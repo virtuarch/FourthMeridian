@@ -28,6 +28,7 @@ import { priceArchive } from "@/lib/prices/archive";
 import { fetchInstrumentWindow } from "@/lib/prices/fetch";
 import { defaultPriceRegistry } from "@/lib/prices/registry";
 import { selectInstrumentsMissingDate } from "@/lib/prices/backfill-core";
+import { resolvePriceability } from "@/lib/prices/coverage-binding.core";
 import { yesterdayUTCISO } from "@/lib/prices/config";
 
 export interface FetchSecurityPricesResult {
@@ -58,11 +59,37 @@ export async function fetchSecurityPrices(now: Date = new Date()): Promise<Fetch
   // Held instruments: a live (non-superseded, non-deleted) position with qty > 0.
   const held = await db.positionObservation.findMany({
     where:    { supersededById: null, deletedAt: null, quantity: { gt: 0 } },
-    select:   { instrumentId: true, instrument: { select: { tickerSymbol: true } } },
+    select:   {
+      instrumentId: true,
+      instrument: { select: { tickerSymbol: true, assetClass: true, marketIdentifierCode: true, currency: true } },
+    },
     distinct: ["instrumentId"],
   });
-  const instrumentIds = [...new Set(held.map((h) => h.instrumentId))].sort();
-  const symbolById = new Map(held.map((h) => [h.instrumentId, h.instrument.tickerSymbol]));
+
+  // V26-PRICE-3 — drop instruments no provider can price BEFORE selecting the
+  // missing list. Previously a CASH instrument, an option, or one with a null
+  // ticker was selected every single day, fetched, answered with nothing, and
+  // therefore still "missing" tomorrow — an unbounded retry loop that produced
+  // no row and no diagnostic, forever. Priceability comes from the ONE resolver
+  // the coverage binding uses, so the cron and coverage cannot disagree.
+  const unpriceable: string[] = [];
+  const priceable = held.filter((h) => {
+    const p = resolvePriceability({
+      instrumentId:         h.instrumentId,
+      assetClass:           String(h.instrument.assetClass),
+      tickerSymbol:         h.instrument.tickerSymbol,
+      marketIdentifierCode: h.instrument.marketIdentifierCode,
+      currency:             h.instrument.currency,
+    });
+    if (!p.priceable) unpriceable.push(`${h.instrumentId}(${p.reason})`);
+    return p.priceable;
+  });
+  if (unpriceable.length > 0) {
+    console.log(`[prices-cron] ${dateISO}: skipping ${unpriceable.length} unpriceable instrument(s): ${unpriceable.sort().join(", ")}`);
+  }
+
+  const instrumentIds = [...new Set(priceable.map((h) => h.instrumentId))].sort();
+  const symbolById = new Map(priceable.map((h) => [h.instrumentId, h.instrument.tickerSymbol]));
 
   // Batch coverage read for the target date, then select the missing.
   const covered = new Map<string, Set<string>>();

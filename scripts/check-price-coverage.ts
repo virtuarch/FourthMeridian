@@ -45,21 +45,41 @@ function label(r: InstrumentRow): string {
   return `${(r.ticker ?? "(no ticker)").slice(0, 22).padEnd(22)} ${r.assetClass.padEnd(7)}`;
 }
 
-/** One-line summary of any binding outcome. */
-function describe(c: InstrumentCoverage): string {
+/**
+ * The window a result was computed over. Every line names its own, because two
+ * sections deliberately ask DIFFERENT questions of the same instrument and their
+ * answers would otherwise look contradictory: section 1 ends at the last
+ * archived date (so a healthy instrument is complete), while section 2 ends at
+ * the latest closed date (so the same instrument legitimately shows a trailing
+ * gap wherever the daily cron has not caught up). Both are correct. Only an
+ * unlabelled mixture would be wrong.
+ */
+type WindowSource = "calendar-falsification" | "operational-ownership" | "crypto-wide";
+
+/**
+ * One fully self-describing line: which window, which calendar, which provider
+ * floor, and every count. Nothing is left implicit, so a line can be read on its
+ * own without knowing which section produced it.
+ */
+function describe(c: InstrumentCoverage, source: WindowSource, floorISO: string | null): string {
+  const floor = `floor=${floorISO ?? "null"}`;
   if (c.kind === "calendar-unavailable") {
     const f = c.failure;
-    return f.code === "HORIZON_EXCEEDED"
-      ? `CALENDAR ${f.code} — ${f.calendarId} supports ${f.supportedFromISO}→${f.supportedThroughISO}, asked ${f.requestedFromISO}→${f.requestedToISO}`
-      : `CALENDAR ${f.code} — assetClass=${f.assetClass} mic=${f.mic ?? "NULL"}`;
+    const detail = f.code === "HORIZON_EXCEEDED"
+      ? `[${source}] ${f.requestedFromISO}→${f.requestedToISO} cal=${f.calendarId} ${floor} ` +
+        `CALENDAR-UNAVAILABLE ${f.code} supported=${f.supportedFromISO}→${f.supportedThroughISO}`
+      : `[${source}] cal=none ${floor} CALENDAR-UNAVAILABLE ${f.code} assetClass=${f.assetClass} mic=${f.mic ?? "NULL"}`;
+    return detail;
   }
   const r = c.report;
   const gaps = r.missingRanges.length === 0
     ? ""
-    : ` · gaps ${r.missingRanges.map((m) => `${m.fromISO}→${m.toISO}(${m.expectedDates})`).join(" ")}`;
-  const cur = c.currencyMismatchCount > 0 ? ` · currency-mismatch ${c.currencyMismatchCount}` : "";
-  return `${r.state.toUpperCase().padEnd(11)} expected ${String(r.expectedCount).padStart(4)} · observed ${String(r.observedCount).padStart(4)} · ` +
-    `missing ${String(r.missingCount).padStart(4)} · unreachable ${r.unreachableCount} · [${r.reasons.join(",")}]${cur}${gaps}`;
+    : ` gaps=${r.missingRanges.map((m) => `${m.fromISO}→${m.toISO}(${m.expectedDates})`).join(",")}`;
+  return `[${source}] ${r.requestedFromISO}→${r.requestedToISO} cal=${r.calendarId} ${floor} ` +
+    `${r.state.toUpperCase().padEnd(11)} ` +
+    `exp=${String(r.expectedCount).padStart(4)} obs=${String(r.observedCount).padStart(4)} ` +
+    `miss=${String(r.missingCount).padStart(4)} unreach=${r.unreachableCount} ` +
+    `unexp=${r.unexpectedCount} ccy=${c.currencyMismatchCount}${gaps}`;
 }
 
 async function main(): Promise<number> {
@@ -95,8 +115,9 @@ async function main(): Promise<number> {
   let findings = 0;
 
   // ── 1. ACCEPTANCE — the calendar must reproduce each archived span ─────────
-  console.log("1 · CALENDAR FALSIFICATION — each equity/ETF over its own archived span");
-  console.log("    (inside a covered span the vendor priced every open day, so this MUST be complete)\n");
+  console.log("1 · CALENDAR FALSIFICATION WINDOW — each equity/ETF over [its first archived date → its LAST ARCHIVED date]");
+  console.log("    Inside a covered span the vendor priced every open day, so this MUST be complete.");
+  console.log("    This window deliberately ENDS AT THE ARCHIVE, not today — it tests the holiday tables, not cron freshness.\n");
   {
     const eligible = instruments.filter(
       (r) => (r.assetClass === "EQUITY" || r.assetClass === "ETF") && r.firstPx && r.lastPx && Number(r.pxRows) > 0,
@@ -115,7 +136,7 @@ async function main(): Promise<number> {
         const c = byId.get(r.id)!;
         const ok = c.kind === "report" && c.report.state === "complete" && c.report.missingRanges.length === 0;
         if (!ok) findings++;
-        console.log(`  ${ok ? "✓" : "✗"} ${label(r)} ${toISODateUTC(r.firstPx!)}→${toISODateUTC(r.lastPx!)}  ${describe(c)}`);
+        console.log(`  ${ok ? "✓" : "✗"} ${label(r)} ${describe(c, "calendar-falsification", floor)}`);
       }
       console.log(
         findings === 0
@@ -127,8 +148,10 @@ async function main(): Promise<number> {
 
   // ── 2. Production answer over ownership-evidence windows ──────────────────
   const latestClosed = yesterdayUTCISO();
-  console.log(`2 · OWNERSHIP-EVIDENCE WINDOWS — [earliest position/event evidence → ${latestClosed}]`);
-  console.log("    (diagnostic: real gaps here are the arc's subject matter, not a defect in this slice)\n");
+  console.log(`2 · OPERATIONAL OWNERSHIP WINDOW — [earliest position/event evidence → ${latestClosed} (latest CLOSED date)]`);
+  console.log("    A DIFFERENT window from section 1: it runs to today, so an instrument that is complete above may");
+  console.log("    legitimately show a trailing gap here wherever the daily cron has not yet caught up. Both are correct.");
+  console.log("    Real gaps here are the arc's subject matter, not a defect in this slice.\n");
   {
     const owned = instruments.filter((r) => r.firstEvidence);
     const requests: CoverageRequest[] = owned.map((r) => ({
@@ -139,13 +162,13 @@ async function main(): Promise<number> {
     const results = requests.length ? await loadInstrumentCoverage(requests) : [];
     const byId = new Map(results.map((c) => [c.instrumentId, c]));
     for (const r of owned) {
-      console.log(`    ${label(r)} ${toISODateUTC(r.firstEvidence!)}→${latestClosed}  ${describe(byId.get(r.id)!)}`);
+      console.log(`    ${label(r)} ${describe(byId.get(r.id)!, "operational-ownership", floor)}`);
     }
     console.log("");
   }
 
   // ── 3. Crypto over a wide window — the flat-history case ──────────────────
-  console.log("3 · CRYPTO OVER A WIDE WINDOW — is dense-but-short mistaken for complete?\n");
+  console.log(`3 · CRYPTO WIDE WINDOW — [2023-01-01 → ${latestClosed}]: is dense-but-short mistaken for complete?\n`);
   {
     const crypto = instruments.filter((r) => r.assetClass === "CRYPTO");
     if (crypto.length === 0) {
@@ -158,7 +181,7 @@ async function main(): Promise<number> {
       const byId = new Map(results.map((c) => [c.instrumentId, c]));
       for (const r of crypto) {
         const c = byId.get(r.id)!;
-        console.log(`    ${label(r)} ${WIDE_FROM}→${latestClosed}  ${describe(c)}`);
+        console.log(`    ${label(r)} ${describe(c, "crypto-wide", floor)}`);
         if (c.kind === "report" && c.report.state === "partial") {
           console.log(
             `      ↳ its ${r.pxRows} archived row(s) are internally dense, yet the ownership-relative\n` +

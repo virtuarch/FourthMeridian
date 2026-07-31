@@ -1,62 +1,53 @@
 /**
  * lib/prices/backfill-core.ts
  *
- * A8-3A — the PURE planning logic for historical price acquisition, split from
- * the DB-touching script/job (the lens/core, backfill/backfill-core convention).
- * No Prisma, no network — fixture-tested. The script (scripts/backfill-security-
- * prices.ts) and the daily job (jobs/fetch-security-prices.ts) read the DB for
- * activity/coverage inputs, then call these helpers to decide WHAT to fetch, and
- * write results through the archive.
+ * A8-3A — pure helpers for historical price acquisition. No Prisma, no network
+ * — fixture-tested.
  *
- * Doctrine encoded here:
- *   - Backfill only DEFENSIBLE windows — bounded by an instrument's earliest
- *     real activity (first PositionObservation / InvestmentEvent), never
- *     arbitrary history for unused instruments.
- *   - Fetch only MISSING dates — resume from the latest already-covered date, so
- *     re-runs are cheap and idempotent.
- *   - Batched/paginated acquisition — a long window is split into bounded chunks.
- *   - No interpolation, ever — this module decides windows, not values.
+ * ── V26-PRICE-3: the window planners were REMOVED ───────────────────────────
+ * This module used to export `resolveBackfillWindow` (resume forward from the
+ * latest covered date) and `resolveForceBackfillWindows` (subtract the covered
+ * block's edges from a requested span). Both inferred coverage from block
+ * EDGES, which silently assumed stored evidence forms a single contiguous
+ * interval. Its own comment admitted the assumption and admitted it could not
+ * detect a gap WITHIN the block.
+ *
+ * The assumption was never enforced — it held only because one force-backfill
+ * happened to write a dense block — and when it broke on 2026-07-15 a two-year
+ * historical request collapsed to an empty window the moment the daily cron had
+ * written ANY recent row, silently ending historical valuation about thirty days
+ * back. The fix applied then patched the symptom (a second planner for the
+ * force path) while keeping the same edge arithmetic.
+ *
+ * Acquisition windows are now planned from an explicit missing-date set:
+ *
+ *     lib/prices/coverage.core.ts          what evidence is missing (pure)
+ *     lib/prices/coverage-binding.ts       real expected + observed dates
+ *     lib/prices/acquisition-plan.core.ts  missing ranges → provider requests
+ *
+ * Both planners were deleted rather than deprecated: they encoded a falsified
+ * assumption, had no remaining production callers, and keeping them would have
+ * left two competing coverage authorities in one directory — the condition that
+ * produced the original defect.
+ *
+ * What remains here is genuinely orthogonal to coverage:
+ *   - chunkWindow — splitting ONE window into vendor-sized requests. Used by the
+ *     acquisition planner; knows nothing about what is covered.
+ *   - selectInstrumentsMissingDate — the daily cron's single-date selection. No
+ *     interval reasoning of any kind, so the contiguity defect never applied.
+ *
+ * Doctrine still encoded: batched/paginated acquisition, and NO interpolation
+ * ever — these helpers decide windows, never values.
  */
 
 import { assertISODate, minusDaysISO } from "./config";
 
 /**
- * The date window to fetch for one instrument, or null when nothing is missing.
- *
- *   from = day after the latest already-covered date (resume), or the earliest
- *          defensible activity date when nothing is covered yet.
- *   to   = the newest closed date (yesterday UTC), passed in as `toISO`.
- *
- * Returns null when `from > to` (fully covered, or no activity in range) so a
- * re-run after a complete backfill fetches nothing.
- */
-export function resolveBackfillWindow(
-  earliestActivityISO: string | null,
-  latestCoveredISO: string | null,
-  toISO: string,
-): { fromISO: string; toISO: string } | null {
-  assertISODate(toISO);
-  if (!earliestActivityISO) return null; // instrument has no defensible activity — skip
-  assertISODate(earliestActivityISO);
-
-  let fromISO: string;
-  if (latestCoveredISO) {
-    assertISODate(latestCoveredISO);
-    // Resume the day after the latest covered date, but never before activity.
-    const dayAfter = minusDaysISO(latestCoveredISO, -1);
-    fromISO = dayAfter > earliestActivityISO ? dayAfter : earliestActivityISO;
-  } else {
-    fromISO = earliestActivityISO;
-  }
-
-  if (fromISO > toISO) return null;
-  return { fromISO, toISO };
-}
-
-/**
  * Split [fromISO, toISO] into ascending chunks of at most `maxDays` calendar
- * days each (batched/paginated acquisition — a vendor call per chunk). Inclusive
- * bounds. Deterministic. Throws on a non-positive maxDays (programmer error).
+ * days each (one vendor call per chunk). INCLUSIVE bounds on both the input and
+ * every chunk: a chunk spanning exactly `maxDays` days runs from its first day
+ * through its last, and consecutive chunks are adjacent with no gap and no
+ * overlap. Deterministic. Throws on a non-positive maxDays (programmer error).
  */
 export function chunkWindow(
   fromISO: string,
@@ -81,69 +72,15 @@ export function chunkWindow(
 }
 
 /**
- * A9 force-backfill — the missing sub-window(s) of [forceFromISO, forceToISO]
- * that fall OUTSIDE existing coverage.
- *
- * 2026-07-15 bug fix: resolveBackfillWindow assumes coverage grows FORWARD
- * from earliest activity and resumes the day after the latest covered date —
- * correct for the daily cron's normal path. A forceWindow's job is the
- * opposite: backfill a historical span BEHIND whatever the daily cron has
- * already accreted forward from today. Reusing resolveBackfillWindow's
- * "resume after latest covered" logic for a forceWindow collapses to an empty
- * window the moment ANY recent coverage exists — the root cause of historical
- * investment valuation falling off after ~30 days (every held instrument
- * already had ~20 days of front-edge cron coverage, so `dayAfter(latestCovered)
- * > toISO` and the force window resolved to null before ever reaching the
- * price vendor for the older span).
- *
- * Assumes a single contiguous covered interval [earliestCoveredISO,
- * latestCoveredISO] — true in practice (the cron accretes one contiguous
- * block forward from wherever the last backfill left off); does not attempt
- * to detect gaps WITHIN that interval.
- *
- * Returns 0, 1, or 2 windows:
- *  - no coverage at all → [forceFromISO, forceToISO] (unchanged from today)
- *  - an OLDER gap: [forceFromISO, earliestCoveredISO − 1], when forceFromISO
- *    precedes existing coverage
- *  - a NEWER gap: [latestCoveredISO + 1, forceToISO], when forceToISO follows
- *    existing coverage (rare — the daily cron usually keeps this current, but
- *    not assumed)
- */
-export function resolveForceBackfillWindows(
-  forceFromISO: string,
-  forceToISO: string,
-  earliestCoveredISO: string | null,
-  latestCoveredISO: string | null,
-): Array<{ fromISO: string; toISO: string }> {
-  assertISODate(forceFromISO);
-  assertISODate(forceToISO);
-  if (forceFromISO > forceToISO) return [];
-
-  if (!earliestCoveredISO || !latestCoveredISO) {
-    return [{ fromISO: forceFromISO, toISO: forceToISO }];
-  }
-  assertISODate(earliestCoveredISO);
-  assertISODate(latestCoveredISO);
-
-  const windows: Array<{ fromISO: string; toISO: string }> = [];
-
-  if (forceFromISO < earliestCoveredISO) {
-    const olderTo = minusDaysISO(earliestCoveredISO, 1);
-    if (forceFromISO <= olderTo) windows.push({ fromISO: forceFromISO, toISO: olderTo });
-  }
-  if (forceToISO > latestCoveredISO) {
-    const newerFrom = minusDaysISO(latestCoveredISO, -1);
-    if (newerFrom <= forceToISO) windows.push({ fromISO: newerFrom, toISO: forceToISO });
-  }
-
-  return windows;
-}
-
-/**
  * Given per-instrument coverage for a single target date, the instrument ids
  * still MISSING that date — the daily job's fetch list. An instrument absent
  * from `covered` (never priced) is missing; one whose set lacks the date is
  * missing. Deterministic ascending order.
+ *
+ * Single-date only: this never reasons about intervals, so it was untouched by
+ * the contiguity defect above. The daily job additionally filters out
+ * instruments that cannot be priced at all before calling this — see
+ * jobs/fetch-security-prices.ts.
  */
 export function selectInstrumentsMissingDate(
   instrumentIds: readonly string[],
