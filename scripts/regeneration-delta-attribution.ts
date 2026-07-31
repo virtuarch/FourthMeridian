@@ -65,6 +65,12 @@ import {
 } from "@/lib/snapshots/price-completeness.core";
 import { loadOwnershipWindows } from "@/lib/prices/ownership-window";
 import { applyOwnershipEligibility, ownershipOn } from "@/lib/snapshots/ownership-eligibility.core";
+import {
+  assessRepresentativeness,
+  summariseRepresentativeness,
+  type HoldingEvidence,
+  type RepresentativenessAssessment,
+} from "@/lib/snapshots/representativeness.core";
 
 const THRESHOLD = Number(process.argv[2] ?? 1000);
 /** Residual above this (absolute, reporting currency) is a real discrepancy. */
@@ -119,6 +125,7 @@ async function main(): Promise<number> {
   /** Days where every MARKET holding was excluded, yet a cash position kept the day eligible. */
   let cashOnlyDays = 0;
   let cashOnlyMaxDelta = 0;
+  const assessments: RepresentativenessAssessment[] = [];
 
   for (const space of spaces) {
     const bounds = await db.spaceSnapshot.aggregate({
@@ -238,6 +245,21 @@ async function main(): Promise<number> {
       });
       const evidence = summariseSnapshotEvidence(dISO, axes);
 
+      // V26-PRICE-5B — representativeness from EVIDENCE COVERAGE only. No value
+      // is read, so the classification cannot move because the market moved.
+      const holdingEvidence: HoldingEvidence[] = components.map((v) => {
+        const own = ownershipOn(dISO, ownership.get(v.instrumentId));
+        return {
+          instrumentId: v.instrumentId,
+          eligible:     own !== "UNKNOWN",
+          inferred:     own === "POSSIBLE",
+          marketPriced: priceAxis(v) !== null,
+          priced:       v.nativePrice != null,
+        };
+      });
+      const assessment = assessRepresentativeness(dISO, holdingEvidence);
+      assessments.push(assessment);
+
       const anyBackProjected = axes.some((a) => a.quantityConfidence !== "RECONSTRUCTED");
       const anyPossible      = axes.some((a) => a.ownershipConfidence !== "KNOWN");
       const category: Category =
@@ -268,7 +290,9 @@ async function main(): Promise<number> {
 
       if (!material.includes(c)) continue;
 
-      console.log(`  ${dISO}   category: ${category}`);
+      console.log(`  ${dISO}   category: ${category}   representativeness: ${assessment.representativeness}` +
+        ` (ownership ${assessment.ownershipCoverage.covered}/${assessment.ownershipCoverage.total}` +
+        `, priced ${assessment.priceCoverage.covered}/${assessment.priceCoverage.total})`);
       console.log(`    stocks    ${f2(priorRow?.stocks ?? 0).padStart(12)} → ${f2(recomputed).padStart(12)}` +
         `   Δ ${f2(stocksDelta?.delta ?? 0).padStart(11)} (${pct(stocksDelta?.delta ?? 0, priorRow?.stocks ?? 0)})`);
       if (nwDelta) {
@@ -317,6 +341,14 @@ async function main(): Promise<number> {
 
   // ── Summary ───────────────────────────────────────────────────────────────
   const total = Object.values(categoryTotals).reduce((a, b) => a + b, 0);
+  const rep = summariseRepresentativeness(assessments);
+  console.log("═".repeat(72));
+  console.log("REPRESENTATIVENESS OF UPDATED SNAPSHOTS (evidence coverage, not magnitude)");
+  console.log("═".repeat(72));
+  console.log(`  REPRESENTATIVE       ${String(rep.REPRESENTATIVE).padStart(5)}   every surfaced market holding eligible and priced`);
+  console.log(`  PARTIAL              ${String(rep.PARTIAL).padStart(5)}   some valued, some excluded or unpriced`);
+  console.log(`  NON_REPRESENTATIVE   ${String(rep.NON_REPRESENTATIVE).padStart(5)}   no market holding valued at all`);
+  console.log("");
   console.log("═".repeat(72));
   console.log("ALL UPDATED SNAPSHOTS BY CATEGORY");
   console.log("═".repeat(72));
