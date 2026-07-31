@@ -52,6 +52,11 @@ import {
   type CashAccountBalance,
 } from "@/lib/snapshots/backfill-core";
 import { regenerateDay, type DayRegenInput, type DayRegenResult } from "@/lib/snapshots/regenerate-history.core";
+import {
+  classifyRegeneration,
+  REGENERATION_DISPOSITIONS,
+  type RegenerationDisposition,
+} from "@/lib/snapshots/regeneration-candidates.core";
 import { resolveBtcInstrumentId, readBtcUsdWindow } from "@/lib/crypto/btc-price";
 import { backfillHeldInstrumentPrices } from "@/lib/investments/holding-price-backfill";
 
@@ -141,6 +146,12 @@ export interface RegenerateWealthHistoryResult {
   // "MEMBERSHIP CHANGED" guard and
   // docs/initiatives/wealth-timeline/WEALTH_TIMELINE_AMENDMENT_SYSTEM_PROPOSAL.md §9.
   skippedMembershipChanged: number;
+  /**
+   * V26-PRICE-5 — every evaluated day by disposition. `written` counts only
+   * UPDATED days; UNCHANGED days are evaluated and deliberately left alone, so
+   * `considered` and `written` no longer imply one another.
+   */
+  dispositions:       Record<RegenerationDisposition, number>;
   applied:            boolean; // whether writes actually happened
   diffs:              WealthHistoryDiff[];
 }
@@ -158,7 +169,9 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   const applyWrites = !args.dryRun && (wealthRegenerationEnabled() || args.isAmendment === true);
 
   const zero: RegenerateWealthHistoryResult = {
-    spaceId, fromDate, toDate, considered: 0, written: 0, skippedFrozen: 0, skippedUnsupported: 0, skippedMembershipChanged: 0, applied: applyWrites, diffs: [],
+    spaceId, fromDate, toDate, considered: 0, written: 0, skippedFrozen: 0, skippedUnsupported: 0, skippedMembershipChanged: 0,
+    dispositions: Object.fromEntries(REGENERATION_DISPOSITIONS.map((d) => [d, 0])) as Record<RegenerationDisposition, number>,
+    applied: applyWrites, diffs: [],
   };
 
   // Space reporting currency (for the per-day conversion context, historical FX)
@@ -195,7 +208,11 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // dark without COINGECKO_API_KEY). Independent of the per-account floor: the
   // constant-quantity assumption spans the whole window (a labeled estimate).
   const cryptoAccounts = accounts.filter((a) => a.type === "crypto" && a.nativeBalance != null);
-  if (cryptoAccounts.length > 0) {
+  // V26-PRICE-5 — a DRY RUN MUST NOT ACQUIRE. `dryRun` previously suppressed
+  // only the snapshot upserts, so a "read-only" impact report still made live
+  // provider calls and wrote price rows. Valuation reads stored evidence only;
+  // acquisition is a separate, effectful phase and is skipped entirely here.
+  if (cryptoAccounts.length > 0 && !args.dryRun) {
     try {
       // V26-PRICE-PROVIDER-UNIFICATION — crypto prices are acquired through the
       // SAME path as equities (coverage → acquisition plan → capability routing
@@ -219,7 +236,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // fetches the historical span anyway). Best-effort/dark without a price vendor.
   const investmentAccounts = accounts.filter((a) => a.type === "investment");
   let heldInstrumentIds: string[] = [];
-  if (investmentAccounts.length > 0) {
+  // Same guard: no acquisition on a dry run. See the crypto branch above.
+  if (investmentAccounts.length > 0 && !args.dryRun) {
     heldInstrumentIds = [
       ...new Set(
         (
@@ -508,11 +526,20 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       netWorthAfter: res.fields ? res.fields.netWorth : null,
     });
 
-    if (res.action === "write" && res.fields) {
+    // V26-PRICE-5 — classify against what is STORED before queueing a write.
+    // A day that recomputes identically is UNCHANGED and is deliberately NOT
+    // rewritten: beyond saving writes, a regeneration that touches thousands of
+    // rows to change none is indistinguishable in an audit trail from one that
+    // changed them all. BLOCKED (frozen / membership) and SKIPPED (invalid or
+    // absent evidence) never reach here — the core already refused them.
+    const candidate = classifyRegeneration(res, prior ?? null);
+    result.dispositions[candidate.disposition]++;
+    if (candidate.disposition === "UPDATED" && res.fields) {
       writes.push({ date: d, isEstimated: res.isEstimated, fields: res.fields });
     }
   }
 
+  // Only UPDATED days are written. `writes` is already filtered to them.
   if (applyWrites) {
     for (const w of writes) {
       const data = {
