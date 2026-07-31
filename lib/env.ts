@@ -115,6 +115,11 @@ const _e = {
   // the integration gracefully (see the accessors below), never a boot failure.
   TIINGO_API_KEY:    process.env.TIINGO_API_KEY,    // securities price vendor (lib/prices/registry.ts)
   COINGECKO_API_KEY: process.env.COINGECKO_API_KEY, // BTC/USD daily close backfill (lib/crypto/btc-price.ts)
+  // V26-PRICE-4C — days of history the CONFIGURED CoinGecko tier serves. Absent
+  // ⇒ the Demo default (365). Possession of a key does NOT imply a paid plan, so
+  // a paid deployment must set this to match its tier; leaving it unset makes the
+  // adapter advertise less capability than it has, never more.
+  COINGECKO_HISTORY_DAYS: process.env.COINGECKO_HISTORY_DAYS,
   OXR_APP_ID:        process.env.OXR_APP_ID,        // primary FX provider (lib/fx/registry.ts)
 
   // ── Investment-history pipeline kill switches (A1/A3/A4/A9 + price capture) ──
@@ -467,6 +472,7 @@ export const env = {
   // these accessors are for feature-flag checks and env reporting, not the SDKs.
   get TIINGO_API_KEY()    { return _e.TIINGO_API_KEY; },
   get COINGECKO_API_KEY() { return _e.COINGECKO_API_KEY; },
+  get COINGECKO_HISTORY_DAYS() { return _e.COINGECKO_HISTORY_DAYS; },
   get OXR_APP_ID()        { return _e.OXR_APP_ID; },
 
   // ── Investment-history pipeline enablement (documentation mirror) ────────────

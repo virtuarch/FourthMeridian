@@ -26,8 +26,77 @@ import type {
   PriceFetchRequest, PriceProviderAdapter, PriceResult, ProviderRoutingKey,
 } from "../types";
 import { ProviderFetchError } from "../provider-errors";
+import { minusDaysISO, toISODateUTC } from "../config";
 
 const COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3";
+
+/**
+ * The earliest date that exists anywhere in CoinGecko's BTC dataset. An ABSOLUTE
+ * LOWER BOUND on the deployment floor, never the floor itself — see
+ * resolveCoinGeckoFloorISO.
+ */
+export const COINGECKO_DATASET_START = "2013-04-28";
+
+/**
+ * Days of history the DEMO tier serves, per CoinGecko's documentation. The
+ * default is deliberately the most restrictive supported tier: possession of an
+ * API key does NOT imply a paid plan, and inferring one would reintroduce the
+ * exact defect V26-PRICE-4C exists to remove. A paid deployment must say so by
+ * setting COINGECKO_HISTORY_DAYS.
+ */
+export const COINGECKO_DEFAULT_HISTORY_DAYS = 365;
+
+/**
+ * Parse COINGECKO_HISTORY_DAYS. Absent or blank ⇒ the Demo default; anything
+ * present but not a positive integer THROWS rather than silently falling back —
+ * a typo that quietly restored a wrong capability is precisely the class of bug
+ * this slice closes.
+ */
+export function resolveCoinGeckoHistoryDays(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return COINGECKO_DEFAULT_HISTORY_DAYS;
+  const text = raw.trim();
+  // PLAIN DECIMAL DIGITS ONLY. Number() would accept "1e3", "0x10" and " 12 " as
+  // integers; for deployment configuration that is surprising rather than
+  // permissive, and this value decides how much history the system believes it
+  // can obtain. An unambiguous grammar makes "malformed" unambiguous too.
+  if (!/^\d+$/.test(text)) {
+    throw new Error(
+      `[prices][coingecko] COINGECKO_HISTORY_DAYS must be a positive integer in plain ` +
+      `decimal digits (got "${raw}")`,
+    );
+  }
+  const n = Number(text);
+  if (!Number.isSafeInteger(n) || n <= 0) {
+    throw new Error(
+      `[prices][coingecko] COINGECKO_HISTORY_DAYS must be a positive integer (got "${raw}")`,
+    );
+  }
+  return n;
+}
+
+/**
+ * The earliest date this CONFIGURED deployment can serve.
+ *
+ * ── Inclusive semantics, stated exactly ──────────────────────────────────────
+ * The floor is the date exactly `historyDays` days before the given UTC today,
+ * and that date IS servable. With historyDays = 365 and utcToday = 2026-07-31:
+ *
+ *     floor = 2025-07-31   ← servable (2025-07-31 + 365 days = 2026-07-31)
+ *     2025-07-30           ← NOT servable
+ *
+ * There is no off-by-one ambiguity: the window is "365 days ago" measured as
+ * date arithmetic, not "the last 365 dates". Fixtures pin both sides.
+ *
+ * Clamped at COINGECKO_DATASET_START so a very large configured window cannot
+ * claim history that does not exist at any tier.
+ *
+ * UTC arithmetic only, and the caller supplies `utcTodayISO` — no clock is read
+ * here, so the function is pure and fixture-testable.
+ */
+export function resolveCoinGeckoFloorISO(utcTodayISO: string, historyDays: number): string {
+  const windowFloor = minusDaysISO(utcTodayISO, historyDays);
+  return windowFloor > COINGECKO_DATASET_START ? windowFloor : COINGECKO_DATASET_START;
+}
 
 /**
  * INSTRUMENT CONFIGURATION — ticker symbol → CoinGecko coin id.
@@ -63,6 +132,13 @@ export interface CoinGeckoOptions {
   apiKey?:    string;         // default: process.env.COINGECKO_API_KEY
   baseUrl?:   string;         // tests
   fetchImpl?: CoinGeckoFetch; // tests
+  /**
+   * The adapter's declared deployment floor, used ONLY to classify an
+   * authorization failure: a 401/403 for a window that predates what this tier
+   * can serve is a CAPABILITY limit, not a credential fault. Absent ⇒ every
+   * 401/403 is treated as a credential fault.
+   */
+  deploymentFloorISO?: string;
 }
 
 /**
@@ -104,8 +180,22 @@ export async function fetchCoinDailyClosesUsd(
   if (!res.ok) {
     const detail = res.status === 429 ? "rate-limited (429)" : `HTTP ${res.status}`;
     console.warn(`[prices][coingecko] ${detail} for ${coinId} [${fromISO}..${toISO}]`);
-    throw new ProviderFetchError(res.status === 429 ? "THROTTLED" : "PROVIDER_ERROR",
-      `coingecko: ${detail} for ${coinId}`);
+    // V26-PRICE-4C — an authorization failure for a window BELOW this
+    // deployment's floor is a capability limit, not a credential fault. The
+    // distinction is operational: PROVIDER_LIMIT is permanent until the tier
+    // changes and is never retried, while PROVIDER_ERROR is retryable and would
+    // otherwise hammer a wall the key can never pass.
+    const authFailure = res.status === 401 || res.status === 403;
+    const belowFloor = opts.deploymentFloorISO !== undefined && fromISO < opts.deploymentFloorISO;
+    const code =
+      res.status === 429 ? "THROTTLED"
+      : authFailure && belowFloor ? "PROVIDER_LIMIT"
+      : "PROVIDER_ERROR";
+    throw new ProviderFetchError(code,
+      code === "PROVIDER_LIMIT"
+        ? `coingecko: ${detail} for ${coinId} — window ${fromISO} predates the configured ` +
+          `deployment floor ${opts.deploymentFloorISO}; not retryable until the tier changes`
+        : `coingecko: ${detail} for ${coinId}`);
   }
 
   let body: unknown;
@@ -147,13 +237,28 @@ export async function fetchCoinDailyClosesUsd(
  */
 export function createCoinGeckoPriceProvider(
   apiKey: string,
-  opts:   CoinGeckoOptions & { source?: string; historicalDepth?: string } = {},
+  opts:   CoinGeckoOptions & {
+    source?: string;
+    /** Explicit override; otherwise computed from historyDays + now. */
+    historicalDepth?: string;
+    /** Configured deployment window. Default: COINGECKO_HISTORY_DAYS, else Demo. */
+    historyDays?: number;
+    /** Injected clock for tests. Default: the process's current UTC date. */
+    now?: Date;
+  } = {},
 ): PriceProviderAdapter {
-  const source          = opts.source ?? "coingecko";
-  // CoinGecko's BTC series begins 2013-04-28; the Demo tier serves ~365 days,
-  // but depth is a capability statement, not a tier limit. Tier truncation
-  // surfaces as fewer returned rows, which coverage reports as a remaining gap.
-  const historicalDepth = opts.historicalDepth ?? "2013-04-28";
+  const source = opts.source ?? "coingecko";
+
+  // V26-PRICE-4C — historicalDepth is DEPLOYMENT capability: "the earliest date
+  // THIS CONFIGURED adapter can currently serve". It previously advertised the
+  // dataset start (2013-04-28), which is true of CoinGecko's data and false of
+  // the Demo tier, so coverage classified a decade of dates as actionable that
+  // no request under this key could ever obtain — three of them returned 401 in
+  // the live run. The floor MOVES with the calendar, so it is resolved here at
+  // the construction edge; the planner stays pure and receives it as data.
+  const historyDays = opts.historyDays ?? resolveCoinGeckoHistoryDays(process.env.COINGECKO_HISTORY_DAYS);
+  const utcTodayISO = toISODateUTC(opts.now ?? new Date());
+  const historicalDepth = opts.historicalDepth ?? resolveCoinGeckoFloorISO(utcTodayISO, historyDays);
 
   return {
     source,
@@ -172,7 +277,9 @@ export function createCoinGeckoPriceProvider(
       const coinId = coinIdForSymbol(req.providerSymbol);
       if (!coinId) return [];
 
-      const closes = await fetchCoinDailyClosesUsd(coinId, req.fromISO, req.toISO, { ...opts, apiKey });
+      const closes = await fetchCoinDailyClosesUsd(coinId, req.fromISO, req.toISO, {
+        ...opts, apiKey, deploymentFloorISO: historicalDepth,
+      });
       return closes.map((c) => ({
         instrumentId: req.instrumentId,
         dateISO:      c.dateISO,

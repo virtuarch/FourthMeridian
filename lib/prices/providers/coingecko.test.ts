@@ -5,7 +5,15 @@
  */
 
 import { fetchCoinDailyClosesUsd, type CoinGeckoFetch, type CoinGeckoHttpResponse } from "./coingecko";
-import { ProviderFetchError } from "../provider-errors";
+import {
+  createCoinGeckoPriceProvider,
+  resolveCoinGeckoFloorISO,
+  resolveCoinGeckoHistoryDays,
+  COINGECKO_DATASET_START,
+  COINGECKO_DEFAULT_HISTORY_DAYS,
+} from "./coingecko";
+import { PriceBasis } from "@prisma/client";
+import { ProviderFetchError, RETRYABLE_OUTCOMES } from "../provider-errors";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -75,6 +83,105 @@ const KEY = "demo-key";
     const { fn } = fake(body);
     const out = await fetchCoinDailyClosesUsd("bitcoin", "2026-06-01", "2026-06-02", { apiKey: KEY, fetchImpl: fn });
     check("only the positive close survives", out.length === 1 && out[0].price === 60000);
+  }
+
+  // ── 5. Deployment capability floor (V26-PRICE-4C) ─────────────────────────
+  console.log("5. deployment capability floor");
+  {
+    // INCLUSIVE SEMANTICS, pinned on both sides. With a 365-day window and a UTC
+    // today of 2026-07-31 the floor is 2025-07-31, and that date IS servable —
+    // 2025-07-31 + 365 days = 2026-07-31 exactly.
+    const floor = resolveCoinGeckoFloorISO("2026-07-31", 365);
+    check("floor is exactly historyDays before today", floor === "2025-07-31", floor);
+    check("the floor date itself is servable (no off-by-one below)",
+      resolveCoinGeckoFloorISO("2026-07-31", 365) <= "2025-07-31");
+    check("the day before the floor is NOT servable", "2025-07-30" < floor);
+    check("a 364-day window moves the floor one day later",
+      resolveCoinGeckoFloorISO("2026-07-31", 364) === "2025-08-01");
+    check("a 366-day window moves it one day earlier",
+      resolveCoinGeckoFloorISO("2026-07-31", 366) === "2025-07-30");
+    check("leap-year arithmetic is UTC date math, not 365×86400s",
+      resolveCoinGeckoFloorISO("2025-03-01", 366) === "2024-02-29");
+
+    // Clamped at the dataset start — a huge window cannot claim data that never existed.
+    check("a very large window clamps to the dataset start",
+      resolveCoinGeckoFloorISO("2026-07-31", 100_000) === COINGECKO_DATASET_START);
+    check("…and the clamp is exactly the dataset start", COINGECKO_DATASET_START === "2013-04-28");
+  }
+
+  // ── 6. Configuration ──────────────────────────────────────────────────────
+  console.log("6. COINGECKO_HISTORY_DAYS validation");
+  {
+    check("absent → the Demo default", resolveCoinGeckoHistoryDays(undefined) === 365);
+    check("blank → the Demo default", resolveCoinGeckoHistoryDays("  ") === 365);
+    check("the default is the MOST RESTRICTIVE tier, never inferred from a key",
+      COINGECKO_DEFAULT_HISTORY_DAYS === 365);
+    check("a valid value is honoured", resolveCoinGeckoHistoryDays("1825") === 1825);
+    for (const bad of ["0", "-1", "1.5", "abc", "365x", "1e3"]) {
+      let threw = false;
+      try { resolveCoinGeckoHistoryDays(bad); } catch { threw = true; }
+      check(`"${bad}" is rejected, never silently defaulted`, threw);
+    }
+  }
+
+  // ── 7. Failure taxonomy (V26-PRICE-4C) ────────────────────────────────────
+  console.log("7. 401 taxonomy — capability limit vs credential fault");
+  {
+    const unauthorised: CoinGeckoFetch = async () => ({ ok: false, status: 401, async json() { return {}; } });
+    const adapter = createCoinGeckoPriceProvider("k", {
+      fetchImpl: unauthorised, now: new Date("2026-07-31T00:00:00Z"),
+    });
+    check("the adapter advertises the deployment floor, not the dataset start",
+      adapter.historicalDepth === "2025-07-31", adapter.historicalDepth);
+
+    const req = (fromISO: string, toISO: string) => ({
+      instrumentId: "inst_btc", assetClass: "CRYPTO", providerSymbol: "BTC",
+      basis: PriceBasis.RAW_CLOSE, fromISO, toISO,
+    });
+
+    // BELOW the floor → capability limit, permanent until the tier changes.
+    let code: string | null = null;
+    try { await adapter.fetchDailyCloses(req("2024-01-01", "2024-06-01")); }
+    catch (e) { code = e instanceof ProviderFetchError ? e.code : "other"; }
+    check("a 401 below the floor is PROVIDER_LIMIT", code === "PROVIDER_LIMIT", String(code));
+    check("…and PROVIDER_LIMIT is NOT retryable", !RETRYABLE_OUTCOMES.has("PROVIDER_LIMIT"));
+
+    // WITHIN the floor → credential fault, retryable.
+    code = null;
+    try { await adapter.fetchDailyCloses(req("2026-06-01", "2026-07-01")); }
+    catch (e) { code = e instanceof ProviderFetchError ? e.code : "other"; }
+    check("a 401 within the floor is PROVIDER_ERROR (credentials, not capability)",
+      code === "PROVIDER_ERROR", String(code));
+    check("…and PROVIDER_ERROR remains retryable", RETRYABLE_OUTCOMES.has("PROVIDER_ERROR"));
+
+    // A 429 stays throttling regardless of position.
+    const throttled = createCoinGeckoPriceProvider("k", {
+      fetchImpl: async () => ({ ok: false, status: 429, async json() { return {}; } }),
+      now: new Date("2026-07-31T00:00:00Z"),
+    });
+    code = null;
+    try { await throttled.fetchDailyCloses(req("2024-01-01", "2024-06-01")); }
+    catch (e) { code = e instanceof ProviderFetchError ? e.code : "other"; }
+    check("a 429 below the floor is still THROTTLED, not PROVIDER_LIMIT", code === "THROTTLED");
+  }
+
+  // ── 8. Determinism under an injected clock ────────────────────────────────
+  console.log("8. determinism");
+  {
+    const mk = () => createCoinGeckoPriceProvider("k", {
+      fetchImpl: async () => ({ ok: true, status: 200, async json() { return { prices: [] }; } }),
+      now: new Date("2026-07-31T00:00:00Z"), historyDays: 365,
+    });
+    check("identical clock + window → identical capability",
+      mk().historicalDepth === mk().historicalDepth && mk().historicalDepth === "2025-07-31");
+    const tomorrow = createCoinGeckoPriceProvider("k", {
+      fetchImpl: async () => ({ ok: true, status: 200, async json() { return { prices: [] }; } }),
+      now: new Date("2026-08-01T00:00:00Z"), historyDays: 365,
+    });
+    check("the floor MOVES with the calendar (a rolling window, by design)",
+      tomorrow.historicalDepth === "2025-08-01");
+    check("an explicit historicalDepth override still wins (test/back-compat seam)",
+      createCoinGeckoPriceProvider("k", { historicalDepth: "2020-01-01" }).historicalDepth === "2020-01-01");
   }
 
   console.log(failures === 0 ? "\nAll coingecko checks passed" : `\n${failures} failure(s)`);
