@@ -171,6 +171,27 @@ export interface PriceArchiveReader {
     fromISO:       string,
     toISO:         string,
   ): Promise<{ instrumentId: string; dateISO: string; price: number; currency: string }[]>;
+
+  /**
+   * V26-PRICE-2 — the COVERAGE access pattern: which dates exist, without the
+   * prices. Same window and index as readRange, but it deliberately does not
+   * return `price`: coverage planning must never see a value it has no business
+   * judging, and the read stays cheap over long ownership windows.
+   *
+   * `currency` IS returned, because the binding filters observations by the
+   * instrument's expected quote currency before counting them as evidence — a
+   * row in the wrong currency is not coverage (OI-1). That check has to happen
+   * somewhere above the dates-only planner, and this is the read that feeds it.
+   *
+   * OPTIONAL, exactly like readRange: in-memory fakes may omit it, and callers
+   * MUST fall back to readRange when it is absent.
+   */
+  readCoveredDates?(
+    instrumentIds: readonly string[],
+    basis:         PriceBasis,
+    fromISO:       string,
+    toISO:         string,
+  ): Promise<{ instrumentId: string; dateISO: string; currency: string }[]>;
 }
 
 /** Full archive contract (reader + append-only writer). Implemented by lib/prices/archive.ts. */
