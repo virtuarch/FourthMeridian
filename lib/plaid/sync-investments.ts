@@ -46,7 +46,10 @@ import { resolvePlaidAccountByExternalId } from "@/lib/accounts/reconcile";
 import { capturePositionObservations, investmentObservationsEnabled } from "@/lib/investments/position-capture";
 import { syncCurrentHoldings } from "@/lib/investments/sync-current-holdings";
 import type { AccountCoverageFact } from "@/lib/plaid/refresh-execution-types";
-import { ingestInvestmentEvents, investmentEventsEnabled } from "@/lib/investments/investment-event-ingest";
+import {
+  ingestInvestmentEvents, investmentEventsEnabled,
+  recordDisabledInvestmentEventCoverage,
+} from "@/lib/investments/investment-event-ingest";
 
 const LOG = "[plaid-investments]";
 
@@ -182,12 +185,28 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
 
     // A3 — canonical investment event ingestion (once per item; separate
     // investmentsTransactionsGet call). Kill-switch gated, isolated best-effort.
+    // V26-QUANTITY-1E′ — the accounts this item's request covers. Resolved here
+    // rather than inside ingestion, which only ever sees accounts that returned
+    // a transaction; an investment account with none is exactly the case the
+    // coverage ledger has to record.
+    const coveredFinancialAccountIds: string[] = [];
+    for (const plaidAcct of investmentAccounts) {
+      const fa = await resolvePlaidAccountByExternalId(plaidAcct.account_id);
+      if (fa) coveredFinancialAccountIds.push(fa.id);
+    }
+
     if (investmentEventsEnabled()) {
       try {
-        await ingestInvestmentEvents({ accessToken, plaidItemId, now: new Date() });
+        await ingestInvestmentEvents({ accessToken, plaidItemId, now: new Date(), coveredFinancialAccountIds });
       } catch (evErr) {
         console.warn(`${LOG} investment event ingestion failed for item ${plaidItemId} (non-fatal): ${evErr instanceof Error ? evErr.message : evErr}`);
       }
+    } else {
+      // A window that was never requested must say so. Silence here would be
+      // read downstream as "no movement", which is the defect this ledger closes.
+      await recordDisabledInvestmentEventCoverage({
+        plaidItemId, coveredFinancialAccountIds, now: new Date(),
+      });
     }
 
     // Unknown (pre-DTM) probe succeeded — remember it.

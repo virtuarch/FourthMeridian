@@ -672,37 +672,37 @@ model AiAgent {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model PlaidItem {
-  id                  String                   @id @default(cuid())
-  userId              String
-  user                User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  externalItemId      String                   @unique // provider's item/connection id (Plaid item_id today)
-  institutionId       String // Plaid's institution_id (e.g. "ins_3")
-  institutionName     String // human-readable (e.g. "Chase")
-  encryptedToken      String // AES-256-GCM encrypted access token — NEVER plaintext
-  status              PlaidItemStatus          @default(ACTIVE)
-  cursor              String? // /transactions/sync cursor for incremental sync
-  errorCode           String? // last Plaid error code when status = ERROR
-  lastSyncedAt        DateTime?
+  id                    String                   @id @default(cuid())
+  userId                String
+  user                  User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  externalItemId        String                   @unique // provider's item/connection id (Plaid item_id today)
+  institutionId         String // Plaid's institution_id (e.g. "ins_3")
+  institutionName       String // human-readable (e.g. "Chase")
+  encryptedToken        String // AES-256-GCM encrypted access token — NEVER plaintext
+  status                PlaidItemStatus          @default(ACTIVE)
+  cursor                String? // /transactions/sync cursor for incremental sync
+  errorCode             String? // last Plaid error code when status = ERROR
+  lastSyncedAt          DateTime?
   // D2.x resume — set while an initial/resumed history import is pending or
   // has not confirmed completion; cleared to null by syncTransactionsForItem
   // once a full sync loop finishes. Non-null on an ACTIVE item = "importing"
   // (drives lib/sync/status.ts and the client auto-resume). Replaces the old
   // cursor===null heuristic, which broke once the cursor is persisted per page.
-  syncIncompleteAt    DateTime?
+  syncIncompleteAt      DateTime?
   // Live progress counter for the first-run import, so the UI can show
   // "1,284 imported" instead of an unmoving spinner during a multi-minute pull.
   // Written once per COMPLETED page (never per row), alongside the cursor, so it
   // survives a mid-import interruption and keeps climbing across a resume rather
   // than restarting at zero. Reset to 0 only when a fresh import begins
   // (cursor == null). Meaningful only while state = "importing".
-  syncImportedCount   Int                      @default(0)
+  syncImportedCount     Int                      @default(0)
   // Number of sync loops that have run to completion for this item. A first-run
   // import is not considered settled until TWO have completed: Plaid keeps
   // delivering history for minutes after the first loop returns, so clearing
   // "importing" on the first completion declared victory while data was still
   // arriving. Existing rows were backfilled to 2 by the migration so no
   // already-settled connection flips back to importing.
-  completedSyncCount  Int                      @default(0)
+  completedSyncCount    Int                      @default(0)
   // History-rebuild progress (A9). Transactions landing is only half of a first
   // run: the wealth history is then rebuilt day by day across the window those
   // transactions support. That phase had NO representation — the card jumped
@@ -723,23 +723,91 @@ model PlaidItem {
   // serializes syncs so a duplicated/racing SYNC_UPDATES_AVAILABLE webhook can
   // never run two pipelines (racing the cursor) at once. Stale-lock recovery is
   // time-based (see lib/plaid/webhook-sync.ts LOCK_TTL_MS).
-  syncLockedAt        DateTime?
+  syncLockedAt          DateTime?
   // D2 Step 7B — last manual "Refresh"/"Sync Now" attempt (success or
   // failure), distinct from lastSyncedAt above (also written by the
   // scheduled sync job). Gates the manual-refresh cooldown only; the
   // scheduler never reads or writes this field.
-  lastManualRefreshAt DateTime?
+  lastManualRefreshAt   DateTime?
   // Investments consent state — null = unknown / never derived (all Items
   // predating this column). Written by lib/plaid/refresh.ts and
   // lib/plaid/exchangeToken.ts; the future "Enable Investment Holdings" UI
   // renders when this is CONSENT_REQUIRED.
-  investmentsConsent  PlaidInvestmentsConsent?
-  createdAt           DateTime                 @default(now())
-  updatedAt           DateTime                 @updatedAt
+  investmentsConsent    PlaidInvestmentsConsent?
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
 
-  connections AccountConnection[] // new relation
+  connections             AccountConnection[] // new relation
+  // V26-QUANTITY-1E′ — one row per (investment-event ingest attempt, covered account).
+  investmentEventCoverage InvestmentEventCoverage[]
 
   @@index([userId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// InvestmentEventCoverage (V26-QUANTITY-1E′)
+//
+// The ingestion record the quantity arc needs and did not have.
+//
+// `computeIngestWindow` builds a rolling 24-month window from `now` on every
+// sync and persisted nothing: not the window, not whether the pull finished,
+// not how far back it reached. Downstream, QUANTITY-1C.1 must decide whether an
+// interval with no events means "nothing happened" or "nothing was imported" —
+// and those look identical unless someone wrote down what was asked for and
+// what came back. This model is that written record.
+//
+// APPEND-ONLY. One row per (attempt, covered account); rows are never updated
+// or deleted, so the union of COMPLETE windows across rows is the honest answer
+// to "over which dates is this account's event stream fully recorded?".
+//
+// The claim a COMPLETE row makes, stated exactly: the provider fully answered a
+// request for [requestedFromDate, requestedToDate] — every page was fetched and
+// the count reconciled against the provider's own reported total. It does NOT
+// claim the provider's history reaches requestedFromDate. Plaid does not report
+// where its own history begins, so a window extending past that boundary looks
+// identical to one that is genuinely empty. See the arc ledger, B-7.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum InvestmentCoverageOutcome {
+  /// Every page fetched and reconciled against the provider's reported total.
+  COMPLETE
+  /// The provider answered, but fewer rows arrived than it reported.
+  PARTIAL
+  /// The request failed. Nothing may be concluded about this window.
+  FAILED
+  /// INVESTMENT_EVENTS_ENABLED was off — the window was never requested.
+  DISABLED
+  /// The item lacks Investments consent.
+  CONSENT_REQUIRED
+  /// Plaid returned PRODUCT_NOT_READY.
+  NOT_READY
+}
+
+model InvestmentEventCoverage {
+  id                 String                    @id @default(cuid())
+  /// Groups every row written by ONE provider request.
+  attemptId          String
+  plaidItemId        String
+  plaidItem          PlaidItem                 @relation(fields: [plaidItemId], references: [id], onDelete: Cascade)
+  financialAccountId String
+  financialAccount   FinancialAccount          @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  /// The window ASKED FOR — recorded even when the request failed.
+  requestedFromDate  DateTime                  @db.Date
+  requestedToDate    DateTime                  @db.Date
+  outcome            InvestmentCoverageOutcome
+  /// The provider's `total_investment_transactions`; null when it never answered.
+  reportedTotal      Int?
+  /// Rows actually received. Zero with outcome COMPLETE is the load-bearing
+  /// case: it is the only evidence that an empty interval means no movement.
+  fetchedCount       Int                       @default(0)
+  pagesFetched       Int                       @default(0)
+  detail             String?
+  attemptedAt        DateTime
+  createdAt          DateTime                  @default(now())
+
+  @@index([financialAccountId, outcome, requestedFromDate])
+  @@index([plaidItemId, attemptedAt])
+  @@index([attemptId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -963,6 +1031,9 @@ model FinancialAccount {
   // FlowType (v2.5.5 P3) — transactions whose counterparty ("other side") is
   // this account. Relation-only back-reference; populated from P4 onward.
   counterpartyTransactions Transaction[]               @relation("TransactionCounterpartyAccount")
+
+  // V26-QUANTITY-1E′ — ingestion-coverage record for investment events.
+  investmentEventCoverage InvestmentEventCoverage[]
 
   @@index([ownerUserId])
   @@index([ownerSpaceId])
@@ -2528,17 +2599,17 @@ model SyncIssue {
   previousIncidentId String?
 
   // ── Lifecycle (OPS-2D-5A-1) ────────────────────────────────────────────────
-  firstOccurredAt    DateTime?
-  lastOccurredAt     DateTime?
-  resolvedAt         DateTime?
+  firstOccurredAt      DateTime?
+  lastOccurredAt       DateTime?
+  resolvedAt           DateTime?
   /// AUTOMATIC_RECOVERY is the only kind any current code path can produce.
-  resolutionKind     String?
+  resolutionKind       String?
   /// RefreshExecution.id of the run that proved recovery. Soft reference (the
   /// ledger is append-only and must survive item deletion), null when the
   /// resolving path had no execution — never fabricated.
   resolvingExecutionId String?
 
-  occurrences        SyncIssueOccurrence[]
+  occurrences SyncIssueOccurrence[]
 
   @@index([financialAccountId, resolved])
   @@index([plaidItemId, kind])
@@ -2554,9 +2625,9 @@ model SyncIssue {
 /// syncTransactionsForItem when no caller threaded one (exchangeToken still does
 /// this). It could not be joined, indexed, or trusted.
 model SyncIssueOccurrence {
-  id             String   @id @default(cuid())
-  syncIssueId    String
-  syncIssue      SyncIssue @relation(fields: [syncIssueId], references: [id], onDelete: Cascade)
+  id                 String    @id @default(cuid())
+  syncIssueId        String
+  syncIssue          SyncIssue @relation(fields: [syncIssueId], references: [id], onDelete: Cascade)
   /// RefreshExecution.id, resolved by LOOKING UP the runId — stored only when a
   /// matching execution actually exists. Null is honest and common: several
   /// producers have no envelope at all. Soft reference for the same reason as
@@ -2564,11 +2635,11 @@ model SyncIssueOccurrence {
   refreshExecutionId String?
   /// The run correlator as the producer knew it. Retained for diagnostics and
   /// for legacy comparison; it is NOT the relationship authority.
-  runId          String?
-  observedAt     DateTime @default(now())
+  runId              String?
+  observedAt         DateTime  @default(now())
   /// Per-occurrence technical evidence. The episode keeps the first detail; this
   /// keeps every one, so a 40-failure page is 40 occurrences, not 40 incidents.
-  detail         Json?
+  detail             Json?
 
   @@index([syncIssueId, observedAt])
   @@index([refreshExecutionId])
@@ -2591,10 +2662,10 @@ enum SyncIssueKind {
   //
   // UPSERT_ERROR is retained: legacy rows keep their recorded kind, and nothing
   // rewrites history to match a newer vocabulary.
-  TRANSACTION_PERSISTENCE_FAILED     // bank transaction not persisted; cursor held
+  TRANSACTION_PERSISTENCE_FAILED // bank transaction not persisted; cursor held
   INVESTMENT_DATA_PERSISTENCE_FAILED // holdings/events/opening-position repair failed
-  IMPORT_ROLLBACK_FAILED             // a user import rollback did not complete
-  WALLET_SYNC_FAILED                 // on-chain wallet discovery/balance/price failed
+  IMPORT_ROLLBACK_FAILED // a user import rollback did not complete
+  WALLET_SYNC_FAILED // on-chain wallet discovery/balance/price failed
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2764,21 +2835,21 @@ model NotificationPreference {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model JobRun {
-  id           String    @id @default(cuid())
-  jobName      String // e.g. "sync-banks" | "fetch-fx-rates" | "process-deletions"
-  trigger      String // "cron" now; "manual" | "script" are vocabulary
-  executionId  String    @unique // wrapper-generated UUID; correlates console logs to this row
-  status       String // "running" | "succeeded" | "failed"
-  startedAt    DateTime
-  completedAt  DateTime? // set by the single completion write
-  durationMs   Int? // wall-clock, set at completion
-  summary      Json? // counts/kinds/IDs only — never user content or monetary values
-  errorSummary String? // truncated message only (no stack), set when status = "failed"
+  id            String    @id @default(cuid())
+  jobName       String // e.g. "sync-banks" | "fetch-fx-rates" | "process-deletions"
+  trigger       String // "cron" now; "manual" | "script" are vocabulary
+  executionId   String    @unique // wrapper-generated UUID; correlates console logs to this row
+  status        String // "running" | "succeeded" | "failed"
+  startedAt     DateTime
+  completedAt   DateTime? // set by the single completion write
+  durationMs    Int? // wall-clock, set at completion
+  summary       Json? // counts/kinds/IDs only — never user content or monetary values
+  errorSummary  String? // truncated message only (no stack), set when status = "failed"
   // OPS-2B′ — the deployment that PRODUCED this fact. See RefreshExecution's
   // fuller note below; identical semantics, identical resolver, stamped once at
   // the start write and never touched by the completion write.
   deploymentSha String?
-  createdAt    DateTime  @default(now())
+  createdAt     DateTime  @default(now())
 
   @@index([jobName, startedAt]) // "did last night's X run?"
   @@index([status, startedAt]) // failure scans
@@ -2819,17 +2890,17 @@ model JobRun {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model RefreshExecution {
-  id             String    @id @default(cuid())
-  runId          String    @unique // first-class run correlator; stamped into SyncIssue.detail.runId and (later) provider-usage rows
-  plaidItemId    String // soft reference (no FK) — ledger survives item deletion
-  trigger        String // "MANUAL" | "CRON" | "RECONNECT" | "WEBHOOK" | "ADMIN"
-  profile        String // "FULL_REFRESH" | "RECONNECT"
-  startedAt      DateTime
-  completedAt    DateTime? // set by the single completion write
-  durationMs     Int? // wall-clock, set at completion
-  overallStatus  String // "RUNNING" | "SUCCEEDED" | "PARTIAL" | "FAILED" | "SKIPPED" — derived from child results
-  parentJobRunId String? // soft ref to JobRun.id when this refresh ran under a batch (cron); null for standalone manual
-  errorSummary   String? // truncated message only (no stack), set when overallStatus != SUCCEEDED
+  id              String    @id @default(cuid())
+  runId           String    @unique // first-class run correlator; stamped into SyncIssue.detail.runId and (later) provider-usage rows
+  plaidItemId     String // soft reference (no FK) — ledger survives item deletion
+  trigger         String // "MANUAL" | "CRON" | "RECONNECT" | "WEBHOOK" | "ADMIN"
+  profile         String // "FULL_REFRESH" | "RECONNECT"
+  startedAt       DateTime
+  completedAt     DateTime? // set by the single completion write
+  durationMs      Int? // wall-clock, set at completion
+  overallStatus   String // "RUNNING" | "SUCCEEDED" | "PARTIAL" | "FAILED" | "SKIPPED" — derived from child results
+  parentJobRunId  String? // soft ref to JobRun.id when this refresh ran under a batch (cron); null for standalone manual
+  errorSummary    String? // truncated message only (no stack), set when overallStatus != SUCCEEDED
   // ───────────────────────────────────────────────────────────────────────────
   // OPS-2B′ — DEPLOYMENT IDENTITY. The deployment that PRODUCED this fact, not
   // the current/latest/active one: a historical row keeps its original identity
@@ -2854,7 +2925,7 @@ model RefreshExecution {
   // (a redeploy or preview→prod promotion repeats it). Instance-grain, if ever
   // needed, is an ADDITIVE column, not a redesign of this one.
   // ───────────────────────────────────────────────────────────────────────────
-  deploymentSha  String?
+  deploymentSha   String?
   // ───────────────────────────────────────────────────────────────────────────
   // OPS-2D-3 — ADMISSION EVIDENCE. Set only when this execution was DENIED by
   // the canonical admission evaluator (lib/platform/admission): the typed reason
@@ -2873,10 +2944,10 @@ model RefreshExecution {
   // read as a failure on the Refresh workspace.
   // ───────────────────────────────────────────────────────────────────────────
   admissionReason String?
-  createdAt      DateTime  @default(now())
+  createdAt       DateTime  @default(now())
 
-  endpoints      RefreshEndpointResult[]
-  providerCalls  ProviderCall[]
+  endpoints       RefreshEndpointResult[]
+  providerCalls   ProviderCall[]
   accountCoverage RefreshEndpointAccountCoverage[]
 
   @@index([plaidItemId, startedAt]) // "recent refreshes of this connection"

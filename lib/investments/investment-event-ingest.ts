@@ -32,6 +32,8 @@ import {
   repairReconstructionForAccount,
 } from "@/lib/investments/reconstruction-runner";
 import { captureSecurityPrices, securityPriceCapturesEnabled } from "@/lib/prices/capture";
+import { InvestmentCoverageOutcome } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -111,6 +113,55 @@ export interface IngestMetrics {
   failed: number;
 }
 
+/**
+ * V26-QUANTITY-1E′ — record what was ASKED FOR and what came back.
+ *
+ * Append-only, one row per covered account, and deliberately written on EVERY
+ * outcome including failure: a window that was never successfully read must be
+ * recorded as unread, or its silence is indistinguishable from an empty one.
+ *
+ * Best-effort and non-fatal, like every other hook here — but note the
+ * asymmetry that makes that safe: a MISSING coverage row degrades to UNKNOWN,
+ * which withholds claims. A missing row can never cause an over-claim.
+ */
+async function recordCoverage(
+  client: PrismaClient,
+  args: {
+    plaidItemId?: string;
+    financialAccountIds: readonly string[];
+    window: { start: string; end: string };
+    outcome: InvestmentCoverageOutcome;
+    reportedTotal: number | null;
+    fetchedCount: number;
+    pagesFetched: number;
+    detail: string | null;
+    now: Date;
+  },
+): Promise<void> {
+  if (!args.plaidItemId || args.financialAccountIds.length === 0) return;
+  const attemptId = randomUUID();
+  try {
+    await client.investmentEventCoverage.createMany({
+      data: [...args.financialAccountIds].sort().map((financialAccountId) => ({
+        attemptId,
+        plaidItemId: args.plaidItemId!,
+        financialAccountId,
+        requestedFromDate: new Date(`${args.window.start}T00:00:00.000Z`),
+        requestedToDate: new Date(`${args.window.end}T00:00:00.000Z`),
+        outcome: args.outcome,
+        reportedTotal: args.reportedTotal,
+        fetchedCount: args.fetchedCount,
+        pagesFetched: args.pagesFetched,
+        detail: args.detail,
+        attemptedAt: args.now,
+      })),
+      skipDuplicates: true,
+    });
+  } catch (err) {
+    console.warn(`[investment-events] coverage record failed for item ${args.plaidItemId} (non-fatal): ${err instanceof Error ? err.message : err}`);
+  }
+}
+
 function emptyMetrics(status: IngestMetrics["status"]): IngestMetrics {
   return { status, requested: 0, fetched: 0, inserted: 0, unchanged: 0, corrected: 0, unknown: 0, unresolvedInstrument: 0, unmappedAccount: 0, skipped: 0, failed: 0 };
 }
@@ -121,6 +172,16 @@ export interface IngestParams {
   accessToken: string;
   /** Internal PlaidItem.id — for sync-issue context only (never the token). */
   plaidItemId?: string;
+  /**
+   * V26-QUANTITY-1E′ — every investment FinancialAccount this item's request
+   * covers, supplied by the CALLER.
+   *
+   * It cannot be derived here: this function only ever sees accounts that
+   * returned a transaction, and an account with none is precisely the case
+   * coverage exists to record. Without the caller's list, "no events" and "not
+   * asked about" stay indistinguishable — the defect this slice removes.
+   */
+  coveredFinancialAccountIds?: readonly string[];
   now: Date;
   /**
    * OPS-2D-TX-1 — a ROOT client, never a `Prisma.TransactionClient`. This
@@ -134,6 +195,29 @@ export interface IngestParams {
 }
 
 /**
+ * V26-QUANTITY-1E′ — record that a window was deliberately NOT requested.
+ *
+ * The kill switch is checked by the caller, so only the caller can record its
+ * effect. Without this, a period with the flag off is indistinguishable from a
+ * period in which nothing happened.
+ */
+export async function recordDisabledInvestmentEventCoverage(args: {
+  plaidItemId: string;
+  coveredFinancialAccountIds: readonly string[];
+  now: Date;
+  client?: PrismaClient;
+}): Promise<void> {
+  await recordCoverage(args.client ?? db, {
+    plaidItemId: args.plaidItemId,
+    financialAccountIds: args.coveredFinancialAccountIds,
+    window: computeIngestWindow(args.now),
+    outcome: InvestmentCoverageOutcome.DISABLED,
+    reportedTotal: null, fetchedCount: 0, pagesFetched: 0,
+    detail: "INVESTMENT_EVENTS_ENABLED is not 'true'", now: args.now,
+  });
+}
+
+/**
  * Ingest investment events for one Plaid Item. Never throws for expected Plaid
  * conditions (consent / PRODUCT_NOT_READY) — returns a status instead. Callers
  * still wrap in try/catch (best-effort contract).
@@ -142,6 +226,15 @@ export async function ingestInvestmentEvents(params: IngestParams): Promise<Inge
   const client = params.client ?? db;
   const metrics = emptyMetrics("ok");
   const { start, end } = computeIngestWindow(params.now);
+  const covered = params.coveredFinancialAccountIds ?? [];
+  const coverage = (
+    outcome: InvestmentCoverageOutcome, reportedTotal: number | null,
+    fetchedCount: number, pagesFetched: number, detail: string | null,
+  ) => recordCoverage(client, {
+    plaidItemId: params.plaidItemId, financialAccountIds: covered,
+    window: { start, end }, outcome, reportedTotal, fetchedCount, pagesFetched,
+    detail, now: params.now,
+  });
 
   // Dynamic import so this module (and its pure helpers/tests) loads without the
   // Plaid client's module-load env validation — the client is only needed here.
@@ -150,6 +243,12 @@ export async function ingestInvestmentEvents(params: IngestParams): Promise<Inge
   // ── Fetch (paginated) ────────────────────────────────────────────────────
   const all: InvestmentTransaction[] = [];
   const securitiesById: Record<string, Security> = {};
+  let pagesFetched = 0;
+  // COMPLETE requires the provider's own reported total to be reached. The loop
+  // also breaks on an empty page, which is NOT the same thing: a page that runs
+  // dry below the reported total means rows are missing, and calling that
+  // window complete is exactly the over-claim this ledger exists to prevent.
+  let reconciled = false;
   try {
     for (let offset = 0; ; offset += PAGE_SIZE) {
       const res = await withPlaidRetry(
@@ -161,19 +260,38 @@ export async function ingestInvestmentEvents(params: IngestParams): Promise<Inge
         }),
         "investmentsTransactionsGet",
       );
+      pagesFetched++;
       metrics.requested = res.data.total_investment_transactions;
       for (const s of res.data.securities) securitiesById[s.security_id] = s;
       all.push(...res.data.investment_transactions);
-      if (all.length >= metrics.requested || res.data.investment_transactions.length === 0) break;
+      if (all.length >= metrics.requested) { reconciled = true; break; }
+      if (res.data.investment_transactions.length === 0) break;
     }
   } catch (err) {
     const code = getPlaidErrorCode(err);
-    if (code === "ADDITIONAL_CONSENT_REQUIRED") return emptyMetrics("consent_required");
-    if (code === "PRODUCT_NOT_READY") return emptyMetrics("not_ready");
+    if (code === "ADDITIONAL_CONSENT_REQUIRED") {
+      await coverage(InvestmentCoverageOutcome.CONSENT_REQUIRED, null, 0, pagesFetched, "ADDITIONAL_CONSENT_REQUIRED");
+      return emptyMetrics("consent_required");
+    }
+    if (code === "PRODUCT_NOT_READY") {
+      await coverage(InvestmentCoverageOutcome.NOT_READY, null, 0, pagesFetched, "PRODUCT_NOT_READY");
+      return emptyMetrics("not_ready");
+    }
     console.warn(`[investment-events] fetch failed for item ${params.plaidItemId ?? "?"} (non-fatal): ${plaidErrorSummary(err)}`);
     await recordSyncIssue({ kind: "INVESTMENT_DATA_PERSISTENCE_FAILED", plaidItemId: params.plaidItemId ?? null, detail: { stage: "investment-events-fetch", error: plaidErrorSummary(err) } }, client);
+    await coverage(InvestmentCoverageOutcome.FAILED, null, all.length, pagesFetched, plaidErrorSummary(err));
     return { ...emptyMetrics("error"), failed: 1 };
   }
+
+  // Recorded BEFORE persistence: this states what the PROVIDER returned for the
+  // window. Whether every row then persisted is a separate question, answered by
+  // metrics and by SyncIssue — conflating the two would let a row-level failure
+  // silently retract a window the provider did answer in full.
+  await coverage(
+    reconciled ? InvestmentCoverageOutcome.COMPLETE : InvestmentCoverageOutcome.PARTIAL,
+    metrics.requested, all.length, pagesFetched,
+    reconciled ? null : `provider reported ${metrics.requested}, received ${all.length}`,
+  );
 
   // ── Persist (stable order) ───────────────────────────────────────────────
   const accountCache = new Map<string, string | null>();
