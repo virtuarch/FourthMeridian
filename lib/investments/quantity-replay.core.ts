@@ -1,20 +1,33 @@
 /**
  * lib/investments/quantity-replay.core.ts
  *
- * V26-QUANTITY-1C — the PURE quantity replay core. No Prisma, no network, no
- * clock. Consumes the QUANTITY-1B contract (`NormalizedQuantityEvent`) exactly;
- * it defines no competing event model.
+ * V26-QUANTITY-1C / 1C.1 — the PURE quantity replay core. No Prisma, no
+ * network, no clock. Consumes the QUANTITY-1B contract
+ * (`NormalizedQuantityEvent`) exactly; it defines no competing event model.
  *
- * ── The claim this module is careful never to make ──────────────────────────
- * A delta without an opening quantity establishes MOVEMENT, not HOLDINGS. A
- * first `BUY 3` does not mean three shares were held — it means three more were
- * held than before, and "before" may be unrecorded. A first `SELL 1` certainly
- * does not mean −1.
+ * ── The two claims this module is careful never to make ─────────────────────
  *
- * So the output is a discriminated union in which unknown quantity is
- * STRUCTURALLY NON-NUMERIC: a RELATIVE segment has no `quantity` field to
- * fabricate, and an UNRESOLVED segment has neither. `{ quantity: 0, basis:
- * "UNKNOWN" }` is unwritable by construction rather than merely discouraged.
+ * 1. A delta without an opening quantity establishes MOVEMENT, not HOLDINGS. A
+ *    first `BUY 3` does not mean three shares were held — it means three more
+ *    were held than before, and "before" may be unrecorded. A first `SELL 1`
+ *    certainly does not mean −1.
+ *
+ *    So unknown quantity is STRUCTURALLY NON-NUMERIC: a RELATIVE segment has no
+ *    `quantity` field to fabricate, and an UNRESOLVED segment has neither.
+ *    `{ quantity: 0, basis: "UNKNOWN" }` is unwritable by construction rather
+ *    than merely discouraged.
+ *
+ * 2. An observation proves a quantity ON ITS DATE. It does not prove the same
+ *    quantity for the days that follow. Extending a point across an interval is
+ *    a claim about the days in between — that nothing happened — and the ONLY
+ *    evidence for that is a declared-complete event stream. Absence of events
+ *    is not evidence of absence of movement: BTC holds 25 recorded inflows, no
+ *    outflows in three years, and 8.43% of its observed balance unexplained.
+ *
+ *    So interval width is licensed by `EventStreamCompleteness`, which the
+ *    caller must state and this module never infers. With an UNKNOWN stream
+ *    every absolute fact is a POINT, and the days between points are reported
+ *    as UNCOVERED — never as zero, and never silently omitted.
  *
  * PRICE-5A's doctrine holds throughout: UNKNOWN ownership prehistory is never
  * valued. No segment of any kind exists before the first defensible evidence,
@@ -37,6 +50,8 @@ function assertISO(s: string, label: string): void {
 function shiftISO(dateISO: string, days: number): string {
   return new Date(Date.parse(`${dateISO}T00:00:00Z`) + days * MS_PER_DAY).toISOString().slice(0, 10);
 }
+const minISO = (a: string, b: string) => (a < b ? a : b);
+const maxISO = (a: string, b: string) => (a > b ? a : b);
 
 // ── Anchors ──────────────────────────────────────────────────────────────────
 
@@ -73,31 +88,94 @@ export const PERMITTED_ANCHOR_ORIGINS: ReadonlySet<string> = new Set([
   "OBSERVED", "IMPORTED", "USER_ASSERTED",
 ]);
 
-export type AnchorDisposition =
-  | "USED_OPENING"
-  | "USED_RESUME"
-  | "CONFIRMING"
-  | "REJECTED_ORIGIN"
-  | "AMBIGUOUS_SAME_DAY"
-  | "UNUSED";
+/** May this observation be used at all? */
+export type AnchorAdmissibility = "PERMITTED" | "REJECTED_ORIGIN" | "OUTSIDE_WINDOW";
 
+/** What part did it play in choosing where absolute replay begins? */
+export type AnchorOpeningRole = "OPENING" | "RESUME" | "AMBIGUOUS_SAME_DAY" | "NONE";
+
+/** How does it appear in the timeline? */
+export type AnchorRepresentation =
+  /** It opened or resumed an interval that replay carried forward. */
+  | "INTERVAL"
+  /** It states an absolute fact on its own date and nothing beyond it. */
+  | "POINT"
+  /** A licensed interval already covers its date; it confirms (see `residue`). */
+  | "COVERED_BY_INTERVAL"
+  /** Rejected, or outside the requested window — it appears in no segment. */
+  | "NOT_REPRESENTED";
+
+/**
+ * Every candidate anchor's full fate. Identity and evidence travel with it so a
+ * consumer never has to re-read the observation to interpret the timeline.
+ */
 export interface AnchorOutcome {
-  observationId: string;
-  dateISO:       string;
-  disposition:   AnchorDisposition;
-  /** Residue on a CONFIRMING anchor; the rejected origin; etc. */
-  detail:        string | null;
+  observationId:  string;
+  dateISO:        string;
+  quantity:       number;
+  origin:         string;
+  completeness:   string;
+  admissibility:  AnchorAdmissibility;
+  openingRole:    AnchorOpeningRole;
+  representation: AnchorRepresentation;
+  /** observed − replayed where a licensed interval covers this date, else null. */
+  residue:        number | null;
+  detail:         string | null;
+}
+
+// ── Event-stream completeness (input, never inferred) ────────────────────────
+
+/**
+ * Whether the event stream is known to contain EVERY movement over an interval.
+ *
+ * This is a fact about the INGESTION — the provider's history window, the
+ * cursor's reach, whether the initial import completed — and it is therefore
+ * unknowable from the events themselves. A stream with no events looks
+ * identical whether nothing happened or nothing was imported. The caller must
+ * say which; this module refuses to guess.
+ *
+ * The DB binding that determines this is later work. Until it exists, callers
+ * pass `UNKNOWN_EVENT_STREAM`, and every absolute fact stays a point.
+ */
+export type EventStreamCompleteness =
+  | { kind: "COMPLETE"; fromISO: string; toISO: string; source: string }
+  | { kind: "PARTIAL"; coveredFromISO: string | null; coveredToISO: string | null; reason: string }
+  | { kind: "UNKNOWN"; reason: string };
+
+export const UNKNOWN_EVENT_STREAM: EventStreamCompleteness = {
+  kind: "UNKNOWN",
+  reason: "no ingestion-coverage evidence supplied by the caller",
+};
+
+/**
+ * The interval over which movement is known to be fully recorded, or null when
+ * no such interval is established. A PARTIAL stream with an open boundary
+ * licenses nothing: "covered from some unknown date" cannot bound a claim.
+ */
+export function licensedCoverage(
+  c: EventStreamCompleteness,
+): { fromISO: string; toISO: string } | null {
+  if (c.kind === "COMPLETE") return { fromISO: c.fromISO, toISO: c.toISO };
+  if (c.kind === "PARTIAL" && c.coveredFromISO !== null && c.coveredToISO !== null) {
+    return { fromISO: c.coveredFromISO, toISO: c.coveredToISO };
+  }
+  return null;
 }
 
 // ── Segments ─────────────────────────────────────────────────────────────────
 
 export type SegmentOrderCertainty = "KNOWN" | "TIE_BROKEN";
 
+/**
+ * `fromISO === toISO` is a POINT: the claim holds on that date and says nothing
+ * about the next. A wider segment is an INTERVAL claim, and only a licensed
+ * event stream can widen one.
+ */
 export type QuantityTimelineSegment =
   | {
       kind:           "ABSOLUTE";
       fromISO:        string;
-      toISO:          string | null;
+      toISO:          string;
       quantity:       number;
       basis:          "OBSERVED_ANCHOR" | "REPLAYED";
       derivedFrom:    string[];
@@ -106,7 +184,7 @@ export type QuantityTimelineSegment =
   | {
       kind:            "RELATIVE";
       fromISO:         string;
-      toISO:           string | null;
+      toISO:           string;
       /** Movement since the first event. Deliberately NOT named `quantity`. */
       cumulativeDelta: number;
       reason:          "MISSING_OPENING_ANCHOR";
@@ -116,10 +194,30 @@ export type QuantityTimelineSegment =
   | {
       kind:             "UNRESOLVED";
       fromISO:          string;
-      toISO:            string | null;
+      toISO:            string;
       reason:           "ORDER_SENSITIVE_UNRESOLVED" | "UNSUPPORTED_EVENT" | "INVALID_EVENT";
       blockingEventIds: string[];
     };
+
+/**
+ * Time inside the requested window about which the timeline says NOTHING.
+ *
+ * This exists so that omitted time is inspectable rather than inferable. A
+ * consumer must never have to compare the first and last segment against the
+ * window to discover that the middle is missing, and uncovered time must never
+ * be mistaken for a quantity of zero.
+ */
+export type UncoveredReason =
+  | "BEFORE_FIRST_DEFENSIBLE_ANCHOR"
+  | "BETWEEN_INDEPENDENT_ANCHORS"
+  | "AFTER_LAST_DEFENSIBLE_EVIDENCE"
+  | "EVENT_STREAM_COMPLETENESS_UNKNOWN";
+
+export interface UncoveredInterval {
+  fromISO: string;
+  toISO:   string;
+  reason:  UncoveredReason;
+}
 
 // ── Same-day classification ──────────────────────────────────────────────────
 
@@ -163,22 +261,28 @@ export interface ReplayDiagnostics {
   orderSensitiveGroups:       Array<{ dateISO: string; eventIds: string[]; classification: SameDayClassification }>;
   missingOpeningAnchor:       boolean;
   anchorRejectedReason:       string | null;
-  /** Last date absolute replay is defensible. Null ⇒ it never was. */
+  /** Last date any absolute claim reaches. Null ⇒ none was ever made. */
   absoluteResolvedThroughISO: string | null;
   /** observationIds that let absolute replay resume after a blocking date. */
   resumedFromAnchors:         string[];
-  /** Every anchor's fate — used, rejected, ambiguous or simply unused. */
+  /** Every anchor's fate — exactly one entry per input anchor. */
   anchorOutcomes:             AnchorOutcome[];
   /** Confirming anchors whose quantity disagreed with replay, beyond tolerance. */
   reconciliationResidues:     Array<{ observationId: string; dateISO: string; expected: number; observed: number; residue: number }>;
+  /** Echoed so a consumer can see what licensed (or refused to license) intervals. */
+  eventStream:                EventStreamCompleteness;
+  /** Days inside the window that no segment widened to cover. */
+  intervalClaimsWithheld:     number;
 }
 
 /**
- * A TRUTHFUL one-word summary. Deliberately NOT "the strongest claim anywhere":
- * that would let ABSOLUTE → UNRESOLVED → ABSOLUTE report as ABSOLUTE_COMPLETE
- * and hide the interval in the middle, which is the single most misleading thing
- * this module could do. Segments remain authoritative; the summary only ever
- * narrows the claim.
+ * A TRUTHFUL one-word summary, derived from INTERVAL COVERAGE and not merely
+ * from which segment kinds are present.
+ *
+ * `ABSOLUTE_COMPLETE` is the strongest claim in the vocabulary and it means
+ * exactly one thing: every date in the requested window is covered by a
+ * defensible absolute segment. One late absolute point in a month-long window
+ * is not complete, however absolute that point may be.
  */
 export type TimelineSummary =
   | "ABSOLUTE_COMPLETE"
@@ -187,12 +291,15 @@ export type TimelineSummary =
   | "UNREPLAYABLE";
 
 export interface QuantityTimeline {
-  instrumentId: string;
-  accountId:    string;
-  windowToISO:  string;
-  summary:      TimelineSummary;
-  segments:     QuantityTimelineSegment[];
-  diagnostics:  ReplayDiagnostics;
+  instrumentId:   string;
+  accountId:      string;
+  windowFromISO:  string;
+  windowToISO:    string;
+  summary:        TimelineSummary;
+  segments:       QuantityTimelineSegment[];
+  /** Requested time no segment speaks for. Empty ⇒ the window is fully spoken for. */
+  uncovered:      UncoveredInterval[];
+  diagnostics:    ReplayDiagnostics;
 }
 
 export interface ReplayInput {
@@ -202,19 +309,40 @@ export interface ReplayInput {
   anchors:      readonly QuantityAnchor[];
   /** QUANTITY-1B output for this (account, instrument). */
   events:       readonly NormalizedQuantityEvent[];
-  windowToISO:  string;
+  /**
+   * The REQUESTED interval. Both ends are caller decisions and neither is
+   * inferred here: not from the first event, the first anchor, account
+   * creation, the current date, or the earliest emitted segment. Those are
+   * evidence facts, and a window derived from evidence can never reveal that
+   * evidence is missing.
+   */
+  windowFromISO: string;
+  windowToISO:   string;
+  /** Required — see `EventStreamCompleteness`. Pass `UNKNOWN_EVENT_STREAM` if unknown. */
+  eventStream:   EventStreamCompleteness;
   /** Asset-aware comparison tolerance for confirming anchors. */
-  tolerance?:   number;
+  tolerance?:    number;
 }
 
 const DEFAULT_TOLERANCE = 1e-6;
 
-/** Derived from ALL segments — never from the best one. */
-export function summarise(segments: readonly QuantityTimelineSegment[]): TimelineSummary {
+/**
+ * Derived from interval coverage across the whole requested window — never from
+ * the strongest segment present. Letting ABSOLUTE → UNRESOLVED → ABSOLUTE
+ * report as complete, or letting a single late point stand for a month, are the
+ * two most misleading things this module could do.
+ */
+export function summarise(
+  segments: readonly QuantityTimelineSegment[],
+  uncovered: readonly UncoveredInterval[],
+): TimelineSummary {
   const hasAbsolute   = segments.some((s) => s.kind === "ABSOLUTE");
   const hasRelative   = segments.some((s) => s.kind === "RELATIVE");
   const hasUnresolved = segments.some((s) => s.kind === "UNRESOLVED");
-  if (hasAbsolute) return hasUnresolved ? "ABSOLUTE_WITH_GAPS" : "ABSOLUTE_COMPLETE";
+  if (hasAbsolute) {
+    return uncovered.length === 0 && !hasRelative && !hasUnresolved
+      ? "ABSOLUTE_COMPLETE" : "ABSOLUTE_WITH_GAPS";
+  }
   if (hasRelative) return "RELATIVE_ONLY";
   return "UNREPLAYABLE";
 }
@@ -228,9 +356,39 @@ interface DayGroup {
   classification: SameDayClassification;
 }
 
+/** A run before licensing clips it. `toISO` is what replay would like to claim. */
+interface RawRun {
+  kind:            "ABSOLUTE" | "RELATIVE";
+  fromISO:         string;
+  toISO:           string;
+  quantity:        number;
+  cumulativeDelta: number;
+  basis:           "OBSERVED_ANCHOR" | "REPLAYED";
+  derivedFrom:     string[];
+  orderCertainty:  SegmentOrderCertainty;
+}
+
 /** Sort key inside an ORDERED group: real datetime, then the 1B key. */
 function orderedKey(e: NormalizedQuantityEvent): string {
   return `${e.order.effectiveDateTimeISO ?? ""}|${e.order.deterministicKey}`;
+}
+
+/**
+ * How far may a claim that begins on `fromISO` extend?
+ *
+ * Only as far as the event stream is declared to record every movement. Outside
+ * that, the claim collapses to the single date it was proven on. This is the
+ * one place interval width is decided, so there is exactly one place where
+ * "nothing was recorded" could be mistaken for "nothing happened".
+ */
+function licensedThrough(
+  fromISO: string, desiredToISO: string, stream: EventStreamCompleteness,
+): string {
+  if (desiredToISO <= fromISO) return fromISO;
+  const cover = licensedCoverage(stream);
+  if (cover === null) return fromISO;
+  if (fromISO < cover.fromISO || fromISO > cover.toISO) return fromISO;
+  return minISO(desiredToISO, cover.toISO);
 }
 
 /**
@@ -259,12 +417,18 @@ function anchorPrecedes(
  * Replay one (account, instrument) timeline.
  *
  * Deterministic and total: identical input yields byte-identical output, every
- * input event ends up in a segment or a diagnostic, and no unsupported event is
- * stepped over while an apparently exact timeline continues past it.
+ * input event ends up in a segment or a diagnostic, every anchor gets exactly
+ * one outcome, every day of the requested window is either covered by a segment
+ * or listed as uncovered, and no unsupported event is stepped over while an
+ * apparently exact timeline continues past it.
  */
 export function replayQuantityTimeline(input: ReplayInput): QuantityTimeline {
-  const { instrumentId, accountId, windowToISO } = input;
+  const { instrumentId, accountId, windowFromISO, windowToISO, eventStream } = input;
+  assertISO(windowFromISO, "windowFromISO");
   assertISO(windowToISO, "windowToISO");
+  if (windowToISO < windowFromISO) {
+    throw new Error(`[quantity-replay] windowToISO ${windowToISO} precedes windowFromISO ${windowFromISO}`);
+  }
   const tolerance = input.tolerance ?? DEFAULT_TOLERANCE;
 
   const diagnostics: ReplayDiagnostics = {
@@ -273,6 +437,7 @@ export function replayQuantityTimeline(input: ReplayInput): QuantityTimeline {
     missingOpeningAnchor: false, anchorRejectedReason: null,
     absoluteResolvedThroughISO: null, resumedFromAnchors: [],
     anchorOutcomes: [], reconciliationResidues: [],
+    eventStream, intervalClaimsWithheld: 0,
   };
 
   // ── Classify every input event ──────────────────────────────────────────
@@ -290,26 +455,36 @@ export function replayQuantityTimeline(input: ReplayInput): QuantityTimeline {
   diagnostics.invalidEventIds.sort();
   diagnostics.unresolvedTransferEventIds.sort();
 
-  // ── Anchors: permitted vs rejected ──────────────────────────────────────
+  // ── Anchors: admissibility ──────────────────────────────────────────────
   const outcome = new Map<string, AnchorOutcome>();
   const permitted: QuantityAnchor[] = [];
-  for (const a of [...input.anchors].sort((x, y) =>
-    x.dateISO < y.dateISO ? -1 : x.dateISO > y.dateISO ? 1 : x.observationId.localeCompare(y.observationId))) {
+  const sortedAnchors = [...input.anchors].sort((x, y) =>
+    x.dateISO < y.dateISO ? -1 : x.dateISO > y.dateISO ? 1 : x.observationId.localeCompare(y.observationId));
+
+  for (const a of sortedAnchors) {
     assertISO(a.dateISO, "anchor.dateISO");
+    const base = {
+      observationId: a.observationId, dateISO: a.dateISO, quantity: a.quantity,
+      origin: a.origin, completeness: a.completeness,
+      openingRole: "NONE" as AnchorOpeningRole,
+      representation: "NOT_REPRESENTED" as AnchorRepresentation,
+      residue: null as number | null, detail: null as string | null,
+    };
     if (!PERMITTED_ANCHOR_ORIGINS.has(a.origin)) {
-      outcome.set(a.observationId, {
-        observationId: a.observationId, dateISO: a.dateISO,
-        disposition: "REJECTED_ORIGIN", detail: `origin ${a.origin} may not anchor a replay`,
-      });
+      outcome.set(a.observationId, { ...base, admissibility: "REJECTED_ORIGIN",
+        detail: `origin ${a.origin} may not anchor a replay` });
+      continue;
+    }
+    if (a.dateISO > windowToISO) {
+      outcome.set(a.observationId, { ...base, admissibility: "OUTSIDE_WINDOW",
+        detail: `dated after windowToISO ${windowToISO}` });
       continue;
     }
     permitted.push(a);
-    outcome.set(a.observationId, {
-      observationId: a.observationId, dateISO: a.dateISO, disposition: "UNUSED", detail: null,
-    });
+    outcome.set(a.observationId, { ...base, admissibility: "PERMITTED" });
   }
   if (permitted.length === 0 && input.anchors.length > 0) {
-    diagnostics.anchorRejectedReason = "no candidate anchor has a permitted origin";
+    diagnostics.anchorRejectedReason = "no candidate anchor is both permitted in origin and inside the window";
   }
 
   // ── Group replayable + blocking events by date ──────────────────────────
@@ -329,70 +504,45 @@ export function replayQuantityTimeline(input: ReplayInput): QuantityTimeline {
   });
 
   const applicable = groups.filter((g) => g.replayable.length > 0 || g.blocking.length > 0);
-  const segments: QuantityTimelineSegment[] = [];
   const groupByDate = new Map(applicable.map((g) => [g.dateISO, g]));
-
-  if (applicable.length === 0) {
-    // No events at all: an anchor alone still states a holding.
-    if (permitted.length > 0) {
-      const a = permitted[permitted.length - 1];
-      outcome.get(a.observationId)!.disposition = "USED_OPENING";
-      segments.push({
-        kind: "ABSOLUTE", fromISO: a.dateISO, toISO: windowToISO, quantity: a.quantity,
-        basis: "OBSERVED_ANCHOR", derivedFrom: [a.observationId], orderCertainty: "KNOWN",
-      });
-      diagnostics.absoluteResolvedThroughISO = windowToISO;
-    }
-    diagnostics.anchorOutcomes = [...outcome.values()].sort((x, y) => x.observationId.localeCompare(y.observationId));
-    return { instrumentId, accountId, windowToISO, summary: summarise(segments), segments, diagnostics };
-  }
+  const rawRuns: RawRun[] = [];
+  const unresolvedSegments: Extract<QuantityTimelineSegment, { kind: "UNRESOLVED" }>[] = [];
 
   // ── Choose an opening anchor ────────────────────────────────────────────
-  const firstDate = applicable[0].dateISO;
-  const firstDayEvents = applicable[0].replayable;
   let opening: QuantityAnchor | null = null;
-  for (const a of permitted) {
-    const p = anchorPrecedes(a, firstDate, firstDayEvents);
-    if (p.ambiguous) outcome.get(a.observationId)!.disposition = "AMBIGUOUS_SAME_DAY";
-    if (p.ok) opening = a; // latest qualifying wins (permitted is date-ascending)
+  if (applicable.length > 0) {
+    const firstDate = applicable[0].dateISO;
+    const firstDayEvents = applicable[0].replayable;
+    for (const a of permitted) {
+      const p = anchorPrecedes(a, firstDate, firstDayEvents);
+      if (p.ambiguous) outcome.get(a.observationId)!.openingRole = "AMBIGUOUS_SAME_DAY";
+      if (p.ok) opening = a; // latest qualifying wins (permitted is date-ascending)
+    }
+    if (opening) outcome.get(opening.observationId)!.openingRole = "OPENING";
+    else diagnostics.missingOpeningAnchor = true;
   }
-  if (opening) outcome.get(opening.observationId)!.disposition = "USED_OPENING";
-  else diagnostics.missingOpeningAnchor = true;
 
-  // ── Walk the days ───────────────────────────────────────────────────────
+  // ── Walk the days, producing RAW (unlicensed) runs ──────────────────────
   let absolute = opening !== null;
   let quantity = opening ? opening.quantity : 0;
   let cumulative = 0;
-  /**
-   * The date the CURRENT absolute run was anchored. An anchor earlier than this
-   * has been superseded (a later qualifying anchor won the opening, or replay
-   * resumed after a gap), so it is not evidence about the current run and must
-   * not be reconciled against it.
-   */
-  let absoluteSinceISO: string | null = opening ? opening.dateISO : null;
   let runFrom: string | null = opening ? opening.dateISO : null;
   let runBasis: "OBSERVED_ANCHOR" | "REPLAYED" = "OBSERVED_ANCHOR";
   let runDerived: string[] = opening ? [opening.observationId] : [];
   let runCertainty: SegmentOrderCertainty = "KNOWN";
 
-  const closeRun = (toISO: string | null): void => {
+  const closeRun = (toISO: string): void => {
     if (runFrom === null) return;
     // A run whose end precedes its own start covers no time: it arises whenever
     // a run is superseded on the very day it opened (a second event the same
     // day, or an anchor timestamped earlier that morning). Emitting it would
     // produce an inverted, empty segment claiming nothing over no interval.
-    if (toISO !== null && toISO < runFrom) { runFrom = null; return; }
-    if (absolute) {
-      segments.push({
-        kind: "ABSOLUTE", fromISO: runFrom, toISO, quantity,
-        basis: runBasis, derivedFrom: [...runDerived], orderCertainty: runCertainty,
-      });
-    } else {
-      segments.push({
-        kind: "RELATIVE", fromISO: runFrom, toISO, cumulativeDelta: cumulative,
-        reason: "MISSING_OPENING_ANCHOR", derivedFrom: [...runDerived], orderCertainty: runCertainty,
-      });
-    }
+    if (toISO < runFrom) { runFrom = null; return; }
+    rawRuns.push({
+      kind: absolute ? "ABSOLUTE" : "RELATIVE", fromISO: runFrom, toISO,
+      quantity, cumulativeDelta: cumulative, basis: runBasis,
+      derivedFrom: [...runDerived], orderCertainty: runCertainty,
+    });
     runFrom = null;
   };
 
@@ -401,7 +551,7 @@ export function replayQuantityTimeline(input: ReplayInput): QuantityTimeline {
   // that date, and must be reconciled rather than silently ignored.
   const walkDates = [...new Set([
     ...applicable.map((g) => g.dateISO),
-    ...permitted.map((a) => a.dateISO).filter((d) => d <= windowToISO),
+    ...permitted.map((a) => a.dateISO),
   ])].sort();
 
   const EMPTY_DAY: Omit<DayGroup, "dateISO"> = {
@@ -416,11 +566,8 @@ export function replayQuantityTimeline(input: ReplayInput): QuantityTimeline {
       // Close whatever run is open at the day BEFORE the blockage, then record
       // the blocked day. Absolute replay may not step over unknown movement.
       closeRun(shiftISO(g.dateISO, -1));
-      if (absolute && diagnostics.absoluteResolvedThroughISO === null) {
-        diagnostics.absoluteResolvedThroughISO = shiftISO(g.dateISO, -1);
-      }
-      segments.push({
-        kind: "UNRESOLVED", fromISO: g.dateISO, toISO: null,
+      unresolvedSegments.push({
+        kind: "UNRESOLVED", fromISO: g.dateISO, toISO: windowToISO,
         reason: g.classification === "ORDER_SENSITIVE_UNRESOLVED" ? "ORDER_SENSITIVE_UNRESOLVED"
               : g.blocking.some((e) => e.status === "INVALID") ? "INVALID_EVENT" : "UNSUPPORTED_EVENT",
         blockingEventIds: [...g.blocking.map((e) => e.eventId),
@@ -432,18 +579,17 @@ export function replayQuantityTimeline(input: ReplayInput): QuantityTimeline {
       // ── Resume from the earliest permitted anchor strictly after this day ──
       const resume = permitted.find((a) => a.dateISO > g.dateISO);
       if (resume) {
-        outcome.get(resume.observationId)!.disposition = "USED_RESUME";
+        const ro = outcome.get(resume.observationId)!;
+        ro.openingRole = "RESUME";
         diagnostics.resumedFromAnchors.push(resume.observationId);
         absolute = true;
         quantity = resume.quantity;
-        absoluteSinceISO = resume.dateISO;
         runFrom = resume.dateISO;
         runBasis = "OBSERVED_ANCHOR";
         runDerived = [resume.observationId];
         runCertainty = "KNOWN";
         // Close the UNRESOLVED gap the day before the resume anchor.
-        const gap = segments[segments.length - 1];
-        if (gap.kind === "UNRESOLVED") gap.toISO = shiftISO(resume.dateISO, -1);
+        unresolvedSegments[unresolvedSegments.length - 1].toISO = shiftISO(resume.dateISO, -1);
       }
       continue;
     }
@@ -466,34 +612,128 @@ export function replayQuantityTimeline(input: ReplayInput): QuantityTimeline {
       runDerived = [e.eventId];
       runCertainty = e.order.certainty === "KNOWN" ? "KNOWN" : "TIE_BROKEN";
     }
-
-    // ── Confirming anchors on this date ────────────────────────────────────
-    // Compared AFTER the day's events are applied: an observation dated on an
-    // event day is an end-of-day state, so end-of-day replay is what it is
-    // evidence about.
-    if (absolute && absoluteSinceISO !== null) {
-      for (const a of permitted.filter((x) => x.dateISO === g.dateISO && x.dateISO >= absoluteSinceISO!)) {
-        const o = outcome.get(a.observationId)!;
-        if (o.disposition === "USED_OPENING" || o.disposition === "USED_RESUME") continue;
-        if (o.disposition === "UNUSED") o.disposition = "CONFIRMING";
-        const residue = a.quantity - quantity;
-        if (Math.abs(residue) > tolerance) {
-          diagnostics.reconciliationResidues.push({
-            observationId: a.observationId, dateISO: a.dateISO,
-            expected: quantity, observed: a.quantity, residue,
-          });
-          o.detail = `replay ${quantity} vs observed ${a.quantity} (residue ${residue})`;
-        }
-      }
-    }
   }
   closeRun(windowToISO);
 
-  if (absolute && diagnostics.absoluteResolvedThroughISO === null) {
-    diagnostics.absoluteResolvedThroughISO = windowToISO;
+  // ── License interval width ──────────────────────────────────────────────
+  // A run's desired reach is what replay computed; its LICENSED reach is how
+  // far the event stream is known to record every movement. Unlicensed tail is
+  // not emitted as a claim — it falls through to `uncovered` below.
+  const segments: QuantityTimelineSegment[] = [];
+  for (const r of rawRuns) {
+    if (r.toISO < windowFromISO || r.fromISO > windowToISO) continue;   // wholly outside the window
+    const from = maxISO(r.fromISO, windowFromISO);
+    const desired = minISO(r.toISO, windowToISO);
+    const to = licensedThrough(from, desired, eventStream);
+    if (to < desired) diagnostics.intervalClaimsWithheld++;
+    if (r.kind === "ABSOLUTE") {
+      segments.push({ kind: "ABSOLUTE", fromISO: from, toISO: to, quantity: r.quantity,
+        basis: r.basis, derivedFrom: r.derivedFrom, orderCertainty: r.orderCertainty });
+    } else {
+      segments.push({ kind: "RELATIVE", fromISO: from, toISO: to, cumulativeDelta: r.cumulativeDelta,
+        reason: "MISSING_OPENING_ANCHOR", derivedFrom: r.derivedFrom, orderCertainty: r.orderCertainty });
+    }
+  }
+  for (const u of unresolvedSegments) {
+    if (u.toISO < windowFromISO || u.fromISO > windowToISO) continue;
+    segments.push({ ...u, fromISO: maxISO(u.fromISO, windowFromISO), toISO: minISO(u.toISO, windowToISO) });
   }
 
+  // ── Every permitted anchor is an absolute fact at its own date ───────────
+  // A later anchor winning the opening does not make an earlier one untrue. An
+  // anchor already inside a licensed absolute interval CONFIRMS it (and may
+  // disagree); one that is not becomes a POINT — proof on its own date, and
+  // deliberately not one day more.
+  for (const a of permitted) {
+    const o = outcome.get(a.observationId)!;
+    if (a.dateISO < windowFromISO) {
+      o.detail = o.detail ?? `dated before windowFromISO ${windowFromISO}`;
+      if (o.openingRole === "OPENING" || o.openingRole === "RESUME") o.representation = "INTERVAL";
+      continue;
+    }
+    const covering = segments.find((s) => s.kind === "ABSOLUTE" && s.fromISO <= a.dateISO && s.toISO >= a.dateISO);
+    if (covering && covering.kind === "ABSOLUTE") {
+      const opened = o.openingRole === "OPENING" || o.openingRole === "RESUME";
+      const isOwnRun = covering.derivedFrom.includes(a.observationId);
+      o.representation = opened && isOwnRun ? "INTERVAL" : "COVERED_BY_INTERVAL";
+      // Reconcile against any licensed interval this anchor did not itself
+      // open: both state a quantity on the same date, so they are directly
+      // comparable and a disagreement is a fact worth surfacing.
+      if (!(opened && isOwnRun)) {
+        const residue = a.quantity - covering.quantity;
+        o.residue = residue;
+        if (Math.abs(residue) > tolerance) {
+          diagnostics.reconciliationResidues.push({
+            observationId: a.observationId, dateISO: a.dateISO,
+            expected: covering.quantity, observed: a.quantity, residue,
+          });
+          o.detail = `replay ${covering.quantity} vs observed ${a.quantity} (residue ${residue})`;
+        }
+      }
+      continue;
+    }
+    // An isolated anchor reaches exactly as far as the event stream licenses:
+    // to the next piece of evidence when movement in between is known to be
+    // fully recorded, and otherwise not one day past the date it proves.
+    const nextBoundary = [
+      ...segments.map((s) => s.fromISO),
+      ...permitted.map((x) => x.dateISO),
+    ].filter((d) => d > a.dateISO).sort()[0];
+    const desired = nextBoundary ? shiftISO(nextBoundary, -1) : windowToISO;
+    const to = licensedThrough(a.dateISO, desired, eventStream);
+    if (to < desired) diagnostics.intervalClaimsWithheld++;
+    segments.push({
+      kind: "ABSOLUTE", fromISO: a.dateISO, toISO: to, quantity: a.quantity,
+      basis: "OBSERVED_ANCHOR", derivedFrom: [a.observationId], orderCertainty: "KNOWN",
+    });
+    o.representation = to > a.dateISO ? "INTERVAL" : "POINT";
+  }
+
+  // ── Order, then find the time nothing speaks for ─────────────────────────
+  // Segments of the same kind never overlap. An ABSOLUTE point MAY sit inside a
+  // RELATIVE run — that is the APLD shape, where an end-of-day observation
+  // states the level on one date while the events around it state only
+  // movement. Both are true of that day, and suppressing either would discard
+  // evidence rather than resolve a contradiction.
+  segments.sort((x, y) =>
+    x.fromISO < y.fromISO ? -1 : x.fromISO > y.fromISO ? 1
+      : x.toISO < y.toISO ? -1 : x.toISO > y.toISO ? 1
+      : x.kind.localeCompare(y.kind));
+
+  const cover = licensedCoverage(eventStream);
+  const firstSpoken = segments.length ? segments[0].fromISO : null;
+  const lastSpoken = segments.reduce<string | null>((m, s) => (m === null || s.toISO > m ? s.toISO : m), null);
+
+  const uncovered: UncoveredInterval[] = [];
+  let cursor = windowFromISO;
+  for (const s of segments) {
+    if (s.fromISO > cursor) {
+      const gapTo = shiftISO(s.fromISO, -1);
+      const interior = firstSpoken !== null && cursor > firstSpoken;
+      const streamCovers = cover !== null && cover.fromISO <= cursor && cover.toISO >= gapTo;
+      uncovered.push({
+        fromISO: cursor, toISO: gapTo,
+        reason: !interior ? "BEFORE_FIRST_DEFENSIBLE_ANCHOR"
+              : streamCovers ? "BETWEEN_INDEPENDENT_ANCHORS"
+              : "EVENT_STREAM_COMPLETENESS_UNKNOWN",
+      });
+    }
+    if (s.toISO >= cursor) cursor = shiftISO(s.toISO, 1);
+  }
+  if (cursor <= windowToISO) {
+    uncovered.push({
+      fromISO: cursor, toISO: windowToISO,
+      reason: lastSpoken === null ? "BEFORE_FIRST_DEFENSIBLE_ANCHOR" : "AFTER_LAST_DEFENSIBLE_EVIDENCE",
+    });
+  }
+
+  diagnostics.absoluteResolvedThroughISO = segments.reduce<string | null>(
+    (m, s) => (s.kind === "ABSOLUTE" && (m === null || s.toISO > m) ? s.toISO : m), null);
   diagnostics.anchorOutcomes = [...outcome.values()].sort((x, y) => x.observationId.localeCompare(y.observationId));
   diagnostics.resumedFromAnchors.sort();
-  return { instrumentId, accountId, windowToISO, summary: summarise(segments), segments, diagnostics };
+
+  return {
+    instrumentId, accountId, windowFromISO, windowToISO,
+    summary: summarise(segments, uncovered), segments, uncovered, diagnostics,
+  };
 }
