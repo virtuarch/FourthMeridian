@@ -32,19 +32,36 @@ export interface PriceResult {
 }
 
 /**
- * A provider adapter: a dumb fetcher. No storage, no failover, no symbol
- * resolution above the vendor call — those live above the adapter (fetch
- * orchestration, A8-3). A new provider is a new implementation of this
- * interface plus a registry entry. `resolveSymbol` maps an instrument's
- * external identity to the vendor's symbol OUTSIDE the archive key.
+ * The facts routing needs in order to choose a provider, without loading an
+ * Instrument row. V26-PRICE-PROVIDER-UNIFICATION — see ProviderResolution.
+ */
+export interface ProviderRoutingKey {
+  /** Instrument.assetClass as a plain string ("EQUITY", "ETF", "CRYPTO", …). */
+  assetClass:     string;
+  /** Vendor-side identity resolved by the caller (Instrument.tickerSymbol today). */
+  providerSymbol: string;
+  basis:          PriceBasis;
+}
+
+/**
+ * A provider adapter: a dumb fetcher. No storage, no symbol resolution above the
+ * vendor call — those live above the adapter (fetch orchestration, A8-3). A new
+ * provider is a new implementation of this interface plus a registry entry.
  */
 export interface PriceProviderAdapter {
-  /** Stable provenance identifier stored on PriceObservation.source (e.g. "plaid", "fixture"). */
+  /** Stable provenance identifier stored on PriceObservation.source (e.g. "tiingo", "coingecko"). */
   readonly source: string;
   /** Earliest ISO date this source can serve. */
   readonly historicalDepth: string;
   /** Which bases this source can serve (e.g. an equities vendor: RAW_CLOSE only). */
   supportedBases(): readonly PriceBasis[];
+  /**
+   * DECLARED capability: can this adapter serve this instrument? Routing ASKS
+   * this — it never tries an adapter to find out, and it never falls through a
+   * list. Required, not optional: an adapter that does not state what it serves
+   * would reintroduce the positional guessing this replaces.
+   */
+  supportsInstrument(key: ProviderRoutingKey): boolean;
   /**
    * Fetch closed daily closes for ONE instrument over [fromISO, toISO] inclusive,
    * for the given basis. The adapter is handed the provider symbol/identity it
@@ -57,6 +74,8 @@ export interface PriceProviderAdapter {
 /** One instrument's fetch request over a bounded window. */
 export interface PriceFetchRequest {
   instrumentId: string;
+  /** Instrument.assetClass — a routing input, not a vendor parameter. */
+  assetClass: string;
   /** Provider-side symbol/identity for this instrument (resolved outside the archive key). */
   providerSymbol: string;
   basis:   PriceBasis;
@@ -64,10 +83,32 @@ export interface PriceFetchRequest {
   toISO:   string;
 }
 
-/** Ordered adapter collection; order = failover priority. */
+/**
+ * Adapter collection. ORDER IS NOT SIGNIFICANT: routing resolves exactly one
+ * provider from declared capability (resolveProviderForInstrument), so changing
+ * registration order cannot change which vendor serves an instrument.
+ */
 export interface PriceRegistry {
   readonly adapters: readonly PriceProviderAdapter[];
 }
+
+/**
+ * The outcome of routing one instrument to one provider.
+ *
+ * Deliberately NOT "the first adapter that works". Order-dependent routing means
+ * a registration edit silently repoints a price series at a different vendor,
+ * and a provider hiccup silently substitutes another — both invisible in the
+ * archive, which records `source` but not why. Every outcome here is a function
+ * of declared capability alone.
+ *
+ * `ambiguous` is a configuration defect surfaced rather than resolved: two
+ * adapters claiming one instrument have no capability-based winner, and picking
+ * one would be exactly the positional guess being removed.
+ */
+export type ProviderResolution =
+  | { kind: "provider";    adapter: PriceProviderAdapter }
+  | { kind: "unsupported"; sourcesConsidered: string[] }
+  | { kind: "ambiguous";   sources: string[] };
 
 /**
  * V26-PRICE-1 — the source of EXPECTED market dates for one asset class.

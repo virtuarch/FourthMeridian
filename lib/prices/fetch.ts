@@ -6,15 +6,31 @@
  * prices.ts) store the result via priceArchive.writeBatch — this module never
  * touches the database.
  *
+ * V26-PRICE-PROVIDER-UNIFICATION — routing is by DECLARED CAPABILITY, not by
+ * position. The registry resolves exactly ONE provider for an instrument
+ * (resolveProviderForInstrument) and this module asks only that one. The former
+ * contract walked the list and took the first adapter that returned usable data,
+ * which made routing an accident of registration order and let a vendor hiccup
+ * silently substitute a different source — invisible afterwards, since
+ * PriceObservation records `source` but never why.
+ *
+ * The trade-off is deliberate and worth stating: cross-adapter FAILOVER IS GONE.
+ * An adapter that errors no longer hands off to another; the window simply
+ * yields no rows and coverage still reports the dates as missing, so the next
+ * run retries. Nothing is fabricated and nothing is silently re-sourced. Today
+ * the capable sets are disjoint (equities/ETFs vs crypto), so no instrument had
+ * a second provider to fall back to in any case.
+ *
  * Contract:
  *   - One instrument + one basis + one CLOSED-date window per call.
- *   - Walk the registry in priority order; the FIRST adapter that both serves
- *     the basis and returns a usable, validated batch wins; that batch stamps
- *     its true source (provenance).
- *   - An adapter that does not serve the basis is skipped (noted).
+ *   - Resolve ONE provider from declared capability; ask only that provider.
+ *   - No capable provider → source null, noted. A REMOVED adapter therefore
+ *     produces a stated unsupported outcome, never an accidental hand-off.
+ *   - Two capable providers → source null, noted as ambiguous. A configuration
+ *     defect is reported, not resolved by position.
  *   - Adapter failure (throw, bad shape, off-window/off-instrument/off-basis row,
- *     non-positive price) → log and CONTINUE to the next adapter. Partial answers
- *     are never merged across adapters (a whole batch is accepted or discarded).
+ *     non-positive price) → the whole batch is discarded and noted. Partial
+ *     answers are never merged.
  *   - An adapter legitimately returning [] (no data for this instrument/window,
  *     e.g. a delisted tail) is "no data", not a failure — continue.
  *   - Deterministic: same registry + same adapter responses → same result.
@@ -22,6 +38,7 @@
  */
 
 import { assertISODate } from "./config";
+import { resolveProviderForInstrument } from "./registry";
 import type { PriceFetchRequest, PriceRegistry, PriceResult } from "./types";
 
 export interface InstrumentFetchResult {
@@ -65,23 +82,39 @@ export async function fetchInstrumentWindow(
   };
   const notes: string[] = [];
 
-  for (const adapter of registry.adapters) {
-    if (!adapter.supportedBases().includes(req.basis)) {
-      notes.push(`${adapter.source}: does not serve ${req.basis} — skipped`);
-      continue;
+  const resolution = resolveProviderForInstrument(registry, {
+    assetClass:     req.assetClass,
+    providerSymbol: req.providerSymbol,
+    basis:          req.basis,
+  });
+
+  if (resolution.kind === "unsupported") {
+    notes.push(
+      `no capable provider for assetClass=${req.assetClass} symbol="${req.providerSymbol}" ` +
+      `basis=${req.basis} (considered: ${resolution.sourcesConsidered.join(", ") || "none registered"})`,
+    );
+    return { ...base, source: null, rows: [], notes };
+  }
+  if (resolution.kind === "ambiguous") {
+    // Reported, never resolved by position — see the header.
+    notes.push(
+      `AMBIGUOUS ROUTING — ${resolution.sources.join(", ")} all declare capability for ` +
+      `assetClass=${req.assetClass} symbol="${req.providerSymbol}"; refusing to guess`,
+    );
+    return { ...base, source: null, rows: [], notes };
+  }
+
+  const adapter = resolution.adapter;
+  try {
+    const rows = await adapter.fetchDailyCloses(req);
+    if (rows.length === 0) {
+      notes.push(`${adapter.source}: no data for ${req.instrumentId} in [${req.fromISO}, ${req.toISO}]`);
+      return { ...base, source: null, rows: [], notes };
     }
-    try {
-      const rows = await adapter.fetchDailyCloses(req);
-      if (rows.length === 0) {
-        notes.push(`${adapter.source}: no data for ${req.instrumentId} in [${req.fromISO}, ${req.toISO}]`);
-        continue;
-      }
-      validateBatch(rows, req);
-      return { ...base, source: adapter.source, rows, notes };
-    } catch (e) {
-      notes.push(`${adapter.source}: FAILED — ${e instanceof Error ? e.message : String(e)}`);
-      continue;
-    }
+    validateBatch(rows, req);
+    return { ...base, source: adapter.source, rows, notes };
+  } catch (e) {
+    notes.push(`${adapter.source}: FAILED — ${e instanceof Error ? e.message : String(e)}`);
   }
 
   return { ...base, source: null, rows: [], notes };

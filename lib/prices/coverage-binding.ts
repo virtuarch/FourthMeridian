@@ -29,6 +29,7 @@ import type { PriceArchiveReader, PriceRegistry } from "./types";
 import {
   resolveInstrumentCoverage,
   resolveProviderFloorISO,
+  routingKeyFor,
   type InstrumentCoverage,
   type InstrumentMeta,
   type ObservedPriceDate,
@@ -137,17 +138,18 @@ export async function loadInstrumentCoverage(
     byInstrument.get(o.instrumentId)?.push({ dateISO: o.dateISO, currency: o.currency });
   }
 
-  const providerFloorISO = resolveProviderFloorISO(registry, basis);
-
-  return ordered.map((req) =>
-    resolveInstrumentCoverage({
-      meta:             metaById.get(req.instrumentId)!,
+  // The floor is PER INSTRUMENT: it is the depth of the provider that would
+  // actually serve it, and different vendors reach back different distances.
+  return ordered.map((req) => {
+    const meta = metaById.get(req.instrumentId)!;
+    return resolveInstrumentCoverage({
+      meta,
       basis,
       requestedFromISO: req.fromISO,
       requestedToISO:   req.toISO,
       // coverage.core.ts clips to the window; passing the union set is safe.
       observed:         byInstrument.get(req.instrumentId) ?? [],
-      providerFloorISO,
-    }),
-  );
+      providerFloorISO: resolveProviderFloorISO(registry, routingKeyFor(meta, basis)),
+    });
+  });
 }

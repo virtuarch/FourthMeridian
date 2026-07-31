@@ -28,11 +28,9 @@
  */
 
 import { db } from "@/lib/db";
-import { PriceBasis } from "@prisma/client";
 import { yesterdayUTCISO, toISODateUTC } from "@/lib/prices/config";
 import { defaultPriceRegistry } from "@/lib/prices/registry";
 import { loadInstrumentCoverage, type CoverageRequest } from "@/lib/prices/coverage-binding";
-import { resolveProviderFloorISO } from "@/lib/prices/coverage-binding.core";
 import type { InstrumentCoverage } from "@/lib/prices/coverage-binding.core";
 
 interface InstrumentRow {
@@ -61,8 +59,8 @@ type WindowSource = "calendar-falsification" | "operational-ownership" | "crypto
  * floor, and every count. Nothing is left implicit, so a line can be read on its
  * own without knowing which section produced it.
  */
-function describe(c: InstrumentCoverage, source: WindowSource, floorISO: string | null): string {
-  const floor = `floor=${floorISO ?? "null"}`;
+function describe(c: InstrumentCoverage, source: WindowSource): string {
+  const floor = c.kind === "report" ? `floor=${c.providerFloorISO ?? "null"}` : "floor=n/a";
   if (c.kind === "calendar-unavailable") {
     const f = c.failure;
     const detail = f.code === "HORIZON_EXCEEDED"
@@ -84,11 +82,12 @@ function describe(c: InstrumentCoverage, source: WindowSource, floorISO: string 
 
 async function main(): Promise<number> {
   const registry = defaultPriceRegistry();
-  const floor = resolveProviderFloorISO(registry, PriceBasis.RAW_CLOSE);
+  // Provider depth is now PER INSTRUMENT (capability routing), carried on each
+  // report envelope. Only the registry summary is global.
   console.log(
     `registry: ${registry.adapters.length} adapter(s)` +
     `${registry.adapters.length ? ` (${registry.adapters.map((a) => a.source).join(", ")})` : " — no vendor key configured"}` +
-    ` · provider floor: ${floor ?? "null (unbounded — coverage is not acquisition)"}\n`,
+    ` · provider depth resolved per instrument by capability\n`,
   );
 
   const instruments = await db.$queryRaw<InstrumentRow[]>`
@@ -136,7 +135,7 @@ async function main(): Promise<number> {
         const c = byId.get(r.id)!;
         const ok = c.kind === "report" && c.report.state === "complete" && c.report.missingRanges.length === 0;
         if (!ok) findings++;
-        console.log(`  ${ok ? "✓" : "✗"} ${label(r)} ${describe(c, "calendar-falsification", floor)}`);
+        console.log(`  ${ok ? "✓" : "✗"} ${label(r)} ${describe(c, "calendar-falsification")}`);
       }
       console.log(
         findings === 0
@@ -162,7 +161,7 @@ async function main(): Promise<number> {
     const results = requests.length ? await loadInstrumentCoverage(requests) : [];
     const byId = new Map(results.map((c) => [c.instrumentId, c]));
     for (const r of owned) {
-      console.log(`    ${label(r)} ${describe(byId.get(r.id)!, "operational-ownership", floor)}`);
+      console.log(`    ${label(r)} ${describe(byId.get(r.id)!, "operational-ownership")}`);
     }
     console.log("");
   }
@@ -181,7 +180,7 @@ async function main(): Promise<number> {
       const byId = new Map(results.map((c) => [c.instrumentId, c]));
       for (const r of crypto) {
         const c = byId.get(r.id)!;
-        console.log(`    ${label(r)} ${describe(c, "crypto-wide", floor)}`);
+        console.log(`    ${label(r)} ${describe(c, "crypto-wide")}`);
         if (c.kind === "report" && c.report.state === "partial") {
           console.log(
             `      ↳ its ${r.pxRows} archived row(s) are internally dense, yet the ownership-relative\n` +

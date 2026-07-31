@@ -40,8 +40,7 @@ async function main(): Promise<void> {
   // ── 2. Window + instrument + basis filtering ──────────────────────────────
   console.log("2. Window/instrument/basis filtering");
   {
-    const rows = await provider.fetchDailyCloses({
-      instrumentId: "i1", providerSymbol: "SYM", basis: PriceBasis.RAW_CLOSE,
+    const rows = await provider.fetchDailyCloses({ instrumentId: "i1", assetClass: "EQUITY", providerSymbol: "SYM", basis: PriceBasis.RAW_CLOSE,
       fromISO: "2026-06-06", toISO: "2026-06-08",
     });
     check("returns only rows inside [from,to] for the instrument+basis", rows.length === 1 && rows[0].dateISO === "2026-06-08");
@@ -49,13 +48,11 @@ async function main(): Promise<void> {
       rows[0].instrumentId === "i1" && rows[0].basis === PriceBasis.RAW_CLOSE && rows[0].price === 210 && rows[0].currency === "USD");
   }
   {
-    const nav = await provider.fetchDailyCloses({
-      instrumentId: "i1", providerSymbol: "SYM", basis: PriceBasis.NAV,
+    const nav = await provider.fetchDailyCloses({ instrumentId: "i1", assetClass: "EQUITY", providerSymbol: "SYM", basis: PriceBasis.NAV,
       fromISO: "2026-06-01", toISO: "2026-06-30",
     });
     check("NAV request never returns RAW_CLOSE rows", nav.length === 1 && nav[0].price === 100);
-    const otherInst = await provider.fetchDailyCloses({
-      instrumentId: "i2", providerSymbol: "SYM", basis: PriceBasis.RAW_CLOSE,
+    const otherInst = await provider.fetchDailyCloses({ instrumentId: "i2", assetClass: "EQUITY", providerSymbol: "SYM", basis: PriceBasis.RAW_CLOSE,
       fromISO: "2026-06-01", toISO: "2026-06-30",
     });
     check("another instrument's rows are isolated", otherInst.length === 1 && otherInst[0].instrumentId === "i2");
@@ -64,8 +61,7 @@ async function main(): Promise<void> {
   // ── 3. Ascending order + no fabrication of absent dates ───────────────────
   console.log("3. Ordering + absence");
   {
-    const rows = await provider.fetchDailyCloses({
-      instrumentId: "i1", providerSymbol: "SYM", basis: PriceBasis.RAW_CLOSE,
+    const rows = await provider.fetchDailyCloses({ instrumentId: "i1", assetClass: "EQUITY", providerSymbol: "SYM", basis: PriceBasis.RAW_CLOSE,
       fromISO: "2026-06-01", toISO: "2026-06-30",
     });
     check("rows in ascending date order", rows.map((x) => x.dateISO).join(",") === "2026-06-05,2026-06-08,2026-06-09");
@@ -76,7 +72,7 @@ async function main(): Promise<void> {
   // ── 4. Determinism ────────────────────────────────────────────────────────
   console.log("4. Determinism");
   {
-    const req = { instrumentId: "i1", providerSymbol: "SYM", basis: PriceBasis.RAW_CLOSE, fromISO: "2026-06-01", toISO: "2026-06-30" };
+    const req = { instrumentId: "i1", assetClass: "EQUITY", providerSymbol: "SYM", basis: PriceBasis.RAW_CLOSE, fromISO: "2026-06-01", toISO: "2026-06-30" };
     const a = await provider.fetchDailyCloses(req);
     const b = await provider.fetchDailyCloses(req);
     check("identical request → byte-identical rows", JSON.stringify(a) === JSON.stringify(b));

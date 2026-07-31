@@ -31,7 +31,7 @@
  */
 
 import { PriceBasis } from "@prisma/client";
-import type { PriceFetchRequest, PriceProviderAdapter, PriceResult } from "../types";
+import type { PriceFetchRequest, PriceProviderAdapter, PriceResult, ProviderRoutingKey } from "../types";
 
 const TIINGO_BASE_URL = "https://api.tiingo.com";
 
@@ -84,6 +84,15 @@ export function createTiingoPriceProvider(
       // Tiingo `close` is unadjusted → RAW_CLOSE only. (adjClose would be a
       // separate ADJUSTED_CLOSE mapping; deliberately not served here.)
       return [PriceBasis.RAW_CLOSE];
+    },
+    // V26-PRICE-PROVIDER-UNIFICATION — declared capability. Listed equities and
+    // ETFs with a symbol, and nothing else: options, cash and crypto are not
+    // Tiingo's to serve, so routing never sends them here and never wastes a
+    // call discovering that.
+    supportsInstrument(key: ProviderRoutingKey): boolean {
+      return (key.assetClass === "EQUITY" || key.assetClass === "ETF")
+        && key.basis === PriceBasis.RAW_CLOSE
+        && key.providerSymbol.trim() !== "";
     },
     async fetchDailyCloses(req: PriceFetchRequest): Promise<PriceResult[]> {
       // The orchestrator already gates on supportedBases(); guard defensively.

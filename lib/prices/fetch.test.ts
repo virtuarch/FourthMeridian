@@ -28,23 +28,29 @@ const seed: FixturePrice[] = [
 ];
 
 const req = (over: Partial<PriceFetchRequest> = {}): PriceFetchRequest => ({
-  instrumentId: "i1", providerSymbol: "SYM", basis: PriceBasis.RAW_CLOSE,
+  instrumentId: "i1", assetClass: "EQUITY", providerSymbol: "SYM", basis: PriceBasis.RAW_CLOSE,
   fromISO: "2026-06-01", toISO: "2026-06-30", ...over,
 });
 
+/** Declared capability helpers — routing consults these, never a trial call. */
+const servesEquity = (k: { assetClass: string }): boolean => k.assetClass === "EQUITY" || k.assetClass === "ETF";
+const servesCrypto = (k: { assetClass: string }): boolean => k.assetClass === "CRYPTO";
+
 /** An adapter that always throws (rate-limit / outage simulation). */
-function throwingAdapter(source: string): PriceProviderAdapter {
+function throwingAdapter(source: string, serves = servesEquity): PriceProviderAdapter {
   return {
     source, historicalDepth: "1970-01-01",
     supportedBases: () => [PriceBasis.RAW_CLOSE],
+    supportsInstrument: serves,
     async fetchDailyCloses() { throw new Error("429 rate limited"); },
   };
 }
 /** An adapter that returns an off-window row (bad shape → whole batch discarded). */
-function badShapeAdapter(source: string): PriceProviderAdapter {
+function badShapeAdapter(source: string, serves = servesEquity): PriceProviderAdapter {
   return {
     source, historicalDepth: "1970-01-01",
     supportedBases: () => [PriceBasis.RAW_CLOSE],
+    supportsInstrument: serves,
     async fetchDailyCloses(r): Promise<PriceResult[]> {
       return [{ instrumentId: r.instrumentId, dateISO: "2020-01-01", basis: r.basis, price: 5, currency: "USD" }];
     },
@@ -65,36 +71,74 @@ async function main(): Promise<void> {
     check("no interpolation — absent 06-06/06-07 never appear", !res.rows.some((r) => r.dateISO === "2026-06-06" || r.dateISO === "2026-06-07"));
   }
 
-  // ── 2. Failover: throwing adapter → next adapter wins ─────────────────────
-  console.log("2. Failover on error");
+  // ── 2. Adapter error → stated failure, never a silent substitution ────────
+  // V26-PRICE-PROVIDER-UNIFICATION: cross-adapter failover is GONE. Routing
+  // resolves ONE capable provider; when it errors the window yields no rows and
+  // coverage still reports those dates missing, so the next run retries. Nothing
+  // is fabricated and nothing is silently re-sourced under a different vendor.
+  console.log("2. Adapter error");
   {
-    const reg = createPriceRegistry([throwingAdapter("flaky"), fixture]);
+    const reg = createPriceRegistry([throwingAdapter("flaky")]);
     const res = await fetchInstrumentWindow(req(), reg);
-    check("failed adapter is skipped, fixture wins", res.source === "fixture" && res.rows.length === 2);
-    check("failure is noted (rate-limit/error behavior)", res.notes.some((n) => n.includes("flaky") && n.includes("FAILED")));
+    check("error → source null, zero rows (never a fabricated or substituted answer)",
+      res.source === null && res.rows.length === 0);
+    check("failure is noted", res.notes.some((n) => n.includes("flaky") && n.includes("FAILED")));
   }
 
-  // ── 3. Bad-shape batch is discarded whole, then failover ──────────────────
+  // ── 3. Bad-shape batch discarded whole ────────────────────────────────────
   console.log("3. Off-window batch discarded");
   {
-    const reg = createPriceRegistry([badShapeAdapter("bad"), fixture]);
+    const reg = createPriceRegistry([badShapeAdapter("bad")]);
     const res = await fetchInstrumentWindow(req(), reg);
-    check("off-window row → whole batch rejected, next adapter used", res.source === "fixture");
+    check("off-window row → whole batch rejected, source null", res.source === null && res.rows.length === 0);
     check("rejection noted", res.notes.some((n) => n.includes("bad") && n.includes("FAILED")));
   }
 
-  // ── 4. Basis-unsupported adapter skipped ──────────────────────────────────
-  console.log("4. Basis support");
+  // ── 4. Capability routing ─────────────────────────────────────────────────
+  console.log("4. Capability routing");
   {
+    const cryptoOnly = throwingAdapter("cryptovendor", servesCrypto);
+    const equityFixture = createFixturePriceProvider(seed, { source: "fixture", supports: servesEquity });
+
+    // An adapter that declines the instrument is never called — the throwing
+    // crypto vendor proves it, since reaching it would fail the suite.
+    const reg = createPriceRegistry([cryptoOnly, equityFixture]);
+    const res = await fetchInstrumentWindow(req(), reg);
+    check("a declining adapter is not called; the capable one serves", res.source === "fixture");
+
+    // THE POINT: registration order cannot change routing.
+    const reversed = createPriceRegistry([equityFixture, cryptoOnly]);
+    const res2 = await fetchInstrumentWindow(req(), reversed);
+    check("REGISTRATION ORDER CANNOT CHANGE ROUTING",
+      res2.source === res.source && JSON.stringify(res2.rows) === JSON.stringify(res.rows));
+
+    // Removing the capable adapter is a STATED outcome, not a fall-through.
+    const withoutEquity = createPriceRegistry([cryptoOnly]);
+    const res3 = await fetchInstrumentWindow(req(), withoutEquity);
+    check("removing the capable adapter → source null, deterministically unsupported",
+      res3.source === null && res3.rows.length === 0);
+    check("unsupported is explained, naming what was considered",
+      res3.notes.some((n) => n.includes("no capable provider") && n.includes("cryptovendor")));
+
+    // Two adapters claiming one instrument is a config defect, reported not guessed.
+    const ambiguous = createPriceRegistry([
+      createFixturePriceProvider(seed, { source: "a", supports: servesEquity }),
+      createFixturePriceProvider(seed, { source: "b", supports: servesEquity }),
+    ]);
+    const res4 = await fetchInstrumentWindow(req(), ambiguous);
+    check("two capable adapters → refuses to guess", res4.source === null);
+    check("ambiguity is named", res4.notes.some((n) => n.includes("AMBIGUOUS ROUTING")));
+
+    // Basis is still part of capability.
     const navOnly: PriceProviderAdapter = {
       source: "navonly", historicalDepth: "1970-01-01",
       supportedBases: () => [PriceBasis.NAV],
+      supportsInstrument: servesEquity,
       async fetchDailyCloses() { throw new Error("should not be called"); },
     };
-    const reg = createPriceRegistry([navOnly, fixture]);
-    const res = await fetchInstrumentWindow(req({ basis: PriceBasis.RAW_CLOSE }), reg);
-    check("adapter that doesn't serve the basis is skipped, not called", res.source === "fixture");
-    check("skip noted", res.notes.some((n) => n.includes("navonly") && n.includes("does not serve")));
+    const reg5 = createPriceRegistry([navOnly, equityFixture]);
+    const res5 = await fetchInstrumentWindow(req({ basis: PriceBasis.RAW_CLOSE }), reg5);
+    check("an adapter that doesn't serve the basis is not routed to", res5.source === "fixture");
   }
 
   // ── 5. Delisted tail / no data → source null (never fabricated) ───────────

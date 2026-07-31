@@ -42,6 +42,7 @@ function fakeFetch(body: unknown, opts: { ok?: boolean; status?: number } = {}):
 
 const req = {
   instrumentId:   "instr_nvda",
+  assetClass:     "EQUITY",
   providerSymbol: "NVDA",
   basis:          PriceBasis.RAW_CLOSE,
   fromISO:        "2026-06-05",

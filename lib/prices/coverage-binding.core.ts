@@ -33,7 +33,8 @@
  */
 
 import type { PriceBasis } from "@prisma/client";
-import type { PriceProviderAdapter, PriceRegistry } from "./types";
+import type { PriceRegistry, ProviderRoutingKey } from "./types";
+import { resolveProviderForInstrument } from "./registry";
 import {
   coverageFor,
   type CoverageReport,
@@ -89,6 +90,8 @@ export type InstrumentCoverage =
       kind:                  "report";
       instrumentId:          string;
       expectedCurrency:      string;
+      /** The depth of the provider that would serve this instrument; null if none. */
+      providerFloorISO:      string | null;
       /** Observations dropped for quote-currency mismatch — diagnostic (OI-1). */
       currencyMismatchCount: number;
       report:                CoverageReport;
@@ -156,27 +159,40 @@ export function selectCalendar(meta: InstrumentMeta): CalendarSelection {
 }
 
 /**
- * The earliest date ANY registered adapter serving `basis` can reach, or null
- * when no such adapter exists.
+ * The earliest date the provider that would actually SERVE this instrument can
+ * reach, or null when no capable provider exists.
  *
- * Null means "unbounded depth" to the planner, which is the right COVERAGE
- * answer: whether a provider currently exists to fetch a date does not change
- * whether the evidence is missing. Acquisition feasibility is PRICE-3/PRICE-4's
- * question. Without this separation, deleting an API key would silently
- * reclassify real gaps as unreachable.
+ * V26-PRICE-PROVIDER-UNIFICATION made this capability-aware. It previously took
+ * the earliest `historicalDepth` across every adapter serving the basis, which
+ * was harmless with one registered vendor and WRONG with two: once CoinGecko is
+ * registered alongside Tiingo, BTC would inherit Tiingo's 1990 depth — a date
+ * CoinGecko cannot serve and Tiingo would never be asked for. Coverage would
+ * then treat pre-2013 crypto dates as actionable and plan windows no run could
+ * fill. The floor must come from the ONE provider routing will choose.
  *
- * Deterministic: adapters are compared by declared `historicalDepth`, sorted, and
- * the earliest wins — never registry order.
+ * Null still means "unbounded depth" to the planner, which remains the right
+ * COVERAGE answer: whether a vendor is configured does not change whether the
+ * evidence is missing. Acquisition feasibility is PRICE-3/PRICE-4's question.
+ * Without that separation, deleting an API key would silently reclassify real
+ * gaps as unreachable.
+ *
+ * Deterministic: routing is by declared capability, never registry order.
  */
 export function resolveProviderFloorISO(
   registry: PriceRegistry,
-  basis:    PriceBasis,
+  key:      ProviderRoutingKey,
 ): string | null {
-  const depths = registry.adapters
-    .filter((a: PriceProviderAdapter) => a.supportedBases().includes(basis))
-    .map((a: PriceProviderAdapter) => a.historicalDepth)
-    .sort();
-  return depths.length > 0 ? depths[0] : null;
+  const resolution = resolveProviderForInstrument(registry, key);
+  return resolution.kind === "provider" ? resolution.adapter.historicalDepth : null;
+}
+
+/** The routing key for an instrument, as the registry needs it. */
+export function routingKeyFor(meta: InstrumentMeta, basis: PriceBasis): ProviderRoutingKey {
+  return {
+    assetClass:     meta.assetClass,
+    providerSymbol: meta.tickerSymbol ?? "",
+    basis,
+  };
 }
 
 // ── Resolution ───────────────────────────────────────────────────────────────
@@ -219,6 +235,7 @@ export function resolveInstrumentCoverage(input: ResolveCoverageInput): Instrume
       kind:             "report",
       instrumentId:     meta.instrumentId,
       expectedCurrency,
+      providerFloorISO,
       currencyMismatchCount,
       report: coverageFor({
         instrumentId:  meta.instrumentId,
@@ -252,6 +269,7 @@ export function resolveInstrumentCoverage(input: ResolveCoverageInput): Instrume
     kind:             "report",
     instrumentId:     meta.instrumentId,
     expectedCurrency,
+    providerFloorISO,
     currencyMismatchCount,
     report: coverageFor({
       instrumentId:  meta.instrumentId,

@@ -90,6 +90,7 @@ export async function fetchSecurityPrices(now: Date = new Date()): Promise<Fetch
 
   const instrumentIds = [...new Set(priceable.map((h) => h.instrumentId))].sort();
   const symbolById = new Map(priceable.map((h) => [h.instrumentId, h.instrument.tickerSymbol]));
+  const classById  = new Map(priceable.map((h) => [h.instrumentId, String(h.instrument.assetClass)]));
 
   // Batch coverage read for the target date, then select the missing.
   const covered = new Map<string, Set<string>>();
@@ -107,6 +108,7 @@ export async function fetchSecurityPrices(now: Date = new Date()): Promise<Fetch
       const res = await fetchInstrumentWindow(
         {
           instrumentId,
+          assetClass:     classById.get(instrumentId) ?? "UNKNOWN",
           providerSymbol: symbolById.get(instrumentId) ?? "",
           basis: PriceBasis.RAW_CLOSE,
           fromISO: dateISO,

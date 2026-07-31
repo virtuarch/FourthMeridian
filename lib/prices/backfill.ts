@@ -214,9 +214,12 @@ export async function backfillPricesForInstruments(
   // Provider symbols for the fetch stage — same identity the daily job resolves.
   const instruments = await db.instrument.findMany({
     where:  { id: { in: requests.map((r) => r.instrumentId) } },
-    select: { id: true, tickerSymbol: true },
+    select: { id: true, tickerSymbol: true, assetClass: true },
   });
   const symbolById = new Map(instruments.map((i) => [i.id, i.tickerSymbol]));
+  // assetClass is a ROUTING input (V26-PRICE-PROVIDER-UNIFICATION): the registry
+  // picks the capable vendor from it, so equities and crypto share this loop.
+  const classById = new Map(instruments.map((i) => [i.id, String(i.assetClass)]));
 
   // ── 3. Execute ────────────────────────────────────────────────────────────
   for (const plan of plans) {
@@ -245,6 +248,7 @@ export async function backfillPricesForInstruments(
       const res = await fetchInstrumentWindow(
         {
           instrumentId:   plan.instrumentId,
+          assetClass:     classById.get(plan.instrumentId) ?? "UNKNOWN",
           providerSymbol: symbolById.get(plan.instrumentId) ?? "",
           basis:          PriceBasis.RAW_CLOSE,
           fromISO:        w.fromISO,

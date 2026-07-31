@@ -28,7 +28,6 @@ import { defaultPriceRegistry } from "@/lib/prices/registry";
 import { loadInstrumentCoverage, type CoverageRequest } from "@/lib/prices/coverage-binding";
 import {
   resolveInstrumentCoverage,
-  resolveProviderFloorISO,
   type InstrumentCoverage,
   type ObservedPriceDate,
 } from "@/lib/prices/coverage-binding.core";
@@ -89,7 +88,8 @@ function needsAttention(plan: AcquisitionPlan): boolean {
 
 async function main(): Promise<number> {
   const registry = defaultPriceRegistry();
-  const floor = resolveProviderFloorISO(registry, PriceBasis.RAW_CLOSE);
+  // Provider depth is now PER INSTRUMENT (capability routing), carried on each
+  // report envelope. Only the registry summary is global.
   const latestClosed = yesterdayUTCISO();
 
   console.log("╔══════════════════════════════════════════════════════════════════════╗");
@@ -98,7 +98,7 @@ async function main(): Promise<number> {
   console.log(
     `registry: ${registry.adapters.length} adapter(s)` +
     `${registry.adapters.length ? ` (${registry.adapters.map((a) => a.source).join(", ")})` : " — no vendor key configured"}` +
-    ` · provider floor: ${floor ?? "null (unbounded)"} · request limit: ${CHUNK_DAYS} calendar day(s)\n`,
+    ` · provider depth per instrument · request limit: ${CHUNK_DAYS} calendar day(s)\n`,
   );
 
   const rows = await db.$queryRaw<Row[]>`
@@ -199,7 +199,7 @@ async function main(): Promise<number> {
         },
         basis: PriceBasis.RAW_CLOSE,
         requestedFromISO: FROM, requestedToISO: TO,
-        observed: punched, providerFloorISO: floor,
+        observed: punched, providerFloorISO: null,
       });
       const plan = planAcquisition({ coverage, maxCalendarDaysPerRequest: CHUNK_DAYS });
       console.log(`  ${name(subject)} ${FROM} → ${TO}  (${real.length} real archived date(s), ${holes.size} removed in memory)`);

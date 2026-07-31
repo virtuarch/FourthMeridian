@@ -1,8 +1,19 @@
 /**
  * lib/crypto/btc-price.ts
  *
- * A8-3B (crypto) — the DB binding for historical BTC valuation, reusing the SAME
- * global price cache the stock backfill uses:
+ * A8-3B (crypto) — the DB binding for historical BTC VALUATION.
+ *
+ * V26-PRICE-PROVIDER-UNIFICATION removed `backfillBtcPrices` from this module.
+ * BTC acquisition now travels the same registry path as equities
+ * (backfillPricesForInstruments → capability routing → CoinGecko adapter →
+ * priceArchive), so there is no asset-specific acquisition code left anywhere.
+ *
+ * What remains here is deliberately BTC-specific and stays that way until
+ * V26-PRICE-5: `readBtcUsdWindow` is a VALUATION read, not acquisition.
+ * Generalising valuation reads is PRICE-5's remit, and doing it here would mix
+ * two slices.
+ *
+ * It reuses the SAME global price cache the stock backfill uses:
  *   - a single GLOBAL Instrument (tickerSymbol "BTC", assetClass CRYPTO) — not a
  *     new table; Instrument's existing shape already models a crypto asset, and
  *     PriceObservation.source discriminates "coingecko" from "tiingo". Deduped
@@ -19,55 +30,22 @@ import { PriceBasis } from "@prisma/client";
 import { priceArchive } from "@/lib/prices/archive";
 import { minusDaysISO } from "@/lib/prices/config";
 import { nearestOnOrBefore } from "@/lib/data/nearest-on-or-before";
-import { fetchBtcDailyClosesUsd, type CoinGeckoOptions } from "@/lib/prices/providers/coingecko";
 import { resolveCanonicalBtcInstrumentId } from "@/lib/investments/crypto-instrument";
 
+/**
+ * Provenance stamped on BTC price rows. Still exported for readers that key on
+ * it; the WRITER is now the shared archive path, not this module.
+ */
 export const BTC_PRICE_SOURCE = "coingecko";
 
 /**
  * The single global BTC Instrument (assetClass CRYPTO) the RAW_CLOSE price series
  * is written against. Delegates to the ONE canonical crypto Instrument resolver
  * (P2-6) so the price series and the position spine share ONE Instrument by
- * construction — a position writer's valuation finds the very prices written here,
- * and no second BTC Instrument can be minted. Idempotent + dedupe-safe (alias
- * unique). The prior get-or-create predicate (tickerSymbol="BTC" + CRYPTO) is
- * preserved inside the resolver's legacy-adoption step, so an already-created
- * price Instrument is adopted, not duplicated.
+ * construction. Idempotent + dedupe-safe.
  */
 export async function resolveBtcInstrumentId(): Promise<string> {
   return resolveCanonicalBtcInstrumentId();
-}
-
-export interface BtcBackfillResult {
-  inserted:   number;
-  attempted:  number;
-  configured: boolean; // false ⇒ no COINGECKO_API_KEY, nothing fetched
-}
-
-/**
- * Backfill daily BTC/USD closes over [fromISO, toISO] into PriceObservation for
- * the global BTC Instrument. Missing-only (skipDuplicates) + closed-dates-only
- * (priceArchive rejects dates after yesterday UTC). Best-effort.
- */
-export async function backfillBtcPrices(
-  fromISO: string,
-  toISO:   string,
-  opts:    CoinGeckoOptions = {},
-): Promise<BtcBackfillResult> {
-  const closes = await fetchBtcDailyClosesUsd(fromISO, toISO, opts);
-  if (closes.length === 0) {
-    return { inserted: 0, attempted: 0, configured: !!(opts.apiKey ?? process.env.COINGECKO_API_KEY) };
-  }
-  const instrumentId = await resolveBtcInstrumentId();
-  const rows = closes.map((c) => ({
-    instrumentId,
-    dateISO:  c.dateISO,
-    basis:    PriceBasis.RAW_CLOSE,
-    price:    c.price,
-    currency: "USD",
-  }));
-  const w = await priceArchive.writeBatch(BTC_PRICE_SOURCE, rows);
-  return { inserted: w.inserted, attempted: w.attempted, configured: true };
 }
 
 /**

@@ -52,7 +52,7 @@ import {
   type CashAccountBalance,
 } from "@/lib/snapshots/backfill-core";
 import { regenerateDay, type DayRegenInput, type DayRegenResult } from "@/lib/snapshots/regenerate-history.core";
-import { backfillBtcPrices, readBtcUsdWindow } from "@/lib/crypto/btc-price";
+import { resolveBtcInstrumentId, readBtcUsdWindow } from "@/lib/crypto/btc-price";
 import { backfillHeldInstrumentPrices } from "@/lib/investments/holding-price-backfill";
 
 type Client = PrismaClient | Prisma.TransactionClient;
@@ -197,10 +197,17 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   const cryptoAccounts = accounts.filter((a) => a.type === "crypto" && a.nativeBalance != null);
   if (cryptoAccounts.length > 0) {
     try {
-      const r = await backfillBtcPrices(fromDate, toDate);
-      console.log(`[wealth-regen] ${spaceId}: BTC price backfill — ${r.inserted} row(s)${r.configured ? "" : " (no COINGECKO_API_KEY — crypto stays flat)"}`);
+      // V26-PRICE-PROVIDER-UNIFICATION — crypto prices are acquired through the
+      // SAME path as equities (coverage → acquisition plan → capability routing
+      // → archive). This replaced a bespoke backfillBtcPrices that called
+      // CoinGecko directly and wrote to the archive itself. Nothing here is
+      // crypto-specific except resolving WHICH instrument to price.
+      const btcInstrumentId = await resolveBtcInstrumentId();
+      const r = await backfillHeldInstrumentPrices([btcInstrumentId], fromDate, toDate,
+        (line) => console.log(`[wealth-regen] ${spaceId}: ${line}`));
+      console.log(`[wealth-regen] ${spaceId}: crypto price backfill — planned ${r.planned}, ${r.inserted} row(s)`);
     } catch (e) {
-      console.warn(`[wealth-regen] ${spaceId}: BTC price backfill failed (non-fatal):`, e instanceof Error ? e.message : e);
+      console.warn(`[wealth-regen] ${spaceId}: crypto price backfill failed (non-fatal):`, e instanceof Error ? e.message : e);
     }
   }
   // Schwab-class fix — investment accounts with holdings but NO reconstructable

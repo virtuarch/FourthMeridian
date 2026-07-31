@@ -46,17 +46,28 @@ function meta(over: Partial<InstrumentMeta> = {}): InstrumentMeta {
   };
 }
 
-/** A provider that cannot be called without failing the suite. */
-function fakeAdapter(source: string, depth: string, bases: PriceBasis[]): PriceProviderAdapter {
+/**
+ * A provider that cannot be called without failing the suite. `serves` is its
+ * DECLARED capability — routing consults it and never tries the adapter.
+ */
+function fakeAdapter(
+  source: string, depth: string, bases: PriceBasis[],
+  serves: (key: { assetClass: string; providerSymbol: string; basis: PriceBasis }) => boolean = () => true,
+): PriceProviderAdapter {
   return {
     source,
     historicalDepth: depth,
     supportedBases: () => bases,
+    supportsInstrument: serves,
     fetchDailyCloses: async () => {
       throw new Error(`[test] a read-only coverage path called provider "${source}"`);
     },
   };
 }
+const EQUITY_KEY = { assetClass: "EQUITY", providerSymbol: "AAPL", basis: PriceBasis.RAW_CLOSE };
+const CRYPTO_KEY = { assetClass: "CRYPTO", providerSymbol: "BTC",  basis: PriceBasis.RAW_CLOSE };
+const servesEquity = (k: { assetClass: string }) => k.assetClass === "EQUITY" || k.assetClass === "ETF";
+const servesCrypto = (k: { assetClass: string }) => k.assetClass === "CRYPTO";
 const registryOf = (...adapters: PriceProviderAdapter[]): PriceRegistry => ({ adapters });
 
 const usd = (dates: readonly string[]): ObservedPriceDate[] =>
@@ -138,24 +149,51 @@ function main(): void {
       foreign.failure.assetClass === "EQUITY" && foreign.failure.mic === "XLON");
   }
 
-  // ── 3. Provider floor ─────────────────────────────────────────────────────
+  // ── 3. Provider floor (capability-routed) ─────────────────────────────────
   console.log("3. provider floor");
   {
     check("an empty registry yields null (unbounded — coverage ≠ acquisition)",
-      resolveProviderFloorISO(registryOf(), PriceBasis.RAW_CLOSE) === null);
-    check("one adapter yields its declared depth",
-      resolveProviderFloorISO(registryOf(fakeAdapter("t", "1990-01-01", [PriceBasis.RAW_CLOSE])),
-        PriceBasis.RAW_CLOSE) === "1990-01-01");
-    check("two adapters yield the EARLIEST depth, not registry order",
+      resolveProviderFloorISO(registryOf(), EQUITY_KEY) === null);
+    check("one capable adapter yields its declared depth",
       resolveProviderFloorISO(
-        registryOf(
-          fakeAdapter("late", "2015-01-01", [PriceBasis.RAW_CLOSE]),
-          fakeAdapter("early", "1990-01-01", [PriceBasis.RAW_CLOSE]),
-        ), PriceBasis.RAW_CLOSE) === "1990-01-01");
+        registryOf(fakeAdapter("t", "1990-01-01", [PriceBasis.RAW_CLOSE], servesEquity)),
+        EQUITY_KEY) === "1990-01-01");
+
+    // The reason this became capability-aware: with two vendors registered, the
+    // old "earliest depth across all adapters" answer gave crypto the EQUITY
+    // vendor's 1990 depth — a date the crypto vendor cannot serve and the equity
+    // vendor would never be asked for.
+    const both = registryOf(
+      fakeAdapter("equities", "1990-01-01", [PriceBasis.RAW_CLOSE], servesEquity),
+      fakeAdapter("crypto",   "2013-04-28", [PriceBasis.RAW_CLOSE], servesCrypto),
+    );
+    check("crypto gets the CRYPTO vendor's depth, not the earliest across vendors",
+      resolveProviderFloorISO(both, CRYPTO_KEY) === "2013-04-28");
+    check("equity gets the EQUITY vendor's depth",
+      resolveProviderFloorISO(both, EQUITY_KEY) === "1990-01-01");
+
+    const reversed = registryOf(
+      fakeAdapter("crypto",   "2013-04-28", [PriceBasis.RAW_CLOSE], servesCrypto),
+      fakeAdapter("equities", "1990-01-01", [PriceBasis.RAW_CLOSE], servesEquity),
+    );
+    check("REGISTRATION ORDER CANNOT CHANGE THE ANSWER",
+      resolveProviderFloorISO(reversed, CRYPTO_KEY) === resolveProviderFloorISO(both, CRYPTO_KEY) &&
+      resolveProviderFloorISO(reversed, EQUITY_KEY) === resolveProviderFloorISO(both, EQUITY_KEY));
+
     check("an adapter not serving the basis is ignored",
       resolveProviderFloorISO(
-        registryOf(fakeAdapter("nav-only", "1980-01-01", [PriceBasis.NAV])),
-        PriceBasis.RAW_CLOSE) === null);
+        registryOf(fakeAdapter("nav-only", "1980-01-01", [PriceBasis.NAV], servesEquity)),
+        EQUITY_KEY) === null);
+    check("an adapter that declines the instrument is ignored",
+      resolveProviderFloorISO(
+        registryOf(fakeAdapter("crypto", "2013-04-28", [PriceBasis.RAW_CLOSE], servesCrypto)),
+        EQUITY_KEY) === null);
+    check("two adapters BOTH claiming the instrument → null, never a positional pick",
+      resolveProviderFloorISO(
+        registryOf(
+          fakeAdapter("a", "1990-01-01", [PriceBasis.RAW_CLOSE], servesEquity),
+          fakeAdapter("b", "2000-01-01", [PriceBasis.RAW_CLOSE], servesEquity),
+        ), EQUITY_KEY) === null);
   }
 
   // ── 4. Reports ────────────────────────────────────────────────────────────
