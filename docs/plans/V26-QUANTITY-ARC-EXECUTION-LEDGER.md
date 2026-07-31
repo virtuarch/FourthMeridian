@@ -23,12 +23,13 @@ PRICE solved the price term. QUANTITY must produce `Historical Quantity(t)`
 | QUANTITY-1C — evidence-aware replay | committed | `3d047fd` | `lib/investments/quantity-replay.core.ts`, `lib/investments/quantity-replay.core.test.ts` |
 | QUANTITY-1C.1 — timeline coverage and anchor representation | committed | `c97cf2d` | same two files |
 | QUANTITY-1D — reconciliation evidence and candidate explanations | committed | `c67c6f1` | `quantity-reconciliation.core.ts`, `quantity-reconciliation.core.test.ts` |
-| QUANTITY-1E — event-stream completeness binding | **BLOCKED** — no ingestion-coverage record exists to bind to (§7) | — | — |
-| QUANTITY-1F — quantity timeline read authority | blocked behind 1E | — | — |
+| QUANTITY-1E′ — ingestion coverage ledger | committed | `0e3a109` | `schema.prisma`, `20260801_v26_quantity_1e_investment_event_coverage`, `investment-event-ingest.ts`, `sync-investments.ts`, `event-coverage.core.ts`, `event-coverage.ts`, + 2 tests |
+| QUANTITY-1F — quantity timeline read authority | committed | `603a53e` | `quantity-timeline.ts`, `quantity-timeline.test.ts` |
 
-No schema change, no migration, no DB binding, no valuation integration, no
-snapshot regeneration, and no production mutation has occurred in any slice of
-this arc.
+QUANTITY-1E′ introduced the arc's first schema change, migration and write, all
+on the LOCAL database and all explicitly authorised. No valuation integration,
+no snapshot regeneration and **no production mutation** has occurred in any
+slice.
 
 ---
 
@@ -417,3 +418,94 @@ on top of it.
 QUANTITY-1F (a read authority assembling anchors, events and completeness from
 the database) is blocked behind it: without 1E it could only ever produce the
 UNKNOWN timelines the corpus scripts already produce.
+
+
+---
+
+## 8 · QUANTITY-1E′ — the ingestion coverage ledger
+
+The blocker in §7 was resolved by writing the record that did not exist.
+
+### Schema
+
+`InvestmentEventCoverage`, append-only, one row per (ingest attempt, covered
+account). `InvestmentCoverageOutcome` = `COMPLETE | PARTIAL | FAILED | DISABLED
+| CONSENT_REQUIRED | NOT_READY`. Migration
+`20260801_v26_quantity_1e_investment_event_coverage` is additive only — one
+enum, one table, three indexes, two foreign keys, and **no ALTER or DROP on any
+existing table**. Applied locally via `db:migrate:safe` (backup
+`fintracker-2026-07-31T23-48-16-372Z.sql`); events 50, positions 159, snapshots
+1679 unchanged.
+
+### Two defects in the ingest path, fixed
+
+1. **The pagination loop conflated two endings.** It broke on
+   `all.length >= reported || page.length === 0`. Reaching the provider's
+   reported total is reconciliation; a page running dry below it means rows are
+   missing. Only the first now yields `COMPLETE`.
+2. **The covered-account list could not be derived where it was needed.**
+   Ingestion only sees accounts that returned a transaction, and an investment
+   account with none is precisely the case coverage must record. The caller now
+   resolves and supplies it.
+
+Coverage is written on **every** outcome, including the paths that return early.
+A window that failed, was refused for consent, or was never requested because
+the kill switch was off is recorded as unread — otherwise its silence is
+indistinguishable from an empty one.
+
+### Reading
+
+`eventStreamCompletenessFor` is pure. Only `COMPLETE` licenses a claim:
+`PARTIAL` means the shortfall's location is unknown, and the remaining outcomes
+mean the window was never read, which is not weaker evidence than a successful
+read but none at all. Overlapping and **day-adjacent** windows merge, so rolling
+syncs accumulate into real coverage without inventing a hole at the seam; a
+genuine hole is never merged over, and a disjoint union reports its largest
+component, under-claiming the others rather than over-claiming any. Absence
+returns `UNKNOWN` with a reason — which is what makes a failed write safe: a
+missing row withholds claims and can never cause an over-claim.
+
+**The load-bearing case** is a `COMPLETE` window with `fetchedCount = 0`. It is
+the only evidence in the system that an empty interval means no movement.
+
+---
+
+## 9 · QUANTITY-1F — the read authority
+
+`loadQuantityTimelines` composes anchors (1C), normalized events (1B) and
+completeness (1E′) into a `QuantityTimeline` plus its `ReconciliationReport`,
+per (account, instrument). Strictly read-only, guarded by a source scan that
+forbids create/update/upsert/delete/executeRaw, `$transaction`, any provider
+import, an ambient clock, and any fallback deriving the window from evidence.
+
+Deliberately **not** wired into valuation or snapshot regeneration.
+
+Real corpus (local, read-only): 25 pairs, byte-identical on repeat,
+`ABSOLUTE_WITH_GAPS` 20 / `RELATIVE_ONLY` 1 / `UNREPLAYABLE` 4; reconciliation
+`FACTS_ONLY` 23 / `DIFFERENCES_PRESENT` 2. Every pair resolves to `UNKNOWN`
+with the reason *"no ingest attempt has been recorded for this account"* —
+correct and visible. The ledger is empty until the next investment sync runs.
+
+---
+
+## 10 · Remaining blockers after 1F
+
+**B-7 — a COMPLETE row does not prove provider history reaches the window
+start.** Plaid does not report where its own history begins, so a request
+extending past that boundary returns exactly what a genuinely empty interval
+returns. Coverage is therefore an upper bound on what is known. Mitigations to
+consider: a declared provider-depth constant (the PRICE-4C pattern, where
+`historicalDepth` was made a deployment capability rather than a dataset
+capability), or clamping coverage at the account's own opening date.
+
+**B-8 — the ledger only fills going forward.** Nothing backfills coverage for
+events already ingested, and nothing can: the windows those pulls used were
+never recorded. Every interval before the first post-migration sync stays
+`UNKNOWN` permanently unless a deliberate backfill asserts a window, which would
+be fabricating evidence.
+
+**B-5 — no consumer.** Valuation still calls `resolveHeldQuantity`; the arc has
+changed no user-visible behaviour.
+
+**B-1** no opening anchor predates first connect · **B-4** two sign conventions
+in `InvestmentEvent`.
