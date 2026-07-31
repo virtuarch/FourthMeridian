@@ -69,6 +69,32 @@ export interface PriceRegistry {
   readonly adapters: readonly PriceProviderAdapter[];
 }
 
+/**
+ * V26-PRICE-1 — the source of EXPECTED market dates for one asset class.
+ *
+ * The price archive cannot tell "the market was closed" from "we never fetched
+ * it": both are an absent row. A calendar supplies the missing half of that
+ * judgement, so coverage.core.ts can report a genuine acquisition gap instead of
+ * screaming about every weekend. `expectedDates` returns the dates a complete
+ * archive WOULD contain over [fromISO, toISO] — trading days for an equity
+ * calendar, every day for a 24/7 crypto calendar.
+ *
+ * Declared here (beside the other price contracts) with ZERO implementations —
+ * V26-PRICE-1 ships only the pure planner, which receives the expected-date set
+ * as data. Implementations and their holiday tables are V26-PRICE-2
+ * (lib/calendar/), which imports this interface rather than redeclaring it.
+ *
+ * `id` is stamped onto a CoverageReport as `calendarId`, so a report is
+ * self-describing about which expectations produced it — the diagnostic that
+ * makes an UNEXPECTED_OBSERVATION actionable when a holiday table goes stale.
+ */
+export interface TradingCalendar {
+  /** Stable provenance identifier, e.g. "us-equity", "crypto-247". */
+  readonly id: string;
+  /** Expected market dates in [fromISO, toISO] inclusive; ascending, deduped. */
+  expectedDates(fromISO: string, toISO: string): readonly string[];
+}
+
 /** A resolution request: the price of `instrumentId` as-of `dateISO` on one basis. */
 export interface PriceQuery {
   instrumentId: string;
