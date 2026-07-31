@@ -233,6 +233,91 @@ export function valueInstrumentAsOf(
 
 // ── Portfolio ─────────────────────────────────────────────────────────────────
 
+/**
+ * V26-QUANTITY-1A — the resolved holding for one (account, instrument) on one
+ * date, after the constant-quantity fallback has had its say. Generic over the
+ * row shape so this stays DB-free and the caller can recover the row the
+ * quantity came from.
+ */
+export interface HeldQuantity<TRow> {
+  /** null ⇒ not held / unknown · 0 ⇒ OBSERVED closure · otherwise the held units. */
+  quantity:     number | null;
+  date:         string | null;
+  tier:         CompletenessTier;
+  /** True only when the quantity was carried from an earlier observation. */
+  heldConstant: boolean;
+  /** The row the quantity was carried from; null unless heldConstant. */
+  sourceRow:    TRow | null;
+}
+
+/**
+ * THE SINGLE AUTHORITY for unknown-vs-known-zero fallback behaviour.
+ *
+ * ── The bug this exists to prevent ───────────────────────────────────────────
+ * The constant-quantity fallback used to fire on `quantity == null || quantity
+ * === 0`, which conflates two facts that are not alike:
+ *
+ *   null ⇒ NO observation covers this date. We do not know. Carrying the
+ *          earliest observed quantity backward is a labelled estimate, and the
+ *          price applied to it is real — the disclosed-estimate contract A10 and
+ *          A9 both rely on.
+ *   0    ⇒ An observation PROVES the position was closed. Substituting the
+ *          earliest positive quantity does not estimate anything; it resurrects
+ *          a holding the user sold.
+ *
+ * Because the historical regeneration binding always passes holdConstant, every
+ * closed position was being valued forever after its sale. Measured locally:
+ * TSLA, sold 2026-07-27 with an explicit zero observation, was valued at
+ * quantity 1 on 2026-07-29; thirteen (account, instrument) pairs were affected.
+ *
+ * ── Contract ─────────────────────────────────────────────────────────────────
+ *   quantity not null, not 0  → pass through unchanged (INCLUDING negatives —
+ *                               short/fractional-negative positions are real and
+ *                               are valued today; this must not change)
+ *   quantity === 0            → preserved as 0. Never searches for an earlier
+ *                               positive row. The caller's existing exclusion
+ *                               remains the final authority on aggregation.
+ *   null + holdConstant       → carry the EARLIEST observation, and only when it
+ *                               is positive; tier degrades to "estimated"
+ *   null + !holdConstant      → unresolved
+ *
+ * Explicit zero is returned as 0 rather than normalised to null on purpose:
+ * collapsing it would destroy the very distinction this function was extracted
+ * to make, and downstream diagnostics can then tell "sold" from "unknown".
+ *
+ * Pure, deterministic, DB-free, no clock. `rows` is scanned by minimum date, so
+ * input order cannot affect the result.
+ */
+export function resolveHeldQuantity<TRow extends { date: string; quantity: number }>(
+  resolved:     { quantity: number | null; date: string | null; tier: CompletenessTier },
+  rows:         readonly TRow[],
+  holdConstant: boolean,
+): HeldQuantity<TRow> {
+  const unchanged: HeldQuantity<TRow> = {
+    quantity: resolved.quantity, date: resolved.date, tier: resolved.tier,
+    heldConstant: false, sourceRow: null,
+  };
+
+  // An OBSERVED closure, or a real (possibly negative) holding — both are
+  // answers, not gaps. Neither may be replaced.
+  if (resolved.quantity !== null) return unchanged;
+
+  if (!holdConstant || rows.length === 0) return unchanged;
+
+  const earliest = rows.reduce((min, r) => (r.date < min.date ? r : min), rows[0]);
+  // Only a positive opening can be carried backward; a zero or negative opening
+  // is not a holding to project.
+  if (earliest.quantity <= 0) return unchanged;
+
+  return {
+    quantity:     earliest.quantity,
+    date:         earliest.date,
+    tier:         "estimated",
+    heldConstant: true,
+    sourceRow:    earliest,
+  };
+}
+
 export interface UnvaluedPosition {
   instrumentId: string;
   accountId:    string;

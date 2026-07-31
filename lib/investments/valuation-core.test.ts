@@ -16,7 +16,8 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import { valueInstrumentAsOf, valuePortfolioAsOf } from "./valuation-core";
+import { valueInstrumentAsOf, valuePortfolioAsOf, resolveHeldQuantity } from "./valuation-core";
+import type { CompletenessTier } from "@/lib/perspective-engine/types";
 import {
   vInput, observedPrice, estimatedPrice, priceMiss,
   identityFxCtx, walkedBackFxCtx,
@@ -178,6 +179,100 @@ function main(): void {
       /priceArchive\.readRange\?\.\(/.test(code) && !/priceArchive\.readLatestOnOrBefore/.test(code));
     check("valuation imports the A4 quantity seam (resolvePositionAsOf), not a reimplementation",
       /resolvePositionAsOf/.test(code));
+  }
+
+  // ── V26-QUANTITY-1A — unknown vs OBSERVED-zero ────────────────────────────
+  console.log("QUANTITY-1A: resolveHeldQuantity — unknown vs observed closure");
+  {
+    type R = { date: string; quantity: number };
+    const held = (q: number | null, rows: R[], hold: boolean, tier: CompletenessTier = "observed") =>
+      resolveHeldQuantity({ quantity: q, date: q === null ? null : "2026-01-01", tier }, rows, hold);
+
+    // 1. SOLD POSITION, LATER DATE — the defect this slice exists to fix.
+    const sold: R[] = [
+      { date: "2026-07-19", quantity: 1 },
+      { date: "2026-07-22", quantity: 1 },
+      { date: "2026-07-27", quantity: 0 },
+      { date: "2026-07-31", quantity: 0 },
+    ];
+    const afterSale = held(0, sold, true);
+    check("Q1A: an observed zero is NEVER resurrected under holdConstant",
+      afterSale.quantity === 0 && afterSale.heldConstant === false);
+    check("Q1A: …and no earlier row is substituted", afterSale.sourceRow === null);
+
+    // 9. TSLA REGRESSION — the exact shape measured in the investigation.
+    // Sold 2026-07-27; previously valued at quantity 1 on 2026-07-29.
+    const tsla = resolveHeldQuantity(
+      { quantity: 0, date: "2026-07-27", tier: "observed" }, sold, true);
+    check("Q1A: TSLA on 2026-07-29 resolves to 0, not 1 (regression)",
+      tsla.quantity === 0 && tsla.heldConstant === false);
+
+    // 2. GENUINELY UNCOVERED EARLY DATE — existing behaviour must not change.
+    const openRows: R[] = [{ date: "2026-06-01", quantity: 2 }, { date: "2026-07-01", quantity: 2 }];
+    const uncovered = held(null, openRows, true);
+    check("Q1A: an uncovered date still holds the earliest quantity constant",
+      uncovered.quantity === 2 && uncovered.heldConstant === true);
+    check("Q1A: …carried from the EARLIEST row, tier degraded to estimated",
+      uncovered.date === "2026-06-01" && uncovered.tier === "estimated" &&
+      uncovered.sourceRow?.date === "2026-06-01");
+
+    // 3. ZERO AS THE EARLIEST OBSERVATION — never projects a later position back.
+    const zeroOpen: R[] = [{ date: "2026-01-01", quantity: 0 }, { date: "2026-06-01", quantity: 5 }];
+    const beforeZeroOpen = held(null, zeroOpen, true);
+    check("Q1A: a zero opening observation is not carried backward",
+      beforeZeroOpen.quantity === null && beforeZeroOpen.heldConstant === false);
+    check("Q1A: …and the later positive row is NOT reached back for",
+      beforeZeroOpen.sourceRow === null);
+
+    // 4. RE-ENTRY — no special logic needed; nearest-on-or-before does it.
+    const reentry: R[] = [
+      { date: "2026-01-01", quantity: 5 },
+      { date: "2026-03-01", quantity: 0 },
+      { date: "2026-06-01", quantity: 3 },
+    ];
+    check("Q1A: inside the closed interval the position is closed",
+      held(0, reentry, true).quantity === 0);
+    check("Q1A: after re-entry the LATER quantity is used, not the original",
+      held(3, reentry, true).quantity === 3 && held(3, reentry, true).heldConstant === false);
+
+    // 5. TERMINAL ZERO stays excluded however far forward.
+    check("Q1A: a terminal zero remains zero on every later date",
+      held(0, sold, true).quantity === 0);
+
+    // 6. Per-pair responsibility: a closed pair and an open pair resolve
+    // independently. (Summing across accounts sits above this helper and is
+    // covered by the integration/dry-run path — the helper is not broadened.)
+    check("Q1A: a closed pair resolves to zero", held(0, sold, true).quantity === 0);
+    check("Q1A: an open pair resolves positive", held(2, openRows, true).quantity === 2);
+
+    // 7. holdConstant=false — unchanged in every case.
+    check("Q1A: holdConstant=false leaves an uncovered date unresolved",
+      held(null, openRows, false).quantity === null);
+    check("Q1A: holdConstant=false leaves an observed zero at zero",
+      held(0, sold, false).quantity === 0);
+
+    // 8. Ordinary resolution passes straight through, including NEGATIVES —
+    // NVDA holds -0.0028 locally and is valued today; that must not change.
+    const positive = held(7, openRows, true);
+    check("Q1A: a positive resolved quantity passes through untouched",
+      positive.quantity === 7 && positive.heldConstant === false && positive.tier === "observed");
+    const negative = held(-0.0028, openRows, true);
+    check("Q1A: a NEGATIVE quantity is preserved, never treated as a gap",
+      negative.quantity === -0.0028 && negative.heldConstant === false);
+
+    // 10. Determinism — input order cannot change the earliest row chosen.
+    const shuffled = [...openRows].reverse();
+    check("Q1A: shuffled input order resolves identically",
+      JSON.stringify(held(null, shuffled, true)) === JSON.stringify(held(null, openRows, true)));
+    check("Q1A: repeat invocation is byte-identical",
+      JSON.stringify(held(null, openRows, true)) === JSON.stringify(held(null, openRows, true)));
+
+    // Invariants.
+    check("Q1A: heldConstant is true ONLY when the resolved quantity was null",
+      [held(0, sold, true), held(5, openRows, true), held(-1, openRows, true)]
+        .every((h) => h.heldConstant === false));
+    check("Q1A: an empty row set never fabricates a quantity",
+      held(null, [], true).quantity === null);
   }
 
   if (failures > 0) {

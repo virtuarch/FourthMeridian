@@ -42,6 +42,7 @@ import {
 import {
   valueInstrumentAsOf,
   valuePortfolioAsOf,
+  resolveHeldQuantity,
   type InstrumentValuation,
   type InstrumentValuationInput,
   type InvestmentValuationView,
@@ -415,24 +416,18 @@ export async function valuePositionRowsOverDates(args: {
     for (const [key, rows] of byPair) {
       const [financialAccountId, instrumentId] = key.split("|");
       const resolved = resolvePositionAsOf(rows, asOf);
-      let quantity      = resolved.quantity;
-      let quantityDate  = resolved.date;
-      let quantityTier  = resolved.tier;
-      let resolvedRow   = pickResolvedRow(rows, resolved.date, resolved.origin);
-      let heldConstant  = false;
-
-      // Constant-quantity fallback (holdConstant): nothing covers asOf → hold the
-      // EARLIEST observed quantity backward as a labeled estimate (price is real).
-      if ((quantity == null || quantity === 0) && holdConstant && rows.length > 0) {
-        const earliest = rows.reduce((min, r) => (r.date < min.date ? r : min), rows[0]);
-        if (earliest.quantity > 0) {
-          quantity     = earliest.quantity;
-          quantityDate = earliest.date;
-          quantityTier = "estimated";
-          resolvedRow  = earliest;
-          heldConstant = true;
-        }
-      }
+      // V26-QUANTITY-1A — the constant-quantity fallback is decided by ONE pure
+      // authority (valuation-core.resolveHeldQuantity), which distinguishes "no
+      // observation covers this date" (null — may hold constant) from "an
+      // observation proves this position was closed" (0 — never may). Previously
+      // both entered the fallback, so every sold position was resurrected at its
+      // earliest quantity on every later date.
+      const held = resolveHeldQuantity(resolved, rows, holdConstant);
+      const quantity     = held.quantity;
+      const quantityDate = held.date;
+      const quantityTier = held.tier;
+      const heldConstant = held.heldConstant;
+      const resolvedRow  = held.sourceRow ?? pickResolvedRow(rows, resolved.date, resolved.origin);
 
       // Not held at asOf (no covering row, or an explicit closed-zero) → excluded.
       if (quantity == null || quantity === 0) continue;
