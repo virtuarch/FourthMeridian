@@ -233,8 +233,15 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
         // truncated run resumes on the next connect (missing-only/idempotent).
         if (priceBackfillEnabled) {
           try {
+            // V26-PRICE-4 — the `quantity > 0` filter was removed. It scoped price
+            // coverage to CURRENTLY-held instruments, so a position sold last
+            // year was never priced and its contribution to last year's history
+            // stayed permanently unrecoverable. Historical valuation needs prices
+            // for everything that was EVER held over the window, not just what
+            // remains. Coverage keeps the cost bounded: a fully covered
+            // instrument still costs zero network calls.
             const heldRows = await db.positionObservation.findMany({
-              where:    { financialAccountId: { in: investmentFaIds }, supersededById: null, deletedAt: null, quantity: { gt: 0 } },
+              where:    { financialAccountId: { in: investmentFaIds }, supersededById: null, deletedAt: null },
               select:   { instrumentId: true },
               distinct: ["instrumentId"],
             });
@@ -246,7 +253,7 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
                 deadlineEpochMs: Date.now() + PRICE_BACKFILL_BUDGET_MS,
               });
               console.log(
-                `[plaid][A8-3B] price backfill (item ${plaidItemId}) — ${heldInstrumentIds.length} held instrument(s): ` +
+                `[plaid][A8-3B] price backfill (item ${plaidItemId}) — ${heldInstrumentIds.length} ever-held instrument(s): ` +
                   `planned ${m.planned}, fetched ${m.fetchedInstruments}, stored ${m.inserted} row(s)` +
                   (m.skippedForBudget ? `, deferred ${m.skippedForBudget} to next connect (budget)` : ""),
               );

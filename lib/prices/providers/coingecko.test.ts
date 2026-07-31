@@ -5,6 +5,7 @@
  */
 
 import { fetchCoinDailyClosesUsd, type CoinGeckoFetch, type CoinGeckoHttpResponse } from "./coingecko";
+import { ProviderFetchError } from "../provider-errors";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -24,7 +25,13 @@ function fake(body: unknown, opts: { ok?: boolean; status?: number } = {}): { fn
 }
 
 async function main(): Promise<void> {
-  const KEY = "demo-key";
+  /** True when `fn` throws a ProviderFetchError carrying `code`. */
+async function throwsWithCode(fn: () => Promise<unknown>, code: string): Promise<boolean> {
+  try { await fn(); return false; }
+  catch (e) { return e instanceof ProviderFetchError && e.code === code; }
+}
+
+const KEY = "demo-key";
 
   console.log("1. No key → dark no-op ([])");
   {
@@ -52,11 +59,14 @@ async function main(): Promise<void> {
   console.log("3. Failures → [] (never throws)");
   {
     const { fn: rl } = fake({}, { ok: false, status: 429 });
-    check("429 → []", (await fetchCoinDailyClosesUsd("bitcoin", "2026-06-01", "2026-06-03", { apiKey: KEY, fetchImpl: rl })).length === 0);
+    check("429 → THROTTLED (never a silent [], which looked like completeness)",
+      await throwsWithCode(() => fetchCoinDailyClosesUsd("bitcoin", "2026-06-01", "2026-06-03", { apiKey: KEY, fetchImpl: rl }), "THROTTLED"));
     const net: CoinGeckoFetch = async () => { throw new Error("boom"); };
-    check("network error → []", (await fetchCoinDailyClosesUsd("bitcoin", "2026-06-01", "2026-06-03", { apiKey: KEY, fetchImpl: net })).length === 0);
+    check("network error → PROVIDER_ERROR",
+      await throwsWithCode(() => fetchCoinDailyClosesUsd("bitcoin", "2026-06-01", "2026-06-03", { apiKey: KEY, fetchImpl: net }), "PROVIDER_ERROR"));
     const { fn: bad } = fake({ nope: true });
-    check("missing prices array → []", (await fetchCoinDailyClosesUsd("bitcoin", "2026-06-01", "2026-06-03", { apiKey: KEY, fetchImpl: bad })).length === 0);
+    check("missing prices array → [] (a shaped response with nothing in it)",
+      (await fetchCoinDailyClosesUsd("bitcoin", "2026-06-01", "2026-06-03", { apiKey: KEY, fetchImpl: bad })).length === 0);
   }
 
   console.log("4. Drops non-positive / malformed points");

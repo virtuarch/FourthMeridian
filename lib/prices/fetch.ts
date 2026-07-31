@@ -39,6 +39,7 @@
 
 import { assertISODate } from "./config";
 import { resolveProviderForInstrument } from "./registry";
+import { classifyThrown, type ProviderOutcome } from "./provider-errors";
 import type { PriceFetchRequest, PriceRegistry, PriceResult } from "./types";
 
 export interface InstrumentFetchResult {
@@ -48,6 +49,11 @@ export interface InstrumentFetchResult {
   toISO:   string;
   /** Winning adapter, or null when no adapter produced data for this window. */
   source:  string | null;
+  /**
+   * V26-PRICE-4 — the classified outcome. `source === null` alone cannot tell a
+   * throttled run from a delisted tail, and those need opposite responses.
+   */
+  outcome: ProviderOutcome;
   /** Validated rows from the winning adapter ([] when source is null). */
   rows:    PriceResult[];
   /** Per-adapter notes in registry order (skips + failures), for progress output. */
@@ -77,7 +83,7 @@ export async function fetchInstrumentWindow(
 ): Promise<InstrumentFetchResult> {
   assertISODate(req.fromISO);
   assertISODate(req.toISO);
-  const base: Omit<InstrumentFetchResult, "source" | "rows" | "notes"> = {
+  const base: Omit<InstrumentFetchResult, "source" | "rows" | "notes" | "outcome"> = {
     instrumentId: req.instrumentId, basis: req.basis, fromISO: req.fromISO, toISO: req.toISO,
   };
   const notes: string[] = [];
@@ -93,7 +99,7 @@ export async function fetchInstrumentWindow(
       `no capable provider for assetClass=${req.assetClass} symbol="${req.providerSymbol}" ` +
       `basis=${req.basis} (considered: ${resolution.sourcesConsidered.join(", ") || "none registered"})`,
     );
-    return { ...base, source: null, rows: [], notes };
+    return { ...base, source: null, outcome: "UNSUPPORTED", rows: [], notes };
   }
   if (resolution.kind === "ambiguous") {
     // Reported, never resolved by position — see the header.
@@ -101,21 +107,36 @@ export async function fetchInstrumentWindow(
       `AMBIGUOUS ROUTING — ${resolution.sources.join(", ")} all declare capability for ` +
       `assetClass=${req.assetClass} symbol="${req.providerSymbol}"; refusing to guess`,
     );
-    return { ...base, source: null, rows: [], notes };
+    return { ...base, source: null, outcome: "UNSUPPORTED", rows: [], notes };
   }
 
   const adapter = resolution.adapter;
+
+  let rows: PriceResult[];
   try {
-    const rows = await adapter.fetchDailyCloses(req);
-    if (rows.length === 0) {
-      notes.push(`${adapter.source}: no data for ${req.instrumentId} in [${req.fromISO}, ${req.toISO}]`);
-      return { ...base, source: null, rows: [], notes };
-    }
-    validateBatch(rows, req);
-    return { ...base, source: adapter.source, rows, notes };
+    rows = await adapter.fetchDailyCloses(req);
   } catch (e) {
-    notes.push(`${adapter.source}: FAILED — ${e instanceof Error ? e.message : String(e)}`);
+    const outcome = classifyThrown(e);
+    notes.push(`${adapter.source}: ${outcome} — ${e instanceof Error ? e.message : String(e)}`);
+    return { ...base, source: null, outcome, rows: [], notes };
   }
 
-  return { ...base, source: null, rows: [], notes };
+  if (rows.length === 0) {
+    // An empty answer is EXPLICABLE when the window predates what this vendor
+    // can serve, and suspicious when it does not. Collapsing both into "no data"
+    // hides a vendor that has quietly stopped answering.
+    const outcome: ProviderOutcome = req.toISO < adapter.historicalDepth ? "NO_DATA" : "EMPTY_RESPONSE";
+    notes.push(`${adapter.source}: ${outcome} for ${req.instrumentId} in [${req.fromISO}, ${req.toISO}]` +
+      (outcome === "NO_DATA" ? ` (before depth ${adapter.historicalDepth})` : ""));
+    return { ...base, source: null, outcome, rows: [], notes };
+  }
+
+  try {
+    validateBatch(rows, req);
+  } catch (e) {
+    notes.push(`${adapter.source}: INVALID_DATA — ${e instanceof Error ? e.message : String(e)}`);
+    return { ...base, source: null, outcome: "INVALID_DATA", rows: [], notes };
+  }
+
+  return { ...base, source: adapter.source, outcome: "OK", rows, notes };
 }

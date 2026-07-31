@@ -82,7 +82,8 @@ async function main(): Promise<void> {
     const res = await fetchInstrumentWindow(req(), reg);
     check("error → source null, zero rows (never a fabricated or substituted answer)",
       res.source === null && res.rows.length === 0);
-    check("failure is noted", res.notes.some((n) => n.includes("flaky") && n.includes("FAILED")));
+    check("the outcome is classified, not merely 'failed'", res.outcome === "PROVIDER_ERROR");
+    check("failure is noted", res.notes.some((n) => n.includes("flaky") && n.includes("PROVIDER_ERROR")));
   }
 
   // ── 3. Bad-shape batch discarded whole ────────────────────────────────────
@@ -91,7 +92,8 @@ async function main(): Promise<void> {
     const reg = createPriceRegistry([badShapeAdapter("bad")]);
     const res = await fetchInstrumentWindow(req(), reg);
     check("off-window row → whole batch rejected, source null", res.source === null && res.rows.length === 0);
-    check("rejection noted", res.notes.some((n) => n.includes("bad") && n.includes("FAILED")));
+    check("an unusable batch is INVALID_DATA, distinct from a vendor outage", res.outcome === "INVALID_DATA");
+    check("rejection noted", res.notes.some((n) => n.includes("bad") && n.includes("INVALID_DATA")));
   }
 
   // ── 4. Capability routing ─────────────────────────────────────────────────
@@ -147,7 +149,17 @@ async function main(): Promise<void> {
     const reg = createPriceRegistry([fixture]);
     const res = await fetchInstrumentWindow(req({ fromISO: "2026-07-01", toISO: "2026-07-31" }), reg);
     check("window past last close → source null, zero rows", res.source === null && res.rows.length === 0);
-    check("empty is 'no data', noted (not a failure)", res.notes.some((n) => n.includes("no data")));
+    // Empty INSIDE servable depth is suspicious (EMPTY_RESPONSE); empty before
+    // depth is explicable (NO_DATA). Collapsing both hides a vendor that has
+    // quietly stopped answering.
+    check("empty within servable depth is EMPTY_RESPONSE, not a bare 'no data'",
+      res.outcome === "EMPTY_RESPONSE");
+    check("the outcome is noted", res.notes.some((n) => n.includes("EMPTY_RESPONSE")));
+
+    const beforeDepth = await fetchInstrumentWindow(
+      req({ fromISO: "2020-01-01", toISO: "2020-01-31" }), reg);
+    check("empty BEFORE the adapter's depth is NO_DATA, an expected outcome",
+      beforeDepth.outcome === "NO_DATA");
   }
 
   // ── 6. Default registry — vendor gate on TIINGO_API_KEY ───────────────────

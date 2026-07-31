@@ -145,8 +145,11 @@ async function main(): Promise<void> {
     const { fn } = fakeFetch("nope", { ok: false, status: 429 });
     const registry = createPriceRegistry([createTiingoPriceProvider("k", { fetchImpl: fn })]);
     const res = await fetchInstrumentWindow(req, registry); // must NOT throw
-    check("source is null (adapter failed over)", res.source === null);
-    check("failure recorded in notes", res.notes.some((n) => n.includes("tiingo") && n.includes("FAILED")));
+    check("source is null (never a fabricated answer)", res.source === null);
+    // V26-PRICE-4 — a 429 is classified, not lumped into a generic failure: it
+    // means the evidence exists and is still coming, so the run is resumable.
+    check("a 429 is classified THROTTLED", res.outcome === "THROTTLED");
+    check("failure recorded in notes", res.notes.some((n) => n.includes("tiingo") && n.includes("THROTTLED")));
   }
 
   console.log(failures === 0 ? "\nAll tiingo adapter checks passed" : `\n${failures} failure(s)`);

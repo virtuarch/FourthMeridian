@@ -44,9 +44,12 @@ import { PriceBasis } from "@prisma/client";
 import { priceArchive } from "./archive";
 import { fetchInstrumentWindow } from "./fetch";
 import { defaultPriceRegistry } from "./registry";
-import { yesterdayUTCISO, toISODateUTC } from "./config";
+import { yesterdayUTCISO } from "./config";
 import { loadInstrumentCoverage, type CoverageRequest } from "./coverage-binding";
 import { planAcquisition, type AcquisitionPlan } from "./acquisition-plan.core";
+import { loadOwnershipWindows } from "./ownership-window";
+import { acquisitionCheckpointId } from "./acquisition-budget.core";
+import { PROVIDER_OUTCOMES, type ProviderOutcome } from "./provider-errors";
 import type { PriceRegistry } from "./types";
 
 export interface BackfillPricesOptions {
@@ -100,43 +103,12 @@ export interface BackfillPricesResult {
   inserted:           number;
   /** Instruments not started because the soft deadline was reached. */
   skippedForBudget:   number;
-}
-
-/**
- * Earliest defensible activity per instrument — first PositionObservation or
- * InvestmentEvent. Batched into two grouped queries rather than two per
- * instrument.
- *
- * NOTE (carried forward from the coverage investigation): a first OBSERVATION is
- * not first OWNERSHIP. An asset held before capture began has activity dated
- * later than it was actually acquired, so this floor can understate the true
- * window. Widening it to KNOWN ∪ POSSIBLE ownership is V26-PRICE-4's remit;
- * callers needing more history today pass forceWindow.
- */
-async function earliestActivityByInstrument(ids: readonly string[]): Promise<Map<string, string>> {
-  const [obs, evt] = await Promise.all([
-    db.positionObservation.groupBy({
-      by: ["instrumentId"],
-      where: { instrumentId: { in: [...ids] }, deletedAt: null },
-      _min: { date: true },
-    }),
-    db.investmentEvent.groupBy({
-      by: ["instrumentId"],
-      where: { instrumentId: { in: [...ids] } },
-      _min: { date: true },
-    }),
-  ]);
-  const out = new Map<string, string>();
-  for (const row of [...obs, ...evt]) {
-    const d = row._min.date;
-    // InvestmentEvent.instrumentId is nullable — an event not attributable to an
-    // instrument cannot bound that instrument's window, so it is skipped.
-    if (!d || row.instrumentId === null) continue;
-    const iso = toISODateUTC(d);
-    const prior = out.get(row.instrumentId);
-    if (prior === undefined || iso < prior) out.set(row.instrumentId, iso);
-  }
-  return out;
+  /**
+   * V26-PRICE-4 — provider outcomes by classification. `source === null` alone
+   * cannot separate a throttled run from a delisted tail, and a run that was
+   * rate-limited into silence otherwise looks exactly like a complete one.
+   */
+  outcomes:           Record<ProviderOutcome, number>;
 }
 
 /** One-line plan description for the progress sink. */
@@ -177,32 +149,42 @@ export async function backfillPricesForInstruments(
   const toISO     = opts.toISO ?? yesterdayUTCISO();
   const log       = opts.onProgress ?? (() => {});
 
+  const outcomes = Object.fromEntries(PROVIDER_OUTCOMES.map((o) => [o, 0])) as Record<ProviderOutcome, number>;
   const result: BackfillPricesResult = {
     considered: 0, planned: 0, skipped: 0, skippedUnavailable: 0,
     skippedCalendarUnavailable: 0, fetchedInstruments: 0, inserted: 0, skippedForBudget: 0,
+    outcomes,
   };
   const ids = [...new Set(instrumentIds)].sort();
   if (ids.length === 0) return result;
 
   // ── 1. Requested window per instrument ────────────────────────────────────
+  // V26-PRICE-4 — the window comes from OWNERSHIP evidence, not from the first
+  // observation alone. A first observation is dated when capture began, not when
+  // the asset was acquired; using it as the floor silently truncates history
+  // (BTC locally: direct evidence 2026-07-19, wallet transactions from
+  // 2023-03-24). resolveOwnershipWindow widens to KNOWN ∪ POSSIBLE and keeps the
+  // two distinguishable; UNKNOWN prehistory is never requested.
   const requests: CoverageRequest[] = [];
-  let noActivity = 0;
+  let noEvidence = 0;
   if (opts.forceWindow) {
     for (const instrumentId of ids) {
       requests.push({ instrumentId, fromISO: opts.forceWindow.fromISO, toISO: opts.forceWindow.toISO });
     }
   } else {
-    const earliest = await earliestActivityByInstrument(ids);
+    const ownership = await loadOwnershipWindows(ids, toISO);
     for (const instrumentId of ids) {
-      const from = earliest.get(instrumentId);
-      // No defensible activity, or activity beyond the target — never backfill
-      // arbitrary history for an unused instrument.
-      if (from === undefined || from > toISO) { noActivity++; continue; }
-      requests.push({ instrumentId, fromISO: from, toISO });
+      const resolved = ownership.get(instrumentId);
+      if (!resolved || resolved.kind !== "resolved") { noEvidence++; continue; }
+      requests.push({
+        instrumentId,
+        fromISO: resolved.acquisitionFromISO,
+        toISO:   resolved.acquisitionToISO,
+      });
     }
   }
-  result.considered += noActivity;
-  result.skipped    += noActivity;
+  result.considered += noEvidence;
+  result.skipped    += noEvidence;
   if (requests.length === 0) return result;
 
   // ── 2. Coverage, then plan (one batched archive read for all instruments) ──
@@ -224,7 +206,7 @@ export async function backfillPricesForInstruments(
   // ── 3. Execute ────────────────────────────────────────────────────────────
   for (const plan of plans) {
     if (opts.deadlineEpochMs != null && Date.now() >= opts.deadlineEpochMs) {
-      result.skippedForBudget = plans.length - (result.considered - noActivity);
+      result.skippedForBudget = plans.length - (result.considered - noEvidence);
       log(`⏱ budget reached — deferring ${result.skippedForBudget} instrument(s) to the next backfill run`);
       break;
     }
@@ -256,9 +238,25 @@ export async function backfillPricesForInstruments(
         },
         registry,
       );
-      if (res.source && res.rows.length > 0) {
+      result.outcomes[res.outcome]++;
+
+      // Checkpoint identity is derived from WHAT the request is — provider,
+      // instrument, requested window, chunk — never from execution order. A
+      // position-based id ("chunk 3 of 7") breaks the moment the plan changes
+      // shape, which it does on every run as coverage shrinks.
+      const checkpoint = acquisitionCheckpointId(
+        res.source ?? "unrouted", plan.instrumentId,
+        plan.requestedFromISO, plan.requestedToISO, w,
+      );
+
+      if (res.outcome === "OK" && res.source) {
+        // Append-only: writeBatch is insert-only with skipDuplicates, so an
+        // already-stored observation is never overwritten by a re-fetch.
         const written = await priceArchive.writeBatch(res.source, res.rows);
         result.inserted += written.inserted;
+        log(`  ✓ ${checkpoint} — ${written.inserted} row(s)`);
+      } else {
+        log(`  · ${checkpoint} — ${res.outcome}${res.notes.length ? `: ${res.notes[res.notes.length - 1]}` : ""}`);
       }
     }
     result.fetchedInstruments++;

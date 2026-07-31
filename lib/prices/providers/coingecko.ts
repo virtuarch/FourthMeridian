@@ -25,6 +25,7 @@ import { PriceBasis } from "@prisma/client";
 import type {
   PriceFetchRequest, PriceProviderAdapter, PriceResult, ProviderRoutingKey,
 } from "../types";
+import { ProviderFetchError } from "../provider-errors";
 
 const COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3";
 
@@ -94,17 +95,22 @@ export async function fetchCoinDailyClosesUsd(
   try {
     res = await doFetch(url, { headers: { "Content-Type": "application/json", "x-cg-demo-api-key": apiKey } });
   } catch (e) {
+    // V26-PRICE-4 — this used to return [], which made a rate-limited backfill
+    // look exactly like a complete one. Failures are now typed and classified.
     console.warn(`[prices][coingecko] network error for ${coinId} [${fromISO}..${toISO}]:`, e instanceof Error ? e.message : e);
-    return [];
+    throw new ProviderFetchError("PROVIDER_ERROR",
+      `coingecko: network error for ${coinId} — ${e instanceof Error ? e.message : String(e)}`);
   }
   if (!res.ok) {
     const detail = res.status === 429 ? "rate-limited (429)" : `HTTP ${res.status}`;
     console.warn(`[prices][coingecko] ${detail} for ${coinId} [${fromISO}..${toISO}]`);
-    return [];
+    throw new ProviderFetchError(res.status === 429 ? "THROTTLED" : "PROVIDER_ERROR",
+      `coingecko: ${detail} for ${coinId}`);
   }
 
   let body: unknown;
-  try { body = await res.json(); } catch { return []; }
+  try { body = await res.json(); }
+  catch { throw new ProviderFetchError("INVALID_DATA", `coingecko: unparseable response for ${coinId}`); }
   const prices = (body as { prices?: unknown })?.prices;
   if (!Array.isArray(prices)) return [];
 

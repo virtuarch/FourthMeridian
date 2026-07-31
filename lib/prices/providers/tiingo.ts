@@ -32,6 +32,7 @@
 
 import { PriceBasis } from "@prisma/client";
 import type { PriceFetchRequest, PriceProviderAdapter, PriceResult, ProviderRoutingKey } from "../types";
+import { ProviderFetchError } from "../provider-errors";
 
 const TIINGO_BASE_URL = "https://api.tiingo.com";
 
@@ -119,20 +120,25 @@ export function createTiingoPriceProvider(
       } catch (e) {
         // Network-level failure — a normal adapter failure.
         console.warn(`[prices][tiingo] network error for ${symbol} [${req.fromISO}..${req.toISO}]`);
-        throw new Error(`tiingo: network error fetching ${symbol} — ${e instanceof Error ? e.message : String(e)}`);
+        throw new ProviderFetchError("PROVIDER_ERROR",
+          `tiingo: network error fetching ${symbol} — ${e instanceof Error ? e.message : String(e)}`);
       }
 
       if (!res.ok) {
         // 429 rate-limit or any non-2xx — a normal adapter failure. Logged +
         // thrown; fetchInstrumentWindow catches it and continues the run.
+        // V26-PRICE-4 — throttling is classified, not lumped into "failed": a
+        // 429 means the evidence exists and is still coming, so the run is
+        // resumable; any other non-2xx is a provider fault.
         const detail = res.status === 429 ? "rate-limited (429)" : `HTTP ${res.status}`;
         console.warn(`[prices][tiingo] ${detail} for ${symbol} [${req.fromISO}..${req.toISO}]`);
-        throw new Error(`tiingo: ${detail} for ${symbol}`);
+        throw new ProviderFetchError(res.status === 429 ? "THROTTLED" : "PROVIDER_ERROR",
+          `tiingo: ${detail} for ${symbol}`);
       }
 
       const body = await res.json();
       if (!Array.isArray(body)) {
-        throw new Error(`tiingo: unexpected response shape for ${symbol} (expected a JSON array)`);
+        throw new ProviderFetchError("INVALID_DATA", `tiingo: unexpected response shape for ${symbol} (expected a JSON array)`);
       }
 
       const out: PriceResult[] = [];
