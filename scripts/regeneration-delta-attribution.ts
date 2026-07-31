@@ -61,16 +61,16 @@ import {
   summariseSnapshotEvidence,
   type InstrumentEvidenceAxes,
   type PriceCoverageAxis,
-  type OwnershipConfidenceAxis,
   type QuantityConfidenceAxis,
 } from "@/lib/snapshots/price-completeness.core";
 import { loadOwnershipWindows } from "@/lib/prices/ownership-window";
+import { applyOwnershipEligibility, ownershipOn } from "@/lib/snapshots/ownership-eligibility.core";
 
 const THRESHOLD = Number(process.argv[2] ?? 1000);
 /** Residual above this (absolute, reporting currency) is a real discrepancy. */
 const RESIDUAL_TOLERANCE = 0.01;
 
-type Category = "PRICE_ONLY" | "OWNERSHIP_CONFIDENCE" | "QUANTITY_LIMITED" | "MIXED" | "UNEXPLAINED";
+type Category = "PRICE_ONLY" | "OWNERSHIP_CONFIDENCE" | "QUANTITY_LIMITED" | "MIXED" | "NO_ELIGIBLE_HOLDINGS" | "UNEXPLAINED";
 
 /**
  * Map A8's per-instrument tiers onto the PRICE-5 evidence axes.
@@ -107,12 +107,18 @@ async function main(): Promise<number> {
 
   const spaces = await db.space.findMany({ select: { id: true, name: true, reportingCurrency: true }, orderBy: { id: "asc" } });
   const categoryTotals: Record<Category, number> = {
-    PRICE_ONLY: 0, OWNERSHIP_CONFIDENCE: 0, QUANTITY_LIMITED: 0, MIXED: 0, UNEXPLAINED: 0,
+    PRICE_ONLY: 0, OWNERSHIP_CONFIDENCE: 0, QUANTITY_LIMITED: 0, MIXED: 0,
+    NO_ELIGIBLE_HOLDINGS: 0, UNEXPLAINED: 0,
   };
   let unexplainedDays = 0;
   /** UPDATED days valued entirely BEFORE any ownership evidence exists. */
   let prehistoryDays = 0;
   let prehistoryValue = 0;
+  /** Holdings excluded as UNKNOWN prehistory, summed across every UPDATED day. */
+  let excludedHoldingSlots = 0;
+  /** Days where every MARKET holding was excluded, yet a cash position kept the day eligible. */
+  let cashOnlyDays = 0;
+  let cashOnlyMaxDelta = 0;
 
   for (const space of spaces) {
     const bounds = await db.spaceSnapshot.aggregate({
@@ -201,26 +207,32 @@ async function main(): Promise<number> {
       const view = viewByDate.get(dISO);
       const components: InstrumentValuation[] = view ? view.components : [];
 
-      // Σ reportingValue IS the valuedSubtotal the snapshot stores, so this
-      // residual is exact by construction — any gap is a genuine finding.
-      const modelled  = components.reduce((n, v) => n + (v.reportingValue ?? 0), 0);
-      const recomputed = stocksDelta ? stocksDelta.after : (priorRow?.stocks ?? 0);
-      const residual  = Math.abs(recomputed - modelled);
-      const explained = residual <= RESIDUAL_TOLERANCE;
+      // V26-PRICE-5A — reconcile against the ELIGIBLE subtotal, which is what the
+      // writer now uses. Reconciling against the unfiltered component sum would
+      // report the excluded amount as an unexplained residual — a false alarm.
+      const elig = applyOwnershipEligibility(
+        dISO,
+        components.map((v) => ({ instrumentId: v.instrumentId, reportingValue: v.reportingValue })),
+        ownership,
+      );
+      excludedHoldingSlots += elig.excludedInstrumentIds.length;
+      const excludedSet = new Set(elig.excludedInstrumentIds);
 
+      const modelled   = elig.valuedSubtotal;
+      const recomputed = stocksDelta ? stocksDelta.after : (priorRow?.stocks ?? 0);
+      const residual   = Math.abs(recomputed - modelled);
+      const explained  = residual <= RESIDUAL_TOLERANCE;
+
+      // Axes describe what was VALUED. An excluded holding contributed nothing,
+      // so folding it in would misreport the day's confidence.
       const axes: InstrumentEvidenceAxes[] = components.flatMap((v) => {
+        if (excludedSet.has(v.instrumentId)) return [];
         const pAxis = priceAxis(v);
         if (pAxis === null) return [];
-        const own = ownership.get(v.instrumentId);
-        const ownAxis: OwnershipConfidenceAxis =
-          !own || own.kind !== "resolved" ? "UNKNOWN"
-          : own.segments.some((sg) => sg.confidence === "KNOWN" && dISO >= sg.fromISO && dISO <= sg.toISO) ? "KNOWN"
-          : own.segments.some((sg) => sg.confidence === "POSSIBLE" && dISO >= sg.fromISO && dISO <= sg.toISO) ? "POSSIBLE"
-          : "UNKNOWN";
         return [{
           instrumentId: tickerById.get(v.instrumentId) ?? v.instrumentId,
           priceCoverage: pAxis,
-          ownershipConfidence: ownAxis,
+          ownershipConfidence: ownershipOn(dISO, ownership.get(v.instrumentId)),
           quantityConfidence: quantityAxis(v, hasEvents.has(v.instrumentId)),
         }];
       });
@@ -230,6 +242,8 @@ async function main(): Promise<number> {
       const anyPossible      = axes.some((a) => a.ownershipConfidence !== "KNOWN");
       const category: Category =
         !explained ? "UNEXPLAINED"
+        : !elig.hasEligibleHoldings ? "NO_ELIGIBLE_HOLDINGS"
+        : axes.length === 0 ? "NO_ELIGIBLE_HOLDINGS"
         : anyBackProjected && anyPossible ? "MIXED"
         : anyBackProjected ? "QUANTITY_LIMITED"
         : anyPossible ? "OWNERSHIP_CONFIDENCE"
@@ -239,7 +253,15 @@ async function main(): Promise<number> {
       if (category === "UNEXPLAINED") unexplainedDays++;
       // A day whose every holding sits OUTSIDE any ownership segment is being
       // valued in prehistory — before any evidence that these assets were held.
-      if (axes.length > 0 && axes.every((a) => a.ownershipConfidence === "UNKNOWN")) {
+      // A cash instrument (CUR:USD) has KNOWN ownership and therefore survives
+      // exclusion, keeping the day "eligible" even when EVERY market holding was
+      // excluded. The day then reports a few dollars of investments where the
+      // honest answer is "we cannot say".
+      if (elig.hasEligibleHoldings && axes.length === 0) {
+        cashOnlyDays++;
+        cashOnlyMaxDelta = Math.max(cashOnlyMaxDelta, Math.abs(stocksDelta?.delta ?? 0));
+      }
+      if (!elig.hasEligibleHoldings) {
         prehistoryDays++;
         prehistoryValue = Math.max(prehistoryValue, Math.abs(stocksDelta?.delta ?? 0));
       }
@@ -271,14 +293,16 @@ async function main(): Promise<number> {
         .slice(0, 5);
       console.log("    largest holdings on this date (quantity and price actually used):");
       for (const v of top) {
-        const own = axes.find((a) => a.instrumentId === (tickerById.get(v.instrumentId) ?? v.instrumentId));
+        const isExcluded = excludedSet.has(v.instrumentId);
+        const ownAxis = ownershipOn(dISO, ownership.get(v.instrumentId));
         console.log(
           `      ${(tickerById.get(v.instrumentId) ?? "?").padEnd(6)}` +
           ` qty ${(v.quantity ?? 0).toFixed(4).padStart(10)} [${v.quantityTier}]` +
           ` × ${v.nativePrice != null ? f2(v.nativePrice).padStart(9) : "     none"}` +
           ` @${v.priceDate ?? "—"}${v.staleDays ? `(+${v.staleDays}d)` : ""} [${v.priceTier}]` +
           ` = ${f2(v.reportingValue ?? 0).padStart(11)}` +
-          `  [${own?.priceCoverage}/${own?.ownershipConfidence}/${own?.quantityConfidence}]`,
+          `  ownership=${ownAxis}` +
+          (isExcluded ? "  ← EXCLUDED (UNKNOWN prehistory, contributes 0)" : ""),
         );
       }
       console.log("");
@@ -300,20 +324,31 @@ async function main(): Promise<number> {
   console.log(`  OWNERSHIP_CONFIDENCE  ${String(categoryTotals.OWNERSHIP_CONFIDENCE).padStart(5)}   inferred ownership contributes`);
   console.log(`  QUANTITY_LIMITED      ${String(categoryTotals.QUANTITY_LIMITED).padStart(5)}   price-explained, quantities back-projected`);
   console.log(`  MIXED                 ${String(categoryTotals.MIXED).padStart(5)}   ownership AND quantity both limited`);
+  console.log(`  NO_ELIGIBLE_HOLDINGS  ${String(categoryTotals.NO_ELIGIBLE_HOLDINGS).padStart(5)}   no holding with KNOWN/POSSIBLE ownership`);
   console.log(`  UNEXPLAINED           ${String(categoryTotals.UNEXPLAINED).padStart(5)}   ⚠ NOT explained by price substitution`);
   console.log(`  total                 ${String(total).padStart(5)}`);
   console.log("");
+  console.log(`\nholdings excluded as UNKNOWN prehistory: ${excludedHoldingSlots} holding-day(s)\n`);
   if (prehistoryDays > 0) {
     console.log("─".repeat(72));
-    console.log("FINDING — VALUATION IN OWNERSHIP PREHISTORY");
+    console.log("FINDING — DAYS WITH NO ELIGIBLE HOLDINGS");
     console.log("─".repeat(72));
-    console.log(`  ${prehistoryDays} UPDATED day(s) are valued entirely BEFORE any ownership evidence.`);
-    console.log("  Every contributing holding falls outside its KNOWN and POSSIBLE segments, i.e.");
-    console.log("  the UNKNOWN prehistory V26-PRICE-4 refuses to ACQUIRE prices for — yet");
-    console.log("  regeneration still VALUES those days, via holdConstantBeforeEarliest: true.");
-    console.log(`  Largest stocks delta among them: ${f2(prehistoryValue)}.`);
-    console.log("  The arithmetic is sound; the question is whether a portfolio should be");
-    console.log("  reported at all for dates preceding any evidence it was held.\n");
+    console.log(`  ${prehistoryDays} UPDATED day(s) have NO holding with KNOWN or POSSIBLE ownership.`);
+    console.log("  Under the V26-PRICE-5A doctrine these are not valued: hasEligibleHoldings is");
+    console.log("  false, so the day falls into the no-fabrication guard rather than being");
+    console.log("  written as a zero-valued portfolio.");
+    console.log(`  Largest stocks delta among them: ${f2(prehistoryValue)}.\n`);
+  }
+  if (cashOnlyDays > 0) {
+    console.log("─".repeat(72));
+    console.log("FINDING — CASH POSITION KEEPS A DAY 'ELIGIBLE'");
+    console.log("─".repeat(72));
+    console.log(`  ${cashOnlyDays} UPDATED day(s) had EVERY market holding excluded, yet remained`);
+    console.log("  eligible because a cash instrument (CUR:USD) has KNOWN ownership. Those days");
+    console.log("  are written with a few dollars of investments where the honest answer is");
+    console.log(`  "we cannot say". Largest stocks delta among them: ${f2(cashOnlyMaxDelta)}.`);
+    console.log("  NOT changed unilaterally — whether a cash position should confer eligibility");
+    console.log("  is a product decision, and the doctrine as written does not settle it.\n");
   }
   console.log(unexplainedDays === 0
     ? "VERDICT: every UPDATED day is fully attributed — Σ(quantity used × price used)\n" +

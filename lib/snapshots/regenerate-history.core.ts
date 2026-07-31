@@ -100,6 +100,13 @@ export interface DayRegenInput {
   /** True when A8 had at least one position with evidence reaching the day. */
   hasInvestmentEvidence: boolean;
   /**
+   * V26-PRICE-5A — true when the day HAD holdings but every one was excluded as
+   * UNKNOWN ownership prehistory. Distinct from `!hasInvestmentEvidence`, which
+   * also covers "A8 returned nothing at all": here we know holdings exist and
+   * know we may not value them, so the day is skipped rather than zeroed.
+   */
+  ownershipIneligible?: boolean;
+  /**
    * Part-A — historical DIGITAL-ASSET (crypto) valuation for the day, reporting
    * currency: Σ (crypto account native quantity, held constant) × that day's
    * CoinGecko price. Overrides the flat totalDigitalAssets exactly like
@@ -185,6 +192,26 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
   }
 
   const flatInvestments = base.totalInvestments;
+
+  // OWNERSHIP PREHISTORY (V26-PRICE-5A): holdings exist, but NONE of them has
+  // KNOWN or POSSIBLE ownership on this date — every one was excluded as
+  // unevidenced prehistory. Writing the day would claim a portfolio value of
+  // (near) zero, and zero is a claim: "you held nothing worth anything". The
+  // truth is "we cannot say".
+  //
+  // This is checked BEFORE the flat-investment test on purpose. That test only
+  // protects a day whose flat estimate is non-zero; when the day's accounts are
+  // floored out the flat value is already 0, so it would let the day through and
+  // silently overwrite a stored value with a fabricated zero — the exact outcome
+  // this guard exists to prevent.
+  if (input.ownershipIneligible === true) {
+    return {
+      date, action: "skip-unsupported", fields: null, isEstimated: true, tier: "incomplete",
+      reason:
+        "OWNERSHIP_PREHISTORY: no holding has KNOWN or POSSIBLE ownership on this date; " +
+        "the stored value is preserved rather than replaced with a zero-valued portfolio.",
+    };
+  }
 
   // NO FABRICATION: flat investments we cannot A8-value are left as-is, never
   // zeroed or fabricated — the day keeps backfill's labeled estimate.

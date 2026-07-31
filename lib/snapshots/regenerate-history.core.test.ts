@@ -304,6 +304,45 @@ function main(): void {
     console.error(`\n${failures} check(s) FAILED`);
     process.exit(1);
   }
+  // ── 9. OWNERSHIP PREHISTORY (V26-PRICE-5A) ───────────────────────────────
+  console.log("9. ownership prehistory — never a zero-valued portfolio");
+  {
+    const r = regenerateDay(input({ ownershipIneligible: true, hasInvestmentEvidence: false }));
+    check("ineligible ownership → skip-unsupported",
+      r.action === "skip-unsupported" && r.fields === null);
+    check("…carrying the OWNERSHIP_PREHISTORY code",
+      (r.reason ?? "").startsWith("OWNERSHIP_PREHISTORY"));
+
+    // THE BUG THIS GUARD EXISTS FOR: when the day's accounts are floored out the
+    // flat investment value is already 0, so the NO-FABRICATION test — which
+    // only fires above the epsilon — would let the day through and overwrite a
+    // stored value with a fabricated zero.
+    const flatZero = regenerateDay(input({
+      ownershipIneligible: true, hasInvestmentEvidence: false,
+      base: base({ totalInvestments: 0 }),
+    }));
+    check("a ZERO flat estimate is still skipped, not written as a zero portfolio",
+      flatZero.action === "skip-unsupported" && flatZero.fields === null);
+
+    check("a frozen row stays frozen — immutability outranks the prehistory guard",
+      regenerateDay(input({ ownershipIneligible: true, existingIsEstimated: false })).action === "skip-frozen");
+    check("a membership change still wins",
+      regenerateDay(input({ ownershipIneligible: true, membershipChangedSince: true })).action === "skip-membership-changed");
+
+    const amended = regenerateDay(input({
+      ownershipIneligible: true, existingIsEstimated: false, isAmendment: true,
+    }));
+    check("an amendment may NOT write an ownership-ineligible day",
+      amended.action === "skip-unsupported" && (amended.reason ?? "").startsWith("OWNERSHIP_PREHISTORY"));
+
+    check("an eligible day still writes normally",
+      regenerateDay(input({ ownershipIneligible: false })).action === "write");
+    check("omitting the flag preserves prior behaviour exactly",
+      regenerateDay(input()).action === "write");
+    check("writableRows excludes an ownership-ineligible day",
+      writableRows([regenerateDay(input({ ownershipIneligible: true }))]).length === 0);
+  }
+
   console.log("\nAll wealth-regeneration core checks passed.");
   process.exit(0);
 }

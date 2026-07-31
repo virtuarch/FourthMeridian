@@ -36,6 +36,15 @@ import { ShareStatus, SpaceType, type Prisma, type PrismaClient } from "@prisma/
 import { classifyAccounts } from "@/lib/account-classifier";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
 import { getInvestmentValueForWindow } from "@/lib/investments/valuation";
+import {
+  resolveOwnershipWindowsForInstruments,
+  type OwnershipResolution,
+} from "@/lib/investments/ownership-windows";
+import {
+  applyOwnershipEligibility,
+  ownershipTier,
+} from "@/lib/snapshots/ownership-eligibility.core";
+import { worstTier } from "@/lib/perspective-engine/completeness";
 import type { InvestmentValuationView } from "@/lib/investments/valuation-core";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
 import {
@@ -375,6 +384,10 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // valuedSubtotal becomes each day's totalInvestments; crypto is valued separately
   // into totalDigitalAssets below, so it must NOT also count here or BTC is
   // double-counted (the historical net-worth cliff). Mirrors the live writer.
+  // V26-PRICE-5A — ownership segments for every instrument the valuation may
+  // touch. Read-only, batched, no provider contact.
+  let ownershipByInstrument = new Map<string, OwnershipResolution>();
+
   let investmentByDate = new Map<string, InvestmentValuationView>();
   try {
     investmentByDate = await getInvestmentValueForWindow({
@@ -386,6 +399,21 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     });
   } catch (err) {
     console.warn(`[wealth-regen] ${spaceId}: batch A8 valuation failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+  }
+
+  // Resolve ownership for exactly the instruments the valuation produced. Failure
+  // is non-fatal and CONSERVATIVE: with no segments every holding reads UNKNOWN,
+  // so the day falls into the no-fabrication guard rather than being valued on
+  // evidence we could not confirm.
+  try {
+    const valuedInstrumentIds = [...new Set(
+      [...investmentByDate.values()].flatMap((v) => v.components.map((k) => k.instrumentId)),
+    )];
+    if (valuedInstrumentIds.length > 0) {
+      ownershipByInstrument = await resolveOwnershipWindowsForInstruments(valuedInstrumentIds, toDate);
+    }
+  } catch (err) {
+    console.warn(`[wealth-regen] ${spaceId}: ownership resolution failed (non-fatal, conservative): ${err instanceof Error ? err.message : err}`);
   }
 
   // HIST-2C — resolve BTC/USD for the whole window in ONE archive read (built
@@ -436,12 +464,37 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     let investmentValue = c.totalInvestments;
     let investmentTier: CompletenessTier = "incomplete";
     let hasInvestmentEvidence = false;
+    let ownershipIneligible = false;
     const view = investmentByDate.get(dISO);
     if (view) {
-      hasInvestmentEvidence = view.components.length > 0;
+      // V26-PRICE-5A — UNKNOWN ownership prehistory must not be valued. A8 is
+      // invoked with holdConstantBeforeEarliest, which projects an instrument's
+      // quantity backwards past its own earliest observation; without this
+      // filter the day reports a portfolio for a period with no evidence any of
+      // it was held. PRICE-4 already refuses to ACQUIRE for such periods —
+      // this is the same rule applied to valuation.
+      const eligible = applyOwnershipEligibility(
+        dISO,
+        view.components.map((k) => ({ instrumentId: k.instrumentId, reportingValue: k.reportingValue })),
+        ownershipByInstrument,
+      );
+      // NOT a zero-valued portfolio when everything is excluded: zero is a claim,
+      // and the truth is "we cannot say". Falling through with
+      // hasInvestmentEvidence=false routes the day into the existing
+      // NO-FABRICATION guard, which preserves the stored estimate and skips
+      // rather than overwriting it.
+      hasInvestmentEvidence = eligible.hasEligibleHoldings;
+      // Holdings existed and every one was excluded — the day must be skipped,
+      // not written as a zero-valued portfolio. See the OWNERSHIP PREHISTORY
+      // guard in regenerate-history.core.ts.
+      ownershipIneligible = view.components.length > 0 && !eligible.hasEligibleHoldings;
       if (hasInvestmentEvidence) {
-        investmentValue = view.valuedSubtotal;
-        investmentTier = view.completeness.tier;
+        investmentValue = eligible.valuedSubtotal;
+        // Inferred ownership is carried forward, never silently absorbed.
+        investmentTier = worstTier([
+          view.completeness.tier,
+          ownershipTier(eligible.ownershipConfidence),
+        ]);
       }
     }
 
@@ -480,6 +533,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       investmentValue,
       investmentTier,
       hasInvestmentEvidence,
+      ownershipIneligible,
       digitalAssetValue,
       digitalAssetTier: "estimated", // constant-quantity assumption × real price
       hasDigitalAssetEvidence,
