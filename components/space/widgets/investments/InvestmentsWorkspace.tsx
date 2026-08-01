@@ -121,6 +121,7 @@ export function InvestmentsWorkspace({
     return (
       <div className="space-y-8 min-w-0">
         <InvestmentsHero
+          attribution={data?.historical?.attribution ?? null}
           portfolio={primary.portfolio} reconciliation={reconciliation}
           reportingCurrency={reportingCurrency} figureLabel={figureLabel} asOf={asOf} envelope={envelope}
         />
@@ -148,6 +149,7 @@ export function InvestmentsWorkspace({
       {/* ① Lede. */}
       <div id="investments-summary" className="scroll-mt-20">
         <InvestmentsHero
+          attribution={data?.historical?.attribution ?? null}
           portfolio={primary.portfolio} reconciliation={reconciliation}
           reportingCurrency={reportingCurrency} figureLabel={figureLabel} asOf={asOf} envelope={envelope}
         />
@@ -174,7 +176,7 @@ export function InvestmentsWorkspace({
       {/* ④ This period — the opening → in → out → change → closing movement bridge. */}
       <div id="investments-period" className="scroll-mt-20">
         <Block label="This period">
-          <Surface className="p-4"><InvestmentsBridgeCard reconciliation={reconciliation} flows={flows} /></Surface>
+          <Surface className="p-4"><InvestmentsBridgeCard reconciliation={reconciliation} flows={flows} attribution={data?.historical?.attribution ?? null} /></Surface>
         </Block>
       </div>
 

@@ -18,16 +18,46 @@ import type { InvestmentsReconciliation } from "@/lib/investments/investments-ti
 import type { PeriodFlows } from "@/lib/investments/investment-flows-core";
 import { buildBridgeRows } from "./investments-bridge";
 import { formatCurrencyExact } from "@/lib/format";
+import type { PeriodAttribution } from "@/lib/investments/period-attribution.core";
 
 export function InvestmentsBridgeCard({
   reconciliation,
   flows,
+  attribution,
 }: {
   reconciliation: InvestmentsReconciliation | null;
   flows:          PeriodFlows | null;
+  /** Canonical period verdict — the same one the hero obeys. */
+  attribution?:   PeriodAttribution | null;
 }) {
   const [open, setOpen] = useState(false);
-  const model = buildBridgeRows(reconciliation, flows);
+  const model = buildBridgeRows(reconciliation, flows, attribution ?? null);
+
+  // V26-INVESTMENTS-HISTORY-FIX — a period that cannot be attributed renders no
+  // waterfall at all. The current value and any observed flows still show; the
+  // causal decomposition does not, because it is the decomposition that was the
+  // false claim, not the numbers inside it.
+  if (model.state === "partial" || model.state === "not-attributable") {
+    const cur = model.reportingCurrency ?? "USD";
+    return (
+      <div className="flex flex-col gap-3 py-1">
+        <p className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>{model.headline}</p>
+        {model.rows.map((r) => (
+          <div key={r.key} className="flex items-baseline justify-between gap-3">
+            <span className="text-xs" style={{ color: "var(--text-secondary)" }}>{r.label}</span>
+            <span className="text-sm tabular-nums" style={{ color: "var(--text-primary)" }}>
+              {formatCurrencyExact(r.amount, cur)}
+            </span>
+          </div>
+        ))}
+        <ul className="flex flex-col gap-1.5">
+          {model.reasons.map((why) => (
+            <li key={why} className="text-xs leading-snug" style={{ color: "var(--text-muted)" }}>· {why}</li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
 
   if (model.state !== "reconciled" || model.reportingCurrency == null) {
     return <p className="text-sm py-4" style={{ color: "var(--text-muted)" }}>

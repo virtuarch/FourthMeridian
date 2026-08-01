@@ -21,6 +21,7 @@
  * — market movement is NEVER fabricated to force the identity to close.
  */
 
+import { assessPeriodAttribution, type PeriodAttribution } from "./period-attribution.core";
 import { propagateCompleteness, worstTier } from "@/lib/perspective-engine/completeness";
 import type { Completeness, CompletenessTier } from "@/lib/perspective-engine/types";
 import type { InstrumentValuation, InvestmentValuationView, UnvaluedPosition } from "./valuation-core";
@@ -175,6 +176,13 @@ export interface InvestmentsReconciliation {
 
 /** The canonical Investments Time Machine result. Serialisable. */
 export interface InvestmentsTimeMachineResult {
+  /**
+   * V26-INVESTMENTS-HISTORY-FIX — the canonical eligibility verdict for the
+   * period. The hero, the change bridge and any future period surface MUST read
+   * this rather than deriving their own opening value, change or percentage.
+   * That is how the page agrees with itself.
+   */
+  attribution?:      PeriodAttribution | null;
   asOf:              string;
   compareTo:         string | null;
   reportingCurrency: string;
@@ -303,7 +311,32 @@ export function assembleInvestmentsTimeMachine(args: {
 
   const completeness = buildEnvelope(view, compareView, flows);
 
-  return { asOf, compareTo, reportingCurrency, holdings, portfolio, flows, reconciliation, completeness };
+  // V26-INVESTMENTS-HISTORY-FIX — assess the period ONCE, here, where both
+  // endpoints and the flows are already in hand. Everything downstream reads
+  // the verdict; nothing downstream recomputes it.
+  const attribution = reconciliation && compareView
+    ? assessPeriodAttribution({
+        fromISO: reconciliation.from, toISO: reconciliation.to,
+        reportingCurrency,
+        openingValue: reconciliation.openingValue,
+        closingValue: reconciliation.closingValue,
+        moneyIn:  flows ? flows.contributions + flows.transfersIn : 0,
+        moneyOut: flows ? flows.withdrawals + flows.transfersOut : 0,
+        netExternalFlows: reconciliation.netExternalFlows,
+        residualChange: reconciliation.residualChange,
+        openingUnvaluedCount: compareView.unvaluedCount,
+        closingUnvaluedCount: view.unvaluedCount,
+        openingTier: compareView.completeness.tier,
+        closingTier: view.completeness.tier,
+        openingComponentValues: compareView.components.map((c) => c.reportingValue ?? 0),
+        openingInstrumentIds: compareView.components.map((c) => c.instrumentId),
+        closingInstrumentIds: view.components.map((c) => c.instrumentId),
+        flowCompleteness: flows?.completeness ?? null,
+        conflict: reconciliation.conflict,
+      })
+    : null;
+
+  return { asOf, compareTo, reportingCurrency, holdings, portfolio, flows, reconciliation, completeness, attribution };
 }
 
 function buildReconciliation(
