@@ -226,9 +226,22 @@ export function quantityToUse(
   mode: QuantityAuthorityMode,
   legacyQuantity: number | null,
   decision: QuantityDecision,
-): { quantity: number | null; usedAuthority: boolean } {
-  if (mode === "adopt" && decision.source === "AUTHORITY") {
-    return { quantity: decision.quantity, usedAuthority: true };
+): { quantity: number | null; usedAuthority: boolean; excluded: boolean } {
+  if (mode !== "adopt") {
+    return { quantity: legacyQuantity, usedAuthority: false, excluded: false };
   }
-  return { quantity: legacyQuantity, usedAuthority: false };
+  if (decision.source === "AUTHORITY") {
+    return { quantity: decision.quantity, usedAuthority: true, excluded: false };
+  }
+  // V26-INVESTMENTS-HISTORY — `adopt` EXCLUDES rather than falling back.
+  //
+  // Falling back looked conservative and was not: it let TQQQ contribute −20
+  // shares and −$1,054.40 of fabricated short to an asserted portfolio total,
+  // purely because its split carries a null ratio. A quantity the authority
+  // will not support must leave the total and be declared, not be quietly
+  // replaced by the legacy carry-forward the arc exists to retire.
+  //
+  // The legacy value stays in the decision ledger for comparison tooling; it
+  // just no longer reaches a user-visible number.
+  return { quantity: null, usedAuthority: false, excluded: true };
 }

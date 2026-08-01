@@ -157,11 +157,17 @@ function main(): void {
       quantityToUse("adopt", 3, yes).quantity === 10 &&
       quantityToUse("adopt", 3, yes).usedAuthority === true);
     const no: QuantityDecision = { source: "LEGACY", reason: "DATE_UNCOVERED", detail: "d" };
-    check("adopt still falls back where unsupported",
-      quantityToUse("adopt", 3, no).quantity === 3 &&
+    // The legacy value must NOT reach a user-visible total. TQQQ contributing
+    // −20 shares because its split is unusable is the case this forbids.
+    check("adopt EXCLUDES where unsupported — it does not fall back",
+      quantityToUse("adopt", 3, no).quantity === null &&
+      quantityToUse("adopt", 3, no).excluded === true);
+    check("…and never claims the authority supplied it",
       quantityToUse("adopt", 3, no).usedAuthority === false);
-    check("…and falls back to NULL rather than inventing one",
-      quantityToUse("adopt", null, no).quantity === null);
+    check("off and compare still carry the legacy value for tooling",
+      quantityToUse("off", 3, no).quantity === 3 &&
+      quantityToUse("compare", 3, no).quantity === 3 &&
+      quantityToUse("compare", 3, no).excluded === false);
   }
 
   console.log("5. the case the arc exists to prevent");
@@ -179,8 +185,9 @@ function main(): void {
     });
     check("…and the comparison marks it LEGACY_ONLY, quantifying the unsupported surface",
       cmp.verdict === "LEGACY_ONLY" && cmp.authorityQuantity === null);
-    check("in adopt, the legacy value still stands — fallback is preserved, not removed",
-      quantityToUse("adopt", 4, before).quantity === 4);
+    check("in adopt, prehistory is EXCLUDED rather than carried forward",
+      quantityToUse("adopt", 4, before).quantity === null &&
+      quantityToUse("adopt", 4, before).excluded === true);
   }
 
   console.log(failures === 0 ? "\nAll quantity-authority-bridge checks passed." : `\n${failures} check(s) FAILED.`);
