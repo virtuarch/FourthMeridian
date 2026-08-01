@@ -12,10 +12,23 @@
  *   - MEASURED width (ResizeObserver) + fixed pixel height — never a stretched
  *     viewBox, so markers stay circular;
  *   - the line BREAKS at real gaps AND at a basis change (observed↔reconstructed);
+ *   - the break at a basis change is DRAWN, as a seam rule (see below);
  *   - reconstructed runs are dashed + faint with HOLLOW markers;
  *   - the unknown is a hatched "NO DATA" band, not an absence;
  *   - y-scale from real points ONLY (no interpolation across the hole);
  *   - three axis labels; an HTML tooltip that won't snap across a gap; honest legend.
+ *
+ * V26-INVESTMENTS-HISTORY — the basis break was already unbridged, but INVISIBLE:
+ * between two points one day apart the dashed line stopped low and the solid line
+ * resumed high ~10px later, with nothing to say why, so the eye read the step as
+ * market movement anyway. Each basis change now carries a seam rule, and the legend
+ * names it. Deliberately unlabelled per-seam: a series whose provider syncs on some
+ * days and not others flips basis repeatedly (five times in a typical two-month
+ * window), and five inline labels would be a picket fence. The rule is the mark; the
+ * legend is the meaning.
+ *
+ * Geometry splitting lives in trend-runs.core.ts (pure, React-free, unit-tested).
+ * This file owns pixels; that file owns what a run, a gap and a seam MEAN.
  *
  * This core is domain-free: it takes points `{date,value,estimated}`, a currency, and
  * presentation slots (title / subtitle / headerRight). The consumer owns what the
@@ -24,6 +37,10 @@
 
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { formatCompactCurrency } from "@/lib/format";
+import {
+  medianSpacingDays, toRuns, toDateGaps, toBasisSeams,
+  type TrendGeomPoint, type TrendRun,
+} from "./trend-runs.core";
 
 export interface TrendPoint {
   /** YYYY-MM-DD. */
@@ -48,51 +65,8 @@ function ts(date: string): number {
   return Date.parse(`${date}T00:00:00.000Z`);
 }
 
-/** Median day-spacing across consecutive points — a robust gap scale. */
-function medianSpacingDays(times: number[]): number {
-  if (times.length < 2) return 1;
-  const diffs = times.slice(1).map((t, i) => (t - times[i]) / 86_400_000).sort((a, b) => a - b);
-  const mid = Math.floor(diffs.length / 2);
-  return diffs.length % 2 ? diffs[mid] : (diffs[mid - 1] + diffs[mid]) / 2;
-}
-
-interface Pt { date: string; t: number; value: number; estimated: boolean }
-interface Run { points: Pt[]; basis: "observed" | "reconstructed" }
-
-/**
- * Split into contiguous runs, breaking on (a) a real date hole and (b) a change of
- * basis. Neither is bridged.
- *
- * V26-INVESTMENTS-HISTORY — adjacent runs used to SHARE the boundary point across a
- * basis change, on the reasoning that "the line stays connected where knowledge is,
- * only its character changes". That reasoning does not hold. A reconstructed value
- * and an observed value are not one measurement whose character changed; they are two
- * different measurements of different quality, and the step between them is a change
- * of BASIS, not a change in the portfolio.
- *
- * Bridging them drew that step as market movement. On the Investments page it rendered
- * a near-vertical rise at first connect — the moment real observations replaced
- * quantities projected backward — as though the user had gained the difference.
- * The runs are now genuinely disjoint, so a basis transition reads as the gap it is.
- */
-function toRuns(pts: Pt[], gapDays: number): Run[] {
-  const runs: Run[] = [];
-  let cur: Run | null = null;
-  for (let i = 0; i < pts.length; i++) {
-    const p = pts[i];
-    const prev = pts[i - 1];
-    const hole = prev ? (p.t - prev.t) / 86_400_000 > gapDays : false;
-    const basis: Run["basis"] = p.estimated ? "reconstructed" : "observed";
-    const basisChanged = prev ? (prev.estimated ? "reconstructed" : "observed") !== basis : false;
-    if (!cur || hole || basisChanged) {
-      cur = { points: [p], basis };
-      runs.push(cur);
-    } else {
-      cur.points.push(p);
-    }
-  }
-  return runs.filter((r) => r.points.length > 0);
-}
+type Pt = TrendGeomPoint;
+type Run = TrendRun;
 
 export function TrendChart({
   points,
@@ -160,12 +134,20 @@ export function TrendChart({
       return `${line(run)} L${x(last.t).toFixed(1)},${H - PAD_B} L${x(first.t).toFixed(1)},${H - PAD_B} Z`;
     };
 
-    const gaps: Array<{ x0: number; x1: number }> = [];
-    for (let i = 1; i < pts.length; i++) {
-      if ((pts[i].t - pts[i - 1].t) / 86_400_000 > gapDays) gaps.push({ x0: x(pts[i - 1].t), x1: x(pts[i].t) });
-    }
+    const gaps = toDateGaps(pts, gapDays).map((g) => ({
+      x0: x(pts[g.fromIndex].t), x1: x(pts[g.toIndex].t),
+    }));
 
-    return { pts, x, y, runs, line, area, gaps, last: pts[pts.length - 1] };
+    // A change of evidence basis, drawn at the MIDPOINT between the two values it
+    // separates — the boundary belongs to neither measurement, so it is anchored to
+    // neither point. Values and positions are untouched; this only marks the break
+    // the runs already make.
+    const seams = toBasisSeams(pts, gapDays).map((s) => ({
+      key: `${s.fromDate}|${s.toDate}`,
+      x:   (x(pts[s.fromIndex].t) + x(pts[s.toIndex].t)) / 2,
+    }));
+
+    return { pts, x, y, runs, line, area, gaps, seams, last: pts[pts.length - 1] };
   }, [points, w]);
 
   function onMove(e: React.PointerEvent) {
@@ -261,6 +243,21 @@ export function TrendChart({
               </g>
             ))}
 
+            {/*
+              Evidence-basis seam. The runs on either side are already disjoint;
+              this draws that break so the step between a reconstructed value and
+              an observed one reads as a change of BASIS rather than as a gain or
+              a loss. Not the hatched band — that vocabulary means "never
+              observed", and here we have values on both sides.
+            */}
+            {geom.seams.map((s) => (
+              <line
+                key={s.key}
+                x1={s.x} y1={PAD_T - 4} x2={s.x} y2={H - PAD_B}
+                stroke="var(--border-hairline-strong)" strokeWidth="1" strokeDasharray="2 3"
+              />
+            ))}
+
             {/* Reconstructed points get hollow markers. */}
             {geom.pts.filter((p) => p.estimated).map((p) => (
               <circle key={p.date} cx={geom.x(p.t)} cy={geom.y(p.value)} r="2.5" fill="var(--bg-base)" stroke="var(--meridian-400)" strokeWidth="1.25" strokeOpacity="0.7" />
@@ -311,6 +308,14 @@ export function TrendChart({
             <span className="inline-flex items-center gap-1.5">
               <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" strokeOpacity="0.6" strokeDasharray="4 3" /></svg>
               Reconstructed
+            </span>
+          )}
+          {geom.seams.length > 0 && (
+            <span className="inline-flex items-center gap-1.5">
+              <svg width="16" height="8" aria-hidden>
+                <line x1="8" y1="0" x2="8" y2="8" stroke="var(--border-hairline-strong)" strokeWidth="1" strokeDasharray="2 3" />
+              </svg>
+              Evidence changes — not a market move
             </span>
           )}
           {geom.gaps.length > 0 && (
