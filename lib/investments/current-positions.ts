@@ -27,6 +27,7 @@ import { db } from "@/lib/db";
 import { valuePortfolioAsOf } from "./valuation-core";
 import {
   POSITION_VALUATION_SELECT,
+  RECONSTRUCTION_VALUATION_SELECT,
   resolveInvestmentScopeAndCurrency,
   valuePositionRows,
   type ObservationValuationRow,
@@ -72,11 +73,16 @@ export interface CurrentPositionsOptions {
   client?: Client;
 }
 
-/** The reconstruction-conflict rows the valuation path consumes. */
+/**
+ * The reconstruction rows the valuation path consumes — conflict flags plus the
+ * reconciliation verdict the residue guard reads (V26-INVESTMENTS-HISTORY). The
+ * select is the shared constant, so this seam and the historical window can
+ * never disagree about what the reconstruction said.
+ */
 async function readConflicts(client: Client, accountIds: string[]) {
   return client.positionReconstruction.findMany({
     where:  { financialAccountId: { in: accountIds } },
-    select: { financialAccountId: true, instrumentId: true, conflicted: true },
+    select: RECONSTRUCTION_VALUATION_SELECT,
   });
 }
 

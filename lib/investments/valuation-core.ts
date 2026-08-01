@@ -318,6 +318,76 @@ export function resolveHeldQuantity<TRow extends { date: string; quantity: numbe
   };
 }
 
+/**
+ * V26-INVESTMENTS-HISTORY — RECONSTRUCTION RESIDUE IS NOT A SHORT POSITION.
+ *
+ * ── The bug this exists to prevent ───────────────────────────────────────────
+ * Backward reconstruction replays events from a present-day anchor to answer
+ * "what was held on date D". When the provider's event history does not reach
+ * far enough back to explain the shares currently held, the replay runs out of
+ * buys to un-apply and lands BELOW ZERO. The reconstruction records exactly that
+ * — `reconciliation: PARTIAL | FAILED` with an `unexplainedOpeningQuantity` —
+ * and then valuation read the quantity and ignored the verdict.
+ *
+ * Measured locally on one Schwab account: six positions whose openings the
+ * replay could not explain AT ALL (`unexplainedOpeningQuantity == openingQuantity`)
+ * were valued as shorts — INTC −5, TQQQ −20, NVDA −2.003, NKE −4, JPM −1,
+ * TXN −1 — turning ~$3.4k of unknown history into ~−$3.4k of asserted portfolio
+ * value. `resolveHeldQuantity` deliberately passes negatives through because
+ * SHORT POSITIONS ARE REAL; the mistake was never that rule, it was that nobody
+ * asked where the negative came from.
+ *
+ * ── The distinction ──────────────────────────────────────────────────────────
+ * A negative quantity is a real holding when someone OBSERVED it — a provider,
+ * a statement import, or the user asserting it. A negative quantity that only a
+ * DERIVED backward replay produced, from a reconstruction that could not close
+ * its own books, is arithmetic residue: the replay saying "I ran out of history",
+ * not the market saying "you are short".
+ *
+ *   OBSERVED / IMPORTED / USER_ASSERTED negative → a real position. Value it.
+ *   DERIVED negative, reconciliation COMPLETE    → a genuinely reconstructed
+ *                                                  short (books closed). Value it.
+ *   DERIVED negative, PARTIAL / FAILED / missing → residue. REFUSE.
+ *
+ * Refusing means UNVALUED-with-a-reason (the `excluded` path in valuation.ts),
+ * never clamped to zero and never dropped: zero is a claim, and an absent
+ * component cannot degrade the portfolio's completeness tier. A missing
+ * reconstruction summary is treated as not-COMPLETE for the same reason the rest
+ * of this file treats a missing price as unvalued — silence is not evidence.
+ *
+ * Pure and structural (plain strings, no Prisma import), so it fixture-tests
+ * without a generated client, like everything else in this module.
+ */
+export function isReconstructionResidue(args: {
+  /** The quantity valuation is about to use. */
+  quantity: number | null;
+  /** `PositionOrigin` of the row that supplied it; null when unknown. */
+  origin: string | null;
+  /** `ReconstructionStatus` for this (account, instrument); null when absent. */
+  reconciliation: string | null;
+}): boolean {
+  const { quantity, origin, reconciliation } = args;
+  // Only negatives are in question. null / 0 / positive are decided elsewhere
+  // (resolveHeldQuantity's known-zero contract and the caller's own skip).
+  if (quantity == null || quantity >= 0) return false;
+  // Someone saw this position. Not our business.
+  if (origin !== "DERIVED") return false;
+  // The replay closed its books — a derived short that reconciles is a real one.
+  return reconciliation !== "COMPLETE";
+}
+
+/**
+ * The refusal reason for a residue quantity. Deterministic and name-free; states
+ * the evidence status so the omission is inspectable rather than inferable.
+ */
+export function reconstructionResidueReason(
+  quantity: number | null,
+  reconciliation: string | null,
+): string {
+  const status = reconciliation ?? "MISSING";
+  return `Quantity unsupported: a derived quantity of ${quantity} remains from a backward reconstruction that did not close (reconciliation ${status}). An unexplained opening is not a short position, so this holding is left unvalued rather than counted.`;
+}
+
 export interface UnvaluedPosition {
   instrumentId: string;
   accountId:    string;

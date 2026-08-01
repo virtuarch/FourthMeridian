@@ -27,7 +27,7 @@ import {
 } from "@/lib/investments/quantity-authority";
 import type { ComparisonRow } from "@/lib/investments/quantity-authority-bridge.core";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
-import { PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
+import { PositionOrigin, type Prisma, type PrismaClient, type ReconstructionStatus } from "@prisma/client";
 import { PriceBasis } from "@prisma/client";
 import { db } from "@/lib/db";
 import { identityContext } from "@/lib/money/convert";
@@ -48,6 +48,8 @@ import {
   valueInstrumentAsOf,
   valuePortfolioAsOf,
   resolveHeldQuantity,
+  isReconstructionResidue,
+  reconstructionResidueReason,
   type InstrumentValuation,
   type InstrumentValuationInput,
   type InvestmentValuationView,
@@ -101,7 +103,23 @@ export interface ReconstructionConflictRow {
   financialAccountId: string;
   instrumentId:       string;
   conflicted:         boolean;
+  /**
+   * V26-INVESTMENTS-HISTORY — the reconstruction's OWN verdict on whether it
+   * closed its books for this pair. Optional so existing fixture callers still
+   * type-check; absent is read as "not COMPLETE", which is the conservative
+   * direction (see isReconstructionResidue — silence is not evidence).
+   */
+  reconciliation?:    ReconstructionStatus | null;
 }
+
+/**
+ * The PositionReconstruction fields the valuation pipeline reads. Shared by all
+ * three read sites (historical window, single date, current positions) so the
+ * residue guard can never see a different verdict depending on the entry point.
+ */
+export const RECONSTRUCTION_VALUATION_SELECT = {
+  financialAccountId: true, instrumentId: true, conflicted: true, reconciliation: true,
+} as const;
 
 export interface GetInvestmentValueArgs {
   /** Value the whole Space's investment holdings. */
@@ -188,7 +206,7 @@ export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Prom
     }),
     client.positionReconstruction.findMany({
       where: { financialAccountId: { in: accountIds } },
-      select: { financialAccountId: true, instrumentId: true, conflicted: true },
+      select: RECONSTRUCTION_VALUATION_SELECT,
     }),
   ]);
 
@@ -265,7 +283,7 @@ export async function getInvestmentValueForWindow(
     }),
     client.positionReconstruction.findMany({
       where: { financialAccountId: { in: accountIds } },
-      select: { financialAccountId: true, instrumentId: true, conflicted: true },
+      select: RECONSTRUCTION_VALUATION_SELECT,
     }),
   ]);
 
@@ -395,7 +413,13 @@ export async function valuePositionRowsOverDates(args: {
   }
 
   const conflictByPair = new Map<string, boolean>();
-  for (const r of reconRows) conflictByPair.set(`${r.financialAccountId}|${r.instrumentId}`, r.conflicted);
+  /** V26-INVESTMENTS-HISTORY — the reconstruction's verdict, per (account, instrument). */
+  const reconciliationByPair = new Map<string, string | null>();
+  for (const r of reconRows) {
+    const k = `${r.financialAccountId}|${r.instrumentId}`;
+    conflictByPair.set(k, r.conflicted);
+    reconciliationByPair.set(k, r.reconciliation ?? null);
+  }
 
   // Instrument currency / cash fallback.
   const instruments = await client.instrument.findMany({
@@ -492,6 +516,42 @@ export async function valuePositionRowsOverDates(args: {
           reason: consulted.decision.source === "LEGACY"
             ? `Quantity unsupported (${consulted.decision.reason}): ${consulted.decision.detail}`
             : "Quantity unsupported by the quantity authority.",
+        });
+        continue;
+      }
+
+      // V26-INVESTMENTS-HISTORY — RECONSTRUCTION RESIDUE IS NOT A SHORT POSITION.
+      //
+      // A DERIVED negative quantity from a reconstruction that could not close
+      // its own books (PARTIAL / FAILED / no summary) is the backward replay
+      // running out of history, not evidence of a short. Valuing it multiplied
+      // an unexplained opening by a real market price and booked the product as
+      // portfolio value — locally, six positions on one Schwab account turned
+      // ~$3.4k of unknown history into ~−$3.4k of asserted value.
+      //
+      // Refused as UNVALUED-with-a-reason through the same `excluded` path a
+      // refused authority quantity takes: the component keeps its instrument,
+      // account, quantity and evidence tier, stays out of the subtotal, and
+      // degrades the portfolio's completeness — never clamped to zero, never
+      // dropped. The reconstruction's own verdict is the authority here; this
+      // binding only stops ignoring it.
+      //
+      // Scoped to the legacy resolver deliberately: when the quantity authority
+      // ADOPTS a value it owns its own evidence grade and exclusion path, so
+      // second-guessing it here would be a different decision in a second place.
+      const reconciliation = reconciliationByPair.get(key) ?? null;
+      if (
+        !consulted.usedAuthority &&
+        isReconstructionResidue({
+          quantity,
+          origin: resolvedRow?.origin ?? resolved.origin ?? null,
+          reconciliation,
+        })
+      ) {
+        excluded.push({
+          instrumentId, accountId: financialAccountId,
+          quantity, quantityTier,
+          reason: reconstructionResidueReason(quantity, reconciliation),
         });
         continue;
       }
