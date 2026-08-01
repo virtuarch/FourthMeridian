@@ -61,8 +61,19 @@ interface Run { points: Pt[]; basis: "observed" | "reconstructed" }
 
 /**
  * Split into contiguous runs, breaking on (a) a real date hole and (b) a change of
- * basis. Adjacent runs SHARE the boundary point across a basis change (the line stays
- * connected where knowledge is, only its character changes) but NEVER across a hole.
+ * basis. Neither is bridged.
+ *
+ * V26-INVESTMENTS-HISTORY — adjacent runs used to SHARE the boundary point across a
+ * basis change, on the reasoning that "the line stays connected where knowledge is,
+ * only its character changes". That reasoning does not hold. A reconstructed value
+ * and an observed value are not one measurement whose character changed; they are two
+ * different measurements of different quality, and the step between them is a change
+ * of BASIS, not a change in the portfolio.
+ *
+ * Bridging them drew that step as market movement. On the Investments page it rendered
+ * a near-vertical rise at first connect — the moment real observations replaced
+ * quantities projected backward — as though the user had gained the difference.
+ * The runs are now genuinely disjoint, so a basis transition reads as the gap it is.
  */
 function toRuns(pts: Pt[], gapDays: number): Run[] {
   const runs: Run[] = [];
@@ -76,7 +87,6 @@ function toRuns(pts: Pt[], gapDays: number): Run[] {
     if (!cur || hole || basisChanged) {
       cur = { points: [p], basis };
       runs.push(cur);
-      if (basisChanged && !hole && prev) cur.points.unshift(prev);
     } else {
       cur.points.push(p);
     }
