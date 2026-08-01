@@ -45,6 +45,12 @@ export interface CoverageRecord {
   /** Mirrors the `InvestmentCoverageOutcome` enum, carried as data. */
   outcome:          string;
   fetchedCount:     number;
+  /**
+   * V26-QUANTITY-1H — the earliest transaction date the provider actually
+   * RETURNED, or null when none were. This is the only demonstrable evidence of
+   * where provider history begins, and it bounds every claim below.
+   */
+  earliestReturnedISO: string | null;
 }
 
 /**
@@ -131,9 +137,38 @@ export function eventStreamCompletenessFor(args: CompletenessArgs): EventStreamC
     assertISO(r.requestedToISO, "record.requestedToISO");
   }
 
-  const merged = mergeIntervals(licensing.map((r) => ({
-    fromISO: r.requestedFromISO, toISO: r.requestedToISO,
+  // ── The correction that makes COMPLETE honest (V26-QUANTITY-1H) ─────────
+  //
+  // `COMPLETE` proves pagination reconciled against the provider's reported
+  // total. It does NOT prove the provider holds history back to
+  // `requestedFromISO`: that total is itself window-scoped, so a window
+  // reaching past the provider's own floor reconciles perfectly while
+  // containing nothing. Before this clamp, a request for
+  // 2024-08-01→2026-08-01 against an item whose history begins 2025-07-31
+  // licensed 364 days in which "no activity" and "no history" are
+  // indistinguishable — and backward replay would have stamped a manufactured
+  // opening onto the earlier date.
+  //
+  // So a record licenses only from the earliest date it actually returned
+  // evidence for. A record that returned NOTHING licenses nothing at all: a
+  // reconciled empty window is silence, and silence is not proof of no
+  // activity. We under-claim deliberately — if there genuinely was no activity
+  // early in a window, we forgo those days rather than assert them.
+  const withEvidence = licensing.filter((r) => r.earliestReturnedISO !== null);
+  const merged = mergeIntervals(withEvidence.map((r) => ({
+    fromISO: maxISO(r.requestedFromISO, r.earliestReturnedISO!),
+    toISO: r.requestedToISO,
   })));
+
+  if (merged.length === 0) {
+    const empty = licensing.length - withEvidence.length;
+    return {
+      kind: "UNKNOWN",
+      reason: `${label}: ${licensing.length} reconciled window(s), ${empty} of which returned no ` +
+        "transactions — pagination completing over an empty window proves the provider was asked, " +
+        "not that it holds history there",
+    };
+  }
 
   // Clip to the request, then judge.
   const clipped = merged
@@ -143,7 +178,7 @@ export function eventStreamCompletenessFor(args: CompletenessArgs): EventStreamC
   if (clipped.length === 0) {
     return {
       kind: "UNKNOWN",
-      reason: `${label}: ${licensing.length} COMPLETE window(s) recorded, none overlapping the requested interval`,
+      reason: `${label}: ${withEvidence.length} evidenced window(s) recorded, none overlapping the requested interval`,
     };
   }
 
@@ -153,7 +188,7 @@ export function eventStreamCompletenessFor(args: CompletenessArgs): EventStreamC
       kind: "COMPLETE",
       fromISO: requestedFromISO,
       toISO: requestedToISO,
-      source: `${label}: ${licensing.length} COMPLETE window(s) span the requested interval`,
+      source: `${label}: ${withEvidence.length} reconciled window(s) with returned evidence span the requested interval`,
     };
   }
 

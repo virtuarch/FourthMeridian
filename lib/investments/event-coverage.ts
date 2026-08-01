@@ -37,7 +37,7 @@ export async function eventStreamCompletenessForAccount(
 ): Promise<EventStreamCompleteness> {
   const rows = await client.investmentEventCoverage.findMany({
     where: { financialAccountId },
-    select: { requestedFromDate: true, requestedToDate: true, outcome: true, fetchedCount: true },
+    select: { requestedFromDate: true, requestedToDate: true, outcome: true, fetchedCount: true, earliestReturnedDate: true },
     orderBy: [{ requestedFromDate: "asc" }, { id: "asc" }],
   });
   return eventStreamCompletenessFor({
@@ -66,7 +66,7 @@ export async function eventStreamCompletenessForAccounts(
     where: { financialAccountId: { in: ids } },
     select: {
       financialAccountId: true, requestedFromDate: true, requestedToDate: true,
-      outcome: true, fetchedCount: true,
+      outcome: true, fetchedCount: true, earliestReturnedDate: true,
     },
     orderBy: [{ requestedFromDate: "asc" }, { id: "asc" }],
   });
@@ -86,11 +86,13 @@ export async function eventStreamCompletenessForAccounts(
 
 function toRecord(r: {
   requestedFromDate: Date; requestedToDate: Date; outcome: string; fetchedCount: number;
+  earliestReturnedDate: Date | null;
 }): CoverageRecord {
   return {
     requestedFromISO: iso(r.requestedFromDate),
     requestedToISO: iso(r.requestedToDate),
     outcome: r.outcome,
     fetchedCount: r.fetchedCount,
+    earliestReturnedISO: r.earliestReturnedDate ? iso(r.earliestReturnedDate) : null,
   };
 }

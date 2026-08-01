@@ -134,6 +134,10 @@ async function recordCoverage(
     reportedTotal: number | null;
     fetchedCount: number;
     pagesFetched: number;
+    paginationReconciled: boolean;
+    /** Dates actually RETURNED — the only evidence of where provider history begins. */
+    earliestReturnedISO: string | null;
+    latestReturnedISO: string | null;
     detail: string | null;
     now: Date;
   },
@@ -152,6 +156,9 @@ async function recordCoverage(
         reportedTotal: args.reportedTotal,
         fetchedCount: args.fetchedCount,
         pagesFetched: args.pagesFetched,
+        paginationReconciled: args.paginationReconciled,
+        earliestReturnedDate: args.earliestReturnedISO ? new Date(`${args.earliestReturnedISO}T00:00:00.000Z`) : null,
+        latestReturnedDate: args.latestReturnedISO ? new Date(`${args.latestReturnedISO}T00:00:00.000Z`) : null,
         detail: args.detail,
         attemptedAt: args.now,
       })),
@@ -213,6 +220,7 @@ export async function recordDisabledInvestmentEventCoverage(args: {
     window: computeIngestWindow(args.now),
     outcome: InvestmentCoverageOutcome.DISABLED,
     reportedTotal: null, fetchedCount: 0, pagesFetched: 0,
+    paginationReconciled: false, earliestReturnedISO: null, latestReturnedISO: null,
     detail: "INVESTMENT_EVENTS_ENABLED is not 'true'", now: args.now,
   });
 }
@@ -230,9 +238,11 @@ export async function ingestInvestmentEvents(params: IngestParams): Promise<Inge
   const coverage = (
     outcome: InvestmentCoverageOutcome, reportedTotal: number | null,
     fetchedCount: number, pagesFetched: number, detail: string | null,
+    reconciled = false, earliestReturnedISO: string | null = null, latestReturnedISO: string | null = null,
   ) => recordCoverage(client, {
     plaidItemId: params.plaidItemId, financialAccountIds: covered,
     window: { start, end }, outcome, reportedTotal, fetchedCount, pagesFetched,
+    paginationReconciled: reconciled, earliestReturnedISO, latestReturnedISO,
     detail, now: params.now,
   });
 
@@ -287,10 +297,16 @@ export async function ingestInvestmentEvents(params: IngestParams): Promise<Inge
   // window. Whether every row then persisted is a separate question, answered by
   // metrics and by SyncIssue — conflating the two would let a row-level failure
   // silently retract a window the provider did answer in full.
+  // The dates actually returned. `earliestReturned` is the ONLY demonstrable
+  // evidence of where provider history begins — Plaid never reports its own
+  // floor, and `total_investment_transactions` is window-scoped, so a window
+  // reaching past that floor reconciles perfectly while containing nothing.
+  const returnedDates = all.map((t) => String(t.date).slice(0, 10)).sort();
   await coverage(
     reconciled ? InvestmentCoverageOutcome.COMPLETE : InvestmentCoverageOutcome.PARTIAL,
     metrics.requested, all.length, pagesFetched,
     reconciled ? null : `provider reported ${metrics.requested}, received ${all.length}`,
+    reconciled, returnedDates[0] ?? null, returnedDates[returnedDates.length - 1] ?? null,
   );
 
   // ── Persist (stable order) ───────────────────────────────────────────────

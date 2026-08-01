@@ -23,8 +23,10 @@ function check(name: string, cond: boolean, detail?: string): void {
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 
-const rec = (from: string, to: string, outcome = "COMPLETE", fetchedCount = 0): CoverageRecord =>
-  ({ requestedFromISO: from, requestedToISO: to, outcome, fetchedCount });
+/** By default a record CARRIES evidence from its own window start. */
+const rec = (from: string, to: string, outcome = "COMPLETE", fetchedCount = 1,
+             earliestReturnedISO: string | null = from): CoverageRecord =>
+  ({ requestedFromISO: from, requestedToISO: to, outcome, fetchedCount, earliestReturnedISO });
 const decide = (records: CoverageRecord[], from = "2026-01-01", to = "2026-12-31") =>
   eventStreamCompletenessFor({ records, requestedFromISO: from, requestedToISO: to });
 
@@ -68,9 +70,19 @@ function main(): void {
     check("a wider window still reports only the requested interval",
       wider.kind === "COMPLETE" && wider.fromISO === "2026-01-01" && wider.toISO === "2026-12-31");
 
-    const zeroFetched = decide([rec("2026-01-01", "2026-12-31", "COMPLETE", 0)]);
-    check("a COMPLETE window with ZERO events is still COMPLETE — the load-bearing case",
-      zeroFetched.kind === "COMPLETE");
+    // V26-QUANTITY-1H reversed this. A reconciled EMPTY window proves the
+    // provider was asked, not that it holds history there.
+    const zeroFetched = decide([rec("2026-01-01", "2026-12-31", "COMPLETE", 0, null)]);
+    check("a reconciled window that returned NOTHING licenses nothing",
+      zeroFetched.kind === "UNKNOWN");
+    check("…and says why, rather than reading silence as absence of activity",
+      /silence|not that it holds history/.test((zeroFetched as { reason: string }).reason));
+
+    const lateEvidence = decide([rec("2026-01-01", "2026-12-31", "COMPLETE", 5, "2026-04-01")]);
+    check("a window whose earliest RETURNED row is later licenses only from there",
+      lateEvidence.kind === "PARTIAL" && lateEvidence.coveredFromISO === "2026-04-01");
+    check("…so a window reaching past the provider's history floor cannot manufacture an opening",
+      lateEvidence.kind === "PARTIAL" && lateEvidence.coveredToISO === "2026-12-31");
 
     const short = decide([rec("2026-01-01", "2026-06-30")]);
     check("a window covering part of the request → PARTIAL", short.kind === "PARTIAL");

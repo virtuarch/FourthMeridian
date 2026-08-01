@@ -784,26 +784,38 @@ enum InvestmentCoverageOutcome {
 }
 
 model InvestmentEventCoverage {
-  id                 String                    @id @default(cuid())
+  id                   String                    @id @default(cuid())
   /// Groups every row written by ONE provider request.
-  attemptId          String
-  plaidItemId        String
-  plaidItem          PlaidItem                 @relation(fields: [plaidItemId], references: [id], onDelete: Cascade)
-  financialAccountId String
-  financialAccount   FinancialAccount          @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  attemptId            String
+  plaidItemId          String
+  plaidItem            PlaidItem                 @relation(fields: [plaidItemId], references: [id], onDelete: Cascade)
+  financialAccountId   String
+  financialAccount     FinancialAccount          @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
   /// The window ASKED FOR — recorded even when the request failed.
-  requestedFromDate  DateTime                  @db.Date
-  requestedToDate    DateTime                  @db.Date
-  outcome            InvestmentCoverageOutcome
+  requestedFromDate    DateTime                  @db.Date
+  requestedToDate      DateTime                  @db.Date
+  outcome              InvestmentCoverageOutcome
   /// The provider's `total_investment_transactions`; null when it never answered.
-  reportedTotal      Int?
+  reportedTotal        Int?
+  /// V26-QUANTITY-1H — every row the provider REPORTED for the window arrived.
+  /// This is what `COMPLETE` proves, and it is strictly weaker than "the
+  /// provider holds history back to requestedFromDate": the reported total is
+  /// itself window-scoped, so a window reaching past the provider's own history
+  /// floor reconciles perfectly while containing nothing.
+  paginationReconciled Boolean                   @default(false)
+  /// Earliest / latest transaction date actually RETURNED. Null when none were.
+  /// `earliestReturnedDate` is the only demonstrable evidence of where provider
+  /// history begins, and it is what bounds the licensed interval. Null licenses
+  /// nothing: silence is not proof of no activity.
+  earliestReturnedDate DateTime?                 @db.Date
+  latestReturnedDate   DateTime?                 @db.Date
   /// Rows actually received. Zero with outcome COMPLETE is the load-bearing
   /// case: it is the only evidence that an empty interval means no movement.
-  fetchedCount       Int                       @default(0)
-  pagesFetched       Int                       @default(0)
-  detail             String?
-  attemptedAt        DateTime
-  createdAt          DateTime                  @default(now())
+  fetchedCount         Int                       @default(0)
+  pagesFetched         Int                       @default(0)
+  detail               String?
+  attemptedAt          DateTime
+  createdAt            DateTime                  @default(now())
 
   @@index([financialAccountId, outcome, requestedFromDate])
   @@index([plaidItemId, attemptedAt])
