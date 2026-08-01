@@ -22,6 +22,10 @@
  * (the A7 evidence contract for imported valuation is deferred to A7-7).
  */
 
+import {
+  buildQuantityAuthorityContext, consultQuantityAuthority,
+} from "@/lib/investments/quantity-authority";
+import type { ComparisonRow } from "@/lib/investments/quantity-authority-bridge.core";
 import { PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
 import { PriceBasis } from "@prisma/client";
 import { db } from "@/lib/db";
@@ -198,6 +202,8 @@ export interface GetInvestmentValueWindowArgs {
   client?: Client;
   holdConstantBeforeEarliest?: boolean;
   visibilityScope?: InvestmentVisibilityScope;
+  /** V26-QUANTITY-1G — receives the quantity-authority decision ledger. */
+  authorityLedgerOut?: ComparisonRow[];
   excludeDigitalAssetAccounts?: boolean;
 }
 
@@ -262,7 +268,10 @@ export async function getInvestmentValueForWindow(
     }),
   ]);
 
-  return valuePositionRowsOverDates({ client, dates, contextSpaceId, reportingCurrency, holdConstant, posRows, reconRows });
+  return valuePositionRowsOverDates({
+    client, dates, contextSpaceId, reportingCurrency, holdConstant, posRows, reconRows,
+    authorityLedgerOut: args.authorityLedgerOut,
+  });
 }
 
 /**
@@ -349,6 +358,11 @@ export async function valuePositionRowsOverDates(args: {
   holdConstant:      boolean;
   posRows:           readonly ObservationValuationRow[];
   reconRows:         readonly ReconstructionConflictRow[];
+  /**
+   * V26-QUANTITY-1G — receives the decision ledger when the quantity authority
+   * is consulted. Optional and inert when `QUANTITY_AUTHORITY_MODE` is off.
+   */
+  authorityLedgerOut?: ComparisonRow[];
 }): Promise<Map<string, InvestmentValuationView>> {
   const { client, contextSpaceId, reportingCurrency, holdConstant, posRows, reconRows } = args;
 
@@ -410,6 +424,15 @@ export async function valuePositionRowsOverDates(args: {
     ? await buildSpaceConversionContextById(contextSpaceId, { currencies: [...currencySet], dates })
     : identityContext(reportingCurrency);
 
+  // ── V26-QUANTITY-1G — the quantity authority, when opted in ───────────────
+  // Built once for the whole date span. `off` returns an inert context without
+  // issuing a query, so this costs nothing unless someone asked for it.
+  const authorityCtx = await buildQuantityAuthorityContext({
+    client,
+    dates,
+    financialAccountIds: [...new Set(posRows.map((r) => r.financialAccountId))],
+  });
+
   // ── Value each requested date independently against the shared prep ────────
   for (const asOf of dates) {
     const inputs: Array<{ input: InstrumentValuationInput; nonCash: boolean }> = [];
@@ -423,10 +446,28 @@ export async function valuePositionRowsOverDates(args: {
       // both entered the fallback, so every sold position was resurrected at its
       // earliest quantity on every later date.
       const held = resolveHeldQuantity(resolved, rows, holdConstant);
-      const quantity     = held.quantity;
-      const quantityDate = held.date;
-      const quantityTier = held.tier;
-      const heldConstant = held.heldConstant;
+      // V26-QUANTITY-1G — consult the authority. In `compare` this records what
+      // it would have said and returns the legacy value unchanged; only `adopt`
+      // lets it move money, and only where the timeline is absolute, covered,
+      // and its ordering evidenced rather than tie-broken. Every other date
+      // falls back to `resolveHeldQuantity` WITH a recorded reason.
+      const consulted = consultQuantityAuthority({
+        ctx: authorityCtx, dateISO: asOf,
+        financialAccountId, instrumentId, legacyQuantity: held.quantity,
+      });
+      const quantity     = consulted.quantity;
+      const quantityDate = consulted.usedAuthority ? asOf : held.date;
+      // An adopted quantity is the authority's own evidence grade: an observed
+      // anchor is observed, a replayed interval is derived from observed events.
+      // Carrying the legacy tier would mislabel it.
+      const quantityTier = consulted.usedAuthority
+        ? (consulted.decision.source === "AUTHORITY" && consulted.decision.basis === "OBSERVED_ANCHOR"
+            ? "observed" : "derived")
+        : held.tier;
+      // The backward carry is a LEGACY concept. When the authority supplied the
+      // quantity there is no carry, and the institution-anchor suppression below
+      // must not fire on a stale flag.
+      const heldConstant = consulted.usedAuthority ? false : held.heldConstant;
       const resolvedRow  = held.sourceRow ?? pickResolvedRow(rows, resolved.date, resolved.origin);
 
       // Not held at asOf (no covering row, or an explicit closed-zero) → excluded.
@@ -472,6 +513,8 @@ export async function valuePositionRowsOverDates(args: {
     const components: InstrumentValuation[] = inputs.map(({ input }) => valueInstrumentAsOf(input, asOf, ctx));
     out.set(asOf, valuePortfolioAsOf(components, asOf, ctx.target));
   }
+
+  if (args.authorityLedgerOut) args.authorityLedgerOut.push(...authorityCtx.ledger);
 
   return out;
 }
