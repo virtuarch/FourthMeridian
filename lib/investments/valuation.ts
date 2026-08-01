@@ -470,10 +470,11 @@ export async function valuePositionRowsOverDates(args: {
         ? (consulted.decision.source === "AUTHORITY" && consulted.decision.basis === "OBSERVED_ANCHOR"
             ? "observed" : "derived")
         : held.tier;
-      // The backward carry is a LEGACY concept. When the authority supplied the
-      // quantity there is no carry, and the institution-anchor suppression below
-      // must not fire on a stale flag.
+      // The backward carry is a LEGACY concept, retained for the quantity tier.
+      // It no longer gates the institution anchor — that is date-gated below,
+      // independently of where the quantity came from.
       const heldConstant = consulted.usedAuthority ? false : held.heldConstant;
+      void heldConstant;
       const resolvedRow  = held.sourceRow ?? pickResolvedRow(rows, resolved.date, resolved.origin);
 
       // V26-INVESTMENTS-HISTORY — an EXCLUDED component must stay visible.
@@ -499,6 +500,7 @@ export async function valuePositionRowsOverDates(args: {
       // This is a KNOWN ZERO, categorically different from the case above: the
       // evidence says the position was not held, rather than saying nothing.
       if (quantity == null || quantity === 0) continue;
+      const anchorPertainsToAsOf = resolvedRow?.date === asOf;
       const meta = instrumentMeta.get(instrumentId);
       const isCash = resolvedRow?.isCash ?? meta?.isCash ?? false;
       const nativeCurrency = resolvedRow?.currency ?? meta?.currency ?? null;
@@ -520,9 +522,24 @@ export async function valuePositionRowsOverDates(args: {
           // CURRENT value. Drop the institution anchor so non-cash positions fall
           // through to the real RAW_CLOSE market price at asOf ("price is real",
           // above); cash still resolves via its unit-price branch.
-          institutionValue: heldConstant ? null : (resolvedRow?.institutionValue ?? null),
-          institutionPrice: heldConstant ? null : (resolvedRow?.institutionPrice ?? null),
-          institutionPriceDate: heldConstant ? null : (resolvedRow?.institutionPriceDate ?? null),
+          // V26-INVESTMENTS-HISTORY — the institution anchor belongs to the DATE
+          // OF THE ROW THAT SUPPLIED IT, and to no other date.
+          //
+          // Passing it through on any other day short-circuits
+          // valueInstrumentAsOf's Precedence 1 and values that day at the
+          // anchor's price. With observations that begin in July, a 2026-01-01
+          // valuation was priced at the 2026-07-17 close — a look-forward of
+          // seven months. The previous gate keyed on `heldConstant`, which only
+          // covered the legacy backward-carry, so the same hole reopened the
+          // moment quantity came from anywhere else.
+          //
+          // The rule is therefore independent of quantity provenance: same date
+          // or nothing. When it is nothing, the component falls through to the
+          // canonical RAW_CLOSE lookup on or before asOf, and is left unvalued
+          // with a reason when no such price exists.
+          institutionValue: anchorPertainsToAsOf ? (resolvedRow?.institutionValue ?? null) : null,
+          institutionPrice: anchorPertainsToAsOf ? (resolvedRow?.institutionPrice ?? null) : null,
+          institutionPriceDate: anchorPertainsToAsOf ? (resolvedRow?.institutionPriceDate ?? null) : null,
           price: null, // filled below for non-cash without an institution anchor
           conflicted: conflictByPair.get(key) ?? false,
         },
