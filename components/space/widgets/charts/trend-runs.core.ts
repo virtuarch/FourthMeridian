@@ -31,14 +31,32 @@
 
 export const DAY_MS = 86_400_000;
 
-export type TrendBasis = "observed" | "reconstructed";
+/**
+ * How a stretch of the series was known.
+ *
+ * V26-INVESTMENTS-HISTORY — `unreliable` is a THIRD state, not a worse shade of
+ * `reconstructed`: the row exists and carries a value, but a regeneration
+ * recorded that most of its components could not be valued. It is supplied by
+ * the caller already classified; nothing in this module or in TrendChart decides
+ * what qualifies.
+ */
+export type TrendBasis = "observed" | "reconstructed" | "unreliable";
 
 /** A trend point with its epoch time resolved. Index-stable across all three functions. */
 export interface TrendGeomPoint {
   date:      string; // YYYY-MM-DD
   t:         number; // epoch ms
   value:     number;
+  /** Legacy two-state shorthand. Used only when `basis` is absent. */
   estimated: boolean;
+  /**
+   * The caller's classification. WINS over `estimated` when present — the two
+   * are not independent inputs, they are a refinement and its fallback, and
+   * `basisOf` below is the single place that precedence is expressed. Optional
+   * so the three charts that have no confidence data (Debt, Liquidity, Net
+   * Worth) keep passing `estimated` alone and behave exactly as before.
+   */
+  basis?:    TrendBasis;
 }
 
 export interface TrendRun {
@@ -64,9 +82,15 @@ export interface TrendBasisSeam {
   toDate:    string;
 }
 
-/** The evidence basis a point was measured on. */
-export function basisOf(p: { estimated: boolean }): TrendBasis {
-  return p.estimated ? "reconstructed" : "observed";
+/**
+ * The evidence basis a point was measured on — THE single derivation site.
+ *
+ * An explicit `basis` always wins; `estimated` is the legacy shorthand for
+ * callers that supply no classification. Keeping the precedence here (rather
+ * than at each call site) is what stops the two fields becoming two truths.
+ */
+export function basisOf(p: { estimated: boolean; basis?: TrendBasis }): TrendBasis {
+  return p.basis ?? (p.estimated ? "reconstructed" : "observed");
 }
 
 /** True when the span between two consecutive points exceeds the gap scale. */

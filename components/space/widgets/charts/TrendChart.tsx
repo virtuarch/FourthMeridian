@@ -39,7 +39,8 @@ import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "reac
 import { formatCompactCurrency } from "@/lib/format";
 import {
   medianSpacingDays, toRuns, toDateGaps, toBasisSeams,
-  type TrendGeomPoint, type TrendRun,
+  basisOf,
+  type TrendGeomPoint, type TrendRun, type TrendBasis,
 } from "./trend-runs.core";
 
 export interface TrendPoint {
@@ -48,6 +49,19 @@ export interface TrendPoint {
   value:     number;
   /** True when reconstructed / display-estimated (drawn as a different KIND of fact). */
   estimated: boolean;
+  /**
+   * V26-INVESTMENTS-HISTORY — the caller's ALREADY-CLASSIFIED confidence. When
+   * present it wins over `estimated` (see basisOf). This component never decides
+   * what makes a point unreliable: it receives a state and draws it. Optional,
+   * so callers with no confidence data are unchanged.
+   */
+  basis?:    TrendBasis;
+  /**
+   * Ready-to-render disclosure for the tooltip, e.g. "1 of 19 positions valued".
+   * Passed as TEXT, deliberately: handing this component the counts instead
+   * would invite it to compute a ratio and decide something from it.
+   */
+  coverageLabel?: string | null;
 }
 
 const H = 264;
@@ -67,6 +81,29 @@ function ts(date: string): number {
 
 type Pt = TrendGeomPoint;
 type Run = TrendRun;
+
+/**
+ * How each basis is DRAWN. A lookup table, not a decision: the caller has
+ * already classified the point, and this only says what that class looks like.
+ *
+ * `unreliable` gets NO area fill on purpose. A filled area reads as substance
+ * beneath the line, and the whole claim of an unreliable run is that most of it
+ * could not be valued — so the line is drawn and nothing is asserted under it.
+ * The dotted stroke and the lowest opacity put it visibly below a reconstructed
+ * estimate rather than beside it.
+ */
+const RUN_STYLE: Record<TrendBasis, { fill: string | null; opacity: number; dash?: string }> = {
+  observed:      { fill: "url(#tc-fill)",       opacity: 1 },
+  reconstructed: { fill: "url(#tc-fill-recon)", opacity: 0.6,  dash: "4 3" },
+  unreliable:    { fill: null,                  opacity: 0.34, dash: "1 4" },
+};
+
+/** The tooltip's one-word provenance suffix. Text, not logic. */
+const BASIS_SUFFIX: Record<TrendBasis, string | null> = {
+  observed:      null,
+  reconstructed: "rebuilt",
+  unreliable:    "low confidence",
+};
 
 export function TrendChart({
   points,
@@ -104,7 +141,9 @@ export function TrendChart({
   }, []);
 
   const geom = useMemo(() => {
-    const pts: Pt[] = points.map((p) => ({ date: p.date, t: ts(p.date), value: p.value, estimated: p.estimated }));
+    const pts: Pt[] = points.map((p) => ({
+      date: p.date, t: ts(p.date), value: p.value, estimated: p.estimated, basis: p.basis,
+    }));
     if (pts.length === 0) return null;
 
     const times = pts.map((p) => p.t);
@@ -226,8 +265,8 @@ export function TrendChart({
 
             {geom.runs.map((run, i) => (
               <g key={i}>
-                {run.points.length > 1 && (
-                  <path d={geom.area(run)} fill={run.basis === "observed" ? "url(#tc-fill)" : "url(#tc-fill-recon)"} />
+                {run.points.length > 1 && RUN_STYLE[run.basis].fill && (
+                  <path d={geom.area(run)} fill={RUN_STYLE[run.basis].fill!} />
                 )}
                 <path
                   d={geom.line(run)}
@@ -236,8 +275,8 @@ export function TrendChart({
                   strokeWidth="2"
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  strokeOpacity={run.basis === "observed" ? 1 : 0.6}
-                  strokeDasharray={run.basis === "reconstructed" ? "4 3" : undefined}
+                  strokeOpacity={RUN_STYLE[run.basis].opacity}
+                  strokeDasharray={RUN_STYLE[run.basis].dash}
                   vectorEffect="non-scaling-stroke"
                 />
               </g>
@@ -258,9 +297,13 @@ export function TrendChart({
               />
             ))}
 
-            {/* Reconstructed points get hollow markers. */}
-            {geom.pts.filter((p) => p.estimated).map((p) => (
-              <circle key={p.date} cx={geom.x(p.t)} cy={geom.y(p.value)} r="2.5" fill="var(--bg-base)" stroke="var(--meridian-400)" strokeWidth="1.25" strokeOpacity="0.7" />
+            {/* Every non-observed point gets a hollow marker, faded by its basis. */}
+            {geom.pts.filter((p) => basisOf(p) !== "observed").map((p) => (
+              <circle
+                key={p.date} cx={geom.x(p.t)} cy={geom.y(p.value)} r="2.5"
+                fill="var(--bg-base)" stroke="var(--meridian-400)" strokeWidth="1.25"
+                strokeOpacity={basisOf(p) === "unreliable" ? 0.4 : 0.7}
+              />
             ))}
 
             {/* The last point — the always-on marker. */}
@@ -270,7 +313,7 @@ export function TrendChart({
             {hover !== null && hoverPt && (
               <g pointerEvents="none">
                 <line x1={geom.x(hoverPt.t)} y1={PAD_T - 4} x2={geom.x(hoverPt.t)} y2={H - PAD_B} stroke="var(--border-hairline-strong)" strokeWidth="1" />
-                <circle cx={geom.x(hoverPt.t)} cy={geom.y(hoverPt.value)} r="4" fill={hoverPt.estimated ? "var(--bg-base)" : "var(--meridian-400)"} stroke="var(--meridian-400)" strokeWidth="1.5" />
+                <circle cx={geom.x(hoverPt.t)} cy={geom.y(hoverPt.value)} r="4" fill={basisOf(hoverPt) === "observed" ? "var(--meridian-400)" : "var(--bg-base)"} stroke="var(--meridian-400)" strokeWidth="1.5" />
               </g>
             )}
           </svg>
@@ -284,8 +327,14 @@ export function TrendChart({
                 </p>
                 <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
                   {formatDate(hoverPt.date)}
-                  {hoverPt.estimated && <span className="text-[var(--text-secondary)]">· rebuilt</span>}
+                  {BASIS_SUFFIX[basisOf(hoverPt)] && (
+                    <span className="text-[var(--text-secondary)]">· {BASIS_SUFFIX[basisOf(hoverPt)]}</span>
+                  )}
                 </p>
+                {/* Disclosure the CALLER wrote. Rendered verbatim, never composed here. */}
+                {hover !== null && points[hover]?.coverageLabel && (
+                  <p className="mt-0.5 text-[11px] text-[var(--text-faint)]">{points[hover].coverageLabel}</p>
+                )}
               </div>
             </div>
           )}
@@ -304,10 +353,16 @@ export function TrendChart({
             <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" /></svg>
             Observed
           </span>
-          {geom.pts.some((p) => p.estimated) && (
+          {geom.pts.some((p) => basisOf(p) === "reconstructed") && (
             <span className="inline-flex items-center gap-1.5">
               <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" strokeOpacity="0.6" strokeDasharray="4 3" /></svg>
               Reconstructed
+            </span>
+          )}
+          {geom.pts.some((p) => basisOf(p) === "unreliable") && (
+            <span className="inline-flex items-center gap-1.5">
+              <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" strokeOpacity="0.34" strokeDasharray="1 4" /></svg>
+              Mostly unvalued
             </span>
           )}
           {geom.seams.length > 0 && (

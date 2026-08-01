@@ -16,7 +16,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { buildPortfolioValueSeries, convertPortfolioValueSeries } from "./portfolio-series";
+import { buildPortfolioValueSeries, convertPortfolioValueSeries, type PortfolioValuePoint } from "./portfolio-series";
 import type { ConversionContext } from "@/lib/money/types";
 
 let failures = 0;
@@ -48,9 +48,9 @@ const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
 
 // ── convertPortfolioValueSeries ──────────────────────────────────────────────────
 {
-  const series = [
-    { date: "2025-01-01", value: 100, currency: "USD", estimated: false },
-    { date: "2025-02-01", value: 200, currency: "USD", estimated: true },
+  const series: PortfolioValuePoint[] = [
+    { date: "2025-01-01", value: 100, currency: "USD", estimated: false, confidence: "observed",      coverageLabel: null },
+    { date: "2025-02-01", value: 200, currency: "USD", estimated: true,  confidence: "reconstructed", coverageLabel: "3 of 4 positions valued" },
   ];
   const ctxEUR: ConversionContext = {
     target: "EUR",
