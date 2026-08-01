@@ -129,14 +129,14 @@ export function consultQuantityAuthority(args: {
   financialAccountId: string;
   instrumentId:       string;
   legacyQuantity:     number | null;
-}): { quantity: number | null; usedAuthority: boolean; decision: QuantityDecision } {
+}): { quantity: number | null; usedAuthority: boolean; excluded: boolean; decision: QuantityDecision } {
   const { ctx } = args;
   if (ctx.mode === "off") {
     const decision: QuantityDecision = {
       source: "LEGACY", reason: "AUTHORITY_DISABLED",
       detail: "QUANTITY_AUTHORITY_MODE is off",
     };
-    return { quantity: args.legacyQuantity, usedAuthority: false, decision };
+    return { quantity: args.legacyQuantity, usedAuthority: false, excluded: false, decision };
   }
 
   const timeline = ctx.timelines.get(pairKey(args.financialAccountId, args.instrumentId));

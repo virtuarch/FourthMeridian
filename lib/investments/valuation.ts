@@ -26,6 +26,7 @@ import {
   buildQuantityAuthorityContext, consultQuantityAuthority,
 } from "@/lib/investments/quantity-authority";
 import type { ComparisonRow } from "@/lib/investments/quantity-authority-bridge.core";
+import type { CompletenessTier } from "@/lib/perspective-engine/types";
 import { PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
 import { PriceBasis } from "@prisma/client";
 import { db } from "@/lib/db";
@@ -436,6 +437,11 @@ export async function valuePositionRowsOverDates(args: {
   // ── Value each requested date independently against the shared prep ────────
   for (const asOf of dates) {
     const inputs: Array<{ input: InstrumentValuationInput; nonCash: boolean }> = [];
+    /** Components the authority refused — unvalued, never absent. */
+    const excluded: Array<{
+      instrumentId: string; accountId: string;
+      quantity: number | null; quantityTier: CompletenessTier; reason: string;
+    }> = [];
     for (const [key, rows] of byPair) {
       const [financialAccountId, instrumentId] = key.split("|");
       const resolved = resolvePositionAsOf(rows, asOf);
@@ -470,7 +476,28 @@ export async function valuePositionRowsOverDates(args: {
       const heldConstant = consulted.usedAuthority ? false : held.heldConstant;
       const resolvedRow  = held.sourceRow ?? pickResolvedRow(rows, resolved.date, resolved.origin);
 
+      // V26-INVESTMENTS-HISTORY — an EXCLUDED component must stay visible.
+      //
+      // Dropping it here removed it from the total AND from completeness
+      // accounting, so an opening built from 8 supported positions while 12
+      // were omitted reported `unvalued 0 · tier estimated` — LESS doubt than
+      // before, on less evidence. A component the authority will not support is
+      // unvalued, not absent, and it carries the authority's own reason so the
+      // omission is inspectable rather than inferable.
+      if (consulted.excluded) {
+        excluded.push({
+          instrumentId, accountId: financialAccountId,
+          quantity: held.quantity, quantityTier: held.tier,
+          reason: consulted.decision.source === "LEGACY"
+            ? `Quantity unsupported (${consulted.decision.reason}): ${consulted.decision.detail}`
+            : "Quantity unsupported by the quantity authority.",
+        });
+        continue;
+      }
+
       // Not held at asOf (no covering row, or an explicit closed-zero) → excluded.
+      // This is a KNOWN ZERO, categorically different from the case above: the
+      // evidence says the position was not held, rather than saying nothing.
       if (quantity == null || quantity === 0) continue;
       const meta = instrumentMeta.get(instrumentId);
       const isCash = resolvedRow?.isCash ?? meta?.isCash ?? false;
@@ -511,6 +538,19 @@ export async function valuePositionRowsOverDates(args: {
     }
 
     const components: InstrumentValuation[] = inputs.map(({ input }) => valueInstrumentAsOf(input, asOf, ctx));
+    // Refused components enter the view as UNVALUED: `reportingValue: null`
+    // keeps them out of the subtotal while `valuePortfolioAsOf` counts them and
+    // degrades the tier through `worstTier`.
+    for (const e of excluded) {
+      components.push({
+        instrumentId: e.instrumentId, accountId: e.accountId, quantity: e.quantity,
+        nativePrice: null, nativeValue: null, reportingValue: null,
+        currency: null, reportingCurrency: ctx.target,
+        quantityTier: e.quantityTier, priceTier: "unknown", fxTier: "unknown",
+        overallTier: "unknown", basisUsed: null,
+        priceDate: null, staleDays: null, reason: e.reason, conflicted: false,
+      });
+    }
     out.set(asOf, valuePortfolioAsOf(components, asOf, ctx.target));
   }
 
