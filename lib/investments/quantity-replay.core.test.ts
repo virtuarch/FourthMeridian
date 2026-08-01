@@ -545,14 +545,29 @@ function main(): void {
         s.kind !== "UNRESOLVED" || !Object.prototype.hasOwnProperty.call(s, "cumulativeDelta")));
     every("explicit zero is an ABSOLUTE known-closure segment, never a gap",
       ({ timeline: t }) => t.segments.every((s) => s.kind !== "ABSOLUTE" || Number.isFinite(s.quantity)));
-    every("no segment precedes the first defensible evidence",
+    // V26-QUANTITY-1H restated this. Backward replay legitimately reaches
+    // EARLIER than the first event — that is the whole point — but never
+    // earlier than the licensed coverage floor, where "no events" stops
+    // carrying information and PRICE-5A's prohibition resumes.
+    every("no segment precedes the licensed coverage floor",
       ({ anchors, events, timeline: t }) => {
-        const earliest = [
-          ...anchors.filter((x) => PERMITTED_ANCHOR_ORIGINS.has(x.origin)).map((x) => x.dateISO),
-          ...events.map((e) => e.dateISO),
-        ].sort()[0];
-        return earliest === undefined ? t.segments.length === 0 : t.segments.every((s) => s.fromISO >= earliest);
+        const cover = licensedCoverage(t.diagnostics.eventStream);
+        const floor = cover
+          ? (cover.fromISO > t.windowFromISO ? cover.fromISO : t.windowFromISO)
+          : [...anchors.filter((x) => PERMITTED_ANCHOR_ORIGINS.has(x.origin)).map((x) => x.dateISO),
+             ...events.map((e) => e.dateISO)].sort()[0];
+        if (floor === undefined) return t.segments.length === 0;
+        // An OBSERVED anchor states its own date and is defensible there
+        // whatever coverage says — the floor governs REPLAYED claims, which are
+        // the ones that depend on the stream being complete.
+        return t.segments.every((s) =>
+          s.fromISO >= floor ||
+          (s.kind === "ABSOLUTE" && s.basis === "OBSERVED_ANCHOR" && s.fromISO === s.toISO));
       });
+    every("a backward-replayed segment is labelled as such, never as observed",
+      ({ timeline: t }) => t.segments.every((s) =>
+        s.kind !== "ABSOLUTE" || s.basis !== "REPLAYED_BACKWARD" ||
+        t.diagnostics.backSolvedOpening !== null || licensedCoverage(t.diagnostics.eventStream) !== null));
     every("a DERIVED anchor never opens, resumes or appears in a segment",
       ({ anchors, timeline: t }) => anchors.filter((x) => x.origin === "DERIVED").every((x) => {
         const o = t.diagnostics.anchorOutcomes.find((y) => y.observationId === x.observationId);

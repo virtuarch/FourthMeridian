@@ -40,7 +40,7 @@ export type FallbackReason = (typeof FALLBACK_REASONS)[number];
 export interface AuthorityQuantity {
   source:          "AUTHORITY";
   quantity:        number;
-  basis:           "OBSERVED_ANCHOR" | "REPLAYED";
+  basis:           "OBSERVED_ANCHOR" | "REPLAYED" | "REPLAYED_BACKWARD";
   segmentFromISO:  string;
   segmentToISO:    string;
   /** Point evidence proves ONE date; an interval claim was licensed by coverage. */

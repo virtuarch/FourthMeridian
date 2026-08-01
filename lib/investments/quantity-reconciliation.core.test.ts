@@ -227,11 +227,14 @@ function main(): void {
     check("…and it is NOT called an opening quantity",
       !("openingQuantity" in gapToObs.unattributedDifferences[0]) && gapToObs.backSolved === null);
 
+    // V26-QUANTITY-1H changed this outcome, and for the better: under COMPLETE
+    // coverage the replay now BACK-SOLVES the opening (10 − 3 = 7), so there is
+    // no unattributed difference left to explain. The question the candidates
+    // existed to answer has been answered.
     const complete = reconcile([anchor({ observationId: "obs", dateISO: "2026-06-01", quantity: 10 })],
       [ev({ type: "BUY", quantity: 3, dateISO: "2026-03-01" })], COMPLETE());
-    const cc = complete.unattributedDifferences[0].candidates.map((x) => x.kind);
-    check("with a COMPLETE stream, missing events is no longer offered",
-      !cc.includes("MISSING_EVENTS_CONSISTENT") && cc.includes("MISSING_PREHISTORY_CONSISTENT"));
+    check("with a COMPLETE stream the opening is solved, not merely explained",
+      complete.unattributedDifferences.length === 0);
 
     const balanced = reconcile([anchor({ observationId: "obs", dateISO: "2026-06-01", quantity: 3 })],
       [ev({ type: "BUY", quantity: 3, dateISO: "2026-03-01" })], COMPLETE());

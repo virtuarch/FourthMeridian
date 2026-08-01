@@ -177,7 +177,12 @@ export type QuantityTimelineSegment =
       fromISO:        string;
       toISO:          string;
       quantity:       number;
-      basis:          "OBSERVED_ANCHOR" | "REPLAYED";
+      /**
+       * `REPLAYED_BACKWARD` — established by inverting the affine map from a
+       * LATER observed anchor. Mathematically forced, not estimated; the
+       * direction stays inspectable because a consumer may weigh it differently.
+       */
+      basis:          "OBSERVED_ANCHOR" | "REPLAYED" | "REPLAYED_BACKWARD";
       derivedFrom:    string[];
       orderCertainty: SegmentOrderCertainty;
     }
@@ -271,6 +276,13 @@ export interface ReplayDiagnostics {
   reconciliationResidues:     Array<{ observationId: string; dateISO: string; expected: number; observed: number; residue: number }>;
   /** Echoed so a consumer can see what licensed (or refused to license) intervals. */
   eventStream:                EventStreamCompleteness;
+  /**
+   * V26-QUANTITY-1H — the opening established by inverting the affine map from a
+   * later observed anchor, when the interval is licensed and determined. NEVER
+   * persisted and never re-read as an anchor: it is a computed consequence of
+   * observed evidence, not evidence.
+   */
+  backSolvedOpening:          { quantity: number; asOfISO: string; fromObservationId: string; eventIds: string[] } | null;
   /** Days inside the window that no segment widened to cover. */
   intervalClaimsWithheld:     number;
 }
@@ -363,7 +375,7 @@ interface RawRun {
   toISO:           string;
   quantity:        number;
   cumulativeDelta: number;
-  basis:           "OBSERVED_ANCHOR" | "REPLAYED";
+  basis:           "OBSERVED_ANCHOR" | "REPLAYED" | "REPLAYED_BACKWARD";
   derivedFrom:     string[];
   orderCertainty:  SegmentOrderCertainty;
 }
@@ -437,7 +449,7 @@ export function replayQuantityTimeline(input: ReplayInput): QuantityTimeline {
     missingOpeningAnchor: false, anchorRejectedReason: null,
     absoluteResolvedThroughISO: null, resumedFromAnchors: [],
     anchorOutcomes: [], reconciliationResidues: [],
-    eventStream, intervalClaimsWithheld: 0,
+    eventStream, intervalClaimsWithheld: 0, backSolvedOpening: null,
   };
 
   // ── Classify every input event ──────────────────────────────────────────
@@ -522,13 +534,93 @@ export function replayQuantityTimeline(input: ReplayInput): QuantityTimeline {
     else diagnostics.missingOpeningAnchor = true;
   }
 
+  // ── V26-QUANTITY-1H — backward replay ───────────────────────────────────
+  // No anchor precedes the events, but one sits LATER inside a licensed,
+  // determined interval. The composite map is affine —
+  //
+  //     Q_anchor = a·Q_0 + b        a = Π(ratios), b = accumulated deltas
+  //     Q_0      = invert(Q_anchor)  unique iff a is finite and non-zero
+  //
+  // — so the opening is forced, not estimated. Refusing it was an artefact of
+  // replaying in one direction, and it is what let a reconstruction walk
+  // persist sign-inverted phantom shorts while the arithmetic here proves the
+  // long position.
+  let backSolvedFloorISO: string | null = null;
+  if (opening === null && applicable.length > 0) {
+    const cover = licensedCoverage(eventStream);
+    const anchor = permitted[0] ?? null;                       // earliest permitted
+    const before = applicable
+      .filter((g) => g.dateISO <= (anchor?.dateISO ?? ""))
+      .flatMap((g) => g.replayable);
+    const blockedBefore = applicable.some((g) =>
+      g.dateISO <= (anchor?.dateISO ?? "") &&
+      (g.blocking.length > 0 || g.classification === "ORDER_SENSITIVE_UNRESOLVED"));
+    const firstEventISO = applicable[0].dateISO;
+
+    // `before` may legitimately be EMPTY. Under COMPLETE coverage that is the
+    // trivially-solved case, not a missing one: no recorded movement between
+    // the floor and the anchor, on a stream declared to record every movement,
+    // means the quantity did not change. Q_0 = Q_anchor. Requiring an event
+    // here would refuse the easiest proof in the set.
+    void firstEventISO;
+    if (cover && anchor && !blockedBefore &&
+        cover.fromISO <= anchor.dateISO && cover.toISO >= anchor.dateISO) {
+      // Invert in exact reverse of the forward application order.
+      const ordered = applicable
+        .filter((g) => g.dateISO <= anchor.dateISO)
+        .flatMap((g) => (g.classification === "ORDERED"
+          ? [...g.replayable].sort((x, y) => (orderedKey(x) < orderedKey(y) ? -1 : 1))
+          : [...g.replayable].sort((x, y) => (x.order.deterministicKey < y.order.deterministicKey ? -1 : 1))));
+      let q = anchor.quantity;
+      let ratioProduct = 1;
+      let invertible = true;
+      for (let i = ordered.length - 1; i >= 0; i--) {
+        const e = ordered[i];
+        if (e.ratio !== null) {
+          if (e.ratio === 0 || !Number.isFinite(e.ratio)) { invertible = false; break; }
+          ratioProduct *= e.ratio;
+          q /= e.ratio;
+        } else {
+          q -= e.normalizedDelta ?? 0;
+        }
+      }
+      if (invertible && Number.isFinite(q) && ratioProduct !== 0) {
+        // The floor is the coverage boundary — never one day earlier. Before it,
+        // "no events" carries no information and PRICE-5A stands unchanged.
+        backSolvedFloorISO = maxISO(windowFromISO, cover.fromISO);
+        diagnostics.backSolvedOpening = {
+          quantity: q, asOfISO: backSolvedFloorISO,
+          fromObservationId: anchor.observationId,
+          eventIds: ordered.map((e) => e.eventId).sort(),
+        };
+        diagnostics.missingOpeningAnchor = false;
+      }
+    }
+  }
+
   // ── Walk the days, producing RAW (unlicensed) runs ──────────────────────
-  let absolute = opening !== null;
-  let quantity = opening ? opening.quantity : 0;
+  // An opening anchor fixes its own date forward. Under COMPLETE coverage
+  // reaching earlier, it fixes the interval BACK to the floor too: the anchor
+  // is by construction the latest one preceding the first event, so nothing
+  // moved in between on a stream declared to record every movement.
+  let openingBackTo: string | null = null;
+  if (opening) {
+    const cover = licensedCoverage(eventStream);
+    if (cover && cover.fromISO <= opening.dateISO && cover.toISO >= opening.dateISO) {
+      const floor = maxISO(windowFromISO, cover.fromISO);
+      if (floor < opening.dateISO) openingBackTo = floor;
+    }
+  }
+  const bs = diagnostics.backSolvedOpening;
+  let absolute = opening !== null || bs !== null;
+  let quantity = opening ? opening.quantity : bs ? bs.quantity : 0;
   let cumulative = 0;
-  let runFrom: string | null = opening ? opening.dateISO : null;
-  let runBasis: "OBSERVED_ANCHOR" | "REPLAYED" = "OBSERVED_ANCHOR";
-  let runDerived: string[] = opening ? [opening.observationId] : [];
+  let runFrom: string | null = opening ? (openingBackTo ?? opening.dateISO) : bs ? bs.asOfISO : null;
+  let runBasis: "OBSERVED_ANCHOR" | "REPLAYED" | "REPLAYED_BACKWARD" =
+    opening ? (openingBackTo ? "REPLAYED_BACKWARD" : "OBSERVED_ANCHOR")
+    : bs ? "REPLAYED_BACKWARD" : "OBSERVED_ANCHOR";
+  let runDerived: string[] = opening ? [opening.observationId]
+    : bs ? [bs.fromObservationId, ...bs.eventIds] : [];
   let runCertainty: SegmentOrderCertainty = "KNOWN";
 
   const closeRun = (toISO: string): void => {
