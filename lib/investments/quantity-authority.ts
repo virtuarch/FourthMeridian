@@ -72,10 +72,40 @@ export async function buildQuantityAuthorityContext(args: {
   if (mode === "off" || args.dates.length === 0 || args.financialAccountIds.length === 0) return OFF;
 
   const sorted = [...new Set(args.dates)].sort();
+  const accountIds = [...new Set(args.financialAccountIds)];
+
+  // V26-QUANTITY-1H — the REPLAY window is not the requested window.
+  //
+  // Valuing a single historical date used to build a one-day replay window, which
+  // contained no events and no anchors, so the authority could never speak about
+  // any past date — it silently fell back to legacy on every one. Backward replay
+  // in particular needs the LATER anchor it inverts from, which by definition
+  // sits after the date being valued.
+  //
+  // So the replay spans from the earliest requested date to the latest evidence
+  // this account holds. The requested dates still decide what is ASKED; this only
+  // ensures the answer is computed with the evidence that determines it.
+  const [lastObs, lastEvent] = await Promise.all([
+    args.client.positionObservation.findFirst({
+      where: { financialAccountId: { in: accountIds }, deletedAt: null, supersededById: null },
+      orderBy: { date: "desc" }, select: { date: true },
+    }),
+    args.client.investmentEvent.findFirst({
+      where: { financialAccountId: { in: accountIds } },
+      orderBy: { date: "desc" }, select: { date: true },
+    }),
+  ]);
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const windowToISO = [
+    sorted[sorted.length - 1],
+    ...(lastObs ? [iso(lastObs.date)] : []),
+    ...(lastEvent ? [iso(lastEvent.date)] : []),
+  ].sort().at(-1)!;
+
   const results = await loadQuantityTimelines({
-    financialAccountIds: [...new Set(args.financialAccountIds)],
+    financialAccountIds: accountIds,
     windowFromISO: sorted[0],
-    windowToISO: sorted[sorted.length - 1],
+    windowToISO,
     client: args.client,
   });
 

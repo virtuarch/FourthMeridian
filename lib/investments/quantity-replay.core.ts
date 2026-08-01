@@ -549,9 +549,6 @@ export function replayQuantityTimeline(input: ReplayInput): QuantityTimeline {
   if (opening === null && applicable.length > 0) {
     const cover = licensedCoverage(eventStream);
     const anchor = permitted[0] ?? null;                       // earliest permitted
-    const before = applicable
-      .filter((g) => g.dateISO <= (anchor?.dateISO ?? ""))
-      .flatMap((g) => g.replayable);
     const blockedBefore = applicable.some((g) =>
       g.dateISO <= (anchor?.dateISO ?? "") &&
       (g.blocking.length > 0 || g.classification === "ORDER_SENSITIVE_UNRESOLVED"));
