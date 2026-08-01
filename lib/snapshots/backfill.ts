@@ -294,6 +294,12 @@ export async function backfillSpaceSnapshots(
     // Historical valuation: day d's balances convert at day d's rate.
     const c = classifyAccounts(dayAccounts, ctx, dISO);
     const fields = computeSnapshotFields(c);
+    // V26-INVESTMENTS-HISTORY — backfill HOLDS INVESTMENTS FLAT at today's
+    // value (see this module's header); it runs no A8 valuation, so there is no
+    // completeness tier and no component composition to record. The three
+    // columns stay null — NOT RECORDED — rather than being invented from a flat
+    // hold. A later historical regeneration is what replaces the flat component
+    // with a real valuation, and that is the writer that records them.
     rows.push({ spaceId, date: d, isEstimated: true, reportingCurrency: space.reportingCurrency, ...fields });
   }
 

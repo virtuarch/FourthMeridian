@@ -193,6 +193,25 @@ export async function regenerateSpaceSnapshot(
   // written to snapshots (approved D-7; Phase 4 open item).
   const reportingCurrency = space.reportingCurrency;
 
+  // V26-INVESTMENTS-HISTORY — this writer computes today's row from LIVE
+  // account balances via classifyAccounts; it runs no A8 historical valuation,
+  // so it has no completeness tier and no component composition to record. The
+  // three columns are therefore written as null — NOT RECORDED — rather than
+  // invented here.
+  //
+  // They are cleared on `update` as well, deliberately: if a historical
+  // regeneration had previously written a tier for this date, those counts
+  // describe an A8 valuation that no longer produced these numbers. A stale
+  // tier surviving onto a live-balance row would be the very "two sources of
+  // truth" this slice exists to avoid. Nothing is lost — today's row is an
+  // observation, and the frozen-row invariant lets a reader infer `observed`
+  // from `isEstimated=false` (see snapshot-completeness.core.ts).
+  const composition = {
+    completenessTier: null,
+    contributingComponentCount: null,
+    totalComponentCount: null,
+  };
+
   await client.spaceSnapshot.upsert({
     where: { spaceId_date: { spaceId, date } },
     create: {
@@ -200,11 +219,13 @@ export async function regenerateSpaceSnapshot(
       stocks, crypto, total, cash, savings, debt,
       netWorth, totalAssets, netLiquid, cashOnHand,
       reportingCurrency,
+      ...composition,
     },
     update: {
       stocks, crypto, total, cash, savings, debt,
       netWorth, totalAssets, netLiquid, cashOnHand,
       reportingCurrency,
+      ...composition,
     },
   });
 }

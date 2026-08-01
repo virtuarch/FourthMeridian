@@ -2343,6 +2343,47 @@ model SpaceSnapshot {
   amendedByAmendmentId String?
   amendedByAmendment   SnapshotAmendment? @relation(fields: [amendedByAmendmentId], references: [id], onDelete: SetNull)
 
+  // ── V26-INVESTMENTS-HISTORY — how this row was computed ────────────────────
+  //
+  // `isEstimated` is `tier !== "observed"` (regenerate-history.core.ts): a
+  // five-value ordinal collapsed into one bit. It cannot separate a day worth
+  // $5,056 with every holding valued from a day worth $11.65 with 18 of 19
+  // holdings unaccounted for — both persist `true` and render identically.
+  //
+  // These three scalars are PROPERTIES OF THE COMPUTATION, exactly like
+  // `reportingCurrency` above — not financial totals, and not a Completeness
+  // ENVELOPE. `reason`, `conflict`, `byComponent` and per-instrument exclusion
+  // lists deliberately stay runtime-only, per the ratified anti-`FinancialState`
+  // ruling (lib/perspective-engine/types.ts). What is persisted is only what a
+  // read path must filter or compare on.
+  //
+  // All three nullable, no default: additive, zero migration risk. Null means
+  // NOT RECORDED, never "zero". Existing rows read null and behave exactly as
+  // before. See lib/snapshots/snapshot-completeness.core.ts for the ONE
+  // canonical interpretation — consumers must not combine these with
+  // `isEstimated` themselves.
+  //
+  // FROZEN-ROW INVARIANT: an `isEstimated=false` row is an immutable
+  // observation and is never rewritten, so its tier stays null forever. That
+  // costs nothing: `isEstimated = tier !== "observed"` makes
+  // `isEstimated=false ⇒ tier="observed"` a sound inference. The one class of
+  // row that can never be enriched is the one class that needs no column.
+
+  // Canonical `CompletenessTier` string ("observed" | "derived" | "estimated" |
+  // "incomplete" | "unknown"), guarded at write time by `isCompletenessTier` —
+  // the same reserved-String pattern as `PositionObservation.completeness` and
+  // `PositionReconstruction.completeness`. Never a parallel vocabulary.
+  completenessTier String?
+
+  // Components of the day's INVESTMENT valuation that actually contributed to
+  // the stored `stocks` figure, and how many the valuation considered in total.
+  // The pair is the composition signal a single tier cannot carry: across the
+  // 2026-06-24 → 06-25 seam the tier is `unknown` on BOTH sides while the
+  // contributing count moves 1 → 7 of 19. Written only when the day had a real
+  // A8 valuation; null when investments were held flat (nothing was composed).
+  contributingComponentCount Int?
+  totalComponentCount        Int?
+
   createdAt DateTime @default(now())
 
   @@unique([spaceId, date])

@@ -18,6 +18,7 @@ import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
 import { buildSpaceConversionContext, resolveEffectiveSpaceConversion } from "@/lib/money/server-context";
 import { convertStampedValues } from "@/lib/snapshots/stamp-conversion";
+import { resolveSnapshotCompleteness } from "@/lib/snapshots/snapshot-completeness.core";
 import type { ConversionContext } from "@/lib/money/types";
 import { Snapshot } from "@/types";
 
@@ -95,6 +96,19 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
       netLiquid:        r.netLiquid,
     };
 
+    // V26-INVESTMENTS-HISTORY — resolve the row's confidence ONCE, here, at the
+    // single read boundary. Downstream surfaces never see the raw
+    // (isEstimated, completenessTier) pair and so can never interpret it two
+    // ways. Note this describes how the row was COMPUTED, so — unlike the
+    // totals — it is unaffected by read-time display conversion below.
+    const completeness = resolveSnapshotCompleteness(r);
+    const provenance = {
+      completenessTier:           completeness.tier,
+      completenessRecorded:       completeness.recorded,
+      contributingComponentCount: completeness.contributingComponentCount,
+      totalComponentCount:        completeness.totalComponentCount,
+    };
+
     // Homogeneous fast path (stampCtx null) or on-stamp row → pre-MC1 mapping.
     if (!stampCtx || stamp === target) {
       return {
@@ -102,6 +116,7 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
         ...raw,
         // D2.x Slice 4 — provenance for the estimated-history badge.
         isEstimated: r.isEstimated ?? false,
+        ...provenance,
       };
     }
 
@@ -112,6 +127,7 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
       date: r.date.toISOString().split("T")[0],
       ...converted.values,
       isEstimated: (r.isEstimated ?? false) || converted.estimated,
+      ...provenance,
       // MC1 QA Q4b — additive: only a genuine rate MISS (native pass-through)
       // sets this; resolving off-stamp rows omit it, so homogeneous histories
       // stay byte-identical. The hero series drops these points downstream.

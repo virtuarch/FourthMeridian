@@ -8,6 +8,9 @@ import type { NeedsClassificationReason } from '@/lib/transactions/needs-classif
 // CF-1 — the canonical TransferDisposition surfaces on the list DTO for the Cash
 // Flow context projection. Type-only; the source module is pure/Prisma-free.
 import type { TransferDisposition } from '@/lib/transactions/transfer-evidence';
+// V26-INVESTMENTS-HISTORY — the canonical trust vocabulary on the Snapshot DTO.
+// Type-only; the perspective-engine types module is pure/Prisma-free.
+import type { CompletenessTier } from '@/lib/perspective-engine/types';
 
 export type AccountType = 'checking' | 'savings' | 'investment' | 'crypto' | 'debt' | 'other';
 
@@ -102,6 +105,22 @@ export interface Snapshot {
   // conversions (byte-identical DTOs), letting a presentation guard drop only
   // the genuinely mixed-unit points from a series.
   fxMiss?: true;
+  // V26-INVESTMENTS-HISTORY — how this row was computed, RESOLVED once at the
+  // read boundary by lib/snapshots/snapshot-completeness.core.ts. `isEstimated`
+  // above stays for existing consumers (it answers "is this a reconstruction?",
+  // which is still a valid question), but anything reasoning about CONFIDENCE
+  // must use these — never the raw pair, and never its own combination of them.
+  //
+  // `completenessTier` is always a canonical member when present; `recorded`
+  // distinguishes a written fact from the frozen-row inference. The counts
+  // describe the day's INVESTMENT valuation and are null when not recorded —
+  // null is "we did not write it down", never "zero contributed".
+  //
+  // Optional so every pre-existing constructor of this DTO is unaffected.
+  completenessTier?:           CompletenessTier;
+  completenessRecorded?:       boolean;
+  contributingComponentCount?: number | null;
+  totalComponentCount?:        number | null;
 }
 
 export type TransactionCategory =

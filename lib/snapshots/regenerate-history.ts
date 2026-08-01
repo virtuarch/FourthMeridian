@@ -44,7 +44,7 @@ import {
   applyOwnershipEligibility,
   ownershipTier,
 } from "@/lib/snapshots/ownership-eligibility.core";
-import { worstTier } from "@/lib/perspective-engine/completeness";
+import { worstTier, isCompletenessTier } from "@/lib/perspective-engine/completeness";
 import type { InvestmentValuationView } from "@/lib/investments/valuation-core";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
 import {
@@ -427,7 +427,14 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       : (_dISO: string): number | null => null;
 
   const result: RegenerateWealthHistoryResult = { ...zero };
-  const writes: Array<{ date: Date; isEstimated: boolean; fields: NonNullable<DayRegenResult["fields"]> }> = [];
+  const writes: Array<{
+    date: Date;
+    isEstimated: boolean;
+    fields: NonNullable<DayRegenResult["fields"]>;
+    completenessTier: DayRegenResult["tier"];
+    contributingComponentCount: number | null;
+    totalComponentCount: number | null;
+  }> = [];
 
   for (const dISO of candidateDates) {
     const d = fromISO(dISO);
@@ -465,6 +472,12 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     let investmentTier: CompletenessTier = "incomplete";
     let hasInvestmentEvidence = false;
     let ownershipIneligible = false;
+    // V26-INVESTMENTS-HISTORY — composition of the day's investment valuation,
+    // persisted alongside the tier so a stored row can distinguish "estimated
+    // but complete" from "estimated and mostly unknown". Null unless a real A8
+    // valuation produced the day's `investmentValue`; null means NOT RECORDED.
+    let contributingComponentCount: number | null = null;
+    let totalComponentCount: number | null = null;
     const view = investmentByDate.get(dISO);
     if (view) {
       // V26-PRICE-5A — UNKNOWN ownership prehistory must not be valued. A8 is
@@ -495,6 +508,11 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
           view.completeness.tier,
           ownershipTier(eligible.ownershipConfidence),
         ]);
+        // Recorded only where a valuation actually happened, and taken from the
+        // SAME eligibility result that produced `investmentValue` above — the
+        // counts describe the exact set that was summed, never a re-derivation.
+        contributingComponentCount = eligible.contributingCount;
+        totalComponentCount = eligible.totalCount;
       }
     }
 
@@ -534,6 +552,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       investmentTier,
       hasInvestmentEvidence,
       ownershipIneligible,
+      contributingComponentCount,
+      totalComponentCount,
       digitalAssetValue,
       digitalAssetTier: "estimated", // constant-quantity assumption × real price
       hasDigitalAssetEvidence,
@@ -589,7 +609,18 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     const candidate = classifyRegeneration(res, prior ?? null);
     result.dispositions[candidate.disposition]++;
     if (candidate.disposition === "UPDATED" && res.fields) {
-      writes.push({ date: d, isEstimated: res.isEstimated, fields: res.fields });
+      // V26-INVESTMENTS-HISTORY — `res.tier` was already computed here and then
+      // discarded at the upsert; it is the row-level worst-of(cash/card,
+      // investment, crypto) the FLIP rule derives `isEstimated` from. Persisting
+      // it makes `isEstimated` derivable rather than a second, lossier truth.
+      writes.push({
+        date: d,
+        isEstimated: res.isEstimated,
+        fields: res.fields,
+        completenessTier: res.tier,
+        contributingComponentCount: res.contributingComponentCount,
+        totalComponentCount: res.totalComponentCount,
+      });
     }
   }
 
@@ -599,6 +630,12 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       const data = {
         ...w.fields,
         isEstimated: w.isEstimated,
+        // Guarded at the write boundary, exactly as A4 guards
+        // PositionObservation.completeness: no stream may smuggle a second trust
+        // vocabulary into the reserved String column.
+        completenessTier: isCompletenessTier(w.completenessTier) ? w.completenessTier : null,
+        contributingComponentCount: w.contributingComponentCount,
+        totalComponentCount: w.totalComponentCount,
         reportingCurrency: space.reportingCurrency,
         // Phase 2 — stamp the amendment that revised this row (amendment runs only).
         ...(args.isAmendment && args.amendedByAmendmentId ? { amendedByAmendmentId: args.amendedByAmendmentId } : {}),

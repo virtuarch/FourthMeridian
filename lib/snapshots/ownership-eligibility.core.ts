@@ -55,6 +55,16 @@ export interface EligibilityResult {
   excludedInstrumentIds: string[];
   /** Σ reportingValue over INCLUDED holdings only. */
   valuedSubtotal:      number;
+  /**
+   * V26-INVESTMENTS-HISTORY — how many holdings actually CONTRIBUTED to
+   * `valuedSubtotal`: included by ownership AND carrying a non-null
+   * reportingValue. Counted in the same pass that sums the subtotal, so the two
+   * can never describe different sets. Component count, not instrument count:
+   * one instrument held in two accounts is two holdings (and two contributions).
+   */
+  contributingCount:   number;
+  /** How many holdings the valuation considered for this date, before any filter. */
+  totalCount:          number;
   /** Worst ownership confidence among INCLUDED holdings; UNKNOWN when none. */
   ownershipConfidence: OwnershipConfidenceAxis;
   /**
@@ -131,6 +141,10 @@ export function applyOwnershipEligibility(
     includedInstrumentIds: includedSorted.map((h) => h.instrumentId),
     excludedInstrumentIds: [...excluded].sort(),
     valuedSubtotal:        includedSorted.reduce((n, h) => n + (h.reportingValue ?? 0), 0),
+    // Same set, same pass, same order as the subtotal above — a holding the
+    // subtotal skipped (reportingValue null) is not counted as contributing.
+    contributingCount:     includedSorted.reduce((n, h) => n + (h.reportingValue == null ? 0 : 1), 0),
+    totalCount:            holdings.length,
     ownershipConfidence:   sawIncluded ? confidence : "UNKNOWN",
     hasEligibleHoldings:   includedSorted.length > 0,
   };

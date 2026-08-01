@@ -120,6 +120,16 @@ export interface DayRegenInput {
   /** Trust tier of the walked-back cash/card component (typically "derived"). */
   cashCardTier: CompletenessTier;
   /**
+   * V26-INVESTMENTS-HISTORY — composition of the day's INVESTMENT valuation:
+   * how many holdings contributed to `investmentValue`, and how many were
+   * considered. Pass-through metadata: neither participates in any decision
+   * below, so no guard, skip, tier or written value can change because of them.
+   * Null when the day had no A8 valuation (investments held flat) — nothing was
+   * composed, and null means NOT RECORDED, never zero.
+   */
+  contributingComponentCount?: number | null;
+  totalComponentCount?:        number | null;
+  /**
    * 2026-07-15 — true when some account in this Space was revoked from the
    * Space (SpaceAccountLink.revokedAt) strictly AFTER this day's date — i.e.
    * that account was plausibly part of the Space as of this day and has
@@ -156,6 +166,15 @@ export interface DayRegenResult {
   isEstimated: boolean;
   /** Overall completeness tier of the regenerated row (worst of cash/card + investment). */
   tier: CompletenessTier;
+  /**
+   * V26-INVESTMENTS-HISTORY — the input's composition counts, echoed so the
+   * writer persists them from the SAME object it takes `tier` and `fields`
+   * from. Non-null only on `action === "write"`: a skipped day writes nothing,
+   * and carrying counts on a skip would invite persisting composition for a row
+   * whose values came from a different run.
+   */
+  contributingComponentCount: number | null;
+  totalComponentCount:        number | null;
   reason: string;
 }
 
@@ -174,7 +193,11 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
   // FROZEN: an observed row is never touched by the automatic path (the safety
   // invariant). An amendment may deliberately revise it (proposal §4).
   if (!isAmendment && existingIsEstimated === false) {
-    return { date, action: "skip-frozen", fields: null, isEstimated: false, tier: "observed", reason: "Observed row is frozen." };
+    return {
+      date, action: "skip-frozen", fields: null, isEstimated: false, tier: "observed",
+      contributingComponentCount: null, totalComponentCount: null,
+      reason: "Observed row is frozen.",
+    };
   }
 
   // MEMBERSHIP CHANGED: an account that was plausibly part of this Space as of
@@ -187,6 +210,7 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
   if (!isAmendment && input.membershipChangedSince) {
     return {
       date, action: "skip-membership-changed", fields: null, isEstimated: existingIsEstimated ?? true, tier: "incomplete",
+      contributingComponentCount: null, totalComponentCount: null,
       reason: "An account was removed from this Space after this date; automatic regen leaves the existing value untouched (requires an explicit amendment).",
     };
   }
@@ -207,6 +231,7 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
   if (input.ownershipIneligible === true) {
     return {
       date, action: "skip-unsupported", fields: null, isEstimated: true, tier: "incomplete",
+      contributingComponentCount: null, totalComponentCount: null,
       reason:
         "OWNERSHIP_PREHISTORY: no holding has KNOWN or POSSIBLE ownership on this date; " +
         "the stored value is preserved rather than replaced with a zero-valued portfolio.",
@@ -218,6 +243,7 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
   if (!input.hasInvestmentEvidence && flatInvestments > WEALTH_REGEN_EPSILON) {
     return {
       date, action: "skip-unsupported", fields: null, isEstimated: true, tier: "incomplete",
+      contributingComponentCount: null, totalComponentCount: null,
       reason: "No historical position evidence for this date; flat estimate preserved (not fabricated).",
     };
   }
@@ -254,6 +280,7 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     return {
       date, action: "skip-unsupported", fields: null,
       isEstimated: true, tier: "incomplete",
+      contributingComponentCount: null, totalComponentCount: null,
       reason:
         `${INVALID_VALUATION_REASON_CODE} (${invalidComponents.join(",")}): historical valuation was ` +
         `negative or non-finite; the stored value is preserved, not overwritten. ` +
@@ -290,6 +317,8 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
   if (input.hasDigitalAssetEvidence) parts.push("crypto at historical price × today's quantity");
   return {
     date, action: "write", fields, isEstimated, tier,
+    contributingComponentCount: input.contributingComponentCount ?? null,
+    totalComponentCount:        input.totalComponentCount ?? null,
     reason: parts.length ? `${parts.join(" + ")} (${tier}).` : `Cash-only reconstruction for this date (${tier}).`,
   };
 }
