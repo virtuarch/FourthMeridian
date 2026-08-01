@@ -25,6 +25,7 @@ PRICE solved the price term. QUANTITY must produce `Historical Quantity(t)`
 | QUANTITY-1D — reconciliation evidence and candidate explanations | committed | `c67c6f1` | `quantity-reconciliation.core.ts`, `quantity-reconciliation.core.test.ts` |
 | QUANTITY-1E′ — ingestion coverage ledger | committed | `0e3a109` | `schema.prisma`, `20260801_v26_quantity_1e_investment_event_coverage`, `investment-event-ingest.ts`, `sync-investments.ts`, `event-coverage.core.ts`, `event-coverage.ts`, + 2 tests |
 | QUANTITY-1F — quantity timeline read authority | committed | `603a53e` | `quantity-timeline.ts`, `quantity-timeline.test.ts` |
+| QUANTITY-1G — first consumer: valuation consults the authority | committed | `009084b` | `quantity-authority-bridge.core.ts`, `quantity-authority.ts`, `valuation.ts`, + 1 test |
 
 QUANTITY-1E′ introduced the arc's first schema change, migration and write, all
 on the LOCAL database and all explicitly authorised. No valuation integration,
@@ -509,3 +510,87 @@ changed no user-visible behaviour.
 
 **B-1** no opening anchor predates first connect · **B-4** two sign conventions
 in `InvestmentEvent`.
+
+
+---
+
+## 11 · QUANTITY-1G — the first consumer
+
+`valuePositionRowsOverDates` now consults the authority at the one point where
+quantity is decided (`valuation.ts`, beside `resolveHeldQuantity`).
+
+`QUANTITY_AUTHORITY_MODE` = `off` (default, zero queries, byte-identical to
+before) · `compare` (both computed, legacy used) · `adopt` (authority where
+supported, legacy fallback elsewhere). An unrecognised value is treated as
+`off`: a typo must not silently enable an experimental money path.
+
+**Sufficiently supported** = a timeline exists · the date is inside its window ·
+the date is not uncovered · no UNRESOLVED segment covers it · an ABSOLUTE
+segment does. Everything else falls back with a recorded reason.
+
+### A gate that was wrong, and how the fixtures caught it
+
+The first draft also required `orderCertainty === "KNOWN"`. QUANTITY-1B marks
+certainty from PROVENANCE — a real datetime — and Plaid's investment
+transactions are date-only, so essentially every replayed segment is
+`TIE_BROKEN`. The gate would have silenced the authority across the whole corpus
+for no correctness gain: order-sensitivity is already caught upstream, where a
+day mixing a ratio with a delta becomes `ORDER_SENSITIVE_UNRESOLVED` and yields
+an UNRESOLVED segment, never an absolute one. By the time an ABSOLUTE segment
+exists, its quantity is provably independent of the tie-break. The value is now
+carried for inspection, not used as a gate.
+
+### Real corpus — 61 days × 13 spaces, read-only
+
+| Verdict | Cells |
+|---|---|
+| `AGREE` | 115 |
+| `DISAGREE` | **0** |
+| `LEGACY_ONLY` | **1341** |
+| `NOT_COMPARED` | 8 |
+
+| Fallback reason | Cells |
+|---|---|
+| `DATE_UNCOVERED` | 1108 |
+| `TIMELINE_UNREPLAYABLE` | 183 |
+| `DATE_UNRESOLVED` | 48 |
+| `DATE_RELATIVE_ONLY` | 10 |
+
+All 115 authority claims are POINTs, on the six observation dates. **Zero
+disagreements** — where the authority speaks it matches the legacy resolver
+exactly. The finding is the other 92%: the legacy carry-forward asserts a
+holding on 1341 (date, position) cells that no evidence supports. That surface
+was always there; it is now measured.
+
+### Data effect: none
+
+793 valuation cells compared across `off` and `adopt` — **0 changed**. Dry-run
+regeneration output byte-identical between modes (md5
+`c60f48031039f16e1ccffb7dde945aeb`). Local snapshots were then regenerated for
+real (`--apply`, backup taken first): 4 rows written, 57 → 60 for the sampled
+space. Those writes are three previously-absent days plus one debt/price change
+— **not** attributable to the quantity authority, since the dry-run was
+identical with it off.
+
+**UI verification was not completed.** The local browser session is
+authenticated as a user with zero ACTIVE SpaceMember rows, so `/dashboard`
+throws `No SpaceMember found` at `lib/space.ts:239`. Pre-existing local session
+state, unrelated to this slice; entering credentials to switch users is out of
+bounds.
+
+---
+
+## 12 · Blockers after 1G
+
+**B-9 — the authority can only speak on observation dates.** 115 of 1464 cells,
+all POINTs. Until the coverage ledger has COMPLETE windows, no interval claim is
+licensed and the authority cannot cover the days between observations. This is
+B-3/B-8 surfacing at the consumer.
+
+**B-10 — `adopt` is inert on today's data.** With zero disagreements and
+fallback preserved, adopting changes nothing. It becomes meaningful only once
+coverage licenses intervals that contradict the carry-forward.
+
+Carried: **B-1**, **B-4**, **B-7**, **B-8**. **B-5 is now partially closed** —
+the authority has a consumer, though the consumer changes no user-visible value
+yet.
