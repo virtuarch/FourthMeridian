@@ -16,13 +16,16 @@ Status vocabulary (a slice may hold several; the last one reached is its real st
 **OPS-REFRESH-1 (investigation)** — complete, read-only.
 `docs/plans/V26-INVESTIGATION-MANUAL-REFRESH-TRACEABILITY.md`. Five drifts found.
 
-**OPS-REFRESH-1A** — **committed**. DRIFT-1 closed.
+**OPS-REFRESH-1A** — **committed · locally verified against a live refresh**.
+DRIFT-1 closed and observed closed. See §OPS-REFRESH-1A-V.
 
 **DRIFT-2 · DRIFT-3 · DRIFT-4 · DRIFT-5 remain OPEN** and are disclosed in
 `REFRESH_EXECUTION_DOCTRINE.md` §N rather than left implicit.
 
-**Not approved, and not performed:** any live manual refresh, any production
-query, any schema change, any migration, any data mutation.
+**Not approved, and not performed:** any PRODUCTION refresh, any production
+query, any schema change, any migration. One **local** all-items manual refresh
+was executed under explicit approval (§OPS-REFRESH-1A-V) — it wrote real rows to
+the local dev database and made real Plaid calls, by design.
 
 ---
 
@@ -125,7 +128,7 @@ query, any schema change, any migration, any data mutation.
 
 | Drift | Status | Owner slice |
 |---|---|---|
-| **DRIFT-1** — all-items fan-out off the ledger | **CLOSED** | this slice |
+| **DRIFT-1** — all-items fan-out off the ledger | **CLOSED — verified live locally** (§OPS-REFRESH-1A-V) | this slice |
 | **DRIFT-2** — reconstruction is not a declared stage; DERIVED rows rewritten from four frames down inside two best-effort catches | **OPEN** | OPS-REFRESH-1B |
 | **DRIFT-3** — execution identity never reaches a financial row; *"which refresh changed this?"* still unanswerable on **every** path | **OPEN** | QUANTITY-1H prerequisite |
 | **DRIFT-4** — cron wealth self-heal, cron event ingest and resume-sync wealth regen run post-envelope and rewrite historical snapshots unattributed | **OPEN** | OPS-REFRESH-1C (scope decision) |
@@ -133,6 +136,85 @@ query, any schema change, any migration, any data mutation.
 | **NEW** — branch A claims its lock outside the envelope, so a 409 in-flight leaves no evidence; the two manual branches now differ in contention evidence | **OPEN** | OPS-REFRESH-1D |
 | `HISTORY_BACKFILL` closes with no facts at all | **OPEN** | OPS-REFRESH-1B |
 | Scripts unledgered | **OPEN** | unscheduled |
+
+---
+
+## OPS-REFRESH-1A-V — Live local verification
+
+| | |
+|---|---|
+| **Status** | **locally verified** — a real all-items manual refresh was executed and observed. **NOT** `production behavior verified`; production remains unobserved. |
+| **When** | 2026-08-01T00:15:09Z (cutoff) → 00:16:22Z |
+| **Path exercised** | The actual topbar `RefreshButton` in Chrome on `localhost:3000` → `useManualRefresh` → `POST /api/plaid/refresh` **with no body** — Branch B, the exact path that previously produced no ledger record. Not a synthetic POST. |
+| **Scope** | User `chr.hogan1997@gmail.com`; 4 ACTIVE items (American Express, Chase, Charles Schwab, Robinhood), all eligible. Real Plaid calls, real local writes. |
+
+### Before → after
+
+| Table | Before | After | Δ |
+|---|---:|---:|---:|
+| `RefreshExecution` | 9 | 13 | **+4** |
+| `RefreshEndpointResult` | 11 | 29 | **+18** |
+| `RefreshEndpointAccountCoverage` | 2 | 15 | **+13** |
+| `ProviderCall` | 6 | 18 | **+12** |
+| `JobRun` | 0 | 0 | **0** |
+| `SpaceSnapshot` | 1682 | 1683 | **+1** |
+| `SyncIssue` | 19 | 19 | 0 |
+
+### The four executions
+
+| Execution id | Item | Trigger / Profile | Status | ms | `parentJobRunId` |
+|---|---|---|---|---:|---|
+| `cms9mf72q007i2bihzmy2xot7` | Chase | MANUAL / FULL_REFRESH | SUCCEEDED | 3392 | null |
+| `cms9mf9p7007z2bihslglxm8o` | American Express | MANUAL / FULL_REFRESH | SUCCEEDED | 1220 | null |
+| `cms9mfanb008g2bihotzck3w4` | Charles Schwab | MANUAL / FULL_REFRESH | SUCCEEDED | 3020 | null |
+| `cms9mfczn00a12bih64raops9` | Robinhood | MANUAL / FULL_REFRESH | SUCCEEDED | 2627 | null |
+
+`admissionReason` null on all four. `deploymentSha` null on all four — correct for local dev, where `currentDeploymentSha()` is unobservable (schema: "never backfilled, never inferred").
+
+### Stage outcomes (18 rows)
+
+- **Chase · Amex** (cash/card, no investment accounts): BALANCES SUCCEEDED (3 changed) · **HOLDINGS SKIPPED `NOT_APPLICABLE`** · TRANSACTIONS SUCCEEDED (0 changed) · RECONCILIATION SUCCEEDED · **SNAPSHOT SKIPPED `BUDGET`**.
+- **Schwab · Robinhood** (investment): BALANCES SUCCEEDED (2 changed) · HOLDINGS SUCCEEDED (6 / 2 changed) · TRANSACTIONS SUCCEEDED · **SNAPSHOT SKIPPED `BUDGET`**. No RECONCILIATION stage — correct: `reconcileKind` returns null for investment accounts, so there were no reconcilable targets.
+- A SKIPPED stage never degraded the derivation: all four closed **SUCCEEDED**.
+
+### Provider-call attribution
+
+12 rows, **12/12 joining a new execution; 0 unattributed provider calls in the window.** Endpoint attribution matched doctrine §M exactly: `accountsGet`→BALANCES · `investmentsHoldingsGet`→HOLDINGS · `investmentsTransactionsGet`→**HOLDINGS** (as §M states for the manual path) · `transactionsSync`→TRANSACTIONS. Investment calls occurred only for the two items with `investmentsConsent = ENABLED`. All SUCCEEDED, attempt 1, each with a Plaid `request_id`.
+
+### runId correlation
+
+All four `runId`s resolve to their own execution through the same unique lookup `lib/platform/incidents/lifecycle.ts` performs. **The before-state is visible in the same database:** the 4 pre-existing `SyncIssue` rows carrying a `detail.runId` (REMOVED_TOMBSTONE, 2026-07-23 / 07-27 / 07-31 — written by earlier all-items refreshes) resolve to **nothing**: `with detail.runId=4, RESOLVES=0, ORPHAN=4`. That is the defect, still legible in the data it produced.
+
+### Snapshot and response
+
+One `SpaceSnapshot` row for `2026-08-01`, created 00:16:22Z — after the last item finished, i.e. the post-loop `regenerateCompletedSpaces`, once for the one affected Space. Each item's own `ConnectionSynced` audit row records `spacesSnapshotted: 0`, confirming the per-item regeneration really was deferred rather than merely labelled so.
+
+The route's `PLAID_REFRESH` audit row carries the returned summary: `{itemCount: 4, totalAccountsUpdated: 10, totalHoldingsUpdated: 8, totalTransactionsAdded/Modified/Removed: 0, spacesSnapshotted: 1}`. It reconciles exactly with the stage rows — BALANCES `recordsChanged` 3+3+2+2 = **10**; HOLDINGS 6+2 = **8**; one snapshot. UI: "Updated 6 hr ago" → **"Updated just now"**, "As of Jul 31" → **"As of Aug 1, 2026"**, no error and no cooldown banner (the hook's success path requires `res.ok` and zero cooldown skips), `router.refresh()` fired.
+
+### Checklist result
+
+| # | Check | Result |
+|---|---|---|
+| 1 | One MANUAL/FULL_REFRESH execution per eligible item | **PASS** — 4 items, 4 executions, ids matched |
+| 2 | Cooldown-excluded and orphaned items create no execution | **NOT EXERCISED** — see below |
+| 3 | Successful items contain expected stage rows | **PASS** — 18 rows, shapes correct per item type |
+| 4 | SNAPSHOT SKIPPED with BUDGET on each execution | **PASS** — 4/4 |
+| 5 | Lock-held items produce a SKIPPED/IN_FLIGHT execution | **NOT EXERCISED** — no contention occurred |
+| 6 | ProviderCall rows join the correct execution | **PASS** — 12/12, 0 orphans |
+| 7 | SyncIssue `detail.runId` resolves to `RefreshExecution.runId` | **PASS at the mechanism level** — no SyncIssue was created or touched by this run, so the end-to-end case did not arise; all 4 runIds were verified resolvable, and 4 pre-existing orphan runIds document the before-state |
+| 8 | Post-loop snapshot regeneration once per affected Space | **PASS** — 1 Space, 1 row, written after the loop |
+| 9 | No JobRun created | **PASS** — 0 |
+| 10 | Route response and visible behavior unchanged | **PASS** — summary reconciles with stage rows; UI behaved normally |
+
+**Why 2 and 5 were not exercised, stated rather than glossed:** no ACTIVE item in this database is orphaned (every one has ≥1 live linked account), no item was on cooldown when the run began, and the fan-out loop is sequential with no concurrent sync in flight, so no lock was ever held. These populations did not exist to observe. They remain covered by fixtures in `lib/plaid/refresh-fanout.test.ts` (groups 2, 4 and 5), which exercise all three branches against injected collaborators — but that is unit evidence, not live evidence, and this ledger does not conflate them. A second immediate refresh would exercise the cooldown branch (all four items now show 59 minutes remaining) at the cost of a second POST; it was **not** performed, because the approval was for exactly one refresh.
+
+### Domain writes — DRIFT-3 confirmed still open
+
+The run wrote 19 `PositionObservation` rows (`OBSERVED`/`plaid`) and updated 8 `Holding` rows; 0 `Transaction`, 0 `InvestmentEvent`, 0 `PositionReconstruction` (nothing new to ingest). **None of those rows carries an execution, run, or job identifier** — the tables have no such column. The ledger now explains what this refresh *attempted and cost*; it still cannot answer *which refresh changed a given position or snapshot*. DRIFT-3 is unchanged by this slice and unchanged by this verification.
+
+### Verification artifacts
+
+Read-only probe (SELECT-only, scratchpad, not committed): baseline / after / correlation queries as recorded above. No code was modified during verification; none needed to be.
 
 ---
 
