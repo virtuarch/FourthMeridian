@@ -24,6 +24,9 @@ import { AssetClass, PositionOrigin, type Prisma, type PrismaClient } from "@pri
 import { db } from "@/lib/db";
 import { COMPLETENESS_TIERS, isCompletenessTier } from "@/lib/perspective-engine/completeness";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
+// V26-A4-SIGN — the canonical type→direction mapping (BUY +, SELL −), reused
+// here rather than restated. See the mapping site below.
+import { signedShareDelta } from "@/lib/investments/quantity-event.core";
 import {
   reconstructPositions,
   detectCheckpointConflicts,
@@ -123,6 +126,24 @@ export async function gatherReconstructionInputs(
       relatedInstrumentId: true,
     },
   });
+  // V26-A4-SIGN — THE ONE PLACE DIRECTION IS APPLIED.
+  //
+  // `ReconEventInput.quantity` is contractually "Security units, signed
+  // +in/−out" and `reconstruction-core` walks backward with `q = q − delta`.
+  // The provider stores an unsigned MAGNITUDE with direction in `type`, and this
+  // mapping passed it through raw: BUY happened to work, every SELL was inverted
+  // (it subtracted where it had to add), and the walk landed at −Σ|quantity| —
+  // the fake negative openings the residue guard has been refusing.
+  //
+  // `signedShareDelta` is the canonical mapping that already lived in
+  // quantity-event.core.ts; this is its second consumer, not a second table.
+  //
+  // A row it does not ratify (transfers, corporate actions, unknown types, or a
+  // pre-signed negative) is passed through UNCHANGED — never zeroed. A4's own
+  // `stopReasonFor` / `corporateActionInvertible` still need the real magnitude
+  // to stop or degrade the walk, and zeroing would let a corporate action vanish
+  // into a silent no-op. This slice applies direction where it is ratified and
+  // changes nothing else.
   const events: ReconEventInput[] = eventRows.map((e) => ({
     id: e.id,
     source: e.source,
@@ -130,7 +151,7 @@ export async function gatherReconstructionInputs(
     date: ymd(e.date),
     type: e.type,
     instrumentId: e.instrumentId,
-    quantity: e.quantity,
+    quantity: signedShareDelta(e) ?? e.quantity,
     amount: e.amount,
     currency: e.currency,
     ratio: e.ratio,

@@ -153,6 +153,53 @@ const MAGNITUDE_WITH_TYPE_DIRECTION: Record<string, 1 | -1> = {
   SELL: -1,
 };
 
+/**
+ * V26-A4-SIGN — the signed share delta a BACKWARD REPLAY must consume, or `null`
+ * when this row's direction is not ratified.
+ *
+ * ── Why this is exported ─────────────────────────────────────────────────────
+ * `reconstruction-core.ts` declares its input as "Security units, signed
+ * +in/−out" and walks backward with `q = q − delta`. `reconstruction-runner.ts`
+ * passed `InvestmentEvent.quantity` straight through — but Plaid stores an
+ * unsigned MAGNITUDE with direction in `type` (measured above: BUY 12/12 and
+ * SELL 10/10 positive). BUY happened to work; every SELL was inverted, so each
+ * one SUBTRACTED where it had to ADD and the walk landed at −Σ|quantity|. That
+ * is the whole origin of the "negative opening" residue.
+ *
+ * The mapping already existed here; only the A4 consumer never used it. This
+ * exposes it WITHOUT exposing the authority's replay semantics (statuses,
+ * ordering, tie-breaking) — A4 keeps its own `stopReasonFor` /
+ * `corporateActionInvertible` path, which stays the authority on what is
+ * unsupported. One table, two consumers.
+ *
+ * ── Contract ─────────────────────────────────────────────────────────────────
+ *   BUY  q>0   → +q
+ *   SELL q>0   → −q
+ *   q === 0    →  0   (cash dividend against a security: no share effect)
+ *   q === null → null (nothing stated)
+ *   q < 0      → null — a pre-signed row contradicts the measured convention
+ *                (0/22 locally). Refused rather than double-negated into a
+ *                plausible-looking number, so an observed or imported SHORT can
+ *                never be silently flipped.
+ *   any other type → null — TRANSFER_IN/OUT (sign unresolved), SPLIT, MERGER,
+ *                SPIN_OFF, REINVESTMENT, OPENING_BALANCE, CANCEL, ADJUSTMENT,
+ *                OTHER, UNKNOWN, and anything added later.
+ *
+ * `null` means "this module states nothing about direction" — NOT "zero". A
+ * caller must pass such a row through unchanged so the consumer's own
+ * unsupported path still sees its real magnitude and can stop or degrade on it.
+ * Returning 0 here would let a corporate action vanish into a no-op, which is
+ * the quietest possible way to lose shares.
+ */
+export function signedShareDelta(src: { type: string; quantity: number | null }): number | null {
+  const direction = MAGNITUDE_WITH_TYPE_DIRECTION[src.type];
+  if (direction === undefined) return null;
+  if (src.quantity === null) return null;
+  if (src.quantity === 0) return 0;
+  if (src.quantity < 0) return null;
+  return src.quantity * direction;
+}
+
 /** Event kinds that change quantity but whose conversion is not implemented. */
 const CONVERSION_KINDS = new Set(["MERGER", "SPIN_OFF", "SYMBOL_CHANGE", "REINVESTMENT"]);
 
