@@ -66,6 +66,59 @@ export const WEALTH_REGEN_EPSILON = 0.5;
 export const INVALID_VALUATION_REASON_CODE = "INVALID_VALUATION_EVIDENCE";
 
 /**
+ * V26-INVESTMENTS-HISTORY — machine-searchable marker for the unsupported-zero
+ * skip. Same shape as INVALID_VALUATION_REASON_CODE above: a stable prefix on
+ * the existing `reason` string, not a new field. Grep this to find every day a
+ * zero investment subtotal was refused.
+ */
+export const NO_VALUED_COMPONENTS_REASON_CODE = "NO_VALUED_COMPONENTS";
+
+/**
+ * V26-INVESTMENTS-HISTORY — A ZERO SUBTOTAL MAY ONLY BE ASSERTED WHEN EVIDENCE
+ * SUPPORTS ZERO.
+ *
+ * ── The bug this exists to prevent ───────────────────────────────────────────
+ * `applyOwnershipEligibility` reports `hasEligibleHoldings` as
+ * `includedInstrumentIds.length > 0` — inclusion by OWNERSHIP, which says
+ * nothing about whether any included holding could be VALUED. A day whose
+ * holdings are all ownership-KNOWN but none of which resolves a price (or whose
+ * quantity was refused as reconstruction residue) therefore reported
+ * `hasEligibleHoldings: true` with `valuedSubtotal: 0`, sailed past the
+ * OWNERSHIP PREHISTORY guard, passed `isUsableValuation(0)`, and was written as
+ * `stocks = 0.00`.
+ *
+ * Measured after the 2026-08 regeneration: 27 days (2025-07-31 → 2025-08-26)
+ * persisted stocks $0.00 at 0/14 and 0/15 coverage, producing a false ~$5,626
+ * cliff on 2025-07-31 against the adjacent un-regenerated day. The system never
+ * proved the user held nothing; it proved it could not value what they held.
+ *
+ * ── The distinction ──────────────────────────────────────────────────────────
+ *   no components in scope            → zero may be valid (nothing to value)
+ *   components explicitly closed      → zero may be valid (an OBSERVED zero;
+ *                                       such positions never become components,
+ *                                       so this reduces to the case above)
+ *   components exist, none valued     → REFUSE. "We cannot say" is not "$0.00"
+ *   some contribute, some unvalued    → partial subtotal, degraded tier (unchanged)
+ *   all contribute                    → supported subtotal (unchanged)
+ *
+ * This is the OWNERSHIP PREHISTORY rule generalised: that guard catches the
+ * subset where nothing was ownership-eligible, this catches every remaining way
+ * a day can reach zero contributors. Ordering keeps the more specific reason.
+ *
+ * Counts absent (null) means no valuation was attempted at all — the
+ * NO-FABRICATION guard owns that case, so this predicate stays silent.
+ */
+export function hasNoValuedComponents(input: {
+  contributingComponentCount?: number | null;
+  totalComponentCount?:        number | null;
+}): boolean {
+  const contributing = input.contributingComponentCount;
+  const total = input.totalComponentCount;
+  if (contributing == null || total == null) return false;
+  return total > 0 && contributing === 0;
+}
+
+/**
  * Is a provider-derived historical valuation usable as a balance component?
  *
  * A balance component is a magnitude: it may be zero, never negative, and never
@@ -235,6 +288,32 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
       reason:
         "OWNERSHIP_PREHISTORY: no holding has KNOWN or POSSIBLE ownership on this date; " +
         "the stored value is preserved rather than replaced with a zero-valued portfolio.",
+    };
+  }
+
+  // UNSUPPORTED ZERO (V26-INVESTMENTS-HISTORY): holdings were in scope for this
+  // date and NOT ONE of them resolved a defensible value. `hasEligibleHoldings`
+  // above only asks whether anything was ownership-eligible, so a day whose
+  // every holding is priceless or whose quantities were refused still arrived
+  // here with valuedSubtotal 0 and was written as `stocks = 0.00` — asserting an
+  // absence the evidence never established.
+  //
+  // Checked AFTER the ownership guard so that the more specific
+  // OWNERSHIP_PREHISTORY reason still wins where it applies; this catches every
+  // other route to zero contributors. Deliberately NOT bypassable by an
+  // amendment, exactly like INVALID EVIDENCE below: a consented rebuild may
+  // revise a frozen day, never write an unsupported one.
+  //
+  // See hasNoValuedComponents() for why a day with NO components in scope — the
+  // genuinely-zero and explicitly-closed cases — is untouched by this.
+  if (hasNoValuedComponents(input)) {
+    return {
+      date, action: "skip-unsupported", fields: null, isEstimated: true, tier: "incomplete",
+      contributingComponentCount: null, totalComponentCount: null,
+      reason:
+        `${NO_VALUED_COMPONENTS_REASON_CODE}: ${input.totalComponentCount} holding(s) were in scope for ` +
+        `this date and none could be valued, so a zero investment subtotal would assert an absence the ` +
+        `evidence does not support. The day is left unwritten rather than recorded as $0.`,
     };
   }
 
