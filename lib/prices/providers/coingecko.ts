@@ -115,6 +115,45 @@ export function coinIdForSymbol(providerSymbol: string): string | null {
   return COINGECKO_COIN_IDS[providerSymbol.trim().toUpperCase()] ?? null;
 }
 
+/**
+ * V26-PRICE-4D — THE LOWER REQUEST BOUND, CLAMPED TO DECLARED CAPABILITY.
+ *
+ * The adapter pads the lower bound back one day so the FIRST requested day has
+ * coverage even when its earliest hourly point lands just after 00:00 UTC. That
+ * padding is a request-formatting detail and must stay one: it may widen a
+ * planned window only INSIDE the interval this deployment has declared it can
+ * serve.
+ *
+ * Unclamped, the padding was self-defeating at exactly the boundary that matters.
+ * The planner correctly clamps its intended range to the provider floor, so a
+ * full backfill asks for precisely `floor`; the adapter then silently rewrote
+ * that to `floor − 1`, which the public tier rejects outright. CoinGecko answers
+ * the whole request with 401 (error_code 10012, "limited to querying historical
+ * data within the past 365 days"), so a one-day overreach discarded a 233-day
+ * window — including months the provider would gladly have served. Because the
+ * planner always re-derives the same floor, the failure repeated on every run.
+ *
+ * Verified against the live API on 2026-08-03 (floor = 2025-08-03):
+ *     from=2025-08-04 → 200 · from=2025-08-03 → 200
+ *     from=2025-08-02 → 401 · from=2025-08-01 → 401
+ *
+ * Absent a declared floor the adapter cannot know where capability ends, so the
+ * padding is left alone — the documented behaviour of `deploymentFloorISO`
+ * being optional (see CoinGeckoOptions), not a new tolerance.
+ *
+ * The floor itself is NOT recomputed here. It arrives as data from the one place
+ * that resolves it (resolveCoinGeckoFloorISO, at the construction edge), keeping
+ * a single provider-capability calculation in the system.
+ */
+export function effectiveRequestFromISO(
+  plannedFromISO:     string,
+  deploymentFloorISO: string | undefined,
+): string {
+  const paddedISO = minusDaysISO(plannedFromISO, 1);
+  if (deploymentFloorISO === undefined) return paddedISO;
+  return paddedISO < deploymentFloorISO ? deploymentFloorISO : paddedISO;
+}
+
 export interface CoinDailyClose {
   dateISO: string; // "YYYY-MM-DD" (UTC)
   price:   number; // USD close (last point of the UTC day)
@@ -159,8 +198,11 @@ export async function fetchCoinDailyClosesUsd(
     opts.fetchImpl ?? ((url, init) => fetch(url, init) as unknown as Promise<CoinGeckoHttpResponse>);
 
   // Widen the lower bound by a day so the first requested day has coverage even
-  // if its earliest hourly point lands just after 00:00 UTC.
-  const fromSec = Math.floor(Date.parse(`${fromISO}T00:00:00Z`) / 1000) - 86_400;
+  // if its earliest hourly point lands just after 00:00 UTC — but never past the
+  // declared capability floor, which the provider rejects wholesale. See
+  // effectiveRequestFromISO.
+  const effectiveFromISO = effectiveRequestFromISO(fromISO, opts.deploymentFloorISO);
+  const fromSec = Math.floor(Date.parse(`${effectiveFromISO}T00:00:00Z`) / 1000);
   const toSec   = Math.floor(Date.parse(`${toISO}T23:59:59Z`) / 1000);
 
   const url =

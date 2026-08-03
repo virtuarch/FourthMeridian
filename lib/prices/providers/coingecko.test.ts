@@ -4,7 +4,7 @@
  * CoinGecko BTC daily-close fetch — standalone tsx, mocked HTTP (no network).
  */
 
-import { fetchCoinDailyClosesUsd, type CoinGeckoFetch, type CoinGeckoHttpResponse } from "./coingecko";
+import { fetchCoinDailyClosesUsd, effectiveRequestFromISO, type CoinGeckoFetch, type CoinGeckoHttpResponse } from "./coingecko";
 import {
   createCoinGeckoPriceProvider,
   resolveCoinGeckoFloorISO,
@@ -182,6 +182,90 @@ const KEY = "demo-key";
       tomorrow.historicalDepth === "2025-08-01");
     check("an explicit historicalDepth override still wins (test/back-compat seam)",
       createCoinGeckoPriceProvider("k", { historicalDepth: "2020-01-01" }).historicalDepth === "2020-01-01");
+  }
+
+  // ── V26-PRICE-4D — the lower request bound never crosses the capability floor ──
+  //
+  // The padding exists so the first requested day is covered; it must not buy that
+  // coverage by asking for a day the tier refuses, because CoinGecko rejects the
+  // WHOLE window (401 / error_code 10012) rather than trimming it.
+  {
+    console.log("\nV26-PRICE-4D — lower-bound clamp");
+    const FLOOR = "2025-08-03";
+
+    // A — planned start EQUALS the floor: padding must not cross below it.
+    check("A. planned == floor → request starts AT the floor, not a day earlier",
+      effectiveRequestFromISO(FLOOR, FLOOR) === FLOOR,
+      effectiveRequestFromISO(FLOOR, FLOOR));
+
+    // B — planned start is ONE day after the floor: the pad may land exactly on it.
+    check("B. planned == floor + 1 → padded start may equal the floor",
+      effectiveRequestFromISO("2025-08-04", FLOOR) === "2025-08-03",
+      effectiveRequestFromISO("2025-08-04", FLOOR));
+
+    // C — well after the floor: the existing one-day padding is untouched.
+    check("C. planned well after floor → one-day padding preserved",
+      effectiveRequestFromISO("2026-01-01", FLOOR) === "2025-12-31",
+      effectiveRequestFromISO("2026-01-01", FLOOR));
+
+    // D — no declared floor is an ALLOWED adapter state (deploymentFloorISO is
+    // optional by contract), so behaviour there is deliberately unchanged.
+    check("D. absent floor → existing unclamped padding preserved",
+      effectiveRequestFromISO("2025-08-03", undefined) === "2025-08-02",
+      effectiveRequestFromISO("2025-08-03", undefined));
+
+    // A planned start BELOW the floor should not be reachable (the planner clamps),
+    // but if it ever were, the adapter must still not request below capability.
+    check("planned below floor → still clamped to the floor",
+      effectiveRequestFromISO("2025-06-01", FLOOR) === FLOOR);
+
+    // E — UTC date-boundary safety: month, year and leap-day rollovers.
+    check("E. month rollover is UTC-exact", effectiveRequestFromISO("2026-03-01", "2020-01-01") === "2026-02-28");
+    check("E. leap-day rollover is UTC-exact", effectiveRequestFromISO("2024-03-01", "2020-01-01") === "2024-02-29");
+    check("E. year rollover is UTC-exact", effectiveRequestFromISO("2026-01-01", "2020-01-01") === "2025-12-31");
+
+    // F — THE EXACT INCIDENT. Floor 2025-08-03, planned 2025-08-03..2026-03-22.
+    // The URL must carry the floor's midnight UTC epoch, never the day before.
+    {
+      const { fn, calls } = fake({ prices: [[ms("2026-01-01", 23), 70000]] });
+      await fetchCoinDailyClosesUsd("bitcoin", FLOOR, "2026-03-22", {
+        apiKey: "k", fetchImpl: fn, deploymentFloorISO: FLOOR,
+      });
+      const from = Number(new URL(calls[0]).searchParams.get("from"));
+      check("F. incident window requests from 2025-08-03T00:00:00Z",
+        from === Date.parse("2025-08-03T00:00:00Z") / 1000, String(from));
+      check("F. incident window never requests 2025-08-02",
+        from !== Date.parse("2025-08-02T00:00:00Z") / 1000);
+    }
+
+    // The upper bound was checked for the same defect and has none: it is not
+    // padded at all, so it cannot overshoot capability. Pinned so it stays that way.
+    {
+      const { fn, calls } = fake({ prices: [] });
+      await fetchCoinDailyClosesUsd("bitcoin", "2026-01-01", "2026-03-22", {
+        apiKey: "k", fetchImpl: fn, deploymentFloorISO: FLOOR,
+      });
+      const to = Number(new URL(calls[0]).searchParams.get("to"));
+      check("upper bound is unpadded (no equivalent defect)",
+        to === Date.parse("2026-03-22T23:59:59Z") / 1000, String(to));
+    }
+
+    // G — response parsing is unchanged: points are still filtered against the
+    // PLANNED from, so a clamped-or-padded request never leaks an extra day.
+    {
+      const { fn } = fake({ prices: [
+        [ms("2025-12-31", 23), 111], // inside the PAD, outside the planned window
+        [ms("2026-01-01", 23), 222],
+        [ms("2026-01-02", 23), 333],
+      ] });
+      const out = await fetchCoinDailyClosesUsd("bitcoin", "2026-01-01", "2026-01-02", {
+        apiKey: "k", fetchImpl: fn, deploymentFloorISO: FLOOR,
+      });
+      check("G. padded day is still excluded from results",
+        out.length === 2 && out[0].dateISO === "2026-01-01" && out[1].dateISO === "2026-01-02",
+        JSON.stringify(out.map((r) => r.dateISO)));
+      check("G. close selection unchanged", out[0].price === 222 && out[1].price === 333);
+    }
   }
 
   console.log(failures === 0 ? "\nAll coingecko checks passed" : `\n${failures} failure(s)`);
