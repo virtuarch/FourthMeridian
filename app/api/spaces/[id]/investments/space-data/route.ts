@@ -28,6 +28,7 @@ import { requireSpaceRole } from "@/lib/session";
 import { loadInvestmentsSpaceData } from "@/lib/investments/space-data";
 import { getRecentSnapshots } from "@/lib/data/snapshots";
 import { buildPortfolioValueSeries } from "@/lib/investments/portfolio-series";
+import { readBtcPriceFloorISO } from "@/lib/crypto/btc-price";
 
 export const dynamic = "force-dynamic";
 
@@ -64,10 +65,15 @@ export async function GET(
   // ONE pass. The series REUSES the persisted SpaceSnapshot window (getRecentSnapshots,
   // a single query) — never an N×date getInvestmentValueAsOf sampler. Value per point =
   // investments + crypto (two disjoint buckets, each asset once; no double-count).
-  const [data, snaps] = await Promise.all([
+  // V26-CRYPTO-FLOOR-1 — the archive's earliest BTC price is read in the SAME
+  // pass and handed to the series, which uses it to omit points whose crypto is a
+  // carried balance no price ever supported. Interpretation stays in the pure
+  // series; the route only supplies evidence.
+  const [data, snaps, cryptoPriceFloorISO] = await Promise.all([
     loadInvestmentsSpaceData({ spaceId }, { history: { asOf, compareTo: compareToRaw ?? null } }),
     getRecentSnapshots(SERIES_DAYS, { spaceId }),
+    readBtcPriceFloorISO(),
   ]);
-  const series = buildPortfolioValueSeries(snaps, data.current.reportingCurrency);
+  const series = buildPortfolioValueSeries(snaps, data.current.reportingCurrency, { cryptoPriceFloorISO });
   return NextResponse.json({ ...data, series });
 }

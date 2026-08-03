@@ -27,6 +27,7 @@
  */
 
 import { PriceBasis } from "@prisma/client";
+import { db } from "@/lib/db";
 import { priceArchive } from "@/lib/prices/archive";
 import { minusDaysISO } from "@/lib/prices/config";
 import { nearestOnOrBefore } from "@/lib/data/nearest-on-or-before";
@@ -76,4 +77,26 @@ export async function readBtcUsdWindow(
     const hit = nearestOnOrBefore(rows, dateISO, (r) => r.dateISO, { maxStaleDays });
     return hit ? hit.price : null;
   };
+}
+
+/**
+ * V26-CRYPTO-FLOOR-1 — the earliest date the archive can value BTC at all.
+ *
+ * A VALUATION-COVERAGE read, not a capability read: it reports what is STORED,
+ * never what a provider might serve. Consumers use it to tell a date whose crypto
+ * came from evidence from one whose crypto is a carried balance no price ever
+ * supported. Null when the archive holds no BTC price at all, which makes every
+ * dependent refusal inert rather than refusing everything.
+ *
+ * Deliberately not a second price authority: same `priceArchive`, same canonical
+ * BTC Instrument, same RAW_CLOSE series as `readBtcUsdWindow` above.
+ */
+export async function readBtcPriceFloorISO(): Promise<string | null> {
+  const instrumentId = await resolveBtcInstrumentId();
+  const row = await db.priceObservation.findFirst({
+    where:   { instrumentId, basis: PriceBasis.RAW_CLOSE },
+    orderBy: { date: "asc" },
+    select:  { date: true },
+  });
+  return row ? row.date.toISOString().slice(0, 10) : null;
 }
