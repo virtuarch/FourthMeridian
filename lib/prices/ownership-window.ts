@@ -22,6 +22,36 @@
  * the possible bound adds no span and the window is entirely KNOWN. Both
  * outcomes fall out of the same rule.
  *
+ * ── V26-PRICE-4B — the PROVIDER FLOOR, a third source for the POSSIBLE bound ──
+ * That last sentence was the defect. `FinancialAccount.createdAt` is when WE
+ * learned of the account, not when it existed, and investment accounts carry no
+ * Transaction rows — so for a freshly connected brokerage the POSSIBLE bound
+ * collapses onto the first observation and licenses nothing. A position
+ * demonstrably held and later SOLD therefore read as UNKNOWN prehistory for
+ * every day before connection.
+ *
+ * The provider's own corpus says more than our ingestion date. Where it covers a
+ * span COMPLETELY (every page fetched, count reconciled) and contains no
+ * acquiring event for an instrument that was nevertheless observed as held, the
+ * acquisition must predate the corpus — so ownership from the corpus floor is
+ * POSSIBLE. Never KNOWN: nothing dates the holding to those days.
+ *
+ * The floor is `MIN(earliestReturnedDate)` over that account's COMPLETE,
+ * pagination-reconciled coverage rows, restricted to ONE CONTINUOUS PROVIDER
+ * IDENTITY (the plaidItem of the account's most recent attempt), so a replaced
+ * or unrelated item can never widen it. Never `requestedFromDate` (a rolling
+ * 24-month window computed from `now`, which would drift daily), never the
+ * connection date, never a per-instrument first event.
+ *
+ * CASH IS EXCLUDED. `licenseProviderFloor` refuses `isCashEquivalent` outright:
+ * cash arrives through deposits, withdrawals and trade settlement routed by
+ * AMOUNT rather than quantity, so "no acquiring event" is not a meaningful
+ * statement about it. See provider-floor.core.ts.
+ *
+ * Whether a floor may be used at all is decided by the pure predicate in
+ * provider-floor.core.ts. This module only gathers its evidence. There is still
+ * exactly one ownership engine: resolveOwnershipWindow.
+ *
  * STRICTLY READ-ONLY: every statement is a SELECT.
  */
 
@@ -33,6 +63,13 @@ import {
   type OwnershipEvidence,
   type OwnershipResolution,
 } from "./ownership-window.core";
+import {
+  licenseProviderFloor,
+  earliestPossibleBound,
+  ACQUIRING_EVENT_TYPES,
+  CORPORATE_ACTION_TYPES,
+  TRANSFER_TYPES,
+} from "./provider-floor.core";
 
 /**
  * Resolve ownership windows for a set of instruments, all against one valuation
@@ -95,11 +132,100 @@ export async function loadOwnershipWindows(
     if (row.possible) possible.set(row.instrumentId, toISODateUTC(row.possible));
   }
 
+  // ── V26-PRICE-4B — PROVIDER FLOOR, per (account, instrument) ───────────────
+  // One grouped query gathering exactly the evidence licenseProviderFloor reads.
+  // `floor` restricts to ONE continuous provider identity: the plaidItem of the
+  // account's most recent coverage attempt, so a replaced item cannot widen it.
+  const acq = Prisma.join(ACQUIRING_EVENT_TYPES.map((t) => Prisma.sql`${t}::"InvestmentEventType"`));
+  const corp = Prisma.join(CORPORATE_ACTION_TYPES.map((t) => Prisma.sql`${t}::"InvestmentEventType"`));
+  const xfer = Prisma.join(TRANSFER_TYPES.map((t) => Prisma.sql`${t}::"InvestmentEventType"`));
+  const floorRows = await db.$queryRaw<Array<{
+    financialAccountId: string; instrumentId: string; providerFloor: Date | null;
+    hasPositiveObservation: boolean; hasAcquiringEvent: boolean; hasTransfer: boolean;
+    hasCorporateAction: boolean; reconciliation: string | null; conflicted: boolean | null;
+    unexplainedOpeningQuantity: number | null; isCashEquivalent: boolean;
+  }>>`
+    WITH current_item AS (
+      SELECT DISTINCT ON ("financialAccountId") "financialAccountId", "plaidItemId"
+      FROM "InvestmentEventCoverage" ORDER BY "financialAccountId", "attemptedAt" DESC
+    ),
+    floor AS (
+      SELECT c."financialAccountId", MIN(c."earliestReturnedDate")::date AS "providerFloor"
+      FROM "InvestmentEventCoverage" c
+      JOIN current_item ci
+        ON ci."financialAccountId" = c."financialAccountId"
+       AND ci."plaidItemId"        = c."plaidItemId"
+      WHERE c.outcome = 'COMPLETE'
+        AND c."paginationReconciled" = true
+        AND c."earliestReturnedDate" IS NOT NULL
+      GROUP BY 1
+    ),
+    pairs AS (
+      SELECT DISTINCT "financialAccountId", "instrumentId"
+      FROM "PositionObservation"
+      WHERE "deletedAt" IS NULL AND "supersededById" IS NULL
+        AND "instrumentId" IN (${Prisma.join(ids)})
+    )
+    SELECT p."financialAccountId", p."instrumentId",
+           f."providerFloor",
+           COALESCE((SELECT bool_or(o.quantity > 0) FROM "PositionObservation" o
+                     WHERE o."financialAccountId" = p."financialAccountId"
+                       AND o."instrumentId" = p."instrumentId"
+                       AND o.origin = 'OBSERVED'
+                       AND o."deletedAt" IS NULL AND o."supersededById" IS NULL), false)
+             AS "hasPositiveObservation",
+           EXISTS (SELECT 1 FROM "InvestmentEvent" e WHERE e."financialAccountId" = p."financialAccountId"
+                     AND e."instrumentId" = p."instrumentId" AND e."deletedAt" IS NULL
+                     AND e."supersededById" IS NULL AND e.type IN (${acq})) AS "hasAcquiringEvent",
+           EXISTS (SELECT 1 FROM "InvestmentEvent" e WHERE e."financialAccountId" = p."financialAccountId"
+                     AND e."instrumentId" = p."instrumentId" AND e."deletedAt" IS NULL
+                     AND e."supersededById" IS NULL AND e.type IN (${xfer})) AS "hasTransfer",
+           EXISTS (SELECT 1 FROM "InvestmentEvent" e WHERE e."financialAccountId" = p."financialAccountId"
+                     AND e."instrumentId" = p."instrumentId" AND e."deletedAt" IS NULL
+                     AND e."supersededById" IS NULL AND e.type IN (${corp})) AS "hasCorporateAction",
+           pr.reconciliation::text AS reconciliation,
+           pr.conflicted,
+           pr."unexplainedOpeningQuantity",
+           i."isCashEquivalent"
+    FROM pairs p
+    JOIN "Instrument" i ON i.id = p."instrumentId"
+    LEFT JOIN floor f ON f."financialAccountId" = p."financialAccountId"
+    LEFT JOIN "PositionReconstruction" pr
+      ON pr."financialAccountId" = p."financialAccountId" AND pr."instrumentId" = p."instrumentId"
+  `;
+
+  // A licensed floor contributes one more POSSIBLE candidate; it can only make
+  // the bound earlier, and never earlier than the floor itself.
+  const licensedByInstrument = new Map<string, string[]>();
+  for (const r of floorRows) {
+    const decision = licenseProviderFloor({
+      financialAccountId: r.financialAccountId,
+      instrumentId:       r.instrumentId,
+      providerFloorISO:   r.providerFloor ? toISODateUTC(r.providerFloor) : null,
+      earliestDirectISO:  direct.get(r.instrumentId) ?? null,
+      hasPositiveObservation: r.hasPositiveObservation === true,
+      hasAcquiringEvent:      r.hasAcquiringEvent === true,
+      hasTransfer:            r.hasTransfer === true,
+      hasCorporateAction:     r.hasCorporateAction === true,
+      reconciliation:             (r.reconciliation as "COMPLETE" | "PARTIAL" | "FAILED" | null) ?? null,
+      conflicted:                 r.conflicted === true,
+      unexplainedOpeningQuantity: r.unexplainedOpeningQuantity,
+      isCashEquivalent:           r.isCashEquivalent === true,
+    });
+    if (!decision.licensed) continue;
+    const list = licensedByInstrument.get(r.instrumentId) ?? [];
+    list.push(decision.possibleFromISO);
+    licensedByInstrument.set(r.instrumentId, list);
+  }
+
   for (const instrumentId of ids) {
     const evidence: OwnershipEvidence = {
       instrumentId,
       earliestDirectISO:   direct.get(instrumentId) ?? null,
-      earliestPossibleISO: possible.get(instrumentId) ?? null,
+      earliestPossibleISO: earliestPossibleBound(
+        possible.get(instrumentId) ?? null,
+        licensedByInstrument.get(instrumentId) ?? [],
+      ),
       valuationToISO,
     };
     out.set(instrumentId, resolveOwnershipWindow(evidence));
