@@ -938,14 +938,29 @@ export interface HoldingsSummaryData {
  */
 export interface SnapshotDataPoint {
   date:         string; // YYYY-MM-DD
-  netWorth:     number;
-  totalAssets:  number;
+  // V26-CRYPTO-STATUS-1 — NULLABLE where the component may not be asserted.
+  // `netWorth` and `totalAssets` are arithmetically composed WITH crypto, so an
+  // unassertable digital-asset component makes both of them unassertable too.
+  // Null here means EXPLICITLY UNKNOWN and is always accompanied by
+  // `digitalAssetsUnavailableReason` — never omitted, because an absent key
+  // invites the model to infer zero.
+  netWorth:     number | null;
+  totalAssets:  number | null;
   liabilities:  number; // `debt` column — positive absolute value
   liquid:       number; // cash + savings
   investments:  number; // `stocks` column
-  digitalAssets: number; // `crypto` column
+  digitalAssets: number | null; // `crypto` column — null when unassertable
   cashOnHand:   number;
   netLiquid:    number;
+  /**
+   * Machine-readable reason the digital-asset figure (and the two totals built
+   * on it) could not be asserted for this date. Present ONLY on such points.
+   *   HISTORICAL_CRYPTO_VALUATION_UNAVAILABLE — refused: a holding existed but
+   *     no historical valuation could be supported.
+   *   HISTORICAL_CRYPTO_VALUATION_UNRECORDED  — a legacy row that predates the
+   *     availability scalar; nothing attests to how its number was produced.
+   */
+  digitalAssetsUnavailableReason?: string;
 }
 
 /**
@@ -975,6 +990,12 @@ export interface SnapshotSectionData {
    */
   estimated?:            boolean;
   excludedFxMissPoints?: number;
+  /**
+   * V26-CRYPTO-STATUS-1 — how many history points carry an unassertable
+   * digital-asset figure (and therefore null netWorth/totalAssets). Absent when
+   * none do, so clean histories stay byte-identical.
+   */
+  unassertableCryptoPoints?: number;
 }
 
 // ---------------------------------------------------------------------------

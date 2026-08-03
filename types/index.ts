@@ -99,6 +99,25 @@ export interface Snapshot {
   // D2.x Slice 4 — true for reconstructed/backfilled historical rows. Optional
   // so existing constructors default to undefined (treated as not-estimated).
   isEstimated?: boolean;
+  // ── V26-CRYPTO-STATUS-1 — the row's crypto authority, resolved ONCE ────────
+  //
+  // `totalCrypto` above is always a number, because SpaceSnapshot.crypto is NOT
+  // NULL. These say whether it may be ASSERTED. Resolved at the single read
+  // boundary (lib/data/snapshots.ts) from the persisted status + observation +
+  // materiality; consumers must not re-derive it.
+  //
+  // `assetSideContaminated` is the load-bearing one for totals: `netWorth` and
+  // `totalAssets` are arithmetically composed WITH crypto, so an unassertable
+  // component makes both of them unassertable too — on the affected rows the
+  // component is 41.7%–99.9% of totalAssets. `totalCash`, `totalSavings`,
+  // `totalDebt` and `netLiquid` never touched crypto and stay valid.
+  //
+  // All optional so every pre-existing constructor of this DTO is unaffected.
+  cryptoValuationState?: "observed" | "supported" | "unavailable" | "legacy-unrecorded" | "none";
+  cryptoAssertable?: boolean;
+  assetSideContaminated?: boolean;
+  cryptoUnavailableReason?: string;
+
   // MC1 QA Q4b — true when this off-stamp point's FX rate MISSED, so its values
   // are native/unconverted and sit at a different magnitude than the resolving
   // points. Additive and absent on homogeneous histories and successful

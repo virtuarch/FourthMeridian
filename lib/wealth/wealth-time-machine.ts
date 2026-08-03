@@ -238,8 +238,26 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
 
   // Drop mixed-unit fx-miss points (the hero/chart reads drop these too), then
   // sort ascending so "nearest ≤ date" is a single linear pass.
+  //
+  // V26-CRYPTO-STATUS-1 — also drop ASSET-SIDE CONTAMINATED points, on the same
+  // honesty rule and for a stronger reason. Every metric this module produces —
+  // netWorth, totalAssets, and the `real` residual computed as
+  // `totalAssets − cash − investments − crypto` — is arithmetically composed
+  // WITH the crypto component. When that component may not be asserted, none of
+  // them may be either: on the affected rows it is 41.7%–99.9% of totalAssets,
+  // averaging 53.5%. A caveat beside a figure that is 99.9% fabricated is a
+  // disclaimer on fiction, not a qualification of a measurement, so the point is
+  // REFUSED and the chart shows a genuine gap.
+  //
+  // The row itself is untouched: `totalCash`, `totalSavings`, `totalDebt` and
+  // `netLiquid` never involved crypto, and Liquidity and Debt read those
+  // directly without passing through here.
+  //
+  // Absent the flag (any DTO built before this slice) nothing is dropped, so
+  // existing behaviour is byte-identical.
   const series = input.snapshots
     .filter((s) => !s.fxMiss)
+    .filter((s) => s.assetSideContaminated !== true)
     .slice()
     .sort((a, b) => a.date.localeCompare(b.date));
 

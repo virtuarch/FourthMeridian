@@ -51,6 +51,9 @@
 
 import { computeSnapshotFields, type ClassifyTotals, type SnapshotFields } from "./backfill-core";
 import { worstTier } from "@/lib/perspective-engine/completeness";
+import {
+  CRYPTO_MATERIALITY_EPSILON, type CryptoValuationStatus,
+} from "./crypto-valuation-status.core";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
 
 /** Sub-dollar noise floor — a flat investment at/below this is "nothing to reconstruct". */
@@ -235,6 +238,17 @@ export interface DayRegenResult {
    */
   contributingComponentCount: number | null;
   totalComponentCount:        number | null;
+  /**
+   * V26-CRYPTO-STATUS-1 — whether this day's crypto component may be asserted.
+   *
+   * Meaningful on BOTH a write and a skip. `supported` accompanies a written
+   * row; `unavailable` is produced by the crypto no-fabrication skip, whose row
+   * is NOT rewritten — the binding stamps that one status alone, touching no
+   * financial scalar (see the metadata-only update there). Null everywhere the
+   * writer has no authority to classify: no material holding, or a disposition
+   * that never examined crypto.
+   */
+  cryptoValuationStatus: CryptoValuationStatus | null;
   reason: string;
 }
 
@@ -256,6 +270,7 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     return {
       date, action: "skip-frozen", fields: null, isEstimated: false, tier: "observed",
       contributingComponentCount: null, totalComponentCount: null,
+      cryptoValuationStatus: null,
       reason: "Observed row is frozen.",
     };
   }
@@ -271,9 +286,32 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     return {
       date, action: "skip-membership-changed", fields: null, isEstimated: existingIsEstimated ?? true, tier: "incomplete",
       contributingComponentCount: null, totalComponentCount: null,
+      cryptoValuationStatus: null,
       reason: "An account was removed from this Space after this date; automatic regen leaves the existing value untouched (requires an explicit amendment).",
     };
   }
+
+  // V26-CRYPTO-STATUS-1 — THE CRYPTO VERDICT IS INDEPENDENT OF THE DISPOSITION.
+  //
+  // Decided here, once, BEFORE the guard chain, because it must survive whichever
+  // guard happens to fire first. It was originally computed at the crypto
+  // no-fabrication rule, and that hid it: on 375 legacy days the INVESTMENTS
+  // no-fabrication rule short-circuits earlier, so the day never reached the
+  // crypto rule and its verdict went unrecorded — even though "material crypto,
+  // no price reached this day" was just as true there.
+  //
+  // Nothing about this verdict depends on investments, ownership, or validity,
+  // so nothing about those may suppress it.
+  //
+  // Frozen and membership-changed days are the exception and keep null: the
+  // former is an immutable observation this function must never classify, and
+  // the latter was computed against a different account set, so this run has no
+  // authority over it. Both return before this line.
+  const cryptoMaterial = Math.abs(base.totalDigitalAssets) > CRYPTO_MATERIALITY_EPSILON;
+  const cryptoVerdict: CryptoValuationStatus | null =
+    input.hasDigitalAssetEvidence && Math.abs(input.digitalAssetValue) > CRYPTO_MATERIALITY_EPSILON ? "supported"
+    : cryptoMaterial ? "unavailable"
+    : null;
 
   const flatInvestments = base.totalInvestments;
 
@@ -292,6 +330,7 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     return {
       date, action: "skip-unsupported", fields: null, isEstimated: true, tier: "incomplete",
       contributingComponentCount: null, totalComponentCount: null,
+      cryptoValuationStatus: cryptoVerdict,
       reason:
         "OWNERSHIP_PREHISTORY: no holding has KNOWN or POSSIBLE ownership on this date; " +
         "the stored value is preserved rather than replaced with a zero-valued portfolio.",
@@ -317,6 +356,7 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     return {
       date, action: "skip-unsupported", fields: null, isEstimated: true, tier: "incomplete",
       contributingComponentCount: null, totalComponentCount: null,
+      cryptoValuationStatus: cryptoVerdict,
       reason:
         `${NO_VALUED_COMPONENTS_REASON_CODE}: ${input.totalComponentCount} holding(s) were in scope for ` +
         `this date and none could be valued, so a zero investment subtotal would assert an absence the ` +
@@ -330,6 +370,7 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     return {
       date, action: "skip-unsupported", fields: null, isEstimated: true, tier: "incomplete",
       contributingComponentCount: null, totalComponentCount: null,
+      cryptoValuationStatus: cryptoVerdict,
       reason: "No historical position evidence for this date; flat estimate preserved (not fabricated).",
     };
   }
@@ -367,6 +408,7 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
       date, action: "skip-unsupported", fields: null,
       isEstimated: true, tier: "incomplete",
       contributingComponentCount: null, totalComponentCount: null,
+      cryptoValuationStatus: cryptoVerdict,
       reason:
         `${INVALID_VALUATION_REASON_CODE} (${invalidComponents.join(",")}): historical valuation was ` +
         `negative or non-finite; the stored value is preserved, not overwritten. ` +
@@ -399,6 +441,11 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     return {
       date, action: "skip-unsupported", fields: null, isEstimated: true, tier: "incomplete",
       contributingComponentCount: null, totalComponentCount: null,
+      // V26-CRYPTO-STATUS-1 — this skip is the ONE disposition that knows the
+      // day holds material crypto AND that it cannot be valued. The row is not
+      // rewritten, but that verdict is real and must be recorded: the binding
+      // stamps this status alone, touching no financial scalar.
+      cryptoValuationStatus: cryptoVerdict,
       reason:
         `${NO_CRYPTO_EVIDENCE_REASON_CODE}: no historical crypto evidence for this date (no price ` +
         `reached it, or the constant-quantity carry was refused by wallet activity); the carried ` +
@@ -437,6 +484,7 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     date, action: "write", fields, isEstimated, tier,
     contributingComponentCount: input.contributingComponentCount ?? null,
     totalComponentCount:        input.totalComponentCount ?? null,
+    cryptoValuationStatus: cryptoVerdict,
     reason: parts.length ? `${parts.join(" + ")} (${tier}).` : `Cash-only reconstruction for this date (${tier}).`,
   };
 }

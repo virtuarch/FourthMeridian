@@ -87,17 +87,33 @@ export function projectSnapshotSection(
   // null so the domain is noted as empty rather than surfacing zeros.
   if (usable.length === 0) return null;
 
-  const points: SnapshotDataPoint[] = usable.map((r) => ({
-    date:          r.date,
-    netWorth:      r.netWorth,
-    totalAssets:   r.totalAssets,
-    liabilities:   r.totalDebt,                    // rename for semantic clarity
-    liquid:        r.totalCash + r.totalSavings,
-    investments:   r.totalInvestments,             // rename for semantic clarity
-    digitalAssets: r.totalCrypto,                  // rename for semantic clarity
-    cashOnHand:    r.cashOnHand,
-    netLiquid:     r.netLiquid ?? 0,
-  }));
+  // V26-CRYPTO-STATUS-1 — a point whose crypto may not be asserted is INCLUDED
+  // with explicit nulls and a reason, never dropped and never zeroed. Dropping
+  // would leave a silent hole the model reads as "no data"; zeroing would state
+  // an absence no evidence supports. Nulls plus a reason say the one true thing:
+  // this figure is unknown, and here is why.
+  //
+  // `netWorth` and `totalAssets` are nulled alongside it because both are
+  // arithmetically composed WITH the crypto component — on the affected rows it
+  // is 41.7%–99.9% of totalAssets. `liabilities`, `liquid`, `investments`,
+  // `cashOnHand` and `netLiquid` never involved crypto and stay factual.
+  const points: SnapshotDataPoint[] = usable.map((r) => {
+    const contaminated = r.assetSideContaminated === true;
+    return {
+      date:          r.date,
+      netWorth:      contaminated ? null : r.netWorth,
+      totalAssets:   contaminated ? null : r.totalAssets,
+      liabilities:   r.totalDebt,                    // rename for semantic clarity
+      liquid:        r.totalCash + r.totalSavings,
+      investments:   r.totalInvestments,             // rename for semantic clarity
+      digitalAssets: contaminated ? null : r.totalCrypto,  // rename for semantic clarity
+      cashOnHand:    r.cashOnHand,
+      netLiquid:     r.netLiquid ?? 0,
+      ...(contaminated
+        ? { digitalAssetsUnavailableReason: r.cryptoUnavailableReason ?? "HISTORICAL_CRYPTO_VALUATION_UNAVAILABLE" }
+        : {}),
+    };
+  });
 
   const oldest = points[0];
   const latest = points[points.length - 1];
@@ -105,7 +121,12 @@ export function projectSnapshotSection(
   let netWorthTrend:    number | null = null;
   let netWorthTrendPct: number | null = null;
 
-  if (points.length >= 2) {
+  // V26-CRYPTO-STATUS-1 — a trend across an unassertable endpoint is not a
+  // weaker trend, it is not a trend at all. Both endpoints must be assertable;
+  // otherwise the calculation is REFUSED (null) rather than computed from a
+  // number the payload itself declares unknown.
+  const unassertablePoints = points.filter((p) => p.netWorth === null).length;
+  if (points.length >= 2 && oldest.netWorth !== null && latest.netWorth !== null) {
     netWorthTrend = latest.netWorth - oldest.netWorth;
     if (oldest.netWorth !== 0) {
       netWorthTrendPct = Math.round((netWorthTrend / Math.abs(oldest.netWorth)) * 10000) / 100;
@@ -125,6 +146,8 @@ export function projectSnapshotSection(
     // Disclosure — additive; absent on clean homogeneous histories.
     ...(estimated ? { estimated: true } : {}),
     ...(excluded > 0 ? { excludedFxMissPoints: excluded } : {}),
+    // Disclosure — how many points carry an unassertable digital-asset figure.
+    ...(unassertablePoints > 0 ? { unassertableCryptoPoints: unassertablePoints } : {}),
   };
 }
 

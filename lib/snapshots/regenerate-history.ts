@@ -68,6 +68,7 @@ import {
 } from "@/lib/snapshots/regeneration-candidates.core";
 import { resolveBtcInstrumentId, readBtcUsdWindow } from "@/lib/crypto/btc-price";
 import { licenseConstantQuantityCarry } from "@/lib/crypto/quantity-carry.core";
+import { toStoredCryptoValuationStatus } from "@/lib/snapshots/crypto-valuation-status.core";
 import { backfillHeldInstrumentPrices } from "@/lib/investments/holding-price-backfill";
 
 type Client = PrismaClient | Prisma.TransactionClient;
@@ -157,6 +158,13 @@ export interface RegenerateWealthHistoryResult {
   // docs/initiatives/wealth-timeline/WEALTH_TIMELINE_AMENDMENT_SYSTEM_PROPOSAL.md §9.
   skippedMembershipChanged: number;
   /**
+   * V26-CRYPTO-STATUS-1 — rows whose crypto verdict was recorded WITHOUT
+   * rewriting the row: a single-column update marking the stored crypto figure
+   * unassertable. Counted separately from `written` because no financial scalar
+   * changed.
+   */
+  cryptoStatusStamped: number;
+  /**
    * V26-PRICE-5 — every evaluated day by disposition. `written` counts only
    * UPDATED days; UNCHANGED days are evaluated and deliberately left alone, so
    * `considered` and `written` no longer imply one another.
@@ -179,7 +187,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   const applyWrites = !args.dryRun && (wealthRegenerationEnabled() || args.isAmendment === true);
 
   const zero: RegenerateWealthHistoryResult = {
-    spaceId, fromDate, toDate, considered: 0, written: 0, skippedFrozen: 0, skippedUnsupported: 0, skippedMembershipChanged: 0,
+    spaceId, fromDate, toDate, considered: 0, written: 0, skippedFrozen: 0, skippedUnsupported: 0, skippedMembershipChanged: 0, cryptoStatusStamped: 0,
     dispositions: Object.fromEntries(REGENERATION_DISPOSITIONS.map((d) => [d, 0])) as Record<RegenerationDisposition, number>,
     applied: applyWrites, diffs: [],
   };
@@ -419,7 +427,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // Existing rows in the window — for the frozen-row flag + before/after diffs.
   const existing = await client.spaceSnapshot.findMany({
     where:  { spaceId, date: { gte: fromISO(fromDate), lte: fromISO(toDate) } },
-    select: { date: true, isEstimated: true, stocks: true, crypto: true, cash: true, savings: true, debt: true, netWorth: true },
+    select: { date: true, isEstimated: true, stocks: true, crypto: true, cash: true, savings: true, debt: true, netWorth: true, cryptoValuationStatus: true },
   });
   const existingByDate = new Map(existing.map((r) => [isoDate(r.date), r]));
 
@@ -501,7 +509,14 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     completenessTier: DayRegenResult["tier"];
     contributingComponentCount: number | null;
     totalComponentCount: number | null;
+    cryptoValuationStatus: DayRegenResult["cryptoValuationStatus"];
   }> = [];
+
+  /**
+   * V26-CRYPTO-STATUS-1 — days that are NOT rewritten but whose crypto verdict
+   * must still be recorded. Applied as single-column updates (see below).
+   */
+  const metadataOnlyStamps: Array<{ date: Date; status: NonNullable<DayRegenResult["cryptoValuationStatus"]> }> = [];
 
   for (const dISO of candidateDates) {
     const d = fromISO(dISO);
@@ -692,7 +707,38 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         completenessTier: res.tier,
         contributingComponentCount: res.contributingComponentCount,
         totalComponentCount: res.totalComponentCount,
+        cryptoValuationStatus: res.cryptoValuationStatus,
       });
+    }
+
+    // V26-CRYPTO-STATUS-1 — THE METADATA-ONLY STAMP.
+    //
+    // A day whose crypto cannot be valued is deliberately NOT rewritten: there
+    // is no correct crypto number to write, and rewriting would either assert
+    // one or zero it. But the verdict itself is real evidence, and leaving it
+    // unrecorded forever means the stale stored figure keeps its authority.
+    //
+    // So this stamps the STATUS COLUMN ALONE. Not an upsert — an `update` naming
+    // exactly one field, so no financial scalar can be touched even by accident,
+    // and a row that does not exist is never created (creating one would require
+    // inventing the very financial fields this refuses to assert).
+    //
+    // Guarded on `prior.isEstimated === true`: a frozen observation is never
+    // written by any path, and its status stays null forever — which costs
+    // nothing, because the read boundary resolves observation BEFORE status.
+    // It applies to BOTH verdicts, for the same reason. A day that recomputes
+    // identically is UNCHANGED and deliberately not rewritten — but its crypto
+    // was still valued from evidence, and leaving that unrecorded would strand
+    // a correct value as `legacy-unrecorded` forever. Stamping is what makes the
+    // repair reach every day the regeneration actually classified.
+    if (
+      applyWrites &&
+      res.cryptoValuationStatus !== null &&
+      candidate.disposition !== "UPDATED" &&
+      prior && prior.isEstimated === true &&
+      prior.cryptoValuationStatus !== res.cryptoValuationStatus
+    ) {
+      metadataOnlyStamps.push({ date: d, status: res.cryptoValuationStatus });
     }
   }
 
@@ -708,6 +754,11 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         completenessTier: isCompletenessTier(w.completenessTier) ? w.completenessTier : null,
         contributingComponentCount: w.contributingComponentCount,
         totalComponentCount: w.totalComponentCount,
+        // V26-CRYPTO-STATUS-1 — same reserved-String discipline as the tier
+        // above. Null on a written row means "no material crypto to authorize",
+        // never "unknown but assume fine": the read boundary resolves an
+        // immaterial component to `none`, which IS assertable.
+        cryptoValuationStatus: toStoredCryptoValuationStatus(w.cryptoValuationStatus),
         reportingCurrency: space.reportingCurrency,
         // Phase 2 — stamp the amendment that revised this row (amendment runs only).
         ...(args.isAmendment && args.amendedByAmendmentId ? { amendedByAmendmentId: args.amendedByAmendmentId } : {}),
@@ -719,6 +770,15 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       });
     }
     result.written = writes.length;
+
+    // Metadata-only stamps: ONE column, no financial scalar, existing rows only.
+    for (const m of metadataOnlyStamps) {
+      await client.spaceSnapshot.updateMany({
+        where: { spaceId, date: m.date, isEstimated: true },
+        data:  { cryptoValuationStatus: m.status },
+      });
+    }
+    result.cryptoStatusStamped = metadataOnlyStamps.length;
   }
 
   return result;

@@ -256,6 +256,7 @@ export async function backfillSpaceSnapshots(
   // meaning (approved D-7): currency estimation is not written to snapshots.
   const rows: Array<{
     spaceId: string; date: Date; isEstimated: true; reportingCurrency: string;
+    cryptoValuationStatus: null;
     stocks: number; crypto: number; total: number; cash: number; savings: number;
     debt: number; netWorth: number; totalAssets: number; netLiquid: number; cashOnHand: number;
   }> = [];
@@ -300,7 +301,15 @@ export async function backfillSpaceSnapshots(
     // columns stay null — NOT RECORDED — rather than being invented from a flat
     // hold. A later historical regeneration is what replaces the flat component
     // with a real valuation, and that is the writer that records them.
-    rows.push({ spaceId, date: d, isEstimated: true, reportingCurrency: space.reportingCurrency, ...fields });
+    // V26-CRYPTO-STATUS-1 — backfill holds CRYPTO flat at today's balance too,
+    // so it has no authority to authorize that number and writes the status
+    // explicitly null. A material flat crypto therefore resolves to
+    // `legacy-unrecorded` at the read boundary — unassertable until a historical
+    // regeneration values it and stamps `supported`.
+    rows.push({
+      spaceId, date: d, isEstimated: true, reportingCurrency: space.reportingCurrency,
+      cryptoValuationStatus: null, ...fields,
+    });
   }
 
   if (rows.length === 0) return 0;

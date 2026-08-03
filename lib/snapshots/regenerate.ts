@@ -210,6 +210,12 @@ export async function regenerateSpaceSnapshot(
     completenessTier: null,
     contributingComponentCount: null,
     totalComponentCount: null,
+    // V26-CRYPTO-STATUS-1 — written EXPLICITLY null, never omitted. This writer
+    // recomputes the row from a different basis (today's live balances), so any
+    // status stamped by a historical regeneration describes a computation that
+    // no longer produced this number. Omitting it from `update` would let that
+    // stale authorization survive onto fresh values.
+    cryptoValuationStatus: null,
   };
 
   await client.spaceSnapshot.upsert({

@@ -2384,6 +2384,43 @@ model SpaceSnapshot {
   contributingComponentCount Int?
   totalComponentCount        Int?
 
+  // ── V26-CRYPTO-STATUS-1 — may the stored `crypto` number be ASSERTED? ──────
+  //
+  // This scalar AUTHORIZES the persisted `crypto` component above. It does not
+  // replace it, restate it, or hold a second copy of it — the number stays
+  // exactly where it is; this says whether anything may claim it as a value.
+  //
+  // Needed because `crypto` is NOT NULL DEFAULT 0 and so cannot express
+  // "unknown", while writing 0 would assert an absence no evidence supports.
+  // Measured on this database: 378 estimated rows carry a crypto figure that is
+  // the wallet's then-current USD balance carried backward by an old backfill —
+  // 41.7%–99.9% of each row's `totalAssets`.
+  //
+  // PERSISTED rather than derived, on purpose. The only runtime discriminator is
+  // the price archive's floor, and the floor MOVES: acquiring earlier prices
+  // does not rewrite snapshots, so a derived test would silently re-bless every
+  // stale row the moment a wider tier was configured. A stamped status records
+  // what THIS row's valuation actually was, so widening is safe by construction
+  // — nothing changes until a regeneration re-derives the day, and that
+  // regeneration is what stamps `supported`.
+  //
+  // Reserved-String, guarded at write time by `isCryptoValuationStatus` — the
+  // same pattern as `completenessTier` above. Stored values: "supported" |
+  // "unavailable". Nullable, no default: additive, zero migration risk. Null
+  // means NOT RECORDED and is NOT automatically trusted when the row carries
+  // material crypto (it resolves to `legacy-unrecorded`).
+  //
+  // FROZEN-ROW INVARIANT: an `isEstimated=false` row is an immutable observation
+  // and is never rewritten, so its status stays null forever — and costs
+  // nothing, because observation is resolved BEFORE status and is trusted
+  // unconditionally. This is what keeps a date-based rule from ever invalidating
+  // another user's genuine observed history.
+  //
+  // See lib/snapshots/crypto-valuation-status.core.ts for the ONE canonical
+  // interpretation; consumers must not combine this with `crypto`/`isEstimated`
+  // themselves.
+  cryptoValuationStatus String?
+
   createdAt DateTime @default(now())
 
   @@unique([spaceId, date])

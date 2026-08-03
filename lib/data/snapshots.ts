@@ -19,6 +19,10 @@ import { getSpaceContext } from "@/lib/space";
 import { buildSpaceConversionContext, resolveEffectiveSpaceConversion } from "@/lib/money/server-context";
 import { convertStampedValues } from "@/lib/snapshots/stamp-conversion";
 import { resolveSnapshotCompleteness } from "@/lib/snapshots/snapshot-completeness.core";
+import {
+  resolveCryptoValuationState, isCryptoAssertable, isAssetSideContaminated,
+  cryptoUnavailableReason,
+} from "@/lib/snapshots/crypto-valuation-status.core";
 import type { ConversionContext } from "@/lib/money/types";
 import { Snapshot } from "@/types";
 
@@ -102,11 +106,28 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
     // ways. Note this describes how the row was COMPUTED, so — unlike the
     // totals — it is unaffected by read-time display conversion below.
     const completeness = resolveSnapshotCompleteness(r);
+    // V26-CRYPTO-STATUS-1 — resolve the row's crypto authority ONCE, here, at the
+    // same single boundary. Consumers receive an already-interpreted state and a
+    // value that is null when nothing may assert it; none of them sees the raw
+    // (crypto, isEstimated, cryptoValuationStatus) triple, so none can interpret
+    // it a second way. Unaffected components (cash/savings/debt/netLiquid) ride
+    // through untouched — Liquidity and Debt never read crypto.
+    const cryptoState = resolveCryptoValuationState({
+      crypto:                r.crypto,
+      isEstimated:           r.isEstimated ?? false,
+      cryptoValuationStatus: r.cryptoValuationStatus ?? null,
+    });
     const provenance = {
       completenessTier:           completeness.tier,
       completenessRecorded:       completeness.recorded,
       contributingComponentCount: completeness.contributingComponentCount,
       totalComponentCount:        completeness.totalComponentCount,
+      cryptoValuationState:       cryptoState,
+      cryptoAssertable:           isCryptoAssertable(cryptoState),
+      assetSideContaminated:      isAssetSideContaminated(cryptoState),
+      ...(cryptoUnavailableReason(cryptoState)
+        ? { cryptoUnavailableReason: cryptoUnavailableReason(cryptoState)! }
+        : {}),
     };
 
     // Homogeneous fast path (stampCtx null) or on-stamp row → pre-MC1 mapping.
