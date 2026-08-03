@@ -87,6 +87,18 @@ export interface ReconstructParams {
   cashInstrumentByCurrency?: Record<string, string>;
   /** YYYY-MM-DD reconstruction run date — the anchor date for closed positions. */
   runDate: string;
+  /**
+   * V26-A4-OPENING — the account's demonstrated provider-data floor
+   * (MIN earliestReturnedDate over COMPLETE, reconciled coverage). An OPENING
+   * ANCHOR is never emitted before it: the day before the first event may fall
+   * outside anything the provider ever supplied, and a position row there would
+   * manufacture evidence in UNKNOWN prehistory.
+   *
+   * Optional and null-safe. When absent, no floor constraint is applied — the
+   * caller is stating it has no floor to enforce, not that the floor is
+   * unbounded, so callers that CAN supply one should.
+   */
+  providerFloorISO?: string | null;
 }
 
 // ── Outputs ───────────────────────────────────────────────────────────────────
@@ -189,6 +201,15 @@ export function routeEvents(
 
 // ── Walk ──────────────────────────────────────────────────────────────────────
 
+/**
+ * The calendar day before an ISO date. Pure and clock-free — parses the date in
+ * UTC, so it is stable regardless of where it runs and correct across month,
+ * year and leap boundaries.
+ */
+export function previousDayISO(dateISO: string): string {
+  return new Date(Date.parse(`${dateISO}T00:00:00.000Z`) - 86_400_000).toISOString().slice(0, 10);
+}
+
 /** Does an event state a material share effect on THIS instrument's leg? */
 function hasMaterialQuantity(e: ReconEventInput): boolean {
   return e.quantity != null && Math.abs(e.quantity) > QUANTITY_EPSILON;
@@ -281,6 +302,7 @@ function walkInstrument(
   anchorDate: string,
   anchorObservationId: string | null,
   routed: RoutedEvent[],
+  providerFloorISO: string | null,
 ): InstrumentReconstruction {
   // Only events on or before the anchor (today) inform the backward walk.
   const inWindow = routed.filter((r) => r.event.date <= anchorDate);
@@ -347,6 +369,69 @@ function walkInstrument(
     }
   }
 
+  // ── V26-A4-OPENING — THE OPENING ANCHOR ───────────────────────────────────
+  //
+  // Every derived row above states the quantity as-of the END of an event date,
+  // so the earliest of them is the quantity AFTER the first event. Nothing
+  // represented the interval BEFORE it, even though `opening` states it exactly.
+  //
+  // The consequence was a silent over-count: with no row covering those dates,
+  // `resolvePositionAsOf` returns null and `holdConstantBeforeEarliest` carries
+  // the earliest row backward — the POST-event quantity. Locally that valued
+  // INTC as 5 shares for the 91 days before the BUY that took it 4 → 5, and
+  // NVDA as 2.0002 before the fractional buy that took it 2.0001 → 2.0002. The
+  // walk knew 4 and 2.0001 the whole time; it simply never said so where a
+  // reader could see it.
+  //
+  // So the residual is emitted as its own DERIVED row, dated the day before the
+  // first supported event. It is the SAME fact already stored as
+  // `openingQuantity` — published at the boundary rather than only summarised —
+  // which is why this belongs in the walk's output and not in a valuation-layer
+  // fallback.
+  //
+  // Refused, deliberately, when:
+  //   - the walk STOPPED (FAILED): everything before the stop is exactly what
+  //     could not be reconstructed. TQQQ keeps its pre-split history unlicensed.
+  //   - sources CONFLICT: an unusable opening must not be published as a fact.
+  //   - the opening is non-finite.
+  //   - the opening is ZERO. Introducing a zero row here would create a KNOWN
+  //     ABSENCE that valuation treats as a closed position, which is new zero
+  //     semantics this slice has not earned. Group A (opening 0) therefore emits
+  //     nothing and its ownership start is untouched.
+  //   - there are no events at all: `earliest` is the anchor date and there is
+  //     no "before the first event" to describe.
+  //   - the anchor date would fall before the account's provider floor.
+  //
+  // A genuinely negative opening KEEPS ITS SIGN. This publishes the walk's
+  // answer; it does not judge it. Valuation's residue guard independently
+  // refuses a DERIVED negative from a non-COMPLETE reconstruction, which is the
+  // right place for that judgement.
+  //
+  // Provenance is preserved, never upgraded: origin stays DERIVED (the writer's
+  // concern), completeness is "incomplete" and `unexplainedQuantity` carries the
+  // residual, because the entire quantity of this row is unexplained. It has no
+  // supporting events — `eventIds` is empty — as it IS the residual.
+  const openingAnchorDate = previousDayISO(earliest);
+  const emitOpeningAnchor =
+    !stopped &&
+    !conflicted &&
+    Number.isFinite(opening) &&
+    Math.abs(opening) > QUANTITY_EPSILON &&
+    rows.length > 0 &&
+    openingAnchorDate < earliest &&
+    !rows.some((r) => r.date === openingAnchorDate) &&
+    (providerFloorISO == null || openingAnchorDate >= providerFloorISO);
+
+  if (emitOpeningAnchor) {
+    rows.unshift({
+      date: openingAnchorDate,
+      quantity: opening,
+      eventIds: [],
+      completeness: "incomplete",
+      unexplainedQuantity: opening,
+    });
+  }
+
   return {
     instrumentId,
     isCash,
@@ -393,6 +478,7 @@ export function reconstructPositions(params: ReconstructParams): InstrumentRecon
         anchor?.date ?? params.runDate,
         anchor?.observationId ?? null,
         routed,
+        params.providerFloorISO ?? null,
       ),
     );
   }

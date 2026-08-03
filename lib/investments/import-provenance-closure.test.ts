@@ -68,6 +68,13 @@ function makeObsClient(rows: ObsRow[]) {
       upsert: async ({ create }: { create: ObsRow }) => { upserts.push({ create }); return create; },
     },
     investmentEvent: { findMany: async () => [] },
+    // V26-A4-OPENING — gatherReconstructionInputs now also reads the account's
+    // provider-data floor. Absent here (this suite is about provenance
+    // filtering), which means "no floor constraint".
+    investmentEventCoverage: {
+      findFirst: async () => null,
+      aggregate: async () => ({ _min: { earliestReturnedDate: null } }),
+    },
     instrument: { findMany: async () => [] },
     positionReconstruction: { findMany: async () => [], upsert: async ({ create }: { create: ObsRow }) => create },
     $transaction: async (cb: (tx: unknown) => Promise<unknown>) => cb(client),

@@ -20,7 +20,7 @@
  * Reads/writes only A4-owned data. No reader/UI changes, no valuation, no prices.
  */
 
-import { AssetClass, PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
+import { AssetClass, InvestmentCoverageOutcome, PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
 import { db } from "@/lib/db";
 import { COMPLETENESS_TIERS, isCompletenessTier } from "@/lib/perspective-engine/completeness";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
@@ -79,6 +79,12 @@ export interface ReconstructionInputs {
   events:  ReconEventInput[];
   cashInstrumentByCurrency: Record<string, string>;
   runDate: string;
+  /**
+   * V26-A4-OPENING — the account's demonstrated provider-data floor. Bounds the
+   * opening anchor the walk may emit; null when this account has no COMPLETE,
+   * pagination-reconciled coverage (a wallet or manual account).
+   */
+  providerFloorISO: string | null;
 }
 
 /**
@@ -158,7 +164,34 @@ export async function gatherReconstructionInputs(
     relatedInstrumentId: e.relatedInstrumentId,
   }));
 
-  return { anchors: [...anchorById.values()], events, cashInstrumentByCurrency, runDate: ymd(now) };
+  // V26-A4-OPENING — the account's demonstrated provider-data floor: the earliest
+  // date any COMPLETE, pagination-reconciled coverage attempt actually returned,
+  // restricted to the provider identity of the most recent attempt so a replaced
+  // item cannot widen it. The walk never emits an opening anchor before this —
+  // the day before a first event can fall outside anything the provider supplied.
+  // Null when the account has no such coverage (a wallet, a manual account), in
+  // which case no floor constraint applies.
+  const latestAttempt = await client.investmentEventCoverage.findFirst({
+    where:   { financialAccountId },
+    orderBy: { attemptedAt: "desc" },
+    select:  { plaidItemId: true },
+  });
+  let providerFloorISO: string | null = null;
+  if (latestAttempt) {
+    const floor = await client.investmentEventCoverage.aggregate({
+      where: {
+        financialAccountId,
+        plaidItemId:          latestAttempt.plaidItemId,
+        outcome:              InvestmentCoverageOutcome.COMPLETE,
+        paginationReconciled: true,
+        earliestReturnedDate: { not: null },
+      },
+      _min: { earliestReturnedDate: true },
+    });
+    if (floor._min.earliestReturnedDate) providerFloorISO = ymd(floor._min.earliestReturnedDate);
+  }
+
+  return { anchors: [...anchorById.values()], events, cashInstrumentByCurrency, runDate: ymd(now), providerFloorISO };
 }
 
 // ── Persistence ──────────────────────────────────────────────────────────────

@@ -41,6 +41,15 @@ function makeFake(observed: Row[], events: Row[], opts: FakeOpts = {}) {
       createMany: async ({ data }: { data: Row[] }) => { calls.createMany++; derivedCreated.push(...data); return { count: data.length }; },
     },
     investmentEvent: { findMany: async () => events },
+    // V26-A4-OPENING — the walk bounds its opening anchor by the account's
+    // provider-data floor, so the gatherer reads coverage. No rows here: these
+    // fixtures assert walk/persistence behaviour, not floor clamping (that is
+    // covered by reconstruction-opening-anchor.test.ts §G), and an absent floor
+    // means "no constraint", which keeps every existing expectation intact.
+    investmentEventCoverage: {
+      findFirst: async () => null,
+      aggregate: async () => ({ _min: { earliestReturnedDate: null } }),
+    },
     instrument: { findMany: async () => opts.cashInstruments ?? [] },
     positionReconstruction: {
       findMany: async () => opts.existingSummaries ?? [],
@@ -87,7 +96,19 @@ async function main(): Promise<void> {
     check("summary completeness is the canonical tier 'incomplete'", s.completeness === "incomplete");
     check("summary carries unexplainedOpeningQuantity = 20", Math.abs((s.unexplainedOpeningQuantity as number) - 20) <= 1e-6);
     check("summary reconstructionVersion pinned", s.reconstructionVersion === RECONSTRUCTION_VERSION);
-    check("DERIVED rows written at event dates", f.derivedCreated.length === 2);
+    // V26-A4-OPENING — two event dates PLUS the opening anchor. The walk now
+    // also publishes its residual as a row dated the day before the first
+    // supported event, so the earliest row is no longer the post-event
+    // quantity. Asserted precisely rather than by count alone.
+    check("DERIVED rows written at both event dates", f.derivedCreated.length === 3);
+    const dates = f.derivedCreated.map((r) => (r.date as Date).toISOString().slice(0, 10)).sort();
+    check("rows are the two event dates plus one opening anchor",
+      dates.join(",") === "2026-06-02,2026-06-03,2026-06-20", `got ${dates.join(",")}`);
+    check("the opening anchor is dated the day BEFORE the first event (2026-06-02)",
+      dates[0] === "2026-06-02");
+    check("the opening anchor carries the unexplained opening of 20",
+      Math.abs((f.derivedCreated.find((r) =>
+        (r.date as Date).toISOString().slice(0, 10) === "2026-06-02")!.quantity as number) - 20) <= 1e-6);
     check("every DERIVED row is origin DERIVED + source reconstruction",
       f.derivedCreated.every((r) => r.origin === "DERIVED" && r.source === RECONSTRUCTION_SOURCE));
     check("every DERIVED completeness is canonical (derived|incomplete)",
