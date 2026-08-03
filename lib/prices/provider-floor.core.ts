@@ -22,17 +22,29 @@
  * before connection.
  *
  * The provider's own corpus says more than our ingestion date does. When it
- * covers a span COMPLETELY (every page fetched, count reconciled) and contains
- * NO acquiring event for an instrument that was nevertheless observed as held,
- * the acquisition must predate the corpus. That makes earlier ownership
- * POSSIBLE — never KNOWN, because nothing dates the holding to those days.
+ * covers a span COMPLETELY (every page fetched, count reconciled) and the
+ * corrected backward replay STILL lands on a positive unexplained opening —
+ * units that existed before anything the corpus can explain — that opening must
+ * predate the corpus. That makes earlier ownership POSSIBLE, never KNOWN,
+ * because nothing dates the holding to those days.
+ *
+ * ── V26-PRICE-4C — a later BUY is not a disproof ─────────────────────────────
+ * The first version refused any instrument carrying an acquiring event. That was
+ * too strict: a BUY does not contradict an already-positive opening, it changes
+ * the quantity from its own date forward. INTC (opening 4, BUY 1, observed 5)
+ * and NVDA (opening 2.0001, fractional BUYs, observed 2.003) both reconcile
+ * exactly against observations the walk never consumed.
+ *
+ * The blanket refusal is replaced by a STRONGER requirement — that the licensed
+ * interval actually RESOLVE to the opening. See the anchor check below.
  *
  * ── What it deliberately will not do ─────────────────────────────────────────
  * It never licenses a date before the floor; never upgrades POSSIBLE to KNOWN;
  * never asserts a quantity (the corrected backward replay owns that); and
  * refuses outright wherever the inference could be wrong rather than merely
- * imprecise — a real acquisition, an unresolved corporate action, an unresolved
- * transfer, a conflicted or failed reconstruction, or a cash instrument.
+ * imprecise — a zero or negative opening, an unresolved corporate action, an
+ * unresolved transfer, a conflicted or failed reconstruction, an opening that is
+ * known but not yet readable, or a cash instrument.
  */
 
 /** Every reason the inference may be refused. Reported, never silent. */
@@ -40,25 +52,13 @@ export type ProviderFloorRefusal =
   | "CASH_INSTRUMENT"
   | "NO_PROVIDER_FLOOR"
   | "NO_POSITIVE_OBSERVATION"
-  | "ACQUIRING_EVENT_PRESENT"
   | "TRANSFER_PRESENT"
   | "CORPORATE_ACTION_PRESENT"
   | "RECONSTRUCTION_FAILED"
   | "RECONSTRUCTION_CONFLICTED"
-  | "NO_UNEXPLAINED_OPENING"
+  | "NO_POSITIVE_OPENING"
+  | "OPENING_ANCHOR_MISSING"
   | "FLOOR_NOT_EARLIER_THAN_DIRECT";
-
-/**
- * Event types that ACQUIRE units and would therefore date the holding. Their
- * presence means the corpus already explains where the position came from, so
- * nothing may be inferred before it.
- *
- * OPENING_BALANCE is included deliberately: a stated opening anchor IS the
- * answer to "when did this begin", so an inference must defer to it.
- */
-export const ACQUIRING_EVENT_TYPES: readonly string[] = [
-  "BUY", "TRANSFER_IN", "REINVESTMENT", "OPENING_BALANCE",
-];
 
 /** Corporate actions whose quantity transformation is not ratified. */
 export const CORPORATE_ACTION_TYPES: readonly string[] = [
@@ -82,13 +82,30 @@ export interface ProviderFloorCandidate {
   earliestDirectISO:  string | null;
   /** A positive OBSERVED PositionObservation exists for this pair. */
   hasPositiveObservation: boolean;
-  hasAcquiringEvent:      boolean;
   hasTransfer:            boolean;
   hasCorporateAction:     boolean;
   /** From PositionReconstruction. Null when the pair was never reconstructed. */
   reconciliation:             "COMPLETE" | "PARTIAL" | "FAILED" | null;
   conflicted:                 boolean;
+  openingQuantity:            number | null;
   unexplainedOpeningQuantity: number | null;
+  /**
+   * V26-PRICE-4C — the date an OPENING ANCHOR would occupy: the day before the
+   * reconstruction's `earliestDefensibleDate`. Null when the pair was never
+   * reconstructed. Supplied by the binding so this module stays free of date
+   * arithmetic and of any reconstruction import.
+   */
+  openingAnchorDateISO: string | null;
+  /** Whether that anchor row actually EXISTS (a DERIVED reconstruction row). */
+  hasOpeningAnchor:     boolean;
+  /**
+   * Routed events behind this reconstruction. ZERO means there is no "before the
+   * first event" interval at all: the walk is anchored directly on the observed
+   * quantity, so `openingQuantity === anchorQuantity` BY CONSTRUCTION and
+   * hold-constant from that observation already resolves the opening. No anchor
+   * can be emitted, and none is needed. Null when never reconstructed.
+   */
+  eventCount: number | null;
   /** Cash is excluded wholesale — see the header of the binding. */
   isCashEquivalent: boolean;
 }
@@ -120,9 +137,6 @@ export function licenseProviderFloor(c: ProviderFloorCandidate): ProviderFloorDe
   // Something must actually have been held.
   if (!c.hasPositiveObservation) return { licensed: false, reason: "NO_POSITIVE_OBSERVATION" };
 
-  // The corpus already explains where the position came from.
-  if (c.hasAcquiringEvent) return { licensed: false, reason: "ACQUIRING_EVENT_PRESENT" };
-
   // Unresolved semantics — never guess across them.
   if (c.hasTransfer) return { licensed: false, reason: "TRANSFER_PRESENT" };
   if (c.hasCorporateAction) return { licensed: false, reason: "CORPORATE_ACTION_PRESENT" };
@@ -134,9 +148,52 @@ export function licenseProviderFloor(c: ProviderFloorCandidate): ProviderFloorDe
   if (c.conflicted) return { licensed: false, reason: "RECONSTRUCTION_CONFLICTED" };
 
   // The corrected replay must state that units existed before its earliest
-  // defensible date. A zero or negative residue states no such thing.
-  if (c.unexplainedOpeningQuantity === null || c.unexplainedOpeningQuantity <= OPENING_EPSILON) {
-    return { licensed: false, reason: "NO_UNEXPLAINED_OPENING" };
+  // defensible date. A zero or negative opening states no such thing, and BOTH
+  // the opening and its unexplained residue must say so — Group A reconstructs
+  // COMPLETE with openingQuantity 0, which is a proven absence, not a gap.
+  const opening = c.openingQuantity;
+  const unexplained = c.unexplainedOpeningQuantity;
+  if (
+    opening === null || !Number.isFinite(opening) || opening <= OPENING_EPSILON ||
+    unexplained === null || !Number.isFinite(unexplained) || unexplained <= OPENING_EPSILON
+  ) {
+    return { licensed: false, reason: "NO_POSITIVE_OPENING" };
+  }
+
+  // V26-PRICE-4C — THE OPENING MUST BE READABLE, NOT MERELY KNOWN.
+  //
+  // A later acquiring event does not disprove an already-positive opening; it
+  // changes the quantity from its own date forward. So a BUY is no longer a
+  // blanket refusal. What replaces it is a stronger test: the licensed interval
+  // must actually RESOLVE to the opening quantity.
+  //
+  // It only does so when the reconstruction has published its opening anchor.
+  // Without one, `holdConstantBeforeEarliest` carries the earliest existing row
+  // backward — the POST-event quantity. Measured on the corpus, exactly the two
+  // instruments this relaxation admits are the two where that differs: INTC
+  // (opening 4 vs earliest row 5) and NVDA (2.0001 vs 2.0002). Licensing them
+  // without the anchor would import a 25% over-statement for 91 days.
+  //
+  // So: where an anchor can legally exist (its date is on or after the floor),
+  // it must exist. This makes the relaxation safe BY CONSTRUCTION rather than
+  // safe-if-reconstruction-was-regenerated-first, and it self-heals — the
+  // moment reconstruction runs, the anchor appears and licensing follows.
+  //
+  // Where an anchor CANNOT legally exist, the first supported event sits on the
+  // floor itself. Then direct evidence is the floor, so the POSSIBLE interval is
+  // empty and the refusal below fires anyway — no quantity earlier than the
+  // floor event is ever required inside a licensed interval. JPM is that shape.
+  //
+  // An instrument with NO events is exempt: the walk anchors on the observation
+  // itself, so the opening IS that observed quantity and hold-constant already
+  // resolves it correctly. Requiring an anchor there would refuse a position
+  // that was never at risk (SIRI, TTWO).
+  const anchorCanExist =
+    (c.eventCount ?? 0) > 0 &&
+    c.openingAnchorDateISO !== null &&
+    c.openingAnchorDateISO >= c.providerFloorISO;
+  if (anchorCanExist && !c.hasOpeningAnchor) {
+    return { licensed: false, reason: "OPENING_ANCHOR_MISSING" };
   }
 
   // A floor that is not earlier than direct evidence widens nothing.

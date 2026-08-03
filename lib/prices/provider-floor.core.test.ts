@@ -1,24 +1,31 @@
 /**
  * lib/prices/provider-floor.core.test.ts
  *
- * V26-PRICE-4B — provider-floor ownership licensing.
+ * V26-PRICE-4B/4C — provider-floor ownership licensing.
  *
- * The defect: `FinancialAccount.createdAt` is our INGESTION date, and investment
+ * 4B: `FinancialAccount.createdAt` is our INGESTION date, and investment
  * accounts carry no Transaction rows, so the POSSIBLE bound collapsed onto the
- * first observation. AMZN, TSLA and SPCE — demonstrably held on 2026-07-19 and
- * fully sold on 2026-07-27, with no acquiring event anywhere in a COMPLETE,
- * pagination-reconciled provider corpus reaching back to 2025-07-31 — therefore
- * read as UNKNOWN prehistory for every day before connection.
+ * first observation. Positions demonstrably held and later sold read as UNKNOWN
+ * prehistory for every day before connection.
  *
- * This suite pins the licensing predicate and, just as importantly, every case
- * that must stay refused.
+ * 4C: the original predicate refused any instrument with an acquiring event.
+ * That was too strict — a later BUY does not disprove an already-positive
+ * opening, it changes the quantity from its own date forward. INTC (opening 4,
+ * BUY 1, observed 5) and NVDA (opening 2.0001, fractional BUYs, observed 2.003)
+ * both reconcile exactly.
+ *
+ * The blanket refusal is replaced by a STRONGER test: the licensed interval must
+ * actually resolve to the opening, which it does only once the reconstruction
+ * has published its OPENING ANCHOR. Measured on the corpus, exactly the two
+ * instruments this admits are the two where the anchor matters — INTC's earliest
+ * row is 5 against an opening of 4, NVDA's is 2.0002 against 2.0001.
  *
  * Standalone tsx script:  npx tsx lib/prices/provider-floor.core.test.ts
  */
 
 import {
   licenseProviderFloor, earliestPossibleBound,
-  ACQUIRING_EVENT_TYPES, CORPORATE_ACTION_TYPES, TRANSFER_TYPES,
+  CORPORATE_ACTION_TYPES, TRANSFER_TYPES,
   type ProviderFloorCandidate,
 } from "./provider-floor.core";
 import { resolveOwnershipWindow } from "./ownership-window.core";
@@ -30,191 +37,199 @@ function check(name: string, cond: boolean, detail?: string): void {
 }
 
 const FLOOR = "2025-07-31";
-const CONNECT = "2026-07-19";
 const CEILING = "2026-08-01";
 
-/** The AMZN/TSLA/SPCE shape: observed, sold, no acquisition, positive residue. */
+/** The AMZN/TSLA/SPCE shape: sold, no acquisition, positive opening, anchor present. */
 function candidate(over: Partial<ProviderFloorCandidate> = {}): ProviderFloorCandidate {
   return {
     financialAccountId: "acct_llc",
     instrumentId:       "INST",
     providerFloorISO:   FLOOR,
-    earliestDirectISO:  CONNECT,
+    earliestDirectISO:  "2026-07-19",
     hasPositiveObservation: true,
-    hasAcquiringEvent:      false,
     hasTransfer:            false,
     hasCorporateAction:     false,
     reconciliation:             "PARTIAL",
     conflicted:                 false,
+    openingQuantity:            1,
     unexplainedOpeningQuantity: 1,
+    openingAnchorDateISO:       "2026-07-26",
+    hasOpeningAnchor:           true,
+    eventCount:                 1,
     isCashEquivalent:           false,
     ...over,
   };
 }
 
-/** Resolve the full window the way the binding will, to assert segment shape. */
 function segmentsFor(c: ProviderFloorCandidate) {
   const d = licenseProviderFloor(c);
-  const possible = earliestPossibleBound(CONNECT, d.licensed ? [d.possibleFromISO] : []);
+  const possible = earliestPossibleBound(c.earliestDirectISO, d.licensed ? [d.possibleFromISO] : []);
   const r = resolveOwnershipWindow({
-    instrumentId: c.instrumentId,
-    earliestDirectISO: c.earliestDirectISO,
-    earliestPossibleISO: possible,
-    valuationToISO: CEILING,
+    instrumentId: c.instrumentId, earliestDirectISO: c.earliestDirectISO,
+    earliestPossibleISO: possible, valuationToISO: CEILING,
   });
   return r.kind === "resolved" ? r.segments : [];
 }
+const reason = (c: ProviderFloorCandidate) => { const d = licenseProviderFloor(c); return d.licensed ? "LICENSED" : d.reason; };
 
 function main(): void {
-  // ── 1–3. The primary fixtures ─────────────────────────────────────────────
-  console.log("1-3. AMZN / TSLA / SPCE — POSSIBLE from the provider floor, KNOWN from direct evidence");
+  // ══ A. INTC — newly licensed ══════════════════════════════════════════════
+  console.log("A. INTC — POSSIBLE[2025-07-31..2025-10-29], KNOWN from the BUY onward");
   {
-    for (const sym of ["AMZN", "TSLA", "SPCE"]) {
-      const segs = segmentsFor(candidate({ instrumentId: sym }));
-      const poss = segs.find((s) => s.confidence === "POSSIBLE");
-      const known = segs.find((s) => s.confidence === "KNOWN");
-      check(`${sym}: a POSSIBLE segment exists`, poss !== undefined);
-      check(`${sym}: POSSIBLE starts at the provider floor ${FLOOR}`, poss?.fromISO === FLOOR);
-      check(`${sym}: POSSIBLE ends the day BEFORE direct evidence (2026-07-18)`, poss?.toISO === "2026-07-18");
-      check(`${sym}: KNOWN starts at direct evidence ${CONNECT}`, known?.fromISO === CONNECT);
-      check(`${sym}: KNOWN runs to the ceiling`, known?.toISO === CEILING);
-      check(`${sym}: nothing is licensed before the floor`,
-        segs.every((s) => s.fromISO >= FLOOR));
-    }
+    const intc = candidate({
+      instrumentId: "INTC", earliestDirectISO: "2025-10-30",
+      openingQuantity: 4, unexplainedOpeningQuantity: 4,
+      openingAnchorDateISO: "2025-10-29", hasOpeningAnchor: true,
+    });
+    check("licensed despite a later BUY", reason(intc) === "LICENSED");
+    const segs = segmentsFor(intc);
+    const poss = segs.find((s) => s.confidence === "POSSIBLE");
+    const known = segs.find((s) => s.confidence === "KNOWN");
+    check("POSSIBLE starts at the provider floor", poss?.fromISO === FLOOR);
+    check("POSSIBLE ends 2025-10-29 (the day before the BUY)", poss?.toISO === "2025-10-29");
+    check("KNOWN starts 2025-10-30 (the BUY)", known?.fromISO === "2025-10-30");
+    check("KNOWN runs to the ceiling", known?.toISO === CEILING);
+    check("nothing precedes the floor", segs.every((s) => s.fromISO >= FLOOR));
+    // The quantities the anchor makes resolvable are proven in
+    // reconstruction-opening-anchor.test.ts (4 before the BUY, 5 after).
   }
 
-  // ── 4. Group A — a real acquiring event blocks inference ──────────────────
-  console.log("4. Group A (APLD/OKLO/QBTS/VGT/VRT/VST) — real 2026-06-25 BUY prevents inference");
+  // ══ B. NVDA — newly licensed ══════════════════════════════════════════════
+  console.log("B. NVDA — POSSIBLE[2025-07-31..2025-10-01], KNOWN from the first event");
+  {
+    const nvda = candidate({
+      instrumentId: "NVDA", earliestDirectISO: "2025-10-02",
+      openingQuantity: 2.0001, unexplainedOpeningQuantity: 2.0001,
+      openingAnchorDateISO: "2025-10-01", hasOpeningAnchor: true,
+    });
+    check("licensed despite four later fractional BUYs", reason(nvda) === "LICENSED");
+    const segs = segmentsFor(nvda);
+    check("POSSIBLE[2025-07-31..2025-10-01]",
+      segs.find((s) => s.confidence === "POSSIBLE")?.fromISO === FLOOR &&
+      segs.find((s) => s.confidence === "POSSIBLE")?.toISO === "2025-10-01");
+    check("KNOWN from 2025-10-02", segs.find((s) => s.confidence === "KNOWN")?.fromISO === "2025-10-02");
+    check("a fractional opening is not lost to epsilon",
+      licenseProviderFloor(candidate({ openingQuantity: 0.0406, unexplainedOpeningQuantity: 0.0406 })).licensed);
+  }
+
+  // ══ C. Group A ════════════════════════════════════════════════════════════
+  console.log("C. Group A — zero opening keeps them absent before their real 2026-06-25 BUY");
   {
     for (const sym of ["APLD", "OKLO", "QBTS", "VGT", "VRT", "VST"]) {
       const c = candidate({
-        instrumentId: sym, hasAcquiringEvent: true,
-        earliestDirectISO: "2026-06-25", reconciliation: "COMPLETE", unexplainedOpeningQuantity: 0,
+        instrumentId: sym, earliestDirectISO: "2026-06-25",
+        reconciliation: "COMPLETE", openingQuantity: 0, unexplainedOpeningQuantity: 0,
+        openingAnchorDateISO: "2026-06-24", hasOpeningAnchor: false,
       });
-      const d = licenseProviderFloor(c);
-      check(`${sym}: refused`, d.licensed === false);
-      check(`${sym}: reason is the acquiring event`,
-        !d.licensed && d.reason === "ACQUIRING_EVENT_PRESENT");
+      check(`${sym}: refused as NO_POSITIVE_OPENING`, reason(c) === "NO_POSITIVE_OPENING");
       const segs = segmentsFor(c);
-      check(`${sym}: ownership still starts 2026-06-25, entirely KNOWN`,
+      check(`${sym}: ownership still starts 2026-06-25 and is entirely KNOWN`,
         segs.length === 1 && segs[0].confidence === "KNOWN" && segs[0].fromISO === "2026-06-25");
     }
-    check("every ratified acquiring type blocks it", ACQUIRING_EVENT_TYPES.length === 4);
+    check("a zero opening is refused even with an anchor present",
+      reason(candidate({ openingQuantity: 0, unexplainedOpeningQuantity: 0 })) === "NO_POSITIVE_OPENING");
+    check("a NEGATIVE opening (the expired option) is refused",
+      reason(candidate({ openingQuantity: -2, unexplainedOpeningQuantity: -2 })) === "NO_POSITIVE_OPENING");
+    check("opening positive but residue zero is refused — BOTH must be positive",
+      reason(candidate({ openingQuantity: 4, unexplainedOpeningQuantity: 0 })) === "NO_POSITIVE_OPENING");
+    check("a non-finite opening is refused",
+      reason(candidate({ openingQuantity: Number.NaN, unexplainedOpeningQuantity: 4 })) === "NO_POSITIVE_OPENING");
   }
 
-  // ── 5. TQQQ ───────────────────────────────────────────────────────────────
-  console.log("5. TQQQ — FAILED / UNSUPPORTED_CORPORATE_ACTION stays excluded");
+  // ══ D. TQQQ ═══════════════════════════════════════════════════════════════
+  console.log("D. TQQQ — still refused");
   {
-    const d = licenseProviderFloor(candidate({
-      instrumentId: "TQQQ", hasCorporateAction: true, reconciliation: "FAILED",
-      unexplainedOpeningQuantity: 20,
-    }));
-    check("refused", d.licensed === false);
-    check("the corporate action is reported before the failure",
-      !d.licensed && d.reason === "CORPORATE_ACTION_PRESENT");
-    check("and a FAILED reconstruction alone also refuses",
-      licenseProviderFloor(candidate({ reconciliation: "FAILED" })).licensed === false);
+    check("corporate action refuses before anything else can license it",
+      reason(candidate({ instrumentId: "TQQQ", hasCorporateAction: true, reconciliation: "FAILED",
+        openingQuantity: 20, unexplainedOpeningQuantity: 20 })) === "CORPORATE_ACTION_PRESENT");
+    check("a FAILED reconstruction alone also refuses",
+      reason(candidate({ reconciliation: "FAILED" })) === "RECONSTRUCTION_FAILED");
+    check("a positive opening cannot rescue a FAILED walk",
+      !licenseProviderFloor(candidate({ reconciliation: "FAILED", openingQuantity: 20, unexplainedOpeningQuantity: 20 })).licensed);
   }
 
-  // ── 6. Transfers and corporate actions ────────────────────────────────────
-  console.log("6. Unresolved transfer / corporate-action semantics prevent inference");
+  // ══ E. Cash ═══════════════════════════════════════════════════════════════
+  console.log("E. Cash — still refused, and checked first");
   {
-    check("a transfer refuses", (() => { const d = licenseProviderFloor(candidate({ hasTransfer: true }));
-      return !d.licensed && d.reason === "TRANSFER_PRESENT"; })());
-    check("a corporate action refuses", (() => { const d = licenseProviderFloor(candidate({ hasCorporateAction: true }));
-      return !d.licensed && d.reason === "CORPORATE_ACTION_PRESENT"; })());
-    check("both vocabularies are the ratified ones",
+    check("refused", reason(candidate({ isCashEquivalent: true })) === "CASH_INSTRUMENT");
+    check("a large positive cash opening cannot license it",
+      reason(candidate({ isCashEquivalent: true, openingQuantity: 3557.72, unexplainedOpeningQuantity: 3557.72 })) === "CASH_INSTRUMENT");
+  }
+
+  // ══ F. Transfers and corporate actions ════════════════════════════════════
+  console.log("F. Unresolved transfer / corporate-action semantics still refuse");
+  {
+    check("transfer refuses", reason(candidate({ hasTransfer: true })) === "TRANSFER_PRESENT");
+    check("corporate action refuses", reason(candidate({ hasCorporateAction: true })) === "CORPORATE_ACTION_PRESENT");
+    check("the ratified vocabularies are unchanged",
       TRANSFER_TYPES.length === 2 && CORPORATE_ACTION_TYPES.length === 4);
+    check("conflicted refuses", reason(candidate({ conflicted: true })) === "RECONSTRUCTION_CONFLICTED");
   }
 
-  // ── 7. Failed / conflicted reconstruction ─────────────────────────────────
-  console.log("7. Failed or conflicted reconstruction prevents inference");
+  // ══ G. Coverage ═══════════════════════════════════════════════════════════
+  console.log("G. Missing / unreconciled / unrelated coverage still refuses");
   {
-    check("FAILED refuses", (() => { const d = licenseProviderFloor(candidate({ reconciliation: "FAILED" }));
-      return !d.licensed && d.reason === "RECONSTRUCTION_FAILED"; })());
-    check("a missing reconstruction refuses", (() => { const d = licenseProviderFloor(candidate({ reconciliation: null }));
-      return !d.licensed && d.reason === "RECONSTRUCTION_FAILED"; })());
-    check("conflicted refuses", (() => { const d = licenseProviderFloor(candidate({ conflicted: true }));
-      return !d.licensed && d.reason === "RECONSTRUCTION_CONFLICTED"; })());
+    check("no provider floor refuses", reason(candidate({ providerFloorISO: null })) === "NO_PROVIDER_FLOOR");
+    check("no positive observation refuses", reason(candidate({ hasPositiveObservation: false })) === "NO_POSITIVE_OBSERVATION");
+    check("a missing reconstruction refuses", reason(candidate({ reconciliation: null })) === "RECONSTRUCTION_FAILED");
+    check("an unlicensed pair contributes no bound", earliestPossibleBound("2026-07-19", []) === "2026-07-19");
+    check("an existing earlier bound is never narrowed",
+      earliestPossibleBound("2023-03-24", [FLOOR]) === "2023-03-24");
   }
 
-  // ── 8. Opening residue ────────────────────────────────────────────────────
-  console.log("8. The corrected replay must state a positive unexplained opening");
+  // ══ H. Floor bound ════════════════════════════════════════════════════════
+  console.log("H. No instrument is licensed before its provider floor");
   {
-    check("zero residue refuses", (() => { const d = licenseProviderFloor(candidate({ unexplainedOpeningQuantity: 0 }));
-      return !d.licensed && d.reason === "NO_UNEXPLAINED_OPENING"; })());
-    check("a NEGATIVE residue refuses (pre-sign-fix rows license nothing)",
-      licenseProviderFloor(candidate({ unexplainedOpeningQuantity: -1 })).licensed === false);
-    check("null residue refuses", licenseProviderFloor(candidate({ unexplainedOpeningQuantity: null })).licensed === false);
-    check("sub-epsilon residue refuses", licenseProviderFloor(candidate({ unexplainedOpeningQuantity: 1e-9 })).licensed === false);
-    check("a materially positive residue licenses", licenseProviderFloor(candidate({ unexplainedOpeningQuantity: 0.5 })).licensed === true);
+    const d = licenseProviderFloor(candidate({ providerFloorISO: "2025-01-15" }));
+    check("a licensed decision returns exactly the floor it was given",
+      d.licensed && d.possibleFromISO === "2025-01-15");
+    check("MIN across licensed floors is taken", earliestPossibleBound("2026-07-19", [FLOOR, "2025-01-15"]) === "2025-01-15");
+    check("a floor at/after direct evidence widens nothing",
+      reason(candidate({ providerFloorISO: "2026-07-19" })) === "FLOOR_NOT_EARLIER_THAN_DIRECT");
+    check("every resolved segment starts on or after the floor",
+      segmentsFor(candidate()).every((s) => s.fromISO >= FLOOR));
   }
 
-  // ── 9. Coverage gating ────────────────────────────────────────────────────
-  console.log("9. Missing / unreconciled coverage prevents inference");
+  // ══ I. Floor/event collision and the anchor requirement ═══════════════════
+  console.log("I. The opening must be READABLE — anchor requirement and the floor collision");
   {
-    check("no provider floor refuses", (() => { const d = licenseProviderFloor(candidate({ providerFloorISO: null }));
-      return !d.licensed && d.reason === "NO_PROVIDER_FLOOR"; })());
-    check("no positive observation refuses", (() => { const d = licenseProviderFloor(candidate({ hasPositiveObservation: false }));
-      return !d.licensed && d.reason === "NO_POSITIVE_OBSERVATION"; })());
-    check("a floor at/after direct evidence widens nothing and is refused", (() => {
-      const d = licenseProviderFloor(candidate({ providerFloorISO: CONNECT }));
-      return !d.licensed && d.reason === "FLOOR_NOT_EARLIER_THAN_DIRECT"; })());
-  }
+    // The 4C safety test: without a published anchor, the licensed interval
+    // would resolve the POST-event quantity. Refuse until reconstruction runs.
+    check("INTC without its anchor is REFUSED, not silently over-stated",
+      reason(candidate({ earliestDirectISO: "2025-10-30", openingQuantity: 4, unexplainedOpeningQuantity: 4,
+        openingAnchorDateISO: "2025-10-29", hasOpeningAnchor: false })) === "OPENING_ANCHOR_MISSING");
+    check("...and licensed once the anchor exists",
+      reason(candidate({ earliestDirectISO: "2025-10-30", openingQuantity: 4, unexplainedOpeningQuantity: 4,
+        openingAnchorDateISO: "2025-10-29", hasOpeningAnchor: true })) === "LICENSED");
 
-  // ── 10. A later attempt with an earlier floor widens safely ───────────────
-  console.log("10. An earlier valid floor widens; the bound never predates it");
-  {
-    const earlier = licenseProviderFloor(candidate({ providerFloorISO: "2025-01-15" }));
-    check("licensed at the earlier floor", earlier.licensed && earlier.possibleFromISO === "2025-01-15");
-    check("the resolved POSSIBLE segment starts there",
-      segmentsFor(candidate({ providerFloorISO: "2025-01-15" }))
-        .find((s) => s.confidence === "POSSIBLE")?.fromISO === "2025-01-15");
-    check("MIN across licensed floors is taken",
-      earliestPossibleBound(CONNECT, ["2025-07-31", "2025-01-15"]) === "2025-01-15");
-    check("and never reaches past the earliest floor supplied",
-      earliestPossibleBound(CONNECT, ["2025-07-31"]) === "2025-07-31");
-  }
+    // JPM's shape: the first supported event sits ON the floor, so no anchor can
+    // legally exist. Direct evidence is then the floor itself, the POSSIBLE
+    // interval is empty, and the floor refusal fires — no quantity earlier than
+    // the floor event is ever required inside a licensed interval.
+    const jpm = candidate({
+      instrumentId: "JPM", earliestDirectISO: FLOOR,
+      openingAnchorDateISO: "2025-07-30", hasOpeningAnchor: false,
+    });
+    check("JPM: anchor cannot legally exist (its date precedes the floor)",
+      ("2025-07-30" < FLOOR));
+    check("JPM: refused by the floor bound, not by the missing anchor",
+      reason(jpm) === "FLOOR_NOT_EARLIER_THAN_DIRECT");
+    check("JPM: therefore no licensed interval needs a pre-floor quantity",
+      segmentsFor(jpm).every((s) => s.confidence === "KNOWN"));
 
-  // ── 11. Provider identity ─────────────────────────────────────────────────
-  console.log("11. An unrelated provider identity cannot widen the floor");
-  {
-    // The predicate receives ONE floor per (account, instrument); the binding
-    // restricts it to the account's current plaidItem before it ever gets here.
-    // What is provable purely: an account whose floor is null licenses nothing,
-    // and floors are only ever combined per-instrument across LICENSED pairs.
-    check("a pair with no floor contributes nothing",
-      licenseProviderFloor(candidate({ providerFloorISO: null })).licensed === false);
-    check("an unlicensed pair contributes no candidate to the bound",
-      earliestPossibleBound(CONNECT, []) === CONNECT);
-    check("the existing account-activity bound is never narrowed by a later floor",
-      earliestPossibleBound("2023-03-24", ["2025-07-31"]) === "2023-03-24");
-  }
+    // A pair never reconstructed states no anchor date at all.
+    check("a null anchor date imposes no anchor requirement",
+      reason(candidate({ openingAnchorDateISO: null, hasOpeningAnchor: false })) === "LICENSED");
 
-  // ── 12. Cash ──────────────────────────────────────────────────────────────
-  console.log("12. Cash is explicitly EXCLUDED, not silently included");
-  {
-    const d = licenseProviderFloor(candidate({ instrumentId: "CUR:USD", isCashEquivalent: true }));
-    check("refused", d.licensed === false);
-    check("reason names the cash exclusion", !d.licensed && d.reason === "CASH_INSTRUMENT");
-    check("the exclusion is checked FIRST, so no other reason can mask it",
-      (() => { const x = licenseProviderFloor(candidate({
-        isCashEquivalent: true, providerFloorISO: null, hasAcquiringEvent: true, reconciliation: "FAILED" }));
-        return !x.licensed && x.reason === "CASH_INSTRUMENT"; })());
-  }
-
-  // ── Invariants that must hold whatever the inputs ─────────────────────────
-  console.log("13. Structural invariants");
-  {
-    const segs = segmentsFor(candidate());
-    check("POSSIBLE precedes KNOWN and they do not overlap",
-      segs.length === 2 && segs[0].confidence === "POSSIBLE" && segs[1].confidence === "KNOWN" &&
-      segs[0].toISO < segs[1].fromISO);
-    check("no segment is ever KNOWN before direct evidence",
-      segs.filter((s) => s.confidence === "KNOWN").every((s) => s.fromISO >= CONNECT));
-    check("a licensed decision never returns a date other than the floor it was given",
-      (() => { const d = licenseProviderFloor(candidate({ providerFloorISO: "2024-02-29" }));
-        return d.licensed && d.possibleFromISO === "2024-02-29"; })());
+    // SIRI/TTWO: no events at all, so the walk anchors on the observation and
+    // `opening === anchorQuantity` by construction. No anchor can exist, and
+    // hold-constant from that observation already resolves the opening.
+    check("an event-free reconstruction needs no anchor (SIRI/TTWO)",
+      reason(candidate({ eventCount: 0, openingAnchorDateISO: "2026-08-02", hasOpeningAnchor: false,
+        openingQuantity: 0.1, unexplainedOpeningQuantity: 0.1 })) === "LICENSED");
+    check("...but an event-BEARING reconstruction still requires it",
+      reason(candidate({ eventCount: 2, openingAnchorDateISO: "2025-10-29", hasOpeningAnchor: false,
+        earliestDirectISO: "2025-10-30", openingQuantity: 4, unexplainedOpeningQuantity: 4 })) === "OPENING_ANCHOR_MISSING");
   }
 
   if (failures > 0) {

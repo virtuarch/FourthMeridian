@@ -31,10 +31,17 @@
  * every day before connection.
  *
  * The provider's own corpus says more than our ingestion date. Where it covers a
- * span COMPLETELY (every page fetched, count reconciled) and contains no
- * acquiring event for an instrument that was nevertheless observed as held, the
- * acquisition must predate the corpus — so ownership from the corpus floor is
- * POSSIBLE. Never KNOWN: nothing dates the holding to those days.
+ * span COMPLETELY (every page fetched, count reconciled) and the corrected
+ * backward replay still lands on a POSITIVE unexplained opening — units that
+ * existed before anything the corpus can explain — that opening must predate the
+ * corpus, so ownership from the corpus floor is POSSIBLE. Never KNOWN: nothing
+ * dates the holding to those days.
+ *
+ * V26-PRICE-4C — a later BUY does NOT disprove a positive opening; it changes the
+ * quantity from its own date forward. So an acquiring event is no longer a
+ * blanket refusal. What replaces it is stronger: the licensed interval must
+ * actually RESOLVE to the opening quantity, which it does only once the
+ * reconstruction has published its OPENING ANCHOR. See provider-floor.core.ts.
  *
  * The floor is `MIN(earliestReturnedDate)` over that account's COMPLETE,
  * pagination-reconciled coverage rows, restricted to ONE CONTINUOUS PROVIDER
@@ -66,7 +73,6 @@ import {
 import {
   licenseProviderFloor,
   earliestPossibleBound,
-  ACQUIRING_EVENT_TYPES,
   CORPORATE_ACTION_TYPES,
   TRANSFER_TYPES,
 } from "./provider-floor.core";
@@ -136,14 +142,15 @@ export async function loadOwnershipWindows(
   // One grouped query gathering exactly the evidence licenseProviderFloor reads.
   // `floor` restricts to ONE continuous provider identity: the plaidItem of the
   // account's most recent coverage attempt, so a replaced item cannot widen it.
-  const acq = Prisma.join(ACQUIRING_EVENT_TYPES.map((t) => Prisma.sql`${t}::"InvestmentEventType"`));
   const corp = Prisma.join(CORPORATE_ACTION_TYPES.map((t) => Prisma.sql`${t}::"InvestmentEventType"`));
   const xfer = Prisma.join(TRANSFER_TYPES.map((t) => Prisma.sql`${t}::"InvestmentEventType"`));
   const floorRows = await db.$queryRaw<Array<{
     financialAccountId: string; instrumentId: string; providerFloor: Date | null;
-    hasPositiveObservation: boolean; hasAcquiringEvent: boolean; hasTransfer: boolean;
+    hasPositiveObservation: boolean; hasTransfer: boolean;
     hasCorporateAction: boolean; reconciliation: string | null; conflicted: boolean | null;
-    unexplainedOpeningQuantity: number | null; isCashEquivalent: boolean;
+    openingQuantity: number | null; unexplainedOpeningQuantity: number | null;
+    openingAnchorDate: Date | null; hasOpeningAnchor: boolean; eventCount: number | null;
+    isCashEquivalent: boolean;
   }>>`
     WITH current_item AS (
       SELECT DISTINCT ON ("financialAccountId") "financialAccountId", "plaidItemId"
@@ -176,16 +183,24 @@ export async function loadOwnershipWindows(
              AS "hasPositiveObservation",
            EXISTS (SELECT 1 FROM "InvestmentEvent" e WHERE e."financialAccountId" = p."financialAccountId"
                      AND e."instrumentId" = p."instrumentId" AND e."deletedAt" IS NULL
-                     AND e."supersededById" IS NULL AND e.type IN (${acq})) AS "hasAcquiringEvent",
-           EXISTS (SELECT 1 FROM "InvestmentEvent" e WHERE e."financialAccountId" = p."financialAccountId"
-                     AND e."instrumentId" = p."instrumentId" AND e."deletedAt" IS NULL
                      AND e."supersededById" IS NULL AND e.type IN (${xfer})) AS "hasTransfer",
            EXISTS (SELECT 1 FROM "InvestmentEvent" e WHERE e."financialAccountId" = p."financialAccountId"
                      AND e."instrumentId" = p."instrumentId" AND e."deletedAt" IS NULL
                      AND e."supersededById" IS NULL AND e.type IN (${corp})) AS "hasCorporateAction",
            pr.reconciliation::text AS reconciliation,
            pr.conflicted,
+           pr."openingQuantity",
            pr."unexplainedOpeningQuantity",
+           -- V26-PRICE-4C — where an opening anchor would live, and whether the
+           -- reconstruction has actually published one there.
+           (pr."earliestDefensibleDate"::date - 1) AS "openingAnchorDate",
+           EXISTS (SELECT 1 FROM "PositionObservation" oa
+                     WHERE oa."financialAccountId" = p."financialAccountId"
+                       AND oa."instrumentId" = p."instrumentId"
+                       AND oa.origin = 'DERIVED' AND oa.source = 'reconstruction'
+                       AND oa."deletedAt" IS NULL AND oa."supersededById" IS NULL
+                       AND oa.date = (pr."earliestDefensibleDate"::date - 1)) AS "hasOpeningAnchor",
+           pr."eventCount",
            i."isCashEquivalent"
     FROM pairs p
     JOIN "Instrument" i ON i.id = p."instrumentId"
@@ -204,12 +219,15 @@ export async function loadOwnershipWindows(
       providerFloorISO:   r.providerFloor ? toISODateUTC(r.providerFloor) : null,
       earliestDirectISO:  direct.get(r.instrumentId) ?? null,
       hasPositiveObservation: r.hasPositiveObservation === true,
-      hasAcquiringEvent:      r.hasAcquiringEvent === true,
       hasTransfer:            r.hasTransfer === true,
       hasCorporateAction:     r.hasCorporateAction === true,
       reconciliation:             (r.reconciliation as "COMPLETE" | "PARTIAL" | "FAILED" | null) ?? null,
       conflicted:                 r.conflicted === true,
+      openingQuantity:            r.openingQuantity,
       unexplainedOpeningQuantity: r.unexplainedOpeningQuantity,
+      openingAnchorDateISO:       r.openingAnchorDate ? toISODateUTC(r.openingAnchorDate) : null,
+      hasOpeningAnchor:           r.hasOpeningAnchor === true,
+      eventCount:                 r.eventCount,
       isCashEquivalent:           r.isCashEquivalent === true,
     });
     if (!decision.licensed) continue;
