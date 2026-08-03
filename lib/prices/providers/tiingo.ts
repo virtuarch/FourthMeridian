@@ -81,6 +81,14 @@ export function createTiingoPriceProvider(
   return {
     source,
     historicalDepth,
+    // V26-CAP-1 — a FIXED floor: an absolute date that does not move with the
+    // calendar, so the date itself IS the declaration.
+    capability: {
+      kind:                 "FIXED" as const,
+      historyDays:          null,
+      earliestSupportedISO: historicalDepth,
+      source:               opts.historicalDepth ? "CONFIG" as const : "DEFAULT" as const,
+    },
     supportedBases() {
       // Tiingo `close` is unadjusted → RAW_CLOSE only. (adjClose would be a
       // separate ADJUSTED_CLOSE mapping; deliberately not served here.)

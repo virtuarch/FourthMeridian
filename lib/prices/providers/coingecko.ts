@@ -305,6 +305,16 @@ export function createCoinGeckoPriceProvider(
   return {
     source,
     historicalDepth,
+    // V26-CAP-1 — a ROLLING window: the depth is the stable declaration, the
+    // floor is its derived snapshot for today. Resolved HERE, at the one
+    // construction edge that already knows how the floor is computed, so no
+    // second capability calculation exists anywhere.
+    capability: {
+      kind:                 "ROLLING" as const,
+      historyDays,
+      earliestSupportedISO: historicalDepth,
+      source:               (process.env.COINGECKO_HISTORY_DAYS ?? "").trim() === "" ? "DEFAULT" as const : "CONFIG" as const,
+    },
     supportedBases() {
       return [PriceBasis.RAW_CLOSE];
     },

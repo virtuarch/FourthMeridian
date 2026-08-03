@@ -53,6 +53,19 @@ export interface PriceProviderAdapter {
   readonly source: string;
   /** Earliest ISO date this source can serve. */
   readonly historicalDepth: string;
+  /**
+   * V26-CAP-1 — the DECLARATION behind `historicalDepth`, so orchestration can
+   * compare capability over time without recomputing depth itself.
+   *
+   * `historicalDepth` alone is not comparable across days for a rolling-window
+   * provider: its floor advances one day every day, so a stored date would read
+   * as "narrowed" daily. This states the KIND and, for a rolling window, the
+   * depth that is actually stable.
+   *
+   * Optional so an adapter that has not declared one is simply not tracked —
+   * absence must never be read as a capability claim.
+   */
+  readonly capability?: import("./provider-capability.core").CapabilityDeclaration;
   /** Which bases this source can serve (e.g. an equities vendor: RAW_CLOSE only). */
   supportedBases(): readonly PriceBasis[];
   /**

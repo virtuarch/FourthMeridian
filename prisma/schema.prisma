@@ -2300,6 +2300,73 @@ model ImportMappingProfile {
 // spaceId replaces userId — snapshots belong to the Space, not the user.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// V26-CAP-1 — an APPEND-ONLY record of what a provider declared it could serve.
+///
+/// Declared capability only. It is not requested history, not demonstrated
+/// returned evidence, not licensed support, and not regenerated snapshot
+/// support. A row here changes what Fourth Meridian may ATTEMPT; it proves
+/// nothing came back and authorizes no snapshot. Only a successful regeneration
+/// may move `SpaceSnapshot.cryptoValuationStatus` to "supported".
+///
+/// APPEND-ONLY, matching the coverage/audit doctrine (InvestmentEventCoverage,
+/// AuditLog): every check writes a row, so widening is attributable to a moment
+/// and a configuration rather than inferred from a mutated singleton.
+///
+/// IDENTITY = (provider, capabilityKey). `capabilityKey` fingerprints the
+/// CONFIGURATION that determines capability — never the credential itself — so a
+/// replaced key starts a new lineage and cannot accidentally widen the old one.
+/// Scope is DEPLOYMENT today because the only crypto price credential is a
+/// single deployment environment variable; the column exists so a future
+/// per-credential contract can be modelled without a migration of meaning.
+///
+/// ROLLING vs FIXED is load-bearing. A rolling window's floor moves forward
+/// every day, so comparing stored dates would report "narrowed" daily and bury
+/// real widenings. `historyDays` is authoritative for ROLLING;
+/// `earliestSupportedISO` is authoritative for FIXED and a derived audit
+/// snapshot for ROLLING. See lib/prices/provider-capability.core.ts.
+model ProviderCapabilityObservation {
+  id String @id @default(cuid())
+
+  /// PriceProviderAdapter.source — the same stable provenance identifier stored
+  /// on PriceObservation.source. Never a vendor name typed by hand.
+  provider String
+
+  /// Non-reversible fingerprint of the capability-determining configuration.
+  /// NEVER the credential. Distinguishes lineages across a key replacement.
+  capabilityKey String
+
+  /// Identity boundary this declaration applies to. "DEPLOYMENT" today.
+  scope String
+
+  /// "ROLLING" | "FIXED" — guarded at write time.
+  kind String
+
+  /// Authoritative for ROLLING; null for FIXED.
+  historyDays Int?
+
+  /// Authoritative for FIXED; a derived snapshot for ROLLING (audit only).
+  earliestSupportedISO String
+
+  /// "CONFIG" | "API" | "DEFAULT" — how the declaration was learned.
+  declarationSource String
+
+  /// Comparison against the previous valid observation for this identity:
+  /// "first-observation" | "unchanged" | "widened" | "narrowed" | "incomparable".
+  comparison String
+
+  /// The observation this was compared against. Null on a first observation.
+  previousObservationId String?
+
+  /// Set only on a widening, and only once work has been PLANNED — never a claim
+  /// that history became supported. Support still requires regeneration.
+  widenedFromISO String?
+  widenedToISO   String?
+
+  observedAt DateTime @default(now())
+
+  @@index([provider, capabilityKey, observedAt])
+}
+
 model SpaceSnapshot {
   id      String   @id @default(cuid())
   spaceId String

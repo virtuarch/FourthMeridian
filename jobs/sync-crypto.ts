@@ -37,6 +37,8 @@ import {
   wealthRegenerationEnabled,
 } from "@/lib/snapshots/regenerate-history";
 import { resolveHistoricalWorkWindow } from "@/lib/snapshots/historical-work-window";
+import { reconcileProviderCapability, type CapabilityWideningPlan } from "@/lib/prices/capability-reconciliation";
+import { BTC_PRICE_SOURCE } from "@/lib/crypto/btc-price";
 
 export interface SyncCryptoResult extends SyncAllBtcWalletsResult {
   /** Spaces whose wealth history was regenerated this run (empty when the flag is off). */
@@ -52,6 +54,38 @@ export async function syncCrypto(deps?: BtcSyncDeps): Promise<SyncCryptoResult> 
   // sweep that discovers a two-year-old movement rebuilds from that movement.
   const runStartedAt = new Date();
 
+  // V26-CAP-1 — reconcile the price provider's DECLARED capability once a day,
+  // here, before the sweep. Cheapest reliable place in this repository: already
+  // scheduled, already fans out over exactly the accounts a crypto capability
+  // change affects, and not a request path. One indexed read plus one insert;
+  // it plans work ONLY when the declaration actually widened.
+  //
+  // It reports a plan and nothing more — no acquisition, no regeneration, no
+  // snapshot write. A wider declaration expands what may be ATTEMPTED; support
+  // still moves only when a regeneration succeeds.
+  let capabilityWidening: CapabilityWideningPlan | null = null;
+  try {
+    const plan = await reconcileProviderCapability(BTC_PRICE_SOURCE, {
+      secret: process.env.COINGECKO_API_KEY,
+    });
+    if (plan.observation.rejectedReason) {
+      console.warn(`[sync-crypto] capability observation refused: ${plan.observation.rejectedReason}`);
+    } else {
+      console.log(`[sync-crypto] capability ${plan.observation.provider}: ${plan.observation.comparison}`);
+    }
+    if (plan.window) {
+      capabilityWidening = plan;
+      console.log(
+        `[sync-crypto] capability WIDENED — newly available ` +
+        `${plan.observation.newlyAvailable?.fromISO}..${plan.observation.newlyAvailable?.toISO}; ` +
+        `planned ${plan.window.fromDate}..${plan.window.toDate} over ${plan.affectedAccountIds.length} account(s)`,
+      );
+    }
+  } catch (err) {
+    // Non-fatal by construction: a capability check must never fail the sweep.
+    console.warn("[sync-crypto] capability reconciliation failed (non-fatal):", err instanceof Error ? err.message : err);
+  }
+
   const result = await syncAllBtcWallets(deps);
 
   // Regenerate the wealth history of every space touched by a successful sync —
@@ -64,10 +98,14 @@ export async function syncCrypto(deps?: BtcSyncDeps): Promise<SyncCryptoResult> 
   let wealthRegenSpaces = 0;
   if (wealthRegenerationEnabled() && result.syncedAccountIds.length > 0) {
     try {
-      const plan = await resolveHistoricalWorkWindow({
-        financialAccountIds: result.syncedAccountIds,
-        changedSince:        runStartedAt,
-      });
+      // A capability widening supersedes the ordinary incremental window: the
+      // newly reachable dates have no stored prices yet, so a measurement-based
+      // window would not reach them.
+      const plan = capabilityWidening?.window
+        ?? await resolveHistoricalWorkWindow({
+          financialAccountIds: result.syncedAccountIds,
+          changedSince:        runStartedAt,
+        });
       console.log(
         `[sync-crypto] historical window ${plan.fromDate}..${plan.toDate} (${plan.mode}) — ${plan.reasons.join("; ")}`,
       );

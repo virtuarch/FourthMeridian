@@ -44,6 +44,20 @@ export interface ResolveHistoricalWorkWindowArgs {
    */
   initialBuild?: boolean;
   now?: Date;
+  /**
+   * V26-CAP-1 — a capability WIDENING supplies the floor and impacted-from
+   * directly, because the widened reach is not yet reflected in stored prices:
+   * the whole point is to plan the acquisition that will create them. Reading
+   * the archive here would return the OLD floor and plan nothing.
+   *
+   * Additive and optional — every existing caller is unaffected, and the planner
+   * itself is untouched. It never widens beyond what the caller states, and the
+   * result is still intersected with evidence and the writable ceiling.
+   */
+  capabilityOverride?: {
+    blockingPriceFloorISO: string;
+    impactedFromISO:       string;
+  };
 }
 
 /**
@@ -113,8 +127,12 @@ export async function resolveHistoricalWorkWindow(
     : { _min: { date: null as Date | null } };
   const evidenceFloorISO = evidence._min.date ? evidence._min.date.toISOString().slice(0, 10) : null;
 
-  const { floorISO: blockingPriceFloorISO, unpricedBlockingInstruments } =
-    await resolveBlockingPriceFloor(financialAccountIds);
+  const resolved = await resolveBlockingPriceFloor(financialAccountIds);
+  const { unpricedBlockingInstruments } = resolved;
+  // A widening states the floor it just unlocked; otherwise the floor is what the
+  // archive can actually price today.
+  const blockingPriceFloorISO =
+    args.capabilityOverride?.blockingPriceFloorISO ?? resolved.floorISO;
 
   // Impacted-from — MEASURED only when the caller supplied a `changedSince`.
   // Two independent sources of newly-written historical evidence: transactions
@@ -123,7 +141,10 @@ export async function resolveHistoricalWorkWindow(
   // this is real measurement, not an estimate.
   let changeDetection: ChangeDetection = "unavailable";
   let impactedFromISO: string | null = null;
-  if (changedSince) {
+  if (args.capabilityOverride) {
+    changeDetection = "measured";
+    impactedFromISO = args.capabilityOverride.impactedFromISO;
+  } else if (changedSince) {
     changeDetection = "measured";
     const [tx, price] = await Promise.all([
       financialAccountIds.length
