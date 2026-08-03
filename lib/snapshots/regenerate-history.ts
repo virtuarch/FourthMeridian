@@ -32,7 +32,7 @@
  */
 
 import { db } from "@/lib/db";
-import { ShareStatus, SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
+import { ShareStatus, SettlementState, SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
 import { getInvestmentValueForWindow } from "@/lib/investments/valuation";
@@ -67,6 +67,7 @@ import {
   type RegenerationDisposition,
 } from "@/lib/snapshots/regeneration-candidates.core";
 import { resolveBtcInstrumentId, readBtcUsdWindow } from "@/lib/crypto/btc-price";
+import { licenseConstantQuantityCarry } from "@/lib/crypto/quantity-carry.core";
 import { backfillHeldInstrumentPrices } from "@/lib/investments/holding-price-backfill";
 
 type Client = PrismaClient | Prisma.TransactionClient;
@@ -195,7 +196,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     where:  { spaceId, status: ShareStatus.ACTIVE, financialAccount: { deletedAt: null } },
     select: {
       createdAt: true,
-      financialAccount: { select: { id: true, type: true, balance: true, currency: true, createdAt: true, debtSubtype: true, creditLimit: true, nativeBalance: true } },
+      financialAccount: { select: { id: true, type: true, balance: true, currency: true, createdAt: true, debtSubtype: true, creditLimit: true, nativeBalance: true, lastUpdated: true } },
     },
   });
   if (linkRows.length === 0) return zero;
@@ -208,6 +209,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     debtSubtype: l.financialAccount.debtSubtype,
     creditLimit: l.financialAccount.creditLimit,
     nativeBalance: l.financialAccount.nativeBalance, // BTC quantity for crypto accounts
+    lastUpdated: l.financialAccount.lastUpdated,     // when nativeBalance was observed
   }));
 
   // Part-A — crypto accounts get an honest per-day valuation: today's on-chain
@@ -217,6 +219,71 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // dark without COINGECKO_API_KEY). Independent of the per-account floor: the
   // constant-quantity assumption spans the whole window (a labeled estimate).
   const cryptoAccounts = accounts.filter((a) => a.type === "crypto" && a.nativeBalance != null);
+
+  // V26-CRYPTO-QTY-1 — THE CONSTANT-QUANTITY CARRY IS NOW LICENSED, NOT ASSUMED.
+  //
+  // Carrying `nativeBalance` to a historical date claims the wallet held that
+  // amount then. That claim is only true across an interval containing no
+  // quantity-changing transaction, and nothing used to check. Load, ONCE:
+  //
+  //   anchor  — the date `nativeBalance` was observed (the account's last sync).
+  //   events  — the dates of quantity-changing wallet transactions.
+  //
+  // FILTERING PREDICATES (the binding's documented responsibility; the pure
+  // decision in quantity-carry.core.ts deliberately takes dates only):
+  //   · scoped to THIS wallet — another account's movements are not this
+  //     wallet's quantity, so they must never block it;
+  //   · currency = "BTC" — the native-amount column. A fiat row carries no BTC
+  //     quantity and is not a quantity event (never infer quantity from fiat);
+  //   · deletedAt IS NULL and settlementState = POSTED — pending/unconfirmed and
+  //     deleted rows are not settled quantity changes;
+  //   · every remaining row counts, whatever its sign or flowType. btc-sync
+  //     writes `amount` as a SIGNED native BTC delta (inflow +, outflow/fee −),
+  //     so inflows, outflows, fees and internal transfers all change THIS
+  //     wallet's balance and all must block. Internal transfers are not
+  //     double-counted: each leg is a row on its own account and only ever
+  //     blocks the account it belongs to.
+  const cryptoQuantityEventsByAccount = new Map<string, string[]>();
+  const cryptoAnchorByAccount = new Map<string, string>();
+  if (cryptoAccounts.length > 0) {
+    for (const a of cryptoAccounts) {
+      // No sync timestamp ⇒ the quantity has no observation date to be carried
+      // FROM. Left unset, which the guard reports as NO_ANCHOR and refuses —
+      // never coerced to "now", which would silently license the whole window.
+      if (a.lastUpdated) cryptoAnchorByAccount.set(a.id, isoDate(a.lastUpdated));
+    }
+    const evRows = await client.transaction.findMany({
+      where: {
+        financialAccountId: { in: cryptoAccounts.map((a) => a.id) },
+        currency:           "BTC",
+        deletedAt:          null,
+        settlementState:    SettlementState.POSTED,
+      },
+      select: { financialAccountId: true, date: true },
+    });
+    for (const r of evRows) {
+      if (!r.financialAccountId) continue; // unattached row — not this wallet's activity
+      const list = cryptoQuantityEventsByAccount.get(r.financialAccountId) ?? [];
+      list.push(isoDate(r.date));
+      cryptoQuantityEventsByAccount.set(r.financialAccountId, list);
+    }
+  }
+
+  /**
+   * May EVERY crypto account's constant quantity be carried to this date?
+   *
+   * All-or-nothing on purpose: valuing the licensed accounts while silently
+   * dropping a refused one would understate crypto and present the remainder as
+   * the whole — the precise dishonesty this slice exists to remove.
+   */
+  const cryptoQuantityLicensed = (dISO: string): boolean =>
+    cryptoAccounts.every((a) =>
+      licenseConstantQuantityCarry({
+        targetISO:     dISO,
+        anchorISO:     cryptoAnchorByAccount.get(a.id) ?? null,
+        eventDatesISO: cryptoQuantityEventsByAccount.get(a.id) ?? [],
+      }).licensed);
+
   // V26-PRICE-5 — a DRY RUN MUST NOT ACQUIRE. `dryRun` previously suppressed
   // only the snapshot upserts, so a "read-only" impact report still made live
   // provider calls and wrote price rows. Valuation reads stored evidence only;
@@ -525,7 +592,12 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     let hasDigitalAssetEvidence = false;
     if (cryptoAccounts.length > 0) {
       const btcUsd = btcAt(dISO); // HIST-2C — from the one-shot window read above
-      if (btcUsd != null) {
+      // V26-CRYPTO-QTY-1 — BOTH are required, and they are independent evidence:
+      // a price reaching the day says nothing about what was held, and a licensed
+      // quantity says nothing about what it was worth. Either one missing leaves
+      // the day's crypto UNVALUED (never a carried fiat balance — see the flat
+      // guard in regenerate-history.core.ts).
+      if (btcUsd != null && cryptoQuantityLicensed(dISO)) {
         // Value each crypto account at its constant native quantity × the day's
         // BTC price (USD), then let classifyAccounts do the FX to the reporting
         // currency — the SAME conversion path every other total uses (no second

@@ -74,6 +74,13 @@ export const INVALID_VALUATION_REASON_CODE = "INVALID_VALUATION_EVIDENCE";
 export const NO_VALUED_COMPONENTS_REASON_CODE = "NO_VALUED_COMPONENTS";
 
 /**
+ * V26-CRYPTO-QTY-1 — machine-searchable marker for the crypto no-fabrication
+ * skip. Same shape as the two codes above. Grep this to find every day whose
+ * crypto component could not be valued and was therefore not asserted.
+ */
+export const NO_CRYPTO_EVIDENCE_REASON_CODE = "NO_CRYPTO_EVIDENCE";
+
+/**
  * V26-INVESTMENTS-HISTORY — A ZERO SUBTOTAL MAY ONLY BE ASSERTED WHEN EVIDENCE
  * SUPPORTS ZERO.
  *
@@ -364,6 +371,38 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
         `${INVALID_VALUATION_REASON_CODE} (${invalidComponents.join(",")}): historical valuation was ` +
         `negative or non-finite; the stored value is preserved, not overwritten. ` +
         `Upstream position reconstruction requires investigation.`,
+    };
+  }
+
+  // NO FABRICATION (CRYPTO) — V26-CRYPTO-QTY-1. The exact analogue of the
+  // NO-FABRICATION rule above, and it was missing.
+  //
+  // `digitalAssets` below falls back to `base.totalDigitalAssets` whenever the
+  // day has no crypto evidence. That base is the account's CURRENT USD balance
+  // carried backward, so an unvaluable day was written as a confident crypto
+  // figure — for the wallet that motivated this slice, 235 consecutive days all
+  // reading exactly $15,311.94 (75% of the portfolio), and with no tier penalty
+  // either, because the crypto tier is only consulted when crypto WAS valued.
+  //
+  // A day is unvaluable for two independent reasons and both land here: no price
+  // reached it, or the constant-quantity carry was refused because wallet
+  // activity lies between it and the observation. Either way the honest outcome
+  // is the one investments already take — leave the day unwritten and preserve
+  // what is stored, rather than assert a number nothing supports.
+  //
+  // Ordered AFTER the invalid-evidence guard so the more specific and more
+  // severe reason still wins on a day that is both. Guarded on a MATERIAL flat
+  // balance so a Space with no crypto — or a closed, genuinely-zero wallet — is
+  // untouched: `base.totalDigitalAssets` is then 0 and there is nothing to
+  // fabricate.
+  if (!input.hasDigitalAssetEvidence && base.totalDigitalAssets > WEALTH_REGEN_EPSILON) {
+    return {
+      date, action: "skip-unsupported", fields: null, isEstimated: true, tier: "incomplete",
+      contributingComponentCount: null, totalComponentCount: null,
+      reason:
+        `${NO_CRYPTO_EVIDENCE_REASON_CODE}: no historical crypto evidence for this date (no price ` +
+        `reached it, or the constant-quantity carry was refused by wallet activity); the carried ` +
+        `balance is preserved, NOT asserted as that day's value.`,
     };
   }
 

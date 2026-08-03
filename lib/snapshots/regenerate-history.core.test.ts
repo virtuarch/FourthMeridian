@@ -12,7 +12,7 @@
 
 import {
   regenerateDay, regenerateWindow, writableRows, WEALTH_REGEN_EPSILON,
-  isUsableValuation, INVALID_VALUATION_REASON_CODE,
+  isUsableValuation, INVALID_VALUATION_REASON_CODE, NO_CRYPTO_EVIDENCE_REASON_CODE,
   type DayRegenInput,
 } from "./regenerate-history.core";
 import { computeSnapshotFields, type ClassifyTotals } from "./backfill-core";
@@ -40,11 +40,19 @@ const input = (over: Partial<DayRegenInput> = {}): DayRegenInput => ({
   investmentValue: 8_500, // A8 historical value (lower than the flat 10,000)
   investmentTier: "derived",
   hasInvestmentEvidence: true,
-  // Part-A crypto override — default OFF (no evidence) so existing cases are
-  // unchanged (flat totalDigitalAssets preserved); crypto cases set these.
-  digitalAssetValue: 0,
+  // Part-A crypto override — default ON, valuing the base's crypto at its own
+  // flat amount so the DEFAULT day is fully valuable and every non-crypto case
+  // below exercises only what it is about.
+  //
+  // V26-CRYPTO-QTY-1 changed why this matters: crypto that CANNOT be valued now
+  // skips the day (the analogue of the investment no-fabrication rule), so a
+  // default of `hasDigitalAssetEvidence: false` alongside a material
+  // `totalDigitalAssets` would silently turn every case here into a skip and
+  // stop testing its subject. Cases that mean to exercise missing crypto
+  // evidence set it explicitly — see 1b.
+  digitalAssetValue: 2_000,
   digitalAssetTier: "estimated",
-  hasDigitalAssetEvidence: false,
+  hasDigitalAssetEvidence: true,
   cashCardTier: "derived",
   membershipChangedSince: false,
   ...over,
@@ -73,9 +81,32 @@ function main(): void {
     check("crypto replaced with the historical value, not the flat 2,000", r.fields?.crypto === 3_500);
     const expected = computeSnapshotFields({ ...base(), totalInvestments: 8_500, totalDigitalAssets: 3_500 });
     check("aggregates match computeSnapshotFields with BOTH overrides", JSON.stringify(r.fields) === JSON.stringify(expected));
-    // No evidence → flat crypto preserved (never fabricated).
+    // V26-CRYPTO-QTY-1 — no crypto evidence and a MATERIAL flat balance: the day
+    // is left unwritten. This assertion previously read "flat 2,000 preserved",
+    // which encoded the defect: `base.totalDigitalAssets` is the wallet's CURRENT
+    // USD balance carried backward, so writing it asserted a crypto value for a
+    // day nothing could value — 235 consecutive identical days in production.
+    // Preserving the stored row is not the same as asserting the carried number.
     const flat = regenerateDay(input({ digitalAssetValue: 9_999, hasDigitalAssetEvidence: false }));
-    check("no crypto evidence → flat 2,000 preserved", flat.fields?.crypto === 2_000);
+    check("no crypto evidence + material flat balance → day skipped, not asserted",
+      flat.action === "skip-unsupported" && flat.fields === null);
+    check("…and the skip is machine-searchable",
+      flat.reason.startsWith(NO_CRYPTO_EVIDENCE_REASON_CODE));
+
+    // A Space with NO crypto is untouched by the guard — nothing to fabricate.
+    const noCrypto = regenerateDay(input({
+      base: base({ totalDigitalAssets: 0 }), digitalAssetValue: 0, hasDigitalAssetEvidence: false,
+    }));
+    check("no crypto at all → guard silent, day still writes",
+      noCrypto.action === "write" && noCrypto.fields?.crypto === 0);
+
+    // INVALID EVIDENCE is more specific and must still win on a day that is both.
+    const both = regenerateDay(input({
+      investmentValue: -1, hasInvestmentEvidence: true,
+      digitalAssetValue: 0, hasDigitalAssetEvidence: false,
+    }));
+    check("invalid evidence outranks the crypto no-fabrication skip",
+      both.action === "skip-unsupported" && both.reason.startsWith(INVALID_VALUATION_REASON_CODE));
   }
 
   // ── 2. Frozen-row safety (observed rows never touched) ────────────────────
@@ -131,7 +162,7 @@ function main(): void {
   {
     check("derived investment ⇒ row stays estimated", regenerateDay(input({ investmentTier: "derived", cashCardTier: "derived" })).isEstimated === true);
     check("estimated investment ⇒ estimated + worst tier", (() => { const r = regenerateDay(input({ investmentTier: "estimated" })); return r.isEstimated === true && r.tier === "estimated"; })());
-    check("all-observed ⇒ flips to observed (isEstimated false)", (() => { const r = regenerateDay(input({ investmentTier: "observed", cashCardTier: "observed" })); return r.tier === "observed" && r.isEstimated === false; })());
+    check("all-observed ⇒ flips to observed (isEstimated false)", (() => { const r = regenerateDay(input({ investmentTier: "observed", cashCardTier: "observed", digitalAssetTier: "observed" })); return r.tier === "observed" && r.isEstimated === false; })());
     check("incomplete investment drags the row tier to incomplete", regenerateDay(input({ investmentTier: "incomplete" })).tier === "incomplete");
   }
 
@@ -146,7 +177,7 @@ function main(): void {
   // ── 5. Cash-only day (no investments at all) ──────────────────────────────
   console.log("5. Cash-only reconstruction");
   {
-    const r = regenerateDay(input({ hasInvestmentEvidence: false, base: base({ totalInvestments: 0, totalDigitalAssets: 0 }), investmentValue: 0 }));
+    const r = regenerateDay(input({ hasInvestmentEvidence: false, base: base({ totalInvestments: 0, totalDigitalAssets: 0 }), investmentValue: 0, digitalAssetValue: 0, hasDigitalAssetEvidence: false }));
     check("no investments + no evidence ⇒ writes a cash-only derived row", r.action === "write" && r.fields?.stocks === 0);
     check("cash-only row is estimated (reconstruction)", r.isEstimated === true && r.tier === "derived");
   }
