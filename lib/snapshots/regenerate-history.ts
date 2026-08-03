@@ -35,17 +35,13 @@ import { db } from "@/lib/db";
 import { ShareStatus, SettlementState, SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
-import { getInvestmentValueForWindow } from "@/lib/investments/valuation";
-import {
-  resolveOwnershipWindowsForInstruments,
-  type OwnershipResolution,
-} from "@/lib/investments/ownership-windows";
-import {
-  applyOwnershipEligibility,
-  ownershipTier,
-} from "@/lib/snapshots/ownership-eligibility.core";
+// V26-S2-OWNERSHIP — regeneration composes NOTHING of its own any more. It asks
+// the canonical historical-holdings query, which is the same query a drill-down
+// will ask, so the chart point and its explanation cannot diverge.
+import { historicalHoldingsForWindow } from "@/lib/investments/historical-holdings";
+import type { HistoricalHoldingsSet } from "@/lib/investments/historical-holdings.core";
+import { ownershipTier } from "@/lib/investments/historical-holdings.core";
 import { worstTier, isCompletenessTier } from "@/lib/perspective-engine/completeness";
-import type { InvestmentValuationView } from "@/lib/investments/valuation-core";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
 import {
   reconstructDailyCashBalances,
@@ -496,36 +492,33 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // valuedSubtotal becomes each day's totalInvestments; crypto is valued separately
   // into totalDigitalAssets below, so it must NOT also count here or BTC is
   // double-counted (the historical net-worth cliff). Mirrors the live writer.
-  // V26-PRICE-5A — ownership segments for every instrument the valuation may
-  // touch. Read-only, batched, no provider contact.
-  let ownershipByInstrument = new Map<string, OwnershipResolution>();
-
-  let investmentByDate = new Map<string, InvestmentValuationView>();
+  // V26-S2-OWNERSHIP — ONE call resolves both halves.
+  //
+  // This was two steps that had to be kept in agreement by hand: value the
+  // window, then resolve ownership per INSTRUMENT and filter. Instrument-scoped
+  // ownership let one account's evidence license another's — measured live, the
+  // LLC account's cash read as KNOWN OWNED back to 2025-08-27 on the strength of
+  // Robinhood's derived cash rows. And the denominator it produced counted every
+  // component the valuation considered, including the ones it had just refused.
+  //
+  // `historicalHoldingsForWindow` composes the same valuation engine with
+  // per-(account, instrument) ownership and returns the HELD set. Failure is
+  // non-fatal and CONSERVATIVE exactly as before: an empty map leaves every day
+  // with its flat estimate and routes it into the no-fabrication guard rather
+  // than valuing it on evidence we could not confirm.
+  let holdingsByDate = new Map<string, HistoricalHoldingsSet>();
   try {
-    investmentByDate = await getInvestmentValueForWindow({
+    holdingsByDate = await historicalHoldingsForWindow({
       spaceId,
       dates: candidateDates,
       client,
       holdConstantBeforeEarliest: true,
       excludeDigitalAssetAccounts: true,
+      // The ownership ceiling is the window's own end, never a clock read.
+      ownershipToISO: toDate,
     });
   } catch (err) {
-    console.warn(`[wealth-regen] ${spaceId}: batch A8 valuation failed (non-fatal): ${err instanceof Error ? err.message : err}`);
-  }
-
-  // Resolve ownership for exactly the instruments the valuation produced. Failure
-  // is non-fatal and CONSERVATIVE: with no segments every holding reads UNKNOWN,
-  // so the day falls into the no-fabrication guard rather than being valued on
-  // evidence we could not confirm.
-  try {
-    const valuedInstrumentIds = [...new Set(
-      [...investmentByDate.values()].flatMap((v) => v.components.map((k) => k.instrumentId)),
-    )];
-    if (valuedInstrumentIds.length > 0) {
-      ownershipByInstrument = await resolveOwnershipWindowsForInstruments(valuedInstrumentIds, toDate);
-    }
-  } catch (err) {
-    console.warn(`[wealth-regen] ${spaceId}: ownership resolution failed (non-fatal, conservative): ${err instanceof Error ? err.message : err}`);
+    console.warn(`[wealth-regen] ${spaceId}: historical holdings resolution failed (non-fatal, conservative): ${err instanceof Error ? err.message : err}`);
   }
 
   // HIST-2C — resolve BTC/USD for the whole window in ONE archive read (built
@@ -597,41 +590,48 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     // valuation produced the day's `investmentValue`; null means NOT RECORDED.
     let contributingComponentCount: number | null = null;
     let totalComponentCount: number | null = null;
-    const view = investmentByDate.get(dISO);
-    if (view) {
-      // V26-PRICE-5A — UNKNOWN ownership prehistory must not be valued. A8 is
-      // invoked with holdConstantBeforeEarliest, which projects an instrument's
-      // quantity backwards past its own earliest observation; without this
-      // filter the day reports a portfolio for a period with no evidence any of
-      // it was held. PRICE-4 already refuses to ACQUIRE for such periods —
-      // this is the same rule applied to valuation.
-      const eligible = applyOwnershipEligibility(
-        dISO,
-        view.components.map((k) => ({ instrumentId: k.instrumentId, reportingValue: k.reportingValue })),
-        ownershipByInstrument,
-      );
-      // NOT a zero-valued portfolio when everything is excluded: zero is a claim,
-      // and the truth is "we cannot say". Falling through with
+    const holdings = holdingsByDate.get(dISO);
+    if (holdings) {
+      // V26-S2-OWNERSHIP — the HELD set is the answer to every question here.
+      //
+      // `held` is what ownership licenses on THIS date, resolved per (account,
+      // instrument) from dated evidence alone. Nothing about today's portfolio
+      // reaches it: a quantity projected backwards onto a date ownership does
+      // not license is EXCLUDED, so the projection can supply a number for a
+      // licensed date but can never put a holding into the set.
+      //
+      // NOT a zero-valued portfolio when nothing is held: zero is a claim, and
+      // the truth is "we cannot say". Falling through with
       // hasInvestmentEvidence=false routes the day into the existing
-      // NO-FABRICATION guard, which preserves the stored estimate and skips
-      // rather than overwriting it.
-      hasInvestmentEvidence = eligible.hasEligibleHoldings;
-      // Holdings existed and every one was excluded — the day must be skipped,
-      // not written as a zero-valued portfolio. See the OWNERSHIP PREHISTORY
-      // guard in regenerate-history.core.ts.
-      ownershipIneligible = view.components.length > 0 && !eligible.hasEligibleHoldings;
+      // NO-FABRICATION guard, which preserves the stored estimate.
+      hasInvestmentEvidence = holdings.heldCount > 0;
+      // Components existed and ownership refused every one — skip, never write
+      // a zero-valued portfolio. See the OWNERSHIP PREHISTORY guard in
+      // regenerate-history.core.ts.
+      ownershipIneligible = (holdings.held.length + holdings.excluded.length) > 0 && holdings.heldCount === 0;
       if (hasInvestmentEvidence) {
-        investmentValue = eligible.valuedSubtotal;
-        // Inferred ownership is carried forward, never silently absorbed.
+        investmentValue = holdings.valuedSubtotal;
+        // Inferred ownership is carried forward, never silently absorbed. The
+        // valuation tier is the worst among HELD components only — a component
+        // ownership refused must not degrade a day it is not part of.
         investmentTier = worstTier([
-          view.completeness.tier,
-          ownershipTier(eligible.ownershipConfidence),
+          ...holdings.held.map((h) => h.tier),
+          ownershipTier(holdings.ownershipConfidence),
         ]);
-        // Recorded only where a valuation actually happened, and taken from the
-        // SAME eligibility result that produced `investmentValue` above — the
-        // counts describe the exact set that was summed, never a re-derivation.
-        contributingComponentCount = eligible.contributingCount;
-        totalComponentCount = eligible.totalCount;
+        // V26-S2-OWNERSHIP — THE DENOMINATOR IS WHAT EXISTED, NOT WHAT EXISTS.
+        //
+        // This was `totalCount = every component the valuation considered`,
+        // which with the backward quantity projection is every pair the account
+        // has EVER observed — including the ones ownership had just refused.
+        // Measured live on 2026-01-01: `12 of 19`, where 6 of the 19 were
+        // positions the engine itself declared unowned on that date. It now
+        // reads `12 of 13`: twelve valued, of thirteen actually held.
+        //
+        // Both counts come from the SAME set that produced `investmentValue`
+        // above, so a label can never describe a different portfolio from the
+        // number beside it.
+        contributingComponentCount = holdings.valuedCount;
+        totalComponentCount = holdings.heldCount;
       }
     }
 
@@ -658,6 +658,33 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         digitalAssetValue = classifyAccounts(cryptoDay, ctx, dISO).totalDigitalAssets;
         hasDigitalAssetEvidence = true;
       }
+    }
+
+    // V26-S2-OWNERSHIP — THE COUNTS MUST DESCRIBE THE PORTFOLIO THEY LABEL.
+    //
+    // These counts reach the user as "N of M positions valued" on the Investments
+    // chart, whose value is investments PLUS crypto. The counts were investments
+    // only, so a portfolio of one Bitcoin wallet and nothing else reported "no
+    // composition recorded" while the chart happily plotted its value — and the
+    // motivating case ("in 2023 I held only Bitcoin, it should read 1 of 1") was
+    // not expressible at all, because crypto was never counted.
+    //
+    // Crypto positions are counted the way the crypto path already decides them:
+    // a wallet with a material balance is a position that existed; it is VALUED
+    // only when a price reached the day AND the constant-quantity carry was
+    // licensed (which, since S1, also requires its movement ledger to reconcile).
+    // The all-or-nothing shape of that decision is the crypto path's, not a new
+    // rule invented here.
+    //
+    // Guarded on `hasInvestmentEvidence || cryptoPositions > 0` so a Space with
+    // neither still records null — NOT RECORDED, never a fabricated zero.
+    const cryptoPositions = cryptoAccounts.filter(
+      (a) => Math.abs(a.nativeBalance ?? 0) > 0,
+    ).length;
+    if (cryptoPositions > 0) {
+      totalComponentCount = (totalComponentCount ?? 0) + cryptoPositions;
+      contributingComponentCount =
+        (contributingComponentCount ?? 0) + (hasDigitalAssetEvidence ? cryptoPositions : 0);
     }
 
     const prior = existingByDate.get(dISO);

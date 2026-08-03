@@ -36,11 +36,22 @@ function main(): void {
   // HIST-1C — the window is valued in ONE batched A8 read (getInvestmentValueForWindow),
   // still the single canonical valuation authority (lib/investments/valuation.ts), not a
   // per-day loop and not a duplicated price/FX/quantity calculation here.
-  check("consumes the canonical batched A8 valuation (getInvestmentValueForWindow)",
-    /getInvestmentValueForWindow\s*\(/.test(code));
-  check("does NOT call the per-day A8 entry point (batched, not N×date)",
-    !/getInvestmentValueAsOf\s*\(/.test(code));
-  check("uses the A8 valuedSubtotal as the investment component", /valuedSubtotal/.test(code));
+  // V26-S2-OWNERSHIP — the binding no longer calls the valuation engine
+  // DIRECTLY. It asks `historicalHoldingsForWindow`, the ONE composition of the
+  // canonical valuation engine with per-(account, instrument) ownership, which is
+  // also the query a drill-down asks. The intent pinned here is unchanged and
+  // stronger: exactly one authority produces the day's composition, and this
+  // binding is not it. Pinning the old call name would now assert the opposite.
+  check("consumes the canonical historical-holdings query (one composition path)",
+    /historicalHoldingsForWindow\s*\(/.test(code));
+  check("does NOT call the valuation engine directly (composition lives in one place)",
+    !/getInvestmentValueForWindow\s*\(/.test(code) && !/getInvestmentValueAsOf\s*\(/.test(code));
+  check("does NOT compose ownership itself (no second eligibility filter here)",
+    !/applyOwnershipEligibility/.test(code) && !/loadOwnershipWindows/.test(code) &&
+    !/resolveOwnershipWindowsForInstruments/.test(code));
+  check("uses the holdings-set subtotal as the investment component", /valuedSubtotal/.test(code));
+  check("the denominator is the HELD count, never everything considered",
+    /totalComponentCount\s*=\s*holdings\.heldCount/.test(code));
   check("does NOT open a second historical price lookup (no lib/prices import)",
     !/from\s+["']@\/lib\/prices/.test(code));
   check("does NOT re-multiply quantity × price (no second valuation)",

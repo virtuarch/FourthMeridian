@@ -26,7 +26,7 @@ import {
   regenerateDay, hasNoValuedComponents, NO_VALUED_COMPONENTS_REASON_CODE,
   type DayRegenInput,
 } from "./regenerate-history.core";
-import { applyOwnershipEligibility } from "./ownership-eligibility.core";
+import { buildHistoricalHoldings } from "@/lib/investments/historical-holdings.core";
 import type { OwnershipResolution } from "@/lib/prices/ownership-window.core";
 import type { ClassifyTotals } from "./backfill-core";
 
@@ -130,28 +130,33 @@ function main(): void {
     // component, so a fully-closed portfolio reaches eligibility with an EMPTY
     // holdings list — proven here rather than assumed.
     const own = new Map<string, OwnershipResolution>([["SOLD", known()]]);
-    const closedPortfolio = applyOwnershipEligibility("2025-07-31", [], own);
-    check("a closed portfolio yields zero holdings in scope", closedPortfolio.totalCount === 0);
-    check("and therefore zero contributors", closedPortfolio.contributingCount === 0);
+    const closedPortfolio = buildHistoricalHoldings(
+      "2025-07-31", [],
+      new Map([...own].map(([k, r]) => [k, { resolution: r, closedFromISO: null }])),
+      (c) => c.instrumentId);
+    check("a closed portfolio yields zero holdings in scope",
+      closedPortfolio.heldCount === 0 && closedPortfolio.excluded.length === 0);
+    check("and therefore zero contributors", closedPortfolio.valuedCount === 0);
     check("which the guard deliberately ignores",
       !hasNoValuedComponents({
-        contributingComponentCount: closedPortfolio.contributingCount,
-        totalComponentCount: closedPortfolio.totalCount,
+        contributingComponentCount: closedPortfolio.valuedCount,
+        totalComponentCount: closedPortfolio.heldCount,
       }));
     const res = regenerateDay(dayInput({
-      contributingComponentCount: closedPortfolio.contributingCount,
-      totalComponentCount: closedPortfolio.totalCount,
+      contributingComponentCount: closedPortfolio.valuedCount,
+      totalComponentCount: closedPortfolio.heldCount,
       investmentValue: closedPortfolio.valuedSubtotal,
     }));
     check("a sold-everything day is still written as a real zero", res.action === "write");
     check("with stocks 0 — a supported zero", res.fields!.stocks === 0);
 
     // A cash-only portfolio: one holding, and it DOES contribute.
-    const cashOnly = applyOwnershipEligibility("2025-07-31",
-      [{ instrumentId: "CASH", reportingValue: 11.65 }], new Map([["CASH", known()]]));
-    check("a supported cash-only portfolio still contributes", cashOnly.contributingCount === 1);
+    const cashOnly = buildHistoricalHoldings("2025-07-31",
+      [{ financialAccountId: "a1", instrumentId: "CASH", quantity: 11.65, reportingValue: 11.65, tier: "derived", reason: "" }],
+      new Map([["CASH", { resolution: known(), closedFromISO: null }]]), (c) => c.instrumentId);
+    check("a supported cash-only portfolio still contributes", cashOnly.valuedCount === 1);
     check("and is not refused",
-      !hasNoValuedComponents({ contributingComponentCount: cashOnly.contributingCount, totalComponentCount: cashOnly.totalCount }));
+      !hasNoValuedComponents({ contributingComponentCount: cashOnly.valuedCount, totalComponentCount: cashOnly.heldCount }));
   }
 
   // ══ E. Frozen observed rows ═══════════════════════════════════════════════
@@ -173,18 +178,22 @@ function main(): void {
     // 14 holdings, all ownership-KNOWN, none with a resolvable value.
     const ids = Array.from({ length: 14 }, (_, i) => `INST_${i}`);
     const own = new Map(ids.map((id) => [id, known("2025-01-01")]));
-    const e = applyOwnershipEligibility("2025-07-31", ids.map((id) => ({ instrumentId: id, reportingValue: null })), own);
+    const e = buildHistoricalHoldings("2025-07-31",
+      ids.map((id) => ({ financialAccountId: "a1", instrumentId: id, quantity: 1, reportingValue: null, tier: "incomplete" as const, reason: "" })),
+      new Map([...own].map(([k, r]) => [k, { resolution: r, closedFromISO: null }])), (c) => c.instrumentId);
 
-    check("eligibility reports holdings ARE eligible (the trap)", e.hasEligibleHoldings === true);
-    check("but zero of them contribute", e.contributingCount === 0);
+    check("ownership reports the holdings ARE held (the trap)", e.heldCount === 14);
+    check("but zero of them contribute", e.valuedCount === 0);
     check("and the subtotal is 0", e.valuedSubtotal === 0);
-    check("totalCount is 14", e.totalCount === 14);
+    // V26-S2-OWNERSHIP — the denominator is the HELD count; all 14 are held here,
+    // so the shape of the trap is unchanged: 0 of 14, and only the writer refuses.
+    check("the denominator is 14", e.heldCount === 14);
     check("the OWNERSHIP PREHISTORY guard would NOT have fired",
-      !(14 > 0 && !e.hasEligibleHoldings));
+      !(14 > 0 && e.heldCount === 0));
 
     const res = regenerateDay(dayInput({
       investmentValue: e.valuedSubtotal, investmentTier: "unknown",
-      contributingComponentCount: e.contributingCount, totalComponentCount: e.totalCount,
+      contributingComponentCount: e.valuedCount, totalComponentCount: e.heldCount,
     }));
     check("the writer now refuses the day", res.action === "skip-unsupported");
     check("so no $0.00 stocks row can be produced from this state", res.fields === null);

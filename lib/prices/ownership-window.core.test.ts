@@ -204,6 +204,71 @@ function main(): void {
     check("output identical with the clock removed", identical);
   }
 
+  // ══ V26-S2-OWNERSHIP — THE CLOSING BOUND ══════════════════════════════════
+  //
+  // Every window this module produced ran to the ceiling, so nine positions sold
+  // on 2026-07-27 still read as owned today. Ownership now ends where an
+  // observation proves it ended.
+  console.log("V26-S2. Ownership ends");
+  {
+    const open = resolveOwnershipWindow({
+      instrumentId: "i", earliestDirectISO: "2025-07-31",
+      earliestPossibleISO: null, valuationToISO: "2026-08-02",
+    });
+    const closed = resolveOwnershipWindow({
+      instrumentId: "i", earliestDirectISO: "2025-07-31",
+      earliestPossibleISO: null, valuationToISO: "2026-08-02",
+      closedFromISO: "2026-07-27",
+    });
+    check("without a closure the window still runs to the ceiling",
+      open.kind === "resolved" && open.segments.at(-1)!.toISO === "2026-08-02");
+    check("a closure ends the window the day BEFORE the proven zero",
+      closed.kind === "resolved" && closed.segments.at(-1)!.toISO === "2026-07-26");
+    check("the opening bound is untouched",
+      closed.kind === "resolved" && closed.segments[0].fromISO === "2025-07-31");
+    check("the day count shrinks with the window",
+      open.kind === "resolved" && closed.kind === "resolved" &&
+      closed.knownDays < open.knownDays);
+
+    // A POSSIBLE prefix must be bounded by the closure too — it is the same
+    // window, not a separate claim that survives disposal.
+    const withPrefix = resolveOwnershipWindow({
+      instrumentId: "i", earliestDirectISO: "2026-07-19",
+      earliestPossibleISO: "2025-07-31", valuationToISO: "2026-08-02",
+      closedFromISO: "2026-07-27",
+    });
+    check("a POSSIBLE prefix survives, and the KNOWN tail is clipped",
+      withPrefix.kind === "resolved" && withPrefix.segments.length === 2 &&
+      withPrefix.segments[0].confidence === "POSSIBLE" &&
+      withPrefix.segments[1].toISO === "2026-07-26");
+    check("acquisitionToISO follows the closure, so we stop buying prices after a sale",
+      withPrefix.kind === "resolved" && withPrefix.acquisitionToISO === "2026-07-26");
+
+    // A closure at or before the earliest evidence leaves no interval at all.
+    const impossible = resolveOwnershipWindow({
+      instrumentId: "i", earliestDirectISO: "2026-07-19",
+      earliestPossibleISO: null, valuationToISO: "2026-08-02",
+      closedFromISO: "2026-07-01",
+    });
+    check("a closure before any evidence yields NO window, not an inverted one",
+      impossible.kind === "no-acquisition");
+
+    // A closure after the ceiling changes nothing — the ceiling already binds.
+    const late = resolveOwnershipWindow({
+      instrumentId: "i", earliestDirectISO: "2025-07-31",
+      earliestPossibleISO: null, valuationToISO: "2026-01-01",
+      closedFromISO: "2026-07-27",
+    });
+    check("a closure beyond the ceiling does not extend the window",
+      late.kind === "resolved" && late.segments.at(-1)!.toISO === "2026-01-01");
+
+    check("an ABSENT closure is byte-identical to before this slice",
+      JSON.stringify(open) === JSON.stringify(resolveOwnershipWindow({
+        instrumentId: "i", earliestDirectISO: "2025-07-31",
+        earliestPossibleISO: null, valuationToISO: "2026-08-02", closedFromISO: null,
+      })));
+  }
+
   console.log(failures === 0 ? "\nAll ownership-window checks passed." : `\n${failures} check(s) FAILED.`);
   process.exit(failures === 0 ? 0 : 1);
 }

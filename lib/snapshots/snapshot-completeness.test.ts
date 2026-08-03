@@ -16,7 +16,7 @@ import {
   resolveSnapshotCompleteness, isEstimatedFromTier, snapshotConfidence,
 } from "./snapshot-completeness.core";
 import { regenerateDay, type DayRegenInput } from "./regenerate-history.core";
-import { applyOwnershipEligibility } from "./ownership-eligibility.core";
+import { buildHistoricalHoldings, type HoldingComponent, type HoldingOwnershipFacts } from "@/lib/investments/historical-holdings.core";
 import type { OwnershipResolution } from "@/lib/prices/ownership-window.core";
 import { COMPLETENESS_TIERS } from "@/lib/perspective-engine/completeness";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
@@ -169,24 +169,31 @@ function main(): void {
     ]);
     // 2026-06-24 shape: CASH contributes; APLD/TSLA are ownership prehistory;
     // RESIDUE is ownership-eligible but unvalued (a refused quantity).
+    const holding = (instrumentId: string, reportingValue: number | null, accountId = "a1"): HoldingComponent =>
+      ({ financialAccountId: accountId, instrumentId, quantity: 1, reportingValue, tier: "derived", reason: "" });
     const holdings = [
-      { instrumentId: "CASH",    reportingValue: 11.65 },
-      { instrumentId: "APLD",    reportingValue: 125.94 },
-      { instrumentId: "TSLA",    reportingValue: 375.53 },
-      { instrumentId: "CASH",    reportingValue: null },   // unvalued (no price)
+      holding("CASH", 11.65),
+      holding("APLD", 125.94),
+      holding("TSLA", 375.53),
+      holding("CASH", null, "a2"),   // unvalued (no price), second account
     ];
-    const e = applyOwnershipEligibility("2026-06-24", holdings, own);
+    const facts = new Map<string, HoldingOwnershipFacts>(
+      [...own].map(([k, r]) => [k, { resolution: r, closedFromISO: null }]));
+    const e = buildHistoricalHoldings("2026-06-24", holdings, facts, (c) => c.instrumentId);
     check("subtotal counts only the contributing holding", Math.abs(e.valuedSubtotal - 11.65) < 1e-9);
-    check("contributingCount matches the set that was summed", e.contributingCount === 1);
-    check("an ownership-eligible but UNVALUED holding does not count as contributing",
-      e.contributingCount === 1 && e.includedInstrumentIds.length === 2);
-    check("totalCount counts every holding considered", e.totalCount === 4);
-    check("ownership prehistory is excluded, not counted", e.excludedInstrumentIds.length === 2);
+    check("valuedCount matches the set that was summed", e.valuedCount === 1);
+    check("an ownership-eligible but UNVALUED holding is HELD but not valued",
+      e.valuedCount === 1 && e.heldCount === 2);
+    // V26-S2-OWNERSHIP — the denominator is now what was HELD, not everything
+    // considered. Two CASH slots are held; APLD/TSLA are ownership prehistory.
+    check("the denominator counts only what ownership licenses", e.heldCount === 2);
+    check("ownership prehistory is excluded, not counted", e.excluded.length === 2);
 
-    // 2026-06-25 shape: APLD's ownership window has opened.
-    const e2 = applyOwnershipEligibility("2026-06-25", holdings, own);
-    check("the next day, the count moves 1 -> 2 while the tier would not move",
-      e2.contributingCount === 2 && e2.totalCount === 4);
+    // 2026-06-25 shape: APLD's ownership window has opened, so the DENOMINATOR
+    // grows with it — the count is date-aware in both directions.
+    const e2 = buildHistoricalHoldings("2026-06-25", holdings, facts, (c) => c.instrumentId);
+    check("the next day, valued moves 1 -> 2 and the denominator 2 -> 3",
+      e2.valuedCount === 2 && e2.heldCount === 3);
   }
 
   // ══ Vocabulary ════════════════════════════════════════════════════════════

@@ -74,6 +74,35 @@ export interface OwnershipEvidence {
    * read a clock.
    */
   valuationToISO:      string;
+  /**
+   * V26-S2-OWNERSHIP — THE CLOSING BOUND. The first date PROVEN not-held: an
+   * observation stating a quantity of zero, on or after the last positive
+   * evidence. Null when nothing proves the position was ever closed.
+   *
+   * ── Why this had to exist ────────────────────────────────────────────────
+   * Every window this module produced ran to `valuationToISO`. Ownership had a
+   * beginning and no end, so a position sold on 2026-07-27 still read as KNOWN
+   * OWNED today — measured on the live corpus for nine positions at once. Three
+   * consequences, all of them real:
+   *
+   *   · the question "when did ownership end?" had no answer at all;
+   *   · closed positions left the historical denominator only because the
+   *     valuation binding happened to skip an explicit zero quantity, which is a
+   *     different mechanism in a different file that could change without
+   *     anyone noticing this one was wrong;
+   *   · price acquisition kept buying closes for dates after a disposal,
+   *     because the window said we still held it.
+   *
+   * A zero is the ONLY thing accepted here, and only when someone OBSERVED it.
+   * "The provider stopped reporting this position" is not a closure — it is
+   * silence, and silence is not evidence (the same rule the rest of this engine
+   * applies to a missing price). The binding is responsible for that filter;
+   * this module takes the date it produced.
+   *
+   * Optional: a caller that cannot establish closure passes nothing and gets
+   * exactly the previous behaviour — a window that runs to the ceiling.
+   */
+  closedFromISO?:      string | null;
 }
 
 export type OwnershipResolution =
@@ -114,13 +143,32 @@ export type OwnershipResolution =
  *   - evidence begins after the ceiling → no acquisition (nothing to value)
  */
 export function resolveOwnershipWindow(evidence: OwnershipEvidence): OwnershipResolution {
-  const { instrumentId, earliestDirectISO, earliestPossibleISO, valuationToISO } = evidence;
-  assertISO(valuationToISO, "valuationToISO");
+  const { instrumentId, earliestDirectISO, earliestPossibleISO } = evidence;
+  assertISO(evidence.valuationToISO, "valuationToISO");
   if (earliestDirectISO !== null) assertISO(earliestDirectISO, "earliestDirectISO");
   if (earliestPossibleISO !== null) assertISO(earliestPossibleISO, "earliestPossibleISO");
 
+  // V26-S2-OWNERSHIP — the ceiling is the earlier of what the caller wants
+  // valued and the day before ownership was PROVEN to end. Applied once, here,
+  // so every segment shape below inherits it and no branch can forget.
+  const closedFromISO = evidence.closedFromISO ?? null;
+  if (closedFromISO !== null) assertISO(closedFromISO, "closedFromISO");
+  const closureCeiling = closedFromISO !== null ? shiftISO(closedFromISO, -1) : null;
+  const valuationToISO =
+    closureCeiling !== null && closureCeiling < evidence.valuationToISO
+      ? closureCeiling
+      : evidence.valuationToISO;
+
   if (earliestDirectISO === null && earliestPossibleISO === null) {
     return { kind: "no-acquisition", instrumentId, reason: "NO_OWNERSHIP_EVIDENCE" };
+  }
+
+  // Closure at or before the earliest evidence leaves no interval at all — the
+  // position opened and closed inside a single day we cannot separate, or the
+  // evidence is contradictory. Either way there is nothing to own.
+  if (valuationToISO < evidence.valuationToISO && earliestDirectISO !== null && closureCeiling !== null
+      && closureCeiling < earliestDirectISO && (earliestPossibleISO === null || closureCeiling < earliestPossibleISO)) {
+    return { kind: "no-acquisition", instrumentId, reason: "EVIDENCE_AFTER_CEILING" };
   }
 
   const segments: OwnershipSegment[] = [];

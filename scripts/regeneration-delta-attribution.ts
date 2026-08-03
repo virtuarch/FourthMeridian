@@ -64,7 +64,7 @@ import {
   type QuantityConfidenceAxis,
 } from "@/lib/snapshots/price-completeness.core";
 import { loadOwnershipWindows } from "@/lib/prices/ownership-window";
-import { applyOwnershipEligibility, ownershipOn } from "@/lib/snapshots/ownership-eligibility.core";
+import { buildHistoricalHoldings, ownershipOn } from "@/lib/investments/historical-holdings.core";
 import {
   assessRepresentativeness,
   summariseRepresentativeness,
@@ -217,13 +217,21 @@ async function main(): Promise<number> {
       // V26-PRICE-5A — reconcile against the ELIGIBLE subtotal, which is what the
       // writer now uses. Reconciling against the unfiltered component sum would
       // report the excluded amount as an unexplained residual — a false alarm.
-      const elig = applyOwnershipEligibility(
+      // V26-S2-OWNERSHIP — the canonical holdings authority, keyed by instrument
+      // here because this report resolves ownership per instrument (its own
+      // pre-existing scope). The writer itself now keys per (account, instrument).
+      const elig = buildHistoricalHoldings(
         dISO,
-        components.map((v) => ({ instrumentId: v.instrumentId, reportingValue: v.reportingValue })),
-        ownership,
+        components.map((v) => ({
+          financialAccountId: v.accountId, instrumentId: v.instrumentId,
+          quantity: v.quantity, reportingValue: v.reportingValue,
+          tier: v.overallTier, reason: v.reason,
+        })),
+        new Map([...ownership].map(([k, r]) => [k, { resolution: r, closedFromISO: null }])),
+        (c) => c.instrumentId,
       );
-      excludedHoldingSlots += elig.excludedInstrumentIds.length;
-      const excludedSet = new Set(elig.excludedInstrumentIds);
+      excludedHoldingSlots += elig.excluded.length;
+      const excludedSet = new Set(elig.excluded.map((e) => e.instrumentId));
 
       const modelled   = elig.valuedSubtotal;
       const recomputed = stocksDelta ? stocksDelta.after : (priorRow?.stocks ?? 0);
@@ -264,7 +272,7 @@ async function main(): Promise<number> {
       const anyPossible      = axes.some((a) => a.ownershipConfidence !== "KNOWN");
       const category: Category =
         !explained ? "UNEXPLAINED"
-        : !elig.hasEligibleHoldings ? "NO_ELIGIBLE_HOLDINGS"
+        : elig.heldCount === 0 ? "NO_ELIGIBLE_HOLDINGS"
         : axes.length === 0 ? "NO_ELIGIBLE_HOLDINGS"
         : anyBackProjected && anyPossible ? "MIXED"
         : anyBackProjected ? "QUANTITY_LIMITED"
@@ -279,11 +287,11 @@ async function main(): Promise<number> {
       // exclusion, keeping the day "eligible" even when EVERY market holding was
       // excluded. The day then reports a few dollars of investments where the
       // honest answer is "we cannot say".
-      if (elig.hasEligibleHoldings && axes.length === 0) {
+      if (elig.heldCount > 0 && axes.length === 0) {
         cashOnlyDays++;
         cashOnlyMaxDelta = Math.max(cashOnlyMaxDelta, Math.abs(stocksDelta?.delta ?? 0));
       }
-      if (!elig.hasEligibleHoldings) {
+      if (elig.heldCount === 0) {
         prehistoryDays++;
         prehistoryValue = Math.max(prehistoryValue, Math.abs(stocksDelta?.delta ?? 0));
       }
