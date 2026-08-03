@@ -314,8 +314,25 @@ async function main(): Promise<void> {
     /parseExtendedKey/.test(sync) && /deriveAddressAt/.test(sync));
   check("partial xpub → pending, complete → synced (honest status)",
     /discoveryComplete/.test(sync) && sync.includes('"pending"') && sync.includes('"synced"'));
-  check("tx import is bounded per run (behemoth-safe)",
-    /BTC_TX_ADDR_CAP/.test(sync) && /addresses\.slice\(0, txAddrCap\)/.test(sync));
+  // V26-S1-BTC — the bound is EVIDENCE, not a count.
+  //
+  // This previously pinned `addresses.slice(0, txAddrCap)` and called it
+  // "behemoth-safe". It was not: slice(0, N) is deterministic, so it selected
+  // the SAME first N addresses on every run and addresses N+1.. never had their
+  // transactions imported — while their balances DID count, because the balance
+  // step walks the whole set. The wallet's ledger then structurally could not
+  // explain its own balance.
+  //
+  // The replacement asserts the new intent (only addresses with on-chain
+  // activity are asked, using stats discovery already produced) AND pins the old
+  // defect out.
+  check("tx import is scoped by demonstrated activity, not by a positional cap",
+    /txCount \?\? 0\) > 0/.test(sync) && /txAddresses/.test(sync) &&
+    !/addresses\.slice\(0,/.test(sync));
+  check("address transaction history is PAGINATED to exhaustion",
+    /last_seen|lastSeenTxid/.test(explorer) && /txPageBudget/.test(explorer));
+  check("ledger completeness is reconciled against the observed balance",
+    /reconcileWalletLedger/.test(code(read("lib", "snapshots", "regenerate-history.ts"))));
   check("xpub balance uses the batch provider (not per-address probing)",
     /fetchAddressStatsBatch\(addresses/.test(sync) || /batchStatsFetcher\(addresses\)/.test(sync));
   check("discovery writes per-address identities via the KEPT composite unique (not dualWrite)",

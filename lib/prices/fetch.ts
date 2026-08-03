@@ -40,7 +40,7 @@
 import { assertISODate } from "./config";
 import { resolveProviderForInstrument } from "./registry";
 import { classifyThrown, type ProviderOutcome } from "./provider-errors";
-import type { PriceFetchRequest, PriceRegistry, PriceResult } from "./types";
+import type { PriceFetchRequest, PriceRegistry, PriceResult, ProviderCorporateAction } from "./types";
 
 export interface InstrumentFetchResult {
   instrumentId: string;
@@ -56,6 +56,16 @@ export interface InstrumentFetchResult {
   outcome: ProviderOutcome;
   /** Validated rows from the winning adapter ([] when source is null). */
   rows:    PriceResult[];
+  /**
+   * V26-S1-CA — corporate actions the winning adapter's response STATED, when it
+   * states any. Carried beside the prices because they arrived on the same call;
+   * NEVER merged into `rows` (an action is not a price and must not reach the
+   * price archive). Always [] for an adapter that does not implement
+   * `fetchDailyClosesWithActions`, and always [] on any non-OK outcome — a
+   * discarded batch discards its actions too, for the same reason: a partial
+   * answer is never merged.
+   */
+  corporateActions: ProviderCorporateAction[];
   /** Per-adapter notes in registry order (skips + failures), for progress output. */
   notes:   string[];
 }
@@ -83,7 +93,7 @@ export async function fetchInstrumentWindow(
 ): Promise<InstrumentFetchResult> {
   assertISODate(req.fromISO);
   assertISODate(req.toISO);
-  const base: Omit<InstrumentFetchResult, "source" | "rows" | "notes" | "outcome"> = {
+  const base: Omit<InstrumentFetchResult, "source" | "rows" | "notes" | "outcome" | "corporateActions"> = {
     instrumentId: req.instrumentId, basis: req.basis, fromISO: req.fromISO, toISO: req.toISO,
   };
   const notes: string[] = [];
@@ -99,7 +109,7 @@ export async function fetchInstrumentWindow(
       `no capable provider for assetClass=${req.assetClass} symbol="${req.providerSymbol}" ` +
       `basis=${req.basis} (considered: ${resolution.sourcesConsidered.join(", ") || "none registered"})`,
     );
-    return { ...base, source: null, outcome: "UNSUPPORTED", rows: [], notes };
+    return { ...base, source: null, outcome: "UNSUPPORTED", rows: [], corporateActions: [], notes };
   }
   if (resolution.kind === "ambiguous") {
     // Reported, never resolved by position — see the header.
@@ -107,18 +117,27 @@ export async function fetchInstrumentWindow(
       `AMBIGUOUS ROUTING — ${resolution.sources.join(", ")} all declare capability for ` +
       `assetClass=${req.assetClass} symbol="${req.providerSymbol}"; refusing to guess`,
     );
-    return { ...base, source: null, outcome: "UNSUPPORTED", rows: [], notes };
+    return { ...base, source: null, outcome: "UNSUPPORTED", rows: [], corporateActions: [], notes };
   }
 
   const adapter = resolution.adapter;
 
+  // V26-S1-CA — prefer the action-aware call when the adapter offers one. Same
+  // request, same cost; the corporate actions were already inside the response.
   let rows: PriceResult[];
+  let corporateActions: ProviderCorporateAction[] = [];
   try {
-    rows = await adapter.fetchDailyCloses(req);
+    if (adapter.fetchDailyClosesWithActions) {
+      const answer = await adapter.fetchDailyClosesWithActions(req);
+      rows = answer.prices;
+      corporateActions = answer.corporateActions;
+    } else {
+      rows = await adapter.fetchDailyCloses(req);
+    }
   } catch (e) {
     const outcome = classifyThrown(e);
     notes.push(`${adapter.source}: ${outcome} — ${e instanceof Error ? e.message : String(e)}`);
-    return { ...base, source: null, outcome, rows: [], notes };
+    return { ...base, source: null, outcome, rows: [], corporateActions: [], notes };
   }
 
   if (rows.length === 0) {
@@ -128,15 +147,15 @@ export async function fetchInstrumentWindow(
     const outcome: ProviderOutcome = req.toISO < adapter.historicalDepth ? "NO_DATA" : "EMPTY_RESPONSE";
     notes.push(`${adapter.source}: ${outcome} for ${req.instrumentId} in [${req.fromISO}, ${req.toISO}]` +
       (outcome === "NO_DATA" ? ` (before depth ${adapter.historicalDepth})` : ""));
-    return { ...base, source: null, outcome, rows: [], notes };
+    return { ...base, source: null, outcome, rows: [], corporateActions: [], notes };
   }
 
   try {
     validateBatch(rows, req);
   } catch (e) {
     notes.push(`${adapter.source}: INVALID_DATA — ${e instanceof Error ? e.message : String(e)}`);
-    return { ...base, source: null, outcome: "INVALID_DATA", rows: [], notes };
+    return { ...base, source: null, outcome: "INVALID_DATA", rows: [], corporateActions: [], notes };
   }
 
-  return { ...base, source: adapter.source, outcome: "OK", rows, notes };
+  return { ...base, source: adapter.source, outcome: "OK", rows, corporateActions, notes };
 }

@@ -29,7 +29,7 @@ const D = (s: string) => new Date(`${s}T00:00:00.000Z`);
 
 // ── Minimal in-memory fake Prisma client ─────────────────────────────────────
 interface Row { [k: string]: unknown }
-interface FakeOpts { existingSummaries?: Row[]; cashInstruments?: Row[] }
+interface FakeOpts { existingSummaries?: Row[]; cashInstruments?: Row[]; corporateActionTerms?: Row[] }
 function makeFake(observed: Row[], events: Row[], opts: FakeOpts = {}) {
   const derivedCreated: Row[] = [];
   const summaries: Row[] = [];
@@ -51,6 +51,13 @@ function makeFake(observed: Row[], events: Row[], opts: FakeOpts = {}) {
       aggregate: async () => ({ _min: { earliestReturnedDate: null } }),
     },
     instrument: { findMany: async () => opts.cashInstruments ?? [] },
+    // V26-S1-CA — the gatherer consults the corporate-action terms authority for
+    // a ratio the event itself does not state. No rows here: these fixtures
+    // assert walk/persistence behaviour, and an empty authority means "no terms
+    // known", which is exactly the pre-slice behaviour every expectation below
+    // was written against. Terms-driven inversion is covered by
+    // corporate-actions.core.test.ts.
+    corporateActionTerms: { findMany: async () => opts.corporateActionTerms ?? [] },
     positionReconstruction: {
       findMany: async () => opts.existingSummaries ?? [],
       upsert: async ({ create }: { create: Row }) => { calls.upsert++; summaries.push(create); return create; },

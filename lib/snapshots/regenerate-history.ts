@@ -68,6 +68,7 @@ import {
 } from "@/lib/snapshots/regeneration-candidates.core";
 import { resolveBtcInstrumentId, readBtcUsdWindow } from "@/lib/crypto/btc-price";
 import { licenseConstantQuantityCarry } from "@/lib/crypto/quantity-carry.core";
+import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
 import { toStoredCryptoValuationStatus } from "@/lib/snapshots/crypto-valuation-status.core";
 import { backfillHeldInstrumentPrices } from "@/lib/investments/holding-price-backfill";
 
@@ -253,6 +254,9 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   //     blocks the account it belongs to.
   const cryptoQuantityEventsByAccount = new Map<string, string[]>();
   const cryptoAnchorByAccount = new Map<string, string>();
+  // V26-S1-BTC — the same rows, summed, answer a question the dates alone cannot:
+  // does this ledger account for the wallet's own balance? See below.
+  const cryptoLedgerCompleteByAccount = new Map<string, boolean>();
   if (cryptoAccounts.length > 0) {
     for (const a of cryptoAccounts) {
       // No sync timestamp ⇒ the quantity has no observation date to be carried
@@ -267,13 +271,45 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         deletedAt:          null,
         settlementState:    SettlementState.POSTED,
       },
-      select: { financialAccountId: true, date: true },
+      // V26-S1-BTC — `amount` joins the select: it is the SIGNED NATIVE delta the
+      // reconciliation sums. The same predicates already scope these rows to this
+      // wallet's settled native movements, which is exactly the ledger the
+      // reconciliation needs, so no second read is introduced.
+      select: { financialAccountId: true, date: true, amount: true },
     });
+    const movementsByAccount = new Map<string, number[]>();
     for (const r of evRows) {
       if (!r.financialAccountId) continue; // unattached row — not this wallet's activity
       const list = cryptoQuantityEventsByAccount.get(r.financialAccountId) ?? [];
       list.push(isoDate(r.date));
       cryptoQuantityEventsByAccount.set(r.financialAccountId, list);
+      const amounts = movementsByAccount.get(r.financialAccountId) ?? [];
+      amounts.push(r.amount);
+      movementsByAccount.set(r.financialAccountId, amounts);
+    }
+
+    // V26-S1-BTC — LEDGER COMPLETENESS IS CHECKED, NOT ASSUMED.
+    //
+    // `licenseConstantQuantityCarry` decides by searching the event dates above
+    // for one that blocks the interval. That search is only meaningful if the
+    // list is complete, and it demonstrably was not: an unpaginated explorer
+    // fetch imported 25 of the wallet's 28 confirmed transactions, so the list
+    // began mid-history and "no event blocks this interval" was an artefact of
+    // the missing rows rather than a fact about the wallet.
+    //
+    // The chain makes this checkable for free — Σ signed movements must equal the
+    // observed balance — so we check it, per account, every run. A wallet whose
+    // ledger cannot explain its own balance licenses NOTHING historical; its
+    // current observed balance is untouched.
+    for (const a of cryptoAccounts) {
+      const recon = reconcileWalletLedger({
+        observedBalance: a.nativeBalance ?? null,
+        movements:       movementsByAccount.get(a.id) ?? [],
+      });
+      cryptoLedgerCompleteByAccount.set(a.id, recon.complete);
+      if (!recon.complete) {
+        console.warn(`[wealth-regen] ${spaceId}: wallet ${a.id} ledger INCOMPLETE — ${recon.reason}`);
+      }
     }
   }
 
@@ -287,9 +323,10 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   const cryptoQuantityLicensed = (dISO: string): boolean =>
     cryptoAccounts.every((a) =>
       licenseConstantQuantityCarry({
-        targetISO:     dISO,
-        anchorISO:     cryptoAnchorByAccount.get(a.id) ?? null,
-        eventDatesISO: cryptoQuantityEventsByAccount.get(a.id) ?? [],
+        targetISO:      dISO,
+        anchorISO:      cryptoAnchorByAccount.get(a.id) ?? null,
+        eventDatesISO:  cryptoQuantityEventsByAccount.get(a.id) ?? [],
+        ledgerComplete: cryptoLedgerCompleteByAccount.get(a.id) ?? false,
       }).licensed);
 
   // V26-PRICE-5 — a DRY RUN MUST NOT ACQUIRE. `dryRun` previously suppressed

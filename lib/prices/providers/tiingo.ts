@@ -31,15 +31,28 @@
  */
 
 import { PriceBasis } from "@prisma/client";
-import type { PriceFetchRequest, PriceProviderAdapter, PriceResult, ProviderRoutingKey } from "../types";
+import type { PriceFetchRequest, PriceProviderAdapter, PriceResult, ProviderCorporateAction, ProviderRoutingKey } from "../types";
+import { splitFactorToRatio } from "@/lib/investments/corporate-actions.core";
 import { ProviderFetchError } from "../provider-errors";
 
 const TIINGO_BASE_URL = "https://api.tiingo.com";
 
-/** The subset of Tiingo's daily-prices row this adapter reads. */
+/**
+ * The subset of Tiingo's daily-prices row this adapter reads.
+ *
+ * V26-S1-CA — `splitFactor` was ALWAYS in this payload and was always discarded.
+ * The response also carries open/high/low/volume and the adj* family; those stay
+ * unread on purpose (ADJUSTED_CLOSE is a separate basis this adapter
+ * deliberately does not serve, and adjusted prices must never enter valuation).
+ * `splitFactor` is different in kind: it is not a price, it is the TERM of a
+ * corporate action, and it is the one fact a backward quantity replay cannot
+ * reconstruct for itself. See lib/investments/corporate-actions.core.ts.
+ */
 interface TiingoDailyRow {
   date:  string; // ISO datetime, e.g. "2026-07-10T00:00:00.000Z"
   close: number; // unadjusted close (quote currency; USD for US equities)
+  /** 1.0 on an ordinary day; the shares-out-per-share-in factor on an effective date. */
+  splitFactor?: number;
 }
 
 /** Minimal HTTP-response shape the adapter needs — lets tests inject a fake without a full Response. */
@@ -104,13 +117,29 @@ export function createTiingoPriceProvider(
         && key.providerSymbol.trim() !== "";
     },
     async fetchDailyCloses(req: PriceFetchRequest): Promise<PriceResult[]> {
+      return (await fetchWindow(req)).prices;
+    },
+    // V26-S1-CA — the SAME request, reporting everything the payload stated.
+    // Optional on the adapter contract (the `readRange?` / `readCoveredDates?`
+    // precedent on PriceArchiveReader): a vendor with no corporate-action data
+    // simply omits it, callers fall back to fetchDailyCloses, and no existing
+    // adapter or fixture changes. Crucially it is not a SECOND network call —
+    // the actions were in the response we were already paying for.
+    async fetchDailyClosesWithActions(req: PriceFetchRequest) {
+      return fetchWindow(req);
+    },
+  };
+
+  /** One vendor request → the prices AND the corporate actions it stated. */
+  async function fetchWindow(req: PriceFetchRequest): Promise<{ prices: PriceResult[]; corporateActions: ProviderCorporateAction[] }> {
+    {
       // The orchestrator already gates on supportedBases(); guard defensively.
-      if (req.basis !== PriceBasis.RAW_CLOSE) return [];
+      if (req.basis !== PriceBasis.RAW_CLOSE) return { prices: [], corporateActions: [] };
 
       const symbol = req.providerSymbol?.trim();
       // No ticker (e.g. a cash / no-symbol instrument) → nothing to ask Tiingo.
       // "No data", not a failure — return [] so the orchestrator moves on.
-      if (!symbol) return [];
+      if (!symbol) return { prices: [], corporateActions: [] };
 
       const url =
         `${baseUrl}/tiingo/daily/${encodeURIComponent(symbol)}/prices` +
@@ -150,11 +179,28 @@ export function createTiingoPriceProvider(
       }
 
       const out: PriceResult[] = [];
+      const actions: ProviderCorporateAction[] = [];
       for (const row of body as TiingoDailyRow[]) {
         if (!row || typeof row.date !== "string") continue;
         const dateISO = row.date.slice(0, 10);
         // Defensive window clamp — never trust the vendor to honor start/end.
         if (dateISO < req.fromISO || dateISO > req.toISO) continue;
+
+        // A corporate action is read INDEPENDENTLY of the price. A row whose
+        // close is malformed is dropped below, but its stated splitFactor is
+        // still the vendor stating a term — and losing it would leave a quantity
+        // replay permanently blocked because of an unrelated bad price field.
+        const ratio = splitFactorToRatio(row.splitFactor);
+        if (ratio !== null) {
+          actions.push({
+            instrumentId:  req.instrumentId,
+            effectiveDate: dateISO,
+            kind:          "SPLIT",
+            ratio,
+            evidence:      { splitFactor: row.splitFactor, close: row.close },
+          });
+        }
+
         const price = row.close;
         // Drop (don't throw on) a malformed / non-positive close so one bad day
         // never discards the whole window in validateBatch.
@@ -168,7 +214,7 @@ export function createTiingoPriceProvider(
           currency:     "USD",
         });
       }
-      return out;
-    },
-  };
+      return { prices: out, corporateActions: actions };
+    }
+  }
 }

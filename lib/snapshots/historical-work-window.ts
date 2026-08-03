@@ -15,7 +15,7 @@
  */
 
 import { db } from "@/lib/db";
-import { AssetClass } from "@prisma/client";
+import { AssetClass, InvestmentCoverageOutcome } from "@prisma/client";
 import {
   planHistoricalWorkWindow,
   type ChangeDetection,
@@ -107,6 +107,77 @@ async function resolveBlockingPriceFloor(
 }
 
 /**
+ * The earliest date this account set has ANY account-level evidence for.
+ *
+ * ── The bug this exists to prevent (V26-S1-PLANNER) ──────────────────────────
+ * This was `MIN(Transaction.date)` alone, described in the planner's own field
+ * doc as "earliest transaction / observation". Transactions are the ONLY
+ * evidence a banking account has — and they are evidence an INVESTMENT account
+ * does not have at all. Measured on this database: the three live Plaid
+ * investment accounts hold ZERO Transaction rows. Their history lives in
+ * InvestmentEvent and is attested by InvestmentEventCoverage, which proves
+ * COMPLETE, pagination-reconciled coverage back to 2025-07-31.
+ *
+ * So for an investment-only account set the planner reported "no evidence floor
+ * — nothing deeper than the recent window exists" and planned 30 days, while
+ * the provider had already demonstrated twelve months.
+ *
+ * The repair is to ask every table that can carry account-level evidence, and
+ * take the EARLIEST. Widening only: MIN can never raise the floor, so no
+ * existing plan narrows, and a set with transactions alone resolves exactly as
+ * before.
+ *
+ * Why each source counts as evidence:
+ *   Transaction.date                       a movement we hold a record of
+ *   InvestmentEvent.date                   the investment analogue; the sole
+ *                                          history source for a brokerage
+ *   InvestmentEventCoverage.earliest       what the provider DEMONSTRABLY
+ *     ReturnedDate (COMPLETE + reconciled)  returned — stronger than our own
+ *                                          rows, because it also proves an
+ *                                          empty interval was empty
+ *   PositionObservation.date               ownership observed on a date
+ *
+ * The floor is a plan bound, never a licence: a wider window still passes
+ * through the blocking-price intersection and every regeneration guard, so a
+ * date this reaches can still be refused for lack of prices or ownership.
+ * Nothing here asserts a value.
+ */
+async function resolveEvidenceFloor(financialAccountIds: string[]): Promise<string | null> {
+  if (financialAccountIds.length === 0) return null;
+  const scope = { financialAccountId: { in: financialAccountIds } };
+
+  const [tx, event, coverage, position] = await Promise.all([
+    db.transaction.aggregate({ where: { ...scope, deletedAt: null }, _min: { date: true } }),
+    db.investmentEvent.aggregate({ where: { ...scope, deletedAt: null, supersededById: null }, _min: { date: true } }),
+    db.investmentEventCoverage.aggregate({
+      where: {
+        ...scope,
+        outcome:              InvestmentCoverageOutcome.COMPLETE,
+        paginationReconciled: true,
+        earliestReturnedDate: { not: null },
+      },
+      _min: { earliestReturnedDate: true },
+    }),
+    db.positionObservation.aggregate({
+      where: { ...scope, deletedAt: null, supersededById: null },
+      _min:  { date: true },
+    }),
+  ]);
+
+  const candidates = [
+    tx._min.date,
+    event._min.date,
+    coverage._min.earliestReturnedDate,
+    position._min.date,
+  ].filter((d): d is Date => d != null);
+
+  if (candidates.length === 0) return null;
+  return candidates
+    .map((d) => d.toISOString().slice(0, 10))
+    .reduce((min, d) => (d < min ? d : min));
+}
+
+/**
  * Resolve the historical work window for an account set.
  *
  * Reads only floors; writes nothing. Safe to call on a dry run.
@@ -117,15 +188,7 @@ export async function resolveHistoricalWorkWindow(
   const { financialAccountIds, changedSince, now = new Date() } = args;
   const recent = recentWealthWindow(now);
 
-  // Evidence floor — the account set's earliest real transaction. Same authority
-  // maxAvailableWealthWindow uses, so the two agree wherever both apply.
-  const evidence = financialAccountIds.length
-    ? await db.transaction.aggregate({
-        where: { financialAccountId: { in: financialAccountIds }, deletedAt: null },
-        _min:  { date: true },
-      })
-    : { _min: { date: null as Date | null } };
-  const evidenceFloorISO = evidence._min.date ? evidence._min.date.toISOString().slice(0, 10) : null;
+  const evidenceFloorISO = await resolveEvidenceFloor(financialAccountIds);
 
   const resolved = await resolveBlockingPriceFloor(financialAccountIds);
   const { unpricedBlockingInstruments } = resolved;

@@ -32,6 +32,32 @@ export interface PriceResult {
 }
 
 /**
+ * V26-S1-CA — a corporate action a PRICE vendor stated, in the same response as
+ * its prices.
+ *
+ * This lives here, beside PriceResult, for one reason: it arrives on the same
+ * HTTP call. It is deliberately NOT a price — it never enters the archive, never
+ * gets a basis, and never participates in valuation. It is the TERM of an event,
+ * carried out of the price pipeline to the corporate-action authority
+ * (lib/investments/corporate-actions.core.ts), which is the only module allowed
+ * to decide whether it may license a quantity replay.
+ *
+ * No `grade` field: the vendor states the term, this codebase grades the source.
+ * An adapter must never be able to declare its own answer authoritative.
+ */
+export interface ProviderCorporateAction {
+  instrumentId:  string;
+  /** "YYYY-MM-DD", UTC — the date the vendor states the action took effect. */
+  effectiveDate: string;
+  /** Canonical kind ("SPLIT"); validated by the corporate-action authority. */
+  kind:          string;
+  /** Shares out per share in. Never 1.0 — "nothing happened" is not an action. */
+  ratio:         number;
+  /** The raw vendor fields this was read from. Evidence, never an input. */
+  evidence?:     Record<string, unknown>;
+}
+
+/**
  * The facts routing needs in order to choose a provider, without loading an
  * Instrument row. V26-PRICE-PROVIDER-UNIFICATION — see ProviderResolution.
  */
@@ -82,6 +108,24 @@ export interface PriceProviderAdapter {
    * instrumentId it was asked about. Complete-or-throw per adapter.
    */
   fetchDailyCloses(req: PriceFetchRequest): Promise<PriceResult[]>;
+  /**
+   * V26-S1-CA — the SAME window, also reporting any corporate action the vendor
+   * stated in that response.
+   *
+   * OPTIONAL, exactly like `readRange?` / `readCoveredDates?` on
+   * PriceArchiveReader: a vendor whose payload carries no corporate-action data
+   * omits it, and callers MUST fall back to `fetchDailyCloses`. That keeps this
+   * strictly additive — every existing adapter, fixture and test is unchanged.
+   *
+   * An adapter implementing this MUST NOT issue a second network request: the
+   * whole point is that the terms were already inside the response the price
+   * fetch paid for. Tiingo's daily-prices rows carry `splitFactor`; that field
+   * was being parsed away, which is why TQQQ's history stopped at a split whose
+   * ratio was sitting in the same payload as the prices around it.
+   */
+  fetchDailyClosesWithActions?(
+    req: PriceFetchRequest,
+  ): Promise<{ prices: PriceResult[]; corporateActions: ProviderCorporateAction[] }>;
 }
 
 /** One instrument's fetch request over a bounded window. */

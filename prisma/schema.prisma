@@ -1446,11 +1446,12 @@ model Instrument {
   createdAt              DateTime   @default(now())
   updatedAt              DateTime   @updatedAt
 
-  aliases         InstrumentAlias[]
-  positions       PositionObservation[]
-  events          InvestmentEvent[]
-  reconstructions PositionReconstruction[]
-  prices          PriceObservation[]
+  aliases          InstrumentAlias[]
+  positions        PositionObservation[]
+  events           InvestmentEvent[]
+  reconstructions  PositionReconstruction[]
+  prices           PriceObservation[]
+  corporateActions CorporateActionTerms[]
 
   @@index([tickerSymbol])
   @@index([assetClass])
@@ -1665,6 +1666,79 @@ model PositionReconstruction {
   @@unique([financialAccountId, instrumentId]) // one live summary per position (upserted on rerun)
   @@index([financialAccountId])
   @@index([instrumentId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Corporate Action Terms (V26-S1-CA)
+//
+// WHAT HAPPENED TO A SECURITY, AND WHO SAYS SO.
+//
+// A backward quantity replay can only invert a corporate action whose TERMS it
+// knows. Plaid emits the EVENT (`transfer`/`split` → InvestmentEventType.SPLIT)
+// but never the terms — every SPLIT row in the live corpus carries `ratio` NULL
+// — so `reconstruction-core.stopReasonFor` halts the walk and the position keeps
+// UNSUPPORTED_CORPORATE_ACTION. Measured locally: TQQQ's history stops dead at
+// 2025-11-20.
+//
+// The terms were never actually missing. Tiingo's daily-prices response — the
+// SAME HTTP call lib/prices/providers/tiingo.ts already makes for every equity
+// and ETF — carries `splitFactor` on every row, and states 2.0 on exactly that
+// date. The adapter typed its row as `{ date, close }` and discarded it.
+//
+// WHY A TABLE, NOT A COLUMN ON InvestmentEvent:
+//   · Terms are a property of the SECURITY, not of one account's row. Every
+//     holder of TQQQ experienced the same 2:1; storing it per event would write
+//     the same fact N times and let two accounts disagree about the market.
+//   · Deployment-global, exactly like Instrument and PriceObservation — one
+//     vendor answer serves every user, which is the same economics that made the
+//     global price archive right.
+//   · An action can exist with NO event: a security can split while a provider
+//     never reports it. Terms can still license the replay; an event column
+//     could not.
+//   · InvestmentEvent.ratio stays what its schema comment says it is — a term
+//     the IMPORT or the USER stated. Writing a vendor-derived value there would
+//     give one column two meanings and no way to tell them apart.
+//
+// GRADE is the load-bearing field. Only terms an INDEPENDENT SOURCE STATES may
+// license an inversion:
+//   STATED        the user or an imported statement stated it
+//   CORROBORATED  a price vendor stated it (Tiingo splitFactor)
+// A ratio our own arithmetic merely IMPLIES (e.g. dividing the event's quantity
+// into the post-action holding) is deliberately NOT persistable here: one
+// observation cannot establish whether a provider reports a split as a delta, a
+// new total, or a paired remove/add, and a plausible guess is exactly what the
+// UNSUPPORTED_CORPORATE_ACTION refusal exists to prevent.
+//
+// Unique on (instrument, date, kind, source) rather than (instrument, date,
+// kind): two sources stating the same action is EVIDENCE, and collapsing them
+// would discard a disagreement worth surfacing. The reader picks deterministically
+// by grade — see lib/investments/corporate-actions.core.ts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CorporateActionTerms {
+  id           String     @id @default(cuid())
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+
+  /// The date the action took effect (the vendor's stated effective date).
+  effectiveDate DateTime @db.Date
+  /// "SPLIT" today. Reserved-String, guarded at write time — the same pattern as
+  /// PositionObservation.completeness; never a parallel enum vocabulary.
+  kind          String
+  /// Shares out per share in. 2.0 = a 2:1 forward split; 0.1 = a 1:10 reverse.
+  ratio         Float?
+  /// "STATED" | "CORROBORATED" — write-time guarded. Never "INFERRED".
+  grade         String
+  /// Provenance, e.g. "tiingo:splitFactor" | "import" | "user".
+  source        String
+  /// The raw vendor row / stated terms this was read from. Evidence, not input.
+  evidenceRefs  Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([instrumentId, effectiveDate, kind, source])
+  @@index([instrumentId, effectiveDate])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

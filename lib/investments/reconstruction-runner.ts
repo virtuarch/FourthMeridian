@@ -20,22 +20,25 @@
  * Reads/writes only A4-owned data. No reader/UI changes, no valuation, no prices.
  */
 
-import { AssetClass, InvestmentCoverageOutcome, PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
+import { AssetClass, InvestmentCoverageOutcome, InvestmentEventType, PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
 import { db } from "@/lib/db";
 import { COMPLETENESS_TIERS, isCompletenessTier } from "@/lib/perspective-engine/completeness";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
 // V26-A4-SIGN — the canonical type→direction mapping (BUY +, SELL −), reused
 // here rather than restated. See the mapping site below.
 import { signedShareDelta } from "@/lib/investments/quantity-event.core";
+import { loadCorporateActionTerms, actionKey } from "./corporate-actions";
 import {
   reconstructPositions,
   detectCheckpointConflicts,
   applyCheckpointConflicts,
+  reconcileWalkAgainstObservations,
   RECONSTRUCTION_VERSION,
   type ReconAnchorInput,
   type ReconEventInput,
   type InstrumentReconstruction,
   type ImportedCheckpoint,
+  type WalkReconciliation,
 } from "./reconstruction-core";
 
 type Client = PrismaClient | Prisma.TransactionClient;
@@ -150,6 +153,34 @@ export async function gatherReconstructionInputs(
   // to stop or degrade the walk, and zeroing would let a corporate action vanish
   // into a silent no-op. This slice applies direction where it is ratified and
   // changes nothing else.
+  // V26-S1-CA — A RATIO THE PROVIDER NEVER STATED, FROM A SOURCE THAT DID.
+  //
+  // Plaid emits the corporate action and never its terms: every SPLIT in the
+  // live corpus carries `ratio` NULL, so `stopReasonFor` halts the walk and the
+  // position keeps UNSUPPORTED_CORPORATE_ACTION. TQQQ's history stopped at
+  // 2025-11-20 for exactly this reason.
+  //
+  // The terms authority holds what an INDEPENDENT source stated — today the
+  // `splitFactor` Tiingo has been returning on the price rows we already fetch.
+  // It is consulted ONLY where the event itself states nothing: a ratio the user
+  // or an imported statement supplied always wins, because it is first-party
+  // evidence about that account and this is a vendor's view of the market.
+  //
+  // This is deliberately the ONLY change S1-CA makes to reconstruction. The core
+  // already handles `ratio != null` correctly on both paths — `stopReasonFor`
+  // stops refusing and `walkInstrument` divides — so the terms belong at the one
+  // place ReconEventInput is constructed, exactly like V26-A4-SIGN's direction
+  // mapping. The walk's math is untouched.
+  const corporateActionTerms = await loadCorporateActionTerms(
+    eventRows.map((e) => e.instrumentId).filter((id): id is string => id != null),
+    client,
+  );
+  const termsRatioFor = (e: { instrumentId: string | null; date: Date; type: InvestmentEventType }): number | null => {
+    if (e.instrumentId == null) return null;
+    if (e.type !== InvestmentEventType.SPLIT) return null; // only splits carry terms today
+    return corporateActionTerms.get(actionKey(e.instrumentId, ymd(e.date), "SPLIT"))?.ratio ?? null;
+  };
+
   const events: ReconEventInput[] = eventRows.map((e) => ({
     id: e.id,
     source: e.source,
@@ -160,7 +191,7 @@ export async function gatherReconstructionInputs(
     quantity: signedShareDelta(e) ?? e.quantity,
     amount: e.amount,
     currency: e.currency,
-    ratio: e.ratio,
+    ratio: e.ratio ?? termsRatioFor(e),
     relatedInstrumentId: e.relatedInstrumentId,
   }));
 
@@ -205,6 +236,8 @@ async function persistInstrument(
   client: Client,
   financialAccountId: string,
   r: InstrumentReconstruction,
+  /** V26-S1-CASH — the walk's agreement with independent observations, when measured. */
+  cashReconciliation?: WalkReconciliation,
 ): Promise<void> {
   await client.positionObservation.deleteMany({
     where: {
@@ -244,7 +277,9 @@ async function persistInstrument(
     conflicted: r.conflicted,
     reconstructionVersion: RECONSTRUCTION_VERSION,
     eventCount: r.eventCount,
-    evidenceRefs: r.evidenceRefs as unknown as Prisma.InputJsonValue,
+    evidenceRefs: (cashReconciliation
+      ? { ...r.evidenceRefs, cashReconciliation }
+      : r.evidenceRefs) as unknown as Prisma.InputJsonValue,
   };
   await client.positionReconstruction.upsert({
     where: { financialAccountId_instrumentId: { financialAccountId, instrumentId: r.instrumentId } },
@@ -305,13 +340,59 @@ export async function reconstructAccount(params: ReconstructAccountParams): Prom
     results = applyCheckpointConflicts(results, detectCheckpointConflicts(results, checkpoints));
   }
 
+  // V26-S1-CASH — RECONCILE THE CASH WALK AGAINST THE PROVIDER'S OWN BALANCES.
+  //
+  // A cash walk is the one reconstruction in this system with frequent
+  // independent checkpoints: the provider reports the account's cash balance on
+  // many dates, and the walk passes over all of them on its way back from the
+  // anchor. Comparing them costs one already-loaded row set and turns cash
+  // reconstruction from an assertion into a measured claim.
+  //
+  // Recorded as evidence, never as a `conflicted` flag — see
+  // reconcileWalkAgainstObservations for why a mismatch on a date that carries
+  // an observation is diagnostic rather than a dispute.
+  //
+  // Scoped to CASH walks deliberately. Securities also carry OBSERVED history
+  // and reconciling them would be valuable, but `conflicted`/status changes on
+  // security positions propagate into valuation and the residue guard; that is a
+  // larger decision than this slice, and mixing it in would hide which change
+  // moved which number.
+  const cashInstrumentIds = new Set(
+    results.filter((r) => r.isCash).map((r) => r.instrumentId),
+  );
+  const cashReconciliationByInstrument = new Map<string, ReturnType<typeof reconcileWalkAgainstObservations>>();
+  if (cashInstrumentIds.size > 0) {
+    const observedCash = await client.positionObservation.findMany({
+      where: {
+        financialAccountId: params.financialAccountId,
+        instrumentId: { in: [...cashInstrumentIds] },
+        origin: PositionOrigin.OBSERVED,
+        deletedAt: null,
+        supersededById: null,
+      },
+      select: { instrumentId: true, date: true, quantity: true },
+    });
+    const byInstrument = new Map<string, { date: string; quantity: number }[]>();
+    for (const o of observedCash) {
+      const list = byInstrument.get(o.instrumentId) ?? [];
+      list.push({ date: ymd(o.date), quantity: o.quantity });
+      byInstrument.set(o.instrumentId, list);
+    }
+    for (const r of results) {
+      if (!r.isCash) continue;
+      const obs = byInstrument.get(r.instrumentId);
+      if (!obs || obs.length === 0) continue;
+      cashReconciliationByInstrument.set(r.instrumentId, reconcileWalkAgainstObservations(r, obs));
+    }
+  }
+
   const metrics: ReconstructionMetrics = {
     status: "ok", instruments: 0, complete: 0, partial: 0, failed: 0, conflicted: 0, derivedRows: 0,
   };
 
   const persistAll = async (tx: Client) => {
     for (const r of results) {
-      await persistInstrument(tx, params.financialAccountId, r);
+      await persistInstrument(tx, params.financialAccountId, r, cashReconciliationByInstrument.get(r.instrumentId));
       metrics.instruments++;
       if (r.status === "COMPLETE") metrics.complete++;
       else if (r.status === "PARTIAL") metrics.partial++;
@@ -372,7 +453,19 @@ export async function repairReconstructionForAccount(params: RepairParams): Prom
   const reconstructed = new Set(summaries.map((s) => s.instrumentId));
 
   const target = new Set(params.affectedInstrumentIds.filter((id) => reconstructed.has(id)));
-  if (params.affectedCash) {
+  // V26-S1-CASH — AN EVENT THAT TOUCHES A SECURITY WALK CAN TOUCH THE CASH WALK.
+  //
+  // `affectedCash` is each producer's statement that a CASH-ONLY row moved, and
+  // it stayed accurate for what it described. But routing now sends a cash leg
+  // wherever a row states a material amount, and almost every such row also
+  // carries an instrumentId — so a newly ingested SELL rebuilds its security
+  // walk while leaving a stale, now-wrong cash walk published beside it.
+  //
+  // Repairing the cash walks whenever ANY walk is repaired is the structural
+  // answer: it lives in one place, a new producer cannot forget it, and the cost
+  // of over-repairing is nil (the walk is always full and the write is
+  // idempotent) while the cost of under-repairing is a wrong number on screen.
+  if (params.affectedCash || target.size > 0) {
     const cashInstruments = await client.instrument.findMany({
       where:  { id: { in: [...reconstructed] }, assetClass: AssetClass.CASH },
       select: { id: true },

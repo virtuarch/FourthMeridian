@@ -43,6 +43,7 @@ import { db } from "@/lib/db";
 import { PriceBasis } from "@prisma/client";
 import { priceArchive } from "./archive";
 import { fetchInstrumentWindow } from "./fetch";
+import { recordCorporateActionTerms } from "@/lib/investments/corporate-actions";
 import { defaultPriceRegistry } from "./registry";
 import { yesterdayUTCISO } from "./config";
 import { loadInstrumentCoverage, type CoverageRequest } from "./coverage-binding";
@@ -101,6 +102,8 @@ export interface BackfillPricesResult {
   fetchedInstruments: number;
   /** PriceObservation rows written. */
   inserted:           number;
+  /** V26-S1-CA — corporate-action terms recorded from the same provider responses. */
+  corporateActions:   number;
   /** Instruments not started because the soft deadline was reached. */
   skippedForBudget:   number;
   /**
@@ -152,8 +155,8 @@ export async function backfillPricesForInstruments(
   const outcomes = Object.fromEntries(PROVIDER_OUTCOMES.map((o) => [o, 0])) as Record<ProviderOutcome, number>;
   const result: BackfillPricesResult = {
     considered: 0, planned: 0, skipped: 0, skippedUnavailable: 0,
-    skippedCalendarUnavailable: 0, fetchedInstruments: 0, inserted: 0, skippedForBudget: 0,
-    outcomes,
+    skippedCalendarUnavailable: 0, fetchedInstruments: 0, inserted: 0, corporateActions: 0,
+    skippedForBudget: 0, outcomes,
   };
   const ids = [...new Set(instrumentIds)].sort();
   if (ids.length === 0) return result;
@@ -254,6 +257,20 @@ export async function backfillPricesForInstruments(
         // already-stored observation is never overwritten by a re-fetch.
         const written = await priceArchive.writeBatch(res.source, res.rows);
         result.inserted += written.inserted;
+        // V26-S1-CA — the same response also stated any corporate action in this
+        // window. Recorded beside the prices, never inside them. Best-effort: a
+        // terms failure must not lose a completed price acquisition, and its
+        // consequence is a walk that keeps refusing — a refusal, not a wrong
+        // number.
+        if (res.corporateActions.length > 0) {
+          try {
+            const n = await recordCorporateActionTerms(res.source, res.corporateActions);
+            result.corporateActions += n;
+            log(`  ✓ ${checkpoint} — ${n} corporate action(s) recorded`);
+          } catch (e) {
+            log(`  · ${checkpoint} — corporate-action capture failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
         log(`  ✓ ${checkpoint} — ${written.inserted} row(s)`);
       } else {
         log(`  · ${checkpoint} — ${res.outcome}${res.notes.length ? `: ${res.notes[res.notes.length - 1]}` : ""}`);

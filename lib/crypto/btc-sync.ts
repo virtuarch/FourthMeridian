@@ -585,11 +585,15 @@ export async function syncBtcWallet(
   //    for xpub, per-address for single-address. For a partially-discovered xpub
   //    this is a PARTIAL balance (completes as discovery advances).
   let sats: number;
+  // V26-S1-BTC — retained so the transaction import can select addresses by
+  // DEMONSTRATED ACTIVITY rather than by position. See the import call below.
+  let statsByAddress: Map<string, AddrStat> | null = null;
   try {
     if (deps.balanceFetcher) {
       sats = (await Promise.all(addresses.map(deps.balanceFetcher))).reduce((s, x) => s + x, 0);
     } else if (isXpub) {
       const stats = deps.batchStatsFetcher ? await deps.batchStatsFetcher(addresses) : await fetchAddressStatsBatch(addresses, deps.fetchImpl);
+      statsByAddress = stats;
       sats = addresses.reduce((s, a) => s + (stats.get(a)?.sats ?? 0), 0);
     } else {
       sats = await fetchConfirmedSatsForAddresses(addresses, deps.fetchImpl);
@@ -626,8 +630,28 @@ export async function syncBtcWallet(
   await writeBtcHolding(accountId, { nativeBalance, priceUsd, balanceUsd });
   // P2-6 — transitional dual-write onto the canonical spine (gated, non-fatal).
   await writeBtcObservation(accountId, nativeBalance, new Date());
-  const txAddrCap = Number(process.env.BTC_TX_ADDR_CAP) || 25;
-  await importBtcTransactions({ id: accountId, ownerUserId: account.ownerUserId, addresses: addresses.slice(0, txAddrCap) }, deps);
+  // V26-S1-BTC — IMPORT TRANSACTIONS FOR EVERY ADDRESS THAT HAS ANY.
+  //
+  // This was `addresses.slice(0, BTC_TX_ADDR_CAP || 25)`, commented "history
+  // fills in across runs (idempotent dedupe)". It does not: `slice(0, 25)` is
+  // deterministic, so it selects the SAME first 25 addresses on every run and
+  // addresses 26+ never have their transactions imported — while their balances
+  // ARE counted, because the balance step above walks the whole set. The result
+  // is a wallet whose balance is complete and whose ledger structurally cannot
+  // be, which is precisely what reconcileWalletLedger now refuses.
+  //
+  // The correct bound is not a count, it is EVIDENCE: only an address with
+  // on-chain activity has transactions to fetch, and discovery already told us
+  // which those are (AddrStat.txCount, from the same batch call that produced
+  // the balance). For the live wallet that is 1 address out of 41 — fewer
+  // requests than the cap it replaces, and complete.
+  //
+  // Without stats (single-address wallets, or an injected balanceFetcher) every
+  // known address is asked, which for those shapes is a set of one or two.
+  const txAddresses = statsByAddress
+    ? addresses.filter((a) => (statsByAddress.get(a)?.txCount ?? 0) > 0)
+    : addresses;
+  await importBtcTransactions({ id: accountId, ownerUserId: account.ownerUserId, addresses: txAddresses }, deps);
 
   // v1.5 spine — record the sync. For an xpub the Connection status reflects the
   // discovery lifecycle honestly:

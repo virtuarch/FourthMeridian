@@ -64,7 +64,17 @@ export type CarryRefusal =
   /** The quantity has no observation date to be carried FROM. */
   | "NO_ANCHOR"
   /** A quantity-changing wallet transaction lies inside the interval. */
-  | "QUANTITY_EVENT_IN_INTERVAL";
+  | "QUANTITY_EVENT_IN_INTERVAL"
+  /**
+   * V26-S1-BTC — the movement ledger cannot account for the wallet's own
+   * balance, so `eventDatesISO` is not a trustworthy statement of when quantity
+   * changed. Checked FIRST, because every other answer this module can give is
+   * derived from that list: "no event blocks the interval" is worthless when the
+   * list is known to be short. The live wallet imported 25 of 28 confirmed
+   * transactions and this module happily licensed carries across the gap.
+   * See ledger-completeness.core.ts.
+   */
+  | "LEDGER_INCOMPLETE";
 
 export interface ConstantQuantityCarryInput {
   /** The date being valued (YYYY-MM-DD). */
@@ -84,6 +94,19 @@ export interface ConstantQuantityCarryInput {
    * binding (see licenseWalletQuantityCarry's caller) rather than a hidden one.
    */
   eventDatesISO: readonly string[];
+  /**
+   * V26-S1-BTC — does the movement ledger that produced `eventDatesISO` account
+   * for the wallet's observed balance? Resolved by the binding through
+   * `reconcileWalletLedger`; see the LEDGER_INCOMPLETE refusal above.
+   *
+   * OPTIONAL and defaulting to `true` (licensed) so a caller that has not yet
+   * adopted the check behaves exactly as before. That default is deliberate and
+   * is the one place this module accepts silence as permission: making it
+   * default to `false` would refuse every historical crypto date for every
+   * caller the moment this field landed, which is a behaviour change disguised
+   * as a safety default. The bindings that CAN answer it must, and do.
+   */
+  ledgerComplete?: boolean;
 }
 
 export type CarryDecision =
@@ -110,6 +133,11 @@ export function licenseConstantQuantityCarry(
   input: ConstantQuantityCarryInput,
 ): CarryDecision {
   const { targetISO, anchorISO, eventDatesISO } = input;
+
+  // Checked before anything else: every judgement below reads `eventDatesISO`,
+  // and a list that provably fails to explain the wallet's balance cannot
+  // support "nothing intervened here".
+  if (input.ledgerComplete === false) return { licensed: false, reason: "LEDGER_INCOMPLETE" };
 
   if (anchorISO === null) return { licensed: false, reason: "NO_ANCHOR" };
 

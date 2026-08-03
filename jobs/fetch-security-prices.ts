@@ -26,6 +26,7 @@ import { db } from "@/lib/db";
 import { PriceBasis } from "@prisma/client";
 import { priceArchive } from "@/lib/prices/archive";
 import { fetchInstrumentWindow } from "@/lib/prices/fetch";
+import { recordCorporateActionTerms } from "@/lib/investments/corporate-actions";
 import { defaultPriceRegistry } from "@/lib/prices/registry";
 import { selectInstrumentsMissingDate } from "@/lib/prices/backfill-core";
 import { resolvePriceability } from "@/lib/prices/coverage-binding.core";
@@ -102,7 +103,7 @@ export async function fetchSecurityPrices(now: Date = new Date()): Promise<Fetch
   }
   const missing = selectInstrumentsMissingDate(instrumentIds, covered, dateISO);
 
-  let fetched = 0, inserted = 0, failed = 0;
+  let fetched = 0, inserted = 0, failed = 0, actions = 0;
   for (const instrumentId of missing) {
     try {
       const res = await fetchInstrumentWindow(
@@ -120,6 +121,16 @@ export async function fetchSecurityPrices(now: Date = new Date()): Promise<Fetch
         fetched++;
         const w = await priceArchive.writeBatch(res.source, res.rows);
         inserted += w.inserted;
+        // V26-S1-CA — a split that happens TODAY is stated on today's row, in
+        // this very response. Capturing it here is what keeps the terms
+        // authority current without a second job or a second vendor call.
+        if (res.corporateActions.length > 0) {
+          try {
+            actions += await recordCorporateActionTerms(res.source, res.corporateActions);
+          } catch (e) {
+            console.warn(`[prices-cron] ${dateISO}: corporate-action capture failed for ${instrumentId} (non-fatal): ${e instanceof Error ? e.message : e}`);
+          }
+        }
       }
     } catch (err) {
       failed++;
@@ -127,6 +138,6 @@ export async function fetchSecurityPrices(now: Date = new Date()): Promise<Fetch
     }
   }
 
-  console.log(`[prices-cron] ${dateISO}: ${instrumentIds.length} held, ${missing.length} missing, ${fetched} fetched, ${inserted} row(s) stored, ${failed} failed`);
+  console.log(`[prices-cron] ${dateISO}: ${instrumentIds.length} held, ${missing.length} missing, ${fetched} fetched, ${inserted} row(s) stored, ${actions} corporate action(s), ${failed} failed`);
   return { dateISO, status: "ok", instrumentsConsidered: instrumentIds.length, instrumentsMissing: missing.length, fetched, inserted, failed };
 }

@@ -399,11 +399,71 @@ export function normalizeBtcAddressTxs(rawTxs: RawBtcTx[], myAddresses: string[]
  * `/txs/chain` returns the most-recent confirmed page; cursor-based backfill of
  * older history is a later refinement (keeps v3 minimal and volume-safe).
  */
+/**
+ * Hard bound on pagination requests per address. A wallet with more confirmed
+ * transactions than this stops early — which is precisely why the LEDGER
+ * RECONCILIATION (reconcileWalletLedger) is the authority on completeness and
+ * this loop is not: an exhausted page budget must be caught by arithmetic, not
+ * assumed away. Env-overridable for a genuinely large wallet.
+ */
+function txPageBudget(): number {
+  const n = Number(process.env.BTC_TX_PAGE_BUDGET);
+  return Number.isFinite(n) && n > 0 ? n : 40; // 40 pages × 25 = 1000 confirmed txs
+}
+
+/**
+ * EVERY confirmed transaction for one address, following the explorer's
+ * pagination to exhaustion.
+ *
+ * ── The bug this exists to prevent (V26-S1-BTC) ──────────────────────────────
+ * This issued exactly ONE request to `/api/address/{addr}/txs/chain` and
+ * returned whatever came back. mempool.space pages that endpoint (25 confirmed
+ * transactions, newest first) and signals "more" only by returning a full page.
+ *
+ * Measured on the live wallet: address bc1q8kv3hyy… has 28 confirmed
+ * transactions and a confirmed balance of 0.24060252 BTC. We imported 25,
+ * summing 0.22031745 BTC — 0.02028507 BTC (8.4% of the wallet) of history
+ * silently absent, and absent from the OLD end, so every backward replay and
+ * every carry licence was reasoning over a ledger that began mid-history.
+ *
+ * Pagination is by `:last_seen_txid`: each page continues from the last txid of
+ * the previous one. The loop stops when a page comes back empty, short, or
+ * fails to advance (a defensive guard against a provider that ignores the
+ * cursor and would otherwise loop forever returning the same page).
+ *
+ * Complete-or-throw, like every other call here: a mid-pagination failure
+ * throws rather than returning a partial list, because a partial list that
+ * looks complete is exactly the failure being repaired.
+ */
 export async function fetchAddressTxsRaw(address: string, fetchImpl: FetchFn = fetch): Promise<RawBtcTx[]> {
-  const url = `${btcExplorerBaseUrl()}/api/address/${encodeURIComponent(address)}/txs/chain`;
-  const json = await getJson(url, "transactions", fetchImpl);
-  if (!Array.isArray(json)) {
-    throw new BtcSyncError("transactions", "unexpected txs response shape (expected array)");
+  const base = `${btcExplorerBaseUrl()}/api/address/${encodeURIComponent(address)}/txs/chain`;
+  const budget = txPageBudget();
+  const out: RawBtcTx[] = [];
+  const seen = new Set<string>();
+  let lastSeenTxid: string | null = null;
+
+  for (let page = 0; page < budget; page++) {
+    const url = lastSeenTxid ? `${base}/${encodeURIComponent(lastSeenTxid)}` : base;
+    const json = await getJson(url, "transactions", fetchImpl);
+    if (!Array.isArray(json)) {
+      throw new BtcSyncError("transactions", "unexpected txs response shape (expected array)");
+    }
+    const rows = json as RawBtcTx[];
+    if (rows.length === 0) break;
+
+    // A page that adds nothing new means the cursor did not advance. Stop rather
+    // than spin — and never let a repeated page inflate the movement set.
+    let added = 0;
+    for (const tx of rows) {
+      if (!tx || typeof tx.txid !== "string" || seen.has(tx.txid)) continue;
+      seen.add(tx.txid);
+      out.push(tx);
+      added++;
+    }
+    const next = rows[rows.length - 1]?.txid;
+    if (added === 0 || typeof next !== "string" || next === lastSeenTxid) break;
+    lastSeenTxid = next;
   }
-  return json as RawBtcTx[];
+
+  return out;
 }

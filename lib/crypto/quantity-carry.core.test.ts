@@ -121,6 +121,29 @@ function main(): void {
   check("target === anchor → empty interval, not even a same-day event blocks",
     licenseConstantQuantityCarry({ targetISO: ANCHOR, anchorISO: ANCHOR, eventDatesISO: [ANCHOR, "2023-09-26"] }).licensed);
 
+  // ── V26-S1-BTC — an incomplete ledger licenses NOTHING ──────────────────────
+  //
+  // This module decides by SEARCHING the event list for a blocker. The list was
+  // demonstrably short: 25 of the wallet's 28 confirmed transactions. "No event
+  // blocks this interval" was then an artefact of the missing rows, and every
+  // date above was licensed on that basis. The check must come FIRST, before any
+  // answer derived from the list.
+  {
+    const incomplete = { targetISO: "2026-01-01", anchorISO: ANCHOR, eventDatesISO: REAL_EVENTS, ledgerComplete: false };
+    const d = licenseConstantQuantityCarry(incomplete);
+    check("M. an incomplete ledger refuses even where no event blocks",
+      !d.licensed && !d.licensed && d.reason === "LEDGER_INCOMPLETE");
+    check("M. it outranks NO_ANCHOR — the list is untrustworthy either way",
+      licenseConstantQuantityCarry({ ...incomplete, anchorISO: null }).licensed === false);
+    const noAnchorReason = licenseConstantQuantityCarry({ ...incomplete, anchorISO: null });
+    check("M. …and reports LEDGER_INCOMPLETE, the more fundamental refusal",
+      !noAnchorReason.licensed && noAnchorReason.reason === "LEDGER_INCOMPLETE");
+    check("M. an explicitly COMPLETE ledger licenses exactly as before",
+      licenseConstantQuantityCarry({ ...incomplete, ledgerComplete: true }).licensed);
+    check("M. an ABSENT flag is backward-compatible (licensed), never a silent refusal",
+      licenseConstantQuantityCarry({ targetISO: "2026-01-01", anchorISO: ANCHOR, eventDatesISO: REAL_EVENTS }).licensed);
+  }
+
   console.log(failures === 0 ? "\nAll quantity-carry checks passed" : `\n${failures} failure(s)`);
   process.exit(failures === 0 ? 0 : 1);
 }
