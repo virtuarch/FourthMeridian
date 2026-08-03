@@ -375,6 +375,18 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
   if (truncated) {
     notes.push(`Transactions were capped at the newest ${data.transactions.length} rows (KD-7 5,000-row limit).`);
   }
+  // V26-CRYPTO-STATUS-1 — the export keeps every stored number, so a reader must
+  // be told which ones may not be asserted. Stated once, in the manifest, and
+  // only when such rows are actually present.
+  const unassertableCrypto = data.snapshots.filter((s) => s.cryptoAssertable === false).length;
+  if (unassertableCrypto > 0) {
+    notes.push(
+      `${unassertableCrypto} snapshot row(s) carry a historical crypto value that cannot be asserted. ` +
+      `Their raw stored total_crypto, total_assets and net_worth are preserved unchanged for audit, ` +
+      `but crypto_assertable is false and asset_side_contaminated is true — net_worth and total_assets ` +
+      `on those rows are composed from the unassertable crypto figure. See crypto_unavailable_reason.`,
+    );
+  }
 
   // Tabular CSVs are included only when their section has rows — no empty files
   // ship. data.json (below) stays stable and always carries every section

@@ -65,6 +65,14 @@ export interface SnapshotSeriesRow {
   totalCrypto:      number; // SpaceSnapshot.crypto  — separate digital-asset bucket
   isEstimated?:     boolean;
   fxMiss?:          boolean;
+  /**
+   * V26-CRYPTO-STATUS-1 — may this row's crypto component be asserted? Resolved
+   * ONCE at the snapshot read boundary from observation + the persisted
+   * `cryptoValuationStatus` + materiality. Read here, never re-derived: this
+   * module must not know what a price floor, a provider or a materiality
+   * threshold is. Optional so a caller predating the field is unaffected.
+   */
+  cryptoAssertable?: boolean;
   // V26-INVESTMENTS-HISTORY — the persisted confidence, as resolved by the read
   // authority (lib/data/snapshots.ts). All optional: a caller that predates the
   // columns, or a row written before them, classifies as `reconstructed` exactly
@@ -76,81 +84,40 @@ export interface SnapshotSeriesRow {
   totalComponentCount?:        number | null;
 }
 
-/** A crypto component at or below this is "no crypto", not an unvalued one. */
-export const CRYPTO_MATERIALITY_EPSILON = 0.5;
-
-export interface PortfolioSeriesOptions {
-  /**
-   * V26-CRYPTO-FLOOR-1 — the earliest date a crypto valuation could have come
-   * from stored price evidence (the archive's earliest BTC RAW_CLOSE date).
-   * Null/absent ⇒ the refusal below is inert and this function behaves exactly
-   * as it did, which is what keeps every existing caller unchanged.
-   */
-  cryptoPriceFloorISO?: string | null;
-}
-
-/**
- * V26-CRYPTO-FLOOR-1 — IS THIS POINT'S CRYPTO A STALE CARRIED BALANCE?
- *
- * Below the price floor no BTC price exists, so a crypto component on such a
- * date CANNOT have been valued from evidence. Whatever is stored there is the
- * wallet's then-current USD balance carried backward by the old backfill — a
- * fabricated assertion, not a valuation. Measured on this database: 378 rows
- * (2024-07-21 → 2025-08-02) holding two such frozen-in-time figures,
- * $15,516.70 and $15,311.94.
- *
- * The floor is DERIVED from the price archive, which is already the authority on
- * what could be valued. No new column is needed, and none is added: the stored
- * `completenessTier` cannot answer this question — 2025-08-02 (stale) and
- * 2025-08-03 (correctly valued) both read `incomplete`.
- *
- * Three conditions, all required:
- *  · the date precedes the floor — provably unvaluable from evidence;
- *  · the crypto component is MATERIAL — a Space with no crypto is untouched;
- *  · the row is ESTIMATED — an OBSERVED row's crypto is a real balance
- *    observation, valid regardless of price coverage, and must never be refused.
- *    (Other users' frozen below-floor rows are exactly this shape.)
- *
- * A row with no metadata at all still classifies correctly: the date and the
- * floor alone identify it as stale, so a legacy row is never rejected for merely
- * lacking metadata — only for evidence that it could not have been valued.
- */
-export function isUnvaluedLegacyCrypto(
-  s: Pick<SnapshotSeriesRow, "date" | "totalCrypto" | "isEstimated">,
-  cryptoPriceFloorISO: string | null | undefined,
-): boolean {
-  if (!cryptoPriceFloorISO) return false;
-  if (s.date >= cryptoPriceFloorISO) return false;
-  if ((s.totalCrypto ?? 0) <= CRYPTO_MATERIALITY_EPSILON) return false;
-  return s.isEstimated !== false;
-}
-
 /**
  * Reshape a stamp-converted SpaceSnapshot window into the Investments value series.
  * Drops `fxMiss` points; every remaining point's value is the two disjoint buckets
  * summed (brokerage + crypto), in `reportingCurrency`.
  *
- * V26-CRYPTO-FLOOR-1 — also drops points whose crypto is a stale carried balance
- * (see isUnvaluedLegacyCrypto). This series' value is investments + crypto, so an
- * unknown crypto makes the SUM unknown: plotting `stocks` alone would silently
- * drop crypto, and plotting the carried figure asserts a valuation that never
- * existed. Omission is the same honesty the `fxMiss` rule above already applies,
- * and it produces a date hole the chart renders as a real break — never a bridge.
+ * V26-CRYPTO-STATUS-1 — also drops points whose crypto MAY NOT BE ASSERTED. This
+ * series' value is investments + crypto, so an unassertable crypto makes the SUM
+ * unassertable: plotting `stocks` alone would silently drop crypto, and plotting
+ * the stored figure asserts a valuation that never existed. Omission is the same
+ * honesty the `fxMiss` rule already applies, and it produces a date hole the
+ * chart renders as a real break — never a bridge.
+ *
+ * The decision is READ, not re-derived. `cryptoAssertable` arrives already
+ * resolved from the snapshot read boundary (lib/data/snapshots.ts), which folds
+ * together observation, the persisted status and materiality. This module
+ * therefore contains no price floor, no provider name, no date rule and no
+ * materiality threshold of its own — the previous version carried all four, and
+ * a floor-derived rule was actively unsafe: the floor moves when a wider tier is
+ * configured, which would have silently re-blessed every stale row.
  *
  * Only THIS series is affected. `stocks`, `cash`, `savings`, `debt` and
  * `netWorth` remain untouched on the row for Net Worth, Liquidity, Debt, AI and
- * export, which read the snapshot directly and are deliberately not changed here.
+ * export.
  */
 export function buildPortfolioValueSeries(
   snapshots: readonly SnapshotSeriesRow[],
   reportingCurrency: string,
-  options: PortfolioSeriesOptions = {},
 ): PortfolioValuePoint[] {
   const out: PortfolioValuePoint[] = [];
   for (const s of snapshots) {
     if (s.fxMiss) continue; // honest omission — never a silently mixed-magnitude point
-    // Unvaluable crypto ⇒ unvaluable portfolio total. Omitted, never asserted.
-    if (isUnvaluedLegacyCrypto(s, options.cryptoPriceFloorISO)) continue;
+    // Unassertable crypto ⇒ unassertable portfolio total. Omitted, never asserted.
+    // Absent (a caller predating the resolved DTO) leaves prior behaviour intact.
+    if (s.cryptoAssertable === false) continue;
     // Classify ONCE, here. The row's stored confidence is re-resolved through the
     // same canonical interpreter the read authority uses, so a caller that hands
     // us a raw row and one that hands us a resolved DTO get the same answer.

@@ -96,5 +96,73 @@ const snapshots = [
 const snapshotsCsv = toSnapshotsCsv(snapshots);
 check("snapshots.csv has net_worth header", snapshotsCsv.split("\n")[0]?.includes("net_worth") === true);
 
+// ── V26-CRYPTO-STATUS-1 — assertability travels beside the raw values ────────
+//
+// The export's contract is AUDITABILITY: every stored number is emitted exactly
+// as stored, and four status columns say what it may be used for. A contaminated
+// row must be unmistakable without any value being blanked, zeroed or relabelled.
+{
+  const statusRows = [
+    // contaminated — a historical crypto figure that may not be asserted
+    { date: "2024-07-21", netWorth: -13830.70, totalAssets: 15528.35, totalDebt: 29359.05,
+      totalCash: 0, totalSavings: 0, totalInvestments: 11.65, totalCrypto: 15516.70, cashOnHand: 0,
+      isEstimated: true, cryptoValuationState: "unavailable", cryptoAssertable: false,
+      assetSideContaminated: true, cryptoUnavailableReason: "HISTORICAL_CRYPTO_VALUATION_UNAVAILABLE",
+      spaceId: "s1", spaceName: "Personal" },
+    // supported
+    { date: "2026-01-01", netWorth: -3697.33, totalAssets: 24141.08, totalDebt: 27838.41,
+      totalCash: 0, totalSavings: 0, totalInvestments: 3070.30, totalCrypto: 21070.78, cashOnHand: 0,
+      isEstimated: true, cryptoValuationState: "supported", cryptoAssertable: true,
+      assetSideContaminated: false, spaceId: "s1", spaceName: "Personal" },
+    // observed
+    { date: "2026-07-19", netWorth: 26715.71, totalAssets: 30000, totalDebt: 3284.29,
+      totalCash: 0, totalSavings: 0, totalInvestments: 4843.24, totalCrypto: 15516.70, cashOnHand: 0,
+      isEstimated: false, cryptoValuationState: "observed", cryptoAssertable: true,
+      assetSideContaminated: false, spaceId: "s1", spaceName: "Personal" },
+    // no crypto at all
+    { date: "2026-07-20", netWorth: 100, totalAssets: 100, totalDebt: 0,
+      totalCash: 100, totalSavings: 0, totalInvestments: 0, totalCrypto: 0, cashOnHand: 100,
+      isEstimated: true, cryptoValuationState: "none", cryptoAssertable: true,
+      assetSideContaminated: false, spaceId: "s1", spaceName: "Personal" },
+  ] as unknown as ExportSnapshot[];
+
+  const csv = toSnapshotsCsv(statusRows);
+  const header = csv.split("\n")[0] ?? "";
+  const rows = Papa.parse<Record<string, string>>(csv, { header: true, skipEmptyLines: true }).data;
+
+  check("snapshots.csv declares all four status columns",
+    ["crypto_valuation_state", "crypto_assertable", "asset_side_contaminated", "crypto_unavailable_reason"]
+      .every((c) => header.includes(c)), header);
+
+  const bad = rows[0], sup = rows[1], obs = rows[2], none = rows[3];
+
+  // Auditability: the RAW stored numbers survive untouched on a contaminated row.
+  check("contaminated row: raw total_crypto preserved, never blank or 0",
+    bad?.total_crypto === "15516.7", bad?.total_crypto);
+  check("contaminated row: raw total_assets and net_worth preserved",
+    bad?.total_assets === "15528.35" && bad?.net_worth === "-13830.7",
+    `${bad?.total_assets} / ${bad?.net_worth}`);
+  check("contaminated row: marked non-assertable",
+    bad?.crypto_valuation_state === "unavailable" && bad?.crypto_assertable === "false");
+  check("contaminated row: totals flagged contaminated",
+    bad?.asset_side_contaminated === "true");
+  check("contaminated row: machine-readable reason present",
+    bad?.crypto_unavailable_reason === "HISTORICAL_CRYPTO_VALUATION_UNAVAILABLE");
+
+  check("supported row: assertable, uncontaminated, no reason",
+    sup?.crypto_valuation_state === "supported" && sup?.crypto_assertable === "true" &&
+    sup?.asset_side_contaminated === "false" && sup?.crypto_unavailable_reason === "");
+  check("observed row: assertable, uncontaminated",
+    obs?.crypto_valuation_state === "observed" && obs?.crypto_assertable === "true" &&
+    obs?.asset_side_contaminated === "false");
+  check("no-crypto row: 'none' reads clearly and implies no error",
+    none?.crypto_valuation_state === "none" && none?.crypto_assertable === "true" &&
+    none?.asset_side_contaminated === "false" && none?.crypto_unavailable_reason === "");
+
+  // The export must never silently correct history.
+  check("no stored value was rewritten across any row",
+    rows.every((r, i) => r.total_crypto === String((statusRows[i] as unknown as { totalCrypto: number }).totalCrypto)));
+}
+
 console.log(failures === 0 ? "\nAll export/csv checks passed." : `\n${failures} failure(s).`);
 process.exit(failures === 0 ? 0 : 1);

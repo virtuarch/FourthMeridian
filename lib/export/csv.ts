@@ -102,6 +102,30 @@ export function toSnapshotsCsv(rows: ExportSnapshot[]): string {
       total_crypto:      r.totalCrypto,
       cash_on_hand:      r.cashOnHand,
       is_estimated:      r.isEstimated ?? false,
+      // ── V26-CRYPTO-STATUS-1 — assertability, beside the raw values ─────────
+      //
+      // Auditability first: `total_crypto`, `total_assets` and `net_worth` above
+      // keep the EXACT number stored on the row, even when it may not be
+      // asserted. Blanking or zeroing them would destroy the audit trail and
+      // silently rewrite history; relabelling them would present a stale figure
+      // as a corrected one. Instead these four columns say what the number is
+      // worth, so a downstream system can tell apart:
+      //   · the raw stored value              → total_crypto / total_assets / net_worth
+      //   · whether it may be asserted        → crypto_assertable
+      //   · whether the totals built on it    → asset_side_contaminated
+      //     are affected
+      //   · why not                           → crypto_unavailable_reason
+      //
+      // All four are READ from the canonical state resolved at the snapshot
+      // boundary. This module derives nothing: no floor, no provider, no date
+      // rule, no materiality threshold.
+      //
+      // Empty means the producing caller did not resolve a state (no such path
+      // exists in the app today); it is deliberately distinct from `false`.
+      crypto_valuation_state:    r.cryptoValuationState ?? "",
+      crypto_assertable:         r.cryptoAssertable ?? "",
+      asset_side_contaminated:   r.assetSideContaminated ?? "",
+      crypto_unavailable_reason: r.cryptoUnavailableReason ?? "",
     })),
   );
 }
