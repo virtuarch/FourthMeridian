@@ -34,9 +34,9 @@
 import { syncAllBtcWallets, type BtcSyncDeps, type SyncAllBtcWalletsResult } from "@/lib/crypto/btc-sync";
 import {
   regenerateWealthHistoryForAccounts,
-  recentWealthWindow,
   wealthRegenerationEnabled,
 } from "@/lib/snapshots/regenerate-history";
+import { resolveHistoricalWorkWindow } from "@/lib/snapshots/historical-work-window";
 
 export interface SyncCryptoResult extends SyncAllBtcWalletsResult {
   /** Spaces whose wealth history was regenerated this run (empty when the flag is off). */
@@ -44,16 +44,36 @@ export interface SyncCryptoResult extends SyncAllBtcWalletsResult {
 }
 
 export async function syncCrypto(deps?: BtcSyncDeps): Promise<SyncCryptoResult> {
+  // V26-ORCH-1 — stamped BEFORE the sync so every row the sync writes falls at or
+  // after it. This is what makes the refresh genuinely INCREMENTAL rather than a
+  // guess: the planner asks which transactions and prices were written from this
+  // instant onward and takes their earliest DATE as `impactedFrom`. A quiet
+  // sweep measures "nothing changed" and rebuilds only the recent interval; a
+  // sweep that discovers a two-year-old movement rebuilds from that movement.
+  const runStartedAt = new Date();
+
   const result = await syncAllBtcWallets(deps);
 
-  // Regenerate the 30-day wealth history of every space touched by a successful
-  // sync — mirrors the route-level wiring (965e0bd), gated on the flag for the
-  // bulk fan-out (see header). Best-effort/non-fatal: regen failures must never
-  // fail the sweep or its JobRun.
+  // Regenerate the wealth history of every space touched by a successful sync —
+  // mirrors the route-level wiring (965e0bd), gated on the flag for the bulk
+  // fan-out (see header). Best-effort/non-fatal: regen failures must never fail
+  // the sweep or its JobRun.
+  //
+  // This used a FIXED 30-DAY window, which capped every wallet's history at one
+  // month no matter how much the provider could serve.
   let wealthRegenSpaces = 0;
   if (wealthRegenerationEnabled() && result.syncedAccountIds.length > 0) {
     try {
-      const spaces = await regenerateWealthHistoryForAccounts(result.syncedAccountIds, recentWealthWindow());
+      const plan = await resolveHistoricalWorkWindow({
+        financialAccountIds: result.syncedAccountIds,
+        changedSince:        runStartedAt,
+      });
+      console.log(
+        `[sync-crypto] historical window ${plan.fromDate}..${plan.toDate} (${plan.mode}) — ${plan.reasons.join("; ")}`,
+      );
+      const spaces = await regenerateWealthHistoryForAccounts(
+        result.syncedAccountIds, { fromDate: plan.fromDate, toDate: plan.toDate },
+      );
       wealthRegenSpaces = spaces.length;
     } catch (err) {
       console.warn("[sync-crypto] wealth-history regen failed (non-fatal):", err instanceof Error ? err.message : err);

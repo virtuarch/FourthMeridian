@@ -29,18 +29,37 @@ import { requireUser } from "@/lib/session";
 import { AuditAction } from "@/lib/audit-actions";
 import { mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
-import { regenerateWealthHistoryForAccounts, recentWealthWindow } from "@/lib/snapshots/regenerate-history";
+import { regenerateWealthHistoryForAccounts } from "@/lib/snapshots/regenerate-history";
+import { resolveHistoricalWorkWindow } from "@/lib/snapshots/historical-work-window";
 
 /**
- * Part-2 — after a BTC wallet's balance is synced, regenerate its Space's 30-day
- * wealth HISTORY (not just today's flat row) so the new CoinGecko-driven per-day
- * crypto valuation (a05ffbd) actually runs for a real wallet. Best-effort/non-
- * fatal and gated internally on WEALTH_REGENERATION_ENABLED. Distinct from
- * regenerateSnapshotsForAccounts (today's live row), which stays as-is.
+ * Part-2 — after a BTC wallet's balance is synced, regenerate its Space's wealth
+ * HISTORY (not just today's flat row) so the per-day crypto valuation actually
+ * runs for a real wallet. Best-effort/non-fatal and gated internally on
+ * WEALTH_REGENERATION_ENABLED. Distinct from regenerateSnapshotsForAccounts
+ * (today's live row), which stays as-is.
+ *
+ * V26-ORCH-1 — this used a FIXED 30-DAY window, so a newly connected wallet
+ * built one month of history and stopped, even where the price provider could
+ * serve a full year and the quantity was licensed across all of it. Every deeper
+ * rebuild had to be run by hand. It now asks the canonical planner, which
+ * intersects evidence, provider prices and the writable ceiling.
+ *
+ * Deliberately still best-effort and AWAITED-but-non-fatal: connection success
+ * must not depend on a long historical rebuild, and the regenerator already
+ * defers/skip-frozens internally.
  */
 async function regenWalletWealthHistory(financialAccountId: string): Promise<void> {
   try {
-    await regenerateWealthHistoryForAccounts([financialAccountId], recentWealthWindow());
+    // A first connection has no measurable "what changed" — there is no prior
+    // state to diff against — so no `changedSince` is supplied and the planner
+    // correctly takes the whole supportable interval.
+    const plan = await resolveHistoricalWorkWindow({ financialAccountIds: [financialAccountId] });
+    console.log(
+      `[POST /api/accounts/wallet] historical window ${plan.fromDate}..${plan.toDate} ` +
+      `(${plan.mode}) — ${plan.reasons.join("; ")}`,
+    );
+    await regenerateWealthHistoryForAccounts([financialAccountId], { fromDate: plan.fromDate, toDate: plan.toDate });
   } catch (e) {
     console.warn(`[POST /api/accounts/wallet] wealth-history regen failed for ${financialAccountId} (non-fatal):`, e);
   }

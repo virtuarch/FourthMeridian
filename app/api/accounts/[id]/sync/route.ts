@@ -25,7 +25,8 @@ import { db } from "@/lib/db";
 import { limitByUser } from "@/lib/rate-limit";
 import { syncBtcWallet, BTC_CHAIN } from "@/lib/crypto/btc-sync";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
-import { regenerateWealthHistoryForAccounts, recentWealthWindow } from "@/lib/snapshots/regenerate-history";
+import { regenerateWealthHistoryForAccounts } from "@/lib/snapshots/regenerate-history";
+import { resolveHistoricalWorkWindow } from "@/lib/snapshots/historical-work-window";
 
 export async function POST(
   _req: NextRequest,
@@ -55,6 +56,9 @@ export async function POST(
     return NextResponse.json({ error: "Only BTC wallet sync is supported." }, { status: 400 });
   }
 
+  // V26-ORCH-1 — stamped BEFORE the sync so rows it writes fall at/after it,
+  // which is what lets the planner MEASURE what changed instead of guessing.
+  const syncStartedAt = new Date();
   const result = await syncBtcWallet(id);
 
   if (result.ok) {
@@ -64,11 +68,30 @@ export async function POST(
     } catch (snapshotErr) {
       console.warn(`[POST /api/accounts/${id}/sync] snapshot regen failed (non-fatal):`, snapshotErr);
     }
-    // Part-2 — also regenerate the 30-day wealth HISTORY so the CoinGecko-driven
-    // per-day BTC valuation (a05ffbd) runs for a real wallet sync, not just
-    // today's flat row. Best-effort/non-fatal; gated on WEALTH_REGENERATION_ENABLED.
+    // Part-2 — also regenerate the wealth HISTORY so the per-day valuation runs
+    // for a real account sync, not just today's flat row. Best-effort/non-fatal;
+    // gated on WEALTH_REGENERATION_ENABLED.
+    //
+    // V26-ORCH-1 — this used a FIXED 30-DAY window, silently narrower than the
+    // Plaid item path's, so the same account got different history depending on
+    // which trigger touched it. It now uses the canonical planner.
+    //
+    // SCOPE: planned for THIS account only, so syncing one account never
+    // rebuilds unrelated accounts' floors. The regeneration itself is
+    // Space-grained — SpaceSnapshot rows are shared — and the regenerator
+    // already re-clamps per account, so a Space-level rebuild cannot invent days
+    // an account did not have. The planned window and its reasons are logged so
+    // that widening is attributable to this account's evidence.
     try {
-      await regenerateWealthHistoryForAccounts([id], recentWealthWindow());
+      const plan = await resolveHistoricalWorkWindow({
+        financialAccountIds: [id],
+        changedSince:        syncStartedAt,
+      });
+      console.log(
+        `[POST /api/accounts/${id}/sync] historical window ${plan.fromDate}..${plan.toDate} ` +
+        `(${plan.mode}) — ${plan.reasons.join("; ")}`,
+      );
+      await regenerateWealthHistoryForAccounts([id], { fromDate: plan.fromDate, toDate: plan.toDate });
     } catch (wealthErr) {
       console.warn(`[POST /api/accounts/${id}/sync] wealth-history regen failed (non-fatal):`, wealthErr);
     }
