@@ -3226,9 +3226,16 @@ model RefreshEndpointResult {
   id                 String           @id @default(cuid())
   refreshExecutionId String
   execution          RefreshExecution @relation(fields: [refreshExecutionId], references: [id], onDelete: Cascade)
-  endpoint           String // stage: "TRANSACTIONS" | "BALANCES" | "HOLDINGS" | "INVESTMENT_ACTIVITY" | "SNAPSHOT" | "RECONCILIATION" | "HISTORY_BACKFILL"
+  endpoint           String // stage: "TRANSACTIONS" | "BALANCES" | "HOLDINGS" | "INVESTMENT_ACTIVITY" | "SNAPSHOT" | "RECONCILIATION" | legacy "HISTORY_BACKFILL" | V26-STAGE-1 "COVERAGE" | "RECONSTRUCTION" | "OWNERSHIP" | "PRICES" | "REGENERATION"
   stageKind          String // "PROVIDER" (a live provider endpoint) | "DERIVED" (a projection/derived stage) — disambiguates the mixed vocabulary
-  status             String // "SUCCEEDED" | "FAILED" | "SKIPPED"
+  /// "SUCCEEDED" | "FAILED" | "SKIPPED" | V26-STAGE-1 "PROVIDER_LIMITED".
+  ///
+  /// PROVIDER_LIMITED is neither success nor failure: the provider cannot serve
+  /// the interval at all, so retrying changes nothing until capability moves.
+  /// Folding it into FAILED would make every provider boundary read as an
+  /// outage and invite endless retries; folding it into SUCCEEDED would claim
+  /// evidence that was never returned.
+  status             String
   skipReason         String? // "NOT_APPLICABLE" | "BUDGET" | "IN_FLIGHT" | "COOLDOWN" — set only when status = "SKIPPED"
   startedAt          DateTime
   completedAt        DateTime?
@@ -3248,6 +3255,47 @@ model RefreshEndpointResult {
   coveredAccountIds  String[]
   freshnessAdvanced  Boolean? // did this stage change canonical data (recordsChanged > 0)? — independent of coverage
   errorSummary       String?
+
+  // ── V26-STAGE-1 — attributable, resumable historical stages ───────────────
+  //
+  // The connect/webhook historical layer was ONE opaque stage, so a failure
+  // could not say which part failed, what had already landed, or where a retry
+  // should resume — and a retry therefore re-paid provider calls for completed
+  // work. These columns carry exactly what the retry and readiness authorities
+  // (lib/plaid/historical-stages.core.ts) need, and nothing more.
+  //
+  // All nullable, no defaults: additive, zero migration risk. Every pre-existing
+  // row — including legacy HISTORY_BACKFILL stages — reads null and stays
+  // readable. Null means NOT RECORDED, never zero.
+
+  /// 1-based attempt for this (execution, stage). Lets a stage be retried
+  /// without destroying the evidence of the attempt that failed.
+  attempt            Int?
+
+  /// The historical interval this attempt actually covered. Resuming against a
+  /// DIFFERENT window is not resumption — it would attribute settled work to a
+  /// scope it never ran for — so the retry authority refuses it.
+  windowFromISO      String?
+  windowToISO        String?
+
+  /// Which planner mode produced that window ("initial-full" | "incremental" |
+  /// "fallback-full"), so a window can be explained without re-deriving it.
+  plannerMode        String?
+
+  /// Stable machine-readable failure code from STAGE_ERROR_CODES. Prose is
+  /// never the stored authority; `errorSummary` above stays human-facing.
+  errorCode          String?
+
+  /// Whether a retry could plausibly change the outcome. A provider limit is
+  /// settled-but-not-successful and is NOT retryable until capability changes.
+  retryable          Boolean?
+
+  /// Concise per-stage counts (planned/stored/considered/written/skipped…).
+  /// Deliberately a SUMMARY: per-instrument detail already has owners
+  /// (InvestmentEventCoverage, PositionReconstruction, SyncIssue), and copying
+  /// it here would create a second, drifting authority.
+  resultSummary      Json?
+
   createdAt          DateTime         @default(now())
 
   @@index([refreshExecutionId])

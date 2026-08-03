@@ -161,6 +161,16 @@ export interface RefreshStageRecord {
  * changes control flow — it only observes, exactly like runJob().
  */
 export interface RefreshStageRecorder {
+  /**
+   * V26-STAGE-1 — the open execution's id, when one exists.
+   *
+   * Exposed so the historical layer can persist its own stages INCREMENTALLY
+   * (see historical-stage-recorder.ts) instead of relying on this recorder's
+   * end-of-run flush. Those two durability models are deliberately different: a
+   * short provider fan-out can afford to report at the end, a resumable
+   * multi-stage pipeline cannot.
+   */
+  readonly refreshExecutionId?: string;
   /** Mark a stage started. */
   begin(endpoint: RefreshEndpoint, stageKind: RefreshStageKind): void;
   /** Finalize the open stage as SUCCEEDED with the facts it produced. */

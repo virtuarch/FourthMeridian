@@ -49,6 +49,13 @@ const LEDGER_ACCESSOR =
 const PERMITTED_DIRECT_READERS = new Set<string>([
   "lib/plaid/refresh-execution.ts",
   "lib/plaid/provider-call.ts",
+  // V26-STAGE-1 — a WRITER, admitted under the same rule as refresh-execution.ts:
+  // it owns the five historical stage facts. It exists separately because those
+  // stages must be persisted AS THEY SETTLE to be resumable, whereas
+  // refresh-execution.ts flushes its provider stages once at completion — a
+  // crash mid-pipeline would otherwise leave nothing to resume to. It writes
+  // only RefreshEndpointResult rows and reads only its own.
+  "lib/plaid/historical-stage-recorder.ts",
   "lib/platform/refresh/projections.ts",
   "lib/platform/refresh/execution-query.ts",
 ]);

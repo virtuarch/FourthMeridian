@@ -131,6 +131,9 @@ const executionDb = db as unknown as RefreshExecutionWriteClient;
 
 export class StageRecorder implements RefreshStageRecorder {
   readonly records: RefreshStageRecord[] = [];
+  /** V26-STAGE-1 — set when an execution row exists; lets the historical layer
+   *  persist its own stages incrementally against this run. */
+  refreshExecutionId?: string;
   private open?: { endpoint: RefreshEndpoint; stageKind: RefreshStageKind; startedAt: Date; t0: number };
 
   /**
@@ -307,6 +310,7 @@ export async function runFullRefresh<T = RefreshItemResult>(
   const ctx: ProviderCallContext | null =
     executionId === null ? null : { refreshExecutionId: executionId, currentEndpoint: undefined, attempts: new Map() };
   const recorder = new StageRecorder(ctx ? (ep) => { ctx.currentEndpoint = ep; } : undefined);
+  if (executionId !== null) recorder.refreshExecutionId = executionId;
 
   // The default runner (refreshPlaidItem) returns RefreshItemResult; the cast is
   // sound because `deps.refresh` is undefined only when T defaulted to it.
