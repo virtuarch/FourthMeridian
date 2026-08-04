@@ -63,6 +63,7 @@ export function LiquidityHero({
   today,
   historical,
   change,
+  deltaBasisDiffers,
   envelope,
   verdict,
   verdictAsOf,
@@ -85,6 +86,9 @@ export function LiquidityHero({
   today:         string;
   /** asOf < today ⇒ the headline is present-day while trend/verdict are as-of. */
   historical:    boolean;
+  /** V27-L3 — true when the headline is reachable cash but `change` was computed
+   *  on the ledger-balance snapshot series. The delta is then suppressed. */
+  deltaBasisDiffers: boolean;
   /** The balance-history window delta, or null when no window exists. */
   change:        LiquidityWindowChange | null;
   /** The workspace's canonical trust envelope — drives the confidence chip. */
@@ -118,7 +122,13 @@ export function LiquidityHero({
             it coincides with this headline, so it's coherent; in a HISTORICAL view the
             headline is present-day while the trend is as-of — different bases, so the delta
             is deferred to the chart and dropped here (the Debt precedent). */}
-        {!historical && (
+        {/* V27-L3 — the headline is now REACHABLE cash while the balance-history
+            series is a ledger-cash snapshot series. Those are different bases, so
+            the delta is DROPPED here for exactly the reason the historical case
+            already drops it: a change computed on one basis printed beside a
+            figure on another is a wrong number, not an approximate one. The
+            chart below still shows the ledger series honestly, on its own axis. */}
+        {!historical && !deltaBasisDiffers && (
           change != null ? (
             <DeltaBadge
               abs={change.abs}
@@ -131,6 +141,11 @@ export function LiquidityHero({
           ) : (
             <span className="text-[11px] text-[var(--text-muted)]">Add a Compare To date above to see the change.</span>
           )
+        )}
+        {!historical && deltaBasisDiffers && (
+          <span className="text-[11px] text-[var(--text-muted)]">
+            Change over time is shown in the chart below — it tracks ledger balances, not reachable cash.
+          </span>
         )}
       </div>
 

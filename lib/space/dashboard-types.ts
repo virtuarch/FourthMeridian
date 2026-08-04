@@ -37,6 +37,29 @@ export type SpaceAccount = {
    * what lets a surface say "last checked" instead of the unearned "as of".
    */
   balanceLastUpdatedAt?: string | null;
+  /**
+   * V27-L3 — the canonical CURRENT-STATE claim, resolved SERVER-SIDE through
+   * lib/balances. Present only on cash accounts (checking / savings); absent
+   * everywhere else, because no other account type has a reachable quantity.
+   *
+   * Widgets read these fields and sum them; they never filter pending rows or
+   * run the reconciliation identity themselves. That arithmetic lives in the
+   * authority, which is the only place it can be proven.
+   */
+  currentState?: {
+    /**
+     * Reachable cash in this account's NATIVE currency, or null when it could
+     * not be established. Null is UNKNOWN — never 0, and never the observed
+     * ledger balance (on CHASE COLLEGE those differ by $4,000).
+     */
+    reachable:   number | null;
+    /** The positive-or-negative residual, or null when not reconcilable. */
+    unexplained: number | null;
+    /** EXACT | PARTIALLY_ATTRIBUTED | UNAVAILABLE | CONTRADICTORY. */
+    state:       string;
+    /** How many provider-observed pending rows backed the prediction. */
+    pendingCount: number;
+  };
   creditLimit?:   number;
   interestRate?:  number;  // APR, e.g. 19.99
   minimumPayment?: number; // monthly minimum

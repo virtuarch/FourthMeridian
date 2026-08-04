@@ -106,6 +106,16 @@ export interface LiquidityAccountRow {
   /** V27-L2 — the INSTITUTION's own balance clock, or null when it reports none.
    *  Null is honest; `lastUpdated` is never substituted. Feeds dataAsOfBasis. */
   balanceLastUpdatedAt?: string | null;
+  /**
+   * V27-L3 — REACHABLE cash for this account in its native currency, resolved by
+   * lib/balances (provider available cash where attested, else the prediction
+   * from provider-observed pending). Null when it could not be established;
+   * ABSENT on the historical as-of path, where a current-state claim would be a
+   * category error. Cash accounts only.
+   */
+  reachableCash?: number | null;
+  /** V27-L3 — the positive unexplained hold on this account, or null. */
+  unexplainedHold?: number | null;
   /** SpaceAccountLink.visibilityLevel string (existing model, no parallel vocabulary). */
   visibilityLevel: string;
 }
@@ -188,8 +198,25 @@ export function computeLiquidity(
   // ── Sums ──────────────────────────────────────────────────────────────────
   let cashNow = 0, marketable = 0, illiquid = 0, credit = 0;
   let creditKnown = false;
+  // V27-L3 — cash accounts whose REACHABLE figure could not be established. They
+  // are excluded from cashNow and counted, so the total is disclosed as partial
+  // rather than silently missing them (or silently using a ledger balance the
+  // headline calls "available as cash now").
+  let cashUnreachableCount = 0;
+  let unexplainedHolds = 0;
   for (const r of contributing) {
-    if (CASH_TYPES.has(r.type))            cashNow    += inTarget(r.balance, r.currency);
+    if (CASH_TYPES.has(r.type)) {
+      // The historical as-of path attaches no current-state claim, so `undefined`
+      // means "this is a reconstructed balance" and the ledger figure is right.
+      // `null` means "this is the live path and reachable is UNKNOWN" — a real
+      // difference, and the reason the two are not collapsed.
+      if (r.reachableCash === undefined)      cashNow += inTarget(r.balance, r.currency);
+      else if (r.reachableCash === null)      cashUnreachableCount++;
+      else                                    cashNow += inTarget(r.reachableCash, r.currency);
+      if (r.unexplainedHold != null && r.unexplainedHold > 0) {
+        unexplainedHolds += inTarget(r.unexplainedHold, r.currency);
+      }
+    }
     else if (MARKETABLE_TYPES.has(r.type)) marketable += inTarget(r.balance, r.currency);
     else if (ILLIQUID_TYPES.has(r.type))   illiquid   += inTarget(r.balance, r.currency);
     else if (r.type === "debt" && r.visibilityLevel === "FULL" && typeof r.creditLimit === "number") {
@@ -239,6 +266,8 @@ export function computeLiquidity(
   }
 
   // ── Metrics ───────────────────────────────────────────────────────────────
+  // V27-L3 — the headline is REACHABLE cash. Its label was already
+  // "Available as cash now"; the number now agrees with the words.
   const headline: LensMetric = {
     id: "cashNow",
     label: "Available as cash now",
@@ -262,13 +291,38 @@ export function computeLiquidity(
   }
 
   // ── Assumptions ───────────────────────────────────────────────────────────
+  // V27-L3 — this used to assert "pending activity and holds are not reflected",
+  // which was an honest statement of the OLD behaviour. They are reflected now,
+  // so the assumption states what the figure actually is, and where a reachable
+  // figure was unavailable that is disclosed rather than assumed away.
+  const usesReachable = contributing.some((r) => CASH_TYPES.has(r.type) && r.reachableCash !== undefined);
   const assumptions: LensAssumption[] = [
-    {
-      id: "balances-as-reported",
-      text: "Balances are used as last reported by each account; pending activity and holds are not reflected.",
-      source: "default",
-    },
+    usesReachable
+      ? {
+          id: "cash-is-reachable",
+          text: "Cash is counted as the amount each institution reports is reachable now, adjusted for the pending activity it has reported.",
+          source: "provider" as const,
+        }
+      : {
+          id: "balances-as-reported",
+          text: "Balances are used as last reported by each account; pending activity and holds are not reflected.",
+          source: "default" as const,
+        },
   ];
+  if (unexplainedHolds > 0) {
+    assumptions.push({
+      id: "unexplained-hold",
+      text: "Part of the cash balance is unavailable and is not yet explained by any reported transaction; it is excluded from the reachable total.",
+      source: "provider",
+    });
+  }
+  if (cashUnreachableCount > 0) {
+    assumptions.push({
+      id: "cash-reachable-unknown",
+      text: `${cashUnreachableCount} cash account${cashUnreachableCount === 1 ? "" : "s"} did not report a reachable amount and ${cashUnreachableCount === 1 ? "is" : "are"} excluded from the total.`,
+      source: "provider",
+    });
+  }
   if (marketable !== 0) {
     assumptions.push(
       {

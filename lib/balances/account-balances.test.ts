@@ -230,8 +230,15 @@ console.log("resolveRowBalances — the row convenience");
 console.log("Section quantity map");
 {
   check("a liquidity card is a current-balance surface", isCurrentBalanceSection("accessible_cash"));
-  check("...and discloses the observed quantity",
-    sectionQuantityNote("accessible_cash") === "Observed ledger balances");
+  // V27-L3 — the liquidity family migrated from OBSERVED_LEDGER to REACHABLE_CASH.
+  // The widgets said "reachable" all along; now the quantity underneath agrees.
+  check("...and discloses the REACHABLE quantity, not the ledger one",
+    sectionQuantityNote("accessible_cash") === "Available now");
+  check("the whole liquidity family migrated together",
+    ["liquidity_ladder", "accessible_cash", "emergency_fund_readiness", "liquidity_concentration"]
+      .every((k) => SECTION_QUANTITY[k] === "REACHABLE_CASH"));
+  check("net worth did NOT migrate — it is a statement about observed balances",
+    SECTION_QUANTITY.net_worth === "OBSERVED_LEDGER");
   check("a debt card discloses amounts owed",
     sectionQuantityNote("debt_by_account") === "Amounts owed");
   check("a snapshot-backed card carries NO current-balance label",

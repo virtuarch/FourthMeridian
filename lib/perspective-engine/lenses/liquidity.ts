@@ -74,6 +74,18 @@ async function liquidityLens(
     // V27-L2 — the institution's own clock, so dataAsOfBasis can tell "as of"
     // from "checked". Null on every account in the corpus today.
     balanceLastUpdatedAt: account.balanceLastUpdatedAt ?? null,
+    // V27-L3 — the CURRENT-state claim, resolved by the KD-19 visibility
+    // authority (lib/data/accounts.ts) and carried on the Account it returns.
+    // The as-of path returns reconstructed accounts with NO currentState, so
+    // these stay absent there — a present-tense "reachable" claim over a
+    // reconstructed past balance would be a category error, and the core
+    // distinguishes absent (use the ledger figure) from null (unknown).
+    ...(account.currentState
+      ? {
+          reachableCash:   account.currentState.reachable,
+          unexplainedHold: account.currentState.unexplained,
+        }
+      : {}),
     visibilityLevel,
   }));
 

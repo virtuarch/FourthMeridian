@@ -37,6 +37,7 @@ import {
   accountBalanceClaimLabel, balanceBasisCaveat, describeLedgerCoverage,
   type LedgerCoverage,
 } from "@/lib/freshness/observation";
+import { RECONCILIATION_LABEL } from "@/lib/balances/reconciliation-labels";
 import { ACCOUNT_TYPE_LABELS, healthChip } from "./AccountsPerspective";
 
 /** A converted balance the ledger already computed — the panel and the row can
@@ -51,6 +52,12 @@ export interface AccountDisplay {
    * and null must render as the refusal, never as a zero or as `amount`.
    */
   available: number | null;
+  /** V27-L3 — the predicted figure, converted through the SAME authority. Null
+   *  when no pending evidence licensed one. */
+  predicted: number | null;
+  /** V27-L3 — the residual, converted. Null when not reconcilable. Signed:
+   *  positive is a hold, negative is a provider over-report. */
+  unexplained: number | null;
 }
 
 function FactRow({ label, value }: { label: string; value: React.ReactNode }) {
@@ -125,6 +132,12 @@ export function AccountDetail({
   // this agrees with the native claim by construction.
   const headlineAmount = balances.debt ? amountOwed(display.amount) : display.amount;
 
+  // V27-L3 — the reconciliation, resolved server-side. This component formats
+  // it; it never filters pending rows and never runs the identity.
+  const recon = row.reconciliation;
+  const predictedDisplay   = display.predicted;
+  const unexplainedDisplay = display.unexplained;
+
   // Rename = PATCH the account displayName. Same endpoint and optimistic reload
   // the former AccountsPerspective row used.
   async function saveRename() {
@@ -186,6 +199,10 @@ export function AccountDetail({
         </p>
       )}
 
+      {/* V27-L3 — the current-state block: what pending activity predicts, and
+          what nothing explains. An unexplained hold is a FIRST-CLASS output —
+          the Amex HYSA's $4,000 is stated in words, never smoothed into the
+          prediction and never absorbed into the headline. */}
       {/* V27-L2 — the SECOND quantity, named. On the Chase card this is
           "Available credit $33,022.48" sitting beneath "Amount owed $562.37":
           two figures that were previously one polymorphic column, and that a
@@ -210,6 +227,36 @@ export function AccountDetail({
         {headline.quantity !== "OBSERVED_LEDGER" && (
           <p className="mt-1 text-xs text-[var(--text-faint)] tabular-nums">
             {balances.observed.label} {formatCurrency(display.amount, currency)}
+          </p>
+        )}
+        {/* Predicted, only where provider-observed pending licenses it. */}
+        {recon.predicted && (
+          <p className="mt-1 text-xs text-[var(--text-faint)] tabular-nums">
+            {recon.predicted.label} {formatCurrency(predictedDisplay!, currency)}
+            <span className="ml-1 not-italic">
+              ({recon.pending.count} pending)
+            </span>
+          </p>
+        )}
+        {/* The residual, in the user's words. Never hidden, never netted away —
+            but only rendered when there IS one. Gating on `!== null` printed
+            "$0 unavailable but not yet explained by transactions" on every
+            EXACT account, which is noise that trains a reader to ignore the
+            line that matters. The STATE is the authority's own decision about
+            whether a residual is material; re-thresholding here would be a
+            second opinion. */}
+        {unexplainedDisplay !== null && recon.state !== "EXACT" && (
+          <p className="mt-1 text-xs" style={{ color: "var(--accent-warning)" }}>
+            {formatCurrency(Math.abs(unexplainedDisplay), currency)}{" "}
+            {/* Basis-aware: on a card the residual is CREDIT LINE, not cash, and
+                calling it "unavailable" would describe the wrong quantity. */}
+            {recon.basis === "REVOLVING_CREDIT"
+              ? unexplainedDisplay > 0
+                ? "of the credit line is used but not yet explained by transactions"
+                : "more credit available than the limit and what is owed support"
+              : unexplainedDisplay > 0
+                ? "unavailable but not yet explained by transactions"
+                : "more available than the balance and pending activity support"}
           </p>
         )}
       </div>
@@ -263,14 +310,23 @@ export function AccountDetail({
             independently, and a wallet can carry a live balance over a ledger that
             stops years earlier. Never presented as staleness. */}
         <FactRow label="Transactions" value={ledgerValue(row.freshness.ledger)} />
+        {/* V27-L3 — reconciliation state is its OWN dimension, beside freshness.
+            A mathematically EXACT reconciliation over a two-month-old balance is
+            still stale, and the two must never be collapsed into one badge. */}
+        {recon.basis !== "NONE" && (
+          <FactRow label="Reconciliation" value={RECONCILIATION_LABEL[recon.state]} />
+        )}
         <FactRow label="Visibility" value={isFull ? "Full detail" : "Balance only"} />
         {isFull && imports > 0 && (
           <FactRow label="Historical imports" value={`${imports} import${imports === 1 ? "" : "s"}`} />
         )}
       </div>
 
+      {recon.basis !== "NONE" && (
+        <p className="mt-3 text-[11px] leading-snug text-[var(--text-faint)]">{recon.explanation}</p>
+      )}
       {basisCaveat && (
-        <p className="mt-3 text-[11px] leading-snug text-[var(--text-faint)]">{basisCaveat}</p>
+        <p className="mt-1 text-[11px] leading-snug text-[var(--text-faint)]">{basisCaveat}</p>
       )}
 
       {/* Actions — only real, verified-to-exist destinations, FULL rows only. There

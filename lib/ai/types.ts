@@ -272,6 +272,31 @@ export interface AccountSummaryItem {
     /** The wording a surface would show, e.g. "Available credit". */
     label:     string;
   };
+  /**
+   * V27-L3 — the current-state reconciliation. Sent so the model states what is
+   * REACHABLE and what is unexplained, instead of narrating an observed ledger
+   * balance as spendable money. On CHASE COLLEGE the difference is $4,000.
+   *
+   * `predicted` is present ONLY when provider-observed pending rows licensed it;
+   * `unexplained` is a first-class output and must be surfaced, never absorbed.
+   */
+  currentState?: {
+    /** DEPOSITORY | REVOLVING_CREDIT | NONE. */
+    basis:        string;
+    /** EXACT | PARTIALLY_ATTRIBUTED | UNAVAILABLE | CONTRADICTORY. */
+    state:        string;
+    /** Provider-observed pending rows counted, and their signed sum (native currency). */
+    pendingCount: number;
+    pendingSum:   number;
+    /** Observed + pending. Absent when no pending evidence exists. */
+    predicted?:   number;
+    /** Reachable cash. Absent on non-cash accounts and when unknown. */
+    reachable?:   number;
+    /** The residual. Positive = held back and unexplained. Absent when not reconcilable. */
+    unexplained?: number;
+    /** One deterministic sentence stating what the numbers mean. */
+    explanation:  string;
+  };
   // NOTE: debt exposure is NOT re-declared here. `amountOwed` / `creditBalance` /
   // `liabilityState` already exist below (V25-SIDE-1) from the same authority the
   // balance module composes (lib/debt/balance-semantics). One field, one source.

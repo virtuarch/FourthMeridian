@@ -43,7 +43,8 @@ import type { ConversionContext } from "@/lib/money/types";
 import { amountOwed, creditBalance } from "@/lib/debt/balance-semantics";
 import type { AccountDetailRow } from "@/app/api/spaces/[id]/accounts/detail/route";
 import { resolveAccountFreshness } from "@/lib/freshness/observation";
-import { resolveAccountBalances } from "@/lib/balances/account-balances";
+import { resolveAccountBalances, reconcileAccount } from "@/lib/balances/account-balances";
+import { NO_PENDING } from "@/lib/balances/pending-evidence";
 import { Surface, Block, Figure } from "@/components/atlas/Surface";
 import {
   WorkspaceLayout, LeftPanel, RightPanel, PanelHeader, PanelContent,
@@ -85,7 +86,7 @@ function toDisplay(amount: number, currency: string | null | undefined, ctx?: Co
 
 interface DisplayRow {
   row:     AccountDetailRow;
-  display: { amount: number; estimated: boolean; available: number | null };
+  display: { amount: number; estimated: boolean; available: number | null; predicted: number | null; unexplained: number | null };
   /** |display balance| — the magnitude used for ordering and the weight bar. */
   magnitude: number;
 }
@@ -99,6 +100,18 @@ function fallbackFreshness(a: FallbackAccount, now: Date) {
     providerBalanceAt: a.balanceLastUpdatedAt ?? null,
     balance:           a.balance,
   }, now);
+}
+
+/** One balance answer per fallback row, shared by the row and its reconciliation. */
+function fallbackBalances(a: FallbackAccount, now: Date) {
+  return resolveAccountBalances({
+    accountId:        a.id,
+    accountType:      a.type,
+    currency:         a.currency,
+    balance:          a.balance,
+    availableBalance: null,
+    freshness:        fallbackFreshness(a, now),
+  });
 }
 
 function fallbackRows(accounts: FallbackAccount[], now: Date): AccountDetailRow[] {
@@ -123,14 +136,11 @@ function fallbackRows(accounts: FallbackAccount[], now: Date): AccountDetailRow[
     // SpaceAccount does not include it), so the authority is handed nothing and
     // answers PROVIDER_DID_NOT_REPORT. The fetched read supplies the real claim
     // a moment later; an honest "not reported" is the right interim answer.
-    balances:           resolveAccountBalances({
-      accountId:        a.id,
-      accountType:      a.type,
-      currency:         a.currency,
-      balance:          a.balance,
-      availableBalance: null,
-      freshness:        fallbackFreshness(a, now),
-    }),
+    balances:           fallbackBalances(a, now),
+    // V27-L3 — the fallback carries no pending evidence either, so reconciliation
+    // is UNAVAILABLE. The fetched read supplies the real claim a moment later;
+    // an honest "cannot be established yet" is the right interim answer.
+    reconciliation:     reconcileAccount(fallbackBalances(a, now), NO_PENDING, null),
   }));
 }
 
@@ -175,7 +185,19 @@ export function AccountsLedger({
         const av = row.balances.available.status === "AVAILABLE"
           ? toDisplay(row.balances.available.amount, row.currency, ctx).amount
           : null;
-        return { row, display: { ...d, available: av }, magnitude: Math.abs(d.amount) };
+        // V27-L3 — predicted and the residual convert through the SAME authority
+        // as the balance, and null stays null in both cases.
+        const pred = row.reconciliation.predicted
+          ? toDisplay(row.reconciliation.predicted.amount, row.currency, ctx).amount
+          : null;
+        const unex = row.reconciliation.unexplained === null
+          ? null
+          : toDisplay(row.reconciliation.unexplained, row.currency, ctx).amount;
+        return {
+          row,
+          display: { ...d, available: av, predicted: pred, unexplained: unex },
+          magnitude: Math.abs(d.amount),
+        };
       })
       .sort((a, b) => b.magnitude - a.magnitude);
   }, [source, ctx]);

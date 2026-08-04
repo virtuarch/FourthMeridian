@@ -44,6 +44,7 @@
 import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { classifyAccounts } from "@/lib/account-classifier";
+import { reachableNow } from "@/components/space/widgets/liquidity-adapters";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatCurrency, formatDate } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
@@ -185,10 +186,18 @@ export function LiquidityWorkspace({
   // FIGURES OF RECORD — present-day, from the accounts array (never the lens). The Hero
   // headline (cashNow tier) is the SAME figure the SourcesLedger sums, so they agree.
   const classification = useMemo(() => classifyAccounts(accounts, ctx), [accounts, ctx]);
-  const cashNow = classification.totalLiquid;
+  // V27-L3 — the headline is REACHABLE cash, not the ledger sum. The copy under
+  // it has always read "reachable right now"; on the live corpus the ledger sum
+  // was $13,674.16 while $8,000 of it was not reachable at all. Same authority
+  // the Sources ledger rows use, so the headline and its ledger still agree.
+  const reach = useMemo(() => reachableNow(accounts as never, ctx), [accounts, ctx]);
+  const cashNow = reach.total;
   const reachableSoon = classification.totalInvestments + classification.totalDigitalAssets;
   const sharePctNow = classification.totalAssets > 0 ? (cashNow / classification.totalAssets) * 100 : null;
-  const nowSourceCount = classification.liquid.filter((a) => a.balance > 0).length;
+  // Count the sources that actually CONTRIBUTE to the headline — an account
+  // whose reachable figure is unknown is excluded from the total, so counting it
+  // as a source would describe money the figure does not include.
+  const nowSourceCount = reach.coveredCount;
 
   const displayCurrency = ctx?.target ?? DEFAULT_DISPLAY_CURRENCY;
   const historical = asOf < today;
@@ -282,6 +291,10 @@ export function LiquidityWorkspace({
           today={today}
           historical={historical}
           change={change}
+          // The headline uses reachable cash whenever ANY account supplied a
+          // current-state claim; the window delta is computed from the ledger
+          // snapshot series, so the two bases diverge exactly then.
+          deltaBasisDiffers={reach.coveredCount > 0 && cashNow !== classification.totalLiquid}
           envelope={envelope}
           verdict={verdict}
           verdictAsOf={verdictAsOf}

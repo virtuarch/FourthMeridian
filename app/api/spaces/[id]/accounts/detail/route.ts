@@ -38,7 +38,8 @@ import { requireSpaceRole }                  from "@/lib/session";
 import { normalizeSharedAccounts, type ShareRow } from "@/lib/account-privacy";
 import { deriveConnectionState, type SyncConnectionState } from "@/lib/sync/status";
 import { resolveAccountFreshness, type AccountFreshness } from "@/lib/freshness/observation";
-import { resolveAccountBalances, type AccountBalances } from "@/lib/balances/account-balances";
+import { resolveAccountBalances, reconcileAccount, type AccountBalances, type Reconciliation } from "@/lib/balances/account-balances";
+import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
 
 export interface AccountDetailRow {
   id:                 string;      // FinancialAccount.id (FULL) or synthetic (BALANCE_ONLY aggregate)
@@ -73,6 +74,14 @@ export interface AccountDetailRow {
    * be interchangeable.
    */
   balances:           AccountBalances;
+  /**
+   * V27-L3 — the current-state reconciliation: provider-observed pending, the
+   * predicted figure where evidence licenses one, the unexplained residual, and
+   * the state in the canonical EXACT / PARTIALLY_ATTRIBUTED / UNAVAILABLE /
+   * CONTRADICTORY vocabulary. An unexplained hold is an OUTPUT — the Amex HYSA's
+   * $4,000 is reported, never smoothed into a prediction.
+   */
+  reconciliation:     Reconciliation;
 }
 
 /** V27-L1/L2 — one freshness answer for an aggregated BALANCE_ONLY row, so the
@@ -192,6 +201,10 @@ export async function GET(
   // be aged against two different instants.
   const now = new Date();
 
+  // V27-L3 — provider-observed pending movements, scoped per account. Nothing is
+  // inferred: this is a read of rows a provider (or an import) delivered.
+  const pending = await loadPendingEvidence(ledgerAccountIds);
+
   // FULL shares carry the full management shape; BALANCE_ONLY shares are routed
   // through the shared aggregator so no identifying field ever leaks.
   const fullRows: AccountDetailRow[] = [];
@@ -249,6 +262,25 @@ export async function GET(
       balance:           a.balance,
     }, now);
 
+    // ONE balance answer and ONE reconciliation per account, resolved before the
+    // push so the row's `balances` and `reconciliation` cannot disagree.
+    const fullBalances = resolveAccountBalances({
+      accountId:           a.id,
+      accountType:         a.type,
+      debtSubtype:         a.debtSubtype,
+      currency:            a.currency,
+      balance:             a.balance,
+      availableBalance:    a.availableBalance,
+      creditLimit:         a.creditLimit,
+      isSelfCustodyWallet: !!a.walletAddress,
+      freshness:           fullFreshness,
+    });
+    const fullReconciliation = reconcileAccount(
+      fullBalances,
+      pending.get(a.id) ?? NO_PENDING,
+      a.creditLimit,
+    );
+
     fullRows.push({
       id:                 a.id,
       spaceAccountLinkId: link.id,
@@ -263,17 +295,8 @@ export async function GET(
       connectionState,
       importBatchCount:   importCountByAccount.get(a.id) ?? 0,
       freshness:          fullFreshness,
-      balances:           resolveAccountBalances({
-        accountId:           a.id,
-        accountType:         a.type,
-        debtSubtype:         a.debtSubtype,
-        currency:            a.currency,
-        balance:             a.balance,
-        availableBalance:    a.availableBalance,
-        creditLimit:         a.creditLimit,
-        isSelfCustodyWallet: !!a.walletAddress,
-        freshness:           fullFreshness,
-      }),
+      balances:           fullBalances,
+      reconciliation:     fullReconciliation,
     });
   }
 
@@ -309,6 +332,21 @@ export async function GET(
       availableBalance: null,
       freshness:        aggregateFreshness(r, now),
     }),
+    // An aggregate maps to no single account, so it has no pending evidence and
+    // no reachable quantity of its own — reconciled as UNAVAILABLE rather than
+    // summing members' residuals into a figure we have not defined.
+    reconciliation:     reconcileAccount(
+      resolveAccountBalances({
+        accountId:        r.id,
+        accountType:      r.type,
+        currency:         r.currency,
+        balance:          r.balance,
+        availableBalance: null,
+        freshness:        aggregateFreshness(r, now),
+      }),
+      NO_PENDING,
+      null,
+    ),
   }));
 
   // FULL rows first (already type/name sorted by the query), then aggregated —

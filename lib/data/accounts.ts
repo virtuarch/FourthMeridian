@@ -29,6 +29,8 @@ import { resolveEffectiveDebtTerms } from "@/lib/debt/effective-terms";
 // is the same single-account redactor the shared-Space accounts route uses.
 import { grantsAccountDetail, TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 import { sanitizeForBalanceOnly } from "@/lib/account-privacy";
+import { resolveRowBalances, reconcileAccount } from "@/lib/balances/account-balances";
+import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
 
 /**
  * One visible account plus the SpaceAccountLink.visibilityLevel that
@@ -68,6 +70,47 @@ export interface AccountWithVisibility {
  * `userId` from the request scope exactly as before; production behavior is
  * unchanged.
  */
+/**
+ * V27-L3 — reachable cash + unexplained hold per CASH account, through the
+ * canonical lib/balances authority. READ-ONLY, and scoped to ids this module has
+ * already resolved, so it widens no visibility surface.
+ *
+ * Non-cash accounts are absent from the map: only a cash account has a reachable
+ * quantity, and an absent entry is how a consumer knows to keep using the ledger
+ * figure rather than treating a missing value as zero.
+ */
+async function loadCurrentCashState(
+  accountIds: string[],
+): Promise<Map<string, NonNullable<Account["currentState"]>>> {
+  const out = new Map<string, NonNullable<Account["currentState"]>>();
+  if (accountIds.length === 0) return out;
+  const rows = await db.financialAccount.findMany({
+    where: { id: { in: accountIds }, deletedAt: null },
+    select: {
+      id: true, type: true, currency: true, balance: true,
+      availableBalance: true, creditLimit: true, debtSubtype: true,
+      walletAddress: true, lastUpdated: true, balanceLastUpdatedAt: true,
+    },
+  });
+  const pending = await loadPendingEvidence(rows.map((r) => r.id));
+  const now = new Date();
+  for (const r of rows) {
+    const rec = reconcileAccount(
+      resolveRowBalances(r, now),
+      pending.get(r.id) ?? NO_PENDING,
+      r.creditLimit,
+    );
+    if (rec.basis !== "DEPOSITORY") continue;
+    out.set(r.id, {
+      reachable:    rec.reachable?.amount ?? null,
+      unexplained:  rec.unexplained,
+      state:        rec.state,
+      pendingCount: rec.pending.count,
+    });
+  }
+  return out;
+}
+
 export async function getAccountsWithVisibility(
   ctx?: { spaceId: string; userId?: string },
 ): Promise<AccountWithVisibility[]> {
@@ -113,6 +156,15 @@ export async function getAccountsWithVisibility(
     ],
   });
 
+  // V27-L3 — the CURRENT-state claim, resolved HERE because this module is the
+  // KD-19 visibility authority: it is the right place to decide what each tier
+  // may see, and it keeps the perspective-engine binding free of a direct DB
+  // read (the engine import-graph rule). Cash accounts only.
+  const currentStateByAccount = await loadCurrentCashState(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    links.map((l: any) => l.financialAccount.id),
+  );
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return links.map((link: any) => {
     const r = link.financialAccount;
@@ -154,6 +206,12 @@ export async function getAccountsWithVisibility(
           balanceLastUpdatedAt: r.balanceLastUpdatedAt
             ? r.balanceLastUpdatedAt.toISOString()
             : null,
+          // V27-L3 — same reasoning: a quantity about the balance this tier
+          // already discloses. Withholding it would make a liquidity total mix
+          // reachable figures with ledger balances, which is worse.
+          ...(currentStateByAccount.has(r.id)
+            ? { currentState: currentStateByAccount.get(r.id) }
+            : {}),
           // All other fields intentionally omitted (undefined) under the
           // BALANCE_ONLY / SUMMARY_ONLY tier: no institution, no debt metadata,
           // no Plaid/connection state, no wallet fields.
@@ -207,6 +265,9 @@ export async function getAccountsWithVisibility(
       balanceLastUpdatedAt: r.balanceLastUpdatedAt
         ? r.balanceLastUpdatedAt.toISOString()
         : null,
+      ...(currentStateByAccount.has(r.id)
+        ? { currentState: currentStateByAccount.get(r.id) }
+        : {}),
       plaidName:     r.plaidName    ?? undefined,
       officialName:  r.officialName ?? undefined,
       displayName:   r.displayName  ?? undefined,

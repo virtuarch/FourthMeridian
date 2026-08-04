@@ -31,13 +31,12 @@ export type SectionQuantity = BalanceQuantity | "HISTORICAL" | "FLOW" | "NON_FIN
 /**
  * The classification for every SectionRegistry key.
  *
- * ⚠️ Today every current-balance widget below shows OBSERVED_LEDGER or
- * AMOUNT_OWED — the two quantities the product has ever actually rendered. The
- * liquidity family is marked OBSERVED_LEDGER because that is what it shows
- * TODAY, and labelling it honestly is the point: "Accessible cash" computed from
- * ledger balances is not reachable cash. Moving that family onto a reachable /
- * predicted quantity is the reconciliation slice's job, and this map is where
- * that change becomes visible.
+ * ⚠️ V27-L3 moved the liquidity family from OBSERVED_LEDGER to REACHABLE_CASH.
+ * That flip IS the migration: those four widgets now consume the reconciliation
+ * authority instead of summing ledger balances under copy that says "reachable".
+ * Everything else still shows OBSERVED_LEDGER or AMOUNT_OWED, which is correct
+ * for what those widgets render — a net-worth donut is a statement about
+ * observed balances, not about reachable money.
  */
 export const SECTION_QUANTITY: Record<string, SectionQuantity> = {
   // ── Net worth / wealth — observed ledger balances ─────────────────────────
@@ -54,11 +53,17 @@ export const SECTION_QUANTITY: Record<string, SectionQuantity> = {
   investment_allocation:    "OBSERVED_LEDGER",
   retirement_accounts:      "OBSERVED_LEDGER",
 
-  // ── Liquidity — see the note above: OBSERVED_LEDGER is what these show ────
-  liquidity_ladder:         "OBSERVED_LEDGER",
-  accessible_cash:          "OBSERVED_LEDGER",
-  emergency_fund_readiness: "OBSERVED_LEDGER",
-  liquidity_concentration:  "OBSERVED_LEDGER",
+  // ── Liquidity — MIGRATED in V27-L3 ────────────────────────────────────────
+  // These four all CLAIM reachability in their own copy ("Available now",
+  // "reachable right now", "reachable emergency cash", "your reachable money")
+  // and were summing ledger balances underneath it. They now consume the
+  // canonical reachable quantity, so the labels below are the truth rather than
+  // an aspiration. On the live corpus this moved the Space's accessible-cash
+  // figure from $13,674.16 to $5,674.16.
+  liquidity_ladder:         "REACHABLE_CASH",
+  accessible_cash:          "REACHABLE_CASH",
+  emergency_fund_readiness: "REACHABLE_CASH",
+  liquidity_concentration:  "REACHABLE_CASH",
 
   // ── Debt — amount OWED, through lib/debt/balance-semantics ────────────────
   debt_by_account:          "AMOUNT_OWED",

@@ -71,6 +71,7 @@ import {
   availableClaim, claim, unavailable,
   type AvailableClaim, type QuantityClaim,
 } from "./quantities";
+import { NO_PENDING, type PendingContribution } from "./pending-evidence";
 
 /** Debt subtypes whose `available` figure is an unused credit line. */
 const REVOLVING_SUBTYPES = new Set(["credit_card", "line_of_credit", "heloc"]);
@@ -253,6 +254,246 @@ export function resolveRowBalances(row: AccountBalanceRow, now: Date): AccountBa
     isSelfCustodyWallet: !!row.walletAddress,
     freshness:           resolveAccountFreshness(freshnessInput, now),
   });
+}
+
+
+// ── Reconciliation (V27-L3) ──────────────────────────────────────────────────
+
+/**
+ * The canonical reconciliation vocabulary, reused verbatim from the historical
+ * engine — NOT a parallel confidence model.
+ */
+export type ReconciliationState =
+  /** Evidence and the provider's own figure agree to the cent. */
+  | "EXACT"
+  /** Part of the gap is explained by pending; a residual remains UNEXPLAINED and
+   *  is reported, never absorbed. */
+  | "PARTIALLY_ATTRIBUTED"
+  /** No attested provider figure to reconcile against. Not a failure. */
+  | "UNAVAILABLE"
+  /** The provider reports MORE reachable than observed-plus-pending can support.
+   *  Pending movements cannot produce this direction, so the two disagree. */
+  | "CONTRADICTORY";
+
+/** Which identity was applied. `NONE` means no identity fits this account shape. */
+export type ReconciliationBasis = "DEPOSITORY" | "REVOLVING_CREDIT" | "NONE";
+
+/** A cent. Below this, float noise — above it, a real residual. */
+export const RECONCILIATION_TOLERANCE = 0.01;
+
+export interface Reconciliation {
+  basis: ReconciliationBasis;
+  state: ReconciliationState;
+  /** The provider-observed pending movements counted, and their ids. */
+  pending: PendingContribution;
+  /**
+   * Observed plus pending. NULL unless at least one pending row exists — with no
+   * pending evidence there is nothing to predict FROM, and relabelling an
+   * untouched observed balance "predicted" would be a claim without a basis.
+   */
+  predicted: QuantityClaim | null;
+  /**
+   * The residual, in the account's native currency, or null when it could not be
+   * computed. POSITIVE means the provider shows less reachable than our evidence
+   * accounts for — money held back that no transaction explains.
+   */
+  unexplained: number | null;
+  /**
+   * What a liquidity surface may claim is reachable, or null when unknown. Only
+   * ever populated for cash accounts.
+   */
+  reachable: QuantityClaim | null;
+  /** One deterministic sentence, safe to render. Never contains an account name. */
+  explanation: string;
+}
+
+/**
+ * Reconcile one account's current state against provider-observed pending
+ * movements. Pure; `pending` is supplied by loadPendingEvidence.
+ *
+ * ── The depository identity, in the signs this repository actually stores ────
+ *
+ * Fourth Meridian stores NEGATIVE for money out (Plaid's opposite convention is
+ * flipped once, at ingest). So a pending outflow is already negative and the
+ * identity adds rather than subtracts:
+ *
+ *     predicted   = observed + Σpending
+ *     unexplained = observed + Σpending − availableCash      ( = predicted − available )
+ *
+ * Proven on the corpus:
+ *     CHASE COLLEGE   5,106.77 + (−4,000.00) − 1,106.77 =     0.00  → EXACT
+ *     Amex HYSA       6,315.04 +      0.00   − 2,315.04 = 4,000.00  → PARTIALLY_ATTRIBUTED
+ *
+ * ── The revolving-credit identity is DIFFERENT, and must be ─────────────────
+ *
+ * Available CREDIT is not available cash, and a card's pending charges consume
+ * the credit line rather than a cash balance. Forcing the depository formula
+ * onto a card compares a $562 debt against a $33,022 credit line. Instead:
+ *
+ *     pendingCharges = −Σpending                      (charges stored negative)
+ *     predictedOwed  = amountOwed(observed) + pendingCharges
+ *     impliedCredit  = creditLimit − predictedOwed
+ *     unexplained    = impliedCredit − availableCredit
+ *
+ * Proven on the corpus (Chase CREDIT CARD):
+ *     owed 562.37 + charges 77.60 = 639.97 owed predicted
+ *     33,700.00 − 639.97 = 33,060.03 implied, against 33,022.48 reported
+ *     → 37.55 of credit line consumed that no pending row explains.
+ *
+ * The identity needs a USABLE limit. The Amex Platinum reports creditLimit 0.00
+ * (a charge card with no preset limit), which is not a ceiling to subtract from —
+ * that account reconciles UNAVAILABLE rather than producing a nonsense residual.
+ *
+ * ── Everything else ─────────────────────────────────────────────────────────
+ *
+ * Investment, crypto, manual and installment-loan accounts get basis NONE. In
+ * particular an investment account is NOT reconciled: its settled cash and its
+ * value are different quantities, and their difference is invested positions —
+ * running the depository identity over Schwab Individual would report $901.66 of
+ * securities as an "unexplained hold".
+ */
+export function reconcileAccount(
+  b: AccountBalances,
+  pending: PendingContribution = NO_PENDING,
+  creditLimit?: number | null,
+): Reconciliation {
+  const isCash = b.accountType === "checking" || b.accountType === "savings";
+  const avail = b.available;
+
+  // ── Depository ────────────────────────────────────────────────────────────
+  if (isCash) {
+    const predicted = pending.count > 0
+      ? claim("PREDICTED_CASH", b.observed.amount + pending.sum)
+      : null;
+
+    // Reachable prefers the provider's OWN attestation over our derivation: the
+    // institution stating "this much is reachable" outranks a figure we computed.
+    // Falls back to predicted, and to null (unknown) — never to the observed
+    // ledger balance, which is the figure that overstates.
+    const reachable =
+      avail.status === "AVAILABLE" && avail.quantity === "AVAILABLE_CASH"
+        ? claim("REACHABLE_CASH", avail.amount)
+        : predicted
+          ? claim("REACHABLE_CASH", predicted.amount)
+          : null;
+
+    if (avail.status !== "AVAILABLE" || avail.quantity !== "AVAILABLE_CASH") {
+      return {
+        basis: "DEPOSITORY",
+        state: "UNAVAILABLE",
+        pending,
+        predicted,
+        unexplained: null,
+        reachable,
+        explanation: predicted
+          ? "No available-cash figure was reported, so the prediction from pending activity cannot be checked against the institution."
+          : "No available-cash figure was reported, so reachable cash cannot be established.",
+      };
+    }
+
+    const unexplained = b.observed.amount + pending.sum - avail.amount;
+    return {
+      basis: "DEPOSITORY",
+      state: stateFor(unexplained),
+      pending,
+      predicted,
+      unexplained,
+      reachable,
+      explanation: depositoryExplanation(unexplained, pending),
+    };
+  }
+
+  // ── Revolving credit ──────────────────────────────────────────────────────
+  if (b.accountType === "debt" && avail.status === "AVAILABLE" && avail.quantity === "AVAILABLE_CREDIT") {
+    const owed = b.debt ? b.debt.owed.amount : 0;
+    // Charges are stored negative; the magnitude is what consumes the line.
+    const pendingCharges = -pending.sum;
+    const predicted = pending.count > 0
+      ? claim("PREDICTED_AMOUNT_OWED", owed + pendingCharges)
+      : null;
+
+    if (creditLimit == null || creditLimit <= 0) {
+      return {
+        basis: "REVOLVING_CREDIT",
+        state: "UNAVAILABLE",
+        pending,
+        predicted,
+        unexplained: null,
+        reachable: null,
+        explanation:
+          "This card reports no usable credit limit, so available credit cannot be reconciled against what is owed.",
+      };
+    }
+
+    const impliedCredit = creditLimit - (owed + pendingCharges);
+    const unexplained = impliedCredit - avail.amount;
+    return {
+      basis: "REVOLVING_CREDIT",
+      state: stateFor(unexplained),
+      pending,
+      predicted,
+      unexplained,
+      // A credit line is never reachable CASH. This stays null on every card.
+      reachable: null,
+      explanation: creditExplanation(unexplained, pending),
+    };
+  }
+
+  // ── No identity fits ──────────────────────────────────────────────────────
+  return {
+    basis: "NONE",
+    state: "UNAVAILABLE",
+    pending,
+    predicted: null,
+    unexplained: null,
+    reachable: null,
+    explanation: noIdentityExplanation(b.accountType),
+  };
+}
+
+function stateFor(unexplained: number): ReconciliationState {
+  if (Math.abs(unexplained) <= RECONCILIATION_TOLERANCE) return "EXACT";
+  return unexplained > 0 ? "PARTIALLY_ATTRIBUTED" : "CONTRADICTORY";
+}
+
+/** Amounts are formatted by the surface; these sentences carry the MEANING. */
+function depositoryExplanation(unexplained: number, pending: PendingContribution): string {
+  const pendingClause = pending.count === 0
+    ? "No pending activity was reported."
+    : `${pending.count} pending ${pending.count === 1 ? "movement" : "movements"} reported by the institution.`;
+  if (Math.abs(unexplained) <= RECONCILIATION_TOLERANCE) {
+    return `${pendingClause} The observed balance and pending activity fully account for the available cash.`;
+  }
+  if (unexplained > 0) {
+    return `${pendingClause} Part of this balance is unavailable and is not yet explained by any transaction.`;
+  }
+  return `${pendingClause} The institution reports more available cash than the observed balance and pending activity support.`;
+}
+
+function creditExplanation(unexplained: number, pending: PendingContribution): string {
+  const pendingClause = pending.count === 0
+    ? "No pending charges were reported."
+    : `${pending.count} pending ${pending.count === 1 ? "charge" : "charges"} reported by the institution.`;
+  if (Math.abs(unexplained) <= RECONCILIATION_TOLERANCE) {
+    return `${pendingClause} The credit limit, what is owed, and pending charges fully account for the available credit.`;
+  }
+  if (unexplained > 0) {
+    return `${pendingClause} Some of the credit line is consumed by activity no transaction explains yet.`;
+  }
+  return `${pendingClause} The institution reports more available credit than the limit and what is owed support.`;
+}
+
+function noIdentityExplanation(accountType: string): string {
+  switch (accountType) {
+    case "investment":
+      return "Settled cash and account value are different quantities; the difference is invested positions, not an unexplained hold, so no reconciliation is attempted.";
+    case "crypto":
+      return "No provider figure attests what is reachable for this kind of account, so no reconciliation is attempted.";
+    case "debt":
+      return "This liability reports no available credit to reconcile against.";
+    default:
+      return "This kind of account carries no reachable figure to reconcile.";
+  }
 }
 
 // ── Consumer-facing predicates ───────────────────────────────────────────────

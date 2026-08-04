@@ -206,8 +206,25 @@ console.log("12. EDITORIAL REDESIGN — Hero / Balance History / Sources ledger 
 {
   // ① Hero — present-day cashNow figure of record (from the accounts array, NOT the lens);
   //    the window delta rides the cashNow snapshot basis and is DROPPED when historical.
-  check("workspace derives the cashNow figure of record from classifyAccounts (not the lens)",
-    CODE.includes("classifyAccounts(") && CODE.includes("classification.totalLiquid"));
+  // V27-L3 — the INTENT of this guard is "the figure of record comes from the
+  // accounts array, not from the lens result", so the headline and the Sources
+  // ledger below it can never disagree. That intent is unchanged; the figure is
+  // now REACHABLE cash rather than the ledger sum, through the one canonical
+  // authority both surfaces call. Asserting on `classification.totalLiquid`
+  // pinned an implementation, not the invariant.
+  check("workspace derives the cashNow figure of record from the ACCOUNTS array (not the lens)",
+    CODE.includes("reachableNow(accounts") && CODE.includes("const cashNow = reach.total"));
+  check("...through the canonical reachable authority, shared with the Sources ledger",
+    CODE.includes('from "@/components/space/widgets/liquidity-adapters"'));
+  // `classification.totalLiquid` survives in ONE place only: the basis-divergence
+  // check that decides whether the window delta may be shown beside the headline.
+  // It is a comparison, never the headline's value.
+  check("the headline value is never the raw ledger sum",
+    !CODE.includes("const cashNow = classification.totalLiquid") &&
+    !CODE.includes("cashNow={classification.totalLiquid}"));
+  check("the ledger sum survives only as the delta-basis comparison",
+    (CODE.match(/classification\.totalLiquid/g) ?? []).length === 1 &&
+    CODE.includes("deltaBasisDiffers"));
   check("Hero headline is passed in (presentation only — no sum in the Hero)",
     HERO.includes("cashNow") && !HERO.includes("classifyAccounts") && !HERO.includes("reduce("));
   check("Hero drops the window delta in a historical view (Debt precedent)",

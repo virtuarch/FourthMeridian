@@ -39,6 +39,28 @@ export interface Account {
    * balance authority exists to close.
    */
   balanceLastUpdatedAt?: string | null;
+  /**
+   * V27-L3 — the CURRENT-state claim for this account, resolved by the KD-19
+   * visibility authority (lib/data/accounts.ts) through lib/balances. Present on
+   * CASH accounts only, and ONLY on the live path — the historical as-of
+   * reconstruction deliberately omits it, because a present-tense "reachable"
+   * claim over a reconstructed past balance is a category error.
+   *
+   * Carried at BOTH visibility tiers. It describes the same balance the tier
+   * already discloses (same reasoning as `balanceLastUpdatedAt`), and the
+   * alternative is worse: if BALANCE_ONLY rows lacked it, a liquidity total
+   * would silently mix reachable figures with ledger balances.
+   */
+  currentState?: {
+    /** Reachable cash, native currency. Null = UNKNOWN, never 0, never the ledger. */
+    reachable:    number | null;
+    /** The residual against the provider's figure, or null when not reconcilable. */
+    unexplained:  number | null;
+    /** EXACT | PARTIALLY_ATTRIBUTED | UNAVAILABLE | CONTRADICTORY. */
+    state:        string;
+    /** Provider-observed pending rows behind the prediction. */
+    pendingCount: number;
+  };
   // Display-name metadata (Plaid values are never overwritten after import).
   plaidName?:    string;  // raw value Plaid returned for this account, frozen at import
   officialName?: string;  // Plaid's official_name, if provided, frozen at import

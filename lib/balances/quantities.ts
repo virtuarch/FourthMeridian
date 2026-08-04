@@ -57,7 +57,22 @@ export type BalanceQuantity =
   | "AMOUNT_OWED"
   /** A negative liability balance as a positive magnitude — the issuer owes the
    *  user. Not an asset: spendable only at that issuer. */
-  | "ISSUER_CREDIT";
+  | "ISSUER_CREDIT"
+  /**
+   * V27-L3 — observed ledger balance PLUS provider-observed pending movements.
+   * Licensed ONLY when at least one pending row exists; with no pending evidence
+   * there is nothing to predict from and the observed balance stands as itself.
+   */
+  | "PREDICTED_CASH"
+  /** V27-L3 — amount owed plus provider-observed pending charges, same licence. */
+  | "PREDICTED_AMOUNT_OWED"
+  /**
+   * V27-L3 — the cash a liquidity surface may claim is reachable. Resolved from
+   * the provider's attested available cash where it exists, else the predicted
+   * figure. NEVER the observed ledger balance: on CHASE COLLEGE those differ by
+   * $4,000, and the ledger figure is the one that overstates.
+   */
+  | "REACHABLE_CASH";
 
 /** Full wording, for detail surfaces with room for a sentence. */
 export const QUANTITY_LABEL: Record<BalanceQuantity, string> = {
@@ -67,6 +82,9 @@ export const QUANTITY_LABEL: Record<BalanceQuantity, string> = {
   SETTLED_CASH:     "Settled cash",
   AMOUNT_OWED:      "Amount owed",
   ISSUER_CREDIT:    "Credit in your favour",
+  PREDICTED_CASH:       "Predicted from pending activity",
+  PREDICTED_AMOUNT_OWED: "Predicted amount owed",
+  REACHABLE_CASH:       "Available now",
 };
 
 /** Compact wording for cards and rows. Must never be LESS specific than the
@@ -78,6 +96,9 @@ export const QUANTITY_SHORT_LABEL: Record<BalanceQuantity, string> = {
   SETTLED_CASH:     "Settled cash",
   AMOUNT_OWED:      "Owed",
   ISSUER_CREDIT:    "Credit",
+  PREDICTED_CASH:       "Predicted",
+  PREDICTED_AMOUNT_OWED: "Predicted owed",
+  REACHABLE_CASH:       "Available now",
 };
 
 /** Plural wording for an aggregate over several accounts. */
@@ -88,6 +109,9 @@ export const QUANTITY_PLURAL_LABEL: Record<BalanceQuantity, string> = {
   SETTLED_CASH:     "Settled cash",
   AMOUNT_OWED:      "Amounts owed",
   ISSUER_CREDIT:    "Credits in your favour",
+  PREDICTED_CASH:       "Predicted from pending activity",
+  PREDICTED_AMOUNT_OWED: "Predicted amounts owed",
+  REACHABLE_CASH:       "Available now",
 };
 
 // ── Refusals ──────────────────────────────────────────────────────────────────

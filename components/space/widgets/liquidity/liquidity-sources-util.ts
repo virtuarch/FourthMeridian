@@ -18,7 +18,7 @@ import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { isDigitalAssetAccountType } from "@/lib/account-classifier";
 import type { ConversionContext } from "@/lib/money/types";
-import type { LiquidityAdapterAccount } from "@/components/space/widgets/liquidity-adapters";
+import { reachableForAccount, type LiquidityAdapterAccount } from "@/components/space/widgets/liquidity-adapters";
 
 /** The three editorial access horizons, in reachability order (top = reachable). */
 export type SourceHorizon = "now" | "days" | "illiquid";
@@ -94,10 +94,16 @@ export function buildSourceRows(
     .filter((x): x is { a: LiquidityAdapterAccount; horizon: SourceHorizon } => x.horizon !== null)
     .map(({ a, horizon }) => {
       const bal = conv(a.balance, a.currency);
+      // V27-L3 — a row under the "Available now" heading shows the REACHABLE
+      // figure, through the same authority the headline totals, so a row and the
+      // headline above it can never disagree. Non-cash horizons are unchanged.
+      // Null (reachable unknown) yields 0 and is dropped by the filter below —
+      // the same exclusion the total applies.
+      const reach = horizon === "now" ? reachableForAccount(a, ctx) : null;
       return {
         account:   a,
         horizon,
-        value:     bal.amount,
+        value:     horizon === "now" ? (reach ?? 0) : bal.amount,
         estimated: bal.estimated,
         share:     0, // filled after the total is known
       } as LiquiditySourceRow;

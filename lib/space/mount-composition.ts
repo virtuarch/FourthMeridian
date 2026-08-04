@@ -36,6 +36,8 @@ import { ShareStatus } from "@prisma/client";
 import { normalizeSharedAccounts } from "@/lib/account-privacy";
 import { resolveEffectiveDebtTerms } from "@/lib/debt/effective-terms";
 import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
+import { resolveRowBalances, reconcileAccount } from "@/lib/balances/account-balances";
+import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
 
 /** THE sections loader (was inline in /api/spaces/[id]/sections). */
 export async function loadSpaceSections(spaceId: string): Promise<DashboardSection[]> {
@@ -74,6 +76,9 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
           id: true, name: true, type: true, institution: true, balance: true,
           currency: true, lastUpdated: true, creditLimit: true, debtSubtype: true,
           interestRate: true, minimumPayment: true,
+          // V27-L3 — forwarded RAW into lib/balances (the only interpreter);
+          // never read as a value in this file.
+          availableBalance: true, walletAddress: true,
           // V27-L1 — the institution's balance-computation clock, carried so the
           // freshness authority can distinguish provider attestation from our own
           // write time instead of every surface assuming they are the same fact.
@@ -132,9 +137,35 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
     };
   });
 
+  // V27-L3 — the canonical CURRENT-STATE claim, resolved ONCE here so every
+  // widget consumes the same answer and none of them re-derives it. Pending
+  // evidence is provider-observed only (loadPendingEvidence); nothing is
+  // inferred from recurrence, averages, or habits.
+  const pending = await loadPendingEvidence(accountIds);
+  const now = new Date();
+  const currentStateByAccount = new Map<string, SpaceAccount["currentState"]>();
+  for (const l of links) {
+    const fa = l.financialAccount;
+    const balances = resolveRowBalances(fa, now);
+    const rec = reconcileAccount(balances, pending.get(fa.id) ?? NO_PENDING, fa.creditLimit);
+    // Only cash accounts carry a reachable figure; for the rest the field is
+    // omitted entirely rather than populated with a null-that-reads-as-zero.
+    if (rec.basis !== "DEPOSITORY") continue;
+    currentStateByAccount.set(fa.id, {
+      reachable:    rec.reachable?.amount ?? null,
+      unexplained:  rec.unexplained,
+      state:        rec.state,
+      pendingCount: rec.pending.count,
+    });
+  }
+
   return normalizeSharedAccounts(effectiveLinks).map((a) => ({
     ...a,
     earliestTxDate: floorByAccount.get(a.id) ?? null,
+    // Aggregated BALANCE_ONLY rows have a synthetic id that maps to no single
+    // account, so they carry no current-state claim — an aggregate of reachable
+    // figures across members is a different quantity we have not defined.
+    ...(currentStateByAccount.has(a.id) ? { currentState: currentStateByAccount.get(a.id) } : {}),
   })) as unknown as SpaceAccount[];
 }
 

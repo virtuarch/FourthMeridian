@@ -59,7 +59,8 @@ import { genericAccountName } from '@/lib/account-privacy';
 import { amountOwed, creditBalance, liabilityState } from '@/lib/debt/balance-semantics';
 import { resolveEffectiveDebtTerms } from '@/lib/debt/effective-terms';
 import { resolveAccountFreshness } from '@/lib/freshness/observation';
-import { resolveAccountBalances } from '@/lib/balances/account-balances';
+import { resolveAccountBalances, reconcileAccount } from '@/lib/balances/account-balances';
+import { loadPendingEvidence, NO_PENDING } from '@/lib/balances/pending-evidence';
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { FinanceDomains } from '@/lib/ai/types';
 import type {
@@ -213,6 +214,10 @@ async function assembleAccounts(
 
   const now = new Date();
 
+  // V27-L3 — provider-observed pending, scoped per account. Read-only; nothing
+  // is inferred from recurrence, averages, or habits.
+  const pendingByAccount = await loadPendingEvidence(links.map((l) => l.financialAccount.id));
+
   /**
    * V27-L1 — the resolved freshness claim for one account, through the canonical
    * authority. Emitted at BOTH visibility tiers: it describes the age of a balance
@@ -255,10 +260,21 @@ async function assembleAccounts(
         providerBalanceAt: fa.balanceLastUpdatedAt,
       }, at),
     });
+    const rec = reconcileAccount(b, pendingByAccount.get(fa.id) ?? NO_PENDING, fa.creditLimit);
     return {
       availableQuantity: b.available.status === "AVAILABLE"
         ? { quantity: b.available.quantity, amount: b.available.amount, label: b.available.label }
         : { reason: b.available.reason, label: b.available.label },
+      currentState: {
+        basis:        rec.basis,
+        state:        rec.state,
+        pendingCount: rec.pending.count,
+        pendingSum:   rec.pending.sum,
+        ...(rec.predicted   ? { predicted:   rec.predicted.amount } : {}),
+        ...(rec.reachable   ? { reachable:   rec.reachable.amount } : {}),
+        ...(rec.unexplained !== null ? { unexplained: rec.unexplained } : {}),
+        explanation:  rec.explanation,
+      },
     };
   };
 
