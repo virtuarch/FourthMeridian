@@ -59,6 +59,7 @@ export function SectionCard({
   transactions,
   txCtx,
   period,
+  asOf,
   onSelectPeriod,
   ficoScore,
   ficoUpdatedAt,
@@ -79,6 +80,8 @@ export function SectionCard({
   transactions?:     Transaction[] | null;
   txCtx?:            ConversionContext;
   period?:           CashFlowPeriod;
+  /** The selected as-of date — every interval widget resolves its window here. */
+  asOf?:             string;
   onSelectPeriod?:   (period: CashFlowPeriod) => void;
   perspective?:          CashFlowPerspective;
   filterId?:             string;
@@ -178,7 +181,7 @@ export function SectionCard({
     if (isDebtSpace && section.key === "savings_rate") return renderDebtPayoffCalculator(accounts, payoffFullscreen, closePayoffFullscreen, ctx);
 
     const render = SectionRegistry[section.key];
-    if (render) return render({ accounts, spaceId, spaceType, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx, snapshots, snapshotCurrency, transactions, txCtx, period, onSelectPeriod, perspective, filterId, onPerspectiveChange, ficoScore, ficoUpdatedAt });
+    if (render) return render({ accounts, spaceId, spaceType, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx, snapshots, snapshotCurrency, transactions, txCtx, period, asOf, onSelectPeriod, perspective, filterId, onPerspectiveChange, ficoScore, ficoUpdatedAt });
     return <ContextualCard sectionKey={section.key} label={section.label} />;
   }
 

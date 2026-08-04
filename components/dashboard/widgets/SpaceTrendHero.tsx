@@ -97,8 +97,12 @@ export function SpaceTrendHero({
     if (points.length === 0) return { latest: null, delta: null, deltaLabel: "" };
     const last = points[points.length - 1];
     if (points.length === 1) return { latest: last, delta: null, deltaLabel: "" };
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - 30);
+    // 30 days back from the SERIES END, not from today. The series ends at the
+    // selected as-of date, so anchoring to the wall clock made the baseline fall
+    // past the end of a historical series — the card then silently compared
+    // against `points[0]` and labelled it "past 30 days" anyway.
+    const cutoff = new Date(`${last.date}T00:00:00Z`);
+    cutoff.setUTCDate(cutoff.getUTCDate() - 30);
     const cutoffIso = cutoff.toISOString().split("T")[0];
     const base = [...points].reverse().find((p) => p.date <= cutoffIso) ?? points[0];
     const label = base.date <= cutoffIso ? "past 30 days" : `since ${formatDate(base.date)}`;

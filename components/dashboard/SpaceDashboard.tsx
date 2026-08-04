@@ -697,6 +697,7 @@ export function SpaceDashboard({
     ctx: widgetCtx,
     snapshots,
     snapshotCurrency: effectiveSnapshotCurrency,
+    asOf,
   };
 
   // SD-2 closeout — the perspective render implementations moved to the
@@ -938,6 +939,7 @@ export function SpaceDashboard({
                     transactions={spaceTransactions}
                     txCtx={txConversionCtx}
                     period={cashFlowPeriod}
+                    asOf={asOf}
                     onSelectPeriod={(p) => setCashFlowExplicitPeriod(p)}
                     ficoScore={ficoScore}
                     ficoUpdatedAt={ficoUpdatedAt}

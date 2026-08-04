@@ -220,6 +220,16 @@ export type SectionRenderProps = {
   transactions?:         Transaction[] | null;
   txCtx?:                ConversionContext;
   period?:               CashFlowPeriod;
+  /**
+   * THE SELECTED AS-OF DATE (YYYY-MM-DD) — the anchor every interval widget
+   * resolves its window against.
+   *
+   * Without it a widget fell back to `new Date()`, so a section card showed
+   * TODAY's period while the dashboard displayed a historical date. The window
+   * is not the widget's to choose; it is the shell's, and this is how it
+   * arrives. Optional so a caller that renders no interval widget is unaffected.
+   */
+  asOf?:                 string;
   /** UX-PER-3 Cash Flow — move the whole Perspective to an explicit historical
    *  period from inside a widget (Cash Flow History's Month/Quarter/Year
    *  selectors). Only the Cash Flow History widget uses it. */
@@ -531,12 +541,12 @@ export const SectionRegistry: Record<string, (p: SectionRenderProps) => React.Re
   "emergency_fund_readiness":(p) => renderEmergencyFundReadiness(p.accounts, p.ctx),
   "liquidity_concentration": (p) => renderLiquidityConcentration(p.accounts, p.ctx),
   // ── Cash Flow Perspective (UX-PER-3) — movement over time (FlowType-aware) ──
-  "cash_flow_summary":       (p) => renderCashFlowSummary(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.accounts, p.perspective, p.onPerspectiveChange),
-  "cash_flow_history":       (p) => renderCashFlowHistory(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.onSelectPeriod, p.accounts, p.perspective, p.filterId, p.onPerspectiveChange),
-  "income_vs_spending":      (p) => renderIncomeVsSpending(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx),
-  "cash_flow_by_category":   (p) => renderCashFlowByCategory(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx),
-  "income_by_source":        (p) => renderIncomeBySource(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.accounts, p.perspective),
-  "debt_payments":           (p) => renderDebtPayments(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.accounts),
+  "cash_flow_summary":       (p) => renderCashFlowSummary(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.accounts, p.perspective, p.onPerspectiveChange, p.asOf),
+  "cash_flow_history":       (p) => renderCashFlowHistory(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.onSelectPeriod, p.accounts, p.perspective, p.filterId, p.onPerspectiveChange, p.asOf),
+  "income_vs_spending":      (p) => renderIncomeVsSpending(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.asOf),
+  "cash_flow_by_category":   (p) => renderCashFlowByCategory(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.asOf),
+  "income_by_source":        (p) => renderIncomeBySource(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.accounts, p.perspective, p.asOf),
+  "debt_payments":           (p) => renderDebtPayments(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.accounts, p.asOf),
   // ── Debt Perspective (UX-PER-3) — liabilities-only (shape/cost/risk) ────────
   "debt_by_account":         (p) => renderDebtByAccount(p.accounts, p.ctx),
   "debt_cost":               (p) => renderDebtCost(p.accounts, p.ctx),

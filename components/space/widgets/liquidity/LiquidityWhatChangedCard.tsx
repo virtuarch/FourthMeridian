@@ -31,20 +31,25 @@ export function LiquidityWhatChangedCard({
   accounts,
   period,
   ctx,
+  asOf,
   onOpenCashFlow,
 }: {
   transactions?:  Transaction[] | null;
   accounts:       { id: string; type: string }[];
   period:         CashFlowPeriod;
   ctx?:           ConversionContext;
+  /** The shell's selected as-of date — the window anchor. Required: without it
+   *  this card windowed against today and disagreed with the Liquidity chart
+   *  beside it on any historical date. */
+  asOf:           string;
   onOpenCashFlow?: () => void;
 }) {
   const periodId = periodKey(period);
   const result = useMemo(
-    () => buildWhatChangedRows({ transactions, accounts, period, ctx }),
+    () => buildWhatChangedRows({ transactions, accounts, period, ctx, asOf }),
     // period is reconstructed from periodId (a stable primitive).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [transactions, accounts, periodId, ctx],
+    [transactions, accounts, periodId, ctx, asOf],
   );
 
   if (result.state === "loading") {

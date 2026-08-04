@@ -10,9 +10,10 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { buildCashFlowSpaceData } from "./cash-flow-space-data";
-import { resolveFinancialWindow } from "@/lib/perspectives/financial-window";
+import { filterByPeriod, asOfAnchor } from "./cash-flow";
+import { resolveFinancialWindow, inFlowInterval } from "@/lib/perspectives/financial-window";
 import { compareToForPreset } from "@/lib/perspectives/time-range";
 import type { Transaction } from "@/types";
 
@@ -132,38 +133,139 @@ const ROWS: Transaction[] = [
   ok("STATIC · no Cash Flow component derives a window; the workspace reads FLOW explicitly");
 }
 
-// ── KNOWN GAP, tracked so it cannot grow ─────────────────────────────────
+// ── STATIC · NO widget windows against the wall clock ────────────────────
 //
-// `cash-flow-adapters.tsx` calls `filterByPeriod(transactions, period)` with no
-// clock, so `now` defaults to `new Date()` — the WALL CLOCK, not the selected
-// as-of. Its six section widgets therefore window against today whatever date
-// the user selected.
+// This replaces a pinned KNOWN GAP. `filterByPeriod(rows, period)` with no third
+// argument defaults `now` to `new Date()`, so a section widget showed TODAY's
+// period while the dashboard displayed a historical date. The as-of now reaches
+// every widget through `SectionRenderProps.asOf`, and the anchor is derived in
+// ONE place (`asOfAnchor`).
 //
-// It is NOT fixed here: the render signature is `(transactions, period, ctx)`
-// and `SectionRegistry` carries no as-of, so threading one is a registry change
-// — the card-matrix work, deliberately out of this slice.
-//
-// Pinned rather than ignored: the count is exact, so a NEW wall-clock window
-// fails this test even while the known one is outstanding.
+// Repo-wide rather than per-file: the gap was pinned to two known files and the
+// real question is whether ANY component re-introduces one.
 {
-  const adapters = strip(readFileSync(
-    new URL("../../components/space/widgets/cash-flow-adapters.tsx", import.meta.url), "utf8"));
-  const debtWidget = strip(readFileSync(
-    new URL("../../components/space/widgets/DebtPaymentsWidget.tsx", import.meta.url), "utf8"));
+  const WIDGET_DIRS = ["components/space/widgets", "components/space/sections", "components/dashboard"];
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(new URL(`../../${dir}`, import.meta.url), { withFileTypes: true })) {
+      if (e.name.includes(".test.")) continue;
+      if (e.isDirectory()) walk(`${dir}/${e.name}`);
+      else if (/\.tsx?$/.test(e.name)) files.push(`${dir}/${e.name}`);
+    }
+  };
+  WIDGET_DIRS.forEach(walk);
 
-  const unclocked = (src: string) => [...src.matchAll(/filterByPeriod\([^)]*\)/g)]
-    .filter((m) => m[0].split(",").length < 3).length;
+  const offenders: string[] = [];
+  for (const f of files) {
+    const src = strip(readFileSync(new URL(`../../${f}`, import.meta.url), "utf8"));
+    for (const m of src.matchAll(/filterByPeriod\(([^)]*)\)/g)) {
+      if (m[1].split(",").length < 3) offenders.push(`${f}: ${m[0]}`);
+    }
+    // `periodRange(period, now?.())` is the same defect wearing a clock's clothes.
+    for (const m of src.matchAll(/periodRange\(([^)]*)\)/g)) {
+      if (m[1].split(",").length < 2) offenders.push(`${f}: ${m[0]}`);
+    }
+  }
+  assert.deepEqual(offenders, [],
+    `every widget window must take an explicit anchor; unclocked: ${offenders.join(" | ")}`);
+  ok(`STATIC · ${files.length} widget/section/dashboard files, ZERO wall-clock financial windows`);
+}
 
-  assert.equal(unclocked(adapters), 1,
-    "exactly ONE wall-clock window in the section adapters (the shared `scoped` helper)");
-  assert.ok(/function scoped\(/.test(adapters), "…and it is shared, not scattered");
+// ── STATIC · the anchor is derived in exactly ONE place ───────────────────
+{
+  const core = strip(readFileSync(new URL("./cash-flow.ts", import.meta.url), "utf8"));
+  assert.ok(/export function asOfAnchor\(/.test(core), "asOfAnchor is exported from the authority");
+  assert.ok(/T00:00:00/.test(core.slice(core.indexOf("export function asOfAnchor"))),
+    "…and it builds LOCAL midnight, because periodRange does local-time arithmetic");
 
-  // The debt widget uses the workspace's canonical rows WHEN GIVEN; the
-  // wall-clock call is only its section-path fallback.
-  assert.equal(unclocked(debtWidget), 1, "exactly ONE fallback window in the debt widget");
-  assert.ok(/windowRows \?\? filterByPeriod/.test(debtWidget),
-    "…and the canonical rows take precedence over it");
-  ok("KNOWN GAP · two wall-clock windows remain on the SECTION path, pinned so they cannot grow");
+  // No component may hand-roll the same conversion.
+  const rolled: string[] = [];
+  for (const f of ["components/space/widgets/cash-flow-adapters.tsx",
+                   "components/space/widgets/DebtPaymentsWidget.tsx",
+                   "components/space/widgets/CashFlowSummaryWidget.tsx",
+                   "components/space/widgets/CashFlowHistoryWidget.tsx"]) {
+    const src = strip(readFileSync(new URL(`../../${f}`, import.meta.url), "utf8"));
+    if (/new Date\(`\$\{asOf\}/.test(src)) rolled.push(f);
+  }
+  assert.deepEqual(rolled, [], `anchors must come from asOfAnchor, hand-rolled in: ${rolled.join(", ")}`);
+  ok("STATIC · one anchor derivation, no hand-rolled duplicates");
+}
+
+// ── STATIC · the as-of reaches the widgets through the registry ───────────
+{
+  const registry = strip(readFileSync(
+    new URL("../../components/space/sections/SectionRegistry.tsx", import.meta.url), "utf8"));
+  assert.ok(/asOf\?:\s*string/.test(registry), "SectionRenderProps carries the selected as-of");
+
+  const CASH_FLOW_SECTIONS = ["cash_flow_summary", "cash_flow_history", "income_vs_spending",
+                              "cash_flow_by_category", "income_by_source", "debt_payments"];
+  const missing = CASH_FLOW_SECTIONS.filter((id) => {
+    const i = registry.indexOf(`"${id}":`);
+    if (i < 0) return true;
+    return !registry.slice(i, registry.indexOf("\n", i)).includes("p.asOf");
+  });
+  assert.deepEqual(missing, [], `every interval section must forward the as-of; missing: ${missing.join(", ")}`);
+
+  const card = strip(readFileSync(
+    new URL("../../components/space/sections/SectionCard.tsx", import.meta.url), "utf8"));
+  assert.ok(/asOf\?:\s*string/.test(card) && /\basOf\b/.test(card.slice(card.indexOf("render"))),
+    "SectionCard accepts the as-of and forwards it to the renderer");
+
+  const shell = strip(readFileSync(
+    new URL("../../components/dashboard/SpaceDashboard.tsx", import.meta.url), "utf8"));
+  assert.ok(/asOf=\{asOf\}/.test(shell), "the shell supplies its own selected as-of to the section cards");
+  ok("STATIC · shell → SectionCard → registry → widget, the as-of is threaded end-to-end");
+}
+
+// ── STATIC · the trend hero baseline is anchored to the SERIES, not today ─
+{
+  const hero = strip(readFileSync(
+    new URL("../../components/dashboard/widgets/SpaceTrendHero.tsx", import.meta.url), "utf8"));
+  const memo = hero.slice(hero.indexOf("const { latest, delta"), hero.indexOf("if (loading)"));
+  assert.ok(!/new Date\(\)/.test(memo),
+    "the 30-day baseline may not come from the wall clock — the series ends at the selected as-of");
+  assert.ok(/last\.date/.test(memo), "…it is measured back from the last point in the series");
+  ok("STATIC · trend-hero delta baseline is anchored to the series end");
+}
+
+// ── BEHAVIOURAL · the section window IS the selected window ──────────────
+//
+// The static probes prove an anchor is PASSED. This proves it is OBEYED: at a
+// historical as-of the section path must select the historical month, not the
+// month the machine happens to be in.
+{
+  const rows: Transaction[] = [
+    { id: "old", date: "2026-03-14", amount: -10, name: "in window",  category: "Groceries" },
+    { id: "new", date: "2026-08-02", amount: -20, name: "today only", category: "Groceries" },
+  ] as unknown as Transaction[];
+
+  const historical = filterByPeriod(rows, "MTD", asOfAnchor("2026-03-20"));
+  assert.deepEqual(historical.map((r) => r.id), ["old"],
+    "a historical as-of selects the historical month");
+
+  const today = filterByPeriod(rows, "MTD", asOfAnchor("2026-08-04"));
+  assert.deepEqual(today.map((r) => r.id), ["new"], "…and a current as-of selects the current one");
+
+  // The same rows, through the canonical authority, must agree.
+  const w = resolveFinancialWindow({ preset: "PAST_MONTH", asOf: "2026-03-20", compareTo: null });
+  const viaAuthority = rows.filter((r) => inFlowInterval(r.date, w.flow));
+  assert.ok(viaAuthority.some((r) => r.id === "old") && !viaAuthority.some((r) => r.id === "new"),
+    "the canonical FLOW interval agrees with the widget's window on which rows are in scope");
+  ok("BEHAVIOURAL · the section window follows the selected as-of, not the wall clock");
+}
+
+// ── BEHAVIOURAL · the anchor is LOCAL midnight ───────────────────────────
+//
+// `new Date("2026-03-01")` is UTC midnight, which is Feb 28 for anyone west of
+// Greenwich — a month boundary that moves by a day depending on the viewer.
+{
+  const a = asOfAnchor("2026-03-01")!;
+  assert.equal(a.getFullYear(), 2026, "local year");
+  assert.equal(a.getMonth(), 2, "local month is March, not February");
+  assert.equal(a.getDate(), 1, "local day is the 1st");
+  assert.equal(asOfAnchor(null), undefined, "no selection ⇒ no fabricated anchor");
+  assert.equal(asOfAnchor(undefined), undefined, "…and undefined behaves the same");
+  ok("BEHAVIOURAL · asOfAnchor builds local midnight and never fabricates a date");
 }
 
 // ── STATIC · comparison ranges come from the authority ───────────────────

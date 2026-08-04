@@ -15,6 +15,7 @@
 
 import {
   filterByPeriod,
+  asOfAnchor,
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
 import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
@@ -40,22 +41,25 @@ const TOP_N = 3;
 
 /**
  * Top cash-in + cash-out liquidity drivers for the period. Loading when
- * transactions haven't arrived; empty when the window has no movement. `now` is
- * injectable so relative periods resolve deterministically in tests; production
- * omits it and `filterByPeriod` uses the real clock (same as the Cash Flow
- * adapters).
+ * transactions haven't arrived; empty when the window has no movement.
+ *
+ * `asOf` is REQUIRED, not injectable-for-tests. It used to be an optional clock
+ * that production omitted, so this card windowed against today and disagreed
+ * with the Liquidity chart beside it on any historical date. Making it required
+ * is what makes that unrepresentable — a caller with no as-of cannot compile.
  */
 export function buildWhatChangedRows(args: {
   transactions: Transaction[] | null | undefined;
   accounts:     { id: string; type: string }[];
   period:       CashFlowPeriod;
   ctx?:         ConversionContext;
-  now?:         () => Date;
+  /** The shell's selected as-of date (YYYY-MM-DD) — the window anchor. */
+  asOf:         string;
 }): WhatChangedResult {
-  const { transactions, accounts, period, ctx, now } = args;
+  const { transactions, accounts, period, ctx, asOf } = args;
   if (transactions == null) return { state: "loading" };
 
-  const rows = now ? filterByPeriod(transactions, period, now()) : filterByPeriod(transactions, period);
+  const rows = filterByPeriod(transactions, period, asOfAnchor(asOf));
   if (rows.length === 0) return { state: "empty" };
 
   const liqCtx = tierResolver(accounts);

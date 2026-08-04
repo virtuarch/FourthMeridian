@@ -39,6 +39,7 @@ import {
 import { CashFlowFilterControls, CALENDAR_FILTERS, DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import {
   filterByPeriod,
+  asOfAnchor,
   transactionsInBucket,
   availableHistoricalPeriods,
   dataBearingYears,
@@ -266,12 +267,21 @@ interface Props {
    *  re-running filterByPeriod / projectDailyFacts / bucketDayFacts — byte-identical
    *  (same authority, same window). Absent ⇒ standalone/registry path computes here. */
   windowRows?:          Transaction[];
+  /**
+   * The SELECTED as-of date (YYYY-MM-DD) — the anchor for the fallback window.
+   *
+   * The workspace path supplies `windowRows` and never re-windows. The section /
+   * registry path has no pre-computed rows, so it windowed against `new Date()`
+   * and showed TODAY's period while the dashboard displayed a historical date.
+   * The window belongs to the shell, not the widget.
+   */
+  asOf?:                string;
   daily?:               Map<string, DayFacts>;
   buckets?:             FactsBucket[];
 }
 
 /** Multi-mode Cash Flow History (Calendar · Cards) with in-widget history. */
-export function CashFlowHistoryWidget({ transactions, period, now, ctx, accounts, onSelectPeriod, perspective: controlledPerspective, filterId: controlledFilterId, onPerspectiveChange, windowRows, daily, buckets }: Props) {
+export function CashFlowHistoryWidget({ transactions, period, now, asOf, ctx, accounts, onSelectPeriod, perspective: controlledPerspective, filterId: controlledFilterId, onPerspectiveChange, windowRows, daily, buckets }: Props) {
   const modes       = getCashFlowHistoryModes(period);
   const defaultMode = getDefaultCashFlowHistoryMode(period);
 
@@ -344,7 +354,12 @@ export function CashFlowHistoryWidget({ transactions, period, now, ctx, accounts
       </div>
     );
   }
-  const rows = windowRows ?? filterByPeriod(transactions, period);
+  const rows = windowRows ?? filterByPeriod(transactions, period, asOfAnchor(asOf));
+  // The calendar grid anchors to the SAME date the rows were windowed against.
+  // An explicit clock still wins (the workspace injects one); `asOf` is what the
+  // section path has, and without it the grid fell back to today's month.
+  const anchorDate = asOfAnchor(asOf);
+  const gridClock = now ?? (anchorDate ? () => anchorDate : undefined);
 
   // CF-3B — the drill-down surfaces ONLY the rows behind the selected measures, so
   // the drawer reconciles with the heat-map cell and never mixes, e.g., debt
@@ -374,7 +389,7 @@ export function CashFlowHistoryWidget({ transactions, period, now, ctx, accounts
                 <AllTimeYearNav year={effectiveViewYear} years={dataYears} onChange={setViewYear} />
               )}
               <CashFlowCalendar
-                transactions={rows} period={period} now={now} ctx={ctx} accounts={accounts}
+                transactions={rows} period={period} now={gridClock} ctx={ctx} accounts={accounts}
                 measures={measures} onSelectDay={openDay}
                 viewYear={period === "ALL" ? effectiveViewYear ?? undefined : undefined}
                 daily={daily}

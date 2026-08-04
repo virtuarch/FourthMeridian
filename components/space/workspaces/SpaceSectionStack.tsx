@@ -49,6 +49,16 @@ export type SectionCardBundle = {
   ctx?:             ConversionContext;
   snapshots:        Snapshot[] | null;
   snapshotCurrency: string;
+  /**
+   * The shell's selected as-of date — the window anchor for any interval widget
+   * on this path.
+   *
+   * This bundle carries no `transactions`, so an interval section here renders
+   * its loading state and never windows at all. The as-of is carried anyway so
+   * that wiring transactions in later cannot silently re-introduce a widget
+   * that windows against the wall clock.
+   */
+  asOf?:            string;
 };
 
 export function SpaceSectionStack({

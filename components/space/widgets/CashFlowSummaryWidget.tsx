@@ -30,6 +30,7 @@ import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import {
   filterByPeriod,
+  asOfAnchor,
   type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
 import {
   classifyLiquidity,
@@ -70,6 +71,15 @@ interface Props {
    *  re-folding from raw rows — byte-identical (same authority, same window). Absent
    *  ⇒ the standalone/registry path computes them here, exactly as before. */
   windowRows?:          Transaction[];
+  /**
+   * The SELECTED as-of date (YYYY-MM-DD) — the anchor for the fallback window.
+   *
+   * The workspace path supplies `windowRows` and never re-windows. The section /
+   * registry path has no pre-computed rows, so it windowed against `new Date()`
+   * and showed TODAY's period while the dashboard displayed a historical date.
+   * The window belongs to the shell, not the widget.
+   */
+  asOf?:                string;
   facts?:               DayFacts;
   context?:             CashFlowContext;
   /** CF-1 — when the editorial CashFlowHero owns the lede (headline Net + the
@@ -161,7 +171,7 @@ function ContextRow({ label, value, onOpen }: { label: string; value: string; on
   );
 }
 
-export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, perspective: controlledPerspective, onPerspectiveChange, windowRows, facts: factsProp, context: contextProp, hideHeadline = false }: Props) {
+export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, perspective: controlledPerspective, onPerspectiveChange, windowRows, asOf, facts: factsProp, context: contextProp, hideHeadline = false }: Props) {
   // CF-3 — perspective toggle (Cash Flow ⇄ Spending). Controlled by the shared
   // workspace perspective when provided; otherwise self-managed for standalone use.
   const [localPerspective, setLocalPerspective] = useState<CashFlowPerspective>("liquidity");
@@ -174,7 +184,7 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
   if (transactions == null) {
     return <p className="text-sm text-[var(--text-muted)] text-center py-8">Loading activity…</p>;
   }
-  const rows = (windowRows ?? filterByPeriod(transactions, period)) as LiquidityTx[];
+  const rows = (windowRows ?? filterByPeriod(transactions, period, asOfAnchor(asOf))) as LiquidityTx[];
   if (rows.length === 0) {
     return (
       <div className="text-center py-8">

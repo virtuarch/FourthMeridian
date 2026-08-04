@@ -214,6 +214,22 @@ export function dataBearingYears(transactions: Transaction[]): number[] {
   );
 }
 
+/**
+ * Turn the shell's SELECTED as-of date into the anchor `periodRange` expects.
+ *
+ * THE one place an ISO date becomes a window anchor. `periodRange` does local-time
+ * `Date` arithmetic, so the anchor must be local midnight of the selected day —
+ * `new Date("2025-11-03")` parses as UTC midnight and lands on the previous day
+ * for anyone west of Greenwich, which would move a month boundary by a day.
+ *
+ * Returns undefined for an absent date so a caller with genuinely no selection
+ * keeps `filterByPeriod`'s documented default rather than being handed a
+ * fabricated one.
+ */
+export function asOfAnchor(asOf?: string | null): Date | undefined {
+  return asOf ? new Date(`${asOf}T00:00:00`) : undefined;
+}
+
 export function filterByPeriod(
   transactions: Transaction[],
   period: CashFlowPeriod,

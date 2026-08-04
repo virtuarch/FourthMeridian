@@ -397,6 +397,7 @@ export function LiquidityWorkspace({
               accounts={accounts}
               period={period}
               ctx={txCtx}
+              asOf={asOf}
               onOpenCashFlow={onOpenCashFlow}
             />
           </Surface>

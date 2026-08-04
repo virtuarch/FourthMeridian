@@ -14,7 +14,7 @@
  * Drill-down reuses the shared TransactionSliceDrawer via CashFlowCategoryBreakdown.
  */
 
-import { filterByPeriod, type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
+import { filterByPeriod, asOfAnchor, type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
 import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
@@ -32,6 +32,16 @@ interface Props {
    *  re-running `filterByPeriod` — the byte-identical slice. Absent ⇒ the
    *  standalone/registry path windows here, exactly as before. */
   windowRows?:  Transaction[];
+  /**
+   * The selected as-of date — the anchor for the fallback window.
+   *
+   * Without it `filterByPeriod` defaults to `new Date()`, so this widget showed
+   * TODAY's period on the section path while the dashboard displayed a
+   * historical date. The workspace path passes `windowRows` and never reaches
+   * the fallback; the section path has no canonical rows to pass, so it must at
+   * least window against the right anchor.
+   */
+  asOf?:        string;
 }
 
 function magnitude(t: Transaction, ctx?: ConversionContext): number {
@@ -46,11 +56,12 @@ function isDebtPaymentRow(t: LiquidityTx, liqCtx: ReturnType<typeof tierResolver
   return c.effect === "CASH_OUT" && c.reason === "DEBT_PAYMENT";
 }
 
-export function DebtPaymentsWidget({ transactions, period, ctx, accounts, windowRows }: Props) {
+export function DebtPaymentsWidget({ transactions, period, ctx, accounts, windowRows, asOf }: Props) {
   if (transactions == null) {
     return <p className="text-sm text-[var(--text-muted)] text-center py-8">Loading activity…</p>;
   }
-  const rows = (windowRows ?? filterByPeriod(transactions, period)) as LiquidityTx[];
+  const rows = (windowRows
+    ?? filterByPeriod(transactions, period, asOfAnchor(asOf))) as LiquidityTx[];
   const liqCtx = tierResolver(accounts);
   // Canonical DEBT_PAYMENT liquidity rows (CASH_OUT/DEBT_PAYMENT) — the spendable-
   // cash leg that pays down a liability; the liability-side leg is NEUTRAL, so a

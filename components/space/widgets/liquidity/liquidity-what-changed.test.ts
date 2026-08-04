@@ -20,7 +20,7 @@ function check(name: string, cond: boolean, detail?: string): void {
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 
-const CLOCK = () => new Date(2026, 5, 15); // 2026-06-15 local
+const AS_OF = "2026-06-15"; // the selected as-of the card windows against
 
 let n = 0;
 function tx(over: Partial<LiquidityTx> & { amount: number; date: string }): LiquidityTx {
@@ -41,14 +41,14 @@ const JAN: CashFlowPeriod = { kind: "month", year: 2026, month: 1 }; // no data
 
 console.log("1. Loading / empty sentinels");
 {
-  check("null transactions ⇒ loading", buildWhatChangedRows({ transactions: null, accounts, period: MAY, now: CLOCK }).state === "loading");
-  check("no rows in the window ⇒ empty", buildWhatChangedRows({ transactions: rows, accounts, period: JAN, now: CLOCK }).state === "empty");
-  check("empty transactions ⇒ empty", buildWhatChangedRows({ transactions: [], accounts, period: MAY, now: CLOCK }).state === "empty");
+  check("null transactions ⇒ loading", buildWhatChangedRows({ transactions: null, accounts, period: MAY, asOf: AS_OF }).state === "loading");
+  check("no rows in the window ⇒ empty", buildWhatChangedRows({ transactions: rows, accounts, period: JAN, asOf: AS_OF }).state === "empty");
+  check("empty transactions ⇒ empty", buildWhatChangedRows({ transactions: [], accounts, period: MAY, asOf: AS_OF }).state === "empty");
 }
 
 console.log("2. Top drivers — signed, in positive / out negative");
 {
-  const r = buildWhatChangedRows({ transactions: rows, accounts, period: MAY, now: CLOCK });
+  const r = buildWhatChangedRows({ transactions: rows, accounts, period: MAY, asOf: AS_OF });
   check("state ok", r.state === "ok");
   if (r.state === "ok") {
     const inRows = r.rows.filter((x) => x.direction === "in");

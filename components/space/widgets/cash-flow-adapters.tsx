@@ -27,6 +27,7 @@ import type { Transaction } from "@/types";
 import { Waves } from "lucide-react";
 import {
   filterByPeriod,
+  asOfAnchor,
   economicTotals,
   outflowByCategory,
   incomeBySource,
@@ -46,10 +47,25 @@ function valueFormatterProps(ctx?: ConversionContext) {
   return ctx ? { formatValue: (v: number) => formatCurrency(v, ctx.target) } : {};
 }
 
-/** Resolve the period's transactions, or a sentinel for loading/empty. */
-function scoped(transactions: Transaction[] | null | undefined, period: CashFlowPeriod) {
+/**
+ * Resolve the period's transactions against the SELECTED as-of date.
+ *
+ * `asOf` is required in practice and defaulted only for a caller that has none:
+ * `filterByPeriod` without a clock falls back to `new Date()`, which is how
+ * these section widgets came to show TODAY's period while the dashboard
+ * displayed a historical date. The window belongs to the shell, not the widget.
+ *
+ * Cash Flow asks a FLOW question — events on the displayed calendar dates — so
+ * the interval comes from the canonical authority's `flow` side.
+ */
+function scoped(
+  transactions: Transaction[] | null | undefined,
+  period: CashFlowPeriod,
+  asOf?: string,
+) {
   if (transactions == null) return { state: "loading" as const, rows: [] as Transaction[] };
-  const rows = filterByPeriod(transactions, period);
+  const anchor = asOfAnchor(asOf);
+  const rows = filterByPeriod(transactions, period, anchor);
   return { state: rows.length ? ("ok" as const) : ("empty" as const), rows };
 }
 
@@ -79,8 +95,10 @@ export function renderCashFlowSummary(
   accounts: { id: string; type: string }[] = [],
   perspective?: CashFlowPerspective,
   onPerspectiveChange?: (perspective: CashFlowPerspective, filterId: string) => void,
+  /** Selected as-of date — the window anchor (see `scoped`). */
+  asOf?: string,
 ): React.ReactElement {
-  return <CashFlowSummaryWidget transactions={transactions} period={period} ctx={ctx} accounts={accounts} perspective={perspective} onPerspectiveChange={onPerspectiveChange} />;
+  return <CashFlowSummaryWidget transactions={transactions} period={period} asOf={asOf} ctx={ctx} accounts={accounts} perspective={perspective} onPerspectiveChange={onPerspectiveChange} />;
 }
 
 // ─── 2. Cash Flow History ─────────────────────────────────────────────────────
@@ -97,8 +115,10 @@ export function renderCashFlowHistory(
   perspective?: CashFlowPerspective,
   filterId?: string,
   onPerspectiveChange?: (perspective: CashFlowPerspective, filterId: string) => void,
+  /** Selected as-of date — the window anchor (see `scoped`). */
+  asOf?: string,
 ): React.ReactElement {
-  return <CashFlowHistoryWidget transactions={transactions} period={period} ctx={ctx} accounts={accounts} onSelectPeriod={onSelectPeriod} perspective={perspective} filterId={filterId} onPerspectiveChange={onPerspectiveChange} />;
+  return <CashFlowHistoryWidget transactions={transactions} period={period} asOf={asOf} ctx={ctx} accounts={accounts} onSelectPeriod={onSelectPeriod} perspective={perspective} filterId={filterId} onPerspectiveChange={onPerspectiveChange} />;
 }
 
 // ─── 3. Income vs Spending ────────────────────────────────────────────────────
@@ -108,8 +128,10 @@ export function renderIncomeVsSpending(
   transactions: Transaction[] | null | undefined,
   period: CashFlowPeriod,
   ctx?: ConversionContext,
+  /** Selected as-of date — the window anchor (see `scoped`). */
+  asOf?: string,
 ): React.ReactElement {
-  const { state, rows } = scoped(transactions, period);
+  const { state, rows } = scoped(transactions, period, asOf);
   if (state === "loading") return <LoadingCard />;
   if (state === "empty") return <EmptyCard sub="Add income and spending to compare the two." />;
 
@@ -138,8 +160,10 @@ export function renderCashFlowByCategory(
   transactions: Transaction[] | null | undefined,
   period: CashFlowPeriod,
   ctx?: ConversionContext,
+  /** Selected as-of date — the window anchor (see `scoped`). */
+  asOf?: string,
 ): React.ReactElement {
-  const { state, rows } = scoped(transactions, period);
+  const { state, rows } = scoped(transactions, period, asOf);
   if (state === "loading") return <LoadingCard />;
   if (state === "empty") return <EmptyCard sub="Spending by category appears once you have outflows." />;
 
@@ -171,8 +195,10 @@ export function renderIncomeBySource(
   ctx?: ConversionContext,
   accounts: { id: string; type: string }[] = [],
   perspective: CashFlowPerspective = "economic",
+  /** Selected as-of date — the window anchor (see `scoped`). */
+  asOf?: string,
 ): React.ReactElement {
-  const { state, rows } = scoped(transactions, period);
+  const { state, rows } = scoped(transactions, period, asOf);
   if (state === "loading") return <LoadingCard />;
 
   // CF-3 — perspective-aware. Cash Flow → "Cash In by Source" groups the canonical
@@ -235,8 +261,10 @@ export function renderDebtPayments(
   period: CashFlowPeriod,
   ctx?: ConversionContext,
   accounts: { id: string; type: string }[] = [],
+  /** Selected as-of date — the window anchor (see `scoped`). */
+  asOf?: string,
 ): React.ReactElement {
-  return <DebtPaymentsWidget transactions={transactions} period={period} ctx={ctx} accounts={accounts} />;
+  return <DebtPaymentsWidget transactions={transactions} period={period} asOf={asOf} ctx={ctx} accounts={accounts} />;
 }
 
 /**
