@@ -51,8 +51,8 @@ import type { WealthAdapterAccount } from "@/components/space/widgets/wealth-ada
 import { EvidenceDrawer } from "@/components/space/shell/EvidenceDrawer";
 import { WealthHero } from "./WealthHero";
 import { WealthTrendChart, type WealthMetricKey } from "./WealthTrendChart";
-import { HistoryExplorationSheet } from "@/components/history/HistoryExplorationSheet";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
+import type { LensRoot } from "@/lib/history/lens-root-node";
 import { WealthChangeLedger } from "./WealthChangeLedger";
 import { WealthCompositionCard } from "./WealthCompositionCard";
 import { WealthExplanationCard } from "./WealthExplanationCard";
@@ -132,15 +132,25 @@ export function WealthWorkspace({
   );
 
   const chartPoints = result.chart.points;
+  // THE METRIC SELECTS THE ROOT. A user looking at Assets and clicking a point
+  // is asking about Assets, not about Net Worth — so the metric they already
+  // chose becomes the question they explore. "Liabilities" resolves to the debt
+  // root because there is no independent liabilities aggregate.
+  const metricRoot: LensRoot =
+    metric === "totalAssets" ? "assets"
+    : metric === "totalLiabilities" ? "debt"
+    : metric === "liquidNetWorth" ? "liquid-net-worth"
+    : "net-worth";
+
   const handleSelectPoint = useCallback(
     (dateISO: string) => {
       // The INHERITED window is the plotted range itself — never a preset
       // default and never a 30-day fallback.
       const first = chartPoints[0]?.date ?? dateISO;
       const last = chartPoints[chartPoints.length - 1]?.date ?? dateISO;
-      exploration.openPoint(dateISO, first, last);
+      exploration.openPoint(metricRoot, dateISO, first, last);
     },
-    [chartPoints, exploration],
+    [chartPoints, exploration, metricRoot],
   );
 
   // V25-FINAL-1 — FX incompleteness of the CURRENT net-worth composition: true when
@@ -198,34 +208,14 @@ export function WealthWorkspace({
     );
   }
 
-  // The exploration sheet is mounted on EVERY return path. A deep link must
-  // restore even when the workspace itself has nothing to plot — otherwise a
-  // shared URL silently opens an empty dashboard instead of the node it names.
-  const explorationSheet = (
-    <HistoryExplorationSheet
-      spaceId={spaceId}
-      open={exploration.open}
-      nodeType={exploration.nodeType}
-      nodeId={exploration.nodeId}
-      dateISO={exploration.dateISO ?? asOf}
-      fromISO={exploration.fromISO || asOf}
-      toISO={exploration.toISO || asOf}
-      onNavigate={exploration.navigate}
-      onClose={exploration.close}
-    />
-  );
-
   if (!result.hasHistory) {
     return (
-      <>
       <div
         className="rounded-2xl border p-8"
         style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}
       >
         <WealthUnavailable message="No wealth history yet. Once this Space accrues daily snapshots (or you connect accounts), the historical Wealth perspective builds itself — nothing is fabricated in the meantime." />
       </div>
-      {explorationSheet}
-      </>
     );
   }
 
@@ -285,9 +275,6 @@ export function WealthWorkspace({
         />
       )}
 
-      {/* The ONE shared exploration sheet. Every stock lens mounts this same
-          component; there is deliberately no Net-Worth-specific drawer. */}
-      {explorationSheet}
     </>
   );
 }

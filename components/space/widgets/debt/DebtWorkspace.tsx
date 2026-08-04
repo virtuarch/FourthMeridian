@@ -29,7 +29,7 @@
  * Owns NO time state — asOf / compareTo / today are shell props threaded into the hook.
  */
 
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { Check, AlertTriangle, Loader2 } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatDate } from "@/lib/format";
@@ -53,6 +53,7 @@ import { buildDebtSignals } from "./debt-signals";
 import { useDebtSpaceData } from "./useDebtSpaceData";
 import { DebtHero, type DebtWindowChange } from "./DebtHero";
 import { DebtBalanceHistory } from "./DebtBalanceHistory";
+import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { LiabilitiesLedger } from "./LiabilitiesLedger";
 import { PayoffScenarioStrip } from "./PayoffScenarioStrip";
 
@@ -177,6 +178,21 @@ export function DebtWorkspace({
     return () => publishSections([]);
   }, [publishSections]);
 
+  const exploration = useHistoryExploration();
+
+  // V27 — the DEBT root. Clicking a Debt point asks about Debt, not about Net
+  // Worth: the breadcrumb starts here and the accounts are its direct children.
+  const debtPoints = history?.points ?? [];
+  const handleSelectPoint = useCallback(
+    (dateISO: string) => {
+      // The INHERITED window is the plotted range itself.
+      const first = debtPoints[0]?.date ?? dateISO;
+      const last = debtPoints[debtPoints.length - 1]?.date ?? dateISO;
+      exploration.openPoint("debt", dateISO, first, last);
+    },
+    [debtPoints, exploration],
+  );
+
   return (
     <div className="space-y-8 sm:space-y-10 min-w-0">
       {loading && (
@@ -205,7 +221,13 @@ export function DebtWorkspace({
       {/* ② Balance history — total debt over time, the SHARED Net Worth chart (bare,
            like Investments: the chart owns its own title + legend). */}
       <div id="debt-history" className="scroll-mt-20">
-        <DebtBalanceHistory history={history} currency={displayCurrency} asOf={asOf} compareTo={compareTo} />
+        <DebtBalanceHistory
+          history={history}
+          currency={displayCurrency}
+          asOf={asOf}
+          compareTo={compareTo}
+          onSelectPoint={handleSelectPoint}
+        />
         {error && (
           <button
             type="button"

@@ -26,12 +26,15 @@ export function DebtBalanceHistory({
   currency,
   asOf,
   compareTo,
+  onSelectPoint,
 }: {
   /** The window-clipped, FX-converted Balance-Over-Time slice. null ⇒ no in-window history. */
   history:   DebtHistorySlice | null;
   currency:  string;
   asOf:      string;
   compareTo: string | null;
+  /** V27 — open the shared historical exploration sheet at the DEBT root. */
+  onSelectPoint?: (dateISO: string) => void;
 }) {
   // Already clipped by the contract; project to the chart's point shape (totalDebt is
   // the value; a backfilled row is reconstructed).
@@ -44,6 +47,7 @@ export function DebtBalanceHistory({
 
   return (
     <TrendChart
+      onSelectPoint={onSelectPoint}
       points={trendPoints}
       currency={currency}
       title="Balance history"

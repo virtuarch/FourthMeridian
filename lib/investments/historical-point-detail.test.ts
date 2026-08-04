@@ -97,16 +97,17 @@ function main(): void {
     check("C. the route strips the diagnostic from the user-facing payload",
       /diagnostic, \.\.\.safe/.test(route));
 
-    const panel = strip(read("components/space/widgets/investments/HistoricalPointPanel.tsx"));
+    // V27 — retired per-lens drawer; the shared explorer carries these guards.
+    const panel = strip(read("components/history/HistoryExplorationSheet.tsx"));
     check("C. the panel does no arithmetic on money",
       !/reduce\(/.test(panel) && !/\bquantity\s*\*/.test(panel) && !/\/\s*quantity/.test(panel));
     check("C. the panel renders a breakdown ONLY when reconciled",
-      /detail\.reconciled &&/.test(panel));
+      /mayShowChildren && node\.components\.length > 0/.test(panel));
     // V26-S4 — two refusals now, named separately: a contradiction and an
     // absence of evidence are different things to tell a reader.
     check("C. and shows a refusal sentence otherwise",
-      /Historical composition unavailable/.test(panel) &&
-      /Historical composition is unavailable because the stored observations conflict/.test(panel));
+      /Composition is unavailable for this date/.test(panel) &&
+      /Historical composition is unavailable because the stored\s+observations conflict/.test(panel));
     check("C. the panel never reads today's holdings",
       !/getCurrentPositions|data\.current/.test(panel));
 

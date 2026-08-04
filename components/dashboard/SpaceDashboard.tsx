@@ -30,7 +30,7 @@ import { useActiveEnvelope } from "@/lib/space/use-active-envelope";
 import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
 import { PerspectiveTabs } from "@/components/space/shell/PerspectiveTabs";
-import { WORKSPACE_RENDERERS, type WorkspaceRenderCtx } from "@/components/space/workspaces/workspaceRenderers";
+import { WORKSPACE_RENDERERS, WorkspaceExplorationHost, type WorkspaceRenderCtx } from "@/components/space/workspaces/workspaceRenderers";
 import { MembersWorkspace } from "@/components/space/workspaces/MembersWorkspace";
 import { TransactionsWorkspace, TX_SCOPE_NOTE } from "@/components/space/workspaces/TransactionsWorkspace";
 import { AccountsWorkspace } from "@/components/space/workspaces/AccountsWorkspace";
@@ -916,7 +916,12 @@ export function SpaceDashboard({
                 // / Liquidity / Investments / Debt). Each owns its data + FX + as-of
                 // trust and emits its envelope up; the host only supplies the render
                 // context. See components/space/workspaces/workspaceRenderers.tsx.
-                WORKSPACE_RENDERERS[activePerspectiveId](renderCtx)
+                // V27 — every workspace renders inside the ONE exploration host,
+                // so the shared sheet has a single mount and a deep link restores
+                // even when the workspace behind it has nothing to plot.
+                <WorkspaceExplorationHost spaceId={spaceId} asOf={asOf}>
+                  {WORKSPACE_RENDERERS[activePerspectiveId](renderCtx)}
+                </WorkspaceExplorationHost>
               ) : activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
                 toVirtualSections(activePerspective.id, activePerspective.widgets).map((vs) => (
                   <SectionCard

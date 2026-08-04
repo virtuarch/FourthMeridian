@@ -20,6 +20,8 @@
  */
 
 import React from "react";
+import { HistoryExplorationSheet } from "@/components/history/HistoryExplorationSheet";
+import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { WealthWorkspace } from "@/components/space/widgets/wealth/WealthWorkspace";
 import { CashFlowWorkspace } from "@/components/space/widgets/cashflow/CashFlowWorkspace";
 import { LiquidityWorkspace } from "@/components/space/widgets/liquidity/LiquidityWorkspace";
@@ -97,6 +99,44 @@ export interface WorkspaceRenderCtx {
  * own an inline workspace (registry `kind: "perspective"`, `status: "available"`,
  * no routed-modal). The registry↔renderer parity test enforces this set.
  */
+/**
+ * THE ONE exploration sheet, mounted ONCE for every workspace.
+ *
+ * Mounting it per workspace meant five mounts of one component, five chances for
+ * one of them to drift, and — worse — a deep link that opened nothing whenever
+ * the workspace behind it early-returned an empty state. The host always
+ * renders, so the sheet always restores.
+ *
+ * Each workspace still chooses its OWN root when a point is clicked; only the
+ * mount is shared. That is the whole design: one explorer, many entry points.
+ */
+export function WorkspaceExplorationHost({
+  spaceId, asOf, children,
+}: {
+  spaceId: string;
+  asOf: string;
+  children: React.ReactNode;
+}) {
+  const exploration = useHistoryExploration();
+  return (
+    <>
+      {children}
+      <HistoryExplorationSheet
+        spaceId={spaceId}
+        open={exploration.open}
+        root={exploration.root}
+        nodeType={exploration.nodeType}
+        nodeId={exploration.nodeId}
+        dateISO={exploration.dateISO ?? asOf}
+        fromISO={exploration.fromISO || asOf}
+        toISO={exploration.toISO || asOf}
+        onNavigate={exploration.navigate}
+        onClose={exploration.close}
+      />
+    </>
+  );
+}
+
 export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => React.ReactNode> = {
   wealth: (ctx) => (
     <WealthWorkspace

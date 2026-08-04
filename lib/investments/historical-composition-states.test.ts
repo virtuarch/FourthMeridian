@@ -189,7 +189,10 @@ function main(): void {
   console.log("\nV, Y. Static guards");
   {
     const detail = strip(read("lib/investments/historical-point-detail.ts"));
-    const panel  = strip(read("components/space/widgets/investments/HistoricalPointPanel.tsx"));
+    // V27 — the per-lens drawer was RETIRED; the ONE shared explorer inherits
+    // every guard that protected it. The intent is unchanged: the view renders a
+    // breakdown only when the authority permits it.
+    const panel  = strip(read("components/history/HistoryExplorationSheet.tsx"));
     const probes = strip(read("lib/integrity/historical-probes.ts"));
     const chart  = strip(read("components/space/widgets/charts/TrendChart.tsx"));
 
@@ -199,7 +202,8 @@ function main(): void {
     check("Y. React does no financial arithmetic",
       !/reduce\(/.test(panel) && !/\bquantity\s*\*/.test(panel) && !/chartValue\s*-/.test(panel));
     check("Y. React renders a breakdown only when the authority reconciled",
-      /detail\.reconciled &&/.test(panel));
+      /mayShowChildren && node\.components\.length > 0/.test(panel) &&
+      /node\.reconciliation === "EXACT" \|\| node\.reconciliation === "PARTIALLY_ATTRIBUTED"/.test(panel));
     check("Y. …and names the two refusals separately",
       /CONTRADICTORY/.test(panel) && /UNAVAILABLE/.test(panel));
     check("Y. the residual is never called cash, gain, or a holding",

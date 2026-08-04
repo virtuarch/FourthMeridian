@@ -25,7 +25,7 @@
  * from the UNCONVERTED historical (trust is currency-agnostic). No new data contracts.
  */
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Info, Loader2, TrendingUp } from "lucide-react";
 import Link from "next/link";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
@@ -42,7 +42,7 @@ import { InvestmentConnectionsCard } from "./InvestmentConnectionsCard";
 import { InvestmentAllocationPanel } from "./InvestmentAllocationPanel";
 import { InvestmentsHero } from "./InvestmentsHero";
 import { InvestmentsBalanceHistory } from "./InvestmentsBalanceHistory";
-import { HistoricalPointPanel } from "./HistoricalPointPanel";
+import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { HoldingsLedger } from "./HoldingsLedger";
 import { HoldingsConcentration } from "./HoldingsConcentration";
 
@@ -74,7 +74,19 @@ export function InvestmentsWorkspace({
   // V26-S3-DETAIL — which historical point the reader asked about. The chart
   // reports a DATE and nothing else; the panel asks the canonical historical
   // authority what that date was made of.
-  const [pointDate, setPointDate] = useState<string | null>(null);
+  // V27 — the INVESTMENTS root, through the ONE shared explorer. The legacy
+  // per-lens drawer is retired: two drawers meant two answers to the same
+  // question, which is what this arc exists to remove.
+  const exploration = useHistoryExploration();
+  const handleSelectPoint = useCallback(
+    (dateISO: string) => {
+      const pts = rawSeries ?? [];
+      const first = pts[0]?.date ?? dateISO;
+      const last = pts[pts.length - 1]?.date ?? dateISO;
+      exploration.openPoint("investments", dateISO, first, last);
+    },
+    [rawSeries, exploration],
+  );
 
   // Trust envelope — resolved from the UNCONVERTED historical (currency-agnostic tiers),
   // reusing the ONE canonical resolver. Memoized so the effect only fires on change, and
@@ -175,13 +187,7 @@ export function InvestmentsWorkspace({
 
       {/* ③ Balance history — invested value over time (the SHARED Net Worth chart). */}
       <div id="investments-history" className="scroll-mt-20">
-        <InvestmentsBalanceHistory points={series} currency={reportingCurrency} asOf={asOf} compareTo={compareTo} onSelectPoint={setPointDate} />
-        <HistoricalPointPanel
-          spaceId={spaceId}
-          dateISO={pointDate}
-          open={pointDate !== null}
-          onClose={() => setPointDate(null)}
-        />
+        <InvestmentsBalanceHistory points={series} currency={reportingCurrency} asOf={asOf} compareTo={compareTo} onSelectPoint={handleSelectPoint} />
       </div>
 
       {/* ④ This period — the opening → in → out → change → closing movement bridge. */}

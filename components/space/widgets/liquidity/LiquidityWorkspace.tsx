@@ -41,7 +41,7 @@
  * Owns NO time state — asOf / compareTo / today are shell props threaded into the hook.
  */
 
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
@@ -59,6 +59,7 @@ import { Surface, Block } from "@/components/atlas/Surface";
 import { TransactionCoverageNote } from "@/components/space/trust/TransactionCoverageNote";
 import { LiquidityHero, type LiquidityWindowChange, type LiquidityCoverage } from "./LiquidityHero";
 import { LiquidityBalanceHistory } from "./LiquidityBalanceHistory";
+import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { SourcesLedger } from "./SourcesLedger";
 import { buildSourceRows } from "./liquidity-sources-util";
 import { LiquidityWhatChangedCard } from "./LiquidityWhatChangedCard";
@@ -139,6 +140,10 @@ export function LiquidityWorkspace({
    *  Liquidity data). Present-day ⇒ the current lens; historical ⇒ the atAsOf lens. */
   onEnvelopeChange: (env: PerspectiveEnvelope) => void;
 }) {
+  // V27 — the LIQUIDITY root. Its children are TIERS, not buckets: liquidity
+  // classifies by how fast an asset converts, and has no liability side at all.
+  const exploration = useHistoryExploration();
+
   // Activate the canonical contract: fetch the whole historical envelope when a past
   // date / comparison is requested; synthesize the current-only contract from the
   // host lens present-day (no fetch).
@@ -245,6 +250,16 @@ export function LiquidityWorkspace({
     return () => publishSections([]);
   }, [publishSections, period]);
 
+  const liquidityPoints = cashHistory?.points ?? [];
+  const handleSelectPoint = useCallback(
+    (dateISO: string) => {
+      const first = liquidityPoints[0]?.date ?? dateISO;
+      const last = liquidityPoints[liquidityPoints.length - 1]?.date ?? dateISO;
+      exploration.openPoint("liquidity", dateISO, first, last);
+    },
+    [liquidityPoints, exploration],
+  );
+
   return (
     <div className="space-y-8 sm:space-y-10 min-w-0">
       {loading && (
@@ -276,7 +291,13 @@ export function LiquidityWorkspace({
 
       {/* ② Balance history — accessible cash over time, the SHARED TrendChart. */}
       <div id="liquidity-history" className="scroll-mt-20">
-        <LiquidityBalanceHistory history={cashHistory} currency={displayCurrency} asOf={asOf} compareTo={compareTo} />
+        <LiquidityBalanceHistory
+          history={cashHistory}
+          currency={displayCurrency}
+          asOf={asOf}
+          compareTo={compareTo}
+          onSelectPoint={handleSelectPoint}
+        />
         {error && (
           <button
             type="button"

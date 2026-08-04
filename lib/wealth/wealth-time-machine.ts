@@ -26,6 +26,7 @@
  */
 
 import { formatCurrency } from "@/lib/format";
+import { derivedRealAssets } from "@/lib/snapshots/aggregate-authorisation.core";
 import { nearestOnOrBefore } from "@/lib/data/nearest-on-or-before";
 import { wealthBasisDisclosure, type WealthBasisDisclosure } from "@/lib/wealth/basis-disclosure";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
@@ -168,7 +169,17 @@ function toState(s: Snapshot): Omit<WealthState, "found"> {
   const cash        = s.totalCash + s.totalSavings;
   const investments = s.totalInvestments;
   const crypto      = s.totalCrypto;
-  const real        = Math.max(0, s.totalAssets - cash - investments - crypto);
+  // V27 — the real-assets residual is CANONICAL arithmetic, owned by
+  // `derivedRealAssets`. Re-deriving it here (as `max(0, totalAssets − …)`) was
+  // a second copy of a formula that already exists, and a second copy is a
+  // divergence waiting for one of them to be corrected alone.
+  const real        = derivedRealAssets({
+    stocks: s.totalInvestments, crypto: s.totalCrypto, cash: s.totalCash,
+    savings: s.totalSavings, debt: s.totalDebt,
+    total: s.totalInvestments + s.totalCrypto,
+    totalAssets: s.totalAssets, netWorth: s.netWorth,
+    netLiquid: s.netLiquid ?? 0, cashOnHand: s.cashOnHand,
+  });
   const liabilities = s.totalDebt;
   return {
     date:           s.date,
@@ -176,7 +187,13 @@ function toState(s: Snapshot): Omit<WealthState, "found"> {
     netWorth:       s.netWorth,
     totalAssets:    s.totalAssets,
     totalLiabilities: liabilities,
-    liquidNetWorth: s.totalCash + s.totalSavings - s.totalDebt,
+    // V27 — READ the authorised column rather than re-deriving its formula.
+    // `netLiquid` is a stored aggregate with its own authorisation
+    // (`be39b1d`) and its own repair history (`86f3b74`); computing
+    // `cash + savings − debt` here produced the same number by luck of both
+    // copies agreeing, and would silently disagree the moment one was fixed.
+    // The `??` fallback covers a pre-column DTO only.
+    liquidNetWorth: s.netLiquid ?? (s.totalCash + s.totalSavings - s.totalDebt),
     composition:    { cash, investments, crypto, real, liabilities },
   };
 }

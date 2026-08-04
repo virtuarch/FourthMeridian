@@ -26,12 +26,15 @@ export function LiquidityBalanceHistory({
   currency,
   asOf,
   compareTo,
+  onSelectPoint,
 }: {
   /** The window-clipped, FX-converted accessible-cash slice. null ⇒ no in-window history. */
   history:   CashHistorySlice | null;
   currency:  string;
   asOf:      string;
   compareTo: string | null;
+  /** V27 — open the shared explorer at the LIQUIDITY root. */
+  onSelectPoint?: (dateISO: string) => void;
 }) {
   // Already clipped by the pure helper; project to the chart's point shape (cashNow is
   // the value; a backfilled row is reconstructed).
@@ -44,6 +47,7 @@ export function LiquidityBalanceHistory({
 
   return (
     <TrendChart
+      onSelectPoint={onSelectPoint}
       points={trendPoints}
       currency={currency}
       title="Balance history"
