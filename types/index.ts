@@ -118,6 +118,22 @@ export interface Snapshot {
   assetSideContaminated?: boolean;
   cryptoUnavailableReason?: string;
 
+  // ── V27-A — AGGREGATE AUTHORISATION ───────────────────────────────────────
+  //
+  // Per-aggregate answer to "may this number be asserted?", resolved at the SAME
+  // single read boundary from the SAME component verdicts above. Components
+  // carried authorisation and aggregates did not, so `netWorth` and
+  // `totalAssets` could be asserted on rows whose crypto explicitly may not be.
+  //
+  // Each entry carries the canonical reconciliation state (EXACT /
+  // PARTIALLY_ATTRIBUTED / CONTRADICTORY / UNAVAILABLE) — the SAME vocabulary
+  // the Investments point detail uses, imported, never restated.
+  //
+  // Optional, exactly like the crypto fields: every pre-existing constructor of
+  // this DTO is unaffected, and a consumer that does not read it behaves as
+  // before.
+  aggregateAuthorisation?: import("@/lib/snapshots/aggregate-authorisation.core").AggregateAuthorisationMap;
+
   // MC1 QA Q4b — true when this off-stamp point's FX rate MISSED, so its values
   // are native/unconverted and sit at a different magnitude than the resolving
   // points. Additive and absent on homogeneous histories and successful

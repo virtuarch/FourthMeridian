@@ -49,46 +49,26 @@ import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
 import { readBtcUsdWindow } from "@/lib/crypto/btc-price";
 import { resolveCryptoValuationState, isCryptoAssertable } from "@/lib/snapshots/crypto-valuation-status.core";
 import { SettlementState } from "@prisma/client";
+import {
+  COMPUTED_TOLERANCE, observedTolerance as observedTol, round2 as round2Shared,
+  type ReconciliationState,
+} from "@/lib/perspective-engine/reconciliation.core";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
 /**
- * Reporting-currency tolerance when comparing the engine AGAINST ITSELF — a
- * reconstructed row, whose stored total this same composition produced. One
- * cent: exactness is achievable there, so anything larger is a real defect.
+ * V27-A — the reconciliation vocabulary now lives in ONE pure module
+ * (lib/perspective-engine/reconciliation.core.ts) because aggregate
+ * authorisation needed it too, and a database binding is the wrong place to
+ * declare a vocabulary. Re-exported here so every existing consumer of these
+ * names is unaffected; the values and semantics are identical.
  */
-export const COMPOSITION_TOLERANCE = 0.01;
-
-/**
- * Tolerance when comparing the engine against an INDEPENDENT OBSERVATION — a
- * frozen row, whose total the app recorded directly at the time from live
- * balances, while the components are resolved now from dated evidence.
- *
- * Two different recordings of the same portfolio, made by different means at
- * different moments, will differ by rounding at the currency and FX boundaries.
- * Measured across the live frozen rows: 0.00, 0.00, −0.02, 0.00, 0.00, −0.31,
- * 0.00, −0.05. Demanding one-cent agreement there would report six-hundredths of
- * a percent as a contradiction, which is not what a contradiction is.
- *
- * A dollar, or one basis point of the total — whichever is larger — so the floor
- * scales with the portfolio instead of becoming stricter as it grows.
- */
-export function observedTolerance(total: number): number {
-  return Math.max(1.0, Math.abs(total) * 0.0001);
-}
-
-/** How well the components explain the displayed total. */
-export const COMPOSITION_STATES = [
-  /** Components account for the total within tolerance. */
-  "EXACT",
-  /** Components fall SHORT of an OBSERVED total; the remainder is unattributed. */
-  "PARTIALLY_ATTRIBUTED",
-  /** The evidence contradicts itself — never shown as a breakdown. */
-  "CONTRADICTORY",
-  /** Not enough evidence to say anything useful. */
-  "UNAVAILABLE",
-] as const;
-export type CompositionState = (typeof COMPOSITION_STATES)[number];
+export {
+  COMPUTED_TOLERANCE as COMPOSITION_TOLERANCE,
+  observedTolerance,
+  RECONCILIATION_STATES as COMPOSITION_STATES,
+  type ReconciliationState as CompositionState,
+} from "@/lib/perspective-engine/reconciliation.core";
 
 export const HISTORICAL_COMPOSITION_UNAVAILABLE = "HISTORICAL_COMPOSITION_UNAVAILABLE";
 export const HISTORICAL_COMPOSITION_CONTRADICTORY = "HISTORICAL_COMPOSITION_CONTRADICTORY";
@@ -139,7 +119,7 @@ export interface HistoricalPointDetail {
   /** chartValue − componentTotal. */
   delta: number;
   /** The reconciliation outcome. `reconciled` is kept as its boolean shorthand. */
-  state: CompositionState;
+  state: ReconciliationState;
   /** True for EXACT and PARTIALLY_ATTRIBUTED — i.e. a breakdown may render. */
   reconciled: boolean;
   /**
@@ -544,7 +524,7 @@ export async function getHistoricalPointDetail(
   const chartValue = snapshot.stocks + (cryptoAssertable ? snapshot.crypto : 0);
   const componentTotal = components.reduce((n, c) => n + (c.value ?? 0), 0);
   const delta = round2(chartValue - componentTotal);
-  const tolerance = observedTotalRow ? observedTolerance(chartValue) : COMPOSITION_TOLERANCE;
+  const tolerance = observedTotalRow ? observedTol(chartValue) : COMPUTED_TOLERANCE;
 
   // ── Contradiction checks, before any friendly outcome ─────────────────────
   const contradictions: string[] = [];
@@ -567,7 +547,7 @@ export async function getHistoricalPointDetail(
     contradictions.push(`row currency ${rowCurrency} differs from the Space's ${reportingCurrency}`);
   }
 
-  let state: CompositionState;
+  let state: ReconciliationState;
   if (contradictions.length > 0) {
     state = "CONTRADICTORY";
   } else if (Math.abs(delta) <= tolerance) {
@@ -616,7 +596,5 @@ export async function getHistoricalPointDetail(
   };
 }
 
-/** Reporting-currency rounding — the repository's canonical two-decimal money policy. */
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
+/** Reporting-currency rounding — the ONE canonical two-decimal policy. */
+const round2 = round2Shared;

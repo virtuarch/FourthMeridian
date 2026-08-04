@@ -23,6 +23,7 @@ import {
   resolveCryptoValuationState, isCryptoAssertable, isAssetSideContaminated,
   cryptoUnavailableReason,
 } from "@/lib/snapshots/crypto-valuation-status.core";
+import { authoriseAggregates } from "@/lib/snapshots/aggregate-authorisation.core";
 import type { ConversionContext } from "@/lib/money/types";
 import { Snapshot } from "@/types";
 
@@ -117,6 +118,33 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
       isEstimated:           r.isEstimated ?? false,
       cryptoValuationStatus: r.cryptoValuationStatus ?? null,
     });
+    // V27-A — AGGREGATE AUTHORISATION, resolved ONCE, at the same boundary.
+    //
+    // Components carried authorisation; aggregates did not, so a row whose
+    // crypto may not be asserted still offered `netWorth` and `totalAssets`
+    // freely — measured at 378 rows. The rule is now applied here, for every
+    // aggregate, from the SAME component verdicts resolved just above: no
+    // consumer re-derives it and none can reach a different answer.
+    //
+    // Deliberately computed on the STORED (pre-conversion) values. Authorisation
+    // is a statement about EVIDENCE, not about presentation: converting a row
+    // into a display currency cannot make an unassertable component assertable,
+    // and running this after conversion would make the verdict depend on which
+    // currency the reader happens to be viewing.
+    //
+    // `crypto` is the only component that carries authorisation today. The
+    // others are absent from the map, which the authority reads as "no authority
+    // has anything to say" — the truth, not an assumption of correctness.
+    const aggregates = authoriseAggregates({
+      values: {
+        stocks: r.stocks, crypto: r.crypto, cash: r.cash, savings: r.savings, debt: r.debt,
+        total: r.total, totalAssets: r.totalAssets, netWorth: r.netWorth,
+        netLiquid: r.netLiquid, cashOnHand: r.cashOnHand,
+      },
+      componentAssertable: { crypto: isCryptoAssertable(cryptoState) },
+      isEstimated: r.isEstimated ?? false,
+    });
+
     const provenance = {
       completenessTier:           completeness.tier,
       completenessRecorded:       completeness.recorded,
@@ -124,7 +152,13 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
       totalComponentCount:        completeness.totalComponentCount,
       cryptoValuationState:       cryptoState,
       cryptoAssertable:           isCryptoAssertable(cryptoState),
+      // RETAINED, unchanged. `assetSideContaminated` is the special case this
+      // general rule was a preview of, and several consumers read it today
+      // (Wealth, AI, export). Removing it would be a migration this slice has
+      // no reason to force; it and `aggregates.netWorth.assertable` agree by
+      // construction, which a test pins.
       assetSideContaminated:      isAssetSideContaminated(cryptoState),
+      aggregateAuthorisation:     aggregates,
       ...(cryptoUnavailableReason(cryptoState)
         ? { cryptoUnavailableReason: cryptoUnavailableReason(cryptoState)! }
         : {}),
