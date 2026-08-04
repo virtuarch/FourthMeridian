@@ -32,6 +32,8 @@
  */
 
 import type { Prisma, PrismaClient } from "@prisma/client";
+import type { CompletenessTier } from "@/lib/perspective-engine/types";
+import { valuePortfolioAsOf, type InvestmentValuationView } from "./valuation-core";
 import { db } from "@/lib/db";
 import { getInvestmentValueForWindow, type GetInvestmentValueWindowArgs } from "./valuation";
 import { loadHoldingOwnership, holdingKey } from "./holding-ownership";
@@ -131,34 +133,94 @@ export async function historicalHoldingsForWindow(
   // The ceiling is now DERIVED from the account set's own latest evidence, so
   // every caller gets the same windows for the same accounts, whatever they
   // asked about. Still clock-free: it reads dated rows, never `new Date()`.
-  const ownershipToISO = args.ownershipToISO
-    ?? await resolveEvidenceCeiling(client, scope.accountIds, dates[dates.length - 1]);
-  const ownership = scope.accountIds.length > 0
-    ? await loadHoldingOwnership(scope.accountIds, ownershipToISO, client)
-    : new Map<string, Awaited<ReturnType<typeof loadHoldingOwnership>> extends Map<string, infer V> ? V : never>();
+  const facts = await loadOwnershipLicence(client, scope.accountIds, dates[dates.length - 1], args.ownershipToISO);
 
+  for (const dateISO of dates) {
+    out.set(dateISO, licenseValuationView(dateISO, byDate.get(dateISO)?.components ?? [], facts));
+  }
+  return out;
+}
+
+/**
+ * THE ownership licence for an account set: per-(account, instrument) facts,
+ * resolved once and applicable to ANY view of those accounts.
+ *
+ * Extracted so a caller that ALREADY has a valuation view can license it without
+ * computing a second one. That is the whole point — A10 used to call the
+ * valuation engine directly and skip this step, which back-projected positions
+ * onto dates before any evidence said they were owned. There is one licence and
+ * one place that loads it.
+ */
+export async function loadOwnershipLicence(
+  client: Client,
+  accountIds: readonly string[],
+  fallbackCeilingISO: string,
+  ceilingOverride?: string,
+): Promise<Map<string, HoldingOwnershipFacts>> {
+  const ownershipToISO = ceilingOverride
+    ?? await resolveEvidenceCeiling(client, accountIds, fallbackCeilingISO);
   const facts = new Map<string, HoldingOwnershipFacts>();
+  if (accountIds.length === 0) return facts;
+  const ownership = await loadHoldingOwnership([...accountIds], ownershipToISO, client);
   for (const [k, o] of ownership) {
     facts.set(k, { resolution: o.resolution, closedFromISO: o.closedFromISO });
   }
+  return facts;
+}
 
-  for (const dateISO of dates) {
-    const view = byDate.get(dateISO);
-    const components: HoldingComponent[] = (view?.components ?? []).map((c) => ({
-      financialAccountId: c.accountId,
-      instrumentId:       c.instrumentId,
-      quantity:           c.quantity,
-      reportingValue:     c.reportingValue,
-      tier:               c.overallTier,
-      reason:             c.reason,
-    }));
-    out.set(
-      dateISO,
-      buildHistoricalHoldings(dateISO, components, facts, (c) =>
-        holdingKey(c.financialAccountId, c.instrumentId)),
-    );
-  }
-  return out;
+/**
+ * Apply the licence to a whole valuation VIEW, returning a licensed view.
+ *
+ * This is where A10 converges. The valuation engine answers "what is this
+ * position worth on date D"; it does not answer "did you own it on date D". A
+ * caller holding a raw view hands it here and gets back the same view restricted
+ * to what ownership licenses — subtotal, counts, unvalued remainder and
+ * completeness tier all re-aggregated through `valuePortfolioAsOf`, the SAME
+ * canonical function that produced the view in the first place.
+ *
+ * Re-aggregating rather than only filtering matters: those fields are
+ * precomputed on the view, so filtering `components` alone would leave them
+ * describing a larger set than the rows beside them.
+ *
+ * An excluded position is REMOVED, not zeroed — `buildHistoricalHoldings` already
+ * decided it was not held, and a zero-valued row asserts ownership of something
+ * the evidence says was not owned.
+ */
+export function licenseView(
+  view: InvestmentValuationView,
+  dateISO: string,
+  facts: ReadonlyMap<string, HoldingOwnershipFacts>,
+): InvestmentValuationView {
+  const set = licenseValuationView(dateISO, view.components, facts);
+  const held = new Set(set.held.map((h) => holdingKey(h.financialAccountId, h.instrumentId)));
+  const components = view.components.filter((c) => held.has(holdingKey(c.accountId, c.instrumentId)));
+  if (components.length === view.components.length) return view;
+  return valuePortfolioAsOf(components, view.asOf, view.reportingCurrency);
+}
+
+/**
+ * Apply the licence to one date's valuation components.
+ *
+ * Pure projection over `buildHistoricalHoldings` — the same core the snapshot
+ * path uses, so a licensed view and a stored snapshot cannot disagree about what
+ * was held.
+ */
+export function licenseValuationView(
+  dateISO: string,
+  components: readonly { accountId: string; instrumentId: string; quantity: number | null;
+                         reportingValue: number | null; overallTier: CompletenessTier; reason: string }[],
+  facts: ReadonlyMap<string, HoldingOwnershipFacts>,
+): HistoricalHoldingsSet {
+  const mapped: HoldingComponent[] = components.map((c) => ({
+    financialAccountId: c.accountId,
+    instrumentId:       c.instrumentId,
+    quantity:           c.quantity,
+    reportingValue:     c.reportingValue,
+    tier:               c.overallTier,
+    reason:             c.reason,
+  }));
+  return buildHistoricalHoldings(dateISO, mapped, facts, (c) =>
+    holdingKey(c.financialAccountId, c.instrumentId));
 }
 
 /**

@@ -23,6 +23,8 @@ import { convertMoney, identityContext } from "@/lib/money/convert";
 import { buildSpaceConversionContextById } from "@/lib/money/server-context";
 import type { ConversionContext } from "@/lib/money/types";
 import { getInvestmentValueAsOf } from "./valuation";
+import { loadOwnershipLicence, licenseView } from "./historical-holdings";
+import type { HoldingOwnershipFacts } from "./historical-holdings.core";
 import { resolveSpaceInvestmentAccountIds, resolveSingleAccountScope } from "./account-scope";
 import { summarizePeriodFlows, type FlowEvent, type PeriodFlows } from "./investment-flows-core";
 import {
@@ -85,12 +87,46 @@ export async function getInvestmentsTimeMachine(
   // contributions), and a position with no PRICE stays an unvalued remainder that
   // the reconciliation's coverage reports. Both endpoints use it so the change
   // compares the SAME position set like-for-like.
-  const [view, compareView] = await Promise.all([
+  const [rawView, rawCompareView] = await Promise.all([
     getInvestmentValueAsOf({ ...scope, asOf, client, visibilityScope: "detailEligible", holdConstantBeforeEarliest: true }),
     compareTo
       ? getInvestmentValueAsOf({ ...scope, asOf: compareTo, client, visibilityScope: "detailEligible", holdConstantBeforeEarliest: true })
       : Promise.resolve(null),
   ]);
+
+  // ── OWNERSHIP LICENSING (V26 convergence) ──────────────────────────────────
+  //
+  // A10 used to hand the raw valuation view straight to assembly. The valuation
+  // engine answers "what is this position worth on date D"; it does NOT answer
+  // "did you own it on date D". `holdConstantBeforeEarliest` above made that
+  // worse rather than better: it deliberately carries the earliest observed
+  // quantity BACKWARD, so an account connected in 2026 had its positions priced
+  // across 2025 as though they had always been held.
+  //
+  // Measured on Chris' Space at 2025-11-03: the `Individual` account contributed
+  // $2,482.12 — six positions, seven months before its first ownership evidence —
+  // and that was the entire gap between the headline ($32,820.13) and the chart,
+  // panel and snapshot, which all agreed at $30,338.00.
+  //
+  // The licence is the SAME one the snapshot path applies (`loadOwnershipLicence`
+  // + `licenseValuationView` over `buildHistoricalHoldings`), resolved from the
+  // same derived evidence ceiling. This is a convergence, not a second gate:
+  // there is no ownership logic here, only its application.
+  //
+  // Applied to BOTH endpoints so the period still compares the same licensed set
+  // like-for-like, which is what `holdConstantBeforeEarliest` was protecting.
+  const scopeAccountIds = await resolveInvestmentAccountIdsForLicence(client, args);
+  const ceilingFallback = compareTo && compareTo > asOf ? compareTo : asOf;
+  const licence = await loadOwnershipLicence(client, scopeAccountIds, ceilingFallback);
+
+  // Licensing a view converges EVERY A10 surface at once: holdings rows, the
+  // portfolio subtotal, reconciliation, the trust envelope and period
+  // attribution are all derived from `view.components` by
+  // `assembleInvestmentsTimeMachine`, so no downstream consumer changes.
+  const view = licenseView(rawView, asOf, licence);
+  const compareView = rawCompareView && compareTo
+    ? licenseView(rawCompareView, compareTo, licence)
+    : null;
 
   // ── Period flows from canonical events (only when an interval is defined) ──
   const flows: PeriodFlows | null = compareTo
@@ -102,6 +138,20 @@ export async function getInvestmentsTimeMachine(
   const display = await readDisplay(client, instrumentIds);
 
   return assembleInvestmentsTimeMachine({ asOf, compareTo, view, compareView, flows, display });
+}
+
+/**
+ * The account ids the licence covers — the SAME detail-eligible scope the
+ * valuation used, so a position cannot be valued under one scope and licensed
+ * under another.
+ */
+async function resolveInvestmentAccountIdsForLicence(
+  client: Client,
+  args: GetInvestmentsTimeMachineArgs,
+): Promise<string[]> {
+  if (args.financialAccountId) return [args.financialAccountId];
+  if (!args.spaceId) return [];
+  return resolveSpaceInvestmentAccountIds(client, args.spaceId, "detailEligible");
 }
 
 /**
