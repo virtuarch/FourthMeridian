@@ -99,6 +99,16 @@ export interface Snapshot {
   // D2.x Slice 4 — true for reconstructed/backfilled historical rows. Optional
   // so existing constructors default to undefined (treated as not-estimated).
   isEstimated?: boolean;
+  /**
+   * V27-B — the currency these totals are actually IN.
+   *
+   * The read boundary already resolves an EFFECTIVE target (V25-CLOSE-3A: a
+   * Space whose requested currency has no rates falls back to USD), and it was
+   * the only thing that knew. Every consumer had to assume, and an assumption
+   * that is right today is a mislabelled chart the day the fallback fires.
+   * Optional, so pre-existing constructors are unaffected.
+   */
+  currency?: string;
   // ── V26-CRYPTO-STATUS-1 — the row's crypto authority, resolved ONCE ────────
   //
   // `totalCrypto` above is always a number, because SpaceSnapshot.crypto is NOT

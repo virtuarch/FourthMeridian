@@ -255,9 +255,26 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
   //
   // Absent the flag (any DTO built before this slice) nothing is dropped, so
   // existing behaviour is byte-identical.
+  // V27-A/B — refuse on the AGGREGATE's own verdict.
+  //
+  // This filtered on `assetSideContaminated`, which is one component's boolean
+  // ("crypto may not be asserted, therefore the asset side is contaminated").
+  // It was correct and it is now the special case of a general rule: Slice A
+  // authorises every aggregate from every component it is composed from. Reading
+  // the aggregate verdict means this stays right when a SECOND component gains
+  // authorisation, instead of silently continuing to ask only about crypto.
+  //
+  // Behaviour is unchanged today — the two agree on every live row by
+  // construction, which a test pins — and the boolean remains the fallback for
+  // any DTO built before Slice A.
+  const netWorthRefused = (s: Snapshot): boolean =>
+    s.aggregateAuthorisation
+      ? s.aggregateAuthorisation.netWorth.assertable === false
+      : s.assetSideContaminated === true;
+
   const series = input.snapshots
     .filter((s) => !s.fxMiss)
-    .filter((s) => s.assetSideContaminated !== true)
+    .filter((s) => !netWorthRefused(s))
     .slice()
     .sort((a, b) => a.date.localeCompare(b.date));
 

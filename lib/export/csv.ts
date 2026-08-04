@@ -126,6 +126,15 @@ export function toSnapshotsCsv(rows: ExportSnapshot[]): string {
       crypto_assertable:         r.cryptoAssertable ?? "",
       asset_side_contaminated:   r.assetSideContaminated ?? "",
       crypto_unavailable_reason: r.cryptoUnavailableReason ?? "",
+      // V27-A/B — AGGREGATE authorisation, beside the component's. The raw
+      // stored totals above are preserved unchanged for audit; these say which
+      // of them may be asserted and why. Empty when the producing caller
+      // resolved no authorisation (a pre-Slice-A DTO) — deliberately distinct
+      // from a recorded `false`.
+      net_worth_state:      r.aggregateAuthorisation?.netWorth.state ?? "",
+      net_worth_assertable: r.aggregateAuthorisation?.netWorth.assertable ?? "",
+      total_assets_state:   r.aggregateAuthorisation?.totalAssets.state ?? "",
+      net_liquid_state:     r.aggregateAuthorisation?.netLiquid.state ?? "",
     })),
   );
 }

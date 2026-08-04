@@ -171,6 +171,9 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
         ...raw,
         // D2.x Slice 4 — provenance for the estimated-history badge.
         isEstimated: r.isEstimated ?? false,
+        // V27-B — the EFFECTIVE currency these totals are in, stated rather than
+        // assumed. On the fast path it is the row's own stamp.
+        currency: target,
         ...provenance,
       };
     }
@@ -182,6 +185,7 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
       date: r.date.toISOString().split("T")[0],
       ...converted.values,
       isEstimated: (r.isEstimated ?? false) || converted.estimated,
+      currency: target,
       ...provenance,
       // MC1 QA Q4b — additive: only a genuine rate MISS (native pass-through)
       // sets this; resolving off-stamp rows omit it, so homogeneous histories

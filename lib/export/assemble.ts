@@ -379,12 +379,25 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
   // be told which ones may not be asserted. Stated once, in the manifest, and
   // only when such rows are actually present.
   const unassertableCrypto = data.snapshots.filter((s) => s.cryptoAssertable === false).length;
+  // V27-A/B — the same rows, counted by the AGGREGATE that refuses. Stated
+  // separately because a reader auditing net worth needs the aggregate's answer,
+  // not an inference from a component's.
+  const unassertableNetWorth = data.snapshots.filter(
+    (s) => s.aggregateAuthorisation?.netWorth.assertable === false,
+  ).length;
   if (unassertableCrypto > 0) {
     notes.push(
       `${unassertableCrypto} snapshot row(s) carry a historical crypto value that cannot be asserted. ` +
       `Their raw stored total_crypto, total_assets and net_worth are preserved unchanged for audit, ` +
       `but crypto_assertable is false and asset_side_contaminated is true — net_worth and total_assets ` +
       `on those rows are composed from the unassertable crypto figure. See crypto_unavailable_reason.`,
+    );
+  }
+  if (unassertableNetWorth > 0) {
+    notes.push(
+      `${unassertableNetWorth} snapshot row(s) carry a net_worth that may not be asserted, because at least ` +
+      `one component it is composed from may not be. Raw values are preserved unchanged; see ` +
+      `net_worth_state, net_worth_assertable and total_assets_state.`,
     );
   }
 
