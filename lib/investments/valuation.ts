@@ -475,7 +475,26 @@ export async function valuePositionRowsOverDates(args: {
       // observation proves this position was closed" (0 — never may). Previously
       // both entered the fallback, so every sold position was resurrected at its
       // earliest quantity on every later date.
-      const held = resolveHeldQuantity(resolved, rows, holdConstant);
+      // V26-S4 — THE BACKWARD CARRY MAY NOT LEAN ON A WALK THAT DID NOT CLOSE.
+      //
+      // `resolveHeldQuantity` carries the EARLIEST row backward when nothing
+      // covers the date. Since S1 that earliest row is normally the walk's
+      // OPENING ANCHOR — its own statement of what was held before its first
+      // event — so the carry is the reconstruction speaking, and is licensed.
+      //
+      // It is NOT licensed when the walk FAILED or its sources CONFLICT. There
+      // the earliest row is whatever the replay reached before it stopped, and
+      // projecting it into prehistory dresses a stop in the clothes of an
+      // answer. TQQQ is the worked example: while its split had no terms its
+      // walk stopped at 2025-11-20 holding 20 shares, and a carry would have
+      // spread today's post-split count across every earlier date.
+      //
+      // Refusing here leaves the component unresolved, which the caller already
+      // treats as not-held — never a fabricated quantity, never a fabricated
+      // ownership (ownership is decided elsewhere and is not consulted here).
+      const pairReconciliation = reconciliationByPair.get(key) ?? null;
+      const carryLicensed = pairReconciliation !== "FAILED" && !(conflictByPair.get(key) ?? false);
+      const held = resolveHeldQuantity(resolved, rows, holdConstant && carryLicensed);
       // V26-QUANTITY-1G — consult the authority. In `compare` this records what
       // it would have said and returns the legacy value unchanged; only `adopt`
       // lets it move money, and only where the timeline is absolute, covered,

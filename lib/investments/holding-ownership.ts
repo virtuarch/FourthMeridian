@@ -70,6 +70,20 @@ export interface HoldingOwnership {
   lastPositiveISO:    string | null;
   /** First OBSERVED zero on/after the last positive; null when never closed. */
   closedFromISO:      string | null;
+  /**
+   * V26-S4 — AN OBSERVED ZERO STRICTLY BETWEEN the first and last positive
+   * evidence: a position that was closed and later REOPENED.
+   *
+   * The window model has ONE segment per pair, so such a pair is currently
+   * described as continuously owned across a gap it was not. This field does not
+   * fix that — it makes it DETECTABLE, so the engine reports the case instead of
+   * merging it silently. `closedFromISO` cannot serve: it looks for a zero at or
+   * after the LAST positive, which a reopened position no longer has.
+   *
+   * Zero occurrences in the live corpus; the detector exists so the first one
+   * announces itself rather than quietly producing a wrong denominator.
+   */
+  interiorClosureISO: string | null;
 }
 
 /**
@@ -101,7 +115,8 @@ export async function loadHoldingOwnership(
   // date, which the checkpoint path already handles.
   const obsRows = await client.$queryRaw<Array<{
     financialAccountId: string; instrumentId: string;
-    earliestObs: Date | null; lastPositive: Date | null; firstZeroAfter: Date | null;
+    earliestObs: Date | null; lastPositive: Date | null; firstPositive: Date | null;
+    firstZeroAfter: Date | null; interiorZero: Date | null;
   }>>`
     WITH pairs AS (
       SELECT DISTINCT "financialAccountId", "instrumentId"
@@ -112,6 +127,7 @@ export async function loadHoldingOwnership(
     positives AS (
       SELECT p."financialAccountId", p."instrumentId",
              MIN(o.date)::date AS "earliestObs",
+             MIN(o.date) FILTER (WHERE o.quantity > 0)::date AS "firstPositive",
              MAX(o.date) FILTER (WHERE o.quantity > 0)::date AS "lastPositive"
       FROM pairs p
       JOIN "PositionObservation" o
@@ -120,7 +136,7 @@ export async function loadHoldingOwnership(
        AND o."deletedAt" IS NULL AND o."supersededById" IS NULL
       GROUP BY 1, 2
     )
-    SELECT v."financialAccountId", v."instrumentId", v."earliestObs", v."lastPositive",
+    SELECT v."financialAccountId", v."instrumentId", v."earliestObs", v."lastPositive", v."firstPositive",
            (SELECT MIN(z.date)::date FROM "PositionObservation" z
              WHERE z."financialAccountId" = v."financialAccountId"
                AND z."instrumentId"       = v."instrumentId"
@@ -128,7 +144,18 @@ export async function loadHoldingOwnership(
                AND z.quantity = 0
                AND z."deletedAt" IS NULL AND z."supersededById" IS NULL
                AND (v."lastPositive" IS NULL OR z.date >= v."lastPositive")
-           ) AS "firstZeroAfter"
+           ) AS "firstZeroAfter",
+           -- V26-S4 — a closure sandwiched BETWEEN positive evidence: the
+           -- closed-then-reopened shape the one-segment model cannot express.
+           (SELECT MIN(z.date)::date FROM "PositionObservation" z
+             WHERE z."financialAccountId" = v."financialAccountId"
+               AND z."instrumentId"       = v."instrumentId"
+               AND z.origin = 'OBSERVED'
+               AND z.quantity = 0
+               AND z."deletedAt" IS NULL AND z."supersededById" IS NULL
+               AND v."firstPositive" IS NOT NULL AND v."lastPositive" IS NOT NULL
+               AND z.date > v."firstPositive" AND z.date < v."lastPositive"
+           ) AS "interiorZero"
     FROM positives v
   `;
 
@@ -225,6 +252,7 @@ export async function loadHoldingOwnership(
   const direct = new Map<string, string>();
   const lastPositive = new Map<string, string>();
   const closedFrom = new Map<string, string>();
+  const interiorClosure = new Map<string, string>();
   const pairs = new Set<string>();
 
   for (const r of obsRows) {
@@ -233,6 +261,7 @@ export async function loadHoldingOwnership(
     if (r.earliestObs) direct.set(k, toISODateUTC(r.earliestObs));
     if (r.lastPositive) lastPositive.set(k, toISODateUTC(r.lastPositive));
     if (r.firstZeroAfter) closedFrom.set(k, toISODateUTC(r.firstZeroAfter));
+    if (r.interiorZero) interiorClosure.set(k, toISODateUTC(r.interiorZero));
   }
   for (const r of evtRows) {
     if (!r.instrumentId || !r._min.date) continue;
@@ -289,6 +318,7 @@ export async function loadHoldingOwnership(
       earliestDirectISO: evidence.earliestDirectISO,
       lastPositiveISO:   lastPositive.get(k) ?? null,
       closedFromISO:     evidence.closedFromISO ?? null,
+      interiorClosureISO: interiorClosure.get(k) ?? null,
     });
   }
   return out;

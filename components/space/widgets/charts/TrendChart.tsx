@@ -197,11 +197,12 @@ export function TrendChart({
     return { pts, x, y, runs, line, area, gaps, seams, last: pts[pts.length - 1] };
   }, [points, w]);
 
-  function onMove(e: React.PointerEvent) {
-    if (!geom) return;
+  /** The point nearest an x offset, or null inside a gap. */
+  function nearestIndex(clientX: number): number | null {
+    if (!geom) return null;
     const rect = wrap.current?.getBoundingClientRect();
-    if (!rect) return;
-    const px = e.clientX - rect.left;
+    if (!rect) return null;
+    const px = clientX - rect.left;
     let best: number | null = null;
     let bestD = Infinity;
     geom.pts.forEach((p, i) => {
@@ -209,7 +210,50 @@ export function TrendChart({
       if (d < bestD) { bestD = d; best = i; }
     });
     // Don't snap across the hole — inside a gap the honest answer is "nothing".
-    setHover(bestD < 20 ? best : null);
+    return bestD < 20 ? best : null;
+  }
+
+  function onMove(e: React.PointerEvent) {
+    setHover(nearestIndex(e.clientX));
+  }
+
+  /**
+   * V26-S4 — A CLICK SELECTS WITHOUT NEEDING A HOVER FIRST.
+   *
+   * Selection used to read the `hover` state, so the first click on a chart did
+   * nothing: on touch, and for keyboard and assistive-technology users, no
+   * pointer-move precedes the click, and a control that requires one is a
+   * control those users cannot operate. The click now resolves the point from
+   * its OWN coordinates and falls back to the hovered point only when it lands
+   * in a gap.
+   */
+  function onSelect(e: React.MouseEvent) {
+    if (!onSelectPoint || !geom) return;
+    const i = nearestIndex(e.clientX) ?? hover;
+    if (i === null) return;
+    setHover(i);
+    onSelectPoint(geom.pts[i].date);
+  }
+
+  /** Keyboard: arrows move the selection, Enter/Space opens it. */
+  function onKeys(e: React.KeyboardEvent) {
+    if (!onSelectPoint || !geom) return;
+    const last = geom.pts.length - 1;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      const from = hover ?? last;
+      setHover(Math.max(0, Math.min(last, from + (e.key === "ArrowRight" ? 1 : -1))));
+      return;
+    }
+    if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      setHover(e.key === "Home" ? 0 : last);
+      return;
+    }
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onSelectPoint(geom.pts[hover ?? last].date);
+    }
   }
 
   const header = (
@@ -245,14 +289,12 @@ export function TrendChart({
           className={`relative touch-pan-y${onSelectPoint ? " cursor-pointer" : ""}`}
           onPointerMove={onMove}
           onPointerLeave={() => setHover(null)}
-          onClick={() => { if (onSelectPoint && hoverPt) onSelectPoint(hoverPt.date); }}
-          onKeyDown={(e) => {
-            if (!onSelectPoint || !hoverPt) return;
-            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelectPoint(hoverPt.date); }
-          }}
+          onClick={onSelect}
+          onKeyDown={onKeys}
+          onFocus={() => { if (onSelectPoint && hover === null && geom) setHover(geom.pts.length - 1); }}
           role={onSelectPoint ? "button" : undefined}
           tabIndex={onSelectPoint ? 0 : undefined}
-          aria-label={onSelectPoint ? `${label} — select a date to see its holdings` : undefined}
+          aria-label={onSelectPoint ? `${label} — arrow keys move between dates, Enter opens the selected date` : undefined}
         >
           <svg width="100%" height={H} className="block overflow-visible" role="img" aria-label={label}>
             <defs>

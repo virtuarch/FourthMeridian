@@ -46,12 +46,22 @@ import type { CompletenessTier } from "@/lib/perspective-engine/types";
 import type { OwnershipResolution, OwnershipSegment } from "@/lib/prices/ownership-window.core";
 import type { OwnershipConfidenceAxis } from "@/lib/snapshots/price-completeness.core";
 
-/** Why a holding is not in the held set. Coded, never free text. */
+/**
+ * Why a holding is not in the held set. Coded, never free text.
+ *
+ * V26-S4 — `NOT_YET_OWNED` was split out of `OWNERSHIP_UNKNOWN`. "You had not
+ * bought it yet" and "we cannot establish whether you held it" are different
+ * facts, and a reader deserves the difference: the first explains an absence
+ * completely, the second admits a gap. Collapsing them made every future
+ * acquisition look like missing evidence.
+ */
 export const HOLDING_EXCLUSION_REASONS = [
-  /** No ownership evidence reaches this date — prehistory. */
-  "OWNERSHIP_UNKNOWN",
+  /** Ownership is evidenced, but it begins AFTER this date. */
+  "NOT_YET_OWNED",
   /** An observation proves the position was closed on or before this date. */
   "OWNERSHIP_CLOSED",
+  /** Ownership evidence exists but does not reach this date either way. */
+  "OWNERSHIP_UNKNOWN",
   /** The pair has no ownership resolution at all (no evidence of any kind). */
   "NO_OWNERSHIP_EVIDENCE",
 ] as const;
@@ -88,6 +98,10 @@ export interface HeldHolding extends HoldingComponent {
 /** A component that did NOT exist on the date, and why. */
 export interface ExcludedHolding extends HoldingComponent {
   reasonCode: HoldingExclusionReason;
+  /** The first date ownership licenses, when one is known. */
+  opensISO: string | null;
+  /** The date a closure ended ownership, when one is known. */
+  closedFromISO: string | null;
   /** Deterministic, name-free sentence. Explains, never apologises. */
   explanation: string;
 }
@@ -187,19 +201,28 @@ export function buildHistoricalHoldings(
       // that shrinks, so the distinction is carried rather than collapsed.
       const closedFrom = facts?.closedFromISO ?? null;
       const closed = closedFrom !== null && dateISO >= closedFrom;
+      const res = facts?.resolution;
+      // The FIRST date any segment licenses — "when did this become yours?".
+      const opensISO = res && res.kind === "resolved" && res.segments.length > 0
+        ? res.segments[0].fromISO : null;
       const reasonCode: HoldingExclusionReason =
         closed ? "OWNERSHIP_CLOSED"
-        : facts?.resolution === undefined || facts.resolution.kind !== "resolved" ? "NO_OWNERSHIP_EVIDENCE"
+        : res === undefined || res.kind !== "resolved" ? "NO_OWNERSHIP_EVIDENCE"
+        : opensISO !== null && dateISO < opensISO ? "NOT_YET_OWNED"
         : "OWNERSHIP_UNKNOWN";
       excluded.push({
         ...c,
         reasonCode,
+        opensISO,
+        closedFromISO: closedFrom,
         explanation:
           reasonCode === "OWNERSHIP_CLOSED"
             ? `Not held on ${dateISO}: an observation on ${closedFrom} states this position was closed.`
-            : reasonCode === "NO_OWNERSHIP_EVIDENCE"
-              ? `Not held on ${dateISO}: no ownership evidence of any kind exists for this position.`
-              : `Not held on ${dateISO}: no ownership evidence reaches this date.`,
+            : reasonCode === "NOT_YET_OWNED"
+              ? `Not held on ${dateISO}: this position was first held on ${opensISO}.`
+              : reasonCode === "NO_OWNERSHIP_EVIDENCE"
+                ? `Not held on ${dateISO}: no ownership evidence of any kind exists for this position.`
+                : `Not held on ${dateISO}: no ownership evidence reaches this date.`,
       });
       continue;
     }

@@ -102,14 +102,19 @@ function main(): void {
       !/reduce\(/.test(panel) && !/\bquantity\s*\*/.test(panel) && !/\/\s*quantity/.test(panel));
     check("C. the panel renders a breakdown ONLY when reconciled",
       /detail\.reconciled &&/.test(panel));
-    check("C. and shows the refusal sentence otherwise",
-      /!detail\.reconciled/.test(panel) && /Historical composition unavailable/.test(panel));
+    // V26-S4 — two refusals now, named separately: a contradiction and an
+    // absence of evidence are different things to tell a reader.
+    check("C. and shows a refusal sentence otherwise",
+      /Historical composition unavailable/.test(panel) &&
+      /Historical composition is unavailable because the stored observations conflict/.test(panel));
     check("C. the panel never reads today's holdings",
       !/getCurrentPositions|data\.current/.test(panel));
 
     const chart = strip(read("components/space/widgets/charts/TrendChart.tsx"));
+    // V26-S4 — selection resolves from the click's OWN coordinates so a first
+    // click works without a prior hover (touch, keyboard, assistive tech).
     check("C. the chart reports a DATE and nothing else",
-      /onSelectPoint\(hoverPt\.date\)/.test(chart));
+      /onSelectPoint\(geom\.pts\[i\]\.date\)/.test(chart));
     // The property, not the vocabulary: the chart must not resolve components,
     // ownership, prices or a reconciliation. (An aria-label may say "holdings";
     // a guard that forbids the WORD tests spelling, not architecture.)

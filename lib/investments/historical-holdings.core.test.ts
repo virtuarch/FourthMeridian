@@ -58,8 +58,13 @@ function main(): void {
 
     check("A. the denominator counts only what ownership licenses", set.heldCount === 2);
     check("A. a HELD but unvalued holding stays in the denominator", set.valuedCount === 1);
+    // V26-S4 — a position whose ownership begins LATER is NOT_YET_OWNED, which
+    // is a complete explanation; OWNERSHIP_UNKNOWN now means only "we cannot
+    // establish either way". The distinction is the point of the split.
     check("A. prehistory is excluded, with a coded reason",
-      set.excluded.length === 1 && set.excluded[0].reasonCode === "OWNERSHIP_UNKNOWN");
+      set.excluded.length === 1 && set.excluded[0].reasonCode === "NOT_YET_OWNED");
+    check("A. and it states when the position WOULD become held",
+      set.excluded[0].opensISO === "2026-06-25");
     check("A. the subtotal counts only held holdings", set.valuedSubtotal === 100);
     check("A. an excluded holding contributes NOTHING to the subtotal",
       !set.held.some((h) => h.instrumentId === "PREHISTORY"));

@@ -43,17 +43,39 @@ interface PointComponent {
 interface PointExcluded {
   accountName: string; symbol: string | null; reasonCode: string; explanation: string;
 }
+interface HistoricalScope {
+  heldValued: number; heldUnavailable: number; notYetOwned: number;
+  alreadyClosed: number; ownershipUncertain: number; excludedArtifact: number;
+  detail: { category: string; symbol: string | null; accountName: string; explanation: string }[];
+}
 interface PointDetail {
   dateISO: string;
   reportingCurrency: string;
   chartValue: number;
   componentTotal: number;
+  state: "EXACT" | "PARTIALLY_ATTRIBUTED" | "CONTRADICTORY" | "UNAVAILABLE";
   reconciled: boolean;
+  unattributed: number | null;
+  explainedFraction: number;
+  observedTotal: boolean;
   refusal: string | null;
   components: PointComponent[];
   excluded: PointExcluded[];
   valuedCount: number;
   heldCount: number;
+  scope: HistoricalScope;
+}
+
+/** Scope lines, worded once. Categories with a zero count are simply absent. */
+function scopeLines(s: HistoricalScope): string[] {
+  const out: string[] = [];
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  if (s.notYetOwned)        out.push(`${plural(s.notYetOwned, "position was", "positions were")} acquired after this date`);
+  if (s.alreadyClosed)      out.push(`${plural(s.alreadyClosed, "position had", "positions had")} already been sold`);
+  if (s.ownershipUncertain) out.push(`${plural(s.ownershipUncertain, "position has", "positions have")} uncertain ownership`);
+  if (s.heldUnavailable)    out.push(`${plural(s.heldUnavailable, "held position", "held positions")} could not be valued`);
+  if (s.excludedArtifact)   out.push(`${plural(s.excludedArtifact, "provider transfer record was", "provider transfer records were")} excluded`);
+  return out;
 }
 
 const money = (n: number, ccy: string) =>
@@ -119,7 +141,13 @@ export function HistoricalPointPanel({
         </div>
       )}
 
-      {!loading && detail && !detail.reconciled && (
+      {!loading && detail && detail.state === "CONTRADICTORY" && (
+        <p className="py-8 text-xs leading-relaxed text-[var(--text-muted)]">
+          Historical composition is unavailable because the stored observations conflict.
+        </p>
+      )}
+
+      {!loading && detail && detail.state === "UNAVAILABLE" && (
         <p className="py-8 text-xs leading-relaxed text-[var(--text-muted)]">
           Historical composition unavailable for this date.
         </p>
@@ -128,13 +156,32 @@ export function HistoricalPointPanel({
       {!loading && detail && detail.reconciled && (
         <div className="space-y-5">
           <div>
-            <p className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)]">Portfolio value</p>
+            <p className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)]">
+              {detail.observedTotal ? "Observed portfolio" : "Portfolio value"}
+            </p>
             <p className="mt-0.5 text-2xl font-medium tabular-nums">{money(detail.chartValue, ccy)}</p>
             <p className="mt-1 text-[11px] text-[var(--text-faint)]">
-              <span className="tabular-nums">{detail.valuedCount}</span> of{" "}
-              <span className="tabular-nums">{detail.heldCount}</span> holdings valued
+              <span className="tabular-nums">{detail.heldCount}</span>{" "}
+              {detail.heldCount === 1 ? "holding existed" : "holdings existed"} ·{" "}
+              <span className="tabular-nums">{detail.valuedCount}</span> valued
             </p>
           </div>
+
+          {/* The residual on a partially attributed OBSERVED total. Stated as
+              arithmetic and nothing else — never cash, gain, or a holding. */}
+          {detail.state === "PARTIALLY_ATTRIBUTED" && detail.unattributed != null && (
+            <div className="rounded-md border border-[var(--border-hairline)] px-3 py-2.5">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-[11px] text-[var(--text-secondary)]">Unattributed observed amount</span>
+                <span className="text-sm tabular-nums">{money(detail.unattributed, ccy)}</span>
+              </div>
+              <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-faint)]">
+                Fourth Meridian recorded the total directly on this date, but the available
+                component evidence does not allocate {money(detail.unattributed, ccy)} to a
+                specific holding. {(detail.explainedFraction * 100).toFixed(1)}% explained.
+              </p>
+            </div>
+          )}
 
           <ul className="space-y-3">
             {detail.components.map((c, i) => (
@@ -160,17 +207,26 @@ export function HistoricalPointPanel({
             ))}
           </ul>
 
-          {detail.excluded.length > 0 && (
-            <div className="border-t border-[var(--border-hairline)] pt-3">
-              <p className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)]">Not held on this date</p>
-              <ul className="mt-2 space-y-1.5">
-                {detail.excluded.map((e, i) => (
-                  <li key={`${e.symbol ?? "?"}-${i}`} className="text-[11px] text-[var(--text-muted)]">
-                    <span className="font-medium">{e.symbol ?? "—"}</span> — {e.explanation}
-                  </li>
+          {scopeLines(detail.scope).length > 0 && (
+            <details className="border-t border-[var(--border-hairline)] pt-3">
+              <summary className="cursor-pointer text-[10px] uppercase tracking-wide text-[var(--text-secondary)]">
+                Historical scope
+              </summary>
+              <ul className="mt-2 space-y-1">
+                {scopeLines(detail.scope).map((line) => (
+                  <li key={line} className="text-[11px] text-[var(--text-muted)]">{line}</li>
                 ))}
               </ul>
-            </div>
+              {detail.scope.detail.length > 0 && (
+                <ul className="mt-3 space-y-1 border-t border-[var(--border-hairline)] pt-2">
+                  {detail.scope.detail.map((d, i) => (
+                    <li key={`${d.category}-${d.symbol ?? "?"}-${i}`} className="text-[10px] text-[var(--text-faint)]">
+                      <span className="font-medium">{d.symbol ?? "—"}</span> · {d.accountName} — {d.explanation}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </details>
           )}
         </div>
       )}

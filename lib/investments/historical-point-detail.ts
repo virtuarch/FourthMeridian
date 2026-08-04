@@ -41,6 +41,7 @@ import { db } from "@/lib/db";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { buildSpaceConversionContextById } from "@/lib/money/server-context";
 import { historicalHoldingsForWindow } from "./historical-holdings";
+import { loadHoldingOwnership, holdingKey } from "./holding-ownership";
 import type { HeldHolding, ExcludedHolding } from "./historical-holdings.core";
 import { valueCryptoDay, type CryptoDayValuation } from "@/lib/crypto/historical-crypto-valuation.core";
 import { licenseConstantQuantityCarry } from "@/lib/crypto/quantity-carry.core";
@@ -52,14 +53,45 @@ import { SettlementState } from "@prisma/client";
 type Client = PrismaClient | Prisma.TransactionClient;
 
 /**
- * Reporting-currency tolerance for the reconciliation. One cent: the stored
- * totals are rounded currency amounts, so anything larger is a real
- * disagreement, not float noise.
+ * Reporting-currency tolerance when comparing the engine AGAINST ITSELF — a
+ * reconstructed row, whose stored total this same composition produced. One
+ * cent: exactness is achievable there, so anything larger is a real defect.
  */
 export const COMPOSITION_TOLERANCE = 0.01;
 
-/** The one refusal a consumer may render. */
+/**
+ * Tolerance when comparing the engine against an INDEPENDENT OBSERVATION — a
+ * frozen row, whose total the app recorded directly at the time from live
+ * balances, while the components are resolved now from dated evidence.
+ *
+ * Two different recordings of the same portfolio, made by different means at
+ * different moments, will differ by rounding at the currency and FX boundaries.
+ * Measured across the live frozen rows: 0.00, 0.00, −0.02, 0.00, 0.00, −0.31,
+ * 0.00, −0.05. Demanding one-cent agreement there would report six-hundredths of
+ * a percent as a contradiction, which is not what a contradiction is.
+ *
+ * A dollar, or one basis point of the total — whichever is larger — so the floor
+ * scales with the portfolio instead of becoming stricter as it grows.
+ */
+export function observedTolerance(total: number): number {
+  return Math.max(1.0, Math.abs(total) * 0.0001);
+}
+
+/** How well the components explain the displayed total. */
+export const COMPOSITION_STATES = [
+  /** Components account for the total within tolerance. */
+  "EXACT",
+  /** Components fall SHORT of an OBSERVED total; the remainder is unattributed. */
+  "PARTIALLY_ATTRIBUTED",
+  /** The evidence contradicts itself — never shown as a breakdown. */
+  "CONTRADICTORY",
+  /** Not enough evidence to say anything useful. */
+  "UNAVAILABLE",
+] as const;
+export type CompositionState = (typeof COMPOSITION_STATES)[number];
+
 export const HISTORICAL_COMPOSITION_UNAVAILABLE = "HISTORICAL_COMPOSITION_UNAVAILABLE";
+export const HISTORICAL_COMPOSITION_CONTRADICTORY = "HISTORICAL_COMPOSITION_CONTRADICTORY";
 
 /** One row of the breakdown, already explained — no arithmetic left for a view. */
 export interface PointComponent {
@@ -106,10 +138,27 @@ export interface HistoricalPointDetail {
   componentTotal: number;
   /** chartValue − componentTotal. */
   delta: number;
-  /** True only when |delta| ≤ COMPOSITION_TOLERANCE. */
+  /** The reconciliation outcome. `reconciled` is kept as its boolean shorthand. */
+  state: CompositionState;
+  /** True for EXACT and PARTIALLY_ATTRIBUTED — i.e. a breakdown may render. */
   reconciled: boolean;
-  /** Set when `reconciled` is false — the ONLY thing a view may render then. */
-  refusal: typeof HISTORICAL_COMPOSITION_UNAVAILABLE | null;
+  /**
+   * V26-S4 — the part of an OBSERVED total the component evidence does not
+   * allocate to any holding. Positive by construction and present ONLY in
+   * PARTIALLY_ATTRIBUTED.
+   *
+   * It is defined as `observed total − explained assertable components` and
+   * NOTHING else. It is not cash, not a gain, not a missing holding and not a
+   * market move; naming it as any of those would invent an asset out of a
+   * subtraction. A view may show the number and say what it is arithmetically.
+   */
+  unattributed: number | null;
+  /** Share of the displayed total the components explain, 0..1. */
+  explainedFraction: number;
+  /** True when the displayed total is an OBSERVATION rather than a computation. */
+  observedTotal: boolean;
+  /** Set for CONTRADICTORY / UNAVAILABLE — the only thing a view may render then. */
+  refusal: typeof HISTORICAL_COMPOSITION_UNAVAILABLE | typeof HISTORICAL_COMPOSITION_CONTRADICTORY | null;
   /** Machine-readable cause, for logs and tests. Never user-facing prose. */
   diagnostic: string | null;
   components: PointComponent[];
@@ -118,6 +167,8 @@ export interface HistoricalPointDetail {
   valuedCount: number;
   /** How many holdings EXISTED on this date — the historical denominator. */
   heldCount: number;
+  /** V26-S4 — why every OTHER known instrument is not in the primary panel. */
+  scope: HistoricalScope;
   /** Whether this row's crypto component may be asserted at all. */
   cryptoAssertable: boolean;
   cryptoRefusal: CryptoDayValuation["refusal"];
@@ -135,9 +186,40 @@ export interface HistoricalPointDetailArgs {
 function noPoint(dateISO: string, reportingCurrency: string, diagnostic: string): HistoricalPointDetail {
   return {
     dateISO, reportingCurrency, chartValue: 0, componentTotal: 0, delta: 0,
-    reconciled: false, refusal: HISTORICAL_COMPOSITION_UNAVAILABLE, diagnostic,
+    state: "UNAVAILABLE", reconciled: false, unattributed: null, explainedFraction: 0,
+    observedTotal: false, refusal: HISTORICAL_COMPOSITION_UNAVAILABLE, diagnostic,
     components: [], excluded: [], valuedCount: 0, heldCount: 0,
+    scope: emptyScope(),
     cryptoAssertable: false, cryptoRefusal: null, completenessTier: null,
+  };
+}
+
+/**
+ * V26-S4 — WHY THE OTHER INSTRUMENTS ARE NOT IN THE PANEL.
+ *
+ * The primary panel is a photograph of one date: held-and-valued, plus
+ * held-but-unavailable. Everything else is absent for a REASON, and a reader who
+ * knows they once owned AMZN deserves to learn it had already been sold rather
+ * than to wonder whether the engine lost it.
+ *
+ * Counts by category, not a wall of tickers. Only the first two contribute to
+ * the denominator; that is what makes the denominator historical.
+ */
+export interface HistoricalScope {
+  heldValued:         number;
+  heldUnavailable:    number;
+  notYetOwned:        number;
+  alreadyClosed:      number;
+  ownershipUncertain: number;
+  excludedArtifact:   number;
+  /** Per-category tickers, for the expandable detail. Never rendered by default. */
+  detail: { category: string; symbol: string | null; accountName: string; explanation: string }[];
+}
+
+function emptyScope(): HistoricalScope {
+  return {
+    heldValued: 0, heldUnavailable: 0, notYetOwned: 0, alreadyClosed: 0,
+    ownershipUncertain: 0, excludedArtifact: 0, detail: [],
   };
 }
 
@@ -245,10 +327,29 @@ export async function getHistoricalPointDetail(
     explanation: e.explanation,
   }));
 
-  // ── Crypto: the SAME shared day valuation the regenerator uses ─────────────
+  // ── Crypto ────────────────────────────────────────────────────────────────
+  //
+  // V26-S4 — A FROZEN ROW'S CRYPTO IS AN OBSERVATION, NOT A RECOMPUTATION.
+  //
+  // The evidence order for a frozen date (Part 1) puts exact-date observations
+  // ahead of reconstruction, and for crypto the observation IS the stored
+  // `crypto` column: the app recorded the wallet's value directly at capture,
+  // from the live spot price of that moment. Recomputing it from the archived
+  // daily close answers a different question and gives a different number —
+  // measured on 2026-07-20, $15,661.85 against a recorded $15,516.70, a $145.15
+  // gap that made the whole point refuse.
+  //
+  // Investments need no such special case: `resolvePositionAsOf` already prefers
+  // an exact-date OBSERVED row, and `valueInstrumentAsOf` values it at the
+  // institution's own stated value. Measured across the frozen rows, that
+  // reproduces the stored `stocks` figure to the cent on six of eight dates and
+  // to within $0.31 on the rest. The canonical engine was already right; only
+  // crypto had no observation to prefer.
   const cryptoAccounts = accounts.filter((a) => a.type === "crypto" && a.nativeBalance != null);
   let crypto: CryptoDayValuation = { positions: [], nativeTotal: 0, positionCount: 0, licensed: false, refusal: null };
-  if (cryptoAccounts.length > 0) {
+  const observedTotalRow = !snapshot.isEstimated;
+
+  if (cryptoAccounts.length > 0 && !observedTotalRow) {
     const btcAt = await readBtcUsdWindow(dateISO, dateISO);
     const movementRows = await client.transaction.findMany({
       where: {
@@ -299,33 +400,216 @@ export async function getHistoricalPointDetail(
     });
   }
 
+  // The OBSERVED crypto component for a frozen row.
+  //
+  // Emitted per wallet ONLY when there is exactly one — splitting a recorded
+  // aggregate across several wallets by quantity share would be an invented
+  // allocation, and this module invents nothing. With several wallets it is one
+  // honest "Digital assets" line carrying the recorded total.
+  if (cryptoAccounts.length > 0 && observedTotalRow && Math.abs(snapshot.crypto) > 0) {
+    const single = cryptoAccounts.length === 1 ? cryptoAccounts[0] : null;
+    const observedQty = single
+      ? (await client.positionObservation.findFirst({
+          where: { financialAccountId: single.id, date: { lte: new Date(`${dateISO}T00:00:00.000Z`) }, deletedAt: null, supersededById: null },
+          orderBy: { date: "desc" }, select: { quantity: true },
+        }))?.quantity ?? single.nativeBalance ?? null
+      : null;
+    components.push({
+      kind: "crypto",
+      accountId: single?.id ?? "digital-assets",
+      accountName: single?.name ?? "Digital assets",
+      instrumentId: null, symbol: single ? "BTC" : null, name: single ? "BTC" : "Digital assets",
+      assetClass: "CRYPTO", isCash: false,
+      quantity: observedQty, quantityTier: "observed",
+      ownership: "KNOWN", ownershipSince: null, ownershipUntil: null,
+      unitPrice: null, priceDate: dateISO, priceSource: null, priceBasis: null,
+      value: snapshot.crypto,
+      reason: `Recorded directly on ${dateISO} when this day's balances were captured.`,
+    });
+    crypto = { ...crypto, positionCount: cryptoAccounts.length, licensed: true, refusal: null };
+  }
+
+  // ── Historical scope: why every OTHER instrument is absent ────────────────
+  const scope = emptyScope();
+  for (const h of (holdings?.held ?? [])) {
+    if (h.reportingValue != null) scope.heldValued++; else scope.heldUnavailable++;
+  }
+  for (const e of ((holdings?.excluded ?? []) as ExcludedHolding[])) {
+    const i = inst.get(e.instrumentId);
+    // A provider TRANSFER ARTIFACT is not a position anyone held. Plaid invents
+    // an instrument per journal/transfer ("Journal to …764"), classified EQUITY
+    // with no ticker; listing those beside real holdings would be noise dressed
+    // as evidence.
+    const artifact = !i?.tickerSymbol;
+    const category = artifact ? "EXCLUDED_ARTIFACT"
+      : e.reasonCode === "NOT_YET_OWNED"      ? "NOT_YET_OWNED"
+      : e.reasonCode === "OWNERSHIP_CLOSED"   ? "ALREADY_CLOSED"
+      : "OWNERSHIP_UNCERTAIN";
+    if (category === "EXCLUDED_ARTIFACT")      scope.excludedArtifact++;
+    else if (category === "NOT_YET_OWNED")     scope.notYetOwned++;
+    else if (category === "ALREADY_CLOSED")    scope.alreadyClosed++;
+    else                                       scope.ownershipUncertain++;
+    scope.detail.push({
+      category,
+      symbol: i?.tickerSymbol ?? null,
+      accountName: acct.get(e.financialAccountId)?.name ?? "Account",
+      explanation: e.explanation,
+    });
+  }
+  // V26-S4 — PAIRS THE VALUATION ENGINE NEVER EMITTED.
+  //
+  // A position with a proven ZERO quantity is dropped by the valuation binding
+  // before it becomes a component, so it never reaches the holdings builder and
+  // could not be categorised. That is exactly the set a reader most wants
+  // explained — "where did the nine positions I sold go?" — and its absence made
+  // the scope silently understate what had happened on that date.
+  //
+  // Resolved through the SAME ownership authority the holdings query uses, never
+  // a second model: any (account, instrument) pair the accounts own evidence for
+  // that did NOT appear above is categorised from its window alone.
+  const seenPairs = new Set<string>([
+    ...(holdings?.held ?? []).map((h) => holdingKey(h.financialAccountId, h.instrumentId)),
+    ...(holdings?.excluded ?? []).map((h) => holdingKey(h.financialAccountId, h.instrumentId)),
+  ]);
+  // Digital-asset accounts are DELIBERATELY absent from this scan: their
+  // positions are the crypto component above, and scanning them again would
+  // list BTC as an unexplained absence directly beneath the BTC holding it is.
+  //
+  // The ceiling is the account set's own latest evidence, NOT the drilled date —
+  // the same rule the holdings query follows, and for the same reason: a
+  // per-date ceiling discards windows whose first evidence postdates it and
+  // would report every such pair as "uncertain" when it is simply later.
+  const scopeAccountIds = accounts.filter((a) => a.type !== "crypto").map((a) => a.id);
+  const scopeCeiling = [dateISO, ...accounts.map((a) => a.lastUpdated?.toISOString().slice(0, 10) ?? dateISO)]
+    .reduce((max, d) => (d > max ? d : max));
+  const allOwnership = await loadHoldingOwnership(scopeAccountIds, scopeCeiling, client);
+  const missingInstrumentIds = [...allOwnership.values()]
+    .filter((o) => !seenPairs.has(holdingKey(o.financialAccountId, o.instrumentId)))
+    .map((o) => o.instrumentId);
+  const missingInst = missingInstrumentIds.length > 0
+    ? new Map((await client.instrument.findMany({
+        where: { id: { in: [...new Set(missingInstrumentIds)] } },
+        select: { id: true, tickerSymbol: true },
+      })).map((i) => [i.id, i]))
+    : new Map<string, { id: string; tickerSymbol: string | null }>();
+
+  for (const o of allOwnership.values()) {
+    const key = holdingKey(o.financialAccountId, o.instrumentId);
+    if (seenPairs.has(key)) continue;
+    const ticker = missingInst.get(o.instrumentId)?.tickerSymbol ?? null;
+    const closed = o.closedFromISO !== null && dateISO >= o.closedFromISO;
+    const opens = o.resolution.kind === "resolved" && o.resolution.segments.length > 0
+      ? o.resolution.segments[0].fromISO : null;
+    const category = !ticker ? "EXCLUDED_ARTIFACT"
+      : closed ? "ALREADY_CLOSED"
+      : opens !== null && dateISO < opens ? "NOT_YET_OWNED"
+      : "OWNERSHIP_UNCERTAIN";
+    if (category === "EXCLUDED_ARTIFACT")   scope.excludedArtifact++;
+    else if (category === "ALREADY_CLOSED") scope.alreadyClosed++;
+    else if (category === "NOT_YET_OWNED")  scope.notYetOwned++;
+    else                                    scope.ownershipUncertain++;
+    scope.detail.push({
+      category, symbol: ticker,
+      accountName: acct.get(o.financialAccountId)?.name ?? "Account",
+      explanation: closed
+        ? `Not held on ${dateISO}: an observation on ${o.closedFromISO} states this position was closed.`
+        : opens !== null && dateISO < opens
+          ? `Not held on ${dateISO}: this position was first held on ${opens}.`
+          : `Not held on ${dateISO}: no ownership evidence reaches this date.`,
+    });
+  }
+
+  scope.detail.sort((a, b) => a.category.localeCompare(b.category) || (a.symbol ?? "").localeCompare(b.symbol ?? ""));
+
   // ── Reconciliation against the STORED point ───────────────────────────────
+  //
+  // V26-S4 — FOUR OUTCOMES, NOT A BOOLEAN.
+  //
+  // The Slice-3 rule was "match exactly or show nothing", and for a frozen row
+  // that made the most recent — and most interesting — dates the least useful to
+  // click. A frozen row means the app RECORDED the total directly and will not
+  // overwrite it. It does not mean nothing can be said about what was in it.
+  //
+  //   EXACT                 components account for the total within tolerance
+  //   PARTIALLY_ATTRIBUTED  components fall SHORT of an OBSERVED total; the
+  //                         remainder is stated as unallocated, never as an asset
+  //   CONTRADICTORY         the evidence disagrees with itself — refused outright
+  //   UNAVAILABLE           too little evidence to say anything useful
+  //
+  // PARTIALLY_ATTRIBUTED is available ONLY for an observed total. On a
+  // reconstructed row the stored figure IS this composition's own output, so a
+  // shortfall is not "unattributed observation" — it means the stored row was
+  // written by an older engine and is stale. Calling that a remainder would
+  // dress a stale number as evidence.
   const chartValue = snapshot.stocks + (cryptoAssertable ? snapshot.crypto : 0);
   const componentTotal = components.reduce((n, c) => n + (c.value ?? 0), 0);
   const delta = round2(chartValue - componentTotal);
-  const reconciled = Math.abs(delta) <= COMPOSITION_TOLERANCE;
+  const tolerance = observedTotalRow ? observedTolerance(chartValue) : COMPOSITION_TOLERANCE;
+
+  // ── Contradiction checks, before any friendly outcome ─────────────────────
+  const contradictions: string[] = [];
+
+  // Components EXCEEDING the total would require a NEGATIVE unattributed amount.
+  if (delta < -tolerance) {
+    contradictions.push(`components exceed the total by ${round2(-delta)}`);
+  }
+  // One holding counted twice is double counting, whatever the sum says.
+  const pairSeen = new Set<string>();
+  for (const c of components) {
+    if (c.instrumentId == null) continue;
+    const k = `${c.accountId}|${c.instrumentId}`;
+    if (pairSeen.has(k)) contradictions.push(`duplicate component for ${c.symbol ?? c.instrumentId}`);
+    pairSeen.add(k);
+  }
+  // A component valued in another currency cannot be summed into this total.
+  const rowCurrency = snapshot.reportingCurrency ?? reportingCurrency;
+  if (rowCurrency !== reportingCurrency) {
+    contradictions.push(`row currency ${rowCurrency} differs from the Space's ${reportingCurrency}`);
+  }
+
+  let state: CompositionState;
+  if (contradictions.length > 0) {
+    state = "CONTRADICTORY";
+  } else if (Math.abs(delta) <= tolerance) {
+    state = "EXACT";
+  } else if (observedTotalRow && delta > 0 && components.length > 0) {
+    state = "PARTIALLY_ATTRIBUTED";
+  } else if (components.length === 0) {
+    state = "UNAVAILABLE";
+  } else {
+    // A reconstructed row that no longer matches its own composition: stale.
+    state = "UNAVAILABLE";
+  }
+
+  const reconciled = state === "EXACT" || state === "PARTIALLY_ATTRIBUTED";
+  const unattributed = state === "PARTIALLY_ATTRIBUTED" ? delta : null;
+  const explainedFraction = chartValue === 0 ? (componentTotal === 0 ? 1 : 0)
+    : Math.max(0, Math.min(1, componentTotal / chartValue));
 
   return {
     dateISO,
-    reportingCurrency: snapshot.reportingCurrency ?? reportingCurrency,
+    reportingCurrency: rowCurrency,
     chartValue: round2(chartValue),
     componentTotal: round2(componentTotal),
     delta,
+    state,
     reconciled,
-    refusal: reconciled ? null : HISTORICAL_COMPOSITION_UNAVAILABLE,
-    diagnostic: reconciled ? null
-      : `component total ${round2(componentTotal)} != stored ${round2(chartValue)} (delta ${delta}); ` +
+    unattributed,
+    explainedFraction,
+    observedTotal: observedTotalRow,
+    refusal: state === "CONTRADICTORY" ? HISTORICAL_COMPOSITION_CONTRADICTORY
+      : state === "UNAVAILABLE" ? HISTORICAL_COMPOSITION_UNAVAILABLE : null,
+    diagnostic: reconciled && state === "EXACT" ? null
+      : `state=${state} components=${round2(componentTotal)} stored=${round2(chartValue)} delta=${delta} ` +
+        `tolerance=${round2(tolerance)} totalIsObserved=${observedTotalRow} ` +
         `investments=${holdings?.valuedCount ?? 0}/${holdings?.heldCount ?? 0} ` +
-        `cryptoLicensed=${crypto.licensed} cryptoAssertable=${cryptoAssertable} ` +
-        // A FROZEN row is an immutable observation of what balances said that
-        // day — the reconstruction engine did not produce it and cannot explain
-        // it. That is an expected refusal, not an engine divergence, and it must
-        // be distinguishable from one in a log.
-        `cause=${snapshot.isEstimated ? "ENGINE_DIVERGENCE" : "FROZEN_OBSERVED_ROW"}`,
+        `cryptoLicensed=${crypto.licensed} cryptoAssertable=${cryptoAssertable}` +
+        (contradictions.length ? ` contradictions=[${contradictions.join("; ")}]` : ""),
     components,
     excluded,
-    valuedCount: (holdings?.valuedCount ?? 0) + (cryptoAssertable ? crypto.positionCount : 0),
+    valuedCount: (holdings?.valuedCount ?? 0) + (cryptoAssertable && crypto.licensed ? crypto.positionCount : 0),
     heldCount:   (holdings?.heldCount ?? 0) + crypto.positionCount,
+    scope,
     cryptoAssertable,
     cryptoRefusal: crypto.refusal,
     completenessTier: snapshot.completenessTier,
