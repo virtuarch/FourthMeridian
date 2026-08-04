@@ -37,7 +37,7 @@ import type { ReconciliationState } from "@/lib/perspective-engine/reconciliatio
 export type { ReconciliationState };
 
 /** What a node represents. The tree is lens → bucket → account → holding. */
-export const HISTORICAL_NODE_TYPES = ["lens", "bucket", "account", "holding"] as const;
+export const HISTORICAL_NODE_TYPES = ["lens", "tier", "bucket", "account", "holding"] as const;
 export type HistoricalNodeType = (typeof HISTORICAL_NODE_TYPES)[number];
 
 /**
@@ -169,11 +169,33 @@ export interface HistoricalBucketNode extends HistoricalNodeBase, HistoricalCoun
   subtracts: boolean;
 }
 
+/**
+ * V27 — the SECONDARY scope summary: what the primary child list deliberately
+ * omits, and why.
+ *
+ * The primary list shows only what EXISTED on the selected date. That is the
+ * honest default, but "three positions are missing" and "three positions were
+ * acquired later" are different facts, and a reader who cannot see the second
+ * one assumes the first. Counts come from the ownership engine's own exclusion
+ * reasons — this is a projection of `HOLDING_EXCLUSION_REASONS`, never a
+ * classification performed here or in a view.
+ */
+export interface HistoricalScope {
+  heldValued:        number;
+  heldUnavailable:   number;
+  notYetOwned:       number;
+  alreadyClosed:     number;
+  ownershipUncertain: number;
+  excludedArtifact:  number;
+}
+
 export interface HistoricalAccountNode extends HistoricalNodeBase, HistoricalCountable {
   nodeType: "account";
   accountId:   string;
   accountType: string;
   institution: string | null;
+  /** Populated when holdings were resolved for this account. */
+  scope?: HistoricalScope;
 }
 
 export interface HistoricalHoldingNode extends HistoricalNodeBase {
@@ -197,8 +219,30 @@ export interface HistoricalHoldingNode extends HistoricalNodeBase {
   ownershipEpisodes?: { fromISO: string; toISO: string }[];
 }
 
+/**
+ * V27 — a LIQUIDITY TIER. Not a bucket.
+ *
+ * Liquidity is not a partition of the balance sheet, it is a classification by
+ * HOW FAST an asset converts to cash — `cashNow` / `marketable` / `illiquid`
+ * (lib/perspective-engine/lenses/liquidity.core.ts). A tier groups buckets; it
+ * is not one of them, and forcing it into `BucketKind` would corrupt the
+ * `classifyAccounts` partition that every other lens depends on.
+ *
+ * `credit` is deliberately NOT a tier. Borrowing capacity is not liquidity and
+ * the doctrine excludes it from every sum; modelling it as a child would put it
+ * inside a total it must never enter.
+ */
+export const LIQUIDITY_TIERS = ["cashNow", "marketable", "illiquid"] as const;
+export type LiquidityTier = (typeof LIQUIDITY_TIERS)[number];
+
+export interface HistoricalTierNode extends HistoricalNodeBase, HistoricalCountable {
+  nodeType: "tier";
+  tier: LiquidityTier;
+}
+
 export type HistoricalNode =
   | HistoricalLensNode
+  | HistoricalTierNode
   | HistoricalBucketNode
   | HistoricalAccountNode
   | HistoricalHoldingNode;
@@ -207,7 +251,7 @@ export type HistoricalNode =
 
 /** Does this node type carry counts? */
 export function isCountable(node: HistoricalNode): node is
-  HistoricalLensNode | HistoricalBucketNode | HistoricalAccountNode {
+  HistoricalLensNode | HistoricalTierNode | HistoricalBucketNode | HistoricalAccountNode {
   return node.nodeType !== "holding";
 }
 

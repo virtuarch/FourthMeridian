@@ -22,9 +22,12 @@ import {
 } from "@/lib/history/exploration-url";
 import { buildSpaceUrl } from "@/lib/space/space-url";
 import type { ExplorationNodeType } from "@/lib/history/exploration";
+import type { LensRoot } from "@/lib/history/lens-root-node";
 
 export interface HistoryExploration {
   open: boolean;
+  /** The question being asked. Carried, never derived from the node. */
+  root: LensRoot;
   nodeType: ExplorationNodeType;
   nodeId: string | null;
   /**
@@ -38,8 +41,8 @@ export interface HistoryExploration {
   dateISO: string | null;
   fromISO: string;
   toISO: string;
-  /** Open the sheet at the lens root for a clicked chart point. */
-  openPoint: (dateISO: string, fromISO: string, toISO: string) => void;
+  /** Open the sheet at a lens ROOT for a clicked chart point. */
+  openPoint: (root: LensRoot, dateISO: string, fromISO: string, toISO: string) => void;
   /** Drill to another node. The window is INHERITED, never recomputed. */
   navigate: (nodeType: ExplorationNodeType, nodeId: string | null) => void;
   close: () => void;
@@ -67,13 +70,13 @@ export function useHistoryExploration(): HistoryExploration {
   );
 
   const openPoint = useCallback(
-    (dateISO: string, fromISO: string, toISO: string) => {
+    (root: LensRoot, dateISO: string, fromISO: string, toISO: string) => {
       // `asof` moves with the selection so the chart and the sheet agree about
       // which point is selected; the exploration window is pinned separately so
       // a preset change later cannot silently re-derive it.
       push({
         asof: dateISO,
-        ...explorationOpenUpdate({ nodeType: "lens", nodeId: null, fromISO, toISO }),
+        ...explorationOpenUpdate({ root, nodeType: "lens", nodeId: null, fromISO, toISO }),
       });
     },
     [push],
@@ -84,7 +87,11 @@ export function useHistoryExploration(): HistoryExploration {
       if (!state) return;
       // WINDOW INHERITANCE: the child is asked about exactly the window the
       // parent was showing. No reset, no preset re-derivation, no clamp.
-      push(explorationOpenUpdate({ nodeType, nodeId, fromISO: state.fromISO, toISO: state.toISO }));
+      // The ROOT is preserved across a drill: the user is still asking the same
+      // question, just about a deeper node.
+      push(explorationOpenUpdate({
+        root: state.root, nodeType, nodeId, fromISO: state.fromISO, toISO: state.toISO,
+      }));
     },
     [push, state],
   );
@@ -97,6 +104,7 @@ export function useHistoryExploration(): HistoryExploration {
 
   return {
     open: state !== null,
+    root: state?.root ?? "net-worth",
     nodeType: state?.nodeType ?? "lens",
     nodeId: state?.nodeId ?? null,
     dateISO,

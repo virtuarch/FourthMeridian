@@ -29,11 +29,22 @@
  */
 
 import type { ExplorationNodeType } from "./exploration";
+import { normaliseLensRoot, type LensRoot } from "./lens-root-node";
 
-/** The three params exploration owns. Nothing else may be written by the panel. */
-export const EXPLORATION_URL_PARAMS = ["hnode", "hfrom", "hto"] as const;
+/** The four params exploration owns. Nothing else may be written by the panel. */
+export const EXPLORATION_URL_PARAMS = ["hroot", "hnode", "hfrom", "hto"] as const;
 
 export interface ExplorationUrlState {
+  /**
+   * WHICH QUESTION the user is asking. The same account under `assets` and under
+   * `liquid-net-worth` is two different questions, and back-navigation differs
+   * between them, so the root cannot be derived from the node — it must be
+   * carried.
+   *
+   * Absent ⇒ `net-worth`, so every link written before roots existed still
+   * resolves exactly as it did.
+   */
+  root: LensRoot;
   nodeType: ExplorationNodeType;
   /** Null for the lens root, which has no id of its own. */
   nodeId: string | null;
@@ -42,7 +53,7 @@ export interface ExplorationUrlState {
 }
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const NODE_TYPES = new Set(["lens", "bucket", "account", "holding"]);
+const NODE_TYPES = new Set(["lens", "tier", "bucket", "account", "holding"]);
 
 /**
  * Encode a node reference. `bucket:crypto` — the type, then the id verbatim.
@@ -76,18 +87,24 @@ export function readExplorationUrl(search: string): ExplorationUrlState | null {
   const p = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
   const ref = decodeNodeRef(p.get("hnode"));
   if (!ref) return null;
+  // An unknown root is NOT an error: it falls back rather than opening nothing,
+  // because a stale or hand-edited link should still show something honest.
+  const root = normaliseLensRoot(p.get("hroot")) ?? "net-worth";
   const fromISO = p.get("hfrom");
   const toISO = p.get("hto");
   // The window is REQUIRED. Without it a refresh would fall back to a default
   // range and silently show a different chart than the link promised.
   if (!fromISO || !toISO || !ISO_DATE.test(fromISO) || !ISO_DATE.test(toISO)) return null;
   if (fromISO > toISO) return null;
-  return { ...ref, fromISO, toISO };
+  return { root, ...ref, fromISO, toISO };
 }
 
 /** The param updates that OPEN or move the panel. Merge into the existing query. */
 export function explorationOpenUpdate(state: ExplorationUrlState): Record<string, string | null> {
   return {
+    // net-worth is omitted from the URL: it is the default, and writing it would
+    // make every pre-existing link differ from a freshly-produced one.
+    hroot: state.root === "net-worth" ? null : state.root,
     hnode: encodeNodeRef(state.nodeType, state.nodeId),
     hfrom: state.fromISO,
     hto: state.toISO,
@@ -102,5 +119,5 @@ export function explorationOpenUpdate(state: ExplorationUrlState): Record<string
  * the chart the user was looking at.
  */
 export function explorationCloseUpdate(): Record<string, string | null> {
-  return { hnode: null, hfrom: null, hto: null };
+  return { hroot: null, hnode: null, hfrom: null, hto: null };
 }

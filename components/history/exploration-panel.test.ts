@@ -37,7 +37,7 @@ const ROUTE = stripComments(readFileSync(new URL("../../app/api/spaces/[id]/hist
             "&hnode=holding:acc1:inst1&hfrom=2024-07-21&hto=2025-11-03";
   const s = readExplorationUrl(q);
   assert.deepEqual(s, {
-    nodeType: "holding", nodeId: "holding:acc1:inst1",
+    root: "net-worth", nodeType: "holding", nodeId: "holding:acc1:inst1",
     fromISO: "2024-07-21", toISO: "2025-11-03",
   });
   ok("G/I · a deep link restores node type, id and the inherited window");
@@ -67,7 +67,7 @@ const ROUTE = stripComments(readFileSync(new URL("../../app/api/spaces/[id]/hist
 {
   const parent = readExplorationUrl("?hnode=lens&hfrom=2024-07-21&hto=2026-08-04")!;
   const child = explorationOpenUpdate({
-    nodeType: "bucket", nodeId: "bucket:investments",
+    root: parent.root, nodeType: "bucket", nodeId: "bucket:investments",
     fromISO: parent.fromISO, toISO: parent.toISO,
   });
   assert.equal(child.hfrom, "2024-07-21");
@@ -147,7 +147,9 @@ const ROUTE = stripComments(readFileSync(new URL("../../app/api/spaces/[id]/hist
   assert.ok(/path\.map\(/.test(SHEET), "the breadcrumb renders the resolver's path");
   assert.ok(!/Net worth ›|buildBreadcrumb|crumbsFor/.test(SHEET), "no UI-owned path assembly");
   assert.ok(/path: \[root, bucket, account, holding\]/.test(RESOLVER),
-    "the resolver returns the full ancestor path");
+    "the resolver returns the full ancestor path under an aggregate root");
+  assert.ok(/path: \[root, account, holding\]/.test(RESOLVER),
+    "and a SHORTER path under a bucket root — Debt › Card, not Net worth › Debt › Card");
   ok("breadcrumb labels and identity come from canonical node data");
 }
 
@@ -187,7 +189,7 @@ const ROUTE = stripComments(readFileSync(new URL("../../app/api/spaces/[id]/hist
 // ── The resolver composes; it does not decide ─────────────────────────────
 {
   for (const authority of [
-    "getNetWorthPointDetail", "expandBucketNode", "expandAccountNode", "buildNetWorthNode",
+    "buildLensRootNode", "buildNetWorthNode", "expandBucketNode", "expandAccountNode",
   ]) {
     assert.ok(RESOLVER.includes(authority), `${authority} is consumed`);
   }

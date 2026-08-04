@@ -74,6 +74,10 @@ export interface ExplorationNode {
   quantity?: number | null;
   unitPrice?: number | null;
   ownershipEpisodes?: { fromISO: string; toISO: string }[];
+  scope?: {
+    heldValued: number; heldUnavailable: number; notYetOwned: number;
+    alreadyClosed: number; ownershipUncertain: number; excludedArtifact: number;
+  };
 }
 
 export interface HistoryExplorationSheetProps {
@@ -85,7 +89,8 @@ export interface HistoryExplorationSheetProps {
   dateISO: string;
   fromISO: string;
   toISO: string;
-  lens?: string;
+  /** The question being asked. Carried through to the resolver. */
+  root?: string;
   /** Drill deeper. The caller writes the URL; this component never routes. */
   onNavigate: (nodeType: ExplorationNodeType, nodeId: string | null) => void;
   onClose: () => void;
@@ -119,7 +124,7 @@ const toneStyle = (accent: string) => ({
 });
 
 export function HistoryExplorationSheet(props: HistoryExplorationSheetProps) {
-  const { spaceId, open, nodeType, nodeId, dateISO, fromISO, toISO, lens = "net-worth" } = props;
+  const { spaceId, open, nodeType, nodeId, dateISO, fromISO, toISO, root: lens = "net-worth" } = props;
 
   // ONE state object, stamped with the request it answers. Two booleans
   // (`loading` + `data`) can disagree; a stamped answer cannot, and it is what
@@ -134,7 +139,7 @@ export function HistoryExplorationSheet(props: HistoryExplorationSheetProps) {
     if (!open) return;
     const ctl = new AbortController();
     const params = new URLSearchParams({
-      lens, type: nodeType, date: dateISO, from: fromISO, to: toISO,
+      root: lens, type: nodeType, date: dateISO, from: fromISO, to: toISO,
     });
     if (nodeId) params.set("id", nodeId);
     fetch(`/api/spaces/${spaceId}/history/node?${params}`, { signal: ctl.signal })
@@ -258,8 +263,11 @@ function NodeBody({
   return (
     <div className="space-y-6">
       <section>
+        {/* The node's OWN label. Hard-coding "Net worth" for every lens root was
+            the Net-Worth monopoly surviving in the copy after the architecture
+            had already stopped assuming it. */}
         <h3 ref={headingRef} tabIndex={-1} className="text-xs uppercase tracking-wide text-faint focus:outline-none">
-          {node.nodeType === "lens" ? "Net worth" : node.label}
+          {node.label}
         </h3>
         <p className="mt-1 text-3xl font-semibold tabular-nums text-primary">
           {money(node.displayedValue, currency)}
@@ -274,6 +282,9 @@ function NodeBody({
           )}
           {node.nodeType === "holding" && (
             <span className="text-[11px] text-faint">{node.assetClass}</span>
+          )}
+          {node.nodeType === "tier" && (
+            <span className="text-[11px] text-faint">Liquidity tier</span>
           )}
         </div>
         {node.provenance.note && (
@@ -346,6 +357,12 @@ function NodeBody({
           )}
         </section>
       )}
+
+      {/* SECONDARY SCOPE — what the primary list deliberately omits, and why.
+          "Three positions are missing" and "three were acquired later" are
+          different facts; showing only the first teaches the reader the wrong
+          one. Counts are the ownership engine's, never recomputed here. */}
+      {node.scope && <ScopeSummary scope={node.scope} />}
 
       {mayShowChildren && node.components.length === 0 && humanReason(node.drilldown.reason ?? "") && (
         <p className="text-xs text-muted">{humanReason(node.drilldown.reason ?? "")}</p>
@@ -484,6 +501,27 @@ function NodeSeries({ node }: { node: ExplorationNode }) {
         </p>
       )}
     </section>
+  );
+}
+
+function ScopeSummary({ scope }: { scope: NonNullable<ExplorationNode["scope"]> }) {
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const lines: string[] = [];
+  if (scope.heldUnavailable)    lines.push(`${plural(scope.heldUnavailable, "position", "positions")} held but could not be valued`);
+  if (scope.notYetOwned)        lines.push(`${plural(scope.notYetOwned, "position was", "positions were")} acquired after this date`);
+  if (scope.alreadyClosed)      lines.push(`${plural(scope.alreadyClosed, "position had", "positions had")} already been sold`);
+  if (scope.ownershipUncertain) lines.push(`${plural(scope.ownershipUncertain, "position has", "positions have")} uncertain ownership`);
+  if (scope.excludedArtifact)   lines.push(`${plural(scope.excludedArtifact, "position has", "positions have")} no ownership evidence`);
+  if (lines.length === 0) return null;
+  return (
+    <details className="rounded-lg border border-hairline bg-[var(--surface-raised)] p-3">
+      <summary className="cursor-pointer text-xs text-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]">
+        Not shown on this date ({lines.length})
+      </summary>
+      <ul className="mt-2 space-y-1 text-[11px] text-faint">
+        {lines.map((l) => <li key={l}>{l}</li>)}
+      </ul>
+    </details>
   );
 }
 

@@ -36,7 +36,7 @@ export async function GET(
   void ctx;
 
   const q = req.nextUrl.searchParams;
-  const lens = q.get("lens") ?? "net-worth";
+  const lens = q.get("root") ?? q.get("lens") ?? "net-worth";
   const nodeType = (q.get("type") ?? "lens") as ExplorationNodeType;
   const nodeId = q.get("id");
   const date = q.get("date");

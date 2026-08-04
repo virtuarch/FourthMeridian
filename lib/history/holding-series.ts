@@ -41,7 +41,7 @@ import { eachDate } from "./account-series";
 import {
   extendBreadcrumb,
   type HistoricalAccountNode, type HistoricalCrumb,
-  type HistoricalHoldingNode, type HistoricalSeriesPoint,
+  type HistoricalHoldingNode, type HistoricalScope, type HistoricalSeriesPoint,
 } from "./historical-node.core";
 
 type Client = PrismaClient | Prisma.TransactionClient;
@@ -193,6 +193,34 @@ export async function accountHoldingNodes(
     (b.displayedValue ?? -Infinity) - (a.displayedValue ?? -Infinity) ||
     (a.instrumentId ?? "").localeCompare(b.instrumentId ?? ""));
   return nodes;
+}
+
+/**
+ * The selected date's SCOPE, projected from the ownership engine's own exclusion
+ * reasons. Nothing is classified here — each reason is counted where the
+ * authority already put it.
+ */
+export async function accountScopeForDate(
+  args: HoldingSeriesArgs,
+): Promise<HistoricalScope | null> {
+  const { account } = args;
+  if (account.accountType !== "investment") return null;
+  const client = args.client ?? db;
+  const byDate = await historicalHoldingsForWindow({
+    financialAccountId: account.accountId, dates: [account.dateISO], client,
+    holdConstantBeforeEarliest: true, excludeDigitalAssetAccounts: true,
+  });
+  const set = byDate.get(account.dateISO);
+  if (!set) return null;
+  const count = (code: string) => set.excluded.filter((e) => e.reasonCode === code).length;
+  return {
+    heldValued:         set.held.filter((h) => h.reportingValue != null).length,
+    heldUnavailable:    set.held.filter((h) => h.reportingValue == null).length,
+    notYetOwned:        count("NOT_YET_OWNED"),
+    alreadyClosed:      count("OWNERSHIP_CLOSED"),
+    ownershipUncertain: count("OWNERSHIP_UNKNOWN"),
+    excludedArtifact:   count("NO_OWNERSHIP_EVIDENCE"),
+  };
 }
 
 /**

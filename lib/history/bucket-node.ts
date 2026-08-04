@@ -33,7 +33,7 @@
 
 import { classifyReconciliation, round2 } from "@/lib/perspective-engine/reconciliation.core";
 import { bucketAccountNodes } from "./account-series";
-import { accountHoldingNodes } from "./holding-series";
+import { accountHoldingNodes, accountScopeForDate } from "./holding-series";
 import type {
   HistoricalAccountNode, HistoricalBucketNode, HistoricalNode,
 } from "./historical-node.core";
@@ -154,9 +154,13 @@ export async function expandAccountNode(args: {
     return account;
   }
 
-  const holdings = await accountHoldingNodes({
-    spaceId: args.spaceId, account, client: args.client,
-  });
+  // The primary list and the scope summary are resolved TOGETHER, from the same
+  // date and the same authority, so a count can never describe a different set
+  // than the list beside it.
+  const [holdings, scope] = await Promise.all([
+    accountHoldingNodes({ spaceId: args.spaceId, account, client: args.client }),
+    accountScopeForDate({ spaceId: args.spaceId, account, client: args.client }),
+  ]);
 
   // `null` = this account type has no holding level. A checking account is not
   // an empty portfolio; it is not a portfolio.
@@ -183,6 +187,7 @@ export async function expandAccountNode(args: {
 
   return {
     ...account,
+    scope: scope ?? undefined,
     components: holdings as HistoricalNode[],
     explainedValue: explained,
     unattributedObservedAmount: r.remainder,
