@@ -179,12 +179,22 @@ export interface HistoricalAccountNode extends HistoricalNodeBase, HistoricalCou
 export interface HistoricalHoldingNode extends HistoricalNodeBase {
   nodeType: "holding";
   accountId:    string;
+  /** THE identity, with accountId. Never the symbol — a ticker is reassignable. */
   instrumentId: string | null;
+  /** Display only. Decides nothing. */
   symbol:       string | null;
   assetClass:   string;
   /** Selected-date quantity and unit price, as the valuation engine resolved them. */
   quantity:  number | null;
   unitPrice: number | null;
+  /**
+   * V27-D3 — the runs within the window where the position was actually held.
+   *
+   * More than one means sold-and-re-bought. A single from/to span cannot say
+   * that, and drawing one across the gap would assert ownership during a period
+   * when there was none. Optional: populated only by the holding authority.
+   */
+  ownershipEpisodes?: { fromISO: string; toISO: string }[];
 }
 
 export type HistoricalNode =

@@ -33,6 +33,7 @@
 
 import { classifyReconciliation, round2 } from "@/lib/perspective-engine/reconciliation.core";
 import { bucketAccountNodes } from "./account-series";
+import { accountHoldingNodes } from "./holding-series";
 import type {
   HistoricalAccountNode, HistoricalBucketNode, HistoricalNode,
 } from "./historical-node.core";
@@ -130,3 +131,68 @@ export async function expandBuckets(
 }
 
 export type { HistoricalAccountNode };
+
+/**
+ * V27-D6 — attach an account's HOLDING children and reconcile them against it.
+ *
+ * The same invariant, one level deeper again:
+ *
+ *   Σ(assertable holdings) + permitted remainder = account total
+ *
+ * An account is a RECORDED total (a provider balance, or a valued subtotal the
+ * engine stated), so a holding it cannot value leaves a genuine remainder rather
+ * than invalidating the account. Holdings that EXCEED it are a contradiction —
+ * the same asymmetry buckets have, for the same reason.
+ */
+export async function expandAccountNode(args: {
+  spaceId: string;
+  account: HistoricalAccountNode;
+  client?: PrismaClient | Prisma.TransactionClient;
+}): Promise<HistoricalAccountNode> {
+  const { account } = args;
+  if (!account.drilldown.available || !account.assertable || account.displayedValue == null) {
+    return account;
+  }
+
+  const holdings = await accountHoldingNodes({
+    spaceId: args.spaceId, account, client: args.client,
+  });
+
+  // `null` = this account type has no holding level. A checking account is not
+  // an empty portfolio; it is not a portfolio.
+  if (holdings === null) {
+    return { ...account, drilldown: { available: false, reason: "NO_HOLDING_LEVEL_FOR_THIS_ACCOUNT_TYPE" } };
+  }
+  if (holdings.length === 0) {
+    return { ...account, components: [], explainedValue: null,
+      drilldown: { available: false, reason: "NO_HOLDINGS_IN_ACCOUNT" } };
+  }
+
+  const explained = round2(
+    holdings.filter((h) => h.assertable && h.displayedValue != null)
+      .reduce((n, h) => n + (h.displayedValue ?? 0), 0),
+  );
+
+  const r = classifyReconciliation({
+    total: account.displayedValue,
+    explained,
+    totalIsObserved: true,
+    componentCount: holdings.length,
+  });
+  const composed = r.state === "EXACT" || r.state === "PARTIALLY_ATTRIBUTED";
+
+  return {
+    ...account,
+    components: holdings as HistoricalNode[],
+    explainedValue: explained,
+    unattributedObservedAmount: r.remainder,
+    reconciliation: r.state,
+    // As with buckets: the account's VALUE stays assertable; only the claim that
+    // its composition is COMPLETE is governed by this reconciliation.
+    assertable: account.assertable,
+    unavailableReason: composed ? account.unavailableReason : "HOLDINGS_CONTRADICT_ACCOUNT_TOTAL",
+    historicalCount: holdings.length,
+    valuedCount: holdings.filter((h) => h.displayedValue != null).length,
+    drilldown: { available: true, reason: null },
+  };
+}
