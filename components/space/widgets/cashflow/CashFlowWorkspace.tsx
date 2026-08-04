@@ -36,17 +36,16 @@ import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import {
   periodLabel,
-  periodRange,
   isExplicitPeriod,
-  incomeSourceLabel,
   type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
 import { formatDate } from "@/lib/format";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
-import { liquidityIdsByReason, classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
+import { liquidityIdsByReason, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import type { CashFlowPerspective as CashFlowPerspectiveMode } from "@/lib/transactions/cash-flow-projection";
 import { cashFlowStamp, compareCashFlow } from "@/lib/transactions/cash-flow-compare";
 import { buildCashFlowSpaceData } from "@/lib/transactions/cash-flow-space-data";
+import { resolveFinancialWindow } from "@/lib/perspectives/financial-window";
+import type { TimePreset } from "@/lib/perspectives/time-range";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { useSpaceSectionsPublisher, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
 import { Surface, Block } from "@/components/atlas/Surface";
@@ -107,7 +106,7 @@ export function CashFlowWorkspace({
   accounts:        { id: string; type: string }[];
   period:          CashFlowPeriod;
   /** Canonical As-of — the ANCHOR for the selected period. The window's end travels
-   *  with asOf (periodRange(period, asOf)), so Cash Flow is historical, not today-only. */
+   *  with asOf via the canonical FLOW window, so Cash Flow is historical, not today-only. */
   asOf:            string;
   /** Canonical compareTo (strictly-earlier) — anchors the then-vs-now comparison. */
   compareTo?:      string | null;
@@ -130,7 +129,7 @@ export function CashFlowWorkspace({
   // The canonical As-of clock — the ONE anchor for every period→range resolution in
   // this workspace (the contract fold, the stamp, the calendar grid, the insights
   // comparison, the hero delta). Replacing the former implicit `new Date()` (today)
-  // makes the whole Cash Flow window travel with asOf: periodRange(period, asOf).
+  // makes the whole Cash Flow window travel with asOf, resolved by the ONE authority.
   const asOfClock = useMemo(() => () => new Date(`${asOf}T00:00:00`), [asOf]);
 
   // THE composition boundary — one canonical projection of the selected window,
@@ -174,7 +173,19 @@ export function CashFlowWorkspace({
   const change = useMemo<CashFlowHeroChange | null>(() => {
     if (!transactions || !data || data.rows.length === 0) return null;
     const clock = asOfClock;
-    const primaryStart = (period === "ALL" || isExplicitPeriod(period)) ? null : periodRange(period, clock()).start;
+    // CANONICAL FLOW WINDOW. A component must not derive a financial window
+    // itself — even a correct derivation is a second place the rule lives, and
+    // that is how the two parsers happened. Cash Flow asks a FLOW question
+    // (events on the displayed calendar dates), so it reads `flow`.
+    //
+    // ALL and explicit periods ("2026-07") are not relative presets and have no
+    // preset-derived start; the existing guard already returns null for them, so
+    // `period` is a relative preset wherever the window is resolved below.
+    const isRelative = period !== "ALL" && !isExplicitPeriod(period);
+    const primaryWindow = isRelative
+      ? resolveFinancialWindow({ preset: period as TimePreset, asOf, compareTo: null })
+      : null;
+    const primaryStart = primaryWindow?.flow.fromInclusiveISO ?? null;
     const compareToClock =
       compareTo && primaryStart && compareTo < primaryStart
         ? () => new Date(`${compareTo}T00:00:00`)
@@ -194,12 +205,17 @@ export function CashFlowWorkspace({
     const abs = cmp.delta.totals.net;
     const fromNet = cmp.then.totals.net;
     const pct = fromNet !== 0 ? (abs / Math.abs(fromNet)) * 100 : null;
-    const cmpRange = compareToClock ? periodRange(period, compareToClock()) : null;
-    const fromLabel = cmpRange
-      ? `${formatDate(cmpRange.start)} – ${formatDate(cmpRange.end)}`
+    // The SAME period resolved at the comparison anchor — again the canonical
+    // FLOW interval, so the label cannot describe a different window than the
+    // comparison actually used.
+    const cmpWindow = compareToClock && isRelative
+      ? resolveFinancialWindow({ preset: period as TimePreset, asOf: compareTo!, compareTo: null })
+      : null;
+    const fromLabel = cmpWindow
+      ? `${formatDate(cmpWindow.flow.fromInclusiveISO)} – ${formatDate(cmpWindow.flow.toInclusiveISO)}`
       : periodLabel(then);
     return { abs, pct, fromLabel };
-  }, [transactions, data, period, compareTo, perspective, liqCtx, txCtx, asOfClock]);
+  }, [transactions, data, period, compareTo, perspective, liqCtx, txCtx, asOfClock, asOf]);
 
   const displayCurrency = txCtx?.target ?? DEFAULT_DISPLAY_CURRENCY;
 
