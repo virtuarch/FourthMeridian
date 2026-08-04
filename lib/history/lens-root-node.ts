@@ -72,7 +72,34 @@ const AGGREGATE_ROOTS: Record<string, {
   subtracts: BucketKind[];
   total: (s: Snapshot) => number;
   formula: string;
+  /** Per-root child relabelling. "Investments › Investments" reads as a bug. */
+  childLabels?: Partial<Record<BucketKind, string>>;
 }> = {
+  /**
+   * INVESTMENTS IS THE `total` AGGREGATE, NOT THE `investments` BUCKET.
+   *
+   * The Investments chart plots `stocks + crypto` — `portfolio-series.ts` says
+   * so outright: "never plot `stocks` alone (that silently drops crypto)".
+   * Mapping this root to the investments BUCKET explained `stocks` while the
+   * chart showed `stocks + crypto`, so the panel answered a different question
+   * than the point the user clicked, and would fail its own parent/child
+   * reconciliation the moment crypto was material.
+   *
+   * `total` is an already-authorised aggregate (`AGGREGATE_COMPOSITION.total =
+   * ["stocks", "crypto"]`), so this is a mapping correction — no new formula and
+   * no second crypto authority.
+   */
+  investments: {
+    label: "Investments",
+    aggregate: "total",
+    adds: ["investments", "crypto"],
+    subtracts: [],
+    // Reads the STORED column. The fallback is that column's own definition and
+    // exists only for a DTO built before the read boundary exposed it.
+    total: (s) => s.total ?? (s.totalInvestments + s.totalCrypto),
+    formula: "Securities + Crypto",
+    childLabels: { investments: "Securities" },
+  },
   assets: {
     label: "Assets",
     aggregate: "totalAssets",
@@ -96,7 +123,6 @@ const AGGREGATE_ROOTS: Record<string, {
 
 /** A root that IS a bucket, entered directly rather than through Net Worth. */
 const BUCKET_ROOTS: Record<string, BucketKind> = {
-  investments: "investments",
   crypto: "crypto",
   cash: "cash",
   savings: "savings",
@@ -269,10 +295,18 @@ export function buildLensRootNode(args: LensRootArgs): HistoricalLensNode | null
     .sort((a, b) => order(spec, a.bucketKind) - order(spec, b.bucketKind));
 
   const rootCrumb: HistoricalCrumb = { id: `lens:${lens}`, label: spec.label, nodeType: "lens" };
-  const rebased: HistoricalBucketNode[] = components.map((c) => ({
-    ...(c as HistoricalBucketNode),
-    breadcrumb: [rootCrumb, { id: c.id, label: c.label, nodeType: "bucket" as const }],
-  }));
+  const rebased: HistoricalBucketNode[] = components.map((c) => {
+    // A child may read differently under a different root: the securities
+    // bucket is "Investments" beneath Net Worth and "Securities" beneath
+    // Investments. The IDENTITY (`bucketKind`, `id`) never changes — only the
+    // word, so a deep link and a reconciliation still refer to one node.
+    const label = spec.childLabels?.[c.bucketKind] ?? c.label;
+    return {
+      ...(c as HistoricalBucketNode),
+      label,
+      breadcrumb: [rootCrumb, { id: c.id, label, nodeType: "bucket" as const }],
+    };
+  });
 
   const auth = s.aggregateAuthorisation?.[spec.aggregate];
   const stored = spec.total(s);

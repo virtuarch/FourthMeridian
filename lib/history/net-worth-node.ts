@@ -146,7 +146,15 @@ export function buildNetWorthNode(args: NetWorthNodeArgs): HistoricalLensNode {
       provenance: {
         basis, tier,
         supportedFromISO: null, supportedToISO: null,
-        note: b.kind === "real-assets"
+        note: b.kind === "investments"
+          // DISAMBIGUATION. Under Net Worth, Investments and Crypto are SIBLING
+          // components of `computeSnapshotFields`' partition, so this bucket is
+          // securities only. The Investments LENS is the `total` aggregate
+          // (securities + crypto) and is a larger number. Same word, two scopes
+          // — saying which one this is costs a sentence and prevents a reader
+          // concluding one of them is wrong.
+          ? "Securities only. Crypto is a separate component of net worth."
+          : b.kind === "real-assets"
           // The one bucket whose honesty depends on saying what it is NOT.
           ? "Part of the recorded asset total that is not investments, crypto, cash or savings. Fourth Meridian does not hold its per-account composition."
           : null,

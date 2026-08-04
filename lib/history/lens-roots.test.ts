@@ -26,6 +26,7 @@ const SNAP = {
   date: "2026-06-18",
   totalInvestments: 5_000, totalCrypto: 15_000, totalCash: 2_000, totalSavings: 3_000,
   totalDebt: 1_000,
+  total: 20_000,                // stocks + crypto, the stored column
   totalAssets: 25_500,          // + 500 real assets
   netWorth: 24_500,
   netLiquid: 4_000,             // 2000 + 3000 − 1000
@@ -61,12 +62,14 @@ const build = (lens: Parameters<typeof buildLensRootNode>[0]["lens"]) =>
 
 // ── root taxonomy ──────────────────────────────────────────────────────────
 {
-  for (const b of ["investments", "crypto", "cash", "savings", "debt"] as const) {
+  // `investments` is deliberately NOT here: it is the `total` AGGREGATE
+  // (securities + crypto), because that is what the Investments chart plots.
+  for (const b of ["crypto", "cash", "savings", "debt"] as const) {
     assert.ok(isBucketRoot(b), `${b} is a bucket root`);
     assert.ok(bucketKindForRoot(b), `${b} maps to a bucket kind`);
     assert.equal(build(b), null, "a bucket root is resolved by the binding, not purely");
   }
-  for (const a of ["assets", "liquid-net-worth"] as const) {
+  for (const a of ["assets", "liquid-net-worth", "investments"] as const) {
     assert.ok(isAggregateRoot(a), `${a} is an aggregate root`);
     assert.ok(!isBucketRoot(a));
   }
@@ -150,6 +153,54 @@ const build = (lens: Parameters<typeof buildLensRootNode>[0]["lens"]) =>
   ok("a bucket re-framed as a root keeps its finances and drops its parent's sign");
 }
 
+// ── INVESTMENTS · securities + crypto, matching what the chart plots ───────
+{
+  const n = build("investments")!;
+  assert.equal(n.lens, "investments");
+  // THE BUG THIS FIXES: the root explained `stocks` while the chart plotted
+  // `stocks + crypto` (portfolio-series.ts: "never plot `stocks` alone (that
+  // silently drops crypto)"), so the panel answered a different question than
+  // the point that opened it.
+  assert.equal(n.displayedValue, 20_000, "stocks 5000 + crypto 15000 — the plotted value");
+  assert.equal(n.provenance.note, "Securities + Crypto");
+
+  const kinds = n.components.map((c) => (c.nodeType === "bucket" ? c.bucketKind : ""));
+  assert.deepEqual(kinds, ["investments", "crypto"], "both branches, in display order");
+
+  // A · both branches present.  B · they reconcile exactly.
+  const sec = n.components.find((c) => c.nodeType === "bucket" && c.bucketKind === "investments")!;
+  const cry = n.components.find((c) => c.nodeType === "bucket" && c.bucketKind === "crypto")!;
+  assert.equal(sec.displayedValue, 5_000);
+  assert.equal(cry.displayedValue, 15_000);
+  assert.equal(n.explainedValue, 20_000, "securities + crypto === the parent");
+  assert.equal(n.reconciliation, "EXACT");
+  // A computed parent may never invent a remainder.
+  assert.equal(n.unattributedObservedAmount, null);
+
+  // The securities child is RELABELLED under this root — "Investments ›
+  // Investments" reads as a bug — while its IDENTITY is untouched, so a deep
+  // link and a reconciliation still refer to the same node.
+  assert.equal(sec.label, "Securities");
+  assert.equal(sec.id, "bucket:investments", "the id never changes with the label");
+  assert.deepEqual(sec.breadcrumb.map((c) => c.label), ["Investments", "Securities"]);
+  ok("INVESTMENTS · securities + crypto, EXACT, matching the value the chart plots");
+}
+
+// ── D · no crypto ⇒ no phantom crypto branch ──────────────────────────────
+{
+  const noCrypto = { ...SNAP, totalCrypto: 0, total: 5_000, totalAssets: 10_500, netWorth: 9_500 } as unknown as Snapshot;
+  const n = buildLensRootNode({
+    snapshot: noCrypto, lens: "investments", dateISO: "2026-06-18",
+    fromISO: "2026-01-01", toISO: "2026-06-18", currency: "USD",
+  })!;
+  const kinds = n.components.map((c) => (c.nodeType === "bucket" ? c.bucketKind : ""));
+  assert.ok(!kinds.includes("crypto"), "an immaterial crypto column produces NO child");
+  assert.equal(n.displayedValue, 5_000);
+  // A legitimate absence is not the same as unavailable history.
+  assert.equal(n.reconciliation, "EXACT");
+  ok("D · no crypto holding ⇒ no phantom crypto branch, and still EXACT");
+}
+
 // ── LIQUIDITY · tiers, and no liability side ──────────────────────────────
 {
   const n = buildLiquidityRootNode({
@@ -199,8 +250,20 @@ const build = (lens: Parameters<typeof buildLensRootNode>[0]["lens"]) =>
   assert.ok(builders.length >= 2, "there is more than one root builder");
   assert.equal((src.match(/buildNetWorthNode\(/g) ?? []).length, builders.length,
     "each root builder projects buildNetWorthNode exactly once");
-  assert.ok(!/totalInvestments \+ |totalCash \+ totalSavings|totalAssets -/.test(src),
-    "no root re-derives a component sum of its own");
+  // EVERY aggregate root READS its stored, authorised column rather than
+  // recomputing the formula — the discipline that retired the duplicated
+  // `liquidNetWorth` derivation. A `??` fallback restating that column's own
+  // definition is permitted for a DTO built before the boundary exposed it, and
+  // is the only place a sum may appear.
+  for (const col of ["s.total", "s.totalAssets", "s.netLiquid"]) {
+    assert.ok(src.includes(col), `an aggregate root reads the stored ${col}`);
+  }
+  const sums = src.match(/s\.total\w* \+ s\.total\w*/g) ?? [];
+  for (const sum of sums) {
+    assert.ok(new RegExp(`\\?\\?\\s*\\(${sum.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`).test(src),
+      `"${sum}" appears only as a documented ?? fallback, never as the primary value`);
+  }
+  ok("STATIC · every aggregate root reads its stored column; sums appear only as fallbacks");
   // No valuation, ownership, replay or authorisation is re-derived here.
   for (const forbidden of [
     "getInvestmentValueForWindow", "loadHoldingOwnership", "valueCryptoDay",
@@ -210,6 +273,18 @@ const build = (lens: Parameters<typeof buildLensRootNode>[0]["lens"]) =>
   }
   assert.ok(!/\.(create|update|upsert|delete)\s*\(/.test(src), "roots write nothing");
   ok("STATIC · roots select authorities; none forks valuation, ownership or authorisation");
+}
+
+// ── L · no duplicate Investments or Crypto authority ──────────────────────
+{
+  const src = readFileSync(new URL("./lens-root-node.ts", import.meta.url), "utf8");
+  // The crypto branch under Investments is the SAME bucket node Net Worth uses,
+  // projected — not a second crypto composition.
+  assert.ok(!/valueCryptoDay|readBtcUsdWindow|licenseConstantQuantityCarry|reconcileWalletLedger/.test(src),
+    "no crypto authority is reconstructed in the root layer");
+  assert.ok(!/historicalHoldingsForWindow|getInvestmentValueForWindow/.test(src),
+    "no investments authority is reconstructed in the root layer");
+  ok("L · Investments and Crypto branches reuse the one partition; no second authority");
 }
 
 for (const c of checks) console.log("  ✓ " + c);

@@ -91,6 +91,12 @@ export interface Snapshot {
   totalSavings: number;   // savings only
   totalInvestments: number;
   totalCrypto: number;
+  /**
+   * V27 — the stored `total` column: investments + crypto, i.e. the INVESTED
+   * value the Investments chart plots. Optional so pre-existing constructors of
+   * this DTO are unaffected; the canonical read boundary always populates it.
+   */
+  total?: number;
   cashOnHand: number;
   // V26-PRE (B2) — `netLiquid` column threaded through the canonical read so
   // AI consumers need no direct SpaceSnapshot query. Optional: pre-existing
