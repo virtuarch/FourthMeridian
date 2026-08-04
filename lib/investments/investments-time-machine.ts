@@ -195,7 +195,8 @@ async function readPeriodFlows(
       supersededById: null,
       date: { gt: new Date(`${from}T00:00:00.000Z`), lte: new Date(`${to}T00:00:00.000Z`) },
     },
-    select: { type: true, date: true, amount: true, quantity: true, currency: true },
+    select: { type: true, date: true, amount: true, quantity: true, currency: true,
+              instrumentId: true, financialAccountId: true },
   });
 
   // One FX context spanning the flow currencies + dates (same money layer as valuation).
@@ -205,13 +206,30 @@ async function readPeriodFlows(
     ? await buildSpaceConversionContextById(spaceId, { currencies, dates })
     : identityContext(reportingCurrency);
 
+  // Display identity for the instruments these FLOWS touch — a separate set
+  // from the as-of holdings, because a security sold during the period is not
+  // in the closing portfolio and would otherwise have no name to show.
+  const flowInstrumentIds = [...new Set(rows.map((r) => r.instrumentId).filter((i): i is string => !!i))];
+  const flowDisplay = await readDisplay(client, flowInstrumentIds);
+
   const events: FlowEvent[] = rows.map((r) => {
     const date = ymd(r.date);
+    const d = r.instrumentId ? flowDisplay[r.instrumentId] : undefined;
+    const identity = {
+      accountId:    r.financialAccountId,
+      instrumentId: r.instrumentId ?? null,
+      // Null when the provider gave no identity — an unattributed dividend stays
+      // explicitly unattributed rather than borrowing a ticker.
+      symbol:       d?.symbol ?? null,
+      name:         d?.name ?? null,
+      quantity:     r.quantity ?? null,
+      hasQuantity:  r.quantity != null && r.quantity !== 0,
+    };
     if (r.amount == null) {
-      return { type: r.type, date, amount: null, fxEstimated: false, hasQuantity: r.quantity != null && r.quantity !== 0 };
+      return { type: r.type, date, amount: null, fxEstimated: false, ...identity };
     }
     const c = convertMoney({ amount: r.amount, currency: r.currency }, date, ctx);
-    return { type: r.type, date, amount: c.amount, fxEstimated: c.estimated, hasQuantity: r.quantity != null && r.quantity !== 0 };
+    return { type: r.type, date, amount: c.amount, fxEstimated: c.estimated, ...identity };
   });
 
   return summarizePeriodFlows(events, from, to, ctx.target);

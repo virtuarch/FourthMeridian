@@ -49,7 +49,7 @@ function flows(over: Partial<PeriodFlows> = {}): PeriodFlows {
     netExternalFlows: 0,
     byCategory: [],
     inKindTransferCount: 0, unclassifiedCount: 0, externalAmountMissingCount: 0,
-    fxEstimated: false,
+    fxEstimated: false, events: [],
     completeness: "observed",
     reason: "3 events in the period.",
     ...over,
