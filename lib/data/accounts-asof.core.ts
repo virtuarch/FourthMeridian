@@ -26,6 +26,7 @@ import {
   reconstructDailyCashBalances,
   reconstructDailyLiabilityBalances,
   isReconstructableCard,
+  addDaysUTC,
   truncDateUTC,
   isoDate,
   type CashAccountBalance,
@@ -106,35 +107,110 @@ export function resolveAccountsAsOf(
 
   const out = new Map<string, ResolvedAsOfBalance>();
   for (const a of accounts) {
-    if (isPresent) {
-      out.set(a.id, { balance: a.balance, method: "observed", tier: "observed" });
-      continue;
-    }
-    // Before the account existed / was linked: a gap, never a fabricated value.
-    // Contributes 0 and flips the consuming Perspective to `incomplete`.
-    if (asOfISO < a.floorISO) {
-      out.set(a.id, { balance: 0, method: "before-coverage", tier: "incomplete" });
-      continue;
-    }
-    if (cashIds.has(a.id)) {
-      out.set(a.id, {
-        balance: cashDay?.get(a.id) ?? a.balance,
-        method:  "cash-walkback",
-        tier:    "derived",
-      });
-      continue;
-    }
-    if (cardIds.has(a.id)) {
-      out.set(a.id, {
-        balance: cardDay?.get(a.id) ?? a.balance,
-        method:  "card-walkback",
-        tier:    "derived",
-      });
-      continue;
-    }
-    // Non-cash (investments, crypto, manual assets, installment loans): no
-    // history to walk, so held flat at today's value and marked estimated.
-    out.set(a.id, { balance: a.balance, method: "held-flat", tier: "estimated" });
+    out.set(a.id, resolveOne(a, {
+      isPresent, dayISO: asOfISO, cashDay, cardDay, cashIds, cardIds,
+    }));
+  }
+  return out;
+}
+
+/** Everything the per-account precedence needs for ONE day. */
+interface DayContext {
+  isPresent: boolean;
+  dayISO:    string;
+  cashDay:   Map<string, number> | undefined;
+  cardDay:   Map<string, number> | undefined;
+  cashIds:   Set<string>;
+  cardIds:   Set<string>;
+}
+
+/**
+ * THE precedence, in one place, for one account on one day:
+ *
+ *   1. the present            → the observed balance
+ *   2. before the floor       → a gap, never a fabricated value
+ *   3. cash / card            → the licensed walk-back
+ *   4. everything else        → held flat, and SAID so
+ *
+ * Extracted so the single-date and windowed resolvers cannot drift apart. Two
+ * copies of this ladder would be two answers to the same question.
+ */
+function resolveOne(a: AsOfAccountInput, ctx: DayContext): ResolvedAsOfBalance {
+  if (ctx.isPresent) return { balance: a.balance, method: "observed", tier: "observed" };
+  // Before the account existed / was linked: a gap, never a fabricated value.
+  // Contributes 0 and flips the consuming Perspective to `incomplete`.
+  if (ctx.dayISO < a.floorISO) return { balance: 0, method: "before-coverage", tier: "incomplete" };
+  if (ctx.cashIds.has(a.id)) {
+    return { balance: ctx.cashDay?.get(a.id) ?? a.balance, method: "cash-walkback", tier: "derived" };
+  }
+  if (ctx.cardIds.has(a.id)) {
+    return { balance: ctx.cardDay?.get(a.id) ?? a.balance, method: "card-walkback", tier: "derived" };
+  }
+  // Non-cash (investments, crypto, manual assets, installment loans): no
+  // history to walk, so held flat at today's value and marked estimated.
+  return { balance: a.balance, method: "held-flat", tier: "estimated" };
+}
+
+/**
+ * V27-C — the SAME resolution, over a WINDOW: isoDate → (accountId → resolved).
+ *
+ * The walk-backs already produce every day between `from` and today in a single
+ * reverse pass, so a window costs exactly what one as-of date costs. Calling
+ * `resolveAccountsAsOf` once per day would re-walk the whole history N times to
+ * read one row out of each pass.
+ *
+ * Every day goes through `resolveOne`, so a windowed series and a single as-of
+ * read of the same date are the same number BY CONSTRUCTION — not by a test that
+ * remembers to check.
+ *
+ * `deltas` must be POSTED-ONLY, same as the single-date path: the anchor is the
+ * posted `FinancialAccount.balance`, and reversing an unsettled row would mix
+ * bases and inject a phantom.
+ */
+export function resolveAccountsOverWindow(
+  accounts:   AsOfAccountInput[],
+  cashDeltas: Map<string, Map<string, number>>,
+  cardDeltas: Map<string, Map<string, number>>,
+  today:      Date,
+  from:       Date,
+  to:         Date,
+): Map<string, Map<string, ResolvedAsOfBalance>> {
+  const t0      = truncDateUTC(today);
+  const fromDay = truncDateUTC(from);
+  const toDay   = truncDateUTC(to);
+
+  const cashAccounts: CashAccountBalance[] = accounts
+    .filter((a) => a.type === "checking" || a.type === "savings")
+    .map((a) => ({ id: a.id, balance: a.balance }));
+  const cardAccounts: CashAccountBalance[] = accounts
+    .filter(isReconstructableCard)
+    .map((a) => ({ id: a.id, balance: a.balance }));
+
+  // ONE reverse pass each, covering the whole window.
+  const pastWindow = fromDay.getTime() < t0.getTime();
+  const dailyCash = pastWindow
+    ? reconstructDailyCashBalances(cashAccounts, cashDeltas, t0, fromDay)
+    : new Map<string, Map<string, number>>();
+  const dailyCard = pastWindow
+    ? reconstructDailyLiabilityBalances(cardAccounts, cardDeltas, t0, fromDay)
+    : new Map<string, Map<string, number>>();
+
+  const cashIds = new Set(cashAccounts.map((a) => a.id));
+  const cardIds = new Set(cardAccounts.map((a) => a.id));
+
+  const out = new Map<string, Map<string, ResolvedAsOfBalance>>();
+  for (let d = fromDay; d.getTime() <= toDay.getTime(); d = addDaysUTC(d, 1)) {
+    const dayISO = isoDate(d);
+    const ctx: DayContext = {
+      isPresent: d.getTime() >= t0.getTime(),
+      dayISO,
+      cashDay: dailyCash.get(dayISO),
+      cardDay: dailyCard.get(dayISO),
+      cashIds, cardIds,
+    };
+    const perAccount = new Map<string, ResolvedAsOfBalance>();
+    for (const a of accounts) perAccount.set(a.id, resolveOne(a, ctx));
+    out.set(dayISO, perAccount);
   }
   return out;
 }
