@@ -118,6 +118,144 @@ export type CounterpartyEvidence =
   /** Nothing established it. */
   | "NONE";
 
+// ── Destination evidence (V27-L4-AUDIT) ─────────────────────────────────────
+
+/**
+ * How well the evidence pins down where a movement went.
+ *
+ * The corpus forced this distinction. A row can have an UNDECIDABLE destination
+ * account and a fully DECIDED destination type — every candidate is a card, say
+ * — and the type is what names the movement. Collapsing that into "ambiguous"
+ * throws away a true claim; collapsing it into "resolved" invents a counterparty.
+ * They are different facts and need different names.
+ */
+export type DestinationEvidenceLevel =
+  /** Exactly one destination account qualifies. Account AND type are known, and
+   *  `counterpartyAccountId` may be persisted. */
+  | "ACCOUNT_CERTAIN"
+  /** Several accounts qualify but they all share ONE type. The type names the
+   *  movement; the account does NOT, so no counterparty may be persisted. */
+  | "TYPE_CERTAIN_ACCOUNT_AMBIGUOUS"
+  /** Candidates span more than one destination type. Nothing above "a transfer
+   *  happened" is supported. */
+  | "TYPE_AMBIGUOUS"
+  /** No qualifying opposite leg exists at all. Distinct from TYPE_AMBIGUOUS:
+   *  there is nothing to be ambiguous BETWEEN, and inventing one would be
+   *  fabrication rather than a guess. */
+  | "NO_DESTINATION_EVIDENCE";
+
+/** One candidate destination — an owned account an opposite leg sits in. */
+export interface DestinationCandidate {
+  accountId: string;
+  /** checking | savings | investment | crypto | debt | other. */
+  accountType: string;
+}
+
+export interface DestinationEvidence {
+  level: DestinationEvidenceLevel;
+  /** Set ONLY at ACCOUNT_CERTAIN. Null at every other level, by construction. */
+  accountId: string | null;
+  /** Set at ACCOUNT_CERTAIN and TYPE_CERTAIN_ACCOUNT_AMBIGUOUS. */
+  accountType: string | null;
+  candidateAccountIds: string[];
+  candidateTypes: string[];
+  /** True ONLY at ACCOUNT_CERTAIN — the one level where an account id is a fact. */
+  persistableCounterparty: boolean;
+}
+
+/**
+ * Resolve the destination evidence level from the candidate set. Pure; the
+ * caller owns finding the candidates (amount, sign, currency, window, ownership).
+ */
+export function resolveDestinationEvidence(
+  candidates: readonly DestinationCandidate[],
+): DestinationEvidence {
+  const accountIds = [...new Set(candidates.map((c) => c.accountId))].sort();
+  const types = [...new Set(candidates.map((c) => c.accountType))].sort();
+
+  if (accountIds.length === 0) {
+    return {
+      level: "NO_DESTINATION_EVIDENCE",
+      accountId: null, accountType: null,
+      candidateAccountIds: [], candidateTypes: [],
+      persistableCounterparty: false,
+    };
+  }
+  if (accountIds.length === 1) {
+    return {
+      level: "ACCOUNT_CERTAIN",
+      accountId: accountIds[0], accountType: types[0],
+      candidateAccountIds: accountIds, candidateTypes: types,
+      persistableCounterparty: true,
+    };
+  }
+  if (types.length === 1) {
+    return {
+      level: "TYPE_CERTAIN_ACCOUNT_AMBIGUOUS",
+      // The account is genuinely unknown — never guess one from the set.
+      accountId: null, accountType: types[0],
+      candidateAccountIds: accountIds, candidateTypes: types,
+      persistableCounterparty: false,
+    };
+  }
+  return {
+    level: "TYPE_AMBIGUOUS",
+    accountId: null, accountType: null,
+    candidateAccountIds: accountIds, candidateTypes: types,
+    persistableCounterparty: false,
+  };
+}
+
+/**
+ * The maturity an evidence level supports.
+ *
+ * ⚠️ The ROW'S OWN account and direction come first, and the full-corpus audit is
+ * why. A destination-only ladder mis-read **103 live rows**: an inflow ARRIVING at
+ * a credit card ("MOBILE PAYMENT - THANK YOU", +$980.48 on the Platinum Card®)
+ * has a CHECKING counterparty, so destination-type alone called it a cash
+ * transfer. It is a debt payment, and the receiving account's own type says so
+ * without needing the counterparty at all.
+ *
+ * The two own-account rules mirror the flow classifier's existing structural
+ * veto (`debtPaymentUnlessLiabilityOutflow`), which this must not contradict:
+ *
+ *   money INTO a liability   → a debt payment. Settled by this account's type.
+ *   money OUT of a liability → NEVER a debt payment; that is a charge, and it is
+ *                              not a transfer leg this ladder should re-label.
+ *
+ * Only when the row's own account does not settle the question does the
+ * destination type decide.
+ */
+export function maturityForEvidence(
+  e: DestinationEvidence,
+  own?: OwnSideContext,
+): TransferMaturity {
+  // 1. The row's own account settles a liability inflow outright.
+  if (own && own.accountType === "debt") {
+    if (own.amount > 0) return "DEBT_PAYMENT";
+    // A liability OUTFLOW is a charge. The ladder has no leaf for that and must
+    // not invent one, so it stays at the least-specific honest answer.
+    return "UNRESOLVED_TRANSFER";
+  }
+  // 2. Otherwise the destination type decides, where it is known.
+  switch (e.level) {
+    case "ACCOUNT_CERTAIN":
+    case "TYPE_CERTAIN_ACCOUNT_AMBIGUOUS":
+      return leafForAccountType(e.accountType as string);
+    case "TYPE_AMBIGUOUS":
+    case "NO_DESTINATION_EVIDENCE":
+      return "UNRESOLVED_TRANSFER";
+  }
+}
+
+/** The row's OWN side — its account type and signed amount. */
+export interface OwnSideContext {
+  /** checking | savings | investment | crypto | debt | other. */
+  accountType: string;
+  /** Signed amount in the row's own account. Negative is outflow. */
+  amount: number;
+}
+
 export interface MaturationInput {
   /** The row's current flowType, whatever it is. Never a gate — see above. */
   flowType: string | null | undefined;
@@ -135,6 +273,18 @@ export interface MaturationInput {
    * movement. SUPPORTING only: it may accompany a matched leg, never replace it.
    */
   balanceGapSupports?: boolean;
+  /**
+   * V27-L4-AUDIT — the FULL candidate set's evidence level. When supplied it
+   * takes precedence over `counterparty`, because it can express certainty about
+   * a destination TYPE without certainty about the account.
+   */
+  destination?: DestinationEvidence;
+  /**
+   * V27-L4-AUDIT — the ROW'S OWN account type. Supplying it lets the ladder
+   * settle a liability inflow from the row itself, which the destination type
+   * cannot do (see maturityForEvidence). Strongly recommended.
+   */
+  ownAccountType?: string;
 }
 
 export interface MaturationResult {
@@ -168,6 +318,34 @@ export function impliedFlowType(m: TransferMaturity): "TRANSFER" | "DEBT_PAYMENT
  */
 export function matureClassification(input: MaturationInput): MaturationResult {
   const direction = input.amount < 0 ? "OUTFLOW" : "INFLOW";
+
+  // V27-L4-AUDIT — the evidence-level path. When the caller supplies the whole
+  // candidate SET, TYPE_CERTAIN_ACCOUNT_AMBIGUOUS becomes expressible: a rank-2
+  // classification with NO persistable counterparty, which the single-counterparty
+  // path below cannot represent.
+  if (input.destination) {
+    const e = input.destination;
+    const maturity = maturityForEvidence(
+      e,
+      input.ownAccountType ? { accountType: input.ownAccountType, amount: input.amount } : undefined,
+    );
+    const impliedNow = impliedFlowType(maturity);
+    return {
+      maturity,
+      rank: maturityRank(maturity),
+      direction,
+      counterpartyAccountId: e.accountId,
+      evidence: e.level === "NO_DESTINATION_EVIDENCE" ? "NONE" : "MATCHED_LEG",
+      reclassified: (input.flowType ?? null) !== impliedNow,
+      reason: input.ownAccountType === "debt"
+        ? (input.amount > 0
+            ? "Money arriving at a liability account is a debt payment; this account's own type settles it without needing the counterparty."
+            : "Money leaving a liability account is a charge, never a debt payment, and the transfer ladder has no leaf for it.")
+        : EVIDENCE_REASON[e.level](e),
+      persistable: e.persistableCounterparty,
+    };
+  }
+
   const cp = input.counterparty ?? null;
 
   // ── Rank 0 — the honest default ─────────────────────────────────────────
@@ -233,6 +411,17 @@ function leafForAccountType(t: string): TransferMaturity {
     default:           return "INTERNAL_TRANSFER";
   }
 }
+
+const EVIDENCE_REASON: Record<DestinationEvidenceLevel, (e: DestinationEvidence) => string> = {
+  ACCOUNT_CERTAIN: (e) =>
+    `Exactly one owned ${e.accountType} account qualifies as the destination, so both the account and the movement are established.`,
+  TYPE_CERTAIN_ACCOUNT_AMBIGUOUS: (e) =>
+    `${e.candidateAccountIds.length} owned accounts qualify and every one is a ${e.accountType} account: the movement is established, the specific account is not, so no counterparty is recorded.`,
+  TYPE_AMBIGUOUS: (e) =>
+    `Candidate destinations span ${e.candidateTypes.length} different account types (${e.candidateTypes.join(", ")}), so nothing beyond "a transfer occurred" is supported.`,
+  NO_DESTINATION_EVIDENCE: () =>
+    "No qualifying opposite leg exists on any owned account, so there is no destination to establish.",
+};
 
 const LEAF_REASON: Record<TransferMaturity, string> = {
   UNRESOLVED_TRANSFER: "Destination unknown",

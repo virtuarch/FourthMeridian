@@ -16,6 +16,7 @@ import {
 import {
   matureClassification, adoptIfMonotonic, adoptRetraction, maturityRank, isTransferCandidate,
   impliedFlowType, TRANSFER_MATCH_WINDOW_DAYS, MATURITY_LABEL,
+  resolveDestinationEvidence, maturityForEvidence,
 } from "./transfer-maturation";
 
 let failures = 0;
@@ -295,6 +296,65 @@ console.log("4C. Monotonic specificity");
   });
   check("a same-rank correction IS adopted (a wrong destination is superseded)",
     adoptIfMonotonic("SAVINGS_TRANSFER", wrongLeaf).adopt);
+}
+
+console.log("4-AUDIT. Destination evidence levels");
+{
+  const A = resolveDestinationEvidence([{ accountId: "hysa", accountType: "savings" }]);
+  check("one candidate ⇒ ACCOUNT_CERTAIN", A.level === "ACCOUNT_CERTAIN");
+  check("...account and type both known", A.accountId === "hysa" && A.accountType === "savings");
+  check("...and a counterparty MAY be persisted", A.persistableCounterparty === true);
+
+  const B = resolveDestinationEvidence([
+    { accountId: "hysa", accountType: "savings" },
+    { accountId: "chase-sav", accountType: "savings" },
+  ]);
+  check("many candidates, ONE type ⇒ TYPE_CERTAIN_ACCOUNT_AMBIGUOUS",
+    B.level === "TYPE_CERTAIN_ACCOUNT_AMBIGUOUS");
+  check("...the TYPE is known", B.accountType === "savings");
+  check("...the ACCOUNT is NOT — never guessed from the set", B.accountId === null);
+  check("...so no counterparty may be persisted", B.persistableCounterparty === false);
+  check("...and it still reaches the leaf", maturityForEvidence(B) === "SAVINGS_TRANSFER");
+
+  const C = resolveDestinationEvidence([
+    { accountId: "hysa", accountType: "savings" },
+    { accountId: "card", accountType: "debt" },
+  ]);
+  check("candidates spanning types ⇒ TYPE_AMBIGUOUS", C.level === "TYPE_AMBIGUOUS");
+  check("...nothing above 'a transfer happened'", maturityForEvidence(C) === "UNRESOLVED_TRANSFER");
+  check("...and no type is claimed", C.accountType === null);
+
+  const D = resolveDestinationEvidence([]);
+  check("no candidates ⇒ NO_DESTINATION_EVIDENCE", D.level === "NO_DESTINATION_EVIDENCE");
+  check("...distinct from TYPE_AMBIGUOUS — nothing to be ambiguous between",
+    D.level !== C.level && maturityForEvidence(D) === "UNRESOLVED_TRANSFER");
+}
+
+console.log("4-AUDIT. The row's OWN account settles a liability inflow");
+{
+  // The 103-row defect the full-corpus audit exposed: "+$980.48 MOBILE PAYMENT -
+  // THANK YOU" ARRIVING at the Platinum Card®, counterparty a CHECKING account.
+  // Destination-type alone called it a cash transfer. It is a debt payment.
+  const fromChecking = resolveDestinationEvidence([{ accountId: "chk", accountType: "checking" }]);
+  check("destination type ALONE would say cash transfer",
+    maturityForEvidence(fromChecking) === "CASH_TRANSFER");
+  check("...but money INTO a liability is a debt payment",
+    maturityForEvidence(fromChecking, { accountType: "debt", amount: 980.48 }) === "DEBT_PAYMENT");
+  check("money OUT of a liability is never a debt payment (the structural veto)",
+    maturityForEvidence(fromChecking, { accountType: "debt", amount: -50 }) === "UNRESOLVED_TRANSFER");
+  check("a liability inflow resolves even with NO destination evidence",
+    maturityForEvidence(resolveDestinationEvidence([]), { accountType: "debt", amount: 100 }) === "DEBT_PAYMENT");
+  check("a non-liability row is unaffected — the destination still decides",
+    maturityForEvidence(fromChecking, { accountType: "checking", amount: -50 }) === "CASH_TRANSFER");
+
+  const r = matureClassification({
+    flowType: "DEBT_PAYMENT", amount: 980.48, ownAccountType: "debt",
+    destination: fromChecking,
+  });
+  check("matureClassification honours the own-side rule", r.maturity === "DEBT_PAYMENT");
+  check("...and is NOT a reclassification", r.reclassified === false);
+  check("...with a reason naming the receiving account's type",
+    r.reason.includes("arriving at a liability account"));
 }
 
 console.log("4C. Retraction is NOT monotonicity — and a caller must say which");
