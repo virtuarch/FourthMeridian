@@ -18,6 +18,7 @@
  */
 
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
+import { compareToForPreset } from "@/lib/perspectives/time-range";
 import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
@@ -141,37 +142,23 @@ export function periodRange(period: CashFlowPeriod, now: Date = new Date()): { s
   // filterByPeriod keeps the full visible history (imported/provider/wallet).
   if (period === "ALL") return { start: "0000-01-01", end: "9999-12-31" };
 
+  // ── ONE PARSER ────────────────────────────────────────────────────────────
+  //
+  // The preset→start-date question belongs to `compareToForPreset`, and asking
+  // it here as well is what made Cash Flow disagree with every other surface.
+  // The local-time `Date` switch this replaces used `setMonth(m - 1)`, which
+  // OVERFLOWS: on 2026-03-31 it produced 2026-03-03 (a three-day window) where
+  // the canonical parser gives 2026-02-28. Same on 2026-05-31 → 2026-05-01.
+  // A user on the last day of a long month saw Cash Flow tally three days while
+  // the chart beside it tallied a month.
+  //
+  // What stays here is the FLOW BOUNDARY — both endpoints inclusive — because
+  // that is Cash Flow's own question: every event on the displayed calendar
+  // dates. The window is shared; the boundary semantics are not, and that is
+  // deliberate (see lib/perspectives/financial-window.ts).
   const end = toISODate(now);
-  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // strip time
-  let start: Date;
-
-  switch (period) {
-    case "WTD": {                                   // from Sunday of this week
-      start = new Date(d);
-      start.setDate(d.getDate() - d.getDay());
-      break;
-    }
-    case "MTD":
-      start = new Date(d.getFullYear(), d.getMonth(), 1);
-      break;
-    case "QTD":
-      start = new Date(d.getFullYear(), Math.floor(d.getMonth() / 3) * 3, 1);
-      break;
-    case "YTD":
-      start = new Date(d.getFullYear(), 0, 1);
-      break;
-    case "PAST_WEEK":
-      start = new Date(d); start.setDate(d.getDate() - 7); break;
-    case "PAST_MONTH":
-      start = new Date(d); start.setMonth(d.getMonth() - 1); break;
-    case "PAST_QUARTER":
-      start = new Date(d); start.setMonth(d.getMonth() - 3); break;
-    case "PAST_6_MONTHS":
-      start = new Date(d); start.setMonth(d.getMonth() - 6); break;
-    case "PAST_YEAR":
-      start = new Date(d); start.setFullYear(d.getFullYear() - 1); break;
-  }
-  return { start: toISODate(start), end };
+  const start = compareToForPreset(period, end, null) ?? end;
+  return { start, end };
 }
 
 // ─── Historical option generation ───────────────────────────────────────────────
