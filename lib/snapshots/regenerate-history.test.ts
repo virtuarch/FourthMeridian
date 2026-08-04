@@ -72,8 +72,22 @@ function main(): void {
     /wealthRegenerationEnabled\s*\(/.test(code) && /applyWrites/.test(code));
   check("upserts only through SpaceSnapshot (one canonical cache, zero new schema)",
     /spaceSnapshot\.upsert/.test(code));
-  check("no other SpaceSnapshot/DB write verbs (create/createMany/update/delete) outside the upsert",
-    !/spaceSnapshot\.(createMany|delete|deleteMany)\b/.test(code) && !/\.update\s*\(\s*\{[\s\S]*?spaceSnapshot/.test(code));
+  // Writes go through exactly TWO named, audited paths and nothing else:
+  //   spaceSnapshot.upsert      — a day whose every component was recomputed
+  //   spaceSnapshot.update      — a PARTIAL day: only the authorised fields
+  //   spaceSnapshot.updateMany  — the crypto-status metadata stamp (one column)
+  // Destructive verbs remain forbidden outright: historical regeneration revises
+  // rows, it never removes them.
+  check("no destructive SpaceSnapshot verbs (create/createMany/delete/deleteMany)",
+    !/spaceSnapshot\.(createMany|delete|deleteMany)\b/.test(code));
+  check("exactly one full-row write path (upsert) and one partial path (update)",
+    (code.match(/spaceSnapshot\.upsert/g) ?? []).length === 1 &&
+    (code.match(/spaceSnapshot\.update\s*\(/g) ?? []).length === 1);
+  // THE load-bearing property of the partial path: it names only the fields the
+  // core authorised. Spreading the full `fields` object would silently rewrite a
+  // preserved component with its own value and defeat per-component authority.
+  check("the partial path patches fieldPatch, never a reconstructed full row",
+    /\.\.\.p\.fieldPatch/.test(code) && !/spaceSnapshot\.update\s*\(\s*\{[\s\S]{0,400}?\.\.\.\w+\.fields\b/.test(code));
 
   // ── 4. Does not modify the sibling generators ─────────────────────────────
   console.log("4. Sibling generators untouched (read-only import discipline)");

@@ -58,6 +58,7 @@ import { readBtcUsdWindow } from "@/lib/crypto/btc-price";
 import { buildSpaceConversionContextById } from "@/lib/money/server-context";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { round2 } from "@/lib/perspective-engine/reconciliation.core";
+import { amountOwed } from "@/lib/debt/balance-semantics";
 import {
   extendBreadcrumb,
   type BucketKind, type HistoricalAccountNode, type HistoricalCrumb,
@@ -171,6 +172,12 @@ async function balanceAccountNodes(
   byDate: ReadonlyMap<string, ReadonlyMap<string, ResolvedAsOfBalance>>,
 ): Promise<HistoricalAccountNode[]> {
   const dates = eachDate(args.fromISO, args.toISO);
+  // V25-SIDE-1 — a liability contributes the amount OWED. A card in credit is
+  // excluded rather than allowed to reduce the total, which is exactly what
+  // `classifyAccounts` does when it builds the bucket these accounts must
+  // explain. Summing raw walked balances instead makes a child disagree with its
+  // parent by the size of any credit balance.
+  const present = (v: number) => (args.bucketKind === "debt" ? amountOwed(v) : v);
 
   return accounts.map((a) => {
     const point = (d: string): HistoricalSeriesPoint => {
@@ -182,15 +189,15 @@ async function balanceAccountNodes(
           return { dateISO: d, value: null, basis: "reconstructed", unavailableReason: "BEFORE_ACCOUNT_COVERAGE" };
         // 1 — the present IS an observation.
         case "observed":
-          return { dateISO: d, value: round2(r.balance), basis: "observed" };
+          return { dateISO: d, value: round2(present(r.balance)), basis: "observed" };
         // 2 — licensed replay.
         case "cash-walkback":
         case "card-walkback":
-          return { dateISO: d, value: round2(r.balance), basis: "reconstructed" };
+          return { dateISO: d, value: round2(present(r.balance)), basis: "reconstructed" };
         // 3 — anchored carry. Carried, but never silently: an installment loan
         // has no ledger to walk, and saying so is the whole point.
         default:
-          return { dateISO: d, value: round2(r.balance), basis: "reconstructed", unavailableReason: "HELD_FLAT_NO_LEDGER" };
+          return { dateISO: d, value: round2(present(r.balance)), basis: "reconstructed", unavailableReason: "HELD_FLAT_NO_LEDGER" };
       }
     };
 

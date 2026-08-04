@@ -33,6 +33,16 @@ const base = (over: Partial<ClassifyTotals> = {}): ClassifyTotals => ({
   ...over,
 });
 
+/**
+ * A plausible stored row, so a per-component refusal has something to PRESERVE.
+ * Values are deliberately distinct from every fresh input below, so a test can
+ * tell "preserved the stored value" from "recomputed and happened to match".
+ */
+const STORED = {
+  stocks: 7_777, crypto: 3_333, total: 11_110, cash: 1_111, savings: 2_222,
+  debt: 999, netWorth: 11_444, totalAssets: 12_443, netLiquid: 2_334, cashOnHand: 1_111,
+};
+
 const input = (over: Partial<DayRegenInput> = {}): DayRegenInput => ({
   date: "2026-05-01",
   existingIsEstimated: true,
@@ -259,27 +269,61 @@ function main(): void {
       check("digitalAssets zero → component written as 0", r.fields?.crypto === 0, String(r.fields?.crypto));
     }
 
-    // MIXED validity — one good component must not be written alongside a stale
-    // one: computeSnapshotFields derives netWorth/totalAssets from ALL
-    // components at once, so a partial write would be internally inconsistent.
+    // MIXED validity — the invalid component is refused ON ITS OWN and the valid
+    // one is still rewritten. This ASSERTION CHANGED with per-component
+    // authorisation: it previously skipped the whole day, on the rationale that
+    // computeSnapshotFields derives the aggregates from all components at once
+    // so a partial write would be internally inconsistent. It no longer is —
+    // aggregates are recomputed from exactly the values the row will carry, and
+    // the refused component is PRESERVED from the stored row rather than mixed
+    // with a stale aggregate. With NO stored row there is nothing to preserve
+    // and the whole day still skips, which the next case pins.
     {
       const r = regenerateDay(input({
         investmentValue: 8_500, hasInvestmentEvidence: true,          // valid
         digitalAssetValue: -1, hasDigitalAssetEvidence: true,          // invalid
+        existing: STORED,
       }));
-      check("mixed validity → the WHOLE day skips", r.action === "skip-unsupported", r.action);
+      check("mixed validity → the day is PATCHED, not skipped", r.action === "write-partial", r.action);
+      const crypto = r.components?.find((c) => c.component === "crypto");
+      const stocks = r.components?.find((c) => c.component === "stocks");
+      check("mixed validity → the invalid component is preserved, not zeroed",
+        crypto?.action === "preserved" && crypto.value === STORED.crypto, JSON.stringify(crypto));
+      check("mixed validity → the preserved component is NOT authorized",
+        crypto?.authorized === false, String(crypto?.authorized));
+      check("mixed validity → the valid component is still recomputed",
+        stocks?.action === "recomputed" && stocks.value === 8_500, JSON.stringify(stocks));
       check("mixed validity → only the invalid component is named",
-        r.reason.startsWith(`${INVALID_VALUATION_REASON_CODE} (digitalAssets)`), r.reason);
+        (crypto?.reason ?? "").startsWith(`${INVALID_VALUATION_REASON_CODE} (digitalAssets)`), String(crypto?.reason));
+      check("mixed validity → the patch never names the preserved component",
+        !Object.prototype.hasOwnProperty.call(r.fieldPatch ?? {}, "crypto"),
+        JSON.stringify(r.fieldPatch));
     }
 
-    // Both invalid — deterministic, machine-searchable component ordering.
+    // With NO stored row, preservation is impossible ⇒ the whole day still skips.
+    {
+      const r = regenerateDay(input({
+        investmentValue: 8_500, hasInvestmentEvidence: true,
+        digitalAssetValue: -1, hasDigitalAssetEvidence: true,
+        existing: null,
+      }));
+      check("no stored row → an unsupported component still skips the whole day",
+        r.action === "skip-unsupported", r.action);
+    }
+
+    // Both invalid — each component named separately, deterministic order.
     {
       const r = regenerateDay(input({
         investmentValue: -5, hasInvestmentEvidence: true,
         digitalAssetValue: Number.NaN, hasDigitalAssetEvidence: true,
+        existing: STORED,
       }));
-      check("both invalid → deterministic component list",
-        r.reason.startsWith(`${INVALID_VALUATION_REASON_CODE} (investments,digitalAssets)`), r.reason);
+      const refused = (r.components ?? []).filter((c) => c.action === "preserved").map((c) => c.component);
+      check("both invalid → both components refused, in deterministic order",
+        JSON.stringify(refused) === JSON.stringify(["stocks", "crypto"]), JSON.stringify(refused));
+      check("both invalid → each carries its OWN reason code",
+        (r.components ?? []).filter((c) => (c.reason ?? "").includes(INVALID_VALUATION_REASON_CODE)).length === 2,
+        JSON.stringify((r.components ?? []).map((c) => c.reason)));
     }
 
     // PRECEDENCE — the guards above the new one are unchanged.

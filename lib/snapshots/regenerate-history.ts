@@ -32,7 +32,7 @@
  */
 
 import { db } from "@/lib/db";
-import { ShareStatus, SettlementState, SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
+import { AccountType, ShareStatus, SettlementState, SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
 // V26-S2-OWNERSHIP — regeneration composes NOTHING of its own any more. It asks
@@ -63,6 +63,11 @@ import {
   type RegenerationDisposition,
 } from "@/lib/snapshots/regeneration-candidates.core";
 import { resolveBtcInstrumentId, readBtcUsdWindow } from "@/lib/crypto/btc-price";
+import { amountOwed } from "@/lib/debt/balance-semantics";
+import { getAccountBalancesOverWindow } from "@/lib/data/accounts-asof-window";
+import {
+  aggregateIdentityViolations, SERIES_IDENTITY_TOLERANCE,
+} from "@/lib/snapshots/series-integrity.core";
 import { licenseConstantQuantityCarry } from "@/lib/crypto/quantity-carry.core";
 import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
 import { valueCryptoDay, type CryptoDayValuation } from "@/lib/crypto/historical-crypto-valuation.core";
@@ -147,7 +152,19 @@ export interface RegenerateWealthHistoryResult {
   fromDate:           string;
   toDate:             string;
   considered:         number; // days evaluated
-  written:            number; // rows upserted (0 on dry-run / flag off)
+  written:            number; // rows upserted in full (0 on dry-run / flag off)
+  /** Rows where only the AUTHORISED fields were patched (0 on dry-run / flag off). */
+  patched:            number;
+  /**
+   * STANDING WRITE-TIME PROBE — did the series this run produced survive its own
+   * integrity check?
+   *
+   * The 2025-07-31 phantom was written by a run that had no way to notice it: it
+   * applied a delta the ledger did not contain and reported success. A stage may
+   * now report success only after the resulting component series agrees with the
+   * evidence behind it. Null when nothing was written (nothing to verify).
+   */
+  integrity: { checked: number; healthy: boolean; violations: string[] } | null;
   skippedFrozen:      number; // observed rows left untouched
   skippedUnsupported: number; // no A8 evidence — flat estimate preserved, not fabricated
   // 2026-07-15 — days left untouched because an account was removed from the
@@ -185,9 +202,9 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   const applyWrites = !args.dryRun && (wealthRegenerationEnabled() || args.isAmendment === true);
 
   const zero: RegenerateWealthHistoryResult = {
-    spaceId, fromDate, toDate, considered: 0, written: 0, skippedFrozen: 0, skippedUnsupported: 0, skippedMembershipChanged: 0, cryptoStatusStamped: 0,
+    spaceId, fromDate, toDate, considered: 0, written: 0, patched: 0, skippedFrozen: 0, skippedUnsupported: 0, skippedMembershipChanged: 0, cryptoStatusStamped: 0,
     dispositions: Object.fromEntries(REGENERATION_DISPOSITIONS.map((d) => [d, 0])) as Record<RegenerationDisposition, number>,
-    applied: applyWrites, diffs: [],
+    applied: applyWrites, diffs: [], integrity: null,
   };
 
   // Space reporting currency (for the per-day conversion context, historical FX)
@@ -462,7 +479,13 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // Existing rows in the window — for the frozen-row flag + before/after diffs.
   const existing = await client.spaceSnapshot.findMany({
     where:  { spaceId, date: { gte: fromISO(fromDate), lte: fromISO(toDate) } },
-    select: { date: true, isEstimated: true, stocks: true, crypto: true, cash: true, savings: true, debt: true, netWorth: true, cryptoValuationStatus: true },
+    select: {
+      date: true, isEstimated: true, cryptoValuationStatus: true,
+      // EVERY field a component patch may name, so the diff compares like with
+      // like. A field absent here would always look "changed" and be rewritten.
+      stocks: true, crypto: true, total: true, cash: true, savings: true, debt: true,
+      netWorth: true, totalAssets: true, netLiquid: true, cashOnHand: true,
+    },
   });
   const existingByDate = new Map(existing.map((r) => [isoDate(r.date), r]));
 
@@ -551,6 +574,20 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
    * must still be recorded. Applied as single-column updates (see below).
    */
   const metadataOnlyStamps: Array<{ date: Date; status: NonNullable<DayRegenResult["cryptoValuationStatus"]> }> = [];
+
+  /**
+   * Days where SOME component was supported and some was not. Each carries the
+   * field patch the core authorised — never a full replacement row.
+   */
+  const patches: Array<{
+    date: Date;
+    isEstimated: boolean;
+    fieldPatch: NonNullable<DayRegenResult["fieldPatch"]>;
+    completenessTier: DayRegenResult["tier"];
+    contributingComponentCount: number | null;
+    totalComponentCount: number | null;
+    cryptoValuationStatus: DayRegenResult["cryptoValuationStatus"];
+  }> = [];
 
   for (const dISO of candidateDates) {
     const d = fromISO(dISO);
@@ -702,6 +739,15 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     const input: DayRegenInput = {
       date: dISO,
       existingIsEstimated: prior ? prior.isEstimated : null,
+      // The stored row is what an unsupported component is PRESERVED from.
+      existing: prior
+        ? {
+            stocks: prior.stocks, crypto: prior.crypto, total: prior.total,
+            cash: prior.cash, savings: prior.savings, debt: prior.debt,
+            netWorth: prior.netWorth, totalAssets: prior.totalAssets,
+            netLiquid: prior.netLiquid, cashOnHand: prior.cashOnHand,
+          }
+        : null,
       base: {
         totalInvestments:   c.totalInvestments,
         totalDigitalAssets: c.totalDigitalAssets,
@@ -768,6 +814,27 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     // rows to change none is indistinguishable in an audit trail from one that
     // changed them all. BLOCKED (frozen / membership) and SKIPPED (invalid or
     // absent evidence) never reach here — the core already refused them.
+    // A PARTIAL day is a real disposition of its own: some component was
+    // rewritten, some preserved. It never reaches classifyRegeneration's
+    // full-row comparison, because "did every field change" is not the question
+    // being asked of it.
+    if (res.action === "write-partial") {
+      const patch = res.fieldPatch ?? {};
+      if (Object.keys(patch).length > 0 && prior) {
+        patches.push({
+          date: d,
+          isEstimated: res.isEstimated,
+          fieldPatch: patch,
+          completenessTier: res.tier,
+          contributingComponentCount: res.contributingComponentCount,
+          totalComponentCount: res.totalComponentCount,
+          cryptoValuationStatus: res.cryptoValuationStatus,
+        });
+      }
+      result.dispositions.UPDATED += Object.keys(patch).length > 0 && prior ? 1 : 0;
+      continue;
+    }
+
     const candidate = classifyRegeneration(res, prior ?? null);
     result.dispositions[candidate.disposition]++;
     if (candidate.disposition === "UPDATED" && res.fields) {
@@ -846,6 +913,32 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     }
     result.written = writes.length;
 
+    // ── PARTIAL PATCHES ─────────────────────────────────────────────────────
+    //
+    // A day where some component could not be supported but another could. The
+    // update NAMES ONLY the authorised fields — never a reconstructed full row —
+    // so a preserved component is not rewritten with its own value, and a column
+    // this run has no authority over is not touched at all.
+    //
+    // `cryptoValuationStatus` is stamped alongside because a partial day still
+    // produced a real crypto verdict, and it is what keeps the read boundary
+    // refusing an aggregate that rests on a preserved component.
+    for (const p of patches) {
+      await client.spaceSnapshot.update({
+        where: { spaceId_date: { spaceId, date: p.date } },
+        data: {
+          ...p.fieldPatch,
+          isEstimated: p.isEstimated,
+          completenessTier: isCompletenessTier(p.completenessTier) ? p.completenessTier : null,
+          contributingComponentCount: p.contributingComponentCount,
+          totalComponentCount: p.totalComponentCount,
+          cryptoValuationStatus: toStoredCryptoValuationStatus(p.cryptoValuationStatus),
+          ...(args.isAmendment && args.amendedByAmendmentId ? { amendedByAmendmentId: args.amendedByAmendmentId } : {}),
+        },
+      });
+    }
+    result.patched = patches.length;
+
     // Metadata-only stamps: ONE column, no financial scalar, existing rows only.
     for (const m of metadataOnlyStamps) {
       await client.spaceSnapshot.updateMany({
@@ -854,9 +947,76 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       });
     }
     result.cryptoStatusStamped = metadataOnlyStamps.length;
+
+    // ── STANDING WRITE-TIME PROBE ───────────────────────────────────────────
+    //
+    // Verify what we just wrote against the evidence that should support it.
+    // COMPONENT-TO-SNAPSHOT EQUALITY is the decisive check — the stored column
+    // must equal Σ amountOwed(walked balance), the same clamp `classifyAccounts`
+    // applies — with the ledger identity as a secondary locator for WHERE a
+    // series first diverges.
+    if (writes.length + patches.length > 0) {
+      result.integrity = await verifyLiabilitySeries(client, spaceId, fromDate, toDate);
+      if (!result.integrity.healthy) {
+        console.warn(
+          `[wealth-regen] ${spaceId}: INTEGRITY PROBE FAILED after writing — ` +
+          result.integrity.violations.join(" | "),
+        );
+      }
+    }
   }
 
   return result;
+}
+
+/**
+ * Read back the debt series and check it against the posted ledger.
+ *
+ * Read-only, and deliberately re-READS rather than trusting the in-memory rows:
+ * a probe that inspects what we intended to write cannot catch a write that went
+ * somewhere else.
+ */
+async function verifyLiabilitySeries(
+  client: Client, spaceId: string, fromDate: string, toDate: string,
+): Promise<{ checked: number; healthy: boolean; violations: string[] }> {
+  const rows = await client.spaceSnapshot.findMany({
+    where: { spaceId, date: { gte: fromISO(fromDate), lte: fromISO(toDate) } },
+    select: { date: true, debt: true, isEstimated: true, stocks: true, crypto: true, total: true,
+              cash: true, savings: true, netWorth: true, totalAssets: true, netLiquid: true },
+    orderBy: { date: "asc" },
+  });
+  if (rows.length === 0) return { checked: 0, healthy: true, violations: [] };
+
+  const violations: string[] = [];
+
+  // Aggregate arithmetic must hold on every row this run touched.
+  for (const r of rows) {
+    const bad = aggregateIdentityViolations(r);
+    if (bad.length > 0) violations.push(`${isoDate(r.date)} aggregate: ${bad.join("; ")}`);
+  }
+
+  const { accounts, byDate } = await getAccountBalancesOverWindow({
+    spaceId, fromISO: fromDate, toISO: toDate, types: [AccountType.debt], client,
+  });
+  if (accounts.length > 0) {
+    const ids = accounts.map((a) => a.id);
+    for (const r of rows) {
+      if (!r.isEstimated) continue; // an observation was never walked
+      const dISO = isoDate(r.date);
+      const owed = ids.reduce((n, id) => n + amountOwed(byDate.get(dISO)?.get(id)?.balance ?? 0), 0);
+      if (Math.abs(owed - r.debt) > SERIES_IDENTITY_TOLERANCE) {
+        violations.push(`${dISO} debt: stored ${r.debt.toFixed(2)} != replay ${owed.toFixed(2)}`);
+      }
+    }
+  }
+
+  return {
+    checked: rows.length,
+    healthy: violations.length === 0,
+    // Bounded: a systemic defect produces hundreds of identical lines and the
+    // count already conveys the scale.
+    violations: violations.slice(0, 10),
+  };
 }
 
 /**

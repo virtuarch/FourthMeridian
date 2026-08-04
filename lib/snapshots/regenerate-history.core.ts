@@ -215,9 +215,51 @@ export interface DayRegenInput {
    * false), so every existing decision is unchanged. See proposal §9 and §4.
    */
   isAmendment?: boolean;
+  /**
+   * The stored row's financial fields, or null when no row exists yet.
+   *
+   * REQUIRED for a partial rewrite: a component this run cannot support is
+   * PRESERVED from here rather than zeroed or fabricated. With no stored row
+   * there is nothing to preserve, so an unsupported component forces the whole
+   * day to skip — exactly the behaviour that predates per-component
+   * authorisation, which is why every existing caller keeps working unchanged.
+   */
+  existing?: SnapshotFields | null;
 }
 
-export type RegenAction = "write" | "skip-frozen" | "skip-unsupported" | "skip-membership-changed";
+export type RegenAction =
+  | "write"
+  | "write-partial"
+  | "skip-frozen"
+  | "skip-unsupported"
+  | "skip-membership-changed";
+
+/** The five stored PRIMITIVES. Aggregates are derived from these, never stored independently. */
+export type ComponentName = "stocks" | "crypto" | "cash" | "savings" | "debt";
+export const COMPONENT_NAMES: readonly ComponentName[] =
+  ["stocks", "crypto", "cash", "savings", "debt"] as const;
+
+/**
+ * What happened to ONE component on ONE day.
+ *
+ * `authorized` is NOT "did we write it". A PRESERVED value is still carried into
+ * the row's arithmetic — the row must stay internally consistent — but it never
+ * gains the right to authorise an aggregate merely by being present. That
+ * distinction is the whole point of this type.
+ */
+export interface ComponentDecision {
+  component: ComponentName;
+  action:    "recomputed" | "preserved";
+  /** The value the row will carry: freshly computed, or the stored one kept. */
+  value:     number;
+  /** May this value support an aggregate that depends on it? */
+  authorized: boolean;
+  /** Coded refusal, present only when the component was preserved. */
+  reason:    string | null;
+}
+
+/** Only the fields authorised to change. Never a full replacement row. */
+export type SnapshotFieldPatch = Partial<SnapshotFields>;
 
 /** The per-day decision + the row to upsert when action === "write". */
 export interface DayRegenResult {
@@ -249,7 +291,28 @@ export interface DayRegenResult {
    * that never examined crypto.
    */
   cryptoValuationStatus: CryptoValuationStatus | null;
+  /**
+   * Per-component verdicts. Non-null on `write` and `write-partial`; null on
+   * every skip, where no component was decided.
+   */
+  components: ComponentDecision[] | null;
+  /**
+   * The fields this day is authorised to CHANGE, and only those. Empty object
+   * means "authorised, but nothing moved" — which is what makes a second run
+   * write nothing. Null on a skip.
+   */
+  fieldPatch: SnapshotFieldPatch | null;
   reason: string;
+}
+
+/** Fields whose recomputed value differs from the stored one by more than a cent. */
+function diffFields(next: SnapshotFields, prev: SnapshotFields | null): SnapshotFieldPatch {
+  if (!prev) return { ...next };
+  const patch: SnapshotFieldPatch = {};
+  for (const k of Object.keys(next) as (keyof SnapshotFields)[]) {
+    if (Math.abs(next[k] - prev[k]) > 0.005) patch[k] = next[k];
+  }
+  return patch;
 }
 
 /**
@@ -270,6 +333,7 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     return {
       date, action: "skip-frozen", fields: null, isEstimated: false, tier: "observed",
       contributingComponentCount: null, totalComponentCount: null,
+      components: null, fieldPatch: null,
       cryptoValuationStatus: null,
       reason: "Observed row is frozen.",
     };
@@ -286,6 +350,7 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     return {
       date, action: "skip-membership-changed", fields: null, isEstimated: existingIsEstimated ?? true, tier: "incomplete",
       contributingComponentCount: null, totalComponentCount: null,
+      components: null, fieldPatch: null,
       cryptoValuationStatus: null,
       reason: "An account was removed from this Space after this date; automatic regen leaves the existing value untouched (requires an explicit amendment).",
     };
@@ -314,155 +379,145 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     : null;
 
   const flatInvestments = base.totalInvestments;
+  const existing = input.existing ?? null;
 
-  // OWNERSHIP PREHISTORY (V26-PRICE-5A): holdings exist, but NONE of them has
-  // KNOWN or POSSIBLE ownership on this date — every one was excluded as
-  // unevidenced prehistory. Writing the day would claim a portfolio value of
-  // (near) zero, and zero is a claim: "you held nothing worth anything". The
-  // truth is "we cannot say".
+  // ── PER-COMPONENT AUTHORISATION ───────────────────────────────────────────
   //
-  // This is checked BEFORE the flat-investment test on purpose. That test only
-  // protects a day whose flat estimate is non-zero; when the day's accounts are
-  // floored out the flat value is already 0, so it would let the day through and
-  // silently overwrite a stored value with a fabricated zero — the exact outcome
-  // this guard exists to prevent.
+  // Each component answers for ITSELF. A component this run cannot support does
+  // not authorise its own rewrite — but it no longer silences the others.
+  //
+  // The rule that keeps this safe: an unsupported component is PRESERVED from
+  // the stored row. It is never zeroed, never replaced by a carried current
+  // balance, and never by another component's fallback. Where there is no stored
+  // row there is nothing to preserve, so the day still skips whole — which is
+  // exactly the pre-existing behaviour.
+  const refusals: { component: ComponentName; reason: string }[] = [];
+
+  // INVESTMENTS — four independent ways to be unsupported, each keeping its own
+  // reason so a component-specific refusal stays visible in diagnostics.
+  let stocksRefusal: string | null = null;
   if (input.ownershipIneligible === true) {
-    return {
-      date, action: "skip-unsupported", fields: null, isEstimated: true, tier: "incomplete",
-      contributingComponentCount: null, totalComponentCount: null,
-      cryptoValuationStatus: cryptoVerdict,
-      reason:
-        "OWNERSHIP_PREHISTORY: no holding has KNOWN or POSSIBLE ownership on this date; " +
-        "the stored value is preserved rather than replaced with a zero-valued portfolio.",
-    };
+    // OWNERSHIP PREHISTORY (V26-PRICE-5A): holdings exist but NONE has KNOWN or
+    // POSSIBLE ownership on this date. Writing would claim a portfolio worth
+    // (near) zero, and zero is a claim. The truth is "we cannot say".
+    stocksRefusal =
+      "OWNERSHIP_PREHISTORY: no holding has KNOWN or POSSIBLE ownership on this date; " +
+      "the stored value is preserved rather than replaced with a zero-valued portfolio.";
+  } else if (hasNoValuedComponents(input)) {
+    // UNSUPPORTED ZERO (V26-INVESTMENTS-HISTORY): holdings were in scope and not
+    // one resolved a defensible value, so a zero subtotal would assert an
+    // absence the evidence never established.
+    stocksRefusal =
+      `${NO_VALUED_COMPONENTS_REASON_CODE}: ${input.totalComponentCount} holding(s) were in scope for ` +
+      `this date and none could be valued, so a zero investment subtotal would assert an absence the ` +
+      `evidence does not support.`;
+  } else if (!input.hasInvestmentEvidence && flatInvestments > WEALTH_REGEN_EPSILON) {
+    // NO FABRICATION: a flat estimate we cannot A8-value is kept as-is.
+    stocksRefusal = "No historical position evidence for this date; flat estimate preserved (not fabricated).";
+  } else if (input.hasInvestmentEvidence && !isUsableValuation(input.investmentValue)) {
+    // INVALID EVIDENCE (P0): negative or non-finite is not a weak estimate, it is
+    // an impossible balance component. Never clamped to 0, never replaced by the
+    // flat value — both substitute one wrong number for another and hide the
+    // upstream reconstruction defect.
+    stocksRefusal =
+      `${INVALID_VALUATION_REASON_CODE} (investments): historical valuation was negative or non-finite; ` +
+      `the stored value is preserved, not overwritten. Upstream position reconstruction requires investigation.`;
   }
+  if (stocksRefusal) refusals.push({ component: "stocks", reason: stocksRefusal });
 
-  // UNSUPPORTED ZERO (V26-INVESTMENTS-HISTORY): holdings were in scope for this
-  // date and NOT ONE of them resolved a defensible value. `hasEligibleHoldings`
-  // above only asks whether anything was ownership-eligible, so a day whose
-  // every holding is priceless or whose quantities were refused still arrived
-  // here with valuedSubtotal 0 and was written as `stocks = 0.00` — asserting an
-  // absence the evidence never established.
-  //
-  // Checked AFTER the ownership guard so that the more specific
-  // OWNERSHIP_PREHISTORY reason still wins where it applies; this catches every
-  // other route to zero contributors. Deliberately NOT bypassable by an
-  // amendment, exactly like INVALID EVIDENCE below: a consented rebuild may
-  // revise a frozen day, never write an unsupported one.
-  //
-  // See hasNoValuedComponents() for why a day with NO components in scope — the
-  // genuinely-zero and explicitly-closed cases — is untouched by this.
-  if (hasNoValuedComponents(input)) {
-    return {
-      date, action: "skip-unsupported", fields: null, isEstimated: true, tier: "incomplete",
-      contributingComponentCount: null, totalComponentCount: null,
-      cryptoValuationStatus: cryptoVerdict,
-      reason:
-        `${NO_VALUED_COMPONENTS_REASON_CODE}: ${input.totalComponentCount} holding(s) were in scope for ` +
-        `this date and none could be valued, so a zero investment subtotal would assert an absence the ` +
-        `evidence does not support. The day is left unwritten rather than recorded as $0.`,
-    };
-  }
-
-  // NO FABRICATION: flat investments we cannot A8-value are left as-is, never
-  // zeroed or fabricated — the day keeps backfill's labeled estimate.
-  if (!input.hasInvestmentEvidence && flatInvestments > WEALTH_REGEN_EPSILON) {
-    return {
-      date, action: "skip-unsupported", fields: null, isEstimated: true, tier: "incomplete",
-      contributingComponentCount: null, totalComponentCount: null,
-      cryptoValuationStatus: cryptoVerdict,
-      reason: "No historical position evidence for this date; flat estimate preserved (not fabricated).",
-    };
-  }
-
-  // INVALID EVIDENCE (P0): a historical valuation that is negative or non-finite
-  // is not a weak estimate — it is an impossible balance component, and writing
-  // it corrupts every aggregate derived from it (production carried 92 days of
-  // negative `stocks`, minimum -1,810). Checked INDEPENDENTLY per component,
-  // because the NO-FABRICATION rule above covers only investments and a
-  // crypto-only invalid value must still be caught.
-  //
-  // An invalid component skips the WHOLE day rather than falling back to that
-  // component's flat value: computeSnapshotFields derives netWorth/totalAssets
-  // from all components together, so a partial write would mix fresh evidence
-  // with a stale component and produce internally inconsistent aggregates.
-  // Skipping preserves whatever is already stored (writableRows keeps only
-  // action === "write"), which on a re-run is the better of the two values.
-  //
-  // Deliberately NOT clamped to 0 and NOT replaced with the flat value: both
-  // substitute one wrong number for another and hide the upstream position-
-  // reconstruction defect that produced the impossible value. See the
-  // INVALID EVIDENCE honesty rule in the module header.
-  //
-  // Reached by amendments too — the guards above may be bypassed by an explicit,
-  // consented rebuild; this one may not.
-  const invalidComponents: string[] = [];
-  if (input.hasInvestmentEvidence && !isUsableValuation(input.investmentValue)) {
-    invalidComponents.push("investments");
-  }
+  // CRYPTO — the exact analogue, decided independently of investments.
+  let cryptoRefusal: string | null = null;
   if (input.hasDigitalAssetEvidence && !isUsableValuation(input.digitalAssetValue)) {
-    invalidComponents.push("digitalAssets");
+    cryptoRefusal =
+      `${INVALID_VALUATION_REASON_CODE} (digitalAssets): historical valuation was negative or non-finite; ` +
+      `the stored value is preserved, not overwritten.`;
+  } else if (!input.hasDigitalAssetEvidence && base.totalDigitalAssets > WEALTH_REGEN_EPSILON) {
+    cryptoRefusal =
+      `${NO_CRYPTO_EVIDENCE_REASON_CODE}: no historical crypto evidence for this date (no price reached it, ` +
+      `or the constant-quantity carry was refused by wallet activity); the carried balance is preserved, ` +
+      `NOT asserted as that day's value.`;
   }
-  if (invalidComponents.length > 0) {
-    return {
-      date, action: "skip-unsupported", fields: null,
-      isEstimated: true, tier: "incomplete",
-      contributingComponentCount: null, totalComponentCount: null,
-      cryptoValuationStatus: cryptoVerdict,
-      reason:
-        `${INVALID_VALUATION_REASON_CODE} (${invalidComponents.join(",")}): historical valuation was ` +
-        `negative or non-finite; the stored value is preserved, not overwritten. ` +
-        `Upstream position reconstruction requires investigation.`,
-    };
+  if (cryptoRefusal) refusals.push({ component: "crypto", reason: cryptoRefusal });
+
+  // CASH / SAVINGS / DEBT come from the posted-ledger walk. They are magnitudes:
+  // an impossible one is refused on the same terms as a valuation.
+  const walked: Record<"cash" | "savings" | "debt", number> = {
+    cash:    base.totalChecking,
+    savings: base.totalSavings,
+    debt:    base.totalLiabilities,
+  };
+  for (const c of ["cash", "savings", "debt"] as const) {
+    if (!isUsableValuation(walked[c])) {
+      refusals.push({
+        component: c,
+        reason: `${INVALID_VALUATION_REASON_CODE} (${c}): the walked balance was negative or non-finite; ` +
+                `the stored value is preserved, not overwritten.`,
+      });
+    }
   }
 
-  // NO FABRICATION (CRYPTO) — V26-CRYPTO-QTY-1. The exact analogue of the
-  // NO-FABRICATION rule above, and it was missing.
-  //
-  // `digitalAssets` below falls back to `base.totalDigitalAssets` whenever the
-  // day has no crypto evidence. That base is the account's CURRENT USD balance
-  // carried backward, so an unvaluable day was written as a confident crypto
-  // figure — for the wallet that motivated this slice, 235 consecutive days all
-  // reading exactly $15,311.94 (75% of the portfolio), and with no tier penalty
-  // either, because the crypto tier is only consulted when crypto WAS valued.
-  //
-  // A day is unvaluable for two independent reasons and both land here: no price
-  // reached it, or the constant-quantity carry was refused because wallet
-  // activity lies between it and the observation. Either way the honest outcome
-  // is the one investments already take — leave the day unwritten and preserve
-  // what is stored, rather than assert a number nothing supports.
-  //
-  // Ordered AFTER the invalid-evidence guard so the more specific and more
-  // severe reason still wins on a day that is both. Guarded on a MATERIAL flat
-  // balance so a Space with no crypto — or a closed, genuinely-zero wallet — is
-  // untouched: `base.totalDigitalAssets` is then 0 and there is nothing to
-  // fabricate.
-  if (!input.hasDigitalAssetEvidence && base.totalDigitalAssets > WEALTH_REGEN_EPSILON) {
+  // NOTHING TO PRESERVE ⇒ the whole day still skips. Preservation is the only
+  // thing that makes a partial rewrite safe; without a stored row a partial
+  // write would have to invent the missing component.
+  if (refusals.length > 0 && existing === null) {
     return {
       date, action: "skip-unsupported", fields: null, isEstimated: true, tier: "incomplete",
       contributingComponentCount: null, totalComponentCount: null,
-      // V26-CRYPTO-STATUS-1 — this skip is the ONE disposition that knows the
-      // day holds material crypto AND that it cannot be valued. The row is not
-      // rewritten, but that verdict is real and must be recorded: the binding
-      // stamps this status alone, touching no financial scalar.
+      components: null, fieldPatch: null,
       cryptoValuationStatus: cryptoVerdict,
-      reason:
-        `${NO_CRYPTO_EVIDENCE_REASON_CODE}: no historical crypto evidence for this date (no price ` +
-        `reached it, or the constant-quantity carry was refused by wallet activity); the carried ` +
-        `balance is preserved, NOT asserted as that day's value.`,
+      reason: refusals.map((r) => r.reason).join(" | "),
     };
   }
 
-  // Override the flat investment component with the A8 valuation (when evidence
-  // exists); otherwise there is nothing to value (flat ≈ 0) and the day is a
-  // cash-only reconstruction.
-  const investments = input.hasInvestmentEvidence ? input.investmentValue : flatInvestments;
-  // Part-A — override the flat crypto component with the historical
-  // (constant-quantity × CoinGecko price) valuation when a BTC price reached the
-  // day; otherwise keep the flat estimate (never fabricated).
-  const digitalAssets = input.hasDigitalAssetEvidence ? input.digitalAssetValue : base.totalDigitalAssets;
-  const totals: ClassifyTotals = { ...base, totalInvestments: investments, totalDigitalAssets: digitalAssets };
+  const refusedBy = new Map(refusals.map((r) => [r.component, r.reason]));
+
+  // Each component's VALUE: freshly computed when supported, otherwise the
+  // stored one, preserved verbatim.
+  const freshStocks = input.hasInvestmentEvidence ? input.investmentValue : flatInvestments;
+  const freshCrypto = input.hasDigitalAssetEvidence ? input.digitalAssetValue : base.totalDigitalAssets;
+  const fresh: Record<ComponentName, number> = {
+    stocks: freshStocks, crypto: freshCrypto,
+    cash: walked.cash, savings: walked.savings, debt: walked.debt,
+  };
+
+  const components: ComponentDecision[] = COMPONENT_NAMES.map((component) => {
+    const reason = refusedBy.get(component) ?? null;
+    if (reason === null) {
+      return { component, action: "recomputed" as const, value: fresh[component], authorized: true, reason: null };
+    }
+    // PRESERVED — carried into the row's arithmetic so the row stays internally
+    // consistent, but NEVER authorised by the mere fact that it is present.
+    return {
+      component, action: "preserved" as const,
+      value: existing ? existing[component] : fresh[component],
+      authorized: false, reason,
+    };
+  });
+  const valueOf = (c: ComponentName) => components.find((d) => d.component === c)!.value;
+
+  const totals: ClassifyTotals = {
+    ...base,
+    totalInvestments:   valueOf("stocks"),
+    totalDigitalAssets: valueOf("crypto"),
+    totalChecking:      valueOf("cash"),
+    totalSavings:       valueOf("savings"),
+    totalLiabilities:   valueOf("debt"),
+  };
+  // AGGREGATES ARE ALWAYS RECOMPUTED FROM THE COMPONENTS THE ROW WILL CARRY.
+  //
+  // Not because a mixed-basis aggregate is authoritative — it is not — but
+  // because `netWorth === totalAssets − debt` and `total === stocks + crypto`
+  // are identities between STORED COLUMNS, checked by aggregate authorisation
+  // (`identityViolations`). Repairing one component and leaving the aggregates
+  // stale would break those identities and turn every repaired row
+  // CONTRADICTORY: strictly worse than the defect being fixed.
+  //
+  // Assertability is unaffected. It is derived at the read boundary from the
+  // component verdicts (`cryptoValuationStatus` and friends), which this run
+  // does not relax — so an aggregate resting on a preserved component stays
+  // refused exactly as it was.
   const fields = computeSnapshotFields(totals);
+  const fieldPatch = diffFields(fields, existing);
 
   const investmentTier: CompletenessTier = input.hasInvestmentEvidence ? input.investmentTier : "derived";
   // Crypto tier only constrains the day when crypto was actually valued; with no
@@ -472,20 +527,33 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
   const tier = worstTier(tiers);
   // FLIP: observed only when every component is observed; otherwise the row is a
   // reconstruction and stays estimated (a derived date is never "observed"). An
-  // amendment always lands estimated — a row deliberately revised because the
-  // account set changed is honestly a reconstruction again, even if every
-  // current component reads observed (proposal §4).
-  const isEstimated = isAmendment ? true : tier !== "observed";
+  // amendment always lands estimated. A PARTIAL rewrite can never be observed —
+  // some component is only preserved.
+  const isEstimated = isAmendment || refusals.length > 0 ? true : tier !== "observed";
 
+  const partial = refusals.length > 0;
   const parts: string[] = [];
-  if (input.hasInvestmentEvidence) parts.push("investments at A8 historical value");
-  if (input.hasDigitalAssetEvidence) parts.push("crypto at historical price × today's quantity");
+  if (!refusedBy.has("stocks") && input.hasInvestmentEvidence) parts.push("investments at A8 historical value");
+  if (!refusedBy.has("crypto") && input.hasDigitalAssetEvidence) parts.push("crypto at historical price × today's quantity");
+
   return {
-    date, action: "write", fields, isEstimated, tier,
-    contributingComponentCount: input.contributingComponentCount ?? null,
-    totalComponentCount:        input.totalComponentCount ?? null,
+    date,
+    action: partial ? "write-partial" : "write",
+    fields,
+    fieldPatch,
+    components,
+    isEstimated,
+    tier: partial ? worstTier([tier, "incomplete"]) : tier,
+    // Composition counts describe the INVESTMENT valuation. A preserved stocks
+    // component was not composed by this run, so recording counts for it would
+    // attribute one run's composition to another run's value.
+    contributingComponentCount: refusedBy.has("stocks") ? null : (input.contributingComponentCount ?? null),
+    totalComponentCount:        refusedBy.has("stocks") ? null : (input.totalComponentCount ?? null),
     cryptoValuationStatus: cryptoVerdict,
-    reason: parts.length ? `${parts.join(" + ")} (${tier}).` : `Cash-only reconstruction for this date (${tier}).`,
+    reason: partial
+      ? `PARTIAL: ${refusals.map((r) => `${r.component} preserved — ${r.reason}`).join(" | ")}` +
+        (parts.length ? ` || rewritten: ${parts.join(" + ")}` : " || rewritten: cash/savings/debt from the posted ledger")
+      : parts.length ? `${parts.join(" + ")} (${tier}).` : `Cash-only reconstruction for this date (${tier}).`,
   };
 }
 
@@ -497,7 +565,19 @@ export function regenerateWindow(inputs: readonly DayRegenInput[]): DayRegenResu
   return inputs.map(regenerateDay);
 }
 
-/** The rows a run would write (action === "write"), in input order. */
+/** The rows a run would write in FULL (every component recomputed), in input order. */
 export function writableRows(results: readonly DayRegenResult[]): DayRegenResult[] {
   return results.filter((r) => r.action === "write");
+}
+
+/**
+ * Rows a run would PATCH — some component preserved — and that actually move.
+ *
+ * An empty patch is filtered out here rather than at the writer, so "authorised
+ * but nothing changed" costs zero writes. That is what makes a second run
+ * idempotent by construction instead of by luck.
+ */
+export function patchableRows(results: readonly DayRegenResult[]): DayRegenResult[] {
+  return results.filter((r) =>
+    r.action === "write-partial" && r.fieldPatch !== null && Object.keys(r.fieldPatch).length > 0);
 }
