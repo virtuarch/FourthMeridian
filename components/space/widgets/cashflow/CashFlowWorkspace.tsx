@@ -43,7 +43,7 @@ import {
 import { formatDate } from "@/lib/format";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
-import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
+import { liquidityIdsByReason, classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import type { CashFlowPerspective as CashFlowPerspectiveMode } from "@/lib/transactions/cash-flow-projection";
 import { cashFlowStamp, compareCashFlow } from "@/lib/transactions/cash-flow-compare";
 import { buildCashFlowSpaceData } from "@/lib/transactions/cash-flow-space-data";
@@ -231,7 +231,7 @@ export function CashFlowWorkspace({
         sliceSubtitle="Spending in this category"
         emptyHeadline="No spending in this period"
         emptySubline="Spending by category appears once you have outflows."
-        sliceFor={(item) => data.rows.filter((t) => t.category === item.id && (isCostFlow(t.flowType) || isRefund(t.flowType)))}
+        sliceFor={(item) => byId(data.rows, item.transactionIds)}
       />
     );
   }
@@ -243,10 +243,16 @@ export function CashFlowWorkspace({
     if (data == null) return <LoadingCard />;
     if (perspective === "liquidity") {
       if (data.rows.length === 0) return <EmptyCard headline="No money moved in this period" sub="Cash in by source appears once cash arrives." />;
+      // ONE canonical classification pass over the windowed rows; the slice
+      // below reads identities from it rather than re-classifying per item.
+      const cashInIds = liquidityIdsByReason(data.rows as LiquidityTx[], liqCtx, "CASH_IN");
       return (
         <CashFlowCategoryLedger
         invalidationKey={periodKey(period)}
-          items={data.cashInByReason.map((l) => ({ id: l.reason, label: l.label, value: l.amount }))}
+          items={data.cashInByReason.map((l) => ({
+            id: l.reason, label: l.label, value: l.amount,
+            transactionIds: cashInIds.get(l.reason) ?? [],
+          }))}
           ctx={txCtx}
           totalLabel="Total cash in"
           browserTitle="Cash in by source"
@@ -257,10 +263,7 @@ export function CashFlowWorkspace({
           sliceSubtitle="Cash in from this source"
           emptyHeadline="No cash arrived in this period"
           emptySubline="Cash in by source appears once cash arrives."
-          sliceFor={(item) => (data.rows as LiquidityTx[]).filter((t) => {
-            const c = classifyLiquidity(t, liqCtx);
-            return c.effect === "CASH_IN" && c.reason === item.id;
-          })}
+          sliceFor={(item) => byId(data.rows, item.transactionIds)}
         />
       );
     }
@@ -279,7 +282,7 @@ export function CashFlowWorkspace({
         sliceSubtitle="Income from this source"
         emptyHeadline="No income in this period"
         emptySubline="Income by source appears once you have inflows."
-        sliceFor={(item) => data.rows.filter((t) => isIncome(t.flowType) && incomeSourceLabel(t) === item.id)}
+        sliceFor={(item) => byId(data.rows, item.transactionIds)}
       />
     );
   }
@@ -396,4 +399,19 @@ export function CashFlowWorkspace({
       </Block>
     </div>
   );
+}
+
+/**
+ * Rows for a contribution, BY IDENTITY.
+ *
+ * The drill-down reads the ids the authority recorded while computing the total,
+ * so a slice cannot include a row its own total excluded — which is exactly what
+ * a re-derived predicate did: the grouping functions skip a row whose amount
+ * cannot be converted (V25-FINAL-1) and the React filter did not.
+ *
+ * This is a lookup, not a classification. React decides nothing here.
+ */
+function byId<T extends { id: string }>(rows: readonly T[], ids: readonly string[]): T[] {
+  const want = new Set(ids);
+  return rows.filter((r) => want.has(r.id));
 }

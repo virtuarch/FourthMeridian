@@ -438,22 +438,47 @@ export function getDefaultCashFlowHistoryMode(period: CashFlowPeriod): CashFlowH
 
 // ─── Outflow contribution ─────────────────────────────────────────────────────
 
-export interface CashFlowContribution { id: string; label: string; value: number }
+/**
+ * One grouped contribution AND the rows that produced it.
+ *
+ * `transactionIds` exists so a drill-down reads the SAME rows the total was
+ * computed from, instead of re-deriving them with its own predicates. That
+ * re-derivation was the defect: these builders skip a row whose amount cannot be
+ * converted (`rowAmount === null`, V25-FINAL-1), and the drawer's React filter
+ * did not — so a category could list a row its own total excluded.
+ *
+ * Carrying identities makes card and drawer agree BY CONSTRUCTION rather than by
+ * two predicates happening to match.
+ */
+export interface CashFlowContribution {
+  id: string;
+  label: string;
+  value: number;
+  /** Transaction ids contributing to `value`, in encounter order. */
+  transactionIds: string[];
+}
 
 /** Where outflows go, grouped by transaction category (cost flows only),
  *  descending. Refunds reduce their category's total (clamped ≥ 0). */
 export function outflowByCategory(transactions: Transaction[], ctx?: ConversionContext): CashFlowContribution[] {
   const byCategory = new Map<string, number>();
+  const idsByCategory = new Map<string, string[]>();
   for (const t of transactions) {
     const flow = t.flowType ?? null;
     const raw = rowAmount(t, ctx);
     if (raw === null) continue; // V25-FINAL-1 — unconvertible row excluded from the category rollup
     const amt = Math.abs(raw);
-    if (isCostFlow(flow)) byCategory.set(t.category, (byCategory.get(t.category) ?? 0) + amt);
-    else if (isRefund(flow)) byCategory.set(t.category, (byCategory.get(t.category) ?? 0) - amt);
+    if (!isCostFlow(flow) && !isRefund(flow)) continue;
+    byCategory.set(t.category, (byCategory.get(t.category) ?? 0) + (isCostFlow(flow) ? amt : -amt));
+    // Recorded on the SAME pass and under the SAME skip rules as the total, so a
+    // drill-down cannot include a row the total left out.
+    idsByCategory.set(t.category, [...(idsByCategory.get(t.category) ?? []), t.id]);
   }
   return [...byCategory.entries()]
-    .map(([label, value]) => ({ id: label, label, value: Math.max(0, value) }))
+    .map(([label, value]) => ({
+      id: label, label, value: Math.max(0, value),
+      transactionIds: idsByCategory.get(label) ?? [],
+    }))
     .filter((c) => c.value > 0)
     .sort((a, b) => b.value - a.value);
 }
@@ -489,6 +514,7 @@ export function incomeSourceLabel(t: Transaction): string {
  */
 export function incomeBySource(transactions: Transaction[], ctx?: ConversionContext): CashFlowContribution[] {
   const bySource = new Map<string, number>();
+  const idsBySource = new Map<string, string[]>();
   for (const t of transactions) {
     if (!isIncome(t.flowType ?? null)) continue;
     const raw = rowAmount(t, ctx);
@@ -496,9 +522,10 @@ export function incomeBySource(transactions: Transaction[], ctx?: ConversionCont
     const amt = Math.abs(raw);
     const source = incomeSourceLabel(t);
     bySource.set(source, (bySource.get(source) ?? 0) + amt);
+    idsBySource.set(source, [...(idsBySource.get(source) ?? []), t.id]);
   }
   return [...bySource.entries()]
-    .map(([label, value]) => ({ id: label, label, value }))
+    .map(([label, value]) => ({ id: label, label, value, transactionIds: idsBySource.get(label) ?? [] }))
     .filter((c) => c.value > 0)
     .sort((a, b) => b.value - a.value);
 }

@@ -67,6 +67,13 @@ export interface DebtPaymentGroup {
   label: string;
   value: number;
   count: number;
+  /**
+   * The rows that produced `value`, recorded on the SAME pass and under the SAME
+   * skip rule (an FX-unavailable row is excluded here, V25-FINAL-1). A
+   * drill-down reads these instead of re-deriving the creditor match, which
+   * would have re-admitted the rows this total left out.
+   */
+  transactionIds: string[];
 }
 
 /**
@@ -81,18 +88,19 @@ export function groupDebtPaymentsByCreditor(
   // rows are EXCLUDED from the creditor group (never a native magnitude / fake 0).
   magnitude: (t: Transaction) => number | null,
 ): DebtPaymentGroup[] {
-  const by = new Map<string, { value: number; count: number }>();
+  const by = new Map<string, { value: number; count: number; ids: string[] }>();
   for (const t of payments) {
     const m = magnitude(t);
     if (m === null) continue;
     const key = normalizeCreditor(rawCreditorLabel(t));
-    const g = by.get(key) ?? { value: 0, count: 0 };
+    const g = by.get(key) ?? { value: 0, count: 0, ids: [] };
     g.value += m;
     g.count += 1;
+    g.ids.push(t.id);
     by.set(key, g);
   }
   return [...by.entries()]
-    .map(([label, g]) => ({ id: label, label, value: g.value, count: g.count }))
+    .map(([label, g]) => ({ id: label, label, value: g.value, count: g.count, transactionIds: g.ids }))
     .filter((g) => g.value > 0)
     .sort((a, b) => b.value - a.value);
 }

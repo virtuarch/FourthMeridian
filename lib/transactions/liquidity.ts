@@ -224,3 +224,25 @@ function classifyTransfer(
   return make(ft, "UNRESOLVED", "UNRESOLVED", 0.2);
 }
 
+
+/**
+ * reason → the transaction ids classified into it, for one effect.
+ *
+ * Exists so a drill-down looks rows up by identity instead of re-running
+ * `classifyLiquidity` in a React closure. The classification stays here, in the
+ * authority, and is performed ONCE over the row set — which is what keeps a
+ * slice incapable of disagreeing with the total beside it.
+ */
+export function liquidityIdsByReason(
+  rows: readonly LiquidityTx[],
+  ctx: Parameters<typeof classifyLiquidity>[1],
+  effect: "CASH_IN" | "CASH_OUT",
+): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const t of rows) {
+    const c = classifyLiquidity(t, ctx);
+    if (c.effect !== effect) continue;
+    out.set(c.reason, [...(out.get(c.reason) ?? []), t.id]);
+  }
+  return out;
+}

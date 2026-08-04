@@ -67,7 +67,16 @@ export function DebtPaymentsWidget({ transactions, period, ctx, accounts, window
       emptySubline="Card and loan payments appear here once you make them."
       invalidationKey={periodKey(period)}
       sliceSubtitle="Debt payments to this creditor"
-      sliceFor={(item) => payments.filter((t) => normalizeCreditor(rawCreditorLabel(t)) === item.id)}
+      sliceFor={(item) => byId(payments, item.transactionIds)}
     />
   );
+}
+
+/**
+ * Rows for a group, BY IDENTITY — the ids the authority recorded while summing.
+ * A lookup, not a classification: React decides nothing here.
+ */
+function byId<T extends { id: string }>(rows: readonly T[], ids: readonly string[]): T[] {
+  const want = new Set(ids);
+  return rows.filter((r) => want.has(r.id));
 }

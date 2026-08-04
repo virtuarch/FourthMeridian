@@ -33,7 +33,7 @@ import {
   incomeSourceLabel,
   type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
-import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
+import { liquidityIdsByReason, classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { groupLiquidityByReason } from "@/lib/transactions/liquidity-breakdown";
 import { aggregateDayFacts, type CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import { CashFlowHistoryWidget } from "@/components/space/widgets/CashFlowHistoryWidget";
@@ -153,7 +153,7 @@ export function renderCashFlowByCategory(
       items={outflowByCategory(rows, ctx)}
       ctx={ctx}
       sliceSubtitle="Spending in this category"
-      sliceFor={(item) => rows.filter((t) => t.category === item.id && (isCostFlow(t.flowType) || isRefund(t.flowType)))}
+      sliceFor={(item) => byId(rows, item.transactionIds)}
     />
   );
 }
@@ -184,21 +184,24 @@ export function renderIncomeBySource(
     const liqCtx = tierResolver(accounts);
     const facts = aggregateDayFacts(rows as LiquidityTx[], liqCtx, ctx);
     const cashIn = groupLiquidityByReason(facts).cashIn;
+    // ONE canonical classification pass over the row set. The slice below reads
+    // identities from it rather than re-running `classifyLiquidity` per item.
+    const cashInIds = liquidityIdsByReason(rows as LiquidityTx[], liqCtx, "CASH_IN");
     return (
       <div className="space-y-2">
         <p className="text-[11px] font-semibold text-[var(--text-secondary)]">Cash in by source</p>
         <CashFlowCategoryBreakdown
       invalidationKey={periodKey(period)}
-          items={cashIn.map((l) => ({ id: l.reason, label: l.label, value: l.amount }))}
+          items={cashIn.map((l) => ({
+            id: l.reason, label: l.label, value: l.amount,
+            transactionIds: cashInIds.get(l.reason) ?? [],
+          }))}
           ctx={ctx}
           totalLabel="Total cash in"
           emptyHeadline="No cash arrived in this period"
           emptySubline="Cash in by source appears once cash arrives."
           sliceSubtitle="Cash in from this source"
-          sliceFor={(item) => (rows as LiquidityTx[]).filter((t) => {
-            const c = classifyLiquidity(t, liqCtx);
-            return c.effect === "CASH_IN" && c.reason === item.id;
-          })}
+          sliceFor={(item) => byId(rows, item.transactionIds)}
         />
       </div>
     );
@@ -216,7 +219,7 @@ export function renderIncomeBySource(
         emptyHeadline="No income in this period"
         emptySubline="Income by source appears once you have inflows."
         sliceSubtitle="Income from this source"
-        sliceFor={(item) => rows.filter((t) => isIncome(t.flowType) && incomeSourceLabel(t) === item.id)}
+        sliceFor={(item) => byId(rows, item.transactionIds)}
       />
     </div>
   );
@@ -234,4 +237,19 @@ export function renderDebtPayments(
   accounts: { id: string; type: string }[] = [],
 ): React.ReactElement {
   return <DebtPaymentsWidget transactions={transactions} period={period} ctx={ctx} accounts={accounts} />;
+}
+
+/**
+ * Rows for a contribution, BY IDENTITY.
+ *
+ * The drill-down reads the ids the authority recorded while computing the total,
+ * so a slice cannot include a row its own total excluded — which is exactly what
+ * a re-derived predicate did: the grouping functions skip a row whose amount
+ * cannot be converted (V25-FINAL-1) and the React filter did not.
+ *
+ * This is a lookup, not a classification. React decides nothing here.
+ */
+function byId<T extends { id: string }>(rows: readonly T[], ids: readonly string[]): T[] {
+  const want = new Set(ids);
+  return rows.filter((r) => want.has(r.id));
 }
