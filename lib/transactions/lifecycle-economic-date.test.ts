@@ -17,6 +17,7 @@ import {
   matureClassification, adoptIfMonotonic, adoptRetraction, maturityRank, isTransferCandidate,
   impliedFlowType, TRANSFER_MATCH_WINDOW_DAYS, MATURITY_LABEL,
   resolveDestinationEvidence, maturityForEvidence,
+  legsQualify, resolveDestinationEvidenceFor, type TransferLeg,
 } from "./transfer-maturation";
 
 let failures = 0;
@@ -106,6 +107,16 @@ console.log("4B. Economic date — the Friday → Sunday proof");
   check("Shake Shack keeps 2026-07-16", shake.economicDate === "2026-07-16" && shake.lagDays === 3);
   check("neither crosses a month boundary",
     !crossesPeriodBoundary(amazon) && !crossesPeriodBoundary(shake));
+
+  // V27-TRUTH-1 — the brief's own example, live in the corpus today: two rows
+  // authorized 2026-08-01 and posted 2026-08-02 ("Comptia Inc." −150.00 and
+  // "Microsoft" −282.00, both on CREDIT CARD). They render under August 2 because
+  // every user-facing surface still keys on the posting date.
+  const brief = resolveEconomicDate({ postingDate: "2026-08-02", authorizedAt: "2026-08-01" });
+  check("the brief's example resolves to August 1, not August 2",
+    brief.economicDate === "2026-08-01" && brief.postingDate === "2026-08-02");
+  check("...within the same month, so only the DAY is wrong there",
+    !crossesPeriodBoundary(brief) && brief.lagDays === 1);
 }
 
 console.log("4B. Economic date — immutable across the lifecycle transition");
@@ -300,14 +311,19 @@ console.log("4C. Monotonic specificity");
 
 console.log("4-AUDIT. Destination evidence levels");
 {
-  const A = resolveDestinationEvidence([{ accountId: "hysa", accountType: "savings" }]);
-  check("one candidate ⇒ ACCOUNT_CERTAIN", A.level === "ACCOUNT_CERTAIN");
+  // A leg is mutually paired unless stated otherwise: one qualifying source.
+  const leg = (legId: string, accountId: string, accountType: string, competingSourceCount = 1) =>
+    ({ legId, accountId, accountType, competingSourceCount, superseded: false });
+
+  const A = resolveDestinationEvidence([leg("l1", "hysa", "savings")]);
+  check("one MUTUALLY-paired candidate ⇒ ACCOUNT_CERTAIN", A.level === "ACCOUNT_CERTAIN");
   check("...account and type both known", A.accountId === "hysa" && A.accountType === "savings");
+  check("...the specific leg is named", A.legId === "l1");
   check("...and a counterparty MAY be persisted", A.persistableCounterparty === true);
 
   const B = resolveDestinationEvidence([
-    { accountId: "hysa", accountType: "savings" },
-    { accountId: "chase-sav", accountType: "savings" },
+    leg("l1", "hysa", "savings"),
+    leg("l2", "chase-sav", "savings"),
   ]);
   check("many candidates, ONE type ⇒ TYPE_CERTAIN_ACCOUNT_AMBIGUOUS",
     B.level === "TYPE_CERTAIN_ACCOUNT_AMBIGUOUS");
@@ -317,8 +333,8 @@ console.log("4-AUDIT. Destination evidence levels");
   check("...and it still reaches the leaf", maturityForEvidence(B) === "SAVINGS_TRANSFER");
 
   const C = resolveDestinationEvidence([
-    { accountId: "hysa", accountType: "savings" },
-    { accountId: "card", accountType: "debt" },
+    leg("l1", "hysa", "savings"),
+    leg("l2", "card", "debt"),
   ]);
   check("candidates spanning types ⇒ TYPE_AMBIGUOUS", C.level === "TYPE_AMBIGUOUS");
   check("...nothing above 'a transfer happened'", maturityForEvidence(C) === "UNRESOLVED_TRANSFER");
@@ -328,6 +344,124 @@ console.log("4-AUDIT. Destination evidence levels");
   check("no candidates ⇒ NO_DESTINATION_EVIDENCE", D.level === "NO_DESTINATION_EVIDENCE");
   check("...distinct from TYPE_AMBIGUOUS — nothing to be ambiguous between",
     D.level !== C.level && maturityForEvidence(D) === "UNRESOLVED_TRANSFER");
+
+  // A superseded leg is dropped INSIDE the authority, not by caller discipline.
+  const E = resolveDestinationEvidence([{ ...leg("l1", "hysa", "savings"), superseded: true }]);
+  check("a superseded leg is structurally dropped ⇒ NO_DESTINATION_EVIDENCE",
+    E.level === "NO_DESTINATION_EVIDENCE");
+}
+
+console.log("V27-TRUTH-1 PART 2. ACCOUNT_CERTAIN requires MUTUAL uniqueness");
+{
+  const leg = (legId: string, accountId: string, accountType: string, competingSourceCount: number) =>
+    ({ legId, accountId, accountType, competingSourceCount, superseded: false });
+
+  // The exact R2 defect: forward-unique, reverse-contested. Each matched Amex
+  // card payment had TWO qualifying funding rows, so "one destination account"
+  // was never the same claim as "one deterministic pairing".
+  const contested = resolveDestinationEvidence([leg("card-leg", "card", "debt", 2)]);
+  check("forward-unique but reverse-CONTESTED is NOT account-certain",
+    contested.level !== "ACCOUNT_CERTAIN");
+  check("...it falls to TYPE_CERTAIN_ACCOUNT_AMBIGUOUS — the type is still true",
+    contested.level === "TYPE_CERTAIN_ACCOUNT_AMBIGUOUS" && contested.accountType === "debt");
+  check("...no counterparty may be persisted", contested.persistableCounterparty === false);
+  check("...no account id leaks out", contested.accountId === null && contested.legId === null);
+  check("...and the refusal is REPORTED, not silent",
+    (contested.mutualityRefusal ?? "").includes("both directions"));
+  check("...while the movement is still named a debt payment",
+    maturityForEvidence(contested) === "DEBT_PAYMENT");
+
+  // Two legs in the SAME account is also not certain: the pairing is not unique
+  // even though the account would be. The old shape could not express this.
+  const twoLegsOneAccount = resolveDestinationEvidence([
+    leg("l1", "card", "debt", 1), leg("l2", "card", "debt", 1),
+  ]);
+  check("two legs in ONE account is not account-certain either",
+    twoLegsOneAccount.level === "TYPE_CERTAIN_ACCOUNT_AMBIGUOUS");
+
+  // legsQualify must be symmetric, or mutual uniqueness is meaningless.
+  const mk = (o: Partial<TransferLeg>): TransferLeg => ({
+    id: "x", accountId: "a", accountType: "checking", ownerId: "u",
+    amount: -100, currency: "USD", dateMs: 0, superseded: false, ...o,
+  });
+  const pairs: Array<[TransferLeg, TransferLeg]> = [
+    [mk({ id: "a" }), mk({ id: "b", accountId: "b", amount: 100 })],
+    [mk({ id: "a" }), mk({ id: "b", accountId: "b", amount: 100, dateMs: 4 * 86_400_000 })],
+    [mk({ id: "a" }), mk({ id: "b", accountId: "b", amount: 100, dateMs: 9 * 86_400_000 })],
+    [mk({ id: "a" }), mk({ id: "b", accountId: "b", amount: 100, currency: "EUR" })],
+    [mk({ id: "a" }), mk({ id: "b", accountId: "b", amount: 100, ownerId: "v" })],
+    [mk({ id: "a" }), mk({ id: "b", accountId: "b", amount: 100, superseded: true })],
+    [mk({ id: "a" }), mk({ id: "b", accountId: "b", amount: -100 })],
+    [mk({ id: "a" }), mk({ id: "b", accountId: "a", amount: 100 })],
+  ];
+  check("legsQualify is SYMMETRIC in every direction that matters",
+    pairs.every(([x, y]) => legsQualify(x, y) === legsQualify(y, x)));
+  check("...and it does pair a genuine opposite leg", legsQualify(pairs[0][0], pairs[0][1]));
+  check("...but not across the window", !legsQualify(pairs[2][0], pairs[2][1]));
+
+  // The corpus-level resolver computes BOTH directions itself.
+  const src = mk({ id: "src", accountId: "chk", amount: -500 });
+  const dst = mk({ id: "dst", accountId: "card", accountType: "debt", amount: 500 });
+  const other = mk({ id: "other", accountId: "sav", accountType: "savings", amount: -500 });
+  check("resolveDestinationEvidenceFor: a clean 1:1 pairing IS account-certain",
+    resolveDestinationEvidenceFor(src, [src, dst]).level === "ACCOUNT_CERTAIN");
+  check("...and adding a second funding row REMOVES that certainty",
+    resolveDestinationEvidenceFor(src, [src, dst, other]).level !== "ACCOUNT_CERTAIN");
+}
+
+console.log("V27-TRUTH-1 PART 1. The CASH veto is structural");
+{
+  const leg = (legId: string, accountId: string, accountType: string) =>
+    ({ legId, accountId, accountType, competingSourceCount: 1, superseded: false });
+
+  // The live row: ATM WITHDRAWAL, TRANSFER_OUT_WITHDRAWAL ⇒ form CASH, matched to
+  // a card payment 4 days later at a DIFFERENT institution, purely by amount.
+  const cash = resolveDestinationEvidence([leg("card-leg", "card", "debt")], { movementForm: "CASH" });
+  check("a perfectly-matched leg CANNOT make a cash row account-certain",
+    cash.level === "CASH_NO_COUNTERPARTY");
+  check("...no counterparty is persistable", cash.persistableCounterparty === false);
+  check("...and no account id survives the veto",
+    cash.accountId === null && cash.legId === null && cash.candidateAccountIds.length === 0);
+  check("...the maturity is CASH_MOVEMENT, not DEBT_PAYMENT",
+    maturityForEvidence(cash) === "CASH_MOVEMENT");
+
+  // ...for every destination type, not just debt.
+  check("the veto holds against a SAVINGS destination too",
+    maturityForEvidence(resolveDestinationEvidence([leg("l", "hysa", "savings")], { movementForm: "CASH" })) === "CASH_MOVEMENT");
+  check("...and a CHECKING destination",
+    maturityForEvidence(resolveDestinationEvidence([leg("l", "chk", "checking")], { movementForm: "CASH" })) === "CASH_MOVEMENT");
+
+  // CASH_MOVEMENT is rank 2 so a later coincidental match cannot "mature" over it.
+  check("CASH_MOVEMENT is terminal (rank 2), not an unknown",
+    maturityRank("CASH_MOVEMENT") === 2);
+  const laterMatch = matureClassification({
+    flowType: "TRANSFER", amount: -500, ownAccountType: "checking",
+    destination: resolveDestinationEvidence([leg("card-leg", "card", "debt")]),
+  });
+  check("...so monotonicity REFUSES to overwrite it with a same-rank leaf",
+    !adoptIfMonotonic("CASH_MOVEMENT", laterMatch).adopt);
+  check("...and says why, pointing at explicit retraction",
+    adoptIfMonotonic("CASH_MOVEMENT", laterMatch).reason.includes("retract it explicitly"));
+  check("...but an explicit retraction CAN still correct a wrong form attestation",
+    adoptRetraction("CASH_MOVEMENT", laterMatch, { priorWasUnearned: true }).adopt);
+
+  const m = matureClassification({
+    flowType: "TRANSFER", amount: -500, ownAccountType: "checking",
+    destination: cash,
+  });
+  check("...while a cash re-resolve is unchanged, not blocked",
+    adoptIfMonotonic("CASH_MOVEMENT", m).adopt);
+  check("matureClassification carries no counterparty for a cash row",
+    m.counterpartyAccountId === null && m.persistable === false);
+  check("...and does not claim a matched leg", m.evidence === "NONE");
+  check("...with a reason naming the form change", m.reason.toLowerCase().includes("form"));
+
+  // The own-account rule is NOT leg-derived, so the veto does not reach it: a
+  // cash deposit onto a card is still a debt payment, still with no counterparty.
+  const cashOntoCard = maturityForEvidence(cash, { accountType: "debt", amount: 250 });
+  check("a CASH deposit onto a card is still a debt payment (own-side rule)",
+    cashOntoCard === "DEBT_PAYMENT");
+  check("...and still carries no counterparty", cash.accountId === null);
 }
 
 console.log("4-AUDIT. The row's OWN account settles a liability inflow");
@@ -335,7 +469,9 @@ console.log("4-AUDIT. The row's OWN account settles a liability inflow");
   // The 103-row defect the full-corpus audit exposed: "+$980.48 MOBILE PAYMENT -
   // THANK YOU" ARRIVING at the Platinum Card®, counterparty a CHECKING account.
   // Destination-type alone called it a cash transfer. It is a debt payment.
-  const fromChecking = resolveDestinationEvidence([{ accountId: "chk", accountType: "checking" }]);
+  const fromChecking = resolveDestinationEvidence([
+    { legId: "chk-leg", accountId: "chk", accountType: "checking", competingSourceCount: 1, superseded: false },
+  ]);
   check("destination type ALONE would say cash transfer",
     maturityForEvidence(fromChecking) === "CASH_TRANSFER");
   check("...but money INTO a liability is a debt payment",

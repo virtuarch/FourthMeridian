@@ -59,15 +59,33 @@ export type TransferMaturity =
   /** Destination is a liability — a genuine debt payment. */
   | "DEBT_PAYMENT"
   /** Destination is an investment or crypto account. */
-  | "INVESTMENT_TRANSFER";
+  | "INVESTMENT_TRANSFER"
+  /**
+   * V27-TRUTH-1 — money changed FORM (cash out of / into an account). A terminal
+   * fact, not an unknown: there is no destination ACCOUNT to find, so this is
+   * maximally specific while carrying no counterparty. See CASH_NO_COUNTERPARTY.
+   */
+  | "CASH_MOVEMENT";
 
 export function maturityRank(m: TransferMaturity): 0 | 1 | 2 {
   switch (m) {
     case "UNRESOLVED_TRANSFER": return 0;
     case "INTERNAL_TRANSFER":   return 1;
+    // CASH_MOVEMENT is rank 2: "this was a form change" is a complete answer, not
+    // a partial one. Ranking it 0 would let a later coincidental leg match
+    // "raise" specificity and overwrite it — the exact defect this veto exists to
+    // prevent.
     default:                    return 2;
   }
 }
+
+/**
+ * The money's physical form, where the provider attests it. Provider-neutral by
+ * design: adapters map their own vocabulary onto this (Plaid's
+ * TRANSFER_IN_DEPOSIT / TRANSFER_OUT_WITHDRAWAL families → CASH, see
+ * lib/transactions/plaid-transfer-evidence.ts).
+ */
+export type TransferMovementForm = "CASH";
 
 /**
  * ± whole days within which an opposite leg may be matched.
@@ -130,11 +148,13 @@ export type CounterpartyEvidence =
  * They are different facts and need different names.
  */
 export type DestinationEvidenceLevel =
-  /** Exactly one destination account qualifies. Account AND type are known, and
-   *  `counterpartyAccountId` may be persisted. */
+  /** Exactly one destination LEG qualifies, and that leg sees exactly one
+   *  qualifying source — a MUTUAL pairing. Account AND type are known, and
+   *  `counterpartyAccountId` may be persisted. See the mutual-uniqueness note. */
   | "ACCOUNT_CERTAIN"
-  /** Several accounts qualify but they all share ONE type. The type names the
-   *  movement; the account does NOT, so no counterparty may be persisted. */
+  /** Several accounts qualify but they all share ONE type — or a single account
+   *  qualifies whose pairing is NOT mutual. The type names the movement; the
+   *  account does NOT, so no counterparty may be persisted. */
   | "TYPE_CERTAIN_ACCOUNT_AMBIGUOUS"
   /** Candidates span more than one destination type. Nothing above "a transfer
    *  happened" is supported. */
@@ -142,13 +162,46 @@ export type DestinationEvidenceLevel =
   /** No qualifying opposite leg exists at all. Distinct from TYPE_AMBIGUOUS:
    *  there is nothing to be ambiguous BETWEEN, and inventing one would be
    *  fabrication rather than a guess. */
-  | "NO_DESTINATION_EVIDENCE";
+  | "NO_DESTINATION_EVIDENCE"
+  /**
+   * V27-TRUTH-1 — the money changed FORM. Cash has no destination account to
+   * find, so leg matching is not merely inconclusive here, it is inapplicable.
+   * Structurally terminal: `accountId` is null and `persistableCounterparty` is
+   * false at this level and cannot be otherwise.
+   */
+  | "CASH_NO_COUNTERPARTY";
 
-/** One candidate destination — an owned account an opposite leg sits in. */
+/**
+ * One candidate destination — a SPECIFIC opposite leg on an owned account.
+ *
+ * ⚠️ This is a LEG, not an account. The distinction is the whole of V27-TRUTH-1.
+ * The previous shape carried only `{accountId, accountType}`, which made two
+ * legs in the same account indistinguishable from one, and made the reverse
+ * direction unrepresentable. The audit that followed the R2 proposal found all
+ * three "account-certain" rows were in fact contested from the destination side.
+ */
 export interface DestinationCandidate {
+  /** The opposite leg's own transaction id. Required — see above. */
+  legId: string;
   accountId: string;
   /** checking | savings | investment | crypto | debt | other. */
   accountType: string;
+  /**
+   * How many qualifying SOURCE events this leg sees, counted with the SAME
+   * predicate, INCLUDING the row under evaluation. Mutual uniqueness requires
+   * exactly 1: the leg must point back at this row and at nothing else.
+   *
+   * Required, deliberately. Making it optional would let a caller that never
+   * computes the reverse direction silently keep the old, wrong answer — and an
+   * optional field production never passes is not a safeguard, it is the defect.
+   */
+  competingSourceCount: number;
+  /**
+   * Lifecycle supersession, respected structurally rather than by caller
+   * discipline: a superseded leg (a pending row replaced by its posted
+   * successor) is dropped here, so no caller can forget to filter it.
+   */
+  superseded: boolean;
 }
 
 export interface DestinationEvidence {
@@ -157,53 +210,189 @@ export interface DestinationEvidence {
   accountId: string | null;
   /** Set at ACCOUNT_CERTAIN and TYPE_CERTAIN_ACCOUNT_AMBIGUOUS. */
   accountType: string | null;
+  /** Set ONLY at ACCOUNT_CERTAIN — the specific mutually-paired leg. */
+  legId: string | null;
   candidateAccountIds: string[];
   candidateTypes: string[];
   /** True ONLY at ACCOUNT_CERTAIN — the one level where an account id is a fact. */
   persistableCounterparty: boolean;
+  /**
+   * Why a pairing that LOOKED unique was refused. Present only when the demotion
+   * happened, so a repair can report the reason instead of silently proposing
+   * less. Never used to justify a write.
+   */
+  mutualityRefusal?: string;
 }
 
 /**
- * Resolve the destination evidence level from the candidate set. Pure; the
- * caller owns finding the candidates (amount, sign, currency, window, ownership).
+ * Resolve the destination evidence level from the candidate LEG set.
+ *
+ * ── Two structural vetoes (V27-TRUTH-1) ─────────────────────────────────────
+ *
+ * **1. Cash.** When the provider attests the money changed FORM, no amount/date
+ * match may attach a financial-account counterparty. An ATM withdrawal
+ * (`TRANSFER_OUT_WITHDRAWAL` → form CASH) leaving checking on the 31st and a card
+ * payment arriving on the 4th are the same amount by coincidence, not by
+ * relation; the corpus contains exactly that pair, across two institutions, while
+ * a DIFFERENT row on the same account is explicitly described "AMERICAN EXPRESS
+ * ACH PMT" and already carries LOAN_PAYMENTS_CREDIT_CARD_PAYMENT. This mirrors
+ * `deriveTransferDisposition`, where CASH is rule 1 and dominates ownership —
+ * two authorities disagreeing about cash precedence is how that bug happened.
+ *
+ * **2. Mutual uniqueness.** ACCOUNT_CERTAIN previously meant "from this source,
+ * one destination account" — a ONE-DIRECTIONAL read. Every one of the three R2
+ * proposals passed it and every one was contested from the other side: each
+ * matched card payment had TWO qualifying funding rows. Certainty now requires
+ * the pairing to close in both directions:
+ *
+ *     exactly one qualifying destination leg   (forward, |candidates| === 1)
+ *   ∧ that leg sees exactly one qualifying src (reverse, competingSourceCount === 1)
+ *
+ * The predicate used in both directions is `legsQualify`, which is symmetric by
+ * construction, so "A sees B" and "B sees A" cannot disagree.
+ *
+ * Refusing mutuality does NOT discard what remains true: a single-typed candidate
+ * set still yields TYPE_CERTAIN_ACCOUNT_AMBIGUOUS, which names the movement while
+ * persisting nothing.
  */
 export function resolveDestinationEvidence(
   candidates: readonly DestinationCandidate[],
+  opts: {
+    /** The SOURCE row's movement form, when the provider attests one. */
+    movementForm?: TransferMovementForm | null;
+  } = {},
 ): DestinationEvidence {
-  const accountIds = [...new Set(candidates.map((c) => c.accountId))].sort();
-  const types = [...new Set(candidates.map((c) => c.accountType))].sort();
-
-  if (accountIds.length === 0) {
+  // ── Veto 1 — cash. Before any candidate is even considered. ───────────────
+  if (opts.movementForm === "CASH") {
     return {
-      level: "NO_DESTINATION_EVIDENCE",
-      accountId: null, accountType: null,
+      level: "CASH_NO_COUNTERPARTY",
+      accountId: null, accountType: null, legId: null,
       candidateAccountIds: [], candidateTypes: [],
       persistableCounterparty: false,
     };
   }
-  if (accountIds.length === 1) {
+
+  // Supersession is enforced here, not by the caller.
+  const live = candidates.filter((c) => !c.superseded);
+
+  const accountIds = [...new Set(live.map((c) => c.accountId))].sort();
+  const types = [...new Set(live.map((c) => c.accountType))].sort();
+
+  if (accountIds.length === 0) {
+    return {
+      level: "NO_DESTINATION_EVIDENCE",
+      accountId: null, accountType: null, legId: null,
+      candidateAccountIds: [], candidateTypes: [],
+      persistableCounterparty: false,
+    };
+  }
+
+  // ── Veto 2 — mutual uniqueness. ──────────────────────────────────────────
+  if (live.length === 1 && live[0].competingSourceCount === 1) {
     return {
       level: "ACCOUNT_CERTAIN",
-      accountId: accountIds[0], accountType: types[0],
+      accountId: live[0].accountId, accountType: live[0].accountType,
+      legId: live[0].legId,
       candidateAccountIds: accountIds, candidateTypes: types,
       persistableCounterparty: true,
     };
   }
+
+  // Not mutual. Say WHY, then fall to the strongest honest level below.
+  const refusal =
+    live.length > 1
+      ? `${live.length} qualifying destination legs across ${accountIds.length} account(s); the forward direction is not unique.`
+      : `The single qualifying leg (${live[0].legId}) is itself matched by ${live[0].competingSourceCount} source events, so the pairing does not close in both directions.`;
+
   if (types.length === 1) {
     return {
       level: "TYPE_CERTAIN_ACCOUNT_AMBIGUOUS",
       // The account is genuinely unknown — never guess one from the set.
-      accountId: null, accountType: types[0],
+      accountId: null, accountType: types[0], legId: null,
       candidateAccountIds: accountIds, candidateTypes: types,
       persistableCounterparty: false,
+      mutualityRefusal: refusal,
     };
   }
   return {
     level: "TYPE_AMBIGUOUS",
-    accountId: null, accountType: null,
+    accountId: null, accountType: null, legId: null,
     candidateAccountIds: accountIds, candidateTypes: types,
     persistableCounterparty: false,
+    mutualityRefusal: refusal,
   };
+}
+
+// ── The symmetric leg predicate + the corpus-level resolver ──────────────────
+
+/** ± tolerance on |amount| when pairing two legs. */
+export const TRANSFER_AMOUNT_EPSILON = 0.005;
+
+/** One transfer-shaped row, as the pairing rules see it. */
+export interface TransferLeg {
+  id: string;
+  accountId: string;
+  /** checking | savings | investment | crypto | debt | other. */
+  accountType: string;
+  /** Ownership boundary — legs may only pair within one owner. */
+  ownerId: string;
+  /** Signed amount in its own account. Negative is outflow. */
+  amount: number;
+  currency: string | null;
+  /** Epoch milliseconds. */
+  dateMs: number;
+  /** Lifecycle supersession — a superseded row is never a valid leg. */
+  superseded: boolean;
+  /** Provider-attested movement form, when known. */
+  movementForm?: TransferMovementForm | null;
+}
+
+/**
+ * Whether two rows may be paired as the two legs of one movement.
+ *
+ * SYMMETRIC by construction — every clause is symmetric in (a, b) — which is what
+ * makes mutual uniqueness well-defined. If this predicate ever became asymmetric,
+ * "A sees B" and "B sees A" could disagree and ACCOUNT_CERTAIN would again mean
+ * nothing. That property is asserted by a standing test, not just by reading.
+ */
+export function legsQualify(a: TransferLeg, b: TransferLeg): boolean {
+  if (a.id === b.id) return false;
+  if (a.superseded || b.superseded) return false;
+  if (a.ownerId !== b.ownerId) return false;
+  if (a.accountId === b.accountId) return false;
+  if ((a.currency ?? null) !== (b.currency ?? null)) return false;
+  if (Math.sign(a.amount) !== -Math.sign(b.amount)) return false;
+  if (Math.abs(Math.abs(a.amount) - Math.abs(b.amount)) > TRANSFER_AMOUNT_EPSILON) return false;
+  const days = Math.abs(a.dateMs - b.dateMs) / 86_400_000;
+  return days <= TRANSFER_MATCH_WINDOW_DAYS;
+}
+
+/**
+ * Resolve destination evidence for `source` against the whole corpus, computing
+ * BOTH directions with `legsQualify`.
+ *
+ * This is the entry point a consumer should use. The set-level
+ * `resolveDestinationEvidence` remains available for callers that already hold a
+ * candidate set, but only this one guarantees the reverse count was actually
+ * computed rather than assumed.
+ */
+export function resolveDestinationEvidenceFor(
+  source: TransferLeg,
+  corpus: readonly TransferLeg[],
+): DestinationEvidence {
+  if (source.movementForm === "CASH") {
+    return resolveDestinationEvidence([], { movementForm: "CASH" });
+  }
+  const forward = corpus.filter((c) => legsQualify(source, c));
+  const candidates: DestinationCandidate[] = forward.map((leg) => ({
+    legId: leg.id,
+    accountId: leg.accountId,
+    accountType: leg.accountType,
+    // The reverse direction, with the same predicate. Includes `source` itself.
+    competingSourceCount: corpus.filter((c) => legsQualify(leg, c)).length,
+    superseded: leg.superseded,
+  }));
+  return resolveDestinationEvidence(candidates, { movementForm: source.movementForm ?? null });
 }
 
 /**
@@ -225,12 +414,29 @@ export function resolveDestinationEvidence(
  *
  * Only when the row's own account does not settle the question does the
  * destination type decide.
+ *
+ * ── Where the CASH veto sits in that precedence (V27-TRUTH-1) ───────────────
+ *
+ * The own-account rule runs FIRST, and the cash veto does not override it,
+ * because the two answer different questions. The veto's subject is COUNTERPARTY
+ * ATTRIBUTION: cash has no destination account, so no leg match may name one.
+ * The own-account rule's subject is what the movement IS: money arriving at a
+ * liability reduces what you owe whether it arrived as cash or as ACH, and that
+ * conclusion never consults a counterparty — so there is nothing for the veto to
+ * veto. A cash deposit onto a card stays a DEBT_PAYMENT, and still carries no
+ * counterparty, because `accountId` is null at CASH_NO_COUNTERPARTY.
+ *
+ * The brief's requirement is that a cash row must not mature to a leaf "merely
+ * because an equal opposite leg exists nearby". Every leg-derived path is vetoed.
+ * The own-side path is not leg-derived, so it is not covered by that sentence and
+ * is deliberately preserved.
  */
 export function maturityForEvidence(
   e: DestinationEvidence,
   own?: OwnSideContext,
 ): TransferMaturity {
-  // 1. The row's own account settles a liability inflow outright.
+  // 1. The row's own account settles a liability inflow outright — no
+  //    counterparty consulted, so the cash veto has nothing to act on here.
   if (own && own.accountType === "debt") {
     if (own.amount > 0) return "DEBT_PAYMENT";
     // A liability OUTFLOW is a charge. The ladder has no leaf for that and must
@@ -239,6 +445,9 @@ export function maturityForEvidence(
   }
   // 2. Otherwise the destination type decides, where it is known.
   switch (e.level) {
+    // The form IS the answer. Never falls through to a leg-derived leaf.
+    case "CASH_NO_COUNTERPARTY":
+      return "CASH_MOVEMENT";
     case "ACCOUNT_CERTAIN":
     case "TYPE_CERTAIN_ACCOUNT_AMBIGUOUS":
       return leafForAccountType(e.accountType as string);
@@ -306,7 +515,11 @@ export interface MaturationResult {
 }
 
 /** The FlowType a matured classification implies, for comparison against the
- *  stored column. Kept separate from the ladder so the ladder can be finer. */
+ *  stored column. Kept separate from the ladder so the ladder can be finer.
+ *
+ *  CASH_MOVEMENT implies TRANSFER: a withdrawal is still a transfer out of the
+ *  account, it simply has no counterparty. The stored vocabulary has no cash
+ *  member, and inventing one would be a schema change. */
 export function impliedFlowType(m: TransferMaturity): "TRANSFER" | "DEBT_PAYMENT" {
   return m === "DEBT_PAYMENT" ? "DEBT_PAYMENT" : "TRANSFER";
 }
@@ -335,7 +548,10 @@ export function matureClassification(input: MaturationInput): MaturationResult {
       rank: maturityRank(maturity),
       direction,
       counterpartyAccountId: e.accountId,
-      evidence: e.level === "NO_DESTINATION_EVIDENCE" ? "NONE" : "MATCHED_LEG",
+      // A leg only counts as evidence where a leg was actually admitted. Neither
+      // "nothing qualified" nor "cash, so nothing may qualify" is a matched leg.
+      evidence: e.level === "NO_DESTINATION_EVIDENCE" || e.level === "CASH_NO_COUNTERPARTY"
+        ? "NONE" : "MATCHED_LEG",
       reclassified: (input.flowType ?? null) !== impliedNow,
       reason: input.ownAccountType === "debt"
         ? (input.amount > 0
@@ -414,13 +630,15 @@ function leafForAccountType(t: string): TransferMaturity {
 
 const EVIDENCE_REASON: Record<DestinationEvidenceLevel, (e: DestinationEvidence) => string> = {
   ACCOUNT_CERTAIN: (e) =>
-    `Exactly one owned ${e.accountType} account qualifies as the destination, so both the account and the movement are established.`,
+    `Exactly one owned ${e.accountType} account qualifies as the destination and that leg is matched by this source alone, so the pairing closes in both directions.`,
   TYPE_CERTAIN_ACCOUNT_AMBIGUOUS: (e) =>
-    `${e.candidateAccountIds.length} owned accounts qualify and every one is a ${e.accountType} account: the movement is established, the specific account is not, so no counterparty is recorded.`,
+    `Every qualifying destination is a ${e.accountType} account, so the movement is established; the specific account is not${e.mutualityRefusal ? ` — ${e.mutualityRefusal}` : ""}, so no counterparty is recorded.`,
   TYPE_AMBIGUOUS: (e) =>
     `Candidate destinations span ${e.candidateTypes.length} different account types (${e.candidateTypes.join(", ")}), so nothing beyond "a transfer occurred" is supported.`,
   NO_DESTINATION_EVIDENCE: () =>
     "No qualifying opposite leg exists on any owned account, so there is no destination to establish.",
+  CASH_NO_COUNTERPARTY: () =>
+    "The provider attests this movement changed the money's FORM (cash), which has no destination account; an equal opposite leg nearby is a coincidence of amount and date, not a relation.",
 };
 
 const LEAF_REASON: Record<TransferMaturity, string> = {
@@ -430,6 +648,7 @@ const LEAF_REASON: Record<TransferMaturity, string> = {
   CASH_TRANSFER:       "Matched an owned checking account, so this is an internal cash transfer",
   DEBT_PAYMENT:        "Matched an owned LIABILITY account, so this is a debt payment",
   INVESTMENT_TRANSFER: "Matched an owned investment account, so this is an investment transfer",
+  CASH_MOVEMENT:       "The money changed form (cash), so there is no destination account to establish",
 };
 
 /** Presentation wording. One place. */
@@ -440,6 +659,7 @@ export const MATURITY_LABEL: Record<TransferMaturity, string> = {
   CASH_TRANSFER:       "Internal cash transfer",
   DEBT_PAYMENT:        "Debt payment",
   INVESTMENT_TRANSFER: "Investment transfer",
+  CASH_MOVEMENT:       "Cash movement",
 };
 
 /**
@@ -504,6 +724,26 @@ export function adoptIfMonotonic(
   next: MaturationResult,
 ): { adopt: boolean; reason: string } {
   if (previous === null) return { adopt: true, reason: "First assessment." };
+
+  // V27-TRUTH-1 — CASH_MOVEMENT is terminal against LEG-DERIVED evidence.
+  //
+  // Without this, the "same rank, different leaf" rule below would let a later
+  // coincidental amount/date match overwrite an established form change — which
+  // is the very substitution the cash veto exists to prevent, arriving one step
+  // later. A row does not stop having been a cash withdrawal because an equal
+  // opposite leg showed up nearby.
+  //
+  // This is not absolute: if the provider's form attestation itself was wrong,
+  // that is a claim the earlier assessment was UNEARNED, and the caller must say
+  // so through `adoptRetraction`. The split is deliberate and mirrors the
+  // maturation/retraction doctrine documented above.
+  if (previous === "CASH_MOVEMENT" && next.maturity !== "CASH_MOVEMENT") {
+    return {
+      adopt: false,
+      reason: "The movement is an established form change (cash), which has no destination account; a leg matched on amount and date cannot supersede that. If the form attestation itself was wrong, retract it explicitly.",
+    };
+  }
+
   const prevRank = maturityRank(previous);
   if (next.rank > prevRank) return { adopt: true, reason: "New evidence raised specificity." };
   if (next.rank === prevRank && next.maturity === previous) {

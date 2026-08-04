@@ -52,17 +52,44 @@
 import { db } from "@/lib/db";
 import { resolveLifecycle } from "@/lib/transactions/lifecycle";
 import { resolveEconomicDate } from "@/lib/transactions/economic-date";
+import { plaidTransferEvidence } from "@/lib/transactions/plaid-transfer-evidence";
 import {
-  resolveDestinationEvidence, maturityForEvidence, TRANSFER_MATCH_WINDOW_DAYS,
+  resolveDestinationEvidenceFor, maturityForEvidence,
+  type TransferLeg,
 } from "@/lib/transactions/transfer-maturation";
 
+/**
+ * ── V27-TRUTH-1 addendum ────────────────────────────────────────────────────
+ *
+ * R1 and R3 are APPLIED and this script is idempotent — it now short-circuits at
+ * "nothing to do" before any gate. It is kept runnable, and re-pointed at the
+ * corrected authority (`resolveDestinationEvidenceFor`), so it can never silently
+ * describe the corpus using the superseded one-directional rule.
+ *
+ * `EXPECT` still records the shape that was APPROVED at the time, unchanged — a
+ * repair's approval record is history and must not be edited to match a later
+ * reading of the corpus. Two of its counts no longer reproduce, and both are
+ * expected:
+ *
+ *   R2               3 → 0   the ATM-withdrawal row is vetoed as a cash movement,
+ *                            and the other two fail mutual uniqueness (each of
+ *                            their destination legs has two qualifying funding
+ *                            rows), landing at TYPE_CERTAIN_ACCOUNT_AMBIGUOUS
+ *                            where no counterparty is persistable.
+ *   TYPE_CERTAIN_DEBT 21 → 52  rows the one-directional rule called ACCOUNT_CERTAIN
+ *                            are correctly demoted to type-certain.
+ *
+ * Neither can cause a write: R1 and R3 are applied, so the idempotence check
+ * returns before the gate is consulted.
+ */
 const EXPECT = { R1: 16, R3: 1, R2: 3, TYPE_CERTAIN_DEBT: 21 } as const;
 const R1_REASON = "AMBIGUOUS_UNKNOWN" as const;
 const R1_CONFIDENCE = 0.2;
 const R3_REASON = "ACCOUNT_TYPE_CONTEXT" as const;
 const R3_CONFIDENCE = 1.0;
-const EPS = 0.005;
-const DAY = 86_400_000;
+// Amount tolerance and the ± day window now live in the authority
+// (TRANSFER_AMOUNT_EPSILON / TRANSFER_MATCH_WINDOW_DAYS), so this script cannot
+// drift from the rule it is auditing against.
 
 async function main(): Promise<void> {
   const apply = process.argv.includes("--apply");
@@ -80,7 +107,7 @@ async function main(): Promise<void> {
       id: true, financialAccountId: true, date: true, authorizedAt: true, amount: true,
       currency: true, flowType: true, flowDirection: true, deletedAt: true, pending: true,
       settlementState: true, counterpartyAccountId: true, merchant: true,
-      plaidTransactionId: true, pendingTransactionRef: true,
+      plaidTransactionId: true, pendingTransactionRef: true, pfcDetailed: true,
       classificationReason: true, classificationConfidence: true,
     },
   });
@@ -94,33 +121,31 @@ async function main(): Promise<void> {
   const shaped = (f: string | null) => f === null || f === "TRANSFER" || f === "DEBT_PAYMENT" || f === "UNKNOWN";
   const corpus = all.filter((t) => shaped(t.flowType) && !lifecycleOf(t).superseded);
 
-  const byOwner = new Map<string, typeof corpus>();
-  for (const t of corpus) {
-    const o = A.get(t.financialAccountId ?? "")?.ownerUserId ?? "";
-    const l = byOwner.get(o) ?? []; l.push(t); byOwner.set(o, l);
-  }
-  const candidatesFor = (t: (typeof corpus)[number]) =>
-    (byOwner.get(A.get(t.financialAccountId ?? "")?.ownerUserId ?? "") ?? []).filter((c) =>
-      c.id !== t.id && c.financialAccountId !== t.financialAccountId &&
-      (c.currency ?? null) === (t.currency ?? null) &&
-      Math.sign(c.amount) === -Math.sign(t.amount) &&
-      Math.abs(Math.abs(c.amount) - Math.abs(t.amount)) <= EPS &&
-      Math.abs(c.date.getTime() - t.date.getTime()) / DAY <= TRANSFER_MATCH_WINDOW_DAYS,
-    );
+  // V27-TRUTH-1 — legs, not ad-hoc candidate tuples. The authority owns the match
+  // predicate and BOTH directions now; this script no longer restates either.
+  const legs: TransferLeg[] = corpus.map((t) => ({
+    id: t.id,
+    accountId: t.financialAccountId ?? "",
+    accountType: A.get(t.financialAccountId ?? "")?.type ?? "other",
+    ownerId: A.get(t.financialAccountId ?? "")?.ownerUserId ?? "",
+    amount: t.amount,
+    currency: t.currency ?? null,
+    dateMs: t.date.getTime(),
+    superseded: lifecycleOf(t).superseded,
+    movementForm: plaidTransferEvidence({ pfcDetailed: t.pfcDetailed, amount: t.amount, name: t.merchant }).movementForm ?? null,
+  }));
 
   const R1: typeof corpus = [], R3: typeof corpus = [], R2: typeof corpus = [], typeCertainDebt: typeof corpus = [];
   const detail = new Map<string, { level: string; mature: string; cands: string; types: string }>();
 
-  for (const t of corpus) {
-    const cands = candidatesFor(t);
-    const e = resolveDestinationEvidence(
-      cands.map((c) => ({ accountId: c.financialAccountId!, accountType: A.get(c.financialAccountId!)!.type })),
-    );
-    const own = { accountType: A.get(t.financialAccountId ?? "")?.type ?? "other", amount: t.amount };
+  for (let i = 0; i < corpus.length; i++) {
+    const t = corpus[i];
+    const e = resolveDestinationEvidenceFor(legs[i], legs);
+    const own = { accountType: legs[i].accountType, amount: t.amount };
     const mature = maturityForEvidence(e, own);
     detail.set(t.id, {
       level: e.level, mature,
-      cands: [...new Set(cands.map((c) => A.get(c.financialAccountId!)!.name))].join(" | ") || "none",
+      cands: e.candidateAccountIds.map((id) => A.get(id)?.name ?? id).join(" | ") || "none",
       types: e.candidateTypes.join("+") || "none",
     });
 
@@ -132,7 +157,8 @@ async function main(): Promise<void> {
 
   // ── Gate: every population must match the approved shape exactly ──────────
   const found = { R1: R1.length, R3: R3.length, R2: R2.length, TYPE_CERTAIN_DEBT: typeCertainDebt.length };
-  console.log("  population check (approved → found):");
+  console.log("  population check (approved-at-the-time → found-now):");
+  console.log("    R2 and TYPE_CERTAIN_DEBT are EXPECTED to differ post-V27-TRUTH-1; see the header.");
   let mismatch = false;
   for (const k of Object.keys(EXPECT) as (keyof typeof EXPECT)[]) {
     const ok = EXPECT[k] === found[k];

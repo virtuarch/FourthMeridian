@@ -13,9 +13,15 @@
  * A coffee bought on Friday and posted on Sunday is a Friday event that settled
  * on Sunday. Both facts are true and the product needs both: posted-basis
  * reconstruction depends on `date`, and a closed period depends on economicDate.
- * Measured on the corpus, **2,813 of 3,996 rows (70.4%) carry a posting date
- * later than the day the event occurred**, and 4 of those cross a month
- * boundary — so "a closed period is closed" is not a hypothetical.
+ * Measured on the corpus, **2,813 of 4,402 active rows (63.9%) carry a posting
+ * date later than the day the event occurred, and 147 of those cross a MONTH
+ * boundary** — so "a closed period is closed" is not a hypothetical.
+ *
+ * ⚠️ That month figure previously read "4" here. It was wrong: re-measured by the
+ * authority and independently by raw SQL (both agree at 147), the population a
+ * closed-period report would silently absorb is 37× larger than this file
+ * claimed. The day-mover count was right; only the month count was understated.
+ * V27-TRUTH-1.
  *
  * ── The credibility bound, derived from the evidence ────────────────────────
  *
