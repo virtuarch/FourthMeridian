@@ -99,6 +99,7 @@ async function main(): Promise<void> {
       id: true, financialAccountId: true, date: true, authorizedAt: true, amount: true,
       currency: true, flowType: true, flowDirection: true, deletedAt: true,
       counterpartyAccountId: true, pending: true, settlementState: true, merchant: true,
+      pfcDetailed: true,
       plaidTransactionId: true, pendingTransactionRef: true,
       classificationReason: true, classificationConfidence: true,
     },
@@ -108,7 +109,16 @@ async function main(): Promise<void> {
     plaidTransactionId: t.plaidTransactionId, pendingTransactionRef: t.pendingTransactionRef,
     date: t.date, amount: t.amount, merchant: t.merchant, pending: t.pending,
     deletedAt: t.deletedAt, flowType: t.flowType, currency: t.currency,
+    // V27-TRUTH-2 — required by the canonical authority: owner scope, lifecycle
+    // supersession, movement form (the cash veto).
+    ownerUserId:           acct.get(t.financialAccountId ?? "")?.ownerUserId ?? null,
+    settlementState:       t.settlementState,
+    pfcDetailed:           t.pfcDetailed,
   });
+
+  // V27-TRUTH-2 — the canonical authority decides from account TYPE; supply it
+  // once rather than letting the matcher guess.
+  const matchCtx = { accountTypeById: new Map(accounts.map((a) => [a.id, a.type as string])) };
 
   const byOwner = new Map<string, typeof legs>();
   for (const l of legs) {
@@ -136,7 +146,7 @@ async function main(): Promise<void> {
     if (!src?.ownerUserId) continue;
     const pool = (byOwner.get(src.ownerUserId) ?? []);
 
-    const m = matchTransferCandidate(rel(t), pool.map(rel), { windowDays: TRANSFER_MATCH_WINDOW_DAYS });
+    const m = matchTransferCandidate(rel(t), pool.map(rel), matchCtx);
     const cp = m.status === "RESOLVED" && m.counterpartyAccountId ? acct.get(m.counterpartyAccountId) : null;
     const mat = matureClassification({
       flowType: t.flowType, amount: t.amount,

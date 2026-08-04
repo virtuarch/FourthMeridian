@@ -202,6 +202,12 @@ type TxnRow = {
   // population (`not: INVESTMENT`) admits UNKNOWN / ADJUSTMENT / null too, so
   // flowType can now be null here (non-economic residue — counted, never money-folded).
   flowType:      FlowType | null;
+  // V27-TRUTH-2 — supersession + movement-form evidence. The AI payload runs the
+  // SAME read-time matcher as the UI, so it must supply the same facts or it
+  // would receive the old, over-resolving answer while the UI receives the
+  // corrected one.
+  settlementState: string | null;
+  pfcDetailed:     string | null;
   flowDirection: FlowDirection | null;
   // TI2-W1 — canonical inputs to shouldSurfaceAsNeedsClassification (all flat
   // persisted columns). counterpartyAccountId is the PERSISTED provider-confirmed
@@ -395,6 +401,9 @@ async function assembleTransactions(
       classificationReason:  true,
       transferRail:          true,
       counterpartyAccountId: true,
+      // V27-TRUTH-2 — see TxnRow.
+      settlementState:       true,
+      pfcDetailed:           true,
     },
     orderBy: { date: 'desc' },
     take:    TRANSACTION_FETCH_LIMIT + 1,

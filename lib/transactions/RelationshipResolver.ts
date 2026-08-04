@@ -1,4 +1,14 @@
-import { TRANSFER_MATCH_WINDOW_DAYS } from "@/lib/transactions/transfer-maturation";
+import {
+  TRANSFER_MATCH_WINDOW_DAYS,
+  resolveDestinationEvidenceFor,
+  maturityForEvidence,
+  isTransferCandidate,
+  type TransferLeg,
+  type TransferMaturity,
+  type DestinationEvidenceLevel,
+} from "@/lib/transactions/transfer-maturation";
+import { resolveLifecycle } from "@/lib/transactions/lifecycle";
+import { plaidTransferEvidence } from "@/lib/transactions/plaid-transfer-evidence";
 /**
  * lib/transactions/RelationshipResolver.ts
  *
@@ -61,6 +71,17 @@ export interface RelationshipTransaction {
   flowType?:             string | null;
   /** Native currency (ISO 4217) — TI4 transfer matching requires same-currency legs. */
   currency?:             string | null;
+
+  // ── V27-TRUTH-2 — the facts the canonical transfer authority requires ──────
+  // Required, not optional. A leg missing any of these cannot be matched
+  // correctly, and an optional field production never passes is how the
+  // read-time resolver came to disagree with the authority in the first place.
+  /** The OWNING user of `financialAccountId`. Legs only pair within one owner. */
+  ownerUserId:           string | null;
+  /** Settlement state, for lifecycle supersession. */
+  settlementState:       string | null;
+  /** Plaid personal_finance_category.detailed — the movement-form evidence. */
+  pfcDetailed:           string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -89,10 +110,15 @@ export type TransferMatchStatus =
   | 'NONE';       // target not transfer-like, or no matching opposite leg
 
 export type TransferMatchReason =
-  | 'DETERMINISTIC_UNIQUE'         // one owned counterparty account, deterministically
+  | 'DETERMINISTIC_UNIQUE'         // one owned counterparty account, MUTUALLY unique
   | 'AMBIGUOUS_MULTIPLE_ACCOUNTS'  // >1 distinct candidate account — refuse
   | 'NO_CANDIDATE'                 // no opposite leg matched
-  | 'NOT_TRANSFER_LIKE';           // target is not a directional transfer row
+  | 'NOT_TRANSFER_LIKE'            // target is not a directional transfer row
+  // ── V27-TRUTH-2 — outcomes the canonical authority can express and this
+  //    resolver previously could not, which is why it over-resolved.
+  | 'CASH_MOVEMENT_NO_COUNTERPARTY' // the money changed form; no account to find
+  | 'TYPE_CERTAIN_ACCOUNT_AMBIGUOUS' // destination TYPE known, account is not
+  | 'NOT_MUTUALLY_UNIQUE';          // one candidate leg, but that leg has rivals
 
 export interface TransferCandidateRelationship {
   status: TransferMatchStatus;
@@ -104,6 +130,17 @@ export interface TransferCandidateRelationship {
   /** 1 for a unique deterministic match; 0 otherwise. Durable field for future UI. */
   confidence:            number;
   reason:                TransferMatchReason;
+  /**
+   * V27-TRUTH-2 — what the evidence DOES support when it does not support an
+   * account. Set at TYPE_CERTAIN_ACCOUNT_AMBIGUOUS so a surface can say "a debt
+   * payment, destination account unknown" instead of either fabricating an
+   * account or falling silent. Null whenever the type is unknown.
+   */
+  destinationAccountType: string | null;
+  /** The canonical maturity for this row, straight from the authority. */
+  maturity:               TransferMaturity;
+  /** The authority's own evidence level, carried through unchanged for audit. */
+  evidenceLevel:          DestinationEvidenceLevel;
 }
 
 export interface TransactionRelationships {
@@ -113,48 +150,30 @@ export interface TransactionRelationships {
   refundCandidate:   null;
   /** TI4 Slice 1 — the RESOLVED deterministic owned-account transfer match, or null
    *  when NONE/AMBIGUOUS (unresolved is honest; the match is never guessed). Callers
-   *  that need the AMBIGUOUS/NONE reason call matchTransferCandidate() directly. */
+   *  that need the AMBIGUOUS/NONE reason read `transferAssessment`. */
   transferCandidate: TransferCandidateRelationship | null;
+  /** V27-TRUTH-2 — the FULL assessment, always present, including the refusals.
+   *  Carries `maturity` and `destinationAccountType` but never a fabricated id. */
+  transferAssessment: TransferCandidateRelationship;
 }
-
-/** Tunables for owned-account transfer matching. */
-export interface TransferMatchOptions {
-  /** ± window in whole days (Transaction.date is day-granular). Default 2. */
-  windowDays?:    number;
-  /** Absolute-amount tolerance in currency units (monetary precision). Default 0.005. */
-  amountEpsilon?: number;
-}
-
-/** V27-L4D — 5, from lib/transactions/transfer-maturation.ts. The old 2 was
- *  NARROWER than the real 3-day skew, which is why the live case never matched. */
-const DEFAULT_TRANSFER_WINDOW_DAYS = TRANSFER_MATCH_WINDOW_DAYS;
-const DEFAULT_AMOUNT_EPSILON = 0.005; // half a cent — legs are cent-aligned in practice.
 
 /**
- * Flow kinds eligible to be a transfer LEG.
+ * V27-TRUTH-2 — the context a transfer match needs that a row cannot carry.
  *
- * V27-L4C — this was `TRANSFER` only, and that narrowness was the defect: the
- * live Chase→Amex-HYSA source leg is stored as `DEBT_PAYMENT` (Plaid's own
- * category, taken at face value while the row was pending and its counterparty
- * unknown), so the ONLY mechanism that could have corrected it refused to look
- * at it. A repair gated on the classification already being right is not a
- * repair.
- *
- * The set now matches lib/transactions/transfer-maturation.ts's candidate list:
- * TRANSFER, DEBT_PAYMENT, UNKNOWN, and rows with no flowType at all (352 seed
- * rows). It is still deliberately narrow — SPENDING and INCOME are NOT legs, and
- * an INVESTMENT security trade is not a two-leg owned-account cash transfer.
- *
- * Admission is not resolution: a DEBT_PAYMENT that matches a SAVINGS account
- * still has to be re-classified by the maturation ladder, and one that matches a
- * LIABILITY stays a debt payment.
+ * There are no window/epsilon "tunables" any more, deliberately. They were the
+ * seam through which this module became a second authority: a caller could set a
+ * different window here than `TRANSFER_MATCH_WINDOW_DAYS`, and the read boundary
+ * would then disagree with the repair boundary about what a transfer even is.
+ * The one evidence-derived bound lives in the authority; this module imports it
+ * and cannot override it.
  */
-const TRANSFER_LIKE_FLOWS: ReadonlySet<string> = new Set(['TRANSFER', 'DEBT_PAYMENT', 'UNKNOWN']);
-function isTransferLike(flowType: string | null | undefined): boolean {
-  // `null` is admitted: a row with no classification at all is the LEAST
-  // specific state, not a disqualifying one.
-  return flowType == null || TRANSFER_LIKE_FLOWS.has(flowType);
+export interface TransferMatchContext {
+  /** FinancialAccount id → its type (checking | savings | debt | …). */
+  accountTypeById: ReadonlyMap<string, string>;
 }
+
+/** Re-exported so a caller can assert the read path and the authority agree. */
+export { TRANSFER_MATCH_WINDOW_DAYS };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pure helpers
@@ -179,13 +198,9 @@ function sameDay(a: Date, b: Date): boolean {
   return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10);
 }
 
-/** Absolute whole-day distance between two day-granular dates (UTC). */
-function dayDistance(a: Date, b: Date): number {
-  const DAY = 24 * 60 * 60 * 1000;
-  const da = Date.UTC(a.getUTCFullYear(), a.getUTCMonth(), a.getUTCDate());
-  const db = Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCDate());
-  return Math.abs(Math.round((da - db) / DAY));
-}
+// V27-TRUTH-2 — `dayDistance` was DELETED. It existed only for this module's own
+// copy of the ±window check, which is now the authority's `legsQualify`. Leaving
+// it would leave a working second implementation of a rule that must have one.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Deterministic resolvers
@@ -262,46 +277,103 @@ function resolveDuplicate(
 export function matchTransferCandidate(
   tx: RelationshipTransaction,
   candidates: readonly RelationshipTransaction[],
-  opts: TransferMatchOptions = {},
+  ctx: TransferMatchContext,
 ): TransferCandidateRelationship {
-  const windowDays = opts.windowDays ?? DEFAULT_TRANSFER_WINDOW_DAYS;
-  const eps = opts.amountEpsilon ?? DEFAULT_AMOUNT_EPSILON;
-
-  const ownAcct = accountKey(tx);
-  const txSign = Math.sign(tx.amount);
-  // Target must be a directional (nonzero) transfer-like row with a known account.
-  if (!isTransferLike(tx.flowType) || txSign === 0 || ownAcct == null) {
-    return { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NOT_TRANSFER_LIKE' };
-  }
-  const txCurrency = tx.currency ?? null;
-  const txMagnitude = Math.abs(tx.amount);
-
-  const matches = candidates.filter((c) => {
-    if (c.id === tx.id) return false;
-    if (c.deletedAt != null) return false;                    // never pair a tombstoned leg
-    if (!isTransferLike(c.flowType)) return false;
-    const cAcct = accountKey(c);
-    if (cAcct == null || cAcct === ownAcct) return false;     // must be a DIFFERENT owned account
-    if ((c.currency ?? null) !== txCurrency) return false;    // same currency
-    if (Math.sign(c.amount) !== -txSign) return false;        // opposite direction
-    if (Math.abs(Math.abs(c.amount) - txMagnitude) > eps) return false; // equal magnitude
-    if (dayDistance(c.date, tx.date) > windowDays) return false;        // within window
-    return true;
+  const refuse = (
+    reason: TransferMatchReason,
+    level: DestinationEvidenceLevel,
+    maturity: TransferMaturity,
+    destinationAccountType: string | null = null,
+  ): TransferCandidateRelationship => ({
+    status: reason === 'AMBIGUOUS_MULTIPLE_ACCOUNTS' || reason === 'TYPE_CERTAIN_ACCOUNT_AMBIGUOUS' || reason === 'NOT_MUTUALLY_UNIQUE'
+      ? 'AMBIGUOUS' : 'NONE',
+    transactionId: null, counterpartyAccountId: null, confidence: 0,
+    reason, destinationAccountType, maturity, evidenceLevel: level,
   });
 
-  if (matches.length === 0) {
-    return { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE' };
+  // Target must be a directional (nonzero) transfer-shaped row with a known account.
+  if (!isTransferCandidate(tx.flowType) || Math.sign(tx.amount) === 0 || tx.financialAccountId == null) {
+    return refuse('NOT_TRANSFER_LIKE', 'NO_DESTINATION_EVIDENCE', 'UNRESOLVED_TRANSFER');
   }
 
-  const distinctAccounts = new Set(matches.map((m) => accountKey(m) as string));
-  if (distinctAccounts.size > 1) {
-    return { status: 'AMBIGUOUS', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'AMBIGUOUS_MULTIPLE_ACCOUNTS' };
+  const self = toTransferLeg(tx, ctx);
+  // The corpus is this row plus its candidate bucket. The bucket is scoped by
+  // (currency, |amount|), which is exactly the set `legsQualify` can pair with —
+  // so the REVERSE count the authority computes over it is complete, not a sample.
+  const corpus: TransferLeg[] = [self];
+  for (const c of candidates) {
+    if (c.id === tx.id) continue;
+    if (c.financialAccountId == null) continue;
+    if (!isTransferCandidate(c.flowType)) continue;
+    corpus.push(toTransferLeg(c, ctx));
   }
 
-  const counterpartyAccountId = [...distinctAccounts][0];
-  // The account is certain; the exact leg only when a single row matched.
-  const transactionId = matches.length === 1 ? matches[0].id : null;
-  return { status: 'RESOLVED', transactionId, counterpartyAccountId, confidence: 1, reason: 'DETERMINISTIC_UNIQUE' };
+  const e = resolveDestinationEvidenceFor(self, corpus);
+  const maturity = maturityForEvidence(e, { accountType: self.accountType, amount: tx.amount });
+
+  switch (e.level) {
+    case 'ACCOUNT_CERTAIN':
+      return {
+        status: 'RESOLVED',
+        transactionId:          e.legId,
+        counterpartyAccountId:  e.accountId,
+        confidence:             1,
+        reason:                 'DETERMINISTIC_UNIQUE',
+        destinationAccountType: e.accountType,
+        maturity,
+        evidenceLevel:          e.level,
+      };
+    case 'CASH_NO_COUNTERPARTY':
+      return refuse('CASH_MOVEMENT_NO_COUNTERPARTY', e.level, maturity);
+    case 'TYPE_CERTAIN_ACCOUNT_AMBIGUOUS':
+      // The type is TRUE and is surfaced; the account is not, and is not invented.
+      // `NOT_MUTUALLY_UNIQUE` distinguishes "one leg with rivals" from "many legs",
+      // because the two demand different follow-up evidence.
+      return refuse(
+        e.candidateAccountIds.length === 1 ? 'NOT_MUTUALLY_UNIQUE' : 'TYPE_CERTAIN_ACCOUNT_AMBIGUOUS',
+        e.level, maturity, e.accountType,
+      );
+    case 'TYPE_AMBIGUOUS':
+      return refuse('AMBIGUOUS_MULTIPLE_ACCOUNTS', e.level, maturity);
+    case 'NO_DESTINATION_EVIDENCE':
+      return refuse('NO_CANDIDATE', e.level, maturity);
+  }
+}
+
+/**
+ * Adapt a relationship row to the authority's leg shape.
+ *
+ * Every field the authority needs comes from the ROW or from `ctx`; nothing is
+ * re-derived. `superseded` goes through `resolveLifecycle` and `movementForm`
+ * through `plaidTransferEvidence`, so this module holds no second copy of either
+ * rule.
+ *
+ * `hasLivePostedSuccessor` is deliberately false here: it is a cross-row fact a
+ * bucket-scoped matcher cannot establish (a posted successor usually differs in
+ * amount, so it need not be in the bucket at all). Supersession therefore rests
+ * on the tombstone, which the write path always sets when a pending row posts —
+ * claiming more would be guessing.
+ */
+function toTransferLeg(r: RelationshipTransaction, ctx: TransferMatchContext): TransferLeg {
+  const lifecycle = resolveLifecycle({
+    settlementState: r.settlementState,
+    pending:         r.pending,
+    deletedAt:       r.deletedAt ?? null,
+    hasLivePostedSuccessor: false,
+  });
+  return {
+    id:          r.id,
+    accountId:   r.financialAccountId as string,
+    accountType: ctx.accountTypeById.get(r.financialAccountId as string) ?? 'other',
+    ownerId:     r.ownerUserId ?? '',
+    amount:      r.amount,
+    currency:    r.currency ?? null,
+    dateMs:      r.date.getTime(),
+    superseded:  lifecycle.superseded,
+    movementForm: plaidTransferEvidence({
+      pfcDetailed: r.pfcDetailed, amount: r.amount, name: r.merchant,
+    }).movementForm ?? null,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -316,9 +388,9 @@ export function matchTransferCandidate(
 export function resolveTransactionRelationships(
   transaction: RelationshipTransaction,
   candidates: readonly RelationshipTransaction[],
-  opts: TransferMatchOptions = {},
+  ctx: TransferMatchContext,
 ): TransactionRelationships {
-  const transfer = matchTransferCandidate(transaction, candidates, opts);
+  const transfer = matchTransferCandidate(transaction, candidates, ctx);
   return {
     pendingPosted:     resolvePendingPosted(transaction, candidates),
     duplicate:         resolveDuplicate(transaction, candidates),
@@ -326,5 +398,9 @@ export function resolveTransactionRelationships(
     // Only a RESOLVED, deterministic match surfaces; NONE/AMBIGUOUS stay null
     // (unresolved is honest). The full outcome is available via matchTransferCandidate.
     transferCandidate: transfer.status === 'RESOLVED' ? transfer : null,
+    // V27-TRUTH-2 — the refused outcome is carried rather than discarded, so a
+    // surface can say what IS known (a debt payment whose account is unresolved)
+    // instead of only "no match". Never carries an account id.
+    transferAssessment: transfer,
   };
 }

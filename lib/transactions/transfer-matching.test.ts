@@ -38,9 +38,20 @@ function relLeg(id: string, faId: string, amount: number, over: Partial<Relation
     id, financialAccountId: faId,
     plaidTransactionId: null, pendingTransactionRef: null,
     date: new Date('2026-06-01'), amount, merchant: '', pending: false,
-    deletedAt: null, flowType: 'TRANSFER', currency: 'USD', ...over,
+    deletedAt: null, flowType: 'TRANSFER', currency: 'USD',
+    // V27-TRUTH-2 — required leg facts; benign defaults (one owner, settled, no form).
+    ownerUserId: 'user_1', settlementState: 'POSTED', pfcDetailed: null,
+    ...over,
   };
 }
+
+/** Account types for the matcher context — mirrors ACCOUNTS above. */
+const MATCH_CTX = {
+  accountTypeById: new Map<string, string>([
+    ['fa_chk', 'checking'], ['fa_sav', 'savings'], ['fa_brk', 'investment'],
+    ['fa_chk2', 'checking'], ['fa_card', 'debt'],
+  ]),
+};
 
 /** The same leg as the liquidity engine sees it, with a (possibly resolved) counterparty. */
 function liqLeg(faId: string, amount: number, cp: string | null): LiquidityTx {
@@ -54,7 +65,7 @@ function liqLeg(faId: string, amount: number, cp: string | null): LiquidityTx {
 
 /** Resolve a leg's counterparty against the other legs (what the data layer does). */
 function resolveCp(target: RelationshipTransaction, others: RelationshipTransaction[]): string | null {
-  const m = matchTransferCandidate(target, others);
+  const m = matchTransferCandidate(target, others, MATCH_CTX);
   return m.status === 'RESOLVED' ? m.counterpartyAccountId : null;
 }
 
@@ -133,7 +144,7 @@ test('chooseCounterpartyId: a persisted provider-confirmed link outranks a read-
 test('KD-15: a resolved id is projected only when its account is visible to the Space', () => {
   const chk = relLeg('chk', 'fa_chk', -500);
   const sav = relLeg('sav', 'fa_sav', 500);
-  const resolved = matchTransferCandidate(chk, [sav]).counterpartyAccountId; // 'fa_sav'
+  const resolved = matchTransferCandidate(chk, [sav], MATCH_CTX).counterpartyAccountId; // 'fa_sav'
 
   // The data layer passes the resolved id to chooseCounterpartyId ONLY when the
   // KD-15 gate says the account is visible; otherwise it passes null.

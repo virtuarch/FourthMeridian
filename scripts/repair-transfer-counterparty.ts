@@ -144,6 +144,7 @@ async function main(): Promise<void> {
       id: true, financialAccountId: true, date: true, authorizedAt: true, amount: true,
       currency: true, flowType: true, flowDirection: true, deletedAt: true,
       counterpartyAccountId: true, pending: true, settlementState: true, merchant: true,
+      pfcDetailed: true,
       plaidTransactionId: true, pendingTransactionRef: true,
     },
   });
@@ -161,7 +162,16 @@ async function main(): Promise<void> {
     deletedAt:             t.deletedAt,
     flowType:              t.flowType,
     currency:              t.currency,
+    // V27-TRUTH-2 — required by the canonical authority: owner scope, lifecycle
+    // supersession, movement form (the cash veto).
+    ownerUserId:           acct.get(t.financialAccountId ?? "")?.ownerUserId ?? null,
+    settlementState:       t.settlementState,
+    pfcDetailed:           t.pfcDetailed,
   });
+
+  // V27-TRUTH-2 — the canonical authority decides from account TYPE; supply it
+  // once rather than letting the matcher guess.
+  const matchCtx = { accountTypeById: new Map(accounts.map((a) => [a.id, a.type as string])) };
 
   const byOwner = new Map<string, typeof legs>();
   for (const l of legs) {
@@ -184,7 +194,7 @@ async function main(): Promise<void> {
     const pool = (byOwner.get(src.ownerUserId) ?? []).map(rel);
 
     // Gates 1–6 are exactly what the pure matcher enforces.
-    const m = matchTransferCandidate(rel(t), pool, { windowDays: TRANSFER_MATCH_WINDOW_DAYS });
+    const m = matchTransferCandidate(rel(t), pool, matchCtx);
     if (m.status !== "RESOLVED" || !m.counterpartyAccountId) continue;
 
     const dest = acct.get(m.counterpartyAccountId);

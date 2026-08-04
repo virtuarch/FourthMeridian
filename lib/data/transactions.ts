@@ -485,20 +485,34 @@ export async function getTransactionDetail(
   // resolvers exclude tombstoned rows from duplicate/transfer matching themselves).
   const RELATIONSHIP_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
   const ownerUserId = row.financialAccount?.ownerUserId ?? null;
-  const ownedAccountIds = ownerUserId
-    ? (await db.financialAccount.findMany({
+  const ownedAccounts = ownerUserId
+    ? await db.financialAccount.findMany({
         where: { ownerUserId, deletedAt: null },
-        select: { id: true },
-      })).map((a) => a.id)
+        select: { id: true, type: true },
+      })
     : [];
+  const ownedAccountIds = ownedAccounts.map((a) => a.id);
+  // V27-TRUTH-2 — the canonical authority decides from account TYPE, so the
+  // detail read supplies the same context the list read does.
+  const matchCtx = { accountTypeById: new Map(ownedAccounts.map((a) => [a.id, a.type as string])) };
   const candidates = await db.transaction.findMany({
     where: {
       OR: [
         // Same-account candidates — pending→posted + duplicate (unchanged behavior).
         { financialAccountId: row.financialAccountId },
-        // Owned cross-account TRANSFER legs — the transferCandidate population.
+        // Owned cross-account transfer legs — the transferCandidate population.
+        // V27-TRUTH-2 — this was `flowType: TRANSFER` alone, NARROWER than the
+        // list read's `isTransferCandidate` set, so the drawer and the list could
+        // disagree about the same row. Both now admit the same population; `null`
+        // is spelled out because a NOT-IN over a nullable column drops nulls.
         ...(ownedAccountIds.length
-          ? [{ financialAccountId: { in: ownedAccountIds }, flowType: FlowType.TRANSFER }]
+          ? [{
+              financialAccountId: { in: ownedAccountIds },
+              OR: [
+                { flowType: { in: [FlowType.TRANSFER, FlowType.DEBT_PAYMENT, FlowType.UNKNOWN] } },
+                { flowType: null },
+              ],
+            }]
           : []),
       ],
       id:   { not: row.id },
@@ -512,10 +526,18 @@ export async function getTransactionDetail(
       plaidTransactionId: true, pendingTransactionRef: true,
       date: true, amount: true, merchant: true, pending: true,
       deletedAt: true, flowType: true, currency: true,
+      settlementState: true, pfcDetailed: true,
     },
     take: 300, // safety cap; same-account sets are tiny, owned ±window sets are small
   });
-  let relationships = resolveTransactionRelationships(row, candidates);
+  // Every candidate is on an account owned by the SAME user (the query scopes it
+  // that way), so one owner id covers the whole set.
+  const withOwner = <T extends { financialAccountId: string | null }>(r: T) => ({ ...r, ownerUserId });
+  let relationships = resolveTransactionRelationships(
+    withOwner(row),
+    candidates.map(withOwner),
+    matchCtx,
+  );
 
   // KD-15 — transferCandidate names an owned account id; expose it only when that
   // account is visible to this Space (same gate as counterpartyAccountId). Fails
