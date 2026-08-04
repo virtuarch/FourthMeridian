@@ -254,8 +254,61 @@ export const MATURITY_LABEL: Record<TransferMaturity, string> = {
 };
 
 /**
- * Guard for re-evaluation: a later assessment may only keep or raise
- * specificity. Returns the assessment to adopt.
+ * ── Monotonicity governs MATURATION. Retraction is a different act. ─────────
+ *
+ * `adoptIfMonotonic` protects an established classification from being made
+ * LESS certain as new evidence arrives. That is the right rule for maturation:
+ * evidence arriving should never cost the product something it already knew.
+ *
+ * It is the wrong rule for a REPAIR. A repair asserts that a stored leaf was
+ * never earned — that there is no established certainty to protect, only a claim
+ * the evidence never supported. Applying monotonicity there would use a rule
+ * designed to protect knowledge to protect a guess instead, and would freeze
+ * exactly the mis-classifications a repair exists to remove.
+ *
+ * So the two are separate functions with separate names, and a caller must SAY
+ * which one it is doing. `adoptRetraction` additionally requires an explicit
+ * `priorWasUnearned` assertion, so a descent can never happen by accident or by
+ * a caller reaching for whichever helper compiles.
+ */
+export function adoptRetraction(
+  previous: TransferMaturity | null,
+  next: MaturationResult,
+  opts: {
+    /**
+     * The caller's explicit assertion that the PRIOR classification was not
+     * supported by evidence. Required, and required to be true: without it this
+     * is a maturation and must go through adoptIfMonotonic.
+     */
+    priorWasUnearned: boolean;
+  },
+): { adopt: boolean; reason: string } {
+  if (!opts.priorWasUnearned) {
+    return {
+      adopt: false,
+      reason: "Not a retraction: the prior classification was not asserted to be unearned, so monotonicity applies and this must go through adoptIfMonotonic.",
+    };
+  }
+  if (previous === null) return { adopt: true, reason: "Nothing to retract; first assessment." };
+  const prevRank = maturityRank(previous);
+  if (next.rank > prevRank) {
+    return { adopt: true, reason: "Not a descent — this raises specificity and needs no retraction." };
+  }
+  if (next.rank === prevRank && next.maturity === previous) {
+    return { adopt: false, reason: "Unchanged; nothing to retract." };
+  }
+  return {
+    adopt: true,
+    reason: `Retracting ${previous} (rank ${prevRank}) to ${next.maturity} (rank ${next.rank}): the prior leaf was not supported by evidence, and an unearned claim is not knowledge worth preserving.`,
+  };
+}
+
+/**
+ * Guard for re-evaluation as evidence ARRIVES: a later assessment may only keep
+ * or raise specificity. Returns the assessment to adopt.
+ *
+ * See `adoptRetraction` above for the deliberate exception — a repair that
+ * withdraws a classification proven to have been unearned.
  */
 export function adoptIfMonotonic(
   previous: TransferMaturity | null,

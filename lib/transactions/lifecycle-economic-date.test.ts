@@ -14,7 +14,7 @@ import {
   ECONOMIC_DATE_MAX_LAG_DAYS,
 } from "./economic-date";
 import {
-  matureClassification, adoptIfMonotonic, maturityRank, isTransferCandidate,
+  matureClassification, adoptIfMonotonic, adoptRetraction, maturityRank, isTransferCandidate,
   impliedFlowType, TRANSFER_MATCH_WINDOW_DAYS, MATURITY_LABEL,
 } from "./transfer-maturation";
 
@@ -295,6 +295,34 @@ console.log("4C. Monotonic specificity");
   });
   check("a same-rank correction IS adopted (a wrong destination is superseded)",
     adoptIfMonotonic("SAVINGS_TRANSFER", wrongLeaf).adopt);
+}
+
+console.log("4C. Retraction is NOT monotonicity — and a caller must say which");
+{
+  const unresolved = matureClassification({ flowType: "DEBT_PAYMENT", amount: -100, counterparty: null });
+  check("monotonicity REFUSES the descent (its job is protecting knowledge)",
+    !adoptIfMonotonic("DEBT_PAYMENT", unresolved).adopt);
+  check("a retraction ALLOWS it when the prior leaf is asserted unearned",
+    adoptRetraction("DEBT_PAYMENT", unresolved, { priorWasUnearned: true }).adopt);
+  check("...and says what it retracted and why",
+    adoptRetraction("DEBT_PAYMENT", unresolved, { priorWasUnearned: true }).reason
+      .includes("not supported by evidence"));
+  check("a retraction WITHOUT the assertion is refused — no accidental descents",
+    !adoptRetraction("DEBT_PAYMENT", unresolved, { priorWasUnearned: false }).adopt);
+  check("...and points the caller back at monotonicity",
+    adoptRetraction("DEBT_PAYMENT", unresolved, { priorWasUnearned: false }).reason
+      .includes("adoptIfMonotonic"));
+  const leaf = matureClassification({
+    flowType: "TRANSFER", amount: -100,
+    counterparty: { accountId: "a", accountType: "savings", evidence: "MATCHED_LEG" },
+  });
+  check("a rise is not a retraction at all",
+    adoptRetraction("UNRESOLVED_TRANSFER", leaf, { priorWasUnearned: true }).reason
+      .includes("raises specificity"));
+  check("an unchanged assessment retracts nothing",
+    !adoptRetraction("SAVINGS_TRANSFER", leaf, { priorWasUnearned: true }).adopt);
+  check("monotonicity is UNCHANGED for maturation",
+    adoptIfMonotonic("UNRESOLVED_TRANSFER", leaf).adopt);
 }
 
 if (failures > 0) { console.error(`\nlifecycle-economic-date: ${failures} failure(s).`); process.exit(1); }
