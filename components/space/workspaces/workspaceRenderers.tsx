@@ -100,6 +100,7 @@ export interface WorkspaceRenderCtx {
 export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => React.ReactNode> = {
   wealth: (ctx) => (
     <WealthWorkspace
+      spaceId={ctx.spaceId}
       snapshots={ctx.snapshots}
       snapshotCurrency={ctx.snapshotCurrency}
       asOf={ctx.asOf}

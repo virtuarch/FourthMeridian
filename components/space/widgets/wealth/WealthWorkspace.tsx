@@ -35,7 +35,7 @@
  *   ⑤ WealthExplanationCard (12)
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 import {
   computeWealthTimeMachine,
@@ -51,6 +51,8 @@ import type { WealthAdapterAccount } from "@/components/space/widgets/wealth-ada
 import { EvidenceDrawer } from "@/components/space/shell/EvidenceDrawer";
 import { WealthHero } from "./WealthHero";
 import { WealthTrendChart, type WealthMetricKey } from "./WealthTrendChart";
+import { HistoryExplorationSheet } from "@/components/history/HistoryExplorationSheet";
+import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { WealthChangeLedger } from "./WealthChangeLedger";
 import { WealthCompositionCard } from "./WealthCompositionCard";
 import { WealthExplanationCard } from "./WealthExplanationCard";
@@ -69,6 +71,7 @@ const WEALTH_SECTIONS: SpaceChromeSection[] = [
 ];
 
 export function WealthWorkspace({
+  spaceId,
   snapshots,
   snapshotCurrency,
   asOf,
@@ -80,6 +83,7 @@ export function WealthWorkspace({
   onEnvelopeChange,
   backfillInProgress,
 }: {
+  spaceId:          string;
   snapshots:        Snapshot[] | null | undefined;
   /** The currency the snapshot totals are stamped in (the FX from-currency). */
   snapshotCurrency: string | null;
@@ -104,6 +108,13 @@ export function WealthWorkspace({
   // (snapshotCurrency ?? display target) with no conversion — never a masqueraded
   // relabel. The Time Machine then derives everything (including its formatted
   // explanation sentence) already in the resolved currency.
+  // ── V27 — shared historical exploration ───────────────────────────────────
+  //
+  // The chart's own plotted window becomes the sheet's window, so every child
+  // inherits exactly what the user was looking at. The workspace owns no time
+  // state of its own (asOf is a shell prop), and neither does the sheet.
+  const exploration = useHistoryExploration();
+
   const canConvert = !!(ctx && snapshotCurrency);
   const displayCurrency = canConvert ? ctx!.target : (snapshotCurrency ?? ctx?.target ?? "USD");
   const convertedSnapshots = useMemo(
@@ -118,6 +129,18 @@ export function WealthWorkspace({
       currency: displayCurrency,
     }),
     [convertedSnapshots, asOf, compareTo, displayCurrency],
+  );
+
+  const chartPoints = result.chart.points;
+  const handleSelectPoint = useCallback(
+    (dateISO: string) => {
+      // The INHERITED window is the plotted range itself — never a preset
+      // default and never a 30-day fallback.
+      const first = chartPoints[0]?.date ?? dateISO;
+      const last = chartPoints[chartPoints.length - 1]?.date ?? dateISO;
+      exploration.openPoint(dateISO, first, last);
+    },
+    [chartPoints, exploration],
   );
 
   // V25-FINAL-1 — FX incompleteness of the CURRENT net-worth composition: true when
@@ -175,14 +198,34 @@ export function WealthWorkspace({
     );
   }
 
+  // The exploration sheet is mounted on EVERY return path. A deep link must
+  // restore even when the workspace itself has nothing to plot — otherwise a
+  // shared URL silently opens an empty dashboard instead of the node it names.
+  const explorationSheet = (
+    <HistoryExplorationSheet
+      spaceId={spaceId}
+      open={exploration.open}
+      nodeType={exploration.nodeType}
+      nodeId={exploration.nodeId}
+      dateISO={exploration.dateISO ?? asOf}
+      fromISO={exploration.fromISO || asOf}
+      toISO={exploration.toISO || asOf}
+      onNavigate={exploration.navigate}
+      onClose={exploration.close}
+    />
+  );
+
   if (!result.hasHistory) {
     return (
+      <>
       <div
         className="rounded-2xl border p-8"
         style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}
       >
         <WealthUnavailable message="No wealth history yet. Once this Space accrues daily snapshots (or you connect accounts), the historical Wealth perspective builds itself — nothing is fabricated in the meantime." />
       </div>
+      {explorationSheet}
+      </>
     );
   }
 
@@ -210,6 +253,7 @@ export function WealthWorkspace({
             currency={displayCurrency}
             metric={metric}
             onMetricChange={onMetricChange}
+            onSelectPoint={handleSelectPoint}
           />
         </div>
 
@@ -240,6 +284,10 @@ export function WealthWorkspace({
           evidence={envelope.evidence}
         />
       )}
+
+      {/* The ONE shared exploration sheet. Every stock lens mounts this same
+          component; there is deliberately no Net-Worth-specific drawer. */}
+      {explorationSheet}
     </>
   );
 }

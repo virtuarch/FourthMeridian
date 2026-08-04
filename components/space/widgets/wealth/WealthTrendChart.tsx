@@ -32,11 +32,14 @@ export function WealthTrendChart({
   currency,
   metric: controlledMetric,
   onMetricChange,
+  onSelectPoint,
 }: {
   result:          WealthResult;
   currency:        string;
   metric?:         WealthMetricKey;
   onMetricChange?: (m: WealthMetricKey) => void;
+  /** V27 — open the shared historical exploration sheet for a clicked point. */
+  onSelectPoint?: (dateISO: string) => void;
 }) {
   const [internalMetric, setInternalMetric] = useState<WealthMetricKey>("netWorth");
   const metric = controlledMetric ?? internalMetric;
@@ -56,6 +59,7 @@ export function WealthTrendChart({
 
   return (
     <TrendChart
+      onSelectPoint={onSelectPoint}
       points={points}
       currency={currency}
       title="Balance history"
