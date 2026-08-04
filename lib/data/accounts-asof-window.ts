@@ -39,6 +39,7 @@ import {
   type AsOfAccountInput,
   type ResolvedAsOfBalance,
 } from "./accounts-asof.core";
+import { getAccountCoverage, type AccountHistoricalCoverage } from "./account-coverage";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -50,6 +51,8 @@ export type WindowAccount = AsOfAccountInput & {
   institution:   string | null;
   nativeBalance: number | null;
   lastUpdated:   Date;
+  /** The evidence-derived intervals and the reasons behind them. */
+  coverage:      AccountHistoricalCoverage;
 };
 
 /**
@@ -88,18 +91,38 @@ export async function getAccountBalancesOverWindow(args: {
     },
   });
 
-  const accounts = linkRows.map((l) => ({
-    id:          l.financialAccount.id,
-    name:        l.financialAccount.name,
-    type:        l.financialAccount.type as string,
-    institution: l.financialAccount.institution,
-    balance:     l.financialAccount.balance,
-    debtSubtype: l.financialAccount.debtSubtype,
-    creditLimit: l.financialAccount.creditLimit,
+  const refs = linkRows.map((l) => ({
+    id:   l.financialAccount.id,
+    type: l.financialAccount.type as string,
+    reconstructableCard: isReconstructableCard({
+      type: l.financialAccount.type as string,
+      debtSubtype: l.financialAccount.debtSubtype,
+      creditLimit: l.financialAccount.creditLimit,
+    }),
+    connectionFloorISO: isoDate(maxDate(truncDateUTC(l.financialAccount.createdAt), truncDateUTC(l.createdAt))),
     nativeBalance: l.financialAccount.nativeBalance,
-    lastUpdated:   l.financialAccount.lastUpdated,
-    floorISO: isoDate(maxDate(truncDateUTC(l.financialAccount.createdAt), truncDateUTC(l.createdAt))),
   }));
+  // THE one coverage authority — the same call `getAccountsAsOf` makes.
+  const coverageById = await getAccountCoverage(refs, { client });
+
+  const accounts: WindowAccount[] = linkRows.map((l, idx) => {
+    const coverage = coverageById.get(l.financialAccount.id)!;
+    return {
+      id:          l.financialAccount.id,
+      name:        l.financialAccount.name,
+      type:        l.financialAccount.type as string,
+      institution: l.financialAccount.institution,
+      balance:     l.financialAccount.balance,
+      debtSubtype: l.financialAccount.debtSubtype,
+      creditLimit: l.financialAccount.creditLimit,
+      nativeBalance: l.financialAccount.nativeBalance,
+      lastUpdated:   l.financialAccount.lastUpdated,
+      // The REPLAY floor drives the resolver; EXISTENCE is carried separately so
+      // a node can say "this existed from X" even where no value may appear.
+      floorISO: coverage.displayFromISO ?? refs[idx].connectionFloorISO,
+      coverage,
+    };
+  });
 
   const today = todayUTC(now);
   const from  = fromISO(args.fromISO);

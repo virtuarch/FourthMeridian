@@ -39,6 +39,7 @@ import {
   type AsOfAccountInput,
   type AsOfMethod,
 } from "./accounts-asof.core";
+import { getAccountCoverage } from "./account-coverage";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
 
 /**
@@ -102,15 +103,31 @@ export async function getAccountsAsOf(args: {
   const today   = todayUTC(now);
   const asOfDay = fromISO(asOf);
 
-  const accounts: AsOfAccountInput[] = linkRows.map((l) => ({
+  // The connection date is PROVENANCE, not a history floor. It stays the
+  // fallback, and dated evidence may carry the floor earlier — resolved by THE
+  // one coverage authority, shared with getAccountBalancesOverWindow so a lens
+  // and a drill-down can never disagree about how far back an account reaches.
+  const refs = linkRows.map((l) => ({
+    id:   l.financialAccount.id,
+    type: l.financialAccount.type as string,
+    reconstructableCard: isReconstructableCard({
+      type: l.financialAccount.type as string,
+      debtSubtype: l.financialAccount.debtSubtype,
+      creditLimit: l.financialAccount.creditLimit,
+    }),
+    connectionFloorISO: isoDate(maxDate(truncDateUTC(l.financialAccount.createdAt), truncDateUTC(l.createdAt))),
+  }));
+  const coverage = await getAccountCoverage(refs, { client: db });
+
+  const accounts: AsOfAccountInput[] = linkRows.map((l, idx) => ({
     id:          l.financialAccount.id,
     type:        l.financialAccount.type as string,
     balance:     l.financialAccount.balance,
     debtSubtype: l.financialAccount.debtSubtype,
     creditLimit: l.financialAccount.creditLimit,
-    // Earliest defensible date — an account cannot be resolved before it existed
-    // or was linked (matches backfill.ts's floor derivation exactly).
-    floorISO:    isoDate(maxDate(truncDateUTC(l.financialAccount.createdAt), truncDateUTC(l.createdAt))),
+    // The REPLAY floor, never the existence floor: knowing an account is older
+    // does not license carrying today's balance back across the extra years.
+    floorISO:    coverage.get(l.financialAccount.id)?.displayFromISO ?? refs[idx].connectionFloorISO,
   }));
 
   // 3. Transaction deltas for the accounts the core will walk (cash + card),

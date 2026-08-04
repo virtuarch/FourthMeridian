@@ -49,8 +49,20 @@ function stubClient(accounts: { id: string; name: string; balance: number; floor
       // the phantom the reconstruction-basis guard exists to prevent.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       groupBy: async (q: any) => {
-        assert.equal(q.where.pending, false, "the delta gather is posted-only");
-        assert.equal(q.where.deletedAt, null, "the delta gather excludes deleted rows");
+        assert.equal(q.where.pending, false, "every transaction gather is posted-only");
+        assert.equal(q.where.deletedAt, null, "every transaction gather excludes deleted rows");
+        // The coverage gather asks for the earliest date per account; the delta
+        // gather asks for daily sums. Same table, two questions.
+        if (q._min) {
+          const byAccount = new Map<string, string>();
+          for (const t of txs) {
+            const cur = byAccount.get(t.financialAccountId);
+            if (!cur || t.date < cur) byAccount.set(t.financialAccountId, t.date);
+          }
+          return [...byAccount].map(([id, date]) => ({
+            financialAccountId: id, _min: { date: new Date(`${date}T00:00:00Z`) },
+          }));
+        }
         return txs.map((t) => ({
           financialAccountId: t.financialAccountId,
           date: new Date(`${t.date}T00:00:00Z`),

@@ -90,6 +90,19 @@ export interface AccountSeriesArgs {
 }
 
 /**
+ * The account existed earlier than any value can be shown for it — say so.
+ *
+ * Requirement 13: a child whose interval is narrower than its parent's must
+ * EXPLAIN the difference rather than render an empty panel. "We know this
+ * account goes back to 2023; we cannot value it before 2025" is an answer.
+ */
+function coverageNote(a: AccountRow): string | null {
+  const { existenceFromISO, displayFromISO } = a.coverage;
+  if (!existenceFromISO || existenceFromISO >= displayFromISO) return null;
+  return `Evidence shows this account existed from ${existenceFromISO}, but its history can only be reconstructed from ${displayFromISO}.`;
+}
+
+/**
  * PRECEDENCE RULE 1 — an exact-date direct observation outranks any
  * reconstruction, at EVERY asset class and not just the ones with a ledger.
  *
@@ -192,10 +205,10 @@ async function balanceAccountNodes(
       tier,
       series: points,
       unavailableReason: method === "before-coverage" ? "BEFORE_ACCOUNT_COVERAGE" : null,
-      supportedFromISO: a.floorISO,
+      supportedFromISO: a.coverage.existenceFromISO ?? a.floorISO,
       note: method === "held-flat"
         ? "No transaction ledger reaches this date; the current balance is carried and labelled."
-        : null,
+        : coverageNote(a),
       // A balance account has no deeper level in this arc.
       drilldown: { available: false, reason: "NO_HOLDING_LEVEL_FOR_THIS_ACCOUNT_TYPE" },
       counts: { historicalCount: 0, valuedCount: 0 },
@@ -250,8 +263,8 @@ async function investmentAccountNodes(
         : mine.every((h) => h.ownership === "KNOWN") ? "derived" : "estimated",
       series: points,
       unavailableReason: present || mine.length > 0 ? null : "NO_HELD_POSITIONS",
-      supportedFromISO: null,
-      note: null,
+      supportedFromISO: a.coverage.existenceFromISO ?? a.floorISO,
+      note: coverageNote(a),
       // The holding level (V27-D) lives beneath an investment account.
       drilldown: { available: present || mine.length > 0, reason: present || mine.length > 0 ? null : "NO_HELD_POSITIONS" },
       counts: { historicalCount: mine.length, valuedCount: valued.length },
@@ -323,8 +336,11 @@ async function cryptoAccountNodes(
       tier: at.value == null ? "incomplete" : at.basis === "observed" ? "observed" : "estimated",
       series: points,
       unavailableReason: at.unavailableReason ?? null,
-      supportedFromISO: firstSupported,
-      note: ledger.complete ? null : ledger.reason,
+      // Existence reaches back to the wallet's first movement; `firstSupported`
+      // is where a PRICE first exists. Both are reported, because they are
+      // different facts and the gap between them is the honest answer.
+      supportedFromISO: a.coverage.existenceFromISO ?? firstSupported,
+      note: ledger.complete ? coverageNote(a) : ledger.reason,
       drilldown: { available: at.value != null, reason: at.value != null ? null : (at.unavailableReason ?? null) },
       counts: { historicalCount: Math.abs(a.nativeBalance ?? 0) > 0 ? 1 : 0, valuedCount: at.value != null ? 1 : 0 },
     });
