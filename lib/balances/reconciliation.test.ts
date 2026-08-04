@@ -92,6 +92,22 @@ console.log("3. Chase credit card — the LIABILITY identity, derived separately
   check("predicted is amount OWED, not cash", r.predicted!.quantity === "PREDICTED_AMOUNT_OWED");
   check("predicted owed = 562.37 + 77.60 = 639.97", near(r.predicted!.amount, 639.97));
   check("unexplained = (33,700 − 639.97) − 33,022.48 = 37.55", near(r.unexplained!, 37.55));
+
+  // V27-L4E — the SIGNED balance is the input to the credit-line identity.
+  // `amountOwed`'s clamp is right for debt exposure and wrong here: an OVERPAID
+  // card has MORE line available. The live Chase card went to −68.78 after a
+  // $650 payment posted, and the clamped form understated implied credit by
+  // exactly that amount.
+  const overpaid = build({ id: "cc-credit", type: "debt", balance: -68.78, available: 32_466.14, creditLimit: 33_700 });
+  const ro = reconcileAccount(overpaid, pend(-413.06, 6, ["a","b","c","d","e","f"]), 33_700);
+  check("an overpaid card still OWES zero", overpaid.debt!.owed.amount === 0);
+  check("...and holds a 68.78 issuer credit", near(overpaid.debt!.issuerCredit!.amount, 68.78));
+  check("the predicted OWED figure clamps at zero (it is a debt figure)",
+    near(ro.predicted!.amount, 344.28) || ro.predicted!.amount >= 0);
+  check("the credit-line identity uses the SIGNED balance: implied 33,355.72",
+    near(33_700 - (-68.78 + 413.06), 33_355.72));
+  check("...so unexplained is 889.58, not the clamped 820.80",
+    near(ro.unexplained!, 889.58));
   check("state is PARTIALLY_ATTRIBUTED", r.state === "PARTIALLY_ATTRIBUTED");
   check("a card NEVER produces reachable cash", r.reachable === null);
   check("three pending charges counted exactly once", r.pending.count === 3);

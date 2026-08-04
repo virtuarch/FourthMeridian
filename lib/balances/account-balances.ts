@@ -405,11 +405,22 @@ export function reconcileAccount(
 
   // ── Revolving credit ──────────────────────────────────────────────────────
   if (b.accountType === "debt" && avail.status === "AVAILABLE" && avail.quantity === "AVAILABLE_CREDIT") {
-    const owed = b.debt ? b.debt.owed.amount : 0;
+    // ⚠️ The SIGNED balance, deliberately NOT amountOwed().
+    //
+    // `amountOwed` clamps a credit balance to zero, which is correct for "how
+    // much debt do I have" and WRONG as an input here: an overpaid card has MORE
+    // credit line available, not the same amount. The Chase card went to −68.78
+    // during the V27-L4E refresh and the clamped form understated implied credit
+    // by exactly that 68.78. `b.debt.owed` remains the debt figure everywhere it
+    // belongs; this identity is about the LINE, not the exposure.
+    const owed = b.observed.amount;
     // Charges are stored negative; the magnitude is what consumes the line.
     const pendingCharges = -pending.sum;
+    // The PREDICTED figure is still a debt figure, so it clamps: a card in credit
+    // owes nothing, and pending charges eat into the credit before they become
+    // debt. Two different questions, two different quantities, one identity each.
     const predicted = pending.count > 0
-      ? claim("PREDICTED_AMOUNT_OWED", owed + pendingCharges)
+      ? claim("PREDICTED_AMOUNT_OWED", Math.max(owed + pendingCharges, 0))
       : null;
 
     if (creditLimit == null || creditLimit <= 0) {
