@@ -34,6 +34,8 @@
 
 import type { Transaction, InvestmentTransaction } from "@/types";
 import { merchantDisplayName, merchantLogoUrl, type ResolvedMerchantLike } from "@/lib/transactions/merchant-display";
+import { resolveLifecycle } from "@/lib/transactions/lifecycle";
+import { resolveEconomicDate } from "@/lib/transactions/economic-date";
 
 /**
  * The scalar fields the serializers read, shaped exactly like a
@@ -49,6 +51,11 @@ export interface TransactionRowLike {
   category:           string;
   amount:             number;
   pending:            boolean;
+  // V27-L4A/B — the evidence the derived authorities read. All OPTIONAL: a read
+  // that omits them gets no derived block rather than a fabricated one.
+  settlementState?:          string | null;
+  deletedAt?:                Date | null;
+  authorizedAt?:             Date | null;
   currency?:                 string | null;
   flowType?:                 string | null;
   flowDirection?:            string | null;
@@ -100,6 +107,46 @@ export function serializeTransactionRow(r: TransactionRowLike): Transaction {
     // Cash Flow liquidity axis — pre-gated by the data layer (KD-15). Null when
     // absent or the counterparty is not visible to the reading Space.
     counterpartyAccountId:    r.counterpartyAccountId ?? null,
+    // ── V27-L4 derived read-model (never persisted) ────────────────────────
+    // `date` above is UNCHANGED — it is the POSTING date and the historical
+    // engine depends on it. `economicDate` is derived alongside it, so a
+    // surface can show when the activity happened without either date moving.
+    ...deriveLifecycleAndEconomicDate(r),
+  };
+}
+
+/**
+ * V27-L4 — the derived lifecycle + economic-date block for a list row.
+ *
+ * Emitted only when the read supplied the evidence: a caller that did not select
+ * `settlementState`/`authorizedAt` gets `lifecycle: undefined` and
+ * `economicDate: undefined`, which is honest — the alternative would be a
+ * derived claim resting on columns nobody read.
+ *
+ * `hasLivePostedSuccessor` is deliberately NOT passed here: a pure row
+ * serializer cannot know it (it is a cross-row fact), so a tombstoned row
+ * resolves UNKNOWN rather than being guessed at. List reads filter tombstones
+ * out anyway.
+ */
+function deriveLifecycleAndEconomicDate(r: TransactionRowLike): Partial<Transaction> {
+  if (r.settlementState === undefined && r.authorizedAt === undefined) return {};
+  const lifecycle = resolveLifecycle({
+    settlementState: r.settlementState,
+    pending:         r.pending,
+    deletedAt:       r.deletedAt,
+  });
+  const econ = resolveEconomicDate({
+    postingDate:  r.date,
+    authorizedAt: r.authorizedAt ?? null,
+  });
+  return {
+    lifecycleState:      lifecycle.state,
+    lifecycleBasis:      lifecycle.basis,
+    economicDate:        econ.economicDate,
+    postingDate:         econ.postingDate,
+    economicDateBasis:   econ.basis,
+    economicDateState:   econ.state,
+    economicDateLagDays: econ.lagDays,
   };
 }
 

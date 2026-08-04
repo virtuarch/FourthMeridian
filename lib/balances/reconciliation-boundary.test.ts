@@ -77,8 +77,14 @@ console.log("\nPROBE 2/3 — each movement counts exactly once");
   const e = code(EVIDENCE);
   check("the reader excludes a pending row whose posted successor is live",
     e.includes("pendingTransactionRef") && e.includes("supersededRefs"));
+  // V27-L4A — the skip moved INTO the lifecycle authority: a superseded row
+  // resolves `superseded: true`, which `contributesPendingEvidence` refuses.
+  // The intent is unchanged (skip, never net out); the decision now lives in
+  // one place instead of being re-expressed here.
   check("...by skipping it, not by netting it out",
-    /if \(r\.plaidTransactionId && supersededRefs\.has\(r\.plaidTransactionId\)\) continue;/.test(e));
+    /if \(!contributesPendingEvidence\(lifecycle\)\) continue;/.test(e));
+  check("...and the supersession fact is handed to the lifecycle authority",
+    /hasLivePostedSuccessor: r\.plaidTransactionId[\s\S]{0,80}supersededRefs\.has/.test(e));
   check("the contribution carries its row ids so single-counting is provable",
     /transactionIds: string\[\]/.test(src(EVIDENCE)));
   // The three-valued-logic trap: `NOT: { col = X }` drops NULL rows.

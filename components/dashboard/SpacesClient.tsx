@@ -100,6 +100,17 @@ type SpaceItem = {
   currency: string;
   trend: number[];
   lastUpdated: string | null;
+  /** V27-L4F — the canonical 1M change, from the SAME authority the inside-Space
+   *  view uses. Null when the Space's history does not reach back a month. */
+  change?: {
+    fromDate: string; toDate: string; fromValue: number; toValue: number;
+    pct: number | null; abs: number; preset: "PAST_MONTH";
+  } | null;
+  /** V27-L4F — ACCOUNT freshness (Slice 1). Null when the Space has no accounts. */
+  freshness?: {
+    label: string; anchorObservedAt: string | null; qualifier: string | null;
+    claim: string; accountCount: number; staleAccountCount: number;
+  } | null;
 };
 
 type Invite = {
@@ -246,15 +257,29 @@ function formatCurrency(value: number, currency = DEFAULT_DISPLAY_CURRENCY) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(value);
 }
 
-function formatActivity(lastUpdated: string | null, createdAt: string): string {
-  const iso = lastUpdated ?? createdAt;
-  const verb = lastUpdated ? "Updated" : "Created";
+/**
+ * V27-L4F — the card's freshness line, from the Slice 1 ACCOUNT-freshness
+ * authority. It used to read `formatActivity(space.lastUpdated, …)` where
+ * `lastUpdated` was the latest SNAPSHOT date — i.e. when we last computed, not
+ * when any balance was observed. Falls back to the creation date only when the
+ * Space has no accounts at all, which is an honest "nothing to observe yet".
+ */
+function formatFreshness(space: SpaceItem): string {
+  const f = space.freshness;
+  if (!f) return `Created ${formatRelative(space.createdAt)}`;
+  if (f.anchorObservedAt === null) return f.label;
+  return `${f.label} ${formatRelative(f.anchorObservedAt)}`;
+}
+
+/** Relative wording only — the VERB is supplied by the caller's authority, so a
+ *  card can never say "Updated" about a clock that did not update anything. */
+function formatRelative(iso: string): string {
   const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
-  if (days <= 0) return `${verb} today`;
-  if (days === 1) return `${verb} yesterday`;
-  if (days < 7) return `${verb} ${days}d ago`;
-  if (days < 30) return `${verb} ${Math.floor(days / 7)}w ago`;
-  return `${verb} ${new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" })}`;
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days}d ago`;
+  if (days < 30) return `${Math.floor(days / 7)}w ago`;
+  return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 // Tiny inline trend visualization — intentionally hand-rolled SVG rather
@@ -340,16 +365,13 @@ function formatCurrencyCompact(value: number, currency = DEFAULT_DISPLAY_CURRENC
   }).format(value);
 }
 
-// Period change derived from the SAME trend series the sparkline draws — not a
-// new number. Math.abs on the base keeps the sign honest for debt Spaces (whose
-// base can be negative). Null when there isn't enough history to state a change.
-function trendDeltaPct(trend: number[]): number | null {
-  if (trend.length < 2) return null;
-  const first = trend[0];
-  const last = trend[trend.length - 1];
-  if (first === 0) return null;
-  return ((last - first) / Math.abs(first)) * 100;
-}
+// V27-L4F — `trendDeltaPct(trend)` was REMOVED. It ran over the last 14 SNAPSHOT
+// ROWS, which is neither a month nor 30 days nor any window the product defines,
+// and it therefore disagreed with the inside-Space view for the same Space on the
+// same day (25.0% outside vs 49.2% inside on the live corpus). The percentage now
+// comes from `space.change`, resolved server-side through the canonical
+// PAST_MONTH authority — the same one the inside hero consumes. The sparkline
+// keeps using `trend`, because a sparkline is a shape, not a claim.
 
 function SpaceCard({
   space,
@@ -382,7 +404,9 @@ function SpaceCard({
   const category = space.category as SpaceCategory;
   const tint = spaceIdentityTint(category);
   const hasFigure = space.trend.length > 0;
-  const delta = trendDeltaPct(space.trend);
+  // V27-L4F — the canonical 1M change, resolved server-side. Never re-derived
+  // here: a percentage computed in React is a second authority by construction.
+  const delta = space.change?.pct ?? null;
   const isShared = space.type === "SHARED";
 
   // The whole left/centre/figure region is one enter affordance (onOpen →
@@ -441,7 +465,7 @@ function SpaceCard({
           <p className="mt-1 truncate text-xs text-[var(--text-muted)]">
             {CATEGORY_LABELS[category] ?? "Space"}
             {" · "}{space.members.length} member{space.members.length === 1 ? "" : "s"}
-            {" · "}{formatActivity(space.lastUpdated, space.createdAt)}
+            {" · "}{formatFreshness(space)}
           </p>
         </div>
 
@@ -575,7 +599,7 @@ function PublicSpaceCard({ space, onOpen }: { space: SpaceItem; onOpen: () => vo
           {space.trend.length > 0 ? formatCurrency(space.netWorth, space.currency) : "—"}
         </p>
         <p className="text-[9px] text-[var(--text-muted)] mt-0.5 truncate">
-          {formatActivity(space.lastUpdated, space.createdAt)}
+          {formatFreshness(space)}
         </p>
       </div>
     </div>

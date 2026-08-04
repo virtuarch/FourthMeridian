@@ -256,6 +256,26 @@ export type FlowClassificationReason =
   | 'SIGN_DEFAULT_SPENDING' | 'SIGN_DEFAULT_INFLOW' | 'AMBIGUOUS_UNKNOWN';
 
 export interface Transaction {
+  // ── V27-L4 derived read-model (DERIVED ONLY — never persisted) ────────────
+  // `date` above remains the POSTING date, unchanged and load-bearing for the
+  // historical engine. These are resolved at read time by
+  // lib/transactions/{lifecycle,economic-date}.ts and are absent when the read
+  // did not select the underlying evidence.
+  /** PENDING | POSTED | WITHDRAWN | REVERSED | UNKNOWN. */
+  lifecycleState?:      string;
+  /** Which evidence decided it (SETTLEMENT_STATE | COMPATIBILITY_FLAG | …). */
+  lifecycleBasis?:      string;
+  /** YYYY-MM-DD — when the activity occurred. May differ from `date`. */
+  economicDate?:        string;
+  /** YYYY-MM-DD — when it posted. Equals `date`. */
+  postingDate?:         string;
+  /** AUTHORIZATION | FIRST_PENDING_OBSERVATION | POSTING | USER_SUPPLIED. */
+  economicDateBasis?:   string;
+  /** OK | CONTRADICTORY. */
+  economicDateState?:   string;
+  /** postingDate − economicDate, in whole days. */
+  economicDateLagDays?: number;
+
   id: string;
   accountId: string;
   date: string;           // ISO date (YYYY-MM-DD)

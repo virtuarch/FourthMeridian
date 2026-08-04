@@ -135,9 +135,51 @@ test('different currencies do not match', () => {
 });
 
 test('a candidate outside the date window does not match', () => {
+  // V27-L4D — the window widened from 2 to 5 days (evidence-derived; see
+  // lib/transactions/transfer-maturation.ts). The INVARIANT is unchanged — a leg
+  // outside the window does not match — so the fixture moves to a genuinely
+  // outside distance rather than the assertion being weakened.
   const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500, date: new Date('2026-06-01') });
-  const far = leg({ id: 'far', financialAccountId: 'fa_sav', amount: 500, date: new Date('2026-06-05') }); // +4d
+  const far = leg({ id: 'far', financialAccountId: 'fa_sav', amount: 500, date: new Date('2026-06-08') }); // +7d
   assert.equal(matchTransferCandidate(chk, [far]).status, 'NONE');
+});
+
+test('V27-L4D: a 3-day skew DOES match — the real Chase→Amex-HYSA distance', () => {
+  // The live case the old 2-day window could never see: destination posted
+  // 2026-07-31, source pending 2026-08-03.
+  const source = leg({ id: 'src', financialAccountId: 'fa_chk', amount: -4000, date: new Date('2026-08-03') });
+  const dest   = leg({ id: 'dst', financialAccountId: 'fa_hysa', amount: 4000, date: new Date('2026-07-31') });
+  const r = matchTransferCandidate(source, [dest]);
+  assert.equal(r.status, 'RESOLVED');
+  assert.equal(r.counterpartyAccountId, 'fa_hysa');
+});
+
+test('V27-L4D: destination BEFORE source is supported (distance is absolute)', () => {
+  const source = leg({ id: 'src', financialAccountId: 'fa_chk', amount: -4000, date: new Date('2026-08-03') });
+  const before = leg({ id: 'b', financialAccountId: 'fa_hysa', amount: 4000, date: new Date('2026-07-31') });
+  const after  = leg({ id: 'a', financialAccountId: 'fa_hysa', amount: 4000, date: new Date('2026-08-06') });
+  assert.equal(matchTransferCandidate(source, [before]).status, 'RESOLVED');
+  assert.equal(matchTransferCandidate(source, [after]).status, 'RESOLVED');
+});
+
+test('V27-L4C: a DEBT_PAYMENT leg is admitted as a transfer candidate', () => {
+  // The source leg is stored as DEBT_PAYMENT — the classification that excluded
+  // it from its own repair. Admission is not resolution: what it MEANS is then
+  // decided by the destination account type, in transfer-maturation.
+  const source = leg({ id: 'src', financialAccountId: 'fa_chk', amount: -4000, flowType: 'DEBT_PAYMENT' });
+  const dest   = leg({ id: 'dst', financialAccountId: 'fa_hysa', amount: 4000, flowType: 'TRANSFER' });
+  const r = matchTransferCandidate(source, [dest]);
+  assert.equal(r.status, 'RESOLVED');
+  assert.equal(r.counterpartyAccountId, 'fa_hysa');
+});
+
+test('V27-L4C: SPENDING is still never a transfer leg', () => {
+  const spend = leg({ id: 's', financialAccountId: 'fa_chk', amount: -500, flowType: 'SPENDING' });
+  const dest  = leg({ id: 'd', financialAccountId: 'fa_sav', amount: 500, flowType: 'TRANSFER' });
+  assert.equal(matchTransferCandidate(spend, [dest]).status, 'NONE');
+  const target = leg({ id: 't', financialAccountId: 'fa_chk', amount: -500, flowType: 'TRANSFER' });
+  const spendCandidate = leg({ id: 'sc', financialAccountId: 'fa_sav', amount: 500, flowType: 'SPENDING' });
+  assert.equal(matchTransferCandidate(target, [spendCandidate]).status, 'NONE');
 });
 
 test('same account is never its own counterparty', () => {

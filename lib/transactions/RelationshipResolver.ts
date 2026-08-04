@@ -1,3 +1,4 @@
+import { TRANSFER_MATCH_WINDOW_DAYS } from "@/lib/transactions/transfer-maturation";
 /**
  * lib/transactions/RelationshipResolver.ts
  *
@@ -124,14 +125,35 @@ export interface TransferMatchOptions {
   amountEpsilon?: number;
 }
 
-const DEFAULT_TRANSFER_WINDOW_DAYS = 2;
+/** V27-L4D — 5, from lib/transactions/transfer-maturation.ts. The old 2 was
+ *  NARROWER than the real 3-day skew, which is why the live case never matched. */
+const DEFAULT_TRANSFER_WINDOW_DAYS = TRANSFER_MATCH_WINDOW_DAYS;
 const DEFAULT_AMOUNT_EPSILON = 0.005; // half a cent — legs are cent-aligned in practice.
 
-/** Transfer-like flow kinds. TRANSFER only — deterministic, no fragility (an
- *  INVESTMENT security trade is not a two-leg owned-account cash transfer). */
-const TRANSFER_LIKE_FLOWS: ReadonlySet<string> = new Set(['TRANSFER']);
+/**
+ * Flow kinds eligible to be a transfer LEG.
+ *
+ * V27-L4C — this was `TRANSFER` only, and that narrowness was the defect: the
+ * live Chase→Amex-HYSA source leg is stored as `DEBT_PAYMENT` (Plaid's own
+ * category, taken at face value while the row was pending and its counterparty
+ * unknown), so the ONLY mechanism that could have corrected it refused to look
+ * at it. A repair gated on the classification already being right is not a
+ * repair.
+ *
+ * The set now matches lib/transactions/transfer-maturation.ts's candidate list:
+ * TRANSFER, DEBT_PAYMENT, UNKNOWN, and rows with no flowType at all (352 seed
+ * rows). It is still deliberately narrow — SPENDING and INCOME are NOT legs, and
+ * an INVESTMENT security trade is not a two-leg owned-account cash transfer.
+ *
+ * Admission is not resolution: a DEBT_PAYMENT that matches a SAVINGS account
+ * still has to be re-classified by the maturation ladder, and one that matches a
+ * LIABILITY stays a debt payment.
+ */
+const TRANSFER_LIKE_FLOWS: ReadonlySet<string> = new Set(['TRANSFER', 'DEBT_PAYMENT', 'UNKNOWN']);
 function isTransferLike(flowType: string | null | undefined): boolean {
-  return flowType != null && TRANSFER_LIKE_FLOWS.has(flowType);
+  // `null` is admitted: a row with no classification at all is the LEAST
+  // specific state, not a disqualifying one.
+  return flowType == null || TRANSFER_LIKE_FLOWS.has(flowType);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

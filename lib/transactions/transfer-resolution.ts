@@ -29,9 +29,12 @@ import {
   matchTransferCandidate,
   type RelationshipTransaction,
 } from "@/lib/transactions/RelationshipResolver";
+import { TRANSFER_MATCH_WINDOW_DAYS, isTransferCandidate } from "@/lib/transactions/transfer-maturation";
 
-/** ± window (whole days) for a matched opposite leg — mirrors the pure matcher default. */
-const TRANSFER_WINDOW_DAYS = 2;
+/** ± window (whole days) for a matched opposite leg — the ONE evidence-derived
+ *  bound, from lib/transactions/transfer-maturation.ts (5 days; see its header
+ *  for the skew-vs-recurrence measurement that chose it). */
+const TRANSFER_WINDOW_DAYS = TRANSFER_MATCH_WINDOW_DAYS;
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** DB gather window is padded by a day over the matcher window for date-boundary safety. */
 const GATHER_WINDOW_MS = (TRANSFER_WINDOW_DAYS + 1) * DAY_MS;
@@ -111,8 +114,10 @@ export async function resolveOwnedTransferCounterparties(
   ctx: { spaceId: string },
 ): Promise<Map<string, string>> {
   // 1 — Targets: transfer-like rows on an owned FinancialAccount with no persisted link.
+  // V27-L4C — candidacy is the shared authority, not an inline `=== "TRANSFER"`.
+  // DEBT_PAYMENT rows now ENTER the resolver; that is the whole point.
   const targets = rows.filter(
-    (r) => r.flowType === "TRANSFER" && r.counterpartyAccountId == null && r.financialAccountId != null,
+    (r) => isTransferCandidate(r.flowType) && r.counterpartyAccountId == null && r.financialAccountId != null,
   );
   if (targets.length === 0) return new Map();
 
@@ -143,7 +148,14 @@ export async function resolveOwnedTransferCounterparties(
   const candidates = await db.transaction.findMany({
     where: {
       financialAccountId: { in: ownedIds },
-      flowType: FlowType.TRANSFER,
+      // V27-L4C — the opposite leg may itself be filed as DEBT_PAYMENT or carry
+      // no flowType at all, so the candidate query admits the same set the
+      // maturation authority does. `null` is included explicitly: a NOT-IN over
+      // a nullable column would drop null rows under three-valued logic.
+      OR: [
+        { flowType: { in: [FlowType.TRANSFER, FlowType.DEBT_PAYMENT, FlowType.UNKNOWN] } },
+        { flowType: null },
+      ],
       deletedAt: null,
       date: { gte, lte },
     },

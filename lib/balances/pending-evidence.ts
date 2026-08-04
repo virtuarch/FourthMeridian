@@ -45,6 +45,7 @@
  */
 
 import { db } from "@/lib/db";
+import { resolveLifecycle, contributesPendingEvidence } from "@/lib/transactions/lifecycle";
 
 /** Provider-observed pending movements for one account. */
 export interface PendingContribution {
@@ -80,8 +81,10 @@ export async function loadPendingEvidence(
       financialAccountId: { in: accountIds },
       deletedAt: null,
       pending: true,
-      // See the header: a no-op today, and the guard against the one
-      // disagreement direction that would double-count.
+      // V27-L4A — a COARSE prefilter only. The authoritative decision is
+      // `contributesPendingEvidence(resolveLifecycle(...))` below; this clause
+      // exists solely to keep the query small, and it is deliberately permissive
+      // so it can never exclude a row the authority would have admitted.
       //
       // ⚠️ Written as an explicit OR-with-null, NOT `NOT: { settlementState:
       // "POSTED" }`. `settlementState` is NULLABLE and SQL's three-valued logic
@@ -99,6 +102,10 @@ export async function loadPendingEvidence(
       financialAccountId: true,
       amount: true,
       plaidTransactionId: true,
+      // V27-L4A — the evidence the lifecycle authority reads.
+      settlementState: true,
+      pending: true,
+      deletedAt: true,
     },
   });
   if (rows.length === 0) return byAccount;
@@ -126,7 +133,19 @@ export async function loadPendingEvidence(
 
   for (const r of rows) {
     if (!r.financialAccountId) continue;
-    if (r.plaidTransactionId && supersededRefs.has(r.plaidTransactionId)) continue;
+    // V27-L4A — THE decision, delegated to the lifecycle authority. A row
+    // contributes only when it is PENDING and not superseded; "pending and
+    // posted cannot both contribute" is decided in exactly one place, and this
+    // module no longer forms its own opinion from the `pending` boolean.
+    const lifecycle = resolveLifecycle({
+      settlementState: r.settlementState,
+      pending: r.pending,
+      deletedAt: r.deletedAt,
+      hasLivePostedSuccessor: r.plaidTransactionId
+        ? supersededRefs.has(r.plaidTransactionId)
+        : false,
+    });
+    if (!contributesPendingEvidence(lifecycle)) continue;
     const e = byAccount.get(r.financialAccountId) ?? { count: 0, sum: 0, transactionIds: [] };
     e.count += 1;
     e.sum += r.amount;
