@@ -74,6 +74,10 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
           id: true, name: true, type: true, institution: true, balance: true,
           currency: true, lastUpdated: true, creditLimit: true, debtSubtype: true,
           interestRate: true, minimumPayment: true,
+          // V27-L1 — the institution's balance-computation clock, carried so the
+          // freshness authority can distinguish provider attestation from our own
+          // write time instead of every surface assuming they are the same fact.
+          balanceLastUpdatedAt: true,
           // V26-PRE (B3) — DebtProfile joined so the EFFECTIVE terms authority
           // (lib/debt/effective-terms.ts) can resolve APR/minimum payment.
           // Before this join, Space debt widgets computed interest and payoff

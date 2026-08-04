@@ -26,7 +26,17 @@ export type SpaceAccount = {
   institution:    string;
   balance:        number;
   currency:       string;
+  /** Fourth Meridian's write clock (FinancialAccount.lastUpdated). NOT the
+   *  institution's — see `balanceLastUpdatedAt`. */
   lastUpdated:    string;
+  /**
+   * V27-L1 — the institution's own attestation of when it computed this balance
+   * (FinancialAccount.balanceLastUpdatedAt), or null when the provider does not
+   * supply one. Null is honest and must never be backfilled from `lastUpdated`:
+   * resolveAccountFreshness reports basis INGESTION when this is null, which is
+   * what lets a surface say "last checked" instead of the unearned "as of".
+   */
+  balanceLastUpdatedAt?: string | null;
   creditLimit?:   number;
   interestRate?:  number;  // APR, e.g. 19.99
   minimumPayment?: number; // monthly minimum

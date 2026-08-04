@@ -33,6 +33,7 @@ import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
 import { formatBalance } from "@/lib/currency";
 import type { SyncConnectionState } from "@/lib/sync/status";
 import type { AccountDetailRow } from "@/app/api/spaces/[id]/accounts/detail/route";
+import { resolveAccountFreshness } from "@/lib/freshness/observation";
 
 // ── Pure, testable presentation logic ─────────────────────────────────────────
 
@@ -104,10 +105,14 @@ interface FallbackAccount {
   institution: string;
   balance:     number;
   currency:    string;
+  /** V27-L1 — carried so the fallback can state the same freshness the fetched
+   *  read would, instead of silently dropping it. */
+  lastUpdated?:          string;
+  balanceLastUpdatedAt?: string | null;
 }
 
 /** Maps the host's already-loaded accounts to detail rows for instant parity. */
-function fallbackRows(accounts: FallbackAccount[]): AccountDetailRow[] {
+function fallbackRows(accounts: FallbackAccount[], now: Date): AccountDetailRow[] {
   return accounts.map((a) => ({
     id:                 a.id,
     spaceAccountLinkId: null,
@@ -121,6 +126,15 @@ function fallbackRows(accounts: FallbackAccount[]): AccountDetailRow[] {
     isManual:           false,
     connectionState:    null,
     importBatchCount:   0,
+    // V27-L1 — freshness from the host's own account row. `ledgerQueried` is
+    // omitted on purpose: the fallback carries no transaction evidence, so
+    // coverage stays UNKNOWN rather than claiming NONE_ON_FILE.
+    freshness:          resolveAccountFreshness({
+      accountId:         a.id,
+      ingestedAt:        a.lastUpdated ?? null,
+      providerBalanceAt: a.balanceLastUpdatedAt ?? null,
+      balance:           a.balance,
+    }, now),
   }));
 }
 
@@ -326,7 +340,7 @@ export function AccountsPerspective({
 
   // Until the enriched detail arrives (or if it fails), render the host's list so
   // accounts are never absent — strictly no worse than today's AccountsCard.
-  const display = rows ?? fallbackRows(accounts);
+  const display = rows ?? fallbackRows(accounts, new Date());
 
   if (display.length === 0) {
     return (

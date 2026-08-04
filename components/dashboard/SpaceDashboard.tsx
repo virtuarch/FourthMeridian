@@ -41,6 +41,7 @@ import { RoutedWorkspaceModal } from "@/components/space/workspaces/RoutedWorksp
 import type { SectionCardBundle } from "@/components/space/workspaces/SpaceSectionStack";
 import { railVisibleTabs, SPACE_TAB_LABELS } from "@/lib/space-nav";
 import { useSpaceChromePublisher } from "@/lib/space/space-chrome-context";
+import { resolveSpaceFreshness } from "@/lib/freshness/space-freshness";
 import { getPerspectivesForCategory, getWorkspaceTargetTab, isRoutedWorkspaceTab, getWorkspaceDefinition } from "@/lib/perspectives";
 import { toVirtualSections } from "@/lib/perspectives/virtual-sections";
 import { PerspectivesWidget, type PerspectiveCardItem } from "@/components/dashboard/widgets/PerspectivesWidget";
@@ -350,13 +351,38 @@ export function SpaceDashboard({
   }
   const showCurrencyBanner = currencyReverted && requestedCurrency !== dismissedCurrency;
 
-  // Data freshness — newest lastUpdated across this Space's shared accounts (no
-  // new fetch). Surfaced in the header subtitle so no balance is read without
-  // knowing how old it is. Client-only: `accounts` starts [] and populates
-  // post-mount, so formatRelativeTime (not SSR-safe) never runs during SSR.
-  const newestAccountUpdate = accounts.length
-    ? accounts.reduce((best, a) => (a.lastUpdated > best ? a.lastUpdated : best), accounts[0].lastUpdated)
-    : null;
+  // ── Data freshness (V27-L1) ────────────────────────────────────────────────
+  // This WAS a MAX across the Space's accounts — the most optimistic claim the
+  // data permits. On the live corpus that header read "Updated 16 hr ago" while
+  // 96.4% of the value it described sat behind balances nobody had observed in
+  // eight weeks. The comment that used to sit here stated the correct intent
+  // ("no balance is read without knowing how old it is") and the reducer
+  // inverted it.
+  //
+  // Freshness is now resolved by the canonical authority: the claim ANCHORS on
+  // the OLDEST observation (so it can never overstate) and carries a qualifier
+  // describing what a single age cannot — stale account count, and the share of
+  // VALUE behind them. No arithmetic here; this component only formats.
+  //
+  // Client-only, same as before: `accounts` starts [] and populates post-mount,
+  // so neither `new Date()` nor formatRelativeTime (not SSR-safe) runs during
+  // SSR. Recomputed when the account list reloads, which is exactly when the
+  // underlying observations can have changed.
+  const freshness = useMemo(
+    () =>
+      accounts.length
+        ? resolveSpaceFreshness(
+            accounts.map((a) => ({
+              accountId:          a.id,
+              ingestedAt:         a.lastUpdated,
+              providerBalanceAt:  a.balanceLastUpdatedAt ?? null,
+              balance:            a.balance,
+            })),
+            new Date(),
+          )
+        : null,
+    [accounts],
+  );
 
   // M3-Reset — the Overview LENS row, reconciled to the Design Lab's set + feel.
   //
@@ -566,7 +592,16 @@ export function SpaceDashboard({
   const chromeSubtitle =
     `${catLabel} Space` +
     (memberCount !== null ? ` · ${memberCount} member${memberCount === 1 ? "" : "s"}` : "");
-  const chromeUpdated = newestAccountUpdate ? `Updated ${formatRelativeTime(newestAccountUpdate)}` : null;
+  // V27-L1 — "Last checked N ago" (our fetch clock) rather than "Updated N ago"
+  // (which reads as the institution's). `label` comes from the authority and
+  // becomes "Balances as of" only when EVERY account is provider-attested.
+  const chromeUpdated = freshness
+    ? freshness.anchor.observedAt
+      ? `${freshness.label} ${formatRelativeTime(freshness.anchor.observedAt)}`
+      : freshness.label
+    : null;
+  const chromeFreshnessNote = freshness?.qualifier ?? null;
+  const chromeFreshnessWarn = freshness?.claim === "STALE" || freshness?.claim === "UNKNOWN";
 
   useEffect(() => {
     publishSpace({
@@ -574,6 +609,8 @@ export function SpaceDashboard({
         name: displaySpaceName(spaceName),
         subtitle: chromeSubtitle,
         updatedLabel: chromeUpdated,
+        freshnessNote: chromeFreshnessNote,
+        freshnessWarn: chromeFreshnessWarn,
         shared: spaceType !== "PERSONAL",
       },
       onManage: canManage ? () => setShowManage(true) : undefined,
@@ -581,7 +618,7 @@ export function SpaceDashboard({
       onLeaveSpace: canLeave ? () => setConfirmLeave(true) : undefined,
     });
     return () => publishSpace(null);
-  }, [publishSpace, spaceName, chromeSubtitle, chromeUpdated, spaceType, canManage, canLeave, router]);
+  }, [publishSpace, spaceName, chromeSubtitle, chromeUpdated, chromeFreshnessNote, chromeFreshnessWarn, spaceType, canManage, canLeave, router]);
 
   useEffect(() => {
     publishCurrencyControl(displayCurrencyControl ?? null);

@@ -30,8 +30,12 @@ import {
   CheckCircle2, AlertTriangle, Loader2, Pencil, X, ArrowUpRight, Cable,
 } from "lucide-react";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency, formatRelativeTime } from "@/lib/format";
 import type { AccountDetailRow } from "@/app/api/spaces/[id]/accounts/detail/route";
+import {
+  accountBalanceClaimLabel, balanceBasisCaveat, describeLedgerCoverage,
+  type LedgerCoverage,
+} from "@/lib/freshness/observation";
 import { ACCOUNT_TYPE_LABELS, healthChip } from "./AccountsPerspective";
 
 /** A converted balance the ledger already computed — the panel and the row can
@@ -48,6 +52,13 @@ function FactRow({ label, value }: { label: string; value: React.ReactNode }) {
       <span className="text-sm tabular-nums text-right text-[var(--text-secondary)]">{value}</span>
     </div>
   );
+}
+
+/** V27-L1 — ledger reach, phrased so it can never be read as a balance age.
+ *  "Transactions through <date>" is a statement about how far the ledger REACHES;
+ *  a quiet account with no recent spending is not a stale one. */
+function ledgerValue(l: LedgerCoverage): string {
+  return l.kind === "OBSERVED" ? l.throughDate : describeLedgerCoverage(l);
 }
 
 /** The connection-health line, in the ledger's own words — reuses the exact three
@@ -91,6 +102,9 @@ export function AccountDetail({
   const approx   = display.estimated ? "≈ " : "";
   const typeLabel = ACCOUNT_TYPE_LABELS[row.type] ?? row.type;
   const imports  = row.importBatchCount;
+  // V27-L1 — the caveat that keeps our fetch clock from reading as the
+  // institution's. Null when there is nothing to caveat.
+  const basisCaveat = balanceBasisCaveat(row.freshness.balance);
 
   // Rename = PATCH the account displayName. Same endpoint and optimistic reload
   // the former AccountsPerspective row used.
@@ -179,11 +193,31 @@ export function AccountDetail({
         {isFull && row.mask && <FactRow label="Account" value={`••••${row.mask}`} />}
         <FactRow label="Currency" value={row.currency} />
         <FactRow label="Status" value={<StatusValue row={row} />} />
+        {/* V27-L1 — the balance above and the evidence for how old it is now travel
+            together. The label itself carries the basis: "Balance as of" is only
+            used when the institution attested its own computation time; otherwise
+            it is "Balance checked", which claims nothing but our own fetch. */}
+        <FactRow
+          label={accountBalanceClaimLabel(row.freshness.balance.basis)}
+          value={
+            row.freshness.balance.observedAt
+              ? formatRelativeTime(row.freshness.balance.observedAt)
+              : "Unknown"
+          }
+        />
+        {/* Ledger reach is a SEPARATE fact from balance age — the two feeds advance
+            independently, and a wallet can carry a live balance over a ledger that
+            stops years earlier. Never presented as staleness. */}
+        <FactRow label="Transactions" value={ledgerValue(row.freshness.ledger)} />
         <FactRow label="Visibility" value={isFull ? "Full detail" : "Balance only"} />
         {isFull && imports > 0 && (
           <FactRow label="Historical imports" value={`${imports} import${imports === 1 ? "" : "s"}`} />
         )}
       </div>
+
+      {basisCaveat && (
+        <p className="mt-3 text-[11px] leading-snug text-[var(--text-faint)]">{basisCaveat}</p>
+      )}
 
       {/* Actions — only real, verified-to-exist destinations, FULL rows only. There
           is no per-account detail page, so that navigation is deliberately omitted.
@@ -215,10 +249,14 @@ export function AccountDetail({
         </Link>
       )}
 
-      {/* Honest scope note — per-account balance history isn't carried by this read. */}
+      {/* Honest scope note — per-account balance history isn't carried by this read.
+          V27-L1: this used to open "Balance is current", which is a freshness claim
+          the read cannot make (24 of 35 accounts in the live corpus are past a
+          week). The freshness facts above make the actual claim; this note is now
+          about SCOPE only. */}
       <p className="mt-5 text-[11px] leading-snug text-[var(--text-faint)]">
         {isFull
-          ? "Balance is current. Per-account history isn't tracked here — see the Wealth or Cash Flow workspaces for balances over time."
+          ? "This is the latest observed balance. Per-account history isn't tracked here — see the Wealth or Cash Flow workspaces for balances over time."
           : "Shared as balance only. Identity, connection health, and transactions stay private to the owner."}
       </p>
     </div>

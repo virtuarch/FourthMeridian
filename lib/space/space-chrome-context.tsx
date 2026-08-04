@@ -47,8 +47,18 @@ export interface SpaceChromeSection {
 export interface SpaceChromeIdentity {
   name: string;
   subtitle: string;
-  /** Pre-formatted "Updated 2h ago" line, or null to omit. */
+  /** Pre-formatted freshness claim, e.g. "Last checked 2 hr ago". Null to omit. */
   updatedLabel?: string | null;
+  /**
+   * V27-L1 — what the claim above HIDES: how many accounts are stale, how much
+   * value sits behind them. A single age cannot carry a distribution, and the
+   * previous header carried the newest age with no disclosure at all. Null when
+   * the anchor hides nothing.
+   */
+  freshnessNote?: string | null;
+  /** True when `freshnessNote` describes stale or unverified value — the note is
+   *  then rendered as a warning rather than a footnote. */
+  freshnessWarn?: boolean;
   shared?: boolean;
 }
 

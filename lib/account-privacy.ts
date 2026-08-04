@@ -61,7 +61,21 @@ export interface NormalizedAccount {
   type:            string;
   balance:         number;
   currency:        string;
-  lastUpdated:     string; // ISO string
+  lastUpdated:     string; // ISO string — Fourth Meridian's WRITE clock
+  /**
+   * V27-L1 — FinancialAccount.balanceLastUpdatedAt: the INSTITUTION's own
+   * attestation of when it computed the balance. Null when the provider does not
+   * supply it (today: every institution in the corpus), and null is honest —
+   * `lastUpdated` is never substituted, because our fetch time is not the
+   * institution's computation time. Carried at every visibility tier: it is a
+   * timestamp about a balance the row already discloses, so it reveals nothing
+   * the tier does not already permit.
+   *
+   * On an aggregated BALANCE_ONLY row it is null unless EVERY member carries an
+   * attestation (an aggregate is never more attested than its weakest member),
+   * in which case it is the OLDEST of them.
+   */
+  balanceLastUpdatedAt?: string | null;
   // Present only on FULL rows:
   institution?:    string;
   creditLimit?:    number | null;
@@ -94,6 +108,9 @@ export interface ShareRow {
     balance:        number;
     currency:       string;
     lastUpdated:    Date;
+    /** V27-L1 — optional so existing callers that do not select it still compile;
+     *  absent is treated exactly like null (no provider attestation). */
+    balanceLastUpdatedAt?: Date | null;
     creditLimit:    number | null;
     debtSubtype:    string | null;
     interestRate:   number | null;
@@ -240,6 +257,10 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedAccount[]
       balance:        number;
       currency:       string;
       lastUpdated:    Date;
+      /** OLDEST member attestation, or null the moment ANY member lacks one. */
+      balanceLastUpdatedAt: Date | null;
+      /** False once a member arrives with no provider attestation. */
+      allAttested:    boolean;
     }
   >();
 
@@ -255,6 +276,7 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedAccount[]
         balance:        a.balance,
         currency:       a.currency,
         lastUpdated:    a.lastUpdated.toISOString(),
+        balanceLastUpdatedAt: a.balanceLastUpdatedAt?.toISOString() ?? null,
         creditLimit:    a.creditLimit,
         debtSubtype:    a.debtSubtype,
         interestRate:   a.interestRate,
@@ -279,8 +301,24 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedAccount[]
     if (existing) {
       existing.count   += 1;
       existing.balance += a.balance;
-      if (a.lastUpdated > existing.lastUpdated) existing.lastUpdated = a.lastUpdated;
+      // V27-L1 — the group's freshness is its OLDEST member, not its newest.
+      // This was a MAX: a summed balance was claiming the freshness of whichever
+      // member happened to be refreshed most recently, so one fresh account made
+      // an aggregate of stale ones look current. A sum is only as observed as its
+      // stalest addend.
+      if (a.lastUpdated < existing.lastUpdated) existing.lastUpdated = a.lastUpdated;
+      // Provider attestation survives aggregation only if EVERY member has one.
+      const attested = a.balanceLastUpdatedAt ?? null;
+      if (attested === null) {
+        existing.allAttested = false;
+        existing.balanceLastUpdatedAt = null;
+      } else if (existing.allAttested) {
+        if (existing.balanceLastUpdatedAt === null || attested < existing.balanceLastUpdatedAt) {
+          existing.balanceLastUpdatedAt = attested;
+        }
+      }
     } else {
+      const attested = a.balanceLastUpdatedAt ?? null;
       groups.set(key, {
         count:          1,
         ownerId:        share.addedByUserId,
@@ -290,6 +328,8 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedAccount[]
         balance:        a.balance,
         currency:       a.currency,
         lastUpdated:    a.lastUpdated,
+        balanceLastUpdatedAt: attested,
+        allAttested:    attested !== null,
       });
     }
   }
@@ -307,6 +347,7 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedAccount[]
       balance:     g.balance,
       currency:    g.currency,
       lastUpdated: g.lastUpdated.toISOString(),
+      balanceLastUpdatedAt: g.allAttested ? (g.balanceLastUpdatedAt?.toISOString() ?? null) : null,
     });
   }
 

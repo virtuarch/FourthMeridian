@@ -321,7 +321,12 @@ function lensEnvelope(lens: LensResult): PerspectiveEnvelope {
       tone:  lens.completeness?.conflict ? "warning" : preset.tone,
       detail:
         lens.completeness?.reason ??
-        (p.dataAsOf ? `Live account balances, as of ${p.dataAsOf.slice(0, 10)}.` : preset.detail),
+        // V27-L1 — this read "Live account balances, as of <date>", which made two
+        // claims the data does not support: "live" (24 of 35 accounts in the live
+        // corpus are past a week) and "as of" (the institution's clock, which no
+        // institution here reports). `dataAsOf` is in fact the OLDEST time Fourth
+        // Meridian wrote any contributing balance, so that is what it now says.
+        (p.dataAsOf ? `Oldest balance observation: ${p.dataAsOf.slice(0, 10)}.` : preset.detail),
     },
     evidence: n > 0 ? { label: `${n} account${n === 1 ? "" : "s"}` } : undefined,
     // V25-FINAL-1 — `unconverted` (a balance excluded for lack of a rate) is the

@@ -42,6 +42,7 @@ import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import type { ConversionContext } from "@/lib/money/types";
 import { amountOwed, creditBalance } from "@/lib/debt/balance-semantics";
 import type { AccountDetailRow } from "@/app/api/spaces/[id]/accounts/detail/route";
+import { resolveAccountFreshness } from "@/lib/freshness/observation";
 import { Surface, Block, Figure } from "@/components/atlas/Surface";
 import {
   WorkspaceLayout, LeftPanel, RightPanel, PanelHeader, PanelContent,
@@ -64,6 +65,10 @@ interface FallbackAccount {
   institution: string;
   balance:     number;
   currency:    string;
+  /** V27-L1 — carried so the fallback can state the same freshness the fetched
+   *  read would, instead of silently dropping it. */
+  lastUpdated?:          string;
+  balanceLastUpdatedAt?: string | null;
 }
 
 /** The single display value each row and its detail panel share (never re-derived,
@@ -84,7 +89,7 @@ interface DisplayRow {
   magnitude: number;
 }
 
-function fallbackRows(accounts: FallbackAccount[]): AccountDetailRow[] {
+function fallbackRows(accounts: FallbackAccount[], now: Date): AccountDetailRow[] {
   return accounts.map((a) => ({
     id:                 a.id,
     spaceAccountLinkId: null,
@@ -98,6 +103,15 @@ function fallbackRows(accounts: FallbackAccount[]): AccountDetailRow[] {
     isManual:           false,
     connectionState:    null,
     importBatchCount:   0,
+    // V27-L1 — freshness from the host's own account row. `ledgerQueried` is
+    // omitted on purpose: the fallback carries no transaction evidence, so
+    // coverage stays UNKNOWN rather than claiming NONE_ON_FILE.
+    freshness:          resolveAccountFreshness({
+      accountId:         a.id,
+      ingestedAt:        a.lastUpdated ?? null,
+      providerBalanceAt: a.balanceLastUpdatedAt ?? null,
+      balance:           a.balance,
+    }, now),
   }));
 }
 
@@ -128,7 +142,7 @@ export function AccountsLedger({
 
   // Until the enriched detail arrives (or if it fails), render the host's list so
   // accounts are never absent — strictly no worse than the former card.
-  const source = rows ?? fallbackRows(accounts);
+  const source = rows ?? fallbackRows(accounts, new Date());
 
   // One display value per account (shared by the row and its detail panel). Descending
   // by magnitude so the preview surfaces the LARGEST holdings first.

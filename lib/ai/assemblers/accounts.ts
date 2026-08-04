@@ -58,6 +58,7 @@ import { yesterdayUTCISO } from '@/lib/fx/config';
 import { genericAccountName } from '@/lib/account-privacy';
 import { amountOwed, creditBalance, liabilityState } from '@/lib/debt/balance-semantics';
 import { resolveEffectiveDebtTerms } from '@/lib/debt/effective-terms';
+import { resolveAccountFreshness } from '@/lib/freshness/observation';
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { FinanceDomains } from '@/lib/ai/types';
 import type {
@@ -201,6 +202,34 @@ async function assembleAccounts(
   if (links.length === 0) return null;
 
   const now = new Date();
+
+  /**
+   * V27-L1 — the resolved freshness claim for one account, through the canonical
+   * authority. Emitted at BOTH visibility tiers: it describes the age of a balance
+   * the tier already discloses, so it adds no exposure. Ledger coverage is
+   * deliberately NOT included — this assembler does not query transactions, and
+   * resolveAccountFreshness therefore reports coverage UNKNOWN, which is the
+   * honest answer rather than an implied "no transactions".
+   */
+  const freshnessFact = (
+    fa: { id: string; lastUpdated: Date; balanceLastUpdatedAt: Date | null },
+    at: Date,
+  ) => {
+    const f = resolveAccountFreshness({
+      accountId:         fa.id,
+      ingestedAt:        fa.lastUpdated,
+      providerBalanceAt: fa.balanceLastUpdatedAt,
+    }, at).balance;
+    return {
+      basis:                f.basis,
+      observedAt:           f.observedAt,
+      // Rounded to whole days: the model narrates in days, and a 14-decimal float
+      // invites false precision about a figure whose true age is a lower bound.
+      ageDays:              f.ageDays === null ? null : Math.round(f.ageDays),
+      band:                 f.band,
+      providerClockUnknown: f.providerClockUnknown,
+    };
+  };
 
   // ── Classify ──────────────────────────────────────────────────────────────
   // classifyAccounts() needs only { type, balance } — available regardless of
@@ -389,6 +418,7 @@ async function assembleAccounts(
           ...(rep.unavailable ? { reportingBalanceUnavailable: true } : {}),
           lastUpdated:          fa.lastUpdated.toISOString(),
           balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
+          balanceFreshness:     freshnessFact(fa, now),
           syncStatus:      fa.syncStatus,
           needsReauth,
           visibilityLevel: 'FULL',
@@ -438,6 +468,7 @@ async function assembleAccounts(
         ...(rep.unavailable ? { reportingBalanceUnavailable: true } : {}),
         lastUpdated:          fa.lastUpdated.toISOString(),
         balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
+        balanceFreshness:     freshnessFact(fa, now),
         syncStatus:      fa.syncStatus,
         needsReauth,
         visibilityLevel: 'BALANCE_ONLY',

@@ -37,6 +37,7 @@ import { SpaceMemberRole }                   from "@prisma/client";
 import { requireSpaceRole }                  from "@/lib/session";
 import { normalizeSharedAccounts, type ShareRow } from "@/lib/account-privacy";
 import { deriveConnectionState, type SyncConnectionState } from "@/lib/sync/status";
+import { resolveAccountFreshness, type AccountFreshness } from "@/lib/freshness/observation";
 
 export interface AccountDetailRow {
   id:                 string;      // FinancialAccount.id (FULL) or synthetic (BALANCE_ONLY aggregate)
@@ -51,6 +52,18 @@ export interface AccountDetailRow {
   isManual:           boolean;     // no provider connection at all (no PlaidItem, no wallet)
   connectionState:    SyncConnectionState | null; // deriveConnectionState() — null for manual/BALANCE_ONLY, never fabricated
   importBatchCount:   number;      // COMPLETED ImportBatch rows for this account (0 on BALANCE_ONLY)
+  /**
+   * V27-L1 — the canonical per-account freshness answer, from
+   * resolveAccountFreshness. THIS is what makes "every current balance claim can
+   * expose its account-level freshness" true rather than aspirational: the
+   * balance on this row and the evidence for how old it is travel together.
+   *
+   * Carried on BALANCE_ONLY rows too — it describes a balance the tier already
+   * discloses. On an aggregated row it reflects the OLDEST member (see
+   * normalizeSharedAccounts), and its `ledger` is UNKNOWN: an aggregate maps to
+   * no single account whose transactions could be counted.
+   */
+  freshness:          AccountFreshness;
 }
 
 export async function GET(
@@ -86,6 +99,9 @@ export async function GET(
           balance:        true,
           currency:       true,
           lastUpdated:    true,
+          // V27-L1 — the institution's own balance clock, kept distinct from
+          // `lastUpdated` (ours) all the way to the client.
+          balanceLastUpdatedAt: true,
           creditLimit:    true,
           debtSubtype:    true,
           interestRate:   true,
@@ -127,6 +143,29 @@ export async function GET(
     importCounts.map((c) => [c.financialAccountId, c._count._all]),
   );
 
+  // V27-L1 — ledger COVERAGE per account: the newest transaction date we hold.
+  // Deliberately a separate query from the balance columns, because the two feeds
+  // advance independently (a wallet whose balance is a live on-chain read can sit
+  // on a ledger that stops years earlier). Because this groupBy covers EVERY
+  // linked account, an account absent from the result is one we looked at and
+  // hold nothing for — NONE_ON_FILE, not UNKNOWN.
+  const ledgerAccountIds = links.map((l) => l.financialAccount.id);
+  const ledgerMax = ledgerAccountIds.length
+    ? await db.transaction.groupBy({
+        by:    ["financialAccountId"],
+        where: { financialAccountId: { in: ledgerAccountIds }, deletedAt: null },
+        _max:  { date: true },
+      })
+    : [];
+  const ledgerThroughByAccount = new Map<string, Date>();
+  for (const r of ledgerMax) {
+    if (r.financialAccountId && r._max.date) ledgerThroughByAccount.set(r.financialAccountId, r._max.date);
+  }
+
+  // ONE clock for the whole response, so two rows in the same payload can never
+  // be aged against two different instants.
+  const now = new Date();
+
   // FULL shares carry the full management shape; BALANCE_ONLY shares are routed
   // through the shared aggregator so no identifying field ever leaks.
   const fullRows: AccountDetailRow[] = [];
@@ -149,6 +188,7 @@ export async function GET(
           balance:        a.balance,
           currency:       a.currency,
           lastUpdated:    a.lastUpdated,
+          balanceLastUpdatedAt: a.balanceLastUpdatedAt,
           creditLimit:    a.creditLimit,
           debtSubtype:    a.debtSubtype,
           interestRate:   a.interestRate,
@@ -185,6 +225,14 @@ export async function GET(
       isManual:           !hasProvider,
       connectionState,
       importBatchCount:   importCountByAccount.get(a.id) ?? 0,
+      freshness:          resolveAccountFreshness({
+        accountId:         a.id,
+        ingestedAt:        a.lastUpdated,
+        providerBalanceAt: a.balanceLastUpdatedAt,
+        ledgerThroughDate: ledgerThroughByAccount.get(a.id) ?? null,
+        ledgerQueried:     true,
+        balance:           a.balance,
+      }, now),
     });
   }
 
@@ -203,6 +251,16 @@ export async function GET(
     isManual:           false,
     connectionState:    null,
     importBatchCount:   0,
+    // The aggregate's freshness is the OLDEST member's (normalizeSharedAccounts
+    // resolves that); `ledgerQueried` is deliberately omitted so coverage stays
+    // UNKNOWN — a synthetic row maps to no single account whose transactions we
+    // could have counted, and NONE_ON_FILE would be a claim we cannot make.
+    freshness:          resolveAccountFreshness({
+      accountId:         r.id,
+      ingestedAt:        r.lastUpdated,
+      providerBalanceAt: r.balanceLastUpdatedAt ?? null,
+      balance:           r.balance,
+    }, now),
   }));
 
   // FULL rows first (already type/name sorted by the query), then aggregated —

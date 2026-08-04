@@ -165,10 +165,18 @@ export interface LensProvenance {
    */
   tierCounts: { full: number; balanceOnly: number; summaryOnly: number };
   /**
-   * Oldest input freshness among contributing accounts (ISO string):
-   * balanceLastUpdatedAt where known, else lastUpdated. Null when there are
-   * no contributing accounts. UI renders "as of …" and never asserts
-   * freshness beyond this.
+   * OLDEST input freshness among contributing accounts (ISO string), or null when
+   * there are none. Taking the oldest is deliberate: an aggregate is never fresher
+   * than its stalest addend.
+   *
+   * V27-L1 — this doc previously read "balanceLastUpdatedAt where known, else
+   * lastUpdated". It never did that: the lens rows carry only `lastUpdated`, so
+   * this value is unambiguously **Fourth Meridian's WRITE clock** — when we
+   * fetched, not when the institution computed. Consumers must therefore word it
+   * as "checked"/"observed", never "as of" (which claims the institution's clock).
+   * Threading the provider attestation onto the lens rows belongs with the balance
+   * authority slice, which rebuilds these row shapes; until then the honest answer
+   * is that there is exactly one basis here and it is ours.
    */
   dataAsOf: string | null;
   /**

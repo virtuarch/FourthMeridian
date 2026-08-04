@@ -232,6 +232,27 @@ export interface AccountSummaryItem {
    *  supply this field (currently all institutions except Capital One).
    *  Optional until the corresponding FinancialAccount schema field lands. */
   balanceLastUpdatedAt?: string | null;
+  /**
+   * V27-L1 — the RESOLVED freshness claim for this balance, so the model is not
+   * left to infer one from two raw timestamps. Given only
+   * `lastUpdated: <today>` and `balanceLastUpdatedAt: null`, a model will
+   * reasonably narrate "your balance was updated today" — which asserts the
+   * institution's clock from ours. `basis` forecloses that: INGESTION means
+   * "Fourth Meridian fetched it then", and `ageDays` is a LOWER BOUND on the true
+   * age of the figure.
+   */
+  balanceFreshness?: {
+    /** PROVIDER_ATTESTED | INGESTION | UNOBSERVED. */
+    basis:      string;
+    /** The instant the claim is anchored on, ISO-8601. Null when unobserved. */
+    observedAt: string | null;
+    /** Age in days at assembly time. Null when unobserved — never a 0 stand-in. */
+    ageDays:    number | null;
+    /** LIVE | RECENT | STALE | VERY_STALE | UNKNOWN. */
+    band:       string;
+    /** True when the institution never reported its own computation time. */
+    providerClockUnknown: boolean;
+  };
   syncStatus?:      string | null;
   needsReauth:      boolean;
   visibilityLevel:  'FULL' | 'BALANCE_ONLY';

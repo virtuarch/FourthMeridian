@@ -448,6 +448,17 @@ function SpaceMode({
         {identity.updatedLabel && (
           <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">{identity.updatedLabel}</p>
         )}
+        {/* V27-L1 — the freshness DISTRIBUTION the single age above cannot carry.
+            Warned (amber) only when stale or unverified value is what it reports;
+            a mere spread stays a quiet footnote. */}
+        {identity.freshnessNote && (
+          <p
+            className="mt-0.5 text-[11px]"
+            style={{ color: identity.freshnessWarn ? "var(--accent-warning)" : "var(--text-faint)" }}
+          >
+            {identity.freshnessNote}
+          </p>
+        )}
 
         {/* SpaceControls — the canonical FX + Manage cluster. At this (wide)
             width it lives here in the Space sidebar, exactly like the prototype.
