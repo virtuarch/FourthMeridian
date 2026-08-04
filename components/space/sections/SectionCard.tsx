@@ -21,6 +21,7 @@ import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/componen
 import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
+import { sectionQuantityNote } from "@/lib/balances/section-quantity";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot, Transaction } from "@/types";
 import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
@@ -165,6 +166,28 @@ export function SectionCard({
     }
   }
 
+  // V27-L2 — the QUANTITY this card renders, named once from the canonical map.
+  // ~18 widgets showed current balances with no disclosure at all, and a figure
+  // without its quantity is exactly how "available credit" and "cash" become
+  // interchangeable. Null for snapshot-backed, flow, and non-financial cards —
+  // labelling those would be wrong, not merely redundant.
+  const quantityNote = sectionQuantityNote(section.key);
+
+  /** The card body plus its quantity disclosure. EVERY shell renders this, so a
+   *  new card shell cannot silently drop the label. */
+  function renderBodyWithQuantity() {
+    return (
+      <>
+        {renderBody()}
+        {quantityNote && (
+          <p className="mt-3 text-[10px] uppercase tracking-[0.1em] text-[var(--text-faint)]">
+            {quantityNote}
+          </p>
+        )}
+      </>
+    );
+  }
+
   function renderBody() {
     // Legacy key overrides — DEBT_PAYOFF spaces seeded before v2 section keys were stable
     // TODO: one-time migration to rename these rows to their canonical keys, then remove these guards
@@ -199,7 +222,7 @@ export function SectionCard({
             {displayLabel}
           </p>
         )}
-        {renderBody()}
+        {renderBodyWithQuantity()}
       </div>
     );
   }
@@ -214,7 +237,7 @@ export function SectionCard({
     return (
       <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-4">
         <p className="text-sm font-semibold text-[var(--text-primary)] px-1 mb-2">{headerLabel}</p>
-        {renderBody()}
+        {renderBodyWithQuantity()}
       </GlassPanel>
     );
   }
@@ -227,7 +250,7 @@ export function SectionCard({
           <p className="text-sm font-semibold text-white">{displayLabel}</p>
         </div>
         <div className="px-4 pb-4 pt-0">
-          {renderBody()}
+          {renderBodyWithQuantity()}
         </div>
       </div>
     );
@@ -274,7 +297,7 @@ export function SectionCard({
 
       {!collapsed && (
         <div className="px-4 pb-4 pt-0">
-          {renderBody()}
+          {renderBodyWithQuantity()}
         </div>
       )}
     </div>

@@ -71,6 +71,9 @@ async function liquidityLens(
     currency:        account.currency ?? null,
     creditLimit:     account.creditLimit ?? undefined,
     lastUpdated:     account.lastUpdated,
+    // V27-L2 — the institution's own clock, so dataAsOfBasis can tell "as of"
+    // from "checked". Null on every account in the corpus today.
+    balanceLastUpdatedAt: account.balanceLastUpdatedAt ?? null,
     visibilityLevel,
   }));
 

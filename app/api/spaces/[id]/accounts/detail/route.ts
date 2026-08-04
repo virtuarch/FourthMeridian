@@ -38,6 +38,7 @@ import { requireSpaceRole }                  from "@/lib/session";
 import { normalizeSharedAccounts, type ShareRow } from "@/lib/account-privacy";
 import { deriveConnectionState, type SyncConnectionState } from "@/lib/sync/status";
 import { resolveAccountFreshness, type AccountFreshness } from "@/lib/freshness/observation";
+import { resolveAccountBalances, type AccountBalances } from "@/lib/balances/account-balances";
 
 export interface AccountDetailRow {
   id:                 string;      // FinancialAccount.id (FULL) or synthetic (BALANCE_ONLY aggregate)
@@ -64,6 +65,28 @@ export interface AccountDetailRow {
    * no single account whose transactions could be counted.
    */
   freshness:          AccountFreshness;
+  /**
+   * V27-L2 — the canonical current-balance answer: the observed ledger figure
+   * and the account-type-aware reading of `availableBalance`, each NAMED. The
+   * raw column never reaches the client; on the Chase card the difference is
+   * $562.37 owed versus $33,022.48 of unused credit line, and those must never
+   * be interchangeable.
+   */
+  balances:           AccountBalances;
+}
+
+/** V27-L1/L2 — one freshness answer for an aggregated BALANCE_ONLY row, so the
+ *  row's freshness and its balance claim are resolved from the same evidence. */
+function aggregateFreshness(
+  r: { id: string; balance: number; lastUpdated: string; balanceLastUpdatedAt?: string | null },
+  now: Date,
+): AccountFreshness {
+  return resolveAccountFreshness({
+    accountId:         r.id,
+    ingestedAt:        r.lastUpdated,
+    providerBalanceAt: r.balanceLastUpdatedAt ?? null,
+    balance:           r.balance,
+  }, now);
 }
 
 export async function GET(
@@ -98,6 +121,9 @@ export async function GET(
           mask:           true,
           balance:        true,
           currency:       true,
+          // V27-L2 — forwarded RAW into the balance authority, which is the only
+          // module permitted to interpret it. Never read as a value here.
+          availableBalance: true,
           lastUpdated:    true,
           // V27-L1 — the institution's own balance clock, kept distinct from
           // `lastUpdated` (ours) all the way to the client.
@@ -212,6 +238,17 @@ export async function GET(
       ? deriveConnectionState(plaidConn.plaidItem)
       : null;
 
+    // ONE freshness answer per account, composed into the balance claim rather
+    // than resolved twice — the two must never be able to disagree.
+    const fullFreshness = resolveAccountFreshness({
+      accountId:         a.id,
+      ingestedAt:        a.lastUpdated,
+      providerBalanceAt: a.balanceLastUpdatedAt,
+      ledgerThroughDate: ledgerThroughByAccount.get(a.id) ?? null,
+      ledgerQueried:     true,
+      balance:           a.balance,
+    }, now);
+
     fullRows.push({
       id:                 a.id,
       spaceAccountLinkId: link.id,
@@ -225,14 +262,18 @@ export async function GET(
       isManual:           !hasProvider,
       connectionState,
       importBatchCount:   importCountByAccount.get(a.id) ?? 0,
-      freshness:          resolveAccountFreshness({
-        accountId:         a.id,
-        ingestedAt:        a.lastUpdated,
-        providerBalanceAt: a.balanceLastUpdatedAt,
-        ledgerThroughDate: ledgerThroughByAccount.get(a.id) ?? null,
-        ledgerQueried:     true,
-        balance:           a.balance,
-      }, now),
+      freshness:          fullFreshness,
+      balances:           resolveAccountBalances({
+        accountId:           a.id,
+        accountType:         a.type,
+        debtSubtype:         a.debtSubtype,
+        currency:            a.currency,
+        balance:             a.balance,
+        availableBalance:    a.availableBalance,
+        creditLimit:         a.creditLimit,
+        isSelfCustodyWallet: !!a.walletAddress,
+        freshness:           fullFreshness,
+      }),
     });
   }
 
@@ -255,12 +296,19 @@ export async function GET(
     // resolves that); `ledgerQueried` is deliberately omitted so coverage stays
     // UNKNOWN — a synthetic row maps to no single account whose transactions we
     // could have counted, and NONE_ON_FILE would be a claim we cannot make.
-    freshness:          resolveAccountFreshness({
-      accountId:         r.id,
-      ingestedAt:        r.lastUpdated,
-      providerBalanceAt: r.balanceLastUpdatedAt ?? null,
-      balance:           r.balance,
-    }, now),
+    freshness:          aggregateFreshness(r, now),
+    // An aggregated row has no single account identity, so no provider
+    // `availableBalance` belongs to it — the authority is handed nothing and
+    // returns PROVIDER_DID_NOT_REPORT rather than a summed available figure that
+    // would mix reachable cash with settled cash across members.
+    balances:           resolveAccountBalances({
+      accountId:        r.id,
+      accountType:      r.type,
+      currency:         r.currency,
+      balance:          r.balance,
+      availableBalance: null,
+      freshness:        aggregateFreshness(r, now),
+    }),
   }));
 
   // FULL rows first (already type/name sorted by the query), then aggregated —

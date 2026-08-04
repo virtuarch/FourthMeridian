@@ -37,7 +37,7 @@ function lensWithPromo(date: string | null): LensResult {
     status: "ok",
     metrics: date ? [{ id: "promoEnds", label: "Next promotional rate ends", value: date, format: "date" }] : [],
     assumptions: [],
-    provenance: { accountIds: [], tierCounts: { full: 0, balanceOnly: 0, summaryOnly: 0 }, dataAsOf: null, redactions: [] },
+    provenance: { accountIds: [], tierCounts: { full: 0, balanceOnly: 0, summaryOnly: 0 }, dataAsOf: null, dataAsOfBasis: "INGESTION", redactions: [] },
   };
 }
 

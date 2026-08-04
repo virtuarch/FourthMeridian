@@ -86,7 +86,7 @@ const fakeLiquidity = async (
   provenance: {
     accountIds: ["fa_1", "fa_2"],
     tierCounts: { full: 2, balanceOnly: 0, summaryOnly: 0 },
-    dataAsOf: "2026-07-01T00:00:00.000Z",
+    dataAsOf: "2026-07-01T00:00:00.000Z", dataAsOfBasis: "INGESTION",
     redactions: [],
   },
 });

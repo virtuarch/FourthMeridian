@@ -34,6 +34,7 @@ import { formatBalance } from "@/lib/currency";
 import type { SyncConnectionState } from "@/lib/sync/status";
 import type { AccountDetailRow } from "@/app/api/spaces/[id]/accounts/detail/route";
 import { resolveAccountFreshness } from "@/lib/freshness/observation";
+import { resolveAccountBalances } from "@/lib/balances/account-balances";
 
 // ── Pure, testable presentation logic ─────────────────────────────────────────
 
@@ -112,6 +113,17 @@ interface FallbackAccount {
 }
 
 /** Maps the host's already-loaded accounts to detail rows for instant parity. */
+/** One freshness answer per fallback row, shared by the row and its balance
+ *  claim so the two can never disagree. */
+function fallbackFreshness(a: FallbackAccount, now: Date) {
+  return resolveAccountFreshness({
+    accountId:         a.id,
+    ingestedAt:        a.lastUpdated ?? null,
+    providerBalanceAt: a.balanceLastUpdatedAt ?? null,
+    balance:           a.balance,
+  }, now);
+}
+
 function fallbackRows(accounts: FallbackAccount[], now: Date): AccountDetailRow[] {
   return accounts.map((a) => ({
     id:                 a.id,
@@ -129,12 +141,19 @@ function fallbackRows(accounts: FallbackAccount[], now: Date): AccountDetailRow[
     // V27-L1 — freshness from the host's own account row. `ledgerQueried` is
     // omitted on purpose: the fallback carries no transaction evidence, so
     // coverage stays UNKNOWN rather than claiming NONE_ON_FILE.
-    freshness:          resolveAccountFreshness({
-      accountId:         a.id,
-      ingestedAt:        a.lastUpdated ?? null,
-      providerBalanceAt: a.balanceLastUpdatedAt ?? null,
-      balance:           a.balance,
-    }, now),
+    freshness:          fallbackFreshness(a, now),
+    // V27-L2 — the fallback carries no `availableBalance` (the host's shared
+    // SpaceAccount does not include it), so the authority is handed nothing and
+    // answers PROVIDER_DID_NOT_REPORT. The fetched read supplies the real claim
+    // a moment later; an honest "not reported" is the right interim answer.
+    balances:           resolveAccountBalances({
+      accountId:        a.id,
+      accountType:      a.type,
+      currency:         a.currency,
+      balance:          a.balance,
+      availableBalance: null,
+      freshness:        fallbackFreshness(a, now),
+    }),
   }));
 }
 

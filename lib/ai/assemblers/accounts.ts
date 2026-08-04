@@ -59,6 +59,7 @@ import { genericAccountName } from '@/lib/account-privacy';
 import { amountOwed, creditBalance, liabilityState } from '@/lib/debt/balance-semantics';
 import { resolveEffectiveDebtTerms } from '@/lib/debt/effective-terms';
 import { resolveAccountFreshness } from '@/lib/freshness/observation';
+import { resolveAccountBalances } from '@/lib/balances/account-balances';
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { FinanceDomains } from '@/lib/ai/types';
 import type {
@@ -94,6 +95,10 @@ type AccountLinkRow = {
     mask:            string | null;
     balance:         number;
     currency:        string;
+    // V27-L2 — forwarded RAW into lib/balances/account-balances, never read here.
+    availableBalance: number | null;
+    creditLimit:      number | null;
+    walletAddress:    string | null;
     lastUpdated:          Date;
     balanceLastUpdatedAt: Date | null;
     syncStatus:   string | null;
@@ -158,6 +163,11 @@ async function assembleAccounts(
           mask:           true,
           balance:        true,
           currency:       true,
+          // V27-L2 — forwarded RAW into the balance authority (the only module
+          // permitted to interpret them); never read as values in this file.
+          availableBalance: true,
+          creditLimit:      true,
+          walletAddress:    true,
           lastUpdated:          true,
           balanceLastUpdatedAt: true,
           syncStatus:     true,
@@ -211,6 +221,47 @@ async function assembleAccounts(
    * resolveAccountFreshness therefore reports coverage UNKNOWN, which is the
    * honest answer rather than an implied "no transactions".
    */
+  /**
+   * V27-L2 — the balance authority's answer for one account, flattened for the
+   * model. Emitted at BOTH visibility tiers: it names quantities the tier already
+   * discloses a figure for, so it adds no exposure.
+   *
+   * Debt exposure is deliberately NOT included: the V25-SIDE-1 liability block
+   * already sends amountOwed / creditBalance / liabilityState from the same
+   * lib/debt/balance-semantics authority this module composes. A second copy
+   * would be two fields that can drift apart.
+   */
+  const balanceFacts = (
+    fa: {
+      id: string; type: string; currency: string; balance: number;
+      availableBalance: number | null; creditLimit: number | null;
+      debtSubtype: string | null; walletAddress: string | null;
+      lastUpdated: Date; balanceLastUpdatedAt: Date | null;
+    },
+    at: Date,
+  ) => {
+    const b = resolveAccountBalances({
+      accountId:           fa.id,
+      accountType:         fa.type,
+      debtSubtype:         fa.debtSubtype,
+      currency:            fa.currency,
+      balance:             fa.balance,
+      availableBalance:    fa.availableBalance,
+      creditLimit:         fa.creditLimit,
+      isSelfCustodyWallet: !!fa.walletAddress,
+      freshness:           resolveAccountFreshness({
+        accountId:         fa.id,
+        ingestedAt:        fa.lastUpdated,
+        providerBalanceAt: fa.balanceLastUpdatedAt,
+      }, at),
+    });
+    return {
+      availableQuantity: b.available.status === "AVAILABLE"
+        ? { quantity: b.available.quantity, amount: b.available.amount, label: b.available.label }
+        : { reason: b.available.reason, label: b.available.label },
+    };
+  };
+
   const freshnessFact = (
     fa: { id: string; lastUpdated: Date; balanceLastUpdatedAt: Date | null },
     at: Date,
@@ -419,6 +470,7 @@ async function assembleAccounts(
           lastUpdated:          fa.lastUpdated.toISOString(),
           balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
           balanceFreshness:     freshnessFact(fa, now),
+          ...balanceFacts(fa, now),
           syncStatus:      fa.syncStatus,
           needsReauth,
           visibilityLevel: 'FULL',
@@ -469,6 +521,7 @@ async function assembleAccounts(
         lastUpdated:          fa.lastUpdated.toISOString(),
         balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
         balanceFreshness:     freshnessFact(fa, now),
+        ...balanceFacts(fa, now),
         syncStatus:      fa.syncStatus,
         needsReauth,
         visibilityLevel: 'BALANCE_ONLY',

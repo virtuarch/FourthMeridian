@@ -121,7 +121,7 @@ console.log("Lens-provenance envelopes (Liquidity/Debt) — tier from completene
     lensId: "liquidity", lensVersion: 1, scope: { spaceId: "s", userId: "u" }, computedAt: "2026-07-01T00:00:00Z",
     status: "ok", estimated: o.estimated ?? false, metrics: [], assumptions: [],
     ...(o.completeness ? { completeness: o.completeness } : {}),
-    provenance: { accountIds: o.ids, tierCounts: { full: o.ids.length, balanceOnly: 0, summaryOnly: 0 }, dataAsOf: "2026-07-01T00:00:00Z", redactions: [] },
+    provenance: { accountIds: o.ids, tierCounts: { full: o.ids.length, balanceOnly: 0, summaryOnly: 0 }, dataAsOf: "2026-07-01T00:00:00Z", dataAsOfBasis: "INGESTION", redactions: [] },
   });
   const cmpl = (tier: CompletenessTier, reason = ""): Completeness => ({ tier, conflict: false, reason });
 
@@ -178,7 +178,7 @@ console.log("V25-FINAL-1 — FX-unconverted partial-total disclosure (Wealth / C
   const lensU = (o: { estimated?: boolean; unconverted?: boolean }): LensResult => ({
     lensId: "liquidity", lensVersion: 1, scope: { spaceId: "s", userId: "u" }, computedAt: "2026-07-01T00:00:00Z",
     status: "ok", estimated: o.estimated ?? false, unconverted: o.unconverted ?? false, metrics: [], assumptions: [],
-    provenance: { accountIds: ["a"], tierCounts: { full: 1, balanceOnly: 0, summaryOnly: 0 }, dataAsOf: "2026-07-01T00:00:00Z", redactions: [] },
+    provenance: { accountIds: ["a"], tierCounts: { full: 1, balanceOnly: 0, summaryOnly: 0 }, dataAsOf: "2026-07-01T00:00:00Z", dataAsOfBasis: "INGESTION", redactions: [] },
   });
   const estOnly = resolvePerspectiveEnvelope({ perspectiveId: "debt", lensResult: lensU({ estimated: true }) });
   const unconv  = resolvePerspectiveEnvelope({ perspectiveId: "debt", lensResult: lensU({ estimated: true, unconverted: true }) });

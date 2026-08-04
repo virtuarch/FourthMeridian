@@ -253,6 +253,28 @@ export interface AccountSummaryItem {
     /** True when the institution never reported its own computation time. */
     providerClockUnknown: boolean;
   };
+  /**
+   * V27-L2 — the account-type-aware reading of `availableBalance`, resolved by
+   * the balance authority. The RAW column is never sent: it carries reachable
+   * cash on a checking account, settled cash on a brokerage, and an unused
+   * CREDIT LINE on a card, and a model given one unlabelled number would have to
+   * guess which. On the Chase card that guess is wrong by $32,460.
+   *
+   * `quantity` is present only when a quantity could be named; otherwise
+   * `reason` says why not, and there is no amount to misread.
+   */
+  availableQuantity?: {
+    /** AVAILABLE_CASH | AVAILABLE_CREDIT | SETTLED_CASH, when named. */
+    quantity?: string;
+    amount?:   number;
+    /** PROVIDER_DID_NOT_REPORT | SEMANTICS_UNATTESTED | NOT_APPLICABLE. */
+    reason?:   string;
+    /** The wording a surface would show, e.g. "Available credit". */
+    label:     string;
+  };
+  // NOTE: debt exposure is NOT re-declared here. `amountOwed` / `creditBalance` /
+  // `liabilityState` already exist below (V25-SIDE-1) from the same authority the
+  // balance module composes (lib/debt/balance-semantics). One field, one source.
   syncStatus?:      string | null;
   needsReauth:      boolean;
   visibilityLevel:  'FULL' | 'BALANCE_ONLY';

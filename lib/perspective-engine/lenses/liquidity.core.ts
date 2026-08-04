@@ -51,6 +51,7 @@
  * `estimated` taint on the result — data-only until Phase 4).
  */
 
+import type { FreshnessBasis } from "@/lib/freshness/observation";
 import { formatCurrency } from "@/lib/format";
 import { amountOwed } from "@/lib/debt/balance-semantics";
 import { convertMoney } from "@/lib/money/convert";
@@ -100,8 +101,11 @@ export interface LiquidityAccountRow {
   currency?: string | null;
   /** Present only on FULL rows (withheld otherwise by the data layer). */
   creditLimit?: number;
-  /** ISO timestamp of last balance write (Account.lastUpdated). */
+  /** ISO timestamp of last balance write (Account.lastUpdated) — OUR clock. */
   lastUpdated: string;
+  /** V27-L2 — the INSTITUTION's own balance clock, or null when it reports none.
+   *  Null is honest; `lastUpdated` is never substituted. Feeds dataAsOfBasis. */
+  balanceLastUpdatedAt?: string | null;
   /** SpaceAccountLink.visibilityLevel string (existing model, no parallel vocabulary). */
   visibilityLevel: string;
 }
@@ -159,6 +163,7 @@ export function computeLiquidity(
         accountIds: [],
         tierCounts: { full: 0, balanceOnly: 0, summaryOnly: 0 },
         dataAsOf: null,
+        dataAsOfBasis: "UNOBSERVED",
         redactions: [],
       },
       empty: { ...LIQUIDITY_EMPTY },
@@ -210,6 +215,16 @@ export function computeLiquidity(
   const dataAsOf = contributing.length
     ? contributing.map((r) => r.lastUpdated).sort()[0]
     : null;
+  // V27-L2 — which clock `dataAsOf` came from. PROVIDER_ATTESTED only when every
+  // contributor carries an institution timestamp: an aggregate is never more
+  // certain than its weakest member, and today no institution in the corpus
+  // reports one, so this is INGESTION and the UI must word it "checked".
+  const dataAsOfBasis: FreshnessBasis =
+    contributing.length === 0
+      ? "UNOBSERVED"
+      : contributing.every((r) => r.balanceLastUpdatedAt != null)
+        ? "PROVIDER_ATTESTED"
+        : "INGESTION";
 
   const redactions: string[] = [];
   if (summaryOnly > 0) {
@@ -308,6 +323,7 @@ export function computeLiquidity(
       accountIds,
       tierCounts: { full, balanceOnly, summaryOnly },
       dataAsOf,
+    dataAsOfBasis,
       redactions,
     },
   };

@@ -50,6 +50,7 @@
  *                     already lapsed is not "ending"
  */
 
+import type { FreshnessBasis } from "@/lib/freshness/observation";
 import { formatCurrency } from "@/lib/format";
 import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
 import { convertMoney } from "@/lib/money/convert";
@@ -99,6 +100,9 @@ export interface DebtAccountRow {
   currency?: string | null;
   /** ISO timestamp of last balance write. */
   lastUpdated: string;
+  /** V27-L2 — the INSTITUTION's own balance clock, or null when it reports none.
+   *  Null is honest; `lastUpdated` is never substituted. Feeds dataAsOfBasis. */
+  balanceLastUpdatedAt?: string | null;
   /** SpaceAccountLink.visibilityLevel string (existing model). */
   visibilityLevel: string;
   /** Effective APR (user-entered preferred over provider) — FULL rows only. */
@@ -162,6 +166,7 @@ export function computeDebt(
         accountIds: [],
         tierCounts: { full: 0, balanceOnly: 0, summaryOnly: 0 },
         dataAsOf: null,
+        dataAsOfBasis: "UNOBSERVED",
         redactions: [],
       },
       empty: { ...DEBT_EMPTY },
@@ -185,6 +190,16 @@ export function computeDebt(
   const dataAsOf = countable.length
     ? countable.map((r) => r.lastUpdated).sort()[0]
     : null;
+  // V27-L2 — which clock `dataAsOf` came from. PROVIDER_ATTESTED only when every
+  // contributor carries an institution timestamp: an aggregate is never more
+  // certain than its weakest member, and today no institution in the corpus
+  // reports one, so this is INGESTION and the UI must word it "checked".
+  const dataAsOfBasis: FreshnessBasis =
+    countable.length === 0
+      ? "UNOBSERVED"
+      : countable.every((r) => r.balanceLastUpdatedAt != null)
+        ? "PROVIDER_ATTESTED"
+        : "INGESTION";
   const redactions: string[] = [];
   if (summaryOnly > 0) {
     redactions.push(
@@ -200,6 +215,7 @@ export function computeDebt(
     accountIds,
     tierCounts: { full: fullRows.length, balanceOnly: balanceRows.length, summaryOnly },
     dataAsOf,
+    dataAsOfBasis,
     redactions,
   };
 

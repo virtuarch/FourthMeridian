@@ -149,6 +149,11 @@ export async function getAccountsWithVisibility(
           balance:     safe.balance,
           currency:    safe.currency,
           lastUpdated: safe.lastUpdated,
+          // V27-L1 — a timestamp about a balance this tier already discloses, so
+          // it reveals nothing further. Null stays null.
+          balanceLastUpdatedAt: r.balanceLastUpdatedAt
+            ? r.balanceLastUpdatedAt.toISOString()
+            : null,
           // All other fields intentionally omitted (undefined) under the
           // BALANCE_ONLY / SUMMARY_ONLY tier: no institution, no debt metadata,
           // no Plaid/connection state, no wallet fields.
@@ -199,6 +204,9 @@ export async function getAccountsWithVisibility(
       balance:       r.balance,
       currency:      r.currency,
       lastUpdated:   r.lastUpdated.toISOString(),
+      balanceLastUpdatedAt: r.balanceLastUpdatedAt
+        ? r.balanceLastUpdatedAt.toISOString()
+        : null,
       plaidName:     r.plaidName    ?? undefined,
       officialName:  r.officialName ?? undefined,
       displayName:   r.displayName  ?? undefined,

@@ -34,6 +34,8 @@
  * redaction line. See investigation §2.3 and §5.
  */
 
+import type { FreshnessBasis } from "@/lib/freshness/observation";
+
 // ── Lens identity ─────────────────────────────────────────────────────────────
 
 /**
@@ -179,6 +181,17 @@ export interface LensProvenance {
    * is that there is exactly one basis here and it is ours.
    */
   dataAsOf: string | null;
+  /**
+   * V27-L2 — WHICH CLOCK `dataAsOf` came from, resolved through the V27-L1
+   * freshness authority over the contributing rows. PROVIDER_ATTESTED only when
+   * EVERY contributor carries an institution timestamp; a single row without one
+   * degrades the whole claim to INGESTION, because an aggregate cannot be more
+   * certain than its weakest member. "UNOBSERVED" when nothing contributed.
+   *
+   * This exists so a consumer cannot word `dataAsOf` as "as of" (the
+   * institution's clock) when it is in fact "checked" (ours).
+   */
+  dataAsOfBasis: FreshnessBasis;
   /**
    * What was deliberately withheld, phrased tier-safely and name-free,
    * e.g. "Rate detail withheld for 1 shared account". Empty when nothing

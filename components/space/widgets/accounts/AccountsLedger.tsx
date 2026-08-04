@@ -43,6 +43,7 @@ import type { ConversionContext } from "@/lib/money/types";
 import { amountOwed, creditBalance } from "@/lib/debt/balance-semantics";
 import type { AccountDetailRow } from "@/app/api/spaces/[id]/accounts/detail/route";
 import { resolveAccountFreshness } from "@/lib/freshness/observation";
+import { resolveAccountBalances } from "@/lib/balances/account-balances";
 import { Surface, Block, Figure } from "@/components/atlas/Surface";
 import {
   WorkspaceLayout, LeftPanel, RightPanel, PanelHeader, PanelContent,
@@ -84,9 +85,20 @@ function toDisplay(amount: number, currency: string | null | undefined, ctx?: Co
 
 interface DisplayRow {
   row:     AccountDetailRow;
-  display: { amount: number; estimated: boolean };
+  display: { amount: number; estimated: boolean; available: number | null };
   /** |display balance| — the magnitude used for ordering and the weight bar. */
   magnitude: number;
+}
+
+/** One freshness answer per fallback row, shared by the row and its balance
+ *  claim so the two can never disagree. */
+function fallbackFreshness(a: FallbackAccount, now: Date) {
+  return resolveAccountFreshness({
+    accountId:         a.id,
+    ingestedAt:        a.lastUpdated ?? null,
+    providerBalanceAt: a.balanceLastUpdatedAt ?? null,
+    balance:           a.balance,
+  }, now);
 }
 
 function fallbackRows(accounts: FallbackAccount[], now: Date): AccountDetailRow[] {
@@ -106,12 +118,19 @@ function fallbackRows(accounts: FallbackAccount[], now: Date): AccountDetailRow[
     // V27-L1 — freshness from the host's own account row. `ledgerQueried` is
     // omitted on purpose: the fallback carries no transaction evidence, so
     // coverage stays UNKNOWN rather than claiming NONE_ON_FILE.
-    freshness:          resolveAccountFreshness({
-      accountId:         a.id,
-      ingestedAt:        a.lastUpdated ?? null,
-      providerBalanceAt: a.balanceLastUpdatedAt ?? null,
-      balance:           a.balance,
-    }, now),
+    freshness:          fallbackFreshness(a, now),
+    // V27-L2 — the fallback carries no `availableBalance` (the host's shared
+    // SpaceAccount does not include it), so the authority is handed nothing and
+    // answers PROVIDER_DID_NOT_REPORT. The fetched read supplies the real claim
+    // a moment later; an honest "not reported" is the right interim answer.
+    balances:           resolveAccountBalances({
+      accountId:        a.id,
+      accountType:      a.type,
+      currency:         a.currency,
+      balance:          a.balance,
+      availableBalance: null,
+      freshness:        fallbackFreshness(a, now),
+    }),
   }));
 }
 
@@ -150,7 +169,13 @@ export function AccountsLedger({
     return source
       .map((row) => {
         const d = toDisplay(row.balance, row.currency, ctx);
-        return { row, display: d, magnitude: Math.abs(d.amount) };
+        // V27-L2 — the AVAILABLE quantity converts through the SAME toDisplay as
+        // the balance. Null when the authority refused to name one, and null is
+        // carried through as null: it must render as the refusal, never as 0.
+        const av = row.balances.available.status === "AVAILABLE"
+          ? toDisplay(row.balances.available.amount, row.currency, ctx).amount
+          : null;
+        return { row, display: { ...d, available: av }, magnitude: Math.abs(d.amount) };
       })
       .sort((a, b) => b.magnitude - a.magnitude);
   }, [source, ctx]);

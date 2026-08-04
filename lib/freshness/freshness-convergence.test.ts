@@ -140,7 +140,12 @@ console.log("\nPROBE 4 — the two clocks are never conflated");
   const envelope = code("lib/perspectives/envelope.ts");
   check("the lens envelope stopped claiming 'Live account balances, as of'",
     !envelope.includes("Live account balances"));
-  check("...and says what dataAsOf actually is", envelope.includes("Oldest balance observation"));
+  // V27-L2 — the wording is now BASIS-GATED: "as of" only when every contributor
+  // carries an institution timestamp, otherwise "checked".
+  check("...and says what dataAsOf actually is",
+    envelope.includes("Oldest balance checked") && envelope.includes("Oldest balance as of"));
+  check("...gated on the resolved basis, not assumed",
+    /dataAsOfBasis === "PROVIDER_ATTESTED"/.test(envelope));
 }
 
 // ── 5. Every current balance claim can expose account-level freshness ─────────

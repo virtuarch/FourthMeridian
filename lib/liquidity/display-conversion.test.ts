@@ -45,7 +45,7 @@ function lens(
     lensId: "liquidity", lensVersion: 1, scope: { spaceId: "s1", userId: "u1" },
     computedAt: "2026-07-16T00:00:00.000Z", status: "ok", verdict: "About $4,000 …",
     headline: metrics[0], metrics, assumptions: [],
-    provenance: { accountIds: ["a"], tierCounts: { full: 1, balanceOnly: 0, summaryOnly: 0 }, dataAsOf: null, redactions: [] },
+    provenance: { accountIds: ["a"], tierCounts: { full: 1, balanceOnly: 0, summaryOnly: 0 }, dataAsOf: null, dataAsOfBasis: "INGESTION", redactions: [] },
     ...(completeness ? { completeness } : {}),
   };
 }

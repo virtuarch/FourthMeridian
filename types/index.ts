@@ -24,7 +24,21 @@ export interface Account {
   institution: string;
   balance: number;
   currency: string;
+  /** Fourth Meridian's write clock. NOT the institution's — see below. */
   lastUpdated: string;
+  /**
+   * V27-L1/L2 — the institution's own attestation of when it computed the
+   * balance (FinancialAccount.balanceLastUpdatedAt), or null when it reports
+   * none. Null is honest and must never be backfilled from `lastUpdated`: the
+   * freshness authority reports basis INGESTION on a null, which is what lets a
+   * surface say "checked" instead of the unearned "as of".
+   *
+   * Deliberately NOT accompanied by `availableBalance` here. That column is
+   * polymorphic and may only be interpreted by lib/balances/account-balances.ts;
+   * putting it on this widely-consumed shape would re-open the exact hazard the
+   * balance authority exists to close.
+   */
+  balanceLastUpdatedAt?: string | null;
   // Display-name metadata (Plaid values are never overwritten after import).
   plaidName?:    string;  // raw value Plaid returned for this account, frozen at import
   officialName?: string;  // Plaid's official_name, if provided, frozen at import

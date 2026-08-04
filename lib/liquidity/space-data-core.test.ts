@@ -44,7 +44,7 @@ function lens(
     headline: metrics[0],
     metrics,
     assumptions: [],
-    provenance: { accountIds: ["a"], tierCounts: { full: 1, balanceOnly: 0, summaryOnly: 0 }, dataAsOf: null, redactions: [] },
+    provenance: { accountIds: ["a"], tierCounts: { full: 1, balanceOnly: 0, summaryOnly: 0 }, dataAsOf: null, dataAsOfBasis: "INGESTION", redactions: [] },
     ...(completeness ? { completeness } : {}),
   };
 }

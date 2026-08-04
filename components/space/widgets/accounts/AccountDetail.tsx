@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
 import { formatCurrency, formatRelativeTime } from "@/lib/format";
+import { amountOwed } from "@/lib/debt/balance-semantics";
 import type { AccountDetailRow } from "@/app/api/spaces/[id]/accounts/detail/route";
 import {
   accountBalanceClaimLabel, balanceBasisCaveat, describeLedgerCoverage,
@@ -43,6 +44,13 @@ import { ACCOUNT_TYPE_LABELS, healthChip } from "./AccountsPerspective";
 export interface AccountDisplay {
   amount:    number;
   estimated: boolean;
+  /**
+   * V27-L2 — the AVAILABLE quantity, converted through the SAME authority as
+   * `amount` so the two figures can never be quoted in different currencies.
+   * Null when the balance authority refused to name an available quantity —
+   * and null must render as the refusal, never as a zero or as `amount`.
+   */
+  available: number | null;
 }
 
 function FactRow({ label, value }: { label: string; value: React.ReactNode }) {
@@ -106,6 +114,17 @@ export function AccountDetail({
   // institution's. Null when there is nothing to caveat.
   const basisCaveat = balanceBasisCaveat(row.freshness.balance);
 
+  // V27-L2 — the canonical claims, resolved server-side and consumed here. This
+  // component names quantities; it never interprets `availableBalance`.
+  const balances = row.balances;
+  // On a liability the headline quantity is AMOUNT_OWED; everywhere else it is
+  // the observed ledger balance.
+  const headline = balances.debt ? balances.debt.owed : balances.observed;
+  // Headline VALUE in display currency. On a liability this is amountOwed of the
+  // CONVERTED balance — clamp and conversion commute (FX rates are positive), so
+  // this agrees with the native claim by construction.
+  const headlineAmount = balances.debt ? amountOwed(display.amount) : display.amount;
+
   // Rename = PATCH the account displayName. Same endpoint and optimistic reload
   // the former AccountsPerspective row used.
   async function saveRename() {
@@ -149,16 +168,51 @@ export function AccountDetail({
 
   return (
     <div className="min-w-0">
-      {/* Headline balance — display-converted; native shown alongside when different. */}
-      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Current balance</p>
+      {/* Headline balance — display-converted; native shown alongside when different.
+          V27-L2 — the eyebrow NAMES the quantity. It read "Current balance" for
+          every account type, which on a credit card describes $562.37 of debt in
+          the same words it describes $5,106.77 of checking. On a liability the
+          headline is the amount OWED (through lib/debt/balance-semantics), which
+          is why a paid-off card reads $0 owed rather than a negative balance. */}
+      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+        {headline.label}
+      </p>
       <p className="mt-1 text-3xl font-semibold tabular-nums text-[var(--text-primary)]">
-        {approx}{formatCurrency(display.amount, currency)}
+        {approx}{formatCurrency(headlineAmount, currency)}
       </p>
       {foreign && (
         <p className="mt-1 tabular-nums text-xs text-[var(--text-muted)]">
           {formatCurrency(row.balance, row.currency)} native
         </p>
       )}
+
+      {/* V27-L2 — the SECOND quantity, named. On the Chase card this is
+          "Available credit $33,022.48" sitting beneath "Amount owed $562.37":
+          two figures that were previously one polymorphic column, and that a
+          uniform reader would have confused by $32,460. When the provider gave
+          us nothing, or gave a figure whose meaning nothing attests, this states
+          the refusal instead of showing a number. */}
+      <div className="mt-3">
+        {balances.available.status === "AVAILABLE" ? (
+          <p className="text-xs text-[var(--text-secondary)]">
+            <span className="text-[var(--text-faint)]">{balances.available.label}</span>{" "}
+            <span className="tabular-nums">
+              {display.available === null
+                ? formatCurrency(balances.available.amount, row.currency)
+                : `${approx}${formatCurrency(display.available, currency)}`}
+            </span>
+          </p>
+        ) : (
+          <p className="text-xs text-[var(--text-faint)]">{balances.available.label}</p>
+        )}
+        {/* The observed ledger figure stays visible on a liability, where the
+            headline is the derived amount owed rather than the stored balance. */}
+        {headline.quantity !== "OBSERVED_LEDGER" && (
+          <p className="mt-1 text-xs text-[var(--text-faint)] tabular-nums">
+            {balances.observed.label} {formatCurrency(display.amount, currency)}
+          </p>
+        )}
+      </div>
 
       {/* Rename affordance sits under the balance so the identity is editable in
           place; FULL rows only (aggregated BALANCE_ONLY rows have no single owner). */}
