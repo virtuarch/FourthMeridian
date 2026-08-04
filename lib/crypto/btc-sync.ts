@@ -69,6 +69,7 @@ import {
 } from "@/lib/crypto/btc-discovery-core";
 import { captureWalletPosition } from "@/lib/crypto/wallet-position-capture";
 import { BTC_ASSET } from "@/lib/investments/crypto-instrument";
+import { reconcileWalletLedger, type LedgerReconciliation } from "@/lib/crypto/ledger-completeness.core";
 
 /** The only chain this v1 sync supports. */
 export const BTC_CHAIN = "BTC";
@@ -83,8 +84,15 @@ export interface BtcWalletSyncResult {
   balanceUsd?: number;
   priceUsd?: number;
   /** On failure: which step failed and why (also recorded as a SyncIssue). */
-  stage?: "load" | "discovery" | "balance" | "price";
+  stage?: "load" | "discovery" | "balance" | "price" | "transactions";
   reason?: string;
+  /**
+   * V26-S3-LEDGER — does the imported movement ledger account for the observed
+   * balance? A wallet is not history-ready until this is true, and the caller
+   * can see it rather than having to re-derive it.
+   */
+  ledgerComplete?: boolean;
+  ledgerResidual?: number | null;
 }
 
 export interface BtcSyncDeps {
@@ -108,7 +116,7 @@ export interface BtcSyncDeps {
 /** Best-effort SyncIssue writer — never throws (mirrors lib/plaid/syncIssues.ts). */
 async function recordWalletSyncIssue(
   financialAccountId: string,
-  stage: "discovery" | "balance" | "price",
+  stage: "discovery" | "balance" | "price" | "transactions",
   message: string,
   extra?: Record<string, unknown>,
 ): Promise<void> {
@@ -520,6 +528,31 @@ async function discoverXpubStep(params: {
  * same identity path. On any external failure the account is left untouched
  * (visible, "pending") and a SyncIssue is recorded.
  */
+/**
+ * V26-S3-LEDGER — reconcile this wallet's STORED movement ledger against a
+ * freshly observed balance, through the canonical authority.
+ *
+ * The predicates are the binding's documented responsibility and are exactly the
+ * ones the regenerator applies (regenerate-history.ts): this account only,
+ * native-denominated, POSTED, not deleted. Keeping them identical is the point —
+ * two reconciliations that disagreed about what counts would be worse than none.
+ */
+async function reconcileWalletLedgerForAccount(
+  accountId: string,
+  observedBalance: number,
+): Promise<LedgerReconciliation> {
+  const rows = await db.transaction.findMany({
+    where: {
+      financialAccountId: accountId,
+      currency:           "BTC",
+      deletedAt:          null,
+      settlementState:    SettlementState.POSTED,
+    },
+    select: { amount: true },
+  });
+  return reconcileWalletLedger({ observedBalance, movements: rows.map((r) => r.amount) });
+}
+
 export async function syncBtcWallet(
   accountId: string,
   deps: BtcSyncDeps = {},
@@ -619,17 +652,10 @@ export async function syncBtcWallet(
   //    not "synced" — honest status while more addresses are still being found.
   const nativeBalance = satsToBtc(sats);
   const balanceUsd = computeUsdBalance(nativeBalance, priceUsd);
-  await db.financialAccount.update({
-    where: { id: accountId },
-    data: { nativeBalance, balance: balanceUsd, currency: "USD", syncStatus: discoveryComplete ? "synced" : "pending", lastUpdated: new Date() },
-  });
 
   // v2 — one BTC Holding (summed). v3 — transactions aggregated across addresses,
   //    BOUNDED to the first N addresses per run so a behemoth wallet never issues
   //    hundreds of tx requests; history fills in across runs (idempotent dedupe).
-  await writeBtcHolding(accountId, { nativeBalance, priceUsd, balanceUsd });
-  // P2-6 — transitional dual-write onto the canonical spine (gated, non-fatal).
-  await writeBtcObservation(accountId, nativeBalance, new Date());
   // V26-S1-BTC — IMPORT TRANSACTIONS FOR EVERY ADDRESS THAT HAS ANY.
   //
   // This was `addresses.slice(0, BTC_TX_ADDR_CAP || 25)`, commented "history
@@ -652,6 +678,60 @@ export async function syncBtcWallet(
     ? addresses.filter((a) => (statsByAddress.get(a)?.txCount ?? 0) > 0)
     : addresses;
   await importBtcTransactions({ id: accountId, ownerUserId: account.ownerUserId, addresses: txAddresses }, deps);
+
+  // V26-S3-LEDGER — A WALLET IS NOT HISTORY-READY UNTIL ITS LEDGER RECONCILES.
+  //
+  // Balance and ledger are gathered by different means: the balance walks every
+  // discovered address in one batch call, the ledger paginates each active
+  // address. They can therefore disagree, and until now nothing at sync time
+  // asked whether they did. `syncStatus` flipped to "synced" on discovery alone,
+  // so a wallet whose import was short — the live one, 25 of 28 confirmed
+  // transactions — reported itself fully synced while its history was missing
+  // 8.4% of the coin.
+  //
+  // Regeneration already refuses such a wallet (S1), but it refuses SILENTLY
+  // from the wallet's point of view: the account looked healthy and the history
+  // simply never appeared. The verdict belongs here too, at the moment the
+  // evidence is gathered, on the SAME authority the regenerator uses — never a
+  // second reconciliation rule.
+  //
+  // The reconciliation runs BEFORE the balance is persisted, so the row is
+  // written ONCE with both facts at the same instant. Writing "synced" first and
+  // correcting it afterwards would leave a window — however short — in which the
+  // account claims a completeness we already knew it did not have.
+  //
+  // This gate is identical for a first connection and a resync because there is
+  // exactly ONE sync path (`syncBtcWallet`); the connect route, the manual sync
+  // route and the cron all call it. A newly connected wallet therefore cannot
+  // reach "synced" — and the history regeneration the connect route runs
+  // immediately afterwards cannot license its quantity — until the ledger
+  // accounts for the balance.
+  await writeBtcHolding(accountId, { nativeBalance, priceUsd, balanceUsd });
+  // P2-6 — transitional dual-write onto the canonical spine (gated, non-fatal).
+  await writeBtcObservation(accountId, nativeBalance, new Date());
+
+  const ledger = await reconcileWalletLedgerForAccount(accountId, nativeBalance);
+
+  await db.financialAccount.update({
+    where: { id: accountId },
+    data: {
+      nativeBalance, balance: balanceUsd, currency: "USD",
+      // "pending" is the honest status when the ledger is short: the balance is
+      // real, the history is still incomplete, and the next run continues the
+      // pagination.
+      syncStatus: discoveryComplete && ledger.complete ? "synced" : "pending",
+      lastUpdated: new Date(),
+    },
+  });
+
+  if (!ledger.complete) {
+    await recordWalletSyncIssue(accountId, "transactions", ledger.reason, {
+      movementCount: ledger.movementCount,
+      movementTotal: ledger.movementTotal,
+      observedBalance: nativeBalance,
+      residual: ledger.residual,
+    });
+  }
 
   // v1.5 spine — record the sync. For an xpub the Connection status reflects the
   // discovery lifecycle honestly:
@@ -687,8 +767,14 @@ export async function syncBtcWallet(
   return {
     accountId,
     ok:           true,
-    syncStatus:   discoveryComplete ? "synced" : "pending",
+    // V26-S3-LEDGER — "synced" now requires BOTH halves: discovery finished AND
+    // the movement ledger accounts for the balance. Reporting "synced" on a
+    // ledger we know is short is the dishonesty this gate removes, and it is the
+    // status the connect route's history regeneration runs against.
+    syncStatus:   discoveryComplete && ledger.complete ? "synced" : "pending",
     nativeBalance, balanceUsd, priceUsd,
+    ledgerComplete: ledger.complete,
+    ledgerResidual: ledger.residual,
   };
 }
 

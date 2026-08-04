@@ -65,6 +65,7 @@ import {
 import { resolveBtcInstrumentId, readBtcUsdWindow } from "@/lib/crypto/btc-price";
 import { licenseConstantQuantityCarry } from "@/lib/crypto/quantity-carry.core";
 import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
+import { valueCryptoDay, type CryptoDayValuation } from "@/lib/crypto/historical-crypto-valuation.core";
 import { toStoredCryptoValuationStatus } from "@/lib/snapshots/crypto-valuation-status.core";
 import { backfillHeldInstrumentPrices } from "@/lib/investments/holding-price-backfill";
 
@@ -201,13 +202,14 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     where:  { spaceId, status: ShareStatus.ACTIVE, financialAccount: { deletedAt: null } },
     select: {
       createdAt: true,
-      financialAccount: { select: { id: true, type: true, balance: true, currency: true, createdAt: true, debtSubtype: true, creditLimit: true, nativeBalance: true, lastUpdated: true } },
+      financialAccount: { select: { id: true, name: true, type: true, balance: true, currency: true, createdAt: true, debtSubtype: true, creditLimit: true, nativeBalance: true, lastUpdated: true } },
     },
   });
   if (linkRows.length === 0) return zero;
 
   const accounts = linkRows.map((l) => ({
     id: l.financialAccount.id,
+    name: l.financialAccount.name,
     type: l.financialAccount.type as string,
     balance: l.financialAccount.balance,
     currency: l.financialAccount.currency,
@@ -514,8 +516,10 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       client,
       holdConstantBeforeEarliest: true,
       excludeDigitalAssetAccounts: true,
-      // The ownership ceiling is the window's own end, never a clock read.
-      ownershipToISO: toDate,
+      // V26-S3-DETAIL — the ceiling is DERIVED from the account set's evidence,
+      // not pinned to this window's end. Pinning it here made the same holding
+      // on the same date resolve differently for a rebuild and for a
+      // drill-down; see resolveEvidenceCeiling.
     });
   } catch (err) {
     console.warn(`[wealth-regen] ${spaceId}: historical holdings resolution failed (non-fatal, conservative): ${err instanceof Error ? err.message : err}`);
@@ -642,6 +646,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     // ⇒ no evidence ⇒ the flat value is preserved (never fabricated).
     let digitalAssetValue = c.totalDigitalAssets;
     let hasDigitalAssetEvidence = false;
+    let cryptoDayValuation: CryptoDayValuation | null = null;
     if (cryptoAccounts.length > 0) {
       const btcUsd = btcAt(dISO); // HIST-2C — from the one-shot window read above
       // V26-CRYPTO-QTY-1 — BOTH are required, and they are independent evidence:
@@ -649,12 +654,20 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       // quantity says nothing about what it was worth. Either one missing leaves
       // the day's crypto UNVALUED (never a carried fiat balance — see the flat
       // guard in regenerate-history.core.ts).
-      if (btcUsd != null && cryptoQuantityLicensed(dISO)) {
-        // Value each crypto account at its constant native quantity × the day's
-        // BTC price (USD), then let classifyAccounts do the FX to the reporting
-        // currency — the SAME conversion path every other total uses (no second
-        // FX interpretation opened in this binding).
-        const cryptoDay = cryptoAccounts.map((a) => ({ type: "crypto", balance: (a.nativeBalance ?? 0) * btcUsd, currency: "USD" }));
+      // V26-S3-DETAIL — through the SHARED crypto day valuation, so the total
+      // this snapshot stores and the per-position breakdown a drill-down shows
+      // come from one call and cannot describe different portfolios.
+      cryptoDayValuation = valueCryptoDay({
+        accounts: cryptoAccounts.map((a) => ({
+          financialAccountId: a.id, name: a.name, nativeBalance: a.nativeBalance, symbol: "BTC",
+        })),
+        unitPrice:        btcUsd,
+        quantityLicensed: cryptoQuantityLicensed(dISO),
+      });
+      if (cryptoDayValuation.licensed) {
+        // classifyAccounts still does the FX to the reporting currency — the SAME
+        // conversion path every other total uses (no second FX interpretation).
+        const cryptoDay = cryptoDayValuation.positions.map((p) => ({ type: "crypto", balance: p.nativeValue, currency: "USD" }));
         digitalAssetValue = classifyAccounts(cryptoDay, ctx, dISO).totalDigitalAssets;
         hasDigitalAssetEvidence = true;
       }
@@ -678,9 +691,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     //
     // Guarded on `hasInvestmentEvidence || cryptoPositions > 0` so a Space with
     // neither still records null — NOT RECORDED, never a fabricated zero.
-    const cryptoPositions = cryptoAccounts.filter(
-      (a) => Math.abs(a.nativeBalance ?? 0) > 0,
-    ).length;
+    const cryptoPositions = cryptoDayValuation?.positionCount ?? 0;
     if (cryptoPositions > 0) {
       totalComponentCount = (totalComponentCount ?? 0) + cryptoPositions;
       contributingComponentCount =

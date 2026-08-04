@@ -114,6 +114,7 @@ export function TrendChart({
   emptyMessage = "No history in this range yet. Widen the range or connect accounts to build history.",
   ariaLabel,
   formatDate = defaultFormatDate,
+  onSelectPoint,
 }: {
   points:       TrendPoint[];
   currency:     string;
@@ -124,6 +125,13 @@ export function TrendChart({
   emptyMessage?: string;
   ariaLabel?:   string;
   formatDate?:  (iso: string) => string;
+  /**
+   * V26-S3-DETAIL — OPTIONAL. When supplied, a point becomes selectable and the
+   * chart reports WHICH DATE was chosen — nothing more. It computes no
+   * composition, no total and no completeness; the consumer asks the canonical
+   * historical authority for those. Omitted ⇒ the chart is exactly as it was.
+   */
+  onSelectPoint?: (dateISO: string) => void;
 }) {
   const wrap = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(640);
@@ -232,7 +240,20 @@ export function TrendChart({
       {header}
 
       <div className="relative">
-        <div ref={wrap} className="relative touch-pan-y" onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
+        <div
+          ref={wrap}
+          className={`relative touch-pan-y${onSelectPoint ? " cursor-pointer" : ""}`}
+          onPointerMove={onMove}
+          onPointerLeave={() => setHover(null)}
+          onClick={() => { if (onSelectPoint && hoverPt) onSelectPoint(hoverPt.date); }}
+          onKeyDown={(e) => {
+            if (!onSelectPoint || !hoverPt) return;
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelectPoint(hoverPt.date); }
+          }}
+          role={onSelectPoint ? "button" : undefined}
+          tabIndex={onSelectPoint ? 0 : undefined}
+          aria-label={onSelectPoint ? `${label} — select a date to see its holdings` : undefined}
+        >
           <svg width="100%" height={H} className="block overflow-visible" role="img" aria-label={label}>
             <defs>
               <linearGradient id="tc-fill" x1="0" y1="0" x2="0" y2="1">

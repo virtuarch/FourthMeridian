@@ -260,7 +260,22 @@ async function persistInstrument(
         reconstructionVersion: RECONSTRUCTION_VERSION,
         completeness: assertCanonicalCompleteness(p.completeness),
         unexplainedQuantity: p.unexplainedQuantity,
-        evidenceRefs: { eventIds: p.eventIds } as Prisma.InputJsonValue,
+        // V26-S3-CASH — A DERIVED ROW MUST PRESERVE THE INSTRUMENT'S FINANCIAL
+        // IDENTITY.
+        //
+        // This was omitted, so every derived row took the column DEFAULT
+        // `isCash = false` — including the cash walks this arc exists to
+        // produce. Valuation then read the row before the instrument, priced a
+        // dollar balance as if it were a security, found no market price for
+        // "CUR:USD", and left real reconstructed cash UNVALUED. Measured on
+        // 2026-01-01: `11 of 12` valued, where the missing one was the cash the
+        // reconstruction had just computed correctly.
+        //
+        // The walk already knows: `isCash` rides on the reconstruction from its
+        // anchor. It simply was not written down. Currency is deliberately NOT
+        // written: NULL there is a genuine absence and the read path's
+        // instrument fallback resolves it correctly (see valuation.ts).
+        isCash: r.isCash,
       })),
       skipDuplicates: true,
     });

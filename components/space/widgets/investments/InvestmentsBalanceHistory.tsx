@@ -25,11 +25,14 @@ export function InvestmentsBalanceHistory({
   currency,
   asOf,
   compareTo,
+  onSelectPoint,
 }: {
   points:    PortfolioValuePoint[];
   currency:  string;
   asOf:      string;
   compareTo: string | null;
+  /** V26-S3-DETAIL — passed straight through; this component decides nothing. */
+  onSelectPoint?: (dateISO: string) => void;
 }) {
   // Clip to the shell window (end travels with asOf; start at compareTo when set) —
   // the same windowing the shell's time controls drive for every temporal surface.
@@ -62,6 +65,7 @@ export function InvestmentsBalanceHistory({
       ariaLabel="Invested value over time"
       emptyMessage="No portfolio history in this range yet. Widen the range or connect accounts to build history."
       formatDate={formatWealthDate}
+      onSelectPoint={onSelectPoint}
     />
   );
 }

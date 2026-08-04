@@ -25,7 +25,7 @@
  * from the UNCONVERTED historical (trust is currency-agnostic). No new data contracts.
  */
 
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Info, Loader2, TrendingUp } from "lucide-react";
 import Link from "next/link";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
@@ -42,6 +42,7 @@ import { InvestmentConnectionsCard } from "./InvestmentConnectionsCard";
 import { InvestmentAllocationPanel } from "./InvestmentAllocationPanel";
 import { InvestmentsHero } from "./InvestmentsHero";
 import { InvestmentsBalanceHistory } from "./InvestmentsBalanceHistory";
+import { HistoricalPointPanel } from "./HistoricalPointPanel";
 import { HoldingsLedger } from "./HoldingsLedger";
 import { HoldingsConcentration } from "./HoldingsConcentration";
 
@@ -70,6 +71,10 @@ export function InvestmentsWorkspace({
   onEnvelopeChange: (env: PerspectiveEnvelope) => void;
 }) {
   const { data: raw, series: rawSeries, loading, error, reload } = useInvestmentsSpaceData(spaceId, asOf, compareTo, active);
+  // V26-S3-DETAIL — which historical point the reader asked about. The chart
+  // reports a DATE and nothing else; the panel asks the canonical historical
+  // authority what that date was made of.
+  const [pointDate, setPointDate] = useState<string | null>(null);
 
   // Trust envelope — resolved from the UNCONVERTED historical (currency-agnostic tiers),
   // reusing the ONE canonical resolver. Memoized so the effect only fires on change, and
@@ -170,7 +175,13 @@ export function InvestmentsWorkspace({
 
       {/* ③ Balance history — invested value over time (the SHARED Net Worth chart). */}
       <div id="investments-history" className="scroll-mt-20">
-        <InvestmentsBalanceHistory points={series} currency={reportingCurrency} asOf={asOf} compareTo={compareTo} />
+        <InvestmentsBalanceHistory points={series} currency={reportingCurrency} asOf={asOf} compareTo={compareTo} onSelectPoint={setPointDate} />
+        <HistoricalPointPanel
+          spaceId={spaceId}
+          dateISO={pointDate}
+          open={pointDate !== null}
+          onClose={() => setPointDate(null)}
+        />
       </div>
 
       {/* ④ This period — the opening → in → out → change → closing movement bridge. */}

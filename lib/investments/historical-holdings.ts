@@ -63,10 +63,10 @@ export interface HistoricalHoldingsArgs {
   holdConstantBeforeEarliest?: boolean;
   excludeDigitalAssetAccounts?: boolean;
   /**
-   * The ownership ceiling. Ownership segments never extend past it, so a caller
-   * valuing a closed window gets windows bounded to that window. Defaults to the
-   * latest requested date — never a clock read, so the same request always
-   * produces the same answer.
+   * Override the ownership ceiling. LEAVE UNSET in production: it is DERIVED
+   * from the account set's own latest evidence so every caller resolves the same
+   * windows (see resolveEvidenceCeiling). Supplying a different value per caller
+   * is what made a drill-down disagree with the chart it explained.
    */
   ownershipToISO?: string;
 }
@@ -111,9 +111,28 @@ export async function historicalHoldingsForWindow(
     resolveInvestmentScopeAndCurrency(client, args, args.visibilityScope ?? "all"),
   ]);
 
-  // The ceiling is a caller decision, defaulting to the latest requested date —
-  // never `new Date()`. A window asked for twice gets the same answer.
-  const ownershipToISO = args.ownershipToISO ?? dates[dates.length - 1];
+  // V26-S3-DETAIL — THE CEILING IS A PROPERTY OF THE ACCOUNT SET, NOT OF THE
+  // QUESTION.
+  //
+  // It used to default to the latest requested date, and callers could pass
+  // their own. That looked harmless and was not: `resolveOwnershipWindow`
+  // returns EVIDENCE_AFTER_CEILING — no window at all — when an instrument's
+  // first direct evidence falls after the ceiling, and that discards the
+  // POSSIBLE prefix along with it. So the same holding on the same date was
+  // HELD when asked as part of a year-long rebuild and NOT HELD when asked on
+  // its own.
+  //
+  // Measured: a drill-down on 2026-01-01 asked with a same-day ceiling lost
+  // SPCE, AMZN, TSLA, SIRI and TTWO — $696.14 — against the stored point that
+  // regeneration had written with a window-end ceiling. The reconciliation
+  // caught it, which is exactly what it is for; but a breakdown that can only be
+  // right when the caller guesses the same ceiling is a trap.
+  //
+  // The ceiling is now DERIVED from the account set's own latest evidence, so
+  // every caller gets the same windows for the same accounts, whatever they
+  // asked about. Still clock-free: it reads dated rows, never `new Date()`.
+  const ownershipToISO = args.ownershipToISO
+    ?? await resolveEvidenceCeiling(client, scope.accountIds, dates[dates.length - 1]);
   const ownership = scope.accountIds.length > 0
     ? await loadHoldingOwnership(scope.accountIds, ownershipToISO, client)
     : new Map<string, Awaited<ReturnType<typeof loadHoldingOwnership>> extends Map<string, infer V> ? V : never>();
@@ -140,6 +159,35 @@ export async function historicalHoldingsForWindow(
     );
   }
   return out;
+}
+
+/**
+ * The latest date this account set has ANY position/event evidence for.
+ *
+ * Deterministic and clock-free. Falls back to the caller's latest requested date
+ * when the set has no evidence at all — there is then nothing for a ceiling to
+ * clip, so any value behaves identically.
+ */
+async function resolveEvidenceCeiling(
+  client: Client,
+  accountIds: readonly string[],
+  fallbackISO: string,
+): Promise<string> {
+  if (accountIds.length === 0) return fallbackISO;
+  const scope = { financialAccountId: { in: [...accountIds] } };
+  const [obs, evt] = await Promise.all([
+    client.positionObservation.aggregate({
+      where: { ...scope, deletedAt: null, supersededById: null }, _max: { date: true },
+    }),
+    client.investmentEvent.aggregate({
+      where: { ...scope, deletedAt: null, supersededById: null }, _max: { date: true },
+    }),
+  ]);
+  const candidates = [obs._max.date, evt._max.date]
+    .filter((d): d is Date => d != null)
+    .map((d) => d.toISOString().slice(0, 10));
+  candidates.push(fallbackISO);
+  return candidates.reduce((max, d) => (d > max ? d : max));
 }
 
 /** Single-date convenience over the window form. Same engine, same answer. */

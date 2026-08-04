@@ -562,7 +562,27 @@ export async function valuePositionRowsOverDates(args: {
       if (quantity == null || quantity === 0) continue;
       const anchorPertainsToAsOf = resolvedRow?.date === asOf;
       const meta = instrumentMeta.get(instrumentId);
-      const isCash = resolvedRow?.isCash ?? meta?.isCash ?? false;
+      // V26-S3-CASH — CASH-EQUIVALENCE IS A PROPERTY OF THE INSTRUMENT.
+      //
+      // This was `resolvedRow?.isCash ?? meta?.isCash ?? false`, and `??` only
+      // falls through null/undefined — never `false`. Since `isCash` is a
+      // NOT NULL column defaulting to false, ANY row that omitted it (every
+      // DERIVED reconstruction row until this slice) permanently out-voted the
+      // instrument, and a dollar balance was sent to a market-price lookup.
+      //
+      // The rule, stated once: an Instrument marked `isCashEquivalent` IS cash,
+      // whatever a row's column happens to hold — that flag is the instrument's
+      // financial identity and a per-row default cannot revoke it. A row may
+      // still ASSERT cash for an instrument not so marked (a provider stating
+      // something about one specific holding), so the two are OR'd rather than
+      // the instrument simply winning.
+      //
+      // Deliberately NOT a blanket "treat false as absent": `false` stays
+      // meaningful everywhere it is a real statement — a wallet position, an
+      // equity holding, a security whose provider flag says non-cash. Only the
+      // instrument's own cash identity can override it, and only in one
+      // direction.
+      const isCash = meta?.isCash === true || resolvedRow?.isCash === true;
       const nativeCurrency = resolvedRow?.currency ?? meta?.currency ?? null;
 
       inputs.push({
