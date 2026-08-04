@@ -22,6 +22,8 @@
 
 import {
   formatFlowCaveatSentence,
+  classifyEventFlow,
+  type FlowEvent,
   type PeriodFlows,
   type FlowCategory,
 } from "@/lib/investments/investment-flows-core";
@@ -45,6 +47,121 @@ export interface ActivityModel {
   groups:  ActivityGroup[];
   /** One caveat sentence from the honesty counters; null when nothing is off. */
   caveat:  string | null;
+  /**
+   * THE ROWS BEHIND THE COUNTS.
+   *
+   * A summary that cannot enumerate itself is an assertion, not evidence. Every
+   * count and subtotal in `sections` is derived from `rows` — not from a
+   * parallel query — so "10 sells" and the ten listed sells cannot disagree.
+   */
+  sections: ActivitySection[];
+}
+
+/** One enumerable group of events, with the subtotal its own rows produce. */
+export interface ActivitySection {
+  key:   ActivitySectionKey;
+  title: string;
+  count: number;
+  /** Σ of this section's row amounts, FM-signed. Null when no row carried one. */
+  amount: number | null;
+  rows:  ActivityRow[];
+}
+
+export type ActivitySectionKey =
+  | "buys" | "sells" | "income" | "corporate_actions" | "transfers" | "fees" | "other";
+
+export interface ActivityRow {
+  dateISO:  string;
+  /** Ticker, else instrument name, else the honest unattributed label. */
+  label:    string;
+  /** False when the provider gave no instrument — never a fabricated ticker. */
+  attributed: boolean;
+  quantity: number | null;
+  amount:   number | null;
+  accountId: string;
+  /** The canonical event type, for a secondary label ("Dividend", "Split"). */
+  type:     FlowEvent["type"];
+}
+
+/**
+ * Which enumerable section a canonical FlowCategory belongs to.
+ *
+ * Derived from `classifyEventFlow` — the ONE classification — so a card cannot
+ * disagree with the Bridge about what a SELL is. Transfers stay separate from
+ * income by doctrine: a transfer in is not a gain, and showing it under income
+ * would overstate what the portfolio earned.
+ */
+const SECTION_BY_CATEGORY: Record<FlowCategory, ActivitySectionKey> = {
+  buy: "buys",
+  sell: "sells",
+  income: "income",
+  reinvestment: "income",
+  corporate_action: "corporate_actions",
+  contribution: "transfers",
+  withdrawal: "transfers",
+  transfer_in: "transfers",
+  transfer_out: "transfers",
+  fee: "fees",
+  opening: "other",
+  unclassified: "other",
+};
+
+const SECTION_TITLE: Record<ActivitySectionKey, string> = {
+  buys: "Buys",
+  sells: "Sells",
+  income: "Income",
+  corporate_actions: "Corporate actions",
+  transfers: "Transfers",
+  fees: "Fees and tax",
+  other: "Other activity",
+};
+
+/** Display order — what the portfolio DID, then what crossed its boundary. */
+const SECTION_ORDER: ActivitySectionKey[] = [
+  "buys", "sells", "income", "corporate_actions", "transfers", "fees", "other",
+];
+
+/** The honest label for an event with no provider instrument identity. */
+export const UNATTRIBUTED_LABEL = "Unattributed";
+
+/**
+ * Group the canonical event rows into enumerable sections.
+ *
+ * PURE projection: it reads `flows.events` (already windowed and identified by
+ * the authority) and never filters by date, classifies a type, or converts a
+ * currency. Counts and subtotals are computed FROM the rows it emits, which is
+ * what makes a count and its list incapable of disagreeing.
+ */
+export function buildActivitySections(flows: PeriodFlows | null): ActivitySection[] {
+  if (!flows || flows.events.length === 0) return [];
+  const byKey = new Map<ActivitySectionKey, ActivityRow[]>();
+
+  for (const e of flows.events) {
+    const key = SECTION_BY_CATEGORY[classifyEventFlow(e.type)];
+    const rows = byKey.get(key) ?? [];
+    rows.push({
+      dateISO: e.date,
+      label: e.symbol ?? e.name ?? UNATTRIBUTED_LABEL,
+      attributed: e.symbol != null || e.name != null,
+      quantity: e.quantity,
+      amount: e.amount,
+      accountId: e.accountId,
+      type: e.type,
+    });
+    byKey.set(key, rows);
+  }
+
+  return SECTION_ORDER.filter((k) => byKey.has(k)).map((key) => {
+    const rows = byKey.get(key)!;
+    const withAmount = rows.filter((r) => r.amount != null);
+    return {
+      key,
+      title: SECTION_TITLE[key],
+      count: rows.length,
+      amount: withAmount.length > 0 ? withAmount.reduce((n2, r) => n2 + (r.amount ?? 0), 0) : null,
+      rows,
+    };
+  });
 }
 
 /** No-comparison honest copy (compareTo omitted / invalidated). */
@@ -70,10 +187,10 @@ function part(count: number, singular: string, plural: string): string | null {
  */
 export function buildActivityGroups(flows: PeriodFlows | null): ActivityModel {
   if (flows === null) {
-    return { state: "no-comparison", message: NO_COMPARISON, groups: [], caveat: null };
+    return { state: "no-comparison", message: NO_COMPARISON, groups: [], caveat: null, sections: [] };
   }
   if (flows.eventCount === 0) {
-    return { state: "no-events", message: flows.reason, groups: [], caveat: null };
+    return { state: "no-events", message: flows.reason, groups: [], caveat: null, sections: [] };
   }
 
   const cur = flows.reportingCurrency;
@@ -117,5 +234,10 @@ export function buildActivityGroups(flows: PeriodFlows | null): ActivityModel {
   // The caveat sentence is single-authored in investment-flows-core
   // (formatFlowCaveatSentence) — PCS-1C removed this panel's private copy so
   // Activity, the flow `reason`, and the Trust summary can never diverge.
-  return { state: "events", message: null, groups, caveat: formatFlowCaveatSentence(flows) };
+  return {
+    state: "events", message: null, groups,
+    caveat: formatFlowCaveatSentence(flows),
+    // The enumerable rows behind the sentences above.
+    sections: buildActivitySections(flows),
+  };
 }

@@ -13,6 +13,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { summarizePeriodFlows, type FlowEvent } from "./investment-flows-core";
 import type { InvestmentEventType } from "@prisma/client";
+// The activity model is a PURE module (no React, no DB), so it imports directly.
+import {
+  buildActivityGroups, UNATTRIBUTED_LABEL,
+} from "@/components/space/widgets/investments/investments-activity";
 
 const checks: string[] = [];
 const ok = (l: string) => checks.push(l);
@@ -121,6 +125,62 @@ const TO = "2026-03-31";
   assert.ok(/readDisplay\(client, flowInstrumentIds\)/.test(binding),
     "flow instruments resolve display through the same reader as holdings");
   ok("STATIC · identity is read once at the boundary, never re-queried per card");
+}
+
+// ── the CARD MODEL's sections enumerate their own counts and subtotals ─────
+{
+  const events = [
+    ev("SELL", "2026-02-10", 500, { symbol: "AMZN", quantity: 1 }),
+    ev("SELL", "2026-02-11", 300, { symbol: "JPM", quantity: 2 }),
+    ev("BUY",  "2026-02-12", -200, { symbol: "NVDA", quantity: 1 }),
+    ev("DIVIDEND", "2026-02-13", 1.4, { symbol: "TXN" }),
+    ev("DIVIDEND", "2026-02-14", 0.03),                 // unattributed
+    ev("TRANSFER_IN", "2026-02-15", 1000),
+    ev("SPLIT", "2026-02-16", 0, { symbol: "TQQQ", quantity: 10 }),
+    ev("FEE", "2026-02-17", -5),
+  ];
+  const model = buildActivityGroups(summarizePeriodFlows(events, FROM, TO, "USD"));
+  const byKey = new Map(model.sections.map((s) => [s.key, s]));
+
+  // Every section's count and subtotal come FROM its rows.
+  for (const s of model.sections) {
+    assert.equal(s.count, s.rows.length, `${s.key}: count === rows`);
+    const withAmount = s.rows.filter((r) => r.amount != null);
+    if (withAmount.length > 0) {
+      assert.ok(Math.abs((s.amount ?? 0) - withAmount.reduce((n, r) => n + (r.amount ?? 0), 0)) < 0.005,
+        `${s.key}: subtotal === Σ its rows`);
+    }
+  }
+  assert.equal(byKey.get("sells")?.count, 2);
+  assert.equal(byKey.get("buys")?.count, 1);
+  assert.equal(byKey.get("income")?.count, 2);
+
+  // Transfers are NOT income — a transfer in is not a gain.
+  assert.equal(byKey.get("transfers")?.count, 1);
+  assert.ok(!byKey.get("income")?.rows.some((r) => r.type === "TRANSFER_IN"),
+    "a transfer never appears under income");
+  // Fees and corporate actions are their own sections, not spending or gain.
+  assert.equal(byKey.get("fees")?.count, 1);
+  assert.equal(byKey.get("corporate_actions")?.count, 1);
+  assert.equal(byKey.get("corporate_actions")?.rows[0].label, "TQQQ");
+
+  // An unattributed event is labelled honestly, never given a ticker.
+  const unattributed = byKey.get("income")!.rows.find((r) => !r.attributed)!;
+  assert.equal(unattributed.label, UNATTRIBUTED_LABEL);
+  assert.equal(unattributed.amount, 0.03, "…and still counts toward the subtotal");
+  ok("the card model's sections enumerate their own counts and subtotals");
+}
+
+// ── STATIC · the card renders; it does not classify or filter ─────────────
+{
+  const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+  const card = strip(readFileSync(
+    new URL("../../components/space/widgets/investments/InvestmentsActivityCard.tsx", import.meta.url), "utf8"));
+  assert.ok(!/\.filter\(|\.reduce\(/.test(card), "the card neither filters nor reduces");
+  assert.ok(!/classifyEventFlow|summarizePeriodFlows/.test(card), "the card classifies nothing");
+  assert.ok(/buildActivityGroups\(/.test(card), "it renders the pure model");
+  assert.ok(/aria-expanded=\{open\}/.test(card), "disclosure is accessible");
+  ok("STATIC · the Activity card renders the model and performs no arithmetic");
 }
 
 for (const c of checks) console.log("  ✓ " + c);
