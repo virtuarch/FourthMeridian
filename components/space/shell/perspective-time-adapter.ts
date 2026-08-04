@@ -60,7 +60,7 @@ const EDITORIAL: Record<RelativeCashFlowPeriod, { label: string; supportingLabel
   // is what it is, and no rolling label asserted the present. Renaming them to
   // "Trailing N" would be churn with no falsehood to fix.
   PAST_WEEK:     { label: "Last 7 days",   supportingLabel: "Rolling week" },
-  PAST_MONTH:    { label: "Last 30 days",  supportingLabel: "Rolling month" },
+  PAST_MONTH:    { label: "1 month",       supportingLabel: "Rolling month" },
   PAST_QUARTER:  { label: "Last 90 days",  supportingLabel: "Rolling quarter" },
   PAST_6_MONTHS: { label: "Last 6 months", supportingLabel: "Rolling half-year" },
   PAST_YEAR:     { label: "Last 12 months", supportingLabel: "Rolling year" },
