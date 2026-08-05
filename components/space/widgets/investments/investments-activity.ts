@@ -109,7 +109,12 @@ const SECTION_BY_CATEGORY: Record<FlowCategory, ActivitySectionKey> = {
 const SECTION_TITLE: Record<ActivitySectionKey, string> = {
   buys: "Buys",
   sells: "Sells",
-  income: "Income",
+  // V27-TRUTH-5 — SCOPED, deliberately. Cash Flow's headline is "Income (bank
+  // transactions)" and covers no dividends; this section covers dividends and
+  // reinvestments and no bank income. Two surfaces both labelled bare "Income"
+  // while containing different things is the ambiguity the canonical taxonomy
+  // exists to remove, so each names its ledger.
+  income: "Investment income (dividends)",
   corporate_actions: "Corporate actions",
   transfers: "Transfers",
   fees: "Fees and tax",

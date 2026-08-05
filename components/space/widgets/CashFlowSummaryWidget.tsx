@@ -240,7 +240,17 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
   const isLiabilityRow = (r: LiquidityTx) => liqCtx.tierOf(r.financialAccountId ?? r.accountId ?? null) === "liability";
   const openEconSlice = (line: TileLine) => {
     if (line.reason === "INCOME") {
-      setSlice({ title: "Income", subtitle: "Earned income this period", rows: rows.filter((r) => isIncome(r.flowType)) });
+      // V27-TRUTH-5 — was subtitled "Earned income this period" over EVERY
+      // income row, which called 45 rows of deposit interest earned income. The
+      // slice spans the whole canonical breakdown, so it says so, and a row the
+      // authority classes NOT_INCOME is excluded here exactly as it is from the
+      // headline. No classification happens in this component — it reads
+      // `incomeClass` off the DTO.
+      setSlice({
+        title: "Income (bank transactions)",
+        subtitle: "Earned, interest and other income this period",
+        rows: rows.filter((r) => isIncome(r.flowType) && r.incomeClass !== "NOT_INCOME"),
+      });
     } else if (line.reason === "CARD_SPEND") {
       setSlice({ title: "Credit-card spending", subtitle: "Bought on credit this period", rows: rows.filter((r) => isCostFlow(r.flowType) && isLiabilityRow(r)) });
     } else {
@@ -248,7 +258,7 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
     }
   };
 
-  const econInLines:  TileLine[] = [{ reason: "INCOME", label: "Income", amount: facts.income }].filter((l) => l.amount > 0);
+  const econInLines:  TileLine[] = [{ reason: "INCOME", label: "Income (bank transactions)", amount: facts.income }].filter((l) => l.amount > 0);
   const econOutLines: TileLine[] = [
     { reason: "CARD_SPEND",   label: "Credit-card spending",   amount: econCard },
     { reason: "DIRECT_SPEND", label: "Direct & other spending", amount: econOther },

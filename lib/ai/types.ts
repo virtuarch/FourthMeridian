@@ -733,6 +733,20 @@ export interface TransactionsSummaryData {
   /** Sum of positive flowType=INCOME amounts (includes dividends, doctrine §5). */
   incomeTotal:       number;
   /**
+   * V27-TRUTH-5 — the canonical income composition, so the model never has to
+   * infer what an "income" number contains. `incomeTotal` is BANK-TRANSACTION
+   * broad income and equals the sum of `incomeByClass`; investment dividends
+   * live in a separate ledger and are deliberately NOT folded in (double
+   * counting — see lib/transactions/income-rollup.ts).
+   */
+  incomeScope?:      "BANK_TRANSACTIONS" | "ALL_SOURCES";
+  /** EARNED_INCOME | INTEREST_INCOME | DIVIDEND_INCOME | OTHER_INCOME → totals. */
+  incomeByClass?:    Record<string, { amount: number; count: number }>;
+  /** "<class>:<accountId|instrumentId>" → the paying account or security. */
+  incomeSourcesByClass?: Record<string, { amount: number; count: number }>;
+  /** Inflows EXCLUDED from broad income, each with its reason. */
+  incomeExcluded?:   { subtype: string; amount: number; count: number; reason: string }[];
+  /**
    * Gross absolute sum over flowType ∈ {SPENDING, FEE, INTEREST} (D-2).
    * Refunds are NEVER netted here — see refundTotal (D-3) — preserving the
    * KD-17 debit-only reconciliation with byCategory.

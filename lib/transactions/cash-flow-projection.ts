@@ -155,7 +155,9 @@ function foldDayFacts(acc: DayFacts, t: LiquidityTx, liqCtx: LiquidityContext, m
   // ── Economic axis (real value, tier-independent — includes card purchases) ──
   // income / spendGross / refunds come from the SINGLE economic-fold authority
   // (foldEconomicRow) shared with economicTotals — no independent 3-way branch.
-  foldEconomicRow(acc, ft, amt);
+  // V27-TRUTH-5 — the canonical income class rides along, so DayFacts and
+  // economicTotals cannot disagree about what counts as income.
+  foldEconomicRow(acc, ft, amt, t.incomeClass ?? null);
   // The liability/direct tier split of gross spend is DayFacts-only (needs liqCtx),
   // so it stays here alongside the shared economic fold.
   if (isCostFlow(ft)) {

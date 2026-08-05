@@ -51,7 +51,10 @@ export type LiquidityEffect = "CASH_IN" | "CASH_OUT" | "NEUTRAL" | "UNRESOLVED";
 
 /** Why the effect was assigned — the durable, explainable label for AI. */
 export type LiquidityReason =
-  | "EARNED_INCOME"      // INCOME arriving in a spendable (liquid) account
+  | "EARNED_INCOME"      // EARNED income arriving in a spendable (liquid) account
+  | "INTEREST_INCOME"    // V27-TRUTH-5 — interest paid by a deposit account
+  | "DIVIDEND_INCOME"    // V27-TRUTH-5 — a distribution from a holding
+  | "OTHER_INCOME"       // V27-TRUTH-5 — income whose source is not established
   | "REAL_COST"          // SPENDING / FEE / INTEREST leaving the liquid tier
   | "REFUND"             // reversal of prior spend, cash back
   | "ASSET_LIQUIDATION"  // asset tier → liquid (crypto/stock sale proceeds to bank)
@@ -107,6 +110,14 @@ function make(
  * asset conversion (NEUTRAL on this axis); its cash face only appears on the
  * transfer leg that lands the proceeds in a liquid account.
  */
+/** Canonical income class → its liquidity reason. One mapping, no re-derivation. */
+const INCOME_REASON_BY_CLASS: Record<string, LiquidityReason> = {
+  EARNED_INCOME:   "EARNED_INCOME",
+  INTEREST_INCOME: "INTEREST_INCOME",
+  DIVIDEND_INCOME: "DIVIDEND_INCOME",
+  OTHER_INCOME:    "OTHER_INCOME",
+};
+
 export function classifyLiquidity(tx: LiquidityTx, ctx: LiquidityContext): LiquidityClassification {
   const ft = tx.flowType ?? null;
   const ownTier = ctx.tierOf(tx.financialAccountId ?? tx.accountId ?? null);
@@ -115,9 +126,17 @@ export function classifyLiquidity(tx: LiquidityTx, ctx: LiquidityContext): Liqui
   // income routed into an asset account (e.g. reinvested dividend) is earned but
   // not spendable, so it's neutral on the liquidity axis.
   if (isIncome(ft)) {
+    // V27-TRUTH-5 — the reason follows the CANONICAL income class, not the bare
+    // flow type. Every income row previously reported EARNED_INCOME, so the
+    // Income-by-source card rendered "Earned income · 100.0%" over a window that
+    // was $10,573.03 earned and $6.01 of deposit interest. The class is read off
+    // the DTO; nothing is re-derived here.
+    const reason = INCOME_REASON_BY_CLASS[tx.incomeClass ?? ""] ?? "EARNED_INCOME";
+    // A NOT_INCOME row (an issuer credit on a card) is not cash in at all.
+    if (tx.incomeClass === "NOT_INCOME") return make(ft, "NEUTRAL", "OTHER_INCOME", 0.7);
     return ownTier === "liquid"
-      ? make(ft, "CASH_IN", "EARNED_INCOME", 1)
-      : make(ft, "NEUTRAL", "EARNED_INCOME", 0.7);
+      ? make(ft, "CASH_IN", reason, 1)
+      : make(ft, "NEUTRAL", reason, 0.7);
   }
 
   // REFUND — reversal of prior spend; small cash back when it hits liquid.

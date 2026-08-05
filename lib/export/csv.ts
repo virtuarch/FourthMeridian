@@ -34,6 +34,19 @@ export function toTransactionsCsv(rows: ExportTransaction[]): string {
       currency:    r.currency ?? "",
       account_id:  r.accountId,
       space_id:    r.spaceId,
+      // ── V27-TRUTH-5 — ADDITIVE income columns ───────────────────────────
+      // Appended AFTER every pre-existing column, and no existing column is
+      // renamed, reordered or removed, so a consumer reading by header name or
+      // by leading position is unaffected. Empty for outflows and for rows the
+      // read supplied no attribution for — never a fabricated class.
+      income_class:            r.incomeClass ?? "",
+      income_subtype:          r.incomeSubtype ?? "",
+      source_account_id:       r.incomeSourceAccountId ?? "",
+      source_instrument_id:    r.incomeInstrumentId ?? "",
+      included_in_broad_income:
+        r.incomeClass == null ? "" : String(r.incomeClass !== "NOT_INCOME"),
+      exclusion_reason:
+        r.incomeClass === "NOT_INCOME" ? (r.incomeSubtype ?? "NOT_INCOME") : "",
     })),
   );
 }

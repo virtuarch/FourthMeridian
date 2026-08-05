@@ -21,6 +21,9 @@ import type { DayFacts } from "@/lib/transactions/cash-flow-projection";
 /** User-facing labels — liquidity terminology, not economic (see doctrine). */
 export const LIQUIDITY_REASON_LABEL: Record<LiquidityReason, string> = {
   EARNED_INCOME:     "Earned income",
+  INTEREST_INCOME:   "Interest",
+  DIVIDEND_INCOME:   "Dividends",
+  OTHER_INCOME:      "Other income",
   ASSET_LIQUIDATION: "Asset liquidation",
   DEBT_PROCEEDS:     "Debt proceeds",
   REFUND:            "Refunds",
@@ -54,6 +57,9 @@ export const LIQUIDITY_REASON_LABEL: Record<LiquidityReason, string> = {
  */
 export const LIQUIDITY_REASON_SIDE: Record<LiquidityReason, "in" | "out" | "context"> = {
   EARNED_INCOME:       "in",
+  INTEREST_INCOME:     "in",
+  DIVIDEND_INCOME:     "in",
+  OTHER_INCOME:        "in",
   REFUND:              "in",
   ASSET_LIQUIDATION:   "in",
   DEBT_PROCEEDS:       "in",

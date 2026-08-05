@@ -471,6 +471,12 @@ async function assembleTransactions(
   let windowEstimated = false;
 
   let incomeTotal      = 0;
+  // V27-TRUTH-5 — the canonical breakdown. Giving the model one "income" number
+  // lets it call interest a raise; these carry the composition and the
+  // exclusions so it can reason about what the money actually was.
+  const incomeByClass: Record<string, { amount: number; count: number }> = {};
+  const incomeSourceTotals: Record<string, { label: string; amount: number; count: number }> = {};
+  const incomeExcluded: { subtype: string; amount: number; count: number }[] = [];
   let expenseTotal     = 0;
   let refundTotal      = 0;
   let debtPaymentTotal = 0;
@@ -544,8 +550,29 @@ async function assembleTransactions(
     }
 
     if (isIncome(txn.flowType)) {
+      // A NOT_INCOME row (an issuer credit landing on a card) is excluded from
+      // the total and REPORTED, so the model sees the exclusion rather than a
+      // silently smaller number.
+      const cls = (txn as { incomeClass?: string }).incomeClass ?? null;
+      if (cls === "NOT_INCOME") {
+        const sub = (txn as { incomeSubtype?: string }).incomeSubtype ?? "NOT_INCOME";
+        const e = incomeExcluded.find((x) => x.subtype === sub);
+        if (e) { e.amount += amt; e.count++; } else incomeExcluded.push({ subtype: sub, amount: amt, count: 1 });
+        continue;
+      }
       if (amt > 0) {
         incomeTotal += amt;
+        if (cls) {
+          const b = (incomeByClass[cls] ??= { amount: 0, count: 0 });
+          b.amount += amt; b.count++;
+          const srcId = (txn as { incomeSourceAccountId?: string | null }).incomeSourceAccountId
+                     ?? (txn as { incomeInstrumentId?: string | null }).incomeInstrumentId ?? null;
+          if (srcId) {
+            const sk = `${cls}:${srcId}`;
+            const sv = (incomeSourceTotals[sk] ??= { label: srcId, amount: 0, count: 0 });
+            sv.amount += amt; sv.count++;
+          }
+        }
         // Largest selected in TARGET units (identical under identity); the row
         // object itself keeps its native amount for downstream serialization.
         if (!largestIncomeRow || amt > largestIncomeAmt) {
@@ -720,6 +747,19 @@ async function assembleTransactions(
     fetchLimit:        TRANSACTION_FETCH_LIMIT,
 
     incomeTotal:      Math.round(incomeTotal      * 100) / 100,
+    // V27-TRUTH-5 — the canonical income composition. `incomeTotal` above is the
+    // BANK-TRANSACTION broad income and equals the sum of these classes;
+    // investment dividends are a separate ledger (see income-rollup.ts) and are
+    // deliberately absent rather than silently folded in.
+    incomeScope: "BANK_TRANSACTIONS" as const,
+    incomeByClass: Object.fromEntries(Object.entries(incomeByClass).map(([k, v]) =>
+      [k, { amount: Math.round(v.amount * 100) / 100, count: v.count }])),
+    incomeSourcesByClass: Object.fromEntries(Object.entries(incomeSourceTotals).map(([k, v]) =>
+      [k, { amount: Math.round(v.amount * 100) / 100, count: v.count }])),
+    incomeExcluded: incomeExcluded.map((e) => ({
+      subtype: e.subtype, amount: Math.round(e.amount * 100) / 100, count: e.count,
+      reason: "Classified NOT_INCOME by the canonical income authority — excluded from broad income.",
+    })),
     expenseTotal:     Math.round(expenseTotal     * 100) / 100,
     refundTotal:      Math.round(refundTotal      * 100) / 100,
     debtPaymentTotal: Math.round(debtPaymentTotal * 100) / 100,

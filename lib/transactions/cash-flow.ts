@@ -296,10 +296,31 @@ export interface EconomicAccumulator {
  * ignored (matching SpaceTransactionsPanel exactly). `magnitude` must be the
  * non-negative converted amount (Math.abs of the row's converted amount).
  */
-export function foldEconomicRow(acc: EconomicAccumulator, flowType: string | null | undefined, magnitude: number): void {
+export function foldEconomicRow(
+  acc: EconomicAccumulator,
+  flowType: string | null | undefined,
+  magnitude: number,
+  /**
+   * V27-TRUTH-5 — the row's canonical income class, when the DTO carried one.
+   *
+   * `flowType === INCOME` was the sole test, and it admitted four live rows that
+   * are not income at all: merchant credits landing on a CREDIT CARD which the
+   * provider tagged INCOME_SALARY / INCOME_CONTRACTOR / INCOME_GIG_ECONOMY
+   * ($495.65 across MICROSOFT, EasyTime, Uber, HUNGERSTATION). The canonical
+   * authority classes them NOT_INCOME, and a broad income total must not contain
+   * them.
+   *
+   * Omitted (undefined) means the read supplied no attribution — the old
+   * behaviour is kept rather than a row being dropped on an absence.
+   */
+  incomeClass?: string | null,
+): void {
   if (isCostFlow(flowType)) acc.spendGross += magnitude;
   else if (isRefund(flowType)) acc.refunds += magnitude;
-  else if (isIncome(flowType)) acc.income += magnitude;
+  else if (isIncome(flowType)) {
+    if (incomeClass === "NOT_INCOME") return;   // named, excluded, never silent
+    acc.income += magnitude;
+  }
 }
 
 /** Economic spend: gross cost flows minus refunds, floored at 0. The single
@@ -326,7 +347,7 @@ export function economicTotals(transactions: Transaction[], ctx?: ConversionCont
   for (const t of transactions) {
     const a = rowAmount(t, ctx);
     if (a === null) { unconverted = true; continue; } // V25-FINAL-1 — exclude the unconvertible row
-    foldEconomicRow(acc, t.flowType ?? null, Math.abs(a));
+    foldEconomicRow(acc, t.flowType ?? null, Math.abs(a), t.incomeClass ?? null);
   }
   const spend = clampEconomicSpend(acc.spendGross, acc.refunds);
   return { income: acc.income, spend, refunds: acc.refunds, net: acc.income - spend, unconverted };

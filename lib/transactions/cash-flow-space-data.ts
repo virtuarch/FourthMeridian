@@ -63,6 +63,7 @@ import {
   type LiquidityTx,
 } from "@/lib/transactions/liquidity";
 import { groupLiquidityByReason, type LiquiditySliceLine } from "@/lib/transactions/liquidity-breakdown";
+import { composeIncomeRollup, type IncomeRollup } from "@/lib/transactions/income-rollup";
 import { groupDebtPaymentsByCreditor, type DebtPaymentGroup } from "@/lib/transactions/debt-payments";
 
 /**
@@ -90,8 +91,19 @@ export interface CashFlowSpaceData {
   // ── derived presentation slices (each straight from an authority) ──
   /** Spending by Category (economic outflow). */
   outflowByCategory: CashFlowContribution[];
-  /** Income by Source (economic income). */
+  /** Income by Source (economic income). Presentation grouping by payer LABEL —
+   *  not a classification. `income` below is the canonical taxonomy. */
   incomeBySource: CashFlowContribution[];
+  /**
+   * V27-TRUTH-5 — THE canonical income breakdown for this window.
+   *
+   * Scope is BANK_TRANSACTIONS and the headline label says so. Investment
+   * dividends are NOT folded in: a dividend paid to a brokerage cash balance and
+   * later swept to checking would be counted twice, and Cash Flow answers "where
+   * did money move through my bank ledgers?". Investments Activity reports them
+   * from the same authority, under the same labels.
+   */
+  income: IncomeRollup;
   /** Cash In by reason (liquidity axis) — groupLiquidityByReason(summary).cashIn. */
   cashInByReason: LiquiditySliceLine[];
   /** Debt payments grouped by creditor — the canonical DEBT_PAYMENT liquidity rows. */
@@ -142,7 +154,9 @@ function magnitude(t: Transaction, ctx?: ConversionContext): number | null {
  */
 export function buildCashFlowSpaceData(input: {
   transactions: Transaction[];
-  accounts: { id: string; type: string }[];
+  /** `name` is optional and used ONLY to label an interest payer; its absence
+   *  degrades the label to the account id, never the classification. */
+  accounts: { id: string; type: string; name?: string }[];
   period: CashFlowPeriod;
   now?: () => Date;
   moneyCtx?: ConversionContext;
@@ -177,6 +191,25 @@ export function buildCashFlowSpaceData(input: {
     buckets: bucketDayFacts(rows, liqCtx, period, moneyCtx),
     outflowByCategory: outflowByCategory(windowed, moneyCtx),
     incomeBySource: incomeBySource(windowed, moneyCtx),
+    // Composed from the SAME `windowed` rows the headline uses, so the canonical
+    // breakdown and the economic total cannot describe different sets.
+    income: composeIncomeRollup({
+      scope: "BANK_TRANSACTIONS",
+      rows: windowed
+        .filter((t) => t.incomeClass != null)
+        .map((t) => ({
+          id: t.id,
+          amount: Math.abs(magnitude(t, moneyCtx) ?? 0),
+          attribution: {
+            incomeClass: t.incomeClass as IncomeRollup["lines"][number]["incomeClass"],
+            subtype: (t.incomeSubtype ?? "UNRESOLVED_INCOME") as never,
+            instrumentId: t.incomeInstrumentId ?? null,
+            sourceAccountId: t.incomeSourceAccountId ?? null,
+            reason: "",
+          },
+        })),
+      accountLabels: new Map(input.accounts.filter((a) => a.name).map((a) => [a.id, a.name as string])),
+    }),
     cashInByReason: breakdown.cashIn,
     debtPayments: groupDebtPaymentsByCreditor(debtPaymentRows, (t) => magnitude(t, moneyCtx)),
     context: groupCashFlowContext(rows, liqCtx, moneyCtx),
