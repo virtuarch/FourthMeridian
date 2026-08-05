@@ -32,7 +32,7 @@ import { CHART_PALETTE } from "@/lib/charts/chart-palette";
 const PALETTE = CHART_PALETTE;
 
 interface Props {
-  items: CashFlowContribution[];   // descending, value > 0 (from outflowByCategory / incomeBySource)
+  items: CashFlowContribution[];   // descending, value > 0 (from outflowByCategory, or the canonical income rollup's lines)
   ctx?:  ConversionContext;
   /** Header total label — defaults to spending. Income by Source passes its own. */
   totalLabel?:    string;

@@ -177,5 +177,84 @@ console.log("V27-TRUTH-5. Static probes");
     !src.includes("@/lib/db") && !src.includes("react") && !src.includes("Date."));
 }
 
+console.log("V27-TRUTH-6. Cash Flow consumes the rollup; incomeBySource is retired as a UI authority");
+{
+  const root2 = join(__dirname, "..", "..");
+  const sh = (cmd: string) => execSync(cmd, { encoding: "utf8" }).trim();
+
+  // (1) No component reads `incomeBySource` — neither the contract field nor the
+  //     function. Comments are stripped so prose ABOUT the retirement passes.
+  // Test files legitimately NAME the retired authority when asserting it is gone.
+  const uiSrc = sh(`grep -rl "incomeBySource" ${root2}/components ${root2}/app 2>/dev/null || true`)
+    .split("\n").filter(Boolean).filter((f) => !/\.test\.[tj]sx?$/.test(f));
+  const stripFile = (f: string) => readFileSync(f, "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1 ");
+  const realHits = uiSrc.filter((f) => /incomeBySource/.test(stripFile(f)));
+  check("no component or route references incomeBySource in code", realHits.length === 0, realHits.join(", "));
+
+  // (2) Every Cash Flow income UI path goes through the canonical entry point.
+  const consumers = [
+    "components/space/widgets/cashflow/CashFlowWorkspace.tsx",
+    "components/space/widgets/cash-flow-adapters.tsx",
+    "components/space/widgets/cashflow/cash-flow-insights.ts",
+  ];
+  for (const f of consumers) {
+    const src = stripFile(join(root2, f));
+    check(`${f.split("/").pop()} consumes the canonical rollup`,
+      /rollupIncomeFromTransactions|data\.income\.lines/.test(src));
+  }
+
+  // (3) No React arithmetic or classification over income.
+  const mathHits = sh(`grep -rn "incomeClass\\|incomeSubtype" ${root2}/components ${root2}/app 2>/dev/null | grep -E "\\+=|reduce\\(|filter\\(.*===" || true`);
+  check("no component sums or filters by income class", mathHits === "", mathHits);
+  const authHits = sh(`grep -rl "attributeIncome\\|composeIncomeRollup(" ${root2}/components ${root2}/app 2>/dev/null || true`);
+  check("no component calls the classification authority directly", authHits === "", authHits);
+
+  // (10) No economic-date or L8 work entered this slice.
+  for (const f of consumers.concat(["lib/transactions/income-rollup.ts"])) {
+    const src = stripFile(join(root2, f));
+    check(`${f.split("/").pop()} touches no economicDate/L8 symbol`,
+      !/economicDate|EconomicEvent|ProviderObservation/.test(src));
+  }
+}
+
+console.log("V27-TRUTH-6. incomeBySource, where it survives, is DERIVED from the rollup");
+{
+  // The contract keeps the payer grouping for compatibility, but its membership
+  // is the rollup's — so a NOT_INCOME row cannot appear in it.
+  const src = readFileSync(join(__dirname, "cash-flow.ts"), "utf8");
+  check("incomeBySource accepts an included-row-id set", src.includes("includedRowIds"));
+  check("...and skips any row outside it",
+    /includedRowIds && !includedRowIds\.has\(t\.id\)/.test(src));
+  const sd = readFileSync(join(__dirname, "cash-flow-space-data.ts"), "utf8");
+  check("the contract derives incomeBySource from the rollup's membership",
+    /includedIncomeIds/.test(sd) && /incomeBySource\(windowed, moneyCtx, includedIncomeIds\)/.test(sd));
+  check("...and builds the rollup through the ONE entry point",
+    /rollupIncomeFromTransactions\(windowed/.test(sd));
+}
+
+console.log("V27-TRUTH-6. Attribution population === the population income is summed over");
+{
+  // The regression this pins: `serialize.ts` attributed an income class to EVERY
+  // positive-amount row — transfers in, refunds, debt-payment inflows. Each fell
+  // through to UNRESOLVED_INCOME, so the moment a surface summed the field
+  // "Other income" read $380,127.32 over 252 rows against a real total of $0.24.
+  // Only the parity check caught it; no unit test could, because each module was
+  // individually correct.
+  const src = readFileSync(join(__dirname, "serialize.ts"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1 ");
+  check("the serializer gates attribution on isIncome, not merely a positive amount",
+    /amount\s*>\s*0\s*&&\s*isIncome\(/.test(src));
+  check("...using the SAME predicate the economic fold uses",
+    src.includes("flow-predicates"));
+
+  // And the rollup entry point must not re-widen it.
+  const roll = readFileSync(join(__dirname, "income-rollup.ts"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1 ");
+  check("the rollup skips rows with no attribution rather than defaulting them",
+    /incomeClass\s*==\s*null\)\s*continue/.test(roll));
+  check("...and never invents a class for one", !/UNRESOLVED_INCOME\"?\s*:/.test(roll.replace(/incomeSubtype \?\? \"UNRESOLVED_INCOME\"/, "")));
+}
+
 console.log(failures === 0 ? "\nincome-rollup: all passed." : `\nincome-rollup: ${failures} failure(s).`);
 process.exit(failures === 0 ? 0 : 1);

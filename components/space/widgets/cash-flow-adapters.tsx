@@ -30,9 +30,9 @@ import {
   asOfAnchor,
   economicTotals,
   outflowByCategory,
-  incomeBySource,
   incomeSourceLabel,
-  type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
+  type CashFlowPeriod, type CashFlowContribution, periodKey } from "@/lib/transactions/cash-flow";
+import { rollupIncomeFromTransactions } from "@/lib/transactions/income-rollup";
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 import { liquidityIdsByReason, classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { groupLiquidityByReason } from "@/lib/transactions/liquidity-breakdown";
@@ -234,14 +234,24 @@ export function renderIncomeBySource(
   }
 
   if (state === "empty") return <EmptyCard sub="Income by source appears once you have inflows." />;
+  // ONE call to the canonical authority — the same one the workspace and the
+  // space-data contract use. This component performs no classification and no
+  // arithmetic; it prints the lines it is handed.
+  const income = rollupIncomeFromTransactions(rows, { scope: "BANK_TRANSACTIONS", ctx });
   return (
     <div className="space-y-2">
-      <p className="text-[11px] font-semibold text-[var(--text-secondary)]">Income by source</p>
+      <p className="text-[11px] font-semibold text-[var(--text-secondary)]">Income (bank transactions)</p>
       <CashFlowCategoryBreakdown
       invalidationKey={periodKey(period)}
-        items={incomeBySource(rows, ctx)}
+        // V27-TRUTH-6 — the compact widget reads the SAME canonical lines as the
+        // workspace. It previously called incomeBySource(rows, ctx) here, which
+        // made this component a second income authority computing over a
+        // different membership rule than the headline.
+        items={income.lines.map((l): CashFlowContribution => ({
+          id: l.incomeClass, label: l.label, value: l.amount, transactionIds: l.rowIds,
+        }))}
         ctx={ctx}
-        totalLabel="Total income"
+        totalLabel="Total income (bank transactions)"
         emptyHeadline="No income in this period"
         emptySubline="Income by source appears once you have inflows."
         sliceSubtitle="Income from this source"

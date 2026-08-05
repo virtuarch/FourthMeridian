@@ -38,6 +38,7 @@ import { resolveLifecycle } from "@/lib/transactions/lifecycle";
 import { resolveEconomicDate } from "@/lib/transactions/economic-date";
 import { attributeIncome } from "@/lib/transactions/income-source";
 import { liabilityInflowIsCustomerPayment } from "@/lib/transactions/liability-inflow";
+import { isIncome } from "@/lib/transactions/flow-predicates";
 
 /**
  * The scalar fields the serializers read, shaped exactly like a
@@ -153,7 +154,18 @@ function deriveLifecycleAndEconomicDate(r: TransactionRowLike): Partial<Transact
   // Emitted only for INFLOWS, and only where the read supplied the evidence: an
   // outflow has no income class, and inventing one would put a zero-amount
   // "OTHER_INCOME" on every purchase in the ledger.
-  const income = r.amount > 0
+  // V27-TRUTH-6 — attributed ONLY over the population income is drawn from.
+  //
+  // This was `r.amount > 0`, which attributed every positive row — transfers in,
+  // refunds, debt-payment inflows. Each fell through to UNRESOLVED_INCOME and so
+  // to OTHER_INCOME, and the moment a surface summed the field, "Other income"
+  // read $380,127.32 over 252 rows. An attribution on a transfer is not merely
+  // unused, it is a false statement about the row.
+  //
+  // `isIncome` is the same predicate the economic fold uses, so the attributed
+  // set and the summed set are the same set by construction. A row outside it
+  // gets NO attribution — honest absence, not a misleading class.
+  const income = r.amount > 0 && isIncome(r.flowType ?? null)
     ? attributeIncome({
         flowType:       r.flowType ?? null,
         providerFamily: r.pfcPrimary ?? null,

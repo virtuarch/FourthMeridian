@@ -549,11 +549,28 @@ export function incomeSourceLabel(t: Transaction): string {
  * same FlowType doctrine the rest of Cash Flow uses. The twin of
  * outflowByCategory.
  */
-export function incomeBySource(transactions: Transaction[], ctx?: ConversionContext): CashFlowContribution[] {
+export function incomeBySource(
+  transactions: Transaction[],
+  ctx?: ConversionContext,
+  /**
+   * V27-TRUTH-6 — the row ids the canonical rollup INCLUDED in broad income.
+   *
+   * Membership is the rollup's decision, not this function's. Without it this
+   * grouping admitted every `flowType === INCOME` row, including the four issuer
+   * credits the taxonomy classes NOT_INCOME — so the payer card and the headline
+   * disagreed by $495.65 about what income even was. Passing the set makes the
+   * two structurally incapable of disagreeing.
+   *
+   * Omitted ⇒ prior behaviour, for the pure-projection callers that hold no
+   * rollup (the drawer over an arbitrary slice).
+   */
+  includedRowIds?: ReadonlySet<string>,
+): CashFlowContribution[] {
   const bySource = new Map<string, number>();
   const idsBySource = new Map<string, string[]>();
   for (const t of transactions) {
     if (!isIncome(t.flowType ?? null)) continue;
+    if (includedRowIds && !includedRowIds.has(t.id)) continue;
     const raw = rowAmount(t, ctx);
     if (raw === null) continue; // V25-FINAL-1 — unconvertible income row excluded
     const amt = Math.abs(raw);

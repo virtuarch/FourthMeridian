@@ -23,12 +23,14 @@
 import {
   filterByPeriod,
   outflowByCategory,
-  incomeBySource,
   periodLabel,
   periodRange,
   isExplicitPeriod,
+  economicTotals,
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
+import { isIncome } from "@/lib/transactions/flow-predicates";
+import { rollupIncomeFromTransactions } from "@/lib/transactions/income-rollup";
 import {
   aggregateDayFacts,
   type CashFlowPerspective,
@@ -187,8 +189,20 @@ export function buildCashFlowInsights(args: {
     const cashIn = groupLiquidityByReason(facts).cashIn;
     if (cashIn.length > 0) topSource = { label: cashIn[0].label, value: cashIn[0].amount };
   } else {
-    const src = incomeBySource(rows, moneyCtx);
-    if (src.length > 0) topSource = { label: src[0].label, value: src[0].value };
+    // V27-TRUTH-6 — the CANONICAL lines, not the payer grouping. The insight
+    // previously read incomeBySource, which admitted NOT_INCOME rows, so it
+    // could name an issuer credit as a source of income and could quote a total
+    // the headline did not contain.
+    const income = rollupIncomeFromTransactions(rows, { scope: "BANK_TRANSACTIONS", ctx: moneyCtx });
+    const top = [...income.lines].sort((a, b) => b.amount - a.amount)[0];
+    if (top) topSource = { label: top.label, value: top.amount };
+    else if (rows.some((r) => isIncome(r.flowType ?? null))) {
+      // The window has income but no row carried an attribution — a read that
+      // did not select the evidence. Say the honest generic thing rather than
+      // dropping the bullet or reaching for a second authority.
+      const total = economicTotals(rows, moneyCtx).income;
+      if (total > 0) topSource = { label: "Income", value: total };
+    }
   }
   if (topSource && topSource.value > 0) {
     const noun = perspective === "liquidity" ? "cash in" : "income";

@@ -29,7 +29,10 @@
  * silently say "Income" while meaning one or the other.
  */
 
-import type { IncomeAttribution, IncomeClass } from "@/lib/transactions/income-source";
+import type { IncomeAttribution, IncomeClass, IncomeSubtype } from "@/lib/transactions/income-source";
+import type { Transaction } from "@/types";
+import type { ConversionContext } from "@/lib/money/types";
+import { convertMoney } from "@/lib/money/convert";
 
 /** Which ledgers a rollup spans. Rendered, never implicit. */
 export type IncomeScope =
@@ -178,6 +181,54 @@ export function composeIncomeRollup(input: {
       byReason: [...byReasonMap.values()].sort((a, b) => b.amount - a.amount),
     },
   };
+}
+
+/**
+ * Build the canonical rollup straight from DTO rows.
+ *
+ * THE entry point for every Cash Flow income surface. It exists so the
+ * DTO → attribution mapping lives in exactly one place: the space-data builder
+ * and the compact adapter previously each rebuilt it, which is two chances to
+ * disagree about what a row means. Nothing is classified here — `incomeClass`
+ * was decided by the authority at serialization; this only reshapes it.
+ *
+ * A row whose read supplied no attribution is SKIPPED rather than defaulted, so
+ * an absent class can never silently become OTHER_INCOME.
+ */
+export function rollupIncomeFromTransactions(
+  transactions: readonly Transaction[],
+  opts: {
+    scope: IncomeScope;
+    ctx?: ConversionContext;
+    accountLabels?: ReadonlyMap<string, string>;
+    dividends?: readonly DividendRow[];
+  },
+): IncomeRollup {
+  const rows: IncomeRollupRow[] = [];
+  for (const t of transactions) {
+    if (t.incomeClass == null) continue;
+    const converted = opts.ctx
+      ? convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, opts.ctx).amount
+      : t.amount;
+    // V25-FINAL-1 — an unconvertible row is EXCLUDED, never counted at its
+    // native magnitude and never as a fabricated zero.
+    if (converted === null) continue;
+    rows.push({
+      id: t.id,
+      amount: Math.abs(converted),
+      attribution: {
+        incomeClass:     t.incomeClass as IncomeClass,
+        subtype:         (t.incomeSubtype ?? "UNRESOLVED_INCOME") as IncomeSubtype,
+        instrumentId:    t.incomeInstrumentId ?? null,
+        sourceAccountId: t.incomeSourceAccountId ?? null,
+        reason:          "",
+      },
+    });
+  }
+  return composeIncomeRollup({
+    scope: opts.scope, rows,
+    dividends: opts.dividends, accountLabels: opts.accountLabels,
+  });
 }
 
 /** The amount for one class, or 0. The ONE accessor a surface should use. */

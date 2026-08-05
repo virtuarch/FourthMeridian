@@ -63,7 +63,7 @@ import {
   type LiquidityTx,
 } from "@/lib/transactions/liquidity";
 import { groupLiquidityByReason, type LiquiditySliceLine } from "@/lib/transactions/liquidity-breakdown";
-import { composeIncomeRollup, type IncomeRollup } from "@/lib/transactions/income-rollup";
+import { rollupIncomeFromTransactions, type IncomeRollup } from "@/lib/transactions/income-rollup";
 import { groupDebtPaymentsByCreditor, type DebtPaymentGroup } from "@/lib/transactions/debt-payments";
 
 /**
@@ -182,34 +182,33 @@ export function buildCashFlowSpaceData(input: {
     return c.effect === "CASH_OUT" && c.reason === "DEBT_PAYMENT";
   });
 
+  // V27-TRUTH-6 — the canonical rollup is built ONCE, and every income slice in
+  // this contract derives from it. `incomeBySource` is now a SUB-grouping of the
+  // rollup's included rows, not an independent authority that happened to agree.
+  const income = rollupIncomeFromTransactions(windowed, {
+    scope: "BANK_TRANSACTIONS",
+    ctx: moneyCtx,
+    accountLabels: new Map(input.accounts.filter((a) => a.name).map((a) => [a.id, a.name as string])),
+  });
+  // Constrain membership ONLY when the rollup actually saw attributions. A read
+  // that did not select the income evidence yields an empty rollup, and an empty
+  // included-set would blank the payer card rather than degrade to prior
+  // behaviour — the same "absence is not a verdict" rule the economic fold uses.
+  const sawAttribution = windowed.some((t) => t.incomeClass != null);
+  const includedIncomeIds = sawAttribution
+    ? new Set(income.lines.flatMap((l) => l.rowIds))
+    : undefined;
+
   return {
     period,
     range,
+    income,
+    incomeBySource: incomeBySource(windowed, moneyCtx, includedIncomeIds),
     rows: windowed,
     summary,
     daily: projectDailyFacts(rows, liqCtx, moneyCtx),
     buckets: bucketDayFacts(rows, liqCtx, period, moneyCtx),
     outflowByCategory: outflowByCategory(windowed, moneyCtx),
-    incomeBySource: incomeBySource(windowed, moneyCtx),
-    // Composed from the SAME `windowed` rows the headline uses, so the canonical
-    // breakdown and the economic total cannot describe different sets.
-    income: composeIncomeRollup({
-      scope: "BANK_TRANSACTIONS",
-      rows: windowed
-        .filter((t) => t.incomeClass != null)
-        .map((t) => ({
-          id: t.id,
-          amount: Math.abs(magnitude(t, moneyCtx) ?? 0),
-          attribution: {
-            incomeClass: t.incomeClass as IncomeRollup["lines"][number]["incomeClass"],
-            subtype: (t.incomeSubtype ?? "UNRESOLVED_INCOME") as never,
-            instrumentId: t.incomeInstrumentId ?? null,
-            sourceAccountId: t.incomeSourceAccountId ?? null,
-            reason: "",
-          },
-        })),
-      accountLabels: new Map(input.accounts.filter((a) => a.name).map((a) => [a.id, a.name as string])),
-    }),
     cashInByReason: breakdown.cashIn,
     debtPayments: groupDebtPaymentsByCreditor(debtPaymentRows, (t) => magnitude(t, moneyCtx)),
     context: groupCashFlowContext(rows, liqCtx, moneyCtx),
