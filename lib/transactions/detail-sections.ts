@@ -75,6 +75,7 @@ function summary(d: TransactionDetail): DetailSection {
   const nature = describeRowNature({
     flowType:      d.flowType ?? null,
     incomeSubtype: d.incomeSubtype ?? null,
+    transferMaturity: d.transferMaturity ?? null,
     amount:        d.amount,
     hasOwnedCounterparty: d.counterpartyAccountId != null,
   });

@@ -129,6 +129,7 @@ function natureOf(t: Transaction) {
   return describeRowNature({
     flowType:      t.flowType ?? null,
     incomeSubtype: t.incomeSubtype ?? null,
+    transferMaturity: t.transferMaturity ?? null,
     amount:        t.amount,
     hasOwnedCounterparty: t.counterpartyAccountId != null,
   });

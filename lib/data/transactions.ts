@@ -319,7 +319,15 @@ function contextFields(
     // Phase 6 — the ladder decides the disposition where it ran.
     transferMaturity:           a?.maturity ?? null,
   });
-  return { transferDisposition: c.transferDisposition, needsClassification: c.needsClassification };
+  // V27-TRUTH-8 — the maturity is the transfer authority's VERDICT about the
+  // destination, and it was computed here and thrown away. Presentation then had
+  // only `flowType` (often the provider's category) to go on, so a movement the
+  // authority had called SAVINGS_TRANSFER still rendered "Debt payment".
+  return {
+    transferDisposition: c.transferDisposition,
+    needsClassification: c.needsClassification,
+    transferMaturity:    a?.maturity ?? null,
+  };
 }
 
 /**
@@ -745,6 +753,15 @@ export async function getTransactionDetail(
     hasResolvedCounterparty: row.counterpartyAccountId != null || resolvedTransferCpId != null,
   });
 
+  // V27-TRUTH-8 — the transfer authority's DESTINATION verdict, from the same
+  // canonical entry point the list read uses. The detail read resolves a
+  // counterparty through RelationshipResolver but never asked what KIND of
+  // movement that made, so the drawer rendered "Debt payment" for a movement the
+  // authority had already called SAVINGS_TRANSFER. One bounded assessment for
+  // this row — not a second derivation.
+  const detailMaturity =
+    (await resolveTransferAssessments([row] as never, { spaceId })).get(row.id)?.maturity ?? null;
+
   return {
     // V27-TRUTH-7 — `accountType` MUST be supplied here, exactly as the list read
     // supplies it (see loadAccountTypes above).
@@ -763,6 +780,7 @@ export async function getTransactionDetail(
     // the resolved `counterparty` block below. TI4 Slice 1: a persisted (provider-
     // confirmed) link wins; otherwise a KD-15-gated read-time transfer match fills in.
     counterpartyAccountId: chooseCounterpartyId(gatedCounterpartyId(row), resolvedTransferCpId),
+    transferMaturity:   detailMaturity,
     pfcPrimary:         row.pfcPrimary ?? null,
     pfcDetailed:        row.pfcDetailed ?? null,
     pfcConfidenceLevel: row.pfcConfidenceLevel ?? null,

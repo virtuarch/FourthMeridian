@@ -76,9 +76,10 @@ export interface RowNatureResult {
    *
    *   INCOME_TAXONOMY — lib/transactions/income-source.ts decided it
    *   FLOW_TYPE       — no attribution was emitted; the canonical FlowType map
+   *   TRANSFER_MATURITY — the transfer authority named the destination
    *   TRANSFER_SIGN   — a TRANSFER, directed by the sign of the amount
    */
-  basis: "INCOME_TAXONOMY" | "FLOW_TYPE" | "TRANSFER_SIGN";
+  basis: "INCOME_TAXONOMY" | "TRANSFER_MATURITY" | "FLOW_TYPE" | "TRANSFER_SIGN";
 }
 
 /** The words. One entry per RowNature — exhaustive by type, so a new nature
@@ -171,8 +172,33 @@ const NATURE_OF_FLOW: Record<string, RowNature> = {
 
 /** The canonical verdicts a row carries. Every field is another authority's
  *  output — this module reads them, and adds nothing. */
+/**
+ * Canonical transfer maturity → nature. V27-TRUTH-8.
+ *
+ * ⚠️ A mapping, not a decision: every key is a verdict
+ * lib/transactions/transfer-maturation.ts already reached about the movement's
+ * DESTINATION. A maturity absent from this map falls through rather than
+ * inventing a nature.
+ */
+const NATURE_OF_MATURITY: Record<string, RowNature> = {
+  SAVINGS_TRANSFER:    "INTERNAL_TRANSFER",
+  CASH_TRANSFER:       "INTERNAL_TRANSFER",
+  INTERNAL_TRANSFER:   "INTERNAL_TRANSFER",
+  INVESTMENT_TRANSFER: "INTERNAL_TRANSFER",
+  DEBT_PAYMENT:        "DEBT_PAYMENT",
+  ISSUER_CREDIT:       "ISSUER_CREDIT",
+};
+
 export interface RowNatureEvidence {
   flowType: string | null | undefined;
+  /**
+   * The transfer authority's verdict about the DESTINATION. Outranks `flowType`,
+   * which is frequently just the provider's category — a live $4,000 movement
+   * into a savings account carried a card-payment category because the
+   * institution also issues a card, and rendered "Debt payment" until this was
+   * consulted.
+   */
+  transferMaturity?: string | null;
   /** lib/transactions/income-source.ts, via the serializer. */
   incomeSubtype?: string | null;
   /** Signed amount — a provider fact, used ONLY to direct a transfer. */
@@ -199,13 +225,20 @@ export function describeRowNature(e: RowNatureEvidence): RowNatureResult {
     if (n) return mk(n, "INCOME_TAXONOMY");
   }
 
-  // 2 — a transfer is directed by the sign of its amount. A fact, not a guess.
+  // 2 — the transfer authority's destination verdict. More informed than
+  //     `flowType`: it weighed the counterparty, the matched leg and the venue.
+  if (e.transferMaturity) {
+    const n = NATURE_OF_MATURITY[e.transferMaturity];
+    if (n) return mk(n, "TRANSFER_MATURITY");
+  }
+
+  // 3 — a transfer is directed by the sign of its amount. A fact, not a guess.
   if (e.flowType === "TRANSFER") {
     if (e.hasOwnedCounterparty === true) return mk("INTERNAL_TRANSFER", "TRANSFER_SIGN");
     return mk(e.amount > 0 ? "TRANSFER_IN" : "TRANSFER_OUT", "TRANSFER_SIGN");
   }
 
-  // 3 — the canonical FlowType label.
+  // 4 — the canonical FlowType label.
   const n = e.flowType ? NATURE_OF_FLOW[e.flowType] : undefined;
   return mk(n ?? "UNKNOWN", "FLOW_TYPE");
 }

@@ -77,6 +77,37 @@ test("an owned counterparty makes it an INTERNAL transfer, in either direction",
   assert.notEqual(into.nature, "DEBT_PAYMENT");
 });
 
+test("the transfer authority's destination verdict outranks the provider's flowType", () => {
+  // The live row: persisted DEBT_PAYMENT because the provider categorised it from
+  // a descriptor naming an institution that also issues a card. The transfer
+  // authority resolved the destination to a SAVINGS account.
+  const r = describeRowNature({ flowType: "DEBT_PAYMENT", transferMaturity: "SAVINGS_TRANSFER", amount: -4000 });
+  assert.equal(r.nature, "INTERNAL_TRANSFER");
+  assert.equal(r.label, "Internal transfer");
+  assert.equal(r.basis, "TRANSFER_MATURITY");
+  assert.equal(r.tone, "neutral");
+});
+
+test("a maturity of DEBT_PAYMENT keeps a real card payment a debt payment", () => {
+  const r = describeRowNature({ flowType: "DEBT_PAYMENT", transferMaturity: "DEBT_PAYMENT", amount: -650 });
+  assert.equal(r.nature, "DEBT_PAYMENT");
+  assert.equal(r.basis, "TRANSFER_MATURITY");
+});
+
+test("an unassessed row still reads from its flowType", () => {
+  // Most rows carry no maturity — they already had a persisted counterparty, or
+  // are not transfer-shaped. Absence must not change their label.
+  const r = describeRowNature({ flowType: "DEBT_PAYMENT", transferMaturity: null, amount: -650 });
+  assert.equal(r.nature, "DEBT_PAYMENT");
+  assert.equal(r.basis, "FLOW_TYPE");
+});
+
+test("an unrecognized maturity falls through rather than inventing a nature", () => {
+  const r = describeRowNature({ flowType: "SPENDING", transferMaturity: "SOME_FUTURE_MATURITY", amount: -5 });
+  assert.equal(r.nature, "SPENDING");
+  assert.equal(r.basis, "FLOW_TYPE");
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Precedence and honest absence
 // ─────────────────────────────────────────────────────────────────────────────

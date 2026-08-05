@@ -66,6 +66,7 @@ export function toTransactionsCsv(rows: ExportTransaction[]): string {
       row_nature:  describeRowNature({
         flowType:      r.flowType ?? null,
         incomeSubtype: r.incomeSubtype ?? null,
+    transferMaturity: r.transferMaturity ?? null,
         amount:        r.amount,
         hasOwnedCounterparty: r.counterpartyAccountId != null,
       }).nature,
@@ -73,6 +74,8 @@ export function toTransactionsCsv(rows: ExportTransaction[]): string {
       // authority established one. Empty when it did not — never a guess, and
       // never a descriptor-derived name.
       transfer_counterparty_account_id: r.counterpartyAccountId ?? "",
+      // The transfer authority's verdict about the DESTINATION, where it ran.
+      transfer_maturity: r.transferMaturity ?? "",
     })),
   );
 }

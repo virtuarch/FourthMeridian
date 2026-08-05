@@ -123,6 +123,7 @@ function TransactionDetailFetcher({ id }: { id: string }) {
         eyebrow={detail ? describeRowNature({
           flowType:      detail.flowType ?? null,
           incomeSubtype: detail.incomeSubtype ?? null,
+    transferMaturity: detail.transferMaturity ?? null,
           amount:        detail.amount,
           hasOwnedCounterparty: detail.counterpartyAccountId != null,
         }).label : undefined}
@@ -166,6 +167,7 @@ function TransactionHeadline({ detail }: { detail: TransactionDetail }) {
   const nature = describeRowNature({
     flowType:      detail.flowType ?? null,
     incomeSubtype: detail.incomeSubtype ?? null,
+    transferMaturity: detail.transferMaturity ?? null,
     amount:        detail.amount,
     hasOwnedCounterparty: detail.counterpartyAccountId != null,
   });

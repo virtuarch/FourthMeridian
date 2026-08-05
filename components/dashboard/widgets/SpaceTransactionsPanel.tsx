@@ -533,6 +533,7 @@ function TxRow({
   const nature     = describeRowNature({
     flowType:      tx.flowType ?? null,
     incomeSubtype: tx.incomeSubtype ?? null,
+    transferMaturity: tx.transferMaturity ?? null,
     amount:        tx.amount,
     hasOwnedCounterparty: tx.counterpartyAccountId != null,
   });

@@ -280,6 +280,11 @@ export interface Transaction {
   /** Canonical income class: EARNED_INCOME | INTEREST_INCOME | DIVIDEND_INCOME
    *  | OTHER_INCOME | NOT_INCOME. Present on inflows the read supplied evidence
    *  for. A surface that shows an income total MUST break it down by this. */
+  /** V27-TRUTH-8 — the transfer authority's verdict about this movement's
+   *  DESTINATION (SAVINGS_TRANSFER | DEBT_PAYMENT | INTERNAL_TRANSFER | …).
+   *  Absent when the read did not assess the row (e.g. it already had a
+   *  persisted counterparty, or it is not transfer-shaped). */
+  transferMaturity?:    string | null;
   /** L8-B1 — the logical event this row projects (pending and posted share one).
    *  Absent when the read did not select it; null outside the banking event
    *  domain (self-custody crypto). */
