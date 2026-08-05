@@ -223,6 +223,10 @@ type TxnRow = {
   // and never by anything that could surface a provider token to the model.
   counterpartyType: string | null;
   description:      string | null;
+  // L8-B — the CANONICAL financial date the model reasons about. `date` stays as
+  // posting provenance; every chronology read below uses this one, so the AI's
+  // months, buckets and "largest expense on ..." agree with what the UI shows.
+  economicDate:     Date | null;
 };
 
 /**
@@ -230,7 +234,24 @@ type TxnRow = {
  * TxnRow so the KD-17 / golden fixtures (which never carry the TI2-W1 identity /
  * needs-classification columns) still satisfy the exported seam unchanged.
  */
-type MonthlyRow = Pick<TxnRow, 'date' | 'amount' | 'currency' | 'category' | 'flowType'>;
+type MonthlyRow = Pick<TxnRow, 'date' | 'amount' | 'currency' | 'category' | 'flowType'>
+  // L8-B — OPTIONAL here, and only here. The KD-17 / spending-trends golden
+  // fixtures predate the column and construct rows by hand; `econOf` falls back
+  // to `date` for them. A LIVE row always carries it (backfill + dual-write +
+  // audit:economic-date), so this cannot mix chronologies on real data.
+  & { economicDate?: Date | null };
+
+/**
+ * L8-B — the canonical financial date of a row.
+ *
+ * ⚠️ Falls back to `date` ONLY for a golden fixture that predates the column
+ * (`economicDate` absent, not null). A live row always carries it — the backfill,
+ * dual-write and `audit:economic-date` guarantee that — so this can never
+ * silently mix chronologies on real data.
+ */
+function econOf(r: { date: Date; economicDate?: Date | null }): Date {
+  return r.economicDate ?? r.date;
+}
 
 /**
  * MC1 Phase 2 Slice 4 — a row's amount in the money-context target, converted
@@ -247,7 +268,7 @@ function amountInTarget(
 ): { amount: number | null; estimated: boolean } {
   const c = convertMoney(
     { amount: txn.amount, currency: txn.currency },
-    txn.date.toISOString().slice(0, 10),
+    econOf(txn).toISOString().slice(0, 10),
     ctx,
   );
   // V25-FINAL-1 — `amount` is null when the conversion is UNAVAILABLE (no rate):
@@ -416,6 +437,8 @@ async function assembleTransactions(
       // Financial Truth (Transfer Authority) — see TxnRow.
       counterpartyType:      true,
       description:           true,
+      // L8-B — the canonical financial chronology.
+      economicDate:          true,
     },
     orderBy: { date: 'desc' },
     take:    TRANSACTION_FETCH_LIMIT + 1,
@@ -456,7 +479,7 @@ async function assembleTransactions(
   const moneyCtx = spaceRow
     ? await buildSpaceConversionContext(spaceRow, {
         currencies: rows.map((r) => r.currency),
-        dates:      [...new Set(rows.map((r) => r.date.toISOString().slice(0, 10)))],
+        dates:      [...new Set(rows.map((r) => econOf(r).toISOString().slice(0, 10)))],
       })
     : identityContext(DEFAULT_DISPLAY_CURRENCY);
 
@@ -669,7 +692,7 @@ async function assembleTransactions(
   // Rows are date-desc, so the last element is the oldest kept row. The month it
   // falls in had older rows dropped and is therefore incomplete.
   const coverageStartIso = truncated
-    ? rows[rows.length - 1].date.toISOString().split('T')[0]
+    ? econOf(rows[rows.length - 1]).toISOString().split('T')[0]
     : win.startIso;
   const monthlyBreakdown = buildMonthlyBreakdown(
     settled,
@@ -686,7 +709,7 @@ async function assembleTransactions(
   // provenance block shows the exact period asked for; otherwise it is the most
   // recent transaction date (default rolling-window behavior, unchanged).
 
-  const newestDate = win.endIso ?? rows[0].date.toISOString().split('T')[0];
+  const newestDate = win.endIso ?? econOf(rows[0]).toISOString().split('T')[0];
 
   // ── Recurring candidates (settled transactions, full scope only) ──────────
   // Heuristic: merchants appearing 2+ times in the window are candidates.
@@ -810,7 +833,7 @@ async function assembleTransactions(
       ? {
           merchant: largestIncomeRow.merchant,
           amount:   Math.round(largestIncomeAmt * 100) / 100,
-          date:     largestIncomeRow.date.toISOString().split('T')[0],
+          date:     econOf(largestIncomeRow).toISOString().split('T')[0],
         }
       : null,
 
@@ -818,7 +841,7 @@ async function assembleTransactions(
       ? {
           merchant: largestExpenseRow.merchant,
           amount:   Math.round(largestExpenseAmt * 100) / 100,
-          date:     largestExpenseRow.date.toISOString().split('T')[0],
+          date:     econOf(largestExpenseRow).toISOString().split('T')[0],
         }
       : null,
 
@@ -959,7 +982,7 @@ export function buildMonthlyBreakdown(
   for (const txn of settled) {
     // MC1 Phase 2 Slice 4 — per-row target amount (native when no ctx).
     // MC1 Phase 3 Slice 2 — the same conversion carries the estimated taint (D-7).
-    const b = bucketFor(monthKey(txn.date));
+    const b = bucketFor(monthKey(econOf(txn)));
     b.transactionCount += 1;
     // P2-7B — non-economic residue (UNKNOWN / ADJUSTMENT / null) is counted in
     // this month's transactionCount but never folded into its category or money
@@ -996,7 +1019,7 @@ export function buildMonthlyBreakdown(
 
   // Pending rows only bump the count (excluded from money totals, as top-level).
   for (const txn of pending) {
-    bucketFor(monthKey(txn.date)).transactionCount += 1;
+    bucketFor(monthKey(econOf(txn))).transactionCount += 1;
   }
 
   const startMonth   = startIso.slice(0, 7);
@@ -1119,7 +1142,7 @@ export function buildMerchantRollup(
     if (txn.flowType !== FlowType.SPENDING) continue;
 
     const { key: canonicalKey, name: canonicalName } = merchantGroupOf(txn);
-    const iso  = txn.date.toISOString().split('T')[0];
+    const iso  = econOf(txn).toISOString().split('T')[0];
     const conv = amountInTarget(txn, ctx);
     // V25-FINAL-1 — occurrence is still evidence the merchant exists, but an
     // unconvertible amount is EXCLUDED from `total` (never a native magnitude /
@@ -1207,7 +1230,7 @@ export function buildIncomeSourceRollup(
     if (txn.amount <= 0) continue;
 
     const { key: canonicalKey, name: canonicalName } = merchantGroupOf(txn);
-    const iso  = txn.date.toISOString().split('T')[0];
+    const iso  = econOf(txn).toISOString().split('T')[0];
     const conv = amountInTarget(txn, ctx);
 
     const agg = incomeMap.get(canonicalKey) ?? {
@@ -1432,6 +1455,7 @@ async function assembleDrilldown(
       category:    true,
       amount:      true,
       currency:    true, // P2-7C — conversion input for the drilldown's FX seam
+      economicDate: true, // L8-B — the canonical financial chronology
       financialAccount: { select: { name: true, displayName: true } },
     },
     orderBy: { date: 'desc' },
@@ -1452,7 +1476,7 @@ async function assembleDrilldown(
   // Degrades to identity if the Space row vanished mid-request.
   const drillCtx = await buildSpaceConversionContextById(spaceId, {
     currencies: capped.map((r) => r.currency),
-    dates:      [...new Set(capped.map((r) => r.date.toISOString().slice(0, 10)))],
+    dates:      [...new Set(capped.map((r) => econOf(r).toISOString().slice(0, 10)))],
   });
   // One converted magnitude per row drives matchedTotal, the "largest" sort, and
   // each serialized amount — never a native amount beside a converted total.
@@ -1486,7 +1510,9 @@ async function assembleDrilldown(
     const accountName =
       r.financialAccount?.displayName ?? r.financialAccount?.name ?? undefined;
     return {
-      date:     r.date.toISOString().split('T')[0],
+      date:     econOf(r).toISOString().split('T')[0],
+      // Posting date rides as PROVENANCE, explicitly labelled, never as the date.
+      postedDate: r.date.toISOString().split('T')[0],
       // MI M6 read cutover — resolved Merchant display name, else the normalizer.
       merchant: r.resolvedMerchant?.displayName ?? normalizeMerchant(r.merchant).canonicalName,
       // Forensic preservation — the original provider descriptor is never lost.

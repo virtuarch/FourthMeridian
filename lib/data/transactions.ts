@@ -71,6 +71,7 @@ import { shouldSurfaceAsNeedsClassification } from "@/lib/transactions/needs-cla
 import { deriveTransactionContext } from "@/lib/transactions/transaction-context";
 import { convertMoney } from "@/lib/money/convert";
 import { buildSpaceConversionContextById } from "@/lib/money/server-context";
+import { ECONOMIC_DATE_MAX_LAG_DAYS } from "@/lib/transactions/economic-date";
 
 /**
  * P2-2 — the canonical banking-population WHERE fragment. FlowType (not provider
@@ -248,8 +249,11 @@ export async function getTransactions(
   const floor      = windowFloorDate(windowDays);
 
   const fetched = await db.transaction.findMany({
-    where: { ...bankingTransactionWhere(spaceId), ...(floor ? { date: { gte: floor } } : {}) },
-    orderBy: { date: "desc" },
+    // L8-B — the bounded list reads on the ECONOMIC chronology, like the
+    // explorer. A floor applied to posting while the page is ordered by economic
+    // would silently drop rows whose economic date is inside the window.
+    where: { ...bankingTransactionWhere(spaceId), ...(floor ? { economicDate: { gte: floor } } : {}) },
+    orderBy: { economicDate: { sort: "desc", nulls: "last" } },
     take: limit + 1, // +1 sentinel to detect truncation without a second query
     // MI M6 read cutover — resolved Merchant presentation (additive join).
     // + KD-15 counterparty visibility for the Cash Flow liquidity axis.
@@ -324,8 +328,8 @@ export async function getDebtTransactions(
   const floor      = windowFloorDate(windowDays);
 
   const fetched = await db.transaction.findMany({
-    where: { ...bankingTransactionWhere(spaceId, { debtOnly: true }), ...(floor ? { date: { gte: floor } } : {}) },
-    orderBy: { date: "desc" },
+    where: { ...bankingTransactionWhere(spaceId, { debtOnly: true }), ...(floor ? { economicDate: { gte: floor } } : {}) },
+    orderBy: { economicDate: { sort: "desc", nulls: "last" } },
     take: limit + 1,
     include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } }, ...counterpartyVisibilityInclude(spaceId) },
   });
@@ -507,7 +511,14 @@ export async function getTransactionDetail(
   // legs so transferCandidate (deterministic owned-account matching) can resolve.
   // deletedAt is NOT filtered (a tombstoned pending row must still resolve; the
   // resolvers exclude tombstoned rows from duplicate/transfer matching themselves).
-  const RELATIONSHIP_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+  // L8-B — the gather window filters the STORED POSTING column (economicDate is
+  // now persisted, but this window also serves pending↔posted and duplicate
+  // matching, which are posting-shaped). Because a leg's economic date can sit up
+  // to ECONOMIC_DATE_MAX_LAG_DAYS BEFORE its posting date, a window sized for the
+  // economic distance would starve the matcher of rows it must see. Widened by
+  // exactly that bound: a bounded over-fetch, never a semantic change — the
+  // matcher still refuses anything outside the real ±window.
+  const RELATIONSHIP_WINDOW_MS = (7 + ECONOMIC_DATE_MAX_LAG_DAYS) * 24 * 60 * 60 * 1000;
   const ownerUserId = row.financialAccount?.ownerUserId ?? null;
   const ownedAccounts = ownerUserId
     ? await db.financialAccount.findMany({
@@ -560,7 +571,7 @@ export async function getTransactionDetail(
     select: {
       id: true, financialAccountId: true,
       plaidTransactionId: true, pendingTransactionRef: true,
-      date: true, amount: true, merchant: true, pending: true,
+      date: true, economicDate: true, amount: true, merchant: true, pending: true,
       deletedAt: true, flowType: true, currency: true,
       settlementState: true, pfcDetailed: true, pfcPrimary: true,
       counterpartyAccountId: true,

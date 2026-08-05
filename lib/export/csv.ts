@@ -26,7 +26,11 @@ import type {
 export function toTransactionsCsv(rows: ExportTransaction[]): string {
   return Papa.unparse(
     rows.map((r) => ({
-      date:        r.date,
+      // L8-B — `date` is the ECONOMIC date (when it happened); `posting_date` is
+      // provenance. Both labelled explicitly so a downloaded file is never
+      // ambiguous about which chronology it carries.
+      date:            r.date,
+      posting_date:    r.postingDate ?? r.date,
       merchant:    r.merchant,
       description: r.description ?? "",
       amount:      r.amount,
@@ -106,6 +110,7 @@ export function toSnapshotsCsv(rows: ExportSnapshot[]): string {
       space_id:          r.spaceId,
       space_name:        r.spaceName,
       date:              r.date,
+      posting_date:      (r as { postingDate?: string }).postingDate ?? r.date,
       net_worth:         r.netWorth,
       total_assets:      r.totalAssets,
       total_debt:        r.totalDebt,

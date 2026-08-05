@@ -128,25 +128,93 @@ test("the write authority itself holds no date logic", () => {
   assert.match(logic, /resolveEconomicDate\(/, "it must delegate to the resolver");
 });
 
-test("L8-A is dual-write ONLY — nothing reads the column yet", () => {
-  // The reader cutover is a separate atomic slice. If a consumer starts reading
-  // `economicDate` from the row before that slice, chronology becomes mixed —
-  // the precise failure mode the cutover exists to avoid.
+// ── L8-B — the reader cutover landed. The guard changes shape. ─────────────
+//
+// L8-A carried a probe asserting NOTHING read the column, so the cutover could
+// not land piecemeal. It fired when this slice moved the readers, which is what
+// it was for. The successor invariant is the inverse and stronger: every
+// chronology reader must be ON the economic column, and none may fall back to
+// posting.
+
+test("L8-B: ordering, cursor and date filter all use economicDate", () => {
+  const core = read("lib/data/transaction-query-core.ts");
+  const logic = core.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+
+  // The three that must never diverge — a cursor minted on one column and
+  // applied against an ordering on another duplicates and skips rows silently.
+  const orderBy = logic.slice(logic.indexOf("export function orderByForSort"));
+  assert.match(orderBy.slice(0, 400), /economicDate/, "ordering must be economic");
+  const keyset = logic.slice(logic.indexOf("export function keysetWhere"));
+  assert.match(keyset.slice(0, 500), /economicDate/, "the keyset must be economic");
+  const filter = logic.slice(logic.indexOf("export function buildFilterWhere"));
+  assert.match(filter.slice(0, 700), /economicDate:/, "the date filter must be economic");
+
+  // ...and none of them may still reach for the posting column.
+  for (const [name, frag] of [["orderBy", orderBy.slice(0, 400)], ["keyset", keyset.slice(0, 500)]] as const) {
+    assert.ok(!/\bdate:\s*"(asc|desc)"/.test(frag) && !/\{\s*date:\s*\{/.test(frag),
+      `${name} still references the posting column`);
+  }
+});
+
+test("L8-B: the count shares the filter, so it cannot describe a different population", () => {
+  // `transaction-count.ts` imports `buildFilterWhere` verbatim. That is what
+  // makes "1,284 results" and the scrolling list the same set by construction —
+  // and it is why the count moved to the economic chronology for free.
+  const countSrc = read("lib/data/transaction-count.ts");
+  assert.match(countSrc, /buildFilterWhere/,
+    "the count must share the list's filter fragments, never restate them");
+});
+
+test("L8-B: transfer matching runs on the economic chronology and refuses a fallback", () => {
+  const logic = read("lib/transactions/RelationshipResolver.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  assert.match(logic, /economicMs\(r\)/, "the leg timestamp must come from the economic chronology");
+  // ⚠️ It must THROW on a null, not substitute `date`. One leg on economic and
+  // another on posting makes mutual uniqueness undefined, not merely wrong.
+  const fn = logic.slice(logic.indexOf("function economicMs"));
+  assert.match(fn.slice(0, 400), /throw new Error/);
+  assert.ok(!/economicDate\s*\?\?\s*r?\.?date/.test(fn.slice(0, 400)),
+    "the leg timestamp must never fall back to the posting date");
+});
+
+test("L8-B: the transfer gather window is widened by the lag bound", () => {
+  // The gather filters the STORED POSTING column while the matcher compares
+  // ECONOMIC dates. A leg whose economic date is inside the window can have a
+  // posting date outside it, so a window sized for the economic distance alone
+  // would starve the matcher — silently, and invisibly to any probe that only
+  // inspects matcher output. This was the calibration's R1.
+  const src = read("lib/transactions/transfer-resolution.ts");
+  assert.match(src, /ECONOMIC_DATE_MAX_LAG_DAYS/,
+    "the gather window must account for the authorization lag");
+  assert.match(src, /GATHER_WINDOW_MS\s*=\s*\(TRANSFER_WINDOW_DAYS \+ 1 \+ ECONOMIC_DATE_MAX_LAG_DAYS\)/,
+    "the gather window must be widened by exactly the lag bound");
+  const drawer = read("lib/data/transactions.ts");
+  assert.match(drawer, /RELATIONSHIP_WINDOW_MS\s*=\s*\(7 \+ ECONOMIC_DATE_MAX_LAG_DAYS\)/,
+    "the drawer's relationship window must be widened too");
+});
+
+test("L8-B: the calibrated bounds are UNCHANGED", () => {
+  // Phase 2 re-derived these on economic dates and they landed in the same
+  // place. The cutover must not quietly retune them.
+  const mat = read("lib/transactions/transfer-maturation.ts");
+  assert.match(mat, /export const TRANSFER_MATCH_WINDOW_DAYS = 5;/);
+  assert.match(mat, /STRATIFIED_MATCH_TIERS: readonly number\[\] = \[0, TRANSFER_MATCH_WINDOW_DAYS\]/);
+  assert.match(read("lib/transactions/transfer-chain.ts"), /CHAIN_CONTINUATION_WINDOW_DAYS = 14/);
+});
+
+test("L8-B: the DTO's `date` is economic and `postingDate` is provenance", () => {
+  const src = read("lib/transactions/serialize.ts");
+  assert.match(src, /function financialDate\(/, "one helper decides the DTO's canonical date");
+  assert.match(src, /date:\s*financialDate\(r\)/, "the DTO date must be the economic one");
+  assert.match(src, /postingDate:\s*econ\.postingDate/, "posting must still ship, as provenance");
+  // Every serializer, not just the banking one — an investment row's trade date
+  // is its economic date too, or the two lists disagree about a day.
   //
-  // `serialize.ts` is exempt: it emits a DERIVED `economicDate` DTO field that
-  // predates this column (V27-L4B) and still comes from `resolveEconomicDate`.
-  const CONSUMERS = [
-    "lib/data/transaction-query-core.ts",
-    "lib/data/transaction-query.ts",
-    "lib/data/transaction-count.ts",
-    "lib/transactions/cash-flow-projection.ts",
-    "lib/transactions/RelationshipResolver.ts",
-  ];
-  for (const f of CONSUMERS) {
-    const logic = read(f).replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
-    assert.ok(
-      !/economicDate/.test(logic),
-      `${f} already reads economicDate — the reader cutover must land as ONE atomic slice, not piecemeal`,
-    );
+  // Matches DTO ASSIGNMENTS (a rendered `date:` that formats a value), never the
+  // interface DECLARATIONS (`date: Date;`) that share the prefix.
+  const emitted = [...src.matchAll(/^\s*date:\s*(.*toISOString.*)$/gm)].map((m) => m[1]);
+  // Two serializers emit a date: the banking row and the investment row.
+  assert.equal(emitted.length, 2, `expected both serializers' date emissions, saw ${emitted.length}`);
+  for (const a of emitted) {
+    assert.ok(/financialDate/.test(a), `a serializer still emits the raw posting date: ${a.trim()}`);
   }
 });

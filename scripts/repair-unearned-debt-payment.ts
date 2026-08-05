@@ -116,6 +116,10 @@ async function main(): Promise<void> {
     pfcDetailed:           t.pfcDetailed,
     pfcPrimary:            t.pfcPrimary,
     category: null, counterpartyClass: null, institutionId: null, descriptor: null,
+    // Historical repairs, already applied. They matched on POSTING dates and
+    // their verdicts are history; feeding the posting date keeps them replayable
+    // and byte-identical rather than silently re-deciding on a new chronology.
+    economicDate: t.date,
     persistedCounterpartyAccountId: t.counterpartyAccountId ?? null,
   });
 

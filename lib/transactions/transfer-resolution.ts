@@ -31,14 +31,28 @@ import {
   type TransferCandidateRelationship,
 } from "@/lib/transactions/RelationshipResolver";
 import { TRANSFER_MATCH_WINDOW_DAYS, isTransferPrefilterCandidate } from "@/lib/transactions/transfer-maturation";
+import { ECONOMIC_DATE_MAX_LAG_DAYS } from "@/lib/transactions/economic-date";
 
 /** ± window (whole days) for a matched opposite leg — the ONE evidence-derived
  *  bound, from lib/transactions/transfer-maturation.ts (5 days; see its header
  *  for the skew-vs-recurrence measurement that chose it). */
 const TRANSFER_WINDOW_DAYS = TRANSFER_MATCH_WINDOW_DAYS;
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** DB gather window is padded by a day over the matcher window for date-boundary safety. */
-const GATHER_WINDOW_MS = (TRANSFER_WINDOW_DAYS + 1) * DAY_MS;
+/**
+ * DB gather window, padded by a day over the matcher window for date-boundary
+ * safety — and, since L8-B, by ECONOMIC_DATE_MAX_LAG_DAYS as well.
+ *
+ * ⚠️ The gather bounds are computed from the TARGETS' economic dates but applied
+ * to a column whose values can sit up to the lag bound LATER. A leg whose
+ * economic date is inside the ±window can therefore have a posting date outside
+ * it, and a window sized for the economic distance alone would never load it —
+ * a silent starvation, invisible to any probe that only inspects matcher output.
+ * This was the calibration's R1 and it is corrected here.
+ *
+ * Over-fetching is free of semantic risk: the matcher still applies the real
+ * ±TRANSFER_MATCH_WINDOW_DAYS to the economic dates it was handed.
+ */
+const GATHER_WINDOW_MS = (TRANSFER_WINDOW_DAYS + 1 + ECONOMIC_DATE_MAX_LAG_DAYS) * DAY_MS;
 /** Safety backstop on the candidate set — owned transfer legs in a ±window are tiny. */
 const CANDIDATE_CAP = 5000;
 
@@ -70,6 +84,8 @@ export interface TransferLegLike {
   counterpartyType:   string | null;
   /** Descriptor text, for IDENTIFIER extraction only. */
   description:        string | null;
+  /** L8-B — the persisted economic chronology; the basis matching runs on. */
+  economicDate:       Date | null;
 }
 
 /** A list-read row eligible to be a target: a leg plus its PERSISTED link (which,
@@ -123,6 +139,7 @@ function toRel(
     // The descriptor the extractor reads. `merchant` alone is not enough: Chase
     // puts the correlation token in `description`, and Amex puts the mask there.
     descriptor:            `${r.merchant ?? ""} ${r.description ?? ""}`,
+    economicDate:          r.economicDate,
   };
 }
 
@@ -236,7 +253,9 @@ export async function resolveTransferAssessments(
   const matchCtx = { accountTypeById, maskToAccountIds };
 
   // 2 — One bounded cross-account candidate query over the union date window.
-  const times = targets.map((t) => t.date.getTime());
+  // Bounds from the ECONOMIC dates (what the matcher compares), widened above so
+  // the POSTING column they are applied to cannot starve the match.
+  const times = targets.map((t) => (t.economicDate ?? t.date).getTime());
   const gte = new Date(Math.min(...times) - GATHER_WINDOW_MS);
   const lte = new Date(Math.max(...times) + GATHER_WINDOW_MS);
   const candidates = await db.transaction.findMany({
@@ -263,6 +282,8 @@ export async function resolveTransferAssessments(
       // Financial Truth — admission needs `category`; the external leaves need
       // `counterpartyType`; identifier extraction needs `description`.
       category: true, counterpartyType: true, description: true,
+      // L8-B — the matching chronology.
+      economicDate: true,
     },
     take: CANDIDATE_CAP,
   });
@@ -277,7 +298,7 @@ export async function resolveTransferAssessments(
   for (const c of candidates) {
     const key = bucketKey(c.currency, c.amount);
     const bucket = index.get(key);
-    const rel = toRel({ ...c, category: c.category as string | null, counterpartyType: c.counterpartyType as string | null }, ownerByAccount, institutionByAccount);
+    const rel = toRel({ ...c, category: c.category as string | null, counterpartyType: c.counterpartyType as string | null, economicDate: c.economicDate }, ownerByAccount, institutionByAccount);
     if (bucket) bucket.push(rel);
     else index.set(key, [rel]);
   }

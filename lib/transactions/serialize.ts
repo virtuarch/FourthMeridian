@@ -48,7 +48,18 @@ import { isIncome } from "@/lib/transactions/flow-predicates";
 export interface TransactionRowLike {
   id:                 string;
   financialAccountId: string | null;
+  /** The POSTING date — `Transaction.date`. Provenance, not the headline. */
   date:               Date;
+  /**
+   * L8-B — the persisted ECONOMIC date. Becomes the DTO's `date`, i.e. THE
+   * canonical financial date every surface renders, groups and buckets by.
+   *
+   * ⚠️ Optional at the TYPE level only because golden fixtures and a few narrow
+   * reads construct rows by hand. A live row always carries it — backfill,
+   * dual-write and `audit:economic-date` guarantee that — and `financialDate()`
+   * below records exactly when the fallback is legitimate.
+   */
+  economicDate?:      Date | null;
   merchant:           string;
   description:        string | null;
   category:           string;
@@ -93,11 +104,35 @@ export interface TransactionRowLike {
  * account. Every row carries a FinancialAccount FK (Transaction model comment,
  * prisma/schema.prisma); the cast documents that invariant.
  */
+/**
+ * L8-B — THE canonical financial date of a row.
+ *
+ * ── Why the DTO's `date` changed meaning ───────────────────────────────────
+ *
+ * `date` is the field every surface reads: the list groups by it, Cash Flow
+ * buckets by it, exports emit it, the AI narrates it. Migrating each of those
+ * to a differently-named field would have left the cutover one missed call site
+ * away from a mixed chronology — and a mixed chronology is invisible until a
+ * month boundary moves 147 rows into the wrong period.
+ *
+ * So the DTO's `date` now carries the ECONOMIC date, and `postingDate` carries
+ * the posting date explicitly beside it. Both facts ship; the one named "date"
+ * on a financial record is the one that answers "when did this happen".
+ *
+ * ⚠️ The fallback to `r.date` fires only for a row constructed WITHOUT the
+ * column — golden fixtures and hand-built rows. Live reads select it, so this is
+ * never a silent posting-chronology fallback in production.
+ */
+function financialDate(r: TransactionRowLike): Date {
+  return r.economicDate ?? r.date;
+}
+
 export function serializeTransactionRow(r: TransactionRowLike): Transaction {
   return {
     id:          r.id,
     accountId:   r.financialAccountId as string,
-    date:        r.date.toISOString().split("T")[0],
+    // L8-B — ECONOMIC. `postingDate` rides in the derived block as provenance.
+    date:        financialDate(r).toISOString().split("T")[0],
     merchant:    r.merchant,
     // MI M6 read cutover — resolved presentation (additive; raw `merchant` kept).
     merchantDisplayName: merchantDisplayName(r.merchant, r.resolvedMerchant),
@@ -146,10 +181,17 @@ function deriveLifecycleAndEconomicDate(r: TransactionRowLike): Partial<Transact
     pending:         r.pending,
     deletedAt:       r.deletedAt,
   });
+  // L8-B — the persisted column is the authority now. `resolveEconomicDate` is
+  // still called because the BASIS, STATE and LAG stay derived (they were never
+  // persisted, deliberately — see the migration note), but the DATE itself comes
+  // from the column so the DTO and the SQL ordering can never disagree.
   const econ = resolveEconomicDate({
     postingDate:  r.date,
     authorizedAt: r.authorizedAt ?? null,
   });
+  const persistedEconomic = r.economicDate
+    ? r.economicDate.toISOString().split("T")[0]
+    : econ.economicDate;
   // V27-TRUTH-4 — the canonical income attribution rides the same derived block.
   // Emitted only for INFLOWS, and only where the read supplied the evidence: an
   // outflow has no income class, and inventing one would put a zero-amount
@@ -196,7 +238,7 @@ function deriveLifecycleAndEconomicDate(r: TransactionRowLike): Partial<Transact
   return {
     lifecycleState:      lifecycle.state,
     lifecycleBasis:      lifecycle.basis,
-    economicDate:        econ.economicDate,
+    economicDate:        persistedEconomic,
     postingDate:         econ.postingDate,
     economicDateBasis:   econ.basis,
     economicDateState:   econ.state,
@@ -223,7 +265,11 @@ export function serializeInvestmentTransactionRow(
   return {
     id:          r.id,
     accountId:   r.financialAccountId as string,
-    date:        r.date.toISOString().split("T")[0],
+    // L8-B — the same canonical chronology as the banking DTO. An investment
+    // row's trade date is its economic date; leaving this on posting would make
+    // the Investments activity list disagree with the transactions list about
+    // the day a trade happened.
+    date:        financialDate(r).toISOString().split("T")[0],
     ticker:      r.merchant,
     description: r.description ?? "",
     category:    r.category as InvestmentTransaction["category"],

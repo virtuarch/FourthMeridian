@@ -124,6 +124,13 @@ function formatDayHeader(iso: string): string {
  * it preserves the server's sequence exactly (a Map keyed in insertion order) and
  * never reorders or filters. It is not a client query.
  */
+/**
+ * L8-B — groups by `tx.date`, which IS the economic date since the cutover.
+ * Nothing here changed, and that is the point: the DTO moved, so every consumer
+ * that reads `date` moved with it. Migrating each call site to a
+ * differently-named field would have left the cutover one missed reader away
+ * from a mixed chronology — invisible until a month boundary moved 147 rows.
+ */
 function groupByDay(rows: Transaction[]): [string, Transaction[]][] {
   const map = new Map<string, Transaction[]>();
   for (const tx of rows) {

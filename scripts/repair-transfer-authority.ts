@@ -82,6 +82,7 @@ async function main() {
       id: true, financialAccountId: true, date: true, amount: true, merchant: true,
       description: true, category: true, pending: true, settlementState: true,
       flowType: true, flowDirection: true, counterpartyAccountId: true,
+      economicDate: true,
       counterpartyType: true, pfcPrimary: true, pfcDetailed: true, currency: true,
       classificationReason: true, classifierVersion: true, deletedAt: true,
     },
@@ -132,7 +133,9 @@ async function main() {
       });
       return {
         id: r.id, accountId: r.acct.id, accountType: r.acct.type as string, ownerId: ownerOf(r),
-        amount: r.amount, currency: r.currency ?? r.acct.currency, dateMs: r.date.getTime(),
+        amount: r.amount, currency: r.currency ?? r.acct.currency,
+        // L8-B — the ECONOMIC chronology, matching the read boundary.
+        dateMs: (r.economicDate ?? r.date).getTime(),
         superseded: lc.superseded, movementForm: ev(r).movementForm ?? null,
         railType: ev(r).railType ?? null,
         providerLinkKey: links.correlation?.linkKey ?? null,

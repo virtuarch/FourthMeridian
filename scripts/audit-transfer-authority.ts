@@ -65,6 +65,7 @@ async function main() {
       id: true, financialAccountId: true, date: true, amount: true, merchant: true,
       description: true, category: true, pending: true, settlementState: true,
       flowType: true, classifierVersion: true, counterpartyAccountId: true,
+      economicDate: true,
       counterpartyType: true, pfcPrimary: true, pfcDetailed: true, currency: true,
       transferRail: true, transferMovementForm: true, transferVenueClass: true,
       deletedAt: true,
@@ -162,7 +163,10 @@ async function main() {
       return {
         id: r.id, accountId: r.acct.id, accountType: r.acct.type as string,
         ownerId: ownerOf(r), amount: r.amount, currency: r.currency ?? r.acct.currency,
-        dateMs: r.date.getTime(), superseded: lc.superseded,
+        // L8-B — the ECONOMIC chronology, matching what the read boundary
+        // (RelationshipResolver.toTransferLeg) does. An audit on the posting
+        // basis would certify an authority production no longer runs.
+        dateMs: (r.economicDate ?? r.date).getTime(), superseded: lc.superseded,
         movementForm: evidenceOf(r).movementForm ?? null,
         railType: evidenceOf(r).railType ?? null,
         providerLinkKey: links.correlation?.linkKey ?? null,

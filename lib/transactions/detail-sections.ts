@@ -62,7 +62,10 @@ function summary(d: TransactionDetail): DetailSection {
   const rows: DetailRow[] = [];
   pushIf(rows, "Merchant", d.merchantDisplayName ?? d.merchant);
   pushIf(rows, "Amount", signedMoney(d.amount, d.currency ?? null));
+  // L8-B — `d.date` is now the ECONOMIC date: when the activity happened. The
+  // posting date rides beside it as provenance, never instead of it.
   pushIf(rows, "Date", d.date);
+  if (d.postingDate && d.postingDate !== d.date) pushIf(rows, "Posted", d.postingDate);
   pushIf(rows, "Category", d.category);
   if (d.flowType) {
     pushIf(rows, "Flow", d.flowDirection ? `${humanize(d.flowType)} · ${humanize(d.flowDirection)}` : humanize(d.flowType));
@@ -105,7 +108,9 @@ function transactionIntelligence(d: TransactionDetail): DetailSection {
   // Summary date already covers it).
   if (d.authorizedAt) {
     pushIf(rows, "Authorized", d.authorizedAt);
-    pushIf(rows, "Posted", d.date);
+    // ⚠️ The POSTING date explicitly — `d.date` is the economic one now, and
+    // labelling it "Posted" would be a false claim on 2,813 live rows.
+    pushIf(rows, "Posted", d.postingDate ?? d.date);
   }
   if (d.counterpartyType) pushIf(rows, "Counterparty", humanize(d.counterpartyType));
   // fxApplied is only notable when true; false/null is noise.
@@ -121,7 +126,7 @@ function relationshipIntelligence(d: TransactionDetail): DetailSection {
     if (pp.role === "POSTED_FROM_PENDING") {
       notes.push(
         d.authorizedAt
-          ? `Posted from a pending transaction. Authorized ${d.authorizedAt}, posted ${d.date}.`
+          ? `Posted from a pending transaction. Authorized ${d.authorizedAt}, posted ${d.postingDate ?? d.date}.`
           : "Posted from a pending transaction.",
       );
     } else {

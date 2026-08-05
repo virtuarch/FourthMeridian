@@ -111,6 +111,19 @@ export interface RelationshipTransaction {
    *  extraction ONLY. ⚠️ Never parsed for names, merchants or purpose — see
    *  provider-link-extract.ts. */
   descriptor: string | null;
+  /**
+   * L8-B — the persisted ECONOMIC date. THE chronology transfer matching runs on.
+   *
+   * ⚠️ REQUIRED and nullable, and `toTransferLeg` REFUSES a null rather than
+   * falling back to `date`. A silent fallback would put one leg on the economic
+   * chronology and another on posting, and mutual uniqueness across two
+   * chronologies is not merely wrong — it is undefined. The column is guaranteed
+   * non-null by the backfill, dual-write and `audit:economic-date`.
+   *
+   * Calibrated on this basis: ±5 window and tiers [0,5] were re-derived on
+   * economic dates and landed in the same place.
+   */
+  economicDate: Date | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -524,7 +537,10 @@ function toTransferLeg(r: RelationshipTransaction, ctx: TransferMatchContext): T
     ownerId:     r.ownerUserId ?? '',
     amount:      r.amount,
     currency:    r.currency ?? null,
-    dateMs:      r.date.getTime(),
+    // L8-B — the ECONOMIC chronology. Posting dates separated two same-amount
+    // card payments only by coincidence; authorization dates separate them by
+    // evidence (see the calibration report §5).
+    dateMs:      economicMs(r),
     superseded:  lifecycle.superseded,
     movementForm: evidence.movementForm ?? null,
     // The RAIL, for the payment-app ⊥ liability veto. Same adapter call as the
@@ -536,6 +552,24 @@ function toTransferLeg(r: RelationshipTransaction, ctx: TransferMatchContext): T
 }
 
 const EMPTY_MASK_INDEX: ReadonlyMap<string, readonly string[]> = new Map();
+
+/**
+ * The leg's timestamp, from the persisted economic chronology.
+ *
+ * ⚠️ Throws on a null rather than substituting the posting date. Requirement 10
+ * of the cutover: no surface may silently fall back to posting chronology — and
+ * a matcher comparing an economic date against a posting date would produce
+ * confident, wrong pairings with nothing to show for it.
+ */
+function economicMs(r: RelationshipTransaction): number {
+  if (r.economicDate == null) {
+    throw new Error(
+      `transfer leg ${r.id}: no economicDate. Transfer matching runs on the economic ` +
+      `chronology; run npm run backfill:economic-date and npm run audit:economic-date.`,
+    );
+  }
+  return r.economicDate.getTime();
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Entry point

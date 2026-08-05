@@ -35,6 +35,10 @@ function tx(over: Partial<RelationshipTransaction> = {}): RelationshipTransactio
     // no institution extractor, no descriptor identifiers.
     category: 'Transfer', counterpartyClass: null, institutionId: null, descriptor: null,
     ...over,
+    // L8-B — the matching chronology. A fixture that moves `date` means to move
+    // the leg in time, so mirror it unless the fixture set an economic date
+    // explicitly (which is how a lag case is written).
+    economicDate: over.economicDate ?? over.date ?? new Date('2026-06-01'),
   };
 }
 

@@ -26,6 +26,7 @@
     "audit:pending-posted": "tsx scripts/audit-pending-posted-desync.ts",
     "audit:transfer-authority": "tsx scripts/audit-transfer-authority.ts",
     "audit:economic-date": "tsx scripts/audit-economic-date-persistence.ts",
+    "audit:chronology": "tsx scripts/audit-chronology-cutover.ts",
     "backfill:economic-date": "tsx scripts/backfill-economic-date.ts"
   },
   "prisma": {
