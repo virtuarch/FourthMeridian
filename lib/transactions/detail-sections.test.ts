@@ -38,15 +38,28 @@ test('Summary always renders merchant/amount/date/category; flow when present', 
   const secs = buildTransactionDetailSections(detail());
   const s = find(secs, 'Summary')!;
   const labels = s.rows!.map((r) => r.label);
-  assert.deepEqual(labels, ['Merchant', 'Amount', 'Date', 'Category', 'Flow']);
+  // V27-TRUTH-7 — "What" is the canonical row nature, not humanize(flowType).
+  assert.deepEqual(labels, ['Merchant', 'Amount', 'Date', 'Category', 'What']);
   assert.equal(s.rows!.find((r) => r.label === 'Amount')!.value, '−$12.50');
-  assert.equal(s.rows!.find((r) => r.label === 'Flow')!.value, 'Spending · Outflow');
+  assert.equal(s.rows!.find((r) => r.label === 'What')!.value, 'Spending · Outflow');
 });
 
-test('null facts are hidden; Flow row absent when flowType null', () => {
+test('null facts are hidden; the nature row is absent when flowType is null', () => {
   const secs = buildTransactionDetailSections(detail({ flowType: null, flowDirection: null }));
   const s = find(secs, 'Summary')!;
-  assert.ok(!s.rows!.some((r) => r.label === 'Flow'));
+  assert.ok(!s.rows!.some((r) => r.label === 'What'));
+});
+
+test('an issuer credit reads as one, and keeps its flow type beside it', () => {
+  // The Microsoft row: flowType INCOME, taxonomy ISSUER_CREDIT, on a card.
+  const secs = buildTransactionDetailSections(detail({
+    flowType: 'INCOME', flowDirection: 'INFLOW', amount: 280.45,
+    incomeClass: 'NOT_INCOME', incomeSubtype: 'ISSUER_CREDIT',
+  } as never));
+  const s = find(secs, 'Summary')!;
+  assert.equal(s.rows!.find((r) => r.label === 'What')!.value, 'Issuer credit · Inflow');
+  // The coarser persisted fact is kept, labelled as itself — never hidden.
+  assert.equal(s.rows!.find((r) => r.label === 'Flow type')!.value, 'Income');
 });
 
 test('Account shows mask formatted; omits mask when null', () => {

@@ -728,7 +728,17 @@ export async function getTransactionDetail(
   });
 
   return {
-    ...serializeTransactionRow(row),
+    // V27-TRUTH-7 — `accountType` MUST be supplied here, exactly as the list read
+    // supplies it (see loadAccountTypes above).
+    //
+    // Without it the serializer fell through to "other", so
+    // `liabilityInflowIsIssuerCredit` — which requires accountType === "debt" —
+    // was always false on this path. The drawer therefore attributed the four
+    // live issuer credits (Microsoft, Uber, HungerStation, EasyTime) as EARNED
+    // income while the list, reading the same authority WITH the account type,
+    // called them ISSUER_CREDIT. Same row, two answers, decided by which read
+    // happened to pass the evidence.
+    ...serializeTransactionRow({ ...row, accountType: row.financialAccount?.type ?? null }),
     // KD-15: override the serializer's raw value with the gated id (the detail's
     // counterpartyAccount already carries the same Space-filtered links), so the
     // detail DTO never exposes a non-visible counterparty's id — consistent with

@@ -114,8 +114,18 @@ function TransactionDetailFetcher({ id }: { id: string }) {
 
   return (
     <>
+      {/* V27-TRUTH-7 — the eyebrow is the canonical nature, not the provider
+          category string. It read "INCOME" directly above a chip saying "Issuer
+          credit", which is the loudest place in the drawer to contradict
+          yourself. The provider's category is still shown, labelled as itself,
+          in the Summary section below. */}
       <PanelHeader
-        eyebrow={detail ? detail.category : undefined}
+        eyebrow={detail ? describeRowNature({
+          flowType:      detail.flowType ?? null,
+          incomeSubtype: detail.incomeSubtype ?? null,
+          amount:        detail.amount,
+          hasOwnedCounterparty: detail.counterpartyAccountId != null,
+        }).label : undefined}
         title={detail ? (detail.merchantDisplayName ?? detail.merchant) : "Transaction"}
       />
       <PanelContent>

@@ -17,6 +17,7 @@
  */
 
 import type { TransactionDetail } from "@/types";
+import { describeRowNature, flowTypeLabel } from "@/lib/transactions/flow-presentation";
 
 export interface DetailRow {
   label: string;
@@ -67,8 +68,21 @@ function summary(d: TransactionDetail): DetailSection {
   pushIf(rows, "Date", d.date);
   if (d.postingDate && d.postingDate !== d.date) pushIf(rows, "Posted", d.postingDate);
   pushIf(rows, "Category", d.category);
+  // V27-TRUTH-7 — "What" is the canonical row NATURE, from the one presentation
+  // authority. This row read `humanize(flowType)`, so a Microsoft issuer credit
+  // said "Income · Inflow" while the taxonomy had already called it an issuer
+  // credit. `flowDirection` stays beside it — a provider fact, still true.
+  const nature = describeRowNature({
+    flowType:      d.flowType ?? null,
+    incomeSubtype: d.incomeSubtype ?? null,
+    amount:        d.amount,
+    hasOwnedCounterparty: d.counterpartyAccountId != null,
+  });
   if (d.flowType) {
-    pushIf(rows, "Flow", d.flowDirection ? `${humanize(d.flowType)} · ${humanize(d.flowDirection)}` : humanize(d.flowType));
+    pushIf(rows, "What", d.flowDirection ? `${nature.label} · ${humanize(d.flowDirection)}` : nature.label);
+    // The persisted economic kind, kept and labelled as itself, so the finer
+    // nature never hides the coarser fact it was derived from.
+    if (nature.basis === "INCOME_TAXONOMY") pushIf(rows, "Flow type", flowTypeLabel(d.flowType));
   }
   return { title: "Summary", rows };
 }
