@@ -27,6 +27,10 @@ export const LIQUIDITY_REASON_LABEL: Record<LiquidityReason, string> = {
   ASSET_LIQUIDATION: "Asset liquidation",
   DEBT_PROCEEDS:     "Debt proceeds",
   REFUND:            "Refunds",
+  // V27-TRUTH-7 — an issuer-originated credit on a card (rewards, statement
+  // credit, purchase reversal). Reduces what you owe without moving cash, so it
+  // is a context line, never Cash In.
+  ISSUER_CREDIT:     "Issuer credits",
   // Liquidity axis: only cost flows paid FROM a liquid account (checking/savings)
   // reach Cash Out. Named to distinguish from economic "Spending by Category"
   // (which includes credit-card purchases). Card spending surfaces separately as
@@ -71,6 +75,8 @@ export const LIQUIDITY_REASON_SIDE: Record<LiquidityReason, "in" | "out" | "cont
   INVESTMENT_OUTFLOW:  "out",
   PAYMENT_APP_OUTFLOW: "out",
   ASSET_CONVERSION:    "context",
+  // No spendable cash moved — it lowered a liability balance.
+  ISSUER_CREDIT:       "context",
   INTERNAL_TRANSFER:   "context",
   NON_CASH:            "context",
   UNRESOLVED:          "context",

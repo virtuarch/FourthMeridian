@@ -53,16 +53,40 @@ const cls = (o: Parameters<typeof tx>[0]) => classifyLiquidity(tx(o), ctx);
 
 // paycheck → checking : earned income + liquidity in
 {
-  const c = cls({ ownAccount: "chk", amount: 3800, flowType: "INCOME" });
+  const c = cls({ ownAccount: "chk", amount: 3800, flowType: "INCOME", incomeClass: "EARNED_INCOME" });
   check("paycheck → checking = CASH_IN / EARNED_INCOME",
     c.effect === "CASH_IN" && c.reason === "EARNED_INCOME", JSON.stringify(c));
 }
 
 // income routed into a brokerage (asset) : earned but not spendable → neutral
 {
-  const c = cls({ ownAccount: "brk", amount: 88, flowType: "INCOME" });
+  const c = cls({ ownAccount: "brk", amount: 88, flowType: "INCOME", incomeClass: "EARNED_INCOME" });
   check("income into asset account = NEUTRAL / EARNED_INCOME (not spendable)",
     c.effect === "NEUTRAL" && c.reason === "EARNED_INCOME");
+}
+
+// V27-TRUTH-7 — an issuer credit is named, not filed under an income reason.
+{
+  const c = cls({ ownAccount: "card", amount: 280.45, flowType: "INCOME",
+                  incomeClass: "NOT_INCOME", incomeSubtype: "ISSUER_CREDIT" });
+  check("issuer credit on a card = NEUTRAL / ISSUER_CREDIT (was OTHER_INCOME)",
+    c.effect === "NEUTRAL" && c.reason === "ISSUER_CREDIT", JSON.stringify(c));
+}
+
+// A NOT_INCOME subtype this map does not know is UNRESOLVED — never a guess.
+{
+  const c = cls({ ownAccount: "chk", amount: 5, flowType: "INCOME",
+                  incomeClass: "NOT_INCOME", incomeSubtype: "SOME_FUTURE_SUBTYPE" });
+  check("an unknown NOT_INCOME subtype is UNRESOLVED, not invented",
+    c.effect === "NEUTRAL" && c.reason === "UNRESOLVED", JSON.stringify(c));
+}
+
+// An income row whose read supplied no class states the uncertainty rather than
+// asserting salary — and keeps its cash effect, so no money leaves Cash In.
+{
+  const c = cls({ ownAccount: "chk", amount: 900, flowType: "INCOME" });
+  check("unattributed income = CASH_IN / OTHER_INCOME at reduced confidence",
+    c.effect === "CASH_IN" && c.reason === "OTHER_INCOME" && c.confidence < 1, JSON.stringify(c));
 }
 
 // Coinbase (asset) → Chase (liquid) : asset liquidation + liquidity in
@@ -161,7 +185,7 @@ const cls = (o: Parameters<typeof tx>[0]) => classifyLiquidity(tx(o), ctx);
 // ── DayFacts fold: the salary + crypto-liquidation composition ─────────────────
 {
   const rows: LiquidityTx[] = [
-    tx({ ownAccount: "chk", amount: 6000, flowType: "INCOME" }),                                  // earned income
+    tx({ ownAccount: "chk", amount: 6000, flowType: "INCOME", incomeClass: "EARNED_INCOME" }),    // earned income
     tx({ ownAccount: "chk", amount: 10044, flowType: "TRANSFER", counterpartyAccountId: "cb" }),  // liquidation
     tx({ ownAccount: "chk", amount: -1500, flowType: "SPENDING" }),                               // real cost
     tx({ ownAccount: "cb",  amount: 10044, flowType: "INVESTMENT" }),                             // the sale itself (neutral)
@@ -191,7 +215,7 @@ const cls = (o: Parameters<typeof tx>[0]) => classifyLiquidity(tx(o), ctx);
 // ── economicTotals parity: DayFacts economic axis is byte-identical to economicTotals ──
 {
   const rows: LiquidityTx[] = [
-    tx({ ownAccount: "chk", amount: 6000, flowType: "INCOME" }),
+    tx({ ownAccount: "chk", amount: 6000, flowType: "INCOME", incomeClass: "EARNED_INCOME" }),
     tx({ ownAccount: "chk", amount: -200, flowType: "SPENDING" }),
     tx({ ownAccount: "cb",  amount: 10044, flowType: "INVESTMENT" }),
     tx({ ownAccount: "chk", amount: -500, flowType: "TRANSFER", counterpartyAccountId: "sav" }),

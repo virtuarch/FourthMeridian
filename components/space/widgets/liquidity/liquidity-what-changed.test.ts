@@ -32,7 +32,7 @@ function tx(over: Partial<LiquidityTx> & { amount: number; date: string }): Liqu
 
 const accounts = [{ id: "chk", type: "checking" }];
 const rows: LiquidityTx[] = [
-  tx({ amount: 5000, date: "2026-05-04", category: "Income",    flowType: "INCOME" }),
+  tx({ amount: 5000, date: "2026-05-04", category: "Income",    flowType: "INCOME", incomeClass: "EARNED_INCOME" }),
   tx({ amount: -200, date: "2026-05-12", category: "Groceries", flowType: "SPENDING" }),
   tx({ amount: -80,  date: "2026-05-20", category: "Dining",    flowType: "SPENDING" }),
 ];

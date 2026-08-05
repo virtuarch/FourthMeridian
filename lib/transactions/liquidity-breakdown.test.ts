@@ -58,7 +58,7 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
 // ── Salary + liquidation compose correctly ─────────────────────────────────────
 {
   const rows: LiquidityTx[] = [
-    tx({ ownAccount: "chk", amount: 6000, flowType: "INCOME" }),
+    tx({ ownAccount: "chk", amount: 6000, flowType: "INCOME", incomeClass: "EARNED_INCOME" }),
     tx({ ownAccount: "chk", amount: 10044, flowType: "TRANSFER", counterpartyAccountId: "cb" }),
     tx({ ownAccount: "chk", amount: -1500, flowType: "SPENDING" }),
     tx({ ownAccount: "cb",  amount: 10044, flowType: "INVESTMENT" }),  // the sale itself → neutral
@@ -97,7 +97,7 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
 {
   const rows: LiquidityTx[] = [
     tx({ ownAccount: "chk", amount: 500, flowType: "TRANSFER" }),  // unknown counterparty → unresolved
-    tx({ ownAccount: "chk", amount: 200, flowType: "INCOME" }),
+    tx({ ownAccount: "chk", amount: 200, flowType: "INCOME", incomeClass: "EARNED_INCOME" }),
   ];
   const bd = groupLiquidityByReason(aggregateDayFacts(rows, ctx));
   check("breakdown lists only non-zero reasons",

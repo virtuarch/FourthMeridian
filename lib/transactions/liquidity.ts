@@ -57,6 +57,9 @@ export type LiquidityReason =
   | "OTHER_INCOME"       // V27-TRUTH-5 — income whose source is not established
   | "REAL_COST"          // SPENDING / FEE / INTEREST leaving the liquid tier
   | "REFUND"             // reversal of prior spend, cash back
+  | "ISSUER_CREDIT"      // V27-TRUTH-7 — a card credit the issuer originated
+                         // (rewards, statement credit, purchase reversal). Reduces
+                         // what you owe; never income, never spendable cash in.
   | "ASSET_LIQUIDATION"  // asset tier → liquid (crypto/stock sale proceeds to bank)
   | "ASSET_DEPLOYMENT"   // liquid → asset tier (brokerage/crypto contribution)
   | "INVESTMENT_INFLOW"  // CF-2: liquid ← investment venue, resolved by transfer EVIDENCE
@@ -118,6 +121,22 @@ const INCOME_REASON_BY_CLASS: Record<string, LiquidityReason> = {
   OTHER_INCOME:    "OTHER_INCOME",
 };
 
+/**
+ * Canonical NOT_INCOME subtype → its liquidity reason. V27-TRUTH-7.
+ *
+ * ⚠️ A mapping, not a decision: every key is a subtype
+ * lib/transactions/income-source.ts already assigned. A subtype absent from this
+ * map resolves to UNRESOLVED rather than to a guess.
+ */
+const NOT_INCOME_REASON_BY_SUBTYPE: Record<string, LiquidityReason> = {
+  ISSUER_CREDIT:     "ISSUER_CREDIT",
+  REFUND_REVERSAL:   "REFUND",
+  INTERNAL_TRANSFER: "INTERNAL_TRANSFER",
+  LOAN_PROCEEDS:     "DEBT_PROCEEDS",
+  SALE_PROCEEDS:     "ASSET_LIQUIDATION",
+  CAPITAL_CONTRIBUTION: "OTHER_INCOME",
+};
+
 export function classifyLiquidity(tx: LiquidityTx, ctx: LiquidityContext): LiquidityClassification {
   const ft = tx.flowType ?? null;
   const ownTier = ctx.tierOf(tx.financialAccountId ?? tx.accountId ?? null);
@@ -131,12 +150,29 @@ export function classifyLiquidity(tx: LiquidityTx, ctx: LiquidityContext): Liqui
     // Income-by-source card rendered "Earned income · 100.0%" over a window that
     // was $10,573.03 earned and $6.01 of deposit interest. The class is read off
     // the DTO; nothing is re-derived here.
-    const reason = INCOME_REASON_BY_CLASS[tx.incomeClass ?? ""] ?? "EARNED_INCOME";
-    // A NOT_INCOME row (an issuer credit on a card) is not cash in at all.
-    if (tx.incomeClass === "NOT_INCOME") return make(ft, "NEUTRAL", "OTHER_INCOME", 0.7);
+    //
+    // V27-TRUTH-7 — a NOT_INCOME row now reports WHICH not-income it is, from the
+    // taxonomy's own subtype. It previously returned OTHER_INCOME, so a Microsoft
+    // rebate on a credit card was filed under an income reason while the taxonomy
+    // had already called it ISSUER_CREDIT. The effect (NEUTRAL) was right; the
+    // word was not, and the word is what a surface prints.
+    if (tx.incomeClass === "NOT_INCOME") {
+      return make(ft, "NEUTRAL", NOT_INCOME_REASON_BY_SUBTYPE[tx.incomeSubtype ?? ""] ?? "UNRESOLVED", 0.9);
+    }
+    // ⚠️ This read `?? "EARNED_INCOME"` — a row whose read did not supply an income
+    // class was ASSERTED to be salary. OTHER_INCOME is the reason that already
+    // means exactly "income whose source is not established", so the uncertainty
+    // is stated instead of hidden, and the cash effect is unchanged (both are
+    // side "in", so no money leaves the Cash In total).
+    //
+    // Measured: 0 of 136 live INCOME rows lack an attribution — the serializer
+    // emits one for every positive income row, and there are no negative ones.
+    // This branch is reachable only from a read that did not select the evidence.
+    const reason = INCOME_REASON_BY_CLASS[tx.incomeClass ?? ""] ?? "OTHER_INCOME";
+    const confidence = tx.incomeClass ? 1 : 0.5;
     return ownTier === "liquid"
-      ? make(ft, "CASH_IN", reason, 1)
-      : make(ft, "NEUTRAL", reason, 0.7);
+      ? make(ft, "CASH_IN", reason, confidence)
+      : make(ft, "NEUTRAL", reason, Math.min(confidence, 0.7));
   }
 
   // REFUND — reversal of prior spend; small cash back when it hits liquid.

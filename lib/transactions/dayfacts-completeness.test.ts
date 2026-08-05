@@ -42,7 +42,7 @@ const cents = (v: number) => Math.round(v * 100);
 
 // A rich fixture that exercises many reasons across both sides + context.
 const rich: LiquidityTx[] = [
-  tx({ own: "chk", amount: 6000, date: "2026-06-01", flowType: "INCOME" }),                                        // EARNED_INCOME (in)
+  tx({ own: "chk", amount: 6000, date: "2026-06-01", flowType: "INCOME", incomeClass: "EARNED_INCOME" }),                                        // EARNED_INCOME (in)
   tx({ own: "chk", amount: 500,  date: "2026-06-02", flowType: "REFUND" }),                                        // REFUND (in)
   tx({ own: "chk", amount: 1000, date: "2026-06-03", flowType: "TRANSFER", counterpartyAccountId: "cb" }),         // ASSET_LIQUIDATION (in)
   tx({ own: "chk", amount: 300,  date: "2026-06-04", flowType: "TRANSFER", counterpartyAccountId: "card" }),       // DEBT_PROCEEDS (in)
@@ -75,13 +75,13 @@ test("1. byReason partitions cashIn/cashOut exactly (LIQUIDITY_REASON_SIDE pin)"
 
 test("2. straddle exclusion — a NEUTRAL income leg is NOT recorded in byReason", () => {
   // Income into an ASSET account is EARNED_INCOME/NEUTRAL (earned, not spendable).
-  const assetIncomeOnly = aggregateDayFacts([tx({ own: "cb", amount: 250, date: "2026-06-01", flowType: "INCOME" })], ctx);
+  const assetIncomeOnly = aggregateDayFacts([tx({ own: "cb", amount: 250, date: "2026-06-01", flowType: "INCOME", incomeClass: "EARNED_INCOME" })], ctx);
   assert.equal(assetIncomeOnly.cashIn, 0, "asset income is not Cash In");
   assert.equal(assetIncomeOnly.byReason.EARNED_INCOME ?? 0, 0, "neutral income leg is NOT in byReason");
   // Mixed: liquid income 100 (CASH_IN) + asset income 50 (NEUTRAL) → byReason has ONLY the 100.
   const mixed = aggregateDayFacts([
-    tx({ own: "chk", amount: 100, date: "2026-06-01", flowType: "INCOME" }),
-    tx({ own: "cb",  amount: 50,  date: "2026-06-01", flowType: "INCOME" }),
+    tx({ own: "chk", amount: 100, date: "2026-06-01", flowType: "INCOME", incomeClass: "EARNED_INCOME" }),
+    tx({ own: "cb",  amount: 50,  date: "2026-06-01", flowType: "INCOME", incomeClass: "EARNED_INCOME" }),
   ], ctx);
   assert.equal(cents(mixed.cashIn), cents(100));
   assert.equal(cents(mixed.byReason.EARNED_INCOME ?? 0), cents(100), "only the liquid (CASH_IN) leg is recorded");
@@ -119,7 +119,7 @@ test("5. liquid payment-app counted; liability payment-app + internal excluded",
       transferDisposition: null, ...over,
     } as unknown as LiquidityTx);
   const rows: LiquidityTx[] = [
-    mk({ amount: 6000,    date: "2026-02-05", flowType: "INCOME", transferDisposition: null }),       // earned income → Cash In
+    mk({ amount: 6000,    date: "2026-02-05", flowType: "INCOME", incomeClass: "EARNED_INCOME", transferDisposition: null }),       // earned income → Cash In
     mk({ amount: 8141.98, date: "2026-02-27", transferDisposition: "ASSET_VENUE_TRANSFER" }),         // From investments → Cash In
     mk({ amount: -50,     date: "2026-02-10", transferDisposition: "PAYMENT_APP_MOVEMENT" }),         // Payments through apps → Cash Out
     mk({ amount: 200,     date: "2026-02-12", transferDisposition: "PAYMENT_APP_MOVEMENT" }),         // From payment apps → Cash In

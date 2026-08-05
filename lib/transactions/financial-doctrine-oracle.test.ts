@@ -128,6 +128,11 @@ interface Fixture {
   disposition?: TransferDisposition | null; // read-time transfer disposition on the row
   rail?:    string | null;   // transferRail ("PAYMENT_APP") when attested
   classificationReason?: string | null;     // FlowClassificationReason
+  // V27-TRUTH-5/7 — the canonical income attribution the read boundary emits for
+  // every positive INCOME row (measured: 136/136 live rows carry one). The
+  // liquidity axis reads it rather than assuming every income is a paycheck.
+  incomeClass?:   string | null;
+  incomeSubtype?: string | null;
   merchantId?: string | null;                // resolved Merchant identity present?
   currency?: string;                         // native currency (default USD)
   flowDirection?: FlowDirection;
@@ -174,6 +179,8 @@ function toTx(f: Fixture): LiquidityTx {
     flowDirection: f.flowDirection,
     currency: f.currency ?? "USD",
     transferDisposition: f.disposition ?? null,
+    incomeClass:   f.incomeClass ?? null,
+    incomeSubtype: f.incomeSubtype ?? null,
   } as unknown as LiquidityTx;
 }
 
@@ -216,6 +223,7 @@ const MATRIX: Fixture[] = [
   // 1 — income (paycheck) into a liquid account
   { id: "F1", title: "income → checking", own: "chk", amount: 3800, flowType: "INCOME",
     classificationReason: "PLAID_PFC_PRIMARY", merchantId: "emp",
+    incomeClass: "EARNED_INCOME", incomeSubtype: "SALARY",
     pop: true, econ: "income", effect: "CASH_IN", reason: "EARNED_INCOME", needs: null,
     facts: { cashIn: 3800, income: 3800, cashOut: 0 }, byReason: { EARNED_INCOME: 3800 } },
 
@@ -276,10 +284,13 @@ const MATRIX: Fixture[] = [
     note: "asset liquidation is Cash In but NOT earned income — proceeds of a sale, never a paycheck." },
 
   // 11 — dividend received to checking (Dividend category → flowType INCOME)
+  // ⚠️ This asserted EARNED_INCOME. A dividend is not a paycheck — the conflation
+  //    V27-TRUTH-5 removed from the data survived here in the oracle until now.
   { id: "F11", title: "dividend received → checking", own: "chk", amount: 50, flowType: "INCOME",
     classificationReason: "CATEGORY_INVESTMENT_VALUE", merchantId: "payer",
-    pop: true, econ: "income", effect: "CASH_IN", reason: "EARNED_INCOME", needs: null,
-    facts: { cashIn: 50, income: 50 }, byReason: { EARNED_INCOME: 50 } },
+    incomeClass: "DIVIDEND_INCOME", incomeSubtype: "SECURITY_DIVIDEND",
+    pop: true, econ: "income", effect: "CASH_IN", reason: "DIVIDEND_INCOME", needs: null,
+    facts: { cashIn: 50, income: 50 }, byReason: { DIVIDEND_INCOME: 50 } },
 
   // 12 — investment BUY (security activity on an asset account)
   { id: "F12", title: "investment buy (on brokerage)", own: "brk", amount: -1000, flowType: "INVESTMENT",
@@ -689,7 +700,7 @@ console.log("── Part 4 — payment-app / liability doctrine ──");
 console.log("── Part 5 — multi-currency doctrine ──");
 
 const usdRows: LiquidityTx[] = [
-  toTx({ id: "u1", title: "", own: "chk", amount: 1000, flowType: "INCOME", pop: true, econ: "income", effect: "CASH_IN", reason: "EARNED_INCOME" }),
+  toTx({ id: "u1", title: "", own: "chk", amount: 1000, flowType: "INCOME", incomeClass: "EARNED_INCOME", pop: true, econ: "income", effect: "CASH_IN", reason: "EARNED_INCOME" }),
   toTx({ id: "u2", title: "", own: "chk", amount: -200, flowType: "SPENDING", pop: true, econ: "spend", effect: "CASH_OUT", reason: "REAL_COST" }),
 ];
 
