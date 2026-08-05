@@ -15,9 +15,16 @@ import { db } from "@/lib/db";
 import { serializeTransactionRow } from "@/lib/transactions/serialize";
 import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { isDebtPayment, isIncome, isTransfer, isRefund } from "@/lib/transactions/flow-predicates";
+import { describeRowNature } from "@/lib/transactions/flow-presentation";
+import { totalDebtPaid, selectDebtPaymentCashLegs } from "@/lib/transactions/debt-payment-authority";
 import type { Transaction } from "@/types";
 
 const bar = (s: string) => console.log(`\n${"═".repeat(78)}\n${s}\n${"═".repeat(78)}`);
+let failures = 0;
+const check = (name: string, ok: boolean, detail = "") => {
+  if (ok) console.log(`  \u2713 ${name}`);
+  else { failures++; console.error(`  \u2717 ${name}${detail ? `\n      ${detail}` : ""}`); }
+};
 const money = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 async function main() {
@@ -116,6 +123,26 @@ async function main() {
       `  subtype=${String((t as { incomeSubtype?: string | null }).incomeSubtype)}` +
       `  ${(t.merchant ?? "").slice(0, 42)}  [${A.get(t.financialAccountId!)?.name}]`);
   }
+  // The four named credits, checked by NATURE — what a surface actually renders.
+  console.log(`\n  the four reported issuer credits, as presentation now labels them:`);
+  for (const name of ["MICROSOFT", "HUNGERSTATION", "EasyTime", "Uber"]) {
+    const row = incomeRows.find((t) => (t.merchant ?? "").toUpperCase().startsWith(name.toUpperCase()));
+    if (!row) { check(`${name} credit present`, false, "row not found"); continue; }
+    const n = describeRowNature({
+      flowType: row.flowType ?? null, incomeSubtype: (row as { incomeSubtype?: string }).incomeSubtype ?? null,
+      amount: row.amount, hasOwnedCounterparty: row.counterpartyAccountId != null,
+    });
+    console.log(`    ${money(row.amount).padStart(11)}  ${name.padEnd(14)} → "${n.label}"  (${n.basis}, tone=${n.tone})`);
+    check(`${name} no longer renders as Income`, n.label !== "Income" && n.nature === "ISSUER_CREDIT",
+      `renders as "${n.label}"`);
+  }
+  // Interest must not read as earned income anywhere.
+  const interestRows = incomeRows.filter((t) => (t as { incomeSubtype?: string }).incomeSubtype === "DEPOSIT_INTEREST");
+  const interestMislabelled = interestRows.filter((t) => describeRowNature({
+    flowType: t.flowType ?? null, incomeSubtype: "DEPOSIT_INTEREST", amount: t.amount,
+  }).nature === "EARNED_INCOME");
+  check(`interest never renders as earned income (${interestRows.length} rows)`, interestMislabelled.length === 0);
+
   const microsoft = tx.filter((t) => /microsoft|msft/i.test(`${t.merchant ?? ""} ${t.description ?? ""}`));
   console.log(`\n  Microsoft-matching rows in this Space: ${microsoft.length}`);
   for (const t of microsoft.slice(0, 10)) {
@@ -134,22 +161,35 @@ async function main() {
   console.log(`  ...with NO counterparty (tier inferred)     : ${transfersInDebt.length - withCp.length}`);
 
   // ── Two debt totals, two surfaces ────────────────────────────────────────
-  bar("CROSS-SURFACE PARITY — the same question, two answers");
-  const widgetTotal = inWidget.reduce((a, t) => a + Math.abs(t.amount), 0);
-  // DebtClient path: `totalDebtPaid` over rows scoped to DEBT accounts, by
-  // flowType alone (lib/debt.ts). No liquidity classification.
-  const debtAcctRows = tx.filter((t) => t.financialAccountId && A.get(t.financialAccountId)?.type === "debt");
-  const clientTotal = debtAcctRows.filter((t) => isDebtPayment(t.flowType)).reduce((a, t) => a + Math.abs(t.amount), 0);
-  // What lib/debt.ts would produce if handed BOTH legs (any unscoped caller).
-  const bothLegs = tx.filter((t) => isDebtPayment(t.flowType)).reduce((a, t) => a + Math.abs(t.amount), 0);
-  console.log(`  DebtPaymentsWidget  (classifyLiquidity, cash leg)   ${money(widgetTotal).padStart(14)}   ${inWidget.length} rows`);
-  console.log(`  DebtClient          (flowType, liability leg)       ${money(clientTotal).padStart(14)}   ${debtAcctRows.filter((t) => isDebtPayment(t.flowType)).length} rows`);
-  console.log(`  ⚠️ divergence                                       ${money(Math.abs(widgetTotal - clientTotal)).padStart(14)}`);
-  console.log(`  totalDebtPaid over BOTH legs (unscoped caller)      ${money(bothLegs).padStart(14)}   ← double count`);
-  const xfersOnDebt = debtAcctRows.filter((t) => isTransfer(t.flowType));
-  console.log(`\n  TRANSFER rows sitting on a debt account             ${money(xfersOnDebt.reduce((a,t)=>a+Math.abs(t.amount),0)).padStart(14)}   ${xfersOnDebt.length} rows`);
-  console.log(`     (SpaceDashboard's "Debt Space preview = the PAYMENTS story" shows every`);
-  console.log(`      row on a debt account, so these appear under a payments heading.)`);
+  bar("CROSS-SURFACE PARITY — the same question, one answer");
+  // Both surfaces now call the SAME authority. The widget passes its windowed
+  // rows; the Credit page passes getDebtPaymentRows(). Over the same corpus they
+  // must agree exactly.
+  const widget = totalDebtPaid(tx as unknown as LiquidityTx[], liqCtx, (t) => Math.abs(t.amount));
+  const credit = totalDebtPaid(
+    tx.filter((t) => isDebtPayment(t.flowType)) as unknown as LiquidityTx[],
+    liqCtx, (t) => Math.abs(t.amount));
+  console.log(`  DebtPaymentsWidget scope (all rows)          ${money(widget.total).padStart(14)}   ${widget.count} rows`);
+  console.log(`  Credit page scope (DEBT_PAYMENT rows)        ${money(credit.total).padStart(14)}   ${credit.count} rows`);
+  check("the two debt surfaces agree exactly", Math.abs(widget.total - credit.total) < 0.005,
+    `${widget.total} vs ${credit.total}`);
+  console.log(`  liability legs present and EXCLUDED         ${String(widget.excludedLiabilityLegCount).padStart(15)}`);
+  // The double count the old lib/debt.ts was one caller away from.
+  const naive = tx.filter((t) => isDebtPayment(t.flowType)).reduce((a, t) => a + Math.abs(t.amount), 0);
+  console.log(`  naive abs-sum over BOTH legs (the old bug)  ${money(naive).padStart(14)}`);
+  check("the authority does not double-count", Math.abs(naive - widget.total) > 1,
+    "naive and authority agree — legs may not be present");
+
+  const xfersInDebt = selectDebtPaymentCashLegs(tx as unknown as LiquidityTx[], liqCtx)
+    .counted.filter((t) => isTransfer((t as unknown as Transaction).flowType));
+  check("no transfer is counted as a debt payment", xfersInDebt.length === 0, `${xfersInDebt.length} found`);
+  const savingsInDebt = selectDebtPaymentCashLegs(tx as unknown as LiquidityTx[], liqCtx)
+    .counted.filter((t) => {
+      const cp = (t as unknown as Transaction).counterpartyAccountId;
+      return cp != null && ["savings", "checking"].includes(A.get(cp)?.type ?? "");
+    });
+  check("no savings/checking-destined transfer sits under debt", savingsInDebt.length === 0,
+    `${savingsInDebt.length} found`);
 
   // ── The economic-date and event-identity coverage the DTO carries ────────
   bar("ECONOMIC DATE / EVENT IDENTITY coverage at the read boundary");
@@ -164,7 +204,13 @@ async function main() {
   console.log(`  linked to a TransactionEvent: ${raw.filter((r) => r.transactionEventId).length}`);
   console.log(`  refunds (flowType=REFUND)   : ${tx.filter((t) => isRefund(t.flowType)).length}`);
 
-  console.log(`\n[AUDIT] complete — nothing was written.\n`);
+  bar("VERDICT");
+  if (failures > 0) {
+    console.error(`\n[AUDIT] FAILED — ${failures} convergence check(s) still broken.\n`);
+    await db.$disconnect();
+    process.exit(1);
+  }
+  console.log(`\n[AUDIT] PASSED — every surface reads its authority. Nothing was written.\n`);
   await db.$disconnect();
 }
 main().catch(async (e) => { console.error(e); await db.$disconnect(); process.exit(1); });
