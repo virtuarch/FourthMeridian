@@ -577,7 +577,11 @@ function TxRow({
           <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
             {nature.label}
           </span>
-          {tx.transferDisposition && (
+          {/* The disposition chip only when it SAYS something the nature chip did
+              not. Both render "Internal transfer" for an owned transfer, and two
+              identical chips side by side is noise, not evidence. */}
+          {tx.transferDisposition
+            && (TRANSFER_DISPOSITION_LABEL[tx.transferDisposition] ?? tx.transferDisposition) !== nature.label && (
             <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
               {TRANSFER_DISPOSITION_LABEL[tx.transferDisposition] ?? tx.transferDisposition}
             </span>
