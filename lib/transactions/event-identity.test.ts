@@ -287,7 +287,8 @@ test("only the write authority touches the L8 tables", () => {
     "scripts/backfill-event-identity.ts",
     "scripts/audit-event-identity.ts",
   ]);
-  const roots = ["lib", "app", "components", "jobs", "scripts"];
+  // `prisma` is in scope so the SEED is held to the same rule as ingest.
+  const roots = ["lib", "app", "components", "jobs", "scripts", "prisma"];
   const walk = (d: string, out: string[] = []): string[] => {
     let entries: string[] = [];
     try { entries = readdirSync(join(process.cwd(), d)); } catch { return out; }
@@ -304,4 +305,45 @@ test("only the write authority touches the L8 tables", () => {
     .filter((f) => /transactionObservation\.(create|update|delete)|transactionEvent\.(create|update|delete)/
       .test(read(f).replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "")));
   assert.deepEqual(offenders, [], "these modules write L8 tables directly instead of through event-write.ts");
+});
+
+test("the seed reaches L8 through the canonical writer, not around it", () => {
+  // A freshly seeded database must be in the SAME L8 state production would put
+  // it in — otherwise every developer works against a corpus whose identity was
+  // decided by different rules than the one users get.
+  const seed = read("prisma/seed.ts");
+  const code = seed.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+
+  // 1 — every seeded transaction batch goes through the wrapper. A bare
+  //     `createMany` returns no ids, so a row inserted that way could never be
+  //     handed to the writer and would silently miss its event.
+  assert.ok(!/prisma\.transaction\.createMany\b/.test(code),
+    "seed.ts inserts transactions with createMany, which returns no ids and skips L8");
+  assert.ok(/createManyAndReturn/.test(code), "seed.ts no longer returns inserted ids");
+
+  // 2 — it calls the canonical writer.
+  assert.ok(/recordTransactionObservation\(/.test(code), "seed.ts does not call the event writer");
+
+  // 3 — and decides NOTHING itself. Scoped to the wrapper's body, because the
+  //     rest of seed.ts legitimately does arithmetic to generate balance curves.
+  const start = code.indexOf("async function seedTransactions");
+  assert.ok(start > 0, "seedTransactions is gone — the seed no longer wraps its inserts");
+  const end = code.indexOf("\n}\n", start);
+  const body = code.slice(start, end);
+  // No key derivation, no eligibility list, no proximity matching.
+  for (const forbidden of [/observationKey\s*\(/, /sha256|createHash/, /Math\.abs/, /86_?400_?000/, /merchant/]) {
+    assert.ok(!forbidden.test(body), `seedTransactions re-implements identity logic: ${forbidden}`);
+  }
+  assert.ok(/providerOfRow\(/.test(body), "seed.ts derives the provider itself instead of using providerOfRow");
+  assert.ok(/isEventEligibleProvider\(/.test(body), "seed.ts decides crypto scope itself instead of asking the authority");
+});
+
+test("provider derivation has exactly one implementation", () => {
+  // Scope drift between ingest and the backfill would mean crypto is out of the
+  // banking domain in one path and in it in another.
+  for (const f of ["prisma/seed.ts", "scripts/backfill-event-identity.ts"]) {
+    const code = read(f).replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+    assert.ok(/providerOfRow\(/.test(code), `${f} does not route through providerOfRow`);
+    assert.ok(!/walletAddress\s*\?\s*"WALLET"/.test(code), `${f} re-derives WALLET inline`);
+  }
 });

@@ -45,6 +45,35 @@ export function isEventEligibleProvider(p: string): boolean {
   return EVENT_ELIGIBLE_PROVIDERS.has(p);
 }
 
+/** The provider evidence a transaction row carries, as the account graph tells it. */
+export interface ProviderEvidence {
+  /** Set on an account we read a chain for — the strongest crypto signal there is. */
+  accountWalletAddress: string | null | undefined;
+  accountPlaidAccountId: string | null | undefined;
+  rowImportBatchId: string | null | undefined;
+  rowExternalTransactionId: string | null | undefined;
+  rowPlaidTransactionId: string | null | undefined;
+}
+
+/**
+ * Which provider attested a transaction row — THE one derivation.
+ *
+ * Every path that records an observation (Plaid sync, CSV import, the backfill,
+ * the seed) resolves the provider here, so scope can never mean one thing in
+ * ingest and another in a script. Ordered by strength of evidence: a wallet
+ * address is a fact about the account, an import batch a fact about the row.
+ *
+ * ⚠️ WALLET is what puts crypto OUT of the banking event domain. The signal is
+ * the wallet address, NOT `AccountType.crypto` — a manually-tracked exchange
+ * account has no chain to observe and behaves like any other manual account.
+ */
+export function providerOfRow(e: ProviderEvidence): "WALLET" | "CSV" | "PLAID" | "MANUAL" {
+  if (e.accountWalletAddress) return "WALLET";
+  if (e.rowImportBatchId || e.rowExternalTransactionId) return "CSV";
+  if (e.rowPlaidTransactionId || e.accountPlaidAccountId) return "PLAID";
+  return "MANUAL";
+}
+
 /** How an observation was attached to its event. Recorded, never inferred later. */
 export type EventLinkBasis =
   /** The provider's own pending→posted reference. Rank 1, and unambiguous. */

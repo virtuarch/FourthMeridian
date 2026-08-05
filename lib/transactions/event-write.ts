@@ -28,8 +28,19 @@
  * cutover is a separate slice.
  */
 
-import "server-only";
-
+// ⚠️ NO `server-only` marker, deliberately.
+//
+// This module takes an explicit `db` handle and touches Prisma directly, so it
+// can never run in a browser bundle regardless — the marker added nothing a
+// client component could actually violate. What it DID do was make the module
+// unreachable from `tsx`, which is how the database seed and the backfill both
+// run. That forced the backfill to re-implement the persistence, and it would
+// have forced the seed to do the same.
+//
+// One writer that every path can reach is worth more than a bundling marker on
+// a module no bundle includes. The real boundary is unchanged: identity is
+// decided by the pure authority (`event-identity.ts`), and a standing probe
+// asserts nothing outside this module writes the L8 tables.
 import type { Prisma, PrismaClient, ProviderType, SettlementState } from "@prisma/client";
 import {
   resolveEventLink, projectEvent, observationKey, isEventEligibleProvider,

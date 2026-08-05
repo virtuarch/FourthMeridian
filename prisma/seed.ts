@@ -36,6 +36,8 @@ import {
   GoalStatus,
   GoalCategory,
 } from "@prisma/client";
+// L8 — the provider vocabulary the event authority decides eligibility from.
+import type { ProviderType } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { encryptWithPurpose, EncryptionPurpose } from "../lib/plaid/encryption";
 import { SpaceCategory } from "../lib/space-presets";
@@ -49,6 +51,8 @@ import { planTemplateApplication } from "../lib/space-templates/apply";
 // grant-gated (no members are seeded).
 import { ensurePlatformSpaces, ensurePlatformSections } from "../lib/platform/seed";
 import { economicDateFor } from "../lib/transactions/economic-date-write";
+import { recordTransactionObservation } from "../lib/transactions/event-write";
+import { isEventEligibleProvider, providerOfRow } from "../lib/transactions/event-identity";
 
 const prisma = new PrismaClient();
 
@@ -594,7 +598,84 @@ async function main() {
   const itx = (acct: { id: string }, n: number, ticker: string, cat: TransactionCategory, amount: number, desc: string): TxRow =>
     ({ financialAccountId: acct.id, date: D(n), economicDate: economicDateFor({ postingDate: D(n), authorizedAt: null }), merchant: ticker, category: cat, amount, pending: false, description: desc });
 
-  await prisma.transaction.createMany({ data: [
+/**
+ * L8 — seed banking transactions AND their event identity, in one call.
+ *
+ * ── Why this exists ────────────────────────────────────────────────────────
+ *
+ * `createMany` returns no ids, so a seeded row could not be handed to the
+ * canonical event writer and a freshly-seeded database needed a separate
+ * backfill run before its L8 state was correct. `createManyAndReturn` (Prisma
+ * 5.14+, PostgreSQL) closes that gap without changing a single seeded value:
+ * same rows, same ids, same timestamps, same classifications — the ids simply
+ * come back.
+ *
+ * ⚠️ NO identity logic lives here. Every decision goes through
+ * `recordTransactionObservation`, the same authority the Plaid sync and the CSV
+ * import call. This function only supplies evidence.
+ *
+ * ⚠️ CRYPTO IS REFUSED BY SCOPE, and refused the same way production refuses it:
+ * `isEventEligibleProvider` decides, not a seed-local list. A wallet row has no
+ * pending↔posted lifecycle of this shape and never enters the banking L8 tables.
+ *
+ * Idempotent: `observationKey` is unique, so re-running the seed against an
+ * already-seeded database writes no duplicate observations.
+ */
+async function seedTransactions(rows: TxRow[]): Promise<void> {
+  if (rows.length === 0) return;
+  const created = await prisma.transaction.createManyAndReturn({
+    data: rows,
+    select: {
+      id: true, financialAccountId: true, date: true, economicDate: true,
+      amount: true, pending: true, externalTransactionId: true,
+    },
+  });
+
+  // The account graph decides the provider — the same signal the backfill and
+  // the census use, never a seed-local guess.
+  const accountIds = [...new Set(created.map((r) => r.financialAccountId).filter((x): x is string => x != null))];
+  const accounts = await prisma.financialAccount.findMany({
+    where: { id: { in: accountIds } },
+    select: { id: true, walletAddress: true, plaidAccountId: true },
+  });
+  const A = new Map(accounts.map((a) => [a.id, a]));
+
+  for (const r of created) {
+    if (!r.financialAccountId || !r.economicDate) continue;
+    const a = A.get(r.financialAccountId);
+    // ⚠️ The seed classifies NOTHING. Both the provider derivation and the
+    // eligibility predicate are the canonical ones, so a seeded database is
+    // in the same L8 state production would put it in.
+    const provider: ProviderType = providerOfRow({
+      accountWalletAddress: a?.walletAddress,
+      accountPlaidAccountId: a?.plaidAccountId,
+      rowImportBatchId: null,
+      rowExternalTransactionId: r.externalTransactionId,
+      rowPlaidTransactionId: null,
+    });
+    if (!isEventEligibleProvider(provider)) continue;
+    await recordTransactionObservation(prisma, {
+      transactionId:      r.id,
+      financialAccountId: r.financialAccountId,
+      provider,
+      // A seeded row carries no provider row id — the transaction id is the
+      // stable anchor, exactly as `observationKeyMaterial` documents.
+      providerRowId:      r.externalTransactionId ?? null,
+      providerPendingRef: null,
+      lifecycle:          r.pending ? "PENDING" : "POSTED",
+      amount:             r.amount,
+      postingDate:        r.date,
+      economicDate:       r.economicDate,
+      authorizedAt:       null,
+      transactionIsLive:  true,
+      // Seeded rows are observed as they are written. Deterministic per run.
+      observedAt:         new Date(),
+    });
+  }
+}
+
+
+  await seedTransactions([
     // Jane Checking — Payroll (bi-weekly ×9)
     tx(jDemoChecking,  2, "Payroll Direct Deposit", Income,  3800),
     tx(jDemoChecking, 16, "Payroll Direct Deposit", Income,  3800),
@@ -669,9 +750,9 @@ async function main() {
     tx(jDemoChecking, 18, "City Pharmacy",    Shopping, -24.60),
     tx(jDemoChecking, 55, "City Pharmacy",    Shopping, -38.90),
     tx(jDemoChecking, 82, "City Pharmacy",    Shopping, -19.40),
-  ]});
+  ]);
 
-  await prisma.transaction.createMany({ data: [
+  await seedTransactions([
     // Jane HYSA — interest ×4
     tx(jDemoHysa, 10, "Interest Credit", Interest, 34.50, false, "HYSA Interest — May 2026 (4.35% APY)"),
     tx(jDemoHysa, 40, "Interest Credit", Interest, 33.80, false, "HYSA Interest — Apr 2026"),
@@ -696,9 +777,9 @@ async function main() {
     tx(jJapanSavings, 75, "Transfer from HYSA",     Transfer, 300),
     tx(jJapanSavings,105, "Transfer from HYSA",     Transfer, 300),
     tx(jJapanSavings, 30, "Interest Credit",  Interest,  8.40, false, "Japan Trip Fund Interest — Apr 2026"),
-  ]});
+  ]);
 
-  await prisma.transaction.createMany({ data: [
+  await seedTransactions([
     // Jane Credit Card — Dining ×15
     tx(jCreditCard,  2, "Sakura Sushi",         Dining,  -68.40),
     tx(jCreditCard,  6, "Corner Coffee",         Dining,   -8.75),
@@ -755,9 +836,9 @@ async function main() {
     tx(jCreditCard, 11, "Whole Foods Local",    Groceries,  -88.40, true),
     tx(jCreditCard, 55, "Trader Joe's",         Groceries,  -67.20),
     tx(jCreditCard, 83, "Whole Foods Local",    Groceries,  -91.60),
-  ]});
+  ]);
 
-  await prisma.transaction.createMany({ data: [
+  await seedTransactions([
     // Jane IRA ×8
     itx(jBrokerageIra,  5, "VOO",          Buy,       -1960, "Buy 4 shares VOO @ $490"),
     itx(jBrokerageIra, 35, "VOO",          Buy,       -1470, "Buy 3 shares VOO @ $490"),
@@ -784,7 +865,7 @@ async function main() {
     // Jane BTC Wallet ×2
     itx(jBtcWallet, 40, "BTC", Buy,   -1960, "Buy 0.02 BTC → self-custody transfer"),
     itx(jBtcWallet,100, "BTC", Sell,    490, "Sell 0.005 BTC — partial profit"),
-  ]});
+  ]);
   console.log("   ✓ Jane transactions: ~150");
 
   // Jane — AI Advice
@@ -1019,7 +1100,7 @@ async function main() {
   });
   console.log("   ✓ Holdings (John): 19");
 
-  await prisma.transaction.createMany({ data: [
+  await seedTransactions([
     // John Checking — Payroll ×9
     tx(jnChecking,  3, "Apex Corp Payroll",   Income,  4200),
     tx(jnChecking, 17, "Apex Corp Payroll",   Income,  4200),
@@ -1107,9 +1188,9 @@ async function main() {
     tx(jnChecking, 60, "Taco Run",             Dining,  -18.40),
     tx(jnChecking, 78, "Sports Bar & Grill",   Dining,  -52.00),
     tx(jnChecking,103, "Fast Food Drive-Thru", Dining,  -16.80),
-  ]});
+  ]);
 
-  await prisma.transaction.createMany({ data: [
+  await seedTransactions([
     // John Savings ×10
     tx(jnSavings,  4, "Transfer from Checking", Transfer,  250),
     tx(jnSavings, 34, "Transfer from Checking", Transfer,  250),
@@ -1121,9 +1202,9 @@ async function main() {
     tx(jnSavings, 70, "Interest Credit", Interest, 16.80, false, "Savings Interest — Mar 2026"),
     tx(jnSavings,100, "Interest Credit", Interest, 15.60, false, "Savings Interest — Feb 2026"),
     tx(jnSavings, 85, "Emergency Withdrawal", Transfer, -800, false, "Car repair fund transfer"),
-  ]});
+  ]);
 
-  await prisma.transaction.createMany({ data: [
+  await seedTransactions([
     // John Credit Card — Dining ×12
     tx(jnCreditCard,  3, "Steakhouse Downtown",  Dining, -118.00),
     tx(jnCreditCard,  9, "Sports Bar & Grill",   Dining,  -68.40),
@@ -1171,9 +1252,9 @@ async function main() {
     tx(jnCreditCard, 58, "CC Payment", Payment,  800),
     tx(jnCreditCard, 88, "CC Payment", Payment, 1000),
     tx(jnCreditCard,118, "CC Payment", Payment,  900),
-  ]});
+  ]);
 
-  await prisma.transaction.createMany({ data: [
+  await seedTransactions([
     // John Roth IRA ×8
     itx(jnRothIra, 10, "CONTRIBUTION", Income,   583,   "Monthly IRA Contribution — Jan"),
     itx(jnRothIra, 40, "CONTRIBUTION", Income,   583,   "Monthly IRA Contribution — Feb"),
@@ -1216,9 +1297,9 @@ async function main() {
     itx(jnBtcWallet, 40,  "BTC", Buy,  -3724, "Buy 0.038 BTC → self-custody"),
     itx(jnBtcWallet,100,  "BTC", Buy,  -1960, "Buy 0.02 BTC → self-custody"),
     itx(jnBtcWallet, 15,  "BTC", Sell,  2450, "Sell 0.025 BTC — partial exit"),
-  ]});
+  ]);
 
-  await prisma.transaction.createMany({ data: [
+  await seedTransactions([
     // John Business Checking ×25
     tx(jnBizChecking,  8, "Acme Corp — Invoice #1042",      Income,  4500),
     tx(jnBizChecking, 22, "TechStart Inc — Invoice #1043",  Income,  3200),
@@ -1261,7 +1342,7 @@ async function main() {
     tx(jnBizCard, 92, "Office Depot",               Shopping,  -95.80),
     tx(jnBizCard, 30, "Conference Hotel",            Travel,  -645.00),
     tx(jnBizCard, 90, "Flight — Business",           Travel,  -380.00),
-  ]});
+  ]);
   console.log("   ✓ John transactions: ~210");
 
   // John — AI Advice

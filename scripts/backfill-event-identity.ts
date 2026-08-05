@@ -29,7 +29,7 @@
 import { db } from "@/lib/db";
 import { createHash } from "node:crypto";
 import type { ProviderType } from "@prisma/client";
-import { projectEvent, type ObservationFacts } from "@/lib/transactions/event-identity";
+import { providerOfRow, projectEvent, type ObservationFacts } from "@/lib/transactions/event-identity";
 import { observationKey, isEventEligibleProvider } from "@/lib/transactions/event-identity";
 
 const BATCH = 200;
@@ -60,12 +60,17 @@ async function main() {
     orderBy: { createdAt: "asc" },
   });
 
+  // The canonical derivation — the seed and every ingest path resolve provider
+  // through the same function, so scope cannot drift between them.
   const providerOf = (r: Row): ProviderType => {
     const a = r.financialAccountId ? A.get(r.financialAccountId) : undefined;
-    if (a?.walletAddress) return "WALLET";
-    if (r.importBatchId || r.externalTransactionId) return "CSV";
-    if (r.plaidTransactionId || a?.plaidAccountId) return "PLAID";
-    return "MANUAL";
+    return providerOfRow({
+      accountWalletAddress: a?.walletAddress,
+      accountPlaidAccountId: a?.plaidAccountId,
+      rowImportBatchId: r.importBatchId,
+      rowExternalTransactionId: r.externalTransactionId,
+      rowPlaidTransactionId: r.plaidTransactionId,
+    });
   };
 
   // ── Scope ────────────────────────────────────────────────────────────────
