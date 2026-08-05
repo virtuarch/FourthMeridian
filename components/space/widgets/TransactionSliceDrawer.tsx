@@ -40,6 +40,9 @@ import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatCurrency } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
+import {
+  describeRowNature, ROW_NATURE_ORDER, ROW_NATURE_GROUP_LABEL, type RowNature,
+} from "@/lib/transactions/flow-presentation";
 import { economicTotals } from "@/lib/transactions/cash-flow";
 import { TransactionDate } from "@/components/ui/TransactionDate";
 import { Waves, Layers, ListFilter } from "lucide-react";
@@ -65,13 +68,6 @@ export interface TransactionSlice {
   totalLabel?:   string;
 }
 
-/** Friendly, canonical FlowType group labels (the persisted `flowType` fact). */
-const FLOW_GROUP_LABEL: Record<string, string> = {
-  SPENDING: "Spending", INCOME: "Income", REFUND: "Refunds", DEBT_PAYMENT: "Debt payments",
-  TRANSFER: "Transfers", INVESTMENT: "Investment activity", FEE: "Fees", INTEREST: "Interest",
-  ADJUSTMENT: "Adjustments", UNKNOWN: "Unclassified",
-};
-const FLOW_GROUP_ORDER = ["SPENDING", "FEE", "INTEREST", "REFUND", "INCOME", "DEBT_PAYMENT", "TRANSFER", "INVESTMENT", "ADJUSTMENT", "UNKNOWN"];
 
 function money(v: number, ctx?: ConversionContext): string {
   return ctx
@@ -102,16 +98,34 @@ function TxRow({ t }: { t: Transaction }) {
   );
 }
 
-/** Group rows by canonical FlowType, in a stable, human order. */
+/**
+ * Group rows by canonical row NATURE, in a stable, human order.
+ *
+ * V27-TRUTH-7 — this grouped on `flowType` through a local label map, so a
+ * refund, an issuer credit, interest earned and a salary deposit all landed
+ * under one "Income" heading. The nature authority splits them, and the heading
+ * words come from the same module the row chips use, so a group title and the
+ * rows inside it can never disagree.
+ */
 function groupByFlow(rows: Transaction[]): { key: string; label: string; rows: Transaction[] }[] {
-  const byFlow = new Map<string, Transaction[]>();
+  const byNature = new Map<RowNature, Transaction[]>();
   for (const t of rows) {
-    const k = t.flowType ?? "UNKNOWN";
-    (byFlow.get(k) ?? byFlow.set(k, []).get(k)!).push(t);
+    const k = natureOf(t).nature;
+    (byNature.get(k) ?? byNature.set(k, []).get(k)!).push(t);
   }
-  return FLOW_GROUP_ORDER
-    .filter((k) => byFlow.has(k))
-    .map((k) => ({ key: k, label: FLOW_GROUP_LABEL[k] ?? k, rows: byFlow.get(k)! }));
+  return ROW_NATURE_ORDER
+    .filter((k) => byNature.has(k))
+    .map((k) => ({ key: k, label: ROW_NATURE_GROUP_LABEL[k], rows: byNature.get(k)! }));
+}
+
+/** The one place this file asks what a row is. */
+function natureOf(t: Transaction) {
+  return describeRowNature({
+    flowType:      t.flowType ?? null,
+    incomeSubtype: t.incomeSubtype ?? null,
+    amount:        t.amount,
+    hasOwnedCounterparty: t.counterpartyAccountId != null,
+  });
 }
 
 /**

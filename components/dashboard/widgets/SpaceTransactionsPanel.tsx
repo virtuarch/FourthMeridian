@@ -43,6 +43,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Account, Transaction, TransactionCategory } from "@/types";
+import { describeRowNature } from "@/lib/transactions/flow-presentation";
 import { DataCard } from "@/components/atlas/DataCard";
 import { Search, X, SlidersHorizontal, CalendarDays, ChevronRight, ArrowDownUp, ArrowLeftRight, Loader2 } from "lucide-react";
 import { ToolbarMenuButton } from "@/components/dashboard/widgets/transactions/ToolbarMenuButton";
@@ -524,8 +525,20 @@ function TxRow({
   /** TX-3.3 — the inspect→query pivot, enabled by the merchantId the DTO now carries. */
   onPivotMerchant?: (merchantId: string, label: string) => void;
 }) {
-  const isTransfer = tx.flowType === "TRANSFER";
-  const isCredit   = tx.amount > 0 && !isTransfer;
+  // V27-TRUTH-7 — one authority decides what this row IS and how it reads.
+  // This was `isCredit = tx.amount > 0 && !isTransfer`, under which a refund, an
+  // issuer credit, interest earned and a salary deposit all rendered identically:
+  // green, with a "+". Only earned income, interest and dividends are gains; a
+  // refund or an issuer credit returns money you already spent, so it is neutral.
+  const nature     = describeRowNature({
+    flowType:      tx.flowType ?? null,
+    incomeSubtype: tx.incomeSubtype ?? null,
+    amount:        tx.amount,
+    hasOwnedCounterparty: tx.counterpartyAccountId != null,
+  });
+  const isTransfer = nature.nature === "TRANSFER_IN" || nature.nature === "TRANSFER_OUT"
+                  || nature.nature === "INTERNAL_TRANSFER";
+  const isCredit   = nature.tone === "positive";
   const title      = tx.merchantDisplayName ?? tx.merchant; // MI M6 — resolved name, raw fallback
   const canPivot   = !!tx.merchantId && !!onPivotMerchant;
 
@@ -559,8 +572,10 @@ function TxRow({
           )}
         </div>
         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+          {/* WHAT it is, from the authority — beside the provider's category, which
+              is a different (and weaker) statement. */}
           <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
-            {tx.category}
+            {nature.label}
           </span>
           {tx.transferDisposition && (
             <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
@@ -588,9 +603,9 @@ function TxRow({
       <div className="shrink-0 text-right">
         <p
           className="text-sm font-bold tabular-nums"
-          style={{ color: isCredit ? "var(--accent-positive)" : isTransfer ? "var(--text-secondary)" : "var(--text-primary)" }}
+          style={{ color: isCredit ? "var(--accent-positive)" : nature.tone === "neutral" ? "var(--text-secondary)" : "var(--text-primary)" }}
         >
-          {isTransfer ? "" : isCredit ? "+" : "−"}{fmt(tx.amount, tx.currency ?? DEFAULT_DISPLAY_CURRENCY)}
+          {nature.tone === "neutral" ? "" : isCredit ? "+" : "−"}{fmt(tx.amount, tx.currency ?? DEFAULT_DISPLAY_CURRENCY)}
         </p>
       </div>
 
