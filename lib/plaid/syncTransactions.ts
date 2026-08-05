@@ -131,6 +131,7 @@ import {
 // TE1 — provider-neutral transfer evidence: stage-1 Plaid adapter + persistence
 // mapper. Wired beside flowFields/factFields; liquidity/Cash Flow never see Plaid.
 import { plaidTransferEvidence } from "@/lib/transactions/plaid-transfer-evidence";
+import { economicDateWriteFields } from "@/lib/transactions/economic-date-write";
 import {
   transferEvidenceWriteFields,
   NULL_TRANSFER_EVIDENCE_FIELDS,
@@ -534,9 +535,21 @@ export async function syncTransactionsForItem(
       //     evidence with nulls (evidence axes are write-time; wiped evidence is
       //     unrecoverable and silently kills the payment-app honesty prompts).
       const evidenceRecognized = transferFields !== NULL_TRANSFER_EVIDENCE_FIELDS;
-      const createFields = { financialAccountId, date, merchant, description, amount, pending: txn.pending, currency, ...factFields, ...transferFields };
+      // L8-A — the economic chronology rides WITH `date`, never separately, so a
+      // row can never carry a posting date without its economic twin. Derived
+      // from this row's own `date` + `authorizedAt` by the one write authority
+      // (which wraps the same resolver the read path uses).
+      //
+      // `factFields.authorizedAt` is the value being written on THIS row; reading
+      // it here rather than the Plaid payload keeps the two columns consistent by
+      // construction even if the fact builder ever changes what it stamps.
+      const econFields = economicDateWriteFields({
+        postingDate:  date,
+        authorizedAt: (factFields as { authorizedAt?: Date | string | null }).authorizedAt ?? null,
+      });
+      const createFields = { financialAccountId, date, ...econFields, merchant, description, amount, pending: txn.pending, currency, ...factFields, ...transferFields };
       const updateFields = {
-        financialAccountId, date, merchant, description, amount, pending: txn.pending,
+        financialAccountId, date, ...econFields, merchant, description, amount, pending: txn.pending,
         ...(currency !== null ? { currency } : {}),
         ...(classified ? factFields : {}),
         ...(evidenceRecognized ? transferFields : {}),

@@ -320,7 +320,7 @@ async function main() {
   const stratified = (basis: Basis, tiers: number[]) => {
     const claims = new Map<string, string>();
     for (const pool of byOwner.values()) {
-      let legs = buildLegs(pool, basis).map((l) => ({ ...l, providerLinkKey: null, maskedDestinationAccountId: null }));
+      const legs = buildLegs(pool, basis).map((l) => ({ ...l, providerLinkKey: null, maskedDestinationAccountId: null }));
       for (const d of tiers) {
         const live = legs.filter((l) => !claims.has(l.id));
         const fwd = new Map<string, string[]>();

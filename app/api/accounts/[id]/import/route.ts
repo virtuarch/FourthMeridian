@@ -152,6 +152,7 @@ import { buildTransactionFacts } from "@/lib/transactions/transaction-facts";
 // enrichment is captured here. Best-effort: a failure degrades to null MI
 // columns and never blocks the import.
 import { resolveMerchantWrite } from "@/lib/transactions/merchant-write";
+import { economicDateFor } from "@/lib/transactions/economic-date-write";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -481,6 +482,10 @@ export const POST = withApiHandler(async (
           data: {
             financialAccountId,
             date:                  row.date,
+            // L8-A — an imported row carries no provider authorization, so the
+            // economic date is the supplied date. Through the write authority so
+            // a future importer that maps an authorization column needs no change.
+            economicDate:          economicDateFor({ postingDate: row.date, authorizedAt: null }),
             merchant:              row.merchant,
             description:           row.description,
             category:              finalCategory,

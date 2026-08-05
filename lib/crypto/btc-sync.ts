@@ -70,6 +70,7 @@ import {
 import { captureWalletPosition } from "@/lib/crypto/wallet-position-capture";
 import { BTC_ASSET } from "@/lib/investments/crypto-instrument";
 import { reconcileWalletLedger, type LedgerReconciliation } from "@/lib/crypto/ledger-completeness.core";
+import { economicDateFor } from "@/lib/transactions/economic-date-write";
 
 /** The only chain this v1 sync supports. */
 export const BTC_CHAIN = "BTC";
@@ -301,6 +302,10 @@ function buildTransactionRow(
   return {
     financialAccountId,
     date:                  m.occurredAt,
+    // L8-A — on-chain rows carry no authorization, so the economic date IS the
+    // occurrence date. Routed through the one write authority anyway, so a
+    // future chain that DOES attest an earlier time needs no change here.
+    economicDate:          economicDateFor({ postingDate: m.occurredAt, authorizedAt: null }),
     merchant,
     description:           m.description,
     category,

@@ -260,9 +260,26 @@ console.log("\nPROBE 17 — no schema, no persistence");
     check(`${path.basename(f)} imports no database client`, !c.includes("@/lib/db"));
   }
   const schema = src(path.join("prisma", "schema.prisma"));
-  check("no economicDate column exists", !/economicDate/.test(schema));
+  // L8-A — `economicDate` IS now a column, deliberately. This probe used to
+  // assert its absence, which was the right guard while the value was
+  // derive-only: persisting it before the authority was proven would have
+  // frozen an unvalidated rule into the corpus.
+  //
+  // That gate is now satisfied. The authority shipped in V27-L4B, was replayed
+  // across the whole corpus in the economic-date calibration, and the persisted
+  // column is checked against it continuously by
+  // `scripts/audit-economic-date-persistence.ts`. So the invariant changes shape
+  // rather than disappearing: the column must exist, must be NULLABLE (null =
+  // "not yet backfilled", never "same as posting"), and must remain the ONLY
+  // chronology persistence in the schema.
+  check("economicDate exists and is NULLABLE", /economicDate\s+DateTime\?\s+@db\.Date/.test(schema));
+  check("...and `date` is still the untouched POSTING column",
+    /\n\s*date\s+DateTime\s+@db\.Date/.test(schema));
   check("no EconomicEvent model exists", !/model EconomicEvent/.test(schema));
   check("no ProviderObservation model exists", !/model ProviderObservation/.test(schema));
+  // L8-A is chronology ONLY. An observation log is the rest of L8 and is not
+  // required to support the read cutover, so it must not appear here.
+  check("no observation log was added", !/model TransactionObservation|model BalanceObservation/.test(schema));
   check("SettlementState is still only PENDING | POSTED",
     /enum SettlementState \{\s*PENDING\s*POSTED\s*\}/.test(schema.replace(/\r/g, "")));
   // No Slice 4 module may write counterpartyAccountId either — that is the

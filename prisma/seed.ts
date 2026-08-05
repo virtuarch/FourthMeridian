@@ -48,6 +48,7 @@ import { planTemplateApplication } from "../lib/space-templates/apply";
 // Ops, Growth & Revenue, Customer Success). Dev DBs always have them; access is
 // grant-gated (no members are seeded).
 import { ensurePlatformSpaces, ensurePlatformSections } from "../lib/platform/seed";
+import { economicDateFor } from "../lib/transactions/economic-date-write";
 
 const prisma = new PrismaClient();
 
@@ -585,10 +586,13 @@ async function main() {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   type TxRow = any;
+  // L8-A — seed rows carry no authorization, so the economic date is the seeded
+  // date. Routed through the write authority (not `D(n)` twice) so a freshly
+  // seeded database satisfies the stored-equals-derived probe like any other.
   const tx = (acct: { id: string }, n: number, merchant: string, cat: TransactionCategory, amount: number, pending = false, desc?: string): TxRow =>
-    ({ financialAccountId: acct.id, date: D(n), merchant, category: cat, amount, pending, description: desc });
+    ({ financialAccountId: acct.id, date: D(n), economicDate: economicDateFor({ postingDate: D(n), authorizedAt: null }), merchant, category: cat, amount, pending, description: desc });
   const itx = (acct: { id: string }, n: number, ticker: string, cat: TransactionCategory, amount: number, desc: string): TxRow =>
-    ({ financialAccountId: acct.id, date: D(n), merchant: ticker, category: cat, amount, pending: false, description: desc });
+    ({ financialAccountId: acct.id, date: D(n), economicDate: economicDateFor({ postingDate: D(n), authorizedAt: null }), merchant: ticker, category: cat, amount, pending: false, description: desc });
 
   await prisma.transaction.createMany({ data: [
     // Jane Checking — Payroll (bi-weekly ×9)

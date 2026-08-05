@@ -1973,6 +1973,33 @@ model Transaction {
   amount      Float
   pending     Boolean             @default(false)
 
+  // ── L8-A — the persisted economic chronology (additive, nullable) ──────────
+  //
+  // WHEN THE ACTIVITY HAPPENED, as opposed to when the provider posted it.
+  // `date` above is UNCHANGED and remains the POSTING date: it is the historical
+  // engine's input and its immutability is load-bearing. These answer different
+  // questions and both exist.
+  //
+  // Written by lib/transactions/economic-date-write.ts, which wraps the SAME
+  // authority the read path uses (lib/transactions/economic-date.ts). It is a
+  // pure function of `date` + `authorizedAt`, so a standing probe can assert
+  // stored == derived for every row — and does.
+  //
+  // ⚠️ NULLABLE, and null means "not yet backfilled", never "same as posting".
+  // A NOT NULL column with a `date` default would make an unbackfilled row
+  // indistinguishable from a genuinely same-day one, and the backfill could
+  // never prove it had finished.
+  //
+  // ⚠️ Only the DATE is persisted. Basis / state / lagDays stay DERIVED at read
+  // time from `date` + `authorizedAt` — storing an explanation beside the value
+  // creates two facts that can disagree. This column is the sort key, not the
+  // story.
+  //
+  // Nothing reads it yet: L8-A is dual-write only. The reader cutover
+  // (ordering, cursor, filters, counts, grouping, Cash Flow, AI, exports,
+  // drawers) is a separate, atomic slice that consumes this column.
+  economicDate DateTime? @db.Date
+
   plaidTransactionId String? @unique // prevents duplicate inserts on re-sync
 
   // D2 Step 4D — written by the import pipeline ("externalId" match
@@ -2109,6 +2136,14 @@ model Transaction {
   @@index([financialAccountId, date])
   @@index([date])
   @@index([importBatchId])
+  // L8-A — the economic chronology's indexes, MIRRORING the two posting indexes
+  // the explorer actually uses: `[financialAccountId, date]` backs the
+  // account-scoped page (the common case) and `[date]` backs the global ordering.
+  // Deliberately only those two: `[flowType, date]` and
+  // `[financialAccountId, flowType, date]` have no economic twin until a consumer
+  // needs one, and an unused index is write cost for nothing.
+  @@index([financialAccountId, economicDate])
+  @@index([economicDate])
   // FlowType rollup indexes (P3 Phase A): per-account/per-liability, global
   // per-flow lenses, and reverse counterparty attribution.
   @@index([financialAccountId, flowType, date])
