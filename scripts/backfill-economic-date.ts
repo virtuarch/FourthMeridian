@@ -10,7 +10,7 @@
  * One column, on rows where it is null or disagrees with the authority. Every
  * value comes from `economicDateWriteFields`, which wraps
  * `lib/transactions/economic-date.ts` — the same resolver the read path has used
- * since V27-L4B. This script contains NO date logic of its own, deliberately: a
+ * since v2.6-L4B. This script contains NO date logic of its own, deliberately: a
  * backfill that re-derived the rule would be a second authority, and the whole
  * point of the column is to have one.
  *

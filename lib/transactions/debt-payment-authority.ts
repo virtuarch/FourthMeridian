@@ -1,5 +1,5 @@
 /**
- * lib/transactions/debt-payment-authority.ts   (V27-TRUTH-7)
+ * lib/transactions/debt-payment-authority.ts   (v2.6-TRUTH-7)
  *
  * THE single answer to "how much did I pay toward debt?"
  *

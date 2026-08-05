@@ -202,13 +202,13 @@ type TxnRow = {
   // population (`not: INVESTMENT`) admits UNKNOWN / ADJUSTMENT / null too, so
   // flowType can now be null here (non-economic residue — counted, never money-folded).
   flowType:      FlowType | null;
-  // V27-TRUTH-2 — supersession + movement-form evidence. The AI payload runs the
+  // v2.6-TRUTH-2 — supersession + movement-form evidence. The AI payload runs the
   // SAME read-time matcher as the UI, so it must supply the same facts or it
   // would receive the old, over-resolving answer while the UI receives the
   // corrected one.
   settlementState: string | null;
   pfcDetailed:     string | null;
-  // V27-TRUTH-3 — provider FAMILY, for the liability-inflow authority.
+  // v2.6-TRUTH-3 — provider FAMILY, for the liability-inflow authority.
   pfcPrimary:      string | null;
   flowDirection: FlowDirection | null;
   // TI2-W1 — canonical inputs to shouldSurfaceAsNeedsClassification (all flat
@@ -430,7 +430,7 @@ async function assembleTransactions(
       classificationReason:  true,
       transferRail:          true,
       counterpartyAccountId: true,
-      // V27-TRUTH-2 — see TxnRow.
+      // v2.6-TRUTH-2 — see TxnRow.
       settlementState:       true,
       pfcDetailed:           true,
       pfcPrimary:            true,
@@ -503,7 +503,7 @@ async function assembleTransactions(
   let windowEstimated = false;
 
   let incomeTotal      = 0;
-  // V27-TRUTH-5 — the canonical breakdown. Giving the model one "income" number
+  // v2.6-TRUTH-5 — the canonical breakdown. Giving the model one "income" number
   // lets it call interest a raise; these carry the composition and the
   // exclusions so it can reason about what the money actually was.
   const incomeByClass: Record<string, { amount: number; count: number }> = {};
@@ -779,7 +779,7 @@ async function assembleTransactions(
     fetchLimit:        TRANSACTION_FETCH_LIMIT,
 
     incomeTotal:      Math.round(incomeTotal      * 100) / 100,
-    // V27-TRUTH-5 — the canonical income composition. `incomeTotal` above is the
+    // v2.6-TRUTH-5 — the canonical income composition. `incomeTotal` above is the
     // BANK-TRANSACTION broad income and equals the sum of these classes;
     // investment dividends are a separate ledger (see income-rollup.ts) and are
     // deliberately absent rather than silently folded in.

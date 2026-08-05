@@ -254,7 +254,7 @@ export function CashFlowWorkspace({
 
   // ── Income by Source — perspective-aware, from the contract's canonical slices
   //    (cashInByReason on the liquidity axis, the canonical income rollup on the
-  //    economic axis — V27-TRUTH-6 retired incomeBySource as a UI authority).
+  //    economic axis — v2.6-TRUTH-6 retired incomeBySource as a UI authority).
   //    CF-4: same exploration ledger as Spending (consistency). ──
   function renderIncome(): ReactNode {
     if (data == null) return <LoadingCard />;
@@ -288,7 +288,7 @@ export function CashFlowWorkspace({
     return (
       <CashFlowCategoryLedger
         invalidationKey={periodKey(period)}
-        // V27-TRUTH-6 — the CANONICAL income composition, straight off the
+        // v2.6-TRUTH-6 — the CANONICAL income composition, straight off the
         // contract. Each item IS a rollup line, so its value and its row
         // identities come from the same object the headline sums; a card and a
         // headline cannot drift apart because there is nothing to drift.

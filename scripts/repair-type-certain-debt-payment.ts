@@ -1,5 +1,5 @@
 /**
- * scripts/repair-type-certain-debt-payment.ts   (V27-TRUTH-1-REPAIR)
+ * scripts/repair-type-certain-debt-payment.ts   (v2.6-TRUTH-1-REPAIR)
  *
  * The APPROVED corrected R2 repair — 2 rows. DRY-RUN BY DEFAULT.
  *

@@ -1,5 +1,5 @@
 /**
- * lib/transactions/read-boundary-authority.test.ts   (V27-TRUTH-2)
+ * lib/transactions/read-boundary-authority.test.ts   (v2.6-TRUTH-2)
  *
  * Standing source-scan probes: no READ path may act as a second transfer
  * authority.

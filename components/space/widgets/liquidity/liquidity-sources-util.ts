@@ -94,7 +94,7 @@ export function buildSourceRows(
     .filter((x): x is { a: LiquidityAdapterAccount; horizon: SourceHorizon } => x.horizon !== null)
     .map(({ a, horizon }) => {
       const bal = conv(a.balance, a.currency);
-      // V27-L3 — a row under the "Available now" heading shows the REACHABLE
+      // v2.6-L3 — a row under the "Available now" heading shows the REACHABLE
       // figure, through the same authority the headline totals, so a row and the
       // headline above it can never disagree. Non-cash horizons are unchanged.
       // Null (reachable unknown) yields 0 and is dropped by the filter below —

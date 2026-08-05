@@ -1,5 +1,5 @@
 /**
- * lib/balances/account-balances.test.ts   (V27-L2)
+ * lib/balances/account-balances.test.ts   (v2.6-L2)
  *
  * Behavioural probes for the balance authority. Pure, no DB, standalone tsx.
  *
@@ -230,7 +230,7 @@ console.log("resolveRowBalances — the row convenience");
 console.log("Section quantity map");
 {
   check("a liquidity card is a current-balance surface", isCurrentBalanceSection("accessible_cash"));
-  // V27-L3 — the liquidity family migrated from OBSERVED_LEDGER to REACHABLE_CASH.
+  // v2.6-L3 — the liquidity family migrated from OBSERVED_LEDGER to REACHABLE_CASH.
   // The widgets said "reachable" all along; now the quantity underneath agrees.
   check("...and discloses the REACHABLE quantity, not the ledger one",
     sectionQuantityNote("accessible_cash") === "Available now");

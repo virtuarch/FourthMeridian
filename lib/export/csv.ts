@@ -39,7 +39,7 @@ export function toTransactionsCsv(rows: ExportTransaction[]): string {
       currency:    r.currency ?? "",
       account_id:  r.accountId,
       space_id:    r.spaceId,
-      // ── V27-TRUTH-5 — ADDITIVE income columns ───────────────────────────
+      // ── v2.6-TRUTH-5 — ADDITIVE income columns ───────────────────────────
       // Appended AFTER every pre-existing column, and no existing column is
       // renamed, reordered or removed, so a consumer reading by header name or
       // by leading position is unaffected. Empty for outflows and for rows the
@@ -52,7 +52,7 @@ export function toTransactionsCsv(rows: ExportTransaction[]): string {
         r.incomeClass == null ? "" : String(r.incomeClass !== "NOT_INCOME"),
       exclusion_reason:
         r.incomeClass === "NOT_INCOME" ? (r.incomeSubtype ?? "NOT_INCOME") : "",
-      // ── V27-TRUTH-7 — ADDITIVE canonical-meaning columns ────────────────
+      // ── v2.6-TRUTH-7 — ADDITIVE canonical-meaning columns ────────────────
       // Appended after everything above, same additive contract.
       //
       // `category` remains for importer round-trip (it is the column
@@ -169,7 +169,7 @@ export function toSnapshotsCsv(rows: ExportSnapshot[]): string {
       crypto_assertable:         r.cryptoAssertable ?? "",
       asset_side_contaminated:   r.assetSideContaminated ?? "",
       crypto_unavailable_reason: r.cryptoUnavailableReason ?? "",
-      // V27-A/B — AGGREGATE authorisation, beside the component's. The raw
+      // v2.6-A/B — AGGREGATE authorisation, beside the component's. The raw
       // stored totals above are preserved unchanged for audit; these say which
       // of them may be asserted and why. Empty when the producing caller
       // resolved no authorisation (a pre-Slice-A DTO) — deliberately distinct

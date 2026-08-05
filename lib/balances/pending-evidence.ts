@@ -1,5 +1,5 @@
 /**
- * lib/balances/pending-evidence.ts   (V27-L3 — RECONCILIATION)
+ * lib/balances/pending-evidence.ts   (v2.6-L3 — RECONCILIATION)
  *
  * The ONE reader of provider-observed pending movements. READ-ONLY: a single
  * SELECT, no writes, no mutation, ever.
@@ -81,7 +81,7 @@ export async function loadPendingEvidence(
       financialAccountId: { in: accountIds },
       deletedAt: null,
       pending: true,
-      // V27-L4A — a COARSE prefilter only. The authoritative decision is
+      // v2.6-L4A — a COARSE prefilter only. The authoritative decision is
       // `contributesPendingEvidence(resolveLifecycle(...))` below; this clause
       // exists solely to keep the query small, and it is deliberately permissive
       // so it can never exclude a row the authority would have admitted.
@@ -102,7 +102,7 @@ export async function loadPendingEvidence(
       financialAccountId: true,
       amount: true,
       plaidTransactionId: true,
-      // V27-L4A — the evidence the lifecycle authority reads.
+      // v2.6-L4A — the evidence the lifecycle authority reads.
       settlementState: true,
       pending: true,
       deletedAt: true,
@@ -133,7 +133,7 @@ export async function loadPendingEvidence(
 
   for (const r of rows) {
     if (!r.financialAccountId) continue;
-    // V27-L4A — THE decision, delegated to the lifecycle authority. A row
+    // v2.6-L4A — THE decision, delegated to the lifecycle authority. A row
     // contributes only when it is PENDING and not superseded; "pending and
     // posted cannot both contribute" is decided in exactly one place, and this
     // module no longer forms its own opinion from the `pending` boolean.

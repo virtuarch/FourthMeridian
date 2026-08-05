@@ -46,7 +46,7 @@ export interface LiquidityAdapterAccount {
   balance:     number;
   currency:    string;
   /**
-   * V27-L3 — the server-resolved current-state claim (SpaceAccount.currentState).
+   * v2.6-L3 — the server-resolved current-state claim (SpaceAccount.currentState).
    * Present on cash accounts only. These widgets all CLAIM reachability, so they
    * consume `reachable`, never `balance`: on CHASE COLLEGE the ledger balance is
    * $5,106.77 and the reachable figure is $1,106.77, and the widget said the
@@ -93,7 +93,7 @@ function emptySummary(): React.ReactElement {
   );
 }
 
-// ─── Reachable cash (V27-L3) ──────────────────────────────────────────────────
+// ─── Reachable cash (v2.6-L3) ──────────────────────────────────────────────────
 
 /**
  * Reachable cash across the CASH accounts, in the display currency.
@@ -116,7 +116,7 @@ export function reachableNow(
       accountId: a.id,
       // Three states, and the middle one is the whole point:
       //   currentState ABSENT  → no reachable claim was made for this row (a
-      //                          payload predating V27-L3, or a historical
+      //                          payload predating v2.6-L3, or a historical
       //                          reconstruction). The ledger figure is the only
       //                          answer available and is used, exactly as before.
       //   reachable NULL       → a claim WAS made and reachable is UNKNOWN. The
@@ -160,7 +160,7 @@ export function renderLiquidityLadder(
   ctx?:     ConversionContext,
 ): React.ReactElement {
   const c = classifyAccounts(accounts, ctx);
-  // V27-L3 — the "now" tier is REACHABLE cash, not the ledger sum. The label
+  // v2.6-L3 — the "now" tier is REACHABLE cash, not the ledger sum. The label
   // already said "Available now"; the number now agrees with it.
   const reach = reachableNow(accounts, ctx);
   const items: BreakdownItem[] = [
@@ -191,7 +191,7 @@ export function renderAccessibleCash(
   ctx?:     ConversionContext,
 ): React.ReactElement {
   const c = classifyAccounts(accounts, ctx);
-  // V27-L3 — "reachable right now" now MEANS reachable: the provider's available
+  // v2.6-L3 — "reachable right now" now MEANS reachable: the provider's available
   // cash where attested, else the prediction from provider-observed pending.
   const reach       = reachableNow(accounts, ctx);
   const now         = reach.total;
@@ -233,7 +233,7 @@ export function renderEmergencyFundReadiness(
   ctx?:     ConversionContext,
 ): React.ReactElement {
   const c = classifyAccounts(accounts, ctx);
-  // V27-L3 — an emergency buffer you cannot reach is not a buffer.
+  // v2.6-L3 — an emergency buffer you cannot reach is not a buffer.
   const reachable = reachableNow(accounts, ctx).total;
 
   if (c.totalAssets <= 0) return emptySummary();
@@ -264,7 +264,7 @@ export function renderLiquidityConcentration(
   ctx?:     ConversionContext,
 ): React.ReactElement {
   const c = classifyAccounts(accounts, ctx);
-  // V27-L3 — concentration OF REACHABLE MONEY. An account whose reachable figure
+  // v2.6-L3 — concentration OF REACHABLE MONEY. An account whose reachable figure
   // could not be established is EXCLUDED (value 0 ⇒ filtered below) rather than
   // ranked by a ledger balance the surrounding copy calls "reachable".
   const byId = new Map(accounts.map((a) => [a.id, a.currentState]));

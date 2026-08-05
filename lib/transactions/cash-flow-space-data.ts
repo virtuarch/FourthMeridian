@@ -96,7 +96,7 @@ export interface CashFlowSpaceData {
    *  not a classification. `income` below is the canonical taxonomy. */
   incomeBySource: CashFlowContribution[];
   /**
-   * V27-TRUTH-5 — THE canonical income breakdown for this window.
+   * v2.6-TRUTH-5 — THE canonical income breakdown for this window.
    *
    * Scope is BANK_TRANSACTIONS and the headline label says so. Investment
    * dividends are NOT folded in: a dividend paid to a brokerage cash balance and
@@ -176,12 +176,12 @@ export function buildCashFlowSpaceData(input: {
   const summary = aggregateDayFacts(rows, liqCtx, moneyCtx);
   const breakdown = groupLiquidityByReason(summary);
 
-  // V27-TRUTH-7 — the counted leg comes from the ONE debt-payment authority. This
+  // v2.6-TRUTH-7 — the counted leg comes from the ONE debt-payment authority. This
   // was a third inline copy of the predicate; the widget had a fourth, and
   // DebtClient had a fifth that disagreed with all of them.
   const debtPaymentRows = selectDebtPaymentCashLegs(rows, liqCtx).counted;
 
-  // V27-TRUTH-6 — the canonical rollup is built ONCE, and every income slice in
+  // v2.6-TRUTH-6 — the canonical rollup is built ONCE, and every income slice in
   // this contract derives from it. `incomeBySource` is now a SUB-grouping of the
   // rollup's included rows, not an independent authority that happened to agree.
   const income = rollupIncomeFromTransactions(windowed, {

@@ -1,5 +1,5 @@
 /**
- * lib/transactions/income-rollup.test.ts   (V27-TRUTH-5)
+ * lib/transactions/income-rollup.test.ts   (v2.6-TRUTH-5)
  *
  * The read-boundary composition, plus the standing probes that keep income
  * classification out of React and keep the surfaces honest about scope.
@@ -38,7 +38,7 @@ const DIVIDENDS = [
 ];
 const LABELS = new Map([["hysa", "High Yield Savings Account"], ["chk", "CHASE SAVINGS"]]);
 
-console.log("V27-TRUTH-5. (1) Broad income EQUALS the sum of its included lines");
+console.log("v2.6-TRUTH-5. (1) Broad income EQUALS the sum of its included lines");
 {
   for (const scope of ["BANK_TRANSACTIONS", "ALL_SOURCES"] as const) {
     const r = composeIncomeRollup({ scope, rows: LIVE, dividends: DIVIDENDS, accountLabels: LABELS });
@@ -49,7 +49,7 @@ console.log("V27-TRUTH-5. (1) Broad income EQUALS the sum of its included lines"
   }
 }
 
-console.log("V27-TRUTH-5. (2) Every included row belongs to exactly ONE line");
+console.log("v2.6-TRUTH-5. (2) Every included row belongs to exactly ONE line");
 {
   const r = composeIncomeRollup({ scope: "ALL_SOURCES", rows: LIVE, dividends: DIVIDENDS });
   const all = r.lines.flatMap((l) => l.rowIds);
@@ -58,7 +58,7 @@ console.log("V27-TRUTH-5. (2) Every included row belongs to exactly ONE line");
     all.length + r.excluded.count === LIVE.length + DIVIDENDS.length);
 }
 
-console.log("V27-TRUTH-5. (3) NOT_INCOME never enters broad income");
+console.log("v2.6-TRUTH-5. (3) NOT_INCOME never enters broad income");
 {
   const r = composeIncomeRollup({ scope: "BANK_TRANSACTIONS", rows: LIVE });
   check("the issuer credits are excluded", r.excluded.count === 2);
@@ -78,7 +78,7 @@ console.log("V27-TRUTH-5. (3) NOT_INCOME never enters broad income");
   check("...and keeps prior behaviour when no attribution was supplied", acc.income === 150);
 }
 
-console.log("V27-TRUTH-5. (4) Earned excludes everything it must");
+console.log("v2.6-TRUTH-5. (4) Earned excludes everything it must");
 {
   const r = composeIncomeRollup({ scope: "ALL_SOURCES", rows: LIVE, dividends: DIVIDENDS });
   const earned = r.lines.find((l) => l.incomeClass === "EARNED_INCOME")!;
@@ -96,7 +96,7 @@ console.log("V27-TRUTH-5. (4) Earned excludes everything it must");
   }
 }
 
-console.log("V27-TRUTH-5. (5) Interest retains its source account");
+console.log("v2.6-TRUTH-5. (5) Interest retains its source account");
 {
   const r = composeIncomeRollup({ scope: "BANK_TRANSACTIONS", rows: LIVE, accountLabels: LABELS });
   const interest = r.lines.find((l) => l.incomeClass === "INTEREST_INCOME")!;
@@ -107,7 +107,7 @@ console.log("V27-TRUTH-5. (5) Interest retains its source account");
   check("...sources sum to the line", Math.abs(interest.sources.reduce((s, x) => s + x.amount, 0) - interest.amount) < 1e-9);
 }
 
-console.log("V27-TRUTH-5. (6) Dividends retain their instrument/ticker");
+console.log("v2.6-TRUTH-5. (6) Dividends retain their instrument/ticker");
 {
   const r = composeIncomeRollup({ scope: "ALL_SOURCES", rows: LIVE, dividends: DIVIDENDS });
   const div = r.lines.find((l) => l.incomeClass === "DIVIDEND_INCOME")!;
@@ -116,7 +116,7 @@ console.log("V27-TRUTH-5. (6) Dividends retain their instrument/ticker");
   check("...ordered by amount", div.sources[0].label === "NKE");
 }
 
-console.log("V27-TRUTH-5. (7) No dividend is double counted across the two ledgers");
+console.log("v2.6-TRUTH-5. (7) No dividend is double counted across the two ledgers");
 {
   const bank = composeIncomeRollup({ scope: "BANK_TRANSACTIONS", rows: LIVE, dividends: DIVIDENDS });
   const all  = composeIncomeRollup({ scope: "ALL_SOURCES", rows: LIVE, dividends: DIVIDENDS });
@@ -131,7 +131,7 @@ console.log("V27-TRUTH-5. (7) No dividend is double counted across the two ledge
     !bank.lines.flatMap((l) => l.rowIds).some((id) => DIVIDENDS.some((d) => d.id === id)));
 }
 
-console.log("V27-TRUTH-5. (8) Headline / chart / card / drawer share ROW IDENTITIES");
+console.log("v2.6-TRUTH-5. (8) Headline / chart / card / drawer share ROW IDENTITIES");
 {
   const r = composeIncomeRollup({ scope: "ALL_SOURCES", rows: LIVE, dividends: DIVIDENDS });
   // A chart segment, a card and a drawer all read the SAME line object, so
@@ -146,7 +146,7 @@ console.log("V27-TRUTH-5. (8) Headline / chart / card / drawer share ROW IDENTIT
   check("every drawer row is in exactly one card", fromDrawerIds === new Set(r.lines.flatMap((l) => l.rowIds)).size);
 }
 
-console.log("V27-TRUTH-5. Static probes");
+console.log("v2.6-TRUTH-5. Static probes");
 {
   const root = join(__dirname, "..", "..");
   const strip = (s: string) => s
@@ -177,7 +177,7 @@ console.log("V27-TRUTH-5. Static probes");
     !src.includes("@/lib/db") && !src.includes("react") && !src.includes("Date."));
 }
 
-console.log("V27-TRUTH-6. Cash Flow consumes the rollup; incomeBySource is retired as a UI authority");
+console.log("v2.6-TRUTH-6. Cash Flow consumes the rollup; incomeBySource is retired as a UI authority");
 {
   const root2 = join(__dirname, "..", "..");
   const sh = (cmd: string) => execSync(cmd, { encoding: "utf8" }).trim();
@@ -218,7 +218,7 @@ console.log("V27-TRUTH-6. Cash Flow consumes the rollup; incomeBySource is retir
   }
 }
 
-console.log("V27-TRUTH-6. incomeBySource, where it survives, is DERIVED from the rollup");
+console.log("v2.6-TRUTH-6. incomeBySource, where it survives, is DERIVED from the rollup");
 {
   // The contract keeps the payer grouping for compatibility, but its membership
   // is the rollup's — so a NOT_INCOME row cannot appear in it.
@@ -233,7 +233,7 @@ console.log("V27-TRUTH-6. incomeBySource, where it survives, is DERIVED from the
     /rollupIncomeFromTransactions\(windowed/.test(sd));
 }
 
-console.log("V27-TRUTH-6. Attribution population === the population income is summed over");
+console.log("v2.6-TRUTH-6. Attribution population === the population income is summed over");
 {
   // The regression this pins: `serialize.ts` attributed an income class to EVERY
   // positive-amount row — transfers in, refunds, debt-payment inflows. Each fell

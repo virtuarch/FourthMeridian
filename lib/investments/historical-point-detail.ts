@@ -57,7 +57,7 @@ import {
 type Client = PrismaClient | Prisma.TransactionClient;
 
 /**
- * V27-A — the reconciliation vocabulary now lives in ONE pure module
+ * v2.6-A — the reconciliation vocabulary now lives in ONE pure module
  * (lib/perspective-engine/reconciliation.core.ts) because aggregate
  * authorisation needed it too, and a database binding is the wrong place to
  * declare a vocabulary. Re-exported here so every existing consumer of these

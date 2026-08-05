@@ -1,7 +1,7 @@
 /**
  * lib/history/net-worth-point-detail.ts
  *
- * V27-B — the DB binding for the Net Worth historical point authority.
+ * v2.6-B — the DB binding for the Net Worth historical point authority.
  *
  * It reads and it composes. Every decision it carries was made elsewhere:
  * assertability at the snapshot read boundary (Slice A), the aggregate

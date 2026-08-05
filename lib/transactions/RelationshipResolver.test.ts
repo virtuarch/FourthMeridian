@@ -24,7 +24,7 @@ function tx(over: Partial<RelationshipTransaction> = {}): RelationshipTransactio
     merchant: 'Blue Bottle Coffee',
     pending: false,
     deletedAt: null,
-    // V27-TRUTH-2 — the canonical authority's required leg facts. Defaults are the
+    // v2.6-TRUTH-2 — the canonical authority's required leg facts. Defaults are the
     // benign case: one owner, settled, no movement form.
     ownerUserId: 'user_1',
     settlementState: 'POSTED',
@@ -158,7 +158,7 @@ test('different currencies do not match', () => {
 });
 
 test('a candidate outside the date window does not match', () => {
-  // V27-L4D — the window widened from 2 to 5 days (evidence-derived; see
+  // v2.6-L4D — the window widened from 2 to 5 days (evidence-derived; see
   // lib/transactions/transfer-maturation.ts). The INVARIANT is unchanged — a leg
   // outside the window does not match — so the fixture moves to a genuinely
   // outside distance rather than the assertion being weakened.
@@ -167,7 +167,7 @@ test('a candidate outside the date window does not match', () => {
   assert.equal(matchTransferCandidate(chk, [far], CTX).status, 'NONE');
 });
 
-test('V27-L4D: a 3-day skew DOES match — the real Chase→Amex-HYSA distance', () => {
+test('v2.6-L4D: a 3-day skew DOES match — the real Chase→Amex-HYSA distance', () => {
   // The live case the old 2-day window could never see: destination posted
   // 2026-07-31, source pending 2026-08-03.
   const source = leg({ id: 'src', financialAccountId: 'fa_chk', amount: -4000, date: new Date('2026-08-03') });
@@ -177,7 +177,7 @@ test('V27-L4D: a 3-day skew DOES match — the real Chase→Amex-HYSA distance',
   assert.equal(r.counterpartyAccountId, 'fa_hysa');
 });
 
-test('V27-L4D: destination BEFORE source is supported (distance is absolute)', () => {
+test('v2.6-L4D: destination BEFORE source is supported (distance is absolute)', () => {
   const source = leg({ id: 'src', financialAccountId: 'fa_chk', amount: -4000, date: new Date('2026-08-03') });
   const before = leg({ id: 'b', financialAccountId: 'fa_hysa', amount: 4000, date: new Date('2026-07-31') });
   const after  = leg({ id: 'a', financialAccountId: 'fa_hysa', amount: 4000, date: new Date('2026-08-06') });
@@ -185,7 +185,7 @@ test('V27-L4D: destination BEFORE source is supported (distance is absolute)', (
   assert.equal(matchTransferCandidate(source, [after], CTX).status, 'RESOLVED');
 });
 
-test('V27-L4C: a DEBT_PAYMENT leg is admitted as a transfer candidate', () => {
+test('v2.6-L4C: a DEBT_PAYMENT leg is admitted as a transfer candidate', () => {
   // The source leg is stored as DEBT_PAYMENT — the classification that excluded
   // it from its own repair. Admission is not resolution: what it MEANS is then
   // decided by the destination account type, in transfer-maturation.
@@ -196,7 +196,7 @@ test('V27-L4C: a DEBT_PAYMENT leg is admitted as a transfer candidate', () => {
   assert.equal(r.counterpartyAccountId, 'fa_hysa');
 });
 
-test('V27-L4C: SPENDING is still never a transfer leg', () => {
+test('v2.6-L4C: SPENDING is still never a transfer leg', () => {
   const spend = leg({ id: 's', financialAccountId: 'fa_chk', amount: -500, flowType: 'SPENDING' });
   const dest  = leg({ id: 'd', financialAccountId: 'fa_sav', amount: 500, flowType: 'TRANSFER' });
   assert.equal(matchTransferCandidate(spend, [dest], CTX).status, 'NONE');
@@ -226,7 +226,7 @@ test('multiple equal candidates within ONE account → the ACCOUNT is certain, t
   //
   // v1 asserted RESOLVED with a null leg id — one-directional, and wrong: "one
   //    destination ACCOUNT" was read as certainty when the PAIRING was not unique.
-  // v2 (V27-TRUTH-2) asserted AMBIGUOUS with a null account. That fixed the
+  // v2 (v2.6-TRUTH-2) asserted AMBIGUOUS with a null account. That fixed the
   //    over-claim by discarding a TRUE claim alongside the false one: both legs
   //    are in fa_sav, so wherever the money went, it went to savings.
   // v3 (this) separates the two questions. The ACCOUNT is a fact and is
@@ -286,7 +286,7 @@ test('a MUTUALLY unique pairing still resolves (the veto is not a blanket refusa
   assert.equal(m.evidenceLevel, 'ACCOUNT_CERTAIN');
 });
 
-test('a CASH movement never receives an account counterparty (V27-TRUTH-2)', () => {
+test('a CASH movement never receives an account counterparty (v2.6-TRUTH-2)', () => {
   // The live ATM withdrawal: a perfectly-matched opposite leg exists, and the
   // read path must still refuse, exactly as the repair boundary does.
   const atm = leg({ id: 'atm', financialAccountId: 'fa_chk', amount: -500, pfcDetailed: 'TRANSFER_OUT_WITHDRAWAL' });
@@ -337,7 +337,7 @@ test('resolveTransactionRelationships surfaces a RESOLVED match but hides AMBIGU
 // ── contract & determinism ────────────────────────────────────────────────────
 test('output shape is exactly the five keys', () => {
   const r = resolveTransactionRelationships(tx(), [], CTX);
-  // V27-TRUTH-2 adds `transferAssessment` — the FULL outcome including refusals,
+  // v2.6-TRUTH-2 adds `transferAssessment` — the FULL outcome including refusals,
   // so a surface can state what is known without reading a fabricated id.
   assert.deepEqual(Object.keys(r).sort(), ['duplicate', 'pendingPosted', 'refundCandidate', 'transferAssessment', 'transferCandidate']);
   assert.equal(r.transferCandidate, null);

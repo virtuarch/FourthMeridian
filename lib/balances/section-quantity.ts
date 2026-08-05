@@ -1,5 +1,5 @@
 /**
- * lib/balances/section-quantity.ts   (V27-L2 — BALANCE AUTHORITY)
+ * lib/balances/section-quantity.ts   (v2.6-L2 — BALANCE AUTHORITY)
  *
  * What quantity does each Space section widget actually show?
  *
@@ -31,7 +31,7 @@ export type SectionQuantity = BalanceQuantity | "HISTORICAL" | "FLOW" | "NON_FIN
 /**
  * The classification for every SectionRegistry key.
  *
- * ⚠️ V27-L3 moved the liquidity family from OBSERVED_LEDGER to REACHABLE_CASH.
+ * ⚠️ v2.6-L3 moved the liquidity family from OBSERVED_LEDGER to REACHABLE_CASH.
  * That flip IS the migration: those four widgets now consume the reconciliation
  * authority instead of summing ledger balances under copy that says "reachable".
  * Everything else still shows OBSERVED_LEDGER or AMOUNT_OWED, which is correct
@@ -53,7 +53,7 @@ export const SECTION_QUANTITY: Record<string, SectionQuantity> = {
   investment_allocation:    "OBSERVED_LEDGER",
   retirement_accounts:      "OBSERVED_LEDGER",
 
-  // ── Liquidity — MIGRATED in V27-L3 ────────────────────────────────────────
+  // ── Liquidity — MIGRATED in v2.6-L3 ────────────────────────────────────────
   // These four all CLAIM reachability in their own copy ("Available now",
   // "reachable right now", "reachable emergency cash", "your reachable money")
   // and were summing ledger balances underneath it. They now consume the

@@ -169,7 +169,7 @@ export async function projectTransactionListRows(
   // assessment, so the counterparty the DTO shows and the name the DTO gives the
   // movement can never disagree.
   const assessments = await resolveTransferAssessments(rows, { spaceId });
-  // V27-TRUTH-4 — the canonical income authority decides partly from the OWNING
+  // v2.6-TRUTH-4 — the canonical income authority decides partly from the OWNING
   // account's type (interest on a deposit account vs a credit on a liability),
   // and that is not a Transaction column. One bounded lookup over the page's
   // distinct account ids, rather than a join on every list read.
@@ -319,7 +319,7 @@ function contextFields(
     // Phase 6 — the ladder decides the disposition where it ran.
     transferMaturity:           a?.maturity ?? null,
   });
-  // V27-TRUTH-8 — the maturity is the transfer authority's VERDICT about the
+  // v2.6-TRUTH-8 — the maturity is the transfer authority's VERDICT about the
   // destination, and it was computed here and thrown away. Presentation then had
   // only `flowType` (often the provider's category) to go on, so a movement the
   // authority had called SAVINGS_TRANSFER still rendered "Debt payment".
@@ -370,7 +370,7 @@ export async function getDebtTransactions(
 }
 
 /**
- * V27-TRUTH-7 — the rows the debt-payment authority selects from.
+ * v2.6-TRUTH-7 — the rows the debt-payment authority selects from.
  *
  * `getDebtTransactions` is LIABILITY-scoped, so it can only ever see the leg
  * that arrives on a card. The counted leg is the CASH leg, which lives on the
@@ -601,7 +601,7 @@ export async function getTransactionDetail(
       })
     : [];
   const ownedAccountIds = ownedAccounts.map((a) => a.id);
-  // V27-TRUTH-2 — the canonical authority decides from account TYPE, so the
+  // v2.6-TRUTH-2 — the canonical authority decides from account TYPE, so the
   // detail read supplies the same context the list read does.
   // Phase 5 — the mask index, from the SAME owned-account graph. Present with
   // every account carrying a given mask, so an ambiguous mask abstains.
@@ -622,7 +622,7 @@ export async function getTransactionDetail(
         // Same-account candidates — pending→posted + duplicate (unchanged behavior).
         { financialAccountId: row.financialAccountId },
         // Owned cross-account transfer legs — the transferCandidate population.
-        // V27-TRUTH-2 — this was `flowType: TRANSFER` alone, NARROWER than the
+        // v2.6-TRUTH-2 — this was `flowType: TRANSFER` alone, NARROWER than the
         // list read's `isTransferCandidate` set, so the drawer and the list could
         // disagree about the same row. Both now admit the same population; `null`
         // is spelled out because a NOT-IN over a nullable column drops nulls.
@@ -652,14 +652,14 @@ export async function getTransactionDetail(
       // Financial Truth (Transfer Authority) — admission reads `category`, the
       // external leaves read `counterpartyType`, identifier extraction reads
       // `description`. The DRAWER must admit the same facts as the LIST or the
-      // two disagree about one row — the exact defect V27-TRUTH-2 closed once.
+      // two disagree about one row — the exact defect v2.6-TRUTH-2 closed once.
       category: true, counterpartyType: true, description: true,
     },
     take: 300, // safety cap; same-account sets are tiny, owned ±window sets are small
   });
   // Every candidate is on an account owned by the SAME user (the query scopes it
   // that way), so one owner id covers the whole set.
-  // V27-TRUTH-3 — `persistedCounterpartyAccountId` is spelled out rather than
+  // v2.6-TRUTH-3 — `persistedCounterpartyAccountId` is spelled out rather than
   // spread: the liability-inflow authority must read the row's OWN persisted
   // link, and a silently-absent field would resolve every card credit as
   // UNDETERMINED instead of consulting the proof that is right there.
@@ -753,7 +753,7 @@ export async function getTransactionDetail(
     hasResolvedCounterparty: row.counterpartyAccountId != null || resolvedTransferCpId != null,
   });
 
-  // V27-TRUTH-8 — the transfer authority's DESTINATION verdict, from the same
+  // v2.6-TRUTH-8 — the transfer authority's DESTINATION verdict, from the same
   // canonical entry point the list read uses. The detail read resolves a
   // counterparty through RelationshipResolver but never asked what KIND of
   // movement that made, so the drawer rendered "Debt payment" for a movement the
@@ -763,7 +763,7 @@ export async function getTransactionDetail(
     (await resolveTransferAssessments([row] as never, { spaceId })).get(row.id)?.maturity ?? null;
 
   return {
-    // V27-TRUTH-7 — `accountType` MUST be supplied here, exactly as the list read
+    // v2.6-TRUTH-7 — `accountType` MUST be supplied here, exactly as the list read
     // supplies it (see loadAccountTypes above).
     //
     // Without it the serializer fell through to "other", so

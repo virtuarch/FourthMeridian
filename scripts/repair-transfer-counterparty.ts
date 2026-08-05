@@ -1,5 +1,5 @@
 /**
- * scripts/repair-transfer-counterparty.ts   (V27-L4-REPAIR)
+ * scripts/repair-transfer-counterparty.ts   (v2.6-L4-REPAIR)
  *
  * The APPROVED seven-row counterparty repair, as a permanent, re-runnable
  * command. DRY-RUN BY DEFAULT — `--apply` is required to write anything.
@@ -162,7 +162,7 @@ async function main(): Promise<void> {
     deletedAt:             t.deletedAt,
     flowType:              t.flowType,
     currency:              t.currency,
-    // V27-TRUTH-2 — required by the canonical authority: owner scope, lifecycle
+    // v2.6-TRUTH-2 — required by the canonical authority: owner scope, lifecycle
     // supersession, movement form (the cash veto).
     ownerUserId:           acct.get(t.financialAccountId ?? "")?.ownerUserId ?? null,
     settlementState:       t.settlementState,
@@ -176,7 +176,7 @@ async function main(): Promise<void> {
     persistedCounterpartyAccountId: t.counterpartyAccountId ?? null,
   });
 
-  // V27-TRUTH-2 — the canonical authority decides from account TYPE; supply it
+  // v2.6-TRUTH-2 — the canonical authority decides from account TYPE; supply it
   // once rather than letting the matcher guess.
   const matchCtx = { accountTypeById: new Map(accounts.map((a) => [a.id, a.type as string])) };
 

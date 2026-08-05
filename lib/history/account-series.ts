@@ -1,7 +1,7 @@
 /**
  * lib/history/account-series.ts
  *
- * V27-C — THE canonical account-history authority for stock lenses.
+ * v2.6-C — THE canonical account-history authority for stock lenses.
  *
  * ── One contract, several authorities ────────────────────────────────────────
  * A checking account and a brokerage account do not have the same kind of
@@ -24,7 +24,7 @@
  *
  * Nothing here prices, owns, or replays anything of its own.
  *
- * ── Precedence (V27-C2) ──────────────────────────────────────────────────────
+ * ── Precedence (v2.6-C2) ──────────────────────────────────────────────────────
  *   1. exact-date direct observation
  *   2. licensed replay / reconstruction
  *   3. anchored carry, only where mathematically licensed
@@ -37,11 +37,11 @@
  * carry is the case that is not licensed, and it is stamped `estimated` and
  * disclosed rather than silently blended in.
  *
- * ── Window inheritance (V27-C3) ──────────────────────────────────────────────
+ * ── Window inheritance (v2.6-C3) ──────────────────────────────────────────────
  * Every series spans exactly the window the caller passes down. No 30-day reset,
  * no one-year clamp, no current-date-only path.
  *
- * NO PERSISTENCE. Computed on demand, per V27's rule 11.
+ * NO PERSISTENCE. Computed on demand, per v2.6's rule 11.
  * READ-ONLY. Nothing here writes.
  */
 
@@ -272,7 +272,7 @@ async function investmentAccountNodes(
       unavailableReason: present || mine.length > 0 ? null : "NO_HELD_POSITIONS",
       supportedFromISO: a.coverage.existenceFromISO ?? a.floorISO,
       note: coverageNote(a),
-      // The holding level (V27-D) lives beneath an investment account.
+      // The holding level (v2.6-D) lives beneath an investment account.
       drilldown: { available: present || mine.length > 0, reason: present || mine.length > 0 ? null : "NO_HELD_POSITIONS" },
       counts: { historicalCount: mine.length, valuedCount: valued.length },
     });
@@ -376,7 +376,7 @@ function node(
     institution: a.institution,
     dateISO: args.dateISO, fromISO: args.fromISO, toISO: args.toISO, currency: args.currency,
     displayedValue: r.value,
-    // An account's own children arrive in V27-D; it explains nothing yet.
+    // An account's own children arrive in v2.6-D; it explains nothing yet.
     explainedValue: null,
     unattributedObservedAmount: null,
     reconciliation: r.value == null ? "UNAVAILABLE" : "EXACT",

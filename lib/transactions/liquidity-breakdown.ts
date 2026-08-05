@@ -27,7 +27,7 @@ export const LIQUIDITY_REASON_LABEL: Record<LiquidityReason, string> = {
   ASSET_LIQUIDATION: "Asset liquidation",
   DEBT_PROCEEDS:     "Debt proceeds",
   REFUND:            "Refunds",
-  // V27-TRUTH-7 — an issuer-originated credit on a card (rewards, statement
+  // v2.6-TRUTH-7 — an issuer-originated credit on a card (rewards, statement
   // credit, purchase reversal). Reduces what you owe without moving cash, so it
   // is a context line, never Cash In.
   ISSUER_CREDIT:     "Issuer credits",

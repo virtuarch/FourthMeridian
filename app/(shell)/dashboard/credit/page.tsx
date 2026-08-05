@@ -14,7 +14,7 @@ export default async function CreditPage() {
     getFicoData({ userId: ctx.userId }),
     getAccounts({ spaceId: ctx.spaceId }),
     getDebtTransactions({ spaceId: ctx.spaceId }), // TX-2 bounded (default cap)
-    // V27-TRUTH-7 — the debt-payment authority counts the CASH leg, which lives on
+    // v2.6-TRUTH-7 — the debt-payment authority counts the CASH leg, which lives on
     // the account the money LEFT. A liability-scoped read cannot see it.
     getDebtPaymentRows({ spaceId: ctx.spaceId }),
   ]);

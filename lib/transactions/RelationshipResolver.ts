@@ -75,7 +75,7 @@ export interface RelationshipTransaction {
   /** Native currency (ISO 4217) — TI4 transfer matching requires same-currency legs. */
   currency?:             string | null;
 
-  // ── V27-TRUTH-2 — the facts the canonical transfer authority requires ──────
+  // ── v2.6-TRUTH-2 — the facts the canonical transfer authority requires ──────
   // Required, not optional. A leg missing any of these cannot be matched
   // correctly, and an optional field production never passes is how the
   // read-time resolver came to disagree with the authority in the first place.
@@ -85,11 +85,11 @@ export interface RelationshipTransaction {
   settlementState:       string | null;
   /** Plaid personal_finance_category.detailed — the movement-form evidence. */
   pfcDetailed:           string | null;
-  /** V27-TRUTH-3 — provider classification FAMILY (Plaid pfcPrimary). The only
+  /** v2.6-TRUTH-3 — provider classification FAMILY (Plaid pfcPrimary). The only
    *  evidence that separates a customer payment from an issuer credit on a
    *  liability inflow. Never a merchant string. */
   pfcPrimary:            string | null;
-  /** V27-TRUTH-3 — a counterparty already persisted on the row. Proof of an
+  /** v2.6-TRUTH-3 — a counterparty already persisted on the row. Proof of an
    *  owned funding source, which outranks the family. */
   persistedCounterpartyAccountId: string | null;
 
@@ -158,7 +158,7 @@ export type TransferMatchReason =
   | 'AMBIGUOUS_MULTIPLE_ACCOUNTS'  // >1 distinct candidate account — refuse
   | 'NO_CANDIDATE'                 // no opposite leg matched
   | 'NOT_TRANSFER_LIKE'            // target is not a directional transfer row
-  // ── V27-TRUTH-2 — outcomes the canonical authority can express and this
+  // ── v2.6-TRUTH-2 — outcomes the canonical authority can express and this
   //    resolver previously could not, which is why it over-resolved.
   | 'CASH_MOVEMENT_NO_COUNTERPARTY' // the money changed form; no account to find
   | 'TYPE_CERTAIN_ACCOUNT_AMBIGUOUS' // destination TYPE known, account is not
@@ -176,7 +176,7 @@ export interface TransferCandidateRelationship {
   confidence:            number;
   reason:                TransferMatchReason;
   /**
-   * V27-TRUTH-2 — what the evidence DOES support when it does not support an
+   * v2.6-TRUTH-2 — what the evidence DOES support when it does not support an
    * account. Set at TYPE_CERTAIN_ACCOUNT_AMBIGUOUS so a surface can say "a debt
    * payment, destination account unknown" instead of either fabricating an
    * account or falling silent. Null whenever the type is unknown.
@@ -218,13 +218,13 @@ export interface TransactionRelationships {
    *  when NONE/AMBIGUOUS (unresolved is honest; the match is never guessed). Callers
    *  that need the AMBIGUOUS/NONE reason read `transferAssessment`. */
   transferCandidate: TransferCandidateRelationship | null;
-  /** V27-TRUTH-2 — the FULL assessment, always present, including the refusals.
+  /** v2.6-TRUTH-2 — the FULL assessment, always present, including the refusals.
    *  Carries `maturity` and `destinationAccountType` but never a fabricated id. */
   transferAssessment: TransferCandidateRelationship;
 }
 
 /**
- * V27-TRUTH-2 — the context a transfer match needs that a row cannot carry.
+ * v2.6-TRUTH-2 — the context a transfer match needs that a row cannot carry.
  *
  * There are no window/epsilon "tunables" any more, deliberately. They were the
  * seam through which this module became a second authority: a caller could set a
@@ -280,7 +280,7 @@ function sameDay(a: Date, b: Date): boolean {
   return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10);
 }
 
-// V27-TRUTH-2 — `dayDistance` was DELETED. It existed only for this module's own
+// v2.6-TRUTH-2 — `dayDistance` was DELETED. It existed only for this module's own
 // copy of the ±window check, which is now the authority's `legsQualify`. Leaving
 // it would leave a working second implementation of a rule that must have one.
 
@@ -402,7 +402,7 @@ export function matchTransferCandidate(
   }
 
   const e = resolveDestinationEvidenceFor(self, corpus);
-  // V27-TRUTH-3 — a positive liability-side movement needs the provider FAMILY
+  // v2.6-TRUTH-3 — a positive liability-side movement needs the provider FAMILY
   // and any persisted counterparty, or the liability-inflow authority cannot
   // tell a customer payment from an issuer credit. Supplied, never re-derived.
   // Phase 4 — the attested axes decide the EXTERNAL leaves when nothing owned
@@ -593,7 +593,7 @@ export function resolveTransactionRelationships(
     // Only a RESOLVED, deterministic match surfaces; NONE/AMBIGUOUS stay null
     // (unresolved is honest). The full outcome is available via matchTransferCandidate.
     transferCandidate: transfer.status === 'RESOLVED' ? transfer : null,
-    // V27-TRUTH-2 — the refused outcome is carried rather than discarded, so a
+    // v2.6-TRUTH-2 — the refused outcome is carried rather than discarded, so a
     // surface can say what IS known (a debt payment whose account is unresolved)
     // instead of only "no match". Never carries an account id.
     transferAssessment: transfer,

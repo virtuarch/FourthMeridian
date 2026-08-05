@@ -33,7 +33,7 @@ export function DebtBalanceHistory({
   currency:  string;
   asOf:      string;
   compareTo: string | null;
-  /** V27 — open the shared historical exploration sheet at the DEBT root. */
+  /** v2.6 — open the shared historical exploration sheet at the DEBT root. */
   onSelectPoint?: (dateISO: string) => void;
 }) {
   // Already clipped by the contract; project to the chart's point shape (totalDebt is

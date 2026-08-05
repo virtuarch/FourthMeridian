@@ -72,7 +72,7 @@ async function debtLens(
     // MC1 QA Q2 — conversion input (non-identifying).
     currency:        account.currency ?? null,
     lastUpdated:     account.lastUpdated,
-    // V27-L2 — the institution's own clock, so dataAsOfBasis can tell "as of"
+    // v2.6-L2 — the institution's own clock, so dataAsOfBasis can tell "as of"
     // from "checked". Null on every account in the corpus today.
     balanceLastUpdatedAt: account.balanceLastUpdatedAt ?? null,
     visibilityLevel,

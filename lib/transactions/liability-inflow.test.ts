@@ -1,5 +1,5 @@
 /**
- * lib/transactions/liability-inflow.test.ts   (V27-TRUTH-3)
+ * lib/transactions/liability-inflow.test.ts   (v2.6-TRUTH-3)
  *
  * The issuer-credit authority, and its ONE integration point: the own-side
  * liability-inflow override in `maturityForEvidence`.
@@ -32,7 +32,7 @@ const OWNED = resolveDestinationEvidence([
   { legId: "chk-leg", accountId: "chk", accountType: "checking", competingSourceCount: 1, superseded: false },
 ]);
 
-console.log("V27-TRUTH-3 (1). A payment-family inflow IS a debt payment");
+console.log("v2.6-TRUTH-3 (1). A payment-family inflow IS a debt payment");
 {
   for (const family of PAYMENT_FAMILIES) {
     const v = liabilityInflowIsCustomerPayment({ providerFamily: family });
@@ -44,7 +44,7 @@ console.log("V27-TRUTH-3 (1). A payment-family inflow IS a debt payment");
     PAYMENT_FAMILIES.size === 2 && PAYMENT_FAMILIES.has("LOAN_PAYMENTS") && PAYMENT_FAMILIES.has("LOAN_DISBURSEMENTS"));
 }
 
-console.log("V27-TRUTH-3 (2). A mutually matched owned funding leg IS a debt payment");
+console.log("v2.6-TRUTH-3 (2). A mutually matched owned funding leg IS a debt payment");
 {
   // No family at all, but the transfer authority proved where the money came from.
   check("a mutually matched owned leg ⇒ DEBT_PAYMENT even with NO family",
@@ -54,7 +54,7 @@ console.log("V27-TRUTH-3 (2). A mutually matched owned funding leg IS a debt pay
       persistedCounterpartyAccountId: "chk", railType: null, venueClass: null, counterpartyClass: null }) === "DEBT_PAYMENT");
   check("an owned leg OUTRANKS a non-payment family",
     liabilityInflowIsCustomerPayment({ providerFamily: "OTHER", hasMutuallyMatchedOwnedCounterparty: true }).verdict === "YES");
-  // ...but a NON-mutual match must not count: that is the V27-TRUTH-1 veto.
+  // ...but a NON-mutual match must not count: that is the v2.6-TRUTH-1 veto.
   const contested = resolveDestinationEvidence([
     { legId: "l", accountId: "chk", accountType: "checking", competingSourceCount: 2, superseded: false },
   ]);
@@ -62,7 +62,7 @@ console.log("V27-TRUTH-3 (2). A mutually matched owned funding leg IS a debt pay
     maturityForEvidence(contested, { accountType: "debt", amount: 500, providerFamily: null, railType: null, venueClass: null, counterpartyClass: null }) !== "DEBT_PAYMENT");
 }
 
-console.log("V27-TRUTH-3 (3). An issuer / non-payment family is NOT a debt payment");
+console.log("v2.6-TRUTH-3 (3). An issuer / non-payment family is NOT a debt payment");
 {
   // The four live shapes, by FAMILY only — never by descriptor.
   for (const family of ["OTHER", "GOVERNMENT_AND_NON_PROFIT", "GENERAL_MERCHANDISE", "TRAVEL"]) {
@@ -74,7 +74,7 @@ console.log("V27-TRUTH-3 (3). An issuer / non-payment family is NOT a debt payme
   check("...and the refusal names the reason", /issuer-originated credit/.test(r.reason));
 }
 
-console.log("V27-TRUTH-3 (4). No family and no match ⇒ UNDETERMINED, never forced");
+console.log("v2.6-TRUTH-3 (4). No family and no match ⇒ UNDETERMINED, never forced");
 {
   for (const family of [null, undefined, ""]) {
     check(`family ${JSON.stringify(family)} ⇒ UNDETERMINED`,
@@ -92,7 +92,7 @@ console.log("V27-TRUTH-3 (4). No family and no match ⇒ UNDETERMINED, never for
     m !== "ISSUER_CREDIT");
 }
 
-console.log("V27-TRUTH-3 (5). INCOME / INTEREST / REFUND rows never reach this rule");
+console.log("v2.6-TRUTH-3 (5). INCOME / INTEREST / REFUND rows never reach this rule");
 {
   // Structural protection: they are not transfer candidates, so the corpus that
   // feeds the ladder excludes them entirely. This is what keeps the authority
@@ -105,7 +105,7 @@ console.log("V27-TRUTH-3 (5). INCOME / INTEREST / REFUND rows never reach this r
   }
 }
 
-console.log("V27-TRUTH-3 (6). Merchant descriptors are never consulted");
+console.log("v2.6-TRUTH-3 (6). Merchant descriptors are never consulted");
 {
   // Behavioural: the verdict cannot vary with the descriptor, because the
   // evidence type has no field for one.
@@ -124,7 +124,7 @@ console.log("V27-TRUTH-3 (6). Merchant descriptors are never consulted");
   }
 }
 
-console.log("V27-TRUTH-3 (7). The ladder makes NO transfer claim about a card credit");
+console.log("v2.6-TRUTH-3 (7). The ladder makes NO transfer claim about a card credit");
 {
   check("ISSUER_CREDIT implies no flowType", impliedFlowType("ISSUER_CREDIT") === null);
   check("UNRESOLVED_LIABILITY_INFLOW implies no flowType", impliedFlowType("UNRESOLVED_LIABILITY_INFLOW") === null);
@@ -145,7 +145,7 @@ console.log("V27-TRUTH-3 (7). The ladder makes NO transfer claim about a card cr
     MATURITY_LABEL.UNRESOLVED_LIABILITY_INFLOW === "Unconfirmed card credit");
 }
 
-console.log("V27-TRUTH-3 (7b). The two entry points agree for the same row");
+console.log("v2.6-TRUTH-3 (7b). The two entry points agree for the same row");
 {
   // `maturityForEvidence` is what the READ path calls; `matureClassification` is
   // what a repair/stored-classification path calls. They must not disagree.
@@ -182,7 +182,7 @@ console.log("V27-TRUTH-3 (7b). The two entry points agree for the same row");
       ownProviderFamily: "LOAN_PAYMENTS", destination: NONE }).maturity === "DEBT_PAYMENT");
 }
 
-console.log("V27-TRUTH-3 (8). A liability OUTFLOW is unaffected");
+console.log("v2.6-TRUTH-3 (8). A liability OUTFLOW is unaffected");
 {
   check("money OUT of a liability is still never a debt payment",
     maturityForEvidence(OWNED, { accountType: "debt", amount: -50, providerFamily: "LOAN_PAYMENTS", railType: null, venueClass: null, counterpartyClass: null }) === "UNRESOLVED_TRANSFER");

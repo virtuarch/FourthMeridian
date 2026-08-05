@@ -65,7 +65,7 @@ const cls = (o: Parameters<typeof tx>[0]) => classifyLiquidity(tx(o), ctx);
     c.effect === "NEUTRAL" && c.reason === "EARNED_INCOME");
 }
 
-// V27-TRUTH-7 — an issuer credit is named, not filed under an income reason.
+// v2.6-TRUTH-7 — an issuer credit is named, not filed under an income reason.
 {
   const c = cls({ ownAccount: "card", amount: 280.45, flowType: "INCOME",
                   incomeClass: "NOT_INCOME", incomeSubtype: "ISSUER_CREDIT" });

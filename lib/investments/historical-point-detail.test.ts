@@ -97,7 +97,7 @@ function main(): void {
     check("C. the route strips the diagnostic from the user-facing payload",
       /diagnostic, \.\.\.safe/.test(route));
 
-    // V27 — retired per-lens drawer; the shared explorer carries these guards.
+    // v2.6 — retired per-lens drawer; the shared explorer carries these guards.
     const panel = strip(read("components/history/HistoryExplorationSheet.tsx"));
     check("C. the panel does no arithmetic on money",
       !/reduce\(/.test(panel) && !/\bquantity\s*\*/.test(panel) && !/\/\s*quantity/.test(panel));

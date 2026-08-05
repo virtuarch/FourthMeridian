@@ -351,7 +351,7 @@ export function SpaceDashboard({
   }
   const showCurrencyBanner = currencyReverted && requestedCurrency !== dismissedCurrency;
 
-  // ── Data freshness (V27-L1) ────────────────────────────────────────────────
+  // ── Data freshness (v2.6-L1) ────────────────────────────────────────────────
   // This WAS a MAX across the Space's accounts — the most optimistic claim the
   // data permits. On the live corpus that header read "Updated 16 hr ago" while
   // 96.4% of the value it described sat behind balances nobody had observed in
@@ -592,7 +592,7 @@ export function SpaceDashboard({
   const chromeSubtitle =
     `${catLabel} Space` +
     (memberCount !== null ? ` · ${memberCount} member${memberCount === 1 ? "" : "s"}` : "");
-  // V27-L1 — "Last checked N ago" (our fetch clock) rather than "Updated N ago"
+  // v2.6-L1 — "Last checked N ago" (our fetch clock) rather than "Updated N ago"
   // (which reads as the institution's). `label` comes from the authority and
   // becomes "Balances as of" only when EVERY account is provider-attested.
   const chromeUpdated = freshness
@@ -959,7 +959,7 @@ export function SpaceDashboard({
                 // / Liquidity / Investments / Debt). Each owns its data + FX + as-of
                 // trust and emits its envelope up; the host only supplies the render
                 // context. See components/space/workspaces/workspaceRenderers.tsx.
-                // V27 — every workspace renders inside the ONE exploration host,
+                // v2.6 — every workspace renders inside the ONE exploration host,
                 // so the shared sheet has a single mount and a deep link restores
                 // even when the workspace behind it has nothing to plot.
                 <WorkspaceExplorationHost spaceId={spaceId} asOf={asOf}>

@@ -1,7 +1,7 @@
 /**
  * lib/data/accounts-asof-window.ts
  *
- * V27-C — `getAccountsAsOf`, widened to a WINDOW.
+ * v2.6-C — `getAccountsAsOf`, widened to a WINDOW.
  *
  * Separate from accounts-asof.ts for one reason: that module reaches
  * `getAccountsWithVisibility`, which transitively imports `server-only` and so

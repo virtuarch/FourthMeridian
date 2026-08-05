@@ -96,7 +96,7 @@ type AccountLinkRow = {
     mask:            string | null;
     balance:         number;
     currency:        string;
-    // V27-L2 — forwarded RAW into lib/balances/account-balances, never read here.
+    // v2.6-L2 — forwarded RAW into lib/balances/account-balances, never read here.
     availableBalance: number | null;
     creditLimit:      number | null;
     walletAddress:    string | null;
@@ -164,7 +164,7 @@ async function assembleAccounts(
           mask:           true,
           balance:        true,
           currency:       true,
-          // V27-L2 — forwarded RAW into the balance authority (the only module
+          // v2.6-L2 — forwarded RAW into the balance authority (the only module
           // permitted to interpret them); never read as values in this file.
           availableBalance: true,
           creditLimit:      true,
@@ -214,12 +214,12 @@ async function assembleAccounts(
 
   const now = new Date();
 
-  // V27-L3 — provider-observed pending, scoped per account. Read-only; nothing
+  // v2.6-L3 — provider-observed pending, scoped per account. Read-only; nothing
   // is inferred from recurrence, averages, or habits.
   const pendingByAccount = await loadPendingEvidence(links.map((l) => l.financialAccount.id));
 
   /**
-   * V27-L1 — the resolved freshness claim for one account, through the canonical
+   * v2.6-L1 — the resolved freshness claim for one account, through the canonical
    * authority. Emitted at BOTH visibility tiers: it describes the age of a balance
    * the tier already discloses, so it adds no exposure. Ledger coverage is
    * deliberately NOT included — this assembler does not query transactions, and
@@ -227,7 +227,7 @@ async function assembleAccounts(
    * honest answer rather than an implied "no transactions".
    */
   /**
-   * V27-L2 — the balance authority's answer for one account, flattened for the
+   * v2.6-L2 — the balance authority's answer for one account, flattened for the
    * model. Emitted at BOTH visibility tiers: it names quantities the tier already
    * discloses a figure for, so it adds no exposure.
    *

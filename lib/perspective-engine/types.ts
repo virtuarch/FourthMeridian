@@ -171,7 +171,7 @@ export interface LensProvenance {
    * there are none. Taking the oldest is deliberate: an aggregate is never fresher
    * than its stalest addend.
    *
-   * V27-L1 — this doc previously read "balanceLastUpdatedAt where known, else
+   * v2.6-L1 — this doc previously read "balanceLastUpdatedAt where known, else
    * lastUpdated". It never did that: the lens rows carry only `lastUpdated`, so
    * this value is unambiguously **Fourth Meridian's WRITE clock** — when we
    * fetched, not when the institution computed. Consumers must therefore word it
@@ -182,7 +182,7 @@ export interface LensProvenance {
    */
   dataAsOf: string | null;
   /**
-   * V27-L2 — WHICH CLOCK `dataAsOf` came from, resolved through the V27-L1
+   * v2.6-L2 — WHICH CLOCK `dataAsOf` came from, resolved through the v2.6-L1
    * freshness authority over the contributing rows. PROVIDER_ATTESTED only when
    * EVERY contributor carries an institution timestamp; a single row without one
    * degrades the whole claim to INGESTION, because an aggregate cannot be more

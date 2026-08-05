@@ -379,7 +379,7 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
   // be told which ones may not be asserted. Stated once, in the manifest, and
   // only when such rows are actually present.
   const unassertableCrypto = data.snapshots.filter((s) => s.cryptoAssertable === false).length;
-  // V27-A/B — the same rows, counted by the AGGREGATE that refuses. Stated
+  // v2.6-A/B — the same rows, counted by the AGGREGATE that refuses. Stated
   // separately because a reader auditing net worth needs the aggregate's answer,
   // not an inference from a component's.
   const unassertableNetWorth = data.snapshots.filter(

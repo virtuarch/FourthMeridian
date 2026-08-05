@@ -1,5 +1,5 @@
 /**
- * lib/balances/balance-boundary.test.ts   (V27-L2)
+ * lib/balances/balance-boundary.test.ts   (v2.6-L2)
  *
  * STANDING source-scan probes for the balance authority. Repo-wide, comments
  * stripped — a probe asserts on CODE, never on prose about code.

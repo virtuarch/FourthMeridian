@@ -71,7 +71,7 @@ export interface AccountWithVisibility {
  * unchanged.
  */
 /**
- * V27-L3 — reachable cash + unexplained hold per CASH account, through the
+ * v2.6-L3 — reachable cash + unexplained hold per CASH account, through the
  * canonical lib/balances authority. READ-ONLY, and scoped to ids this module has
  * already resolved, so it widens no visibility surface.
  *
@@ -156,7 +156,7 @@ export async function getAccountsWithVisibility(
     ],
   });
 
-  // V27-L3 — the CURRENT-state claim, resolved HERE because this module is the
+  // v2.6-L3 — the CURRENT-state claim, resolved HERE because this module is the
   // KD-19 visibility authority: it is the right place to decide what each tier
   // may see, and it keeps the perspective-engine binding free of a direct DB
   // read (the engine import-graph rule). Cash accounts only.
@@ -201,12 +201,12 @@ export async function getAccountsWithVisibility(
           balance:     safe.balance,
           currency:    safe.currency,
           lastUpdated: safe.lastUpdated,
-          // V27-L1 — a timestamp about a balance this tier already discloses, so
+          // v2.6-L1 — a timestamp about a balance this tier already discloses, so
           // it reveals nothing further. Null stays null.
           balanceLastUpdatedAt: r.balanceLastUpdatedAt
             ? r.balanceLastUpdatedAt.toISOString()
             : null,
-          // V27-L3 — same reasoning: a quantity about the balance this tier
+          // v2.6-L3 — same reasoning: a quantity about the balance this tier
           // already discloses. Withholding it would make a liquidity total mix
           // reachable figures with ledger balances, which is worse.
           ...(currentStateByAccount.has(r.id)

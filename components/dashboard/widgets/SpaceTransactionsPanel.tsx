@@ -525,7 +525,7 @@ function TxRow({
   /** TX-3.3 — the inspect→query pivot, enabled by the merchantId the DTO now carries. */
   onPivotMerchant?: (merchantId: string, label: string) => void;
 }) {
-  // V27-TRUTH-7 — one authority decides what this row IS and how it reads.
+  // v2.6-TRUTH-7 — one authority decides what this row IS and how it reads.
   // This was `isCredit = tx.amount > 0 && !isTransfer`, under which a refund, an
   // issuer credit, interest earned and a salary deposit all rendered identically:
   // green, with a "+". Only earned income, interest and dividends are gains; a

@@ -206,7 +206,7 @@ console.log("12. EDITORIAL REDESIGN — Hero / Balance History / Sources ledger 
 {
   // ① Hero — present-day cashNow figure of record (from the accounts array, NOT the lens);
   //    the window delta rides the cashNow snapshot basis and is DROPPED when historical.
-  // V27-L3 — the INTENT of this guard is "the figure of record comes from the
+  // v2.6-L3 — the INTENT of this guard is "the figure of record comes from the
   // accounts array, not from the lens result", so the headline and the Sources
   // ledger below it can never disagree. That intent is unchanged; the figure is
   // now REACHABLE cash rather than the ledger sum, through the one canonical

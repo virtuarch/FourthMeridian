@@ -59,7 +59,7 @@ export function DebtPaymentsWidget({ transactions, period, ctx, accounts, window
   const rows = (windowRows
     ?? filterByPeriod(transactions, period, asOfAnchor(asOf))) as LiquidityTx[];
   const liqCtx = tierResolver(accounts);
-  // V27-TRUTH-7 — the ONE debt-payment authority selects the counted leg. This
+  // v2.6-TRUTH-7 — the ONE debt-payment authority selects the counted leg. This
   // widget used to carry its own `isDebtPaymentRow` predicate; DebtClient carried
   // a different one, and the two totals differed by $6,000.
   const payments = selectDebtPaymentCashLegs(rows, liqCtx).counted;

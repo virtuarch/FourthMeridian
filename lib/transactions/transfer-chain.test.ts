@@ -1,5 +1,5 @@
 /**
- * lib/transactions/transfer-chain.test.ts   (V27-TRUTH-4)
+ * lib/transactions/transfer-chain.test.ts   (v2.6-TRUTH-4)
  *
  * Behavioural probes for the multi-leg chain authority, plus the static probes
  * that keep chain reasoning out of React and out of a second matcher.
@@ -30,7 +30,7 @@ function hop(from: string, fromType: string, to: string, toType: string, amount:
   ];
 }
 
-console.log("V27-TRUTH-4. A genuine two-hop chain links");
+console.log("v2.6-TRUTH-4. A genuine two-hop chain links");
 {
   seq = 0;
   // savings → checking → card, same amount, 2 days apart.
@@ -58,7 +58,7 @@ console.log("V27-TRUTH-4. A genuine two-hop chain links");
     a.purpose === "DEBT_FUNDING" && a.immediateCounterpartyByLeg["out0"] === "chk");
 }
 
-console.log("V27-TRUTH-4. Every original row survives; a chain is a relationship");
+console.log("v2.6-TRUTH-4. Every original row survives; a chain is a relationship");
 {
   seq = 0;
   const corpus = [...hop("sav", "savings", "chk", "checking", 1000, 0),
@@ -73,7 +73,7 @@ console.log("V27-TRUTH-4. Every original row survives; a chain is a relationship
   check("chain value is conserved (1000 + 1000 moved across two hops)", moved === 2000);
 }
 
-console.log("V27-TRUTH-4. A liability is never an INTERMEDIATE");
+console.log("v2.6-TRUTH-4. A liability is never an INTERMEDIATE");
 {
   seq = 0;
   // checking → card, then card → savings at the same amount. The middle is a
@@ -88,7 +88,7 @@ console.log("V27-TRUTH-4. A liability is never an INTERMEDIATE");
   check("PARKABLE excludes debt", !PARKABLE_ACCOUNT_TYPES.has("debt"));
 }
 
-console.log("V27-TRUTH-4. Branches are explicit, never collapsed");
+console.log("v2.6-TRUTH-4. Branches are explicit, never collapsed");
 {
   seq = 0;
   // One arrival in checking, TWO qualifying onward hops of the same amount.
@@ -108,7 +108,7 @@ console.log("V27-TRUTH-4. Branches are explicit, never collapsed");
     a.immediateCounterpartyByLeg["out0"] === "chk");
 }
 
-console.log("V27-TRUTH-4. Many-to-many is refused (the LTE double-count)");
+console.log("v2.6-TRUTH-4. Many-to-many is refused (the LTE double-count)");
 {
   seq = 0;
   // Two arrivals of the same amount, ONE onward hop. Under a "sufficient funds"
@@ -124,7 +124,7 @@ console.log("V27-TRUTH-4. Many-to-many is refused (the LTE double-count)");
     (chains.get("out0")!.refusalReason ?? "").includes("mutually unique"));
 }
 
-console.log("V27-TRUTH-4. Cycles are reported, not flattened");
+console.log("v2.6-TRUTH-4. Cycles are reported, not flattened");
 {
   seq = 0;
   const corpus = [...hop("a", "checking", "b", "savings", 300, 0),
@@ -136,7 +136,7 @@ console.log("V27-TRUTH-4. Cycles are reported, not flattened");
   check("...and says so", (a.refusalReason ?? "").includes("cycle"));
 }
 
-console.log("V27-TRUTH-4. Determinism and idempotence");
+console.log("v2.6-TRUTH-4. Determinism and idempotence");
 {
   seq = 0;
   // Reset the id counter each time, so the two runs are the SAME corpus rather
@@ -154,7 +154,7 @@ console.log("V27-TRUTH-4. Determinism and idempotence");
     chainIdFor(["x", "y"]) === "chain:x>y" && chainIdFor(["x", "y"]) !== chainIdFor(["y", "x"]));
 }
 
-console.log("V27-TRUTH-4. No row appears in two incompatible chains");
+console.log("v2.6-TRUTH-4. No row appears in two incompatible chains");
 {
   seq = 0;
   const corpus = [...hop("sav", "savings", "chk", "checking", 1000, 0),
@@ -174,7 +174,7 @@ console.log("V27-TRUTH-4. No row appears in two incompatible chains");
     chains.get("out2")!.chainId !== chains.get("out0")!.chainId);
 }
 
-console.log("V27-TRUTH-4. Out-of-window and unequal amounts do not link");
+console.log("v2.6-TRUTH-4. Out-of-window and unequal amounts do not link");
 {
   seq = 0;
   const far = [...hop("sav", "savings", "chk", "checking", 1000, 0),
@@ -188,7 +188,7 @@ console.log("V27-TRUTH-4. Out-of-window and unequal amounts do not link");
     resolveTransferChains(uneven).get("out0")!.state === "SINGLE_HOP");
 }
 
-console.log("V27-TRUTH-4. Static probes");
+console.log("v2.6-TRUTH-4. Static probes");
 {
   const root = join(__dirname, "..", "..");
   const strip = (s: string) => s

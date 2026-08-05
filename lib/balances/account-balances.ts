@@ -1,12 +1,12 @@
 /**
- * lib/balances/account-balances.ts   (V27-L2 — BALANCE AUTHORITY)
+ * lib/balances/account-balances.ts   (v2.6-L2 — BALANCE AUTHORITY)
  *
  * THE canonical current-balance authority, and **the only module in the product
  * permitted to read `FinancialAccount.availableBalance` as a value.** Every other
  * surface asks this module and receives a NAMED quantity or an explicit refusal.
  * lib/balances/balance-boundary.test.ts enforces that boundary repo-wide.
  *
- * Pure: no DB, no React, no clock. Freshness is COMPOSED from the V27-L1
+ * Pure: no DB, no React, no clock. Freshness is COMPOSED from the v2.6-L1
  * authority (`AccountFreshness`), never re-derived here — this module knows
  * nothing about ageing a timestamp, and that is deliberate.
  *
@@ -101,7 +101,7 @@ export interface AccountBalanceInput {
    * set). An on-chain balance has no provider "available" concept.
    */
   isSelfCustodyWallet?: boolean;
-  /** From V27-L1. Composed, never re-derived. */
+  /** From v2.6-L1. Composed, never re-derived. */
   freshness: AccountFreshness;
 }
 
@@ -257,7 +257,7 @@ export function resolveRowBalances(row: AccountBalanceRow, now: Date): AccountBa
 }
 
 
-// ── Reconciliation (V27-L3) ──────────────────────────────────────────────────
+// ── Reconciliation (v2.6-L3) ──────────────────────────────────────────────────
 
 /**
  * The canonical reconciliation vocabulary, reused verbatim from the historical
@@ -410,7 +410,7 @@ export function reconcileAccount(
     // `amountOwed` clamps a credit balance to zero, which is correct for "how
     // much debt do I have" and WRONG as an input here: an overpaid card has MORE
     // credit line available, not the same amount. The Chase card went to −68.78
-    // during the V27-L4E refresh and the clamped form understated implied credit
+    // during the v2.6-L4E refresh and the clamped form understated implied credit
     // by exactly that 68.78. `b.debt.owed` remains the debt figure everywhere it
     // belongs; this identity is about the LINE, not the exposure.
     const owed = b.observed.amount;

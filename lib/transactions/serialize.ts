@@ -68,7 +68,7 @@ export interface TransactionRowLike {
   category:           string;
   amount:             number;
   pending:            boolean;
-  // V27-L4A/B — the evidence the derived authorities read. All OPTIONAL: a read
+  // v2.6-L4A/B — the evidence the derived authorities read. All OPTIONAL: a read
   // that omits them gets no derived block rather than a fabricated one.
   settlementState?:          string | null;
   deletedAt?:                Date | null;
@@ -84,7 +84,7 @@ export interface TransactionRowLike {
   // visible to the reading Space). This pure serializer emits whatever it is
   // handed; it has no Space context and does NOT enforce visibility.
   counterpartyAccountId?:    string | null;
-  // V27-TRUTH-4 — the evidence the canonical income authority reads. Optional
+  // v2.6-TRUTH-4 — the evidence the canonical income authority reads. Optional
   // on the same principle: a read that omits them gets no income attribution
   // rather than one resting on columns nobody selected.
   pfcPrimary?:               string | null;
@@ -161,7 +161,7 @@ export function serializeTransactionRow(r: TransactionRowLike): Transaction {
     // Cash Flow liquidity axis — pre-gated by the data layer (KD-15). Null when
     // absent or the counterparty is not visible to the reading Space.
     counterpartyAccountId:    r.counterpartyAccountId ?? null,
-    // ── V27-L4 derived read-model (never persisted) ────────────────────────
+    // ── v2.6-L4 derived read-model (never persisted) ────────────────────────
     // `date` above is UNCHANGED — it is the POSTING date and the historical
     // engine depends on it. `economicDate` is derived alongside it, so a
     // surface can show when the activity happened without either date moving.
@@ -170,7 +170,7 @@ export function serializeTransactionRow(r: TransactionRowLike): Transaction {
 }
 
 /**
- * V27-L4 — the derived lifecycle + economic-date block for a list row.
+ * v2.6-L4 — the derived lifecycle + economic-date block for a list row.
  *
  * Emitted only when the read supplied the evidence: a caller that did not select
  * `settlementState`/`authorizedAt` gets `lifecycle: undefined` and
@@ -200,11 +200,11 @@ function deriveLifecycleAndEconomicDate(r: TransactionRowLike): Partial<Transact
   const persistedEconomic = r.economicDate
     ? r.economicDate.toISOString().split("T")[0]
     : econ.economicDate;
-  // V27-TRUTH-4 — the canonical income attribution rides the same derived block.
+  // v2.6-TRUTH-4 — the canonical income attribution rides the same derived block.
   // Emitted only for INFLOWS, and only where the read supplied the evidence: an
   // outflow has no income class, and inventing one would put a zero-amount
   // "OTHER_INCOME" on every purchase in the ledger.
-  // V27-TRUTH-6 — attributed ONLY over the population income is drawn from.
+  // v2.6-TRUTH-6 — attributed ONLY over the population income is drawn from.
   //
   // This was `r.amount > 0`, which attributed every positive row — transfers in,
   // refunds, debt-payment inflows. Each fell through to UNRESOLVED_INCOME and so
@@ -228,7 +228,7 @@ function deriveLifecycleAndEconomicDate(r: TransactionRowLike): Partial<Transact
         // than declining.
         isOwnedInternalTransfer: r.counterpartyAccountId != null,
         sourceAccountId: r.financialAccountId ?? null,
-        // V27-TRUTH-3's verdict, consulted rather than re-derived. Without it,
+        // v2.6-TRUTH-3's verdict, consulted rather than re-derived. Without it,
         // four live rows that Plaid tagged INCOME_SALARY / INCOME_CONTRACTOR /
         // INCOME_GIG_ECONOMY — but which are merchant credits landing on a
         // CREDIT CARD — stay inside earned income. Structural evidence (a

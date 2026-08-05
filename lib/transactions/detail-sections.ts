@@ -68,7 +68,7 @@ function summary(d: TransactionDetail): DetailSection {
   pushIf(rows, "Date", d.date);
   if (d.postingDate && d.postingDate !== d.date) pushIf(rows, "Posted", d.postingDate);
   pushIf(rows, "Category", d.category);
-  // V27-TRUTH-7 — "What" is the canonical row NATURE, from the one presentation
+  // v2.6-TRUTH-7 — "What" is the canonical row NATURE, from the one presentation
   // authority. This row read `humanize(flowType)`, so a Microsoft issuer credit
   // said "Income · Inflow" while the taxonomy had already called it an issuer
   // credit. `flowDirection` stays beside it — a provider fact, still true.

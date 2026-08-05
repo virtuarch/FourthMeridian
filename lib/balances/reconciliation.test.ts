@@ -1,5 +1,5 @@
 /**
- * lib/balances/reconciliation.test.ts   (V27-L3)
+ * lib/balances/reconciliation.test.ts   (v2.6-L3)
  *
  * Behavioural probes for current-state reconciliation. Pure, no DB.
  *
@@ -93,7 +93,7 @@ console.log("3. Chase credit card — the LIABILITY identity, derived separately
   check("predicted owed = 562.37 + 77.60 = 639.97", near(r.predicted!.amount, 639.97));
   check("unexplained = (33,700 − 639.97) − 33,022.48 = 37.55", near(r.unexplained!, 37.55));
 
-  // V27-L4E — the SIGNED balance is the input to the credit-line identity.
+  // v2.6-L4E — the SIGNED balance is the input to the credit-line identity.
   // `amountOwed`'s clamp is right for debt exposure and wrong here: an OVERPAID
   // card has MORE line available. The live Chase card went to −68.78 after a
   // $650 payment posted, and the clamped form understated implied credit by

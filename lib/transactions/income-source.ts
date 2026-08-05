@@ -1,5 +1,5 @@
 /**
- * lib/transactions/income-source.ts   (V27-TRUTH-4)
+ * lib/transactions/income-source.ts   (v2.6-TRUTH-4)
  *
  * THE canonical income taxonomy. One authority, feeding Cash Flow, Investments
  * Activity, income cards, drawers, AI payloads and exports.
@@ -26,7 +26,7 @@
  *
  * And at least one row is not income at all: +$280.45 "MICROSOFT" on a CREDIT
  * CARD, filed INCOME. A positive amount on a liability from a non-payment family
- * is an issuer credit — V27-TRUTH-3 already established that — so the income
+ * is an issuer credit — v2.6-TRUTH-3 already established that — so the income
  * authority must consult that verdict rather than take `flowType` at face value.
  *
  * ── Why the provider FAMILY and never a descriptor ─────────────────────────
@@ -107,7 +107,7 @@ export interface IncomeEvidence {
   /** True when the transfer authority established an OWNED counterparty. */
   isOwnedInternalTransfer?: boolean;
   /**
-   * V27-TRUTH-3's verdict for a positive liability-side movement. Passed in, not
+   * v2.6-TRUTH-3's verdict for a positive liability-side movement. Passed in, not
    * re-derived: an issuer credit must not be counted as income, and this module
    * does not own that question.
    */
@@ -149,7 +149,7 @@ export function attributeIncome(e: IncomeEvidence): IncomeAttribution {
   if (e.isOwnedInternalTransfer === true) {
     return mk("INTERNAL_TRANSFER", "The transfer authority established an owned counterparty, so this is money moving between your own accounts, not new money.");
   }
-  // 2. An issuer credit on a liability is not income. V27-TRUTH-3 decided it.
+  // 2. An issuer credit on a liability is not income. v2.6-TRUTH-3 decided it.
   if (e.liabilityInflowIsIssuerCredit === true) {
     return mk("ISSUER_CREDIT", "A positive movement on a liability from a non-payment family is an issuer-originated credit, not income.");
   }

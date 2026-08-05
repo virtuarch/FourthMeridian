@@ -58,7 +58,7 @@ const lock = JSON.parse(read("package-lock.json")) as {
 
 // ── no stray v2.7 naming ───────────────────────────────────────────────────
 //
-// The historical-exploration work carried a "V27-" work-stream label that is
+// The historical-exploration work carried a "v2.6-" work-stream label that is
 // NOT a version. It must never leak into a version field.
 {
   assert.ok(!pkg.version.startsWith("2.7"), "this is v2.6, not v2.7");

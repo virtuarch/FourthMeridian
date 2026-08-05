@@ -63,7 +63,7 @@ export interface NormalizedAccount {
   currency:        string;
   lastUpdated:     string; // ISO string — Fourth Meridian's WRITE clock
   /**
-   * V27-L1 — FinancialAccount.balanceLastUpdatedAt: the INSTITUTION's own
+   * v2.6-L1 — FinancialAccount.balanceLastUpdatedAt: the INSTITUTION's own
    * attestation of when it computed the balance. Null when the provider does not
    * supply it (today: every institution in the corpus), and null is honest —
    * `lastUpdated` is never substituted, because our fetch time is not the
@@ -108,7 +108,7 @@ export interface ShareRow {
     balance:        number;
     currency:       string;
     lastUpdated:    Date;
-    /** V27-L1 — optional so existing callers that do not select it still compile;
+    /** v2.6-L1 — optional so existing callers that do not select it still compile;
      *  absent is treated exactly like null (no provider attestation). */
     balanceLastUpdatedAt?: Date | null;
     creditLimit:    number | null;
@@ -301,7 +301,7 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedAccount[]
     if (existing) {
       existing.count   += 1;
       existing.balance += a.balance;
-      // V27-L1 — the group's freshness is its OLDEST member, not its newest.
+      // v2.6-L1 — the group's freshness is its OLDEST member, not its newest.
       // This was a MAX: a summed balance was claiming the freshness of whichever
       // member happened to be refreshed most recently, so one fresh account made
       // an aggregate of stale ones look current. A sum is only as observed as its

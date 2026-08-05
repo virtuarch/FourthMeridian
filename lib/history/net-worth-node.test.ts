@@ -1,7 +1,7 @@
 /**
  * lib/history/net-worth-node.test.ts
  *
- * V27-B — the Net Worth historical node: composition, reconciliation, and the
+ * v2.6-B — the Net Worth historical node: composition, reconciliation, and the
  * three things that must never be conflated (real-assets residual, unattributed
  * observed remainder, contradiction).
  *
@@ -53,7 +53,7 @@ const build = (s: Snapshot) =>
   buildNetWorthNode({ snapshot: s, dateISO: "2026-01-01", fromISO: "2025-08-03", toISO: "2026-08-03", currency: "USD" });
 
 function main(): void {
-  console.log("V27-B — Net Worth historical node\n");
+  console.log("v2.6-B — Net Worth historical node\n");
 
   // ══ A. ASSERTABLE NET WORTH IS UNTOUCHED ══════════════════════════════════
   console.log("A. An assertable Net Worth is byte-identical");

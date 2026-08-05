@@ -1,5 +1,5 @@
 /**
- * lib/transactions/transfer-chain.ts   (V27-TRUTH-4)
+ * lib/transactions/transfer-chain.ts   (v2.6-TRUTH-4)
  *
  * Owned-money journeys across MORE than one hop: savings → checking → card,
  * checking → brokerage → purchase, and so on.
@@ -45,7 +45,7 @@
  *  3. Amounts must be EQUAL, not merely sufficient (see the double-counting).
  *  4. The continuation must be MUTUALLY unique — one onward hop for this
  *     arrival, and one arrival for that onward hop. Same discipline as
- *     V27-TRUTH-1's leg matching, applied one level up.
+ *     v2.6-TRUTH-1's leg matching, applied one level up.
  *  5. No revisited account: A→B→A is a round trip, and A→B→C→A is a cycle.
  *     Both are represented honestly rather than silently linearised.
  *  6. Deterministic: hops are ordered by (economic ms, leg id) before linking,

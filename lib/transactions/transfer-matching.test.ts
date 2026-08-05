@@ -39,7 +39,7 @@ function relLeg(id: string, faId: string, amount: number, over: Partial<Relation
     plaidTransactionId: null, pendingTransactionRef: null,
     date: new Date('2026-06-01'), amount, merchant: '', pending: false,
     deletedAt: null, flowType: 'TRANSFER', currency: 'USD',
-    // V27-TRUTH-2 — required leg facts; benign defaults (one owner, settled, no form).
+    // v2.6-TRUTH-2 — required leg facts; benign defaults (one owner, settled, no form).
     ownerUserId: 'user_1', settlementState: 'POSTED', pfcDetailed: null,
     pfcPrimary: null, persistedCounterpartyAccountId: null,
     // Financial Truth — a transfer-shaped category so admission admits the leg,

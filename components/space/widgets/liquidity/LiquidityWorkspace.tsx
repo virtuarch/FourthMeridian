@@ -141,7 +141,7 @@ export function LiquidityWorkspace({
    *  Liquidity data). Present-day ⇒ the current lens; historical ⇒ the atAsOf lens. */
   onEnvelopeChange: (env: PerspectiveEnvelope) => void;
 }) {
-  // V27 — the LIQUIDITY root. Its children are TIERS, not buckets: liquidity
+  // v2.6 — the LIQUIDITY root. Its children are TIERS, not buckets: liquidity
   // classifies by how fast an asset converts, and has no liability side at all.
   const exploration = useHistoryExploration();
 
@@ -186,7 +186,7 @@ export function LiquidityWorkspace({
   // FIGURES OF RECORD — present-day, from the accounts array (never the lens). The Hero
   // headline (cashNow tier) is the SAME figure the SourcesLedger sums, so they agree.
   const classification = useMemo(() => classifyAccounts(accounts, ctx), [accounts, ctx]);
-  // V27-L3 — the headline is REACHABLE cash, not the ledger sum. The copy under
+  // v2.6-L3 — the headline is REACHABLE cash, not the ledger sum. The copy under
   // it has always read "reachable right now"; on the live corpus the ledger sum
   // was $13,674.16 while $8,000 of it was not reachable at all. Same authority
   // the Sources ledger rows use, so the headline and its ledger still agree.

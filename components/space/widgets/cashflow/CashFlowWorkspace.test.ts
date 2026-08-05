@@ -76,7 +76,7 @@ console.log("2. CashFlowSpaceData is the composition boundary");
   check("panels consume the contract's daily/buckets slices", WS.includes("data?.daily") && WS.includes("data?.buckets"));
   check("windowed rows come from the contract", WS.includes("data?.rows"));
   check("spending consumes data.outflowByCategory", WS.includes("data.outflowByCategory"));
-  // V27-TRUTH-6 — the economic axis now consumes the CANONICAL income rollup.
+  // v2.6-TRUTH-6 — the economic axis now consumes the CANONICAL income rollup.
   // `data.incomeBySource` was the old presentation authority and admitted rows
   // the taxonomy classes NOT_INCOME, so the card and the headline could disagree.
   check("income consumes data.cashInByReason / data.income.lines",

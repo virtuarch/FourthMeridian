@@ -108,7 +108,7 @@ export function WealthWorkspace({
   // (snapshotCurrency ?? display target) with no conversion — never a masqueraded
   // relabel. The Time Machine then derives everything (including its formatted
   // explanation sentence) already in the resolved currency.
-  // ── V27 — shared historical exploration ───────────────────────────────────
+  // ── v2.6 — shared historical exploration ───────────────────────────────────
   //
   // The chart's own plotted window becomes the sheet's window, so every child
   // inherits exactly what the user was looking at. The workspace owns no time

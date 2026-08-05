@@ -1,5 +1,5 @@
 /**
- * lib/balances/quantities.ts   (V27-L2 — BALANCE AUTHORITY)
+ * lib/balances/quantities.ts   (v2.6-L2 — BALANCE AUTHORITY)
  *
  * THE vocabulary of current-balance quantities. Pure: no DB, no React, no clock.
  *
@@ -59,15 +59,15 @@ export type BalanceQuantity =
    *  user. Not an asset: spendable only at that issuer. */
   | "ISSUER_CREDIT"
   /**
-   * V27-L3 — observed ledger balance PLUS provider-observed pending movements.
+   * v2.6-L3 — observed ledger balance PLUS provider-observed pending movements.
    * Licensed ONLY when at least one pending row exists; with no pending evidence
    * there is nothing to predict from and the observed balance stands as itself.
    */
   | "PREDICTED_CASH"
-  /** V27-L3 — amount owed plus provider-observed pending charges, same licence. */
+  /** v2.6-L3 — amount owed plus provider-observed pending charges, same licence. */
   | "PREDICTED_AMOUNT_OWED"
   /**
-   * V27-L3 — the cash a liquidity surface may claim is reachable. Resolved from
+   * v2.6-L3 — the cash a liquidity surface may claim is reachable. Resolved from
    * the provider's attested available cash where it exists, else the predicted
    * figure. NEVER the observed ledger balance: on CHASE COLLEGE those differ by
    * $4,000, and the ledger figure is the one that overstates.

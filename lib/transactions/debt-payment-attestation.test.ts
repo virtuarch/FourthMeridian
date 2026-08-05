@@ -1,5 +1,5 @@
 /**
- * lib/transactions/debt-payment-attestation.test.ts   (V27-TRUTH-8)
+ * lib/transactions/debt-payment-attestation.test.ts   (v2.6-TRUTH-8)
  *
  * The eight standing probes for the Cash Flow transfer / debt-payment defect.
  *

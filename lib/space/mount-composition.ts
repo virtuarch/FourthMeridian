@@ -76,10 +76,10 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
           id: true, name: true, type: true, institution: true, balance: true,
           currency: true, lastUpdated: true, creditLimit: true, debtSubtype: true,
           interestRate: true, minimumPayment: true,
-          // V27-L3 — forwarded RAW into lib/balances (the only interpreter);
+          // v2.6-L3 — forwarded RAW into lib/balances (the only interpreter);
           // never read as a value in this file.
           availableBalance: true, walletAddress: true,
-          // V27-L1 — the institution's balance-computation clock, carried so the
+          // v2.6-L1 — the institution's balance-computation clock, carried so the
           // freshness authority can distinguish provider attestation from our own
           // write time instead of every surface assuming they are the same fact.
           balanceLastUpdatedAt: true,
@@ -137,7 +137,7 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
     };
   });
 
-  // V27-L3 — the canonical CURRENT-STATE claim, resolved ONCE here so every
+  // v2.6-L3 — the canonical CURRENT-STATE claim, resolved ONCE here so every
   // widget consumes the same answer and none of them re-derives it. Pending
   // evidence is provider-observed only (loadPendingEvidence); nothing is
   // inferred from recurrence, averages, or habits.

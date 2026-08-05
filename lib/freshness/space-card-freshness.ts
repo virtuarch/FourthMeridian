@@ -1,7 +1,7 @@
 /**
- * lib/freshness/space-card-freshness.ts   (V27-L4F)
+ * lib/freshness/space-card-freshness.ts   (v2.6-L4F)
  *
- * Per-Space ACCOUNT freshness for the Spaces launcher cards, through the V27-L1
+ * Per-Space ACCOUNT freshness for the Spaces launcher cards, through the v2.6-L1
  * authority. READ-ONLY: one query, no writes.
  *
  * ── The defect this closes ──────────────────────────────────────────────────

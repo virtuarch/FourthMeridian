@@ -1,5 +1,5 @@
 /**
- * lib/transactions/lifecycle-boundary.test.ts   (V27-L4)
+ * lib/transactions/lifecycle-boundary.test.ts   (v2.6-L4)
  *
  * STANDING source-scan probes for the lifecycle / economic-date / maturation
  * authorities and the Space-card convergence. Repo-wide, comments stripped.
@@ -265,7 +265,7 @@ console.log("\nPROBE 17 — no schema, no persistence");
   // derive-only: persisting it before the authority was proven would have
   // frozen an unvalidated rule into the corpus.
   //
-  // That gate is now satisfied. The authority shipped in V27-L4B, was replayed
+  // That gate is now satisfied. The authority shipped in v2.6-L4B, was replayed
   // across the whole corpus in the economic-date calibration, and the persisted
   // column is checked against it continuously by
   // `scripts/audit-economic-date-persistence.ts`. So the invariant changes shape

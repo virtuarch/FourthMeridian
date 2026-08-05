@@ -1,7 +1,7 @@
 /**
  * lib/snapshots/aggregate-authorisation.core.ts
  *
- * V27-A — MAY THIS AGGREGATE BE ASSERTED?
+ * v2.6-A — MAY THIS AGGREGATE BE ASSERTED?
  *
  * Pure: no Prisma, no DB, no clock, no network.
  *

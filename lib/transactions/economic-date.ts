@@ -1,5 +1,5 @@
 /**
- * lib/transactions/economic-date.ts   (V27-L4B — DERIVED ECONOMIC DATE)
+ * lib/transactions/economic-date.ts   (v2.6-L4B — DERIVED ECONOMIC DATE)
  *
  * THE canonical answer to "when did this economic event actually happen?"
  * Pure: no DB, no React, no clock. **DERIVED ONLY — nothing is persisted, and
@@ -21,7 +21,7 @@
  * authority and independently by raw SQL (both agree at 147), the population a
  * closed-period report would silently absorb is 37× larger than this file
  * claimed. The day-mover count was right; only the month count was understated.
- * V27-TRUTH-1.
+ * v2.6-TRUTH-1.
  *
  * ── The credibility bound, derived from the evidence ────────────────────────
  *

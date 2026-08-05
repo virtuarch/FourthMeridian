@@ -1,7 +1,7 @@
 /**
  * lib/history/account-series.test.ts
  *
- * V27-C — the account level. DB-free: the Prisma client is a stub, so this runs
+ * v2.6-C — the account level. DB-free: the Prisma client is a stub, so this runs
  * in the unit runner without `prisma generate`.
  */
 

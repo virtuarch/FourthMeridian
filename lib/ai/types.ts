@@ -233,7 +233,7 @@ export interface AccountSummaryItem {
    *  Optional until the corresponding FinancialAccount schema field lands. */
   balanceLastUpdatedAt?: string | null;
   /**
-   * V27-L1 — the RESOLVED freshness claim for this balance, so the model is not
+   * v2.6-L1 — the RESOLVED freshness claim for this balance, so the model is not
    * left to infer one from two raw timestamps. Given only
    * `lastUpdated: <today>` and `balanceLastUpdatedAt: null`, a model will
    * reasonably narrate "your balance was updated today" — which asserts the
@@ -254,7 +254,7 @@ export interface AccountSummaryItem {
     providerClockUnknown: boolean;
   };
   /**
-   * V27-L2 — the account-type-aware reading of `availableBalance`, resolved by
+   * v2.6-L2 — the account-type-aware reading of `availableBalance`, resolved by
    * the balance authority. The RAW column is never sent: it carries reachable
    * cash on a checking account, settled cash on a brokerage, and an unused
    * CREDIT LINE on a card, and a model given one unlabelled number would have to
@@ -273,7 +273,7 @@ export interface AccountSummaryItem {
     label:     string;
   };
   /**
-   * V27-L3 — the current-state reconciliation. Sent so the model states what is
+   * v2.6-L3 — the current-state reconciliation. Sent so the model states what is
    * REACHABLE and what is unexplained, instead of narrating an observed ledger
    * balance as spendable money. On CHASE COLLEGE the difference is $4,000.
    *
@@ -733,7 +733,7 @@ export interface TransactionsSummaryData {
   /** Sum of positive flowType=INCOME amounts (includes dividends, doctrine §5). */
   incomeTotal:       number;
   /**
-   * V27-TRUTH-5 — the canonical income composition, so the model never has to
+   * v2.6-TRUTH-5 — the canonical income composition, so the model never has to
    * infer what an "income" number contains. `incomeTotal` is BANK-TRANSACTION
    * broad income and equals the sum of `incomeByClass`; investment dividends
    * live in a separate ledger and are deliberately NOT folded in (double

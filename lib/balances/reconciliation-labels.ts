@@ -1,5 +1,5 @@
 /**
- * lib/balances/reconciliation-labels.ts   (V27-L3)
+ * lib/balances/reconciliation-labels.ts   (v2.6-L3)
  *
  * The user-facing wording for each reconciliation state. Kept in the authority,
  * not in components, so two surfaces cannot describe the same state differently.

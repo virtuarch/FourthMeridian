@@ -71,7 +71,7 @@ const CORRELATION_EXTRACTORS: Record<string, readonly CorrelationExtractor[]> = 
     // opposite-sign, equal-amount, same-owner, same-currency, 0-day gap ·
     // 0 contradictions with the independently-derived authority (which agrees on
     // 72 of the 132) · 0 errors.
-    measured: "V27 investigation, 2026-08-05: 66/66 groups valid, 0 contradictions, 0 errors",
+    measured: "v2.6 investigation, 2026-08-05: 66/66 groups valid, 0 contradictions, 0 errors",
   }],
   // American Express: MEASURED AND DELIBERATELY ABSENT. 147 transfer rows,
   // 0 carrying any correlation token (mean description length 30 chars vs Chase's

@@ -46,16 +46,16 @@ export interface AccountDisplay {
   amount:    number;
   estimated: boolean;
   /**
-   * V27-L2 — the AVAILABLE quantity, converted through the SAME authority as
+   * v2.6-L2 — the AVAILABLE quantity, converted through the SAME authority as
    * `amount` so the two figures can never be quoted in different currencies.
    * Null when the balance authority refused to name an available quantity —
    * and null must render as the refusal, never as a zero or as `amount`.
    */
   available: number | null;
-  /** V27-L3 — the predicted figure, converted through the SAME authority. Null
+  /** v2.6-L3 — the predicted figure, converted through the SAME authority. Null
    *  when no pending evidence licensed one. */
   predicted: number | null;
-  /** V27-L3 — the residual, converted. Null when not reconcilable. Signed:
+  /** v2.6-L3 — the residual, converted. Null when not reconcilable. Signed:
    *  positive is a hold, negative is a provider over-report. */
   unexplained: number | null;
 }
@@ -69,7 +69,7 @@ function FactRow({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-/** V27-L1 — ledger reach, phrased so it can never be read as a balance age.
+/** v2.6-L1 — ledger reach, phrased so it can never be read as a balance age.
  *  "Transactions through <date>" is a statement about how far the ledger REACHES;
  *  a quiet account with no recent spending is not a stale one. */
 function ledgerValue(l: LedgerCoverage): string {
@@ -117,11 +117,11 @@ export function AccountDetail({
   const approx   = display.estimated ? "≈ " : "";
   const typeLabel = ACCOUNT_TYPE_LABELS[row.type] ?? row.type;
   const imports  = row.importBatchCount;
-  // V27-L1 — the caveat that keeps our fetch clock from reading as the
+  // v2.6-L1 — the caveat that keeps our fetch clock from reading as the
   // institution's. Null when there is nothing to caveat.
   const basisCaveat = balanceBasisCaveat(row.freshness.balance);
 
-  // V27-L2 — the canonical claims, resolved server-side and consumed here. This
+  // v2.6-L2 — the canonical claims, resolved server-side and consumed here. This
   // component names quantities; it never interprets `availableBalance`.
   const balances = row.balances;
   // On a liability the headline quantity is AMOUNT_OWED; everywhere else it is
@@ -132,7 +132,7 @@ export function AccountDetail({
   // this agrees with the native claim by construction.
   const headlineAmount = balances.debt ? amountOwed(display.amount) : display.amount;
 
-  // V27-L3 — the reconciliation, resolved server-side. This component formats
+  // v2.6-L3 — the reconciliation, resolved server-side. This component formats
   // it; it never filters pending rows and never runs the identity.
   const recon = row.reconciliation;
   const predictedDisplay   = display.predicted;
@@ -182,7 +182,7 @@ export function AccountDetail({
   return (
     <div className="min-w-0">
       {/* Headline balance — display-converted; native shown alongside when different.
-          V27-L2 — the eyebrow NAMES the quantity. It read "Current balance" for
+          v2.6-L2 — the eyebrow NAMES the quantity. It read "Current balance" for
           every account type, which on a credit card describes $562.37 of debt in
           the same words it describes $5,106.77 of checking. On a liability the
           headline is the amount OWED (through lib/debt/balance-semantics), which
@@ -199,11 +199,11 @@ export function AccountDetail({
         </p>
       )}
 
-      {/* V27-L3 — the current-state block: what pending activity predicts, and
+      {/* v2.6-L3 — the current-state block: what pending activity predicts, and
           what nothing explains. An unexplained hold is a FIRST-CLASS output —
           the Amex HYSA's $4,000 is stated in words, never smoothed into the
           prediction and never absorbed into the headline. */}
-      {/* V27-L2 — the SECOND quantity, named. On the Chase card this is
+      {/* v2.6-L2 — the SECOND quantity, named. On the Chase card this is
           "Available credit $33,022.48" sitting beneath "Amount owed $562.37":
           two figures that were previously one polymorphic column, and that a
           uniform reader would have confused by $32,460. When the provider gave
@@ -294,7 +294,7 @@ export function AccountDetail({
         {isFull && row.mask && <FactRow label="Account" value={`••••${row.mask}`} />}
         <FactRow label="Currency" value={row.currency} />
         <FactRow label="Status" value={<StatusValue row={row} />} />
-        {/* V27-L1 — the balance above and the evidence for how old it is now travel
+        {/* v2.6-L1 — the balance above and the evidence for how old it is now travel
             together. The label itself carries the basis: "Balance as of" is only
             used when the institution attested its own computation time; otherwise
             it is "Balance checked", which claims nothing but our own fetch. */}
@@ -310,7 +310,7 @@ export function AccountDetail({
             independently, and a wallet can carry a live balance over a ledger that
             stops years earlier. Never presented as staleness. */}
         <FactRow label="Transactions" value={ledgerValue(row.freshness.ledger)} />
-        {/* V27-L3 — reconciliation state is its OWN dimension, beside freshness.
+        {/* v2.6-L3 — reconciliation state is its OWN dimension, beside freshness.
             A mathematically EXACT reconciliation over a two-month-old balance is
             still stale, and the two must never be collapsed into one badge. */}
         {recon.basis !== "NONE" && (
@@ -360,7 +360,7 @@ export function AccountDetail({
       )}
 
       {/* Honest scope note — per-account balance history isn't carried by this read.
-          V27-L1: this used to open "Balance is current", which is a freshness claim
+          v2.6-L1: this used to open "Balance is current", which is a freshness claim
           the read cannot make (24 of 35 accounts in the live corpus are past a
           week). The freshness facts above make the actual claim; this note is now
           about SCOPE only. */}

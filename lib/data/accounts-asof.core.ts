@@ -152,7 +152,7 @@ function resolveOne(a: AsOfAccountInput, ctx: DayContext): ResolvedAsOfBalance {
 }
 
 /**
- * V27-C — the SAME resolution, over a WINDOW: isoDate → (accountId → resolved).
+ * v2.6-C — the SAME resolution, over a WINDOW: isoDate → (accountId → resolved).
  *
  * The walk-backs already produce every day between `from` and today in a single
  * reverse pass, so a window costs exactly what one as-of date costs. Calling

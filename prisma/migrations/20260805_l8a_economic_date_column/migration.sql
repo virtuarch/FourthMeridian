@@ -4,7 +4,7 @@
 -- cutover will consume. Nothing reads the column in this migration: L8-A is
 -- dual-write only, and the reader cutover is a separate atomic slice.
 --
--- WHY A COLUMN. `economicDate` has been derived at read time since V27-L4B. The
+-- WHY A COLUMN. `economicDate` has been derived at read time since v2.6-L4B. The
 -- cutover needs to ORDER BY, filter and keyset-paginate on it, and the
 -- expression
 --     CASE WHEN "authorizedAt" IS NOT NULL AND "authorizedAt" <= date

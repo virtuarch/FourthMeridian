@@ -1,7 +1,7 @@
 /**
  * lib/history/historical-node.core.ts
  *
- * V27-B — THE RECURSIVE HISTORICAL EXPLORATION CONTRACT.
+ * v2.6-B — THE RECURSIVE HISTORICAL EXPLORATION CONTRACT.
  *
  * Pure: no Prisma, no DB, no clock, no network, no prices.
  *
@@ -28,7 +28,7 @@
  * answers "how did it move across the window". Those are different questions
  * with different costs — one date versus N — and bundling them would make every
  * composition request pay for a series it may not render. `series` is therefore
- * optional and populated only when a caller asks for it (V27-C/D).
+ * optional and populated only when a caller asks for it (v2.6-C/D).
  */
 
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
@@ -170,7 +170,7 @@ export interface HistoricalBucketNode extends HistoricalNodeBase, HistoricalCoun
 }
 
 /**
- * V27 — the SECONDARY scope summary: what the primary child list deliberately
+ * v2.6 — the SECONDARY scope summary: what the primary child list deliberately
  * omits, and why.
  *
  * The primary list shows only what EXISTED on the selected date. That is the
@@ -210,7 +210,7 @@ export interface HistoricalHoldingNode extends HistoricalNodeBase {
   quantity:  number | null;
   unitPrice: number | null;
   /**
-   * V27-D3 — the runs within the window where the position was actually held.
+   * v2.6-D3 — the runs within the window where the position was actually held.
    *
    * More than one means sold-and-re-bought. A single from/to span cannot say
    * that, and drawing one across the gap would assert ownership during a period
@@ -220,7 +220,7 @@ export interface HistoricalHoldingNode extends HistoricalNodeBase {
 }
 
 /**
- * V27 — a LIQUIDITY TIER. Not a bucket.
+ * v2.6 — a LIQUIDITY TIER. Not a bucket.
  *
  * Liquidity is not a partition of the balance sheet, it is a classification by
  * HOW FAST an asset converts to cash — `cashNow` / `marketable` / `illiquid`

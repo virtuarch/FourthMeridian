@@ -86,7 +86,7 @@ export function LiquidityHero({
   today:         string;
   /** asOf < today ⇒ the headline is present-day while trend/verdict are as-of. */
   historical:    boolean;
-  /** V27-L3 — true when the headline is reachable cash but `change` was computed
+  /** v2.6-L3 — true when the headline is reachable cash but `change` was computed
    *  on the ledger-balance snapshot series. The delta is then suppressed. */
   deltaBasisDiffers: boolean;
   /** The balance-history window delta, or null when no window exists. */
@@ -122,7 +122,7 @@ export function LiquidityHero({
             it coincides with this headline, so it's coherent; in a HISTORICAL view the
             headline is present-day while the trend is as-of — different bases, so the delta
             is deferred to the chart and dropped here (the Debt precedent). */}
-        {/* V27-L3 — the headline is now REACHABLE cash while the balance-history
+        {/* v2.6-L3 — the headline is now REACHABLE cash while the balance-history
             series is a ledger-cash snapshot series. Those are different bases, so
             the delta is DROPPED here for exactly the reason the historical case
             already drops it: a change computed on one basis printed beside a

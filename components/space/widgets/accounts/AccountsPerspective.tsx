@@ -107,7 +107,7 @@ interface FallbackAccount {
   institution: string;
   balance:     number;
   currency:    string;
-  /** V27-L1 — carried so the fallback can state the same freshness the fetched
+  /** v2.6-L1 — carried so the fallback can state the same freshness the fetched
    *  read would, instead of silently dropping it. */
   lastUpdated?:          string;
   balanceLastUpdatedAt?: string | null;
@@ -151,16 +151,16 @@ function fallbackRows(accounts: FallbackAccount[], now: Date): AccountDetailRow[
     isManual:           false,
     connectionState:    null,
     importBatchCount:   0,
-    // V27-L1 — freshness from the host's own account row. `ledgerQueried` is
+    // v2.6-L1 — freshness from the host's own account row. `ledgerQueried` is
     // omitted on purpose: the fallback carries no transaction evidence, so
     // coverage stays UNKNOWN rather than claiming NONE_ON_FILE.
     freshness:          fallbackFreshness(a, now),
-    // V27-L2 — the fallback carries no `availableBalance` (the host's shared
+    // v2.6-L2 — the fallback carries no `availableBalance` (the host's shared
     // SpaceAccount does not include it), so the authority is handed nothing and
     // answers PROVIDER_DID_NOT_REPORT. The fetched read supplies the real claim
     // a moment later; an honest "not reported" is the right interim answer.
     balances:           fallbackBalances(a, now),
-    // V27-L3 — the fallback carries no pending evidence either, so reconciliation
+    // v2.6-L3 — the fallback carries no pending evidence either, so reconciliation
     // is UNAVAILABLE. The fetched read supplies the real claim a moment later;
     // an honest "cannot be established yet" is the right interim answer.
     reconciliation:     reconcileAccount(fallbackBalances(a, now), NO_PENDING, null),

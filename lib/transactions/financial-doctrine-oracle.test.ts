@@ -128,7 +128,7 @@ interface Fixture {
   disposition?: TransferDisposition | null; // read-time transfer disposition on the row
   rail?:    string | null;   // transferRail ("PAYMENT_APP") when attested
   classificationReason?: string | null;     // FlowClassificationReason
-  // V27-TRUTH-5/7 — the canonical income attribution the read boundary emits for
+  // v2.6-TRUTH-5/7 — the canonical income attribution the read boundary emits for
   // every positive INCOME row (measured: 136/136 live rows carry one). The
   // liquidity axis reads it rather than assuming every income is a paycheck.
   incomeClass?:   string | null;
@@ -285,7 +285,7 @@ const MATRIX: Fixture[] = [
 
   // 11 — dividend received to checking (Dividend category → flowType INCOME)
   // ⚠️ This asserted EARNED_INCOME. A dividend is not a paycheck — the conflation
-  //    V27-TRUTH-5 removed from the data survived here in the oracle until now.
+  //    v2.6-TRUTH-5 removed from the data survived here in the oracle until now.
   { id: "F11", title: "dividend received → checking", own: "chk", amount: 50, flowType: "INCOME",
     classificationReason: "CATEGORY_INVESTMENT_VALUE", merchantId: "payer",
     incomeClass: "DIVIDEND_INCOME", incomeSubtype: "SECURITY_DIVIDEND",
@@ -566,7 +566,7 @@ console.log("── Part 3 — debt-payment reconciliation ──");
 
 // View adapters (each reads its real authority; C is the assembler's inline rule).
 const viewA = (rows: LiquidityTx[]): number => aggregateDayFacts(rows, ctx).byReason.DEBT_PAYMENT ?? 0;
-// V27-TRUTH-7 — B was `lib/debt.ts totalDebtPaid`, which abs-summed whatever it
+// v2.6-TRUTH-7 — B was `lib/debt.ts totalDebtPaid`, which abs-summed whatever it
 // was handed and so meant different things to different callers. The
 // received-by-liability SEMANTICS it stood for are unchanged and still needed
 // here, and `rollupDebtPaymentsByAccount` is where they now live — it is the one

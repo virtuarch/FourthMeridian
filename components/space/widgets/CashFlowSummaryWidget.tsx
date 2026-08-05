@@ -240,7 +240,7 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
   const isLiabilityRow = (r: LiquidityTx) => liqCtx.tierOf(r.financialAccountId ?? r.accountId ?? null) === "liability";
   const openEconSlice = (line: TileLine) => {
     if (line.reason === "INCOME") {
-      // V27-TRUTH-5 — was subtitled "Earned income this period" over EVERY
+      // v2.6-TRUTH-5 — was subtitled "Earned income this period" over EVERY
       // income row, which called 45 rows of deposit interest earned income. The
       // slice spans the whole canonical breakdown, so it says so, and a row the
       // authority classes NOT_INCOME is excluded here exactly as it is from the

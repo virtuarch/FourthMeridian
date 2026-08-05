@@ -1,5 +1,5 @@
 /**
- * lib/freshness/observation.ts   (V27-L1 — FRESHNESS TRUTH)
+ * lib/freshness/observation.ts   (v2.6-L1 — FRESHNESS TRUTH)
  *
  * THE canonical per-account freshness authority. Pure: no DB, no React, no
  * ambient clock — `now` is a REQUIRED argument on every entry point so a caller

@@ -1,5 +1,5 @@
 /**
- * lib/transactions/lifecycle.ts   (V27-L4A — LIFECYCLE AUTHORITY)
+ * lib/transactions/lifecycle.ts   (v2.6-L4A — LIFECYCLE AUTHORITY)
  *
  * THE canonical answer to "what lifecycle state is this economic event in?"
  * Pure: no DB, no React, no clock. A caller supplies the row's evidence; this

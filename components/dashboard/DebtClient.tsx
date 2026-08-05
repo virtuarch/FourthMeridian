@@ -116,7 +116,7 @@ interface Props {
   lastUpdatedAt: string | null;
   accounts:      Account[];       // debt accounts only
   transactions:  Transaction[];   // debt account transactions
-  /** V27-TRUTH-7 — DEBT_PAYMENT rows across the banking population. The counted
+  /** v2.6-TRUTH-7 — DEBT_PAYMENT rows across the banking population. The counted
    *  leg lives on the account the money LEFT, which `transactions` cannot see. */
   paymentRows:   Transaction[];
   /** id + type for EVERY account, so the authority can resolve liquidity tiers.
@@ -222,7 +222,7 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
 
   // Modal-level filters (search + category only visible inside modal)
   const [search,    setSearch]    = useState("");
-  // V27-TRUTH-7 — was `catFilter: TransactionCategory`, filtering on the legacy
+  // v2.6-TRUTH-7 — was `catFilter: TransactionCategory`, filtering on the legacy
   // provider category STRING. The file's own comment beside the total noted that
   // heuristic had been replaced; the filter next to it had not been. It now
   // filters on the canonical FlowType, through the canonical label map.
@@ -505,7 +505,7 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
   const totalPages    = Math.ceil(filteredTxs.length / PAGE_ROWS);
   const pageSlice     = filteredTxs.slice(modalPage * PAGE_ROWS, (modalPage + 1) * PAGE_ROWS);
 
-  // V27-TRUTH-7 — ONE debt-payment authority, counting the CASH leg.
+  // v2.6-TRUTH-7 — ONE debt-payment authority, counting the CASH leg.
   //
   // This read `computeTotalDebtPaid(baseTxs, …)` over LIABILITY-side rows and
   // reported $239,592.37 while the Debt Payments widget reported $245,592.37 for

@@ -52,12 +52,12 @@ export type LiquidityEffect = "CASH_IN" | "CASH_OUT" | "NEUTRAL" | "UNRESOLVED";
 /** Why the effect was assigned — the durable, explainable label for AI. */
 export type LiquidityReason =
   | "EARNED_INCOME"      // EARNED income arriving in a spendable (liquid) account
-  | "INTEREST_INCOME"    // V27-TRUTH-5 — interest paid by a deposit account
-  | "DIVIDEND_INCOME"    // V27-TRUTH-5 — a distribution from a holding
-  | "OTHER_INCOME"       // V27-TRUTH-5 — income whose source is not established
+  | "INTEREST_INCOME"    // v2.6-TRUTH-5 — interest paid by a deposit account
+  | "DIVIDEND_INCOME"    // v2.6-TRUTH-5 — a distribution from a holding
+  | "OTHER_INCOME"       // v2.6-TRUTH-5 — income whose source is not established
   | "REAL_COST"          // SPENDING / FEE / INTEREST leaving the liquid tier
   | "REFUND"             // reversal of prior spend, cash back
-  | "ISSUER_CREDIT"      // V27-TRUTH-7 — a card credit the issuer originated
+  | "ISSUER_CREDIT"      // v2.6-TRUTH-7 — a card credit the issuer originated
                          // (rewards, statement credit, purchase reversal). Reduces
                          // what you owe; never income, never spendable cash in.
   | "ASSET_LIQUIDATION"  // asset tier → liquid (crypto/stock sale proceeds to bank)
@@ -122,7 +122,7 @@ const INCOME_REASON_BY_CLASS: Record<string, LiquidityReason> = {
 };
 
 /**
- * Canonical NOT_INCOME subtype → its liquidity reason. V27-TRUTH-7.
+ * Canonical NOT_INCOME subtype → its liquidity reason. v2.6-TRUTH-7.
  *
  * ⚠️ A mapping, not a decision: every key is a subtype
  * lib/transactions/income-source.ts already assigned. A subtype absent from this
@@ -145,13 +145,13 @@ export function classifyLiquidity(tx: LiquidityTx, ctx: LiquidityContext): Liqui
   // income routed into an asset account (e.g. reinvested dividend) is earned but
   // not spendable, so it's neutral on the liquidity axis.
   if (isIncome(ft)) {
-    // V27-TRUTH-5 — the reason follows the CANONICAL income class, not the bare
+    // v2.6-TRUTH-5 — the reason follows the CANONICAL income class, not the bare
     // flow type. Every income row previously reported EARNED_INCOME, so the
     // Income-by-source card rendered "Earned income · 100.0%" over a window that
     // was $10,573.03 earned and $6.01 of deposit interest. The class is read off
     // the DTO; nothing is re-derived here.
     //
-    // V27-TRUTH-7 — a NOT_INCOME row now reports WHICH not-income it is, from the
+    // v2.6-TRUTH-7 — a NOT_INCOME row now reports WHICH not-income it is, from the
     // taxonomy's own subtype. It previously returned OTHER_INCOME, so a Microsoft
     // rebate on a credit card was filed under an income reason while the taxonomy
     // had already called it ISSUER_CREDIT. The effect (NEUTRAL) was right; the

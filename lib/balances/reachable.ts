@@ -1,5 +1,5 @@
 /**
- * lib/balances/reachable.ts   (V27-L3 — RECONCILIATION)
+ * lib/balances/reachable.ts   (v2.6-L3 — RECONCILIATION)
  *
  * How a liquidity surface totals reachable cash. Pure: no DB, no React, no clock.
  *

@@ -1,5 +1,5 @@
 /**
- * scripts/repair-unearned-debt-payment.ts   (V27-L4-REPAIR-2)
+ * scripts/repair-unearned-debt-payment.ts   (v2.6-L4-REPAIR-2)
  *
  * The APPROVED 38-row demotion. DRY-RUN BY DEFAULT — `--apply` is required.
  *
@@ -109,7 +109,7 @@ async function main(): Promise<void> {
     plaidTransactionId: t.plaidTransactionId, pendingTransactionRef: t.pendingTransactionRef,
     date: t.date, amount: t.amount, merchant: t.merchant, pending: t.pending,
     deletedAt: t.deletedAt, flowType: t.flowType, currency: t.currency,
-    // V27-TRUTH-2 — required by the canonical authority: owner scope, lifecycle
+    // v2.6-TRUTH-2 — required by the canonical authority: owner scope, lifecycle
     // supersession, movement form (the cash veto).
     ownerUserId:           acct.get(t.financialAccountId ?? "")?.ownerUserId ?? null,
     settlementState:       t.settlementState,
@@ -123,7 +123,7 @@ async function main(): Promise<void> {
     persistedCounterpartyAccountId: t.counterpartyAccountId ?? null,
   });
 
-  // V27-TRUTH-2 — the canonical authority decides from account TYPE; supply it
+  // v2.6-TRUTH-2 — the canonical authority decides from account TYPE; supply it
   // once rather than letting the matcher guess.
   const matchCtx = { accountTypeById: new Map(accounts.map((a) => [a.id, a.type as string])) };
 

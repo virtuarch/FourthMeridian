@@ -120,7 +120,7 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
       isEstimated:           r.isEstimated ?? false,
       cryptoValuationStatus: r.cryptoValuationStatus ?? null,
     });
-    // V27-A — AGGREGATE AUTHORISATION, resolved ONCE, at the same boundary.
+    // v2.6-A — AGGREGATE AUTHORISATION, resolved ONCE, at the same boundary.
     //
     // Components carried authorisation; aggregates did not, so a row whose
     // crypto may not be asserted still offered `netWorth` and `totalAssets`
@@ -173,7 +173,7 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
         ...raw,
         // D2.x Slice 4 — provenance for the estimated-history badge.
         isEstimated: r.isEstimated ?? false,
-        // V27-B — the EFFECTIVE currency these totals are in, stated rather than
+        // v2.6-B — the EFFECTIVE currency these totals are in, stated rather than
         // assumed. On the fast path it is the row's own stamp.
         currency: target,
         ...provenance,
@@ -221,7 +221,7 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
  * "no history yet" state from that.
  */
 /**
- * V27-L4F — the canonical 1M change over a snapshot series.
+ * v2.6-L4F — the canonical 1M change over a snapshot series.
  *
  * The window comes from `compareToForPreset("PAST_MONTH", asOf)` — the SAME
  * authority the inside-Space time selector uses — so "one month" means one
@@ -270,7 +270,7 @@ export interface SpaceNetWorthSummary {
   /** The latest SNAPSHOT date. A history fact — never a freshness claim. */
   asOf: string | null;
   /**
-   * V27-L4F — the CANONICAL 1M change, resolved through the same authority the
+   * v2.6-L4F — the CANONICAL 1M change, resolved through the same authority the
    * inside-Space view uses (`compareToForPreset("PAST_MONTH", asOf)` from
    * lib/perspectives/time-range), so the outer card and the inner hero cannot
    * disagree. Null when there is no comparison point.

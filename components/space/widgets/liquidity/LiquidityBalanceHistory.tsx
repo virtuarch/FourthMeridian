@@ -33,7 +33,7 @@ export function LiquidityBalanceHistory({
   currency:  string;
   asOf:      string;
   compareTo: string | null;
-  /** V27 — open the shared explorer at the LIQUIDITY root. */
+  /** v2.6 — open the shared explorer at the LIQUIDITY root. */
   onSelectPoint?: (dateISO: string) => void;
 }) {
   // Already clipped by the pure helper; project to the chart's point shape (cashNow is

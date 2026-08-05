@@ -213,7 +213,7 @@ async function main() {
   // ── Refusal 3 — a reclassification must not CREATE a classifier desync ───
   //
   // The transfer authority and `classifyFlow` are different authorities answering
-  // overlapping questions. V27-TRUTH-3's real bug was found only by comparing two
+  // overlapping questions. v2.6-TRUTH-3's real bug was found only by comparing two
   // entry points, so this compares them before writing rather than after.
   //
   // ⚠️ The line is DESTINATION EVIDENCE, not agreement.

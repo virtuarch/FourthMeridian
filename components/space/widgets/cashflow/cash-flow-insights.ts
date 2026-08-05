@@ -189,7 +189,7 @@ export function buildCashFlowInsights(args: {
     const cashIn = groupLiquidityByReason(facts).cashIn;
     if (cashIn.length > 0) topSource = { label: cashIn[0].label, value: cashIn[0].amount };
   } else {
-    // V27-TRUTH-6 — the CANONICAL lines, not the payer grouping. The insight
+    // v2.6-TRUTH-6 — the CANONICAL lines, not the payer grouping. The insight
     // previously read incomeBySource, which admitted NOT_INCOME rows, so it
     // could name an issuer credit as a source of income and could quote a total
     // the headline did not contain.

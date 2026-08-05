@@ -1,5 +1,5 @@
 /**
- * lib/transactions/income-rollup.ts   (V27-TRUTH-5)
+ * lib/transactions/income-rollup.ts   (v2.6-TRUTH-5)
  *
  * THE read-boundary composition of the canonical income taxonomy: it turns
  * per-row attributions (lib/transactions/income-source.ts) and InvestmentEvent

@@ -1,5 +1,5 @@
 /**
- * lib/freshness/freshness-convergence.test.ts   (V27-L1)
+ * lib/freshness/freshness-convergence.test.ts   (v2.6-L1)
  *
  * STANDING source-scan probes. These are the guards the brief asks for, and
  * probe 1 is the one that would have caught the original defect: the Space header
@@ -140,7 +140,7 @@ console.log("\nPROBE 4 — the two clocks are never conflated");
   const envelope = code("lib/perspectives/envelope.ts");
   check("the lens envelope stopped claiming 'Live account balances, as of'",
     !envelope.includes("Live account balances"));
-  // V27-L2 — the wording is now BASIS-GATED: "as of" only when every contributor
+  // v2.6-L2 — the wording is now BASIS-GATED: "as of" only when every contributor
   // carries an institution timestamp, otherwise "checked".
   check("...and says what dataAsOf actually is",
     envelope.includes("Oldest balance checked") && envelope.includes("Oldest balance as of"));

@@ -1,5 +1,5 @@
 /**
- * scripts/repair-transfer-classification.ts   (V27-L4-REPAIR-3)
+ * scripts/repair-transfer-classification.ts   (v2.6-L4-REPAIR-3)
  *
  * The APPROVED R1 + R3 repair — 17 rows. DRY-RUN BY DEFAULT.
  *
@@ -59,7 +59,7 @@ import {
 } from "@/lib/transactions/transfer-maturation";
 
 /**
- * ── V27-TRUTH-1 addendum ────────────────────────────────────────────────────
+ * ── v2.6-TRUTH-1 addendum ────────────────────────────────────────────────────
  *
  * R1 and R3 are APPLIED and this script is idempotent — it now short-circuits at
  * "nothing to do" before any gate. It is kept runnable, and re-pointed at the
@@ -121,7 +121,7 @@ async function main(): Promise<void> {
   const shaped = (f: string | null) => f === null || f === "TRANSFER" || f === "DEBT_PAYMENT" || f === "UNKNOWN";
   const corpus = all.filter((t) => shaped(t.flowType) && !lifecycleOf(t).superseded);
 
-  // V27-TRUTH-1 — legs, not ad-hoc candidate tuples. The authority owns the match
+  // v2.6-TRUTH-1 — legs, not ad-hoc candidate tuples. The authority owns the match
   // predicate and BOTH directions now; this script no longer restates either.
   const legs: TransferLeg[] = corpus.map((t) => ({
     id: t.id,
@@ -163,7 +163,7 @@ async function main(): Promise<void> {
   // ── Gate: every population must match the approved shape exactly ──────────
   const found = { R1: R1.length, R3: R3.length, R2: R2.length, TYPE_CERTAIN_DEBT: typeCertainDebt.length };
   console.log("  population check (approved-at-the-time → found-now):");
-  console.log("    R2 and TYPE_CERTAIN_DEBT are EXPECTED to differ post-V27-TRUTH-1; see the header.");
+  console.log("    R2 and TYPE_CERTAIN_DEBT are EXPECTED to differ post-v2.6-TRUTH-1; see the header.");
   let mismatch = false;
   for (const k of Object.keys(EXPECT) as (keyof typeof EXPECT)[]) {
     const ok = EXPECT[k] === found[k];

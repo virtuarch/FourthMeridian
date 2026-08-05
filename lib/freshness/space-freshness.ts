@@ -1,5 +1,5 @@
 /**
- * lib/freshness/space-freshness.ts   (V27-L1 — FRESHNESS TRUTH)
+ * lib/freshness/space-freshness.ts   (v2.6-L1 — FRESHNESS TRUTH)
  *
  * THE Space-level freshness presentation. Pure. The clock enters exactly once, as
  * the required `now` on resolveSpaceFreshness.

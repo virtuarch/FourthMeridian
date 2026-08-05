@@ -1,7 +1,7 @@
 /**
  * lib/snapshots/aggregate-authorisation.core.test.ts
  *
- * V27-A — aggregate authorisation. Standalone tsx, pure.
+ * v2.6-A — aggregate authorisation. Standalone tsx, pure.
  *
  * The rule under test: an aggregate may be asserted only when every component it
  * is composed from is assertable — and when that fails, WHICH outcome applies
@@ -46,7 +46,7 @@ function row(over: Partial<AggregateAuthorisationInput["values"]> = {}) {
 }
 
 function main(): void {
-  console.log("V27-A — aggregate authorisation\n");
+  console.log("v2.6-A — aggregate authorisation\n");
 
   // ══ A. AN ASSERTABLE AGGREGATE IS UNTOUCHED ═══════════════════════════════
   console.log("A. Every assertable aggregate is byte-identical");

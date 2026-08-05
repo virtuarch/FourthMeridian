@@ -80,7 +80,7 @@ function rowMoney(t: Transaction): string {
 }
 
 function TxRow({ t }: { t: Transaction }) {
-  // V27-TRUTH-8 — the chip is the canonical row NATURE, matching the group
+  // v2.6-TRUTH-8 — the chip is the canonical row NATURE, matching the group
   // heading above it. It rendered `t.category`, the raw provider string, so a row
   // the Debt Payments card counted showed "Transfer" — the drawer contradicting
   // the card it was opened from. Tone follows the same authority, so a refund or
@@ -107,7 +107,7 @@ function TxRow({ t }: { t: Transaction }) {
 /**
  * Group rows by canonical row NATURE, in a stable, human order.
  *
- * V27-TRUTH-7 — this grouped on `flowType` through a local label map, so a
+ * v2.6-TRUTH-7 — this grouped on `flowType` through a local label map, so a
  * refund, an issuer credit, interest earned and a salary deposit all landed
  * under one "Income" heading. The nature authority splits them, and the heading
  * words come from the same module the row chips use, so a group title and the

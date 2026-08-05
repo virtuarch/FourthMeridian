@@ -55,7 +55,7 @@ export interface AccountDetailRow {
   connectionState:    SyncConnectionState | null; // deriveConnectionState() — null for manual/BALANCE_ONLY, never fabricated
   importBatchCount:   number;      // COMPLETED ImportBatch rows for this account (0 on BALANCE_ONLY)
   /**
-   * V27-L1 — the canonical per-account freshness answer, from
+   * v2.6-L1 — the canonical per-account freshness answer, from
    * resolveAccountFreshness. THIS is what makes "every current balance claim can
    * expose its account-level freshness" true rather than aspirational: the
    * balance on this row and the evidence for how old it is travel together.
@@ -67,7 +67,7 @@ export interface AccountDetailRow {
    */
   freshness:          AccountFreshness;
   /**
-   * V27-L2 — the canonical current-balance answer: the observed ledger figure
+   * v2.6-L2 — the canonical current-balance answer: the observed ledger figure
    * and the account-type-aware reading of `availableBalance`, each NAMED. The
    * raw column never reaches the client; on the Chase card the difference is
    * $562.37 owed versus $33,022.48 of unused credit line, and those must never
@@ -75,7 +75,7 @@ export interface AccountDetailRow {
    */
   balances:           AccountBalances;
   /**
-   * V27-L3 — the current-state reconciliation: provider-observed pending, the
+   * v2.6-L3 — the current-state reconciliation: provider-observed pending, the
    * predicted figure where evidence licenses one, the unexplained residual, and
    * the state in the canonical EXACT / PARTIALLY_ATTRIBUTED / UNAVAILABLE /
    * CONTRADICTORY vocabulary. An unexplained hold is an OUTPUT — the Amex HYSA's
@@ -84,7 +84,7 @@ export interface AccountDetailRow {
   reconciliation:     Reconciliation;
 }
 
-/** V27-L1/L2 — one freshness answer for an aggregated BALANCE_ONLY row, so the
+/** v2.6-L1/L2 — one freshness answer for an aggregated BALANCE_ONLY row, so the
  *  row's freshness and its balance claim are resolved from the same evidence. */
 function aggregateFreshness(
   r: { id: string; balance: number; lastUpdated: string; balanceLastUpdatedAt?: string | null },
@@ -130,11 +130,11 @@ export async function GET(
           mask:           true,
           balance:        true,
           currency:       true,
-          // V27-L2 — forwarded RAW into the balance authority, which is the only
+          // v2.6-L2 — forwarded RAW into the balance authority, which is the only
           // module permitted to interpret it. Never read as a value here.
           availableBalance: true,
           lastUpdated:    true,
-          // V27-L1 — the institution's own balance clock, kept distinct from
+          // v2.6-L1 — the institution's own balance clock, kept distinct from
           // `lastUpdated` (ours) all the way to the client.
           balanceLastUpdatedAt: true,
           creditLimit:    true,
@@ -178,7 +178,7 @@ export async function GET(
     importCounts.map((c) => [c.financialAccountId, c._count._all]),
   );
 
-  // V27-L1 — ledger COVERAGE per account: the newest transaction date we hold.
+  // v2.6-L1 — ledger COVERAGE per account: the newest transaction date we hold.
   // Deliberately a separate query from the balance columns, because the two feeds
   // advance independently (a wallet whose balance is a live on-chain read can sit
   // on a ledger that stops years earlier). Because this groupBy covers EVERY
@@ -201,7 +201,7 @@ export async function GET(
   // be aged against two different instants.
   const now = new Date();
 
-  // V27-L3 — provider-observed pending movements, scoped per account. Nothing is
+  // v2.6-L3 — provider-observed pending movements, scoped per account. Nothing is
   // inferred: this is a read of rows a provider (or an import) delivered.
   const pending = await loadPendingEvidence(ledgerAccountIds);
 

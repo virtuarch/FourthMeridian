@@ -38,7 +38,7 @@ test('Summary always renders merchant/amount/date/category; flow when present', 
   const secs = buildTransactionDetailSections(detail());
   const s = find(secs, 'Summary')!;
   const labels = s.rows!.map((r) => r.label);
-  // V27-TRUTH-7 — "What" is the canonical row nature, not humanize(flowType).
+  // v2.6-TRUTH-7 — "What" is the canonical row nature, not humanize(flowType).
   assert.deepEqual(labels, ['Merchant', 'Amount', 'Date', 'Category', 'What']);
   assert.equal(s.rows!.find((r) => r.label === 'Amount')!.value, '−$12.50');
   assert.equal(s.rows!.find((r) => r.label === 'What')!.value, 'Spending · Outflow');

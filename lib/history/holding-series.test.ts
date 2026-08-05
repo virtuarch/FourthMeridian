@@ -1,7 +1,7 @@
 /**
  * lib/history/holding-series.test.ts
  *
- * V27-D — the holding level. The episode derivation is pure and is tested
+ * v2.6-D — the holding level. The episode derivation is pure and is tested
  * directly; the rest is asserted by intent against the module source.
  */
 

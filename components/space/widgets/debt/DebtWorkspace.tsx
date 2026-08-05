@@ -180,7 +180,7 @@ export function DebtWorkspace({
 
   const exploration = useHistoryExploration();
 
-  // V27 — the DEBT root. Clicking a Debt point asks about Debt, not about Net
+  // v2.6 — the DEBT root. Clicking a Debt point asks about Debt, not about Net
   // Worth: the breadcrumb starts here and the accounts are its direct children.
   const debtPoints = history?.points ?? [];
   const handleSelectPoint = useCallback(

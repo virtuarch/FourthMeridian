@@ -1,7 +1,7 @@
 /**
  * lib/history/net-worth-node.ts
  *
- * V27-B — THE canonical Net Worth historical-point authority.
+ * v2.6-B — THE canonical Net Worth historical-point authority.
  *
  * ── What it composes, and what it refuses to re-derive ───────────────────────
  * One question: "what made up Net Worth on this date?" — answered ONLY from
@@ -19,7 +19,7 @@
  * It prices nothing, owns nothing, replays nothing and authorises nothing.
  *
  * ── The three things that must never be conflated ────────────────────────────
- * V27-B3 is explicit about this and it is the subtlest part of the module:
+ * v2.6-B3 is explicit about this and it is the subtlest part of the module:
  *
  *   REAL-ASSETS RESIDUAL   a canonical bucket. `computeSnapshotFields` folds
  *                          real assets into totalAssets and netWorth without

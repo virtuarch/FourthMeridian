@@ -50,7 +50,7 @@ export interface SpaceChromeIdentity {
   /** Pre-formatted freshness claim, e.g. "Last checked 2 hr ago". Null to omit. */
   updatedLabel?: string | null;
   /**
-   * V27-L1 — what the claim above HIDES: how many accounts are stale, how much
+   * v2.6-L1 — what the claim above HIDES: how many accounts are stale, how much
    * value sits behind them. A single age cannot carry a distribution, and the
    * previous header carried the newest age with no disclosure at all. Null when
    * the anchor hides nothing.

@@ -1,5 +1,5 @@
 /**
- * lib/transactions/liability-inflow.ts   (V27-TRUTH-3)
+ * lib/transactions/liability-inflow.ts   (v2.6-TRUTH-3)
  *
  * THE canonical answer to exactly one question:
  *

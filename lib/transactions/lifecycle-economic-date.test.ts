@@ -1,5 +1,5 @@
 /**
- * lib/transactions/lifecycle-economic-date.test.ts   (V27-L4A/B/C/D)
+ * lib/transactions/lifecycle-economic-date.test.ts   (v2.6-L4A/B/C/D)
  *
  * Behavioural probes for the lifecycle, economic-date and transfer-maturation
  * authorities. Pure, no DB. Every fixture is a real row or a real measured shape
@@ -108,7 +108,7 @@ console.log("4B. Economic date — the Friday → Sunday proof");
   check("neither crosses a month boundary",
     !crossesPeriodBoundary(amazon) && !crossesPeriodBoundary(shake));
 
-  // V27-TRUTH-1 — the brief's own example, live in the corpus today: two rows
+  // v2.6-TRUTH-1 — the brief's own example, live in the corpus today: two rows
   // authorized 2026-08-01 and posted 2026-08-02 ("Comptia Inc." −150.00 and
   // "Microsoft" −282.00, both on CREDIT CARD). They render under August 2 because
   // every user-facing surface still keys on the posting date.
@@ -351,7 +351,7 @@ console.log("4-AUDIT. Destination evidence levels");
     E.level === "NO_DESTINATION_EVIDENCE");
 }
 
-console.log("V27-TRUTH-1 PART 2. ACCOUNT_CERTAIN requires MUTUAL uniqueness");
+console.log("v2.6-TRUTH-1 PART 2. ACCOUNT_CERTAIN requires MUTUAL uniqueness");
 {
   const leg = (legId: string, accountId: string, accountType: string, competingSourceCount: number) =>
     ({ legId, accountId, accountType, competingSourceCount, superseded: false });
@@ -409,7 +409,7 @@ console.log("V27-TRUTH-1 PART 2. ACCOUNT_CERTAIN requires MUTUAL uniqueness");
     resolveDestinationEvidenceFor(src, [src, dst, other]).level !== "ACCOUNT_CERTAIN");
 }
 
-console.log("V27-TRUTH-1 PART 1. The CASH veto is structural");
+console.log("v2.6-TRUTH-1 PART 1. The CASH veto is structural");
 {
   const leg = (legId: string, accountId: string, accountType: string) =>
     ({ legId, accountId, accountType, competingSourceCount: 1, superseded: false });
@@ -458,7 +458,7 @@ console.log("V27-TRUTH-1 PART 1. The CASH veto is structural");
 
   // The own-account rule is NOT leg-derived, so the veto does not reach it: a
   // cash deposit onto a card is still a debt payment, still with no counterparty.
-  // V27-TRUTH-3 — a cash deposit onto a card is a payment ONCE something attests
+  // v2.6-TRUTH-3 — a cash deposit onto a card is a payment ONCE something attests
   // it. With no family it is now UNDETERMINED rather than assumed, and the cash
   // veto still guarantees no counterparty either way.
   check("a CASH deposit onto a card with an attested payment family IS a debt payment",
@@ -484,7 +484,7 @@ console.log("4-AUDIT. The row's OWN account settles a liability inflow");
     maturityForEvidence(fromChecking, { accountType: "debt", amount: 980.48, railType: null, venueClass: null, counterpartyClass: null }) === "DEBT_PAYMENT");
   check("money OUT of a liability is never a debt payment (the structural veto)",
     maturityForEvidence(fromChecking, { accountType: "debt", amount: -50, railType: null, venueClass: null, counterpartyClass: null }) === "UNRESOLVED_TRANSFER");
-  // V27-TRUTH-3 — this assertion encoded the false rule verbatim: "a positive
+  // v2.6-TRUTH-3 — this assertion encoded the false rule verbatim: "a positive
   // amount on a liability is a debt payment, evidence or not". A debt payment is
   // now positively attested, so with no family and no funding leg the honest
   // answer is that we cannot say.

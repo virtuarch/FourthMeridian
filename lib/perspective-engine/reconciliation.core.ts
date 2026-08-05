@@ -1,7 +1,7 @@
 /**
  * lib/perspective-engine/reconciliation.core.ts
  *
- * V27-A — THE ONE RECONCILIATION VOCABULARY.
+ * v2.6-A — THE ONE RECONCILIATION VOCABULARY.
  *
  * Pure: no Prisma, no DB, no clock, no network.
  *
@@ -10,11 +10,11 @@
  * and proved them against 366 live dates. They were declared inside
  * `lib/investments/historical-point-detail.ts`, which is a database binding —
  * so the moment a SECOND thing needed to reconcile (aggregate authorisation,
- * V27 Slice A) the only options were to import a DB module from a pure one or
+ * v2.6 Slice A) the only options were to import a DB module from a pure one or
  * to restate the vocabulary.
  *
  * Restating it would have been the beginning of a second reconciliation model,
- * which is precisely what the V27 investigation's invariants forbid. So the
+ * which is precisely what the v2.6 investigation's invariants forbid. So the
  * vocabulary moves here, beside the trust tiers it belongs with, and both
  * consumers import it. `historical-point-detail.ts` re-exports its own names so
  * nothing downstream changes.

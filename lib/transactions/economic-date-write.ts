@@ -9,7 +9,7 @@
  *
  * ── Why a column at all ────────────────────────────────────────────────────
  *
- * `economicDate` has been a DERIVED read-time value since V27-L4B, and that was
+ * `economicDate` has been a DERIVED read-time value since v2.6-L4B, and that was
  * right while nothing needed to sort or filter by it. The read cutover does. The
  * expression is
  *

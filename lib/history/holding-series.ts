@@ -1,7 +1,7 @@
 /**
  * lib/history/holding-series.ts
  *
- * V27-D — the deepest level: one holding, over time.
+ * v2.6-D — the deepest level: one holding, over time.
  *
  * ── Identity (D1) ────────────────────────────────────────────────────────────
  * A holding is identified by (accountId, instrumentId) — NEVER by symbol. A

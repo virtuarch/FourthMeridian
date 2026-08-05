@@ -103,18 +103,18 @@ export interface LiquidityAccountRow {
   creditLimit?: number;
   /** ISO timestamp of last balance write (Account.lastUpdated) — OUR clock. */
   lastUpdated: string;
-  /** V27-L2 — the INSTITUTION's own balance clock, or null when it reports none.
+  /** v2.6-L2 — the INSTITUTION's own balance clock, or null when it reports none.
    *  Null is honest; `lastUpdated` is never substituted. Feeds dataAsOfBasis. */
   balanceLastUpdatedAt?: string | null;
   /**
-   * V27-L3 — REACHABLE cash for this account in its native currency, resolved by
+   * v2.6-L3 — REACHABLE cash for this account in its native currency, resolved by
    * lib/balances (provider available cash where attested, else the prediction
    * from provider-observed pending). Null when it could not be established;
    * ABSENT on the historical as-of path, where a current-state claim would be a
    * category error. Cash accounts only.
    */
   reachableCash?: number | null;
-  /** V27-L3 — the positive unexplained hold on this account, or null. */
+  /** v2.6-L3 — the positive unexplained hold on this account, or null. */
   unexplainedHold?: number | null;
   /** SpaceAccountLink.visibilityLevel string (existing model, no parallel vocabulary). */
   visibilityLevel: string;
@@ -198,7 +198,7 @@ export function computeLiquidity(
   // ── Sums ──────────────────────────────────────────────────────────────────
   let cashNow = 0, marketable = 0, illiquid = 0, credit = 0;
   let creditKnown = false;
-  // V27-L3 — cash accounts whose REACHABLE figure could not be established. They
+  // v2.6-L3 — cash accounts whose REACHABLE figure could not be established. They
   // are excluded from cashNow and counted, so the total is disclosed as partial
   // rather than silently missing them (or silently using a ledger balance the
   // headline calls "available as cash now").
@@ -242,7 +242,7 @@ export function computeLiquidity(
   const dataAsOf = contributing.length
     ? contributing.map((r) => r.lastUpdated).sort()[0]
     : null;
-  // V27-L2 — which clock `dataAsOf` came from. PROVIDER_ATTESTED only when every
+  // v2.6-L2 — which clock `dataAsOf` came from. PROVIDER_ATTESTED only when every
   // contributor carries an institution timestamp: an aggregate is never more
   // certain than its weakest member, and today no institution in the corpus
   // reports one, so this is INGESTION and the UI must word it "checked".
@@ -266,7 +266,7 @@ export function computeLiquidity(
   }
 
   // ── Metrics ───────────────────────────────────────────────────────────────
-  // V27-L3 — the headline is REACHABLE cash. Its label was already
+  // v2.6-L3 — the headline is REACHABLE cash. Its label was already
   // "Available as cash now"; the number now agrees with the words.
   const headline: LensMetric = {
     id: "cashNow",
@@ -291,7 +291,7 @@ export function computeLiquidity(
   }
 
   // ── Assumptions ───────────────────────────────────────────────────────────
-  // V27-L3 — this used to assert "pending activity and holds are not reflected",
+  // v2.6-L3 — this used to assert "pending activity and holds are not reflected",
   // which was an honest statement of the OLD behaviour. They are reflected now,
   // so the assumption states what the figure actually is, and where a reachable
   // figure was unavailable that is disclosed rather than assumed away.

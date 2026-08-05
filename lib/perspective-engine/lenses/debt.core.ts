@@ -100,7 +100,7 @@ export interface DebtAccountRow {
   currency?: string | null;
   /** ISO timestamp of last balance write. */
   lastUpdated: string;
-  /** V27-L2 — the INSTITUTION's own balance clock, or null when it reports none.
+  /** v2.6-L2 — the INSTITUTION's own balance clock, or null when it reports none.
    *  Null is honest; `lastUpdated` is never substituted. Feeds dataAsOfBasis. */
   balanceLastUpdatedAt?: string | null;
   /** SpaceAccountLink.visibilityLevel string (existing model). */
@@ -190,7 +190,7 @@ export function computeDebt(
   const dataAsOf = countable.length
     ? countable.map((r) => r.lastUpdated).sort()[0]
     : null;
-  // V27-L2 — which clock `dataAsOf` came from. PROVIDER_ATTESTED only when every
+  // v2.6-L2 — which clock `dataAsOf` came from. PROVIDER_ATTESTED only when every
   // contributor carries an institution timestamp: an aggregate is never more
   // certain than its weakest member, and today no institution in the corpus
   // reports one, so this is INGESTION and the UI must word it "checked".

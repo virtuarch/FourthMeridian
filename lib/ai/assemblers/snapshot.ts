@@ -98,7 +98,7 @@ export function projectSnapshotSection(
   // is 41.7%–99.9% of totalAssets. `liabilities`, `liquid`, `investments`,
   // `cashOnHand` and `netLiquid` never involved crypto and stay factual.
   const points: SnapshotDataPoint[] = usable.map((r) => {
-    // V27-A/B — the AGGREGATE's verdict decides, not one component's boolean.
+    // v2.6-A/B — the AGGREGATE's verdict decides, not one component's boolean.
     // A model must never receive an unassertable Net Worth as a fact, and after
     // Slice A the aggregate itself says whether it may be asserted. The boolean
     // remains the fallback for a DTO built before Slice A.

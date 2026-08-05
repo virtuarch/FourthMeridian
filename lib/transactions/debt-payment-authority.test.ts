@@ -1,5 +1,5 @@
 /**
- * lib/transactions/debt-payment-authority.test.ts   (V27-TRUTH-7)
+ * lib/transactions/debt-payment-authority.test.ts   (v2.6-TRUTH-7)
  *
  * The one debt-payment total, and the double-count it makes impossible.
  */

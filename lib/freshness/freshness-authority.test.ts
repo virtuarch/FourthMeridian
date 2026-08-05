@@ -1,9 +1,9 @@
 /**
- * lib/freshness/freshness-authority.test.ts   (V27-L1)
+ * lib/freshness/freshness-authority.test.ts   (v2.6-L1)
  *
  * Behavioural probes for the freshness authority. Pure, no DB, standalone tsx.
  *
- * These encode the acceptance cases from the V27 brief plus the standing
+ * These encode the acceptance cases from the v2.6 brief plus the standing
  * invariants. The load-bearing ones:
  *
  *   • a Space's freshness is NEVER the newest account (the defect this replaces);

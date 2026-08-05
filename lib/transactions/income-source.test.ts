@@ -1,5 +1,5 @@
 /**
- * lib/transactions/income-source.test.ts   (V27-TRUTH-4)
+ * lib/transactions/income-source.test.ts   (v2.6-TRUTH-4)
  *
  * The canonical income taxonomy. Every fixture is a real shape from the live
  * corpus (2026-08-04).
@@ -19,7 +19,7 @@ function check(name: string, cond: boolean, detail?: string) {
 const ev = (o: Partial<IncomeEvidence>): IncomeEvidence =>
   ({ flowType: "INCOME", accountType: "checking", amount: 100, ...o });
 
-console.log("V27-TRUTH-4 INCOME. Earned income");
+console.log("v2.6-TRUTH-4 INCOME. Earned income");
 {
   // "VECTRUS SYSTEMS PAYROLL PPD ID: 22215228" — 54 rows, $255,648.69.
   const salary = attributeIncome(ev({ providerDetail: "INCOME_SALARY", amount: 5286.64 }));
@@ -31,7 +31,7 @@ console.log("V27-TRUTH-4 INCOME. Earned income");
     attributeIncome(ev({ providerDetail: "INCOME_GIG_ECONOMY" })).incomeClass === "EARNED_INCOME");
 }
 
-console.log("V27-TRUTH-4 INCOME. Interest is NOT earned, and keeps its source account");
+console.log("v2.6-TRUTH-4 INCOME. Interest is NOT earned, and keeps its source account");
 {
   // HYSA "Interest Payment" $6.03; CHASE SAVINGS "INTEREST PAYMENT" $0.01.
   const i = attributeIncome(ev({ providerDetail: "INCOME_INTEREST_EARNED", amount: 6.03,
@@ -42,7 +42,7 @@ console.log("V27-TRUTH-4 INCOME. Interest is NOT earned, and keeps its source ac
   check("...with a reason that says it is not earned", /not earned income/.test(i.reason));
 }
 
-console.log("V27-TRUTH-4 INCOME. Dividends keep their security");
+console.log("v2.6-TRUTH-4 INCOME. Dividends keep their security");
 {
   const d = attributeIncome(ev({ providerDetail: "INCOME_DIVIDENDS", instrumentId: "VTI", accountType: "investment" }));
   check("dividend ⇒ DIVIDEND_INCOME", d.incomeClass === "DIVIDEND_INCOME");
@@ -53,7 +53,7 @@ console.log("V27-TRUTH-4 INCOME. Dividends keep their security");
     fromEvent.incomeClass === "DIVIDEND_INCOME" && fromEvent.instrumentId === "SCHD");
 }
 
-console.log("V27-TRUTH-4 INCOME. Non-income inflows are excluded, and NAMED");
+console.log("v2.6-TRUTH-4 INCOME. Non-income inflows are excluded, and NAMED");
 {
   check("an owned internal transfer is NOT income",
     attributeIncome(ev({ isOwnedInternalTransfer: true, providerDetail: "INCOME_SALARY" })).incomeClass === "NOT_INCOME");
@@ -69,7 +69,7 @@ console.log("V27-TRUTH-4 INCOME. Non-income inflows are excluded, and NAMED");
     attributeIncome(ev({ providerDetail: "LOAN_DISBURSEMENTS_STUDENT_LOAN_DISBURSEMENT" })).incomeClass === "NOT_INCOME");
 }
 
-console.log("V27-TRUTH-4 INCOME. Interest CHARGED is not interest income");
+console.log("v2.6-TRUTH-4 INCOME. Interest CHARGED is not interest income");
 {
   // 44 live rows, Σ−16,158.26, BANK_FEES_INTEREST_CHARGE on cards.
   const charged = attributeIncome(ev({ flowType: "INTEREST", amount: -412.55, accountType: "debt",
@@ -78,7 +78,7 @@ console.log("V27-TRUTH-4 INCOME. Interest CHARGED is not interest income");
   check("...and never earned income", charged.incomeClass !== "EARNED_INCOME");
 }
 
-console.log("V27-TRUTH-4 INCOME. UNKNOWN is preserved, never promoted");
+console.log("v2.6-TRUTH-4 INCOME. UNKNOWN is preserved, never promoted");
 {
   // 28 "Bitcoin received" rows on Cold Wallet BTC, no provider family at all.
   const u = attributeIncome(ev({ providerDetail: null, providerFamily: null, amount: 0.01, accountType: "crypto" }));
@@ -87,7 +87,7 @@ console.log("V27-TRUTH-4 INCOME. UNKNOWN is preserved, never promoted");
   check("...and says the source is not established", /not established/.test(u.reason));
 }
 
-console.log("V27-TRUTH-4 INCOME. The rollup is composed, not asserted");
+console.log("v2.6-TRUTH-4 INCOME. The rollup is composed, not asserted");
 {
   const rows = [
     { amount: 255648.69, attribution: attributeIncome(ev({ providerDetail: "INCOME_SALARY" })) },
@@ -112,7 +112,7 @@ console.log("V27-TRUTH-4 INCOME. The rollup is composed, not asserted");
     Object.values(b.counts).reduce((s, n) => s + n, 0) === rows.length);
 }
 
-console.log("V27-TRUTH-4 INCOME. Static probes");
+console.log("v2.6-TRUTH-4 INCOME. Static probes");
 {
   const src = readFileSync(join(__dirname, "income-source.ts"), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1 ")

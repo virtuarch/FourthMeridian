@@ -243,7 +243,7 @@ export function renderIncomeBySource(
       <p className="text-[11px] font-semibold text-[var(--text-secondary)]">Income (bank transactions)</p>
       <CashFlowCategoryBreakdown
       invalidationKey={periodKey(period)}
-        // V27-TRUTH-6 — the compact widget reads the SAME canonical lines as the
+        // v2.6-TRUTH-6 — the compact widget reads the SAME canonical lines as the
         // workspace. It previously called incomeBySource(rows, ctx) here, which
         // made this component a second income authority computing over a
         // different membership rule than the headline.

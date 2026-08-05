@@ -58,7 +58,7 @@ const CANDIDATE_CAP = 5000;
 
 /** The fields a transfer LEG contributes to matching (a target or a candidate).
  *
- *  V27-TRUTH-2 — `pending`, `settlementState` and `pfcDetailed` are REQUIRED.
+ *  v2.6-TRUTH-2 — `pending`, `settlementState` and `pfcDetailed` are REQUIRED.
  *  The canonical authority needs lifecycle supersession and movement form, and a
  *  leg that cannot supply them cannot be matched honestly. Optional would mean a
  *  caller that forgot them silently gets the old, over-resolving answer. */
@@ -74,7 +74,7 @@ export interface TransferLegLike {
   settlementState:    string | null;
   pfcDetailed:        string | null;
   merchant?:          string | null;
-  /** V27-TRUTH-3 — the provider FAMILY, for the liability-inflow authority. */
+  /** v2.6-TRUTH-3 — the provider FAMILY, for the liability-inflow authority. */
   pfcPrimary:         string | null;
   // ── Financial Truth (Transfer Authority) ────────────────────────────────
   /** Fourth Meridian's own category — the movement signal for rows whose
@@ -102,7 +102,7 @@ function bucketKey(currency: string | null, amount: number): string {
 /**
  * Adapt a DB leg to the pure matcher's structural type.
  *
- * V27-TRUTH-2 — `pending`/`settlementState`/`pfcDetailed` are now carried through
+ * v2.6-TRUTH-2 — `pending`/`settlementState`/`pfcDetailed` are now carried through
  * instead of being stubbed. The old version hard-coded `pending: false` and
  * `merchant: ""`, which meant the matcher could not see supersession or movement
  * form at all — one of the two reasons the read path over-resolved. `ownerUserId`
@@ -200,7 +200,7 @@ export async function resolveTransferAssessments(
   ctx: { spaceId: string },
 ): Promise<Map<string, TransferCandidateRelationship>> {
   // 1 — Targets: transfer-like rows on an owned FinancialAccount with no persisted link.
-  // V27-L4C — candidacy is the shared authority, not an inline `=== "TRANSFER"`.
+  // v2.6-L4C — candidacy is the shared authority, not an inline `=== "TRANSFER"`.
   // DEBT_PAYMENT rows now ENTER the resolver; that is the whole point.
   // The PREFILTER, not the admission rule: the real gate needs the account type
   // and the attested axes, which are loaded below. Filtering twice would be a
@@ -232,7 +232,7 @@ export async function resolveTransferAssessments(
   const ownedIds = owned.map((a) => a.id);
   if (ownedIds.length === 0) return new Map();
 
-  // V27-TRUTH-2 — the authority decides from ACCOUNT TYPE and OWNER, so both are
+  // v2.6-TRUTH-2 — the authority decides from ACCOUNT TYPE and OWNER, so both are
   // loaded here once and handed in. They are not re-derived per row and never
   // guessed: an account missing from this map contributes type "other", which
   // reaches no leaf.
@@ -261,7 +261,7 @@ export async function resolveTransferAssessments(
   const candidates = await db.transaction.findMany({
     where: {
       financialAccountId: { in: ownedIds },
-      // V27-L4C — the opposite leg may itself be filed as DEBT_PAYMENT or carry
+      // v2.6-L4C — the opposite leg may itself be filed as DEBT_PAYMENT or carry
       // no flowType at all, so the candidate query admits the same set the
       // maturation authority does. `null` is included explicitly: a NOT-IN over
       // a nullable column would drop null rows under three-valued logic.
@@ -275,7 +275,7 @@ export async function resolveTransferAssessments(
     select: {
       id: true, financialAccountId: true,
       date: true, amount: true, currency: true, flowType: true, deletedAt: true,
-      // V27-TRUTH-2 — supersession + movement-form evidence. Without these the
+      // v2.6-TRUTH-2 — supersession + movement-form evidence. Without these the
       // matcher cannot apply the cash veto or drop a superseded leg.
       pending: true, settlementState: true, pfcDetailed: true, merchant: true,
       pfcPrimary: true, counterpartyAccountId: true,

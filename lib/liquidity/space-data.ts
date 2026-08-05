@@ -104,7 +104,7 @@ async function evaluateHistorical(
     deps.getInvestmentValueAsOf({ spaceId: scope.spaceId, asOf: date, visibilityScope: "all", client }),
   ]);
 
-  // V27-L3 — "reachable right now" is a PRESENT-TENSE claim, so it applies to
+  // v2.6-L3 — "reachable right now" is a PRESENT-TENSE claim, so it applies to
   // this path only when the as-of date IS today. The Liquidity workspace runs
   // through here even for "as of today" (its default), which is why the claim
   // must reach it — but on a genuinely past date the field is left absent and

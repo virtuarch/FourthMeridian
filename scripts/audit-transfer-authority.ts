@@ -242,7 +242,7 @@ async function main() {
     console.log(`      ${r.id} → ${byIdAll.get(r.id)?.maturity} (${byIdAll.get(r.id)?.level})`);
   }
 
-  // The V27-TRUTH-3 population: where did the issuer credits go?
+  // The v2.6-TRUTH-3 population: where did the issuer credits go?
   const liabilityInflows = rows.filter((r) => r.acct.type === "debt" && r.amount > 0);
   const inflowFate: Tally = new Map();
   for (const r of liabilityInflows) {

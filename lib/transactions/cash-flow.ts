@@ -301,7 +301,7 @@ export function foldEconomicRow(
   flowType: string | null | undefined,
   magnitude: number,
   /**
-   * V27-TRUTH-5 — the row's canonical income class, when the DTO carried one.
+   * v2.6-TRUTH-5 — the row's canonical income class, when the DTO carried one.
    *
    * `flowType === INCOME` was the sole test, and it admitted four live rows that
    * are not income at all: merchant credits landing on a CREDIT CARD which the
@@ -553,7 +553,7 @@ export function incomeBySource(
   transactions: Transaction[],
   ctx?: ConversionContext,
   /**
-   * V27-TRUTH-6 — the row ids the canonical rollup INCLUDED in broad income.
+   * v2.6-TRUTH-6 — the row ids the canonical rollup INCLUDED in broad income.
    *
    * Membership is the rollup's decision, not this function's. Without it this
    * grouping admitted every `flowType === INCOME` row, including the four issuer

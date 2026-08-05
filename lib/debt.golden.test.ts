@@ -9,7 +9,7 @@
  */
 
 import { rollupDebtPaymentsByAccount, type DebtPaymentTxnLike } from "./debt";
-// V27-TRUTH-7 — `totalDebtPaid` moved to the debt-payment authority, which SELECTS
+// v2.6-TRUTH-7 — `totalDebtPaid` moved to the debt-payment authority, which SELECTS
 // the counted leg instead of abs-summing whatever a caller hands it. FX conversion
 // is now the caller's `magnitude` callback, so the shim below performs exactly the
 // conversion lib/debt.ts's own `rowAmount` does — same convertMoney call, same

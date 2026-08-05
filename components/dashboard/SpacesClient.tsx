@@ -100,13 +100,13 @@ type SpaceItem = {
   currency: string;
   trend: number[];
   lastUpdated: string | null;
-  /** V27-L4F — the canonical 1M change, from the SAME authority the inside-Space
+  /** v2.6-L4F — the canonical 1M change, from the SAME authority the inside-Space
    *  view uses. Null when the Space's history does not reach back a month. */
   change?: {
     fromDate: string; toDate: string; fromValue: number; toValue: number;
     pct: number | null; abs: number; preset: "PAST_MONTH";
   } | null;
-  /** V27-L4F — ACCOUNT freshness (Slice 1). Null when the Space has no accounts. */
+  /** v2.6-L4F — ACCOUNT freshness (Slice 1). Null when the Space has no accounts. */
   freshness?: {
     label: string; anchorObservedAt: string | null; qualifier: string | null;
     claim: string; accountCount: number; staleAccountCount: number;
@@ -258,7 +258,7 @@ function formatCurrency(value: number, currency = DEFAULT_DISPLAY_CURRENCY) {
 }
 
 /**
- * V27-L4F — the card's freshness line, from the Slice 1 ACCOUNT-freshness
+ * v2.6-L4F — the card's freshness line, from the Slice 1 ACCOUNT-freshness
  * authority. It used to read `formatActivity(space.lastUpdated, …)` where
  * `lastUpdated` was the latest SNAPSHOT date — i.e. when we last computed, not
  * when any balance was observed. Falls back to the creation date only when the
@@ -365,7 +365,7 @@ function formatCurrencyCompact(value: number, currency = DEFAULT_DISPLAY_CURRENC
   }).format(value);
 }
 
-// V27-L4F — `trendDeltaPct(trend)` was REMOVED. It ran over the last 14 SNAPSHOT
+// v2.6-L4F — `trendDeltaPct(trend)` was REMOVED. It ran over the last 14 SNAPSHOT
 // ROWS, which is neither a month nor 30 days nor any window the product defines,
 // and it therefore disagreed with the inside-Space view for the same Space on the
 // same day (25.0% outside vs 49.2% inside on the live corpus). The percentage now
@@ -404,7 +404,7 @@ function SpaceCard({
   const category = space.category as SpaceCategory;
   const tint = spaceIdentityTint(category);
   const hasFigure = space.trend.length > 0;
-  // V27-L4F — the canonical 1M change, resolved server-side. Never re-derived
+  // v2.6-L4F — the canonical 1M change, resolved server-side. Never re-derived
   // here: a percentage computed in React is a second authority by construction.
   const delta = space.change?.pct ?? null;
   const isShared = space.type === "SHARED";

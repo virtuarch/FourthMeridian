@@ -74,7 +74,7 @@ export function InvestmentsWorkspace({
   // V26-S3-DETAIL — which historical point the reader asked about. The chart
   // reports a DATE and nothing else; the panel asks the canonical historical
   // authority what that date was made of.
-  // V27 — the INVESTMENTS root, through the ONE shared explorer. The legacy
+  // v2.6 — the INVESTMENTS root, through the ONE shared explorer. The legacy
   // per-lens drawer is retired: two drawers meant two answers to the same
   // question, which is what this arc exists to remove.
   const exploration = useHistoryExploration();

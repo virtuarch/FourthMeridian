@@ -27,7 +27,7 @@ export interface Account {
   /** Fourth Meridian's write clock. NOT the institution's — see below. */
   lastUpdated: string;
   /**
-   * V27-L1/L2 — the institution's own attestation of when it computed the
+   * v2.6-L1/L2 — the institution's own attestation of when it computed the
    * balance (FinancialAccount.balanceLastUpdatedAt), or null when it reports
    * none. Null is honest and must never be backfilled from `lastUpdated`: the
    * freshness authority reports basis INGESTION on a null, which is what lets a
@@ -40,7 +40,7 @@ export interface Account {
    */
   balanceLastUpdatedAt?: string | null;
   /**
-   * V27-L3 — the CURRENT-state claim for this account, resolved by the KD-19
+   * v2.6-L3 — the CURRENT-state claim for this account, resolved by the KD-19
    * visibility authority (lib/data/accounts.ts) through lib/balances. Present on
    * CASH accounts only, and ONLY on the live path — the historical as-of
    * reconstruction deliberately omits it, because a present-tense "reachable"
@@ -128,7 +128,7 @@ export interface Snapshot {
   totalInvestments: number;
   totalCrypto: number;
   /**
-   * V27 — the stored `total` column: investments + crypto, i.e. the INVESTED
+   * v2.6 — the stored `total` column: investments + crypto, i.e. the INVESTED
    * value the Investments chart plots. Optional so pre-existing constructors of
    * this DTO are unaffected; the canonical read boundary always populates it.
    */
@@ -142,7 +142,7 @@ export interface Snapshot {
   // so existing constructors default to undefined (treated as not-estimated).
   isEstimated?: boolean;
   /**
-   * V27-B — the currency these totals are actually IN.
+   * v2.6-B — the currency these totals are actually IN.
    *
    * The read boundary already resolves an EFFECTIVE target (V25-CLOSE-3A: a
    * Space whose requested currency has no rates falls back to USD), and it was
@@ -170,7 +170,7 @@ export interface Snapshot {
   assetSideContaminated?: boolean;
   cryptoUnavailableReason?: string;
 
-  // ── V27-A — AGGREGATE AUTHORISATION ───────────────────────────────────────
+  // ── v2.6-A — AGGREGATE AUTHORISATION ───────────────────────────────────────
   //
   // Per-aggregate answer to "may this number be asserted?", resolved at the SAME
   // single read boundary from the SAME component verdicts above. Components
@@ -256,7 +256,7 @@ export type FlowClassificationReason =
   | 'SIGN_DEFAULT_SPENDING' | 'SIGN_DEFAULT_INFLOW' | 'AMBIGUOUS_UNKNOWN';
 
 export interface Transaction {
-  // ── V27-L4 derived read-model (DERIVED ONLY — never persisted) ────────────
+  // ── v2.6-L4 derived read-model (DERIVED ONLY — never persisted) ────────────
   // `date` above remains the POSTING date, unchanged and load-bearing for the
   // historical engine. These are resolved at read time by
   // lib/transactions/{lifecycle,economic-date}.ts and are absent when the read
@@ -276,11 +276,11 @@ export interface Transaction {
   /** postingDate − economicDate, in whole days. */
   economicDateLagDays?: number;
 
-  // ── V27-TRUTH-4 derived read-model (never persisted) ─────────────────────
+  // ── v2.6-TRUTH-4 derived read-model (never persisted) ─────────────────────
   /** Canonical income class: EARNED_INCOME | INTEREST_INCOME | DIVIDEND_INCOME
    *  | OTHER_INCOME | NOT_INCOME. Present on inflows the read supplied evidence
    *  for. A surface that shows an income total MUST break it down by this. */
-  /** V27-TRUTH-8 — the transfer authority's verdict about this movement's
+  /** v2.6-TRUTH-8 — the transfer authority's verdict about this movement's
    *  DESTINATION (SAVINGS_TRANSFER | DEBT_PAYMENT | INTERNAL_TRANSFER | …).
    *  Absent when the read did not assess the row (e.g. it already had a
    *  persisted counterparty, or it is not transfer-shaped). */

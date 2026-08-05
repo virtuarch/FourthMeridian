@@ -149,7 +149,7 @@ export function spliceLiquidityRows(
         creditLimit: r.creditLimit,
         lastUpdated: r.lastUpdated,
         visibilityLevel: r.visibilityLevel,
-        // V27-L3 — the CURRENT-state reachable claim, carried only when the
+        // v2.6-L3 — the CURRENT-state reachable claim, carried only when the
         // caller attached one (i.e. the as-of date IS today). Absent on a
         // genuinely historical date, where "reachable right now" has no meaning.
         // Deliberately NOT carried on the splice branch above: that branch

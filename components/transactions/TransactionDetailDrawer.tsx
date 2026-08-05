@@ -114,7 +114,7 @@ function TransactionDetailFetcher({ id }: { id: string }) {
 
   return (
     <>
-      {/* V27-TRUTH-7 — the eyebrow is the canonical nature, not the provider
+      {/* v2.6-TRUTH-7 — the eyebrow is the canonical nature, not the provider
           category string. It read "INCOME" directly above a chip saying "Issuer
           credit", which is the loudest place in the drawer to contradict
           yourself. The provider's category is still shown, labelled as itself,
@@ -156,7 +156,7 @@ function TransactionDetailFetcher({ id }: { id: string }) {
 /** The editorial headline — the amount as a Figure, with a nature/pending/currency
  *  chip row.
  *
- *  V27-TRUTH-7 — the chip is the canonical row NATURE, not `humanize(flowType)`.
+ *  v2.6-TRUTH-7 — the chip is the canonical row NATURE, not `humanize(flowType)`.
  *  Four live rows the income authority had already classified ISSUER_CREDIT (a
  *  Microsoft rebate, an Uber credit, a HungerStation credit, an EasyTime credit,
  *  all on a CREDIT CARD) read "Income" here because this drawer never consulted

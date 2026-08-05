@@ -166,7 +166,7 @@ export function SectionCard({
     }
   }
 
-  // V27-L2 — the QUANTITY this card renders, named once from the canonical map.
+  // v2.6-L2 — the QUANTITY this card renders, named once from the canonical map.
   // ~18 widgets showed current balances with no disclosure at all, and a figure
   // without its quantity is exactly how "available credit" and "cash" become
   // interchangeable. Null for snapshot-backed, flow, and non-financial cards —

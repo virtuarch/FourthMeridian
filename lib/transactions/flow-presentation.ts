@@ -1,5 +1,5 @@
 /**
- * lib/transactions/flow-presentation.ts   (V27-TRUTH-7)
+ * lib/transactions/flow-presentation.ts   (v2.6-TRUTH-7)
  *
  * THE single authority for what a transaction row is CALLED.
  *
@@ -38,7 +38,7 @@
  *
  * The income taxonomy OUTRANKS `flowType` for inflows, because it is strictly
  * more informed: it already consulted the transfer authority (owned
- * counterparty), the issuer-credit authority (V27-TRUTH-3) and the provider
+ * counterparty), the issuer-credit authority (v2.6-TRUTH-3) and the provider
  * family before returning. `flowType` says INCOME for all five of salary,
  * interest, a rewards redemption, an issuer credit and an internal transfer.
  * Preferring the coarser field would discard work already done.
@@ -173,7 +173,7 @@ const NATURE_OF_FLOW: Record<string, RowNature> = {
 /** The canonical verdicts a row carries. Every field is another authority's
  *  output — this module reads them, and adds nothing. */
 /**
- * Canonical transfer maturity → nature. V27-TRUTH-8.
+ * Canonical transfer maturity → nature. v2.6-TRUTH-8.
  *
  * ⚠️ A mapping, not a decision: every key is a verdict
  * lib/transactions/transfer-maturation.ts already reached about the movement's

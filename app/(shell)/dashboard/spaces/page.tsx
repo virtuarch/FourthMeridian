@@ -136,7 +136,7 @@ export default async function SpacesPage() {
   // ── Net worth + sparkline trend, one query for every card on the page ─────
   const allIds = [...mySpaceIds, ...publicSpaces.map((w) => w.id)];
   const netWorthBySpace = await getSpaceNetWorthSummaries(allIds);
-  // V27-L4F — per-Space ACCOUNT freshness, so the card's "updated" line is the
+  // v2.6-L4F — per-Space ACCOUNT freshness, so the card's "updated" line is the
   // Slice 1 claim (anchored on the OLDEST observation, with its qualifier) and
   // not the snapshot date it used to show.
   const freshnessBySpace = await getSpaceCardFreshness(allIds);
@@ -174,12 +174,12 @@ export default async function SpacesPage() {
       // MC1 QA Q5 — each card labels in its OWN Space's reporting currency.
       currency:     nw?.currency ?? "USD",
       trend:        nw?.trend ?? [],
-      // V27-L4F — the SNAPSHOT date. Kept for the "history reaches" line; it is
+      // v2.6-L4F — the SNAPSHOT date. Kept for the "history reaches" line; it is
       // NOT a freshness claim and the card no longer renders it as one.
       lastUpdated:  nw?.asOf ?? null,
-      // V27-L4F — the canonical 1M change (same authority as the inside view).
+      // v2.6-L4F — the canonical 1M change (same authority as the inside view).
       change:       nw?.change ?? null,
-      // V27-L4F/L1 — account freshness through the Slice 1 authority. "Updated
+      // v2.6-L4F/L1 — account freshness through the Slice 1 authority. "Updated
       // today" previously came from the snapshot date, which says when we last
       // COMPUTED, never when the balances were last observed.
       freshness:    freshnessBySpace[m.space.id] ?? null,

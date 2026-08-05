@@ -1,5 +1,5 @@
 /**
- * lib/transactions/flow-presentation.test.ts   (V27-TRUTH-7)
+ * lib/transactions/flow-presentation.test.ts   (v2.6-TRUTH-7)
  *
  * The nature authority, and the standing probes that keep presentation from
  * becoming a second classifier.

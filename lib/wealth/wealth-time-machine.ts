@@ -169,7 +169,7 @@ function toState(s: Snapshot): Omit<WealthState, "found"> {
   const cash        = s.totalCash + s.totalSavings;
   const investments = s.totalInvestments;
   const crypto      = s.totalCrypto;
-  // V27 — the real-assets residual is CANONICAL arithmetic, owned by
+  // v2.6 — the real-assets residual is CANONICAL arithmetic, owned by
   // `derivedRealAssets`. Re-deriving it here (as `max(0, totalAssets − …)`) was
   // a second copy of a formula that already exists, and a second copy is a
   // divergence waiting for one of them to be corrected alone.
@@ -187,7 +187,7 @@ function toState(s: Snapshot): Omit<WealthState, "found"> {
     netWorth:       s.netWorth,
     totalAssets:    s.totalAssets,
     totalLiabilities: liabilities,
-    // V27 — READ the authorised column rather than re-deriving its formula.
+    // v2.6 — READ the authorised column rather than re-deriving its formula.
     // `netLiquid` is a stored aggregate with its own authorisation
     // (`be39b1d`) and its own repair history (`86f3b74`); computing
     // `cash + savings − debt` here produced the same number by luck of both
@@ -272,7 +272,7 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
   //
   // Absent the flag (any DTO built before this slice) nothing is dropped, so
   // existing behaviour is byte-identical.
-  // V27-A/B — refuse on the AGGREGATE's own verdict.
+  // v2.6-A/B — refuse on the AGGREGATE's own verdict.
   //
   // This filtered on `assetSideContaminated`, which is one component's boolean
   // ("crypto may not be asserted, therefore the asset side is contaminated").

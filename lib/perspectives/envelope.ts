@@ -321,12 +321,12 @@ function lensEnvelope(lens: LensResult): PerspectiveEnvelope {
       tone:  lens.completeness?.conflict ? "warning" : preset.tone,
       detail:
         lens.completeness?.reason ??
-        // V27-L1 — this read "Live account balances, as of <date>", which made two
+        // v2.6-L1 — this read "Live account balances, as of <date>", which made two
         // claims the data does not support: "live" (24 of 35 accounts in the live
         // corpus are past a week) and "as of" (the institution's clock, which no
         // institution here reports). `dataAsOf` is in fact the OLDEST time any
         // contributing balance was observed.
-        // V27-L2 — and WHICH clock that was is now stated, not assumed: "as of"
+        // v2.6-L2 — and WHICH clock that was is now stated, not assumed: "as of"
         // is used only when every contributor carries an institution timestamp.
         (p.dataAsOf
           ? `${p.dataAsOfBasis === "PROVIDER_ATTESTED" ? "Oldest balance as of" : "Oldest balance checked"} ${p.dataAsOf.slice(0, 10)}.`

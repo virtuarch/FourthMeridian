@@ -1,5 +1,5 @@
 /**
- * lib/balances/reconciliation-boundary.test.ts   (V27-L3)
+ * lib/balances/reconciliation-boundary.test.ts   (v2.6-L3)
  *
  * STANDING source-scan probes for current-state reconciliation. Repo-wide,
  * comments stripped — a probe asserts on CODE, never on prose about code.
@@ -77,7 +77,7 @@ console.log("\nPROBE 2/3 — each movement counts exactly once");
   const e = code(EVIDENCE);
   check("the reader excludes a pending row whose posted successor is live",
     e.includes("pendingTransactionRef") && e.includes("supersededRefs"));
-  // V27-L4A — the skip moved INTO the lifecycle authority: a superseded row
+  // v2.6-L4A — the skip moved INTO the lifecycle authority: a superseded row
   // resolves `superseded: true`, which `contributesPendingEvidence` refuses.
   // The intent is unchanged (skip, never net out); the decision now lives in
   // one place instead of being re-expressed here.

@@ -30,7 +30,7 @@ export type SpaceAccount = {
    *  institution's — see `balanceLastUpdatedAt`. */
   lastUpdated:    string;
   /**
-   * V27-L1 — the institution's own attestation of when it computed this balance
+   * v2.6-L1 — the institution's own attestation of when it computed this balance
    * (FinancialAccount.balanceLastUpdatedAt), or null when the provider does not
    * supply one. Null is honest and must never be backfilled from `lastUpdated`:
    * resolveAccountFreshness reports basis INGESTION when this is null, which is
@@ -38,7 +38,7 @@ export type SpaceAccount = {
    */
   balanceLastUpdatedAt?: string | null;
   /**
-   * V27-L3 — the canonical CURRENT-STATE claim, resolved SERVER-SIDE through
+   * v2.6-L3 — the canonical CURRENT-STATE claim, resolved SERVER-SIDE through
    * lib/balances. Present only on cash accounts (checking / savings); absent
    * everywhere else, because no other account type has a reachable quantity.
    *

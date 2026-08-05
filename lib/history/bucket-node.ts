@@ -1,7 +1,7 @@
 /**
  * lib/history/bucket-node.ts
  *
- * V27-C4 — attach a bucket's ACCOUNT children and reconcile them against it.
+ * v2.6-C4 — attach a bucket's ACCOUNT children and reconcile them against it.
  *
  * ── The invariant this exists to state ───────────────────────────────────────
  *
@@ -27,7 +27,7 @@
  * nowhere else, so children reconcile against their parent unsigned and the
  * lens above still gets it right.
  *
- * READ-ONLY. No persistence, per V27's rule 11: an account series is computed on
+ * READ-ONLY. No persistence, per v2.6's rule 11: an account series is computed on
  * demand, never stored.
  */
 
@@ -133,7 +133,7 @@ export async function expandBuckets(
 export type { HistoricalAccountNode };
 
 /**
- * V27-D6 — attach an account's HOLDING children and reconcile them against it.
+ * v2.6-D6 — attach an account's HOLDING children and reconcile them against it.
  *
  * The same invariant, one level deeper again:
  *
