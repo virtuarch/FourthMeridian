@@ -132,6 +132,7 @@ import {
 // mapper. Wired beside flowFields/factFields; liquidity/Cash Flow never see Plaid.
 import { plaidTransferEvidence } from "@/lib/transactions/plaid-transfer-evidence";
 import { economicDateWriteFields } from "@/lib/transactions/economic-date-write";
+import { recordTransactionObservation } from "@/lib/transactions/event-write";
 import {
   transferEvidenceWriteFields,
   NULL_TRANSFER_EVIDENCE_FIELDS,
@@ -614,6 +615,35 @@ export async function syncTransactionsForItem(
         }
       }
 
+      // L8 — record the provider OBSERVATION and resolve its logical event.
+      // One helper for all three write paths below, so a pending row and its
+      // posted successor are two observations of ONE event however the row was
+      // matched. Idempotent: replaying the same payload writes nothing.
+      //
+      // ⚠️ Deliberately NON-BLOCKING. Event identity is additive and nothing
+      // reads it yet; a failure here must never cost the transaction write or
+      // advance the cursor past an unpersisted page.
+      const recordObservation = async (transactionId: string) => {
+        try {
+          await recordTransactionObservation(database, {
+            transactionId,
+            financialAccountId,
+            provider: "PLAID",
+            providerRowId: txn.transaction_id,
+            providerPendingRef: txn.pending_transaction_id ?? null,
+            lifecycle: txn.pending ? "PENDING" : "POSTED",
+            amount,
+            postingDate: date,
+            economicDate: econFields.economicDate,
+            authorizedAt: txn.authorized_date ? new Date(`${txn.authorized_date}T00:00:00.000Z`) : null,
+            transactionIsLive: true,
+            observedAt: new Date(),
+          });
+        } catch (e) {
+          console.warn(`[l8] observation skipped for ${txn.transaction_id} — event identity is additive and non-blocking:`, e);
+        }
+      };
+
       try {
         // 1. Exact match — same row Plaid is telling us about.
         const existingByPlaidId = await database.transaction.findUnique({
@@ -628,6 +658,7 @@ export async function syncTransactionsForItem(
           // for live transactions, so clearing deletedAt here is correct.
           const mi = await miData({ merchantId: existingByPlaidId.merchantId, categorySource: existingByPlaidId.categorySource }, "update");
           await database.transaction.update({ where: { id: existingByPlaidId.id }, data: { ...updateFields, deletedAt: null, ...mi } });
+          await recordObservation(existingByPlaidId.id);
           updatedByPlaidId++;
           continue;
         }
@@ -653,6 +684,7 @@ export async function syncTransactionsForItem(
             where: { id: fingerprintMatch.id },
             data:  { ...updateFields, plaidTransactionId: txn.transaction_id, ...mi },
           });
+          await recordObservation(fingerprintMatch.id);
           updatedByFingerprint++;
           console.warn(
             `[plaid sync] fingerprint match — reusing existing transaction ${fingerprintMatch.id} for new plaidTransactionId ${txn.transaction_id} (previously ${fingerprintMatch.plaidTransactionId ?? "null"})`
@@ -664,7 +696,11 @@ export async function syncTransactionsForItem(
         // required baseline; miData's category (normal/override) overrides it via
         // the later spread (preserve never occurs on a create).
         const mi = await miData({ merchantId: null, categorySource: null }, "create");
-        await database.transaction.create({ data: { ...createFields, category, plaidTransactionId: txn.transaction_id, ...mi } });
+        const createdRow = await database.transaction.create({
+          data: { ...createFields, category, plaidTransactionId: txn.transaction_id, ...mi },
+          select: { id: true },
+        });
+        await recordObservation(createdRow.id);
         created++;
       } catch (e) {
         console.error(`[plaid sync] failed to upsert transaction ${txn.transaction_id}:`, redactedErrorForLog(e));

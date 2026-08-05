@@ -275,11 +275,27 @@ console.log("\nPROBE 17 — no schema, no persistence");
   check("economicDate exists and is NULLABLE", /economicDate\s+DateTime\?\s+@db\.Date/.test(schema));
   check("...and `date` is still the untouched POSTING column",
     /\n\s*date\s+DateTime\s+@db\.Date/.test(schema));
+  // ── L8 — event identity landed. These guards change shape, not disappear. ──
+  //
+  // "no observation log was added" was the right guard while L8-A was scoped to
+  // chronology alone: an observation log is not needed to support the read
+  // cutover, and adding it early would have widened a narrow slice. L8 proper
+  // adds it deliberately, so the invariant becomes what the model must LOOK
+  // like rather than that it must be absent.
+  check("TransactionObservation exists", /model TransactionObservation/.test(schema));
+  check("TransactionEvent exists", /model TransactionEvent/.test(schema));
+  check("the observation key is UNIQUE (idempotence rests on it)",
+    /observationKey\s+String\s+@unique/.test(schema));
+  check("an event projects to AT MOST ONE live transaction row",
+    /currentTransactionId\s+String\?\s+@unique/.test(schema));
+  check("Transaction's event link is NULLABLE and additive",
+    /transactionEventId\s+String\?/.test(schema));
+  // ⚠️ Still absent, and must stay so: L8 is transaction event identity only.
+  // A balance observation log is the broader observation platform, which this
+  // slice explicitly does not begin.
+  check("no BALANCE observation log was added", !/model BalanceObservation/.test(schema));
   check("no EconomicEvent model exists", !/model EconomicEvent/.test(schema));
   check("no ProviderObservation model exists", !/model ProviderObservation/.test(schema));
-  // L8-A is chronology ONLY. An observation log is the rest of L8 and is not
-  // required to support the read cutover, so it must not appear here.
-  check("no observation log was added", !/model TransactionObservation|model BalanceObservation/.test(schema));
   check("SettlementState is still only PENDING | POSTED",
     /enum SettlementState \{\s*PENDING\s*POSTED\s*\}/.test(schema.replace(/\r/g, "")));
   // No Slice 4 module may write counterpartyAccountId either — that is the

@@ -1028,6 +1028,8 @@ model FinancialAccount {
   goalContributions        GoalContribution[]
   debtProfile              DebtProfile?
   transactions             Transaction[]               @relation("FinancialAccountTransactions")
+  // L8 — logical economic events on this account (banking only).
+  transactionEvents        TransactionEvent[]          @relation("AccountTransactionEvents")
   holdings                 Holding[]
   // A1 — append-only investment position history (dark-write; Holding stays the
   // current-state read model). Additive back-relation only.
@@ -2000,6 +2002,18 @@ model Transaction {
   // drawers) is a separate, atomic slice that consumes this column.
   economicDate DateTime? @db.Date
 
+  // ── L8 — the logical economic event this row is the CURRENT projection of ──
+  //
+  // A pending transaction and its posted successor are two OBSERVATIONS of one
+  // event, not two unrelated identities. This is the link from the row users see
+  // to that event. Nullable and additive: null = "not yet backfilled" or a row
+  // outside the banking domain (crypto has its own implementation later).
+  //
+  // ⚠️ NOTHING READS THIS YET. L8 establishes identity + dual-write; the reader
+  // cutover is a separate slice. A probe enforces that.
+  transactionEventId String?
+  transactionEvent   TransactionEvent? @relation("EventTransactions", fields: [transactionEventId], references: [id], onDelete: SetNull)
+
   plaidTransactionId String? @unique // prevents duplicate inserts on re-sync
 
   // D2 Step 4D — written by the import pipeline ("externalId" match
@@ -2144,6 +2158,7 @@ model Transaction {
   // needs one, and an unused index is write cost for nothing.
   @@index([financialAccountId, economicDate])
   @@index([economicDate])
+  @@index([transactionEventId])
   // FlowType rollup indexes (P3 Phase A): per-account/per-liability, global
   // per-flow lenses, and reverse counterparty attribution.
   @@index([financialAccountId, flowType, date])
@@ -2152,6 +2167,121 @@ model Transaction {
   // MI1 M1 — merchant-identity + category-provenance FK indexes (additive).
   @@index([merchantId])
   @@index([categoryRuleId])
+}
+
+/// L8 — the lifecycle a LOGICAL EVENT is currently in, derived from its
+/// observations and never written directly.
+///
+/// WITHDRAWN is attested, not invented: a pending observation whose row was
+/// tombstoned WITHOUT a posted successor is an authorization the provider took
+/// back. Seven such rows exist today. Modelling it as "posted" or deleting it
+/// would both be false.
+enum TransactionEventLifecycle {
+  PENDING
+  POSTED
+  WITHDRAWN
+}
+
+/// L8 — ONE LOGICAL ECONOMIC EVENT.
+///
+/// The stable identity a pending observation and its posted successor share. Its
+/// current state is DERIVED from its observations (see
+/// lib/transactions/event-identity.ts); nothing here is authored by hand.
+///
+/// ⚠️ Scope: BANKING only. Crypto/on-chain rows are deliberately excluded — a
+/// wallet transaction has no pending↔posted lifecycle of this shape, and forcing
+/// it into this table would model a state no provider attests. Crypto shares the
+/// abstraction later through its own domain implementation.
+model TransactionEvent {
+  id                 String   @id @default(cuid())
+  financialAccountId String
+  financialAccount   FinancialAccount @relation("AccountTransactionEvents", fields: [financialAccountId], references: [id], onDelete: Cascade)
+
+  /// Derived: the lifecycle its observations currently support.
+  lifecycle TransactionEventLifecycle
+
+  /// Derived: WHEN THE ACTIVITY HAPPENED. Immutable across posting — that is the
+  /// whole point of the event, and a standing invariant proves it does not move.
+  economicDate DateTime @db.Date
+
+  /// Derived: the amount the latest observation reports. A restatement appends a
+  /// new observation and moves this; the earlier observation is never rewritten.
+  currentAmount Float
+
+  /// The Transaction row that is CURRENTLY the live projection of this event —
+  /// the one users see. Unique: an event projects to at most one live row.
+  currentTransactionId String? @unique
+
+  /// L8 Part 7 — observation timestamps. `firstPendingObservedAt` is the seed of
+  /// the future economic-date precedence, which this slice deliberately does NOT
+  /// apply (changing economicDate again is a separate measured cutover).
+  firstObservedAt        DateTime
+  lastObservedAt         DateTime
+  firstPendingObservedAt DateTime?
+  postedObservedAt       DateTime?
+
+  /// Derived: how many observations this event has. 1 for a first-observed-posted
+  /// row; 2 for a normal pending→posted chain.
+  observationCount Int @default(0)
+
+  observations TransactionObservation[] @relation("EventObservations")
+  transactions Transaction[]            @relation("EventTransactions")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([financialAccountId, economicDate])
+  @@index([lifecycle])
+}
+
+/// L8 — ONE IMMUTABLE PROVIDER OBSERVATION.
+///
+/// What a provider said about an event at one moment. Append-only: a restatement
+/// adds a row, it never edits one. That immutability is what makes the event's
+/// current state re-derivable and a provider's history auditable.
+///
+/// ⚠️ `observationKey` is the IDEMPOTENCE key. Replaying an identical provider
+/// payload produces the same key and writes nothing; a genuine restatement (a
+/// changed amount, a new posting date) produces a different key and appends.
+model TransactionObservation {
+  id      String           @id @default(cuid())
+  eventId String
+  event   TransactionEvent @relation("EventObservations", fields: [eventId], references: [id], onDelete: Cascade)
+
+  /// The Transaction row this observation was read from / written alongside.
+  /// Nullable because an observation outlives the row it came from (a tombstoned
+  /// pending row is still a real observation of the event).
+  transactionId String?
+
+  financialAccountId String
+  provider           ProviderType
+
+  /// The provider's own row id (Plaid `transaction_id`, or an import's external
+  /// id). Null where the source supplies none — a manual/seed row.
+  providerRowId String?
+  /// Plaid `pending_transaction_id` — the provider's OWN statement that this row
+  /// succeeds another. Rank 1 in the identity hierarchy.
+  providerPendingRef String?
+
+  /// When Fourth Meridian OBSERVED this, not when the provider dated it.
+  observedAt DateTime @default(now())
+  /// PENDING or POSTED, as the provider reported at this observation.
+  lifecycle  SettlementState
+
+  amount       Float
+  postingDate  DateTime  @db.Date
+  economicDate DateTime  @db.Date
+  authorizedAt DateTime? @db.Date
+
+  /// Deterministic digest of the observed facts. See the model note above.
+  observationKey String @unique
+
+  createdAt DateTime @default(now())
+
+  @@index([eventId])
+  @@index([transactionId])
+  @@index([providerRowId])
+  @@index([financialAccountId, economicDate])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -153,6 +153,7 @@ import { buildTransactionFacts } from "@/lib/transactions/transaction-facts";
 // columns and never blocks the import.
 import { resolveMerchantWrite } from "@/lib/transactions/merchant-write";
 import { economicDateFor } from "@/lib/transactions/economic-date-write";
+import { recordTransactionObservation } from "@/lib/transactions/event-write";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -478,7 +479,7 @@ export const POST = withApiHandler(async (
         } catch (miErr) {
           console.warn(`[merchant-intelligence] import resolution skipped for row ${lineNumber} — writing null MI columns:`, miErr);
         }
-        await db.transaction.create({
+        const createdRow = await db.transaction.create({
           data: {
             financialAccountId,
             date:                  row.date,
@@ -500,7 +501,30 @@ export const POST = withApiHandler(async (
             ...computeFactFields(flowAcct?.currency ?? null),
             ...mi,
           },
+          select: { id: true },
         });
+        // L8 — an imported row is a single-observation event: a CSV file carries
+        // no pending↔posted lifecycle, so the row is observed once, POSTED. It
+        // still gets an identity, so "every banking row has an event" holds
+        // without exception. Non-blocking, like the Plaid path.
+        try {
+          await recordTransactionObservation(db, {
+            transactionId:      createdRow.id,
+            financialAccountId,
+            provider:           "CSV",
+            providerRowId:      row.externalTransactionId ?? null,
+            providerPendingRef: null,
+            lifecycle:          "POSTED",
+            amount:             row.amount,
+            postingDate:        row.date,
+            economicDate:       economicDateFor({ postingDate: row.date, authorizedAt: null }),
+            authorizedAt:       null,
+            transactionIsLive:  true,
+            observedAt:         new Date(),
+          });
+        } catch (e) {
+          console.warn(`[l8] observation skipped for imported row ${lineNumber} — event identity is additive and non-blocking:`, e);
+        }
         created++;
       } else if (result.outcome === "MATCH") {
         matched++;

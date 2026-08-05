@@ -625,6 +625,48 @@ export async function getTransactionDetail(
     }
   }
 
+  // L8 — the logical event this row projects, for verification. One bounded
+  // lookup on the detail read only; the LIST never pays for it.
+  const eventIdentity = row.transactionEventId
+    ? await (async () => {
+        const ev = await db.transactionEvent.findUnique({
+          where: { id: row.transactionEventId as string },
+          select: {
+            id: true, lifecycle: true, economicDate: true, currentAmount: true,
+            currentTransactionId: true, observationCount: true,
+            firstObservedAt: true, lastObservedAt: true,
+            firstPendingObservedAt: true, postedObservedAt: true,
+            observations: {
+              select: { id: true, lifecycle: true, amount: true, postingDate: true, economicDate: true, observedAt: true },
+              orderBy: { observedAt: "asc" },
+            },
+          },
+        });
+        if (!ev) return null;
+        return {
+          eventId: ev.id,
+          lifecycle: ev.lifecycle,
+          economicDate: ev.economicDate.toISOString().slice(0, 10),
+          currentAmount: ev.currentAmount,
+          isCurrentProjection: ev.currentTransactionId === row.id,
+          observationCount: ev.observationCount,
+          firstObservedAt: ev.firstObservedAt.toISOString(),
+          lastObservedAt: ev.lastObservedAt.toISOString(),
+          firstPendingObservedAt: ev.firstPendingObservedAt?.toISOString() ?? null,
+          postedObservedAt: ev.postedObservedAt?.toISOString() ?? null,
+          observations: ev.observations.map((o) => ({
+            lifecycle: o.lifecycle,
+            amount: o.amount,
+            // Both dates, explicitly labelled — an observation records what the
+            // provider said, and posting is provenance beside the economic date.
+            postingDate: o.postingDate.toISOString().slice(0, 10),
+            economicDate: o.economicDate.toISOString().slice(0, 10),
+            observedAt: o.observedAt.toISOString(),
+          })),
+        };
+      })()
+    : null;
+
   // TE-2B — derive the needs-classification disclosure from canonical fields. The
   // raw inputs (transferRail, merchantId, classificationReason) stay server-side;
   // only the boolean + a provider-neutral reason reach the DTO. A resolved owned
@@ -668,5 +710,15 @@ export async function getTransactionDetail(
     // TE-2B — disclosure only; no calculation consumes these.
     needsClassification:       needs.needsClassification,
     needsClassificationReason: needs.reason,
+    // ── L8 — event identity, as PROVENANCE ONLY ────────────────────────────
+    //
+    // The narrow verification surface the L8 slice permits: enough to confirm a
+    // pending row and its posted successor share one event, and nothing more.
+    //
+    // ⚠️ DISCLOSURE, not behaviour. No total, ordering, grouping, classification
+    // or projection consults it, and a standing probe asserts that the
+    // behavioural readers (query core, count, cash flow, exports, AI, the
+    // serializer) still do not. The reader cutover is a separate slice.
+    ...(eventIdentity ? { eventIdentity } : {}),
   };
 }
