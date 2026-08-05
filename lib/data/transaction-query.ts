@@ -26,6 +26,7 @@ import type { Transaction } from "@/types";
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
+import { assertOneRowPerEvent } from "@/lib/transactions/event-projection";
 import {
   bankingTransactionWhere,
   transactionListInclude,
@@ -153,6 +154,9 @@ export async function queryTransactions(args: {
   });
 
   const { pageRows, nextCursor, hasMore } = nextCursorFrom(fetched, query.sort, limit);
+  // L8-B1 — the keyset explorer inherits the projection filter through
+  // bankingTransactionWhere; this refuses the page if it ever stops doing so.
+  assertOneRowPerEvent(pageRows, "queryTransactions");
   const rows = await projectTransactionListRows(pageRows, spaceId);
   return { rows, nextCursor, hasMore, cursorReset };
 }

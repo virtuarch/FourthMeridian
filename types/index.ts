@@ -280,6 +280,10 @@ export interface Transaction {
   /** Canonical income class: EARNED_INCOME | INTEREST_INCOME | DIVIDEND_INCOME
    *  | OTHER_INCOME | NOT_INCOME. Present on inflows the read supplied evidence
    *  for. A surface that shows an income total MUST break it down by this. */
+  /** L8-B1 — the logical event this row projects (pending and posted share one).
+   *  Absent when the read did not select it; null outside the banking event
+   *  domain (self-custody crypto). */
+  transactionEventId?:  string | null;
   incomeClass?:         string;
   /** The finer subtype (SALARY, DEPOSIT_INTEREST, SECURITY_DIVIDEND, …). */
   incomeSubtype?:       string;

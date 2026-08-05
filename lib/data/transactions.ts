@@ -51,6 +51,7 @@ import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 // TI-1: canonical row → DTO serialization (single derivation site — replaces
 // the three inline mappings this file previously duplicated).
 import { serializeTransactionRow } from "@/lib/transactions/serialize";
+import { eventProjectionWhere, assertOneRowPerEvent } from "@/lib/transactions/event-projection";
 import { gatedCounterpartyId, chooseCounterpartyId } from "@/lib/transactions/counterparty-visibility";
 import { transactionDetailWhere } from "@/lib/transactions/detail-query";
 // TI5-2 — the pure read-time relationship engine. Candidate gathering stays in
@@ -222,6 +223,11 @@ export interface BoundedTransactions {
  *  (e.g. view-context) so they can never disagree on the population. */
 export function bankingTransactionWhere(spaceId: string, opts?: { debtOnly?: boolean }): Prisma.TransactionWhereInput {
   return {
+    // L8-B1 — one row per LOGICAL EVENT. A pending charge and the posting that
+    // supersedes it are one economic event observed twice; this keeps only the
+    // row the event currently projects to. Rows outside the banking event domain
+    // (self-custody crypto) carry no event and are kept, so no total moves.
+    ...eventProjectionWhere(),
     // deletedAt: null guards an archived account's rows; visibilityLevel (KD-15)
     // admits only transaction-detail (FULL) links. debtOnly narrows to debt accounts.
     financialAccount: {
@@ -260,6 +266,10 @@ export async function getTransactions(
     include: transactionListInclude(spaceId),
   });
   const { rows: capped, truncated } = capFetched(fetched, limit);
+  // L8-B1 — the filter should make this unreachable. It is here so that if the
+  // projection filter is ever dropped from the population, this read breaks
+  // instead of the numbers.
+  assertOneRowPerEvent(capped, "getTransactions");
 
   // TI4 Slice 1 + TI-1 — read-time owned-account transfer match (KD-15-gated) →
   // canonical serialization → CF-1 context → provenance source. Shared projection
@@ -334,6 +344,10 @@ export async function getDebtTransactions(
     include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } }, ...counterpartyVisibilityInclude(spaceId) },
   });
   const { rows: capped, truncated } = capFetched(fetched, limit);
+  // L8-B1 — the filter should make this unreachable. It is here so that if the
+  // projection filter is ever dropped from the population, this read breaks
+  // instead of the numbers.
+  assertOneRowPerEvent(capped, "getDebtTransactions");
 
   const assessments = await resolveTransferAssessments(capped, { spaceId });
   const rows = capped.map((r) => ({
@@ -380,6 +394,10 @@ export async function getDebtPaymentRows(
     include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } }, ...counterpartyVisibilityInclude(spaceId) },
   });
   const { rows: capped, truncated } = capFetched(fetched, limit);
+  // L8-B1 — the filter should make this unreachable. It is here so that if the
+  // projection filter is ever dropped from the population, this read breaks
+  // instead of the numbers.
+  assertOneRowPerEvent(capped, "getDebtPaymentRows");
 
   const assessments = await resolveTransferAssessments(capped, { spaceId });
   const rows = capped.map((r) => ({

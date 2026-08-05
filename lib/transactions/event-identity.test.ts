@@ -255,30 +255,59 @@ test("INV-1/2/5: one observation → one event; one row → at most one event; o
     "an observation must never be deleted — history is not editable");
 });
 
-// ── 18. No consumer reads partial L8 state ─────────────────────────────────
+// ── 18. The cutover landed as ONE slice ────────────────────────────────────
 
-test("INV-18: no BEHAVIOURAL reader consumes event identity — the cutover is a separate slice", () => {
-  // ⚠️ `lib/data/transactions.ts` is deliberately ABSENT from this list. Its
-  // detail read exposes an `eventIdentity` PROVENANCE block, which the L8 brief
-  // explicitly permits for verification. The distinction is behaviour: nothing
-  // in that block feeds a total, an ordering, a grouping, a classification or a
-  // projection — the modules below are where such a read would change what a
-  // user sees, and they must stay clean until the cutover.
-  const CONSUMERS = [
-    "lib/data/transaction-query-core.ts",
-    "lib/data/transaction-query.ts",
-    "lib/data/transaction-count.ts",
-    "lib/transactions/cash-flow-projection.ts",
-    "lib/transactions/serialize.ts",
-    "lib/ai/assemblers/transactions.ts",
-    "lib/export/csv.ts",
-  ];
-  for (const f of CONSUMERS) {
+test("INV-18: every read that can double-count an event carries the projection filter", () => {
+  // ⚠️ THIS INVARIANT WAS INVERTED IN L8-B1.
+  //
+  // Through Phase A it asserted that NO behavioural reader touched event
+  // identity, so the cutover could not land piecemeal. B1 IS that cutover, so
+  // the same question now has the opposite answer: the readers that could
+  // present one economic event as two must all inherit the filter, and none may
+  // hand-roll its own version of it.
+  //
+  // The filter lives in exactly one place — `bankingTransactionWhere` — so every
+  // population read inherits it by composition rather than by remembering to.
+  const population = read("lib/data/transactions.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  assert.ok(/eventProjectionWhere\(\)/.test(population),
+    "bankingTransactionWhere no longer applies the event-projection filter — every total can double-count");
+
+  // The bounded reads refuse rather than degrade if the filter is ever dropped.
+  for (const f of ["lib/data/transactions.ts", "lib/data/transaction-query.ts"]) {
     const logic = read(f).replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
-    assert.ok(!/transactionEventId|TransactionEvent|transactionObservation/.test(logic),
-      `${f} already reads L8 state — the reader cutover must land as ONE slice, not piecemeal`);
+    assert.ok(/assertOneRowPerEvent\(/.test(logic), `${f} does not guard against duplicate events`);
   }
 });
+
+test("INV-18b: the projection filter has exactly one definition", () => {
+  // A second copy is a second answer to "which row represents this event".
+  const ALLOWED = new Set(["lib/transactions/event-projection.ts"]);
+  const offenders = ["lib", "app", "components", "jobs"].flatMap((r) => walkTs(r))
+    .filter((f) => !f.startsWith("prototype/") && !ALLOWED.has(f))
+    .filter((f) => /currentOfEvent/.test(read(f).replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "")));
+  assert.deepEqual(offenders, [], "these modules express the event projection themselves");
+});
+
+test("INV-18c: the DETAIL read stays unfiltered, so a superseded row is still inspectable", () => {
+  // Dropping a superseded row from a TOTAL is correct. Refusing to open it is
+  // not — its observations are the audit trail for the row that replaced it.
+  const logic = read("lib/data/transactions.ts");
+  const detail = logic.slice(logic.indexOf("export async function getTransactionDetail"));
+  assert.ok(!/eventProjectionWhere/.test(detail.slice(0, detail.indexOf("\nexport "))),
+    "the detail read filters by projection — a superseded row would become unopenable");
+});
+
+function walkTs(d: string, out: string[] = []): string[] {
+  let entries: string[] = [];
+  try { entries = readdirSync(join(process.cwd(), d)); } catch { return out; }
+  for (const e of entries) {
+    if (e === "node_modules" || e.startsWith(".")) continue;
+    const rel = `${d}/${e}`;
+    if (statSync(join(process.cwd(), rel)).isDirectory()) walkTs(rel, out);
+    else if (/\.tsx?$/.test(e) && !/\.test\.tsx?$/.test(e)) out.push(rel);
+  }
+  return out;
+}
 
 test("only the write authority touches the L8 tables", () => {
   // Any other writer would be a second identity authority.

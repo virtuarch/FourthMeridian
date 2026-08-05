@@ -60,6 +60,9 @@ export interface TransactionRowLike {
    * below records exactly when the fallback is legitimate.
    */
   economicDate?:      Date | null;
+  /** L8-B1 — the logical event this row projects. Absent on reads that did not
+   *  select it, and null for rows outside the banking event domain (crypto). */
+  transactionEventId?: string | null;
   merchant:           string;
   description:        string | null;
   category:           string;
@@ -131,6 +134,11 @@ export function serializeTransactionRow(r: TransactionRowLike): Transaction {
   return {
     id:          r.id,
     accountId:   r.financialAccountId as string,
+    // L8-B1 — the LOGICAL EVENT this row projects. A surface that needs to speak
+    // about the event (rather than the row observing it) addresses this. Null for
+    // rows outside the banking event domain; absent when the read did not select
+    // it, which is honest absence, not a claim of "no event".
+    ...(r.transactionEventId !== undefined ? { transactionEventId: r.transactionEventId } : {}),
     // L8-B — ECONOMIC. `postingDate` rides in the derived block as provenance.
     date:        financialDate(r).toISOString().split("T")[0],
     merchant:    r.merchant,

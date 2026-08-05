@@ -2013,6 +2013,9 @@ model Transaction {
   // cutover is a separate slice. A probe enforces that.
   transactionEventId String?
   transactionEvent   TransactionEvent? @relation("EventTransactions", fields: [transactionEventId], references: [id], onDelete: SetNull)
+  /// L8-B1 — set when THIS row is its event's current projection. The read
+  /// boundary filters on it, so a superseded row can never reach a total.
+  currentOfEvent     TransactionEvent? @relation("EventCurrentTransaction")
 
   plaidTransactionId String? @unique // prevents duplicate inserts on re-sync
 
@@ -2210,7 +2213,14 @@ model TransactionEvent {
 
   /// The Transaction row that is CURRENTLY the live projection of this event —
   /// the one users see. Unique: an event projects to at most one live row.
+  ///
+  /// L8-B1 — this gained a RELATION so the read boundary can state "this row is
+  /// its event's current projection" as a query rather than as a hope. Without
+  /// it, one-row-per-event held only because superseded rows happen to get
+  /// tombstoned; the filter now says so, and the FK makes a dangling projection
+  /// impossible. Additive: the column and its uniqueness are unchanged.
   currentTransactionId String? @unique
+  currentTransaction   Transaction? @relation("EventCurrentTransaction", fields: [currentTransactionId], references: [id], onDelete: SetNull)
 
   /// L8 Part 7 — observation timestamps. `firstPendingObservedAt` is the seed of
   /// the future economic-date precedence, which this slice deliberately does NOT
