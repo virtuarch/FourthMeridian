@@ -65,6 +65,7 @@ import {
 import { groupLiquidityByReason, type LiquiditySliceLine } from "@/lib/transactions/liquidity-breakdown";
 import { rollupIncomeFromTransactions, type IncomeRollup } from "@/lib/transactions/income-rollup";
 import { groupDebtPaymentsByCreditor, type DebtPaymentGroup } from "@/lib/transactions/debt-payments";
+import { selectDebtPaymentCashLegs } from "@/lib/transactions/debt-payment-authority";
 
 /**
  * THE canonical Cash Flow workspace contract — the perspective-AGNOSTIC data for
@@ -175,12 +176,10 @@ export function buildCashFlowSpaceData(input: {
   const summary = aggregateDayFacts(rows, liqCtx, moneyCtx);
   const breakdown = groupLiquidityByReason(summary);
 
-  // Canonical DEBT_PAYMENT rows (classifyLiquidity CASH_OUT + DEBT_PAYMENT) — no new
-  // classifier; the SAME predicate the Debt Payments widget uses, applied once here.
-  const debtPaymentRows = rows.filter((t) => {
-    const c = classifyLiquidity(t, liqCtx);
-    return c.effect === "CASH_OUT" && c.reason === "DEBT_PAYMENT";
-  });
+  // V27-TRUTH-7 — the counted leg comes from the ONE debt-payment authority. This
+  // was a third inline copy of the predicate; the widget had a fourth, and
+  // DebtClient had a fifth that disagreed with all of them.
+  const debtPaymentRows = selectDebtPaymentCashLegs(rows, liqCtx).counted;
 
   // V27-TRUTH-6 — the canonical rollup is built ONCE, and every income slice in
   // this contract derives from it. `incomeBySource` is now a SUB-grouping of the

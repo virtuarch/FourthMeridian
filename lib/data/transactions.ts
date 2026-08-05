@@ -348,6 +348,54 @@ export async function getDebtTransactions(
 }
 
 /**
+ * V27-TRUTH-7 — the rows the debt-payment authority selects from.
+ *
+ * `getDebtTransactions` is LIABILITY-scoped, so it can only ever see the leg
+ * that arrives on a card. The counted leg is the CASH leg, which lives on the
+ * checking account the money left — measured on the live corpus, 26 of those
+ * ($50,150) have no liability leg at all, because the liability is not connected
+ * to this app. A liability-scoped read cannot see them, and a total built from
+ * one silently under-reports.
+ *
+ * So this read spans the whole banking population and narrows to DEBT_PAYMENT.
+ * It does NOT choose the leg — `selectDebtPaymentCashLegs` does, from the tiers.
+ * Same Space scoping, same KD-15 visibility, same bound as its sibling.
+ */
+export async function getDebtPaymentRows(
+  ctx?: { spaceId?: string; windowDays?: number; limit?: number },
+): Promise<BoundedTransactions> {
+  const spaceId    = ctx?.spaceId ?? (await getSpaceContext()).spaceId;
+  const limit      = ctx?.limit ?? DEFAULT_TX_LIMIT;
+  const windowDays = ctx?.windowDays ?? null;
+  const floor      = windowFloorDate(windowDays);
+
+  const fetched = await db.transaction.findMany({
+    where: {
+      ...bankingTransactionWhere(spaceId),
+      flowType: FlowType.DEBT_PAYMENT,
+      ...(floor ? { economicDate: { gte: floor } } : {}),
+    },
+    orderBy: { economicDate: { sort: "desc", nulls: "last" } },
+    take: limit + 1,
+    include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } }, ...counterpartyVisibilityInclude(spaceId) },
+  });
+  const { rows: capped, truncated } = capFetched(fetched, limit);
+
+  const assessments = await resolveTransferAssessments(capped, { spaceId });
+  const rows = capped.map((r) => ({
+    ...serializeTransactionRow({
+      ...r,
+      counterpartyAccountId: chooseCounterpartyId(
+        gatedCounterpartyId(r), assessments.get(r.id)?.counterpartyAccountId ?? null),
+    }),
+    ...contextFields(r, assessments),
+    // The tier resolver needs the owning account; the list DTO does not carry it.
+    financialAccountId: r.financialAccountId,
+  }));
+  return { rows, truncated, limit, windowDays };
+}
+
+/**
  * TX-4 — `getInvestmentTransactions()` was DELETED here.
  *
  * It had no consumer (dead since P2-2) and, unlike every other transaction read in

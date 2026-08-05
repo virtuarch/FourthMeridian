@@ -8,7 +8,16 @@
  * convert with correct flags. Pure: no DB, no network.
  */
 
-import { rollupDebtPaymentsByAccount, totalDebtPaid, type DebtPaymentTxnLike } from "./debt";
+import { rollupDebtPaymentsByAccount, type DebtPaymentTxnLike } from "./debt";
+// V27-TRUTH-7 — `totalDebtPaid` moved to the debt-payment authority, which SELECTS
+// the counted leg instead of abs-summing whatever a caller hands it. FX conversion
+// is now the caller's `magnitude` callback, so the shim below performs exactly the
+// conversion lib/debt.ts's own `rowAmount` does — same convertMoney call, same
+// null-means-EXCLUDE rule. The guarantees pinned here are therefore the real ones.
+import { totalDebtPaid as authorityTotal } from "./transactions/debt-payment-authority";
+import { tierResolver, type LiquidityTx } from "./transactions/liquidity";
+import { convertMoney } from "./money/convert";
+import type { ConversionContext } from "./money/types";
 import { identityContext } from "./money/convert";
 import { DEFAULT_DISPLAY_CURRENCY } from "./currency";
 
@@ -21,6 +30,30 @@ function check(name: string, cond: boolean, detail = ""): void {
 }
 
 const CTX = identityContext(DEFAULT_DISPLAY_CURRENCY);
+
+// These fixtures are DESTINATION-side legs (each `accountId` is the card that
+// received money). The authority counts the CASH leg, so it is presented the same
+// payments from the paying side — which is what production actually sums.
+const TIERS = tierResolver([
+  { id: "chk", type: "checking" },
+  { id: "cardA", type: "debt" }, { id: "cardB", type: "debt" }, { id: "cardC", type: "debt" },
+]);
+
+const asCashLegs = (rows: DebtPaymentTxnLike[]): LiquidityTx[] =>
+  rows.map((r, i) => ({
+    id: `g${i}`, accountId: "chk", financialAccountId: "chk",
+    counterpartyAccountId: r.accountId,
+    amount: r.amount, flowType: r.flowType, currency: r.currency ?? null,
+    date: r.dateISO ?? "", merchant: "m", category: "Other", pending: false,
+  }) as unknown as LiquidityTx);
+
+/** Σ|amount| over the authority's counted leg — the same conversion rowAmount does. */
+const totalDebtPaid = (rows: DebtPaymentTxnLike[], ctx?: ConversionContext): number =>
+  authorityTotal(asCashLegs(rows), TIERS, (t) => {
+    if (!ctx) return t.amount;
+    return convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date ?? "", ctx).amount;
+  }).total;
+
 
 const numbersOf = (entries: ReturnType<typeof rollupDebtPaymentsByAccount>) =>
   entries.map(({ accountId, total, count }) => ({ accountId, total, count }));

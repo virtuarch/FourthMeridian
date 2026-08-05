@@ -82,7 +82,7 @@ import { resolvePayrollIncomeCategory } from "@/lib/transactions/descriptor-evid
 import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-payment";
 import { deriveTransferDisposition, type TransferDisposition, type TransferEvidence } from "@/lib/transactions/transfer-evidence";
 import { shouldSurfaceAsNeedsClassification } from "@/lib/transactions/needs-classification";
-import { totalDebtPaid, type DebtPaymentTxnLike } from "@/lib/debt";
+import { rollupDebtPaymentsByAccount, type DebtPaymentTxnLike } from "@/lib/debt";
 import { grantsTransactionDetail } from "@/lib/ai/visibility";
 import { identityContext, convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
@@ -556,7 +556,7 @@ check("CONVERGED: assembler surfaces the non-economic residue disclosure (never 
 //
 // One DebtPayment FACT FAMILY, three OBSERVATION VIEWS (dictionary §B):
 //   A  classifyLiquidity → DayFacts.byReason.DEBT_PAYMENT  (source-side liquid cash-out)
-//   B  lib/debt.ts totalDebtPaid                            (received-by-liability, destination-side)
+//   B  lib/debt.ts rollupDebtPaymentsByAccount             (received-by-liability, destination-side)
 //   C  AI assembler debtPaymentTotal                        (DEBT_PAYMENT flowType, negative-only)
 // When evidence is symmetric (a fully connected two-leg payment) they RECONCILE.
 // When evidence is asymmetric they legitimately DIVERGE — the oracle documents the
@@ -566,7 +566,14 @@ console.log("── Part 3 — debt-payment reconciliation ──");
 
 // View adapters (each reads its real authority; C is the assembler's inline rule).
 const viewA = (rows: LiquidityTx[]): number => aggregateDayFacts(rows, ctx).byReason.DEBT_PAYMENT ?? 0;
-const viewB = (debtAccountRows: DebtPaymentTxnLike[]): number => totalDebtPaid(debtAccountRows);
+// V27-TRUTH-7 — B was `lib/debt.ts totalDebtPaid`, which abs-summed whatever it
+// was handed and so meant different things to different callers. The
+// received-by-liability SEMANTICS it stood for are unchanged and still needed
+// here, and `rollupDebtPaymentsByAccount` is where they now live — it is the one
+// view that names WHICH liability received the money. The headline total is
+// view A, via lib/transactions/debt-payment-authority.ts.
+const viewB = (debtAccountRows: DebtPaymentTxnLike[]): number =>
+  rollupDebtPaymentsByAccount(debtAccountRows).reduce((sum, e) => sum + e.total, 0);
 const viewC = (rows: LiquidityTx[]): number =>
   rows.filter((r) => isDebtPayment(r.flowType) && r.amount < 0).reduce((s, r) => s + Math.abs(r.amount), 0);
 

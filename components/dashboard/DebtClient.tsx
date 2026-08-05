@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { Account, Transaction, TransactionCategory } from "@/types";
+import { Account, Transaction } from "@/types";
 import { FicoCard } from "@/components/dashboard/FicoCard";
 import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
 import {
@@ -12,6 +12,9 @@ import {
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { useDisplayCurrency } from "@/lib/currency-context";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
+import { totalDebtPaid as computeTotalDebtPaid } from "@/lib/transactions/debt-payment-authority";
+import { FLOW_TYPE_LABEL } from "@/lib/transactions/flow-predicates";
+import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { EstimatedChip } from "@/components/ui/EstimatedChip";
 import { TransactionDate } from "@/components/ui/TransactionDate";
@@ -19,7 +22,6 @@ import { formatDate as formatDateUTC } from "@/lib/format";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
 import {
   estimateMinimumPayment,
-  totalDebtPaid as computeTotalDebtPaid,
   rollupDebtPaymentsByAccount,
 } from "@/lib/debt";
 import { amountOwed, creditBalance, hasOutstandingDebt, liabilityState } from "@/lib/debt/balance-semantics";
@@ -38,10 +40,6 @@ const fmtFull = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
 // carries the meaning. Amount direction is still state-coloured in TxRow.
 const CAT_CHIP = "bg-[var(--surface-inset)] text-[var(--text-secondary)]";
 
-// Income, Transfer, Interest excluded — not relevant for credit card review
-const ALL_CATEGORIES: TransactionCategory[] = [
-  "Groceries","Dining","Shopping","Travel","Subscriptions","Utilities","Payment","Other",
-];
 
 // Score-range legend — a reference data-visualisation of the FICO bands; the
 // dot colours are preserved as viz (not card chrome).
@@ -118,6 +116,12 @@ interface Props {
   lastUpdatedAt: string | null;
   accounts:      Account[];       // debt accounts only
   transactions:  Transaction[];   // debt account transactions
+  /** V27-TRUTH-7 — DEBT_PAYMENT rows across the banking population. The counted
+   *  leg lives on the account the money LEFT, which `transactions` cannot see. */
+  paymentRows:   Transaction[];
+  /** id + type for EVERY account, so the authority can resolve liquidity tiers.
+   *  Not for display — `accounts` above is still the debt-account roster. */
+  accountTiers:  { id: string; type: string }[];
   /**
    * MC1 Phase 3 Slice 6 (F-1, D-6) — serialized Space conversion context from
    * the server page. Optional: absent => context-less native rollups (kill switch).
@@ -130,7 +134,7 @@ const INPUT_CLS = "focus:outline-none focus:border-[var(--accent-info)] transiti
 const inputStyle: React.CSSProperties = { background: "var(--surface-inset)", borderColor: "var(--border-hairline)", color: "var(--text-primary)" };
 
 // ── Main component ────────────────────────────────────────────────────────────
-export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions, moneyCtx }: Props) {
+export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions, paymentRows, accountTiers, moneyCtx }: Props) {
   const router = useRouter();
   // TI5-3C — shared opener; rows call it to open the shell-mounted detail drawer.
   const openTransaction = useOpenTransaction();
@@ -218,7 +222,11 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
 
   // Modal-level filters (search + category only visible inside modal)
   const [search,    setSearch]    = useState("");
-  const [catFilter, setCatFilter] = useState<TransactionCategory | null>(null);
+  // V27-TRUTH-7 — was `catFilter: TransactionCategory`, filtering on the legacy
+  // provider category STRING. The file's own comment beside the total noted that
+  // heuristic had been replaced; the filter next to it had not been. It now
+  // filters on the canonical FlowType, through the canonical label map.
+  const [flowFilter, setFlowFilter] = useState<string | null>(null);
 
   const COMPACT_ROWS = 4;
   const PAGE_ROWS    = 10;
@@ -483,31 +491,78 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
   // Modal: base + search + category
   const filteredTxs = useMemo(() => {
     return baseTxs.filter((tx) => {
-      if (catFilter && tx.category !== catFilter) return false;
+      if (flowFilter && (tx.flowType ?? "UNKNOWN") !== flowFilter) return false;
       if (search) {
         const q = search.toLowerCase();
         if (!tx.merchant.toLowerCase().includes(q) && !(tx.merchantDisplayName ?? "").toLowerCase().includes(q) /* MI M6 — alias-aware */ && !(tx.description ?? "").toLowerCase().includes(q)) return false;
       }
       return true;
     });
-  }, [baseTxs, catFilter, search]);
+  }, [baseTxs, flowFilter, search]);
 
   const selectedCard  = selectedCardId ? cards.find((c) => c.id === selectedCardId) : null;
   const compactSlice  = baseTxs.slice(0, COMPACT_ROWS);
   const totalPages    = Math.ceil(filteredTxs.length / PAGE_ROWS);
   const pageSlice     = filteredTxs.slice(modalPage * PAGE_ROWS, (modalPage + 1) * PAGE_ROWS);
 
-  // Payments made toward the card balance (flowType = DEBT_PAYMENT — FlowType
-  // P5 Slice 3; replaces the category === "Payment" string heuristic).
-  const totalDebtPaid = computeTotalDebtPaid(baseTxs.map((t) => rollupRowById.get(t.id) ?? t), conversionCtx);
+  // V27-TRUTH-7 — ONE debt-payment authority, counting the CASH leg.
+  //
+  // This read `computeTotalDebtPaid(baseTxs, …)` over LIABILITY-side rows and
+  // reported $239,592.37 while the Debt Payments widget reported $245,592.37 for
+  // the same question. The gap is real money: 26 cash legs ($50,150) pay
+  // liabilities that are not connected here, so no liability leg exists for them
+  // and a liability-scoped total cannot see them.
+  //
+  // The authority selects the leg; passing it both legs cannot double-count.
+  // The authority resolves legs from account tiers; this is the only place the
+  // component builds one, and it is derived from the props, never guessed.
+  const liquidityCtx = useMemo(() => tierResolver(accountTiers), [accountTiers]);
+  // V25-FINAL-1 — an unavailable conversion returns null, which the authority
+  // EXCLUDES from the total and reports as `unconverted`. Never a fake 0.
+  const rowMagnitude = useCallback((t: Transaction): number | null => {
+    if (!conversionCtx) return t.amount;
+    return convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, conversionCtx).amount;
+  }, [conversionCtx]);
+
+  const paymentScope = useMemo(
+    () => (selectedCardId
+      // With a card selected, the question is "what did THIS card receive?" —
+      // answered from the leg that names the liability, and labelled as such.
+      ? paymentRows.filter((t) => t.counterpartyAccountId === selectedCardId
+          || (t as { financialAccountId?: string | null }).financialAccountId === selectedCardId)
+      : paymentRows),
+    [paymentRows, selectedCardId],
+  );
+  const debtPaid = useMemo(
+    () => computeTotalDebtPaid(
+      paymentScope.map((t) => rollupRowById.get(t.id) ?? t) as unknown as LiquidityTx[],
+      liquidityCtx,
+      (t) => rowMagnitude(t as unknown as Transaction),
+    ),
+    [paymentScope, rollupRowById, liquidityCtx, rowMagnitude],
+  );
+  const totalDebtPaid = debtPaid.total;
 
   // Per-liability payment rollup (KD-18 capability): payments grouped by the
-  // receiving card. Shown only in the unfiltered view — with a card selected
-  // it would be a single entry equal to totalDebtPaid.
+  // receiving card. Shown only in the unfiltered view.
+  //
+  // ⚠️ This DELIBERATELY reads the LIABILITY leg, and is the one question that
+  // must: only the leg that lands on a card names WHICH card received the money.
+  // It therefore sums to less than `totalDebtPaid` whenever money went to a
+  // liability that is not connected here — disclosed below rather than hidden.
   const debtPaidByCard = useMemo(
     () => (selectedCardId ? [] : rollupDebtPaymentsByAccount(baseTxs.map((t) => rollupRowById.get(t.id) ?? t), conversionCtx)),
     [selectedCardId, baseTxs, rollupRowById, conversionCtx],
   );
+
+  // How much of the total went somewhere the per-card breakdown cannot show.
+  // Derived by subtraction from the two authorities' own numbers — nothing new
+  // is classified, and it is only rendered when it is non-trivial.
+  const paidToUnconnected = useMemo(() => {
+    if (selectedCardId || debtPaidByCard.length === 0) return 0;
+    const named = debtPaidByCard.reduce((a, e) => a + e.total, 0);
+    return Math.max(0, totalDebtPaid - named);
+  }, [selectedCardId, debtPaidByCard, totalDebtPaid]);
 
   // MC1 P4 Slice 3 (D-5) — estimation taint for the Total Debt Paid figure:
   // derived from the same rows/context via the rollup's per-entry flags
@@ -1098,6 +1153,14 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
                     {cards.find((c) => c.id === e.accountId)?.name ?? "Other"}: {e.estimated ? "\u2248 " : ""}{fmtAggFull(e.total)}{e.estimated && <EstimatedChip />}
                   </span>
                 ))}
+                {/* The breakdown above can only name cards connected here. When the
+                    total exceeds what they received, say where the rest went rather
+                    than letting the two figures quietly disagree. */}
+                {debtPaidByCard.length > 1 && paidToUnconnected > 0.005 && (
+                  <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                    To accounts not connected here: {fmtAggFull(paidToUnconnected)}
+                  </span>
+                )}
               </div>
               {baseTxs.length > COMPACT_ROWS && (
                 <button
@@ -1149,14 +1212,14 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
                 {search && <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 hover:text-[var(--text-primary)]" style={{ color: "var(--text-muted)" }}><X size={12} /></button>}
               </div>
               <select
-                value={catFilter ?? ""}
-                onChange={(e) => { setCatFilter((e.target.value as TransactionCategory) || null); setModalPage(0); }}
+                value={flowFilter ?? ""}
+                onChange={(e) => { setFlowFilter(e.target.value || null); setModalPage(0); }}
                 className={`w-full border rounded-xl px-3 py-2 text-sm ${INPUT_CLS}`}
                 style={inputStyle}
               >
-                <option value="">All categories</option>
-                {ALL_CATEGORIES.map((c) => (
-                  <option key={c} value={c}>{c}</option>
+                <option value="">All flow types</option>
+                {Object.entries(FLOW_TYPE_LABEL).map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
                 ))}
               </select>
               <div className="flex items-center gap-1 text-xs" style={{ color: "var(--text-muted)" }}>

@@ -653,9 +653,14 @@ export function SpaceDashboard({
     ? snapshots.filter((s) => !s.fxMiss).map((s) => ({ date: s.date, value: heroDef.value(s) }))
     : [];
 
-  // Debt Space preview = the PAYMENTS story (template polish D6): only
-  // rows on debt accounts. Pure render-phase filter over data already
-  // fetched; other flow categories pass the list through unchanged.
+  // Debt Space preview — activity on debt accounts (template polish D6). Pure
+  // render-phase filter over data already fetched; other categories pass through.
+  //
+  // ⚠️ This called itself "the PAYMENTS story" while filtering only on account
+  // type, so 65 TRANSFER rows ($5,000.43 on the live corpus) appeared under a
+  // payments heading. The filter is right for what this preview is — everything
+  // that happened on your debt accounts — so the WORDS changed, not the rows.
+  // The debt-payment TOTAL has one authority and is not computed here.
   const previewTransactions: Transaction[] = (() => {
     const txs = spaceTransactions ?? [];
     if (category !== "DEBT_PAYOFF") return txs;
@@ -663,7 +668,7 @@ export function SpaceDashboard({
     return txs.filter((t) => debtIds.has(t.accountId));
   })();
   const previewScopeNote =
-    category === "DEBT_PAYOFF" ? `Debt accounts · ${TX_SCOPE_NOTE.toLowerCase()}` : TX_SCOPE_NOTE;
+    category === "DEBT_PAYOFF" ? `Activity on debt accounts · ${TX_SCOPE_NOTE.toLowerCase()}` : TX_SCOPE_NOTE;
 
   // Emergency-fund lede: "how long could I last" — months covered, computed
   // from the existing emergency_fund_progress section config. Only shown
