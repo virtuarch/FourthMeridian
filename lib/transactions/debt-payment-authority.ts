@@ -127,3 +127,145 @@ export function totalDebtPaid<T extends LiquidityTx>(
   }
   return { total, count, excludedLiabilityLegCount: excludedLiabilityLegs.length, unconverted };
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CREDITOR ATTRIBUTION — a SEPARATE question from "is this a debt payment"
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * How certain we are about WHICH creditor received a payment.
+ *
+ * ⚠️ Orthogonal to membership. A row is a debt payment or it is not — decided
+ * above, by `selectDebtPaymentCashLegs`. This axis only says whether we may NAME
+ * the account, and it can never remove a payment from the total.
+ */
+export type CreditorCertainty =
+  /** The counterparty authority resolved an OWNED LIABILITY account. Nameable. */
+  | "ACCOUNT_CERTAIN"
+  /**
+   * The transfer authority proved the destination TYPE is a liability but could
+   * not establish WHICH one — typically because two cards were paid the same day
+   * for the same amount, which no evidence distinguishes. 18 live rows
+   * ($34,500). The payment is real; the creditor is not nameable.
+   */
+  | "ACCOUNT_AMBIGUOUS"
+  /** Neither an owned liability counterparty nor a destination-type proof. */
+  | "NONE";
+
+/** The account facts this module may consult. NO descriptor, ever. */
+export interface CreditorAccountRef {
+  id: string;
+  name?: string | null;
+  type: string;
+}
+
+/** The row facts this module may consult — both are other authorities' verdicts. */
+export interface CreditorEvidence {
+  /** Resolved by the transfer authority / persisted link. */
+  counterpartyAccountId?: string | null;
+  /** The transfer authority's destination verdict. */
+  transferMaturity?: string | null;
+}
+
+export interface CreditorAttribution {
+  certainty: CreditorCertainty;
+  /** The creditor account — ONLY when ACCOUNT_CERTAIN. Null otherwise, always. */
+  accountId: string | null;
+}
+
+/**
+ * Which creditor received this payment?
+ *
+ * ⚠️ There is no merchant string, description or institution name in this
+ * function, and a probe asserts it. The descriptor "AMERICAN EXPRESS ACH PMT
+ * M4082" names an institution that issues several products; it is not identity.
+ */
+export function attributeCreditor(
+  e: CreditorEvidence,
+  accounts: ReadonlyMap<string, CreditorAccountRef>,
+): CreditorAttribution {
+  const cp = e.counterpartyAccountId ? accounts.get(e.counterpartyAccountId) : undefined;
+  if (cp?.type === "debt") return { certainty: "ACCOUNT_CERTAIN", accountId: cp.id };
+  // The destination TYPE is proven even where the account is not.
+  if (e.transferMaturity === "DEBT_PAYMENT") return { certainty: "ACCOUNT_AMBIGUOUS", accountId: null };
+  return { certainty: "NONE", accountId: null };
+}
+
+/** The single bucket every un-nameable creditor lands in. */
+export const UNRESOLVED_CREDITOR_KEY = "__creditor_unresolved__";
+export const UNRESOLVED_CREDITOR_LABEL = "Debt account not determined";
+
+export interface DebtPaymentGroup {
+  /** Stable grouping key: the creditor account id, or the unresolved sentinel. */
+  id: string;
+  label: string;
+  value: number;
+  count: number;
+  /**
+   * The rows that produced `value`, recorded on the SAME pass and under the SAME
+   * skip rule. A drill-down reads these instead of re-deriving the match, which
+   * would re-admit the rows this total left out.
+   */
+  transactionIds: string[];
+  /** The creditor account, or null for the unresolved bucket. */
+  creditorAccountId: string | null;
+}
+
+/**
+ * Group counted debt payments by their CREDITOR ACCOUNT.
+ *
+ * ── What this replaces, and why ─────────────────────────────────────────────
+ *
+ * The previous grouping normalised the payment DESCRIPTOR and used it as the
+ * creditor key, so 18 rows whose creditor account is permanently unknowable
+ * appeared beneath confident headings like "American Express Ach" and "Payment
+ * To Chase Card". Those headings read as creditors and were descriptor labels —
+ * the card total was right while its breakdown claimed more than the evidence
+ * carried, and the same descriptor class is what mis-filed a savings transfer as
+ * a card payment one slice earlier.
+ *
+ * ⚠️ GROUPING IS PRESENTATION ONLY. Every input row lands in exactly one group,
+ * so Σ(group values) == Σ(row magnitudes) and membership is untouched. An
+ * un-nameable creditor changes the HEADING a payment sits under, never whether
+ * it counts.
+ */
+export function groupDebtPaymentsByCreditor<T extends CreditorEvidence & { id: string }>(
+  payments: readonly T[],
+  accounts: ReadonlyMap<string, CreditorAccountRef>,
+  // V25-FINAL-1 — `null` means no acceptable FX rate: the row is EXCLUDED from
+  // the group (never a native magnitude, never a fake 0).
+  magnitude: (t: T) => number | null,
+): DebtPaymentGroup[] {
+  const by = new Map<string, { value: number; count: number; ids: string[]; accountId: string | null }>();
+  for (const t of payments) {
+    const m = magnitude(t);
+    if (m === null) continue;
+    const { certainty, accountId } = attributeCreditor(t, accounts);
+    const key = certainty === "ACCOUNT_CERTAIN" && accountId ? accountId : UNRESOLVED_CREDITOR_KEY;
+    const g = by.get(key) ?? { value: 0, count: 0, ids: [], accountId: key === UNRESOLVED_CREDITOR_KEY ? null : accountId };
+    g.value += m;
+    g.count += 1;
+    g.ids.push(t.id);
+    by.set(key, g);
+  }
+  return [...by.entries()]
+    .map(([key, g]) => ({
+      id: key,
+      // The account's own name, from the account graph. Never a descriptor, and
+      // never an institution string standing in for an account.
+      label: g.accountId
+        ? (accounts.get(g.accountId)?.name?.trim() || "Liability account")
+        : UNRESOLVED_CREDITOR_LABEL,
+      value: g.value,
+      count: g.count,
+      transactionIds: g.ids,
+      creditorAccountId: g.accountId,
+    }))
+    .filter((g) => g.value > 0)
+    // Named creditors first, then the unresolved bucket — which sorts last
+    // regardless of size, because it is a disclosure rather than a creditor.
+    .sort((a, b) =>
+      (a.creditorAccountId === null ? 1 : 0) - (b.creditorAccountId === null ? 1 : 0)
+      || b.value - a.value);
+}

@@ -18,11 +18,19 @@ import { createHash } from "node:crypto";
 import { serializeTransactionRow } from "@/lib/transactions/serialize";
 import { resolveTransferAssessments } from "@/lib/transactions/transfer-resolution";
 import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
-import { selectDebtPaymentCashLegs } from "@/lib/transactions/debt-payment-authority";
+import {
+  selectDebtPaymentCashLegs, groupDebtPaymentsByCreditor, attributeCreditor,
+  UNRESOLVED_CREDITOR_KEY, type CreditorAccountRef,
+} from "@/lib/transactions/debt-payment-authority";
 import { isDebtPayment, isTransfer } from "@/lib/transactions/flow-predicates";
 import type { Transaction } from "@/types";
 
 const bar = (s: string) => console.log(`\n${"═".repeat(78)}\n${s}\n${"═".repeat(78)}`);
+let failures = 0;
+const check = (name: string, ok: boolean, detail = "") => {
+  if (ok) console.log(`  \u2713 ${name}`);
+  else { failures++; console.error(`  \u2717 ${name}${detail ? `\n      ${detail}` : ""}`); }
+};
 const money = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 /** The two rows the brief names. */
@@ -182,14 +190,53 @@ async function main() {
   console.log(`\n  ⚠️ Cash Out rows whose destination is the user's OWN non-liability account:`);
   console.log(`     ${internalInCashOut.length} rows  ${money(internalInCashOut.reduce((a, x) => a + Math.abs(x.r.amount), 0))}`);
 
+  // ── CREDITOR PRESENTATION PARITY (v2.6-TRUTH-9) ──────────────────────────
+  bar("CREDITOR PRESENTATION — grouping is presentation only");
+  const refs = new Map<string, CreditorAccountRef>(
+    accounts.map((a) => [a.id, { id: a.id, name: a.name, type: a.type }]));
+  const groups = groupDebtPaymentsByCreditor(cardRows as never, refs, (t) => Math.abs((t as never as { amount: number }).amount));
+  const groupedIds = groups.flatMap((g) => g.transactionIds).sort();
+  const cardIds = cardRows.map((r) => r.id).sort();
+  const groupedSum = groups.reduce((s, g) => s + g.value, 0);
+  const cardSum = cardRows.reduce((s, r) => s + Math.abs(r.amount), 0);
+  console.log(`  groups: ${groups.length}`);
+  for (const g of groups) {
+    const kind = g.creditorAccountId ? "ACCOUNT_CERTAIN" : "unresolved bucket";
+    console.log(`    ${g.label.padEnd(34)} ${String(g.count).padStart(4)} rows ${money(g.value).padStart(14)}   ${kind}`);
+  }
+  check("Σ(groups) === the card total", Math.abs(groupedSum - cardSum) < 0.005, `${groupedSum} vs ${cardSum}`);
+  check("grouping changed NO membership", JSON.stringify(groupedIds) === JSON.stringify(cardIds),
+    `${groupedIds.length} vs ${cardIds.length}`);
+  check("no row appears in two groups", new Set(groupedIds).size === groupedIds.length);
+  const named = groups.filter((g) => g.creditorAccountId);
+  check("every named group is an owned LIABILITY account",
+    named.every((g) => A.get(g.creditorAccountId!)?.type === "debt"),
+    named.filter((g) => A.get(g.creditorAccountId!)?.type !== "debt").map((g) => g.label).join("; "));
+  check("every named group's label IS its account's name",
+    named.every((g) => g.label === A.get(g.creditorAccountId!)?.name));
+  const bucket = groups.find((g) => g.id === UNRESOLVED_CREDITOR_KEY);
+  const ambiguous = cardRows.filter((r) => attributeCreditor(r as never, refs).certainty !== "ACCOUNT_CERTAIN");
+  console.log(`\n  rows whose creditor cannot be named: ${ambiguous.length}  ${money(ambiguous.reduce((s, r) => s + Math.abs(r.amount), 0))}`);
+  check("every un-nameable row sits in the unresolved bucket",
+    bucket != null && ambiguous.every((r) => bucket.transactionIds.includes(r.id)));
+  check("the unresolved bucket contains NOTHING else",
+    bucket == null || bucket.transactionIds.every((id) => ambiguous.some((r) => r.id === id)));
+  check("the unresolved bucket sorts LAST", groups.length === 0 || groups[groups.length - 1].id === UNRESOLVED_CREDITOR_KEY);
+
   bar("FINGERPRINTS");
   const fp = (label: string, parts: string[]) =>
     console.log(`  ${label.padEnd(34)} ${createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 16)}  (${parts.length})`);
   fp("debt-card event ids", cardRows.map((r) => r.transactionEventId ?? r.id).sort());
+  fp("GROUPED event ids", groups.flatMap((g) => g.transactionIds)
+    .map((id) => byId.get(id)?.transactionEventId ?? id).sort());
   fp("debt-card row ids", cardRows.map((r) => r.id).sort());
   fp("cash-out row ids", out.map((x) => x.r.id).sort());
 
-  console.log(`\n[AUDIT] complete — nothing was written.\n`);
+  if (failures > 0) {
+    console.error(`\n[AUDIT] FAILED — ${failures} presentation check(s) broken.\n`);
+    await db.$disconnect(); process.exit(1);
+  }
+  console.log(`\n[AUDIT] PASSED — nothing was written.\n`);
   await db.$disconnect();
 }
 main().catch(async (e) => { console.error(e); await db.$disconnect(); process.exit(1); });

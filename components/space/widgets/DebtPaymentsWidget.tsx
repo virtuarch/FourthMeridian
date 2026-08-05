@@ -16,18 +16,21 @@
 
 import { filterByPeriod, asOfAnchor, type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
 import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
-import { selectDebtPaymentCashLegs } from "@/lib/transactions/debt-payment-authority";
+import {
+  selectDebtPaymentCashLegs, groupDebtPaymentsByCreditor,
+} from "@/lib/transactions/debt-payment-authority";
 import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import { CashFlowCategoryBreakdown } from "@/components/space/widgets/CashFlowCategoryBreakdown";
-import { groupDebtPaymentsByCreditor, normalizeCreditor, rawCreditorLabel } from "@/lib/transactions/debt-payments";
 
 interface Props {
   transactions: Transaction[] | null | undefined;
   period:       CashFlowPeriod;
   ctx?:         ConversionContext;
-  accounts:     { id: string; type: string }[];
+  /** id + type for the tier resolver; `name` additionally lets the breakdown
+   *  head a group with the creditor ACCOUNT rather than a descriptor. */
+  accounts:     { id: string; type: string; name?: string | null }[];
   /** SD-6C — the period-windowed rows from CashFlowSpaceData (the workspace
    *  composition boundary). When supplied the widget consumes it instead of
    *  re-running `filterByPeriod` — the byte-identical slice. Absent ⇒ the
@@ -63,7 +66,12 @@ export function DebtPaymentsWidget({ transactions, period, ctx, accounts, window
   // widget used to carry its own `isDebtPaymentRow` predicate; DebtClient carried
   // a different one, and the two totals differed by $6,000.
   const payments = selectDebtPaymentCashLegs(rows, liqCtx).counted;
-  const items = groupDebtPaymentsByCreditor(payments, (t) => magnitude(t, ctx));
+  // v2.6-TRUTH-9 — grouped by CREDITOR ACCOUNT. Presentation only: every counted
+  // row lands in exactly one group, so the heading a payment sits under can
+  // change while the total cannot.
+  const creditorAccounts = new Map(accounts.map((a) => [a.id, { id: a.id, name: a.name ?? null, type: a.type }]));
+  const items = groupDebtPaymentsByCreditor(
+    payments as never, creditorAccounts, (t) => magnitude(t as never, ctx));
 
   return (
     <CashFlowCategoryBreakdown

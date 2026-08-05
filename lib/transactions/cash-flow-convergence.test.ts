@@ -16,7 +16,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { outflowByCategory, incomeBySource } from "./cash-flow";
-import { groupDebtPaymentsByCreditor } from "./debt-payments";
+import { groupDebtPaymentsByCreditor } from "./debt-payment-authority";
 import type { Transaction } from "@/types";
 
 const checks: string[] = [];
@@ -77,7 +77,10 @@ const sliceOf = (rows: Transaction[], ids: readonly string[]) => {
     assert.ok(idAt > skipAt,
       `${fn}: the id must be recorded AFTER the skip that governs the value`);
   }
-  const debt = readFileSync(new URL("./debt-payments.ts", import.meta.url), "utf8");
+  // v2.6-TRUTH-9 — grouping moved to the debt-payment authority; the guarantee
+  // did not: the id is recorded AFTER the skip that governs the value, so a
+  // group's total and its drill-down can never disagree about membership.
+  const debt = readFileSync(new URL("./debt-payment-authority.ts", import.meta.url), "utf8");
   assert.ok(debt.indexOf("g.ids.push(t.id)") > debt.indexOf("if (m === null) continue;"),
     "debt payments record the id after the same FX skip");
   ok("the skip and the id are one decision — a row cannot be in the total but not the slice");
@@ -102,15 +105,22 @@ const sliceOf = (rows: Transaction[], ids: readonly string[]) => {
 
 // ── DEBT PAYMENTS · same guarantee, including the FX skip ─────────────────
 {
+  // v2.6-TRUTH-9 — grouped by CREDITOR ACCOUNT, not by descriptor. The guarantee
+  // under test is unchanged: an FX-unavailable row leaves the total AND the slice.
+  const CREDITORS = new Map([
+    ["chaseCard", { id: "chaseCard", name: "Chase Card", type: "debt" }],
+    ["amexCard",  { id: "amexCard",  name: "Amex Card",  type: "debt" }],
+  ]);
   const rows = [
-    tx({ id: "d1", amount: -200, merchantDisplayName: "Chase" }),
-    tx({ id: "d2", amount: -100, merchantDisplayName: "Chase" }),
-    tx({ id: "d3", amount: -75, merchantDisplayName: "Amex" }),
-    tx({ id: "d4", amount: -999, merchantDisplayName: "Chase" }), // FX-unavailable
+    tx({ id: "d1", amount: -200, counterpartyAccountId: "chaseCard" }),
+    tx({ id: "d2", amount: -100, counterpartyAccountId: "chaseCard" }),
+    tx({ id: "d3", amount: -75,  counterpartyAccountId: "amexCard" }),
+    tx({ id: "d4", amount: -999, counterpartyAccountId: "chaseCard" }), // FX-unavailable
   ];
-  const groups = groupDebtPaymentsByCreditor(rows, (t) => (t.id === "d4" ? null : Math.abs(t.amount)));
-  const chase = groups.find((g) => g.label.toLowerCase().includes("chase"))!;
+  const groups = groupDebtPaymentsByCreditor(rows as never, CREDITORS, (t: { id: string; amount: number }) => (t.id === "d4" ? null : Math.abs(t.amount)));
+  const chase = groups.find((g) => g.creditorAccountId === "chaseCard")!;
 
+  assert.equal(chase.label, "Chase Card", "the heading is the ACCOUNT's name");
   assert.equal(chase.value, 300, "the FX-unavailable row is excluded from the total");
   assert.ok(!chase.transactionIds.includes("d4"), "…and from the slice");
   assert.equal(chase.count, chase.transactionIds.length, "count === the ids it counted");

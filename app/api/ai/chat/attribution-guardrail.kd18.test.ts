@@ -185,10 +185,19 @@ check('disclosure is emitted exactly once (single insertion)',
 // debt-payments.ts reads the DB, so this stays a source assertion (not runtime).
 {
   const debtSrc = readFileSync(join(process.cwd(), 'lib/ai/intelligence/debt-payments.ts'), 'utf8');
-  check('per-card figures come from lib/debt rollupDebtPaymentsByAccount (deterministic Slice-3)',
-    debtSrc.includes('rollupDebtPaymentsByAccount('));
-  check('per-card rows come through the KD-15 visibility-guarded getDebtTransactions',
-    debtSrc.includes("import { getDebtTransactions } from '@/lib/data/transactions'"));
+  // v2.6-TRUTH-9 — the guarantees are unchanged; the modules that provide them
+  // moved. Figures must still be deterministic from a canonical authority, and
+  // rows must still arrive through a KD-15 visibility-guarded read.
+  check('per-creditor figures come from the ONE debt-payment authority',
+    debtSrc.includes('selectDebtPaymentCashLegs(') && debtSrc.includes('groupDebtPaymentsByCreditor('));
+  check('per-creditor rows come through the KD-15 visibility-guarded getDebtPaymentRows',
+    debtSrc.includes("getDebtPaymentRows") && debtSrc.includes("from '@/lib/data/transactions'"));
+  // ⚠️ The AI must count the SAME population the Debt Payments card counts, or
+  // the assistant cites a number nobody can find on screen.
+  check('the AI shares the card\'s leg selection, not the liability-side legs',
+    !debtSrc.includes('rollupDebtPaymentsByAccount') && !debtSrc.includes('getDebtTransactions'));
+  check('the AI never derives a creditor from a descriptor',
+    !/merchant|description/i.test(debtSrc.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '')));
 }
 
 if (failures > 0) {

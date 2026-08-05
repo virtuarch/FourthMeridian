@@ -64,8 +64,9 @@ import {
 } from "@/lib/transactions/liquidity";
 import { groupLiquidityByReason, type LiquiditySliceLine } from "@/lib/transactions/liquidity-breakdown";
 import { rollupIncomeFromTransactions, type IncomeRollup } from "@/lib/transactions/income-rollup";
-import { groupDebtPaymentsByCreditor, type DebtPaymentGroup } from "@/lib/transactions/debt-payments";
-import { selectDebtPaymentCashLegs } from "@/lib/transactions/debt-payment-authority";
+import {
+  selectDebtPaymentCashLegs, groupDebtPaymentsByCreditor, type DebtPaymentGroup,
+} from "@/lib/transactions/debt-payment-authority";
 
 /**
  * THE canonical Cash Flow workspace contract — the perspective-AGNOSTIC data for
@@ -169,6 +170,7 @@ export function buildCashFlowSpaceData(input: {
   const range = periodRange(period, nowDate);
   const windowed = filterByPeriod(transactions, period, nowDate);
   const liqCtx = tierResolver(accounts);
+  const creditorAccounts = new Map(accounts.map((a) => [a.id, { id: a.id, name: a.name ?? null, type: a.type }]));
   // The canonical projection consumes LiquidityTx (Transaction + optional transfer
   // fields); a plain Transaction[] satisfies it — the exact cast the widgets use.
   const rows = windowed as LiquidityTx[];
@@ -209,7 +211,11 @@ export function buildCashFlowSpaceData(input: {
     buckets: bucketDayFacts(rows, liqCtx, period, moneyCtx),
     outflowByCategory: outflowByCategory(windowed, moneyCtx),
     cashInByReason: breakdown.cashIn,
-    debtPayments: groupDebtPaymentsByCreditor(debtPaymentRows, (t) => magnitude(t, moneyCtx)),
+    // v2.6-TRUTH-9 — grouped by CREDITOR ACCOUNT, from the same account graph the
+    // tier resolver uses. A payment whose creditor cannot be named lands in one
+    // honest bucket rather than under a descriptor pretending to be a creditor.
+    debtPayments: groupDebtPaymentsByCreditor(
+      debtPaymentRows as never, creditorAccounts, (t) => magnitude(t as never, moneyCtx)),
     context: groupCashFlowContext(rows, liqCtx, moneyCtx),
     stamp: cashFlowStamp({ transactions, period, now }),
     available: availableHistoricalPeriods(transactions),

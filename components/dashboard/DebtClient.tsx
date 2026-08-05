@@ -12,7 +12,9 @@ import {
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { useDisplayCurrency } from "@/lib/currency-context";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
-import { totalDebtPaid as computeTotalDebtPaid } from "@/lib/transactions/debt-payment-authority";
+import {
+  totalDebtPaid as computeTotalDebtPaid, groupDebtPaymentsByCreditor,
+} from "@/lib/transactions/debt-payment-authority";
 import { FLOW_TYPE_LABEL } from "@/lib/transactions/flow-predicates";
 import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { yesterdayUTCISO } from "@/lib/fx/config";
@@ -543,26 +545,26 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
   );
   const totalDebtPaid = debtPaid.total;
 
-  // Per-liability payment rollup (KD-18 capability): payments grouped by the
-  // receiving card. Shown only in the unfiltered view.
+  // v2.6-TRUTH-9 — the per-creditor breakdown now comes from the ONE debt
+  // presentation authority, over the SAME rows the total counts.
   //
-  // ⚠️ This DELIBERATELY reads the LIABILITY leg, and is the one question that
-  // must: only the leg that lands on a card names WHICH card received the money.
-  // It therefore sums to less than `totalDebtPaid` whenever money went to a
-  // liability that is not connected here — disclosed below rather than hidden.
-  const debtPaidByCard = useMemo(
-    () => (selectedCardId ? [] : rollupDebtPaymentsByAccount(baseTxs.map((t) => rollupRowById.get(t.id) ?? t), conversionCtx)),
-    [selectedCardId, baseTxs, rollupRowById, conversionCtx],
+  // ⚠️ It used to read `rollupDebtPaymentsByAccount` over LIABILITY-side rows —
+  // a different population from the total beside it, which is why the two needed
+  // a subtraction to reconcile. Same authority, same population, same event ids:
+  // the groups now sum exactly to the total, and a payment whose creditor cannot
+  // be named appears under one honest heading instead of a descriptor.
+  const creditorAccounts = useMemo(
+    () => new Map(accountTiers.map((a) => [a.id, { id: a.id, name: cards.find((c) => c.id === a.id)?.name ?? null, type: a.type }])),
+    [accountTiers, cards],
   );
-
-  // How much of the total went somewhere the per-card breakdown cannot show.
-  // Derived by subtraction from the two authorities' own numbers — nothing new
-  // is classified, and it is only rendered when it is non-trivial.
-  const paidToUnconnected = useMemo(() => {
-    if (selectedCardId || debtPaidByCard.length === 0) return 0;
-    const named = debtPaidByCard.reduce((a, e) => a + e.total, 0);
-    return Math.max(0, totalDebtPaid - named);
-  }, [selectedCardId, debtPaidByCard, totalDebtPaid]);
+  const debtPaidByCard = useMemo(
+    () => (selectedCardId ? [] : groupDebtPaymentsByCreditor(
+      paymentScope.map((t) => rollupRowById.get(t.id) ?? t) as never,
+      creditorAccounts,
+      (t) => rowMagnitude(t as unknown as Transaction),
+    )),
+    [selectedCardId, paymentScope, rollupRowById, creditorAccounts, rowMagnitude],
+  );
 
   // MC1 P4 Slice 3 (D-5) — estimation taint for the Total Debt Paid figure:
   // derived from the same rows/context via the rollup's per-entry flags
@@ -1146,21 +1148,15 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
                     Total Debt Paid: {debtPaidEstimated ? "\u2248 " : ""}{fmtAggFull(totalDebtPaid)}{debtPaidEstimated && <EstimatedChip />}
                   </span>
                 )}
-                {/* Per-liability breakdown (P5 Slice 3 / KD-18) — only when
-                    more than one card received payments in this range. */}
-                {debtPaidByCard.length > 1 && debtPaidByCard.map((e) => (
-                  <span key={e.accountId} className="text-xs" style={{ color: "var(--text-muted)" }}>
-                    {cards.find((c) => c.id === e.accountId)?.name ?? "Other"}: {e.estimated ? "\u2248 " : ""}{fmtAggFull(e.total)}{e.estimated && <EstimatedChip />}
+                {/* Per-creditor breakdown (P5 Slice 3 / KD-18). The groups sum
+                    EXACTLY to the total above — same authority, same rows — so a
+                    creditor that cannot be named appears as its own heading
+                    rather than as an unexplained gap. */}
+                {debtPaidByCard.length > 1 && debtPaidByCard.map((g) => (
+                  <span key={g.id} className="text-xs" style={{ color: "var(--text-muted)" }}>
+                    {g.label}: {fmtAggFull(g.value)}
                   </span>
                 ))}
-                {/* The breakdown above can only name cards connected here. When the
-                    total exceeds what they received, say where the rest went rather
-                    than letting the two figures quietly disagree. */}
-                {debtPaidByCard.length > 1 && paidToUnconnected > 0.005 && (
-                  <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                    To accounts not connected here: {fmtAggFull(paidToUnconnected)}
-                  </span>
-                )}
               </div>
               {baseTxs.length > COMPACT_ROWS && (
                 <button
