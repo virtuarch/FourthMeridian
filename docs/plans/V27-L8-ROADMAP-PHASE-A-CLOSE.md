@@ -1,0 +1,221 @@
+# L8 — Event Identity: Phase A close, and what Phase B is
+
+**Status:** Phase A **COMPLETE**. Phase B defined, not started.
+**Measured:** live corpus 2026-08-05 — 4,379 events, 4,423 observations, 4,456 rows.
+
+---
+
+## Phase A — COMPLETE
+
+| # | Slice | Commit | Evidence |
+|---|---|---|---|
+| A1 | Lifecycle identity census | — | 38 chains · 7 withdrawn · 15 live pending · 4,326 first-observed-posted · 23 dangling refs · 0 double-counts · 0 fan-in |
+| A2 | Observation model | `9f817d4` | `TransactionEvent` ← `TransactionObservation` (immutable, `observationKey @unique`) + nullable FK |
+| A3 | Identity authority | `9f817d4` | Pure `resolveEventLink` / `projectEvent`; hierarchy rungs 1,2,3,5 — **rung 4 deliberately empty** |
+| A4 | Idempotent dual-write | `9f817d4` | One writer, 3 ingest paths; replay = 0 new rows |
+| A5 | Backfill | `9f817d4` | 4,414 observations → 4,376 events; second pass 0 |
+| A6 | Seed support | `3f4d5a6` | Fresh seed → 347 events unaided; backfill after = "nothing to do" |
+| A7 | Pending↔posted lifecycle | `9f817d4` | PENDING / POSTED / WITHDRAWN, re-derived from all observations |
+| A8 | Audits | `9f817d4` | `audit:lifecycle-identity` (census), `audit:event-identity` (standing probe) |
+| A9 | Invariants | `9f817d4` | 8 corpus invariants + projection re-derivation, all passing |
+
+**Phase A's guarantee:** every banking transaction that enters the system —
+through Plaid, CSV, manual entry, the backfill, or the seed — gets one logical
+event, decided by provider evidence only, idempotently, with its whole history
+retained. **Nothing reads it yet.** That is the boundary between A and B.
+
+### What Phase A deliberately refused
+
+- **Fingerprint identity (rung 4).** The only fingerprint in the repo is
+  `resolveDuplicate`'s account+date+amount+pending+merchant, built to flag
+  suspects for a human. Using it for identity would fuse two separate $4.03
+  pharmacy purchases into one event and make one vanish.
+- **Crypto.** `isEventEligibleProvider` = PLAID | MANUAL | CSV. A wallet
+  transaction has no pending↔posted lifecycle of this shape.
+- **Retroactive latency claims.** Backfilled `observedAt` is
+  `Transaction.createdAt` — a reconstruction. Latency is prospective only.
+
+### ⚠️ One boundary that is looser than the doctrine sentence
+
+"Crypto stays out of banking L8" is enforced by **`walletAddress`**, not by
+`AccountType.crypto`. A manually-tracked crypto *exchange* account has no wallet
+address, resolves to `MANUAL`, and **14 such observations exist in the live
+corpus.** `INV-17` passes because it tests `provider IN (WALLET, EXCHANGE)`,
+which these rows are not. Pre-existing; needs its own decision (see B6).
+
+---
+
+## Phase B — remaining slices
+
+### B1 · Reader cutover: Transaction projection → Event projection
+
+**Why it exists.** Today every surface reads `Transaction`. When a pending row
+and its posted successor are both live, both are counted — the corpus has **0
+such pairs today**, so nothing is currently wrong, but the guarantee is
+accidental rather than structural. Reading the event makes "one economic event
+counts once" true by construction.
+
+**Blocks Assessment / Attention / Decision Engine?** **Attention: YES.**
+"You have a $412 pending charge that just posted" requires knowing they are one
+event. Assessment: no — totals are already correct. Decision Engine: no.
+
+**Before or after crypto?** **Before.** The cutover establishes the read
+contract; doing crypto first means migrating two domains instead of one.
+
+**⚠️ Dependency:** this lands *after* the UI convergence polish slice
+(`V27-UI-TRUTH-CONVERGENCE-INVENTORY.md`). Cutting readers over to a new
+projection while they still bypass the income and debt authorities would migrate
+the bypasses along with them.
+
+---
+
+### B2 · Balance observations
+
+**Why it exists.** L2 sealed `availableBalance` behind `lib/balances/`, but a
+balance is still a single mutable number. The same argument that produced
+`TransactionObservation` applies: a provider restates balances, and we keep no
+history, so "what did we believe on 2026-06-01?" is unanswerable.
+
+**Blocks?** **Assessment: YES** — a point-in-time assessment that cannot say what
+was known at the time is a reconstruction, not a record. Attention: partially
+(balance-drop alerts need a believable prior). Decision Engine: no.
+
+**Before or after crypto?** **After.** Crypto balances are derived from chain
+state and would need their own observation semantics. Doing banking first gives
+crypto a model to adopt.
+
+**⚠️ Largest remaining slice.** Balances are written on far more paths than
+transactions (connect, webhook, cron, manual refresh, repair scripts).
+
+---
+
+### B3 · Observation history APIs
+
+**Why it exists.** The drawer can say *what* a transaction is but not *how it
+came to be that*. The observations exist; nothing exposes them.
+
+**Blocks?** **None.** Pure explainability.
+
+**Before or after crypto?** Either. Naturally follows B1 — once surfaces read
+events, "show me this event's history" is a small addition.
+
+---
+
+### B4 · Economic-date precedence upgrade
+
+Proposed: `first credible pending observation ?? authorizedAt ?? posting date`.
+
+**Why it exists.** A pending observation is closer to when the activity happened
+than the posting date.
+
+**Blocks?** **None.**
+
+**⚠️ Measured, and it barely moves.** `firstPendingObservedAt` covers **60 of
+4,376 events (1.4%)**. Of the 365 rows lacking `authorizedAt`, **only 4 would
+gain evidence.** Coverage only grows prospectively, as live pending observations
+accumulate.
+
+**Recommendation: DEFER.** Re-measure in a few months. Changing the economic date
+again costs a full measured cutover for 4 rows today.
+
+---
+
+### B5 · Provider latency analytics
+
+**Why it exists.** "Your Amex charges take 3 days to post" is real intelligence,
+and the observation table is the only place that fact can live.
+
+**Blocks?** **Attention: partially** — "this pending charge is unusually old"
+needs a per-institution baseline. Assessment / Decision Engine: no.
+
+**⚠️ Gated by calendar time, not engineering.** Every backfilled `observedAt` is
+a reconstruction. Only **prospective** observations are measurable, and dual-write
+began 2026-08-05. This slice cannot produce honest output until enough live
+observations accumulate — **realistically one to two months.**
+
+**Recommendation: START THE CLOCK, BUILD LATER.** The data is already being
+collected correctly.
+
+---
+
+### B6 · Cross-provider lifecycle support
+
+**Why it exists.** Identity is Plaid-shaped: it depends on
+`pendingTransactionRef` → `plaidTransactionId`. A second provider with different
+correlation semantics has no rung to stand on, and CSV/manual rows already fall
+straight to `NEW_EVENT`.
+
+**Also the home for the `AccountType.crypto` exchange-account boundary** noted
+above — deciding whether provider or account type defines the banking domain is
+the same question.
+
+**Blocks?** **None today.** Becomes blocking the moment a second provider is
+added.
+
+**Before or after crypto?** **Before, and it is the actual prerequisite.** Crypto
+event identity is the first cross-provider case. Doing crypto without this means
+answering the general question inside a specific implementation.
+
+---
+
+### B7 · Crypto event identity
+
+**Why it exists.** Crypto has a real lifecycle — unconfirmed → N confirmations →
+final, plus reorgs — that is genuinely different from pending↔posted. It needs
+the *abstraction*, not the banking table.
+
+**Blocks?** **None** for banking Assessment / Attention / Decision Engine.
+
+**Before or after crypto architecture work?** **It IS the crypto architecture
+work** — it should be a slice of it, not a precursor. Depends on B6.
+
+**⚠️ Related open findings** (from the multi-network investigation): crypto
+`InstrumentAlias` is keyed on symbol alone; `valueCryptoDay` takes one price and
+a literal `"BTC"`; Solana `getSignaturesForAddress` misses ALT-loaded accounts.
+Those are valuation and ingest defects, separate from identity, and some are more
+urgent.
+
+---
+
+### B8 · Additional milestones not in the brief
+
+| Slice | Why | Blocks? |
+|---|---|---|
+| **B8a · Event-aware duplicate detection** | `resolveDuplicate` still fingerprints on account+date+amount+pending+merchant. Once events exist, "same event observed twice" is answerable structurally. | None — but it retires a heuristic |
+| **B8b · Dangling-ref resolution** | 23 rows claim a predecessor absent from the corpus. Each is its own single-observation event with the refusal recorded. Whether they are recoverable is unknown. | None |
+| **B8c · Event-identity write probe extension** | The probe guards `lib/`, `app/`, `components/`, `jobs/`, `scripts/`, `prisma/`. Any new root is unguarded. | None — cheap insurance |
+
+---
+
+## Recommended order
+
+```
+  UI convergence polish          ← the inventory doc; unblocks B1 honestly
+        ↓
+  B1  Reader cutover             ← Attention depends on this
+        ↓
+  B3  Observation history        ← small, follows B1
+        ↓
+  B2  Balance observations       ← Assessment depends on this; largest slice
+        ↓
+  B6  Cross-provider lifecycle   ← the real prerequisite for crypto
+        ↓
+  B7  Crypto event identity      ← inside the crypto architecture arc
+
+  DEFERRED, time-gated:
+  B5  Provider latency           ← needs ~1–2 months of live observations
+  B4  Economic-date precedence   ← affects 4 rows today; re-measure later
+```
+
+**Engine dependencies, consolidated:**
+
+| Engine | Needs |
+|---|---|
+| **Assessment** | **B2** (balance observations) |
+| **Attention** | **B1** (reader cutover); B5 improves it |
+| **Decision Engine** | **Nothing in L8.** Not blocked. |
+
+**The one-line answer:** L8 Phase A is complete and self-verifying. Phase B's
+only Attention-blocking item is **B1**, and B1 should follow the UI convergence
+polish so the cutover moves correct readers rather than migrating today's
+bypasses onto a new projection.
