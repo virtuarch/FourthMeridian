@@ -46,6 +46,8 @@
  * asserted, and `matureClassification` refuses to descend.
  */
 
+import { liabilityInflowIsCustomerPayment } from "@/lib/transactions/liability-inflow";
+
 /** The classification ladder. Rank rises with evidence; it never falls. */
 export type TransferMaturity =
   /** Direction known, destination unknown. The least-specific honest answer. */
@@ -65,11 +67,28 @@ export type TransferMaturity =
    * fact, not an unknown: there is no destination ACCOUNT to find, so this is
    * maximally specific while carrying no counterparty. See CASH_NO_COUNTERPARTY.
    */
-  | "CASH_MOVEMENT";
+  | "CASH_MOVEMENT"
+  /**
+   * V27-TRUTH-3 — a positive liability-side movement the provider attests is NOT
+   * a payment: rewards, a statement credit, a fee reimbursement, a purchase
+   * reversal. Terminal and evidence-backed. Makes NO transfer claim — see
+   * `impliedFlowType`, which returns null for it.
+   */
+  | "ISSUER_CREDIT"
+  /**
+   * V27-TRUTH-3 — a positive liability-side movement with no family evidence and
+   * no owned funding leg. The honest floor: we cannot say it is a payment, and
+   * we do not say it is one. Distinct from ISSUER_CREDIT, which is a positive
+   * finding, and from UNRESOLVED_TRANSFER, which would assert a transfer.
+   */
+  | "UNRESOLVED_LIABILITY_INFLOW";
 
 export function maturityRank(m: TransferMaturity): 0 | 1 | 2 {
   switch (m) {
     case "UNRESOLVED_TRANSFER": return 0;
+    // V27-TRUTH-3 — "we could not establish this is a payment" is an UNKNOWN, so
+    // rank 0: later evidence (a matched funding leg) must be free to raise it.
+    case "UNRESOLVED_LIABILITY_INFLOW": return 0;
     case "INTERNAL_TRANSFER":   return 1;
     // CASH_MOVEMENT is rank 2: "this was a form change" is a complete answer, not
     // a partial one. Ranking it 0 would let a later coincidental leg match
@@ -435,10 +454,23 @@ export function maturityForEvidence(
   e: DestinationEvidence,
   own?: OwnSideContext,
 ): TransferMaturity {
-  // 1. The row's own account settles a liability inflow outright — no
-  //    counterparty consulted, so the cash veto has nothing to act on here.
+  // 1. The row's own account governs a liability inflow.
+  //
+  //    V27-TRUTH-3 — this used to return DEBT_PAYMENT unconditionally, which was
+  //    false for every issuer-originated credit. The DEFAULT IS NOW INVERTED: a
+  //    debt payment must be positively attested, and anything else declines to
+  //    make the claim rather than forcing it.
   if (own && own.accountType === "debt") {
-    if (own.amount > 0) return "DEBT_PAYMENT";
+    if (own.amount > 0) {
+      const v = liabilityInflowIsCustomerPayment({
+        providerFamily: own.providerFamily,
+        persistedCounterpartyAccountId: own.persistedCounterpartyAccountId,
+        // The authority's OWN mutual-uniqueness verdict, never re-derived here.
+        hasMutuallyMatchedOwnedCounterparty: e.persistableCounterparty,
+      }).verdict;
+      if (v === "YES") return "DEBT_PAYMENT";
+      return v === "NO" ? "ISSUER_CREDIT" : "UNRESOLVED_LIABILITY_INFLOW";
+    }
     // A liability OUTFLOW is a charge. The ladder has no leaf for that and must
     // not invent one, so it stays at the least-specific honest answer.
     return "UNRESOLVED_TRANSFER";
@@ -457,12 +489,21 @@ export function maturityForEvidence(
   }
 }
 
-/** The row's OWN side — its account type and signed amount. */
+/** The row's OWN side — its account type, signed amount, and the evidence the
+ *  liability-inflow authority needs. */
 export interface OwnSideContext {
   /** checking | savings | investment | crypto | debt | other. */
   accountType: string;
   /** Signed amount in the row's own account. Negative is outflow. */
   amount: number;
+  /**
+   * V27-TRUTH-3 — the provider's classification family (Plaid `pfcPrimary`).
+   * Consulted ONLY for a positive liability-side movement, and never a merchant
+   * string. Absent ⇒ the inflow resolves UNDETERMINED rather than being forced.
+   */
+  providerFamily?: string | null;
+  /** A counterparty already persisted on the row — proof of an owned funding source. */
+  persistedCounterpartyAccountId?: string | null;
 }
 
 export interface MaturationInput {
@@ -494,6 +535,16 @@ export interface MaturationInput {
    * cannot do (see maturityForEvidence). Strongly recommended.
    */
   ownAccountType?: string;
+  /**
+   * V27-TRUTH-3 — the provider classification FAMILY, for a positive
+   * liability-side movement. Without it `matureClassification` would resolve
+   * every card credit UNDETERMINED — including genuine payments — and would
+   * therefore disagree with `maturityForEvidence`, which the read path calls
+   * directly. The two entry points must give the same answer for the same row.
+   */
+  ownProviderFamily?: string | null;
+  /** V27-TRUTH-3 — a counterparty already persisted on the row. */
+  persistedCounterpartyAccountId?: string | null;
 }
 
 export interface MaturationResult {
@@ -514,14 +565,26 @@ export interface MaturationResult {
   persistable: boolean;
 }
 
-/** The FlowType a matured classification implies, for comparison against the
- *  stored column. Kept separate from the ladder so the ladder can be finer.
+/**
+ * The FlowType a matured classification implies, for comparison against the
+ * stored column — or NULL when the ladder makes no flowType claim at all.
  *
- *  CASH_MOVEMENT implies TRANSFER: a withdrawal is still a transfer out of the
- *  account, it simply has no counterparty. The stored vocabulary has no cash
- *  member, and inventing one would be a schema change. */
-export function impliedFlowType(m: TransferMaturity): "TRANSFER" | "DEBT_PAYMENT" {
-  return m === "DEBT_PAYMENT" ? "DEBT_PAYMENT" : "TRANSFER";
+ * CASH_MOVEMENT implies TRANSFER: a withdrawal is still a transfer out of the
+ * account, it simply has no counterparty. The stored vocabulary has no cash
+ * member, and inventing one would be a schema change.
+ *
+ * V27-TRUTH-3 — the two liability-inflow leaves return **null**, and the
+ * distinction is load-bearing. An issuer credit is not a transfer; saying
+ * "implies TRANSFER" would replace one false claim (DEBT_PAYMENT) with another.
+ * "No claim" and "a claim of TRANSFER" are different facts, so a caller that
+ * compares stored-vs-implied must SKIP a null rather than treat it as a
+ * disagreement. The transfer ladder has simply determined that this row is not
+ * its business.
+ */
+export function impliedFlowType(m: TransferMaturity): "TRANSFER" | "DEBT_PAYMENT" | null {
+  if (m === "DEBT_PAYMENT") return "DEBT_PAYMENT";
+  if (m === "ISSUER_CREDIT" || m === "UNRESOLVED_LIABILITY_INFLOW") return null;
+  return "TRANSFER";
 }
 
 /**
@@ -540,7 +603,14 @@ export function matureClassification(input: MaturationInput): MaturationResult {
     const e = input.destination;
     const maturity = maturityForEvidence(
       e,
-      input.ownAccountType ? { accountType: input.ownAccountType, amount: input.amount } : undefined,
+      input.ownAccountType
+        ? {
+            accountType: input.ownAccountType,
+            amount: input.amount,
+            providerFamily: input.ownProviderFamily,
+            persistedCounterpartyAccountId: input.persistedCounterpartyAccountId,
+          }
+        : undefined,
     );
     const impliedNow = impliedFlowType(maturity);
     return {
@@ -552,7 +622,10 @@ export function matureClassification(input: MaturationInput): MaturationResult {
       // "nothing qualified" nor "cash, so nothing may qualify" is a matched leg.
       evidence: e.level === "NO_DESTINATION_EVIDENCE" || e.level === "CASH_NO_COUNTERPARTY"
         ? "NONE" : "MATCHED_LEG",
-      reclassified: (input.flowType ?? null) !== impliedNow,
+      // V27-TRUTH-3 — a null implication is NO CLAIM, so it can never be a
+      // reclassification. Treating it as one would report every issuer credit as
+      // a proposed change to nothing in particular.
+      reclassified: impliedNow !== null && (input.flowType ?? null) !== impliedNow,
       reason: input.ownAccountType === "debt"
         ? (input.amount > 0
             ? "Money arriving at a liability account is a debt payment; this account's own type settles it without needing the counterparty."
@@ -608,7 +681,7 @@ export function matureClassification(input: MaturationInput): MaturationResult {
     direction,
     counterpartyAccountId: cp.accountId,
     evidence: cp.evidence,
-    reclassified: (input.flowType ?? null) !== impliedNow,
+    reclassified: impliedNow !== null && (input.flowType ?? null) !== impliedNow,
     reason: `${LEAF_REASON[maturity]} (destination account type: ${cp.accountType}; evidence: ${cp.evidence}${supported ? " + balance-gap support" : ""}).`,
     // Only a provider link or a uniquely matched leg is strong enough to write.
     persistable: cp.evidence === "PROVIDER_LINK" || cp.evidence === "MATCHED_LEG",
@@ -649,6 +722,8 @@ const LEAF_REASON: Record<TransferMaturity, string> = {
   DEBT_PAYMENT:        "Matched an owned LIABILITY account, so this is a debt payment",
   INVESTMENT_TRANSFER: "Matched an owned investment account, so this is an investment transfer",
   CASH_MOVEMENT:       "The money changed form (cash), so there is no destination account to establish",
+  ISSUER_CREDIT:       "The provider attests a non-payment family on a liability inflow, so this is an issuer-originated credit, not a payment",
+  UNRESOLVED_LIABILITY_INFLOW: "No family evidence and no owned funding leg, so this cannot be asserted as a debt payment",
 };
 
 /** Presentation wording. One place. */
@@ -660,6 +735,8 @@ export const MATURITY_LABEL: Record<TransferMaturity, string> = {
   DEBT_PAYMENT:        "Debt payment",
   INVESTMENT_TRANSFER: "Investment transfer",
   CASH_MOVEMENT:       "Cash movement",
+  ISSUER_CREDIT:       "Issuer credit",
+  UNRESOLVED_LIABILITY_INFLOW: "Unconfirmed card credit",
 };
 
 /**

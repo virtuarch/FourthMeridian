@@ -458,9 +458,15 @@ console.log("V27-TRUTH-1 PART 1. The CASH veto is structural");
 
   // The own-account rule is NOT leg-derived, so the veto does not reach it: a
   // cash deposit onto a card is still a debt payment, still with no counterparty.
-  const cashOntoCard = maturityForEvidence(cash, { accountType: "debt", amount: 250 });
-  check("a CASH deposit onto a card is still a debt payment (own-side rule)",
-    cashOntoCard === "DEBT_PAYMENT");
+  // V27-TRUTH-3 — a cash deposit onto a card is a payment ONCE something attests
+  // it. With no family it is now UNDETERMINED rather than assumed, and the cash
+  // veto still guarantees no counterparty either way.
+  check("a CASH deposit onto a card with an attested payment family IS a debt payment",
+    maturityForEvidence(cash, { accountType: "debt", amount: 250, providerFamily: "LOAN_PAYMENTS" }) === "DEBT_PAYMENT");
+  check("...with no family at all it is UNDETERMINED, not assumed",
+    maturityForEvidence(cash, { accountType: "debt", amount: 250 }) === "UNRESOLVED_LIABILITY_INFLOW");
+  check("...and a TRANSFER_IN family is UNDETERMINED too — movement, not origin",
+    maturityForEvidence(cash, { accountType: "debt", amount: 250, providerFamily: "TRANSFER_IN" }) === "UNRESOLVED_LIABILITY_INFLOW");
   check("...and still carries no counterparty", cash.accountId === null);
 }
 
@@ -478,8 +484,14 @@ console.log("4-AUDIT. The row's OWN account settles a liability inflow");
     maturityForEvidence(fromChecking, { accountType: "debt", amount: 980.48 }) === "DEBT_PAYMENT");
   check("money OUT of a liability is never a debt payment (the structural veto)",
     maturityForEvidence(fromChecking, { accountType: "debt", amount: -50 }) === "UNRESOLVED_TRANSFER");
-  check("a liability inflow resolves even with NO destination evidence",
-    maturityForEvidence(resolveDestinationEvidence([]), { accountType: "debt", amount: 100 }) === "DEBT_PAYMENT");
+  // V27-TRUTH-3 — this assertion encoded the false rule verbatim: "a positive
+  // amount on a liability is a debt payment, evidence or not". A debt payment is
+  // now positively attested, so with no family and no funding leg the honest
+  // answer is that we cannot say.
+  check("a liability inflow with NO evidence at all is NOT forced to a debt payment",
+    maturityForEvidence(resolveDestinationEvidence([]), { accountType: "debt", amount: 100 }) === "UNRESOLVED_LIABILITY_INFLOW");
+  check("...but WITH an attested payment family it still resolves",
+    maturityForEvidence(resolveDestinationEvidence([]), { accountType: "debt", amount: 100, providerFamily: "LOAN_PAYMENTS" }) === "DEBT_PAYMENT");
   check("a non-liability row is unaffected — the destination still decides",
     maturityForEvidence(fromChecking, { accountType: "checking", amount: -50 }) === "CASH_TRANSFER");
 

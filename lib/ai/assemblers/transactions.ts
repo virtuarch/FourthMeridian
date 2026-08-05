@@ -208,6 +208,8 @@ type TxnRow = {
   // corrected one.
   settlementState: string | null;
   pfcDetailed:     string | null;
+  // V27-TRUTH-3 — provider FAMILY, for the liability-inflow authority.
+  pfcPrimary:      string | null;
   flowDirection: FlowDirection | null;
   // TI2-W1 — canonical inputs to shouldSurfaceAsNeedsClassification (all flat
   // persisted columns). counterpartyAccountId is the PERSISTED provider-confirmed
@@ -404,6 +406,7 @@ async function assembleTransactions(
       // V27-TRUTH-2 — see TxnRow.
       settlementState:       true,
       pfcDetailed:           true,
+      pfcPrimary:            true,
     },
     orderBy: { date: 'desc' },
     take:    TRANSACTION_FETCH_LIMIT + 1,

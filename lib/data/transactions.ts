@@ -526,13 +526,23 @@ export async function getTransactionDetail(
       plaidTransactionId: true, pendingTransactionRef: true,
       date: true, amount: true, merchant: true, pending: true,
       deletedAt: true, flowType: true, currency: true,
-      settlementState: true, pfcDetailed: true,
+      settlementState: true, pfcDetailed: true, pfcPrimary: true,
+      counterpartyAccountId: true,
     },
     take: 300, // safety cap; same-account sets are tiny, owned ±window sets are small
   });
   // Every candidate is on an account owned by the SAME user (the query scopes it
   // that way), so one owner id covers the whole set.
-  const withOwner = <T extends { financialAccountId: string | null }>(r: T) => ({ ...r, ownerUserId });
+  // V27-TRUTH-3 — `persistedCounterpartyAccountId` is spelled out rather than
+  // spread: the liability-inflow authority must read the row's OWN persisted
+  // link, and a silently-absent field would resolve every card credit as
+  // UNDETERMINED instead of consulting the proof that is right there.
+  const withOwner = <T extends { financialAccountId: string | null; counterpartyAccountId?: string | null; pfcPrimary?: string | null }>(r: T) => ({
+    ...r,
+    ownerUserId,
+    pfcPrimary: r.pfcPrimary ?? null,
+    persistedCounterpartyAccountId: r.counterpartyAccountId ?? null,
+  });
   let relationships = resolveTransactionRelationships(
     withOwner(row),
     candidates.map(withOwner),

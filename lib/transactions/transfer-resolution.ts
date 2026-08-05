@@ -59,6 +59,8 @@ export interface TransferLegLike {
   settlementState:    string | null;
   pfcDetailed:        string | null;
   merchant?:          string | null;
+  /** V27-TRUTH-3 — the provider FAMILY, for the liability-inflow authority. */
+  pfcPrimary:         string | null;
 }
 
 /** A list-read row eligible to be a target: a leg plus its PERSISTED link (which,
@@ -97,6 +99,11 @@ function toRel(r: TransferLegLike, ownerByAccount: ReadonlyMap<string, string>):
     ownerUserId:           ownerByAccount.get(r.financialAccountId ?? "") ?? null,
     settlementState:       r.settlementState,
     pfcDetailed:           r.pfcDetailed,
+    pfcPrimary:            r.pfcPrimary,
+    // A candidate leg carries no persisted-counterparty claim of its own here;
+    // targets supply theirs from the row (see TransferResolutionRow).
+    persistedCounterpartyAccountId:
+      (r as { counterpartyAccountId?: string | null }).counterpartyAccountId ?? null,
   };
 }
 
@@ -195,6 +202,7 @@ export async function resolveOwnedTransferCounterparties(
       // V27-TRUTH-2 — supersession + movement-form evidence. Without these the
       // matcher cannot apply the cash veto or drop a superseded leg.
       pending: true, settlementState: true, pfcDetailed: true, merchant: true,
+      pfcPrimary: true, counterpartyAccountId: true,
     },
     take: CANDIDATE_CAP,
   });

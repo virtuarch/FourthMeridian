@@ -29,6 +29,7 @@ function tx(over: Partial<RelationshipTransaction> = {}): RelationshipTransactio
     ownerUserId: 'user_1',
     settlementState: 'POSTED',
     pfcDetailed: null,
+    pfcPrimary: null, persistedCounterpartyAccountId: null,
     ...over,
   };
 }

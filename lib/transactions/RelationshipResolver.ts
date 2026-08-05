@@ -82,6 +82,13 @@ export interface RelationshipTransaction {
   settlementState:       string | null;
   /** Plaid personal_finance_category.detailed — the movement-form evidence. */
   pfcDetailed:           string | null;
+  /** V27-TRUTH-3 — provider classification FAMILY (Plaid pfcPrimary). The only
+   *  evidence that separates a customer payment from an issuer credit on a
+   *  liability inflow. Never a merchant string. */
+  pfcPrimary:            string | null;
+  /** V27-TRUTH-3 — a counterparty already persisted on the row. Proof of an
+   *  owned funding source, which outranks the family. */
+  persistedCounterpartyAccountId: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -309,7 +316,15 @@ export function matchTransferCandidate(
   }
 
   const e = resolveDestinationEvidenceFor(self, corpus);
-  const maturity = maturityForEvidence(e, { accountType: self.accountType, amount: tx.amount });
+  // V27-TRUTH-3 — a positive liability-side movement needs the provider FAMILY
+  // and any persisted counterparty, or the liability-inflow authority cannot
+  // tell a customer payment from an issuer credit. Supplied, never re-derived.
+  const maturity = maturityForEvidence(e, {
+    accountType: self.accountType,
+    amount: tx.amount,
+    providerFamily: tx.pfcPrimary,
+    persistedCounterpartyAccountId: tx.persistedCounterpartyAccountId ?? null,
+  });
 
   switch (e.level) {
     case 'ACCOUNT_CERTAIN':

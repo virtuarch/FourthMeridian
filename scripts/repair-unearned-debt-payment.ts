@@ -99,7 +99,7 @@ async function main(): Promise<void> {
       id: true, financialAccountId: true, date: true, authorizedAt: true, amount: true,
       currency: true, flowType: true, flowDirection: true, deletedAt: true,
       counterpartyAccountId: true, pending: true, settlementState: true, merchant: true,
-      pfcDetailed: true,
+      pfcDetailed: true, pfcPrimary: true,
       plaidTransactionId: true, pendingTransactionRef: true,
       classificationReason: true, classificationConfidence: true,
     },
@@ -114,6 +114,8 @@ async function main(): Promise<void> {
     ownerUserId:           acct.get(t.financialAccountId ?? "")?.ownerUserId ?? null,
     settlementState:       t.settlementState,
     pfcDetailed:           t.pfcDetailed,
+    pfcPrimary:            t.pfcPrimary,
+    persistedCounterpartyAccountId: t.counterpartyAccountId ?? null,
   });
 
   // V27-TRUTH-2 — the canonical authority decides from account TYPE; supply it
