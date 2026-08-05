@@ -241,10 +241,16 @@ export function groupDebtPaymentsByCreditor<T extends CreditorEvidence & { id: s
   for (const t of payments) {
     const m = magnitude(t);
     if (m === null) continue;
+    // ⚠️ ABS here, matching `totalDebtPaid`. A cash leg is negative, so a caller
+    // supplying a signed converter would otherwise sum to a negative group and
+    // have it dropped by the `value > 0` filter — the heading would vanish while
+    // the total stayed right. The authority takes the magnitude so no caller can
+    // get this half-right.
+    const value = Math.abs(m);
     const { certainty, accountId } = attributeCreditor(t, accounts);
     const key = certainty === "ACCOUNT_CERTAIN" && accountId ? accountId : UNRESOLVED_CREDITOR_KEY;
     const g = by.get(key) ?? { value: 0, count: 0, ids: [], accountId: key === UNRESOLVED_CREDITOR_KEY ? null : accountId };
-    g.value += m;
+    g.value += value;
     g.count += 1;
     g.ids.push(t.id);
     by.set(key, g);

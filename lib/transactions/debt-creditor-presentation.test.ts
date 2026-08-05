@@ -170,6 +170,30 @@ test("8. ambiguous rows always appear under the unresolved bucket, which sorts l
   assert.equal(attributeCreditor({}, ACCOUNTS).certainty, "NONE");
 });
 
+test("a SIGNED magnitude converter still produces groups (the authority abs's)", () => {
+  // Caught in the browser: DebtClient's converter returns the signed amount, so
+  // every group summed negative and was dropped by the `value > 0` filter — the
+  // headings vanished while the total stayed right. The authority takes the
+  // magnitude so a caller cannot get this half-right.
+  const rows = [CERTAIN, AMBIGUOUS];
+  const signed = groupDebtPaymentsByCreditor(rows, ACCOUNTS, (t) => (t as { amount: number }).amount);
+  const absed = groupDebtPaymentsByCreditor(rows, ACCOUNTS, abs);
+  assert.equal(signed.length, 2, "a signed converter produced no groups");
+  assert.deepEqual(signed.map((g) => [g.id, g.value]), absed.map((g) => [g.id, g.value]));
+});
+
+test("grouping describes only rows the SELECTION counted", () => {
+  // The liability-side leg must never reach a group. Handing grouping the raw
+  // scope would fold it in and inflate the breakdown past its own total.
+  const liabilityLeg = row({ id: "liab", amount: 650, own: "chaseCard", cp: "chk" });
+  const raw = [CERTAIN, liabilityLeg];
+  const counted = selectDebtPaymentCashLegs(raw, TIERS).counted;
+  const groups = groupDebtPaymentsByCreditor(counted, ACCOUNTS, abs);
+  assert.equal(groups.reduce((s, g) => s + g.value, 0), 650);
+  assert.ok(!groups.flatMap((g) => g.transactionIds).includes("liab"),
+    "a liability-side leg entered the breakdown");
+});
+
 // ── 9 ────────────────────────────────────────────────────────────────────────
 
 test("9. no React component derives creditor identity", () => {

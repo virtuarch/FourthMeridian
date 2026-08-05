@@ -13,7 +13,7 @@ import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { useDisplayCurrency } from "@/lib/currency-context";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 import {
-  totalDebtPaid as computeTotalDebtPaid, groupDebtPaymentsByCreditor,
+  totalDebtPaid as computeTotalDebtPaid, groupDebtPaymentsByCreditor, selectDebtPaymentCashLegs,
 } from "@/lib/transactions/debt-payment-authority";
 import { FLOW_TYPE_LABEL } from "@/lib/transactions/flow-predicates";
 import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
@@ -558,24 +558,32 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
     [accountTiers, cards],
   );
   const debtPaidByCard = useMemo(
-    () => (selectedCardId ? [] : groupDebtPaymentsByCreditor(
-      paymentScope.map((t) => rollupRowById.get(t.id) ?? t) as never,
-      creditorAccounts,
-      (t) => rowMagnitude(t as unknown as Transaction),
-    )),
-    [selectedCardId, paymentScope, rollupRowById, creditorAccounts, rowMagnitude],
+    () => {
+      if (selectedCardId) return [];
+      // ⚠️ Group the SELECTED legs, never the raw scope: grouping must describe
+      // exactly the rows the total counted, or the breakdown would also fold in
+      // the liability-side legs the authority deliberately excludes.
+      const rows = paymentScope.map((t) => rollupRowById.get(t.id) ?? t) as unknown as LiquidityTx[];
+      const counted = selectDebtPaymentCashLegs(rows, liquidityCtx).counted;
+      return groupDebtPaymentsByCreditor(
+        counted as never, creditorAccounts, (t) => rowMagnitude(t as unknown as Transaction));
+    },
+    [selectedCardId, paymentScope, rollupRowById, liquidityCtx, creditorAccounts, rowMagnitude],
   );
 
   // MC1 P4 Slice 3 (D-5) — estimation taint for the Total Debt Paid figure:
   // derived from the same rows/context via the rollup's per-entry flags
   // (computed over the FULL base set so it also covers the selected-card view).
-  const debtPaidEstimated = useMemo(
-    () =>
-      conversionCtx
-        ? rollupDebtPaymentsByAccount(baseTxs.map((t) => rollupRowById.get(t.id) ?? t), conversionCtx).some((e) => e.estimated)
-        : false,
-    [baseTxs, rollupRowById, conversionCtx],
-  );
+  // MC1 P4 Slice 3 (D-5) — estimation taint, from the SAME rows the total
+  // counted. It used to read a rollup over the liability-side legs, a different
+  // population from the figure it was qualifying.
+  const debtPaidEstimated = useMemo(() => {
+    if (!conversionCtx) return false;
+    return paymentScope.some((t) => {
+      const r = (rollupRowById.get(t.id) ?? t) as Transaction;
+      return convertMoney({ amount: r.amount, currency: r.currency ?? null }, r.date, conversionCtx).estimated;
+    });
+  }, [paymentScope, rollupRowById, conversionCtx]);
 
   return (
     <div className="space-y-6">
