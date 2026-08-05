@@ -17,7 +17,7 @@
 import { filterByPeriod, asOfAnchor, type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
 import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import {
-  selectDebtPaymentCashLegs, groupDebtPaymentsByCreditor,
+  selectDebtPaymentCashLegs, groupDebtPaymentsByCreditor, UNRESOLVED_CREDITOR_KEY,
 } from "@/lib/transactions/debt-payment-authority";
 import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
@@ -81,7 +81,11 @@ export function DebtPaymentsWidget({ transactions, period, ctx, accounts, window
       emptyHeadline="No debt payments in this period"
       emptySubline="Card and loan payments appear here once you make them."
       invalidationKey={periodKey(period)}
-      sliceSubtitle="Debt payments to this creditor"
+      // ⚠️ The unresolved bucket must not be described as a creditor. Its rows
+      //    ARE debt payments; what is unknown is which account received them.
+      sliceSubtitle={(item) => item.id === UNRESOLVED_CREDITOR_KEY
+        ? "Debt payments whose receiving account could not be established"
+        : "Debt payments to this creditor"}
       sliceFor={(item) => byId(payments, item.transactionIds)}
     />
   );

@@ -41,7 +41,9 @@ interface Props {
   /** Drill-down: resolve the transactions behind one item (category / source).
    *  When provided, cards + strip segments open a TransactionSliceDrawer. */
   sliceFor?:      (item: CashFlowContribution) => Transaction[];
-  sliceSubtitle?: string;
+  /** A fixed subtitle, or one derived from the group being opened — so a group
+   *  that names no creditor is not described as if it did. */
+  sliceSubtitle?: string | ((item: { id: string; label: string }) => string);
   /** Identifies the time window these items describe (periodKey). A change
    *  closes any open slice panel — the question it answered is gone. */
   invalidationKey: string;
@@ -77,7 +79,9 @@ export function CashFlowCategoryBreakdown({
   const [mobileExpanded, setMobileExpanded] = useState(false);
   const openSlice = sliceFor
     ? (item: CashFlowContribution) => setSlice({
-        title: item.label, subtitle: sliceSubtitle, rows: sliceFor(item),
+        title: item.label,
+        subtitle: typeof sliceSubtitle === "function" ? sliceSubtitle(item) : sliceSubtitle,
+        rows: sliceFor(item),
         // The clicked value, so the drawer visibly reconciles even for slices
         // whose rows are neither income nor spending (debt payments, cash-in
         // reasons) — the drawer shows it only when the flow totals are both 0.
