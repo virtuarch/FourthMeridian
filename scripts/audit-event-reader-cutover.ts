@@ -129,12 +129,28 @@ async function main() {
   console.log(`  events preserved       : ${events}`);
   const multi = await db.transactionEvent.count({ where: { observationCount: { gt: 1 } } });
   console.log(`  multi-observation events (a pending that later posted): ${multi}`);
-  check("multi-observation events still project exactly one row each",
-    (await Promise.all((await db.transactionEvent.findMany({
-      where: { observationCount: { gt: 1 } }, select: { id: true, currentTransactionId: true },
-    })).map(async (e) => e.currentTransactionId != null
-      || (await db.transactionObservation.count({ where: { eventId: e.id, transaction: { deletedAt: null } } })) === 0)))
-      .every(Boolean));
+  // The event that a pending→posted chain produced must still resolve to exactly
+  // one live row (or to none, when the pending was withdrawn and never posted).
+  const multiEvents = await db.transactionEvent.findMany({
+    where: { observationCount: { gt: 1 } }, select: { id: true, currentTransactionId: true },
+  });
+  const multiObs = await db.transactionObservation.findMany({
+    where: { eventId: { in: multiEvents.map((e) => e.id) } },
+    select: { eventId: true, transactionId: true },
+  });
+  const liveIds = new Set((await db.transaction.findMany({
+    where: { id: { in: multiObs.map((o) => o.transactionId).filter((x): x is string => x != null) }, deletedAt: null },
+    select: { id: true },
+  })).map((r) => r.id));
+  const liveByEvent = new Map<string, number>();
+  for (const o of multiObs) {
+    if (o.transactionId && liveIds.has(o.transactionId)) {
+      liveByEvent.set(o.eventId, (liveByEvent.get(o.eventId) ?? 0) + 1);
+    }
+  }
+  const overProjected = multiEvents.filter((e) => (liveByEvent.get(e.id) ?? 0) > 1);
+  check("multi-observation events project at most ONE live row each",
+    overProjected.length === 0, overProjected.slice(0, 3).map((e) => e.id).join("; "));
 
   bar("CHRONOLOGY UNCHANGED");
   const chron = (rows: typeof before) => rows.map((r) => `${r.id}|${r.date}`).sort();
