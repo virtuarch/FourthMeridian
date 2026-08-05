@@ -17,6 +17,7 @@
  */
 
 import { db } from "@/lib/db";
+import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { getSpaceContext } from "@/lib/space";
 import { Account, Holding } from "@/types";
 import { ShareStatus, PlaidItemStatus, type VisibilityLevel } from "@prisma/client";
@@ -254,9 +255,9 @@ export async function getAccountsWithVisibility(
       visibilityLevel: link.visibilityLevel as VisibilityLevel,
       account: {
       id:            r.id,
-      // Resolution order: user override > Plaid's official name > Plaid's raw
-      // name > whatever was already in `name` (covers manual/legacy accounts).
-      name:          r.displayName ?? r.officialName ?? r.plaidName ?? r.name,
+      // v2.6-TRUTH-10 — the ONE identity authority. This inlined the resolution
+      // order, as three other modules also did and a fifth did differently.
+      name:          accountDisplayName(r),
       type:          r.type as Account["type"],
       institution:   r.institution,
       balance:       r.balance,

@@ -12,6 +12,7 @@
  */
 
 import { db } from "@/lib/db";
+import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { serializeTransactionRow } from "@/lib/transactions/serialize";
 import { resolveTransferAssessments } from "@/lib/transactions/transfer-resolution";
 import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
@@ -41,8 +42,9 @@ async function main() {
   console.log(`\n[AUDIT] UI truth convergence — READ-ONLY`);
   console.log(`  Space: ${space.name}  (${space.n} transactions)`);
 
-  const accounts = await db.financialAccount.findMany({ select: { id: true, type: true, name: true } });
-  const A = new Map(accounts.map((a) => [a.id, a]));
+  const accounts = await db.financialAccount.findMany({ select: { id: true, type: true, ...ACCOUNT_NAME_SELECT } });
+  // v2.6-TRUTH-10 — resolve as the app does; a raw-name probe is not the live path.
+  const A = new Map(accounts.map((a) => [a.id, { ...a, name: accountDisplayName(a) }]));
 
   // ⚠️ `getTransactions` cannot run under tsx — its import graph reaches
   // `server-only`, which only Next resolves. So this probe calls the SAME

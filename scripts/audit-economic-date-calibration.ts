@@ -13,6 +13,7 @@
  */
 
 import { db } from "@/lib/db";
+import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { admitTransferCandidate } from "@/lib/transactions/transfer-admission";
 import {
   resolveDestinationEvidenceFor, maturityForEvidence, impliedFlowType,
@@ -38,7 +39,7 @@ type Basis = "POSTING" | "ECONOMIC";
 async function main() {
   const accounts = await db.financialAccount.findMany({
     select: {
-      id: true, name: true, type: true, institution: true, institutionId: true, mask: true,
+      id: true, type: true, institution: true, institutionId: true, mask: true, ...ACCOUNT_NAME_SELECT,
       ownerUserId: true, ownerSpaceId: true, currency: true,
     },
   });

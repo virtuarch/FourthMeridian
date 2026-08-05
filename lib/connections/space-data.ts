@@ -50,6 +50,7 @@
  */
 
 import { db } from "@/lib/db";
+import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { PlaidItemStatus, ConnectionStatus } from "@prisma/client";
 import { getIngestionDeferrals } from "@/lib/platform/refresh/projections";
 import {
@@ -150,7 +151,8 @@ export function groupConnectionAccounts(
     seen[connectionId].add(account.id);
     (out[connectionId] ??= []).push({
       id:   account.id,
-      name: account.displayName ?? account.officialName ?? account.plaidName ?? account.name,
+      // v2.6-TRUTH-10 — the ONE identity authority.
+      name: accountDisplayName(account),
       type: account.type,
     });
   }
@@ -178,7 +180,7 @@ async function loadPlaidConnectionAccounts(
     select: {
       plaidItemDbId:    true,
       financialAccount: {
-        select: { id: true, name: true, displayName: true, officialName: true, plaidName: true, type: true },
+        select: { id: true, type: true, ...ACCOUNT_NAME_SELECT },
       },
     },
   });

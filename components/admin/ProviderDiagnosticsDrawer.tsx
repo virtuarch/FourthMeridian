@@ -19,6 +19,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { accountDisplayName } from "@/lib/accounts/display-identity";
 import { X, ChevronDown, ChevronUp, AlertCircle, CheckCircle2, Clock, Database } from "lucide-react";
 import type { DiagnosticsResponse, DiagnosticsAccount } from "@/app/api/admin/plaid/diagnostics/route";
 
@@ -77,7 +78,9 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function AccountCard({ acct }: { acct: DiagnosticsAccount }) {
   const [open, setOpen] = useState(true);
 
-  const displayLabel = acct.displayName ?? acct.officialName ?? acct.name;
+  // v2.6-TRUTH-10 — this omitted `plaidName`, so an account with only a provider
+  // name showed its stored fallback here and its provider name everywhere else.
+  const displayLabel = accountDisplayName(acct);
   const typeLabel    = acct.type.charAt(0).toUpperCase() + acct.type.slice(1);
 
   return (

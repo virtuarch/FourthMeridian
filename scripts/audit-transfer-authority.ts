@@ -19,6 +19,7 @@
  */
 
 import { db } from "@/lib/db";
+import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { createHash } from "node:crypto";
 import {
   admitTransferCandidate, ADMISSION_LABEL, type TransferAdmission,
@@ -52,7 +53,7 @@ const dump = (t: Tally, total: number) => {
 async function main() {
   const accounts = await db.financialAccount.findMany({
     select: {
-      id: true, name: true, type: true, institution: true, institutionId: true,
+      id: true, type: true, institution: true, institutionId: true, ...ACCOUNT_NAME_SELECT,
       mask: true, ownerUserId: true, ownerSpaceId: true, currency: true,
       plaidAccountId: true, walletAddress: true, deletedAt: true,
     },

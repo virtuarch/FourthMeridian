@@ -35,6 +35,7 @@
  */
 
 import { db } from "@/lib/db";
+import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { getSpaceContext } from "@/lib/space";
 import {
   Transaction,
@@ -447,7 +448,8 @@ function resolveAccountName(fa: {
   officialName: string | null;
   plaidName: string | null;
 }): string {
-  return fa.displayName ?? fa.officialName ?? fa.plaidName ?? fa.name;
+  // v2.6-TRUTH-10 — the ONE identity authority.
+  return accountDisplayName(fa);
 }
 
 /**

@@ -30,6 +30,7 @@
  */
 
 import "server-only";
+import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 
 import { db } from "@/lib/db";
 import { ShareStatus } from "@prisma/client";
@@ -73,7 +74,13 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
       addedByUser: { select: { firstName: true, name: true } },
       financialAccount: {
         select: {
-          id: true, name: true, type: true, institution: true, balance: true,
+          id: true, type: true, institution: true, balance: true,
+          // v2.6-TRUTH-10 — THE ROOT CAUSE. This selected `name` alone, so the
+          // loader feeding every Space surface could not resolve an identity and
+          // emitted the provider's raw label — "CREDIT CARD" on Cash Flow while
+          // the Credit page, reading getAccounts, showed "Ultimate Rewards®" for
+          // the same row. Selecting the columns is what makes resolution possible.
+          ...ACCOUNT_NAME_SELECT,
           currency: true, lastUpdated: true, creditLimit: true, debtSubtype: true,
           interestRate: true, minimumPayment: true,
           // v2.6-L3 — forwarded RAW into lib/balances (the only interpreter);
@@ -131,6 +138,12 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
       ...l,
       financialAccount: {
         ...account,
+        // v2.6-TRUTH-10 — resolve the canonical identity HERE, once, so every
+        // Space surface downstream receives the same name the Credit page shows.
+        // ⚠️ `name` is overwritten with the resolved identity, NOT a new field:
+        // every consumer already reads `name`, and adding a second name field
+        // would recreate the divergence this slice removes.
+        name:           accountDisplayName(account),
         interestRate:   terms.apr,
         minimumPayment: terms.minimumPayment,
       },

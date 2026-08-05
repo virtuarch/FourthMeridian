@@ -14,6 +14,7 @@
  */
 
 import { db } from "@/lib/db";
+import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { createHash } from "node:crypto";
 import { serializeTransactionRow } from "@/lib/transactions/serialize";
 import { resolveTransferAssessments } from "@/lib/transactions/transfer-resolution";
@@ -41,9 +42,13 @@ async function main() {
   console.log(`\n[AUDIT] Cash Flow transfer / debt-payment defect — READ-ONLY\n`);
 
   const accounts = await db.financialAccount.findMany({
-    select: { id: true, name: true, type: true, institution: true, institutionId: true },
+    select: { id: true, type: true, institution: true, institutionId: true, ...ACCOUNT_NAME_SELECT },
   });
-  const A = new Map(accounts.map((a) => [a.id, a]));
+  // v2.6-TRUTH-10 — an audit that reads the RAW name is not the live path. It
+  // would have reported "CREDIT CARD" while every screen showed "Ultimate
+  // Rewards®", which is exactly the class of probe/app divergence this arc keeps
+  // finding. Resolve through the same authority the app uses.
+  const A = new Map(accounts.map((a) => [a.id, { ...a, name: accountDisplayName(a) }]));
   const liqCtx = tierResolver(accounts.map((a) => ({ id: a.id, type: a.type })));
 
   const spaces = await db.space.findMany({ select: { id: true, name: true } });
@@ -192,8 +197,10 @@ async function main() {
 
   // ── CREDITOR PRESENTATION PARITY (v2.6-TRUTH-9) ──────────────────────────
   bar("CREDITOR PRESENTATION — grouping is presentation only");
+  // The RESOLVED identities (map A), not the raw column — the app groups on the
+  // canonical name, so an audit grouping on the raw one would prove nothing.
   const refs = new Map<string, CreditorAccountRef>(
-    accounts.map((a) => [a.id, { id: a.id, name: a.name, type: a.type }]));
+    [...A.values()].map((a) => [a.id, { id: a.id, name: a.name, type: a.type }]));
   const groups = groupDebtPaymentsByCreditor(cardRows as never, refs, (t) => Math.abs((t as never as { amount: number }).amount));
   const groupedIds = groups.flatMap((g) => g.transactionIds).sort();
   const cardIds = cardRows.map((r) => r.id).sort();

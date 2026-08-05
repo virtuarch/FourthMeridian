@@ -12,6 +12,7 @@
  */
 
 import { db } from "@/lib/db";
+import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { serializeTransactionRow } from "@/lib/transactions/serialize";
 import { resolveTransferAssessments } from "@/lib/transactions/transfer-resolution";
 import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
@@ -25,9 +26,10 @@ async function main() {
   console.log(`\n[AUDIT] Unattested debt payments — READ-ONLY\n`);
 
   const accounts = await db.financialAccount.findMany({
-    select: { id: true, name: true, type: true, institution: true, mask: true },
+    select: { id: true, type: true, institution: true, mask: true, ...ACCOUNT_NAME_SELECT },
   });
-  const A = new Map(accounts.map((a) => [a.id, a]));
+  // v2.6-TRUTH-10 — the canonical identity, so this reads what the app renders.
+  const A = new Map(accounts.map((a) => [a.id, { ...a, name: accountDisplayName(a) }]));
   const liqCtx = tierResolver(accounts.map((a) => ({ id: a.id, type: a.type })));
   const liabilities = accounts.filter((a) => a.type === "debt");
 

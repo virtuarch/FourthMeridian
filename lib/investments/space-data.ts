@@ -44,6 +44,7 @@
  */
 
 import { SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
+import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { db } from "@/lib/db";
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 import { DIGITAL_ASSET_ACCOUNT_TYPES } from "@/lib/account-classifier";
@@ -95,11 +96,12 @@ async function resolveAccountNames(
   if (accountIds.length === 0) return {};
   const rows = await client.financialAccount.findMany({
     where:  { id: { in: accountIds } },
-    select: { id: true, name: true, displayName: true, officialName: true, plaidName: true },
+    select: { id: true, ...ACCOUNT_NAME_SELECT },
   });
   const out: Record<string, string> = {};
   for (const r of rows) {
-    out[r.id] = r.displayName ?? r.officialName ?? r.plaidName ?? r.name;
+    // v2.6-TRUTH-10 — the ONE identity authority.
+    out[r.id] = accountDisplayName(r);
   }
   return out;
 }

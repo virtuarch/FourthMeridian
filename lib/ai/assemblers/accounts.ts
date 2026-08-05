@@ -48,6 +48,9 @@
  */
 
 import { db } from '@/lib/db';
+import {
+  accountDisplayName, ACCOUNT_NAME_SELECT, type AccountNameEvidence,
+} from '@/lib/accounts/display-identity';
 import { ShareStatus, PlaidItemStatus, VisibilityLevel } from '@prisma/client';
 
 import { classifyAccounts, type ClassifiableAccount } from '@/lib/account-classifier';
@@ -155,10 +158,7 @@ async function assembleAccounts(
       financialAccount: {
         select: {
           id:             true,
-          name:           true,
-          displayName:    true,
-          officialName:   true,
-          plaidName:      true,
+          ...ACCOUNT_NAME_SELECT,
           type:           true,
           institution:    true,
           mask:           true,
@@ -641,13 +641,11 @@ async function assembleAccounts(
  * priority order used in lib/data/accounts.ts:
  *   displayName ?? officialName ?? plaidName ?? name
  */
-function resolveDisplayName(fa: {
-  name:         string;
-  displayName:  string | null;
-  officialName: string | null;
-  plaidName:    string | null;
-}): string {
-  return fa.displayName ?? fa.officialName ?? fa.plaidName ?? fa.name;
+/** v2.6-TRUTH-10 — a thin alias over the ONE identity authority. This was a
+ *  sixth inline copy of the resolution order; the assistant must call an account
+ *  exactly what the screen calls it. */
+function resolveDisplayName(fa: AccountNameEvidence): string {
+  return accountDisplayName(fa);
 }
 
 /**
