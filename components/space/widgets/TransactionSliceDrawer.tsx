@@ -80,19 +80,25 @@ function rowMoney(t: Transaction): string {
 }
 
 function TxRow({ t }: { t: Transaction }) {
-  const credit = t.amount > 0;
+  // V27-TRUTH-8 — the chip is the canonical row NATURE, matching the group
+  // heading above it. It rendered `t.category`, the raw provider string, so a row
+  // the Debt Payments card counted showed "Transfer" — the drawer contradicting
+  // the card it was opened from. Tone follows the same authority, so a refund or
+  // an issuer credit no longer reads as a gain here either.
+  const nature = natureOf(t);
+  const credit = nature.tone === "positive";
   return (
     <div className="flex items-center gap-3 px-4 py-3">
       <TransactionDate date={t.date} />
       <div className="flex-1 min-w-0">
         <p className="text-sm font-semibold truncate text-[var(--text-primary)]">{t.merchantDisplayName ?? t.merchant}</p>
         <div className="flex items-center gap-2 mt-0.5">
-          <span className="text-xs px-1.5 py-0.5 rounded-full bg-[var(--surface-inset)] text-[var(--text-secondary)]">{t.category}</span>
+          <span className="text-xs px-1.5 py-0.5 rounded-full bg-[var(--surface-inset)] text-[var(--text-secondary)]">{nature.label}</span>
           {t.pending && <span className="text-xs text-[var(--text-faint)]">Pending</span>}
         </div>
       </div>
       <p className="text-sm font-bold tabular-nums shrink-0" style={{ color: credit ? "var(--accent-positive)" : "var(--text-primary)" }}>
-        {credit ? "+" : "−"}{rowMoney(t)}
+        {nature.tone === "neutral" ? "" : credit ? "+" : "−"}{rowMoney(t)}
       </p>
     </div>
   );

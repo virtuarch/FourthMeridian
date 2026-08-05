@@ -13,6 +13,7 @@
 
 import { db } from "@/lib/db";
 import { serializeTransactionRow } from "@/lib/transactions/serialize";
+import { resolveTransferAssessments } from "@/lib/transactions/transfer-resolution";
 import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { isDebtPayment, isIncome, isTransfer, isRefund } from "@/lib/transactions/flow-predicates";
 import { describeRowNature } from "@/lib/transactions/flow-presentation";

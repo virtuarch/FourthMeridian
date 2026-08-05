@@ -194,6 +194,31 @@ export function classifyLiquidity(tx: LiquidityTx, ctx: LiquidityContext): Liqui
   // DEBT_PAYMENT — paying down a liability. Cash out when it leaves the liquid
   // tier; the liability-side leg (payment received on the card) is neutral.
   if (isDebtPayment(ft)) {
+    // ⚠️ DEBT_PAYMENT is a claim about the DESTINATION, and `flowType` alone does
+    // not attest one — it is frequently just the provider's own category, which
+    // is derived from a descriptor and is wrong whenever an institution issues
+    // both a card and a deposit account. A live $4,000 movement from checking
+    // into a SAVINGS account carried a card-payment category for exactly that
+    // reason; this branch returned CASH_OUT/DEBT_PAYMENT at confidence 1 for it,
+    // so a savings transfer entered both household Cash Out and the Debt Payments
+    // card while the transfer authority had already resolved its destination to
+    // that savings account.
+    //
+    // On the CASH-side leg the counterparty IS the destination. When the
+    // counterparty authority has named an owned account that is not a liability,
+    // it contradicts the provider outright, and the structural fact wins — the
+    // same precedence the income taxonomy already takes over `flowType`.
+    //
+    // ⚠️ Only the liquid side. On the LIABILITY-side leg the counterparty is the
+    // SOURCE (money arriving on a card from checking), so its tier says nothing
+    // about the destination and this must not fire — 109 live rows are in that
+    // shape and stay NEUTRAL/DEBT_PAYMENT.
+    //
+    // Measured: exactly ONE row in the corpus is diverted by this.
+    const destinationTier = ctx.tierOf(tx.counterpartyAccountId ?? null);
+    if (ownTier === "liquid" && destinationTier !== "unknown" && destinationTier !== "liability") {
+      return classifyTransfer(tx, ownTier, ctx);
+    }
     return ownTier === "liquid"
       ? make(ft, "CASH_OUT", "DEBT_PAYMENT", 1)
       : make(ft, "NEUTRAL", "DEBT_PAYMENT", 0.8);

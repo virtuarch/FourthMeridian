@@ -31,6 +31,7 @@
     "audit:event-identity": "tsx scripts/audit-event-identity.ts",
     "audit:ui-truth": "tsx --env-file=.env.local scripts/audit-ui-truth-convergence.ts",
     "audit:event-cutover": "tsx --env-file=.env.local scripts/audit-event-reader-cutover.ts",
+    "audit:cashflow-debt": "tsx --env-file=.env.local scripts/audit-cashflow-debt-defect.ts",
     "backfill:event-identity": "tsx scripts/backfill-event-identity.ts",
     "backfill:economic-date": "tsx scripts/backfill-economic-date.ts"
   },
