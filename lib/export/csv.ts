@@ -15,6 +15,7 @@
  */
 
 import Papa from "papaparse";
+import { describeRowNature } from "@/lib/transactions/flow-presentation";
 import type {
   ExportAccount,
   ExportHolding,
@@ -51,6 +52,27 @@ export function toTransactionsCsv(rows: ExportTransaction[]): string {
         r.incomeClass == null ? "" : String(r.incomeClass !== "NOT_INCOME"),
       exclusion_reason:
         r.incomeClass === "NOT_INCOME" ? (r.incomeSubtype ?? "NOT_INCOME") : "",
+      // ── V27-TRUTH-7 — ADDITIVE canonical-meaning columns ────────────────
+      // Appended after everything above, same additive contract.
+      //
+      // `category` remains for importer round-trip (it is the column
+      // detectColumns() looks for), but no exported MEANING depends on it any
+      // more: `flow_type` is the canonical economic kind, `row_nature` is what
+      // the app itself calls the row, and `income_subtype` above refines
+      // inflows. A downstream consumer no longer has to guess whether the
+      // "Payment" category string meant a debt payment or a merchant named
+      // Payment.
+      flow_type:   r.flowType ?? "",
+      row_nature:  describeRowNature({
+        flowType:      r.flowType ?? null,
+        incomeSubtype: r.incomeSubtype ?? null,
+        amount:        r.amount,
+        hasOwnedCounterparty: r.counterpartyAccountId != null,
+      }).nature,
+      // The owned account on the other side of a transfer, where the transfer
+      // authority established one. Empty when it did not — never a guess, and
+      // never a descriptor-derived name.
+      transfer_counterparty_account_id: r.counterpartyAccountId ?? "",
     })),
   );
 }
