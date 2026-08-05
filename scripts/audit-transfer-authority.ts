@@ -164,6 +164,7 @@ async function main() {
         ownerId: ownerOf(r), amount: r.amount, currency: r.currency ?? r.acct.currency,
         dateMs: r.date.getTime(), superseded: lc.superseded,
         movementForm: evidenceOf(r).movementForm ?? null,
+        railType: evidenceOf(r).railType ?? null,
         providerLinkKey: links.correlation?.linkKey ?? null,
         maskedDestinationAccountId: links.maskedAccountId,
       };

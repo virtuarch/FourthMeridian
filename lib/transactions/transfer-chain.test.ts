@@ -25,8 +25,8 @@ let seq = 0;
 function hop(from: string, fromType: string, to: string, toType: string, amount: number, day: number): TransferLeg[] {
   const n = seq++;
   return [
-    { id: `out${n}`, accountId: from, accountType: fromType, ownerId: "u", amount: -amount, currency: "USD", dateMs: day * DAY, superseded: false, providerLinkKey: null, maskedDestinationAccountId: null },
-    { id: `in${n}`,  accountId: to,   accountType: toType,   ownerId: "u", amount:  amount, currency: "USD", dateMs: day * DAY, superseded: false, providerLinkKey: null, maskedDestinationAccountId: null },
+    { id: `out${n}`, accountId: from, accountType: fromType, ownerId: "u", amount: -amount, currency: "USD", dateMs: day * DAY, superseded: false, providerLinkKey: null, maskedDestinationAccountId: null, railType: null },
+    { id: `in${n}`,  accountId: to,   accountType: toType,   ownerId: "u", amount:  amount, currency: "USD", dateMs: day * DAY, superseded: false, providerLinkKey: null, maskedDestinationAccountId: null, railType: null },
   ];
 }
 

@@ -33,7 +33,7 @@ function mk(o: Partial<TransferLeg> & { id: string }): TransferLeg {
   return {
     accountId: "a", accountType: "checking", ownerId: "u",
     amount: -100, currency: "USD", dateMs: 0, superseded: false,
-    movementForm: null, providerLinkKey: null, maskedDestinationAccountId: null,
+    movementForm: null, railType: null, providerLinkKey: null, maskedDestinationAccountId: null,
     ...o,
   };
 }
@@ -442,6 +442,124 @@ test("P5: the deny-listed Plaid fields are never read", () => {
     for (const denied of ["ppd_id", "reference_number", "by_order_of", "account_numbers", "account_owner", "payment_meta"]) {
       assert.ok(!src.includes(denied), `${f} must never read the deny-listed ${denied}`);
     }
+  }
+});
+
+// ═══ The payment-app ⊥ liability veto ══════════════════════════════════════
+//
+// Found by the repair's cross-authority pre-flight, not by any test here: two
+// live rows — `Zelle payment to Mom` and `APPLE CASH SENT MONE`, both −$1,000 —
+// were about to be written DEBT_PAYMENT because stratification had correctly
+// consumed their real savings rivals, leaving a coincidental $1,000
+// `Payment Thank You-Mobile` as the sole surviving candidate.
+
+const zelle = (o: Partial<TransferLeg> = {}) =>
+  mk({ id: "zelle", accountId: "chk", amount: -1000, railType: "PAYMENT_APP", ...o });
+const card = (o: Partial<TransferLeg> = {}) =>
+  mk({ id: "card", accountId: "card", accountType: "debt", amount: 1000, ...o });
+
+test("VETO: a Zelle payment to a person cannot pair with a card", () => {
+  const z = zelle(), c = card();
+  assert.equal(legsQualify(z, c), false, "you cannot Zelle a credit card");
+  const e = resolveDestinationEvidenceFor(z, [z, c]);
+  assert.equal(e.level, "NO_DESTINATION_EVIDENCE");
+  assert.equal(e.accountId, null);
+  assert.equal(e.accountType, null, "not even the destination TYPE may survive");
+  // ...and it reaches the truthful terminal state its rail already supports.
+  assert.equal(
+    maturityForEvidence(e, own({ accountType: "checking", amount: -1000, railType: "PAYMENT_APP" })),
+    "EXTERNAL_PERSON_TRANSFER");
+});
+
+test("VETO: an Apple Cash send cannot pair with a card", () => {
+  // Apple Cash arrives under Plaid's GENERIC account-transfer family; the rail is
+  // recovered by the adapter's brand allowlist, which is why the leg carries a
+  // rail at all. Same veto, different provider path in.
+  const a = zelle({ id: "applecash" }), c = card();
+  assert.equal(legsQualify(a, c), false);
+  assert.equal(resolveDestinationEvidenceFor(a, [a, c]).level, "NO_DESTINATION_EVIDENCE");
+});
+
+test("VETO: a legitimate bank-account payment to a card STILL resolves", () => {
+  // The discriminator is the RAIL, not the liability. A real checking→card
+  // payment carries no rail attestation and is untouched — if this ever fails,
+  // the veto has become a liability rule and 239 debt payments are at risk.
+  const pay = mk({ id: "pay", accountId: "chk", amount: -1000, railType: null });
+  const c = card();
+  assert.equal(legsQualify(pay, c), true);
+  const e = resolveDestinationEvidenceFor(pay, [pay, c]);
+  assert.equal(e.level, "ACCOUNT_CERTAIN");
+  assert.equal(e.accountId, "card");
+  assert.equal(maturityForEvidence(e, own({ accountType: "checking", amount: -1000 })), "DEBT_PAYMENT");
+});
+
+test("VETO: a payment app CAN still reach an owned deposit account", () => {
+  // Zelle between your own banks is real. The veto is liability-specific, so a
+  // depository destination is unaffected — proving it removes only what is
+  // impossible, not everything convenient.
+  const z = zelle();
+  const sav = mk({ id: "sav", accountId: "sav", accountType: "savings", amount: 1000 });
+  assert.equal(legsQualify(z, sav), true);
+  assert.equal(resolveDestinationEvidenceFor(z, [z, sav]).level, "ACCOUNT_CERTAIN");
+});
+
+test("VETO: the qualification is SYMMETRIC", () => {
+  // An inbound payment-app credit on a card must be refused from either side, or
+  // mutual uniqueness stops being well-defined.
+  const inboundApp = mk({ id: "in", accountId: "chk", amount: 1000, railType: "PAYMENT_APP" });
+  const cardOut = mk({ id: "co", accountId: "card", accountType: "debt", amount: -1000 });
+  for (const [p, q] of [[zelle(), card()], [inboundApp, cardOut], [card(), zelle()]] as const) {
+    assert.equal(legsQualify(p, q), legsQualify(q, p), "asymmetry breaks mutual uniqueness");
+  }
+  assert.equal(legsQualify(cardOut, inboundApp), false);
+});
+
+test("VETO: it REMOVES the candidate rather than relabelling a match", () => {
+  // The distinction is the whole reason it lives in legsQualify. A post-match
+  // relabel would leave the account id already established and persistable.
+  const z = zelle(), c = card();
+  const e = resolveDestinationEvidenceFor(z, [z, c]);
+  assert.deepEqual(e.candidateAccountIds, [], "the card must never enter the candidate set");
+  assert.deepEqual(e.candidateTypes, []);
+  assert.equal(e.persistableCounterparty, false);
+  assert.equal(e.persistableLeg, false);
+  // The reverse direction is equally starved — the card sees no funding here.
+  const rev = resolveDestinationEvidenceFor(c, [z, c]);
+  assert.deepEqual(rev.candidateAccountIds, []);
+});
+
+test("VETO: no counterparty becomes persistable through a rejected pairing", () => {
+  // Including through the STRATIFIED tiers and the provider tier: the veto is a
+  // clause of legsQualify, which every tier is defined in terms of.
+  const z = zelle(), c = card();
+  const idx = buildTransferCorpusIndex([z, c]);
+  assert.equal(idx.claimed.size, 0, "no tier may claim a vetoed pair");
+  assert.equal(idx.claims.get("zelle"), undefined);
+  // Even a shared provider link cannot resurrect it — a provider group must
+  // still satisfy legsQualify, which is what stops an assertion becoming an
+  // exemption.
+  const key = providerLinkKey({ institutionId: "ins_56", extractorId: "x", rawToken: "1" });
+  const zl = zelle({ providerLinkKey: key }), cl = card({ providerLinkKey: key });
+  assert.equal(buildTransferCorpusIndex([zl, cl]).claimed.size, 0);
+});
+
+test("VETO: the freed card leg can still find its REAL funding row", () => {
+  // Subtractive, not destructive. Removing the impossible pairing is what lets
+  // the true one close.
+  const z = zelle();
+  const realFunding = mk({ id: "real", accountId: "chk2", amount: -1000 });
+  const c = card();
+  const e = resolveDestinationEvidenceFor(realFunding, [z, realFunding, c]);
+  assert.equal(e.level, "ACCOUNT_CERTAIN");
+  assert.equal(e.accountId, "card");
+  // ...and the Zelle row is still honestly external.
+  assert.equal(resolveDestinationEvidenceFor(z, [z, realFunding, c]).level, "NO_DESTINATION_EVIDENCE");
+});
+
+test("VETO: no institution or merchant name appears in the authority", () => {
+  const src = read("lib/transactions/transfer-maturation.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  for (const brand of ["Zelle", "ZELLE", "Venmo", "VENMO", "Apple", "APPLE", "PayPal", "Cash App", "Chase", "Amex"]) {
+    assert.ok(!src.includes(brand), `the authority must not name "${brand}" — the rail is canonical evidence`);
   }
 });
 

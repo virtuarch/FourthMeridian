@@ -509,6 +509,9 @@ function toTransferLeg(r: RelationshipTransaction, ctx: TransferMatchContext): T
   // Phase 5 — identifier extraction. Only the OPAQUE key crosses this boundary;
   // the raw provider token never leaves `provider-link-extract.ts`, and a
   // mask's digits are consumed there and discarded.
+  const evidence = plaidTransferEvidence({
+    pfcDetailed: r.pfcDetailed, amount: r.amount, name: r.merchant,
+  });
   const links = extractProviderLinks(r.descriptor ?? r.merchant, {
     institutionId:    r.institutionId,
     maskToAccountIds: ctx.maskToAccountIds ?? EMPTY_MASK_INDEX,
@@ -523,9 +526,10 @@ function toTransferLeg(r: RelationshipTransaction, ctx: TransferMatchContext): T
     currency:    r.currency ?? null,
     dateMs:      r.date.getTime(),
     superseded:  lifecycle.superseded,
-    movementForm: plaidTransferEvidence({
-      pfcDetailed: r.pfcDetailed, amount: r.amount, name: r.merchant,
-    }).movementForm ?? null,
+    movementForm: evidence.movementForm ?? null,
+    // The RAIL, for the payment-app ⊥ liability veto. Same adapter call as the
+    // form, so the two axes can never come from different evaluations.
+    railType: evidence.railType ?? null,
     providerLinkKey: links.correlation?.linkKey ?? null,
     maskedDestinationAccountId: links.maskedAccountId,
   };

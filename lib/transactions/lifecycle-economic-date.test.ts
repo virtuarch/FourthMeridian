@@ -383,7 +383,7 @@ console.log("V27-TRUTH-1 PART 2. ACCOUNT_CERTAIN requires MUTUAL uniqueness");
   const mk = (o: Partial<TransferLeg>): TransferLeg => ({
     id: "x", accountId: "a", accountType: "checking", ownerId: "u",
     amount: -100, currency: "USD", dateMs: 0, superseded: false,
-    providerLinkKey: null, maskedDestinationAccountId: null, ...o });
+    providerLinkKey: null, maskedDestinationAccountId: null, railType: null, ...o });
   const pairs: Array<[TransferLeg, TransferLeg]> = [
     [mk({ id: "a" }), mk({ id: "b", accountId: "b", amount: 100 })],
     [mk({ id: "a" }), mk({ id: "b", accountId: "b", amount: 100, dateMs: 4 * 86_400_000 })],

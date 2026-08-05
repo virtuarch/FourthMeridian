@@ -603,6 +603,20 @@ export interface TransferLeg {
    * digits were wrong; the worst case is that a real pairing is refused.
    */
   maskedDestinationAccountId: string | null;
+  /**
+   * The provider-attested RAIL this movement travelled over, when one is
+   * attested (`PAYMENT_APP` today). Canonical and provider-neutral — the value
+   * comes from a stage-1 adapter, never from a merchant string read here.
+   *
+   * ⚠️ REQUIRED and nullable, following `movementForm` and `providerLinkKey`.
+   * An optional field would let a caller that forgot it silently re-admit the
+   * pairing the veto below exists to refuse, and look identical to an
+   * institution that attests no rail.
+   *
+   * Consulted by `legsQualify` ONLY to refuse a structurally impossible pairing.
+   * The rail never names a purpose and never resolves a destination.
+   */
+  railType: string | null;
 }
 
 /**
@@ -632,6 +646,38 @@ export function legsQualify(a: TransferLeg, b: TransferLeg): boolean {
   // invent one.
   if (a.maskedDestinationAccountId && a.maskedDestinationAccountId !== b.accountId) return false;
   if (b.maskedDestinationAccountId && b.maskedDestinationAccountId !== a.accountId) return false;
+  // A PAYMENT-APP leg may not pair with a LIABILITY leg. ─────────────────────
+  //
+  // Payment-app rails settle to a deposit account. You cannot Zelle, Apple Cash,
+  // Venmo, Cash App or PayPal a credit card — the card issuer is not reachable
+  // as a P2P recipient. So an equal-amount card payment sitting near a
+  // payment-app send is a coincidence of amount and date, exactly as an ATM
+  // withdrawal near a card payment is, and this refuses it for the same reason
+  // the CASH veto does.
+  //
+  // ⚠️ Discovered by the repair's cross-authority pre-flight, not by any test:
+  // `Zelle payment to Mom` (−$1,000) and `APPLE CASH SENT MONE` (−$1,000) were
+  // each about to be written DEBT_PAYMENT because stratification had correctly
+  // consumed their real savings rivals — leaving a coincidental
+  // `Payment Thank You-Mobile` as the sole survivor. The identifier tier did not
+  // cause that; it ENABLED it, which is the cascade risk this architecture
+  // documented and must therefore defend against structurally.
+  //
+  // ⚠️ It belongs HERE and not on the maturity leaf. As a qualification rule it
+  // is symmetric, it applies to the forward direction, the reverse count and
+  // every stratified tier at once, and — decisively — it removes the CANDIDATE,
+  // so no counterparty can be persisted from a pairing it rejects. Relabelling
+  // after a match would leave the account id already established.
+  //
+  // ⚠️ It is SUBTRACTIVE only. Refusing this pairing frees the card leg to pair
+  // with its real funding row, and leaves the payment-app leg to reach the
+  // terminal state its rail already supports (EXTERNAL_PERSON_TRANSFER). Nothing
+  // is invented on either side.
+  //
+  // A genuine checking/savings → card payment carries NO rail attestation and is
+  // untouched, which is why this is a rail rule and not a liability rule.
+  if (a.railType === "PAYMENT_APP" && b.accountType === "debt") return false;
+  if (b.railType === "PAYMENT_APP" && a.accountType === "debt") return false;
   const days = Math.abs(a.dateMs - b.dateMs) / 86_400_000;
   return days <= TRANSFER_MATCH_WINDOW_DAYS;
 }
@@ -659,6 +705,11 @@ export function legsQualifyIgnoringOwner(a: TransferLeg, b: TransferLeg): boolea
   if (Math.abs(Math.abs(a.amount) - Math.abs(b.amount)) > TRANSFER_AMOUNT_EPSILON) return false;
   if (a.maskedDestinationAccountId && a.maskedDestinationAccountId !== b.accountId) return false;
   if (b.maskedDestinationAccountId && b.maskedDestinationAccountId !== a.accountId) return false;
+  // Mirrors the payment-app veto above: a cross-owner pairing that the same-owner
+  // predicate would refuse must not be COUNTED as a cross-owner limitation either,
+  // or the census would report an impossible pairing as a boundary problem.
+  if (a.railType === "PAYMENT_APP" && b.accountType === "debt") return false;
+  if (b.railType === "PAYMENT_APP" && a.accountType === "debt") return false;
   return Math.abs(a.dateMs - b.dateMs) / 86_400_000 <= TRANSFER_MATCH_WINDOW_DAYS;
 }
 

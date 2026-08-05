@@ -105,7 +105,7 @@ async function main(): Promise<void> {
     currency: t.currency ?? null,
     dateMs: t.date.getTime(),
     superseded: lifecycleOf(t).superseded,
-    providerLinkKey: null, maskedDestinationAccountId: null, movementForm: plaidTransferEvidence({ pfcDetailed: t.pfcDetailed, amount: t.amount, name: t.merchant }).movementForm ?? null,
+    providerLinkKey: null, maskedDestinationAccountId: null, railType: null, movementForm: plaidTransferEvidence({ pfcDetailed: t.pfcDetailed, amount: t.amount, name: t.merchant }).movementForm ?? null,
   }));
 
   // ── Derive the proposal set from the AUTHORITY, never from the id list ─────
