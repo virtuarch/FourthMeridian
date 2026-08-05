@@ -13,6 +13,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   resolveAccountIdentity, accountDisplayName, formatAccountMask, ACCOUNT_NAME_SELECT,
+  compareAccountsByDisplayName,
 } from "./display-identity";
 
 /** The exact live row that produced the divergence. */
@@ -157,4 +158,38 @@ test("10. the authority has no runtime dependencies", () => {
   const code = read("lib/accounts/display-identity.ts");
   const imports = [...code.matchAll(/^import .*$/gm)].map((m) => m[0]);
   assert.deepEqual(imports, [], "the identity authority grew an import");
+});
+
+// ── sorting (v2.6-TRUTH-10b) ────────────────────────────────────────────────
+
+test("11. accounts order by the name a user SEES, not the stored one", () => {
+  // The live case: "CREDIT CARD" displays "Ultimate Rewards®" and belongs LAST
+  // among the debt accounts, not fourth.
+  const rows = [
+    { id: "a", name: "Beacon Mortgage" },
+    { id: "b", name: "CREDIT CARD", officialName: "Ultimate Rewards®" },
+    { id: "c", name: "Example CU Credit Card" },
+  ];
+  const sorted = [...rows].sort(compareAccountsByDisplayName);
+  assert.deepEqual(sorted.map((r) => accountDisplayName(r)),
+    ["Beacon Mortgage", "Example CU Credit Card", "Ultimate Rewards®"]);
+  // The stored order would have put it in the middle.
+  assert.notDeepEqual(sorted.map((r) => r.id), [...rows].sort((x, y) => x.name.localeCompare(y.name)).map((r) => r.id));
+});
+
+test("12. the comparator is deterministic when two accounts share a name", () => {
+  const a = { id: "z", name: "Checking" };
+  const b = { id: "a", name: "Checking" };
+  assert.ok(compareAccountsByDisplayName(a, b) > 0);
+  assert.ok(compareAccountsByDisplayName(b, a) < 0);
+  assert.equal(compareAccountsByDisplayName(a, { ...a }), 0);
+});
+
+test("13. snapshot summation order is NOT re-sorted", () => {
+  // lib/snapshots/space-accounts.ts states that summation order fixes the exact
+  // float result. That is a financial artifact, not a label, and must not move.
+  const snap = read("lib/snapshots/space-accounts.ts");
+  assert.ok(!/sortAccountsForDisplay|compareAccountsByDisplayName/.test(snap),
+    "the snapshot reader was re-sorted — its float totals can now drift from live");
+  assert.ok(/name: "asc"/.test(snap), "the snapshot reader lost its stored-name order");
 });

@@ -17,7 +17,9 @@
  */
 
 import { db } from "@/lib/db";
-import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
+import {
+  accountDisplayName, ACCOUNT_NAME_SELECT, compareAccountsByDisplayName,
+} from "@/lib/accounts/display-identity";
 import { getSpaceContext } from "@/lib/space";
 import { Account, Holding } from "@/types";
 import { ShareStatus, PlaidItemStatus, type VisibilityLevel } from "@prisma/client";
@@ -303,7 +305,24 @@ export async function getAccountsWithVisibility(
  * by the AccountWithVisibility addition.
  */
 export async function getAccounts(ctx?: { spaceId: string; userId?: string }): Promise<Account[]> {
-  return (await getAccountsWithVisibility(ctx)).map((r) => r.account);
+  return sortAccountsForDisplay((await getAccountsWithVisibility(ctx)).map((r) => r.account));
+}
+
+/**
+ * v2.6-TRUTH-10b — order a resolved account list the way a user reads it.
+ *
+ * The query's `orderBy` sorts on the STORED name and cannot do better: the
+ * display identity is resolved across four columns. This re-sorts the resolved
+ * list, type first (unchanged) and then by the name actually rendered.
+ *
+ * ⚠️ Applied to the PRESENTATION list only. `lib/snapshots/space-accounts.ts`
+ * keeps the stored-name order deliberately — its comment records that summation
+ * order fixes the exact float result, which is a financial artifact, not a label.
+ */
+export function sortAccountsForDisplay<T extends { id: string; type: string; name: string }>(accounts: T[]): T[] {
+  return [...accounts].sort((a, b) =>
+    a.type.localeCompare(b.type) || compareAccountsByDisplayName(
+      { id: a.id, name: a.name }, { id: b.id, name: b.name }));
 }
 
 /**

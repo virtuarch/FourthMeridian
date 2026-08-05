@@ -114,3 +114,27 @@ export function formatAccountMask(mask: string | null | undefined): string | nul
   const t = mask?.trim();
   return t ? `••••${t}` : null;
 }
+
+/**
+ * Order two accounts by the name a user actually SEES.
+ *
+ * ⚠️ The database cannot do this. `displayName` is resolved across four columns,
+ * so `orderBy: { name: "asc" }` sorts on the STORED label — and an account whose
+ * identity comes from `officialName` lands under the wrong letter. Live example:
+ * a card stored as "CREDIT CARD" displays "Ultimate Rewards®" and sat fourth in
+ * a seven-account list, between "Beacon Mortgage" and "Example CU Credit Card".
+ *
+ * Locale-aware, and tie-broken on `id` so the order is deterministic when two
+ * accounts share a display name.
+ *
+ * ⚠️ SORTING ONLY. It must never be used to sum, and never on a paginated read:
+ * re-ordering one page of a larger set produces a page that is sorted and a list
+ * that is not. Every reader applying it loads its full set.
+ */
+export function compareAccountsByDisplayName(
+  a: AccountNameEvidence & { id: string },
+  b: AccountNameEvidence & { id: string },
+): number {
+  const byName = accountDisplayName(a).localeCompare(accountDisplayName(b), undefined, { sensitivity: "base" });
+  return byName !== 0 ? byName : a.id.localeCompare(b.id);
+}

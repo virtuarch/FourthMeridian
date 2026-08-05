@@ -31,6 +31,7 @@
 
 import "server-only";
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
+import { sortAccountsForDisplay } from "@/lib/data/accounts";
 
 import { db } from "@/lib/db";
 import { ShareStatus } from "@prisma/client";
@@ -172,14 +173,17 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
     });
   }
 
-  return normalizeSharedAccounts(effectiveLinks).map((a) => ({
+  // v2.6-TRUTH-10b — the query sorts on the STORED name and cannot do better;
+  // re-order the RESOLVED list so it reads the way it renders. Type order is
+  // unchanged, and this list is unpaginated so the sort is complete.
+  return sortAccountsForDisplay(normalizeSharedAccounts(effectiveLinks).map((a) => ({
     ...a,
     earliestTxDate: floorByAccount.get(a.id) ?? null,
     // Aggregated BALANCE_ONLY rows have a synthetic id that maps to no single
     // account, so they carry no current-state claim — an aggregate of reachable
     // figures across members is a different quantity we have not defined.
     ...(currentStateByAccount.has(a.id) ? { currentState: currentStateByAccount.get(a.id) } : {}),
-  })) as unknown as SpaceAccount[];
+  }))) as unknown as SpaceAccount[];
 }
 
 /** ACTIVE member count — the ONLY field the shell header reads from the heavy
