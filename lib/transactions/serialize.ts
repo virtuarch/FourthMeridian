@@ -36,6 +36,8 @@ import type { Transaction, InvestmentTransaction } from "@/types";
 import { merchantDisplayName, merchantLogoUrl, type ResolvedMerchantLike } from "@/lib/transactions/merchant-display";
 import { resolveLifecycle } from "@/lib/transactions/lifecycle";
 import { resolveEconomicDate } from "@/lib/transactions/economic-date";
+import { attributeIncome } from "@/lib/transactions/income-source";
+import { liabilityInflowIsCustomerPayment } from "@/lib/transactions/liability-inflow";
 
 /**
  * The scalar fields the serializers read, shaped exactly like a
@@ -67,6 +69,14 @@ export interface TransactionRowLike {
   // visible to the reading Space). This pure serializer emits whatever it is
   // handed; it has no Space context and does NOT enforce visibility.
   counterpartyAccountId?:    string | null;
+  // V27-TRUTH-4 — the evidence the canonical income authority reads. Optional
+  // on the same principle: a read that omits them gets no income attribution
+  // rather than one resting on columns nobody selected.
+  pfcPrimary?:               string | null;
+  pfcDetailed?:              string | null;
+  /** The OWNING account's type (checking | savings | debt | …). Not a Transaction
+   *  column — a caller with the account joined supplies it. */
+  accountType?:              string | null;
   // MI M6 — the resolved Merchant, from `include: { resolvedMerchant: { select:
   // { displayName, logoUrl } } }`. Optional: reads that omit the join fall back
   // to the raw `merchant` and a null logo (icon).
@@ -139,6 +149,38 @@ function deriveLifecycleAndEconomicDate(r: TransactionRowLike): Partial<Transact
     postingDate:  r.date,
     authorizedAt: r.authorizedAt ?? null,
   });
+  // V27-TRUTH-4 — the canonical income attribution rides the same derived block.
+  // Emitted only for INFLOWS, and only where the read supplied the evidence: an
+  // outflow has no income class, and inventing one would put a zero-amount
+  // "OTHER_INCOME" on every purchase in the ledger.
+  const income = r.amount > 0
+    ? attributeIncome({
+        flowType:       r.flowType ?? null,
+        providerFamily: r.pfcPrimary ?? null,
+        providerDetail: r.pfcDetailed ?? null,
+        accountType:    r.accountType ?? "other",
+        amount:         r.amount,
+        // A persisted counterparty is proof the money came from an owned
+        // account. The read-time match is NOT consulted here — this serializer
+        // is per-row and cannot see the corpus, and guessing would be worse
+        // than declining.
+        isOwnedInternalTransfer: r.counterpartyAccountId != null,
+        sourceAccountId: r.financialAccountId ?? null,
+        // V27-TRUTH-3's verdict, consulted rather than re-derived. Without it,
+        // four live rows that Plaid tagged INCOME_SALARY / INCOME_CONTRACTOR /
+        // INCOME_GIG_ECONOMY — but which are merchant credits landing on a
+        // CREDIT CARD — stay inside earned income. Structural evidence (a
+        // positive movement on a liability from a non-payment family) outranks
+        // the provider's label, which is the whole point of the precedence.
+        liabilityInflowIsIssuerCredit:
+          (r.accountType ?? null) === "debt" &&
+          liabilityInflowIsCustomerPayment({
+            providerFamily: r.pfcPrimary ?? null,
+            persistedCounterpartyAccountId: r.counterpartyAccountId ?? null,
+          }).verdict === "NO",
+      })
+    : null;
+
   return {
     lifecycleState:      lifecycle.state,
     lifecycleBasis:      lifecycle.basis,
@@ -147,6 +189,14 @@ function deriveLifecycleAndEconomicDate(r: TransactionRowLike): Partial<Transact
     economicDateBasis:   econ.basis,
     economicDateState:   econ.state,
     economicDateLagDays: econ.lagDays,
+    ...(income
+      ? {
+          incomeClass:           income.incomeClass,
+          incomeSubtype:         income.subtype,
+          incomeInstrumentId:    income.instrumentId,
+          incomeSourceAccountId: income.sourceAccountId,
+        }
+      : {}),
   };
 }
 

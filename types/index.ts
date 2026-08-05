@@ -276,6 +276,30 @@ export interface Transaction {
   /** postingDate − economicDate, in whole days. */
   economicDateLagDays?: number;
 
+  // ── V27-TRUTH-4 derived read-model (never persisted) ─────────────────────
+  /** Canonical income class: EARNED_INCOME | INTEREST_INCOME | DIVIDEND_INCOME
+   *  | OTHER_INCOME | NOT_INCOME. Present on inflows the read supplied evidence
+   *  for. A surface that shows an income total MUST break it down by this. */
+  incomeClass?:         string;
+  /** The finer subtype (SALARY, DEPOSIT_INTEREST, SECURITY_DIVIDEND, …). */
+  incomeSubtype?:       string;
+  /** The security that paid a dividend, where evidence names one. */
+  incomeInstrumentId?:  string | null;
+  /** The account that paid interest, where evidence names one. */
+  incomeSourceAccountId?: string | null;
+  // NOTE — there are deliberately NO chain fields here yet.
+  //
+  // `lib/transactions/transfer-chain.ts` exists and is tested, but a chain is a
+  // property of the WHOLE corpus, not of a page: resolving one needs every leg,
+  // and a bounded list read holds 50. Populating a chain field from a page would
+  // report SINGLE_HOP for journeys that a full read would link — a wrong answer
+  // dressed as a real one. And an optional field that production never populates
+  // is the defect pattern this arc has removed twice already.
+  //
+  // The live corpus contains ZERO multi-leg chains (see the authority's header),
+  // so nothing is hidden by waiting. These fields land when there is a
+  // corpus-scoped seam to fill them and a surface that consumes them.
+
   id: string;
   accountId: string;
   date: string;           // ISO date (YYYY-MM-DD)

@@ -149,15 +149,31 @@ export type TransactionListRow = Prisma.TransactionGetPayload<{
  * source. Extracted verbatim from getTransactions so getTransactions AND the keyset
  * explorer authority produce byte-identical `Transaction` DTOs (no second builder).
  */
+/** Account id → type, for the page's rows only. Bounded by the page size. */
+async function loadAccountTypes(ids: (string | null)[]): Promise<Map<string, string>> {
+  const unique = [...new Set(ids.filter((x): x is string => x != null))];
+  if (unique.length === 0) return new Map();
+  const rows = await db.financialAccount.findMany({
+    where: { id: { in: unique } }, select: { id: true, type: true },
+  });
+  return new Map(rows.map((a) => [a.id, a.type as string]));
+}
+
 export async function projectTransactionListRows(
   rows: TransactionListRow[],
   spaceId: string,
 ): Promise<Transaction[]> {
   const resolvedCp = await resolveOwnedTransferCounterparties(rows, { spaceId });
+  // V27-TRUTH-4 — the canonical income authority decides partly from the OWNING
+  // account's type (interest on a deposit account vs a credit on a liability),
+  // and that is not a Transaction column. One bounded lookup over the page's
+  // distinct account ids, rather than a join on every list read.
+  const accountTypeById = await loadAccountTypes(rows.map((r) => r.financialAccountId));
   return rows.map((r) => ({
     ...serializeTransactionRow({
       ...r,
       counterpartyAccountId: chooseCounterpartyId(gatedCounterpartyId(r), resolvedCp.get(r.id) ?? null),
+      accountType: accountTypeById.get(r.financialAccountId ?? "") ?? null,
     }),
     ...contextFields(r, resolvedCp),
     source: deriveSource(r),
