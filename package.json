@@ -23,7 +23,8 @@
     "backfill:merchant-intelligence": "tsx scripts/backfill-merchant-intelligence.ts",
     "backfill:personal-sections": "tsx scripts/backfill-personal-sections.ts",
     "audit:flow-desync": "tsx scripts/audit-flow-desync.ts",
-    "audit:pending-posted": "tsx scripts/audit-pending-posted-desync.ts"
+    "audit:pending-posted": "tsx scripts/audit-pending-posted-desync.ts",
+    "audit:transfer-authority": "tsx scripts/audit-transfer-authority.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

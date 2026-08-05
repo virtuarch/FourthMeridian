@@ -1,0 +1,280 @@
+# Financial Truth — Canonical Transfer Resolution Authority · Execution Ledger
+
+Implements `V27-PROPOSAL-TRANSFER-RESOLUTION-AUTHORITY.md`.
+
+**Zero database mutation.** Every query in this arc was a `SELECT`. Corpus counts
+identical before and after: `Transaction` 4,447 total / 4,402 active,
+`FinancialAccount` 35, rows carrying `counterpartyAccountId` **7** (unchanged).
+No schema change, no migration, no repair applied. 465/465 tests, `tsc` clean,
+lint 0 errors.
+
+Reproduce: `npm run audit:transfer-authority`
+
+---
+
+## 1. Before / after census
+
+| | before | after |
+|---|---|---|
+| active transactions | 4,402 | 4,402 |
+| **transfer candidates** | **1,023** | **598** |
+| counterparty establishable | 234 (22.9%) | **351 (58.7%)** |
+| terminal, no account (cash + external) | 63 counted as failures | **244 (40.8%) counted as answers** |
+| **movement-unresolved** | **252** | **3 (0.5%)** |
+| rows with a *generic* unresolved bucket | 252 | **0** |
+
+Every excluded row, under exactly one reason — the census balances:
+
+| n | $ | reason |
+|---|---|---|
+| 352 | 236,773.33 | `NOT_CLASSIFIED` — awaiting a classifier (a **backlog**, reported not dropped) |
+| 65 | 5,000.43 | `LIABILITY_CHARGE` — a card charge is not a transfer leg |
+| 8 | 1,263.14 | `NOT_TRANSFER_SHAPED` — no evidence that value moved |
+| **425** | | **total excluded** (598 + 425 = 1,023 ✓) |
+
+---
+
+## 2. Resolution improvement
+
+| evidence level | n | % | $ |
+|---|---|---|---|
+| `ACCOUNT_CERTAIN` | 202 | 33.8 | 410,684.74 |
+| `PROVIDER_LINKED` | 132 | 22.1 | 203,994.74 |
+| `NO_DESTINATION_EVIDENCE` | 138 | 23.1 | 38,973.08 |
+| `CASH_NO_COUNTERPARTY` | 63 | 10.5 | 25,454.53 |
+| `TYPE_CERTAIN_ACCOUNT_AMBIGUOUS` | 40 | 6.7 | 72,500.00 |
+| **`ACCOUNT_CERTAIN_LEG_AMBIGUOUS`** | **17** | **2.8** | **26,500.00** |
+| `TYPE_AMBIGUOUS` | 6 | 1.0 | 13,000.00 |
+
+Canonical maturity: `DEBT_PAYMENT` 239 · **`EXTERNAL_PERSON_TRANSFER` 116** ·
+`SAVINGS_TRANSFER` 79 · `CASH_TRANSFER` 76 · `CASH_MOVEMENT` 63 ·
+**`EXTERNAL_VENUE_TRANSFER` 21** · `UNRESOLVED_TRANSFER` 3 ·
+**`EXTERNAL_DEPOSITORY_TRANSFER` 1**.
+
+---
+
+## 3. Unresolved population, by explicit reason
+
+**3 rows. One reason. No generic bucket.**
+
+| n | $ | reason |
+|---|---|---|
+| 3 | 6,500.00 | `CANDIDATES_SPAN_TYPES` — several possible destinations of different kinds |
+
+All three are `Requested transfer to AMEX checking account` from the Amex HYSA,
+whose candidates span a checking account and a card. An identifier would settle
+them; American Express exposes none.
+
+The vocabulary carries four more limitations, each renderable, none currently
+populated in this corpus: `CROSS_OWNER_BOUNDARY`, `NO_COUNTERPART_EVIDENCE`,
+`LIABILITY_INFLOW_UNATTESTED`, and the census-level
+`PROVIDER_EVIDENCE_UNAVAILABLE`.
+
+> ⚠️ `CROSS_OWNER_BOUNDARY` is **detection only**. `legsQualify` still refuses to
+> pair across owners and this arc does not change that. Joint accounts and
+> business Spaces remain the largest unmeasured gap — but they will now be
+> *named* rather than vanishing into "unknown". A standing probe asserts
+> `legsQualifyIgnoringOwner` can only ever be counted, never claimed.
+
+---
+
+## 4. Deterministic counterparty improvement
+
+| | |
+|---|---|
+| persisted today | 7 |
+| authority can establish an account | **351** (58.7%) |
+| …agreeing with a persisted value | 7 |
+| …NEW (currently null) | **344** |
+| …**conflicting** with a persisted value | **0** |
+
+Of the 351, **17 rows ($26,500) are `ACCOUNT_CERTAIN_LEG_AMBIGUOUS`**: the
+destination account is a fact, the opposing row is unknowable. Not one carries a
+leg id. Two independent probes assert it: `legId` is null at that level, and no
+assessed row anywhere carries a leg id at a level that forbids one (0), nor an
+account id without persistability (0).
+
+---
+
+## 5. Provider value — structure vs identifiers
+
+| | persistable | unresolved |
+|---|---|---|
+| structural only (**all identifiers disabled**) | 342 (57.2%) | 17 (2.8%) |
+| identifier-assisted | 351 (58.7%) | 3 (0.5%) |
+
+**Identifiers contribute 9 legs; structure contributes the other 108.** The
+proposal predicted 73% of the gain would be provider-agnostic; measured, it is
+**92%**. The architecture does not depend on Chase.
+
+**Identifier vs structural contradictions: 0** — identifiers only ever *add*.
+That is the measured answer to the cascade risk (R1): no identifier claim
+overrode a structural one.
+
+| institution | n | corrId | mask | resolved |
+|---|---|---|---|---|
+| Chase `ins_56` | 518 | 132 (25.5%) | 190 (36.7%) | 292 (56.4%) |
+| American Express `ins_10` | 80 | **0 (0.0%)** | 13 (16.3%) | **59 (73.8%)** |
+
+Amex exposes no correlation token at all and still resolves at 73.8% — the
+graceful-degradation case, measured rather than asserted.
+
+---
+
+## 6. Repair proposal — **NOTHING APPLIED**
+
+| | n | detail |
+|---|---|---|
+| **A. counterparty writes** | 344 | null → an established account. `ACCOUNT_CERTAIN` 197 · `PROVIDER_LINKED` 132 · `ACCOUNT_CERTAIN_LEG_AMBIGUOUS` 15 |
+| **B. flowType reclassifications** | 18 | all `TRANSFER → DEBT_PAYMENT`, $21,000 |
+| **C. external classifications** | 138 | a **name** change only — no counterparty, no flowType change |
+| **D. cash classifications** | 63 | terminal, unchanged |
+
+The audit script has no `--apply` flag and adding one is a separate,
+separately-approved act.
+
+---
+
+## 7. Regression guards — the expected buckets are populated
+
+A falling failure count is not evidence of success; this repository has shipped a
+false pass before. The audit checks what must **not** have changed:
+
+- **221 / 221 stored `DEBT_PAYMENT` rows still mature to `DEBT_PAYMENT`.** None lost.
+- The 160 liability inflows: 118 `DEBT_PAYMENT`, 42 excluded at admission
+  (27 `NOT_A_TRANSFER_FLOW` — refunds; 8 `NOT_TRANSFER_SHAPED` — the V27-TRUTH-3
+  issuer credits, `POINTS FOR AMEX TRVL` and friends; 7 `NOT_CLASSIFIED` — seed
+  `CC Payment` rows).
+
+> ⚠️ **`ISSUER_CREDIT` now has zero members, and that is correct.** Those 8 rows
+> are excluded at *admission* rather than resolved to a leaf. The outcome is
+> identical: `impliedFlowType(ISSUER_CREDIT)` already returned `null`, i.e. "not
+> this authority's business". Admission says the same thing one step earlier and
+> more cleanly. The leaf is retained because a provider that attests a
+> non-payment family on a *transfer-shaped* row will still reach it.
+
+- 0 rows carry a leg id at a level that forbids one.
+- 0 rows carry an account id without persistability.
+
+---
+
+## 8. Verification
+
+**Tests** — 465/465. New suite `lib/transactions/transfer-authority.test.ts`
+(30 tests) covering all five phases plus cross-cutting invariants. Notable:
+pigeonhole soundness, stratification determinism under input reordering,
+mask symmetry, deny-list compliance, and "ACH/WIRE are not maturities".
+
+**Three existing tests changed behaviour deliberately**, each with the reasoning
+recorded in the test body:
+- `RelationshipResolver.test.ts` — two legs in one account went `RESOLVED (v1,
+  wrong) → AMBIGUOUS (v2, discarded a true claim) → account-certain/leg-ambiguous
+  (v3)`. A new sibling test pins the pigeonhole failure that v3 must still refuse.
+- `read-boundary-authority.test.ts` — the DTO gate moved from `status ===
+  "RESOLVED"` to the authority's own `persistableCounterparty` verdict, because
+  the status stopped being equivalent to persistability.
+- `lifecycle-boundary.test.ts` — candidacy split into prefilter vs admission.
+
+**API** — `GET /api/transactions/:id` returns the new fields. The founding defect
+case (Chase `−$4,000` "AMERICANEXPRESS … TRANSFER", 2026-08-03) resolves
+`ACCOUNT_CERTAIN → SAVINGS_TRANSFER`, counterparty *High Yield Savings Account*:
+
+```json
+"transferAssessment": {
+  "status": "RESOLVED", "reason": "DETERMINISTIC_UNIQUE",
+  "maturity": "SAVINGS_TRANSFER", "evidenceLevel": "ACCOUNT_CERTAIN",
+  "persistableCounterparty": true, "persistableLeg": true,
+  "unresolvedReason": null, "admission": "ADMITTED"
+}
+```
+
+**Browser** — Transactions list and drawer render clean, zero console errors.
+Badges now read *Internal transfer*, *Payment app movement*, *Cash movement*,
+*Asset venue transfer*. The three genuinely-unresolved Amex rows read *Unknown
+movement* where the old per-row path claimed *External bank transfer* — a false
+claim, since an owned candidate exists and the row is ambiguous, not external.
+That regression in apparent specificity is an improvement in truth.
+
+**Fingerprints** — identical across two consecutive runs:
+
+```
+corpus (all active transactions)   cd4fa31b8777707f  (4402 rows)
+admitted candidate set             937a9f9bd0f9aa35  (598 rows)
+authority verdicts                 9073e088753c3c6b  (598 rows)
+persisted counterparties           0ae8c508c156456e  (7 rows)
+```
+
+---
+
+## 9. Architecture as built
+
+```
+  ADMISSION      transfer-admission.ts        classified · leg-capable · transfer-shaped
+      ↓
+  E1 IDENTITY    provider-link.ts             PROVIDER_LINKED   ✅ account + leg
+                 provider-link-extract.ts     mask restriction (symmetric, subtractive)
+      ↓          each claim REMOVES both legs from every later tier
+  E2 STRUCTURE   transfer-maturation.ts       ACCOUNT_CERTAIN (day-0 tier, then ±5)
+      ↓                                       ACCOUNT_CERTAIN_LEG_AMBIGUOUS ✅ account only
+  E4 CLASS                                    TYPE_CERTAIN · TYPE_AMBIGUOUS
+      ↓
+  E5 TERMINAL                                 CASH_MOVEMENT · EXTERNAL_{PERSON,DEPOSITORY,
+      ↓                                       VENUE,UNKNOWN}
+  E6 RESIDUE                                  UNRESOLVED_TRANSFER + a NAMED reason
+```
+
+**One authority.** `matchTransferCandidate` delegates entirely; the server
+boundary consults `persistableCounterparty` rather than re-deriving it;
+`resolveOwnedTransferCounterparties` is now a projection of
+`resolveTransferAssessments`, not a sibling computation; and
+`TransferDisposition` became a projection of `TransferMaturity` via
+`dispositionForMaturity`, so the two vocabularies can no longer disagree.
+
+### Design decisions worth carrying forward
+
+- **`providerLinkKey` and `maskedDestinationAccountId` are required-nullable on
+  `TransferLeg`.** The compiler found all 10 call sites, which is the point. An
+  optional field production never populates is not a safeguard, it is the defect.
+- **Mask evidence lives inside `legsQualify`**, not as a post-filter. Both clauses
+  together are symmetric in the pair, so it applies to the forward direction, the
+  reverse count and the stratified tiers at once — and it can only ever remove a
+  pairing, never invent one.
+- **The pigeonhole condition, not "one account".** `ACCOUNT_CERTAIN_LEG_AMBIGUOUS`
+  requires `|competing sources| ≤ |qualifying legs|`. My first implementation used
+  "one account" alone and the V27-TRUTH-1 mutual-uniqueness probe caught it: one
+  arrival contested by two debits means one of them did not land there, and
+  nothing says which.
+- **Externality needs positive evidence.** "No owned leg matched" is not evidence
+  that money left the household. `FINANCIAL_INSTITUTION` is deliberately excluded
+  from the external counterparty classes — your own bank is one.
+- **Privacy tightened, not relaxed.** The Plaid deny-list is untouched and probed.
+  Only the opaque `truncate(sha256(institutionId ‖ extractorId ‖ rawToken))`
+  leaves the extractor; mask digits are consumed and discarded. A probe asserts
+  neither the raw token nor the digits appear anywhere in the output.
+
+---
+
+## 10. Readiness for the `economicDate` cutover
+
+**Localized, and blocked on one measurement.**
+
+- The authority reads a date in exactly one place per leg (`dateMs`), constructed
+  at **three** call sites (`RelationshipResolver.toTransferLeg`, the audit script,
+  the chain authority). Switching the basis is a three-line change.
+- ⚠️ **The bounds were measured on POSTING dates.** `TRANSFER_MATCH_WINDOW_DAYS = 5`
+  came from a posting-date skew histogram, and the day-0 stratification tier is
+  meaningful only because both legs of an internal transfer post on the same day
+  (all 66 correlation-id pairs are at 0 days). On economic dates the settlement
+  skew largely disappears, which would make the day-0 tier absorb *more* — and
+  possibly too much. **Both bounds must be re-derived on economic dates before the
+  cutover, not after.**
+- The corpus index is keyed on the leg array's identity, so any date change
+  naturally rebuilds it; there is no cached derivation to invalidate.
+- Nothing in this arc reads or writes `economicDate`, and no schema changed.
+
+## 11. What this arc did NOT do
+
+L8 is untouched. `economicDate` is untouched. No repair was applied. No
+migration was written. `pendingTransactionRef` remains the only `scope: SELF`
+provider link and is still L8's subject matter — the `ProviderAssertedIdentity`
+abstraction names the seam without crossing it.

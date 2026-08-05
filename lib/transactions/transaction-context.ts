@@ -14,6 +14,7 @@
 
 import {
   deriveTransferDisposition,
+  dispositionForMaturity,
   type TransferDisposition,
   type TransferEvidence,
 } from "@/lib/transactions/transfer-evidence";
@@ -34,6 +35,20 @@ export interface TransactionContextInput {
   hasResolvedMerchant:        boolean;
   /** The movement resolved to an owned counterparty account (persisted or read-time). */
   isOwnedCounterparty:        boolean;
+  /**
+   * Phase 6 — the canonical maturity from the transfer authority, when the
+   * caller ran it.
+   *
+   * ⚠️ When present it DECIDES, and the per-row evidence path below is not
+   * consulted. That is the whole convergence: the ladder measured the corpus,
+   * this module can only look at one row, and two authorities answering the same
+   * question is how "unresolved" and "external bank transfer" came to describe
+   * the same movement simultaneously.
+   *
+   * Null when the caller had no corpus (golden fixtures, exports built from a
+   * bare row). The fallback is then honest rather than absent.
+   */
+  transferMaturity?:          string | null;
 }
 
 export interface TransactionContext {
@@ -49,7 +64,10 @@ export interface TransactionContext {
  */
 export function deriveTransactionContext(t: TransactionContextInput): TransactionContext {
   let transferDisposition: TransferDisposition | null = null;
-  if (t.flowType === "TRANSFER") {
+  if (t.transferMaturity) {
+    // The ladder has spoken. Project, never re-derive.
+    transferDisposition = dispositionForMaturity(t.transferMaturity);
+  } else if (t.flowType === "TRANSFER") {
     const evidence: TransferEvidence = {
       railType:           (t.transferRail ?? undefined) as TransferEvidence["railType"],
       movementForm:       (t.transferMovementForm ?? undefined) as TransferEvidence["movementForm"],

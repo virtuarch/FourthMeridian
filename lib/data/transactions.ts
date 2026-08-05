@@ -60,7 +60,7 @@ import { resolveTransactionRelationships } from "@/lib/transactions/Relationship
 // Projects a deterministically-matched counterparty id into the list DTO through
 // the SAME KD-15 gate; never persists Transaction.counterpartyAccountId.
 import {
-  resolveOwnedTransferCounterparties,
+  resolveTransferAssessments,
   filterVisibleCounterpartyAccounts,
 } from "@/lib/transactions/transfer-resolution";
 // TE-2B — semantic "needs classification" disclosure, derived server-side from
@@ -163,7 +163,10 @@ export async function projectTransactionListRows(
   rows: TransactionListRow[],
   spaceId: string,
 ): Promise<Transaction[]> {
-  const resolvedCp = await resolveOwnedTransferCounterparties(rows, { spaceId });
+  // Phase 6 — ONE call, ONE answer. The id and the maturity come from the same
+  // assessment, so the counterparty the DTO shows and the name the DTO gives the
+  // movement can never disagree.
+  const assessments = await resolveTransferAssessments(rows, { spaceId });
   // V27-TRUTH-4 — the canonical income authority decides partly from the OWNING
   // account's type (interest on a deposit account vs a credit on a liability),
   // and that is not a Transaction column. One bounded lookup over the page's
@@ -172,10 +175,11 @@ export async function projectTransactionListRows(
   return rows.map((r) => ({
     ...serializeTransactionRow({
       ...r,
-      counterpartyAccountId: chooseCounterpartyId(gatedCounterpartyId(r), resolvedCp.get(r.id) ?? null),
+      counterpartyAccountId: chooseCounterpartyId(
+        gatedCounterpartyId(r), assessments.get(r.id)?.counterpartyAccountId ?? null),
       accountType: accountTypeById.get(r.financialAccountId ?? "") ?? null,
     }),
-    ...contextFields(r, resolvedCp),
+    ...contextFields(r, assessments),
     source: deriveSource(r),
     // TX-3.1b (review M6) — the resolved Merchant id. The explorer's `merchantId`
     // filter was previously unusable: it filtered on a real, indexed, persisted
@@ -283,8 +287,9 @@ function contextFields(
     transferEvidenceSource: string | null; transferEvidenceVersion: string | null;
     merchantId: string | null; counterpartyAccountId: string | null;
   },
-  resolvedCp: Map<string, string>,
+  assessments: Map<string, { counterpartyAccountId: string | null; maturity: string }>,
 ) {
+  const a = assessments.get(r.id);
   const c = deriveTransactionContext({
     flowType:                   r.flowType,
     classificationReason:       r.classificationReason,
@@ -296,7 +301,9 @@ function contextFields(
     transferEvidenceSource:     r.transferEvidenceSource,
     transferEvidenceVersion:    r.transferEvidenceVersion,
     hasResolvedMerchant:        r.merchantId != null,
-    isOwnedCounterparty:        r.counterpartyAccountId != null || resolvedCp.has(r.id),
+    isOwnedCounterparty:        r.counterpartyAccountId != null || a?.counterpartyAccountId != null,
+    // Phase 6 — the ladder decides the disposition where it ran.
+    transferMaturity:           a?.maturity ?? null,
   });
   return { transferDisposition: c.transferDisposition, needsClassification: c.needsClassification };
 }
@@ -324,13 +331,14 @@ export async function getDebtTransactions(
   });
   const { rows: capped, truncated } = capFetched(fetched, limit);
 
-  const resolvedCp = await resolveOwnedTransferCounterparties(capped, { spaceId });
+  const assessments = await resolveTransferAssessments(capped, { spaceId });
   const rows = capped.map((r) => ({
     ...serializeTransactionRow({
       ...r,
-      counterpartyAccountId: chooseCounterpartyId(gatedCounterpartyId(r), resolvedCp.get(r.id) ?? null),
+      counterpartyAccountId: chooseCounterpartyId(
+        gatedCounterpartyId(r), assessments.get(r.id)?.counterpartyAccountId ?? null),
     }),
-    ...contextFields(r, resolvedCp),
+    ...contextFields(r, assessments),
   }));
   return { rows, truncated, limit, windowDays };
 }
@@ -504,13 +512,25 @@ export async function getTransactionDetail(
   const ownedAccounts = ownerUserId
     ? await db.financialAccount.findMany({
         where: { ownerUserId, deletedAt: null },
-        select: { id: true, type: true },
+        select: { id: true, type: true, mask: true, institutionId: true },
       })
     : [];
   const ownedAccountIds = ownedAccounts.map((a) => a.id);
   // V27-TRUTH-2 — the canonical authority decides from account TYPE, so the
   // detail read supplies the same context the list read does.
-  const matchCtx = { accountTypeById: new Map(ownedAccounts.map((a) => [a.id, a.type as string])) };
+  // Phase 5 — the mask index, from the SAME owned-account graph. Present with
+  // every account carrying a given mask, so an ambiguous mask abstains.
+  const maskToAccountIds = new Map<string, string[]>();
+  for (const a of ownedAccounts) {
+    if (!a.mask) continue;
+    const list = maskToAccountIds.get(a.mask);
+    if (list) list.push(a.id); else maskToAccountIds.set(a.mask, [a.id]);
+  }
+  const institutionByAccount = new Map(ownedAccounts.map((a) => [a.id, a.institutionId ?? null]));
+  const matchCtx = {
+    accountTypeById: new Map(ownedAccounts.map((a) => [a.id, a.type as string])),
+    maskToAccountIds,
+  };
   const candidates = await db.transaction.findMany({
     where: {
       OR: [
@@ -544,6 +564,11 @@ export async function getTransactionDetail(
       deletedAt: true, flowType: true, currency: true,
       settlementState: true, pfcDetailed: true, pfcPrimary: true,
       counterpartyAccountId: true,
+      // Financial Truth (Transfer Authority) — admission reads `category`, the
+      // external leaves read `counterpartyType`, identifier extraction reads
+      // `description`. The DRAWER must admit the same facts as the LIST or the
+      // two disagree about one row — the exact defect V27-TRUTH-2 closed once.
+      category: true, counterpartyType: true, description: true,
     },
     take: 300, // safety cap; same-account sets are tiny, owned ±window sets are small
   });
@@ -553,11 +578,19 @@ export async function getTransactionDetail(
   // spread: the liability-inflow authority must read the row's OWN persisted
   // link, and a silently-absent field would resolve every card credit as
   // UNDETERMINED instead of consulting the proof that is right there.
-  const withOwner = <T extends { financialAccountId: string | null; counterpartyAccountId?: string | null; pfcPrimary?: string | null }>(r: T) => ({
+  const withOwner = <T extends {
+    financialAccountId: string | null; counterpartyAccountId?: string | null;
+    pfcPrimary?: string | null; category?: unknown; counterpartyType?: unknown;
+    description?: string | null; merchant?: string;
+  }>(r: T) => ({
     ...r,
     ownerUserId,
     pfcPrimary: r.pfcPrimary ?? null,
     persistedCounterpartyAccountId: r.counterpartyAccountId ?? null,
+    category:          (r.category as string | null) ?? null,
+    counterpartyClass: (r.counterpartyType as string | null) ?? null,
+    institutionId:     institutionByAccount.get(r.financialAccountId ?? "") ?? null,
+    descriptor:        `${r.merchant ?? ""} ${r.description ?? ""}`,
   });
   let relationships = resolveTransactionRelationships(
     withOwner(row),

@@ -151,8 +151,16 @@ console.log("\nPROBE 7/8 — DEBT_PAYMENT enters the resolver; classification re
   const m = code(MATURE);
   check("TRANSFER, DEBT_PAYMENT, UNKNOWN and null are all candidates",
     /"TRANSFER", "DEBT_PAYMENT", "UNKNOWN", null/.test(m));
-  check("candidacy is a helper, not an inline flowType === TRANSFER gate",
-    /export function isTransferCandidate/.test(m));
+  // Financial Truth — candidacy split into two named things, deliberately.
+  // The broad list above is now the DATABASE PREFILTER (it admits every
+  // unclassified row, which a `WHERE` clause cannot tell apart from a transfer);
+  // real ADMISSION lives in transfer-admission.ts, which also reads the row's own
+  // account type, category and attested axes. The invariant tying them together
+  // — admitted ⊆ prefiltered — is asserted in transfer-authority.test.ts.
+  check("the prefilter is a helper, not an inline flowType === TRANSFER gate",
+    /export function isTransferPrefilterCandidate/.test(m));
+  check("...and it is NAMED a prefilter, so no caller mistakes it for admission",
+    /TRANSFER_PREFILTER_FLOW_TYPES/.test(m) && !/export function isTransferCandidate\b/.test(m));
   check("maturation takes the CURRENT flowType as input, never as a gate",
     /flowType: string \| null \| undefined;/.test(m) &&
     !/if \(input\.flowType !== "TRANSFER"\) return/.test(m));

@@ -120,13 +120,65 @@ test("a read path never writes counterpartyAccountId", () => {
   }
 });
 
-test("the DTO's counterparty can only come from a persisted id or a RESOLVED match", () => {
+test("the DTO's counterparty can only come from a persisted id or the authority's own persistability verdict", () => {
   const src = logic(read("lib/transactions/transfer-resolution.ts"));
-  // The one place a resolved id enters the map must be gated on RESOLVED.
+  // Financial Truth — the gate was `status === "RESOLVED"`, which was a PROXY for
+  // persistability and stopped being equivalent to it. At
+  // ACCOUNT_CERTAIN_LEG_AMBIGUOUS the destination ACCOUNT is a fact while the LEG
+  // is unknowable, so the row is RESOLVED and carries no `transactionId`; a gate
+  // on the status alone cannot express that, and a gate that re-derives it would
+  // be a second authority. The read boundary now consults the authority's own
+  // verdict instead of inferring one.
   assert.match(
     src,
-    /status\s*===\s*""\s*&&\s*match\.counterpartyAccountId/,
-    "the resolved-id map must be gated on a RESOLVED status",
+    /match\.persistableCounterparty\s*&&\s*match\.counterpartyAccountId/,
+    "the resolved-id map must be gated on the authority's persistableCounterparty verdict",
+  );
+  assert.ok(
+    !/status\s*===\s*""/.test(src),
+    "the read boundary must not re-derive persistability from the status string",
+  );
+});
+
+test("a persistable LEG and a persistable ACCOUNT are separate claims", () => {
+  const src = logic(read("lib/transactions/transfer-maturation.ts"));
+  // The two booleans must never be assigned from one another, or the missing
+  // rung collapses back into the defect it was created to fix.
+  assert.ok(
+    !/persistableLeg\s*:\s*persistableCounterparty/.test(src) &&
+      !/persistableCounterparty\s*:\s*persistableLeg/.test(src),
+    "persistableLeg and persistableCounterparty must be decided independently",
+  );
+  // ACCOUNT_CERTAIN_LEG_AMBIGUOUS must be the one level that grants the account
+  // and refuses the leg. If that stops being true the rung means nothing.
+  //
+  // ⚠️ Located in RAW source, not in `logic()`. The level name IS a string
+  // literal, and `logic()` strips string literals — the fourth time this
+  // repository has hit that trap, and the reason the note is here rather than in
+  // a commit message.
+  const raw = read("lib/transactions/transfer-maturation.ts");
+  const rung = raw.slice(raw.indexOf('level: "ACCOUNT_CERTAIN_LEG_AMBIGUOUS"'));
+  const block = rung.slice(0, rung.indexOf("};"));
+  assert.match(block, /legId:\s*null/, "the leg-ambiguous rung must never carry a leg id");
+  assert.match(block, /persistableCounterparty:\s*true,\s*persistableLeg:\s*false/,
+    "the leg-ambiguous rung must persist the account and refuse the leg");
+});
+
+test("cross-owner detection can never become cross-owner MATCHING", () => {
+  const src = logic(read("lib/transactions/transfer-maturation.ts"));
+  // `legsQualifyIgnoringOwner` exists to NAME a limitation, not to relax the
+  // ownership boundary. It may only ever be counted.
+  const uses = [...src.matchAll(/legsQualifyIgnoringOwner\s*\(/g)].length;
+  assert.ok(uses >= 1, "the cross-owner probe should exist");
+  // Every call site must feed a COUNT, never a candidate set or a claim.
+  assert.match(
+    src,
+    /corpus\.filter\(\(c\) => legsQualifyIgnoringOwner\(source, c\)\)\.length/,
+    "cross-owner qualification may only be counted, never turned into candidates",
+  );
+  assert.ok(
+    !/claim\([^)]*legsQualifyIgnoringOwner/.test(src),
+    "a cross-owner pair must never become a claim",
   );
 });
 

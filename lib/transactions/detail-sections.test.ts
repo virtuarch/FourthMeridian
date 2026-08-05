@@ -26,7 +26,7 @@ function detail(over: Partial<TransactionDetail> = {}): TransactionDetail {
     provenance: { source: 'plaid' },
     counterparty: null,
     reporting: null,
-    relationships: { pendingPosted: null, duplicate: null, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE' } },
+    relationships: { pendingPosted: null, duplicate: null, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } },
     needsClassification: false, needsClassificationReason: null,
   };
   return { ...base, ...over } as unknown as TransactionDetail;
@@ -79,18 +79,18 @@ test('fxApplied false/null is not shown; tiFactsVersion never shown', () => {
 });
 
 test('pendingPosted wording — no amount claim', () => {
-  const posted = detail({ authorizedAt: '2026-05-30', relationships: { pendingPosted: { role: 'POSTED_FROM_PENDING', transactionId: 'x' }, duplicate: null, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE' } } });
+  const posted = detail({ authorizedAt: '2026-05-30', relationships: { pendingPosted: { role: 'POSTED_FROM_PENDING', transactionId: 'x' }, duplicate: null, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } } });
   const notes = find(buildTransactionDetailSections(posted), 'Relationship Intelligence')!.notes!;
   assert.equal(notes[0], 'Posted from a pending transaction. Authorized 2026-05-30, posted 2026-06-01.');
   assert.ok(!/amount/i.test(notes.join(' ')));
-  const pending = detail({ relationships: { pendingPosted: { role: 'PENDING_AWAITING_POST', transactionId: 'x' }, duplicate: null, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE' } } });
+  const pending = detail({ relationships: { pendingPosted: { role: 'PENDING_AWAITING_POST', transactionId: 'x' }, duplicate: null, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } } });
   assert.equal(find(buildTransactionDetailSections(pending), 'Relationship Intelligence')!.notes![0], 'A posted version of this pending transaction exists.');
 });
 
 test('duplicate wording is hedged, counts, pluralizes', () => {
-  const one = detail({ relationships: { pendingPosted: null, duplicate: { transactionIds: ['a'] }, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE' } } });
+  const one = detail({ relationships: { pendingPosted: null, duplicate: { transactionIds: ['a'] }, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } } });
   assert.equal(find(buildTransactionDetailSections(one), 'Relationship Intelligence')!.notes![0], 'Possible duplicate — appears to match 1 other transaction on 2026-06-01.');
-  const two = detail({ relationships: { pendingPosted: null, duplicate: { transactionIds: ['a', 'b'] }, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE' } } });
+  const two = detail({ relationships: { pendingPosted: null, duplicate: { transactionIds: ['a', 'b'] }, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } } });
   const note = find(buildTransactionDetailSections(two), 'Relationship Intelligence')!.notes![0];
   assert.match(note, /Possible duplicate/);
   assert.match(note, /2 other transactions/);
@@ -112,11 +112,11 @@ test('transferCandidate renders a hedged, account-name-free note when resolved',
         transactionId: 'leg2',
         counterpartyAccountId: 'acct-2',
         confidence: 1,
-        reason: 'DETERMINISTIC_UNIQUE', destinationAccountType: 'savings', maturity: 'SAVINGS_TRANSFER', evidenceLevel: 'ACCOUNT_CERTAIN',
+        reason: 'DETERMINISTIC_UNIQUE', destinationAccountType: 'savings', maturity: 'SAVINGS_TRANSFER', evidenceLevel: 'ACCOUNT_CERTAIN', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED',
       },
       transferAssessment: {
         status: 'RESOLVED', transactionId: 'leg2', counterpartyAccountId: 'acct-2', confidence: 1,
-        reason: 'DETERMINISTIC_UNIQUE', destinationAccountType: 'savings', maturity: 'SAVINGS_TRANSFER', evidenceLevel: 'ACCOUNT_CERTAIN',
+        reason: 'DETERMINISTIC_UNIQUE', destinationAccountType: 'savings', maturity: 'SAVINGS_TRANSFER', evidenceLevel: 'ACCOUNT_CERTAIN', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED',
       },
     },
   });
@@ -139,11 +139,11 @@ test('refundCandidate stays reserved-null even when transferCandidate resolves',
       refundCandidate: null,
       transferCandidate: {
         status: 'RESOLVED', transactionId: null, counterpartyAccountId: 'acct-2',
-        confidence: 1, reason: 'DETERMINISTIC_UNIQUE', destinationAccountType: 'savings', maturity: 'SAVINGS_TRANSFER', evidenceLevel: 'ACCOUNT_CERTAIN',
+        confidence: 1, reason: 'DETERMINISTIC_UNIQUE', destinationAccountType: 'savings', maturity: 'SAVINGS_TRANSFER', evidenceLevel: 'ACCOUNT_CERTAIN', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED',
       },
       transferAssessment: {
         status: 'RESOLVED', transactionId: null, counterpartyAccountId: 'acct-2',
-        confidence: 1, reason: 'DETERMINISTIC_UNIQUE', destinationAccountType: 'savings', maturity: 'SAVINGS_TRANSFER', evidenceLevel: 'ACCOUNT_CERTAIN',
+        confidence: 1, reason: 'DETERMINISTIC_UNIQUE', destinationAccountType: 'savings', maturity: 'SAVINGS_TRANSFER', evidenceLevel: 'ACCOUNT_CERTAIN', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED',
       },
     },
   });

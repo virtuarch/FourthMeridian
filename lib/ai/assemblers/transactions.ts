@@ -217,6 +217,12 @@ type TxnRow = {
   classificationReason:  string | null;
   transferRail:          string | null;
   counterpartyAccountId: string | null;
+  // Financial Truth (Transfer Authority) — the AI payload runs the SAME matcher
+  // as the UI, so it must supply the same facts. `counterpartyType` decides the
+  // external terminal leaves; `description` is read by the IDENTIFIER extractor
+  // and never by anything that could surface a provider token to the model.
+  counterpartyType: string | null;
+  description:      string | null;
 };
 
 /**
@@ -407,6 +413,9 @@ async function assembleTransactions(
       settlementState:       true,
       pfcDetailed:           true,
       pfcPrimary:            true,
+      // Financial Truth (Transfer Authority) — see TxnRow.
+      counterpartyType:      true,
+      description:           true,
     },
     orderBy: { date: 'desc' },
     take:    TRANSACTION_FETCH_LIMIT + 1,

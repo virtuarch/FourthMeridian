@@ -14,7 +14,7 @@ import {
   ECONOMIC_DATE_MAX_LAG_DAYS,
 } from "./economic-date";
 import {
-  matureClassification, adoptIfMonotonic, adoptRetraction, maturityRank, isTransferCandidate,
+  matureClassification, adoptIfMonotonic, adoptRetraction, maturityRank, isTransferPrefilterCandidate,
   impliedFlowType, TRANSFER_MATCH_WINDOW_DAYS, MATURITY_LABEL,
   resolveDestinationEvidence, maturityForEvidence,
   legsQualify, resolveDestinationEvidenceFor, type TransferLeg,
@@ -179,13 +179,13 @@ console.log("4B. Economic date — inverted and absent evidence");
 
 console.log("4C. Classification — DEBT_PAYMENT rows ENTER the resolver");
 {
-  check("TRANSFER is a candidate", isTransferCandidate("TRANSFER"));
+  check("TRANSFER is a candidate", isTransferPrefilterCandidate("TRANSFER"));
   check("DEBT_PAYMENT is a candidate — the row excluded from its own repair",
-    isTransferCandidate("DEBT_PAYMENT"));
-  check("UNKNOWN is a candidate", isTransferCandidate("UNKNOWN"));
-  check("null (the 352 seed rows) is a candidate", isTransferCandidate(null));
-  check("SPENDING is NOT a candidate", !isTransferCandidate("SPENDING"));
-  check("INCOME is NOT a candidate", !isTransferCandidate("INCOME"));
+    isTransferPrefilterCandidate("DEBT_PAYMENT"));
+  check("UNKNOWN is a candidate", isTransferPrefilterCandidate("UNKNOWN"));
+  check("null (the 352 seed rows) is a candidate", isTransferPrefilterCandidate(null));
+  check("SPENDING is NOT a candidate", !isTransferPrefilterCandidate("SPENDING"));
+  check("INCOME is NOT a candidate", !isTransferPrefilterCandidate("INCOME"));
 }
 
 console.log("4C. Classification — the least-specific honest default");
@@ -377,13 +377,13 @@ console.log("V27-TRUTH-1 PART 2. ACCOUNT_CERTAIN requires MUTUAL uniqueness");
     leg("l1", "card", "debt", 1), leg("l2", "card", "debt", 1),
   ]);
   check("two legs in ONE account is not account-certain either",
-    twoLegsOneAccount.level === "TYPE_CERTAIN_ACCOUNT_AMBIGUOUS");
+    twoLegsOneAccount.level === "ACCOUNT_CERTAIN_LEG_AMBIGUOUS");
 
   // legsQualify must be symmetric, or mutual uniqueness is meaningless.
   const mk = (o: Partial<TransferLeg>): TransferLeg => ({
     id: "x", accountId: "a", accountType: "checking", ownerId: "u",
-    amount: -100, currency: "USD", dateMs: 0, superseded: false, ...o,
-  });
+    amount: -100, currency: "USD", dateMs: 0, superseded: false,
+    providerLinkKey: null, maskedDestinationAccountId: null, ...o });
   const pairs: Array<[TransferLeg, TransferLeg]> = [
     [mk({ id: "a" }), mk({ id: "b", accountId: "b", amount: 100 })],
     [mk({ id: "a" }), mk({ id: "b", accountId: "b", amount: 100, dateMs: 4 * 86_400_000 })],
@@ -462,11 +462,11 @@ console.log("V27-TRUTH-1 PART 1. The CASH veto is structural");
   // it. With no family it is now UNDETERMINED rather than assumed, and the cash
   // veto still guarantees no counterparty either way.
   check("a CASH deposit onto a card with an attested payment family IS a debt payment",
-    maturityForEvidence(cash, { accountType: "debt", amount: 250, providerFamily: "LOAN_PAYMENTS" }) === "DEBT_PAYMENT");
+    maturityForEvidence(cash, { accountType: "debt", amount: 250, providerFamily: "LOAN_PAYMENTS", railType: null, venueClass: null, counterpartyClass: null }) === "DEBT_PAYMENT");
   check("...with no family at all it is UNDETERMINED, not assumed",
-    maturityForEvidence(cash, { accountType: "debt", amount: 250 }) === "UNRESOLVED_LIABILITY_INFLOW");
+    maturityForEvidence(cash, { accountType: "debt", amount: 250, railType: null, venueClass: null, counterpartyClass: null }) === "UNRESOLVED_LIABILITY_INFLOW");
   check("...and a TRANSFER_IN family is UNDETERMINED too — movement, not origin",
-    maturityForEvidence(cash, { accountType: "debt", amount: 250, providerFamily: "TRANSFER_IN" }) === "UNRESOLVED_LIABILITY_INFLOW");
+    maturityForEvidence(cash, { accountType: "debt", amount: 250, providerFamily: "TRANSFER_IN", railType: null, venueClass: null, counterpartyClass: null }) === "UNRESOLVED_LIABILITY_INFLOW");
   check("...and still carries no counterparty", cash.accountId === null);
 }
 
@@ -481,19 +481,19 @@ console.log("4-AUDIT. The row's OWN account settles a liability inflow");
   check("destination type ALONE would say cash transfer",
     maturityForEvidence(fromChecking) === "CASH_TRANSFER");
   check("...but money INTO a liability is a debt payment",
-    maturityForEvidence(fromChecking, { accountType: "debt", amount: 980.48 }) === "DEBT_PAYMENT");
+    maturityForEvidence(fromChecking, { accountType: "debt", amount: 980.48, railType: null, venueClass: null, counterpartyClass: null }) === "DEBT_PAYMENT");
   check("money OUT of a liability is never a debt payment (the structural veto)",
-    maturityForEvidence(fromChecking, { accountType: "debt", amount: -50 }) === "UNRESOLVED_TRANSFER");
+    maturityForEvidence(fromChecking, { accountType: "debt", amount: -50, railType: null, venueClass: null, counterpartyClass: null }) === "UNRESOLVED_TRANSFER");
   // V27-TRUTH-3 — this assertion encoded the false rule verbatim: "a positive
   // amount on a liability is a debt payment, evidence or not". A debt payment is
   // now positively attested, so with no family and no funding leg the honest
   // answer is that we cannot say.
   check("a liability inflow with NO evidence at all is NOT forced to a debt payment",
-    maturityForEvidence(resolveDestinationEvidence([]), { accountType: "debt", amount: 100 }) === "UNRESOLVED_LIABILITY_INFLOW");
+    maturityForEvidence(resolveDestinationEvidence([]), { accountType: "debt", amount: 100, railType: null, venueClass: null, counterpartyClass: null }) === "UNRESOLVED_LIABILITY_INFLOW");
   check("...but WITH an attested payment family it still resolves",
-    maturityForEvidence(resolveDestinationEvidence([]), { accountType: "debt", amount: 100, providerFamily: "LOAN_PAYMENTS" }) === "DEBT_PAYMENT");
+    maturityForEvidence(resolveDestinationEvidence([]), { accountType: "debt", amount: 100, providerFamily: "LOAN_PAYMENTS", railType: null, venueClass: null, counterpartyClass: null }) === "DEBT_PAYMENT");
   check("a non-liability row is unaffected — the destination still decides",
-    maturityForEvidence(fromChecking, { accountType: "checking", amount: -50 }) === "CASH_TRANSFER");
+    maturityForEvidence(fromChecking, { accountType: "checking", amount: -50, railType: null, venueClass: null, counterpartyClass: null }) === "CASH_TRANSFER");
 
   const r = matureClassification({
     flowType: "DEBT_PAYMENT", amount: 980.48, ownAccountType: "debt",

@@ -168,6 +168,7 @@ async function main(): Promise<void> {
     settlementState:       t.settlementState,
     pfcDetailed:           t.pfcDetailed,
     pfcPrimary:            t.pfcPrimary,
+    category: null, counterpartyClass: null, institutionId: null, descriptor: null,
     persistedCounterpartyAccountId: t.counterpartyAccountId ?? null,
   });
 

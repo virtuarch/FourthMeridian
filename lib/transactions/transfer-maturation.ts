@@ -81,7 +81,59 @@ export type TransferMaturity =
    * we do not say it is one. Distinct from ISSUER_CREDIT, which is a positive
    * finding, and from UNRESOLVED_TRANSFER, which would assert a transfer.
    */
-  | "UNRESOLVED_LIABILITY_INFLOW";
+  | "UNRESOLVED_LIABILITY_INFLOW"
+  // ── Phase 4 — EXTERNAL TERMINAL STATES ──────────────────────────────────
+  //
+  // An external movement is NOT an unresolved internal movement. It is a
+  // different, complete fact, and until now the ladder could not say it: 116
+  // live payment-app legs ($24,986) reported UNRESOLVED_TRANSFER while their
+  // truth — "you sent money to a person" — was fully established.
+  //
+  // `deriveTransferDisposition` has had EXTERNAL_BANK_TRANSFER,
+  // ASSET_VENUE_TRANSFER and PAYMENT_APP_MOVEMENT all along. Two vocabularies
+  // existed and only the weaker one classified. These leaves converge them.
+  //
+  // ⚠️ Each requires POSITIVE evidence of externality — an attested rail, venue,
+  // or non-owned counterparty class. "No owned leg matched" is NOT evidence that
+  // money left the household; the other side may simply not be synced yet. That
+  // case stays UNRESOLVED_TRANSFER, and the distinction is the difference
+  // between a terminal fact and a manufactured one.
+  //
+  // ⚠️ These are rank 2 but carry NO cash-style veto in `adoptIfMonotonic`, and
+  // that is deliberate: they are DERIVED, never STAMPED. If the user later
+  // connects the institution and a real leg appears, "same rank, different leaf"
+  // adopts the correction. An external state must always be free to become
+  // internal.
+  /** A payment-app rail with no owned counterparty — the other side is a person. */
+  | "EXTERNAL_PERSON_TRANSFER"
+  /** A depository venue not known to be owned — an external bank account. */
+  | "EXTERNAL_DEPOSITORY_TRANSFER"
+  /** A brokerage/exchange venue not known to be owned — an unconnected venue. */
+  | "EXTERNAL_VENUE_TRANSFER"
+  /** The provider attests a counterparty class that is not an owned account,
+   *  without naming a rail or venue. The honest floor of the external branch. */
+  | "EXTERNAL_UNKNOWN_TRANSFER";
+
+/** The external leaves, in one place, so no consumer re-lists them. */
+export const EXTERNAL_MATURITIES: ReadonlySet<TransferMaturity> = new Set<TransferMaturity>([
+  "EXTERNAL_PERSON_TRANSFER",
+  "EXTERNAL_DEPOSITORY_TRANSFER",
+  "EXTERNAL_VENUE_TRANSFER",
+  "EXTERNAL_UNKNOWN_TRANSFER",
+]);
+
+/** Maturities that are a COMPLETE answer — resolved, though they name no owned
+ *  account. A metric that counts these as failures is measuring the wrong thing:
+ *  63 cash rows and 8 issuer credits are finished facts, not open questions. */
+export const TERMINAL_MATURITIES: ReadonlySet<TransferMaturity> = new Set<TransferMaturity>([
+  "CASH_MOVEMENT", "ISSUER_CREDIT", ...EXTERNAL_MATURITIES,
+]);
+
+/** Whether the ladder still owes an answer for this row. The ONE predicate the
+ *  unresolved metric may use. */
+export function isUnresolvedMaturity(m: TransferMaturity): boolean {
+  return m === "UNRESOLVED_TRANSFER" || m === "UNRESOLVED_LIABILITY_INFLOW";
+}
 
 export function maturityRank(m: TransferMaturity): 0 | 1 | 2 {
   switch (m) {
@@ -94,6 +146,10 @@ export function maturityRank(m: TransferMaturity): 0 | 1 | 2 {
     // a partial one. Ranking it 0 would let a later coincidental leg match
     // "raise" specificity and overwrite it — the exact defect this veto exists to
     // prevent.
+    //
+    // The EXTERNAL_* leaves are rank 2 for the same reason — "this left the
+    // household" is a complete answer — but WITHOUT the veto, so a later owned
+    // leg can still correct them. See the note on the union above.
     default:                    return 2;
   }
 }
@@ -128,17 +184,42 @@ export type TransferMovementForm = "CASH";
  */
 export const TRANSFER_MATCH_WINDOW_DAYS = 5;
 
-/** Flow classifications eligible to ENTER transfer resolution.
+/**
+ * The DATABASE PREFILTER — flowType values a candidate QUERY must not exclude.
  *
- *  DEBT_PAYMENT is in the set, and that is the point: the mis-filed leg above
- *  was excluded from its own repair because the resolver required TRANSFER.
- *  `null` is included because 352 seed rows carry no flowType at all. */
-export const TRANSFER_CANDIDATE_FLOW_TYPES: readonly (string | null)[] = [
+ * ⚠️ This is NOT the admission rule. Admission is
+ * `lib/transactions/transfer-admission.ts` `admitTransferCandidate`, which also
+ * reads the row's own account type, its category and its attested axes — none of
+ * which a `WHERE flowType IN (…)` clause can see.
+ *
+ * The two are related by ONE invariant, asserted by a standing probe:
+ *
+ *     admitted ⊆ prefiltered
+ *
+ * i.e. the prefilter may be broader than admission (and is), but must never drop
+ * a row admission would have kept. That is what makes it safe for a query to use
+ * this while the in-memory authority uses the real rule. `null` stays here for
+ * exactly that reason: a NOT-IN over a nullable column drops nulls under
+ * three-valued logic, and a query that excluded them could not be checked against
+ * the invariant at all.
+ *
+ * DEBT_PAYMENT is in the set, and that is the point: the mis-filed leg described
+ * above was excluded from its own repair because the resolver required TRANSFER.
+ */
+export const TRANSFER_PREFILTER_FLOW_TYPES: readonly (string | null)[] = [
   "TRANSFER", "DEBT_PAYMENT", "UNKNOWN", null,
 ];
 
-export function isTransferCandidate(flowType: string | null | undefined): boolean {
-  return TRANSFER_CANDIDATE_FLOW_TYPES.includes(flowType ?? null);
+/**
+ * Whether a candidate QUERY should load this row. Deliberately permissive.
+ *
+ * ⚠️ Do NOT use this to decide whether a row is a transfer. It admits every
+ * unclassified row in the database — 352 of them locally, including payroll,
+ * groceries and dining — because a query cannot tell them apart and must not
+ * guess. `admitTransferCandidate` is the authority that can.
+ */
+export function isTransferPrefilterCandidate(flowType: string | null | undefined): boolean {
+  return TRANSFER_PREFILTER_FLOW_TYPES.includes(flowType ?? null);
 }
 
 /** How the counterparty was established. */
@@ -167,13 +248,42 @@ export type CounterpartyEvidence =
  * They are different facts and need different names.
  */
 export type DestinationEvidenceLevel =
+  /**
+   * Phase 5 — the PROVIDER asserted that these two rows are one movement.
+   * Strictly above `ACCOUNT_CERTAIN`: that level is Fourth Meridian's inference
+   * about the corpus, this one is the institution's own statement. Account, type
+   * and leg are all known, and all are persistable.
+   */
+  | "PROVIDER_LINKED"
   /** Exactly one destination LEG qualifies, and that leg sees exactly one
    *  qualifying source — a MUTUAL pairing. Account AND type are known, and
    *  `counterpartyAccountId` may be persisted. See the mutual-uniqueness note. */
   | "ACCOUNT_CERTAIN"
-  /** Several accounts qualify but they all share ONE type — or a single account
-   *  qualifies whose pairing is NOT mutual. The type names the movement; the
-   *  account does NOT, so no counterparty may be persisted. */
+  /**
+   * Phase 3 — THE MISSING RUNG. Every qualifying destination leg resolves to
+   * ONE owned account, but the pairing is not mutually unique, so which leg is
+   * the other side cannot be established.
+   *
+   * ⚠️ Before this existed, these rows returned `TYPE_CERTAIN_ACCOUNT_AMBIGUOUS`
+   * with `accountId: null` — a level whose NAME asserted the account was
+   * ambiguous while its own `candidateAccountIds` held exactly one element.
+   * 75 live legs, $103,000, thrown away by a gate applied at LEG level to a claim
+   * made at ACCOUNT level. That is the same error already recorded once in this
+   * repository's history ("the gate must be ACCOUNT-level not leg-level").
+   *
+   * The account IS a fact and IS persistable. The leg is not, and — uniquely
+   * among the refusals — it is not merely unknown but UNKNOWABLE: two identical
+   * movements between the same two accounts in the same window are not
+   * distinguishable by any evidence that exists. Every downstream consumer
+   * (wealth neutrality, debt attribution, cash-flow exclusion, liquidity
+   * tiering) asks WHICH ACCOUNT and never WHICH ROW.
+   *
+   * A later PROVIDER_LINKED claim can still promote this to certainty, so it is
+   * a rung and not a dead end.
+   */
+  | "ACCOUNT_CERTAIN_LEG_AMBIGUOUS"
+  /** Several accounts qualify but they all share ONE type. The type names the
+   *  movement; the account does NOT, so no counterparty may be persisted. */
   | "TYPE_CERTAIN_ACCOUNT_AMBIGUOUS"
   /** Candidates span more than one destination type. Nothing above "a transfer
    *  happened" is supported. */
@@ -223,24 +333,59 @@ export interface DestinationCandidate {
   superseded: boolean;
 }
 
+/**
+ * WHY the ladder still owes an answer. Every unresolved row carries exactly one,
+ * so no surface ever has to render a bare "unknown".
+ *
+ * ⚠️ `CROSS_OWNER_BOUNDARY` is DETECTION ONLY. `legsQualify` refuses to pair
+ * across owners and this proposal does not change that — but a limitation that
+ * is invisible cannot be reasoned about, and joint accounts / business Spaces are
+ * the largest unmeasured gap in this design. Naming it converts a silent failure
+ * into a reported one. It must never become a matching rule.
+ */
+export type TransferUnresolvedReason =
+  /** Candidates span more than one destination TYPE — nothing above "a transfer
+   *  happened" is supported. An identifier would settle it. */
+  | "CANDIDATES_SPAN_TYPES"
+  /** A leg that would otherwise qualify sits on ANOTHER OWNER's account. */
+  | "CROSS_OWNER_BOUNDARY"
+  /** No qualifying opposite leg on any owned account, and no attested rail,
+   *  venue or counterparty class to make an external claim from. */
+  | "NO_COUNTERPART_EVIDENCE"
+  /** A positive liability movement with no payment family and no owned funding
+   *  leg — we decline to call it a payment. */
+  | "LIABILITY_INFLOW_UNATTESTED";
+
 export interface DestinationEvidence {
   level: DestinationEvidenceLevel;
-  /** Set ONLY at ACCOUNT_CERTAIN. Null at every other level, by construction. */
+  /** Set at PROVIDER_LINKED, ACCOUNT_CERTAIN and ACCOUNT_CERTAIN_LEG_AMBIGUOUS —
+   *  every level where the destination ACCOUNT is a fact. Null elsewhere. */
   accountId: string | null;
-  /** Set at ACCOUNT_CERTAIN and TYPE_CERTAIN_ACCOUNT_AMBIGUOUS. */
+  /** Set wherever the destination TYPE is known (the above, plus TYPE_CERTAIN). */
   accountType: string | null;
-  /** Set ONLY at ACCOUNT_CERTAIN — the specific mutually-paired leg. */
+  /** Set ONLY at PROVIDER_LINKED and ACCOUNT_CERTAIN — the levels where the
+   *  specific opposing ROW is established. ⚠️ Null at
+   *  ACCOUNT_CERTAIN_LEG_AMBIGUOUS by construction: the account is known and the
+   *  leg is unknowable, and writing a "best" leg there would be fabrication. */
   legId: string | null;
   candidateAccountIds: string[];
   candidateTypes: string[];
-  /** True ONLY at ACCOUNT_CERTAIN — the one level where an account id is a fact. */
+  /** True wherever `accountId` is a fact — the levels at which
+   *  `counterpartyAccountId` may be persisted. */
   persistableCounterparty: boolean;
+  /** True ONLY where `legId` is a fact. Separate from the above precisely so a
+   *  caller cannot persist a leg it was never given. */
+  persistableLeg: boolean;
   /**
    * Why a pairing that LOOKED unique was refused. Present only when the demotion
    * happened, so a repair can report the reason instead of silently proposing
    * less. Never used to justify a write.
    */
   mutualityRefusal?: string;
+  /** Present whenever the row remains unresolved — never a bare unknown. */
+  unresolvedReason?: TransferUnresolvedReason;
+  /** How many qualifying legs sit on another OWNER's accounts. Detection only. */
+  crossOwnerCandidateCount?: number;
 }
 
 /**
@@ -279,6 +424,15 @@ export function resolveDestinationEvidence(
   opts: {
     /** The SOURCE row's movement form, when the provider attests one. */
     movementForm?: TransferMovementForm | null;
+    /**
+     * Phase 3 — how many DISTINCT sources compete for this candidate set, counted
+     * as a UNION over every candidate leg (including the source under evaluation).
+     *
+     * Only the corpus-level resolver can count this correctly; when it is absent
+     * the per-leg maximum is used, which is an over-estimate and therefore
+     * conservative — it can only ever refuse the rung, never grant it wrongly.
+     */
+    competingSourceCount?: number;
   } = {},
 ): DestinationEvidence {
   // ── Veto 1 — cash. Before any candidate is even considered. ───────────────
@@ -287,7 +441,7 @@ export function resolveDestinationEvidence(
       level: "CASH_NO_COUNTERPARTY",
       accountId: null, accountType: null, legId: null,
       candidateAccountIds: [], candidateTypes: [],
-      persistableCounterparty: false,
+      persistableCounterparty: false, persistableLeg: false,
     };
   }
 
@@ -302,7 +456,10 @@ export function resolveDestinationEvidence(
       level: "NO_DESTINATION_EVIDENCE",
       accountId: null, accountType: null, legId: null,
       candidateAccountIds: [], candidateTypes: [],
-      persistableCounterparty: false,
+      persistableCounterparty: false, persistableLeg: false,
+      // The external branch decides from the ROW's own attested axes, which this
+      // set-level function cannot see. `maturityForEvidence` owns that call.
+      unresolvedReason: "NO_COUNTERPART_EVIDENCE",
     };
   }
 
@@ -313,7 +470,7 @@ export function resolveDestinationEvidence(
       accountId: live[0].accountId, accountType: live[0].accountType,
       legId: live[0].legId,
       candidateAccountIds: accountIds, candidateTypes: types,
-      persistableCounterparty: true,
+      persistableCounterparty: true, persistableLeg: true,
     };
   }
 
@@ -323,13 +480,60 @@ export function resolveDestinationEvidence(
       ? `${live.length} qualifying destination legs across ${accountIds.length} account(s); the forward direction is not unique.`
       : `The single qualifying leg (${live[0].legId}) is itself matched by ${live[0].competingSourceCount} source events, so the pairing does not close in both directions.`;
 
+  // ── Phase 3 — the missing rung. Check the ACCOUNT before the TYPE. ────────
+  //
+  // Order matters and is half the fix: `types.length === 1` was tested first, so
+  // a candidate set of three legs all sitting in ONE savings account fell through
+  // to "the account is ambiguous" — a claim its own candidate list contradicted.
+  //
+  // ── The OTHER half: one account is NOT sufficient. ────────────────────────
+  //
+  // A single forward candidate that is itself contested by another source is
+  // exactly the shape this rung must REFUSE:
+  //
+  //     checking −1,000 (S)  ─┐
+  //                           ├─▶  savings +1,000 (L)      only ONE arrival
+  //     checking −1,000 (T)  ─┘
+  //
+  // S's only candidate is on savings, so "one account" holds — and yet one of S
+  // and T did not go to savings at all, and nothing says which. Persisting
+  // savings for both would double-claim L and would be a coin flip wearing an
+  // identifier's authority. An earlier draft of this rung did exactly that, and
+  // the V27-TRUTH-1 mutual-uniqueness probe caught it.
+  //
+  // The sound condition is PIGEONHOLE: every source competing for this candidate
+  // set can be given a DISTINCT leg in it. Then S landed in this account
+  // whichever leg was actually its own — which is the precise claim being made.
+  //
+  //     |competing sources|  ≤  |qualifying legs|
+  //
+  // With 2 legs in one savings account and only this source competing (1 ≤ 2),
+  // the account is a fact and the leg is unknowable. With 1 leg and 2 sources
+  // (2 > 1), neither is established.
+  const competingSources = opts.competingSourceCount ?? Math.max(
+    ...live.map((c) => c.competingSourceCount),
+  );
+  if (accountIds.length === 1 && competingSources <= live.length) {
+    return {
+      level: "ACCOUNT_CERTAIN_LEG_AMBIGUOUS",
+      accountId: accountIds[0], accountType: types[0],
+      // ⚠️ Never a leg. Two identical movements between the same two accounts in
+      // the same window are indistinguishable, and picking one would be
+      // fabrication dressed as a tie-break.
+      legId: null,
+      candidateAccountIds: accountIds, candidateTypes: types,
+      persistableCounterparty: true, persistableLeg: false,
+      mutualityRefusal: refusal,
+    };
+  }
+
   if (types.length === 1) {
     return {
       level: "TYPE_CERTAIN_ACCOUNT_AMBIGUOUS",
       // The account is genuinely unknown — never guess one from the set.
       accountId: null, accountType: types[0], legId: null,
       candidateAccountIds: accountIds, candidateTypes: types,
-      persistableCounterparty: false,
+      persistableCounterparty: false, persistableLeg: false,
       mutualityRefusal: refusal,
     };
   }
@@ -337,8 +541,9 @@ export function resolveDestinationEvidence(
     level: "TYPE_AMBIGUOUS",
     accountId: null, accountType: null, legId: null,
     candidateAccountIds: accountIds, candidateTypes: types,
-    persistableCounterparty: false,
+    persistableCounterparty: false, persistableLeg: false,
     mutualityRefusal: refusal,
+    unresolvedReason: "CANDIDATES_SPAN_TYPES",
   };
 }
 
@@ -364,6 +569,40 @@ export interface TransferLeg {
   superseded: boolean;
   /** Provider-attested movement form, when known. */
   movementForm?: TransferMovementForm | null;
+  /**
+   * Phase 5 — the OPAQUE, institution-scoped provider correlation key, when the
+   * institution stamped one on this row (see `lib/transactions/provider-link.ts`).
+   * Two legs sharing a key are asserted BY THE PROVIDER to be one movement.
+   *
+   * ⚠️ REQUIRED, and nullable rather than optional. `null` is a real state — most
+   * institutions supply nothing, and American Express supplies nothing at all on
+   * 147 of 147 measured rows. But an OPTIONAL field would let a caller that
+   * simply forgot to extract silently lose 260 legs of deterministic evidence and
+   * look identical to an honest absence. Required-nullable makes the compiler ask
+   * every caller the question; the same reasoning that made `superseded` and
+   * `competingSourceCount` required.
+   *
+   * ⚠️ Never the raw provider token. See `providerLinkKey`.
+   */
+  providerLinkKey: string | null;
+  /**
+   * Phase 5 — the owned account this row's DESCRIPTOR names by account mask
+   * ("Online Transfer to SAV ...9516", "card ending in 0202"), when it names
+   * exactly one. Null when no mask marker is present, when it matches no owned
+   * account, or when it is AMBIGUOUS across two owned accounts — in which case
+   * the extractor abstains rather than picking.
+   *
+   * ⚠️ This is an IDENTIFIER, not a name. `...9516` denotes exactly one account
+   * or none; `AMERICANEXPRESS` denotes an institution that issues both cards and
+   * savings accounts, and is why descriptor-derived *names* are forbidden. The
+   * measurement is unambiguous: mask evidence made 250 claims with 0 errors,
+   * institution-name routing resolved 0 legs on its own.
+   *
+   * ⚠️ It can only ever REMOVE candidates — see `legsQualify`. A mask never
+   * creates a pairing, so it cannot fabricate a counterparty even if the four
+   * digits were wrong; the worst case is that a real pairing is refused.
+   */
+  maskedDestinationAccountId: string | null;
 }
 
 /**
@@ -382,18 +621,219 @@ export function legsQualify(a: TransferLeg, b: TransferLeg): boolean {
   if ((a.currency ?? null) !== (b.currency ?? null)) return false;
   if (Math.sign(a.amount) !== -Math.sign(b.amount)) return false;
   if (Math.abs(Math.abs(a.amount) - Math.abs(b.amount)) > TRANSFER_AMOUNT_EPSILON) return false;
+  // Phase 5 — a descriptor that NAMES the other account restricts who may be it.
+  //
+  // Both clauses together are symmetric in the PAIR, which is what keeps mutual
+  // uniqueness well-defined: swapping (a, b) evaluates the same two conditions in
+  // the opposite order and reaches the same verdict. Expressing mask evidence
+  // here rather than as a post-filter is what makes it apply to the forward
+  // direction, the reverse count and the stratified tiers at once, with no
+  // special-casing anywhere — and it can only ever REMOVE a pairing, never
+  // invent one.
+  if (a.maskedDestinationAccountId && a.maskedDestinationAccountId !== b.accountId) return false;
+  if (b.maskedDestinationAccountId && b.maskedDestinationAccountId !== a.accountId) return false;
   const days = Math.abs(a.dateMs - b.dateMs) / 86_400_000;
   return days <= TRANSFER_MATCH_WINDOW_DAYS;
 }
 
 /**
- * Resolve destination evidence for `source` against the whole corpus, computing
- * BOTH directions with `legsQualify`.
+ * `legsQualify` with the OWNERSHIP clause removed — and nothing else.
+ *
+ * ⚠️ This is a DETECTION probe, never a matching rule. Legs may only pair within
+ * one owner and this proposal does not change that. But a joint account, a
+ * couple sharing a household, or a personal + business Space produces real
+ * transfers that cross the boundary, and today they vanish into a generic
+ * "unresolved" with no explanation. Counting them turns the largest unmeasured
+ * gap in this design into a NAMED limitation (`CROSS_OWNER_BOUNDARY`).
+ *
+ * If this ever feeds a pairing decision, the ownership boundary has been
+ * silently deleted. A standing probe asserts it does not.
+ */
+export function legsQualifyIgnoringOwner(a: TransferLeg, b: TransferLeg): boolean {
+  if (a.ownerId === b.ownerId) return false;   // same-owner pairs are legsQualify's job
+  if (a.id === b.id) return false;
+  if (a.superseded || b.superseded) return false;
+  if (a.accountId === b.accountId) return false;
+  if ((a.currency ?? null) !== (b.currency ?? null)) return false;
+  if (Math.sign(a.amount) !== -Math.sign(b.amount)) return false;
+  if (Math.abs(Math.abs(a.amount) - Math.abs(b.amount)) > TRANSFER_AMOUNT_EPSILON) return false;
+  if (a.maskedDestinationAccountId && a.maskedDestinationAccountId !== b.accountId) return false;
+  if (b.maskedDestinationAccountId && b.maskedDestinationAccountId !== a.accountId) return false;
+  return Math.abs(a.dateMs - b.dateMs) / 86_400_000 <= TRANSFER_MATCH_WINDOW_DAYS;
+}
+
+// ── The stratified corpus index (Phase 2 / Phase 5) ──────────────────────────
+
+/**
+ * ± day tolerances applied IN ORDER, each on the legs the previous tier did not
+ * claim.
+ *
+ * ── Why tightening first resolves MORE, not less ───────────────────────────
+ *
+ * A single ±5 pass asks every leg to be unique against every other leg within
+ * five days. Recurring round-number transfers defeat that: `$1,000` appears 154
+ * times in a 663-row corpus, so a Monday transfer sees Wednesday's as a rival and
+ * mutual uniqueness correctly refuses both.
+ *
+ * Resolving at ±0 FIRST removes both legs of every same-day pair from the pool,
+ * which shrinks the competition set that was defeating the ±5 pass. The tight
+ * tier is more restrictive per pair and yet resolves more overall.
+ *
+ * Measured against 132 legs of provider-issued ground truth:
+ *
+ *     single tier ±5 (the old rule)   72 correct · 0 wrong · 60 abstained
+ *     tiers 0 → 5                    116 correct · 0 wrong · 16 abstained
+ *     tiers 0 → 1 → 2 → 3 → 5        116 correct · 0 wrong · 16 abstained
+ *
+ * So `[0, 5]`, and deliberately not a finer ladder: the intermediate tiers add
+ * two claims across the whole corpus, which is noise. This is blocking from
+ * record linkage — the one technique from that literature that transfers cleanly,
+ * because it changes the ORDER of decisions without weakening any of them.
+ *
+ * ⚠️ Widening past `TRANSFER_MATCH_WINDOW_DAYS` is NOT a further tier. The gap
+ * histogram decays to ~6 days and then RISES again on recurrence; a wider tier
+ * manufactures pairs between months. See that constant's own note.
+ */
+export const STRATIFIED_MATCH_TIERS: readonly number[] = [0, TRANSFER_MATCH_WINDOW_DAYS];
+
+/** How a leg came to be claimed. Mirrors the evidence ladder's top two rungs. */
+export type ClaimTier = "PROVIDER_LINKED" | "ACCOUNT_CERTAIN";
+
+export interface CorpusClaim {
+  tier: ClaimTier;
+  /** The opposing leg. Always a specific row at both of these tiers. */
+  mateId: string;
+}
+
+/**
+ * The corpus-scoped resolution, computed ONCE.
+ *
+ * Tier order is the whole design: each claim REMOVES both of its legs from every
+ * later tier's pool, which is what lets a provider assertion improve structural
+ * matching downstream.
+ *
+ * ⚠️ That cascade is also the main structural risk in this architecture. One
+ * wrong provider claim removes two legs and can cause a downstream mis-pairing
+ * that would not otherwise occur. The mitigation is that a provider group must
+ * survive EVERY validation clause or produce no evidence at all — never weaker
+ * evidence. There is no partial credit anywhere in this function.
+ */
+export interface TransferCorpusIndex {
+  claims: ReadonlyMap<string, CorpusClaim>;
+  /** Legs consumed by a claim — excluded from every later candidate set. */
+  claimed: ReadonlySet<string>;
+}
+
+/** Legs of unequal magnitude or differing currency can never pair, so the corpus
+ *  splits into closed components and every O(n²) pass runs inside one. */
+function componentKey(l: TransferLeg): string {
+  return `${l.currency ?? ""}|${Math.round(Math.abs(l.amount) * 100)}`;
+}
+
+/** Mutually-unique pairs within one pool at one day tolerance. Deterministic and
+ *  order-independent: mutual uniqueness is symmetric, so the result depends only
+ *  on the set. */
+function mutualPairsAt(pool: readonly TransferLeg[], days: number): [string, string][] {
+  const forward = new Map<string, string[]>();
+  for (const a of pool) {
+    for (const b of pool) {
+      if (!legsQualify(a, b)) continue;
+      if (Math.abs(a.dateMs - b.dateMs) / 86_400_000 > days) continue;
+      const list = forward.get(a.id);
+      if (list) list.push(b.id); else forward.set(a.id, [b.id]);
+    }
+  }
+  const out: [string, string][] = [];
+  for (const [a, bs] of forward) {
+    if (bs.length !== 1) continue;
+    const back = forward.get(bs[0]);
+    if (!back || back.length !== 1 || back[0] !== a) continue;
+    if (a < bs[0]) out.push([a, bs[0]]);      // emit each pair once, deterministically
+  }
+  return out;
+}
+
+/**
+ * Build the corpus index: provider links first, then the stratified structural
+ * tiers on what remains.
+ *
+ * Pure and deterministic. Exported so a repair/audit can inspect the claim set
+ * directly rather than inferring it from per-row answers.
+ */
+export function buildTransferCorpusIndex(corpus: readonly TransferLeg[]): TransferCorpusIndex {
+  const claims = new Map<string, CorpusClaim>();
+  const claimed = new Set<string>();
+  const claim = (a: string, b: string, tier: ClaimTier) => {
+    if (claimed.has(a) || claimed.has(b)) return;
+    claims.set(a, { tier, mateId: b });
+    claims.set(b, { tier, mateId: a });
+    claimed.add(a); claimed.add(b);
+  };
+
+  // ── E1 — provider-asserted counterparty identity ─────────────────────────
+  // Cash is excluded first: a provider correlation token on an ATM withdrawal
+  // would still not give the money a destination ACCOUNT, and the form veto
+  // outranks every leg-derived path by construction.
+  const byLinkKey = new Map<string, TransferLeg[]>();
+  for (const l of corpus) {
+    if (!l.providerLinkKey || l.superseded || l.movementForm === "CASH") continue;
+    const g = byLinkKey.get(l.providerLinkKey);
+    if (g) g.push(l); else byLinkKey.set(l.providerLinkKey, [l]);
+  }
+  for (const group of byLinkKey.values()) {
+    // Exactly two, and they must satisfy the SAME pairing predicate structural
+    // matching uses. A provider assertion earns priority, not an exemption.
+    if (group.length !== 2) continue;
+    const [a, b] = group;
+    if (!legsQualify(a, b)) continue;
+    claim(a.id, b.id, "PROVIDER_LINKED");
+  }
+
+  // ── E2 — stratified structural determinism ───────────────────────────────
+  const components = new Map<string, TransferLeg[]>();
+  for (const l of corpus) {
+    if (l.superseded || l.movementForm === "CASH") continue;
+    const k = componentKey(l);
+    const g = components.get(k);
+    if (g) g.push(l); else components.set(k, [l]);
+  }
+  for (const days of STRATIFIED_MATCH_TIERS) {
+    for (const group of components.values()) {
+      const pool = group.filter((l) => !claimed.has(l.id));
+      if (pool.length < 2) continue;
+      for (const [a, b] of mutualPairsAt(pool, days)) claim(a, b, "ACCOUNT_CERTAIN");
+    }
+  }
+  return { claims, claimed };
+}
+
+/**
+ * Memoized index per corpus ARRAY IDENTITY.
+ *
+ * `resolveDestinationEvidenceFor` is called once per leg with the same corpus, so
+ * rebuilding the index each time would make a full-corpus audit O(n³). Keyed on
+ * the array reference, which is safe because the corpus is built once and read
+ * many times; a caller that mutates a corpus array in place gets a stale index,
+ * and must build a new array instead (as every caller already does).
+ */
+const INDEX_CACHE = new WeakMap<object, TransferCorpusIndex>();
+function indexFor(corpus: readonly TransferLeg[]): TransferCorpusIndex {
+  const key = corpus as unknown as object;
+  const hit = INDEX_CACHE.get(key);
+  if (hit) return hit;
+  const built = buildTransferCorpusIndex(corpus);
+  INDEX_CACHE.set(key, built);
+  return built;
+}
+
+/**
+ * Resolve destination evidence for `source` against the whole corpus.
  *
  * This is the entry point a consumer should use. The set-level
  * `resolveDestinationEvidence` remains available for callers that already hold a
- * candidate set, but only this one guarantees the reverse count was actually
- * computed rather than assumed.
+ * candidate set, but only this one applies the provider tier and the stratified
+ * structural tiers, and only this one guarantees the reverse direction was
+ * actually computed rather than assumed.
  */
 export function resolveDestinationEvidenceFor(
   source: TransferLeg,
@@ -402,16 +842,63 @@ export function resolveDestinationEvidenceFor(
   if (source.movementForm === "CASH") {
     return resolveDestinationEvidence([], { movementForm: "CASH" });
   }
-  const forward = corpus.filter((c) => legsQualify(source, c));
+
+  const index = indexFor(corpus);
+  const claim = index.claims.get(source.id);
+  if (claim) {
+    const mate = corpus.find((c) => c.id === claim.mateId);
+    if (mate) {
+      return {
+        level: claim.tier,
+        accountId: mate.accountId, accountType: mate.accountType, legId: mate.id,
+        candidateAccountIds: [mate.accountId], candidateTypes: [mate.accountType],
+        persistableCounterparty: true, persistableLeg: true,
+      };
+    }
+  }
+
+  // Unclaimed. The remaining candidates are the legs no higher tier spoke for —
+  // which is precisely why anything still standing here is genuinely contested.
+  const forward = corpus.filter((c) => !index.claimed.has(c.id) && legsQualify(source, c));
   const candidates: DestinationCandidate[] = forward.map((leg) => ({
     legId: leg.id,
     accountId: leg.accountId,
     accountType: leg.accountType,
-    // The reverse direction, with the same predicate. Includes `source` itself.
-    competingSourceCount: corpus.filter((c) => legsQualify(leg, c)).length,
+    // The reverse direction, with the same predicate, over the same pool.
+    competingSourceCount: corpus.filter(
+      (c) => !index.claimed.has(c.id) && legsQualify(leg, c),
+    ).length,
     superseded: leg.superseded,
   }));
-  return resolveDestinationEvidence(candidates, { movementForm: source.movementForm ?? null });
+  // The UNION of sources competing for ANY candidate leg — the pigeonhole input.
+  // Counting per-leg maxima would over-count when two legs share one rival and
+  // under-count when they have different ones; only the union is the real
+  // constraint, and only this corpus-scoped function can compute it.
+  const competing = new Set<string>([source.id]);
+  for (const leg of forward) {
+    for (const c of corpus) {
+      if (index.claimed.has(c.id)) continue;
+      if (legsQualify(leg, c)) competing.add(c.id);
+    }
+  }
+  const evidence = resolveDestinationEvidence(candidates, {
+    movementForm: source.movementForm ?? null,
+    competingSourceCount: competing.size,
+  });
+
+  // Cross-owner DETECTION — never matching. Attached only when nothing owned
+  // qualified, so a named limitation replaces a bare unknown.
+  if (evidence.level === "NO_DESTINATION_EVIDENCE") {
+    const crossOwner = corpus.filter((c) => legsQualifyIgnoringOwner(source, c)).length;
+    if (crossOwner > 0) {
+      return {
+        ...evidence,
+        crossOwnerCandidateCount: crossOwner,
+        unresolvedReason: "CROSS_OWNER_BOUNDARY",
+      };
+    }
+  }
+  return evidence;
 }
 
 /**
@@ -480,14 +967,61 @@ export function maturityForEvidence(
     // The form IS the answer. Never falls through to a leg-derived leaf.
     case "CASH_NO_COUNTERPARTY":
       return "CASH_MOVEMENT";
+    case "PROVIDER_LINKED":
     case "ACCOUNT_CERTAIN":
+    case "ACCOUNT_CERTAIN_LEG_AMBIGUOUS":
     case "TYPE_CERTAIN_ACCOUNT_AMBIGUOUS":
       return leafForAccountType(e.accountType as string);
     case "TYPE_AMBIGUOUS":
-    case "NO_DESTINATION_EVIDENCE":
+      // Candidates exist and disagree. There IS an owned counterparty in that
+      // set, so an external claim would be false; this is genuinely unresolved.
       return "UNRESOLVED_TRANSFER";
+    case "NO_DESTINATION_EVIDENCE":
+      // Phase 4 — nothing owned qualified. That is where an EXTERNAL movement
+      // lives, but only where the provider attested something about it.
+      return own ? externalLeafFor(own) : "UNRESOLVED_TRANSFER";
   }
 }
+
+/**
+ * The external terminal leaf the row's OWN attested evidence supports — or
+ * `UNRESOLVED_TRANSFER` when it supports none.
+ *
+ * ⚠️ The gate is POSITIVE EVIDENCE OF EXTERNALITY, and this is the line between a
+ * terminal fact and a manufactured one. "No owned leg matched" is not evidence
+ * that money left the household: the other side may be at an institution the user
+ * has not connected yet, or may simply not have synced. Only an attested rail,
+ * venue, or non-owned counterparty class licenses the claim.
+ *
+ * Precedence mirrors `deriveTransferDisposition` exactly — venue above rail —
+ * because two authorities disagreeing about precedence is how the original cash
+ * bug happened.
+ */
+function externalLeafFor(own: OwnSideContext): TransferMaturity {
+  // An asset venue is capital deployment/liquidation; it outranks the rail.
+  if (own.venueClass === "BROKERAGE" || own.venueClass === "EXCHANGE") {
+    return "EXTERNAL_VENUE_TRANSFER";
+  }
+  if (own.venueClass === "DEPOSITORY") return "EXTERNAL_DEPOSITORY_TRANSFER";
+  // A payment-app rail with no owned counterparty: the other side is a person.
+  // The rail says HOW, and here it also settles WHO — not why, which stays
+  // unresolved and is deliberately not claimed.
+  if (own.railType === "PAYMENT_APP") return "EXTERNAL_PERSON_TRANSFER";
+  // The provider attested a counterparty CLASS that cannot be an owned account.
+  //
+  // ⚠️ FINANCIAL_INSTITUTION is deliberately NOT in this set. Your own bank is a
+  // financial institution, so that class is consistent with an internal transfer
+  // whose other leg has not arrived — exactly the case that must stay unresolved.
+  if (own.counterpartyClass && EXTERNAL_COUNTERPARTY_CLASSES.has(own.counterpartyClass)) {
+    return "EXTERNAL_UNKNOWN_TRANSFER";
+  }
+  return "UNRESOLVED_TRANSFER";
+}
+
+/** Provider counterparty classes that cannot be one of the user's own accounts. */
+const EXTERNAL_COUNTERPARTY_CLASSES: ReadonlySet<string> = new Set([
+  "MERCHANT", "MARKETPLACE", "INCOME_SOURCE", "PAYMENT_APP", "PAYMENT_TERMINAL",
+]);
 
 /** The row's OWN side — its account type, signed amount, and the evidence the
  *  liability-inflow authority needs. */
@@ -504,6 +1038,20 @@ export interface OwnSideContext {
   providerFamily?: string | null;
   /** A counterparty already persisted on the row — proof of an owned funding source. */
   persistedCounterpartyAccountId?: string | null;
+  // ── Phase 4 — the row's OWN attested axes, for the external terminal leaves ──
+  //
+  // ⚠️ REQUIRED, not optional, and nullable to express honest absence. These are
+  // read ONLY when no owned leg qualified, and they are the difference between
+  // "you sent this to a person" and "we could not tell". A caller that omitted
+  // them would silently send 116 fully-explained payment-app legs back to
+  // UNRESOLVED — the exact defect Phase 4 exists to remove — and would look
+  // identical to an institution that genuinely attests nothing.
+  /** Provider-attested rail (PAYMENT_APP), when the adapter emitted one. */
+  railType: string | null;
+  /** Provider-attested venue class (DEPOSITORY / BROKERAGE / EXCHANGE). */
+  venueClass: string | null;
+  /** Provider counterparty class (Plaid `counterparties[].type`), when attested. */
+  counterpartyClass: string | null;
 }
 
 export interface MaturationInput {
@@ -545,6 +1093,12 @@ export interface MaturationInput {
   ownProviderFamily?: string | null;
   /** V27-TRUTH-3 — a counterparty already persisted on the row. */
   persistedCounterpartyAccountId?: string | null;
+  /** Phase 4 — the row's own attested rail, for the external terminal leaves. */
+  ownRailType?: string | null;
+  /** Phase 4 — the row's own attested venue class. */
+  ownVenueClass?: string | null;
+  /** Phase 4 — the row's own attested provider counterparty class. */
+  ownCounterpartyClass?: string | null;
 }
 
 export interface MaturationResult {
@@ -563,6 +1117,12 @@ export interface MaturationResult {
    * alone never qualifies.
    */
   persistable: boolean;
+  /**
+   * Phase 2 — the specific known limitation, whenever the row is still
+   * unresolved. Never a bare unknown: a surface that renders "unresolved" without
+   * this is reporting less truth than the authority holds.
+   */
+  unresolvedReason: TransferUnresolvedReason | null;
 }
 
 /**
@@ -584,6 +1144,10 @@ export interface MaturationResult {
 export function impliedFlowType(m: TransferMaturity): "TRANSFER" | "DEBT_PAYMENT" | null {
   if (m === "DEBT_PAYMENT") return "DEBT_PAYMENT";
   if (m === "ISSUER_CREDIT" || m === "UNRESOLVED_LIABILITY_INFLOW") return null;
+  // Phase 4 — the external leaves imply TRANSFER, unchanged from what these rows
+  // already say. An external movement IS a transfer; only its destination is
+  // outside the household. Naming it must not trigger a reclassification storm
+  // across 137 rows that were already filed correctly.
   return "TRANSFER";
 }
 
@@ -609,6 +1173,9 @@ export function matureClassification(input: MaturationInput): MaturationResult {
             amount: input.amount,
             providerFamily: input.ownProviderFamily,
             persistedCounterpartyAccountId: input.persistedCounterpartyAccountId,
+            railType: input.ownRailType ?? null,
+            venueClass: input.ownVenueClass ?? null,
+            counterpartyClass: input.ownCounterpartyClass ?? null,
           }
         : undefined,
     );
@@ -620,7 +1187,12 @@ export function matureClassification(input: MaturationInput): MaturationResult {
       counterpartyAccountId: e.accountId,
       // A leg only counts as evidence where a leg was actually admitted. Neither
       // "nothing qualified" nor "cash, so nothing may qualify" is a matched leg.
-      evidence: e.level === "NO_DESTINATION_EVIDENCE" || e.level === "CASH_NO_COUNTERPARTY"
+      //
+      // Phase 5 — a provider assertion is a PROVIDER_LINK, not a matched leg. The
+      // distinction is the whole reason `CounterpartyEvidence` has both members:
+      // one is the institution's statement, the other is our inference.
+      evidence: e.level === "PROVIDER_LINKED" ? "PROVIDER_LINK"
+        : e.level === "NO_DESTINATION_EVIDENCE" || e.level === "CASH_NO_COUNTERPARTY"
         ? "NONE" : "MATCHED_LEG",
       // V27-TRUTH-3 — a null implication is NO CLAIM, so it can never be a
       // reclassification. Treating it as one would report every issuer credit as
@@ -632,6 +1204,7 @@ export function matureClassification(input: MaturationInput): MaturationResult {
             : "Money leaving a liability account is a charge, never a debt payment, and the transfer ladder has no leaf for it.")
         : EVIDENCE_REASON[e.level](e),
       persistable: e.persistableCounterparty,
+      unresolvedReason: unresolvedReasonFor(maturity, e),
     };
   }
 
@@ -652,6 +1225,7 @@ export function matureClassification(input: MaturationInput): MaturationResult {
         ? "No destination account was established, so the movement is an unresolved transfer; a descriptor naming an institution does not identify the destination."
         : "No destination account was established; direction is known, destination is not.",
       persistable: false,
+      unresolvedReason: "NO_COUNTERPART_EVIDENCE",
     };
   }
 
@@ -666,6 +1240,7 @@ export function matureClassification(input: MaturationInput): MaturationResult {
       reclassified: input.flowType === "DEBT_PAYMENT",
       reason: "A balance gap is consistent with this movement, but a gap is not a transaction and cannot establish a destination on its own.",
       persistable: false,
+      unresolvedReason: "NO_COUNTERPART_EVIDENCE",
     };
   }
 
@@ -685,7 +1260,26 @@ export function matureClassification(input: MaturationInput): MaturationResult {
     reason: `${LEAF_REASON[maturity]} (destination account type: ${cp.accountType}; evidence: ${cp.evidence}${supported ? " + balance-gap support" : ""}).`,
     // Only a provider link or a uniquely matched leg is strong enough to write.
     persistable: cp.evidence === "PROVIDER_LINK" || cp.evidence === "MATCHED_LEG",
+    unresolvedReason: isUnresolvedMaturity(maturity) ? "NO_COUNTERPART_EVIDENCE" : null,
   };
+}
+
+/**
+ * The specific limitation behind an unresolved row — never a bare unknown.
+ *
+ * Returns null the moment the ladder HAS an answer, including every terminal
+ * external leaf and cash. A caller that finds a non-null value here is holding a
+ * named, renderable explanation; a caller that finds null must not print
+ * "unresolved".
+ */
+function unresolvedReasonFor(
+  m: TransferMaturity,
+  e: DestinationEvidence,
+): TransferUnresolvedReason | null {
+  if (!isUnresolvedMaturity(m)) return null;
+  if (m === "UNRESOLVED_LIABILITY_INFLOW") return "LIABILITY_INFLOW_UNATTESTED";
+  // The evidence already named it where it could (cross-owner, span-types).
+  return e.unresolvedReason ?? "NO_COUNTERPART_EVIDENCE";
 }
 
 /** Destination account type → the leaf it names. The ONLY discriminator. */
@@ -702,14 +1296,22 @@ function leafForAccountType(t: string): TransferMaturity {
 }
 
 const EVIDENCE_REASON: Record<DestinationEvidenceLevel, (e: DestinationEvidence) => string> = {
+  PROVIDER_LINKED: (e) =>
+    `The institution stamped one reference on both sides of this movement, identifying the owned ${e.accountType} account on the other side.`,
   ACCOUNT_CERTAIN: (e) =>
     `Exactly one owned ${e.accountType} account qualifies as the destination and that leg is matched by this source alone, so the pairing closes in both directions.`,
+  // ⚠️ Names the account and says plainly that the ROW on the other side is not
+  // merely unknown but unknowable. No surface should imply a pending answer.
+  ACCOUNT_CERTAIN_LEG_AMBIGUOUS: (e) =>
+    `Every qualifying destination leg is in the same owned ${e.accountType} account, so the destination account is established. Identical movements between these accounts in this window cannot be told apart, so the specific transaction on the other side is not identified.`,
   TYPE_CERTAIN_ACCOUNT_AMBIGUOUS: (e) =>
     `Every qualifying destination is a ${e.accountType} account, so the movement is established; the specific account is not${e.mutualityRefusal ? ` — ${e.mutualityRefusal}` : ""}, so no counterparty is recorded.`,
   TYPE_AMBIGUOUS: (e) =>
     `Candidate destinations span ${e.candidateTypes.length} different account types (${e.candidateTypes.join(", ")}), so nothing beyond "a transfer occurred" is supported.`,
-  NO_DESTINATION_EVIDENCE: () =>
-    "No qualifying opposite leg exists on any owned account, so there is no destination to establish.",
+  NO_DESTINATION_EVIDENCE: (e) =>
+    e.unresolvedReason === "CROSS_OWNER_BOUNDARY"
+      ? `No qualifying opposite leg exists on an account owned by this user, though ${e.crossOwnerCandidateCount} matching leg(s) exist on another owner's accounts. Transfers are only matched within one owner, so this is a known limitation rather than an absence of evidence.`
+      : "No qualifying opposite leg exists on any owned account, so there is no destination to establish.",
   CASH_NO_COUNTERPARTY: () =>
     "The provider attests this movement changed the money's FORM (cash), which has no destination account; an equal opposite leg nearby is a coincidence of amount and date, not a relation.",
 };
@@ -724,9 +1326,19 @@ const LEAF_REASON: Record<TransferMaturity, string> = {
   CASH_MOVEMENT:       "The money changed form (cash), so there is no destination account to establish",
   ISSUER_CREDIT:       "The provider attests a non-payment family on a liability inflow, so this is an issuer-originated credit, not a payment",
   UNRESOLVED_LIABILITY_INFLOW: "No family evidence and no owned funding leg, so this cannot be asserted as a debt payment",
+  EXTERNAL_PERSON_TRANSFER:     "Moved over a payment-app rail with no owned account on the other side, so the counterparty is a person",
+  EXTERNAL_DEPOSITORY_TRANSFER: "Reached a bank account that is not one of yours",
+  EXTERNAL_VENUE_TRANSFER:      "Reached a brokerage or exchange that is not connected here",
+  EXTERNAL_UNKNOWN_TRANSFER:    "The provider attests a counterparty that cannot be one of your accounts",
 };
 
-/** Presentation wording. One place. */
+/**
+ * Presentation wording. One place.
+ *
+ * ⚠️ The external leaves read as COMPLETED FACTS, not as failures. "Sent to
+ * someone else" is what happened; "Unresolved transfer" would be a false
+ * statement about a movement whose destination is perfectly well understood.
+ */
 export const MATURITY_LABEL: Record<TransferMaturity, string> = {
   UNRESOLVED_TRANSFER: "Unresolved transfer",
   INTERNAL_TRANSFER:   "Internal transfer",
@@ -737,6 +1349,18 @@ export const MATURITY_LABEL: Record<TransferMaturity, string> = {
   CASH_MOVEMENT:       "Cash movement",
   ISSUER_CREDIT:       "Issuer credit",
   UNRESOLVED_LIABILITY_INFLOW: "Unconfirmed card credit",
+  EXTERNAL_PERSON_TRANSFER:     "Sent to someone else",
+  EXTERNAL_DEPOSITORY_TRANSFER: "External bank transfer",
+  EXTERNAL_VENUE_TRANSFER:      "External investment transfer",
+  EXTERNAL_UNKNOWN_TRANSFER:    "External transfer",
+};
+
+/** Presentation wording for a named limitation. One place. */
+export const UNRESOLVED_REASON_LABEL: Record<TransferUnresolvedReason, string> = {
+  CANDIDATES_SPAN_TYPES:       "Several possible destinations of different kinds",
+  CROSS_OWNER_BOUNDARY:        "The matching account belongs to another member",
+  NO_COUNTERPART_EVIDENCE:     "Nothing on the other side has been shared with us",
+  LIABILITY_INFLOW_UNATTESTED: "Not confirmed as a card payment",
 };
 
 /**

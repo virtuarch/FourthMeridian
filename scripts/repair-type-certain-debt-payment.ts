@@ -52,7 +52,7 @@ import { resolveLifecycle } from "@/lib/transactions/lifecycle";
 import { resolveEconomicDate } from "@/lib/transactions/economic-date";
 import { plaidTransferEvidence } from "@/lib/transactions/plaid-transfer-evidence";
 import {
-  resolveDestinationEvidenceFor, maturityForEvidence, isTransferCandidate,
+  resolveDestinationEvidenceFor, maturityForEvidence, isTransferPrefilterCandidate,
   type TransferLeg,
 } from "@/lib/transactions/transfer-maturation";
 
@@ -94,7 +94,7 @@ async function main(): Promise<void> {
     settlementState: t.settlementState, pending: t.pending, deletedAt: t.deletedAt,
     hasLivePostedSuccessor: t.plaidTransactionId ? liveRefs.has(t.plaidTransactionId) : false,
   });
-  const corpus = all.filter((t) => isTransferCandidate(t.flowType) && !lifecycleOf(t).superseded);
+  const corpus = all.filter((t) => isTransferPrefilterCandidate(t.flowType) && !lifecycleOf(t).superseded);
 
   const legs: TransferLeg[] = corpus.map((t) => ({
     id: t.id,
@@ -105,7 +105,7 @@ async function main(): Promise<void> {
     currency: t.currency ?? null,
     dateMs: t.date.getTime(),
     superseded: lifecycleOf(t).superseded,
-    movementForm: plaidTransferEvidence({ pfcDetailed: t.pfcDetailed, amount: t.amount, name: t.merchant }).movementForm ?? null,
+    providerLinkKey: null, maskedDestinationAccountId: null, movementForm: plaidTransferEvidence({ pfcDetailed: t.pfcDetailed, amount: t.amount, name: t.merchant }).movementForm ?? null,
   }));
 
   // ── Derive the proposal set from the AUTHORITY, never from the id list ─────
@@ -116,7 +116,7 @@ async function main(): Promise<void> {
   for (let i = 0; i < corpus.length; i++) {
     const t = corpus[i];
     const e = resolveDestinationEvidenceFor(legs[i], legs);
-    const mature = maturityForEvidence(e, { accountType: legs[i].accountType, amount: t.amount });
+    const mature = maturityForEvidence(e, { accountType: legs[i].accountType, amount: t.amount, railType: null, venueClass: null, counterpartyClass: null });
     if (t.id === VETOED_ATM && e.level !== "CASH_NO_COUNTERPARTY") {
       vetoedSeen = true;
       console.error(`  ABORT — the ATM-withdrawal row is no longer CASH_NO_COUNTERPARTY (${e.level}).`);

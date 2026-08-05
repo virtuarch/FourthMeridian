@@ -132,7 +132,7 @@ async function main(): Promise<void> {
     currency: t.currency ?? null,
     dateMs: t.date.getTime(),
     superseded: lifecycleOf(t).superseded,
-    movementForm: plaidTransferEvidence({ pfcDetailed: t.pfcDetailed, amount: t.amount, name: t.merchant }).movementForm ?? null,
+    providerLinkKey: null, maskedDestinationAccountId: null, movementForm: plaidTransferEvidence({ pfcDetailed: t.pfcDetailed, amount: t.amount, name: t.merchant }).movementForm ?? null,
   }));
 
   const R1: typeof corpus = [], R3: typeof corpus = [], R2: typeof corpus = [], typeCertainDebt: typeof corpus = [];
@@ -141,7 +141,12 @@ async function main(): Promise<void> {
   for (let i = 0; i < corpus.length; i++) {
     const t = corpus[i];
     const e = resolveDestinationEvidenceFor(legs[i], legs);
-    const own = { accountType: legs[i].accountType, amount: t.amount };
+    // This historical repair predates the external terminal leaves and made no
+    // claim about them; passing nulls keeps its verdicts byte-identical.
+    const own = {
+      accountType: legs[i].accountType, amount: t.amount,
+      railType: null, venueClass: null, counterpartyClass: null,
+    };
     const mature = maturityForEvidence(e, own);
     detail.set(t.id, {
       level: e.level, mature,

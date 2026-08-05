@@ -30,6 +30,10 @@ function tx(over: Partial<RelationshipTransaction> = {}): RelationshipTransactio
     settlementState: 'POSTED',
     pfcDetailed: null,
     pfcPrimary: null, persistedCounterpartyAccountId: null,
+    // Financial Truth — admission + external-leaf + identifier facts. Defaults are
+    // the benign case: a transfer-shaped category, no attested counterparty class,
+    // no institution extractor, no descriptor identifiers.
+    category: 'Transfer', counterpartyClass: null, institutionId: null, descriptor: null,
     ...over,
   };
 }
@@ -213,21 +217,57 @@ test('multiple equal candidates across DIFFERENT accounts → AMBIGUOUS (refused
   assert.equal(m.reason, 'AMBIGUOUS_MULTIPLE_ACCOUNTS');
 });
 
-test('multiple equal candidates within ONE account → NOT account-certain (V27-TRUTH-2)', () => {
-  // This test asserted RESOLVED with a null leg id. That was the one-directional
-  // reading: "one destination ACCOUNT" was treated as certainty even though the
-  // PAIRING was not unique. The canonical authority now requires mutual
-  // uniqueness, so two rival legs — even in the same account — refuse the id.
-  // The destination TYPE survives and is surfaced; the account is not invented.
+test('multiple equal candidates within ONE account → the ACCOUNT is certain, the LEG is not', () => {
+  // ── The history of this one test is the history of the whole arc ──────────
+  //
+  // v1 asserted RESOLVED with a null leg id — one-directional, and wrong: "one
+  //    destination ACCOUNT" was read as certainty when the PAIRING was not unique.
+  // v2 (V27-TRUTH-2) asserted AMBIGUOUS with a null account. That fixed the
+  //    over-claim by discarding a TRUE claim alongside the false one: both legs
+  //    are in fa_sav, so wherever the money went, it went to savings.
+  // v3 (this) separates the two questions. The ACCOUNT is a fact and is
+  //    persistable; the LEG is unknowable and is never invented.
+  //
+  // The soundness condition is pigeonhole, not "one account": ONE source and TWO
+  // qualifying legs means this source has a partner in fa_sav whichever leg was
+  // actually its own. The next test pins the case where that fails.
   const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
   const savA = leg({ id: 'savA', financialAccountId: 'fa_sav', amount: 500 });
   const savB = leg({ id: 'savB', financialAccountId: 'fa_sav', amount: 500 });
   const m = matchTransferCandidate(chk, [savA, savB], CTX);
+  assert.equal(m.status, 'RESOLVED');
+  assert.equal(m.counterpartyAccountId, 'fa_sav');
+  // ⚠️ RESOLVED and yet NO leg. A consumer that inferred "resolved ⇒ I have a
+  // transactionId" would be wrong, which is why persistability is two booleans.
+  assert.equal(m.transactionId, null);
+  assert.equal(m.persistableCounterparty, true);
+  assert.equal(m.persistableLeg, false);
+  assert.equal(m.reason, 'ACCOUNT_CERTAIN_LEG_AMBIGUOUS');
+  assert.equal(m.evidenceLevel, 'ACCOUNT_CERTAIN_LEG_AMBIGUOUS');
+  assert.equal(m.destinationAccountType, 'savings');
+  assert.equal(m.maturity, 'SAVINGS_TRANSFER');
+  assert.equal(m.unresolvedReason, null);
+});
+
+test('...but ONE leg contested by TWO sources persists nothing — pigeonhole fails', () => {
+  // Two identical debits, one arrival. One of them did not go to savings at all,
+  // and nothing says which. Claiming fa_sav for both would double-claim the
+  // arrival — a coin flip wearing an identifier's authority.
+  //
+  // This is the guard that stops the leg-ambiguous rung from re-becoming the
+  // one-directional over-claim v1 shipped.
+  const s1 = leg({ id: 's1', financialAccountId: 'fa_chk', amount: -500 });
+  const s2 = leg({ id: 's2', financialAccountId: 'fa_chk2', amount: -500 });
+  const sav = leg({ id: 'sav', financialAccountId: 'fa_sav', amount: 500 });
+  const m = matchTransferCandidate(s1, [s2, sav], {
+    accountTypeById: new Map([...CTX.accountTypeById, ['fa_chk2', 'checking']]),
+  });
   assert.equal(m.status, 'AMBIGUOUS');
   assert.equal(m.counterpartyAccountId, null);
   assert.equal(m.transactionId, null);
-  // One ACCOUNT, rival legs — the more precise refusal of the two.
+  assert.equal(m.persistableCounterparty, false);
   assert.equal(m.reason, 'NOT_MUTUALLY_UNIQUE');
+  // What survives is still true: whatever this was, its destination is savings.
   assert.equal(m.destinationAccountType, 'savings');
   assert.equal(m.maturity, 'SAVINGS_TRANSFER');
 });

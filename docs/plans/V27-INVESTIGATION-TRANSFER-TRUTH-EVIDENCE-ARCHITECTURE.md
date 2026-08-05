@@ -1,0 +1,645 @@
+# V27 — Transfer Truth: what remains unknowable, and what is merely unread
+
+**Investigation only.** No code changed, no schema changed, no row mutated, no repair
+proposed for application. Every query was a `SELECT`. Corpus counts before and after:
+`Transaction` 4,447 total / 4,402 active, `FinancialAccount` 35 — identical.
+
+Baseline treated as correct and not re-litigated: mutual matching, the cash veto,
+account certainty, type certainty, ambiguity levels, movement form, issuer credits,
+persisted counterparties, read/write convergence.
+
+---
+
+## 0. The one-sentence answer
+
+Unresolved transfers persist for four structurally different reasons, and only one of
+them is about matching:
+
+1. **The corpus admits rows that are not transfer legs** (a liability charge, a
+   never-classified seed row). They can never resolve because there is nothing to resolve.
+2. **The ladder has no terminal leaf for "it left the household."** A Zelle payment to a
+   named person is *fully understood* and is reported as `UNRESOLVED_TRANSFER`.
+3. **The authority reads none of the identifier evidence already sitting in the
+   database.** Chase stamps a provider correlation id on both legs of every internal
+   transfer, in plaintext, in `description`. It is never parsed. 132 legs carry it.
+4. **A genuinely irreducible core remains — 43 legs, $67,000** — where amount and date
+   carry literally zero discriminating information and no stored evidence separates the
+   candidates.
+
+The headline measurement: pairing on (amount, ±5 days) resolves **234 of 671** candidate
+legs (34.9%). Adding only evidence *already stored today* raises that to **354 (52.8%)**
+with **zero contradictions against the current authority and zero errors against provider
+ground truth**. The remaining 317 legs are then almost entirely *correctly* unresolvable —
+external parties, cash, and rows that were never transfers.
+
+---
+
+## 1. Complete unresolved taxonomy
+
+### 1.1 First, the population is not what it looks like
+
+`isTransferCandidate` admits `flowType ∈ {TRANSFER, DEBT_PAYMENT, UNKNOWN, null}`.
+
+| admitted population | n | what it is |
+|---|---|---|
+| `TRANSFER` / cv=4 / plaid | 442 | real |
+| `DEBT_PAYMENT` / cv=4 / plaid | 221 | real |
+| `UNKNOWN` / cv=4 / plaid | 8 | real |
+| `null` / cv=null / manual | 347 | **seed/demo, never classified** |
+| `null` / cv=null / wallet | 5 | **seed/demo, never classified** |
+
+**1,023 candidates; 306 of them are not transfer-shaped by any evidence** — no transfer
+PFC family, no Transfer/Payment category, no rail/form/venue axis. The bucket contents are
+`Payroll Direct Deposit ×41`, `Groceries ×29`, `Dining ×39`, `Subscriptions ×35`,
+`Utilities ×24`, `Buy/Sell ×36`…
+
+> ⚠️ **`null` in `TRANSFER_CANDIDATE_FLOW_TYPES` means "never classified", not "might be a
+> transfer".** The comment in `transfer-maturation.ts:136` says it is there because "352
+> seed rows carry no flowType at all" — which is true, and is precisely why they should not
+> be admitted. Admitting an unclassified row asserts a transfer hypothesis the evidence
+> never made. Every one of those 306 rows is then counted as an unresolved transfer forever.
+
+Restricting to the one real (Plaid + wallet) owner and to transfer-shaped rows gives the
+honest corpus: **663 legs, of which 252 are movement-unresolved.**
+
+### 1.2 The taxonomy — every unresolved row in exactly one bucket
+
+Buckets assigned by a fixed-precedence cascade that relaxes *exactly one* clause of
+`legsQualify` at a time. Real, transfer-shaped corpus, n = 252.
+
+| # | bucket | n | $ | what is missing |
+|---|---|---|---|---|
+| **B13** | Nearby opposite rows exist but none is related | 113 | 19,687 | **nothing** — these are external parties (Zelle/Cash App/Apple Cash/crypto sends). The ladder has no leaf for them. |
+| **B0** | Liability *outflow* — a charge, not a transfer leg | 65 | 5,000 | **nothing** — admission defect. 64 are `TRANSFER_OUT_FROM_APPS` on a card (paying a person *with* the card). |
+| **B2** | Candidates span more than one destination type | 50 | 69,500 | an **identifier**. Amount and date are exhausted. |
+| **B10** | Payment-app rail, no owned counterpart at all | 17 | 2,442 | **nothing** — the counterparty is a person. |
+| **B5** | Exact match exists but 5 d < gap ≤ 60 d | 4 | 5,600 | a wider window — **but see §1.3, this is recurrence, not lag.** |
+| **B9** | Asset-venue movement, no owned leg | 2 | 10,044 | the *account* (Coinbase is not connected). |
+| **B6** | Amount altered (fee/rounding shaped) | 1 | 200 | a fee model. Effectively absent. |
+
+Empty buckets, and their emptiness is a finding: **B4 FX = 0**, **B7 batched/split = 0**,
+**B3 counterpart-excluded-by-classification = 0**, **B12 unattested one-sided = 0**.
+
+> ⚠️ The three buckets a reconciliation engineer expects to dominate — FX, batching,
+> split transfers — are **empty in this corpus**. Building for them now would be building
+> for an imagined failure mode.
+
+### 1.3 B5 is not a timing bucket
+
+The four "beyond-window" matches sit at gaps of 32, 38, 11, and 14/42/56 days, and their
+descriptors are `Zelle payment to Langston`, `Zelle payment to Mom`, `Zelle payment to Ella`.
+They are the *same recurring payment in a later month*, not a slow settlement. This
+reconfirms the recurrence bulge already recorded in `TRANSFER_MATCH_WINDOW_DAYS`'s note:
+**widening the window manufactures pairs between months.** No window change is warranted.
+
+### 1.4 The second, different question: counterparty-unresolved
+
+"Movement unresolved" and "counterparty unresolved" are distinct populations and the
+current reporting conflates them.
+
+| level / maturity | n | movement named? | account named? |
+|---|---|---|---|
+| `CASH_NO_COUNTERPARTY` / `CASH_MOVEMENT` | 63 | ✅ yes, terminally | ✅ correctly none |
+| `TYPE_CERTAIN_ACCOUNT_AMBIGUOUS` / `DEBT_PAYMENT` | 54 | ✅ | ❌ |
+| `TYPE_CERTAIN_ACCOUNT_AMBIGUOUS` / `SAVINGS_TRANSFER` | 23 | ✅ | ❌ |
+| `TYPE_CERTAIN_ACCOUNT_AMBIGUOUS` / `CASH_TRANSFER` | 22 | ✅ | ❌ |
+| `TYPE_AMBIGUOUS` / `DEBT_PAYMENT` | 15 | ✅ (own side) | ❌ |
+| `NO_DESTINATION_EVIDENCE` / `ISSUER_CREDIT` | 8 | ✅ | ✅ correctly none |
+
+745 legs are counterparty-unresolved; only 252 are movement-unresolved. **The 63 cash rows
+and the 8 issuer credits are fully resolved facts that a counterparty-shaped metric reports
+as failures.**
+
+---
+
+## 2. Statistical breakdown
+
+### 2.1 Where the authority stands
+
+| | legs | % |
+|---|---|---|
+| candidate legs (real owner) | 671 | 100 |
+| `ACCOUNT_CERTAIN` | 234 | 34.9 |
+| `TYPE_CERTAIN_ACCOUNT_AMBIGUOUS` | 99 | 14.8 |
+| `TYPE_AMBIGUOUS` | 65 | 9.7 |
+| `NO_DESTINATION_EVIDENCE` | 210 | 31.3 |
+| `CASH_NO_COUNTERPARTY` | 63 | 9.4 |
+
+### 2.2 Why mutual uniqueness fails — it is information, not algorithm
+
+| measurement | value |
+|---|---|
+| legs with **0** qualifying candidates | 210 |
+| legs with **exactly 1** | 256 |
+| legs with **>1** | 142 |
+| refusal caused by **forward** multiplicity | 142 |
+| refusal caused by **reverse** contention only | 22 |
+| contested legs with an exact **same-day** rival | 123 of 164 |
+| amount entropy over 608 transfer rows | **5.38 bits** (uniform over 162 distinct amounts would be 7.34) |
+| `$1,000` | **154 rows** — 23% of the transfer corpus |
+| top collisions | $1000×154 $2000×67 $1500×26 $3000×24 $4000×21 $500×20 $5000×14 |
+
+> ⚠️ **123 of 164 contested legs have an exact, same-day, opposite-sign rival.** For those
+> rows the pair (amount, date) contains *zero* discriminating information. No window, no
+> epsilon, no scoring function, no optimizer can separate them. Only an identifier can.
+
+### 2.3 The missing rung
+
+`resolveDestinationEvidence` demotes to `TYPE_CERTAIN_ACCOUNT_AMBIGUOUS` whenever
+`live.length > 1` — **even when every one of those legs is on the same account**. The level
+name then asserts something false.
+
+**75 legs ($103,000) have exactly one candidate destination *account* while the level
+returns `accountId: null`.** Example, six times over: `+2,000 Amex Platinum "MOBILE PAYMENT
+- THANK YOU"` with 2–3 qualifying legs, all of them on Chase checking `…2058`. *Which*
+$2,000 debit paid it is unknowable and financially irrelevant; *that it came from Chase
+checking* is certain and is being discarded.
+
+A further **22 legs are refused for reverse contention alone** — a single forward
+candidate, demoted because that leg is claimed by more than one source.
+
+---
+
+## 3. Graph analysis
+
+Edges = `ACCOUNT_CERTAIN` outflows ∪ correlation-id pairings. Real owner.
+
+| metric | value |
+|---|---|
+| nodes with activity | 7 |
+| distinct directed account pairs used | **6** of 42 possible |
+| **density** | **0.143** |
+| bidirectional pairs | **1** (checking `2058` ⇄ savings `9516`, 40 out / 26 back) |
+| out-degree ≥ 2 | **1 node** (checking `2058`, out-degree 4) |
+| every other node | out-degree ≤ 1 |
+
+Edge multiplicity:
+
+```
+42×  checking/2058 → debt/1009        26×  savings/9516  → checking/2058
+40×  checking/2058 → savings/9516      4×  checking/2058 → savings/5336
+34×  checking/2058 → debt/0202         1×  savings/5336  → checking/0985
+```
+
+**Destination entropy** from the hub: H = 1.737 bits over 4 destinations (max 2.000). The
+hub sends almost uniformly to all four. **The graph's own structure supplies no prior for
+disambiguation** — knowing money left checking tells you nothing about where it went.
+
+> ⚠️ This is a **star, not a network.** Every financial "journey" is a single hop out of one
+> hub. There is no topology for a chain to live in.
+
+---
+
+## 4. Transfer journey findings — chains do not exist, and now we can prove why
+
+Prior work (`transfer-chain.ts`) found zero multi-leg chains and read the arrival→departure
+gap histogram as *flat*. With the correlation-id edge set the picture is sharper, and worse
+for the chain hypothesis.
+
+| arrival→onward-departure gap | mass |
+|---|---|
+| 0–7 d | 136 |
+| 8–14 d | 108 |
+| **15–28 d** | **221** |
+
+```
+0:57 1:19 2:6 3:12 4:17 5:16 6:4 7:5 8:4 9:6 10:16 11:12 12:21 13:26 14:23
+15:24 16:9 17:17 18:16 19:18 20:10 21:7 22:10 23:17 24:13 25:14 26:11 27:28 28:27 29:18 30:14
+```
+
+**The histogram does not decay — it rises, peaking at 27–28 days.** Money is *more* likely
+to leave an account four weeks after an arrival than two days after. That is the monthly
+statement cycle, not forwarding. A causal succession produces monotone decay; this is the
+opposite signal.
+
+Other journey measurements:
+
+- 71 arrivals at a parkable account; **47** have an exact-amount onward departure ≤30 d —
+  and the amount is $1,000, the amount that appears 154 times. The "conservation" is a
+  coincidence of recurrence.
+- **31 same-day multi-outflow groups** — one checking account funding 2–4 destinations on
+  one day (`2026-02-27: → 0202:$3,450.65, → 1009:$5,000, → 1009:$1,000, → 0202:$4,000`).
+  Real journeys here are **branching, not linear**. A path model cannot represent them; only
+  a flow model could, and there is no evidence to constrain the flow.
+- Round trips exist at the account-pair level only (checking ⇄ savings), and they are
+  *independent* movements in both directions, not cycles of one sum.
+
+**Verdict: chains are absent, and their absence is now explained rather than merely
+observed.** Money entering the hub is fungible; the corpus contains no evidence that
+distinguishes "this dollar moved on" from "a dollar moved on." Do not build chain
+inference. Do not widen `CHAIN_CONTINUATION_WINDOW_DAYS`. The existing authority's decision
+to be correct and find nothing was right.
+
+---
+
+## 5. Alternative reconciliation models — measured, not argued
+
+Ground truth: the **66 provider correlation-id pairs (132 legs)**, which are
+provider-issued, not inferred, and which the current authority **agrees with on all 72 legs
+it independently resolves — 0 contradictions.**
+
+| model | claims | correct | **wrong** | abstains |
+|---|---|---|---|---|
+| 1 pairwise mutual (**current**) | 236 | 72 | **0** | 60 |
+| 2 greedy nearest-in-time | 302 | 125 | **7** | 0 |
+| 3 global min-cost bipartite matching | 386 | 122 | **8** | 2 |
+| 3b min-cost, abstain on tie | 320 | 116 | **2** | 14 |
+| 4 same-day mutual only | 256 | 116 | **0** | 16 |
+| **D1 stratified: day-0 mutual, then ±5** | **304** | **116** | **0** | 16 |
+| B descriptor mask (identifier) | 250 | 124 | **0** | 8 |
+| C institution *name* routing | 0 | 0 | 0 | 132 |
+| A provider correlation id | 132 | 132 | **0** | 0 |
+| **E corrId ▷ mask ▷ stratified** | **354** | **132** | **0** | **0** |
+
+### 5.1 The most important negative result
+
+> ⚠️ **Global optimization is strictly worse than the current local rule.** Min-cost
+> bipartite matching resolved 122 correctly and **8 incorrectly**; greedy nearest resolved
+> 125 and **7 incorrectly**. The current pairwise-mutual rule makes **zero** errors.
+
+This is not a tuning failure, it is a category error, and it is the single clearest finding
+about the reconciliation literature. Min-cost flow, Hungarian assignment, and the treasury
+/ settlement / two-way-match algorithms are built for a **closed book**: a bank statement
+and a ledger, where every item is *known* to have a counterpart and the only question is
+which. A personal-finance corpus is an **open book** — 210 of 671 legs (31%) have no
+counterpart in the corpus *at all*, because the other side is a person, a merchant, cash,
+or an institution the user has not connected. Maximum matching on an open book does not
+discover pairs; it manufactures them. The objective function's job is to leave nothing
+unmatched, which is exactly the wrong instinct here.
+
+The same reasoning disposes of the rest of the survey:
+
+- **Probabilistic / Bayesian record linkage (Fellegi–Sunter)** needs a labelled training
+  set and produces a posterior. Both are hostile to this codebase's doctrine: a posterior
+  of 0.83 cannot be persisted as `counterpartyAccountId` without lying, and the only
+  labelled set available *is* the correlation-id set — which, where it exists, is the
+  answer, not a feature.
+- **Hidden-state / temporal graph inference** requires the latent transition to be
+  identifiable from timing. §4 shows timing is anti-informative (rising histogram).
+- **Conservation constraints (Σ balance deltas)** — genuinely promising in principle, and
+  already correctly refused by the existing doctrine: `BALANCE_GAP_SUPPORT` may raise
+  confidence in a matched leg but "a gap is not a transaction." That refusal remains right.
+  A balance delta is also *not independent* of the transactions that produced it, so it
+  cannot arbitrate between two candidate transactions of equal amount on the same day.
+- **Fraud-graph / entity-resolution research** targets a different objective: recall under
+  adversarial obfuscation, with a human reviewer downstream. There is no reviewer here and
+  no adversary; the cost asymmetry is inverted.
+
+### 5.2 The one *structural* model that is a free win
+
+**Stratified matching (tighten-then-widen).** Resolve at ±0 days with mutual uniqueness,
+*remove those legs from the pool*, then re-run at ±5 on what remains.
+
+- current single-tier ±5: 236 claims, **72** ground-truth correct
+- stratified 0 → 5: 304 claims, **116** ground-truth correct, **0 wrong, 0 conflicts with
+  the current model**
+
+Adding intermediate tiers (0→1→2→3→5) adds 2 claims — noise. The useful stratification is
+exactly *same-day first*.
+
+The mechanism is worth stating because it is counter-intuitive: the tight tier is *more*
+restrictive per pair, yet resolves *more*, because removing the same-day pairs shrinks the
+competition set that was defeating mutual uniqueness at ±5. This is standard blocking from
+record linkage, and it is the only piece of that literature that transfers cleanly, because
+it changes the *order* of decisions without weakening any of them.
+
+---
+
+## 6. The evidence that already exists and is never read
+
+### 6.1 A provider correlation id, in plaintext, in `description`
+
+```
+Online Transfer to   SAV ...9516  transaction#: 30039468383   ← checking −1,000
+Online Transfer from CHK ...2058  transaction#: 30039468383   ← savings  +1,000
+```
+
+| measurement | value |
+|---|---|
+| rows carrying `transaction#:` | 132 |
+| distinct ids | 66 |
+| group sizes | **every group has exactly 2** |
+| perfect opposite pairs (cross-account, same owner, same currency, equal amount) | **66 / 66** |
+| same-account / cross-owner / same-sign / amount-mismatch failures | **0 / 0 / 0 / 0** |
+| gap between the two legs | **0 days, all 66** |
+| agrees with the current authority | 72 legs |
+| **contradicts the current authority** | **0** |
+| newly resolvable | **60 legs** |
+
+A provider-issued join key, present on both legs, perfectly bipartite, never once wrong.
+This is `PROVIDER_LINK`-grade evidence — the strongest rung in `CounterpartyEvidence` — and
+the ladder's only `PROVIDER_LINK` source today is `pendingTransactionRef`, which covers
+**61 of 4,050 rows**.
+
+### 6.2 The counterparty account mask, also in plaintext
+
+Four descriptor forms carry the *other* account's last four digits:
+
+```
+Online Transfer from CHK ...2058                      ← "...####"
+Payment to Chase card ending in 0202                  ← "ending in ####"
+Internal Transfer Credit: Savings -5336               ← "-####"
+Internet transfer from JPMORGAN CHASE BANK, NA DDA account XXXXX2058
+```
+
+`FinancialAccount.mask` is populated on **10 / 10** Plaid accounts. Measured:
+
+| | value |
+|---|---|
+| legs where a mask resolves to exactly one owned account | **250** |
+| ground-truth correct | **124 / 132** |
+| **wrong** | **0** |
+| mask ambiguous (two owned accounts share a mask) | **0** |
+| claims outside ground truth (narrow-pattern variant) | 5 |
+
+> ⚠️ **This is not descriptor classification, and the distinction is load-bearing.**
+> `transfer-maturation.ts`'s founding case is that the descriptor `AMERICANEXPRESS` cannot
+> decide a destination — because it is a **name**, and Amex issues both cards and savings
+> accounts. `...9516` is an **identifier**: it denotes exactly one account or none. The
+> existing doctrine forbids inferring semantics from names; it does not forbid reading an
+> identifier. The measurement separates them cleanly — mask: 250 claims, 0 wrong;
+> institution **name** routing: **0 claims**, because a name never narrows to one account
+> on its own.
+
+Institution names are not useless, though — they are a **scoping** signal, not a resolving
+one. Applied to candidate sets that already span multiple accounts, an institution token
+cuts the set to exactly 1 in **28** cases (`AMERICAN EXPRESS ACH PMT M7878` → the Amex card,
+not the Chase card), fails to narrow in 14, and is absent in 47.
+
+### 6.3 What Plaid sends that ingestion deliberately discards
+
+`plaid-flow-input.ts:64–67` deny-lists, on privacy grounds:
+`counterparties[].account_numbers`, `payment_meta.{payer, payee, by_order_of, ppd_id,
+reference_number}`, `account_owner`, all location.
+
+`transaction_code`, `payment_meta.payment_method` and `check_number` are captured in memory
+and **have no schema column**, so they are dropped at write time.
+
+> ⚠️ The privacy boundary is **already crossed, in an unstructured and unaudited form.**
+> The corpus contains `SCHWAB BROKERAGE MONEYLINK PPD ID: 9005586224` and
+> `AMERICAN EXPRESS ACH PMT M7878 WEB ID: 2005032111` inside `description` today. The
+> deny-list keeps the *structured, typed, minimizable* copy out while the *raw, unbounded*
+> copy is stored, indexed and shown to the user. That is strictly worse for privacy and
+> strictly worse for truth.
+>
+> This is an argument for **structured extraction from what is already stored** — parse the
+> mask and the correlation id out of `description` into typed evidence — **not** for
+> relaxing the deny-list. Extracting a token already in the row adds no new exposure.
+
+---
+
+## 7. Deterministic vs probabilistic vs fundamentally unknowable
+
+| bucket | n | $ | verdict | required evidence |
+|---|---|---|---|---|
+| Correlation-id pairs | 132 | — | **DETERMINISTIC — available now** | parse `description` |
+| Mask-named destination | 250 (124 in truth) | — | **DETERMINISTIC — available now** | parse `description` + `FinancialAccount.mask` |
+| Same-day mutual (stratified tier 0) | +68 over current | — | **DETERMINISTIC — available now** | reorder the existing predicate |
+| One account, many legs | **75** | **103,000** | **DETERMINISTIC — a missing rung** | none; the fact is already computed and thrown away |
+| Reverse-contention-only refusals | 22 | — | **DETERMINISTIC once the rung exists** | none |
+| Institution-scoped narrowing | 28 | — | **DETERMINISTIC as a filter** | institution token + `FinancialAccount.institution` |
+| Cash form change | 63 | 25,455 | **ALREADY TERMINAL** — mis-counted as unresolved | a reporting fix |
+| Liability outflow (a charge) | 65 | 5,000 | **NOT A TRANSFER** | an admission fix |
+| Never-classified seed rows | 306 | — | **NOT A TRANSFER** | an admission fix |
+| External payment-app party | 94 | 24,652 | **KNOWN, but has no leaf** | a terminal `EXTERNAL_PARTY` rung |
+| Asset venue, institution not connected | 21 | 13,960 | **KNOWN as external; account unknowable until connected** | user connects the account |
+| Beyond-window "matches" | 4 | 5,600 | **CORRECTLY REFUSED** — recurrence, not lag | none; do not widen |
+| **Irreducible contested** | **43** | **67,000** | see below | — |
+
+### 7.1 The irreducible 43, characterized
+
+| n | shape | resolvable? |
+|---|---|---|
+| 11 | `AMERICAN EXPRESS ACH PMT M#### WEB ID:` · rivals=2 across **2** accounts | **YES** — institution scoping (§6.2) |
+| 9 + 1 + 2 | `MOBILE PAYMENT - THANK YOU` · rivals=2–3 on **1** account | **PARTIALLY** — the *account* is certain (§2.3); the *leg* is not, and is irrelevant |
+| 4 | `Internet transfer from JPMORGAN CHASE BANK` · rivals=2 on **1** account | same |
+| 4 | `Online Transfer / Payment: Debit` (Amex) · rivals=1–2 | **YES** — reverse-contention refusal only |
+| 3 | `Payment to Chase card ending in ####` · rivals=3–4 | **YES** — mask |
+| 4 | `AMERICANEXPRESS TRANSFER 0003200463**15336**` | **YES** — the ACH trace embeds the mask `5336` |
+| 1 | `SCHWAB BROKERAGE MONEYLINK PPD ID:` | **NO** — Schwab is connected but the MoneyLink leg is not in the corpus |
+| 1 | `APPLE CASH SENT MONE` | **NO** — external party |
+
+> **Genuinely and permanently unknowable: which *specific leg* pairs with which, when two
+> identical movements occur between the same two accounts within the same window.** This is
+> the only true unknowable in the corpus, it affects roughly 19 legs, and **it does not
+> matter**: leg identity carries no financial meaning that account identity does not
+> already carry. Every downstream consumer — wealth neutrality, debt attribution, cash-flow
+> exclusion, liquidity tiering — asks *which account*, never *which row*.
+
+Everything else in the residue is either **evidence not yet read** or **a fact the ladder
+has no word for**.
+
+---
+
+## 8. Generalization across all users
+
+The dangerous move would be to build for Chase's `transaction#:`. The corpus already
+refutes that instinct:
+
+| institution | transfer rows | correlation id | mask in descriptor | resolved today |
+|---|---|---|---|---|
+| **Chase** (`ins_56`) | 524 | 132 (**25%**) | 190 (**36%**) | 294 (56%) |
+| **American Express** (`ins_10`) | 147 | 0 (**0%**) | 13 (**9%**) | 60 (41%) |
+
+> ⚠️ **Identifier evidence is institution-specific and unevenly distributed.** Amex supplies
+> essentially none — `MOBILE PAYMENT - THANK YOU`, `Internal Transfer Credit: Savings -5336`,
+> average description length 30 vs Chase's 49, and `hasDescription` on 61 of 150 rows. Any
+> architecture that assumes an identifier will collapse on the next institution.
+
+Stress test against the requested population classes:
+
+| class | behaviour under the proposed architecture |
+|---|---|
+| Multiple banks | ✅ evidence is per-row; an institution with no identifier degrades to the structural tier, never to a guess |
+| Missing / unconnected institutions | ✅ resolves to a terminal **external** leaf, not to "unresolved". This is the biggest honesty gain. |
+| Credit unions, small banks | ⚠️ expect *no* correlation id and *poor* masks — the Amex profile, not the Chase profile. Plan for it. |
+| Investment accounts / brokerage | ✅ venue attested; the MoneyLink case shows the *other leg is often not in the corpus at all* (a brokerage cash sweep is not a transaction feed) |
+| Crypto exchanges | ⚠️ on-chain and exchange feeds do not share an identifier space; amount pairing is also broken by network fees (an **amount-altered** case this corpus has only 1 of) |
+| Payroll cards, external ACH | ✅ one-sided by nature → external leaf |
+| Zelle / Venmo / Cash App / Apple Cash / PayPal | ✅ **rail is attested, counterparty is a person, and that is the complete truth.** 94 legs here. They must terminate, not linger. |
+| Mortgages / HELOCs | ⚠️ the *own-side* liability rules already carry these; the payment leg is a normal checking→liability hop |
+| Business accounts | ⚠️ **the ownership boundary is the risk.** `legsQualify` pairs only within one `ownerId`. A user with a personal and a business Space, or a joint account, has real transfers that cross the boundary and will be permanently unresolvable. The seed data already exhibits three separate owners. |
+| Mask collisions at scale | 4-digit masks collide within one user with P = 0.45% at 10 accounts, 1.9% at 20, **4.3% at 30**. Non-zero. The rule must **abstain on an ambiguous mask**, never pick. In this corpus: 0 collisions, and 25 of 35 accounts (manual/wallet) carry **no mask at all**. |
+
+---
+
+## 9. Recommended long-term transfer architecture
+
+Conceptual only. No schema, no migration, no code.
+
+### 9.1 Four layers, and what lives in each
+
+```
+  OBSERVATION      immutable, provider-authored, never derived
+     ↓             the row as it arrived, plus typed EXTRACTIONS of identifiers
+                   that are already present in it
+  EVIDENCE         per-row, typed, provenance-carrying, multi-axis
+     ↓             "what this row attests", never "what it means"
+  RESOLUTION       corpus-scoped, deterministic, tiered by evidence strength
+     ↓             "which owned account, if any" — and a first-class NONE
+  DISPOSITION      the single classification vocabulary every surface reads
+```
+
+### 9.2 Immutable facts (never derived, never recomputed)
+
+- the provider row: amount, posting date, descriptor, PFC, account
+- `FinancialAccount.mask`, `.institution`, `.type`, ownership
+- a **provider correlation id**, where the provider issues one
+- the **counterparty mask**, where the descriptor carries one
+
+The last two are *extractions*, not inferences: a lossless projection of bytes already
+stored. They belong with observation because re-deriving them at read time would make every
+consumer re-implement the parser — the exact failure V27-TRUTH-2 removed from
+`RelationshipResolver`.
+
+### 9.3 Derived, read-time, never stored
+
+- destination evidence level and candidate sets
+- maturity / disposition
+- chain assessments (which should continue to find nothing)
+- anything with a confidence below certainty
+
+### 9.4 Persisted
+
+Only `counterpartyAccountId`, and only at the top two tiers below. The existing rule —
+persist only what a `PROVIDER_LINK` or a uniquely-matched leg supports — stays. What
+changes is that *more evidence qualifies as a provider link*.
+
+### 9.5 The resolution ladder, redesigned
+
+The current ladder has one resolving mechanism and five ways to say no. The proposed one
+has an ordered evidence hierarchy and a **complete terminal vocabulary**:
+
+**Admission** — a row enters only if it is transfer-shaped:
+- ❌ never-classified rows (`flowType === null`)
+- ❌ liability outflows (a charge, structurally not a leg)
+- ❌ rows with no transfer PFC family, no Transfer/Payment category, no rail/form/venue
+
+**Tier 1 — identifier (deterministic, persistable)**
+1. provider correlation id shared by exactly two cross-account legs
+2. provider pending→posted ref
+3. counterparty mask resolving to exactly one owned account — **abstain on collision**
+
+**Tier 2 — structure (deterministic, persistable)**
+4. mutual uniqueness at ±0 days
+5. mutual uniqueness at ±5 days, on the pool tier 4 did not claim
+6. **`ACCOUNT_CERTAIN_LEG_AMBIGUOUS`** — the missing rung. All qualifying legs on one
+   account ⇒ the *account* is a fact, the leg is not. Persistable; the leg is not recorded.
+
+**Tier 3 — scoping (narrows, never resolves)**
+7. institution token filters a multi-account candidate set. Only ever *removes* candidates,
+   then re-runs tiers 2. It can never name an account by itself.
+
+**Tier 4 — terminal leaves (facts, not failures)**
+- `CASH_MOVEMENT` — form change *(exists)*
+- `ISSUER_CREDIT` — *(exists)*
+- **`EXTERNAL_PARTY`** — a payment-app rail or a depository venue with no owned counterpart.
+  **New.** 94 legs. The truth is complete; there is no account to find.
+- **`EXTERNAL_VENUE_UNCONNECTED`** — asset venue attested, institution not linked. **New.**
+  21 legs. Distinct from `EXTERNAL_PARTY` because *connecting the account would resolve it*
+  — it is a product prompt, not a dead end.
+
+**Tier 5 — honest residue**
+- `UNRESOLVED_TRANSFER` — for what is genuinely contested. Target size: ~43 legs, not 252.
+
+> The single most important structural change is **Tier 4**. Today
+> `deriveTransferDisposition` already knows about `EXTERNAL_BANK_TRANSFER` and
+> `PAYMENT_APP_MOVEMENT` — and the maturity ladder, which is what actually classifies,
+> cannot say either. **Two vocabularies exist and only the weaker one is wired in.** That
+> divergence is the same shape as the read-boundary defect V27-TRUTH-2 removed, one level
+> up.
+
+### 9.6 What should never be stored
+
+- a probability, a score, or a ranked candidate list
+- a chain id or a non-adjacent counterparty
+- an inferred counterparty at any level below account-certainty
+- **raw Plaid PII the deny-list refuses** — `payer`, `payee`, `by_order_of`, `account_numbers`
+- an `economicDate`-style column with no reader
+
+---
+
+## 10. Sequencing — before L8, inside L8, and never
+
+L8 = *event identity: pending↔posted as one logical event; `removed` distinguishes
+withdrawal from transition.* The only schema slice.
+
+### 10.1 Before L8 — no schema, no migration, independently verifiable
+
+| | slice | why it does not need L8 | measured effect |
+|---|---|---|---|
+| **T1** | **Admission correctness** — refuse never-classified rows and liability outflows | pure predicate | −306 phantom candidates, −65 charges |
+| **T2** | **Terminal external leaves** — `EXTERNAL_PARTY`, `EXTERNAL_VENUE_UNCONNECTED` | vocabulary only | 115 legs stop being reported as failures |
+| **T3** | **The missing rung** `ACCOUNT_CERTAIN_LEG_AMBIGUOUS` | the candidate set is already computed | **+75 legs, $103,000** |
+| **T4** | **Stratified matching** (day-0 tier first) | reorders an existing predicate | +68 legs, **0 conflicts, 0 errors** |
+| **T5** | **Identifier extraction** — correlation id + mask, as read-time typed evidence | parses a column that already exists | +60 (corrId) and +124 (mask) ground-truth-verified legs |
+| **T6** | **Institution scoping as a filter** | read-time | 28 multi-account sets cut to 1 |
+| **T7** | **Report the two axes separately** — movement-unresolved vs counterparty-unresolved | reporting | stops 63 cash + 8 issuer-credit facts being counted as failures |
+
+T1–T4 are pure logic. T5–T6 read stored columns. **None requires L8, none requires a
+migration, and each is independently provable against the 66-pair ground truth.**
+
+Order: **T1 → T7 → T2 → T3 → T4 → T5 → T6.** T1 first because every subsequent measurement
+is distorted by the 306 phantom candidates. T7 second because the correct denominator must
+exist before anything claims to improve it.
+
+### 10.2 Inside L8 — genuinely blocked on event identity
+
+| slice | why it needs L8 |
+|---|---|
+| **Persisting extracted identifiers as typed columns** | An identifier belongs to the *logical event*, not to a row that will be superseded. Persisting `correlationId` on a pending row that L8 will merge means writing it twice and reconciling it later. |
+| **Provider-link evidence surviving pending→posted** | `pendingTransactionRef` covers 61/4,050 today; the correlation id is the same *kind* of fact and needs the same identity anchor. Both legs of a transfer can be pending independently. |
+| **Supersession in `legsQualify`** | `superseded` is a required field on `TransferLeg` that nothing currently computes — the audit passes `false` for every row. Correct supersession *is* L8. |
+| **Any counterparty persisted against a pending leg** | Without event identity, the posted successor arrives as a new row and the persisted pointer dangles. |
+
+### 10.3 Never implement — these would reduce truth
+
+1. **Global min-cost / bipartite maximum matching.** Measured: 8 errors vs the current 0.
+   The objective is wrong for an open book.
+2. **Greedy nearest-in-time.** Measured: 7 errors.
+3. **Widening `TRANSFER_MATCH_WINDOW_DAYS`.** The beyond-window "matches" are recurring
+   monthly payments; the histogram *rises* past 14 days.
+4. **Probabilistic linkage with a persisted score.** A posterior cannot be written to
+   `counterpartyAccountId` without asserting a fact that is not one.
+5. **Chain / multi-hop inference.** No topology (density 0.143, one hub), no timing signal
+   (rising histogram), no amount conservation (fungibility). Building it would produce
+   confident fiction.
+6. **Partial-forwarding or subset-sum matching.** Zero batched/split cases in the corpus;
+   the prior attempt double-counted (one $997.37 arrival funding two cards).
+7. **Institution *names* as a resolving signal.** Measured: 0 resolutions on its own. Names
+   scope; identifiers resolve. This is the `AMERICANEXPRESS`→HYSA-vs-card lesson, and it
+   must not be quietly reversed by T6.
+8. **Relaxing the Plaid PII deny-list.** T5 gets the same information from a column already
+   stored. Adding `payer`/`payee`/`ppd_id` as typed columns would widen exposure for no
+   measured gain.
+9. **A `TransferChain` table.** There is nothing to store.
+10. **Fee/FX tolerance models.** 1 amount-altered case, 0 FX cases. Tolerance without
+    evidence is how false pairs get made.
+
+---
+
+## 11. What I could not determine
+
+- **Whether `transaction#:` is stable across Plaid re-syncs or is a Chase display artifact.**
+  All 66 groups are internally consistent *now*; there is no observation history to prove
+  the id does not change. This is a direct argument for L1's observation log.
+- **Whether other institutions emit a correlation id at all.** Two institutions in the
+  corpus; one does, one does not. A production sample across many `institutionId`s is
+  needed before T5 is sized.
+- **Whether the ACH trace `000320046315336` reliably ends in the receiver's mask**, or
+  whether `5336` there is coincidence. Four rows. Worth reading directly, not encoding.
+- **Cross-owner transfers.** `legsQualify` forbids them by design and the real corpus has
+  one owner, so the joint-account / business-Space failure mode is unmeasured here.
+- **Whether production shares this profile.** Local repair never implies production repair;
+  the institution mix determines everything in §8.
+
+---
+
+## 12. Database safety
+
+Read-only throughout. Six investigation scripts, every query a `SELECT` / `count` /
+`findMany` / `information_schema` read; a static scan confirmed no
+`create|update|delete|upsert|executeRaw` call in any of them. Counts before and after are
+identical: `Transaction` 4,447 total / 4,402 active, `FinancialAccount` 35. No schema
+change, no migration, no repair, no commit, no regeneration. Scripts were removed after the
+measurements were recorded.

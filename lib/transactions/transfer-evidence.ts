@@ -114,9 +114,64 @@ export type TransferDisposition =
   | "UNKNOWN_MOVEMENT";      // honest residue — nothing attestable
 
 /**
+ * The disposition a canonical MATURITY projects to.
+ *
+ * ── Why this exists (Financial Truth — Phase 6) ────────────────────────────
+ *
+ * Two vocabularies described the same movement and only one of them classified.
+ * `TransferDisposition` had EXTERNAL_BANK_TRANSFER, ASSET_VENUE_TRANSFER and
+ * PAYMENT_APP_MOVEMENT from the start; `TransferMaturity` — the vocabulary the
+ * ladder actually produces — had none of them, so 116 live payment-app legs
+ * reported "unresolved" while the disposition layer already knew better.
+ *
+ * Phase 4 gave the ladder those leaves. This function makes the disposition a
+ * PROJECTION of the ladder rather than a parallel computation, so the two can no
+ * longer disagree: where a maturity is known, the disposition is derived from it
+ * and `deriveTransferDisposition` is not consulted at all.
+ *
+ * `deriveTransferDisposition` below remains for the per-row seam where no corpus
+ * — and therefore no maturity — is available. It is a fallback, not a peer.
+ *
+ * The `string` parameter is deliberate: this module imports nothing (see the
+ * header), and taking `TransferMaturity` would create a cycle with the ladder.
+ * The mapping is total, and unknown input yields the honest UNKNOWN_MOVEMENT.
+ */
+export function dispositionForMaturity(maturity: string): TransferDisposition {
+  switch (maturity) {
+    // Owned counterparty established — wealth-neutral movement between your accounts.
+    case "INTERNAL_TRANSFER":
+    case "SAVINGS_TRANSFER":
+    case "CASH_TRANSFER":
+    case "DEBT_PAYMENT":
+      return "INTERNAL_TRANSFER";
+    case "INVESTMENT_TRANSFER":
+    case "EXTERNAL_VENUE_TRANSFER":
+      return "ASSET_VENUE_TRANSFER";
+    case "CASH_MOVEMENT":
+      return "CASH_MOVEMENT";
+    case "EXTERNAL_DEPOSITORY_TRANSFER":
+      return "EXTERNAL_BANK_TRANSFER";
+    case "EXTERNAL_PERSON_TRANSFER":
+      // The rail is what is attested; the PURPOSE stays unresolved, which is
+      // exactly what PAYMENT_APP_MOVEMENT means. Never P2P_PAYMENT.
+      return "PAYMENT_APP_MOVEMENT";
+    // ISSUER_CREDIT and the two liability-inflow leaves make no transfer claim at
+    // all, and neither does an unresolved row. Honest residue in every case.
+    default:
+      return "UNKNOWN_MOVEMENT";
+  }
+}
+
+/**
  * Derive the canonical disposition from provider-neutral evidence plus canonical
  * relationship context. Pure, total, deterministic; never throws. Precedence is
  * fixed and documented so overlapping axes cannot be resolved ambiguously.
+ *
+ * ⚠️ FALLBACK ONLY, since Phase 6. Prefer `dispositionForMaturity` wherever the
+ * ladder has produced a maturity: this function sees one row and cannot know
+ * whether an owned counterparty exists, so it must be told, and a caller that
+ * tells it wrong gets a confident wrong answer. The ladder is told nothing — it
+ * measures.
  */
 export function deriveTransferDisposition(
   evidence: TransferEvidence,

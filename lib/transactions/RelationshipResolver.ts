@@ -2,13 +2,16 @@ import {
   TRANSFER_MATCH_WINDOW_DAYS,
   resolveDestinationEvidenceFor,
   maturityForEvidence,
-  isTransferCandidate,
+  isUnresolvedMaturity,
   type TransferLeg,
   type TransferMaturity,
   type DestinationEvidenceLevel,
+  type TransferUnresolvedReason,
 } from "@/lib/transactions/transfer-maturation";
+import { admitTransferCandidate, type TransferAdmission } from "@/lib/transactions/transfer-admission";
 import { resolveLifecycle } from "@/lib/transactions/lifecycle";
 import { plaidTransferEvidence } from "@/lib/transactions/plaid-transfer-evidence";
+import { extractProviderLinks } from "@/lib/transactions/provider-link-extract";
 /**
  * lib/transactions/RelationshipResolver.ts
  *
@@ -89,6 +92,25 @@ export interface RelationshipTransaction {
   /** V27-TRUTH-3 — a counterparty already persisted on the row. Proof of an
    *  owned funding source, which outranks the family. */
   persistedCounterpartyAccountId: string | null;
+
+  // ── Financial Truth (Transfer Authority) — the facts the ladder now needs ───
+  // All REQUIRED and nullable. An optional field here is how the read boundary
+  // came to disagree with the authority twice already: a caller that forgets it
+  // gets the weaker answer silently, and that is indistinguishable from an
+  // institution that genuinely attests nothing.
+  /** Fourth Meridian's own category — a movement signal admission consults when
+   *  the provider supplies no family (imports, manual entry, CSV). */
+  category: string | null;
+  /** Provider counterparty class (Plaid `counterparties[].type`). Phase 4 reads
+   *  it ONLY to decide whether an unmatched movement left the household. */
+  counterpartyClass: string | null;
+  /** The OWN account's stable institution id (Plaid `institution_id`), for the
+   *  institution-scoped correlation extractors. Never a display name. */
+  institutionId: string | null;
+  /** The row's descriptor text (merchant + description), for identifier
+   *  extraction ONLY. ⚠️ Never parsed for names, merchants or purpose — see
+   *  provider-link-extract.ts. */
+  descriptor: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -117,7 +139,9 @@ export type TransferMatchStatus =
   | 'NONE';       // target not transfer-like, or no matching opposite leg
 
 export type TransferMatchReason =
+  | 'PROVIDER_ASSERTED'            // the institution linked both legs itself
   | 'DETERMINISTIC_UNIQUE'         // one owned counterparty account, MUTUALLY unique
+  | 'ACCOUNT_CERTAIN_LEG_AMBIGUOUS' // the account is a fact; the row is unknowable
   | 'AMBIGUOUS_MULTIPLE_ACCOUNTS'  // >1 distinct candidate account — refuse
   | 'NO_CANDIDATE'                 // no opposite leg matched
   | 'NOT_TRANSFER_LIKE'            // target is not a directional transfer row
@@ -125,7 +149,8 @@ export type TransferMatchReason =
   //    resolver previously could not, which is why it over-resolved.
   | 'CASH_MOVEMENT_NO_COUNTERPARTY' // the money changed form; no account to find
   | 'TYPE_CERTAIN_ACCOUNT_AMBIGUOUS' // destination TYPE known, account is not
-  | 'NOT_MUTUALLY_UNIQUE';          // one candidate leg, but that leg has rivals
+  | 'NOT_MUTUALLY_UNIQUE'           // one candidate leg, but that leg has rivals
+  | 'EXTERNAL_TERMINAL';            // it left the household — a fact, not a refusal
 
 export interface TransferCandidateRelationship {
   status: TransferMatchStatus;
@@ -148,6 +173,27 @@ export interface TransferCandidateRelationship {
   maturity:               TransferMaturity;
   /** The authority's own evidence level, carried through unchanged for audit. */
   evidenceLevel:          DestinationEvidenceLevel;
+  /**
+   * Phase 3 — whether `counterpartyAccountId` above may be PERSISTED.
+   *
+   * ⚠️ Deliberately separate from `status === 'RESOLVED'`. At
+   * ACCOUNT_CERTAIN_LEG_AMBIGUOUS the account is a persistable fact while
+   * `transactionId` is null and must stay null, so a consumer that inferred
+   * "resolved ⇒ I have a leg" would be wrong. Two booleans, because they answer
+   * two questions.
+   */
+  persistableCounterparty: boolean;
+  /** Phase 3 — whether the OPPOSING ROW is established. False whenever the leg
+   *  is unknowable, even though the account is known. */
+  persistableLeg:          boolean;
+  /**
+   * Phase 2 — the specific known limitation when this row is still unresolved,
+   * or null when the ladder has an answer (including every external leaf).
+   * A surface must never print "unresolved" without rendering this.
+   */
+  unresolvedReason:       TransferUnresolvedReason | null;
+  /** Phase 1 — why the row was, or was not, admitted to the corpus at all. */
+  admission:              TransferAdmission;
 }
 
 export interface TransactionRelationships {
@@ -177,6 +223,22 @@ export interface TransactionRelationships {
 export interface TransferMatchContext {
   /** FinancialAccount id → its type (checking | savings | debt | …). */
   accountTypeById: ReadonlyMap<string, string>;
+  /**
+   * Phase 5 — account MASK → the owned account ids carrying it, within one owner.
+   *
+   * A corpus-level fact the caller already holds (it loaded the owned-account
+   * graph to build `accountTypeById`). A mask appearing against MORE THAN ONE
+   * account must be present with all of them, so the extractor abstains instead
+   * of picking: 4-digit masks collide within one user with probability 0.45% at
+   * 10 accounts and 4.3% at 30, and picking would be a coin flip wearing an
+   * identifier's authority.
+   *
+   * Optional, and this is the one place that is right: a caller with no mask
+   * data (the pure unit tests, the chain authority) genuinely has none, and the
+   * consequence is only that mask evidence does not apply. Unlike the leg fields,
+   * absence here cannot produce a WRONG answer — only a weaker one.
+   */
+  maskToAccountIds?: ReadonlyMap<string, readonly string[]>;
 }
 
 /** Re-exported so a caller can assert the read path and the authority agree. */
@@ -286,20 +348,27 @@ export function matchTransferCandidate(
   candidates: readonly RelationshipTransaction[],
   ctx: TransferMatchContext,
 ): TransferCandidateRelationship {
+  const admission = admitTransferCandidate(admissionInput(tx, ctx));
+
   const refuse = (
     reason: TransferMatchReason,
     level: DestinationEvidenceLevel,
     maturity: TransferMaturity,
     destinationAccountType: string | null = null,
+    unresolvedReason: TransferUnresolvedReason | null = null,
   ): TransferCandidateRelationship => ({
     status: reason === 'AMBIGUOUS_MULTIPLE_ACCOUNTS' || reason === 'TYPE_CERTAIN_ACCOUNT_AMBIGUOUS' || reason === 'NOT_MUTUALLY_UNIQUE'
       ? 'AMBIGUOUS' : 'NONE',
     transactionId: null, counterpartyAccountId: null, confidence: 0,
     reason, destinationAccountType, maturity, evidenceLevel: level,
+    persistableCounterparty: false, persistableLeg: false,
+    unresolvedReason, admission,
   });
 
-  // Target must be a directional (nonzero) transfer-shaped row with a known account.
-  if (!isTransferCandidate(tx.flowType) || Math.sign(tx.amount) === 0 || tx.financialAccountId == null) {
+  // Phase 1 — the canonical admission gate. A row that is not a transfer
+  // candidate is not "an unresolved transfer"; it was never a transfer at all,
+  // and the assessment says which of the seven reasons applies.
+  if (admission !== 'ADMITTED') {
     return refuse('NOT_TRANSFER_LIKE', 'NO_DESTINATION_EVIDENCE', 'UNRESOLVED_TRANSFER');
   }
 
@@ -307,11 +376,15 @@ export function matchTransferCandidate(
   // The corpus is this row plus its candidate bucket. The bucket is scoped by
   // (currency, |amount|), which is exactly the set `legsQualify` can pair with —
   // so the REVERSE count the authority computes over it is complete, not a sample.
+  //
+  // ⚠️ It is also exactly the set the STRATIFIED tiers need: a day-0 claim can
+  // only ever remove a leg of equal magnitude and currency, so the tier ordering
+  // computed over one bucket is identical to the one a full-corpus pass would
+  // compute. Bucketing is a performance decision that changes no answer.
   const corpus: TransferLeg[] = [self];
   for (const c of candidates) {
     if (c.id === tx.id) continue;
-    if (c.financialAccountId == null) continue;
-    if (!isTransferCandidate(c.flowType)) continue;
+    if (admitTransferCandidate(admissionInput(c, ctx)) !== 'ADMITTED') continue;
     corpus.push(toTransferLeg(c, ctx));
   }
 
@@ -319,24 +392,57 @@ export function matchTransferCandidate(
   // V27-TRUTH-3 — a positive liability-side movement needs the provider FAMILY
   // and any persisted counterparty, or the liability-inflow authority cannot
   // tell a customer payment from an issuer credit. Supplied, never re-derived.
+  // Phase 4 — the attested axes decide the EXTERNAL leaves when nothing owned
+  // qualified. Supplied for the same reason: never re-derived here.
+  const evidence = plaidTransferEvidence({
+    pfcDetailed: tx.pfcDetailed, amount: tx.amount, name: tx.merchant,
+  });
   const maturity = maturityForEvidence(e, {
     accountType: self.accountType,
     amount: tx.amount,
     providerFamily: tx.pfcPrimary,
     persistedCounterpartyAccountId: tx.persistedCounterpartyAccountId ?? null,
+    railType: evidence.railType ?? null,
+    venueClass: evidence.venueClass ?? null,
+    counterpartyClass: tx.counterpartyClass,
   });
+  const unresolved = isUnresolvedMaturity(maturity)
+    ? (e.unresolvedReason ?? (maturity === 'UNRESOLVED_LIABILITY_INFLOW'
+        ? 'LIABILITY_INFLOW_UNATTESTED' : 'NO_COUNTERPART_EVIDENCE'))
+    : null;
 
   switch (e.level) {
+    // Phase 5 + the original certain rung. Both establish the ROW on the other
+    // side; they differ in WHO established it, which `reason` records.
+    case 'PROVIDER_LINKED':
     case 'ACCOUNT_CERTAIN':
       return {
         status: 'RESOLVED',
         transactionId:          e.legId,
         counterpartyAccountId:  e.accountId,
         confidence:             1,
-        reason:                 'DETERMINISTIC_UNIQUE',
+        reason:                 e.level === 'PROVIDER_LINKED' ? 'PROVIDER_ASSERTED' : 'DETERMINISTIC_UNIQUE',
         destinationAccountType: e.accountType,
         maturity,
         evidenceLevel:          e.level,
+        persistableCounterparty: true, persistableLeg: true,
+        unresolvedReason: null, admission,
+      };
+    // Phase 3 — RESOLVED for the ACCOUNT, with `transactionId` null. The status
+    // and the leg are independent facts here, which is why `persistableLeg`
+    // exists as its own field rather than being inferred from the status.
+    case 'ACCOUNT_CERTAIN_LEG_AMBIGUOUS':
+      return {
+        status: 'RESOLVED',
+        transactionId:          null,
+        counterpartyAccountId:  e.accountId,
+        confidence:             1,
+        reason:                 'ACCOUNT_CERTAIN_LEG_AMBIGUOUS',
+        destinationAccountType: e.accountType,
+        maturity,
+        evidenceLevel:          e.level,
+        persistableCounterparty: true, persistableLeg: false,
+        unresolvedReason: null, admission,
       };
     case 'CASH_NO_COUNTERPARTY':
       return refuse('CASH_MOVEMENT_NO_COUNTERPARTY', e.level, maturity);
@@ -346,13 +452,37 @@ export function matchTransferCandidate(
       // because the two demand different follow-up evidence.
       return refuse(
         e.candidateAccountIds.length === 1 ? 'NOT_MUTUALLY_UNIQUE' : 'TYPE_CERTAIN_ACCOUNT_AMBIGUOUS',
-        e.level, maturity, e.accountType,
+        e.level, maturity, e.accountType, unresolved,
       );
     case 'TYPE_AMBIGUOUS':
-      return refuse('AMBIGUOUS_MULTIPLE_ACCOUNTS', e.level, maturity);
+      return refuse('AMBIGUOUS_MULTIPLE_ACCOUNTS', e.level, maturity, null, unresolved);
     case 'NO_DESTINATION_EVIDENCE':
-      return refuse('NO_CANDIDATE', e.level, maturity);
+      // Phase 4 — an EXTERNAL leaf is an answer, not a refusal. `NO_CANDIDATE`
+      // stays for the genuinely unresolved case, so the two never blur.
+      return refuse(
+        unresolved === null ? 'EXTERNAL_TERMINAL' : 'NO_CANDIDATE',
+        e.level, maturity, null, unresolved,
+      );
   }
+}
+
+/** The row's facts, as the admission authority sees them. One place, so the
+ *  target gate and the candidate gate can never drift apart. */
+function admissionInput(r: RelationshipTransaction, ctx: TransferMatchContext) {
+  const evidence = plaidTransferEvidence({
+    pfcDetailed: r.pfcDetailed, amount: r.amount, name: r.merchant,
+  });
+  return {
+    flowType:      r.flowType ?? null,
+    amount:        r.amount,
+    accountType:   r.financialAccountId ? ctx.accountTypeById.get(r.financialAccountId) ?? null : null,
+    accountId:     r.financialAccountId,
+    category:      r.category,
+    providerFamily: r.pfcPrimary,
+    movementForm:  evidence.movementForm ?? null,
+    railType:      evidence.railType ?? null,
+    venueClass:    evidence.venueClass ?? null,
+  };
 }
 
 /**
@@ -376,6 +506,14 @@ function toTransferLeg(r: RelationshipTransaction, ctx: TransferMatchContext): T
     deletedAt:       r.deletedAt ?? null,
     hasLivePostedSuccessor: false,
   });
+  // Phase 5 — identifier extraction. Only the OPAQUE key crosses this boundary;
+  // the raw provider token never leaves `provider-link-extract.ts`, and a
+  // mask's digits are consumed there and discarded.
+  const links = extractProviderLinks(r.descriptor ?? r.merchant, {
+    institutionId:    r.institutionId,
+    maskToAccountIds: ctx.maskToAccountIds ?? EMPTY_MASK_INDEX,
+    selfAccountId:    r.financialAccountId as string,
+  });
   return {
     id:          r.id,
     accountId:   r.financialAccountId as string,
@@ -388,8 +526,12 @@ function toTransferLeg(r: RelationshipTransaction, ctx: TransferMatchContext): T
     movementForm: plaidTransferEvidence({
       pfcDetailed: r.pfcDetailed, amount: r.amount, name: r.merchant,
     }).movementForm ?? null,
+    providerLinkKey: links.correlation?.linkKey ?? null,
+    maskedDestinationAccountId: links.maskedAccountId,
   };
 }
+
+const EMPTY_MASK_INDEX: ReadonlyMap<string, readonly string[]> = new Map();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Entry point
