@@ -25,6 +25,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
+import { FlowType, TransactionCategory, type Prisma } from "@prisma/client";
+
 import { aiTransactionWhere, aiDrilldownWhere } from "@/lib/ai/assemblers/transactions";
 import { bankingTransactionWhere } from "@/lib/data/banking-population";
 
@@ -87,8 +89,10 @@ test("PARITY-1: caller fragments are AND-ed, so none can silently swallow anothe
   // `bankingTransactionWhere` carries BOTH an `AND` (population) and an `OR`
   // (event projection). Spread into one object literal, the later key wins and
   // the earlier filter vanishes — with no error and no wrong-looking output.
-  const categoryWhere = { AND: [{ category: "Shopping" }] };
-  const amountWhere = { amount: { lt: 0 } };
+  const categoryWhere: Prisma.TransactionWhereInput = {
+    AND: [{ category: TransactionCategory.Shopping }],
+  };
+  const amountWhere: Prisma.TransactionWhereInput = { amount: { lt: 0 } };
   const where = aiDrilldownWhere(SPACE, { start: WIN.start, end: WIN.end }, {
     categoryWhere, amountWhere, merchantQuery: "amazon",
   });
@@ -111,11 +115,12 @@ test("PARITY-1: a category drill is bounded by the banking population too", () =
   // invisible everywhere else. Measured live at 0 rows — a structural hole, not
   // a leak, and the kind that stays 0 only until it doesn't.
   const canonical = JSON.stringify(bankingTransactionWhere(SPACE));
-  for (const categoryWhere of [
-    { category: "Shopping" },          // resolved category
-    { flowType: "SPENDING" },          // the default arm
-    {},                                // includeNonSpending
-  ]) {
+  const arms: Prisma.TransactionWhereInput[] = [
+    { category: TransactionCategory.Shopping }, // resolved category
+    { flowType: FlowType.SPENDING },            // the default arm
+    {},                                         // includeNonSpending
+  ];
+  for (const categoryWhere of arms) {
     const and = (aiDrilldownWhere(SPACE, { start: WIN.start, end: WIN.end }, {
       categoryWhere, amountWhere: {}, merchantQuery: undefined,
     }) as { AND: unknown[] }).AND;
