@@ -122,6 +122,11 @@ export const AUDITS: readonly AuditEntry[] = [
           "creditor group is an owned liability account",
   },
   {
+    name: "audit-transfer-identification", tier: "REQUIRED", needsDb: true,
+    what: "the identification rung only NARROWS a qualifying candidate set, and never names an " +
+          "account that contradicts a counterparty an approved repair already persisted",
+  },
+  {
     name: "audit-transfer-authority", tier: "REQUIRED", needsDb: true,
     what: "the admission census balances, no leg id or account id is fabricated, and every " +
           "unresolved row carries a named limitation (ladder DISTRIBUTIONS are advisory)",

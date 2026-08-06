@@ -331,6 +331,19 @@ export interface DestinationCandidate {
    * successor) is dropped here, so no caller can forget to filter it.
    */
   superseded: boolean;
+  /**
+   * v2.6-XFER-1 — does THIS leg positively name the source account?
+   *
+   * True when the leg's own extracted account mask resolves to the source's
+   * account. That is the destination side saying, in the provider's own words,
+   * where the money came from — e.g. an AMEX checking credit reading
+   * "Internal Transfer Credit: Savings -5336" where 5336 is the source's mask.
+   *
+   * ⚠️ Optional, and absence means "not known to identify", never "does not".
+   * A caller that cannot compute it gets the pre-XFER-1 behaviour rather than a
+   * silently weakened tie-break.
+   */
+  identifiesSource?: boolean;
 }
 
 /**
@@ -419,6 +432,28 @@ export interface DestinationEvidence {
  * set still yields TYPE_CERTAIN_ACCOUNT_AMBIGUOUS, which names the movement while
  * persisting nothing.
  */
+/**
+ * v2.6-XFER-1 — the identification narrowing, in ONE place.
+ *
+ * A leg that positively names `sourceAccountId` outranks a leg that names
+ * nothing. Applies only as a STRICT, non-empty subset: if every candidate
+ * identifies the source, or none does, there is no tie to break.
+ *
+ * Exported so `resolveDestinationEvidenceFor` can compute the pigeonhole union
+ * over exactly the set `resolveDestinationEvidence` will judge. Two copies of
+ * this predicate would be two definitions of the rung.
+ */
+export function narrowByIdentification<T extends { maskedDestinationAccountId?: string | null }>(
+  candidates: readonly T[],
+  sourceAccountId: string,
+): readonly T[] {
+  const identified = candidates.filter((c) => c.maskedDestinationAccountId === sourceAccountId);
+  const silent = candidates.filter((c) => !c.maskedDestinationAccountId);
+  return identified.length > 0 && silent.length === candidates.length - identified.length && silent.length > 0
+    ? identified
+    : candidates;
+}
+
 export function resolveDestinationEvidence(
   candidates: readonly DestinationCandidate[],
   opts: {
@@ -446,7 +481,54 @@ export function resolveDestinationEvidence(
   }
 
   // Supersession is enforced here, not by the caller.
-  const live = candidates.filter((c) => !c.superseded);
+  const all = candidates.filter((c) => !c.superseded);
+
+  // ── v2.6-XFER-1 — IDENTIFICATION OUTRANKS SILENCE. ───────────────────────
+  //
+  // `legsQualify` already applies the account mask SUBTRACTIVELY: a leg naming
+  // an account that is not the other side is disqualified. What it cannot do is
+  // PREFER a leg that names the right one — so among the survivors, "names the
+  // counterparty" and "names nothing" counted the same, and the ladder saw a tie
+  // where the evidence had a winner.
+  //
+  // Measured on the live corpus, three AMEX savings→checking transfers ($6,500):
+  //
+  //   source  AMEX High Yield Savings (mask 5336)  −500
+  //           "Requested transfer to AMEX checking account"
+  //   cand A  AMEX Rewards Checking  +500  "Internal Transfer Credit: Savings -5336"
+  //   cand B  AMEX Platinum Card®    +500  "MOBILE PAYMENT - THANK YOU"
+  //
+  // A names the source account outright. B is a real card payment that coincides
+  // in amount, day and institution. Candidates spanned checking + debt, so the
+  // ladder returned TYPE_AMBIGUOUS / CANDIDATES_SPAN_TYPES — a refusal, over a
+  // pair the provider had already identified.
+  //
+  // ── Why this is a NARROWING and not a new level ──────────────────────────
+  //
+  // The identified subset becomes the candidate set and every rung below runs
+  // unchanged on it. So the outcome is still ACCOUNT_CERTAIN (mutually unique),
+  // ACCOUNT_CERTAIN_LEG_AMBIGUOUS (pigeonhole) or a refusal — the same claims,
+  // reached on better-filtered evidence. It can only ever REMOVE a candidate
+  // that already passed `legsQualify`; it can never invent one, and it cannot
+  // reach a level the surviving evidence does not support.
+  //
+  // ── The two conditions, both load-bearing ────────────────────────────────
+  //
+  //   1. STRICT, NON-EMPTY subset. If every candidate identifies the source, or
+  //      none does, there is no tie to break and the set is unchanged.
+  //   2. Every non-identifying candidate must be SILENT. A leg naming a
+  //      DIFFERENT account cannot appear here (legsQualify removed it), so in
+  //      practice this holds by construction — but asserting it means a future
+  //      change to that predicate degrades to "no narrowing" rather than to
+  //      "outrank a leg that contradicted us".
+  //
+  // Measured before shipping (scripts/audit-transfer-identification.ts): applies
+  // to 29 of 1023 legs, changes 27 levels, EVERY change an upgrade toward
+  // certainty, ZERO re-pointed ACCOUNT_CERTAIN/PROVIDER_LINKED verdicts, ZERO
+  // contradictions against any counterparty an approved repair had persisted.
+  const identified = all.filter((c) => c.identifiesSource === true);
+  const silent = all.filter((c) => c.identifiesSource !== true);
+  const live = identified.length > 0 && silent.length > 0 ? identified : all;
 
   const accountIds = [...new Set(live.map((c) => c.accountId))].sort();
   const types = [...new Set(live.map((c) => c.accountType))].sort();
@@ -920,13 +1002,27 @@ export function resolveDestinationEvidenceFor(
       (c) => !index.claimed.has(c.id) && legsQualify(leg, c),
     ).length,
     superseded: leg.superseded,
+    // v2.6-XFER-1 — does this candidate NAME the source account? The mask was
+    // already extracted for `legsQualify`'s subtractive clause; this reads the
+    // same fact in the positive direction, so identification and disqualification
+    // can never disagree about what a descriptor said.
+    identifiesSource: leg.maskedDestinationAccountId === source.accountId,
   }));
+
   // The UNION of sources competing for ANY candidate leg — the pigeonhole input.
   // Counting per-leg maxima would over-count when two legs share one rival and
   // under-count when they have different ones; only the union is the real
   // constraint, and only this corpus-scoped function can compute it.
+  //
+  // v2.6-XFER-1 — computed over the set the ladder will actually judge. When
+  // identification narrows the candidates, the sources competing for the DROPPED
+  // legs are no longer part of the constraint, and counting them would refuse
+  // the pigeonhole rung on rivals that are no longer in contention. The
+  // narrowing predicate is applied identically here and in
+  // `resolveDestinationEvidence`; a single helper keeps them from drifting.
+  const judged = narrowByIdentification(forward, source.accountId);
   const competing = new Set<string>([source.id]);
-  for (const leg of forward) {
+  for (const leg of judged) {
     for (const c of corpus) {
       if (index.claimed.has(c.id)) continue;
       if (legsQualify(leg, c)) competing.add(c.id);
