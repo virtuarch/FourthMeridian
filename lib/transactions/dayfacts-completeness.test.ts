@@ -48,7 +48,10 @@ const rich: LiquidityTx[] = [
   tx({ own: "chk", amount: 300,  date: "2026-06-04", flowType: "TRANSFER", counterpartyAccountId: "card" }),       // DEBT_PROCEEDS (in)
   tx({ own: "chk", amount: 200,  date: "2026-06-05", flowType: "TRANSFER", transferDisposition: "PAYMENT_APP_MOVEMENT" }), // PAYMENT_APP_INFLOW (in)
   tx({ own: "chk", amount: -120, date: "2026-06-06", flowType: "SPENDING" }),                                      // REAL_COST (out)
-  tx({ own: "chk", amount: -800, date: "2026-06-07", flowType: "DEBT_PAYMENT" }),                                  // DEBT_PAYMENT (out)
+  // v2.6-DEBT-1 — the counterparty is the EVIDENCE that makes this a debt
+  // payment. Without it the row is a movement with an unproven destination and
+  // is UNRESOLVED, not a debt payment — which is the point of the rule.
+  tx({ own: "chk", amount: -800, date: "2026-06-07", flowType: "DEBT_PAYMENT", counterpartyAccountId: "card" }),  // DEBT_PAYMENT (out)
   tx({ own: "chk", amount: -400, date: "2026-06-08", flowType: "TRANSFER", counterpartyAccountId: "cb" }),         // ASSET_DEPLOYMENT (out)
   tx({ own: "chk", amount: -50,  date: "2026-06-09", flowType: "TRANSFER", transferDisposition: "PAYMENT_APP_MOVEMENT" }), // PAYMENT_APP_OUTFLOW (out)
   tx({ own: "chk", amount: -500, date: "2026-06-10", flowType: "TRANSFER", counterpartyAccountId: "sav" }),        // INTERNAL_TRANSFER (context)

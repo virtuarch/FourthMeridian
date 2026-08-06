@@ -55,6 +55,16 @@ import { classifyLiquidity, type LiquidityContext, type LiquidityTx } from "@/li
  */
 export const COUNTED_DEBT_PAYMENT_LEG = "CASH" as const;
 
+/**
+ * v2.6-DEBT-1 — the debt-payment attestation rule lives in its own module.
+ *
+ * It cannot live here: this module imports `classifyLiquidity`, and the
+ * liquidity axis is the thing that must consult the rule — importing back would
+ * be a cycle. Re-exported so callers still find it where they look for
+ * debt-payment decisions.
+ */
+export { isDebtPaymentAttested } from "@/lib/transactions/debt-payment-attestation";
+
 export interface DebtPaymentSelection<T> {
   /** The rows that count. Sum these; never sum anything else. */
   counted: T[];

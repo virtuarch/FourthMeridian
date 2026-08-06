@@ -112,6 +112,11 @@ export const AUDITS: readonly AuditEntry[] = [
           "income taxonomy, issuer credits, and cross-surface debt parity",
   },
   {
+    name: "audit-debt-payment-attestation", tier: "REQUIRED", needsDb: true,
+    what: "every counted debt payment is POSITIVELY attested — an owned liability counterparty " +
+          "or a proven liability destination TYPE; absence of contradiction never admits",
+  },
+  {
     name: "audit-cashflow-debt-defect", tier: "REQUIRED", needsDb: true,
     what: "no transfer is counted as a debt payment, no leg is double-counted, and every " +
           "creditor group is an owned liability account",

@@ -116,9 +116,23 @@ const cls = (o: Parameters<typeof tx>[0]) => classifyLiquidity(tx(o), ctx);
   const c1 = cls({ ownAccount: "chk", amount: -300, flowType: "TRANSFER", counterpartyAccountId: "card" });
   check("checking → credit card (TRANSFER) = CASH_OUT / DEBT_PAYMENT",
     c1.effect === "CASH_OUT" && c1.reason === "DEBT_PAYMENT", JSON.stringify(c1));
+  // v2.6-DEBT-1 — BEHAVIOUR CHANGE, deliberate. This case used to assert that a
+  // bare `flowType = DEBT_PAYMENT` with NO counterparty and NO authority verdict
+  // was counted as CASH_OUT / DEBT_PAYMENT. It was pinning admission by ABSENCE
+  // OF CONTRADICTION: the only thing behind the row is a provider category
+  // derived from descriptor text, and nothing had disproved it.
+  //
+  // Membership now requires POSITIVE destination evidence. A row with none is
+  // resolved as the transfer it structurally is, which leaves it UNRESOLVED
+  // rather than asserting a debt payment nobody attested.
   const c2 = cls({ ownAccount: "chk", amount: -300, flowType: "DEBT_PAYMENT" });
-  check("checking → credit card (DEBT_PAYMENT flowType) = CASH_OUT / DEBT_PAYMENT",
-    c2.effect === "CASH_OUT" && c2.reason === "DEBT_PAYMENT");
+  check("checking → ??? (DEBT_PAYMENT flowType, NO evidence) = UNRESOLVED, never counted",
+    c2.effect === "UNRESOLVED" && c2.reason === "UNRESOLVED", JSON.stringify(c2));
+  // The same row, once the authority attests the destination TYPE, IS counted —
+  // membership needs evidence, not a nameable account.
+  const c3 = cls({ ownAccount: "chk", amount: -300, flowType: "DEBT_PAYMENT", transferMaturity: "DEBT_PAYMENT" } as never);
+  check("checking → proven-liability TYPE (DEBT_PAYMENT maturity) = CASH_OUT / DEBT_PAYMENT",
+    c3.effect === "CASH_OUT" && c3.reason === "DEBT_PAYMENT", JSON.stringify(c3));
 }
 
 // loan proceeds (liability → checking) : debt proceeds + liquidity in

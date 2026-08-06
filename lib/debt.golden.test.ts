@@ -34,9 +34,18 @@ const CTX = identityContext(DEFAULT_DISPLAY_CURRENCY);
 // These fixtures are DESTINATION-side legs (each `accountId` is the card that
 // received money). The authority counts the CASH leg, so it is presented the same
 // payments from the paying side — which is what production actually sums.
+// v2.6-DEBT-1 — cardD and cardE MUST be declared. The fixtures below use them as
+// debt-payment destinations, but the tier map omitted them, so `tierOf` returned
+// "unknown". Under the old rule an unknown destination was still admitted
+// (absence of contradiction), which masked the gap; membership now requires
+// positive evidence, so an undeclared destination is correctly refused. The
+// fixtures always meant these to be cards.
 const TIERS = tierResolver([
   { id: "chk", type: "checking" },
   { id: "cardA", type: "debt" }, { id: "cardB", type: "debt" }, { id: "cardC", type: "debt" },
+  { id: "cardD", type: "debt" }, { id: "cardE", type: "debt" },
+  // The rollup fixtures name their cards directly.
+  { id: "amex", type: "debt" }, { id: "chase", type: "debt" },
 ]);
 
 const asCashLegs = (rows: DebtPaymentTxnLike[]): LiquidityTx[] =>
@@ -142,22 +151,26 @@ const pureUsd: DebtPaymentTxnLike[] = [
 // exclusion, mixed-sign abs-sum, group-by-account, descending sort by total, and
 // per-account count. Block-scoped so its `tx`/`mixed` locals stay isolated.
 {
+  // v2.6-DEBT-1 — every id used here must be a DECLARED debt account, because
+  // `asCashLegs` maps it to the counterparty and membership now requires a
+  // proven liability destination. Previously any string worked: an unknown
+  // destination was admitted anyway.
   const tx = (accountId: string, amount: number, flowType: string | null): DebtPaymentTxnLike =>
     ({ accountId, amount, flowType });
 
   check("empty input → 0", totalDebtPaid([]) === 0);
   check(
     "non-DEBT_PAYMENT rows ignored",
-    totalDebtPaid([tx("a", -50, "SPENDING"), tx("a", 100, "INCOME"), tx("a", -35, "FEE")]) === 0,
+    totalDebtPaid([tx("cardA", -50, "SPENDING"), tx("cardA", 100, "INCOME"), tx("cardA", -35, "FEE")]) === 0,
   );
   check(
     "null flowType excluded (legacy Payment rows not counted by flow predicate)",
-    totalDebtPaid([tx("a", -300, null)]) === 0,
+    totalDebtPaid([tx("cardA", -300, null)]) === 0,
   );
   check(
     "abs-sums across mixed signs (INTERNAL negative + INFLOW positive legs)",
-    totalDebtPaid([tx("a", -300, "DEBT_PAYMENT"), tx("b", 200, "DEBT_PAYMENT")]) === 500,
-    `got ${totalDebtPaid([tx("a", -300, "DEBT_PAYMENT"), tx("b", 200, "DEBT_PAYMENT")])}`,
+    totalDebtPaid([tx("cardA", -300, "DEBT_PAYMENT"), tx("cardB", 200, "DEBT_PAYMENT")]) === 500,
+    `got ${totalDebtPaid([tx("cardA", -300, "DEBT_PAYMENT"), tx("cardB", 200, "DEBT_PAYMENT")])}`,
   );
 
   check("empty input → empty rollup", rollupDebtPaymentsByAccount([]).length === 0);

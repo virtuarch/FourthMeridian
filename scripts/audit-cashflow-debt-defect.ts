@@ -119,16 +119,23 @@ async function main() {
   bar("PART 4 — the Debt Payments card's exact contents, with ATTESTATION");
   const cardRows = rows.filter((r) => counted.has(r.id));
   console.log(`  rows the card counts: ${cardRows.length}   total ${money(cardRows.reduce((a, r) => a + Math.abs(r.amount), 0))}`);
-  // Attested = the destination is an OWNED LIABILITY account. Structural, from
-  // the account graph — no merchant string, no institution name.
-  const attested = cardRows.filter((r) => {
+  // v2.6-DEBT-1 — NAMEABLE is not the same question as ATTESTED, and calling one
+  // the other is how a reader concluded these rows rested on the provider's
+  // category. They do not: 18 of them carry a proven liability destination TYPE
+  // from the transfer authority, which is positive evidence — it simply cannot
+  // say WHICH card, because the user paid two on the same day for the same
+  // amount. Membership and naming are orthogonal axes (see
+  // lib/transactions/debt-payment-attestation.ts).
+  const nameable = cardRows.filter((r) => {
     const cp = r.counterpartyAccountId ? A.get(r.counterpartyAccountId) : null;
     return cp?.type === "debt";
   });
-  const unattested = cardRows.filter((r) => !attested.includes(r));
-  console.log(`  ATTESTED   (counterparty is an owned liability) : ${attested.length}  ${money(attested.reduce((a, r) => a + Math.abs(r.amount), 0))}`);
-  console.log(`  UNATTESTED (no owned liability destination)     : ${unattested.length}  ${money(unattested.reduce((a, r) => a + Math.abs(r.amount), 0))}`);
-  console.log(`\n  the UNATTESTED rows — each counted purely on the provider's category:`);
+  const typeOnly = cardRows.filter((r) => !nameable.includes(r) && r.transferMaturity === "DEBT_PAYMENT");
+  const unattested = cardRows.filter((r) => !nameable.includes(r) && !typeOnly.includes(r));
+  console.log(`  NAMEABLE   (counterparty is an owned liability) : ${nameable.length}  ${money(nameable.reduce((a, r) => a + Math.abs(r.amount), 0))}`);
+  console.log(`  TYPE-ONLY  (destination TYPE proven liability)  : ${typeOnly.length}  ${money(typeOnly.reduce((a, r) => a + Math.abs(r.amount), 0))}   ← attested; the account is unknowable, not the kind`);
+  console.log(`  UNATTESTED (no positive destination evidence)   : ${unattested.length}  ${money(unattested.reduce((a, r) => a + Math.abs(r.amount), 0))}`);
+  console.log(`\n  the UNATTESTED rows — admitted with no positive evidence at all:`);
   for (const r of unattested.slice(0, 30)) {
     console.log(`    ${String(r.date).slice(0, 10)} ${money(r.amount).padStart(12)}  ${(r.merchant ?? "").slice(0, 44).padEnd(44)}  ${r.pfcDetailed ?? "—"}`);
   }
@@ -161,6 +168,7 @@ async function main() {
       : cp?.type === "debt" ? "DEBT_PAYMENT (attested)"
       : cp?.type === "savings" ? "SAVINGS_TRANSFER (attested)"
       : cp?.type === "checking" ? "CASH_TRANSFER (attested)"
+      : isDebtPayment(r.flowType) && r.transferMaturity === "DEBT_PAYMENT" ? "DEBT_PAYMENT (type-attested, account unknowable)"
       : isDebtPayment(r.flowType) ? "DEBT_PAYMENT (provider-asserted, UNATTESTED)"
       : isTransfer(r.flowType) ? "TRANSFER (unresolved destination)"
       : `other:${r.flowType}`;

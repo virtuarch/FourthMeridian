@@ -249,7 +249,12 @@ const MATRIX: Fixture[] = [
     note: "cost flow enters ECONOMIC spend (creditCardSpending) but NOT liquidity Cash Out — the spendable drain happens later at debt payment (A2)." },
 
   // 6 — debt payment, source leg (cash leaving the liquid tier)
+  // v2.6-DEBT-1 — `cp: "card"` is REQUIRED evidence now, not decoration. A debt
+  // payment is admitted only on a positively attested destination; a bare
+  // DEBT_PAYMENT flowType is a provider category, and the fixture's own title
+  // says "debt payment", so it must carry the destination that makes it one.
   { id: "F6", title: "debt payment (source leg, from checking)", own: "chk", amount: -300, flowType: "DEBT_PAYMENT",
+    cp: "card", counterpartyIsOwned: true,
     pop: true, econ: "none", effect: "CASH_OUT", reason: "DEBT_PAYMENT", debtMember: true,
     facts: { cashOut: 300, income: 0, spendGross: 0 }, byReason: { DEBT_PAYMENT: 300 } },
 
@@ -594,7 +599,10 @@ const viewC = (rows: LiquidityTx[]): number =>
 //   source leg  DEBT_PAYMENT −300 on checking (liquid)
 //   dest   leg  DEBT_PAYMENT +300 on the card (liability)
 {
+  // v2.6-DEBT-1 — the source leg names its destination; that is what makes it a
+  // "fully connected" payment and what admits it to the measure.
   const sourceLeg = toTx({ id: "src", title: "", own: "chk", amount: -300, flowType: "DEBT_PAYMENT",
+    cp: "card", counterpartyIsOwned: true,
     pop: true, econ: "none", effect: "CASH_OUT", reason: "DEBT_PAYMENT" });
   const destLeg = toTx({ id: "dst", title: "", own: "card", amount: 300, flowType: "DEBT_PAYMENT",
     pop: true, econ: "none", effect: "NEUTRAL", reason: "DEBT_PAYMENT" });

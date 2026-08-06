@@ -32,6 +32,8 @@ import {
 } from "@/lib/transactions/flow-predicates";
 import { accountTier, type AccountTier } from "@/lib/account-classifier";
 import type { Transaction } from "@/types";
+// v2.6-DEBT-1 — the ONE debt-payment attestation rule.
+import { isDebtPaymentAttested } from "@/lib/transactions/debt-payment-attestation";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -216,12 +218,39 @@ export function classifyLiquidity(tx: LiquidityTx, ctx: LiquidityContext): Liqui
     //
     // Measured: exactly ONE row in the corpus is diverted by this.
     const destinationTier = ctx.tierOf(tx.counterpartyAccountId ?? null);
-    if (ownTier === "liquid" && destinationTier !== "unknown" && destinationTier !== "liability") {
-      return classifyTransfer(tx, ownTier, ctx);
+
+    // v2.6-DEBT-1 — POSITIVE ATTESTATION, not absence of contradiction.
+    //
+    // This branch used to divert a row only when the destination was KNOWN and
+    // NOT a liability; an UNKNOWN destination fell through and was counted, at
+    // confidence 1. A row was therefore admitted because nothing had disproved
+    // it — and "nothing disproved it" is not evidence. The only thing standing
+    // behind such a row is `flowType = DEBT_PAYMENT`, which is frequently just
+    // the provider's category, derived from descriptor text, and wrong whenever
+    // an institution issues both a card and a deposit account.
+    //
+    // Membership now requires the transfer authority to positively attest the
+    // destination: an OWNED LIABILITY counterparty, or a proven liability
+    // destination TYPE. `isDebtPaymentAttested` states that once
+    // (lib/transactions/debt-payment-authority.ts).
+    //
+    // ⚠️ Only the CASH leg. On the LIABILITY-side leg the destination IS the own
+    // account — money arriving on a card — which is structurally certain and
+    // needs no counterparty evidence. Requiring attestation there would refuse
+    // 109 live rows whose destination is not in question.
+    if (ownTier === "liquid") {
+      const attested = isDebtPaymentAttested({
+        counterpartyTier: destinationTier,
+        transferMaturity: (tx as { transferMaturity?: string | null }).transferMaturity ?? null,
+      });
+      // Unattested — including the previously-admitted "unknown destination" —
+      // is a movement whose purpose is not established. It is resolved as the
+      // transfer it structurally is, which leaves it UNRESOLVED when the
+      // destination is genuinely unknown rather than asserting a debt payment.
+      if (!attested) return classifyTransfer(tx, ownTier, ctx);
+      return make(ft, "CASH_OUT", "DEBT_PAYMENT", 1);
     }
-    return ownTier === "liquid"
-      ? make(ft, "CASH_OUT", "DEBT_PAYMENT", 1)
-      : make(ft, "NEUTRAL", "DEBT_PAYMENT", 0.8);
+    return make(ft, "NEUTRAL", "DEBT_PAYMENT", 0.8);
   }
 
   // INVESTMENT — asset conversion / security activity (net-worth-neutral). The

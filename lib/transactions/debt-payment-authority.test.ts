@@ -59,14 +59,42 @@ test("selection is idempotent — re-selecting a counted set changes nothing", (
   assert.deepEqual(twice.map((r) => r.id), once.map((r) => r.id));
 });
 
-test("a payment toward an UNCONNECTED liability still counts", () => {
-  // 26 live cash legs ($50,150) have no counterparty at all — the liability is
-  // not connected here, so no liability leg exists. A liability-scoped total
-  // cannot see them; this one must.
+test("a payment toward an UNCONNECTED liability counts when the TYPE is attested", () => {
+  // A cash leg whose liability is not connected to this app has no counterparty
+  // and therefore no liability leg. A liability-scoped total cannot see it; this
+  // one must — PROVIDED the transfer authority can still prove the destination
+  // is a liability. That is the whole distinction: unconnected is not the same
+  // as unevidenced.
   const unconnected = row({ own: "chk", amount: -4000, counterpartyAccountId: null });
-  const r = totalDebtPaid([unconnected], TIERS, abs);
+  const attested = { ...unconnected, transferMaturity: "DEBT_PAYMENT" } as typeof unconnected;
+  const r = totalDebtPaid([attested], TIERS, abs);
   assert.equal(r.total, 4000);
   assert.equal(r.count, 1);
+});
+
+test("v2.6-DEBT-1: an unconnected liability with NO evidence at all does NOT count", () => {
+  // ⚠️ DELIBERATE SEMANTIC CHANGE, and the tradeoff is real.
+  //
+  // This case previously counted: a row with `flowType = DEBT_PAYMENT`, a liquid
+  // own account, no counterparty and no authority verdict was admitted at
+  // confidence 1 — on the provider's category alone, because nothing had
+  // contradicted it.
+  //
+  // Membership now requires POSITIVE destination evidence. The consequence,
+  // stated plainly: a payment toward a card this app does not know about, which
+  // the transfer authority also cannot type-attest, no longer appears in Debt
+  // Payments. It is not lost — it remains a visible movement, classified
+  // UNRESOLVED — but it is not counted as debt.
+  //
+  // That is the correct trade. The alternative is counting a number because a
+  // provider category derived from descriptor text said so, which is exactly how
+  // a $4,000 savings transfer once entered this measure. On the live corpus the
+  // change removes ZERO rows: all 119 counted payments carry positive evidence
+  // (101 nameable, 18 type-proven).
+  const unevidenced = row({ own: "chk", amount: -4000, counterpartyAccountId: null });
+  const r = totalDebtPaid([unevidenced], TIERS, abs);
+  assert.equal(r.total, 0, "a provider category is not evidence of a debt destination");
+  assert.equal(r.count, 0);
 });
 
 test("a savings transfer is never a debt payment", () => {

@@ -38,7 +38,8 @@ const rows: LiquidityTx[] = [
   tx({ amount: -120.50, date: "2026-06-03", category: "Groceries", flowType: "SPENDING" }),                                // direct cash spend (checking)
   tx({ amount: -692.97, date: "2026-06-05", category: "Shopping",  flowType: "SPENDING", accountId: "card", financialAccountId: "card" }), // CARD purchase
   tx({ amount: -45.00,  date: "2026-06-05", category: "Dining",    flowType: "SPENDING", accountId: "card", financialAccountId: "card" }), // CARD purchase
-  tx({ amount: -800.00, date: "2026-06-20", category: "Payment",   flowType: "DEBT_PAYMENT" }),                            // pay the card FROM checking
+  /* v2.6-DEBT-1: destination evidence is what makes this a debt payment */ 
+  tx({ amount: -800.00, date: "2026-06-20", category: "Payment",   flowType: "DEBT_PAYMENT", counterpartyAccountId: "card" }),                            // pay the card FROM checking
   tx({ amount: -1000,   date: "2026-06-22", category: "Transfer",  flowType: "TRANSFER", transferDisposition: "ASSET_VENUE_TRANSFER" }), // money invested
   tx({ amount: -50,     date: "2026-06-10", category: "Transfer",  flowType: "TRANSFER", transferDisposition: "PAYMENT_APP_MOVEMENT" }), // payments through apps
   tx({ amount: 200,     date: "2026-06-12", category: "Transfer",  flowType: "TRANSFER", transferDisposition: "PAYMENT_APP_MOVEMENT" }), // from payment apps
@@ -187,7 +188,7 @@ const LULU = tx({ id: "lulu-jul8", amount: -72.83, date: "2026-07-08", category:
 const mixedDay: LiquidityTx[] = [
   LULU,
   tx({ id: "tmobile", amount: -119, date: "2026-07-08", category: "Utilities", flowType: "SPENDING", accountId: "card", financialAccountId: "card", merchant: "T-Mobile" }),
-  tx({ id: "cardpay", amount: -800, date: "2026-07-08", category: "Payment",  flowType: "DEBT_PAYMENT", merchant: "AUTOPAY" }),        // paid FROM checking → Cash Out / Debt payment
+  tx({ id: "cardpay", amount: -800, date: "2026-07-08", category: "Payment",  flowType: "DEBT_PAYMENT", merchant: "AUTOPAY", counterpartyAccountId: "card" }),        // paid FROM checking → Cash Out / Debt payment
   tx({ id: "salary",  amount: 500,  date: "2026-07-08", category: "Income",   flowType: "INCOME",       merchant: "ACME" }),
 ];
 
@@ -266,7 +267,7 @@ const HUNGER_S = tx({ id: "hunger", amount: -33.10, date: "2026-06-08", category
 const CARD_FEE = tx({ id: "fee",    amount: -12.00, date: "2026-06-09", category: "Fee",       flowType: "FEE",      accountId: "card", financialAccountId: "card", merchant: "Card fee" });
 const CARD_INT = tx({ id: "int",    amount: -8.00,  date: "2026-06-09", category: "Interest",  flowType: "INTEREST", accountId: "card", financialAccountId: "card", merchant: "Interest charge" });
 const CARD_REF = tx({ id: "ref",    amount: 20.00,  date: "2026-06-10", category: "Shopping",  flowType: "REFUND",   accountId: "card", financialAccountId: "card", merchant: "Harvey Nichols refund" });
-const DEBT_PAY = tx({ id: "debt",   amount: -500,   date: "2026-06-08", category: "Payment",   flowType: "DEBT_PAYMENT", accountId: "chk", financialAccountId: "chk", merchant: "AUTOPAY" });
+const DEBT_PAY = tx({ id: "debt",   amount: -500,   date: "2026-06-08", category: "Payment",   flowType: "DEBT_PAYMENT", accountId: "chk", financialAccountId: "chk", merchant: "AUTOPAY", counterpartyAccountId: "card" });
 const spendingRows: LiquidityTx[] = [HARVEY_N, LULU_HYP, UBER_RDE, HUNGER_S, CARD_FEE, CARD_INT, CARD_REF, DEBT_PAY];
 
 test("Spending filter: all four representative purchases appear in 'Spending'", () => {

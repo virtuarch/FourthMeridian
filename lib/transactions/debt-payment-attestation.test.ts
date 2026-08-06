@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { classifyLiquidity, tierResolver, type LiquidityTx } from "./liquidity";
 import { selectDebtPaymentCashLegs, totalDebtPaid } from "./debt-payment-authority";
 import { findDuplicateEvents } from "./event-projection";
+import { isDebtPaymentAttested } from "@/lib/transactions/debt-payment-attestation";
 
 // Two institutions, each owning BOTH a card and a deposit account — the exact
 // shape that produced the defect. Names are inert here: nothing under test may
@@ -185,4 +186,104 @@ test("8. pending and posted observations count once through event projection", (
     "a duplicated event must be detectable before it reaches a total");
   // With the projection filter doing its job, only one reaches the authority.
   assert.equal(totalDebtPaid([posted], TIERS, abs).total, 650);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2.6-DEBT-1 — ADMISSION REQUIRES POSITIVE EVIDENCE
+//
+// TRUTH-8 (probes 1–8 above) stopped a CONTRADICTED row being counted: the
+// destination was known and was not a liability. It left the other half open.
+// `classifyLiquidity` diverted a row only when the destination was KNOWN and NOT
+// a liability, so an UNKNOWN destination fell through and was counted at
+// confidence 1 — admission by ABSENCE OF CONTRADICTION, which is not evidence.
+//
+// Measured on the live corpus: no row was exploiting it (all 119 counted
+// payments carry positive evidence — 101 with a nameable owned liability, 18
+// with a proven liability destination TYPE). The fall-through was a standing
+// hazard, not an active defect: any row with a provider-derived
+// `flowType = DEBT_PAYMENT`, a liquid own account and no resolved counterparty
+// would have been admitted on nothing at all. That is the shape that put a
+// $4,000 savings transfer in the card in the first place.
+//
+// ⚠️ Attestation is MEMBERSHIP, never NAMING. A type-attested row whose account
+// cannot be named IS a debt payment and stays counted, under "Debt account not
+// determined". Conflating the two axes is what made a corpus report describe 18
+// type-attested rows as "provider-asserted" — and that mislabel is what the
+// $6,500 figure came from.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const attestedRow = (o: Parameters<typeof row>[0] & { maturity?: string | null }) =>
+  ({ ...row(o), transferMaturity: o.maturity ?? null }) as LiquidityTx;
+
+const countedAsDebt = (t: LiquidityTx) => {
+  const c = classifyLiquidity(t, TIERS);
+  return c.effect === "CASH_OUT" && c.reason === "DEBT_PAYMENT";
+};
+
+test("9. provider classification alone can never admit a debt payment", () => {
+  // Nothing but the stored category — no counterparty, no authority verdict.
+  assert.equal(
+    countedAsDebt(attestedRow({ id: "bare", own: "chk", amount: -500 })), false,
+    "flowType alone admitted a row; it is a provider category derived from descriptor text",
+  );
+  assert.equal(isDebtPaymentAttested({ counterpartyTier: "unknown", transferMaturity: null }), false);
+});
+
+test("10. an UNRESOLVED transfer verdict cannot satisfy debt-payment admission", () => {
+  for (const maturity of [
+    "UNRESOLVED_TRANSFER", "CASH_MOVEMENT", "EXTERNAL_PERSON_TRANSFER",
+    "SAVINGS_TRANSFER", "CASH_TRANSFER", "EXTERNAL_VENUE_TRANSFER",
+    "EXTERNAL_DEPOSITORY_TRANSFER", "INTERNAL_TRANSFER",
+  ]) {
+    assert.equal(
+      isDebtPaymentAttested({ counterpartyTier: "unknown", transferMaturity: maturity }), false,
+      `${maturity} must not attest a liability destination`,
+    );
+    assert.equal(
+      countedAsDebt(attestedRow({ id: `m_${maturity}`, own: "chk", amount: -500, maturity })), false,
+      `a row the authority called ${maturity} was counted as a debt payment`,
+    );
+  }
+});
+
+test("11. every admitted debt payment is structurally attested", () => {
+  // The two positive forms — and only these.
+  assert.ok(countedAsDebt(attestedRow({ id: "named", own: "chk", amount: -500, cp: "chaseCard" })),
+    "an owned liability counterparty must admit");
+  assert.ok(countedAsDebt(attestedRow({ id: "typed", own: "chk", amount: -500, maturity: "DEBT_PAYMENT" })),
+    "a proven liability destination TYPE must admit — an unnameable account is a NAMING limit, not a membership one");
+  for (const tier of ["liquid", "asset", "unknown", null, undefined]) {
+    assert.equal(isDebtPaymentAttested({ counterpartyTier: tier, transferMaturity: null }), false);
+  }
+  // The LIABILITY-side leg is untouched: its destination is the own account,
+  // structurally certain, needing no counterparty evidence.
+  const leg = classifyLiquidity(attestedRow({ id: "liab", own: "chaseCard", amount: 500 }), TIERS);
+  assert.equal(leg.effect, "NEUTRAL");
+  assert.equal(leg.reason, "DEBT_PAYMENT", "the liability leg keeps its meaning and stays uncounted");
+});
+
+test("12. descriptor and institution text cannot create a debt payment", () => {
+  for (const merchant of [
+    "PAYMENT TO CHASE CARD ENDING IN 0202", "AMERICAN EXPRESS ACH PMT",
+    "CARD PAYMENT", "Mobile Payment - Thank You", "CREDIT CARD PAYMENT",
+  ]) {
+    const t = { ...attestedRow({ id: "d", own: "chk", amount: -500, maturity: "UNRESOLVED_TRANSFER" }), merchant } as LiquidityTx;
+    assert.equal(countedAsDebt(t), false, `descriptor "${merchant}" admitted an unattested row`);
+  }
+});
+
+test("13. no provider reclassification can reintroduce admission-by-silence", () => {
+  // Every provider-supplied signal a future taxonomy change could alter. None
+  // may admit a row the transfer authority has not attested.
+  const shapes = [
+    { pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_CREDIT_CARD" },
+    { pfcPrimary: "TRANSFER_OUT",  pfcDetailed: "TRANSFER_OUT_ACCOUNT_TRANSFER" },
+    { category: "Payment" }, { category: "Transfer" },
+    { classificationReason: "CATEGORY_FLOW_VALUE", classificationConfidence: 1 },
+    { classificationReason: "ACCOUNT_TYPE_CONTEXT", classificationConfidence: 1 },
+  ];
+  for (const shape of shapes) {
+    const t = { ...attestedRow({ id: "p", own: "chk", amount: -500 }), ...shape } as LiquidityTx;
+    assert.equal(countedAsDebt(t), false, `provider shape ${JSON.stringify(shape)} admitted an unattested row`);
+  }
 });

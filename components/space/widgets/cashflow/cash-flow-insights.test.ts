@@ -144,7 +144,9 @@ console.log("7. P2-1B — credit insight is a two-fact statement (no unpaid-bala
 {
   const ccAccounts = [{ id: "chk", type: "checking" }, { id: "cc", type: "debt" }];
   const creditSpend = tx({ amount: -300, date: "2026-05-18", category: "Shopping", flowType: "SPENDING", accountId: "cc", financialAccountId: "cc" });
-  const debtPay = tx({ amount: -800, date: "2026-05-20", category: "Payment", flowType: "DEBT_PAYMENT" }); // liquid chk → debt payment
+  // v2.6-DEBT-1 — the counterparty IS the evidence. Membership requires a proven
+  // liability destination; the bare flowType is a provider category.
+  const debtPay = tx({ amount: -800, date: "2026-05-20", category: "Payment", flowType: "DEBT_PAYMENT", counterpartyAccountId: "cc" }); // liquid chk → debt payment
 
   // (a) credit spend + visible debt payments → combined two-fact sentence.
   const combined = buildCashFlowInsights({ transactions: [...rows, creditSpend, debtPay], accounts: ccAccounts, period: MAY, perspective: "economic", now: CLOCK });
