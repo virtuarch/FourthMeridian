@@ -39,6 +39,26 @@ const money = (n: number) => `$${n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, "
 const pct = (n: number, d: number) => d === 0 ? "0.0%" : `${((100 * n) / d).toFixed(1)}%`;
 const bar = (s: string) => console.log(`\n${"═".repeat(78)}\n${s}\n${"═".repeat(78)}`);
 
+/**
+ * v2.6-OWN-2 — this audit now GATES on its STRUCTURAL invariants.
+ *
+ * It previously printed ✗ for a census that does not balance, a fabricated leg
+ * id, a fabricated account id and an unnamed unresolved row — and exited 0 for
+ * every one of them. Those are invariants: they must hold on any corpus.
+ *
+ * It ALSO printed ✗ for two things that are not invariants at all — a stored
+ * DEBT_PAYMENT whose maturity has since moved, and a counterparty that conflicts
+ * with a persisted value. The transfer authority's verdicts legitimately evolve
+ * as evidence improves, so a moved verdict is a finding to review, not a
+ * regression. Those are now ⚠ ADVISORY and never fail the run. Same symbol, same
+ * meaning, everywhere: ✗ fails, ⚠ informs.
+ */
+const breaches: string[] = [];
+function invariant(held: boolean, statement: string): boolean {
+  if (!held) breaches.push(statement);
+  return held;
+}
+
 type Tally = Map<string, { n: number; amt: number }>;
 const add = (t: Tally, k: string, amt: number) => {
   const c = t.get(k) ?? { n: 0, amt: 0 };
@@ -124,7 +144,8 @@ async function main() {
   dump(exclusions, beforeCandidates.length);
   const excludedTotal = [...exclusions.values()].reduce((s, v) => s + v.n, 0);
   console.log(`  ${String(excludedTotal).padStart(5)}          ${" ".repeat(14)}  TOTAL EXCLUDED`);
-  console.log(admitted.length + excludedTotal === beforeCandidates.length
+  console.log(invariant(admitted.length + excludedTotal === beforeCandidates.length,
+    "the admission census balances — every prefiltered row is accounted for exactly once")
     ? "  ✓ every prefiltered row is accounted for exactly once"
     : "  ✗ CENSUS DOES NOT BALANCE");
 
@@ -236,9 +257,11 @@ async function main() {
   const lostDebt = storedDebtPayments.filter((r) => byIdAll.get(r.id)?.maturity !== "DEBT_PAYMENT");
   console.log(`  stored DEBT_PAYMENT rows admitted          ${storedDebtPayments.length}`);
   console.log(`  ...still maturing to DEBT_PAYMENT          ${storedDebtPayments.length - lostDebt.length}`);
+  // ⚠ ADVISORY, not an invariant: the authority's verdict for a row may move as
+  // evidence improves, and that is the ladder working. Reported for review.
   console.log(lostDebt.length === 0
     ? `  ✓ no stored debt payment lost its classification`
-    : `  ✗ ${lostDebt.length} stored DEBT_PAYMENT rows changed — REVIEW`);
+    : `  ⚠ ADVISORY — ${lostDebt.length} stored DEBT_PAYMENT row(s) now mature differently; review, not a regression`);
   for (const r of lostDebt.slice(0, 10)) {
     console.log(`      ${r.id} → ${byIdAll.get(r.id)?.maturity} (${byIdAll.get(r.id)?.level})`);
   }
@@ -267,10 +290,12 @@ async function main() {
   const legLeak = all.filter((a) =>
     a.legId !== null && a.level !== "ACCOUNT_CERTAIN" && a.level !== "PROVIDER_LINKED");
   console.log(`\n  rows carrying a leg id at a level that forbids one: ${legLeak.length}` +
-    (legLeak.length ? "  ✗ FABRICATION" : "  ✓"));
+    (invariant(legLeak.length === 0,
+      "no row carries a leg id at an evidence level that forbids one") ? "  ✓" : "  ✗ FABRICATION"));
   const acctLeak = all.filter((a) => a.accountId !== null && !a.persistable);
   console.log(`  rows carrying an account id without persistability:  ${acctLeak.length}` +
-    (acctLeak.length ? "  ✗ FABRICATION" : "  ✓"));
+    (invariant(acctLeak.length === 0,
+      "no row carries a counterparty account id without persistability") ? "  ✓" : "  ✗ FABRICATION"));
 
   // ══ 3. UNRESOLVED, BY EXPLICIT REASON ════════════════════════════════════
   bar("3. UNRESOLVED — every row under a named limitation");
@@ -287,7 +312,8 @@ async function main() {
     add(reasons, key, a.row.amount);
   }
   dump(reasons, unresolved.length);
-  console.log(unresolved.every((a) => a.unresolvedReason !== null)
+  console.log(invariant(unresolved.every((a) => a.unresolvedReason !== null),
+    "every unresolved row carries a specific, named limitation — no generic bucket")
     ? `  ✓ no generic bucket — every unresolved row carries a specific limitation`
     : `  ✗ some rows are unresolved with no reason`);
 
@@ -309,7 +335,7 @@ async function main() {
   console.log(`  authority can establish an account      ${resolvable.length}  (${pct(resolvable.length, all.length)})`);
   console.log(`    ...agreeing with a persisted value    ${agree.length}`);
   console.log(`    ...NEW (currently null)               ${newWrites.length}`);
-  console.log(`    ...CONFLICTING with a persisted value ${conflict.length}${conflict.length ? "  ⚠️ REVIEW BEFORE ANY APPLY" : ""}`);
+  console.log(`    ...CONFLICTING with a persisted value ${conflict.length}${conflict.length ? "  ⚠ ADVISORY — REVIEW BEFORE ANY APPLY" : ""}`);
   for (const c of conflict.slice(0, 10)) {
     console.log(`      ${c.row.id} stored=${c.row.counterpartyAccountId} authority=${c.accountId} level=${c.level}`);
   }
@@ -319,6 +345,8 @@ async function main() {
   console.log(`    — the account is a fact, the opposing ROW is unknowable and is never written`);
   console.log(legAmbiguous.every((a) => a.legId === null)
     ? `    ✓ not one of them carries a leg id` : `    ✗ a leg id leaked at this level`);
+  invariant(legAmbiguous.every((a) => a.legId === null),
+    "no ACCOUNT_CERTAIN_LEG_AMBIGUOUS row carries a leg id");
 
   // ══ 5. PROVIDER VALUE ════════════════════════════════════════════════════
   bar("5. PROVIDER VALUE — structural-only vs identifier-assisted");
@@ -416,7 +444,19 @@ async function main() {
   console.log(`\n  row counts: ${JSON.stringify(counts)}`);
   console.log(`  (identical before and after this run — the script issues SELECTs only)`);
 
-  await db.$disconnect();
+  // ══ VERDICT ══════════════════════════════════════════════════════════════
+  bar("VERDICT — structural invariants");
+  if (breaches.length > 0) {
+    console.error(`  ✗ ${breaches.length} invariant(s) breached:`);
+    for (const b of breaches) console.error(`      · ${b}`);
+    console.error("\n[AUDIT] FAILED — the transfer authority is fabricating or losing rows.\n");
+    process.exitCode = 1;
+    return;
+  }
+  console.log("  ✓ every structural invariant holds. ⚠ ADVISORY lines above are findings, not regressions.");
+  console.log("\n[AUDIT] PASSED — nothing was written.\n");
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main()
+  .catch((e) => { console.error(e); process.exitCode = 1; })
+  .finally(async () => { await db.$disconnect(); });

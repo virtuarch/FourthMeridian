@@ -80,6 +80,9 @@ import { shouldSurfaceAsNeedsClassification } from '@/lib/transactions/needs-cla
 // so a payment-app row the Tab shows as a resolved internal transfer is NOT counted
 // here as UNKNOWN_PAYMENT_APP_PURPOSE (a KD-10 cross-surface divergence otherwise).
 import { resolveOwnedTransferCounterparties } from '@/lib/transactions/transfer-resolution';
+// v2.6-TRUTH-10 — the ONE account-identity authority, and the select that makes
+// it answerable. A read that omits a name column silently downgrades the answer.
+import { accountDisplayName, ACCOUNT_NAME_SELECT } from '@/lib/accounts/display-identity';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
 import { convertMoney, identityContext } from '@/lib/money/convert';
 import { buildSpaceConversionContext, buildSpaceConversionContextById } from '@/lib/money/server-context';
@@ -129,7 +132,18 @@ const BANKING_CATEGORIES: TransactionCategory[] = [
  * ADJUSTMENT is not spending, an UNKNOWN is not income). INVESTMENT stays out —
  * it is the sole flow outside the banking population.
  */
-const BANKING_POPULATION = { flowType: { not: FlowType.INVESTMENT } } as const;
+// v2.6-POP-1 — IMPORTED, no longer redeclared. This file used to carry its own
+// copy of the fragment with the same name and the same defect: `not: INVESTMENT`
+// drops NULLs, so the AI's "canonical banking population" silently excluded every
+// unclassified row while its comment claimed the opposite. Leaving the duplicate
+// after fixing the canonical one would be strictly worse than the original bug —
+// two constants, one name, two meanings, no way to notice.
+//
+// Both `where` clauses in this file are OR-free, so the fragment's new OR arm
+// spreads safely. This is a deduplication, NOT the AI read-boundary convergence
+// (event projection, economic-date windowing, transfer assessments) — those
+// remain open and are tracked separately.
+import { BANKING_POPULATION } from "@/lib/data/banking-population";
 
 // FlowType P5 Slice 4 (D-2) / TI1 — flows counted in expenseTotal (gross
 // Σ|amount|): SPENDING + FEE + INTEREST charges. This membership (the former
@@ -1456,7 +1470,12 @@ async function assembleDrilldown(
       amount:      true,
       currency:    true, // P2-7C — conversion input for the drilldown's FX seam
       economicDate: true, // L8-B — the canonical financial chronology
-      financialAccount: { select: { name: true, displayName: true } },
+      // v2.6-TRUTH-10 (completed) — ACCOUNT_NAME_SELECT, not a hand-written pair.
+      // This read selected `{ name, displayName }` ONLY, so `officialName` and
+      // `plaidName` were unreachable and the resolve below could never consult
+      // them. That is the same shape as the original defect: a narrow `select`
+      // making the identity authority structurally unable to answer.
+      financialAccount: { select: ACCOUNT_NAME_SELECT },
     },
     orderBy: { date: 'desc' },
     // KD-7: same LIMIT+1 sentinel as the summary query so a fetch-cap hit here is
@@ -1507,8 +1526,14 @@ async function assembleDrilldown(
     .slice(0, limit);
 
   const transactions: DrilldownTransaction[] = shown.map(({ row: r, amount, estimated }) => {
-    const accountName =
-      r.financialAccount?.displayName ?? r.financialAccount?.name ?? undefined;
+    // v2.6-TRUTH-10 (completed) — the ONE identity authority. This was
+    // `displayName ?? name`, a TWO-rung fallback that skipped `officialName` and
+    // `plaidName`, so a Chase card the whole product calls "Ultimate Rewards®"
+    // was narrated to the model as "CREDIT CARD" — the exact divergence TRUTH-10
+    // removed everywhere else.
+    const accountName = r.financialAccount
+      ? accountDisplayName(r.financialAccount)
+      : undefined;
     return {
       date:     econOf(r).toISOString().split('T')[0],
       // Posting date rides as PROVENANCE, explicitly labelled, never as the date.

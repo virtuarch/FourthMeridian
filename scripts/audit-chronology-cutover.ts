@@ -6,7 +6,23 @@
  * 1. day / month movement — the population the cutover exists for
  * 2. keyset pagination — no duplicate, no skipped row, cursor-stable
  * 3. count == list population for every tested filter
- * 4. the two CONTRADICTORY rows still sit on their posting date
+ * 4. the cursor predicate agrees with the SQL ordering
+ *
+ * ── v2.6-OWN-2: this audit now GATES ────────────────────────────────────────
+ *
+ * It previously printed ✗ for a pagination duplicate, a skipped row, a count/list
+ * mismatch and a cursor disagreement — and exited 0 for every one of them. Four
+ * real invariants could breach in silence. Every ✗ below is now collected and the
+ * process exits 1 if any fired.
+ *
+ * It also pinned three CORPUS-SPECIFIC counts as expectations (2,813 day movers /
+ * 147 month movers / exactly 2 contradictory rows). Those are measurements of one
+ * database, not properties of the cutover: the day-mover figure had already
+ * drifted to 2,817 and printed a permanent ✗ that everyone learned to ignore, and
+ * on any other corpus — a CI seed, production — all three are meaningless. They
+ * are now REPORTED as facts, and what is ASSERTED is the actual invariant:
+ * every row carries an economic date, and a CONTRADICTORY row stays on its
+ * posting date. That holds on any corpus, which is what lets this run in CI.
  *
  * Run: npx tsx --env-file=.env.local scripts/audit-chronology-cutover.ts
  */
@@ -20,6 +36,14 @@ import { resolveEconomicDate } from "@/lib/transactions/economic-date";
 
 const bar = (s: string) => console.log(`\n${"═".repeat(78)}\n${s}\n${"═".repeat(78)}`);
 const iso = (d: Date) => d.toISOString().slice(0, 10);
+
+/** Every invariant breach found. Non-empty ⇒ the audit fails. */
+const breaches: string[] = [];
+/** Assert an invariant, print its verdict, and remember a breach. */
+function invariant(held: boolean, statement: string): boolean {
+  if (!held) breaches.push(statement);
+  return held;
+}
 
 async function main() {
   // ── 1. Movement ─────────────────────────────────────────────────────────
@@ -40,17 +64,23 @@ async function main() {
     }
   }
   console.log(`  active rows                 : ${all.length}`);
-  console.log(`  rows MOVING DAY             : ${dayMovers}   ${dayMovers === 2813 ? "✓ (expected 2,813)" : "✗ expected 2,813"}`);
-  console.log(`  rows MOVING MONTH           : ${monthMovers}   ${monthMovers === 147 ? "✓ (expected 147)" : "✗ expected 147"}`);
-  console.log(`  rows with NO economic date  : ${nulls}   ${nulls === 0 ? "✓" : "✗ the cutover requires the column"}`);
+  // REPORTED, not asserted — these are facts about THIS corpus, and pinning them
+  // as expectations is what left a permanent ✗ in this audit's output for weeks.
+  console.log(`  rows MOVING DAY             : ${dayMovers}   (reported — corpus-specific)`);
+  console.log(`  rows MOVING MONTH           : ${monthMovers}   (reported — corpus-specific)`);
+  // ASSERTED — a property of the cutover, true on any corpus.
+  console.log(`  rows with NO economic date  : ${nulls}   ${
+    invariant(nulls === 0, "every active row carries an economic date") ? "✓" : "✗ the cutover requires the column"}`);
   console.log(`\n  CONTRADICTORY rows — must remain on the POSTING date:`);
   for (const c of contradictory) console.log(`    ${c}`);
-  const contradictoryOk = contradictory.length === 2 &&
-    all.filter((r) => {
-      const res = resolveEconomicDate({ postingDate: r.date, authorizedAt: r.authorizedAt });
-      return res.state === "CONTRADICTORY" && r.economicDate && iso(r.economicDate) === iso(r.date);
-    }).length === 2;
-  console.log(`  ${contradictoryOk ? "✓ both sit on their posting date" : "✗ a CONTRADICTORY row moved"}`);
+  const contradictoryHeld = all.every((r) => {
+    const res = resolveEconomicDate({ postingDate: r.date, authorizedAt: r.authorizedAt });
+    return res.state !== "CONTRADICTORY" || (r.economicDate != null && iso(r.economicDate) === iso(r.date));
+  });
+  console.log(`  ${
+    invariant(contradictoryHeld, "every CONTRADICTORY row sits on its posting date")
+      ? `✓ all ${contradictory.length} sit on their posting date`
+      : "✗ a CONTRADICTORY row moved"}`);
 
   // ── 2. Pagination ───────────────────────────────────────────────────────
   bar("2. KEYSET PAGINATION — no duplicate, no skipped row");
@@ -104,7 +134,10 @@ async function main() {
       const orderMatches = reference.length === sqlOrder.length && reference.every((id, i) => id === sqlOrder[i]);
       console.log(`  ${sort.padEnd(7)} limit=${String(limit).padStart(3)}  pages=${String(pages).padStart(3)}  seen=${seen.length}  unique=${unique}  total=${total}` +
         `  duplicates=${dup}  missing=${total - unique}` +
-        `  ${dup === 0 && unique === total ? "✓" : "✗"}  SQL order == pure comparator: ${orderMatches ? "✓" : "✗"}`);
+        `  ${invariant(dup === 0 && unique === total,
+            `keyset paging over ${sort}/limit=${limit} returns every row exactly once`) ? "✓" : "✗"}` +
+        `  SQL order == pure comparator: ${
+          invariant(orderMatches, `SQL ordering matches the pure comparator for ${sort}/limit=${limit}`) ? "✓" : "✗"}`);
     }
   }
 
@@ -150,7 +183,8 @@ async function main() {
       : where;
     const postingCount = await db.transaction.count({ where: postingWhere });
     console.log(`  ${label.padEnd(26)} count=${String(count).padStart(5)}  paged=${String(seen.size).padStart(5)}  ` +
-      `${count === seen.size ? "✓ parity" : "✗ MISMATCH"}   (posting basis would be ${postingCount}${postingCount !== count ? `, Δ${count - postingCount}` : ""})`);
+      `${invariant(count === seen.size, `count == paged population for filter "${label}"`) ? "✓ parity" : "✗ MISMATCH"}` +
+      `   (posting basis would be ${postingCount}${postingCount !== count ? `, Δ${count - postingCount}` : ""})`);
   }
 
   // ── 4. The pure reference matcher ───────────────────────────────────────
@@ -167,8 +201,20 @@ async function main() {
       if (afterCursorMatches(sample[j], "newest", c) !== expected) { refOk = false; break; }
     }
   }
-  console.log(`  afterCursorMatches agrees with the SQL ordering at every probed boundary: ${refOk ? "✓" : "✗"}`);
+  console.log(`  afterCursorMatches agrees with the SQL ordering at every probed boundary: ${
+    invariant(refOk, "afterCursorMatches agrees with the SQL ordering") ? "✓" : "✗"}`);
 
-  await db.$disconnect();
+  // ── Verdict ─────────────────────────────────────────────────────────────
+  bar("VERDICT");
+  if (breaches.length > 0) {
+    console.error(`  ✗ ${breaches.length} invariant(s) breached:`);
+    for (const b of breaches) console.error(`      · ${b}`);
+    console.error("\n[AUDIT] FAILED — the economic-date read cutover does not hold.\n");
+    process.exitCode = 1;
+    return;
+  }
+  console.log("\n[AUDIT] PASSED — the economic-date read cutover holds end to end. ✓\n");
 }
-main().catch((e) => { console.error(e); process.exit(1); });
+main()
+  .catch((e) => { console.error(e); process.exitCode = 1; })
+  .finally(async () => { await db.$disconnect(); });

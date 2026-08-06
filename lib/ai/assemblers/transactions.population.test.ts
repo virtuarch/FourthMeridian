@@ -106,8 +106,16 @@ function row(dateISO: string, amount: number, flowType: string | null, category:
   check("guard: no `const BANKING_FLOWS: FlowType[]` population allow-list in the assembler",
     !/const\s+BANKING_FLOWS\s*:/.test(src),
     "P2-7B retired it — use the canonical BANKING_POPULATION (`not: INVESTMENT`) instead");
-  check("guard: assembler consumes the canonical banking population (`not: FlowType.INVESTMENT`)",
-    /flowType:\s*\{\s*not:\s*FlowType\.INVESTMENT\s*\}/.test(src));
+  // v2.6-POP-1 — the assembler now IMPORTS the canonical fragment instead of
+  // typing its own copy. Asserting the literal was convergence by coincidence:
+  // when the canonical fragment gained its `flowType: null` arm (a bare
+  // `not: INVESTMENT` drops NULLs), a duplicate would have kept the defective
+  // meaning under the same name, undetected. Assert the stronger property.
+  check("guard: assembler declares no local BANKING_POPULATION copy",
+    !/const\s+BANKING_POPULATION\s*[:=]/.test(src),
+    "two definitions under one name is worse than none — import the canonical fragment");
+  check("guard: assembler imports the canonical banking population",
+    /import\s*\{[^}]*\bBANKING_POPULATION\b[^}]*\}\s*from\s*["'][^"']*banking-population["']/.test(src));
   check("guard: money folds gate on isNonEconomicResidue (canonical predicate, not a local set)",
     /isNonEconomicResidue/.test(src));
 }

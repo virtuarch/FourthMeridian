@@ -68,8 +68,19 @@ function bodyBetween(code: string, startMarker: string, endMarker: string): stri
 // 1. Predicate / query lockstep (pure)
 // ---------------------------------------------------------------------------
 // The banking population = every FlowType EXCEPT pure investment security-activity,
-// with null/UNKNOWN INCLUDED. This is the exact meaning of the Prisma fragment
-// `flowType: { not: INVESTMENT }` (scalar `not` returns null rows too).
+// with null/UNKNOWN INCLUDED.
+//
+// ⚠️ v2.6-POP-1 — this block used to add: "This is the exact meaning of the Prisma
+// fragment `flowType: { not: INVESTMENT }` (scalar `not` returns null rows too)."
+// That sentence was false, and asserting it HERE — in the file that claimed to pin
+// the predicate and the query "in lockstep" — is why nobody checked. `not` compiles
+// to `NOT (flowType = 'INVESTMENT')`, SQL UNKNOWN for NULL, so the query silently
+// excluded every unclassified row while this test proved the predicate includes it.
+//
+// A prose claim is not a lockstep test. The two definitions are now compared by
+// EXECUTING the query against a database: scripts/audit-banking-population.ts,
+// REQUIRED tier, run in CI on every PR. What remains below is the pure half — the
+// predicate's own behaviour — which is all a database-free test can honestly assert.
 
 const ALL_FLOWS: (FlowType | null)[] = [...(Object.values(FlowType) as FlowType[]), null];
 
@@ -96,17 +107,42 @@ check(
 );
 
 // ---------------------------------------------------------------------------
-// 2. Source tripwires — lib/data/transactions.ts banking reads
+// 2. Source tripwires — the banking population + the reads that apply it
 // ---------------------------------------------------------------------------
+//
+// v2.6-OWN-2 — `BANKING_POPULATION` and `bankingTransactionWhere` MOVED to
+// lib/data/banking-population.ts, byte-identical, so read-only audits can import
+// the canonical population without reaching `server-only` (lib/data/transactions.ts
+// → lib/space → lib/auth). lib/data/transactions.ts re-exports both, so no
+// consumer moved. The tripwires below split accordingly: the FRAGMENT is checked
+// where it now lives, the READS where they still live.
 
-const DATA_TX = ["lib", "data", "transactions.ts"];
+const DATA_TX  = ["lib", "data", "transactions.ts"];
 const dataCode = codeOf(DATA_TX);
+const POPULATION = ["lib", "data", "banking-population.ts"];
+const populationCode = codeOf(POPULATION);
 
 // The canonical fragment is defined once and applied by the banking reads.
+// v2.6-POP-1 — the fragment is an OR with TWO arms, and both are load-bearing.
+// It was `flowType: { not: FlowType.INVESTMENT }` alone, which drops NULLs
+// (`NOT (flowType = 'INVESTMENT')` is SQL UNKNOWN for null), silently excluding
+// every unclassified row from every banking surface.
 check(
-  "BANKING_POPULATION fragment is `flowType: { not: FlowType.INVESTMENT }`",
-  /BANKING_POPULATION\s*=\s*\{\s*flowType:\s*\{\s*not:\s*FlowType\.INVESTMENT\s*\}\s*\}/.test(dataCode),
-  "the single population fragment must be a FlowType exclusion, not a category list",
+  "BANKING_POPULATION excludes INVESTMENT",
+  /flowType:\s*\{\s*not:\s*FlowType\.INVESTMENT\s*\}/.test(populationCode),
+  "the population must exclude investment security-activity",
+);
+check(
+  "BANKING_POPULATION explicitly ADMITS unclassified rows (flowType: null)",
+  /\{\s*flowType:\s*null\s*\}/.test(populationCode),
+  "a bare `not: INVESTMENT` drops NULLs — the null arm is what keeps unclassified " +
+  "rows visible to review / needs-classification. Proven against a DB by " +
+  "scripts/audit-banking-population.ts (INV-P1/P3).",
+);
+check(
+  "BANKING_POPULATION is not a category allow-list",
+  !/category:\s*\{/.test(populationCode),
+  "the population is decided by FlowType, never by provider category",
 );
 
 // The dead local BANKING_CATEGORIES allow-list is gone from this module.
@@ -134,12 +170,27 @@ const BANKING_READS: { label: string; startMarker: string; endMarker: string }[]
 // BOTH: the builder carries the invariants, AND each loader applies it. The
 // semantic guarantee (population/visibility/soft-delete) is unchanged — only its
 // location moved.
-const whereBody = bodyBetween(dataCode, "export function bankingTransactionWhere(", "export async function getTransactions(");
+// `bankingTransactionWhere` is the last declaration in banking-population.ts, so
+// the slice runs to end-of-file (bodyBetween returns the tail when the end marker
+// is absent). Passing a marker that cannot occur states that intent explicitly.
+const whereBody = bodyBetween(populationCode, "export function bankingTransactionWhere(", "\n// END-OF-MODULE-SENTINEL");
 check("bankingTransactionWhere: body located", whereBody.length > 0, "could not slice the shared where-builder");
+// v2.6-POP-1 — composed with AND, never object-spread. Both the population
+// fragment and eventProjectionWhere() carry an `OR`; spreading two objects that
+// share a key keeps only the LAST, so `{ ...eventProjectionWhere(), ...BANKING_POPULATION }`
+// would silently drop the event-projection filter and let every total
+// double-count a pending row and its posting. This guard is the only thing
+// standing between that shape and a green build.
 check(
-  "bankingTransactionWhere: applies the canonical FlowType population fragment (...BANKING_POPULATION)",
-  /\.\.\.BANKING_POPULATION\b/.test(whereBody),
-  "the shared where must spread the FlowType population fragment, not a category filter",
+  "bankingTransactionWhere: applies the canonical FlowType population fragment",
+  /\bBANKING_POPULATION\b/.test(whereBody),
+  "the shared where must apply the FlowType population fragment, not a category filter",
+);
+check(
+  "bankingTransactionWhere: composes with AND, never object-spread (OR-collision safety)",
+  /AND:\s*\[/.test(whereBody) && !/\.\.\.BANKING_POPULATION\b/.test(whereBody) && !/\.\.\.eventProjectionWhere\(\)/.test(whereBody),
+  "spreading two OR-bearing fragments into one object silently drops the first — " +
+  "the population and the event projection must be ANDed",
 );
 check(
   "bankingTransactionWhere: no category:{ } gate (population is FlowType, not provider category)",
@@ -227,6 +278,41 @@ check(
   "SpaceTransactionsPanel still applies the user-selected category filter (now a server param)",
   /setCatFilter/.test(codeOf(PANEL)) && /category:\s*catFilter/.test(codeOf(PANEL)),
   "the presentation-only category filter must not be removed by the population cutover",
+);
+
+// ---------------------------------------------------------------------------
+// 4. v2.6-POP-1 — the unclassified fixture must survive
+// ---------------------------------------------------------------------------
+//
+// The seed classifies through the canonical classifier now, which is what makes
+// it resemble production. That removes the accident that exposed the null-drop
+// defect: a corpus that was 100% unclassified.
+//
+// So the seed keeps a DELIBERATE unclassified fixture, and this guard keeps the
+// fixture. Without it the next person deletes three odd-looking rows, INV-P3 in
+// audit-banking-population goes vacuous (it warns rather than fails, correctly —
+// a real corpus may legitimately have none), and the regression test for a
+// silent, self-concealing data-visibility bug evaporates with no red anywhere.
+//
+// Fails CLOSED on purpose: removing the fixture is a decision, not a cleanup.
+const SEED = ["prisma", "seed.ts"];
+const seedCode = codeOf(SEED);
+check(
+  "prisma/seed.ts still declares the unclassified fixture helper",
+  /const unclassifiedTx\s*=/.test(seedCode),
+  "the helper that produces deliberately-unclassified seed rows was removed",
+);
+check(
+  "prisma/seed.ts still seeds unclassified fixture rows",
+  (seedCode.match(/unclassifiedTx\(/g) ?? []).length >= 2,
+  "fewer than two fixture rows remain — the null-flowType path is no longer seeded, " +
+  "so audit-banking-population INV-P3 would pass vacuously",
+);
+check(
+  "prisma/seed.ts classifies through the CANONICAL classifier (no seed-local logic)",
+  /buildFlowWriteFields\(classifyFlow\(/.test(seedCode),
+  "the seed must classify via buildFlowInputFromRow → classifyFlow → buildFlowWriteFields, " +
+  "the same chain the Plaid sync and the CSV import run",
 );
 
 if (failures > 0) {

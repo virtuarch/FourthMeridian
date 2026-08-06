@@ -140,12 +140,21 @@ export function isNonEconomicResidue(flowType: Flow): boolean {
  * row must stay visible to review / needs-classification paths, never silently
  * dropped by a taxonomy allow-list.
  *
- * This is the row-level statement of the DB population rule the banking reads in
- * lib/data/transactions.ts (getTransactions / getDebtTransactions) apply as the
- * Prisma fragment `flowType: { not: INVESTMENT }` — Prisma scalar `not` returns
- * null rows too, so the query and this predicate agree on the null/UNKNOWN case
- * (pinned by lib/data/transactions.population.test.ts). Structural exclusions
- * (deletedAt, Space visibility, date window) are ANDed on top and are unaffected.
+ * This is the row-level statement of the DB population rule the banking reads
+ * apply as the Prisma fragment `BANKING_POPULATION` (lib/data/banking-population.ts).
+ *
+ * ⚠️ v2.6-POP-1 — this comment USED to say the fragment was
+ * `flowType: { not: INVESTMENT }` and that "Prisma scalar `not` returns null rows
+ * too, so the query and this predicate agree on the null/UNKNOWN case". That was
+ * FALSE: `not` compiles to `NOT (flowType = 'INVESTMENT')`, which is SQL UNKNOWN
+ * for a NULL column and therefore excludes it. The query and this predicate
+ * disagreed on every unclassified row for the whole life of the fragment, and the
+ * belief that they agreed is what let it survive.
+ *
+ * The fragment now carries an explicit `flowType: null` arm, and the agreement is
+ * PROVEN against a database by scripts/audit-banking-population.ts (REQUIRED in
+ * CI) rather than asserted in prose here. Structural exclusions (deletedAt, Space
+ * visibility, date window) are ANDed on top and are unaffected.
  *
  * Delegates to the single INVESTMENT authority (isInvestmentFlow) — it introduces
  * no new membership list, only names the partition already implied by it.

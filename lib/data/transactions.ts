@@ -52,7 +52,12 @@ import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 // TI-1: canonical row → DTO serialization (single derivation site — replaces
 // the three inline mappings this file previously duplicated).
 import { serializeTransactionRow } from "@/lib/transactions/serialize";
-import { eventProjectionWhere, assertOneRowPerEvent } from "@/lib/transactions/event-projection";
+import { assertOneRowPerEvent } from "@/lib/transactions/event-projection";
+// v2.6-OWN-2 — the canonical population fragment now lives in a `server-only`-free
+// module so read-only audits can measure the SAME population the UI reads. Moved
+// verbatim; re-exported here so every existing importer is unchanged.
+export { BANKING_POPULATION, bankingTransactionWhere } from "@/lib/data/banking-population";
+import { bankingTransactionWhere } from "@/lib/data/banking-population";
 import { gatedCounterpartyId, chooseCounterpartyId } from "@/lib/transactions/counterparty-visibility";
 import { transactionDetailWhere } from "@/lib/transactions/detail-query";
 // TI5-2 — the pure read-time relationship engine. Candidate gathering stays in
@@ -75,33 +80,6 @@ import { convertMoney } from "@/lib/money/convert";
 import { buildSpaceConversionContextById } from "@/lib/money/server-context";
 import { ECONOMIC_DATE_MAX_LAG_DAYS } from "@/lib/transactions/economic-date";
 
-/**
- * P2-2 — the canonical banking-population WHERE fragment. FlowType (not provider
- * category) decides eligibility for canonical financial analysis: every row EXCEPT
- * pure investment security-activity (FlowType.INVESTMENT) belongs to the banking
- * semantic population that reaches Cash Flow / DayFacts, the Transactions
- * Perspective, exports, and the liquidity axis.
- *
- * Why `not: INVESTMENT` and not a flow allow-list: the ONLY structural split among
- * banking reads is banking vs. investment security-activity. Expressing the rule as
- * a single exclusion (a) keeps unclassified rows visible — Prisma scalar `not`
- * returns null/UNKNOWN rows too, so a row awaiting classification still surfaces to
- * review / needs-classification paths, never dropped by a taxonomy allow-list; and
- * (b) admits every legitimate banking flow (SPENDING/INCOME/REFUND/FEE/INTEREST/
- * TRANSFER/DEBT_PAYMENT/ADJUSTMENT) regardless of its provider category label. The
- * DayFacts fold already handles each of these canonically (UNKNOWN → unresolved
- * transparency total; ADJUSTMENT → NON_CASH context reason; neither enters net), so
- * widening the population changes no Cash-Flow math — it only stops the old
- * `category ∈ BANKING_CATEGORIES` allow-list from silently omitting rows whose
- * category fell outside 11 hand-listed values (e.g. cash Dividend income, card Fees,
- * newer/merchant PFC categories). This mirrors the AI assembler's already-migrated
- * `flowType: { in: BANKING_FLOWS }` cutover (lib/ai/assemblers/transactions.ts).
- *
- * Row-level statement of the same rule: isBankingPopulation (flow-predicates.ts).
- * Pinned in lockstep by lib/data/transactions.population.test.ts. Structural
- * filters (deletedAt, SpaceAccountLink visibility, date) are ANDed separately.
- */
-const BANKING_POPULATION = { flowType: { not: FlowType.INVESTMENT } } as const;
 
 /**
  * KD-15 counterparty-visibility include for the list reads (Cash Flow liquidity
@@ -219,27 +197,6 @@ export interface BoundedTransactions {
   windowDays: number | null;
 }
 
-/** The ONE canonical banking-population `where` (KD-15 visibility + deletedAt +
- *  FlowType population). Shared by the list loaders AND cheap aggregate readers
- *  (e.g. view-context) so they can never disagree on the population. */
-export function bankingTransactionWhere(spaceId: string, opts?: { debtOnly?: boolean }): Prisma.TransactionWhereInput {
-  return {
-    // L8-B1 — one row per LOGICAL EVENT. A pending charge and the posting that
-    // supersedes it are one economic event observed twice; this keeps only the
-    // row the event currently projects to. Rows outside the banking event domain
-    // (self-custody crypto) carry no event and are kept, so no total moves.
-    ...eventProjectionWhere(),
-    // deletedAt: null guards an archived account's rows; visibilityLevel (KD-15)
-    // admits only transaction-detail (FULL) links. debtOnly narrows to debt accounts.
-    financialAccount: {
-      ...(opts?.debtOnly ? { type: "debt" } : {}),
-      deletedAt: null,
-      spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE, visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY } } },
-    },
-    deletedAt: null,
-    ...BANKING_POPULATION,
-  };
-}
 
 /**
  * Banking transactions (excludes investment activity), newest first — BOUNDED.
@@ -490,8 +447,12 @@ export async function getTransactionDetail(
       resolvedMerchant: { select: { displayName: true, logoUrl: true } },
       financialAccount: {
         select: {
-          id: true, name: true, displayName: true, officialName: true,
-          plaidName: true, institution: true, mask: true, type: true,
+          // v2.6-TRUTH-10 — the authority's own select, spread rather than
+          // hand-listed. The four columns were complete here; a hand-written list
+          // is complete until someone edits it, and an omitted column downgrades
+          // the identity silently — which is how this defect started.
+          id: true, ...ACCOUNT_NAME_SELECT,
+          institution: true, mask: true, type: true,
           // TI4 Slice 1 — owner anchor for cross-account transfer candidate gathering.
           ownerUserId: true,
         },
@@ -504,8 +465,7 @@ export async function getTransactionDetail(
       },
       counterpartyAccount: {
         select: {
-          id: true, name: true, displayName: true, officialName: true,
-          plaidName: true, deletedAt: true,
+          id: true, ...ACCOUNT_NAME_SELECT, deletedAt: true,
           // Name-exposure gate: visible only through an ACTIVE link granting
           // transaction detail (same predicate as every other read here).
           spaceAccountLinks: {

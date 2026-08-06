@@ -1,14 +1,37 @@
 name: CI
 
-# Unit-test + typecheck + lint gate for Fourth Meridian.
+# Unit-test + typecheck + lint gate, plus the ARCHITECTURE AUDIT gate.
 #
-# Runs ONLY the safe local test suite (scripts/run-tests.ts → every *.test.ts
-# under lib/ and app/). These need no database, no network, and no secrets, so
-# this workflow requires no service containers and no repository secrets.
+# ── job: test ────────────────────────────────────────────────────────────────
+# The safe local test suite (scripts/run-tests.ts → every *.test.ts under lib/,
+# app/, components/, jobs/, scripts/). These need no database, no network and no
+# secrets, so this job requires no service container and no repository secrets.
 #
 # DO NOT add the DB/Plaid dev harnesses here
 # (scripts/test-visibility-two-user-space.ts, scripts/reset-chase-history-test.ts):
-# they need a live Postgres / Plaid and are intentionally out of scope for CI.
+# they need a live Postgres / Plaid and are intentionally out of scope.
+#
+# ── job: architecture (v2.6-OWN-2) ───────────────────────────────────────────
+# The repository accumulated 25 audit scripts and CI executed ZERO of them. Every
+# architectural proof in docs/plans/ was a snapshot of a moment nothing preserved:
+# a regression could merge while every invariant silently failed — and one
+# (audit:flow-desync) WAS failing, unnoticed, with a remediation that would have
+# reverted approved data repairs.
+#
+# This job runs the REQUIRED tier of scripts/audit-registry.ts against a fresh,
+# migrated, seeded Postgres. Those audits assert INVARIANTS — properties that
+# hold on any corpus — so a green run here means the same thing it means locally.
+# INFORMATIONAL audits (corpus reports, investigations) are deliberately NOT run:
+# they can legitimately have findings, and a gate that cries wolf teaches people
+# to ignore red, which is the failure this job exists to end.
+#
+# The runner also reconciles the registry against the filesystem in BOTH
+# directions, so a new scripts/audit-*.ts that nobody classified fails the build.
+# An audit outside the registry is an audit outside the gate.
+#
+# ENCRYPTION_KEY below is a throwaway constant, not a secret: the database is
+# ephemeral and is destroyed with the runner. prisma/seed.ts encrypts a fake
+# Plaid access token with it and nothing else reads it.
 
 on:
   push:
@@ -42,3 +65,55 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+  architecture:
+    name: Architecture audits
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fintracker
+          POSTGRES_PASSWORD: fintracker
+          POSTGRES_DB: fintracker_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql://fintracker:fintracker@localhost:5432/fintracker_ci?schema=public
+      DIRECT_URL:   postgresql://fintracker:fintracker@localhost:5432/fintracker_ci?schema=public
+      # Throwaway — see the header. Never a real key, never reused.
+      ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000001"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      # `migrate deploy`, never `migrate dev`: CI applies the committed migration
+      # history exactly as production will, and fails on a migration that does not
+      # apply cleanly from empty.
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+
+      - name: Seed
+        run: npx prisma db seed
+
+      # The gate. Fails the build on any REQUIRED invariant breach; prints the
+      # specific statement that no longer holds.
+      - name: Architecture audits (REQUIRED tier)
+        run: npm run audit:ci

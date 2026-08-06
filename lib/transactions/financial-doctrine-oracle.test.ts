@@ -530,8 +530,21 @@ const assemblerSrc = readFileSync(ASSEMBLER, "utf8");
 check("CONVERGED: assembler declares NO separate BANKING_FLOWS population allow-list",
   !/const\s+BANKING_FLOWS\s*:/.test(assemblerSrc),
   "P2-7B retired the allow-list; reintroducing it is a population-divergence regression");
-check("CONVERGED: assembler consumes the canonical banking population (not INVESTMENT)",
-  /flowType:\s*\{\s*not:\s*FlowType\.INVESTMENT\s*\}/.test(assemblerSrc));
+// v2.6-POP-1 — this used to assert the assembler contained the LITERAL
+// `flowType: { not: FlowType.INVESTMENT }`, i.e. its own copy of the fragment.
+// That was convergence by coincidence: two files agreeing because someone typed
+// the same thing twice. When the canonical fragment was corrected (`not` drops
+// NULLs, so it needed an explicit `flowType: null` arm), the duplicate would have
+// silently kept the old, defective meaning under the same name.
+//
+// The assembler now IMPORTS the canonical fragment, so it cannot diverge at all.
+// Assert that stronger property: no local redeclaration, and a real import.
+check("CONVERGED: assembler declares no local BANKING_POPULATION copy",
+  !/const\s+BANKING_POPULATION\s*[:=]/.test(assemblerSrc),
+  "a second definition of the population under the same name is worse than none — " +
+  "import it from lib/data/banking-population.ts");
+check("CONVERGED: assembler imports the canonical banking population",
+  /import\s*\{[^}]*\bBANKING_POPULATION\b[^}]*\}\s*from\s*["'][^"']*banking-population["']/.test(assemblerSrc));
 check("CONVERGED: money folds gate on isNonEconomicResidue (UNKNOWN/ADJUSTMENT/null admitted but not counted as money)",
   /isNonEconomicResidue/.test(assemblerSrc));
 check("CONVERGED: assembler surfaces the non-economic residue disclosure (never silently dropped)",

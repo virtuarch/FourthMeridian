@@ -12,6 +12,16 @@
  */
 
 import { db } from "@/lib/db";
+// v2.6-OWN-2 — the probe must read the population the UI actually reads.
+// It previously matched `spaceAccountLinks: { status: ACTIVE }` alone, OMITTING
+// the KD-15 visibilityLevel gate that every live transaction read applies. Its
+// population was therefore WIDER than any surface it claimed to audit: a
+// BALANCE_ONLY/SUMMARY_ONLY shared account contributed rows here and to nothing
+// in the product. `bankingTransactionWhere` is the same fragment the list reads,
+// the explorer and the count share, so the probe can no longer disagree with
+// them about what is in scope.
+import { bankingTransactionWhere } from "@/lib/data/banking-population";
+import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { serializeTransactionRow } from "@/lib/transactions/serialize";
 import { resolveTransferAssessments } from "@/lib/transactions/transfer-resolution";
@@ -35,7 +45,10 @@ async function main() {
   const counts = await Promise.all(
     spaces.map(async (s) => ({
       ...s,
-      n: await db.transaction.count({ where: { deletedAt: null, financialAccount: { deletedAt: null, spaceAccountLinks: { some: { spaceId: s.id, status: "ACTIVE" } } } } }),
+      n: await db.transaction.count({
+        where: { deletedAt: null, financialAccount: { deletedAt: null, spaceAccountLinks: {
+          some: { spaceId: s.id, status: "ACTIVE", visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY } } } } },
+      }),
     })),
   );
   const space = counts.sort((a, b) => b.n - a.n)[0];
@@ -51,8 +64,9 @@ async function main() {
   // projection the read boundary calls (`serializeTransactionRow`) over the same
   // rows. It is the boundary's own DTO, not a second derivation.
   const rawRows = await db.transaction.findMany({
-    where: { deletedAt: null, flowType: { not: "INVESTMENT" },
-             financialAccount: { deletedAt: null, spaceAccountLinks: { some: { spaceId: space.id, status: "ACTIVE" } } } },
+    // The CANONICAL banking population — identical to getTransactions,
+    // queryTransactions and countTransactions, event projection included.
+    where: bankingTransactionWhere(space.id),
     include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } } },
     orderBy: { economicDate: { sort: "desc", nulls: "last" } },
   });
@@ -126,11 +140,18 @@ async function main() {
       `  subtype=${String((t as { incomeSubtype?: string | null }).incomeSubtype)}` +
       `  ${(t.merchant ?? "").slice(0, 42)}  [${A.get(t.financialAccountId!)?.name}]`);
   }
-  // The four named credits, checked by NATURE — what a surface actually renders.
-  console.log(`\n  the four reported issuer credits, as presentation now labels them:`);
+  // v2.6-OWN-2 — the four named credits are the EVIDENCE TRAIL of a fixed defect
+  // (v2.6-TRUTH-3/7), not an invariant. Their PRESENCE is a fact about one
+  // database; asserting it made this audit fail on every other corpus, including
+  // a fresh seed, for a reason that has nothing to do with correctness.
+  //
+  // What IS invariant is stated below over the whole population: no issuer credit
+  // renders as Income, on any corpus. The named rows are checked when present and
+  // reported as absent when not.
+  console.log(`\n  the four historically-reported issuer credits, as presentation now labels them:`);
   for (const name of ["MICROSOFT", "HUNGERSTATION", "EasyTime", "Uber"]) {
     const row = incomeRows.find((t) => (t.merchant ?? "").toUpperCase().startsWith(name.toUpperCase()));
-    if (!row) { check(`${name} credit present`, false, "row not found"); continue; }
+    if (!row) { console.log(`    ${name.padEnd(14)} — not in this corpus (reported, not asserted)`); continue; }
     const n = describeRowNature({
       flowType: row.flowType ?? null, incomeSubtype: (row as { incomeSubtype?: string }).incomeSubtype ?? null,
       amount: row.amount, hasOwnedCounterparty: row.counterpartyAccountId != null,
@@ -139,6 +160,17 @@ async function main() {
     check(`${name} no longer renders as Income`, n.label !== "Income" && n.nature === "ISSUER_CREDIT",
       `renders as "${n.label}"`);
   }
+  // THE INVARIANT, corpus-independent: no ISSUER_CREDIT row anywhere renders as
+  // Income. Holds vacuously on a corpus with none, which is the correct verdict.
+  const issuerCredits = incomeRows.filter(
+    (t) => (t as { incomeSubtype?: string }).incomeSubtype === "ISSUER_CREDIT");
+  const creditMislabelled = issuerCredits.filter((t) => describeRowNature({
+    flowType: t.flowType ?? null, incomeSubtype: (t as { incomeSubtype?: string }).incomeSubtype ?? null,
+    amount: t.amount, hasOwnedCounterparty: t.counterpartyAccountId != null,
+  }).label === "Income");
+  check(`no issuer credit renders as earned income (${issuerCredits.length} row(s))`,
+    creditMislabelled.length === 0, `${creditMislabelled.length} mislabelled`);
+
   // Interest must not read as earned income anywhere.
   const interestRows = incomeRows.filter((t) => (t as { incomeSubtype?: string }).incomeSubtype === "DEPOSIT_INTEREST");
   const interestMislabelled = interestRows.filter((t) => describeRowNature({
@@ -180,8 +212,15 @@ async function main() {
   // The double count the old lib/debt.ts was one caller away from.
   const naive = tx.filter((t) => isDebtPayment(t.flowType)).reduce((a, t) => a + Math.abs(t.amount), 0);
   console.log(`  naive abs-sum over BOTH legs (the old bug)  ${money(naive).padStart(14)}`);
-  check("the authority does not double-count", Math.abs(naive - widget.total) > 1,
-    "naive and authority agree — legs may not be present");
+  // Only meaningful when BOTH legs are present: with no liability leg in the
+  // corpus the naive sum and the authority's total legitimately coincide, and
+  // asserting a difference would be asserting a property of the data.
+  if (widget.excludedLiabilityLegCount > 0) {
+    check("the authority does not double-count", Math.abs(naive - widget.total) > 1,
+      "naive and authority agree despite liability legs being present");
+  } else {
+    console.log("  — no liability leg in this corpus; the double-count check is vacuous (reported)");
+  }
 
   const xfersInDebt = selectDebtPaymentCashLegs(tx as unknown as LiquidityTx[], liqCtx)
     .counted.filter((t) => isTransfer((t as unknown as Transaction).flowType));
@@ -197,7 +236,8 @@ async function main() {
   // ── The economic-date and event-identity coverage the DTO carries ────────
   bar("ECONOMIC DATE / EVENT IDENTITY coverage at the read boundary");
   const raw = await db.transaction.findMany({
-    where: { deletedAt: null, financialAccount: { deletedAt: null, spaceAccountLinks: { some: { spaceId: space.id, status: "ACTIVE" } } } },
+    where: { deletedAt: null, financialAccount: { deletedAt: null, spaceAccountLinks: {
+      some: { spaceId: space.id, status: "ACTIVE", visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY } } } } },
     select: { id: true, date: true, economicDate: true, transactionEventId: true },
   });
   const drift = raw.filter((r) => r.economicDate && r.economicDate.toISOString().slice(0, 10) !== r.date.toISOString().slice(0, 10));

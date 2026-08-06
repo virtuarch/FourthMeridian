@@ -53,6 +53,10 @@ import { ensurePlatformSpaces, ensurePlatformSections } from "../lib/platform/se
 import { economicDateFor } from "../lib/transactions/economic-date-write";
 import { recordTransactionObservation } from "../lib/transactions/event-write";
 import { isEventEligibleProvider, providerOfRow } from "../lib/transactions/event-identity";
+// v2.6-POP-1 — the seed classifies through the CANONICAL path, exactly as the
+// Plaid sync and the CSV import do. No seed-local classification logic exists.
+import { classifyFlow, FLOW_CLASSIFIER_VERSION } from "../lib/transactions/flow-classifier";
+import { buildFlowInputFromRow, buildFlowWriteFields } from "../lib/transactions/plaid-flow-input";
 
 const prisma = new PrismaClient();
 
@@ -595,6 +599,28 @@ async function main() {
   // seeded database satisfies the stored-equals-derived probe like any other.
   const tx = (acct: { id: string }, n: number, merchant: string, cat: TransactionCategory, amount: number, pending = false, desc?: string): TxRow =>
     ({ financialAccountId: acct.id, date: D(n), economicDate: economicDateFor({ postingDate: D(n), authorizedAt: null }), merchant, category: cat, amount, pending, description: desc });
+  /**
+   * v2.6-POP-1 — a DELIBERATELY UNCLASSIFIED row.
+   *
+   * The seed now classifies everything else, which is what makes it resemble
+   * production. But production ALSO produces unclassified rows: when
+   * `classifyFlow` throws during a sync, the create path persists all-null flow
+   * columns on purpose ("degrade-to-null is honest", lib/plaid/syncTransactions.ts)
+   * and relies on the banking reads keeping the row visible.
+   *
+   * That path had a defect for its whole life — `flowType: { not: INVESTMENT }`
+   * drops NULLs, so every such row was invisible everywhere, including on the
+   * needs-classification surface built to catch it. It was found only because a
+   * seeded corpus happened to be 100% unclassified and an audit measured zero.
+   *
+   * If the seed classified EVERYTHING, that signal would be gone and the fix
+   * would lose its regression test. These rows exist so the null path stays under
+   * test forever — `audit-banking-population` INV-P3 asserts against them.
+   *
+   * ⚠️ Do not "fix" these by classifying them. They are the fixture.
+   */
+  const unclassifiedTx = (acct: { id: string }, n: number, merchant: string, cat: TransactionCategory, amount: number, desc: string): TxRow =>
+    ({ ...tx(acct, n, merchant, cat, amount, false, desc), [UNCLASSIFIED_FIXTURE]: true });
   const itx = (acct: { id: string }, n: number, ticker: string, cat: TransactionCategory, amount: number, desc: string): TxRow =>
     ({ financialAccountId: acct.id, date: D(n), economicDate: economicDateFor({ postingDate: D(n), authorizedAt: null }), merchant: ticker, category: cat, amount, pending: false, description: desc });
 
@@ -621,8 +647,77 @@ async function main() {
  * Idempotent: `observationKey` is unique, so re-running the seed against an
  * already-seeded database writes no duplicate observations.
  */
-async function seedTransactions(rows: TxRow[]): Promise<void> {
-  if (rows.length === 0) return;
+/**
+ * v2.6-POP-1 — marks a row the seed must leave unclassified on purpose.
+ * Stripped before the insert; see `unclassifiedTx` for why the fixture exists.
+ */
+const UNCLASSIFIED_FIXTURE = "__unclassifiedFixture" as const;
+
+/**
+ * v2.6-POP-1 — classify the seeded rows through the CANONICAL classifier.
+ *
+ * ── Why the seed classifies at all ─────────────────────────────────────────
+ *
+ * It used to write `flowType: null` on every row, so a freshly seeded database
+ * was 100% unclassified — a corpus production can never produce. Every audit
+ * that measures the banking population then measured almost nothing, and CI
+ * (which runs against exactly this seed) could not exercise the classified path
+ * at all. A seed that does not resemble production is a gate that does not test
+ * production.
+ *
+ * ── No seed-local logic ────────────────────────────────────────────────────
+ *
+ * `buildFlowInputFromRow → classifyFlow → buildFlowWriteFields` is the same
+ * chain the Plaid sync, the CSV import and the flowType backfill run. The seed
+ * supplies evidence and nothing else — including `flowAuthority = CLASSIFIER`,
+ * which the builder stamps, so seeded rows carry honest ownership.
+ *
+ * Seed rows have no provider PFC, so classification is coarse (category + sign),
+ * which is exactly what the classifier does with any row lacking provider hints.
+ *
+ * ── Two populations are deliberately left unclassified ─────────────────────
+ *
+ *   · the `unclassifiedTx` fixture — see its comment; it keeps the null path
+ *     under test.
+ *   · rows on a SELF-CUSTODY WALLET account — in production lib/crypto/btc-sync.ts
+ *     owns those flow facts (flowAuthority = CRYPTO_LEDGER) and derives category
+ *     FROM flowType, the inverse of this classifier. Routing them through
+ *     classifyFlow would stamp the wrong authority on them and make the seed LESS
+ *     like production, not more. The seed does not simulate btc-sync.
+ */
+async function classifySeedRows(rows: TxRow[]): Promise<TxRow[]> {
+  const accountIds = [...new Set(rows.map((r) => r.financialAccountId).filter((x): x is string => x != null))];
+  const accounts = await prisma.financialAccount.findMany({
+    where: { id: { in: accountIds } },
+    select: { id: true, type: true, debtSubtype: true, walletAddress: true },
+  });
+  const A = new Map(accounts.map((a) => [a.id, a]));
+
+  return rows.map((row) => {
+    const { [UNCLASSIFIED_FIXTURE]: fixture, ...clean } = row as Record<string, unknown>;
+    const acct = A.get(clean.financialAccountId as string);
+    // The two deliberate exclusions. Both leave the row UNOWNED (flowType null ⟺
+    // flowAuthority null), which is the honest state for "nobody classified this".
+    if (fixture || acct?.walletAddress) return clean as TxRow;
+
+    const { input, captured } = buildFlowInputFromRow(
+      {
+        category:           clean.category as string,
+        amount:             clean.amount as number,
+        pfcPrimary:         null,
+        pfcDetailed:        null,
+        pfcConfidenceLevel: null,
+        merchantEntityId:   null,
+      },
+      { accountType: (acct?.type as string | null) ?? null, debtSubtype: acct?.debtSubtype ?? null },
+    );
+    return { ...clean, ...buildFlowWriteFields(classifyFlow(input), input, captured, FLOW_CLASSIFIER_VERSION) } as TxRow;
+  });
+}
+
+async function seedTransactions(input: TxRow[]): Promise<void> {
+  if (input.length === 0) return;
+  const rows = await classifySeedRows(input);
   const created = await prisma.transaction.createManyAndReturn({
     data: rows,
     select: {
@@ -643,9 +738,12 @@ async function seedTransactions(rows: TxRow[]): Promise<void> {
   for (const r of created) {
     if (!r.financialAccountId || !r.economicDate) continue;
     const a = A.get(r.financialAccountId);
-    // ⚠️ The seed classifies NOTHING. Both the provider derivation and the
+    // ⚠️ No IDENTITY logic here. Both the provider derivation and the
     // eligibility predicate are the canonical ones, so a seeded database is
-    // in the same L8 state production would put it in.
+    // in the same L8 state production would put it in. (v2.6-POP-1: the seed
+    // now classifies FLOW through the canonical classifier too — see
+    // classifySeedRows — but event identity is still decided entirely by
+    // recordTransactionObservation.)
     const provider: ProviderType = providerOfRow({
       accountWalletAddress: a?.walletAddress,
       accountPlaidAccountId: a?.plaidAccountId,
@@ -686,6 +784,16 @@ async function seedTransactions(rows: TxRow[]): Promise<void> {
     tx(jDemoChecking, 86, "Payroll Direct Deposit", Income,  3800),
     tx(jDemoChecking,100, "Payroll Direct Deposit", Income,  3800),
     tx(jDemoChecking,114, "Payroll Direct Deposit", Income,  3800),
+    // v2.6-POP-1 — THE UNCLASSIFIED FIXTURE. Three rows the seed leaves with
+    // null flow columns on purpose, standing in for a production row whose
+    // classification threw during sync. They must remain VISIBLE on every
+    // banking surface; audit-banking-population INV-P3 asserts it, and they are
+    // the regression test for the defect that hid every such row.
+    // Deliberately on a BANKING account, an ordinary amount, and NOT pending —
+    // nothing about them should be special except the absence of a verdict.
+    unclassifiedTx(jDemoChecking, 12, "Unrecognised Debit",  Other,  -64.20, "classification-failure fixture (v2.6-POP-1) — must stay visible"),
+    unclassifiedTx(jDemoChecking, 47, "Unrecognised Credit", Other,  210.00, "classification-failure fixture (v2.6-POP-1) — must stay visible"),
+    unclassifiedTx(jDemoChecking, 91, "Unrecognised Debit",  Other, -128.75, "classification-failure fixture (v2.6-POP-1) — must stay visible"),
     // Groceries (every ~8 days ×14)
     tx(jDemoChecking,  1, "Fresh Market",     Groceries,  -92.40, true),
     tx(jDemoChecking,  9, "Whole Foods Local",Groceries,  -67.80),

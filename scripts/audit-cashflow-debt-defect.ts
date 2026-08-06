@@ -224,8 +224,14 @@ async function main() {
   const bucket = groups.find((g) => g.id === UNRESOLVED_CREDITOR_KEY);
   const ambiguous = cardRows.filter((r) => attributeCreditor(r as never, refs).certainty !== "ACCOUNT_CERTAIN");
   console.log(`\n  rows whose creditor cannot be named: ${ambiguous.length}  ${money(ambiguous.reduce((s, r) => s + Math.abs(r.amount), 0))}`);
+  // v2.6-OWN-2 — the bucket exists only when there is something to put in it.
+  // Requiring `bucket != null` unconditionally asserted that SOME row must be
+  // un-nameable, which is a property of one corpus, not of the grouping.
   check("every un-nameable row sits in the unresolved bucket",
-    bucket != null && ambiguous.every((r) => bucket.transactionIds.includes(r.id)));
+    ambiguous.length === 0
+      ? bucket == null
+      : bucket != null && ambiguous.every((r) => bucket.transactionIds.includes(r.id)),
+    ambiguous.length === 0 ? "no un-nameable rows, yet an unresolved bucket exists" : "");
   check("the unresolved bucket contains NOTHING else",
     bucket == null || bucket.transactionIds.every((id) => ambiguous.some((r) => r.id === id)));
   check("the unresolved bucket sorts LAST", groups.length === 0 || groups[groups.length - 1].id === UNRESOLVED_CREDITOR_KEY);

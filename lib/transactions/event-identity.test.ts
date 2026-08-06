@@ -268,7 +268,13 @@ test("INV-18: every read that can double-count an event carries the projection f
   //
   // The filter lives in exactly one place — `bankingTransactionWhere` — so every
   // population read inherits it by composition rather than by remembering to.
-  const population = read("lib/data/transactions.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  //
+  // v2.6-OWN-2 — that one place is now lib/data/banking-population.ts. The
+  // function moved byte-identical out of lib/data/transactions.ts (which
+  // re-exports it) so read-only audits can import the canonical population
+  // without reaching `server-only`. The invariant is unchanged; only the file
+  // this guard reads it from moved.
+  const population = read("lib/data/banking-population.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
   assert.ok(/eventProjectionWhere\(\)/.test(population),
     "bankingTransactionWhere no longer applies the event-projection filter — every total can double-count");
 
