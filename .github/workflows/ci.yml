@@ -37,6 +37,11 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  # Manual re-run. GitHub dropped the push event for 4e55f3b entirely — the
+  # commit landed on the branch, Vercel's check ran, and no CI run was ever
+  # created. Without this, the only way to re-trigger the gate is an empty
+  # commit, i.e. rewriting the branch to work around someone else's outage.
+  workflow_dispatch:
 
 jobs:
   test:
