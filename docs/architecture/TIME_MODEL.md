@@ -12,6 +12,11 @@ This is the authoritative statement of how time works in Fourth Meridian. It sup
 > `TimelineLens` UI cannot read a clock or name a preset — it only *emits intents* —
 > so it is structurally incapable of becoming a second authority. **Every financial
 > Perspective participates in this one model** (§5); no workspace owns its own time.
+>
+> **The second idea (§8).** Selecting a window is one axis. *Which date a row
+> carries* is a different one. A flow happened when it was **authorised**; a
+> balance changed when it **posted**. Both are true, both are stored, and a
+> measure must not mix them.
 
 ---
 
@@ -106,3 +111,98 @@ If a future change makes the anchor reset on preset selection, it must also answ
 2. **Wealth's only historical-window workflow.** *"What did my net worth look like on D, and what was the trailing-quarter shape into D?"* has exactly one expression: anchor at D, pick 3M. The balance lenses have no `explicitPeriodRange` escape hatch the way Cash Flow does.
 
 Both were weighed in the TIME-1 audit and neither has a cheap answer. That is why the doctrine is what it is.
+
+---
+
+## 8. The basis axis — economic vs posting
+
+Status: **settled** (v2.6-CHRON-1). Enforced by `audit-chronology-basis`, REQUIRED in CI.
+
+§1–§7 govern **which window** a surface reads. This section governs **which date a
+row carries inside it**. The two are orthogonal: choosing `asOf = 2026-03-31 · 1M`
+says nothing about whether a transaction dated near that boundary is inside it.
+
+### 8.1 The invariant
+
+> **A measure is computed on ONE basis, and names it.**
+>
+> **Flow** measures use the **economic** date — when the money moved.
+> **Balance** measures use the **posting** date — when the account changed.
+>
+> A measure that mixes them is wrong even when every input is right.
+
+```
+Transaction.economicDate   authorisation, else posting   ← FLOW basis
+Transaction.date           the provider's posting date   ← BALANCE basis
+```
+
+Both columns are persisted, both are true, and neither is a fallback for the
+other. `economicDate` is NOT NULL for every live row (`audit:economic-date`).
+
+### 8.2 Why both exist
+
+They answer different questions, and the honest answer differs:
+
+- *"How much did I spend in March?"* — a card charge authorised 31 Mar and posted
+  2 Apr **is March spending**. The economic date is the truthful one.
+- *"What was my balance on 31 March?"* — that same charge had **not yet moved the
+  balance**. The bank's own statement agrees. The posting date is the truthful one.
+
+On the live corpus **2,817 rows** carry an economic date different from their
+posting date, and **147 cross a month boundary**. This is not an edge case; it is
+one month's worth of rows every month.
+
+`lib/snapshots/regenerate-history.ts` states the balance half in its own words —
+a reconstruction anchored to a posted `FinancialAccount.balance` must use posted
+deltas, *"same-basis invariant"*. That was already correct. What was missing was
+anyone saying the other half out loud.
+
+### 8.3 The rules
+
+| # | Rule |
+|---|---|
+| B1 | A **flow** read (population = `bankingTransactionWhere`) filters, orders, groups and buckets on `economicDate`. Never `date`. |
+| B2 | A **balance** read (anchored to a stored balance, snapshot or position) uses `date`. Never `economicDate`. |
+| B3 | A surface serving **both** enumerates **both** — it does not pick one and hope. See §8.4. |
+| B4 | The DTO's `date` **is** the economic date (`lib/transactions/serialize.ts`). `postingDate` rides beside it as provenance. A comment claiming otherwise is a defect, not a nuance. |
+| B5 | Comparing a flow measure to a balance measure across a period boundary requires an explicit reconciliation, because the two periods are genuinely not the same set of rows. |
+
+### 8.4 The worked example — one endpoint, both bases
+
+`/api/money/view-context` prefetches the FX rates the client will need. It serves
+two populations at once:
+
+- **transaction rows**, converted by the flow folds at the DTO's `date` — economic
+- **snapshot points**, converted at the snapshot's own date — posting
+
+It enumerated `groupBy(["date"])` over the *flow* population: posting keys for
+rows that would be converted at economic dates. Measured on the live corpus,
+**31 economic dates had no prefetched rate and 163 rows landed on them** — they
+would have converted as unavailable while every neighbouring row converted
+cleanly. `FxRate` is empty today, so nothing was visibly wrong; the defect was
+latent and would have surfaced as an unexplainable scatter of missing
+conversions the first time a non-USD reporting currency was used.
+
+It now enumerates economic dates for the flow rows and keeps snapshot dates for
+the balance series. **That is rule B3: serve both, enumerate both.**
+
+### 8.5 Enforcement
+
+| Property | Check | Note |
+|---|---|---|
+| No flow aggregate keyed on posting | `audit-chronology-basis` INV-B1 | Source scan: a Prisma aggregate whose `where` is the banking population may not key on `date` |
+| Every economic date is FX-reachable | `audit-chronology-basis` INV-B2 | Data: the 31→0 gap above, corpus-level |
+| The DTO date seam documents itself | `audit-chronology-basis` INV-B3 | The `serialize.ts` comment asserted `date` was posting *twenty lines below the code setting it to economic* |
+| Economic date is stored and derivable | `audit:economic-date` | 4,456/4,456 stored === derived |
+| Reads are economic end to end | `audit:chronology` | Keyset, count/list parity, cursor agreement |
+
+### 8.6 Known open
+
+**The AI assembler mixes bases.** `lib/ai/assemblers/transactions.ts` filters its
+window on `date` (posting) and buckets into months with `econOf` (economic), so a
+row can be admitted by one basis and counted under the other. It is a different
+*shape* from B1 — a `where` filter, not an aggregate key — so INV-B1 does not
+reach it, and correcting it moves AI totals, which needs its own measured cutover.
+
+Recorded here rather than silently excluded. It is one of four axes on which the
+AI read boundary diverges from the UI, and it is fixed with them, not alone.

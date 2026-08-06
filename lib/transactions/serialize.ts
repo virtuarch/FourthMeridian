@@ -162,9 +162,20 @@ export function serializeTransactionRow(r: TransactionRowLike): Transaction {
     // absent or the counterparty is not visible to the reading Space.
     counterpartyAccountId:    r.counterpartyAccountId ?? null,
     // ── v2.6-L4 derived read-model (never persisted) ────────────────────────
-    // `date` above is UNCHANGED — it is the POSTING date and the historical
-    // engine depends on it. `economicDate` is derived alongside it, so a
-    // surface can show when the activity happened without either date moving.
+    //
+    // ⚠️ v2.6-CHRON-1 — this comment USED to read: "`date` above is UNCHANGED —
+    // it is the POSTING date and the historical engine depends on it." That was
+    // written before L8-B and became false twenty lines below the line that
+    // falsifies it: `date` (above) is `financialDate(r)`, the ECONOMIC date.
+    //
+    // A comment contradicting its own function at the seam where the meaning of
+    // `date` is decided is worse than no comment — it is what a reader trusts.
+    //
+    // What is true: the DTO's `date` is the ECONOMIC date (flow basis), and
+    // `postingDate` rides in the derived block below as provenance. The
+    // historical engine depends on `Transaction.date` — the COLUMN — which this
+    // serializer never moves, and which it reads on the balance basis for
+    // exactly the reason docs/architecture/TIME_MODEL.md §8.2 gives.
     ...deriveLifecycleAndEconomicDate(r),
   };
 }

@@ -74,6 +74,12 @@ export const AUDITS: readonly AuditEntry[] = [
     what: "every row's persisted economicDate equals what the economic-date authority derives",
   },
   {
+    name: "audit-chronology-basis", tier: "REQUIRED", needsDb: true,
+    what: "flow measures read the economic date and balance measures read the posting date — " +
+          "no flow aggregate is keyed on posting, every economic date is FX-enumerable, and the " +
+          "DTO date seam documents the basis it implements (INV-B1/B2/B3)",
+  },
+  {
     name: "audit-chronology-cutover", tier: "REQUIRED", needsDb: true,
     what: "every row carries an economic date, CONTRADICTORY rows stay on posting, " +
           "keyset paging returns every row exactly once, and count == list population per filter",
