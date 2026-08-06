@@ -17,7 +17,7 @@
  */
 
 import type { TransactionDetail } from "@/types";
-import { describeRowNature, flowTypeLabel } from "@/lib/transactions/flow-presentation";
+import { describeRowNature, flowTypeLabel, DIRECTION_SIGN, type RowDirection } from "@/lib/transactions/flow-presentation";
 
 export interface DetailRow {
   label: string;
@@ -48,8 +48,14 @@ function money(amount: number, currency: string | null): string {
   }).format(amount);
 }
 
-function signedMoney(amount: number, currency: string | null): string {
-  return `${amount > 0 ? "+" : "−"}${money(Math.abs(amount), currency)}`;
+/**
+ * v2.6-DIR-1 — the sign comes from the canonical direction, never from a local
+ * comparison. Behaviour here is unchanged (this helper always showed a sign);
+ * what changes is that there is now exactly ONE place that decides which glyph a
+ * transaction amount carries, so this cannot drift from the ledger.
+ */
+function signedMoney(direction: RowDirection, amount: number, currency: string | null): string {
+  return `${DIRECTION_SIGN[direction]}${money(Math.abs(amount), currency)}`;
 }
 
 /** Push a row only when the value is present (non-empty). */
@@ -61,8 +67,17 @@ function pushIf(rows: DetailRow[], label: string, value: string | null | undefin
 
 function summary(d: TransactionDetail): DetailSection {
   const rows: DetailRow[] = [];
+  // v2.6-DIR-1 — resolved BEFORE the Amount row, so the amount and the "What"
+  // row below are two readings of the same single verdict.
+  const nature = describeRowNature({
+    flowType:      d.flowType ?? null,
+    incomeSubtype: d.incomeSubtype ?? null,
+    transferMaturity: d.transferMaturity ?? null,
+    amount:        d.amount,
+    hasOwnedCounterparty: d.counterpartyAccountId != null,
+  });
   pushIf(rows, "Merchant", d.merchantDisplayName ?? d.merchant);
-  pushIf(rows, "Amount", signedMoney(d.amount, d.currency ?? null));
+  pushIf(rows, "Amount", signedMoney(nature.direction, d.amount, d.currency ?? null));
   // L8-B — `d.date` is now the ECONOMIC date: when the activity happened. The
   // posting date rides beside it as provenance, never instead of it.
   pushIf(rows, "Date", d.date);
@@ -72,13 +87,6 @@ function summary(d: TransactionDetail): DetailSection {
   // authority. This row read `humanize(flowType)`, so a Microsoft issuer credit
   // said "Income · Inflow" while the taxonomy had already called it an issuer
   // credit. `flowDirection` stays beside it — a provider fact, still true.
-  const nature = describeRowNature({
-    flowType:      d.flowType ?? null,
-    incomeSubtype: d.incomeSubtype ?? null,
-    transferMaturity: d.transferMaturity ?? null,
-    amount:        d.amount,
-    hasOwnedCounterparty: d.counterpartyAccountId != null,
-  });
   if (d.flowType) {
     pushIf(rows, "What", d.flowDirection ? `${nature.label} · ${humanize(d.flowDirection)}` : nature.label);
     // The persisted economic kind, kept and labelled as itself, so the finer

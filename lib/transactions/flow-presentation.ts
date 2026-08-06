@@ -62,14 +62,46 @@ export type RowNature =
   | "DEBT_PAYMENT" | "SPENDING" | "FEE" | "INTEREST_CHARGE"
   | "INVESTMENT" | "ADJUSTMENT" | "UNKNOWN";
 
-/** How a surface should colour the row. Presentation only. */
+/**
+ * How a surface should COLOUR the row. Presentation only.
+ *
+ * ⚠️ Tone answers "is this a gain, a cost, or neither" — nothing else. It used to
+ * answer a second question it has no business answering ("should the amount show
+ * a direction?"), and three components read it that way: `tone === "neutral" ? ""
+ * : …`. Every transfer is neutral, so better transfer evidence made a movement
+ * LESS legible — a −$650 outflow and its +$650 counterpart both rendered
+ * "$650.00". Direction is `RowDirection`, below.
+ */
 export type RowTone = "positive" | "negative" | "neutral";
+
+/**
+ * WHICH WAY the money moved on this row's own account. Presentation only.
+ *
+ * A separate axis from `RowTone`, deliberately. An internal transfer is neutral
+ * in tone (it is neither a gain nor a cost) AND directional in fact (it left one
+ * account and arrived in another). Collapsing the two lost the second.
+ *
+ * `NONE` is reserved for a genuinely directionless row — a zero amount. It is
+ * never a fallback for "we could not tell": the sign of a stored amount is a
+ * provider fact that is always present.
+ */
+export type RowDirection = "IN" | "OUT" | "NONE";
 
 export interface RowNatureResult {
   nature: RowNature;
   /** The word a surface prints. */
   label: string;
   tone: RowTone;
+  /**
+   * WHICH WAY the money moved. Derived from the row's own signed amount, so it
+   * is a FACT and is available for every nature — including the ones the transfer
+   * ladder resolves, which is precisely where it used to be discarded.
+   *
+   * ⚠️ THE canonical source of a rendered +/−. A surface must not re-derive it
+   * from `amount`, and must not gate it on `tone`. Pinned by
+   * lib/transactions/flow-presentation.direction.test.ts.
+   */
+  direction: RowDirection;
   /**
    * WHICH authority answered. Recorded so a surface can never be wrong about
    * where its label came from, and so a probe can assert coverage.
@@ -136,6 +168,23 @@ export const ROW_NATURE_ORDER: readonly RowNature[] = [
   "INVESTMENT", "ADJUSTMENT", "UNKNOWN",
 ];
 
+/**
+ * The character a surface prints in front of an amount, per direction.
+ *
+ * ⚠️ THE only sanctioned way to render a +/− on a transaction amount. It exists
+ * so no component writes `amount > 0 ? "+" : "−"` — that expression is how the
+ * sign got tangled with tone in the first place, and it is what let a neutral
+ * tone suppress a real direction.
+ *
+ * Exhaustive by type: a new RowDirection cannot ship without a glyph.
+ */
+export const DIRECTION_SIGN: Record<RowDirection, string> = {
+  IN:   "+",
+  // U+2212 MINUS SIGN, not a hyphen — the glyph the ledger already rendered.
+  OUT:  "−",
+  NONE: "",
+};
+
 const TONE_OF: Record<RowNature, RowTone> = {
   EARNED_INCOME: "positive", INTEREST: "positive", DIVIDEND: "positive", OTHER_INCOME: "positive",
   // ⚠️ A refund and an issuer credit are NEUTRAL, deliberately. They put money
@@ -201,7 +250,10 @@ export interface RowNatureEvidence {
   transferMaturity?: string | null;
   /** lib/transactions/income-source.ts, via the serializer. */
   incomeSubtype?: string | null;
-  /** Signed amount — a provider fact, used ONLY to direct a transfer. */
+  /**
+   * Signed amount — a provider fact. Sets `direction` for EVERY row, and
+   * additionally names the nature of an unmatured transfer (rung 3).
+   */
   amount: number;
   /** True when the transfer authority established an owned counterparty. */
   hasOwnedCounterparty?: boolean;
@@ -214,8 +266,14 @@ export interface RowNatureEvidence {
  * canonical FlowType label. Never a descriptor.
  */
 export function describeRowNature(e: RowNatureEvidence): RowNatureResult {
+  // The direction is settled BEFORE the nature and independently of it. It is the
+  // sign of the row's own amount — a provider fact — so no rung below can reach
+  // it, and none can suppress it. This is the whole repair: `nature` says WHAT the
+  // movement was, `direction` says WHICH WAY, and answering the first no longer
+  // erases the second.
+  const direction: RowDirection = e.amount > 0 ? "IN" : e.amount < 0 ? "OUT" : "NONE";
   const mk = (nature: RowNature, basis: RowNatureResult["basis"]): RowNatureResult =>
-    ({ nature, label: ROW_NATURE_LABEL[nature], tone: TONE_OF[nature], basis });
+    ({ nature, label: ROW_NATURE_LABEL[nature], tone: TONE_OF[nature], direction, basis });
 
   // 1 — the income taxonomy, where it spoke. Strictly more informed than
   //     flowType: it already consulted the transfer and issuer-credit
@@ -232,7 +290,9 @@ export function describeRowNature(e: RowNatureEvidence): RowNatureResult {
     if (n) return mk(n, "TRANSFER_MATURITY");
   }
 
-  // 3 — a transfer is directed by the sign of its amount. A fact, not a guess.
+  // 3 — an UNMATURED transfer takes its NATURE from the sign too, so the label
+  //     itself reads "Transfer in"/"Transfer out". Note this is about the LABEL:
+  //     `direction` above is already set for every row, matured or not.
   if (e.flowType === "TRANSFER") {
     if (e.hasOwnedCounterparty === true) return mk("INTERNAL_TRANSFER", "TRANSFER_SIGN");
     return mk(e.amount > 0 ? "TRANSFER_IN" : "TRANSFER_OUT", "TRANSFER_SIGN");

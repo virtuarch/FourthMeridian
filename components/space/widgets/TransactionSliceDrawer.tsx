@@ -41,7 +41,7 @@ import { formatCurrency } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import {
-  describeRowNature, ROW_NATURE_ORDER, ROW_NATURE_GROUP_LABEL, type RowNature,
+  describeRowNature, DIRECTION_SIGN, ROW_NATURE_ORDER, ROW_NATURE_GROUP_LABEL, type RowNature,
 } from "@/lib/transactions/flow-presentation";
 import { economicTotals } from "@/lib/transactions/cash-flow";
 import { TransactionDate } from "@/components/ui/TransactionDate";
@@ -98,7 +98,8 @@ function TxRow({ t }: { t: Transaction }) {
         </div>
       </div>
       <p className="text-sm font-bold tabular-nums shrink-0" style={{ color: credit ? "var(--accent-positive)" : "var(--text-primary)" }}>
-        {nature.tone === "neutral" ? "" : credit ? "+" : "−"}{rowMoney(t)}
+        {/* v2.6-DIR-1 — sign from the canonical direction, colour from the tone. */}
+        {DIRECTION_SIGN[nature.direction]}{rowMoney(t)}
       </p>
     </div>
   );

@@ -43,7 +43,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Account, Transaction, TransactionCategory } from "@/types";
-import { describeRowNature } from "@/lib/transactions/flow-presentation";
+import { describeRowNature, DIRECTION_SIGN } from "@/lib/transactions/flow-presentation";
 import { DataCard } from "@/components/atlas/DataCard";
 import { Search, X, SlidersHorizontal, CalendarDays, ChevronRight, ArrowDownUp, ArrowLeftRight, Loader2 } from "lucide-react";
 import { ToolbarMenuButton } from "@/components/dashboard/widgets/transactions/ToolbarMenuButton";
@@ -610,7 +610,11 @@ function TxRow({
           className="text-sm font-bold tabular-nums"
           style={{ color: isCredit ? "var(--accent-positive)" : nature.tone === "neutral" ? "var(--text-secondary)" : "var(--text-primary)" }}
         >
-          {nature.tone === "neutral" ? "" : isCredit ? "+" : "−"}{fmt(tx.amount, tx.currency ?? DEFAULT_DISPLAY_CURRENCY)}
+          {/* v2.6-DIR-1 — the SIGN comes from the canonical direction, the COLOUR
+              from the tone. This was `tone === "neutral" ? "" : …`, which let a
+              neutral tone erase the direction: a −$650 outflow and its +$650
+              counterpart both rendered "$650.00". React derives nothing here. */}
+          {DIRECTION_SIGN[nature.direction]}{fmt(tx.amount, tx.currency ?? DEFAULT_DISPLAY_CURRENCY)}
         </p>
       </div>
 

@@ -39,7 +39,7 @@ import type { TransactionDetail } from "@/types";
 import { useTransactionDrawer } from "./useTransactionDrawer";
 import { TransactionDetailContent } from "./TransactionDetailContent";
 import { TransactionCorrection } from "./TransactionCorrection";
-import { describeRowNature } from "@/lib/transactions/flow-presentation";
+import { describeRowNature, DIRECTION_SIGN } from "@/lib/transactions/flow-presentation";
 
 type LoadState =
   | { status: "loading" }
@@ -171,7 +171,11 @@ function TransactionHeadline({ detail }: { detail: TransactionDetail }) {
     amount:        detail.amount,
     hasOwnedCounterparty: detail.counterpartyAccountId != null,
   });
-  const sign = nature.tone === "neutral" ? "" : nature.tone === "positive" ? "+" : "−";
+  // v2.6-DIR-1 — the canonical direction. This read the TONE twice: once to
+  // decide whether to show a sign at all, and once to decide which sign — so it
+  // never consulted the amount, and every neutral row (transfer, debt payment,
+  // refund, issuer credit) rendered directionless.
+  const sign = DIRECTION_SIGN[nature.direction];
   return (
     <div className="space-y-3">
       <Figure
