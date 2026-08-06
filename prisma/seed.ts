@@ -53,6 +53,8 @@ import { ensurePlatformSpaces, ensurePlatformSections } from "../lib/platform/se
 import { economicDateFor } from "../lib/transactions/economic-date-write";
 import { recordTransactionObservation } from "../lib/transactions/event-write";
 import { isEventEligibleProvider, providerOfRow } from "../lib/transactions/event-identity";
+// v2.6-CRYPTO-1 — the on-chain ledger names itself on seeded wallet rows too.
+import { foreignFlowOwnershipFields } from "../lib/transactions/flow-authority";
 // v2.6-POP-1 — the seed classifies through the CANONICAL path, exactly as the
 // Plaid sync and the CSV import do. No seed-local classification logic exists.
 import { classifyFlow, FLOW_CLASSIFIER_VERSION } from "../lib/transactions/flow-classifier";
@@ -696,9 +698,33 @@ async function classifySeedRows(rows: TxRow[]): Promise<TxRow[]> {
   return rows.map((row) => {
     const { [UNCLASSIFIED_FIXTURE]: fixture, ...clean } = row as Record<string, unknown>;
     const acct = A.get(clean.financialAccountId as string);
-    // The two deliberate exclusions. Both leave the row UNOWNED (flowType null ⟺
-    // flowAuthority null), which is the honest state for "nobody classified this".
-    if (fixture || acct?.walletAddress) return clean as TxRow;
+    // The unclassified fixture stays UNOWNED (flowType null ⟺ flowAuthority
+    // null) — the honest state for "nobody classified this".
+    if (fixture) return clean as TxRow;
+
+    // v2.6-CRYPTO-1 — THE CRYPTO FIXTURE. A row on a self-custody wallet account
+    // is stamped the way lib/crypto/btc-sync.ts stamps a real one: CRYPTO_LEDGER,
+    // a sign-derived flowType, and its native denomination.
+    //
+    // These rows used to be left UNOWNED, which was wrong twice. Production has
+    // no such row — btc-sync always stamps an authority — so the seed did not
+    // resemble production. And with no CRYPTO_LEDGER row in a seeded corpus, CI
+    // could not exercise the banking/on-chain separation AT ALL: the guard would
+    // pass vacuously on the one database it runs against.
+    //
+    // This invents no crypto classification. INCOME-on-inflow / SPENDING-on-
+    // outflow is exactly what btc-sync already writes, and after separation those
+    // values carry no banking meaning — they are crypto-domain provenance,
+    // refused by every banking authority. The future crypto-domain authority will
+    // decide what an on-chain movement actually IS.
+    if (acct?.walletAddress) {
+      return {
+        ...clean,
+        flowType: (clean.amount as number) >= 0 ? "INCOME" : "SPENDING",
+        currency: "BTC",
+        ...foreignFlowOwnershipFields("CRYPTO_LEDGER"),
+      } as TxRow;
+    }
 
     const { input, captured } = buildFlowInputFromRow(
       {

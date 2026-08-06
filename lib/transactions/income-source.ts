@@ -42,6 +42,8 @@
  * looks at intervals, and a probe enforces it.
  */
 
+import { carriesBankingSemantics, type FlowAuthorityName } from "@/lib/transactions/flow-authority";
+
 /** The four top-level income classes, plus the explicit not-income answer. */
 export type IncomeClass =
   | "EARNED_INCOME"
@@ -62,7 +64,10 @@ export type IncomeSubtype =
   | "REWARDS_AS_INCOME" | "MISC_INFLOW" | "UNRESOLVED_INCOME"
   // NOT_INCOME — each named rather than lumped, so a surface can say which
   | "INTERNAL_TRANSFER" | "REFUND_REVERSAL" | "ISSUER_CREDIT"
-  | "LOAN_PROCEEDS" | "SALE_PROCEEDS" | "CAPITAL_CONTRIBUTION";
+  | "LOAN_PROCEEDS" | "SALE_PROCEEDS" | "CAPITAL_CONTRIBUTION"
+  /** v2.6-CRYPTO-1 — an on-chain movement. The banking taxonomy REFUSES to
+   *  classify it; a crypto-domain authority will, and does not exist yet. */
+  | "ON_CHAIN_MOVEMENT";
 
 /** Provider detail → the subtype it attests. Provider-neutral by contract: an
  *  adapter maps its own vocabulary onto these keys. */
@@ -89,6 +94,7 @@ const CLASS_OF: Record<IncomeSubtype, IncomeClass> = {
   REWARDS_AS_INCOME: "OTHER_INCOME", MISC_INFLOW: "OTHER_INCOME", UNRESOLVED_INCOME: "OTHER_INCOME",
   INTERNAL_TRANSFER: "NOT_INCOME", REFUND_REVERSAL: "NOT_INCOME", ISSUER_CREDIT: "NOT_INCOME",
   LOAN_PROCEEDS: "NOT_INCOME", SALE_PROCEEDS: "NOT_INCOME", CAPITAL_CONTRIBUTION: "NOT_INCOME",
+  ON_CHAIN_MOVEMENT: "NOT_INCOME",
 };
 
 export function classOfSubtype(s: IncomeSubtype): IncomeClass { return CLASS_OF[s]; }
@@ -112,6 +118,13 @@ export interface IncomeEvidence {
    * does not own that question.
    */
   liabilityInflowIsIssuerCredit?: boolean;
+  /**
+   * v2.6-CRYPTO-1 — WHO wrote this row's flow facts. When the on-chain ledger
+   * did, this taxonomy refuses the row outright (rung 0). Optional so a caller
+   * that cannot supply it is not silently given a crypto verdict it did not ask
+   * for — absence means "not known to be on-chain", never "is on-chain".
+   */
+  flowAuthority?: FlowAuthorityName | null;
   /** Set for an InvestmentEvent-sourced row — the paying security. */
   instrumentId?: string | null;
   /** Set for a dividend/interest row whose paying ACCOUNT is known. */
@@ -144,6 +157,22 @@ export function attributeIncome(e: IncomeEvidence): IncomeAttribution {
     reason,
   });
 
+  // 0. v2.6-CRYPTO-1 — an ON-CHAIN movement is not a banking inflow, and this
+  //    taxonomy has no basis to say what it IS. It runs FIRST so no rung below
+  //    can reach a crypto row: the 28 live BTC receipts were attributed
+  //    UNRESOLVED_INCOME → OTHER_INCOME (an INCLUDED class) at their native BTC
+  //    magnitude, purely because rung 8's fallback had nothing better to say.
+  //
+  //    A receipt is not income. It may be a purchase settling, a transfer between
+  //    the user's own wallets, a staking reward, a mining payout, an airdrop or a
+  //    swap leg — economically different things with different tax and cash-flow
+  //    meanings. Guessing "income" is not a conservative default; it is a claim.
+  //
+  //    NOT_INCOME + a NAMED subtype, so a surface can say WHY it was excluded
+  //    rather than showing a silent zero.
+  if (!carriesBankingSemantics(e.flowAuthority)) {
+    return mk("ON_CHAIN_MOVEMENT", "An on-chain movement is outside the banking income taxonomy. Its economic meaning — purchase, self-transfer, reward, airdrop, swap leg — belongs to a crypto-domain authority that does not exist yet, and this module refuses to guess.");
+  }
   // 1. An owned internal transfer is money you already had. Structural, and it
   //    outranks any provider label — a transfer tagged INCOME is still a transfer.
   if (e.isOwnedInternalTransfer === true) {
@@ -247,4 +276,5 @@ export const INCOME_SUBTYPE_LABEL: Record<IncomeSubtype, string> = {
   REWARDS_AS_INCOME: "Rewards", MISC_INFLOW: "Miscellaneous inflow", UNRESOLVED_INCOME: "Unresolved income",
   INTERNAL_TRANSFER: "Internal transfer", REFUND_REVERSAL: "Refund", ISSUER_CREDIT: "Issuer credit",
   LOAN_PROCEEDS: "Loan proceeds", SALE_PROCEEDS: "Sale proceeds", CAPITAL_CONTRIBUTION: "Capital contribution",
+  ON_CHAIN_MOVEMENT: "On-chain movement",
 };

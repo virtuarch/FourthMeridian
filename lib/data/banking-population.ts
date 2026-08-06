@@ -29,6 +29,8 @@ import { ShareStatus, FlowType, Prisma } from "@prisma/client";
 
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 import { eventProjectionWhere } from "@/lib/transactions/event-projection";
+// v2.6-CRYPTO-1 — the separation rule. Stated once, in the ownership authority.
+import { type FlowAuthorityName } from "@/lib/transactions/flow-authority";
 
 /**
  * P2-2 — the canonical banking-population WHERE fragment. FlowType (not provider
@@ -100,12 +102,60 @@ import { eventProjectionWhere } from "@/lib/transactions/event-projection";
 // Prisma's WhereInput does not accept. The explicit annotation also makes a
 // malformed fragment a compile error at the definition instead of at every
 // call site.
+const CRYPTO_LEDGER = "CRYPTO_LEDGER" as const satisfies FlowAuthorityName;
+
+/**
+ * v2.6-CRYPTO-1 — on-chain movements are NOT banking rows.
+ *
+ * `lib/crypto/btc-sync.ts` stores its movements in the banking `Transaction`
+ * table (there is no crypto table yet), so without this arm every banking
+ * authority reached them and assigned a banking meaning none of them can
+ * justify. Measured before separation: 28 live BTC rows entered the banking
+ * population, all classified INCOME, all attributed UNRESOLVED_INCOME →
+ * OTHER_INCOME — an INCLUDED income class — at their NATIVE BTC magnitude read
+ * as dollar-like, and they reached Cash Flow, the AI summaries, the explorer,
+ * the count and the exports. `FxRate` being empty is the only reason
+ * 0.24060252 BTC had not yet been rendered as a real number on an income
+ * headline.
+ *
+ * The signal is the AUTHORITY, never a heuristic — see `carriesBankingSemantics`
+ * in lib/transactions/flow-authority.ts for why, and for the doctrine on what
+ * an on-chain movement does and does not mean.
+ *
+ * ⚠️ Spelled as an OR with an explicit null arm. `{ not: CRYPTO_LEDGER }` over a
+ * NULLABLE column DROPS NULLs, which would silently exclude every UNOWNED row —
+ * the never-classified backlog that v2.6-POP-1 exists to keep visible. This is
+ * the same hazard, in the same file, one arm down.
+ */
+const NOT_CRYPTO_OWNED: Prisma.TransactionWhereInput = {
+  OR: [{ flowAuthority: { not: CRYPTO_LEDGER } }, { flowAuthority: null }],
+};
+
+/**
+ * The crypto-domain entry point. EXPORTED deliberately.
+ *
+ * Separation is not concealment: these rows exist, they are the wallet ledger,
+ * and a future crypto-domain reader needs a named way to reach them that is not
+ * "re-derive the exclusion". Without this, the first crypto surface would
+ * hand-roll its own predicate and the separation would immediately have two
+ * definitions — which is how every defect this arc fixed began.
+ */
+export const CRYPTO_LEDGER_POPULATION: Prisma.TransactionWhereInput = {
+  flowAuthority: CRYPTO_LEDGER,
+};
+
 export const BANKING_POPULATION: Prisma.TransactionWhereInput = {
-  OR: [
-    { flowType: { not: FlowType.INVESTMENT } },
-    // Unclassified. Visible for review / needs-classification, never dropped by
-    // a comparison that cannot see NULL.
-    { flowType: null },
+  AND: [
+    {
+      OR: [
+        { flowType: { not: FlowType.INVESTMENT } },
+        // Unclassified. Visible for review / needs-classification, never dropped
+        // by a comparison that cannot see NULL.
+        { flowType: null },
+      ],
+    },
+    // v2.6-CRYPTO-1 — ANDed, never spread: both arms carry an `OR`.
+    NOT_CRYPTO_OWNED,
   ],
 };
 

@@ -37,6 +37,7 @@ import { merchantDisplayName, merchantLogoUrl, type ResolvedMerchantLike } from 
 import { resolveLifecycle } from "@/lib/transactions/lifecycle";
 import { resolveEconomicDate } from "@/lib/transactions/economic-date";
 import { attributeIncome } from "@/lib/transactions/income-source";
+import { type FlowAuthorityName } from "@/lib/transactions/flow-authority";
 import { liabilityInflowIsCustomerPayment } from "@/lib/transactions/liability-inflow";
 import { isIncome } from "@/lib/transactions/flow-predicates";
 
@@ -79,6 +80,9 @@ export interface TransactionRowLike {
   classificationConfidence?: number | null;
   classificationReason?:     string | null;
   classifierVersion?:        number | null;
+  /** v2.6-CRYPTO-1 — WHO wrote the flow facts. The income taxonomy refuses a
+   *  row the on-chain ledger owns; without this it cannot tell. */
+  flowAuthority?:            FlowAuthorityName | null;
   // Cash Flow liquidity axis — the counterparty's owned-account id. MUST be
   // PRE-GATED by the data layer (KD-15: only set when the counterparty is
   // visible to the reading Space). This pure serializer emits whatever it is
@@ -229,6 +233,10 @@ function deriveLifecycleAndEconomicDate(r: TransactionRowLike): Partial<Transact
   const income = r.amount > 0 && isIncome(r.flowType ?? null)
     ? attributeIncome({
         flowType:       r.flowType ?? null,
+        // v2.6-CRYPTO-1 — passed, not re-derived. The taxonomy's rung 0 refuses
+        // an on-chain movement outright; a read that omits this gets no crypto
+        // verdict rather than a wrong one.
+        flowAuthority:  r.flowAuthority ?? null,
         providerFamily: r.pfcPrimary ?? null,
         providerDetail: r.pfcDetailed ?? null,
         accountType:    r.accountType ?? "other",

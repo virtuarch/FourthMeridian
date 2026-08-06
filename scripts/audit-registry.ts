@@ -65,6 +65,11 @@ export const AUDITS: readonly AuditEntry[] = [
           "and every CLASSIFIER-owned row is reproducible by the canonical classifier",
   },
   {
+    name: "audit-crypto-banking-leak", tier: "REQUIRED", needsDb: true,
+    what: "no CRYPTO_LEDGER row enters a banking population or a banking meaning, and income " +
+          "attribution refuses one even given maximally income-like evidence (INV-C4)",
+  },
+  {
     name: "audit-banking-population", tier: "REQUIRED", needsDb: true,
     what: "the SQL population fragment and the row-level predicate denote the SAME set, " +
           "per flow value and by id — and an unclassified row stays reachable (INV-P1/P2/P3)",

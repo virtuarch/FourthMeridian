@@ -86,6 +86,55 @@ export const FLOW_AUTHORITY_SOURCE: Record<FlowAuthorityName, string> = {
 };
 
 /**
+ * Does a row authored by this authority carry BANKING semantics?
+ *
+ * v2.6-CRYPTO-1 — the ONE separation rule.
+ *
+ *     CRYPTO_LEDGER rows must not enter banking populations or banking meanings.
+ *
+ * ── The doctrine ────────────────────────────────────────────────────────────
+ *
+ *   An on-chain receipt is not automatically INCOME.
+ *   An on-chain send is not automatically SPENDING.
+ *   A wallet-to-wallet movement is not automatically a banking TRANSFER.
+ *
+ * Fees, swaps, staking rewards, mining rewards, airdrops and exchange movements
+ * are real economic events with real meanings — and every one of those meanings
+ * belongs to a crypto-domain authority that does not exist yet. Until it does,
+ * the banking domain REFUSES to assign one. Refusal is the correct answer, not a
+ * gap: a confident wrong number is worse than an absent one.
+ *
+ * ── Why the AUTHORITY is the signal ─────────────────────────────────────────
+ *
+ * Not the account name, the institution, the ticker, the descriptor, the
+ * currency, `classifierVersion`, or the wallet address. Every one of those is a
+ * heuristic that a new chain, a new custodian or a renamed account breaks — and
+ * naming a thing from its descriptor is the error class this codebase has spent
+ * an entire arc removing (v2.6-TRUTH-9, v2.6-TRUTH-10).
+ *
+ * The authority that WROTE the row names itself (v2.6-OWN-1). That is a fact
+ * about provenance, it is already on every row, and a future Solana/EVM/XRP
+ * syncer inherits the separation the moment it stamps its own authority —
+ * without this predicate changing at all.
+ *
+ * ── What "banking semantics" means here ─────────────────────────────────────
+ *
+ * The banking population and everything derived from it: Cash Flow, income,
+ * spending, refunds, debt payments, banking transfers, the liquidity axis, the
+ * AI's banking summaries, banking exports, and any Assessment input drawn from
+ * them. It does NOT mean the row is hidden from the product — balances,
+ * quantities, ledger reconciliation, snapshots, prices and historical valuation
+ * are a different domain, computed from the wallet ledger, and are untouched.
+ *
+ * ⚠️ Returns TRUE for `null` (unowned). An unclassified row is a banking row
+ * nobody has classified yet — it stays visible for review (v2.6-POP-1). Absence
+ * of an owner is not evidence of being on-chain.
+ */
+export function carriesBankingSemantics(authority: FlowAuthorityName | null | undefined): boolean {
+  return authority !== "CRYPTO_LEDGER";
+}
+
+/**
  * Can the classifier be re-run over this row to certify it?
  *
  * ONLY for CLASSIFIER-owned rows. `classifyFlow` is pure over stored columns, so

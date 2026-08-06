@@ -32,6 +32,8 @@
  * guards exactly.
  */
 
+import { carriesBankingSemantics, type FlowAuthorityName } from "@/lib/transactions/flow-authority";
+
 type Flow = string | null | undefined;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -161,6 +163,29 @@ export function isNonEconomicResidue(flowType: Flow): boolean {
  */
 export function isBankingPopulation(flowType: Flow): boolean {
   return !isInvestmentFlow(flowType);
+}
+
+/**
+ * v2.6-CRYPTO-1 — the FULL row-level banking-population rule.
+ *
+ * `isBankingPopulation` above answers the FLOW-TYPE half. Membership also depends
+ * on WHO wrote the row: an on-chain movement carries no banking meaning whatever
+ * its flowType, because the authority that wrote it is not a banking authority.
+ *
+ * This is the row-level twin of `BANKING_POPULATION`
+ * (lib/data/banking-population.ts). The two must denote the same set, and
+ * scripts/audit-banking-population.ts EXECUTES that comparison against a
+ * database rather than asserting it — the lesson of v2.6-POP-1, where a prose
+ * claim of "lockstep" hid a query that dropped every unclassified row.
+ *
+ * ⚠️ A null authority is IN. Unowned means "no banking authority has classified
+ * this yet", not "this is on-chain".
+ */
+export function isBankingRow(row: {
+  flowType: Flow;
+  flowAuthority?: FlowAuthorityName | null;
+}): boolean {
+  return isBankingPopulation(row.flowType) && carriesBankingSemantics(row.flowAuthority);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

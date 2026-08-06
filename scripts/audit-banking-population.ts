@@ -56,7 +56,8 @@ import { db } from "@/lib/db";
 import { FlowType, ShareStatus } from "@prisma/client";
 
 import { BANKING_POPULATION, bankingTransactionWhere } from "@/lib/data/banking-population";
-import { isBankingPopulation } from "@/lib/transactions/flow-predicates";
+import { isBankingRow } from "@/lib/transactions/flow-predicates";
+import { type FlowAuthorityName } from "@/lib/transactions/flow-authority";
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 
 const bar = (s: string) => console.log(`\n${"═".repeat(78)}\n${s}\n${"═".repeat(78)}`);
@@ -85,14 +86,18 @@ async function main(): Promise<void> {
     // …and how many of THOSE the canonical fragment admits. Running the fragment
     // itself, not a restatement of it.
     const admitted = await db.transaction.count({
-      where: { AND: [{ flowType: ft }, BANKING_POPULATION] },
+      where: { AND: [{ flowType: ft, flowAuthority: null }, BANKING_POPULATION] },
     });
-    const predicateSays = isBankingPopulation(ft);
+    const totalUnowned = await db.transaction.count({ where: { flowType: ft, flowAuthority: null } });
+    // v2.6-CRYPTO-1 — the predicate now takes the whole row. Membership is a
+    // function of flowType AND authorship, so the per-VALUE comparison holds the
+    // authority at a banking one; the crypto axis is asserted separately below.
+    const predicateSays = isBankingRow({ flowType: ft, flowAuthority: null });
     // The fragment must admit ALL of them or NONE of them — membership is a
     // property of the value, never of the row.
-    const sqlSays = admitted === total ? true : admitted === 0 ? false : null;
+    const sqlSays = admitted === totalUnowned ? true : admitted === 0 ? false : null;
 
-    if (total === 0) {
+    if (totalUnowned === 0) {
       untested++;
       console.log(`  ${label.padEnd(14)} ${String(total).padStart(7)}   ${"—".padStart(15)}   ${String(predicateSays).padEnd(6)}  (absent from corpus — UNTESTED)`);
       continue;
@@ -124,7 +129,7 @@ async function main(): Promise<void> {
           },
         },
       },
-      select: { id: true, flowType: true, transactionEventId: true, currentOfEvent: { select: { id: true } } },
+      select: { id: true, flowType: true, flowAuthority: true, transactionEventId: true, currentOfEvent: { select: { id: true } } },
     });
     if (structural.length === 0) continue;
     probed++;
@@ -134,7 +139,7 @@ async function main(): Promise<void> {
     const wantIds = new Set(
       structural
         .filter((r) => r.transactionEventId === null || r.currentOfEvent !== null)
-        .filter((r) => isBankingPopulation(r.flowType))
+        .filter((r) => isBankingRow({ flowType: r.flowType, flowAuthority: r.flowAuthority as FlowAuthorityName | null }))
         .map((r) => r.id),
     );
     // What the canonical READ actually returns.

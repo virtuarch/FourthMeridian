@@ -13,6 +13,8 @@
  */
 
 import { db } from "@/lib/db";
+import { BANKING_POPULATION } from "@/lib/data/banking-population";
+import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 import { Prisma } from "@prisma/client";
 import { createHash } from "node:crypto";
 import { serializeTransactionRow } from "@/lib/transactions/serialize";
@@ -47,10 +49,28 @@ async function main() {
   const liqCtx = tierResolver(accounts.map((a) => ({ id: a.id, type: a.type })));
   const A = new Map(accounts.map((a) => [a.id, a.type]));
 
+  // v2.6-CRYPTO-1 — the CANONICAL population, minus only the event-projection
+  // arm this audit exists to add. It was hand-rolled as
+  // `flowType: { not: "INVESTMENT" }` + an ACTIVE-link join, which omitted the
+  // KD-15 visibilityLevel gate AND (once it existed) the crypto exclusion — so
+  // this audit measured a population no surface reads, and would have reported
+  // "no total moved" while the totals it compared were not the product's.
+  //
+  // Composed from the shared fragment so it cannot drift again. The event filter
+  // is deliberately NOT included here: adding it is the cutover under test.
   const base: Prisma.TransactionWhereInput = {
-    deletedAt: null,
-    flowType: { not: "INVESTMENT" },
-    financialAccount: { deletedAt: null, spaceAccountLinks: { some: { spaceId: space.id, status: "ACTIVE" } } },
+    AND: [
+      BANKING_POPULATION,
+      {
+        deletedAt: null,
+        financialAccount: {
+          deletedAt: null,
+          spaceAccountLinks: {
+            some: { spaceId: space.id, status: "ACTIVE", visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY } },
+          },
+        },
+      },
+    ],
   };
 
   const load = async (where: Prisma.TransactionWhereInput) => {
