@@ -135,6 +135,8 @@ import { getImportProviderCapabilities } from "@/lib/imports/provider-capabiliti
 // FlowType P5 Slice 0 — same classification contract as the Plaid sync write path.
 import { classifyFlow, FLOW_CLASSIFIER_VERSION } from "@/lib/transactions/flow-classifier";
 import { buildFlowInputFromRow, buildFlowWriteFields } from "@/lib/transactions/plaid-flow-input";
+// v2.6-OWN-1 — the flow-ownership rule (see lib/transactions/flow-authority.ts).
+import { mayWriteFlow } from "@/lib/transactions/flow-authority";
 // CCPAY-2C-4 — the ONE card-payment category rescue, shared with the Plaid sync
 // seam. File imports supply evidence; the authority owns the decision.
 import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-payment";
@@ -543,6 +545,10 @@ export const POST = withApiHandler(async (
               // MC1 Phase 0 Slice 2 — read the existing stamp so the update
               // below preserves it (or fills it opportunistically if null).
               currency: true,
+              // v2.6-OWN-1 — who owns this row's flow facts. An update-on-match
+              // is the CLASSIFIER refreshing its own work; it must not silently
+              // revert a transfer-authority repair or a crypto-ledger row.
+              flowAuthority: true,
             },
           });
           if (existing) {
@@ -571,14 +577,21 @@ export const POST = withApiHandler(async (
               // changed category/amount never leaves flowType stale (the P4
               // backfill would not re-select a current-version row). Existing
               // provider hints are re-fed and preserved.
-              const flowFields = computeFlowFields({
-                category:           rescuedCategory,
-                amount:             row.amount,
-                pfcPrimary:         existing.pfcPrimary,
-                pfcDetailed:        existing.pfcDetailed,
-                pfcConfidenceLevel: existing.pfcConfidenceLevel,
-                merchantEntityId:   existing.merchantEntityId,
-              });
+              //
+              // v2.6-OWN-1 — but only where the CLASSIFIER still owns the row.
+              // A re-import is routine, not an approved act of correction, so it
+              // declares no claims: a row the transfer authority repaired keeps
+              // its flow facts and only the non-flow diff lands.
+              const flowFields = mayWriteFlow(existing.flowAuthority, "CLASSIFIER").allowed
+                ? computeFlowFields({
+                    category:           rescuedCategory,
+                    amount:             row.amount,
+                    pfcPrimary:         existing.pfcPrimary,
+                    pfcDetailed:        existing.pfcDetailed,
+                    pfcConfidenceLevel: existing.pfcConfidenceLevel,
+                    merchantEntityId:   existing.merchantEntityId,
+                  })
+                : {};
               await db.transaction.update({
                 where: { id: result.transactionId },
                 // currency (MC1 Phase 0 Slice 2): preserve the existing stamp,

@@ -1,0 +1,49 @@
+-- v2.6-OWN-1 — FlowType ownership. ADDITIVE ONLY.
+--
+-- Adds `Transaction.flowAuthority` (nullable) and its enum type. Nothing is
+-- populated here: the stamp is applied by scripts/backfill-flow-authority.ts,
+-- which REFUSES any row whose author it cannot prove rather than guessing.
+--
+-- WHY A COLUMN. `Transaction.flowType` has four legitimate write paths — the
+-- canonical classifier (Plaid sync, CSV import, merchant corrections, the
+-- flowType backfill), the approved transfer-authority repairs, lib/crypto/
+-- btc-sync.ts, and the seed (which writes nothing and leaves the row
+-- unclassified). The column recorded the VALUE but not the AUTHOR, and
+-- `classifierVersion` was pressed into service as ownership metadata. It cannot
+-- carry that: it has two states (a number, or null) and there are three authors
+-- plus "nobody".
+--
+-- The consequence was live. The transfer-authority repairs wrote flow facts and
+-- left `classifierVersion = 4` (they also reused the classifier's own reason
+-- codes), so their rows were indistinguishable from classifier output.
+-- `audit:flow-desync` recomputed them, found 12 disagreements, FAILED, and
+-- printed a remediation — `backfill-flowtype --only-version=4 --apply` — that
+-- would have reverted every one of them. All 12 are Plaid-sourced, so the Plaid
+-- sync's own update path would have done the same thing on the next re-sync of
+-- a modified transaction.
+--
+-- NULLABLE, deliberately, and COUPLED to the value:
+--     (flowType IS NULL) == (flowAuthority IS NULL)
+-- A row nobody has classified is UNOWNED. That is a real state (the 352-row
+-- seed backlog sits in it) and it is distinct from "an authority looked and
+-- declined", which is expressed as flowType = UNKNOWN with an owner.
+--
+-- NO DEFAULT: a default would silently declare every historical row
+-- classifier-owned, which is exactly the false claim this column exists to stop.
+--
+-- The coupling invariant is enforced by scripts/audit-flow-desync.ts (INV-A) and
+-- by lib/transactions/flow-authority.ts at every write site, not by a CHECK
+-- constraint: the backfill necessarily passes through a partially-stamped state,
+-- and a constraint that forbids the migration path is a constraint that gets
+-- dropped. The audit runs in CI on every PR, so the invariant is enforced where
+-- a violation would actually be introduced.
+--
+-- No index: every consumer (the audit, the ownership-scoped backfill predicate)
+-- scans the whole table by design, and the corpus-wide reads are already
+-- keyset-paginated. Adding one would cost a write on every sync for no read.
+
+-- CreateEnum
+CREATE TYPE "FlowAuthority" AS ENUM ('CLASSIFIER', 'TRANSFER_AUTHORITY', 'CRYPTO_LEDGER');
+
+-- AlterTable
+ALTER TABLE "Transaction" ADD COLUMN     "flowAuthority" "FlowAuthority";

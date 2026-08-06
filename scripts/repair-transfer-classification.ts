@@ -50,6 +50,13 @@
  */
 
 import { db } from "@/lib/db";
+// v2.6-OWN-1 — this repair applies the TRANSFER AUTHORITY's verdict, and says so
+// on the row. `foreignFlowOwnershipFields` also nulls `classifierVersion`: once
+// these columns hold the transfer authority's answer, "the classifier at version
+// N produced these" is no longer a true statement about the row. Leaving that
+// number behind is precisely what made these repairs look like classifier output
+// and put them one `backfill-flowtype --only-version=4 --apply` from reversion.
+import { foreignFlowOwnershipFields } from "@/lib/transactions/flow-authority";
 import { resolveLifecycle } from "@/lib/transactions/lifecycle";
 import { resolveEconomicDate } from "@/lib/transactions/economic-date";
 import { plaidTransferEvidence } from "@/lib/transactions/plaid-transfer-evidence";
@@ -214,11 +221,13 @@ async function main(): Promise<void> {
   const written = await db.$transaction([
     ...R1.map((t) => db.transaction.update({
       where: { id: t.id },
-      data: { flowType: "TRANSFER", classificationReason: R1_REASON, classificationConfidence: R1_CONFIDENCE },
+      data: { flowType: "TRANSFER", classificationReason: R1_REASON, classificationConfidence: R1_CONFIDENCE,
+              ...foreignFlowOwnershipFields("TRANSFER_AUTHORITY") },
     })),
     ...R3.map((t) => db.transaction.update({
       where: { id: t.id },
-      data: { flowType: "TRANSFER", classificationReason: R3_REASON, classificationConfidence: R3_CONFIDENCE },
+      data: { flowType: "TRANSFER", classificationReason: R3_REASON, classificationConfidence: R3_CONFIDENCE,
+              ...foreignFlowOwnershipFields("TRANSFER_AUTHORITY") },
     })),
   ]);
   console.log(`\n  APPLIED — ${written.length} rows (R1 ${R1.length}, R3 ${R3.length}).\n`);

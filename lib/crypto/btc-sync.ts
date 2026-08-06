@@ -71,6 +71,8 @@ import { captureWalletPosition } from "@/lib/crypto/wallet-position-capture";
 import { BTC_ASSET } from "@/lib/investments/crypto-instrument";
 import { reconcileWalletLedger, type LedgerReconciliation } from "@/lib/crypto/ledger-completeness.core";
 import { economicDateFor } from "@/lib/transactions/economic-date-write";
+// v2.6-OWN-1 — the on-chain ledger names itself as the author of its flow facts.
+import { foreignFlowOwnershipFields } from "@/lib/transactions/flow-authority";
 
 /** The only chain this v1 sync supports. */
 export const BTC_CHAIN = "BTC";
@@ -268,6 +270,12 @@ async function resolveOwnWalletAddresses(
  * made executable policy — not a comment anyone can quietly copy — by
  * lib/transactions/flow-classifier-authority.test.ts, which fails if this marker
  * is removed OR if any OTHER file starts hand-writing flowType off-classifier.
+ *
+ * v2.6-OWN-1 — that distinctness is now a VALUE, not an absence: every row this
+ * builder produces is stamped `flowAuthority = CRYPTO_LEDGER`. "classifierVersion
+ * IS NULL" previously meant two different things — this authority, and the
+ * never-classified seed backlog — and the two are now separable by construction.
+ * `classifierVersion` stays null, which remains a true statement about the row.
  */
 function buildTransactionRow(
   financialAccountId: string,
@@ -315,6 +323,10 @@ function buildTransactionRow(
     externalTransactionId: m.externalId,
     flowType,
     flowDirection,
+    // v2.6-OWN-1 — this authority names itself. `classifierVersion` stays absent
+    // (null), so the two facts agree: the classifier did not write this row, and
+    // the ledger that did is named.
+    ...foreignFlowOwnershipFields("CRYPTO_LEDGER"),
     settlementState:       m.settlement === "POSTED" ? SettlementState.POSTED : SettlementState.PENDING,
     ...(counterpartyAccountId ? { counterpartyAccountId } : {}),
     ...(classificationReason  ? { classificationReason }  : {}),

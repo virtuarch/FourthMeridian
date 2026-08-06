@@ -63,6 +63,8 @@ export async function POST(
       id: true, merchant: true, description: true, category: true, amount: true,
       merchantId: true, categorySource: true, merchantEntityId: true,
       pfcPrimary: true, pfcDetailed: true, pfcConfidenceLevel: true,
+      // v2.6-OWN-1 — who owns this row's flow facts.
+      flowAuthority: true,
       financialAccount: { select: { type: true, debtSubtype: true } },
     },
   });
@@ -77,6 +79,7 @@ export async function POST(
     amount: row.amount, merchantId: row.merchantId, categorySource: row.categorySource,
     merchantEntityId: row.merchantEntityId, pfcPrimary: row.pfcPrimary,
     pfcDetailed: row.pfcDetailed, pfcConfidenceLevel: row.pfcConfidenceLevel,
+    flowAuthority: row.flowAuthority,
   };
 
   const validCategory = (v: unknown): v is TransactionCategory =>

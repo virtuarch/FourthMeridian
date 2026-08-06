@@ -64,9 +64,16 @@
 import { db } from "@/lib/db";
 import { classifyFlow, FLOW_CLASSIFIER_VERSION } from "@/lib/transactions/flow-classifier";
 import { buildFlowInputFromRow, buildFlowWriteFields, withDescriptorEvidenceReason } from "@/lib/transactions/plaid-flow-input";
+// v2.6-OWN-1 — this repair RE-RUNS the canonical classifier, so it writes AS the
+// classifier (buildFlowWriteFields stamps CLASSIFIER) and is bound by the same
+// ownership gate: it may refresh classifier-owned rows and adopt unowned ones,
+// never displace the transfer authority or the crypto ledger.
+import type { FlowAuthorityName } from "@/lib/transactions/flow-authority";
 import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-payment";
 import { resolvePayrollIncomeCategory } from "@/lib/transactions/descriptor-evidence";
 import type { Prisma, TransactionCategory } from "@prisma/client";
+
+const CLASSIFIER_OWNED = "CLASSIFIER" as const satisfies FlowAuthorityName;
 
 const argv = process.argv.slice(2);
 function intFlag(name: string, def: number): number {
@@ -99,7 +106,15 @@ function selectionWhere(): Prisma.TransactionWhereInput {
       { categorySource: { notIn: ["USER_OVERRIDE", "USER_RULE"] } },
     ],
   };
-  return INCLUDE_DELETED ? signature : { AND: [signature, { deletedAt: null }] };
+  // v2.6-OWN-1 — the ownership gate. Spelled as an explicit OR because a Prisma
+  // `NOT` over a NULLABLE column drops NULL rows, which would exclude the very
+  // unowned population a repair may legitimately adopt.
+  const owned: Prisma.TransactionWhereInput = {
+    OR: [{ flowAuthority: CLASSIFIER_OWNED }, { flowAuthority: null }],
+  };
+  return INCLUDE_DELETED
+    ? { AND: [signature, owned] }
+    : { AND: [signature, owned, { deletedAt: null }] };
 }
 
 /** Resolve the repaired category via the SAME rescue chain the ingest seams run. */
@@ -129,6 +144,7 @@ async function main(): Promise<void> {
   console.log("Selection: flowType=REFUND AND reason=SIGN_DEFAULT_INFLOW AND category=Other");
   console.log(`           AND classifierVersion <= ${FLOW_CLASSIFIER_VERSION - 1}`);
   console.log("           AND (categorySource IS NULL OR categorySource NOT IN (USER_OVERRIDE, USER_RULE))  ← NULL-safe");
+  console.log(`           AND flowAuthority = ${CLASSIFIER_OWNED} or NULL  ← v2.6-OWN-1 ownership gate`);
   console.log(`           ${INCLUDE_DELETED ? "including" : "excluding"} soft-deleted   → writing classifierVersion = ${FLOW_CLASSIFIER_VERSION}`);
   console.log(`Batch: ${BATCH}${Number.isFinite(LIMIT) ? `   Limit: ${LIMIT}` : ""}\n`);
 
@@ -237,7 +253,8 @@ async function main(): Promise<void> {
           "flowDirection"            = ${f.flowDirection}::"FlowDirection",
           "classificationConfidence" = ${f.classificationConfidence},
           "classificationReason"     = ${f.classificationReason}::"FlowClassificationReason",
-          "classifierVersion"        = ${f.classifierVersion}
+          "classifierVersion"        = ${f.classifierVersion},
+          "flowAuthority"            = ${f.flowAuthority}::"FlowAuthority"
         WHERE "id" = ${c.id}
       `;
     } else {
@@ -247,7 +264,8 @@ async function main(): Promise<void> {
           "flowDirection"            = ${f.flowDirection}::"FlowDirection",
           "classificationConfidence" = ${f.classificationConfidence},
           "classificationReason"     = ${f.classificationReason}::"FlowClassificationReason",
-          "classifierVersion"        = ${f.classifierVersion}
+          "classifierVersion"        = ${f.classifierVersion},
+          "flowAuthority"            = ${f.flowAuthority}::"FlowAuthority"
         WHERE "id" = ${c.id}
       `;
     }

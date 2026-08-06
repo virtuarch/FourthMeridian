@@ -34,7 +34,9 @@
 
 import type { CategorySource, MerchantAliasSource, Prisma, TransactionCategory } from "@prisma/client";
 import { normalizeMerchantIdentity } from "@/lib/transactions/merchant-resolver";
-import { buildFlowInputFromRow, buildFlowWriteFields } from "@/lib/transactions/plaid-flow-input";
+import { buildFlowInputFromRow, buildFlowWriteFields, type FlowWriteFields } from "@/lib/transactions/plaid-flow-input";
+// v2.6-OWN-1 — the flow-ownership rule (see lib/transactions/flow-authority.ts).
+import { mayWriteFlow, type FlowAuthorityName } from "@/lib/transactions/flow-authority";
 import { classifyFlow, FLOW_CLASSIFIER_VERSION } from "@/lib/transactions/flow-classifier";
 
 /** A PrismaClient or a $transaction client. */
@@ -53,6 +55,8 @@ export interface CorrectionRow {
   pfcPrimary: string | null;
   pfcDetailed: string | null;
   pfcConfidenceLevel: string | null;
+  /** v2.6-OWN-1 — who owns this row's flow facts. See `recomputeFlowFields`. */
+  flowAuthority: FlowAuthorityName | null;
 }
 
 /** Account context for the authoritative flow re-derivation. */
@@ -103,8 +107,26 @@ export function planMerchantIdentityCorrection(input: MerchantIdentityInput): Me
 
 // ── Flow re-derivation (authoritative pipeline) ───────────────────────────────
 
-/** Re-derive the flow write-columns for a row's (possibly new) category. Pure. */
-export function recomputeFlowFields(row: CorrectionRow, acct: CorrectionAcct, category: TransactionCategory) {
+/**
+ * Re-derive the flow write-columns for a row's (possibly new) category. Pure.
+ *
+ * v2.6-OWN-1 — returns `{}` (write nothing) when the CLASSIFIER does not own the
+ * row's flow facts. Re-categorising is a statement about what a purchase WAS;
+ * it is not evidence about where money WENT, and the transfer authority reached
+ * its verdict from the counterparty leg, the venue and the account type — none
+ * of which a category can contradict. The correction still lands: `category` and
+ * `categorySource` are written by the callers below, which this does not gate.
+ *
+ * The classifier declares NO claims anywhere. Displacing another authority is an
+ * approved, reviewed act, and the acts that do it say so at their own write site
+ * (scripts/repair-*.ts).
+ */
+export function recomputeFlowFields(
+  row: CorrectionRow,
+  acct: CorrectionAcct,
+  category: TransactionCategory,
+): Partial<FlowWriteFields> {
+  if (!mayWriteFlow(row.flowAuthority, "CLASSIFIER").allowed) return {};
   // CCPAY-2C-5 — no merchant/description: the classifier is descriptor-blind by
   // contract. CorrectionRow still carries them for the merchant-identity work
   // below; they simply never reach the flow layer.

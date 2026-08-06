@@ -68,7 +68,10 @@ const NO_META: CapturedPlaidMetadata = {
   check("pfcDetailed pass-through", w.pfcDetailed === "LOAN_PAYMENTS_CREDIT_CARD");
   check("pfcConfidenceLevel from captured", w.pfcConfidenceLevel === "HIGH");
   check("merchantEntityId from captured", w.merchantEntityId === "ent_chase");
-  check("exactly 10 keys", Object.keys(w).length === 10, `${Object.keys(w).length}`);
+  // v2.6-OWN-1 — the builder names its author on every field-set it returns, so
+  // no classifier write site can produce a flow value without an owner.
+  check("flowAuthority stamped CLASSIFIER", w.flowAuthority === "CLASSIFIER");
+  check("exactly 11 keys", Object.keys(w).length === 11, `${Object.keys(w).length}`);
 }
 
 // pfc fields null when Plaid supplied none
@@ -116,8 +119,12 @@ for (const r of ALL_REASONS) {
 // 3. NULL_FLOW_WRITE_FIELDS — the classification-failure fallback
 // ─────────────────────────────────────────────────────────────────────────────
 
-check("NULL fallback has 10 keys", Object.keys(NULL_FLOW_WRITE_FIELDS).length === 10);
+check("NULL fallback has 11 keys", Object.keys(NULL_FLOW_WRITE_FIELDS).length === 11);
+// v2.6-OWN-1 — including flowAuthority: classification FAILED, so nobody
+// classified the row and nobody claims it. This keeps the coupling invariant
+// (flowType null ⟺ flowAuthority null) true on the failure path too.
 check("NULL fallback all null", Object.values(NULL_FLOW_WRITE_FIELDS).every((v) => v === null));
+check("NULL fallback is UNOWNED", NULL_FLOW_WRITE_FIELDS.flowAuthority === null);
 
 // ── Report ────────────────────────────────────────────────────────────────────
 

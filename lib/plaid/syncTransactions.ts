@@ -131,6 +131,10 @@ import {
 // TE1 — provider-neutral transfer evidence: stage-1 Plaid adapter + persistence
 // mapper. Wired beside flowFields/factFields; liquidity/Cash Flow never see Plaid.
 import { plaidTransferEvidence } from "@/lib/transactions/plaid-transfer-evidence";
+// v2.6-OWN-1 — the flow-ownership rule. A provider re-sync is the CLASSIFIER
+// refreshing its own rows; it declares no claims, so it can never displace the
+// transfer authority or the crypto ledger.
+import { mayWriteFlow, type FlowAuthorityName } from "@/lib/transactions/flow-authority";
 import { economicDateWriteFields } from "@/lib/transactions/economic-date-write";
 import { recordTransactionObservation } from "@/lib/transactions/event-write";
 import {
@@ -568,10 +572,36 @@ export async function syncTransactionsForItem(
       // withheld so existing persisted facts survive. A USER-rule override that
       // successfully re-classifies through the authoritative pipeline still
       // applies — that is a real classification, not a degradation.
+      //
+      // v2.6-OWN-1 — `flowAuthority` joins `current` for the same reason
+      // `categorySource` is already there: an UPDATE must not overwrite facts a
+      // different authority owns. Every one of the 12 rows the transfer-authority
+      // repairs corrected is Plaid-sourced, so before this gate the next
+      // `modified` page for any of them would have silently reverted the repair —
+      // a larger hole than the backfill the audit was pointing at.
       async function miData(current: {
         merchantId: string | null;
         categorySource: CategorySource | null;
+        flowAuthority: FlowAuthorityName | null;
       }, mode: "create" | "update"): Promise<Record<string, unknown>> {
+        /**
+         * Strip the flow columns from a patch when the CLASSIFIER may not write
+         * this row. Category and merchant columns are NOT stripped: they belong
+         * to the category/MI stack, which the transfer authority never touched.
+         *
+         * The classifier declares NO claims — a provider re-sync is routine, not
+         * an approved act of correction, so it can only ever refresh its own rows
+         * and adopt unowned ones. Displacing the transfer authority is a
+         * reviewed repair, and it says so at its own write site.
+         */
+        const ownFlow = <T extends object>(patch: T): Partial<T> => {
+          if (mayWriteFlow(current.flowAuthority, "CLASSIFIER").allowed) return patch;
+          const { flowType: _ft, flowDirection: _fd, flowAuthority: _fa,
+                  classificationConfidence: _cc, classificationReason: _cr,
+                  classifierVersion: _cv, counterpartyAccountId: _cp,
+                  ...rest } = patch as Record<string, unknown>;
+          return rest as Partial<T>;
+        };
         try {
           const meta = await resolveAccountMeta(financialAccountId as string);
           const mi = await resolveMerchantWrite(
@@ -600,18 +630,18 @@ export async function syncTransactionsForItem(
           if (mi.category) {
             const { input, captured } = buildPlaidFlowInput(txn, { category: mi.category, amount, accountType: meta.type, debtSubtype: meta.debtSubtype });
             const overrideFlow = buildFlowWriteFields(classifyFlow(input), input, captured, FLOW_CLASSIFIER_VERSION);
-            return { ...columns, category: mi.category, ...overrideFlow, categorySource: "USER_RULE", ...(mi.categoryRuleId ? { categoryRuleId: mi.categoryRuleId } : {}) };
+            return { ...columns, category: mi.category, ...ownFlow(overrideFlow), categorySource: "USER_RULE", ...(mi.categoryRuleId ? { categoryRuleId: mi.categoryRuleId } : {}) };
           }
           // NORMAL — default category + flow, stamp confirmed provenance.
           // V26-PRE (B1): withheld on update when classification failed — the
           // "default" would be an un-rescued category + null flow columns.
           if (mode === "update" && !classified) return { ...columns };
-          return { ...columns, ...defaultCategoryFlow, ...(mi.categorySource ? { categorySource: mi.categorySource } : {}) };
+          return { ...columns, ...ownFlow(defaultCategoryFlow), ...(mi.categorySource ? { categorySource: mi.categorySource } : {}) };
         } catch (e) {
           console.warn(`[merchant-intelligence] resolution skipped for ${txn.transaction_id} — default category/flow on create, existing facts preserved on update; no MI:`, e);
           // V26-PRE (B1): same preservation rule on the failure path.
           if (mode === "update" && !classified) return {};
-          return { ...defaultCategoryFlow };
+          return { ...ownFlow(defaultCategoryFlow) };
         }
       }
 
@@ -648,7 +678,9 @@ export async function syncTransactionsForItem(
         // 1. Exact match — same row Plaid is telling us about.
         const existingByPlaidId = await database.transaction.findUnique({
           where:  { plaidTransactionId: txn.transaction_id },
-          select: { id: true, merchantId: true, categorySource: true },
+          // v2.6-OWN-1 — flowAuthority joins the read so the update arm can tell
+          // whether the classifier still owns this row's flow facts.
+          select: { id: true, merchantId: true, categorySource: true, flowAuthority: true },
         });
 
         if (existingByPlaidId) {
@@ -656,7 +688,7 @@ export async function syncTransactionsForItem(
           // been tombstoned by a prior removed[] and Plaid now re-sends it in
           // added/modified, it is live again — Plaid only sends added/modified
           // for live transactions, so clearing deletedAt here is correct.
-          const mi = await miData({ merchantId: existingByPlaidId.merchantId, categorySource: existingByPlaidId.categorySource }, "update");
+          const mi = await miData({ merchantId: existingByPlaidId.merchantId, categorySource: existingByPlaidId.categorySource, flowAuthority: existingByPlaidId.flowAuthority }, "update");
           await database.transaction.update({ where: { id: existingByPlaidId.id }, data: { ...updateFields, deletedAt: null, ...mi } });
           await recordObservation(existingByPlaidId.id);
           updatedByPlaidId++;
@@ -677,9 +709,9 @@ export async function syncTransactionsForItem(
           // re-points an existing merchant or overwrites set provenance.
           const cur = await database.transaction.findUnique({
             where:  { id: fingerprintMatch.id },
-            select: { merchantId: true, categorySource: true },
+            select: { merchantId: true, categorySource: true, flowAuthority: true },
           });
-          const mi = await miData({ merchantId: cur?.merchantId ?? null, categorySource: cur?.categorySource ?? null }, "update");
+          const mi = await miData({ merchantId: cur?.merchantId ?? null, categorySource: cur?.categorySource ?? null, flowAuthority: cur?.flowAuthority ?? null }, "update");
           await database.transaction.update({
             where: { id: fingerprintMatch.id },
             data:  { ...updateFields, plaidTransactionId: txn.transaction_id, ...mi },
@@ -695,7 +727,8 @@ export async function syncTransactionsForItem(
         // 3. Genuinely new transaction. `category` is included explicitly as the
         // required baseline; miData's category (normal/override) overrides it via
         // the later spread (preserve never occurs on a create).
-        const mi = await miData({ merchantId: null, categorySource: null }, "create");
+        // A brand-new row is UNOWNED — nothing to displace (v2.6-OWN-1).
+        const mi = await miData({ merchantId: null, categorySource: null, flowAuthority: null }, "create");
         const createdRow = await database.transaction.create({
           data: { ...createFields, category, plaidTransactionId: txn.transaction_id, ...mi },
           select: { id: true },

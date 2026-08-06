@@ -37,6 +37,13 @@
  */
 
 import { db } from "@/lib/db";
+// v2.6-OWN-1 — this repair applies the TRANSFER AUTHORITY's verdict, and says so
+// on the row. `foreignFlowOwnershipFields` also nulls `classifierVersion`: once
+// these columns hold the transfer authority's answer, "the classifier at version
+// N produced these" is no longer a true statement about the row. Leaving that
+// number behind is precisely what made these repairs look like classifier output
+// and put them one `backfill-flowtype --only-version=4 --apply` from reversion.
+import { foreignFlowOwnershipFields } from "@/lib/transactions/flow-authority";
 import { createHash } from "node:crypto";
 import { FlowType, FlowClassificationReason } from "@prisma/client";
 import { admitTransferCandidate } from "@/lib/transactions/transfer-admission";
@@ -322,6 +329,7 @@ async function main() {
           flowType: impliedFlowType(v.maturity as never) as FlowType,
           classificationReason: REASON,
           classificationConfidence: CONFIDENCE,
+          ...foreignFlowOwnershipFields("TRANSFER_AUTHORITY"),
           ...(cp ? { counterpartyAccountId: cp.accountId } : {}),
         },
       });

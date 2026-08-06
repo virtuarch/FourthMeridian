@@ -66,6 +66,13 @@
  */
 
 import { db } from "@/lib/db";
+// v2.6-OWN-1 — this repair applies the TRANSFER AUTHORITY's verdict, and says so
+// on the row. `foreignFlowOwnershipFields` also nulls `classifierVersion`: once
+// these columns hold the transfer authority's answer, "the classifier at version
+// N produced these" is no longer a true statement about the row. Leaving that
+// number behind is precisely what made these repairs look like classifier output
+// and put them one `backfill-flowtype --only-version=4 --apply` from reversion.
+import { foreignFlowOwnershipFields } from "@/lib/transactions/flow-authority";
 import { matchTransferCandidate, type RelationshipTransaction } from "@/lib/transactions/RelationshipResolver";
 import {
   matureClassification, adoptRetraction, TRANSFER_MATCH_WINDOW_DAYS,
@@ -323,6 +330,7 @@ async function main(): Promise<void> {
           flowType:                 "TRANSFER",
           classificationReason:     UNRESOLVED_REASON,
           classificationConfidence: UNRESOLVED_CONFIDENCE,
+          ...foreignFlowOwnershipFields("TRANSFER_AUTHORITY"),
           // flowDirection, counterpartyAccountId, and every immutable field are
           // deliberately absent — see the header.
         },

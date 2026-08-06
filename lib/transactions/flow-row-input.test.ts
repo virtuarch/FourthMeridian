@@ -141,7 +141,9 @@ for (const over of [
   // The constant is wired through; do NOT re-pin its integer value (CCPAY-2F: a
   // literal here forces a second edit on every version bump for no added coverage).
   check("composed classifierVersion set", w.classifierVersion === FLOW_CLASSIFIER_VERSION);
-  check("composed 10 columns", Object.keys(w).length === 10);
+  // v2.6-OWN-1 — the eleventh column is the author.
+  check("composed flowAuthority CLASSIFIER", w.flowAuthority === "CLASSIFIER");
+  check("composed 11 columns", Object.keys(w).length === 11);
 }
 
 // Determinism → idempotency: same row yields byte-identical write fields twice

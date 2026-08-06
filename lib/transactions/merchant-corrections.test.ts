@@ -112,7 +112,10 @@ function row(over: Partial<CorrectionRow> = {}): CorrectionRow {
   return {
     id: "t1", merchant: "WALMART #1842", description: "WALMART", category: "Shopping" as TransactionCategory,
     amount: -20, merchantId: "m-existing", categorySource: null, merchantEntityId: null,
-    pfcPrimary: null, pfcDetailed: null, pfcConfidenceLevel: null, ...over,
+    pfcPrimary: null, pfcDetailed: null, pfcConfidenceLevel: null,
+    // v2.6-OWN-1 — the ordinary case: the classifier owns this row, so a
+    // correction may re-derive its flow. Overridden below to prove the refusal.
+    flowAuthority: "CLASSIFIER", ...over,
   };
 }
 
@@ -210,6 +213,24 @@ async function main() {
   const want = classifyFlow({ category: "Income", amount: 500, accountType: "checking", debtSubtype: null });
   eq("recompute: flowType matches classifier", flow.flowType, want.flowType);
   eq("recompute: flowDirection matches classifier", flow.flowDirection, want.flowDirection);
+}
+
+// ── 8. v2.6-OWN-1: a correction may not silently displace another authority ───
+{
+  // The transfer authority decided this row's flow from the counterparty leg and
+  // the account type. Re-categorising says what a purchase WAS; it is not
+  // evidence about where money WENT, so the flow columns are preserved and only
+  // the category-side write lands.
+  for (const owner of ["TRANSFER_AUTHORITY", "CRYPTO_LEDGER"] as const) {
+    const r = row({ amount: 500, flowAuthority: owner });
+    const flow = recomputeFlowFields(r, ACCT, "Income" as TransactionCategory);
+    eq(`recompute: ${owner}-owned row writes no flow columns`, Object.keys(flow).length, 0);
+  }
+  // An UNOWNED row (the never-classified backlog) is adoptable.
+  const unowned = recomputeFlowFields(row({ amount: 500, flowAuthority: null }), ACCT, "Income" as TransactionCategory);
+  const wantUnowned = classifyFlow({ category: "Income", amount: 500, accountType: "checking", debtSubtype: null });
+  eq("recompute: unowned row is adopted", unowned.flowType, wantUnowned.flowType);
+  eq("recompute: adopted row is stamped CLASSIFIER", unowned.flowAuthority, "CLASSIFIER");
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────

@@ -12,8 +12,9 @@
  *
  * Design notes (see docs/initiatives/flowtype/P4_BACKFILL_CHECKLIST.md):
  *  - Selection predicate (§1): rows with null flowType/flowDirection/
- *    classifierVersion, or classifierVersion < FLOW_CLASSIFIER_VERSION.
- *    Idempotent and version-aware by construction.
+ *    classifierVersion, or classifierVersion < FLOW_CLASSIFIER_VERSION —
+ *    AND owned by the CLASSIFIER or by nobody (v2.6-OWN-1, below).
+ *    Idempotent, version-aware and ownership-scoped by construction.
  *  - Keyset pagination by id (§3.3): resume-safe, drift-free.
  *  - Account context from whichever FK is set: FinancialAccount (type +
  *    debtSubtype) or legacy Account (type only; debtSubtype null).
@@ -25,13 +26,29 @@
  *   npx tsx scripts/backfill-flowtype.ts [--verbose] [--batch=N] [--limit=N] [--exclude-deleted]
  *                                        [--only-version=N]
  *
- * Ownership scoping (CCPAY-2F):
+ * Ownership scoping (CCPAY-2F, hardened by v2.6-OWN-1):
  *   --only-version=N  selects EXACTLY `classifierVersion = N` instead of the
  *   default predicate. Use this for a version migration: it targets the rows a
- *   known prior classifier wrote, and refuses to adopt null-version rows that
- *   another authority (lib/crypto/btc-sync.ts) or nothing at all produced. See
- *   the flag's own comment and docs/doctrine/financial-semantics.md (§ Liability payment classification).
+ *   known prior classifier wrote. See the flag's own comment and
+ *   docs/doctrine/financial-semantics.md (§ Liability payment classification).
  *     v2 → v3 convergence:  --only-version=2 --apply --exclude-deleted
+ *
+ * ── v2.6-OWN-1: THIS SCRIPT CAN NO LONGER REVERT ANOTHER AUTHORITY ──────────
+ *
+ * Every predicate below — default AND --only-version — is now ANDed with
+ *     flowAuthority IN (CLASSIFIER) OR flowAuthority IS NULL
+ * so the selection cannot reach a row the transfer authority or the crypto
+ * ledger owns. This is not a warning in a comment; it is the WHERE clause.
+ *
+ * It closes a live defect. `audit:flow-desync` used to fail on 12 rows the
+ * approved transfer-authority repairs had written (they left classifierVersion =
+ * 4, so they looked like classifier output), and the audit's own remediation text
+ * said to run `--only-version=4 --apply`. That command would have reverted all
+ * twelve. The audit no longer prints it, and this predicate would refuse it.
+ *
+ * `--only-version` narrowing to CLASSIFIER also makes the flag mean what its
+ * name always claimed: "the rows MY predecessor owned", not "the rows carrying
+ * that number".
  *
  * Diagnostic mode (read-only):
  *   npx tsx scripts/backfill-flowtype.ts --diagnose
@@ -50,8 +67,10 @@
  *   pfcConfidenceLevel, merchantEntityId) via a PARAMETERIZED RAW UPDATE that
  *   deliberately does NOT bump updatedAt and never touches category, amount,
  *   merchant, date, pending, accountId, financialAccountId, plaidTransactionId,
- *   importBatchId, or any timestamp. Dry-run is the default; --apply is required
- *   to write. Idempotent: a second --apply finds 0 rows (classifierVersion gate).
+ *   importBatchId, or any timestamp. It also stamps `flowAuthority = CLASSIFIER`
+ *   (v2.6-OWN-1), from the same buildFlowWriteFields the live sync uses.
+ *   Dry-run is the default; --apply is required to write. Idempotent: a second
+ *   --apply finds 0 rows (classifierVersion gate).
  *   --diagnose is always read-only and ignores --apply.
  */
 
@@ -67,6 +86,12 @@ import {
   legacyBucket,
   classifierBucket,
 } from "@/lib/transactions/plaid-flow-input";
+// v2.6-OWN-1 — the ownership gate. This script is the CLASSIFIER's batch writer.
+import { FLOW_AUTHORITY_SOURCE, type FlowAuthorityName } from "@/lib/transactions/flow-authority";
+
+/** The one authority this script writes as, and the only owned population it
+ *  may select. Named once so the predicate and the UPDATE cannot drift. */
+const CLASSIFIER_OWNED = "CLASSIFIER" as const satisfies FlowAuthorityName;
 
 const argv = process.argv.slice(2);
 
@@ -144,21 +169,56 @@ async function main(): Promise<void> {
           { classifierVersion: { lt: FLOW_CLASSIFIER_VERSION } },
         ],
       };
+
+  /**
+   * v2.6-OWN-1 — THE OWNERSHIP GATE. ANDed with every predicate above.
+   *
+   * The classifier may write rows it already owns, and may adopt UNOWNED rows
+   * (the never-classified backlog — the original P4 job). It may not touch a row
+   * another authority owns, and it declares no claims: a batch re-classification
+   * is routine work, never an approved act of correction.
+   *
+   * Spelled as an explicit OR rather than `NOT: { flowAuthority: { in: [...] } }`
+   * because a Prisma `NOT` over a NULLABLE column DROPS NULL rows — which would
+   * silently exclude the entire unowned backlog this script exists to adopt.
+   */
+  const ownershipWhere: Prisma.TransactionWhereInput = {
+    OR: [{ flowAuthority: CLASSIFIER_OWNED }, { flowAuthority: null }],
+  };
+
   const baseWhere: Prisma.TransactionWhereInput = EXCLUDE_DELETED
-    ? { AND: [versionWhere, { deletedAt: null }] }
-    : versionWhere;
+    ? { AND: [versionWhere, ownershipWhere, { deletedAt: null }] }
+    : { AND: [versionWhere, ownershipWhere] };
 
   console.log(`\n${WILL_WRITE ? "[APPLY] FlowType backfill — WRITING flow columns" : "[DRY RUN] FlowType backfill — READ-ONLY, no writes"}`);
   console.log(
     ONLY_VERSION !== null
-      ? `Selection: classifierVersion = ${ONLY_VERSION} ONLY (ownership-scoped: the population v${ONLY_VERSION} wrote; ` +
-        `null-version rows are NOT adopted)`
+      ? `Selection: classifierVersion = ${ONLY_VERSION} ONLY (ownership-scoped: the population v${ONLY_VERSION} wrote)`
       : `Selection: flowType/flowDirection/classifierVersion null OR classifierVersion < ${FLOW_CLASSIFIER_VERSION}`,
+  );
+  console.log(
+    `           AND flowAuthority = ${CLASSIFIER_OWNED} or NULL — rows owned by another authority are unreachable`,
   );
   console.log(
     `           ${EXCLUDE_DELETED ? "excluding" : "including"} soft-deleted   → writing classifierVersion = ${FLOW_CLASSIFIER_VERSION}`,
   );
   console.log(`Batch: ${BATCH}${Number.isFinite(LIMIT) ? `   Limit: ${LIMIT}` : ""}\n`);
+  // v2.6-OWN-1 — name what the gate excluded. A refusal that is not reported is
+  // indistinguishable from an empty population, and "silently skipped 12 rows"
+  // is the failure mode this whole slice exists to remove.
+  const refused = await db.transaction.groupBy({
+    by:    ["flowAuthority"],
+    where: { AND: [versionWhere, { NOT: { flowAuthority: null }, flowAuthority: { not: CLASSIFIER_OWNED } }] },
+    _count: true,
+  });
+  if (refused.length > 0) {
+    console.log("\n  OWNERSHIP GATE — matched the version predicate but owned elsewhere, NOT selected:");
+    for (const g of refused) {
+      const owner = g.flowAuthority as FlowAuthorityName;
+      console.log(`    ${String(g._count).padStart(5)}  ${owner.padEnd(20)} ${FLOW_AUTHORITY_SOURCE[owner]}`);
+    }
+    console.log("");
+  }
 
   const stats = createShadowStats();
   const byDirection: Record<string, number> = {};
@@ -231,6 +291,10 @@ async function main(): Promise<void> {
             "classificationConfidence" = ${f.classificationConfidence},
             "classificationReason"     = ${f.classificationReason}::"FlowClassificationReason",
             "classifierVersion"        = ${f.classifierVersion},
+            -- v2.6-OWN-1 — the classifier names itself on every row it writes.
+            -- Sourced from buildFlowWriteFields, so this UPDATE and the live sync
+            -- write path stamp the identical value from the identical builder.
+            "flowAuthority"            = ${f.flowAuthority}::"FlowAuthority",
             "pfcPrimary"               = ${f.pfcPrimary},
             "pfcDetailed"              = ${f.pfcDetailed},
             "pfcConfidenceLevel"       = ${f.pfcConfidenceLevel},

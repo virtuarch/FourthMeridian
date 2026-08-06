@@ -48,6 +48,13 @@
  */
 
 import { db } from "@/lib/db";
+// v2.6-OWN-1 — this repair applies the TRANSFER AUTHORITY's verdict, and says so
+// on the row. `foreignFlowOwnershipFields` also nulls `classifierVersion`: once
+// these columns hold the transfer authority's answer, "the classifier at version
+// N produced these" is no longer a true statement about the row. Leaving that
+// number behind is precisely what made these repairs look like classifier output
+// and put them one `backfill-flowtype --only-version=4 --apply` from reversion.
+import { foreignFlowOwnershipFields } from "@/lib/transactions/flow-authority";
 import { resolveLifecycle } from "@/lib/transactions/lifecycle";
 import { resolveEconomicDate } from "@/lib/transactions/economic-date";
 import { plaidTransferEvidence } from "@/lib/transactions/plaid-transfer-evidence";
@@ -189,7 +196,8 @@ async function main(): Promise<void> {
   const written = await db.$transaction(
     proposals.map(({ t }) => db.transaction.update({
       where: { id: t.id },
-      data: { flowType: "DEBT_PAYMENT", classificationReason: REASON, classificationConfidence: CONFIDENCE },
+      data: { flowType: "DEBT_PAYMENT", classificationReason: REASON, classificationConfidence: CONFIDENCE,
+              ...foreignFlowOwnershipFields("TRANSFER_AUTHORITY") },
     })),
   );
   console.log(`\n  APPLIED — ${written.length} rows.\n`);

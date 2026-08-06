@@ -1837,6 +1837,51 @@ enum FlowClassificationReason {
   DESCRIPTOR_EVIDENCE
 }
 
+/// WHICH authority produced `Transaction.flowType` / `flowDirection`.
+///
+/// v2.6-OWN-1. Before this enum, the column recorded the VALUE but not the
+/// AUTHOR, and `classifierVersion` was doing double duty as ownership metadata —
+/// which it could not carry, because it has only two states (a number, or null)
+/// and there are three authors plus "nobody". The transfer-authority repairs
+/// therefore wrote flow facts while leaving `classifierVersion = 4`, making them
+/// indistinguishable from classifier output: `audit:flow-desync` reported 12 of
+/// them as desynced, and its own remediation (`backfill-flowtype --only-version=4
+/// --apply`) would have REVERTED them.
+///
+/// Ownership is now explicit and coupled to the value:
+///     (flowType IS NULL) == (flowAuthority IS NULL)
+/// An unclassified row is UNOWNED — nobody has claimed it, which is honest and
+/// is the state the never-classified seed backlog sits in.
+///
+/// The rule every writer obeys (lib/transactions/flow-authority.ts):
+///   an authority may write a row that is UNOWNED or that it already owns.
+///   Displacing another authority requires an EXPLICIT, declared claim.
+///   Silence is refusal.
+///
+/// Adding an authority: add a value here, add it to FLOW_AUTHORITIES in
+/// lib/transactions/flow-authority.ts (the exhaustive-by-type maps will refuse to
+/// compile until it is labelled), and give it a write site that stamps itself.
+enum FlowAuthority {
+  /// lib/transactions/flow-classifier.ts, via buildFlowWriteFields. The Plaid
+  /// sync, the CSV import, merchant corrections and the flowType backfill all
+  /// write through it, so they are ONE authority, versioned by classifierVersion.
+  CLASSIFIER
+
+  /// lib/transactions/transfer-maturation.ts — the destination-evidence ladder,
+  /// applied to the corpus by an approved, separately-reviewed repair under
+  /// scripts/repair-*.ts. Strictly better informed than the classifier on these
+  /// rows: it weighed the counterparty leg, the venue and the account type, none
+  /// of which classifyFlow can see.
+  TRANSFER_AUTHORITY
+
+  /// lib/crypto/btc-sync.ts — the on-chain ledger writes its own flow facts and
+  /// derives `category` FROM flowType (the inverse of classifyFlow), so it can
+  /// never be canonically recomputed by the classifier. Formerly encoded as
+  /// "classifierVersion IS NULL", which it shared with the never-classified
+  /// backlog; those two populations are now distinct by construction.
+  CRYPTO_LEDGER
+}
+
 // ── Merchant Intelligence (MI1 M1 — additive, nothing reads/writes yet) ───────
 
 /// Provenance for a transaction's `category` — WHY it is what it is. Written by
@@ -2064,6 +2109,11 @@ model Transaction {
   classificationConfidence Float?
   classificationReason     FlowClassificationReason?
   classifierVersion        Int?
+  // v2.6-OWN-1 — WHICH authority produced flowType/flowDirection (see the
+  // FlowAuthority enum). Coupled to the value: null iff flowType is null.
+  // `classifierVersion` reverts to what its name says — the CLASSIFIER's version
+  // — and is meaningful only while flowAuthority = CLASSIFIER.
+  flowAuthority            FlowAuthority?
   // Raw Plaid personal_finance_category hints (captured in memory since P2).
   // Kept as String — Plaid owns/versions this taxonomy; it is a provider hint,
   // not Fourth Meridian semantics (which live in flowType).
