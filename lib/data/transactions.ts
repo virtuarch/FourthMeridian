@@ -507,6 +507,12 @@ export async function getTransactionDetail(
     : { source };
 
   // ── Counterparty (fails closed on name exposure) ───────────────────────────
+  //
+  // ⚠️ PERSISTED counterparties only. The READ-TIME match the transfer authority
+  // resolves is folded in further down, once it has passed its own KD-15 gate —
+  // see the `resolvedTransferCpId` block. Keeping the two apart is deliberate:
+  // this one reads a relation already loaded by the query above, that one costs
+  // a lookup and must not run when a persisted link already answers.
   let counterparty: TransactionDetailCounterparty | null = null;
   if (row.counterpartyAccountId) {
     const cp = row.counterpartyAccount;
@@ -659,6 +665,33 @@ export async function getTransactionDetail(
     } else {
       relationships = { ...relationships, transferCandidate: null };
     }
+  }
+
+  // ── v2.6-XFER-2 — the READ-TIME counterparty reaches the drawer ────────────
+  //
+  // `counterparty` above keys on the PERSISTED column, so a match the transfer
+  // authority resolves at read time never reached it: the DTO carried the
+  // resolved id (`counterpartyAccountId`, via chooseCounterpartyId) while the
+  // block that holds the NAME stayed null, and the drawer fell back to the
+  // provider's counterparty CLASS — "Financial institution" — for a movement the
+  // authority had already resolved to a named owned account.
+  //
+  // Live: three AMEX savings→checking transfers ($6,500) resolved to Rewards
+  // Checking by v2.6-XFER-1 and still read "Financial institution".
+  //
+  // Same KD-15 gate, reused rather than repeated: `resolvedTransferCpId` is
+  // already null unless `filterVisibleCounterpartyAccounts` admitted it, so this
+  // cannot widen name exposure. One bounded lookup, only when a persisted link
+  // did NOT already answer, and only on the detail read.
+  if (!counterparty && resolvedTransferCpId) {
+    const resolved = await db.financialAccount.findFirst({
+      where:  { id: resolvedTransferCpId, deletedAt: null },
+      select: { id: true, ...ACCOUNT_NAME_SELECT },
+    });
+    // v2.6-TRUTH-10 — the ONE identity authority, never a local name order.
+    counterparty = resolved
+      ? { visible: true, accountId: resolved.id, name: accountDisplayName(resolved) }
+      : { visible: false };
   }
 
   // L8 — the logical event this row projects, for verification. One bounded

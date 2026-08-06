@@ -221,3 +221,60 @@ test('no section is ever empty', () => {
     assert.ok((s.rows?.length ?? 0) > 0 || (s.notes?.length ?? 0) > 0, `${s.title} is empty`);
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2.6-XFER-2 — the RESOLVED counterparty reaches the drawer
+//
+// `TransactionDetail.counterparty` carries a KD-15-gated, identity-authority
+// name, and it was rendered by NOTHING: the drawer showed only the provider's
+// counterparty CLASS. Three AMEX savings→checking transfers resolved to
+// "Rewards Checking" and still read "Financial institution".
+//
+// Precedence is most-specific-true-statement-first, and each branch is pinned:
+// a name when we may show one, "Another account" when KD-15 forbids the name but
+// a counterparty exists, and the provider's class only when there is no resolved
+// account at all.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const cpRow = (d: TransactionDetail): string | null => {
+  const sec = find(buildTransactionDetailSections(d), 'Transaction Intelligence');
+  return sec?.rows?.find((r) => r.label === 'Counterparty')?.value ?? null;
+};
+
+test('XFER-2: a resolved VISIBLE counterparty renders its account name', () => {
+  const v = cpRow(detail({
+    counterpartyType: 'FINANCIAL_INSTITUTION',
+    counterparty: { visible: true, accountId: 'a2', name: 'Rewards Checking' },
+  }));
+  assert.equal(v, 'Rewards Checking', 'the resolved account name must win over the provider class');
+});
+
+test('XFER-2: a resolved but NON-VISIBLE counterparty is named generically, never by name', () => {
+  const v = cpRow(detail({
+    counterpartyType: 'FINANCIAL_INSTITUTION',
+    counterparty: { visible: false },
+  }));
+  assert.equal(v, 'Another account',
+    'KD-15 forbids the name; saying nothing would imply there was no counterparty');
+});
+
+test('XFER-2: with NO resolved counterparty the provider class is preserved', () => {
+  assert.equal(
+    cpRow(detail({ counterpartyType: 'FINANCIAL_INSTITUTION', counterparty: null })),
+    'Financial institution',
+    'unchanged behaviour where the authority resolved nothing',
+  );
+  // …and a row with neither shows no counterparty row at all.
+  assert.equal(cpRow(detail({ counterpartyType: null, counterparty: null })), null);
+});
+
+test('XFER-2: the drawer never derives a counterparty name itself', () => {
+  // The name is whatever the read boundary put in the DTO — produced there by
+  // accountDisplayName, the ONE identity authority. This surface must render it
+  // verbatim so it cannot call an account something no other surface calls it.
+  const v = cpRow(detail({
+    counterpartyType: 'MERCHANT',
+    counterparty: { visible: true, accountId: 'a2', name: 'Ultimate Rewards®' },
+  }));
+  assert.equal(v, 'Ultimate Rewards®', 'rendered verbatim, never re-derived or re-formatted');
+});

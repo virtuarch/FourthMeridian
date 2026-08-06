@@ -135,7 +135,34 @@ function transactionIntelligence(d: TransactionDetail): DetailSection {
     // labelling it "Posted" would be a false claim on 2,813 live rows.
     pushIf(rows, "Posted", d.postingDate ?? d.date);
   }
-  if (d.counterpartyType) pushIf(rows, "Counterparty", humanize(d.counterpartyType));
+  // ── v2.6-XFER-2 — the RESOLVED counterparty, when there is one ────────────
+  //
+  // `d.counterpartyType` is the PROVIDER'S CLASS — "Financial institution",
+  // "Merchant". It is a real fact and it is the right answer for a purchase. It
+  // is the WRONG answer for a movement between the user's own accounts, where
+  // the transfer authority has resolved a specific owned account and the DTO is
+  // already carrying its name.
+  //
+  // That name was populated by the read and rendered by NOTHING: three AMEX
+  // savings→checking transfers resolved to "Rewards Checking" and the drawer
+  // still said "Financial institution".
+  //
+  // Precedence — most specific true statement first:
+  //   1. a resolved, VISIBLE owned account  → its name (the identity authority's)
+  //   2. a resolved but NOT-visible account → "Another account"; KD-15 forbids
+  //      the name, and saying nothing would imply there was no counterparty
+  //   3. otherwise                          → the provider's class, as before
+  //
+  // The name is never derived here. `TransactionDetail.counterparty.name` comes
+  // from `accountDisplayName` at the read boundary, so this surface and every
+  // other one call the same account by the same name.
+  if (d.counterparty?.visible && d.counterparty.name) {
+    pushIf(rows, "Counterparty", d.counterparty.name);
+  } else if (d.counterparty && !d.counterparty.visible) {
+    pushIf(rows, "Counterparty", "Another account");
+  } else if (d.counterpartyType) {
+    pushIf(rows, "Counterparty", humanize(d.counterpartyType));
+  }
   // fxApplied is only notable when true; false/null is noise.
   if (d.fxApplied === true) pushIf(rows, "Foreign exchange", "Yes");
   // tiFactsVersion intentionally omitted from the UI (debug/version integer).
