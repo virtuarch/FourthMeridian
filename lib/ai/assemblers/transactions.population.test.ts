@@ -114,8 +114,14 @@ function row(dateISO: string, amount: number, flowType: string | null, category:
   check("guard: assembler declares no local BANKING_POPULATION copy",
     !/const\s+BANKING_POPULATION\s*[:=]/.test(src),
     "two definitions under one name is worse than none — import the canonical fragment");
-  check("guard: assembler imports the canonical banking population",
-    /import\s*\{[^}]*\bBANKING_POPULATION\b[^}]*\}\s*from\s*["'][^"']*banking-population["']/.test(src));
+  // v2.6-PARITY-1 — strengthened. Importing `BANKING_POPULATION` was true while
+  // the assembler still read a population nothing else read: that fragment is the
+  // FLOW half only, and the KD-15 gate beside it was hand-spelled while the event
+  // projection was absent entirely. `bankingTransactionWhere` is the whole
+  // boundary, and consuming the half is now the regression this pins.
+  check("guard: assembler consumes the whole read boundary (bankingTransactionWhere)",
+    /import\s*\{[^}]*\bbankingTransactionWhere\b[^}]*\}\s*from\s*["'][^"']*banking-population["']/.test(src),
+    "the AI must read bankingTransactionWhere(spaceId) — gate, population and event projection");
   check("guard: money folds gate on isNonEconomicResidue (canonical predicate, not a local set)",
     /isNonEconomicResidue/.test(src));
 }

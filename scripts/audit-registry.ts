@@ -122,6 +122,12 @@ export const AUDITS: readonly AuditEntry[] = [
           "creditor group is an owned liability account",
   },
   {
+    name: "audit-ai-read-parity", tier: "REQUIRED", needsDb: true,
+    what: "the AI reads the SAME population the product does — bankingTransactionWhere windowed " +
+          "on economicDate — with no superseded observation, no gate drift, and no drilldown row " +
+          "the model can cite but no surface can show",
+  },
+  {
     name: "audit-transfer-identification", tier: "REQUIRED", needsDb: true,
     what: "the identification rung only NARROWS a qualifying candidate set, and never names an " +
           "account that contradicts a counterparty an approved repair already persisted",

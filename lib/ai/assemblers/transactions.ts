@@ -53,7 +53,7 @@
 
 import { db } from '@/lib/db';
 import { ShareStatus, TransactionCategory, FlowType } from '@prisma/client';
-import type { FlowDirection } from '@prisma/client';
+import type { FlowDirection, Prisma } from '@prisma/client';
 
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { TRANSACTION_DETAIL_VISIBILITY } from '@/lib/ai/visibility';
@@ -143,7 +143,11 @@ const BANKING_CATEGORIES: TransactionCategory[] = [
 // spreads safely. This is a deduplication, NOT the AI read-boundary convergence
 // (event projection, economic-date windowing, transfer assessments) — those
 // remain open and are tracked separately.
-import { BANKING_POPULATION } from "@/lib/data/banking-population";
+// v2.6-PARITY-1 — `bankingTransactionWhere` is now the AI's population too. The
+// bare `BANKING_POPULATION` fragment is no longer imported here: consuming the
+// half without the Space gate and the event projection is exactly how this file
+// came to read a population no other surface did.
+import { bankingTransactionWhere } from "@/lib/data/banking-population";
 
 // FlowType P5 Slice 4 (D-2) / TI1 — flows counted in expenseTotal (gross
 // Σ|amount|): SPENDING + FEE + INTEREST charges. This membership (the former
@@ -374,6 +378,110 @@ export function accumulateNeedsClassification(
 }
 
 // ---------------------------------------------------------------------------
+// The AI read boundary
+// ---------------------------------------------------------------------------
+
+/**
+ * v2.6-PARITY-1 — THE population the AI reasons over. It is the product's.
+ *
+ * ── What this used to be ────────────────────────────────────────────────────
+ *
+ * A hand-built `where` that restated the KD-15 visibility gate, spread
+ * `BANKING_POPULATION`, applied NO event projection, and filtered its window on
+ * `date` while every bucket downstream keyed on `econOf`. Four statements of
+ * rules stated canonically elsewhere, and the model reasoned over their result.
+ *
+ * ── What it is now ──────────────────────────────────────────────────────────
+ *
+ * `bankingTransactionWhere` — the same fragment the transaction list, the
+ * explorer, the count, the exports and every audit read — AND-ed with a window
+ * on `economicDate`. That single substitution closes all three axes at once:
+ * the gate is stated once, the event projection comes along with it, and the
+ * basis is the one TIME_MODEL rule B1 requires of a flow read.
+ *
+ * ⚠️ Composed with `AND`, never by spreading. `bankingTransactionWhere` carries
+ * an `AND` (population) and an `OR` (event projection); spreading it beside any
+ * other fragment that has either key silently discards one of them. That hazard
+ * is why this reads the way it does, and `transactions.parity.test.ts` pins it.
+ *
+ * ── Measured effect of the cutover (audit-ai-read-parity, live corpus) ───────
+ *
+ *   axis 1  event projection : 0 rows — no live row is superseded today, so the
+ *                              projection changes nothing. It is a GUARANTEE
+ *                              acquired, not a defect fixed.
+ *   axis 3  gate drift       : 0 rows — the two statements happened to agree.
+ *   axis 2  basis            : 2 rows / $102.71 (30d), 6 / $445.89 (90d),
+ *                              7 / $240.15 (full span). All at the window FLOOR:
+ *                              rows that posted inside the window but happened
+ *                              before it. `economicDate <= date` on all 4,405
+ *                              live rows, so the correction can only ever move
+ *                              the floor edge, never the ceiling.
+ *
+ * The AI's totals move by those floor rows and nothing else.
+ */
+export function aiTransactionWhere(
+  spaceId: string,
+  win: { start: Date; end: Date | null },
+): Prisma.TransactionWhereInput {
+  return {
+    AND: [
+      // KD-15 visibility, deletedAt on both levels, the banking population and
+      // the event projection — one statement, shared with the whole product.
+      bankingTransactionWhere(spaceId),
+      // TIME_MODEL rule B1 — a FLOW read filters on the economic date. Floor
+      // always applied; ceiling only for an explicit past-bounded window.
+      { economicDate: win.end ? { gte: win.start, lte: win.end } : { gte: win.start } },
+    ],
+  };
+}
+
+/**
+ * v2.6-PARITY-1 — the DRILLDOWN's population. Also the product's.
+ *
+ * The drilldown is the AI's EVIDENCE path: "what is this made of?" It answers by
+ * re-reading real rows, so a row it can reach that no product surface can show
+ * is a row the model can cite and the user cannot find.
+ *
+ * It carried the same three divergences as the summary query, plus one of its
+ * own: on the CATEGORY path (`categoryWhere = { category: X }`) the banking
+ * population was not applied AT ALL — only the `includeNonSpending` path applied
+ * it. So an INVESTMENT row filed under a banking category was drillable and
+ * otherwise invisible. Measured before the change: 0 such rows on the live
+ * corpus (nothing INVESTMENT-flagged carries a banking category today), so this
+ * closes a structural hole rather than a live leak.
+ *
+ * ⚠️ AND-composed, for the same reason as above: `categoryWhere` may itself BE
+ * `BANKING_POPULATION` (an `{ AND: [...] }`), and `bankingTransactionWhere`
+ * carries both an `AND` and an `OR`. Spreading any two of these into one object
+ * literal drops keys silently. That is precisely the bug shape this file used to
+ * have, and the reason the composition is explicit.
+ *
+ * `pending: false` stays — the drilldown deliberately cites settled rows only.
+ */
+export function aiDrilldownWhere(
+  spaceId: string,
+  win:     { start: Date; end: Date },
+  parts:   {
+    categoryWhere: Prisma.TransactionWhereInput;
+    amountWhere:   Prisma.TransactionWhereInput;
+    merchantQuery: string | undefined;
+  },
+): Prisma.TransactionWhereInput {
+  return {
+    AND: [
+      bankingTransactionWhere(spaceId),
+      // Rule B1 — the drilldown is a flow read; its window is economic.
+      { pending: false, economicDate: { gte: win.start, lte: win.end } },
+      parts.categoryWhere,
+      parts.amountWhere,
+      ...(parts.merchantQuery
+        ? [{ merchant: { contains: parts.merchantQuery, mode: 'insensitive' as const } }]
+        : []),
+    ],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Assembler implementation
 // ---------------------------------------------------------------------------
 
@@ -404,27 +512,7 @@ async function assembleTransactions(
   // Rows are newest-first, so any overflow drops the OLDEST rows — which would
   // silently deflate older-month totals, category/merchant rollups, and trends.
   const fetched: TxnRow[] = await db.transaction.findMany({
-    where: {
-      financialAccount: {
-        deletedAt:         null,
-        spaceAccountLinks: {
-          some: {
-            spaceId,
-            status:          ShareStatus.ACTIVE,
-            visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
-          },
-        },
-      },
-      deletedAt: null,
-      // P2-7B — canonical banking population (`not: INVESTMENT`, incl. UNKNOWN /
-      // ADJUSTMENT / null), replacing the old `flowType: { in: BANKING_FLOWS }`
-      // allow-list that silently dropped UNKNOWN/ADJUSTMENT rows the UI still
-      // shows. Economics are unchanged — the money folds gate on
-      // isNonEconomicResidue (see the settled/pending loops).
-      ...BANKING_POPULATION,
-      // Floor always applied; ceiling only for an explicit past-bounded window.
-      date:      win.end ? { gte: win.start, lte: win.end } : { gte: win.start },
-    },
+    where: aiTransactionWhere(spaceId, win),
     select: {
       // TI2-W1 — id + account key for the read-time transfer matcher (§3.3 parity).
       id:                 true,
@@ -454,7 +542,11 @@ async function assembleTransactions(
       // L8-B — the canonical financial chronology.
       economicDate:          true,
     },
-    orderBy: { date: 'desc' },
+    // v2.6-PARITY-1 / rule B1 — a flow read ORDERS on the economic date too.
+    // This is load-bearing, not cosmetic: the KD-7 sentinel below takes
+    // newest-first and drops the OLDEST rows past the cap, so ordering on
+    // posting would truncate a different set than the window admits.
+    orderBy: { economicDate: 'desc' },
     take:    TRANSACTION_FETCH_LIMIT + 1,
   });
 
@@ -1355,8 +1447,14 @@ function inclusiveDaySpan(startIso: string, endIso: string): number {
  * Explicit (D6): inclusive [startDate, endDate]. The floor is clamped so it can
  * never reach further back than MAX_EXPLICIT_WINDOW_DAYS. `days` is the
  * inclusive day count used for downstream monthly-equivalent math.
+ *
+ * ⚠️ EXPORTED for `scripts/audit-ai-read-parity.ts` only. The audit measures the
+ * AI read boundary against the UI's, and a measurement taken over a window the
+ * assembler does not actually use measures nothing. It calls this function
+ * rather than reconstructing "30 or 90 days back" — a second copy of a window is
+ * how a probe starts agreeing with itself instead of with the code.
  */
-function resolveWindow(
+export function resolveWindow(
   scopeHint:         'full' | 'brief',
   transactionWindow: AssemblerOptions['transactionWindow'],
 ): { start: Date; end: Date | null; startIso: string; endIso: string | null; days: number } {
@@ -1425,15 +1523,17 @@ async function assembleDrilldown(
 
   // Category constraint (Slice 4, D-5; P2-7B population):
   //   - a specific resolved category → exactly that category (explicit ask)
-  //   - includeNonSpending           → any banking-population row (canonical:
-  //                                     not INVESTMENT — incl. UNKNOWN/ADJUSTMENT,
-  //                                     so an explicit "show me everything" drill
-  //                                     matches the same rows the UI shows)
+  //   - includeNonSpending           → NO extra constraint: "show me everything"
+  //                                     means the whole banking population, which
+  //                                     `aiDrilldownWhere` now applies for every
+  //                                     path via `bankingTransactionWhere`
+  //                                     (v2.6-PARITY-1). This arm used to be the
+  //                                     ONLY one that applied it.
   //   - default                      → discretionary spending (flowType=SPENDING)
-  const categoryWhere = resolvedCategory
+  const categoryWhere: Prisma.TransactionWhereInput = resolvedCategory
     ? { category: resolvedCategory }
     : includeNonSpending
-      ? BANKING_POPULATION
+      ? {}
       : { flowType: FlowType.SPENDING };
 
   // Sign constraint: spending only (amount < 0) unless a non-spending category
@@ -1441,24 +1541,7 @@ async function assembleDrilldown(
   const amountWhere = includeNonSpending ? {} : { amount: { lt: 0 } };
 
   const rows = await db.transaction.findMany({
-    where: {
-      financialAccount: {
-        deletedAt:         null,
-        spaceAccountLinks: {
-          some: {
-            spaceId,
-            status:          ShareStatus.ACTIVE,
-            visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
-          },
-        },
-      },
-      deletedAt: null,
-      pending:   false,
-      date:      { gte: start, lte: end },
-      ...categoryWhere,
-      ...amountWhere,
-      ...(merchantQuery ? { merchant: { contains: merchantQuery, mode: 'insensitive' } } : {}),
-    },
+    where: aiDrilldownWhere(spaceId, { start, end }, { categoryWhere, amountWhere, merchantQuery }),
     select: {
       date:        true,
       merchant:    true,
@@ -1477,7 +1560,8 @@ async function assembleDrilldown(
       // making the identity authority structurally unable to answer.
       financialAccount: { select: ACCOUNT_NAME_SELECT },
     },
-    orderBy: { date: 'desc' },
+    // v2.6-PARITY-1 / rule B1 — same reason as the summary query above.
+    orderBy: { economicDate: 'desc' },
     // KD-7: same LIMIT+1 sentinel as the summary query so a fetch-cap hit here is
     // detected rather than silently under-reporting matchedTotal/totalCount.
     take:    TRANSACTION_FETCH_LIMIT + 1,

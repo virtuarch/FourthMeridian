@@ -548,8 +548,23 @@ check("CONVERGED: assembler declares no local BANKING_POPULATION copy",
   !/const\s+BANKING_POPULATION\s*[:=]/.test(assemblerSrc),
   "a second definition of the population under the same name is worse than none — " +
   "import it from lib/data/banking-population.ts");
-check("CONVERGED: assembler imports the canonical banking population",
-  /import\s*\{[^}]*\bBANKING_POPULATION\b[^}]*\}\s*from\s*["'][^"']*banking-population["']/.test(assemblerSrc));
+// v2.6-PARITY-1 — STRENGTHENED, for the second time and for the same reason.
+//
+// This asserted that the assembler imports `BANKING_POPULATION`. It did, and it
+// was still reading a population no other surface read: that fragment is only
+// the FLOW half. Around it the assembler hand-spelled the KD-15 visibility gate
+// and applied no event projection, so "imports the canonical fragment" was true
+// and "reads the canonical population" was false.
+//
+// `bankingTransactionWhere` is the whole boundary — gate, population, projection
+// — and importing the half is now itself the regression. Asserting the STRONGER
+// property, exactly as v2.6-POP-1 did when the literal was replaced by an import.
+check("CONVERGED: assembler consumes the whole read boundary (bankingTransactionWhere)",
+  /import\s*\{[^}]*\bbankingTransactionWhere\b[^}]*\}\s*from\s*["'][^"']*banking-population["']/.test(assemblerSrc),
+  "the AI must read bankingTransactionWhere(spaceId), not the bare population fragment");
+check("CONVERGED: assembler does not consume the population fragment WITHOUT the gate",
+  !/\bBANKING_POPULATION\b/.test(assemblerSrc.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "")),
+  "BANKING_POPULATION alone omits the KD-15 gate and the event projection");
 check("CONVERGED: money folds gate on isNonEconomicResidue (UNKNOWN/ADJUSTMENT/null admitted but not counted as money)",
   /isNonEconomicResidue/.test(assemblerSrc));
 check("CONVERGED: assembler surfaces the non-economic residue disclosure (never silently dropped)",

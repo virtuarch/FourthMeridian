@@ -97,11 +97,37 @@ const predicateUseCount = (
   source.match(/visibilityLevel: \{ in: TRANSACTION_DETAIL_VISIBILITY \}/g) ?? []
 ).length;
 
+// v2.6-PARITY-1 — the assembler no longer queries SpaceAccountLink at all: both
+// of its reads delegate to `bankingTransactionWhere`, which carries the gate for
+// the whole product.
+//
+// ⚠️ That makes the ORIGINAL form of this check — "salQueryCount > 0 and every
+// one carries the predicate" — pass vacuously the moment the gate is DELETED,
+// which is the exact failure it exists to catch. So it is split in two:
+//
+//   (a) any SAL query the assembler still writes must carry the predicate; and
+//   (b) the gate must be REACHED — by delegation, and the delegate is read here
+//       and proven to apply it, rather than trusted because of its name.
 check(
-  'every SpaceAccountLink query carries the shared predicate',
-  salQueryCount > 0 && salQueryCount === predicateUseCount,
+  'every SpaceAccountLink query in the assembler carries the shared predicate',
+  salQueryCount === predicateUseCount,
   `spaceAccountLinks queries: ${salQueryCount}, predicate uses: ${predicateUseCount} — ` +
     'a SAL query was added without the KD-1 visibility constraint',
+);
+
+const boundarySrc = readFileSync(
+  join(process.cwd(), 'lib', 'data', 'banking-population.ts'), 'utf8',
+);
+const delegates = /import\s*\{[^}]*\bbankingTransactionWhere\b[^}]*\}\s*from\s*["'][^"']*banking-population["']/
+  .test(source);
+check(
+  'the AI read is KD-1 gated — directly, or by a delegate that provably gates',
+  (salQueryCount > 0 && salQueryCount === predicateUseCount) ||
+    (delegates &&
+      /spaceAccountLinks:\s*\{\s*some:\s*\{[^}]*visibilityLevel:\s*\{\s*in:\s*TRANSACTION_DETAIL_VISIBILITY/
+        .test(boundarySrc)),
+  'the assembler neither gates its own SAL query nor delegates to a boundary that does — ' +
+    'the AI would read transactions from BALANCE_ONLY / SUMMARY_ONLY shared accounts',
 );
 
 check(

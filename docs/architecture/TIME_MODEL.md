@@ -195,14 +195,39 @@ the balance series. **That is rule B3: serve both, enumerate both.**
 | The DTO date seam documents itself | `audit-chronology-basis` INV-B3 | The `serialize.ts` comment asserted `date` was posting *twenty lines below the code setting it to economic* |
 | Economic date is stored and derivable | `audit:economic-date` | 4,456/4,456 stored === derived |
 | Reads are economic end to end | `audit:chronology` | Keyset, count/list parity, cursor agreement |
+| The AI reads the product's population, on the flow basis | `audit-ai-read-parity` INV-A1–A4 | Set equality by id and fingerprint against `bankingTransactionWhere` on an economic window |
 
-### 8.6 Known open
+### 8.6 Closed — the AI assembler (v2.6-PARITY-1)
 
-**The AI assembler mixes bases.** `lib/ai/assemblers/transactions.ts` filters its
-window on `date` (posting) and buckets into months with `econOf` (economic), so a
-row can be admitted by one basis and counted under the other. It is a different
-*shape* from B1 — a `where` filter, not an aggregate key — so INV-B1 does not
-reach it, and correcting it moves AI totals, which needs its own measured cutover.
+This section recorded `lib/ai/assemblers/transactions.ts` as mixing bases: it
+filtered its window on `date` (posting) and bucketed into months with `econOf`
+(economic), so a row could be admitted by one basis and counted under the other.
+It was one of four axes on which the AI read boundary diverged from the UI, and
+the note said it would be fixed with them, not alone. It was.
 
-Recorded here rather than silently excluded. It is one of four axes on which the
-AI read boundary diverges from the UI, and it is fixed with them, not alone.
+**What changed.** Both AI reads — the summary and the drilldown — now compose
+`bankingTransactionWhere(spaceId)` with a window on `economicDate`, and order on
+`economicDate`. One substitution closed all four axes: the KD-15 gate is stated
+once instead of twice, the event projection arrives with it, the basis satisfies
+B1, and the drilldown's category path acquired the banking population it never
+had. `lib/ai/assemblers/transactions.parity.test.ts` pins the shape;
+`scripts/audit-ai-read-parity.ts` (REQUIRED) pins the sets.
+
+**What the cutover was measured to cost**, before it was made:
+
+| Axis | Divergence | Measured |
+|---|---|---|
+| 1 | no event projection | **0 rows** — no live row is superseded; the ingest tombstone was already achieving what the projection now guarantees |
+| 3 | KD-15 gate stated twice | **0 rows** — the two statements happened to agree |
+| 2 | posting-basis window | **2 rows / $102.71** (30d), **6 / $445.89** (90d), **7 / $240.15** (full span) |
+| 4 | drilldown category path unbounded | **0 rows** — nothing INVESTMENT-flagged carries a banking category |
+
+Three of the four were latent. The correction was worth making for the
+guarantees, not because the numbers were wrong — and that is a conclusion only a
+measurement could have produced. `economicDate <= date` holds on all 4,405 live
+rows, so the basis correction can only ever move the window's **floor** edge:
+rows that posted inside the window but happened before it.
+
+**Still open on the AI boundary:** nothing on the basis axis. The remaining AI
+work (Assessment migration) is about what is *computed* from this population, not
+about which rows it contains.
