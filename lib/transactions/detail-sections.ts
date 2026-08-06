@@ -10,9 +10,11 @@
  *  - Relationship wording never overclaims: pendingPosted makes no amount claim
  *    (the DTO carries only the counterpart id), and duplicate / transferCandidate
  *    are always hedged ("possible" / "appears to match").
- *  - transferCandidate (TI4 Slice 1) renders a hedged, account-name-free note when
- *    a deterministic owned-account transfer match resolves (KD-15-gated upstream).
- *    refundCandidate remains reserved-null and is never rendered.
+ *  - transferCandidate (TI4 Slice 1) renders a hedged note when a deterministic
+ *    owned-account transfer match resolves (KD-15-gated upstream). v2.6-XFER-3 —
+ *    it NAMES the other account when the DTO carries a visible counterparty block
+ *    for that same account id, and falls back to the generic wording otherwise.
+ *    Raw ids are never rendered. refundCandidate remains reserved-null.
  *  - tiFactsVersion and raw provider ids are omitted from the UI.
  */
 
@@ -188,12 +190,51 @@ function relationshipIntelligence(d: TransactionDetail): DetailSection {
     const n = dup.transactionIds.length;
     notes.push(`Possible duplicate — appears to match ${n} other transaction${n > 1 ? "s" : ""} on ${d.date}.`);
   }
+  // ── v2.6-XFER-3 — the note names the account, when the DTO can prove it ────
+  //
   // transferCandidate (TI4 Slice 1) is non-null only when a deterministic
   // owned-account transfer match RESOLVED and passed the KD-15 visibility gate
-  // upstream. Hedged and account-name-free — the DTO carries only an id, never a
-  // name, and the match is a candidate, not an unqualified claim.
+  // upstream. The note stayed generic — "between your own accounts" — even after
+  // v2.6-XFER-2 put the resolved account's NAME two rows above it. Same defect
+  // XFER-2 closed, in a second consumer: the evidence was present and this
+  // surface declined to read it.
+  //
+  // Three conditions, all required, before a name may appear:
+  //   · the match resolved to an account id at all;
+  //   · the DTO carries a counterparty block marked VISIBLE — the KD-15 gate's
+  //     own verdict, never re-derived here;
+  //   · that block is about THE SAME ACCOUNT. `d.counterparty` prefers the
+  //     PERSISTED link, which need not be the leg this read matched; naming one
+  //     account from a block describing another is a fabrication, so the ids
+  //     must agree or the note stays generic.
+  //
+  // Direction comes from the one presentation authority (v2.6-DIR-1), so "to" vs
+  // "from" is the same verdict the Amount row's sign renders — never a second
+  // local comparison on the amount.
+  //
+  // Still hedged: "Appears to match" is a candidate claim, and naming the other
+  // side does not upgrade it to an assertion that the transfer occurred.
   if (d.relationships.transferCandidate) {
-    notes.push("Appears to match a transfer between your own accounts.");
+    const tc = d.relationships.transferCandidate;
+    const named =
+      tc.counterpartyAccountId != null &&
+      d.counterparty?.visible === true &&
+      d.counterparty.accountId === tc.counterpartyAccountId
+        ? d.counterparty.name
+        : null;
+    if (named) {
+      const direction = describeRowNature({
+        flowType:      d.flowType ?? null,
+        incomeSubtype: d.incomeSubtype ?? null,
+        transferMaturity: d.transferMaturity ?? null,
+        amount:        d.amount,
+        hasOwnedCounterparty: d.counterpartyAccountId != null,
+      }).direction;
+      const preposition = direction === "OUT" ? "to" : direction === "IN" ? "from" : "with";
+      notes.push(`Appears to match a transfer ${preposition} ${named}.`);
+    } else {
+      notes.push("Appears to match a transfer between your own accounts.");
+    }
   }
   // refundCandidate is reserved-null: never rendered.
   return { title: "Relationship Intelligence", notes };

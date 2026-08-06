@@ -114,7 +114,7 @@ test('refundCandidate / transferCandidate (null) never render a section', () => 
   assert.equal(find(buildTransactionDetailSections(detail()), 'Relationship Intelligence'), undefined);
 });
 
-test('transferCandidate renders a hedged, account-name-free note when resolved', () => {
+test('transferCandidate with no counterparty block stays generic and id-free', () => {
   const t = detail({
     relationships: {
       pendingPosted: null,
@@ -277,4 +277,91 @@ test('XFER-2: the drawer never derives a counterparty name itself', () => {
     counterparty: { visible: true, accountId: 'a2', name: 'Ultimate Rewards®' },
   }));
   assert.equal(v, 'Ultimate Rewards®', 'rendered verbatim, never re-derived or re-formatted');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2.6-XFER-3 — the relationship note names the account
+//
+// XFER-2 put the resolved name in the fact rows; the Relationship Intelligence
+// sentence beside it still read "a transfer between your own accounts" while the
+// account was named two rows above. Same defect, second consumer.
+//
+// A name may appear ONLY when the DTO proves all three: the match resolved to an
+// account, the counterparty block is VISIBLE (KD-15's own verdict), and the block
+// is about THAT account. Everything else keeps the generic wording. These probes
+// pin each condition separately, because the dangerous failure is not silence —
+// it is confidently naming the wrong account.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const resolvedTo = (acctId: string | null) => ({
+  status: 'RESOLVED', transactionId: 'leg2', counterpartyAccountId: acctId, confidence: 1,
+  reason: 'DETERMINISTIC_UNIQUE', destinationAccountType: 'checking', maturity: 'INTERNAL_TRANSFER',
+  evidenceLevel: 'ACCOUNT_CERTAIN', persistableCounterparty: true, persistableLeg: true,
+  unresolvedReason: null, admission: 'ADMITTED',
+});
+const withMatch = (over: Partial<TransactionDetail>, acctId: string | null = 'a2') => detail({
+  relationships: {
+    pendingPosted: null, duplicate: null, refundCandidate: null,
+    transferCandidate: resolvedTo(acctId), transferAssessment: resolvedTo(acctId),
+  },
+  ...over,
+} as Partial<TransactionDetail>);
+const relNote = (d: TransactionDetail): string =>
+  find(buildTransactionDetailSections(d), 'Relationship Intelligence')!.notes![0];
+
+test('XFER-3: the note names the account, and takes its direction from the sign', () => {
+  // The live AMEX case: −$500 out of High Yield Savings, matched to Rewards Checking.
+  const out = withMatch({
+    flowType: 'TRANSFER', flowDirection: 'OUTFLOW', amount: -500,
+    counterparty: { visible: true, accountId: 'a2', name: 'Rewards Checking' },
+  });
+  assert.equal(relNote(out), 'Appears to match a transfer to Rewards Checking.');
+
+  // The opposite leg reads the same fact from the other side.
+  const inbound = withMatch({
+    flowType: 'TRANSFER', flowDirection: 'INFLOW', amount: 500,
+    counterparty: { visible: true, accountId: 'a2', name: 'High Yield Savings Account' },
+  });
+  assert.equal(relNote(inbound), 'Appears to match a transfer from High Yield Savings Account.');
+
+  // Still HEDGED — naming the other side is not a claim that the transfer occurred.
+  assert.match(relNote(out), /^Appears to match/);
+});
+
+test('XFER-3: KD-15 governs the note exactly as it governs the fact row', () => {
+  const hidden = withMatch({
+    flowType: 'TRANSFER', flowDirection: 'OUTFLOW', amount: -500,
+    counterparty: { visible: false },
+  });
+  assert.equal(relNote(hidden), 'Appears to match a transfer between your own accounts.',
+    'an invisible counterparty must not be named here either');
+});
+
+test('XFER-3: a counterparty block about a DIFFERENT account never names the match', () => {
+  // `d.counterparty` prefers the PERSISTED link, which need not be the leg this
+  // read matched. Naming one account from a block describing another would be a
+  // fabrication that reads as authoritative — the note must fall back instead.
+  const mismatched = withMatch({
+    flowType: 'TRANSFER', flowDirection: 'OUTFLOW', amount: -500,
+    counterparty: { visible: true, accountId: 'SOMEONE-ELSE', name: 'Platinum Card®' },
+  });
+  assert.equal(relNote(mismatched), 'Appears to match a transfer between your own accounts.');
+  assert.ok(!/Platinum/.test(relNote(mismatched)), 'the wrong account must never be named');
+
+  // …and a match that resolved no account id at all cannot be named either.
+  const noId = withMatch({
+    flowType: 'TRANSFER', flowDirection: 'OUTFLOW', amount: -500,
+    counterparty: { visible: true, accountId: 'a2', name: 'Rewards Checking' },
+  }, null);
+  assert.equal(relNote(noId), 'Appears to match a transfer between your own accounts.');
+});
+
+test('XFER-3: the note never renders a raw id, named or generic', () => {
+  for (const d of [
+    withMatch({ flowType: 'TRANSFER', amount: -500, counterparty: { visible: true, accountId: 'a2', name: 'Rewards Checking' } }),
+    withMatch({ flowType: 'TRANSFER', amount: -500, counterparty: { visible: false } }),
+  ]) {
+    const notes = find(buildTransactionDetailSections(d), 'Relationship Intelligence')!.notes!.join(' ');
+    assert.ok(!/\ba2\b|leg2/.test(notes), `an id leaked into the note: ${notes}`);
+  }
 });
