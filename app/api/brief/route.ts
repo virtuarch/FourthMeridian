@@ -39,8 +39,11 @@ import {
   FinanceDomains,
   SignalType,
   MATERIAL_UNIDENTIFIED_INFLOW_SHARE,
-  deriveUnidentifiedInflowShare,
 } from "@/lib/ai";
+// v2.6-BRIEF-1 — THE deterministic financial assessment. The Brief no longer
+// answers "how am I doing?" itself; it reads the same authority the AI reads.
+import { computeAssessment } from "@/lib/ai/intelligence";
+import type { FinancialAssessment } from "@/lib/ai/intelligence";
 import type {
   SpaceContext_AI,
   AccountsSectionData,
@@ -233,6 +236,7 @@ function buildSinceLastVisit(
 function buildAttention(
   allSignals:  ContextSignal[],
   primaryCtx:  SpaceContext_AI,
+  assessment:  FinancialAssessment,
 ): BriefSection | null {
   const items: BriefItem[] = [];
   const acct  = accounts(primaryCtx);
@@ -313,14 +317,33 @@ function buildAttention(
     }
   }
 
-  // ── Low liquidity (primary Space accounts domain) ─────────────────────────
-  if (acct && acct.netWorth > 5000 && acct.totalLiquid >= 0 && acct.totalLiquid / acct.netWorth < 0.05) {
+  // ── Low liquidity — v2.6-BRIEF-1: the canonical verdict, not a second one ──
+  //
+  // This was `totalLiquid / netWorth < 0.05` — a BALANCE-SHEET RATIO, which is
+  // not a liquidity measure and disagreed with the authority in both directions.
+  // Someone holding $80,000 in cash against a $2M net worth was told they had a
+  // "Low cash position" while `computeAssessment` classified their coverage
+  // EXCELLENT; someone with three weeks of expenses in cash and a small net
+  // worth passed the ratio and was told nothing while the authority said
+  // CRITICAL. Liquidity is coverage — cash measured against what it has to
+  // cover — and `liquidity.classification` is where that is decided
+  // (LIQUIDITY_CRITICAL_MONTHS / LIQUIDITY_WARNING_MONTHS).
+  //
+  // UNKNOWN means the authority cannot compute coverage (no liquid accounts, or
+  // no complete calendar month in the window — which is the normal state of a
+  // 30-day brief window). The Brief then says NOTHING. Refusing is the point:
+  // the ratio rule was a way of appearing to know when the input for knowing
+  // was absent.
+  const liq = assessment.liquidity;
+  if (liq.classification === "CRITICAL" || liq.classification === "WARNING") {
     items.push({
       id:     "low_liquidity",
       label:  "Low cash position",
-      value:  fmtCurrency(acct.totalLiquid),
-      detail: "Less than 5% of net worth is liquid",
-      tone:   "warning",
+      value:  fmtCurrency(liq.liquidCashTotal),
+      ...(liq.coverageMonths !== null
+        ? { detail: `About ${liq.coverageMonths.toFixed(1)} months of expenses covered` }
+        : {}),
+      tone:   liq.classification === "CRITICAL" ? "danger" : "warning",
     });
   }
 
@@ -350,6 +373,7 @@ function buildInsight(
   allSignals:   ContextSignal[],
   primaryCtx:   SpaceContext_AI,
   advice:       { summary: string; adviceText: string } | null,
+  assessment:   FinancialAssessment,
 ): BriefSection | null {
   // Prefer cached AI advice
   if (advice?.summary) {
@@ -369,10 +393,14 @@ function buildInsight(
   const txn   = transactions(primaryCtx);
   const snap  = snapshot(primaryCtx);
 
+  // v2.6-BRIEF-1 — these three remain because the fallback still needs to know
+  // whether there is a balance sheet at all, and the net-worth figure is quoted
+  // verbatim. `cash` is gone with the cashRatio rule: the liquid total is now
+  // read from `assessment.liquidity.liquidCashTotal`, beside the coverage
+  // classification that gives it meaning.
   const netWorth    = acct?.netWorth    ?? 0;
   const totalAssets = acct?.totalAssets ?? 0;
   const totalDebt   = acct?.totalLiabilities ?? 0;
-  const cash        = acct?.totalLiquid ?? 0;
 
   // ── Signal-driven insights (highest priority) ─────────────────────────────
 
@@ -403,17 +431,25 @@ function buildInsight(
     };
   }
 
-  // Transaction picture: spending vs income
-  if (txn && txn.incomeTotal > 0) {
-    const savingsRate = txn.incomeTotal > 0
-      ? Math.round(((txn.incomeTotal - txn.expenseTotal) / txn.incomeTotal) * 100)
-      : null;
-    if (savingsRate !== null && savingsRate > 0) {
+  // ── Transaction picture: spending vs income ───────────────────────────────
+  //
+  // v2.6-BRIEF-1 — the rate itself is a window statistic the Brief may state,
+  // but ONLY when the authority says the income figure behind it is worth
+  // stating. `cashFlow.reliability` is UNRELIABLE exactly when income confidence
+  // is LOW, and this sentence is entirely a claim about income: quoting a
+  // savings rate off an income total the assessment will not stand behind is how
+  // the Brief and the AI ended up telling a user two different things about the
+  // same 30 days.
+  if (txn && txn.incomeTotal > 0 && assessment.cashFlow.reliability !== "UNRELIABLE") {
+    const savingsRate = Math.round(((txn.incomeTotal - txn.expenseTotal) / txn.incomeTotal) * 100);
+    if (savingsRate > 0) {
       // TI2-W2 — honesty caveat: when a material share of that income is
       // sign-default inflow with no resolved source, the savings rate rests on
-      // income we cannot fully identify. Same threshold as the signal escalation
-      // (MATERIAL_UNIDENTIFIED_INFLOW_SHARE) — one definition, reused.
-      const share = deriveUnidentifiedInflowShare(txn);
+      // income we cannot fully identify. Read from the assessment's own
+      // dataQuality rather than re-derived here — the route used to call
+      // deriveUnidentifiedInflowShare(txn) itself, computing a second time what
+      // computeAssessment had already computed from the same input.
+      const share = assessment.dataQuality.unidentifiedInflowShare;
       const caveat = share !== null && share >= MATERIAL_UNIDENTIFIED_INFLOW_SHARE
         ? ` Note: ${fmtCurrency(txn.needsClassification.unknownInflowTotal)} of that income has no identified source, so this rate is provisional.`
         : "";
@@ -428,25 +464,73 @@ function buildInsight(
     }
   }
 
-  // ── Rule-based fallback (mirrors previous logic) ──────────────────────────
-
+  // ── Fallback — v2.6-BRIEF-1: the authority's priority, not a second ladder ─
+  //
+  // This was four inline balance-sheet rules that competed with
+  // `computeAssessment` and lost. `debtRatio > 0.5` announced "debt makes up
+  // more than half your total assets" on a mortgage the authority classified
+  // HEALTHY (its APR is fine and liabilities are declining) — a ratio is a
+  // shape, not a verdict. `cashRatio > 0.4` told a user with two months of
+  // expenses in cash that too much was "sitting in cash" while the liquidity
+  // authority classified their coverage WARNING and wanted MORE.
+  //
+  // `currentStatePriority` is the engine's own answer to the question an insight
+  // asks — what matters most right now — computed from confidence-gated sections
+  // in a fixed order. The Brief reads it and narrates the matching section. It
+  // decides nothing.
   if (totalAssets === 0 && totalDebt === 0) return null;
 
-  let body: string;
-  const debtRatio = totalAssets > 0 ? totalDebt / totalAssets : 0;
-  const cashRatio = netWorth    > 0 ? cash      / netWorth    : 0;
+  const { debt, liquidity, cashFlow, currentStatePriority } = assessment;
 
-  if (debtRatio > 0.5) {
-    body = "Debt makes up more than half your total assets. Reducing high-interest balances can significantly improve your net position.";
-  } else if (cashRatio > 0.4) {
-    body = "A large share of your net worth is sitting in cash. Consider whether any of it could be working harder in investments or savings.";
-  } else if (netWorth > 0 && totalDebt === 0) {
-    body = "You're carrying no debt — a strong position. Make sure your cash and investment allocations are aligned with your goals.";
-  } else if (netWorth > 0) {
-    body = `Your net worth stands at ${fmtCurrency(netWorth)}. Stay consistent and check in regularly to spot trends early.`;
-  } else {
-    return null;
-  }
+  const body: string | null = (() => {
+    switch (currentStatePriority) {
+      case "DATA_QUALITY":
+        // The honest answer when the window cannot support a verdict. It replaces
+        // a net-worth platitude that was shown in precisely this state.
+        return "There isn't enough recent activity to read your cash flow with confidence yet. " +
+               "Connecting or refreshing your accounts will sharpen the picture.";
+
+      case "DEBT":
+        if (debt.classification === "CRITICAL") {
+          return `Your debt is carrying a high interest rate${debt.monthlyInterestBurden !== null
+            ? ` — about ${fmtCurrency(debt.monthlyInterestBurden)} a month in interest`
+            : ""}. Reducing the highest-rate balance first has the largest effect.`;
+        }
+        return "Some of your debt is at an elevated interest rate and worth actively managing.";
+
+      case "LIQUIDITY":
+        if (liquidity.classification === "CRITICAL" || liquidity.classification === "WARNING") {
+          return `Your cash covers about ${liquidity.coverageMonths?.toFixed(1) ?? "under one"} months of expenses. ` +
+                 "Building that buffer is the highest-value move available right now.";
+        }
+        if (liquidity.classification === "EXCELLENT") {
+          return `You have ${fmtCurrency(liquidity.liquidCashTotal)} in cash — comfortably more than ` +
+                 "your expenses require. Consider whether some of it could be working harder.";
+        }
+        // SAFE or UNKNOWN — nothing worth escalating, and nothing worth inventing.
+        return debt.classification === "NO_DEBT" && netWorth > 0
+          ? "You're carrying no debt and your cash position is sound. Keep the allocations aligned with your goals."
+          : null;
+
+      case "CASH_FLOW":
+        if (cashFlow.deficitCause === "POSSIBLE_OVERSPENDING") {
+          return "You spent more than you took in over this window, and it isn't explained by debt payoff. " +
+                 "Worth a look at where it went.";
+        }
+        if (cashFlow.deficitCause === "INTENTIONAL_DEBT_PAYOFF" || cashFlow.deficitCause === "MIXED") {
+          return "You ran a deficit this window, but it's driven by debt payments against an active payoff goal — " +
+                 "that's the plan working, not a problem.";
+        }
+        return null;
+
+      default:
+        // GOALS / GOALS_GOOD — the goals domain owns those, and the Brief has no
+        // goals section. Silence beats a manufactured sentence.
+        return null;
+    }
+  })();
+
+  if (body === null) return null;
 
   return {
     id:       "insight",
@@ -454,7 +538,7 @@ function buildInsight(
     priority: 20,
     title:    "Today's Insight",
     body,
-    tone:     "info",
+    tone:     currentStatePriority === "DEBT" || currentStatePriority === "LIQUIDITY" ? "warning" : "info",
   };
 }
 
@@ -624,10 +708,15 @@ export async function GET() {
     );
     if (sinceSection) sections.push(sinceSection);
 
-    const attentionSection = buildAttention(allSignals, primaryCtx);
+    // v2.6-BRIEF-1 — computed ONCE, from the primary Space's context, and passed
+    // to both section builders. Two calls would be two assessments of the same
+    // context, which is the duplication this slice exists to remove, in miniature.
+    const assessment = computeAssessment(primaryCtx);
+
+    const attentionSection = buildAttention(allSignals, primaryCtx, assessment);
     if (attentionSection) sections.push(attentionSection);
 
-    const insightSection = buildInsight(allSignals, primaryCtx, advice);
+    const insightSection = buildInsight(allSignals, primaryCtx, advice, assessment);
     if (insightSection) sections.push(insightSection);
   }
 

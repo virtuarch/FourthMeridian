@@ -83,6 +83,10 @@ import { resolveOwnedTransferCounterparties } from '@/lib/transactions/transfer-
 // v2.6-TRUTH-10 — the ONE account-identity authority, and the select that makes
 // it answerable. A read that omits a name column silently downgrades the answer.
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from '@/lib/accounts/display-identity';
+// v2.6-BRIEF-1 — the flow-derived spending/non-spending taxonomy. The ONE owner
+// of that membership; the brief-scope category cap reads it rather than
+// re-listing {Income, Transfer, Payment} by hand.
+import { NON_SPENDING_CATEGORY_NAMES } from '@/lib/ai/spending-categories';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
 import { convertMoney, identityContext } from '@/lib/money/convert';
 import { buildSpaceConversionContext, buildSpaceConversionContextById } from '@/lib/money/server-context';
@@ -785,8 +789,46 @@ async function assembleTransactions(
     }))
     .sort((a, b) => b.total - a.total);
 
-  // For brief scope: keep only top 5 categories (enough for a morning summary).
-  const byCategoryOutput = scopeHint === 'brief' ? byCategory.slice(0, 5) : byCategory;
+  // For brief scope: keep only the top 5 SPENDING categories (enough for a
+  // morning summary).
+  //
+  // ── v2.6-BRIEF-1: why the truncation is spending-ranked ────────────────────
+  //
+  // It was `byCategory.slice(0, 5)` over the whole list. `total` is the
+  // DEBIT-ONLY sum (KD-17 — see the comment above), so an INFLOW category has
+  // total 0, sorts LAST, and was always the first thing the slice discarded.
+  // Income is exactly such a category, and the comment above says why its entry
+  // exists at all: "its byCategory entry exists for its `count`, which
+  // lib/ai/intelligence/annotations.ts reads for incomeTransactionCount".
+  //
+  // So the condensed payload silently destroyed the one value the assessment
+  // engine reads it for. Measured on the live corpus: 11 categories → 5, Income
+  // dropped, incomeTransactionCount 8 → 0, and from that single missing row the
+  // engine concluded incomeConfidence LOW, cashFlow UNRELIABLE, deficitCause
+  // LOW_INCOME_SAMPLE and currentStatePriority DATA_QUALITY — about a Space
+  // whose income data is complete (scripts/audit-brief-assessment-parity.ts).
+  //
+  // Ranking within SPENDING categories is what the cap was ever for; a
+  // non-spending entry was never competing for a spending slot. Membership comes
+  // from the existing flow-derived authority (lib/ai/spending-categories.ts),
+  // never a hand-written {Income, Transfer, Payment} list — that copy is the
+  // thing that module was created to end.
+  //
+  // ⚠️ The result stays in the ORIGINAL debit-total-descending order. Ranking the
+  // survivors separately and concatenating would re-order the list, and
+  // `context-serializer.ts` takes `.filter(total > 0).slice(0, 8)` off the front
+  // of it — a non-spending category with real debits (Payment, Transfer) would
+  // have jumped the queue and changed which categories the model is shown. The
+  // cap is the only thing that changes here; the order is not ours to move.
+  const topSpending = new Set(
+    byCategory
+      .filter((c) => !NON_SPENDING_CATEGORY_NAMES.has(c.category))
+      .slice(0, 5)
+      .map((c) => c.category),
+  );
+  const byCategoryOutput = scopeHint === 'brief'
+    ? byCategory.filter((c) => topSpending.has(c.category) || NON_SPENDING_CATEGORY_NAMES.has(c.category))
+    : byCategory;
 
   // ── Monthly rollups (D6 — deterministic, per calendar month) ──────────────
   // Buckets are built directly from the queried rows so month-by-month answers

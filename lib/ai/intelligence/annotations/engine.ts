@@ -181,8 +181,34 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
       hasBalanceOnlyDebt:    false,
       aprGapAccountNames:    [],
     };
+  } else if (accts.accounts === undefined) {
+    // v2.6-BRIEF-1 — the per-account list was WITHHELD, not empty.
+    //
+    // `AccountsSectionData.accounts` is optional and its own doc says
+    // "omitted when scopeHint === 'brief'". This branch used to read
+    // `accts.accounts ?? []`, which collapsed WITHHELD and NONE into the same
+    // empty set — so a real liability with its account list truncated away was
+    // graded from zero debt accounts: no APR found, weighted average 0, verdict
+    // HEALTHY at HIGH confidence. Measured on a $20,000 liability
+    // (lib/ai/intelligence/brief-scope-adequacy.test.ts).
+    //
+    // That is a conclusion drawn from ABSENCE — the mirror image of the rule
+    // v2.6-DEBT-1 established for admission ("absence of contradiction is not
+    // evidence"). The engine may only grade debt it was actually shown.
+    // `totalLiabilities` is still reported: the AMOUNT is a fact the payload
+    // does carry; only the GRADE is unknowable.
+    debtSection = {
+      classification:        'INSUFFICIENT_DATA',
+      confidence:            'LOW',
+      totalLiabilities,
+      monthlyInterestBurden: null,
+      aprCompleteness:       'NONE',
+      hasNullAPR:            true,
+      hasBalanceOnlyDebt:    false,
+      aprGapAccountNames:    [],
+    };
   } else {
-    const debtAccounts = (accts.accounts ?? []).filter((a) => a.type === 'debt');
+    const debtAccounts = accts.accounts.filter((a) => a.type === 'debt');
 
     let interestBurden    = 0;
     let totalDebtWithAPR  = 0;

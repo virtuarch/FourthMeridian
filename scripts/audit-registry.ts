@@ -144,6 +144,13 @@ export const AUDITS: readonly AuditEntry[] = [
 
   // ── INFORMATIONAL — reports and investigations, never a gate ──────────────
   {
+    name: "audit-brief-assessment-parity", tier: "INFORMATIONAL", needsDb: true,
+    what: "v2.6-BRIEF-1: varies ONLY scopeHint and reports which computeAssessment " +
+          "conclusions move on the hint alone — a corpus drift count, not an invariant. " +
+          "The invariant it led to (the engine must not grade a truncated payload) is " +
+          "pinned in CI by lib/ai/intelligence/brief-scope-adequacy.test.ts",
+  },
+  {
     name: "audit-unattested-debt-payments", tier: "INFORMATIONAL", needsDb: true,
     what: "investigation: which counted debt payments rest on provider assertion rather than " +
           "structural destination evidence",
