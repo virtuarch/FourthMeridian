@@ -240,14 +240,32 @@ console.log("12. EDITORIAL REDESIGN — Hero / Balance History / Sources ledger 
   // the assessment engine dividing by different numbers. The invariant is
   // unchanged and is what is asserted now: no coverage without a resolved
   // baseline, and the divide uses what the authority returned.
+  // v2.6-ASSESS-3 — the baseline now arrives ALREADY RESOLVED from the server.
+  // The invariants are stronger than the ones these checks used to pin: coverage
+  // still refuses without a baseline, and additionally NOTHING about which figure
+  // wins — nor the measured average itself — may be computed in React.
   check("coverage is conditional on a RESOLVED baseline (no fabricated runway)",
-    CODE.includes("resolveExpenseBaseline(") &&
-    CODE.includes("baseline === null") &&
-    CODE.includes("cashNow / baseline.amount"));
+    CODE.includes("if (!expenseBaseline || cashNow <= 0) return null;") &&
+    CODE.includes("cashNow / expenseBaseline.amount"));
   check("the coverage assumption names WHICH baseline it used",
-    HERO.includes("describeExpenseBaseline") && CODE.includes("basis: baseline.basis"));
-  check("host threads the monthly-expense baseline from emergency_fund_progress config",
-    DASH.includes("emergency_fund_progress") && DASH.includes("liquidityMonthlyExpenses"));
+    HERO.includes("describeExpenseBaseline") && CODE.includes("basis:           expenseBaseline.basis"));
+
+  // The workspace RENDERS a baseline; it never decides or derives one. A
+  // `resolveExpenseBaseline` call here would mean the precedence is being applied
+  // in two places, and `computeAverageMonthlySpending` would mean the measured
+  // figure is being recomputed client-side from a population React cannot see.
+  check("the workspace neither resolves nor derives the baseline",
+    !CODE.includes("resolveExpenseBaseline(") &&
+    !CODE.includes("computeAverageMonthlySpending") &&
+    !CODE.includes("emergency_fund_progress"));
+
+  // The host FETCHES the server-resolved baseline instead of reading the config
+  // and calling it the only honest source — which is how the product came to show
+  // no coverage at all on a corpus where nobody had declared a figure.
+  check("host fetches the server-resolved baseline, lazily, and derives nothing",
+    DASH.includes("liquidity/expense-baseline") &&
+    DASH.includes("liquidityExpenseBaseline") &&
+    !DASH.includes("config?.monthlyExpenses"));
 
   // ② Balance History — the SHARED TrendChart over the cashNow series, no liquidity look-alike.
   check("Balance History renders the shared TrendChart", HISTORY.includes("TrendChart"));

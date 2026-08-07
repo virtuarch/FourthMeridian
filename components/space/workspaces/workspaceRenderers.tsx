@@ -51,7 +51,9 @@ export interface WorkspaceRenderCtx {
   perspectiveTargetCurrency?: string;
   /** The Space's monthly-expense baseline (emergency_fund_progress config), or null.
    *  Drives the Liquidity Hero's honest Coverage stat; absent ⇒ no coverage shown. */
-  liquidityMonthlyExpenses?: number | null;
+  /** v2.6-ASSESS-3 — the RESOLVED baseline (declared or measured) + its basis,
+   *  or null when neither exists. Resolved server-side; never derived here. */
+  liquidityExpenseBaseline?: import("@/lib/liquidity/expense-baseline").ExpenseBaseline | null;
 
   // Shared data (useSpaceData)
   accounts:                SpaceAccount[];
@@ -178,7 +180,7 @@ export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => Re
       ctx={ctx.widgetCtx}
       snapshots={ctx.snapshots}
       snapshotCurrency={ctx.snapshotCurrency}
-      monthlyExpenses={ctx.liquidityMonthlyExpenses}
+      expenseBaseline={ctx.liquidityExpenseBaseline}
       presentLens={ctx.lensResults?.["liquidity"] ?? null}
       transactions={ctx.transactions}
       transactionsMeta={ctx.transactionsMeta}

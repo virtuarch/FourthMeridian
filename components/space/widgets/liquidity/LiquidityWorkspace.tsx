@@ -45,7 +45,6 @@ import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { reachableNow } from "@/components/space/widgets/liquidity-adapters";
-import { resolveExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatCurrency, formatDate } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
@@ -98,7 +97,7 @@ export function LiquidityWorkspace({
   ctx,
   snapshots,
   snapshotCurrency,
-  monthlyExpenses,
+  expenseBaseline,
   presentLens,
   transactions,
   transactionsMeta,
@@ -125,7 +124,10 @@ export function LiquidityWorkspace({
   snapshotCurrency: string;
   /** The Space's monthly-expense baseline (emergency_fund_progress config), or null.
    *  Drives the honest Coverage stat; absent ⇒ no coverage shown (never fabricated). */
-  monthlyExpenses?: number | null;
+  /** v2.6-ASSESS-3 — the RESOLVED baseline + its basis, from the server. Null
+   *  when neither a declared nor a measured figure exists: the surface then shows
+   *  no coverage, exactly as before. */
+  expenseBaseline?: import("@/lib/liquidity/expense-baseline").ExpenseBaseline | null;
   /** The host's already-fetched present-day liquidity lens (lensResults["liquidity"]).
    *  Reused as `current` on the present-day branch (byte-identical, no round-trip). */
   presentLens?: LensResult | null;
@@ -225,18 +227,23 @@ export function LiquidityWorkspace({
 
   // Coverage months — honest ONLY when a monthly-expense baseline exists (never fabricated).
   //
-  // v2.6-ASSESS-2 — the baseline comes from THE authority, which owns the
-  // precedence (a declared figure outranks a measured one) and the
-  // positive-or-refuse rule that used to be spelled out inline here. This
-  // workspace holds only the DECLARED figure today, so `measured` is absent and
-  // the resolution is unchanged; putting it on the authority means the rule about
-  // what counts as a usable baseline is stated once, and the day a measured
-  // figure reaches this component it is one field, not a second policy.
+  // v2.6-ASSESS-3 — the baseline arrives ALREADY RESOLVED from the server, which
+  // ran the one authority (`lib/liquidity/expense-baseline.ts`: declared outranks
+  // measured, non-positive refuses). Nothing about which figure wins is decided
+  // here, and the measured average is never recomputed in React — this component
+  // divides and labels.
+  //
+  // Until ASSESS-3 this surface could only ever see the DECLARED figure, so on a
+  // corpus where no Space declared one it showed no coverage at all while the
+  // assessment engine graded the same position from the measured average.
   const coverage = useMemo<LiquidityCoverage | null>(() => {
-    const baseline = resolveExpenseBaseline({ declared: monthlyExpenses });
-    if (baseline === null || cashNow <= 0) return null;
-    return { months: cashNow / baseline.amount, monthlyExpenses: baseline.amount, basis: baseline.basis };
-  }, [monthlyExpenses, cashNow]);
+    if (!expenseBaseline || cashNow <= 0) return null;
+    return {
+      months:          cashNow / expenseBaseline.amount,
+      monthlyExpenses: expenseBaseline.amount,
+      basis:           expenseBaseline.basis,
+    };
+  }, [expenseBaseline, cashNow]);
 
   // Cash concentration signal (Resilience) — the top reachable-now source's share of cashNow,
   // via the SAME one-FX-pass the ledger uses (no bespoke FX here). Present-day anchor.

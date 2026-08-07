@@ -12,6 +12,7 @@
  */
 
 import React, { useState, useEffect, useMemo } from "react";
+import type { ExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import { useRouter } from "next/navigation";
 import { Loader2, LayoutDashboard, LogOut } from "lucide-react";
 import { CATEGORY_LABELS, SpaceCategory } from "@/lib/space-presets";
@@ -625,6 +626,43 @@ export function SpaceDashboard({
     return () => publishCurrencyControl(null);
   }, [publishCurrencyControl, displayCurrencyControl]);
 
+  // v2.6-ASSESS-3 — the RESOLVED monthly-expense baseline, fetched from the server
+  // when the Liquidity perspective is open.
+  //
+  // This used to read the `emergency_fund_progress` config here and call it "the
+  // ONLY honest source of a coverage multiple". It was not the only one — it was
+  // one of two, and the other (the reliable-month average) is what the assessment
+  // engine had been dividing by all along. Measured on the corpus, NO Space
+  // declared a figure, so this returned null everywhere and the Liquidity Hero
+  // showed no coverage at all while the engine graded the same position and told
+  // the AI about it.
+  //
+  // The precedence (declared outranks measured) and the positive-or-refuse rule
+  // now live in `lib/liquidity/expense-baseline.ts`, and the route resolves them
+  // server-side because the two candidate figures sit on opposite sides of this
+  // boundary: the declared one is in the section config, the measured one needs
+  // the transactions assembler. Nothing is re-derived here — the host receives an
+  // answer and its basis.
+  //
+  // Lazy, per the mount hydration doctrine: fetched only while Liquidity is the
+  // open perspective, never on every Space mount.
+  //
+  // ⚠️ Placed ABOVE the `loading` early return below. These are hooks, and this
+  // component returns a spinner before that point — putting them after it would
+  // change hook order between the loading and loaded renders.
+  const liquidityOpen = openNeeds.has("transactions") && activePerspectiveId === "liquidity";
+  const [liquidityExpenseBaseline, setLiquidityExpenseBaseline] =
+    useState<ExpenseBaseline | null>(null);
+  useEffect(() => {
+    if (!liquidityOpen) return;
+    let alive = true;
+    fetch(`/api/spaces/${spaceId}/liquidity/expense-baseline`)
+      .then((r) => (r.ok ? r.json() : { baseline: null }))
+      .then((d) => { if (alive) setLiquidityExpenseBaseline(d?.baseline ?? null); })
+      .catch(() => { if (alive) setLiquidityExpenseBaseline(null); });
+    return () => { alive = false; };
+  }, [liquidityOpen, spaceId]);
+
   // SD-7b — wait on the data load AND the initial-tab selection. The tab is now
   // picked in a follow-up effect (once `loading` flips false), so guarding on
   // `activeTab` too keeps the spinner up for that extra tick instead of flashing
@@ -747,13 +785,6 @@ export function SpaceDashboard({
   // registry's workspace ids and bound to the registry by a parity test. The host
   // no longer defines which component renders; it materializes ONE render context
   // (from useSpaceData + useSpaceNavigation + shell time + props) and dispatches.
-  // The Space's monthly-expense baseline, read from the SAME emergency_fund_progress
-  // config the Overview EF hero uses (line ~581) — the ONLY honest source of a coverage
-  // multiple. null when unset; the Liquidity Hero then shows no coverage (never faked).
-  const liquidityMonthlyExpenses = (() => {
-    const raw = Number(sections.find((s) => s.key === "emergency_fund_progress")?.config?.monthlyExpenses);
-    return !isNaN(raw) && raw > 0 ? raw : null;
-  })();
 
   const renderCtx: WorkspaceRenderCtx = {
     spaceId,
@@ -761,7 +792,7 @@ export function SpaceDashboard({
     ficoScore,
     ficoUpdatedAt,
     perspectiveTargetCurrency,
-    liquidityMonthlyExpenses,
+    liquidityExpenseBaseline,
     accounts,
     snapshots,
     snapshotsBackfilling,
