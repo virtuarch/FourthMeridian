@@ -173,8 +173,14 @@ export function LiquidityHero({
           available. Coverage is the resilience headline; it is NEVER fabricated. */}
       {(coverage || reachableSoon > 0 || sharePctNow != null) && (
         <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-[var(--text-muted)]">
+          {/* v2.6-ASSESS-4 — "Reachable cash covers", not bare "Coverage". The
+              Overview emergency-fund hero also answers in months, from a
+              DIFFERENT question: goal progress over a dedicated savings buffer.
+              Two real questions sharing one unit need labels that say which is
+              which, or the reader treats them as one figure disagreeing with
+              itself. This one is runway over money reachable right now. */}
           {coverage && (
-            <Stat label="Coverage">
+            <Stat label="Reachable cash covers">
               <span style={{ color: coverage.months >= 6 ? "var(--accent-positive)" : coverage.months >= 3 ? "#f59e0b" : "var(--accent-negative)" }}>
                 {coverage.months.toFixed(1)} months
               </span>

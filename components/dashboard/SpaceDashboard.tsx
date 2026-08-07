@@ -12,7 +12,7 @@
  */
 
 import React, { useState, useEffect, useMemo } from "react";
-import type { ExpenseBaseline } from "@/lib/liquidity/expense-baseline";
+import { describeExpenseBaseline, type ExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import { useRouter } from "next/navigation";
 import { Loader2, LayoutDashboard, LogOut } from "lucide-react";
 import { CATEGORY_LABELS, SpaceCategory } from "@/lib/space-presets";
@@ -650,18 +650,27 @@ export function SpaceDashboard({
   // ⚠️ Placed ABOVE the `loading` early return below. These are hooks, and this
   // component returns a spinner before that point — putting them after it would
   // change hook order between the loading and loaded renders.
+  //
+  // v2.6-ASSESS-4 — needed by TWO surfaces asking DIFFERENT questions: the
+  // Liquidity workspace's runway ("how long could I last on reachable cash?")
+  // and the Overview emergency-fund hero's goal progress ("how much of my
+  // target buffer have I built?"). They keep separate numerators and separate
+  // verdicts; they share only the UNIT both are denominated in, so they share
+  // only this.
   const liquidityOpen = openNeeds.has("transactions") && activePerspectiveId === "liquidity";
-  const [liquidityExpenseBaseline, setLiquidityExpenseBaseline] =
+  const efHeroNeedsBaseline = category === "EMERGENCY_FUND";
+  const needsExpenseBaseline = liquidityOpen || efHeroNeedsBaseline;
+  const [expenseBaseline, setExpenseBaseline] =
     useState<ExpenseBaseline | null>(null);
   useEffect(() => {
-    if (!liquidityOpen) return;
+    if (!needsExpenseBaseline) return;
     let alive = true;
-    fetch(`/api/spaces/${spaceId}/liquidity/expense-baseline`)
+    fetch(`/api/spaces/${spaceId}/expense-baseline`)
       .then((r) => (r.ok ? r.json() : { baseline: null }))
-      .then((d) => { if (alive) setLiquidityExpenseBaseline(d?.baseline ?? null); })
-      .catch(() => { if (alive) setLiquidityExpenseBaseline(null); });
+      .then((d) => { if (alive) setExpenseBaseline(d?.baseline ?? null); })
+      .catch(() => { if (alive) setExpenseBaseline(null); });
     return () => { alive = false; };
-  }, [liquidityOpen, spaceId]);
+  }, [needsExpenseBaseline, spaceId]);
 
   // SD-7b — wait on the data load AND the initial-tab selection. The tab is now
   // picked in a follow-up effect (once `loading` flips false), so guarding on
@@ -714,15 +723,43 @@ export function SpaceDashboard({
   // falls back to the plain savings balance.
   let heroHeadlineOverride: string | undefined;
   let heroSublineNote:      string | undefined;
-  if (heroDef && category === "EMERGENCY_FUND" && heroPoints.length > 0) {
-    const efCfg      = sections.find((s) => s.key === "emergency_fund_progress")?.config;
-    const monthlyExp = Number(efCfg?.monthlyExpenses);
-    if (!isNaN(monthlyExp) && monthlyExp > 0) {
-      const months = heroPoints[heroPoints.length - 1].value / monthlyExp;
-      heroHeadlineOverride = `${months.toFixed(1)} months covered`;
-      // MC1 QA Q4 — the config expense figure is Space-native; label follows.
-      heroSublineNote      = `at ${formatBalance(monthlyExp, effectiveDisplay)}/mo expenses`;
-    }
+  //
+  // ── v2.6-ASSESS-4: the DENOMINATOR converges, the QUESTION does not ────────
+  //
+  // This hero and the Liquidity workspace both say "months", and they are NOT
+  // asking the same thing. The emergency_fund_progress widget's own contract
+  // settles it: `requires accountTypes: ["savings"]`, tab GOALS, `targetMonths`
+  // 3/6/9/12 — "savings account balance vs. N months of expenses TARGET". This
+  // is goal progress over a DEDICATED buffer. The Liquidity workspace asks a
+  // solvency question over ALL reachable cash and grades it CRITICAL→EXCELLENT.
+  //
+  // So the numerator stays exactly what it was — this Space's SAVINGS, on the
+  // snapshot basis its own chart plots — and no verdict or threshold moves.
+  // Converging those would merge two real questions into one wrong one.
+  //
+  // What DOES converge is the unit. Both answers are denominated in "a month of
+  // my expenses", and that has to mean one amount on a Space whichever question
+  // is asking; otherwise these are not two answers, they are two currencies.
+  // The baseline is now the resolved one (DECLARED → MEASURED → refuse), the
+  // same figure the Assessment engine and the Liquidity workspace divide by.
+  //
+  // This also does what the widget always said it would: its `monthlyExpenses`
+  // hint promises the figure "will auto-populate from the monthly_expenses
+  // widget when that widget is built". The MEASURED rung is that source.
+  //
+  // Refusal is preserved: no baseline ⇒ no override, and the hero falls back to
+  // the plain savings balance exactly as before. Nothing falls back to 0 or to
+  // config-only.
+  if (heroDef && category === "EMERGENCY_FUND" && heroPoints.length > 0 && expenseBaseline) {
+    const months = heroPoints[heroPoints.length - 1].value / expenseBaseline.amount;
+    heroHeadlineOverride = `${months.toFixed(1)} months of expenses saved`;
+    // The assumption, and WHICH baseline it is. "at $X/mo expenses" alone did
+    // not say whether the figure was the user's own or a measurement — the
+    // ambiguity that let one unit mean two amounts.
+    heroSublineNote = `savings vs ${describeExpenseBaseline(
+      expenseBaseline,
+      (n) => formatBalance(n, effectiveDisplay),
+    )}`;
   }
 
   // Overview doorways. (Activity slice) — the Recent Activity preview is
@@ -792,7 +829,7 @@ export function SpaceDashboard({
     ficoScore,
     ficoUpdatedAt,
     perspectiveTargetCurrency,
-    liquidityExpenseBaseline,
+    liquidityExpenseBaseline: expenseBaseline,
     accounts,
     snapshots,
     snapshotsBackfilling,
