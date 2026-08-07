@@ -668,11 +668,50 @@ async function main() {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   type TxRow = any;
-  // L8-A — seed rows carry no authorization, so the economic date is the seeded
-  // date. Routed through the write authority (not `D(n)` twice) so a freshly
-  // seeded database satisfies the stored-equals-derived probe like any other.
-  const tx = (acct: { id: string }, n: number, merchant: string, cat: TransactionCategory, amount: number, pending = false, desc?: string): TxRow =>
-    ({ financialAccountId: acct.id, date: D(n), economicDate: economicDateFor({ postingDate: D(n), authorizedAt: null }), merchant, category: cat, amount, pending, description: desc });
+  /**
+   * v2.6-SEED-2 — CARD PURCHASES CARRY AN AUTHORIZATION DATE.
+   *
+   * Every seeded row used to pass `authorizedAt: null`, so `economicDateFor`
+   * returned the posting date and the corpus contained ZERO rows where the
+   * economic date differs from the posting date. That is not a thin corpus, it
+   * is a WRONG one: it models a world where a card is authorised and posts on
+   * the same day, always.
+   *
+   * Measured against the live account (real Plaid data, seed contributing none):
+   *
+   *     economicDate ≠ posting date : 2,822 of 4,053 rows — 70%, THE NORM
+   *
+   * So the absence made the seed less representative, not merely less thorough,
+   * and it left the entire L8-B economic-chronology cutover unexercised in CI —
+   * `audit-chronology-basis` and `audit-chronology-cutover` both pass vacuously
+   * on a corpus where the two dates can never disagree.
+   *
+   * The lag is DETERMINISTIC (derived from the row index, not random) so two
+   * seeds of the same database are byte-identical, and it is applied only to
+   * card-like spending, which is what actually carries `authorized_date` from a
+   * provider — transfers, income and fees post without a separate authorisation.
+   * The economic date is still produced by the write authority; the seed states
+   * evidence and never computes the date itself.
+   */
+  const authorizedAtFor = (n: number, cat: TransactionCategory, pending: boolean): Date | null => {
+    // Only card-like spending carries an authorisation, and a pending row has
+    // not posted yet — its authorisation IS its evidence, so it always has one.
+    const cardLike = cat === TransactionCategory.Dining || cat === TransactionCategory.Shopping ||
+                     cat === TransactionCategory.Groceries || cat === TransactionCategory.Travel;
+    if (!cardLike && !pending) return null;
+    // 1–2 days before posting, alternating deterministically by index.
+    const lagDays = (n % 2) + 1;
+    return D(n + lagDays);
+  };
+  const tx = (acct: { id: string }, n: number, merchant: string, cat: TransactionCategory, amount: number, pending = false, desc?: string): TxRow => {
+    const authorizedAt = authorizedAtFor(n, cat, pending);
+    return {
+      financialAccountId: acct.id, date: D(n),
+      economicDate: economicDateFor({ postingDate: D(n), authorizedAt }),
+      authorizedAt,
+      merchant, category: cat, amount, pending, description: desc,
+    };
+  };
   /**
    * v2.6-POP-1 — a DELIBERATELY UNCLASSIFIED row.
    *
@@ -819,7 +858,7 @@ async function seedTransactions(input: TxRow[]): Promise<void> {
   const created = await prisma.transaction.createManyAndReturn({
     data: rows,
     select: {
-      id: true, financialAccountId: true, date: true, economicDate: true,
+      id: true, financialAccountId: true, date: true, economicDate: true, authorizedAt: true,
       amount: true, pending: true, externalTransactionId: true,
     },
   });
@@ -862,7 +901,7 @@ async function seedTransactions(input: TxRow[]): Promise<void> {
       amount:             r.amount,
       postingDate:        r.date,
       economicDate:       r.economicDate,
-      authorizedAt:       null,
+      authorizedAt:       r.authorizedAt ?? null,
       transactionIsLive:  true,
       // Seeded rows are observed as they are written. Deterministic per run.
       observedAt:         new Date(),
