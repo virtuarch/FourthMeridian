@@ -66,7 +66,7 @@ export type ExplorationError =
 
 /** Generous enough for an all-time window; the boundary takes the newest N rows. */
 async function readSnapshotFor(spaceId: string, dateISO: string) {
-  const rows = await getRecentSnapshots(WINDOW_ROWS, { spaceId });
+  const rows = await getRecentSnapshots({ rows: WINDOW_ROWS }, { spaceId });
   return { row: rows.find((r) => r.date === dateISO) ?? null, rows };
 }
 
@@ -331,7 +331,7 @@ async function lensSeries(
   fromISO: string,
   toISO: string,
 ): Promise<HistoricalSeriesPoint[]> {
-  const rows = await getRecentSnapshots(WINDOW_ROWS, { spaceId });
+  const rows = await getRecentSnapshots({ rows: WINDOW_ROWS }, { spaceId });
   const currency = rows[0]?.currency ?? "USD";
   return rows
     .filter((r) => r.date >= fromISO && r.date <= toISO && r.fxMiss !== true)
@@ -356,7 +356,7 @@ async function bucketSeries(
   fromISO: string,
   toISO: string,
 ): Promise<HistoricalSeriesPoint[]> {
-  const rows = await getRecentSnapshots(WINDOW_ROWS, { spaceId });
+  const rows = await getRecentSnapshots({ rows: WINDOW_ROWS }, { spaceId });
   const currency = rows[0]?.currency ?? "USD";
   return rows
     .filter((r) => r.date >= fromISO && r.date <= toISO && r.fxMiss !== true)

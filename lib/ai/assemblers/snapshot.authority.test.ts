@@ -52,8 +52,12 @@ check(
   !/spaceSnapshot/.test(src),
 );
 check(
-  "assembler calls getRecentSnapshots scoped to the validated Space",
-  /getRecentSnapshots\(\s*SNAPSHOT_HISTORY_LIMIT\s*,\s*\{\s*spaceId\s*\}\s*\)/.test(src),
+  // v2.6-WINDOW-2 — the bound became a named object (`{ rows: N }`) so a
+  // positional number can no longer hide which unit it is. Same call, same
+  // Space scoping, same limit; the pin follows the new shape and additionally
+  // requires the bound be spelled `rows`, since that is the whole point.
+  "assembler calls getRecentSnapshots scoped to the validated Space, bounded by ROWS",
+  /getRecentSnapshots\(\s*\{\s*rows:\s*SNAPSHOT_HISTORY_LIMIT\s*\}\s*,\s*\{\s*spaceId\s*\}\s*\)/.test(src),
 );
 
 // ─── B. Behavioral pins on the pure projection ───────────────────────────────

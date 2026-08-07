@@ -71,16 +71,55 @@ async function resolveStampContext(
 }
 
 /**
- * Last N days of snapshots — used by the 30-day net-worth chart on the dashboard.
- * Returns newest-last so chart renders left→right in time order.
+ * How much history to read. A ROW bound — deliberately the only shape available.
+ *
+ * ── Why this is an object (v2.6-WINDOW-2) ───────────────────────────────────
+ *
+ * The parameter was `days = 30`, and it was used as `take: -days`: a ROW LIMIT
+ * wearing a duration's name. Every caller inherited the misnomer, and one of
+ * them — the Daily Brief — published it, telling a user "up 14.9% over the last
+ * 90 days" about a 90-ROW window while the Space said 47.4% for the same words
+ * (v2.6-WINDOW-1).
+ *
+ * A positional number cannot say which unit it is. This object can, and a bare
+ * `getRecentSnapshots(365)` no longer compiles — so the ambiguity is not fixed
+ * by everyone remembering, it is fixed by the type.
  */
-export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): Promise<Snapshot[]> {
+export interface SnapshotReadBound {
+  /**
+   * Read the newest N ROWS.
+   *
+   * ⚠️ Rows, not days — but safely so, and this is the fact that makes every
+   * current caller correct. `SpaceSnapshot` carries `@@unique([spaceId, date])`,
+   * so a Space has AT MOST one row per day. N rows therefore always span at
+   * least N−1 calendar days: a row cap is a CONSERVATIVE over-cover of the same
+   * number of days, never a silent truncation. Measured across the corpus, every
+   * Space runs at exactly 1.00 rows/day, and gaps only widen the span (Jane's
+   * Space: 366 rows over 371 calendar days).
+   *
+   * That is why the callers below are all generous caps with client-side
+   * clipping and none of them needs a date-bounded read. A surface that wants to
+   * make a CLAIM about a window must not count rows to do it — it resolves the
+   * window through `canonicalWindowChange` (lib/data/snapshot-window.ts), which
+   * is what the Brief now does.
+   */
+  rows: number;
+}
+
+/**
+ * Snapshot history for a Space, oldest-first so a chart renders left→right in
+ * time order. Bounded by ROW COUNT — see `SnapshotReadBound`.
+ */
+export async function getRecentSnapshots(
+  bound: SnapshotReadBound,
+  ctx?: { spaceId: string },
+): Promise<Snapshot[]> {
   const { spaceId } = ctx ?? (await getSpaceContext());
 
   const rows = await db.spaceSnapshot.findMany({
     where:   { spaceId },
     orderBy: { date: "asc" },
-    take:    -days, // last N rows
+    take:    -bound.rows, // the newest N rows (negative take = from the end)
   });
 
   const { target, ctx: stampCtx } = await resolveStampContext(spaceId, rows);

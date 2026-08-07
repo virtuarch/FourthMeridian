@@ -20,6 +20,15 @@ import { requireSpaceRole }          from "@/lib/session";
 import { getRecentSnapshots }        from "@/lib/data/snapshots";
 import { db }                        from "@/lib/db";
 
+/**
+ * How many trailing SpaceSnapshot ROWS the hero reads.
+ *
+ * v2.6-WINDOW-2 — a bare `365` sat here with a comment calling it "≈ a year".
+ * It was always a row cap; naming it says so at the call site instead of in a
+ * comment a reader has to find.
+ */
+const HERO_HISTORY_ROWS = 365;
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -29,9 +38,10 @@ export async function GET(
   const [, err] = await requireSpaceRole(spaceId, SpaceMemberRole.VIEWER);
   if (err) return err;
 
-  // 365 rows ≈ a year of daily snapshots — enough for every hero window;
-  // the client filters further.
-  const snapshots = await getRecentSnapshots(365, { spaceId });
+  // v2.6-WINDOW-2 — a ROW cap, stated as one. `@@unique([spaceId, date])` means
+  // at most one row per day, so 365 rows always cover at least 365 days: a
+  // conservative over-cover for every hero window, and the client filters further.
+  const snapshots = await getRecentSnapshots({ rows: HERO_HISTORY_ROWS }, { spaceId });
 
   // Part-6 — per-Space "a backfill is actively running" signal, derived from the
   // SAME PlaidItem.syncIncompleteAt truth the Connections/sync-status subsystem

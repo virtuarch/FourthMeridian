@@ -213,7 +213,7 @@ async function assembleSnapshot(
   const assembledAt = new Date().toISOString();
 
   // Canonical, stamp-aware, bounded read (newest-last, ascending by date).
-  const rows = await getRecentSnapshots(SNAPSHOT_HISTORY_LIMIT, { spaceId });
+  const rows = await getRecentSnapshots({ rows: SNAPSHOT_HISTORY_LIMIT }, { spaceId });
 
   const data = projectSnapshotSection(rows, scopeHint === 'brief' ? 'brief' : 'full');
   if (data === null) return null;

@@ -42,7 +42,7 @@ export async function getNetWorthPointDetail(
   args: NetWorthPointDetailArgs,
 ): Promise<HistoricalLensNode> {
   const { spaceId, dateISO, fromISO, toISO } = args;
-  const rows = await getRecentSnapshots(WINDOW_ROWS, { spaceId });
+  const rows = await getRecentSnapshots({ rows: WINDOW_ROWS }, { spaceId });
   const row = rows.find((r) => r.date === dateISO);
   const currency = rows[0]?.currency ?? "USD";
 

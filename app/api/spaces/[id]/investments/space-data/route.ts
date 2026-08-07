@@ -32,10 +32,15 @@ import { buildPortfolioValueSeries } from "@/lib/investments/portfolio-series";
 export const dynamic = "force-dynamic";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-// Portfolio Value Over Time — how many trailing SpaceSnapshot rows to read for the
-// series (one query, at most one row/day). Generous enough for an "All Time" view of a
-// space's history; the chart clips to the shell window client-side.
-const SERIES_DAYS = 1100;
+// Portfolio Value Over Time — how many trailing SpaceSnapshot ROWS to read for
+// the series (one query, at most one row/day — @@unique([spaceId, date])).
+// Generous enough for an "All Time" view of a space's history; the chart clips to
+// the shell window client-side.
+//
+// v2.6-WINDOW-2 — was `SERIES_DAYS`. The value and the behaviour are unchanged;
+// the name was the only thing claiming a duration, and a name that lies is how
+// the Brief ended up publishing a row count as "90 days".
+const SERIES_ROWS = 1100;
 
 export async function GET(
   req: NextRequest,
@@ -71,7 +76,7 @@ export async function GET(
   // answer moved with the provider tier.
   const [data, snaps] = await Promise.all([
     loadInvestmentsSpaceData({ spaceId }, { history: { asOf, compareTo: compareToRaw ?? null } }),
-    getRecentSnapshots(SERIES_DAYS, { spaceId }),
+    getRecentSnapshots({ rows: SERIES_ROWS }, { spaceId }),
   ]);
   const series = buildPortfolioValueSeries(snaps, data.current.reportingCurrency);
   return NextResponse.json({ ...data, series });

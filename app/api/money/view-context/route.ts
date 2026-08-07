@@ -74,9 +74,12 @@ export async function GET(req: NextRequest) {
     db.transaction.groupBy({ by: ["economicDate"], where: txWhere }),
     // Snapshot dates + the Space's stamp currency are enumerated so the chart's
     // per-point conversion resolves under the override instead of rate-missing
-    // (each historical net-worth point converts at its own date). Same 365-day
-    // window the Overview chart reads.
-    getRecentSnapshots(365, { spaceId: ctx.spaceId }),
+    // (each historical net-worth point converts at its own date).
+    //
+    // v2.6-WINDOW-2 — the same ROW cap the Overview chart reads
+    // (app/api/spaces/[id]/snapshots), so the two enumerate the same dates. The
+    // comment here used to say "365-day window"; it was 365 rows then too.
+    getRecentSnapshots({ rows: 365 }, { spaceId: ctx.spaceId }),
   ]);
 
   // Same input coverage as before — balances at the latest close, the distinct

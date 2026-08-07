@@ -147,7 +147,7 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
       reportingCurrency: positions.reportingCurrency,
     }));
 
-    const spaceSnapshots = await getRecentSnapshots(ALL_SNAPSHOTS, { spaceId });
+    const spaceSnapshots = await getRecentSnapshots({ rows: ALL_SNAPSHOTS }, { spaceId });
     for (const s of spaceSnapshots) snapshots.push({ ...s, spaceId, spaceName });
 
     // Goals belong to the Space; contributions are narrowed to FULL-visible
