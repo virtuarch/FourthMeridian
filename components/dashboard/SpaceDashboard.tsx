@@ -12,7 +12,7 @@
  */
 
 import React, { useState, useEffect, useMemo } from "react";
-import { describeExpenseBaseline, type ExpenseBaseline } from "@/lib/liquidity/expense-baseline";
+import type { ExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import { useRouter } from "next/navigation";
 import { Loader2, LayoutDashboard, LogOut } from "lucide-react";
 import { CATEGORY_LABELS, SpaceCategory } from "@/lib/space-presets";
@@ -57,7 +57,6 @@ import { getSpaceHeroDef } from "@/lib/space-hero";
 import type { Transaction } from "@/types";
 import { SectionCard } from "@/components/space/sections/SectionCard";
 import { SectionRegistry } from "@/components/space/sections/SectionRegistry";
-import { formatBalance } from "@/lib/currency";
 import type { FinancialInitialWorkspacePayload } from "@/lib/space/mount-composition";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -651,26 +650,24 @@ export function SpaceDashboard({
   // component returns a spinner before that point — putting them after it would
   // change hook order between the loading and loaded renders.
   //
-  // v2.6-ASSESS-4 — needed by TWO surfaces asking DIFFERENT questions: the
-  // Liquidity workspace's runway ("how long could I last on reachable cash?")
-  // and the Overview emergency-fund hero's goal progress ("how much of my
-  // target buffer have I built?"). They keep separate numerators and separate
-  // verdicts; they share only the UNIT both are denominated in, so they share
-  // only this.
+  // v2.6-LEGACY-1 — ONE live consumer now: the Liquidity workspace's runway
+  // ("how long could I last on reachable cash?"). The Overview emergency-fund
+  // hero was the second, and it is retired with its category — see the lede
+  // block below. The route stays Space-level rather than liquidity-scoped: the
+  // baseline is a UNIT, and the next surface to express an answer in months of
+  // expenses should read it rather than mint a second one.
   const liquidityOpen = openNeeds.has("transactions") && activePerspectiveId === "liquidity";
-  const efHeroNeedsBaseline = category === "EMERGENCY_FUND";
-  const needsExpenseBaseline = liquidityOpen || efHeroNeedsBaseline;
   const [expenseBaseline, setExpenseBaseline] =
     useState<ExpenseBaseline | null>(null);
   useEffect(() => {
-    if (!needsExpenseBaseline) return;
+    if (!liquidityOpen) return;
     let alive = true;
     fetch(`/api/spaces/${spaceId}/expense-baseline`)
       .then((r) => (r.ok ? r.json() : { baseline: null }))
       .then((d) => { if (alive) setExpenseBaseline(d?.baseline ?? null); })
       .catch(() => { if (alive) setExpenseBaseline(null); });
     return () => { alive = false; };
-  }, [needsExpenseBaseline, spaceId]);
+  }, [liquidityOpen, spaceId]);
 
   // SD-7b — wait on the data load AND the initial-tab selection. The tab is now
   // picked in a follow-up effect (once `loading` flips false), so guarding on
@@ -717,50 +714,35 @@ export function SpaceDashboard({
   const previewScopeNote =
     category === "DEBT_PAYOFF" ? `Activity on debt accounts · ${TX_SCOPE_NOTE.toLowerCase()}` : TX_SCOPE_NOTE;
 
-  // Emergency-fund lede: "how long could I last" — months covered, computed
-  // from the existing emergency_fund_progress section config. Only shown
-  // with its assumption disclosed (sublineNote); without config the hero
-  // falls back to the plain savings balance.
+  // ── v2.6-LEGACY-1: the emergency-fund lede is RETIRED ─────────────────────
+  //
+  // This rendered "N months covered" for `category === "EMERGENCY_FUND"`. That
+  // category is `hidden` in lib/space-templates/registry.ts — one of the
+  // template list's own "retired Debt Payoff / Emergency Fund / Investment /
+  // Equipment / Other". Only `family` and `custom` are `live`, so no user can
+  // create a Space this could render on, and the corpus holds zero of them.
+  //
+  // v2.6-ASSESS-5 converged this override onto the resolved expense baseline.
+  // That was polish on a removed product surface: the analysis was right about
+  // the ARCHITECTURE (different question, shared unit) and wrong about whether
+  // the surface should exist at all. The override is removed rather than left
+  // converged, because a dead surface that looks well-maintained is harder to
+  // retire than one that plainly is not.
+  //
+  // The reusable primitive is NOT lost: `SpaceGoal` already carries
+  // category=EMERGENCY_FUND with targetAmount/currentAmount/targetDate,
+  // contributions and check-ins — a live, generic goal framework this section
+  // duplicated more weakly. What that framework lacks is a target denominated in
+  // MONTHS OF EXPENSES rather than dollars, which is the one idea worth carrying
+  // forward (targetAmount = targetMonths × resolveExpenseBaseline().amount).
+  // Recorded in the after-action report, not built here: there is no consumer
+  // yet, and an authority without one is the failure this codebase already
+  // learned (TX-3).
+  //
+  // The hero itself still renders for a legacy EF Space — the plain savings
+  // balance from lib/space-hero.ts — so nothing that exists loses its headline.
   let heroHeadlineOverride: string | undefined;
   let heroSublineNote:      string | undefined;
-  //
-  // ── v2.6-ASSESS-4: the DENOMINATOR converges, the QUESTION does not ────────
-  //
-  // This hero and the Liquidity workspace both say "months", and they are NOT
-  // asking the same thing. The emergency_fund_progress widget's own contract
-  // settles it: `requires accountTypes: ["savings"]`, tab GOALS, `targetMonths`
-  // 3/6/9/12 — "savings account balance vs. N months of expenses TARGET". This
-  // is goal progress over a DEDICATED buffer. The Liquidity workspace asks a
-  // solvency question over ALL reachable cash and grades it CRITICAL→EXCELLENT.
-  //
-  // So the numerator stays exactly what it was — this Space's SAVINGS, on the
-  // snapshot basis its own chart plots — and no verdict or threshold moves.
-  // Converging those would merge two real questions into one wrong one.
-  //
-  // What DOES converge is the unit. Both answers are denominated in "a month of
-  // my expenses", and that has to mean one amount on a Space whichever question
-  // is asking; otherwise these are not two answers, they are two currencies.
-  // The baseline is now the resolved one (DECLARED → MEASURED → refuse), the
-  // same figure the Assessment engine and the Liquidity workspace divide by.
-  //
-  // This also does what the widget always said it would: its `monthlyExpenses`
-  // hint promises the figure "will auto-populate from the monthly_expenses
-  // widget when that widget is built". The MEASURED rung is that source.
-  //
-  // Refusal is preserved: no baseline ⇒ no override, and the hero falls back to
-  // the plain savings balance exactly as before. Nothing falls back to 0 or to
-  // config-only.
-  if (heroDef && category === "EMERGENCY_FUND" && heroPoints.length > 0 && expenseBaseline) {
-    const months = heroPoints[heroPoints.length - 1].value / expenseBaseline.amount;
-    heroHeadlineOverride = `${months.toFixed(1)} months of expenses saved`;
-    // The assumption, and WHICH baseline it is. "at $X/mo expenses" alone did
-    // not say whether the figure was the user's own or a measurement — the
-    // ambiguity that let one unit mean two amounts.
-    heroSublineNote = `savings vs ${describeExpenseBaseline(
-      expenseBaseline,
-      (n) => formatBalance(n, effectiveDisplay),
-    )}`;
-  }
 
   // Overview doorways. (Activity slice) — the Recent Activity preview is
   // removed from Overview: Activity is now its own rail tab. The Recent

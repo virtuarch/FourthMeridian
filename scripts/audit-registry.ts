@@ -150,6 +150,13 @@ export const AUDITS: readonly AuditEntry[] = [
 
   // ── INFORMATIONAL — reports and investigations, never a gate ──────────────
   {
+    name: "audit-emergency-fund-footprint", tier: "INFORMATIONAL", needsDb: true,
+    what: "v2.6-LEGACY-1 census: what a user can actually create (only `family` and `custom` are " +
+          "live), how many Spaces carry each category, and every remaining Emergency Fund " +
+          "reference classified CODE / SCHEMA / SEED-ONLY / TEST — the measurement that showed " +
+          "the EF surfaces are unreachable and the goal primitive already lives in SpaceGoal",
+  },
+  {
     name: "audit-ef-hero-coverage-divergence", tier: "INFORMATIONAL", needsDb: true,
     what: "v2.6-ASSESS-4 census: the Overview EF hero's numerator (a stored snapshot's SAVINGS " +
           "component) against the canonical liquidity numerator (REACHABLE checking+savings) — " +
