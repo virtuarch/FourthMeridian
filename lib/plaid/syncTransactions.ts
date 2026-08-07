@@ -136,7 +136,10 @@ import { plaidTransferEvidence } from "@/lib/transactions/plaid-transfer-evidenc
 // transfer authority or the crypto ledger.
 import { mayWriteFlow, type FlowAuthorityName } from "@/lib/transactions/flow-authority";
 import { economicDateWriteFields } from "@/lib/transactions/economic-date-write";
-import { recordTransactionObservation } from "@/lib/transactions/event-write";
+// v2.6-EVENT-1 — `reprojectEvent` beside the observation writer: a tombstone
+// changes an event's liveness just as surely as a new observation does, and both
+// must go through the one module that owns event state.
+import { recordTransactionObservation, reprojectEvent } from "@/lib/transactions/event-write";
 import {
   transferEvidenceWriteFields,
   NULL_TRANSFER_EVIDENCE_FIELDS,
@@ -762,6 +765,23 @@ export async function syncTransactionsForItem(
 
     if (removedTxns.length > 0) {
       const ids = removedTxns.map((t) => t.transaction_id);
+
+      // v2.6-EVENT-1 — the events these rows observe, read BEFORE the tombstone.
+      //
+      // Deliberately NOT filtered on `deletedAt: null`, unlike the update below.
+      // The update is guarded so a replay preserves the original removal time;
+      // this read must NOT be, because a replay is exactly when the reprojection
+      // needs to happen again — if a previous run tombstoned the row and then
+      // died before re-projecting, its event is still stale, and the guarded
+      // count would be 0 while the drift persists. Reading the wider set makes
+      // the recovery path self-healing rather than dependent on a run completing.
+      const affectedEventIds = [...new Set(
+        (await database.transaction.findMany({
+          where:  { plaidTransactionId: { in: ids }, transactionEventId: { not: null } },
+          select: { transactionEventId: true },
+        })).map((r) => r.transactionEventId).filter((x): x is string => x != null),
+      )];
+
       // Integrity hardening: SOFT-delete (tombstone) instead of physical delete.
       // Preserves the row + plaidTransactionId for forensics/recovery, so a
       // pending removed during a pending→posted transition is never lost without
@@ -774,15 +794,37 @@ export async function syncTransactionsForItem(
         data:  { deletedAt: new Date() },
       });
       removed += result.count;
+
+      // v2.6-EVENT-1 — re-derive every event whose liveness just changed.
+      //
+      // ⚠️ AFTER the tombstone, never before: `reprojectEvent` decides liveness by
+      // reading `deletedAt`, and `projectEvent` derives WITHDRAWN precisely when no
+      // observation still points at a live row. Running it first would re-write the
+      // same stale state it is meant to correct.
+      //
+      // Without this, tombstoning silently invalidated the event's stored
+      // projection: the row vanished from every read while the event kept saying
+      // PENDING about it, and `audit-event-identity`'s stored-equals-derived
+      // invariant broke. Two events drifted this way on the dev corpus before the
+      // fix — a real state, since `removed[]` fires in production too.
+      //
+      // Idempotent by construction: the projection is a pure function of the
+      // observations and the current liveness, so re-running it writes the same
+      // values. That is what lets this run unconditionally on the wider set above.
+      for (const eventId of affectedEventIds) {
+        await reprojectEvent(database, eventId);
+      }
+
       if (result.count > 0) {
         console.warn(
-          `[plaid sync] removed[] soft-deleted ${result.count} transaction(s) for item ${plaidItemDbId} — plaidTransactionIds: ${ids.join(", ")}`
+          `[plaid sync] removed[] soft-deleted ${result.count} transaction(s) for item ${plaidItemDbId} — plaidTransactionIds: ${ids.join(", ")}` +
+          (affectedEventIds.length ? ` — re-projected ${affectedEventIds.length} event(s)` : "")
         );
         // M1 — durable record of the removed[] tombstone batch for forensics.
         await recordSyncIssue({
           kind:        "REMOVED_TOMBSTONE",
           plaidItemId: plaidItemDbId,
-          detail:      { runId, count: result.count, ids },
+          detail:      { runId, count: result.count, ids, reprojectedEvents: affectedEventIds.length },
         }, database);
       }
     }
