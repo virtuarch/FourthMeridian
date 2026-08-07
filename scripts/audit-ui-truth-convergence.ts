@@ -70,9 +70,33 @@ async function main() {
     include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } } },
     orderBy: { economicDate: { sort: "desc", nulls: "last" } },
   });
+  // v2.6-BRIEF-1 — the TRANSFER AUTHORITY'S VERDICT, which this probe imported
+  // and never called.
+  //
+  // `classifyLiquidity` reads `transferMaturity`, and `isDebtPaymentAttested`
+  // (v2.6-DEBT-1) admits a row on EITHER an owned-liability counterparty OR a
+  // proven liability destination TYPE. The type-level attestation lives only in
+  // the maturity, which the live read boundary attaches in `contextFields`
+  // (lib/data/transactions.ts) via exactly this call. Without it every row here
+  // carried `transferMaturity: null`, so the probe fell back to counterparty
+  // tier alone and could not see the TYPE-attested payments at all.
+  //
+  // Measured on the live corpus at the moment this was fixed:
+  //     probe as written   94 rows  $195,442.37
+  //     the product       119 rows  $241,592.37
+  //     invisible to the gate — 25 rows, $46,150.00
+  //
+  // Every check below passed anyway, because both sides of each parity
+  // comparison were computed the same wrong way. That is the failure this file's
+  // own header warns about in another form: a probe that does not measure the
+  // live path is not evidence about the live path. Consistency is not
+  // correctness, and a REQUIRED gate that under-measures manufactures exactly
+  // the confidence it exists to earn.
+  const assessments = await resolveTransferAssessments(rawRows as never, { spaceId: space.id });
   const tx = rawRows.map((r) => ({
     ...serializeTransactionRow({ ...r, accountType: A.get(r.financialAccountId ?? "")?.type ?? null } as never),
     financialAccountId: r.financialAccountId,
+    transferMaturity:   assessments.get(r.id)?.maturity ?? null,
   })) as (Transaction & { financialAccountId: string | null; incomeSubtype?: string | null })[];
   const liqCtx = tierResolver(accounts.map((a) => ({ id: a.id, type: a.type })));
   console.log(`  rows through the canonical projection: ${tx.length}`);
