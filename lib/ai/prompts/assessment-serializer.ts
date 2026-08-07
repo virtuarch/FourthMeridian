@@ -125,7 +125,15 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
     lines.push(`  Implied monthly income: ${fmtMoney(cashFlow.impliedMonthlyIncome)}/mo${qualifier}`);
   }
   if (cashFlow.estimatedMonthlyExpenses !== null) {
-    lines.push(`  Est. monthly expenses: ${fmtMoney(cashFlow.estimatedMonthlyExpenses)}/mo`);
+    // v2.6-ASSESS-2 — say that THIS one is measured spending.
+    //
+    // Cash flow reports what the user ACTUALLY SPENT; the liquidity block reports
+    // the baseline coverage divides by, which may be the user's own declared
+    // figure instead. They are different claims and can legitimately differ — but
+    // both were printed as "Est. monthly expenses", so the moment a declared
+    // baseline existed the model saw two lines with that label and two different
+    // numbers, and nothing to tell it they were answering different questions.
+    lines.push(`  Est. monthly spending: ${fmtMoney(cashFlow.estimatedMonthlyExpenses)}/mo (measured)`);
   }
   if (cashFlow.estimatedMonthlyDebtPayments !== null) {
     lines.push(`  Est. monthly debt payments: ${fmtMoney(cashFlow.estimatedMonthlyDebtPayments)}/mo`);
@@ -179,10 +187,23 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
     }
 
     if (liquidity.estimatedMonthlyExpense !== null) {
-      const partial = dataQuality.snapshotSpanDays < SNAPSHOT_HIGH_THRESHOLD_NOTE
-        ? ' (from partial expense data)'
+      // v2.6-ASSESS-2 — say WHICH baseline this is. A declared figure is the
+      // user's own statement and an average is our inference about it; the model
+      // must not present one as the other, and "the figure you set" is a
+      // different kind of claim from "your recent average".
+      const basis =
+        liquidity.estimatedMonthlyExpenseBasis === 'DECLARED' ? ' (the figure the user set)'
+        : liquidity.estimatedMonthlyExpenseBasis === 'MEASURED' ? ' (measured — average of complete months)'
         : '';
-      lines.push(`  Est. monthly expenses: ${fmtMoney(liquidity.estimatedMonthlyExpense)}/mo${partial}`);
+      // The partial-data caveat applies only to a MEASURED figure. A declared one
+      // is not derived from the window at all, so qualifying it by our data
+      // coverage would misdescribe the user's own number.
+      const partial =
+        liquidity.estimatedMonthlyExpenseBasis === 'MEASURED' &&
+        dataQuality.snapshotSpanDays < SNAPSHOT_HIGH_THRESHOLD_NOTE
+          ? ' (from partial expense data)'
+          : '';
+      lines.push(`  Est. monthly expenses: ${fmtMoney(liquidity.estimatedMonthlyExpense)}/mo${basis}${partial}`);
     }
 
     if (liquidity.coverageMonths !== null) {

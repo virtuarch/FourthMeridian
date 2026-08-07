@@ -43,6 +43,7 @@ import { computeCapitalAllocation, computeGoalAlignment, computeInvestmentReadin
 import type { SpaceContext_AI } from '@/lib/ai/types';
 import { MATERIAL_UNIDENTIFIED_INFLOW_SHARE, deriveUnidentifiedInflowShare } from '@/lib/ai/types';
 import { amountOwed, hasOutstandingDebt } from '@/lib/debt/balance-semantics';
+import { resolveExpenseBaseline } from '@/lib/liquidity/expense-baseline';
 
 export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   const txn   = getTxnData(ctx);
@@ -348,13 +349,22 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   //
   // Dividing by zero does not yield a large number; it yields no number. Nothing
   // is known about how long this cash lasts, so the authority says so.
-  const baselineSupportsCoverage =
-    estimatedMonthlyExpense !== null && estimatedMonthlyExpense > 0;
+  // v2.6-ASSESS-2 — the baseline is chosen by THE authority, not here.
+  //
+  // The product divided by the user's DECLARED figure and this engine by the
+  // MEASURED one, so "months of expenses covered" had two answers under one set
+  // of words — and neither surface said which it had used. `resolveExpenseBaseline`
+  // owns the precedence (declared outranks measured, a non-positive figure is a
+  // refusal) and reports WHICH rung answered, so a consumer can disclose it.
+  const baseline = resolveExpenseBaseline({
+    declared: txn?.declaredMonthlyExpenses,
+    measured: estimatedMonthlyExpense,
+  });
 
-  if (liquidAccountCount === 0 || !baselineSupportsCoverage) {
+  if (liquidAccountCount === 0 || baseline === null) {
     liquidityCoverageClassification = 'UNKNOWN';
   } else {
-    const months = totalLiquid / estimatedMonthlyExpense;
+    const months = totalLiquid / baseline.amount;
     // Belt to the braces above: `totalLiquid` is summed by an assembler, and a
     // non-finite input must never become a grade. Every comparison below is `<`,
     // which NaN fails silently — so an unguarded NaN lands on 'EXCELLENT', the
@@ -388,7 +398,11 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     liquidCashTotal:         totalLiquid,
     liquidAccountCount,
     coverageMonths:          liquidityCoverageMonths,
-    estimatedMonthlyExpense,
+    // v2.6-ASSESS-2 — the figure actually divided by, and which rung supplied
+    // it. Reporting the measured figure while having divided by the declared one
+    // would be a new way to be wrong about the same number.
+    estimatedMonthlyExpense: baseline?.amount ?? estimatedMonthlyExpense,
+    estimatedMonthlyExpenseBasis: baseline?.basis ?? null,
     noLiquidAccountsInSpace,
     hasAccountsDomain,
   };

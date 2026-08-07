@@ -45,6 +45,7 @@ import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { reachableNow } from "@/components/space/widgets/liquidity-adapters";
+import { resolveExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatCurrency, formatDate } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
@@ -223,9 +224,18 @@ export function LiquidityWorkspace({
   }, [cashHistory]);
 
   // Coverage months — honest ONLY when a monthly-expense baseline exists (never fabricated).
+  //
+  // v2.6-ASSESS-2 — the baseline comes from THE authority, which owns the
+  // precedence (a declared figure outranks a measured one) and the
+  // positive-or-refuse rule that used to be spelled out inline here. This
+  // workspace holds only the DECLARED figure today, so `measured` is absent and
+  // the resolution is unchanged; putting it on the authority means the rule about
+  // what counts as a usable baseline is stated once, and the day a measured
+  // figure reaches this component it is one field, not a second policy.
   const coverage = useMemo<LiquidityCoverage | null>(() => {
-    if (monthlyExpenses == null || !(monthlyExpenses > 0) || cashNow <= 0) return null;
-    return { months: cashNow / monthlyExpenses, monthlyExpenses };
+    const baseline = resolveExpenseBaseline({ declared: monthlyExpenses });
+    if (baseline === null || cashNow <= 0) return null;
+    return { months: cashNow / baseline.amount, monthlyExpenses: baseline.amount, basis: baseline.basis };
   }, [monthlyExpenses, cashNow]);
 
   // Cash concentration signal (Resilience) — the top reachable-now source's share of cashNow,

@@ -44,8 +44,8 @@ import type {
   SpaceContext_AI, TransactionsSummaryData, AccountsSectionData,
 } from "@/lib/ai/types";
 
-function mkCtx(opts: { expenseTotal: number; totalLiquid: number; liquidCount?: number; reliableMonth?: boolean }): SpaceContext_AI {
-  const { expenseTotal, totalLiquid, liquidCount = 2, reliableMonth = true } = opts;
+function mkCtx(opts: { expenseTotal: number; totalLiquid: number; liquidCount?: number; reliableMonth?: boolean; declared?: number | null }): SpaceContext_AI {
+  const { expenseTotal, totalLiquid, liquidCount = 2, reliableMonth = true, declared = null } = opts;
   const txn = {
     windowDays: 90, startDate: "2026-04-01", endDate: "2026-06-30",
     transactionCount: 30, truncated: false, coverageStartDate: "2026-04-01", fetchLimit: 5000,
@@ -65,6 +65,7 @@ function mkCtx(opts: { expenseTotal: number; totalLiquid: number; liquidCount?: 
       ? [{ month: "2026-05", partial: false, truncated: false, expenseTotal, incomeTotal: 3000, netCashFlow: 3000 - expenseTotal, byCategory: [] }]
       : [],
     largestIncome: null, largestExpense: null,
+    declaredMonthlyExpenses: declared,
   } as unknown as TransactionsSummaryData;
 
   const accts = {
@@ -151,4 +152,43 @@ test("ASSESS-1: no reliable month still refuses, as it always did", () => {
   assert.equal(a.liquidity.estimatedMonthlyExpense, null);
   assert.equal(a.liquidity.classification, "UNKNOWN");
   assert.equal(a.liquidity.coverageMonths, null);
+});
+
+// ── v2.6-ASSESS-2 — the baseline authority reaches the assessment ────────────
+
+test("ASSESS-2: a DECLARED baseline outranks the measured one, end to end", () => {
+  // The product divided by the declared figure and this engine by the measured
+  // one. Same Space, same cash, two coverage numbers. The engine now resolves
+  // through the same authority the product's figure is rung 1 of, so when a user
+  // has declared a baseline BOTH surfaces divide by it.
+  const a = computeAssessment(mkCtx({ expenseTotal: 6_000, totalLiquid: 12_000, declared: 4_000 }));
+
+  assert.equal(a.liquidity.estimatedMonthlyExpense, 4_000, "the declared figure won");
+  assert.equal(a.liquidity.estimatedMonthlyExpenseBasis, "DECLARED");
+  assert.equal(a.liquidity.coverageMonths, 3);          // 12,000 / 4,000
+  // Measured would have been 6,000 ⇒ 2.0 months ⇒ WARNING. The basis changes the
+  // verdict, which is exactly why it has to be stated rather than assumed.
+  assert.equal(a.liquidity.classification, "SAFE");
+});
+
+test("ASSESS-2: with nothing declared the measured average answers, and says so", () => {
+  const a = computeAssessment(mkCtx({ expenseTotal: 6_000, totalLiquid: 12_000 }));
+  assert.equal(a.liquidity.estimatedMonthlyExpense, 6_000);
+  assert.equal(a.liquidity.estimatedMonthlyExpenseBasis, "MEASURED");
+  assert.equal(a.liquidity.coverageMonths, 2);
+  assert.equal(a.liquidity.classification, "WARNING");
+});
+
+test("ASSESS-2: a declared baseline rescues a Space the measurement refused", () => {
+  // The ASSESS-1 case: reliable months with no spending ⇒ a $0 measurement ⇒
+  // refusal. A user who has told us their expenses gives the authority a rung to
+  // stand on, and coverage becomes computable without any fabrication.
+  const refused = computeAssessment(mkCtx({ expenseTotal: 0, totalLiquid: 12_000 }));
+  assert.equal(refused.liquidity.classification, "UNKNOWN");
+  assert.equal(refused.liquidity.estimatedMonthlyExpenseBasis, null);
+
+  const rescued = computeAssessment(mkCtx({ expenseTotal: 0, totalLiquid: 12_000, declared: 3_000 }));
+  assert.equal(rescued.liquidity.estimatedMonthlyExpenseBasis, "DECLARED");
+  assert.equal(rescued.liquidity.coverageMonths, 4);
+  assert.equal(rescued.liquidity.classification, "SAFE");
 });

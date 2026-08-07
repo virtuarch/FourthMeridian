@@ -28,6 +28,7 @@
 
 import type { ReactNode } from "react";
 import { formatCurrency, formatDate } from "@/lib/format";
+import { describeExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { Figure } from "@/components/atlas/Surface";
 import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
@@ -49,6 +50,12 @@ export interface LiquidityCoverage {
   months: number;
   /** The Space-native monthly expense figure (for the disclosed assumption). */
   monthlyExpenses: number;
+  /**
+   * v2.6-ASSESS-2 — WHICH baseline this is: the user's DECLARED figure or a
+   * MEASURED average. A coverage multiple that does not say what it assumed is
+   * how one judgment ended up with two answers.
+   */
+  basis: import("@/lib/liquidity/expense-baseline").ExpenseBaselineBasis;
 }
 
 export function LiquidityHero({
@@ -171,7 +178,15 @@ export function LiquidityHero({
               <span style={{ color: coverage.months >= 6 ? "var(--accent-positive)" : coverage.months >= 3 ? "#f59e0b" : "var(--accent-negative)" }}>
                 {coverage.months.toFixed(1)} months
               </span>
-              <span className="text-[var(--text-faint)]"> · at {formatCurrency(coverage.monthlyExpenses, currency)}/mo</span>
+              {/* v2.6-ASSESS-2 — name the baseline. "at $4,000/mo" alone does not say
+                  whether that is the user's own figure or our average of their
+                  complete months, and those are different claims. */}
+              <span className="text-[var(--text-faint)]">
+                {" · "}{describeExpenseBaseline(
+                  { amount: coverage.monthlyExpenses, basis: coverage.basis },
+                  (n: number) => formatCurrency(n, currency),
+                )}
+              </span>
             </Stat>
           )}
           {reachableSoon > 0 && (

@@ -233,8 +233,19 @@ console.log("12. EDITORIAL REDESIGN — Hero / Balance History / Sources ledger 
     HERO.includes("Balances are current"));
 
   // TEMPORAL HONESTY — coverage is NEVER fabricated: it needs a real monthly-expense baseline.
-  check("coverage is conditional on monthlyExpenses (no fabricated runway)",
-    CODE.includes("monthlyExpenses == null") && CODE.includes("cashNow / monthlyExpenses"));
+  // v2.6-ASSESS-2 — this pinned the inline `monthlyExpenses == null` /
+  // `cashNow / monthlyExpenses` spelling. The positive-or-refuse rule now belongs
+  // to `resolveExpenseBaseline`, which also owns the precedence between a
+  // DECLARED and a MEASURED baseline — the divergence that had the product and
+  // the assessment engine dividing by different numbers. The invariant is
+  // unchanged and is what is asserted now: no coverage without a resolved
+  // baseline, and the divide uses what the authority returned.
+  check("coverage is conditional on a RESOLVED baseline (no fabricated runway)",
+    CODE.includes("resolveExpenseBaseline(") &&
+    CODE.includes("baseline === null") &&
+    CODE.includes("cashNow / baseline.amount"));
+  check("the coverage assumption names WHICH baseline it used",
+    HERO.includes("describeExpenseBaseline") && CODE.includes("basis: baseline.basis"));
   check("host threads the monthly-expense baseline from emergency_fund_progress config",
     DASH.includes("emergency_fund_progress") && DASH.includes("liquidityMonthlyExpenses"));
 

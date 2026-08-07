@@ -150,6 +150,13 @@ export const AUDITS: readonly AuditEntry[] = [
 
   // ── INFORMATIONAL — reports and investigations, never a gate ──────────────
   {
+    name: "audit-coverage-fraction-divergence", tier: "INFORMATIONAL", needsDb: true,
+    what: "v2.6-ASSESS-2 census: BOTH halves of \"months of expenses covered\" per Space — the " +
+          "reachable-vs-ledger numerators and the declared-vs-measured denominators — so a " +
+          "convergence is aimed at the half that actually moves (measured: numerators agree, " +
+          "denominators do not)",
+  },
+  {
     name: "audit-coverage-baseline-divergence", tier: "INFORMATIONAL", needsDb: true,
     what: "v2.6-ASSESS-1 census: the DECLARED monthly-expense baseline (the emergency_fund_progress " +
           "config the Liquidity workspace and the EF hero divide by) against the MEASURED one " +

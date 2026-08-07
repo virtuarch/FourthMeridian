@@ -162,6 +162,12 @@ export interface LiquiditySection {
   coverageMonths:          number | null;
   estimatedMonthlyExpense: number | null;
   /**
+   * v2.6-ASSESS-2 — which rung supplied `estimatedMonthlyExpense`: the user's
+   * DECLARED figure or the MEASURED reliable-month average. Null when coverage
+   * was refused. A surface quoting a coverage figure must say which it divided by.
+   */
+  estimatedMonthlyExpenseBasis: import('@/lib/liquidity/expense-baseline').ExpenseBaselineBasis | null;
+  /**
    * True when the accounts domain was assembled (hasAccountsDomain)
    * but no checking or savings accounts are linked to this Space.
    * Liquid assets may exist in other Spaces — the LLM must not say the

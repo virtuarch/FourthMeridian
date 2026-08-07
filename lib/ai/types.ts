@@ -829,6 +829,20 @@ export interface TransactionsSummaryData {
    * dividing a window total by a month count.
    */
   monthlyBreakdown: MonthlyBreakdownEntry[];
+  /**
+   * v2.6-ASSESS-2 — the user's DECLARED monthly expenses
+   * (`emergency_fund_progress` config), when they have set one.
+   *
+   * It sits here, beside the measured spending it competes with, deliberately:
+   * `computeAverageMonthlySpending` reads this same object, so the two candidate
+   * baselines for "months of expenses covered" are visible together and
+   * `resolveExpenseBaseline` (lib/liquidity/expense-baseline.ts) picks between
+   * them once. Undefined when the Space has no declared figure.
+   *
+   * ⚠️ Not a measurement. It is the user's own statement, and any surface
+   * quoting a coverage figure must say which of the two it divided by.
+   */
+  declaredMonthlyExpenses?: number | null;
 
   // ── Highlights ──────────────────────────────────────────────────────────
   largestIncome:  { merchant: string; amount: number; date: string } | null;

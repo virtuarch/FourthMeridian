@@ -505,6 +505,21 @@ async function assembleTransactions(
   // downstream monthly-equivalent math unchanged (only the span widens).
   const win = resolveWindow(scopeHint, transactionWindow);
 
+  // v2.6-ASSESS-2 — the DECLARED monthly-expense baseline, read from the same
+  // `emergency_fund_progress` config the Liquidity workspace and the Overview EF
+  // hero divide by. Reading it here puts both candidate baselines on one object
+  // so the authority can choose; without it the engine could only ever see the
+  // measured one, and "declared outranks measured" would be a rule with no rung.
+  const efSection = await db.spaceDashboardSection.findFirst({
+    where:  { spaceId, key: 'emergency_fund_progress' },
+    select: { config: true },
+  });
+  const rawDeclared = Number(
+    (efSection?.config as { monthlyExpenses?: unknown } | null)?.monthlyExpenses,
+  );
+  const declaredMonthlyExpenses: number | null =
+    Number.isFinite(rawDeclared) && rawDeclared > 0 ? rawDeclared : null;
+
   // ── Query ─────────────────────────────────────────────────────────────────
   // Mirrors the canonical scope in lib/data/transactions.ts: FinancialAccount
   // via an active SpaceAccountLink (D3 canonical), restricted to links granting
@@ -972,6 +987,13 @@ async function assembleTransactions(
     byCategory: byCategoryOutput,
 
     monthlyBreakdown,
+
+    // v2.6-ASSESS-2 — the user's DECLARED monthly-expense figure, carried beside
+    // the measured spending it competes with. `computeAverageMonthlySpending`
+    // reads this same object, so `resolveExpenseBaseline` can see both candidate
+    // baselines at once and pick between them ONCE, instead of the product
+    // dividing by one and the assessment engine by the other.
+    declaredMonthlyExpenses,
 
     // P2-7C — serialize the amount already converted into the reporting currency
     // (largestIncomeAmt / largestExpenseAmt, the same target units used to SELECT
