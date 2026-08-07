@@ -274,8 +274,52 @@ function assertNonProductionSeed(): void {
   }
 }
 
+/**
+ * v2.6-SEED-1 — the guard the environment check could not give us.
+ *
+ * `assertNonProductionSeed` asks WHERE we are. It cannot ask WHOSE data is here,
+ * and a local development database is exactly where a real account ends up: the
+ * working DB for this repo holds a live user with 11 linked accounts, 4,112
+ * transactions and 748 snapshots beside the demo world. The wipe below is
+ * UNSCOPED — `prisma.user.deleteMany()` with no filter — so one `npx prisma db
+ * seed` would have destroyed that account, and nothing in the environment check
+ * would have objected, because NODE_ENV was correct.
+ *
+ * So the seed now asks the only question that matters: is every user in this
+ * database one I am entitled to delete? Any unrecognised email stops the run and
+ * is named, because "refuse and say who" is recoverable and "wipe and report
+ * success" is not.
+ *
+ * SEED_ALLOW_DESTRUCTIVE=1 still overrides, deliberately: a throwaway database
+ * seeded from a copy of real data is a legitimate case, and the override is the
+ * same explicit opt-in `db-guard.ts` uses for the other destructive paths.
+ */
+const DEMO_EMAILS = new Set([
+  "jane@example.com",
+  "john@example.com",
+  "alex@example.com",
+  "sysadmin@example.com",
+]);
+
+async function assertOnlyDemoUsersPresent(): Promise<void> {
+  if (process.env.SEED_ALLOW_DESTRUCTIVE === "1") return;
+  const users = await prisma.user.findMany({ select: { email: true } });
+  const foreign = users.map((u) => u.email).filter((e) => !DEMO_EMAILS.has(e));
+  if (foreign.length === 0) return;
+  throw new Error(
+    "[seed] REFUSING TO RUN — this database contains account(s) the seed does not own:\n" +
+    foreign.map((e) => `         ${e}`).join("\n") +
+    "\n\n       prisma/seed.ts wipes EVERY table, unscoped, including User. Running it\n" +
+    "       here would delete the account(s) above and everything they own.\n\n" +
+    "       If you want a demo world, point DATABASE_URL at a throwaway database.\n" +
+    "       If you genuinely intend to destroy the data above, set\n" +
+    "       SEED_ALLOW_DESTRUCTIVE=1 explicitly.",
+  );
+}
+
 async function main() {
   assertNonProductionSeed();
+  await assertOnlyDemoUsersPresent();
   console.log("🌱  Seeding Fourth Meridian database…");
   console.log("   ⏳ Hashing passwords (bcrypt cost 12)…");
 
@@ -364,31 +408,59 @@ async function main() {
   console.log("   ✓ Platform Spaces: 4 (Platform Ops, Security Ops, Growth & Revenue, Customer Success)");
 
   // ── Spaces (8) ──────────────────────────────────────────────────────────
+  //
+  // ── v2.6-SEED-1: the demo world models what a user can CREATE ─────────────
+  //
+  // These Spaces were HOUSEHOLD / DEBT_PAYOFF / TRIP / INVESTMENT / BUSINESS /
+  // PROPERTY. Every one of those categories is `hidden` in
+  // lib/space-templates/registry.ts — the registry's own comment calls them "the
+  // RETIRED Debt Payoff / Emergency Fund / Investment / Equipment / Other". Only
+  // `family` and `custom` are `live`. So the seed was demonstrating a product
+  // shape no user could build, and every measurement taken over it described
+  // that shape rather than the real one.
+  //
+  // ⚠️ COVERAGE IS PRESERVED, NAMES ARE NOT. The architectural states these
+  // Spaces carry — multi-member sharing, VIEWER and ADMIN roles, BALANCE_ONLY
+  // links, an account shared across Spaces, a Space with no accounts at all,
+  // every account type, every flow type — are properties of MEMBERS and
+  // ACCOUNTS, not of the category. The category only ever selected a section
+  // preset and a hero definition. So the shapes move across unchanged and the
+  // retired presets simply stop being exercised, which is the point.
+  //
+  // PERSONAL stays on the two personal Spaces: it is not user-pickable, but it
+  // IS what every real account gets on registration, so it is the live path —
+  // the working database's one real Space is PERSONAL.
   const janeSpace = await prisma.space.create({
     data: { name: "Jane's Space", type: "PERSONAL", category: "PERSONAL" },
   });
   const johnSpace = await prisma.space.create({
     data: { name: "John's Space", type: "PERSONAL", category: "PERSONAL" },
   });
+  // FAMILY — the one live SHARED template. Carries the 2-member household shape
+  // and the BALANCE_ONLY links, and is the only seeded Space that exercises the
+  // FAMILY preset (DEBT_SUMMARY_SECTION).
   const householdSpace = await prisma.space.create({
-    data: { name: "Smith-Doe Household", type: "SHARED", category: "HOUSEHOLD", isPublic: false, description: "Shared household finances for Jane & John" },
+    data: { name: "Smith-Doe Family", type: "SHARED", category: "FAMILY", isPublic: false, description: "Shared household finances for Jane & John" },
   });
+  // CUSTOM — the other live template, and the honest home for every purpose the
+  // retired categories used to name. A user building any of these today builds
+  // a Custom Space, so the demo world does too.
   const debtSpace = await prisma.space.create({
-    data: { name: "Debt Payoff Tracker", type: "SHARED", category: "DEBT_PAYOFF", isPublic: false, description: "Joint debt elimination plan" },
+    data: { name: "Debt Paydown", type: "SHARED", category: "CUSTOM", isPublic: false, description: "Joint debt elimination plan" },
   });
   const japanSpace = await prisma.space.create({
-    data: { name: "Japan Trip 2027", type: "SHARED", category: "TRIP", isPublic: false, description: "3-week Japan trip — saving $8,500 by March 2027" },
+    data: { name: "Japan Trip 2027", type: "SHARED", category: "CUSTOM", isPublic: false, description: "3-week Japan trip — saving $8,500 by March 2027" },
   });
   const investmentSpace = await prisma.space.create({
-    data: { name: "Investment Club", type: "SHARED", category: "INVESTMENT", isPublic: false, description: "John & Jane portfolio tracking — Alex as advisor" },
+    data: { name: "Investment Club", type: "SHARED", category: "CUSTOM", isPublic: false, description: "John & Jane portfolio tracking — Alex as advisor" },
   });
   const businessSpace = await prisma.space.create({
-    data: { name: "JD Freelance LLC", type: "SHARED", category: "BUSINESS", isPublic: false, description: "John's freelance business finances — Alex bookkeeping" },
+    data: { name: "JD Freelance", type: "SHARED", category: "CUSTOM", isPublic: false, description: "John's freelance finances — Alex bookkeeping" },
   });
   const propertySpace = await prisma.space.create({
-    data: { name: "Austin Home", type: "SHARED", category: "PROPERTY", isPublic: false, description: "Primary residence — 3BR/2BA, purchased April 2020" },
+    data: { name: "Austin Home", type: "SHARED", category: "CUSTOM", isPublic: false, description: "Primary residence — 3BR/2BA, purchased April 2020" },
   });
-  console.log("   ✓ Spaces: 8");
+  console.log("   ✓ Spaces: 8  (2 PERSONAL · 1 FAMILY · 5 CUSTOM — every one creatable today)");
 
   // ── Dashboard sections ───────────────────────────────────────────────────────
   async function seedSections(spaceId: string, category: string) {
@@ -410,12 +482,12 @@ async function main() {
 
   await seedSections(janeSpace.id,       SpaceCategory.PERSONAL);
   await seedSections(johnSpace.id,       SpaceCategory.PERSONAL);
-  await seedSections(householdSpace.id,  SpaceCategory.HOUSEHOLD);
-  await seedSections(debtSpace.id,       SpaceCategory.DEBT_PAYOFF);
-  await seedSections(japanSpace.id,      SpaceCategory.TRIP);
-  await seedSections(investmentSpace.id, SpaceCategory.INVESTMENT);
-  await seedSections(businessSpace.id,   SpaceCategory.BUSINESS);
-  await seedSections(propertySpace.id,   SpaceCategory.PROPERTY);
+  await seedSections(householdSpace.id,  SpaceCategory.FAMILY);
+  await seedSections(debtSpace.id,       SpaceCategory.CUSTOM);
+  await seedSections(japanSpace.id,      SpaceCategory.CUSTOM);
+  await seedSections(investmentSpace.id, SpaceCategory.CUSTOM);
+  await seedSections(businessSpace.id,   SpaceCategory.CUSTOM);
+  await seedSections(propertySpace.id,   SpaceCategory.CUSTOM);
 
   await updateSectionConfig(japanSpace.id, "trip_budget",  { targetAmount: 8500, amountSpent: 3240, currency: "USD" });
   await updateSectionConfig(japanSpace.id, "trip_savings", { targetAmount: 8500, targetDate: "2027-03-01" });

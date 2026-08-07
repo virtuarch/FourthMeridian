@@ -150,6 +150,13 @@ export const AUDITS: readonly AuditEntry[] = [
 
   // ── INFORMATIONAL — reports and investigations, never a gate ──────────────
   {
+    name: "audit-seed-coverage", tier: "INFORMATIONAL", needsDb: true,
+    what: "v2.6-SEED-1: WHICH architectural states a corpus contains — the acceptance contract " +
+          "for a reseed (every PRESENT state must survive; names may change, coverage may not " +
+          "shrink). Passing invariants prove nothing on a corpus that cannot express their " +
+          "failure mode; this measures the states that let them bite",
+  },
+  {
     name: "audit-emergency-fund-footprint", tier: "INFORMATIONAL", needsDb: true,
     what: "v2.6-LEGACY-1 census: what a user can actually create (only `family` and `custom` are " +
           "live), how many Spaces carry each category, and every remaining Emergency Fund " +
