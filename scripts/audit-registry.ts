@@ -150,6 +150,13 @@ export const AUDITS: readonly AuditEntry[] = [
 
   // ── INFORMATIONAL — reports and investigations, never a gate ──────────────
   {
+    name: "audit-ef-hero-coverage-divergence", tier: "INFORMATIONAL", needsDb: true,
+    what: "v2.6-ASSESS-4 census: the Overview EF hero's numerator (a stored snapshot's SAVINGS " +
+          "component) against the canonical liquidity numerator (REACHABLE checking+savings) — " +
+          "the measurement that showed the hero is a SECOND judgment, not a baseline divergence, " +
+          "and that converging its denominator alone would align two disagreeing answers' divisors",
+  },
+  {
     name: "audit-coverage-fraction-divergence", tier: "INFORMATIONAL", needsDb: true,
     what: "v2.6-ASSESS-2 census: BOTH halves of \"months of expenses covered\" per Space — the " +
           "reachable-vs-ledger numerators and the declared-vs-measured denominators — so a " +
