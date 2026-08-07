@@ -322,21 +322,64 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   let liquidityCoverageMonths: number | null = null;
   let liquidityCoverageClassification: LiquidityCoverageClassification;
 
-  if (liquidAccountCount === 0 || estimatedMonthlyExpense === null) {
+  // v2.6-ASSESS-1 — A ZERO BASELINE IS NOT INFINITE RUNWAY.
+  //
+  // The guard was `estimatedMonthlyExpense === null`, and `computeAverageMonthlySpending`
+  // returns null only when NO reliable month exists. A Space with reliable months
+  // and no spending in them returns 0 — a true measurement — and 0 went straight
+  // into the divide.
+  //
+  // Measured on the live corpus: 5 of 9 Spaces had liquid accounts and a $0.00
+  // measured baseline, so each was graded:
+  //
+  //     Coverage: Infinity months → EXCELLENT     [confidence: HIGH]
+  //     1. [HIGH] READY_TO_INVEST — conditions support investing
+  //
+  // and a Space with zero cash AND zero spending produced NaN, which fails every
+  // `<` comparison and therefore also fell through to EXCELLENT. The engine was
+  // manufacturing a HIGH-confidence investment recommendation out of an absence
+  // of evidence — the same error this arc removed from debt admission
+  // (v2.6-DEBT-1: "absence of contradiction is not evidence"), here producing a
+  // FINDING rather than a membership.
+  //
+  // It also serialized incoherently: `JSON.stringify(Infinity)` is `null`, so a
+  // consumer received `{ coverageMonths: null, classification: "EXCELLENT" }` —
+  // an object contradicting itself, with the null looking like an honest refusal.
+  //
+  // Dividing by zero does not yield a large number; it yields no number. Nothing
+  // is known about how long this cash lasts, so the authority says so.
+  const baselineSupportsCoverage =
+    estimatedMonthlyExpense !== null && estimatedMonthlyExpense > 0;
+
+  if (liquidAccountCount === 0 || !baselineSupportsCoverage) {
     liquidityCoverageClassification = 'UNKNOWN';
   } else {
-    liquidityCoverageMonths = Math.round((totalLiquid / estimatedMonthlyExpense) * 100) / 100;
-    liquidityCoverageClassification =
-      liquidityCoverageMonths < LIQUIDITY_CRITICAL_MONTHS  ? 'CRITICAL' :
-      liquidityCoverageMonths < LIQUIDITY_WARNING_MONTHS   ? 'WARNING'  :
-      liquidityCoverageMonths < LIQUIDITY_EXCELLENT_MONTHS ? 'SAFE'     :
-      'EXCELLENT';
+    const months = totalLiquid / estimatedMonthlyExpense;
+    // Belt to the braces above: `totalLiquid` is summed by an assembler, and a
+    // non-finite input must never become a grade. Every comparison below is `<`,
+    // which NaN fails silently — so an unguarded NaN lands on 'EXCELLENT', the
+    // most favourable verdict available, by falling through every check.
+    if (!Number.isFinite(months)) {
+      liquidityCoverageClassification = 'UNKNOWN';
+    } else {
+      liquidityCoverageMonths = Math.round(months * 100) / 100;
+      liquidityCoverageClassification =
+        liquidityCoverageMonths < LIQUIDITY_CRITICAL_MONTHS  ? 'CRITICAL' :
+        liquidityCoverageMonths < LIQUIDITY_WARNING_MONTHS   ? 'WARNING'  :
+        liquidityCoverageMonths < LIQUIDITY_EXCELLENT_MONTHS ? 'SAFE'     :
+        'EXCELLENT';
+    }
   }
 
-  // Liquidity confidence: balance data is always reliable when accounts are present.
+  // Liquidity confidence: balance data is always reliable when accounts are
+  // present — but a confidence describes the CLASSIFICATION, and there is no
+  // such thing as a HIGH-confidence UNKNOWN. The old shape reported
+  // "EXCELLENT [confidence: HIGH]" off a zero baseline; reporting
+  // "UNKNOWN [confidence: HIGH]" instead would fix the grade and keep the lie.
   const liquidityConfidence: ConfidenceLevel =
-    !hasAccountsDomain      ? 'LOW'    :
-    noLiquidAccountsInSpace ? 'MEDIUM' : // accounts present but liquid ones missing from Space
+    !hasAccountsDomain                                 ? 'LOW'    :
+    noLiquidAccountsInSpace                            ? 'MEDIUM' : // accounts present but liquid ones missing from Space
+    liquidityCoverageClassification === 'UNKNOWN'      ? 'LOW'    : // no baseline ⇒ nothing was classified
     'HIGH';
 
   const liquidity: LiquiditySection = {

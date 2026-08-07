@@ -150,6 +150,14 @@ export const AUDITS: readonly AuditEntry[] = [
 
   // ── INFORMATIONAL — reports and investigations, never a gate ──────────────
   {
+    name: "audit-coverage-baseline-divergence", tier: "INFORMATIONAL", needsDb: true,
+    what: "v2.6-ASSESS-1 census: the DECLARED monthly-expense baseline (the emergency_fund_progress " +
+          "config the Liquidity workspace and the EF hero divide by) against the MEASURED one " +
+          "(computeAverageMonthlySpending, which the assessment engine divides by) — two baselines " +
+          "for one judgment. A corpus count, not an invariant; the refusal invariant it led to is " +
+          "pinned in CI by lib/ai/intelligence/liquidity-baseline-refusal.test.ts",
+  },
+  {
     name: "audit-brief-assessment-parity", tier: "INFORMATIONAL", needsDb: true,
     what: "v2.6-BRIEF-1: varies ONLY scopeHint and reports which computeAssessment " +
           "conclusions move on the hint alone — a corpus drift count, not an invariant. " +
