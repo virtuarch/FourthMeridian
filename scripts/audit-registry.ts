@@ -133,6 +133,12 @@ export const AUDITS: readonly AuditEntry[] = [
           "account that contradicts a counterparty an approved repair already persisted",
   },
   {
+    name: "audit-snapshot-window-claims", tier: "REQUIRED", needsDb: true,
+    what: "a snapshot section's spanDays is the TRUE calendar distance between its endpoints " +
+          "(never the row count), and its canonicalChange is reproducible by the same " +
+          "compareToForPreset authority the Space launcher and the inside-Space selector use",
+  },
+  {
     name: "audit-transfer-authority", tier: "REQUIRED", needsDb: true,
     what: "the admission census balances, no leg id or account id is fabricated, and every " +
           "unresolved row carries a named limitation (ladder DISTRIBUTIONS are advisory)",

@@ -15,7 +15,7 @@
  */
 
 import { db } from "@/lib/db";
-import { compareToForPreset } from "@/lib/perspectives/time-range";
+import { type TimePreset } from "@/lib/perspectives/time-range";
 import { getSpaceContext } from "@/lib/space";
 import { buildSpaceConversionContext, resolveEffectiveSpaceConversion } from "@/lib/money/server-context";
 import { convertStampedValues } from "@/lib/snapshots/stamp-conversion";
@@ -220,48 +220,12 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
  * resolve to netWorth: 0, trend: [], asOf: null — the card renders its
  * "no history yet" state from that.
  */
-/**
- * v2.6-L4F — the canonical 1M change over a snapshot series.
- *
- * The window comes from `compareToForPreset("PAST_MONTH", asOf)` — the SAME
- * authority the inside-Space time selector uses — so "one month" means one
- * CALENDAR month here exactly as it does there. It is deliberately NOT a 30-day
- * approximation: `PAST_MONTH` is `subMonths(asOf, 1)`, and a surface that
- * labelled this "30 days" would be mislabelling a calendar-month figure.
- *
- * The opening point is the last snapshot AT OR BEFORE the compare-to date (the
- * same as-of-or-earlier rule a point-in-time read uses), so a Space without a
- * snapshot exactly on that date still gets an honest window rather than none.
- */
-function canonicalMonthChange(
-  points: { date: Date; value: number }[],
-): SpaceNetWorthSummary["change"] {
-  if (points.length === 0) return null;
-  const last = points[points.length - 1];
-  const toDate = last.date.toISOString().slice(0, 10);
-  const fromDate = compareToForPreset("PAST_MONTH", toDate, null);
-  if (fromDate == null) return null;
-
-  let opening: { date: Date; value: number } | null = null;
-  for (const p of points) {
-    if (p.date.toISOString().slice(0, 10) <= fromDate) opening = p;
-  }
-  // No point at or before the window's start: the Space's history does not
-  // reach back a month, so there is no month to compare. Refuse rather than
-  // silently comparing against the earliest point available.
-  if (opening === null) return null;
-
-  const abs = last.value - opening.value;
-  return {
-    fromDate,
-    toDate,
-    fromValue: opening.value,
-    toValue:   last.value,
-    pct:       opening.value === 0 ? null : (abs / Math.abs(opening.value)) * 100,
-    abs,
-    preset:    "PAST_MONTH",
-  };
-}
+// v2.6-WINDOW-1 — the canonical windowed change now lives in a module with no
+// `server-only` in its import graph, so an audit and the AI context layer can
+// both reach it. Re-exported here so no existing consumer moved. See that
+// module's header for what the unreachability cost.
+export { canonicalWindowChange, seriesSpanDays } from "@/lib/data/snapshot-window";
+import { canonicalWindowChange } from "@/lib/data/snapshot-window";
 
 export interface SpaceNetWorthSummary {
   netWorth: number;
@@ -289,8 +253,15 @@ export interface SpaceNetWorthSummary {
     /** (to − from) / |from| × 100. Null when `from` is 0. */
     pct: number | null;
     abs: number;
-    /** The preset this window represents. Always PAST_MONTH here. */
-    preset: "PAST_MONTH";
+    /**
+     * The preset this window represents.
+     *
+     * v2.6-WINDOW-1 — widened from the literal `"PAST_MONTH"` when
+     * `canonicalWindowChange` became the shared authority. It stays PAST_MONTH
+     * for every caller today; the field exists so a surface RENDERS the window
+     * it was given rather than assuming which one it received.
+     */
+    preset: TimePreset;
   } | null;
 }
 
@@ -361,7 +332,7 @@ export async function getSpaceNetWorthSummaries(
       currency,
       trend:    recent.map((p) => p.value),
       asOf:     latest?.date.toISOString() ?? null,
-      change:   canonicalMonthChange(points),
+      change:   canonicalWindowChange(points),
     };
   }
   return result;

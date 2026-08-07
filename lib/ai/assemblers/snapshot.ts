@@ -41,6 +41,9 @@
  */
 
 import { getRecentSnapshots } from '@/lib/data/snapshots';
+// v2.6-WINDOW-1 — imported from the PURE module, not through the server-only
+// read, so the projection below stays reachable from a probe.
+import { canonicalWindowChange, seriesSpanDays } from '@/lib/data/snapshot-window';
 
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { FinanceDomains } from '@/lib/ai/types';
@@ -58,11 +61,24 @@ import type { Snapshot } from '@/types';
 // ---------------------------------------------------------------------------
 
 /**
- * Maximum number of snapshot rows returned in the `history` array.
- * Daily snapshots → ~90 days of history. Sufficient for trend analysis and
- * compact enough not to bloat the context payload.
+ * Maximum number of snapshot ROWS returned in the `history` array.
+ *
+ * ⚠️ v2.6-WINDOW-1 — a ROW CAP, not a date range. `getRecentSnapshots` uses its
+ * `days` parameter as `take: -days`, so this is "the last 90 rows", and the
+ * comment that used to read "→ ~90 days of history" was an ASSUMPTION about
+ * snapshot cadence, not a fact about the read. On a daily contiguous corpus 90
+ * rows span 89 days; on any other cadence they span whatever they span. Nothing
+ * downstream may call this number a duration — `spanDays` is the measured one.
  */
-const SNAPSHOT_HISTORY_LIMIT = 90;
+export const SNAPSHOT_HISTORY_LIMIT = 90;
+
+/**
+ * The window every context consumer states when it reports a net-worth change.
+ *
+ * PAST_MONTH, matching the Space launcher (`getSpaceNetWorthSummaries`) and the
+ * inside-Space selector's default. One preset, three surfaces, one number.
+ */
+const CANONICAL_CHANGE_PRESET = "PAST_MONTH" as const;
 
 // ---------------------------------------------------------------------------
 // Pure projection (exported for tests)
@@ -142,8 +158,34 @@ export function projectSnapshotSection(
 
   const estimated = usable.some((r) => r.isEstimated === true);
 
+  // v2.6-WINDOW-1 — the TRUE calendar distance the points cover, and the change
+  // over a window the product DEFINES.
+  //
+  // `snapshotCount` is a ROW COUNT (`getRecentSnapshots` uses its `days`
+  // parameter as `take: -days`). Four surfaces rendered it as a number of days,
+  // which is only true when snapshots are daily AND contiguous — a property
+  // nothing enforces. `spanDays` is derived from the dates the section already
+  // carries, so the count is never again pressed into service as a duration.
+  //
+  // `canonicalChange` exists because `netWorthTrend` above is oldest→newest of
+  // whatever rows were fetched: a real number over an ACCIDENTAL window. The
+  // Daily Brief published it as "over the last 90 days" and landed on a baseline
+  // three days from the canonical one, across a $4,985 debt paydown — 14.9%
+  // where the Space said 47.4% for the same words. This is the same figure the
+  // Space launcher and the inside-Space selector show, from the same authority
+  // (`compareToForPreset`), so a consumer can state a window instead of inventing
+  // one. It is null when history does not reach back that far — a refusal, not a
+  // fallback to the earliest available point.
+  const series = points
+    .filter((p): p is typeof p & { netWorth: number } => p.netWorth !== null)
+    .map((p) => ({ date: new Date(p.date), value: p.netWorth }));
+  const spanDays = seriesSpanDays(points.map((p) => ({ date: new Date(p.date), value: 0 })));
+  const canonicalChange = canonicalWindowChange(series, CANONICAL_CHANGE_PRESET);
+
   return {
     snapshotCount:    usable.length,
+    spanDays,
+    canonicalChange,
     oldestDate:       oldest.date,
     newestDate:       latest.date,
     netWorthTrend,

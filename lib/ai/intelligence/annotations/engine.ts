@@ -104,7 +104,12 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
 
   const dataQuality: DataQualitySection = {
     transactionHistoryCompleteness,
-    snapshotSpanDays: snapshotCount,
+    // v2.6-WINDOW-1 — the MEASURED calendar span, not the row count.
+    // `snapshotSpanDays` held `snapshotCount`, and the prompt serializer renders
+    // it as "N-day history in 90-day window" — so the model was told a row count
+    // was a duration. The thresholds above deliberately keep reading
+    // `snapshotCount`: they gate on data DENSITY, which is a different question.
+    snapshotSpanDays: snap?.spanDays ?? 0,
     incomeConfidence,
     incomeTransactionCount,
     unidentifiedInflowShare,

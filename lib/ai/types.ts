@@ -1053,12 +1053,48 @@ export interface SnapshotDataPoint {
  * `latest` + trend deltas are returned.
  */
 export interface SnapshotSectionData {
+  /**
+   * How many snapshot ROWS the section covers.
+   *
+   * ⚠️ v2.6-WINDOW-1 — a COUNT, never a duration. It is the row cap applied by
+   * `getRecentSnapshots` (`take: -days`), and it equals a number of days only
+   * when snapshots are daily AND contiguous. Four surfaces rendered it as "N
+   * days" and one of them, the Daily Brief, disagreed with the Space by a factor
+   * of three for the same words. Use `spanDays` for any claim about time.
+   */
   snapshotCount:   number;
+  /**
+   * v2.6-WINDOW-1 — the TRUE calendar distance in days between `oldestDate` and
+   * `newestDate`. This is the only field that may be described as a duration.
+   */
+  spanDays:        number;
+  /**
+   * v2.6-WINDOW-1 — the net-worth change over a window the product DEFINES,
+   * resolved through `compareToForPreset` — the same authority the Space
+   * launcher and the inside-Space time selector use, so all three state one
+   * number. Null when history does not reach back that far: a refusal, never a
+   * fallback to the earliest available point.
+   *
+   * ⚠️ Prefer this over `netWorthTrend`/`netWorthTrendPct` for anything a user
+   * reads. Those span oldest→newest of whatever rows were fetched — a real
+   * number over an ACCIDENTAL window.
+   */
+  canonicalChange: {
+    fromDate:  string;
+    toDate:    string;
+    fromValue: number;
+    toValue:   number;
+    pct:       number | null;
+    abs:       number;
+    preset:    string;
+  } | null;
   oldestDate:      string | null; // YYYY-MM-DD
   newestDate:      string | null; // YYYY-MM-DD
-  /** Absolute net-worth change from oldest to newest in the window. */
+  /** Absolute net-worth change from oldest to newest in the window.
+   *  ⚠️ An ACCIDENTAL window — see `canonicalChange`. */
   netWorthTrend:   number | null; // null if fewer than 2 snapshots
-  /** Percentage change, null if oldest net worth was 0. */
+  /** Percentage change, null if oldest net worth was 0.
+   *  ⚠️ An ACCIDENTAL window — see `canonicalChange`. */
   netWorthTrendPct: number | null;
   latest:          SnapshotDataPoint | null;
   history:         SnapshotDataPoint[]; // omitted on scopeHint='brief'

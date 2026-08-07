@@ -211,9 +211,23 @@ console.log("\nPROBE 13 — Slice 3 reachable balances are undisturbed");
 console.log("\nPROBE 14/15 — one canonical 1M authority, one freshness authority");
 {
   const snap = code("lib/data/snapshots.ts");
+  // v2.6-WINDOW-1 — this pinned the literal `compareToForPreset("PAST_MONTH"` in
+  // lib/data/snapshots.ts. The authority was then generalized
+  // (`canonicalWindowChange(points, preset)`) and EXTRACTED to a module with no
+  // `server-only` in its import graph, because the AI context layer and the audit
+  // runner could not reach it where it was — so the Daily Brief derived its own
+  // "90 days" from a ROW COUNT and disagreed with the Space by a factor of three.
+  //
+  // The invariant is unchanged and is what is asserted now: ONE module resolves
+  // the window, through the shared time-range authority, defaulting to
+  // PAST_MONTH; and the Space summary CONSUMES it rather than deriving its own.
+  const win = code("lib/data/snapshot-window.ts");
   check("the Space summary resolves its window through the canonical authority",
-    snap.includes('compareToForPreset("PAST_MONTH"') &&
-    snap.includes('from "@/lib/perspectives/time-range"'));
+    /compareToForPreset\(\s*preset\b/.test(win) &&
+    /preset:\s*TimePreset\s*=\s*"PAST_MONTH"/.test(win) &&
+    win.includes('from "@/lib/perspectives/time-range"') &&
+    /canonicalWindowChange\(/.test(snap) &&
+    snap.includes('from "@/lib/data/snapshot-window"'));
   check("...and does NOT derive a month of its own",
     !/setMonth|subMonths\(|30 \* 86_?400_?000|days: 30/.test(snap));
   check("the change carries BOTH endpoints so they can be compared",

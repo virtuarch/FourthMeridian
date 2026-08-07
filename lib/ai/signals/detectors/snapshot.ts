@@ -51,13 +51,17 @@ function detectSnapshotSignals(
   // Require enough snapshots and a sufficient date span before signalling a
   // trend. Sparse histories (e.g. right after an account import) can show
   // large-percentage swings over 1-2 days that are not genuine trends.
+  //
+  // ⚠️ v2.6-WINDOW-1 — `snapshotCount` is correct HERE and only here: this is a
+  // density test ("do we have enough observations?"), not a duration. The two
+  // titles below used to render the same count as "over N days"; they now read
+  // `spanDays`, the measured calendar distance. The gate and the claim ask
+  // different questions of the same section and must not share a field.
   if (data.snapshotCount < MIN_SNAPSHOTS) return [];
 
-  if (data.oldestDate !== null && data.newestDate !== null) {
-    const spanMs   = Date.parse(data.newestDate) - Date.parse(data.oldestDate);
-    const spanDays = spanMs / 86_400_000;
-    if (spanDays < MIN_SPAN_DAYS) return [];
-  }
+  // v2.6-WINDOW-1 — the section now MEASURES its own span, so this no longer
+  // re-derives it from the endpoint dates. Same number, one owner.
+  if (data.spanDays < MIN_SPAN_DAYS) return [];
 
   if (data.netWorthTrend === null || data.netWorthTrend === 0) return [];
 
@@ -74,7 +78,7 @@ function detectSnapshotSignals(
       domain:     FinanceDomains.SNAPSHOT_HISTORY,
       spaceId,
       severity:   'info',
-      title:      `Net worth up $${abs}${pct} over ${data.snapshotCount} days`,
+      title:      `Net worth up $${abs}${pct} over ${data.spanDays} days`,
       value:      data.netWorthTrend,
       metadata: {
         trend:       data.netWorthTrend,
@@ -94,7 +98,7 @@ function detectSnapshotSignals(
     domain:     FinanceDomains.SNAPSHOT_HISTORY,
     spaceId,
     severity:   'warning',
-    title:      `Net worth down $${abs}${pct} over ${data.snapshotCount} days`,
+    title:      `Net worth down $${abs}${pct} over ${data.spanDays} days`,
     value:      data.netWorthTrend, // negative — consumers can abs() as needed
     metadata: {
       trend:       data.netWorthTrend,

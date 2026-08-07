@@ -104,7 +104,10 @@ type SpaceItem = {
    *  view uses. Null when the Space's history does not reach back a month. */
   change?: {
     fromDate: string; toDate: string; fromValue: number; toValue: number;
-    pct: number | null; abs: number; preset: "PAST_MONTH";
+    // v2.6-WINDOW-1 — widened with the authority (canonicalWindowChange is no
+    // longer month-only). Still PAST_MONTH for this card; the card renders the
+    // window it is GIVEN rather than assuming which one arrived.
+    pct: number | null; abs: number; preset: string;
   } | null;
   /** v2.6-L4F — ACCOUNT freshness (Slice 1). Null when the Space has no accounts. */
   freshness?: {

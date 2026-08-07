@@ -75,6 +75,22 @@ function fmtDelta(delta: number): string {
   return `${sign}${fmtCurrency(Math.abs(delta))}`;
 }
 
+/**
+ * v2.6-WINDOW-1 — a window's opening date, as a user reads it ("Jul 7").
+ *
+ * Parsed as UTC (the `T00:00:00Z` suffix) because `canonicalChange.fromDate` is
+ * a plain YYYY-MM-DD from the canonical window authority. `new Date("2026-07-07")`
+ * is already UTC-midnight, but formatting it without an explicit timeZone renders
+ * it in the server's local zone — which shows "Jul 6" anywhere west of UTC. A
+ * date that shifts by one day depending on where the server runs is exactly the
+ * class of quiet wrongness this slice exists to remove.
+ */
+function fmtDay(isoDate: string): string {
+  return new Date(`${isoDate}T00:00:00Z`).toLocaleDateString("en-US", {
+    month: "short", day: "numeric", timeZone: "UTC",
+  });
+}
+
 // ── Visit state helpers (unchanged) ───────────────────────────────────────────
 
 function visitState(lastViewedAt: Date | null, hasData: boolean): VisitState {
@@ -171,14 +187,28 @@ function buildSinceLastVisit(
   const items: BriefItem[] = [];
   const netWorth = acct.netWorth;
 
-  // Net worth — with trend from snapshot domain if available
-  if (snap?.netWorthTrend != null && snap.netWorthTrend !== 0) {
-    const tone: BriefTone = snap.netWorthTrend > 0 ? "positive" : "warning";
+  // Net worth — the CANONICAL windowed change, named by its window.
+  //
+  // v2.6-WINDOW-1 — this rendered `snap.netWorthTrend`: oldest→newest of
+  // whatever rows were fetched (89 days on the live corpus, +$3.6K) under a
+  // heading that says "In the last hour". The section's own header comment
+  // admitted the delta "covers the full snapshot history window rather than
+  // exact since-last-visit", but nothing on screen said so, and the figure sat
+  // directly above an insight quoting a DIFFERENT net-worth change — +$3.6K and
+  // +26.8% ($5,920), one screen, same account, both unlabelled.
+  //
+  // Both now read the same canonical month, and the item carries its window in
+  // the detail line, so the number cannot be misread as "since your last visit".
+  // A delta that does not match its heading is not a smaller lie than a wrong
+  // one; it is the same lie with a friendlier tone.
+  const nwChange = snap?.canonicalChange ?? null;
+  if (nwChange && nwChange.abs !== 0) {
+    const tone: BriefTone = nwChange.abs > 0 ? "positive" : "warning";
     items.push({
       id:     "nw_delta",
       label:  "Net worth",
-      value:  fmtDelta(snap.netWorthTrend),
-      detail: `now ${fmtCurrency(netWorth)}`,
+      value:  fmtDelta(nwChange.abs),
+      detail: `since ${fmtDay(nwChange.fromDate)} · now ${fmtCurrency(netWorth)}`,
       tone,
     });
   } else {
@@ -419,14 +449,37 @@ function buildInsight(
   }
 
   // Positive net worth trend
+  //
+  // v2.6-WINDOW-1 — the CANONICAL window, named by its actual dates.
+  //
+  // This read `${snap.netWorthTrendPct}% over the last ${snap.snapshotCount}
+  // days`. Both halves were wrong. `snapshotCount` is a ROW COUNT, printed as a
+  // duration; and the percentage spanned oldest→newest of whatever rows were
+  // fetched, which is not a window the product defines. On the live corpus that
+  // put the baseline on 2026-05-10 — 89 days back, three days from the canonical
+  // 2026-05-07 — with a $4,985 debt paydown sitting between them. The Brief said
+  // "up 14.9% over the last 90 days" while the Space, for the same words on the
+  // same day, said 47.4%.
+  //
+  // `canonicalChange` comes from `compareToForPreset`, the same authority behind
+  // the Space launcher's figure and the inside-Space selector, so the three now
+  // state one number. The window is rendered as the date it actually opens on
+  // rather than a day count, because "since Jul 7" cannot be silently wrong the
+  // way "over the last 90 days" was.
+  //
+  // No canonicalChange means history does not reach back a month — the authority
+  // refuses rather than comparing against the earliest point it happens to hold,
+  // and so does this sentence.
   const trendUpSig = allSignals.find(s => s.type === SignalType.NET_WORTH_INCREASED);
-  if (trendUpSig && snap?.netWorthTrendPct != null) {
+  const change = snap?.canonicalChange ?? null;
+  if (trendUpSig && change && change.pct !== null) {
     return {
       id:       "insight",
       type:     "insight",
       priority: 20,
       title:    "Today's Insight",
-      body:     `Net worth is up ${snap.netWorthTrendPct.toFixed(1)}% over the last ${snap.snapshotCount} days — ${fmtCurrency(netWorth)} total. Stay consistent.`,
+      body:     `Net worth is up ${change.pct.toFixed(1)}% since ${fmtDay(change.fromDate)} — ` +
+                `${fmtCurrency(netWorth)} total. Stay consistent.`,
       tone:     "positive",
     };
   }
