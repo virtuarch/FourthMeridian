@@ -150,6 +150,12 @@ export const AUDITS: readonly AuditEntry[] = [
 
   // ── INFORMATIONAL — reports and investigations, never a gate ──────────────
   {
+    name: "audit-surface-independence", tier: "INFORMATIONAL", needsDb: false,
+    what: "v2.6-REVIEW-1 source census: where a RENDERING surface does the financial arithmetic " +
+          "itself — aggregation, ratio, or a threshold verdict. Candidates to read, not defects; " +
+          "the measure of whether judgment has actually left the components",
+  },
+  {
     name: "audit-seed-coverage", tier: "INFORMATIONAL", needsDb: true,
     what: "v2.6-SEED-1: WHICH architectural states a corpus contains — the acceptance contract " +
           "for a reseed (every PRESENT state must survive; names may change, coverage may not " +
