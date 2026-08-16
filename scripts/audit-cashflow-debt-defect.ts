@@ -242,7 +242,18 @@ async function main() {
     ambiguous.length === 0 ? "no un-nameable rows, yet an unresolved bucket exists" : "");
   check("the unresolved bucket contains NOTHING else",
     bucket == null || bucket.transactionIds.every((id) => ambiguous.some((r) => r.id === id)));
-  check("the unresolved bucket sorts LAST", groups.length === 0 || groups[groups.length - 1].id === UNRESOLVED_CREDITOR_KEY);
+  // v2.6-SEED-3 — the SAME correction v2.6-OWN-2 made two checks above, on the
+  // line it missed. "The last group is the unresolved bucket" asserts that some
+  // row must always be un-nameable — a property of one corpus, not of the
+  // grouping. `buildCreditorGroups` emits the bucket only when something belongs
+  // in it, and sorts it last when it does; the invariant is the CONDITIONAL one.
+  //
+  // It survived because no seeded corpus ever put a row on the debt card: the
+  // seed's card payments had no funding leg, so nothing was ever attested and
+  // `groups` was always empty. The check passed on the `groups.length === 0`
+  // escape hatch and had never once evaluated its own claim.
+  check("IF an unresolved bucket exists, it sorts LAST",
+    bucket == null || groups[groups.length - 1].id === UNRESOLVED_CREDITOR_KEY);
 
   bar("FINGERPRINTS");
   const fp = (label: string, parts: string[]) =>

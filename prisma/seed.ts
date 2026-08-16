@@ -37,7 +37,7 @@ import {
   GoalCategory,
 } from "@prisma/client";
 // L8 — the provider vocabulary the event authority decides eligibility from.
-import type { ProviderType } from "@prisma/client";
+import { ProviderType } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { encryptWithPurpose, EncryptionPurpose } from "../lib/plaid/encryption";
 import { SpaceCategory } from "../lib/space-presets";
@@ -51,8 +51,22 @@ import { planTemplateApplication } from "../lib/space-templates/apply";
 // grant-gated (no members are seeded).
 import { ensurePlatformSpaces, ensurePlatformSections } from "../lib/platform/seed";
 import { economicDateFor } from "../lib/transactions/economic-date-write";
-import { recordTransactionObservation } from "../lib/transactions/event-write";
+import { recordTransactionObservation, reprojectEvent } from "../lib/transactions/event-write";
 import { isEventEligibleProvider, providerOfRow } from "../lib/transactions/event-identity";
+// v2.6-SEED-3 — a Plaid-connected account carries a PROVIDER IDENTITY, written by
+// the same dual-write helper the exchange-token route calls. The seed states the
+// provider's account id; it never invents the identity row's shape.
+import { dualWriteProviderAccountIdentity } from "../lib/accounts/provider-identity";
+// v2.6-SEED-3 — the TRANSFER RESOLUTION AUTHORITY, imported whole. The seed
+// replays it over the corpus it just wrote and persists the verdict, exactly as
+// scripts/repair-transfer-authority.ts does. No seed-local matching exists.
+import { admitTransferCandidate } from "../lib/transactions/transfer-admission";
+import {
+  resolveDestinationEvidenceFor, type TransferLeg,
+} from "../lib/transactions/transfer-maturation";
+import { extractProviderLinks } from "../lib/transactions/provider-link-extract";
+import { plaidTransferEvidence } from "../lib/transactions/plaid-transfer-evidence";
+import { resolveLifecycle } from "../lib/transactions/lifecycle";
 // v2.6-CRYPTO-1 — the on-chain ledger names itself on seeded wallet rows too.
 import { foreignFlowOwnershipFields } from "../lib/transactions/flow-authority";
 // v2.6-POP-1 — the seed classifies through the CANONICAL path, exactly as the
@@ -208,6 +222,24 @@ async function createFullAccount(opts: {
       plaidItemDbId: plaidItemId ?? null, syncStatus, isCanonical: true,
     },
   });
+
+  // v2.6-SEED-3 — a PROVIDER-SOURCED account carries a provider identity.
+  //
+  // The seed has always created PlaidItems and pointed AccountConnections at
+  // them, but never gave any FinancialAccount a `plaidAccountId` — a state
+  // production cannot reach. `resolveFinancialAccountId` matches an incoming
+  // Plaid transaction by provider account id, so an account connected to an
+  // Item with no such id can never receive one; every seeded row was therefore
+  // provider=MANUAL, and `audit-pending-posted-desync` — whose entire query is
+  // gated on `plaidTransactionId IS NOT NULL` — could not return a row on any
+  // seeded corpus no matter what it contained.
+  //
+  // The identity row goes through `dualWriteProviderAccountIdentity`, the same
+  // helper the exchange-token route calls. The seed supplies the provider's
+  // account id and nothing else.
+  if (plaidAccountId) {
+    await dualWriteProviderAccountIdentity(fa.id, ProviderType.PLAID, plaidAccountId);
+  }
 
   // Every createFullAccount() call in this seed passes the creator's own
   // PERSONAL space as `spaceId`, so this is always the account's HOME link
@@ -571,6 +603,14 @@ async function main() {
   const jDemoChecking = await createFullAccount({
     spaceId: janeSpace.id, userId: jane.id,
     plaidItemId: janeItemBy["Demo Bank"].id, institutionId: "demo_ins_001",
+    // v2.6-SEED-3 — PROVIDER-SOURCED. The four accounts that carry a
+    // pending→posted lifecycle are the ones where Plaid actually produces one:
+    // day-to-day spending accounts and cards. They get a provider account id,
+    // and every row on them a provider row id, so the corpus contains a real
+    // Plaid population rather than an all-MANUAL one. The remaining 20 accounts
+    // stay manual, which is also what the live corpus looks like (10 of 35
+    // provider-sourced).
+    plaidAccountId: "demo_acct_jane_demobank_checking",
     name: "Demo Bank Checking", type: AccountType.checking,
     institution: "Demo Bank", balance: 3450, availableBalance: 3450,
   });
@@ -595,6 +635,7 @@ async function main() {
   const jCreditCard = await createFullAccount({
     spaceId: janeSpace.id, userId: jane.id,
     plaidItemId: janeItemBy["Example Credit Union"].id, institutionId: "demo_ins_002",
+    plaidAccountId: "demo_acct_jane_cu_card",
     name: "Example CU Credit Card", type: AccountType.debt,
     institution: "Example Credit Union", balance: 3200, creditLimit: 10000,
     debtSubtype: "credit_card", interestRate: 19.99, minimumPayment: 85,
@@ -713,6 +754,51 @@ async function main() {
     };
   };
   /**
+   * v2.6-SEED-3 — a pending row that LATER SETTLED.
+   *
+   * ── The state that was missing ─────────────────────────────────────────────
+   *
+   * The seed created pending rows and never posted any of them, so a seeded
+   * corpus contained ZERO events with more than one observation — the entire
+   * point of L8, which exists so that a pending and the posting that supersedes
+   * it are ONE event rather than two rows. Measured on the live account, 54 of
+   * 55 multi-observation events are exactly this shape: a posted successor row
+   * carrying the provider's `pending_transaction_id`, with the pending row
+   * tombstoned. One is not a rare edge case; it is how card spending settles.
+   *
+   * Three REQUIRED invariants passed vacuously as a result:
+   *
+   *   audit-event-reader-cutover  "multi-observation events project at most ONE
+   *                               live row each" — over an empty set
+   *   audit-pending-posted-desync its whole query needs a live pending row with
+   *                               a provider row id; the seed had none
+   *   audit-event-identity        the stored-equals-derived projection checks
+   *                               never saw a re-projection
+   *
+   * ── What this marks, and what it does NOT author ───────────────────────────
+   *
+   * The marker states one provider fact: this pending row settled `days` later.
+   * The successor ROW is derived in `seedTransactions` from the pending row
+   * itself — the same movement, restated by the provider — and the tombstone
+   * and re-projection go through the production write path. The seed never
+   * writes a TransactionEvent or an observation itself.
+   *
+   * ⚠️ Not every pending row settles. Rows without this marker stay live and
+   * unposted, which is the ordinary steady state and the population
+   * `audit-pending-posted-desync` measures. Removing that population would
+   * disarm the audit just as thoroughly as never posting anything.
+   */
+  const SETTLES_AFTER = "__settlesAfterDays" as const;
+  const settles = (row: TxRow, days: number): TxRow => ({ ...row, [SETTLES_AFTER]: days });
+  /**
+   * v2.6-SEED-3 — the provider's own row id, for rows on a provider-sourced
+   * account. A monotonic counter over insertion order: deterministic (no
+   * `Math.random()`, no clock), unique, and opaque — which is all a provider row
+   * id ever is. It is never parsed and never carries meaning.
+   */
+  let providerRowSeq = 0;
+  const nextProviderRowId = (): string => `demo_ptx_${String(++providerRowSeq).padStart(6, "0")}`;
+  /**
    * v2.6-POP-1 — a DELIBERATELY UNCLASSIFIED row.
    *
    * The seed now classifies everything else, which is what makes it resemble
@@ -807,7 +893,10 @@ async function classifySeedRows(rows: TxRow[]): Promise<TxRow[]> {
   const A = new Map(accounts.map((a) => [a.id, a]));
 
   return rows.map((row) => {
-    const { [UNCLASSIFIED_FIXTURE]: fixture, ...clean } = row as Record<string, unknown>;
+    // v2.6-SEED-3 — `SETTLES_AFTER` is consumed by seedTransactions before this
+    // point; strip it here too so a marker can never reach a column.
+    const { [UNCLASSIFIED_FIXTURE]: fixture, [SETTLES_AFTER]: _settles, ...clean } = row as Record<string, unknown>;
+    void _settles;
     const acct = A.get(clean.financialAccountId as string);
     // The unclassified fixture stays UNOWNED (flowType null ⟺ flowAuthority
     // null) — the honest state for "nobody classified this".
@@ -852,28 +941,198 @@ async function classifySeedRows(rows: TxRow[]): Promise<TxRow[]> {
   });
 }
 
+/**
+ * v2.6-SEED-3 — replay the Transfer Resolution Authority over the seeded corpus
+ * and persist the counterparty it establishes. See the call site for why.
+ *
+ * A faithful replay of `scripts/repair-transfer-authority.ts`'s resolution half:
+ * same admission predicate, same per-owner leg pools, same evidence extraction,
+ * same ladder. Only the approval gates are absent — they exist to protect a
+ * production corpus from an unreviewed proposal, and a seed is writing the
+ * corpus in the first place.
+ */
+async function persistTransferCounterparties(): Promise<number> {
+  const accounts = await prisma.financialAccount.findMany({
+    select: {
+      id: true, name: true, type: true, institution: true, institutionId: true,
+      mask: true, ownerUserId: true, ownerSpaceId: true, currency: true, debtSubtype: true,
+    },
+  });
+  const A = new Map(accounts.map((a) => [a.id, a]));
+  const txs = await prisma.transaction.findMany({
+    where: { deletedAt: null },
+    select: {
+      id: true, financialAccountId: true, date: true, amount: true, merchant: true,
+      description: true, category: true, pending: true, settlementState: true,
+      flowType: true, counterpartyAccountId: true, economicDate: true,
+      counterpartyType: true, pfcPrimary: true, pfcDetailed: true, currency: true,
+      deletedAt: true,
+    },
+  });
+  const rows = txs
+    .filter((t) => t.financialAccountId && A.has(t.financialAccountId))
+    .map((t) => ({ ...t, acct: A.get(t.financialAccountId!)! }));
+  const ownerOf = (r: (typeof rows)[number]): string =>
+    r.acct.ownerUserId ?? r.acct.ownerSpaceId ?? "?";
+
+  // Masks are owner-scoped: a four-digit suffix only identifies an account
+  // among the accounts one person holds.
+  const maskByOwner = new Map<string, Map<string, string[]>>();
+  for (const a of accounts) {
+    if (!a.mask) continue;
+    const o = a.ownerUserId ?? a.ownerSpaceId ?? "?";
+    const m = maskByOwner.get(o) ?? maskByOwner.set(o, new Map()).get(o)!;
+    (m.get(a.mask) ?? m.set(a.mask, []).get(a.mask)!).push(a.id);
+  }
+
+  const ev = (r: (typeof rows)[number]) =>
+    plaidTransferEvidence({ pfcDetailed: r.pfcDetailed, amount: r.amount, name: r.merchant });
+
+  const admitted = rows.filter((r) => {
+    const e = ev(r);
+    return admitTransferCandidate({
+      flowType: r.flowType, amount: r.amount, accountType: r.acct.type,
+      accountId: r.financialAccountId, category: r.category, providerFamily: r.pfcPrimary,
+      movementForm: e.movementForm ?? null, railType: e.railType ?? null,
+      venueClass: e.venueClass ?? null,
+    }) === "ADMITTED";
+  });
+
+  const byOwner = new Map<string, typeof admitted>();
+  for (const r of admitted) {
+    (byOwner.get(ownerOf(r)) ?? byOwner.set(ownerOf(r), []).get(ownerOf(r))!).push(r);
+  }
+
+  const writes: Array<{ id: string; accountId: string }> = [];
+  for (const pool of byOwner.values()) {
+    const masks = maskByOwner.get(ownerOf(pool[0])) ?? new Map<string, string[]>();
+    const legs: TransferLeg[] = pool.map((r) => {
+      const links = extractProviderLinks(`${r.merchant} ${r.description ?? ""}`, {
+        institutionId: r.acct.institutionId, maskToAccountIds: masks, selfAccountId: r.acct.id,
+      });
+      const lc = resolveLifecycle({
+        settlementState: r.settlementState, pending: r.pending, deletedAt: r.deletedAt,
+        hasLivePostedSuccessor: false,
+      });
+      return {
+        id: r.id, accountId: r.acct.id, accountType: r.acct.type as string, ownerId: ownerOf(r),
+        amount: r.amount, currency: r.currency ?? r.acct.currency,
+        // L8-B — the ECONOMIC chronology, matching the read boundary.
+        dateMs: (r.economicDate ?? r.date).getTime(),
+        superseded: lc.superseded, movementForm: ev(r).movementForm ?? null,
+        railType: ev(r).railType ?? null,
+        providerLinkKey: links.correlation?.linkKey ?? null,
+        maskedDestinationAccountId: links.maskedAccountId,
+      };
+    });
+    for (const l of legs) {
+      const e = resolveDestinationEvidenceFor(l, legs);
+      // ⚠️ `persistableCounterparty` is the ONLY admission to the column. A level
+      // that names an account without it is a level the authority will not stand
+      // behind, and writing it anyway is precisely what audit-transfer-authority
+      // calls FABRICATION.
+      if (!e.persistableCounterparty || !e.accountId) continue;
+      writes.push({ id: l.id, accountId: e.accountId });
+    }
+  }
+
+  // Counterparty ONLY. `classificationReason`, `flowType` and every provider
+  // fact are untouched — the same boundary repair-transfer-authority holds.
+  await prisma.$transaction(
+    writes.map((w) => prisma.transaction.update({
+      where: { id: w.id },
+      data:  { counterpartyAccountId: w.accountId },
+    })),
+  );
+  return writes.length;
+}
+
 async function seedTransactions(input: TxRow[]): Promise<void> {
   if (input.length === 0) return;
-  const rows = await classifySeedRows(input);
+
+  // The account graph decides the provider — the same signal the backfill and
+  // the census use, never a seed-local guess. Read BEFORE the insert now,
+  // because a provider-sourced account's rows must carry a provider row id at
+  // write time, exactly as they do when the sync writes them.
+  const inputAccountIds = [...new Set(input.map((r) => r.financialAccountId).filter((x): x is string => x != null))];
+  const accounts = await prisma.financialAccount.findMany({
+    where: { id: { in: inputAccountIds } },
+    select: { id: true, walletAddress: true, plaidAccountId: true },
+  });
+  const A = new Map(accounts.map((a) => [a.id, a]));
+
+  // ── v2.6-SEED-3 — provider row ids, and the pending→posted succession ──────
+  //
+  // Two things happen in this pure pre-pass, both before anything is written:
+  //
+  //   1. Every row on a PROVIDER-SOURCED account gets a provider row id. A
+  //      Plaid row without a `transaction_id` is not a state Plaid can produce,
+  //      and `audit-pending-posted-desync`'s query is gated on that column.
+  //   2. A row marked `settles(…, days)` is EXPANDED into the two rows the
+  //      provider actually sends: the pending one, and a posted successor
+  //      carrying `pendingTransactionRef` — Plaid's `pending_transaction_id`,
+  //      which is the evidence `resolveEventLink` ranks first.
+  //
+  // The successor is derived from the pending row, never authored separately:
+  // same account, same amount, same merchant, same authorisation. Only the
+  // posting date moves, which is what settling IS. `economicDateFor` — the
+  // write authority, not the seed — then derives the successor's economic date
+  // from the SAME authorisation, so both rows share one economic date and the
+  // event's date does not move when the posting arrives.
+  const expanded: TxRow[] = [];
+  for (const row of input) {
+    const acct = A.get(row.financialAccountId as string);
+    const providerSourced = acct?.plaidAccountId != null;
+    const plaidTransactionId = providerSourced ? nextProviderRowId() : null;
+    expanded.push(providerSourced ? { ...row, plaidTransactionId } : row);
+
+    const settlesIn = (row as Record<string, unknown>)[SETTLES_AFTER] as number | undefined;
+    if (settlesIn == null) continue;
+    if (!providerSourced) {
+      throw new Error(
+        "[seed] settles() on an account with no provider identity — a pending→posted " +
+        "succession is a PROVIDER claim (pending_transaction_id) and cannot exist without one.",
+      );
+    }
+    const postedDate = new Date(row.date as Date);
+    postedDate.setDate(postedDate.getDate() + settlesIn);
+    expanded.push({
+      ...row,
+      [SETTLES_AFTER]: undefined,
+      plaidTransactionId:    nextProviderRowId(),
+      pendingTransactionRef: plaidTransactionId,
+      date:                  postedDate,
+      pending:               false,
+      economicDate:          economicDateFor({ postingDate: postedDate, authorizedAt: row.authorizedAt ?? null }),
+    });
+  }
+
+  const rows = await classifySeedRows(expanded);
   const created = await prisma.transaction.createManyAndReturn({
     data: rows,
     select: {
       id: true, financialAccountId: true, date: true, economicDate: true, authorizedAt: true,
       amount: true, pending: true, externalTransactionId: true,
+      plaidTransactionId: true, pendingTransactionRef: true,
     },
   });
 
-  // The account graph decides the provider — the same signal the backfill and
-  // the census use, never a seed-local guess.
-  const accountIds = [...new Set(created.map((r) => r.financialAccountId).filter((x): x is string => x != null))];
-  const accounts = await prisma.financialAccount.findMany({
-    where: { id: { in: accountIds } },
-    select: { id: true, walletAddress: true, plaidAccountId: true },
-  });
-  const A = new Map(accounts.map((a) => [a.id, a]));
+  // The two halves of a succession are handled together, in provider order, so
+  // the loop below can skip them and stay exactly as it was.
+  const byProviderRowId = new Map(
+    created.filter((r) => r.plaidTransactionId).map((r) => [r.plaidTransactionId!, r]),
+  );
+  const successors = created.filter((r) => r.pendingTransactionRef != null);
+  const inSuccession = new Set<string>();
+  for (const s of successors) {
+    inSuccession.add(s.id);
+    const p = byProviderRowId.get(s.pendingTransactionRef!);
+    if (p) inSuccession.add(p.id);
+  }
 
   for (const r of created) {
     if (!r.financialAccountId || !r.economicDate) continue;
+    if (inSuccession.has(r.id)) continue;
     const a = A.get(r.financialAccountId);
     // ⚠️ No IDENTITY logic here. Both the provider derivation and the
     // eligibility predicate are the canonical ones, so a seeded database is
@@ -886,16 +1145,17 @@ async function seedTransactions(input: TxRow[]): Promise<void> {
       accountPlaidAccountId: a?.plaidAccountId,
       rowImportBatchId: null,
       rowExternalTransactionId: r.externalTransactionId,
-      rowPlaidTransactionId: null,
+      rowPlaidTransactionId: r.plaidTransactionId,
     });
     if (!isEventEligibleProvider(provider)) continue;
     await recordTransactionObservation(prisma, {
       transactionId:      r.id,
       financialAccountId: r.financialAccountId,
       provider,
-      // A seeded row carries no provider row id — the transaction id is the
-      // stable anchor, exactly as `observationKeyMaterial` documents.
-      providerRowId:      r.externalTransactionId ?? null,
+      // A manually-sourced row carries no provider row id — the transaction id
+      // is the stable anchor, exactly as `observationKeyMaterial` documents. A
+      // provider-sourced row carries the id the provider gave it.
+      providerRowId:      r.plaidTransactionId ?? r.externalTransactionId ?? null,
       providerPendingRef: null,
       lifecycle:          r.pending ? "PENDING" : "POSTED",
       amount:             r.amount,
@@ -906,6 +1166,90 @@ async function seedTransactions(input: TxRow[]): Promise<void> {
       // Seeded rows are observed as they are written. Deterministic per run.
       observedAt:         new Date(),
     });
+  }
+
+  // ── v2.6-SEED-3 — the pending→posted succession, in PROVIDER ORDER ─────────
+  //
+  // This replays what two consecutive Plaid syncs do, in the order they do it
+  // (lib/plaid/syncTransactions.ts):
+  //
+  //   sync 1   the pending row is added and observed, live
+  //   sync 2   the posted successor is added and observed, carrying
+  //            `pending_transaction_id`; then the pending row comes back in
+  //            `removed[]` and is TOMBSTONED; then — and only then — the event
+  //            is re-projected.
+  //
+  // ⚠️ The order is load-bearing at both ends. The pending observation must be
+  // recorded first or `resolveEventLink` finds no predecessor event and the
+  // successor opens a second event instead of joining the first. And the
+  // re-projection must run AFTER the tombstone or it re-writes the same stale
+  // PENDING state it exists to correct — the v2.6-EVENT-1 defect exactly.
+  //
+  // `observedAt` is derived from the posting dates, never `new Date()`: an
+  // observation time is a fact about when the provider spoke, and deriving it
+  // keeps the pending strictly before the posting on every run.
+  const observedAtFor = (d: Date): Date => new Date(Date.UTC(
+    d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 12, 0, 0, 0,
+  ));
+
+  for (const posted of successors) {
+    const pending = byProviderRowId.get(posted.pendingTransactionRef!);
+    if (!pending || !pending.financialAccountId || !pending.economicDate) continue;
+    if (!posted.financialAccountId || !posted.economicDate) continue;
+    const a = A.get(posted.financialAccountId);
+    const provider: ProviderType = providerOfRow({
+      accountWalletAddress: a?.walletAddress,
+      accountPlaidAccountId: a?.plaidAccountId,
+      rowImportBatchId: null,
+      rowExternalTransactionId: posted.externalTransactionId,
+      rowPlaidTransactionId: posted.plaidTransactionId,
+    });
+    if (!isEventEligibleProvider(provider)) continue;
+
+    await recordTransactionObservation(prisma, {
+      transactionId:      pending.id,
+      financialAccountId: pending.financialAccountId,
+      provider,
+      providerRowId:      pending.plaidTransactionId,
+      providerPendingRef: null,
+      lifecycle:          "PENDING",
+      amount:             pending.amount,
+      postingDate:        pending.date,
+      economicDate:       pending.economicDate,
+      authorizedAt:       pending.authorizedAt ?? null,
+      transactionIsLive:  true,
+      observedAt:         observedAtFor(pending.date),
+    });
+
+    const link = await recordTransactionObservation(prisma, {
+      transactionId:      posted.id,
+      financialAccountId: posted.financialAccountId,
+      provider,
+      providerRowId:      posted.plaidTransactionId,
+      // THE succession claim. Everything else here is ordinary evidence.
+      providerPendingRef: posted.pendingTransactionRef,
+      lifecycle:          "POSTED",
+      amount:             posted.amount,
+      postingDate:        posted.date,
+      economicDate:       posted.economicDate,
+      authorizedAt:       posted.authorizedAt ?? null,
+      transactionIsLive:  true,
+      observedAt:         observedAtFor(posted.date),
+    });
+    if (link && link.basis !== "PROVIDER_PENDING_REF") {
+      throw new Error(
+        `[seed] a settled pending did not join its predecessor's event ` +
+        `(basis=${link.basis}, refusal=${link.refusal ?? "none"}). The seed would ` +
+        `then contain two events for one movement, which is the state L8 exists ` +
+        `to prevent — refusing rather than seeding it.`,
+      );
+    }
+
+    await prisma.transaction.update({
+      where: { id: pending.id },
+      data:  { deletedAt: observedAtFor(posted.date) },
+    });
+    await reprojectEvent(prisma, link!.eventId);
   }
 }
 
@@ -985,6 +1329,35 @@ async function seedTransactions(input: TxRow[]): Promise<void> {
     tx(jDemoChecking, 45, "Transfer to Japan Fund", Transfer, -500),
     tx(jDemoChecking, 75, "Transfer to Japan Fund", Transfer, -500),
     tx(jDemoChecking,105, "Transfer to Japan Fund", Transfer, -500),
+    /**
+     * v2.6-SEED-3 — the CARD PAYMENT'S FUNDING LEG.
+     *
+     * The seed created the card-side inflows below (`CC Payment`, positive, on
+     * `jCreditCard`) and no source of funds for any of them. A card payment is
+     * two legs by definition — money leaves a deposit account and arrives at the
+     * liability — so a one-sided one is not a thin corpus, it is an impossible
+     * one, and the transfer authority correctly refused to name a destination
+     * for it: NO_DESTINATION_EVIDENCE, because there was genuinely no evidence.
+     *
+     * That refusal emptied the Debt Payments surface entirely. Measured before
+     * these rows existed, on a fully seeded database:
+     *
+     *   audit-debt-payment-attestation  "counted as Debt Payments : 0"
+     *   audit-cashflow-debt-defect      "rows the card counts: 0"
+     *                                   NAMEABLE 0 · TYPE-ONLY 0 · UNATTESTED 0
+     *
+     * Both are REQUIRED, both are about which rows may be counted as debt
+     * payments and on what evidence, and both were deciding that question over
+     * an empty set. The attestation they look for — "the counterparty is an
+     * OWNED LIABILITY account" — is precisely what the authority establishes
+     * once the other leg exists.
+     *
+     * Same amount, same day, opposite sign: the two legs of one movement, which
+     * is all the evidence the authority needs and all the seed states.
+     */
+    tx(jDemoChecking, 28, "CC Payment", Payment, -800, false, "Example CU Credit Card payment"),
+    tx(jDemoChecking, 60, "CC Payment", Payment, -600, false, "Example CU Credit Card payment"),
+    tx(jDemoChecking, 90, "CC Payment", Payment, -700, false, "Example CU Credit Card payment"),
     // Gas ×5
     tx(jDemoChecking, 10, "QuickFuel Gas",    Other,  -52.40),
     tx(jDemoChecking, 28, "QuickFuel Gas",    Other,  -48.60),
@@ -1078,7 +1451,10 @@ async function seedTransactions(input: TxRow[]): Promise<void> {
     tx(jCreditCard, 60, "CC Payment", Payment, 600),
     tx(jCreditCard, 90, "CC Payment", Payment, 700),
     // Groceries on CC ×3
-    tx(jCreditCard, 11, "Whole Foods Local",    Groceries,  -88.40, true),
+    // v2.6-SEED-3 — a card authorisation that SETTLED three days later. Expands
+    // into the pending row and its posted successor; the pending is tombstoned
+    // and the two share ONE event. See `settles` for why this had to exist.
+    settles(tx(jCreditCard, 11, "Whole Foods Local", Groceries, -88.40, true), 3),
     tx(jCreditCard, 55, "Trader Joe's",         Groceries,  -67.20),
     tx(jCreditCard, 83, "Whole Foods Local",    Groceries,  -91.60),
   ]);
@@ -1164,6 +1540,7 @@ async function seedTransactions(input: TxRow[]): Promise<void> {
   const jnChecking = await createFullAccount({
     spaceId: johnSpace.id, userId: john.id,
     plaidItemId: johnItemBy["Beacon Bank"].id, institutionId: "demo_ins_005",
+    plaidAccountId: "demo_acct_john_beacon_checking",
     name: "Beacon Bank Checking", type: AccountType.checking,
     institution: "Beacon Bank", balance: 2100, availableBalance: 2100,
   });
@@ -1176,6 +1553,7 @@ async function seedTransactions(input: TxRow[]): Promise<void> {
   const jnCreditCard = await createFullAccount({
     spaceId: johnSpace.id, userId: john.id,
     plaidItemId: johnItemBy["Beacon Bank"].id, institutionId: "demo_ins_005",
+    plaidAccountId: "demo_acct_john_beacon_card",
     name: "Beacon Credit Card", type: AccountType.debt,
     institution: "Beacon Bank", balance: 5800, creditLimit: 15000,
     debtSubtype: "credit_card", interestRate: 22.99, minimumPayment: 135,
@@ -1398,6 +1776,12 @@ async function seedTransactions(input: TxRow[]): Promise<void> {
     tx(jnChecking, 34, "Transfer to Savings", Transfer, -250),
     tx(jnChecking, 64, "Transfer to Savings", Transfer, -250),
     tx(jnChecking, 94, "Transfer to Savings", Transfer, -250),
+    // v2.6-SEED-3 — the funding legs for John's card payments; see the note on
+    // Jane's block for why a one-sided card payment could not be resolved.
+    tx(jnChecking, 28, "CC Payment", Payment, -1200, false, "Beacon Credit Card payment"),
+    tx(jnChecking, 58, "CC Payment", Payment,  -800, false, "Beacon Credit Card payment"),
+    tx(jnChecking, 88, "CC Payment", Payment, -1000, false, "Beacon Credit Card payment"),
+    tx(jnChecking,118, "CC Payment", Payment,  -900, false, "Beacon Credit Card payment"),
     tx(jnChecking,114, "Transfer to Savings", Transfer, -250),
     // Auto loan payment ×4
     tx(jnChecking,  5, "Beacon Auto Loan Pmt",  Payment, -380),
@@ -1464,7 +1848,10 @@ async function seedTransactions(input: TxRow[]): Promise<void> {
     tx(jnCreditCard, 70, "Steakhouse Downtown",  Dining,  -88.40),
     tx(jnCreditCard, 78, "Mexican Grill",        Dining,  -46.20),
     // Shopping ×10
-    tx(jnCreditCard,  5, "Electronics Superstore",Shopping,-349.00, true),
+    // v2.6-SEED-3 — settled after two days. The two seeded successions differ in
+    // lag on purpose: the successor's posting date is the only thing settling
+    // moves, so a fixed lag would leave that untested.
+    settles(tx(jnCreditCard, 5, "Electronics Superstore", Shopping, -349.00, true), 2),
     tx(jnCreditCard, 11, "Sporting Goods",        Shopping,-185.00),
     tx(jnCreditCard, 19, "Amazon Marketplace",    Shopping, -89.99),
     tx(jnCreditCard, 27, "Men's Wearhouse",       Shopping,-240.00),
@@ -1786,6 +2173,56 @@ async function seedTransactions(input: TxRow[]): Promise<void> {
     ],
   });
   console.log("   ✓ AuditLog: 32 events");
+
+  // ══ v2.6-SEED-3 — THE TRANSFER AUTHORITY'S VERDICT, PERSISTED ══════════════
+  //
+  // The seed produced 39 TRANSFER rows and never a single resolved counterparty,
+  // so `Transaction.counterpartyAccountId` was null on every seeded row — and
+  // the two REQUIRED audits that decide which rows may be COUNTED as debt
+  // payments were deciding it over nothing at all:
+  //
+  //   audit-debt-payment-attestation  "counted as Debt Payments : 0"
+  //   audit-cashflow-debt-defect      "rows the card counts: 0"
+  //
+  // Every attestation, grouping and double-counting check in both ran over an
+  // empty set. With the column populated they run over seven rows in two
+  // creditor groups — and the first thing that produced was a FALSE ASSERTION
+  // in audit-cashflow-debt-defect ("the unresolved bucket sorts LAST", which
+  // demanded that some row always be un-nameable). An invariant that has never
+  // once evaluated its own claim is not an invariant.
+  //
+  // ⚠️ MEASURED, not assumed: this does NOT arm `audit-transfer-identification`.
+  // Its contradiction check needs the identification rung to APPLY, which needs
+  // an extracted account mask, and no seeded account carries a `mask` — the rung
+  // applies to 0 legs before and after. Nor does it arm
+  // `audit-transfer-authority`'s FABRICATION guard, which is asserted over the
+  // AUTHORITY'S OWN verdicts (already 54 of them), not over the stored column.
+  // Both are recorded as still-vacuous rather than claimed as closed.
+  //
+  // Nothing is manufactured. The authority ALREADY establishes an account for 34
+  // of the seed's admitted legs — measured, before this existed — and the seed
+  // simply stops discarding the answer. Jane moving money from her checking
+  // account to her own HYSA is the most ordinary transfer there is; leaving it
+  // unresolved was the unrealistic state.
+  //
+  // ── No seed-local matching ─────────────────────────────────────────────────
+  //
+  // `admitTransferCandidate → resolveDestinationEvidenceFor` is the same chain
+  // `scripts/repair-transfer-authority.ts` applies to production and
+  // `RelationshipResolver` reads at request time. This function assembles
+  // evidence and writes what the authority returns. It contains no matching
+  // rule of its own, and it writes ONLY where the authority reports
+  // `persistableCounterparty` — the exact predicate the fabrication guard
+  // polices.
+  //
+  // ⚠️ It deliberately does NOT apply the authority's flowType half. On this
+  // corpus that would reclassify 8 mortgage and auto-loan payments to TRANSFER,
+  // because the seed holds no opposing leg on those loan accounts — a gap in the
+  // seeded data, not a verdict about the product. Persisting a counterparty is a
+  // fact the evidence supports; reclassifying a mortgage payment on the strength
+  // of a missing row is not.
+  const persisted = await persistTransferCounterparties();
+  console.log(`   ✓ Transfer counterparties (authority verdict): ${persisted}`);
 
   console.log("\n✅  Seed complete.");
   console.log("─── Jane Smith ──────────────────────────────────────────────────────────────");
