@@ -3,8 +3,9 @@
  *
  * Recover and remove Plaid Items that were STRANDED by a database wipe.
  *
- *   npx tsx scripts/remove-orphaned-plaid-items-from-backup.ts backups/postgres-*.sql
- *   npx tsx scripts/remove-orphaned-plaid-items-from-backup.ts --apply backups/postgres-*.sql
+ *   npm run plaid:orphans -- backups/postgres-*.sql                      # dry run
+ *   npm run plaid:orphans -- --keep-from-db backups/postgres-*.sql       # dry run, real keep-list
+ *   npm run plaid:orphans -- --apply --keep-from-db backups/postgres-*.sql
  *
  * ── The problem this solves ──────────────────────────────────────────────────
  * `npm run db:wipe` drops the `public` schema. The PlaidItem rows go with it —
@@ -20,12 +21,34 @@
  * wipe itself took, in `backups/`. This script reads the Items straight out of
  * those dumps and closes them out on Plaid.
  *
+ * ── Running this (the `server-only` break) ───────────────────────────────────
+ * `lib/plaid/client.ts` reaches `lib/plaid/provider-call.ts`, which declares
+ * `import "server-only"` — a Next-internal alias that is NOT an installed npm
+ * package. Under a plain tsx runtime that import throws MODULE_NOT_FOUND before
+ * this script does anything at all. The fix is the SAME preload the test runner
+ * already uses (scripts/lib/server-only-preload.cjs); `npm run plaid:orphans`
+ * wires it up. Invoking this file with bare `npx tsx` will still fail — use the
+ * npm script, or pass `--require scripts/lib/server-only-preload.cjs` yourself.
+ *
  * ── Safety ───────────────────────────────────────────────────────────────────
  *   - DRY RUN by default. Without --apply it only calls itemGet() (a read) and
- *     tells you which Items are still live. Pass --apply to call itemRemove().
- *   - --keep=<externalItemId,…> hard-excludes Items you still own. Anything you
- *     are currently using MUST be listed here: an Item removed by mistake cannot
- *     be restored, and the user has to re-link the institution by hand.
+ *     tells you which Items are still live.
+ *   - --apply REFUSES without a keep-list. An Item removed by mistake cannot be
+ *     restored; the user has to re-link the institution by hand. A keep-list is
+ *     therefore mandatory for the destructive mode, never a default-empty
+ *     convenience. Supply it with --keep=<ids>, --keep-from-db, or both.
+ *   - --keep-from-db reads the CURRENT PlaidItem set out of the database that
+ *     DATABASE_URL points at, so the protected set is live truth rather than a
+ *     hand-copied list that went stale the moment someone re-linked. The
+ *     database identity (host/name, never credentials) is printed before any
+ *     Plaid call so you can see which database you actually protected.
+ *   - Every explicit --keep id must appear in the dumps. A typo'd id silently
+ *     protects nothing, which is exactly how a live Item gets removed; an
+ *     unmatched id is a hard error, not a warning.
+ *   - ZERO overlap between a --keep-from-db set and the dumps means the database
+ *     and the dumps almost certainly describe different environments (the
+ *     classic mistake: local DATABASE_URL, production dumps). --apply refuses;
+ *     pass --allow-zero-overlap only when you have confirmed it is genuine.
  *   - Access tokens are decrypted in memory and NEVER printed or logged.
  *   - Items are deduped by externalItemId across dumps, so overlapping backups
  *     are safe to pass together.
@@ -36,6 +59,8 @@
  *   PLAID_CLIENT_ID  production credentials — these Items live in Plaid
  *   PLAID_SECRET     production, and that is the environment they must be
  *   PLAID_ENV        removed from.
+ *   DATABASE_URL     only when --keep-from-db is used; the database whose Items
+ *                    must be PROTECTED (i.e. production, for production dumps).
  *
  * Handles both ciphertext formats: v1 ("iv:tag:ct", root key) from older rows
  * and v2 ("v2:iv:tag:ct", HKDF-derived subkey). decryptWithPurpose() dispatches
@@ -94,21 +119,57 @@ function parseDump(path: string): DumpItem[] {
   return out;
 }
 
+/**
+ * Credential-free database identity for the console — mirrors the `hostDb`
+ * idiom in scripts/db-guard.ts. That file runs its preflight at module scope
+ * (and calls process.exit), so it cannot be imported; the six lines are
+ * duplicated deliberately rather than making a destructive preflight importable.
+ */
+function hostDb(url: string | undefined): string {
+  if (!url) return "(DATABASE_URL unset)";
+  try {
+    const u = new URL(url);
+    return `${u.host}${u.pathname}`;
+  } catch {
+    return "(unparseable)";
+  }
+}
+
+/**
+ * The CURRENT set of Item ids the connected database still owns. Imported
+ * dynamically so that a run WITHOUT --keep-from-db needs no database at all —
+ * the dry run against production dumps must stay usable from a laptop that has
+ * no production DATABASE_URL.
+ */
+async function keepListFromDb(): Promise<Set<string>> {
+  const { db } = await import("@/lib/db");
+  const rows = await db.plaidItem.findMany({ select: { externalItemId: true } });
+  return new Set(rows.map((r: { externalItemId: string }) => r.externalItemId));
+}
+
+function fail(...lines: string[]): never {
+  console.error(`\n✗ ${lines[0]}`);
+  for (const l of lines.slice(1)) console.error(`  ${l}`);
+  console.error("");
+  process.exit(1);
+}
+
 async function main() {
   const argv  = process.argv.slice(2);
   const apply = argv.includes("--apply");
-  const keep  = new Set(
+  const keepFromDb        = argv.includes("--keep-from-db");
+  const allowZeroOverlap  = argv.includes("--allow-zero-overlap");
+  const explicitKeep = new Set(
     argv.filter((a) => a.startsWith("--keep=")).flatMap((a) => a.slice(7).split(",")).filter(Boolean),
   );
   const dumps = argv.filter((a) => !a.startsWith("--"));
 
   if (dumps.length === 0) {
-    console.error("Usage: tsx scripts/remove-orphaned-plaid-items-from-backup.ts [--apply] [--keep=id,id] <dump.sql…>");
+    console.error("Usage: npm run plaid:orphans -- [--apply] [--keep=id,id] [--keep-from-db] <dump.sql…>");
     process.exit(1);
   }
   if (!process.env.ENCRYPTION_KEY) {
-    console.error("✗ ENCRYPTION_KEY is not set — must be the PRODUCTION key in effect when the dump was taken.");
-    process.exit(1);
+    fail("ENCRYPTION_KEY is not set — must be the PRODUCTION key in effect when the dump was taken.");
   }
 
   // Dedupe across dumps: the same Item can appear in several backups.
@@ -117,19 +178,72 @@ async function main() {
     if (!byId.has(it.externalItemId)) byId.set(it.externalItemId, it);
   }
 
-  console.log(`\nPlaid env : ${PLAID_ENV}`);
-  console.log(`Mode      : ${apply ? "APPLY — will call itemRemove()" : "DRY RUN — read-only itemGet()"}`);
-  console.log(`Dumps     : ${dumps.length}`);
-  console.log(`Items     : ${byId.size} distinct${keep.size ? `  (keeping ${keep.size})` : ""}\n`);
+  // ── Resolve the protected set ───────────────────────────────────────────────
+  const keep = new Set(explicitKeep);
+  let dbIdentity = "(not consulted)";
+  let dbCount = 0;
+  if (keepFromDb) {
+    dbIdentity = hostDb(process.env.DATABASE_URL);
+    const fromDb = await keepListFromDb();
+    dbCount = fromDb.size;
+    for (const id of fromDb) keep.add(id);
+  }
 
-  let live = 0, gone = 0, removed = 0, failed = 0, skipped = 0;
+  // A typo'd --keep id protects nothing. Catch it before any Plaid call.
+  const unmatched = [...explicitKeep].filter((id) => !byId.has(id));
+  if (unmatched.length > 0) {
+    fail(
+      `${unmatched.length} --keep id(s) do not appear in the supplied dumps:`,
+      ...unmatched.map((id) => `  ${id}`),
+      "A keep id that matches nothing protects nothing. Fix the id or drop it.",
+    );
+  }
+
+  const overlap = [...keep].filter((id) => byId.has(id)).length;
+  const candidates = [...byId.values()].filter((i) => !keep.has(i.externalItemId));
+
+  console.log(`\nPlaid env  : ${PLAID_ENV}`);
+  console.log(`Mode       : ${apply ? "APPLY — will call itemRemove()" : "DRY RUN — read-only itemGet()"}`);
+  console.log(`Dumps      : ${dumps.length}`);
+  console.log(`Items      : ${byId.size} distinct`);
+  console.log(`Keep-list  : ${keep.size} id(s)` +
+    (keepFromDb ? `  [--keep-from-db: ${dbCount} from ${dbIdentity}]` : "") +
+    (explicitKeep.size ? `  [--keep: ${explicitKeep.size} explicit]` : ""));
+  console.log(`Protected  : ${overlap} of ${byId.size} dump items`);
+  console.log(`Candidates : ${candidates.length}\n`);
+
+  // ── Destructive-mode gates ──────────────────────────────────────────────────
+  if (apply) {
+    if (keep.size === 0) {
+      fail(
+        "--apply refused: no keep-list.",
+        "Removing an Item at Plaid is IRREVERSIBLE — the institution must be re-linked by hand.",
+        "Supply the Items to protect with --keep-from-db (recommended) and/or --keep=<id,…>.",
+        "Run without --apply first and read the candidate list.",
+      );
+    }
+    if (keepFromDb && overlap === 0 && !allowZeroOverlap) {
+      fail(
+        "--apply refused: the --keep-from-db set does not overlap the dumps at all.",
+        `Database : ${dbIdentity} (${dbCount} Items)`,
+        `Dumps    : ${byId.size} Items, 0 protected`,
+        "That normally means DATABASE_URL and the dumps are different environments",
+        "(e.g. a local DATABASE_URL against production dumps) — in which case this",
+        "run would remove every live production Item.",
+        "Point DATABASE_URL at the matching environment, or pass --allow-zero-overlap",
+        "if you have confirmed the dumps really are all orphans.",
+      );
+    }
+  }
+
+  let live = 0, gone = 0, removed = 0, failed = 0;
+  const liveIds: string[] = [];
 
   for (const item of byId.values()) {
     const label = `${item.externalItemId}  ${item.institutionName.padEnd(22)}`;
 
     if (keep.has(item.externalItemId)) {
-      console.log(`KEEP     ${label} (explicitly excluded)`);
-      skipped++;
+      console.log(`KEEP     ${label} (protected)`);
       continue;
     }
 
@@ -146,7 +260,8 @@ async function main() {
     try {
       if (!apply) {
         await plaidClient.itemGet({ access_token: accessToken });
-        console.log(`LIVE     ${label} (would remove)`);
+        console.log(`LIVE     ${label} (orphan candidate — would be removed)`);
+        liveIds.push(item.externalItemId);
         live++;
       } else {
         await plaidClient.itemRemove({ access_token: accessToken });
@@ -166,9 +281,18 @@ async function main() {
   }
 
   console.log(
-    `\n${apply ? `removed ${removed}` : `live ${live}`} · already-gone ${gone} · kept ${skipped} · failed ${failed}\n`,
+    `\n${apply ? `removed ${removed}` : `live ${live}`} · already-gone ${gone} · kept ${keep.size ? overlap : 0} · failed ${failed}\n`,
   );
-  if (!apply && live > 0) console.log("Re-run with --apply to remove the LIVE items above.\n");
+
+  if (!apply && live > 0) {
+    console.log("LIVE orphan candidates (copy into --keep= to EXCLUDE any you still own):");
+    console.log(liveIds.join(","));
+    console.log(
+      "\nTo remove them, re-run the SAME command with --apply AND a keep-list:\n" +
+      "  npm run plaid:orphans -- --apply --keep-from-db <the same dump paths>\n" +
+      "DATABASE_URL must point at the environment that OWNS the Items you are keeping.\n",
+    );
+  }
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
