@@ -4,9 +4,15 @@
  * Cleanly remove ONE Plaid connection — revoke it at Plaid, then close it out in
  * our database — so the institution can be re-linked from scratch.
  *
- *   npx tsx scripts/remove-plaid-connection.ts --institution "American Express"
- *   npx tsx scripts/remove-plaid-connection.ts --institution "American Express" --apply
- *   npx tsx scripts/remove-plaid-connection.ts --item <PlaidItem.id | Plaid item_id> --apply
+ *   npm run plaid:remove-connection -- --institution "American Express"
+ *   npm run plaid:remove-connection -- --institution "American Express" --apply
+ *   npm run plaid:remove-connection -- --item <PlaidItem.id | Plaid item_id> --apply
+ *
+ * NOTE: run via the npm script. This file imports lib/plaid/client.ts, which
+ * imports "server-only" — a Next-internal alias that is NOT an installed npm
+ * package, so bare `npx tsx` dies at module load with MODULE_NOT_FOUND. The npm
+ * script wires in the same preload the test runner uses
+ * (scripts/lib/server-only-preload.cjs). Behavior is otherwise unchanged.
  *
  * Requires DATABASE_URL / DIRECT_URL, ENCRYPTION_KEY and the Plaid credentials
  * for the environment the Item lives in. Dry run by default.
@@ -71,8 +77,8 @@ async function main(): Promise<void> {
   const itemRef     = arg("item");
 
   if (!institution && !itemRef) {
-    console.error('Usage: tsx scripts/remove-plaid-connection.ts --institution "American Express" [--apply]');
-    console.error('   or: tsx scripts/remove-plaid-connection.ts --item <PlaidItem.id | Plaid item_id> [--apply]');
+    console.error('Usage: npm run plaid:remove-connection -- --institution "American Express" [--apply]');
+    console.error('   or: npm run plaid:remove-connection -- --item <PlaidItem.id | Plaid item_id> [--apply]');
     process.exit(1);
   }
 

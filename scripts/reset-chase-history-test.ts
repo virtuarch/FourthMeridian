@@ -36,10 +36,16 @@
  *   cannot be recovered; they will be re-imported on next Plaid sync.
  *
  * Usage:
- *   npx tsx scripts/reset-chase-history-test.ts \
+ *   npm run dev:reset-chase-history -- \
  *     --plaid-item-id=<id> \
  *     --confirm=RESET_CHASE_HISTORY_TEST \
  *     [--delete-transactions]
+ *
+ *   NOTE: run via the npm script. This file imports lib/plaid/client.ts, which
+ *   imports "server-only" — a Next-internal alias that is NOT an installed npm
+ *   package, so bare `npx tsx` dies at module load with MODULE_NOT_FOUND. The
+ *   npm script wires in the same preload the test runner uses
+ *   (scripts/lib/server-only-preload.cjs). Behavior is otherwise unchanged.
  *
  * Flags:
  *   --plaid-item-id=<id>                 Required. The PlaidItem.id to reset.
@@ -49,7 +55,7 @@
  *                                        the import can be verified from zero.
  *
  * Example:
- *   npx tsx scripts/reset-chase-history-test.ts \
+ *   npm run dev:reset-chase-history -- \
  *     --plaid-item-id=clxxxxxxxx \
  *     --confirm=RESET_CHASE_HISTORY_TEST \
  *     --delete-transactions
@@ -88,7 +94,7 @@ async function main() {
     bail(
       "Missing required flag: --plaid-item-id=<id>\n\n" +
       "Usage:\n" +
-      "  npx tsx scripts/reset-chase-history-test.ts \\\n" +
+      "  npm run dev:reset-chase-history -- \\\n" +
       "    --plaid-item-id=<id> \\\n" +
       "    --confirm=RESET_CHASE_HISTORY_TEST \\\n" +
       "    [--delete-transactions]",

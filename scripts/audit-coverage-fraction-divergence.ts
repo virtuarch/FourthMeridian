@@ -57,7 +57,12 @@
  * by lib/ai/intelligence/liquidity-baseline-refusal.test.ts and by the baseline
  * authority's own tests.
  *
- * Run: npx tsx --env-file=.env.local scripts/audit-coverage-fraction-divergence.ts
+ * Run: npm run audit:coverage-fraction-divergence
+ *
+ * (Run via the npm script: this file transitively imports a module that declares
+ *  `import "server-only"`, which is not an installed npm package, so bare
+ *  `npx tsx` dies at module load. The npm script wires in the same preload the
+ *  test runner uses — scripts/lib/server-only-preload.cjs. Nothing else changes.)
  */
 
 import "@/lib/ai/assemblers/transactions";

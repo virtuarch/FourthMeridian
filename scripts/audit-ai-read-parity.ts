@@ -3,7 +3,12 @@
  *
  * v2.6-PARITY-0 — the AI read boundary, measured against the UI's. READ-ONLY.
  *
- *   npx tsx --env-file=.env.local scripts/audit-ai-read-parity.ts
+ *   npm run audit:ai-read-parity
+ *
+ * (Run via the npm script: this file transitively imports a module that declares
+ *  `import "server-only"`, which is not an installed npm package, so bare
+ *  `npx tsx` dies at module load. The npm script wires in the same preload the
+ *  test runner uses — scripts/lib/server-only-preload.cjs. Nothing else changes.)
  *
  * ── Why this exists before any fix ──────────────────────────────────────────
  *

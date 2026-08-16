@@ -46,8 +46,14 @@
  * the institution filter (default: amex / american express, case-insensitive).
  *
  * Usage:
- *   npx tsx scripts/purge-plaid-connection.ts \
+ *   npm run plaid:purge-connection -- \
  *     --email <login-email> [--institution <substring>] [--apply]
+ *
+ *   NOTE: run via the npm script. This file reaches lib/plaid/client.ts, which
+ *   imports "server-only" — a Next-internal alias that is NOT an installed npm
+ *   package, so bare `npx tsx` dies at module load with MODULE_NOT_FOUND. The
+ *   npm script wires in the same preload the test runner uses
+ *   (scripts/lib/server-only-preload.cjs). Behavior is otherwise unchanged.
  *
  *   (default)      DRY RUN. Resolves the user, finds matching PlaidItem(s),
  *                  prints full detail (item id, institution, status, createdAt,
@@ -84,7 +90,7 @@ if (!EMAIL_ARG || !EMAIL_ARG.trim()) {
   console.error(
     "\nERROR: --email is required.\n\n" +
     "Usage:\n" +
-    "  npx tsx scripts/purge-plaid-connection.ts --email <login-email> \\\n" +
+    "  npm run plaid:purge-connection -- --email <login-email> \\\n" +
     "    [--institution <substring>] [--apply]\n\n" +
     "  --email        (REQUIRED) login email of the account to scope to.\n" +
     "  --institution  case-insensitive substring vs PlaidItem.institutionName\n" +

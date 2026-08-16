@@ -49,7 +49,12 @@
  * one from a context that cannot support it — is pinned by the unit test above,
  * which runs in CI on fixtures and needs no corpus at all.
  *
- * Run: npx tsx --env-file=.env.local scripts/audit-brief-assessment-parity.ts
+ * Run: npm run audit:brief-assessment-parity
+ *
+ * (Run via the npm script: this file transitively imports a module that declares
+ *  `import "server-only"`, which is not an installed npm package, so bare
+ *  `npx tsx` dies at module load. The npm script wires in the same preload the
+ *  test runner uses — scripts/lib/server-only-preload.cjs. Nothing else changes.)
  */
 
 // Side-effect import of the ONE assembler under test — deliberately NOT the

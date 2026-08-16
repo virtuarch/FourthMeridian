@@ -24,8 +24,7 @@
  *     -e POSTGRES_USER=x -e POSTGRES_DB=x -p 127.0.0.1:55433:5432 postgres:16-alpine
  *   URL="postgresql://x:x@127.0.0.1:55433/x"
  *   DATABASE_URL=$URL DIRECT_URL=$URL npx prisma migrate deploy
- *   DATABASE_URL=$URL DIRECT_URL=$URL npx tsx \
- *     --require ./scripts/lib/server-only-preload.cjs scripts/test-incident-preview-path.ts
+ *   DATABASE_URL=$URL DIRECT_URL=$URL npm run harness:incident-preview-path
  *   docker rm -f incident-preview-db
  *
  * It refuses to run against anything that looks like the dev or production

@@ -35,9 +35,15 @@
  * any other user's data — asserted empirically (global counts unchanged).
  *
  * Default = DRY RUN (zero writes, zero Plaid calls). Re-run with --apply.
- *   npx tsx scripts/dev-reset-test-state.ts                    # dry-run
- *   npx tsx scripts/dev-reset-test-state.ts --apply            # perform
+ *   npm run dev:reset-test-state --                    # dry-run
+ *   npm run dev:reset-test-state -- --apply            # perform
  *   flags: --email <login-email>
+ *
+ * NOTE: run via the npm script. This file reaches lib/plaid/client.ts, which
+ * imports "server-only" — a Next-internal alias that is NOT an installed npm
+ * package, so bare `npx tsx` dies at module load with MODULE_NOT_FOUND. The npm
+ * script wires in the same preload the test runner uses
+ * (scripts/lib/server-only-preload.cjs). Behavior is otherwise unchanged.
  *
  * Irreversible when applied. Read the dry-run output before --apply.
  */

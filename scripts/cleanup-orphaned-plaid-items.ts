@@ -44,8 +44,14 @@
  * same way it would from application code.
  *
  * Usage:
- *   npx tsx scripts/cleanup-orphaned-plaid-items.ts [--verbose]
- *   npx tsx scripts/cleanup-orphaned-plaid-items.ts --apply [--verbose]
+ *   npm run plaid:cleanup-orphans -- [--verbose]
+ *   npm run plaid:cleanup-orphans -- --apply [--verbose]
+ *
+ *   NOTE: run via the npm script. This file reaches lib/plaid/client.ts, which
+ *   imports "server-only" — a Next-internal alias that is NOT an installed npm
+ *   package, so bare `npx tsx` dies at module load with MODULE_NOT_FOUND. The
+ *   npm script wires in the same preload the test runner uses
+ *   (scripts/lib/server-only-preload.cjs). Behavior is otherwise unchanged.
  *
  *   (default)   Dry run. Computes and prints every orphaned PlaidItem and
  *               every stray AccountConnection that would be closed. Zero

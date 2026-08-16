@@ -14,7 +14,12 @@
  * and without syncing in between, so the row population is identical.
  *
  * Run:
- *   npx tsx scripts/capture-assembler-snapshot.ts --label=before [--space=<id>] [--days=90]
+ *   npm run capture:assembler-snapshot -- --label=before [--space=<id>] [--days=90]
+ *
+ * (Run via the npm script: this file transitively imports a module that declares
+ *  `import "server-only"`, which is not an installed npm package, so bare
+ *  `npx tsx` dies at module load. The npm script wires in the same preload the
+ *  test runner uses — scripts/lib/server-only-preload.cjs. Nothing else changes.)
  *
  * Space selection: --space=<id> wins; otherwise the oldest PERSONAL Space.
  * The SpaceContext is constructed directly (OWNER of that Space) — this
@@ -42,7 +47,7 @@ function arg(name: string): string | undefined {
 async function main(): Promise<void> {
   const label = arg("label");
   if (label !== "before" && label !== "after") {
-    console.error("Usage: npx tsx scripts/capture-assembler-snapshot.ts --label=before|after [--space=<id>] [--days=90]");
+    console.error("Usage: npm run capture:assembler-snapshot -- --label=before|after [--space=<id>] [--days=90]");
     process.exit(1);
   }
   const days = Number(arg("days") ?? "90");

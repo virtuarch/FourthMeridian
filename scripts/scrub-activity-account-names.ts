@@ -29,10 +29,12 @@
  * Run (loads .env.local for DATABASE_URL; the server-only preload lets the
  * transitively-imported account-privacy module resolve under bare tsx, same as
  * scripts/run-tests.ts):
- *   npx dotenv -e .env.local -- npx tsx --require ./scripts/lib/server-only-preload.cjs \
- *     scripts/scrub-activity-account-names.ts             # dry-run (default)
- *   … scripts/scrub-activity-account-names.ts --apply     # write (LOCAL ONLY)
- *   … scripts/scrub-activity-account-names.ts [--limit=N]
+ *   npm run scrub:activity-account-names                  # dry-run (default)
+ *   npm run scrub:activity-account-names -- --apply       # write (LOCAL ONLY)
+ *   npm run scrub:activity-account-names -- --limit=N
+ *
+ * The npm script is the same command previously spelled out here (dotenv -e
+ * .env.local + the server-only preload), just named.
  */
 
 import { db } from "@/lib/db";

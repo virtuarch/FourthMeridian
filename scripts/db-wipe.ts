@@ -213,8 +213,8 @@ async function removePlaidItemsBeforeWipe(): Promise<void> {
     for (const id of stranded) console.log(`       ${id}`);
     console.log("\n     They are recoverable — the backup taken above still contains their");
     console.log("     tokens. After the wipe, retry with:");
-    console.log("       npx tsx scripts/remove-orphaned-plaid-items-from-backup.ts backups/<newest>.sql");
-    console.log("     (dry run; add --apply once the list looks right)\n");
+    console.log("       npm run plaid:orphans -- backups/<newest>.sql");
+    console.log("     (dry run; add --apply AND a keep-list once the list looks right)\n");
   }
 }
 

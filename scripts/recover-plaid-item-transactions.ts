@@ -17,8 +17,14 @@
  *    No schema change, no data deletion.
  *
  * Run:
- *   npx tsx scripts/recover-plaid-item-transactions.ts --item <plaidItemId>          # dry run
- *   npx tsx scripts/recover-plaid-item-transactions.ts --item <plaidItemId> --apply  # reset + re-sync
+ *   npm run plaid:recover-transactions -- --item <plaidItemId>          # dry run
+ *   npm run plaid:recover-transactions -- --item <plaidItemId> --apply  # reset + re-sync
+ *
+ * NOTE: run via the npm script. This file reaches lib/plaid/client.ts, which
+ * imports "server-only" — a Next-internal alias that is NOT an installed npm
+ * package, so bare `npx tsx` dies at module load with MODULE_NOT_FOUND. The npm
+ * script wires in the same preload the test runner uses
+ * (scripts/lib/server-only-preload.cjs). Behavior is otherwise unchanged.
  */
 
 import { db } from "@/lib/db";
@@ -36,7 +42,7 @@ function argValue(flag: string): string | null {
 async function main(): Promise<void> {
   const itemId = argValue("--item");
   if (!itemId) {
-    console.error("Usage: npx tsx scripts/recover-plaid-item-transactions.ts --item <plaidItemId> [--apply]");
+    console.error("Usage: npm run plaid:recover-transactions -- --item <plaidItemId> [--apply]");
     process.exit(1);
   }
 

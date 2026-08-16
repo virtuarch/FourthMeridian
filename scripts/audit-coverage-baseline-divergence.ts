@@ -49,7 +49,12 @@
  * baseline, and how far it sits from the measured one. A divergence count is a
  * fact about this database, not an invariant.
  *
- * Run: npx tsx --env-file=.env.local scripts/audit-coverage-baseline-divergence.ts
+ * Run: npm run audit:coverage-baseline-divergence
+ *
+ * (Run via the npm script: this file transitively imports a module that declares
+ *  `import "server-only"`, which is not an installed npm package, so bare
+ *  `npx tsx` dies at module load. The npm script wires in the same preload the
+ *  test runner uses — scripts/lib/server-only-preload.cjs. Nothing else changes.)
  */
 
 import "@/lib/ai/assemblers/transactions";

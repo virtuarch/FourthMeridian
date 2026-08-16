@@ -10,8 +10,7 @@
  *     DATABASE_URL=postgresql://tx1:tx1@127.0.0.1:55432/tx1 \
  *     DIRECT_URL=postgresql://tx1:tx1@127.0.0.1:55432/tx1 npx prisma migrate deploy
  *     TX1_DATABASE_URL=postgresql://tx1:tx1@127.0.0.1:55432/tx1 \
- *       npx tsx --require ./scripts/lib/server-only-preload.cjs \
- *       scripts/test-incident-transaction-safety.ts
+ *       npm run harness:incident-transaction-safety
  *
  * A DISPOSABLE database is mandatory, and its URL must be passed explicitly in
  * TX1_DATABASE_URL — this file never reads .env.local, so it cannot be pointed
