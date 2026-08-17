@@ -2,7 +2,7 @@ import { DebtClient } from "@/components/dashboard/DebtClient";
 import { getFicoData, getAccounts } from "@/lib/data/accounts";
 import { getDebtTransactions, getDebtPaymentRows } from "@/lib/data/transactions";
 import { getSpaceContext } from "@/lib/space";
-import { serializeSpaceConversionContext } from "@/lib/money/server-context";
+import { resolveEffectiveSpaceConversionSerialized } from "@/lib/money/server-context";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 
 export const preferredRegion = "sin1";
@@ -27,7 +27,14 @@ export default async function CreditPage() {
   // MC1 Phase 3 Slice 6 (F-1, D-6) — serialized conversion context for the
   // client-side per-liability rollup (each debt leg converts at its own row
   // date). All-USD Spaces serialize empty entries; math is identical.
-  const moneyCtx = await serializeSpaceConversionContext(ctx.space, {
+  //
+  // REVIEW-3 B-5 (E5) — resolved through the EFFECTIVE-currency decision point
+  // (V25-CLOSE-3A), not the raw requested one: when the Space's requested
+  // currency is wholly unsatisfiable the context targets USD, matching the
+  // reverted label the shell layout provides, instead of a context whose every
+  // conversion misses under a label the page still claims. All-USD Spaces are
+  // satisfiable by construction — behaviour unchanged.
+  const { moneyCtx } = await resolveEffectiveSpaceConversionSerialized(ctx.space, {
     currencies: [
       ...debtAccounts.map((a) => a.currency ?? null),
       ...transactions.map((t) => t.currency ?? null),

@@ -28,7 +28,7 @@ import type { ConversionContext } from "@/lib/money/types";
 import type { CashFlowContribution } from "@/lib/transactions/cash-flow";
 import type { Transaction } from "@/types";
 import { formatCurrency } from "@/lib/format";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { LeftPanel, RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
 import { TransactionSliceDrawer, useTransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
 import { CashFlowCategoryDetail } from "./CashFlowCategoryDetail";
@@ -96,7 +96,10 @@ export function CashFlowCategoryLedger({
   // Closes on a TimelineLens move — the window the slice described is gone.
   const [slice, setSlice] = useTransactionSlice(invalidationKey);
 
-  const fmt = (v: number) => (ctx ? formatCurrency(v, ctx.target) : formatCurrency(v, DEFAULT_DISPLAY_CURRENCY));
+  // REVIEW-3 B-5 — the display-currency AUTHORITY is the fallback, never a
+  // build-time USD literal (display-money.ts).
+  const aggregateCurrency = useAggregateCurrency(ctx);
+  const fmt = (v: number) => formatCurrency(v, aggregateCurrency);
 
   const total = items.reduce((s, c) => s + c.value, 0);
 

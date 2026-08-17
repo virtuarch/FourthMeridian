@@ -27,7 +27,7 @@ import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/
 import { WEALTH_CLASS_COLOR, DEFAULT_CHART_COLOR } from "@/lib/charts/chart-palette";
 import { SummaryWidget, type SummaryColor } from "@/components/space/widgets/SummaryWidget";
 import { classifyAccounts } from "@/lib/account-classifier";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import { formatCurrency } from "@/lib/format";
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
@@ -240,9 +240,9 @@ export function renderWealthAccountCards(
     );
   }
 
-  const fmt = ctx
-    ? (v: number) => formatCurrency(v, ctx.target)
-    : (v: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
+  // REVIEW-3 B-5 — no context ⇒ magnitudes with NO currency claim, never a USD
+  // relabel of native amounts (see display-money.ts).
+  const fmt = (v: number) => formatAggregateMoney(v, ctx);
 
   // Grid collapses to a single column on narrow widths; two columns otherwise.
   return (
@@ -556,9 +556,8 @@ function WealthAllocationChart({ accounts, ctx }: { accounts: WealthAdapterAccou
   }
 
   const colored = base.map((i) => ({ ...i, color: ASSET_CLASS_COLOR[i.id] ?? DEFAULT_CLASS_COLOR }));
-  const fmt = ctx
-    ? (v: number) => formatCurrency(v, ctx.target)
-    : (v: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
+  // REVIEW-3 B-5 — no context ⇒ no currency claim (display-money.ts).
+  const fmt = (v: number) => formatAggregateMoney(v, ctx);
 
   return (
     <div className="space-y-3">
@@ -625,7 +624,8 @@ export function renderWealthConcentration(
   const level: string       = hhi >= 0.25 ? "Concentrated" : hhi >= 0.15 ? "Moderately concentrated" : "Well diversified";
   const color: SummaryColor = hhi >= 0.15 ? "orange" : "green";
 
-  const fmt = (v: number) => (ctx ? formatCurrency(v, ctx.target) : new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v));
+  // REVIEW-3 B-5 — no context ⇒ no currency claim (display-money.ts).
+  const fmt = (v: number) => formatAggregateMoney(v, ctx);
 
   return (
     <SummaryWidget

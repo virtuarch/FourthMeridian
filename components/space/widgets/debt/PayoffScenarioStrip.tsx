@@ -15,16 +15,10 @@
  * renders nothing (the planner's own disclaimers already cover it).
  */
 
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatCurrency } from "@/lib/format";
+import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import type { ConversionContext } from "@/lib/money/types";
 import { buildPayoffScenarios, type PayoffScenarioInput } from "./payoff-scenarios";
-
-function fmtMoney(v: number, ctx?: ConversionContext): string {
-  return ctx
-    ? formatCurrency(v, ctx.target)
-    : new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
-}
 
 function horizonLabel(months: number | null): string {
   if (months == null) return "Won't cover interest";
@@ -42,7 +36,12 @@ export function PayoffScenarioStrip({
   input: PayoffScenarioInput;
   ctx?: ConversionContext;
 }) {
-  const rows = buildPayoffScenarios(input, { fmtMoney: (n) => fmtMoney(n, ctx) });
+  // REVIEW-3 B-5 — the display-currency AUTHORITY is the fallback, never a
+  // build-time USD literal (display-money.ts). The formatter is INJECTED into
+  // buildPayoffScenarios, which no longer owns a "$" default of its own.
+  const aggregateCurrency = useAggregateCurrency(ctx);
+  const fmtMoney = (v: number) => formatCurrency(v, aggregateCurrency);
+  const rows = buildPayoffScenarios(input, { fmtMoney });
   if (rows.length === 0) return null;
 
   return (
@@ -55,7 +54,7 @@ export function PayoffScenarioStrip({
             <span className="text-[var(--text-muted)]">{horizonLabel(r.months)}</span>
             {r.interestSavedVsMin != null && r.interestSavedVsMin > 0 && (
               <span className="font-medium text-[var(--accent-positive)]">
-                saves {fmtMoney(r.interestSavedVsMin, ctx)}
+                saves {fmtMoney(r.interestSavedVsMin)}
               </span>
             )}
           </span>

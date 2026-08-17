@@ -212,7 +212,6 @@ export async function getRecentSnapshots(
 // both reach it. Re-exported here so no existing consumer moved. See that
 // module's header for what the unreachability cost.
 export { canonicalWindowChange, seriesSpanDays } from "@/lib/data/snapshot-window";
-import { canonicalWindowChange } from "@/lib/data/snapshot-window";
 
 export interface SpaceNetWorthSummary {
   netWorth: number;

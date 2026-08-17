@@ -45,8 +45,8 @@ import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { reachableNow } from "@/components/space/widgets/liquidity-adapters";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatAggregateMoney, useAggregateCurrency } from "@/components/space/widgets/display-money";
+import { formatDate } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot, Transaction } from "@/types";
 import type { LensResult } from "@/lib/perspective-engine/types";
@@ -68,9 +68,8 @@ import { useLiquiditySpaceData } from "./useLiquiditySpaceData";
 import type { LiquidityAdapterAccount } from "@/components/space/widgets/liquidity-adapters";
 
 function fmtMoney(v: number, ctx?: ConversionContext): string {
-  return ctx
-    ? formatCurrency(v, ctx.target)
-    : new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
+  // REVIEW-3 B-5 — no context ⇒ no currency claim (display-money.ts).
+  return formatAggregateMoney(v, ctx);
 }
 
 function fmtSigned(v: number, ctx?: ConversionContext): string {
@@ -202,7 +201,9 @@ export function LiquidityWorkspace({
   // as a source would describe money the figure does not include.
   const nowSourceCount = reach.coveredCount;
 
-  const displayCurrency = ctx?.target ?? DEFAULT_DISPLAY_CURRENCY;
+  // REVIEW-3 B-5 — the display-currency AUTHORITY is the fallback, never a
+  // build-time USD literal (display-money.ts).
+  const displayCurrency = useAggregateCurrency(ctx);
   const historical = asOf < today;
 
   // ② Balance history — the cashNow tier over time, clipped to the shell window from the

@@ -29,7 +29,7 @@
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { SummaryWidget, type SummaryColor } from "@/components/space/widgets/SummaryWidget";
 import { classifyAccounts } from "@/lib/account-classifier";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import { formatCurrency } from "@/lib/format";
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
@@ -71,9 +71,9 @@ function inDisp(amount: number, currency: string | null | undefined, ctx?: Conve
 }
 
 function fmtMoney(v: number, ctx?: ConversionContext): string {
-  return ctx
-    ? formatCurrency(v, ctx.target)
-    : new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
+  // REVIEW-3 B-5 — no context ⇒ no currency claim, never a USD relabel of
+  // native amounts (display-money.ts).
+  return formatAggregateMoney(v, ctx);
 }
 
 function valueFormatterProps(ctx?: ConversionContext) {
