@@ -111,9 +111,9 @@ console.log("\nPROBE 2 — available credit is never a debt figure");
     (authority.match(/AVAILABLE_CREDIT/g) ?? []).length ===
       (authority.match(/availableClaim\("AVAILABLE_CREDIT"/g) ?? []).length +
       (authority.match(/quantity === "AVAILABLE_CREDIT"/g) ?? []).length);
-  // The consumer accessor refuses everything that is not the named quantity.
-  check("availableCredit() returns null for any other quantity",
-    /quantity === "AVAILABLE_CREDIT"\s*\?\s*b\.available\.amount\s*:\s*null/.test(authority));
+  // (REVIEW-3: the availableCredit() consumer accessor was deleted — zero
+  // importers; consumers read the named claim directly. The named-quantity
+  // discipline is pinned above via the claim construction itself.)
 }
 
 // ── 3. Liquidity never treats credit as cash ─────────────────────────────────
@@ -121,25 +121,15 @@ console.log("\nPROBE 2 — available credit is never a debt figure");
 console.log("\nPROBE 3 — credit is never cash");
 {
   const authority = code(AUTHORITY);
-  // Slice the accessor's OWN body — a window measured in characters would run
-  // into the next function and assert on the wrong code.
-  const bodyOf = (fn: string): string => {
-    const at = authority.indexOf(`export function ${fn}(`);
-    if (at < 0) return "";
-    const open = authority.indexOf("{", authority.indexOf(")", at));
-    let depth = 0;
-    for (let i = open; i < authority.length; i++) {
-      if (authority[i] === "{") depth++;
-      else if (authority[i] === "}" && --depth === 0) return authority.slice(open, i + 1);
-    }
-    return "";
-  };
-  const reach = bodyOf("reachableCash");
-  check("reachableCash() has a body to assert on", reach.length > 20);
-  check("reachableCash() admits ONLY AVAILABLE_CASH",
-    reach.includes('"AVAILABLE_CASH"') && /:\s*null/.test(reach));
-  check("reachableCash() does not admit AVAILABLE_CREDIT", !reach.includes("AVAILABLE_CREDIT"));
-  check("reachableCash() does not admit SETTLED_CASH", !reach.includes("SETTLED_CASH"));
+  // (REVIEW-3: the reachableCash() accessor was deleted — zero importers. The
+  // LIVE boundary is reconcileAccount's reachable-claim guard: only a named
+  // AVAILABLE_CASH claim may become REACHABLE_CASH.)
+  check("reachable cash admits ONLY AVAILABLE_CASH (reconciliation guard)",
+    /avail\.quantity === "AVAILABLE_CASH"\s*\?\s*claim\("REACHABLE_CASH", avail\.amount\)/.test(authority));
+  check("available credit never becomes reachable cash",
+    !/quantity === "AVAILABLE_CREDIT"[\s\S]{0,120}claim\("REACHABLE_CASH"/.test(authority));
+  check("settled cash never becomes reachable cash",
+    !/quantity === "SETTLED_CASH"[\s\S]{0,120}claim\("REACHABLE_CASH"/.test(authority));
   // The liquidity lens must not have started consuming the raw column.
   const liq = code("lib/perspective-engine/lenses/liquidity.core.ts");
   check("the liquidity core reads no available column", !liq.includes("availableBalance"));
@@ -152,19 +142,10 @@ console.log("\nPROBE 4 — an account's value is never its available cash");
   const authority = code(AUTHORITY);
   check("the investment branch returns SETTLED_CASH or refuses — never the balance",
     /case "investment":[\s\S]{0,240}PROVIDER_DID_NOT_REPORT[\s\S]{0,120}SETTLED_CASH/.test(authority));
-  const settledBody = (() => {
-    const at = authority.indexOf("export function settledCash(");
-    const open = authority.indexOf("{", authority.indexOf(")", at));
-    let depth = 0;
-    for (let i = open; i < authority.length; i++) {
-      if (authority[i] === "{") depth++;
-      else if (authority[i] === "}" && --depth === 0) return authority.slice(open, i + 1);
-    }
-    return "";
-  })();
-  check("settledCash() admits ONLY SETTLED_CASH",
-    settledBody.includes('"SETTLED_CASH"') &&
-    !settledBody.includes("AVAILABLE_CASH") && !settledBody.includes("AVAILABLE_CREDIT"));
+  // (REVIEW-3: the settledCash() accessor was deleted — zero importers. The
+  // named-quantity claim in the investment branch, pinned above, is the live
+  // statement; the reachable-claim guard in PROBE 3 keeps SETTLED_CASH out of
+  // liquidity.)
 }
 
 // ── 5. Null available stays unknown ──────────────────────────────────────────

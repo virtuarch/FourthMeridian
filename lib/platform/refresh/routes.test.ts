@@ -32,8 +32,11 @@ function check(name: string, cond: boolean, detail?: string): void {
 const ROOT = process.cwd();
 const BASE = "app/api/platform/platform-ops/refresh";
 
-/** The four projection routes and the one seam route this slice ships. */
-const PROJECTION_ROUTES = ["summary", "provider-operations", "coverage", "failures"] as const;
+/** The projection routes and the one seam route.
+ *  (REVIEW-3: the "failures" projection route was deleted — no widget was ever
+ *  built over it and it had zero non-test callers; getFailureSummary remains in
+ *  the read model, unrouted.) */
+const PROJECTION_ROUTES = ["summary", "provider-operations", "coverage"] as const;
 const SEAM_ROUTE = "executions";
 const ALL_ROUTES = [...PROJECTION_ROUTES, SEAM_ROUTE];
 
@@ -95,9 +98,10 @@ function main() {
       summary: "getRefreshSummary",
       "provider-operations": "getProviderOperationSummary",
       coverage: "getCoverageSummary",
-      failures: "getFailureSummary",
     };
-    const all = Object.values(expected);
+    // getFailureSummary stays in the ban list: its route was deleted, so no
+    // surviving route may quietly adopt the unrouted projection.
+    const all = [...Object.values(expected), "getFailureSummary"];
     for (const r of PROJECTION_ROUTES) {
       const src = code(routeFile(r));
       check(`${r}: calls ${expected[r]}`, new RegExp(`\\b${expected[r]}\\(`).test(src));
