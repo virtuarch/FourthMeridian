@@ -11,7 +11,8 @@
  * line). Unknown ⇒ "Other" — we never guess from the name (a claim is a claim).
  */
 
-import { amountOwed, type LiabilityState } from "@/lib/debt/balance-semantics";
+import { type LiabilityState } from "@/lib/debt/balance-semantics";
+import { utilizationPercent } from "@/lib/accounts/credit-utilization";
 import type { DebtPerspectiveAccount } from "@/components/space/widgets/debt-perspective-adapters";
 
 /**
@@ -85,11 +86,15 @@ export function classifyDebt(a: DebtPerspectiveAccount): DebtClass {
   return "other";
 }
 
-/** Utilization % for a revolving line (owed / limit), or null when no usable
- *  limit exists. Currency-agnostic (both native to the same account).
- *  V25-SIDE-1 — the numerator is `amountOwed`, so a credit balance reads 0%
- *  used rather than a negative utilization. */
+/** Utilization % for a revolving line, or null when no usable limit exists.
+ *  Currency-agnostic (both native to the same account).
+ *
+ *  v2.6-DEBT-1 — this had transcribed the ratio itself
+ *  (`amountOwed(balance) / creditLimit * 100`) rather than calling the module
+ *  that owns it. Same formula, second site: a later change to what counts as a
+ *  usable limit would have landed in one of them. `lib/accounts/credit-utilization.ts`
+ *  is the owner (it also owns the LEVEL bands the KPI strip and signals read),
+ *  so this is now a thin adapter from the ledger's row shape onto it. */
 export function accountUtilization(a: DebtPerspectiveAccount): number | null {
-  if (a.creditLimit == null || a.creditLimit <= 0) return null;
-  return (amountOwed(a.balance) / a.creditLimit) * 100;
+  return utilizationPercent({ balance: a.balance, creditLimit: a.creditLimit });
 }

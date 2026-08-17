@@ -14,7 +14,9 @@ import { CreditCard, X } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY, formatBalance, currencySymbol } from "@/lib/currency";
 import { formatMonthYear } from "@/lib/format";
 import { convertMoney } from "@/lib/money/convert";
-import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
+// v2.6-DEBT-1 — `amountOwed` / `hasOutstandingDebt` are no longer applied here:
+// the aggregate authority owns both, so the planner cannot drift from the rule.
+import { computeDebtAggregate, type DebtAggregateRow } from "@/lib/debt/aggregates";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
 import { useBodyScrollLock } from "@/components/atlas/useBodyScrollLock";
@@ -184,27 +186,33 @@ export function DebtPayoffSection({
   // (lib/debt/balance-semantics.ts). A credit balance contributes nothing: it
   // must not net against another card's obligation, carry APR weight, or imply
   // a minimum payment.
+  // v2.6-DEBT-1 — the population rule (who counts, how they are weighted, what a
+  // missing rate means) belongs to `computeDebtAggregate`, not to this planner.
+  // This block now does only what IS the planner's context: convert into the
+  // display currency and carry the FX taint. Six surfaces derived this same
+  // triple; five of them wrote it out again, and one of those five disagreed.
   const filteredConv = filtered.map((a) => {
-    const conv = inDisp(a.balance, a.currency);
-    return { a, bal: { amount: amountOwed(conv.amount), estimated: conv.estimated }, owes: hasOutstandingDebt(conv.amount) };
+    const bal = inDisp(a.balance, a.currency);
+    const min = a.minimumPayment == null ? null : inDisp(a.minimumPayment, a.currency);
+    return { a, bal, min };
   });
-  const total        = filteredConv.reduce((s, r) => s + r.bal.amount, 0);
 
-  const withRate    = filteredConv.filter((r) => r.a.interestRate != null && r.owes);
-  const weightedApr = withRate.length > 0
-    ? withRate.reduce((s, r) => s + (r.a.interestRate! * r.bal.amount), 0)
-      / withRate.reduce((s, r) => s + r.bal.amount, 0)
-    : null;
-  const hasRates = weightedApr != null;
+  const agg = computeDebtAggregate(
+    filteredConv.map(({ a, bal, min }): DebtAggregateRow => ({
+      balance:        bal.amount,
+      apr:            a.interestRate ?? null,
+      minimumPayment: min?.amount ?? null,
+    })),
+  );
 
-  const minPaymentConv = filteredConv
-    .filter((r) => r.owes)
-    .map((r) => inDisp(r.a.minimumPayment ?? 0, r.a.currency));
-  const minPayment     = minPaymentConv.reduce((s, c) => s + c.amount, 0);
+  const total       = agg.totalOwed;
+  const weightedApr = agg.weightedApr;
+  const hasRates    = weightedApr != null;
+  const minPayment  = agg.minimumPayment;
 
   // Aggregate taint — any unresolvable row marks every derived projection.
   const aggEstimated =
-    filteredConv.some((r) => r.bal.estimated) || minPaymentConv.some((c) => c.estimated);
+    filteredConv.some((r) => r.bal.estimated) || filteredConv.some((r) => r.min?.estimated === true);
   const est = aggEstimated ? "≈ " : "";
 
   const monthlyEquiv = freq === "week" ? (amount * 52) / 12

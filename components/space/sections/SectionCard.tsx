@@ -20,7 +20,8 @@ import { simulatePayoff } from "@/components/space/sections/DebtPayoffSection";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
 import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
-import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
+// v2.6-DEBT-1 — the owed/settled rules moved into the aggregate authority.
+import { computeDebtAggregate, type DebtAggregateRow } from "@/lib/debt/aggregates";
 import { sectionQuantityNote } from "@/lib/balances/section-quantity";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot, Transaction } from "@/types";
@@ -135,20 +136,32 @@ export function SectionCard({
     // copy is time-only, so no label change is involved.
     // V25-SIDE-1 — a payoff projection is over amount OWED; credits never net
     // against another account's obligation, and nothing is due on a settled card.
+    // v2.6-DEBT-1 — this block held a SIXTH weighted-APR derivation, and it was
+    // the one that disagreed. It divided a rate-weighted numerator by the total
+    // over ALL debt, folding every UNRATED row in as if it carried 0% — and a
+    // BALANCE_ONLY row reaches this component with its rate stripped by privacy
+    // sanitisation, so a withheld card silently dragged the blended rate toward
+    // zero. Measured on the seeded "Debt Payoff Tracker" Space, which renders
+    // exactly this summary: 10.1995% against the 12.1194% every other surface
+    // stated, i.e. this card promised the user a payoff date the money does not
+    // support. `computeDebtAggregate` excludes an unrated row from BOTH sides.
     const debtAccs = accounts.filter((a) => a.type === "debt");
-    const balConv  = debtAccs.map((a) => {
-      const c = toDisplay(a.balance, a.currency, ctx);
-      return { amount: amountOwed(c.amount), estimated: c.estimated };
-    });
-    const totalBal = balConv.reduce((s, c) => s + c.amount, 0);
-    const totalMin = debtAccs
-      .filter((a) => hasOutstandingDebt(a.balance))
-      .map((a) => toDisplay(a.minimumPayment ?? 0, a.currency, ctx))
-      .reduce((s, c) => s + c.amount, 0);
+    const conv = debtAccs.map((a) => ({
+      bal: toDisplay(a.balance, a.currency, ctx),
+      min: a.minimumPayment == null ? null : toDisplay(a.minimumPayment, a.currency, ctx),
+      apr: a.interestRate ?? null,
+    }));
+    const agg = computeDebtAggregate(
+      conv.map((c): DebtAggregateRow => ({
+        balance:        c.bal.amount,
+        apr:            c.apr,
+        minimumPayment: c.min?.amount ?? null,
+      })),
+    );
+    const totalBal = agg.totalOwed;
+    const totalMin = agg.minimumPayment;
     if (totalBal > 0 && totalMin > 0) {
-      const avgApr      = debtAccs.reduce((s, a, i) => s + (a.interestRate ?? 0) * balConv[i].amount, 0) / totalBal;
-      const monthlyRate = avgApr / 100 / 12;
-      const result      = simulatePayoff(totalBal, monthlyRate, totalMin);
+      const result = simulatePayoff(totalBal, agg.monthlyRate, totalMin);
       if (result) {
         const yrs = Math.floor(result.months / 12);
         const mos = result.months % 12;
