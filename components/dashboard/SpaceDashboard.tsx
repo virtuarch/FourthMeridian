@@ -1,4 +1,5 @@
 "use client";
+import { todayUTCISO } from "@/lib/time/clock";
 
 /**
  * SpaceDashboard
@@ -442,7 +443,10 @@ export function SpaceDashboard({
   // today, Compare To the first of this month). earliestDefensibleDate = the
   // oldest non-fxMiss snapshot (Space-level, lens-independent) → powers the ALL
   // slice's Compare To; null ⇒ never fabricated.
-  const shellToday = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  // B-6 — the client's UTC day, from THE clock seam (lib/time/clock.ts). It
+  // gates fetches and seeds time-range defaults; where a server read answers
+  // an as-of question, the server's classification wins (lib/time/basis.ts).
+  const shellToday = useMemo(() => todayUTCISO(), []);
   const earliestDefensibleDate = useMemo(
     () => snapshots?.find((s) => !s.fxMiss)?.date ?? null,
     [snapshots],

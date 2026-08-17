@@ -64,6 +64,11 @@ import {
   type BucketKind, type HistoricalAccountNode, type HistoricalCrumb,
   type HistoricalSeriesPoint, type ValueBasis,
 } from "./historical-node.core";
+// REVIEW-3 B-6 — THE clock and THE today/history switch. This module runs on
+// the server, so its todayUTCISO() IS the authoritative classification day
+// (lib/time/basis.ts: server-authoritative asOf classification).
+import { todayUTCISO } from "@/lib/time/clock";
+import { isHistoricalDay } from "@/lib/time/basis";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -115,7 +120,9 @@ function coverageNote(a: AccountRow): string | null {
  * authorities for one date is the thing this arc exists to remove.
  */
 function observedPoint(dateISO: string, todayISO: string, balance: number): HistoricalSeriesPoint | null {
-  if (dateISO < todayISO) return null;
+  // B-6 — the ONE today/history switch (lib/time/basis.ts), never a local
+  // comparison: a historical day is reconstructed, the present day is observed.
+  if (isHistoricalDay(dateISO, todayISO)) return null;
   return { dateISO, value: round2(balance), basis: "observed" };
 }
 
@@ -236,7 +243,7 @@ async function investmentAccountNodes(
     holdConstantBeforeEarliest: true, excludeDigitalAssetAccounts: true,
   });
 
-  const todayISO = isoDate(truncDateUTC(new Date()));
+  const todayISO = todayUTCISO();
 
   return accounts.map((a) => {
     const points: HistoricalSeriesPoint[] = dates.map((d) => {
@@ -258,7 +265,7 @@ async function investmentAccountNodes(
     const set = byDate.get(args.dateISO);
     const mine = (set?.held ?? []).filter((h) => h.financialAccountId === a.id);
     const valued = mine.filter((h) => h.reportingValue != null);
-    const present = args.dateISO >= todayISO;
+    const present = !isHistoricalDay(args.dateISO, todayISO);
     const at = points.find((p) => p.dateISO === args.dateISO)
       ?? observedPoint(args.dateISO, todayISO, a.balance);
 
@@ -292,7 +299,7 @@ async function cryptoAccountNodes(
   const fx = await buildSpaceConversionContextById(args.spaceId, { currencies: ["USD"], dates });
   const toReporting = (usd: number, d: string): number =>
     classifyAccounts([{ type: "crypto", balance: usd, currency: "USD" }], fx, d).totalDigitalAssets;
-  const todayISO = isoDate(truncDateUTC(new Date()));
+  const todayISO = todayUTCISO();
   const movements = await (client ?? db).transaction.findMany({
     where: {
       financialAccountId: { in: accounts.map((a) => a.id) },

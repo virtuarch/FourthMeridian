@@ -294,13 +294,24 @@ test("INV-18b: the projection filter has exactly one definition", () => {
   assert.deepEqual(offenders, [], "these modules express the event projection themselves");
 });
 
-test("INV-18c: the DETAIL read stays unfiltered, so a superseded row is still inspectable", () => {
-  // Dropping a superseded row from a TOTAL is correct. Refusing to open it is
-  // not — its observations are the audit trail for the row that replaced it.
-  const logic = read("lib/data/transactions.ts");
-  const detail = logic.slice(logic.indexOf("export async function getTransactionDetail"));
-  assert.ok(!/eventProjectionWhere/.test(detail.slice(0, detail.indexOf("\nexport "))),
-    "the detail read filters by projection — a superseded row would become unopenable");
+test("INV-18c: the DETAIL read carries the SAME population as the lists (REVIEW-3 row 36)", () => {
+  // REVERSED from the original L8 stance ("stays unfiltered, so a superseded
+  // row is still inspectable"). That stance existed to keep the eventIdentity
+  // observation-history disclosure reachable on a superseded row's drawer —
+  // and REVIEW-3 deleted that disclosure (no component ever rendered it, the
+  // field was not in the TransactionDetail type). What remained was pure
+  // divergence: a row absent from EVERY list (superseded pending, crypto
+  // ledger, investment activity) still answered a direct-id detail read with a
+  // full banking-framed DTO. The detail WHERE now ANDs eventProjectionWhere()
+  // and BANKING_POPULATION exactly as bankingTransactionWhere does; the audit
+  // trail for superseded rows lives where audits read it (the observation
+  // tables via scripts/audit-event-identity.ts), not in a product DTO.
+  const dq = read("lib/transactions/detail-query.ts");
+  assert.ok(/AND:\s*\[eventProjectionWhere\(\),\s*BANKING_POPULATION\]/.test(dq),
+    "transactionDetailWhere must AND the event projection + banking population, like every list read");
+  // Composed with AND, never spread — both fragments carry an OR (INV-18's hazard).
+  assert.ok(!/\.\.\.eventProjectionWhere\(\)/.test(dq) && !/\.\.\.BANKING_POPULATION/.test(dq),
+    "the fragments must be AND-composed, never object-spread");
 });
 
 function walkTs(d: string, out: string[] = []): string[] {

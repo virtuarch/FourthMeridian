@@ -35,6 +35,7 @@
  */
 
 import "server-only";
+import { todayUTCISO } from "@/lib/time/clock";
 import { deriveIngestionDeferral, type IngestionDeferral } from "@/lib/sync/deferred-ingestion";
 
 import { db } from "@/lib/db";
@@ -94,9 +95,8 @@ export interface RefreshProjectionDeps {
 
 // ── Window + envelope ───────────────────────────────────────────────────────────
 
-function todayISO(now: Date): string {
-  return now.toISOString().slice(0, 10);
-}
+// REVIEW-3 B-6 — the day formatter is THE clock seam's (lib/time/clock.ts).
+const todayISO = (now: Date): string => todayUTCISO(now);
 function minusDaysISO(dateISO: string, days: number): string {
   return new Date(Date.parse(`${dateISO}T00:00:00.000Z`) - days * 86_400_000)
     .toISOString()

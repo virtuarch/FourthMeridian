@@ -24,8 +24,11 @@
  * the abstraction later through its own domain implementation. A probe asserts
  * the crypto writers never reach this module.
  *
- * ⚠️ NOTHING READS THIS YET. L8 establishes identity and dual-write; the reader
- * cutover is a separate slice.
+ * ⚠️ Readers: the population cutover reads the projection through
+ * `eventProjectionWhere` (L8-B1), and — B-6 — the event's economicDate is now
+ * AUTHORITATIVE for its current row's chronology: `reprojectEvent` materializes
+ * it into `Transaction.economicDate` (see its doc block). Lifecycle/amount
+ * remain row-carried; their reader cutover is still a separate slice.
  */
 
 // ⚠️ NO `server-only` marker, deliberately.
@@ -110,6 +113,13 @@ export async function recordTransactionObservation(
     select: { id: true, eventId: true },
   });
   if (existing) {
+    // B-6 — RE-PIN even on the idempotent path. The ingest writer stamps the
+    // row's economicDate from ROW evidence just before calling here; when the
+    // event's pinned date differs (a pending→posted chain whose pin is earlier
+    // than the row's own evidence supports), a replayed payload would leave the
+    // row on the wrong date FOREVER — the observation key exists, so no future
+    // write ever corrects it. One guarded no-op-when-equal write closes that.
+    await pinRowToEvent(db, existing.eventId);
     return { observationId: existing.id, eventId: existing.eventId, basis: "PERSISTED_LINK", refusal: null, created: false };
   }
 
@@ -240,11 +250,29 @@ function hasInteractiveTransaction(db: Db): db is PrismaClient {
  * event's state is a function of its whole history — that is what makes it
  * re-derivable, and what keeps the economic date pinned to the FIRST observation
  * when a posting arrives later.
+ *
+ * ── B-6: the event's economic date is MATERIALIZED into its current row ─────
+ *
+ * `TransactionEvent.economicDate` is the authority for an event-linked row's
+ * chronology (`projectEvent` derives it through `resolveEconomicDate`, the one
+ * resolver — first resolution wins). But every product surface sorts, filters
+ * and folds on `Transaction.economicDate`, the indexed column. So after every
+ * reprojection the event's answer is written onto the event's CURRENT row
+ * (no-op when already equal) — the row column stays what it has always been,
+ * the sort key, and the event is what decides it. Row and event therefore
+ * agree BY CONSTRUCTION; `audit-event-identity` fails if they ever do not, and
+ * event-economic-date-rule.test.ts pins the whole rule.
+ *
+ * Rows OUTSIDE the event domain (self-custody crypto; any provider the
+ * identity authority refuses) keep their write-time evidence-derived value —
+ * there is no observation history to pin them to, and nothing here touches
+ * them. Superseded (tombstoned) rows are also left alone: they are outside
+ * every product population and their columns are provider provenance.
  */
 export async function reprojectEvent(db: Db, eventId: string): Promise<void> {
   const observations = await db.transactionObservation.findMany({
     where: { eventId },
-    select: { observedAt: true, lifecycle: true, amount: true, postingDate: true, economicDate: true, transactionId: true },
+    select: { observedAt: true, lifecycle: true, amount: true, postingDate: true, economicDate: true, authorizedAt: true, transactionId: true },
     orderBy: { observedAt: "asc" },
   });
   if (observations.length === 0) return;
@@ -263,6 +291,7 @@ export async function reprojectEvent(db: Db, eventId: string): Promise<void> {
     amount: o.amount,
     postingDate: o.postingDate,
     economicDate: o.economicDate,
+    authorizedAt: o.authorizedAt,
     liveTransactionId: o.transactionId && live.has(o.transactionId) ? o.transactionId : null,
   }));
   const p = projectEvent(facts);
@@ -280,5 +309,33 @@ export async function reprojectEvent(db: Db, eventId: string): Promise<void> {
       postedObservedAt: p.postedObservedAt,
       observationCount: p.observationCount,
     },
+  });
+
+  // The event's answer, onto the row every surface actually reads. Guarded so
+  // an agreeing row costs no write; never touches a row the event does not
+  // currently project.
+  if (p.currentTransactionId) {
+    await db.transaction.updateMany({
+      where: { id: p.currentTransactionId, NOT: { economicDate: p.economicDate } },
+      data: { economicDate: p.economicDate },
+    });
+  }
+}
+
+/**
+ * B-6 — re-align an event's current row with the event's already-stored
+ * projection, WITHOUT re-deriving it. Used on the idempotent replay path,
+ * where the observations are unchanged (so the projection is too) but the
+ * ingest writer has just re-stamped the row from row evidence.
+ */
+async function pinRowToEvent(db: Db, eventId: string): Promise<void> {
+  const ev = await db.transactionEvent.findUnique({
+    where: { id: eventId },
+    select: { economicDate: true, currentTransactionId: true },
+  });
+  if (!ev?.currentTransactionId) return;
+  await db.transaction.updateMany({
+    where: { id: ev.currentTransactionId, NOT: { economicDate: ev.economicDate } },
+    data: { economicDate: ev.economicDate },
   });
 }

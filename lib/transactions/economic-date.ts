@@ -53,6 +53,31 @@
  * Negative lag — an authorization dated AFTER its posting — is also
  * CONTRADICTORY. Zero rows today; the guard exists because "zero today" is not
  * an invariant.
+ *
+ * ── REVIEW-3 B-6: FIRST RESOLUTION WINS (event ↔ row reconciliation) ────────
+ *
+ * Where an observation history exists (the L8 event tables), the economic date
+ * is decided ONCE, at the first observation, and never moves afterwards:
+ * `firstPendingDate` — the economic date resolved when the row was FIRST seen
+ * PENDING — outranks a later authorization attestation, which outranks posting.
+ *
+ * Why first-pending outranks authorization: an `authorizedAt` can APPEAR at
+ * posting time (null while pending, stamped when posted), so an auth-first
+ * precedence would let the posting DELIVERY move an already-published economic
+ * date — precisely the movement this module exists to forbid ("a closed period
+ * is closed"). The first-pending value is itself a resolution of THIS module
+ * (authorization-aware at pending time), so nothing is lost: when the pending
+ * row carried an authorization, that authorization IS the pinned value.
+ *
+ * The credibility bound applies to the pin too: a first-pending date more than
+ * ECONOMIC_DATE_MAX_LAG_DAYS before (or after) the posting is refused and falls
+ * through to the row's own evidence — an event pin is evidence, not an oracle.
+ *
+ * This is the SAME derivation `projectEvent` (event-identity.ts) uses for
+ * `TransactionEvent.economicDate`, and `reprojectEvent` (event-write.ts)
+ * materializes the event's answer into `Transaction.economicDate` — so the
+ * event and its current row agree BY CONSTRUCTION. One resolver, one rule.
+ * Pinned by lib/transactions/event-economic-date-rule.test.ts.
  */
 
 /** Which evidence produced the economic date. */
@@ -86,9 +111,11 @@ export interface EconomicDateEvidence {
   /** Transaction.authorizedAt — the provider's attestation, or null. */
   authorizedAt?: Date | string | null;
   /**
-   * The date this row carried when it was FIRST observed pending, where an
-   * observation history exists. Absent today (no observation log — that is L8);
-   * the parameter exists so adding one changes no call site.
+   * The economic date resolved when this row's EVENT was first observed
+   * PENDING, where an observation history exists (L8). Supplied by the event
+   * projection (`projectEvent` / `reprojectEvent`); a row with no event — or an
+   * event never seen pending — has none. When credible, it WINS: first
+   * resolution is final (see the header).
    */
   firstPendingDate?: Date | string | null;
   /** True when the date came from a user/import rather than a provider. */
@@ -118,19 +145,38 @@ const iso = (d: Date): string => d.toISOString().slice(0, 10);
 const dayDiff = (a: Date, b: Date): number => Math.round((a.getTime() - b.getTime()) / DAY_MS);
 
 /**
- * Resolve the economic date. Priority: credible bounded authorization → first
- * observed pending date → posting date → user-supplied.
+ * Resolve the economic date. Priority (B-6 — first resolution wins):
+ * credible first-pending observation → credible bounded authorization →
+ * posting date → user-supplied.
  *
- * The resolution is a pure function of the row's own evidence, which is what
- * makes it IMMUTABLE across lifecycle transitions: posting changes `pending`,
- * `settlementState` and the row's identity, but changes none of the inputs
- * below, so the answer cannot move. (Posting DOES change `Transaction.date`,
- * which is why `authorizedAt` outranks it.)
+ * The resolution is a pure function of the evidence, which is what makes it
+ * IMMUTABLE across lifecycle transitions: posting changes `pending`,
+ * `settlementState` and the row's identity, but a first-pending resolution —
+ * once one exists — outranks everything posting can deliver (including a
+ * late-arriving `authorizedAt`), so the answer cannot move. Where no
+ * observation history exists, `authorizedAt` outranks `Transaction.date` for
+ * the same reason: posting rewrites `date`, never `authorizedAt`.
  */
 export function resolveEconomicDate(e: EconomicDateEvidence): EconomicDateResolution {
   const posting = toUTCDate(e.postingDate);
   const postingISO = iso(posting);
 
+  // ── 1. First resolution wins (B-6). A credible pin is final; a non-credible
+  //       one is NOT silently honoured — it falls through to the row's own
+  //       evidence, and if that evidence cannot answer either, the posting date
+  //       is used with the disagreement reported.
+  const firstPending = e.firstPendingDate != null ? toUTCDate(e.firstPendingDate) : null;
+  if (firstPending !== null) {
+    const lag = dayDiff(posting, firstPending);
+    if (lag >= 0 && lag <= ECONOMIC_DATE_MAX_LAG_DAYS) {
+      return {
+        economicDate: iso(firstPending), postingDate: postingISO,
+        basis: "FIRST_PENDING_OBSERVATION", state: "OK", lagDays: lag,
+      };
+    }
+  }
+
+  // ── 2. The provider's authorization attestation, bounded. ─────────────────
   const auth = e.authorizedAt != null ? toUTCDate(e.authorizedAt) : null;
   if (auth !== null) {
     const lag = dayDiff(posting, auth);
@@ -154,15 +200,8 @@ export function resolveEconomicDate(e: EconomicDateEvidence): EconomicDateResolu
     };
   }
 
-  if (e.firstPendingDate != null) {
-    const first = toUTCDate(e.firstPendingDate);
-    const lag = dayDiff(posting, first);
-    if (lag >= 0 && lag <= ECONOMIC_DATE_MAX_LAG_DAYS) {
-      return {
-        economicDate: iso(first), postingDate: postingISO,
-        basis: "FIRST_PENDING_OBSERVATION", state: "OK", lagDays: lag,
-      };
-    }
+  // ── 3. A pin existed but was not credible, and nothing else answers. ──────
+  if (firstPending !== null) {
     return {
       economicDate: postingISO, postingDate: postingISO,
       basis: "POSTING", state: "CONTRADICTORY", lagDays: 0,

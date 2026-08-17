@@ -215,6 +215,17 @@ function deriveLifecycleAndEconomicDate(r: TransactionRowLike): Partial<Transact
   const persistedEconomic = r.economicDate
     ? r.economicDate.toISOString().split("T")[0]
     : econ.economicDate;
+  // B-6 — when the column disagrees with the row's OWN evidence, the only
+  // writer that can have put it there is the event materialization
+  // (reprojectEvent), whose extra evidence is precisely the first PENDING
+  // observation. Say so: the basis is FIRST_PENDING_OBSERVATION, the pin is
+  // OK by construction (the resolver bounded it before the event stored it),
+  // and the lag is the real distance the pin preserved. Without this, a
+  // pinned row would carry its true date labelled with the wrong basis.
+  const pinnedByEvent = persistedEconomic !== econ.economicDate;
+  const pinnedLagDays = pinnedByEvent
+    ? Math.round((Date.parse(`${econ.postingDate}T00:00:00Z`) - Date.parse(`${persistedEconomic}T00:00:00Z`)) / 86_400_000)
+    : null;
   // v2.6-TRUTH-4 — the canonical income attribution rides the same derived block.
   // Emitted only for INFLOWS, and only where the read supplied the evidence: an
   // outflow has no income class, and inventing one would put a zero-amount
@@ -267,9 +278,9 @@ function deriveLifecycleAndEconomicDate(r: TransactionRowLike): Partial<Transact
     lifecycleBasis:      lifecycle.basis,
     economicDate:        persistedEconomic,
     postingDate:         econ.postingDate,
-    economicDateBasis:   econ.basis,
-    economicDateState:   econ.state,
-    economicDateLagDays: econ.lagDays,
+    economicDateBasis:   pinnedByEvent ? "FIRST_PENDING_OBSERVATION" : econ.basis,
+    economicDateState:   pinnedByEvent ? "OK" : econ.state,
+    economicDateLagDays: pinnedByEvent ? (pinnedLagDays as number) : econ.lagDays,
     ...(income
       ? {
           incomeClass:           income.incomeClass,

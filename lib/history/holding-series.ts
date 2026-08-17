@@ -36,7 +36,9 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import { historicalHoldingsForWindow } from "@/lib/investments/historical-holdings";
 import { getCurrentPositions } from "@/lib/investments/current-positions";
 import { round2 } from "@/lib/perspective-engine/reconciliation.core";
-import { isoDate, truncDateUTC } from "@/lib/snapshots/backfill-core";
+// REVIEW-3 B-6 — THE clock and THE today/history switch (server-authoritative).
+import { todayUTCISO } from "@/lib/time/clock";
+import { isHistoricalDay } from "@/lib/time/basis";
 import { eachDate } from "./account-series";
 import {
   extendBreadcrumb,
@@ -67,7 +69,7 @@ export async function accountHoldingNodes(
 
   const client = args.client ?? db;
   const dates = eachDate(account.fromISO, account.toISO);
-  const todayISO = isoDate(truncDateUTC(new Date()));
+  const todayISO = todayUTCISO();
 
   const byDate = await historicalHoldingsForWindow({
     financialAccountId: account.accountId, dates, client,
@@ -75,7 +77,7 @@ export async function accountHoldingNodes(
   });
 
   // The present, from the same spine and the same identity.
-  const present = account.toISO >= todayISO
+  const present = !isHistoricalDay(account.toISO, todayISO)
     ? await getCurrentPositions({ financialAccountId: account.accountId }, { client })
     : null;
 
@@ -112,7 +114,7 @@ export async function accountHoldingNodes(
   const nodes: HistoricalHoldingNode[] = [];
   for (const [instrumentId, id] of identity) {
     const point = (d: string): HistoricalSeriesPoint => {
-      if (d >= todayISO) {
+      if (!isHistoricalDay(d, todayISO)) {
         const p = presentByInstrument.get(instrumentId);
         // Absent from the present read = no longer held. A gap, not a zero.
         if (!p) return { dateISO: d, value: null, basis: "observed", unavailableReason: "NOT_HELD" };
@@ -137,7 +139,7 @@ export async function accountHoldingNodes(
     const series = dates.map(point);
     const at = series.find((p) => p.dateISO === account.dateISO) ?? point(account.dateISO);
     const heldAt = byDate.get(account.dateISO)?.held.find((h) => h.instrumentId === instrumentId);
-    const presentAt = account.dateISO >= todayISO ? presentByInstrument.get(instrumentId) : undefined;
+    const presentAt = !isHistoricalDay(account.dateISO, todayISO) ? presentByInstrument.get(instrumentId) : undefined;
 
     const quantity = presentAt?.quantity ?? heldAt?.quantity ?? null;
     const value = at.value;
