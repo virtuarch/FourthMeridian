@@ -77,7 +77,7 @@ function makeFakeDb(opts: { cursor: string | null; accounts: Record<string, stri
   const syncIssues: { kind: string; detail?: Record<string, unknown>; resolved: boolean }[] = [];
   let seq = 0, oseq = 0, eseq = 0;
 
-  return {
+  const fakeDb = {
     _txns: txns, _obs: obs, _events: events, _item: item, _syncIssues: syncIssues,
 
     syncIssue: {
@@ -91,7 +91,20 @@ function makeFakeDb(opts: { cursor: string | null; accounts: Record<string, stri
       updateMany: async () => ({ count: 0 }),
     },
     syncIssueOccurrence: { create: async () => ({ id: "so1" }) },
-    $transaction: async () => { throw new Error("the incident lifecycle must not open transactions"); },
+    // v2.6-EVENT-2 — `recordTransactionObservation` now runs its observation
+    // insert, FK update and BOTH reprojections in one interactive transaction, so
+    // the fake must model one: the callback receives this same client, which is
+    // what an interactive transaction hands a caller.
+    //
+    // ⚠️ The original assertion is PRESERVED, not removed. This fake threw to
+    // prove the incident lifecycle never opens a transaction, and that still
+    // holds — the callback-less form (the only shape the SyncIssue path could
+    // use) still throws.
+    // Rebound immediately after construction so it can hand the callback this
+    // same client without breaking the object's inferred type.
+    $transaction: async (_fn?: unknown): Promise<unknown> => {
+      throw new Error("the incident lifecycle must not open transactions");
+    },
 
     plaidItem: {
       findUnique: async () => ({ ...item }),
@@ -211,6 +224,11 @@ function makeFakeDb(opts: { cursor: string | null; accounts: Record<string, stri
     merchantAlias: { upsert: async () => ({ id: "a1" }), findUnique: async () => null },
     merchantRule:  { findMany: async () => [] },
   };
+  fakeDb.$transaction = async (fn?: unknown): Promise<unknown> => {
+    if (typeof fn === "function") return (fn as (c: unknown) => unknown)(fakeDb);
+    throw new Error("the incident lifecycle must not open transactions");
+  };
+  return fakeDb;
 }
 
 const pendingTxn = (id: string, acct: string, amount: number) => ({

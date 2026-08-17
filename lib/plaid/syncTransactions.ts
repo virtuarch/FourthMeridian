@@ -707,7 +707,47 @@ export async function syncTransactionsForItem(
         // always present for Plaid; `?? merchant` keeps the contract uniform.
         const fingerprintMatch = await findByFingerprint(financialAccountId, date, amount, description ?? merchant, txn.pending, database);
 
-        if (fingerprintMatch) {
+        // v2.6-EVENT-2 — STRONGER PROVIDER IDENTITY EVIDENCE OUTRANKS A FINGERPRINT.
+        //
+        // A fingerprint (account + date + amount + descriptor + pending) cannot
+        // establish identity — `lib/transactions/event-identity.ts` refuses it as
+        // rung 4 for exactly that reason, and ranks `pending_transaction_id` FIRST.
+        // But adoption happens here, on the ROW, upstream of that authority, so the
+        // observation layer used to inherit a decision the authority would refuse.
+        //
+        // Measured production shape (Chase "TAP TALABAT food", −12.05): two pending
+        // authorisations a day apart, then two posted settlements on the same day
+        // for the same amount under the same descriptor, each naming a DIFFERENT
+        // predecessor. The second settlement fingerprint-matched the first's row,
+        // overwrote its `plaidTransactionId`, and re-pointed it at the other event —
+        // leaving one row observed on two events, an orphaned provider id belonging
+        // to no row, and a stale projection on the event it left.
+        //
+        // The refusal is deliberately NARROW, because DF-4's duplicate prevention
+        // is load-bearing (the six-Amazon-rows incident). Adoption is refused ONLY
+        // when the provider itself says this row continues a DIFFERENT event than
+        // the candidate already belongs to. No pending ref, an unresolvable one, or
+        // one naming the SAME event ⇒ adoption proceeds exactly as before.
+        let adoptionRefusedByPendingRef = false;
+        if (fingerprintMatch && txn.pending_transaction_id && fingerprintMatch.transactionEventId) {
+          const predecessor = await database.transaction.findUnique({
+            where:  { plaidTransactionId: txn.pending_transaction_id },
+            select: { transactionEventId: true },
+          });
+          const claimedEventId = predecessor?.transactionEventId ?? null;
+          if (claimedEventId && claimedEventId !== fingerprintMatch.transactionEventId) {
+            adoptionRefusedByPendingRef = true;
+            console.warn(
+              `[plaid sync] fingerprint adoption REFUSED for ${txn.transaction_id} — its ` +
+              `pending_transaction_id ${txn.pending_transaction_id} continues event ${claimedEventId}, ` +
+              `but the fingerprint candidate ${fingerprintMatch.id} belongs to event ` +
+              `${fingerprintMatch.transactionEventId}. Provider identity outranks a fingerprint; ` +
+              `persisting as a distinct row.`,
+            );
+          }
+        }
+
+        if (fingerprintMatch && !adoptionRefusedByPendingRef) {
           // Read the matched row's current MI state so the update never
           // re-points an existing merchant or overwrites set provenance.
           const cur = await database.transaction.findUnique({

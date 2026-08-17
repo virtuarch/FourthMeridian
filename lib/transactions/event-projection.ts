@@ -115,3 +115,56 @@ export function assertOneRowPerEvent(rows: readonly EventProjectedRow[], readNam
     `Is eventProjectionWhere() still in this read's filter? ${sample}`,
   );
 }
+
+// ── How many LIVE rows does an event actually have? ──────────────────────────
+
+/** One observation, as the live-row census reads it. */
+export interface EventObservationRef {
+  eventId: string;
+  /** The row this observation was read from, or null once it is gone. */
+  transactionId: string | null;
+}
+
+/**
+ * DISTINCT live transaction rows per event.
+ *
+ * v2.6-EVENT-2 — extracted because `audit-event-identity` (INV-4) and
+ * `audit-event-reader-cutover` each counted this THEMSELVES, and both counted
+ * the wrong thing: they incremented once per OBSERVATION whose row is live,
+ * which scores an event that observed ONE row twice as having two rows.
+ *
+ * ⚠️ Observing one row twice is not a defect. When Plaid re-keys a row (same
+ * account, date, amount, descriptor and pending flag; a new `transaction_id`),
+ * `syncTransactions` reuses the existing row instead of duplicating it — DF-4,
+ * the fix for the six-Amazon-rows incident. The row is then legitimately
+ * observed under two provider ids and both observations are true. What the
+ * invariant forbids is an event PROJECTING two rows, because that is what would
+ * double-count money; and that is a question about rows, not observations.
+ *
+ * The invariant is unchanged. Only the counter is corrected — proven in
+ * `event-live-row-count.test.ts`, which keeps the old counter executable beside
+ * the new one so the difference is demonstrated rather than asserted.
+ */
+export function countLiveRowsPerEvent(
+  observations: readonly EventObservationRef[],
+  liveTransactionIds: ReadonlySet<string>,
+): Map<string, number> {
+  const rowsByEvent = new Map<string, Set<string>>();
+  for (const o of observations) {
+    if (!o.transactionId || !liveTransactionIds.has(o.transactionId)) continue;
+    const set = rowsByEvent.get(o.eventId) ?? new Set<string>();
+    set.add(o.transactionId);
+    rowsByEvent.set(o.eventId, set);
+  }
+  return new Map([...rowsByEvent].map(([eventId, rows]) => [eventId, rows.size]));
+}
+
+/** Event ids projecting MORE THAN ONE distinct live row — the INV-4 violation. */
+export function eventsWithMultipleLiveRows(
+  observations: readonly EventObservationRef[],
+  liveTransactionIds: ReadonlySet<string>,
+): string[] {
+  return [...countLiveRowsPerEvent(observations, liveTransactionIds)]
+    .filter(([, n]) => n > 1)
+    .map(([eventId]) => eventId);
+}

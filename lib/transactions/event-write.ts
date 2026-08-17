@@ -154,49 +154,83 @@ export async function recordTransactionObservation(
     { eventByProviderRowId, accountByProviderRowId, claimsPerPendingRef },
   );
 
+  // v2.6-EVENT-2 — the event this row belongs to BEFORE this observation. When
+  // an observation moves a row to a different event, the ORIGIN is left holding a
+  // projection derived from a row it no longer owns, and nothing else ever
+  // revisits it. That is one of the two production defects this slice repairs.
+  const originEventId = persisted?.transactionEventId ?? null;
+
   // ── Create or attach ─────────────────────────────────────────────────────
-  const eventId = link.eventId ?? (await db.transactionEvent.create({
-    data: {
-      financialAccountId: input.financialAccountId,
-      // Provisional: re-derived from every observation immediately below, so a
-      // freshly-created event is never left carrying a guess.
-      lifecycle: input.lifecycle === "PENDING" ? "PENDING" : "POSTED",
-      economicDate: input.economicDate,
-      currentAmount: input.amount,
-      currentTransactionId: input.transactionIsLive ? input.transactionId : null,
-      firstObservedAt: input.observedAt,
-      lastObservedAt: input.observedAt,
-    },
-    select: { id: true },
-  })).id;
+  //
+  // ⚠️ ALL FOUR WRITES ARE ONE UNIT. Previously they were four awaits in
+  // sequence, and the Plaid sync wraps this whole call in a non-blocking
+  // try/catch — so a failure after the observation insert left the observation
+  // recorded, the row's FK possibly moved, and the projection never re-derived.
+  // An event whose stored state disagrees with its own observations is exactly
+  // what `audit-event-identity` fails on, and it is unreachable by any replay:
+  // the observation key now exists, so the idempotent path returns early and the
+  // drift is permanent. Atomicity is what makes the retry meaningful.
+  const write = async (tx: Db): Promise<ObservationResult> => {
+    const eventId = link.eventId ?? (await tx.transactionEvent.create({
+      data: {
+        financialAccountId: input.financialAccountId,
+        // Provisional: re-derived from every observation immediately below, so a
+        // freshly-created event is never left carrying a guess.
+        lifecycle: input.lifecycle === "PENDING" ? "PENDING" : "POSTED",
+        economicDate: input.economicDate,
+        currentAmount: input.amount,
+        currentTransactionId: input.transactionIsLive ? input.transactionId : null,
+        firstObservedAt: input.observedAt,
+        lastObservedAt: input.observedAt,
+      },
+      select: { id: true },
+    })).id;
 
-  const observation = await db.transactionObservation.create({
-    data: {
-      eventId,
-      transactionId: input.transactionId,
-      financialAccountId: input.financialAccountId,
-      provider: input.provider,
-      providerRowId: input.providerRowId,
-      providerPendingRef: input.providerPendingRef,
-      observedAt: input.observedAt,
-      lifecycle: input.lifecycle,
-      amount: input.amount,
-      postingDate: input.postingDate,
-      economicDate: input.economicDate,
-      authorizedAt: input.authorizedAt,
-      observationKey: key,
-    },
-    select: { id: true },
-  });
+    const observation = await tx.transactionObservation.create({
+      data: {
+        eventId,
+        transactionId: input.transactionId,
+        financialAccountId: input.financialAccountId,
+        provider: input.provider,
+        providerRowId: input.providerRowId,
+        providerPendingRef: input.providerPendingRef,
+        observedAt: input.observedAt,
+        lifecycle: input.lifecycle,
+        amount: input.amount,
+        postingDate: input.postingDate,
+        economicDate: input.economicDate,
+        authorizedAt: input.authorizedAt,
+        observationKey: key,
+      },
+      select: { id: true },
+    });
 
-  await db.transaction.update({
-    where: { id: input.transactionId },
-    data: { transactionEventId: eventId },
-  });
+    await tx.transaction.update({
+      where: { id: input.transactionId },
+      data: { transactionEventId: eventId },
+    });
 
-  await reprojectEvent(db, eventId);
+    await reprojectEvent(tx, eventId);
 
-  return { observationId: observation.id, eventId, basis: link.basis, refusal: link.refusal, created: true };
+    // The origin loses a row here, so its liveness — and therefore possibly its
+    // lifecycle, amount and currentTransactionId — changed too. Re-derive it in
+    // the SAME unit, or the guarantee is only half kept.
+    if (originEventId && originEventId !== eventId) {
+      await reprojectEvent(tx, originEventId);
+    }
+
+    return { observationId: observation.id, eventId, basis: link.basis, refusal: link.refusal, created: true };
+  };
+
+  // A caller already inside an interactive transaction (the CSV importer) passes
+  // its handle; Prisma forbids nesting, and joining the caller's unit is the
+  // stronger guarantee anyway.
+  return hasInteractiveTransaction(db) ? db.$transaction(write) : write(db);
+}
+
+/** True for a full PrismaClient — a TransactionClient cannot open a nested one. */
+function hasInteractiveTransaction(db: Db): db is PrismaClient {
+  return typeof (db as PrismaClient).$transaction === "function";
 }
 
 /**
