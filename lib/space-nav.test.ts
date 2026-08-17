@@ -1,14 +1,16 @@
 /**
  * lib/space-nav.test.ts
  *
- * v2.5 honesty-slice guard — placeholder tabs must never reappear as
- * active rail items, and rail ordering must stay a subsequence of
- * SPACE_TAB_ORDER.
+ * Rail guard, migrated for REVIEW-3 (slice F): the placeholder ids
+ * (FINANCES / DOCUMENTS), the retired PERSPECTIVES id, and the non-rail
+ * SETTINGS id were DELETED from SpaceTabId — every id in SPACE_TAB_ORDER is
+ * rail-real now, and the per-host gating machinery (isRailTabVisible /
+ * PLACEHOLDER_SPACE_TABS / SHARED_ONLY_PLACEHOLDER_TABS) retired with its
+ * permanently-empty lists. This guard pins that state so a dead id cannot
+ * silently reappear.
  *
- * The project has no test runner (no jest/vitest). This is a standalone,
- * dependency-free script runnable with the already-installed `tsx`,
- * mirroring lib/ai/output-validator.test.ts and
- * lib/data/transactions.privacy.test.ts:
+ * Standalone, dependency-free script runnable with the already-installed
+ * `tsx`:
  *
  *     npx tsx lib/space-nav.test.ts
  *
@@ -17,12 +19,8 @@
 
 import {
   SPACE_TAB_ORDER,
-  PLACEHOLDER_SPACE_TABS,
-  SHARED_ONLY_PLACEHOLDER_TABS,
-  isRailTabVisible,
+  SPACE_TAB_LABELS,
   railVisibleTabs,
-  type SpaceDashboardHost,
-  type SpaceTabId,
 } from "./space-nav";
 
 let failures = 0;
@@ -35,73 +33,34 @@ function check(name: string, ok: boolean, detail?: string): void {
   }
 }
 
-const HOSTS: SpaceDashboardHost[] = ["personal", "shared"];
+// 1. The rail IS the fixed order — no filtering machinery remains.
+check(
+  "railVisibleTabs() is exactly SPACE_TAB_ORDER",
+  JSON.stringify(railVisibleTabs()) === JSON.stringify(SPACE_TAB_ORDER),
+  `got ${JSON.stringify(railVisibleTabs())}`,
+);
 
-// 1. Product-wide placeholder tabs are hidden on every host.
-for (const host of HOSTS) {
-  for (const id of PLACEHOLDER_SPACE_TABS) {
-    check(
-      `${id} is not rail-visible on ${host}`,
-      !isRailTabVisible(id, host) && !railVisibleTabs(host).includes(id),
-    );
-  }
-}
+// 2. Exact expected rail (update deliberately when a tab earns a slot).
+check(
+  "rail is exactly OVERVIEW/ACTIVITY/ACCOUNTS/TRANSACTIONS/MEMBERS",
+  JSON.stringify(SPACE_TAB_ORDER) ===
+    JSON.stringify(["OVERVIEW", "ACTIVITY", "ACCOUNTS", "TRANSACTIONS", "MEMBERS"]),
+  `got ${JSON.stringify(SPACE_TAB_ORDER)}`,
+);
 
-// 2. Shared-only placeholders: hidden on shared, visible on personal.
-//    (Space Template Redesign: TRANSACTIONS re-earned its shared slot —
-//    the list is currently empty; the loop stands ready for future
-//    personal-first tabs.)
-for (const id of SHARED_ONLY_PLACEHOLDER_TABS) {
-  check(`${id} is hidden on shared`, !railVisibleTabs("shared").includes(id));
-  check(`${id} is visible on personal`, railVisibleTabs("personal").includes(id));
-}
-
-// 2b. TRANSACTIONS is real on BOTH hosts now.
-check("TRANSACTIONS is visible on shared", railVisibleTabs("shared").includes("TRANSACTIONS"));
-check("TRANSACTIONS is visible on personal", railVisibleTabs("personal").includes("TRANSACTIONS"));
-
-// 3. Tabs with real content everywhere keep their rail slot on both hosts.
-//    M2 canonical IA: PERSPECTIVES is NO LONGER a rail destination (perspectives
-//    are selected through Overview), so it is intentionally absent here.
-const ALWAYS_REAL: SpaceTabId[] = [
-  "OVERVIEW", "ACTIVITY", "ACCOUNTS", "MEMBERS", "SETTINGS",
-];
-// M2 regression: PERSPECTIVES must never re-earn a rail slot.
-for (const host of HOSTS) {
-  check(`PERSPECTIVES is NOT rail-visible on ${host}`, !railVisibleTabs(host).includes("PERSPECTIVES" as SpaceTabId));
-}
-for (const host of HOSTS) {
-  for (const id of ALWAYS_REAL) {
-    check(`${id} is rail-visible on ${host}`, railVisibleTabs(host).includes(id));
-  }
-}
-
-// 4. Fixed order preserved: railVisibleTabs must be a subsequence of
-//    SPACE_TAB_ORDER (filtering only — never reordering).
-for (const host of HOSTS) {
-  const visible = railVisibleTabs(host);
-  const expected = SPACE_TAB_ORDER.filter((id) => visible.includes(id));
+// 3. Dead ids stay dead — REVIEW-3 regression pins.
+for (const dead of ["PERSPECTIVES", "FINANCES", "DOCUMENTS", "SETTINGS"]) {
   check(
-    `rail order for ${host} is a subsequence of SPACE_TAB_ORDER`,
-    JSON.stringify(visible) === JSON.stringify(expected),
-    `got ${JSON.stringify(visible)}`,
+    `${dead} is not a rail id`,
+    !(SPACE_TAB_ORDER as string[]).includes(dead) &&
+      !(dead in SPACE_TAB_LABELS),
   );
 }
 
-// 5. Exact expected rails (update deliberately when a tab re-earns its slot).
-//    TRANSACTIONS re-earned its shared slot in the Space Template Redesign.
-check(
-  "shared rail is exactly OVERVIEW/ACTIVITY/ACCOUNTS/TRANSACTIONS/MEMBERS/SETTINGS",
-  JSON.stringify(railVisibleTabs("shared")) ===
-    JSON.stringify(["OVERVIEW", "ACTIVITY", "ACCOUNTS", "TRANSACTIONS", "MEMBERS", "SETTINGS"]),
-  `got ${JSON.stringify(railVisibleTabs("shared"))}`,
-);
-check(
-  "personal rail is exactly OVERVIEW/ACTIVITY/ACCOUNTS/TRANSACTIONS/MEMBERS/SETTINGS",
-  JSON.stringify(railVisibleTabs("personal")) ===
-    JSON.stringify(["OVERVIEW", "ACTIVITY", "ACCOUNTS", "TRANSACTIONS", "MEMBERS", "SETTINGS"]),
-  `got ${JSON.stringify(railVisibleTabs("personal"))}`,
-);
+// 4. Every rail id carries a label.
+for (const id of SPACE_TAB_ORDER) {
+  check(`${id} has a label`, typeof SPACE_TAB_LABELS[id] === "string" && SPACE_TAB_LABELS[id].length > 0);
+}
 
 console.log(failures === 0 ? "\nAll space-nav rail checks passed." : `\n${failures} failure(s).`);
 process.exit(failures === 0 ? 0 : 1);

@@ -21,107 +21,55 @@
  * strings rather than importing lucide-react directly.
  */
 
+// REVIEW-3 (slice F) — dead nav ids deleted:
+//   - "PERSPECTIVES": no longer a rail destination since M2 (perspectives are
+//     selected through Overview via ?perspective=); the legacy ?tab=perspectives
+//     deep link canonicalizes to Overview in the host URL layer (a string
+//     alias, not a SpaceTabId), so the id + label carried no consumer.
+//   - "FINANCES" / "DOCUMENTS": permanent placeholders — no rail control since
+//     the v2.5 honesty slice, no body branch, no API. The PLACEHOLDER_SPACE_TABS
+//     / SHARED_ONLY_PLACEHOLDER_TABS gating machinery (isRailTabVisible's host
+//     parameter was inert — the shared-only list was permanently empty) went
+//     with them: every tab in SPACE_TAB_ORDER is rail-real now.
+//   - "SETTINGS": not an in-space tab since UX-CUST-1A (Manage modal owns
+//     settings); the host filtered it out of the rail unconditionally.
+// The Prisma SpaceDashboardTab enum (lib/space-presets mirror) keeps every
+// member — DB enum members are never dropped in this program.
 export type SpaceTabId =
   | "OVERVIEW"
-  | "PERSPECTIVES"
   | "ACTIVITY"
-  | "FINANCES"
   | "ACCOUNTS"
   | "TRANSACTIONS"
-  | "MEMBERS"
-  | "DOCUMENTS"
-  | "SETTINGS";
+  | "MEMBERS";
 
-// M2 canonical IA: "PERSPECTIVES" is NO LONGER a rail destination. Perspectives
-// are specialized Workspaces selected through the Overview experience
-// (?perspective=<id>), so the rail never shows a Perspectives button. The id is
-// kept in SpaceTabId + SPACE_TAB_LABELS for back-compat (legacy
-// ?tab=perspectives links canonicalize to Overview in the host URL layer), but
-// it is deliberately absent from SPACE_TAB_ORDER so railVisibleTabs() can never
-// re-surface it. Fixed ORDER remains law for every tab that DOES appear.
 export const SPACE_TAB_ORDER: SpaceTabId[] = [
   "OVERVIEW",
   "ACTIVITY",
-  "FINANCES",
   "ACCOUNTS",
   "TRANSACTIONS",
   "MEMBERS",
-  "DOCUMENTS",
-  "SETTINGS",
 ];
 
 // Unified Space Widget Layout — "ACTIVITY" is a first-class rail tab whose id
-// matches the SpaceDashboardTab.ACTIVITY section enum, so the recent_activity
-// section renders inline through the normal section system (like OVERVIEW /
-// ACCOUNTS). It replaces the former rail-only "TIMELINE" concept (which was a
-// modal launched from an Overview doorway).
+// matches the SpaceDashboardTab.ACTIVITY section enum. It replaces the former
+// rail-only "TIMELINE" concept (which was a modal launched from an Overview
+// doorway).
 export const SPACE_TAB_LABELS: Record<SpaceTabId, string> = {
   OVERVIEW:     "Overview",
-  PERSPECTIVES: "Perspectives",
   ACTIVITY:     "Activity",
-  FINANCES:     "Finances",
   ACCOUNTS:     "Accounts",
   TRANSACTIONS: "Transactions",
   MEMBERS:      "Members",
-  DOCUMENTS:    "Documents",
-  SETTINGS:     "Settings",
 };
 
 /**
- * Tabs that don't yet have a real, working feature behind them anywhere in
- * the product (no API, no UI, in the shared-space dashboard implementation as
- * of this pass).
- *
- * v2.5 honesty slice: these tabs no longer get a rail control at all —
- * "rail earns tabs by having real content" (see
- * docs/investigations/SPACE_DASHBOARD_FUTURE_INVESTIGATION.md §2.9). The
- * tab *ids* stay valid (types, deep-link handling, and internal gating
- * still reference them); only their rail presence is gated, via
- * isRailTabVisible/railVisibleTabs below. Fixed ORDER remains law for
- * every tab that does appear.
- *
- * Note: TRANSACTIONS is real for the personal host (SpaceDashboard renders
- * SpaceTransactionsPanel on the personal shell) — the per-host gating below
- * is kept ready for any future tab that ships personal-first.
- *
- * FUTURE ENHANCEMENT: once Finances and Documents features exist, and
- * Transactions is wired for shared Spaces, remove entries here so the tabs
- * re-earn their rail slots.
+ * The rail: SPACE_TAB_ORDER, order preserved. Every id is rail-real (the
+ * placeholder gating retired with its permanently-empty lists in REVIEW-3).
+ * Hosts may apply further presentation filters on top but must never re-add
+ * a tab outside this list, and must never reorder.
  */
-export const PLACEHOLDER_SPACE_TABS: SpaceTabId[] = ["FINANCES", "DOCUMENTS"];
-
-/** Which host is asking — the personal shell or a shared Space. Both render
- *  through SpaceDashboard.tsx; the host only tunes rail/gating. */
-export type SpaceDashboardHost = "personal" | "shared";
-
-/** Tabs that are placeholders only on shared/non-personal Spaces.
- *  TRANSACTIONS re-earned its slot in the Space Template Redesign:
- *  SpaceDashboard now renders a real, KD-15-filtered SpaceTransactionsPanel
- *  (GET /api/spaces/[id]/transactions) as the doorway for every shared
- *  Space. Currently empty — kept so the gate (and its test) stand ready
- *  for any future tab that ships personal-first again. */
-export const SHARED_ONLY_PLACEHOLDER_TABS: SpaceTabId[] = [];
-
-/**
- * Presentation-level gate: should this tab get a visible rail control on
- * the given host? False for tabs whose only content would be a
- * SpaceComingSoonPanel. This does NOT invalidate the tab id itself —
- * routes, types, and internal activeTab values are untouched.
- */
-export function isRailTabVisible(id: SpaceTabId, host: SpaceDashboardHost): boolean {
-  if (PLACEHOLDER_SPACE_TABS.includes(id)) return false;
-  if (host === "shared" && SHARED_ONLY_PLACEHOLDER_TABS.includes(id)) return false;
-  return true;
-}
-
-/**
- * The rail for a host: SPACE_TAB_ORDER minus placeholder tabs, order
- * preserved. Hosts may apply further presentation filters on top (e.g.
- * SETTINGS only for managers) but must never re-add a tab this function
- * excludes, and must never reorder.
- */
-export function railVisibleTabs(host: SpaceDashboardHost): SpaceTabId[] {
-  return SPACE_TAB_ORDER.filter((id) => isRailTabVisible(id, host));
+export function railVisibleTabs(): SpaceTabId[] {
+  return [...SPACE_TAB_ORDER];
 }
 
 /**

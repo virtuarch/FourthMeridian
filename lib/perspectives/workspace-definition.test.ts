@@ -320,8 +320,10 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
 
 // ── Top-level Space tabs are NOT workspaces (M2: PERSPECTIVES removed from the
 //    rail — perspectives are selected through Overview, not a tab) ──────────────
-check("SPACE_TAB_ORDER is the M2 rail (no PERSPECTIVES tier)",
-  SPACE_TAB_ORDER.join(",") === "OVERVIEW,ACTIVITY,FINANCES,ACCOUNTS,TRANSACTIONS,MEMBERS,DOCUMENTS,SETTINGS");
+// REVIEW-3 (slice F): the placeholder ids (FINANCES/DOCUMENTS) and the
+// non-rail SETTINGS id were deleted — the rail is exactly the real tabs.
+check("SPACE_TAB_ORDER is the rail (no PERSPECTIVES tier, no placeholder ids)",
+  SPACE_TAB_ORDER.join(",") === "OVERVIEW,ACTIVITY,ACCOUNTS,TRANSACTIONS,MEMBERS");
 
 // ── Source-scan: the old duplicate host maps are gone; host uses the registry ────
 {
@@ -337,8 +339,12 @@ check("SPACE_TAB_ORDER is the M2 rail (no PERSPECTIVES tier)",
     path.join(ROOT, "components", "space", "workspaces", "RoutedWorkspaceModal.tsx"),
     "utf8",
   ).replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  // REVIEW-3: getWorkspaceTargetTab lost its host call site with the Overview
+  // doorway cards (perspectiveItems no longer maps onSelect); the surviving
+  // registry routing consumers are isRoutedWorkspaceTab (host gating) and
+  // getWorkspaceModalMeta (routed modal chrome).
   check("host consumes the registry routing helpers",
-    /getWorkspaceTargetTab\(/.test(dashCode) && /isRoutedWorkspaceTab\(/.test(dashCode) && /getWorkspaceModalMeta\(/.test(routedCode));
+    /isRoutedWorkspaceTab\(/.test(dashCode) && /getWorkspaceModalMeta\(/.test(routedCode));
 
   // SpaceShell stays workspace-agnostic — it must not reach into the registry.
   const shellCode = readFileSync(path.join(ROOT, "components", "space", "shell", "SpaceShell.tsx"), "utf8")

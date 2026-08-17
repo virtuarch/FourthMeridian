@@ -202,27 +202,13 @@ export function SpaceDashboard({
   const canManage = ["OWNER", "ADMIN"].includes(myRole);
   const canLeave  = !canManage; // MEMBER and VIEWER can leave
 
-  // Fixed rail options — starts from railVisibleTabs(railHost) (v2.5
-  // honesty slice: placeholder tabs — Finances/Documents — get no rail control
-  // until real; see lib/space-nav.ts). On top of that, SETTINGS only renders a
-  // button for managers. ACTIVITY is now a real rail tab (Unified Space Widget
-  // Layout — Activity slice): clicking it sets activeTab="ACTIVITY", which
-  // renders the recent_activity section inline. Order is inherited from
-  // SPACE_TAB_ORDER — these filters never reorder.
-  // SP-2A-4a — host derives from spaceType instead of the previous hardcoded
-  // "shared". railVisibleTabs("personal") and ("shared") return identical
-  // lists today (SHARED_ONLY_PLACEHOLDER_TABS is empty), so shared Spaces —
-  // and any future Personal mount — inherit the same fixed rail order.
-  const railHost = spaceType === "PERSONAL" ? ("personal" as const) : ("shared" as const);
-  // M3-Reset — TEXT-ONLY rail options (the prototype's rail language); the old
-  // per-tab RailTabIcon treatment is dropped.
-  const railOptions: { id: string; label: string }[] = railVisibleTabs(railHost)
-    // UX-CUST-1A correction: Settings is no longer an in-space rail tab.
-    // Space-level settings (incl. section show/hide and layout controls) live
-    // in ManageSpaceModal → Overview. "SETTINGS" stays a valid tab id in
-    // lib/space-nav for types/back-compat, but it renders no rail button here.
-    .filter((id) => id !== "SETTINGS")
-    .map((id) => ({ id, label: SPACE_TAB_LABELS[id] }));
+  // Fixed rail options (lib/space-nav SPACE_TAB_ORDER — every id is rail-real
+  // since REVIEW-3 deleted the placeholder ids: FINANCES/DOCUMENTS/SETTINGS/
+  // PERSPECTIVES). M3-Reset — TEXT-ONLY rail options (the prototype's rail
+  // language); the old per-tab RailTabIcon treatment is dropped. Order is
+  // inherited from SPACE_TAB_ORDER — never reordered here.
+  const railOptions: { id: string; label: string }[] =
+    railVisibleTabs().map((id) => ({ id, label: SPACE_TAB_LABELS[id] }));
 
   // "overview" is filtered out here, not in lib/perspectives.ts: it's the
   // OVERVIEW destination's own identity, never an engageable lens. (The former
