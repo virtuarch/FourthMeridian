@@ -52,7 +52,16 @@
     "harness:incident-preview-path": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/test-incident-preview-path.ts",
     "harness:incident-transaction-safety": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/test-incident-transaction-safety.ts",
     "backfill:event-identity": "tsx scripts/backfill-event-identity.ts",
-    "backfill:economic-date": "tsx scripts/backfill-economic-date.ts"
+    "backfill:economic-date": "tsx scripts/backfill-economic-date.ts",
+    "merchants:merge": "tsx --env-file=.env.local scripts/merge-merchants.ts",
+    "platform:set-setting": "tsx --env-file=.env.local scripts/set-platform-setting.ts",
+    "platform:seed-spaces": "tsx --env-file=.env.local scripts/seed-platform-spaces.ts",
+    "wealth:regenerate-history": "tsx scripts/regenerate-wealth-history.ts",
+    "prices:acquisition-dry-run": "dotenv -e .env.local -- tsx scripts/dry-run-acquisition.ts",
+    "prices:acquisition": "dotenv -e .env.local -- tsx scripts/run-acquisition.ts",
+    "snapshots:regeneration-dry-run": "dotenv -e .env.local -- tsx scripts/dry-run-regeneration.ts",
+    "snapshots:regeneration-delta": "dotenv -e .env.local -- tsx scripts/regeneration-delta-attribution.ts",
+    "positions:reconstruct": "tsx scripts/run-reconstruction.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
