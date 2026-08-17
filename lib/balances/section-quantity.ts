@@ -39,41 +39,21 @@ export type SectionQuantity = BalanceQuantity | "HISTORICAL" | "FLOW" | "NON_FIN
  * observed balances, not about reachable money.
  */
 export const SECTION_QUANTITY: Record<string, SectionQuantity> = {
-  // ── Net worth / wealth — observed ledger balances ─────────────────────────
-  net_worth:                "OBSERVED_LEDGER",
-  net_worth_section:        "OBSERVED_LEDGER", // deprecated alias, same renderer
-  allocation:               "OBSERVED_LEDGER",
-  wealth_by_account:        "OBSERVED_LEDGER",
-  institution_allocation:   "OBSERVED_LEDGER",
-  asset_allocation:         "OBSERVED_LEDGER",
-  wealth_concentration:     "OBSERVED_LEDGER",
-  business_accounts:        "OBSERVED_LEDGER",
+  // REVIEW-3 (slice F): trimmed with the registry — the Overview lede family
+  // (net_worth / net_worth_chart / allocation) and the WORKSPACE_RENDERERS-
+  // backed perspective widget keys (wealth_* / liquidity_* / cash_flow_* /
+  // debt-perspective keys) lost their renderers, so their classifications went
+  // with them. The perspective WORKSPACES never rendered through SectionCard;
+  // the v2.6-L3 liquidity REACHABLE_CASH migration lives on in the
+  // LiquidityWorkspace path, not here.
+
+  // ── Observed ledger balances ──────────────────────────────────────────────
   accounts_overview:        "OBSERVED_LEDGER",
   investment_summary:       "OBSERVED_LEDGER",
   investment_allocation:    "OBSERVED_LEDGER",
   retirement_accounts:      "OBSERVED_LEDGER",
 
-  // ── Liquidity — MIGRATED in v2.6-L3 ────────────────────────────────────────
-  // These four all CLAIM reachability in their own copy ("Available now",
-  // "reachable right now", "reachable emergency cash", "your reachable money")
-  // and were summing ledger balances underneath it. They now consume the
-  // canonical reachable quantity, so the labels below are the truth rather than
-  // an aspiration. On the live corpus this moved the Space's accessible-cash
-  // figure from $13,674.16 to $5,674.16.
-  liquidity_ladder:         "REACHABLE_CASH",
-  accessible_cash:          "REACHABLE_CASH",
-  emergency_fund_readiness: "REACHABLE_CASH",
-  liquidity_concentration:  "REACHABLE_CASH",
-
   // ── Debt — amount OWED, through lib/debt/balance-semantics ────────────────
-  debt_by_account:          "AMOUNT_OWED",
-  debt_cost:                "AMOUNT_OWED",
-  credit_utilization:       "AMOUNT_OWED",
-  debt_complete_info:       "AMOUNT_OWED",
-  debt_summary:             "AMOUNT_OWED",
-  debt_payoff_tracker:      "AMOUNT_OWED",
-  mortgage_tracker:         "AMOUNT_OWED",
-  auto_loan_tracker:        "AMOUNT_OWED",
   debt_breakdown_chart:     "AMOUNT_OWED",
   debt_payoff_calculator:   "AMOUNT_OWED",
 
@@ -85,21 +65,10 @@ export const SECTION_QUANTITY: Record<string, SectionQuantity> = {
   emergency_fund_progress:  "OBSERVED_LEDGER",
   retirement_progress:      "OBSERVED_LEDGER",
 
-  // ── Snapshot-backed: already carries its own as-of ────────────────────────
-  net_worth_chart:          "HISTORICAL",
-  debt_history:             "HISTORICAL",
-
   // ── Transaction-derived: accounts scope or filter, never sum as balances ──
-  cash_flow_summary:        "FLOW",
-  cash_flow_history:        "FLOW",
-  income_vs_spending:       "FLOW",
-  cash_flow_by_category:    "FLOW",
-  income_by_source:         "FLOW",
-  debt_payments:            "FLOW",
   trip_budget:              "FLOW",
 
   // ── Not a balance claim ───────────────────────────────────────────────────
-  credit_score:             "NON_FINANCIAL",
   goal_progress:            "NON_FINANCIAL",
   goal_on_track:            "NON_FINANCIAL",
   goal_required_pace:       "NON_FINANCIAL",

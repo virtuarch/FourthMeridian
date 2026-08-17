@@ -63,8 +63,35 @@ export interface SectionPreset {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Shared sections — injected into every space
+// Shared sections
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// REVIEW-3 (slice F) — the preset system was cut to what today's product
+// actually renders from SpaceDashboardSection rows. Sections render in
+// exactly two places now: the GOALS / RETIREMENT routed modals (deep-link
+// only) and the Goals virtual-section path. The Overview canvas — the only
+// mount for the category lede sections (net_worth / net_worth_chart /
+// allocation / debt_summary / value trackers / progress widgets) — was
+// deleted as product-unreachable, ACCOUNTS renders the editorial
+// AccountsLedger and ACTIVITY the editorial timeline (neither reads section
+// rows), and the DEBT / INVESTMENTS / RETIREMENT-seeded tabs have no render
+// branch. So:
+//
+//  - Every category's preset is now the universal GOALS section only — the
+//    one seeded key a surface still reads (the GOALS routed modal renders
+//    goals_progress). Existing Spaces keep their rows untouched: unknown
+//    keys are gated out at render (hasRenderer) and stay toggleable in
+//    Manage → Sections.
+//  - The per-category preset entries for retired/non-creatable categories
+//    (BUSINESS, PROPERTY, VEHICLE, TRIP, EQUIPMENT, DEBT_PAYOFF,
+//    EMERGENCY_FUND, INVESTMENT, RETIREMENT, GOAL, HOUSEHOLD) were deleted —
+//    none is creatable (live templates: family/custom; PERSONAL at
+//    registration; OTHER via the legacy category fallback) and production
+//    holds only OTHER and PERSONAL Spaces.
+//
+// Re-adding a section to a template is a one-line PRESET_MAP entry — but the
+// key must have a SectionRegistry renderer AND a surface that renders it
+// ("the template earns its modules").
 
 const GOALS_SECTION: SectionPreset = {
   key:     "goals_progress",
@@ -74,315 +101,18 @@ const GOALS_SECTION: SectionPreset = {
   order:   0,
 };
 
-const ACCOUNTS_SECTION: SectionPreset = {
-  key:     "accounts_overview",
-  label:   "Accounts",
-  tab:     SpaceDashboardTab.ACCOUNTS,
-  enabled: true,
-  order:   0,
-};
-
-const ACTIVITY_SECTION: SectionPreset = {
-  key:     "recent_activity",
-  label:   "Recent Activity",
-  tab:     SpaceDashboardTab.ACTIVITY,
-  enabled: true,
-  order:   0,
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Per-category overview sections
-// ─────────────────────────────────────────────────────────────────────────────
-
-const NET_WORTH_SECTION: SectionPreset = {
-  key:     "net_worth",
-  label:   "Net Worth",
-  tab:     SpaceDashboardTab.OVERVIEW,
-  enabled: true,
-  order:   0,
-};
-
-// Unified Space Widget Layout (slice 1) — the Personal Overview chart +
-// allocation, formerly hardcoded in PersonalHero, are now section-backed so
-// they order/drag/persist like any other widget. OVERVIEW, after net_worth.
-const NET_WORTH_CHART_SECTION: SectionPreset = {
-  key:     "net_worth_chart",
-  label:   "Net Worth over time",
-  tab:     SpaceDashboardTab.OVERVIEW,
-  enabled: true,
-  order:   1,
-};
-
-const ALLOCATION_SECTION: SectionPreset = {
-  key:     "allocation",
-  label:   "Allocation",
-  tab:     SpaceDashboardTab.OVERVIEW,
-  enabled: true,
-  order:   2,
-};
-
-// Space Template Redesign (approved investigation): CASH_FLOW_SECTION,
-// SAVINGS_RATE_SECTION, MONTHLY_EXPENSES, and BUSINESS_CASH_FLOW were
-// removed from this file. Their keys have no SectionRegistry renderer, so
-// every preset that referenced them seeded a PERMANENT "coming soon" card
-// — a template promising a story the product can't tell ("the template
-// earns its modules"). Re-add each one only together with its real widget.
-
-const DEBT_SUMMARY_SECTION: SectionPreset = {
-  key:     "debt_summary",
-  label:   "Debt Summary",
-  tab:     SpaceDashboardTab.DEBT,
-  enabled: true,
-  order:   0,
-};
-
-// DEBT_PAYOFF_TRACKER removed (template redesign): its key rendered a
-// debt-summary alias under a "Payoff Tracker" label — a real widget wearing
-// a misleading name. Re-add when a real payoff tracker exists.
-
-const DEBT_BREAKDOWN_SECTION: SectionPreset = {
-  key:     "debt_breakdown_chart",
-  label:   "Debt Breakdown",
-  tab:     SpaceDashboardTab.OVERVIEW,
-  enabled: true,
-  order:   0,
-};
-
-const DEBT_PAYOFF_CALC_SECTION: SectionPreset = {
-  key:     "debt_payoff_calculator",
-  label:   "Payoff Planner",
-  tab:     SpaceDashboardTab.OVERVIEW,
-  enabled: true,
-  order:   1,
-};
-
-const INVESTMENT_SUMMARY: SectionPreset = {
-  key:     "investment_summary",
-  label:   "Portfolio Summary",
-  tab:     SpaceDashboardTab.INVESTMENTS,
-  enabled: true,
-  order:   0,
-};
-
-const INVESTMENT_ALLOCATION: SectionPreset = {
-  key:     "investment_allocation",
-  label:   "Asset Allocation",
-  tab:     SpaceDashboardTab.INVESTMENTS,
-  enabled: true,
-  order:   1,
-};
-
-const RETIREMENT_PROGRESS: SectionPreset = {
-  key:     "retirement_progress",
-  label:   "Retirement Progress",
-  tab:     SpaceDashboardTab.RETIREMENT,
-  enabled: true,
-  order:   0,
-};
-
-const RETIREMENT_ACCOUNTS: SectionPreset = {
-  key:     "retirement_accounts",
-  label:   "Retirement Accounts",
-  tab:     SpaceDashboardTab.RETIREMENT,
-  enabled: true,
-  order:   1,
-};
-
-const EMERGENCY_FUND_PROGRESS: SectionPreset = {
-  key:     "emergency_fund_progress",
-  label:   "Emergency Fund",
-  tab:     SpaceDashboardTab.OVERVIEW,
-  enabled: true,
-  order:   0,
-};
-
-const PROPERTY_VALUE: SectionPreset = {
-  key:     "property_value",
-  label:   "Property Value",
-  tab:     SpaceDashboardTab.OVERVIEW,
-  enabled: true,
-  order:   0,
-};
-
-const MORTGAGE_TRACKER: SectionPreset = {
-  key:     "mortgage_tracker",
-  label:   "Mortgage",
-  tab:     SpaceDashboardTab.DEBT,
-  enabled: true,
-  order:   0,
-};
-
-const VEHICLE_VALUE: SectionPreset = {
-  key:     "vehicle_value",
-  label:   "Vehicle Value",
-  tab:     SpaceDashboardTab.OVERVIEW,
-  enabled: true,
-  order:   0,
-};
-
-const AUTO_LOAN_TRACKER: SectionPreset = {
-  key:     "auto_loan_tracker",
-  label:   "Auto Loan",
-  tab:     SpaceDashboardTab.DEBT,
-  enabled: true,
-  order:   0,
-};
-
-const TRIP_BUDGET: SectionPreset = {
-  key:     "trip_budget",
-  label:   "Trip Budget",
-  tab:     SpaceDashboardTab.OVERVIEW,
-  enabled: true,
-  order:   0,
-};
-
-const TRIP_SAVINGS: SectionPreset = {
-  key:     "trip_savings",
-  label:   "Trip Savings",
-  tab:     SpaceDashboardTab.OVERVIEW,
-  enabled: true,
-  order:   1,
-};
-
-const BUSINESS_ACCOUNTS: SectionPreset = {
-  key:     "business_accounts",
-  label:   "Business Accounts",
-  tab:     SpaceDashboardTab.ACCOUNTS,
-  enabled: true,
-  order:   0,
-};
-
-const EQUIPMENT_VALUE: SectionPreset = {
-  key:     "equipment_value",
-  label:   "Equipment Value",
-  tab:     SpaceDashboardTab.OVERVIEW,
-  enabled: true,
-  order:   0,
-};
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Preset map
-// Every space always gets GOALS_SECTION, ACCOUNTS_SECTION, ACTIVITY_SECTION
-// on top of the category-specific sections below.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const UNIVERSAL_SECTIONS: SectionPreset[] = [
   GOALS_SECTION,
-  ACCOUNTS_SECTION,
-  ACTIVITY_SECTION,
 ];
 
-// ── Space Template Redesign (approved) ────────────────────────────────────────
-// Each preset below is an EDITED template, not a category's column-inches:
-// one lede per Space type (the hero, rendered by SpaceDashboard from
-// SpaceSnapshot — not a section), at most three signature modules, and no
-// section whose key lacks a SectionRegistry renderer. Universal sections
-// (Goals / Accounts / Activity) still append via getPresetsForCategory.
-const PRESET_MAP: Record<SpaceCategory, SectionPreset[]> = {
-  // Personal now renders through the shared SpaceDashboard shell, which reads
-  // these sections (the Overview lede excepted — PersonalHero owns it).
-  // Preset kept minimal + real.
-  [SpaceCategory.PERSONAL]: [
-    NET_WORTH_SECTION,
-    NET_WORTH_CHART_SECTION,
-    ALLOCATION_SECTION,
-    DEBT_SUMMARY_SECTION,
-    INVESTMENT_SUMMARY,
-  ],
-
-  // Household story: "are WE on track" — hero is shared net worth;
-  // signature = shared goals (universal) + obligations. Allocation is
-  // deliberately NOT signature here (partial-scope allocation misleads);
-  // it stays reachable via Perspectives.
-  [SpaceCategory.HOUSEHOLD]: [
-    DEBT_SUMMARY_SECTION,
-  ],
-
-  [SpaceCategory.FAMILY]: [
-    DEBT_SUMMARY_SECTION,
-  ],
-
-  // Business story: "do we have cash" — hero is cash position; signature =
-  // business accounts + obligations. investment_summary removed (edge case,
-  // not signature). business_cash_flow removed until a real widget exists.
-  [SpaceCategory.BUSINESS]: [
-    BUSINESS_ACCOUNTS,
-    DEBT_SUMMARY_SECTION,
-  ],
-
-  // Property story: "what is it worth minus what we owe" — hero is equity;
-  // signature = the two components, BOTH on the Overview under the hero
-  // (template polish D4: the mortgage is half of the equity story — it
-  // can't live behind the Debt perspective modal).
-  [SpaceCategory.PROPERTY]: [
-    PROPERTY_VALUE,
-    { ...MORTGAGE_TRACKER, tab: SpaceDashboardTab.OVERVIEW, order: 1 },
-  ],
-
-  [SpaceCategory.VEHICLE]: [
-    VEHICLE_VALUE,
-    AUTO_LOAN_TRACKER,
-  ],
-
-  [SpaceCategory.TRIP]: [
-    TRIP_BUDGET,
-    TRIP_SAVINGS,
-  ],
-
-  // Investment story: "what is the portfolio worth, what's it made of" —
-  // hero is portfolio value; net_worth removed (duplicates the hero with a
-  // broader, confusable scope).
-  [SpaceCategory.INVESTMENT]: [
-    INVESTMENT_SUMMARY,
-    INVESTMENT_ALLOCATION,
-  ],
-
-  [SpaceCategory.EQUIPMENT]: [
-    EQUIPMENT_VALUE,
-    DEBT_SUMMARY_SECTION,
-  ],
-
-  [SpaceCategory.RETIREMENT]: [
-    RETIREMENT_PROGRESS,
-    RETIREMENT_ACCOUNTS,
-    INVESTMENT_ALLOCATION,
-  ],
-
-  // Debt story: "how far have I come, when am I free" — hero is the payoff
-  // arc (down-is-good); signature = composition ("what am I fighting") +
-  // planner. debt_payoff_tracker removed: it rendered a debt-summary alias
-  // under a misleading label.
-  [SpaceCategory.DEBT_PAYOFF]: [
-    DEBT_BREAKDOWN_SECTION,
-    DEBT_PAYOFF_CALC_SECTION,
-    DEBT_SUMMARY_SECTION,
-  ],
-
-  // Emergency-fund story: "how long could I last" — hero is the savings
-  // trend; signature = months-covered progress. monthly_expenses removed
-  // (config input masquerading as a module — it's collected in the
-  // progress widget's settings).
-  [SpaceCategory.EMERGENCY_FUND]: [
-    EMERGENCY_FUND_PROGRESS,
-  ],
-
-  // Goal story: "how close am I" — the Goals section (ProgressWidget
-  // family) IS the lede, so it lives on the Overview page itself (template
-  // polish D3: preset-wins dedupe in getPresetsForCategory overrides the
-  // universal GOALS-tab placement). Intentionally no chart until goal
-  // history exists. Legacy category; goal-shaped types (TRIP/VEHICLE/
-  // EQUIPMENT) are variants of the same template.
-  [SpaceCategory.GOAL]: [
-    { ...GOALS_SECTION, tab: SpaceDashboardTab.OVERVIEW },
-  ],
-
-  // Blank slate — user builds their own
-  [SpaceCategory.CUSTOM]: [],
-
-  [SpaceCategory.OTHER]: [
-    NET_WORTH_SECTION,
-  ],
-};
+/** Per-category preset OVERRIDES on top of the universal set. Empty today —
+ *  see the REVIEW-3 note above. Partial by design: a missing category gets
+ *  the universal sections only. */
+const PRESET_MAP: Partial<Record<SpaceCategory, SectionPreset[]>> = {};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public helpers
@@ -390,8 +120,7 @@ const PRESET_MAP: Record<SpaceCategory, SectionPreset[]> = {
 
 /**
  * Returns the full ordered list of sections for a space of the given
- * category, including the universal sections (Goals, Accounts, Activity) that
- * every space receives.
+ * category, including the universal sections every space receives.
  *
  * Deduplication: if a category preset includes a key that also appears in
  * UNIVERSAL_SECTIONS, the preset version wins (overrides label/tab/order).
@@ -492,23 +221,40 @@ export const CATEGORY_ICONS: Record<SpaceCategory, string> = {
   [SpaceCategory.OTHER]:          "MoreHorizontal",
 };
 
-/** Categories shown as primary options in the template picker (first row). */
-export const PRIMARY_CATEGORIES: SpaceCategory[] = [
-  SpaceCategory.HOUSEHOLD,
+/**
+ * REVIEW-3 (slice F) — the CURRENTLY-SUPPORTED category set: the categories a
+ * Space can be born with today (FAMILY/CUSTOM via live templates, PERSONAL at
+ * registration, OTHER via the legacy create fallback) plus the set present in
+ * production (OTHER, PERSONAL — nothing else, measured 2026-08-17).
+ *
+ * This is the ONE allowlist every category WRITE validates against:
+ *   - PATCH /api/spaces/[id] (Manage → General) — previously wrote
+ *     `category as never` with NO validation, accepting all 15 enum members
+ *     (the only route by which a retired category could re-enter production);
+ *   - POST /api/spaces' legacy `category` body field — previously resolved
+ *     any category's hidden template, bypassing the live-template gate;
+ *   - GeneralSettingsPanel's picker — previously offered all 13
+ *     primary+secondary categories.
+ *
+ * HOUSEHOLD is deliberately EXCLUDED: its template is hidden ("merged into
+ * Family — identical composition"), production holds zero HOUSEHOLD Spaces,
+ * and re-admitting it would resurrect a retired concept. The SpaceCategory
+ * enum keeps every member (no enum drops in this program) — retired members
+ * are unwritable, not removed.
+ */
+export const SUPPORTED_SPACE_CATEGORIES: SpaceCategory[] = [
+  SpaceCategory.PERSONAL,
   SpaceCategory.FAMILY,
-  SpaceCategory.DEBT_PAYOFF,
-  SpaceCategory.EMERGENCY_FUND,
-  SpaceCategory.RETIREMENT,
-  SpaceCategory.INVESTMENT,
+  SpaceCategory.CUSTOM,
+  SpaceCategory.OTHER,
 ];
 
-/** Categories shown as secondary options (second row / "more" section). */
-export const SECONDARY_CATEGORIES: SpaceCategory[] = [
-  SpaceCategory.BUSINESS,
-  SpaceCategory.PROPERTY,
-  SpaceCategory.VEHICLE,
-  SpaceCategory.TRIP,
-  SpaceCategory.EQUIPMENT,
+/** Categories offered by the Manage → General category picker: the supported
+ *  set minus PERSONAL (the Personal Space's category is fixed at birth; the
+ *  picker only renders for re-categorizable Spaces). Replaces the former
+ *  PRIMARY_CATEGORIES / SECONDARY_CATEGORIES two-row picker over all 13. */
+export const RECATEGORIZE_CATEGORIES: SpaceCategory[] = [
+  SpaceCategory.FAMILY,
   SpaceCategory.CUSTOM,
   SpaceCategory.OTHER,
 ];

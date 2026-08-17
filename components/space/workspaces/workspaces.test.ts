@@ -50,13 +50,18 @@ console.log("1. Every primary destination RESOLVES to its Workspace (host gates 
     ['activeTab === "TRANSACTIONS"', "<TransactionsWorkspace"],
     ['activeTab === "ACCOUNTS"', "<AccountsWorkspace"],
     ['activeTab === "ACTIVITY"', "<ActivityWorkspace"],
-    ['activeTab === "OVERVIEW"', "<OverviewWorkspace"],
+    // REVIEW-3 (slice F): OVERVIEW always renders the engaged Perspective
+    // workspace through the exploration host — the summary canvas
+    // (OverviewWorkspace) was deleted as product-unreachable.
+    ['activeTab === "OVERVIEW"', "<WorkspaceExplorationHost"],
     ["isRoutedWorkspaceTab(activeTab)", "<RoutedWorkspaceModal"],
   ];
   for (const [gate, mount] of mounts) {
     check(`host gates + mounts ${mount}`, DASHCODE.includes(gate) && DASHCODE.includes(mount));
   }
   check("host mounts <AddGoalModal (overlay)", DASHCODE.includes("<AddGoalModal"));
+  check("the retired Overview summary canvas is not mounted anywhere in the host",
+    !DASHCODE.includes("<OverviewWorkspace") && !DASHCODE.includes("perspectiveEngaged"));
 }
 
 console.log("2. Host no longer DEFINES the extracted composition (ownership left the host)");
@@ -89,8 +94,13 @@ console.log("3. The section subsystem is the ONE home for SectionCard + the regi
   check("host imports SectionCard from the card module + SectionRegistry from the registry module",
     DASH.includes('from "@/components/space/sections/SectionCard"') &&
     DASH.includes('from "@/components/space/sections/SectionRegistry"'));
-  check("Overview composes the shared SpaceSectionStack",
-    WS("OverviewWorkspace.tsx").includes("<SpaceSectionStack"));
+  // REVIEW-3: the <SpaceSectionStack> component was deleted with its last
+  // mount (the Overview summary canvas); the module keeps only the shared
+  // vocabulary (NoSectionsCard + SectionCardBundle) the modal path still uses.
+  check("SpaceSectionStack no longer exports a stack component (vocabulary only)",
+    !WS("SpaceSectionStack.tsx").includes("export function SpaceSectionStack(") &&
+    WS("SpaceSectionStack.tsx").includes("export function NoSectionsCard(") &&
+    WS("SpaceSectionStack.tsx").includes("export type SectionCardBundle"));
   // Accounts migrated OUT of the generic section stack into the editorial ledger
   // idiom — the tab mounts AccountsLedger (summary + grouped ledger + LeftPanel/
   // RightPanel exploration over the Space's accounts), no longer a section stack.

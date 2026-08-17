@@ -11,38 +11,33 @@
  * SectionRegistry + ContextualCard + toDisplay from here; nothing here imports
  * SectionCard.
  *
- * Contains: SectionRenderProps (the renderer contract), the config/money adapter
- * helpers (cfgNum/cfgStr/toDisplay/sumAccounts/projectFV), the local renderers
- * (AccountsCard, ActivityCard, ContextualCard, renderNetWorth/DebtSummary/
- * InvestmentSummary, NetWorthChartSection, AllocationSection), and the
- * SectionRegistry map. GoalsCard (goals_progress) lives in ./goals/ (SEC-1); most
- * other renderers live in the per-domain *-adapters files and are wired here.
+ * REVIEW-3 (slice F) — the catalog was cut to keys a surface can still reach.
+ * Persisted SpaceDashboardSection rows render in exactly two places now: the
+ * GOALS / RETIREMENT routed modals (deep-link only), plus the goals widgets[]
+ * virtual-section path. The Overview canvas — the only mount for the
+ * net_worth / net_worth_chart / allocation lede and the perspective widget
+ * keys (wealth_* / liquidity_* / cash_flow_* / debt-perspective keys, whose
+ * perspectives render via WORKSPACE_RENDERERS, never via widgets[]) — was
+ * deleted, so those entries and their renderers (renderNetWorth,
+ * renderDebtSummary, NetWorthChartSection, AllocationSection, the
+ * NetWorthChart family) are gone. Production rows with deleted keys are gated
+ * out at render time by the host's hasRenderer check and stay visible /
+ * toggleable in Manage → Sections; ContextualCard remains the graceful
+ * unknown-key fallback.
  */
 
-import React, { useState } from "react";
-import { LayoutDashboard, Landmark, CreditCard, TrendingUp, Maximize2 } from "lucide-react";
+import React from "react";
+import { LayoutDashboard, TrendingUp } from "lucide-react";
 import { getWidgetMeta } from "@/lib/widget-registry";
 import { AssetValueWidget, type AssetValueConfig } from "@/components/space/widgets/AssetValueWidget";
 import { ProgressWidget, type ProgressStat } from "@/components/space/widgets/ProgressWidget";
 import { type BreakdownViewMode } from "@/components/space/widgets/BreakdownWidget";
-import { SummaryWidget, type SummaryColor } from "@/components/space/widgets/SummaryWidget";
-// Unified Space Widget Layout (slice 1) — Personal Overview lede widgets, now
-// section-backed (net_worth_chart + allocation).
-import { NetWorthChart, type Interval } from "@/components/charts/NetWorthChart";
-import { NetWorthChartModal } from "@/components/charts/NetWorthChartModal";
-import { RebuildHistoryButton } from "@/components/dashboard/RebuildHistoryButton";
-import { AllocationChart } from "@/components/charts/AllocationChart";
-import { classifyAccounts } from "@/lib/account-classifier";
-import { amountOwed, creditBalance, liabilityState } from "@/lib/debt/balance-semantics";
+import { SummaryWidget } from "@/components/space/widgets/SummaryWidget";
 import { formatBalance } from "@/lib/currency";
 import { GoalsCard } from "@/components/space/sections/goals/GoalsCard";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
-import { renderWealthAccountCards, renderInstitutionAllocation, renderWealthAllocationChart, renderWealthConcentration } from "@/components/space/widgets/wealth-adapters";
-import { renderLiquidityLadder, renderAccessibleCash, renderEmergencyFundReadiness, renderLiquidityConcentration } from "@/components/space/widgets/liquidity-adapters";
-import { renderCashFlowSummary, renderCashFlowHistory, renderIncomeVsSpending, renderCashFlowByCategory, renderIncomeBySource, renderDebtPayments } from "@/components/space/widgets/cash-flow-adapters";
-import { renderDebtByAccount, renderDebtCost, CreditUtilizationWidget, renderDebtHistory, renderCreditScore, renderDebtCompleteInfo } from "@/components/space/widgets/debt-perspective-adapters";
 import { renderGoalProgress, renderGoalOnTrack, renderGoalRequiredPace, renderGoalFundingGap, GoalPerspectiveWidget } from "@/components/space/widgets/goals-perspective-adapters";
-import { DEFAULT_CASH_FLOW_PERIOD, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
+import { type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import { AccountsPerspective } from "@/components/space/widgets/accounts/AccountsPerspective";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
@@ -52,59 +47,7 @@ import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot, Transaction } from "@/types";
 import type { SpaceAccount } from "@/lib/space/dashboard-types";
 
-const ACCOUNT_TYPE_LABELS: Record<string, string> = {
-  checking:   "Checking",
-  savings:    "Savings",
-  investment: "Investment",
-  crypto:     "Crypto",
-  debt:       "Debt",
-  other:      "Other",
-};
-
 // ─── Section cards ────────────────────────────────────────────────────────────
-
-
-function AccountsCard({ accounts }: { accounts: SpaceAccount[] }) {
-  if (accounts.length === 0) {
-    return (
-      <div className="text-center py-4">
-        <Landmark size={22} className="text-[var(--text-faint)] mx-auto mb-2" />
-        <p className="text-sm text-[var(--text-muted)]">No accounts shared yet</p>
-        <p className="text-xs text-[var(--text-faint)] mt-0.5">Share accounts from the Spaces page.</p>
-      </div>
-    );
-  }
-
-  const grouped = accounts.reduce<Record<string, SpaceAccount[]>>((acc, a) => {
-    (acc[a.type] ??= []).push(a);
-    return acc;
-  }, {});
-
-  return (
-    <div className="space-y-3">
-      {Object.entries(grouped).map(([type, items]) => (
-        <div key={type}>
-          <p className="text-[10px] font-semibold text-[var(--text-faint)] uppercase tracking-widest mb-1">
-            {ACCOUNT_TYPE_LABELS[type] ?? type}
-          </p>
-          <div className="space-y-1">
-            {items.map((a) => (
-              <div key={a.id} className="flex items-center gap-3 px-3 py-2 rounded-xl bg-[var(--surface-inset)]">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-white truncate">{a.name}</p>
-                  <p className="text-xs text-[var(--text-muted)] truncate">{a.institution}</p>
-                </div>
-                <p className="text-sm font-medium text-white shrink-0">
-                  {formatBalance(a.balance, a.currency)}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 function ActivityCard({ spaceId }: { spaceId: string }) {
   return <TimelineWidget spaceId={spaceId} pageSize={10} />;
@@ -161,24 +104,11 @@ export function ContextualCard({ sectionKey, label }: { sectionKey: string; labe
 // Maps section keys to their render functions.
 // Adding a new section type requires ONE entry here — no switch modifications.
 //
-// Runtime compositor contract (implemented progressively):
-//
-//   section row
-//     → WIDGET_REGISTRY entry  (lib/widget-registry.ts)
-//     → component              (entries below)
-//     → widget meta            (entry.meta)
-//     → data contract          (entry.meta.requires)
-//     → render
-//
-// Phase 1 (current): SectionRegistry maps key → render fn.
-//                    WIDGET_REGISTRY knows metadata + implementation status.
-// Phase 2:           SectionRegistry entries are co-located with components;
-//                    this map is auto-built from the registry.
-// Phase 3:           SpaceDashboard becomes a pure compositor — it reads
-//                    WIDGET_REGISTRY and dispatches to components generically.
-//
-// Keys without an entry here fall back to ContextualCard.
-// Keys with implemented:false in WIDGET_REGISTRY also fall back to ContextualCard.
+// THIS map is the dispatch authority: SectionCard consults it directly and
+// falls back to ContextualCard for keys without an entry. (REVIEW-3 corrected
+// the former claim that WIDGET_REGISTRY's `implemented:false` also forced the
+// ContextualCard fallback — SectionCard never consulted that flag; the trimmed
+// lib/widget-registry.ts no longer carries it.)
 
 export type SectionRenderProps = {
   accounts:              SpaceAccount[];
@@ -326,86 +256,8 @@ function projectFV(
 
 // ─── SectionRegistry adapter helpers ─────────────────────────────────────────
 // These are reused across multiple section keys that share the same data shape.
-
-const renderNetWorth = (p: SectionRenderProps): React.ReactElement => {
-  // MC1 QA Q4 — aggregates convert into the Space's reporting currency
-  // (map-then-reduce keeps the taint); labels follow via ctx.target.
-  // V25-SIDE-1 — net worth is the CLASSIFIER's answer, not a second one computed
-  // here. This block used to raw-sum debt balances, so a credit balance rendered
-  // "Total debt: −$149.81" and overstated net worth by the same amount — a
-  // parallel authority that disagreed with classifyAccounts (which has always
-  // floored liabilities at zero) and therefore with every stored snapshot.
-  const c      = classifyAccounts(p.accounts, p.ctx);
-  const assets = c.totalAssets;
-  const debt   = c.totalLiabilities;
-  const net    = c.netWorth;
-  const est    = c.estimated ? "≈ " : "";
-  // M3 Design Lab convergence — an accounts-derived subline (count + distinct
-  // currencies), read from the SAME `accounts` source, no new authority.
-  const currencyCount = new Set(p.accounts.map((a) => a.currency)).size;
-  const acctSubline = p.accounts.length > 0
-    ? `${p.accounts.length} account${p.accounts.length === 1 ? "" : "s"}` +
-      (currencyCount > 1 ? ` across ${currencyCount} currencies` : "")
-    : undefined;
-  return (
-    <SummaryWidget
-      variant="hero"
-      eyebrow="Net worth"
-      primary={p.accounts.length > 0 ? {
-        value: `${est}${formatBalance(net, p.ctx?.target)}`,
-        label: acctSubline,
-        color: net >= 0 ? "white" : "red",
-        size:  "3xl",
-      } : undefined}
-      stats={p.accounts.length > 0 ? [
-        { label: "Total assets", value: `${est}${formatBalance(assets, p.ctx?.target)}`, accent: "green" },
-        { label: "Total debt",   value: `${est}${formatBalance(debt, p.ctx?.target)}`,   accent: "red"   },
-      ] : undefined}
-      emptyHeadline="No accounts shared yet"
-      emptySubline="Share accounts on the Spaces page to see net worth."
-      emptyIcon={<LayoutDashboard size={22} className="text-[var(--text-faint)]" />}
-    />
-  );
-};
-
-const renderDebtSummary = (p: SectionRenderProps): React.ReactElement => {
-  // V25-SIDE-1 — "Total outstanding debt" IS classifyAccounts' totalLiabilities:
-  // one aggregation path, so this headline can never disagree with net worth or
-  // with a stored snapshot. The former raw sum could render a NEGATIVE total.
-  // MC1 QA Q4 — the headline converts (labels follow); per-account rows below
-  // stay native (itemized doctrine, already labeled with a.currency).
-  const c     = classifyAccounts(p.accounts, p.ctx);
-  const debts = c.liabilities;
-  const total = c.totalLiabilities;
-  const est   = c.estimated ? "≈ " : "";
-  return (
-    <SummaryWidget
-      primary={debts.length > 0 ? {
-        value: `${est}${formatBalance(total, p.ctx?.target)}`,
-        label: "Total outstanding debt",
-        color: "red",
-        size:  "2xl",
-      } : undefined}
-      // Rows keep every liability (membership is structural — a paid-off card is
-      // still a debt account) and state what each amount MEANS.
-      rows={debts.map((a) => {
-        const isCredit = liabilityState(a.balance) === "credit";
-        return {
-          id:         a.id,
-          label:      a.name,
-          sublabel:   a.institution || undefined,
-          value:      isCredit
-            ? `${formatBalance(creditBalance(a.balance), a.currency)} credit`
-            : formatBalance(amountOwed(a.balance), a.currency),
-          valueColor: (isCredit ? "green" : "red") as SummaryColor,
-        };
-      })}
-      emptyHeadline="No debt accounts shared"
-      emptySubline="Share debt accounts from the Spaces page."
-      emptyIcon={<CreditCard size={22} className="text-[var(--text-faint)]" />}
-    />
-  );
-};
+// (renderNetWorth and renderDebtSummary were deleted in REVIEW-3 with their
+// last reachable keys — the Overview lede and the render-branch-less DEBT tab.)
 
 const renderInvestmentSummary = (p: SectionRenderProps): React.ReactElement => {
   const investments = p.accounts.filter((a) => a.type === "investment");
@@ -435,141 +287,18 @@ const renderInvestmentSummary = (p: SectionRenderProps): React.ReactElement => {
   );
 };
 
-// ── Unified Space Widget Layout (slice 1) — Overview lede sections ───────────
-// Formerly hardcoded in PersonalHero; now section-backed so they order/drag/
-// persist like any widget. Body-only: SectionCard supplies the card chrome +
-// title (the section label). Currency conversion follows the host's ctx
-// (ctx.target = the display / "view as" currency); the chart also needs the
-// snapshot stamp currency as the "from" side.
-
-function NetWorthChartSection({
-  snapshots,
-  ctx,
-  snapshotCurrency,
-  spaceId,
-  spaceType,
-  accounts,
-}: {
-  snapshots?:        Snapshot[] | null;
-  ctx?:              ConversionContext;
-  snapshotCurrency?: string;
-  spaceId?:          string;
-  spaceType?:        string;
-  accounts?:         SpaceAccount[];
-}): React.ReactElement {
-  const [chartInterval, setChartInterval] = useState<Interval>("1M");
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <>
-      <div className="flex justify-end items-center gap-1 mb-1">
-        {/* Wealth-timeline amendment (Phase 2) — personal-space only; SHARED
-            approval is Phase 3. */}
-        {spaceType === "PERSONAL" && spaceId && accounts && accounts.length > 0 && (
-          <RebuildHistoryButton spaceId={spaceId} accounts={accounts} />
-        )}
-        <button
-          onClick={() => setExpanded(true)}
-          aria-label="Expand chart"
-          className="w-7 h-7 flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] transition-colors touch-manipulation"
-        >
-          <Maximize2 size={14} />
-        </button>
-      </div>
-      <NetWorthChart
-        snapshots={snapshots ?? []}
-        interval={chartInterval}
-        onIntervalChange={setChartInterval}
-        ctx={ctx}
-        snapshotCurrency={snapshotCurrency}
-        fill
-      />
-      {expanded && (
-        <NetWorthChartModal
-          snapshots={snapshots ?? []}
-          initialInterval={chartInterval}
-          initialSeries="netWorth"
-          ctx={ctx}
-          snapshotCurrency={snapshotCurrency}
-          onClose={() => setExpanded(false)}
-        />
-      )}
-    </>
-  );
-}
-
-function AllocationSection({
-  accounts,
-  ctx,
-}: {
-  accounts: SpaceAccount[];
-  ctx?:     ConversionContext;
-}): React.ReactElement {
-  // classifyAccounts accepts SpaceAccount[] and converts through ctx when
-  // present (identical math for all-USD Spaces).
-  const c = classifyAccounts(accounts, ctx);
-  return (
-    <AllocationChart
-      cash={c.totalLiquid}
-      investments={c.totalInvestments}
-      crypto={c.totalDigitalAssets}
-      debt={c.totalLiabilities}
-      realAssets={c.totalRealAssets}
-      size="responsive"
-    />
-  );
-}
-
 export const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElement> = {
-  "net_worth":              renderNetWorth,
-  "net_worth_chart":        (p) => <NetWorthChartSection snapshots={p.snapshots} ctx={p.ctx} snapshotCurrency={p.snapshotCurrency} spaceId={p.spaceId} spaceType={p.spaceType} accounts={p.accounts} />,
-  "allocation":             (p) => <AllocationSection accounts={p.accounts} ctx={p.ctx} />,
-  // ── Wealth Perspective (UX-PER-3) — assets-only analytical widgets ──────────
-  // EXPERIMENT (UX): temporarily render "Wealth by Account" as a two-column
-  // account-card grid instead of ranked bars. Reversible — restore
-  // renderWealthByAccount to end the experiment. renderWealthByAccount and its
-  // widget key/registry entry are intentionally left untouched.
-  "wealth_by_account":       (p) => renderWealthAccountCards(p.accounts, p.ctx),
-  "institution_allocation":  (p) => renderInstitutionAllocation(p.accounts, p.ctx),
-  // EXPERIMENT (UX): temporarily render "Asset Allocation" as a multi-mode chart
-  // (treemap default / donut / strip). Donut mode reuses renderAssetAllocation
-  // verbatim. Reversible — restore renderAssetAllocation to end the experiment.
-  "asset_allocation":        (p) => renderWealthAllocationChart(p.accounts, p.ctx),
-  "wealth_concentration":    (p) => renderWealthConcentration(p.accounts, p.ctx),
-  // ── Liquidity Perspective (UX-PER-3) — access/readiness widgets ─────────────
-  "liquidity_ladder":        (p) => renderLiquidityLadder(p.accounts, p.ctx),
-  "accessible_cash":         (p) => renderAccessibleCash(p.accounts, p.ctx),
-  "emergency_fund_readiness":(p) => renderEmergencyFundReadiness(p.accounts, p.ctx),
-  "liquidity_concentration": (p) => renderLiquidityConcentration(p.accounts, p.ctx),
-  // ── Cash Flow Perspective (UX-PER-3) — movement over time (FlowType-aware) ──
-  "cash_flow_summary":       (p) => renderCashFlowSummary(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.accounts, p.perspective, p.onPerspectiveChange, p.asOf),
-  "cash_flow_history":       (p) => renderCashFlowHistory(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.onSelectPeriod, p.accounts, p.perspective, p.filterId, p.onPerspectiveChange, p.asOf),
-  "income_vs_spending":      (p) => renderIncomeVsSpending(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.asOf),
-  "cash_flow_by_category":   (p) => renderCashFlowByCategory(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.asOf),
-  "income_by_source":        (p) => renderIncomeBySource(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.accounts, p.perspective, p.asOf),
-  "debt_payments":           (p) => renderDebtPayments(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.accounts, p.asOf),
-  // ── Debt Perspective (UX-PER-3) — liabilities-only (shape/cost/risk) ────────
-  "debt_by_account":         (p) => renderDebtByAccount(p.accounts, p.ctx),
-  "debt_cost":               (p) => renderDebtCost(p.accounts, p.ctx),
-  "credit_utilization":      (p) => <CreditUtilizationWidget accounts={p.accounts} ctx={p.ctx} />,
-  "debt_history":            (p) => renderDebtHistory(p.snapshots, p.ctx),
-  "credit_score":            (p) => renderCreditScore(p.ficoScore, p.ficoUpdatedAt),
-  "debt_complete_info":      (p) => renderDebtCompleteInfo(p.accounts),
-  // debt_payoff_calculator is already registered above (reused from the Debt tab).
   // ── Goals Perspective (UX-PER-3) — trajectory vs target ─────────────────────
   // SD-7a — each Goals widget owns its data via the self-fetching wrapper (the
   // host no longer fetches or threads goals). The pure render fn still does the
   // rendering; the wrapper just supplies the goals it fetches by spaceId.
+  // (Kept with the goals surface per REVIEW-3's conservative rule: goals is
+  // live-but-orphaned — deep-link only — not provably retired.)
   "goal_progress":           (p) => <GoalPerspectiveWidget spaceId={p.spaceId} ctx={p.ctx} render={renderGoalProgress} />,
   "goal_on_track":           (p) => <GoalPerspectiveWidget spaceId={p.spaceId} render={renderGoalOnTrack} />,
   "goal_required_pace":      (p) => <GoalPerspectiveWidget spaceId={p.spaceId} ctx={p.ctx} render={renderGoalRequiredPace} />,
   "goal_funding_gap":        (p) => <GoalPerspectiveWidget spaceId={p.spaceId} ctx={p.ctx} render={renderGoalFundingGap} />,
-  "net_worth_section":      renderNetWorth,       // deprecated alias — seeded pre-v2
   "accounts_overview":      (p) => <AccountsPerspective spaceId={p.spaceId} accounts={p.accounts} />,
-  "business_accounts":      (p) => <AccountsCard accounts={p.accounts} />,
-  "debt_summary":           renderDebtSummary,
-  "debt_payoff_tracker":    renderDebtSummary,    // TODO: Progress/Timeline hybrid when payoff simulation is ready
-  "mortgage_tracker":       renderDebtSummary,
-  "auto_loan_tracker":      renderDebtSummary,
   "debt_breakdown_chart": (p) => {
     const viewMode = (cfgStr(p.config?.viewMode) as BreakdownViewMode | undefined) ?? "donut";
     return renderDebtBreakdownChart(

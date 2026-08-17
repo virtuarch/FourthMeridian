@@ -182,9 +182,14 @@ console.log("\nPROBE 7/10 — liquidity consumes reachable; credit is never cash
   check("reachable cash still admits ONLY AVAILABLE_CASH",
     /avail\.quantity === "AVAILABLE_CASH"\s*\?\s*claim\("REACHABLE_CASH", avail\.amount\)/.test(a));
 
+  // REVIEW-3 (slice F): the four liquidity section KEYS were deleted with the
+  // Overview canvas (their registry entries are gone), so the section ledger
+  // no longer classifies them — the v2.6-L3 migration's live guard is the
+  // adapters checks above (LiquidityWorkspace renders through them). Assert
+  // the ledger did not keep stale liquidity classifications behind.
   const sq = code("lib/balances/section-quantity.ts");
-  check("the section ledger records the liquidity migration",
-    (sq.match(/"REACHABLE_CASH"/g) ?? []).length === 4);
+  check("the section ledger carries no stale liquidity section keys",
+    !/liquidity_ladder:|accessible_cash:|emergency_fund_readiness:|liquidity_concentration:/.test(sq));
 }
 
 // ── 8. Debt stays observed ──────────────────────────────────────────────────
