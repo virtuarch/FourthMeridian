@@ -33,12 +33,18 @@ function priorityGuidance(assessment: FinancialAssessment): string {
         ? 'High-APR debt is urgent — lead with the monthly interest cost and recommended payoff priority.'
         : 'High-APR debt is the most actionable item — discuss the interest burden and payoff options.';
     case 'CASH_FLOW':
-      return (
+      if (
         assessment.cashFlow.deficitCause === 'INTENTIONAL_DEBT_PAYOFF' ||
         assessment.cashFlow.deficitCause === 'MIXED'
-      )
-        ? 'Affirm the intentional debt payoff strategy. Note any liquidity constraint if coverage is below 3 months.'
-        : 'Spending may be exceeding income — identify the specific expense categories driving the gap.';
+      ) {
+        return 'Affirm the intentional debt payoff strategy. Note any liquidity constraint if coverage is below 3 months.';
+      }
+      if (assessment.cashFlow.deficitCause === 'DEBT_DRIVEN') {
+        // REVIEW-3 C-3 — debt payments explain the deficit and the canonical net
+        // is non-negative: never frame this as overspending.
+        return 'The cash deficit is driven by debt payments, not overspending — discuss whether the paydown pace is intentional and suggest recording it as a goal.';
+      }
+      return 'Spending may be exceeding income — identify the specific expense categories driving the gap.';
     case 'GOALS':
       return 'A goal may need attention — discuss its status and recommend the next action.';
     case 'GOALS_GOOD':
@@ -118,6 +124,8 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
     lines.push('  → Negative cash flow is intentional debt-reduction strategy — active debt goal confirms this.');
   } else if (cashFlow.deficitCause === 'MIXED') {
     lines.push('  → Deficit has both intentional debt payments and non-debt spending above income.');
+  } else if (cashFlow.deficitCause === 'DEBT_DRIVEN') {
+    lines.push('  → Cash deficit is driven by debt payments (canonical net is non-negative) — not overspending; no active payoff goal on record.');
   }
 
   if (cashFlow.impliedMonthlyIncome !== null) {
