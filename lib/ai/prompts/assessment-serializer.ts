@@ -12,12 +12,11 @@
 import type { FinancialAssessment } from '@/lib/ai/intelligence';
 import { fmtMoney } from './format';
 
-// Thresholds used in the assessment serialization block.
-// Mirror named constants from annotations.ts — defined here to avoid importing
-// module-private constants for a formatting-only concern.
-const SNAPSHOT_HIGH_THRESHOLD_NOTE  = 45;
-/** Passive-index annual return reference (%) — mirrors MARKET_RETURN_THRESHOLD in annotations.ts. */
-const MARKET_RETURN_THRESHOLD_NOTE  = 7;
+// REVIEW-3 C-8 — thresholds are IMPORTED from the one constants module, not
+// mirrored. The local copies drifted-by-design ("_NOTE" suffixes) and one of
+// them was even compared against a different quantity than the engine compares
+// (span vs row count); a mirror that nothing enforces is a fork in waiting.
+import { MARKET_RETURN_THRESHOLD } from '@/lib/ai/intelligence/annotations/constants';
 
 /** Return a one-sentence LLM instruction based on the current priority. */
 function priorityGuidance(assessment: FinancialAssessment): string {
@@ -33,12 +32,18 @@ function priorityGuidance(assessment: FinancialAssessment): string {
         ? 'High-APR debt is urgent — lead with the monthly interest cost and recommended payoff priority.'
         : 'High-APR debt is the most actionable item — discuss the interest burden and payoff options.';
     case 'CASH_FLOW':
-      return (
+      if (
         assessment.cashFlow.deficitCause === 'INTENTIONAL_DEBT_PAYOFF' ||
         assessment.cashFlow.deficitCause === 'MIXED'
-      )
-        ? 'Affirm the intentional debt payoff strategy. Note any liquidity constraint if coverage is below 3 months.'
-        : 'Spending may be exceeding income — identify the specific expense categories driving the gap.';
+      ) {
+        return 'Affirm the intentional debt payoff strategy. Note any liquidity constraint if coverage is below 3 months.';
+      }
+      if (assessment.cashFlow.deficitCause === 'DEBT_DRIVEN') {
+        // REVIEW-3 C-3 — debt payments explain the deficit and the canonical net
+        // is non-negative: never frame this as overspending.
+        return 'The cash deficit is driven by debt payments, not overspending — discuss whether the paydown pace is intentional and suggest recording it as a goal.';
+      }
+      return 'Spending may be exceeding income — identify the specific expense categories driving the gap.';
     case 'GOALS':
       return 'A goal may need attention — discuss its status and recommend the next action.';
     case 'GOALS_GOOD':
@@ -67,7 +72,13 @@ function priorityGuidance(assessment: FinancialAssessment): string {
  *   12. ADVISOR FLAGS           — typed heuristics for calibration.
  *   13. PRIORITIES              — ranked deterministic hints (not recommendations).
  */
-export function serializeAssessmentBlock(assessment: FinancialAssessment, windowNote?: string | null): string {
+export function serializeAssessmentBlock(
+  assessment: FinancialAssessment,
+  windowNote?: string | null,
+  // REVIEW-3 C-6 — the Space's reporting currency; USD default for fixtures.
+  reportingCurrency?: string,
+): string {
+  const money = (n: number) => fmtMoney(n, reportingCurrency);
   const {
     dataQuality, cashFlow, debt, liquidity,
     capitalAllocation, debtStrategy,
@@ -87,9 +98,13 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
     // Provenance (D6): the period + denominators every derived figure is bounded by.
     lines.push(`  Analysis period: ${windowNote}`);
   }
+  // REVIEW-3 C-8 (KD-16) — no hard-coded "90-day window": the actual analysis
+  // window is stated by the Analysis-period line above (from txn.windowDays via
+  // analysisWindowNote); this line describes only what it measures — the
+  // snapshot span and the income-row count.
   lines.push(
     `  Transaction completeness: ${dataQuality.transactionHistoryCompleteness}` +
-    ` (${dataQuality.snapshotSpanDays}-day history in 90-day window;` +
+    ` (${dataQuality.snapshotSpanDays}-day snapshot span;` +
     ` ${dataQuality.incomeTransactionCount} income transaction(s) captured)`,
   );
   lines.push(
@@ -118,11 +133,13 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
     lines.push('  → Negative cash flow is intentional debt-reduction strategy — active debt goal confirms this.');
   } else if (cashFlow.deficitCause === 'MIXED') {
     lines.push('  → Deficit has both intentional debt payments and non-debt spending above income.');
+  } else if (cashFlow.deficitCause === 'DEBT_DRIVEN') {
+    lines.push('  → Cash deficit is driven by debt payments (canonical net is non-negative) — not overspending; no active payoff goal on record.');
   }
 
   if (cashFlow.impliedMonthlyIncome !== null) {
     const qualifier = dataQuality.incomeConfidence === 'LOW' ? ' (likely understated — partial data)' : '';
-    lines.push(`  Implied monthly income: ${fmtMoney(cashFlow.impliedMonthlyIncome)}/mo${qualifier}`);
+    lines.push(`  Implied monthly income: ${money(cashFlow.impliedMonthlyIncome)}/mo${qualifier}`);
   }
   if (cashFlow.estimatedMonthlyExpenses !== null) {
     // v2.6-ASSESS-2 — say that THIS one is measured spending.
@@ -133,10 +150,10 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
     // both were printed as "Est. monthly expenses", so the moment a declared
     // baseline existed the model saw two lines with that label and two different
     // numbers, and nothing to tell it they were answering different questions.
-    lines.push(`  Est. monthly spending: ${fmtMoney(cashFlow.estimatedMonthlyExpenses)}/mo (measured)`);
+    lines.push(`  Est. monthly spending: ${money(cashFlow.estimatedMonthlyExpenses)}/mo (measured)`);
   }
   if (cashFlow.estimatedMonthlyDebtPayments !== null) {
-    lines.push(`  Est. monthly debt payments: ${fmtMoney(cashFlow.estimatedMonthlyDebtPayments)}/mo`);
+    lines.push(`  Est. monthly debt payments: ${money(cashFlow.estimatedMonthlyDebtPayments)}/mo`);
   }
 
   lines.push('');
@@ -144,7 +161,7 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
   // ── 4. Debt ───────────────────────────────────────────────────────────────
   lines.push(`DEBT  [confidence: ${debt.confidence}]`);
   lines.push(`  Classification: ${debt.classification}`);
-  lines.push(`  Total liabilities: ${fmtMoney(debt.totalLiabilities)}`);
+  lines.push(`  Total liabilities: ${money(debt.totalLiabilities)}`);
 
   if (debt.classification === 'INSUFFICIENT_DATA') {
     lines.push(`  APR completeness: ${debt.aprCompleteness}`);
@@ -164,7 +181,7 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
 
   if (debt.monthlyInterestBurden !== null) {
     const partial = debt.hasNullAPR ? ' (partial — APR missing for some accounts)' : '';
-    lines.push(`  Monthly interest burden: ${fmtMoney(debt.monthlyInterestBurden)}/mo${partial}`);
+    lines.push(`  Monthly interest burden: ${money(debt.monthlyInterestBurden)}/mo${partial}`);
   } else if (debt.hasNullAPR && debt.totalLiabilities > 0) {
     lines.push('  Monthly interest burden: cannot be computed — APR missing.');
   }
@@ -177,7 +194,7 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
   if (!liquidity.hasAccountsDomain) {
     lines.push('  No accounts are linked to this Space — balance data is unavailable.');
   } else {
-    lines.push(`  Liquid cash: ${fmtMoney(liquidity.liquidCashTotal)} (${liquidity.liquidAccountCount} account(s))`);
+    lines.push(`  Liquid cash: ${money(liquidity.liquidCashTotal)} (${liquidity.liquidAccountCount} account(s))`);
 
     if (liquidity.noLiquidAccountsInSpace) {
       lines.push(
@@ -198,12 +215,17 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
       // The partial-data caveat applies only to a MEASURED figure. A declared one
       // is not derived from the window at all, so qualifying it by our data
       // coverage would misdescribe the user's own number.
+      // REVIEW-3 C-8 — the "partial" qualifier mirrors the ENGINE's own
+      // completeness verdict. The old test compared snapshotSpanDays (a
+      // calendar SPAN) against SNAPSHOT_HIGH_THRESHOLD, the same constant
+      // engine.ts compares a ROW COUNT to — a category error that made the
+      // qualifier fire on a different condition than the grade it annotates.
       const partial =
         liquidity.estimatedMonthlyExpenseBasis === 'MEASURED' &&
-        dataQuality.snapshotSpanDays < SNAPSHOT_HIGH_THRESHOLD_NOTE
+        dataQuality.transactionHistoryCompleteness !== 'HIGH'
           ? ' (from partial expense data)'
           : '';
-      lines.push(`  Est. monthly expenses: ${fmtMoney(liquidity.estimatedMonthlyExpense)}/mo${basis}${partial}`);
+      lines.push(`  Est. monthly expenses: ${money(liquidity.estimatedMonthlyExpense)}/mo${basis}${partial}`);
     }
 
     if (liquidity.coverageMonths !== null) {
@@ -233,22 +255,22 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
 
   const ev = capitalAllocation.evidence;
   if (ev.weightedDebtApr !== null) {
-    lines.push(`  Weighted debt APR: ${ev.weightedDebtApr.toFixed(2)}% vs ${MARKET_RETURN_THRESHOLD_NOTE}% market reference`);
+    lines.push(`  Weighted debt APR: ${ev.weightedDebtApr.toFixed(2)}% vs ${MARKET_RETURN_THRESHOLD}% market reference`);
     if (ev.guaranteedReturnAdvantage !== null) {
       if (ev.guaranteedReturnAdvantage > 0) {
         lines.push(
           `  Paying down debt ≈ earning a guaranteed ${ev.weightedDebtApr.toFixed(2)}% return` +
-          ` (${ev.guaranteedReturnAdvantage.toFixed(2)}% above ${MARKET_RETURN_THRESHOLD_NOTE}% market reference)`,
+          ` (${ev.guaranteedReturnAdvantage.toFixed(2)}% above ${MARKET_RETURN_THRESHOLD}% market reference)`,
         );
       } else {
         lines.push(
-          `  Debt APR (${ev.weightedDebtApr.toFixed(2)}%) is below the ${MARKET_RETURN_THRESHOLD_NOTE}% market reference — investing return context may apply`,
+          `  Debt APR (${ev.weightedDebtApr.toFixed(2)}%) is below the ${MARKET_RETURN_THRESHOLD}% market reference — investing return context may apply`,
         );
       }
     }
   }
   if (ev.monthlyInterestBurden !== null) {
-    lines.push(`  Monthly interest cost of carrying debt: ${fmtMoney(ev.monthlyInterestBurden)}/mo`);
+    lines.push(`  Monthly interest cost of carrying debt: ${money(ev.monthlyInterestBurden)}/mo`);
   }
   if (ev.liquidityMonths !== null) {
     lines.push(`  Liquid coverage: ${ev.liquidityMonths.toFixed(1)} months`);
@@ -274,13 +296,13 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
       const c = debtStrategy.avalancheCandidate;
       lines.push(
         `  Avalanche target: ${c.accountName}` +
-        ` (${c.apr!.toFixed(2)}% APR, ${fmtMoney(c.balance)} balance)`,
+        ` (${c.apr!.toFixed(2)}% APR, ${money(c.balance)} balance)`,
       );
     }
     if (debtStrategy.snowballCandidate) {
       const c   = debtStrategy.snowballCandidate;
       const apr = c.apr != null ? `, ${c.apr.toFixed(2)}% APR` : ', APR unknown';
-      lines.push(`  Snowball target: ${c.accountName} (${fmtMoney(c.balance)} balance${apr})`);
+      lines.push(`  Snowball target: ${c.accountName} (${money(c.balance)} balance${apr})`);
     }
     if (debtStrategy.missingAprAccountNames.length > 0) {
       lines.push(`  APR missing for: ${debtStrategy.missingAprAccountNames.join(', ')}`);
@@ -301,15 +323,15 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
 
     if (spendingOpportunities.topReductionOpportunity) {
       const top = spendingOpportunities.topReductionOpportunity;
-      lines.push(`  Top reduction opportunity: ${top.category} (${fmtMoney(top.monthlyEquivalent)}/mo, ${top.transactionCount} txn(s))`);
+      lines.push(`  Top reduction opportunity: ${top.category} (${money(top.monthlyEquivalent)}/mo, ${top.transactionCount} txn(s))`);
     }
-    lines.push(`  Total discretionary spend: ${fmtMoney(spendingOpportunities.discretionaryTotal)}/mo`);
+    lines.push(`  Total discretionary spend: ${money(spendingOpportunities.discretionaryTotal)}/mo`);
 
     const displayCats = spendingOpportunities.topCategories.slice(0, 6);
     if (displayCats.length > 0) {
       lines.push('  By category:');
       for (const cat of displayCats) {
-        lines.push(`    ${cat.category}: ${fmtMoney(cat.monthlyEquivalent)}/mo [${cat.classification}]`);
+        lines.push(`    ${cat.category}: ${money(cat.monthlyEquivalent)}/mo [${cat.classification}]`);
       }
     }
 
@@ -347,7 +369,7 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
 
       const abs =
         t.momDeltaAbs !== null
-          ? `${t.momDeltaAbs > 0 ? '+' : t.momDeltaAbs < 0 ? '−' : ''}${fmtMoney(Math.abs(t.momDeltaAbs))}`
+          ? `${t.momDeltaAbs > 0 ? '+' : t.momDeltaAbs < 0 ? '−' : ''}${money(Math.abs(t.momDeltaAbs))}`
           : 'n/a';
       const pct =
         t.momDeltaPct !== null
@@ -355,7 +377,7 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
           : '';
       const roll =
         t.rolling3moAvg !== null
-          ? `; 3-mo avg ${fmtMoney(t.rolling3moAvg)}`
+          ? `; 3-mo avg ${money(t.rolling3moAvg)}`
           : '; 3-mo avg n/a (needs 3 complete months)';
 
       lines.push(
@@ -391,7 +413,7 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
   lines.push(`  Classification: ${investmentReadiness.classification}`);
   if (investmentReadiness.debtBeatsMarket !== null) {
     lines.push(
-      `  Debt APR exceeds ${MARKET_RETURN_THRESHOLD_NOTE}% market reference: ` +
+      `  Debt APR exceeds ${MARKET_RETURN_THRESHOLD}% market reference: ` +
       (investmentReadiness.debtBeatsMarket ? 'YES' : 'NO'),
     );
   }

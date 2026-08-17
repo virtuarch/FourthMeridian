@@ -332,6 +332,19 @@ export interface AccountSummaryItem {
   statementCloseDay?:     number | null; // day of month (1–31)
   promoAprEndDate?:       string | null; // ISO-8601 date string
   debtProfileUpdatedAt?:  string | null; // ISO-8601 — when DebtProfile was last touched
+
+  /**
+   * REVIEW-3 C-4 — present ONLY on aggregated privacy-reduced rows (synthetic
+   * id), from lib/account-privacy's PrivacyAggregate: member identity/count so
+   * per-member state can resolve, and owed vs issuer-credit carried SEPARATELY
+   * (never netted — an issuer credit cannot discharge another account's debt).
+   */
+  aggregate?: {
+    memberAccountIds: string[];
+    memberCount:      number;
+    owedTotal:        number;
+    creditTotal:      number;
+  };
 }
 
 /**
@@ -377,6 +390,14 @@ export interface KnowledgeGap {
  */
 export interface AccountsSectionData {
   totalCount:         number;
+  /**
+   * REVIEW-3 C-4 — ACTIVE links whose visibility tier grants no balance
+   * disclosure (SUMMARY_ONLY / PRIVATE / legacy SHARED / unknown). They fail
+   * closed: no per-account row, no contribution to any total; this count is the
+   * only disclosure (mirrors lib/account-privacy's redactedCount). Optional so
+   * fixtures predating it still compile; the assembler always emits it.
+   */
+  redactedCount?:     number;
   totalAssets:        number;
   totalLiabilities:   number;
   netWorth:           number;
@@ -705,6 +726,13 @@ export interface TransactionDrilldown {
  * `recurringCandidates` is omitted when scopeHint='brief'.
  */
 export interface TransactionsSummaryData {
+  /**
+   * REVIEW-3 C-6 — the reporting currency every money total in this section is
+   * stated in (the assembler's conversion target). Consumers that render money
+   * (signal detectors, the Brief) format with THIS, never a hard-coded symbol.
+   * Optional only for fixtures predating it.
+   */
+  currency?:        string;
   windowDays:       number;
   startDate:        string; // YYYY-MM-DD — window floor (requested)
   endDate:          string; // YYYY-MM-DD — most recent transaction date (or today)
@@ -759,12 +787,32 @@ export interface TransactionsSummaryData {
    * folded to REFUND (e.g. misclassified card-payment credits — N10 caveat).
    */
   refundTotal:       number;
-  /** Absolute sum of source-side (amount < 0) flowType=DEBT_PAYMENT legs. */
+  /**
+   * REVIEW-3 C-3 — Σ|amount| over the debt-payment authority's counted CASH
+   * legs (lib/transactions/debt-payment-authority.ts selectDebtPaymentCashLegs),
+   * settled rows only. NOT the old `flowType=DEBT_PAYMENT && amount<0` proxy:
+   * the authority refuses unattested provider-categorised rows, admits attested
+   * transfer-typed cash legs, and never counts the liability-side leg.
+   */
   debtPaymentTotal:  number;
-  /** Absolute sum of flowType=TRANSFER (internal moves, both directions). */
+  /** Absolute sum of flowType=TRANSFER moves NOT counted as debt-payment cash
+   *  legs (a counted transfer is disclosed once, under debtPaymentTotal). */
   transferTotal:     number;
-  /** incomeTotal + refundTotal − expenseTotal − debtPaymentTotal (D-4; excludes transfers). */
+  /**
+   * REVIEW-3 C-3 — THE canonical economic net: incomeTotal −
+   * clampEconomicSpend(expenseTotal, refundTotal). Identical in definition to
+   * the Cash Flow workspace's net (foldEconomicRow / clampEconomicSpend are the
+   * shared authority). Transfers and debt payments are movement, not cash flow,
+   * and are excluded — see netAfterDebtPayments for the after-paydown position.
+   */
   netCashFlow:       number;
+  /**
+   * netCashFlow − debtPaymentTotal: the cash position after debt paydown. A
+   * SEPARATE, named measure — never the headline net (a debt payment is capital
+   * directed at a goal, not consumption). Optional only so fixtures that
+   * predate it still compile; the assembler always emits it.
+   */
+  netAfterDebtPayments?: number;
   /**
    * MC1 Phase 3 Slice 4 (D-7) — true when any converted row in the window
    * totals above was estimated (rate walked back / missing, or null-residue
@@ -1067,6 +1115,14 @@ export interface SnapshotDataPoint {
  * `latest` + trend deltas are returned.
  */
 export interface SnapshotSectionData {
+  /**
+   * REVIEW-3 C-6 — the currency the section's figures are actually IN, from the
+   * canonical stamp-aware read (Snapshot.currency: the resolved EFFECTIVE
+   * target). Consumers that render money (the snapshot signal detector, the
+   * Brief) format with THIS, never a hard-coded symbol. Optional only for
+   * fixtures predating it.
+   */
+  currency?:       string;
   /**
    * How many snapshot ROWS the section covers.
    *

@@ -22,6 +22,7 @@ import type {
   DebtSection,
   LiquiditySection,
   FinancialAssessment,
+  UngradedSection,
 } from './types';
 import {
   SNAPSHOT_LOW_THRESHOLD,
@@ -60,7 +61,11 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   const incomeTotal      = txn?.incomeTotal        ?? 0;
   const expenseTotal     = txn?.expenseTotal       ?? 0;
   const debtPaymentTotal = txn?.debtPaymentTotal   ?? 0;
-  const netCashFlow      = txn?.netCashFlow        ?? 0;
+  // REVIEW-3 C-3 — netCashFlow is now THE canonical economic net (income −
+  // clamped spend; debt payments excluded). The after-paydown position is its
+  // own named figure; the `??` keeps fixtures that predate the field working.
+  const netCashFlow          = txn?.netCashFlow    ?? 0;
+  const netAfterDebtPayments = txn?.netAfterDebtPayments ?? (netCashFlow - debtPaymentTotal);
   const totalLiquid      = accts?.totalLiquid      ?? 0;
   const totalLiabilities = accts?.totalLiabilities ?? 0;
 
@@ -135,14 +140,22 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     (g) => g.status === 'ACTIVE' && g.goalType === 'DEBT_REDUCTION',
   );
 
+  // REVIEW-3 C-3 — graded on the CANONICAL figures. The trigger is the full cash
+  // deficit (net after debt payments < 0); the OVERSPENDING claim specifically
+  // requires the canonical economic net to be negative — that is the exact
+  // number the Cash Flow workspace renders, so "you spent more than you took in"
+  // can no longer contradict a surplus on screen. A deficit that debt payments
+  // fully explain is INTENTIONAL_DEBT_PAYOFF / MIXED with an active goal, and
+  // DEBT_DRIVEN without one — named, never mislabelled as overspending.
   const deficitCause: DeficitCauseClassification = (() => {
-    if (netCashFlow >= 0)           return 'NOT_APPLICABLE';
+    if (netAfterDebtPayments >= 0)  return 'NOT_APPLICABLE';
     if (incomeConfidence === 'LOW') return 'LOW_INCOME_SAMPLE';
-    const deficit      = Math.abs(netCashFlow);
+    const deficit      = Math.abs(netAfterDebtPayments);
     const debtFraction = deficit > 0 ? debtPaymentTotal / deficit : 0;
     if (debtFraction >= DEBT_FRACTION_DOMINANT && hasActiveDebtGoal) return 'INTENTIONAL_DEBT_PAYOFF';
     if (debtFraction >= DEBT_FRACTION_PARTIAL && hasActiveDebtGoal)  return 'MIXED';
-    return 'POSSIBLE_OVERSPENDING';
+    if (netCashFlow < 0) return 'POSSIBLE_OVERSPENDING';
+    return 'DEBT_DRIVEN';
   })();
 
   const cashFlowReliability: CashFlowReliability =
@@ -431,7 +444,7 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     if (deficitCause === 'POSSIBLE_OVERSPENDING') return 'CASH_FLOW';
     if (debtSection.classification === 'WARNING') return 'DEBT';
 
-    if (deficitCause === 'INTENTIONAL_DEBT_PAYOFF' || deficitCause === 'MIXED') return 'CASH_FLOW';
+    if (deficitCause === 'INTENTIONAL_DEBT_PAYOFF' || deficitCause === 'MIXED' || deficitCause === 'DEBT_DRIVEN') return 'CASH_FLOW';
 
     return 'LIQUIDITY';
   })();
@@ -475,12 +488,60 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     goalAlignment,
     investmentReadiness,
     txn, // TI2-W2 — amount-based INCOMPLETE_INCOME_DATA wording
+    ctx.space.reportingCurrency, // REVIEW-3 C-6 — money in evidence strings
   );
 
   // ── Step 12: Heuristics and priorities ──────────────────────────────────
 
   const advisorHeuristics = deriveHeuristics(dataQuality, cashFlow, debtSection, liquidity);
   const priorities        = derivePriorities(dataQuality, cashFlow, debtSection, liquidity);
+
+  // ── Step 13: Declared insufficiency (REVIEW-3 C-7, audit E3) ─────────────
+  // scopeHint silently changed what this authority could decide: 'brief' omits
+  // the per-account list (debt forced INSUFFICIENT_DATA) and its 30-day rolling
+  // window almost never contains a complete calendar month (liquidity UNKNOWN
+  // ~30 days in 31). The scope behaviour itself is unchanged; what changes is
+  // that every withheld grade is now DECLARED, with a reason a consumer can
+  // read — so the Brief can say what was withheld or stay silent knowingly,
+  // instead of implying a grade the evidence cannot carry.
+  const ungraded: UngradedSection[] = [];
+  if (debtSection.classification === 'INSUFFICIENT_DATA') {
+    if (!accts) {
+      ungraded.push({
+        section: 'debt', verdict: 'INSUFFICIENT_DATA', reason: 'ACCOUNTS_DOMAIN_ABSENT',
+        detail:  'No accounts domain was assembled — debt cannot be graded.',
+      });
+    } else if (accts.accounts === undefined) {
+      ungraded.push({
+        section: 'debt', verdict: 'INSUFFICIENT_DATA', reason: 'ACCOUNT_LIST_WITHHELD_BY_SCOPE',
+        detail:  'The per-account list was withheld by the brief scope, so liabilities exist but their rates cannot be graded.',
+      });
+    } else {
+      ungraded.push({
+        section: 'debt', verdict: 'INSUFFICIENT_DATA', reason: 'APR_MISSING',
+        detail:  'One or more debt accounts carry no APR (missing input or balance-only visibility).',
+      });
+    }
+  }
+  if (liquidity.classification === 'UNKNOWN') {
+    ungraded.push(
+      noLiquidAccountsInSpace || liquidAccountCount === 0
+        ? {
+            section: 'liquidity', verdict: 'UNKNOWN', reason: 'NO_LIQUID_ACCOUNTS_IN_SPACE',
+            detail:  'No checking or savings accounts are linked to this Space, so coverage cannot be computed.',
+          }
+        : {
+            section: 'liquidity', verdict: 'UNKNOWN', reason: 'NO_EXPENSE_BASELINE_IN_WINDOW',
+            detail:  `No expense baseline: no declared monthly figure and no complete calendar month in the ${windowDays}-day analysis window.`,
+          },
+    );
+  }
+  if (cashFlow.reliability === 'UNRELIABLE') {
+    ungraded.push({
+      section: 'cashFlow', verdict: 'UNRELIABLE', reason: 'LOW_INCOME_CONFIDENCE',
+      detail:  'Income confidence is LOW — cash-flow verdicts over this window would be data artifacts.',
+    });
+  }
 
   return {
     dataQuality,
@@ -497,6 +558,7 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     currentStatePriority,
     advisorHeuristics,
     priorities,
+    ungraded,
   };
 }
 

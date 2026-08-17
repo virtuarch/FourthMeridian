@@ -109,8 +109,11 @@ const TRANSACTIONS  = FinanceDomains.TRANSACTIONS_SUMMARY;
 const HOLDINGS      = FinanceDomains.HOLDINGS_SUMMARY;
 const GOALS         = FinanceDomains.GOALS;
 const SNAPSHOTS     = FinanceDomains.SNAPSHOT_HISTORY;
-const PROVIDERS     = FinanceDomains.PROVIDERS;
-const MEMBERS       = FinanceDomains.MEMBERS;
+// REVIEW-3 C-10 — PROVIDERS / MEMBERS shorthands deleted with their rule
+// references: no assembler is registered for either domain and the manifests no
+// longer attempt them, so routing hints naming those sections claimed context
+// that can never exist. The FinanceDomains enum values remain (types.ts) for
+// when an assembler lands.
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -151,7 +154,7 @@ const RULES: Rule[] = [
     intent: FinancialIntents.UPDATE_KNOWLEDGE,
     temporalFrame: TemporalFrames.CURRENT,
     answerStyle: AnswerStyles.CONFIRM_ACTION,
-    primarySections: [ACCOUNTS, PROVIDERS],
+    primarySections: [ACCOUNTS],
     supportingSections: [],
     suppressSections: [TRANSACTIONS, HOLDINGS, GOALS, SNAPSHOTS],
     match: (t) => {
@@ -170,7 +173,7 @@ const RULES: Rule[] = [
     answerStyle: AnswerStyles.TRADEOFF,
     primarySections: [ACCOUNTS, HOLDINGS],
     supportingSections: [GOALS, SNAPSHOTS, TRANSACTIONS],
-    suppressSections: [MEMBERS],
+    suppressSections: [],
     match: (t) => {
       const debt = hasAny(t, DEBT_WORDS);
       const invest = hasAny(t, INVEST_WORDS);
@@ -187,8 +190,8 @@ const RULES: Rule[] = [
     temporalFrame: TemporalFrames.PLANNING,
     answerStyle: AnswerStyles.PLAN,
     primarySections: [ACCOUNTS],
-    supportingSections: [TRANSACTIONS, SNAPSHOTS, PROVIDERS],
-    suppressSections: [HOLDINGS, MEMBERS],
+    supportingSections: [TRANSACTIONS, SNAPSHOTS],
+    suppressSections: [HOLDINGS],
     match: (t) => {
       const debt = hasAny(t, DEBT_WORDS);
       const payoff = hasAny(t, PAYOFF_WORDS);
@@ -205,7 +208,7 @@ const RULES: Rule[] = [
     temporalFrame: TemporalFrames.CURRENT,
     answerStyle: AnswerStyles.DIRECT_STATUS,
     primarySections: [ACCOUNTS],
-    supportingSections: [SNAPSHOTS, PROVIDERS],
+    supportingSections: [SNAPSHOTS],
     suppressSections: [TRANSACTIONS, HOLDINGS, GOALS],
     match: (t) => {
       const debt = hasAny(t, DEBT_WORDS);
@@ -224,7 +227,7 @@ const RULES: Rule[] = [
     answerStyle: AnswerStyles.ASSESSMENT,
     primarySections: [ACCOUNTS, HOLDINGS],
     supportingSections: [GOALS, TRANSACTIONS, SNAPSHOTS],
-    suppressSections: [MEMBERS],
+    suppressSections: [],
     match: (t) => {
       if (hasAny(t, READINESS_WORDS)) return 0.9;
       // "ready" + invest vocabulary.

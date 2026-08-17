@@ -15,6 +15,7 @@ import type { FinancialAssessment } from '@/lib/ai/intelligence';
 import type { IntentRoute } from '@/lib/ai/intent';
 import { serializeRoutingBlock } from '@/lib/ai/intent';
 import { displaySpaceName } from '@/lib/format';
+import { todayUTCISO } from '@/lib/time/clock';
 import {
   ADVISOR_PRINCIPLES,
   RESPONSE_STYLE,
@@ -27,9 +28,11 @@ import { serializeAssessmentBlock } from './assessment-serializer';
 import { serializeContextBlock } from './context-serializer';
 import type { DebtPaymentLine } from './context-serializer';
 
-/** Returns today's date as a UTC ISO date string (YYYY-MM-DD). Computed per-request. */
+/** Today's UTC calendar day, from THE one clock (REVIEW-3 B-6 — lib/time).
+ *  Computed per-request. This was one of the two recorded lib/ai inline day
+ *  derivations; the clock-authority guard now scans lib/ai like everything else. */
 function todayDateString(): string {
-  return new Date().toISOString().split('T')[0];
+  return todayUTCISO();
 }
 
 /**
@@ -79,7 +82,7 @@ export function buildSpaceSystemPrompt(
     '=== END ROUTING ===',
     '',
     '=== FINANCIAL ASSESSMENT ===',
-    serializeAssessmentBlock(annotations, analysisWindowNote(ctx)),
+    serializeAssessmentBlock(annotations, analysisWindowNote(ctx), ctx.space.reportingCurrency),
     '=== END ASSESSMENT ===',
     '',
     '=== SPACE CONTEXT ===',
@@ -110,11 +113,25 @@ function buildMasterAliasGuidance(contexts: SpaceContext_AI[]): string {
  * Build the full system prompt for master (cross-Space) chat.
  * Each Space gets its own clearly delimited block to prevent cross-leakage.
  */
+/**
+ * REVIEW-3 C-9 (KD-8) — the master roll-up facts the route computed:
+ * attempted-vs-succeeded Space coverage, the failed Spaces by name, and the ONE
+ * deterministic cross-Space deduped figure (distinct connected accounts — the
+ * same dedupe the Brief route applies). Optional so existing fixture callers
+ * keep the prior prompt shape.
+ */
+export interface MasterRollup {
+  attemptedSpaceCount:  number;
+  failedSpaceNames:     string[];
+  distinctAccountCount: number;
+}
+
 export function buildMasterSystemPrompt(
   contexts: SpaceContext_AI[],
   annotationsList: FinancialAssessment[],
   route: IntentRoute,
   debtPaymentsList?: DebtPaymentLine[][],
+  rollup?: MasterRollup,
 ): string {
   const spaceBlocks = contexts
     .map((ctx, i) => {
@@ -122,16 +139,42 @@ export function buildMasterSystemPrompt(
       return [
         `--- Space ${i + 1} of ${contexts.length} ---`,
         '=== FINANCIAL ASSESSMENT ===',
-        assessment ? serializeAssessmentBlock(assessment, analysisWindowNote(ctx)) : '(no assessment available)',
+        assessment ? serializeAssessmentBlock(assessment, analysisWindowNote(ctx), ctx.space.reportingCurrency) : '(no assessment available)',
         '=== END ASSESSMENT ===',
         serializeContextBlock(ctx, debtPaymentsList?.[i]),
       ].join('\n');
     })
     .join('\n\n');
 
+  // REVIEW-3 C-9 (KD-8) — honest coverage. The prompt used to state the
+  // SURVIVOR count as the user's Space count: a failed buildContext silently
+  // shrank the user's financial world and the model asserted completeness it
+  // did not have.
+  const attempted = rollup?.attemptedSpaceCount ?? contexts.length;
+  const coverageLines: string[] = [
+    attempted === contexts.length
+      ? `You have context for all ${contexts.length} space(s) the user belongs to.`
+      : `You have context for ${contexts.length} of the user's ${attempted} space(s).`,
+  ];
+  if (rollup && rollup.failedSpaceNames.length > 0) {
+    coverageLines.push(
+      `UNAVAILABLE SPACES: context could not be assembled for: ${rollup.failedSpaceNames.map((n) => `"${displaySpaceName(n)}"`).join(', ')}. ` +
+      'Their data is MISSING from this conversation — the blocks below are NOT the user\'s complete financial picture. ' +
+      'If the user asks about one of these spaces, or about all-spaces totals, say plainly that this data is currently unavailable.',
+    );
+  }
+  if (rollup) {
+    coverageLines.push(
+      'CROSS-SPACE ARITHMETIC RULE: an account shared into multiple spaces appears in EACH of those spaces\' ' +
+      'blocks below, so figures from different space blocks OVERLAP and must NEVER be added together. ' +
+      `The one deduplicated cross-space fact available: the user has ${rollup.distinctAccountCount} distinct connected account(s) across all spaces. ` +
+      'For any other cross-space total, present the per-space figures separately and state that a combined total is not available here.',
+    );
+  }
+
   return [
     'You are a skilled, direct financial advisor powered by Fourth Meridian.',
-    `You have context for ${contexts.length} space(s) the user belongs to.`,
+    ...coverageLines,
     `Today's date: ${todayDateString()}.`,
     'Answer using ONLY the supplied financial context.',
     'Never invent accounts, balances, transactions, or any financial data.',

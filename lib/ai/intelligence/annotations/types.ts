@@ -17,10 +17,18 @@ export type CashFlowReliability = 'UNRELIABLE' | 'PARTIAL' | 'RELIABLE';
 
 export type DeficitCauseClassification =
   | 'INTENTIONAL_DEBT_PAYOFF'  // debt payments dominate + active debt goal confirms strategy
-  | 'POSSIBLE_OVERSPENDING'    // deficit not explained by intentional debt payoff
+  | 'POSSIBLE_OVERSPENDING'    // canonical economic net < 0 — spending genuinely exceeded income
   | 'LOW_INCOME_SAMPLE'        // income data is incomplete — deficit is a data artifact
   | 'MIXED'                    // significant debt payments but not dominant cause
-  | 'NOT_APPLICABLE';          // no deficit (cash flow ≥ 0)
+  /**
+   * REVIEW-3 C-3 — the after-paydown position is negative but the CANONICAL
+   * economic net is not: debt payments (without an active payoff goal on
+   * record) fully explain the cash deficit. Distinct from POSSIBLE_OVERSPENDING
+   * so a consumer can never say "you spent more than you took in" while the
+   * Cash Flow workspace shows a surplus for the same window.
+   */
+  | 'DEBT_DRIVEN'
+  | 'NOT_APPLICABLE';          // no cash deficit (net after debt payments ≥ 0)
 
 
 export type DebtHealthClassification =
@@ -81,6 +89,53 @@ export interface AssessmentPriority {
   code:     CurrentStatePriority;
   severity: HeuristicSeverity;
   reason:   string;
+}
+
+// ── REVIEW-3 C-7 — declared input insufficiency ──────────────────────────────
+
+/** Sections whose GRADE can be withheld for want of input. */
+export type UngradedSectionName = 'debt' | 'liquidity' | 'cashFlow';
+
+/**
+ * WHY a section could not be graded. Machine-readable so a consumer (the Brief)
+ * can distinguish "the evidence was withheld by the requesting scope" from "the
+ * evidence does not exist" — the two demand different sentences.
+ */
+export type UngradedReasonCode =
+  /** No accounts domain was assembled at all. */
+  | 'ACCOUNTS_DOMAIN_ABSENT'
+  /** The per-account list was WITHHELD by the requesting scope (scopeHint
+   *  'brief' omits it) — liabilities exist but cannot be graded from totals. */
+  | 'ACCOUNT_LIST_WITHHELD_BY_SCOPE'
+  /** One or more debt accounts carry no APR (missing input, or balance-only
+   *  visibility making it structurally inaccessible). */
+  | 'APR_MISSING'
+  /** No checking/savings accounts are linked to this Space. */
+  | 'NO_LIQUID_ACCOUNTS_IN_SPACE'
+  /** No expense baseline: no declared figure and no complete, untruncated
+   *  calendar month in the analysis window (the normal state of a 30-day
+   *  rolling brief window). */
+  | 'NO_EXPENSE_BASELINE_IN_WINDOW'
+  /** Income confidence LOW — cash-flow verdicts would be data artifacts. */
+  | 'LOW_INCOME_CONFIDENCE';
+
+/**
+ * One section the assessment explicitly declined to grade, and why.
+ *
+ * REVIEW-3 C-7 (audit E3): `scopeHint` silently changed what computeAssessment
+ * could decide — under 'brief', debt is forced INSUFFICIENT_DATA and liquidity
+ * is UNKNOWN on ~30 days in 31, and nothing in the output said so. A consumer
+ * either implied a grade it did not have or went silent without knowing it was
+ * silent. This record makes the refusal a FACT the consumer can read: say what
+ * was withheld, or stay silent knowingly — never imply.
+ */
+export interface UngradedSection {
+  section: UngradedSectionName;
+  /** The refusing verdict the section carries (mirrors its classification). */
+  verdict: 'INSUFFICIENT_DATA' | 'UNKNOWN' | 'UNRELIABLE';
+  reason:  UngradedReasonCode;
+  /** Human-readable explanation, suitable for prose. */
+  detail:  string;
 }
 
 // ── Typed assessment sections ─────────────────────────────────────────────────
@@ -362,11 +417,10 @@ export type SpendingTrendMetric = 'income' | 'expense' | 'net';
  * is excluded before any comparison. Fields are null when there is not enough
  * complete-month history to compute them (< 2 months for MoM, < 3 for rolling).
  *
- * `net` mirrors the top-level netCashFlow convention EXACTLY, refunds included:
- * income + refunds − expense − debt payments (transfers excluded). Refunds are
- * added back because expense is the GROSS cost-flow sum; omitting them would
- * make the trend net a different (refund-blind) measure than the canonical
- * window net it claims to track. Single formula source: metricValue().
+ * `net` mirrors the top-level netCashFlow convention EXACTLY — since REVIEW-3
+ * C-3 that is the CANONICAL economic net: income − clampEconomicSpend(gross
+ * expense, refunds). Debt payments and transfers are movement, not cash flow,
+ * and are excluded. Single formula source: metricValue().
  */
 
 export interface MetricTrend {
@@ -604,6 +658,12 @@ export interface FinancialAssessment {
   advisorHeuristics:     AdvisorHeuristic[];
   /** Ranked list of active priorities — deterministic hints, not recommendations. */
   priorities:            AssessmentPriority[];
+  /**
+   * REVIEW-3 C-7 — sections whose grade was WITHHELD, each with a declared
+   * reason. Empty when every section was graded. Consumers must read this
+   * before implying any grade: a missing verdict is a refusal, not a pass.
+   */
+  ungraded:              UngradedSection[];
 }
 
 // ── Thresholds ────────────────────────────────────────────────────────────────

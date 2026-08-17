@@ -183,11 +183,24 @@ export function projectSnapshotSection(
   const canonicalChange = canonicalWindowChange(series, CANONICAL_CHANGE_PRESET);
 
   return {
+    // REVIEW-3 C-6 — the effective currency of these figures, from the newest
+    // usable row's stamp (the canonical read boundary resolves it). Consumers
+    // that render money format with THIS, never a hard-coded symbol. Absent on
+    // fixtures whose rows carry no stamp.
+    ...(usable[usable.length - 1].currency
+      ? { currency: usable[usable.length - 1].currency }
+      : {}),
     snapshotCount:    usable.length,
     spanDays,
     canonicalChange,
     oldestDate:       oldest.date,
     newestDate:       latest.date,
+    // ⚠️ REVIEW-3 C-5 — the accidental fetched-row window. RETAINED in the
+    // payload ONLY because a snapshot-authority guard outside this slice's
+    // write scope pins its refusal semantics (crypto-valuation-status: a trend
+    // across an unassertable endpoint is null); NO detector or Brief sentence
+    // reads it any more — the signal detector migrated to canonicalChange.
+    // Nothing user-facing may consume these two fields.
     netWorthTrend,
     netWorthTrendPct,
     latest,
