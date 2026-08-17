@@ -190,6 +190,21 @@ if (process.argv[2] === "child") {
   const out20 = run({ ...CORE, ...PLAID, PLAID_ENV: "sandbox", VERCEL: "1", NODE_ENV: "production" });
   check("VALIDATE_OK", out20.includes("VALIDATE_OK"), out20.slice(0, 300));
 
+  // ── REVIEW-3 — QUANTITY_AUTHORITY_MODE is a declared, validated money switch ─
+  console.log("21. QUANTITY_AUTHORITY_MODE=adopt → passes but warns LOUDLY (money switch)");
+  const out21 = run({ ...CORE, NODE_ENV: "test", QUANTITY_AUTHORITY_MODE: "adopt" });
+  check("VALIDATE_OK (never fatal)", out21.includes("VALIDATE_OK"), out21.slice(0, 300));
+  check("warns that money values can change", /QUANTITY_AUTHORITY_MODE/.test(out21) && /money values can change/i.test(out21));
+
+  console.log("22. QUANTITY_AUTHORITY_MODE with a typo → passes, warns treated-as-off");
+  const out22 = run({ ...CORE, NODE_ENV: "test", QUANTITY_AUTHORITY_MODE: "adotp" });
+  check("VALIDATE_OK (typo never enables/errors)", out22.includes("VALIDATE_OK"), out22.slice(0, 300));
+  check("warns unrecognised → off", /unrecognised value/.test(out22) && /treated as "off"/.test(out22));
+
+  console.log("23. QUANTITY_AUTHORITY_MODE unset/off → silent");
+  const out23 = run({ ...CORE, NODE_ENV: "test", QUANTITY_AUTHORITY_MODE: "off" });
+  check("VALIDATE_OK, no quantity-authority warning", out23.includes("VALIDATE_OK") && !/QUANTITY_AUTHORITY_MODE/.test(out23));
+
   console.log(failures === 0 ? "\nAll env-validation tests passed." : `\n${failures} failure(s).`);
   process.exit(failures === 0 ? 0 : 1);
 }
