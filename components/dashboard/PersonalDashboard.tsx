@@ -36,8 +36,6 @@ interface Props {
   category:      string;
   myRole:        string;
   currentUserId: string;
-  /** Mapped from the legacy `?tab=` deep link by page.tsx (unknown ⇒ OVERVIEW). */
-  initialTab:    string;
 
   // The user's FICO score → the Debt workspace's credit-health companion.
   // CLEAN-0 removed the former accounts/snapshots/transactions/moneyCtx props:
@@ -50,7 +48,7 @@ interface Props {
 }
 
 export function PersonalDashboard({
-  spaceId, spaceName, spaceType, category, myRole, currentUserId, initialTab,
+  spaceId, spaceName, spaceType, category, myRole, currentUserId,
   ficoScore, initialWorkspace,
 }: Props) {
   // EPHEMERAL "view as" override — pure in-memory, never persisted; a reload
@@ -73,7 +71,6 @@ export function PersonalDashboard({
         category={category}
         myRole={myRole}
         currentUserId={currentUserId}
-        initialTab={initialTab}
         // UX-PER-3 Debt — the user's FICO score for the Debt workspace's
         // credit-health companion (never drives debt math).
         ficoScore={ficoScore}
