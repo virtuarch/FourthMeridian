@@ -40,7 +40,7 @@
  */
 
 import { convertStampedValues } from "@/lib/snapshots/stamp-conversion";
-import { resolveSnapshotCompleteness, type SnapshotCompleteness } from "@/lib/snapshots/snapshot-completeness.core";
+import { resolveSnapshotCompleteness, snapshotConfidence, type SnapshotCompleteness } from "@/lib/snapshots/snapshot-completeness.core";
 import {
   resolveCryptoValuationState, isCryptoAssertable, isAssetSideContaminated,
   cryptoUnavailableReason, type CryptoValuationState,
@@ -159,12 +159,19 @@ export function admissibleNetWorthSeries(
   for (const r of rows) {
     // Rule 1a — the SAME aggregate authorisation the full read boundary
     // resolves. A non-assertable netWorth never becomes a plain number here.
-    const { aggregates } = resolveSnapshotRowProvenance(r);
+    const { aggregates, completeness } = resolveSnapshotRowProvenance(r);
     if (!aggregates.netWorth.assertable) continue;
+
+    // Rule 3 — the marker covers every non-observation: reconstructed rows
+    // (isEstimated) AND rows whose recorded confidence is below observation
+    // (e.g. the live writer's FX-partial 'incomplete' disclosure, REVIEW-3
+    // row 33 — an assertable but PARTIAL sum is shown as ≈, never as fact).
+    const rowUncertain =
+      (r.isEstimated ?? false) || snapshotConfidence(completeness) !== "observed";
 
     const stamp = r.reportingCurrency ?? "USD";
     if (!stampCtx || stamp === target) {
-      points.push({ date: r.date, value: r.netWorth, estimated: r.isEstimated ?? false });
+      points.push({ date: r.date, value: r.netWorth, estimated: rowUncertain });
       continue;
     }
     // Rule 1b — off-stamp: convert at THIS point's own date. A genuine rate
@@ -176,7 +183,7 @@ export function admissibleNetWorthSeries(
     if (conv.missed) continue;
     points.push({
       date: r.date, value: conv.values.v,
-      estimated: (r.isEstimated ?? false) || conv.estimated,
+      estimated: rowUncertain || conv.estimated,
     });
   }
   return points;

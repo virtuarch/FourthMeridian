@@ -115,6 +115,17 @@ console.log("\n3. Reconstruction marker");
   check("marker reflects the point SHOWN (latest observed ⇒ false)", s2.estimated === false);
 }
 
+// ── 3b. FX-partial live rows (recorded 'incomplete') are marked, not fact ────
+console.log("\n3b. FX-partial disclosure carries the marker");
+{
+  // The live writer's REVIEW-3 row-33 disclosure: isEstimated=false but a
+  // recorded 'incomplete' tier (an FX-unavailable account was excluded).
+  const partial = row({ date: d("2026-08-07"), completenessTier: "incomplete" });
+  const s = summarizeNetWorthSeries(admissibleNetWorthSeries([partial], "USD", null));
+  check("an assertable PARTIAL sum still shows (identities hold)", s.netWorth === 1300);
+  check("but it is marked estimated — never presented as an observation", s.estimated === true);
+}
+
 // ── 4. The window change runs over the admissible series only ────────────────
 console.log("\n4. canonicalWindowChange over ADMISSIBLE points");
 {
