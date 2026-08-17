@@ -12,12 +12,11 @@
 import type { FinancialAssessment } from '@/lib/ai/intelligence';
 import { fmtMoney } from './format';
 
-// Thresholds used in the assessment serialization block.
-// Mirror named constants from annotations.ts — defined here to avoid importing
-// module-private constants for a formatting-only concern.
-const SNAPSHOT_HIGH_THRESHOLD_NOTE  = 45;
-/** Passive-index annual return reference (%) — mirrors MARKET_RETURN_THRESHOLD in annotations.ts. */
-const MARKET_RETURN_THRESHOLD_NOTE  = 7;
+// REVIEW-3 C-8 — thresholds are IMPORTED from the one constants module, not
+// mirrored. The local copies drifted-by-design ("_NOTE" suffixes) and one of
+// them was even compared against a different quantity than the engine compares
+// (span vs row count); a mirror that nothing enforces is a fork in waiting.
+import { MARKET_RETURN_THRESHOLD } from '@/lib/ai/intelligence/annotations/constants';
 
 /** Return a one-sentence LLM instruction based on the current priority. */
 function priorityGuidance(assessment: FinancialAssessment): string {
@@ -99,9 +98,13 @@ export function serializeAssessmentBlock(
     // Provenance (D6): the period + denominators every derived figure is bounded by.
     lines.push(`  Analysis period: ${windowNote}`);
   }
+  // REVIEW-3 C-8 (KD-16) — no hard-coded "90-day window": the actual analysis
+  // window is stated by the Analysis-period line above (from txn.windowDays via
+  // analysisWindowNote); this line describes only what it measures — the
+  // snapshot span and the income-row count.
   lines.push(
     `  Transaction completeness: ${dataQuality.transactionHistoryCompleteness}` +
-    ` (${dataQuality.snapshotSpanDays}-day history in 90-day window;` +
+    ` (${dataQuality.snapshotSpanDays}-day snapshot span;` +
     ` ${dataQuality.incomeTransactionCount} income transaction(s) captured)`,
   );
   lines.push(
@@ -212,9 +215,14 @@ export function serializeAssessmentBlock(
       // The partial-data caveat applies only to a MEASURED figure. A declared one
       // is not derived from the window at all, so qualifying it by our data
       // coverage would misdescribe the user's own number.
+      // REVIEW-3 C-8 — the "partial" qualifier mirrors the ENGINE's own
+      // completeness verdict. The old test compared snapshotSpanDays (a
+      // calendar SPAN) against SNAPSHOT_HIGH_THRESHOLD, the same constant
+      // engine.ts compares a ROW COUNT to — a category error that made the
+      // qualifier fire on a different condition than the grade it annotates.
       const partial =
         liquidity.estimatedMonthlyExpenseBasis === 'MEASURED' &&
-        dataQuality.snapshotSpanDays < SNAPSHOT_HIGH_THRESHOLD_NOTE
+        dataQuality.transactionHistoryCompleteness !== 'HIGH'
           ? ' (from partial expense data)'
           : '';
       lines.push(`  Est. monthly expenses: ${money(liquidity.estimatedMonthlyExpense)}/mo${basis}${partial}`);
@@ -247,16 +255,16 @@ export function serializeAssessmentBlock(
 
   const ev = capitalAllocation.evidence;
   if (ev.weightedDebtApr !== null) {
-    lines.push(`  Weighted debt APR: ${ev.weightedDebtApr.toFixed(2)}% vs ${MARKET_RETURN_THRESHOLD_NOTE}% market reference`);
+    lines.push(`  Weighted debt APR: ${ev.weightedDebtApr.toFixed(2)}% vs ${MARKET_RETURN_THRESHOLD}% market reference`);
     if (ev.guaranteedReturnAdvantage !== null) {
       if (ev.guaranteedReturnAdvantage > 0) {
         lines.push(
           `  Paying down debt ≈ earning a guaranteed ${ev.weightedDebtApr.toFixed(2)}% return` +
-          ` (${ev.guaranteedReturnAdvantage.toFixed(2)}% above ${MARKET_RETURN_THRESHOLD_NOTE}% market reference)`,
+          ` (${ev.guaranteedReturnAdvantage.toFixed(2)}% above ${MARKET_RETURN_THRESHOLD}% market reference)`,
         );
       } else {
         lines.push(
-          `  Debt APR (${ev.weightedDebtApr.toFixed(2)}%) is below the ${MARKET_RETURN_THRESHOLD_NOTE}% market reference — investing return context may apply`,
+          `  Debt APR (${ev.weightedDebtApr.toFixed(2)}%) is below the ${MARKET_RETURN_THRESHOLD}% market reference — investing return context may apply`,
         );
       }
     }
@@ -405,7 +413,7 @@ export function serializeAssessmentBlock(
   lines.push(`  Classification: ${investmentReadiness.classification}`);
   if (investmentReadiness.debtBeatsMarket !== null) {
     lines.push(
-      `  Debt APR exceeds ${MARKET_RETURN_THRESHOLD_NOTE}% market reference: ` +
+      `  Debt APR exceeds ${MARKET_RETURN_THRESHOLD}% market reference: ` +
       (investmentReadiness.debtBeatsMarket ? 'YES' : 'NO'),
     );
   }

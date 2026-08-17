@@ -94,10 +94,12 @@ console.log("2. The today/history switch");
 const ROOT = process.cwd();
 const SCAN_DIRS = ["lib", "components", "app", "jobs"];
 
-/** lib/ai is a concurrent slice's territory (see header). lib/time is the seam. */
+/** lib/time is the seam itself. REVIEW-3 C: the lib/ai exclusion is DELETED —
+ *  the AI slice migrated its inline day derivations onto the seam
+ *  (prompts/system-prompt.ts and assemblers/transactions.ts now call
+ *  todayUTCISO), so lib/ai is scanned like everything else. */
 const EXCLUDED_PREFIXES = [
   join("lib", "time") + sep,
-  join("lib", "ai") + sep,
 ];
 
 const CLOCK_REIMPLEMENTATION_PATTERNS: { name: string; re: RegExp }[] = [
@@ -144,15 +146,15 @@ check(
   offenders.join("\n        "),
 );
 
-// The known, recorded exception: lib/ai still carries inline day derivations.
-// This check EXPECTS them, so the exclusion above cannot silently rot: when the
-// AI slice migrates to the seam, this check fails and both it and the
-// exclusion get deleted together.
+// (REVIEW-3 C: the recorded lib/ai exception was deleted together with its
+// exclusion above — the AI layer now delegates to the seam and is scanned by
+// the main invariant like every other directory.)
 {
   const aiSystemPrompt = readFileSync(join(ROOT, "lib", "ai", "prompts", "system-prompt.ts"), "utf8");
   check(
-    "recorded exception: lib/ai (another slice's territory) still has its own day derivation — delete the lib/ai exclusion when this fails",
-    /new Date\(\)\.toISOString\(\)\.split\('T'\)\[0\]/.test(aiSystemPrompt),
+    "lib/ai delegates to the seam (system-prompt imports todayUTCISO from lib/time)",
+    aiSystemPrompt.includes("@/lib/time/clock") &&
+      !/new Date\(\)\.toISOString\(\)\.split\('T'\)\[0\]/.test(aiSystemPrompt),
   );
 }
 

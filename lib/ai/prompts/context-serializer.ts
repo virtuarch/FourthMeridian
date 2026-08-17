@@ -157,10 +157,16 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
     lines.push(`  Period: ${fmtMonthYear(txn.startDate)} – ${fmtMonthYear(txn.endDate)}`);
     lines.push(`  Months analyzed: ~${approxMonths(txn.windowDays)} (${txn.windowDays}-day window)`);
     lines.push(`  Transactions in window: ${txn.transactionCount}`);
+    // REVIEW-3 C-8 (KD-16) — an honest availability claim. This used to read
+    // "the ONLY period for which transaction data exists in this Space", which
+    // is false: it is the only period FETCHED for this context (the window is a
+    // fetch bound, not a statement about the ledger). A model repeating the old
+    // sentence would deny the existence of data the product can show.
     lines.push(
-      '  This is the ONLY period for which transaction data exists in this Space. ' +
-      'Do not describe it as "this year", "YTD", or any longer span unless the dates match. ' +
-      'If the user asks about a longer period, state plainly that only this window is available.',
+      '  This is the only period FETCHED into this context — older transactions may exist in the ' +
+      'Space but are not available here. Do not describe this window as "this year", "YTD", or any ' +
+      'longer span unless the dates match. If the user asks about a longer period, state plainly ' +
+      'that only this window was loaded for this conversation.',
     );
 
     // ── Attribution limit (KD-18) ────────────────────────────────────────────

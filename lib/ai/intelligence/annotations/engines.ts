@@ -570,7 +570,9 @@ export function computeRiskOpportunities(
       code:             'HISTORY_INCOMPLETE',
       severity:         'info',
       confidence:       'HIGH',
-      evidence:         `Transaction history completeness LOW (${dataQuality.snapshotSpanDays}-day span in 90-day window)`,
+      // REVIEW-3 C-8 (KD-16) — the ACTUAL analysis window, never a hard-coded
+      // "90-day" that disagrees with a 30-day brief or explicit window.
+      evidence:         `Transaction history completeness LOW (${dataQuality.snapshotSpanDays}-day snapshot span${txn?.windowDays ? ` in ${txn.windowDays}-day analysis window` : ''})`,
       affectedSections: ['dataQuality'],
     });
   }

@@ -63,7 +63,8 @@ import { SpaceMemberRole }           from '@prisma/client';
 import { buildContext }              from '@/lib/ai/context-builder';
 import { generateChatReply }         from '@/lib/ai/provider';
 import type { ChatMessage }          from '@/lib/ai/provider';
-import type { SpaceContext_AI, KnowledgeGap } from '@/lib/ai/types';
+import type { SpaceContext_AI, KnowledgeGap, AccountsSectionData } from '@/lib/ai/types';
+import { FinanceDomains }            from '@/lib/ai/types';
 import { computeAssessment }         from '@/lib/ai/intelligence';
 import type { FinancialAssessment }  from '@/lib/ai/intelligence';
 import { fetchPerLiabilityDebtPayments } from '@/lib/ai/intelligence/debt-payments';
@@ -361,7 +362,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         role:   { in: ELIGIBLE_ROLES },
         space:  { archivedAt: null, deletedAt: null },
       },
-      select: { spaceId: true },
+      // REVIEW-3 C-9 (KD-8) — the name rides along so a FAILED Space can be
+      // named as unavailable in the prompt instead of silently vanishing.
+      select: { spaceId: true, space: { select: { name: true } } },
     });
 
     if (memberships.length === 0) {
@@ -384,9 +387,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       )
       .map((r) => r.value);
 
-    // Log failures without crashing
+    // REVIEW-3 C-9 (KD-8) — failed Spaces are logged AND surfaced. The prompt
+    // previously stated the SURVIVOR count as the user's Space count, so a
+    // build failure silently shrank the user's financial world.
+    const failedSpaceNames: string[] = [];
     contextResults.forEach((r, i) => {
       if (r.status === 'rejected') {
+        failedSpaceNames.push(memberships[i]?.space.name ?? 'Unknown space');
         console.error(
           `[api/ai/chat] buildContext failed for Space ${memberships[i]?.spaceId}:`,
           r.reason,
@@ -401,17 +408,43 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       );
     }
 
+    // REVIEW-3 C-9 (KD-8) — ONE deterministic cross-Space deduped figure, the
+    // same dedupe the Brief route applies (distinct FinancialAccount ids across
+    // every Space's accountIds): an account shared into two Spaces counts once.
+    // Deliberately NOT a new cross-Space aggregation authority — a count over
+    // ids, so the model has a canonical figure instead of doing arithmetic over
+    // knowingly overlapping per-Space blocks.
+    const distinctAccountCount = new Set(
+      contexts.flatMap(
+        (c) => (c.domains[FinanceDomains.ACCOUNTS]?.data as AccountsSectionData | undefined)?.accountIds ?? [],
+      ),
+    ).size;
+
     const masterAssessments = contexts.map(computeAssessment);
     // Slice 6: per-liability debt-payment rollups (one Space-scoped query each,
     // in parallel; [] on failure — serializer falls back to disclosure-only).
     const masterDebtPayments = await Promise.all(
       contexts.map((c) => fetchPerLiabilityDebtPayments(c)),
     );
-    systemPrompt = buildMasterSystemPrompt(contexts, masterAssessments, intentRoute, masterDebtPayments);
+    systemPrompt = buildMasterSystemPrompt(contexts, masterAssessments, intentRoute, masterDebtPayments, {
+      attemptedSpaceCount: memberships.length,
+      failedSpaceNames,
+      distinctAccountCount,
+    });
     // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
     await logShadowSelectionPlans(user.id, contexts, masterAssessments, intentRoute);
+    // REVIEW-3 C-9 (KD-8) — deduplicate flat-mapped gaps: an account shared
+    // into several Spaces surfaced the SAME gap once per Space, and the client
+    // rendered duplicate cards.
+    const seenGapKeys = new Set<string>();
+    const dedupedGaps = contexts.flatMap(extractKnowledgeGaps).filter((g) => {
+      const key = `${g.accountId}:${g.field}`;
+      if (seenGapKeys.has(key)) return false;
+      seenGapKeys.add(key);
+      return true;
+    });
     gapsForResponse = filterGapsByIntent(
-      contexts.flatMap(extractKnowledgeGaps),
+      dedupedGaps,
       detectsPayoffIntent(messages),
     );
 
