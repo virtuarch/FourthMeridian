@@ -193,7 +193,6 @@ function main(): void {
     // every guard that protected it. The intent is unchanged: the view renders a
     // breakdown only when the authority permits it.
     const panel  = strip(read("components/history/HistoryExplorationSheet.tsx"));
-    const probes = strip(read("lib/integrity/historical-probes.ts"));
     const chart  = strip(read("components/space/widgets/charts/TrendChart.tsx"));
 
     check("V. the detail authority never queries current positions",
@@ -211,14 +210,10 @@ function main(): void {
         panel.slice(panel.indexOf("Unattributed"), panel.indexOf("Unattributed") + 900)
           .replace(/Reconstructed from cash effects/g, "")));
 
-    check("probes open no second valuation engine",
-      !/valueInstrumentAsOf|valuePortfolioAsOf|createPriceService/.test(probes));
-    check("probes consume the canonical authorities",
-      /reconcileWalletLedger/.test(probes) && /getHistoricalPointDetail/.test(probes) &&
-      /loadHoldingOwnership/.test(probes));
-    check("probes never write", !/\.(create|update|upsert|delete)(Many)?\(/.test(probes));
-    check("probe diagnostics carry no secrets",
-      !/apiKey|accessToken|ENCRYPTION_KEY|password/i.test(probes));
+    // (The four "probes" checks that scanned lib/integrity/historical-probes.ts
+    // were removed with that module in REVIEW-3: the probe file had zero
+    // importers — prod, jobs, scripts or tests — so the checks guarded code with
+    // no runtime path. Recoverable from git history if the probes are ever wired.)
 
     check("W/X. the chart selects from the click's own coordinates, not a prior hover",
       /function onSelect\(/.test(chart) && /nearestIndex\(e\.clientX\)/.test(chart));
