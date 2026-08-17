@@ -42,6 +42,7 @@ import {
 } from './constants';
 import type { SpaceContext_AI, TransactionsSummaryData, SnapshotSectionData, GoalsSectionData } from '@/lib/ai/types';
 import { FinanceDomains } from '@/lib/ai/types';
+import { fmtMoney } from '@/lib/ai/prompts/format';
 
 export function computeGoalAlignment(
   goals:    GoalsSectionData | null,
@@ -436,7 +437,11 @@ export function computeRiskOpportunities(
   // wording ("$X of $Y income … has no identified source"). Optional so absent-domain
   // callers still resolve; the evidence falls back to the count-only phrasing.
   txn?:                  TransactionsSummaryData | null,
+  // REVIEW-3 C-6 — the Space's reporting currency for evidence strings that
+  // carry money. USD default keeps fixtures identical; no hard-coded `$`.
+  reportingCurrency?:    string,
 ): RiskOpportunitySection {
+  const money = (n: number) => fmtMoney(n, reportingCurrency);
   const risks:         AssessmentRisk[]        = [];
   const opportunities: AssessmentOpportunity[] = [];
 
@@ -466,7 +471,7 @@ export function computeRiskOpportunities(
     const unknownInflowTotal = txn?.needsClassification?.unknownInflowTotal ?? 0;
     const incomeTotal        = txn?.incomeTotal ?? 0;
     const evidence = unknownInflowTotal > 0 && incomeTotal > 0
-      ? `$${unknownInflowTotal.toFixed(2)} of $${incomeTotal.toFixed(2)} income in-window has no identified source (${dataQuality.incomeTransactionCount} income transaction(s) captured) — income confidence LOW`
+      ? `${money(unknownInflowTotal)} of ${money(incomeTotal)} income in-window has no identified source (${dataQuality.incomeTransactionCount} income transaction(s) captured) — income confidence LOW`
       : `Only ${dataQuality.incomeTransactionCount} income transaction(s) captured — income confidence LOW`;
     risks.push({
       code:             'INCOMPLETE_INCOME_DATA',
@@ -494,7 +499,7 @@ export function computeRiskOpportunities(
       ? `weighted APR ${debtStrategy.weightedAvgApr.toFixed(2)}%`
       : 'elevated APR';
     const burden = debt.monthlyInterestBurden !== null
-      ? `, ~$${debt.monthlyInterestBurden.toFixed(2)}/mo interest`
+      ? `, ~${money(debt.monthlyInterestBurden)}/mo interest`
       : '';
     risks.push({
       code:             'HIGH_INTEREST_DEBT',
@@ -583,7 +588,7 @@ export function computeRiskOpportunities(
       code:             'CUT_TOP_DISCRETIONARY_CATEGORY',
       impact,
       confidence:       spendingOpportunities.confidence,
-      evidence:         `Top discretionary category ${top.category} at $${top.monthlyEquivalent.toFixed(2)}/mo`,
+      evidence:         `Top discretionary category ${top.category} at ${money(top.monthlyEquivalent)}/mo`,
       affectedSections: ['spendingOpportunities'],
     });
   }

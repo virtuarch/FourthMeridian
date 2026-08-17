@@ -17,6 +17,9 @@ import { FinanceDomains, MATERIAL_UNIDENTIFIED_INFLOW_SHARE, deriveUnidentifiedI
 import type { ContextDomainSection, ContextSignal, TransactionsSummaryData } from '@/lib/ai/types';
 import { SignalType } from '@/lib/ai/signals/types';
 import { registerDetector } from '@/lib/ai/signals/registry';
+// REVIEW-3 C-6 — money in titles renders in the section's own reporting
+// currency (TransactionsSummaryData.currency); never a hard-coded symbol.
+import { fmtMoney } from '@/lib/ai/prompts/format';
 
 // ---------------------------------------------------------------------------
 // Detector
@@ -32,6 +35,7 @@ export function detectTransactionSignals(
   if (!section) return [];
 
   const data    = section.data as TransactionsSummaryData;
+  const money   = (n: number) => fmtMoney(n, data.currency);
   const now     = new Date().toISOString();
   const signals: ContextSignal[] = [];
 
@@ -46,7 +50,7 @@ export function detectTransactionSignals(
       domain:     FinanceDomains.TRANSACTIONS_SUMMARY,
       spaceId,
       severity:   'info',
-      title:      `${n} pending credit${n > 1 ? 's' : ''} — $${data.pendingCreditTotal.toFixed(2)} incoming`,
+      title:      `${n} pending credit${n > 1 ? 's' : ''} — ${money(data.pendingCreditTotal)} incoming`,
       value:      data.pendingCreditTotal,
       metadata: {
         count: n,
@@ -67,7 +71,7 @@ export function detectTransactionSignals(
       domain:     FinanceDomains.TRANSACTIONS_SUMMARY,
       spaceId,
       severity:   'info',
-      title:      `${n} pending debit${n > 1 ? 's' : ''} — $${data.pendingDebitTotal.toFixed(2)} outgoing`,
+      title:      `${n} pending debit${n > 1 ? 's' : ''} — ${money(data.pendingDebitTotal)} outgoing`,
       value:      data.pendingDebitTotal,
       metadata: {
         count: n,
@@ -91,10 +95,10 @@ export function detectTransactionSignals(
     const material = share !== null && share >= MATERIAL_UNIDENTIFIED_INFLOW_SHARE;
     const parts: string[] = [];
     if (nc.unknownInflowCount > 0) {
-      parts.push(`$${nc.unknownInflowTotal.toFixed(2)} of income has no identified source`);
+      parts.push(`${money(nc.unknownInflowTotal)} of income has no identified source`);
     }
     if (nc.unknownPaymentAppCount > 0) {
-      parts.push(`$${nc.unknownPaymentAppTotal.toFixed(2)} moved via payment apps, purpose unknown`);
+      parts.push(`${money(nc.unknownPaymentAppTotal)} moved via payment apps, purpose unknown`);
     }
     signals.push({
       id:       `${spaceId}:${SignalType.NEEDS_CLASSIFICATION}`,

@@ -1060,6 +1060,8 @@ async function assembleTransactions(
   // ── Assemble payload ──────────────────────────────────────────────────────
 
   const data: TransactionsSummaryData = {
+    // REVIEW-3 C-6 — the currency every money total below is stated in.
+    currency:         moneyCtx.target,
     windowDays:       win.days,
     startDate:        win.startIso,
     endDate:          newestDate,

@@ -21,7 +21,8 @@
  *
  * ── scopeHint behaviour ──────────────────────────────────────────────────────
  *   'full'  — all non-cancelled, non-trashed goals
- *   'brief' — ACTIVE goals only (tightest summary for Daily Brief)
+ *   'brief' — ACTIVE + COMPLETED (REVIEW-3 C-7: the GOAL_COMPLETED signal reads
+ *             completed goals off this payload; PAUSED stays excluded)
  *
  * ── Permissions ──────────────────────────────────────────────────────────────
  * buildContext() validates Space membership before invoking any assembler.
@@ -63,9 +64,18 @@ async function assembleGoals(
 
   // ── Build status filter ───────────────────────────────────────────────────
 
-  // brief → ACTIVE only; full → all non-cancelled, non-trashed
+  // brief → ACTIVE + COMPLETED; full → all non-cancelled, non-trashed.
+  //
+  // REVIEW-3 C-7 — COMPLETED is included under 'brief' because the
+  // GOAL_COMPLETED signal (and the Brief's celebration insight consuming it)
+  // reads completed goals off THIS payload. The old ACTIVE-only filter made
+  // that whole path statically unreachable in the Brief: a goal completed
+  // yesterday never appeared in brief scope, the detector never fired, and the
+  // Brief's GOAL_COMPLETED branch was dead code (audit E3). The detector's own
+  // 30-day recency window keeps stale completions out of the Brief; PAUSED
+  // stays excluded from 'brief' (nothing in the Brief consumes it).
   const statusFilter: GoalStatus[] = scopeHint === 'brief'
-    ? [GoalStatus.ACTIVE]
+    ? [GoalStatus.ACTIVE, GoalStatus.COMPLETED]
     : [GoalStatus.ACTIVE, GoalStatus.PAUSED, GoalStatus.COMPLETED];
 
   // ── Query ─────────────────────────────────────────────────────────────────

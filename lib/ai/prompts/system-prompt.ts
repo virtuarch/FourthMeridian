@@ -79,7 +79,7 @@ export function buildSpaceSystemPrompt(
     '=== END ROUTING ===',
     '',
     '=== FINANCIAL ASSESSMENT ===',
-    serializeAssessmentBlock(annotations, analysisWindowNote(ctx)),
+    serializeAssessmentBlock(annotations, analysisWindowNote(ctx), ctx.space.reportingCurrency),
     '=== END ASSESSMENT ===',
     '',
     '=== SPACE CONTEXT ===',
@@ -122,7 +122,7 @@ export function buildMasterSystemPrompt(
       return [
         `--- Space ${i + 1} of ${contexts.length} ---`,
         '=== FINANCIAL ASSESSMENT ===',
-        assessment ? serializeAssessmentBlock(assessment, analysisWindowNote(ctx)) : '(no assessment available)',
+        assessment ? serializeAssessmentBlock(assessment, analysisWindowNote(ctx), ctx.space.reportingCurrency) : '(no assessment available)',
         '=== END ASSESSMENT ===',
         serializeContextBlock(ctx, debtPaymentsList?.[i]),
       ].join('\n');

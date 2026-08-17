@@ -332,6 +332,19 @@ export interface AccountSummaryItem {
   statementCloseDay?:     number | null; // day of month (1–31)
   promoAprEndDate?:       string | null; // ISO-8601 date string
   debtProfileUpdatedAt?:  string | null; // ISO-8601 — when DebtProfile was last touched
+
+  /**
+   * REVIEW-3 C-4 — present ONLY on aggregated privacy-reduced rows (synthetic
+   * id), from lib/account-privacy's PrivacyAggregate: member identity/count so
+   * per-member state can resolve, and owed vs issuer-credit carried SEPARATELY
+   * (never netted — an issuer credit cannot discharge another account's debt).
+   */
+  aggregate?: {
+    memberAccountIds: string[];
+    memberCount:      number;
+    owedTotal:        number;
+    creditTotal:      number;
+  };
 }
 
 /**
@@ -377,6 +390,14 @@ export interface KnowledgeGap {
  */
 export interface AccountsSectionData {
   totalCount:         number;
+  /**
+   * REVIEW-3 C-4 — ACTIVE links whose visibility tier grants no balance
+   * disclosure (SUMMARY_ONLY / PRIVATE / legacy SHARED / unknown). They fail
+   * closed: no per-account row, no contribution to any total; this count is the
+   * only disclosure (mirrors lib/account-privacy's redactedCount). Optional so
+   * fixtures predating it still compile; the assembler always emits it.
+   */
+  redactedCount?:     number;
   totalAssets:        number;
   totalLiabilities:   number;
   netWorth:           number;
@@ -705,6 +726,13 @@ export interface TransactionDrilldown {
  * `recurringCandidates` is omitted when scopeHint='brief'.
  */
 export interface TransactionsSummaryData {
+  /**
+   * REVIEW-3 C-6 — the reporting currency every money total in this section is
+   * stated in (the assembler's conversion target). Consumers that render money
+   * (signal detectors, the Brief) format with THIS, never a hard-coded symbol.
+   * Optional only for fixtures predating it.
+   */
+  currency?:        string;
   windowDays:       number;
   startDate:        string; // YYYY-MM-DD — window floor (requested)
   endDate:          string; // YYYY-MM-DD — most recent transaction date (or today)
@@ -1087,6 +1115,14 @@ export interface SnapshotDataPoint {
  * `latest` + trend deltas are returned.
  */
 export interface SnapshotSectionData {
+  /**
+   * REVIEW-3 C-6 — the currency the section's figures are actually IN, from the
+   * canonical stamp-aware read (Snapshot.currency: the resolved EFFECTIVE
+   * target). Consumers that render money (the snapshot signal detector, the
+   * Brief) format with THIS, never a hard-coded symbol. Optional only for
+   * fixtures predating it.
+   */
+  currency?:       string;
   /**
    * How many snapshot ROWS the section covers.
    *

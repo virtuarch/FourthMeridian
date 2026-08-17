@@ -488,6 +488,7 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     goalAlignment,
     investmentReadiness,
     txn, // TI2-W2 — amount-based INCOMPLETE_INCOME_DATA wording
+    ctx.space.reportingCurrency, // REVIEW-3 C-6 — money in evidence strings
   );
 
   // ── Step 12: Heuristics and priorities ──────────────────────────────────

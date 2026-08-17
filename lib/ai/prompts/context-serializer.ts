@@ -40,14 +40,17 @@ export type DebtPaymentLine = { name: string; total: number; count: number };
  */
 export function needsClassificationSummaryLine(
   nc: TransactionsSummaryData['needsClassification'] | undefined | null,
+  // REVIEW-3 C-6 — the Space's reporting currency; USD default for fixtures.
+  currency?: string,
 ): string | null {
   if (!nc || nc.count <= 0) return null;
+  const money = (n: number) => fmtMoney(n, currency);
   const bits: string[] = [];
   if (nc.unknownInflowCount > 0) {
-    bits.push(`${fmtMoney(nc.unknownInflowTotal)} of income has no identified source`);
+    bits.push(`${money(nc.unknownInflowTotal)} of income has no identified source`);
   }
   if (nc.unknownPaymentAppCount > 0) {
-    bits.push(`${fmtMoney(nc.unknownPaymentAppTotal)} moved via payment apps, purpose unknown`);
+    bits.push(`${money(nc.unknownPaymentAppTotal)} moved via payment apps, purpose unknown`);
   }
   const detail = bits.length ? ` (${bits.join('; ')})` : '';
   return (
@@ -77,6 +80,9 @@ export function extractKnowledgeGaps(ctx: SpaceContext_AI): KnowledgeGap[] {
  */
 export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtPaymentLine[]): string {
   const lines: string[] = [];
+  // REVIEW-3 C-6 — ONE bound money formatter for the whole block, in the
+  // Space's reporting currency (never a hard-coded `$`). USD output unchanged.
+  const money = (n: number) => fmtMoney(n, ctx.space.reportingCurrency ?? undefined);
 
   lines.push(`Space: ${displaySpaceName(ctx.space.name)}`);
   lines.push(`Your role: ${ctx.role}`);
@@ -174,7 +180,7 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
         '  PER-LIABILITY DEBT PAYMENTS (deterministic — settled debt-payment legs ' +
         'recorded on each debt account itself, same window as above): ' +
         debtPayments
-          .map((d) => `${d.name}: ${fmtMoney(d.total)} across ${d.count} payment(s)`)
+          .map((d) => `${d.name}: ${money(d.total)} across ${d.count} payment(s)`)
           .join('; ') + '.',
       );
       lines.push(
@@ -208,7 +214,7 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
     // One honesty line: how much of the window is semantically ambiguous. The
     // amounts stay INCLUDED in the totals above (disclosure, never subtracted) —
     // the model must not present income that depends on them as fully verified.
-    const ncLine = needsClassificationSummaryLine(txn.needsClassification);
+    const ncLine = needsClassificationSummaryLine(txn.needsClassification, reportingCur);
     if (ncLine) lines.push(ncLine);
 
     // ── Spending aggregates: single source of truth (D6.3 Part B) ────────────
@@ -245,7 +251,7 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
 
       lines.push(
         `  AVERAGE MONTHLY SPENDING (deterministic — total spending across the ${completeCount} ` +
-        `complete month(s) ${monthsLabel}, divided by ${completeCount}): ${fmtMoney(avgSpend)}/month. ` +
+        `complete month(s) ${monthsLabel}, divided by ${completeCount}): ${money(avgSpend)}/month. ` +
         'Use this exact figure for "average monthly spending". Do NOT recompute it from a window ' +
         'total, and do NOT include partial months unless the user explicitly asks for a month-to-date figure.',
       );
@@ -280,8 +286,8 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
         );
         for (const c of catAverages) {
           lines.push(
-            `    ${c.category}: ${fmtMoney(c.avg)}/month ` +
-            `(${fmtMoney(Math.round(c.total * 100) / 100)} across ${completeCount} mo)`,
+            `    ${c.category}: ${money(c.avg)}/month ` +
+            `(${money(Math.round(c.total * 100) / 100)} across ${completeCount} mo)`,
           );
         }
       }
@@ -298,9 +304,9 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
       // income figures above) are not printed as spending. Credits disclosed.
       for (const cat of txn.byCategory.filter((c) => c.total > 0).slice(0, 8)) {
         lines.push(
-          `    ${cat.category}: ${fmtMoney(cat.total)} total (${cat.count} txn(s))` +
+          `    ${cat.category}: ${money(cat.total)} total (${cat.count} txn(s))` +
           (cat.creditTotal
-            ? ` (excludes ${fmtMoney(cat.creditTotal)} in credits/refunds — NOT spending)`
+            ? ` (excludes ${money(cat.creditTotal)} in credits/refunds — NOT spending)`
             : ''),
         );
       }
@@ -352,9 +358,9 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
         const catsStr = spendingCats.length > 0
           ? spendingCats
               .map((c) =>
-                `${c.category} ${fmtMoney(c.total)}` +
+                `${c.category} ${money(c.total)}` +
                 (c.creditTotal
-                  ? ` (excludes ${fmtMoney(c.creditTotal)} in credits/refunds — NOT spending)`
+                  ? ` (excludes ${money(c.creditTotal)} in credits/refunds — NOT spending)`
                   : ''),
               )
               .join(', ')
@@ -381,16 +387,16 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
         }
 
         lines.push(
-          `  - ${m.month}${flag}${invariantFlag}: spending ${fmtMoney(m.expenseTotal)}; categories: ${catsStr}`,
+          `  - ${m.month}${flag}${invariantFlag}: spending ${money(m.expenseTotal)}; categories: ${catsStr}`,
         );
         // Non-spending flows for the same month, bracketed separately so they can
         // never be misread as spending categories.
         lines.push(
-          `      [other flows this month — NOT spending: income ${fmtMoney(m.incomeTotal)}, ` +
-          `debt payments ${fmtMoney(m.debtPaymentTotal)}, transfers ${fmtMoney(m.transferTotal)}` +
+          `      [other flows this month — NOT spending: income ${money(m.incomeTotal)}, ` +
+          `debt payments ${money(m.debtPaymentTotal)}, transfers ${money(m.transferTotal)}` +
           // Slice 6: surface the Slice 4 refundTotal when present — refunds are
           // reversals of spending, never income, and are not netted anywhere.
-          (m.refundTotal > 0 ? `, refunds received ${fmtMoney(m.refundTotal)} (reversals of spending — NOT income, already excluded from the spending figure)` : '') +
+          (m.refundTotal > 0 ? `, refunds received ${money(m.refundTotal)} (reversals of spending — NOT income, already excluded from the spending figure)` : '') +
           `; ${m.transactionCount} txn(s)]`,
         );
       }
@@ -425,7 +431,7 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
       );
       for (const mrc of txn.merchants.slice(0, 8)) {
         lines.push(
-          `  ${mrc.canonicalName}: ${fmtMoney(mrc.total)} across ${mrc.occurrences} txn(s), ` +
+          `  ${mrc.canonicalName}: ${money(mrc.total)} across ${mrc.occurrences} txn(s), ` +
           `mostly ${mrc.category}, ${mrc.firstSeen} → ${mrc.lastSeen}`,
         );
       }
@@ -446,7 +452,7 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
       );
       for (const src of txn.incomeSources.slice(0, 8)) {
         lines.push(
-          `  ${src.canonicalName}: ${fmtMoney(src.total)} across ${src.occurrences} txn(s), ` +
+          `  ${src.canonicalName}: ${money(src.total)} across ${src.occurrences} txn(s), ` +
           `${src.firstSeen} → ${src.lastSeen}`,
         );
       }
@@ -474,7 +480,7 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
         const desc = t.description ? ` — ${t.description}` : '';
         const acct = t.accountName ? ` · ${t.accountName}` : '';
         lines.push(
-          `  ${t.date}  ${t.merchant}  ${fmtMoney(t.amount)}  (${t.category})${desc}${acct}`,
+          `  ${t.date}  ${t.merchant}  ${money(t.amount)}  (${t.category})${desc}${acct}`,
         );
       }
       const coverage = d.truncated
@@ -482,8 +488,8 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
           `(${d.totalCount - d.shownCount} more not shown).`
         : `Showing all ${d.shownCount} matching transaction(s).`;
       lines.push(
-        `  ${coverage} Shown total: ${fmtMoney(d.shownTotal)}. ` +
-        `Total for "${scope}" this period: ${fmtMoney(d.matchedTotal)}.`,
+        `  ${coverage} Shown total: ${money(d.shownTotal)}. ` +
+        `Total for "${scope}" this period: ${money(d.matchedTotal)}.`,
       );
       lines.push(
         '  Use these exact rows to explain what the category/merchant is made up of. They are the ' +

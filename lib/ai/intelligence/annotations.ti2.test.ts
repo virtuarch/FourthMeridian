@@ -130,7 +130,9 @@ check("share: missing needsClassification block → 0 (defensive)",
   const risk = a.riskOpportunities.risks.find((r) => r.code === "INCOMPLETE_INCOME_DATA");
   check("INCOMPLETE_INCOME_DATA risk present", !!risk);
   check("evidence states the amount ($X of $Y income … no identified source)",
-    !!risk && risk.evidence === "$200.00 of $1000.00 income in-window has no identified source (0 income transaction(s) captured) — income confidence LOW",
+    // REVIEW-3 C-6 — money formats through the currency-aware fmtMoney (Intl,
+    // thousands separators) instead of a hard-coded `$` + toFixed.
+    !!risk && risk.evidence === "$200.00 of $1,000.00 income in-window has no identified source (0 income transaction(s) captured) — income confidence LOW",
     risk?.evidence);
 
   // No unidentified inflow → count-only fallback wording.

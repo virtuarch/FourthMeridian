@@ -73,7 +73,13 @@ function priorityGuidance(assessment: FinancialAssessment): string {
  *   12. ADVISOR FLAGS           — typed heuristics for calibration.
  *   13. PRIORITIES              — ranked deterministic hints (not recommendations).
  */
-export function serializeAssessmentBlock(assessment: FinancialAssessment, windowNote?: string | null): string {
+export function serializeAssessmentBlock(
+  assessment: FinancialAssessment,
+  windowNote?: string | null,
+  // REVIEW-3 C-6 — the Space's reporting currency; USD default for fixtures.
+  reportingCurrency?: string,
+): string {
+  const money = (n: number) => fmtMoney(n, reportingCurrency);
   const {
     dataQuality, cashFlow, debt, liquidity,
     capitalAllocation, debtStrategy,
@@ -130,7 +136,7 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
 
   if (cashFlow.impliedMonthlyIncome !== null) {
     const qualifier = dataQuality.incomeConfidence === 'LOW' ? ' (likely understated — partial data)' : '';
-    lines.push(`  Implied monthly income: ${fmtMoney(cashFlow.impliedMonthlyIncome)}/mo${qualifier}`);
+    lines.push(`  Implied monthly income: ${money(cashFlow.impliedMonthlyIncome)}/mo${qualifier}`);
   }
   if (cashFlow.estimatedMonthlyExpenses !== null) {
     // v2.6-ASSESS-2 — say that THIS one is measured spending.
@@ -141,10 +147,10 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
     // both were printed as "Est. monthly expenses", so the moment a declared
     // baseline existed the model saw two lines with that label and two different
     // numbers, and nothing to tell it they were answering different questions.
-    lines.push(`  Est. monthly spending: ${fmtMoney(cashFlow.estimatedMonthlyExpenses)}/mo (measured)`);
+    lines.push(`  Est. monthly spending: ${money(cashFlow.estimatedMonthlyExpenses)}/mo (measured)`);
   }
   if (cashFlow.estimatedMonthlyDebtPayments !== null) {
-    lines.push(`  Est. monthly debt payments: ${fmtMoney(cashFlow.estimatedMonthlyDebtPayments)}/mo`);
+    lines.push(`  Est. monthly debt payments: ${money(cashFlow.estimatedMonthlyDebtPayments)}/mo`);
   }
 
   lines.push('');
@@ -152,7 +158,7 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
   // ── 4. Debt ───────────────────────────────────────────────────────────────
   lines.push(`DEBT  [confidence: ${debt.confidence}]`);
   lines.push(`  Classification: ${debt.classification}`);
-  lines.push(`  Total liabilities: ${fmtMoney(debt.totalLiabilities)}`);
+  lines.push(`  Total liabilities: ${money(debt.totalLiabilities)}`);
 
   if (debt.classification === 'INSUFFICIENT_DATA') {
     lines.push(`  APR completeness: ${debt.aprCompleteness}`);
@@ -172,7 +178,7 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
 
   if (debt.monthlyInterestBurden !== null) {
     const partial = debt.hasNullAPR ? ' (partial — APR missing for some accounts)' : '';
-    lines.push(`  Monthly interest burden: ${fmtMoney(debt.monthlyInterestBurden)}/mo${partial}`);
+    lines.push(`  Monthly interest burden: ${money(debt.monthlyInterestBurden)}/mo${partial}`);
   } else if (debt.hasNullAPR && debt.totalLiabilities > 0) {
     lines.push('  Monthly interest burden: cannot be computed — APR missing.');
   }
@@ -185,7 +191,7 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
   if (!liquidity.hasAccountsDomain) {
     lines.push('  No accounts are linked to this Space — balance data is unavailable.');
   } else {
-    lines.push(`  Liquid cash: ${fmtMoney(liquidity.liquidCashTotal)} (${liquidity.liquidAccountCount} account(s))`);
+    lines.push(`  Liquid cash: ${money(liquidity.liquidCashTotal)} (${liquidity.liquidAccountCount} account(s))`);
 
     if (liquidity.noLiquidAccountsInSpace) {
       lines.push(
@@ -211,7 +217,7 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
         dataQuality.snapshotSpanDays < SNAPSHOT_HIGH_THRESHOLD_NOTE
           ? ' (from partial expense data)'
           : '';
-      lines.push(`  Est. monthly expenses: ${fmtMoney(liquidity.estimatedMonthlyExpense)}/mo${basis}${partial}`);
+      lines.push(`  Est. monthly expenses: ${money(liquidity.estimatedMonthlyExpense)}/mo${basis}${partial}`);
     }
 
     if (liquidity.coverageMonths !== null) {
@@ -256,7 +262,7 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
     }
   }
   if (ev.monthlyInterestBurden !== null) {
-    lines.push(`  Monthly interest cost of carrying debt: ${fmtMoney(ev.monthlyInterestBurden)}/mo`);
+    lines.push(`  Monthly interest cost of carrying debt: ${money(ev.monthlyInterestBurden)}/mo`);
   }
   if (ev.liquidityMonths !== null) {
     lines.push(`  Liquid coverage: ${ev.liquidityMonths.toFixed(1)} months`);
@@ -282,13 +288,13 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
       const c = debtStrategy.avalancheCandidate;
       lines.push(
         `  Avalanche target: ${c.accountName}` +
-        ` (${c.apr!.toFixed(2)}% APR, ${fmtMoney(c.balance)} balance)`,
+        ` (${c.apr!.toFixed(2)}% APR, ${money(c.balance)} balance)`,
       );
     }
     if (debtStrategy.snowballCandidate) {
       const c   = debtStrategy.snowballCandidate;
       const apr = c.apr != null ? `, ${c.apr.toFixed(2)}% APR` : ', APR unknown';
-      lines.push(`  Snowball target: ${c.accountName} (${fmtMoney(c.balance)} balance${apr})`);
+      lines.push(`  Snowball target: ${c.accountName} (${money(c.balance)} balance${apr})`);
     }
     if (debtStrategy.missingAprAccountNames.length > 0) {
       lines.push(`  APR missing for: ${debtStrategy.missingAprAccountNames.join(', ')}`);
@@ -309,15 +315,15 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
 
     if (spendingOpportunities.topReductionOpportunity) {
       const top = spendingOpportunities.topReductionOpportunity;
-      lines.push(`  Top reduction opportunity: ${top.category} (${fmtMoney(top.monthlyEquivalent)}/mo, ${top.transactionCount} txn(s))`);
+      lines.push(`  Top reduction opportunity: ${top.category} (${money(top.monthlyEquivalent)}/mo, ${top.transactionCount} txn(s))`);
     }
-    lines.push(`  Total discretionary spend: ${fmtMoney(spendingOpportunities.discretionaryTotal)}/mo`);
+    lines.push(`  Total discretionary spend: ${money(spendingOpportunities.discretionaryTotal)}/mo`);
 
     const displayCats = spendingOpportunities.topCategories.slice(0, 6);
     if (displayCats.length > 0) {
       lines.push('  By category:');
       for (const cat of displayCats) {
-        lines.push(`    ${cat.category}: ${fmtMoney(cat.monthlyEquivalent)}/mo [${cat.classification}]`);
+        lines.push(`    ${cat.category}: ${money(cat.monthlyEquivalent)}/mo [${cat.classification}]`);
       }
     }
 
@@ -355,7 +361,7 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
 
       const abs =
         t.momDeltaAbs !== null
-          ? `${t.momDeltaAbs > 0 ? '+' : t.momDeltaAbs < 0 ? '−' : ''}${fmtMoney(Math.abs(t.momDeltaAbs))}`
+          ? `${t.momDeltaAbs > 0 ? '+' : t.momDeltaAbs < 0 ? '−' : ''}${money(Math.abs(t.momDeltaAbs))}`
           : 'n/a';
       const pct =
         t.momDeltaPct !== null
@@ -363,7 +369,7 @@ export function serializeAssessmentBlock(assessment: FinancialAssessment, window
           : '';
       const roll =
         t.rolling3moAvg !== null
-          ? `; 3-mo avg ${fmtMoney(t.rolling3moAvg)}`
+          ? `; 3-mo avg ${money(t.rolling3moAvg)}`
           : '; 3-mo avg n/a (needs 3 complete months)';
 
       lines.push(
