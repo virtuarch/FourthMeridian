@@ -221,23 +221,40 @@ export const CATEGORY_ICONS: Record<SpaceCategory, string> = {
   [SpaceCategory.OTHER]:          "MoreHorizontal",
 };
 
-/** Categories shown as primary options in the template picker (first row). */
-export const PRIMARY_CATEGORIES: SpaceCategory[] = [
-  SpaceCategory.HOUSEHOLD,
+/**
+ * REVIEW-3 (slice F) — the CURRENTLY-SUPPORTED category set: the categories a
+ * Space can be born with today (FAMILY/CUSTOM via live templates, PERSONAL at
+ * registration, OTHER via the legacy create fallback) plus the set present in
+ * production (OTHER, PERSONAL — nothing else, measured 2026-08-17).
+ *
+ * This is the ONE allowlist every category WRITE validates against:
+ *   - PATCH /api/spaces/[id] (Manage → General) — previously wrote
+ *     `category as never` with NO validation, accepting all 15 enum members
+ *     (the only route by which a retired category could re-enter production);
+ *   - POST /api/spaces' legacy `category` body field — previously resolved
+ *     any category's hidden template, bypassing the live-template gate;
+ *   - GeneralSettingsPanel's picker — previously offered all 13
+ *     primary+secondary categories.
+ *
+ * HOUSEHOLD is deliberately EXCLUDED: its template is hidden ("merged into
+ * Family — identical composition"), production holds zero HOUSEHOLD Spaces,
+ * and re-admitting it would resurrect a retired concept. The SpaceCategory
+ * enum keeps every member (no enum drops in this program) — retired members
+ * are unwritable, not removed.
+ */
+export const SUPPORTED_SPACE_CATEGORIES: SpaceCategory[] = [
+  SpaceCategory.PERSONAL,
   SpaceCategory.FAMILY,
-  SpaceCategory.DEBT_PAYOFF,
-  SpaceCategory.EMERGENCY_FUND,
-  SpaceCategory.RETIREMENT,
-  SpaceCategory.INVESTMENT,
+  SpaceCategory.CUSTOM,
+  SpaceCategory.OTHER,
 ];
 
-/** Categories shown as secondary options (second row / "more" section). */
-export const SECONDARY_CATEGORIES: SpaceCategory[] = [
-  SpaceCategory.BUSINESS,
-  SpaceCategory.PROPERTY,
-  SpaceCategory.VEHICLE,
-  SpaceCategory.TRIP,
-  SpaceCategory.EQUIPMENT,
+/** Categories offered by the Manage → General category picker: the supported
+ *  set minus PERSONAL (the Personal Space's category is fixed at birth; the
+ *  picker only renders for re-categorizable Spaces). Replaces the former
+ *  PRIMARY_CATEGORIES / SECONDARY_CATEGORIES two-row picker over all 13. */
+export const RECATEGORIZE_CATEGORIES: SpaceCategory[] = [
+  SpaceCategory.FAMILY,
   SpaceCategory.CUSTOM,
   SpaceCategory.OTHER,
 ];

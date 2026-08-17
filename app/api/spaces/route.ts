@@ -14,7 +14,7 @@ import { Prisma } from "@prisma/client";
 // before `prisma generate` has been re-run with the new schema values.
 // The string values are identical to what Prisma generates.
 import { requireUser } from "@/lib/session";
-import { SpaceCategory } from "@/lib/space-presets";
+import { SpaceCategory, SUPPORTED_SPACE_CATEGORIES } from "@/lib/space-presets";
 // SP-2.1 — the SP-1 template registry/planner is this route's sole
 // materialization source (same pattern as the register route, SP-2A-3).
 import { getTemplate, getTemplateForCategory } from "@/lib/space-templates/registry";
@@ -116,8 +116,16 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     }
     template = found;
   } else {
+    // REVIEW-3 (slice F): the legacy `category` field used to accept ANY
+    // SpaceCategory and resolve its hidden template — a bypass around the
+    // live-template gate above. It now accepts only the currently-supported
+    // shared categories (the allowlist minus PERSONAL — a SHARED Space can
+    // never be born PERSONAL); anything else falls back to OTHER exactly as
+    // an absent/invalid category always has.
     const legacyCategory: SpaceCategory =
-      category && Object.values(SpaceCategory).includes(category)
+      category &&
+      category !== SpaceCategory.PERSONAL &&
+      SUPPORTED_SPACE_CATEGORIES.includes(category)
         ? category
         : SpaceCategory.OTHER;
     const found = getTemplateForCategory(legacyCategory);
