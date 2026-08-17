@@ -31,7 +31,9 @@ import { resolveEffectiveDebtTerms } from "@/lib/debt/effective-terms";
 // AI assemblers use, so no read surface can disagree; sanitizeForBalanceOnly
 // is the same single-account redactor the shared-Space accounts route uses.
 import { grantsAccountDetail, TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
-import { sanitizeForBalanceOnly } from "@/lib/account-privacy";
+import {
+  sanitizeForBalanceOnly, genericAccountName, grantsBalanceDisclosure,
+} from "@/lib/account-privacy";
 import { resolveRowBalances, reconcileAccount } from "@/lib/balances/account-balances";
 import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
 
@@ -183,6 +185,35 @@ export async function getAccountsWithVisibility(
         link.addedByUser?.firstName?.trim() ||
         link.addedByUser?.name?.trim().split(" ")[0] ||
         null;
+
+      // REVIEW-3 B-1 — tiers granting NO balance disclosure (SUMMARY_ONLY /
+      // PRIVATE / legacy SHARED / unknown) FAIL CLOSED here, matching the
+      // perspective lenses and the aggregating normalizer: the row survives so
+      // tier counts and redaction disclosures stay honest, but its balance is
+      // a structural 0 flagged `balanceRedacted` — never summed, never a claim
+      // the account is settled. currentState and the provider attestation are
+      // withheld with it: both describe a balance this tier does not disclose.
+      if (!grantsBalanceDisclosure(link.visibilityLevel)) {
+        return {
+          visibilityLevel: link.visibilityLevel as VisibilityLevel,
+          account: {
+            id:          r.id,
+            name:        genericAccountName({
+              type:          r.type,
+              debtSubtype:   r.debtSubtype ?? null,
+              ownerFirstName,
+            }),
+            type:        r.type as Account["type"],
+            institution: "",              // redacted — institution is identifying
+            balance:     0,
+            balanceRedacted: true,
+            currency:    r.currency,
+            lastUpdated: r.lastUpdated.toISOString(),
+            balanceLastUpdatedAt: null,
+          } as Account,
+        };
+      }
+
       const safe = sanitizeForBalanceOnly(
         {
           id:          r.id,

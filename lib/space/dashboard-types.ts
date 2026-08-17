@@ -64,6 +64,22 @@ export type SpaceAccount = {
   interestRate?:  number;  // APR, e.g. 19.99
   minimumPayment?: number; // monthly minimum
   earliestTxDate?: string | null; // YYYY-MM-DD earliest non-deleted tx (regen floor); FULL rows only
+  /**
+   * REVIEW-3 B-1 — present ONLY on aggregated privacy-reduced (BALANCE_ONLY)
+   * rows, whose synthetic id maps to no single FinancialAccount. Mirrors
+   * lib/account-privacy.ts#PrivacyAggregate:
+   *   - memberAccountIds / memberCount — the honest population behind the row
+   *     (a Space's account count is the LINK count, not the row count);
+   *   - owedTotal — Σ per-member amountOwed; for a debt row this IS `balance`
+   *     (an issuer credit never discharges another member's obligation);
+   *   - creditTotal — Σ per-member issuer credit, disclosed, never netted.
+   */
+  aggregate?: {
+    memberAccountIds: string[];
+    memberCount:      number;
+    owedTotal:        number;
+    creditTotal:      number;
+  };
 };
 
 export type SpaceGoal = {

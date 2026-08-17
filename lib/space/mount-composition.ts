@@ -35,7 +35,7 @@ import { sortAccountsForDisplay } from "@/lib/data/accounts";
 
 import { db } from "@/lib/db";
 import { ShareStatus } from "@prisma/client";
-import { normalizeSharedAccounts } from "@/lib/account-privacy";
+import { normalizeSharedAccounts, aggregateCurrentCashState } from "@/lib/account-privacy";
 import { resolveEffectiveDebtTerms } from "@/lib/debt/effective-terms";
 import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
 import { resolveRowBalances, reconcileAccount } from "@/lib/balances/account-balances";
@@ -176,14 +176,27 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
   // v2.6-TRUTH-10b — the query sorts on the STORED name and cannot do better;
   // re-order the RESOLVED list so it reads the way it renders. Type order is
   // unchanged, and this list is unpaginated so the sort is complete.
-  return sortAccountsForDisplay(normalizeSharedAccounts(effectiveLinks).map((a) => ({
-    ...a,
-    earliestTxDate: floorByAccount.get(a.id) ?? null,
-    // Aggregated BALANCE_ONLY rows have a synthetic id that maps to no single
-    // account, so they carry no current-state claim — an aggregate of reachable
-    // figures across members is a different quantity we have not defined.
-    ...(currentStateByAccount.has(a.id) ? { currentState: currentStateByAccount.get(a.id) } : {}),
-  }))) as unknown as SpaceAccount[];
+  // REVIEW-3 B-1 — normalizeSharedAccounts now fails closed on non-disclosing
+  // tiers (they are absent from `accounts` and counted in `redactedCount`; the
+  // SpaceAccount[] payload shape has no population-level field to carry that
+  // count, and today no write path can produce such a link — the lens path
+  // (lib/data/accounts.ts → debt/liquidity cores) is the disclosure surface).
+  const { accounts: normalized } = normalizeSharedAccounts(effectiveLinks);
+  return sortAccountsForDisplay(normalized.map((a) => {
+    // REVIEW-3 B-1 — an aggregated row's current-state claim is composed from
+    // its members' ALREADY-RESOLVED claims (the synthetic id maps to no single
+    // account, so the direct lookup used to miss and the LEDGER balance was
+    // published as reachable cash). Resolution stays above, per real account;
+    // this only combines, under the authority's weakest-member rules.
+    const currentState = a.aggregate
+      ? aggregateCurrentCashState(a.aggregate.memberAccountIds.map((id) => currentStateByAccount.get(id)))
+      : currentStateByAccount.get(a.id);
+    return {
+      ...a,
+      earliestTxDate: floorByAccount.get(a.id) ?? null,
+      ...(currentState ? { currentState } : {}),
+    };
+  })) as unknown as SpaceAccount[];
 }
 
 /** ACTIVE member count — the ONLY field the shell header reads from the heavy

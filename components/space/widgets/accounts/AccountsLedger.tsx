@@ -71,6 +71,13 @@ interface FallbackAccount {
    *  read would, instead of silently dropping it. */
   lastUpdated?:          string;
   balanceLastUpdatedAt?: string | null;
+  /** REVIEW-3 B-1 — present only on aggregated BALANCE_ONLY rows (SpaceAccount.aggregate). */
+  aggregate?: {
+    memberAccountIds: string[];
+    memberCount:      number;
+    owedTotal:        number;
+    creditTotal:      number;
+  };
 }
 
 /** The single display value each row and its detail panel share (never re-derived,
@@ -86,7 +93,7 @@ function toDisplay(amount: number, currency: string | null | undefined, ctx?: Co
 
 interface DisplayRow {
   row:     AccountDetailRow;
-  display: { amount: number; estimated: boolean; available: number | null; predicted: number | null; unexplained: number | null };
+  display: { amount: number; estimated: boolean; available: number | null; predicted: number | null; unexplained: number | null; credit: number };
   /** |display balance| — the magnitude used for ordering and the weight bar. */
   magnitude: number;
 }
@@ -118,9 +125,16 @@ function fallbackRows(accounts: FallbackAccount[], now: Date): AccountDetailRow[
   return accounts.map((a) => ({
     id:                 a.id,
     spaceAccountLinkId: null,
-    visibility:         "FULL" as const,
+    // REVIEW-3 B-1 — an aggregated privacy-reduced row (synthetic id, carries
+    // `aggregate`) must never be relabelled FULL: the fetched read calls it
+    // BALANCE_ONLY, and the fallback must make the same visibility claim.
+    visibility:         a.aggregate ? ("BALANCE_ONLY" as const) : ("FULL" as const),
+    ...(a.aggregate ? { memberCount: a.aggregate.memberCount } : {}),
+    ...(a.aggregate && a.aggregate.creditTotal > 0 ? { creditTotal: a.aggregate.creditTotal } : {}),
     name:               a.name,
-    institution:        a.institution,
+    // "" on aggregate rows — institution is identifying and is never present
+    // on a privacy-reduced SpaceAccount (matches the fetched read).
+    institution:        a.institution ?? "",
     type:               a.type,
     mask:               null,
     balance:            a.balance,
@@ -152,6 +166,7 @@ export function AccountsLedger({
   ctx?:     ConversionContext;
 }) {
   const [rows,  setRows]  = useState<AccountDetailRow[] | null>(null);
+  const [redactedCount, setRedactedCount] = useState(0);
   const [fetchFailed, setFetchFailed] = useState(false);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -161,7 +176,14 @@ export function AccountsLedger({
   const load = useCallback(() => {
     fetch(`/api/spaces/${spaceId}/accounts/detail`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("failed"))))
-      .then((data) => { setRows(Array.isArray(data) ? data : []); setFetchFailed(false); })
+      .then((data) => {
+        // REVIEW-3 B-1 — { rows, redactedCount }; the bare-array shape is
+        // accepted for one deploy generation of drift.
+        const list = Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : [];
+        setRows(list);
+        setRedactedCount(Array.isArray(data) ? 0 : Number(data?.redactedCount) || 0);
+        setFetchFailed(false);
+      })
       .catch(() => setFetchFailed(true));
   }, [spaceId]);
 
@@ -193,9 +215,18 @@ export function AccountsLedger({
         const unex = row.reconciliation.unexplained === null
           ? null
           : toDisplay(row.reconciliation.unexplained, row.currency, ctx).amount;
+        // REVIEW-3 B-1 — issuer credit on a debt row, in the display currency.
+        // A FULL row states it through its signed balance (the canonical
+        // authority); an aggregated row carries it as the disclosed, never
+        // netted `creditTotal` — its balance is Σ owed and is never negative.
+        const credit = row.type === "debt"
+          ? (row.creditTotal != null
+              ? toDisplay(row.creditTotal, row.currency, ctx).amount
+              : creditBalance(d.amount))
+          : 0;
         return {
           row,
-          display: { ...d, available: av, predicted: pred, unexplained: unex },
+          display: { ...d, available: av, predicted: pred, unexplained: unex, credit },
           magnitude: Math.abs(d.amount),
         };
       })
@@ -246,11 +277,19 @@ export function AccountsLedger({
   // top-N slice (which would read "Debt 1" while a second liability sits below the
   // fold — confident-wrong). The full browser omits this and counts what it shows,
   // so a search result honestly reads its match count.
+  // REVIEW-3 B-1 — an aggregated privacy-reduced row counts its MEMBERS: the
+  // Space's account count is the link count, not the post-aggregation row count.
   const totalByType = useMemo(() => {
     const m = new Map<string, number>();
-    for (const d of display) m.set(d.row.type, (m.get(d.row.type) ?? 0) + 1);
+    for (const d of display) m.set(d.row.type, (m.get(d.row.type) ?? 0) + (d.row.memberCount ?? 1));
     return m;
   }, [display]);
+
+  /** Member-aware account count (aggregated rows count every link they carry). */
+  const accountCount = useMemo(
+    () => display.reduce((s, d) => s + (d.row.memberCount ?? 1), 0),
+    [display],
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -305,9 +344,15 @@ export function AccountsLedger({
           )}
           <div className="flex flex-col gap-1">
             <p className="text-xs text-[var(--text-muted)]">
-              {display.length} account{display.length === 1 ? "" : "s"}
+              {accountCount} account{accountCount === 1 ? "" : "s"}
               {summary.institutions > 0 && ` across ${summary.institutions} institution${summary.institutions === 1 ? "" : "s"}`}
             </p>
+            {redactedCount > 0 && (
+              <p className="text-[11px] text-[var(--text-faint)]">
+                {redactedCount} shared account{redactedCount === 1 ? "" : "s"} without balance
+                disclosure {redactedCount === 1 ? "is" : "are"} excluded from all totals
+              </p>
+            )}
             {(health.synced > 0 || health.attention > 0) && (
               <p className="flex items-center gap-2 text-[11px] text-[var(--text-faint)]">
                 {health.synced > 0 && (
@@ -338,7 +383,7 @@ export function AccountsLedger({
                 onClick={() => { setQuery(""); setBrowserOpen(true); }}
                 className="flex w-full items-center justify-between border-t border-[var(--border-hairline)] px-4 py-3 text-left text-[13px] font-medium text-[var(--meridian-400)] transition-colors hover:bg-[var(--surface-hover)]"
               >
-                View all {display.length} accounts
+                View all {accountCount} accounts
                 <span aria-hidden>→</span>
               </button>
             )}
@@ -348,7 +393,7 @@ export function AccountsLedger({
 
       {/* Full list — the searchable context surface ("everything this Space holds"). */}
       <LeftPanel open={browserOpen} onClose={() => setBrowserOpen(false)} ariaLabel="All accounts">
-        <PanelHeader eyebrow="Accounts" title={`All ${display.length} accounts`} />
+        <PanelHeader eyebrow="Accounts" title={`All ${accountCount} accounts`} />
         <PanelContent className="px-0">
           <div className="px-5 pb-3">
             <div className="flex items-center gap-2 rounded-[var(--radius-md)] border border-[var(--border-hairline)] bg-[var(--surface-inset)] px-3 py-2">
@@ -424,7 +469,7 @@ function GroupedRows({
             <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">
               {ACCOUNT_TYPE_LABELS[g.type] ?? g.type}
             </span>
-            <span className="shrink-0 text-[10px] tabular-nums text-[var(--text-faint)]">{countByType?.get(g.type) ?? g.rows.length}</span>
+            <span className="shrink-0 text-[10px] tabular-nums text-[var(--text-faint)]">{countByType?.get(g.type) ?? g.rows.reduce((s, r) => s + (r.row.memberCount ?? 1), 0)}</span>
           </div>
           <div className="divide-y divide-[var(--border-hairline)]">
             {g.rows.map((d) => (
@@ -450,9 +495,14 @@ function LedgerRow({
   // V25-SIDE-1 — for a LIABILITY, a negative display amount is not "a negative
   // number", it is a CREDIT the issuer owes the user. Render the meaning, not
   // the provider's sign convention, and never in the negative/problem colour.
+  // REVIEW-3 B-1 — on an aggregated row the credit is the disclosed per-member
+  // sum (display.credit); its balance is Σ owed and is never negative.
   const isDebt = row.type === "debt";
-  const credit = isDebt ? creditBalance(d.display.amount) : 0;
-  const isCredit = credit > 0;
+  const credit = d.display.credit;
+  const isCredit = isDebt && credit > 0 && d.display.amount <= 0;
+  // Aggregated row owing something AND holding issuer credit: state both,
+  // separately — the credit discharges nothing and is never netted.
+  const creditBeside = isDebt && credit > 0 && d.display.amount > 0;
   const negative = !isCredit && d.display.amount < 0;
   const approx = d.display.estimated ? "≈ " : "";
   const foreign = row.currency !== currency;
@@ -503,6 +553,11 @@ function LedgerRow({
         ) : (
           <p className={`tabular-nums text-sm ${negative ? "text-[var(--accent-negative)]" : "text-[var(--text-primary)]"}`}>
             {approx}{formatCurrency(d.display.amount, currency)}
+          </p>
+        )}
+        {creditBeside && (
+          <p className="mt-0.5 tabular-nums text-[11px] text-[var(--accent-positive)]">
+            + {approx}{formatCurrency(credit, currency)} issuer credit
           </p>
         )}
         {foreign && (

@@ -45,6 +45,19 @@ export interface AccountDetailRow {
   id:                 string;      // FinancialAccount.id (FULL) or synthetic (BALANCE_ONLY aggregate)
   spaceAccountLinkId: string | null; // null for aggregated BALANCE_ONLY rows (no single link)
   visibility:         "FULL" | "BALANCE_ONLY";
+  /**
+   * REVIEW-3 B-1 — on an aggregated BALANCE_ONLY row: how many member links it
+   * discloses, so count surfaces can state the LINK count rather than the
+   * post-aggregation row count. Absent on FULL rows (each is one account).
+   */
+  memberCount?:       number;
+  /**
+   * REVIEW-3 B-1 — on an aggregated BALANCE_ONLY DEBT row: Σ per-member issuer
+   * credit (a positive magnitude), disclosed beside the owed `balance` and
+   * never netted into it. Absent on FULL rows (their signed balance already
+   * carries the credit state per lib/debt/balance-semantics).
+   */
+  creditTotal?:       number;
   name:               string;
   institution:        string;     // "" on BALANCE_ONLY rows (never leaked)
   type:               string;
@@ -302,10 +315,17 @@ export async function GET(
 
   // Aggregate + sanitise BALANCE_ONLY shares; map to the detail shape with every
   // management field neutralised (no mask, no health, no imports, no actions).
-  const aggregated: AccountDetailRow[] = normalizeSharedAccounts(balanceOnlyShares).map((r) => ({
+  // REVIEW-3 B-1 — the authority now aggregates AFTER financial semantics (a
+  // debt row's balance is Σ per-member amountOwed with issuer credit disclosed
+  // separately) and FAILS CLOSED on non-disclosing tiers, which surface only
+  // as `redactedCount` below.
+  const { accounts: aggregatedAccounts, redactedCount } = normalizeSharedAccounts(balanceOnlyShares);
+  const aggregated: AccountDetailRow[] = aggregatedAccounts.map((r) => ({
     id:                 r.id,
     spaceAccountLinkId: null,
     visibility:         "BALANCE_ONLY",
+    ...(r.aggregate ? { memberCount: r.aggregate.memberCount } : {}),
+    ...(r.aggregate && r.aggregate.creditTotal > 0 ? { creditTotal: r.aggregate.creditTotal } : {}),
     name:               r.name,
     institution:        "",
     type:               r.type,
@@ -351,5 +371,15 @@ export async function GET(
 
   // FULL rows first (already type/name sorted by the query), then aggregated —
   // the same ordering normalizeSharedAccounts produces for the shared route.
-  return NextResponse.json([...fullRows, ...aggregated]);
+  // REVIEW-3 B-1 — the response carries the fail-closed redaction count so the
+  // Accounts surfaces can DISCLOSE withheld links instead of silently omitting
+  // them (consumers accept both this shape and the former bare array).
+  return NextResponse.json({ rows: [...fullRows, ...aggregated], redactedCount });
+}
+
+/** The detail route's response shape (REVIEW-3 B-1). */
+export interface AccountDetailResponse {
+  rows:          AccountDetailRow[];
+  /** ACTIVE links whose tier grants no balance disclosure — in no row, no sum. */
+  redactedCount: number;
 }
