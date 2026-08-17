@@ -18,7 +18,7 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { simulatePayoff } from "@/components/space/sections/DebtPayoffSection";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
-import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
+import { type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 // v2.6-DEBT-1 — the owed/settled rules moved into the aggregate authority.
 import { computeDebtAggregate, type DebtAggregateRow } from "@/lib/debt/aggregates";
@@ -28,19 +28,14 @@ import type { Snapshot, Transaction } from "@/types";
 import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
 import { SectionRegistry, ContextualCard, toDisplay } from "./SectionRegistry";
 
-// Solid/frosted, non-collapsible cards. Two families use this treatment:
-//  - the Overview lede widgets (formerly PersonalHero cards A/B/C), and
-//  - the Wealth Perspective's analytical widgets (UX-PER-3),
-// so the workspace reads as intentional analytical cards, not the faint
-// ~5%-opacity SectionCard surface. Keyed by section key; any Space rendering
-// these exact keys gets the treatment.
+// Solid/frosted, non-collapsible cards — intentional analytical cards, not the
+// faint ~5%-opacity SectionCard surface. REVIEW-3 (slice F): trimmed to the
+// keys that still have a SectionRegistry renderer — the Overview lede family
+// and the WORKSPACE_RENDERERS-backed perspective widget keys were deleted with
+// the Overview canvas, leaving the Goals virtual-section widgets and the
+// reused payoff calculator.
 const SOLID_LEDE_KEYS = new Set([
-  "net_worth", "net_worth_chart", "allocation",
-  "wealth_by_account", "institution_allocation", "asset_allocation", "wealth_concentration",
-  "liquidity_ladder", "accessible_cash", "emergency_fund_readiness", "liquidity_concentration",
-  "cash_flow_summary", "cash_flow_history", "income_vs_spending", "cash_flow_by_category", "income_by_source", "debt_payments",
-  "debt_by_account", "debt_cost", "credit_utilization", "debt_payoff_snapshot",
-  "debt_history", "credit_score", "debt_complete_info", "debt_payoff_calculator",
+  "debt_payoff_calculator",
   "goal_progress", "goal_on_track", "goal_required_pace", "goal_funding_gap",
 ]);
 
@@ -117,16 +112,10 @@ export function SectionCard({
   const isDebtBreakdown = (isDebtSpace && section.key === "cash_flow") || section.key === "debt_breakdown_chart" || section.key === "recent_activity";
   // Payoff Planner shows a summary when collapsed
   const isDebtPayoff    = (isDebtSpace && section.key === "savings_rate") || section.key === "debt_payoff_calculator";
-  // Overview lede widgets: solid/frosted card, not collapsible (see SOLID_LEDE_KEYS).
+  // Analytical widgets: solid/frosted card, not collapsible (see SOLID_LEDE_KEYS).
+  // (The card-less "bare lede" treatment — net_worth / net_worth_chart — was
+  // deleted in REVIEW-3 with those keys' renderers.)
   const isSolidLede     = SOLID_LEDE_KEYS.has(section.key);
-  // M3 Design Lab convergence — the Overview lede blocks render CARD-LESS (no
-  // box) for the editorial, airy feel of the Design Lab. `net_worth` is fully
-  // bare (its SummaryWidget hero variant supplies its own uppercase eyebrow);
-  // `net_worth_chart` keeps a quiet uppercase label above a card-less chart
-  // (the Design Lab's "BALANCE HISTORY" treatment). Presentation only — the
-  // sections, their data, and their ordering are unchanged.
-  const isBareLede      = section.key === "net_worth" || section.key === "net_worth_chart";
-  const bareLedeLabel   = section.key === "net_worth_chart"; // net_worth's eyebrow lives in its widget
 
   // ── Payoff summary for collapsed state ─────────────────────────────────────
   let payoffSummary: string | null = null;
@@ -221,35 +210,11 @@ export function SectionCard({
     return <ContextualCard sectionKey={section.key} label={section.label} />;
   }
 
-  // ── Solid Overview lede (Net Worth / chart / allocation) — frosted card,
-  //    NOT collapsible. Preserves the pre-section-backed PersonalHero card
-  //    treatment (GlassPanel) so these never use the faint SectionCard fill,
-  //    and keeps the drag handle legible. Left padding leaves room for the
-  //    Edit-Layout grip that overlays the card's top-left corner. */
-  // ── Card-less Overview lede (Net Worth + Balance history) — M3 convergence ──
-  if (isBareLede) {
-    return (
-      <div className="px-1 py-1">
-        {bareLedeLabel && (
-          <p className="text-[11px] font-medium uppercase tracking-[0.14em] mb-4" style={{ color: "var(--text-faint)" }}>
-            {displayLabel}
-          </p>
-        )}
-        {renderBodyWithQuantity()}
-      </div>
-    );
-  }
-
+  // ── Solid analytical card — frosted (GlassPanel), NOT collapsible. ─────────
   if (isSolidLede) {
-    // Phase 7 — the Cash Flow Summary header names the active analytical time
-    // slice, read from the SAME authoritative `period` every widget consumes
-    // (no separate period logic here). Other lede widgets keep their bare label.
-    const headerLabel = section.key === "cash_flow_summary" && period
-      ? `${displayLabel} · ${periodLabel(period)}`
-      : displayLabel;
     return (
       <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-4">
-        <p className="text-sm font-semibold text-[var(--text-primary)] px-1 mb-2">{headerLabel}</p>
+        <p className="text-sm font-semibold text-[var(--text-primary)] px-1 mb-2">{displayLabel}</p>
         {renderBodyWithQuantity()}
       </GlassPanel>
     );
