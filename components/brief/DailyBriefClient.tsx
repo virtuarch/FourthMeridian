@@ -11,8 +11,8 @@
  *
  * The cinematic Earth hero was retired here in favour of the text-first
  * editorial header — the Brief's authority now comes from hierarchy and honest
- * grounding, not a backdrop. (EarthBackground/BriefHero remain in the tree,
- * unused by this route — a v2.6 cleanup, not a dependency.)
+ * grounding, not a backdrop. (EarthBackground/BriefHero were deleted in the
+ * v2.6 REVIEW-3 cleanup — this route never depended on them.)
  *
  * NOTHING about the data changed: same `fetch("/api/brief")` → `BriefPayload`,
  * same `POST /api/brief/viewed`, same section contract. The production sections
