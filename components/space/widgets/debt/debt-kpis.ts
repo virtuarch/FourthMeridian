@@ -21,6 +21,7 @@
 
 import { convertMoney } from "@/lib/money/convert";
 import { amountOwed, hasOutstandingDebt, liabilityState } from "@/lib/debt/balance-semantics";
+import { computeDebtAggregate, type DebtAggregateRow } from "@/lib/debt/aggregates";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { utilizationLevel, type UtilizationLevel } from "@/lib/accounts/credit-utilization";
 import type { ConversionContext } from "@/lib/money/types";
@@ -103,25 +104,45 @@ export function computeDebtKpis(
       };
     });
 
-  // ── Total Debt ──────────────────────────────────────────────────────────────
-  const totalDebt = debts.reduce((s, x) => s + x.bal, 0);
+  // ── Total owed, rated/unrated split, minimums ───────────────────────────────
+  // v2.6-DEBT-1 — one authority for the three aggregate questions. The minimums
+  // are converted here (the display currency is this widget's context) and the
+  // membership rule is applied there.
+  const agg = computeDebtAggregate(
+    debts.map((x): DebtAggregateRow => {
+      let min: number | null = null;
+      if (x.a.minimumPayment != null) {
+        const m = inDisp(x.a.minimumPayment, x.a.currency, ctx);
+        mark(m);
+        min = m.amount;
+      }
+      // `x.bal` is already the converted amount OWED; the authority re-applies
+      // `amountOwed`, which is idempotent on a non-negative figure.
+      return { balance: x.bal, apr: x.a.interestRate ?? null, minimumPayment: min };
+    }),
+  );
+
+  const totalDebt = agg.totalOwed;
 
   // ── Est. Interest / month (rated, INDEBTED rows only) ───────────────────────
-  // V25-SIDE-1 — the rated/unrated split explains the interest figure, so it is
-  // scoped to accounts that actually owe. `accountCount` below is the structural
-  // membership count and includes paid-off / credit-balance cards.
+  // A DIFFERENT question from the blended rate: what does this debt COST per
+  // month. It stays here because it is a sum of money, not a rate — and a 0%
+  // row contributes exactly 0, so the population needs no `> 0` guard to agree
+  // with the rated split above.
   const owing = debts.filter((x) => x.owes);
-  const rated = owing.filter((x) => x.a.interestRate != null && (x.a.interestRate as number) > 0);
-  const estMonthlyInterest = rated.reduce(
-    (s, x) => s + x.bal * ((x.a.interestRate as number) / 100) / 12,
+  const estMonthlyInterest = owing.reduce(
+    (s, x) => s + (x.a.interestRate != null ? x.bal * (x.a.interestRate / 100) / 12 : 0),
     0,
   );
   const accountCount = debts.length;
   const owingCount = owing.length;
   const settledCount = debts.filter((x) => x.state === "settled").length;
   const creditCount = debts.filter((x) => x.state === "credit").length;
-  const ratedCount = rated.length;
-  const unratedCount = owingCount - ratedCount;
+  // v2.6-DEBT-1 — "rated" now means AN APR IS ON FILE, not "an APR above zero".
+  // A 0% promotional balance used to be counted as a data gap and reported by
+  // debt-signals as "missing an APR", which is a false claim about the user's data.
+  const ratedCount = agg.ratedCount;
+  const unratedCount = agg.unratedCount;
 
   // ── Aggregate Utilization (converted balances ÷ converted limits) ───────────
   // Mixed-currency ratios are dishonest, so both sides convert before the ratio.
@@ -148,16 +169,10 @@ export function computeDebtKpis(
 
   // ── Minimum payments ────────────────────────────────────────────────────────
   // V25-SIDE-1 — nothing is DUE on a settled or credit-balance account, and a
-  // missing minimum on one is not a data gap worth reporting.
-  let minPayments = 0;
-  let missingMinCount = 0;
-  for (const x of debts) {
-    if (!x.owes) continue;
-    if (x.a.minimumPayment == null) { missingMinCount++; continue; }
-    const min = inDisp(x.a.minimumPayment, x.a.currency, ctx);
-    mark(min);
-    minPayments += min.amount;
-  }
+  // missing minimum on one is not a data gap worth reporting. Both rules now
+  // live in the aggregate authority (v2.6-DEBT-1).
+  const minPayments = agg.minimumPayment;
+  const missingMinCount = agg.missingMinimumCount;
 
   return {
     totalDebt,
@@ -206,33 +221,30 @@ export function computePayoffAggregate(
   let estimated = false;
   const mark = (c: { estimated: boolean }) => { if (c.estimated) estimated = true; };
 
+  // v2.6-DEBT-1 — this function's body WAS a transcription of
+  // DebtPayoffSection.tsx:195–219, kept in sync by a comment. Both now call the
+  // aggregate authority, so "in sync" is a property of the code rather than a
+  // promise in a docstring. V25-SIDE-1's no-cross-account-netting rule moved
+  // with it and is enforced there (`amountOwed` per row, never a raw sum).
   const debts = accounts.filter((a) => a.type === "debt");
-  const conv = debts.map((a) => {
+  const rows = debts.map((a): DebtAggregateRow => {
     const bal = inDisp(a.balance, a.currency, ctx);
     mark(bal);
-    return { a, bal: amountOwed(bal.amount), owes: hasOutstandingDebt(bal.amount) };
+    let min: number | null = null;
+    if (a.minimumPayment != null) {
+      const m = inDisp(a.minimumPayment, a.currency, ctx);
+      mark(m);
+      min = m.amount;
+    }
+    return { balance: bal.amount, apr: a.interestRate ?? null, minimumPayment: min };
   });
 
-  // V25-SIDE-1 — NO CROSS-ACCOUNT NETTING. The former raw sum let a credit
-  // balance on one card silently reduce the payoff obligation on an unrelated
-  // card; an issuer credit is spendable only at that issuer, so it cannot
-  // discharge someone else's debt. Each row contributes `amountOwed` or nothing.
-  const total = conv.reduce((s, r) => s + r.bal, 0);
+  const agg = computeDebtAggregate(rows);
 
-  const withRate = conv.filter((r) => r.a.interestRate != null && r.owes);
-  const weightedApr = withRate.length > 0
-    ? withRate.reduce((s, r) => s + (r.a.interestRate as number) * r.bal, 0)
-      / withRate.reduce((s, r) => s + r.bal, 0)
-    : null;
-  const monthlyRate = weightedApr != null ? (weightedApr / 100) / 12 : 0;
-
-  let minPayment = 0;
-  for (const r of conv) {
-    if (!r.owes) continue; // nothing due on a settled / credit-balance account
-    const min = inDisp(r.a.minimumPayment ?? 0, r.a.currency, ctx);
-    mark(min);
-    minPayment += min.amount;
-  }
-
-  return { total, monthlyRate, minPayment, estimated };
+  return {
+    total:       agg.totalOwed,
+    monthlyRate: agg.monthlyRate,
+    minPayment:  agg.minimumPayment,
+    estimated,
+  };
 }

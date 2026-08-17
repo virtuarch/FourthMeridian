@@ -43,6 +43,7 @@ import { computeCapitalAllocation, computeGoalAlignment, computeInvestmentReadin
 import type { SpaceContext_AI } from '@/lib/ai/types';
 import { MATERIAL_UNIDENTIFIED_INFLOW_SHARE, deriveUnidentifiedInflowShare } from '@/lib/ai/types';
 import { amountOwed, hasOutstandingDebt } from '@/lib/debt/balance-semantics';
+import { computeDebtAggregate, type DebtAggregateRow } from '@/lib/debt/aggregates';
 import { resolveExpenseBaseline } from '@/lib/liquidity/expense-baseline';
 
 export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
@@ -217,7 +218,12 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     const debtAccounts = accts.accounts.filter((a) => a.type === 'debt');
 
     let interestBurden    = 0;
-    let totalDebtWithAPR  = 0;
+    // v2.6-DEBT-1 — the rows this section weights, handed to the ONE aggregate
+    // authority below instead of being reduced inline. The APR was previously
+    // back-derived here as `interestBurden * 12 / totalDebtWithAPR`, which is
+    // the same number `computeDebtStrategy` computed from the same population
+    // and rounded differently — one figure, two values, in one engine.
+    const aprRows: DebtAggregateRow[] = [];
     let hasNullAPR        = false;
     let fullVisDebtCount  = 0;
     let fullVisWithAPR    = 0;
@@ -242,13 +248,15 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
         // V25-SIDE-1 — only real outstanding debt accrues interest. A credit
         // balance previously entered here via Math.abs and generated phantom
         // interest burden on money the issuer owes the USER.
-        if (acct.apr > 0 && acct.reportingBalance !== null && hasOutstandingDebt(acct.reportingBalance)) {
+        if (acct.reportingBalance !== null && hasOutstandingDebt(acct.reportingBalance)) {
           // P2-7D — reporting-currency balance: monthlyInterestBurden and the
           // APR-weighting denominator sum across accounts, so mixed-currency
           // native balances would be an invalid sum. APR stays dimensionless.
           const balance   = amountOwed(acct.reportingBalance);
-          interestBurden   += balance * acct.apr / 100 / 12;
-          totalDebtWithAPR += balance;
+          // A 0% row accrues nothing, so it adds nothing here — but it IS a
+          // known rate and belongs in the blended-rate population below.
+          interestBurden += balance * acct.apr / 100 / 12;
+          aprRows.push({ balance, apr: acct.apr, minimumPayment: null });
         }
       }
     }
@@ -270,9 +278,11 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     if (hasNullAPR) {
       debtHealthClassification = 'INSUFFICIENT_DATA';
     } else {
-      const weightedAvgAPR = totalDebtWithAPR > 0
-        ? (interestBurden * 12 / totalDebtWithAPR) * 100
-        : 0;
+      // No rated row that owes ⇒ no blended rate. `?? 0` preserves the previous
+      // behaviour exactly: with nothing to weight, the rate thresholds below
+      // cannot fire and the classification falls to IMPROVING / HEALTHY on the
+      // liabilities trend, which is the honest read when no interest is accruing.
+      const weightedAvgAPR = computeDebtAggregate(aprRows).weightedApr ?? 0;
       const history = snap?.history ?? [];
       const isLiabilitiesDeclining =
         history.length >= 7 &&

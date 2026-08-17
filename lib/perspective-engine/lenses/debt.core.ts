@@ -53,6 +53,7 @@
 import type { FreshnessBasis } from "@/lib/freshness/observation";
 import { formatCurrency } from "@/lib/format";
 import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
+import { computeDebtAggregate, type DebtAggregateRow } from "@/lib/debt/aggregates";
 import { convertMoney } from "@/lib/money/convert";
 import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
@@ -253,37 +254,57 @@ export function computeDebt(
   const totalDebt = countable.reduce((s, r) => s + amountOwed(inTarget(r.balance, r.currency)), 0);
 
   let monthlyInterest = 0;
-  let rateWeighted = 0;
-  let rateKnownBalance = 0;
-  let unknownRateFullCount = 0;
-  let minPayments = 0;
   let minPaymentsKnown = false;
   let anyMinEstimated = false;
+  // ⚠️ NOT `fullAgg.unratedCount`. This drives the "N accounts have no interest
+  // rate on file" DISCLOSURE, which is a statement about the user's DATA, so it
+  // counts every FULL row without a rate — including one that owes nothing. The
+  // authority's `unratedCount` answers a different question (which owing rows
+  // were left out of the blended rate) and would silently drop a settled card
+  // from the disclosure. Same unit, different question.
+  let unknownRateFullCount = 0;
   const futurePromos: string[] = [];
   const todayIsoDate = computedAt.slice(0, 10); // YYYY-MM-DD from the injected clock
 
+  // v2.6-DEBT-1 — the blended rate, the owed total and the monthly obligation are
+  // one authority's answer. This loop keeps only what is the LENS's own context:
+  // conversion into the target currency, the estimated-minimum disclosure, and
+  // the promotional-rate scan.
+  //
+  // ⚠️ The old body had no `owes` filter on the rate weighting. That was never a
+  // difference: the weight IS `amountOwed`, which is 0 for a settled or
+  // credit-balance row, so such a row contributed 0 to both sides. The authority
+  // filters explicitly, which is the same function stated once.
+  const aggRows: DebtAggregateRow[] = [];
   for (const r of fullRows) {
-    const bal = amountOwed(inTarget(r.balance, r.currency));
+    const owed = amountOwed(inTarget(r.balance, r.currency));
     if (typeof r.interestRate === "number") {
-      monthlyInterest  += bal * (r.interestRate / 100 / 12);
-      rateWeighted     += bal * r.interestRate;
-      rateKnownBalance += bal;
+      monthlyInterest += owed * (r.interestRate / 100 / 12);
     } else {
       unknownRateFullCount++;
     }
     // V25-SIDE-1 — nothing is DUE on a settled or credit-balance account, so a
-    // stale stored minimum must not inflate the monthly obligation.
-    if (typeof r.minimumPayment === "number" && hasOutstandingDebt(r.balance)) {
-      minPayments += inTarget(r.minimumPayment, r.currency);
+    // stale stored minimum must not inflate the monthly obligation. The
+    // authority applies that rule; this only decides what is DISCLOSED about it.
+    const owesNow = hasOutstandingDebt(r.balance);
+    if (typeof r.minimumPayment === "number" && owesNow) {
       minPaymentsKnown = true;
       if (r.minimumPaymentIsEstimated) anyMinEstimated = true;
     }
     if (r.promoAprEndDate && r.promoAprEndDate > todayIsoDate) {
       futurePromos.push(r.promoAprEndDate);
     }
+    aggRows.push({
+      balance:        owed,
+      apr:            typeof r.interestRate === "number" ? r.interestRate : null,
+      minimumPayment: typeof r.minimumPayment === "number" ? inTarget(r.minimumPayment, r.currency) : null,
+    });
   }
-  const blendedApr = rateKnownBalance > 0 ? rateWeighted / rateKnownBalance : null;
-  const interestKnown = rateKnownBalance > 0;
+
+  const fullAgg = computeDebtAggregate(aggRows);
+  const blendedApr = fullAgg.weightedApr;
+  const minPayments = fullAgg.minimumPayment;
+  const interestKnown = blendedApr !== null;
 
   // ── Metrics ───────────────────────────────────────────────────────────────
   const headline: LensMetric = {

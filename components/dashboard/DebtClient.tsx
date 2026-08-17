@@ -27,6 +27,7 @@ import {
   rollupDebtPaymentsByAccount,
 } from "@/lib/debt";
 import { amountOwed, creditBalance, hasOutstandingDebt, liabilityState } from "@/lib/debt/balance-semantics";
+import { utilizationPercent } from "@/lib/accounts/credit-utilization";
 // TI5-3C — rows open the shared Transaction Detail drawer (mounted in DashboardChrome).
 import { useOpenTransaction } from "@/components/transactions/useTransactionDrawer";
 
@@ -787,7 +788,11 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
               const used           = isCredit ? creditBalance(card.balance) : amountOwed(card.balance);
               const limit          = card.creditLimit;
               const revolving      = isRevolving(card.debtSubtype);
-              const util           = revolving && !isCredit && limit && limit > 0 ? (amountOwed(card.balance) / limit) * 100 : null;
+              // v2.6-DEBT-1 — the RATIO comes from the utilization authority; the
+              // two gates in front of it are a display decision this surface owns
+              // (a non-revolving loan has no utilization to show, and a card in
+              // credit is not "0% used", it is owed money).
+              const util           = revolving && !isCredit ? utilizationPercent(card) : null;
               const available      = revolving && !isCredit && limit ? limit - amountOwed(card.balance) : null;
               const isSelected     = selectedCardId === card.id;
               const isEditingLimit = editingLimitId === card.id;

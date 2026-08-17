@@ -34,6 +34,7 @@ import type { SpaceContext_AI, TransactionsSummaryData, MonthlyBreakdownEntry, S
 import { FinanceDomains } from '@/lib/ai/types';
 import { classifyFlow, isExcludedFromSpending } from '@/lib/transactions/flow-classifier';
 import { amountOwed, hasOutstandingDebt } from '@/lib/debt/balance-semantics';
+import { computeDebtAggregate, type DebtAggregateRow } from '@/lib/debt/aggregates';
 
 export function getTxnData(ctx: SpaceContext_AI): TransactionsSummaryData | null {
   const section = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY];
@@ -390,16 +391,25 @@ export function computeDebtStrategy(
 
   // Weighted average APR across accounts where APR is known — weighted by REPORTING
   // amount owed so a larger true (reporting-currency) debt carries more weight.
-  let totalWeighted    = 0;
-  let totalForWeighting = 0;
-  for (const a of fullWithApr) {
-    const bal         = amountOwed(a.reportingBalance);
-    totalWeighted    += (a.apr ?? 0) * bal;
-    totalForWeighting += bal;
-  }
-  const weightedAvgApr: number | null = totalForWeighting > 0
-    ? Math.round((totalWeighted / totalForWeighting) * 100) / 100
-    : null;
+  //
+  // v2.6-DEBT-1 — one authority, and two changes came with it:
+  //
+  //   · The population is now "an APR is on file", not `apr > 0`. A 0%
+  //     promotional balance is a KNOWN rate and genuinely lowers what the
+  //     borrower pays; excluding it overstated the blended rate.
+  //   · The 2dp rounding is GONE. `engine.ts` derived the same number from the
+  //     same population and did not round, so the assessment carried one figure
+  //     at two precisions. Rounding is presentation — every consumer already
+  //     calls `.toFixed(2)`.
+  const weightedAvgApr: number | null = computeDebtAggregate(
+    valuedDebt
+      .filter((a) => a.visibilityLevel === 'FULL' && a.apr != null)
+      .map((a): DebtAggregateRow => ({
+        balance:        a.reportingBalance,
+        apr:            a.apr ?? null,
+        minimumPayment: null,   // the strategy does not state a monthly obligation
+      })),
+  ).weightedApr;
 
   // P2-7D honesty: taint the strategy when any driving debt account had an
   // estimated reporting balance (missing/walked-back FX) — the ranking/weighting is
