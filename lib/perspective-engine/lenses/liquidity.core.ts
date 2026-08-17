@@ -54,6 +54,7 @@
 import type { FreshnessBasis } from "@/lib/freshness/observation";
 import { formatCurrency } from "@/lib/format";
 import { amountOwed } from "@/lib/debt/balance-semantics";
+import { totalReachableCash, type ReachableInput } from "@/lib/balances/reachable";
 import { convertMoney } from "@/lib/money/convert";
 import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
@@ -196,26 +197,28 @@ export function computeLiquidity(
   }
 
   // ── Sums ──────────────────────────────────────────────────────────────────
-  let cashNow = 0, marketable = 0, illiquid = 0, credit = 0;
+  let marketable = 0, illiquid = 0, credit = 0;
   let creditKnown = false;
-  // v2.6-L3 — cash accounts whose REACHABLE figure could not be established. They
-  // are excluded from cashNow and counted, so the total is disclosed as partial
-  // rather than silently missing them (or silently using a ledger balance the
-  // headline calls "available as cash now").
-  let cashUnreachableCount = 0;
-  let unexplainedHolds = 0;
+  // v2.6-L3 / REVIEW-3 — the reachable-cash RULE (what an unknown does, what is
+  // counted, what a positive hold contributes) lives in lib/balances/reachable —
+  // the SAME pure authority the Space widgets total through (liquidity-adapters
+  // reachableNow). This loop only maps each row into the display currency and
+  // resolves the three-state claim, which is the part that is this lens's
+  // context: `undefined` means the historical as-of path made no current-state
+  // claim (the reconstructed ledger figure is the only honest answer), `null`
+  // means the live path claimed and could not establish one (excluded and
+  // counted by the authority, never summed as a ledger balance).
+  const cashInputs: ReachableInput[] = [];
   for (const r of contributing) {
     if (CASH_TYPES.has(r.type)) {
-      // The historical as-of path attaches no current-state claim, so `undefined`
-      // means "this is a reconstructed balance" and the ledger figure is right.
-      // `null` means "this is the live path and reachable is UNKNOWN" — a real
-      // difference, and the reason the two are not collapsed.
-      if (r.reachableCash === undefined)      cashNow += inTarget(r.balance, r.currency);
-      else if (r.reachableCash === null)      cashUnreachableCount++;
-      else                                    cashNow += inTarget(r.reachableCash, r.currency);
-      if (r.unexplainedHold != null && r.unexplainedHold > 0) {
-        unexplainedHolds += inTarget(r.unexplainedHold, r.currency);
-      }
+      cashInputs.push({
+        accountId: r.id,
+        reachable:
+          r.reachableCash === undefined ? inTarget(r.balance, r.currency)
+          : r.reachableCash === null    ? null
+          :                               inTarget(r.reachableCash, r.currency),
+        unexplained: r.unexplainedHold == null ? null : inTarget(r.unexplainedHold, r.currency),
+      });
     }
     else if (MARKETABLE_TYPES.has(r.type)) marketable += inTarget(r.balance, r.currency);
     else if (ILLIQUID_TYPES.has(r.type))   illiquid   += inTarget(r.balance, r.currency);
@@ -233,6 +236,12 @@ export function computeLiquidity(
       creditKnown = true;
     }
   }
+
+  // One rule, one owner: totals via the reachable authority.
+  const reach = totalReachableCash(cashInputs);
+  const cashNow              = reach.total;
+  const cashUnreachableCount = reach.unknownCount;
+  const unexplainedHolds     = reach.unexplainedTotal;
 
   // ── Provenance ────────────────────────────────────────────────────────────
   // accountIds: contributing rows only (summary-only rows never appear),
