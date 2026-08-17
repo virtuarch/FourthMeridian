@@ -25,7 +25,7 @@
  */
 
 import { useMemo, useState } from "react";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import type { ConversionContext } from "@/lib/money/types";
 import { Surface } from "@/components/atlas/Surface";
 import {

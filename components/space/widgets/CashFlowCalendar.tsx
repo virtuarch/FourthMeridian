@@ -28,7 +28,7 @@
 import { useMemo } from "react";
 import type { ConversionContext } from "@/lib/money/types";
 import { useAggregateCurrency } from "@/components/space/widgets/display-money";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import type { Transaction } from "@/types";
 import {
   monthsInRange,

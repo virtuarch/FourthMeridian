@@ -20,7 +20,7 @@
  * Presentation only — every figure comes from the InvestmentsSpaceData contract.
  */
 
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import type { InvestmentsPortfolio, InvestmentsReconciliation } from "@/lib/investments/investments-time-machine-core";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { Figure } from "@/components/atlas/Surface";

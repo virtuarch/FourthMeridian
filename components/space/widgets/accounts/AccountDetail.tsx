@@ -30,7 +30,8 @@ import {
   CheckCircle2, AlertTriangle, Loader2, Pencil, X, ArrowUpRight, Cable,
 } from "lucide-react";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
-import { formatCurrency, formatRelativeTime } from "@/lib/format";
+import { formatRelativeTime } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { amountOwed } from "@/lib/debt/balance-semantics";
 import type { AccountDetailRow } from "@/app/api/spaces/[id]/accounts/detail/route";
 import {

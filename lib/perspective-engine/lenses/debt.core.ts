@@ -51,7 +51,7 @@
  */
 
 import type { FreshnessBasis } from "@/lib/freshness/observation";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
 import { computeDebtAggregate, type DebtAggregateRow } from "@/lib/debt/aggregates";
 import { convertMoney } from "@/lib/money/convert";

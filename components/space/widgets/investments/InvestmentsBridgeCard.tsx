@@ -17,7 +17,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import type { InvestmentsReconciliation } from "@/lib/investments/investments-time-machine-core";
 import type { PeriodFlows } from "@/lib/investments/investment-flows-core";
 import { buildBridgeRows } from "./investments-bridge";
-import { formatCurrencyExact } from "@/lib/format";
+import { formatCurrencyExact } from "@/lib/currency";
 import type { PeriodAttribution } from "@/lib/investments/period-attribution.core";
 
 export function InvestmentsBridgeCard({

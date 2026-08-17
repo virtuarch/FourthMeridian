@@ -36,9 +36,8 @@
 
 import { useState } from "react";
 import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { DEFAULT_DISPLAY_CURRENCY, formatCurrency } from "@/lib/currency";
 import { formatAggregateMoney } from "@/components/space/widgets/display-money";
-import { formatCurrency } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import {

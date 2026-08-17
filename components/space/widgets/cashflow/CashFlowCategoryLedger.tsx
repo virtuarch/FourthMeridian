@@ -27,7 +27,7 @@ import { Search } from "lucide-react";
 import type { ConversionContext } from "@/lib/money/types";
 import type { CashFlowContribution } from "@/lib/transactions/cash-flow";
 import type { Transaction } from "@/types";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { LeftPanel, RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
 import { TransactionSliceDrawer, useTransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";

@@ -21,7 +21,7 @@
 
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { CashFlowSummaryWidget } from "@/components/space/widgets/CashFlowSummaryWidget";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import { Waves } from "lucide-react";

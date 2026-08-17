@@ -17,8 +17,7 @@
 
 import { BreakdownWidget, type BreakdownItem, type BreakdownViewMode } from "@/components/space/widgets/BreakdownWidget";
 import { DebtPayoffSection, type DebtPayoffAccount } from "@/components/space/sections/DebtPayoffSection";
-import { formatBalance } from "@/lib/currency";
-import { formatCurrency } from "@/lib/format";
+import { formatBalance, formatCurrency } from "@/lib/currency";
 import { convertMoney } from "@/lib/money/convert";
 import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
 import { yesterdayUTCISO } from "@/lib/fx/config";

@@ -25,7 +25,7 @@
  *  - drivers are real snapshot component deltas — never invented attribution.
  */
 
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { derivedRealAssets } from "@/lib/snapshots/aggregate-authorisation.core";
 import { nearestOnOrBefore } from "@/lib/data/nearest-on-or-before";
 import { wealthBasisDisclosure, type WealthBasisDisclosure } from "@/lib/wealth/basis-disclosure";

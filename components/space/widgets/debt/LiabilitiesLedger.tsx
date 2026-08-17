@@ -39,7 +39,7 @@ import { useMemo, useState } from "react";
 import { convertMoney } from "@/lib/money/convert";
 import { amountOwed, creditBalance, liabilityState } from "@/lib/debt/balance-semantics";
 import { yesterdayUTCISO } from "@/lib/fx/config";
-import { formatCurrency, formatCurrencyExact } from "@/lib/format";
+import { formatCurrency, formatCurrencyExact } from "@/lib/currency";
 import type { ConversionContext } from "@/lib/money/types";
 import { Surface } from "@/components/atlas/Surface";
 import {

@@ -19,7 +19,7 @@
 import { useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useAggregateCurrency } from "@/components/space/widgets/display-money";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import type { ConversionContext } from "@/lib/money/types";
 import type { CashFlowContribution } from "@/lib/transactions/cash-flow";
 import type { Transaction } from "@/types";
