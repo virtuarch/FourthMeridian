@@ -501,8 +501,8 @@ export function getCompositionSwitcherItems(category: string): PerspectiveDef[] 
 /**
  * The structural (non-Perspective) primary destinations that render directly in
  * the SpaceShell workspace slot. Base WorkspaceDefinitions — no lens/card
- * metadata. Icons mirror lib/space-nav-icons SPACE_TAB_ICON_MAP (the rail still
- * renders from that map; these are the canonical identity + SD-3 dataNeeds).
+ * metadata. The rail renders text-only (lib/space-nav-icons was deleted in
+ * REVIEW-3); these are the canonical identity + SD-3 dataNeeds.
  * ACTIVITY/MEMBERS self-fetch (TimelineWidget / MembersWorkspace's useSpaceMembers),
  * so their host-provided dataNeeds are minimal.
  */

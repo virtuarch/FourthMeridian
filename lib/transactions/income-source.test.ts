@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  attributeIncome, foldIncome, classOfSubtype,
+  attributeIncome, classOfSubtype,
   INCOME_CLASS_LABEL, INCOME_SUBTYPE_LABEL, type IncomeEvidence,
 } from "./income-source";
 
@@ -87,30 +87,10 @@ console.log("v2.6-TRUTH-4 INCOME. UNKNOWN is preserved, never promoted");
   check("...and says the source is not established", /not established/.test(u.reason));
 }
 
-console.log("v2.6-TRUTH-4 INCOME. The rollup is composed, not asserted");
-{
-  const rows = [
-    { amount: 255648.69, attribution: attributeIncome(ev({ providerDetail: "INCOME_SALARY" })) },
-    { amount: 18435.75,  attribution: attributeIncome(ev({ providerDetail: "INCOME_CONTRACTOR" })) },
-    { amount: 45.09,     attribution: attributeIncome(ev({ providerDetail: "INCOME_GIG_ECONOMY" })) },
-    { amount: 68.63,     attribution: attributeIncome(ev({ providerDetail: "INCOME_INTEREST_EARNED" })) },
-    { amount: 27.76,     attribution: attributeIncome(ev({ instrumentId: "VTI" })) },
-    { amount: 0.24,      attribution: attributeIncome(ev({ providerDetail: null })) },
-    { amount: 280.45,    attribution: attributeIncome(ev({ accountType: "debt", liabilityInflowIsIssuerCredit: true })) },
-  ];
-  const b = foldIncome(rows);
-  check("broad income EQUALS the sum of its subtypes",
-    Math.abs(b.broad - (b.earned + b.interest + b.dividends + b.other)) < 1e-9);
-  check("earned excludes interest, dividends and the issuer credit",
-    Math.abs(b.earned - 274129.53) < 0.005);
-  check("interest is separated", Math.abs(b.interest - 68.63) < 0.005);
-  check("dividends are separated", Math.abs(b.dividends - 27.76) < 0.005);
-  check("other holds only the unresolved crypto receipts", Math.abs(b.other - 0.24) < 0.005);
-  check("the issuer credit is EXCLUDED, and visibly so", Math.abs(b.excluded - 280.45) < 0.005);
-  check("...so it is NOT inside broad income", b.broad < 274129.53 + 68.63 + 27.76 + 0.25);
-  check("every row lands in exactly one class",
-    Object.values(b.counts).reduce((s, n) => s + n, 0) === rows.length);
-}
+// (REVIEW-3: the "rollup is composed, not asserted" block exercised foldIncome,
+// which was deleted with its IncomeBreakdown shape — superseded by
+// composeIncomeRollup, whose own income-rollup.test.ts pins the same
+// composed-not-asserted invariant for the LIVE rollup.)
 
 console.log("v2.6-TRUTH-4 INCOME. Static probes");
 {

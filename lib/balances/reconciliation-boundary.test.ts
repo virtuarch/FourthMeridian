@@ -176,8 +176,11 @@ console.log("\nPROBE 7/10 — liquidity consumes reachable; credit is never cash
   const a = code(AUTHORITY);
   check("a card never produces a reachable figure",
     /basis: "REVOLVING_CREDIT",[\s\S]{0,400}reachable: null/.test(a));
-  check("reachableCash() still admits ONLY AVAILABLE_CASH",
-    /quantity === "AVAILABLE_CASH"[\s\S]{0,60}:\s*null/.test(a));
+  // (REVIEW-3: the reachableCash() accessor was deleted — zero importers. The
+  // live guard is reconcileAccount's reachable claim, which only a named
+  // AVAILABLE_CASH attestation may seed.)
+  check("reachable cash still admits ONLY AVAILABLE_CASH",
+    /avail\.quantity === "AVAILABLE_CASH"\s*\?\s*claim\("REACHABLE_CASH", avail\.amount\)/.test(a));
 
   const sq = code("lib/balances/section-quantity.ts");
   check("the section ledger records the liquidity migration",

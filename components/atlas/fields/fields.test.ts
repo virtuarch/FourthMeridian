@@ -44,7 +44,6 @@ console.log("promoted primitives exist");
     "components/atlas/fields/Toggle.tsx",
     "components/atlas/Toast.tsx",
     "components/atlas/InlineBanner.tsx",
-    "components/atlas/EmptyState.tsx",
     "components/settings/SettingsSection.tsx",
   ]) {
     check(`${f} exists`, has(f));
@@ -63,7 +62,7 @@ console.log("Toast contract");
 console.log("no atlas → settings dependency (layering)");
 {
   // Atlas primitives are domain-neutral; none may import from components/settings.
-  for (const f of ["components/atlas/fields/index.ts", "components/atlas/Toast.tsx", "components/atlas/InlineBanner.tsx", "components/atlas/EmptyState.tsx"]) {
+  for (const f of ["components/atlas/fields/index.ts", "components/atlas/Toast.tsx", "components/atlas/InlineBanner.tsx"]) {
     check(`${f} does not import from components/settings`, !read(f).includes("@/components/settings"));
   }
 }

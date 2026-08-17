@@ -153,15 +153,3 @@ export function snapshotConfidence(c: SnapshotCompleteness): SnapshotConfidence 
   if (!c.recorded) return "reconstructed";
   return c.tier === "incomplete" || c.tier === "unknown" ? "unreliable" : "reconstructed";
 }
-
-/**
- * The `isEstimated` a resolved tier implies — the FLIP rule, in one place.
- *
- * Provided so a future consumer can drop the stored boolean entirely rather
- * than keep asking both questions. NOT used to rewrite stored rows in this
- * slice: `isEstimated` remains authoritative on disk, and this is the bridge
- * that keeps the two from ever disagreeing in a reader's hands.
- */
-export function isEstimatedFromTier(tier: CompletenessTier): boolean {
-  return tier !== "observed";
-}

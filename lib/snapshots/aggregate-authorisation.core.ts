@@ -264,11 +264,4 @@ export function authoriseAggregates(
   return out;
 }
 
-/** Convenience: is this one aggregate assertable? */
-export function isAggregateAssertable(
-  map: AggregateAuthorisationMap, aggregate: SnapshotAggregate,
-): boolean {
-  return map[aggregate].assertable;
-}
-
 export { toleranceFor };

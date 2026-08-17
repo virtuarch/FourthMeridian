@@ -190,11 +190,14 @@ function main(): void {
     check("P. it is pure — no DB", !/from "@\/lib\/db"|@prisma\/client/.test(authority));
     check("P. and reads no clock", !/Date\.now\(\)|new Date\(\)/.test(authority));
 
-    // One authority, not several.
-    const binding = strip(read("lib/history/net-worth-point-detail.ts"));
+    // One authority, not several. The LIVE binding is the shared exploration
+    // resolver (lib/history/net-worth-point-detail.ts, the superseded binding
+    // this check used to scan, was deleted in REVIEW-3): it partitions every
+    // Net Worth point through buildNetWorthNode over getRecentSnapshots rows,
+    // and nothing else composes a Net Worth point.
+    const binding = strip(read("lib/history/exploration.ts"));
     check("P. exactly one Net Worth point authority exists",
-      (binding.match(/buildNetWorthNode\(/g) ?? []).length === 2 && // node + series
-      /getRecentSnapshots\(/.test(binding));
+      /buildNetWorthNode\(/.test(binding) && /getRecentSnapshots\(/.test(binding));
     check("P. the binding never writes",
       !/\.(create|update|upsert|delete)(Many)?\(/.test(binding));
   }

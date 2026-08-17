@@ -57,7 +57,6 @@ import type {
   BriefItem,
   BriefTone,
   VisitState,
-  FinancialMapData,
   TrackedAccount,
 } from "@/lib/brief-types";
 
@@ -775,16 +774,11 @@ export async function GET() {
 
   sections.sort((a, b) => a.priority - b.priority);
 
-  // ── Map data (empty markers in brief mode — no per-account detail available)
-  // Map hero rendering does not require markers in the current UI.
-  const map: FinancialMapData = { markers: [], hasLocations: false };
-
   const payload: BriefPayload = {
     visitState:  state,
     contextLine: context,
     hasData,
     sections,
-    map,
     generatedAt: new Date().toISOString(),
   };
 

@@ -11,8 +11,8 @@
  *
  * The cinematic Earth hero was retired here in favour of the text-first
  * editorial header — the Brief's authority now comes from hierarchy and honest
- * grounding, not a backdrop. (EarthBackground/BriefHero remain in the tree,
- * unused by this route — a v2.6 cleanup, not a dependency.)
+ * grounding, not a backdrop. (EarthBackground/BriefHero were deleted in the
+ * v2.6 REVIEW-3 cleanup — this route never depended on them.)
  *
  * NOTHING about the data changed: same `fetch("/api/brief")` → `BriefPayload`,
  * same `POST /api/brief/viewed`, same section contract. The production sections
@@ -20,15 +20,16 @@
  *   insight            → the LEDE (FM's one read for today)
  *   since_last_visit   → "Since you were last here" (the metric quartet)
  *   attention          → "Worth your attention" (or the all-clear line)
- *   opportunity/other  → "Can wait" (folded)
+ *   onboarding         → "Can wait" (folded)
  * The rich detail still lives in the SAME modals (SinceLastVisitModal,
  * AttentionModal), opened from the editorial surfaces.
  *
- * HONESTY: the prototype's trust dot, evidence chips, "Ask about this", and
- * Space-jumps are presentational SLOTS here — a trust dot renders only when an
- * item carries a `basis` (the builder doesn't emit one yet), a jump chip only
- * when an item has an `href`. Nothing is fabricated. "View AI Analysis" opens
- * the existing conversational AI at /dashboard/analyze — the Brief→AI handoff.
+ * HONESTY: the prototype's evidence chips, "Ask about this", and Space-jumps
+ * are presentational SLOTS here — a jump chip renders only when an item has an
+ * `href`. Nothing is fabricated. (The trust-dot seam and its `basis` field were
+ * deleted in REVIEW-3: the builder never emitted a basis, so the dot never
+ * rendered.) "View AI Analysis" opens the existing conversational AI at
+ * /dashboard/analyze — the Brief→AI handoff.
  */
 
 import { useEffect, useState } from "react";
@@ -38,7 +39,7 @@ import { Surface, Figure } from "@/components/atlas/Surface";
 import { BriefNewUser } from "./BriefNewUser";
 import { SinceLastVisitModal } from "./SinceLastVisitModal";
 import { AttentionModal } from "./AttentionModal";
-import type { BriefPayload, BriefSection, BriefItem, BriefBasis, BriefTone, VisitState } from "@/lib/brief-types";
+import type { BriefPayload, BriefSection, BriefItem, BriefTone, VisitState } from "@/lib/brief-types";
 
 // ── Copy helpers (ported from the retired BriefHero) ────────────────────────────
 
@@ -83,22 +84,6 @@ function figureTone(tone?: BriefTone): "up" | "down" | "neutral" {
 }
 
 // ── Small presentational parts ──────────────────────────────────────────────────
-
-/** Trust provenance dot — renders ONLY when an item carries a `basis`. The
- *  builder does not emit one yet, so this is a seam, never fabricated. */
-function TrustDot({ basis }: { basis: BriefBasis }) {
-  const observed = basis === "observed";
-  const color = observed ? "var(--accent-positive)" : "var(--text-muted)";
-  const label = basis === "observed" ? "observed" : basis === "reconstructed" ? "reconstructed" : "partly reconstructed";
-  return (
-    <span
-      aria-label={label}
-      title={label}
-      className="mt-[7px] inline-block size-2 shrink-0 rounded-full"
-      style={{ background: observed ? color : "transparent", boxShadow: `inset 0 0 0 1.5px ${color}` }}
-    />
-  );
-}
 
 /** A jump chip — an honest deep-link, shown only when the item/section has an
  *  href. This is the prototype's `spaceJump`/evidence affordance over the real
@@ -230,7 +215,6 @@ function AttentionBlock({ section }: { section?: BriefSection }) {
               className="group block w-full p-4 text-left sm:p-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-inset"
             >
               <div className="flex items-baseline gap-2.5">
-                {item.basis && <TrustDot basis={item.basis} />}
                 <p className="text-[15px] font-medium leading-6 text-[var(--text-primary)]">{item.label}</p>
               </div>
               {item.detail && <p className="mt-1.5 text-xs leading-5 text-[var(--text-secondary)]">{item.detail}</p>}
@@ -368,7 +352,7 @@ export function DailyBriefClient() {
   const sinceLast    = sections.find((s) => s.type === "since_last_visit");
   const attention    = sections.find((s) => s.type === "attention");
   const canWaitItems = sections
-    .filter((s) => s.type === "opportunity" || (!isNewUser && s.type === "onboarding"))
+    .filter((s) => !isNewUser && s.type === "onboarding")
     .flatMap((s) => s.items ?? []);
 
   return (

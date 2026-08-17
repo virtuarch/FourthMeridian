@@ -12,32 +12,15 @@ import { DisplayCurrencyProvider }                 from "@/lib/currency-context"
 export const preferredRegion = "sin1";
 export const runtime = "nodejs";
 
-/**
- * SP-2A-4c — map a legacy Personal `?tab=` deep link onto the shared shell's
- * tab vocabulary. The unified SpaceDashboard has no URL sync, so this is a
- * one-shot initial-tab hint (applied once via the `initialTab` seam).
- * Unknown/absent values (including the old `dashboard`/`overview` ids) fall
- * back to OVERVIEW — the shell's own default.
- */
-function mapLegacyTabToShell(raw: string | undefined): string {
-  switch (raw) {
-    case "banking":      return "ACCOUNTS";
-    case "transactions": return "TRANSACTIONS";
-    case "members":      return "MEMBERS";
-    case "settings":     return "SETTINGS";
-    case "credit":       return "DEBT";
-    case "investments":  return "INVESTMENTS";
-    case "activity":
-    case "timeline":     return "ACTIVITY";
-    default:             return "OVERVIEW";
-  }
-}
-
-export default async function DashboardPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
-}) {
+// REVIEW-3 — the former SP-2A-4c `mapLegacyTabToShell` legacy `?tab=` mapping
+// was deleted as dead: useSpaceNavigation's own URL authority (parseTabParam /
+// URL_TAB_ALIAS) collapses every present `?tab=` value FIRST, so the server-side
+// hint was consulted only when `?tab=` was absent — where it always produced
+// "OVERVIEW", the value the hook's own fallback chain already yields for a
+// PERSONAL Space (no trend hero; the OVERVIEW section is first in TAB_ORDER and
+// enabled by the PERSONAL preset). The DEBT/INVESTMENTS/SETTINGS returns mapped
+// to tabs with no render branch and could never take effect.
+export default async function DashboardPage() {
   const ctx = await getSpaceContext();
   const isPersonal = ctx.space.type === "PERSONAL";
 
@@ -49,9 +32,6 @@ export default async function DashboardPage({
   // plumbing. Platform consumes SpaceMountContext directly because it consolidates
   // real authority (PS-6C); finance does not, by design — see
   // docs/architecture/SPACE_MOUNT_DOCTRINE.md.
-  const spAll = await searchParams;
-  const str = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
-
   // PS-6B — compose the finance initial-Workspace payload (sections + accounts +
   // member count) ONCE from the already-authorized ctx.spaceId, so the shell
   // hydrates instead of the client re-fetching those three eager resources (each
@@ -104,8 +84,6 @@ export default async function DashboardPage({
   // Context is resolved exactly once above (and cache()-deduped even if it
   // weren't — see lib/space.ts). Pass the already-resolved userId into
   // getFicoData so this page makes zero redundant context lookups.
-  const rawTab = str(spAll?.tab);
-
   const ficoData = await getFicoData({ userId: ctx.userId });
 
   return (
@@ -119,7 +97,6 @@ export default async function DashboardPage({
           category={ctx.space.category}
           myRole={ctx.role}
           currentUserId={ctx.userId}
-          initialTab={mapLegacyTabToShell(rawTab)}
           ficoScore={ficoData.score}
           initialWorkspace={initialWorkspace}
         />

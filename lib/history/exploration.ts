@@ -7,7 +7,6 @@
  * holding — by walking down from the canonical root. It composes authorities and
  * decides nothing:
  *
- *   getNetWorthPointDetail   the lens root (Slice B)
  *   expandBucketNode         bucket → accounts, reconciled (Slice C)
  *   expandAccountNode        account → holdings, reconciled (Slice D)
  *   buildNetWorthNode        the bucket partition, for a bucket's own series
