@@ -68,7 +68,8 @@ check(
 );
 
 // SHARED is the legacy "maps to FULL" value. The 2026-07-02 data audit
-// (scripts/audit-visibility-levels.ts) confirmed zero SHARED rows in dev and
+// (audit-visibility-levels, retired and deleted REVIEW-3 W3; tombstoned in
+// scripts/audit-registry.ts) confirmed zero SHARED rows in dev and
 // prod, and no write path can produce one, so the predicate excludes it and
 // fails closed. This assertion makes that decision executable: if SHARED is
 // ever added to the predicate, this test must be changed consciously,

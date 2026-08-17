@@ -32,10 +32,22 @@
  *                  It must never print ✗ (findings are ⚠), and CI does not run
  *                  it. Runnable on demand.
  *
+ *   OPERATIONAL    A TOOL, not an audit (REVIEW-3 W3 extended the governed
+ *                  shapes to backfill-* / repair-* / diagnose-*). A maintained
+ *                  migration, remediation, or diagnostic command — dry-run by
+ *                  default where it writes, run by an operator on purpose.
+ *                  NEVER run by CI or by --tier=all (a tool is not a gate);
+ *                  classified here so an ungoverned script shape cannot
+ *                  accumulate again and so the inventory says why each exists.
+ *
  *   RETIRED        Its job is done — a pre-migration check for a migration that
  *                  is applied, a companion to a completed backfill, a one-time
  *                  data fix. Kept for the historical record and explicitly
  *                  marked so nobody mistakes it for a live gate. Never run by CI.
+ *                  An entry with `tombstone: true` records a retired script
+ *                  whose FILE was also deleted (REVIEW-3 W3): the entry is the
+ *                  historical record, and the runner fails if the name ever
+ *                  reappears on disk without a conscious re-classification.
  *
  * The rule every REQUIRED script obeys, and the one this arc had to repair in
  * four of them: **the symbol and the exit code agree.** ✗ means the process
@@ -43,7 +55,7 @@
  * than no audit — it manufactures confidence.
  */
 
-export type AuditTier = "REQUIRED" | "INFORMATIONAL" | "RETIRED";
+export type AuditTier = "REQUIRED" | "INFORMATIONAL" | "OPERATIONAL" | "RETIRED";
 
 export interface AuditEntry {
   /** Script basename under scripts/, without the .ts. */
@@ -53,6 +65,8 @@ export interface AuditEntry {
   what: string;
   /** For RETIRED: what completed, making it historical. */
   retiredBecause?: string;
+  /** RETIRED only: the script file itself was deleted; this entry is the record. */
+  tombstone?: true;
   /** True when the script reads a database. Everything here does except one. */
   needsDb: boolean;
 }
@@ -240,37 +254,103 @@ export const AUDITS: readonly AuditEntry[] = [
           "must not move while the OWNERSHIP fingerprint does",
   },
 
-  // ── RETIRED — their job is done ───────────────────────────────────────────
+  // ── OPERATIONAL — maintained tools under the extended governance ──────────
+  // backfill-* / repair-* / diagnose-* shapes require classification here
+  // (REVIEW-3 W3). The completed one-shots and closed-incident forensics were
+  // deleted in the same wave; these are the ones with a live reason to exist.
   {
-    name: "check-external-id-duplicates", tier: "RETIRED", needsDb: true,
+    name: "backfill-flowtype", tier: "OPERATIONAL", needsDb: true,
+    what: "the ownership-scoped flow reclassification tool — the remediation path the REQUIRED " +
+          "audit-flow-desync gate names verbatim for version-stale CLASSIFIER-owned rows " +
+          "(--only-version=<N> --apply --exclude-deleted); dry-run by default, idempotent",
+  },
+  {
+    name: "backfill-fx-rates", tier: "OPERATIONAL", needsDb: true,
+    what: "historical FX rate backfill + archive spot-check (MC1 P1 S3); " +
+          "docs/operations/background-jobs.md names it as the FX-gap self-heal path",
+  },
+  {
+    name: "backfill-economic-date", tier: "OPERATIONAL", needsDb: true,
+    what: "populates Transaction.economicDate from the proven read authority (L8-A); " +
+          "re-runnable companion to the economicDate persistence gates (npm run backfill:economic-date)",
+  },
+  {
+    name: "backfill-event-identity", tier: "OPERATIONAL", needsDb: true,
+    what: "reconstructs observations and logical events from corpus evidence (L8 Part 5); " +
+          "the event system is undeployed to production — REQUIRED at event-migration deploy time",
+  },
+  {
+    name: "backfill-ai-agents", tier: "OPERATIONAL", needsDb: true,
+    what: "creates an AiAgent row for any Space missing one; idempotent bootstrap " +
+          "(npm run backfill:ai-agents)",
+  },
+  {
+    name: "backfill-snapshots", tier: "OPERATIONAL", needsDb: true,
+    what: "manual runner for the historical snapshot backfill (D2.x S4) " +
+          "(npm run backfill:snapshots)",
+  },
+  {
+    name: "backfill-merchant-intelligence", tier: "OPERATIONAL", needsDb: true,
+    what: "Merchant Intelligence M3 historical backfill — offline migration utility " +
+          "(npm run backfill:merchant-intelligence)",
+  },
+  {
+    name: "backfill-personal-sections", tier: "OPERATIONAL", needsDb: true,
+    what: "ensures every Personal Space has the hidden `personal` template's section rows " +
+          "(SP-2A-3) (npm run backfill:personal-sections)",
+  },
+  {
+    name: "repair-event-identity-adoption-artifacts", tier: "OPERATIONAL", needsDb: true,
+    what: "repairs live-data residue of the fingerprint-adoption defect v2.6-EVENT-2 fixed at " +
+          "the write path; RETAIN UNTIL the event-migration production deploy completes — " +
+          "production has no TransactionEvent table yet, so the residue may still be created there",
+  },
+  {
+    name: "repair-event-projection-drift", tier: "OPERATIONAL", needsDb: true,
+    what: "re-derives stored TransactionEvent projections that disagree with their observations " +
+          "(v2.6-EVENT-1); RETAIN UNTIL the event-migration production deploy completes",
+  },
+  {
+    name: "diagnose-invalid-plaid-tokens", tier: "OPERATIONAL", needsDb: true,
+    what: "READ-ONLY diagnostic for PlaidItem rows whose encryptedToken is neither v1 nor v2; " +
+          "step 2 of the key-rotation runbook (docs/operations/key-rotation.md)",
+  },
+
+  // ── RETIRED — their job is done ───────────────────────────────────────────
+  // All five below are TOMBSTONES: the files were deleted in REVIEW-3 W3, the
+  // entries remain as the historical record, and the runner refuses a script
+  // reappearing under a tombstoned name.
+  {
+    name: "check-external-id-duplicates", tier: "RETIRED", tombstone: true, needsDb: true,
     what: "pre-migration duplicate check for the BTC identity backstop unique index",
     retiredBecause: "migration 20260727_v26pre_b4_btc_identity_backstop is applied; the index " +
                     "now enforces what this checked",
   },
   {
-    name: "audit-visibility-levels", tier: "RETIRED", needsDb: true,
+    name: "audit-visibility-levels", tier: "RETIRED", tombstone: true, needsDb: true,
     what: "KD-1 pre-flight: no SpaceAccountLink carries the legacy SHARED visibility",
     retiredBecause: "KD-1 shipped; TRANSACTION_DETAIL_VISIBILITY is enforced in every read path " +
                     "and pinned by lib/visibility-resolver-parity.test.ts",
   },
   {
-    name: "verify-provider-account-identity-backfill", tier: "RETIRED", needsDb: true,
+    name: "verify-provider-account-identity-backfill", tier: "RETIRED", tombstone: true, needsDb: true,
     what: "companion validation for the D2 Step 1C ProviderAccountIdentity backfill",
     retiredBecause: "the backfill is applied and ProviderAccountIdentity is written at connect time",
   },
   {
-    name: "verify-orphaned-plaid-items", tier: "RETIRED", needsDb: true,
+    name: "verify-orphaned-plaid-items", tier: "RETIRED", tombstone: true, needsDb: true,
     what: "companion validation for the orphaned-PlaidItem cleanup",
     retiredBecause: "the incident is closed; account deletion now revokes or holds (PRE-BETA-OPS-CLOSE)",
   },
   {
-    name: "verify-seed-emails", tier: "RETIRED", needsDb: true,
+    name: "verify-seed-emails", tier: "RETIRED", tombstone: true, needsDb: true,
     what: "one-time data fix marking the four dev seed users' emails verified",
     retiredBecause: "prisma/seed.ts sets emailVerified itself; despite the `verify-` prefix this " +
-                    "script WRITES, so it must never be mistaken for an audit",
+                    "script WROTE, so it must never be mistaken for an audit",
   },
 ];
 
 export const REQUIRED_AUDITS = AUDITS.filter((a) => a.tier === "REQUIRED");
 export const INFORMATIONAL_AUDITS = AUDITS.filter((a) => a.tier === "INFORMATIONAL");
+export const OPERATIONAL_TOOLS = AUDITS.filter((a) => a.tier === "OPERATIONAL");
 export const RETIRED_AUDITS = AUDITS.filter((a) => a.tier === "RETIRED");
