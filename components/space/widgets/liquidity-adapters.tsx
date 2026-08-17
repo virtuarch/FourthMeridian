@@ -30,7 +30,7 @@ import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/
 import { SummaryWidget, type SummaryColor } from "@/components/space/widgets/SummaryWidget";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { formatAggregateMoney } from "@/components/space/widgets/display-money";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";

@@ -52,7 +52,7 @@
  */
 
 import type { FreshnessBasis } from "@/lib/freshness/observation";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { amountOwed } from "@/lib/debt/balance-semantics";
 import { totalReachableCash, type ReachableInput } from "@/lib/balances/reachable";
 import { convertMoney } from "@/lib/money/convert";

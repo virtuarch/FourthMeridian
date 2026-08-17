@@ -9,7 +9,32 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { transactionDateParts } from "./format";
+
+// ── Currency-regrowth guard (REVIEW-3 wave 3) ─────────────────────────────────
+// lib/format.ts once carried byte-equivalent copies of the lib/currency.ts
+// formatters (formatCurrency / formatCurrencyExact / formatCompactCurrency);
+// they were consolidated into lib/currency.ts. This source scan fails if any
+// currency formatter regrows here: no `style: "currency"` Intl option and no
+// export whose name contains "Currency" may appear in lib/format.ts. New
+// currency helpers belong in lib/currency.ts.
+test("lib/format.ts contains no currency formatter (consolidated in lib/currency.ts)", () => {
+  const src = readFileSync(join(__dirname, "format.ts"), "utf8");
+  const code = src
+    .split("\n")
+    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join("\n");
+  assert.ok(
+    !/style:\s*["']currency["']/.test(code),
+    'lib/format.ts uses Intl style:"currency" — currency formatting belongs in lib/currency.ts',
+  );
+  assert.ok(
+    !/export\s+(function|const)\s+\w*[Cc]urrency/.test(code),
+    "lib/format.ts exports a *Currency* helper — it belongs in lib/currency.ts",
+  );
+});
 
 test("transactionDateParts: day / 3-letter month / 4-digit year", () => {
   assert.deepEqual(transactionDateParts("2026-07-11"), { day: "11", month: "Jul", year: "2026" });

@@ -10,7 +10,6 @@
  */
 
 import { db } from "@/lib/db";
-import { redactedErrorForLog } from "@/lib/plaid/errors";
 import type { SyncIssueKind, Prisma } from "@prisma/client";
 import { recordIncidentObservation, resolveByAutomaticRecovery, type IncidentClient } from "@/lib/platform/incidents/lifecycle";
 

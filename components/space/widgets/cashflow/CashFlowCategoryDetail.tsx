@@ -17,7 +17,7 @@
 
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { ChevronRight } from "lucide-react";
 

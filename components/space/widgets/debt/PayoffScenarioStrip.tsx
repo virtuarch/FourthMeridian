@@ -15,7 +15,7 @@
  * renders nothing (the planner's own disclaimers already cover it).
  */
 
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import type { ConversionContext } from "@/lib/money/types";
 import { buildPayoffScenarios, type PayoffScenarioInput } from "./payoff-scenarios";

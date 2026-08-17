@@ -22,15 +22,15 @@
  * initial state. See getGreeting() + useGreeting() below.
  *
  * ── CURRENCY ──────────────────────────────────────────────────────────────────
- * These wrappers live alongside the existing lib/currency.ts. They call through
- * to the same Intl.NumberFormat machinery; import from here when you need
- * a self-contained helper.
+ * This module deliberately contains NO currency formatters. lib/currency.ts is
+ * THE currency module (formatCurrency / formatCurrencyExact /
+ * formatCompactCurrency / formatBalance / currencySymbol) — the former
+ * byte-equivalent copies here were consolidated there in REVIEW-3 wave 3, and
+ * lib/format.test.ts carries a source-scan guard so they never regrow here.
  *
  * ── USAGE ─────────────────────────────────────────────────────────────────────
- *   import { formatDate, formatCurrency, useGreeting } from "@/lib/format";
+ *   import { formatDate, formatPercent, useGreeting } from "@/lib/format";
  */
-
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 
 // ── Date ──────────────────────────────────────────────────────────────────────
 
@@ -178,52 +178,9 @@ export function getGreeting(): string {
 /** Neutral text shown during SSR and first client paint. */
 export const GREETING_PLACEHOLDER = "Welcome back";
 
-// ── Currency ──────────────────────────────────────────────────────────────────
-
-/**
- * "$1,234" — no cents, explicit locale + currency, SSR-safe.
- * Standard dollar display for balances, totals.
- */
-export function formatCurrency(
-  amount:   number,
-  currency: string = DEFAULT_DISPLAY_CURRENCY,
-): string {
-  return new Intl.NumberFormat("en-US", {
-    style:                 "currency",
-    currency,
-    maximumFractionDigits: 0,
-  }).format(amount);
-}
-
-/**
- * "$1,234.56" — with cents, SSR-safe.
- */
-export function formatCurrencyExact(
-  amount:   number,
-  currency: string = DEFAULT_DISPLAY_CURRENCY,
-): string {
-  return new Intl.NumberFormat("en-US", {
-    style:                 "currency",
-    currency,
-    maximumFractionDigits: 2,
-  }).format(amount);
-}
-
-/**
- * "$1.2K", "$3.4M" — compact notation, SSR-safe.
- * Use for summary cards, charts.
- */
-export function formatCompactCurrency(
-  amount:   number,
-  currency: string = DEFAULT_DISPLAY_CURRENCY,
-): string {
-  return new Intl.NumberFormat("en-US", {
-    style:                 "currency",
-    currency,
-    notation:              "compact",
-    maximumFractionDigits: 1,
-  }).format(amount);
-}
+// ── Number / percent ──────────────────────────────────────────────────────────
+// (Currency formatters live in lib/currency.ts — see header. Do not add any
+// here; the source-scan guard in lib/format.test.ts will fail.)
 
 /**
  * "12.3%" — percentage with one decimal, SSR-safe.

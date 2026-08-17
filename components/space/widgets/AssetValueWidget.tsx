@@ -35,8 +35,8 @@
  */
 
 import { TrendingDown, TrendingUp, Minus } from "lucide-react";
-import { formatCurrency, formatDate, formatPercent } from "@/lib/format";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { formatDate, formatPercent } from "@/lib/format";
+import { DEFAULT_DISPLAY_CURRENCY, formatCurrency } from "@/lib/currency";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

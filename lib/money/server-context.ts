@@ -204,18 +204,3 @@ export async function resolveEffectiveSpaceConversionSerialized(
   };
 }
 
-/**
- * MC1 Phase 3 Slice 6 (F-1, approved D-6) — build AND materialize a Space's
- * conversion context for transport to client components as a plain-JSON prop.
- * Client surfaces rehydrate it with rehydrateContext() (lib/money/convert,
- * client-safe) and pass it to their existing classify/rollup calls. All-USD
- * Spaces serialize an EMPTY entry table (identity never calls resolve()), so
- * the prop is a few bytes and the client math is provably identical.
- */
-export async function serializeSpaceConversionContext(
-  space: { reportingCurrency: string },
-  opts: SpaceConversionOptions,
-): Promise<SerializedConversionContext> {
-  const ctx = await buildSpaceConversionContext(space, opts);
-  return serializeContext(ctx, opts.currencies, opts.dates);
-}

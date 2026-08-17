@@ -10,7 +10,7 @@
  * badge, and a compact sparkline.
  */
 
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 
 // WealthCard (the old rounded-2xl glass-ish card shell) was retired in the Net
 // Worth design-language migration — every wealth surface now composes the

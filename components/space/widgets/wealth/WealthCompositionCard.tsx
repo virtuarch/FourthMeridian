@@ -22,7 +22,7 @@
  */
 
 import { useMemo, useState, type ReactNode } from "react";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { WEALTH_CLASS_COLOR, DEFAULT_CHART_COLOR } from "@/lib/charts/chart-palette";
 import { Dropdown } from "@/components/atlas/Dropdown";

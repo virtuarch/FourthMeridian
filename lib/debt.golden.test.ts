@@ -63,10 +63,6 @@ const totalDebtPaid = (rows: DebtPaymentTxnLike[], ctx?: ConversionContext): num
     return convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date ?? "", ctx).amount;
   }).total;
 
-
-const numbersOf = (entries: ReturnType<typeof rollupDebtPaymentsByAccount>) =>
-  entries.map(({ accountId, total, count }) => ({ accountId, total, count }));
-
 // ── pure-USD fixture: byte-identity (kill-switch gate) ────────────────────────
 
 const pureUsd: DebtPaymentTxnLike[] = [

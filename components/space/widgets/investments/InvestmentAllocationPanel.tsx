@@ -20,7 +20,7 @@
 
 import { useMemo, useState } from "react";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import type { ValuedHoldingRow } from "@/lib/investments/investments-time-machine-core";
 import type { ConcentrationClassification } from "@/lib/investments/concentration";
 import {

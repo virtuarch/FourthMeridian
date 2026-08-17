@@ -13,7 +13,7 @@
  */
 
 import { db } from "@/lib/db";
-import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
+import { ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { admitTransferCandidate } from "@/lib/transactions/transfer-admission";
 import {
   resolveDestinationEvidenceFor, maturityForEvidence, impliedFlowType,
@@ -151,9 +151,9 @@ async function main() {
   for (const s of [
     "lib/transactions/RelationshipResolver.ts:527   toTransferLeg — THE read boundary",
     "scripts/audit-transfer-authority.ts:165        the census",
-    "scripts/repair-transfer-authority.ts:135       the repair",
-    "scripts/repair-transfer-classification.ts:133  historical, applied",
-    "scripts/repair-type-certain-debt-payment.ts:106 historical, applied",
+    "(historical) repair-transfer-authority / repair-transfer-classification /",
+    "(historical) repair-type-certain-debt-payment — applied incident repairs,",
+    "(historical) scripts deleted REVIEW-3 W3; each read r.date = POSTING",
   ]) console.log(`    · ${s}`);
   console.log(`  WINDOW COMPARISONS (consume leg.dateMs):`);
   for (const s of [

@@ -24,7 +24,6 @@ import { formatDate as formatDateUTC } from "@/lib/format";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
 import {
   estimateMinimumPayment,
-  rollupDebtPaymentsByAccount,
 } from "@/lib/debt";
 import { amountOwed, creditBalance, hasOutstandingDebt, liabilityState } from "@/lib/debt/balance-semantics";
 import { utilizationPercent } from "@/lib/accounts/credit-utilization";

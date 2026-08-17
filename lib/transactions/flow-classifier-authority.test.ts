@@ -23,8 +23,8 @@
  * pattern fails CI instead of silently forking classification authority.
  */
 
-import { readFileSync, readdirSync, statSync } from "fs";
-import { join, relative } from "path";
+import { readFileSync, readdirSync } from "fs";
+import { join } from "path";
 
 const ROOT = process.cwd();
 

@@ -46,7 +46,7 @@
  */
 
 import { db } from "@/lib/db";
-import { AccountType, ShareStatus, SettlementState, type Prisma, type PrismaClient } from "@prisma/client";
+import { AccountType, SettlementState, type Prisma, type PrismaClient } from "@prisma/client";
 import { truncDateUTC, isoDate, fromISO, addDaysUTC } from "@/lib/snapshots/backfill-core";
 import { getAccountBalancesOverWindow, type WindowAccount } from "@/lib/data/accounts-asof-window";
 import type { ResolvedAsOfBalance } from "@/lib/data/accounts-asof.core";

@@ -37,7 +37,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Landmark, Search, CheckCircle2, AlertTriangle } from "lucide-react";
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import type { ConversionContext } from "@/lib/money/types";
 import { amountOwed, creditBalance } from "@/lib/debt/balance-semantics";

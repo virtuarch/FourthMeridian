@@ -23,7 +23,7 @@
  * that cannot be honoured.
  */
 
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { Surface } from "@/components/atlas/Surface";
 import {
   HORIZON_META, HORIZON_COLOR,

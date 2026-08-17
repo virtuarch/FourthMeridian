@@ -42,7 +42,6 @@ import { db } from "@/lib/db";
 import {
   buildCoverageSummary,
   buildExecutionTimeline,
-  buildFailureSummary,
   buildProviderOperationSummary,
   buildRefreshSummary,
   countOpenExecutions,
@@ -53,7 +52,6 @@ import type {
   EndpointFact,
   ExecutionFact,
   ExecutionTimeline,
-  FailureSummary,
   ProjectionEnvelope,
   ProviderCallFact,
   ProviderOperationSummary,
@@ -372,22 +370,6 @@ export async function getCoverageSummary(
   return { ...buildCoverageSummary(coverage), ...envelopeFor(loaded) };
 }
 
-/**
- * Failure Summary — non-clean executions, failed stages, and failed/rate-limited
- * provider attempts grouped by Plaid's OWN error vocabulary. Invents no failure
- * taxonomy and never groups free-text error text.
- */
-export async function getFailureSummary(
-  args: RefreshProjectionArgs = {},
-  deps?: RefreshProjectionDeps,
-): Promise<FailureSummary> {
-  const loaded = await loadExecutionWindow(args, deps);
-  const [endpoints, calls] = await Promise.all([endpointsOf(loaded), providerCallsOf(loaded)]);
-  return {
-    ...buildFailureSummary(loaded.executions, endpoints, calls),
-    ...envelopeFor(loaded),
-  };
-}
 
 /**
  * Execution Timeline — ONE execution's ordered story (stages, provider calls,

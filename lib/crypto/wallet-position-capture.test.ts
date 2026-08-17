@@ -93,16 +93,10 @@ check("btc-sync writes NO synthetic InvestmentEvent from balance",
 check("dual-write carries an explicit DELETION CONDITION (not indefinite)",
   /DELETION CONDITION/.test(syncRaw));
 
-// Backfill — safe by construction.
-const backfill = code(read("scripts", "backfill-crypto-positions.ts"));
-check("backfill is dry-run by default (writes only on --apply)",
-  /APPLY\s*=\s*process\.argv\.includes\(["']--apply["']\)/.test(backfill));
-check("backfill resolves the canonical BTC Instrument (no per-wallet identity)",
-  backfill.includes("CRYPTO_PROVIDER") && /assetClass:\s*AssetClass\.CRYPTO/.test(backfill));
-check("backfill writes quantity-only (no institution anchor, no cost basis)",
-  /institutionValue:\s*null/.test(backfill) && /costBasis:\s*null/.test(backfill));
-check("backfill uses the wallet source + OBSERVED origin",
-  /source:\s*WALLET_SOURCE/.test(backfill) && /PositionOrigin\.OBSERVED/.test(backfill));
+// Backfill: scripts/backfill-crypto-positions.ts (the P2-6 one-time Holding →
+// PositionObservation bootstrap) completed its arc and was deleted in REVIEW-3
+// wave 3; its safe-by-construction source checks went with it. The live wallet
+// write path above is what these invariants now cover.
 
 console.log(`\nwallet-position-capture: ${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

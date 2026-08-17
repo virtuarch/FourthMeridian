@@ -36,7 +36,7 @@
  */
 
 import { useDisplayCurrency } from "@/lib/currency-context";
-import { formatCurrency, formatCurrencyExact } from "@/lib/format";
+import { formatCurrency, formatCurrencyExact } from "@/lib/currency";
 
 /** Minimal structural shape — accepts ConversionContext or its serialized form. */
 export interface HasTarget { target: string }

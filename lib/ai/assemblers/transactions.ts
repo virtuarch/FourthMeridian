@@ -56,7 +56,7 @@ import { ShareStatus, TransactionCategory, FlowType } from '@prisma/client';
 import type { FlowDirection, Prisma } from '@prisma/client';
 
 import { registerAssembler } from '@/lib/ai/assembler-registry';
-import { TRANSACTION_DETAIL_VISIBILITY } from '@/lib/ai/visibility';
+import { } from '@/lib/ai/visibility';
 import { FinanceDomains } from '@/lib/ai/types';
 import type {
   AssemblerOptions,
@@ -71,7 +71,7 @@ import type {
   DrilldownTransaction,
 } from '@/lib/ai/types';
 import { normalizeMerchant } from '@/lib/transactions/merchant';
-import { isCostFlow, isRefund, isIncome, isTransfer, isDebtPayment, isAdjustment, isNonEconomicResidue } from '@/lib/transactions/flow-predicates';
+import { isCostFlow, isIncome, isTransfer, isDebtPayment, isAdjustment, isNonEconomicResidue } from '@/lib/transactions/flow-predicates';
 // REVIEW-3 C-1 — THE economic fold. The window and monthly money folds below are
 // consumers of the SAME primitives the Cash Flow workspace folds with
 // (lib/transactions/cash-flow.ts): foldEconomicRow decides which bucket a row's
@@ -93,7 +93,7 @@ import type { FlowAuthorityName } from '@/lib/transactions/flow-authority';
 // old proxy counted unattested provider-categorised rows the authority refuses,
 // and missed transfer-typed rows whose destination the transfer authority proved
 // to be a liability.
-import { totalDebtPaid, selectDebtPaymentCashLegs } from '@/lib/transactions/debt-payment-authority';
+import { selectDebtPaymentCashLegs } from '@/lib/transactions/debt-payment-authority';
 import { tierResolver, type LiquidityTx } from '@/lib/transactions/liquidity';
 import { resolveTransferAssessments } from '@/lib/transactions/transfer-resolution';
 import { dispositionForMaturity } from '@/lib/transactions/transfer-evidence';

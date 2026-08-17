@@ -15,9 +15,9 @@
  *
  * Restating it would have been the beginning of a second reconciliation model,
  * which is precisely what the v2.6 investigation's invariants forbid. So the
- * vocabulary moves here, beside the trust tiers it belongs with, and both
- * consumers import it. `historical-point-detail.ts` re-exports its own names so
- * nothing downstream changes.
+ * vocabulary moved here, beside the trust tiers it belongs with, and every
+ * consumer imports it. (`historical-point-detail.ts`, the DB binding it was
+ * extracted from, was deleted in REVIEW-3 W3 with its retired route.)
  *
  * This module holds the VOCABULARY and the TOLERANCE RULE, and nothing else. It
  * knows about no lens, no aggregate, no instrument and no account.

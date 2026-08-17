@@ -24,7 +24,8 @@ import React, { useState, useEffect } from "react";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { SummaryWidget } from "@/components/space/widgets/SummaryWidget";
 import { formatAggregateMoney } from "@/components/space/widgets/display-money";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatDate } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import type { ConversionContext } from "@/lib/money/types";
 import { Target } from "lucide-react";
 import {

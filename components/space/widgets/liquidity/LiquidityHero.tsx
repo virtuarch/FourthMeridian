@@ -27,7 +27,8 @@
  */
 
 import type { ReactNode } from "react";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatDate } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { describeExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { Figure } from "@/components/atlas/Surface";

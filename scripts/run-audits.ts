@@ -11,11 +11,15 @@
  * ── What it guarantees ──────────────────────────────────────────────────────
  *
  *  · Every REQUIRED audit RUNS. A registry entry with no script on disk is a
- *    failure, not a silent skip — a deleted audit must be deliberately retired,
- *    never quietly dropped.
+ *    failure, not a silent skip — a deleted audit must be deliberately retired
+ *    (a RETIRED entry with `tombstone: true` records a retired-AND-deleted
+ *    file), never quietly dropped. A script reappearing under a tombstoned
+ *    name is also a failure — resurrection requires re-classification.
  *  · Every script on disk is CLASSIFIED. A new scripts/audit-*.ts that nobody
  *    registered fails the run, so an invariant cannot be written and then left
  *    outside the gate. That is precisely how eleven audits ended up unexecuted.
+ *    REVIEW-3 W3 extended the governed shapes to backfill-* / repair-* /
+ *    diagnose-* (tier OPERATIONAL) — tools are classified, never executed here.
  *  · The exit code is the union: any REQUIRED failure fails the process.
  *    INFORMATIONAL results are reported and NEVER affect it.
  *
@@ -53,7 +57,7 @@ const INFRASTRUCTURE = new Set(["audit-registry"]);
 function scriptsOnDisk(): string[] {
   return readdirSync(SCRIPTS_DIR)
     .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))
-    .filter((f) => /^(audit|check|verify)-/.test(f))
+    .filter((f) => /^(audit|check|verify|backfill|repair|diagnose)-/.test(f))
     .map((f) => f.replace(/\.ts$/, ""))
     .filter((n) => !INFRASTRUCTURE.has(n))
     .sort();
@@ -61,15 +65,15 @@ function scriptsOnDisk(): string[] {
 
 function printInventory(): void {
   const byTier: Record<AuditTier, AuditEntry[]> = {
-    REQUIRED: [], INFORMATIONAL: [], RETIRED: [],
+    REQUIRED: [], INFORMATIONAL: [], OPERATIONAL: [], RETIRED: [],
   };
   for (const a of AUDITS) byTier[a.tier].push(a);
-  for (const tier of ["REQUIRED", "INFORMATIONAL", "RETIRED"] as const) {
+  for (const tier of ["REQUIRED", "INFORMATIONAL", "OPERATIONAL", "RETIRED"] as const) {
     bar(`${tier} — ${byTier[tier].length}`);
     for (const a of byTier[tier]) {
       console.log(`  ${a.name}`);
       console.log(`      ${a.what}`);
-      if (a.retiredBecause) console.log(`      RETIRED: ${a.retiredBecause}`);
+      if (a.retiredBecause) console.log(`      RETIRED${a.tombstone ? " (tombstone — file deleted)" : ""}: ${a.retiredBecause}`);
     }
   }
 }
@@ -94,15 +98,22 @@ function main(): void {
   const disk = new Set(scriptsOnDisk());
   const registered = new Set(AUDITS.map((a) => a.name));
   const unregistered = [...disk].filter((n) => !registered.has(n));
-  const missing = AUDITS.filter((a) => !existsSync(join(SCRIPTS_DIR, `${a.name}.ts`)));
+  const missing = AUDITS.filter((a) => !a.tombstone && !existsSync(join(SCRIPTS_DIR, `${a.name}.ts`)));
+  const resurrected = AUDITS.filter((a) => a.tombstone && existsSync(join(SCRIPTS_DIR, `${a.name}.ts`)));
 
-  if (unregistered.length > 0 || missing.length > 0) {
+  if (unregistered.length > 0 || missing.length > 0 || resurrected.length > 0) {
     bar("REGISTRY ↔ DISK MISMATCH");
     for (const n of unregistered) {
       console.error(`  ✗ scripts/${n}.ts exists but is not classified in scripts/audit-registry.ts`);
     }
     for (const a of missing) {
       console.error(`  ✗ ${a.name} is registered as ${a.tier} but no script exists`);
+    }
+    for (const a of resurrected) {
+      console.error(
+        `  ✗ scripts/${a.name}.ts exists but that name is a TOMBSTONE (retired and deleted); ` +
+        "re-classify it deliberately before reusing the name",
+      );
     }
     console.error(
       "\n[AUDITS] FAILED — the inventory and the filesystem disagree.\n" +
@@ -117,7 +128,7 @@ function main(): void {
   const selected = (ONLY
     ? AUDITS.filter((a) => ONLY.includes(a.name))
     : TIER === "all"
-      ? AUDITS.filter((a) => a.tier !== "RETIRED")
+      ? AUDITS.filter((a) => a.tier === "REQUIRED" || a.tier === "INFORMATIONAL")
       : REQUIRED_AUDITS
   );
 

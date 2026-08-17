@@ -28,7 +28,7 @@
 import type { LensResult, CompletenessTier } from "@/lib/perspective-engine/types";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import type { CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
 import type { InvestmentsTimeMachineResult } from "@/lib/investments/investments-time-machine-core";
 import { buildInvestmentsTrustSummary } from "@/lib/investments/investments-trust";

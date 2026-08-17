@@ -18,7 +18,8 @@
 import { ArrowLeft } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ValuedHoldingRow } from "@/lib/investments/investments-time-machine-core";
-import { formatCurrencyExact, formatPercent } from "@/lib/format";
+import { formatPercent } from "@/lib/format";
+import { formatCurrencyExact } from "@/lib/currency";
 import { costBasisOf, rowLabel, TIER_LABEL } from "./holdings-util";
 
 function Row({ label, value, valueColor }: { label: string; value: ReactNode; valueColor?: string }) {

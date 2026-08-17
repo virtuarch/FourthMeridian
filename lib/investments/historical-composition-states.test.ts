@@ -10,10 +10,14 @@
  */
 
 import { readFileSync } from "node:fs";
+// REVIEW-3 W3: lib/investments/historical-point-detail.ts (the retired
+// point-detail route's authority) was deleted with zero production importers;
+// the vocabulary it re-exported lives in THE one pure reconciliation module.
 import {
-  COMPOSITION_TOLERANCE, COMPOSITION_STATES, observedTolerance,
-  HISTORICAL_COMPOSITION_UNAVAILABLE, HISTORICAL_COMPOSITION_CONTRADICTORY,
-} from "./historical-point-detail";
+  COMPUTED_TOLERANCE as COMPOSITION_TOLERANCE,
+  RECONCILIATION_STATES as COMPOSITION_STATES,
+  observedTolerance,
+} from "@/lib/perspective-engine/reconciliation.core";
 import {
   buildHistoricalHoldings, type HoldingComponent, type HoldingOwnershipFacts,
 } from "./historical-holdings.core";
@@ -79,13 +83,10 @@ function main(): void {
       classify({ chartValue: 4032.1, componentTotal: 0, observedTotal: true, componentCount: 0 }) === "UNAVAILABLE");
 
     check("D. the four states are the whole vocabulary", COMPOSITION_STATES.length === 4);
-    // Distinctness is a TYPE-level fact here (the compiler proves the literals
-    // cannot overlap), so assert the property that actually matters at runtime:
-    // both codes exist and neither is empty.
-    check("D. and the two refusals are distinct, non-empty codes",
-      String(HISTORICAL_COMPOSITION_UNAVAILABLE).length > 0 &&
-      String(HISTORICAL_COMPOSITION_CONTRADICTORY).length > 0 &&
-      String(HISTORICAL_COMPOSITION_UNAVAILABLE) !== String(HISTORICAL_COMPOSITION_CONTRADICTORY));
+    // (The HISTORICAL_COMPOSITION_* refusal codes were module-local to the
+    // deleted historical-point-detail; the shared explorer refuses through the
+    // RECONCILIATION_STATES vocabulary itself — CONTRADICTORY / UNAVAILABLE —
+    // which check D above and check Y below pin.)
   }
 
   // ══ TOLERANCE — engine-vs-itself is strict, engine-vs-observation is not ═══
@@ -188,14 +189,16 @@ function main(): void {
   // ══ V, Y. STATIC GUARDS ═══════════════════════════════════════════════════
   console.log("\nV, Y. Static guards");
   {
-    const detail = strip(read("lib/investments/historical-point-detail.ts"));
     // v2.6 — the per-lens drawer was RETIRED; the ONE shared explorer inherits
     // every guard that protected it. The intent is unchanged: the view renders a
-    // breakdown only when the authority permits it.
+    // breakdown only when the authority permits it. REVIEW-3 W3: the retired
+    // drawer's DB authority (historical-point-detail.ts) was deleted, so the
+    // V-checks now scan the live exploration authority instead.
+    const detail = strip(read("lib/history/exploration.ts"));
     const panel  = strip(read("components/history/HistoryExplorationSheet.tsx"));
     const chart  = strip(read("components/space/widgets/charts/TrendChart.tsx"));
 
-    check("V. the detail authority never queries current positions",
+    check("V. the exploration authority never queries current positions",
       !/getCurrentPositions|current-holdings|current-positions/.test(detail));
     check("V. nor reads a clock", !/Date\.now\(\)|new Date\(\)/.test(detail));
     check("Y. React does no financial arithmetic",

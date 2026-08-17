@@ -40,7 +40,7 @@
  */
 
 import { useState } from "react";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { useDisplayCurrency } from "@/lib/currency-context";
 import { assignStableColors, DEFAULT_CHART_COLOR } from "@/lib/charts/chart-palette";
 

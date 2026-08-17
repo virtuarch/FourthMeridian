@@ -32,7 +32,7 @@ import {
   bucketKindForRoot, isBucketRoot, LENS_ROOT_LABELS, type LensRoot,
 } from "./lens-root-node";
 import type {
-  BucketKind, HistoricalBucketNode, HistoricalLensNode,
+  HistoricalBucketNode, HistoricalLensNode,
   HistoricalNode, HistoricalSeriesPoint,
 } from "./historical-node.core";
 

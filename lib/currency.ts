@@ -43,6 +43,36 @@ export function formatBalance(amount: number, currency: string = DEFAULT_DISPLAY
 }
 
 /**
+ * "$1,234.56" — with cents, SSR-safe. The exact-amount formatter for
+ * transaction rows and anywhere cents are material. Moved verbatim from
+ * lib/format.ts (REVIEW-3 wave 3) so lib/currency is the ONE currency module;
+ * no counterpart previously existed here.
+ */
+export function formatCurrencyExact(
+  amount:   number,
+  currency: string = DEFAULT_DISPLAY_CURRENCY,
+): string {
+  return new Intl.NumberFormat("en-US", {
+    style:                 "currency",
+    currency,
+    maximumFractionDigits: 2,
+  }).format(amount);
+}
+
+/**
+ * "$1.2K", "$3.4M" — compact notation, SSR-safe. Use for summary cards and
+ * charts. Identical output to `formatCurrency(amount, currency, true)`
+ * (verified byte-equivalent across an input battery, REVIEW-3 wave 3); kept as
+ * a named export because it is the historical spelling across the widgets.
+ */
+export function formatCompactCurrency(
+  amount:   number,
+  currency: string = DEFAULT_DISPLAY_CURRENCY,
+): string {
+  return formatCurrency(amount, currency, true);
+}
+
+/**
  * The bare currency symbol for a currency code (e.g. "$", "€", "﷼") — used for
  * form-toggle glyphs, axis ticks, and slider bound labels. USD ⇒ "$", so
  * all-USD surfaces render unchanged. For every valid ISO 4217 code `Intl`

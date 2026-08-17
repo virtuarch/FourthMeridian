@@ -27,7 +27,7 @@ import {
   type PeriodFlows,
   type FlowCategory,
 } from "@/lib/investments/investment-flows-core";
-import { formatCurrencyExact } from "@/lib/format";
+import { formatCurrencyExact } from "@/lib/currency";
 
 export type ActivityGroupKey = "money_in" | "money_out" | "inside";
 

@@ -16,7 +16,7 @@
  */
 
 import type { ReactNode } from "react";
-import { formatCurrency, formatCurrencyExact } from "@/lib/format";
+import { formatCurrency, formatCurrencyExact } from "@/lib/currency";
 import type { LiabilityRow } from "./debt-ledger-util";
 import { debtSubtypeLabel } from "./debt-ledger-util";
 

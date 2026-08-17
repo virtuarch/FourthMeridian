@@ -17,7 +17,8 @@ import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 import type { TimelineEvent } from "@/lib/timeline-types";
 import { ACTIVITY_FILTER_GROUPS } from "@/lib/timeline-types";
-import { formatDateTime, formatCurrency } from "@/lib/format";
+import { formatDateTime } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { EventIcon, toneColor, isColoredTone, timeAgo } from "./event-visuals";
 
 /** Member-facing label for a category id ("connection" → "Connections"). */

@@ -327,7 +327,7 @@ export async function refreshPlaidItem(
   //     SpaceSnapshot regeneration — is SKIPPED, on purpose.
   //   • `syncIncompleteAt` stays set, so the item reads as "importing", the
   //     client auto-resume and the daily cron keep retrying it, and Platform Ops
-  //     reports it as stalled (lib/platform/stall-projection.ts).
+  //     reports it as a stalled incident (lib/platform/incidents/ lifecycle projection).
   //   • The caller records the failure (runDeferredHistorySync stamps health,
   //     refreshAllActiveItemsForUser records ok:false). Re-catching it here would
   //     only duplicate that contract — or worse, downgrade it to success.

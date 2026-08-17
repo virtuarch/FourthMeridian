@@ -27,7 +27,7 @@ import { creditUtilization } from "@/lib/accounts/credit-utilization";
 import { amountOwed } from "@/lib/debt/balance-semantics";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
 import { formatAggregateMoney } from "@/components/space/widgets/display-money";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";

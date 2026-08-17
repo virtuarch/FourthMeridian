@@ -14,7 +14,7 @@
 import { useState } from "react";
 import { ArrowDownLeft, ArrowUpRight, Repeat, ChevronRight } from "lucide-react";
 import type { PeriodFlows } from "@/lib/investments/investment-flows-core";
-import { formatCurrencyExact } from "@/lib/format";
+import { formatCurrencyExact } from "@/lib/currency";
 import {
   buildActivityGroups, UNATTRIBUTED_LABEL,
   type ActivityGroupKey, type ActivitySection,

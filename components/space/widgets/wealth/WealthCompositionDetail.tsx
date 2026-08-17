@@ -24,7 +24,7 @@
  * segment and this panel cannot disagree.
  */
 
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { Surface } from "@/components/atlas/Surface";
 import type {
   WealthCompositionAccount,
