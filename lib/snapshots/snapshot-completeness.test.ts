@@ -101,6 +101,17 @@ function main(): void {
     const explicit = resolveSnapshotCompleteness({ isEstimated: false, completenessTier: "observed" });
     check("an explicitly recorded observed tier is reported as recorded",
       explicit.tier === "observed" && explicit.recorded === true && explicit.basis === "recorded");
+
+    // REVIEW-3 B-4 (row 33) — the live writer's FX-partial disclosure: an
+    // isEstimated=false row RECORDING "incomplete" (an FX-unavailable account
+    // was excluded, so the totals are a partial sum) must resolve to the
+    // recorded tier — the flip-rule inference must NOT re-bless it as observed
+    // — and must classify as LESS than an estimate.
+    const partial = resolveSnapshotCompleteness({ isEstimated: false, completenessTier: "incomplete" });
+    check("recorded 'incomplete' outranks the flip-rule inference on a live row",
+      partial.tier === "incomplete" && partial.recorded === true && partial.basis === "recorded");
+    check("an FX-partial live row classifies as unreliable, never silently complete",
+      snapshotConfidence(partial) === "unreliable");
   }
 
   // ══ C. Estimated but MOSTLY UNKNOWN ═══════════════════════════════════════
