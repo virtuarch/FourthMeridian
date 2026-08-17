@@ -34,6 +34,15 @@
  * the point is made of.
  *
  * READ-ONLY. Nothing here writes.
+ *
+ * ── REVIEW-3 consumer status ─────────────────────────────────────────────────
+ * The dedicated API route (app/api/spaces/[id]/investments/point-detail) was
+ * DELETED — zero client callers; the shared exploration route
+ * app/api/spaces/[id]/history/node (lib/history/exploration.ts) supersedes it.
+ * The remaining importer is lib/integrity/historical-probes.ts (scheduled for
+ * deletion by another REVIEW-3 slice). Once that lands, this module has no
+ * non-test importer: either wire it under the history/node exploration path or
+ * delete it together with its tests — do not leave it parked silently.
  */
 
 import type { Prisma, PrismaClient } from "@prisma/client";

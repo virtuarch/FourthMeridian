@@ -12,11 +12,17 @@
  * and produces a `QuantityTimeline` plus its `ReconciliationReport`.
  *
  * STRICTLY READ-ONLY. It writes nothing, mutates nothing, and calls no
- * provider. It is also, deliberately, not wired into valuation or snapshot
- * regeneration: an authority earns a consumer once it is trusted, and trust
- * here means a corpus in which coverage is actually recorded. Today the ledger
- * is empty until the next investment sync runs, so every pair still resolves to
- * UNKNOWN — correctly, and visibly.
+ * provider.
+ *
+ * WIRING (corrected by REVIEW-3 — the previous claim here was false): this
+ * module IS wired into valuation. lib/investments/quantity-authority.ts
+ * (V26-QUANTITY-1G) loads these timelines and lib/investments/valuation.ts
+ * consults them for every (pair, date) it values. What keeps the authority
+ * inert is ONLY the `off` default of QUANTITY_AUTHORITY_MODE (declared in
+ * lib/env.ts / .env.example): `off` never loads it, `compare` computes but
+ * still uses the legacy quantity, and `adopt` REPOINTS quantity replay at this
+ * module's answer. Snapshot regeneration reaches it the same way, through
+ * valuation.
  *
  * The window is a CALLER decision, as it is in 1C.1. This module never infers
  * one from the evidence it happens to hold, because a window derived from

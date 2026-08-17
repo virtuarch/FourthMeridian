@@ -10,7 +10,7 @@
  * what surfaced it instead of shipping a breakdown that was quietly short.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { COMPOSITION_TOLERANCE, HISTORICAL_COMPOSITION_UNAVAILABLE } from "./historical-point-detail";
 import { valueCryptoDay } from "@/lib/crypto/historical-crypto-valuation.core";
 
@@ -90,12 +90,11 @@ function main(): void {
     check("C. it pins the ownership ceiling to NOTHING (derived, so it matches regeneration)",
       !/ownershipToISO:/.test(detail));
 
-    const route = strip(read("app/api/spaces/[id]/investments/point-detail/route.ts"));
-    check("C. the route delegates to the authority", /getHistoricalPointDetail\s*\(/.test(route));
-    check("C. the route computes no money",
-      !/reduce\(/.test(route) && !/\*/.test(route.replace(/import[^;]+;/g, "")));
-    check("C. the route strips the diagnostic from the user-facing payload",
-      /diagnostic, \.\.\.safe/.test(route));
+    // REVIEW-3 — the point-detail route was DELETED (zero client callers;
+    // superseded by app/api/spaces/[id]/history/node, the declared single
+    // exploration route). Guard that it stays deleted.
+    check("C. the superseded point-detail route stays deleted",
+      !existsSync("app/api/spaces/[id]/investments/point-detail"));
 
     // v2.6 — retired per-lens drawer; the shared explorer carries these guards.
     const panel = strip(read("components/history/HistoryExplorationSheet.tsx"));

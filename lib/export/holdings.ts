@@ -22,6 +22,7 @@
 import type { CurrentPositionRow } from "@/lib/investments/current-positions-core";
 import type { LegacyCryptoPosition } from "@/lib/investments/legacy-crypto-holdings";
 import type { ExportHolding } from "@/lib/export/types";
+import { excludeCanonicalAccounts } from "@/lib/investments/canonical-precedence.core";
 
 /** Canonical current-position row → export holding (native value + added reporting value). */
 export function toExportHoldingFromPosition(row: CurrentPositionRow, spaceId: string): ExportHolding {
@@ -76,12 +77,20 @@ export function toExportHoldingFromLegacyCrypto(
 /**
  * Merge one Space's canonical positions and its crypto-bridge positions into the
  * export holdings, keeping the two sources DISJOINT BY ACCOUNT so nothing double
- * counts. Wallet accounts belong entirely to the crypto bridge until P2-6 — the
- * observation backfill (scripts/backfill-position-observations.ts) can mint a
- * PositionObservation from a wallet's `Holding`, which would otherwise let the
- * same wallet surface through BOTH paths, so canonical rows for any wallet account
- * are dropped here. Pure — the caller supplies the rows and the Space
- * reporting currency. P2-6: drop the crypto args and this becomes a passthrough.
+ * counts.
+ *
+ * REVIEW-3 (matrix row 26) — CANONICAL WINS, converged with the AI assembler.
+ * P2-6 writes BTC wallet balances onto the PositionObservation spine, so a
+ * wallet can be present in BOTH sources. This merge previously applied the
+ * OPPOSITE precedence to the AI's (it dropped the CANONICAL row and kept the
+ * legacy one), so Export and the AI could disagree about the same wallet. Both
+ * consumers now share the ONE rule in
+ * lib/investments/canonical-precedence.core.ts: every canonical row is kept
+ * (value/FX/completeness already computed on the spine), and a bridge position
+ * survives ONLY when the canonical seam has no row for that custody account —
+ * the bridge is a fallback, never an override. Pure — the caller supplies the
+ * rows and the Space reporting currency. P2-6 completion: drop the crypto args
+ * and this becomes a passthrough.
  */
 export function mergeSpaceExportHoldings(args: {
   canonicalRows:     readonly CurrentPositionRow[];
@@ -90,13 +99,14 @@ export function mergeSpaceExportHoldings(args: {
   reportingCurrency: string;
 }): ExportHolding[] {
   const { canonicalRows, cryptoPositions, spaceId, reportingCurrency } = args;
-  const walletAccountIds = new Set(cryptoPositions.map((c) => c.financialAccountId));
+  const canonicalAccountIds = new Set(canonicalRows.map((r) => r.accountId));
   const out: ExportHolding[] = [];
   for (const row of canonicalRows) {
-    if (walletAccountIds.has(row.accountId)) continue; // owned by the crypto bridge
     out.push(toExportHoldingFromPosition(row, spaceId));
   }
-  for (const c of cryptoPositions) {
+  // Canonical wins — the SAME shared rule the AI binding applies
+  // (excludeCanonicalCryptoAccounts in lib/ai/assemblers/holdings-core.ts).
+  for (const c of excludeCanonicalAccounts(cryptoPositions, canonicalAccountIds)) {
     out.push(toExportHoldingFromLegacyCrypto(c, spaceId, reportingCurrency));
   }
   return out;

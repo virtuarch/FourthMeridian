@@ -23,8 +23,25 @@
  * - Required variables are accessed via getters that throw at call-site if missing.
  *   This fails fast and gives a clear error rather than a cryptic downstream failure.
  * - Optional integrations expose the raw value (undefined if not set) and
- *   boolean feature flags (isPlaidEnabled, isAiEnabled, etc.) for guard clauses.
+ *   boolean feature flags (isPlaidEnabled, etc.) for guard clauses.
  * - `validateEnv()` can be called to validate everything eagerly at startup.
+ *
+ * FLAG PATTERN (v2.6 REVIEW-3, deliberate)
+ * ----------------------------------------
+ * Feature-flag and kill-switch TRUTH lives at each flag's OWN gate function,
+ * which reads `process.env.X` directly at CALL TIME (e.g.
+ * lib/investments/position-capture.ts `investmentObservationsEnabled()`).
+ * That is load-bearing, not sloppiness:
+ *   - the test suite toggles process.env at runtime and re-invokes the gates
+ *     (this module snapshots once at load, so a mirror here can NEVER be the
+ *     gate);
+ *   - operational scripts run the gated modules under plain `tsx`, where this
+ *     module's `server-only` import cannot be resolved without a preload.
+ * This module therefore carries NO duplicate boolean accessor for those flags
+ * — a second, documented-but-dead copy of a flag authority is exactly the
+ * drift REVIEW-3 removed. The snapshot entries below exist ONLY for startup
+ * validation and the value-free env report. `.env.example` is the single
+ * documentation surface for every variable and its default.
  */
 
 import "server-only";
@@ -132,6 +149,21 @@ const _e = {
   WEALTH_REGENERATION_ENABLED:       process.env.WEALTH_REGENERATION_ENABLED,
   SECURITY_PRICES_ENABLED:           process.env.SECURITY_PRICES_ENABLED,
   INVESTMENT_IMPORTS_ENABLED:        process.env.INVESTMENT_IMPORTS_ENABLED,
+
+  // ⚠️ QUANTITY_AUTHORITY_MODE — A MONEY SWITCH, not an ordinary feature flag
+  // (V26-QUANTITY-1G; declared here by REVIEW-3 — it was previously undeclared).
+  // Read at call time by lib/investments/quantity-authority.ts
+  // `quantityAuthorityMode()`, which IS wired into historical valuation
+  // (lib/investments/valuation.ts). Values:
+  //   unset / "off" / anything unrecognised → off (byte-identical valuation;
+  //     a typo must never silently enable an experimental money path)
+  //   "compare" → both quantity replays computed, LEGACY used, deltas ledgered
+  //   "adopt"   → the quantity-timeline authority's quantity is USED wherever
+  //     sufficiently supported — this REPOINTS historical quantity replay, i.e.
+  //     it changes money values. Never set in production without the
+  //     compare-mode ledger having been reviewed first.
+  // validateEnv() warns loudly on any non-off value; see .env.example.
+  QUANTITY_AUTHORITY_MODE: process.env.QUANTITY_AUTHORITY_MODE,
 
   // ── AI output enforcement / diagnostics ─────────────────────────────────────
   // AI_OUTPUT_VALIDATION_MODE: shadow | annotate | block; unset/unrecognized ⇒
@@ -306,6 +338,18 @@ export function getEnvReport(): EnvReport {
     keys.push({ key: "RATE_LIMIT_ENABLED", status: "pass", scope: "optional" });
   }
 
+  // QUANTITY_AUTHORITY_MODE — a money switch (see the snapshot comment). Never
+  // fatal, but any non-off value is surfaced as a warn so an experimental
+  // quantity replay can never be silently live.
+  const qam = _e.QUANTITY_AUTHORITY_MODE;
+  if (qam === undefined || qam === "" || qam === "off") {
+    keys.push({ key: "QUANTITY_AUTHORITY_MODE", status: "pass", scope: "optional" });
+  } else if (qam === "compare" || qam === "adopt") {
+    keys.push({ key: "QUANTITY_AUTHORITY_MODE", status: "warn", scope: "optional", note: `quantity authority is "${qam}" — experimental quantity replay is active` });
+  } else {
+    keys.push({ key: "QUANTITY_AUTHORITY_MODE", status: "warn", scope: "optional", note: "unrecognised value — treated as off" });
+  }
+
   // Optional price/FX vendor keys — never fatal. Represented in the report so the
   // ops surface shows whether each external integration is configured. Absent is a
   // warn ("integration disabled / graceful degrade"), never a fail. Names only.
@@ -392,6 +436,24 @@ export function validateEnv(): EnvReport {
     );
   }
 
+  // QUANTITY_AUTHORITY_MODE (REVIEW-3) — a MONEY switch: "adopt" repoints
+  // historical quantity replay inside valuation (lib/investments/
+  // quantity-authority.ts). Never fatal (the reader treats any unrecognised
+  // value as off), but a non-off value must never be silently live.
+  const qam = _e.QUANTITY_AUTHORITY_MODE;
+  if (qam === "compare" || qam === "adopt") {
+    console.warn(
+      `[env] QUANTITY_AUTHORITY_MODE="${qam}" — the experimental quantity-timeline ` +
+      `authority is ${qam === "adopt" ? "ADOPTED into historical valuation (money values can change)" : "computed in compare mode (legacy values still used)"}.` +
+      (isProd ? " This is a PRODUCTION deployment — confirm this is deliberate." : "")
+    );
+  } else if (qam !== undefined && qam !== "" && qam !== "off") {
+    console.warn(
+      `[env] QUANTITY_AUTHORITY_MODE has unrecognised value ${JSON.stringify(qam)} — ` +
+      `treated as "off" (expected "off" | "compare" | "adopt").`
+    );
+  }
+
   // Additive: return the structured report on the success path (no throw).
   return getEnvReport();
 }
@@ -475,48 +537,23 @@ export const env = {
   get COINGECKO_HISTORY_DAYS() { return _e.COINGECKO_HISTORY_DAYS; },
   get OXR_APP_ID()        { return _e.OXR_APP_ID; },
 
-  // ── Investment-history pipeline enablement (documentation mirror) ────────────
-  // Strict "true" semantics, matching each pipeline reader. These do NOT gate the
-  // pipeline (the readers own that) — they answer "is the switch on?" for reports.
-  get isInvestmentObservationsEnabled()   { return _e.INVESTMENT_OBSERVATIONS_ENABLED === "true"; },
-  get isInvestmentEventsEnabled()         { return _e.INVESTMENT_EVENTS_ENABLED === "true"; },
-  get isInvestmentReconstructionEnabled() { return _e.INVESTMENT_RECONSTRUCTION_ENABLED === "true"; },
-  get isWealthRegenerationEnabled()       { return _e.WEALTH_REGENERATION_ENABLED === "true"; },
-  get isSecurityPriceCaptureEnabled()     { return _e.SECURITY_PRICES_ENABLED === "true"; },
-  get isInvestmentImportsEnabled()        { return _e.INVESTMENT_IMPORTS_ENABLED === "true"; },
-  /** Securities price vendor (Tiingo) is available when the key is set (see lib/prices/registry.ts). */
-  get isSecurityPriceVendorEnabled()      { return !!_e.TIINGO_API_KEY; },
-  /** BTC daily-close backfill is available when the CoinGecko key is set. */
-  get isCryptoPriceVendorEnabled()        { return !!_e.COINGECKO_API_KEY; },
-  /** Primary FX provider (Open Exchange Rates) is available when OXR_APP_ID is set;
-   *  absent falls back to the keyless Frankfurter/ECB failover. */
-  get isFxPrimaryEnabled()                { return !!_e.OXR_APP_ID; },
-
-  // ── AI output enforcement mode (documentation mirror) ────────────────────────
-  /** shadow | annotate | block. Unset/unrecognized ⇒ 'annotate' (live default). */
-  get aiOutputValidationMode() {
-    const raw = (_e.AI_OUTPUT_VALIDATION_MODE ?? "annotate").toLowerCase();
-    return raw === "shadow" || raw === "block" ? raw : "annotate";
-  },
-
   // ── Feature flags ─────────────────────────────────────────────────────────
+  // REVIEW-3 flag hygiene: the accessors below are the ONLY flag accessors this
+  // module carries, because they are the only ones with consumers. Every other
+  // flag's truth lives at its own gate function, which reads process.env at
+  // call time (see the FLAG PATTERN note in the module header) and is
+  // documented in .env.example. Deleted here (all were consumer-less duplicate
+  // authorities): isAiEnabled, isEthEnabled, isSolanaEnabled, isCryptoEnabled,
+  // isEmailEnabled, isCaptchaEnabled, aiOutputValidationMode,
+  // isInvestment{Observations,Events,Reconstruction,Imports}Enabled,
+  // isWealthRegenerationEnabled, isSecurityPriceCaptureEnabled,
+  // isSecurityPriceVendorEnabled, isCryptoPriceVendorEnabled, isFxPrimaryEnabled.
   /** Plaid integration is available when both credentials are set. */
   get isPlaidEnabled()    { return !!_e.PLAID_CLIENT_ID && !!_e.PLAID_SECRET; },
-  /** AI chat/advice is available when the OpenAI key is set (see lib/ai/provider.ts). */
-  get isAiEnabled()       { return !!_e.OPENAI_API_KEY; },
-  /** Ethereum on-chain data is available when the Etherscan key is set. */
-  get isEthEnabled()      { return !!_e.ETHERSCAN_API_KEY; },
-  /** Solana on-chain data is available when the Helius key is set. */
-  get isSolanaEnabled()   { return !!_e.HELIUS_API_KEY; },
-  /** Either crypto network is available. */
-  get isCryptoEnabled()   { return !!_e.ETHERSCAN_API_KEY || !!_e.HELIUS_API_KEY; },
-  /** Real email delivery is available when the Resend key is set (see lib/email/providers/resend.ts). */
-  get isEmailEnabled()    { return !!_e.RESEND_API_KEY; },
-  /** CAPTCHA verification is active when the Turnstile secret is set (see lib/captcha.ts).
-   *  When false, verifyCaptchaToken skips and returns true (dev/test/unconfigured). */
-  get isCaptchaEnabled()  { return !!_e.TURNSTILE_SECRET_KEY; },
   /** V25-FINAL-2 — error monitoring (Sentry) is active when the DSN is set. Production
-   *  requires it (PROD_REQUIRED_KEYS); the SDK stays disabled without it elsewhere. */
+   *  requires it (PROD_REQUIRED_KEYS); the SDK stays disabled without it elsewhere.
+   *  Kept (despite no runtime consumer) as the discoverability contract pinned by
+   *  lib/monitoring/sentry-options.test.ts. */
   get isErrorMonitoringConfigured() { return !!_e.NEXT_PUBLIC_SENTRY_DSN; },
 
   // ── Runtime ───────────────────────────────────────────────────────────────

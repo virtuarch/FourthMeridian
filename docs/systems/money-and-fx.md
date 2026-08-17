@@ -31,6 +31,17 @@ Fourth Meridian is a first-class multi-currency system built so that new provide
 
 Crypto is modeled as an **asset with a fiat valuation**, not as a simple cash currency. Its valuation and bucket rules live in [historical-data.md](./historical-data.md) (the crypto bucket split) and [../systems/investments.md](../systems/investments.md).
 
+### The BTC ingest valuation boundary (REVIEW-3, matrix rows 30/33)
+
+`lib/crypto/btc-sync.ts` writes `FinancialAccount.balance` (and the wallet's `Holding.value`) in `"USD"` from an **undated mempool.space spot quote**, deliberately **bypassing `convertMoney`**. That is a bounded, documented exemption, not a breach, under this contract (stated in code at the write site):
+
+1. **Native quantity is canonical.** `FinancialAccount.nativeBalance` (BTC, from confirmed on-chain sats) is the stored financial fact; the sync asserts its coherence before anything derives from it. The observation spine records the same quantity.
+2. **The USD write is valuation-derived presentation, not FX truth.** It is quantity × spot quote — a price×quantity **valuation** of an asset, not a currency conversion, which is why `convertMoney` (a fiat FX instrument) is not involved. No consumer may treat the column as a dated FX fact. Historical surfaces never read it back: they re-value `nativeBalance` against the dated price archive (`lib/crypto/historical-crypto-valuation.core.ts` / `btc-price.ts`).
+3. **The valuation instant/source is a documented limit.** The spot endpoint supplies no quote timestamp and `FinancialAccount` has no valuation-provenance column (`balanceLastUpdatedAt` means the *institution's* balance clock and is not reused). `lastUpdated` — written in the same run as the quote fetch — is the closest recorded instant. Adding a real provenance column is schema work owned by the **crypto valuation spine completion** workstream, not a thing to improvise.
+4. **Cent rounding at this boundary is exempt from the no-rounding rule.** D-4's no-rounding doctrine governs the read-time conversion core, where rounding would compound through convert-then-sum. `computeUsdBalance` rounds a *write-time presentation figure* to cents so the balance/Holding upserts stay idempotent under float dust; the canonical `nativeBalance` is stored unrounded, so nothing financial is lost. (`lib/crypto/btc-explorer.ts` documents this at the function.)
+
+The unification of the three independent BTC→USD paths (ingest spot valuation above, `historical-crypto-valuation.core.ts`, `btc-price.ts` archive reads) onto one crypto valuation authority is deliberately **out of scope** for REVIEW-3 and is tracked as the named future workstream above.
+
 ## Conversion mechanics (where the rules live in code)
 
 - The aggregation chokepoint is `sumBalances()` / `classifyAccounts()` (`lib/account-classifier.ts`) — conversion isolates there rather than being sprayed across surfaces.

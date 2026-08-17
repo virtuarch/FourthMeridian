@@ -18,6 +18,29 @@
  * Pure core (isHoldingEligible / mapPlaidHoldingToRow / planHoldingSync) is
  * unit-testable without a DB; the thin DB binding applies the plan in one
  * transaction so a failure never deletes or corrupts valid existing rows.
+ *
+ * ── REVIEW-3 — reader status, and why this writer is deliberately KEPT ───────
+ * As of REVIEW-3 the brokerage `Holding` rows this writes have NO production
+ * reader: the only production Holding readers are the crypto-only bridge
+ * (lib/investments/legacy-crypto-holdings.ts, walletChain != null — never a
+ * brokerage row) and btc-sync's own upsert; the general getHoldings reader
+ * (lib/data/accounts.ts) was deleted this wave. The writer stays anyway,
+ * deliberately, because:
+ *   1. Its SyncCounts ARE the user-facing import evidence — `holdingsImported`
+ *      (link, lib/plaid/exchangeToken.ts), `holdingsUpdated` (refresh +
+ *      /api/plaid/investments/enable) and the per-account HOLDINGS coverage
+ *      facts (DF-2B/DF-2E) all derive from this reconciliation of the REAL
+ *      Plaid payload. The counts report what Plaid returned and was processed,
+ *      so they are honest regardless of who reads the table.
+ *   2. `Holding` remains the current-state projection the flag-off /rollback
+ *      posture falls back to; deleting the brokerage write while
+ *      INVESTMENT_OBSERVATIONS_ENABLED is still a kill switch would make that
+ *      switch one-way.
+ * DELETION CONDITION: retire this writer (and report the enable/refresh counts
+ * from the observation path) when the PositionObservation spine is declared the
+ * sole current-state authority and the Holding table's remaining readers are
+ * zero — tracked as the "crypto/holdings spine completion" workstream (P2-6
+ * close-out), not this program.
  */
 
 import type { Holding as PlaidHolding, Security } from "plaid";

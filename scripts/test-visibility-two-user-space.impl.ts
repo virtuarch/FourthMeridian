@@ -71,8 +71,13 @@ import { getDomainManifest } from '@/lib/ai/domain-manifest';
 import { runSignalDetectors } from '@/lib/ai/signals';
 // KD-15: the real UI list read path + the predicate the account-modal route uses.
 import { getTransactions } from '@/lib/data/transactions';
-// KD-19: the real UI account + holdings read paths.
-import { getAccounts, getHoldings } from '@/lib/data/accounts';
+// KD-19: the real UI account read path.
+import { getAccounts } from '@/lib/data/accounts';
+// KD-19 (REVIEW-3): the general legacy Holding reader (lib/data/accounts.ts
+// getHoldings) was DELETED — the sole remaining production Holding read path is
+// the crypto-only wallet bridge, which enforces the same per-item FULL detail
+// gate. The holding-canary block below exercises IT instead.
+import { readLegacyCryptoWalletPositions } from '@/lib/investments/legacy-crypto-holdings';
 import { grantsTransactionDetail } from '@/lib/ai/visibility';
 import { FinanceDomains } from '@/lib/ai/types';
 import type {
@@ -95,13 +100,15 @@ const CANARY_W = `LEAKCANARYW ${RUN_ID}`;
 
 // KD-19 — per-account institution canaries (identifying metadata that
 // BALANCE_ONLY / SUMMARY_ONLY must redact from getAccounts()), and per-position
-// holding-symbol canaries (per-item detail getHoldings() must gate on FULL).
+// holding-symbol canaries (per-item detail on the wallet Holding bridge must
+// gate on FULL — the same KD-19 invariant getHoldings enforced before REVIEW-3
+// deleted it).
 const INST_X = `INSTCANARYX${RUN_ID}`;
 const INST_Y = `INSTCANARYY${RUN_ID}`;
 const INST_Z = `INSTCANARYZ${RUN_ID}`;
 const INST_W = `INSTCANARYW${RUN_ID}`;
-const HOLD_X = `HOLDCANARYX${RUN_ID}`; // on FULL account X → must appear
-const HOLD_Y = `HOLDCANARYY${RUN_ID}`; // on BALANCE_ONLY account Y → must not
+const HOLD_X = `HOLDCANARYX${RUN_ID}`; // on FULL wallet account V → must appear
+const HOLD_Y = `HOLDCANARYY${RUN_ID}`; // on BALANCE_ONLY wallet account U → must not
 
 const Y_BALANCE = 7777.77;
 
@@ -227,13 +234,37 @@ async function main(): Promise<void> {
     ],
   });
 
-  // KD-19 — one position on the FULL account X (must surface in getHoldings)
-  // and one on the BALANCE_ONLY account Y (positions are per-item detail — must
-  // NOT surface, even though Y's balance is still exposed via getAccounts).
+  // KD-19 (REVIEW-3) — the general getHoldings reader is deleted; the remaining
+  // production Holding read path is the crypto-only wallet bridge
+  // (readLegacyCryptoWalletPositions, walletChain-gated). Seed two dedicated
+  // WALLET accounts so the bridge's per-item FULL detail gate is exercised on
+  // the same invariant: a position on the FULL wallet V must surface; a
+  // position on the BALANCE_ONLY wallet U must NOT (its balance still may).
+  const mkWallet = (name: string, addr: string) =>
+    prisma.financialAccount.create({
+      data: {
+        ownerType:     AccountOwnerType.USER,
+        ownerUserId:   userB.id,
+        name,
+        type:          AccountType.crypto,
+        institution:   'Self-custody',
+        balance:       0,
+        walletChain:   'bitcoin',
+        walletAddress: addr,
+      },
+    });
+  const [acctV, acctU] = await Promise.all([
+    mkWallet(`KD1 V ${RUN_ID}`, `bc1qkd1v${RUN_ID}`),
+    mkWallet(`KD1 U ${RUN_ID}`, `bc1qkd1u${RUN_ID}`),
+  ]);
+  await Promise.all([
+    mkLink(acctV.id, VisibilityLevel.FULL,         ShareStatus.ACTIVE),
+    mkLink(acctU.id, VisibilityLevel.BALANCE_ONLY, ShareStatus.ACTIVE),
+  ]);
   await prisma.holding.createMany({
     data: [
-      { financialAccountId: acctX.id, symbol: HOLD_X, name: HOLD_X, quantity: 1, price: 10, value: 10 },
-      { financialAccountId: acctY.id, symbol: HOLD_Y, name: HOLD_Y, quantity: 1, price: 20, value: 20 },
+      { financialAccountId: acctV.id, symbol: HOLD_X, name: HOLD_X, quantity: 1, price: 10, value: 10 },
+      { financialAccountId: acctU.id, symbol: HOLD_Y, name: HOLD_Y, quantity: 1, price: 20, value: 20 },
     ],
   });
 
@@ -396,18 +427,20 @@ async function main(): Promise<void> {
     'REVOKED link account leaked into the UI account list',
   );
 
-  // ── 8. KD-19 — UI holdings read path (positions are per-item detail) ───────
-  const holdings   = await getHoldings({ spaceId: space.id });
+  // ── 8. KD-19 — wallet Holding bridge (positions are per-item detail) ───────
+  // REVIEW-3: getHoldings was deleted; the crypto-only bridge is the remaining
+  // production Holding read path and must enforce the identical FULL gate.
+  const holdings   = await readLegacyCryptoWalletPositions({ spaceId: space.id }, prisma);
   const holdingsUi = JSON.stringify(holdings).toLowerCase();
   check(
-    'getHoldings() surfaces positions from FULL account X',
+    'wallet Holding bridge surfaces positions from FULL wallet V',
     holdingsUi.includes(HOLD_X.toLowerCase()),
-    'FULL-visibility position missing — fix is over-redacting holdings',
+    'FULL-visibility wallet position missing — fix is over-redacting holdings',
   );
   check(
-    'getHoldings() leaks no positions from BALANCE_ONLY account Y',
+    'wallet Holding bridge leaks no positions from BALANCE_ONLY wallet U',
     !holdingsUi.includes(HOLD_Y.toLowerCase()),
-    'BALANCE_ONLY position leaked into the UI holdings list',
+    'BALANCE_ONLY wallet position leaked through the crypto bridge',
   );
 }
 

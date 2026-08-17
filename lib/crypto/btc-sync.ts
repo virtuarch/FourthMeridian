@@ -159,6 +159,10 @@ const BTC_ASSET_NAME = "Bitcoin";
  *
  * Best-effort/non-fatal: the balance write is what net worth reads this slice,
  * so a Holding failure is logged and swallowed rather than failing the sync.
+ *
+ * REVIEW-3 — same money contract as the FinancialAccount write below:
+ * `quantity` (native BTC) is the canonical fact; `price`/`value`/`currency:"USD"`
+ * are valuation-derived presentation from an undated spot quote, NOT FX truth.
  */
 async function writeBtcHolding(
   financialAccountId: string,
@@ -668,6 +672,15 @@ export async function syncBtcWallet(
   //    Until an xpub's discovery completes, the account is "pending" (partial),
   //    not "synced" — honest status while more addresses are still being found.
   const nativeBalance = satsToBtc(sats);
+  // REVIEW-3 (BTC money contract, point 1) — the native quantity is the
+  // canonical stored fact; everything USD below is DERIVED from it. Assert its
+  // coherence before anything derives from it: a provider returning garbage
+  // must fail the sync, not write a fabricated quantity and valuation.
+  if (!Number.isFinite(nativeBalance) || nativeBalance < 0) {
+    const reason = `incoherent native balance from provider (sats=${sats})`;
+    await recordWalletSyncIssue(accountId, "balance", reason);
+    return { accountId, ok: false, stage: "balance", reason };
+  }
   const balanceUsd = computeUsdBalance(nativeBalance, priceUsd);
 
   // v2 — one BTC Holding (summed). v3 — transactions aggregated across addresses,
@@ -729,6 +742,30 @@ export async function syncBtcWallet(
 
   const ledger = await reconcileWalletLedgerForAccount(accountId, nativeBalance);
 
+  // ── THE BTC MONEY CONTRACT (REVIEW-3, row 30/33 — read before touching) ─────
+  //
+  //  1. NATIVE QUANTITY IS CANONICAL. `nativeBalance` (BTC, from confirmed
+  //     on-chain sats) is the stored financial FACT for this wallet. It is the
+  //     value the ledger reconciliation checks, the quantity the observation
+  //     spine records, and the only number here with provenance.
+  //  2. THE USD FIGURE IS VALUATION-DERIVED PRESENTATION, NOT FX TRUTH.
+  //     `balance`/`currency:"USD"` is quantity × an UNDATED mempool.space spot
+  //     quote fetched in this same run (`priceUsd`), deliberately BYPASSING
+  //     convertMoney: BTC is an asset with a fiat valuation, not a cash
+  //     currency, so this is a price×quantity valuation, not a currency
+  //     conversion (docs/systems/money-and-fx.md). Nothing downstream may
+  //     treat this column as a dated FX fact — historical crypto valuation
+  //     re-values from `nativeBalance` × the dated price archive
+  //     (historical-crypto-valuation.core.ts), never from this column.
+  //  3. VALUATION INSTANT / SOURCE — DOCUMENTED LIMIT. The quote's own
+  //     timestamp is not supplied by the spot endpoint and FinancialAccount has
+  //     NO column for a valuation source or instant; `lastUpdated` (written
+  //     below, same run as the price fetch) is the closest recorded instant,
+  //     and `balanceLastUpdatedAt` is deliberately NOT reused — it is typed as
+  //     the INSTITUTION's balance clock (D4) and freshness surfaces consume it
+  //     with that meaning. Adding a provenance column is schema work owned by
+  //     the "crypto valuation spine completion" workstream, NOT this program —
+  //     do not smuggle the instant into a column that means something else.
   await db.financialAccount.update({
     where: { id: accountId },
     data: {

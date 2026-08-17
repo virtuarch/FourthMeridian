@@ -12,11 +12,13 @@
  *     KNOWN-foreign miss): a KNOWN foreign currency with no acceptable rate is
  *     UNAVAILABLE. It must not be relabeled as the target — "¥1,000,000" must
  *     never surface (or sum) as "$1,000,000 estimated". So convertMoney returns
- *     `amount: 0` (contributes nothing to any target total — exclusion by
- *     construction) with the untouched native value on `native` for honest
- *     display, and `estimated: true` / `conversion: null` so it reads as
- *     "unavailable". Null-residue (currency unknown) is NOT a false unit —
- *     nothing to mislabel — so it keeps the legacy assume-target passthrough.
+ *     `amount: null` (there is NO valid target-currency value — deliberately
+ *     not 0, so every consumer must decide what unavailable means for its
+ *     surface; convertAndSum excludes the member and counts it in `excluded`)
+ *     with the untouched native value on `native` for honest display, and
+ *     `estimated: true` / `conversion: null` so it reads as "unavailable".
+ *     Null-residue (currency unknown) is NOT a false unit — nothing to
+ *     mislabel — so it keeps the legacy assume-target passthrough.
  *   - NO ROUNDING (plan D-4): full f64 precision end to end; display rounding
  *     belongs to the existing formatting boundary (lib/currency.ts /
  *     lib/format.ts). This module never formats (plan D-5).
@@ -120,10 +122,11 @@ export function convertMoney(money: Money, dateISO: string, ctx: ConversionConte
  * of the members (taint propagation) — an aggregate is only exact when every
  * member converted exactly.
  *
- * V25-FINAL-1 — an UNAVAILABLE member (known foreign currency, no rate) now
- * contributes `amount: 0`, so its native magnitude can never inflate the total;
- * `excluded` counts how many were dropped this way, so the caller can disclose
- * that the total is a partial sum over the convertible members.
+ * V25-FINAL-1 — an UNAVAILABLE member (known foreign currency, no rate) carries
+ * `amount: null` and is SKIPPED (it contributes nothing — neither its native
+ * magnitude nor a fake 0); `excluded` counts how many were dropped this way, so
+ * the caller can disclose that the total is a partial sum over the convertible
+ * members.
  */
 export function convertAndSum(items: readonly DatedMoney[], ctx: ConversionContext): ConvertedTotal {
   let amount = 0;

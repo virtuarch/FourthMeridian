@@ -48,6 +48,7 @@
  */
 
 import { computeConcentration } from "@/lib/investments/concentration";
+import { excludeCanonicalAccounts } from "@/lib/investments/canonical-precedence.core";
 import type {
   HoldingsSummaryData,
   HoldingPosition,
@@ -105,17 +106,18 @@ export interface CryptoHoldingsInput {
 
 /**
  * CANONICAL WINS — exclude legacy-bridge crypto positions whose custody account is
- * ALREADY represented on the canonical position spine. The dedup boundary is the
- * FinancialAccount (custody) identity, NOT the asset symbol: two DIFFERENT BTC
- * wallets both remain valid positions, but the SAME wallet can never be counted
- * from both `getCurrentPositions` and the legacy Holding bridge. Pure; the caller
- * (holdings.ts) supplies the canonical account-id set from getCurrentPositions().rows.
+ * ALREADY represented on the canonical position spine. REVIEW-3: the rule itself
+ * now lives in ONE place, lib/investments/canonical-precedence.core.ts, shared
+ * with the data Export's merge (which previously applied the OPPOSITE
+ * precedence). This export keeps the binding's (holdings.ts) name stable and
+ * delegates. Pure; the caller supplies the canonical account-id set from
+ * getCurrentPositions().rows.
  */
 export function excludeCanonicalCryptoAccounts<T extends { financialAccountId: string }>(
   bridgePositions:     readonly T[],
   canonicalAccountIds: ReadonlySet<string>,
 ): T[] {
-  return bridgePositions.filter((p) => !canonicalAccountIds.has(p.financialAccountId));
+  return excludeCanonicalAccounts(bridgePositions, canonicalAccountIds);
 }
 
 const EPS = 1e-6;
