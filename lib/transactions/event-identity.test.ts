@@ -321,6 +321,13 @@ test("only the write authority touches the L8 tables", () => {
     "lib/transactions/event-write.ts",
     "scripts/backfill-event-identity.ts",
     "scripts/audit-event-identity.ts",
+    // v2.6-EVENT-2 — a one-off repair of L8 DATA inherently writes L8 tables, and
+    // the canonical writer has no delete API BY DESIGN (observations are
+    // append-only; a probe two tests above bans `transactionObservation.delete`
+    // inside event-write.ts itself). This script deletes only rows that satisfy
+    // an objective artifact predicate, and it re-derives every touched event
+    // through `reprojectEvent` rather than expressing a projection of its own.
+    "scripts/repair-event-identity-adoption-artifacts.ts",
   ]);
   // `prisma` is in scope so the SEED is held to the same rule as ingest.
   const roots = ["lib", "app", "components", "jobs", "scripts", "prisma"];

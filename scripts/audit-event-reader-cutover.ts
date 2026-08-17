@@ -21,7 +21,7 @@ import { serializeTransactionRow } from "@/lib/transactions/serialize";
 import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { totalDebtPaid } from "@/lib/transactions/debt-payment-authority";
 import { isIncome, isTransfer, isCostFlow, isRefund } from "@/lib/transactions/flow-predicates";
-import { eventProjectionWhere, findDuplicateEvents } from "@/lib/transactions/event-projection";
+import { eventProjectionWhere, findDuplicateEvents, eventsWithMultipleLiveRows } from "@/lib/transactions/event-projection";
 import type { Transaction } from "@/types";
 
 const bar = (s: string) => console.log(`\n${"═".repeat(78)}\n${s}\n${"═".repeat(78)}`);
@@ -162,13 +162,12 @@ async function main() {
     where: { id: { in: multiObs.map((o) => o.transactionId).filter((x): x is string => x != null) }, deletedAt: null },
     select: { id: true },
   })).map((r) => r.id));
-  const liveByEvent = new Map<string, number>();
-  for (const o of multiObs) {
-    if (o.transactionId && liveIds.has(o.transactionId)) {
-      liveByEvent.set(o.eventId, (liveByEvent.get(o.eventId) ?? 0) + 1);
-    }
-  }
-  const overProjected = multiEvents.filter((e) => (liveByEvent.get(e.id) ?? 0) > 1);
+  // v2.6-EVENT-2 — DISTINCT live rows, not observations-with-a-live-row. A DF-4
+  // re-key legitimately observes ONE row twice, and the invariant is about rows.
+  // Shared with audit-event-identity's INV-4 so the two cannot drift; pinned in
+  // lib/transactions/event-live-row-count.test.ts.
+  const overProjectedIds = new Set(eventsWithMultipleLiveRows(multiObs, liveIds));
+  const overProjected = multiEvents.filter((e) => overProjectedIds.has(e.id));
   check("multi-observation events project at most ONE live row each",
     overProjected.length === 0, overProjected.slice(0, 3).map((e) => e.id).join("; "));
 

@@ -14,6 +14,7 @@
 import { db } from "@/lib/db";
 import { createHash } from "node:crypto";
 import { projectEvent, type ObservationFacts } from "@/lib/transactions/event-identity";
+import { eventsWithMultipleLiveRows } from "@/lib/transactions/event-projection";
 
 const bar = (s: string) => console.log(`\n${"═".repeat(78)}\n${s}\n${"═".repeat(78)}`);
 const pct = (n: number, d: number) => (d === 0 ? "—" : `${((100 * n) / d).toFixed(1)}%`);
@@ -70,14 +71,20 @@ async function main() {
   check("INV-5 observation keys are unique",
     new Set(observations.map((o) => o.observationKey)).size === observations.length);
   // 4 — at most one LIVE row per event: pending and posted cannot both count.
-  const liveByEvent = new Map<string, number>();
-  for (const o of observations) {
-    const t = o.transactionId ? T.get(o.transactionId) : undefined;
-    if (t && !t.deletedAt) liveByEvent.set(o.eventId, (liveByEvent.get(o.eventId) ?? 0) + 1);
-  }
-  const doubleCount = [...liveByEvent.entries()].filter(([, n]) => n > 1);
+  //
+  // v2.6-EVENT-2 — this counted OBSERVATIONS whose row is live, not distinct
+  // ROWS, so an event that observed ONE row twice scored 2 and failed a check
+  // about how many rows it has. That is a legitimate state: a DF-4 re-key
+  // (Plaid issues a new `transaction_id` for a row we already hold) reuses the
+  // row and records a second observation of it. The invariant is unchanged —
+  // two live rows would double-count money — only the counter is corrected, and
+  // the correction is pinned in lib/transactions/event-live-row-count.test.ts.
+  const liveIds = new Set(
+    [...T.entries()].filter(([, t]) => !t.deletedAt).map(([id]) => id),
+  );
+  const doubleCount = eventsWithMultipleLiveRows(observations, liveIds);
   check("INV-4 no event has two LIVE transaction rows", doubleCount.length === 0,
-    doubleCount.slice(0, 3).map(([e, n]) => `${e}: ${n}`).join("; "));
+    doubleCount.slice(0, 3).join("; "));
 
   // Re-derive every projection and compare — the event state must be a pure
   // function of its observations, or it has drifted.

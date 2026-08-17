@@ -24,6 +24,13 @@ import { db } from "@/lib/db";
 export type TransactionFingerprintCandidate = {
   id: string;
   plaidTransactionId: string | null;
+  /**
+   * v2.6-EVENT-2 — the logical event this candidate already belongs to, so a
+   * caller can tell whether adopting it would OVERRIDE stronger provider
+   * identity evidence (a `pending_transaction_id` naming a different event).
+   * Additive: the CSV importer ignores it.
+   */
+  transactionEventId?: string | null;
 };
 
 /**
@@ -93,7 +100,7 @@ export async function findByFingerprint(
     // this helper. See
     // docs/initiatives/d2/investigations/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §3.
     where:  { financialAccountId, date, amount, pending, deletedAt: null },
-    select: { id: true, merchant: true, description: true, plaidTransactionId: true },
+    select: { id: true, merchant: true, description: true, plaidTransactionId: true, transactionEventId: true },
   });
   if (candidates.length === 0) return null;
 
