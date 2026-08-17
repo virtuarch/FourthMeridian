@@ -1,4 +1,5 @@
 "use client";
+import { todayUTCISO } from "@/lib/time/clock";
 
 import { formatCurrency } from "@/lib/format";
 import { formatDate } from "@/lib/format";
@@ -19,7 +20,7 @@ interface Props {
  * day-one state with a real number rather than rendering a near-empty chart.
  */
 export function ChartFirstDayPlaceholder({ value, date, height = 180 }: Props) {
-  const isToday = date === new Date().toISOString().split("T")[0];
+  const isToday = date === todayUTCISO(); // B-6 — THE clock seam
 
   return (
     <div

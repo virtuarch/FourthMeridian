@@ -9,6 +9,8 @@
  * loading/error UI; this returns a plain result.
  */
 
+import { todayUTCISO } from "@/lib/time/clock"; // B-6 — THE clock seam
+
 export type DownloadResult = { ok: true } | { ok: false; error: string };
 
 export async function downloadDataExport(): Promise<DownloadResult> {
@@ -22,7 +24,7 @@ export async function downloadDataExport(): Promise<DownloadResult> {
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a");
     a.href     = url;
-    a.download = `fourth-meridian-export-${new Date().toISOString().slice(0, 10)}.zip`;
+    a.download = `fourth-meridian-export-${todayUTCISO()}.zip`;
     document.body.appendChild(a);
     a.click();
     a.remove();

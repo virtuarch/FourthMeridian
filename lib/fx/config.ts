@@ -37,6 +37,16 @@ export function isSupportedCurrency(code: string): boolean {
 
 // ── Pure ISO calendar-date helpers (UTC) ─────────────────────────────────────
 // Shared by service.ts (walk-back window) and archive.ts (closed-date guard).
+// REVIEW-3 B-6 — the CLOCK functions delegate to lib/time/clock.ts (the one
+// chronology seam; pure, zero-import, so this module stays Prisma-free and
+// test-safe). The fx-specific validators below stay here: they are doctrine
+// guards with fx-prefixed errors, not clocks.
+
+import { toISODateUTC, yesterdayUTCISO } from "@/lib/time/clock";
+
+// Re-exported so every existing fx importer keeps its import path; the
+// implementation lives in lib/time and nowhere else (clock-authority guard).
+export { toISODateUTC, yesterdayUTCISO };
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -47,21 +57,11 @@ export function assertISODate(s: string): void {
   }
 }
 
-/** UTC calendar date of a Date instant, as "YYYY-MM-DD". */
-export function toISODateUTC(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-
 /** ISO date minus n days (UTC arithmetic). */
 export function minusDaysISO(dateISO: string, n: number): string {
   assertISODate(dateISO);
   const t = Date.parse(`${dateISO}T00:00:00Z`) - n * 86_400_000;
   return toISODateUTC(new Date(t));
-}
-
-/** Yesterday's UTC calendar date — the newest date the append-only archive accepts (plan D4/D8). */
-export function yesterdayUTCISO(now: Date = new Date()): string {
-  return minusDaysISO(toISODateUTC(now), 1);
 }
 
 /**

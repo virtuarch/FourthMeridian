@@ -45,10 +45,9 @@ function ymd(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** Today (UTC), YYYY-MM-DD. The seam's default clock. */
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
+// REVIEW-3 B-6 — the seam's default clock is THE clock (lib/time/clock.ts);
+// this module no longer carries a private "today" implementation.
+import { todayUTCISO } from "@/lib/time/clock";
 
 /** The scope of a current-position read. userId/owner scope is intentionally NOT
  *  offered — Personal is itself a Space, and no named consumer reads position
@@ -61,7 +60,7 @@ export interface CurrentPositionsOptions {
   /**
    * The seam's injected "today" clock (YYYY-MM-DD) — for determinism / tests, and
    * so a caller can value CURRENT positions and an all-visibility aggregate at the
-   * exact same instant (the AI holdings assembler's use; always todayIso() in
+   * exact same instant (the AI holdings assembler's use; always todayUTCISO() in
    * production). It is NOT a historical portal: this seam has no compare/flows/
    * reconciliation, and a genuine as-of / historical read is an A10 caller
    * (loadInvestmentsHistory / getInvestmentsTimeMachine), never this. PCS-1B pins
@@ -95,7 +94,7 @@ export async function getCurrentPositions(
   options?: CurrentPositionsOptions,
 ): Promise<CurrentPositions> {
   const client = options?.client ?? db;
-  const asOf = options?.asOf ?? todayIso();
+  const asOf = options?.asOf ?? todayUTCISO();
   const asOfDate = new Date(`${asOf}T00:00:00.000Z`);
   const scopeArgs = "spaceId" in scope
     ? { spaceId: scope.spaceId }
