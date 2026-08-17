@@ -35,22 +35,33 @@ function acct(p: Partial<InvestmentAccountInput>): InvestmentAccountInput {
     investmentsConsent: p.investmentsConsent ?? "ENABLED",
     itemStatus: p.itemStatus ?? "ACTIVE", itemErrorCode: p.itemErrorCode ?? null,
     lastSyncedAt: p.lastSyncedAt ?? null, positionCount: p.positionCount ?? 0,
+    positionSignalAvailable: p.positionSignalAvailable ?? true,
   };
 }
 
 console.log("deriveInvestmentAccountState — precedence + honesty");
 check("crypto/wallet → wallet (before positionCount is consulted)",
-  deriveInvestmentAccountState({ type: "crypto", provider: "WALLET", investmentsConsent: null, itemStatus: null, positionCount: 0 }) === "wallet");
+  deriveInvestmentAccountState({ type: "crypto", provider: "WALLET", investmentsConsent: null, itemStatus: null, positionCount: 0, positionSignalAvailable: true }) === "wallet");
 check("plaid ERROR beats holdings → error",
-  deriveInvestmentAccountState({ type: "investment", provider: "PLAID", investmentsConsent: "ENABLED", itemStatus: "ERROR", positionCount: 5 }) === "error");
+  deriveInvestmentAccountState({ type: "investment", provider: "PLAID", investmentsConsent: "ENABLED", itemStatus: "ERROR", positionCount: 5, positionSignalAvailable: true }) === "error");
 check("plaid NEEDS_REAUTH → needs_reauth",
-  deriveInvestmentAccountState({ type: "investment", provider: "PLAID", investmentsConsent: "ENABLED", itemStatus: "NEEDS_REAUTH", positionCount: 5 }) === "needs_reauth");
+  deriveInvestmentAccountState({ type: "investment", provider: "PLAID", investmentsConsent: "ENABLED", itemStatus: "NEEDS_REAUTH", positionCount: 5, positionSignalAvailable: true }) === "needs_reauth");
 check("consent required (even with 0 holdings) → consent_required",
-  deriveInvestmentAccountState({ type: "investment", provider: "PLAID", investmentsConsent: "CONSENT_REQUIRED", itemStatus: "ACTIVE", positionCount: 0 }) === "consent_required");
+  deriveInvestmentAccountState({ type: "investment", provider: "PLAID", investmentsConsent: "CONSENT_REQUIRED", itemStatus: "ACTIVE", positionCount: 0, positionSignalAvailable: true }) === "consent_required");
 check("enabled + positions → holdings",
-  deriveInvestmentAccountState({ type: "investment", provider: "PLAID", investmentsConsent: "ENABLED", itemStatus: "ACTIVE", positionCount: 3 }) === "holdings");
+  deriveInvestmentAccountState({ type: "investment", provider: "PLAID", investmentsConsent: "ENABLED", itemStatus: "ACTIVE", positionCount: 3, positionSignalAvailable: true }) === "holdings");
 check("enabled + no positions → zero_holdings (NOT collapsed to consent)",
-  deriveInvestmentAccountState({ type: "investment", provider: "PLAID", investmentsConsent: "ENABLED", itemStatus: "ACTIVE", positionCount: 0 }) === "zero_holdings");
+  deriveInvestmentAccountState({ type: "investment", provider: "PLAID", investmentsConsent: "ENABLED", itemStatus: "ACTIVE", positionCount: 0, positionSignalAvailable: true }) === "zero_holdings");
+
+console.log("REVIEW-3 — a disabled observation pipeline is not an empty portfolio");
+check("signal off + zero count → positions_unknown (NEVER zero_holdings)",
+  deriveInvestmentAccountState({ type: "investment", provider: "PLAID", investmentsConsent: "ENABLED", itemStatus: "ACTIVE", positionCount: 0, positionSignalAvailable: false }) === "positions_unknown");
+check("signal off but positions previously observed → still holdings (evidence beats the switch)",
+  deriveInvestmentAccountState({ type: "investment", provider: "PLAID", investmentsConsent: "ENABLED", itemStatus: "ACTIVE", positionCount: 2, positionSignalAvailable: false }) === "holdings");
+check("signal off + connection error → error still wins (health precedence unchanged)",
+  deriveInvestmentAccountState({ type: "investment", provider: "PLAID", investmentsConsent: "ENABLED", itemStatus: "ERROR", positionCount: 0, positionSignalAvailable: false }) === "error");
+check("wallet accounts unaffected by the Plaid observation switch",
+  deriveInvestmentAccountState({ type: "crypto", provider: "WALLET", investmentsConsent: null, itemStatus: null, positionCount: 0, positionSignalAvailable: false }) === "wallet");
 
 console.log("buildInvestmentAccountView — canonical count → state");
 const withPositions = buildInvestmentAccountView(acct({ positionCount: 2 }));

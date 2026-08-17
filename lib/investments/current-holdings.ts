@@ -44,6 +44,15 @@ export interface InvestmentAccountInput {
    * present).
    */
   positionCount:      number;
+  /**
+   * REVIEW-3 honesty — whether the canonical position signal is being CAPTURED
+   * on this deployment (INVESTMENT_OBSERVATIONS_ENABLED, via
+   * investmentObservationsEnabled()). When false, a positionCount of 0 does NOT
+   * mean "Plaid returned no positions" — it means the observation pipeline is
+   * switched off and presence is unknowable. The derivation reports that as
+   * `positions_unknown`, never as `zero_holdings`.
+   */
+  positionSignalAvailable: boolean;
 }
 
 /**
@@ -53,7 +62,8 @@ export interface InvestmentAccountInput {
  */
 export type InvestmentAccountState =
   | "holdings"          // positions exist → render them
-  | "zero_holdings"     // consented/synced but Plaid returned no positions
+  | "zero_holdings"     // consented/synced AND the position signal is live — Plaid genuinely reported no positions
+  | "positions_unknown" // REVIEW-3 — observation capture is DISABLED on this deployment; presence is unknowable, NOT empty
   | "consent_required"  // supported, user must Enable Investments
   | "needs_reauth"      // Plaid item needs reconnection
   | "error"             // Plaid item is in an error state
@@ -74,7 +84,7 @@ export function deriveInvestmentAccountState(
   input: Pick<
     InvestmentAccountInput,
     "type" | "provider" | "investmentsConsent" | "itemStatus"
-  > & { positionCount: number },
+  > & { positionCount: number; positionSignalAvailable: boolean },
 ): InvestmentAccountState {
   // Self-custody / crypto accounts have no Plaid Investments consent concept.
   if (input.provider === "WALLET" || input.type === "crypto") return "wallet";
@@ -85,17 +95,23 @@ export function deriveInvestmentAccountState(
   // Supported but not yet consented — the Enable Investments path.
   if (input.investmentsConsent === "CONSENT_REQUIRED") return "consent_required";
 
-  return input.positionCount > 0 ? "holdings" : "zero_holdings";
+  if (input.positionCount > 0) return "holdings";
+
+  // REVIEW-3 — with observation capture disabled, a zero count is an ABSENT
+  // SIGNAL, not evidence that Plaid returned no positions. "zero_holdings" is
+  // only claimable when the pipeline that would have recorded positions is on.
+  return input.positionSignalAvailable ? "zero_holdings" : "positions_unknown";
 }
 
 /** Derive connection state for one account from its canonical position count. */
 export function buildInvestmentAccountView(input: InvestmentAccountInput): InvestmentAccountView {
   const state = deriveInvestmentAccountState({
-    type:               input.type,
-    provider:           input.provider,
-    investmentsConsent: input.investmentsConsent,
-    itemStatus:         input.itemStatus,
-    positionCount:      input.positionCount,
+    type:                    input.type,
+    provider:                input.provider,
+    investmentsConsent:      input.investmentsConsent,
+    itemStatus:              input.itemStatus,
+    positionCount:           input.positionCount,
+    positionSignalAvailable: input.positionSignalAvailable,
   });
 
   return {

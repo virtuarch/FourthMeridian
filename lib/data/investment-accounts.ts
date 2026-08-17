@@ -24,6 +24,9 @@ import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
 import { getAccounts } from "@/lib/data/accounts";
 import { countCurrentPositionsByAccount } from "@/lib/investments/current-positions";
+// REVIEW-3 — the ONE gate function for the observation pipeline; consulted so a
+// disabled pipeline is reported as positions_unknown, never as zero_holdings.
+import { investmentObservationsEnabled } from "@/lib/investments/position-capture";
 import {
   buildInvestmentAccountsView,
   type InvestmentAccountInput,
@@ -105,6 +108,9 @@ export async function getInvestmentAccountsView(
       itemErrorCode:      item?.errorCode ?? null,
       lastSyncedAt:       item?.lastSyncedAt ? item.lastSyncedAt.toISOString() : null,
       positionCount:      positionCountByAccount[a.id] ?? 0,
+      // Evaluated per-request (cheap env read) so the honesty of the zero state
+      // always reflects the deployment's live switch, not a cached value.
+      positionSignalAvailable: investmentObservationsEnabled(),
     };
   });
 

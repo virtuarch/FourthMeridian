@@ -31,6 +31,10 @@ const ATTENTION_STATES: ReadonlySet<InvestmentAccountView["state"]> = new Set([
   "needs_reauth",
   "error",
   "zero_holdings",
+  // REVIEW-3 — observation capture disabled on this deployment: presence is
+  // unknowable. Distinct from zero_holdings so we never claim "Plaid reported
+  // no holdings" when the pipeline that would have recorded them is off.
+  "positions_unknown",
 ]);
 
 function AttentionRow({ acct, onReload }: { acct: InvestmentAccountView; onReload: () => void }) {
@@ -77,6 +81,13 @@ function AttentionRow({ acct, onReload }: { acct: InvestmentAccountView; onReloa
           <p className="text-xs" style={{ color: "var(--text-muted)" }}>No individual holdings were reported for this account.</p>
           {acct.plaidItemId && <AccountRefreshButton plaidItemId={acct.plaidItemId} onDone={onReload} />}
         </div>
+      )}
+
+      {acct.state === "positions_unknown" && (
+        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+          Position tracking is not enabled on this deployment, so individual holdings
+          for this account are not available. The account balance is still current.
+        </p>
       )}
     </div>
   );
