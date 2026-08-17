@@ -27,7 +27,7 @@
 
 import { useMemo } from "react";
 import type { ConversionContext } from "@/lib/money/types";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { formatCurrency } from "@/lib/format";
 import type { Transaction } from "@/types";
 import {
@@ -85,12 +85,10 @@ export function CashFlowCalendar({ transactions, period, now, ctx, accounts, mea
   );
   const months = useMemo(() => monthsInRange(range.start, range.end), [range]);
 
-  const currency = ctx?.target ?? DEFAULT_DISPLAY_CURRENCY;
-  const fmt = useMemo(() => {
-    return ctx
-      ? (n: number) => formatCurrency(n, currency)
-      : (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(n);
-  }, [ctx, currency]);
+  // REVIEW-3 B-5 — the display-currency AUTHORITY is the fallback, never a
+  // build-time USD literal (display-money.ts).
+  const currency = useAggregateCurrency(ctx);
+  const fmt = useMemo(() => (n: number) => formatCurrency(n, currency), [currency]);
 
   // Per-day net of the selected measures (Σ in − Σ out) — the signed magnitude
   // the shared grid tints by. Built once from the projection.

@@ -26,7 +26,7 @@ import { FicoCard } from "@/components/dashboard/FicoCard";
 import { creditUtilization } from "@/lib/accounts/credit-utilization";
 import { amountOwed } from "@/lib/debt/balance-semantics";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import { formatCurrency } from "@/lib/format";
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
@@ -62,9 +62,9 @@ function inDisp(amount: number, currency: string | null | undefined, ctx?: Conve
   return convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), ctx).amount ?? 0;
 }
 function fmtMoney(v: number, ctx?: ConversionContext): string {
-  return ctx
-    ? formatCurrency(v, ctx.target)
-    : new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
+  // REVIEW-3 B-5 — no context ⇒ no currency claim, never a USD relabel of
+  // native amounts (display-money.ts).
+  return formatAggregateMoney(v, ctx);
 }
 function valueFormatterProps(ctx?: ConversionContext) {
   return ctx ? { formatValue: (v: number) => formatCurrency(v, ctx.target) } : {};

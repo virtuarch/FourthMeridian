@@ -38,7 +38,7 @@ import { Landmark, Search, CheckCircle2, AlertTriangle } from "lucide-react";
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { formatCurrency } from "@/lib/format";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import type { ConversionContext } from "@/lib/money/types";
 import { amountOwed, creditBalance } from "@/lib/debt/balance-semantics";
 import type { AccountDetailRow } from "@/app/api/spaces/[id]/accounts/detail/route";
@@ -189,7 +189,9 @@ export function AccountsLedger({
 
   useEffect(() => { load(); }, [load]);
 
-  const currency = ctx?.target ?? DEFAULT_DISPLAY_CURRENCY;
+  // REVIEW-3 B-5 — the display-currency AUTHORITY is the fallback, never a
+  // build-time USD literal (display-money.ts).
+  const currency = useAggregateCurrency(ctx);
 
   // Until the enriched detail arrives (or if it fails), render the host's list so
   // accounts are never absent — strictly no worse than the former card.

@@ -25,8 +25,7 @@
 
 import { useState } from "react";
 import { CalendarDays, LayoutGrid, ChevronLeft, ChevronRight } from "lucide-react";
-import { formatCurrency } from "@/lib/format";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import { CashFlowCalendar } from "@/components/space/widgets/CashFlowCalendar";
@@ -53,9 +52,8 @@ import {
 } from "@/lib/transactions/cash-flow";
 
 function fmtMoney(v: number, ctx?: ConversionContext): string {
-  return ctx
-    ? formatCurrency(v, ctx.target)
-    : new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
+  // REVIEW-3 B-5 — no context ⇒ no currency claim (display-money.ts).
+  return formatAggregateMoney(v, ctx);
 }
 
 function EmptyCard({ sub }: { sub: string }) {

@@ -100,6 +100,27 @@ for (const f of PERSPECTIVES) {
   );
 }
 
+// ── REVIEW-3 B-5 (E5) — the SHELL consumes the same decision point ───────────
+// The /dashboard layout used to mount DisplayCurrencyProvider with the RAW
+// Space.reportingCurrency while /dashboard re-wrapped with the effective one —
+// so /dashboard/credit, /analyze, /connections and settings inherited an
+// unreverted label. Both the shell provider and the credit page's serialized
+// context must resolve through lib/money/server-context.ts.
+{
+  const layout = stripComments(read("app/(shell)/dashboard/layout.tsx"));
+  check(
+    "the dashboard shell resolves the EFFECTIVE display currency (not raw reportingCurrency)",
+    /resolveEffectiveSpaceConversion\b/.test(layout) && /resolved\.effective/.test(layout),
+    "the shell provider must come from the one decision point (V25-CLOSE-3A)",
+  );
+  const credit = stripComments(read("app/(shell)/dashboard/credit/page.tsx"));
+  check(
+    "the credit page builds its client context through the effective resolver",
+    /resolveEffectiveSpaceConversionSerialized\b/.test(credit) && !/[^E]serializeSpaceConversionContext\b/.test(credit),
+    "credit must not serialize the requested-currency context while the shell labels the effective one",
+  );
+}
+
 // ── UI — the banner renders iff reverted, at the composition root ────────────
 {
   const dash = stripComments(read("components/dashboard/SpaceDashboard.tsx"));

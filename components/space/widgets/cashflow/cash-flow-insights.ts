@@ -39,8 +39,8 @@ import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { groupLiquidityByReason } from "@/lib/transactions/liquidity-breakdown";
 import { groupCashFlowContext } from "@/lib/transactions/cash-flow-context";
 import { compareCashFlow, type CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatAggregateMoney } from "@/components/space/widgets/display-money";
+import { formatDate } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 
@@ -132,7 +132,9 @@ export function buildCashFlowInsights(args: {
       : null;
   const liqCtx = tierResolver(accounts);
   const facts = aggregateDayFacts(rows, liqCtx, moneyCtx);
-  const fmt = (v: number) => formatCurrency(v, moneyCtx?.target ?? DEFAULT_DISPLAY_CURRENCY);
+  // REVIEW-3 B-5 — no context ⇒ the sentence states the magnitude with no
+  // currency claim (display-money.ts); a native amount is never relabelled USD.
+  const fmt = (v: number) => formatAggregateMoney(v, moneyCtx);
 
   const insights: CashFlowInsight[] = [];
   const hasActivity = rows.length > 0;

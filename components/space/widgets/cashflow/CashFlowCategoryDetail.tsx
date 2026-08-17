@@ -18,7 +18,7 @@
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import { formatCurrency } from "@/lib/format";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { ChevronRight } from "lucide-react";
 
 export function CashFlowCategoryDetail({
@@ -47,7 +47,10 @@ export function CashFlowCategoryDetail({
   /** Opens the EXISTING TransactionSliceDrawer for these rows (the caller owns it). */
   onOpenTransactions: () => void;
 }) {
-  const fmt = (v: number) => (ctx ? formatCurrency(v, ctx.target) : formatCurrency(v, DEFAULT_DISPLAY_CURRENCY));
+  // REVIEW-3 B-5 — the display-currency AUTHORITY is the fallback, never a
+  // build-time USD literal (display-money.ts).
+  const aggregateCurrency = useAggregateCurrency(ctx);
+  const fmt = (v: number) => formatCurrency(v, aggregateCurrency);
   const pct = total > 0 ? (value / total) * 100 : 0;
   const count = rows.length;
 

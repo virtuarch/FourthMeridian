@@ -216,21 +216,30 @@ function main(): void {
     check("G. and performs no writes", !/\.(create|update|upsert|delete)(Many)?\(/.test(core));
     check("G. and reads no clock", !/Date\.now\(\)|new Date\(\)/.test(core));
 
+    // REVIEW-3 B-4 — the per-row resolution moved verbatim into
+    // lib/data/snapshot-summary.core.ts (resolveSnapshotRowProvenance) so the
+    // Spaces launcher shares it instead of bypassing the boundary. The
+    // invariants are unchanged; they are asserted where the call now lives,
+    // plus the consumption pin on snapshots.ts.
     const boundary = strip(read("lib/data/snapshots.ts"));
-    check("the read boundary resolves authorisation exactly once",
-      (boundary.match(/authoriseAggregates\(/g) ?? []).length === 1);
+    const sumCore  = strip(read("lib/data/snapshot-summary.core.ts"));
+    check("the shared row authority resolves authorisation exactly once",
+      (sumCore.match(/authoriseAggregates\(/g) ?? []).length === 1 &&
+      (boundary.match(/authoriseAggregates\(/g) ?? []).length === 0);
+    check("the read boundary CONSUMES the shared row authority",
+      /resolveSnapshotRowProvenance\(/.test(boundary));
     check("G. and still performs no writes",
-      !/\.(create|update|upsert|delete)(Many)?\(/.test(boundary));
+      !/\.(create|update|upsert|delete)(Many)?\(/.test(boundary + sumCore));
     check("the boundary authorises on STORED values, before display conversion",
-      boundary.indexOf("authoriseAggregates(") < boundary.indexOf("convertStampedValues("));
+      sumCore.indexOf("authoriseAggregates(") < sumCore.indexOf("convertStampedValues("));
     check("I. no schema field was added for this",
       !/aggregateAuthorisation/.test(read("prisma/schema.prisma")));
     check("H. nothing here regenerates",
-      !/regenerateWealthHistory|regenerateSpaceSnapshot/.test(boundary + core));
+      !/regenerateWealthHistory|regenerateSpaceSnapshot/.test(boundary + sumCore + core));
 
     // The general rule and the special case it generalises must agree.
     check("assetSideContaminated is retained for its existing consumers",
-      /assetSideContaminated:\s*isAssetSideContaminated/.test(boundary));
+      /assetSideContaminated:\s*isAssetSideContaminated/.test(sumCore));
   }
 
   console.log(failures === 0 ? "\nAll aggregate-authorisation checks passed" : `\n${failures} failure(s)`);

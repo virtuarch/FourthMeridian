@@ -31,7 +31,7 @@
 
 import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { Check, AlertTriangle, Loader2 } from "lucide-react";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { formatDate } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot } from "@/types";
@@ -131,7 +131,9 @@ export function DebtWorkspace({
   const payoffAgg = computePayoffAggregate(accounts, ctx);
   const signals = buildDebtSignals({ accounts, ctx, lensResult: lens });
 
-  const displayCurrency = ctx?.target ?? DEFAULT_DISPLAY_CURRENCY;
+  // REVIEW-3 B-5 — the display-currency AUTHORITY is the fallback, never a
+  // build-time USD literal (display-money.ts).
+  const displayCurrency = useAggregateCurrency(ctx);
   const historical = asOf < today;
   const hasDebt = kpis.totalDebt > 0;
   // V25-SIDE-1 — the STRUCTURAL count, so this hint matches the number of rows

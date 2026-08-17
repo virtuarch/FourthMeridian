@@ -29,6 +29,7 @@ import { db }                               from "@/lib/db";
 import { getSpaceContext }              from "@/lib/space";
 import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, SpaceMemberStatus, SpaceMemberRole } from "@prisma/client";
 import { requireUser }                      from "@/lib/session";
+import { isSupportedCurrency }              from "@/lib/fx/config";
 import { withApiHandler }                   from "@/lib/api";
 import { dualWriteSpaceAccountLink }        from "@/lib/accounts/space-account-link";
 import { regenerateSnapshotsForAccounts }   from "@/lib/snapshots/regenerate";
@@ -70,6 +71,20 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   const VALID_KINDS = ["real_estate", "vehicle", "equipment", "other"];
   if (!VALID_KINDS.includes(assetKind))
                                return NextResponse.json({ error: `Invalid assetKind. Use: ${VALID_KINDS.join(", ")}` }, { status: 400 });
+
+  // REVIEW-3 B-5 — the currency goes through the SAME allowlist rule the
+  // reporting-currency boundary enforces (lib/spaces/reporting-currency.ts →
+  // isSupportedCurrency: FX_BASE + SUPPORTED_QUOTES). This route used to
+  // uppercase ARBITRARY input and store it: an unsupported-but-real code was
+  // permanently FX-unavailable (excluded from every converted total forever),
+  // and a malformed code ("US", "DOLLARS") throws RangeError inside the Intl
+  // formatters at render. Rejecting at the boundary is the same 400 contract
+  // the Space PATCH route applies.
+  if (typeof currency !== "string" || currency.trim() === "")
+                               return NextResponse.json({ error: "currency must be a non-empty string." }, { status: 400 });
+  const normalizedCurrency = currency.trim().toUpperCase();
+  if (!isSupportedCurrency(normalizedCurrency))
+                               return NextResponse.json({ error: `Unsupported currency "${normalizedCurrency}" — must be USD or one of the supported quote currencies.` }, { status: 400 });
 
   // ── Get user's personal space ──────────────────────────────────────────
   const ctx = await getSpaceContext();
@@ -129,7 +144,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
         type:        AccountType.other,
         institution: "Manual Entry",
         balance,
-        currency:    currency.toUpperCase(),
+        currency:    normalizedCurrency,
         syncStatus:  "manual",
         lastUpdated: new Date(),
       },

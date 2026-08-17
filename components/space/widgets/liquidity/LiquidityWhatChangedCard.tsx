@@ -12,17 +12,15 @@
 
 import { useMemo } from "react";
 import { ArrowRight, Waves } from "lucide-react";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatCurrency } from "@/lib/format";
+import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import { periodKey, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import { buildWhatChangedRows } from "./liquidity-what-changed";
 
 function fmtSigned(amount: number, ctx?: ConversionContext): string {
-  const abs = ctx
-    ? formatCurrency(Math.abs(amount), ctx.target)
-    : new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(Math.abs(amount));
+  // REVIEW-3 B-5 — no context ⇒ no currency claim (display-money.ts).
+  const abs = formatAggregateMoney(Math.abs(amount), ctx);
   return `${amount >= 0 ? "+" : "−"}${abs}`;
 }
 

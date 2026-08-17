@@ -39,7 +39,7 @@ import {
   isExplicitPeriod,
   type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
 import { formatDate } from "@/lib/format";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { liquidityIdsByReason, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import type { CashFlowPerspective as CashFlowPerspectiveMode } from "@/lib/transactions/cash-flow-projection";
 import { cashFlowStamp, compareCashFlow } from "@/lib/transactions/cash-flow-compare";
@@ -217,7 +217,9 @@ export function CashFlowWorkspace({
     return { abs, pct, fromLabel };
   }, [transactions, data, period, compareTo, perspective, liqCtx, txCtx, asOfClock, asOf]);
 
-  const displayCurrency = txCtx?.target ?? DEFAULT_DISPLAY_CURRENCY;
+  // REVIEW-3 B-5 — the display-currency AUTHORITY is the fallback, never a
+  // build-time USD literal (display-money.ts).
+  const displayCurrency = useAggregateCurrency(txCtx);
 
   // Publish section anchors to the sidebar (cleared on unmount).
   const publishSections = useSpaceSectionsPublisher();

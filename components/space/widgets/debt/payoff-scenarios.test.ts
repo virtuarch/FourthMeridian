@@ -28,7 +28,11 @@ console.log("1. Rows agree with direct simulatePayoff over the same inputs");
   const total = 10000, monthlyRate = 0.24 / 12, minPayment = 250; // 2%/mo
   const rows = buildPayoffScenarios({ total, monthlyRate, minPayment }, { now: CLOCK });
   check("three preset rows", rows.length === 3, `${rows.length}`);
-  check("labels are Minimums / +$100/mo / +$250/mo", rows.map((r) => r.label).join("|") === "Minimums|+$100/mo|+$250/mo", rows.map((r) => r.label).join("|"));
+  // REVIEW-3 B-5 — with no injected formatter this pure helper claims NO
+  // currency: the label states the magnitude ("+100/mo"), never a "$" literal
+  // relabelling unknown-currency amounts. The strip injects the real formatter
+  // (display-currency authority) — pinned in section 6 below.
+  check("labels claim no currency without an injected formatter", rows.map((r) => r.label).join("|") === "Minimums|+100/mo|+250/mo", rows.map((r) => r.label).join("|"));
   check("extras are 0 / 100 / 250", rows.map((r) => r.extra).join(",") === "0,100,250");
   for (const r of rows) {
     const direct = simulatePayoff(total, monthlyRate, minPayment + r.extra);

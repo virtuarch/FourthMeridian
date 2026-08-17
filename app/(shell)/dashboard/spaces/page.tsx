@@ -171,11 +171,17 @@ export default async function SpacesPage() {
       myRole:       m.role as string,
       accountCount: m.space._count.accountLinks,
       netWorth:     nw?.netWorth ?? 0,
-      // MC1 QA Q5 — each card labels in its OWN Space's reporting currency.
+      // MC1 QA Q5 — each card labels in its OWN Space's reporting currency
+      // (REVIEW-3: the EFFECTIVE one — the currency of the amount actually
+      // computed, which reverts to USD when the requested one is unsatisfiable,
+      // exactly as inside the Space).
       currency:     nw?.currency ?? "USD",
       trend:        nw?.trend ?? [],
-      // v2.6-L4F — the SNAPSHOT date. Kept for the "history reaches" line; it is
-      // NOT a freshness claim and the card no longer renders it as one.
+      // REVIEW-3 B-4 — reconstructed/estimated latest point carries its marker.
+      estimated:    nw?.estimated ?? false,
+      // v2.6-L4F — the latest ADMISSIBLE snapshot date. Kept for the "history
+      // reaches" line; it is NOT a freshness claim and the card no longer
+      // renders it as one.
       lastUpdated:  nw?.asOf ?? null,
       // v2.6-L4F — the canonical 1M change (same authority as the inside view).
       change:       nw?.change ?? null,
@@ -199,9 +205,10 @@ export default async function SpacesPage() {
       members:      serializeMembers(w.members),
       accountCount: w._count.accountLinks,
       netWorth:     nw?.netWorth ?? 0,
-      // MC1 QA Q5 — each card labels in its OWN Space's reporting currency.
+      // MC1 QA Q5 / REVIEW-3 — the EFFECTIVE reporting currency (see above).
       currency:     nw?.currency ?? "USD",
       trend:        nw?.trend ?? [],
+      estimated:    nw?.estimated ?? false,
       lastUpdated:  nw?.asOf ?? null,
       change:       nw?.change ?? null,
       freshness:    freshnessBySpace[w.id] ?? null,

@@ -37,6 +37,7 @@
 import { useState } from "react";
 import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import { formatCurrency } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
@@ -70,9 +71,9 @@ export interface TransactionSlice {
 
 
 function money(v: number, ctx?: ConversionContext): string {
-  return ctx
-    ? formatCurrency(v, ctx.target)
-    : new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(v));
+  // REVIEW-3 B-5 — no context ⇒ no currency claim (display-money.ts). Itemized
+  // rows (rowMoney below) keep their own native row currency, per doctrine.
+  return ctx ? formatCurrency(v, ctx.target) : formatAggregateMoney(Math.abs(v), null, 2);
 }
 
 function rowMoney(t: Transaction): string {

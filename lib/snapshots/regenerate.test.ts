@@ -38,10 +38,16 @@ function main(): void {
     !/type\s*===\s*["']checking["'][\s\S]{0,80}filter/.test(code));
 
   // ── 2. classifyAccounts is the sole inclusion + aggregation authority ──────
-  console.log("2. classifyAccounts remains the authority");
+  // REVIEW-3 B-4 (matrix row 14): the derived aggregates now come from the ONE
+  // formula owner, computeSnapshotFields(classifyAccounts(...)) — the former
+  // pins matched the hand-copied inline formula this convergence removed.
+  // Executable parity lives in background-authority.test.ts Part 2.
+  console.log("2. classifyAccounts → computeSnapshotFields remains the authority");
   check("classifies the eligible account set", /classifyAccounts\s*\(/.test(code));
-  check("cash comes from classifyAccounts.totalChecking", /totalChecking/.test(code));
-  check("totalAssets includes cash + savings", /totalAssets\s*=\s*total\s*\+\s*cash\s*\+\s*savings/.test(code));
+  check("derived aggregates come from computeSnapshotFields (one formula owner)",
+    /computeSnapshotFields\s*\(\s*c\s*\)/.test(code));
+  check("the hand-copied inline formula has not returned",
+    !/const\s+totalAssets\s*=\s*total\s*\+\s*cash/.test(code));
 
   // ── 3. Legitimate Part-B consent suppression retained ─────────────────────
   console.log("3. Part-B investment-consent suppression retained (no holdings fetched)");

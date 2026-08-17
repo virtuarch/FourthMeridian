@@ -38,6 +38,7 @@ import {
   type SnapshotAccountsClient,
 } from "@/lib/snapshots/space-accounts";
 import { classifyAccounts } from "@/lib/account-classifier";
+import { computeSnapshotFields } from "@/lib/snapshots/backfill-core";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { ShareStatus, PlaidInvestmentsConsent, type Prisma } from "@prisma/client";
@@ -169,21 +170,22 @@ export async function regenerateSpaceSnapshot(
   });
   const c = classifyAccounts(eligible, ctx);
 
-  const stocks     = c.totalInvestments;
-  const crypto     = c.totalDigitalAssets;
-  const total      = stocks + crypto;
-  const cash       = c.totalChecking;
-  const savings    = c.totalSavings;
-  const debt       = c.totalLiabilities;
-  const realAssets = c.totalRealAssets;
-
-  const totalAssets = total + cash + savings + realAssets;
-  const netWorth    = totalAssets - debt;
-  const netLiquid   = cash + savings - debt;
-  // No "expense buffer" setting exists yet (schema comment: max(cash -
-  // expense_buffer, 0)) — until one is added, cashOnHand is plain checking
-  // cash rather than an invented buffer amount.
-  const cashOnHand  = Math.max(cash, 0);
+  // REVIEW-3 B-4 (matrix row 14) — the derived aggregates come from
+  // computeSnapshotFields (lib/snapshots/backfill-core.ts), the ONE place the
+  // snapshot arithmetic lives. This function used to carry a hand-copied
+  // duplicate of that formula with nothing enforcing parity; the historical
+  // writers (backfill.ts, regenerate-history.core.ts) already import it, so the
+  // live "today" row and every reconstructed row are now the same computation by
+  // construction, not by transcription. backfill-core.test.ts pins this import
+  // (and the absence of a re-inlined formula) so the formula cannot fork again.
+  //
+  // Note on cashOnHand: no "expense buffer" setting exists yet (schema comment:
+  // max(cash - expense_buffer, 0)) — until one is added, cashOnHand is plain
+  // checking cash (max(cash, 0)), exactly as computeSnapshotFields computes it.
+  const {
+    stocks, crypto, total, cash, savings, debt,
+    netWorth, totalAssets, netLiquid, cashOnHand,
+  } = computeSnapshotFields(c);
 
   // MC1 Phase 3 Slice 3 (F-2) — the stamp IS the context target: both come
   // from the same Space read above, in the same edit, so they can never
@@ -206,8 +208,31 @@ export async function regenerateSpaceSnapshot(
   // truth" this slice exists to avoid. Nothing is lost — today's row is an
   // observation, and the frozen-row invariant lets a reader infer `observed`
   // from `isEstimated=false` (see snapshot-completeness.core.ts).
+  //
+  // REVIEW-3 B-4 (matrix row 33) — ONE exception: when classifyAccounts reports
+  // `unconverted` (an account's balance was FX-UNAVAILABLE and therefore
+  // EXCLUDED from every total — an honest partial sum, never a native magnitude
+  // blended in), the partiality used to be DROPPED at this write boundary: the
+  // row stored the partial sum with nothing recording that anything was
+  // missing, and every reader downstream (charts, launcher, AI) presented it as
+  // complete. There is no `unconverted` column and this program allows no
+  // schema migration, so the smallest honest disclosure with EXISTING columns
+  // is the canonical completeness vocabulary: `completenessTier: "incomplete"`
+  // — the tier that already means "the row exists but part of it could not be
+  // valued" (snapshot-completeness.core.ts classifies it `unreliable`). The
+  // resolver's precedence (a RECORDED tier outranks the isEstimated flip-rule
+  // inference) makes this read correctly everywhere without touching
+  // `isEstimated`, whose reconstruction meaning — and the frozen-row guard
+  // built on it — must not be overloaded (approved D-7).
+  //
+  // WHAT THIS CANNOT SAY (named schema follow-up, REVIEW-3): WHICH component
+  // was partial and by how much. `contributingComponentCount` describes the A8
+  // investment valuation, not FX coverage, so it stays null here. A dedicated
+  // `unconvertedCount`/`unconvertedCurrencies` column is the honest fix once a
+  // migration window exists. Production today is all-USD (unconverted is
+  // always false), so no live row changes.
   const composition = {
-    completenessTier: null,
+    completenessTier: c.unconverted ? ("incomplete" as const) : null,
     contributingComponentCount: null,
     totalComponentCount: null,
     // V26-CRYPTO-STATUS-1 — written EXPLICITLY null, never omitted. This writer
