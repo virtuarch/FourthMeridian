@@ -17,33 +17,26 @@
 import { db } from "@/lib/db";
 import { type TimePreset } from "@/lib/perspectives/time-range";
 import { getSpaceContext } from "@/lib/space";
-import { buildSpaceConversionContext, resolveEffectiveSpaceConversion } from "@/lib/money/server-context";
+import { resolveEffectiveSpaceConversion } from "@/lib/money/server-context";
 import { convertStampedValues } from "@/lib/snapshots/stamp-conversion";
-import { resolveSnapshotCompleteness } from "@/lib/snapshots/snapshot-completeness.core";
 import {
-  resolveCryptoValuationState, isCryptoAssertable, isAssetSideContaminated,
-  cryptoUnavailableReason,
-} from "@/lib/snapshots/crypto-valuation-status.core";
-import { authoriseAggregates } from "@/lib/snapshots/aggregate-authorisation.core";
+  resolveSnapshotRowProvenance, admissibleNetWorthSeries, summarizeNetWorthSeries,
+} from "@/lib/data/snapshot-summary.core";
 import type { ConversionContext } from "@/lib/money/types";
 import { Snapshot } from "@/types";
 
 /**
- * Resolve the stamp-conversion context for a set of snapshot rows.
+ * Resolve the stamp-conversion context for a set of snapshot rows against the
+ * requested reporting currency (the caller supplies it from its own Space
+ * read, so batch callers resolve it once per Space without a second query).
  * Returns `{ target, ctx: null }` on the homogeneous fast path (every stamp
- * already matches the Space's current reporting currency) — callers then map
- * rows exactly as they always have.
+ * already matches the effective target) — callers then map rows exactly as
+ * they always have.
  */
 async function resolveStampContext(
-  spaceId: string,
+  requested: string,
   rows: { date: Date; reportingCurrency?: string | null }[],
 ): Promise<{ target: string; ctx: ConversionContext | null }> {
-  const space = await db.space.findUnique({
-    where:  { id: spaceId },
-    select: { reportingCurrency: true },
-  });
-  const requested = space?.reportingCurrency ?? "USD";
-
   const offStamp = rows.filter((r) => (r.reportingCurrency ?? "USD") !== requested);
   if (offStamp.length === 0) return { target: requested, ctx: null };
 
@@ -122,7 +115,11 @@ export async function getRecentSnapshots(
     take:    -bound.rows, // the newest N rows (negative take = from the end)
   });
 
-  const { target, ctx: stampCtx } = await resolveStampContext(spaceId, rows);
+  const space = await db.space.findUnique({
+    where:  { id: spaceId },
+    select: { reportingCurrency: true },
+  });
+  const { target, ctx: stampCtx } = await resolveStampContext(space?.reportingCurrency ?? "USD", rows);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return rows.map((r: any) => {
@@ -142,68 +139,19 @@ export async function getRecentSnapshots(
       netLiquid:        r.netLiquid,
     };
 
-    // V26-INVESTMENTS-HISTORY — resolve the row's confidence ONCE, here, at the
-    // single read boundary. Downstream surfaces never see the raw
-    // (isEstimated, completenessTier) pair and so can never interpret it two
-    // ways. Note this describes how the row was COMPUTED, so — unlike the
-    // totals — it is unaffected by read-time display conversion below.
-    const completeness = resolveSnapshotCompleteness(r);
-    // V26-CRYPTO-STATUS-1 — resolve the row's crypto authority ONCE, here, at the
-    // same single boundary. Consumers receive an already-interpreted state and a
-    // value that is null when nothing may assert it; none of them sees the raw
-    // (crypto, isEstimated, cryptoValuationStatus) triple, so none can interpret
-    // it a second way. Unaffected components (cash/savings/debt/netLiquid) ride
-    // through untouched — Liquidity and Debt never read crypto.
-    const cryptoState = resolveCryptoValuationState({
-      crypto:                r.crypto,
-      isEstimated:           r.isEstimated ?? false,
-      cryptoValuationStatus: r.cryptoValuationStatus ?? null,
-    });
-    // v2.6-A — AGGREGATE AUTHORISATION, resolved ONCE, at the same boundary.
+    // V26-INVESTMENTS-HISTORY / V26-CRYPTO-STATUS-1 / v2.6-A — the row's
+    // confidence, crypto authority and AGGREGATE AUTHORISATION, resolved ONCE.
     //
-    // Components carried authorisation; aggregates did not, so a row whose
-    // crypto may not be asserted still offered `netWorth` and `totalAssets`
-    // freely — measured at 378 rows. The rule is now applied here, for every
-    // aggregate, from the SAME component verdicts resolved just above: no
-    // consumer re-derives it and none can reach a different answer.
-    //
-    // Deliberately computed on the STORED (pre-conversion) values. Authorisation
-    // is a statement about EVIDENCE, not about presentation: converting a row
-    // into a display currency cannot make an unassertable component assertable,
-    // and running this after conversion would make the verdict depend on which
-    // currency the reader happens to be viewing.
-    //
-    // `crypto` is the only component that carries authorisation today. The
-    // others are absent from the map, which the authority reads as "no authority
-    // has anything to say" — the truth, not an assumption of correctness.
-    const aggregates = authoriseAggregates({
-      values: {
-        stocks: r.stocks, crypto: r.crypto, cash: r.cash, savings: r.savings, debt: r.debt,
-        total: r.total, totalAssets: r.totalAssets, netWorth: r.netWorth,
-        netLiquid: r.netLiquid, cashOnHand: r.cashOnHand,
-      },
-      componentAssertable: { crypto: isCryptoAssertable(cryptoState) },
-      isEstimated: r.isEstimated ?? false,
-    });
-
-    const provenance = {
-      completenessTier:           completeness.tier,
-      completenessRecorded:       completeness.recorded,
-      contributingComponentCount: completeness.contributingComponentCount,
-      totalComponentCount:        completeness.totalComponentCount,
-      cryptoValuationState:       cryptoState,
-      cryptoAssertable:           isCryptoAssertable(cryptoState),
-      // RETAINED, unchanged. `assetSideContaminated` is the special case this
-      // general rule was a preview of, and several consumers read it today
-      // (Wealth, AI, export). Removing it would be a migration this slice has
-      // no reason to force; it and `aggregates.netWorth.assertable` agree by
-      // construction, which a test pins.
-      assetSideContaminated:      isAssetSideContaminated(cryptoState),
-      aggregateAuthorisation:     aggregates,
-      ...(cryptoUnavailableReason(cryptoState)
-        ? { cryptoUnavailableReason: cryptoUnavailableReason(cryptoState)! }
-        : {}),
-    };
+    // REVIEW-3 B-4 (E4): the resolution moved verbatim into
+    // lib/data/snapshot-summary.core.ts (`resolveSnapshotRowProvenance`) so the
+    // Spaces-launcher reader below shares the SAME per-row interpretation
+    // instead of bypassing it. Everything the original inline block asserted
+    // still holds: downstream surfaces never see the raw
+    // (isEstimated, completenessTier, cryptoValuationStatus) fields;
+    // authorisation is computed on the STORED (pre-conversion) values, because
+    // it is a statement about EVIDENCE, not presentation; and `crypto` is the
+    // only component carrying authorisation today.
+    const { provenance } = resolveSnapshotRowProvenance(r);
 
     // Homogeneous fast path (stampCtx null) or on-stamp row → pre-MC1 mapping.
     if (!stampCtx || stamp === target) {
@@ -270,8 +218,19 @@ export interface SpaceNetWorthSummary {
   netWorth: number;
   currency: string;
   trend: number[];
-  /** The latest SNAPSHOT date. A history fact — never a freshness claim. */
+  /**
+   * The latest ADMISSIBLE snapshot date — the date of the number the card
+   * actually shows (REVIEW-3: a fresher row whose netWorth may not be asserted
+   * never becomes the card figure, so this is never that row's date either).
+   * A history fact — never a freshness claim.
+   */
   asOf: string | null;
+  /**
+   * REVIEW-3 B-4 — true when the value shown is a reconstruction/estimate
+   * (row `isEstimated`, or display-converted off its stamp). The card renders
+   * its marker from this; a reconstructed value never poses as an observation.
+   */
+  estimated: boolean;
   /**
    * v2.6-L4F — the CANONICAL 1M change, resolved through the same authority the
    * inside-Space view uses (`compareToForPreset("PAST_MONTH", asOf)` from
@@ -317,62 +276,52 @@ export async function getSpaceNetWorthSummaries(
   });
   const currencyById = new Map(spaces.map((s) => [s.id, s.reportingCurrency ?? "USD"]));
 
+  // REVIEW-3 B-4 (E4, matrix row 13) — this reader now goes THROUGH the read
+  // boundary's per-row authority instead of bypassing it. One batch query still
+  // covers every card on the page; it selects the full component/authority
+  // columns because admissibility (aggregate authorisation, crypto
+  // assertability, completeness) is resolved per row by the SAME
+  // `resolveSnapshotRowProvenance` getRecentSnapshots uses — see
+  // lib/data/snapshot-summary.core.ts for the launcher's honest-presentation
+  // rule this implements.
   const rows = await db.spaceSnapshot.findMany({
     where:   { spaceId: { in: spaceIds } },
     orderBy: { date: "asc" },
-    select:  { spaceId: true, date: true, netWorth: true, reportingCurrency: true },
+    select:  {
+      spaceId: true, date: true, reportingCurrency: true,
+      stocks: true, crypto: true, total: true, cash: true, savings: true, debt: true,
+      netWorth: true, totalAssets: true, netLiquid: true, cashOnHand: true,
+      isEstimated: true, cryptoValuationStatus: true,
+      completenessTier: true, contributingComponentCount: true, totalComponentCount: true,
+    },
   });
 
-  const bySpace = new Map<string, { date: Date; netWorth: number; stamp: string }[]>();
+  type SummaryRow = (typeof rows)[number];
+  const bySpace = new Map<string, SummaryRow[]>();
   for (const r of rows) {
     const list = bySpace.get(r.spaceId) ?? [];
-    list.push({ date: r.date, netWorth: r.netWorth, stamp: r.reportingCurrency ?? "USD" });
+    list.push(r);
     bySpace.set(r.spaceId, list);
   }
 
   const result: Record<string, SpaceNetWorthSummary> = {};
   for (const id of spaceIds) {
-    const currency = currencyById.get(id) ?? "USD";
-    const series   = bySpace.get(id) ?? [];
+    const series = bySpace.get(id) ?? [];
 
-    // Build a conversion context only when the Space has off-stamp rows; a
-    // homogeneous Space (all rows already in `currency`) keeps the fast path
-    // and never touches the FX archive.
-    const offStamp = series.filter((s) => s.stamp !== currency);
-    const stampCtx = offStamp.length > 0
-      ? await buildSpaceConversionContext(
-          { reportingCurrency: currency },
-          {
-            currencies: [...new Set(offStamp.map((s) => s.stamp))],
-            dates:      [...new Set(offStamp.map((s) => s.date.toISOString().slice(0, 10)))],
-          },
-        )
-      : null;
+    // The SAME effective-currency resolution getRecentSnapshots uses
+    // (V25-CLOSE-3A): a Space switched to a currency the archive cannot satisfy
+    // reads its history in USD — on the launcher exactly as inside the Space —
+    // instead of dropping every point. Homogeneous Spaces (all-USD today) take
+    // the fast path and never touch the FX archive.
+    const { target, ctx: stampCtx } = await resolveStampContext(currencyById.get(id) ?? "USD", series);
 
-    // Convert each point at its own date; keep on-stamp rows as-is. Omit ONLY
-    // the points whose rate missed (they would be native-magnitude, mixing
-    // units) — every convertible point stays, so the card never blanks merely
-    // because its history predates the currency switch.
-    const points: { date: Date; value: number }[] = [];
-    for (const s of series) {
-      if (!stampCtx || s.stamp === currency) {
-        points.push({ date: s.date, value: s.netWorth });
-        continue;
-      }
-      const conv = convertStampedValues({ v: s.netWorth }, s.stamp, s.date.toISOString().slice(0, 10), stampCtx);
-      if (conv.missed) continue; // unconvertible — drop this point only
-      points.push({ date: s.date, value: conv.values.v });
-    }
-
-    const recent = points.slice(-14); // last ~2 weeks for the card SPARKLINE only
-    const latest = points[points.length - 1];
-    result[id] = {
-      netWorth: latest?.value ?? 0,
-      currency,
-      trend:    recent.map((p) => p.value),
-      asOf:     latest?.date.toISOString() ?? null,
-      change:   canonicalWindowChange(points),
-    };
+    // Admissibility + per-point stamp conversion + summary, all shared with
+    // the read boundary (snapshot-summary.core.ts). Non-assertable rows and
+    // genuine rate misses are omitted — never rendered as plain numbers, never
+    // native magnitudes relabelled. No admissible point ⇒ the card's explicit
+    // "no figure" state (netWorth 0, trend [], asOf null).
+    const summary = summarizeNetWorthSeries(admissibleNetWorthSeries(series, target, stampCtx));
+    result[id] = { currency: target, ...summary };
   }
   return result;
 }
