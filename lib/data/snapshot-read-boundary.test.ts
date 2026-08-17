@@ -51,12 +51,6 @@ function check(name: string, cond: boolean, detail?: string): void {
  *     lib/snapshots/historical-work-window.ts  window bounds for regeneration
  *
  *   INTENTIONALLY DIFFERENT QUESTION
- *     lib/investments/historical-point-detail.ts  ONE row's stocks/crypto for
- *                                         the drill-down reconciliation, using
- *                                         the same canonical interpreters
- *                                         (resolveCryptoValuationState) — a
- *                                         component question, not a net-worth
- *                                         series read
  *     lib/platform/connection-diagnostics.ts  groupBy _max(date) — snapshot
  *                                         RECENCY metadata for ops diagnostics,
  *                                         no financial value is read
@@ -66,7 +60,6 @@ const ALLOWED_READERS = new Set([
   "lib/snapshots/backfill.ts",
   "lib/snapshots/regenerate-history.ts",
   "lib/snapshots/historical-work-window.ts",
-  "lib/investments/historical-point-detail.ts",
   "lib/platform/connection-diagnostics.ts",
 ]);
 
