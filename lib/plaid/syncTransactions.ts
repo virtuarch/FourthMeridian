@@ -536,8 +536,8 @@ export async function syncTransactionsForItem(
       //     successful run persisted. Semantic columns ride ONLY when this run
       //     computed them (`classified`), `currency` only when known (null means
       //     "not recorded", which must not overwrite a recorded denomination),
-      //     and transfer evidence follows the reconcile planner's NO_WRITE rule
-      //     (lib/transactions/transfer-evidence-plan.ts): persist only when a
+      //     and transfer evidence follows the reconcile NO_WRITE rule
+      //     (lib/transactions/transfer-evidence-write.ts): persist only when a
       //     descriptive axis was RECOGNIZED — an unrecognized/no-signal run, or
       //     a row currently classified non-TRANSFER, never overwrites stamped
       //     evidence with nulls (evidence axes are write-time; wiped evidence is
