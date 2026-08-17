@@ -222,14 +222,20 @@ console.log("\nPROBE 14/15 — one canonical 1M authority, one freshness authori
   // the window, through the shared time-range authority, defaulting to
   // PAST_MONTH; and the Space summary CONSUMES it rather than deriving its own.
   const win = code("lib/data/snapshot-window.ts");
+  // REVIEW-3 B-4 — the summary's window call moved with the launcher read into
+  // lib/data/snapshot-summary.core.ts (the shared admissibility core), which
+  // snapshots.ts consumes. Same invariant: ONE module resolves the window and
+  // the summary CONSUMES it.
+  const sumCore = code("lib/data/snapshot-summary.core.ts");
   check("the Space summary resolves its window through the canonical authority",
     /compareToForPreset\(\s*preset\b/.test(win) &&
     /preset:\s*TimePreset\s*=\s*"PAST_MONTH"/.test(win) &&
     win.includes('from "@/lib/perspectives/time-range"') &&
-    /canonicalWindowChange\(/.test(snap) &&
-    snap.includes('from "@/lib/data/snapshot-window"'));
+    /canonicalWindowChange\(/.test(sumCore) &&
+    sumCore.includes('from "@/lib/data/snapshot-window"') &&
+    /summarizeNetWorthSeries\(/.test(snap));
   check("...and does NOT derive a month of its own",
-    !/setMonth|subMonths\(|30 \* 86_?400_?000|days: 30/.test(snap));
+    !/setMonth|subMonths\(|30 \* 86_?400_?000|days: 30/.test(snap + sumCore));
   check("the change carries BOTH endpoints so they can be compared",
     /fromDate: string;/.test(src("lib/data/snapshots.ts")) && /toDate: string;/.test(src("lib/data/snapshots.ts")));
 
