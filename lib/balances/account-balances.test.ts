@@ -13,10 +13,20 @@
 import { resolveAccountFreshness } from "@/lib/freshness/observation";
 import {
   resolveAccountBalances, resolveRowBalances,
-  reachableCash, availableCredit, settledCash,
   type AccountBalances,
 } from "./account-balances";
 import { SECTION_QUANTITY, isCurrentBalanceSection, sectionQuantityNote } from "./section-quantity";
+
+// Test-local shorthands over the resolved claim. (The exported
+// reachableCash/availableCredit/settledCash wrappers were deleted in REVIEW-3 —
+// zero production importers. The doctrine they expressed is asserted here
+// directly against the available-claim's quantity, so every behavioural pin
+// below is unchanged.)
+const amountAs = (b: AccountBalances, q: string): number | null =>
+  b.available.status === "AVAILABLE" && b.available.quantity === q ? b.available.amount : null;
+const reachableCash   = (b: AccountBalances) => amountAs(b, "AVAILABLE_CASH");
+const availableCredit = (b: AccountBalances) => amountAs(b, "AVAILABLE_CREDIT");
+const settledCash     = (b: AccountBalances) => amountAs(b, "SETTLED_CASH");
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {

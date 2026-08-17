@@ -13,13 +13,12 @@
  */
 
 import {
-  resolveSnapshotCompleteness, isEstimatedFromTier, snapshotConfidence,
+  resolveSnapshotCompleteness, snapshotConfidence,
 } from "./snapshot-completeness.core";
 import { regenerateDay, type DayRegenInput } from "./regenerate-history.core";
 import { buildHistoricalHoldings, type HoldingComponent, type HoldingOwnershipFacts } from "@/lib/investments/historical-holdings.core";
 import type { OwnershipResolution } from "@/lib/prices/ownership-window.core";
 import { COMPLETENESS_TIERS } from "@/lib/perspective-engine/completeness";
-import type { CompletenessTier } from "@/lib/perspective-engine/types";
 import type { ClassifyTotals } from "./backfill-core";
 
 let failures = 0;
@@ -70,7 +69,7 @@ function main(): void {
     check("counts stay null — never coerced to 0",
       legacy.contributingComponentCount === null && legacy.totalComponentCount === null);
     check("still reads as a reconstruction (existing behaviour preserved)",
-      isEstimatedFromTier(legacy.tier) === true);
+      legacy.tier !== "observed");
 
     // Totally empty row (defensive: no flag at all).
     const empty = resolveSnapshotCompleteness({});
@@ -89,7 +88,7 @@ function main(): void {
     check("null tier + isEstimated=false infers observed", frozen.tier === "observed");
     check("marked as an inference, not a recorded fact",
       frozen.recorded === false && frozen.basis === "inferred-observed");
-    check("the inference round-trips the FLIP rule", isEstimatedFromTier(frozen.tier) === false);
+    check("the inference round-trips the FLIP rule", frozen.tier === "observed");
 
     // The writer can never persist anything for a frozen day.
     const res = regenerateDay(dayInput({ existingIsEstimated: false }));
@@ -206,8 +205,9 @@ function main(): void {
     const nonMember: string[] = ["partial", "high", "OBSERVED", ""];
     check("non-members are never accepted",
       nonMember.every((s) => resolveSnapshotCompleteness({ isEstimated: true, completenessTier: s }).recorded === false));
-    check("isEstimatedFromTier is the FLIP rule for every tier",
-      COMPLETENESS_TIERS.every((t: CompletenessTier) => isEstimatedFromTier(t) === (t !== "observed")));
+    // (isEstimatedFromTier — the exported FLIP-rule wrapper — was deleted in
+    // REVIEW-3: zero importers outside this test. The FLIP semantics are still
+    // pinned above via the tier value itself.)
   }
 
 
