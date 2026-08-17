@@ -11,9 +11,14 @@
  * visibility, only ownership semantics differ, and only after the D3 Step 3
  * HOME Semantics Correction (docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md) is
  * the link set here guaranteed to agree with WorkspaceAccountShare's.
- * getHoldings() reads Holding rows anchored to FinancialAccount (visibility via
- * SpaceAccountLink, the same join getAccounts() uses), exposing the anchor as a
- * single `accountId` field so existing UI call sites need no changes.
+ *
+ * REVIEW-3: getHoldings() — the general legacy `Holding` read model — was
+ * DELETED. Current positions come from the canonical PositionObservation seam
+ * (lib/investments/current-positions.ts getCurrentPositions); the only
+ * remaining production Holding reader is the crypto-only bridge
+ * (lib/investments/legacy-crypto-holdings.ts, walletChain-gated). Do not
+ * reintroduce a general Holding reader here — lib/export/holdings.test.ts and
+ * lib/investments/current-holdings.test.ts guard against it.
  */
 
 import { db } from "@/lib/db";
@@ -21,16 +26,16 @@ import {
   accountDisplayName, ACCOUNT_NAME_SELECT, compareAccountsByDisplayName,
 } from "@/lib/accounts/display-identity";
 import { getSpaceContext } from "@/lib/space";
-import { Account, Holding } from "@/types";
+import { Account } from "@/types";
 import { ShareStatus, PlaidItemStatus, type VisibilityLevel } from "@prisma/client";
 import { estimateMinimumPayment } from "@/lib/debt";
 import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
 import { resolveEffectiveDebtTerms } from "@/lib/debt/effective-terms";
-// KD-19 — visibility-tier enforcement on the UI account/holdings read paths.
-// grantsAccountDetail + TRANSACTION_DETAIL_VISIBILITY share the FULL gate the
-// AI assemblers use, so no read surface can disagree; sanitizeForBalanceOnly
-// is the same single-account redactor the shared-Space accounts route uses.
-import { grantsAccountDetail, TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
+// KD-19 — visibility-tier enforcement on the UI account read paths.
+// grantsAccountDetail shares the FULL gate the AI assemblers use, so no read
+// surface can disagree; sanitizeForBalanceOnly is the same single-account
+// redactor the shared-Space accounts route uses.
+import { grantsAccountDetail } from "@/lib/ai/visibility";
 import { sanitizeForBalanceOnly } from "@/lib/account-privacy";
 import { resolveRowBalances, reconcileAccount } from "@/lib/balances/account-balances";
 import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
@@ -325,50 +330,8 @@ export function sortAccountsForDisplay<T extends { id: string; type: string; nam
       { id: a.id, name: a.name }, { id: b.id, name: b.name }));
 }
 
-/**
- * All holdings across all investment accounts.
- *
- * Holdings are anchored to a FinancialAccount (financialAccountId); visibility
- * goes through an active SpaceAccountLink, mirroring getAccounts() above.
- */
-export async function getHoldings(ctx?: { spaceId: string }): Promise<Holding[]> {
-  const { spaceId } = ctx ?? (await getSpaceContext());
-
-  const rows = (await db.holding.findMany({
-    where: {
-      financialAccountId: { not: null },
-      financialAccount: {
-        deletedAt: null,
-        // KD-19 — individual positions are per-item DETAIL and require a
-        // FULL link. BALANCE_ONLY / SUMMARY_ONLY accounts contribute their
-        // balance (via getAccounts) but never expose symbols/quantities.
-        // Same FULL-only gate the transaction read paths use, so positions
-        // and rows can never disagree.
-        spaceAccountLinks: {
-          some: {
-            spaceId,
-            status:          ShareStatus.ACTIVE,
-            visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
-          },
-        },
-      },
-    },
-  })).sort((a, b) => b.value - a.value);
-
-  return rows.map((r) => ({
-    id:        r.id,
-    // Holdings match to accounts by this single id (the FinancialAccount FK).
-    accountId: r.financialAccountId as string,
-    symbol:    r.symbol,
-    name:      r.name,
-    quantity:  r.quantity,
-    price:     r.price,
-    value:     r.value,
-    change24h: r.change24h,
-    isCash:    r.isCash,
-    currency:  r.currency ?? null, // MC1 P4 Slice 5 — conversion input
-  }));
-}
+// REVIEW-3 — getHoldings() (the general legacy Holding reader) was deleted
+// here. See the module header; the canonical seam is getCurrentPositions.
 
 /**
  * Latest credit score for the current user.

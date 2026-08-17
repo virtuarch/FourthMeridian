@@ -151,6 +151,15 @@ console.log("source guard — export assembler off the general legacy Holding re
     /canonical-precedence\.core/.test(aiCore) && /excludeCanonicalAccounts\s*\(/.test(aiCore));
   check("export merge no longer drops canonical rows for bridge wallets (legacy never wins)",
     !/walletAccountIds/.test(mergeSrc));
+
+  // REVIEW-3 ratchet — the general legacy Holding reader (lib/data/accounts.ts
+  // getHoldings) is DELETED; lib/data/accounts.ts must never regrow a Holding
+  // read. The crypto-only bridge stays the single production Holding read path.
+  const accountsSrc = strip(readFileSync(join(process.cwd(), "lib/data/accounts.ts"), "utf8"));
+  check("lib/data/accounts.ts exports no getHoldings (general legacy reader deleted)",
+    !/export\s+(async\s+)?function\s+getHoldings/.test(accountsSrc));
+  check("lib/data/accounts.ts reads no Holding rows at all",
+    !/\.holding\./.test(accountsSrc));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed.`); process.exit(1); }
