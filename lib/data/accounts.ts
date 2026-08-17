@@ -23,7 +23,7 @@
 
 import { db } from "@/lib/db";
 import {
-  accountDisplayName, ACCOUNT_NAME_SELECT, compareAccountsByDisplayName,
+  accountDisplayName, compareAccountsByDisplayName,
 } from "@/lib/accounts/display-identity";
 import { getSpaceContext } from "@/lib/space";
 import { Account } from "@/types";

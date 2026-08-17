@@ -24,7 +24,7 @@ import { buildSpaceConversionContextById } from "@/lib/money/server-context";
 import type { ConversionContext } from "@/lib/money/types";
 import { getInvestmentValueAsOf } from "./valuation";
 import { loadOwnershipLicence, licenseView } from "./historical-holdings";
-import type { HoldingOwnershipFacts } from "./historical-holdings.core";
+import type { } from "./historical-holdings.core";
 import { resolveSpaceInvestmentAccountIds, resolveSingleAccountScope } from "./account-scope";
 import { summarizePeriodFlows, type FlowEvent, type PeriodFlows } from "./investment-flows-core";
 import {

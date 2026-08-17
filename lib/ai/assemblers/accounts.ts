@@ -55,7 +55,7 @@ import { ShareStatus, PlaidItemStatus, VisibilityLevel } from '@prisma/client';
 
 import { classifyAccounts, type ClassifiableAccount } from '@/lib/account-classifier';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
-import { identityContext, convertMoney, fxDisclosureOf } from '@/lib/money/convert';
+import { identityContext, convertMoney } from '@/lib/money/convert';
 import { buildSpaceConversionContext } from '@/lib/money/server-context';
 import { yesterdayUTCISO } from '@/lib/fx/config';
 // REVIEW-3 C-4 — THE population/privacy authority (lib/account-privacy). The

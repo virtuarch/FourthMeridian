@@ -79,11 +79,11 @@ import { createHash } from "node:crypto";
 
 import { db } from "@/lib/db";
 import { bankingTransactionWhere, BANKING_POPULATION as BANKING_POPULATION_FRAGMENT } from "@/lib/data/banking-population";
-import { eventProjectionWhere, findDuplicateEvents } from "@/lib/transactions/event-projection";
+import { findDuplicateEvents } from "@/lib/transactions/event-projection";
 // ⚠️ The REAL seams, never a reconstruction of them. A probe that rebuilds the
 // window or the where-clause measures its own copy and always agrees with it.
 import { aiTransactionWhere, aiDrilldownWhere, resolveWindow } from "@/lib/ai/assemblers/transactions";
-import { TransactionCategory, FlowType } from "@prisma/client";
+import { TransactionCategory } from "@prisma/client";
 
 const bar = (s: string) => console.log(`\n${"═".repeat(78)}\n${s}\n${"═".repeat(78)}`);
 const money = (n: number) =>

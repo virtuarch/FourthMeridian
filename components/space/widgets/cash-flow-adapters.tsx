@@ -30,11 +30,9 @@ import {
   asOfAnchor,
   economicTotals,
   outflowByCategory,
-  incomeSourceLabel,
   type CashFlowPeriod, type CashFlowContribution, periodKey } from "@/lib/transactions/cash-flow";
 import { rollupIncomeFromTransactions } from "@/lib/transactions/income-rollup";
-import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
-import { liquidityIdsByReason, classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
+import { liquidityIdsByReason, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { groupLiquidityByReason } from "@/lib/transactions/liquidity-breakdown";
 import { aggregateDayFacts, type CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import { CashFlowHistoryWidget } from "@/components/space/widgets/CashFlowHistoryWidget";

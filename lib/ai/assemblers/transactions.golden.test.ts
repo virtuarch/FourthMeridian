@@ -43,10 +43,6 @@ function row(dateISO: string, amount: number, flowType: string, category: string
   };
 }
 
-const numbersOf = (ms: ReturnType<typeof buildMonthlyBreakdown>) =>
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  ms.map(({ estimated, ...rest }) => rest);
-
 const pureUsd = [
   row("2026-05-03", -120.55, "SPENDING", "Food", "USD"),
   row("2026-05-10", 2500,    "INCOME",   "Income", "USD"),

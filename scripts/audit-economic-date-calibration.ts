@@ -13,7 +13,7 @@
  */
 
 import { db } from "@/lib/db";
-import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
+import { ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { admitTransferCandidate } from "@/lib/transactions/transfer-admission";
 import {
   resolveDestinationEvidenceFor, maturityForEvidence, impliedFlowType,

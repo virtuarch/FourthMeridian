@@ -25,7 +25,7 @@
  * from the UNCONVERTED historical (trust is currency-agnostic). No new data contracts.
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { Info, Loader2, TrendingUp } from "lucide-react";
 import Link from "next/link";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
