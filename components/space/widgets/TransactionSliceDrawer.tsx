@@ -35,8 +35,9 @@
  */
 
 import { useState } from "react";
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
-import { DEFAULT_DISPLAY_CURRENCY, formatCurrency } from "@/lib/currency";
+import { formatCurrency } from "@/lib/currency";
 import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
@@ -75,11 +76,15 @@ function money(v: number, ctx?: ConversionContext): string {
   return ctx ? formatCurrency(v, ctx.target) : formatAggregateMoney(Math.abs(v), null, 2);
 }
 
-function rowMoney(t: Transaction): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: t.currency ?? DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(t.amount));
+// REVIEW-3 C-5 — a row with NO recorded denomination renders in the DISPLAY
+// currency (the null-residue doctrine: never a hard-coded label). Rows with a
+// recorded currency keep their native label — itemized rows are never relabelled.
+function rowMoney(t: Transaction, displayCurrency: string): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: t.currency ?? displayCurrency, maximumFractionDigits: 2 }).format(Math.abs(t.amount));
 }
 
 function TxRow({ t }: { t: Transaction }) {
+  const displayCurrency = useDisplayCurrency();
   // v2.6-TRUTH-8 — the chip is the canonical row NATURE, matching the group
   // heading above it. It rendered `t.category`, the raw provider string, so a row
   // the Debt Payments card counted showed "Transfer" — the drawer contradicting
@@ -99,7 +104,7 @@ function TxRow({ t }: { t: Transaction }) {
       </div>
       <p className="text-sm font-bold tabular-nums shrink-0" style={{ color: credit ? "var(--accent-positive)" : "var(--text-primary)" }}>
         {/* v2.6-DIR-1 — sign from the canonical direction, colour from the tone. */}
-        {DIRECTION_SIGN[nature.direction]}{rowMoney(t)}
+        {DIRECTION_SIGN[nature.direction]}{rowMoney(t, displayCurrency)}
       </p>
     </div>
   );

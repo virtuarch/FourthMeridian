@@ -11,7 +11,8 @@
 
 import { useState, useEffect } from "react";
 import { CreditCard, X } from "lucide-react";
-import { DEFAULT_DISPLAY_CURRENCY, formatBalance, currencySymbol } from "@/lib/currency";
+import { formatBalance, currencySymbol } from "@/lib/currency";
+import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { formatMonthYear } from "@/lib/format";
 import { convertMoney } from "@/lib/money/convert";
 // v2.6-DEBT-1 — `amountOwed` / `hasOutstandingDebt` are no longer applied here:
@@ -117,9 +118,10 @@ export function DebtPayoffSection({
 }) {
   const debtAccounts = accounts.filter((a) => a.type === "debt");
 
-  // Display currency follows the converted values; the raw-sum path keeps
-  // the historical default label.
-  const disp = ctx?.target ?? DEFAULT_DISPLAY_CURRENCY;
+  // Display currency follows the converted values; with no context the
+  // display-currency AUTHORITY decides — never a hard-coded default label
+  // (REVIEW-3 C-5).
+  const disp = useAggregateCurrency(ctx);
   const sym  = currencySymbol(disp);
 
   /** Row amount in the display currency (native pass-through + taint on miss, plan D-3). */

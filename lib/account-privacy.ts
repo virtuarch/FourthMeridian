@@ -152,7 +152,6 @@ export interface NormalizedAccount {
    * history.ts). Attached by the accounts route, not normalizeSharedAccounts
    * itself. Present on FULL rows with transactions; null otherwise (no synced
    * transactions, or a BALANCE_ONLY aggregate row that maps to no single
-   * FinancialAccount). Consumed by RebuildHistoryButton as the "From" min.
    */
   earliestTxDate?: string | null;
   /**

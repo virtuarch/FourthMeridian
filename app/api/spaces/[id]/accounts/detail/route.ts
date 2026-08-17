@@ -36,6 +36,7 @@ import { ShareStatus, ImportBatchStatus }    from "@prisma/client";
 import { SpaceMemberRole }                   from "@prisma/client";
 import { requireSpaceRole }                  from "@/lib/session";
 import { normalizeSharedAccounts, type ShareRow } from "@/lib/account-privacy";
+import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { deriveConnectionState, type SyncConnectionState } from "@/lib/sync/status";
 import { resolveAccountFreshness, type AccountFreshness } from "@/lib/freshness/observation";
 import { resolveAccountBalances, reconcileAccount, type AccountBalances, type Reconciliation } from "@/lib/balances/account-balances";
@@ -137,7 +138,11 @@ export async function GET(
       financialAccount: {
         select: {
           id:             true,
-          name:           true,
+          // TRUTH-10 / REVIEW-3 C-1 — the full name-evidence set, via the shared
+          // select, so this surface (which HOSTS the rename control) resolves the
+          // same display identity as every other surface. Selecting `name` alone
+          // made the Accounts tab show the pre-rename provider name forever.
+          ...ACCOUNT_NAME_SELECT,
           type:           true,
           institution:    true,
           mask:           true,
@@ -298,7 +303,7 @@ export async function GET(
       id:                 a.id,
       spaceAccountLinkId: link.id,
       visibility:         "FULL",
-      name:               a.name,
+      name:               accountDisplayName(a),
       institution:        a.institution,
       type:               a.type,
       mask:               a.mask,

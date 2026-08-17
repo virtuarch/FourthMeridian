@@ -66,6 +66,24 @@ export interface CreditUtilizationResult {
  * a real over-limit position must be able to exceed 100 (`barPct` clamps for
  * display, and `utilizationLevel` reports "over").
  */
+
+/**
+ * REVIEW-3 C-4 — the ONE membership rule for "which lines participate in
+ * utilization". Utilization is a REVOLVING-credit concept: a loan that happens
+ * to carry a provider limit is not "utilized". A null subtype is admitted
+ * (legacy rows predate subtypes; a limit-bearing untyped debt account is a
+ * card in this corpus). Both the personal Credit page and the Space debt KPIs
+ * consume this predicate — the two previously asked different populations
+ * under the same word.
+ */
+export const REVOLVING_DEBT_SUBTYPES = new Set(["credit_card", "line_of_credit", "heloc"]);
+export function isRevolvingLine(a: { debtSubtype?: string | null; creditLimit?: number | null }): boolean {
+  return (
+    (a.debtSubtype == null || REVOLVING_DEBT_SUBTYPES.has(a.debtSubtype)) &&
+    a.creditLimit != null && a.creditLimit > 0
+  );
+}
+
 export function utilizationPercent(
   account: { balance: number; creditLimit?: number | null },
 ): number | null {

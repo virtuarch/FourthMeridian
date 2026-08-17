@@ -34,6 +34,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { TrendingDown, TrendingUp, Minus } from "lucide-react";
 import { formatDate, formatPercent } from "@/lib/format";
 import { DEFAULT_DISPLAY_CURRENCY, formatCurrency } from "@/lib/currency";
@@ -150,7 +151,10 @@ export function AssetValueWidget({ title: _title, assetType, config, accountBala
   const currentValue  = accountBalance ?? toNumber((config as Record<string, unknown> | null | undefined)?.["currentValue"]);
   const purchasePrice = toNumber(config?.purchasePrice);
   const purchaseDate  = toStringVal(config?.purchaseDate);
-  const currency      = toStringVal(config?.currency) ?? currencyProp ?? DEFAULT_DISPLAY_CURRENCY;
+  // REVIEW-3 C-5 — with no configured/prop currency the display AUTHORITY
+  // decides, never a hard-coded label.
+  const displayCurrency = useDisplayCurrency();
+  const currency      = toStringVal(config?.currency) ?? currencyProp ?? displayCurrency;
   // Support both 'note' (legacy) and 'notes' (current seed field)
   const note          = toStringVal(config?.note) ?? toStringVal(config?.notes);
 

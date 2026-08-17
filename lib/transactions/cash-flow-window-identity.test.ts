@@ -180,8 +180,7 @@ const ROWS: Transaction[] = [
 
   // No component may hand-roll the same conversion.
   const rolled: string[] = [];
-  for (const f of ["components/space/widgets/cash-flow-adapters.tsx",
-                   "components/space/widgets/DebtPaymentsWidget.tsx",
+  for (const f of [                   "components/space/widgets/DebtPaymentsWidget.tsx",
                    "components/space/widgets/CashFlowSummaryWidget.tsx",
                    "components/space/widgets/CashFlowHistoryWidget.tsx"]) {
     const src = strip(readFileSync(new URL(`../../${f}`, import.meta.url), "utf8"));

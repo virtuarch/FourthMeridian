@@ -526,10 +526,17 @@ async function assembleAccounts(
           // V26-PRE (B3) — effective terms via the single authority.
           const { apr: effectiveApr, minimumPayment: effectiveMinPayment } = resolveEffectiveDebtTerms(fa);
 
-          // rateSource reflects where the effective APR originated.
-          const rateSource: 'user' | 'provider' | null =
-            dp?.apr        != null ? 'user'     :
-            fa.interestRate != null ? 'provider' :
+          // rateSource reflects where the effective APR originated. REVIEW-3 C-2:
+          // BOTH stores are user-entered — `FinancialAccount.interestRate`'s only
+          // writer in the codebase is PATCH /api/accounts/[id] (no provider ingest
+          // writes it), so labelling it 'provider' told the model a self-reported
+          // rate was issuer-attested. 'user' = the debt-profile editor;
+          // 'user_account' = the legacy account-field editor. A true provider
+          // provenance value may be reintroduced only when a provider ingest
+          // actually writes a rate.
+          const rateSource: 'user' | 'user_account' | null =
+            dp?.apr        != null ? 'user'         :
+            fa.interestRate != null ? 'user_account' :
             null;
 
           base.apr                  = effectiveApr;

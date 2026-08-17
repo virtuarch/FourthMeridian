@@ -525,7 +525,12 @@ function buildInsight(
   // the Brief and the AI ended up telling a user two different things about the
   // same 30 days.
   if (txn && txn.incomeTotal > 0 && assessment.cashFlow.reliability !== "UNRELIABLE") {
-    const savingsRate = Math.round(((txn.incomeTotal - txn.expenseTotal) / txn.incomeTotal) * 100);
+    // REVIEW-3 C-3 — the rate is derived from the CANONICAL net (income −
+    // clamped spend), the same figure the Cash Flow workspace headlines — never
+    // recomputed here from gross expenseTotal, which overstated spending by the
+    // window's refunds. The sentence still DISCLOSES gross expenses, but names
+    // them as gross.
+    const savingsRate = Math.round((txn.netCashFlow / txn.incomeTotal) * 100);
     if (savingsRate > 0) {
       // TI2-W2 — honesty caveat: when a material share of that income is
       // sign-default inflow with no resolved source, the savings rate rests on
@@ -542,7 +547,7 @@ function buildInsight(
         type:     "insight",
         priority: 20,
         title:    "Today's Insight",
-        body:     `You kept ${savingsRate}% of income over the last ${txn.windowDays} days. Expenses were ${fmtCurrency(txn.expenseTotal, cur)} against ${fmtCurrency(txn.incomeTotal, cur)} in income.${caveat}`,
+        body:     `You kept ${savingsRate}% of income over the last ${txn.windowDays} days. Gross expenses were ${fmtCurrency(txn.expenseTotal, cur)} against ${fmtCurrency(txn.incomeTotal, cur)} in income${txn.refundTotal > 0 ? ` (${fmtCurrency(txn.refundTotal, cur)} came back as refunds)` : ""}.${caveat}`,
         tone:     "info",
       };
     }

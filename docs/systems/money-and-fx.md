@@ -75,7 +75,6 @@ inflated by a native magnitude, never quietly reduced by a fake zero.
 
 **The exclusion is disclosed, not hidden.** `unconverted` rides through
 `classifyAccounts`, the perspective lenses, and the workspace adapters to the Wealth
-and Cash Flow surfaces (`components/ui/FxUnavailableNote.tsx`, the perspective trust
 envelope's `warnings[]`). The AI path carries the same contract rather than inventing
 a figure: `AccountSummaryItem.reportingBalance` is `null` for an unavailable balance,
 `AccountsSectionData.totalsUnconverted` marks the affected totals, and the context

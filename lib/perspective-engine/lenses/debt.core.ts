@@ -351,7 +351,7 @@ export function computeDebt(
       },
       {
         id: "rate-sources",
-        text: "Rates come from your entries where provided, otherwise from the account provider.",
+        text: "Rates come from your entries — the debt-profile editor first, else the rate saved on the account.",
         source: "default",
       },
     );

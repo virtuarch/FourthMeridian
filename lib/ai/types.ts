@@ -182,11 +182,13 @@ export interface AccountHealthSummary {
  * SUMMARY_ONLY accounts to prevent identifying financial assumptions from leaking
  * across Space membership boundaries.
  *
- * `rateSource` reflects where the effective APR came from:
- *   'user'     — DebtProfile.apr was set by the account owner
- *   'provider' — FinancialAccount.interestRate was populated by Plaid or another
- *                provider; not user-confirmed
- *   null       — no rate data available from any source
+ * `rateSource` reflects where the effective APR came from. REVIEW-3 C-2: every
+ * live rate store is user-entered — no provider ingest writes a rate today:
+ *   'user'         — DebtProfile.apr, set in the debt-profile editor
+ *   'user_account' — FinancialAccount.interestRate, set in the account editor
+ *                    (the column's only writer; historically mislabelled
+ *                    'provider')
+ *   null           — no rate data available from any source
  */
 export interface AccountSummaryItem {
   id:               string;
@@ -327,7 +329,7 @@ export interface AccountSummaryItem {
   // All fields are undefined for non-debt account types and for BALANCE_ONLY accounts.
   apr?:                   number | null; // effective APR; null = known missing
   minimumPayment?:        number | null; // effective minimum payment; null = known missing
-  rateSource?:            'user' | 'provider' | null;
+  rateSource?:            'user' | 'user_account' | null;
   dueDay?:                number | null; // day of month (1–31)
   statementCloseDay?:     number | null; // day of month (1–31)
   promoAprEndDate?:       string | null; // ISO-8601 date string

@@ -195,7 +195,6 @@ console.log("v2.6-TRUTH-6. Cash Flow consumes the rollup; incomeBySource is reti
   // (2) Every Cash Flow income UI path goes through the canonical entry point.
   const consumers = [
     "components/space/widgets/cashflow/CashFlowWorkspace.tsx",
-    "components/space/widgets/cash-flow-adapters.tsx",
     "components/space/widgets/cashflow/cash-flow-insights.ts",
   ];
   for (const f of consumers) {

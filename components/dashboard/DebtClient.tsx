@@ -26,7 +26,7 @@ import {
   estimateMinimumPayment,
 } from "@/lib/debt";
 import { amountOwed, creditBalance, hasOutstandingDebt, liabilityState } from "@/lib/debt/balance-semantics";
-import { utilizationPercent } from "@/lib/accounts/credit-utilization";
+import { utilizationPercent, REVOLVING_DEBT_SUBTYPES } from "@/lib/accounts/credit-utilization";
 // TI5-3C — rows open the shared Transaction Detail drawer (mounted in DashboardChrome).
 import { useOpenTransaction } from "@/components/transactions/useTransactionDrawer";
 
@@ -65,12 +65,11 @@ const DEBT_SUBTYPES = [
   { value: 'other',          label: 'Other'           },
 ];
 
-/** Revolving credit: shows utilisation bar + limit editor */
-const REVOLVING = new Set(['credit_card', 'line_of_credit', 'heloc']);
-
-/** Returns true if this subtype supports a credit limit */
+/** Revolving credit: shows utilisation bar + limit editor.
+ *  REVIEW-3 C-4 — subtype membership from the canonical revolving-line rule
+ *  (lib/accounts/credit-utilization owns utilization membership). */
 function isRevolving(subtype?: string | null) {
-  return !subtype || REVOLVING.has(subtype);
+  return subtype == null || REVOLVING_DEBT_SUBTYPES.has(subtype);
 }
 
 function formatDate(iso: string | null): string {
