@@ -147,13 +147,16 @@ function main(): void {
       good.digitalAssets === 21_070.78 && good.netWorth === 24_141.08 && good.digitalAssetsUnavailableReason === undefined);
     check("the count of unassertable points is disclosed",
       section.unassertableCryptoPoints === 1, String(section.unassertableCryptoPoints));
-    check("trend crossing an unassertable endpoint is REFUSED",
-      section.netWorthTrend === null && section.netWorthTrendPct === null);
+    check("no accidental-window trend fields exist in the payload (REVIEW-3)",
+      !("netWorthTrend" in section) && !("netWorthTrendPct" in section));
+    check("the canonical change REFUSES a series whose only admissible point is the endpoint",
+      section.canonicalChange === null);
   }
   {
     const bothClean = projectSnapshotSection([clean({ date: "2026-01-01" }), clean({ date: "2026-02-01", netWorth: 25_000 })], "full")!;
-    check("trend between two assertable points is still computed",
-      bothClean.netWorthTrend === 25_000 - 24_141.08);
+    check("the canonical change is computed between two assertable points",
+      bothClean.canonicalChange !== null &&
+      Math.abs(bothClean.canonicalChange.abs - (25_000 - 24_141.08)) < 1e-9);
     check("clean histories disclose nothing extra",
       bothClean.unassertableCryptoPoints === undefined);
   }

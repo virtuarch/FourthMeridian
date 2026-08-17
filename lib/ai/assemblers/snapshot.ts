@@ -141,20 +141,13 @@ export function projectSnapshotSection(
   const oldest = points[0];
   const latest = points[points.length - 1];
 
-  let netWorthTrend:    number | null = null;
-  let netWorthTrendPct: number | null = null;
-
-  // V26-CRYPTO-STATUS-1 — a trend across an unassertable endpoint is not a
-  // weaker trend, it is not a trend at all. Both endpoints must be assertable;
-  // otherwise the calculation is REFUSED (null) rather than computed from a
-  // number the payload itself declares unknown.
+  // V26-CRYPTO-STATUS-1 — an unassertable digital-asset point NULLS the row's
+  // netWorth, which removes it from the canonical-change series below: a trend
+  // is never computed from a number the payload itself declares unknown. The
+  // count is disclosed. (The accidental-window `netWorthTrend` pair this block
+  // once computed was deleted at REVIEW-3 integration — `canonicalChange` is
+  // the only change figure the payload carries.)
   const unassertablePoints = points.filter((p) => p.netWorth === null).length;
-  if (points.length >= 2 && oldest.netWorth !== null && latest.netWorth !== null) {
-    netWorthTrend = latest.netWorth - oldest.netWorth;
-    if (oldest.netWorth !== 0) {
-      netWorthTrendPct = Math.round((netWorthTrend / Math.abs(oldest.netWorth)) * 10000) / 100;
-    }
-  }
 
   const estimated = usable.some((r) => r.isEstimated === true);
 
@@ -167,7 +160,7 @@ export function projectSnapshotSection(
   // nothing enforces. `spanDays` is derived from the dates the section already
   // carries, so the count is never again pressed into service as a duration.
   //
-  // `canonicalChange` exists because `netWorthTrend` above is oldest→newest of
+  // `canonicalChange` replaced the deleted `netWorthTrend` pair (oldest→newest of
   // whatever rows were fetched: a real number over an ACCIDENTAL window. The
   // Daily Brief published it as "over the last 90 days" and landed on a baseline
   // three days from the canonical one, across a $4,985 debt paydown — 14.9%
@@ -195,14 +188,6 @@ export function projectSnapshotSection(
     canonicalChange,
     oldestDate:       oldest.date,
     newestDate:       latest.date,
-    // ⚠️ REVIEW-3 C-5 — the accidental fetched-row window. RETAINED in the
-    // payload ONLY because a snapshot-authority guard outside this slice's
-    // write scope pins its refusal semantics (crypto-valuation-status: a trend
-    // across an unassertable endpoint is null); NO detector or Brief sentence
-    // reads it any more — the signal detector migrated to canonicalChange.
-    // Nothing user-facing may consume these two fields.
-    netWorthTrend,
-    netWorthTrendPct,
     latest,
     history: scopeHint === 'brief' ? [] : points,
     // Disclosure — additive; absent on clean homogeneous histories.

@@ -80,8 +80,10 @@ function snap(over: Partial<Snapshot> & { date: string }): Snapshot {
     "full",
   );
   check("clean history: section assembled", out !== null);
-  check("clean history: trend = latest − oldest", out?.netWorthTrend === 100);
-  check("clean history: pct rounded to 2dp", out?.netWorthTrendPct === 10);
+  check("clean history: no accidental-window trend fields (REVIEW-3)",
+    out !== null && !("netWorthTrend" in out) && !("netWorthTrendPct" in out));
+  check("clean history: fold endpoints usable (1000 → 1100)",
+    out?.history[0]?.netWorth === 1000 && out?.history[1]?.netWorth === 1100);
   check("clean history: liquid = cash + savings", out?.latest?.liquid === 550);
   check("clean history: no estimated flag", out !== null && !("estimated" in out));
   check("clean history: no exclusion disclosure", out !== null && !("excludedFxMissPoints" in out));
@@ -100,7 +102,8 @@ function snap(over: Partial<Snapshot> & { date: string }): Snapshot {
     "full",
   );
   check("fxMiss: excluded from count", out?.snapshotCount === 2);
-  check("fxMiss: excluded from trend (1200−1000, not native-magnitude)", out?.netWorthTrend === 200);
+  check("fxMiss: excluded from the series endpoints (1000…1200, never native-magnitude)",
+    out?.history[0]?.netWorth === 1000 && out?.history[out.history.length - 1]?.netWorth === 1200);
   check("fxMiss: excluded from history", out?.history.length === 2);
   check("fxMiss: exclusion disclosed", out?.excludedFxMissPoints === 1);
   check("fxMiss: latest is the last USABLE point", out?.latest?.date === "2026-07-03");
@@ -138,7 +141,8 @@ function snap(over: Partial<Snapshot> & { date: string }): Snapshot {
   );
   check("brief: history omitted", out?.history.length === 0);
   check("brief: latest retained", out?.latest?.netWorth === 1100);
-  check("brief: trend retained", out?.netWorthTrend === 100);
+  check("brief: canonical latest retained without trend fields",
+    out !== null && !("netWorthTrend" in out));
 }
 
 // B6. Zero-baseline: pct is null when oldest netWorth is 0 (no fabricated %).
@@ -150,8 +154,10 @@ function snap(over: Partial<Snapshot> & { date: string }): Snapshot {
     ],
     "full",
   );
-  check("zero baseline: absolute trend kept", out?.netWorthTrend === 500);
-  check("zero baseline: pct null", out?.netWorthTrendPct === null);
+  // B6. Zero-baseline handling now lives in canonicalWindowChange (pct null on
+  // zero opening value) — pinned in lib/data/snapshot-window.test.ts. Here we
+  // pin only that the deleted accidental fields did not resurface.
+  check("zero baseline: no accidental trend fields", out !== null && !("netWorthTrend" in out));
 }
 
 if (failures > 0) {

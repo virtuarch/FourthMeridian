@@ -1145,7 +1145,8 @@ export interface SnapshotSectionData {
    * number. Null when history does not reach back that far: a refusal, never a
    * fallback to the earliest available point.
    *
-   * ⚠️ Prefer this over `netWorthTrend`/`netWorthTrendPct` for anything a user
+   * ⚠️ The ONLY window-change figure in this payload (the accidental-window
+   * trend pair was deleted at REVIEW-3 integration). Use for anything a user
    * reads. Those span oldest→newest of whatever rows were fetched — a real
    * number over an ACCIDENTAL window.
    */
@@ -1162,10 +1163,8 @@ export interface SnapshotSectionData {
   newestDate:      string | null; // YYYY-MM-DD
   /** Absolute net-worth change from oldest to newest in the window.
    *  ⚠️ An ACCIDENTAL window — see `canonicalChange`. */
-  netWorthTrend:   number | null; // null if fewer than 2 snapshots
   /** Percentage change, null if oldest net worth was 0.
    *  ⚠️ An ACCIDENTAL window — see `canonicalChange`. */
-  netWorthTrendPct: number | null;
   latest:          SnapshotDataPoint | null;
   history:         SnapshotDataPoint[]; // omitted on scopeHint='brief'
   /**
