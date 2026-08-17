@@ -91,7 +91,7 @@ async function main() {
     const store = createWorkspaceSessionStore();
     store.ensure("/api/platform/platform-ops/refresh/summary");
     store.ensure("/api/platform/platform-ops/refresh/coverage");
-    store.ensure("/api/platform/platform-ops/refresh/failures");
+    store.ensure("/api/platform/platform-ops/refresh/executions");
     await tick();
 
     check("three distinct routes ⇒ three requests (no merging)", calls.length === 3, `issued ${calls.length}`);
