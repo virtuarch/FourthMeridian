@@ -155,8 +155,13 @@ console.log("\nPROBE 7/10 — liquidity consumes reachable; credit is never cash
   check("the lens cash total consumes reachableCash", core.includes("r.reachableCash"));
   check("...and distinguishes ABSENT (no claim) from NULL (unknown)",
     /r\.reachableCash === undefined/.test(core) && /r\.reachableCash === null/.test(core));
-  check("a cash account with an UNKNOWN reachable figure is excluded and counted",
-    /cashUnreachableCount\+\+/.test(core));
+  // REVIEW-3 — the exclude-and-count rule now lives ONLY in the authority
+  // (lib/balances/reachable.ts); the lens totals through it instead of
+  // re-implementing the counter inline (`cashUnreachableCount++`).
+  check("a cash account with an UNKNOWN reachable figure is excluded and counted (via the authority)",
+    core.includes("totalReachableCash(cashInputs)") &&
+    /cashUnreachableCount\s*=\s*reach\.unknownCount/.test(core) &&
+    !/cashUnreachableCount\+\+/.test(core));
   check("the lens no longer asserts holds are unreflected",
     !core.includes("pending activity and holds are not reflected") ||
     /usesReachable/.test(core));
