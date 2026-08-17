@@ -244,8 +244,16 @@ console.log("\nPROBE 8 — every section widget is classified, and balance cards
   // The AI payload names the quantity instead of shipping a bare number.
   const ai = code("lib/ai/assemblers/accounts.ts");
   check("the AI payload sends a NAMED available quantity", ai.includes("availableQuantity:"));
-  check("...at BOTH visibility tiers",
-    (ai.match(/\.\.\.balanceFacts\(fa, now\),/g) ?? []).length === 2);
+  // REVIEW-3 C-4 re-point: the privacy-reduced tier no longer spreads
+  // balanceFacts per link — its rows are AGGREGATED by the account-privacy
+  // authority, and each aggregate's current state is composed from the members'
+  // balanceFacts claims via aggregateCurrentCashState (an aggregate is never
+  // more certain than its weakest member). Both tiers still consume the balance
+  // authority; neither ships the raw column.
+  check("...at BOTH visibility tiers (FULL spread; aggregate composes member claims)",
+    (ai.match(/\.\.\.balanceFacts\(fa, now\),/g) ?? []).length === 1 &&
+    /balanceFacts\(fa, now\);/.test(ai) &&
+    ai.includes("aggregateCurrentCashState("));
   check("the AI payload does not send the raw column",
     !/availableBalance:\s*fa\.availableBalance\.toString|availableBalance:\s*fa\.availableBalance\s*\?\?\s*null,\s*\n\s*syncStatus/.test(ai));
 }
