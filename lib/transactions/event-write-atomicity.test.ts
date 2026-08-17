@@ -80,6 +80,19 @@ function makeDb(initial: State, failOn?: number) {
         if (r) Object.assign(r, data);
         return r;
       },
+      // B-6 — reprojectEvent materializes the event's economicDate into its
+      // current row via a guarded updateMany (no-op when equal).
+      updateMany: async ({ where, data }: {
+        where: { id: string; NOT?: { economicDate?: Date } };
+        data: Record<string, unknown>;
+      }) => {
+        const r = s.txns.find((t) => t.id === where.id) as unknown as { economicDate?: Date } | undefined;
+        if (!r) return { count: 0 };
+        if (where.NOT?.economicDate !== undefined &&
+            r.economicDate?.getTime?.() === where.NOT.economicDate?.getTime?.()) return { count: 0 };
+        Object.assign(r, data);
+        return { count: 1 };
+      },
     },
     transactionObservation: {
       findUnique: async ({ where }: { where: { observationKey: string } }) => {
@@ -103,6 +116,12 @@ function makeDb(initial: State, failOn?: number) {
       },
     },
     transactionEvent: {
+      // B-6 — the idempotent path re-pins the current row from the stored
+      // projection (pinRowToEvent) without re-deriving it.
+      findUnique: async ({ where }: { where: { id: string } }) => {
+        const e = s.events.find((x) => x.id === where.id);
+        return e ? { ...e } : null;
+      },
       create: async ({ data }: { data: Record<string, unknown> }) => {
         const e = { id: `e${++seq}`, observationCount: 0, firstPendingObservedAt: null,
                     postedObservedAt: null, ...data } as unknown as Evt;
@@ -278,7 +297,10 @@ console.log("\nC. Replaying an identical payload still writes nothing");
     postingDate: replay.postingDate, economicDate: replay.economicDate,
   });
   const initial: State = {
-    txns: [{ id: "t1", plaidTransactionId: "post_A", deletedAt: null, transactionEventId: "eOrigin" }],
+    // B-6 — the row carries the event's pinned economicDate (as any really-
+    // written row does), so the idempotent re-pin is provably a no-op.
+    txns: [{ id: "t1", plaidTransactionId: "post_A", deletedAt: null, transactionEventId: "eOrigin",
+             economicDate: D("2026-08-05") } as never],
     obs: [baseObs({ eventId: "eOrigin", transactionId: "t1", observationKey: realKey, providerRowId: "post_A" })],
     events: [baseEvt({ id: "eOrigin", currentTransactionId: "t1" })],
   };

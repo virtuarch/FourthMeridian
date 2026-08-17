@@ -157,6 +157,7 @@ async function main() {
       amount: r.amount,
       postingDate: r.date,
       economicDate: r.economicDate as Date,
+      authorizedAt: r.authorizedAt,
       liveTransactionId: r.deletedAt ? null : r.id,
     }));
     const p = projectEvent(facts);
