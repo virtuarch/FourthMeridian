@@ -4,18 +4,19 @@ import { todayUTCISO } from "@/lib/time/clock";
 /**
  * SpaceDashboard
  *
- * Rendered for any non-PERSONAL space. Driven by SpaceDashboardSection
- * rows fetched from GET /api/spaces/[id]/sections.
- *
- * - Tabs are derived from enabled sections in TAB_ORDER
- * - Default tab is the first tab that has enabled sections (never SETTINGS by default)
- * - OWNER/ADMIN can toggle sections via the Settings tab
+ * The shared Space shell host (Personal renders through it too, via
+ * PersonalDashboard). The rail is fixed (lib/space-nav SPACE_TAB_ORDER); the
+ * OVERVIEW slot always renders the engaged Perspective workspace (the Net
+ * Worth default resolves to Wealth). SpaceDashboardSection rows (GET
+ * /api/spaces/[id]/sections) now drive only the GOALS / RETIREMENT routed
+ * modals and the initial-tab pick — the section-driven Overview canvas was
+ * retired in REVIEW-3.
  */
 
 import React, { useState, useEffect, useMemo } from "react";
 import type { ExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import { useRouter } from "next/navigation";
-import { Loader2, LayoutDashboard, LogOut } from "lucide-react";
+import { Loader2, LogOut } from "lucide-react";
 import { CATEGORY_LABELS, SpaceCategory } from "@/lib/space-presets";
 // Unified Space Widget Layout (slice 1) — Personal Overview lede widgets, now
 // section-backed (net_worth_chart + allocation).
@@ -26,36 +27,30 @@ import { usePerspectiveShellState } from "@/components/space/shell/usePerspectiv
 import { SpaceShell } from "@/components/space/shell/SpaceShell";
 import { openPerspectiveDataNeeds } from "@/lib/space/workspace-resources";
 import { useSpaceData } from "@/lib/space/use-space-data";
-import { useSpaceNavigation, TAB_ORDER, NEW_SPACE_TABS, NET_WORTH_LENS_ID, CORE_LENS_IDS } from "@/lib/space/use-space-navigation";
+import { useSpaceNavigation, NET_WORTH_LENS_ID, CORE_LENS_IDS } from "@/lib/space/use-space-navigation";
 import { useSpaceLensResults } from "@/lib/space/use-space-lens-results";
 import { useActiveEnvelope } from "@/lib/space/use-active-envelope";
 import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
-import { PerspectiveTabs } from "@/components/space/shell/PerspectiveTabs";
 import { WORKSPACE_RENDERERS, WorkspaceExplorationHost, type WorkspaceRenderCtx } from "@/components/space/workspaces/workspaceRenderers";
 import { MembersWorkspace } from "@/components/space/workspaces/MembersWorkspace";
-import { TransactionsWorkspace, TX_SCOPE_NOTE } from "@/components/space/workspaces/TransactionsWorkspace";
+import { TransactionsWorkspace } from "@/components/space/workspaces/TransactionsWorkspace";
 import { AccountsWorkspace } from "@/components/space/workspaces/AccountsWorkspace";
 import { ActivityWorkspace } from "@/components/space/workspaces/ActivityWorkspace";
-import { OverviewWorkspace } from "@/components/space/workspaces/OverviewWorkspace";
 import { AddGoalModal } from "@/components/space/workspaces/AddGoalModal";
 import { RoutedWorkspaceModal } from "@/components/space/workspaces/RoutedWorkspaceModal";
 import type { SectionCardBundle } from "@/components/space/workspaces/SpaceSectionStack";
 import { railVisibleTabs, SPACE_TAB_LABELS } from "@/lib/space-nav";
 import { useSpaceChromePublisher } from "@/lib/space/space-chrome-context";
 import { resolveSpaceFreshness } from "@/lib/freshness/space-freshness";
-import { getPerspectivesForCategory, getWorkspaceTargetTab, isRoutedWorkspaceTab, getWorkspaceDefinition } from "@/lib/perspectives";
+import { getPerspectivesForCategory, isRoutedWorkspaceTab, getWorkspaceDefinition, type PerspectiveDef } from "@/lib/perspectives";
 import { toVirtualSections } from "@/lib/perspectives/virtual-sections";
-import { PerspectivesWidget, type PerspectiveCardItem } from "@/components/dashboard/widgets/PerspectivesWidget";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
-import { type HeroPoint } from "@/components/dashboard/widgets/SpaceTrendHero";
-import { RecentTransactionsPanel } from "@/components/dashboard/widgets/RecentTransactionsPanel";
 import { rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 import { useDisplayCurrency, DisplayCurrencyProvider } from "@/lib/currency-context";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { CurrencyRevertedBanner } from "@/components/dashboard/CurrencyRevertedBanner";
-import { getSpaceHeroDef } from "@/lib/space-hero";
-import type { Transaction } from "@/types";
+import { hasSpaceTrendHero } from "@/lib/space-hero";
 import { SectionCard } from "@/components/space/sections/SectionCard";
 import { SectionRegistry } from "@/components/space/sections/SectionRegistry";
 import type { FinancialInitialWorkspacePayload } from "@/lib/space/mount-composition";
@@ -69,13 +64,6 @@ interface Props {
   category:      string;
   myRole:        string;
   currentUserId?: string;
-  /**
-   * SP-2A-4a — initial rail tab override (e.g. mapped from a legacy
-   * /dashboard?tab= deep link by the caller). No URL synchronization.
-   * Omitted ⇒ existing section-derived default. Applied once, after the
-   * first data load, exactly where the default would have been chosen.
-   */
-  initialTab?: string;
   /**
    * SD-2C — the Space-level display-currency ("view as" / FX) control. The
    * Personal host builds it (ViewCurrencyOverride) and its state; this host
@@ -137,21 +125,15 @@ interface Props {
 
 // SD-8b — the URL⇄tab vocabulary (URL_SYNCED_TABS / URL_TAB_ALIAS / parseTabParam /
 // perspectiveIdToSlug / parsePerspectiveParam / readUrlTabState) and the nav
-// constants (TAB_ORDER / NEW_SPACE_TABS / NET_WORTH_LENS_ID / CORE_LENS_IDS) moved
-// to lib/space/use-space-navigation.ts, the navigation authority. The host imports
+// constants (TAB_ORDER / NET_WORTH_LENS_ID / CORE_LENS_IDS) moved to
+// lib/space/use-space-navigation.ts, the navigation authority. The host imports
 // the constants it still renders with; the URL helpers are hook-internal.
 
 /** Flow-identified templates (Space Template Redesign): money movement is
- *  part of these Spaces' story, so Transactions is a first-class Overview
- *  preview module. Stock-identified categories (Investment / Property /
- *  Goal / value trackers) reach transactions through the Transactions tab
- *  doorway instead — never on the Overview. */
+ *  part of these Spaces' story. The former Overview transactions-preview
+ *  doorway is retired with the summary canvas (REVIEW-3); the list survives
+ *  as the eager-transaction-fetch activation gate (wantTransactions). */
 const FLOW_TX_CATEGORIES = ["HOUSEHOLD", "FAMILY", "BUSINESS", "DEBT_PAYOFF"];
-
-/** Scope honesty label for shared-Space transaction lists — KD-15 filters
- *  rows to FULL-visibility shares, so the list is structurally partial. */
-// TX_SCOPE_NOTE now lives with its primary owner (TransactionsWorkspace) and is
-// re-imported here for the Overview doorway preview (below).
 
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -163,7 +145,6 @@ export function SpaceDashboard({
   category,
   myRole,
   currentUserId = "",
-  initialTab,
   displayCurrencyControl,
   snapshotCurrency,
   ficoScore,
@@ -207,7 +188,7 @@ export function SpaceDashboard({
     chartMetric, setChartMetric,
     initialAccountFilter,
     applyInitialTab,
-  } = useSpaceNavigation({ initialTab, category, availablePerspectives });
+  } = useSpaceNavigation({ category, availablePerspectives });
 
   // SD-7b — the shared structural data lifecycle (sections / accounts / snapshots /
   // transactions / view-context / member count) + its refresh orchestration moved
@@ -243,25 +224,13 @@ export function SpaceDashboard({
     .filter((id) => id !== "SETTINGS")
     .map((id) => ({ id, label: SPACE_TAB_LABELS[id] }));
 
-  // "overview" is filtered out here, not in lib/perspectives.ts: it's never
-  // a clickable Perspective *card* (see that file's doc comment on the
-  // id) — only the PerspectiveSwitcher dropdown on Overview renders it.
-  const perspectiveItems: PerspectiveCardItem[] = useMemo(
-    () =>
-      getPerspectivesForCategory(category)
-        .filter((p) => p.id !== "overview")
-        .map((p) => {
-          const target = getWorkspaceTargetTab(p.id);
-          // Engine answer for lens-backed cards (liquidity, debt). Missing
-          // key (fetch pending/failed, or a lens that errored server-side
-          // returns status "error") → undefined → the widget renders the
-          // static description exactly as before.
-          const result = p.lensId ? lensResults?.[p.lensId] : undefined;
-          return target
-            ? { ...p, result, onSelect: () => setActiveTab(target) }
-            : { ...p, result };
-        }),
-    [category, lensResults, setActiveTab]
+  // "overview" is filtered out here, not in lib/perspectives.ts: it's the
+  // OVERVIEW destination's own identity, never an engageable lens. (The former
+  // PerspectiveCardItem mapping — engine results + doorway onSelect — retired
+  // with the Overview summary canvas and its Perspectives doorway, REVIEW-3.)
+  const perspectiveItems: PerspectiveDef[] = useMemo(
+    () => getPerspectivesForCategory(category).filter((p) => p.id !== "overview"),
+    [category]
   );
 
   // ── Perspective Workspace (UX-PER-3) ───────────────────────────────────────
@@ -278,11 +247,14 @@ export function SpaceDashboard({
   const activePerspective = activePerspectiveId
     ? perspectiveItems.find((p) => p.id === activePerspectiveId) ?? null
     : null;
-  // A Perspective is "engaged" (its Workspace occupies the Overview content slot)
-  // whenever Overview resolves a lens — which, with the Net Worth default, is
-  // always true for finance Spaces. Stock-category Spaces without a Wealth
-  // perspective resolve null and keep the summary fallback.
-  const perspectiveEngaged = activeTab === "OVERVIEW" && activePerspective != null;
+  // REVIEW-3 (slice F) — the Overview content slot ALWAYS renders the resolved
+  // lens's workspace now. The former `!perspectiveEngaged` summary canvas
+  // (OverviewWorkspace: trend hero / section stack / doorways) was product-
+  // unreachable for every creatable category (the Net Worth default always
+  // resolves to "wealth"; only TRIP lacks it, and TRIP is neither creatable nor
+  // present in production) and has been deleted. The nav hook guarantees
+  // activePerspectiveId is category-valid, so activePerspective is null only
+  // for a category with no wealth lens — where the slot renders nothing.
 
   // ── SD-3 — declarative lazy activation. The host asks the canonical registry
   //    what the OPEN perspective declared (WORKSPACE_REGISTRY[id].dataNeeds):
@@ -296,11 +268,11 @@ export function SpaceDashboard({
 
   // ── SD-7b — shared structural data lifecycle (useSpaceData) ─────────────────
   // Fold the nav-derived lazy-activation gates into two booleans and hand the
-  // whole data lifecycle to the hook (it stays nav-agnostic). heroDef /
-  // isFlowCategory are pure category helpers, also used for rendering below.
-  const heroDef = getSpaceHeroDef(category);
+  // whole data lifecycle to the hook (it stays nav-agnostic). hasSpaceTrendHero /
+  // isFlowCategory are pure category predicates (activation gates only — the
+  // hero rendering path was retired with the Overview canvas, REVIEW-3).
   const isFlowCategory = FLOW_TX_CATEGORIES.includes(category);
-  const wantSnapshots = Boolean(heroDef) || spaceType === "PERSONAL" || perspectiveNeedsSnapshots;
+  const wantSnapshots = hasSpaceTrendHero(category) || spaceType === "PERSONAL" || perspectiveNeedsSnapshots;
   const wantTransactions = isFlowCategory || activeTab === "TRANSACTIONS" || perspectiveNeedsTransactions;
   const {
     sections,
@@ -389,18 +361,12 @@ export function SpaceDashboard({
   //
   //   Net Worth · Cash Flow · Liquidity · Investments · Debt   (text-only, no icons)
   //
-  // "Net Worth" is the DEFAULT lens and IS the Overview summary (point-in-time
-  // net worth + composition), matching the prototype's `temporal:false` Net Worth
-  // lens — selecting it clears the engaged perspective. The other four engage
-  // their existing extracted Workspaces. Reconciliation notes:
-  //   • "Wealth" (assets-only, a full asOf/compareTo time-machine) is dropped from
-  //     the core lens row — it is heavier than the prototype's point-in-time Net
-  //     Worth lens; its semantics are untouched and it stays reachable at
-  //     ?perspective=wealth.
-  //   • "Goals" is not a core financial analytical lens (prototype excludes it);
-  //     removed from the selector, its Workspace architecture treated separately.
-  // ONE shared PerspectiveTabs renders this on the summary AND (engaged) inside
-  // PerspectiveShell — same items, same handler; never two selectors at once.
+  // "Net Worth" is the DEFAULT lens — REVIEW-3: selecting it clears the engaged
+  // selection, which re-resolves to the Wealth workspace (the summary canvas it
+  // used to return to is retired). The other four engage their extracted
+  // Workspaces. "Goals" is not a core financial analytical lens (prototype
+  // excludes it); it stays reachable only via its routed-modal deep link.
+  // ONE shared PerspectiveTabs renders inside PerspectiveShell.
   // SD-2 — "is this Perspective workspace-backed?" is answered by the renderer
   // contract (a dedicated WORKSPACE_RENDERERS entry) OR real widgets[] (the
   // virtual-section path, e.g. Goals) — never by widget presence alone. Investments
@@ -418,20 +384,9 @@ export function SpaceDashboard({
   );
   // selectLens + activeLensId now come from useSpaceNavigation (SD-8b).
 
-  // Overview Perspectives doorway — each workspace-backed card engages that
-  // Perspective through the Overview experience (M2 canonical IA: stay on
-  // OVERVIEW, set the lens; the URL sync then writes ?tab=overview&perspective=
-  // <slug>). Perspectives without a workspace stay non-clickable "Soon"
-  // placeholders. This is the summary-level entry into the lens selector.
-  const perspectiveDoorwayItems = useMemo(
-    () =>
-      perspectiveItems.map((p) =>
-        isWorkspaceBacked(p)
-          ? { ...p, onSelect: () => { setSelectedPerspectiveId(p.id); setActiveTab("OVERVIEW"); } }
-          : { ...p, onSelect: undefined },
-      ),
-    [perspectiveItems, setSelectedPerspectiveId, setActiveTab],
-  );
+  // (REVIEW-3) The Overview Perspectives doorway-card row retired with the
+  // summary canvas; the lens selector inside PerspectiveShell is the one
+  // remaining lens entry surface.
 
   // SD-8b — the ?tab=/?perspective= write + Back/Forward read + the ?account=
   // deep-link seed all moved into useSpaceNavigation (the URL authority). The host
@@ -576,11 +531,11 @@ export function SpaceDashboard({
     key in SectionRegistry ||
     (isDebtSpaceCategory && (key === "cash_flow" || key === "savings_rate"));
 
-  // Derive tabs from enabled sections. (Settings is no longer an in-space
-  // tab — section show/hide and layout controls live in ManageSpaceModal.)
+  // Enabled, renderer-backed sections — consumed by the routed-modal tabs
+  // (GOALS / RETIREMENT) via sectionsForTab below. (The former section-derived
+  // `tabs` list fed only the "no sections configured" fallback, deleted with
+  // the Overview summary canvas in REVIEW-3.)
   const enabledSections = sections.filter((s) => s.enabled && hasRenderer(s.key));
-  const tabSet = Array.from(new Set(enabledSections.map((s) => s.tab)));
-  const tabs   = TAB_ORDER.filter((t) => tabSet.includes(t));
 
   const catLabel = CATEGORY_LABELS[category as SpaceCategory] ?? category;
 
@@ -685,111 +640,19 @@ export function SpaceDashboard({
     );
   }
 
-  // Unified Space Widget Layout (slice 1) — every tab (Personal OVERVIEW
-  // included) renders its ordered section stack. The former renderHero
-  // suppression that emptied Personal's Overview is gone: Net Worth / chart /
-  // allocation are now section-backed, so Edit Layout works here naturally.
+  // The active tab's enabled, renderer-backed sections — consumed by the
+  // GOALS / RETIREMENT routed modals (the last section-driven surfaces).
   const sectionsForTab = enabledSections
     .filter((s) => s.tab === activeTab)
     .sort((a, b) => a.order - b.order);
 
-  // ── Hero series (Space Template Redesign) ─────────────────────────────────
-  // MC1 QA Q4b — drop fxMiss points (off-stamp rows whose FX rate missed, so
-  // their values are native/unconverted) so the hero series never plots mixed
-  // units: a shorter honest trend beats a silently mixed-magnitude one.
-  const heroPoints: HeroPoint[] = heroDef && snapshots
-    ? snapshots.filter((s) => !s.fxMiss).map((s) => ({ date: s.date, value: heroDef.value(s) }))
-    : [];
+  // (REVIEW-3, slice F) The Overview summary canvas — trend-hero series, the
+  // v2.6-LEGACY-1 hero-override dead lets, the Recent-Transactions preview and
+  // the Perspectives doorway row — was deleted with OverviewWorkspace: the
+  // Overview slot always renders the engaged Perspective workspace, so the
+  // summary composition had no reachable mount.
 
-  // Debt Space preview — activity on debt accounts (template polish D6). Pure
-  // render-phase filter over data already fetched; other categories pass through.
-  //
-  // ⚠️ This called itself "the PAYMENTS story" while filtering only on account
-  // type, so 65 TRANSFER rows ($5,000.43 on the live corpus) appeared under a
-  // payments heading. The filter is right for what this preview is — everything
-  // that happened on your debt accounts — so the WORDS changed, not the rows.
-  // The debt-payment TOTAL has one authority and is not computed here.
-  const previewTransactions: Transaction[] = (() => {
-    const txs = spaceTransactions ?? [];
-    if (category !== "DEBT_PAYOFF") return txs;
-    const debtIds = new Set(accounts.filter((a) => a.type === "debt").map((a) => a.id));
-    return txs.filter((t) => debtIds.has(t.accountId));
-  })();
-  const previewScopeNote =
-    category === "DEBT_PAYOFF" ? `Activity on debt accounts · ${TX_SCOPE_NOTE.toLowerCase()}` : TX_SCOPE_NOTE;
-
-  // ── v2.6-LEGACY-1: the emergency-fund lede is RETIRED ─────────────────────
-  //
-  // This rendered "N months covered" for `category === "EMERGENCY_FUND"`. That
-  // category is `hidden` in lib/space-templates/registry.ts — one of the
-  // template list's own "retired Debt Payoff / Emergency Fund / Investment /
-  // Equipment / Other". Only `family` and `custom` are `live`, so no user can
-  // create a Space this could render on, and the corpus holds zero of them.
-  //
-  // v2.6-ASSESS-5 converged this override onto the resolved expense baseline.
-  // That was polish on a removed product surface: the analysis was right about
-  // the ARCHITECTURE (different question, shared unit) and wrong about whether
-  // the surface should exist at all. The override is removed rather than left
-  // converged, because a dead surface that looks well-maintained is harder to
-  // retire than one that plainly is not.
-  //
-  // The reusable primitive is NOT lost: `SpaceGoal` already carries
-  // category=EMERGENCY_FUND with targetAmount/currentAmount/targetDate,
-  // contributions and check-ins — a live, generic goal framework this section
-  // duplicated more weakly. What that framework lacks is a target denominated in
-  // MONTHS OF EXPENSES rather than dollars, which is the one idea worth carrying
-  // forward (targetAmount = targetMonths × resolveExpenseBaseline().amount).
-  // Recorded in the after-action report, not built here: there is no consumer
-  // yet, and an authority without one is the failure this codebase already
-  // learned (TX-3).
-  //
-  // The hero itself still renders for a legacy EF Space — the plain savings
-  // balance from lib/space-hero.ts — so nothing that exists loses its headline.
-  let heroHeadlineOverride: string | undefined;
-  let heroSublineNote:      string | undefined;
-
-  // Overview doorways. (Activity slice) — the Recent Activity preview is
-  // removed from Overview: Activity is now its own rail tab. The Recent
-  // Transactions preview stays on flow-identified Spaces (money movement is
-  // part of their story; it's a doorway to the Transactions tab, not Activity).
-  // Non-flow Spaces get nothing here now.
-  const recentTransactionsDoorway =
-    isFlowCategory && accounts.length > 0 ? (
-      <RecentTransactionsPanel
-        transactions={previewTransactions}
-        previewCount={5}
-        scopeNote={previewScopeNote}
-        onViewAll={() => setActiveTab("TRANSACTIONS")}
-      />
-    ) : null;
-
-  const perspectivesDoorway =
-    accounts.length > 0 ? (
-      /* Doorways — hidden at day zero (every lens would open onto empty data;
-         the setup card is the one call to action). */
-      <div>
-        <div className="flex items-center justify-between px-1 mb-2">
-          <p className="text-sm font-semibold text-white">Perspectives</p>
-          <button
-            type="button"
-            // M2: engage the first workspace-backed lens through Overview (no
-            // separate Perspectives tab). Stays on OVERVIEW; the lens selector
-            // then lets the user move between lenses or back to the summary.
-            onClick={() => {
-              const first = perspectiveItems.find((p) => isWorkspaceBacked(p))?.id;
-              if (first) setSelectedPerspectiveId(first);
-            }}
-            className="text-xs font-medium text-[var(--meridian-400)] hover:text-[var(--meridian-300)] transition-colors"
-          >
-            See all
-          </button>
-        </div>
-        <PerspectivesWidget items={perspectiveDoorwayItems} variant="row" />
-      </div>
-    ) : null;
-
-  // SD-7 — the SectionCard prop bundle that the section-backed Workspaces
-  // (Accounts / Activity / Overview) thread through SpaceSectionStack.
+  // SD-7 — the SectionCard prop bundle for the section-backed surfaces.
   const sectionCardBundle: SectionCardBundle = {
     accounts,
     spaceId,
@@ -956,17 +819,19 @@ export function SpaceDashboard({
             section show/hide and layout controls moved to ManageSpaceModal →
             Overview. Opened via the "Manage" button above. */}
 
-        {/* M2 canonical IA — the Perspective experience now lives UNDER Overview
-            (no separate PERSPECTIVES rail tab). When a lens is engaged
-            (perspectiveEngaged) the Perspective's WORKSPACE + the lens selector
-            occupy the Overview content slot IN PLACE of the summary; the "Overview"
-            item in the selector returns to the summary. Selecting a lens swaps the
-            panel below: workspace-backed Perspectives (widgets[]) render through
-            the EXISTING SectionCard/SectionRegistry compositor as VIRTUAL,
-            render-only sections (virtual ids never reach a mutation endpoint);
-            others show an honest "coming soon" placeholder. The financial
-            workspaces, contracts, time semantics, Evidence, and FX are unchanged. */}
-        {activeTab === "OVERVIEW" && perspectiveEngaged && (
+        {/* M2 canonical IA — the Perspective experience lives UNDER Overview
+            (no separate PERSPECTIVES rail tab). REVIEW-3: the Overview content
+            slot ALWAYS renders the resolved lens's workspace + the lens
+            selector (the Net Worth default resolves to the Wealth workspace;
+            the former summary canvas was unreachable and is deleted).
+            Selecting a lens swaps the panel below: workspace-backed
+            Perspectives render their WORKSPACE_RENDERERS entry; widgets[]-
+            backed ones (Goals, deep-link only) render through the EXISTING
+            SectionCard/SectionRegistry compositor as VIRTUAL, render-only
+            sections (virtual ids never reach a mutation endpoint); others show
+            an honest "coming soon" placeholder. The financial workspaces,
+            contracts, time semantics, Evidence, and FX are unchanged. */}
+        {activeTab === "OVERVIEW" && activePerspective != null && (
           <div className="space-y-4">
             {/* ── Perspective shell — two framed containers (§2) ────────────────
                 Container 1 (time & trust): As of / Compare to / Completeness /
@@ -1118,51 +983,12 @@ export function SpaceDashboard({
           />
         )}
 
-        {/* Overview summary — the Space's primary canvas (SD-7), shown when no
-            lens is engaged (M2: an engaged lens swaps in the Perspective block
-            above). OverviewWorkspace owns the composition switcher + coming-soon
-            panel + the canvas (hero → day-zero setup / section stack → doorways).
-            Host passes shared data + host-derived hero values + the Edit-Layout
-            controls + the fetched doorway nodes (incl. the Perspectives entry). */}
-        {activeTab === "OVERVIEW" && !perspectiveEngaged && (
-          <div className="space-y-7 sm:space-y-9">
-            {/* M3 Design Lab convergence — the lens selector, surfaced on the
-                Overview summary so Perspective selection is front-and-centre.
-                Hidden at day zero (no accounts) where every lens would open onto
-                empty data — there the setup card is the one call to action. */}
-            {accounts.length > 0 && lensSelectorItems.length > 0 && (
-              <div className="flex flex-col items-center gap-2">
-                <p className="text-[11px] font-medium uppercase tracking-wider text-[var(--text-faint)]">
-                  Lens
-                </p>
-                <PerspectiveTabs
-                  items={lensSelectorItems}
-                  activeId={activeLensId}
-                  onSelect={selectLens}
-                />
-              </div>
-            )}
-            <OverviewWorkspace
-              category={category}
-              spaceType={spaceType}
-              accounts={accounts}
-              loading={loading}
-              canManage={canManage}
-              onManage={() => setShowManage(true)}
-              onAddGoal={() => setShowAddGoal(true)}
-              heroDef={heroDef ?? null}
-              heroPoints={heroPoints}
-              heroHeadlineOverride={heroHeadlineOverride}
-              heroSublineNote={heroSublineNote}
-              heroCurrency={effectiveDisplay}
-              snapshotsLoading={snapshots === null}
-              sectionsForTab={sectionsForTab}
-              card={sectionCardBundle}
-              recentTransactionsDoorway={recentTransactionsDoorway}
-              perspectivesDoorway={perspectivesDoorway}
-            />
-          </div>
-        )}
+        {/* (REVIEW-3) The former Overview summary branch (OverviewWorkspace:
+            composition switcher, trend hero, day-zero setup card, section
+            stack, doorways) is deleted — with the Net Worth default always
+            resolving to the Wealth workspace it had no reachable mount. The
+            "no dashboard sections configured" fallback went with it: every
+            rail tab now renders real content regardless of section rows. */}
 
         {/* Accounts — a fixed rail tab, now the editorial AccountsLedger (ground-truth
             list of the Space's financial objects). Consumes the SAME shared data +
@@ -1176,19 +1002,6 @@ export function SpaceDashboard({
             activity feed. Presentation-only convergence; never reorders. */}
         {activeTab === "ACTIVITY" && (
           <ActivityWorkspace spaceId={spaceId} />
-        )}
-
-        {/* No sections at all — only meaningful for the legacy data-driven
-            tabs above; the fixed-rail tabs always have their own content. */}
-        {tabs.length === 0 && !loading && activeTab !== "SETTINGS" && activeTab !== "ACTIVITY" &&
-         !NEW_SPACE_TABS.includes(activeTab) && !isRoutedWorkspaceTab(activeTab) && (
-          <div className="text-center py-12">
-            <LayoutDashboard size={30} className="text-[var(--text-faint)] mx-auto mb-3" />
-            <p className="text-sm text-[var(--text-muted)]">No dashboard sections configured</p>
-            {canManage && (
-              <p className="text-xs text-[var(--text-faint)] mt-1">This Space was created without a template.</p>
-            )}
-          </div>
         )}
         </div>
 

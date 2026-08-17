@@ -32,7 +32,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
 import { readSpaceParam, legacyTabPerspective } from "@/lib/space/space-url";
 import { PERSPECTIVE_LIBRARY, isRoutedWorkspaceTab } from "@/lib/perspectives";
-import { getSpaceHeroDef } from "@/lib/space-hero";
+import { hasSpaceTrendHero } from "@/lib/space-hero";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
 import type { DashboardSection } from "@/lib/space/dashboard-types";
 
@@ -94,9 +94,11 @@ function readUrlTabState(): { tab: string | null; perspective: string | null } {
 
 // M2: DEBT / INVESTMENTS removed — perspectives under Overview. GOALS / RETIREMENT
 // remain only as legacy routed modals, filtered out of the default-tab pick.
+// REVIEW-3 (slice F): GOALS / RETIREMENT stay in this order ONLY because their
+// deep links (?tab=goals / ?tab=retirement) are deliberately kept — they are
+// live-but-orphaned product surfaces awaiting a product decision (re-add an
+// entry point, or retire). They have no rail button and no other doorway.
 export const TAB_ORDER = ["OVERVIEW", "GOALS", "ACCOUNTS", "RETIREMENT", "ACTIVITY"];
-/** New tab ids that live entirely on the fixed rail (not section-driven). */
-export const NEW_SPACE_TABS = ["FINANCES", "TRANSACTIONS", "MEMBERS", "DOCUMENTS"];
 // M3-Reset — the canonical Overview LENS set (prototype parity). "Net Worth" is the
 // default lens (a null engaged perspective = the Overview summary); the rest engage
 // their extracted Workspaces.
@@ -106,8 +108,6 @@ export const CORE_LENS_IDS = ["cashFlow", "liquidity", "investments", "debt"];
 const WEALTH_METRICS: WealthMetricKey[] = ["netWorth", "totalAssets", "totalLiabilities", "liquidNetWorth"];
 
 export interface UseSpaceNavigationArgs {
-  /** Mapped legacy `?tab=` deep-link hint from the caller (unknown ⇒ section default). */
-  initialTab?: string;
   /** Space category — drives the trend-hero default-tab shortcut. */
   category: string;
   /** Perspective ids available for this category (getPerspectivesForCategory ids). */
@@ -133,12 +133,11 @@ export interface SpaceNavigation {
   setChartMetric: (m: WealthMetricKey) => void;
   /** ?account= deep-link seed for the Transactions tab (read once on mount). */
   initialAccountFilter: string | null;
-  /** Resolve + apply the initial tab ONCE, from the URL / initialTab / sections. */
+  /** Resolve + apply the initial tab ONCE, from the URL / sections. */
   applyInitialTab: (sections: DashboardSection[]) => void;
 }
 
 export function useSpaceNavigation({
-  initialTab,
   category,
   availablePerspectives,
 }: UseSpaceNavigationArgs): SpaceNavigation {
@@ -158,9 +157,23 @@ export function useSpaceNavigation({
   // "wealth" when no other lens is engaged; selectedPerspectiveId stays the clean
   // selection state (null = Net Worth default → clean URL). Non-Overview tabs engage
   // no lens.
+  //
+  // REVIEW-3 (slice F) — the Overview slot ALWAYS renders the resolved lens's
+  // workspace now (the summary canvas is retired), so the resolution must never
+  // produce an id the category cannot render: a selected id outside this
+  // category's lens list (only reachable via a hand-crafted ?perspective= URL —
+  // parsePerspectiveParam validates against the whole library, not the
+  // category) degrades to the wealth default instead of falling through to a
+  // deleted summary branch. "overview" is likewise not an engageable lens.
   const wealthAvailable = availablePerspectives.includes("wealth");
+  const selectedAvailableId =
+    selectedPerspectiveId &&
+    selectedPerspectiveId !== "overview" &&
+    availablePerspectives.includes(selectedPerspectiveId)
+      ? selectedPerspectiveId
+      : null;
   const activePerspectiveId =
-    activeTab === "OVERVIEW" ? (selectedPerspectiveId ?? (wealthAvailable ? "wealth" : null)) : null;
+    activeTab === "OVERVIEW" ? (selectedAvailableId ?? (wealthAvailable ? "wealth" : null)) : null;
   // Net Worth ⇒ the summary (clear the engaged lens); any other id engages it.
   const selectLens = useCallback(
     (id: string) => setSelectedPerspectiveId(id === NET_WORTH_LENS_ID ? null : id),
@@ -232,9 +245,11 @@ export function useSpaceNavigation({
   );
 
   // ── Initial-tab resolution (called ONCE by the host when data lands) ─────────
-  // URL wins, then the mapped legacy initialTab, then the section-derived default:
-  // a trend-hero Space opens on Overview; else the first non-Activity, non-routed
-  // enabled tab; else Activity if enabled; else Overview (e.g. CUSTOM, no sections).
+  // URL wins, then the section-derived default: a trend-hero Space opens on
+  // Overview; else the first non-Activity, non-routed enabled tab; else Activity
+  // if enabled; else Overview (e.g. CUSTOM, no sections). (The legacy initialTab
+  // prop seam was removed in REVIEW-3 — its last supplier, the /dashboard?tab=
+  // mapping chain, was deleted in Wave 1.)
   const applyInitialTab = useCallback(
     (sections: DashboardSection[]) => {
       if (initialTabSet.current) return;
@@ -243,15 +258,14 @@ export function useSpaceNavigation({
       const enabledTabs = new Set(sections.filter((s) => s.enabled).map((s) => s.tab));
       const nextTab =
         url.tab ??
-        (initialTab || null) ??
-        (getSpaceHeroDef(category)
+        (hasSpaceTrendHero(category)
           ? "OVERVIEW"
           : TAB_ORDER.find((t) => t !== "ACTIVITY" && !isRoutedWorkspaceTab(t) && enabledTabs.has(t)) ??
             (enabledTabs.has("ACTIVITY") ? "ACTIVITY" : "OVERVIEW"));
       if (url.perspective) setSelectedPerspectiveId(url.perspective);
       setActiveTab(nextTab);
     },
-    [category, initialTab],
+    [category],
   );
 
   return {

@@ -20,8 +20,8 @@
  *      lib/perspective-engine/lenses/<lensId>.ts (checked by source scan —
  *      importing the lens modules here would pull the data layer/Prisma
  *      into a pure config test).
- *   3. Lens-backed entries never leak into the composition switcher —
- *      exactly one navigation path per feature (the library's own rule).
+ *   3. (retired in REVIEW-3 — the composition switcher was deleted with the
+ *      Overview summary canvas.)
  *   4. Category lists only reference library ids, and every lens-backed
  *      entry is reachable from at least one category.
  */
@@ -31,7 +31,6 @@ import { join } from "path";
 
 import {
   PERSPECTIVE_LIBRARY,
-  getCompositionSwitcherItems,
   getPerspectivesForCategory,
 } from "./perspectives";
 
@@ -79,12 +78,10 @@ function main(): void {
       new RegExp(`registerLens\\(\\s*["']${p.lensId}["']`).test(src));
   }
 
-  console.log("3. One navigation path — lens-backed entries stay out of the composition switcher");
-  for (const cat of CATEGORIES) {
-    const leaked = getCompositionSwitcherItems(cat).filter((p) => p.lensId !== undefined);
-    check(`${cat}: switcher has no lens-backed entries`,
-      leaked.length === 0, leaked.map((p) => p.id).join(", "));
-  }
+  // (Invariant 3 retired in REVIEW-3 slice F: the Overview composition
+  // switcher and getCompositionSwitcherItems were deleted with the Overview
+  // summary canvas — the PerspectiveShell lens selector is the one lens
+  // navigation path now.)
 
   console.log("4. Category lists are library-consistent and lens entries are reachable");
   const reachable = new Set<string>();

@@ -217,16 +217,9 @@ const ROWS: Transaction[] = [
   ok("STATIC · shell → SectionCard → registry → widget, the as-of is threaded end-to-end");
 }
 
-// ── STATIC · the trend hero baseline is anchored to the SERIES, not today ─
-{
-  const hero = strip(readFileSync(
-    new URL("../../components/dashboard/widgets/SpaceTrendHero.tsx", import.meta.url), "utf8"));
-  const memo = hero.slice(hero.indexOf("const { latest, delta"), hero.indexOf("if (loading)"));
-  assert.ok(!/new Date\(\)/.test(memo),
-    "the 30-day baseline may not come from the wall clock — the series ends at the selected as-of");
-  assert.ok(/last\.date/.test(memo), "…it is measured back from the last point in the series");
-  ok("STATIC · trend-hero delta baseline is anchored to the series end");
-}
+// (REVIEW-3 slice F — the SpaceTrendHero series-anchor probe was deleted with
+// the trend hero itself: the Overview summary canvas is retired, so no surface
+// renders a category trend hero anymore.)
 
 // ── BEHAVIOURAL · the section window IS the selected window ──────────────
 //

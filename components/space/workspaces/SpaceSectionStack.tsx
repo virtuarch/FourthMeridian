@@ -3,19 +3,16 @@
 /**
  * components/space/workspaces/SpaceSectionStack.tsx  (SD-7)
  *
- * The shared section-stack render, extracted verbatim from SpaceDashboard's
- * section-backed-tab block. Every section-backed destination (Overview / Accounts /
- * Activity) renders the SAME stack:
- *   • sections empty → the caller's `emptyState`
- *   • otherwise      → the plain SectionCard map
- * Relocated so each Workspace mounts <SpaceSectionStack> instead of the host owning
- * the stack inline.
+ * REVIEW-3 (slice F): the <SpaceSectionStack> component itself was deleted with
+ * its last mount (the Overview summary canvas — Accounts and Activity had
+ * already migrated to their editorial workspaces). What survives here is the
+ * shared vocabulary the remaining section surfaces still use:
+ *   • NoSectionsCard — the empty state the GOALS/RETIREMENT routed modal renders;
+ *   • SectionCardBundle — the SectionCard prop bundle the host materializes.
  */
 
-import type { ReactNode } from "react";
 import { LayoutDashboard } from "lucide-react";
-import { SectionCard } from "@/components/space/sections/SectionCard";
-import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
+import type { SpaceAccount } from "@/lib/space/dashboard-types";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot } from "@/types";
 
@@ -60,19 +57,3 @@ export type SectionCardBundle = {
    */
   asOf?:            string;
 };
-
-export function SpaceSectionStack({
-  sections,
-  emptyState,
-  card,
-}: {
-  /** The active tab's visible sections (host's `sectionsForTab`). */
-  sections: DashboardSection[];
-  /** Rendered when `sections` is empty (Overview passes its hero-aware variant). */
-  emptyState: ReactNode;
-  card: SectionCardBundle;
-}) {
-  if (sections.length === 0) return <>{emptyState}</>;
-
-  return <>{sections.map((s) => <SectionCard key={s.id} section={s} {...card} />)}</>;
-}

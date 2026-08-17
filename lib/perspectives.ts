@@ -464,24 +464,8 @@ export function getPerspectivesForCategory(category: string): PerspectiveDef[] {
   return ids.map((id) => PERSPECTIVE_LIBRARY[id]).filter(Boolean);
 }
 
-/**
- * Subset of a category's Perspectives that are alternate full-canvas
- * *compositions* of the Overview tab itself — the PerspectiveSwitcher
- * dropdown (IA refactor point 2/3) — as opposed to card-based modal
- * launchers onto a different feature (Investments, Debt, Goals,
- * Retirement, etc. — see each host's own PERSPECTIVE_TARGET_TAB-style map
- * for those). A lens belongs here when it's the default "overview" lens,
- * or any other "Financial"-group lens that's still comingSoon — i.e.
- * lenses that would reshape the *same* canvas rather than open a
- * different one. Investments/Debt are also "Financial" but excluded here
- * (status "available", real modal targets) so there's exactly one
- * navigation path to each, not two competing ones.
- */
-export function getCompositionSwitcherItems(category: string): PerspectiveDef[] {
-  return getPerspectivesForCategory(category).filter(
-    (p) => p.group === "Financial" && (p.id === "overview" || p.status === "comingSoon")
-  );
-}
+// (REVIEW-3, slice F) getCompositionSwitcherItems was deleted with its sole
+// consumer, the Overview summary canvas's PerspectiveSwitcher dropdown.
 
 // ── SD-2B canonical UNIVERSAL workspace registry ───────────────────────────────
 // WORKSPACE_REGISTRY is the ONE identity authority over every primary Space
