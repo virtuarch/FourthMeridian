@@ -218,8 +218,11 @@ test("9. no React component derives creditor identity", () => {
     });
   assert.deepEqual(offenders, [], "these components infer a creditor from a descriptor");
 
-  // And the retired module stays retired.
-  const retired = readFileSync(join(process.cwd(), "lib/transactions/debt-payments.ts"), "utf8");
-  assert.ok(!/export function (normalizeCreditor|rawCreditorLabel|groupDebtPaymentsByCreditor)/.test(retired),
+  // And descriptor grouping stays retired: the LIVE authority groups by the
+  // creditor ACCOUNT (groupDebtPaymentsByCreditor over CreditorAccountRef) and
+  // must never regrow the descriptor-normalizing helpers the deleted
+  // lib/transactions/debt-payments.ts once exported.
+  const authority = readFileSync(join(process.cwd(), "lib/transactions/debt-payment-authority.ts"), "utf8");
+  assert.ok(!/normalizeCreditor|rawCreditorLabel/.test(authority),
     "descriptor grouping came back");
 });
