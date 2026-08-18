@@ -13,6 +13,7 @@
     "db:migrate:safe": "npm run db:backup && prisma migrate deploy",
     "db:backup": "tsx scripts/db-backup.ts",
     "db:guard": "tsx scripts/db-guard.ts",
+    "db:drift": "tsx --env-file=.env.local scripts/check-schema-drift.ts",
     "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
     "db:reset": "tsx scripts/db-guard.ts && npm run db:backup && prisma migrate reset --force",

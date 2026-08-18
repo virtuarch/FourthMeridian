@@ -315,6 +315,15 @@ export const AUDITS: readonly AuditEntry[] = [
     what: "READ-ONLY diagnostic for PlaidItem rows whose encryptedToken is neither v1 nor v2; " +
           "step 2 of the key-rotation runbook (docs/operations/key-rotation.md)",
   },
+  {
+    name: "check-schema-drift", tier: "OPERATIONAL", needsDb: true,
+    what: "READ-ONLY comparison of prisma/migrations/ against the target database's " +
+          "_prisma_migrations ledger (npm run db:drift); exits 1 on pending, unfinished, " +
+          "rolled-back, or unknown-to-the-repo migrations. A TOOL, not a gate: the build is " +
+          "`prisma generate && next build`, so nothing deploys schema and a deploy can ship " +
+          "code ahead of its columns — that gap ran for ten hours on 2026-07-26. Applying is " +
+          "a separate, deliberate step (npm run db:migrate:safe, which backs up first)",
+  },
 
   // ── RETIRED — their job is done ───────────────────────────────────────────
   // All five below are TOMBSTONES: the files were deleted in REVIEW-3 W3, the

@@ -162,3 +162,118 @@ export function captureSessionRevocationFailure(args: {
     // Monitoring must never take down the request it is observing.
   }
 }
+
+// ── Operational-ledger write failures (SCHEDULER-DISPATCH-RESTORE-1) ─────────
+//
+// WHY THIS EXISTS. Both append-only execution ledgers write best-effort and
+// swallow their own failures on purpose — "the ledger must never break the job
+// it observes" (lib/jobs/run.ts) and the identical contract in
+// lib/plaid/refresh-execution.ts. That contract is correct and is NOT changed
+// here. What was missing is that a swallowed failure went only to console.error,
+// so a ledger that had gone completely write-dead stayed invisible: the
+// dispatcher still returned 200, the Vercel cron dashboard stayed green, and the
+// only visible symptom was every job drifting to "overdue" on a surface nobody
+// watches minute-to-minute.
+//
+// That is exactly what happened on 2026-07-26: the deploy shipped OPS-2B′
+// (JobRun.deploymentSha) without its migration, so every jobRun.create() failed
+// P2022 for ten hours while every job body ran normally. RefreshExecution was
+// worse — its table was absent entirely, so the DF-2 ledger had been write-dead
+// since 07-24 and nothing reported it.
+//
+// So: still swallowed, still non-fatal, but now escalated. A write-dead ledger
+// reports itself instead of hiding behind a 200.
+
+/** The append-only execution ledgers whose writes are best-effort. */
+export type OperationalLedger = "JobRun" | "RefreshExecution";
+
+/** Which of the two writes failed. Start failures suppress the completion write. */
+export type LedgerWritePhase = "start" | "completion";
+
+/**
+ * Prisma's schema-drift signatures: the deployed code references a column
+ * (P2022) or a table (P2021) that the target database does not have. Kept
+ * distinct from the pool-exhaustion codes above for the same reason those are
+ * kept distinct from each other — drift and contention have different fixes, so
+ * they must not share a fingerprint. P2022 IS the 2026-07-26 fingerprint.
+ */
+export function isSchemaDriftCode(code: string): boolean {
+  return code === "P2021" || code === "P2022";
+}
+
+/**
+ * Build the Sentry payload for a swallowed operational-ledger write failure.
+ *
+ * Split out as a PURE function for the same reason buildSessionRevocationCapture
+ * is: the tags, the drift fingerprint and — critically — the absence of any
+ * credential are then provable in a unit test without a Sentry double.
+ *
+ * Reuses classifyDbError() rather than reading `.code` locally; a second, blinder
+ * Prisma-code reader in this file would be exactly the drift that a single
+ * classification authority exists to prevent.
+ */
+export function buildLedgerWriteCapture(args: {
+  ledger:   OperationalLedger;
+  phase:    LedgerWritePhase;
+  error:    unknown;
+  /** Static registry identifier (lib/jobs/registry.ts). Never user content. */
+  jobName?: string;
+}): {
+  tags:     Record<string, string>;
+  contexts: Record<string, Record<string, unknown>>;
+  level:    "error";
+} {
+  const dbErrorCode = classifyDbError(args.error);
+  return {
+    tags: {
+      area:          "operational-ledger",
+      ledger:        args.ledger,
+      // `phase`, not `stage`: "stage" is the SyncIssue operation vocabulary
+      // (lib/platform/incidents) and the auth surface already had to rename away
+      // from it. Two unrelated meanings under one tag name makes filtering
+      // ambiguous.
+      phase:         args.phase,
+      db_error_code: dbErrorCode,
+      schema_drift:  String(isSchemaDriftCode(dbErrorCode)),
+      ...(args.jobName ? { jobName: args.jobName } : {}),
+      // The deployment is NOT tagged here, for the reason given above: Sentry's
+      // `release` already carries currentDeploymentSha() and OPS-2B′ keeps that
+      // resolver sole-sourced.
+    },
+    contexts: {
+      ledger_write: {
+        ledger: args.ledger,
+        phase:  args.phase,
+        // Names the outcome in the words of the incident this prevents, so an
+        // alert reads as a consequence rather than as a stack trace.
+        effect: args.phase === "start"
+          ? "run left NO row in this ledger; the completion write is skipped"
+          : "row left permanently 'running'; the work itself succeeded",
+      },
+    },
+    // Always an error: either shape makes a successful run unreadable afterwards.
+    level: "error",
+  };
+}
+
+/**
+ * Capture a swallowed operational-ledger write failure.
+ *
+ * SAFE CONTEXT ONLY — and note what is deliberately ABSENT: no summary, no row,
+ * no connection string, no user content. The job name is a static registry
+ * identifier, and the db error code is a static Prisma code. Never throws:
+ * capture must not become a second failure on a path whose whole contract is
+ * that it cannot fail the work it observes.
+ */
+export function captureLedgerWriteFailure(
+  ledger: OperationalLedger,
+  phase: LedgerWritePhase,
+  error: unknown,
+  jobName?: string,
+): void {
+  try {
+    Sentry.captureException(error, buildLedgerWriteCapture({ ledger, phase, error, jobName }));
+  } catch {
+    // Monitoring must never take down the request it is observing.
+  }
+}

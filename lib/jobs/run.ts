@@ -22,6 +22,22 @@
  * observes. If the start write failed, the completion write is skipped
  * (nothing to complete; append-only means we never guess a row into place).
  *
+ * ...AND NOW ALSO REPORTED (SCHEDULER-DISPATCH-RESTORE-1, 2026-07-26).
+ * RELAXES A DOCUMENTED FENCE, deliberately. R8 below froze "metrics/telemetry"
+ * out of this wrapper, and that fence still holds: nothing here counts, times,
+ * samples or emits a metric. What it now does is escalate the ONE thing it was
+ * already swallowing — a failed ledger write — from console.error to
+ * captureLedgerWriteFailure (lib/monitoring/capture.ts, the PS-4A chokepoint).
+ *
+ * The fence was written to keep an observability system out of the execution
+ * wrapper. It was not written to make the wrapper's own blindness permanent, and
+ * read that strictly it did real damage: on 2026-07-26 a deploy shipped
+ * OPS-2B′ (deploymentSha) without its migration, every jobRun.create() failed
+ * P2022 for ten hours, ten registered jobs ran normally and NOT ONE left a row.
+ * Dispatch returned 200 throughout, so the only signal was every job silently
+ * ageing into "overdue". An error report is not telemetry; it is the wrapper
+ * admitting it failed at the one job it has.
+ *
  * SUMMARY DOCTRINE (schema comment is authoritative): the fn's resolved value
  * is stored as `summary` only if it JSON-serializes cleanly; callers must
  * return counts/kinds/dates/IDs only — never user content or monetary values.
@@ -34,6 +50,7 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
+import { captureLedgerWriteFailure } from "@/lib/monitoring/capture";
 import { currentDeploymentSha } from "@/lib/monitoring/deployment";
 
 /** How a run was initiated. "cron" for the Vercel-cron routes. */
@@ -139,6 +156,11 @@ export async function runJob<T>(
     runId = row.id;
   } catch (err) {
     console.error(`[job-run] ${jobName} (${executionId}): start write failed (non-fatal):`, err);
+    // Swallowed as always — but no longer silent. A start-write failure means
+    // this run leaves NO trace in the ledger at all (the completion write is
+    // skipped below), which is precisely the shape that reads as "the job never
+    // ran" on every health surface while the job in fact runs fine.
+    captureLedgerWriteFailure("JobRun", "start", err, jobName);
   }
 
   // The single completion write — skipped if the start write never landed.
@@ -148,6 +170,10 @@ export async function runJob<T>(
       await client.jobRun.update({ where: { id: runId }, data });
     } catch (err) {
       console.error(`[job-run] ${jobName} (${executionId}): completion write failed (non-fatal):`, err);
+      // Leaves a permanently "running" row — the crash shape lib/jobs/health.ts
+      // counts as a failure after STALE_RUNNING_HOURS. Worth an event: the job
+      // itself succeeded, so nothing else will ever report this.
+      captureLedgerWriteFailure("JobRun", "completion", err, jobName);
     }
   }
 

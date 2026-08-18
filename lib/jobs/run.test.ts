@@ -18,6 +18,10 @@
 
 import { readFileSync } from "node:fs";
 import {
+  buildLedgerWriteCapture,
+  isSchemaDriftCode,
+} from "@/lib/monitoring/capture";
+import {
   runJob,
   summarizeError,
   toJsonSummary,
@@ -218,6 +222,117 @@ async function main(): Promise<void> {
       "notification cleanup registered separately; process-deletions single-purpose (S3)",
       registrySrc.includes('"notification-cleanup"') && !routes[2].includes("cleanupNotifications"),
     );
+  }
+
+  // ── 7. Swallowed ledger failures are REPORTED (SCHEDULER-DISPATCH-RESTORE-1) ─
+  //
+  // The 2026-07-26 incident: a deploy shipped OPS-2B′ without its migration, so
+  // every jobRun.create() failed P2022. Ten jobs ran, none recorded, dispatch
+  // returned 200, and the only symptom was every job ageing into "overdue".
+  // Both catch blocks must escalate, not just console.error — the whole point is
+  // that a write-dead ledger cannot stay quiet again.
+  {
+    const src = readFileSync("lib/jobs/run.ts", "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    check(
+      "start-write failure is captured, not only logged",
+      /captureLedgerWriteFailure\(\s*"JobRun"\s*,\s*"start"/.test(src),
+    );
+    check(
+      "completion-write failure is captured, not only logged",
+      /captureLedgerWriteFailure\(\s*"JobRun"\s*,\s*"completion"/.test(src),
+    );
+    // The escalation must not have quietly become fatal: the swallow is the
+    // contract. Neither catch may rethrow.
+    check(
+      "capture did not make ledger writes fatal — neither catch rethrows",
+      !/catch\s*\(\s*err\s*\)\s*\{[^}]*captureLedgerWriteFailure[^}]*\bthrow\b/.test(src),
+    );
+    // The sibling ledger carries the identical contract and the identical gap.
+    const refreshSrc = readFileSync("lib/plaid/refresh-execution.ts", "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    check(
+      "RefreshExecution start-write failure is captured too",
+      /captureLedgerWriteFailure\(\s*"RefreshExecution"\s*,\s*"start"/.test(refreshSrc),
+    );
+    // A start-write failure still suppresses the completion write — capture is
+    // additive and must not have disturbed the append-only rule.
+    check(
+      "append-only preserved: completion still skipped when start never landed",
+      /if\s*\(runId === null\)\s*return;/.test(src),
+    );
+  }
+
+  // ── 7b. The capture PAYLOAD — extraction of SCHEDULER-DISPATCH-RESTORE-1 ────
+  //
+  // The builder is pure for the same reason buildSessionRevocationCapture is:
+  // the drift fingerprint and the ABSENCE of sensitive context are provable here
+  // without a Sentry double.
+  {
+    const p2022 = Object.assign(new Error("The column `deploymentSha` does not exist"), { code: "P2022" });
+    const drift = buildLedgerWriteCapture({ ledger: "JobRun", phase: "start", error: p2022, jobName: "fetch-fx-rates" });
+
+    check("P2022 is fingerprinted as schema drift", drift.tags.schema_drift === "true");
+    check("the Prisma code is carried as db_error_code", drift.tags.db_error_code === "P2022");
+    check("ledger and phase are tagged", drift.tags.ledger === "JobRun" && drift.tags.phase === "start");
+    check("the static job name is tagged", drift.tags.jobName === "fetch-fx-rates");
+    check("a write-dead ledger is an error, never a warning", drift.level === "error");
+    // The 2026-07-24 shape: the RefreshExecution TABLE was absent, not a column.
+    check("P2021 (missing table) is drift too", isSchemaDriftCode("P2021"));
+    check("a pool timeout is NOT mistaken for drift", !isSchemaDriftCode("P2024"));
+
+    // One classifier, reused — never a second, blinder reader of `.code`.
+    const unknown = buildLedgerWriteCapture({ ledger: "RefreshExecution", phase: "start", error: new Error("boom") });
+    check("an uncoded error still classifies (no undefined tag)", unknown.tags.db_error_code === "UNKNOWN");
+    check("an uncoded error is not called drift", unknown.tags.schema_drift === "false");
+    check("jobName is omitted when absent, never empty", !("jobName" in unknown.tags));
+
+    // NO SENSITIVE DATA. The whole payload is scanned, not just the fields we
+    // happen to remember — a future tag cannot quietly smuggle a secret in.
+    const serialized = JSON.stringify({ tags: drift.tags, contexts: drift.contexts });
+    const forbidden = ["postgres://", "postgresql://", "password", "secret", "token", "DATABASE_URL", "connection"];
+    check(
+      "payload carries no credential, connection string or token",
+      forbidden.every((f) => !serialized.toLowerCase().includes(f.toLowerCase())),
+      serialized,
+    );
+    // The deployment must come from Sentry's `release` (OPS-2B'), not a second read.
+    check("deployment sha is not re-tagged here", !/deploymentsha|release/i.test(JSON.stringify(drift.tags)));
+  }
+
+  // ── 8. The pre-deploy half of the same defence ──────────────────────────────
+  //
+  // Sentry catches drift that reached production. The drift guard catches it
+  // before it can. Neither replaces the other, so the script must keep existing
+  // and must stay read-only — it runs against production DATABASE_URLs.
+  {
+    const drift = readFileSync("scripts/check-schema-drift.ts", "utf8");
+    check(
+      "drift guard reads the real migration ledger",
+      drift.includes("_prisma_migrations") && drift.includes("prisma"),
+    );
+    check(
+      "drift guard exits nonzero on drift",
+      /process\.exit\(1\)/.test(drift),
+    );
+    const driftCode = drift.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    // Assert the CAPABILITY, not the vocabulary: the script prints the remediation
+    // command in its failure message, so banning the words "migrate deploy" would
+    // fail on advice rather than on an action. What must hold is that it cannot
+    // execute anything — no write query, no shell.
+    check(
+      "drift guard cannot write — no executeRaw, no shell",
+      !/\$execute(Raw|RawUnsafe)?\b/.test(driftCode) &&
+        !/child_process|execSync|spawn\(/.test(driftCode),
+    );
+    check(
+      "drift guard's only database call is a read",
+      (driftCode.match(/db\.\$\w+/g) ?? []).every((c) => c === "db.$queryRaw"),
+    );
+    const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> };
+    check("drift guard is reachable as npm run db:drift", pkg.scripts["db:drift"]?.includes("check-schema-drift"));
   }
 
   if (failures > 0) {
