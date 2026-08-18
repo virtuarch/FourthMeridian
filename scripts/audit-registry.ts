@@ -161,6 +161,14 @@ export const AUDITS: readonly AuditEntry[] = [
     name: "check-snapshot-integrity", tier: "REQUIRED", needsDb: true,
     what: "a stored balance component is a magnitude — never negative, never non-finite",
   },
+  {
+    // W1 (D6) — INV-19. Source-only: the corpus it audits is the repository.
+    name: "audit-read-identity-consumers", tier: "REQUIRED", needsDb: false,
+    what: "no product READ derives transaction identity from a non-event key — the fingerprint " +
+          "module is importable by write paths only, the similarity evidence defers to " +
+          "TransactionEvent (cross-event exclusion + DF-4 raw-descriptor key), and " +
+          "wallet/crypto rows stay outside the banking event domain",
+  },
 
   // ── INFORMATIONAL — reports and investigations, never a gate ──────────────
   {

@@ -39,6 +39,8 @@ async function main() {
       id: true, eventId: true, transactionId: true, financialAccountId: true, provider: true,
       providerRowId: true, providerPendingRef: true, observedAt: true, lifecycle: true,
       amount: true, postingDate: true, economicDate: true, authorizedAt: true, observationKey: true,
+      // W1 (D6) — the evidence ledger.
+      linkBasis: true, linkRefusal: true,
     },
   });
   const txs = await db.transaction.findMany({
@@ -193,12 +195,51 @@ async function main() {
   console.log(`\n  POSTING-DATE lag across ${chains.length} chains (a provider-DATED fact, so measurable now):`);
   console.log(`    ${[...postingLag].sort((a, b) => a[0] - b[0]).map(([d, c]) => `${d}d:${c}`).join("  ")}`);
 
+  bar("W1 — LINK-EVIDENCE LEDGER (basis / refusal / unhealed splits)");
+  // Recorded at write time by the one writer; null = written before the ledger
+  // existed (pre-W1 rows — re-derivable only by replay, which also HEALS
+  // formerly-dangling splits when the predecessor now exists).
+  const byBasis = new Map<string, number>();
+  const byRefusal = new Map<string, number>();
+  for (const o of observations) {
+    byBasis.set(o.linkBasis ?? "(pre-ledger)", (byBasis.get(o.linkBasis ?? "(pre-ledger)") ?? 0) + 1);
+    if (o.linkRefusal) byRefusal.set(o.linkRefusal, (byRefusal.get(o.linkRefusal) ?? 0) + 1);
+  }
+  console.log(`  by basis   :`, Object.fromEntries([...byBasis].sort()));
+  console.log(`  by refusal :`, byRefusal.size ? Object.fromEntries([...byRefusal].sort()) : "(none recorded)");
+
+  // DANGLING-SPLIT-UNHEALED counter: observations whose providerPendingRef NOW
+  // resolves to a same-account observation on a DIFFERENT event. Each is a split
+  // the replay-heal path would repair on the next idempotent replay of its
+  // payload. A COUNTER, not an invariant: a dangling claim whose predecessor
+  // never arrives is a permanent, honest refusal, and a healable one is repaired
+  // by replay, not by this audit.
+  const eventByRowId = new Map<string, { eventId: string; financialAccountId: string }>();
+  for (const o of observations) {
+    if (o.providerRowId) eventByRowId.set(o.providerRowId, { eventId: o.eventId, financialAccountId: o.financialAccountId });
+  }
+  const unhealed = observations.filter((o) => {
+    if (!o.providerPendingRef) return false;
+    const target = eventByRowId.get(o.providerPendingRef);
+    return !!target && target.financialAccountId === o.financialAccountId && target.eventId !== o.eventId;
+  });
+  const danglingNow = observations.filter((o) => o.providerPendingRef && !eventByRowId.has(o.providerPendingRef));
+  console.log(`  pending-ref claims dangling (predecessor absent)   : ${danglingNow.length}`);
+  console.log(`  HEALABLE splits (predecessor present, event differs): ${unhealed.length}`);
+  if (unhealed.length > 0) {
+    console.log(`    ⚠ each heals on the next idempotent replay of its payload (recordTransactionObservation)`);
+    for (const o of unhealed.slice(0, 5)) console.log(`      · obs ${o.id} claims ${o.providerPendingRef} → event ${eventByRowId.get(o.providerPendingRef!)?.eventId}, sits on ${o.eventId}`);
+  }
+
   bar("FINGERPRINTS");
   const fp = (label: string, parts: string[]) =>
     console.log(`  ${label.padEnd(28)} ${createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 16)}  (${parts.length})`);
   fp("events", events.map((e) => `${e.id}|${e.lifecycle}|${e.economicDate.toISOString()}|${e.currentAmount}|${e.currentTransactionId}|${e.observationCount}`).sort());
   fp("observations", observations.map((o) => `${o.observationKey}|${o.eventId}|${o.transactionId}|${o.lifecycle}|${o.amount}`).sort());
   fp("transaction → event links", txs.filter((t) => t.transactionEventId).map((t) => `${t.id}|${t.transactionEventId}`).sort());
+  // W1 (D6) — ADDITIVE fourth line; the three above keep their historical
+  // material so pre/post-W1 runs stay comparable.
+  fp("link-evidence ledger", observations.map((o) => `${o.observationKey}|${o.linkBasis ?? ""}|${o.linkRefusal ?? ""}`).sort());
 
   if (failures > 0) {
     console.error(`\n[AUDIT] FAILED — ${failures} invariant(s) violated.\n`);
