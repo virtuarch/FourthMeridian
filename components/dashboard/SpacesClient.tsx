@@ -185,7 +185,6 @@ export function CategoryIcon({ name }: { name: string }) {
 // repeated for every category.
 const CATEGORY_TILE: Record<string, string> = {
   PERSONAL:       "linear-gradient(135deg, var(--meridian-400), var(--meridian-700))",
-  HOUSEHOLD:      "linear-gradient(135deg, var(--ink-400), var(--ink-700))",
   FAMILY:         "linear-gradient(135deg, var(--ink-400), var(--ink-700))",
   BUSINESS:       "linear-gradient(135deg, var(--emerald-400), var(--emerald-700))",
   PROPERTY:       "linear-gradient(135deg, var(--ink-400), var(--ink-700))",
@@ -211,7 +210,6 @@ function categoryTile(category: string): string {
 // Space this is, never its health/state. Product-specified palette.
 const SPACE_IDENTITY_TINT: Record<string, string> = {
   PERSONAL:       "#C89B3C",
-  HOUSEHOLD:      "#4F8DFF",
   FAMILY:         "#4F8DFF",
   BUSINESS:       "#2FBF71",
   INVESTMENT:     "#8B6CFF",

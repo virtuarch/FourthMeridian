@@ -35,9 +35,12 @@ function check(name: string, ok: boolean, detail?: string): void {
 const CATEGORY_VALUES = new Set<string>(Object.values(SpaceCategory));
 
 // V25-CLOSE-4B — the picker's product truth, as template ids by exposure.
+// W1 — "household" was removed from EXPECTED_HIDDEN: the HOUSEHOLD concept is
+// RETIRED outright (FAMILY is the sole shared-family-space concept) and its
+// template was DELETED, not hidden. Test 6 below pins the deletion.
 const EXPECTED_LIVE        = ["family", "custom"];
 const EXPECTED_COMING_SOON = ["retirement", "business", "property", "vehicle", "trip"];
-const EXPECTED_HIDDEN      = ["household", "debt-payoff", "emergency-fund", "investment", "equipment", "other", "personal", "goal"];
+const EXPECTED_HIDDEN      = ["debt-payoff", "emergency-fund", "investment", "equipment", "other", "personal", "goal"];
 
 // 1. Unique, stable slug ids.
 const ids = SPACE_TEMPLATES.map((t) => t.id);
@@ -87,6 +90,14 @@ for (const id of EXPECTED_HIDDEN) {
   check(`retired/hidden template "${id}" is hidden but still resolvable`,
     getTemplate(id)?.status === "hidden");
 }
+// W1 — HOUSEHOLD is retired OUTRIGHT, not hidden: no template resolves for the
+// id or the category, and nothing may reintroduce one (FAMILY is the sole
+// shared-family-space concept; the enum member alone survives until the
+// enum-retirement migration).
+check(`retired concept "household" has NO template (deleted, not hidden)`,
+  getTemplate("household") === undefined);
+check(`no template carries the retired HOUSEHOLD category`,
+  getTemplateForCategory("HOUSEHOLD") === undefined);
 // The three groups partition the whole registry (nothing stranded in a 4th state).
 check(
   "live + comingSoon + hidden partition the registry",

@@ -133,7 +133,7 @@ interface Props {
  *  part of these Spaces' story. The former Overview transactions-preview
  *  doorway is retired with the summary canvas (REVIEW-3); the list survives
  *  as the eager-transaction-fetch activation gate (wantTransactions). */
-const FLOW_TX_CATEGORIES = ["HOUSEHOLD", "FAMILY", "BUSINESS", "DEBT_PAYOFF"];
+const FLOW_TX_CATEGORIES = ["FAMILY", "BUSINESS", "DEBT_PAYOFF"];
 
 
 // ─── Main component ───────────────────────────────────────────────────────────

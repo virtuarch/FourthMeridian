@@ -35,7 +35,7 @@ import { FinanceDomains, type ContextDomain } from '@/lib/ai/types';
  * Ordered so the most important data is assembled first.
  *
  * SNAPSHOT_HISTORY is included here (not just in FINANCE_WITH_HOLDINGS) so
- * that Personal, Business, Household, Debt-focused, and Goal-focused Spaces
+ * that Personal, Business, Family, Debt-focused, and Goal-focused Spaces
  * can all answer 90-day net-worth and trend questions. It is pre-aggregated
  * data (SpaceSnapshot rows) — cheap to assemble, high advisory value.
  */
@@ -63,7 +63,8 @@ const FINANCE_WITH_HOLDINGS: ContextDomain[] = [
 
 /**
  * Finance core + member management emphasis.
- * Used for HOUSEHOLD and FAMILY categories where member roles matter.
+ * Used for the FAMILY category, where member roles matter. (HOUSEHOLD was
+ * retired in W1 — FAMILY is the sole shared-family-space concept.)
  * SNAPSHOT_HISTORY included: multi-member Spaces benefit from net-worth trend
  * context to show collective progress across members.
  */
@@ -118,7 +119,6 @@ const FINANCE_GOAL_FOCUSED: ContextDomain[] = [
 const DOMAIN_MANIFEST_BY_CATEGORY: Record<string, ContextDomain[]> = {
   // Finance categories
   PERSONAL:        FINANCE_CORE,
-  HOUSEHOLD:       FINANCE_WITH_MEMBERS,
   FAMILY:          FINANCE_WITH_MEMBERS,
   BUSINESS:        FINANCE_CORE,
   INVESTMENT:      FINANCE_WITH_HOLDINGS,

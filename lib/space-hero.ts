@@ -23,7 +23,6 @@
  */
 
 const SPACE_HERO_CATEGORIES = new Set<string>([
-  "HOUSEHOLD",
   "FAMILY",
   "BUSINESS",
   "INVESTMENT",

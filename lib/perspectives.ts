@@ -421,7 +421,6 @@ const PERSPECTIVES_BY_CATEGORY: Record<string, string[]> = {
   // is a daily question (see PERSPECTIVE_ENGINE_FOUNDATION_INVESTIGATION.md
   // §2.5). Other categories can adopt it later as one-line changes here.
   PERSONAL:        ["overview", "wealth", "cashFlow", "liquidity", "investments", "debt", "goals"],
-  HOUSEHOLD:       ["overview", "wealth", "cashFlow", "liquidity", "goals", "debt"],
   FAMILY:          ["overview", "wealth", "cashFlow", "liquidity", "goals", "debt"],
   RETIREMENT:      ["overview", "wealth", "retirement", "investments", "cashFlow"],
   INVESTMENT:      ["overview", "investments", "wealth", "cashFlow"],

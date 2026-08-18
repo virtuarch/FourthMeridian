@@ -45,7 +45,10 @@ function check(name: string, cond: boolean, detail?: string): void {
 }
 
 // Categories exercised — superset of PERSPECTIVES_BY_CATEGORY's keys plus an
-// unknown one to cover the DEFAULT_PERSPECTIVES fallback path.
+// unknown one to cover the DEFAULT_PERSPECTIVES fallback path. "HOUSEHOLD" is
+// deliberately kept as a probe: the category is RETIRED (W1 — FAMILY is the
+// sole shared-family-space concept, and its PERSPECTIVES_BY_CATEGORY entry was
+// deleted), so it must degrade through the same fallback as any unknown value.
 const CATEGORIES = [
   "PERSONAL", "HOUSEHOLD", "FAMILY", "RETIREMENT", "INVESTMENT", "PROPERTY",
   "VEHICLE", "BUSINESS", "DEBT_PAYOFF", "EMERGENCY_FUND", "GOAL", "TRIP",

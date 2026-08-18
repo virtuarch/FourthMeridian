@@ -70,8 +70,10 @@ export const SPACE_TEMPLATES: readonly SpaceTemplate[] = [
   makeTemplate("property",       SpaceCategory.PROPERTY,       "comingSoon"),
   makeTemplate("vehicle",        SpaceCategory.VEHICLE,        "comingSoon"),
   makeTemplate("trip",           SpaceCategory.TRIP,           "comingSoon"),
-  // Retired from the picker — still resolvable so existing Spaces materialize
-  makeTemplate("household",      SpaceCategory.HOUSEHOLD,      "hidden"),
+  // Retired from the picker — still resolvable so existing Spaces materialize.
+  // (The "household" template was DELETED in W1: HOUSEHOLD is retired outright,
+  // FAMILY is the sole shared-family-space concept, and production holds zero
+  // HOUSEHOLD Spaces to materialize. Do not reintroduce it.)
   makeTemplate("debt-payoff",    SpaceCategory.DEBT_PAYOFF,    "hidden"),
   makeTemplate("emergency-fund", SpaceCategory.EMERGENCY_FUND, "hidden"),
   makeTemplate("investment",     SpaceCategory.INVESTMENT,     "hidden"),

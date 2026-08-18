@@ -97,12 +97,17 @@ function main(): void {
 
   console.log("6. removed templates are gone from the picker but still resolvable");
   const pickerIds = new Set([...live, ...soon].map((t) => t.id));
-  for (const id of ["household", "debt-payoff", "emergency-fund", "investment", "equipment", "other"]) {
+  for (const id of ["debt-payoff", "emergency-fund", "investment", "equipment", "other"]) {
     check(`"${id}" is not offered in the picker`, !pickerIds.has(id));
     check(`"${id}" still resolves (existing Spaces materialize)`, getTemplate(id) !== undefined);
   }
-  check("Household was merged into Family (Family is selectable)",
-    live.some((t) => t.id === "family") && !pickerIds.has("household"));
+  // W1 — HOUSEHOLD is retired OUTRIGHT: its template was DELETED (zero
+  // production Spaces to materialize), not merely hidden. FAMILY is the sole
+  // shared-family-space concept and stays selectable.
+  check(`"household" does not resolve at all (concept retired, template deleted)`,
+    getTemplate("household") === undefined && !pickerIds.has("household"));
+  check("Family carries the household concept (Family is selectable)",
+    live.some((t) => t.id === "family"));
 
   console.log(failures === 0 ? "\nPASS" : `\nFAIL — ${failures} check(s)`);
   process.exit(failures === 0 ? 0 : 1);

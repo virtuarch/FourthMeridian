@@ -20,7 +20,6 @@
 
 export const SpaceCategory = {
   PERSONAL:       "PERSONAL",
-  HOUSEHOLD:      "HOUSEHOLD",
   FAMILY:         "FAMILY",
   BUSINESS:       "BUSINESS",
   PROPERTY:       "PROPERTY",
@@ -163,7 +162,6 @@ export function getPresetsForCategory(
  */
 export const CATEGORY_LABELS: Record<SpaceCategory, string> = {
   [SpaceCategory.PERSONAL]:       "Personal",
-  [SpaceCategory.HOUSEHOLD]:      "Household",
   [SpaceCategory.FAMILY]:         "Family",
   [SpaceCategory.BUSINESS]:       "Business",
   [SpaceCategory.PROPERTY]:       "Property",
@@ -184,7 +182,6 @@ export const CATEGORY_LABELS: Record<SpaceCategory, string> = {
  */
 export const CATEGORY_DESCRIPTIONS: Record<SpaceCategory, string> = {
   [SpaceCategory.PERSONAL]:       "Track your personal finances, net worth, and spending.",
-  [SpaceCategory.HOUSEHOLD]:      "Manage shared finances with a partner or housemates.",
   [SpaceCategory.FAMILY]:         "Shared finances for your family or household — one net worth across everyone's accounts.",
   [SpaceCategory.BUSINESS]:       "Oversee cash flow and accounts for a business or LLC.",
   [SpaceCategory.PROPERTY]:       "See your equity — property value minus what you owe — over time.",
@@ -205,7 +202,6 @@ export const CATEGORY_DESCRIPTIONS: Record<SpaceCategory, string> = {
  */
 export const CATEGORY_ICONS: Record<SpaceCategory, string> = {
   [SpaceCategory.PERSONAL]:       "User",
-  [SpaceCategory.HOUSEHOLD]:      "Home",
   [SpaceCategory.FAMILY]:         "Users",
   [SpaceCategory.BUSINESS]:       "Briefcase",
   [SpaceCategory.PROPERTY]:       "Building2",
@@ -236,11 +232,14 @@ export const CATEGORY_ICONS: Record<SpaceCategory, string> = {
  *   - GeneralSettingsPanel's picker — previously offered all 13
  *     primary+secondary categories.
  *
- * HOUSEHOLD is deliberately EXCLUDED: its template is hidden ("merged into
- * Family — identical composition"), production holds zero HOUSEHOLD Spaces,
- * and re-admitting it would resurrect a retired concept. The SpaceCategory
- * enum keeps every member (no enum drops in this program) — retired members
- * are unwritable, not removed.
+ * HOUSEHOLD is RETIRED (W1, final product decision): FAMILY is the one
+ * canonical shared-family-space concept (its description already reads
+ * "for your family or household"). All HOUSEHOLD product code — template,
+ * labels, lens lists, manifests, tints — was deleted in W1; production holds
+ * zero HOUSEHOLD Spaces. Do NOT re-admit it, as a category or as an alias.
+ * The ONLY residue is the SpaceCategory.HOUSEHOLD member of the Prisma enum,
+ * which stays until the enum-retirement migration program (Postgres cannot
+ * DROP an enum VALUE in place) — retired members are unwritable, not removed.
  */
 export const SUPPORTED_SPACE_CATEGORIES: SpaceCategory[] = [
   SpaceCategory.PERSONAL,
