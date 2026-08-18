@@ -137,6 +137,16 @@ function makeDb(initial: State, failOn?: number) {
         if (e) Object.assign(e, data);
         return e;
       },
+      // W1 (D6) — the write path releases an origin's stale (unique)
+      // currentTransactionId claim via a guarded updateMany before any
+      // reprojection can re-assert the row on the destination.
+      updateMany: async ({ where, data }: { where: { id: string; currentTransactionId?: string }; data: Record<string, unknown> }) => {
+        const e = s.events.find((x) => x.id === where.id &&
+          (where.currentTransactionId === undefined || x.currentTransactionId === where.currentTransactionId));
+        if (!e) return { count: 0 };
+        Object.assign(e, data);
+        return { count: 1 };
+      },
     },
     /** A real rollback: the callback mutates a SNAPSHOT, promoted only on success. */
     $transaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => {

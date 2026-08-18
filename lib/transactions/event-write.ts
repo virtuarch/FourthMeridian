@@ -110,9 +110,25 @@ export async function recordTransactionObservation(
   // ── Idempotence, checked FIRST ───────────────────────────────────────────
   const existing = await db.transactionObservation.findUnique({
     where: { observationKey: key },
-    select: { id: true, eventId: true },
+    select: { id: true, eventId: true, linkBasis: true, linkRefusal: true },
   });
   if (existing) {
+    // W1 (D6) — REPLAY HEALING. A pending ref that was DANGLING at first
+    // observation (predecessor not yet in the corpus — e.g. a historical sync
+    // that delivered the settlement before the authorisation) produced an
+    // honest but SPLIT identity: a fresh event recording the refusal. Before
+    // this path existed the split was permanent — the observation key exists,
+    // so the idempotent early-return meant no future replay ever re-ran rung 1.
+    // Now a replay re-resolves the link, and when — and only when — the
+    // provider's own claim resolves CLEANLY (rank-1 PROVIDER_PENDING_REF, no
+    // ambiguity, no cross-account veto) to a DIFFERENT event, the observation
+    // moves onto it. Rung-1-outranks-persisted-link is the existing merge
+    // doctrine; this applies it on replay. Nothing else heals: still-dangling
+    // and ambiguous claims stay refused, and no event-split machinery exists.
+    if (input.providerPendingRef) {
+      const healed = await maybeHealDanglingLink(db, input, existing);
+      if (healed) return healed;
+    }
     // B-6 — RE-PIN even on the idempotent path. The ingest writer stamps the
     // row's economicDate from ROW evidence just before calling here; when the
     // event's pinned date differs (a pending→posted chain whose pin is earlier
@@ -120,33 +136,21 @@ export async function recordTransactionObservation(
     // row on the wrong date FOREVER — the observation key exists, so no future
     // write ever corrects it. One guarded no-op-when-equal write closes that.
     await pinRowToEvent(db, existing.eventId);
-    return { observationId: existing.id, eventId: existing.eventId, basis: "PERSISTED_LINK", refusal: null, created: false };
+    return {
+      observationId: existing.id,
+      eventId: existing.eventId,
+      // W1 (D6) — return the STORED basis/refusal where the ledger has them.
+      // The pre-ledger hard-coded "PERSISTED_LINK" was a fabrication on this
+      // path; it remains only as the fallback for rows written before the
+      // ledger existed (linkBasis null), where the true basis is unrecoverable.
+      basis: (existing.linkBasis as EventLinkBasis | null) ?? "PERSISTED_LINK",
+      refusal: (existing.linkRefusal as EventLinkRefusal | null) ?? null,
+      created: false,
+    };
   }
 
   // ── Evidence for the identity decision ───────────────────────────────────
-  const anchors = [input.providerRowId, input.providerPendingRef].filter((x): x is string => x != null);
-  const related = anchors.length
-    ? await db.transactionObservation.findMany({
-        where: { providerRowId: { in: anchors } },
-        select: { providerRowId: true, eventId: true, financialAccountId: true },
-      })
-    : [];
-  const eventByProviderRowId = new Map<string, string>();
-  const accountByProviderRowId = new Map<string, string>();
-  for (const r of related) {
-    if (!r.providerRowId) continue;
-    eventByProviderRowId.set(r.providerRowId, r.eventId);
-    accountByProviderRowId.set(r.providerRowId, r.financialAccountId);
-  }
-  const claimsPerPendingRef = new Map<string, number>();
-  if (input.providerPendingRef) {
-    // Count OTHER observations claiming the same predecessor. More than one and
-    // 1:1 identity cannot hold, so the authority refuses both.
-    const claims = await db.transactionObservation.count({
-      where: { providerPendingRef: input.providerPendingRef, NOT: { transactionId: input.transactionId } },
-    });
-    claimsPerPendingRef.set(input.providerPendingRef, claims + 1);
-  }
+  const evidence = await gatherLinkEvidence(db, input);
 
   const persisted = await db.transaction.findUnique({
     where: { id: input.transactionId },
@@ -161,7 +165,7 @@ export async function recordTransactionObservation(
       providerPendingRef: input.providerPendingRef,
       persistedEventId: persisted?.transactionEventId ?? null,
     },
-    { eventByProviderRowId, accountByProviderRowId, claimsPerPendingRef },
+    evidence,
   );
 
   // v2.6-EVENT-2 — the event this row belongs to BEFORE this observation. When
@@ -211,9 +215,29 @@ export async function recordTransactionObservation(
         economicDate: input.economicDate,
         authorizedAt: input.authorizedAt,
         observationKey: key,
+        // W1 (D6) — the evidence ledger: persist the basis/refusal the authority
+        // just decided, instead of computing and dropping them. Recorded at
+        // write time, never inferred later; no confidence scalar.
+        linkBasis: link.basis,
+        linkRefusal: link.refusal,
       },
       select: { id: true },
     });
+
+    // W1 (D6) — when this observation MOVES the row to a different event
+    // (rung-1 outranking a persisted link), the origin may still hold this row
+    // as its currentTransactionId. That column is UNIQUE, so reprojecting the
+    // destination first would collide with the origin's stale claim and abort
+    // the whole unit on a real database (the fakes carry no constraints, which
+    // is why this never surfaced in the harness). Release the stale claim
+    // before any reprojection; the origin's own reprojection below re-derives
+    // its true current row from what remains.
+    if (originEventId && originEventId !== eventId) {
+      await tx.transactionEvent.updateMany({
+        where: { id: originEventId, currentTransactionId: input.transactionId },
+        data:  { currentTransactionId: null },
+      });
+    }
 
     await tx.transaction.update({
       where: { id: input.transactionId },
@@ -241,6 +265,126 @@ export async function recordTransactionObservation(
 /** True for a full PrismaClient — a TransactionClient cannot open a nested one. */
 function hasInteractiveTransaction(db: Db): db is PrismaClient {
   return typeof (db as PrismaClient).$transaction === "function";
+}
+
+/**
+ * W1 (D6) — the corpus evidence `resolveEventLink` needs, gathered ONE way.
+ *
+ * Extracted from the main write path so the replay-heal path re-derives the
+ * link from the SAME evidence shape — two gatherers would be two chances for
+ * the write path and the heal path to disagree about what the corpus says.
+ */
+async function gatherLinkEvidence(
+  db: Db,
+  input: Pick<ObservationInput, "providerRowId" | "providerPendingRef" | "transactionId">,
+): Promise<{
+  eventByProviderRowId: Map<string, string>;
+  accountByProviderRowId: Map<string, string>;
+  claimsPerPendingRef: Map<string, number>;
+}> {
+  const anchors = [input.providerRowId, input.providerPendingRef].filter((x): x is string => x != null);
+  const related = anchors.length
+    ? await db.transactionObservation.findMany({
+        where: { providerRowId: { in: anchors } },
+        select: { providerRowId: true, eventId: true, financialAccountId: true },
+      })
+    : [];
+  const eventByProviderRowId = new Map<string, string>();
+  const accountByProviderRowId = new Map<string, string>();
+  for (const r of related) {
+    if (!r.providerRowId) continue;
+    eventByProviderRowId.set(r.providerRowId, r.eventId);
+    accountByProviderRowId.set(r.providerRowId, r.financialAccountId);
+  }
+  const claimsPerPendingRef = new Map<string, number>();
+  if (input.providerPendingRef) {
+    // Count OTHER observations claiming the same predecessor. More than one and
+    // 1:1 identity cannot hold, so the authority refuses both.
+    const claims = await db.transactionObservation.count({
+      where: { providerPendingRef: input.providerPendingRef, NOT: { transactionId: input.transactionId } },
+    });
+    claimsPerPendingRef.set(input.providerPendingRef, claims + 1);
+  }
+  return { eventByProviderRowId, accountByProviderRowId, claimsPerPendingRef };
+}
+
+/**
+ * W1 (D6) — REPLAY HEALING of a dangling-ref split. Idempotent-path only.
+ *
+ * When an observation carrying a `providerPendingRef` was first recorded while
+ * its predecessor was absent from the corpus, the authority refused the link
+ * (DANGLING_PENDING_REF) and the observation landed on its own event — honest,
+ * but split. If the predecessor has SINCE been observed, replaying the same
+ * provider payload re-runs rung 1 here and moves the observation onto the
+ * predecessor's event.
+ *
+ * Heals if and only if the fresh resolution is a CLEAN rank-1
+ * PROVIDER_PENDING_REF link to a DIFFERENT event — the same precedence the
+ * live write path applies (rung 1 outranks a persisted link). Still-dangling,
+ * ambiguous (two claimants) and cross-account claims heal nothing; there is
+ * deliberately NO event-split machinery. The gate is the RESOLUTION, not the
+ * stored refusal, so observations written before the evidence ledger existed
+ * (linkRefusal null — the 62 production dangling refs) heal on replay too.
+ *
+ * The observation's PROVIDER FACTS are never touched: `eventId`, `linkBasis`
+ * and `linkRefusal` are OUR derivation columns, and correcting a derivation on
+ * new evidence is exactly what makes the ledger honest. All writes are one
+ * atomic unit. An origin event left with zero observations is deleted (nothing
+ * observed it; keeping it would be a projection of nothing) — observations
+ * cascade only from that empty state, and row FKs SetNull by schema.
+ */
+async function maybeHealDanglingLink(
+  db: Db,
+  input: ObservationInput,
+  existing: { id: string; eventId: string },
+): Promise<ObservationResult | null> {
+  const evidence = await gatherLinkEvidence(db, input);
+  const link = resolveEventLink(
+    {
+      transactionId: input.transactionId,
+      financialAccountId: input.financialAccountId,
+      providerRowId: input.providerRowId,
+      providerPendingRef: input.providerPendingRef,
+      persistedEventId: existing.eventId,
+    },
+    evidence,
+  );
+  if (link.basis !== "PROVIDER_PENDING_REF" || link.eventId === existing.eventId) return null;
+  const targetEventId = link.eventId;
+  const originEventId = existing.eventId;
+
+  const heal = async (tx: Db): Promise<ObservationResult> => {
+    // Release the origin's (unique) current-row claim before the destination
+    // reprojection can assert it — same constraint-ordering rule as the live
+    // write path.
+    await tx.transactionEvent.updateMany({
+      where: { id: originEventId, currentTransactionId: input.transactionId },
+      data:  { currentTransactionId: null },
+    });
+    await tx.transactionObservation.update({
+      where: { id: existing.id },
+      data:  { eventId: targetEventId, linkBasis: "PROVIDER_PENDING_REF", linkRefusal: null },
+    });
+    await tx.transaction.update({
+      where: { id: input.transactionId },
+      data:  { transactionEventId: targetEventId },
+    });
+    await reprojectEvent(tx, targetEventId);
+    const remaining = await tx.transactionObservation.count({ where: { eventId: originEventId } });
+    if (remaining === 0) {
+      await tx.transactionEvent.delete({ where: { id: originEventId } });
+    } else {
+      await reprojectEvent(tx, originEventId);
+    }
+    return {
+      observationId: existing.id,
+      eventId: targetEventId,
+      basis: "PROVIDER_PENDING_REF",
+      refusal: null,
+      created: false,
+    };
+  };
+  return hasInteractiveTransaction(db) ? db.$transaction(heal) : heal(db);
 }
 
 /**

@@ -2336,6 +2336,23 @@ model TransactionObservation {
   /// Deterministic digest of the observed facts. See the model note above.
   observationKey String @unique
 
+  /// W1 (D6) — THE EVIDENCE LEDGER: which rung of the identity hierarchy
+  /// actually attached this observation to its event (an EventLinkBasis value:
+  /// PROVIDER_PENDING_REF | PERSISTED_LINK | PROVIDER_ROW_ID | NEW_EVENT).
+  /// Recorded at write time by the ONE writer (lib/transactions/event-write.ts),
+  /// never inferred later. Deliberately a plain string, not an enum, and
+  /// deliberately NO confidence scalar: the rungs are provider facts, and a
+  /// scalar would launder heuristics back into identity. Nullable = written
+  /// before this ledger existed (backfill-safe; re-derivable only by replay).
+  linkBasis String?
+  /// W1 (D6) — why a link that LOOKED possible was refused (an EventLinkRefusal
+  /// value: DANGLING_PENDING_REF | CROSS_ACCOUNT_REF | AMBIGUOUS_PREDECESSOR),
+  /// or null when nothing was refused. Makes the refusal population queryable
+  /// (production carries 62 dangling refs answerable today only by re-derivation)
+  /// and is what lets idempotent replay HEAL a dangling split once the
+  /// predecessor exists — see recordTransactionObservation's replay-heal path.
+  linkRefusal String?
+
   createdAt DateTime @default(now())
 
   @@index([eventId])

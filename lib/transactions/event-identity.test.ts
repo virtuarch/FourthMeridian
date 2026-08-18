@@ -246,11 +246,26 @@ test("INV-1/2/5: one observation → one event; one row → at most one event; o
   //     live row.
   assert.match(schema, /transactionEventId String\?/);
   assert.match(schema, /currentTransactionId String\? @unique/);
-  // 5 — immutability is enforced by there being no updater. The write authority
-  //     creates observations and never updates one.
+  // 5 — PROVIDER TESTIMONY is immutable: a restatement APPENDS. W1 (D6) refined
+  //     this invariant: the replay-heal path may correct an observation's
+  //     DERIVATION columns (eventId + the linkBasis/linkRefusal ledger) when
+  //     rank-1 provider evidence resolves a formerly-dangling link — correcting
+  //     a derivation on new evidence is what keeps the ledger honest. What stays
+  //     absolute: no update may ever touch a provider-fact column, and nothing
+  //     deletes an observation. Enforced mechanically: every
+  //     `transactionObservation.update` data block in the write authority is
+  //     extracted and its keys checked against the derivation-column allowlist.
   const writeSrc = read("lib/transactions/event-write.ts");
-  assert.ok(!/transactionObservation\.update/.test(writeSrc),
-    "an observation must never be updated — a restatement APPENDS");
+  const DERIVATION_COLUMNS = new Set(["eventId", "linkBasis", "linkRefusal"]);
+  const updates = [...writeSrc.matchAll(/transactionObservation\.update\(\{[\s\S]*?data:\s*\{([\s\S]*?)\}/g)];
+  for (const m of updates) {
+    const keys = [...m[1].matchAll(/(\w+)\s*:/g)].map((k) => k[1]);
+    assert.ok(keys.length > 0, "unparseable transactionObservation.update data block");
+    for (const k of keys) {
+      assert.ok(DERIVATION_COLUMNS.has(k),
+        `observation update touches "${k}" — provider testimony is immutable; only derivation columns (${[...DERIVATION_COLUMNS].join(", ")}) may be corrected`);
+    }
+  }
   assert.ok(!/transactionObservation\.delete/.test(writeSrc),
     "an observation must never be deleted — history is not editable");
 });
