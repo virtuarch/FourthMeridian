@@ -34,6 +34,10 @@ function tx(over: Partial<RelationshipTransaction> = {}): RelationshipTransactio
     // the benign case: a transfer-shaped category, no attested counterparty class,
     // no institution extractor, no descriptor identifiers.
     category: 'Transfer', counterpartyClass: null, institutionId: null, descriptor: null,
+    // W1 (D6) — similarity-evidence facts. Defaults: no separate raw descriptor
+    // (key falls back to merchant, the pre-DF-4 CSV shape) and no event identity
+    // (the ledger is silent, so fingerprint evidence may apply).
+    description: null, transactionEventId: null,
     ...over,
     // L8-B — the matching chronology. A fixture that moves `date` means to move
     // the leg in time, so mirror it unless the fixture set an economic date
@@ -77,15 +81,61 @@ test('pendingPosted is null when no counterpart / ref is absent', () => {
   assert.equal(resolveTransactionRelationships(posted, [tx({ id: 'x', plaidTransactionId: 'different' })], CTX).pendingPosted, null);
 });
 
-// ── duplicate (exact fingerprint) ─────────────────────────────────────────────
-test('duplicate: exact fingerprint match (account+date+amount+pending+normalized merchant)', () => {
+// ── similarity (fingerprint-key EVIDENCE — W1/D6) ─────────────────────────────
+test('similarity: exact fingerprint-key match (account+date+amount+pending+normalized raw descriptor)', () => {
   const a = tx({ id: 'a' });
   const b = tx({ id: 'b', plaidTransactionId: 'plaid_2', merchant: '  blue bottle   coffee ' }); // case/space differ
   const r = resolveTransactionRelationships(a, [b], CTX);
-  assert.deepEqual(r.duplicate, { transactionIds: ['b'] });
+  assert.deepEqual(r.similarity, { transactionIds: ['b'], basis: 'RAW_DESCRIPTOR_FINGERPRINT' });
 });
 
-test('duplicate excludes self, tombstoned, different account/amount/merchant/pending', () => {
+// ⚠️ THE W1/D6 DOCTRINE PIN. Two rows on different TransactionEvents are two
+// events — the provider established two identities, and no fingerprint
+// coincidence may present them as one. This is the fixture the wave exists for.
+test('two rows on different TransactionEvents are NEVER similarity-flagged, however identical', () => {
+  const a = tx({ id: 'a', transactionEventId: 'evt_1' });
+  const b = tx({ id: 'b', plaidTransactionId: 'plaid_2', transactionEventId: 'evt_2' }); // byte-identical facts
+  assert.equal(resolveTransactionRelationships(a, [b], CTX).similarity, null);
+});
+
+test('two rows on the SAME TransactionEvent are not similarity-flagged (a lifecycle pair, not a repeat)', () => {
+  const a = tx({ id: 'a', transactionEventId: 'evt_1' });
+  const b = tx({ id: 'b', plaidTransactionId: 'plaid_2', transactionEventId: 'evt_1' });
+  assert.equal(resolveTransactionRelationships(a, [b], CTX).similarity, null);
+});
+
+test('similarity applies only while the event ledger is silent (either side unlinked)', () => {
+  // Target unlinked, candidate linked — the ledger cannot adjudicate: evidence stands.
+  const a = tx({ id: 'a', transactionEventId: null });
+  const b = tx({ id: 'b', plaidTransactionId: 'plaid_2', transactionEventId: 'evt_2' });
+  assert.deepEqual(resolveTransactionRelationships(a, [b], CTX).similarity,
+    { transactionIds: ['b'], basis: 'RAW_DESCRIPTOR_FINGERPRINT' });
+  // Target linked, candidate unlinked — same.
+  const c = tx({ id: 'c', transactionEventId: 'evt_1' });
+  const d = tx({ id: 'd', plaidTransactionId: 'plaid_3', transactionEventId: null });
+  assert.deepEqual(resolveTransactionRelationships(c, [d], CTX).similarity,
+    { transactionIds: ['d'], basis: 'RAW_DESCRIPTOR_FINGERPRINT' });
+});
+
+// DF-4 alignment: the key is the RAW descriptor (`description ?? merchant`),
+// mirroring lib/transactions/fingerprint.ts — enrichment drift on `merchant`
+// neither creates nor destroys a match when raw descriptors agree.
+test('similarity keys on the raw descriptor: enrichment drift on merchant does not break the match', () => {
+  // The six-Amazon shape: same raw descriptor, one row enriched, one not.
+  const a = tx({ id: 'a', merchant: 'Amazon',              description: 'AMZN Mktp US*RT4Y12' });
+  const b = tx({ id: 'b', plaidTransactionId: 'plaid_2',
+                 merchant: 'AMZN MKTP US*RT4Y12',          description: 'AMZN Mktp US*RT4Y12' });
+  assert.deepEqual(resolveTransactionRelationships(a, [b], CTX).similarity,
+    { transactionIds: ['b'], basis: 'RAW_DESCRIPTOR_FINGERPRINT' });
+});
+
+test('similarity: matching enriched merchants with DIFFERENT raw descriptors do NOT match', () => {
+  const a = tx({ id: 'a', merchant: 'Amazon', description: 'AMZN Mktp US*RT4Y12' });
+  const b = tx({ id: 'b', plaidTransactionId: 'plaid_2', merchant: 'Amazon', description: 'AMZN Mktp US*ZZ9Q88' });
+  assert.equal(resolveTransactionRelationships(a, [b], CTX).similarity, null);
+});
+
+test('similarity excludes self, tombstoned, different account/amount/descriptor/pending', () => {
   const a = tx({ id: 'a' });
   const candidates = [
     tx({ id: 'a' }),                                               // self — excluded by id !== tx.id
@@ -96,18 +146,18 @@ test('duplicate excludes self, tombstoned, different account/amount/merchant/pen
     tx({ id: 'other-pending', plaidTransactionId: 'p6', pending: true }),
   ];
   const r = resolveTransactionRelationships(a, candidates, CTX);
-  assert.equal(r.duplicate, null);
+  assert.equal(r.similarity, null);
 });
 
-test('duplicate returns null when candidate list is empty', () => {
-  assert.equal(resolveTransactionRelationships(tx(), [], CTX).duplicate, null);
+test('similarity returns null when candidate list is empty', () => {
+  assert.equal(resolveTransactionRelationships(tx(), [], CTX).similarity, null);
 });
 
-test('a pending row and its posted successor are NOT flagged as duplicates', () => {
+test('a pending row and its posted successor are NOT similarity-flagged', () => {
   // They differ in `pending` and the pending row is tombstoned — both exclusions apply.
   const posted  = tx({ id: 'posted', plaidTransactionId: 'plaid_posted', pendingTransactionRef: 'plaid_pending', pending: false });
   const pending = tx({ id: 'pending', plaidTransactionId: 'plaid_pending', pending: true, deletedAt: new Date() });
-  assert.equal(resolveTransactionRelationships(posted, [pending], CTX).duplicate, null);
+  assert.equal(resolveTransactionRelationships(posted, [pending], CTX).similarity, null);
 });
 
 // ── reserved (refundCandidate still unratified); a non-transfer row never matches ─
@@ -339,7 +389,7 @@ test('output shape is exactly the five keys', () => {
   const r = resolveTransactionRelationships(tx(), [], CTX);
   // v2.6-TRUTH-2 adds `transferAssessment` — the FULL outcome including refusals,
   // so a surface can state what is known without reading a fabricated id.
-  assert.deepEqual(Object.keys(r).sort(), ['duplicate', 'pendingPosted', 'refundCandidate', 'transferAssessment', 'transferCandidate']);
+  assert.deepEqual(Object.keys(r).sort(), ['pendingPosted', 'refundCandidate', 'similarity', 'transferAssessment', 'transferCandidate']);
   assert.equal(r.transferCandidate, null);
   assert.equal(r.transferAssessment.counterpartyAccountId, null);
 });

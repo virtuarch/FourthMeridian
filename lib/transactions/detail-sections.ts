@@ -8,8 +8,11 @@
  * Rules (enforced here so the UI stays dumb):
  *  - Never emit a null/empty fact row, and never emit an empty section.
  *  - Relationship wording never overclaims: pendingPosted makes no amount claim
- *    (the DTO carries only the counterpart id), and duplicate / transferCandidate
- *    are always hedged ("possible" / "appears to match").
+ *    (the DTO carries only the counterpart id), and similarity / transferCandidate
+ *    are always hedged ("looks similar" / "appears to match"). W1 (D6): the
+ *    similarity note is EVIDENCE language by doctrine — event identity is the only
+ *    read-side identity authority, and rows on different TransactionEvents never
+ *    reach this surface as "duplicates" at all (excluded upstream).
  *  - transferCandidate (TI4 Slice 1) renders a hedged note when a deterministic
  *    owned-account transfer match resolves (KD-15-gated upstream). v2.6-XFER-3 —
  *    it NAMES the other account when the DTO carries a visible counterparty block
@@ -185,10 +188,20 @@ function relationshipIntelligence(d: TransactionDetail): DetailSection {
       notes.push("A posted version of this pending transaction exists.");
     }
   }
-  const dup = d.relationships.duplicate;
-  if (dup && dup.transactionIds.length > 0) {
-    const n = dup.transactionIds.length;
-    notes.push(`Possible duplicate — appears to match ${n} other transaction${n > 1 ? "s" : ""} on ${d.date}.`);
+  // W1 (D6) — SIMILARITY EVIDENCE, not an identity verdict. The resolver has
+  // already excluded every candidate whose TransactionEvent identity settles the
+  // question (two events are two transactions; one event is a lifecycle pair).
+  // What remains is honest: rows the event ledger cannot yet distinguish that
+  // collide on the write-side fingerprint key. The wording claims exactly that —
+  // "looks similar … may be a repeated charge or a duplicate record" — and never
+  // asserts that they ARE one transaction.
+  const sim = d.relationships.similarity;
+  if (sim && sim.transactionIds.length > 0) {
+    const n = sim.transactionIds.length;
+    notes.push(
+      `Looks similar to ${n} other transaction${n > 1 ? "s" : ""} on ${d.date} — same account, ` +
+      `amount, and description. This may be a repeated charge or a duplicate record.`,
+    );
   }
   // ── v2.6-XFER-3 — the note names the account, when the DTO can prove it ────
   //

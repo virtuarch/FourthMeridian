@@ -34,9 +34,17 @@ import { extractProviderLinks } from "@/lib/transactions/provider-link-extract";
  *
  * Scope of THIS slice — deterministic / low-risk relationships only:
  *  - pendingPosted : exact provider match on plaidTransactionId ↔ pendingTransactionRef.
- *  - duplicate     : exact fingerprint (same account/date/amount/pending + normalized
- *                    merchant) — the same deterministic keys lib/transactions/fingerprint.ts
- *                    uses for sync dedup; no fuzzy matching.
+ *  - similarity    : exact fingerprint-key EVIDENCE (same account/date/amount/pending +
+ *                    normalized RAW DESCRIPTOR — the same DF-4 key
+ *                    lib/transactions/fingerprint.ts uses for write-side dedup; no fuzzy
+ *                    matching). W1 (D6): this is MATCHING EVIDENCE, never an identity
+ *                    verdict — TransactionEvent is the only read-side identity authority,
+ *                    so a candidate whose event identity DIFFERS from the target's is
+ *                    excluded (the provider itself says they are two events), and a
+ *                    candidate on the SAME event is excluded too (that is one event's
+ *                    lifecycle, already carried by pendingPosted). What remains is the
+ *                    honest claim: rows the event ledger cannot yet distinguish that
+ *                    collide on the write-side fingerprint key.
  *  - transferCandidate : TI4 Slice 1 — DETERMINISTIC owned-account two-leg transfer
  *                    matching. A transfer-like row resolves to the owned account on
  *                    the other side when EXACTLY ONE opposite leg matches on all of:
@@ -68,6 +76,21 @@ export interface RelationshipTransaction {
   date:                  Date;
   amount:                number;
   merchant:              string;
+  /**
+   * W1 (D6) — the RAW provider descriptor (`Transaction.description`, Plaid's
+   * verbatim `txn.name`). The similarity evidence keys on `description ?? merchant`
+   * — the exact DF-4 fingerprint key — because the enriched `merchant` drifts
+   * across provider re-pulls (the six-Amazon incident) and is neither identity
+   * nor a stable matching key. Nullable: some CSV/manual rows have none.
+   */
+  description:           string | null;
+  /**
+   * W1 (D6) — the row's canonical event identity (`Transaction.transactionEventId`),
+   * when established. THE read-side identity authority: two rows on different
+   * events are two events, whatever their fingerprints say. Null before the
+   * event backfill or where linking was refused.
+   */
+  transactionEventId:    string | null;
   pending:               boolean;
   /** Soft-delete tombstone (the pending row is tombstoned once it posts). */
   deletedAt?:            Date | null;
@@ -140,9 +163,24 @@ export interface PendingPostedRelationship {
   transactionId: string;
 }
 
-export interface DuplicateRelationship {
-  /** Ids of exact-fingerprint duplicates of the target (excludes the target itself). */
+/**
+ * W1 (D6) — matching EVIDENCE, deliberately not named "duplicate".
+ *
+ * The write-side fingerprint key (account + date + amount + settlement state +
+ * normalized raw descriptor) may decide whether a WRITE happens; it may never
+ * decide what a READ claims. This shape therefore asserts only: these rows
+ * collide on that key AND the event ledger does not distinguish them. Whether
+ * they are one economic event is exactly what the evidence CANNOT establish —
+ * consumers must render it hedged ("similar", "possible repeat"), never as an
+ * identity verdict.
+ */
+export interface SimilarityEvidence {
+  /** Ids of rows sharing the fingerprint key with the target (excludes the target
+   *  itself, tombstoned rows, and every row whose TransactionEvent identity
+   *  differs from — or equals — the target's). */
   transactionIds: string[];
+  /** The one basis this evidence can have. Recorded so the claim is explicit. */
+  basis: 'RAW_DESCRIPTOR_FINGERPRINT';
 }
 
 /** Outcome of deterministic owned-account transfer matching (TI4 Slice 1). */
@@ -211,7 +249,8 @@ export interface TransferCandidateRelationship {
 
 export interface TransactionRelationships {
   pendingPosted:   PendingPostedRelationship | null;
-  duplicate:       DuplicateRelationship | null;
+  /** W1 (D6) — fingerprint-key matching evidence. Never an identity verdict. */
+  similarity:      SimilarityEvidence | null;
   /** Reserved — requires a ratified fuzzy heuristic. Always null in this slice. */
   refundCandidate:   null;
   /** TI4 Slice 1 — the RESOLVED deterministic owned-account transfer match, or null
@@ -311,11 +350,31 @@ function resolvePendingPosted(
   return null;
 }
 
-function resolveDuplicate(
+/**
+ * W1 (D6) — fingerprint-key SIMILARITY EVIDENCE (formerly `resolveDuplicate`).
+ *
+ * Two corrections over the retired duplicate claim, both doctrine-driven:
+ *
+ *  1. THE KEY. It keyed on the enriched `merchant` — which Plaid's enrichment
+ *     drifts across re-pulls, so it was over- AND under-inclusive at once: it
+ *     would have MISSED the real six-Amazon duplicates (enrichment drift broke
+ *     the key — the reason DF-4 moved ingest to raw descriptors) while flagging
+ *     provider-distinct rows. The key is now the canonical DF-4 fingerprint
+ *     narrowing key: normalized `description ?? merchant`, mirroring
+ *     lib/transactions/fingerprint.ts `findByFingerprint`.
+ *
+ *  2. THE VERDICT. Event identity outranks any fingerprint at READ time. A
+ *     candidate on a DIFFERENT TransactionEvent is excluded — the provider
+ *     itself established two identities, and no read may overrule that with a
+ *     key coincidence. A candidate on the SAME event is also excluded: that is
+ *     one event's own lifecycle (pendingPosted's job), not a repeat. Evidence
+ *     survives only where the event ledger is silent (either side unlinked).
+ */
+function resolveSimilarity(
   tx: RelationshipTransaction,
   candidates: readonly RelationshipTransaction[],
-): DuplicateRelationship | null {
-  const key = normalizeMerchantKey(tx.merchant);
+): SimilarityEvidence | null {
+  const key = normalizeMerchantKey(tx.description ?? tx.merchant);
   const acct = accountKey(tx);
   if (acct == null) return null;
 
@@ -324,15 +383,20 @@ function resolveDuplicate(
       (c) =>
         c.id !== tx.id &&
         c.deletedAt == null &&               // never flag a tombstoned row
+        // Event identity is the read authority — it adjudicates BEFORE any key:
+        //  · both linked, different events → two events. Never "similar-as-duplicate".
+        //  · both linked, same event      → one event (a lifecycle pair). Not a repeat.
+        //  · either side unlinked         → the ledger is silent; evidence may apply.
+        !(c.transactionEventId != null && tx.transactionEventId != null) &&
         accountKey(c) === acct &&            // same account
         c.amount === tx.amount &&            // exact amount
         c.pending === tx.pending &&          // same settlement state (fingerprint key)
         sameDay(c.date, tx.date) &&          // same day
-        normalizeMerchantKey(c.merchant) === key, // same normalized merchant
+        normalizeMerchantKey(c.description ?? c.merchant) === key, // DF-4 raw-descriptor key
     )
     .map((c) => c.id);
 
-  return ids.length > 0 ? { transactionIds: ids } : null;
+  return ids.length > 0 ? { transactionIds: ids, basis: 'RAW_DESCRIPTOR_FINGERPRINT' } : null;
 }
 
 /**
@@ -588,7 +652,7 @@ export function resolveTransactionRelationships(
   const transfer = matchTransferCandidate(transaction, candidates, ctx);
   return {
     pendingPosted:     resolvePendingPosted(transaction, candidates),
-    duplicate:         resolveDuplicate(transaction, candidates),
+    similarity:        resolveSimilarity(transaction, candidates),
     refundCandidate:   null,
     // Only a RESOLVED, deterministic match surfaces; NONE/AMBIGUOUS stay null
     // (unresolved is honest). The full outcome is available via matchTransferCandidate.

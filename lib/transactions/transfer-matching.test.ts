@@ -46,6 +46,8 @@ function relLeg(id: string, faId: string, amount: number, over: Partial<Relation
     // and no identifier/external evidence, so these tests keep exercising the
     // STRUCTURAL tiers in isolation.
     category: 'Transfer', counterpartyClass: null, institutionId: null, descriptor: null,
+    // W1 (D6) — similarity-evidence facts; irrelevant to transfer matching.
+    description: null, transactionEventId: null,
     ...over,
     // L8-B — the matching chronology. A fixture that moves `date` means to move
     // the leg in time, so mirror it unless the fixture set an economic date

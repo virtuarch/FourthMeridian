@@ -140,6 +140,12 @@ function toRel(
     // puts the correlation token in `description`, and Amex puts the mask there.
     descriptor:            `${r.merchant ?? ""} ${r.description ?? ""}`,
     economicDate:          r.economicDate,
+    // W1 (D6) — the similarity-evidence facts. This adapter feeds TRANSFER
+    // matching only (matchTransferCandidate), which never consults them; they
+    // are supplied honestly rather than stubbed so the type stays total.
+    description:           r.description ?? null,
+    transactionEventId:
+      (r as { transactionEventId?: string | null }).transactionEventId ?? null,
   };
 }
 

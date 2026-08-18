@@ -26,7 +26,7 @@ function detail(over: Partial<TransactionDetail> = {}): TransactionDetail {
     provenance: { source: 'plaid' },
     counterparty: null,
     reporting: null,
-    relationships: { pendingPosted: null, duplicate: null, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } },
+    relationships: { pendingPosted: null, similarity: null, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } },
     needsClassification: false, needsClassificationReason: null,
   };
   return { ...base, ...over } as unknown as TransactionDetail;
@@ -92,22 +92,29 @@ test('fxApplied false/null is not shown; tiFactsVersion never shown', () => {
 });
 
 test('pendingPosted wording — no amount claim', () => {
-  const posted = detail({ authorizedAt: '2026-05-30', relationships: { pendingPosted: { role: 'POSTED_FROM_PENDING', transactionId: 'x' }, duplicate: null, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } } });
+  const posted = detail({ authorizedAt: '2026-05-30', relationships: { pendingPosted: { role: 'POSTED_FROM_PENDING', transactionId: 'x' }, similarity: null, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } } });
   const notes = find(buildTransactionDetailSections(posted), 'Relationship Intelligence')!.notes!;
   assert.equal(notes[0], 'Posted from a pending transaction. Authorized 2026-05-30, posted 2026-06-01.');
   assert.ok(!/amount/i.test(notes.join(' ')));
-  const pending = detail({ relationships: { pendingPosted: { role: 'PENDING_AWAITING_POST', transactionId: 'x' }, duplicate: null, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } } });
+  const pending = detail({ relationships: { pendingPosted: { role: 'PENDING_AWAITING_POST', transactionId: 'x' }, similarity: null, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } } });
   assert.equal(find(buildTransactionDetailSections(pending), 'Relationship Intelligence')!.notes![0], 'A posted version of this pending transaction exists.');
 });
 
-test('duplicate wording is hedged, counts, pluralizes', () => {
-  const one = detail({ relationships: { pendingPosted: null, duplicate: { transactionIds: ['a'] }, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } } });
-  assert.equal(find(buildTransactionDetailSections(one), 'Relationship Intelligence')!.notes![0], 'Possible duplicate — appears to match 1 other transaction on 2026-06-01.');
-  const two = detail({ relationships: { pendingPosted: null, duplicate: { transactionIds: ['a', 'b'] }, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } } });
+test('similarity wording is evidence language — hedged, counts, pluralizes, never an identity verdict', () => {
+  const one = detail({ relationships: { pendingPosted: null, similarity: { transactionIds: ['a'], basis: 'RAW_DESCRIPTOR_FINGERPRINT' }, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } } });
+  assert.equal(
+    find(buildTransactionDetailSections(one), 'Relationship Intelligence')!.notes![0],
+    'Looks similar to 1 other transaction on 2026-06-01 — same account, amount, and description. This may be a repeated charge or a duplicate record.',
+  );
+  const two = detail({ relationships: { pendingPosted: null, similarity: { transactionIds: ['a', 'b'], basis: 'RAW_DESCRIPTOR_FINGERPRINT' }, refundCandidate: null, transferCandidate: null, transferAssessment: { status: 'NONE', transactionId: null, counterpartyAccountId: null, confidence: 0, reason: 'NO_CANDIDATE', destinationAccountType: null, maturity: 'UNRESOLVED_TRANSFER', evidenceLevel: 'NO_DESTINATION_EVIDENCE', persistableCounterparty: false, persistableLeg: false, unresolvedReason: null, admission: 'ADMITTED' } } });
   const note = find(buildTransactionDetailSections(two), 'Relationship Intelligence')!.notes![0];
-  assert.match(note, /Possible duplicate/);
+  assert.match(note, /Looks similar/);
   assert.match(note, /2 other transactions/);
-  assert.ok(!/\bduplicate\b(?!.*possible)/i.test(note.replace('Possible duplicate', ''))); // never a bare certain "duplicate"
+  // W1 (D6) — the surface may name the POSSIBILITY of a duplicate record; it may
+  // never assert one. "Possible duplicate —" (the retired verdict-shaped lead)
+  // must not return, and "duplicate" may appear only inside the hedged clause.
+  assert.ok(!/Possible duplicate/.test(note));
+  assert.match(note, /may be a repeated charge or a duplicate record/);
 });
 
 test('refundCandidate / transferCandidate (null) never render a section', () => {
@@ -118,7 +125,7 @@ test('transferCandidate with no counterparty block stays generic and id-free', (
   const t = detail({
     relationships: {
       pendingPosted: null,
-      duplicate: null,
+      similarity: null,
       refundCandidate: null,
       transferCandidate: {
         status: 'RESOLVED',
@@ -148,7 +155,7 @@ test('refundCandidate stays reserved-null even when transferCandidate resolves',
   const t = detail({
     relationships: {
       pendingPosted: null,
-      duplicate: null,
+      similarity: null,
       refundCandidate: null,
       transferCandidate: {
         status: 'RESOLVED', transactionId: null, counterpartyAccountId: 'acct-2',
@@ -301,7 +308,7 @@ const resolvedTo = (acctId: string | null) => ({
 });
 const withMatch = (over: Partial<TransactionDetail>, acctId: string | null = 'a2') => detail({
   relationships: {
-    pendingPosted: null, duplicate: null, refundCandidate: null,
+    pendingPosted: null, similarity: null, refundCandidate: null,
     transferCandidate: resolvedTo(acctId), transferAssessment: resolvedTo(acctId),
   },
   ...over,

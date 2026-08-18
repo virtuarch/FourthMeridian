@@ -496,7 +496,8 @@ export interface TransactionDetail extends Transaction {
 
   // ── TI5-2 — read-time relationship facts (RelationshipResolver) ────────────
   // Computed on read from a tiny candidate set; never persisted. Deterministic
-  // only (pendingPosted, duplicate); refundCandidate/transferCandidate are null.
+  // only (pendingPosted, similarity — W1/D6: fingerprint-key matching EVIDENCE,
+  // never an identity verdict); refundCandidate/transferCandidate are null.
   relationships: TransactionRelationships;
 
   // ── TE-2B — needs-classification disclosure (derived server-side) ──────────

@@ -622,6 +622,11 @@ export async function getTransactionDetail(
       // `description`. The DRAWER must admit the same facts as the LIST or the
       // two disagree about one row — the exact defect v2.6-TRUTH-2 closed once.
       category: true, counterpartyType: true, description: true,
+      // W1 (D6) — the candidate's EVENT identity. Without it the resolver
+      // structurally could not consult the read-side identity authority, so the
+      // drawer rendered "possible duplicate" for provider-distinct rows (two
+      // events). The similarity evidence excludes cross-event candidates.
+      transactionEventId: true,
     },
     take: 300, // safety cap; same-account sets are tiny, owned ±window sets are small
   });
@@ -635,6 +640,7 @@ export async function getTransactionDetail(
     financialAccountId: string | null; counterpartyAccountId?: string | null;
     pfcPrimary?: string | null; category?: unknown; counterpartyType?: unknown;
     description?: string | null; merchant?: string;
+    transactionEventId?: string | null;
   }>(r: T) => ({
     ...r,
     ownerUserId,
@@ -644,6 +650,12 @@ export async function getTransactionDetail(
     counterpartyClass: (r.counterpartyType as string | null) ?? null,
     institutionId:     institutionByAccount.get(r.financialAccountId ?? "") ?? null,
     descriptor:        `${r.merchant ?? ""} ${r.description ?? ""}`,
+    // W1 (D6) — spelled out rather than left to the spread, for the same reason
+    // as `persistedCounterpartyAccountId` above: the similarity evidence MUST
+    // consult event identity, and a silently-absent field would quietly disable
+    // the cross-event exclusion (the exact defect this wave closes).
+    description:        r.description ?? null,
+    transactionEventId: r.transactionEventId ?? null,
   });
   let relationships = resolveTransactionRelationships(
     withOwner(row),

@@ -16,13 +16,17 @@
  *
  * ⚠️ Rung 4 of the briefed hierarchy — "existing deterministic fingerprint where
  * already proven safe" — is deliberately EMPTY. The only fingerprint this
- * repository has is `RelationshipResolver.resolveDuplicate`'s
- * (account + date + amount + pending + normalized merchant), and it was built to
- * flag SUSPECTED DUPLICATES for a human, not to establish identity. It is exactly
- * the amount/merchant/date coincidence the brief forbids, wearing a different
- * name. Two genuinely separate $4.03 pharmacy purchases on one day would be
- * fused into one event and one of them would vanish from the ledger. Identity
- * gets provider evidence or a new event; there is no third option.
+ * repository has is the DF-4 key (account + date + amount + pending + normalized
+ * raw descriptor; see lib/transactions/fingerprint.ts, and the read-side
+ * SIMILARITY EVIDENCE in `RelationshipResolver.resolveSimilarity`), and it was
+ * built to decide WRITE outcomes and flag SUSPECTED repeats for a human, not to
+ * establish identity. It is exactly the amount/descriptor/date coincidence the
+ * brief forbids, wearing a different name. Two genuinely separate $4.03 pharmacy
+ * purchases on one day would be fused into one event and one of them would
+ * vanish from the ledger. Identity gets provider evidence or a new event; there
+ * is no third option. (W1/D6 made this bidirectional: reads may not derive
+ * identity from the fingerprint either — the similarity surface defers to event
+ * identity and renders evidence language only.)
  *
  * ⚠️ Nothing here joins on amount, merchant, proximity, account or cadence. Those
  * support diagnostics; they never support identity.
