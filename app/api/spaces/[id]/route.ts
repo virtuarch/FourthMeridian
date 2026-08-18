@@ -23,6 +23,7 @@ import { db } from "@/lib/db";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
+import { rosterForViewer } from "@/lib/spaces/roster-visibility";
 import { SUPPORTED_SPACE_CATEGORIES } from "@/lib/space-presets";
 
 export const GET = withApiHandler(async (
@@ -67,7 +68,16 @@ export const GET = withApiHandler(async (
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  return NextResponse.json({ ...space, myRole: isActiveMember ? membership!.role : null });
+  // W1-D3 — roster privacy on the public-read path. A non-member reading a
+  // PUBLIC Space must not receive member emails (or any SpaceMember scalar
+  // beyond the intentionally-public shape the /dashboard/spaces page already
+  // serves). Members' own view passes through untouched. See
+  // lib/spaces/roster-visibility.ts for the allowlist rationale.
+  return NextResponse.json({
+    ...space,
+    members: rosterForViewer(space.members, isActiveMember),
+    myRole:  isActiveMember ? membership!.role : null,
+  });
 }, "GET /api/spaces/[id]");
 
 export const PATCH = withApiHandler(async (

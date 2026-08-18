@@ -73,8 +73,8 @@
  * from regenerateSpaceSnapshot may import lib/space.ts or getServerSession.
  */
 
-import { db } from "@/lib/db";
 import { ShareStatus, type Prisma } from "@prisma/client";
+import { grantsBalanceDisclosure } from "@/lib/account-privacy";
 
 /**
  * The minimum account shape snapshot computation needs. Structurally
@@ -104,9 +104,9 @@ export interface SnapshotAccountsClient {
   spaceAccountLink: {
     findMany(args: {
       where:    Prisma.SpaceAccountLinkWhereInput;
-      select:   { financialAccount: { select: { id: true; type: true; balance: true; currency: true } } };
+      select:   { visibilityLevel: true; financialAccount: { select: { id: true; type: true; balance: true; currency: true } } };
       orderBy:  Prisma.SpaceAccountLinkOrderByWithRelationInput[];
-    }): Promise<Array<{ financialAccount: { id: string; type: string; balance: number; currency: string } }>>;
+    }): Promise<Array<{ visibilityLevel: string; financialAccount: { id: string; type: string; balance: number; currency: string } }>>;
   };
 }
 
@@ -120,15 +120,23 @@ export interface SnapshotAccountsClient {
  */
 export async function readSpaceAccountsForSnapshot(
   spaceId: string,
-  client: SnapshotAccountsClient = db,
+  client?: SnapshotAccountsClient,
 ): Promise<SnapshotAccount[]> {
-  const links = await client.spaceAccountLink.findMany({
+  // Default client resolved LAZILY (dynamic import at call time, not a static
+  // module import): callers that inject a client — every test, and the
+  // regenerate path — never touch the real Prisma client, so this module can
+  // be exercised in environments with no database engine at all. Uninjected
+  // callers get the shared client exactly as before.
+  const prisma = client ?? (await import("@/lib/db")).db;
+
+  const links = await prisma.spaceAccountLink.findMany({
     where: {
       spaceId,
       status:           ShareStatus.ACTIVE,
       financialAccount: { deletedAt: null },
     },
     select: {
+      visibilityLevel: true, // read for the W1-D3 disclosure tripwire below
       financialAccount: {
         select: { id: true, type: true, balance: true, currency: true },
       },
@@ -140,6 +148,28 @@ export async function readSpaceAccountsForSnapshot(
       { financialAccount: { name: "asc" } },
     ],
   });
+
+  // ── W1-D3 — snapshot-population disclosure tripwire ─────────────────────────
+  // A link's balance may enter a Space snapshot ONLY if its visibility tier
+  // grants balance disclosure to that Space (grantsBalanceDisclosure — the same
+  // fail-closed predicate the presentation layer enforces via
+  // normalizeSharedAccounts). Today every production link is FULL, so this is
+  // a strict no-op; it exists so that if a non-disclosing tier (SUMMARY_ONLY /
+  // PRIVATE / legacy SHARED / unknown) is ever enabled, the snapshot writer
+  // FAILS LOUDLY instead of structurally leaking the masked amount into
+  // shared-space aggregates. Throwing (not silently dropping) is deliberate:
+  // silently excluding a link would change net worth without disclosure —
+  // resolving that is the tier-enablement wave's job, not this guard's.
+  for (const l of links) {
+    if (!grantsBalanceDisclosure(l.visibilityLevel)) {
+      throw new Error(
+        `snapshot-population disclosure violation: SpaceAccountLink for account ` +
+        `${l.financialAccount.id} in space ${spaceId} has visibility tier ` +
+        `"${l.visibilityLevel}", which grants no balance disclosure — refusing to ` +
+        `include its balance in the snapshot population.`,
+      );
+    }
+  }
 
   return links.map((l) => ({
     id:       l.financialAccount.id,

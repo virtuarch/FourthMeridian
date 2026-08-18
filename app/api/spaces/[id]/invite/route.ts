@@ -8,6 +8,7 @@ import { NextRequest, NextResponse }              from "next/server";
 import { db }                                     from "@/lib/db";
 import { env }                                    from "@/lib/env";
 import { requireSpaceRole }                   from "@/lib/session";
+import { parseInviteRoleInput }                   from "@/lib/spaces/invite-role";
 import { SpaceMemberRole, SpaceMemberStatus, SpaceType } from "@prisma/client";
 import { getClientIp }                            from "@/lib/api";
 import { emitDomainEvent }                        from "@/lib/events/emit";
@@ -39,11 +40,22 @@ export async function POST(
   }
 
   const body = await req.json();
-  const { username, role = "MEMBER" } = body as { username: string; role?: string };
+  const { username } = body as { username: string; role?: unknown };
 
   if (!username?.trim()) {
     return NextResponse.json({ error: "Username is required" }, { status: 400 });
   }
+
+  // W1-D3 — the role is allowlist-validated (ADMIN/MEMBER/VIEWER; absent →
+  // MEMBER, the pre-existing default). This replaces the old `role as never`
+  // cast, which persisted ANY SpaceMemberRole value — including OWNER, letting
+  // an ADMIN mint a second OWNER through invite-then-accept. OWNER is never
+  // invitable; ownership transfer is a separate (future) flow.
+  const parsedRole = parseInviteRoleInput((body as { role?: unknown }).role);
+  if (!parsedRole.ok) {
+    return NextResponse.json({ error: parsedRole.error }, { status: 400 });
+  }
+  const role = parsedRole.role;
 
   // Look up target user by username
   const targetUser = await db.user.findUnique({
@@ -82,12 +94,12 @@ export async function POST(
       spaceId,
       invitedById:   user.id,
       invitedUserId: targetUser.id,
-      role:          role as never,
+      role,          // validated InvitableSpaceRole — never OWNER (W1-D3)
       status:        "PENDING",
     },
     update: {
       invitedById: user.id,
-      role:        role as never,
+      role,        // validated InvitableSpaceRole — never OWNER (W1-D3)
       status:      "PENDING",
       createdAt:   new Date(),
       seenAt:      null,  // reset so the New badge and sidebar count fire again

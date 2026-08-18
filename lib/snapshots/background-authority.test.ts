@@ -203,7 +203,10 @@ function makeFake(accounts: Array<{ id: string; type: string; balance: number; c
     spaceAccountLink: {
       async findMany() {
         calls.push("spaceAccountLink.findMany");
-        return accounts.map((a) => ({ financialAccount: a }));
+        // W1-D3 — the system read now also selects visibilityLevel for the
+        // snapshot-population disclosure tripwire; FULL matches every
+        // production link today (the guard is a no-op for FULL).
+        return accounts.map((a) => ({ visibilityLevel: "FULL", financialAccount: a }));
       },
     },
     financialAccount: {

@@ -10,6 +10,7 @@
 import { NextRequest, NextResponse }              from "next/server";
 import { db }                                     from "@/lib/db";
 import { requireUser, requireSpaceRole }      from "@/lib/session";
+import { isInvitableSpaceRole }                   from "@/lib/spaces/invite-role";
 import { SpaceMemberRole, SpaceMemberStatus, SpaceType } from "@prisma/client";
 import { getClientIp }                            from "@/lib/api";
 import { emitDomainEvent }                        from "@/lib/events/emit";
@@ -44,6 +45,19 @@ export async function PATCH(
     const space = await db.space.findUnique({ where: { id: spaceId }, select: { type: true } });
     if (space?.type === SpaceType.PERSONAL) {
       return NextResponse.json({ error: "Personal Spaces can't have additional members." }, { status: 400 });
+    }
+
+    // W1-D3 — validation must hold at the point the SpaceMember row is
+    // WRITTEN, not just where the invite was created: a pre-existing invite
+    // row carrying OWNER (minted before the invite route validated roles)
+    // must never materialize a second OWNER here. Same allowlist as the
+    // invite route (ADMIN/MEMBER/VIEWER); decline still works so a bad
+    // invite can be cleared.
+    if (!isInvitableSpaceRole(invite.role)) {
+      return NextResponse.json(
+        { error: "This invite carries a role that can't be granted. Ask a Space admin to send a new invite." },
+        { status: 400 }
+      );
     }
 
     // Use upsert to handle re-joins: if the user previously left or was removed,
