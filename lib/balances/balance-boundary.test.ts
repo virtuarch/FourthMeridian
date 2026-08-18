@@ -111,9 +111,9 @@ console.log("\nPROBE 2 — available credit is never a debt figure");
     (authority.match(/AVAILABLE_CREDIT/g) ?? []).length ===
       (authority.match(/availableClaim\("AVAILABLE_CREDIT"/g) ?? []).length +
       (authority.match(/quantity === "AVAILABLE_CREDIT"/g) ?? []).length);
-  // The consumer accessor refuses everything that is not the named quantity.
-  check("availableCredit() returns null for any other quantity",
-    /quantity === "AVAILABLE_CREDIT"\s*\?\s*b\.available\.amount\s*:\s*null/.test(authority));
+  // (REVIEW-3: the availableCredit() consumer accessor was deleted — zero
+  // importers; consumers read the named claim directly. The named-quantity
+  // discipline is pinned above via the claim construction itself.)
 }
 
 // ── 3. Liquidity never treats credit as cash ─────────────────────────────────
@@ -121,25 +121,15 @@ console.log("\nPROBE 2 — available credit is never a debt figure");
 console.log("\nPROBE 3 — credit is never cash");
 {
   const authority = code(AUTHORITY);
-  // Slice the accessor's OWN body — a window measured in characters would run
-  // into the next function and assert on the wrong code.
-  const bodyOf = (fn: string): string => {
-    const at = authority.indexOf(`export function ${fn}(`);
-    if (at < 0) return "";
-    const open = authority.indexOf("{", authority.indexOf(")", at));
-    let depth = 0;
-    for (let i = open; i < authority.length; i++) {
-      if (authority[i] === "{") depth++;
-      else if (authority[i] === "}" && --depth === 0) return authority.slice(open, i + 1);
-    }
-    return "";
-  };
-  const reach = bodyOf("reachableCash");
-  check("reachableCash() has a body to assert on", reach.length > 20);
-  check("reachableCash() admits ONLY AVAILABLE_CASH",
-    reach.includes('"AVAILABLE_CASH"') && /:\s*null/.test(reach));
-  check("reachableCash() does not admit AVAILABLE_CREDIT", !reach.includes("AVAILABLE_CREDIT"));
-  check("reachableCash() does not admit SETTLED_CASH", !reach.includes("SETTLED_CASH"));
+  // (REVIEW-3: the reachableCash() accessor was deleted — zero importers. The
+  // LIVE boundary is reconcileAccount's reachable-claim guard: only a named
+  // AVAILABLE_CASH claim may become REACHABLE_CASH.)
+  check("reachable cash admits ONLY AVAILABLE_CASH (reconciliation guard)",
+    /avail\.quantity === "AVAILABLE_CASH"\s*\?\s*claim\("REACHABLE_CASH", avail\.amount\)/.test(authority));
+  check("available credit never becomes reachable cash",
+    !/quantity === "AVAILABLE_CREDIT"[\s\S]{0,120}claim\("REACHABLE_CASH"/.test(authority));
+  check("settled cash never becomes reachable cash",
+    !/quantity === "SETTLED_CASH"[\s\S]{0,120}claim\("REACHABLE_CASH"/.test(authority));
   // The liquidity lens must not have started consuming the raw column.
   const liq = code("lib/perspective-engine/lenses/liquidity.core.ts");
   check("the liquidity core reads no available column", !liq.includes("availableBalance"));
@@ -152,19 +142,10 @@ console.log("\nPROBE 4 — an account's value is never its available cash");
   const authority = code(AUTHORITY);
   check("the investment branch returns SETTLED_CASH or refuses — never the balance",
     /case "investment":[\s\S]{0,240}PROVIDER_DID_NOT_REPORT[\s\S]{0,120}SETTLED_CASH/.test(authority));
-  const settledBody = (() => {
-    const at = authority.indexOf("export function settledCash(");
-    const open = authority.indexOf("{", authority.indexOf(")", at));
-    let depth = 0;
-    for (let i = open; i < authority.length; i++) {
-      if (authority[i] === "{") depth++;
-      else if (authority[i] === "}" && --depth === 0) return authority.slice(open, i + 1);
-    }
-    return "";
-  })();
-  check("settledCash() admits ONLY SETTLED_CASH",
-    settledBody.includes('"SETTLED_CASH"') &&
-    !settledBody.includes("AVAILABLE_CASH") && !settledBody.includes("AVAILABLE_CREDIT"));
+  // (REVIEW-3: the settledCash() accessor was deleted — zero importers. The
+  // named-quantity claim in the investment branch, pinned above, is the live
+  // statement; the reachable-claim guard in PROBE 3 keeps SETTLED_CASH out of
+  // liquidity.)
 }
 
 // ── 5. Null available stays unknown ──────────────────────────────────────────
@@ -235,7 +216,9 @@ console.log("\nPROBE 8 — every section widget is classified, and balance cards
   const registrySrc = src("components/space/sections/SectionRegistry.tsx");
   const body = registrySrc.slice(registrySrc.indexOf("export const SectionRegistry"));
   const keys = [...body.matchAll(/^\s{2}"([a-z_0-9]+)":/gm)].map((m) => m[1]);
-  check(`the registry exposes a readable key list (${keys.length} keys)`, keys.length > 30);
+  // REVIEW-3 (slice F) cut the registry to reachable keys (~19); the bound
+  // asserts the scan still parses a real list, not a historical count.
+  check(`the registry exposes a readable key list (${keys.length} keys)`, keys.length >= 15);
 
   const mapSrc = code("lib/balances/section-quantity.ts");
   const missing = keys.filter((k) => !new RegExp(`\\b${k}:\\s`).test(mapSrc));
@@ -248,8 +231,10 @@ console.log("\nPROBE 8 — every section widget is classified, and balance cards
   // family silently loses its label.
   check("no card shell renders the bare body",
     !/\{renderBody\(\)\}/.test(card.replace(/function renderBodyWithQuantity\(\)[\s\S]*?\n  \}/, "")));
-  check("all four card shells render the labelled body",
-    (card.match(/\{renderBodyWithQuantity\(\)\}/g) ?? []).length === 4);
+  // REVIEW-3: the bare-lede shell (net_worth / net_worth_chart) was deleted
+  // with its keys, leaving three shells.
+  check("all three card shells render the labelled body",
+    (card.match(/\{renderBodyWithQuantity\(\)\}/g) ?? []).length === 3);
 
   // The account panel names both quantities.
   const panel = code("components/space/widgets/accounts/AccountDetail.tsx");
@@ -263,8 +248,16 @@ console.log("\nPROBE 8 — every section widget is classified, and balance cards
   // The AI payload names the quantity instead of shipping a bare number.
   const ai = code("lib/ai/assemblers/accounts.ts");
   check("the AI payload sends a NAMED available quantity", ai.includes("availableQuantity:"));
-  check("...at BOTH visibility tiers",
-    (ai.match(/\.\.\.balanceFacts\(fa, now\),/g) ?? []).length === 2);
+  // REVIEW-3 C-4 re-point: the privacy-reduced tier no longer spreads
+  // balanceFacts per link — its rows are AGGREGATED by the account-privacy
+  // authority, and each aggregate's current state is composed from the members'
+  // balanceFacts claims via aggregateCurrentCashState (an aggregate is never
+  // more certain than its weakest member). Both tiers still consume the balance
+  // authority; neither ships the raw column.
+  check("...at BOTH visibility tiers (FULL spread; aggregate composes member claims)",
+    (ai.match(/\.\.\.balanceFacts\(fa, now\),/g) ?? []).length === 1 &&
+    /balanceFacts\(fa, now\);/.test(ai) &&
+    ai.includes("aggregateCurrentCashState("));
   check("the AI payload does not send the raw column",
     !/availableBalance:\s*fa\.availableBalance\.toString|availableBalance:\s*fa\.availableBalance\s*\?\?\s*null,\s*\n\s*syncStatus/.test(ai));
 }

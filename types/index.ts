@@ -40,6 +40,16 @@ export interface Account {
    */
   balanceLastUpdatedAt?: string | null;
   /**
+   * REVIEW-3 B-1 — true when the link's visibility tier grants NO balance
+   * disclosure (SUMMARY_ONLY / PRIVATE / legacy SHARED / unknown — fail
+   * closed). On such a row `balance` is 0 as a STRUCTURAL placeholder, never a
+   * claim the account is settled: it must be excluded from every balance sum
+   * and rendered as withheld, and `balanceLastUpdatedAt` / `currentState` are
+   * withheld with it (they describe a balance this tier does not disclose).
+   * Absent (never false) on FULL and BALANCE_ONLY rows.
+   */
+  balanceRedacted?: true;
+  /**
    * v2.6-L3 — the CURRENT-state claim for this account, resolved by the KD-19
    * visibility authority (lib/data/accounts.ts) through lib/balances. Present on
    * CASH accounts only, and ONLY on the live path — the historical as-of

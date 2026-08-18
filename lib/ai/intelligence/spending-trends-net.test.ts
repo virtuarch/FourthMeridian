@@ -1,21 +1,17 @@
 /**
  * lib/ai/intelligence/spending-trends-net.test.ts
  *
- * P1-4 — N3 net correctness. Pins the trend/annotation "net" metric to the
- * canonical, REFUND-INCLUSIVE net cash flow and guards it against ever drifting
- * back into the refund-blind formula it used to compute.
- *
- * The defect (traced, not assumed): metricValue()'s `net` branch computed
- *     income − expense − debtPayments
- * while its own comment claimed to mirror the top-level window `netCashFlow`,
- * which the assembler defines (lib/ai/assemblers/transactions.ts:546) as
- *     incomeTotal + refundTotal − expenseTotal − debtPaymentTotal
- * (refund-inclusive; expenseTotal is the GROSS cost-flow sum, KD-17 debit-only).
- * The two same-named measures therefore silently diverged by the window's
- * refund total. Both flow figures are honest; the trend net was simply missing
- * the `+ refundTotal` term. This suite pins the corrected formula and asserts
- * parity between the trend net and the assembler net formula on real assembled
- * data (buildMonthlyBreakdown output), so a future edit cannot re-open the gap.
+ * P1-4 — N3 net correctness, updated for REVIEW-3 C-3. Pins the
+ * trend/annotation "net" metric to THE canonical economic net — income −
+ * clampEconomicSpend(gross expense, refunds), the same clamp authority the Cash
+ * Flow workspace and the assembler's headline netCashFlow use — and guards it
+ * against drifting back into either retired formula: the refund-blind
+ * `income − expense − debt` (P1-4's original defect) or the fourth-definition
+ * `income + refund − expense − debtPayments` (which subtracted debt payments
+ * and let the Brief's deficit verdict contradict the Cash Flow workspace).
+ * Asserts parity between the trend net and the assembler net formula on real
+ * assembled data (buildMonthlyBreakdown output), so a future edit cannot
+ * re-open the gap.
  *
  * No test framework — standalone tsx script, inline assertions, exit 0/1
  * (house pattern, mirrors transactions.kd17.test.ts). Importing annotations /
@@ -50,11 +46,17 @@ function approx(a: number, b: number): boolean {
   return Math.abs(a - b) < 0.005;
 }
 
-/** The canonical net cash flow — the assembler's window formula, one line. */
+/**
+ * The canonical net cash flow — REVIEW-3 C-3: the assembler's headline
+ * netCashFlow is now THE canonical economic net (income − clamped spend, the
+ * same clampEconomicSpend the Cash Flow workspace uses). Debt payments are
+ * movement toward a goal, not cash flow, and are EXCLUDED; the after-paydown
+ * position ships separately as netAfterDebtPayments.
+ */
 function canonicalNet(f: {
   incomeTotal: number; refundTotal: number; expenseTotal: number; debtPaymentTotal: number;
 }): number {
-  return f.incomeTotal + f.refundTotal - f.expenseTotal - f.debtPaymentTotal;
+  return f.incomeTotal - Math.max(0, f.expenseTotal - f.refundTotal);
 }
 
 function mkMonth(over: Partial<MonthlyBreakdownEntry> & { month: string }): MonthlyBreakdownEntry {
@@ -74,15 +76,20 @@ function mkMonth(over: Partial<MonthlyBreakdownEntry> & { month: string }): Mont
   });
 
   const net           = metricValue(m, 'net');
-  const refundBlind   = m.incomeTotal - m.expenseTotal - m.debtPaymentTotal; // the old bug
+  const refundBlind   = m.incomeTotal - m.expenseTotal; // a refund-blind figure would be wrong
+  const debtSubtracted = m.incomeTotal + m.refundTotal - m.expenseTotal - m.debtPaymentTotal; // the old 4th definition
   const canonical     = canonicalNet(m);
 
-  check('net equals the canonical refund-inclusive formula (income + refund − expense − debt)',
-    approx(net, canonical) && approx(net, 1600), `got ${net}, expected 1600`);
+  check('net equals the canonical economic net (income − clamp(expense − refund))',
+    approx(net, canonical) && approx(net, 1800), `got ${net}, expected 1800`);
 
   check('refunds MATERIALLY change the net — refund-blind figure is wrong',
-    approx(refundBlind, 800) && !approx(net, refundBlind) && approx(net - refundBlind, m.refundTotal),
+    approx(refundBlind, 1000) && !approx(net, refundBlind) && approx(net - refundBlind, m.refundTotal),
     `net=${net}, refundBlind=${refundBlind}, refundTotal=${m.refundTotal}`);
+
+  check('debt payments do NOT enter the canonical net (the retired 4th definition subtracted them)',
+    !approx(net, debtSubtracted) && approx(debtSubtracted, net - m.debtPaymentTotal),
+    `net=${net}, retiredFormula=${debtSubtracted}`);
 
   // income / expense metrics untouched by the fix.
   check('income metric is incomeTotal (unchanged)',  approx(metricValue(m, 'income'), 4000));
@@ -132,9 +139,10 @@ function mkMonth(over: Partial<MonthlyBreakdownEntry> & { month: string }): Mont
       approx(metricValue(may, 'net'), canonicalNet(may)),
       `trend=${metricValue(may, 'net')}, assembler=${canonicalNet(may)}`);
 
-    // Concrete value: 5000 + 150 − (320+680) − 400 = 3750. Transfer excluded.
-    check('trend net has the expected concrete value (transfers excluded)',
-      approx(metricValue(may, 'net'), 3750), `got ${metricValue(may, 'net')}`);
+    // Concrete value: 5000 − max(0, (320+680) − 150) = 4150. Transfer AND the
+    // debt-payment leg excluded (both are movement, not cash flow).
+    check('trend net has the expected concrete value (transfers and debt payments excluded)',
+      approx(metricValue(may, 'net'), 4150), `got ${metricValue(may, 'net')}`);
   }
 }
 

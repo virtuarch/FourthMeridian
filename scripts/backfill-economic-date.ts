@@ -18,6 +18,13 @@
  * date is a pure function of the first two, so the backfill is re-runnable and
  * idempotent by construction: a second pass finds nothing to do.
  *
+ * ⚠️ B-6 (REVIEW-3): EVENT-LINKED rows are SKIPPED. Where an observation history
+ * exists, `Transaction.economicDate` is the EVENT's answer (first resolution
+ * wins — projectEvent → reprojectEvent materialization), which can legitimately
+ * differ from this script's row-evidence derivation on pending→posted chains.
+ * "Correcting" those rows back to row evidence would undo the pin; the event
+ * repair path for them is scripts/repair-event-projection-drift.ts.
+ *
  * ── Soft-deleted rows are INCLUDED ─────────────────────────────────────────
  *
  * Tombstoned rows are excluded from reads but still exist, and an import
@@ -42,10 +49,13 @@ async function main() {
   const apply = process.argv.includes("--apply");
   console.log(`\n[backfill-economic-date] ${apply ? "APPLY" : "DRY RUN"}\n`);
 
-  const rows = await db.transaction.findMany({
-    select: { id: true, date: true, authorizedAt: true, economicDate: true, deletedAt: true },
+  const all = await db.transaction.findMany({
+    select: { id: true, date: true, authorizedAt: true, economicDate: true, deletedAt: true, transactionEventId: true },
   });
-  console.log(`  rows in table (tombstones included): ${rows.length}`);
+  // B-6 — event-linked rows carry the EVENT's pinned date, not row evidence.
+  const rows = all.filter((r) => r.transactionEventId == null);
+  console.log(`  rows in table (tombstones included): ${all.length}`);
+  console.log(`  event-linked rows SKIPPED (event pin governs): ${all.length - rows.length}`);
 
   type Plan = { id: string; from: string | null; to: string; basis: string; state: string };
   const plan: Plan[] = [];

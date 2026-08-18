@@ -23,7 +23,8 @@
  * reconciles by construction with the tiles below.
  */
 
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatDate } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { Figure } from "@/components/atlas/Surface";
 import { TrustIndicator } from "@/components/space/trust/TrustIndicator";

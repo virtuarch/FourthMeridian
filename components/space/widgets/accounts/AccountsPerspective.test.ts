@@ -17,8 +17,9 @@
  *      shared SpaceAccount type.
  *   7. Detail route reuses the SAME spaceAccountLinks ACTIVE join + the Activity
  *      Tab's ImportBatch join shape, and deriveConnectionState() verbatim.
- *   8. Host wiring: accounts_overview mounts AccountsPerspective; business_accounts
- *      stays on the untouched AccountsCard.
+ *   8. Host wiring: accounts_overview mounts AccountsPerspective. (REVIEW-3:
+ *      business_accounts + AccountsCard were deleted — the key was seeded only
+ *      by the non-creatable BUSINESS category and rendered nowhere.)
  *
  *   npx tsx components/space/widgets/accounts/AccountsPerspective.test.ts
  */
@@ -129,9 +130,10 @@ console.log("8. Section-registry wiring — one renderer swap, business_accounts
   const SECTIONS = readFileSync(path.join(ROOT, "components/space/sections/SectionRegistry.tsx"), "utf8");
   check("accounts_overview mounts AccountsPerspective",
     SECTIONS.includes('"accounts_overview":      (p) => <AccountsPerspective spaceId={p.spaceId} accounts={p.accounts} />'));
-  check("business_accounts still on AccountsCard",
-    SECTIONS.includes('"business_accounts":      (p) => <AccountsCard accounts={p.accounts} />'));
-  check("AccountsCard still defined (serves business_accounts)", SECTIONS.includes("function AccountsCard("));
+  // REVIEW-3 (slice F): business_accounts + AccountsCard deleted — seeded only
+  // by the non-creatable BUSINESS category, rendered nowhere, zero prod rows.
+  check("business_accounts / AccountsCard stay deleted",
+    !SECTIONS.includes('"business_accounts"') && !SECTIONS.includes("function AccountsCard("));
   check("AccountsPerspective imported", SECTIONS.includes('from "@/components/space/widgets/accounts/AccountsPerspective"'));
 }
 

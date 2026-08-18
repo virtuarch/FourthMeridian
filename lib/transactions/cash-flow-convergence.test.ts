@@ -151,7 +151,6 @@ const sliceOf = (rows: Transaction[], ids: readonly string[]) => {
 {
   const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
   const surfaces = [
-    "../../components/space/widgets/cash-flow-adapters.tsx",
     "../../components/space/widgets/cashflow/CashFlowWorkspace.tsx",
     "../../components/space/widgets/DebtPaymentsWidget.tsx",
   ];

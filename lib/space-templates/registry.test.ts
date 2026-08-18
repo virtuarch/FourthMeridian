@@ -98,17 +98,12 @@ for (const t of [...live, ...comingSoon]) {
 }
 
 // 6. Widget-key referential integrity — every section key exists in
-//    WIDGET_REGISTRY and is not a deprecated alias.
+//    WIDGET_REGISTRY. (The deprecated-alias check retired with the
+//    `deprecatedAlias` field in REVIEW-3's widget-registry cut.)
 for (const t of SPACE_TEMPLATES) {
   for (const s of t.sections) {
     const entry = WIDGET_REGISTRY.get(s.key);
     check(`template "${t.id}" section key "${s.key}" exists in WIDGET_REGISTRY`, entry !== undefined);
-    if (entry) {
-      check(
-        `template "${t.id}" section key "${s.key}" is not a deprecated alias`,
-        entry.meta.deprecatedAlias === undefined
-      );
-    }
   }
 }
 

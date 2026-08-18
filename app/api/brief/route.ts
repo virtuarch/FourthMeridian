@@ -57,22 +57,29 @@ import type {
   BriefItem,
   BriefTone,
   VisitState,
-  FinancialMapData,
   TrackedAccount,
 } from "@/lib/brief-types";
+// REVIEW-3 C-6 — the ONE symbol/formatting source; no hard-coded `$` remains.
+import { currencySymbol, DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 
-// ── Formatting helpers (unchanged) ────────────────────────────────────────────
+// ── Formatting helpers ────────────────────────────────────────────────────────
 
-function fmtCurrency(n: number): string {
+// REVIEW-3 C-6 — the Brief renders money in the primary Space's REPORTING
+// currency, threaded from the context (ctx.space.reportingCurrency). The
+// previous helpers hard-coded `$` on every figure; a non-USD Space would have
+// had its entire Brief silently dollar-signed. The symbol comes from
+// lib/currency's currencySymbol (USD ⇒ "$", so all-USD output is unchanged).
+function fmtCurrency(n: number, currency: string): string {
   const abs = Math.abs(n);
-  if (abs >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
-  if (abs >= 1_000)     return `$${(n / 1_000).toFixed(1)}K`;
-  return `$${n.toFixed(0)}`;
+  const sym = currencySymbol(currency);
+  if (abs >= 1_000_000) return `${sym}${(n / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000)     return `${sym}${(n / 1_000).toFixed(1)}K`;
+  return `${sym}${n.toFixed(0)}`;
 }
 
-function fmtDelta(delta: number): string {
+function fmtDelta(delta: number, currency: string): string {
   const sign = delta >= 0 ? "+" : "−";
-  return `${sign}${fmtCurrency(Math.abs(delta))}`;
+  return `${sign}${fmtCurrency(Math.abs(delta), currency)}`;
 }
 
 /**
@@ -178,6 +185,7 @@ function buildSinceLastVisit(
   lastViewedAt:    Date | null,
   pendingInvites:  number,
   trackedAccounts: TrackedAccount[],
+  cur:             string,
 ): BriefSection | null {
   const acct = accounts(primaryCtx);
   const snap  = snapshot(primaryCtx);
@@ -207,15 +215,22 @@ function buildSinceLastVisit(
     items.push({
       id:     "nw_delta",
       label:  "Net worth",
-      value:  fmtDelta(nwChange.abs),
-      detail: `since ${fmtDay(nwChange.fromDate)} · now ${fmtCurrency(netWorth)}`,
+      value:  fmtDelta(nwChange.abs, cur),
+      // REVIEW-3 C-4c — ONE population per sentence. `now` is the canonical
+      // window's own endpoint (the same snapshot series the delta is computed
+      // over), not the live classifier's figure: the previous mix put a
+      // snapshot-window change beside a live total whose population differs
+      // (e.g. consent-gated investments), so the two numbers in one line could
+      // not be reconciled with each other.
+      detail: `since ${fmtDay(nwChange.fromDate)} · now ${fmtCurrency(nwChange.toValue, cur)} (as of ${fmtDay(nwChange.toDate)})`,
       tone,
     });
   } else {
+    // Single figure, single population (the live accounts-domain total).
     items.push({
       id:    "nw_current",
       label: "Net worth",
-      value: fmtCurrency(netWorth),
+      value: fmtCurrency(netWorth, cur),
       tone:  "neutral",
     });
   }
@@ -267,6 +282,7 @@ function buildAttention(
   allSignals:  ContextSignal[],
   primaryCtx:  SpaceContext_AI,
   assessment:  FinancialAssessment,
+  cur:         string,
 ): BriefSection | null {
   const items: BriefItem[] = [];
   const acct  = accounts(primaryCtx);
@@ -369,7 +385,7 @@ function buildAttention(
     items.push({
       id:     "low_liquidity",
       label:  "Low cash position",
-      value:  fmtCurrency(liq.liquidCashTotal),
+      value:  fmtCurrency(liq.liquidCashTotal, cur),
       ...(liq.coverageMonths !== null
         ? { detail: `About ${liq.coverageMonths.toFixed(1)} months of expenses covered` }
         : {}),
@@ -404,8 +420,14 @@ function buildInsight(
   primaryCtx:   SpaceContext_AI,
   advice:       { summary: string; adviceText: string } | null,
   assessment:   FinancialAssessment,
+  cur:          string,
 ): BriefSection | null {
-  // Prefer cached AI advice
+  // Prefer cached AI advice.
+  //
+  // REVIEW-3 — DORMANT-VALID, not dead (do not delete): no current code path
+  // writes AiAdvice rows, so this branch never fires TODAY, but the AiAdvice
+  // writer is a tracked open issue (KD-14, milestoned v2.6b). When that writer
+  // lands, this branch is the consumption path.
   if (advice?.summary) {
     return {
       id:          "insight",
@@ -470,16 +492,25 @@ function buildInsight(
   // No canonicalChange means history does not reach back a month — the authority
   // refuses rather than comparing against the earliest point it happens to hold,
   // and so does this sentence.
+  // REVIEW-3 C-5 — ONE window, sign-correct verbs. The gate used to be the
+  // NET_WORTH_INCREASED signal (computed, pre-migration, over the ACCIDENTAL
+  // fetched-row window) while the sentence printed the canonical percentage
+  // with NO sign check — so "up" could gate on one window's sign and print
+  // another window's negative number ("Net worth is up -3.2%"). The signal now
+  // derives from canonicalChange too, and this sentence additionally checks
+  // the sign of the exact figure it prints, so gate, figure, and verb agree by
+  // construction. The quoted total is the canonical window's own endpoint —
+  // the same series as the percentage, never the live classifier's total.
   const trendUpSig = allSignals.find(s => s.type === SignalType.NET_WORTH_INCREASED);
   const change = snap?.canonicalChange ?? null;
-  if (trendUpSig && change && change.pct !== null) {
+  if (trendUpSig && change && change.pct !== null && change.pct > 0 && change.abs > 0) {
     return {
       id:       "insight",
       type:     "insight",
       priority: 20,
       title:    "Today's Insight",
       body:     `Net worth is up ${change.pct.toFixed(1)}% since ${fmtDay(change.fromDate)} — ` +
-                `${fmtCurrency(netWorth)} total. Stay consistent.`,
+                `${fmtCurrency(change.toValue, cur)} as of ${fmtDay(change.toDate)}. Stay consistent.`,
       tone:     "positive",
     };
   }
@@ -494,7 +525,12 @@ function buildInsight(
   // the Brief and the AI ended up telling a user two different things about the
   // same 30 days.
   if (txn && txn.incomeTotal > 0 && assessment.cashFlow.reliability !== "UNRELIABLE") {
-    const savingsRate = Math.round(((txn.incomeTotal - txn.expenseTotal) / txn.incomeTotal) * 100);
+    // REVIEW-3 C-3 — the rate is derived from the CANONICAL net (income −
+    // clamped spend), the same figure the Cash Flow workspace headlines — never
+    // recomputed here from gross expenseTotal, which overstated spending by the
+    // window's refunds. The sentence still DISCLOSES gross expenses, but names
+    // them as gross.
+    const savingsRate = Math.round((txn.netCashFlow / txn.incomeTotal) * 100);
     if (savingsRate > 0) {
       // TI2-W2 — honesty caveat: when a material share of that income is
       // sign-default inflow with no resolved source, the savings rate rests on
@@ -504,14 +540,14 @@ function buildInsight(
       // computeAssessment had already computed from the same input.
       const share = assessment.dataQuality.unidentifiedInflowShare;
       const caveat = share !== null && share >= MATERIAL_UNIDENTIFIED_INFLOW_SHARE
-        ? ` Note: ${fmtCurrency(txn.needsClassification.unknownInflowTotal)} of that income has no identified source, so this rate is provisional.`
+        ? ` Note: ${fmtCurrency(txn.needsClassification.unknownInflowTotal, cur)} of that income has no identified source, so this rate is provisional.`
         : "";
       return {
         id:       "insight",
         type:     "insight",
         priority: 20,
         title:    "Today's Insight",
-        body:     `You kept ${savingsRate}% of income over the last ${txn.windowDays} days. Expenses were ${fmtCurrency(txn.expenseTotal)} against ${fmtCurrency(txn.incomeTotal)} in income.${caveat}`,
+        body:     `You kept ${savingsRate}% of income over the last ${txn.windowDays} days. Gross expenses were ${fmtCurrency(txn.expenseTotal, cur)} against ${fmtCurrency(txn.incomeTotal, cur)} in income${txn.refundTotal > 0 ? ` (${fmtCurrency(txn.refundTotal, cur)} came back as refunds)` : ""}.${caveat}`,
         tone:     "info",
       };
     }
@@ -535,7 +571,7 @@ function buildInsight(
 
   const { debt, liquidity, cashFlow, currentStatePriority } = assessment;
 
-  const body: string | null = (() => {
+  let body: string | null = (() => {
     switch (currentStatePriority) {
       case "DATA_QUALITY":
         // The honest answer when the window cannot support a verdict. It replaces
@@ -543,13 +579,13 @@ function buildInsight(
         return "There isn't enough recent activity to read your cash flow with confidence yet. " +
                "Connecting or refreshing your accounts will sharpen the picture.";
 
-      case "DEBT":
-        if (debt.classification === "CRITICAL") {
-          return `Your debt is carrying a high interest rate${debt.monthlyInterestBurden !== null
-            ? ` — about ${fmtCurrency(debt.monthlyInterestBurden)} a month in interest`
-            : ""}. Reducing the highest-rate balance first has the largest effect.`;
-        }
-        return "Some of your debt is at an elevated interest rate and worth actively managing.";
+      // REVIEW-3 C-7 — there is deliberately NO `case "DEBT"` arm. Under the
+      // Brief's own scope the per-account list is withheld (scopeHint 'brief'),
+      // debt is forced INSUFFICIENT_DATA, and currentStatePriority can never be
+      // DEBT — the arm that lived here was statically unreachable (audit E3).
+      // The withheld grade is consumed HONESTLY below via assessment.ungraded
+      // instead. Whether Brief scope should ever carry per-account debt detail
+      // is an open product decision recorded in the REVIEW-3 report.
 
       case "LIQUIDITY":
         if (liquidity.classification === "CRITICAL" || liquidity.classification === "WARNING") {
@@ -557,7 +593,7 @@ function buildInsight(
                  "Building that buffer is the highest-value move available right now.";
         }
         if (liquidity.classification === "EXCELLENT") {
-          return `You have ${fmtCurrency(liquidity.liquidCashTotal)} in cash — comfortably more than ` +
+          return `You have ${fmtCurrency(liquidity.liquidCashTotal, cur)} in cash — comfortably more than ` +
                  "your expenses require. Consider whether some of it could be working harder.";
         }
         // SAFE or UNKNOWN — nothing worth escalating, and nothing worth inventing.
@@ -567,12 +603,20 @@ function buildInsight(
 
       case "CASH_FLOW":
         if (cashFlow.deficitCause === "POSSIBLE_OVERSPENDING") {
+          // REVIEW-3 C-3 — this claim now rests on the CANONICAL economic net
+          // (negative), so it can never contradict the Cash Flow workspace.
           return "You spent more than you took in over this window, and it isn't explained by debt payoff. " +
                  "Worth a look at where it went.";
         }
         if (cashFlow.deficitCause === "INTENTIONAL_DEBT_PAYOFF" || cashFlow.deficitCause === "MIXED") {
           return "You ran a deficit this window, but it's driven by debt payments against an active payoff goal — " +
                  "that's the plan working, not a problem.";
+        }
+        if (cashFlow.deficitCause === "DEBT_DRIVEN") {
+          // Debt payments fully explain the cash deficit and the canonical net
+          // is non-negative — never framed as overspending.
+          return "Your cash went down this window, but the gap is debt payments, not overspending. " +
+                 "If that paydown is deliberate, consider recording it as a goal so it reads as strategy.";
         }
         return null;
 
@@ -583,6 +627,21 @@ function buildInsight(
     }
   })();
 
+  // REVIEW-3 C-7 — consume the DECLARED insufficiency: when real liabilities
+  // exist but their grade was withheld by this surface's own scope, say so
+  // rather than letting silence imply health. ("Say so or say nothing
+  // knowingly" — this is the say-so arm; every other withheld grade stays
+  // knowingly silent because no figure of its section is on screen.)
+  if (body === null && totalDebt > 0) {
+    const debtWithheld = assessment.ungraded.find(
+      (u) => u.section === "debt" && u.reason === "ACCOUNT_LIST_WITHHELD_BY_SCOPE",
+    );
+    if (debtWithheld) {
+      body = `You're carrying ${fmtCurrency(totalDebt, cur)} of debt. The Brief's summary view doesn't ` +
+             "carry the per-account detail needed to grade it — open your Space's Debt view for the full picture.";
+    }
+  }
+
   if (body === null) return null;
 
   return {
@@ -591,7 +650,9 @@ function buildInsight(
     priority: 20,
     title:    "Today's Insight",
     body,
-    tone:     currentStatePriority === "DEBT" || currentStatePriority === "LIQUIDITY" ? "warning" : "info",
+    // DEBT is unreachable at this surface (see above); LIQUIDITY is the only
+    // priority whose insight warrants the warning tone here.
+    tone:     currentStatePriority === "LIQUIDITY" ? "warning" : "info",
   };
 }
 
@@ -752,12 +813,17 @@ export async function GET() {
   if (!hasData || !primaryCtx) {
     sections.push(buildOnboarding());
   } else {
+    // REVIEW-3 C-6 — the primary Space's reporting currency, threaded through
+    // every money string the Brief renders. USD output is byte-identical.
+    const cur = primaryCtx.space.reportingCurrency ?? DEFAULT_DISPLAY_CURRENCY;
+
     const sinceSection = buildSinceLastVisit(
       primaryCtx,
       totalAccountCount,
       lastViewedAt,
       pendingInviteCount,
       trackedAccounts,
+      cur,
     );
     if (sinceSection) sections.push(sinceSection);
 
@@ -766,25 +832,20 @@ export async function GET() {
     // context, which is the duplication this slice exists to remove, in miniature.
     const assessment = computeAssessment(primaryCtx);
 
-    const attentionSection = buildAttention(allSignals, primaryCtx, assessment);
+    const attentionSection = buildAttention(allSignals, primaryCtx, assessment, cur);
     if (attentionSection) sections.push(attentionSection);
 
-    const insightSection = buildInsight(allSignals, primaryCtx, advice, assessment);
+    const insightSection = buildInsight(allSignals, primaryCtx, advice, assessment, cur);
     if (insightSection) sections.push(insightSection);
   }
 
   sections.sort((a, b) => a.priority - b.priority);
-
-  // ── Map data (empty markers in brief mode — no per-account detail available)
-  // Map hero rendering does not require markers in the current UI.
-  const map: FinancialMapData = { markers: [], hasLocations: false };
 
   const payload: BriefPayload = {
     visitState:  state,
     contextLine: context,
     hasData,
     sections,
-    map,
     generatedAt: new Date().toISOString(),
   };
 

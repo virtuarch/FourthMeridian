@@ -1,31 +1,28 @@
 /**
  * Widget Registry
  *
- * Central source of truth for every section key the dashboard runtime knows
- * about. Each entry describes the widget's metadata, data requirements, config
- * schema, and implementation status.
+ * Metadata for the section keys the dashboard runtime still consumes.
  *
- * Design contract:
- *  - SpaceDashboard (the runtime compositor) looks up entries here.
- *  - Adding a new section type = add one entry here; no switch/case edits.
- *  - Placeholder entries keep the registry honest while real components land.
+ * REVIEW-3 (slice F) cut this file from ~1,100 lines to what is actually
+ * read. The registry used to catalogue every section key ever conceived —
+ * config schemas, tab/icon assignments, collapse/fullscreen flags,
+ * deprecation aliases, and an `implemented` flag whose documented fallback
+ * behavior ("implemented:false falls back to ContextualCard") was FALSE:
+ * SectionCard never consulted it. Production reads exactly two things:
  *
- * ── Widget Primitive Rule ──────────────────────────────────────────────────────
- * Before creating a new widget component, ask:
- *   Can this be an AssetValue, Progress, Breakdown, Summary, or Timeline
- *   widget with a different adapter?
+ *   - `label`               (lib/perspectives/virtual-sections.ts — virtual
+ *                            section titles for the Goals workspace; the
+ *                            ContextualCard fallback's headline)
+ *   - `requires[0].reason`  (ContextualCard's hint line)
  *
- *   If yes  → write the adapter in SpaceDashboard SectionRegistry.
- *   If no   → define a new primitive in components/space/widgets/.
- *
- * This prevents widget sprawl. Every adapter-only addition costs ~15 lines.
- * Every new primitive costs ~200+ lines and a new mental model.
- * ──────────────────────────────────────────────────────────────────────────────
- *
- * Companion to: WIDGET_META_ANALYSIS.md
+ * so WidgetMeta is now { key, label, description, requires } and the entry
+ * list is the surviving consumers' key set: the Goals virtual-section widgets
+ * and the goals_progress section that presets still seed. The renderer
+ * dispatch authority is components/space/sections/SectionRegistry.tsx — NOT
+ * this file. The platform ops dashboard uses its own, separate
+ * PLATFORM_WIDGET_REGISTRY (components/platform/PlatformSpaceDashboard.tsx)
+ * and reads nothing from here.
  */
-
-import { SpaceDashboardTab } from "@/lib/space-presets";
 
 // ─── Data requirement ─────────────────────────────────────────────────────────
 
@@ -38,1051 +35,78 @@ export interface DataRequirement {
   visibility: AccountVisibility;
   /** How many qualifying accounts must exist (default 1) */
   minCount?: number;
-  /** Human-readable explanation shown in the widget picker when not met */
+  /** Human-readable explanation shown when the requirement is not met */
   reason: string;
-}
-
-// ─── Config schema ────────────────────────────────────────────────────────────
-
-export type ConfigFieldType = "number" | "string" | "select" | "boolean" | "date";
-
-export interface ConfigField {
-  key:      string;
-  label:    string;
-  type:     ConfigFieldType;
-  options?: { value: string; label: string }[];
-  default?: unknown;
-  hint?:    string;
 }
 
 // ─── Widget meta ──────────────────────────────────────────────────────────────
 
 export interface WidgetMeta {
   /** Stable machine-readable key — matches SpaceDashboardSection.key */
-  key:              string;
-  /** Display name in settings list and future picker */
-  label:            string;
-  /** One-line description shown in picker cards */
-  description:      string;
-  /** Default tab assignment */
-  tab:              SpaceDashboardTab;
-  /** Lucide icon name (string; caller imports the icon) */
-  icon:             string;
+  key:         string;
+  /** Display name (virtual-section titles, ContextualCard headline) */
+  label:       string;
+  /** One-line description (documentation; not currently rendered) */
+  description: string;
   /** Required data conditions — empty array = always renderable */
-  requires:         DataRequirement[];
-  /** Config fields read from SpaceDashboardSection.config */
-  configSchema?:    ConfigField[];
-  /** Card can be collapsed by the user. Default: true */
-  collapsible?:     boolean;
-  /** Card supports fullscreen/expand mode */
-  fullscreenable?:  boolean;
-  /**
-   * If set, this key is a deprecated alias for another canonical key.
-   * The registry will still render it (via whatever component is mapped),
-   * but the settings UI can show a deprecation notice.
-   */
-  deprecatedAlias?: string;
+  requires:    DataRequirement[];
 }
 
-// ─── Registry entry ───────────────────────────────────────────────────────────
-
 export interface WidgetRegistryEntry {
-  meta:        WidgetMeta;
-  /**
-   * True  → a real component is wired up in the SectionRegistry inside
-   *          SpaceDashboard.tsx. Renders meaningful data.
-   * False → falls back to ContextualCard (placeholder).
-   */
-  implemented: boolean;
-  /**
-   * True → registered, rendered, but the component is a stub ("coming soon").
-   * Only set this when `implemented` is also true.
-   */
-  isStub?: boolean;
+  meta: WidgetMeta;
 }
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
 
 const registry: WidgetRegistryEntry[] = [
 
-  // ── Net Worth ───────────────────────────────────────────────────────────────
-
-  {
-    implemented: true,
-    meta: {
-      key:         "net_worth",
-      label:       "Net Worth",
-      description: "Total assets minus total debt across all shared accounts.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "LayoutDashboard",
-      requires:    [],
-      collapsible: true,
-    },
-  },
-
-  {
-    implemented: true,
-    meta: {
-      key:              "net_worth_section",
-      label:            "Net Worth (legacy alias)",
-      description:      "Alias for net_worth. Deprecated — prefer net_worth.",
-      tab:              SpaceDashboardTab.OVERVIEW,
-      icon:             "LayoutDashboard",
-      requires:         [],
-      collapsible:      true,
-      deprecatedAlias:  "net_worth",
-    },
-  },
-
-  // Unified Space Widget Layout (slice 1) — the Personal Overview lede
-  // (formerly hardcoded in PersonalHero) is now section-backed so it inherits
-  // order / drag / show-hide like any other widget.
-  {
-    implemented: true,
-    meta: {
-      key:         "net_worth_chart",
-      label:       "Net Worth over time",
-      description: "This Space's net-worth trend from its SpaceSnapshot history.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "TrendingUp",
-      requires:    [],
-      collapsible: true,
-    },
-  },
-
-  {
-    implemented: true,
-    meta: {
-      key:         "allocation",
-      label:       "Allocation",
-      description: "How this Space's assets are split across cash, investments, crypto, and real assets.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "PieChart",
-      requires:    [],
-      collapsible: true,
-    },
-  },
-
-  // ── Wealth Perspective (UX-PER-3) — assets-only analytical widgets. ──────────
-  // Rendered as VIRTUAL sections in the Wealth workspace (never materialized as
-  // tab rows); the `tab` field is metadata only. Answer "Where is my money?".
-  {
-    implemented: true,
-    meta: {
-      key:         "wealth_by_account",
-      label:       "Wealth by Account",
-      description: "Every asset account ranked by balance — where your money actually sits.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Landmark",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "institution_allocation",
-      label:       "Institution Allocation",
-      description: "Assets grouped by institution — how concentrated your money is by provider.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Landmark",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "asset_allocation",
-      label:       "Asset Allocation",
-      description: "Assets by class — cash, investments, crypto, and real assets. Liabilities excluded.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "PieChart",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "wealth_concentration",
-      label:       "Wealth Concentration",
-      description: "How concentrated your assets are — largest account, top institution, diversification score.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Gem",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-
-  // ── Liquidity Perspective (UX-PER-3) — access/readiness widgets. ────────────
-  // Rendered as VIRTUAL sections in the Liquidity workspace (never materialized
-  // as tab rows); `tab` is metadata only. Answer "How accessible is my money?".
-  {
-    implemented: true,
-    meta: {
-      key:         "liquidity_ladder",
-      label:       "Liquidity Ladder",
-      description: "Assets grouped by how fast you can reach them — now, within days, or illiquid.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Droplets",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "accessible_cash",
-      label:       "Accessible Cash",
-      description: "How much you can get at right now and within days, and what share of your money that is.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Wallet",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "emergency_fund_readiness",
-      label:       "Emergency Fund Readiness",
-      description: "Reachable cash as a safety buffer. Months of coverage appear once a monthly expense target is set.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "ShieldCheck",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "liquidity_concentration",
-      label:       "Liquidity Concentration",
-      description: "Whether your reachable cash is spread across accounts or sitting in one place.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Droplets",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-
-  // ── Cash Flow Perspective (UX-PER-3) — movement over time. ──────────────────
-  // Rendered as VIRTUAL sections in the Cash Flow workspace; `tab` is metadata
-  // only. Answer "Where does my money move?" from transaction history.
-  {
-    implemented: true,
-    meta: {
-      key:         "cash_flow_summary",
-      label:       "Cash Flow Summary",
-      description: "Income, spending, and net cash flow for the selected period (FlowType-aware).",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Waves",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "cash_flow_history",
-      label:       "Cash Flow History",
-      description: "Income vs spending over time, bucketed to fit the selected period.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Waves",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "income_vs_spending",
-      label:       "Income vs Spending",
-      description: "Incoming versus outgoing movement for the selected period.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Waves",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "cash_flow_by_category",
-      label:       "Spending by Category",
-      description: "Where outflows go — spending grouped by category for the selected period.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Waves",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "income_by_source",
-      label:       "Income by Source",
-      description: "Where income comes from — inflows grouped by source for the selected period.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Waves",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "debt_payments",
-      label:       "Debt Payments",
-      description: "Where debt payments go — card and loan payments grouped by creditor for the selected period.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Waves",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-
-  // ── Debt Perspective (UX-PER-3) — liabilities-only (shape / cost / risk). ────
-  // Rendered as VIRTUAL sections in the Debt workspace; `tab` is metadata only.
-  // Answer "What do I owe?".
-  {
-    implemented: true,
-    meta: {
-      key:         "debt_by_account",
-      label:       "Debt by Account",
-      description: "Every liability ranked by cost (APR) then size — the shape of what you owe.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "CreditCard",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "debt_cost",
-      label:       "Interest Cost",
-      description: "Estimated monthly interest per debt (balance × APR ÷ 12) — which debts cost the most.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "CreditCard",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "credit_utilization",
-      label:       "Credit Utilization",
-      description: "Balance vs credit limit for revolving lines, highest utilization first.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "CreditCard",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "debt_payoff_snapshot",
-      label:       "Payoff Snapshot",
-      description: "Total owed, minimum payments, highest-APR target, and an honest payoff estimate.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "CreditCard",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "debt_history",
-      label:       "Debt History",
-      description: "Total debt over time from this Space's snapshot history.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "CreditCard",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "credit_score",
-      label:       "Credit Score",
-      description: "Your manual FICO score — a credit-health companion. Never drives debt calculations.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "ShieldCheck",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "debt_complete_info",
-      label:       "Complete Debt Details",
-      description: "Fill in missing APR or minimum payment on your debt accounts.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "CreditCard",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-
-  // ── Goals Perspective (UX-PER-3) — trajectory vs target. ────────────────────
-  // Rendered as VIRTUAL sections in the Goals workspace; `tab` is metadata only.
-  // Answer "Am I on track?".
-  {
-    implemented: true,
-    meta: {
-      key:         "goal_progress",
-      label:       "Goal Progress",
-      description: "Each financial goal's progress toward its target.",
-      tab:         SpaceDashboardTab.GOALS,
-      icon:        "Target",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "goal_on_track",
-      label:       "On Track",
-      description: "How many goals are on track by their deadline, and how many are overdue.",
-      tab:         SpaceDashboardTab.GOALS,
-      icon:        "Target",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "goal_required_pace",
-      label:       "Required Pace",
-      description: "The monthly contribution needed to hit each dated goal on time.",
-      tab:         SpaceDashboardTab.GOALS,
-      icon:        "Target",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-  {
-    implemented: true,
-    meta: {
-      key:         "goal_funding_gap",
-      label:       "Funding Gap",
-      description: "Goals ranked by how much is still needed to reach target.",
-      tab:         SpaceDashboardTab.GOALS,
-      icon:        "Target",
-      requires:    [],
-      collapsible: false,
-    },
-  },
-
-  // ── Accounts ────────────────────────────────────────────────────────────────
-
-  {
-    implemented: true,
-    meta: {
-      key:         "accounts_overview",
-      label:       "Accounts Overview",
-      description: "All shared accounts grouped by type with balances.",
-      tab:         SpaceDashboardTab.ACCOUNTS,
-      icon:        "Landmark",
-      requires:    [],
-      collapsible: true,
-    },
-  },
-
-  {
-    implemented: true,
-    meta: {
-      key:         "business_accounts",
-      label:       "Business Accounts",
-      description: "Shared business accounts grouped by type with balances.",
-      tab:         SpaceDashboardTab.ACCOUNTS,
-      icon:        "Landmark",
-      requires:    [],
-      collapsible: true,
-    },
-  },
-
-  // ── Debt ────────────────────────────────────────────────────────────────────
-
-  {
-    implemented: true,
-    meta: {
-      key:         "debt_summary",
-      label:       "Debt Summary",
-      description: "Total outstanding debt across all shared debt accounts.",
-      tab:         SpaceDashboardTab.DEBT,
-      icon:        "CreditCard",
-      requires:    [
-        {
-          accountTypes: ["debt"],
-          visibility:   "any",
-          reason:       "Share a debt account to see totals.",
-        },
-      ],
-      collapsible: true,
-    },
-  },
-
-  {
-    // Placeholder — currently renders DebtCard (same as debt_summary).
-    // Intended: per-account payoff progress bars.
-    implemented: false,
-    meta: {
-      key:         "debt_payoff_tracker",
-      label:       "Debt Payoff Tracker",
-      description: "Per-account progress bars showing payoff progress toward zero.",
-      tab:         SpaceDashboardTab.DEBT,
-      icon:        "CreditCard",
-      requires:    [
-        {
-          accountTypes: ["debt"],
-          visibility:   "FULL",
-          reason:       "Requires full account access to show payoff progress.",
-        },
-      ],
-      configSchema: [
-        {
-          key:     "strategy",
-          label:   "Payoff strategy",
-          type:    "select",
-          options: [
-            { value: "avalanche", label: "Avalanche (highest rate first)" },
-            { value: "snowball",  label: "Snowball (lowest balance first)" },
-          ],
-          default: "avalanche",
-        },
-      ],
-      collapsible: true,
-    },
-  },
-
-  {
-    // Placeholder — currently renders DebtCard.
-    // Intended: mortgage amortization progress, equity built, payoff date.
-    implemented: false,
-    meta: {
-      key:         "mortgage_tracker",
-      label:       "Mortgage Tracker",
-      description: "Mortgage amortization progress: equity built and payoff date estimate.",
-      tab:         SpaceDashboardTab.DEBT,
-      icon:        "Home",
-      requires:    [
-        {
-          accountTypes: ["debt"],
-          visibility:   "FULL",
-          reason:       "Share your mortgage account at full access to see amortization.",
-        },
-      ],
-      configSchema: [
-        { key: "originalBalance", label: "Original loan amount ($)", type: "number" },
-        { key: "closingDate",     label: "Loan origination date",    type: "date"   },
-      ],
-      collapsible: true,
-    },
-  },
-
-  {
-    // Placeholder — currently renders DebtCard.
-    // Intended: auto-loan payoff progress, same pattern as mortgage_tracker.
-    implemented: false,
-    meta: {
-      key:         "auto_loan_tracker",
-      label:       "Auto Loan Tracker",
-      description: "Auto loan payoff progress and estimated payoff date.",
-      tab:         SpaceDashboardTab.DEBT,
-      icon:        "Car",
-      requires:    [
-        {
-          accountTypes: ["debt"],
-          visibility:   "FULL",
-          reason:       "Share your auto loan account at full access.",
-        },
-      ],
-      configSchema: [
-        { key: "originalBalance", label: "Original loan amount ($)", type: "number" },
-      ],
-      collapsible: true,
-    },
-  },
-
-  {
-    implemented: true,
-    meta: {
-      key:         "debt_breakdown_chart",
-      label:       "Debt Breakdown",
-      description: "Interactive donut chart breaking down debt by account.",
-      tab:         SpaceDashboardTab.DEBT,
-      icon:        "PieChart",
-      requires:    [
-        {
-          accountTypes: ["debt"],
-          visibility:   "FULL",
-          reason:       "Requires full access to show interest rates and minimums.",
-        },
-      ],
-      collapsible: false, // explicitly non-collapsible in current UI
-    },
-  },
-
-  {
-    implemented: true,
-    meta: {
-      key:            "debt_payoff_calculator",
-      label:          "Payoff Planner",
-      description:    "Simulate debt payoff timelines with avalanche and snowball strategies.",
-      tab:            SpaceDashboardTab.DEBT,
-      icon:           "Calculator",
-      requires:       [
-        {
-          accountTypes: ["debt"],
-          visibility:   "FULL",
-          minCount:     1,
-          reason:       "Requires interest rate and minimum payment — share debt accounts at full access.",
-        },
-      ],
-      configSchema: [
-        {
-          key:     "strategy",
-          label:   "Default strategy",
-          type:    "select",
-          options: [
-            { value: "avalanche", label: "Avalanche (highest rate first)" },
-            { value: "snowball",  label: "Snowball (lowest balance first)" },
-          ],
-          default: "avalanche",
-        },
-      ],
-      collapsible:    true,
-      fullscreenable: true,
-    },
-  },
-
-  // ── Investments ─────────────────────────────────────────────────────────────
-
-  {
-    // Placeholder — currently renders InvestmentsCard (balance list only).
-    // Intended: portfolio summary with optional chart.
-    implemented: false,
-    meta: {
-      key:         "investment_summary",
-      label:       "Investment Summary",
-      description: "Portfolio total and per-account balance list.",
-      tab:         SpaceDashboardTab.INVESTMENTS,
-      icon:        "TrendingUp",
-      requires:    [
-        {
-          accountTypes: ["investment"],
-          visibility:   "any",
-          reason:       "Share an investment account to see your portfolio total.",
-        },
-      ],
-      configSchema: [
-        {
-          key:     "timeRange",
-          label:   "Chart time range",
-          type:    "select",
-          options: [
-            { value: "1M",  label: "1 month"  },
-            { value: "3M",  label: "3 months" },
-            { value: "6M",  label: "6 months" },
-            { value: "1Y",  label: "1 year"   },
-            { value: "all", label: "All time" },
-          ],
-          default: "1Y",
-        },
-      ],
-      collapsible: true,
-    },
-  },
-
-  {
-    // Placeholder — currently renders InvestmentsCard.
-    // Intended: AllocationChart.tsx donut by asset class (holdings from the
-    // existing GET /api/spaces/[id]/investments — there is no /holdings route).
-    implemented: false,
-    meta: {
-      key:         "investment_allocation",
-      label:       "Investment Allocation",
-      description: "Asset allocation breakdown across all investment accounts.",
-      tab:         SpaceDashboardTab.INVESTMENTS,
-      icon:        "PieChart",
-      requires:    [
-        {
-          accountTypes: ["investment"],
-          visibility:   "FULL",
-          reason:       "Requires full access to show allocation details.",
-        },
-      ],
-      collapsible: true,
-    },
-  },
-
-  // ── Retirement ──────────────────────────────────────────────────────────────
-
-  {
-    // Placeholder — currently renders InvestmentsCard.
-    // Intended: filtered investment list for retirement account types.
-    implemented: false,
-    meta: {
-      key:         "retirement_accounts",
-      label:       "Retirement Accounts",
-      description: "IRA, 401k, Roth, and other retirement account balances.",
-      tab:         SpaceDashboardTab.RETIREMENT,
-      icon:        "Home",
-      requires:    [
-        {
-          accountTypes: ["investment"],
-          visibility:   "any",
-          reason:       "Share retirement accounts to see balances.",
-        },
-      ],
-      configSchema: [
-        {
-          key:     "retirementAccountTypes",
-          label:   "Account types to include",
-          type:    "select",
-          options: [
-            { value: "all",   label: "All investment accounts" },
-            { value: "ira",   label: "IRA only"                },
-            { value: "401k",  label: "401k only"               },
-            { value: "roth",  label: "Roth only"               },
-          ],
-          default: "all",
-          hint:    "Until sub-type tagging exists, this filters by name heuristic.",
-        },
-      ],
-      collapsible: true,
-    },
-  },
-
-  {
-    implemented: true,
-    meta: {
-      key:         "retirement_progress",
-      label:       "Retirement Progress",
-      description: "Track progress toward a retirement savings target, with FV projection.",
-      tab:         SpaceDashboardTab.RETIREMENT,
-      icon:        "TrendingUp",
-      requires:    [
-        {
-          accountTypes: ["investment"],
-          visibility:   "any",
-          reason:       "Share investment accounts to track retirement progress.",
-        },
-      ],
-      configSchema: [
-        { key: "targetAmount",       label: "Retirement target ($)",         type: "number"             },
-        { key: "retirementAge",      label: "Target retirement age",         type: "number"             },
-        { key: "currentAge",         label: "Current age",                   type: "number"             },
-        { key: "expectedReturn",     label: "Expected annual return (%)",    type: "number", default: 7 },
-        { key: "annualContribution", label: "Annual contribution ($/year)",  type: "number"             },
-      ],
-      collapsible: true,
-    },
-  },
-
   // ── Goals ───────────────────────────────────────────────────────────────────
 
   {
-    implemented: true,
     meta: {
       key:         "goals_progress",
       label:       "Goals",
       description: "Active, completed, and archived goals for this space.",
-      tab:         SpaceDashboardTab.GOALS,
-      icon:        "Target",
       requires:    [],
-      collapsible: true,
     },
   },
 
-  // ── Activity ────────────────────────────────────────────────────────────────
-
+  // ── Goals Perspective (UX-PER-3) — trajectory vs target. ────────────────────
+  // Rendered as VIRTUAL sections in the Goals workspace (deep-link only —
+  // kept per REVIEW-3's conservative rule: goals is live-but-orphaned, not
+  // provably retired).
   {
-    implemented: true,
     meta: {
-      key:         "recent_activity",
-      label:       "Recent Activity",
-      description: "Member actions and account updates for this space.",
-      tab:         SpaceDashboardTab.ACTIVITY,
-      icon:        "Clock",
+      key:         "goal_progress",
+      label:       "Goal Progress",
+      description: "Each financial goal's progress toward its target.",
       requires:    [],
-      collapsible: true,
     },
   },
-
-  // ── Overview / Cash Flow (Tier 5 — transaction widgets) ────────────────────
-  // These cannot be built until transaction-level space data exists.
-  // ContextualCard is rendered as placeholder.
-
   {
-    implemented: false,
     meta: {
-      key:         "cash_flow",
-      label:       "Cash Flow",
-      description: "Monthly income vs. expenses across shared accounts.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "ArrowLeftRight",
-      requires:    [
-        {
-          accountTypes: ["checking", "savings"],
-          visibility:   "FULL",
-          reason:       "Requires transaction-level access. Not yet available.",
-        },
-      ],
-      collapsible: true,
-    },
-  },
-
-  {
-    implemented: false,
-    meta: {
-      key:         "savings_rate",
-      label:       "Savings Rate",
-      description: "Monthly savings rate as a percentage of income.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Percent",
-      requires:    [
-        {
-          accountTypes: ["checking", "savings"],
-          visibility:   "FULL",
-          reason:       "Requires transaction-level access. Not yet available.",
-        },
-      ],
-      collapsible: true,
-    },
-  },
-
-  {
-    implemented: false,
-    meta: {
-      key:         "business_cash_flow",
-      label:       "Business Cash Flow",
-      description: "Business income vs. expenses across shared business accounts.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "ArrowLeftRight",
-      requires:    [
-        {
-          accountTypes: ["checking", "savings"],
-          visibility:   "FULL",
-          reason:       "Requires transaction-level access. Not yet available.",
-        },
-      ],
-      collapsible: true,
-    },
-  },
-
-  {
-    implemented: false,
-    meta: {
-      key:         "monthly_expenses",
-      label:       "Monthly Expenses",
-      description: "Total monthly spending broken down by category.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Receipt",
-      requires:    [
-        {
-          accountTypes: ["checking"],
-          visibility:   "FULL",
-          reason:       "Requires transaction-level access. Not yet available.",
-        },
-      ],
-      collapsible: true,
-    },
-  },
-
-  // ── Config-driven asset value widgets ──────────────────────────────────────
-  // All three share AssetValueWidget (components/space/widgets/AssetValueWidget.tsx).
-  // The registry key distinguishes which assetType the widget advertises for
-  // empty-state copy. Everything else — layout, maths, data contract — is identical.
-
-  // ── NOTE on asset widget data model ─────────────────────────────────────────
-  // Live value comes from FinancialAccount.balance (AccountType.other, syncStatus='manual').
-  // SpaceDashboardSection.config holds rendering metadata ONLY — no dollar values.
-  // The widget adapter in SpaceDashboard SectionRegistry filters accounts for
-  // type='other' and passes the first match's balance as `accountBalance`.
-  // TODO: when AccountType.asset lands, update requires[] to use 'asset' type.
-  {
-    implemented: true,
-    meta: {
-      key:         "property_value",
-      label:       "Property Value",
-      description: "Current estimated property value vs. purchase price, with gain/loss.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Home",
-      requires:    [
-        {
-          accountTypes: ["other"],
-          visibility:   "any",
-          reason:       "Add a manual asset account for your property to see its value here.",
-        },
-      ],
-      configSchema: [
-        // accountId pins this section to a specific FinancialAccount.
-        // When set, the adapter skips name heuristics entirely.
-        // Set via ManageSpaceModal asset section settings (account picker — TODO).
-        { key: "accountId",       label: "Linked account (ID)",   type: "string" },
-        // currentValue intentionally absent — lives in FinancialAccount.balance
-        { key: "purchasePrice",   label: "Purchase price ($)",    type: "number" },
-        { key: "purchaseDate",    label: "Purchase date",         type: "date"   },
-        { key: "assetKind",       label: "Asset kind",            type: "select",
-          options: [
-            { value: "real_estate", label: "Real estate"  },
-            { value: "land",        label: "Land"          },
-            { value: "commercial",  label: "Commercial"    },
-          ],
-          default: "real_estate",
-        },
-        { key: "estimatedSource", label: "Estimate source",       type: "string" },
-        { key: "notes",           label: "Notes (optional)",      type: "string" },
-      ],
-      collapsible: true,
-    },
-  },
-
-  {
-    implemented: true,
-    meta: {
-      key:         "vehicle_value",
-      label:       "Vehicle Value",
-      description: "Current estimated vehicle value and depreciation since purchase.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Car",
-      requires:    [
-        {
-          accountTypes: ["other"],
-          visibility:   "any",
-          reason:       "Add a manual asset account for your vehicle to see its value here.",
-        },
-      ],
-      configSchema: [
-        { key: "accountId",       label: "Linked account (ID)",   type: "string" },
-        { key: "purchasePrice",   label: "Purchase price ($)",    type: "number" },
-        { key: "purchaseDate",    label: "Purchase date",         type: "date"   },
-        { key: "estimatedSource", label: "Estimate source",       type: "string" },
-        { key: "notes",           label: "Notes (optional)",      type: "string" },
-      ],
-      collapsible: true,
-    },
-  },
-
-  {
-    implemented: true,
-    meta: {
-      key:         "equipment_value",
-      label:       "Equipment Value",
-      description: "Current estimated equipment value and depreciation since purchase.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Wrench",
-      requires:    [
-        {
-          accountTypes: ["other"],
-          visibility:   "any",
-          reason:       "Add a manual asset account for your equipment to see its value here.",
-        },
-      ],
-      configSchema: [
-        { key: "accountId",       label: "Linked account (ID)",   type: "string" },
-        { key: "purchasePrice",   label: "Purchase price ($)",    type: "number" },
-        { key: "purchaseDate",    label: "Purchase date",         type: "date"   },
-        { key: "estimatedSource", label: "Estimate source",       type: "string" },
-        { key: "notes",           label: "Notes (optional)",      type: "string" },
-      ],
-      collapsible: true,
-    },
-  },
-
-  {
-    implemented: true,
-    meta: {
-      key:         "trip_budget",
-      label:       "Trip Budget",
-      description: "Spending mode: track amount spent against a total trip budget cap.",
-      tab:         SpaceDashboardTab.OVERVIEW,
-      icon:        "Plane",
+      key:         "goal_on_track",
+      label:       "On Track",
+      description: "How many goals are on track by their deadline, and how many are overdue.",
       requires:    [],
-      configSchema: [
-        { key: "totalBudget",   label: "Total trip budget ($)",     type: "number" },
-        { key: "amountSpent",   label: "Amount spent so far ($)",   type: "number" },
-        { key: "departureDate", label: "Departure date",            type: "date"   },
-        { key: "note",          label: "Note (optional)",           type: "string" },
-      ],
-      collapsible: true,
     },
   },
-
   {
-    implemented: true,
     meta: {
-      key:         "trip_savings",
-      label:       "Trip Savings",
-      description: "Savings mode: track savings account balance toward a trip cost target.",
-      tab:         SpaceDashboardTab.GOALS,
-      icon:        "PiggyBank",
-      requires:    [
-        {
-          accountTypes: ["savings"],
-          visibility:   "any",
-          reason:       "Share a savings account to track trip savings balance.",
-        },
-      ],
-      configSchema: [
-        { key: "totalBudget",   label: "Trip savings target ($)", type: "number" },
-        { key: "departureDate", label: "Departure date",          type: "date"   },
-        { key: "note",          label: "Note (optional)",         type: "string" },
-      ],
-      collapsible: true,
+      key:         "goal_required_pace",
+      label:       "Required Pace",
+      description: "The monthly contribution needed to hit each dated goal on time.",
+      requires:    [],
     },
   },
-
   {
-    implemented: true,
     meta: {
-      key:         "emergency_fund_progress",
-      label:       "Emergency Fund",
-      description: "Savings mode: savings account balance vs. N months of expenses target.",
-      tab:         SpaceDashboardTab.GOALS,
-      icon:        "Shield",
-      requires:    [
-        {
-          accountTypes: ["savings"],
-          visibility:   "any",
-          reason:       "Share a savings account to track emergency fund balance.",
-        },
-      ],
-      configSchema: [
-        {
-          key:     "targetMonths",
-          label:   "Months of expenses to cover",
-          type:    "select",
-          options: [
-            { value: "3",  label: "3 months"  },
-            { value: "6",  label: "6 months"  },
-            { value: "9",  label: "9 months"  },
-            { value: "12", label: "12 months" },
-          ],
-          default: "6",
-        },
-        {
-          key:   "monthlyExpenses",
-          label: "Monthly expenses ($)",
-          type:  "number",
-          hint:  "Used to compute the target. Will auto-populate from the monthly_expenses widget when that widget is built.",
-        },
-      ],
-      collapsible: true,
+      key:         "goal_funding_gap",
+      label:       "Funding Gap",
+      description: "Goals ranked by how much is still needed to reach target.",
+      requires:    [],
     },
   },
-
 ];
 
 // ─── Lookup helpers ───────────────────────────────────────────────────────────
@@ -1095,12 +119,8 @@ export const WIDGET_REGISTRY = new Map<string, WidgetRegistryEntry>(
 /**
  * Returns the WidgetMeta for a key, or undefined if not registered.
  *
- * This is the ONE live consumer of the registry today (SpaceSections'
- * ContextualCard fallback + perspectives/virtual-sections read `.label` and
- * `.requires[0].reason`). CLEAN-0 removed the never-called sibling helpers
- * (getWidgetEntry / isWidgetImplemented / isDeprecatedAlias / getAllWidgets /
- * getWidgetsForTab) — the picker/settings UIs that would have used them were
- * never built. Re-add from git history if a widget-picker surface lands.
+ * The ONE live consumer surface: SectionRegistry's ContextualCard fallback +
+ * perspectives/virtual-sections read `.label` and `.requires[0].reason`.
  */
 export function getWidgetMeta(key: string): WidgetMeta | undefined {
   return WIDGET_REGISTRY.get(key)?.meta;

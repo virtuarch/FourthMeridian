@@ -300,75 +300,9 @@ export function buildCoverageSummary(coverage: readonly CoverageFact[]): Coverag
 
 // ── Failure Summary ─────────────────────────────────────────────────────────────
 
-export interface FailureSummaryCore {
-  executions: { status: string; count: number }[];
-  endpoints: { endpoint: string; failed: number }[];
-  providerCalls: {
-    provider: string;
-    operation: string;
-    status: string;
-    errorCode: string | null;
-    errorCategory: string | null;
-    count: number;
-  }[];
-  totalFailedExecutions: number;
-  totalFailedStages: number;
-  totalFailedCalls: number;
-  tier: OperationalTier;
-}
 
 /** Execution statuses that represent a non-clean outcome. RUNNING is not a failure. */
-const NON_SUCCESS_STATUSES = new Set(["FAILED", "PARTIAL"]);
 
-/**
- * Group failures ONLY by taxonomies that already exist. Free-text `errorSummary`
- * is never grouped — it is not a controlled vocabulary, and grouping it would
- * mint a failure taxonomy this projection has no authority to own.
- */
-export function buildFailureSummary(
-  executions: readonly ExecutionFact[],
-  endpoints: readonly EndpointFact[],
-  calls: readonly ProviderCallFact[],
-): FailureSummaryCore {
-  const failedExecutions = executions.filter((e) => NON_SUCCESS_STATUSES.has(e.overallStatus));
-  const executionCounts = tally(failedExecutions.map((e) => e.overallStatus));
-
-  const failedStages = endpoints.filter((r) => r.status === "FAILED");
-  const stageCounts = tally(failedStages.map((r) => r.endpoint));
-
-  const failedCalls = calls.filter((c) => c.status === "FAILED" || c.status === "RATE_LIMITED");
-  const callGroups = groupBy(
-    failedCalls,
-    (c) => [c.provider, c.operation, c.status, c.errorCode ?? "", c.errorCategory ?? ""].join(" "),
-  );
-
-  return {
-    executions: Object.keys(executionCounts).map((status) => ({
-      status,
-      count: executionCounts[status],
-    })),
-    endpoints: Object.keys(stageCounts).map((endpoint) => ({
-      endpoint,
-      failed: stageCounts[endpoint],
-    })),
-    providerCalls: [...callGroups.keys()].sort().map((key) => {
-      const rows = callGroups.get(key)!;
-      const [provider, operation, status, errorCode, errorCategory] = key.split(" ");
-      return {
-        provider,
-        operation,
-        status,
-        errorCode: errorCode === "" ? null : errorCode,
-        errorCategory: errorCategory === "" ? null : errorCategory,
-        count: rows.length,
-      };
-    }),
-    totalFailedExecutions: failedExecutions.length,
-    totalFailedStages: failedStages.length,
-    totalFailedCalls: failedCalls.length,
-    tier: tierFor(executions.length + endpoints.length + calls.length, false),
-  };
-}
 
 // ── Execution Timeline ──────────────────────────────────────────────────────────
 

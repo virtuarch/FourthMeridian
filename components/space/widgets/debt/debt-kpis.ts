@@ -23,7 +23,7 @@ import { convertMoney } from "@/lib/money/convert";
 import { amountOwed, hasOutstandingDebt, liabilityState } from "@/lib/debt/balance-semantics";
 import { computeDebtAggregate, type DebtAggregateRow } from "@/lib/debt/aggregates";
 import { yesterdayUTCISO } from "@/lib/fx/config";
-import { utilizationLevel, type UtilizationLevel } from "@/lib/accounts/credit-utilization";
+import { utilizationLevel, isRevolvingLine, type UtilizationLevel } from "@/lib/accounts/credit-utilization";
 import type { ConversionContext } from "@/lib/money/types";
 import type { DebtPerspectiveAccount } from "@/components/space/widgets/debt-perspective-adapters";
 
@@ -146,7 +146,10 @@ export function computeDebtKpis(
 
   // ── Aggregate Utilization (converted balances ÷ converted limits) ───────────
   // Mixed-currency ratios are dishonest, so both sides convert before the ratio.
-  const revolving = debts.filter((x) => x.a.creditLimit != null && (x.a.creditLimit as number) > 0);
+  // REVIEW-3 C-4 — membership via the canonical revolving-line predicate: a
+  // loan carrying a provider limit no longer inflates the Space's utilization
+  // while the Credit page excludes it.
+  const revolving = debts.filter((x) => isRevolvingLine(x.a));
   let utilizationPct: number | null = null;
   let level: UtilizationLevel | null = null;
   if (revolving.length > 0) {

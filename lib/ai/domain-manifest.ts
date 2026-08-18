@@ -39,12 +39,15 @@ import { FinanceDomains, type ContextDomain } from '@/lib/ai/types';
  * can all answer 90-day net-worth and trend questions. It is pre-aggregated
  * data (SpaceSnapshot rows) — cheap to assemble, high advisory value.
  */
+// REVIEW-3 C-10 — MEMBERS / PROVIDERS removed from every manifest: no
+// assembler has ever been registered for either domain, so every context build
+// recorded them as permanent skipped-domain noise ('no_assembler') and every
+// manifest claimed data it could not assemble. Re-add them here WHEN their
+// assemblers land (assembler-registry registration is the gate that matters).
 const FINANCE_CORE: ContextDomain[] = [
   FinanceDomains.ACCOUNTS,
   FinanceDomains.TRANSACTIONS_SUMMARY,
   FinanceDomains.GOALS,
-  FinanceDomains.MEMBERS,
-  FinanceDomains.PROVIDERS,
   FinanceDomains.SNAPSHOT_HISTORY,
 ];
 
@@ -67,9 +70,7 @@ const FINANCE_WITH_HOLDINGS: ContextDomain[] = [
 const FINANCE_WITH_MEMBERS: ContextDomain[] = [
   FinanceDomains.ACCOUNTS,
   FinanceDomains.TRANSACTIONS_SUMMARY,
-  FinanceDomains.MEMBERS,
   FinanceDomains.GOALS,
-  FinanceDomains.PROVIDERS,
   FinanceDomains.SNAPSHOT_HISTORY,
 ];
 
@@ -83,7 +84,6 @@ const FINANCE_DEBT_FOCUSED: ContextDomain[] = [
   FinanceDomains.ACCOUNTS,
   FinanceDomains.TRANSACTIONS_SUMMARY,
   FinanceDomains.GOALS,
-  FinanceDomains.PROVIDERS,
   FinanceDomains.SNAPSHOT_HISTORY,
 ];
 
@@ -96,7 +96,6 @@ const FINANCE_GOAL_FOCUSED: ContextDomain[] = [
   FinanceDomains.ACCOUNTS,
   FinanceDomains.GOALS,
   FinanceDomains.TRANSACTIONS_SUMMARY,
-  FinanceDomains.PROVIDERS,
   FinanceDomains.SNAPSHOT_HISTORY,
 ];
 

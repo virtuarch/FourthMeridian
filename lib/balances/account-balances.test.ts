@@ -13,10 +13,20 @@
 import { resolveAccountFreshness } from "@/lib/freshness/observation";
 import {
   resolveAccountBalances, resolveRowBalances,
-  reachableCash, availableCredit, settledCash,
   type AccountBalances,
 } from "./account-balances";
 import { SECTION_QUANTITY, isCurrentBalanceSection, sectionQuantityNote } from "./section-quantity";
+
+// Test-local shorthands over the resolved claim. (The exported
+// reachableCash/availableCredit/settledCash wrappers were deleted in REVIEW-3 —
+// zero production importers. The doctrine they expressed is asserted here
+// directly against the available-claim's quantity, so every behavioural pin
+// below is unchanged.)
+const amountAs = (b: AccountBalances, q: string): number | null =>
+  b.available.status === "AVAILABLE" && b.available.quantity === q ? b.available.amount : null;
+const reachableCash   = (b: AccountBalances) => amountAs(b, "AVAILABLE_CASH");
+const availableCredit = (b: AccountBalances) => amountAs(b, "AVAILABLE_CREDIT");
+const settledCash     = (b: AccountBalances) => amountAs(b, "SETTLED_CASH");
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -229,24 +239,25 @@ console.log("resolveRowBalances — the row convenience");
 
 console.log("Section quantity map");
 {
-  check("a liquidity card is a current-balance surface", isCurrentBalanceSection("accessible_cash"));
-  // v2.6-L3 — the liquidity family migrated from OBSERVED_LEDGER to REACHABLE_CASH.
-  // The widgets said "reachable" all along; now the quantity underneath agrees.
-  check("...and discloses the REACHABLE quantity, not the ledger one",
-    sectionQuantityNote("accessible_cash") === "Available now");
-  check("the whole liquidity family migrated together",
-    ["liquidity_ladder", "accessible_cash", "emergency_fund_readiness", "liquidity_concentration"]
-      .every((k) => SECTION_QUANTITY[k] === "REACHABLE_CASH"));
-  check("net worth did NOT migrate — it is a statement about observed balances",
-    SECTION_QUANTITY.net_worth === "OBSERVED_LEDGER");
+  // REVIEW-3 (slice F): the liquidity / net-worth / cash-flow / debt-
+  // perspective SECTION keys were deleted with the Overview canvas (their
+  // registry entries are gone), so the map no longer classifies them — the
+  // v2.6-L3 REACHABLE_CASH migration lives on in the LiquidityWorkspace path
+  // (pinned by reconciliation-boundary.test.ts). These checks pin the
+  // surviving vocabulary.
+  check("an observed-balance card is a current-balance surface", isCurrentBalanceSection("accounts_overview"));
+  check("...and discloses the observed-ledger quantity",
+    sectionQuantityNote("accounts_overview") !== null && SECTION_QUANTITY.accounts_overview === "OBSERVED_LEDGER");
   check("a debt card discloses amounts owed",
-    sectionQuantityNote("debt_by_account") === "Amounts owed");
-  check("a snapshot-backed card carries NO current-balance label",
-    sectionQuantityNote("net_worth_chart") === null && SECTION_QUANTITY.net_worth_chart === "HISTORICAL");
+    sectionQuantityNote("debt_breakdown_chart") === "Amounts owed");
   check("a flow card carries NO current-balance label",
-    sectionQuantityNote("cash_flow_summary") === null && SECTION_QUANTITY.cash_flow_summary === "FLOW");
-  check("a non-financial card carries none either", sectionQuantityNote("credit_score") === null);
+    sectionQuantityNote("trip_budget") === null && SECTION_QUANTITY.trip_budget === "FLOW");
+  check("a non-financial card carries none either", sectionQuantityNote("goals_progress") === null);
   check("an unknown key is not labelled", sectionQuantityNote("no_such_widget") === null);
+  check("deleted section keys did not linger in the map",
+    ["net_worth", "net_worth_chart", "allocation", "accessible_cash", "cash_flow_summary",
+     "debt_by_account", "credit_score", "debt_summary"]
+      .every((k) => SECTION_QUANTITY[k] === undefined));
 }
 
 if (failures > 0) { console.error(`\naccount-balances: ${failures} failure(s).`); process.exit(1); }

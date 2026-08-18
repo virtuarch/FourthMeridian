@@ -254,33 +254,6 @@ export interface CoverageSummary extends ProjectionEnvelope {
   tier: OperationalTier;
 }
 
-// ── Failure Summary ─────────────────────────────────────────────────────────────
-
-/**
- * Failures grouped ONLY by taxonomies that already exist — the execution's
- * derived `overallStatus`, the stage `endpoint`, and Plaid's OWN
- * `errorCode`/`errorCategory`. No new failure taxonomy is invented here, and
- * free-text `errorSummary` is never grouped (it is not a controlled vocabulary).
- */
-export interface FailureSummary extends ProjectionEnvelope {
-  /** Executions by non-success status. Stable order: by status. */
-  executions: readonly { status: string; count: number }[];
-  /** Failed stages by endpoint. Stable order: by endpoint. */
-  endpoints: readonly { endpoint: string; failed: number }[];
-  /** Failed/rate-limited provider attempts by the PROVIDER's own code. */
-  providerCalls: readonly {
-    provider: string;
-    operation: string;
-    status: string;
-    errorCode: string | null;
-    errorCategory: string | null;
-    count: number;
-  }[];
-  totalFailedExecutions: number;
-  totalFailedStages: number;
-  totalFailedCalls: number;
-  tier: OperationalTier;
-}
 
 // ── Execution Timeline ──────────────────────────────────────────────────────────
 

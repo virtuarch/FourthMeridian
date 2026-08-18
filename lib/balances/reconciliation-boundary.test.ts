@@ -155,8 +155,13 @@ console.log("\nPROBE 7/10 — liquidity consumes reachable; credit is never cash
   check("the lens cash total consumes reachableCash", core.includes("r.reachableCash"));
   check("...and distinguishes ABSENT (no claim) from NULL (unknown)",
     /r\.reachableCash === undefined/.test(core) && /r\.reachableCash === null/.test(core));
-  check("a cash account with an UNKNOWN reachable figure is excluded and counted",
-    /cashUnreachableCount\+\+/.test(core));
+  // REVIEW-3 — the exclude-and-count rule now lives ONLY in the authority
+  // (lib/balances/reachable.ts); the lens totals through it instead of
+  // re-implementing the counter inline (`cashUnreachableCount++`).
+  check("a cash account with an UNKNOWN reachable figure is excluded and counted (via the authority)",
+    core.includes("totalReachableCash(cashInputs)") &&
+    /cashUnreachableCount\s*=\s*reach\.unknownCount/.test(core) &&
+    !/cashUnreachableCount\+\+/.test(core));
   check("the lens no longer asserts holds are unreflected",
     !core.includes("pending activity and holds are not reflected") ||
     /usesReachable/.test(core));
@@ -171,12 +176,20 @@ console.log("\nPROBE 7/10 — liquidity consumes reachable; credit is never cash
   const a = code(AUTHORITY);
   check("a card never produces a reachable figure",
     /basis: "REVOLVING_CREDIT",[\s\S]{0,400}reachable: null/.test(a));
-  check("reachableCash() still admits ONLY AVAILABLE_CASH",
-    /quantity === "AVAILABLE_CASH"[\s\S]{0,60}:\s*null/.test(a));
+  // (REVIEW-3: the reachableCash() accessor was deleted — zero importers. The
+  // live guard is reconcileAccount's reachable claim, which only a named
+  // AVAILABLE_CASH attestation may seed.)
+  check("reachable cash still admits ONLY AVAILABLE_CASH",
+    /avail\.quantity === "AVAILABLE_CASH"\s*\?\s*claim\("REACHABLE_CASH", avail\.amount\)/.test(a));
 
+  // REVIEW-3 (slice F): the four liquidity section KEYS were deleted with the
+  // Overview canvas (their registry entries are gone), so the section ledger
+  // no longer classifies them — the v2.6-L3 migration's live guard is the
+  // adapters checks above (LiquidityWorkspace renders through them). Assert
+  // the ledger did not keep stale liquidity classifications behind.
   const sq = code("lib/balances/section-quantity.ts");
-  check("the section ledger records the liquidity migration",
-    (sq.match(/"REACHABLE_CASH"/g) ?? []).length === 4);
+  check("the section ledger carries no stale liquidity section keys",
+    !/liquidity_ladder:|accessible_cash:|emergency_fund_readiness:|liquidity_concentration:/.test(sq));
 }
 
 // ── 8. Debt stays observed ──────────────────────────────────────────────────

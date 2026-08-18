@@ -15,7 +15,7 @@
  * Presentation only — every number comes from the WealthResult.
  */
 
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";

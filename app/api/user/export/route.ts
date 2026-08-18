@@ -18,6 +18,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { todayUTCISO } from "@/lib/time/clock"; // B-6 — THE clock seam
 import { db } from "@/lib/db";
 import { requireFreshUser } from "@/lib/session";
 import { limitByUser } from "@/lib/rate-limit";
@@ -77,7 +78,7 @@ export async function POST() {
       auditLogId: auditRow.id,
     });
 
-    const filename = `fourth-meridian-export-${new Date().toISOString().slice(0, 10)}.zip`;
+    const filename = `fourth-meridian-export-${todayUTCISO()}.zip`;
     return new NextResponse(new Uint8Array(zip), {
       status: 200,
       headers: {

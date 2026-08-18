@@ -19,7 +19,7 @@
  */
 
 import { db } from "@/lib/db";
-import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
+import { ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { createHash } from "node:crypto";
 import {
   admitTransferCandidate, ADMISSION_LABEL, type TransferAdmission,

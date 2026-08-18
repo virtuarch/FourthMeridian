@@ -35,13 +35,13 @@
  */
 
 import "server-only";
+import { todayUTCISO } from "@/lib/time/clock";
 import { deriveIngestionDeferral, type IngestionDeferral } from "@/lib/sync/deferred-ingestion";
 
 import { db } from "@/lib/db";
 import {
   buildCoverageSummary,
   buildExecutionTimeline,
-  buildFailureSummary,
   buildProviderOperationSummary,
   buildRefreshSummary,
   countOpenExecutions,
@@ -52,7 +52,6 @@ import type {
   EndpointFact,
   ExecutionFact,
   ExecutionTimeline,
-  FailureSummary,
   ProjectionEnvelope,
   ProviderCallFact,
   ProviderOperationSummary,
@@ -94,9 +93,8 @@ export interface RefreshProjectionDeps {
 
 // ── Window + envelope ───────────────────────────────────────────────────────────
 
-function todayISO(now: Date): string {
-  return now.toISOString().slice(0, 10);
-}
+// REVIEW-3 B-6 — the day formatter is THE clock seam's (lib/time/clock.ts).
+const todayISO = (now: Date): string => todayUTCISO(now);
 function minusDaysISO(dateISO: string, days: number): string {
   return new Date(Date.parse(`${dateISO}T00:00:00.000Z`) - days * 86_400_000)
     .toISOString()
@@ -372,22 +370,6 @@ export async function getCoverageSummary(
   return { ...buildCoverageSummary(coverage), ...envelopeFor(loaded) };
 }
 
-/**
- * Failure Summary — non-clean executions, failed stages, and failed/rate-limited
- * provider attempts grouped by Plaid's OWN error vocabulary. Invents no failure
- * taxonomy and never groups free-text error text.
- */
-export async function getFailureSummary(
-  args: RefreshProjectionArgs = {},
-  deps?: RefreshProjectionDeps,
-): Promise<FailureSummary> {
-  const loaded = await loadExecutionWindow(args, deps);
-  const [endpoints, calls] = await Promise.all([endpointsOf(loaded), providerCallsOf(loaded)]);
-  return {
-    ...buildFailureSummary(loaded.executions, endpoints, calls),
-    ...envelopeFor(loaded),
-  };
-}
 
 /**
  * Execution Timeline — ONE execution's ordered story (stages, provider calls,

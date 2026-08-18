@@ -101,11 +101,16 @@ test("WINDOW-1: the canonical change opens a CALENDAR month back, not a row offs
   assert.equal(daily.canonicalChange.preset, "PAST_MONTH");
 
   // The change is measured between those two points — not oldest→newest.
-  assert.notEqual(
-    daily.canonicalChange.abs, daily.netWorthTrend,
-    "canonicalChange must not equal the oldest→newest trend: that is the accidental " +
-    "window it exists to replace",
-  );
+  {
+    // The accidental oldest→newest figure (computed inline here — the payload
+    // field was deleted at REVIEW-3 integration) must differ from the canonical
+    // window change, or the window would be decorative.
+    const accidental =
+      (daily.history[daily.history.length - 1].netWorth ?? 0) - (daily.history[0].netWorth ?? 0);
+    assert.notEqual(daily.canonicalChange.abs, accidental,
+      "canonicalChange must not equal the oldest→newest trend: that is the accidental " +
+      "window it exists to replace");
+  }
   assert.equal(
     daily.canonicalChange.toValue - daily.canonicalChange.fromValue,
     daily.canonicalChange.abs,
@@ -122,9 +127,9 @@ test("WINDOW-1: a history shorter than the window is REFUSED, not approximated",
     short.canonicalChange, null,
     "history that does not reach the window must refuse, never fall back to oldest→newest",
   );
-  // The accidental trend still exists for anything that legitimately wants
-  // "across the data we hold" — it simply must not be labelled a window.
-  assert.ok(short.netWorthTrend !== null);
+  // The accidental-trend fields were deleted at REVIEW-3 integration — the
+  // refusal above is the ONLY change answer the payload may carry.
+  assert.ok(!("netWorthTrend" in short) && !("netWorthTrendPct" in short));
   assert.equal(short.spanDays, 9);
 });
 
@@ -133,6 +138,6 @@ test("WINDOW-1: an unassertable endpoint does not silently become a window", () 
   const one = projectSnapshotSection([snap("2026-08-07", 28_000)], "full");
   assert.ok(one);
   assert.equal(one.spanDays, 0);
-  assert.equal(one.netWorthTrend, null);
+  assert.ok(!("netWorthTrend" in one));
   assert.equal(one.canonicalChange, null);
 });

@@ -25,7 +25,7 @@
  * from the UNCONVERTED historical (trust is currency-agnostic). No new data contracts.
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { Info, Loader2, TrendingUp } from "lucide-react";
 import Link from "next/link";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
@@ -36,6 +36,8 @@ import { convertPortfolioValueSeries } from "@/lib/investments/portfolio-series"
 import { Surface, Block } from "@/components/atlas/Surface";
 import { DataCard } from "@/components/atlas/DataCard";
 import { useInvestmentsSpaceData } from "./useInvestmentsSpaceData";
+// B-6 — THE today/history switch (one comparison, shared with the server).
+import { isHistoricalDay } from "@/lib/time/basis";
 import { InvestmentsActivityCard } from "./InvestmentsActivityCard";
 import { InvestmentsBridgeCard } from "./InvestmentsBridgeCard";
 import { InvestmentConnectionsCard } from "./InvestmentConnectionsCard";
@@ -70,7 +72,7 @@ export function InvestmentsWorkspace({
   ctx?:      ConversionContext;
   onEnvelopeChange: (env: PerspectiveEnvelope) => void;
 }) {
-  const { data: raw, series: rawSeries, loading, error, reload } = useInvestmentsSpaceData(spaceId, asOf, compareTo, active);
+  const { data: raw, series: rawSeries, loading, error, reload, serverToday } = useInvestmentsSpaceData(spaceId, asOf, compareTo, active);
   // V26-S3-DETAIL — which historical point the reader asked about. The chart
   // reports a DATE and nothing else; the panel asks the canonical historical
   // authority what that date was made of.
@@ -101,7 +103,13 @@ export function InvestmentsWorkspace({
   const data = useMemo(() => (raw && ctx ? convertInvestmentsSpaceData(raw, ctx, asOf) : raw), [raw, ctx, asOf]);
   const series = useMemo(() => (ctx ? convertPortfolioValueSeries(rawSeries, ctx, asOf) : rawSeries), [rawSeries, ctx, asOf]);
 
-  const historicalMode = !!data && asOf < today && data.historical != null;
+  // B-6 — SERVER-AUTHORITATIVE classification (lib/time/basis.ts): asOf is
+  // historical iff the SERVER's UTC day says so. `serverToday` rides every
+  // /space-data response; the client `today` prop is only the pre-first-fetch
+  // fallback (where `data` is null and this is false regardless). Before B-6
+  // this compared the client clock while lib/history/account-series.ts compared
+  // the server's — around midnight the same date sat on both sides at once.
+  const historicalMode = !!data && isHistoricalDay(asOf, serverToday ?? today) && data.historical != null;
   const primary = data ? (historicalMode && data.historical ? data.historical : data.current) : null;
 
   // Publish section anchors to the sidebar once real holdings exist (cleared on unmount).

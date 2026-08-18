@@ -89,10 +89,10 @@ check("index is PARTIAL: non-null external ids only",
 check("index is PARTIAL: ACTIVE rows only (tombstones excluded — rollback → re-import unaffected)",
   /WHERE[^;]*"deletedAt"\s+IS\s+NULL/.test(sql));
 
-// The pre-deploy duplicate check must exist and be read-only.
-const precheck = strip(readFileSync(path.join(ROOT, "scripts", "check-external-id-duplicates.ts"), "utf8"));
-check("pre-deploy duplicate-check script exists and only reads",
-  precheck.includes("groupBy") && !/\.(create|update|updateMany|delete|deleteMany|upsert|createMany)\(/.test(precheck));
+// The pre-deploy duplicate check (scripts/check-external-id-duplicates.ts) was
+// RETIRED once the B4 migration applied — the unique index above now enforces
+// what it checked — and the file was deleted in REVIEW-3 wave 3 (tombstoned in
+// scripts/audit-registry.ts). The migration assertions above are the live guard.
 
 if (failures > 0) {
   console.error(`\nbtc-identity: ${failures} check(s) failed.`);

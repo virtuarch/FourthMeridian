@@ -1,114 +1,42 @@
 /**
  * lib/space-hero.ts
  *
- * Space Template Redesign — per-category hero definitions ("One Space,
- * One Lede"). Each chartable Space category maps to ONE primary metric
- * drawn from the Space's own SpaceSnapshot history (types/index.ts
- * Snapshot shape, served by GET /api/spaces/[id]/snapshots).
+ * Space Template Redesign — per-category hero VOCABULARY ("One Space, One
+ * Lede"), reduced in REVIEW-3 (slice F) to what the product still consumes.
  *
- * This file is pure config + selectors — no React, no fetching — so the
- * hero vocabulary can be unit-tested and reused by future surfaces (the
- * Spaces landing rollup, Perspective Engine) without touching the widget.
+ * The SpaceTrendHero rendering path (title / value selector / framing /
+ * chartType / scopeLabel and the hero chart itself) was retired with the
+ * Overview summary canvas: the Overview slot now always renders the engaged
+ * Perspective workspace, so no surface draws a category trend hero anymore.
  *
- * Categories with NO entry here intentionally have no trend hero:
- *   - PERSONAL renders through the shared SpaceDashboard shell with a custom
- *     hero (PersonalHero, injected via the renderHero seam — KpiRow +
- *     NetWorthChart form that hero), so it needs no trend-hero def here.
- *   - GOAL / TRIP / VEHICLE / EQUIPMENT / CUSTOM / OTHER: no honest series
- *     exists for their lede (goal history isn't tracked; manual-asset
- *     categories are step functions better served by their value widgets).
- *     Per the approved investigation, intentional absence is part of the
- *     philosophy — no fake charts.
+ * What SURVIVES is the category MEMBERSHIP — "is this a chartable category
+ * with a snapshot-backed lede story?" — because two consumers still decide on
+ * it:
+ *   - lib/space/use-space-navigation.ts (applyInitialTab): a hero category
+ *     defaults to the OVERVIEW tab rather than the first section-backed tab;
+ *   - components/dashboard/SpaceDashboard.tsx (wantSnapshots): a hero category
+ *     keeps eagerly fetching snapshots, preserving pre-REVIEW-3 activation.
+ *
+ * Categories NOT listed intentionally have no trend-hero identity
+ * (PERSONAL renders through the shared shell; GOAL / TRIP / VEHICLE /
+ * EQUIPMENT / CUSTOM / OTHER have no honest series for a lede).
  */
 
-import type { Snapshot } from "@/types";
+const SPACE_HERO_CATEGORIES = new Set<string>([
+  "HOUSEHOLD",
+  "FAMILY",
+  "BUSINESS",
+  "INVESTMENT",
+  "RETIREMENT",
+  "DEBT_PAYOFF",
+  "EMERGENCY_FUND",
+  "PROPERTY",
+]);
 
-export type HeroFraming = "up-good" | "down-good";
-
-export interface SpaceHeroDef {
-  /** Card title — an answer-shaped headline, not a topic label. */
-  title: string;
-  /** Selects this category's primary series from a snapshot row. */
-  value: (s: Snapshot) => number;
-  /** Which direction is good news — controls delta coloring only. */
-  framing: HeroFraming;
-  /** recharts line type — "stepAfter" for manually-updated (step) series. */
-  chartType: "monotone" | "stepAfter";
-  /** Scope/honesty label rendered under the headline (advisor rule:
-   *  partial views must say what they are). */
-  scopeLabel?: string;
-}
-
-export const SPACE_HERO_DEFS: Partial<Record<string, SpaceHeroDef>> = {
-  HOUSEHOLD: {
-    title:      "Net worth",
-    value:      (s) => s.netWorth,
-    framing:    "up-good",
-    chartType:  "monotone",
-    scopeLabel: "Across accounts shared with this Space",
-  },
-  FAMILY: {
-    title:      "Net worth",
-    value:      (s) => s.netWorth,
-    framing:    "up-good",
-    chartType:  "monotone",
-    scopeLabel: "Across accounts shared with this Space",
-  },
-  BUSINESS: {
-    // Cash position — NOT revenue or runway: neither has a defensible
-    // deterministic series yet (approved investigation §1.3). Upgrade path:
-    // in/out flow module first, runway only with a real burn definition.
-    title:      "Cash position",
-    value:      (s) => s.totalCash + s.totalSavings,
-    framing:    "up-good",
-    chartType:  "monotone",
-    scopeLabel: "Cash and savings across linked business accounts",
-  },
-  INVESTMENT: {
-    title:      "Portfolio value",
-    value:      (s) => s.totalInvestments + s.totalCrypto,
-    framing:    "up-good",
-    chartType:  "monotone",
-  },
-  RETIREMENT: {
-    title:      "Retirement portfolio",
-    value:      (s) => s.totalInvestments + s.totalCrypto,
-    framing:    "up-good",
-    chartType:  "monotone",
-  },
-  DEBT_PAYOFF: {
-    // The payoff arc — same `debt` series, down-is-good framing: the slope
-    // is the user's own behavior (approved investigation §1.5).
-    title:      "Remaining debt",
-    value:      (s) => s.totalDebt,
-    framing:    "down-good",
-    chartType:  "monotone",
-    scopeLabel: "Across debt accounts linked to this Space",
-  },
-  EMERGENCY_FUND: {
-    // "Emergency fund" (not "Savings balance") — the headline switches
-    // between months-covered and the dollar balance depending on config,
-    // and this title is correct over either (template polish D5).
-    title:      "Emergency fund",
-    value:      (s) => s.totalSavings,
-    framing:    "up-good",
-    chartType:  "monotone",
-    scopeLabel: "Savings accounts linked to this Space",
-  },
-  PROPERTY: {
-    // Equity = this Space's netWorth (value − mortgage) for a well-scoped
-    // Property Space. Manual valuations are step functions — drawn as
-    // steps, never interpolated slopes pretending to be market data.
-    title:      "Equity",
-    value:      (s) => s.netWorth,
-    framing:    "up-good",
-    chartType:  "stepAfter",
-    scopeLabel: "Value minus debt across accounts linked to this Space",
-  },
-};
-
-/** The hero definition for a category, or undefined when the category
- *  intentionally has no trend hero. */
-export function getSpaceHeroDef(category: string): SpaceHeroDef | undefined {
-  return SPACE_HERO_DEFS[category];
+/** True when the category has a trend-hero identity (drives the OVERVIEW
+ *  default tab + eager snapshot activation); false when it intentionally
+ *  has none. Replaces the former getSpaceHeroDef(category) — the rendering
+ *  def it returned was retired in REVIEW-3 with the Overview canvas. */
+export function hasSpaceTrendHero(category: string): boolean {
+  return SPACE_HERO_CATEGORIES.has(category);
 }

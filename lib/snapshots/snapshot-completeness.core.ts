@@ -34,6 +34,14 @@
  * that derivation ever changes, this function is where it breaks and must be
  * revisited.
  *
+ * ONE deliberate exception (REVIEW-3 B-4): the live writer
+ * (lib/snapshots/regenerate.ts) RECORDS `completenessTier: "incomplete"` on an
+ * `isEstimated=false` row when classifyAccounts reported `unconverted` — an
+ * FX-unavailable account was excluded, so the stored totals are an honest
+ * PARTIAL sum. The precedence below already handles it: a recorded tier
+ * outranks the flip-rule inference, so such a row resolves `incomplete`
+ * (classified `unreliable`), never a silently-complete `observed`.
+ *
  * ── What is deliberately NOT here ───────────────────────────────────────────
  * `reason`, `conflict`, `byComponent`, and per-instrument exclusion lists are
  * NOT persisted and are not reconstructed here. Those belong to the runtime
@@ -152,16 +160,4 @@ export function snapshotConfidence(c: SnapshotCompleteness): SnapshotConfidence 
   if (c.tier === "observed") return "observed";
   if (!c.recorded) return "reconstructed";
   return c.tier === "incomplete" || c.tier === "unknown" ? "unreliable" : "reconstructed";
-}
-
-/**
- * The `isEstimated` a resolved tier implies — the FLIP rule, in one place.
- *
- * Provided so a future consumer can drop the stored boolean entirely rather
- * than keep asking both questions. NOT used to rewrite stored rows in this
- * slice: `isEstimated` remains authoritative on disk, and this is the bridge
- * that keeps the two from ever disagreeing in a reader's hands.
- */
-export function isEstimatedFromTier(tier: CompletenessTier): boolean {
-  return tier !== "observed";
 }

@@ -19,6 +19,12 @@
  * Read from `QUANTITY_AUTHORITY_MODE`. An unrecognised value is treated as
  * `off` rather than as an error: a typo in an env var must not silently enable
  * an experimental money path, and must not take the app down either.
+ *
+ * REVIEW-3 — the variable is DECLARED: documented with a hard warning in
+ * .env.example and mirrored + validated (loud non-off warning at boot) in
+ * lib/env.ts. The read stays here at call time per the flag pattern (lib/env.ts
+ * header): tests toggle process.env at runtime, and this module runs under
+ * plain tsx where lib/env's `server-only` import cannot resolve.
  */
 
 import type { Prisma, PrismaClient } from "@prisma/client";

@@ -20,7 +20,7 @@
 import { useMemo, useState } from "react";
 import { AlertTriangle, Search } from "lucide-react";
 import type { ValuedHoldingRow } from "@/lib/investments/investments-time-machine-core";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { Surface } from "@/components/atlas/Surface";
 import { LeftPanel, RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
 import { rowKey, rowLabel, tierDotColor } from "./holdings-util";

@@ -23,6 +23,7 @@ import { db } from "@/lib/db";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
+import { SUPPORTED_SPACE_CATEGORIES } from "@/lib/space-presets";
 
 export const GET = withApiHandler(async (
   _req: NextRequest,
@@ -108,6 +109,24 @@ export const PATCH = withApiHandler(async (
 
   const existing = await db.space.findUnique({ where: { id } });
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  // ── Category allowlist (REVIEW-3, slice F) ─────────────────────────────
+  // This route used to write `category: category as never` with NO
+  // validation while Manage → General offered all 13 categories — the ONLY
+  // path by which a retired category (TRIP, DEBT_PAYOFF, …) could re-enter
+  // production, and the only path that reached the deleted Overview canvas.
+  // Category writes are now validated against the currently-supported set
+  // (creatable + existing-in-prod: PERSONAL, FAMILY, CUSTOM, OTHER;
+  // HOUSEHOLD deliberately excluded — hidden template, merged into Family,
+  // zero production rows). A no-op re-send of the Space's CURRENT category
+  // stays accepted so legacy-category Spaces can still save other fields.
+  if (
+    category !== undefined &&
+    category !== existing.category &&
+    !(SUPPORTED_SPACE_CATEGORIES as string[]).includes(category)
+  ) {
+    return NextResponse.json({ error: "Unsupported category" }, { status: 400 });
+  }
 
   // ── Archive / unarchive ────────────────────────────────────────────────
   if (archivedAt !== undefined) {

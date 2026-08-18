@@ -275,13 +275,9 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     id: "wealth", kind: "perspective", label: "Wealth", icon: "Gem", status: "available", group: "Financial",
     description: "Where your money is — assets by account, institution, and class.",
     // UX-PER-3 Wealth workspace. Doctrine: Wealth answers "Where is my money?"
-    // and is ASSETS ONLY. It deliberately does NOT reuse the Overview widgets
-    // (net_worth / net_worth_chart / allocation-incl-debt) — those answer
-    // "What?" on the executive dashboard. These are purpose-built, assets-only
-    // analytical widgets rendered through the same SectionCard compositor.
-    // EXPERIMENT (UX): asset_allocation is placed first so the richer multi-mode
-    // allocation chart sits ABOVE the Wealth by Account cards. Reversible.
-    widgets: ["asset_allocation", "wealth_by_account", "institution_allocation", "wealth_concentration"],
+    // and is ASSETS ONLY. (REVIEW-3: the widgets[] array was deleted — Wealth
+    // renders via its dedicated WORKSPACE_RENDERERS entry, which always wins
+    // the dispatch, so the virtual-section list could never be read.)
     dataNeeds: ["accounts", "snapshots"],
     temporalCapability: { asOf: "full", compareTo: "full", period: "none" },
     envelope: "wealth",
@@ -291,12 +287,8 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     description: "Income versus spending over time.",
     // UX-PER-3 Cash Flow workspace. Doctrine: Cash Flow answers "Where does my
     // money move?" — movement over time from transaction history, FlowType-aware
-    // (no net worth / allocation / debt / goals). Widgets share the workspace
-    // period selector. Rendered through the same SectionCard compositor.
-    // (income_vs_spending retired from the active list — Cash Flow History's
-    //  bucket cards now surface income/spending/net; renderer kept for reuse.)
-    //  Order: History → Spending by Category → Income/Cash In by Source → Debt Payments.
-    widgets: ["cash_flow_summary", "cash_flow_history", "cash_flow_by_category", "income_by_source", "debt_payments"],
+    // (no net worth / allocation / debt / goals). (REVIEW-3: widgets[] deleted —
+    // CashFlowWorkspace's WORKSPACE_RENDERERS entry always wins the dispatch.)
     // A temporal Perspective: it consumes the canonical time model via the SD-0B
     // preset dimension (shell.derived.cashFlowPeriod → the workspace period), i.e.
     // its historical window follows the shared slice. (It reads the preset, not
@@ -341,12 +333,9 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     lensId: "debt",
     // UX-PER-3 Debt workspace. Doctrine: Debt answers "What do I owe?" and is
     // LIABILITIES ONLY — it explains the shape, cost, and risk of debt (no
-    // assets / net worth / allocation / spending / goals). Reuses the existing
-    // Debt payoff calculator, credit-score card, and missing-info editor.
-    widgets: [
-      "debt_by_account", "debt_cost", "credit_utilization", "debt_history",
-      "debt_payoff_calculator", "credit_score", "debt_complete_info",
-    ],
+    // assets / net worth / allocation / spending / goals). (REVIEW-3:
+    // widgets[] deleted — DebtWorkspace's WORKSPACE_RENDERERS entry always
+    // wins the dispatch.)
     // M2 canonical IA: Debt is a specialized Workspace (perspective) selected
     // through Overview — NOT a routed modal. Its former
     // `routing.targetTab: "DEBT"` (RoutedWorkspaceModal) is retired so it has ONE
@@ -370,10 +359,9 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     description: "How much you could get at, and how fast.",
     lensId: "liquidity",
     // UX-PER-3 Liquidity workspace. Doctrine: Liquidity answers "How accessible
-    // is my money?" — access and readiness, not total wealth. Assets only;
-    // purpose-built widgets (no Overview / Wealth widget reuse). Rendered
-    // through the same SectionCard compositor as virtual sections.
-    widgets: ["liquidity_ladder", "accessible_cash", "emergency_fund_readiness", "liquidity_concentration"],
+    // is my money?" — access and readiness, not total wealth. Assets only.
+    // (REVIEW-3: widgets[] deleted — LiquidityWorkspace's WORKSPACE_RENDERERS
+    // entry always wins the dispatch.)
     // temporalCapability PARTIAL: asOf/compareTo reconstruct the Liquidity Ladder +
     // lede + per-tier delta (SD-6B historical engine), but the per-account panels
     // (Accessible Cash / Emergency Fund / Reachability / Concentration) remain
@@ -464,24 +452,8 @@ export function getPerspectivesForCategory(category: string): PerspectiveDef[] {
   return ids.map((id) => PERSPECTIVE_LIBRARY[id]).filter(Boolean);
 }
 
-/**
- * Subset of a category's Perspectives that are alternate full-canvas
- * *compositions* of the Overview tab itself — the PerspectiveSwitcher
- * dropdown (IA refactor point 2/3) — as opposed to card-based modal
- * launchers onto a different feature (Investments, Debt, Goals,
- * Retirement, etc. — see each host's own PERSPECTIVE_TARGET_TAB-style map
- * for those). A lens belongs here when it's the default "overview" lens,
- * or any other "Financial"-group lens that's still comingSoon — i.e.
- * lenses that would reshape the *same* canvas rather than open a
- * different one. Investments/Debt are also "Financial" but excluded here
- * (status "available", real modal targets) so there's exactly one
- * navigation path to each, not two competing ones.
- */
-export function getCompositionSwitcherItems(category: string): PerspectiveDef[] {
-  return getPerspectivesForCategory(category).filter(
-    (p) => p.group === "Financial" && (p.id === "overview" || p.status === "comingSoon")
-  );
-}
+// (REVIEW-3, slice F) getCompositionSwitcherItems was deleted with its sole
+// consumer, the Overview summary canvas's PerspectiveSwitcher dropdown.
 
 // ── SD-2B canonical UNIVERSAL workspace registry ───────────────────────────────
 // WORKSPACE_REGISTRY is the ONE identity authority over every primary Space
@@ -501,8 +473,8 @@ export function getCompositionSwitcherItems(category: string): PerspectiveDef[] 
 /**
  * The structural (non-Perspective) primary destinations that render directly in
  * the SpaceShell workspace slot. Base WorkspaceDefinitions — no lens/card
- * metadata. Icons mirror lib/space-nav-icons SPACE_TAB_ICON_MAP (the rail still
- * renders from that map; these are the canonical identity + SD-3 dataNeeds).
+ * metadata. The rail renders text-only (lib/space-nav-icons was deleted in
+ * REVIEW-3); these are the canonical identity + SD-3 dataNeeds.
  * ACTIVITY/MEMBERS self-fetch (TimelineWidget / MembersWorkspace's useSpaceMembers),
  * so their host-provided dataNeeds are minimal.
  */

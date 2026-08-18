@@ -72,6 +72,18 @@ It receives context; it does not manage the frame.
 Personal Finance workspaces: **Overview, Cash Flow, Liquidity, Investments, Wealth,
 Debt, Goals, Transactions, Accounts, Activity, Members.**
 
+> **REVIEW-3 (2026-08, slice F).** The OVERVIEW *tab* no longer has a summary
+> canvas of its own: the former `OverviewWorkspace` (trend hero → DB-backed
+> section stack → doorways) was product-unreachable — the Net Worth default
+> lens always resolves to the Wealth workspace — and was deleted. The OVERVIEW
+> slot now always renders the engaged Perspective workspace. `overview` remains
+> a registry identity (the tab's destination + dataNeeds), not a rendered
+> composition. Persisted `SpaceDashboardSection` rows render in exactly two
+> places: the GOALS / RETIREMENT routed modals (deep-link only) and the Goals
+> virtual-section path; the platform ops dashboard keeps its own, separate live
+> section consumer (`PLATFORM_WIDGET_REGISTRY`). Presets seed only
+> `goals_progress`.
+
 ---
 
 ## 3. Ownership Boundaries
@@ -302,7 +314,7 @@ themselves and the product assembles the answer.
 
 **The five laws:**
 
-1. **Scalar → Decomposition.** Overview owns the *scalar* (the number); a Perspective owns the *decomposition* (the shape behind it). Overview answers **"what?"**; a Perspective answers **"why?"**. A Perspective that renders a scalar Overview already shows is repeating, not decomposing.
+1. **Scalar → Decomposition.** *(Design intent — see the REVIEW-3 addendum in §2: today no Overview summary canvas renders a scalar; the OVERVIEW slot shows the engaged Perspective, with Wealth as the default. If a scalar Overview returns, this law governs it.)* Overview owns the *scalar* (the number); a Perspective owns the *decomposition* (the shape behind it). Overview answers **"what?"**; a Perspective answers **"why?"**. A Perspective that renders a scalar Overview already shows is repeating, not decomposing.
 2. **One-Question.** Each Perspective has a single primary question; every widget maps to a sub-question of it. A widget answering a different question belongs to a different Perspective (or is cut).
 3. **Verdict-First.** Every Perspective opens with a one-sentence **Verdict** — an AI-computed claim — and the widgets beneath exist to prove it. A verdict must be provable by a widget in the same Perspective (no orphan claims); it degrades gracefully to a neutral description when data is thin, never fabricating. Overview's verdict is the ranked set of the Perspectives' verdicts.
 4. **Graph-Projection.** There is one financial graph (accounts → institutions → asset classes → holdings → transactions → merchants → flows → goals → time). A Perspective is a *projection/query* over that graph. New data sources are new graph edges that light up existing Perspectives rather than spawning new ones.
@@ -376,7 +388,7 @@ SpaceShell's slot — PerspectiveShell is the perspective *chrome header* render
 3. **"How do I consume time?"** → `temporalCapability {asOf, compareTo, period}`, each `full | partial | none`. The workspace owns no local `now`/period state; every window derives from the shell's resolved `{asOf, compareTo}`.
 4. **"How do I communicate trust?"** → one `PerspectiveEnvelope` via `resolvePerspectiveEnvelope → TrustIndicator`, using the canonical `CompletenessTier` vocabulary. No hand-authored confidence strings.
 5. **"How am I rendered?"** → `WORKSPACE_RENDERERS[id]` (perspectives) or the shell slot (standard).
-6. **"What do I need / expose?"** → `dataNeeds[]`, `routing`, `widgets[]`, `envelope` source. **No bypass** — no workspace reads Prisma/`db` directly; every server read routes through the authority's endpoint.
+6. **"What do I need / expose?"** → `dataNeeds[]`, `routing`, `widgets[]` (REVIEW-3: only Goals carries one — a renderer-dispatched Perspective must NOT declare `widgets[]`, its `WORKSPACE_RENDERERS` entry always wins the dispatch), `envelope` source. **No bypass** — no workspace reads Prisma/`db` directly; every server read routes through the authority's endpoint.
 
 **Two kinds** (`kind` on the registry): `perspective` (a financial lens participating
 in canonical time — Wealth, Cash Flow, Investments, Debt, Liquidity; renderer-

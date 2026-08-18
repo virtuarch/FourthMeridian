@@ -13,6 +13,7 @@
  */
 
 import "server-only";
+import { todayUTCISO } from "@/lib/time/clock";
 import { db } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { loadRecentAlertRuns } from "@/lib/alerts/run";
@@ -36,7 +37,8 @@ export interface ConvergenceDeps {
   participants?: readonly ConvergenceParticipant[];
 }
 
-function todayISO(now: Date): string { return now.toISOString().slice(0, 10); }
+// REVIEW-3 B-6 — the day formatter is THE clock seam's (lib/time/clock.ts).
+const todayISO = (now: Date): string => todayUTCISO(now);
 function minusDaysISO(iso: string, d: number): string {
   return new Date(Date.parse(`${iso}T00:00:00.000Z`) - d * 86_400_000).toISOString().slice(0, 10);
 }

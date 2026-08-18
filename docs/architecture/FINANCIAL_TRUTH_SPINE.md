@@ -225,7 +225,7 @@ FlowType semantics are split by responsibility, and the split is doctrine:
 - **Purpose:** the effect-split, labeled, sorted reason breakdown of the liquidity axis (e.g. "Cash In $16,044 = Earned income $6,000 + Asset liquidation $10,044"), plus context figures.
 - **Authority:** `lib/transactions/liquidity-breakdown.ts`. A **pure PROJECTION over `DayFacts`** — no fold. Splits `DayFacts.byReason` via the static `LIQUIDITY_REASON_SIDE` map (pinned to `classifyLiquidity`).
 - **Outputs:** a `DayFacts` → `LiquidityBreakdown` (`cashIn[]`/`cashOut[]` labeled lines, totals, `netCash`, `unresolved`, `creditCardPurchases`, `internalTransfers`).
-- **Consumers:** `CashFlowSummaryWidget`, `cash-flow-insights`, `liquidity-what-changed`, `cash-flow-adapters`.
+- **Consumers:** `CashFlowSummaryWidget`, `cash-flow-insights`, `liquidity-what-changed`, `cash-flow widgets (CashFlowWorkspace)`.
 - **Must NOT be used for:** re-summing rows. It must NEVER call `classifyLiquidity` or take `(rows, ctx)` — feed it a `DayFacts`.
 
 ### groupCashFlowContext

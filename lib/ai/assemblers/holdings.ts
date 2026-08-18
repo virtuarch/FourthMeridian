@@ -71,10 +71,9 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Today (UTC), YYYY-MM-DD. Shared clock for both canonical valuations. */
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
+// REVIEW-3 B-6 — the shared clock for both canonical valuations is THE clock
+// (lib/time/clock.ts); this assembler no longer carries a private "today".
+import { todayUTCISO } from '@/lib/time/clock';
 
 /**
  * TRANSITIONAL crypto arm (convergence P2-6). Reuses the SHARED, crypto-only
@@ -158,7 +157,7 @@ async function assembleHoldings(
   const { spaceId } = spaceCtx;
   const { scopeHint = 'full' } = options;
   const assembledAt = new Date().toISOString();
-  const asOf = todayIso();
+  const asOf = todayUTCISO();
 
   // Reporting currency (also used for the crypto arm's conversions). The two
   // canonical valuations resolve the same currency from the Space internally.

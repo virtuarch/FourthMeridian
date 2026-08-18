@@ -19,7 +19,6 @@ import path from "node:path";
 import {
   buildCoverageSummary,
   buildExecutionTimeline,
-  buildFailureSummary,
   buildProviderOperationSummary,
   buildRefreshSummary,
   countOpenExecutions,
@@ -27,7 +26,6 @@ import {
 import {
   getCoverageSummary,
   getExecutionTimeline,
-  getFailureSummary,
   getProviderOperationSummary,
   getRefreshSummary,
   type RefreshProjectionReaders,
@@ -186,22 +184,21 @@ async function main() {
     const readers = fakeReaders({ executions: async () => [execution(), halfWritten] });
     const args = { from: "2026-07-01", to: "2026-07-10" };
 
-    const [refresh, provider, cov, fail] = await Promise.all([
+    const [refresh, provider, cov] = await Promise.all([
       getRefreshSummary(args, { readers }),
       getProviderOperationSummary(args, { readers }),
       getCoverageSummary(args, { readers }),
-      getFailureSummary(args, { readers }),
     ]);
 
-    const verdicts = [refresh, provider, cov, fail].map((r) => r.deterministic);
-    check("all four projections return the SAME determinism verdict", new Set(verdicts).size === 1, `verdicts: ${verdicts.join()}`);
+    const verdicts = [refresh, provider, cov].map((r) => r.deterministic);
+    check("all projections return the SAME determinism verdict", new Set(verdicts).size === 1, `verdicts: ${verdicts.join()}`);
     check("...and that verdict is `false` (an unfinalized row is open)", verdicts.every((v) => v === false));
 
-    const reasons = [refresh, provider, cov, fail].map((r) => r.indeterminacyReason);
-    check("all four give the SAME indeterminacy reason", new Set(reasons).size === 1);
+    const reasons = [refresh, provider, cov].map((r) => r.indeterminacyReason);
+    check("all give the SAME indeterminacy reason", new Set(reasons).size === 1);
 
-    const windows = [refresh, provider, cov, fail].map((r) => `${r.window.from}..${r.window.to}`);
-    check("all four resolve the same window", new Set(windows).size === 1);
+    const windows = [refresh, provider, cov].map((r) => `${r.window.from}..${r.window.to}`);
+    check("all resolve the same window", new Set(windows).size === 1);
   }
 
   // ── reproducibility ────────────────────────────────────────────────────────────
@@ -336,28 +333,6 @@ async function main() {
     check("empty facts ⇒ unknown tier, never a fabricated healthy state", buildCoverageSummary([]).tier === "unknown");
   }
 
-  // ── failure summary ────────────────────────────────────────────────────────────
-  console.log("correctness · failure summary");
-  {
-    const summary = buildFailureSummary(
-      [execution({ id: "a" }), execution({ id: "b", overallStatus: "FAILED", errorSummary: "internal detail" }), execution({ id: "c", overallStatus: "PARTIAL" })],
-      [endpoint({ status: "FAILED", endpoint: "HOLDINGS", errorSummary: "stage blew up" })],
-      [
-        call({ status: "FAILED", errorCode: "RATE_LIMIT", errorCategory: "RATE_LIMIT_EXCEEDED" }),
-        call({ status: "FAILED", errorCode: "RATE_LIMIT", errorCategory: "RATE_LIMIT_EXCEEDED" }),
-        call({ status: "RATE_LIMITED", errorCode: "TOO_MANY", errorCategory: "RATE_LIMIT_EXCEEDED" }),
-      ],
-    );
-    check("RUNNING is not a failure", summary.totalFailedExecutions === 2);
-    check("failed stages counted by endpoint", summary.endpoints[0].endpoint === "HOLDINGS" && summary.endpoints[0].failed === 1);
-    check("provider failures grouped by Plaid's OWN code", summary.providerCalls.some((p) => p.errorCode === "RATE_LIMIT" && p.count === 2));
-    check("RATE_LIMITED counts as a failed attempt", summary.totalFailedCalls === 3);
-
-    // DOCTRINE: free-text error bodies are never grouped or echoed.
-    const json = JSON.stringify(summary);
-    check("free-text errorSummary is NEVER echoed into the summary", !json.includes("internal detail") && !json.includes("stage blew up"));
-  }
-
   // ── execution timeline ─────────────────────────────────────────────────────────
   console.log("correctness · execution timeline");
   {
@@ -429,14 +404,12 @@ async function main() {
     check("an empty scope does not hit the CHILD readers either", childHit === false);
 
     // Every projection must fail closed the same way.
-    const [refresh, provider, fail] = await Promise.all([
+    const [refresh, provider] = await Promise.all([
       getRefreshSummary(args, { readers: loud }),
       getProviderOperationSummary(args, { readers: loud }),
-      getFailureSummary(args, { readers: loud }),
     ]);
     check("refresh summary is empty under an empty scope", refresh.executions === 0 && refresh.endpoints.length === 0);
     check("provider summary is empty under an empty scope", provider.totalCalls === 0);
-    check("failure summary is empty under an empty scope", fail.totalFailedCalls === 0 && fail.totalFailedStages === 0);
     check("no reader was consulted by ANY projection under an empty scope", executionsHit === false && childHit === false);
   }
 
@@ -448,9 +421,6 @@ async function main() {
     const viaCore = buildProviderOperationSummary([call()]);
     check("authority output contains the core output verbatim", JSON.stringify(viaAuthority.operations) === JSON.stringify(viaCore.operations));
     check("authority stamps checkedAt", typeof viaAuthority.checkedAt === "string" && viaAuthority.checkedAt.length > 0);
-
-    const failure = await getFailureSummary({ from: "2026-07-01", to: "2026-07-10" }, { readers });
-    check("failure summary reaches the ledger through injected readers", failure.window.to === "2026-07-10");
 
     const timeline = await getExecutionTimeline("exec1", { readers });
     check("timeline resolves by id", timeline?.executionId === "exec1");

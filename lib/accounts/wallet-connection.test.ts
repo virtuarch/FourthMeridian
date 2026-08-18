@@ -75,8 +75,11 @@ check("btc-sync records the Connection on a successful sync (markSynced)",
   sync.includes("alignWalletProviderSpine") && /markSynced:\s*true/.test(sync));
 check("btc-sync selects ownerUserId for spine alignment", /ownerUserId:\s*true/.test(sync));
 
-const backfill = code(read("scripts", "backfill-wallet-connections.ts"));
-check("backfill script reuses alignWalletProviderSpine", backfill.includes("alignWalletProviderSpine"));
+// REVIEW-3 — scripts/backfill-wallet-connections.ts was DELETED: its work is
+// done (the live add/re-add/reactivate/sync paths self-heal the spine, above),
+// and it called alignWalletProviderSpine WITHOUT descriptorOnly, which for an
+// xpub wallet repoints a discovered-address PAI row to the xpub descriptor and
+// silently loses that address from getWalletAddresses.
 
 // ── PART C — v1.5 cleanup: AccountConnection mirror + schema doctrine ───────────
 

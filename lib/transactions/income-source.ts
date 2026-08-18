@@ -219,46 +219,9 @@ export function attributeIncome(e: IncomeEvidence): IncomeAttribution {
   return mk("UNRESOLVED_INCOME", "No provider classification and no structural evidence, so the source of this inflow is not established.");
 }
 
-/** A canonical rollup. Broad income is the SUM of its parts, by construction. */
-export interface IncomeBreakdown {
-  broad: number;
-  earned: number;
-  interest: number;
-  dividends: number;
-  other: number;
-  /** Inflows deliberately EXCLUDED, so the exclusion is visible not silent. */
-  excluded: number;
-  counts: Record<IncomeClass, number>;
-}
-
-/**
- * Fold attributed rows into the canonical rollup.
- *
- * `broad = earned + interest + dividends + other` holds by construction — the
- * total is computed FROM the parts, never alongside them, so a surface cannot
- * show a headline that disagrees with its own breakdown.
- */
-export function foldIncome(
-  rows: readonly { amount: number; attribution: IncomeAttribution }[],
-): IncomeBreakdown {
-  const b: IncomeBreakdown = {
-    broad: 0, earned: 0, interest: 0, dividends: 0, other: 0, excluded: 0,
-    counts: { EARNED_INCOME: 0, INTEREST_INCOME: 0, DIVIDEND_INCOME: 0, OTHER_INCOME: 0, NOT_INCOME: 0 },
-  };
-  for (const r of rows) {
-    const c = r.attribution.incomeClass;
-    b.counts[c]++;
-    switch (c) {
-      case "EARNED_INCOME":   b.earned    += r.amount; break;
-      case "INTEREST_INCOME": b.interest  += r.amount; break;
-      case "DIVIDEND_INCOME": b.dividends += r.amount; break;
-      case "OTHER_INCOME":    b.other     += r.amount; break;
-      case "NOT_INCOME":      b.excluded  += r.amount; break;
-    }
-  }
-  b.broad = b.earned + b.interest + b.dividends + b.other;
-  return b;
-}
+// (REVIEW-3: the foldIncome rollup + its IncomeBreakdown shape were deleted —
+// superseded by composeIncomeRollup in lib/transactions/income-rollup.ts, and
+// nothing outside their own test imported them.)
 
 /** Presentation wording. One place; React composes nothing. */
 export const INCOME_CLASS_LABEL: Record<IncomeClass, string> = {

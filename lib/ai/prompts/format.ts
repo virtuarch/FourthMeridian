@@ -13,10 +13,21 @@
 
 import type { SpaceContext_AI, TransactionsSummaryData } from '@/lib/ai/types';
 import { FinanceDomains } from '@/lib/ai/types';
+import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
 
-/** Format a number as a USD money string (e.g. $4,320.00). */
-export function fmtMoney(n: number): string {
-  return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/**
+ * Format a money string in the given currency (e.g. $4,320.00, €4,320.00).
+ *
+ * REVIEW-3 C-6 — this used to hard-code `$`, so every AI prompt line was
+ * dollar-signed regardless of the Space's reporting currency. Serializers bind
+ * it to `ctx.space.reportingCurrency`; the USD default keeps fixture callers
+ * (and all-USD output) identical for non-negative amounts.
+ */
+export function fmtMoney(n: number, currency: string = DEFAULT_DISPLAY_CURRENCY): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency', currency,
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  }).format(n);
 }
 
 /** Format a YYYY-MM-DD date string as "Mon YYYY" (e.g. "2026-01-15" → "Jan 2026"). */

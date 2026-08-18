@@ -29,6 +29,9 @@
  */
 
 import { sha256 } from "@noble/hashes/sha2.js";
+// B-6 — the ONE economic-date resolver. The event's economicDate is derived
+// through it (see projectEvent), never by a second rule.
+import { resolveEconomicDate } from "@/lib/transactions/economic-date";
 
 /**
  * Providers whose deliveries have a pending↔posted lifecycle worth modelling.
@@ -183,6 +186,10 @@ export interface ObservationFacts {
   amount: number;
   postingDate: Date;
   economicDate: Date;
+  /** The provider's authorization attestation carried by this observation, when
+   *  it made one. Feeds the economic-date resolution for posted-only events
+   *  (B-6); optional so pre-B-6 callers and fixtures stay valid. */
+  authorizedAt?: Date | null;
   /** The transaction row, when it is still live. Null once tombstoned. */
   liveTransactionId: string | null;
 }
@@ -202,10 +209,21 @@ export interface EventProjection {
 /**
  * Derive an event's current state from its observations. Pure and total.
  *
- * ⚠️ **The economic date comes from the FIRST observation, not the latest.** That
- * is the invariant the whole slice exists to protect: posting must not move when
- * an event happened. The corpus already agrees — economicDate changed on 0 of 38
- * chains — and this makes it structural rather than incidental.
+ * ⚠️ **The economic date is decided at FIRST observation and never moved by
+ * posting.** That is the invariant the whole slice exists to protect: posting
+ * must not move when an event happened. The corpus already agrees —
+ * economicDate changed on 0 of 38 chains — and this makes it structural.
+ *
+ * B-6 — the derivation now runs THROUGH `resolveEconomicDate` (the one
+ * economic-date authority) instead of copying the first observation's value
+ * verbatim: the first PENDING observation's resolved economic date is supplied
+ * as `firstPendingDate` (which the resolver ranks first — first resolution
+ * wins), the latest authorization attestation and the current posting date ride
+ * as the remaining evidence. Behaviour is identical for every credible chain;
+ * what changes is that the resolver's 14-day credibility bound now applies to
+ * the pin too, and that the event and its row derive from the SAME function —
+ * `reprojectEvent` materializes this value into `Transaction.economicDate`, so
+ * the two cannot disagree (the rule the REVIEW-3 audit found unreconciled).
  *
  * ⚠️ The AMOUNT comes from the LATEST observation. A restatement is new
  * information about the same event, and the earlier observation stays on the
@@ -236,10 +254,24 @@ export function projectEvent(observations: readonly ObservationFacts[]): EventPr
       : live ? "PENDING"
       : "WITHDRAWN";
 
+  // ── The event's economic date, through the ONE resolver ───────────────────
+  // Posting evidence is the CURRENT posting: the latest POSTED observation's,
+  // or the latest observation's while still pending. The authorization is the
+  // latest one any observation attested (it can be null while pending and
+  // appear at posting). The pin is the FIRST pending observation's resolved
+  // economic date — which the resolver ranks above both.
+  const lastPosted = [...sorted].reverse().find((o) => o.lifecycle === "POSTED") ?? null;
+  const currentPosting = (lastPosted ?? last).postingDate;
+  const latestAuth = [...sorted].reverse().find((o) => o.authorizedAt != null)?.authorizedAt ?? null;
+  const econ = resolveEconomicDate({
+    postingDate: currentPosting,
+    authorizedAt: latestAuth,
+    firstPendingDate: firstPending?.economicDate ?? null,
+  });
+
   return {
     lifecycle,
-    // FIRST, deliberately. See the note above.
-    economicDate: first.economicDate,
+    economicDate: new Date(`${econ.economicDate}T00:00:00.000Z`),
     currentAmount: last.amount,
     currentTransactionId: live?.liveTransactionId ?? null,
     firstObservedAt: first.observedAt,

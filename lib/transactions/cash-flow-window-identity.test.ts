@@ -180,8 +180,7 @@ const ROWS: Transaction[] = [
 
   // No component may hand-roll the same conversion.
   const rolled: string[] = [];
-  for (const f of ["components/space/widgets/cash-flow-adapters.tsx",
-                   "components/space/widgets/DebtPaymentsWidget.tsx",
+  for (const f of [                   "components/space/widgets/DebtPaymentsWidget.tsx",
                    "components/space/widgets/CashFlowSummaryWidget.tsx",
                    "components/space/widgets/CashFlowHistoryWidget.tsx"]) {
     const src = strip(readFileSync(new URL(`../../${f}`, import.meta.url), "utf8"));
@@ -191,20 +190,22 @@ const ROWS: Transaction[] = [
   ok("STATIC · one anchor derivation, no hand-rolled duplicates");
 }
 
-// ── STATIC · the as-of reaches the widgets through the registry ───────────
+// ── STATIC · the as-of reaches the widgets end-to-end ─────────────────────
+// REVIEW-3 (slice F): the cash-flow SECTION entries were deleted with the
+// Overview canvas — Cash Flow renders exclusively through CashFlowWorkspace,
+// which receives the shell's asOf via the WORKSPACE_RENDERERS context. The
+// probe follows the surviving paths: the workspace renderer, plus the
+// remaining SectionCard path (Goals virtual sections / routed modals).
 {
   const registry = strip(readFileSync(
     new URL("../../components/space/sections/SectionRegistry.tsx", import.meta.url), "utf8"));
   assert.ok(/asOf\?:\s*string/.test(registry), "SectionRenderProps carries the selected as-of");
 
-  const CASH_FLOW_SECTIONS = ["cash_flow_summary", "cash_flow_history", "income_vs_spending",
-                              "cash_flow_by_category", "income_by_source", "debt_payments"];
-  const missing = CASH_FLOW_SECTIONS.filter((id) => {
-    const i = registry.indexOf(`"${id}":`);
-    if (i < 0) return true;
-    return !registry.slice(i, registry.indexOf("\n", i)).includes("p.asOf");
-  });
-  assert.deepEqual(missing, [], `every interval section must forward the as-of; missing: ${missing.join(", ")}`);
+  const renderers = strip(readFileSync(
+    new URL("../../components/space/workspaces/workspaceRenderers.tsx", import.meta.url), "utf8"));
+  const cf = renderers.slice(renderers.indexOf("cashFlow: (ctx)"), renderers.indexOf("liquidity: (ctx)"));
+  assert.ok(/asOf=\{ctx\.asOf\}/.test(cf),
+    "the Cash Flow workspace receives the shell's selected as-of from the renderer context");
 
   const card = strip(readFileSync(
     new URL("../../components/space/sections/SectionCard.tsx", import.meta.url), "utf8"));
@@ -213,20 +214,14 @@ const ROWS: Transaction[] = [
 
   const shell = strip(readFileSync(
     new URL("../../components/dashboard/SpaceDashboard.tsx", import.meta.url), "utf8"));
-  assert.ok(/asOf=\{asOf\}/.test(shell), "the shell supplies its own selected as-of to the section cards");
-  ok("STATIC · shell → SectionCard → registry → widget, the as-of is threaded end-to-end");
+  assert.ok(/asOf=\{asOf\}/.test(shell) || /asOf,\s*\n/.test(shell),
+    "the shell supplies its own selected as-of to the section cards");
+  ok("STATIC · shell → workspace/SectionCard, the as-of is threaded end-to-end");
 }
 
-// ── STATIC · the trend hero baseline is anchored to the SERIES, not today ─
-{
-  const hero = strip(readFileSync(
-    new URL("../../components/dashboard/widgets/SpaceTrendHero.tsx", import.meta.url), "utf8"));
-  const memo = hero.slice(hero.indexOf("const { latest, delta"), hero.indexOf("if (loading)"));
-  assert.ok(!/new Date\(\)/.test(memo),
-    "the 30-day baseline may not come from the wall clock — the series ends at the selected as-of");
-  assert.ok(/last\.date/.test(memo), "…it is measured back from the last point in the series");
-  ok("STATIC · trend-hero delta baseline is anchored to the series end");
-}
+// (REVIEW-3 slice F — the SpaceTrendHero series-anchor probe was deleted with
+// the trend hero itself: the Overview summary canvas is retired, so no surface
+// renders a category trend hero anymore.)
 
 // ── BEHAVIOURAL · the section window IS the selected window ──────────────
 //

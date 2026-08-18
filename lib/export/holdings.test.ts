@@ -78,30 +78,45 @@ console.log("toExportHoldingFromLegacyCrypto — crypto-only bridge projection")
   check("source = crypto-compat", h.source === "crypto-compat");
 }
 
-console.log("mergeSpaceExportHoldings — disjoint by account, no double count");
+console.log("mergeSpaceExportHoldings — disjoint by account, CANONICAL WINS (row 26)");
 {
-  // A backfilled wallet observation would put the SAME wallet account into BOTH
-  // the canonical rows and the crypto bridge. The merge must drop the canonical
-  // wallet row and keep only the crypto one.
+  // REVIEW-3 converged dedup rule: a wallet on BOTH the canonical spine and the
+  // legacy bridge is supplied ONCE, by CANONICAL (the export previously kept
+  // the legacy row — the OPPOSITE of the AI assembler; both now share
+  // lib/investments/canonical-precedence.core.ts). A wallet the spine has no
+  // observation for still rides in through the bridge (fallback, not override).
   const canonicalRows = [
-    posRow({ accountId: "brokerage1", instrumentId: "vti" }),        // A-track — kept
-    posRow({ accountId: "wallet1", instrumentId: "btc", symbol: "BTC" }), // backfilled wallet — dropped
+    posRow({ accountId: "brokerage1", instrumentId: "vti" }),             // A-track — kept
+    posRow({ accountId: "wallet1", instrumentId: "btc", symbol: "BTC" }), // on-spine wallet — CANONICAL WINS
   ];
   const cryptoPositions: LegacyCryptoPosition[] = [
+    // Same wallet also present on the bridge — must be dropped (canonical wins).
     { holdingId: "h_btc", financialAccountId: "wallet1", symbol: "BTC", name: "Bitcoin", quantity: 0.5, price: 60000, value: 30000, currency: "USD", isCash: false },
+    // Off-spine wallet — bridge is the fallback; must be kept.
+    { holdingId: "h_btc2", financialAccountId: "wallet2", symbol: "BTC", name: "Bitcoin", quantity: 0.1, price: 60000, value: 6000, currency: "USD", isCash: false },
   ];
   const merged = mergeSpaceExportHoldings({ canonicalRows, cryptoPositions, spaceId: "s1", reportingCurrency: "USD" });
-  check("wallet appears exactly once (crypto bridge wins)",
+  check("on-spine wallet appears exactly once",
     merged.filter((h) => h.accountId === "wallet1").length === 1);
-  check("the single wallet row is crypto-compat",
-    merged.find((h) => h.accountId === "wallet1")?.source === "crypto-compat");
-  check("non-wallet canonical row retained", merged.some((h) => h.accountId === "brokerage1" && h.source === "canonical"));
-  check("total rows = canonical(non-wallet) + crypto", merged.length === 2);
+  check("…and the surviving row is CANONICAL (canonical wins over the bridge)",
+    merged.find((h) => h.accountId === "wallet1")?.source === "canonical");
+  check("off-spine wallet still rides in via the bridge (fallback preserved)",
+    merged.find((h) => h.accountId === "wallet2")?.source === "crypto-compat");
+  check("brokerage canonical row retained", merged.some((h) => h.accountId === "brokerage1" && h.source === "canonical"));
+  check("total rows = canonical + off-spine bridge only (no double count)", merged.length === 3);
 }
 {
   // No crypto → passthrough of canonical rows only.
   const merged = mergeSpaceExportHoldings({ canonicalRows: [posRow({ accountId: "b1" })], cryptoPositions: [], spaceId: "s1", reportingCurrency: "USD" });
   check("no-crypto passthrough keeps canonical rows", merged.length === 1 && merged[0].source === "canonical");
+}
+{
+  // No canonical rows (flag-off corpus) → the bridge remains the sole crypto source.
+  const cryptoPositions: LegacyCryptoPosition[] = [
+    { holdingId: "h1", financialAccountId: "w1", symbol: "BTC", name: "Bitcoin", quantity: 1, price: 1, value: 1, currency: "USD", isCash: false },
+  ];
+  const merged = mergeSpaceExportHoldings({ canonicalRows: [], cryptoPositions, spaceId: "s1", reportingCurrency: "USD" });
+  check("flag-off state: bridge-only wallet survives", merged.length === 1 && merged[0].source === "crypto-compat");
 }
 
 // ── Source guard — the assembler reads canonical positions, not general Holding ─
@@ -122,6 +137,29 @@ console.log("source guard — export assembler off the general legacy Holding re
   const bridgeCode = bridge.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
   check("bridge scopes to self-custody wallets only (walletChain)", /walletChain/.test(bridgeCode));
   check("bridge enforces FULL detail visibility", /TRANSACTION_DETAIL_VISIBILITY/.test(bridgeCode));
+
+  // REVIEW-3 (row 26) — ONE dedup rule, shared by BOTH bridge consumers.
+  // Export and the AI assembler previously applied OPPOSITE precedence for a
+  // wallet present on both sources; both must now import the shared
+  // canonical-wins rule rather than re-deciding precedence locally.
+  const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  const mergeSrc = strip(readFileSync(join(process.cwd(), "lib/export/holdings.ts"), "utf8"));
+  const aiCore   = strip(readFileSync(join(process.cwd(), "lib/ai/assemblers/holdings-core.ts"), "utf8"));
+  check("export merge imports the shared canonical-precedence rule",
+    /canonical-precedence\.core/.test(mergeSrc) && /excludeCanonicalAccounts\s*\(/.test(mergeSrc));
+  check("AI holdings-core delegates to the SAME shared rule",
+    /canonical-precedence\.core/.test(aiCore) && /excludeCanonicalAccounts\s*\(/.test(aiCore));
+  check("export merge no longer drops canonical rows for bridge wallets (legacy never wins)",
+    !/walletAccountIds/.test(mergeSrc));
+
+  // REVIEW-3 ratchet — the general legacy Holding reader (lib/data/accounts.ts
+  // getHoldings) is DELETED; lib/data/accounts.ts must never regrow a Holding
+  // read. The crypto-only bridge stays the single production Holding read path.
+  const accountsSrc = strip(readFileSync(join(process.cwd(), "lib/data/accounts.ts"), "utf8"));
+  check("lib/data/accounts.ts exports no getHoldings (general legacy reader deleted)",
+    !/export\s+(async\s+)?function\s+getHoldings/.test(accountsSrc));
+  check("lib/data/accounts.ts reads no Holding rows at all",
+    !/\.holding\./.test(accountsSrc));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed.`); process.exit(1); }

@@ -19,63 +19,6 @@ export const SITE = {
   tagline: "Your whole financial life, in one clear view.",
 } as const;
 
-// ── Home / hero ───────────────────────────────────────────────────────────────
-
-export const HOME = {
-  eyebrow: "Personal finance, held to a higher standard",
-  heading: "Every account, every asset, one true north.",
-  subheading:
-    "Fourth Meridian brings your balances, investments, crypto, and debt " +
-    "together into a single, honest picture — organized into Spaces you " +
-    "actually live inside, with an ambient daily briefing that tells you " +
-    "what changed and why it matters.",
-  primaryCta: { label: "Request beta access", href: "/request-access" },
-  secondaryCta: { label: "How we protect your data", href: "/security" },
-} as const;
-
-export type Feature = { title: string; body: string };
-
-export const FEATURES: Feature[] = [
-  {
-    title: "One picture, every account",
-    body:
-      "Link banks and brokerages or add manual assets and debts. Net worth, " +
-      "holdings, and cash flow reconcile into a single view that stays honest — " +
-      "no fake jumps, no double-counting.",
-  },
-  {
-    title: "Spaces, not spreadsheets",
-    body:
-      "Organize your finances into Spaces — personal, a household, an entity — " +
-      "each shaped by a template like FinTracker. The structure follows how you " +
-      "actually think about money.",
-  },
-  {
-    title: "A daily briefing that reads for you",
-    body:
-      "An ambient briefing surfaces what moved overnight and what deserves your " +
-      "attention — grounded in your own data, never a chat window you have to " +
-      "prompt.",
-  },
-  {
-    title: "Investments and crypto, honestly valued",
-    body:
-      "Historical holdings and on-chain balances are valued against real market " +
-      "prices over time, so the history you see is the history that happened.",
-  },
-  {
-    title: "Security you can inspect",
-    body:
-      "Two-factor authentication, encrypted credentials, and an audited access " +
-      "model — described plainly on our security page, not buried in a policy.",
-  },
-  {
-    title: "Built to give back control",
-    body:
-      "Export your data whenever you want, and close your account on your terms. " +
-      "Your financial picture belongs to you.",
-  },
-];
 
 // ── Security page ─────────────────────────────────────────────────────────────
 

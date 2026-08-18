@@ -39,7 +39,6 @@ const PROJECTIONS = [
   { name: "Refresh Summary", constructor: "buildRefreshSummary", authority: "getRefreshSummary" },
   { name: "Provider Operation Summary", constructor: "buildProviderOperationSummary", authority: "getProviderOperationSummary" },
   { name: "Coverage Summary", constructor: "buildCoverageSummary", authority: "getCoverageSummary" },
-  { name: "Failure Summary", constructor: "buildFailureSummary", authority: "getFailureSummary" },
   { name: "Execution Timeline", constructor: "buildExecutionTimeline", authority: "getExecutionTimeline" },
 ] as const;
 

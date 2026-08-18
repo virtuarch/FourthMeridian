@@ -40,7 +40,17 @@ export const PRICE_BASES = [
 ] as const;
 
 // ── Pure ISO calendar-date helpers (UTC) ─────────────────────────────────────
-// Cloned from lib/fx/config.ts so lib/prices carries no lib/fx dependency.
+// REVIEW-3 B-6 — the CLOCK functions delegate to lib/time/clock.ts, which is
+// pure and zero-import, so lib/prices STILL carries no lib/fx dependency (the
+// clone-the-pattern-never-couple doctrine above concerns subsystem coupling;
+// a dependency-free time primitive is shared, not coupled). The prices-specific
+// validators below stay here: doctrine guards with prices-prefixed errors.
+
+import { toISODateUTC, yesterdayUTCISO } from "@/lib/time/clock";
+
+// Re-exported so every existing prices importer keeps its import path; the
+// implementation lives in lib/time and nowhere else (clock-authority guard).
+export { toISODateUTC, yesterdayUTCISO };
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -49,11 +59,6 @@ export function assertISODate(s: string): void {
   if (!ISO_DATE_RE.test(s) || Number.isNaN(Date.parse(`${s}T00:00:00Z`))) {
     throw new Error(`[prices] invalid ISO date: "${s}" (expected YYYY-MM-DD)`);
   }
-}
-
-/** UTC calendar date of a Date instant, as "YYYY-MM-DD". */
-export function toISODateUTC(d: Date): string {
-  return d.toISOString().slice(0, 10);
 }
 
 /** ISO date minus n days (UTC arithmetic). */
@@ -70,11 +75,6 @@ export function daysBetweenISO(fromISO: string, toISO: string): number {
   return Math.round(
     (Date.parse(`${toISO}T00:00:00Z`) - Date.parse(`${fromISO}T00:00:00Z`)) / 86_400_000,
   );
-}
-
-/** Yesterday's UTC calendar date — the newest date the append-only archive accepts. */
-export function yesterdayUTCISO(now: Date = new Date()): string {
-  return minusDaysISO(toISODateUTC(now), 1);
 }
 
 /**

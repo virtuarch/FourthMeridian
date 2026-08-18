@@ -51,7 +51,7 @@
  */
 
 import type { FreshnessBasis } from "@/lib/freshness/observation";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
 import { computeDebtAggregate, type DebtAggregateRow } from "@/lib/debt/aggregates";
 import { convertMoney } from "@/lib/money/convert";
@@ -351,7 +351,7 @@ export function computeDebt(
       },
       {
         id: "rate-sources",
-        text: "Rates come from your entries where provided, otherwise from the account provider.",
+        text: "Rates come from your entries — the debt-profile editor first, else the rate saved on the account.",
         source: "default",
       },
     );

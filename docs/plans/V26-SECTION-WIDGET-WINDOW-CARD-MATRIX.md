@@ -1,5 +1,19 @@
 # V2.6 — Section-Widget Window Convergence · Card Matrix
 
+> **SUPERSEDED (REVIEW-3, 2026-08 — slice F).** This document describes the
+> section↔widget matrix as it stood before the Overview canvas retirement. It
+> is kept as history, not as current truth. Since REVIEW-3:
+> the Overview summary canvas (`OverviewWorkspace`) and the section-rendered
+> cash-flow/wealth/liquidity/debt-perspective registry entries are DELETED —
+> those lenses render exclusively through `WORKSPACE_RENDERERS` workspaces,
+> which receive the shell's `asOf` via the renderer context;
+> `SectionRegistry` is cut to the Goals virtual-section widgets +
+> the routed-modal keys; `lib/widget-registry.ts` carries only
+> `{key, label, description, requires}` for the surviving goals keys; presets
+> seed only `goals_progress`. The `asOfAnchor()` single-conversion rule and
+> the shell→SectionCard `asOf` threading REMAIN in force on the surviving
+> section path (pinned by lib/transactions/cash-flow-window-identity.test.ts).
+
 Branch `v2.6`. Read-only against the database throughout.
 
 The dashboard shell owns ONE selected financial window (`preset`, `asOf`, `compareTo`). Before

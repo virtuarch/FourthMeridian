@@ -38,7 +38,7 @@ async function main() {
     select: {
       id: true, eventId: true, transactionId: true, financialAccountId: true, provider: true,
       providerRowId: true, providerPendingRef: true, observedAt: true, lifecycle: true,
-      amount: true, postingDate: true, economicDate: true, observationKey: true,
+      amount: true, postingDate: true, economicDate: true, authorizedAt: true, observationKey: true,
     },
   });
   const txs = await db.transaction.findMany({
@@ -100,6 +100,7 @@ async function main() {
       return {
         observedAt: o.observedAt, lifecycle: o.lifecycle as "PENDING" | "POSTED",
         amount: o.amount, postingDate: o.postingDate, economicDate: o.economicDate,
+        authorizedAt: o.authorizedAt,
         liveTransactionId: t && !t.deletedAt ? t.id : null,
       };
     });
@@ -155,10 +156,10 @@ async function main() {
   });
   console.log(`\n  rows lacking authorizedAt              : ${noAuth.length}`);
   console.log(`  ...that NOW have first-pending evidence: ${gained.length}`);
-  console.log(`\n  ⚠️ PROPOSED future precedence (NOT applied in this slice):`);
-  console.log(`       first credible pending observation ?? authorizedAt ?? posting date`);
-  console.log(`     Changing economicDate again is a separate MEASURED cutover, exactly as`);
-  console.log(`     the current one was. On this corpus it would affect ${gained.length} row(s).`);
+  console.log(`\n  ✓ B-6 precedence (APPLIED — REVIEW-3): first credible pending observation`);
+  console.log(`    ?? authorizedAt ?? posting date. projectEvent derives through`);
+  console.log(`    resolveEconomicDate and reprojectEvent materializes the event's answer`);
+  console.log(`    into Transaction.economicDate — the row/event match above is structural.`);
 
   bar("PART 8 — PROVIDER LATENCY READINESS");
   // ⚠️ Every backfilled observedAt is Transaction.createdAt — a RECONSTRUCTION,

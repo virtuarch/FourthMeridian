@@ -23,8 +23,9 @@
  */
 
 import { Calendar, CheckCircle2 } from "lucide-react";
-import { formatCurrency, formatDate, formatPercent } from "@/lib/format";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useDisplayCurrency } from "@/lib/currency-context";
+import { formatDate, formatPercent } from "@/lib/format";
+import { DEFAULT_DISPLAY_CURRENCY, formatCurrency } from "@/lib/currency";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -141,7 +142,7 @@ function pctTextColor(pct: number, mode: ProgressMode): string {
 export function ProgressWidget({
   currentAmount,
   targetAmount,
-  currency      = DEFAULT_DISPLAY_CURRENCY,
+  currency: currencyProp,
   currentLabel,
   targetLabel,
   progressLabel,
@@ -152,6 +153,9 @@ export function ProgressWidget({
   emptyHeadline,
   emptySubline,
 }: ProgressWidgetProps) {
+  // REVIEW-3 C-5 — no hard-coded currency default; the display authority decides.
+  const displayCurrency = useDisplayCurrency();
+  const currency = currencyProp ?? displayCurrency;
 
   // ── Empty / unconfigured state ─────────────────────────────────────────────
   if (targetAmount == null || targetAmount <= 0) {

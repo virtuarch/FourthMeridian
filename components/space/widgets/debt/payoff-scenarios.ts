@@ -63,7 +63,11 @@ export function buildPayoffScenarios(
   if (!(minPayment > 0) || !(total > 0)) return [];
 
   const now = opts?.now ?? (() => new Date());
-  const fmt = opts?.fmtMoney ?? ((n: number) => `$${Math.round(n)}`);
+  // REVIEW-3 B-5 — this pure helper owns NO currency. The caller injects the
+  // formatter (PayoffScenarioStrip formats in the display-currency authority);
+  // without one the label states the magnitude with no currency claim — the
+  // former \`$\`-literal default relabelled unknown-currency amounts as dollars.
+  const fmt = opts?.fmtMoney ?? ((n: number) => `${Math.round(n)}`);
   const hasRate = monthlyRate > 0;
 
   // The minimums-only baseline every "interest saved" figure is measured against.

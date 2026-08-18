@@ -144,6 +144,15 @@ export function derivePriorities(
       severity: 'warning',
       reason:   'Mixed deficit — debt payments plus non-debt spending above income',
     });
+  } else if (cashFlow.deficitCause === 'DEBT_DRIVEN') {
+    // REVIEW-3 C-3 — the canonical net is non-negative; debt payments fully
+    // explain the cash deficit, with no active payoff goal on record. Not
+    // overspending — never framed as such.
+    result.push({
+      code:     'CASH_FLOW',
+      severity: 'info',
+      reason:   'Cash deficit driven by debt payments — no active payoff goal on record',
+    });
   }
 
   return result;

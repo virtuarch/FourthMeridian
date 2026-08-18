@@ -40,8 +40,8 @@
  */
 
 import { useState } from "react";
-import { formatCurrency } from "@/lib/format";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { formatCurrency } from "@/lib/currency";
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { assignStableColors, DEFAULT_CHART_COLOR } from "@/lib/charts/chart-palette";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -127,8 +127,7 @@ function assignColors(items: BreakdownItem[]): ColoredItem[] {
   return items.map((item, i) => ({ ...item, color: item.color ?? derived[i] }));
 }
 
-const defaultFmt = (v: number) =>
-  formatCurrency(v, DEFAULT_DISPLAY_CURRENCY);
+
 
 /**
  * Pluralise the donut's centre noun. A bare `+ "s"` rendered "3 asset classs"
@@ -468,7 +467,7 @@ function DonutView({
 export function BreakdownWidget({
   items,
   viewMode     = "donut",
-  formatValue  = defaultFmt,
+  formatValue: formatValueProp,
   itemNoun     = "item",
   footer,
   emptyHeadline,
@@ -477,6 +476,11 @@ export function BreakdownWidget({
   selectedId,
   selectLabel,
 }: BreakdownWidgetProps) {
+  // REVIEW-3 B-5 — when the caller supplies no formatter, label in the
+  // display-currency AUTHORITY (the Space's effective reporting currency),
+  // never a build-time USD literal. Resolved before any early return (hook rule).
+  const displayCurrency = useDisplayCurrency();
+  const formatValue = formatValueProp ?? ((v: number) => formatCurrency(v, displayCurrency));
   const sel: SelectApi = { onSelect, selectedId, selectLabel };
   if (items.length === 0) {
     return (

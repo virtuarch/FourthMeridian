@@ -38,7 +38,22 @@
  * into any of them would hide the defect that motivated the whole probe.
  */
 
-/** Canonical money tolerance for a single step. */
+import { COMPUTED_TOLERANCE } from "@/lib/perspective-engine/reconciliation.core";
+
+/**
+ * Tolerance for a SINGLE WALKED STEP against its own ledger movement — and only
+ * that. Deliberately tighter than the one-cent stored-column tolerance below: a
+ * step is one subtraction, so anything above half a cent is a real defect, and
+ * a looser bound would let sub-cent drift accumulate across hundreds of steps
+ * into a visible phantom before any step individually failed.
+ *
+ * REVIEW-3 (matrix row 15): this constant is NOT the stored-row identity
+ * tolerance. Row identities (netWorth = totalAssets − debt, …) are governed by
+ * COMPUTED_TOLERANCE — owned by lib/perspective-engine/reconciliation.core.ts
+ * and shared with aggregate-authorisation.core.ts — so the probe and the
+ * authorisation authority can never disagree about whether one row is
+ * self-consistent.
+ */
 export const SERIES_IDENTITY_TOLERANCE = 0.005;
 
 /** One day of a stored series, with everything the probes need to judge it. */
@@ -143,11 +158,14 @@ export interface AggregateRow {
  */
 export function aggregateIdentityViolations(row: AggregateRow): string[] {
   const out: string[] = [];
-  const near = (a: number, b: number) => Math.abs(a - b) <= SERIES_IDENTITY_TOLERANCE;
+  // ONE-ROW identities use the SHARED stored-column tolerance (see the
+  // SERIES_IDENTITY_TOLERANCE header): the same one-cent bound
+  // aggregate-authorisation.core.ts applies, imported from the one owner.
+  const near = (a: number, b: number) => Math.abs(a - b) <= COMPUTED_TOLERANCE;
   if (!near(row.total, row.stocks + row.crypto)) out.push("total !== stocks + crypto");
   if (!near(row.netWorth, row.totalAssets - row.debt)) out.push("netWorth !== totalAssets - debt");
   if (!near(row.netLiquid, row.cash + row.savings - row.debt)) out.push("netLiquid !== cash + savings - debt");
-  if (row.totalAssets < row.stocks + row.crypto + row.cash + row.savings - SERIES_IDENTITY_TOLERANCE) {
+  if (row.totalAssets < row.stocks + row.crypto + row.cash + row.savings - COMPUTED_TOLERANCE) {
     out.push("totalAssets < its own components");
   }
   return out;

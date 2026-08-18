@@ -47,7 +47,7 @@
  */
 
 import {
-  classifyReconciliation, round2, toleranceFor,
+  classifyReconciliation, round2, toleranceFor, COMPUTED_TOLERANCE,
   type ReconciliationState,
 } from "@/lib/perspective-engine/reconciliation.core";
 
@@ -152,7 +152,17 @@ export type AggregateAuthorisationMap = Record<SnapshotAggregate, AggregateAutho
  */
 function identityViolations(v: AggregateAuthorisationInput["values"]): string[] {
   const out: string[] = [];
-  const tol = 0.01;
+  // REVIEW-3 (matrix row 15) — the stored-column identity tolerance is
+  // COMPUTED_TOLERANCE (one cent), owned by reconciliation.core.ts. These
+  // columns were produced in ONE pass by computeSnapshotFields, so this is the
+  // "engine against itself" comparison that constant is defined for. It was a
+  // hard-coded 0.01 here while series-integrity.core.ts checked the SAME
+  // identities at 0.005 — a residual in (0.005, 0.01] made a row CONTRADICTORY
+  // to the probe yet EXACT to this authority. Both sides now import the one
+  // owner; the probe's PER-STEP walk tolerance (SERIES_IDENTITY_TOLERANCE)
+  // deliberately stays tighter — that is a different question (one walked step
+  // vs its ledger movement), documented there.
+  const tol = COMPUTED_TOLERANCE;
   if (Math.abs(v.total - (v.stocks + v.crypto)) > tol) {
     out.push(`total ${round2(v.total)} != stocks + crypto ${round2(v.stocks + v.crypto)}`);
   }
@@ -262,13 +272,6 @@ export function authoriseAggregates(
     };
   }
   return out;
-}
-
-/** Convenience: is this one aggregate assertable? */
-export function isAggregateAssertable(
-  map: AggregateAuthorisationMap, aggregate: SnapshotAggregate,
-): boolean {
-  return map[aggregate].assertable;
 }
 
 export { toleranceFor };

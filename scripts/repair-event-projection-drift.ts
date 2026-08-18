@@ -109,7 +109,7 @@ async function findDrift(): Promise<Drift[]> {
     },
   });
   const observations = await db.transactionObservation.findMany({
-    select: { eventId: true, observedAt: true, lifecycle: true, amount: true, postingDate: true, economicDate: true, transactionId: true },
+    select: { eventId: true, observedAt: true, lifecycle: true, amount: true, postingDate: true, economicDate: true, authorizedAt: true, transactionId: true },
   });
   const txIds = [...new Set(observations.map((o) => o.transactionId).filter((x): x is string => x != null))];
   const live = new Set(
@@ -137,6 +137,7 @@ async function findDrift(): Promise<Drift[]> {
       amount:       o.amount,
       postingDate:  o.postingDate,
       economicDate: o.economicDate,
+      authorizedAt: o.authorizedAt,
       liveTransactionId: o.transactionId && live.has(o.transactionId) ? o.transactionId : null,
     }));
     const p = projectEvent(facts);

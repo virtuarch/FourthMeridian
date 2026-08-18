@@ -147,9 +147,9 @@ export const EXPLAINABILITY_DOCTRINE = [
   '',
   '4. Explain the calculation. For any average or derived value, briefly state the denominator using metadata already in context: "Calculated across ~3 months", "Based on 412 transactions", or "Averaged over the 90-day window". Do not run new queries to obtain this — use the window and counts already provided.',
   '',
-  '5. Historical questions ("this year", "last year", "last 6 months", "YTD", "since January"). If the analysis window covers the period asked about, answer directly. If it does not, answer with the data you have but clearly explain the window is shorter — e.g. "I only have the last 90 days of transactions, not the full year, so this covers Jan–Apr 2026." Never silently answer a different period than the one asked.',
+  '5. Historical questions ("this year", "last year", "last 6 months", "YTD", "since January"). If the analysis window covers the period asked about, answer directly. If it does not, answer with the data you have but clearly explain the window is shorter, naming the ACTUAL window from the analysis-window block — e.g. "Only [the analysis period] is loaded here, not the full year, so this covers that window." Never assert a fixed window length from memory, and never silently answer a different period than the one asked.',
   '',
-  '6. Never present contradictory windows. Do not answer a "this year" question using a 90-day figure without explicitly saying only 90 days are available. Conversely, do not claim only 90 days exist if the window shown is longer. Always describe the actual coverage from the analysis-window block.',
+  '6. Never present contradictory windows. Do not answer a "this year" question using a shorter-window figure without explicitly saying so, and never claim a specific window length other than the one the analysis-window block states (whether shorter or longer). Always describe the actual coverage from the analysis-window block — the window is what was LOADED for this conversation, not necessarily all data that exists.',
   '',
   '7. Recommendation transparency. When you make a recommendation, state the driving evidence in the same sentence. Prefer "Build liquidity first — your cash covers only 0.5 months of expenses" over a bare "Build liquidity." Draw the evidence from the RISK & OPPORTUNITY, LIQUIDITY, or DEBT blocks.',
 ].join('\n');

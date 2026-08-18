@@ -33,6 +33,9 @@ import {
 import type { SpaceContext_AI, TransactionsSummaryData, MonthlyBreakdownEntry, SnapshotSectionData, AccountsSectionData, GoalsSectionData } from '@/lib/ai/types';
 import { FinanceDomains } from '@/lib/ai/types';
 import { classifyFlow, isExcludedFromSpending } from '@/lib/transactions/flow-classifier';
+// REVIEW-3 C-1/C-3 — the ONE spend-clamp authority; the monthly trend `net`
+// applies the same clamp the headline netCashFlow and the workspace use.
+import { clampEconomicSpend } from '@/lib/transactions/cash-flow';
 import { amountOwed, hasOutstandingDebt } from '@/lib/debt/balance-semantics';
 import { computeDebtAggregate, type DebtAggregateRow } from '@/lib/debt/aggregates';
 
@@ -159,16 +162,14 @@ export function round2(n: number): number {
 /**
  * Value of a single cash-flow metric for one month.
  *
- * `net` is the canonical refund-inclusive net cash flow — byte-identical to the
- * assembler's window `netCashFlow` formula (lib/ai/assemblers/transactions.ts:
- * `incomeTotal + refundTotal - expenseTotal - debtPaymentTotal`), applied per
- * month. `refundTotal` MUST be added: expenseTotal is the gross cost-flow sum
- * (refunds are never netted into it — the KD-17 debit-only rule), so a net that
- * dropped refunds would understate cash flow by the month's refund total and no
- * longer mirror the top-level measure it advertises. Transfers stay excluded.
- * This is the sole trend/annotation net definition site; the parity test
- * (spending-trends-net.test.ts) pins it to the assembler formula so the two
- * same-named measures can never drift apart again.
+ * `net` mirrors the assembler's headline `netCashFlow` — which since REVIEW-3
+ * C-3 is THE canonical economic net: income − clampEconomicSpend(gross spend,
+ * refunds), the same clamp authority the Cash Flow workspace folds with. Debt
+ * payments are movement toward a goal, not cash flow, and are EXCLUDED (the old
+ * formula subtracted them, making the trend "net" a fourth definition).
+ * Transfers stay excluded. This is the sole trend/annotation net definition
+ * site; the parity test (spending-trends-net.test.ts) pins it to the assembler
+ * formula so the two same-named measures can never drift apart again.
  *
  * Exported for that doctrine/parity test — no runtime consumer outside this module.
  */
@@ -176,7 +177,7 @@ export function round2(n: number): number {
 export function metricValue(m: MonthlyBreakdownEntry, metric: SpendingTrendMetric): number {
   if (metric === 'income')  return m.incomeTotal;
   if (metric === 'expense') return m.expenseTotal;
-  return m.incomeTotal + m.refundTotal - m.expenseTotal - m.debtPaymentTotal; // net
+  return m.incomeTotal - clampEconomicSpend(m.expenseTotal, m.refundTotal); // net — canonical
 }
 
 /**

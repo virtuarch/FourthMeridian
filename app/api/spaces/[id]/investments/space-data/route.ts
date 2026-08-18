@@ -28,6 +28,9 @@ import { requireSpaceRole } from "@/lib/session";
 import { loadInvestmentsSpaceData } from "@/lib/investments/space-data";
 import { getRecentSnapshots } from "@/lib/data/snapshots";
 import { buildPortfolioValueSeries } from "@/lib/investments/portfolio-series";
+// REVIEW-3 B-6 — the server's UTC day rides the response (`serverToday`) so the
+// client classifies asOf against THE authoritative clock, not its own.
+import { todayUTCISO } from "@/lib/time/clock";
 
 export const dynamic = "force-dynamic";
 
@@ -79,5 +82,11 @@ export async function GET(
     getRecentSnapshots({ rows: SERIES_ROWS }, { spaceId }),
   ]);
   const series = buildPortfolioValueSeries(snaps, data.current.reportingCurrency);
-  return NextResponse.json({ ...data, series });
+  // B-6 — the today/history switch is SERVER-AUTHORITATIVE (lib/time/basis.ts):
+  // the same server clock account-series' observedPoint classifies with. The
+  // workspace uses this, never the client's clock, to decide historical mode —
+  // so one calendar date can never land on different sides of the switch on
+  // two surfaces (the pre-B-6 defect: a client-supplied `today` prop there vs
+  // a server `new Date()` in lib/history/account-series.ts).
+  return NextResponse.json({ ...data, series, serverToday: todayUTCISO() });
 }

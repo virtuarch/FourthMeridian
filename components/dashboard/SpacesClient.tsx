@@ -99,6 +99,10 @@ type SpaceItem = {
   // (never the active Space's). Defaults to USD upstream.
   currency: string;
   trend: number[];
+  /** REVIEW-3 B-4 — true when the figure shown is a reconstruction/estimate
+   *  (row isEstimated, or display-converted off its stamp). Renders the ≈
+   *  marker so a reconstructed value never poses as an observation. */
+  estimated?: boolean;
   lastUpdated: string | null;
   /** v2.6-L4F — the canonical 1M change, from the SAME authority the inside-Space
    *  view uses. Null when the Space's history does not reach back a month. */
@@ -480,7 +484,9 @@ function SpaceCard({
         {/* One real figure + its derived change. Money is neutral (a number is
             not a claim); only the delta carries gain/loss colour. */}
         <div className="shrink-0 text-right">
-          <Figure value={hasFigure ? formatCurrencyCompact(space.netWorth, space.currency) : "—"} size="lede" />
+          {/* REVIEW-3 B-4 — ≈ marks a reconstructed/estimated figure (the same
+              provenance the inside-Space history badges disclose). */}
+          <Figure value={hasFigure ? `${space.estimated ? "≈" : ""}${formatCurrencyCompact(space.netWorth, space.currency)}` : "—"} size="lede" />
           {delta !== null && (
             <p className={["tabular-nums mt-0.5 text-[11px]", delta >= 0 ? "text-[var(--accent-positive)]" : "text-[var(--accent-negative)]"].join(" ")}>
               {delta >= 0 ? "+" : ""}{delta.toFixed(1)}%
@@ -599,7 +605,7 @@ function PublicSpaceCard({ space, onOpen }: { space: SpaceItem; onOpen: () => vo
           {metricLabelForCategory(category)}
         </p>
         <p className="text-sm font-bold text-[var(--text-primary)] tabular-nums truncate">
-          {space.trend.length > 0 ? formatCurrency(space.netWorth, space.currency) : "—"}
+          {space.trend.length > 0 ? `${space.estimated ? "≈" : ""}${formatCurrency(space.netWorth, space.currency)}` : "—"}
         </p>
         <p className="text-[9px] text-[var(--text-muted)] mt-0.5 truncate">
           {formatFreshness(space)}
@@ -722,7 +728,7 @@ function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose:
                   {metricLabelForCategory(category)}
                 </p>
                 <p className="text-2xl font-bold text-[var(--text-primary)] tabular-nums">
-                  {space.trend.length > 0 ? formatCurrency(space.netWorth, space.currency) : "—"}
+                  {space.trend.length > 0 ? `${space.estimated ? "≈" : ""}${formatCurrency(space.netWorth, space.currency)}` : "—"}
                 </p>
               </div>
               <Sparkline values={space.trend} tone={tone} />

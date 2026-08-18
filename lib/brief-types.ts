@@ -30,16 +30,11 @@ export type VisitState =
 
 // ── Brief item ────────────────────────────────────────────────────────────────
 
-/**
- * Trust provenance for a Brief item — how well we know the claim.
- * Presentational slot (v2.6): the editorial Brief renders a trust dot ONLY when
- * an item carries a `basis`. The current /api/brief builder does NOT emit this
- * yet, so no dot is shown — the field is a seam, not fabricated data. Wiring
- * per-item provenance requires the Brief pipeline to emit a completeness
- * envelope per insight (see components/space/trust/TrustIndicator + the
- * PerspectiveEnvelope model).
- */
-export type BriefBasis = "observed" | "reconstructed" | "mixed";
+// (REVIEW-3: the `BriefBasis` trust-provenance slot and `BriefItem.basis` were
+// deleted — the builder never emitted a basis and the client dot that read it
+// was a seam rendering nothing. Recoverable from git history if per-item
+// provenance ships; it would need the Brief pipeline to emit a completeness
+// envelope per insight first.)
 
 export interface BriefItem {
   id:      string;
@@ -48,8 +43,6 @@ export interface BriefItem {
   detail?: string;
   tone?:   BriefTone;
   href?:   string;
-  /** Reserved presentational slot — see BriefBasis. Not emitted by /api/brief. */
-  basis?:  BriefBasis;
 }
 
 // ── Tracked account (Since Last Visit modal — "Accounts Tracked" tab) ──────────
@@ -74,13 +67,13 @@ export interface TrackedAccount {
 
 export interface BriefSection {
   id:          string;
+  // (REVIEW-3: the "opportunity" and "map" section types were deleted — no
+  // builder ever emitted either on current HEAD.)
   type:
     | "since_last_visit"
     | "insight"
     | "attention"
-    | "opportunity"
-    | "onboarding"
-    | "map";
+    | "onboarding";
   priority:     number;
   title:        string;
   body?:        string;
@@ -96,39 +89,14 @@ export interface BriefSection {
   trackedAccounts?: TrackedAccount[];
 }
 
-// ── Financial map ─────────────────────────────────────────────────────────────
-
-export interface FinancialMapMarker {
-  id:            string;
-  label:         string;
-  type:
-    | "bank"
-    | "investment"
-    | "crypto"
-    | "property"
-    | "vehicle"
-    | "business"
-    | "asset"
-    | "other";
-  lat?:          number;
-  lng?:          number;
-  region?:       string;
-  value?:        number;
-  privacyLevel?: "hidden" | "summary" | "full";
-}
-
-export interface FinancialMapData {
-  markers:      FinancialMapMarker[];
-  hasLocations: boolean;
-}
-
 // ── Brief payload ─────────────────────────────────────────────────────────────
+// (REVIEW-3: FinancialMapMarker / FinancialMapData and the `map` payload field
+// were deleted — the route hard-coded an empty map and no client read it.)
 
 export interface BriefPayload {
   visitState:  VisitState;
   contextLine: string;
   hasData:     boolean;
   sections:    BriefSection[];
-  map?:        FinancialMapData;
   generatedAt: string;
 }

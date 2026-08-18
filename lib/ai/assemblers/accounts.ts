@@ -55,11 +55,25 @@ import { ShareStatus, PlaidItemStatus, VisibilityLevel } from '@prisma/client';
 
 import { classifyAccounts, type ClassifiableAccount } from '@/lib/account-classifier';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
-import { identityContext, convertMoney, fxDisclosureOf } from '@/lib/money/convert';
+import { identityContext, convertMoney } from '@/lib/money/convert';
 import { buildSpaceConversionContext } from '@/lib/money/server-context';
 import { yesterdayUTCISO } from '@/lib/fx/config';
-import { genericAccountName } from '@/lib/account-privacy';
-import { amountOwed, creditBalance, liabilityState } from '@/lib/debt/balance-semantics';
+// REVIEW-3 C-4 — THE population/privacy authority (lib/account-privacy). The
+// per-account list's privacy-reduced rows and the section totals now share its
+// semantics: aggregation AFTER balance interpretation (per-member amountOwed /
+// creditBalance, never a raw signed sum), member identity on the row, and
+// fail-closed non-disclosing tiers (SUMMARY_ONLY / PRIVATE / legacy SHARED /
+// unknown → no row, no sum, a redaction count only).
+import {
+  genericAccountName,
+  normalizeSharedAccounts,
+  grantsBalanceDisclosure,
+  aggregateCurrentCashState,
+  type CurrentCashStateClaim,
+  type NormalizedAccount,
+} from '@/lib/account-privacy';
+import { grantsAccountDetail } from '@/lib/ai/visibility';
+import { amountOwed, creditBalance, liabilityState, type LiabilityState } from '@/lib/debt/balance-semantics';
 import { resolveEffectiveDebtTerms } from '@/lib/debt/effective-terms';
 import { resolveAccountFreshness } from '@/lib/freshness/observation';
 import { resolveAccountBalances, reconcileAccount } from '@/lib/balances/account-balances';
@@ -214,6 +228,15 @@ async function assembleAccounts(
 
   const now = new Date();
 
+  // ── REVIEW-3 C-4 — fail-closed tier partition, BEFORE any arithmetic ──────
+  // Identical population semantics to the product path (normalizeSharedAccounts):
+  // a tier that does not grant balance disclosure contributes to NO sum and
+  // produces NO row; it is disclosed only as a redaction count. Previously every
+  // ACTIVE link entered the totals and the per-account list regardless of tier —
+  // the AI-path twin of the product defect B-1 closed.
+  const disclosingLinks = links.filter((l) => grantsBalanceDisclosure(l.visibilityLevel));
+  const redactedCount   = links.length - disclosingLinks.length;
+
   // v2.6-L3 — provider-observed pending, scoped per account. Read-only; nothing
   // is inferred from recurrence, averages, or habits.
   const pendingByAccount = await loadPendingEvidence(links.map((l) => l.financialAccount.id));
@@ -303,7 +326,9 @@ async function assembleAccounts(
   // visibility level, so all accounts contribute to totals. currency rides
   // along for the MC1 conversion seam (identical totals under identity).
 
-  const classifiableAll: ClassifiableAccount[] = links.map((l) => ({
+  // REVIEW-3 C-4 — DISCLOSING tiers only. A SUMMARY_ONLY / PRIVATE / unknown
+  // tier fails closed out of every total (see partition above).
+  const classifiableAll: ClassifiableAccount[] = disclosingLinks.map((l) => ({
     type:       l.financialAccount.type,
     balance:    l.financialAccount.balance,
     currency:   l.financialAccount.currency,
@@ -355,7 +380,10 @@ async function assembleAccounts(
 
   for (const link of links) {
     const fa          = link.financialAccount;
-    const isFullView  = link.visibilityLevel === VisibilityLevel.FULL;
+    // REVIEW-3 C-4 — the canonical detail predicate (KD-19), not an inline enum
+    // test. Health COUNTS still cover every ACTIVE link (a count discloses no
+    // balance); NAMES are detail and follow the detail grant.
+    const isFullView  = grantsAccountDetail(link.visibilityLevel);
 
     // Sync error
     if (fa.syncStatus === 'error') {
@@ -410,7 +438,8 @@ async function assembleAccounts(
   for (const link of links) {
     const fa = link.financialAccount;
     if (fa.type !== 'debt') continue;
-    if (link.visibilityLevel !== VisibilityLevel.FULL) continue;
+    // REVIEW-3 C-4 — the canonical detail predicate (KD-19).
+    if (!grantsAccountDetail(link.visibilityLevel)) continue;
 
     const displayName = resolveDisplayName(fa);
     // V26-PRE (B3) — effective terms via the single authority (DebtProfile >
@@ -445,34 +474,31 @@ async function assembleAccounts(
   let accounts: AccountSummaryItem[] | undefined;
 
   if (scopeHint !== 'brief') {
-    accounts = links.map((link): AccountSummaryItem => {
-      const fa         = link.financialAccount;
-      const isFull     = link.visibilityLevel === VisibilityLevel.FULL;
-      const ownerName  = link.addedByUser?.firstName?.trim() ||
-                         link.addedByUser?.name?.trim().split(' ')[0] ||
-                         null;
+    // FULL rows pass through individually, exactly as before.
+    const fullItems = disclosingLinks
+      .filter((link) => grantsAccountDetail(link.visibilityLevel))
+      .map((link): AccountSummaryItem => {
+        const fa = link.financialAccount;
 
-      const needsReauth = fa.connections.some(
-        (c) =>
-          c.connectedByUserId === userId &&
-          c.plaidItem?.status === PlaidItemStatus.NEEDS_REAUTH,
-      );
+        const needsReauth = fa.connections.some(
+          (c) =>
+            c.connectedByUserId === userId &&
+            c.plaidItem?.status === PlaidItemStatus.NEEDS_REAUTH,
+        );
 
-      const rep = toReporting(fa);
+        const rep = toReporting(fa);
 
-      // V25-SIDE-1 — derived liability semantics, so the model never has to infer
-      // what a negative credit-card balance means. Native currency (same basis as
-      // `balance`); emitted at every visibility level for debt rows, since they
-      // only restate a balance the row already carries.
-      const liability = fa.type === 'debt'
-        ? {
-            amountOwed:     amountOwed(fa.balance),
-            creditBalance:  creditBalance(fa.balance),
-            liabilityState: liabilityState(fa.balance),
-          }
-        : {};
+        // V25-SIDE-1 — derived liability semantics, so the model never has to
+        // infer what a negative credit-card balance means. Native currency (same
+        // basis as `balance`).
+        const liability = fa.type === 'debt'
+          ? {
+              amountOwed:     amountOwed(fa.balance),
+              creditBalance:  creditBalance(fa.balance),
+              liabilityState: liabilityState(fa.balance),
+            }
+          : {};
 
-      if (isFull) {
         const base: AccountSummaryItem = {
           id:              fa.id,
           name:            resolveDisplayName(fa),
@@ -500,10 +526,17 @@ async function assembleAccounts(
           // V26-PRE (B3) — effective terms via the single authority.
           const { apr: effectiveApr, minimumPayment: effectiveMinPayment } = resolveEffectiveDebtTerms(fa);
 
-          // rateSource reflects where the effective APR originated.
-          const rateSource: 'user' | 'provider' | null =
-            dp?.apr        != null ? 'user'     :
-            fa.interestRate != null ? 'provider' :
+          // rateSource reflects where the effective APR originated. REVIEW-3 C-2:
+          // BOTH stores are user-entered — `FinancialAccount.interestRate`'s only
+          // writer in the codebase is PATCH /api/accounts/[id] (no provider ingest
+          // writes it), so labelling it 'provider' told the model a self-reported
+          // rate was issuer-attested. 'user' = the debt-profile editor;
+          // 'user_account' = the legacy account-field editor. A true provider
+          // provenance value may be reintroduced only when a provider ingest
+          // actually writes a rate.
+          const rateSource: 'user' | 'user_account' | null =
+            dp?.apr        != null ? 'user'         :
+            fa.interestRate != null ? 'user_account' :
             null;
 
           base.apr                  = effectiveApr;
@@ -518,35 +551,121 @@ async function assembleAccounts(
         }
 
         return base;
-      }
+      });
 
-      // BALANCE_ONLY — sanitized, no institution, no debt metadata
+    // ── REVIEW-3 C-4 — privacy-reduced rows via THE population authority ─────
+    //
+    // What this replaces: a per-link map that stamped a synthetic id
+    // (`balance-only:{user}:{type}:{currency}`) onto each row individually,
+    // carrying the RAW SIGNED balance — the AI-path twin of the product defect
+    // where a debt member's issuer credit could discharge another account's
+    // debt the moment anything summed those rows. The rows now come from
+    // normalizeSharedAccounts, the same authority the Space accounts API uses:
+    //   · one aggregated row per owner × generic label × currency;
+    //   · aggregation AFTER semantics — a debt row's balance IS Σ per-member
+    //     amountOwed; issuer credit rides separately on aggregate.creditTotal;
+    //   · member identity + count on `aggregate`, so per-member state resolves;
+    //   · non-disclosing tiers already failed closed (partition above).
+    const nonDetailLinks = disclosingLinks.filter(
+      (link) => !grantsAccountDetail(link.visibilityLevel),
+    );
+    const normalized = normalizeSharedAccounts(nonDetailLinks);
+
+    // Per-member current-state claims (native currency), composed per aggregate
+    // row by the authority's own combinator — an aggregate is never more
+    // certain than its weakest member.
+    const memberClaimById = new Map<string, CurrentCashStateClaim>();
+    const memberPendingSumById = new Map<string, number>();
+    for (const link of nonDetailLinks) {
+      const fa  = link.financialAccount;
+      const bf  = balanceFacts(fa, now);
+      memberClaimById.set(fa.id, {
+        reachable:    bf.currentState.reachable ?? null,
+        unexplained:  bf.currentState.unexplained ?? null,
+        state:        bf.currentState.state,
+        pendingCount: bf.currentState.pendingCount,
+      });
+      memberPendingSumById.set(fa.id, bf.currentState.pendingSum);
+    }
+    const faById = new Map(nonDetailLinks.map((l) => [l.financialAccount.id, l.financialAccount]));
+
+    const aggregatedItems = normalized.accounts.map((row: NormalizedAccount): AccountSummaryItem => {
+      const agg = row.aggregate; // present on every privacy-aggregated row
+      const memberIds = agg?.memberAccountIds ?? [];
+      const rep = toReporting({ balance: row.balance, currency: row.currency });
+
+      const needsReauth = memberIds.some((id) =>
+        faById.get(id)?.connections.some(
+          (c) => c.connectedByUserId === userId && c.plaidItem?.status === PlaidItemStatus.NEEDS_REAUTH,
+        ) ?? false,
+      );
+
+      // Aggregate current state via the authority's combinator. Undefined when
+      // any member made no claim — honest absence, never a partial sum.
+      const aggState = aggregateCurrentCashState(memberIds.map((id) => memberClaimById.get(id)));
+      const pendingSum = memberIds.reduce((s, id) => s + (memberPendingSumById.get(id) ?? 0), 0);
+
+      // Liability semantics come from the aggregate's OWN separated quantities —
+      // never re-derived from a signed sum (there is none to re-derive from).
+      const liability = row.type === 'debt' && agg
+        ? {
+            amountOwed:    agg.owedTotal,
+            creditBalance: agg.creditTotal,
+            liabilityState: (agg.owedTotal > 0 ? 'owed' : agg.creditTotal > 0 ? 'credit' : 'settled') as LiabilityState,
+          }
+        : {};
+
       return {
-        id:              `balance-only:${link.addedByUserId}:${fa.type}:${fa.currency}`,
-        name:            genericAccountName({
-                           type:           fa.type,
-                           debtSubtype:    fa.debtSubtype,
-                           ownerFirstName: ownerName,
-                         }),
-        type:            fa.type,
-        balance:         fa.balance,
-        currency:        fa.currency,
+        id:       row.id, // authority synthetic id: balance-only:{owner}:{label}:{currency}
+        name:     row.name,
+        type:     row.type,
+        balance:  row.balance, // debt: Σ per-member amountOwed (≥ 0); assets: signed member sum
+        currency: row.currency,
         reportingBalance: rep.reportingBalance,
         ...(rep.estimated ? { reportingBalanceEstimated: true } : {}),
         ...(rep.unavailable ? { reportingBalanceUnavailable: true } : {}),
-        lastUpdated:          fa.lastUpdated.toISOString(),
-        balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
-        balanceFreshness:     freshnessFact(fa, now),
-        ...balanceFacts(fa, now),
-        syncStatus:      fa.syncStatus,
+        lastUpdated:          row.lastUpdated, // OLDEST member (authority freshness rule)
+        balanceLastUpdatedAt: row.balanceLastUpdatedAt ?? null,
+        balanceFreshness: freshnessFact({
+          id:                   row.id,
+          lastUpdated:          new Date(row.lastUpdated),
+          balanceLastUpdatedAt: row.balanceLastUpdatedAt ? new Date(row.balanceLastUpdatedAt) : null,
+        }, now),
+        ...(aggState
+          ? {
+              currentState: {
+                basis:        'AGGREGATE',
+                state:        aggState.state,
+                pendingCount: aggState.pendingCount,
+                pendingSum,
+                ...(aggState.reachable   !== null ? { reachable:   aggState.reachable }   : {}),
+                ...(aggState.unexplained !== null ? { unexplained: aggState.unexplained } : {}),
+                explanation:
+                  `Aggregated privacy-reduced row composed from ${memberIds.length} member account(s); ` +
+                  'state and reachability are never more certain than the weakest member.',
+              },
+            }
+          : {}),
         needsReauth,
         visibilityLevel: 'BALANCE_ONLY',
         ...liability,
+        ...(agg
+          ? {
+              aggregate: {
+                memberAccountIds: agg.memberAccountIds,
+                memberCount:      agg.memberCount,
+                owedTotal:        agg.owedTotal,
+                creditTotal:      agg.creditTotal,
+              },
+            }
+          : {}),
         // Debt metadata intentionally omitted — BALANCE_ONLY privacy guarantee.
-        // The liability semantics above are NOT debt metadata: they restate the
-        // balance this tier already discloses, adding no new exposure.
+        // The liability semantics above are NOT debt metadata: they restate
+        // quantities this tier already discloses, adding no new exposure.
       };
     });
+
+    accounts = [...fullItems, ...aggregatedItems];
   }
 
   // ── Assemble payload ──────────────────────────────────────────────────────
@@ -565,7 +684,8 @@ async function assembleAccounts(
   // SUMMARY_ONLY precedence; every other non-FULL level is treated as BALANCE_ONLY.
   const trackedAccounts: TrackedAccountLite[] = links.map((link) => {
     const fa       = link.financialAccount;
-    const isFull   = link.visibilityLevel === VisibilityLevel.FULL;
+    // REVIEW-3 C-4 — the canonical detail predicate (KD-19).
+    const isFull   = grantsAccountDetail(link.visibilityLevel);
     const ownerName = link.addedByUser?.firstName?.trim() ||
                       link.addedByUser?.name?.trim().split(' ')[0] ||
                       null;
@@ -601,6 +721,10 @@ async function assembleAccounts(
 
   const data: AccountsSectionData = {
     totalCount:         links.length,
+    // REVIEW-3 C-4 — ACTIVE links whose tier grants no balance disclosure. They
+    // are in NO row and NO total above; this count is the only thing the model
+    // may know about them (same rule as the product path's redactedCount).
+    redactedCount,
     accountIds,
     trackedAccounts,
     totalAssets:        classification.totalAssets,

@@ -18,8 +18,8 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatCurrency } from "@/lib/format";
+import { useAggregateCurrency } from "@/components/space/widgets/display-money";
+import { formatCurrency } from "@/lib/currency";
 import type { ConversionContext } from "@/lib/money/types";
 import type { CashFlowContribution } from "@/lib/transactions/cash-flow";
 import type { Transaction } from "@/types";
@@ -88,9 +88,10 @@ export function CashFlowCategoryBreakdown({
         total: item.value, totalLabel: "Total",
       })
     : undefined;
-  const fmt = ctx
-    ? (v: number) => formatCurrency(v, ctx.target)
-    : (v: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
+  // REVIEW-3 B-5 — the display-currency AUTHORITY is the fallback, never a
+  // build-time USD literal (display-money.ts).
+  const aggregateCurrency = useAggregateCurrency(ctx);
+  const fmt = (v: number) => formatCurrency(v, aggregateCurrency);
 
   const total = items.reduce((s, c) => s + c.value, 0);
   if (items.length === 0 || total <= 0) {

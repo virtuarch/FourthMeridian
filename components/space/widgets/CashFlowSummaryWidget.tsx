@@ -24,8 +24,7 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatCurrency } from "@/lib/format";
+import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import {
@@ -46,9 +45,8 @@ import { CashFlowFilterControls, DEFAULT_FILTER_ID } from "@/components/space/wi
 import { TransactionSliceDrawer, useTransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
 
 function fmt(v: number, ctx?: ConversionContext): string {
-  return ctx
-    ? formatCurrency(v, ctx.target)
-    : new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
+  // REVIEW-3 B-5 — no context ⇒ no currency claim (display-money.ts).
+  return formatAggregateMoney(v, ctx);
 }
 
 interface TierAccount { id: string; type: string }

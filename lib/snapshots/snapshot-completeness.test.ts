@@ -13,13 +13,12 @@
  */
 
 import {
-  resolveSnapshotCompleteness, isEstimatedFromTier, snapshotConfidence,
+  resolveSnapshotCompleteness, snapshotConfidence,
 } from "./snapshot-completeness.core";
 import { regenerateDay, type DayRegenInput } from "./regenerate-history.core";
 import { buildHistoricalHoldings, type HoldingComponent, type HoldingOwnershipFacts } from "@/lib/investments/historical-holdings.core";
 import type { OwnershipResolution } from "@/lib/prices/ownership-window.core";
 import { COMPLETENESS_TIERS } from "@/lib/perspective-engine/completeness";
-import type { CompletenessTier } from "@/lib/perspective-engine/types";
 import type { ClassifyTotals } from "./backfill-core";
 
 let failures = 0;
@@ -70,7 +69,7 @@ function main(): void {
     check("counts stay null — never coerced to 0",
       legacy.contributingComponentCount === null && legacy.totalComponentCount === null);
     check("still reads as a reconstruction (existing behaviour preserved)",
-      isEstimatedFromTier(legacy.tier) === true);
+      legacy.tier !== "observed");
 
     // Totally empty row (defensive: no flag at all).
     const empty = resolveSnapshotCompleteness({});
@@ -89,7 +88,7 @@ function main(): void {
     check("null tier + isEstimated=false infers observed", frozen.tier === "observed");
     check("marked as an inference, not a recorded fact",
       frozen.recorded === false && frozen.basis === "inferred-observed");
-    check("the inference round-trips the FLIP rule", isEstimatedFromTier(frozen.tier) === false);
+    check("the inference round-trips the FLIP rule", frozen.tier === "observed");
 
     // The writer can never persist anything for a frozen day.
     const res = regenerateDay(dayInput({ existingIsEstimated: false }));
@@ -102,6 +101,17 @@ function main(): void {
     const explicit = resolveSnapshotCompleteness({ isEstimated: false, completenessTier: "observed" });
     check("an explicitly recorded observed tier is reported as recorded",
       explicit.tier === "observed" && explicit.recorded === true && explicit.basis === "recorded");
+
+    // REVIEW-3 B-4 (row 33) — the live writer's FX-partial disclosure: an
+    // isEstimated=false row RECORDING "incomplete" (an FX-unavailable account
+    // was excluded, so the totals are a partial sum) must resolve to the
+    // recorded tier — the flip-rule inference must NOT re-bless it as observed
+    // — and must classify as LESS than an estimate.
+    const partial = resolveSnapshotCompleteness({ isEstimated: false, completenessTier: "incomplete" });
+    check("recorded 'incomplete' outranks the flip-rule inference on a live row",
+      partial.tier === "incomplete" && partial.recorded === true && partial.basis === "recorded");
+    check("an FX-partial live row classifies as unreliable, never silently complete",
+      snapshotConfidence(partial) === "unreliable");
   }
 
   // ══ C. Estimated but MOSTLY UNKNOWN ═══════════════════════════════════════
@@ -206,8 +216,9 @@ function main(): void {
     const nonMember: string[] = ["partial", "high", "OBSERVED", ""];
     check("non-members are never accepted",
       nonMember.every((s) => resolveSnapshotCompleteness({ isEstimated: true, completenessTier: s }).recorded === false));
-    check("isEstimatedFromTier is the FLIP rule for every tier",
-      COMPLETENESS_TIERS.every((t: CompletenessTier) => isEstimatedFromTier(t) === (t !== "observed")));
+    // (isEstimatedFromTier — the exported FLIP-rule wrapper — was deleted in
+    // REVIEW-3: zero importers outside this test. The FLIP semantics are still
+    // pinned above via the tier value itself.)
   }
 
 

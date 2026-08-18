@@ -71,7 +71,7 @@ const WEALTH_SECTIONS: SpaceChromeSection[] = [
 ];
 
 export function WealthWorkspace({
-  spaceId,
+  spaceId: _spaceId,
   snapshots,
   snapshotCurrency,
   asOf,

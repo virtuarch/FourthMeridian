@@ -74,7 +74,8 @@ check(
 );
 
 // SHARED is the legacy "maps to FULL" value, excluded so the predicate fails
-// closed (see KD-1 test + scripts/audit-visibility-levels.ts). The UI paths
+// closed (see KD-1 test + the retired audit-visibility-levels data audit,
+// tombstoned in scripts/audit-registry.ts). The UI paths
 // reuse the identical constant, so this holds here too.
 check(
   'SHARED (legacy) does not grant transaction detail — fails closed',

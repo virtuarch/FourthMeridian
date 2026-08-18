@@ -104,7 +104,23 @@ export function satsToBtc(sats: number): number {
   return sats / SATS_PER_BTC;
 }
 
-/** USD value of a BTC amount at a spot price, rounded to cents. */
+/**
+ * USD value of a BTC amount at a spot price, rounded to cents.
+ *
+ * REVIEW-3 — WHY THIS MAY ROUND when lib/money/convert.ts forbids rounding
+ * (plan D-4): the no-rounding doctrine governs the READ-TIME CONVERSION CORE,
+ * where rounding would compound through convert-then-sum aggregation and
+ * belongs to the display boundary. This is not that path. This is a WRITE-TIME
+ * VALUATION at the provider-ingest boundary — quantity × undated spot quote,
+ * deliberately outside convertMoney (BTC is an asset, not a cash currency; see
+ * the BTC money contract at the btc-sync write site and
+ * docs/systems/money-and-fx.md). The product of a ~8-decimal BTC quantity and
+ * a float spot price carries sub-cent noise with no financial meaning;
+ * stabilising the STORED presentation figure to cents keeps the
+ * Holding/balance upserts idempotent (equality checks don't churn on float
+ * dust). The canonical fact, `nativeBalance`, is stored UNROUNDED — nothing
+ * financial is lost to this rounding.
+ */
 export function computeUsdBalance(btc: number, priceUsd: number): number {
   return Math.round(btc * priceUsd * 100) / 100;
 }

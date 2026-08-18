@@ -111,6 +111,13 @@ interface FallbackAccount {
    *  read would, instead of silently dropping it. */
   lastUpdated?:          string;
   balanceLastUpdatedAt?: string | null;
+  /** REVIEW-3 B-1 — present only on aggregated BALANCE_ONLY rows (SpaceAccount.aggregate). */
+  aggregate?: {
+    memberAccountIds: string[];
+    memberCount:      number;
+    owedTotal:        number;
+    creditTotal:      number;
+  };
 }
 
 /** Maps the host's already-loaded accounts to detail rows for instant parity. */
@@ -141,9 +148,14 @@ function fallbackRows(accounts: FallbackAccount[], now: Date): AccountDetailRow[
   return accounts.map((a) => ({
     id:                 a.id,
     spaceAccountLinkId: null,
-    visibility:         "FULL" as const,
+    // REVIEW-3 B-1 — an aggregated privacy-reduced row (synthetic id, carries
+    // `aggregate`) must never be relabelled FULL: the fetched read calls it
+    // BALANCE_ONLY, and the fallback must make the same visibility claim.
+    visibility:         a.aggregate ? ("BALANCE_ONLY" as const) : ("FULL" as const),
+    ...(a.aggregate ? { memberCount: a.aggregate.memberCount } : {}),
+    ...(a.aggregate && a.aggregate.creditTotal > 0 ? { creditTotal: a.aggregate.creditTotal } : {}),
     name:               a.name,
-    institution:        a.institution,
+    institution:        a.institution ?? "",
     type:               a.type,
     mask:               null,
     balance:            a.balance,
@@ -361,7 +373,12 @@ export function AccountsPerspective({
   const load = useCallback(() => {
     fetch(`/api/spaces/${spaceId}/accounts/detail`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("failed"))))
-      .then((data) => { setRows(Array.isArray(data) ? data : []); setError(false); })
+      .then((data) => {
+        // REVIEW-3 B-1 — { rows, redactedCount }; the bare-array shape is
+        // accepted for one deploy generation of drift.
+        setRows(Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : []);
+        setError(false);
+      })
       .catch(() => setError(true));
   }, [spaceId]);
 

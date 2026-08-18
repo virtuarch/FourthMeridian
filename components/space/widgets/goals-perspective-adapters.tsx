@@ -23,8 +23,9 @@
 import React, { useState, useEffect } from "react";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { SummaryWidget } from "@/components/space/widgets/SummaryWidget";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatAggregateMoney } from "@/components/space/widgets/display-money";
+import { formatDate } from "@/lib/format";
+import { formatCurrency } from "@/lib/currency";
 import type { ConversionContext } from "@/lib/money/types";
 import { Target } from "lucide-react";
 import {
@@ -40,9 +41,8 @@ import {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function fmtMoney(v: number, ctx?: ConversionContext): string {
-  return ctx
-    ? formatCurrency(v, ctx.target)
-    : new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
+  // REVIEW-3 B-5 — no context ⇒ no currency claim (display-money.ts).
+  return formatAggregateMoney(v, ctx);
 }
 function valueFormatterProps(ctx?: ConversionContext) {
   return ctx ? { formatValue: (v: number) => formatCurrency(v, ctx.target) } : {};

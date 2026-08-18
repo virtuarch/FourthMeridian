@@ -160,6 +160,32 @@ function partOneStructural(): void {
     "regenerateSnapshotsForAccounts does not Promise.all over spaces",
     !/Promise\.all\(\s*spaceIds/.test(regenSrc),
   );
+
+  // ── REVIEW-3 B-4 (matrix row 14) — formula parity is IMPORTED, not copied ──
+  // regenerate.ts carried a hand-transcribed duplicate of computeSnapshotFields
+  // with nothing enforcing parity. The formula now has exactly one owner
+  // (lib/snapshots/backfill-core.ts) and this writer imports it; these pins
+  // stop the copy from coming back. Part 2 below additionally EXECUTES the
+  // parity (payload === computeSnapshotFields(classifyAccounts(...))), because
+  // a source scan alone proves text, not behaviour.
+  const regenCode = stripComments(regenSrc);
+  check(
+    "derived aggregates come from computeSnapshotFields (one formula owner)",
+    /computeSnapshotFields\(/.test(regenCode),
+  );
+  check(
+    "the hand-copied aggregate formula did not return to regenerate.ts",
+    !/const\s+netWorth\s*=/.test(regenCode) && !/const\s+totalAssets\s*=/.test(regenCode),
+  );
+
+  // ── REVIEW-3 B-4 (matrix row 33) — the `unconverted` flag is not dropped ───
+  // classifyAccounts' FX-unavailable exclusion makes the stored totals an
+  // honest PARTIAL sum; the write boundary must disclose that with the
+  // canonical completeness vocabulary rather than storing partial-as-complete.
+  check(
+    "FX-partial sums are disclosed at the write site (unconverted → 'incomplete' tier)",
+    /completenessTier:\s*c\.unconverted\s*\?\s*\(?["']incomplete["']/.test(regenCode),
+  );
 }
 
 // ── Part 2 — behavioural: it actually runs with no session ───────────────────
@@ -267,6 +293,32 @@ async function partTwoBehavioural(): Promise<void> {
   check("netLiquid = 1250",       up.create.netLiquid === 1250,   `got ${up.create.netLiquid}`);
   check("reportingCurrency stamped from the Space", up.create.reportingCurrency === "USD");
   check("upsert keyed on (spaceId, date)", up.where?.spaceId_date?.spaceId === "space-1");
+
+  // REVIEW-3 B-4 (row 14) — EXECUTABLE formula parity: the written payload must
+  // equal computeSnapshotFields(classifyAccounts(...)) field for field. This is
+  // the runtime counterpart of Part 1's import pin: if the writer ever re-inlines
+  // or diverges from the one formula owner, this fails on real numbers.
+  {
+    const { classifyAccounts } = await import("@/lib/account-classifier");
+    const { computeSnapshotFields } = await import("@/lib/snapshots/backfill-core");
+    const expected = computeSnapshotFields(classifyAccounts([
+      { id: "fa-check", type: "checking",   balance: 1000, currency: "USD" },
+      { id: "fa-save",  type: "savings",    balance: 500,  currency: "USD" },
+      { id: "fa-inv",   type: "investment", balance: 2000, currency: "USD" },
+      { id: "fa-card",  type: "debt",       balance: 250,  currency: "USD" },
+    ]));
+    const fields = ["stocks", "crypto", "total", "cash", "savings", "debt", "netWorth", "totalAssets", "netLiquid", "cashOnHand"] as const;
+    const diverged = fields.filter((f) => up.create[f] !== expected[f]);
+    check(
+      "payload === computeSnapshotFields(classifyAccounts(...)) (executable parity)",
+      diverged.length === 0,
+      diverged.map((f) => `${f}: wrote ${up.create[f]}, formula says ${expected[f]}`).join("; "),
+    );
+  }
+
+  // REVIEW-3 B-4 (row 33) — on the fully-converted path (no FX-unavailable
+  // member) the disclosure column stays null: NOT RECORDED, exactly as before.
+  check("fully-converted row records no completeness tier (null, unchanged)", up.create.completenessTier === null);
 
   // V25-SIDE-1 regression pin: an OVERPAID card (negative liability balance)
   // owes nothing, so it must contribute 0 debt — not 250 via Math.abs. Kept

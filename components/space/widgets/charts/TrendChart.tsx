@@ -36,7 +36,7 @@
  */
 
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { formatCompactCurrency } from "@/lib/format";
+import { formatCompactCurrency } from "@/lib/currency";
 import {
   medianSpacingDays, toRuns, toDateGaps, toBasisSeams,
   basisOf,
