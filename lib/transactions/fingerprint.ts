@@ -31,6 +31,16 @@ export type TransactionFingerprintCandidate = {
    * Additive: the CSV importer ignores it.
    */
   transactionEventId?: string | null;
+  /**
+   * W1 (D6) — the candidate's OWN provider succession claim
+   * (`Transaction.pendingTransactionRef`). The EVENT-2 guard compares it against
+   * the incoming row's `pending_transaction_id` directly, so the
+   * provider-identity protection is live even while `transactionEventId` is null
+   * everywhere — which is every production row during the event-backfill window,
+   * exactly when TALABAT-class collisions are most likely. Additive: the CSV
+   * importer ignores it.
+   */
+  pendingTransactionRef?: string | null;
 };
 
 /**
@@ -100,7 +110,7 @@ export async function findByFingerprint(
     // this helper. See
     // docs/initiatives/d2/investigations/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §3.
     where:  { financialAccountId, date, amount, pending, deletedAt: null },
-    select: { id: true, merchant: true, description: true, plaidTransactionId: true, transactionEventId: true },
+    select: { id: true, merchant: true, description: true, plaidTransactionId: true, transactionEventId: true, pendingTransactionRef: true },
   });
   if (candidates.length === 0) return null;
 

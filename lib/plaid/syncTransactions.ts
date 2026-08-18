@@ -725,25 +725,71 @@ export async function syncTransactionsForItem(
         //
         // The refusal is deliberately NARROW, because DF-4's duplicate prevention
         // is load-bearing (the six-Amazon-rows incident). Adoption is refused ONLY
-        // when the provider itself says this row continues a DIFFERENT event than
-        // the candidate already belongs to. No pending ref, an unresolvable one, or
-        // one naming the SAME event ⇒ adoption proceeds exactly as before.
+        // on POSITIVE provider evidence that the incoming row and the candidate
+        // continue two DIFFERENT predecessors. No pending ref, an unresolvable
+        // one, or one naming the SAME predecessor/event ⇒ adoption proceeds
+        // exactly as before.
+        //
+        // W1 (D6) — GENERALIZED TO PROVIDER-REF COMPARISON. The original guard
+        // required `fingerprintMatch.transactionEventId`, which made it INERT for
+        // every row with no event link yet — i.e. ALL production rows during the
+        // event-backfill window (migrations not yet deployed), exactly when
+        // TALABAT-class collisions are most likely. The comparison now runs on the
+        // provider's own succession claims first, with events as the tie-breaker
+        // where both sides have them:
+        //
+        //   1. Both events known → compare events (unchanged). Events survive
+        //      provider id churn (an adopted pending row keeps its event), so this
+        //      rung is the most churn-robust and keeps precedence.
+        //   2. Otherwise, if the candidate carries its OWN pendingTransactionRef
+        //      and it names a DIFFERENT predecessor than the incoming row's —
+        //      and BOTH refs resolve to two DISTINCT rows in the corpus — the
+        //      provider has attested two successions. Refuse. (Requiring both
+        //      rows to resolve keeps the refusal narrow: a dangling candidate ref
+        //      can be a churned-away id of the SAME predecessor, and refusing on
+        //      it would re-open the six-Amazon duplication. The dangling-
+        //      predecessor fusion case remains a NAMED, accepted write-side
+        //      trade-off — see the Phase-1 D6 report.)
         let adoptionRefusedByPendingRef = false;
-        if (fingerprintMatch && txn.pending_transaction_id && fingerprintMatch.transactionEventId) {
+        if (fingerprintMatch && txn.pending_transaction_id) {
           const predecessor = await database.transaction.findUnique({
             where:  { plaidTransactionId: txn.pending_transaction_id },
-            select: { transactionEventId: true },
+            select: { id: true, transactionEventId: true },
           });
           const claimedEventId = predecessor?.transactionEventId ?? null;
-          if (claimedEventId && claimedEventId !== fingerprintMatch.transactionEventId) {
-            adoptionRefusedByPendingRef = true;
-            console.warn(
-              `[plaid sync] fingerprint adoption REFUSED for ${txn.transaction_id} — its ` +
-              `pending_transaction_id ${txn.pending_transaction_id} continues event ${claimedEventId}, ` +
-              `but the fingerprint candidate ${fingerprintMatch.id} belongs to event ` +
-              `${fingerprintMatch.transactionEventId}. Provider identity outranks a fingerprint; ` +
-              `persisting as a distinct row.`,
-            );
+          if (claimedEventId && fingerprintMatch.transactionEventId) {
+            // Rung 1 — event vs event (the pre-W1 guard, unchanged).
+            if (claimedEventId !== fingerprintMatch.transactionEventId) {
+              adoptionRefusedByPendingRef = true;
+              console.warn(
+                `[plaid sync] fingerprint adoption REFUSED for ${txn.transaction_id} — its ` +
+                `pending_transaction_id ${txn.pending_transaction_id} continues event ${claimedEventId}, ` +
+                `but the fingerprint candidate ${fingerprintMatch.id} belongs to event ` +
+                `${fingerprintMatch.transactionEventId}. Provider identity outranks a fingerprint; ` +
+                `persisting as a distinct row.`,
+              );
+            }
+          } else if (
+            predecessor &&
+            fingerprintMatch.pendingTransactionRef &&
+            fingerprintMatch.pendingTransactionRef !== txn.pending_transaction_id
+          ) {
+            // Rung 2 — provider-ref vs provider-ref (live pre-backfill). Refuse
+            // only when the candidate's own ref resolves to a DISTINCT row.
+            const candidatePredecessor = await database.transaction.findUnique({
+              where:  { plaidTransactionId: fingerprintMatch.pendingTransactionRef },
+              select: { id: true },
+            });
+            if (candidatePredecessor && candidatePredecessor.id !== predecessor.id) {
+              adoptionRefusedByPendingRef = true;
+              console.warn(
+                `[plaid sync] fingerprint adoption REFUSED for ${txn.transaction_id} — its ` +
+                `pending_transaction_id ${txn.pending_transaction_id} and the fingerprint ` +
+                `candidate ${fingerprintMatch.id}'s own pendingTransactionRef ` +
+                `${fingerprintMatch.pendingTransactionRef} resolve to two distinct predecessor ` +
+                `rows. Provider identity outranks a fingerprint; persisting as a distinct row.`,
+              );
+            }
           }
         }
 

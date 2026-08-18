@@ -35,10 +35,14 @@
  * ⚠️ DF-4 IS PRESERVED. Test 2 is the Uber/Amazon case — a fingerprint collision
  * where NO stronger evidence exists. Adoption must still happen there, or the
  * six-Amazon-rows duplication returns. The guard is narrow by design: it refuses
- * adoption ONLY when the incoming row's `pending_transaction_id` resolves to a
- * different event than the candidate row already belongs to.
+ * adoption ONLY on POSITIVE provider evidence of two distinct predecessors —
+ * different events where both sides have them, or (W1/D6, the pre-backfill rung)
+ * two different pending refs that both resolve to distinct rows.
  *
- * ⚠️ Test 1 is the one that must fail if the guard is reverted.
+ * ⚠️ Test 1 is the one that must fail if the guard is reverted. Test 4 is the one
+ * that must fail if the guard regresses to requiring `transactionEventId` — the
+ * pre-W1 shape, inert during the exact production backfill window it deploys
+ * through. Test 5 pins the narrowness (a dangling candidate ref still adopts).
  */
 
 process.env.ENCRYPTION_KEY ??= "0".repeat(64);
@@ -62,6 +66,9 @@ interface Row {
   amount: number; date: Date; economicDate: Date | null; merchant: string; description: string | null;
   pending: boolean; deletedAt: Date | null; merchantId: string | null; categorySource: string | null;
   transactionEventId: string | null; flowAuthority: string | null;
+  /** W1 (D6) — the row's own provider succession claim, which the generalized
+   *  EVENT-2 guard compares directly (live pre-backfill). */
+  pendingTransactionRef?: string | null;
 }
 interface Obs {
   id: string; eventId: string; transactionId: string | null; financialAccountId: string;
@@ -150,6 +157,9 @@ function makeFakeDb(opts: { cursor: string | null; accounts: Record<string, stri
             // v2.6-EVENT-2 — the guard reads the candidate's event to compare it
             // against the incoming row's pending-ref evidence.
             transactionEventId: t.transactionEventId,
+            // W1 (D6) — and the candidate's OWN succession claim, so the guard
+            // works while transactionEventId is still null (pre-backfill).
+            pendingTransactionRef: t.pendingTransactionRef ?? null,
           }));
         }
         if (!idIn && !ptIn) return [];
@@ -384,6 +394,83 @@ console.log("\n3. A single pending → posted succession is still ONE event");
     fdb._events[0]?.economicDate.toISOString().slice(0, 10));
   check("no event has a stale stored projection", staleEvents(fdb).length === 0,
     staleEvents(fdb).join(" | "));
+}
+
+// ── 4. W1 (D6) — THE GUARD MUST BE LIVE BEFORE THE EVENT BACKFILL ───────────
+//
+// The pre-W1 guard required `fingerprintMatch.transactionEventId`, which is null
+// on EVERY production row until the event-identity backfill has run — i.e. the
+// guard was inert during the exact deployment window it will ship through. These
+// rows are seeded directly with `transactionEventId: null` (the backfill-window
+// shape: rows carry provider refs, no events exist yet).
+console.log("\n4. PRE-BACKFILL (null transactionEventId): provider-ref comparison still refuses fusion");
+{
+  const fdb = makeDb({ cursor: "C1", accounts: ACCOUNTS });
+  const day = (s: string) => new Date(`${s}T00:00:00.000Z`);
+  const seeded = (r: Partial<Row> & { id: string }): Row => ({
+    plaidTransactionId: null, financialAccountId: "fa_checking",
+    // DB-side sign convention: the sync stores `-txn.amount` (Plaid positive =
+    // money out), so a −12.05 delivery lands as +12.05 in the corpus.
+    amount: 12.05, date: day("2026-08-09"), economicDate: day("2026-08-09"),
+    merchant: "Talabat", description: "TAP TALABAT food",
+    pending: false, deletedAt: null, merchantId: null, categorySource: null,
+    transactionEventId: null, flowAuthority: null, pendingTransactionRef: null,
+    ...r,
+  });
+  // The backfill-window corpus: two pending authorisations (one settled →
+  // tombstoned, one still live) and the first settlement, all event-less.
+  fdb._txns.push(
+    seeded({ id: "t_pend_A", plaidTransactionId: "pend_A", pending: true, date: day("2026-08-05"), deletedAt: day("2026-08-09") }),
+    seeded({ id: "t_pend_B", plaidTransactionId: "pend_B", pending: true, date: day("2026-08-06") }),
+    seeded({ id: "t_post_A", plaidTransactionId: "post_A", pendingTransactionRef: "pend_A" }),
+  );
+  // The second settlement arrives: fingerprint-identical to t_post_A, but the
+  // provider says it continues pend_B — a DIFFERENT predecessor than pend_A.
+  await run(fdb, makeFakePlaid([
+    { added: [posted("post_B", "2026-08-09", -12.05, "pend_B")], next_cursor: "C2" },
+  ]));
+
+  const livePosted = fdb._txns.filter((t) => t.deletedAt === null && !t.pending);
+  check("BOTH posted rows exist as separate rows (adoption refused with NO events anywhere)",
+    livePosted.length === 2, `${livePosted.length} live posted row(s)`);
+  check("the first settlement keeps its provider id (nothing overwritten)",
+    fdb._txns.find((t) => t.id === "t_post_A")?.plaidTransactionId === "post_A",
+    `${fdb._txns.find((t) => t.id === "t_post_A")?.plaidTransactionId}`);
+  check("the new settlement carries its own provider id",
+    livePosted.some((t) => t.plaidTransactionId === "post_B"),
+    livePosted.map((t) => t.plaidTransactionId).join(","));
+}
+
+// ── 5. W1 (D6) — the pre-backfill refusal stays NARROW (DF-4 preserved) ─────
+console.log("\n5. PRE-BACKFILL: a DANGLING candidate ref (id churn) still adopts — no duplicate");
+{
+  const fdb = makeDb({ cursor: "C1", accounts: ACCOUNTS });
+  const day = (s: string) => new Date(`${s}T00:00:00.000Z`);
+  // Churn shape: the candidate's ref names a predecessor that no longer resolves
+  // (its id was re-keyed away). Positive two-predecessor evidence is ABSENT, so
+  // adoption must proceed — refusing here would re-open six-Amazon duplication.
+  fdb._txns.push({
+    id: "t_pend_NEW", plaidTransactionId: "pend_NEW", financialAccountId: "fa_checking",
+    amount: 12.05, date: day("2026-08-05"), economicDate: day("2026-08-05"),
+    merchant: "Talabat", description: "TAP TALABAT food", pending: true,
+    deletedAt: day("2026-08-09"), merchantId: null, categorySource: null,
+    transactionEventId: null, flowAuthority: null, pendingTransactionRef: null,
+  }, {
+    id: "t_post_OLD", plaidTransactionId: "post_OLD", financialAccountId: "fa_checking",
+    amount: 12.05, date: day("2026-08-09"), economicDate: day("2026-08-09"),
+    merchant: "Talabat", description: "TAP TALABAT food", pending: false,
+    deletedAt: null, merchantId: null, categorySource: null,
+    transactionEventId: null, flowAuthority: null, pendingTransactionRef: "pend_GONE",
+  });
+  await run(fdb, makeFakePlaid([
+    { added: [posted("post_NEW", "2026-08-09", -12.05, "pend_NEW")], next_cursor: "C2" },
+  ]));
+
+  const livePosted = fdb._txns.filter((t) => t.deletedAt === null && !t.pending);
+  check("still ONE live posted row — the re-keyed settlement was adopted",
+    livePosted.length === 1, `${livePosted.length}`);
+  check("the row carries the newest provider id",
+    livePosted[0]?.plaidTransactionId === "post_NEW", `${livePosted[0]?.plaidTransactionId}`);
 }
 
 console.log(failures === 0 ? "\nAll pending-ref guard checks passed.\n" : `\n${failures} check(s) failed\n`);
