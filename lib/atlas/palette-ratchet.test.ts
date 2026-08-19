@@ -120,10 +120,24 @@ for (const dir of SCAN_ROOTS) {
 
 const baselinePath = join(ROOT, BASELINE);
 
+// TS-WAVE (test-suite census) — a MISSING baseline FAILS; it no longer silently
+// re-records. The baseline is a tracked file, so its absence means it was
+// deleted — and auto-recreating it here would quietly reset the ratchet,
+// blessing every current violation as the new floor with nothing in the test
+// output to say so. Restore it from git, or bootstrap DELIBERATELY with --init.
+const INIT = process.argv.includes("--init");
 if (!existsSync(baselinePath)) {
+  if (!INIT) {
+    console.error(
+      `[palette-ratchet] FAIL — baseline missing (${BASELINE}).\n` +
+        `  The baseline is tracked; restore it (git checkout -- ${BASELINE})\n` +
+        `  or consciously re-bootstrap with: npx tsx lib/atlas/palette-ratchet.test.ts --init`
+    );
+    process.exit(1);
+  }
   writeFileSync(baselinePath, JSON.stringify(current, null, 2) + "\n");
   console.log(
-    `[palette-ratchet] baseline created — ${Object.keys(current).length} files, ` +
+    `[palette-ratchet] baseline created (--init) — ${Object.keys(current).length} files, ` +
       `${Object.values(current).reduce((a, b) => a + b, 0)} violations recorded. PASS.`
   );
   process.exit(0);

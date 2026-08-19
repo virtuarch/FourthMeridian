@@ -16,12 +16,16 @@
  *   • NO MerchantAsset model exists
  *   • the pure MI modules (resolver, backfill planner, enrichment) stay PURE
  *   • MI stamping (M4) is confined to the designated write sites only
- *   • NO AI read cutover (M6) and NO MerchantRule writes / user corrections (M5)
+ *   • M5 (user corrections) and M6 (read cutover) are confined to their
+ *     designated sites: MerchantRule writes only from the correction workflow,
+ *     resolved-merchant reads only from the enumerated read surfaces
  *
- * If a later change starts M5 (user corrections) or M6 (read cutover) without
- * updating this test, it fails first — pinning "schema is additive/behavior-
- * neutral; M4 live stamping is confined to the designated write sites;
- * M5/M6 not started".
+ * TS-WAVE header fix: this header previously claimed "M5/M6 not started" while
+ * the checks below (section 6) already enforced the post-M5/M6 write-site and
+ * read-surface allowlists — M5 and M6 LANDED and the assertions tracked them;
+ * the prose did not. The contract pinned today is confinement, not absence.
+ * If a later change adds an M5/M6 site without updating this test, it fails
+ * first — that part is unchanged.
  *
  * Ratification: docs/initiatives/mi1/MI1_M0_RATIFICATION_2026-07-07.md.
  */

@@ -20,11 +20,13 @@
  *      `todayIso`/`yesterdayUTCISO` definition) fails the suite.
  *
  *      ⚠️ Scope: lib/, components/, app/, jobs/, minus *.test.ts and minus
- *      lib/ai/** — the AI assembler layer is owned by a concurrent
- *      convergence slice (REVIEW-3 F2); its two remaining inline day
- *      derivations (prompts/system-prompt.ts, assemblers/transactions.ts) are
- *      RECORDED here as the exception rather than silently excluded, and the
- *      exclusion should be deleted when that slice lands.
+ *      lib/time itself (the seam). TS-WAVE header fix: this paragraph used to
+ *      describe a lib/ai/** exclusion "until REVIEW-3 F2 lands" — that slice
+ *      LANDED (the AI layer migrated system-prompt.ts and
+ *      assemblers/transactions.ts onto todayUTCISO) and the exclusion was
+ *      already deleted from the BODY at REVIEW-3 C; lib/ai is scanned like
+ *      every other directory and a dedicated check below pins the delegation.
+ *      The prose just never caught up with the code.
  */
 
 import { readdirSync, readFileSync, statSync } from "fs";
