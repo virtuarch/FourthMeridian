@@ -12,10 +12,24 @@
  *   • DISMISSED records a decision and touches NO merchant record (the reject
  *     invariant): every merchant/alias/rule/transaction MUTATION method throws
  *     if called, so a passing dismiss proves none was.
+ *
+ * Also hosts the decision-store helper tests merged from
+ * merchant-merge-decisions.test.ts (MI2 S2): a tiny in-memory fake stands in
+ * for the Prisma client (only merchantMergeDecision) and proves pair-key is
+ * order-independent and unique; a human DECISION is persisted (upsert);
+ * SUGGESTIONS are never persisted (the detector output is filtered by decided
+ * pairs, in memory).
  */
 
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { applyMergeReviewDecision } from "./merchant-merge-review";
+import {
+  mergePairKey,
+  recordMergeDecision,
+  loadDecidedPairKeys,
+  filterPendingCandidates,
+} from "./merchant-merge-decisions";
+import type { MergeCandidate } from "./merchant-merge-suggest";
 
 let passed = 0;
 const failures: string[] = [];
@@ -99,6 +113,44 @@ function makeFake(seed: { merchants: MRec[]; aliasesOn?: Record<string, number>;
   return { client: api as unknown as PrismaClient, merchants, decisions };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ── merged from lib/transactions/merchant-merge-decisions.test.ts (MI2 S2) ───
+// Decision-store helpers: in-memory fake over merchantMergeDecision only.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface DecRec {
+  pairKey: string; verdict: string; survivorKey: string; absorbedKey: string;
+  evidenceTier: string; evidenceSignal: string | null; decidedByUserId: string | null;
+}
+function makeDecisionFake() {
+  const decisions = new Map<string, DecRec>();
+  const client = {
+    merchantMergeDecision: {
+      upsert: async (args: {
+        where: { pairKey: string };
+        create: DecRec;
+        update: Partial<DecRec>;
+      }) => {
+        const existing = decisions.get(args.where.pairKey);
+        if (existing) { Object.assign(existing, args.update); return { id: args.where.pairKey }; }
+        decisions.set(args.where.pairKey, { ...args.create });
+        return { id: args.where.pairKey };
+      },
+      findMany: async (_args: { select: { pairKey: true } }) =>
+        [...decisions.values()].map((d) => ({ pairKey: d.pairKey })),
+    },
+  };
+  return { client: client as unknown as Prisma.TransactionClient, decisions };
+}
+
+function candidate(survivorKey: string, absorbedKey: string): MergeCandidate {
+  return {
+    survivorKey, survivorId: `id_${survivorKey}`,
+    absorbedKey, absorbedId: `id_${absorbedKey}`,
+    tier: "T2", signal: "CANONICAL_CONTAINMENT", explanation: "test",
+  };
+}
+
 async function main() {
   // ── 1. MERGED delegates to the engine (duplicate deleted) + records MERGED ──
   {
@@ -157,6 +209,55 @@ async function main() {
     } catch { threw = true; }
     eq("unresolved: threw", threw, true);
     eq("unresolved: no decision recorded", decisions.length, 0);
+  }
+
+  // ── merged from merchant-merge-decisions.test.ts (MI2 S2) ───────────────────
+
+  // ── D1. Pair key is order-independent and case-normalized ───────────────────
+  {
+    eq("pairKey symmetric", mergePairKey("A", "B"), mergePairKey("B", "A"));
+    eq("pairKey normalized case", mergePairKey("wgu", "WESTERN"), mergePairKey("WGU", "western"));
+    check("pairKey distinct for distinct pairs", mergePairKey("A", "B") !== mergePairKey("A", "C"));
+  }
+
+  // ── D2. A human decision is persisted (and is idempotent by pair) ───────────
+  {
+    const { client, decisions } = makeDecisionFake();
+    await recordMergeDecision(client, {
+      survivorKey: "WESTERN GOVERNORS UNIVERSITY", absorbedKey: "WESTERN GOVERNORS UN",
+      verdict: "DISMISSED", evidenceTier: "T2", evidenceSignal: "CANONICAL_CONTAINMENT", decidedByUserId: "u1",
+    });
+    eq("decision persisted", decisions.size, 1);
+    const only = [...decisions.values()][0];
+    eq("verdict stored", only.verdict, "DISMISSED");
+    eq("survivorKey stored", only.survivorKey, "WESTERN GOVERNORS UNIVERSITY");
+    eq("evidence snapshot stored", only.evidenceTier, "T2");
+    eq("actor stored", only.decidedByUserId, "u1");
+
+    // Re-deciding the same pair (opposite direction) upserts, not duplicates.
+    await recordMergeDecision(client, {
+      survivorKey: "WESTERN GOVERNORS UN", absorbedKey: "WESTERN GOVERNORS UNIVERSITY",
+      verdict: "MERGED", evidenceTier: "T2", decidedByUserId: "u2",
+    });
+    eq("still one row (upsert by pair)", decisions.size, 1);
+    eq("verdict updated", [...decisions.values()][0].verdict, "MERGED");
+  }
+
+  // ── D3. Suggestions are never persisted — decided pairs are filtered out ────
+  {
+    const { client } = makeDecisionFake();
+    await recordMergeDecision(client, {
+      survivorKey: "COSTCO WHOLESALE CORP", absorbedKey: "COSTCO WHOLESALE",
+      verdict: "DISMISSED", evidenceTier: "T2", decidedByUserId: "u1",
+    });
+    const decided = await loadDecidedPairKeys(client);
+    const live = [
+      candidate("COSTCO WHOLESALE CORP", "COSTCO WHOLESALE"), // dismissed → suppressed
+      candidate("WESTERN GOVERNORS UNIVERSITY", "WESTERN GOVERNORS UN"), // still pending
+    ];
+    const pending = filterPendingCandidates(live, decided);
+    eq("dismissed pair suppressed", pending.length, 1);
+    eq("pending pair survives", pending[0].survivorKey, "WESTERN GOVERNORS UNIVERSITY");
   }
 
   if (failures.length === 0) {

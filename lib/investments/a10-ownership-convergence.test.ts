@@ -17,6 +17,13 @@
  * These tests pin the convergence and the shape that makes it total: every A10
  * surface derives from `view.components`, so licensing the view converges all of
  * them at once.
+ *
+ * Consolidated file: absorbs investments-time-machine.test.ts (A10
+ * binding-source era) — the binding-composition scans proving the A10 DB
+ * binding COMPOSES the canonical services (valuation, FX, provenance-safe
+ * reads, pure summariser/assembler) and never forks them. That file used the
+ * check()/failures harness; its assertions are converted to this file's
+ * assert + ok() style.
  */
 
 import assert from "node:assert/strict";
@@ -24,6 +31,17 @@ import { readFileSync } from "node:fs";
 import { licenseView, licenseValuationView } from "./historical-holdings";
 import type { HoldingOwnershipFacts } from "./historical-holdings.core";
 import type { InvestmentValuationView } from "./valuation-core";
+
+// Environment tolerance (see create.test.ts): importing ./historical-holdings
+// pulls @/lib/db, whose shared PrismaClient's background engine warm-up
+// floating-rejects on platform-mismatched sandboxes. Nothing here uses Prisma.
+process.on("unhandledRejection", (err) => {
+  if ((err as { constructor?: { name?: string } })?.constructor?.name === "PrismaClientInitializationError") {
+    return;
+  }
+  console.error("unexpected unhandled rejection:", err);
+  process.exit(1);
+});
 
 const checks: string[] = [];
 const ok = (l: string) => checks.push(l);
@@ -139,6 +157,55 @@ const facts = (owned: [string, string][]): Map<string, HoldingOwnershipFacts> =>
   // No valuation arithmetic of its own (the pre-existing guard, restated).
   assert.ok(!/valuation-core/.test(a10), "A10 imports no valuation core");
   ok("STATIC · A10 applies the licence and owns neither ownership nor valuation");
+}
+
+// ═══ Merged from investments-time-machine.test.ts (A10 binding-source era) ═
+//
+// Binding-source guards for the Investments Time Machine DB binding. The
+// binding must COMPOSE the canonical services, never fork them. These guards
+// fail the moment it grows a second replay engine, price lookup, FX
+// interpretation, or a persistence write — the A10 §"one canonical
+// implementation" rule made executable.
+{
+  const code = strip(readFileSync(new URL("./investments-time-machine.ts", import.meta.url), "utf8"));
+
+  // 1. Single valuation path
+  assert.ok(/getInvestmentValueAsOf\s*\(/.test(code),
+    "values via the canonical getInvestmentValueAsOf (A8/A4/FX), not a reimplementation");
+  ok("STATIC · binding values via the canonical getInvestmentValueAsOf (A8/A4/FX)");
+  assert.ok(!/@\/lib\/prices/.test(code) && !/priceArchive|createPriceService|getPriceAsOf/.test(code),
+    "no second price engine (does not import lib/prices)");
+  ok("STATIC · no second price engine (does not import lib/prices)");
+  assert.ok(!/resolvePositionAsOf|getPositionQuantityAsOf|reconstruction-read/.test(code),
+    "no second replay engine (does not import the A4 quantity seam directly)");
+  ok("STATIC · no second replay engine (no direct A4 quantity-seam import)");
+  assert.ok(!/valueInstrumentAsOf|valuePortfolioAsOf/.test(code),
+    "no bespoke valuation arithmetic (does not import valuation-core directly)");
+  ok("STATIC · no bespoke valuation arithmetic (no direct valuation-core calls)");
+
+  // 2. Canonical FX + provenance-safe event read
+  assert.ok(/convertMoney\s*\(/.test(code),
+    "FX via the money layer convertMoney, no hand-rolled rate math");
+  ok("STATIC · FX via the money layer convertMoney, no hand-rolled rate math");
+  assert.ok(/deletedAt:\s*null/.test(code) && /supersededById:\s*null/.test(code),
+    "events read with the A7-1 provenance filter (deletedAt + supersededById null)");
+  ok("STATIC · events read with the A7-1 provenance filter");
+  assert.ok(/summarizePeriodFlows\s*\(/.test(code),
+    "period flows come from the pure summariser, not an inline reducer");
+  ok("STATIC · period flows come from the pure summariser");
+  assert.ok(/assembleInvestmentsTimeMachine\s*\(/.test(code),
+    "result shaped by the pure assembler");
+  ok("STATIC · result shaped by the pure assembler");
+
+  // 3. No persistence (derived, never a second fact store)
+  assert.ok(!/\.(create|createMany|upsert|update|updateMany|delete|deleteMany)\s*\(/.test(code),
+    "no create/upsert/update/delete writes");
+  ok("STATIC · binding persists nothing (derived, never a second fact store)");
+
+  // 4. Receives resolved dates (does not own time state)
+  assert.ok(/asOf/.test(code) && /compareTo/.test(code) && !/preset/.test(code),
+    "takes asOf + compareTo, not a preset");
+  ok("STATIC · binding takes asOf + compareTo, not a preset (owns no time state)");
 }
 
 // ── STATIC · exactly ONE historical investments authority ─────────────────

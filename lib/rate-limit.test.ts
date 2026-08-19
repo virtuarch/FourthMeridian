@@ -17,6 +17,9 @@
  *      buckets are independent per route name, per IP, per user, per key.
  *   4. Shadow mode: over-limit returns null (logged, never blocked).
  *   5. getClientIp: x-forwarded-for first hop → x-real-ip → "unknown".
+ *   7. checkStrict fail-closed verdicts (PS-4A, merged from
+ *      lib/rate-limit-strict.test.ts) — runs AFTER the env-dependent sections
+ *      above and restores the flag state it mutates.
  */
 
 // Set BEFORE import: lib/rate-limit → lib/db instantiates a PrismaClient;
@@ -33,6 +36,8 @@ import {
   limitByKey,
   peekKey,
   getClientIp,
+  checkStrict,
+  type LimitVerdict,
 } from "@/lib/rate-limit";
 
 let failures = 0;
@@ -170,6 +175,64 @@ async function main(): Promise<void> {
   // Independent per (name) and per (key).
   check("peek is bucket-scoped by name", (await peekKey("peek@example.com", "other-name", WIN)) === 0);
   check("peek is bucket-scoped by key", (await peekKey("someone-else@example.com", "login-id", WIN)) === 0);
+
+  // ── 7. checkStrict fail-closed verdicts (PS-4A) ─────────────────────────────
+  // merged from lib/rate-limit-strict.test.ts. The authentication paths need the
+  // limiter to FAIL CLOSED: a store outage must stop the attempt (→ temporary
+  // unavailability) rather than silently disable brute-force protection. These
+  // execute checkStrict's three verdicts, including the error path (via the
+  // injection seam, since the DB backend is production-gated and never throws in
+  // test). Both suites mutate process.env in one process, so this block runs
+  // AFTER every env-dependent section above and restores the flags it touches.
+  console.log("7. checkStrict fail-closed policy (PS-4A)");
+
+  // Enable limiting for this block (and restore afterwards).
+  const prevEnabled = envw.RATE_LIMIT_ENABLED;
+  const prevShadow = envw.RATE_LIMIT_SHADOW;
+  envw.RATE_LIMIT_ENABLED = "true";
+  delete envw.RATE_LIMIT_SHADOW;
+
+  // FAIL CLOSED: store throws (simulated P2024 / ECHECKOUTTIMEOUT).
+  const throwP2024 = async (): Promise<never> => {
+    const e = new Error("Timed out fetching a new connection from the connection pool. (connection_limit: 1)");
+    (e as unknown as { code: string }).code = "P2024";
+    throw e;
+  };
+  const throwCheckout = async (): Promise<never> => {
+    throw new Error("FATAL: (ECHECKOUTTIMEOUT) unable to check out connection from the pool after 60000ms in Transaction mode");
+  };
+
+  const v1: LimitVerdict = await checkStrict("k", { limit: 5, windowSec: 60 }, throwP2024);
+  check("simulated P2024 ⇒ status 'unavailable' (fail CLOSED, not open)", v1.status === "unavailable");
+
+  const v2: LimitVerdict = await checkStrict("k", { limit: 5, windowSec: 60 }, throwCheckout);
+  check("simulated ECHECKOUTTIMEOUT ⇒ status 'unavailable'", v2.status === "unavailable");
+
+  // Normal outcomes still work.
+  const underLimit = async () => ({ limited: false, retryAfterSec: 42 });
+  const v3 = await checkStrict("k", { limit: 5, windowSec: 60 }, underLimit);
+  check("under limit ⇒ status 'ok'", v3.status === "ok");
+
+  const overLimit = async () => ({ limited: true, retryAfterSec: 42 });
+  const v4 = await checkStrict("k", { limit: 5, windowSec: 60 }, overLimit);
+  check("over limit ⇒ status 'limited' with retryAfterSec", v4.status === "limited" && (v4 as { retryAfterSec: number }).retryAfterSec === 42);
+
+  // Disabled ⇒ ok without touching the store (no accidental fail-closed).
+  envw.RATE_LIMIT_ENABLED = "false";
+  let touched = false;
+  const spy = async () => { touched = true; return { limited: true, retryAfterSec: 1 }; };
+  const v5 = await checkStrict("k", { limit: 5, windowSec: 60 }, spy);
+  check("disabled ⇒ ok and store NOT consulted", v5.status === "ok" && touched === false);
+  envw.RATE_LIMIT_ENABLED = "true";
+
+  // Store error is NOT reported as 'ok' (the fail-open bug it replaces).
+  check("fail-closed never returns 'ok' on a store throw", v1.status !== "ok" && v2.status !== "ok");
+
+  // Restore the env exactly as the earlier sections left it.
+  if (prevEnabled === undefined) delete envw.RATE_LIMIT_ENABLED;
+  else envw.RATE_LIMIT_ENABLED = prevEnabled;
+  if (prevShadow === undefined) delete envw.RATE_LIMIT_SHADOW;
+  else envw.RATE_LIMIT_SHADOW = prevShadow;
 
   console.log(failures === 0 ? "\nAll rate-limit tests passed." : `\n${failures} failure(s).`);
   process.exit(failures === 0 ? 0 : 1);

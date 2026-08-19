@@ -3,10 +3,13 @@
  *
  * V26-ORCH-1 — the canonical historical-work planner, and the static guarantee
  * that the three migrated triggers no longer invent their own window.
+ * Also absorbs the CONN-2 max-available wealth-window checks (window behavior
+ * plus Plaid-path parity), merged from lib/snapshots/wealth-window.test.ts.
  * Standalone tsx, pure (no DB).
  */
 
 import { planHistoricalWorkWindow, type HistoricalWorkWindowInput } from "./historical-work-window.core";
+import { wealthWindowFromEarliest, recentWealthWindow } from "./regenerate-history";
 import { readFileSync } from "node:fs";
 
 let failures = 0;
@@ -154,6 +157,53 @@ function main(): void {
     const binding = stripComments(readFileSync("lib/snapshots/historical-work-window.ts", "utf8"));
     check("binding selects by ASSET CLASS, never by ticker or provider",
       /AssetClass\.CRYPTO/.test(binding) && !/tickerSymbol|"BTC"|coingecko/i.test(binding));
+  }
+
+  // ── merged from lib/snapshots/wealth-window.test.ts (CONN-2 — max-available
+  //    intelligence): full-window behavior + Plaid-path parity checks ─────────
+  {
+    console.log("\nCONN-2 — max-available wealth window");
+    // The source stripped ALL comments (inline too); keep that behavior here so
+    // the "no longer hardcodes" checks see exactly what CONN-2 saw.
+    const codeFull = (rel: string) =>
+      readFileSync(rel, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+
+    const NOW = new Date("2026-07-19T12:00:00.000Z");
+    const recent = recentWealthWindow(NOW); // { from: 2026-06-18, to: 2026-07-18 (yesterday) }
+
+    console.log("Max-available window — builds the FULL history, not 30 days");
+    {
+      const twoYears = wealthWindowFromEarliest(new Date("2024-07-19T00:00:00.000Z"), NOW);
+      check("2 years available → fromDate = earliest tx", twoYears.fromDate === "2024-07-19");
+      check("2 years available → toDate = yesterday", twoYears.toDate === recent.toDate);
+      check("2 years available → NOT the 30-day recent window", twoYears.fromDate !== recent.fromDate);
+      check("2 years available → window spans ~2 years", twoYears.fromDate < "2025-01-01");
+    }
+
+    console.log("No fabricated history — only what exists is built");
+    {
+      const ninetyDays = wealthWindowFromEarliest(new Date("2026-04-20T00:00:00.000Z"), NOW);
+      check("90 days available → fromDate = earliest (not 2 years)", ninetyDays.fromDate === "2026-04-20");
+
+      const none = wealthWindowFromEarliest(null, NOW);
+      check("no transactions → recent 30-day window (nothing deeper exists)", none.fromDate === recent.fromDate && none.toDate === recent.toDate);
+
+      const today = wealthWindowFromEarliest(new Date("2026-07-19T00:00:00.000Z"), NOW);
+      check("earliest on/after yesterday → recent window (no pre-yesterday history)", today.fromDate === recent.fromDate);
+    }
+
+    console.log("Initial connect == manual recovery: same window helper + same L2 authority");
+    {
+      const connect = codeFull("lib/plaid/backgroundHistorySync.ts");
+      const route   = codeFull("app/api/connections/build-intelligence/route.ts");
+
+      check("initial connect uses maxAvailableWealthWindow", connect.includes("maxAvailableWealthWindow("));
+      check("recovery route uses maxAvailableWealthWindow", route.includes("maxAvailableWealthWindow("));
+      check("both call the one L2 authority regenerateWealthHistoryForAccounts",
+        connect.includes("regenerateWealthHistoryForAccounts(") && route.includes("regenerateWealthHistoryForAccounts("));
+      check("initial connect no longer hardcodes a 30-day wealth window",
+        !/minusDaysISO\([^)]*,\s*30\)/.test(connect) && !connect.includes("matches the 30-day snapshot backfill window"));
+    }
   }
 
   console.log(failures === 0 ? "\nAll historical-work-window guards passed." : `\n${failures} check(s) FAILED`);

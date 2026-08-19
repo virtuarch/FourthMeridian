@@ -12,6 +12,12 @@
  * PART B source-scans the DB-touching modules (which pull @/lib/db and can't
  * import under bare tsx — same constraint the sibling route tests document) for
  * the invariants this slice must not regress.
+ * PART J (merged from btc-identity.test.ts, V26-PRE B4 era) covers the BTC
+ * transaction identity defenses: filterFreshMovements tombstone-wins semantics,
+ * the dedupe/skipDuplicates write contract, and the partial-unique-index
+ * migration backstop. Importing filterFreshMovements pulls @/lib/db, so this
+ * file now runs with scripts/lib/server-only-preload.cjs and tolerates the
+ * PrismaClient engine warm-up floating-rejection on mismatched sandboxes.
  */
 
 import { readFileSync } from "fs";
@@ -31,6 +37,18 @@ import {
   SATS_PER_BTC,
   type RawBtcTx,
 } from "@/lib/crypto/btc-explorer";
+import { filterFreshMovements } from "./btc-sync";
+
+// Environment tolerance (see create.test.ts): the shared PrismaClient's
+// background engine warm-up floating-rejects on platform-mismatched sandboxes.
+// Nothing here uses Prisma — filterFreshMovements is pure.
+process.on("unhandledRejection", (err) => {
+  if ((err as { constructor?: { name?: string } })?.constructor?.name === "PrismaClientInitializationError") {
+    return;
+  }
+  console.error("unexpected unhandled rejection:", err);
+  process.exit(1);
+});
 
 let failures = 0;
 let passes = 0;
@@ -447,6 +465,73 @@ async function main(): Promise<void> {
   const batched = await fetchAddressStatsBatch(["A1", "A2", "A3"], batchFetch);
   check("fetchAddressStatsBatch: ONE request per chunk (vs one-per-address)",
     batchCalls === 1 && batched.get("A1")?.sats === 500000);
+
+  // ═══ PART J — merged from btc-identity.test.ts (V26-PRE B4 era) ─────────────
+  //
+  // BTC transaction identity defenses. The Plaid write path has a per-item
+  // lock plus a plaidTransactionId unique backstop; the BTC wallet path had
+  // NEITHER: find-then-createMany with no constraint (a manual sync racing
+  // the daily cron duplicated movements), and a `deletedAt: null` dedupe
+  // filter that re-created tombstoned rows as new ACTIVE rows on the next
+  // sync — violating the identity doctrine's replay invariant.
+
+  // ── J.A — Behavioral: tombstone-wins filter (pure) ──────────────────────────
+  const M = (externalId: string) => ({ externalId });
+  {
+    const fresh = filterFreshMovements([M("tx1"), M("tx2"), M("tx3")], ["tx2"]);
+    check("known id filtered, unknown ids kept", fresh.map((m) => m.externalId).join(",") === "tx1,tx3");
+  }
+  {
+    // The core B4 scenario: the existing set now includes TOMBSTONED rows' ids —
+    // a deliberate deletion must block re-creation exactly like an active row.
+    const fresh = filterFreshMovements([M("tx1"), M("tx2")], ["tx1", "tx2"]);
+    check("tombstone-wins: previously-imported ids never re-import", fresh.length === 0);
+  }
+  {
+    const fresh = filterFreshMovements([M("tx1")], []);
+    check("empty existing set → everything fresh", fresh.length === 1);
+  }
+  {
+    // Null externalTransactionId rows (non-import rows caught by a broad read)
+    // must not poison the set.
+    const fresh = filterFreshMovements([M("tx1")], [null, null]);
+    check("null ids in the existing read are ignored", fresh.length === 1);
+  }
+
+  // ── J.B — Source-scan: the import step's write contract ─────────────────────
+
+  // The dedupe read: the findMany selecting externalTransactionId for the
+  // account must NOT filter deletedAt — tombstones are part of identity.
+  const dedupeRead = sync.match(/findMany\(\{\s*where:\s*\{\s*financialAccountId:[^}]*externalTransactionId:\s*\{\s*in:[^}]*\}[^}]*\}/);
+  check("dedupe read exists (find existing ids for the account)", dedupeRead !== null);
+  check(
+    "dedupe read INCLUDES tombstones (no deletedAt filter — tombstone wins)",
+    dedupeRead !== null && !dedupeRead[0].includes("deletedAt"),
+    dedupeRead?.[0],
+  );
+  check(
+    "createMany passes skipDuplicates (concurrent-writer overlap no-ops via the active-row index)",
+    /createMany\(\{[\s\S]{0,200}?skipDuplicates:\s*true/.test(sync),
+  );
+  check("movement filtering goes through the tested pure helper", sync.includes("filterFreshMovements(movements"));
+
+  // ── J.C — Migration: the DB-level backstop ──────────────────────────────────
+  const MIGRATION = join(process.cwd(), "prisma", "migrations", "20260727_v26pre_b4_btc_identity_backstop", "migration.sql");
+  let sql = "";
+  try { sql = readFileSync(MIGRATION, "utf8"); } catch { /* handled below */ }
+
+  check("B4 migration exists", sql.length > 0, MIGRATION);
+  check("index is UNIQUE on (financialAccountId, externalTransactionId)",
+    /CREATE UNIQUE INDEX[^;]*"Transaction"\s*\("financialAccountId",\s*"externalTransactionId"\)/.test(sql));
+  check("index is PARTIAL: non-null external ids only",
+    /WHERE[^;]*"externalTransactionId"\s+IS\s+NOT\s+NULL/.test(sql));
+  check("index is PARTIAL: ACTIVE rows only (tombstones excluded — rollback → re-import unaffected)",
+    /WHERE[^;]*"deletedAt"\s+IS\s+NULL/.test(sql));
+
+  // The pre-deploy duplicate check (scripts/check-external-id-duplicates.ts) was
+  // RETIRED once the B4 migration applied — the unique index above now enforces
+  // what it checked — and the file was deleted in REVIEW-3 wave 3 (tombstoned in
+  // scripts/audit-registry.ts). The migration assertions above are the live guard.
 
   // ── Summary ─────────────────────────────────────────────────────────────────
   console.log(`\nbtc-sync: ${passes} passed, ${failures} failed`);

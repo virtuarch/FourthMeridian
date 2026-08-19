@@ -23,6 +23,10 @@
  * format, order, filter and lay out. The moment it decides a health state, or
  * fills the policy column with something, it has forked `lib/jobs/health.ts` or
  * invented an authority that does not exist.
+ *
+ * Section 13 carries the OPS-5 S2 pure formatter contracts (merged from
+ * components/platform/widgets/job-health-format.test.ts): duration / percent /
+ * cadence / relative-time formatting, em-dash-on-null, severity ordering.
  */
 
 import { readFileSync } from "node:fs";
@@ -47,7 +51,16 @@ import {
 } from "./jobs-view";
 import { JobRowDetail, JobsSurface, JobsTable } from "./OpsJobHealthWidget";
 import { JobDetailBody } from "./JobDetailPanel";
-import { relTime, statusLabel } from "./job-health-format";
+import {
+  JOB_STATUS_META,
+  fmtCadence,
+  fmtDuration,
+  fmtPercent,
+  relTime,
+  severityRank,
+  statusLabel,
+  statusTone,
+} from "./job-health-format";
 import type {
   PlatformJobHealthResponse,
   PlatformJobRow,
@@ -465,6 +478,61 @@ function main() {
     check("fmtUtc refuses a garbage string", fmtUtc("not a date") === null);
     check("cadence rides as the identity line", cadenceLine(healthy) === "Daily" && cadenceLine(slotless) === "Every 6h");
     check("relTime is injected, never read from the wall clock in a cell", relTime(healthy.lastStartedAt, NOW) === "3h ago");
+  }
+
+  // ── 13 · job-health-format pure guards (OPS-5 S2) ───────────────────────────
+  // merged from components/platform/widgets/job-health-format.test.ts — pure
+  // guards for the OpsJobHealthWidget presentation helpers (no DOM, no React):
+  // duration / percent / cadence / relative-time formatting, the em-dash-on-null
+  // contract (no fabricated metrics), and severity ordering across all six
+  // statuses.
+  console.log("\n13. job-health-format (OPS-5 S2)");
+  {
+    const DASH = "—";
+    const FMT_NOW = Date.parse("2026-07-16T12:00:00Z");
+
+    // Duration
+    check("sub-second → ms", fmtDuration(840) === "840ms");
+    check("seconds → one-decimal s", fmtDuration(3200) === "3.2s");
+    check("minutes → m s", fmtDuration(125000) === "2m 5s");
+    check("hours → h m", fmtDuration(3840000) === "1h 4m");
+    check("null duration → em-dash (no fake metric)", fmtDuration(null) === DASH);
+    check("negative duration → em-dash", fmtDuration(-5) === DASH);
+
+    // Percent
+    check("rate 0.75 → 75%", fmtPercent(0.75) === "75%");
+    check("rate 1 → 100%", fmtPercent(1) === "100%");
+    check("null rate → em-dash", fmtPercent(null) === DASH);
+
+    // Cadence
+    check("24h → daily", fmtCadence(24) === "daily");
+    check("6h → every 6h", fmtCadence(6) === "every 6h");
+    check("sub-hour → minutes", fmtCadence(0.5) === "every 30m");
+    check("null cadence → em-dash", fmtCadence(null) === DASH);
+
+    // Relative time (signed, explicit clock)
+    check("past → ' ago'", relTime("2026-07-16T09:00:00Z", FMT_NOW) === "3h ago");
+    check("future → 'in '", relTime("2026-07-16T17:00:00Z", FMT_NOW) === "in 5h");
+    check("within a minute → now", relTime("2026-07-16T12:00:30Z", FMT_NOW) === "now");
+    check("days granularity", relTime("2026-07-14T12:00:00Z", FMT_NOW) === "2d ago");
+    check("null iso → em-dash", relTime(null, FMT_NOW) === DASH);
+    check("unparseable iso → em-dash", relTime("not-a-date", FMT_NOW) === DASH);
+
+    // Status metadata + ordering
+    check("every status has label/rank/tone", (Object.keys(JOB_STATUS_META) as (keyof typeof JOB_STATUS_META)[]).every(
+      (k) => typeof JOB_STATUS_META[k].label === "string" && typeof JOB_STATUS_META[k].rank === "number"));
+    check("severity: dead worst, healthy best",
+      severityRank("dead") < severityRank("failing") &&
+      severityRank("failing") < severityRank("overdue") &&
+      severityRank("overdue") < severityRank("never-ran") &&
+      severityRank("never-ran") < severityRank("running") &&
+      severityRank("running") < severityRank("healthy"));
+    check("unknown status sorts last", severityRank("bogus") === 99);
+    check("labels human-readable", statusLabel("never-ran") === "Never ran" && statusLabel("dead") === "Dead");
+    check("unknown status label falls back to raw", statusLabel("bogus") === "bogus");
+    check("tone maps (healthy ok / dead bad / running info)",
+      statusTone("healthy") === "ok" && statusTone("dead") === "bad" && statusTone("running") === "info");
+    check("unknown status tone → muted", statusTone("bogus") === "muted");
   }
 
   console.log(

@@ -6,9 +6,22 @@
  * auto-discovered by scripts/run-tests.ts:
  *
  *     npx tsx lib/money/convert.test.ts
+ *
+ * Also hosts two merged suites:
+ *   - lib/money/fx-coverage.test.ts (V25-CLOSE-3A): the reporting-currency
+ *     failure contract's PURE core — the `fxCoverageOf` coverage verdict and
+ *     the `decideEffectiveCurrency` requested/effective/reverted decision.
+ *   - lib/money/fx-disclosure.test.ts (V25-CLOSE-3 Part 1): the FX honesty
+ *     upgrade — `fxDisclosureOf` distinguishes unavailable/estimated/exact,
+ *     `convertAndSum` preserves the "unavailable" fact through the fold, and
+ *     successful conversions are unchanged.
  */
 
-import { convertAndSum, convertMoney, fxDisclosureOf, identityContext } from "./convert";
+import {
+  convertAndSum, convertMoney, fxDisclosureOf, identityContext,
+  fxCoverageOf, decideEffectiveCurrency,
+} from "./convert";
+import type { SerializedConversionContext } from "./convert";
 import type { ConversionContext, DatedMoney } from "./types";
 import type { Resolution } from "@/lib/fx/types";
 
@@ -205,6 +218,183 @@ const m = (amount: number, currency: string | null) => ({ amount, currency });
     idCtx,
   );
   check("no-rounding: sum is the exact float sum (0.30000000000000004)", t.amount === 0.1 + 0.2 && t.amount !== 0.3);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ── merged from lib/money/fx-coverage.test.ts (V25-CLOSE-3A) ─────────────────
+// The reporting-currency failure contract's PURE core: the coverage verdict and
+// the requested/effective/reverted decision. No DB, no FX resolution — these
+// read the resolution table the builder already produced.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const miss = (from: string, d: string): Resolution => ({ kind: "miss", quote: from, requestedDateISO: d });
+  const ctxOf = (entries: Record<string, Resolution>): SerializedConversionContext =>
+    ({ target: "EUR", entries });
+
+  // ── Coverage tests ──────────────────────────────────────────────────────────
+
+  // all FX resolutions missing → unsatisfiable
+  {
+    const c = fxCoverageOf(ctxOf({ "USD|2026-07-20": miss("USD", "2026-07-20"), "USD|2026-07-19": miss("USD", "2026-07-19") }));
+    check("all missing → unsatisfiable", c.satisfiable === false, JSON.stringify(c));
+    check("all missing → needed=missed", c.needed === 2 && c.missed === 2);
+  }
+
+  // any valid conversion → satisfiable (partial coverage stays satisfiable)
+  {
+    const c = fxCoverageOf(ctxOf({ "USD|2026-07-20": exact(0.9, "2026-07-20"), "USD|2026-07-19": miss("USD", "2026-07-19") }));
+    check("one resolved among misses → satisfiable", c.satisfiable === true, JSON.stringify(c));
+  }
+
+  // USD identity / all-USD → no conversion needed → always valid
+  {
+    const c = fxCoverageOf(ctxOf({}));
+    check("empty entries (all-identity) → satisfiable", c.satisfiable === true && c.needed === 0);
+  }
+
+  // ── Resolver decision tests ─────────────────────────────────────────────────
+
+  // unavailable conversion: requested preserved, effective USD, reverted true
+  {
+    const d = decideEffectiveCurrency("EUR", { needed: 3, missed: 3, satisfiable: false }, "USD");
+    check("unavailable → requested preserved (EUR)", d.requested === "EUR");
+    check("unavailable → effective USD", d.effective === "USD");
+    check("unavailable → reverted true", d.reverted === true);
+  }
+
+  // valid conversion: requested == effective, reverted false
+  {
+    const d = decideEffectiveCurrency("EUR", { needed: 3, missed: 1, satisfiable: true }, "USD");
+    check("valid → requested == effective", d.requested === d.effective && d.effective === "EUR");
+    check("valid → reverted false", d.reverted === false);
+  }
+
+  // USD requested-but-unsatisfiable: no better fallback ⇒ not a revert
+  {
+    const d = decideEffectiveCurrency("USD", { needed: 2, missed: 2, satisfiable: false }, "USD");
+    check("USD unsatisfiable → effective USD, NOT reverted", d.effective === "USD" && d.reverted === false);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ── merged from lib/money/fx-disclosure.test.ts (V25-CLOSE-3 Part 1) ─────────
+// Proves the FX honesty upgrade:
+//   1. `fxDisclosureOf` distinguishes "unavailable" (no rate applied —
+//      V25-FINAL-1 excludes it to amount 0 with the truth on `native`) from
+//      "estimated" (real rate, walked back) from "exact".
+//   2. `convertAndSum` preserves the "unavailable" fact through the fold.
+//   3. SUCCESSFUL conversions are UNCHANGED — same amount, and never classified
+//      as unavailable/estimated when the rate was exact.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  // ── Test contexts (all target USD) ──────────────────────────────────────────
+
+  /** Every non-USD resolves MISS → unavailable: excluded to 0, native preserved (V25-FINAL-1). */
+  const missCtx: ConversionContext = {
+    target: "USD",
+    resolve: (from, dateISO): Resolution => ({ kind: "miss", quote: from, requestedDateISO: dateISO }),
+  };
+
+  /** A real EXACT rate: 1 JPY = 0.0065 USD, not stale. */
+  const exactCtx: ConversionContext = {
+    target: "USD",
+    resolve: (from, dateISO): Resolution =>
+      from === "JPY"
+        ? { kind: "rate", rate: 0.0065, requestedDateISO: dateISO, effectiveDates: { from: dateISO, to: dateISO }, staleness: "exact" }
+        : { kind: "miss", quote: from, requestedDateISO: dateISO },
+  };
+
+  /** A real but WALKED-BACK rate (a rate WAS applied — value is roughly right). */
+  const staleCtx: ConversionContext = {
+    target: "USD",
+    resolve: (from, dateISO): Resolution =>
+      from === "JPY"
+        ? { kind: "rate", rate: 0.0065, requestedDateISO: dateISO, effectiveDates: { from: "2020-01-01", to: "2020-01-01" }, staleness: "walked-back" }
+        : { kind: "miss", quote: from, requestedDateISO: dateISO },
+  };
+
+  const DD = "2026-07-20";
+
+  // ── 1. fxDisclosureOf classification ────────────────────────────────────────
+
+  // identity (native === target): exact, not estimated
+  check("identity → exact", fxDisclosureOf(convertMoney({ amount: 100, currency: "USD" }, DD, exactCtx)) === "exact");
+
+  // exact applied rate: exact
+  {
+    const c = convertMoney({ amount: 1_000_000, currency: "JPY" }, DD, exactCtx);
+    check("exact rate → exact", fxDisclosureOf(c) === "exact");
+    check("exact rate converts the amount (¥1,000,000 → $6,500)", c.amount !== null && Math.abs(c.amount - 6500) < 1e-9, `amount=${c.amount}`);
+    check("exact rate is not estimated", c.estimated === false);
+  }
+
+  // walked-back rate: estimated (a rate WAS applied)
+  {
+    const c = convertMoney({ amount: 1_000_000, currency: "JPY" }, DD, staleCtx);
+    check("walked-back rate → estimated (NOT unavailable)", fxDisclosureOf(c) === "estimated");
+    check("walked-back still applied the rate (amount converted, not native)", c.amount !== null && Math.abs(c.amount - 6500) < 1e-9, `amount=${c.amount}`);
+  }
+
+  // rate miss: unavailable — V25-FINAL-1: NOT relabeled. Excluded to 0, native kept.
+  {
+    const c = convertMoney({ amount: 1_000_000, currency: "JPY" }, DD, missCtx);
+    check("rate miss → unavailable", fxDisclosureOf(c) === "unavailable");
+    check("rate miss is NOT relabeled — amount is null (¥1,000,000 never becomes any USD number)", c.amount === null, `amount=${c.amount}`);
+    check("rate miss preserves the native magnitude on `native`", c.native?.amount === 1_000_000 && c.native?.currency === "JPY");
+    check("rate miss has no conversion metadata", c.conversion === null);
+  }
+
+  // null-residue currency: unavailable
+  {
+    const c = convertMoney({ amount: 42, currency: null }, DD, exactCtx);
+    check("null-residue currency → estimated (assume-target passthrough; amount is NOT null)", fxDisclosureOf(c) === "estimated");
+    check("null-residue passes the raw amount through", c.amount === 42);
+  }
+
+  // ── 2. convertAndSum preserves the unconverted fact ─────────────────────────
+
+  {
+    const total = convertAndSum(
+      [
+        { money: { amount: 100, currency: "USD" }, dateISO: DD },        // exact
+        { money: { amount: 1_000_000, currency: "JPY" }, dateISO: DD },  // MISS → unavailable
+      ],
+      missCtx,
+    );
+    check("mixed total is estimated", total.estimated === true);
+    check("mixed total is unconverted (a member had no rate)", total.unconverted === true);
+  }
+
+  {
+    // Only a walked-back member — estimated but NOT unconverted (a rate was applied).
+    const total = convertAndSum(
+      [{ money: { amount: 1_000_000, currency: "JPY" }, dateISO: DD }],
+      staleCtx,
+    );
+    check("walked-back-only total is estimated", total.estimated === true);
+    check("walked-back-only total is NOT unconverted", total.unconverted === false);
+  }
+
+  // ── 3. Successful conversions remain unchanged ──────────────────────────────
+
+  {
+    const total = convertAndSum(
+      [
+        { money: { amount: 100, currency: "USD" }, dateISO: DD },
+        { money: { amount: 1_000_000, currency: "JPY" }, dateISO: DD },
+      ],
+      exactCtx,
+    );
+    check("all-exact total amount = 100 + 6500", Math.abs(total.amount - 6600) < 1e-9, `amount=${total.amount}`);
+    check("all-exact total is NOT estimated", total.estimated === false);
+    check("all-exact total is NOT unconverted", total.unconverted === false);
+  }
+
+  // A pure-USD (identity) total is exact and unmarked — the common case, unchanged.
+  {
+    const total = convertAndSum([{ money: { amount: 250, currency: "USD" }, dateISO: DD }], exactCtx);
+    check("identity total is exact/unmarked", total.estimated === false && total.unconverted === false && total.amount === 250);
+  }
 }
 
 // ── Report ────────────────────────────────────────────────────────────────────

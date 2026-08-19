@@ -9,9 +9,14 @@
  * behavior-change guarantee for the legacy category path), and hidden
  * templates are rejected material for the templateId path.
  *
- * Source-scan checks (precedent: purity.test.ts / personal-materialization
- * .test.ts): POST /api/spaces materializes via the SP-1 planner only, accepts
- * templateId, enforces the live-template rule, and hardcodes no section keys.
+ * Source-scan checks (precedent: purity.test.ts): POST /api/spaces
+ * materializes via the SP-1 planner only, accepts templateId, enforces the
+ * live-template rule, and hardcodes no section keys.
+ *
+ * Also carries the SP-2A-3 personal-materialization guards (merged from
+ * lib/space-templates/personal-materialization.test.ts): the hidden `personal`
+ * template's plan semantics, the register-route scan, the backfill-script
+ * contract, and the schema-free guarantee.
  */
 
 import { readFileSync, readdirSync } from "node:fs";
@@ -186,6 +191,118 @@ check(
   "seed materializes via planTemplateApplication",
   seedSrc.includes("planTemplateApplication(")
 );
+
+// ── merged from lib/space-templates/personal-materialization.test.ts
+//    (SP-2A-3 guards) ──────────────────────────────────────────────────────────
+// The legacy-path parity loop above already asserts that PERSONAL resolves and
+// that its plan equals getPresetsForCategory(PERSONAL); only the checks below
+// were distinct to the SP-2A-3 suite.
+
+// The personal template is hidden (never in the picker).
+const personal = getTemplateForCategory(SpaceCategory.PERSONAL);
+check("personal template is hidden", personal?.status === "hidden");
+
+if (personal) {
+  // Non-empty plan at birth.
+  const birthPlan = planTemplateApplication(personal, new Set<string>()).sectionsToCreate;
+  check("planned Personal sections are non-empty", birthPlan.length > 0);
+
+  // Backfill semantics: skips existing keys.
+  const someKeys = new Set(birthPlan.slice(0, 1).map((s) => s.key));
+  const partial = planTemplateApplication(personal, someKeys).sectionsToCreate;
+  check(
+    "backfill planner skips existing keys",
+    partial.length === birthPlan.length - 1 && partial.every((s) => !someKeys.has(s.key))
+  );
+
+  // Idempotence: after a full apply, the plan is empty; replanning is stable.
+  const allKeys = new Set(birthPlan.map((s) => s.key));
+  check(
+    "backfill planner is idempotent (full Space → empty plan)",
+    planTemplateApplication(personal, allKeys).sectionsToCreate.length === 0
+  );
+  check(
+    "backfill planner is deterministic",
+    JSON.stringify(planTemplateApplication(personal, someKeys)) ===
+      JSON.stringify(planTemplateApplication(personal, someKeys))
+  );
+}
+
+const registerSrc = readFileSync(
+  path.join(ROOT, "app", "api", "auth", "register", "route.ts"),
+  "utf8"
+);
+const backfillSrc = readFileSync(
+  path.join(ROOT, "scripts", "backfill-personal-sections.ts"),
+  "utf8"
+);
+const schemaSrc = readFileSync(path.join(ROOT, "prisma", "schema.prisma"), "utf8");
+
+// Register route uses the SP-1 registry + planner.
+check(
+  "register route imports the SP-1 registry",
+  registerSrc.includes('from "@/lib/space-templates/registry"')
+);
+check(
+  "register route imports the SP-1 planner",
+  registerSrc.includes('from "@/lib/space-templates/apply"')
+);
+check(
+  "register route calls planTemplateApplication",
+  registerSrc.includes("planTemplateApplication(")
+);
+check(
+  "register route materializes dashboardSections",
+  registerSrc.includes("dashboardSections")
+);
+
+// Register route hardcodes no section keys — every key the personal template
+// (or the universal set) carries must be absent as a literal.
+if (personal) {
+  const templateKeys = planTemplateApplication(personal, new Set<string>())
+    .sectionsToCreate.map((s) => s.key);
+  for (const key of templateKeys) {
+    check(
+      `register route does not hardcode section key "${key}"`,
+      !registerSrc.includes(`"${key}"`)
+    );
+  }
+}
+
+// Backfill script contract.
+check(
+  "backfill script uses planTemplateApplication",
+  backfillSrc.includes("planTemplateApplication(")
+);
+check(
+  "backfill script resolves the template from the SP-1 registry",
+  backfillSrc.includes("getTemplateForCategory(")
+);
+check(
+  "backfill script is dry-run by default (--apply gate present)",
+  backfillSrc.includes('"--apply"')
+);
+check(
+  "backfill script writes via createMany only",
+  backfillSrc.includes("spaceDashboardSection.createMany")
+);
+check(
+  "backfill script never updates section rows",
+  !/spaceDashboardSection\s*\.\s*update/i.test(backfillSrc) &&
+    !backfillSrc.includes(".updateMany(")
+);
+check(
+  "backfill script never deletes section rows",
+  !/\.delete(Many)?\s*\(/.test(backfillSrc)
+);
+check(
+  "backfill script never upserts section rows",
+  !backfillSrc.includes(".upsert(")
+);
+
+// SP-2A-3 is schema-free: no SpaceTemplate model, no template provenance column.
+check("prisma schema has no SpaceTemplate model", !/model\s+SpaceTemplate\b/.test(schemaSrc));
+check("prisma schema has no templateId column on Space", !/\btemplateId\b/.test(schemaSrc));
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed.`);

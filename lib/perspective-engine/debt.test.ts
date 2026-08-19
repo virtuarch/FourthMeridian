@@ -11,6 +11,13 @@
  *
  * Run from the repo root. Exits 0 on success, 1 on failure. Exercises the
  * PURE core with fixtures — no DB, no Next request scope.
+ *
+ * Consolidated file: absorbs debt.mc1.test.ts (MC1 QA Q2 era) — the debt-lens
+ * conversion equivalence gates, mirroring the liquidity gates: context-less
+ * kill switch, all-USD identity, non-USD conversion (balances + minimum
+ * payments; APRs are rates and never convert), miss ⇒ excluded + estimated,
+ * verdict labels follow the context target. That file used a silent
+ * passed-counter harness; converted to this file's check()/failures style.
  */
 
 import { readFileSync } from "fs";
@@ -23,6 +30,10 @@ import {
   DEBT_LENS_VERSION,
   type DebtAccountRow,
 } from "./lenses/debt.core";
+import { identityContext } from "@/lib/money/convert";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
+import type { ConversionContext } from "@/lib/money/types";
 import type { ComputeOptions, PerspectiveScope } from "./types";
 
 let failures = 0;
@@ -192,6 +203,93 @@ function main(): void {
     !/account\.(name|institution|displayName|officialName|plaidName)/.test(bindSrc));
   check("adapter reads through getAccountsWithVisibility (the KD-19 path)",
     /getAccountsWithVisibility/.test(bindSrc) && !/from ["']@\/lib\/db["']/.test(bindSrc));
+
+  // ═══ 8. Merged from debt.mc1.test.ts (MC1 QA Q2 era) ─────────────────────
+  //
+  // Debt-lens conversion equivalence gates, mirroring the liquidity gates:
+  // context-less kill switch, all-USD identity, non-USD conversion (balances
+  // + minimum payments; APRs are rates and never convert), miss ⇒ excluded +
+  // estimated, verdict labels follow the context target. Pure fixtures.
+  console.log("8. MC1 conversion gates");
+  {
+    const NOW = new Date("2026-07-05T12:00:00Z");
+    const mc1Scope: PerspectiveScope = { spaceId: "s1", userId: "u1" } as PerspectiveScope;
+    const mc1Opts: ComputeOptions = { now: () => NOW } as ComputeOptions;
+    const CLOSE = minusDaysISO(toISODateUTC(NOW), 1);
+    const CTX = identityContext(DEFAULT_DISPLAY_CURRENCY);
+
+    const mc1Row = (id: string, balance: number, extra: Partial<DebtAccountRow> = {}): DebtAccountRow => ({
+      id, type: "debt", balance,
+      currency: "USD",
+      lastUpdated: "2026-07-04T00:00:00Z",
+      visibilityLevel: "FULL",
+      ...extra,
+    });
+
+    const metric = (r: ReturnType<typeof computeDebt>, id: string) =>
+      r.metrics.find((m) => m.id === id)?.value;
+
+    const usdRows: DebtAccountRow[] = [
+      mc1Row("a", 5000, { interestRate: 24, minimumPayment: 150 }),
+      mc1Row("b", 2000, { interestRate: 12 }),
+      mc1Row("c", 800 ),
+    ];
+
+    // kill switch: context-less byte-identical shape (no estimated field)
+    {
+      const r = computeDebt(mc1Scope, mc1Opts, usdRows);
+      check("kill switch: no estimated field without a context", !("estimated" in r));
+      check("kill switch: totalDebt raw sum intact", metric(r, "totalDebt") === 7800);
+    }
+
+    // all-USD through identity: numerically identical, estimated false
+    {
+      const a = computeDebt(mc1Scope, mc1Opts, usdRows);
+      const b = computeDebt(mc1Scope, mc1Opts, usdRows, CTX);
+      check("all-USD: totalDebt identical", metric(a, "totalDebt") === metric(b, "totalDebt"));
+      check("all-USD: monthlyInterest identical", metric(a, "monthlyInterest") === metric(b, "monthlyInterest"));
+      check("all-USD: minPayments identical", metric(a, "minPayments") === metric(b, "minPayments"));
+      check("all-USD: verdict identical", a.verdict === b.verdict);
+      check("all-USD: estimated false", b.estimated === false);
+    }
+
+    // non-USD conversion: balances + min payments convert; APRs never do
+    {
+      const realCtx: ConversionContext = {
+        target: "USD",
+        resolve: (from, dateISO) =>
+          from === "EUR" && dateISO === CLOSE
+            ? { kind: "rate", rate: 1.25, requestedDateISO: dateISO, effectiveDates: { from: dateISO, to: dateISO }, staleness: "exact" }
+            : { kind: "miss", quote: from, requestedDateISO: dateISO },
+      };
+      const rows: DebtAccountRow[] = [
+        mc1Row("eur", 1000, { currency: "EUR", interestRate: 12, minimumPayment: 100 }),
+        mc1Row("usd", 500,  { interestRate: 12 }),
+      ];
+      const r = computeDebt(mc1Scope, mc1Opts, rows, realCtx);
+      check("non-USD: totalDebt converts (1000×1.25 + 500 = 1750)", metric(r, "totalDebt") === 1750);
+      check("non-USD: monthlyInterest converts via converted balance ((1250+500)×0.01 = 17.5)",
+        Math.abs(Number(metric(r, "monthlyInterest")) - 17.5) < 1e-9);
+      check("non-USD: minPayments convert (100×1.25 = 125)", metric(r, "minPayments") === 125);
+      check("non-USD: exact rates ⇒ estimated false", r.estimated === false);
+
+      // miss ⇒ UNAVAILABLE: excluded to 0 + estimated (V25-FINAL-1, not native)
+      const missRows = [mc1Row("sar", 1000, { currency: "SAR" })];
+      const m = computeDebt(mc1Scope, mc1Opts, missRows, realCtx);
+      check("miss: excluded to 0, never native-as-target (V25-FINAL-1)", metric(m, "totalDebt") === 0);
+      check("miss: estimated true", m.estimated === true);
+    }
+
+    // verdict labels follow the context target
+    {
+      const eurCtx = identityContext("EUR");
+      const r = computeDebt(mc1Scope, mc1Opts, [mc1Row("a", 1200, { currency: "EUR", interestRate: 10 })], eurCtx);
+      check("verdict label: EUR-target verdict formats in €", (r.verdict ?? "").includes("€"));
+      check("verdict label: no $ leaks into a EUR-target verdict", !(r.verdict ?? "").includes("$"));
+      const legacy = computeDebt(mc1Scope, mc1Opts, usdRows);
+      check("verdict label: context-less verdict keeps the USD default", (legacy.verdict ?? "").includes("$"));
+    }
+  }
 
   if (failures > 0) {
     console.error(`\n${failures} check(s) FAILED`);
