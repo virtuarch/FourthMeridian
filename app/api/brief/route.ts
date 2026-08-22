@@ -401,8 +401,10 @@ function buildAttention(
   // (LIQUIDITY_CRITICAL_MONTHS / LIQUIDITY_WARNING_MONTHS).
   //
   // UNKNOWN means the authority cannot compute coverage (no liquid accounts, or
-  // no complete calendar month in the window — which is the normal state of a
-  // 30-day brief window). The Brief then says NOTHING. Refusing is the point:
+  // no complete calendar month in the window — a genuinely thin corpus, now
+  // that W4 assesses 90 rolling days at every scope hint; before W4 this was
+  // the normal state of the 30-day brief window). The Brief then says NOTHING.
+  // Refusing is the point:
   // the ratio rule was a way of appearing to know when the input for knowing
   // was absent.
   const liq = assessment.liquidity;
@@ -536,7 +538,9 @@ function buildInsight(
   // is LOW, and this sentence is entirely a claim about income: quoting a
   // savings rate off an income total the assessment will not stand behind is how
   // the Brief and the AI ended up telling a user two different things about the
-  // same 30 days.
+  // same window. (Since W4 that window is the same 90 rolling days at every
+  // scope hint — the copy below interpolates `txn.windowDays`, never a
+  // hard-coded day count.)
   if (txn && txn.incomeTotal > 0 && assessment.cashFlow.reliability !== "UNRELIABLE") {
     // REVIEW-3 C-3 — the rate is derived from the CANONICAL net (income −
     // clamped spend), the same figure the Cash Flow workspace headlines — never
@@ -731,8 +735,11 @@ export async function GET() {
     memberships.find((m) => m.space.type === "PERSONAL" && m.role === SpaceMemberRole.OWNER) ?? memberships[0];
 
   // ── Build context for every eligible Space in parallel ─────────────────────
-  // scopeHint='brief' keeps each context lean (no per-account list, no raw
-  // transaction history, no full snapshot series).
+  // scopeHint='brief' keeps each context lean — a TRANSPORT choice only (W4):
+  // condensed category list, no merchant/income rollups, the DEBT_ONLY account
+  // subset (W3), no full snapshot series. It never changes the assessment
+  // window (90 rolling days at every hint) or any conclusion computeAssessment
+  // reaches — same corpus, same day, same verdicts as full scope.
 
   const contextResults = await Promise.allSettled(
     memberships.map((m) =>

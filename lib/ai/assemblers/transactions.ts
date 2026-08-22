@@ -28,8 +28,10 @@
  * they belong to a future investment-activity domain.
  *
  * ── Query window ─────────────────────────────────────────────────────────────
- *   scopeHint='brief' → last 30 days  (Daily Brief: recent activity)
- *   scopeHint='full'  → last 90 days  (full context: trend visibility)
+ *   Default: the ASSESSMENT WINDOW — the last 90 rolling days at EVERY scope
+ *   hint (W4). `scopeHint` is a transport knob: it may condense what this
+ *   section carries, never the period it measures. Explicit caller-directed
+ *   windows (D6 `transactionWindow`) are unchanged and scope-independent.
  * A fetch safety cap (TRANSACTION_FETCH_LIMIT) prevents unbounded queries
  * for Spaces with dense transaction history. Aggregation is over the returned
  * rows; if the cap is hit, the summary covers the most recent N rows within
@@ -195,8 +197,30 @@ import { bankingTransactionWhere } from "@/lib/data/banking-population";
  */
 const TRANSACTION_FETCH_LIMIT = 5_000;
 
-const WINDOW_BRIEF_DAYS = 30;
-const WINDOW_FULL_DAYS  = 90;
+/**
+ * W4 — THE assessment window: 90 rolling days, invariant across scopeHint.
+ *
+ * This is the period over which every figure `computeAssessment` reads from
+ * this section is measured (incomeTotal, expenseTotal, the net figures, the
+ * Income category count, monthlyBreakdown reach, windowDays itself). The
+ * Option-A decision (W4): the engine's confidence thresholds and fixtures were
+ * always calibrated to 90 days, and the hint must not change what is CONCLUDED
+ * about the user's finances — only what is CARRIED. The transport caps below
+ * (byCategory top-5-spending, merchant/income/recurring omissions) remain
+ * scopeHint-gated because they provably cannot move a conclusion — pinned in
+ * lib/ai/intelligence/brief-scope-adequacy.test.ts.
+ *
+ * WINDOW_BRIEF_DAYS (30) was DELETED here by W4. It made scopeHint='brief'
+ * assess a DIFFERENT PERIOD: on the live corpus the same Space, same day,
+ * graded deficitCause NOT_APPLICABLE under brief against a deficit under full,
+ * reported estimatedMonthlyExpenses null (a 30-day rolling window almost never
+ * contains a complete calendar month) and a ~3% different impliedMonthlyIncome.
+ * Do not reintroduce a scope-varying assessment window. A recent-activity
+ * DISPLAY block (Option D) is a separate additive payload question that must
+ * not touch this constant; a calendar-preset basis (PAST_QUARTER via
+ * compareToForPreset) remains an unmade product decision.
+ */
+const ASSESSMENT_WINDOW_DAYS = 90;
 
 /** Number of top categories surfaced per month in the monthly breakdown. */
 const MONTHLY_TOP_CATEGORIES = 3;
@@ -533,7 +557,8 @@ async function assembleTransactions(
   const assembledAt = new Date().toISOString();
 
   // ── Resolve the analysis window ─────────────────────────────────────────────
-  // Default: rolling 30-day (brief) / 90-day (full) window, floor only.
+  // Default: the ASSESSMENT WINDOW (90 rolling days, W4 — invariant across
+  // scopeHint), floor only.
   // Explicit (D6): a caller-supplied inclusive [startDate, endDate] range. The
   // floor is clamped to MAX_EXPLICIT_WINDOW_DAYS so a request can never reach
   // unbounded history. windowDays is the inclusive day count — it feeds the
@@ -1684,27 +1709,35 @@ function inclusiveDaySpan(startIso: string, endIso: string): number {
 }
 
 /**
- * Resolve the query window from scopeHint + an optional explicit request.
+ * Resolve the query window from an optional explicit request.
  *
- * Default (no explicit window): rolling floor only — 30 days (brief) / 90 days
- * (full), matching the pre-D6 behavior exactly.
+ * Default (no explicit window): the ASSESSMENT WINDOW — 90 rolling days, floor
+ * only, IDENTICAL at every scope hint (W4). The `scopeHint` parameter is
+ * deliberately kept in the signature and deliberately NOT consulted: callers
+ * legitimately pass their hint, and the invariance pin
+ * (lib/ai/assemblers/transactions.parity.test.ts) asserts that passing either
+ * value resolves the same window. Re-keying `days` on the hint is the exact
+ * seam W4 removed — same corpus, same day, different scopeHint must yield the
+ * same assessment conclusions.
  *
- * Explicit (D6): inclusive [startDate, endDate]. The floor is clamped so it can
- * never reach further back than MAX_EXPLICIT_WINDOW_DAYS. `days` is the
- * inclusive day count used for downstream monthly-equivalent math.
+ * Explicit (D6): inclusive [startDate, endDate] — caller-directed, always
+ * scope-independent. The floor is clamped so it can never reach further back
+ * than MAX_EXPLICIT_WINDOW_DAYS. `days` is the inclusive day count used for
+ * downstream monthly-equivalent math.
  *
- * ⚠️ EXPORTED for `scripts/audit-ai-read-parity.ts` only. The audit measures the
- * AI read boundary against the UI's, and a measurement taken over a window the
- * assembler does not actually use measures nothing. It calls this function
- * rather than reconstructing "30 or 90 days back" — a second copy of a window is
- * how a probe starts agreeing with itself instead of with the code.
+ * ⚠️ EXPORTED for `scripts/audit-ai-read-parity.ts` (and the W4 invariance
+ * pin) only. The audit measures the AI read boundary against the UI's, and a
+ * measurement taken over a window the assembler does not actually use measures
+ * nothing. It calls this function rather than reconstructing "90 days back" —
+ * a second copy of a window is how a probe starts agreeing with itself instead
+ * of with the code.
  */
 export function resolveWindow(
-  scopeHint:         'full' | 'brief',
+  _scopeHint:        'full' | 'brief',
   transactionWindow: AssemblerOptions['transactionWindow'],
 ): { start: Date; end: Date | null; startIso: string; endIso: string | null; days: number } {
   if (!transactionWindow) {
-    const days  = scopeHint === 'brief' ? WINDOW_BRIEF_DAYS : WINDOW_FULL_DAYS;
+    const days  = ASSESSMENT_WINDOW_DAYS; // W4 — never keyed on the scope hint
     const start = startOfDay(-days);
     return { start, end: null, startIso: start.toISOString().split('T')[0], endIso: null, days };
   }

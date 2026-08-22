@@ -306,3 +306,121 @@ test("W3: no debt consumer remains on the accidental fetched-row window", () => 
     "the debt trend must read liabilitiesChange (canonicalWindowChange), never history endpoints");
   assert.match(e, /liabilitiesChange/, "the canonical liabilities change must be the trend input");
 });
+
+// ── W4. TRANSPORT-SHAPE INVARIANCE — scopeHint is transport, never semantics ──
+//
+// W4 removed the last meaning-changing scope seam (the 30-vs-90-day default
+// query window — see ASSESSMENT_WINDOW_DAYS in lib/ai/assemblers/transactions.ts
+// and the resolveWindow pins in lib/ai/assemblers/transactions.parity.test.ts).
+// What remains scope-varying is TRANSPORT: the brief payload carries a condensed
+// SHAPE of the same measured figures. This section pins that the engine's
+// conclusions cannot tell the two shapes apart: one identical measured corpus,
+// presented once full-shaped and once brief-shaped, must assess deep-equal.
+//
+// ⚠️ Known, deliberate exclusion — spendingOpportunities / riskOpportunities:
+// computeSpendingOpportunities iterates ALL of txn.byCategory, and the brief
+// transport cap keeps only the top-5 spending categories, so those two sections
+// CAN differ across shapes for a Space with 6+ spending categories. No Brief
+// surface consumes either section (riskOpportunities is deliberately
+// unconsumed — W3), and the parity audit's Conclusions projection does not
+// compare them, but the residual is REAL and is reported to the operator as an
+// open W4 follow-up rather than silently equalized here. Every other section —
+// including everything the Brief renders and the parity audit measures — is
+// pinned invariant below.
+
+test("W4: one measured corpus, brief-shaped vs full-shaped transport, assesses deep-equal (minus the documented byCategory-cap residual)", () => {
+  // The measured figures — IDENTICAL in both shapes (same corpus, same day,
+  // same 90-day assessment window). Negative canonical net so the deficit
+  // ladder and priority selection actually run (the live drift class W4 fixed).
+  const MEASURED = {
+    windowDays: 90, startDate: "2026-04-01", endDate: "2026-06-30",
+    transactionCount: 60,
+    incomeTotal: 9000, expenseTotal: 10000, refundTotal: 0, debtPaymentTotal: 500,
+    netCashFlow: -1000, // canonical economic net: negative
+    netAfterDebtPayments: -1500,
+  } as const;
+
+  const INCOME_ENTRY = { category: "Income", total: 0, count: 8 };
+  // Six spending categories, debit-total descending: the brief cap keeps 5.
+  const SPENDING = [
+    { category: "Groceries",     total: 3000, count: 20 },
+    { category: "Dining",        total: 2500, count: 15 },
+    { category: "Travel",        total: 2000, count: 4 },
+    { category: "Utilities",     total: 1300, count: 6 },
+    { category: "Shopping",      total: 900,  count: 9 },
+    { category: "Subscriptions", total: 300,  count: 7 }, // dropped under brief
+  ];
+  // Two COMPLETE months → estimatedMonthlyExpenses is a measurement, not null.
+  const MONTHS = [
+    { month: "2026-04", incomeTotal: 3000, expenseTotal: 3300, refundTotal: 0,
+      debtPaymentTotal: 200, transferTotal: 0, transactionCount: 20, estimated: false,
+      byCategory: [] },
+    { month: "2026-05", incomeTotal: 3000, expenseTotal: 3400, refundTotal: 0,
+      debtPaymentTotal: 200, transferTotal: 0, transactionCount: 20, estimated: false,
+      byCategory: [] },
+  ];
+
+  const fullTxn = mkTxn({
+    ...MEASURED,
+    byCategory: [...SPENDING, INCOME_ENTRY],
+    monthlyBreakdown: MONTHS,
+    // Full-scope-only rollups present (their absence under brief must be
+    // invisible to the engine):
+    recurringCandidates: [], merchants: [], incomeSources: [],
+  } as Partial<TransactionsSummaryData>);
+  const briefTxn = mkTxn({
+    ...MEASURED,
+    // The real transport shape: top-5 spending + non-spending survivors, in
+    // original order; rollups omitted entirely.
+    byCategory: [...SPENDING.slice(0, 5), INCOME_ENTRY],
+    monthlyBreakdown: MONTHS,
+  } as Partial<TransactionsSummaryData>);
+
+  // Accounts: same totals/counts; full carries the FULL list, brief the
+  // DEBT_ONLY subset of the SAME debt rows (W3 transport boundary).
+  const fullAccts  = mkAccts({
+    accounts: [liquidRow(), debtRow(), liquidRow({ id: "sav-1", type: "savings" })],
+    accountListScope: "FULL",
+  });
+  const briefAccts = mkAccts({
+    accounts: [debtRow()], accountListScope: "DEBT_ONLY",
+  });
+
+  // Snapshot: same measured span/trend figures; full carries history points,
+  // brief carries none (the W3-verified truncation-after-derivation).
+  const SNAP_MEASURED = {
+    spanDays: 88,
+    liabilitiesChange: { fromDate: "2026-05-30", toDate: "2026-06-30",
+      fromValue: 21_000, toValue: 20_000, pct: -4.76, abs: -1000, preset: "PAST_MONTH" },
+  };
+  const fullSnap  = { ...SNAP_MEASURED, history: [{ date: "2026-06-30", netWorth: 80_000 }] };
+  const briefSnap = { ...SNAP_MEASURED };
+
+  const full  = computeAssessment(mkCtx(fullTxn,  fullAccts,  60, fullSnap));
+  const brief = computeAssessment(mkCtx(briefTxn, briefAccts, 60, briefSnap));
+
+  // The documented residual, held OUT of the deep-equal and pinned as real so
+  // this exclusion can never silently widen: the dropped 6th category is
+  // visible to computeSpendingOpportunities.
+  assert.equal(full.spendingOpportunities.topCategories.length,
+               brief.spendingOpportunities.topCategories.length + 1,
+    "the byCategory cap residual disappeared — if the cap no longer reaches the engine, " +
+    "DELETE this exclusion and fold spendingOpportunities/riskOpportunities into the deep-equal");
+
+  const project = (a: ReturnType<typeof computeAssessment>) => {
+    const { spendingOpportunities: _so, riskOpportunities: _ro, ...rest } = a;
+    return rest;
+  };
+  assert.deepEqual(project(brief), project(full),
+    "same corpus + same day + different scopeHint must yield identical assessment " +
+    "conclusions — transport shape leaked into semantics");
+
+  // And the exercised verdicts are the live-corpus class the W4 seam used to
+  // split: a real deficit, graded identically at both shapes.
+  assert.equal(full.cashFlow.deficitCause, brief.cashFlow.deficitCause);
+  assert.equal(full.currentStatePriority, brief.currentStatePriority);
+  assert.equal(brief.cashFlow.estimatedMonthlyExpenses,
+               full.cashFlow.estimatedMonthlyExpenses);
+  assert.notEqual(brief.cashFlow.estimatedMonthlyExpenses, null,
+    "two complete months in the 90-day window must yield a measured baseline at BOTH shapes");
+});

@@ -259,10 +259,12 @@ async function main(): Promise<void> {
   }
   console.log(`  Space: ${space.name}  (${space.n} banking rows)`);
 
-  // The two ROLLING windows the assembler actually uses, resolved by its own
-  // resolver. These are relative to today, so their counts move with the corpus.
-  await compareWindow(space.id, "brief (30d)", resolveWindow("brief", undefined));
-  await compareWindow(space.id, "full (90d)", resolveWindow("full", undefined));
+  // The ROLLING window the assembler actually uses, resolved by its own
+  // resolver — relative to today, so counts move with the corpus. W4: both
+  // scope hints resolve the SAME 90-day assessment window; both calls are kept
+  // deliberately so this audit also witnesses that invariance on the live DB.
+  await compareWindow(space.id, "brief hint (=90d, W4)", resolveWindow("brief", undefined));
+  await compareWindow(space.id, "full hint (90d)", resolveWindow("full", undefined));
 
   // …and one EXPLICIT window (the D6 drilldown shape), pinned to fixed dates so
   // the fingerprint below is stable across runs. A rolling window's fingerprint

@@ -320,28 +320,32 @@ async function main(): Promise<void> {
 
   bar("VERDICT");
   console.log(`  Spaces measured                     : ${measured}`);
-  console.log(`  Spaces whose CONCLUSIONS move on the hint alone: ${drifting}`);
+  console.log(`  Spaces whose CONCLUSIONS move on the hint alone: ${drifting}` +
+    (drifting === 0 ? "  ✓ (expected ZERO)" :
+     "  ⚠ UNEXPECTED — the W4 invariant says this must be zero"));
   console.log(`  W3 DEBT parity — spaces whose DEBT conclusions move on the hint alone: ${debtDrifting}` +
     (debtDrifting === 0 ? "  ✓ (expected ZERO: the brief payload carries the debt rows)" :
      "  ⚠ UNEXPECTED — the W3 invariant says this must be zero"));
   console.log(
-    `\n  Attribution note (W3): remaining non-debt drift above is the 30-vs-90-day\n` +
-    `  WINDOW BASIS (WINDOW_BRIEF_DAYS) — the brief and full arms genuinely measure\n` +
-    `  different periods for income/cash-flow. That window question is a separate,\n` +
-    `  deliberately-untouched product decision; it is NOT payload withholding.`,
+    `\n  W4 — the 30-vs-90-day window seam is REMOVED: the assessment window is\n` +
+    `  90 rolling days at EVERY scope hint (lib/ai/assemblers/transactions.ts,\n` +
+    `  ASSESSMENT_WINDOW_DAYS). scopeHint is transport-only. Expected drift is\n` +
+    `  ZERO for every conclusion — there is no longer any "expected window-basis"\n` +
+    `  attribution. Any Space printed above is a DEFECT to investigate, never a\n` +
+    `  normalized exception.`,
   );
   console.log(`  Spaces where brief scope DROPS the Income category: ${incomeLostSpaces.length}` +
     (incomeLostSpaces.length ? `  (${incomeLostSpaces.join(", ")})` : ""));
 
   if (drifting > 0) {
     console.log(
-      `\n  ⚠ scopeHint is not a payload-size knob. It changes what computeAssessment\n` +
-      `    concludes about the user's finances, with no signal that anything was\n` +
-      `    withheld. A Brief that calls computeAssessment over a 'brief' context\n` +
-      `    would publish these differences as findings.\n`,
+      `\n  ⚠ W4 INVARIANT VIOLATED: same corpus + same day + different scopeHint\n` +
+      `    must yield the same assessment conclusions. scopeHint is a transport\n` +
+      `    knob, never a semantics knob. Investigate the rows above as a defect —\n` +
+      `    do not reclassify them as expected.\n`,
     );
   } else {
-    console.log(`\n  ✓ no conclusion moves on the hint alone.\n`);
+    console.log(`\n  ✓ no conclusion moves on the hint alone — the W4 invariant holds.\n`);
   }
 }
 

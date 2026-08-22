@@ -27,7 +27,7 @@ import path from "node:path";
 
 import { FlowType, TransactionCategory, type Prisma } from "@prisma/client";
 
-import { aiTransactionWhere, aiDrilldownWhere } from "@/lib/ai/assemblers/transactions";
+import { aiTransactionWhere, aiDrilldownWhere, resolveWindow } from "@/lib/ai/assemblers/transactions";
 import { bankingTransactionWhere } from "@/lib/data/banking-population";
 
 const SPACE = "space-1";
@@ -167,4 +167,40 @@ test("PARITY-1: the assembler consumes the whole read boundary, not half of it",
     "the KD-15 visibility gate is spelled out in the AI assembler again. It is " +
     "stated once, in bankingTransactionWhere — two statements of one rule drift.",
   );
+});
+
+// ── W4. The assessment window is scope-invariant ────────────────────────────
+//
+// W4 (Option A): the default query window is THE assessment window — 90
+// rolling days at EVERY scope hint. Before W4, resolveWindow keyed `days` on
+// the hint (30 brief / 90 full), so the same corpus on the same day reached
+// different deficit, priority, and monthly-figure conclusions under the two
+// hints (measured live: incomeTransactionCount 3 vs 8, deficitCause
+// NOT_APPLICABLE vs a deficit verdict, estimatedMonthlyExpenses null vs a
+// measurement, ~3% different impliedMonthlyIncome, priority LIQUIDITY vs
+// CASH_FLOW). These pins are BEHAVIORAL — they call the real resolver — so
+// re-keying the window on the hint fails here before it can reach a corpus.
+
+test("W4: the default window is the same 90-day assessment window at every scope hint", () => {
+  const brief = resolveWindow("brief", undefined);
+  const full  = resolveWindow("full",  undefined);
+
+  assert.equal(brief.days, 90, "the Option-A assessment window is 90 rolling days");
+  assert.equal(full.days,  90);
+  assert.equal(brief.startIso, full.startIso,
+    "brief and full must open the window on the same day — a scope-keyed " +
+    "assessment window is the exact seam W4 removed");
+  assert.equal(brief.start.getTime(), full.start.getTime());
+  assert.equal(brief.endIso, null);
+  assert.equal(full.endIso,  null);
+});
+
+test("W4: an explicit caller window is caller-controlled and scope-independent", () => {
+  const w = { startDate: "2026-01-01", endDate: "2026-03-31" };
+  assert.deepEqual(resolveWindow("brief", w), resolveWindow("full", w),
+    "an explicit D6 window must resolve identically under every hint");
+  const r = resolveWindow("brief", w);
+  assert.equal(r.startIso, "2026-01-01");
+  assert.equal(r.endIso,   "2026-03-31");
+  assert.equal(r.days, 90, "inclusive span Jan 1 – Mar 31 2026");
 });

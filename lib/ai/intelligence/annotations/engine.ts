@@ -506,13 +506,16 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   const priorities        = derivePriorities(dataQuality, cashFlow, debtSection, liquidity);
 
   // ── Step 13: Declared insufficiency (REVIEW-3 C-7, audit E3) ─────────────
-  // scopeHint silently changed what this authority could decide: 'brief' omits
-  // the per-account list (debt forced INSUFFICIENT_DATA) and its 30-day rolling
-  // window almost never contains a complete calendar month (liquidity UNKNOWN
-  // ~30 days in 31). The scope behaviour itself is unchanged; what changes is
-  // that every withheld grade is now DECLARED, with a reason a consumer can
-  // read — so the Brief can say what was withheld or stay silent knowingly,
-  // instead of implying a grade the evidence cannot carry.
+  // C-7 found scopeHint silently changing what this authority could decide:
+  // 'brief' omitted the per-account list (debt forced INSUFFICIENT_DATA) and
+  // assessed a 30-day window that almost never contained a complete calendar
+  // month (liquidity UNKNOWN ~30 days in 31). Both scope causes are since
+  // CURED — W3 emits the assessment-required debt rows at every hint, W4 made
+  // the assessment window scope-invariant (90 rolling days) — so a refusal
+  // recorded here now names a GENUINE data gap, never a scope choice. The
+  // declaration mechanism stays: every withheld grade is DECLARED with a
+  // reason a consumer can read, so the Brief says what is missing or stays
+  // silent knowingly, instead of implying a grade the evidence cannot carry.
   const ungraded: UngradedSection[] = [];
   if (debtSection.classification === 'INSUFFICIENT_DATA') {
     if (!accts) {

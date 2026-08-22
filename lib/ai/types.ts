@@ -78,14 +78,29 @@ export interface ContextDomainSection {
  * `scopeHint` lets callers signal intent without changing the domain list:
  *   - 'brief'  → assembler may return a condensed summary (for Daily Brief)
  *   - 'full'   → assembler returns the complete section (default)
+ *
+ * ── W4 doctrine: scopeHint is TRANSPORT, never SEMANTICS ────────────────────
+ * The hint controls what a section CARRIES (truncated lists, omitted rollups,
+ * the DEBT_ONLY account subset — see `accountListScope`), never what the
+ * assessment CONCLUDES: it must not alter the period over which the user's
+ * financial condition is measured, nor any input that can move a
+ * `computeAssessment` verdict. Same corpus + same day + different scopeHint
+ * ⇒ same assessment conclusions. (Before W4 the transactions assembler keyed
+ * its default query window on the hint — 30 vs 90 days — and brief/full
+ * reached different deficit, priority, and monthly-figure conclusions from the
+ * same corpus.) A transport omission is legal only where it provably cannot
+ * change a conclusion — pinned in brief-scope-adequacy.test.ts and measured by
+ * scripts/audit-brief-assessment-parity.ts, whose expected drift is ZERO.
  */
 export interface AssemblerOptions {
   scopeHint?: 'full' | 'brief';
   /**
    * Optional explicit transaction window (D6 dynamic windows). When present,
    * the transactions assembler summarizes this UTC date range instead of its
-   * default 30/90-day span. Both bounds are inclusive YYYY-MM-DD dates. Other
-   * assemblers ignore this field. Absent → default behavior is preserved.
+   * default assessment window (90 rolling days at every scope hint — W4).
+   * Both bounds are inclusive YYYY-MM-DD dates. Other assemblers ignore this
+   * field. Absent → default behavior is preserved. Always caller-directed and
+   * scope-independent.
    */
   transactionWindow?: {
     startDate: string; // YYYY-MM-DD, inclusive floor

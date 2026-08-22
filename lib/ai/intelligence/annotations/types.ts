@@ -127,8 +127,11 @@ export type UngradedReasonCode =
   /** No checking/savings accounts are linked to this Space. */
   | 'NO_LIQUID_ACCOUNTS_IN_SPACE'
   /** No expense baseline: no declared figure and no complete, untruncated
-   *  calendar month in the analysis window (the normal state of a 30-day
-   *  rolling brief window). */
+   *  calendar month in the analysis window. (Before W4 this was the normal
+   *  state of the Brief — its 30-day rolling window almost never contained a
+   *  complete calendar month. The assessment window is now 90 rolling days at
+   *  every scope hint, so this refusal marks a genuinely thin corpus, not a
+   *  scope artifact.) */
   | 'NO_EXPENSE_BASELINE_IN_WINDOW'
   /** Income confidence LOW — cash-flow verdicts would be data artifacts. */
   | 'LOW_INCOME_CONFIDENCE';
@@ -137,11 +140,15 @@ export type UngradedReasonCode =
  * One section the assessment explicitly declined to grade, and why.
  *
  * REVIEW-3 C-7 (audit E3): `scopeHint` silently changed what computeAssessment
- * could decide — under 'brief', debt is forced INSUFFICIENT_DATA and liquidity
- * is UNKNOWN on ~30 days in 31, and nothing in the output said so. A consumer
- * either implied a grade it did not have or went silent without knowing it was
- * silent. This record makes the refusal a FACT the consumer can read: say what
- * was withheld, or stay silent knowingly — never imply.
+ * could decide — under 'brief', debt was forced INSUFFICIENT_DATA (cured by
+ * W3: the assembler emits the debt rows at every hint) and liquidity was
+ * UNKNOWN ~30 days in 31 on the 30-day brief window (cured by W4: the
+ * assessment window is scope-invariant) — and nothing in the output said so.
+ * A consumer either implied a grade it did not have or went silent without
+ * knowing it was silent. This record makes every remaining refusal a FACT the
+ * consumer can read — and since W3+W4 those refusals name genuine data gaps,
+ * never scope choices: say what is missing, or stay silent knowingly — never
+ * imply.
  */
 export interface UngradedSection {
   section: UngradedSectionName;

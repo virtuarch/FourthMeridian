@@ -377,7 +377,9 @@ export function computeRiskOpportunities(
       severity:         'info',
       confidence:       'HIGH',
       // REVIEW-3 C-8 (KD-16) — the ACTUAL analysis window, never a hard-coded
-      // "90-day" that disagrees with a 30-day brief or explicit window.
+      // "90-day" that disagrees with an explicit caller-directed window. (The
+      // scope-varying 30-day brief window this also guarded against was
+      // removed by W4 — the default window is now scope-invariant.)
       evidence:         `Transaction history completeness LOW (${dataQuality.snapshotSpanDays}-day snapshot span${txn?.windowDays ? ` in ${txn.windowDays}-day analysis window` : ''})`,
       affectedSections: ['dataQuality'],
     });
