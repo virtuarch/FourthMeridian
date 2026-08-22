@@ -509,7 +509,9 @@ async function run(): Promise<void> {
     "drift ruling: DUPLICATE_DETECTED stays VOCABULARY (no PENDING substrate exists)",
     NOTIFICATION_REGISTRY.DUPLICATE_DETECTED.status === "VOCABULARY",
   );
-  for (const wave4 of ["DAILY_BRIEF_READY", "OPPORTUNITY_FOUND", "UNUSUAL_SPENDING", "GOAL_RISK", "DEBT_ALERT",
+  // W2 — GOAL_RISK removed from this list with its registry entry (Goals
+  // retired; the partial registry simply no longer carries the type).
+  for (const wave4 of ["DAILY_BRIEF_READY", "OPPORTUNITY_FOUND", "UNUSUAL_SPENDING", "DEBT_ALERT",
                        "MAINTENANCE_SCHEDULED", "FEATURE_RELEASED", "POLICY_UPDATED", "DIGEST_SENT"] as const) {
     check(`${wave4} remains VOCABULARY (Wave 4 / platform not started)`,
       NOTIFICATION_REGISTRY[wave4].status === "VOCABULARY");

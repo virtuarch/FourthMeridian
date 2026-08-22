@@ -128,7 +128,7 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
   // shape the client has always received — no data is coerced.
   // V26-PRE (B3) — resolve effective debt terms through the single authority
   // BEFORE normalization, so every downstream consumer (LiabilitiesLedger
-  // interest math, SectionCard avgApr/payoff, avalanche ordering) reads the
+  // interest math, payoff summaries, avalanche ordering) reads the
   // same effective APR/minimum payment as the Personal Debt surface. The
   // normalized shape is unchanged: `interestRate`/`minimumPayment` now simply
   // carry the EFFECTIVE values (DebtProfile > flat column).

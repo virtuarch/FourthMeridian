@@ -47,7 +47,6 @@ import {
   capTransactions,
   EXPORT_TRANSACTION_CAP,
   dedupById,
-  filterVisibleContributions,
   isFullVisibility,
 } from "@/lib/export/select";
 import type {
@@ -111,7 +110,8 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
   const transactions: ExportTransaction[] = [];
   const holdings: ExportHolding[] = [];
   const snapshots: ExportSnapshot[] = [];
-  const goals: Record<string, unknown>[] = [];
+  // W2 — the goals collection was deleted with the Goals retirement (no rows
+  // exist anywhere; the export carries no retired-concept section).
 
   for (const m of memberships) {
     const spaceId = m.spaceId;
@@ -119,10 +119,10 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
 
     const withVis = await getAccountsWithVisibility({ spaceId, userId });
     // D3 — owned accounts (FULL HOME link) + FULL-shared only.
-    const fullAccountIds = new Set<string>();
+    // W2 — the fullAccountIds set died with the goal export block below; it
+    // existed only to narrow goal contributions to FULL-visible accounts.
     for (const row of withVis) {
       if (!isFullVisibility(row.visibilityLevel)) continue;
-      fullAccountIds.add(row.account.id);
       accounts.push({ ...row.account, spaceId, spaceName });
     }
 
@@ -150,37 +150,8 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     const spaceSnapshots = await getRecentSnapshots({ rows: ALL_SNAPSHOTS }, { spaceId });
     for (const s of spaceSnapshots) snapshots.push({ ...s, spaceId, spaceName });
 
-    // Goals belong to the Space; contributions are narrowed to FULL-visible
-    // accounts (D4). Check-ins carry no member attribution.
-    const spaceGoals = await db.spaceGoal.findMany({
-      where:  { spaceId, deletedAt: null },
-      orderBy: { createdAt: "asc" },
-      include: {
-        contributions: { select: { financialAccountId: true, includeBalance: true, createdAt: true } },
-        checkIns:      { select: { note: true, checkedAt: true } },
-      },
-    });
-    for (const g of spaceGoals) {
-      const visibleContributions = filterVisibleContributions(g.contributions, fullAccountIds);
-      goals.push({
-        id: g.id, spaceId, name: g.name, description: g.description,
-        category: g.category, goalType: g.goalType, status: g.status,
-        targetAmount: g.targetAmount, currentAmount: g.currentAmount,
-        targetDate: g.targetDate?.toISOString() ?? null,
-        habitFrequency: g.habitFrequency, currentStreak: g.currentStreak,
-        longestStreak: g.longestStreak, lastCheckIn: g.lastCheckIn?.toISOString() ?? null,
-        spendingCategory: g.spendingCategory,
-        completedAt: g.completedAt?.toISOString() ?? null,
-        archivedAt: g.archivedAt?.toISOString() ?? null,
-        createdAt: g.createdAt.toISOString(),
-        contributions: visibleContributions.map((c) => ({
-          financialAccountId: c.financialAccountId,
-          includeBalance: c.includeBalance,
-          createdAt: c.createdAt.toISOString(),
-        })),
-        checkIns: g.checkIns.map((c) => ({ note: c.note, checkedAt: c.checkedAt.toISOString() })),
-      });
-    }
+    // W2 — the per-Space goal export block (SpaceGoal + contributions +
+    // check-ins, D4 visibility-narrowed) was deleted with the Goals retirement.
   }
 
   // Dedup rows that appear via multiple Spaces (e.g. an owned account shared
@@ -332,7 +303,6 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     creditHistory: creditScores.map((c) => ({
       score: c.score, source: c.source, recordedAt: iso(c.recordedAt),
     })),
-    goals,
     auditHistory,
     imports: {
       batches: importBatches.map((b) => ({
@@ -358,7 +328,6 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     holdings: data.holdings.length,
     snapshots: data.snapshots.length,
     creditHistory: data.creditHistory.length,
-    goals: data.goals.length,
     auditHistory: data.auditHistory.length,
     importBatches: data.imports.batches.length,
     aiAdvice: data.aiAdvice.length,

@@ -15,17 +15,27 @@ export type ConfidenceLevel    = 'LOW' | 'MEDIUM' | 'HIGH';
 export type CashFlowReliability = 'UNRELIABLE' | 'PARTIAL' | 'RELIABLE';
 
 
+/**
+ * W2 — 'INTENTIONAL_DEBT_PAYOFF' and 'MIXED' were DELETED from this union.
+ * Both were INTENT claims, gated on an ACTIVE DEBT_REDUCTION goal — and Goals
+ * (the product's only intent-declaration mechanism) are retired. The doctrine:
+ * declared debt-paydown intent is NEVER guessed from activity; with no
+ * declaration mechanism, an intent-shaped cause is structurally unreachable,
+ * not merely absent. What remains is measurable fact: DEBT_DRIVEN states that
+ * debt payments explain the deficit (activity, not intent). When a declaration
+ * mechanism returns, it belongs to debt planning/strategy (the recorded future
+ * home) — re-adding an intent-backed cause then must route through THAT
+ * authority, never through activity inference here.
+ */
 export type DeficitCauseClassification =
-  | 'INTENTIONAL_DEBT_PAYOFF'  // debt payments dominate + active debt goal confirms strategy
   | 'POSSIBLE_OVERSPENDING'    // canonical economic net < 0 — spending genuinely exceeded income
   | 'LOW_INCOME_SAMPLE'        // income data is incomplete — deficit is a data artifact
-  | 'MIXED'                    // significant debt payments but not dominant cause
   /**
    * REVIEW-3 C-3 — the after-paydown position is negative but the CANONICAL
-   * economic net is not: debt payments (without an active payoff goal on
-   * record) fully explain the cash deficit. Distinct from POSSIBLE_OVERSPENDING
-   * so a consumer can never say "you spent more than you took in" while the
-   * Cash Flow workspace shows a surplus for the same window.
+   * economic net is not: debt payments fully explain the cash deficit — a
+   * measured fact about the money, with no claim about intent. Distinct from
+   * POSSIBLE_OVERSPENDING so a consumer can never say "you spent more than you
+   * took in" while the Cash Flow workspace shows a surplus for the same window.
    */
   | 'DEBT_DRIVEN'
   | 'NOT_APPLICABLE';          // no cash deficit (net after debt payments ≥ 0)
@@ -52,9 +62,9 @@ export type CurrentStatePriority =
   | 'DATA_QUALITY'  // incomplete data overrides all other findings
   | 'LIQUIDITY'     // critically low or notably high liquid coverage
   | 'DEBT'          // critical or warning-level debt health
-  | 'CASH_FLOW'     // spending problem or intentional payoff to surface
-  | 'GOALS'         // goal needs attention
-  | 'GOALS_GOOD';   // position looks healthy — affirm progress
+  | 'CASH_FLOW';    // spending problem or debt-driven deficit to surface
+// W2 — 'GOALS' / 'GOALS_GOOD' deleted: the priority ladder never emitted them
+// (dead union members) and the goals domain is retired.
 
 /** Whether APR is known for all, some, or no FULL-visibility debt accounts. */
 
@@ -72,7 +82,7 @@ export type AdvisorHeuristic =
   | 'HIGH_APR_DEBT_PRIORITY'                  // CRITICAL or WARNING debt classification
   | 'DATA_QUALITY_LIMITS_CASH_FLOW_ADVICE'    // income confidence is LOW
   | 'LIQUIDITY_UNKNOWN_FOR_SPACE'             // accounts present but no liquid accounts in this Space
-  | 'DEBT_PAYOFF_IS_INTENTIONAL'              // INTENTIONAL_DEBT_PAYOFF or MIXED deficit cause
+  // W2 — 'DEBT_PAYOFF_IS_INTENTIONAL' deleted (intent claim; Goals retired).
   | 'APR_REQUIRED_FOR_PRECISE_PAYOFF'         // hasNullAPR with outstanding liabilities
   | 'INCOME_INCOMPLETE_DO_NOT_DEFICIT_FRAME'  // income confidence LOW — never frame as cash deficit
   | 'LOW_LIQUIDITY_COVERAGE';                 // CRITICAL or WARNING liquidity classification
@@ -334,7 +344,8 @@ export interface DebtStrategySection {
  * Used in primaryEvidence / ignoredEvidence so the LLM can explain its reasoning.
  */
 
-export type AllocationEvidenceDomain = 'cashFlow' | 'debt' | 'liquidity' | 'investments' | 'goals';
+export type AllocationEvidenceDomain = 'cashFlow' | 'debt' | 'liquidity' | 'investments';
+// W2 — 'goals' deleted from the union (Goals retired; no engine ever cited it).
 
 /**
  * Concrete numeric facts for the LLM to quote directly.
@@ -466,41 +477,10 @@ export interface SpendingTrendsSection {
   metricTrends:           MetricTrend[];
 }
 
-// ── 2.4 Goal Alignment Engine types ──────────────────────────────────────────
-
-/** Alignment status of a single goal based on observable behavior. */
-
-export type GoalAlignmentStatus =
-  | 'ALIGNED'            // behavior clearly supports this goal
-  | 'LIKELY_ALIGNED'     // partial or indirect evidence of alignment
-  | 'MISALIGNED'         // behavior appears to conflict with goal
-  | 'INSUFFICIENT_DATA'; // cannot assess from available context
-
-/** Alignment assessment for a single active goal. */
-
-export interface GoalAlignmentItem {
-  goalId:    string;
-  goalName:  string;
-  goalType:  string;
-  status:    GoalAlignmentStatus;
-  /** One-line deterministic fact supporting the classification. */
-  evidence:  string;
-  /** Data that would improve confidence. Omitted when assessment is confident. */
-  blocker?:  string;
-}
-
-/** Aggregate goal alignment across all active goals in the Space. */
-
-export interface GoalAlignmentSection {
-  confidence:      ConfidenceLevel;
-  overallStatus:   'ALIGNED' | 'MIXED' | 'MISALIGNED' | 'INSUFFICIENT_DATA';
-  alignedCount:    number;
-  misalignedCount: number;
-  blockedCount:    number;
-  goalAlignments:  GoalAlignmentItem[];
-  hasGoalsDomain:  boolean;
-  activeGoalCount: number;
-}
+// ── 2.4 Goal Alignment Engine types — DELETED (W2) ───────────────────────────
+// GoalAlignmentStatus / GoalAlignmentItem / GoalAlignmentSection (and the
+// 'MIXED' overall status that lived only on that section) were removed with
+// the Goals retirement — there are no goals left to align against.
 
 // ── 2.5 Investment Readiness Engine types ─────────────────────────────────────
 
@@ -554,7 +534,8 @@ export type RiskCode =
   | 'HIGH_INTEREST_DEBT'
   | 'APR_MISSING_FOR_DEBT'
   | 'DEBT_PAYOFF_BLOCKED_BY_DATA'
-  | 'GOALS_MISALIGNED'
+  // W2 — 'GOALS_MISALIGNED' deleted (its emitting rule read the retired
+  // goal-alignment section).
   | 'INVESTING_NOT_READY'
   | 'HISTORY_INCOMPLETE';
 
@@ -569,7 +550,7 @@ export type OpportunityCode =
   | 'PAY_HIGH_APR_DEBT'
   | 'BUILD_EMERGENCY_FUND'
   | 'IMPROVE_DATA_QUALITY'
-  | 'ALIGN_SPENDING_WITH_GOALS'
+  // W2 — 'ALIGN_SPENDING_WITH_GOALS' deleted with the goal-alignment section.
   | 'READY_TO_INVEST'
   | 'EXPAND_TRANSACTION_HISTORY';
 
@@ -635,9 +616,11 @@ export interface RiskOpportunitySection {
  *   debtStrategy         — 2.2 Debt Strategy Engine
  *   spendingOpportunities — 2.3 Spending Opportunity Engine
  *   spendingTrends       — 2.3B Spending Trends Engine (deterministic MoM/rolling)
- *   goalAlignment        — 2.4 Goal Alignment Engine
  *   investmentReadiness  — 2.5 Investment Readiness Engine
  *   riskOpportunities    — 2.6 Risk & Opportunity Engine (aggregates 2.1–2.5 + base)
+ *
+ * W2 — goalAlignment (2.4) was removed with the Goals retirement; engine
+ * numbering is preserved for doc continuity.
  */
 
 export interface FinancialAssessment {
@@ -649,7 +632,6 @@ export interface FinancialAssessment {
   debtStrategy:          DebtStrategySection;           // 2.2
   spendingOpportunities: SpendingOpportunitySection;    // 2.3
   spendingTrends:        SpendingTrendsSection;         // 2.3B
-  goalAlignment:         GoalAlignmentSection;          // 2.4
   investmentReadiness:   InvestmentReadinessSection;    // 2.5
   riskOpportunities:     RiskOpportunitySection;        // 2.6
   /** Top-ranked priority — used by the prompt for the leading instruction. */

@@ -17,14 +17,15 @@
  *      shared SpaceAccount type.
  *   7. Detail route reuses the SAME spaceAccountLinks ACTIVE join + the Activity
  *      Tab's ImportBatch join shape, and deriveConnectionState() verbatim.
- *   8. Host wiring: accounts_overview mounts AccountsPerspective. (REVIEW-3:
- *      business_accounts + AccountsCard were deleted — the key was seeded only
- *      by the non-creatable BUSINESS category and rendered nowhere.)
+ *   8. Wiring: W2 — the SectionRegistry render stack is DELETED (the
+ *      accounts_overview section mount went with it); AccountsPerspective
+ *      survives as the vocabulary module behind the editorial Accounts
+ *      surfaces (AccountsLedger / AccountDetail consume its exports).
  *
  *   npx tsx components/space/widgets/accounts/AccountsPerspective.test.ts
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 
 const ROOT = process.cwd();
@@ -122,19 +123,22 @@ console.log("7. Detail route reuses established joins + pure state derivation");
   check("membership-gated VIEWER+", ROUTE.includes("requireSpaceRole(spaceId, SpaceMemberRole.VIEWER)"));
 }
 
-console.log("8. Section-registry wiring — one renderer swap, business_accounts untouched");
+console.log("8. Wiring — W2: the section-registry mount is gone; the editorial surfaces consume the module");
 {
-  // SD-7 moved the SectionRegistry (and its renderers) out of SpaceDashboard; SEC-2
-  // then split it into components/space/sections/SectionRegistry.tsx — the wiring
-  // assertions (incl. the AccountsCard renderer) follow it there.
-  const SECTIONS = readFileSync(path.join(ROOT, "components/space/sections/SectionRegistry.tsx"), "utf8");
-  check("accounts_overview mounts AccountsPerspective",
-    SECTIONS.includes('"accounts_overview":      (p) => <AccountsPerspective spaceId={p.spaceId} accounts={p.accounts} />'));
-  // REVIEW-3 (slice F): business_accounts + AccountsCard deleted — seeded only
-  // by the non-creatable BUSINESS category, rendered nowhere, zero prod rows.
-  check("business_accounts / AccountsCard stay deleted",
-    !SECTIONS.includes('"business_accounts"') && !SECTIONS.includes("function AccountsCard("));
-  check("AccountsPerspective imported", SECTIONS.includes('from "@/components/space/widgets/accounts/AccountsPerspective"'));
+  // W2 — the SectionRegistry/SectionCard render stack is DELETED with the
+  // Goals/Retirement retirement (its only remaining product mounts), taking the
+  // accounts_overview SECTION mount with it. AccountsPerspective itself stays:
+  // the editorial Accounts surfaces consume its exported vocabulary.
+  check("SectionRegistry.tsx stays deleted (W2 — render stack retired)",
+    !existsSync(path.join(ROOT, "components/space/sections/SectionRegistry.tsx")));
+  check("AccountsPerspective still exports its component",
+    SRC.includes("export function AccountsPerspective"));
+  const LEDGER = readFileSync(path.join(ROOT, "components/space/widgets/accounts/AccountsLedger.tsx"), "utf8");
+  const DETAIL = readFileSync(path.join(ROOT, "components/space/widgets/accounts/AccountDetail.tsx"), "utf8");
+  check("AccountsLedger consumes the AccountsPerspective vocabulary",
+    LEDGER.includes('from "./AccountsPerspective"'));
+  check("AccountDetail consumes the AccountsPerspective vocabulary",
+    DETAIL.includes('from "./AccountsPerspective"'));
 }
 
 if (failures > 0) {

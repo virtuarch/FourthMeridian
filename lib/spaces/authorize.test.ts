@@ -19,7 +19,7 @@
  * adapter + routes for the invariants that must not regress.
  */
 
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { join }         from "path";
 import { can }          from "./policy";
 import type { SpaceMemberRole, SpaceMemberStatus, SpaceType } from "@prisma/client";
@@ -141,17 +141,13 @@ check("C share no longer imports requireUser / SpaceMemberStatus",
 // Same source-scan tripwire approach. All three are "any ACTIVE member" doors.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const checkIn      = code(read("app", "api", "spaces", "[id]", "goals", "[goalId]", "check-in", "route.ts"));
+// W2 — the goal check-in route was DELETED with the Goals retirement; its three
+// door pins retired with it. The route's absence is itself pinned here so the
+// door cannot quietly return without re-enrolling in this scan.
+check("D goals routes stay deleted (Goals retired, W2)",
+  !existsSync(join(process.cwd(), "app", "api", "spaces", "[id]", "goals")));
 const activity     = code(read("app", "api", "spaces", "[id]", "activity", "route.ts"));
 const perspectives = code(read("app", "api", "spaces", "[id]", "perspectives", "route.ts"));
-
-// goal check-in
-check("D check-in uses requireSpaceAction goal:checkIn",
-  /requireSpaceAction\(\s*spaceId\s*,\s*["']goal:checkIn["']\s*\)/.test(checkIn));
-check("D check-in dropped inline spaceMember.findUnique",
-  !/spaceMember\.findUnique/.test(checkIn));
-check("D check-in keeps goal 404 + HABIT 400 residuals",
-  /status:\s*404/.test(checkIn) && /HABIT/.test(checkIn) && /status:\s*400/.test(checkIn));
 
 // activity
 check("D activity uses requireSpaceAction activity:read",

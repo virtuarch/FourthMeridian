@@ -49,6 +49,5 @@ export type {
   RecurringCandidate,
   SnapshotSectionData,
   SnapshotDataPoint,
-  GoalsSectionData,
-  GoalSummaryItem,
+  // W2 — GoalsSectionData / GoalSummaryItem deleted (Goals retired).
 } from '@/lib/ai/types';

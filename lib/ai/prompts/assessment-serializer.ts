@@ -32,22 +32,19 @@ function priorityGuidance(assessment: FinancialAssessment): string {
         ? 'High-APR debt is urgent — lead with the monthly interest cost and recommended payoff priority.'
         : 'High-APR debt is the most actionable item — discuss the interest burden and payoff options.';
     case 'CASH_FLOW':
-      if (
-        assessment.cashFlow.deficitCause === 'INTENTIONAL_DEBT_PAYOFF' ||
-        assessment.cashFlow.deficitCause === 'MIXED'
-      ) {
-        return 'Affirm the intentional debt payoff strategy. Note any liquidity constraint if coverage is below 3 months.';
-      }
+      // W2 — the INTENTIONAL_DEBT_PAYOFF / MIXED guidance arm was deleted with
+      // those union members (Goals retired; intent is never guessed).
       if (assessment.cashFlow.deficitCause === 'DEBT_DRIVEN') {
         // REVIEW-3 C-3 — debt payments explain the deficit and the canonical net
-        // is non-negative: never frame this as overspending.
-        return 'The cash deficit is driven by debt payments, not overspending — discuss whether the paydown pace is intentional and suggest recording it as a goal.';
+        // is non-negative: never frame this as overspending. W2 — the "suggest
+        // recording it as a goal" tail was deleted with the Goals retirement:
+        // there is no declaration mechanism, and the serializer must not steer
+        // the model toward one. Intent stays undiscussed unless the USER raises
+        // it; the future home for declared intent is debt planning/strategy.
+        return 'The cash deficit is driven by debt payments, not overspending — the user has not declared whether this paydown pace is deliberate, so state the fact without asserting intent.';
       }
       return 'Spending may be exceeding income — identify the specific expense categories driving the gap.';
-    case 'GOALS':
-      return 'A goal may need attention — discuss its status and recommend the next action.';
-    case 'GOALS_GOOD':
-      return 'Financial position looks healthy — affirm progress and highlight the next milestone.';
+    // W2 — 'GOALS' / 'GOALS_GOOD' cases deleted with their union members.
     default:
       return 'Provide an overall financial assessment.';
   }
@@ -66,7 +63,7 @@ function priorityGuidance(assessment: FinancialAssessment): string {
  *   7.  DEBT STRATEGY           — 2.2: avalanche/snowball candidates + urgency.
  *   8.  SPENDING OPPORTUNITIES  — 2.3: category breakdown + discretionary total (conditional).
  *   8B. SPENDING TRENDS        — 2.3B: deterministic MoM / rolling trends (conditional).
- *   9.  GOAL ALIGNMENT          — 2.4: per-goal alignment status (conditional).
+ *   9.  (W2 — GOAL ALIGNMENT deleted with the Goals retirement.)
  *   10. INVESTMENT READINESS    — 2.5: readiness context (conditional).
  *   11. RISK & OPPORTUNITY      — 2.6: top-3 aggregated risks + opportunities (conditional).
  *   12. ADVISOR FLAGS           — typed heuristics for calibration.
@@ -82,7 +79,7 @@ export function serializeAssessmentBlock(
   const {
     dataQuality, cashFlow, debt, liquidity,
     capitalAllocation, debtStrategy,
-    spendingOpportunities, spendingTrends, goalAlignment, investmentReadiness,
+    spendingOpportunities, spendingTrends, investmentReadiness,
     riskOpportunities,
   } = assessment;
   const lines: string[] = [];
@@ -129,12 +126,12 @@ export function serializeAssessmentBlock(
 
   if (cashFlow.incompleteIncomeWarning) {
     lines.push('  ⚠ Do not treat apparent deficit as fact — income history is incomplete.');
-  } else if (cashFlow.deficitCause === 'INTENTIONAL_DEBT_PAYOFF') {
-    lines.push('  → Negative cash flow is intentional debt-reduction strategy — active debt goal confirms this.');
-  } else if (cashFlow.deficitCause === 'MIXED') {
-    lines.push('  → Deficit has both intentional debt payments and non-debt spending above income.');
   } else if (cashFlow.deficitCause === 'DEBT_DRIVEN') {
-    lines.push('  → Cash deficit is driven by debt payments (canonical net is non-negative) — not overspending; no active payoff goal on record.');
+    // W2 — the INTENTIONAL_DEBT_PAYOFF / MIXED branches were deleted with
+    // their union members, and the "no active payoff goal on record" tail is
+    // gone: with Goals retired there is no declaration mechanism, so the line
+    // states the measured fact and asserts nothing about intent.
+    lines.push('  → Cash deficit is driven by debt payments (canonical net is non-negative) — not overspending; whether this paydown pace is deliberate has not been declared.');
   }
 
   if (cashFlow.impliedMonthlyIncome !== null) {
@@ -393,20 +390,8 @@ export function serializeAssessmentBlock(
     lines.push('');
   }
 
-  // ── 9. Goal Alignment (2.4) ───────────────────────────────────────────────
-  if (goalAlignment.hasGoalsDomain && goalAlignment.activeGoalCount > 0) {
-    lines.push(`GOAL ALIGNMENT  [confidence: ${goalAlignment.confidence}]`);
-    lines.push(
-      `  Overall: ${goalAlignment.overallStatus}` +
-      ` (${goalAlignment.alignedCount} aligned, ${goalAlignment.misalignedCount} misaligned,` +
-      ` ${goalAlignment.blockedCount} insufficient data)`,
-    );
-    for (const g of goalAlignment.goalAlignments) {
-      lines.push(`  ${g.goalName} [${g.goalType}]: ${g.status} — ${g.evidence}`);
-      if (g.blocker) lines.push(`    ↳ Needs: ${g.blocker}`);
-    }
-    lines.push('');
-  }
+  // ── 9. Goal Alignment (2.4) — DELETED (W2, Goals retired) ─────────────────
+  // Section numbering is preserved for doc continuity with the engine list.
 
   // ── 10. Investment Readiness (2.5) ────────────────────────────────────────
   lines.push(`INVESTMENT READINESS  [confidence: ${investmentReadiness.confidence}]`);

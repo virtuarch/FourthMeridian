@@ -61,15 +61,5 @@ export function capTransactions<T extends { date: string }>(
   return { rows: sorted, truncated: false };
 }
 
-/**
- * Approved decision D4 — a goal's contributions are kept only when their
- * account is visible to the user at FULL in the goal's Space. A contribution
- * pointing at an account the user can't see at FULL would leak another
- * member's account id, so it is dropped.
- */
-export function filterVisibleContributions<C extends { financialAccountId: string }>(
-  contributions: C[],
-  fullVisibleAccountIds: Set<string>,
-): C[] {
-  return contributions.filter((c) => fullVisibleAccountIds.has(c.financialAccountId));
-}
+// W2 — filterVisibleContributions (approved decision D4) was deleted with the
+// goals export block: goal contributions no longer exist to narrow.

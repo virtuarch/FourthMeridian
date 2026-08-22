@@ -43,6 +43,8 @@ function modelBody(name: string): string {
 console.log("deletion-safety schema tripwires (OPS-2 S5)");
 
 // ── 1. SpaceGoal.createdBy — nullable + SetNull (was Cascade) ────────────────
+// W2 note: Goals are retired but the goal TABLES are schema and await the
+// retirement migration train, so this posture pin stays live until then.
 {
   const body = modelBody("SpaceGoal");
   check(
@@ -81,6 +83,56 @@ console.log("deletion-safety schema tripwires (OPS-2 S5)");
     "AuditLog.space is onDelete: SetNull (retain & anonymize)",
     /space\s+Space\?\s+@relation\(fields: \[spaceId\][\s\S]*?onDelete: SetNull\)/.test(body),
   );
+}
+
+// ── 4. W2 — goal models are cascade-only; code-side goal deletion is GONE ────
+// Goals are retired. The schema keeps the goal tables until the retirement
+// migration train, and their FK cascades (SpaceGoal→Space,
+// GoalContribution→SpaceGoal + FinancialAccount, GoalCheckIn→SpaceGoal) are
+// now the ONLY goal-row cleanup mechanism — every code-side delete/repoint
+// (purge-trash arm, reconcile contribution-move, seed wipes) was deleted as
+// redundant. These tripwires pin both halves: the cascades exist in schema
+// text, and no runtime code deletes or repoints goal rows any more.
+{
+  const spaceGoal = modelBody("SpaceGoal");
+  check(
+    "SpaceGoal.space is onDelete: Cascade (Space delete owns goal cleanup)",
+    /space\s+Space\s+@relation\(fields: \[spaceId\][\s\S]*?onDelete: Cascade\)/.test(spaceGoal),
+  );
+  const contribution = modelBody("GoalContribution");
+  check(
+    "GoalContribution.goal is onDelete: Cascade",
+    /goal\s+SpaceGoal\s+@relation\(fields: \[goalId\][\s\S]*?onDelete: Cascade\)/.test(contribution),
+  );
+  check(
+    "GoalContribution.financialAccount is onDelete: Cascade",
+    /financialAccount\s+FinancialAccount\s+@relation\(fields: \[financialAccountId\][\s\S]*?onDelete: Cascade\)/.test(contribution),
+  );
+  const checkIn = modelBody("GoalCheckIn");
+  check(
+    "GoalCheckIn.goal is onDelete: Cascade",
+    /goal\s+SpaceGoal\s+@relation\(fields: \[goalId\][\s\S]*?onDelete: Cascade\)/.test(checkIn),
+  );
+
+  // Code-side goal-row deletion/repointing must stay gone (comment lines are
+  // excluded so W2 tombstones do not trip the scan).
+  const codeSites = [
+    "jobs/purge-trash.ts",
+    "lib/accounts/reconcile.ts",
+    "lib/account-deletion/purge.ts",
+    "app/api/spaces/[id]/permanent/route.ts",
+  ];
+  for (const rel of codeSites) {
+    const src = readFileSync(path.join(process.cwd(), rel), "utf8")
+      .split("\n")
+      .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+      .join("\n");
+    check(
+      `${rel}: no code-side spaceGoal/goalContribution/goalCheckIn access`,
+      !/\b(spaceGoal|goalContribution|goalCheckIn)\b/.test(src),
+      "goal rows are cascade-only since W2",
+    );
+  }
 }
 
 console.log(

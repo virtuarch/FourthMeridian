@@ -64,7 +64,7 @@ export type IntentFamily =
   | 'SPENDING'
   | 'INVESTMENT'
   | 'CASH_FLOW'
-  | 'GOAL'
+  // W2 — 'GOAL' deleted with the GOAL_ALIGNMENT intent (Goals retired).
   | 'OVERVIEW'
   | 'UPDATE'
   | 'UNKNOWN';

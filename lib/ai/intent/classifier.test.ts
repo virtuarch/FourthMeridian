@@ -36,7 +36,11 @@ const CASES: Case[] = [
   { message: 'Should I pay off debt or buy stock?',       intent: FinancialIntents.DEBT_VS_INVESTING,          temporal: [TemporalFrames.PLANNING] },
   { message: 'Where can I cut spending?',                 intent: FinancialIntents.SPENDING_REDUCTION,         temporal: [TemporalFrames.HISTORICAL, TemporalFrames.TREND] },
   { message: 'Why is my cash flow negative?',             intent: FinancialIntents.CASH_FLOW_EXPLANATION,      temporal: [TemporalFrames.HISTORICAL] },
-  { message: "Are my goals aligned with how I'm spending?", intent: FinancialIntents.GOAL_ALIGNMENT,           temporal: [TemporalFrames.CURRENT, TemporalFrames.TREND] },
+  // W2 — GOAL_ALIGNMENT was deleted with the Goals retirement. A goal-phrased
+  // question now classifies HONESTLY to UNKNOWN (no surviving rule's
+  // vocabulary matches it) — never to a section that no longer exists, and
+  // never a crash.
+  { message: "Are my goals aligned with how I'm spending?", intent: FinancialIntents.UNKNOWN,                  temporal: [TemporalFrames.GENERAL] },
   { message: 'Am I ready to invest?',                     intent: FinancialIntents.INVESTMENT_READINESS,       temporal: [TemporalFrames.CURRENT] },
   { message: 'Can you update my Chase APR?',              intent: FinancialIntents.UPDATE_KNOWLEDGE,           temporal: [TemporalFrames.CURRENT] },
   { message: 'Give me an overview',                       intent: FinancialIntents.GENERAL_FINANCIAL_OVERVIEW, temporal: [TemporalFrames.CURRENT] },

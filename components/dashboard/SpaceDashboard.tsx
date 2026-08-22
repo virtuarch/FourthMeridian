@@ -7,10 +7,11 @@ import { todayUTCISO } from "@/lib/time/clock";
  * The shared Space shell host (Personal renders through it too, via
  * PersonalDashboard). The rail is fixed (lib/space-nav SPACE_TAB_ORDER); the
  * OVERVIEW slot always renders the engaged Perspective workspace (the Net
- * Worth default resolves to Wealth). SpaceDashboardSection rows (GET
- * /api/spaces/[id]/sections) now drive only the GOALS / RETIREMENT routed
- * modals and the initial-tab pick — the section-driven Overview canvas was
- * retired in REVIEW-3.
+ * Worth default resolves to Wealth). W2 — the Goals/Retirement surfaces and
+ * the whole section RENDER stack (SectionCard/SectionRegistry, virtual
+ * sections, routed modals) are retired; SpaceDashboardSection rows (GET
+ * /api/spaces/[id]/sections) remain CONFIG (Manage → Overview toggles) and
+ * still feed the initial-tab pick, but nothing here renders them.
  */
 
 import React, { useState, useEffect, useMemo } from "react";
@@ -37,22 +38,17 @@ import { MembersWorkspace } from "@/components/space/workspaces/MembersWorkspace
 import { TransactionsWorkspace } from "@/components/space/workspaces/TransactionsWorkspace";
 import { AccountsWorkspace } from "@/components/space/workspaces/AccountsWorkspace";
 import { ActivityWorkspace } from "@/components/space/workspaces/ActivityWorkspace";
-import { AddGoalModal } from "@/components/space/workspaces/AddGoalModal";
-import { RoutedWorkspaceModal } from "@/components/space/workspaces/RoutedWorkspaceModal";
 import type { SectionCardBundle } from "@/components/space/workspaces/SpaceSectionStack";
 import { railVisibleTabs, SPACE_TAB_LABELS } from "@/lib/space-nav";
 import { useSpaceChromePublisher } from "@/lib/space/space-chrome-context";
 import { resolveSpaceFreshness } from "@/lib/freshness/space-freshness";
-import { getPerspectivesForCategory, isRoutedWorkspaceTab, getWorkspaceDefinition, type PerspectiveDef } from "@/lib/perspectives";
-import { toVirtualSections } from "@/lib/perspectives/virtual-sections";
+import { getPerspectivesForCategory, getWorkspaceDefinition, type PerspectiveDef } from "@/lib/perspectives";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 import { useDisplayCurrency, DisplayCurrencyProvider } from "@/lib/currency-context";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { CurrencyRevertedBanner } from "@/components/dashboard/CurrencyRevertedBanner";
 import { hasSpaceTrendHero } from "@/lib/space-hero";
-import { SectionCard } from "@/components/space/sections/SectionCard";
-import { SectionRegistry } from "@/components/space/sections/SectionRegistry";
 import type { FinancialInitialWorkspacePayload } from "@/lib/space/mount-composition";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -155,7 +151,6 @@ export function SpaceDashboard({
 }: Props) {
   const router = useRouter();
 
-  const [showAddGoal,   setShowAddGoal]   = useState(false);
   const [showManage,    setShowManage]    = useState(false);
   const [confirmLeave,  setConfirmLeave]  = useState(false);
   const [leaveBusy,     setLeaveBusy]    = useState(false);
@@ -222,10 +217,10 @@ export function SpaceDashboard({
   // ── Perspective Workspace (UX-PER-3) ───────────────────────────────────────
   // The Perspectives TAB is selector-driven (free-form tabs, not cards). The
   // selector lists the category's Perspectives (overview already excluded from
-  // perspectiveItems); the selected one renders its workspace (widgets[] →
-  // virtual sections → existing SectionCard) or an honest placeholder below.
-  // Default = the first workspace-backed Perspective (Wealth) so the tab opens
-  // on a real workspace. The Overview doorway keeps `perspectiveItems` intact.
+  // perspectiveItems); the selected one renders its WORKSPACE_RENDERERS entry
+  // or an honest placeholder below (W2: the widgets[]/virtual-section render
+  // path retired with Goals). Default = the first workspace-backed Perspective
+  // (Wealth) so the tab opens on a real workspace.
   // SD-8b — the lens SELECTION state (selectedPerspectiveId) + its resolution to
   // the RENDERED activePerspectiveId (Net Worth default → "wealth" on Overview)
   // now live in useSpaceNavigation. The host only looks the engaged lens up in
@@ -350,15 +345,11 @@ export function SpaceDashboard({
   // "Net Worth" is the DEFAULT lens — REVIEW-3: selecting it clears the engaged
   // selection, which re-resolves to the Wealth workspace (the summary canvas it
   // used to return to is retired). The other four engage their extracted
-  // Workspaces. "Goals" is not a core financial analytical lens (prototype
-  // excludes it); it stays reachable only via its routed-modal deep link.
-  // ONE shared PerspectiveTabs renders inside PerspectiveShell.
-  // SD-2 — "is this Perspective workspace-backed?" is answered by the renderer
-  // contract (a dedicated WORKSPACE_RENDERERS entry) OR real widgets[] (the
-  // virtual-section path, e.g. Goals) — never by widget presence alone. Investments
-  // has a renderer but no widgets, so the widget-only proxy would wrongly gray it out.
-  const isWorkspaceBacked = (p: { id: string; widgets?: readonly string[] }) =>
-    p.id in WORKSPACE_RENDERERS || !!(p.widgets && p.widgets.length > 0);
+  // Workspaces. ONE shared PerspectiveTabs renders inside PerspectiveShell.
+  // SD-2/W2 — "is this Perspective workspace-backed?" is answered by the renderer
+  // contract alone (a dedicated WORKSPACE_RENDERERS entry); the widgets[]/
+  // virtual-section alternative retired with the Goals surface.
+  const isWorkspaceBacked = (p: { id: string }) => p.id in WORKSPACE_RENDERERS;
   const lensSelectorItems = useMemo(
     () => [
       { id: NET_WORTH_LENS_ID, label: "Net Worth", hasWorkspace: true },
@@ -463,9 +454,6 @@ export function SpaceDashboard({
   // derived value — shell.derived.historicalCompareTo — not computed host-local.
   const debtActive = activeTab === "OVERVIEW" && activePerspectiveId === "debt";
   const liquidityActive = activeTab === "OVERVIEW" && activePerspectiveId === "liquidity";
-  // SD-7a — Goals data ownership moved OUT of the host: each Goals Perspective
-  // widget self-fetches via GoalPerspectiveWidget (mirroring GoalsCard). The host
-  // no longer fetches goals, holds `spaceGoals`, or threads it through SectionCard.
   const txConversionCtx = useMemo(() => {
     const serialized = transactionsMoneyCtxOverride ?? spaceMoneyCtx;
     return serialized ? rehydrateContext(serialized) : undefined;
@@ -505,24 +493,13 @@ export function SpaceDashboard({
     if (!loading) applyInitialTab(sections);
   }, [loading, sections, applyInitialTab]);
 
-  // Template redesign: seeded section rows whose key has no SectionRegistry
-  // renderer (and no debt-space legacy override) previously fell through to
-  // a permanent ContextualCard "coming soon" body. Presets no longer seed
-  // such keys, but EXISTING Spaces still carry the rows — gate them out at
-  // render time ("nothing appears that the data cannot defend"). The rows
-  // themselves are untouched (still visible/toggleable in Settings), so a
-  // key regains its card the moment a renderer ships.
-  const isDebtSpaceCategory = category === "DEBT_PAYOFF";
-  const hasRenderer = (key: string) =>
-    key in SectionRegistry ||
-    (isDebtSpaceCategory && (key === "cash_flow" || key === "savings_rate"));
-
-  // Enabled, renderer-backed sections — consumed by the routed-modal tabs
-  // (GOALS / RETIREMENT) via sectionsForTab below. (The former section-derived
-  // `tabs` list fed only the "no sections configured" fallback, deleted with
-  // the Overview summary canvas in REVIEW-3.)
-  const enabledSections = sections.filter((s) => s.enabled && hasRenderer(s.key));
-
+  // (W2) The section RENDER pipeline (hasRenderer gating, enabledSections,
+  // sectionsForTab, the SectionCard/SectionRegistry compositor) is deleted with
+  // its last mounts — the GOALS/RETIREMENT routed modals and the Goals virtual
+  // sections. The `sections` fetch itself is KEPT: SpaceDashboardSection rows
+  // remain live CONFIG (Manage → Overview toggles write them via reloadSections)
+  // and applyInitialTab still reads enabled rows for the section-derived
+  // default-tab pick on existing Spaces.
   const catLabel = CATEGORY_LABELS[category as SpaceCategory] ?? category;
 
   // ── SHELL migration — publish this Space's identity + controls UP to the
@@ -626,26 +603,21 @@ export function SpaceDashboard({
     );
   }
 
-  // The active tab's enabled, renderer-backed sections — consumed by the
-  // GOALS / RETIREMENT routed modals (the last section-driven surfaces).
-  const sectionsForTab = enabledSections
-    .filter((s) => s.tab === activeTab)
-    .sort((a, b) => a.order - b.order);
-
   // (REVIEW-3, slice F) The Overview summary canvas — trend-hero series, the
   // v2.6-LEGACY-1 hero-override dead lets, the Recent-Transactions preview and
   // the Perspectives doorway row — was deleted with OverviewWorkspace: the
   // Overview slot always renders the engaged Perspective workspace, so the
   // summary composition had no reachable mount.
 
-  // SD-7 — the SectionCard prop bundle for the section-backed surfaces.
+  // SD-7 — the shared prop bundle; ONE consumer remains (AccountsWorkspace, which
+  // reads only spaceId/accounts/ctx). W2 — goals are retired: `onAddGoal` was
+  // deleted from SectionCardBundle with the routed modal.
   const sectionCardBundle: SectionCardBundle = {
     accounts,
     spaceId,
     spaceType,
     category,
     canManage,
-    onAddGoal: () => setShowAddGoal(true),
     ctx: widgetCtx,
     snapshots,
     snapshotCurrency: effectiveSnapshotCurrency,
@@ -705,20 +677,8 @@ export function SpaceDashboard({
           {/* (Activity slice) — the Timeline modal is gone. Activity is now a
               first-class rail tab rendering the recent_activity section inline
               (TimelineWidget, which self-fetches + paginates), so there's no
-              modal to launch. */}
-          {showAddGoal && (
-            <AddGoalModal
-              spaceId={spaceId}
-              spaceCategory={category}
-              accounts={accounts}
-              onClose={() => setShowAddGoal(false)}
-              onCreated={() => {
-                setShowAddGoal(false);
-                setActiveTab("GOALS");
-              }}
-            />
-          )}
-
+              modal to launch. (W2 — the AddGoalModal overlay retired with the
+              Goals surface.) */}
           {showManage && (
             <ManageSpaceModal
               spaceId={spaceId}
@@ -811,12 +771,11 @@ export function SpaceDashboard({
             selector (the Net Worth default resolves to the Wealth workspace;
             the former summary canvas was unreachable and is deleted).
             Selecting a lens swaps the panel below: workspace-backed
-            Perspectives render their WORKSPACE_RENDERERS entry; widgets[]-
-            backed ones (Goals, deep-link only) render through the EXISTING
-            SectionCard/SectionRegistry compositor as VIRTUAL, render-only
-            sections (virtual ids never reach a mutation endpoint); others show
-            an honest "coming soon" placeholder. The financial workspaces,
-            contracts, time semantics, Evidence, and FX are unchanged. */}
+            Perspectives render their WORKSPACE_RENDERERS entry; others show
+            an honest "coming soon" placeholder. (W2 — the widgets[]/virtual-
+            section SectionCard path retired with the Goals surface.) The
+            financial workspaces, contracts, time semantics, Evidence, and FX
+            are unchanged. */}
         {activeTab === "OVERVIEW" && activePerspective != null && (
           <div className="space-y-4">
             {/* ── Perspective shell — two framed containers (§2) ────────────────
@@ -870,28 +829,6 @@ export function SpaceDashboard({
                 <WorkspaceExplorationHost spaceId={spaceId} asOf={asOf}>
                   {WORKSPACE_RENDERERS[activePerspectiveId](renderCtx)}
                 </WorkspaceExplorationHost>
-              ) : activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
-                toVirtualSections(activePerspective.id, activePerspective.widgets).map((vs) => (
-                  <SectionCard
-                    key={vs.id}
-                    section={vs}
-                    accounts={accounts}
-                    spaceId={spaceId}
-                    spaceType={spaceType}
-                    category={category}
-                    canManage={canManage}
-                    ctx={widgetCtx}
-                    snapshots={snapshots}
-                    snapshotCurrency={effectiveSnapshotCurrency}
-                    transactions={spaceTransactions}
-                    txCtx={txConversionCtx}
-                    period={cashFlowPeriod}
-                    asOf={asOf}
-                    onSelectPeriod={(p) => setCashFlowExplicitPeriod(p)}
-                    ficoScore={ficoScore}
-                    ficoUpdatedAt={ficoUpdatedAt}
-                  />
-                ))
               ) : activePerspective ? (
                 <div className="text-center py-12">
                   <p className="text-sm text-[var(--text-muted)]">{activePerspective.label}</p>
@@ -946,28 +883,11 @@ export function SpaceDashboard({
           />
         )}
 
-        {/* Goals / Retirement — the last remaining legacy routed-modal surfaces
-            (M2 explicit compatibility boundary). Debt & Investments were retired
-            from this path — they now have ONE canonical destination each: the
-            Perspective under Overview. Goals/Retirement keep the GlassModal until
-            their future product architecture is decided (not this slice), so the
-            legacy mechanism is deliberately isolated to these two ids via the
-            registry's routing.targetTab (ROUTED_WORKSPACE_TABS = {GOALS, RETIREMENT}). */}
-        {isRoutedWorkspaceTab(activeTab) && (
-          <RoutedWorkspaceModal
-            activeTab={activeTab}
-            sections={sectionsForTab}
-            canManage={canManage}
-            onClose={() => setActiveTab("OVERVIEW")}
-            onManage={() => setShowManage(true)}
-            onAddGoal={() => setShowAddGoal(true)}
-            accounts={accounts}
-            spaceId={spaceId}
-            spaceType={spaceType}
-            category={category}
-            ctx={widgetCtx}
-          />
-        )}
+        {/* (W2) Goals / Retirement — the last legacy routed-modal surfaces — are
+            RETIRED (product decision, final), and the routed-modal mechanism
+            (RoutedWorkspaceModal + the registry routing vocabulary) retired with
+            them. Legacy ?tab=goals / ?tab=retirement deep links degrade to the
+            default tab in useSpaceNavigation. */}
 
         {/* (REVIEW-3) The former Overview summary branch (OverviewWorkspace:
             composition switcher, trend hero, day-zero setup card, section

@@ -9,6 +9,8 @@
  *   3. INCOMPLETE_INCOME_DATA evidence states the amount ("$X of $Y income …
  *      has no identified source") when there is unidentified inflow, and falls
  *      back to the count-only wording when there is not.
+ *   4. (W2) The deficit-cause ladder carries no intent rungs — a debt-driven
+ *      deficit is DEBT_DRIVEN, never an intent-shaped cause (Goals retired).
  *
  * No test framework — inline assertions, exit 0/1 (house pattern). Importing
  * annotations transitively constructs the Prisma client but issues no query
@@ -142,6 +144,35 @@ check("share: missing needsClassification block → 0 (defensive)",
   check("fallback evidence is count-only when no unidentified inflow",
     !!risk2 && risk2.evidence === "Only 0 income transaction(s) captured — income confidence LOW",
     risk2?.evidence);
+}
+
+// ── 4. W2 — deficit-cause ladder without intent rungs (Goals retired) ────────
+// The ladder's two goal-gated INTENT rungs (INTENTIONAL_DEBT_PAYOFF / MIXED)
+// were deleted with the Goals retirement. Doctrine pin: a deficit that debt
+// payments explain — even a DOMINANT debt fraction — with NO declaration
+// mechanism yields DEBT_DRIVEN, a measured fact. It must NEVER produce an
+// intent-shaped cause; declared intent's future home is debt planning/strategy.
+
+{
+  // Income 1000, expenses 500 (canonical net +500), debt payments 900 → net
+  // after paydown −400 with the debt fraction dominant (900 / 1400 ≈ 0.64,
+  // above the retired DEBT_FRACTION_DOMINANT rung's 0.5 gate).
+  const ctx = mkCtx(mkTxn({
+    debtPaymentTotal: 900,
+    netAfterDebtPayments: -400,
+  }));
+  const a = computeAssessment(ctx);
+  check("W2: dominant-debt-fraction deficit with no declaration → DEBT_DRIVEN",
+    a.cashFlow.deficitCause === "DEBT_DRIVEN", a.cashFlow.deficitCause);
+  check("W2: the cause is never intent-shaped (retired rungs stay dead)",
+    a.cashFlow.deficitCause !== ("INTENTIONAL_DEBT_PAYOFF" as string) &&
+    a.cashFlow.deficitCause !== ("MIXED" as string));
+  check("W2: the assessment carries no goalAlignment section",
+    !("goalAlignment" in a));
+  check("W2: a DEBT_DRIVEN deficit lands on the CASH_FLOW priority",
+    a.currentStatePriority === "CASH_FLOW", a.currentStatePriority);
+  check("W2: no advisor heuristic asserts paydown intent",
+    !a.advisorHeuristics.includes("DEBT_PAYOFF_IS_INTENTIONAL" as never));
 }
 
 if (failures.length > 0) {

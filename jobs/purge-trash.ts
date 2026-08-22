@@ -1,41 +1,29 @@
 /**
  * jobs/purge-trash.ts
  *
- * Permanently deletes SpaceGoal rows that have been in the trash
- * (deletedAt IS NOT NULL) for more than 7 days.
+ * W2 — the goals purge arm (its ONLY arm) was deleted with the Goals
+ * retirement. This job existed to make the 7-day goal-trash retention promise
+ * true: SpaceGoal rows soft-deleted (deletedAt) for more than 7 days were
+ * permanently removed. With Goals retired there is no surface that can trash
+ * a goal, zero goal rows exist anywhere, and DB-side FK cascades
+ * (SpaceGoal→Space, GoalContribution→SpaceGoal/FinancialAccount,
+ * GoalCheckIn→SpaceGoal, all onDelete: Cascade) own goal-row cleanup — so
+ * code-side goal-row deletion is redundant by doctrine and must not return.
  *
- * SCHEDULED (OPS-4 S3): registered in lib/jobs/registry.ts (07:30 UTC slot)
- * and executed through the dispatcher + runJob() — the first time this body
- * runs in production, making the 7-day goal-trash retention promise true
- * (dormant since the in-process scheduler was retired in S2, and never
- * invoked before that either). Safe to run multiple times — idempotent
- * (WHERE-guarded deleteMany against an absolute cutoff).
+ * The job REGISTRATION is intentionally kept (lib/jobs/registry.ts 07:30 UTC
+ * slot): the scheduler, dispatch ledger, platform-ops registry, and health
+ * widgets all reference the job by name, and deregistering it is scheduler
+ * surgery that belongs to its own slice. Each run is now an honest no-op that
+ * records a zero count in the JobRun ledger. When a future trash-retention
+ * arm lands (any model), it goes here.
  */
 
-import { db } from "@/lib/db";
-
-const TRASH_RETENTION_DAYS = 7;
-
 export interface PurgeTrashResult {
-  /** Trashed goals permanently deleted this run (count only — S1 doctrine). */
+  /** Trashed goals permanently deleted this run — always 0 since W2 (see header). */
   purgedGoals: number;
 }
 
 export async function purgeTrash(): Promise<PurgeTrashResult> {
-  const cutoff = new Date(Date.now() - TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000);
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const result = await (db as any).spaceGoal.deleteMany({
-    where: {
-      deletedAt: { not: null, lte: cutoff },
-    },
-  });
-
-  if (result.count > 0) {
-    console.log(`[purge-trash] Permanently deleted ${result.count} goal(s) older than ${TRASH_RETENTION_DAYS} days.`);
-  }
-
-  // Purge behavior unchanged (OPS-4 S3 rule); the count it already computed
-  // is returned so the JobRun ledger records a meaningful summary.
-  return { purgedGoals: result.count };
+  // W2 — no purge arms remain; see the file header.
+  return { purgedGoals: 0 };
 }

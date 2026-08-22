@@ -113,9 +113,7 @@ function gapEmphasisGuidance(intent: FinancialIntent): string {
     case FinancialIntents.CASH_FLOW_EXPLANATION:
       return 'Data-gap emphasis: if income or transaction history is incomplete, note it once as the '
         + 'reason the picture is partial, then continue. Do not raise APR.';
-    case FinancialIntents.GOAL_ALIGNMENT:
-      return 'Data-gap emphasis: raise a data gap only when it blocks a specific goal assessment. '
-        + 'Otherwise focus on alignment, not missing fields.';
+    // W2 — the GOAL_ALIGNMENT case was deleted with the intent (Goals retired).
     case FinancialIntents.UPDATE_KNOWLEDGE:
       return 'Data-gap emphasis: the user is updating a value — confirm the value and point to the save '
         + 'form. Do not enumerate other unrelated gaps.';
@@ -156,9 +154,7 @@ function riskOpportunityFocus(intent: FinancialIntent): string {
     case FinancialIntents.CASH_FLOW_EXPLANATION:
       return 'Risk & Opportunity: reference cash-flow and income-visibility risks from the RISK & '
         + 'OPPORTUNITY section.';
-    case FinancialIntents.GOAL_ALIGNMENT:
-      return 'Risk & Opportunity: reference goal-related risks and opportunities from the RISK & '
-        + 'OPPORTUNITY section.';
+    // W2 — the GOAL_ALIGNMENT case was deleted with the intent (Goals retired).
     case FinancialIntents.UPDATE_KNOWLEDGE:
     case FinancialIntents.UNKNOWN:
     default:

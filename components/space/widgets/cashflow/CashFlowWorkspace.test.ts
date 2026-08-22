@@ -128,7 +128,9 @@ console.log("8. Display currency (FX) is not regressed");
 {
   check("workspace threads txCtx into the contract as moneyCtx", WS.includes("moneyCtx: txCtx"));
   check("workspace passes the tx conversion context to its panels", WS.includes("ctx={txCtx}"));
-  check("host still passes the tx conversion context to the workspace", DASH.includes("txCtx={txConversionCtx}"));
+  // W2 — the JSX-prop delivery went with the routed-modal/section path; the ONE
+  // surviving delivery is the workspace render context the host materializes.
+  check("host still passes the tx conversion context to the workspace (renderCtx)", DASH.includes("txCtx: txConversionCtx"));
 }
 
 console.log("9. Old Cash Flow host composition retired/reduced");

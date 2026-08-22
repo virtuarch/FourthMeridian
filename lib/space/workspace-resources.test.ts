@@ -65,7 +65,6 @@ function check(name: string, cond: boolean, detail?: string): void {
 // The host's removed booleans were:
 //   debtWorkspaceActive || wealthWorkspaceActive   → gated the snapshots fetch
 //   cashFlowActive || liquidityWorkspaceActive     → gated the transactions fetch
-//   goalsWorkspaceActive                            → gated the goals fetch
 //   investmentsActive                               → gated the investments hook
 // each defined (M2) as `activeTab === "OVERVIEW" && activePerspectiveId === <id>`.
 // SD-3 replaces them with openPerspectiveDataNeeds(...).has(<need>). This section
@@ -76,7 +75,7 @@ function check(name: string, cond: boolean, detail?: string): void {
   const REDUCTIONS: { need: string; ids: string[] }[] = [
     { need: "snapshots",          ids: ["wealth", "debt"] },
     { need: "transactions",       ids: ["cashFlow", "liquidity"] },
-    { need: "goals",              ids: ["goals"] },
+    // W2 — the "goals" need row was deleted with the goals perspective (Goals retired).
     { need: "investmentsHistory", ids: ["investments"] },
   ];
   // activePerspectiveId is drawn from perspectiveItems, which EXCLUDES overview

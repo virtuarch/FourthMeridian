@@ -95,7 +95,7 @@ export interface ExportData {
   holdings: ExportHolding[];
   snapshots: ExportSnapshot[];
   creditHistory: Record<string, unknown>[];
-  goals: Record<string, unknown>[];
+  // W2 — the goals export section was deleted with the Goals retirement.
   auditHistory: Record<string, unknown>[];
   imports: {
     batches: Record<string, unknown>[];

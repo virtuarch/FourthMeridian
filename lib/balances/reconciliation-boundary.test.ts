@@ -187,9 +187,10 @@ console.log("\nPROBE 7/10 — liquidity consumes reachable; credit is never cash
   // no longer classifies them — the v2.6-L3 migration's live guard is the
   // adapters checks above (LiquidityWorkspace renders through them). Assert
   // the ledger did not keep stale liquidity classifications behind.
-  const sq = code("lib/balances/section-quantity.ts");
-  check("the section ledger carries no stale liquidity section keys",
-    !/liquidity_ladder:|accessible_cash:|emergency_fund_readiness:|liquidity_concentration:/.test(sq));
+  // W2 — the section ledger itself (lib/balances/section-quantity.ts) was
+  // DELETED with the render stack (its only caller was SectionCard); stale-key
+  // drift is impossible in a file that no longer exists, and its absence is
+  // pinned by audit-goals-tombstone + balance-boundary probe 8.
 }
 
 // ── 8. Debt stays observed ──────────────────────────────────────────────────

@@ -13,18 +13,19 @@
  * this file defines the lens library and which category gets which lenses.
  * It does NOT implement Perspective business logic. A lens is either:
  *   - "available": a real, already-working feature exists somewhere in the
- *     current dashboard (e.g. Investments, Debt, Retirement, Goals) — the
- *     host dashboard wires `targetTab` to route straight to that existing,
- *     unmodified tab/content. No new logic, just a new entry point.
- *   - "comingSoon": no real feature exists yet (Wealth, Cash Flow, Tax,
- *     Property, Business Health as dedicated views) — the host renders a
- *     calm placeholder card. No `targetTab`.
+ *     current dashboard (e.g. Investments, Debt) — rendered through its
+ *     WORKSPACE_RENDERERS entry. No new logic, just a new entry point.
+ *   - "comingSoon": no real feature exists yet (Tax, Property, Business
+ *     Health as dedicated views) — the host renders a calm placeholder card.
  *
- * The host dashboard (SpaceDashboard.tsx) keeps its own short
- * id-to-internal-tab map (e.g. the "debt" perspective routes to the "DEBT"
- * tab). Keeping that map at the call site — instead of here — keeps this
- * file honest about being host-agnostic, the same separation
- * lib/space-presets.ts uses.
+ * W2 (product decision, FINAL): the GOALS and RETIREMENT surfaces are
+ * RETIRED outright — their library entries, the "goals" data need, the
+ * widgets[] virtual-section path, and the whole routed-modal (GlassModal)
+ * mechanism (RoutedWorkspaceTab / WorkspaceRouting / ROUTED_WORKSPACE_TABS /
+ * isRoutedWorkspaceTab / getWorkspaceTargetTab / getWorkspaceModalMeta) went
+ * with them: Goals and Retirement were its last two members. Do not
+ * reintroduce either surface or the routed-modal mechanism; a future lens
+ * ships as a WORKSPACE_RENDERERS-backed Perspective instead.
  */
 
 // Type-only import — erased at compile time, so this client-safe config file
@@ -46,7 +47,7 @@ export type PerspectiveStatus = "available" | "comingSoon";
  * through. "All" is the implicit default and is not itself a lens group.
  */
 export const PERSPECTIVE_GROUPS = [
-  "All", "Financial", "Tax", "Goals", "Retirement", "Business", "Property",
+  "All", "Financial", "Tax", "Business", "Property",
 ] as const;
 export type PerspectiveGroup = Exclude<(typeof PERSPECTIVE_GROUPS)[number], "All">;
 
@@ -70,7 +71,6 @@ export type WorkspaceDataNeed =
   | "transactions"
   | "lens"
   | "investmentsHistory"
-  | "goals"
   | "sections"
   | "fico";
 
@@ -122,18 +122,11 @@ export interface TemporalCapability {
   period:    TemporalCapabilityLevel;
 }
 
-/** Legacy data-tab ids a workspace can route to — each presented as a GlassModal
- *  launched from the Overview doorway. The union of every routing.targetTab;
- *  ROUTED_WORKSPACE_TABS is derived from it. NOTE: these are the host's internal
- *  activeTab ids, deliberately NOT lib/space-nav SpaceTabIds — a Space TAB may
- *  host one or more workspaces (SD-2 P5), so the two identity spaces stay separate. */
-export type RoutedWorkspaceTab = "GOALS" | "DEBT" | "INVESTMENTS" | "RETIREMENT";
-
-export interface WorkspaceRouting {
-  /** The top-level tab this workspace routes to from the Overview doorway (the
-   *  legacy modal tabs). Absent ⇒ reachable only as a Perspectives-tab workspace. */
-  targetTab?: RoutedWorkspaceTab;
-}
+// (W2) The routed-modal routing vocabulary (RoutedWorkspaceTab / WorkspaceRouting
+// / the `routing` field) is DELETED: Debt & Investments left the routed path in
+// M2, and Goals & Retirement — its last two members — are retired outright in W2.
+// No workspace routes to a legacy modal tab anymore; do not reintroduce the
+// mechanism.
 
 /**
  * A workspace's KIND. "standard" = a structural primary destination that renders
@@ -161,22 +154,18 @@ export interface WorkspaceDefinition {
    * OPS-5 S6 — which DOMAIN owns this workspace. Absent ⇒ "finance" (the original
    * and only domain until Platform Operations became the second real consumer;
    * UI-Convergence Wave 1 added the user-owned "connections" and "settings" utility
-   * surfaces as further consumers). The finance-scoped metadata below (routing/
-   * dataNeeds/temporalCapability/envelope) uses finance VOCABULARIES
-   * (WorkspaceDataNeed / WorkspaceEnvelopeSource / RoutedWorkspaceTab); a non-finance
+   * surfaces as further consumers). The finance-scoped metadata below
+   * (dataNeeds/temporalCapability/envelope) uses finance VOCABULARIES
+   * (WorkspaceDataNeed / WorkspaceEnvelopeSource); a non-finance
    * workspace ("platform" / "connections" / "settings") declares NONE of them: its
-   * bodies self-fetch, carry no finance envelope, and navigate via their own rail,
-   * not the finance modal tabs. This discriminator + the guards in
+   * bodies self-fetch, carry no finance envelope, and navigate via their own rail.
+   * This discriminator + the guards in
    * lib/platform/workspaces.test.ts and lib/{connections,settings}/workspaces.test.ts
    * is what keeps finance vocabularies from polluting non-finance definitions —
    * WITHOUT a base/PersonalFinance type split (which SD-3 forbids: dataNeeds is
    * universal orchestration metadata by design).
    */
   domain?: "finance" | "platform" | "connections" | "settings";
-  /** Routing/navigation identity — the ONE answer to "which top-level tab owns
-   *  this workspace, and how is it presented?" (replaces the host-side
-   *  PERSPECTIVE_TARGET_TAB / PERSPECTIVE_ROUTED_TABS / PERSPECTIVE_MODAL_META). */
-  routing?: WorkspaceRouting;
   /** The data primitives this workspace consumes at runtime — declared for SD-3
    *  (no fetch behavior changes here). Empty ⇒ the workspace self-fetches. */
   dataNeeds?: readonly WorkspaceDataNeed[];
@@ -244,15 +233,10 @@ export interface PerspectiveDef extends WorkspaceDefinition {
    * placeholder).
    */
   lensId?: LensId;
-  /**
-   * UX-PER-3 (Perspective Workspace) — the ordered widget keys this Perspective
-   * renders as its workspace body. Each key MUST exist in WIDGET_REGISTRY
-   * (parity-tested in lib/perspectives/virtual-sections.test.ts) and reuse the
-   * same SectionCard/SectionRegistry compositor as tab sections. Rendered as
-   * VIRTUAL, render-only sections (no DB rows, no persistence, no drag/drop yet).
-   * Absent ⇒ today's behavior (host tab routing / lens card / comingSoon).
-   */
-  widgets?: readonly string[];
+  // (W2) The UX-PER-3 `widgets?` virtual-section path is DELETED with its last
+  // consumer (the Goals workspace): a Perspective is workspace-backed iff it has
+  // a WORKSPACE_RENDERERS entry — there is no second (widgets[]/SectionCard)
+  // render path anymore.
 }
 
 export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
@@ -319,10 +303,10 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // The former "investment_accounts" registry widget and the "investments_workspace"
     // affordance marker are both retired.
     // M2 canonical IA: Investments is a specialized Workspace (perspective)
-    // selected through Overview — NOT a routed modal. Its former
-    // `routing.targetTab: "INVESTMENTS"` (RoutedWorkspaceModal) is retired so it
-    // has ONE runtime destination. Legacy `?tab=investments` links canonicalize
-    // to `?perspective=investments` in the host URL layer.
+    // selected through Overview — NOT a routed modal. Its former routed-modal
+    // targetTab is retired so it has ONE runtime destination. Legacy
+    // `?tab=investments` links canonicalize to `?perspective=investments` in
+    // the host URL layer.
     dataNeeds: ["accounts", "investmentsHistory"],
     temporalCapability: { asOf: "full", compareTo: "full", period: "none" },
     envelope: "investments",
@@ -337,10 +321,10 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // widgets[] deleted — DebtWorkspace's WORKSPACE_RENDERERS entry always
     // wins the dispatch.)
     // M2 canonical IA: Debt is a specialized Workspace (perspective) selected
-    // through Overview — NOT a routed modal. Its former
-    // `routing.targetTab: "DEBT"` (RoutedWorkspaceModal) is retired so it has ONE
-    // runtime destination. Legacy `?tab=debt` / `?tab=credit` links canonicalize
-    // to `?perspective=debt` in the host URL layer.
+    // through Overview — NOT a routed modal. Its former routed-modal targetTab
+    // is retired so it has ONE runtime destination. Legacy `?tab=debt` /
+    // `?tab=credit` links canonicalize to `?perspective=debt` in the host URL
+    // layer.
     // temporalCapability PARTIAL: the lede + Balance-Over-Time chart + trust honor
     // asOf/compareTo, but the KPIs/utilization/payoff are present-day (dual-authority
     // from the accounts array) — a capability GAP to close, not a different category.
@@ -370,32 +354,10 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     temporalCapability: { asOf: "partial", compareTo: "partial", period: "none" },
     envelope: "lens",
   },
-  retirement: {
-    id: "retirement", kind: "perspective", label: "Retirement", icon: "PiggyBank", status: "available", group: "Retirement",
-    description: "Progress toward retirement targets.",
-    // Routes to the legacy RETIREMENT tab (GlassModal); no Perspectives workspace
-    // of its own (no widgets[]), so no dataNeeds/temporalCapability/envelope.
-    routing: { targetTab: "RETIREMENT" },
-  },
-  goals: {
-    // SD-2B doctrine correction: Goals is a STANDARD (domain) Workspace, NOT a
-    // Perspective. A Perspective is a temporal financial LENS over the canonical
-    // financial knowledge (participates in asOf/compareTo); Goals is goal
-    // management — its own domain (progress, forecasting, projections, guidance
-    // may come later, but that does not make it a temporal lens). It is kept in
-    // PERSPECTIVE_LIBRARY (so today's Perspectives sub-nav card + workspace render
-    // are byte-unchanged) but tagged kind:"standard"; it declares no
-    // temporalCapability (derived: consumes no canonical time axis).
-    // Physical relocation to STANDARD_WORKSPACES (and out of the sub-nav) is a
-    // functionality change deferred to the Goals workspace slice.
-    id: "goals", kind: "standard", label: "Goals", icon: "Target", status: "available", group: "Goals",
-    description: "Savings and habit goals tied to this Space.",
-    routing: { targetTab: "GOALS" },
-    dataNeeds: ["accounts", "goals"], envelope: "none",
-    // Doctrine: Goals answers "Am I on track?" — trajectory vs target, not current
-    // balances. Rendered through the same SectionCard compositor.
-    widgets: ["goal_progress", "goal_on_track", "goal_required_pace", "goal_funding_gap"],
-  },
+  // (W2, product decision FINAL) The "retirement" and "goals" entries are
+  // DELETED — both surfaces are retired outright (no roadmap placeholder). An
+  // unknown ?perspective= id degrades to the default lens in the host URL
+  // layer, so old deep links resolve safely. Do not reintroduce either entry.
   tax: {
     id: "tax", kind: "perspective", label: "Tax", icon: "FileText", status: "comingSoon", group: "Tax",
     description: "Tax-relevant activity and documents.",
@@ -420,9 +382,11 @@ const PERSPECTIVES_BY_CATEGORY: Record<string, string[]> = {
   // category set — the categories where "what could I get at, how fast?"
   // is a daily question (see PERSPECTIVE_ENGINE_FOUNDATION_INVESTIGATION.md
   // §2.5). Other categories can adopt it later as one-line changes here.
-  PERSONAL:        ["overview", "wealth", "cashFlow", "liquidity", "investments", "debt", "goals"],
-  FAMILY:          ["overview", "wealth", "cashFlow", "liquidity", "goals", "debt"],
-  RETIREMENT:      ["overview", "wealth", "retirement", "investments", "cashFlow"],
+  // W2 — "goals" and "retirement" removed from every list: both lens entries
+  // are deleted (surfaces retired outright).
+  PERSONAL:        ["overview", "wealth", "cashFlow", "liquidity", "investments", "debt"],
+  FAMILY:          ["overview", "wealth", "cashFlow", "liquidity", "debt"],
+  RETIREMENT:      ["overview", "wealth", "investments", "cashFlow"],
   INVESTMENT:      ["overview", "investments", "wealth", "cashFlow"],
   // V25-CLOSE-4: `property` / `businessHealth` removed. They are comingSoon
   // lenses with no workspace, so as the 2nd id they led the Perspectives doorway
@@ -435,15 +399,15 @@ const PERSPECTIVES_BY_CATEGORY: Record<string, string[]> = {
   BUSINESS:        ["overview", "cashFlow", "liquidity", "wealth"],
   DEBT_PAYOFF:     ["overview", "debt", "cashFlow", "wealth"],
   // Emergency funds exist to BE liquidity — the lens sits right up front.
-  EMERGENCY_FUND:  ["overview", "liquidity", "wealth", "goals", "cashFlow"],
-  GOAL:            ["overview", "goals", "wealth", "cashFlow"],
-  TRIP:            ["overview", "cashFlow", "goals"],
+  EMERGENCY_FUND:  ["overview", "liquidity", "wealth", "cashFlow"],
+  GOAL:            ["overview", "wealth", "cashFlow"],
+  TRIP:            ["overview", "cashFlow"],
   EQUIPMENT:       ["overview", "wealth", "cashFlow"],
-  CUSTOM:          ["overview", "wealth", "cashFlow", "goals"],
-  OTHER:           ["overview", "wealth", "cashFlow", "goals"],
+  CUSTOM:          ["overview", "wealth", "cashFlow"],
+  OTHER:           ["overview", "wealth", "cashFlow"],
 };
 
-const DEFAULT_PERSPECTIVES = ["overview", "wealth", "cashFlow", "goals"];
+const DEFAULT_PERSPECTIVES = ["overview", "wealth", "cashFlow"];
 
 /** Returns the ordered Perspective definitions for a Space category. */
 export function getPerspectivesForCategory(category: string): PerspectiveDef[] {
@@ -527,43 +491,17 @@ export function getWorkspaceDefinition(id: string): WorkspaceDefinition | undefi
 
 /**
  * The Workspace a top-level Space tab id resolves to (the tab's lowercased id is
- * the workspace id): OVERVIEW→overview, TRANSACTIONS→transactions, GOALS→goals,
- * DEBT→debt, … . Container/non-workspace tabs (PERSPECTIVES, FINANCES, DOCUMENTS,
- * SETTINGS) resolve to undefined. Lets SD-3 look up any primary destination's
- * dataNeeds uniformly, without a Transactions/Accounts exception path.
+ * the workspace id): OVERVIEW→overview, TRANSACTIONS→transactions, DEBT→debt, … .
+ * Container/non-workspace tabs (PERSPECTIVES, FINANCES, DOCUMENTS, SETTINGS)
+ * resolve to undefined. Lets SD-3 look up any primary destination's dataNeeds
+ * uniformly, without a Transactions/Accounts exception path.
  */
 export function getWorkspaceForTab(tab: string): WorkspaceDefinition | undefined {
   return getWorkspaceDefinition(tab.toLowerCase());
 }
 
-/** The legacy tab a workspace routes to from the Overview doorway (→ GlassModal),
- *  or undefined. Replaces the host-side PERSPECTIVE_TARGET_TAB map. */
-export function getWorkspaceTargetTab(id: string): RoutedWorkspaceTab | undefined {
-  return WORKSPACE_REGISTRY[id]?.routing?.targetTab;
-}
-
-/** Every distinct routed (modal) tab, derived from the registry. Replaces the
- *  host-side PERSPECTIVE_ROUTED_TABS array. */
-export const ROUTED_WORKSPACE_TABS: readonly RoutedWorkspaceTab[] = Array.from(
-  new Set(
-    Object.values(WORKSPACE_REGISTRY)
-      .map((d) => d.routing?.targetTab)
-      .filter((t): t is RoutedWorkspaceTab => t != null),
-  ),
-);
-
-/** Is this activeTab id a routed (modal-presented) workspace tab? */
-export function isRoutedWorkspaceTab(tab: string): boolean {
-  return (ROUTED_WORKSPACE_TABS as readonly string[]).includes(tab);
-}
-
-/**
- * Modal chrome for a routed tab, derived from the owning workspace's own label +
- * icon — replaces the host-side PERSPECTIVE_MODAL_META map. `icon` is the Lucide
- * icon NAME (resolve via lib/perspective-icons PERSPECTIVE_ICON_MAP, the same
- * resolver the tabs/cards use). Undefined for a non-routed tab.
- */
-export function getWorkspaceModalMeta(tab: string): { title: string; icon: string } | undefined {
-  const def = Object.values(WORKSPACE_REGISTRY).find((d) => d.routing?.targetTab === tab);
-  return def ? { title: def.label, icon: def.icon } : undefined;
-}
+// (W2) getWorkspaceTargetTab / ROUTED_WORKSPACE_TABS / isRoutedWorkspaceTab /
+// getWorkspaceModalMeta are DELETED with the routed-modal (GlassModal) mechanism:
+// Goals & Retirement were its last two members and both surfaces are retired
+// outright. Every remaining workspace renders in place (rail tab or Overview
+// lens); do not reintroduce a modal-routed tab path.

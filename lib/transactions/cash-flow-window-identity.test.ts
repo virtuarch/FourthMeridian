@@ -10,7 +10,7 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { buildCashFlowSpaceData } from "./cash-flow-space-data";
 import { filterByPeriod, asOfAnchor } from "./cash-flow";
 import { resolveFinancialWindow, inFlowInterval } from "@/lib/perspectives/financial-window";
@@ -193,30 +193,23 @@ const ROWS: Transaction[] = [
 // ── STATIC · the as-of reaches the widgets end-to-end ─────────────────────
 // REVIEW-3 (slice F): the cash-flow SECTION entries were deleted with the
 // Overview canvas — Cash Flow renders exclusively through CashFlowWorkspace,
-// which receives the shell's asOf via the WORKSPACE_RENDERERS context. The
-// probe follows the surviving paths: the workspace renderer, plus the
-// remaining SectionCard path (Goals virtual sections / routed modals).
+// which receives the shell's asOf via the WORKSPACE_RENDERERS context.
+// W2: the LAST SectionCard path (Goals virtual sections / routed modals) was
+// deleted with the Goals retirement — SectionRegistry/SectionCard no longer
+// exist, so the workspace renderer is the ONLY as-of path and its deletion
+// pins ride here.
 {
-  const registry = strip(readFileSync(
-    new URL("../../components/space/sections/SectionRegistry.tsx", import.meta.url), "utf8"));
-  assert.ok(/asOf\?:\s*string/.test(registry), "SectionRenderProps carries the selected as-of");
+  assert.ok(
+    !existsSync(new URL("../../components/space/sections/SectionRegistry.tsx", import.meta.url)) &&
+    !existsSync(new URL("../../components/space/sections/SectionCard.tsx", import.meta.url)),
+    "the section render stack stays deleted (W2 — Goals retired took its last mounts)");
 
   const renderers = strip(readFileSync(
     new URL("../../components/space/workspaces/workspaceRenderers.tsx", import.meta.url), "utf8"));
   const cf = renderers.slice(renderers.indexOf("cashFlow: (ctx)"), renderers.indexOf("liquidity: (ctx)"));
   assert.ok(/asOf=\{ctx\.asOf\}/.test(cf),
     "the Cash Flow workspace receives the shell's selected as-of from the renderer context");
-
-  const card = strip(readFileSync(
-    new URL("../../components/space/sections/SectionCard.tsx", import.meta.url), "utf8"));
-  assert.ok(/asOf\?:\s*string/.test(card) && /\basOf\b/.test(card.slice(card.indexOf("render"))),
-    "SectionCard accepts the as-of and forwards it to the renderer");
-
-  const shell = strip(readFileSync(
-    new URL("../../components/dashboard/SpaceDashboard.tsx", import.meta.url), "utf8"));
-  assert.ok(/asOf=\{asOf\}/.test(shell) || /asOf,\s*\n/.test(shell),
-    "the shell supplies its own selected as-of to the section cards");
-  ok("STATIC · shell → workspace/SectionCard, the as-of is threaded end-to-end");
+  ok("STATIC · shell → workspace, the as-of is threaded end-to-end (sole surviving path)");
 }
 
 // (REVIEW-3 slice F — the SpaceTrendHero series-anchor probe was deleted with

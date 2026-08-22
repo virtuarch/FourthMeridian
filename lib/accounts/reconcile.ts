@@ -437,10 +437,11 @@ export async function resolveAccountByFingerprint(
  *
  *  - Transactions: re-pointed to winner. Safe to bulk re-point — Transaction's
  *    only uniqueness (plaidTransactionId) is per-row, not per-account.
- *  - GoalContributions: re-pointed to winner, skipping any that would
- *    collide with the (goalId, financialAccountId) unique constraint
- *    because winner already tracks that goal — the loser's row is left in
- *    place, inert, rather than erroring.
+ *  - GoalContributions: NOT re-pointed (W2 — Goals retired). Zero rows exist
+ *    anywhere; if a stray row ever pointed at the loser it would cascade away
+ *    with the loser account (GoalContribution→FinancialAccount is onDelete:
+ *    Cascade) — the concept is retired, so preserving it across a merge would
+ *    be resurrecting deleted product surface, not protecting user data.
  *  - DebtProfile: moved to winner only if winner doesn't already have one
  *    (it's a strict 1:1) — otherwise left on the archived loser, inert.
  *  - WorkspaceAccountShare: every space the loser was shared into gets
@@ -466,8 +467,9 @@ export async function mergeArchivedDuplicateIntoCanonical(
 ) {
   if (loserId === winnerId) return;
 
-  // KD-4 Phase 2 — the entire re-point / contribution-move / debt-move /
-  // link-re-point / audit group below must commit or roll back together. When
+  // KD-4 Phase 2 — the entire re-point / debt-move / link-re-point / audit
+  // group below must commit or roll back together. (W2 — the contribution-move
+  // member of this group was deleted with the Goals retirement.) When
   // called at the top level (client === db) we open our own interactive
   // transaction and re-enter with the tx client. When a caller already passes
   // a tx (e.g. pickCanonicalAndMerge, which bundles the loser-archive into the
@@ -496,20 +498,9 @@ export async function mergeArchivedDuplicateIntoCanonical(
     data:  { financialAccountId: winnerId },
   });
 
-  const loserContributions = await tx.goalContribution.findMany({
-    where:  { financialAccountId: loserId },
-    select: { id: true, goalId: true },
-  });
-  for (const c of loserContributions) {
-    const collision = await tx.goalContribution.findUnique({
-      where: { goalId_financialAccountId: { goalId: c.goalId, financialAccountId: winnerId } },
-    });
-    if (!collision) {
-      await tx.goalContribution.update({ where: { id: c.id }, data: { financialAccountId: winnerId } });
-    }
-    // else: winner already has a contribution row for this goal — leave the
-    // loser's row where it is. It's on an archived account, so it's inert.
-  }
+  // W2 — the GoalContribution re-point block was DELETED with the Goals
+  // retirement (see the doc bullet above): contributions now cascade with the
+  // merged-away account if any ever existed (0 rows do).
 
   const winnerDebtProfile = await tx.debtProfile.findUnique({ where: { financialAccountId: winnerId } });
   if (!winnerDebtProfile) {

@@ -4,7 +4,8 @@
  * Multi-user demo world for local development.
  * Creates three regular users (Jane, John, Alex) plus the unchanged sysadmin,
  * 8 spaces, 21 accounts, ~360 transactions over 120 days, holdings,
- * goals, audit log events, and space snapshots.
+ * audit log events, and space snapshots. (W2 — goal seeding deleted with the
+ * Goals retirement.)
  *
  * All data is entirely fictional. Run via: npx prisma db seed
  * Safe to re-run — all data is wiped and recreated cleanly.
@@ -32,9 +33,9 @@ import {
   ShareStatus,
   VisibilityLevel,
   SpaceAccountLinkKind,
-  GoalType,
-  GoalStatus,
-  GoalCategory,
+  // W2 — GoalType/GoalStatus/GoalCategory no longer imported (goal seeding
+  // deleted; the Prisma enums themselves are schema and await the retirement
+  // migration train).
 } from "@prisma/client";
 // L8 — the provider vocabulary the event authority decides eligibility from.
 import { ProviderType } from "@prisma/client";
@@ -366,9 +367,9 @@ async function main() {
   const alexDobEncrypted = encryptWithPurpose("1992-11-05", EncryptionPurpose.DATE_OF_BIRTH);
 
   // ── Wipe in reverse-dependency order ────────────────────────────────────────
-  await prisma.goalCheckIn.deleteMany();
-  await prisma.goalContribution.deleteMany();
-  await prisma.spaceGoal.deleteMany();
+  // W2 — goalCheckIn/goalContribution/spaceGoal wipe lines deleted: goal rows
+  // are no longer seeded, and any stragglers in an old dev DB cascade away
+  // with their Space/account rows below (schema onDelete: Cascade).
   await prisma.duplicateAccountCandidate.deleteMany();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (prisma as any).spaceDashboardSection.deleteMany();
@@ -2016,96 +2017,9 @@ async function seedTransactions(input: TxRow[]): Promise<void> {
   await prisma.spaceSnapshot.createMany({ data: buildDebtHistory(debtSpace.id) });
   console.log("   ✓ SpaceSnapshots (Household 120, Debt 90)");
 
-  // ── Space Goals ──────────────────────────────────────────────────────────
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const goalCreate = (data: any) => (prisma.spaceGoal as any).create({ data });
-
-  const goalJaneEmergencyFund = await goalCreate({
-    spaceId: householdSpace.id, createdByUserId: jane.id,
-    name: "6-Month Emergency Fund", description: "Build a combined emergency fund covering 6 months of household expenses (~$20k)",
-    category: GoalCategory.EMERGENCY_FUND, goalType: GoalType.FINANCIAL,
-    status: GoalStatus.ACTIVE, targetAmount: 20000, currentAmount: 11740,
-    targetDate: new Date("2027-01-01"),
-  });
-  const goalJaneJapan = await goalCreate({
-    spaceId: japanSpace.id, createdByUserId: jane.id,
-    name: "Japan Trip 2027 Fund", description: "Save $8,500 for flights, accommodation, and spending money",
-    category: GoalCategory.TRIP, goalType: GoalType.FINANCIAL,
-    status: GoalStatus.ACTIVE, targetAmount: 8500, currentAmount: 3240,
-    targetDate: new Date("2027-03-01"),
-  });
-  const goalJaneCCPayoff = await goalCreate({
-    spaceId: janeSpace.id, createdByUserId: jane.id,
-    name: "Pay Off CU Credit Card", description: "Eliminate $3,200 balance at 19.99% APR",
-    category: GoalCategory.DEBT_PAYOFF, goalType: GoalType.DEBT_REDUCTION,
-    status: GoalStatus.ACTIVE, targetAmount: 3200, currentAmount: 2100,
-    linkedAccountId: jCreditCard.id, snapshotBalance: 3200, targetReductionAmount: 3200,
-  });
-  const _goalJaneExercise = await goalCreate({
-    spaceId: janeSpace.id, createdByUserId: jane.id,
-    name: "Daily Exercise Streak", description: "30-minute workout every day — building the habit",
-    category: GoalCategory.GENERAL, goalType: GoalType.HABIT,
-    status: GoalStatus.ACTIVE, habitFrequency: "DAILY", currentStreak: 12, longestStreak: 28,
-    lastCheckIn: D(1),
-  });
-  const _goalJaneDiningBudget = await goalCreate({
-    spaceId: janeSpace.id, createdByUserId: jane.id,
-    name: "Dining Budget — $300/mo", description: "Keep dining + coffee under $300/month",
-    category: GoalCategory.GENERAL, goalType: GoalType.SPENDING_LIMIT,
-    status: GoalStatus.ACTIVE, targetAmount: 300, spendingCategory: "Dining",
-  });
-  const goalJohnCCElim = await goalCreate({
-    spaceId: debtSpace.id, createdByUserId: john.id,
-    name: "Beacon CC Elimination",  description: "Pay off Beacon Credit Card ($5,800 at 22.99% APR) — highest priority debt",
-    category: GoalCategory.DEBT_PAYOFF, goalType: GoalType.DEBT_REDUCTION,
-    status: GoalStatus.ACTIVE, targetAmount: 5800, currentAmount: 3200,
-    linkedAccountId: jnCreditCard.id, snapshotBalance: 5800, targetReductionAmount: 5800,
-  });
-  const goalJohnAutoLoan = await goalCreate({
-    spaceId: debtSpace.id, createdByUserId: john.id,
-    name: "Auto Loan Payoff", description: "Accelerate payoff of $11,200 auto loan (6.49% APR)",
-    category: GoalCategory.DEBT_PAYOFF, goalType: GoalType.DEBT_REDUCTION,
-    status: GoalStatus.ACTIVE, targetAmount: 11200, currentAmount: 4000,
-    linkedAccountId: jnAutoLoan.id, snapshotBalance: 11200, targetReductionAmount: 11200,
-    targetDate: new Date("2028-06-01"),
-  });
-  const goalJohnRothMax = await goalCreate({
-    spaceId: investmentSpace.id, createdByUserId: john.id,
-    name: "Max Roth IRA 2026", description: "Contribute full $7,000 to Roth IRA this calendar year",
-    category: GoalCategory.INVESTMENT, goalType: GoalType.FINANCIAL,
-    status: GoalStatus.ACTIVE, targetAmount: 7000, currentAmount: 2332,
-    targetDate: new Date("2026-12-31"),
-  });
-  const _goalJohnRenovation = await goalCreate({
-    spaceId: propertySpace.id, createdByUserId: john.id,
-    name: "Home Renovation Fund", description: "Kitchen + master bath renovation — paused pending CC payoff",
-    category: GoalCategory.HOME_PURCHASE, goalType: GoalType.FINANCIAL,
-    status: GoalStatus.PAUSED, targetAmount: 25000, currentAmount: 0,
-    targetDate: new Date("2028-01-01"),
-  });
-  // Completed goal — earlier Japan research fund
-  const _goalJaneCompleted = await goalCreate({
-    spaceId: janeSpace.id, createdByUserId: jane.id,
-    name: "Japan Research Budget", description: "Fund for Japan trip research and flight booking deposit",
-    category: GoalCategory.TRIP, goalType: GoalType.FINANCIAL,
-    status: GoalStatus.COMPLETED, targetAmount: 1000, currentAmount: 1000,
-    targetDate: new Date("2026-03-01"), completedAt: D(45),
-  });
-  console.log("   ✓ SpaceGoals: 10");
-
-  // ── Goal Contributions ────────────────────────────────────────────────────────
-  await prisma.goalContribution.createMany({
-    data: [
-      { goalId: goalJaneEmergencyFund.id, financialAccountId: jDemoHysa.id,     includeBalance: true },
-      { goalId: goalJaneEmergencyFund.id, financialAccountId: jnSavings.id,     includeBalance: true },
-      { goalId: goalJaneJapan.id,         financialAccountId: jJapanSavings.id, includeBalance: true },
-      { goalId: goalJaneCCPayoff.id,      financialAccountId: jCreditCard.id,   includeBalance: true },
-      { goalId: goalJohnCCElim.id,        financialAccountId: jnCreditCard.id,  includeBalance: true },
-      { goalId: goalJohnAutoLoan.id,      financialAccountId: jnAutoLoan.id,    includeBalance: true },
-      { goalId: goalJohnRothMax.id,       financialAccountId: jnRothIra.id,     includeBalance: false },
-    ],
-  });
-  console.log("   ✓ GoalContributions: 7");
+  // ── Space Goals / Goal Contributions — DELETED (W2, Goals retired) ───────
+  // The 10 SpaceGoal rows and 7 GoalContribution rows this seed created are
+  // gone; no surface reads them and the demo world carries no retired concept.
 
   // ── Audit Log ─────────────────────────────────────────────────────────────────
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2165,14 +2079,15 @@ async function seedTransactions(input: TxRow[]): Promise<void> {
       log(jane.id, propertySpace.id,  "MEMBER_JOINED",      { role: "ADMIN" },                                  T(3,  5)),
 
       // ── Recent activity (today / yesterday) ──────────────────────────────────
-      log(jane.id, janeSpace.id,      "GOAL_CREATED",       { goalName: "Pay Off CU Credit Card", category: "DEBT_PAYOFF" }, T(2)),
-      log(john.id, debtSpace.id,      "GOAL_CREATED",       { goalName: "Beacon CC Elimination",  category: "DEBT_PAYOFF" }, T(1)),
-      log(jane.id, janeSpace.id,      "GOAL_COMPLETED",     { goalName: "Japan Research Budget",  completedAt: D(45).toISOString() }, T(0, 30)),
+      // W2 — the three GOAL_CREATED/GOAL_COMPLETED demo events were deleted
+      // with the Goals retirement (the AuditAction enum members are schema and
+      // stay; the seed just no longer manufactures history for a retired
+      // feature).
       log(john.id, null,                  "TOTP_ENABLED",       { method: "authenticator_app" }),
       log(admin.id,null,                  "SEED",               { note: "Comprehensive demo seed — dev only" }),
     ],
   });
-  console.log("   ✓ AuditLog: 32 events");
+  console.log("   ✓ AuditLog: 29 events");
 
   // ══ v2.6-SEED-3 — THE TRANSFER AUTHORITY'S VERDICT, PERSISTED ══════════════
   //

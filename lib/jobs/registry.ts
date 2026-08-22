@@ -157,8 +157,10 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     minuteUTC: 30,
     run: async () => (await import("@/jobs/retry-notifications")).retryNotifications(),
   },
-  // First production scheduling ever — makes the 7-day goal-trash retention
-  // promise true (dormant since the v1.0 scheduler that never ran).
+  // W2 — the goals purge arm was deleted with the Goals retirement (cascades
+  // own goal-row cleanup; no surface can trash a goal). The registration stays
+  // because scheduler/ops/health surfaces reference the job by name; each run
+  // is an honest no-op until a future trash-retention arm lands.
   {
     name: "purge-trash",
     hourUTC: 7,

@@ -411,7 +411,6 @@ function buildAttention(
  * Prefers cached AI advice when present.
  * Otherwise synthesizes a rule-based insight using:
  *   - NET_WORTH_INCREASED signal (positive trend)
- *   - GOAL_COMPLETED signal (achievement)
  *   - Transaction summary (income vs expense picture)
  *   - Accounts domain (debt ratio, cash ratio)
  */
@@ -456,19 +455,8 @@ function buildInsight(
 
   // ── Signal-driven insights (highest priority) ─────────────────────────────
 
-  // Recently completed goal
-  const completedGoalSig = allSignals.find(s => s.type === SignalType.GOAL_COMPLETED);
-  if (completedGoalSig) {
-    const name = (completedGoalSig.metadata?.goalName as string | undefined) ?? "a goal";
-    return {
-      id:       "insight",
-      type:     "insight",
-      priority: 20,
-      title:    "Today's Insight",
-      body:     `You completed "${name}" — great work. Review your remaining goals and consider setting a new target.`,
-      tone:     "positive",
-    };
-  }
+  // W2 — the "recently completed goal" insight was DELETED with the Goals
+  // retirement (its GOAL_COMPLETED signal no longer exists to fire).
 
   // Positive net worth trend
   //
@@ -608,21 +596,18 @@ function buildInsight(
           return "You spent more than you took in over this window, and it isn't explained by debt payoff. " +
                  "Worth a look at where it went.";
         }
-        if (cashFlow.deficitCause === "INTENTIONAL_DEBT_PAYOFF" || cashFlow.deficitCause === "MIXED") {
-          return "You ran a deficit this window, but it's driven by debt payments against an active payoff goal — " +
-                 "that's the plan working, not a problem.";
-        }
+        // W2 — the INTENTIONAL/MIXED branch was deleted with its union members
+        // (intent claims; Goals retired), and the DEBT_DRIVEN copy no longer
+        // suggests "recording it as a goal" — there is no goal to record. The
+        // sentence states the measured fact and claims nothing about intent.
         if (cashFlow.deficitCause === "DEBT_DRIVEN") {
           // Debt payments fully explain the cash deficit and the canonical net
           // is non-negative — never framed as overspending.
-          return "Your cash went down this window, but the gap is debt payments, not overspending. " +
-                 "If that paydown is deliberate, consider recording it as a goal so it reads as strategy.";
+          return "Your cash went down this window, but the gap is debt payments, not overspending.";
         }
         return null;
 
       default:
-        // GOALS / GOALS_GOOD — the goals domain owns those, and the Brief has no
-        // goals section. Silence beats a manufactured sentence.
         return null;
     }
   })();

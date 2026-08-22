@@ -10,11 +10,12 @@
  * that column sealed behind lib/balances/account-balances.ts.
  */
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import path from "node:path";
 
 const ROOT = process.cwd();
 const src  = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
+const exists = (rel: string) => existsSync(path.join(ROOT, rel));
 const code = (rel: string) =>
   src(rel).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
@@ -210,31 +211,19 @@ console.log("\nPROBE 7 — provider and ingestion clocks stay separate");
 
 // ── 8. Every current-balance surface labels its quantity ─────────────────────
 
-console.log("\nPROBE 8 — every section widget is classified, and balance cards disclose");
+console.log("\nPROBE 8 — balance surfaces disclose their quantity");
 {
-  // Read the registry's actual key list and require a classification for each.
-  const registrySrc = src("components/space/sections/SectionRegistry.tsx");
-  const body = registrySrc.slice(registrySrc.indexOf("export const SectionRegistry"));
-  const keys = [...body.matchAll(/^\s{2}"([a-z_0-9]+)":/gm)].map((m) => m[1]);
-  // REVIEW-3 (slice F) cut the registry to reachable keys (~19); the bound
-  // asserts the scan still parses a real list, not a historical count.
-  check(`the registry exposes a readable key list (${keys.length} keys)`, keys.length >= 15);
-
-  const mapSrc = code("lib/balances/section-quantity.ts");
-  const missing = keys.filter((k) => !new RegExp(`\\b${k}:\\s`).test(mapSrc));
-  check("EVERY SectionRegistry key is classified in SECTION_QUANTITY",
-    missing.length === 0, `unclassified: ${missing.join(", ")}`);
-
-  const card = code("components/space/sections/SectionCard.tsx");
-  check("the card asks the map for its quantity", card.includes("sectionQuantityNote("));
-  // Every shell must render the wrapper, not the bare body — otherwise a card
-  // family silently loses its label.
-  check("no card shell renders the bare body",
-    !/\{renderBody\(\)\}/.test(card.replace(/function renderBodyWithQuantity\(\)[\s\S]*?\n  \}/, "")));
-  // REVIEW-3: the bare-lede shell (net_worth / net_worth_chart) was deleted
-  // with its keys, leaving three shells.
-  check("all three card shells render the labelled body",
-    (card.match(/\{renderBodyWithQuantity\(\)\}/g) ?? []).length === 3);
+  // W2 — the section render stack (SectionRegistry/SectionCard) and its
+  // per-key quantity map (lib/balances/section-quantity.ts) were DELETED with
+  // the Goals retirement: the stack's last mounts were the GOALS/RETIREMENT
+  // routed tabs, and the map's only caller was SectionCard. The former probe-8
+  // checks over them retire with the code; what remains guarded here are the
+  // LIVE balance surfaces (account panel + AI payload) below, and the stack's
+  // absence is pinned so it cannot quietly return unclassified.
+  check("the section render stack stays deleted (W2)",
+    !exists("components/space/sections/SectionRegistry.tsx") &&
+    !exists("components/space/sections/SectionCard.tsx") &&
+    !exists("lib/balances/section-quantity.ts"));
 
   // The account panel names both quantities.
   const panel = code("components/space/widgets/accounts/AccountDetail.tsx");
@@ -266,7 +255,8 @@ console.log("\nPROBE 8 — every section widget is classified, and balance cards
 
 console.log("\nPROBE 9 — the balance authority writes nothing");
 {
-  for (const f of ["lib/balances/quantities.ts", "lib/balances/account-balances.ts", "lib/balances/section-quantity.ts"]) {
+  // W2 — section-quantity.ts deleted with the render stack (see probe 8).
+  for (const f of ["lib/balances/quantities.ts", "lib/balances/account-balances.ts"]) {
     const c = code(f);
     check(`${path.basename(f)} touches no database`,
       !c.includes("@/lib/db") && !/prisma|\.update\(|\.create\(|\.upsert\(/.test(c));

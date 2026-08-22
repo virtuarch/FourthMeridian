@@ -114,9 +114,10 @@ async function main(): Promise<void> {
     "a canonical PAST_MONTH window can resolve");
   add("SNAPSHOT", "estimated snapshots", await db.spaceSnapshot.count({ where: { isEstimated: true } }), "FX-estimated disclosure");
 
-  // ── Goals / holdings ──────────────────────────────────────────────────────
-  const goalTypes = await db.spaceGoal.groupBy({ by: ["goalType"], _count: { _all: true } });
-  for (const g of goalTypes) add("GOAL", `goalType=${g.goalType}`, g._count._all, "goal alignment engine");
+  // ── Holdings ──────────────────────────────────────────────────────────────
+  // W2 — the GOAL coverage rows were deleted with the Goals retirement: the
+  // seed no longer creates goal rows and no engine consumes them, so measuring
+  // their coverage would demand seeding a retired concept.
   add("HOLDING", "holdings", await db.holding.count(), "investments valuation");
 
   // ── Report ────────────────────────────────────────────────────────────────

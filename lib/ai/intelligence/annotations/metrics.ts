@@ -30,7 +30,7 @@ import {
   SPENDING_FIXED,
   TREND_FLAT_PCT,
 } from './constants';
-import type { SpaceContext_AI, TransactionsSummaryData, MonthlyBreakdownEntry, SnapshotSectionData, AccountsSectionData, GoalsSectionData } from '@/lib/ai/types';
+import type { SpaceContext_AI, TransactionsSummaryData, MonthlyBreakdownEntry, SnapshotSectionData, AccountsSectionData } from '@/lib/ai/types';
 import { FinanceDomains } from '@/lib/ai/types';
 import { classifyFlow, isExcludedFromSpending } from '@/lib/transactions/flow-classifier';
 // REVIEW-3 C-1/C-3 — the ONE spend-clamp authority; the monthly trend `net`
@@ -60,11 +60,8 @@ export function getAcctsData(ctx: SpaceContext_AI): AccountsSectionData | null {
 }
 
 
-export function getGoalsData(ctx: SpaceContext_AI): GoalsSectionData | null {
-  const section = ctx.domains[FinanceDomains.GOALS];
-  if (!section?.data) return null;
-  return section.data as GoalsSectionData;
-}
+// W2 — getGoalsData deleted (Goals retired; the 'goals' domain and its
+// GoalsSectionData payload no longer exist).
 
 // ── Heuristic derivation ──────────────────────────────────────────────────────
 
@@ -319,13 +316,12 @@ export function computeSpendingTrends(
   };
 }
 
-// ── 2.4 Goal Alignment computation ───────────────────────────────────────────
+// ── 2.2 Debt Strategy computation ────────────────────────────────────────────
 
 /**
- * Cross-references active goal state against observable spending, debt, and
- * snapshot behavior.
- * Pure function. No DB queries. Alignment is determined from assembled domain
- * data — no LLM inference.
+ * Derives avalanche/snowball candidates and payoff urgency from the assembled
+ * accounts list + the already-computed DebtSection.
+ * Pure function. No DB queries. Must be called after Step 3 (DebtSection).
  */
 
 export function computeDebtStrategy(

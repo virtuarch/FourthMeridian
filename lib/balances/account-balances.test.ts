@@ -10,12 +10,12 @@
  * two numbers must never be interchangeable.
  */
 
+import { existsSync } from "node:fs";
 import { resolveAccountFreshness } from "@/lib/freshness/observation";
 import {
   resolveAccountBalances, resolveRowBalances,
   type AccountBalances,
 } from "./account-balances";
-import { SECTION_QUANTITY, isCurrentBalanceSection, sectionQuantityNote } from "./section-quantity";
 
 // Test-local shorthands over the resolved claim. (The exported
 // reachableCash/availableCredit/settledCash wrappers were deleted in REVIEW-3 —
@@ -239,25 +239,15 @@ console.log("resolveRowBalances — the row convenience");
 
 console.log("Section quantity map");
 {
-  // REVIEW-3 (slice F): the liquidity / net-worth / cash-flow / debt-
-  // perspective SECTION keys were deleted with the Overview canvas (their
-  // registry entries are gone), so the map no longer classifies them — the
-  // v2.6-L3 REACHABLE_CASH migration lives on in the LiquidityWorkspace path
-  // (pinned by reconciliation-boundary.test.ts). These checks pin the
-  // surviving vocabulary.
-  check("an observed-balance card is a current-balance surface", isCurrentBalanceSection("accounts_overview"));
-  check("...and discloses the observed-ledger quantity",
-    sectionQuantityNote("accounts_overview") !== null && SECTION_QUANTITY.accounts_overview === "OBSERVED_LEDGER");
-  check("a debt card discloses amounts owed",
-    sectionQuantityNote("debt_breakdown_chart") === "Amounts owed");
-  check("a flow card carries NO current-balance label",
-    sectionQuantityNote("trip_budget") === null && SECTION_QUANTITY.trip_budget === "FLOW");
-  check("a non-financial card carries none either", sectionQuantityNote("goals_progress") === null);
-  check("an unknown key is not labelled", sectionQuantityNote("no_such_widget") === null);
-  check("deleted section keys did not linger in the map",
-    ["net_worth", "net_worth_chart", "allocation", "accessible_cash", "cash_flow_summary",
-     "debt_by_account", "credit_score", "debt_summary"]
-      .every((k) => SECTION_QUANTITY[k] === undefined));
+  // W2 — lib/balances/section-quantity.ts was DELETED OUTRIGHT: the Goals
+  // retirement removed the section render stack (SectionRegistry/SectionCard),
+  // and SectionCard was the map's only caller. The former vocabulary checks
+  // retire with the module; its absence is pinned so a per-key quantity map
+  // cannot quietly return without a consumer and a classification test. The
+  // LIVE balance-disclosure surfaces (account panel, AI payload) are guarded
+  // by lib/balances/balance-boundary.test.ts probe 8.
+  check("section-quantity.ts stays deleted (W2 — render stack retired)",
+    !existsSync(new URL("./section-quantity.ts", import.meta.url)));
 }
 
 if (failures > 0) { console.error(`\naccount-balances: ${failures} failure(s).`); process.exit(1); }

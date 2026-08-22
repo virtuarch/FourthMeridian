@@ -16,9 +16,9 @@
  *
  * This file only owns ORDER + COPY. Icon components stay in the consuming
  * dashboard files (same pattern as the existing TAB_ICONS record in
- * SpaceDashboard.tsx) so this stays a plain, framework-agnostic module
- * — consistent with how lib/widget-registry.ts stores icon names as
- * strings rather than importing lucide-react directly.
+ * SpaceDashboard.tsx) so this stays a plain, framework-agnostic module —
+ * icon identities are stored as name strings rather than importing
+ * lucide-react directly.
  */
 
 // REVIEW-3 (slice F) — dead nav ids deleted:
@@ -80,8 +80,8 @@ export function railVisibleTabs(): SpaceTabId[] {
  * Settings, in that fixed order.
  *
  * Data only (id/label/href/live) — icon components stay in the consuming
- * components (same convention as SPACE_TAB_LABELS above and lib/widget-registry),
- * so this stays a framework-agnostic module. Every destination is a real,
+ * components (same convention as SPACE_TAB_LABELS above), so this stays a
+ * framework-agnostic module. Every destination is a real,
  * shipping production route, so all five are `live` (the prototype's "Settings ·
  * soon" stub does not apply here).
  */
@@ -131,7 +131,8 @@ export function isGlobalDestActive(id: GlobalDestId, pathname: string): boolean 
 export const SPACE_LIST_CHANGED_EVENT     = "space-list-changed";
 export const SPACE_INVITES_CHANGED_EVENT  = "space-invites-changed";
 export const SPACE_ACCOUNTS_CHANGED_EVENT = "space-accounts-changed";
-export const SPACE_GOALS_CHANGED_EVENT    = "space-goals-changed";
+// (W2) SPACE_GOALS_CHANGED_EVENT deleted — its only dispatchers/listeners
+// (GoalsCard / AddGoalModal) retired with the Goals surface.
 export const OPEN_CREATE_SPACE_EVENT      = "open-create-space";
 // MC1 QA Q6 — a Space's reporting currency changed. router.refresh() re-runs
 // the server tree (layout DisplayCurrencyProvider + card props), but a client

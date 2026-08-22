@@ -50,13 +50,12 @@ function makeTemplate(
  *
  *   live       — SELECTABLE. Only the two concepts that fully work today:
  *                Family (Household merged in — identical composition) and Custom.
- *   comingSoon — SHOWN DISABLED so the roadmap is visible: Retirement, Business,
- *                Property, Vehicle, Trip. Not creatable (the create route rejects
- *                any non-"live" id).
+ *   comingSoon — SHOWN DISABLED so the roadmap is visible: Business, Property,
+ *                Vehicle, Trip. Not creatable (the create route rejects any
+ *                non-"live" id).
  *   hidden     — not in the picker, still resolvable for existing Spaces:
- *                Household (merged into Family), the retired Debt Payoff /
- *                Emergency Fund / Investment / Equipment / Other, plus the
- *                never-picker PERSONAL and legacy GOAL.
+ *                the retired Debt Payoff / Emergency Fund / Investment /
+ *                Equipment / Other, plus the never-picker PERSONAL.
  *
  * Array order is the picker's display order within each status group.
  */
@@ -65,7 +64,6 @@ export const SPACE_TEMPLATES: readonly SpaceTemplate[] = [
   makeTemplate("family",         SpaceCategory.FAMILY,         "live"),
   makeTemplate("custom",         SpaceCategory.CUSTOM,         "live"),
   // Visible in the picker, disabled — planned concepts
-  makeTemplate("retirement",     SpaceCategory.RETIREMENT,     "comingSoon"),
   makeTemplate("business",       SpaceCategory.BUSINESS,       "comingSoon"),
   makeTemplate("property",       SpaceCategory.PROPERTY,       "comingSoon"),
   makeTemplate("vehicle",        SpaceCategory.VEHICLE,        "comingSoon"),
@@ -74,6 +72,10 @@ export const SPACE_TEMPLATES: readonly SpaceTemplate[] = [
   // (The "household" template was DELETED in W1: HOUSEHOLD is retired outright,
   // FAMILY is the sole shared-family-space concept, and production holds zero
   // HOUSEHOLD Spaces to materialize. Do not reintroduce it.)
+  // (W2: the "retirement" comingSoon template and the hidden legacy "goal"
+  // template were DELETED — both surfaces are RETIRED outright (product
+  // decision, final), NOT preserved as roadmap placeholders; production holds
+  // zero GOAL/RETIREMENT Spaces to materialize. Do not reintroduce either.)
   makeTemplate("debt-payoff",    SpaceCategory.DEBT_PAYOFF,    "hidden"),
   makeTemplate("emergency-fund", SpaceCategory.EMERGENCY_FUND, "hidden"),
   makeTemplate("investment",     SpaceCategory.INVESTMENT,     "hidden"),
@@ -81,7 +83,6 @@ export const SPACE_TEMPLATES: readonly SpaceTemplate[] = [
   makeTemplate("other",          SpaceCategory.OTHER,          "hidden"),
   // Never exposed in the picker
   makeTemplate("personal",       SpaceCategory.PERSONAL,       "hidden"),
-  makeTemplate("goal",           SpaceCategory.GOAL,           "hidden"),
 ];
 
 /** Look up a template by its stable id. Resolves hidden templates too. */

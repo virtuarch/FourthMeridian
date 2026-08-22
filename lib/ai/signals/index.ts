@@ -23,7 +23,11 @@
 // Each import executes the module's top-level registerDetector() call.
 import './detectors/transactions';
 import './detectors/snapshot';
-import './detectors/goals';
+// W2 — './detectors/goals' DELETED (Goals retired; GOAL_COMPLETED signal gone).
+// ⚠️ A dangling side-effect import here is INVISIBLE to tsc (side-effect
+// imports that fail to resolve are ignored unless noUncheckedSideEffectImports
+// is on) and crashes only at runtime — keep this list in lockstep with the
+// detectors directory.
 import './detectors/accounts';
 
 // ── Public API ─────────────────────────────────────────────────────────────

@@ -32,7 +32,9 @@ export const FinancialIntents = {
   DEBT_VS_INVESTING:           'DEBT_VS_INVESTING',
   SPENDING_REDUCTION:          'SPENDING_REDUCTION',
   CASH_FLOW_EXPLANATION:       'CASH_FLOW_EXPLANATION',
-  GOAL_ALIGNMENT:              'GOAL_ALIGNMENT',
+  // W2 — GOAL_ALIGNMENT deleted (Goals retired). A goal-phrased question now
+  // classifies to whichever surviving intent its other vocabulary earns, or
+  // honestly to UNKNOWN — never to a section that no longer exists.
   INVESTMENT_READINESS:        'INVESTMENT_READINESS',
   UPDATE_KNOWLEDGE:            'UPDATE_KNOWLEDGE',
   GENERAL_FINANCIAL_OVERVIEW:  'GENERAL_FINANCIAL_OVERVIEW',

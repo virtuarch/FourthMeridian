@@ -210,8 +210,10 @@ export const EXCLUDED_TARGETS: Record<string, string> = {
   // per-item locks the OPS-4 exclusion required. See OPERATION_TARGETS above.
   "process-deletions":
     "Destructive (executes pending account/data deletions). Automatic-only; if ever exposed, requires WRITE + explicit typed confirm (investigation §5).",
+  // W2 — the goals purge arm was deleted (Goals retired); the job is a no-op
+  // pending a future trash-retention arm. Still no operator value to expose.
   "purge-trash":
-    "Destructive (permanent goal-trash purge). Automatic-only (investigation §5).",
+    "No-op since W2 (goals purge arm retired). Automatic-only (investigation §5).",
   "notification-cleanup": "Low operator value; no reason to expose (investigation §5 ➖).",
   "notification-retry": "Low operator value; the daily cadence is the retry mechanism (investigation §5 ➖).",
   "rate-limit-sweep": "Low operator value; automatic-only (investigation §5 ➖).",

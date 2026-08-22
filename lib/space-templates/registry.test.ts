@@ -7,18 +7,16 @@
  *
  * Covers: unique/stable ids · template shape · live/hidden exposure ·
  * category validity · exactly one live template per exposed category ·
- * widget-key referential integrity (incl. no deprecated aliases) ·
- * no duplicate section keys · parity with getPresetsForCategory ·
- * template keys have a real SectionRegistry renderer (read-only source scan).
+ * empty section plans (W2) · no duplicate section keys · parity with
+ * getPresetsForCategory · the deleted section render stack stays deleted.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import {
   SpaceCategory,
   getPresetsForCategory,
 } from "../space-presets";
-import { WIDGET_REGISTRY } from "../widget-registry";
 import {
   SPACE_TEMPLATES, getTemplate, getLiveTemplates, getComingSoonTemplates, getTemplateForCategory,
 } from "./registry";
@@ -38,9 +36,13 @@ const CATEGORY_VALUES = new Set<string>(Object.values(SpaceCategory));
 // W1 — "household" was removed from EXPECTED_HIDDEN: the HOUSEHOLD concept is
 // RETIRED outright (FAMILY is the sole shared-family-space concept) and its
 // template was DELETED, not hidden. Test 6 below pins the deletion.
+// W2 — "retirement" removed from EXPECTED_COMING_SOON and "goal" from
+// EXPECTED_HIDDEN: both surfaces are RETIRED outright (product decision,
+// final) and their templates were DELETED — retirement was NOT preserved as a
+// roadmap placeholder. Pinned below alongside the household pins.
 const EXPECTED_LIVE        = ["family", "custom"];
-const EXPECTED_COMING_SOON = ["retirement", "business", "property", "vehicle", "trip"];
-const EXPECTED_HIDDEN      = ["debt-payoff", "emergency-fund", "investment", "equipment", "other", "personal", "goal"];
+const EXPECTED_COMING_SOON = ["business", "property", "vehicle", "trip"];
+const EXPECTED_HIDDEN      = ["debt-payoff", "emergency-fund", "investment", "equipment", "other", "personal"];
 
 // 1. Unique, stable slug ids.
 const ids = SPACE_TEMPLATES.map((t) => t.id);
@@ -98,6 +100,18 @@ check(`retired concept "household" has NO template (deleted, not hidden)`,
   getTemplate("household") === undefined);
 check(`no template carries the retired HOUSEHOLD category`,
   getTemplateForCategory("HOUSEHOLD") === undefined);
+// W2 — GOALS and RETIREMENT are retired OUTRIGHT (product decision, final):
+// their templates were DELETED, not hidden — including the "retirement"
+// comingSoon placeholder (it is NOT preserved as a roadmap surface). Production
+// holds zero GOAL/RETIREMENT Spaces to materialize. Do not reintroduce either.
+check(`retired concept "retirement" has NO template (deleted, not hidden)`,
+  getTemplate("retirement") === undefined);
+check(`retired concept "goal" has NO template (deleted, not hidden)`,
+  getTemplate("goal") === undefined);
+check(`no template carries the retired RETIREMENT category`,
+  getTemplateForCategory("RETIREMENT") === undefined);
+check(`no template carries the retired GOAL category`,
+  getTemplateForCategory("GOAL") === undefined);
 // The three groups partition the whole registry (nothing stranded in a 4th state).
 check(
   "live + comingSoon + hidden partition the registry",
@@ -108,14 +122,14 @@ for (const t of [...live, ...comingSoon]) {
   check(`picker template "${t.id}" resolves its category`, getTemplateForCategory(t.category)?.id !== undefined);
 }
 
-// 6. Widget-key referential integrity — every section key exists in
-//    WIDGET_REGISTRY. (The deprecated-alias check retired with the
-//    `deprecatedAlias` field in REVIEW-3's widget-registry cut.)
+// 6. Section plans — W2: every built-in template's section list is EMPTY. The
+//    last seeded key (the universal goals_progress) retired with the Goals
+//    surface, and lib/widget-registry.ts (whose entries the keys used to
+//    reference) was deleted with the section render stack. An empty plan is
+//    legal end-to-end; a template may only regain a section together with a
+//    real renderer AND a surface that renders it.
 for (const t of SPACE_TEMPLATES) {
-  for (const s of t.sections) {
-    const entry = WIDGET_REGISTRY.get(s.key);
-    check(`template "${t.id}" section key "${s.key}" exists in WIDGET_REGISTRY`, entry !== undefined);
-  }
+  check(`template "${t.id}" has an empty section plan (W2)`, t.sections.length === 0);
 }
 
 // 7. No duplicate section keys within a template (protects @@unique([spaceId, key])).
@@ -131,7 +145,12 @@ for (const t of SPACE_TEMPLATES) {
 // 11. Parity — for every SpaceCategory, the category's template sections
 //     deep-equal getPresetsForCategory(category). This is the SP-1 core
 //     guarantee: the registry is a formalization, not a fork.
+// W2 — GOAL / RETIREMENT are skipped: their templates are DELETED (retired
+// outright; the categories' enum-mirror members survive only until the
+// enum-retirement migration program), pinned above in the exposure section.
+const W2_RETIRED_CATEGORIES = new Set<string>(["GOAL", "RETIREMENT"]);
 for (const cat of Object.values(SpaceCategory)) {
+  if (W2_RETIRED_CATEGORIES.has(cat)) continue;
   const t = getTemplateForCategory(cat);
   check(`getTemplateForCategory(${cat}) resolves a template`, t !== undefined);
   if (t) {
@@ -142,31 +161,15 @@ for (const cat of Object.values(SpaceCategory)) {
   }
 }
 
-// Optional drift guard (read-only): every template section key must have a
-// real renderer in the SectionRegistry literal — the exact failure mode the
-// Space Template Redesign eliminated ("no section whose key lacks a
-// SectionRegistry renderer"). SD-7 extracted the section subsystem out of
-// SpaceDashboard into components/space/sections/SpaceSections.tsx, so the scan
-// now reads the registry from its new home. Source scan only; the code is never
-// imported or edited here.
-const sectionsSrc = readFileSync(
-  path.join(process.cwd(), "components", "space", "sections", "SectionRegistry.tsx"),
-  "utf8"
-);
-const registryBlockMatch = sectionsSrc.match(
-  /const SectionRegistry[\s\S]*?\n};/
-);
-check("SectionRegistry literal found in SectionRegistry.tsx", registryBlockMatch !== null);
-if (registryBlockMatch) {
-  const block = registryBlockMatch[0];
-  const templateKeys = new Set(SPACE_TEMPLATES.flatMap((t) => t.sections.map((s) => s.key)));
-  for (const key of templateKeys) {
-    check(
-      `template section key "${key}" has a SectionRegistry renderer`,
-      block.includes(`"${key}"`)
-    );
-  }
-}
+// Drift guard — W2: the SectionRegistry render stack is DELETED with the
+// Goals/Retirement retirement (its only remaining mounts). The former "every
+// template key has a renderer" scan is replaced by its W2 truth: the renderer
+// file stays gone, and (checked in test 6 above) no template seeds a section,
+// so no key can lack a renderer.
+check("SectionRegistry.tsx stays deleted (W2 — section render stack retired)",
+  !existsSync(path.join(process.cwd(), "components", "space", "sections", "SectionRegistry.tsx")));
+check("SectionCard.tsx stays deleted (W2 — section render stack retired)",
+  !existsSync(path.join(process.cwd(), "components", "space", "sections", "SectionCard.tsx")));
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed.`);

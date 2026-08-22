@@ -31,9 +31,7 @@ export type {
   MetricTrend,
   SpendingTrendMetric,
   TrendDirection,
-  GoalAlignmentSection,
-  GoalAlignmentItem,
-  GoalAlignmentStatus,
+  // W2 — GoalAlignment* exports deleted with the goal-alignment engine.
   InvestmentReadinessSection,
   InvestmentReadinessClassification,
   RiskOpportunitySection,

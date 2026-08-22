@@ -536,22 +536,11 @@ export const NOTIFICATION_REGISTRY = {
       title: str(d, "summary", "Unusual spending detected"),
     }),
   },
-  GOAL_RISK: {
-    ...AI,
-    id: "GOAL_RISK",
-    priority: "HIGH" as const,
-    defaultChannels: ["IN_APP"] as const satisfies readonly NotificationChannel[],
-    digestable: false,
-    // Condition identity: two producers (agent, job) observing the same
-    // at-risk goal compute the same key — dedupe by design, no instance ids.
-    dedupe: "suppress" as const,
-    dedupeKeyTemplate: "GOAL_RISK:goal:{goalId}:open",
-    icon: "target",
-    pointerContract: ["goalId", "goalName", "agentId"],
-    render: (d) => ({
-      title: `${str(d, "goalName", "A goal")} is at risk`,
-    }),
-  },
+  // W2 — GOAL_RISK deleted with the Goals retirement. The registry is PARTIAL
+  // (satisfies Record<string, ...>; the DB stores type as a string, not a
+  // Prisma enum), so a vocabulary-only entry with no producer and no goal
+  // substrate left to point at is simply removed — the S1 chokepoint now
+  // rejects the type like any other unregistered string.
   DEBT_ALERT: {
     ...AI,
     id: "DEBT_ALERT",

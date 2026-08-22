@@ -4,8 +4,9 @@
  * Context Priority Registry (D6.3D-1, shadow mode).
  *
  * Declares one ContextSectionDescriptor per existing pipeline section — the
- * four Layer 1 domains that have assemblers today plus the ten Layer 2
- * FinancialAssessment sections. This is the single source of truth the planner
+ * three Layer 1 domains that have assemblers today plus the nine Layer 2
+ * FinancialAssessment sections (W2 — the goals domain and the goalAlignment
+ * section were retired). This is the single source of truth the planner
  * reads. Adding a section later is one descriptor here; no central routing edit.
  *
  * Affinity values encode the D6.3D domain × intent matrix (see
@@ -74,7 +75,7 @@ export const INTENT_FAMILY_BY_INTENT: Record<FinancialIntent, IntentFamily> = {
   [FinancialIntents.DEBT_VS_INVESTING]:          'DEBT_VS_INVESTING',
   [FinancialIntents.SPENDING_REDUCTION]:         'SPENDING',
   [FinancialIntents.CASH_FLOW_EXPLANATION]:      'CASH_FLOW',
-  [FinancialIntents.GOAL_ALIGNMENT]:             'GOAL',
+  // W2 — GOAL_ALIGNMENT → 'GOAL' mapping deleted with the intent and family.
   [FinancialIntents.INVESTMENT_READINESS]:       'INVESTMENT',
   [FinancialIntents.UPDATE_KNOWLEDGE]:           'UPDATE',
   [FinancialIntents.GENERAL_FINANCIAL_OVERVIEW]: 'OVERVIEW',
@@ -120,7 +121,7 @@ const DESCRIPTORS: ContextSectionDescriptor[] = [
     baseImportance: 'ALWAYS', // Required floor — the balance/net-worth spine.
     intentAffinity: {
       DEBT: 'SUPPORT', DEBT_VS_INVESTING: 'PRIMARY', SPENDING: 'SUPPORT',
-      INVESTMENT: 'PRIMARY', CASH_FLOW: 'SUPPORT', GOAL: 'SUPPORT',
+      INVESTMENT: 'PRIMARY', CASH_FLOW: 'SUPPORT',
       OVERVIEW: 'PRIMARY', UPDATE: 'PRIMARY', UNKNOWN: 'PRIMARY',
     },
     dependsOn: [],
@@ -132,31 +133,21 @@ const DESCRIPTORS: ContextSectionDescriptor[] = [
     baseImportance: 'USUALLY',
     intentAffinity: {
       DEBT: 'SUPPORT', DEBT_VS_INVESTING: 'SUPPORT', SPENDING: 'PRIMARY',
-      INVESTMENT: 'SUPPORT', CASH_FLOW: 'PRIMARY', GOAL: 'SUPPORT',
+      INVESTMENT: 'SUPPORT', CASH_FLOW: 'PRIMARY',
       OVERVIEW: 'SUPPORT', UPDATE: 'OPTIONAL', UNKNOWN: 'SUPPORT',
     },
     dependsOn: [],
     staticEstimatedTokens: 700,
   },
-  {
-    key: FinanceDomains.GOALS, // 'goals'
-    layer: 'DOMAIN',
-    baseImportance: 'ON_REQUEST',
-    intentAffinity: {
-      DEBT: 'SUPPORT', DEBT_VS_INVESTING: 'OPTIONAL', SPENDING: 'OPTIONAL',
-      INVESTMENT: 'SUPPORT', CASH_FLOW: 'OPTIONAL', GOAL: 'PRIMARY',
-      OVERVIEW: 'SUPPORT', UPDATE: 'OPTIONAL', UNKNOWN: 'OPTIONAL',
-    },
-    dependsOn: [],
-    staticEstimatedTokens: 300,
-  },
+  // W2 — the 'goals' DOMAIN descriptor was deleted with the Goals retirement
+  // (no assembler, no manifest entry, nothing to select).
   {
     key: FinanceDomains.SNAPSHOT_HISTORY, // 'snapshot_history'
     layer: 'DOMAIN',
     baseImportance: 'SUPPORTING',
     intentAffinity: {
       DEBT: 'SUPPORT', DEBT_VS_INVESTING: 'SUPPORT', SPENDING: 'OPTIONAL',
-      INVESTMENT: 'SUPPORT', CASH_FLOW: 'SUPPORT', GOAL: 'SUPPORT',
+      INVESTMENT: 'SUPPORT', CASH_FLOW: 'SUPPORT',
       OVERVIEW: 'SUPPORT', UPDATE: 'OPTIONAL', UNKNOWN: 'OPTIONAL',
     },
     dependsOn: [],
@@ -170,7 +161,7 @@ const DESCRIPTORS: ContextSectionDescriptor[] = [
     baseImportance: 'ALWAYS', // Required floor — gates confidence of every claim.
     intentAffinity: {
       DEBT: 'SUPPORT', DEBT_VS_INVESTING: 'SUPPORT', SPENDING: 'SUPPORT',
-      INVESTMENT: 'SUPPORT', CASH_FLOW: 'SUPPORT', GOAL: 'SUPPORT',
+      INVESTMENT: 'SUPPORT', CASH_FLOW: 'SUPPORT',
       OVERVIEW: 'SUPPORT', UPDATE: 'SUPPORT', UNKNOWN: 'SUPPORT',
     },
     dependsOn: [],
@@ -183,7 +174,7 @@ const DESCRIPTORS: ContextSectionDescriptor[] = [
     baseImportance: 'USUALLY',
     intentAffinity: {
       DEBT: 'SUPPORT', DEBT_VS_INVESTING: 'SUPPORT', SPENDING: 'PRIMARY',
-      INVESTMENT: 'SUPPORT', CASH_FLOW: 'PRIMARY', GOAL: 'SUPPORT',
+      INVESTMENT: 'SUPPORT', CASH_FLOW: 'PRIMARY',
       OVERVIEW: 'SUPPORT', UPDATE: 'OPTIONAL', UNKNOWN: 'SUPPORT',
     },
     dependsOn: [FinanceDomains.TRANSACTIONS_SUMMARY],
@@ -196,7 +187,7 @@ const DESCRIPTORS: ContextSectionDescriptor[] = [
     baseImportance: 'USUALLY',
     intentAffinity: {
       DEBT: 'PRIMARY', DEBT_VS_INVESTING: 'PRIMARY', SPENDING: 'SUPPORT',
-      INVESTMENT: 'SUPPORT', CASH_FLOW: 'SUPPORT', GOAL: 'SUPPORT',
+      INVESTMENT: 'SUPPORT', CASH_FLOW: 'SUPPORT',
       OVERVIEW: 'SUPPORT', UPDATE: 'OPTIONAL', UNKNOWN: 'SUPPORT',
     },
     dependsOn: [FinanceDomains.ACCOUNTS],
@@ -209,7 +200,7 @@ const DESCRIPTORS: ContextSectionDescriptor[] = [
     baseImportance: 'ON_REQUEST',
     intentAffinity: {
       DEBT: 'PRIMARY', DEBT_VS_INVESTING: 'PRIMARY', SPENDING: 'OPTIONAL',
-      INVESTMENT: 'SUPPORT', CASH_FLOW: 'OPTIONAL', GOAL: 'OPTIONAL',
+      INVESTMENT: 'SUPPORT', CASH_FLOW: 'OPTIONAL',
       OVERVIEW: 'OPTIONAL', UPDATE: 'OPTIONAL', UNKNOWN: 'OPTIONAL',
     },
     dependsOn: ['debt', FinanceDomains.ACCOUNTS],
@@ -222,7 +213,7 @@ const DESCRIPTORS: ContextSectionDescriptor[] = [
     baseImportance: 'USUALLY',
     intentAffinity: {
       DEBT: 'SUPPORT', DEBT_VS_INVESTING: 'PRIMARY', SPENDING: 'SUPPORT',
-      INVESTMENT: 'PRIMARY', CASH_FLOW: 'SUPPORT', GOAL: 'SUPPORT',
+      INVESTMENT: 'PRIMARY', CASH_FLOW: 'SUPPORT',
       OVERVIEW: 'SUPPORT', UPDATE: 'OPTIONAL', UNKNOWN: 'SUPPORT',
     },
     dependsOn: [FinanceDomains.ACCOUNTS],
@@ -235,7 +226,7 @@ const DESCRIPTORS: ContextSectionDescriptor[] = [
     baseImportance: 'ON_REQUEST',
     intentAffinity: {
       DEBT: 'PRIMARY', DEBT_VS_INVESTING: 'PRIMARY', SPENDING: 'OPTIONAL',
-      INVESTMENT: 'PRIMARY', CASH_FLOW: 'SUPPORT', GOAL: 'SUPPORT',
+      INVESTMENT: 'PRIMARY', CASH_FLOW: 'SUPPORT',
       OVERVIEW: 'SUPPORT', UPDATE: 'OPTIONAL', UNKNOWN: 'OPTIONAL',
     },
     dependsOn: ['debt', 'liquidity', 'cashFlow'],
@@ -248,33 +239,22 @@ const DESCRIPTORS: ContextSectionDescriptor[] = [
     baseImportance: 'ON_REQUEST',
     intentAffinity: {
       DEBT: 'OPTIONAL', DEBT_VS_INVESTING: 'OPTIONAL', SPENDING: 'PRIMARY',
-      INVESTMENT: 'OPTIONAL', CASH_FLOW: 'SUPPORT', GOAL: 'OPTIONAL',
+      INVESTMENT: 'OPTIONAL', CASH_FLOW: 'SUPPORT',
       OVERVIEW: 'OPTIONAL', UPDATE: 'OPTIONAL', UNKNOWN: 'OPTIONAL',
     },
     dependsOn: ['cashFlow', FinanceDomains.TRANSACTIONS_SUMMARY],
     staticEstimatedTokens: 320,
     confidenceFrom: conf('spendingOpportunities'),
   },
-  {
-    key: 'goalAlignment',
-    layer: 'ASSESSMENT',
-    baseImportance: 'ON_REQUEST',
-    intentAffinity: {
-      DEBT: 'SUPPORT', DEBT_VS_INVESTING: 'OPTIONAL', SPENDING: 'OPTIONAL',
-      INVESTMENT: 'SUPPORT', CASH_FLOW: 'OPTIONAL', GOAL: 'PRIMARY',
-      OVERVIEW: 'SUPPORT', UPDATE: 'OPTIONAL', UNKNOWN: 'OPTIONAL',
-    },
-    dependsOn: [FinanceDomains.GOALS, FinanceDomains.TRANSACTIONS_SUMMARY],
-    staticEstimatedTokens: 280,
-    confidenceFrom: conf('goalAlignment'),
-  },
+  // W2 — the 'goalAlignment' ASSESSMENT descriptor was deleted with the
+  // goal-alignment engine (and its conf('goalAlignment') reader with it).
   {
     key: 'investmentReadiness',
     layer: 'ASSESSMENT',
     baseImportance: 'ON_REQUEST',
     intentAffinity: {
       DEBT: 'OPTIONAL', DEBT_VS_INVESTING: 'PRIMARY', SPENDING: 'SUPPRESS',
-      INVESTMENT: 'PRIMARY', CASH_FLOW: 'OPTIONAL', GOAL: 'OPTIONAL',
+      INVESTMENT: 'PRIMARY', CASH_FLOW: 'OPTIONAL',
       OVERVIEW: 'OPTIONAL', UPDATE: 'OPTIONAL', UNKNOWN: 'OPTIONAL',
     },
     dependsOn: ['liquidity', 'debt'],
@@ -287,7 +267,7 @@ const DESCRIPTORS: ContextSectionDescriptor[] = [
     baseImportance: 'ALWAYS', // Required floor — the executive-summary engine.
     intentAffinity: {
       DEBT: 'PRIMARY', DEBT_VS_INVESTING: 'PRIMARY', SPENDING: 'PRIMARY',
-      INVESTMENT: 'PRIMARY', CASH_FLOW: 'PRIMARY', GOAL: 'PRIMARY',
+      INVESTMENT: 'PRIMARY', CASH_FLOW: 'PRIMARY',
       OVERVIEW: 'PRIMARY', UPDATE: 'SUPPORT', UNKNOWN: 'PRIMARY',
     },
     dependsOn: [],

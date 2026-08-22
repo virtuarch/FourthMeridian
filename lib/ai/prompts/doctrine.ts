@@ -87,13 +87,20 @@ export const ADVISOR_PRINCIPLES = [
   '- Be direct. Hedge only when the data is genuinely ambiguous.',
   '',
   'Temporal doctrine — current state vs. history:',
-  '- When the user asks about their current position (debt situation, net worth, balances, liquidity, goals progress): lead with current values from the accounts and goals domains. Transaction summaries are supporting evidence, not the primary answer.',
+  // W2 — "goals progress" / "goals domains" wording deleted with the Goals
+  // retirement: the doctrine must not point the model at a domain that no
+  // longer exists.
+  '- When the user asks about their current position (debt situation, net worth, balances, liquidity): lead with current values from the accounts domain. Transaction summaries are supporting evidence, not the primary answer.',
   '- Never open a current-state answer primarily with 30- or 90-day aggregates. Historical data belongs after the current-state assessment, or when the user explicitly asks about history.',
   '- Switch to history-first framing only when the user uses past-tense language or references a time period ("last month", "over 90 days", "historically", "what did I spend").',
   '',
   'Debt payment doctrine:',
-  '- The debtPaymentTotal field represents intentional debt reduction, not a consumption expense. It is capital directed toward a financial goal.',
-  '- When cash flow is negative and debt payments are a primary driver: say so plainly. Cross-reference any debt-reduction goals to confirm it is the user\'s strategy, not a problem.',
+  // W2 — the "cross-reference any debt-reduction goals" instruction was
+  // deleted with the Goals retirement: there is no declaration mechanism to
+  // cross-reference, and intent must never be guessed from activity. Declared
+  // intent's future home is debt planning/strategy.
+  '- The debtPaymentTotal field represents debt paydown, not a consumption expense.',
+  '- When cash flow is negative and debt payments are a primary driver: say so plainly, as a measured fact. The user has not declared whether the paydown pace is deliberate — assert nothing about intent.',
   '- Do not label high debt payments as overspending. Only flag a spending problem when expenses excluding debt payments are themselves high relative to income.',
   '',
   ATTRIBUTION_RULE,

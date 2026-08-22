@@ -82,30 +82,6 @@ export type SpaceAccount = {
   };
 };
 
-export type SpaceGoal = {
-  id:                    string;
-  name:                  string;
-  description:           string | null;
-  category:              string;
-  goalType:              "FINANCIAL" | "HABIT" | "SPENDING_LIMIT" | "DEBT_REDUCTION";
-  status:                string;
-  targetAmount:          number | null;
-  currentAmount:         number;
-  targetDate:            string | null;
-  completedAt:           string | null;
-  archivedAt:            string | null;
-  deletedAt:             string | null;
-  // HABIT
-  habitFrequency:        string | null;
-  currentStreak:         number;
-  longestStreak:         number;
-  lastCheckIn:           string | null;
-  checkIns:              { id: string; checkedAt: string; note: string | null }[];
-  // SPENDING_LIMIT
-  spendingCategory:      string | null;
-  // DEBT_REDUCTION
-  linkedAccountId:       string | null;
-  targetReductionAmount: number | null;
-  targetReductionPct:    number | null;
-  snapshotBalance:       number | null;
-};
+// (W2) The SpaceGoal VIEW type is deleted — the Goals surface is retired and its
+// last consumer (GoalsCard) went with it. The Prisma SpaceGoal tables stay until
+// a later migration train; nothing in the dashboard reads them anymore.

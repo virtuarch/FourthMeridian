@@ -108,6 +108,13 @@ function main(): void {
     getTemplate("household") === undefined && !pickerIds.has("household"));
   check("Family carries the household concept (Family is selectable)",
     live.some((t) => t.id === "family"));
+  // W2 — GOALS and RETIREMENT retired OUTRIGHT (product decision, final): both
+  // templates DELETED — including the "retirement" comingSoon placeholder, which
+  // is NOT preserved as a roadmap surface. Zero production Spaces to materialize.
+  check(`"retirement" does not resolve at all (concept retired, template deleted — not a roadmap card)`,
+    getTemplate("retirement") === undefined && !pickerIds.has("retirement"));
+  check(`"goal" does not resolve at all (concept retired, template deleted)`,
+    getTemplate("goal") === undefined && !pickerIds.has("goal"));
 
   console.log(failures === 0 ? "\nPASS" : `\nFAIL — ${failures} check(s)`);
   process.exit(failures === 0 ? 0 : 1);

@@ -98,6 +98,19 @@ function main(): void {
     check(`lens-backed "${p.id}" is reachable from at least one category`, reachable.has(p.id));
   }
 
+  console.log("5. W2 — the goals/retirement lenses are retired outright");
+  // Product decision (final): both entries are DELETED from the library — the
+  // retirement comingSoon placeholder included — and no category list may
+  // surface either id. An unknown ?perspective= id (incl. the legacy
+  // goals/retirement slugs) degrades to the default lens in the host URL layer
+  // (parsePerspectiveParam validates against this library), never a crash.
+  check(`the "goals" entry is deleted from PERSPECTIVE_LIBRARY`,
+    PERSPECTIVE_LIBRARY.goals === undefined);
+  check(`the "retirement" entry is deleted from PERSPECTIVE_LIBRARY`,
+    PERSPECTIVE_LIBRARY.retirement === undefined);
+  check("no category surfaces the retired goals/retirement lenses",
+    !reachable.has("goals") && !reachable.has("retirement"));
+
   if (failures > 0) {
     console.error(`\n${failures} check(s) FAILED`);
     process.exit(1);

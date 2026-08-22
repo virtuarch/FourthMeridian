@@ -11,21 +11,19 @@
  *   npx tsx components/space/workspaces/workspaces.test.ts
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 
 const ROOT = process.cwd();
 const read = (...seg: string[]) => readFileSync(path.join(ROOT, ...seg), "utf8");
 const WS = (f: string) => read("components", "space", "workspaces", f);
+const gone = (...seg: string[]) => !existsSync(path.join(ROOT, ...seg));
 const DASH = read("components", "dashboard", "SpaceDashboard.tsx");
 const DASHCODE = DASH.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, ""); // strip comments (prose names moved decls)
-// SEC-2 split the former SpaceSections.tsx into the card chrome (SectionCard.tsx)
-// and the renderer catalog (SectionRegistry.tsx).
-const SECTIONCARD     = read("components", "space", "sections", "SectionCard.tsx");
-const SECTIONREGISTRY = read("components", "space", "sections", "SectionRegistry.tsx");
-// SD-7a — Goals data ownership moved OUT of the host into the Goals consumers.
-const GOALS_ADAPTERS  = read("components", "space", "widgets", "goals-perspective-adapters.tsx");
-const GOALS_CARD      = read("components", "space", "sections", "goals", "GoalsCard.tsx");
+// W2 — the section RENDER subsystem (SectionCard.tsx / SectionRegistry.tsx) and
+// the whole Goals surface (goals-perspective-adapters, sections/goals/,
+// AddGoalModal, RoutedWorkspaceModal) are DELETED; sections 3 and 5 below pin
+// the deletions instead of reading the files.
 // SD-7b — the shared structural data lifecycle moved OUT of the host into useSpaceData.
 const USE_SPACE_DATA  = read("lib", "space", "use-space-data.ts");
 // SD-8b — the URL/tab/perspective navigation state machine moved into useSpaceNavigation.
@@ -36,10 +34,7 @@ function check(name: string, cond: boolean, detail?: string): void {
   if (cond) console.log(`  ✓ ${name}`);
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
-function count(hay: string, needle: string): number {
-  let n = 0, i = 0;
-  for (;;) { const j = hay.indexOf(needle, i); if (j === -1) return n; n++; i = j + needle.length; }
-}
+// (W2: the `count` helper retired with the section-subsystem definition pins.)
 
 console.log("1. Every primary destination RESOLVES to its Workspace (host gates + mounts it)");
 {
@@ -54,12 +49,16 @@ console.log("1. Every primary destination RESOLVES to its Workspace (host gates 
     // workspace through the exploration host — the summary canvas
     // (OverviewWorkspace) was deleted as product-unreachable.
     ['activeTab === "OVERVIEW"', "<WorkspaceExplorationHost"],
-    ["isRoutedWorkspaceTab(activeTab)", "<RoutedWorkspaceModal"],
   ];
   for (const [gate, mount] of mounts) {
     check(`host gates + mounts ${mount}`, DASHCODE.includes(gate) && DASHCODE.includes(mount));
   }
-  check("host mounts <AddGoalModal (overlay)", DASHCODE.includes("<AddGoalModal"));
+  // W2 — the Goals/Retirement routed-modal path and the AddGoalModal overlay are
+  // RETIRED: the host mounts neither, and the components are deleted from disk.
+  check("the retired routed-modal path is not mounted anywhere in the host",
+    !DASHCODE.includes("<RoutedWorkspaceModal") && !DASHCODE.includes("isRoutedWorkspaceTab("));
+  check("the retired AddGoalModal overlay is not mounted anywhere in the host",
+    !DASHCODE.includes("<AddGoalModal") && !DASHCODE.includes("showAddGoal"));
   check("the retired Overview summary canvas is not mounted anywhere in the host",
     !DASHCODE.includes("<OverviewWorkspace") && !DASHCODE.includes("perspectiveEngaged"));
 }
@@ -87,19 +86,24 @@ console.log("2. Host no longer DEFINES the extracted composition (ownership left
   check("host no longer owns composition switcher state", !DASHCODE.includes("const [composition"));
 }
 
-console.log("3. The section subsystem is the ONE home for SectionCard + the registry");
+console.log("3. The section RENDER subsystem is DELETED (W2) — and stays deleted");
 {
-  check("SectionCard.tsx defines SectionCard once", count(SECTIONCARD, "export function SectionCard(") === 1);
-  check("SectionRegistry.tsx defines the SectionRegistry once", count(SECTIONREGISTRY, "export const SectionRegistry") === 1);
-  check("host imports SectionCard from the card module + SectionRegistry from the registry module",
-    DASH.includes('from "@/components/space/sections/SectionCard"') &&
-    DASH.includes('from "@/components/space/sections/SectionRegistry"'));
+  // W2 — the SectionCard/SectionRegistry compositor retired with its last
+  // mounts (the GOALS/RETIREMENT routed modals + the Goals virtual sections).
+  // Section CONFIG (SpaceDashboardSection rows, the sections API, Manage
+  // toggles) survives; only RENDERING is gone.
+  check("SectionCard.tsx is deleted", gone("components", "space", "sections", "SectionCard.tsx"));
+  check("SectionRegistry.tsx is deleted", gone("components", "space", "sections", "SectionRegistry.tsx"));
+  check("host no longer imports the section render modules",
+    !DASH.includes('from "@/components/space/sections/SectionCard"') &&
+    !DASH.includes('from "@/components/space/sections/SectionRegistry"') &&
+    !DASHCODE.includes("<SectionCard"));
   // REVIEW-3: the <SpaceSectionStack> component was deleted with its last
-  // mount (the Overview summary canvas); the module keeps only the shared
-  // vocabulary (NoSectionsCard + SectionCardBundle) the modal path still uses.
+  // mount; the module keeps only the shared vocabulary. W2: SectionCardBundle
+  // survives solely as the AccountsWorkspace prop bundle (spaceId/accounts/ctx
+  // are the read fields) — trimming that vocabulary is a follow-up seam.
   check("SpaceSectionStack no longer exports a stack component (vocabulary only)",
     !WS("SpaceSectionStack.tsx").includes("export function SpaceSectionStack(") &&
-    WS("SpaceSectionStack.tsx").includes("export function NoSectionsCard(") &&
     WS("SpaceSectionStack.tsx").includes("export type SectionCardBundle"));
   // Accounts migrated OUT of the generic section stack into the editorial ledger
   // idiom — the tab mounts AccountsLedger (summary + grouped ledger + LeftPanel/
@@ -129,41 +133,32 @@ console.log("4. Shared dashboard types have ONE home (no host-inline re-declarat
     !DASHCODE.includes("type SpaceAccount =") && !DASHCODE.includes("type DashboardSection ="));
 }
 
-console.log("5. Goals data ownership left the host (SD-7a) — the consumer self-fetches");
+console.log("5. The Goals surface is RETIRED (W2) — deleted end to end, host reads nothing of it");
 {
-  // (a) The host no longer fetches or holds Goals data. `DASHCODE` is
-  // comment-stripped, so an explanatory comment mentioning the old name does not
-  // trip these — only real code would.
+  // (a) The host no longer fetches, holds, or threads any Goals data. `DASHCODE`
+  // is comment-stripped, so an explanatory comment does not trip these.
   check("host no longer fetches the goals endpoint", !DASHCODE.includes("/goals"));
   check("host no longer holds spaceGoals state", !DASHCODE.includes("spaceGoals"));
   check("host no longer derives perspectiveNeedsGoals", !DASHCODE.includes("perspectiveNeedsGoals"));
   check("host no longer threads a goals prop", !DASHCODE.includes("goals={"));
   check("host no longer imports the SpaceGoal type", !DASHCODE.includes("SpaceGoal"));
 
-  // (b) The Goals CONSUMER owns its own data dependency (the self-fetching
-  // wrapper), and the four perspective widgets render through it.
-  check("goals adapters export the self-fetching GoalPerspectiveWidget",
-    count(GOALS_ADAPTERS, "export function GoalPerspectiveWidget(") === 1);
-  check("GoalPerspectiveWidget fetches goals by spaceId",
-    GOALS_ADAPTERS.includes("/goals") && GOALS_ADAPTERS.includes("fetch("));
-  check("all four goal_* registry entries render through GoalPerspectiveWidget",
-    count(SECTIONREGISTRY, "<GoalPerspectiveWidget") === 4);
-  // GoalsCard (the goals_progress list surface) already owned its data — unchanged.
-  check("GoalsCard still self-fetches its goals", GOALS_CARD.includes("/goals") && GOALS_CARD.includes("fetch("));
+  // (b) Every Goals module is deleted from disk (product decision, final):
+  // the API route dir, the card + adapters, the create modal, and the
+  // virtual-section machinery that rendered the goals workspace.
+  check("goals API route dir is deleted", gone("app", "api", "spaces", "[id]", "goals"));
+  check("sections/goals/ (GoalsCard) is deleted", gone("components", "space", "sections", "goals"));
+  check("goals-perspective-adapters.tsx is deleted",
+    gone("components", "space", "widgets", "goals-perspective-adapters.tsx"));
+  check("AddGoalModal.tsx is deleted", gone("components", "space", "workspaces", "AddGoalModal.tsx"));
+  check("lib/perspectives/virtual-sections.ts is deleted", gone("lib", "perspectives", "virtual-sections.ts"));
+  check("lib/widget-registry.ts is deleted (goals-only registry)", gone("lib", "widget-registry.ts"));
 
-  // (c) Existing Goals rendering is unchanged — the four pure render fns and their
-  // registry keys still exist; only their DATA SOURCE moved.
-  for (const key of ['"goal_progress"', '"goal_on_track"', '"goal_required_pace"', '"goal_funding_gap"']) {
-    check(`registry still maps ${key}`, SECTIONREGISTRY.includes(key));
-  }
-  for (const fn of ["renderGoalProgress", "renderGoalOnTrack", "renderGoalRequiredPace", "renderGoalFundingGap"]) {
-    check(`goals adapters still define ${fn}`, GOALS_ADAPTERS.includes(`export function ${fn}(`));
-  }
-
-  // (d) No other consumer relied on the old prop — the section subsystem no longer
-  // declares/threads a goals prop at all.
-  check("SectionRenderProps no longer declares a goals field", !SECTIONREGISTRY.includes("goals?:"));
-  check("SectionCard no longer threads a goals prop", !SECTIONCARD.includes("goals?:") && !SECTIONCARD.includes("SpaceGoal"));
+  // (c) The Prisma SpaceGoal MODEL is deliberately untouched (tables/enums stay
+  // until a later migration train) — only the UI/API surface retired. The shared
+  // view type is gone with its last consumer.
+  check("dashboard-types no longer declares the SpaceGoal view type",
+    !read("lib", "space", "dashboard-types.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "").includes("SpaceGoal"));
 }
 
 console.log("6. Shared Space data ownership left the host (SD-7b) — useSpaceData owns the lifecycle");
@@ -234,6 +229,19 @@ console.log("7. Navigation ownership left the host (SD-8b) — useSpaceNavigatio
     USE_SPACE_NAV.includes("activePerspectiveId") && USE_SPACE_NAV.includes("chartMetric") && USE_SPACE_NAV.includes("?metric="));
   check("nav constants (TAB_ORDER / lens ids) live in the nav hook",
     USE_SPACE_NAV.includes("export const TAB_ORDER") && USE_SPACE_NAV.includes("export const NET_WORTH_LENS_ID"));
+
+  // W2 — GOALS/RETIREMENT left the LOCAL tab vocabulary entirely, and legacy
+  // deep links DEGRADE, never crash: ?tab=goals|retirement is now
+  // "present-but-invalid", which parseTabParam maps to OVERVIEW (the pinned
+  // fallback below), and TAB_ORDER carries no routed member.
+  const NAVCODE = USE_SPACE_NAV.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  check("nav vocabulary carries no GOALS/RETIREMENT member",
+    !NAVCODE.includes('"GOALS"') && !NAVCODE.includes('"RETIREMENT"') &&
+    !NAVCODE.includes("goals:") && !NAVCODE.includes("retirement:"));
+  check("unknown ?tab= values degrade to OVERVIEW (parseTabParam fallback)",
+    NAVCODE.includes('URL_TAB_ALIAS[raw.toLowerCase()] ?? "OVERVIEW"'));
+  check("TAB_ORDER is exactly the section-derived default candidates",
+    NAVCODE.includes('export const TAB_ORDER = ["OVERVIEW", "ACCOUNTS", "ACTIVITY"]'));
 
   // (d) Data ⇄ nav stay separate + the one intentional coordination point.
   check("nav hook does not fetch data (no /sections, /snapshots)",

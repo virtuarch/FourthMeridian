@@ -44,10 +44,11 @@ import { FinanceDomains, type ContextDomain } from '@/lib/ai/types';
 // recorded them as permanent skipped-domain noise ('no_assembler') and every
 // manifest claimed data it could not assemble. Re-add them here WHEN their
 // assemblers land (assembler-registry registration is the gate that matters).
+// W2 — GOALS removed from every manifest list below (Goals retired; the
+// domain, its assembler, and its payload types no longer exist).
 const FINANCE_CORE: ContextDomain[] = [
   FinanceDomains.ACCOUNTS,
   FinanceDomains.TRANSACTIONS_SUMMARY,
-  FinanceDomains.GOALS,
   FinanceDomains.SNAPSHOT_HISTORY,
 ];
 
@@ -71,7 +72,6 @@ const FINANCE_WITH_HOLDINGS: ContextDomain[] = [
 const FINANCE_WITH_MEMBERS: ContextDomain[] = [
   FinanceDomains.ACCOUNTS,
   FinanceDomains.TRANSACTIONS_SUMMARY,
-  FinanceDomains.GOALS,
   FinanceDomains.SNAPSHOT_HISTORY,
 ];
 
@@ -84,18 +84,21 @@ const FINANCE_WITH_MEMBERS: ContextDomain[] = [
 const FINANCE_DEBT_FOCUSED: ContextDomain[] = [
   FinanceDomains.ACCOUNTS,
   FinanceDomains.TRANSACTIONS_SUMMARY,
-  FinanceDomains.GOALS,
   FinanceDomains.SNAPSHOT_HISTORY,
 ];
 
 /**
- * Emergency fund / goal-focused domain list.
+ * Emergency fund / savings-focused domain list.
  * SNAPSHOT_HISTORY included: savings trajectory over 90 days is the primary
- * signal for emergency fund and goal-progress questions.
+ * signal for emergency-fund questions.
+ *
+ * W2 — GOALS removed; the member set now duplicates FINANCE_CORE, but this
+ * stays a NAMED list: the EMERGENCY_FUND and GOAL categories still reference
+ * it, and their domain set is its own declaration — aliasing it to
+ * FINANCE_CORE would silently couple those categories to future core edits.
  */
 const FINANCE_GOAL_FOCUSED: ContextDomain[] = [
   FinanceDomains.ACCOUNTS,
-  FinanceDomains.GOALS,
   FinanceDomains.TRANSACTIONS_SUMMARY,
   FinanceDomains.SNAPSHOT_HISTORY,
 ];

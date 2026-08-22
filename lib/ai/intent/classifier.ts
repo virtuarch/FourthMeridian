@@ -74,12 +74,7 @@ const SPENDING_CUT_WORDS = [
 
 const CASH_FLOW_WORDS = ['cash flow', 'cashflow', 'cash-flow'];
 
-const GOAL_WORDS = ['goal', 'goals', 'target', 'targets', 'saving for', 'on track'];
-
-const ALIGN_WORDS = [
-  'align', 'aligned', 'alignment', 'on track', 'consistent with',
-  'match my', 'line up', 'in line with',
-];
+// W2 — GOAL_WORDS / ALIGN_WORDS deleted with the GOAL_ALIGNMENT rule.
 
 const READINESS_WORDS = [
   'ready to invest', 'ready to start investing', 'should i invest',
@@ -107,7 +102,8 @@ const STATUS_WORDS = [
 const ACCOUNTS      = FinanceDomains.ACCOUNTS;
 const TRANSACTIONS  = FinanceDomains.TRANSACTIONS_SUMMARY;
 const HOLDINGS      = FinanceDomains.HOLDINGS_SUMMARY;
-const GOALS         = FinanceDomains.GOALS;
+// W2 — GOALS shorthand deleted with the domain (Goals retired): routing hints
+// must never name a section that can no longer be assembled.
 const SNAPSHOTS     = FinanceDomains.SNAPSHOT_HISTORY;
 // REVIEW-3 C-10 — PROVIDERS / MEMBERS shorthands deleted with their rule
 // references: no assembler is registered for either domain and the manifests no
@@ -156,7 +152,7 @@ const RULES: Rule[] = [
     answerStyle: AnswerStyles.CONFIRM_ACTION,
     primarySections: [ACCOUNTS],
     supportingSections: [],
-    suppressSections: [TRANSACTIONS, HOLDINGS, GOALS, SNAPSHOTS],
+    suppressSections: [TRANSACTIONS, HOLDINGS, SNAPSHOTS],
     match: (t) => {
       const action = hasAny(t, UPDATE_ACTION_WORDS);
       const field = hasAny(t, UPDATE_FIELD_WORDS);
@@ -172,7 +168,7 @@ const RULES: Rule[] = [
     temporalFrame: TemporalFrames.PLANNING,
     answerStyle: AnswerStyles.TRADEOFF,
     primarySections: [ACCOUNTS, HOLDINGS],
-    supportingSections: [GOALS, SNAPSHOTS, TRANSACTIONS],
+    supportingSections: [SNAPSHOTS, TRANSACTIONS],
     suppressSections: [],
     match: (t) => {
       const debt = hasAny(t, DEBT_WORDS);
@@ -209,7 +205,7 @@ const RULES: Rule[] = [
     answerStyle: AnswerStyles.DIRECT_STATUS,
     primarySections: [ACCOUNTS],
     supportingSections: [SNAPSHOTS],
-    suppressSections: [TRANSACTIONS, HOLDINGS, GOALS],
+    suppressSections: [TRANSACTIONS, HOLDINGS],
     match: (t) => {
       const debt = hasAny(t, DEBT_WORDS);
       if (!debt) return 0;
@@ -226,7 +222,7 @@ const RULES: Rule[] = [
     temporalFrame: TemporalFrames.CURRENT,
     answerStyle: AnswerStyles.ASSESSMENT,
     primarySections: [ACCOUNTS, HOLDINGS],
-    supportingSections: [GOALS, TRANSACTIONS, SNAPSHOTS],
+    supportingSections: [TRANSACTIONS, SNAPSHOTS],
     suppressSections: [],
     match: (t) => {
       if (hasAny(t, READINESS_WORDS)) return 0.9;
@@ -243,7 +239,7 @@ const RULES: Rule[] = [
     answerStyle: AnswerStyles.EXPLANATION,
     primarySections: [TRANSACTIONS],
     supportingSections: [ACCOUNTS, SNAPSHOTS],
-    suppressSections: [HOLDINGS, GOALS],
+    suppressSections: [HOLDINGS],
     match: (t) => {
       if (hasAny(t, CASH_FLOW_WORDS)) return 0.9;
       return 0;
@@ -267,22 +263,10 @@ const RULES: Rule[] = [
     },
   },
 
-  // 8. GOAL_ALIGNMENT — "are my goals aligned with my spending".
-  {
-    intent: FinancialIntents.GOAL_ALIGNMENT,
-    temporalFrame: TemporalFrames.CURRENT,
-    answerStyle: AnswerStyles.ASSESSMENT,
-    primarySections: [GOALS, TRANSACTIONS],
-    supportingSections: [ACCOUNTS, SNAPSHOTS],
-    suppressSections: [HOLDINGS],
-    match: (t) => {
-      const goal = hasAny(t, GOAL_WORDS);
-      if (goal && hasAny(t, ALIGN_WORDS)) return 0.9;
-      if (goal && hasAny(t, ['spend', 'spending', 'saving', 'progress'])) return 0.75;
-      if (goal) return 0.6;
-      return 0;
-    },
-  },
+  // 8. W2 — the GOAL_ALIGNMENT rule was deleted with the Goals retirement.
+  //    A goal-phrased question now falls through to whatever surviving rule
+  //    its other vocabulary matches, or to the UNKNOWN fallback — the honest
+  //    route when the product has no goals surface to answer from.
 
   // 9. GENERAL_FINANCIAL_OVERVIEW — "give me an overview".
   {
@@ -290,7 +274,7 @@ const RULES: Rule[] = [
     temporalFrame: TemporalFrames.CURRENT,
     answerStyle: AnswerStyles.OVERVIEW,
     primarySections: [ACCOUNTS, SNAPSHOTS],
-    supportingSections: [GOALS, TRANSACTIONS, HOLDINGS],
+    supportingSections: [TRANSACTIONS, HOLDINGS],
     suppressSections: [],
     match: (t) => {
       if (hasAny(t, OVERVIEW_WORDS)) return 0.85;
@@ -305,7 +289,7 @@ const UNKNOWN_ROUTE: Omit<IntentRoute, 'confidence'> = {
   temporalFrame: TemporalFrames.GENERAL,
   answerStyle: AnswerStyles.CLARIFY,
   primarySections: [],
-  supportingSections: [ACCOUNTS, TRANSACTIONS, GOALS, SNAPSHOTS, HOLDINGS],
+  supportingSections: [ACCOUNTS, TRANSACTIONS, SNAPSHOTS, HOLDINGS],
   suppressSections: [],
 };
 

@@ -21,17 +21,17 @@ import {
   WORKSPACE_REGISTRY,
   getWorkspaceDefinition,
   getWorkspaceForTab,
-  getWorkspaceTargetTab,
-  ROUTED_WORKSPACE_TABS,
-  isRoutedWorkspaceTab,
-  getWorkspaceModalMeta,
   workspaceConsumesShellTime,
   temporalControlVisibility,
   type WorkspaceDataNeed,
   type WorkspaceEnvelopeSource,
   type TemporalCapability,
 } from "../perspectives";
-import { PERSPECTIVE_ICON_MAP } from "../perspective-icons";
+// W2 — the routed-modal machinery (getWorkspaceTargetTab / ROUTED_WORKSPACE_TABS /
+// isRoutedWorkspaceTab / getWorkspaceModalMeta) is DELETED with its last two
+// members (Goals & Retirement, both surfaces retired outright). The namespace
+// import lets the deletion be pinned without naming dead exports statically.
+import * as PerspectivesModule from "../perspectives";
 import { SPACE_TAB_ORDER } from "../space-nav";
 
 let failures = 0;
@@ -59,22 +59,25 @@ const sameSet = (a: readonly string[], b: readonly string[]) =>
 
 // ── kind discriminator: standard vs perspective ─────────────────────────────────
 // Doctrine: a Perspective is a TEMPORAL FINANCIAL LENS over the canonical financial
-// knowledge (participates in asOf/compareTo). Goals is goal MANAGEMENT (its own
-// domain) ⇒ standard, NOT a Perspective. Overview + the four rail destinations are
-// structural ⇒ standard.
+// knowledge (participates in asOf/compareTo). Overview + the four rail destinations
+// are structural ⇒ standard. W2 — the "goals" (standard) and "retirement"
+// (perspective) entries are DELETED: both surfaces are retired outright.
 {
-  const STANDARD = ["overview", "transactions", "accounts", "activity", "members", "goals"];
-  const PERSPECTIVES = ["wealth", "cashFlow", "liquidity", "investments", "debt", "retirement", "tax", "property", "businessHealth"];
+  const STANDARD = ["overview", "transactions", "accounts", "activity", "members"];
+  const PERSPECTIVES = ["wealth", "cashFlow", "liquidity", "investments", "debt", "tax", "property", "businessHealth"];
   for (const id of STANDARD) check(`${id}.kind === "standard"`, WORKSPACE_REGISTRY[id]?.kind === "standard");
   for (const id of PERSPECTIVES) check(`${id}.kind === "perspective"`, WORKSPACE_REGISTRY[id]?.kind === "perspective");
-  check("Goals is a standard Workspace, NOT a Perspective", WORKSPACE_REGISTRY.goals?.kind === "standard");
-  // Exhaustive: the FINANCE standard set is EXACTLY these six (registry
+  // W2 retirement pins — neither surface re-enters the registry, under any kind.
+  check("goals has NO registry entry (W2 — surface retired outright)", WORKSPACE_REGISTRY.goals === undefined);
+  check("retirement has NO registry entry (W2 — surface retired outright, incl. the comingSoon placeholder)",
+    WORKSPACE_REGISTRY.retirement === undefined);
+  // Exhaustive: the FINANCE standard set is EXACTLY these five (registry
   // verification). Scoped to the finance domain because the universal registry also
   // holds non-finance kind:"standard" workspaces — Platform Operations
   // (domain:"platform", OPS-5 S6) and the UI-Convergence utility surfaces
   // (domain:"connections"/"settings", Wave 1) — each validated in its own domain's
   // workspaces.test.ts. Finance ⇔ domain absent or "finance".
-  check("finance kind:standard set === {overview,transactions,accounts,activity,members,goals}",
+  check("finance kind:standard set === {overview,transactions,accounts,activity,members}",
     sameSet(Object.values(WORKSPACE_REGISTRY).filter((d) => d.kind === "standard" && (d.domain ?? "finance") === "finance").map((d) => d.id), STANDARD));
   // Every Perspective is a Workspace: PERSPECTIVE_LIBRARY entries carry the base fields.
   check("every PERSPECTIVE_LIBRARY entry has an id/label/icon/kind",
@@ -88,10 +91,13 @@ const sameSet = (a: readonly string[], b: readonly string[]) =>
     check(`primary destination "${id}" is registered`, !!getWorkspaceDefinition(id));
   }
   // getWorkspaceForTab maps a top-level tab id → its workspace (lowercased id).
+  // W2 — GOALS / RETIREMENT resolve to undefined now: their workspaces are
+  // deleted with the retired surfaces (they fail safe, like any unknown tab).
   const tabMap: Record<string, string | undefined> = {
     OVERVIEW: "overview", TRANSACTIONS: "transactions", ACCOUNTS: "accounts",
     ACTIVITY: "activity", MEMBERS: "members",
-    GOALS: "goals", DEBT: "debt", INVESTMENTS: "investments", RETIREMENT: "retirement",
+    DEBT: "debt", INVESTMENTS: "investments",
+    GOALS: undefined, RETIREMENT: undefined,
     PERSPECTIVES: undefined, FINANCES: undefined, DOCUMENTS: undefined, SETTINGS: undefined,
   };
   for (const [tab, wid] of Object.entries(tabMap)) {
@@ -105,49 +111,18 @@ check("Transactions is now lookup-able (no exception path for SD-3)", getWorkspa
 check("unknown id fails safe (undefined)", getWorkspaceDefinition("nope") === undefined);
 check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefined);
 
-// ── Routing converged — behavior-identical to the removed PERSPECTIVE_TARGET_TAB ──
+// ── W2 — the routed-modal (GlassModal) mechanism is DELETED outright ─────────────
+// M2 shrank the routed set to {GOALS, RETIREMENT}; W2 retires both surfaces, so
+// the mechanism itself (routing metadata + every helper over it) is gone. These
+// pins keep it gone: no definition carries routing metadata, and none of the
+// removed helpers is exported anymore.
 {
-  // M2 canonical IA: Debt & Investments are NO LONGER routed modals — they are
-  // perspectives selected through Overview, so they carry no routing.targetTab.
-  // Only Goals & Retirement remain routed (explicit compatibility boundary).
-  const expectedTargets: Record<string, string | undefined> = {
-    retirement: "RETIREMENT", goals: "GOALS",
-    investments: undefined, debt: undefined,
-    wealth: undefined, cashFlow: undefined, liquidity: undefined, overview: undefined,
-  };
-  for (const [id, target] of Object.entries(expectedTargets)) {
-    check(`getWorkspaceTargetTab(${id}) === ${target}`, getWorkspaceTargetTab(id) === target);
+  check("no WorkspaceDefinition carries a routing field (mechanism deleted)",
+    Object.values(WORKSPACE_REGISTRY).every((d) => !("routing" in d)));
+  for (const gone of ["getWorkspaceTargetTab", "ROUTED_WORKSPACE_TABS", "isRoutedWorkspaceTab", "getWorkspaceModalMeta"]) {
+    check(`perspectives module no longer exports ${gone}`,
+      !(gone in PerspectivesModule));
   }
-  // M2: the routed set shrank to exactly {GOALS, RETIREMENT} (order-free).
-  check("ROUTED_WORKSPACE_TABS === {GOALS,RETIREMENT}",
-    sameSet(ROUTED_WORKSPACE_TABS as readonly string[], ["GOALS", "RETIREMENT"]));
-  check("isRoutedWorkspaceTab true for a routed tab (GOALS)", isRoutedWorkspaceTab("GOALS"));
-  check("isRoutedWorkspaceTab true for a routed tab (RETIREMENT)", isRoutedWorkspaceTab("RETIREMENT"));
-  // M2 regression: Debt/Investments must NEVER re-enter the routed-modal path —
-  // one canonical destination each (the Perspective under Overview).
-  check("isRoutedWorkspaceTab false for DEBT (retired)", !isRoutedWorkspaceTab("DEBT"));
-  check("isRoutedWorkspaceTab false for INVESTMENTS (retired)", !isRoutedWorkspaceTab("INVESTMENTS"));
-  check("isRoutedWorkspaceTab false for a non-routed tab", !isRoutedWorkspaceTab("OVERVIEW") && !isRoutedWorkspaceTab("ACCOUNTS"));
-}
-
-// ── Modal chrome converged — behavior-identical to the removed PERSPECTIVE_MODAL_META
-{
-  // M2: only Goals & Retirement retain modal chrome (routed-modal boundary).
-  const expectedModal: Record<string, { title: string; icon: string }> = {
-    GOALS:       { title: "Goals",       icon: "Target" },
-    RETIREMENT:  { title: "Retirement",  icon: "PiggyBank" },
-  };
-  for (const [tab, meta] of Object.entries(expectedModal)) {
-    const got = getWorkspaceModalMeta(tab);
-    check(`getWorkspaceModalMeta(${tab}) === {${meta.title}, ${meta.icon}}`,
-      !!got && got.title === meta.title && got.icon === meta.icon);
-    // The icon NAME must resolve in the shared map so the host render is identical.
-    check(`modal icon "${meta.icon}" resolves in PERSPECTIVE_ICON_MAP`, !!PERSPECTIVE_ICON_MAP[meta.icon]);
-  }
-  check("getWorkspaceModalMeta(OVERVIEW) undefined (non-routed)", getWorkspaceModalMeta("OVERVIEW") === undefined);
-  // M2 regression: Debt/Investments no longer have modal chrome.
-  check("getWorkspaceModalMeta(DEBT) undefined (retired)", getWorkspaceModalMeta("DEBT") === undefined);
-  check("getWorkspaceModalMeta(INVESTMENTS) undefined (retired)", getWorkspaceModalMeta("INVESTMENTS") === undefined);
 }
 
 // ── dataNeeds declared to match current runtime (per the SD-2 census) ────────────
@@ -159,7 +134,7 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
     liquidity:   ["accounts", "transactions", "lens"],
     investments: ["accounts", "investmentsHistory"],
     debt:        ["accounts", "snapshots", "lens", "fico"],
-    goals:       ["accounts", "goals"],
+    // (W2: the goals entry and its "goals" data need are deleted with the surface.)
     // standard workspaces
     overview:      ["accounts", "sections", "snapshots", "transactions", "lens"],
     transactions:  ["accounts", "transactions"],
@@ -172,7 +147,8 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
     check(`${id}.dataNeeds === [${needs.join(", ")}]`, !!got && sameSet(got, needs));
   }
   // Every declared need is a member of the closed WorkspaceDataNeed union.
-  const VALID: WorkspaceDataNeed[] = ["accounts", "snapshots", "transactions", "lens", "investmentsHistory", "goals", "sections", "fico"];
+  // (W2: "goals" left the union with its only declarer.)
+  const VALID: WorkspaceDataNeed[] = ["accounts", "snapshots", "transactions", "lens", "investmentsHistory", "sections", "fico"];
   const allNeeds = Object.values(WORKSPACE_REGISTRY).flatMap((d) => d.dataNeeds ?? []);
   check("all declared dataNeeds are valid union members", allNeeds.every((n) => (VALID as string[]).includes(n)));
 }
@@ -198,15 +174,16 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
     check(`${id} derives consumesShellTime = true`, workspaceConsumesShellTime(WORKSPACE_REGISTRY[id]) === true);
   }
   // Standard/domain workspaces declare no capability and derive false.
-  for (const id of ["overview", "transactions", "accounts", "activity", "members", "goals"]) {
+  for (const id of ["overview", "transactions", "accounts", "activity", "members"]) {
     check(`${id} has no temporalCapability`, WORKSPACE_REGISTRY[id].temporalCapability === undefined);
     check(`${id} derives consumesShellTime = false`, workspaceConsumesShellTime(WORKSPACE_REGISTRY[id]) === false);
   }
   // DOCTRINE RATCHET: every renderer-backed financial Perspective is temporal — the
   // registry describes the intended contract, never fossilizing an impl gap as a
-  // non-temporal category. (Renderer-backed = kind perspective, available, no routed modal.)
+  // non-temporal category. (Renderer-backed = kind perspective, available — W2:
+  // the routed-modal exclusion is gone with the mechanism.)
   for (const [id, def] of Object.entries(PERSPECTIVE_LIBRARY)) {
-    if (def.kind === "perspective" && def.status === "available" && !def.routing?.targetTab) {
+    if (def.kind === "perspective" && def.status === "available") {
       check(`perspective workspace "${id}" declares a temporalCapability`, def.temporalCapability !== undefined);
       check(`perspective workspace "${id}" is temporal (derived consumesShellTime)`, workspaceConsumesShellTime(def) === true);
     }
@@ -264,10 +241,11 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
     ["components", "space", "widgets", "cashflow"],
   ];
 
-  // Data-entry date fields are NOT view-time controls. A goal's target date is a
-  // value the user is storing, not a lens they are looking through. Exempt by
-  // explicit name so adding another is a conscious act, never a silent drift.
-  const DATA_ENTRY_EXEMPT = new Set(["AddGoalModal.tsx"]);
+  // Data-entry date fields are NOT view-time controls. Exempt by explicit name
+  // so adding one is a conscious act, never a silent drift. (W2: AddGoalModal —
+  // the only former exemption — was deleted with the Goals surface; the set is
+  // empty today.)
+  const DATA_ENTRY_EXEMPT = new Set<string>([]);
 
   // Owning canonical time = rendering a time selector, holding the time reducer,
   // or dispatching a shell time action directly.
@@ -311,7 +289,7 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
 {
   const expectedEnvelope: Record<string, WorkspaceEnvelopeSource> = {
     wealth: "wealth", cashFlow: "cashFlow", investments: "investments",
-    liquidity: "lens", debt: "lens", goals: "none",
+    liquidity: "lens", debt: "lens",
   };
   for (const [id, env] of Object.entries(expectedEnvelope)) {
     check(`${id}.envelope === "${env}"`, WORKSPACE_REGISTRY[id].envelope === env);
@@ -333,18 +311,12 @@ check("SPACE_TAB_ORDER is the rail (no PERSPECTIVES tier, no placeholder ids)",
   for (const gone of ["PERSPECTIVE_TARGET_TAB", "PERSPECTIVE_ROUTED_TABS", "PERSPECTIVE_MODAL_META"]) {
     check(`host no longer declares/uses ${gone}`, !dashCode.includes(gone));
   }
-  // SD-7 extracted the routed-tab GlassModal into RoutedWorkspaceModal, so
-  // getWorkspaceModalMeta is now consumed there (still the registry, not a host map).
-  const routedCode = readFileSync(
-    path.join(ROOT, "components", "space", "workspaces", "RoutedWorkspaceModal.tsx"),
-    "utf8",
-  ).replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
-  // REVIEW-3: getWorkspaceTargetTab lost its host call site with the Overview
-  // doorway cards (perspectiveItems no longer maps onSelect); the surviving
-  // registry routing consumers are isRoutedWorkspaceTab (host gating) and
-  // getWorkspaceModalMeta (routed modal chrome).
-  check("host consumes the registry routing helpers",
-    /isRoutedWorkspaceTab\(/.test(dashCode) && /getWorkspaceModalMeta\(/.test(routedCode));
+  // W2 — the routed-modal path is deleted end to end: the modal component is
+  // gone from disk and the host neither imports it nor calls any routed helper.
+  check("RoutedWorkspaceModal.tsx is deleted (W2 — routed modals retired)",
+    !readdirSync(path.join(ROOT, "components", "space", "workspaces")).includes("RoutedWorkspaceModal.tsx"));
+  check("host no longer consumes the deleted routing helpers",
+    !/isRoutedWorkspaceTab\(/.test(dashCode) && !/getWorkspaceModalMeta\(/.test(dashCode));
 
   // SpaceShell stays workspace-agnostic — it must not reach into the registry.
   const shellCode = readFileSync(path.join(ROOT, "components", "space", "shell", "SpaceShell.tsx"), "utf8")

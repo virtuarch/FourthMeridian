@@ -16,6 +16,8 @@
 // Finance assemblers (D4 Slice 2+)
 import './accounts';
 import './snapshot';
-import './goals';
+// W2 — './goals' DELETED (Goals retired; the GOALS domain no longer assembles).
+// ⚠️ Same runtime trap as lib/ai/signals/index.ts: tsc ignores a dangling
+// side-effect import — keep this list in lockstep with the directory.
 import './transactions';
 import './holdings';

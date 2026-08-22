@@ -117,7 +117,8 @@ console.log("\nB. Enrolment — the metric has ONE owner");
 const ENROLLED: [string, string][] = [
   ["components/space/sections/DebtPayoffSection.tsx", "the interactive payoff planner"],
   ["components/space/widgets/debt/debt-kpis.ts",      "the Debt workspace KPI strip + payoff aggregate"],
-  ["components/space/sections/SectionCard.tsx",       "the collapsed payoff summary"],
+  // W2 — SectionCard.tsx (the collapsed payoff summary) deleted with the render
+  // stack; its enrolment retires with it. DebtPayoffSection remains enrolled.
   ["lib/perspective-engine/lenses/debt.core.ts",      "the debt perspective lens"],
   ["lib/ai/intelligence/annotations/metrics.ts",      "computeDebtStrategy (the AI's weightedAvgApr)"],
   ["lib/ai/intelligence/annotations/engine.ts",       "the debt health classification"],

@@ -5,10 +5,12 @@
  * records that are created automatically when a space is created.
  *
  * Rules:
- *  - Every space (regardless of category) gets a GOALS section.
  *  - Section keys are stable machine-readable identifiers — do not rename them
  *    once they exist in the database; update the label instead.
  *  - order is relative within the preset; 0 = first.
+ *  - W2: every preset is EMPTY today (see the note above GOALS retirement
+ *    below) — an empty section plan is legal end-to-end (creation, planner,
+ *    dashboard).
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -65,48 +67,27 @@ export interface SectionPreset {
 // Shared sections
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// REVIEW-3 (slice F) — the preset system was cut to what today's product
-// actually renders from SpaceDashboardSection rows. Sections render in
-// exactly two places now: the GOALS / RETIREMENT routed modals (deep-link
-// only) and the Goals virtual-section path. The Overview canvas — the only
-// mount for the category lede sections (net_worth / net_worth_chart /
-// allocation / debt_summary / value trackers / progress widgets) — was
-// deleted as product-unreachable, ACCOUNTS renders the editorial
-// AccountsLedger and ACTIVITY the editorial timeline (neither reads section
-// rows), and the DEBT / INVESTMENTS / RETIREMENT-seeded tabs have no render
-// branch. So:
+// REVIEW-3 (slice F) cut the preset system to what the product renders from
+// SpaceDashboardSection rows; W2 finishes the cut: the GOALS surface — the
+// LAST seeded section (the universal goals_progress) — is RETIRED (product
+// decision, final), together with the whole section RENDER stack. So:
 //
-//  - Every category's preset is now the universal GOALS section only — the
-//    one seeded key a surface still reads (the GOALS routed modal renders
-//    goals_progress). Existing Spaces keep their rows untouched: unknown
-//    keys are gated out at render (hasRenderer) and stay toggleable in
-//    Manage → Sections.
-//  - The per-category preset entries for retired/non-creatable categories
-//    (BUSINESS, PROPERTY, VEHICLE, TRIP, EQUIPMENT, DEBT_PAYOFF,
-//    EMERGENCY_FUND, INVESTMENT, RETIREMENT, GOAL, HOUSEHOLD) were deleted —
-//    none is creatable (live templates: family/custom; PERSONAL at
-//    registration; OTHER via the legacy category fallback) and production
-//    holds only OTHER and PERSONAL Spaces.
+//  - Every preset (universal + per-category) is now EMPTY. An empty section
+//    plan is legal end-to-end: the planner plans nothing, POST /api/spaces
+//    creates no rows, and the dashboard renders every rail tab regardless of
+//    section rows. Do NOT invent replacement sections to fill the plan.
+//  - Existing Spaces keep their rows untouched: nothing renders them, but
+//    they remain visible/toggleable CONFIG in Manage → Overview.
 //
 // Re-adding a section to a template is a one-line PRESET_MAP entry — but the
-// key must have a SectionRegistry renderer AND a surface that renders it
-// ("the template earns its modules").
-
-const GOALS_SECTION: SectionPreset = {
-  key:     "goals_progress",
-  label:   "Goals",
-  tab:     SpaceDashboardTab.GOALS,
-  enabled: true,
-  order:   0,
-};
+// key must have a renderer AND a surface that renders it ("the template earns
+// its modules"), and neither GOALS nor RETIREMENT may return.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Preset map
 // ─────────────────────────────────────────────────────────────────────────────
 
-const UNIVERSAL_SECTIONS: SectionPreset[] = [
-  GOALS_SECTION,
-];
+const UNIVERSAL_SECTIONS: SectionPreset[] = [];
 
 /** Per-category preset OVERRIDES on top of the universal set. Empty today —
  *  see the REVIEW-3 note above. Partial by design: a missing category gets

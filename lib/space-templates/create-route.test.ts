@@ -39,8 +39,17 @@ function check(name: string, ok: boolean, detail?: string): void {
 // Legacy-path parity: for every SpaceCategory, the route's new source
 // (category → template → planner) equals its old source
 // (getPresetsForCategory). This is the SP-2.1 zero-behavior-change guarantee.
+// W2 — GOAL / RETIREMENT are RETIRED outright (templates DELETED, like W1's
+// household): the legacy path must resolve NOTHING for them. Both are already
+// unwritable (absent from SUPPORTED_SPACE_CATEGORIES), so no create path can
+// reach the undefined resolution.
+const W2_RETIRED_CATEGORIES = new Set<string>(["GOAL", "RETIREMENT"]);
 for (const cat of Object.values(SpaceCategory)) {
   const t = getTemplateForCategory(cat);
+  if (W2_RETIRED_CATEGORIES.has(cat)) {
+    check(`legacy path resolves NO template for retired ${cat} (W2)`, t === undefined);
+    continue;
+  }
   check(`legacy path resolves a template for ${cat}`, t !== undefined);
   if (t) {
     check(
@@ -58,9 +67,13 @@ for (const t of SPACE_TEMPLATES) {
 }
 check(
   "hidden templates are distinguishable for rejection",
-  getTemplate("personal")?.status !== "live" && getTemplate("goal")?.status !== "live"
+  getTemplate("personal")?.status !== "live" && getTemplate("debt-payoff")?.status !== "live"
 );
 check("unknown template id resolves to undefined", getTemplate("no-such-template") === undefined);
+// W2 — the retired goal/retirement templates resolve to NOTHING (deleted, not
+// hidden): the templateId path rejects them exactly like any unknown id.
+check(`retired template id "goal" resolves to undefined (W2)`, getTemplate("goal") === undefined);
+check(`retired template id "retirement" resolves to undefined (W2)`, getTemplate("retirement") === undefined);
 
 // ── Source scans ──────────────────────────────────────────────────────────────
 
@@ -203,28 +216,31 @@ const personal = getTemplateForCategory(SpaceCategory.PERSONAL);
 check("personal template is hidden", personal?.status === "hidden");
 
 if (personal) {
-  // Non-empty plan at birth.
+  // W2 — the birth plan is EMPTY, and that is the asserted truth (the former
+  // "non-empty plan" pin inverted honestly): the last seeded section — the
+  // universal goals_progress — retired with the Goals surface, and an empty
+  // section plan is legal end-to-end (planner plans nothing, POST creates no
+  // rows, the dashboard renders every rail tab regardless). Do not re-add a
+  // seeded section to make this non-empty.
   const birthPlan = planTemplateApplication(personal, new Set<string>()).sectionsToCreate;
-  check("planned Personal sections are non-empty", birthPlan.length > 0);
+  check("planned Personal sections are EMPTY (W2 — no seeded sections)", birthPlan.length === 0);
 
-  // Backfill semantics: skips existing keys.
-  const someKeys = new Set(birthPlan.slice(0, 1).map((s) => s.key));
-  const partial = planTemplateApplication(personal, someKeys).sectionsToCreate;
+  // Backfill semantics still hold over the empty plan: existing rows are never
+  // touched, replanning stays a stable no-op, and pre-existing keys (existing
+  // Spaces keep their goals_progress CONFIG rows) plan nothing new.
+  const existingRows = new Set(["goals_progress"]);
   check(
-    "backfill planner skips existing keys",
-    partial.length === birthPlan.length - 1 && partial.every((s) => !someKeys.has(s.key))
+    "backfill planner plans nothing against an existing Space's rows",
+    planTemplateApplication(personal, existingRows).sectionsToCreate.length === 0
   );
-
-  // Idempotence: after a full apply, the plan is empty; replanning is stable.
-  const allKeys = new Set(birthPlan.map((s) => s.key));
   check(
-    "backfill planner is idempotent (full Space → empty plan)",
-    planTemplateApplication(personal, allKeys).sectionsToCreate.length === 0
+    "backfill planner is idempotent (empty plan → empty plan)",
+    planTemplateApplication(personal, new Set<string>()).sectionsToCreate.length === 0
   );
   check(
     "backfill planner is deterministic",
-    JSON.stringify(planTemplateApplication(personal, someKeys)) ===
-      JSON.stringify(planTemplateApplication(personal, someKeys))
+    JSON.stringify(planTemplateApplication(personal, existingRows)) ===
+      JSON.stringify(planTemplateApplication(personal, existingRows))
   );
 }
 

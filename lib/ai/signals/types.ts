@@ -15,8 +15,8 @@
  * Implemented in D4 Slice 5:
  *   Transactions  — PENDING_CREDIT, PENDING_DEBIT, NEEDS_CLASSIFICATION (TI2-W2)
  *   Snapshot      — NET_WORTH_INCREASED, NET_WORTH_DECLINED
- *   Goals         — GOAL_COMPLETED
  *   Accounts      — STALE_CONNECTION, NEEDS_REAUTH
+ * (W2 — the Goals GOAL_COMPLETED signal was deleted with the Goals retirement.)
  */
 
 export const SignalType = {
@@ -39,9 +39,7 @@ export const SignalType = {
   /** Net worth declined over the snapshot history window. */
   NET_WORTH_DECLINED: 'NET_WORTH_DECLINED',
 
-  // ── Goals ────────────────────────────────────────────────────────────────
-  /** A financial goal has been marked as completed. */
-  GOAL_COMPLETED: 'GOAL_COMPLETED',
+  // W2 — GOAL_COMPLETED deleted with its detector (Goals retired).
 
   // ── Accounts ─────────────────────────────────────────────────────────────
   /** One or more manually-entered accounts have not been updated in 30+ days. */

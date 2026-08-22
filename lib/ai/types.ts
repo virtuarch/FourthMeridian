@@ -45,7 +45,8 @@ export const FinanceDomains = {
   TRANSACTIONS_RAW:     'transactions_raw',
   HOLDINGS_SUMMARY:     'holdings_summary',
   HOLDINGS_RAW:         'holdings_raw',
-  GOALS:                'goals',
+  // W2 — GOALS deleted (Goals retired; the 'goals' domain has no assembler,
+  // no manifest entry, and no payload types any more).
   MEMBERS:              'members',
   SNAPSHOT_HISTORY:     'snapshot_history',
   PROVIDERS:            'providers',
@@ -1188,55 +1189,10 @@ export interface SnapshotSectionData {
 }
 
 // ---------------------------------------------------------------------------
-// Goals domain types
+// Goals domain types — DELETED (W2)
 // ---------------------------------------------------------------------------
-
-/**
- * A single goal summary for AI context.
- * Only fields relevant to AI-generated advice are included.
- * Sensitive or purely-UI fields (description, spendingCategory, etc.) are
- * omitted to keep the context payload lean.
- */
-export interface GoalSummaryItem {
-  id:       string;
-  name:     string;
-  category: string; // GoalCategory
-  goalType: string; // GoalType
-  status:   string; // GoalStatus
-
-  // FINANCIAL / SPENDING_LIMIT — amounts and progress
-  targetAmount?:  number | null;
-  currentAmount?: number;
-  /** 0-100 integer, null when not computable (HABIT, DEBT_REDUCTION). */
-  progressPct?:   number | null;
-  targetDate?:    string | null; // YYYY-MM-DD
-
-  // DEBT_REDUCTION — debt-specific reduction targets
-  targetReductionAmount?: number | null;
-  targetReductionPct?:    number | null;
-  snapshotBalance?:       number | null;
-
-  // HABIT — streak tracking
-  habitFrequency?: string | null;
-  currentStreak?:  number;
-  longestStreak?:  number;
-  lastCheckIn?:    string | null; // ISO-8601
-
-  completedAt?: string | null; // ISO-8601
-}
-
-/**
- * Data payload for the 'goals' context domain.
- */
-export interface GoalsSectionData {
-  totalCount: number;
-  counts: {
-    active:    number;
-    paused:    number;
-    completed: number;
-  };
-  goals: GoalSummaryItem[];
-}
+// GoalSummaryItem / GoalsSectionData were removed with the Goals retirement:
+// the 'goals' domain no longer exists, so there is no payload to type.
 
 // ---------------------------------------------------------------------------
 // Assembled context

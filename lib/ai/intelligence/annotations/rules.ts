@@ -45,12 +45,10 @@ export function deriveHeuristics(
     h.push('LIQUIDITY_UNKNOWN_FOR_SPACE');
   }
 
-  if (
-    cashFlow.deficitCause === 'INTENTIONAL_DEBT_PAYOFF' ||
-    cashFlow.deficitCause === 'MIXED'
-  ) {
-    h.push('DEBT_PAYOFF_IS_INTENTIONAL');
-  }
+  // W2 — the 'DEBT_PAYOFF_IS_INTENTIONAL' hint was DELETED with the Goals
+  // retirement: its two triggering causes (INTENTIONAL_DEBT_PAYOFF / MIXED)
+  // were intent claims gated on an ACTIVE goal and are structurally
+  // unreachable now. Intent is never inferred from activity here.
 
   if (
     liquidity.classification === 'CRITICAL' ||
@@ -132,19 +130,9 @@ export function derivePriorities(
     });
   }
 
-  if (cashFlow.deficitCause === 'INTENTIONAL_DEBT_PAYOFF') {
-    result.push({
-      code:     'CASH_FLOW',
-      severity: 'info',
-      reason:   'Intentional debt payoff strategy — active debt goal confirmed',
-    });
-  } else if (cashFlow.deficitCause === 'MIXED') {
-    result.push({
-      code:     'CASH_FLOW',
-      severity: 'warning',
-      reason:   'Mixed deficit — debt payments plus non-debt spending above income',
-    });
-  } else if (cashFlow.deficitCause === 'DEBT_DRIVEN') {
+  // W2 — INTENTIONAL_DEBT_PAYOFF / MIXED arms deleted (unreachable intent
+  // claims; Goals retired). DEBT_DRIVEN carries the measured fact.
+  if (cashFlow.deficitCause === 'DEBT_DRIVEN') {
     // REVIEW-3 C-3 — the canonical net is non-negative; debt payments fully
     // explain the cash deficit, with no active payoff goal on record. Not
     // overspending — never framed as such.

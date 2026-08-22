@@ -35,12 +35,12 @@ import {
   LIQUIDITY_CRITICAL_MONTHS,
   LIQUIDITY_WARNING_MONTHS,
   LIQUIDITY_EXCELLENT_MONTHS,
-  DEBT_FRACTION_DOMINANT,
-  DEBT_FRACTION_PARTIAL,
+  // W2 — DEBT_FRACTION_DOMINANT / DEBT_FRACTION_PARTIAL no longer imported:
+  // their only consumers were the deleted intent rungs of the deficit ladder.
 } from './constants';
-import { computeAverageMonthlySpending, computeDebtStrategy, computeSpendingOpportunities, computeSpendingTrends, getAcctsData, getGoalsData, getSnapData, getTxnData } from './metrics';
+import { computeAverageMonthlySpending, computeDebtStrategy, computeSpendingOpportunities, computeSpendingTrends, getAcctsData, getSnapData, getTxnData } from './metrics';
 import { deriveHeuristics, derivePriorities } from './rules';
-import { computeCapitalAllocation, computeGoalAlignment, computeInvestmentReadiness, computeRiskOpportunities } from './engines';
+import { computeCapitalAllocation, computeInvestmentReadiness, computeRiskOpportunities } from './engines';
 import type { SpaceContext_AI } from '@/lib/ai/types';
 import { MATERIAL_UNIDENTIFIED_INFLOW_SHARE, deriveUnidentifiedInflowShare } from '@/lib/ai/types';
 import { amountOwed, hasOutstandingDebt } from '@/lib/debt/balance-semantics';
@@ -51,7 +51,7 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   const txn   = getTxnData(ctx);
   const snap  = getSnapData(ctx);
   const accts = getAcctsData(ctx);
-  const goals = getGoalsData(ctx);
+  // W2 — the goals domain read was deleted with the Goals retirement.
 
   // ── Raw inputs (with safe defaults for absent domains) ───────────────────
 
@@ -136,24 +136,23 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     ? Math.round((debtPaymentTotal / windowDays * 30) * 100) / 100
     : null;
 
-  const hasActiveDebtGoal = (goals?.goals ?? []).some(
-    (g) => g.status === 'ACTIVE' && g.goalType === 'DEBT_REDUCTION',
-  );
-
   // REVIEW-3 C-3 — graded on the CANONICAL figures. The trigger is the full cash
   // deficit (net after debt payments < 0); the OVERSPENDING claim specifically
   // requires the canonical economic net to be negative — that is the exact
   // number the Cash Flow workspace renders, so "you spent more than you took in"
-  // can no longer contradict a surplus on screen. A deficit that debt payments
-  // fully explain is INTENTIONAL_DEBT_PAYOFF / MIXED with an active goal, and
-  // DEBT_DRIVEN without one — named, never mislabelled as overspending.
+  // can no longer contradict a surplus on screen.
+  //
+  // W2 — the two goal-gated rungs (INTENTIONAL_DEBT_PAYOFF / MIXED, each
+  // requiring an ACTIVE DEBT_REDUCTION goal) were DELETED with the Goals
+  // retirement. They were the ladder's only INTENT claims; with the product's
+  // only declaration mechanism gone, intent is never guessed from activity —
+  // a deficit debt payments explain is DEBT_DRIVEN, a measured fact. For every
+  // goal-less corpus (production today: zero goal rows) this ladder is
+  // byte-identical to the pre-W2 one — no AI-facing verdict moves. Declared
+  // intent's future home is debt planning/strategy, not this engine.
   const deficitCause: DeficitCauseClassification = (() => {
     if (netAfterDebtPayments >= 0)  return 'NOT_APPLICABLE';
     if (incomeConfidence === 'LOW') return 'LOW_INCOME_SAMPLE';
-    const deficit      = Math.abs(netAfterDebtPayments);
-    const debtFraction = deficit > 0 ? debtPaymentTotal / deficit : 0;
-    if (debtFraction >= DEBT_FRACTION_DOMINANT && hasActiveDebtGoal) return 'INTENTIONAL_DEBT_PAYOFF';
-    if (debtFraction >= DEBT_FRACTION_PARTIAL && hasActiveDebtGoal)  return 'MIXED';
     if (netCashFlow < 0) return 'POSSIBLE_OVERSPENDING';
     return 'DEBT_DRIVEN';
   })();
@@ -444,7 +443,7 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     if (deficitCause === 'POSSIBLE_OVERSPENDING') return 'CASH_FLOW';
     if (debtSection.classification === 'WARNING') return 'DEBT';
 
-    if (deficitCause === 'INTENTIONAL_DEBT_PAYOFF' || deficitCause === 'MIXED' || deficitCause === 'DEBT_DRIVEN') return 'CASH_FLOW';
+    if (deficitCause === 'DEBT_DRIVEN') return 'CASH_FLOW'; // W2 — intent causes deleted (Goals retired)
 
     return 'LIQUIDITY';
   })();
@@ -467,9 +466,8 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
 
   const spendingTrends = computeSpendingTrends(txn);
 
-  // ── Step 9: Goal Alignment (2.4) ────────────────────────────────────────
-
-  const goalAlignment = computeGoalAlignment(goals, cashFlow, debtSection, txn, snap);
+  // ── Step 9: Goal Alignment (2.4) — DELETED (W2, Goals retired) ──────────
+  // Step numbering is preserved for doc continuity with the engine list.
 
   // ── Step 10: Investment Readiness (2.5) ─────────────────────────────────
 
@@ -485,7 +483,6 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     liquidity,
     debtStrategy,
     spendingOpportunities,
-    goalAlignment,
     investmentReadiness,
     txn, // TI2-W2 — amount-based INCOMPLETE_INCOME_DATA wording
     ctx.space.reportingCurrency, // REVIEW-3 C-6 — money in evidence strings
@@ -552,7 +549,6 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     debtStrategy,
     spendingOpportunities,
     spendingTrends,
-    goalAlignment,
     investmentReadiness,
     riskOpportunities,
     currentStatePriority,

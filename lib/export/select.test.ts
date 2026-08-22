@@ -12,7 +12,6 @@ import {
   EXPORT_TRANSACTION_CAP,
   capTransactions,
   dedupById,
-  filterVisibleContributions,
   isFullVisibility,
 } from "@/lib/export/select";
 
@@ -54,17 +53,8 @@ const capped = capTransactions(many);
 check("over cap → truncated flag set", capped.truncated === true);
 check("over cap → exactly the cap kept", capped.rows.length === EXPORT_TRANSACTION_CAP);
 
-// ── filterVisibleContributions (D4) ───────────────────────────────────────────
-const contributions = [
-  { financialAccountId: "visible-1" },
-  { financialAccountId: "hidden-1" },
-  { financialAccountId: "visible-2" },
-];
-const kept = filterVisibleContributions(contributions, new Set(["visible-1", "visible-2"]));
-check(
-  "drops contributions tied to non-FULL-visible accounts",
-  kept.length === 2 && kept.every((c) => c.financialAccountId.startsWith("visible")),
-);
+// W2 — the filterVisibleContributions (D4) checks were deleted with the
+// helper: goal contributions no longer exist to narrow.
 
 console.log(failures === 0 ? "\nAll export/select checks passed." : `\n${failures} failure(s).`);
 process.exit(failures === 0 ? 0 : 1);

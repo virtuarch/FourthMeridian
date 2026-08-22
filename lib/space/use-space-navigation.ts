@@ -31,7 +31,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
 import { readSpaceParam, legacyTabPerspective } from "@/lib/space/space-url";
-import { PERSPECTIVE_LIBRARY, isRoutedWorkspaceTab } from "@/lib/perspectives";
+import { PERSPECTIVE_LIBRARY } from "@/lib/perspectives";
 import { hasSpaceTrendHero } from "@/lib/space-hero";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
 import type { DashboardSection } from "@/lib/space/dashboard-types";
@@ -39,19 +39,20 @@ import type { DashboardSection } from "@/lib/space/dashboard-types";
 // ─── URL ⇄ tab vocabulary ───────────────────────────────────────────────────────
 // M2 canonical IA: PERSPECTIVES / DEBT / INVESTMENTS are no longer runtime
 // destinations — perspectives are selected through OVERVIEW (?perspective=), so
-// only the true rail tabs plus the two remaining legacy routed modals
-// (GOALS / RETIREMENT) are mirrored; Debt/Investments canonicalize to
+// only the true rail tabs are mirrored; Debt/Investments canonicalize to
 // OVERVIEW+perspective. Every synced tab restores on refresh.
+// W2 — GOALS / RETIREMENT are RETIRED (last routed-modal surfaces, deleted with
+// the mechanism): they left this vocabulary, so a legacy ?tab=goals /
+// ?tab=retirement deep link is now "present-but-invalid" and degrades to
+// OVERVIEW via parseTabParam — never a crash, never an empty frame.
 const URL_SYNCED_TABS = new Set([
   "OVERVIEW", "ACCOUNTS", "ACTIVITY", "TRANSACTIONS", "MEMBERS",
-  "GOALS", "RETIREMENT",
 ]);
-// URL "tab" value → activeTab. Rail tabs, the two remaining routed modals, and
-// legacy aliases (timeline/banking/credit) so existing deep links keep working.
+// URL "tab" value → activeTab. Rail tabs plus legacy aliases
+// (timeline/banking/credit) so existing deep links keep working.
 const URL_TAB_ALIAS: Record<string, string> = {
   overview: "OVERVIEW", accounts: "ACCOUNTS", banking: "ACCOUNTS",
   activity: "ACTIVITY", timeline: "ACTIVITY", transactions: "TRANSACTIONS", members: "MEMBERS",
-  goals: "GOALS", retirement: "RETIREMENT",
   // Legacy perspective-routing tabs → Overview (the lens is engaged separately).
   perspectives: "OVERVIEW", debt: "OVERVIEW", credit: "OVERVIEW", investments: "OVERVIEW",
 };
@@ -92,13 +93,11 @@ function readUrlTabState(): { tab: string | null; perspective: string | null } {
   };
 }
 
-// M2: DEBT / INVESTMENTS removed — perspectives under Overview. GOALS / RETIREMENT
-// remain only as legacy routed modals, filtered out of the default-tab pick.
-// REVIEW-3 (slice F): GOALS / RETIREMENT stay in this order ONLY because their
-// deep links (?tab=goals / ?tab=retirement) are deliberately kept — they are
-// live-but-orphaned product surfaces awaiting a product decision (re-add an
-// entry point, or retire). They have no rail button and no other doorway.
-export const TAB_ORDER = ["OVERVIEW", "GOALS", "ACCOUNTS", "RETIREMENT", "ACTIVITY"];
+// M2: DEBT / INVESTMENTS removed — perspectives under Overview.
+// W2: GOALS / RETIREMENT removed — the product decision landed (retire), so the
+// live-but-orphaned routed-modal surfaces and their deep links are gone; the
+// order is exactly the section-derived default-tab candidates.
+export const TAB_ORDER = ["OVERVIEW", "ACCOUNTS", "ACTIVITY"];
 // M3-Reset — the canonical Overview LENS set (prototype parity). "Net Worth" is the
 // default lens (a null engaged perspective = the Overview summary); the rest engage
 // their extracted Workspaces.
@@ -246,10 +245,16 @@ export function useSpaceNavigation({
 
   // ── Initial-tab resolution (called ONCE by the host when data lands) ─────────
   // URL wins, then the section-derived default: a trend-hero Space opens on
-  // Overview; else the first non-Activity, non-routed enabled tab; else Activity
-  // if enabled; else Overview (e.g. CUSTOM, no sections). (The legacy initialTab
-  // prop seam was removed in REVIEW-3 — its last supplier, the /dashboard?tab=
-  // mapping chain, was deleted in Wave 1.)
+  // Overview; else the first non-Activity enabled tab; else Activity if enabled;
+  // else Overview (e.g. CUSTOM, no sections). (The legacy initialTab prop seam
+  // was removed in REVIEW-3; the routed-tab exclusion retired with the routed
+  // modals in W2 — TAB_ORDER carries no routed member anymore.)
+  //
+  // W2 NOTE — sections are still an input here, deliberately: SpaceDashboardSection
+  // CONFIG survives (rows stay toggleable in Manage → Overview), and a section-less
+  // Space (the empty-plan default for new Spaces) resolves to OVERVIEW through the
+  // final fallback. Only the RENDER stack retired; tab defaulting still honors
+  // whatever enabled rows an existing Space carries.
   const applyInitialTab = useCallback(
     (sections: DashboardSection[]) => {
       if (initialTabSet.current) return;
@@ -260,7 +265,7 @@ export function useSpaceNavigation({
         url.tab ??
         (hasSpaceTrendHero(category)
           ? "OVERVIEW"
-          : TAB_ORDER.find((t) => t !== "ACTIVITY" && !isRoutedWorkspaceTab(t) && enabledTabs.has(t)) ??
+          : TAB_ORDER.find((t) => t !== "ACTIVITY" && enabledTabs.has(t)) ??
             (enabledTabs.has("ACTIVITY") ? "ACTIVITY" : "OVERVIEW"));
       if (url.perspective) setSelectedPerspectiveId(url.perspective);
       setActiveTab(nextTab);
