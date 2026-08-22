@@ -18,13 +18,13 @@
  *      (isFullVisibility); the transaction reader and the position seam already
  *      fail closed to FULL (KD-15/KD-19/KD-21a), so their rows need no re-filtering.
  *
- * Investment positions (P2-5): sourced from getCurrentPositions — the ratified
- * FULL-authorized current-position authority (value + FX + completeness), NOT the
- * general legacy `Holding` read model. `value`/`currency` stay native (the
- * pre-P2-5 contract) and `reportingValue` adds the converted figure. Self-custody
- * crypto wallets still live only in legacy `Holding` (no PositionObservation until
- * P2-6), so they are bridged in via the narrow, crypto-only
- * readLegacyCryptoWalletPositions — disjoint from the canonical rows, removed at P2-6.
+ * Investment positions (P2-5, completed by W5/P2-6): sourced from
+ * getCurrentPositions — the ratified FULL-authorized current-position authority
+ * (value + FX + completeness), NOT any legacy `Holding` read. `value`/`currency`
+ * stay native (the pre-P2-5 contract) and `reportingValue` adds the converted
+ * figure. Self-custody crypto wallets arrive through this same seam as
+ * PositionObservations valued at dated archive prices; the crypto-only bridge
+ * was DELETED at W5, and a wallet with no observations is honestly absent.
  *
  * Excluded everywhere: secrets/hashes/tokens (passwordHash, totpSecret, raw
  * dateOfBirthEncrypted, RecoveryCode.codeHash, PlaidItem.encryptedToken,
@@ -36,7 +36,6 @@ import "server-only";
 import { db } from "@/lib/db";
 import { getAccountsWithVisibility } from "@/lib/data/accounts";
 import { getCurrentPositions } from "@/lib/investments/current-positions";
-import { readLegacyCryptoWalletPositions } from "@/lib/investments/legacy-crypto-holdings";
 import { mergeSpaceExportHoldings } from "@/lib/export/holdings";
 import { getTransactions } from "@/lib/data/transactions";
 import { getRecentSnapshots } from "@/lib/data/snapshots";
@@ -134,17 +133,14 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     const spaceTxns = await getTransactions({ spaceId, limit: EXPORT_TRANSACTION_CAP });
     for (const t of spaceTxns.rows) transactions.push({ ...t, spaceId });
 
-    // Investment positions: canonical seam (FULL-authorized, valued + FX) merged
-    // with the crypto-only bridge (self-custody wallet positions still live in
-    // legacy `Holding` until P2-6). mergeSpaceExportHoldings keeps them disjoint by
-    // account so nothing double-counts (see its doc — the observation backfill).
+    // Investment positions: the ONE canonical seam (FULL-authorized, valued +
+    // FX). W5 — crypto wallets ride the same seam; the legacy bridge and its
+    // merge args are gone (mergeSpaceExportHoldings is now the passthrough its
+    // own doc promised at P2-6 completion).
     const positions = await getCurrentPositions({ spaceId });
-    const cryptoPositions = await readLegacyCryptoWalletPositions({ spaceId });
     holdings.push(...mergeSpaceExportHoldings({
-      canonicalRows:     positions.rows,
-      cryptoPositions,
+      canonicalRows: positions.rows,
       spaceId,
-      reportingCurrency: positions.reportingCurrency,
     }));
 
     const spaceSnapshots = await getRecentSnapshots({ rows: ALL_SNAPSHOTS }, { spaceId });

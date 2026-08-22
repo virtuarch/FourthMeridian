@@ -17,7 +17,7 @@
  *
  * Gated behind INVESTMENT_OBSERVATIONS_ENABLED — callers must check
  * investmentObservationsEnabled() first. Best-effort/non-fatal by contract:
- * callers wrap this in try/catch (the writeBtcHolding precedent).
+ * callers wrap this in try/catch (the precedent set by the since-retired writeBtcHolding).
  */
 
 import type { Holding as PlaidHolding, Security } from "plaid";

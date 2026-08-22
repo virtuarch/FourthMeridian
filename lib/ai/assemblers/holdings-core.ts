@@ -15,40 +15,35 @@
  * BALANCE_ONLY / SUMMARY_ONLY accounts while withholding their positions) comes
  * from the canonical `getInvestmentValueAsOf({visibilityScope:"all"})` path.
  *
- * Crypto (BTC wallets) rides in through the SHARED, crypto-only transitional
- * reader `lib/investments/legacy-crypto-holdings.ts`
- * (`readLegacyCryptoWalletPositions`, walletChain-gated, FULL-detail) — the SAME
- * bridge the data Export uses (P2-5) — dropped entirely once P2-6 completes.
- *
- * CANONICAL WINS (P2-4 convergence): P2-6 now ALSO writes BTC wallet balances to
- * the PositionObservation spine, so a wallet can be present in BOTH sources. To
- * avoid double-counting, the binding (holdings.ts) excludes from the bridge any
- * custody account already represented in the canonical `getCurrentPositions` rows
- * (`excludeCanonicalCryptoAccounts`, keyed by FinancialAccount identity — NOT by
- * asset symbol). A wallet already on the spine is supplied ONCE by canonical; a
- * wallet not yet on the spine is supplied ONCE by the bridge.
+ * ── W5 — one authority, one source (P2-6 executed) ───────────────────────────
+ * Crypto no longer has a side entrance. The legacy `Holding` bridge
+ * (lib/investments/legacy-crypto-holdings.ts) and its CANONICAL-WINS dedup
+ * (lib/investments/canonical-precedence.core.ts) were DELETED per their own
+ * deletion conditions: a crypto wallet appears here exactly like any other
+ * instrument — as a PositionObservation valued through the dated archive price
+ * on the canonical seam. A wallet with NO spine observation is HONESTLY ABSENT
+ * (position-unknown), never back-filled from a legacy row and never re-valued
+ * from an undated sync-time spot quote. Do not reintroduce a `Holding` read or
+ * a second crypto valuation path — scripts/audit-crypto-holding-tombstone.ts
+ * fails the build on the retired vocabulary.
  *
  * ── Privacy invariant ────────────────────────────────────────────────────────
  * This module only ever SEES FULL-visibility position rows (`fullRows`, from the
- * detail-eligible seam) and FULL crypto positions. Non-FULL accounts contribute
- * ONLY aggregate value (`allScope`) — never a symbol, name, quantity, or
- * per-position value. The hidden non-cash value is disclosed via
- * `positionsPartiallyHidden` + a dataLimits note, never leaked as detail.
+ * detail-eligible seam). Non-FULL accounts contribute ONLY aggregate value
+ * (`allScope`) — never a symbol, name, quantity, or per-position value. The
+ * hidden non-cash value is disclosed via `positionsPartiallyHidden` + a
+ * dataLimits note, never leaked as detail.
  *
  * ── Concentration parity ─────────────────────────────────────────────────────
  * Concentration is computed over the FULL non-cash rows aggregated PER INSTRUMENT
  * (exactly as investments-allocation-core.ts::computeAllocation does) and run
- * through the SAME lib/investments/concentration.ts helper — so on a spine-only
- * FULL fixture the AI number and the Investments Allocation number are identical.
- * OFF-spine crypto positions ONLY are blended into the AI concentration (on-spine
- * wallets are excluded from the bridge upstream — canonical wins — so no wallet is
- * counted twice; they must not be silently dropped either, since the plain payload
- * has no separate crypto block) — a transitional divergence from the spine-only UI
- * that disappears at P2-6, and is disclosed in dataLimits.
+ * through the SAME lib/investments/concentration.ts helper — so on a FULL
+ * fixture the AI number and the Investments Allocation number are identical.
+ * (W5: the off-spine crypto blend that transitionally diverged from the
+ * spine-only UI is gone with the bridge — the two surfaces now read one spine.)
  */
 
 import { computeConcentration } from "@/lib/investments/concentration";
-import { excludeCanonicalAccounts } from "@/lib/investments/canonical-precedence.core";
 import type {
   HoldingsSummaryData,
   HoldingPosition,
@@ -62,6 +57,14 @@ export interface CanonicalPositionRow {
   /** reporting-currency value; null ⇒ unvalued (excluded from totals & concentration). */
   reportingValue: number | null;
   isCash:         boolean;
+  /**
+   * W5 — valuation dating from the canonical path (InstrumentValuation):
+   * the archive date the value was priced at and its age in days relative to
+   * asOf. Carried so the payload can DISCLOSE a stale valuation instead of
+   * presenting an aged price as current. null ⇒ unvalued or dating unknown.
+   */
+  priceDate?: string | null;
+  staleDays?: number | null;
 }
 
 /**
@@ -80,47 +83,16 @@ export interface AllScopeAggregate {
   hasAny:         boolean;
 }
 
-/**
- * The TRANSITIONAL crypto compatibility input (from readLegacyCryptoWalletPositions,
- * FULL-visibility, walletChain-gated). All monetary fields already converted into
- * the reporting currency. FULL-only by construction — non-FULL wallet detail AND
- * value are not read (the canonical bridge is FULL-detail; a rare non-FULL shared
- * wallet's value is simply absent until P2-6, never leaked).
- */
-export interface CryptoHoldingsInput {
-  /** total FULL crypto value (reporting currency). */
-  total:    number;
-  /** non-cash FULL crypto value. */
-  invested: number;
-  /** cash FULL crypto value (normally 0 — crypto is not cash). */
-  cash:     number;
-  /** FULL, non-cash crypto positions, aggregated by symbol. */
-  fullPositions: ReadonlyArray<{ symbol: string; name: string; value: number }>;
-  /** any crypto value conversion was estimated. */
-  anyEstimated:  boolean;
-  /** V25-FINAL-1 — any crypto position was FX-unavailable and EXCLUDED from the totals. */
-  anyUnconverted: boolean;
-  /** any crypto holding present at all. */
-  hasAny:        boolean;
-}
-
-/**
- * CANONICAL WINS — exclude legacy-bridge crypto positions whose custody account is
- * ALREADY represented on the canonical position spine. REVIEW-3: the rule itself
- * now lives in ONE place, lib/investments/canonical-precedence.core.ts, shared
- * with the data Export's merge (which previously applied the OPPOSITE
- * precedence). This export keeps the binding's (holdings.ts) name stable and
- * delegates. Pure; the caller supplies the canonical account-id set from
- * getCurrentPositions().rows.
- */
-export function excludeCanonicalCryptoAccounts<T extends { financialAccountId: string }>(
-  bridgePositions:     readonly T[],
-  canonicalAccountIds: ReadonlySet<string>,
-): T[] {
-  return excludeCanonicalAccounts(bridgePositions, canonicalAccountIds);
-}
-
 const EPS = 1e-6;
+
+/**
+ * W5 — a valuation is DISCLOSED as stale beyond this age (days). 0–1 days is the
+ * normal market-close lag (yesterday's close priced today) and is not remarked
+ * on; at 2+ days the payload says how old the price is instead of letting an
+ * aged figure read as current. Disclosure-only: nothing is graded or excluded
+ * on staleness — the value stays in the totals with its age stated.
+ */
+export const STALE_PRICE_DISCLOSURE_DAYS = 2;
 
 /** Maximum number of top positions surfaced in the context payload. */
 export const HOLDINGS_TOP_N = 10;
@@ -145,42 +117,47 @@ export function buildHoldingsSummary(args: {
   /** FULL-visibility detail rows from getCurrentPositions (visibility enforced upstream). */
   fullRows:  readonly CanonicalPositionRow[];
   allScope:  AllScopeAggregate;
-  crypto:    CryptoHoldingsInput;
 }): HoldingsSummaryData | null {
-  const { scopeHint, fullRows, allScope, crypto } = args;
+  const { scopeHint, fullRows, allScope } = args;
 
-  // Domain cleanly empty — no observations in scope and no crypto.
-  if (!allScope.hasAny && !crypto.hasAny) return null;
+  // Domain cleanly empty — no observations in scope. (W5: a crypto wallet with
+  // no spine observation is part of this honest emptiness, never back-filled.)
+  if (!allScope.hasAny) return null;
 
-  // ── Aggregate totals (all visibility; spine value + FULL crypto value) ──────
+  // ── Aggregate totals (all visibility, ONE spine — crypto included) ──────────
   const allInvestedSpine = allScope.valuedSubtotal - allScope.cashValue;
-  const totalPortfolioValue = allScope.valuedSubtotal + crypto.total;
-  const cashValue           = allScope.cashValue + crypto.cash;
-  const investedValue       = allInvestedSpine + crypto.invested;
-  const totalsEstimated     = allScope.anyFxEstimated || crypto.anyEstimated;
+  const totalPortfolioValue = allScope.valuedSubtotal;
+  const cashValue           = allScope.cashValue;
+  const investedValue       = allInvestedSpine;
+  const totalsEstimated     = allScope.anyFxEstimated;
   const cashPct = totalPortfolioValue > 0 ? cashValue / totalPortfolioValue : 0;
 
   // ── FULL detail → concentration ─────────────────────────────────────────────
   // Spine rows aggregate PER INSTRUMENT (VTI in two brokerages collapses to one
   // weighted position — same as the Allocation panel, giving byte-identical
-  // concentration on a spine-only fixture). Off-spine crypto rides on a disjoint
-  // key so it is not silently dropped (removed at P2-6).
+  // concentration on a FULL fixture). W5: crypto instruments participate here
+  // exactly like any other instrument — no separate blend key exists any more.
   const byKey = new Map<string, { symbol: string | null; name: string | null; value: number }>();
   let fullSpineInvestedNonCash = 0;
   let unvaluedFullCount = 0;
+  let stalePricedCount = 0;
+  let maxStaleDays = 0;
+  let maxStalePriceDate: string | null = null;
   for (const r of fullRows) {
     if (r.reportingValue == null) { unvaluedFullCount++; continue; }
+    // W5 — staleness bookkeeping for the disclosure below (valued rows only).
+    if ((r.staleDays ?? 0) >= STALE_PRICE_DISCLOSURE_DAYS) {
+      stalePricedCount++;
+      if ((r.staleDays ?? 0) > maxStaleDays) {
+        maxStaleDays = r.staleDays ?? 0;
+        maxStalePriceDate = r.priceDate ?? null;
+      }
+    }
     if (r.isCash) continue;
     fullSpineInvestedNonCash += r.reportingValue;
     const b = byKey.get(r.instrumentId) ?? { symbol: r.symbol ?? r.name ?? null, name: r.name ?? r.symbol ?? null, value: 0 };
     b.value += r.reportingValue;
     byKey.set(r.instrumentId, b);
-  }
-  for (const cp of crypto.fullPositions) {
-    const key = `crypto:${cp.symbol}`;
-    const b = byKey.get(key) ?? { symbol: cp.symbol, name: cp.name, value: 0 };
-    b.value += cp.value;
-    byKey.set(key, b);
   }
 
   const analyzedInvestedValue = [...byKey.values()].reduce((s, p) => s + p.value, 0);
@@ -223,10 +200,14 @@ export function buildHoldingsSummary(args: {
       "the value totals — treat the totals as a subtotal, not the whole.",
     );
   }
-  if (crypto.hasAny) {
+  // W5 — staleness disclosure: a value priced from an archive date older than
+  // the normal close lag is stated as such, never presented as current. The
+  // value stays in the totals; only its age is disclosed.
+  if (stalePricedCount > 0) {
     dataLimits.push(
-      "Crypto positions are included from wallet balances (value only) and are not " +
-      "yet on the investment history spine.",
+      `${stalePricedCount} position value(s) use a price ${maxStaleDays} day(s) old` +
+      (maxStalePriceDate ? ` (latest available price date ${maxStalePriceDate})` : "") +
+      " — treat those values as of that date, not today.",
     );
   }
 

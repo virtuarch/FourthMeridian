@@ -21,11 +21,11 @@
  *
  * ── REVIEW-3 — reader status, and why this writer is deliberately KEPT ───────
  * As of REVIEW-3 the brokerage `Holding` rows this writes have NO production
- * reader: the only production Holding readers are the crypto-only bridge
- * (lib/investments/legacy-crypto-holdings.ts, walletChain != null — never a
- * brokerage row) and btc-sync's own upsert; the general getHoldings reader
- * (lib/data/accounts.ts) was deleted this wave. The writer stays anyway,
- * deliberately, because:
+ * reader — and as of W5 there is NO production Holding reader of any kind
+ * (the crypto-only bridge and btc-sync's wallet Holding upsert are both
+ * deleted; the general getHoldings reader went at REVIEW-3). This writer is
+ * therefore the LAST production toucher of the `Holding` table. It stays
+ * anyway, deliberately, because:
  *   1. Its SyncCounts ARE the user-facing import evidence — `holdingsImported`
  *      (link, lib/plaid/exchangeToken.ts), `holdingsUpdated` (refresh +
  *      /api/plaid/investments/enable) and the per-account HOLDINGS coverage

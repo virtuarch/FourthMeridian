@@ -223,7 +223,6 @@ test("enrolment — every Space-scoped detail reader is a known authority", () =
     "lib/data/accounts.ts",
     "lib/transactions/detail-query.ts",
     "lib/transactions/transfer-resolution.ts",
-    "lib/investments/legacy-crypto-holdings.ts",
     "lib/investments/space-data.ts",
     "lib/ai/assemblers/transactions.ts",
   ]);
@@ -249,9 +248,12 @@ test("enrolment — every Space-scoped detail reader is a known authority", () =
   // Anti-vacuity: if the scan or matcher breaks, `unknown` is trivially empty
   // and this test would "pass" while checking nothing.
   assert.ok(
-    found.length >= 10,
-    `Expected the known detail-visibility readers (11 at V25-CLOSE-2), found ` +
-      `${found.length}. The scan is broken — fix it rather than lowering this floor.`,
+    found.length >= 9,
+    `Expected the known detail-visibility readers (11 at V25-CLOSE-2; 9 after ` +
+      `W5 deleted lib/investments/legacy-crypto-holdings.ts and REVIEW-3 the ` +
+      `general reader), found ${found.length}. The scan is broken — fix it ` +
+      `rather than lowering this floor; lower the floor ONLY for a documented ` +
+      `reader deletion, alongside the known-set edit above.`,
   );
 });
 

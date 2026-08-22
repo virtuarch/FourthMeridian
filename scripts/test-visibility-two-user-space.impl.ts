@@ -73,11 +73,12 @@ import { runSignalDetectors } from '@/lib/ai/signals';
 import { getTransactions } from '@/lib/data/transactions';
 // KD-19: the real UI account read path.
 import { getAccounts } from '@/lib/data/accounts';
-// KD-19 (REVIEW-3): the general legacy Holding reader (lib/data/accounts.ts
-// getHoldings) was DELETED — the sole remaining production Holding read path is
-// the crypto-only wallet bridge, which enforces the same per-item FULL detail
+// KD-19 (REVIEW-3 → W5): the general legacy Holding reader (lib/data/accounts.ts
+// getHoldings) was DELETED, and W5 deleted the last one — the crypto bridge.
+// The per-item position detail gate now lives INSIDE the canonical seam
+// the canonical position seam, which enforces the same per-item FULL detail
 // gate. The holding-canary block below exercises IT instead.
-import { readLegacyCryptoWalletPositions } from '@/lib/investments/legacy-crypto-holdings';
+import { getCurrentPositions } from '@/lib/investments/current-positions';
 import { grantsTransactionDetail } from '@/lib/ai/visibility';
 import { FinanceDomains } from '@/lib/ai/types';
 import type {
@@ -100,7 +101,7 @@ const CANARY_W = `LEAKCANARYW ${RUN_ID}`;
 
 // KD-19 — per-account institution canaries (identifying metadata that
 // BALANCE_ONLY / SUMMARY_ONLY must redact from getAccounts()), and per-position
-// holding-symbol canaries (per-item detail on the wallet Holding bridge must
+// position-symbol canaries (per-item detail on the canonical position seam must
 // gate on FULL — the same KD-19 invariant getHoldings enforced before REVIEW-3
 // deleted it).
 const INST_X = `INSTCANARYX${RUN_ID}`;
@@ -234,12 +235,12 @@ async function main(): Promise<void> {
     ],
   });
 
-  // KD-19 (REVIEW-3) — the general getHoldings reader is deleted; the remaining
-  // production Holding read path is the crypto-only wallet bridge
-  // (readLegacyCryptoWalletPositions, walletChain-gated). Seed two dedicated
-  // WALLET accounts so the bridge's per-item FULL detail gate is exercised on
-  // the same invariant: a position on the FULL wallet V must surface; a
-  // position on the BALANCE_ONLY wallet U must NOT (its balance still may).
+  // KD-19 (REVIEW-3 → W5) — every legacy Holding read path is deleted; wallet
+  // positions live on the canonical PositionObservation spine and are read
+  // through getCurrentPositions, whose per-item FULL detail gate (KD-21a
+  // detailEligible) is exercised here on the same invariant: a position on the
+  // FULL wallet V must surface; a position on the BALANCE_ONLY wallet U must
+  // NOT (its balance still may).
   const mkWallet = (name: string, addr: string) =>
     prisma.financialAccount.create({
       data: {
@@ -261,10 +262,21 @@ async function main(): Promise<void> {
     mkLink(acctV.id, VisibilityLevel.FULL,         ShareStatus.ACTIVE),
     mkLink(acctU.id, VisibilityLevel.BALANCE_ONLY, ShareStatus.ACTIVE),
   ]);
-  await prisma.holding.createMany({
+  // W5 — seed CANONICAL spine rows (one throwaway Instrument per canary; the
+  // canary string rides tickerSymbol/name so the string-level scans work
+  // unchanged). Cleanup deletes these instruments by RUN_ID after the accounts
+  // (and their cascading observations) are gone.
+  const mkInstrument = (sym: string) =>
+    prisma.instrument.create({ data: { tickerSymbol: sym, name: sym, assetClass: 'CRYPTO' } });
+  const [instX, instY] = await Promise.all([mkInstrument(HOLD_X), mkInstrument(HOLD_Y)]);
+  await prisma.positionObservation.createMany({
     data: [
-      { financialAccountId: acctV.id, symbol: HOLD_X, name: HOLD_X, quantity: 1, price: 10, value: 10 },
-      { financialAccountId: acctU.id, symbol: HOLD_Y, name: HOLD_Y, quantity: 1, price: 20, value: 20 },
+      { financialAccountId: acctV.id, instrumentId: instX.id, date: daysAgo(1),
+        quantity: 1, origin: 'OBSERVED', source: 'user',
+        institutionPrice: 10, institutionValue: 10, currency: 'USD' },
+      { financialAccountId: acctU.id, instrumentId: instY.id, date: daysAgo(1),
+        quantity: 1, origin: 'OBSERVED', source: 'user',
+        institutionPrice: 20, institutionValue: 20, currency: 'USD' },
     ],
   });
 
@@ -427,20 +439,21 @@ async function main(): Promise<void> {
     'REVOKED link account leaked into the UI account list',
   );
 
-  // ── 8. KD-19 — wallet Holding bridge (positions are per-item detail) ───────
-  // REVIEW-3: getHoldings was deleted; the crypto-only bridge is the remaining
-  // production Holding read path and must enforce the identical FULL gate.
-  const holdings   = await readLegacyCryptoWalletPositions({ spaceId: space.id }, prisma);
-  const holdingsUi = JSON.stringify(holdings).toLowerCase();
+  // ── 8. KD-19/W5 — canonical position seam (positions are per-item detail) ──
+  // Every legacy Holding read path is deleted (REVIEW-3 killed getHoldings,
+  // W5 killed the crypto bridge). getCurrentPositions must enforce the
+  // identical FULL gate INSIDE the seam (KD-21a detailEligible).
+  const positions   = await getCurrentPositions({ spaceId: space.id }, { client: prisma });
+  const positionsUi = JSON.stringify(positions.rows).toLowerCase();
   check(
-    'wallet Holding bridge surfaces positions from FULL wallet V',
-    holdingsUi.includes(HOLD_X.toLowerCase()),
-    'FULL-visibility wallet position missing — fix is over-redacting holdings',
+    'canonical position seam surfaces positions from FULL wallet V',
+    positionsUi.includes(HOLD_X.toLowerCase()),
+    'FULL-visibility wallet position missing — fix is over-redacting positions',
   );
   check(
-    'wallet Holding bridge leaks no positions from BALANCE_ONLY wallet U',
-    !holdingsUi.includes(HOLD_Y.toLowerCase()),
-    'BALANCE_ONLY wallet position leaked through the crypto bridge',
+    'canonical position seam leaks no positions from BALANCE_ONLY wallet U',
+    !positionsUi.includes(HOLD_Y.toLowerCase()),
+    'BALANCE_ONLY wallet position leaked through the canonical seam',
   );
 }
 
@@ -459,6 +472,9 @@ async function cleanup(): Promise<void> {
   // FinancialAccount deletes cascade Transactions; Space deletes cascade
   // members, links, and the AiAgent.
   await prisma.financialAccount.deleteMany({ where: { name: { contains: RUN_ID } } });
+  // W5 — the seeded canary Instruments (observations cascaded with the accounts;
+  // Instrument FK is Restrict, so this must run after the account delete).
+  await prisma.instrument.deleteMany({ where: { tickerSymbol: { contains: RUN_ID } } });
   if (spaceIds.length > 0) {
     await prisma.space.deleteMany({ where: { id: { in: spaceIds } } });
   }

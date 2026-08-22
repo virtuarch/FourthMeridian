@@ -4,7 +4,8 @@
  * P2-6 — the crypto wallet PositionObservation writer: pure fact-mapping tests +
  * source-scan invariants covering valuation doctrine (quantity-only, no anchor,
  * no invented cost basis), zero-balance closure, idempotency, gating, the
- * transitional Holding dual-write, and the "no synthetic InvestmentEvent" rule.
+ * spine-only position write (W5 — the Holding dual-write is retired), and the
+ * "no synthetic InvestmentEvent" rule.
  *
  *     npx tsx lib/crypto/wallet-position-capture.test.ts
  *
@@ -79,19 +80,20 @@ check("resolves the ONE canonical asset Instrument (shared across wallets)",
 check("writes NO InvestmentEvent (a balance is not event-level evidence)",
   !/investmentEvent/i.test(writer));
 
-// btc-sync — transitional dual-write, not a cutover; documented deletion gate.
+// btc-sync — W5: the dual-write's own DELETION CONDITION was executed. The
+// wallet position write is SPINE-ONLY; the legacy Holding mirror stays dead.
 const syncRaw = read("lib", "crypto", "btc-sync.ts");
 const sync = code(syncRaw);
-check("btc-sync still writes the legacy Holding (transitional dual-write)",
-  /db\.holding\.upsert/.test(sync));
-check("btc-sync also writes the canonical PositionObservation",
+check("btc-sync writes NO legacy Holding row (dual-write retired at W5)",
+  !/db\.holding\.upsert/.test(sync) && !/\bdb\.holding\b/.test(sync));
+check("btc-sync writes the canonical PositionObservation (spine-only)",
   sync.includes("captureWalletPosition") || sync.includes("writeBtcObservation"));
-check("btc-sync calls the spine write after the Holding write",
-  sync.indexOf("writeBtcHolding(accountId") < sync.indexOf("writeBtcObservation(accountId"));
+check("btc-sync still records the account balance (FA.balance write kept — recorded W5 follow-up)",
+  /financialAccount\.update/.test(sync) || /nativeBalance/.test(sync));
 check("btc-sync writes NO synthetic InvestmentEvent from balance",
   !/investmentEvent\.(create|createMany|upsert)/i.test(sync));
-check("dual-write carries an explicit DELETION CONDITION (not indefinite)",
-  /DELETION CONDITION/.test(syncRaw));
+check("the retirement is documented at the write site (executed deletion condition)",
+  /DELETION CONDITION/.test(syncRaw) && /W5/.test(syncRaw));
 
 // Backfill: scripts/backfill-crypto-positions.ts (the P2-6 one-time Holding →
 // PositionObservation bootstrap) completed its arc and was deleted in REVIEW-3

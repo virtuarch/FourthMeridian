@@ -2,8 +2,9 @@
  * lib/export/holdings.test.ts  (P2-5)
  *
  * Pure guards for the export holdings projection + the source-scan guard that the
- * assembler reads canonical positions (getCurrentPositions), NOT the general
- * legacy `Holding` model — the ONLY legacy read left is the crypto-only bridge.
+ * assembler reads canonical positions (getCurrentPositions) and NO legacy
+ * `Holding` model at all (W5 — the crypto-only bridge is deleted; crypto rides
+ * the canonical seam; a wallet without observations is honestly absent).
  * Standalone tsx script (exit 0/1). No DB, no network.
  *
  *     npx tsx lib/export/holdings.test.ts
@@ -11,9 +12,8 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { toExportHoldingFromPosition, toExportHoldingFromLegacyCrypto, mergeSpaceExportHoldings } from "@/lib/export/holdings";
+import { toExportHoldingFromPosition, mergeSpaceExportHoldings } from "@/lib/export/holdings";
 import type { CurrentPositionRow } from "@/lib/investments/current-positions-core";
-import type { LegacyCryptoPosition } from "@/lib/investments/legacy-crypto-holdings";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -62,99 +62,51 @@ console.log("toExportHoldingFromPosition — canonical projection");
   check("cash row: isCash true", h.isCash === true);
 }
 
-console.log("toExportHoldingFromLegacyCrypto — crypto-only bridge projection");
+console.log("mergeSpaceExportHoldings — the W5 passthrough (one source, no merge left)");
 {
-  const c: LegacyCryptoPosition = {
-    holdingId: "hold_btc", financialAccountId: "wallet1", symbol: "BTC", name: "Bitcoin",
-    quantity: 0.5, price: 60000, value: 30000, currency: "USD", isCash: false,
-  };
-  const h = toExportHoldingFromLegacyCrypto(c, "s1", "GBP");
-  check("id = legacy Holding id", h.id === "hold_btc");
-  check("accountId = financialAccountId", h.accountId === "wallet1");
-  check("native (quote) value/currency preserved", h.value === 30000 && h.currency === "USD");
-  check("reportingValue null (bridge does NO FX)", h.reportingValue === null);
-  check("reportingCurrency carried for column consistency", h.reportingCurrency === "GBP");
-  check("costBasis null (legacy Holding has none)", h.costBasis === null);
-  check("source = crypto-compat", h.source === "crypto-compat");
-}
-
-console.log("mergeSpaceExportHoldings — disjoint by account, CANONICAL WINS (row 26)");
-{
-  // REVIEW-3 converged dedup rule: a wallet on BOTH the canonical spine and the
-  // legacy bridge is supplied ONCE, by CANONICAL (the export previously kept
-  // the legacy row — the OPPOSITE of the AI assembler; both now share
-  // lib/investments/canonical-precedence.core.ts). A wallet the spine has no
-  // observation for still rides in through the bridge (fallback, not override).
+  // W5 (P2-6 executed): the crypto args are gone — this is the passthrough the
+  // function's own P2-6 note promised. Crypto wallets arrive as canonical rows;
+  // a wallet with no spine observation produces NO row (honest absence).
   const canonicalRows = [
-    posRow({ accountId: "brokerage1", instrumentId: "vti" }),             // A-track — kept
-    posRow({ accountId: "wallet1", instrumentId: "btc", symbol: "BTC" }), // on-spine wallet — CANONICAL WINS
+    posRow({ accountId: "brokerage1", instrumentId: "vti" }),
+    posRow({ accountId: "wallet1", instrumentId: "btc", symbol: "BTC", name: "Bitcoin" }),
   ];
-  const cryptoPositions: LegacyCryptoPosition[] = [
-    // Same wallet also present on the bridge — must be dropped (canonical wins).
-    { holdingId: "h_btc", financialAccountId: "wallet1", symbol: "BTC", name: "Bitcoin", quantity: 0.5, price: 60000, value: 30000, currency: "USD", isCash: false },
-    // Off-spine wallet — bridge is the fallback; must be kept.
-    { holdingId: "h_btc2", financialAccountId: "wallet2", symbol: "BTC", name: "Bitcoin", quantity: 0.1, price: 60000, value: 6000, currency: "USD", isCash: false },
-  ];
-  const merged = mergeSpaceExportHoldings({ canonicalRows, cryptoPositions, spaceId: "s1", reportingCurrency: "USD" });
-  check("on-spine wallet appears exactly once",
-    merged.filter((h) => h.accountId === "wallet1").length === 1);
-  check("…and the surviving row is CANONICAL (canonical wins over the bridge)",
-    merged.find((h) => h.accountId === "wallet1")?.source === "canonical");
-  check("off-spine wallet still rides in via the bridge (fallback preserved)",
-    merged.find((h) => h.accountId === "wallet2")?.source === "crypto-compat");
-  check("brokerage canonical row retained", merged.some((h) => h.accountId === "brokerage1" && h.source === "canonical"));
-  check("total rows = canonical + off-spine bridge only (no double count)", merged.length === 3);
-}
-{
-  // No crypto → passthrough of canonical rows only.
-  const merged = mergeSpaceExportHoldings({ canonicalRows: [posRow({ accountId: "b1" })], cryptoPositions: [], spaceId: "s1", reportingCurrency: "USD" });
-  check("no-crypto passthrough keeps canonical rows", merged.length === 1 && merged[0].source === "canonical");
-}
-{
-  // No canonical rows (flag-off corpus) → the bridge remains the sole crypto source.
-  const cryptoPositions: LegacyCryptoPosition[] = [
-    { holdingId: "h1", financialAccountId: "w1", symbol: "BTC", name: "Bitcoin", quantity: 1, price: 1, value: 1, currency: "USD", isCash: false },
-  ];
-  const merged = mergeSpaceExportHoldings({ canonicalRows: [], cryptoPositions, spaceId: "s1", reportingCurrency: "USD" });
-  check("flag-off state: bridge-only wallet survives", merged.length === 1 && merged[0].source === "crypto-compat");
+  const merged = mergeSpaceExportHoldings({ canonicalRows, spaceId: "s1" });
+  check("passthrough projects every canonical row", merged.length === 2);
+  check("every row is canonical-sourced", merged.every((h) => h.source === "canonical"));
+  check("wallet rides the SAME canonical projection as brokerage",
+    merged.find((h) => h.accountId === "wallet1")?.id === "wallet1:btc");
+  check("empty spine ⇒ empty export positions (honest absence, no legacy backfill)",
+    mergeSpaceExportHoldings({ canonicalRows: [], spaceId: "s1" }).length === 0);
 }
 
 // ── Source guard — the assembler reads canonical positions, not general Holding ─
-console.log("source guard — export assembler off the general legacy Holding read");
+console.log("source guard — export assembler reads NO legacy Holding path (W5)");
 {
   const src = readFileSync(join(process.cwd(), "lib/export/assemble.ts"), "utf8")
     .replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, ""); // strip comments (doc mentions Holding)
   check("assemble.ts does NOT import getHoldings", !/getHoldings/.test(src));
   check("assemble.ts does NOT read prisma.holding directly", !/\.holding\./.test(src));
   check("assemble.ts sources positions from getCurrentPositions", /getCurrentPositions\s*\(/.test(src));
-  check("assemble.ts bridges crypto ONLY via readLegacyCryptoWalletPositions",
-    /readLegacyCryptoWalletPositions\s*\(/.test(src));
-  check("assemble.ts merges the two sources disjointly (no double count)",
+  check("assemble.ts imports no crypto bridge (W5 — deleted)",
+    !/legacy-crypto-holdings|readLegacyCryptoWalletPositions/.test(src));
+  check("assemble.ts projects through the one passthrough",
     /mergeSpaceExportHoldings\s*\(/.test(src));
 
-  // The crypto bridge itself must stay crypto-only (walletChain), FULL-gated.
-  const bridge = readFileSync(join(process.cwd(), "lib/investments/legacy-crypto-holdings.ts"), "utf8");
-  const bridgeCode = bridge.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
-  check("bridge scopes to self-custody wallets only (walletChain)", /walletChain/.test(bridgeCode));
-  check("bridge enforces FULL detail visibility", /TRANSACTION_DETAIL_VISIBILITY/.test(bridgeCode));
-
-  // REVIEW-3 (row 26) — ONE dedup rule, shared by BOTH bridge consumers.
-  // Export and the AI assembler previously applied OPPOSITE precedence for a
-  // wallet present on both sources; both must now import the shared
-  // canonical-wins rule rather than re-deciding precedence locally.
   const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+
+  // W5 ratchet — the bridge and the dedup rule STAY deleted, in both consumers.
   const mergeSrc = strip(readFileSync(join(process.cwd(), "lib/export/holdings.ts"), "utf8"));
   const aiCore   = strip(readFileSync(join(process.cwd(), "lib/ai/assemblers/holdings-core.ts"), "utf8"));
-  check("export merge imports the shared canonical-precedence rule",
-    /canonical-precedence\.core/.test(mergeSrc) && /excludeCanonicalAccounts\s*\(/.test(mergeSrc));
-  check("AI holdings-core delegates to the SAME shared rule",
-    /canonical-precedence\.core/.test(aiCore) && /excludeCanonicalAccounts\s*\(/.test(aiCore));
-  check("export merge no longer drops canonical rows for bridge wallets (legacy never wins)",
-    !/walletAccountIds/.test(mergeSrc));
+  check("export projection carries no bridge/dedup residue",
+    !/legacy-crypto-holdings|canonical-precedence|LegacyCryptoPosition|crypto-compat/.test(mergeSrc));
+  check("AI holdings-core carries no bridge/dedup residue",
+    !/canonical-precedence|excludeCanonicalAccounts|CryptoHoldingsInput/.test(aiCore));
 
   // REVIEW-3 ratchet — the general legacy Holding reader (lib/data/accounts.ts
   // getHoldings) is DELETED; lib/data/accounts.ts must never regrow a Holding
-  // read. The crypto-only bridge stays the single production Holding read path.
+  // read. (W5: there is no sanctioned production Holding read path AT ALL —
+  // scripts/audit-crypto-holding-tombstone.ts enforces the repo-wide census.)
   const accountsSrc = strip(readFileSync(join(process.cwd(), "lib/data/accounts.ts"), "utf8"));
   check("lib/data/accounts.ts exports no getHoldings (general legacy reader deleted)",
     !/export\s+(async\s+)?function\s+getHoldings/.test(accountsSrc));

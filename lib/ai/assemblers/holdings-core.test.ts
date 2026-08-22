@@ -14,15 +14,20 @@
  *      (computeAllocation → same computeConcentration helper) on a spine-only
  *      FULL fixture.
  *   5. Unvalued positions handled honestly; same instrument across accounts
- *      collapses; crypto compatibility preserved (blended + disclosed).
+ *      collapses.
+ *   6. W5 — crypto has NO side entrance: the shaper takes no crypto input at
+ *      all (the legacy-bridge blend is deleted); a spine crypto row behaves
+ *      like any instrument, and an empty spine is an empty domain — honest
+ *      absence, never a legacy backfill.
+ *   7. W5 — stale valuation dating is DISCLOSED (≥ STALE_PRICE_DISCLOSURE_DAYS),
+ *      and the normal 0–1 day close lag is not remarked on.
  */
 
 import {
   buildHoldingsSummary,
-  excludeCanonicalCryptoAccounts,
+  STALE_PRICE_DISCLOSURE_DAYS,
   type CanonicalPositionRow,
   type AllScopeAggregate,
-  type CryptoHoldingsInput,
 } from "./holdings-core";
 import { computeAllocation } from "@/lib/investments/investments-allocation-core";
 import type { ValuedHoldingRow } from "@/lib/investments/investments-time-machine-core";
@@ -34,9 +39,6 @@ function check(name: string, cond: boolean, detail?: string): void {
 }
 const approx = (a: number, b: number, eps = 1e-6) => Math.abs(a - b) <= eps;
 
-const NO_CRYPTO: CryptoHoldingsInput = {
-  total: 0, invested: 0, cash: 0, fullPositions: [], anyEstimated: false, anyUnconverted: false, hasAny: false,
-};
 function agg(over: Partial<AllScopeAggregate> = {}): AllScopeAggregate {
   return { valuedSubtotal: 0, cashValue: 0, anyFxEstimated: false, hasAny: true, ...over };
 }
@@ -61,9 +63,9 @@ function vhr(over: Partial<ValuedHoldingRow>): ValuedHoldingRow {
 console.log("1. empty domain");
 {
   const out = buildHoldingsSummary({
-    scopeHint: "full", fullRows: [], allScope: agg({ hasAny: false }), crypto: NO_CRYPTO,
+    scopeHint: "full", fullRows: [], allScope: agg({ hasAny: false }),
   });
-  check("no spine + no crypto ⇒ null (domain cleanly empty)", out === null);
+  check("no spine observations ⇒ null (domain cleanly empty — W5: crypto included in this honesty)", out === null);
 }
 
 // ── 2. FULL detail from canonical rows ──────────────────────────────────────────
@@ -77,7 +79,6 @@ console.log("2. FULL detail sourced from canonical current-position rows");
   const out = buildHoldingsSummary({
     scopeHint: "full", fullRows,
     allScope: agg({ valuedSubtotal: 12000, cashValue: 2000 }),
-    crypto: NO_CRYPTO,
   })!;
   const syms = (out.topPositions ?? []).map((p) => p.symbol);
   check("FULL non-cash positions surfaced", syms.includes("AAA") && syms.includes("BBB"));
@@ -101,7 +102,6 @@ console.log("3. hidden value preserved without leaking detail");
   const out = buildHoldingsSummary({
     scopeHint: "full", fullRows,
     allScope: agg({ valuedSubtotal: 15000, cashValue: 0 }),
-    crypto: NO_CRYPTO,
   })!;
   check("aggregate includes hidden value (total 15000)", approx(out.totalPortfolioValue, 15000));
   check("hidden invested value preserved in investedValue", approx(out.investedValue, 15000));
@@ -136,7 +136,6 @@ console.log("4. concentration parity — same helper + per-instrument aggregatio
   const out = buildHoldingsSummary({
     scopeHint: "full", fullRows: canonical,
     allScope: agg({ valuedSubtotal: 15000, cashValue: 1000 }),
-    crypto: NO_CRYPTO,
   })!;
 
   check("AI concentration === Allocation-panel concentration (byte-identical)",
@@ -157,40 +156,41 @@ console.log("5. unvalued positions honest");
   const out = buildHoldingsSummary({
     scopeHint: "full", fullRows,
     allScope: agg({ valuedSubtotal: 5000, cashValue: 0 }),
-    crypto: NO_CRYPTO,
   })!;
   const syms = (out.topPositions ?? []).map((p) => p.symbol);
   check("unvalued row excluded from concentration/positions", !syms.includes("MISS") && out.positionCount === 1);
   check("unvalued disclosed in dataLimits", out.dataLimits.some((d) => /could not be valued/.test(d)));
 }
 
-// ── 6. Crypto transitional compatibility (blended + disclosed) ──────────────────
-console.log("6. crypto compatibility preserved (transitional)");
+// ── 6. W5 — crypto through the ONE spine, honest absence, no side entrance ────
+console.log("6. W5 crypto: spine-only, honest absence");
 {
-  const crypto: CryptoHoldingsInput = {
-    total: 30000, invested: 30000, cash: 0,
-    fullPositions: [{ symbol: "BTC", name: "Bitcoin", value: 30000 }],
-    anyEstimated: false, anyUnconverted: false, hasAny: true,
-  };
+  // A spine BTC row is just another instrument: totals/concentration/positions
+  // treat it identically to an equity row — no special-cased blend key exists.
   const out = buildHoldingsSummary({
     scopeHint: "full",
-    fullRows: [row({ instrumentId: "i1", symbol: "AAA", reportingValue: 10000 })],
-    allScope: agg({ valuedSubtotal: 10000, cashValue: 0 }),
-    crypto,
+    fullRows: [
+      row({ instrumentId: "iAAA", symbol: "AAA", reportingValue: 10000 }),
+      row({ instrumentId: "iBTC", symbol: "BTC", name: "Bitcoin", reportingValue: 30000 }),
+    ],
+    allScope: agg({ valuedSubtotal: 40000, cashValue: 0 }),
   })!;
   const syms = (out.topPositions ?? []).map((p) => p.symbol);
-  check("crypto value included in totals (10000 + 30000)", approx(out.totalPortfolioValue, 40000));
-  check("crypto FULL position not silently dropped (surfaced in positions)",
-    syms.includes("BTC") && syms.includes("AAA"));
-  check("crypto participates in concentration (BTC top at 30000/40000)",
+  check("spine BTC surfaces like any instrument", syms.includes("BTC") && syms.includes("AAA"));
+  check("BTC participates in totals (40000)", approx(out.totalPortfolioValue, 40000));
+  check("BTC participates in concentration (30000/40000)",
     out.concentration.topSymbol === "BTC" && approx(out.concentration.topWeight!, 30000 / 40000));
-  check("crypto disclosed in dataLimits", out.dataLimits.some((d) => /wallet balances/.test(d)));
+  check("no wallet-balance provenance caveat remains (crypto is ON the spine now)",
+    !out.dataLimits.some((d) => /wallet balances/.test(d)));
 
-  // Empty-spine + crypto-only Space is NOT empty.
-  const cryptoOnly = buildHoldingsSummary({
-    scopeHint: "full", fullRows: [], allScope: agg({ hasAny: false }), crypto,
+  // HONEST ABSENCE — a Space whose only wallet has NO spine observation is an
+  // EMPTY domain: there is no input through which a legacy Holding value could
+  // ride in, structurally (the shaper takes no crypto argument at all).
+  const absent = buildHoldingsSummary({
+    scopeHint: "full", fullRows: [], allScope: agg({ hasAny: false }),
   });
-  check("crypto-only Space is not a null domain", cryptoOnly !== null);
+  check("wallet without observations ⇒ null domain (honest absence, never legacy backfill)",
+    absent === null);
 }
 
 // ── 7. brief scopeHint omits topPositions ───────────────────────────────────────
@@ -200,70 +200,48 @@ console.log("7. scopeHint='brief' omits topPositions");
     scopeHint: "brief",
     fullRows: [row({ instrumentId: "i1", symbol: "AAA", reportingValue: 5000 })],
     allScope: agg({ valuedSubtotal: 5000 }),
-    crypto: NO_CRYPTO,
   })!;
   check("topPositions omitted for brief", out.topPositions === undefined);
   check("concentration still computed for brief", out.concentration.topSymbol === "AAA");
 }
 
-// ── 8. Crypto dedup — CANONICAL WINS by custody account (P2-4 convergence) ──────
-console.log("8. crypto dedup — canonical wins, dedup boundary is the wallet account");
+// ── 8. W5 — stale valuation dating is disclosed, never presented as current ────
+console.log("8. W5 staleness disclosure");
 {
-  // ── 8a. The pure exclusion rule ────────────────────────────────────────────
-  type Bridge = { financialAccountId: string; symbol: string; name: string; value: number };
-  const bridge: Bridge[] = [
-    { financialAccountId: "walletA", symbol: "BTC", name: "Bitcoin", value: 30000 }, // A — also on spine
-    { financialAccountId: "walletB", symbol: "BTC", name: "Bitcoin", value: 25000 }, // B — bridge-only
-  ];
-  // Wallet A is on the canonical spine; B is not.
-  const keptA = excludeCanonicalCryptoAccounts(bridge, new Set(["walletA"]));
-  check("on-spine wallet A dropped from the bridge (canonical wins)",
-    keptA.length === 1 && keptA[0].financialAccountId === "walletB");
-  check("off-spine wallet B retained via the bridge", keptA.some((p) => p.financialAccountId === "walletB"));
-
-  // Dedup boundary is the ACCOUNT, not the symbol: two different BTC wallets, none
-  // on the spine → BOTH kept even though they share the ticker.
-  const keptNone = excludeCanonicalCryptoAccounts(bridge, new Set<string>());
-  check("two distinct BTC wallets both remain when neither is canonical",
-    keptNone.length === 2 && keptNone.every((p) => p.symbol === "BTC"));
-
-  // ── 8b. End-to-end: no double count once the dedup feeds the shaper ─────────
-  // Wallet A is on the spine (canonical BTC row + counted in allScope). The bridge
-  // carried A and B; after the exclusion only B rides in. Assert single-count.
-  const canonicalRows: CanonicalPositionRow[] = [
-    { instrumentId: "iAAA", symbol: "AAA", name: "Alpha",   reportingValue: 10000, isCash: false },
-    { instrumentId: "iBTC", symbol: "BTC", name: "Bitcoin", reportingValue: 30000, isCash: false }, // wallet A
-  ];
-  const kept = excludeCanonicalCryptoAccounts(bridge, new Set(["walletA"]));
-  const crypto: CryptoHoldingsInput = {
-    total: kept.reduce((s, p) => s + p.value, 0),          // 25000 (B only)
-    invested: kept.reduce((s, p) => s + p.value, 0),
-    cash: 0,
-    fullPositions: kept.map((p) => ({ symbol: p.symbol, name: p.name, value: p.value })),
-    anyEstimated: false, anyUnconverted: false, hasAny: kept.length > 0,
-  };
+  // A BTC row valued at a 7-day-old archive price (the live-corpus class): the
+  // value stays in the totals, and its age is DISCLOSED.
   const out = buildHoldingsSummary({
     scopeHint: "full",
-    fullRows: canonicalRows,
-    // "all"-scope valuation INCLUDES wallet A's canonical BTC (10000 + 30000).
-    allScope: agg({ valuedSubtotal: 40000, cashValue: 0 }),
-    crypto,
+    fullRows: [
+      row({ instrumentId: "iAAA", symbol: "AAA", reportingValue: 10000, priceDate: "2026-08-21", staleDays: 1 }),
+      row({ instrumentId: "iBTC", symbol: "BTC", reportingValue: 15176.17, priceDate: "2026-08-15", staleDays: 7 }),
+    ],
+    allScope: agg({ valuedSubtotal: 25176.17, cashValue: 0 }),
   })!;
+  check("stale-priced value stays in the totals (disclosure, not exclusion)",
+    approx(out.totalPortfolioValue, 25176.17));
+  const staleNote = out.dataLimits.find((d) => /day\(s\) old/.test(d));
+  check("staleness disclosed in dataLimits", staleNote !== undefined);
+  check("disclosure names the max age and its price date",
+    !!staleNote && /7 day\(s\) old/.test(staleNote) && /2026-08-15/.test(staleNote));
 
-  check("totalPortfolioValue not double-counted (10000 + 30000 canonical + 25000 bridge = 65000)",
-    approx(out.totalPortfolioValue, 65000));
-  check("analyzedInvestedValue not double-counted (65000, wallet A once)",
-    approx(out.analyzedInvestedValue, 65000));
+  // The normal close lag (0–1 days) is NOT remarked on.
+  const fresh = buildHoldingsSummary({
+    scopeHint: "full",
+    fullRows: [row({ instrumentId: "i1", symbol: "AAA", reportingValue: 5000, priceDate: "2026-08-21", staleDays: 1 })],
+    allScope: agg({ valuedSubtotal: 5000 }),
+  })!;
+  check("0–1 day close lag not disclosed (threshold = STALE_PRICE_DISCLOSURE_DAYS)",
+    STALE_PRICE_DISCLOSURE_DAYS === 2 && !fresh.dataLimits.some((d) => /day\(s\) old/.test(d)));
 
-  const btcValues = (out.topPositions ?? []).filter((p) => p.symbol === "BTC").map((p) => p.value).sort((a, b) => b - a);
-  check("wallet A's BTC (30000) counted once — not merged/doubled into 60000",
-    !btcValues.includes(60000) && !btcValues.includes(55000));
-  check("two distinct BTC wallets coexist (canonical A=30000 + bridge B=25000, each once)",
-    btcValues.length === 2 && approx(btcValues[0], 30000) && approx(btcValues[1], 25000));
-  check("topPositions carry no duplicate wallet-A entry (AAA + 2 distinct BTC = 3)",
-    (out.topPositions ?? []).length === 3);
-  check("BTC is the top position (30000/65000)",
-    out.concentration.topSymbol === "BTC" && approx(out.concentration.topWeight!, 30000 / 65000));
+  // Dating absent (fixtures/unvalued) ⇒ no disclosure, no crash.
+  const undated = buildHoldingsSummary({
+    scopeHint: "full",
+    fullRows: [row({ instrumentId: "i1", symbol: "AAA", reportingValue: 5000 })],
+    allScope: agg({ valuedSubtotal: 5000 }),
+  })!;
+  check("rows without dating fields are fine (optional, no disclosure)",
+    !undated.dataLimits.some((d) => /day\(s\) old/.test(d)));
 }
 
 // ── Exit ────────────────────────────────────────────────────────────────────

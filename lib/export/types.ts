@@ -17,11 +17,12 @@ export type ExportTransaction = Transaction & { spaceId: string };
 /**
  * Where an exported position row came from. `canonical` — the ratified
  * current-position spine (getCurrentPositions), the FULL-authorized value + FX +
- * completeness authority. `crypto-compat` — a self-custody wallet position still
- * living only in legacy `Holding` (native/quote value, no FX conversion), bridged
- * until the crypto spine writer (P2-6) removes it.
+ * completeness authority — and since W5 (P2-6 executed) the ONLY source: the
+ * `crypto-compat` member died with the legacy `Holding` bridge. The union stays
+ * a union so a future second source must declare itself here rather than
+ * masquerade as canonical.
  */
-export type HoldingExportSource = "canonical" | "crypto-compat";
+export type HoldingExportSource = "canonical";
 
 /**
  * An investment position for the export (P2-5). No longer the legacy `Holding`
@@ -33,8 +34,9 @@ export type HoldingExportSource = "canonical" | "crypto-compat";
  */
 export interface ExportHolding {
   /**
-   * Stable per-row key, also the cross-Space dedup key. Canonical rows use
-   * `${accountId}:${instrumentId}`; crypto-compat rows use the legacy Holding id.
+   * Stable per-row key, also the cross-Space dedup key:
+   * `${accountId}:${instrumentId}` (W5 — the legacy-Holding-id form died with
+   * the crypto-compat source).
    */
   id:                string;
   accountId:         string;
@@ -47,7 +49,7 @@ export interface ExportHolding {
   value:             number | null;
   /** ISO code of `price`/`value` (native/quote currency). */
   currency:          string | null;
-  /** `value` converted into the Space reporting currency; null when unvalued or not converted (crypto-compat). */
+  /** `value` converted into the Space reporting currency; null when unvalued. */
   reportingValue:    number | null;
   /** The Space reporting currency (ISO). */
   reportingCurrency: string;

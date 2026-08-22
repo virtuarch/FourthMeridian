@@ -215,15 +215,14 @@ async function main(): Promise<void> {
   check("SyncWalletButton label: pending -> 'Sync wallet', else 'Refresh'",
     /syncStatus\s*===\s*["']pending["']/.test(btn) && btn.includes("Sync wallet") && btn.includes("Refresh"));
 
-  // ── PART D — Wallet Provider v2: BTC as a Holding ────────────────────────────
-  check("sync upserts a BTC Holding on the (financialAccountId, symbol) key",
-    /holding\.upsert/.test(sync) && /financialAccountId_symbol/.test(sync) && /symbol:\s*BTC_SYMBOL/.test(sync));
-  check("BTC Holding value mirrors the account balance (no double count)",
-    /value:\s*amounts\.balanceUsd/.test(sync));
-  check("BTC Holding carries native-BTC quantity, price, and USD currency",
-    /quantity:\s*amounts\.nativeBalance/.test(sync) && /price:\s*amounts\.priceUsd/.test(sync) && /currency:\s*["']USD["']/.test(sync));
-  check("BTC Holding write is best-effort (never fails the sync)",
-    /writeBtcHolding/.test(sync) && /catch/.test(sync));
+  // ── PART D — Wallet Provider v2 → W5: BTC position is SPINE-ONLY ─────────────
+  // W5 executed the dual-write's deletion condition: no legacy Holding row is
+  // written; the position fact is the canonical PositionObservation (quantity-
+  // only, valued at read time through the dated price archive).
+  check("sync writes NO legacy Holding row (W5 — dual-write retired)",
+    !/holding\.upsert/.test(sync) && !/writeBtcHolding/.test(sync));
+  check("sync records the spine observation (best-effort, never fails the sync)",
+    /writeBtcObservation/.test(sync) && /catch/.test(sync));
   check("sync still writes transitional FinancialAccount.balance/nativeBalance",
     /financialAccount\.update/.test(sync) && /balance:\s*balanceUsd/.test(sync) && /nativeBalance/.test(sync));
 
@@ -361,8 +360,8 @@ async function main(): Promise<void> {
     /isXpub && connection/.test(sync) && sync.includes("touchWalletConnectionStatus"));
   check("raw txs deduped by txid across addresses before normalization",
     sync.includes("dedupeRawTxsByTxid"));
-  check("one Holding + one balance write regardless of address count",
-    (sync.match(/holding\.upsert/g) || []).length === 1 &&
+  check("one balance write + zero Holding writes regardless of address count (W5)",
+    (sync.match(/holding\.upsert/g) || []).length === 0 &&
     (sync.match(/financialAccount\.update/g) || []).length === 1);
 
   // ── Schema: the approved constraint drop (durable STATE, not the migration SQL) ─

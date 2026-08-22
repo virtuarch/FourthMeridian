@@ -12,13 +12,13 @@
  * HOME Semantics Correction (docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md) is
  * the link set here guaranteed to agree with WorkspaceAccountShare's.
  *
- * REVIEW-3: getHoldings() — the general legacy `Holding` read model — was
- * DELETED. Current positions come from the canonical PositionObservation seam
- * (lib/investments/current-positions.ts getCurrentPositions); the only
- * remaining production Holding reader is the crypto-only bridge
- * (lib/investments/legacy-crypto-holdings.ts, walletChain-gated). Do not
- * reintroduce a general Holding reader here — lib/export/holdings.test.ts and
- * lib/investments/current-holdings.test.ts guard against it.
+ * REVIEW-3 → W5: getHoldings() — the general legacy `Holding` read model — was
+ * DELETED, and W5 deleted the last remaining production Holding reader (the
+ * crypto-only bridge). Current positions — crypto wallets included — come from
+ * the canonical PositionObservation seam
+ * (lib/investments/current-positions.ts getCurrentPositions). Do not
+ * reintroduce ANY Holding reader here — lib/export/holdings.test.ts and
+ * scripts/audit-crypto-holding-tombstone.ts guard against it.
  */
 
 import { db } from "@/lib/db";

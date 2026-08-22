@@ -142,74 +142,23 @@ async function recordWalletSyncIssue(
   });
 }
 
-/** Canonical asset identity for the wallet's native BTC position. */
-const BTC_SYMBOL = "BTC";
-const BTC_ASSET_NAME = "Bitcoin";
-
 /**
- * Wallet Provider v2 — persist/refresh the wallet's native BTC Holding.
+ * P2-6 (completed at W5) — the wallet's position write is SPINE-ONLY. The
+ * balance is recorded as a canonical OBSERVED `PositionObservation` (via the
+ * ONE canonical BTC Instrument), quantity-only: valuation happens at read time
+ * through the canonical dated price series (getCurrentPositions /
+ * historical-crypto-valuation), never from a stored undated figure. A zero
+ * balance writes a `quantity:0` closure row. Gated behind
+ * INVESTMENT_OBSERVATIONS_ENABLED (inside captureWalletPosition) and
+ * best-effort/non-fatal.
  *
- * Upserts on the existing (financialAccountId, symbol) unique key — no schema
- * change. `value` mirrors the account's USD balance EXACTLY (same balanceUsd),
- * so nothing that sums account balances double-counts, and net worth (which
- * reads FinancialAccount.balance by type, not Holdings, this slice) is
- * unchanged. Going forward Holding is the authoritative balance source; the
- * FinancialAccount.balance/nativeBalance columns remain transitional
- * compatibility fields (see prisma/schema.prisma).
- *
- * Best-effort/non-fatal: the balance write is what net worth reads this slice,
- * so a Holding failure is logged and swallowed rather than failing the sync.
- *
- * REVIEW-3 — same money contract as the FinancialAccount write below:
- * `quantity` (native BTC) is the canonical fact; `price`/`value`/`currency:"USD"`
- * are valuation-derived presentation from an undated spot quote, NOT FX truth.
- */
-async function writeBtcHolding(
-  financialAccountId: string,
-  amounts: { nativeBalance: number; priceUsd: number; balanceUsd: number },
-): Promise<void> {
-  try {
-    await db.holding.upsert({
-      where: { financialAccountId_symbol: { financialAccountId, symbol: BTC_SYMBOL } },
-      create: {
-        financialAccountId,
-        symbol:   BTC_SYMBOL,
-        name:     BTC_ASSET_NAME,
-        quantity: amounts.nativeBalance,
-        price:    amounts.priceUsd,
-        value:    amounts.balanceUsd,
-        currency: "USD",
-        isCash:   false,
-      },
-      update: {
-        quantity: amounts.nativeBalance,
-        price:    amounts.priceUsd,
-        value:    amounts.balanceUsd,
-        currency: "USD",
-      },
-    });
-  } catch (e) {
-    console.warn(`[btc-sync] BTC Holding upsert failed for account ${financialAccountId} (non-fatal):`, e);
-  }
-}
-
-/**
- * P2-6 — TRANSITIONAL DUAL-WRITE. Alongside the legacy `Holding` above, record the
- * same balance as a canonical OBSERVED `PositionObservation` on the investment
- * spine (via the ONE canonical BTC Instrument), so `getCurrentPositions()` sees
- * crypto without a legacy Holding compatibility reader. Quantity-only: valued
- * through the canonical RAW_CLOSE price series, never a synthetic institution
- * anchor (see wallet-position-capture.ts). A zero balance writes a `quantity:0`
- * closure row. Gated behind INVESTMENT_OBSERVATIONS_ENABLED and best-effort/
- * non-fatal — the balance/Holding write above is what Wealth still reads this
- * slice, so a spine-write failure never fails the sync.
- *
- * DELETION CONDITION — this dual-write drops to a spine-only write (remove the
- * `writeBtcHolding` call) once EVERY current crypto `Holding` reader is cut over
- * to `getCurrentPositions()` (P2-4 AI holdings assembler, P2-5 data export +
- * ConnectionsCard) AND the Part 9 census shows zero remaining crypto Holding
- * readers. Kept dual only to protect those concurrently-migrating consumers from
- * timing; NOT indefinitely. Invariant covered by wallet-position-capture.test.ts.
+ * W5 executed the dual-write's own DELETION CONDITION: the legacy `Holding`
+ * mirror (`writeBtcHolding`) was removed once the census showed zero remaining
+ * production `Holding` readers (the AI assembler, the data export and the
+ * account read all consume getCurrentPositions; the crypto-only bridge is
+ * deleted). scripts/audit-crypto-holding-tombstone.ts keeps the count at zero
+ * — do not reintroduce a wallet `Holding` write to satisfy a new reader; new
+ * readers consume the spine.
  */
 async function writeBtcObservation(
   financialAccountId: string,
@@ -543,7 +492,8 @@ async function discoverXpubStep(params: {
  * Sync one BTC wallet account — single-address OR xpub. Never throws.
  *
  * xpub: discovery runs first to populate ProviderAccountIdentity; the confirmed
- * balance is SUMMED across every discovered address into ONE Holding, and
+ * balance is SUMMED across every discovered address into ONE position (the
+ * account balance + ONE spine observation — W5: no legacy Holding row), and
  * transactions from every address are aggregated (deduped by txid) into ONE
  * history. Single-address wallets behave exactly as before, resolved through the
  * same identity path. On any external failure the account is left untouched
@@ -683,7 +633,8 @@ export async function syncBtcWallet(
   }
   const balanceUsd = computeUsdBalance(nativeBalance, priceUsd);
 
-  // v2 — one BTC Holding (summed). v3 — transactions aggregated across addresses,
+  // v2 — one summed BTC position (W5: FA balance + spine observation; the
+  //    legacy Holding mirror is retired). v3 — transactions aggregated across addresses,
   //    BOUNDED to the first N addresses per run so a behemoth wallet never issues
   //    hundreds of tx requests; history fills in across runs (idempotent dedupe).
   // V26-S1-BTC — IMPORT TRANSACTIONS FOR EVERY ADDRESS THAT HAS ANY.
@@ -736,8 +687,8 @@ export async function syncBtcWallet(
   // reach "synced" — and the history regeneration the connect route runs
   // immediately afterwards cannot license its quantity — until the ledger
   // accounts for the balance.
-  await writeBtcHolding(accountId, { nativeBalance, priceUsd, balanceUsd });
-  // P2-6 — transitional dual-write onto the canonical spine (gated, non-fatal).
+  // W5 — spine-only position write (the legacy Holding dual-write is retired;
+  // see writeBtcObservation's doc). Gated + non-fatal inside.
   await writeBtcObservation(accountId, nativeBalance, new Date());
 
   const ledger = await reconcileWalletLedgerForAccount(accountId, nativeBalance);

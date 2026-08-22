@@ -169,6 +169,16 @@ export const AUDITS: readonly AuditEntry[] = [
           "structurally unreachable; the W2 deletion set stays deleted",
   },
   {
+    // W5 — crypto current-value authority. Source-only: the corpus is the repo.
+    name: "audit-crypto-holding-tombstone", tier: "REQUIRED", needsDb: false,
+    what: "one current-value authority for positions, crypto included — no production read " +
+          "path touches the legacy Holding table; the crypto bridge, its dedup rule and " +
+          "btc-sync's Holding dual-write stay deleted; wallets ride the PositionObservation " +
+          "spine valued at dated archive prices, and a wallet without observations is " +
+          "honestly absent (the last Holding toucher is the documented reader-less " +
+          "brokerage projection writer, awaiting its own deletion condition)",
+  },
+  {
     // W1 (D6) — INV-19. Source-only: the corpus it audits is the repository.
     name: "audit-read-identity-consumers", tier: "REQUIRED", needsDb: false,
     what: "no product READ derives transaction identity from a non-event key — the fingerprint " +
