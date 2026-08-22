@@ -175,6 +175,16 @@ export function projectSnapshotSection(
   const spanDays = seriesSpanDays(points.map((p) => ({ date: new Date(p.date), value: 0 })));
   const canonicalChange = canonicalWindowChange(series, CANONICAL_CHANGE_PRESET);
 
+  // W3 — the LIABILITIES change, from the SAME window authority over the SAME
+  // preset. This is the canonical figure the debt trend (engine.ts IMPROVING)
+  // now reads, replacing the accidental fetched-row window (history[0] vs
+  // history[last] over ≥7 rows). `liabilities` is never nulled by the
+  // crypto-unassertable rule (it is the `debt` column, composed without
+  // crypto), so every point enters the series. Computed BEFORE the brief-scope
+  // history truncation below, so both scope hints carry the identical figure.
+  const liabilitiesSeries = points.map((p) => ({ date: new Date(p.date), value: p.liabilities }));
+  const liabilitiesChange = canonicalWindowChange(liabilitiesSeries, CANONICAL_CHANGE_PRESET);
+
   return {
     // REVIEW-3 C-6 — the effective currency of these figures, from the newest
     // usable row's stamp (the canonical read boundary resolves it). Consumers
@@ -186,6 +196,7 @@ export function projectSnapshotSection(
     snapshotCount:    usable.length,
     spanDays,
     canonicalChange,
+    liabilitiesChange,
     oldestDate:       oldest.date,
     newestDate:       latest.date,
     latest,

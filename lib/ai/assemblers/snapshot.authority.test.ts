@@ -268,6 +268,40 @@ function series(endIso: string, count: number, stepDays: number, from: number, t
   check("WINDOW-1: single point yields no canonical change", one?.canonicalChange === null);
 }
 
+// W3. liabilitiesChange — the SAME canonical window authority, over liabilities.
+{
+  // Debt declining 30k → 24k over 90 daily points; net worth held via snap()'s
+  // debt field. The canonical liabilities window must open a calendar month
+  // back and report the decline; single-point history must REFUSE (null).
+  const end = new Date("2026-08-07T00:00:00Z").getTime();
+  const rows: Snapshot[] = [];
+  for (let i = 89; i >= 0; i--) {
+    const d = new Date(end - i * 86_400_000).toISOString().slice(0, 10);
+    const t = (89 - i) / 89;
+    rows.push(snap({ date: d, netWorth: 10_000, totalAssets: 40_000, totalDebt: 30_000 - 6_000 * t }));
+  }
+  const withDebt = projectSnapshotSection(rows, "full");
+  check("W3: liabilitiesChange present", withDebt?.liabilitiesChange != null);
+  check("W3: liabilities window opens on the subMonths date (calendar, not row offset)",
+    withDebt?.liabilitiesChange?.fromDate === "2026-07-07");
+  check("W3: liabilities window preset matches canonicalChange's",
+    withDebt?.liabilitiesChange?.preset === withDebt?.canonicalChange?.preset);
+  check("W3: declining debt reports a negative abs",
+    (withDebt?.liabilitiesChange?.abs ?? 0) < 0, `got ${withDebt?.liabilitiesChange?.abs}`);
+
+  // Brief scope truncates history but must carry the IDENTICAL figure — the
+  // change derives from the full series before truncation.
+  const brief = projectSnapshotSection(rows, "brief");
+  check("W3: brief scope carries the identical liabilitiesChange",
+    JSON.stringify(brief?.liabilitiesChange) === JSON.stringify(withDebt?.liabilitiesChange));
+  check("W3: brief history is still truncated (payload economy where it changes no grade)",
+    brief?.history.length === 0);
+
+  const one = projectSnapshotSection([snap({ date: "2026-08-07", totalDebt: 30_000 })], "full");
+  check("W3: single point yields no liabilities change (refusal, not fallback)",
+    one?.liabilitiesChange === null);
+}
+
 if (failures > 0) {
   console.error(`\nsnapshot.authority: ${failures} check(s) failed.`);
   process.exit(1);

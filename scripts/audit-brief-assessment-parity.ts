@@ -86,6 +86,28 @@ interface Conclusions {
   incompleteIncomeWarning:  boolean;
 }
 
+/** W3 — the DEBT conclusions, measured over the ACCOUNTS domain arms. After W3
+ *  the brief payload carries the DEBT_ONLY row subset — the exact rows the
+ *  grade requires — so scope-hint-only debt drift is expected to be ZERO. */
+interface DebtConclusions {
+  classification:        string;
+  confidence:            string;
+  hasBalanceOnlyDebt:    boolean;
+  monthlyInterestBurden: number | null;
+  ungradedDebtReason:    string | null;
+}
+
+function debtConclusionsOf(ctx: SpaceContext_AI): DebtConclusions {
+  const a = computeAssessment(ctx);
+  return {
+    classification:        a.debt.classification,
+    confidence:            a.debt.confidence,
+    hasBalanceOnlyDebt:    a.debt.hasBalanceOnlyDebt,
+    monthlyInterestBurden: a.debt.monthlyInterestBurden,
+    ungradedDebtReason:    a.ungraded.find((u) => u.section === 'debt')?.reason ?? null,
+  };
+}
+
 function conclusionsOf(ctx: SpaceContext_AI): Conclusions {
   const a = computeAssessment(ctx);
   return {
@@ -158,6 +180,13 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  // W3 — the ACCOUNTS arms, for debt parity.
+  const assembleAccts = getAssembler(FinanceDomains.ACCOUNTS);
+  if (!assembleAccts) {
+    console.error("  ✗ ACCOUNTS assembler is not registered.");
+    process.exitCode = 1;
+    return;
+  }
 
   // Every Space the Brief would build a context for: an ACTIVE OWNER exists.
   const spaces = await db.space.findMany({
@@ -167,6 +196,7 @@ async function main(): Promise<void> {
 
   let drifting = 0;
   let measured = 0;
+  let debtDrifting = 0;
   const incomeLostSpaces: string[] = [];
 
   for (const space of spaces) {
@@ -188,12 +218,36 @@ async function main(): Promise<void> {
       },
     };
 
-    const [briefSection, fullSection] = await Promise.all([
+    const [briefSection, fullSection, acctsBrief, acctsFull] = await Promise.all([
       assemble(spaceCtx, { scopeHint: "brief" }),
       assemble(spaceCtx, { scopeHint: "full"  }),
+      assembleAccts(spaceCtx, { scopeHint: "brief" }),
+      assembleAccts(spaceCtx, { scopeHint: "full"  }),
     ]);
     if (!briefSection || !fullSection) continue;
     measured++;
+
+    // ── W3 DEBT PARITY — vary ONLY the ACCOUNTS arm's scope hint; hold the
+    // transactions arm CONSTANT (full) and the snapshot constant, so any
+    // difference is attributable to the account payload alone. Expected after
+    // W3: ZERO drift — the brief payload carries the DEBT_ONLY subset, which is
+    // the exact row population the debt grade reads.
+    if (acctsBrief && acctsFull) {
+      const mkDebtCtx = (acctsSection: ContextDomainSection): SpaceContext_AI => {
+        const base = contextWith(space.id, owner.userId, fullSection, { withSnapshot: true });
+        return { ...base, domains: { ...base.domains, [FinanceDomains.ACCOUNTS]: acctsSection } };
+      };
+      const dBrief = debtConclusionsOf(mkDebtCtx(acctsBrief));
+      const dFull  = debtConclusionsOf(mkDebtCtx(acctsFull));
+      const dKeys = (Object.keys(dFull) as (keyof DebtConclusions)[]).filter((k) => dBrief[k] !== dFull[k]);
+      if (dKeys.length > 0) {
+        debtDrifting++;
+        console.log(`\n  ⚠ DEBT drift on ${space.name} (${space.id}) — EXPECTED ZERO after W3:`);
+        for (const k of dKeys) {
+          console.log(`        ${String(k).padEnd(26)} brief=${String(dBrief[k]).padEnd(16)} full=${String(dFull[k])}`);
+        }
+      }
+    }
 
     // Two arms, each varying ONLY scopeHint. The second admits the constant
     // snapshot so the confidence ladder can actually run — see CONSTANT_SNAPSHOT.
@@ -249,6 +303,15 @@ async function main(): Promise<void> {
   bar("VERDICT");
   console.log(`  Spaces measured                     : ${measured}`);
   console.log(`  Spaces whose CONCLUSIONS move on the hint alone: ${drifting}`);
+  console.log(`  W3 DEBT parity — spaces whose DEBT conclusions move on the hint alone: ${debtDrifting}` +
+    (debtDrifting === 0 ? "  ✓ (expected ZERO: the brief payload carries the debt rows)" :
+     "  ⚠ UNEXPECTED — the W3 invariant says this must be zero"));
+  console.log(
+    `\n  Attribution note (W3): remaining non-debt drift above is the 30-vs-90-day\n` +
+    `  WINDOW BASIS (WINDOW_BRIEF_DAYS) — the brief and full arms genuinely measure\n` +
+    `  different periods for income/cash-flow. That window question is a separate,\n` +
+    `  deliberately-untouched product decision; it is NOT payload withholding.`,
+  );
   console.log(`  Spaces where brief scope DROPS the Income category: ${incomeLostSpaces.length}` +
     (incomeLostSpaces.length ? `  (${incomeLostSpaces.join(", ")})` : ""));
 

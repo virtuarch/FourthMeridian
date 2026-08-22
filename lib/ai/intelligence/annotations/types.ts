@@ -114,9 +114,13 @@ export type UngradedSectionName = 'debt' | 'liquidity' | 'cashFlow';
 export type UngradedReasonCode =
   /** No accounts domain was assembled at all. */
   | 'ACCOUNTS_DOMAIN_ABSENT'
-  /** The per-account list was WITHHELD by the requesting scope (scopeHint
-   *  'brief' omits it) — liabilities exist but cannot be graded from totals. */
-  | 'ACCOUNT_LIST_WITHHELD_BY_SCOPE'
+  /** The payload carries no per-account list — liabilities exist but cannot be
+   *  graded from totals. W3 renamed this from ACCOUNT_LIST_WITHHELD_BY_SCOPE:
+   *  withholding-by-scope no longer exists (the assembler emits the
+   *  assessment-required rows at every scope hint), so an absent list is a
+   *  genuine payload gap (fixture / hand-built context), never a payload-size
+   *  choice. The core invariant: every refusal names a data gap. */
+  | 'ACCOUNT_LIST_ABSENT'
   /** One or more debt accounts carry no APR (missing input, or balance-only
    *  visibility making it structurally inaccessible). */
   | 'APR_MISSING'

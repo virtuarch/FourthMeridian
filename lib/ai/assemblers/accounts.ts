@@ -468,12 +468,21 @@ async function assembleAccounts(
   }
 
   // ── Per-account summaries ─────────────────────────────────────────────────
-  // Omitted entirely when scopeHint='brief' to reduce payload for the Daily
-  // Brief aggregator (which only needs totals + health to compose insights).
+  //
+  // W3 — the list is ALWAYS built and ALWAYS emitted. The former brief-scope
+  // omission ("only needs totals + health") was a payload-economy premise the
+  // engine's own design falsifies: the debt GRADE requires the rows
+  // (engine.ts, v2.6-BRIEF-1), so omitting them forced every Daily Brief debt
+  // assessment to INSUFFICIENT_DATA. Doctrine now: ASSESSMENT-COMPLETE
+  // canonical context — withholding is legal only where it provably cannot
+  // change a grade. Under 'brief' the emitted list is the DEBT subset
+  // (accountListScope 'DEBT_ONLY' — a W3 TRANSPORT boundary, not product
+  // doctrine; see the field's doc in lib/ai/types.ts). The subset rows are the
+  // SAME objects the full list carries (one builder, one order, filtered), so
+  // brief/full debt grades agree by construction. Building the list is pure
+  // computation over links already fetched — the gate never saved a query.
 
-  let accounts: AccountSummaryItem[] | undefined;
-
-  if (scopeHint !== 'brief') {
+  const allItems: AccountSummaryItem[] = (() => {
     // FULL rows pass through individually, exactly as before.
     const fullItems = disclosingLinks
       .filter((link) => grantsAccountDetail(link.visibilityLevel))
@@ -665,8 +674,13 @@ async function assembleAccounts(
       };
     });
 
-    accounts = [...fullItems, ...aggregatedItems];
-  }
+    return [...fullItems, ...aggregatedItems];
+  })();
+
+  const accounts: AccountSummaryItem[] =
+    scopeHint === 'brief' ? allItems.filter((a) => a.type === 'debt') : allItems;
+  const accountListScope: 'FULL' | 'DEBT_ONLY' =
+    scopeHint === 'brief' ? 'DEBT_ONLY' : 'FULL';
 
   // ── Assemble payload ──────────────────────────────────────────────────────
 
@@ -746,7 +760,8 @@ async function assembleAccounts(
     },
     health,
     knowledgeGaps,
-    ...(accounts !== undefined ? { accounts } : {}),
+    accounts,
+    accountListScope,
   };
 
   return {

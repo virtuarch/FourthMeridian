@@ -235,6 +235,31 @@ function buildSinceLastVisit(
     });
   }
 
+  // W3 — the honesty clause. The assembler has ALWAYS computed these three
+  // facts (totalsUnconverted, totalsEstimated, redactedCount) and the route
+  // consumed none of them — so the Brief could present a complete-looking
+  // figure over totals that were partially estimated, missing an
+  // unconvertible balance, or excluding privacy-redacted accounts. One item,
+  // rendered only when at least one caveat is true; no hidden account detail
+  // is exposed (counts and adjectives only — same rule as redactedCount's own
+  // doc). This is the smallest clause that keeps the headline honest; it is
+  // NOT a risk engine.
+  const caveats: string[] = [];
+  if (acct.totalsUnconverted) caveats.push("a balance couldn't be converted and is excluded");
+  if (acct.totalsEstimated)   caveats.push("some balances use estimated FX rates");
+  if ((acct.redactedCount ?? 0) > 0) {
+    const n = acct.redactedCount!;
+    caveats.push(`${n} private account${n > 1 ? "s are" : " is"} not included`);
+  }
+  if (caveats.length > 0) {
+    items.push({
+      id:    "totals_caveat",
+      label: "Note",
+      value: caveats.join("; "),
+      tone:  "neutral",
+    });
+  }
+
   if (totalAccounts > 0) {
     items.push({
       id:    "account_count",
@@ -567,13 +592,29 @@ function buildInsight(
         return "There isn't enough recent activity to read your cash flow with confidence yet. " +
                "Connecting or refreshing your accounts will sharpen the picture.";
 
-      // REVIEW-3 C-7 — there is deliberately NO `case "DEBT"` arm. Under the
-      // Brief's own scope the per-account list is withheld (scopeHint 'brief'),
-      // debt is forced INSUFFICIENT_DATA, and currentStatePriority can never be
-      // DEBT — the arm that lived here was statically unreachable (audit E3).
-      // The withheld grade is consumed HONESTLY below via assessment.ungraded
-      // instead. Whether Brief scope should ever carry per-account debt detail
-      // is an open product decision recorded in the REVIEW-3 report.
+      // W3 — the DEBT arm, reinstated. It was deliberately absent while the
+      // brief scope withheld the per-account list (debt forced
+      // INSUFFICIENT_DATA ⇒ DEBT priority unreachable ⇒ a dead arm, audit E3).
+      // The product decision is now made: the Brief carries assessment-complete
+      // canonical debt context (the DEBT_ONLY row subset), the engine grades it
+      // identically to full scope, and this arm RENDERS the engine's verdict —
+      // it computes nothing. `monthlyInterestBurden` is quoted only when the
+      // engine derived one (never re-derived here).
+      case "DEBT": {
+        if (debt.classification === "CRITICAL" || debt.classification === "WARNING") {
+          const burden = debt.monthlyInterestBurden != null && debt.monthlyInterestBurden > 0
+            ? ` costing about ${fmtCurrency(debt.monthlyInterestBurden, cur)} a month in interest`
+            : "";
+          return debt.classification === "CRITICAL"
+            ? `Your ${fmtCurrency(debt.totalLiabilities, cur)} of debt carries a rate high enough` +
+              ` to outrun most returns${burden}. Paying it down is the highest-value move available right now.`
+            : `Your ${fmtCurrency(debt.totalLiabilities, cur)} of debt carries an elevated rate${burden}. ` +
+              `Worth an active plan while the balance is manageable.`;
+        }
+        // IMPROVING / HEALTHY / NO_DEBT never rank DEBT as the priority;
+        // INSUFFICIENT_DATA is handled by the genuine-gap clause below.
+        return null;
+      }
 
       case "LIQUIDITY":
         if (liquidity.classification === "CRITICAL" || liquidity.classification === "WARNING") {
@@ -612,18 +653,21 @@ function buildInsight(
     }
   })();
 
-  // REVIEW-3 C-7 — consume the DECLARED insufficiency: when real liabilities
-  // exist but their grade was withheld by this surface's own scope, say so
-  // rather than letting silence imply health. ("Say so or say nothing
-  // knowingly" — this is the say-so arm; every other withheld grade stays
-  // knowingly silent because no figure of its section is on screen.)
+  // W3 — consume the DECLARED insufficiency, now naming only GENUINE data
+  // gaps. The former arm here caught ACCOUNT_LIST_WITHHELD_BY_SCOPE — the
+  // Brief apologising for its own payload choice ("doesn't carry the
+  // per-account detail"). That refusal is structurally unreachable now (the
+  // brief payload carries the debt rows), so the deflection is deleted. What
+  // remains is the honest case: real liabilities whose rates are genuinely
+  // missing. ("Say so or say nothing knowingly" — this is the say-so arm.)
   if (body === null && totalDebt > 0) {
-    const debtWithheld = assessment.ungraded.find(
-      (u) => u.section === "debt" && u.reason === "ACCOUNT_LIST_WITHHELD_BY_SCOPE",
+    const aprGap = assessment.ungraded.find(
+      (u) => u.section === "debt" && u.reason === "APR_MISSING",
     );
-    if (debtWithheld) {
-      body = `You're carrying ${fmtCurrency(totalDebt, cur)} of debt. The Brief's summary view doesn't ` +
-             "carry the per-account detail needed to grade it — open your Space's Debt view for the full picture.";
+    if (aprGap) {
+      body = `You're carrying ${fmtCurrency(totalDebt, cur)} of debt, but one or more accounts have ` +
+             "no interest rate on record, so it can't be graded yet. Adding APRs in your Space's " +
+             "Debt view completes the picture.";
     }
   }
 

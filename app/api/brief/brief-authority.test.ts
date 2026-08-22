@@ -90,3 +90,41 @@ test("BRIEF-1: the Brief does not re-derive what the assessment already computed
     "Read assessment.dataQuality.unidentifiedInflowShare instead of recomputing it.",
   );
 });
+
+// ── W3 — assessment-complete debt context: the route RENDERS, never re-grades ─
+
+test("W3: the DEBT insight arm exists and renders the engine's verdict", () => {
+  const src = code();
+  assert.match(src, /case "DEBT":/,
+    "the DEBT arm was reinstated with the W3 product decision — its absence " +
+    "would silently drop the engine's top priority on the Brief");
+  assert.match(src, /debt\.classification === "CRITICAL"/,
+    "the arm must branch on the ENGINE's classification, not a route-local rule");
+});
+
+test("W3: the route computes no debt figure of its own", () => {
+  const src = code();
+  assert.ok(!/computeDebtAggregate|resolveEffectiveDebtTerms|weightedApr/.test(src),
+    "the Brief quotes the assessment's debt facts; it never re-derives them");
+  assert.ok(!/monthlyInterestBurden\s*[=*+/-]/.test(src),
+    "the interest burden is quoted from the engine, never recomputed");
+});
+
+test("W3: the payload-choice deflection is gone; the genuine-gap clause names APR_MISSING", () => {
+  const src = code();
+  assert.ok(!src.includes("ACCOUNT_LIST_WITHHELD_BY_SCOPE"),
+    "the Brief no longer apologises for its own payload choice — that refusal is unreachable");
+  assert.ok(!src.includes("doesn't carry the per-account detail"),
+    "the old deflection copy must not survive in code");
+  assert.match(src, /"APR_MISSING"/,
+    "the say-so arm must name the one genuine debt data gap a user can fix");
+});
+
+test("W3: the honesty clause consumes the assembler's disclosure facts", () => {
+  const src = code();
+  for (const field of ["totalsUnconverted", "totalsEstimated", "redactedCount"]) {
+    assert.ok(src.includes(field),
+      `${field} is computed by the assembler on every payload; the Brief must consume it ` +
+      "rather than present a complete-looking figure over partial totals");
+  }
+});

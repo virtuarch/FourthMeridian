@@ -432,7 +432,31 @@ export interface AccountsSectionData {
   };
   health:         AccountHealthSummary;
   knowledgeGaps:  KnowledgeGap[];          // always present, possibly empty
-  accounts?:      AccountSummaryItem[];    // omitted when scopeHint === 'brief'
+  /**
+   * W3 — the per-account list is now ALWAYS emitted by the assembler; under
+   * scopeHint='brief' it is the DEBT subset (see `accountListScope`). Optional
+   * only for payloads not built by the assembler (fixtures, older stored
+   * contexts) — an undefined list is a PAYLOAD GAP the engine refuses to grade
+   * from, never a scope choice.
+   */
+  accounts?:      AccountSummaryItem[];
+  /**
+   * W3 — WHICH population `accounts` carries, so the payload states its own
+   * boundary instead of leaving the model (or the engine) to infer it.
+   *
+   *   'FULL'      — every disclosing link's rows (full scope).
+   *   'DEBT_ONLY' — the debt rows only (brief scope).
+   *
+   * ⚠️ 'DEBT_ONLY' is a TRANSPORT BOUNDARY for W3, not product doctrine. The
+   * Brief's doctrine is ASSESSMENT-COMPLETE canonical context: no canonical
+   * fact a grade requires may be withheld for payload economy. Debt is the
+   * domain whose grade requires per-account rows today; if another section's
+   * grade ever requires rows, this scope WIDENS — it is never an argument for
+   * withholding them. Rows in this subset are byte-identical to the same rows
+   * under 'FULL' (same builder, same order, filtered) — cross-scope grade
+   * parity is by construction, pinned in brief-scope-adequacy.test.ts.
+   */
+  accountListScope?: 'FULL' | 'DEBT_ONLY';
   /**
    * Distinct FinancialAccount ids visible in this Space (one per SpaceAccountLink).
    * Populated regardless of scopeHint — used by the Daily Brief to deduplicate
@@ -1154,6 +1178,24 @@ export interface SnapshotSectionData {
    * number over an ACCIDENTAL window.
    */
   canonicalChange: {
+    fromDate:  string;
+    toDate:    string;
+    fromValue: number;
+    toValue:   number;
+    pct:       number | null;
+    abs:       number;
+    preset:    string;
+  } | null;
+  /**
+   * W3 — the LIABILITIES change over the same product-defined window, from the
+   * same authority (`canonicalWindowChange`), so the debt trend never again
+   * derives from "oldest row we happen to hold vs newest" (the accidental
+   * fetched-row window this replaces — see engine.ts's IMPROVING rung). Null is
+   * a refusal (history does not reach the window's start), never a fallback.
+   * Present at BOTH scope hints: it derives from the same series
+   * `canonicalChange` uses, before any brief-scope history truncation.
+   */
+  liabilitiesChange: {
     fromDate:  string;
     toDate:    string;
     fromValue: number;

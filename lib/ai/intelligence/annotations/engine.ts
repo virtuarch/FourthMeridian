@@ -201,21 +201,26 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
       aprGapAccountNames:    [],
     };
   } else if (accts.accounts === undefined) {
-    // v2.6-BRIEF-1 — the per-account list was WITHHELD, not empty.
+    // v2.6-BRIEF-1 — the per-account list is ABSENT, not empty.
     //
-    // `AccountsSectionData.accounts` is optional and its own doc says
-    // "omitted when scopeHint === 'brief'". This branch used to read
-    // `accts.accounts ?? []`, which collapsed WITHHELD and NONE into the same
-    // empty set — so a real liability with its account list truncated away was
-    // graded from zero debt accounts: no APR found, weighted average 0, verdict
-    // HEALTHY at HIGH confidence. Measured on a $20,000 liability
-    // (lib/ai/intelligence/brief-scope-adequacy.test.ts).
+    // This branch used to read `accts.accounts ?? []`, which collapsed ABSENT
+    // and NONE into the same empty set — so a real liability with its account
+    // list missing was graded from zero debt accounts: no APR found, weighted
+    // average 0, verdict HEALTHY at HIGH confidence. Measured on a $20,000
+    // liability (lib/ai/intelligence/brief-scope-adequacy.test.ts).
     //
     // That is a conclusion drawn from ABSENCE — the mirror image of the rule
     // v2.6-DEBT-1 established for admission ("absence of contradiction is not
     // evidence"). The engine may only grade debt it was actually shown.
     // `totalLiabilities` is still reported: the AMOUNT is a fact the payload
     // does carry; only the GRADE is unknowable.
+    //
+    // W3 — this can no longer be a SCOPE outcome: the assembler emits the list
+    // at every scope hint (the brief carries the DEBT_ONLY subset — the exact
+    // rows this grade requires). An undefined list now means a payload NOT
+    // built by the assembler (fixture, hand-rolled context) — a genuine
+    // payload gap, refused honestly below as ACCOUNT_LIST_ABSENT. The refusal
+    // stands; only its attribution stopped being a payload-size choice.
     debtSection = {
       classification:        'INSUFFICIENT_DATA',
       confidence:            'LOW',
@@ -295,10 +300,17 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
       // cannot fire and the classification falls to IMPROVING / HEALTHY on the
       // liabilities trend, which is the honest read when no interest is accruing.
       const weightedAvgAPR = computeDebtAggregate(aprRows).weightedApr ?? 0;
-      const history = snap?.history ?? [];
-      const isLiabilitiesDeclining =
-        history.length >= 7 &&
-        history[history.length - 1].liabilities < history[0].liabilities;
+      // W3 — IMPROVING now derives from the CANONICAL window authority
+      // (`liabilitiesChange`, computed by canonicalWindowChange over the same
+      // product-defined preset as `canonicalChange`), replacing the accidental
+      // fetched-row window this rung carried (history[0] vs history[last] over
+      // ≥7 rows — lib/ai/types.ts had already labelled those fields "an
+      // ACCIDENTAL window"). A null change is a REFUSAL (history does not reach
+      // the window's start) and cannot claim IMPROVING — same honesty rule as
+      // canonicalChange. Corpora where the row-count window and the calendar
+      // window disagree may flip this verdict: that movement is a CORRECTION,
+      // the same class as v2.6-WINDOW-1.
+      const isLiabilitiesDeclining = (snap?.liabilitiesChange?.abs ?? 0) < 0;
 
       if (weightedAvgAPR > APR_CRITICAL_THRESHOLD) {
         debtHealthClassification = 'CRITICAL';
@@ -510,8 +522,9 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
       });
     } else if (accts.accounts === undefined) {
       ungraded.push({
-        section: 'debt', verdict: 'INSUFFICIENT_DATA', reason: 'ACCOUNT_LIST_WITHHELD_BY_SCOPE',
-        detail:  'The per-account list was withheld by the brief scope, so liabilities exist but their rates cannot be graded.',
+        section: 'debt', verdict: 'INSUFFICIENT_DATA', reason: 'ACCOUNT_LIST_ABSENT',
+        detail:  'The payload carries no per-account list, so liabilities exist but their rates cannot be graded. ' +
+                 '(Not a scope choice: since W3 the assembler emits the assessment-required rows at every scope hint.)',
       });
     } else {
       ungraded.push({
