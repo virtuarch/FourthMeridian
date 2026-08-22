@@ -27,6 +27,12 @@ import type {
   AssessmentRisk,
   AssessmentOpportunity,
   RiskOpportunitySection,
+  SpendingTrendsSection,
+  SpendingTrendMetric,
+  TrendDirection,
+  TrajectoryClassification,
+  TrajectorySection,
+  TrajectorySignal,
 } from './types';
 import {
   MARKET_RETURN_THRESHOLD,
@@ -527,3 +533,91 @@ export function computeRiskOpportunities(
  * Pure function — no DB queries, no side effects, no LLM calls.
  * Call this after buildContext() and before prompt construction.
  */
+
+
+// ── 2.3C Trajectory Assessment (A2) ──────────────────────────────────────────
+
+/**
+ * Grade the already-computed trend directions into ONE deterministic verdict.
+ *
+ * Aggregation only, per this module's contract: it reads SpendingTrendsSection
+ * and recalculates nothing from raw context. No new threshold is introduced —
+ * "material" means the trend engine did not classify the move as FLAT, which is
+ * already the TREND_FLAT_PCT decision.
+ *
+ * The decision table, in full:
+ *
+ *   net RISING                          -> IMPROVING
+ *   net FALLING                         -> WORSENING
+ *   net FLAT + both components material -> MIXED     (offsetting moves)
+ *   net FLAT + otherwise                -> STABLE
+ *   net INSUFFICIENT_DATA               -> INSUFFICIENT_DATA
+ *
+ * Income and expense never outvote net: net IS their canonical resolution
+ * (metricValue -> REVIEW-3 C-3 economic net). They are recorded as
+ * `divergentSignals` when they run against the headline, so a consumer can say
+ * "your position improved, but on a smaller income" without a second verdict.
+ */
+export function computeTrajectory(trends: SpendingTrendsSection): TrajectorySection {
+  const dirOf = (m: SpendingTrendMetric): TrendDirection =>
+    trends.metricTrends.find((t) => t.metric === m)?.direction ?? 'INSUFFICIENT_DATA';
+
+  const netDirection     = dirOf('net');
+  const incomeDirection  = dirOf('income');
+  const expenseDirection = dirOf('expense');
+
+  const base = {
+    confidence:             trends.confidence,
+    completeMonthsAnalyzed: trends.completeMonthsAnalyzed,
+    netDirection, incomeDirection, expenseDirection,
+  };
+
+  // Refusal. One complete month is not a trajectory, and a partial month is
+  // never substituted to reach two (they are filtered out upstream).
+  if (netDirection === 'INSUFFICIENT_DATA') {
+    return {
+      ...base,
+      classification:   'INSUFFICIENT_DATA',
+      basis:            null,
+      divergentSignals: [],
+    };
+  }
+
+  /** Material = the trend engine did not call it FLAT (i.e. >= TREND_FLAT_PCT). */
+  const material = (d: TrendDirection): boolean => d === 'RISING' || d === 'FALLING';
+
+  const classification: TrajectoryClassification =
+    netDirection === 'RISING'  ? 'IMPROVING' :
+    netDirection === 'FALLING' ? 'WORSENING' :
+    material(incomeDirection) && material(expenseDirection) ? 'MIXED' :
+    'STABLE';
+
+  // Component moves that complicate the headline. For a directional verdict these
+  // are the moves whose OWN favourability opposes it (rising income is good,
+  // rising expense is not). For MIXED they are the two offsetting moves that made
+  // a flat net look steady.
+  const divergentSignals: TrajectorySignal[] = [];
+  const push = (metric: SpendingTrendMetric, direction: TrendDirection, note: string) =>
+    divergentSignals.push({ metric, direction, note });
+
+  if (classification === 'IMPROVING') {
+    if (incomeDirection === 'FALLING') {
+      push('income', 'FALLING', 'net improved while income fell — the gain came from lower spending, on a smaller income base');
+    }
+    if (expenseDirection === 'RISING') {
+      push('expense', 'RISING', 'net improved even though spending rose — income rose faster');
+    }
+  } else if (classification === 'WORSENING') {
+    if (incomeDirection === 'RISING') {
+      push('income', 'RISING', 'net worsened despite income rising — spending outpaced it');
+    }
+    if (expenseDirection === 'FALLING') {
+      push('expense', 'FALLING', 'net worsened even though spending fell — income fell further');
+    }
+  } else if (classification === 'MIXED') {
+    push('income', incomeDirection, 'income moved materially');
+    push('expense', expenseDirection, 'spending moved materially in the offsetting direction');
+  }
+
+  return { ...base, classification, basis: 'MONTH_OVER_MONTH', divergentSignals };
+}

@@ -102,6 +102,8 @@ interface Conclusions {
   estimatedMonthlyExpenses: number | null;
   impliedMonthlyIncome:     number | null;
   incompleteIncomeWarning:  boolean;
+  /** A2 — the deterministic trajectory verdict; must not move on the hint alone. */
+  trajectory:               string;
 }
 
 /** W3 — the DEBT conclusions, measured over the ACCOUNTS domain arms. After W3
@@ -137,6 +139,10 @@ function conclusionsOf(ctx: SpaceContext_AI): Conclusions {
     estimatedMonthlyExpenses: a.cashFlow.estimatedMonthlyExpenses,
     impliedMonthlyIncome:     a.cashFlow.impliedMonthlyIncome,
     incompleteIncomeWarning:  a.cashFlow.incompleteIncomeWarning,
+    // A2 — the trajectory verdict joins the conclusion set this probe diffs
+    // across scope hints, so a scope-sensitive trajectory becomes a MEASURED
+    // failure on the real corpus, not merely a fixture assertion.
+    trajectory:               a.trajectory.classification,
   };
 }
 

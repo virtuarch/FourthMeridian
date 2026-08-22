@@ -40,7 +40,7 @@ import {
 } from './constants';
 import { computeAverageMonthlySpending, computeDebtStrategy, computeSpendingOpportunities, computeSpendingTrends, getAcctsData, getSnapData, getTxnData } from './metrics';
 import { deriveHeuristics, derivePriorities } from './rules';
-import { computeCapitalAllocation, computeInvestmentReadiness, computeRiskOpportunities } from './engines';
+import { computeCapitalAllocation, computeInvestmentReadiness, computeRiskOpportunities, computeTrajectory } from './engines';
 import type { SpaceContext_AI } from '@/lib/ai/types';
 import { MATERIAL_UNIDENTIFIED_INFLOW_SHARE, deriveUnidentifiedInflowShare } from '@/lib/ai/types';
 import { amountOwed, hasOutstandingDebt } from '@/lib/debt/balance-semantics';
@@ -477,6 +477,8 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   // Deterministic MoM / rolling trends from monthlyBreakdown complete months.
 
   const spendingTrends = computeSpendingTrends(txn);
+  // A2 — the significance of those directions. Consumes the trends section only.
+  const trajectory     = computeTrajectory(spendingTrends);
 
   // ── Step 9: Goal Alignment (2.4) — DELETED (W2, Goals retired) ──────────
   // Step numbering is preserved for doc continuity with the engine list.
@@ -555,6 +557,16 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
       detail:  'Income confidence is LOW — cash-flow verdicts over this window would be data artifacts.',
     });
   }
+  // A2 — a withheld trajectory is DECLARED like every other refusal, so a
+  // consumer never reads silence as "nothing changed".
+  if (trajectory.classification === 'INSUFFICIENT_DATA') {
+    ungraded.push({
+      section: 'trajectory', verdict: 'INSUFFICIENT_DATA', reason: 'INSUFFICIENT_COMPLETE_MONTHS',
+      detail:  `Fewer than two complete calendar months (${trajectory.completeMonthsAnalyzed}) — ` +
+               'no month-over-month comparison exists. Direction is not inferred from one month, ' +
+               'and partial months are never substituted to reach two.',
+    });
+  }
 
   return {
     dataQuality,
@@ -565,6 +577,7 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     debtStrategy,
     spendingOpportunities,
     spendingTrends,
+    trajectory,
     investmentReadiness,
     riskOpportunities,
     currentStatePriority,

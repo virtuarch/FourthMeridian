@@ -79,7 +79,7 @@ export function serializeAssessmentBlock(
   const {
     dataQuality, cashFlow, debt, liquidity,
     capitalAllocation, debtStrategy,
-    spendingOpportunities, spendingTrends, investmentReadiness,
+    spendingOpportunities, spendingTrends, trajectory, investmentReadiness,
     riskOpportunities,
   } = assessment;
   const lines: string[] = [];
@@ -389,6 +389,40 @@ export function serializeAssessmentBlock(
     );
     lines.push('');
   }
+
+  // ── 8C. Trajectory (2.3C — A2) ────────────────────────────────────────────
+  // The CONCLUSION drawn from 8B. 8B is evidence; this is what it means. Emitted
+  // even when refused: a withheld trajectory must be stated, never left as a
+  // silence the model fills with a direction of its own.
+  lines.push(`TRAJECTORY  [confidence: ${trajectory.confidence}]`);
+
+  if (trajectory.classification === 'INSUFFICIENT_DATA') {
+    lines.push(
+      `  Classification: INSUFFICIENT_DATA — ${trajectory.completeMonthsAnalyzed} complete ` +
+      'calendar month(s). There is no month-over-month comparison, so there is no trajectory. ' +
+      'Do NOT describe the user as improving, worsening, or stable, and do not infer direction ' +
+      'from a single month or from any partial month.',
+    );
+  } else {
+    lines.push(
+      `  Classification: ${trajectory.classification} ` +
+      `(basis: single month-over-month comparison of the canonical economic net; ` +
+      `${trajectory.completeMonthsAnalyzed} complete month(s) analysed)`,
+    );
+    lines.push(
+      `  Net ${trajectory.netDirection} · Income ${trajectory.incomeDirection} · Spending ${trajectory.expenseDirection}`,
+    );
+    for (const d of trajectory.divergentSignals) {
+      lines.push(`  ⚠ ${d.note}.`);
+    }
+    lines.push(
+      '  This classification is the deterministic verdict on the SPENDING TRENDS figures above. ' +
+      'The trend directions are evidence; this line is the conclusion. Do not assert a different ' +
+      'trajectory from the same numbers, and do not upgrade a single-period comparison into a ' +
+      'long-run trend.',
+    );
+  }
+  lines.push('');
 
   // ── 9. Goal Alignment (2.4) — DELETED (W2, Goals retired) ─────────────────
   // Section numbering is preserved for doc continuity with the engine list.

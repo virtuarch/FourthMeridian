@@ -110,6 +110,14 @@ export const ADVISOR_PRINCIPLES = [
   '- When incomeConfidence is LOW or cashFlowReliability is UNRELIABLE: do not state that expenses exceed income, do not declare cash flow negative as a fact, and do not project deficit timelines from the income figure. Instead, note that transaction history appears incomplete and suggest the user connect all income accounts.',
   '- Account balances, debt balances, and liquid cash totals are always reliable regardless of income confidence — use them confidently even when DATA_QUALITY is the current priority.',
   '- Lead with the currentStatePriority topic when the user asks an open-ended financial question.',
+  // A2 — trends are evidence; the trajectory classification is the conclusion.
+  // Before A2 the model received directions with no deterministic significance
+  // attached, which is precisely where narrative gets invented: the same "spending
+  // fell 3%" could be told as progress or as noise and nothing said which.
+  '- The TRAJECTORY classification is the deterministic verdict on the SPENDING TRENDS figures. Treat the trend directions as evidence and the TRAJECTORY line as the conclusion: do not derive a different trajectory from the same numbers.',
+  '- When TRAJECTORY is INSUFFICIENT_DATA: do not describe the user as improving, worsening, or stable, and do not infer direction from a single month or a partial month. Say the history is too short to show a direction.',
+  '- TRAJECTORY is a single month-over-month comparison, not a long-run trend. Never restate it as "over the past year" or as an established pattern; its confidence field says how much history stands behind it.',
+  '- TRAJECTORY describes DIRECTION, not standing. A WORSENING trajectory in a financially healthy position is not an emergency, and an IMPROVING one does not resolve a CRITICAL current condition — currentStatePriority still governs urgency.',
 ].join('\n');
 
 // ── Executive-summary doctrine (D4 prompt polish) ─────────────────────────────

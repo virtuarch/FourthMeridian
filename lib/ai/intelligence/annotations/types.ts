@@ -104,7 +104,7 @@ export interface AssessmentPriority {
 // ── REVIEW-3 C-7 — declared input insufficiency ──────────────────────────────
 
 /** Sections whose GRADE can be withheld for want of input. */
-export type UngradedSectionName = 'debt' | 'liquidity' | 'cashFlow';
+export type UngradedSectionName = 'debt' | 'liquidity' | 'cashFlow' | 'trajectory';
 
 /**
  * WHY a section could not be graded. Machine-readable so a consumer (the Brief)
@@ -134,7 +134,13 @@ export type UngradedReasonCode =
    *  scope artifact.) */
   | 'NO_EXPENSE_BASELINE_IN_WINDOW'
   /** Income confidence LOW — cash-flow verdicts would be data artifacts. */
-  | 'LOW_INCOME_CONFIDENCE';
+  | 'LOW_INCOME_CONFIDENCE'
+  /**
+   * A2 — fewer than two COMPLETE calendar months, so no month-over-month
+   * comparison exists. A direction cannot be inferred from one month, and a
+   * partial month is never substituted to reach two.
+   */
+  | 'INSUFFICIENT_COMPLETE_MONTHS';
 
 /**
  * One section the assessment explicitly declined to grade, and why.
@@ -488,6 +494,85 @@ export interface SpendingTrendsSection {
   metricTrends:           MetricTrend[];
 }
 
+// ── 2.3C Trajectory Assessment (A2) ──────────────────────────────────────────
+
+/**
+ * Whether the user's measured financial trajectory is getting better or worse.
+ *
+ * WHY THIS EXISTS. computeSpendingTrends already produced per-metric DIRECTIONS
+ * (income/expense/net RISING|FALLING|FLAT) and the serializer already showed them
+ * to the model — but no deterministic conclusion was drawn from them. Direction
+ * without significance is exactly the gap where a language model supplies its own
+ * narrative: the same "expenses fell 3%" can be told as progress or as noise, and
+ * nothing in the assessment said which. A2 makes the significance deterministic.
+ *
+ * THE ARBITER IS `net`, NOT A VOTE. Income and expense do not get equal ballots:
+ * `net` (metricValue) is ALREADY their canonical resolution — income minus
+ * clampEconomicSpend(expense, refunds), the REVIEW-3 C-3 economic net. So
+ * "income rose but expenses rose faster" is not a tie to be broken here; it is a
+ * question the canonical basis has already answered. Re-deciding it in this layer
+ * would be a second, competing definition of the same fact.
+ *
+ * MATERIALITY IS INHERITED, NOT REDEFINED. A direction of FLAT already means the
+ * move was below TREND_FLAT_PCT. This layer adds no second threshold: "material"
+ * means "the existing engine did not call it FLAT".
+ */
+export type TrajectoryClassification =
+  /** Canonical economic net rose materially month over month. */
+  | 'IMPROVING'
+  /** Canonical economic net fell materially month over month. */
+  | 'WORSENING'
+  /** Net flat, and no offsetting material component moves behind it. */
+  | 'STABLE'
+  /**
+   * Net is flat, but income AND expense both moved materially — the steadiness is
+   * the product of two offsetting moves, not of a steady state. Reporting that as
+   * STABLE would be a false comfort: a household whose income fell 20% while
+   * spending fell 20% has a flat net and a materially changed position.
+   */
+  | 'MIXED'
+  /** Fewer than two complete months — no comparison exists. */
+  | 'INSUFFICIENT_DATA';
+
+/** A component move that complicates the headline verdict. */
+export interface TrajectorySignal {
+  metric:    SpendingTrendMetric;
+  direction: TrendDirection;
+  /** Plain statement of why this move runs against (or complicates) the verdict. */
+  note:      string;
+}
+
+/**
+ * Deterministic trajectory conclusion (A2).
+ *
+ * Consumes SpendingTrendsSection ONLY — no raw transactions, no new query, no
+ * second measurement basis. The authority chain stays:
+ *   canonical transaction basis → complete-month trend metrics → this verdict.
+ */
+export interface TrajectorySection {
+  classification: TrajectoryClassification;
+  /**
+   * Mirrors SpendingTrendsSection.confidence, which ALREADY encodes how much
+   * history stands behind the verdict (< 2 complete months LOW, 2 MEDIUM, >= 3
+   * HIGH). A one-period comparison is therefore never presented as more than it
+   * is, and no second confidence vocabulary is introduced.
+   */
+  confidence:     ConfidenceLevel;
+  /**
+   * What the verdict was computed from. 'MONTH_OVER_MONTH' is a SINGLE-period
+   * comparison — the honest name for one delta between two complete months.
+   * Null when the verdict was withheld.
+   */
+  basis:          'MONTH_OVER_MONTH' | null;
+  completeMonthsAnalyzed: number;
+  /** The composite that decided the verdict. */
+  netDirection:      TrendDirection;
+  incomeDirection:   TrendDirection;
+  expenseDirection:  TrendDirection;
+  /** Material component moves running against, or complicating, the verdict. */
+  divergentSignals:  TrajectorySignal[];
+}
+
 // ── 2.4 Goal Alignment Engine types — DELETED (W2) ───────────────────────────
 // GoalAlignmentStatus / GoalAlignmentItem / GoalAlignmentSection (and the
 // 'MIXED' overall status that lived only on that section) were removed with
@@ -627,6 +712,7 @@ export interface RiskOpportunitySection {
  *   debtStrategy         — 2.2 Debt Strategy Engine
  *   spendingOpportunities — 2.3 Spending Opportunity Engine
  *   spendingTrends       — 2.3B Spending Trends Engine (deterministic MoM/rolling)
+ *   trajectory           — 2.3C Trajectory Assessment (A2: significance of those trends)
  *   investmentReadiness  — 2.5 Investment Readiness Engine
  *   riskOpportunities    — 2.6 Risk & Opportunity Engine (aggregates 2.1–2.5 + base)
  *
@@ -643,6 +729,7 @@ export interface FinancialAssessment {
   debtStrategy:          DebtStrategySection;           // 2.2
   spendingOpportunities: SpendingOpportunitySection;    // 2.3
   spendingTrends:        SpendingTrendsSection;         // 2.3B
+  trajectory:            TrajectorySection;             // 2.3C (A2)
   investmentReadiness:   InvestmentReadinessSection;    // 2.5
   riskOpportunities:     RiskOpportunitySection;        // 2.6
   /** Top-ranked priority — used by the prompt for the leading instruction. */

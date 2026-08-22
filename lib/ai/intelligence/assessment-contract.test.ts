@@ -140,11 +140,18 @@ const DECLARED_COVERAGE: Record<string, string[]> = {
     "READY", "CONDITIONALLY_READY", "DEBT_FIRST", "BUILD_LIQUIDITY_FIRST", "BLOCKED_BY_DATA",
   ],
   TrendDirection: ["RISING", "FALLING", "FLAT", "INSUFFICIENT_DATA"],
+  // A2 — the significance of those directions. Declared deliberately: this guard
+  // FAILED when the union was added, which is the mechanism working.
+  TrajectoryClassification: [
+    "IMPROVING", "WORSENING", "STABLE", "MIXED", "INSUFFICIENT_DATA",
+  ],
   // Ranking + refusal vocabulary.
   CurrentStatePriority: ["DATA_QUALITY", "LIQUIDITY", "DEBT", "CASH_FLOW"],
   UngradedReasonCode: [
     "ACCOUNTS_DOMAIN_ABSENT", "ACCOUNT_LIST_ABSENT", "APR_MISSING",
     "NO_LIQUID_ACCOUNTS_IN_SPACE", "NO_EXPENSE_BASELINE_IN_WINDOW", "LOW_INCOME_CONFIDENCE",
+    // A2 — fewer than two complete calendar months, so no comparison exists.
+    "INSUFFICIENT_COMPLETE_MONTHS",
   ],
 };
 
@@ -246,6 +253,11 @@ test("A1 §3 — an empty context refuses every gradeable dimension", () => {
     "be a stated refusal, never silence a consumer can misread as a pass.");
   assert.equal(a.capitalAllocation.recommendation, "BLOCKED_BY_DATA",
     "Capital allocation must be BLOCKED_BY_DATA when there is nothing to allocate from.");
+  assert.equal(a.trajectory.classification, "INSUFFICIENT_DATA",
+    "With no months of history the trajectory must refuse — a direction inferred from " +
+    "nothing is the narrative gap A2 exists to close.");
+  assert.equal(a.trajectory.basis, null,
+    "A refused trajectory must not claim a comparison basis.");
   assert.equal(a.investmentReadiness.classification, "BLOCKED_BY_DATA",
     "Investment readiness must not read READY off an empty context (the ASSESS-1 " +
     "fabricated-recommendation shape).");
