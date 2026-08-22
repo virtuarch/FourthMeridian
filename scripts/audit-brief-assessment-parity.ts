@@ -30,15 +30,30 @@
  * caused by the hint alone — it cannot be a corpus artefact, because both arms
  * read the same corpus.
  *
- * ⚠️ It measures the TRANSACTIONS domain only. The ACCOUNTS and SNAPSHOT
- * assemblers reach `lib/account-privacy.ts` → `server-only`, which only Next
- * resolves, so no tsx probe can invoke them (the same constraint documented in
- * scripts/capture-assembler-snapshot.ts and lib/data/banking-population.ts).
- * Claiming to measure them here would be exactly the "probe that is not the live
- * path" failure v2.6-TRUTH-8 was caused by. Their scope degradations are pinned
- * STRUCTURALLY instead, over fixtures, in
- * lib/ai/intelligence/brief-scope-adequacy.test.ts — asserted where they can be
- * asserted honestly, rather than measured where they cannot.
+ * ── Registration wiring (W3 acceptance repair) ──────────────────────────────
+ *
+ * Assemblers register as a SIDE-EFFECT of module load (each module calls
+ * registerAssembler() at its top level — lib/ai/assembler-registry.ts), so
+ * getAssembler() finds nothing unless THIS process's import graph actually
+ * loaded the assembler module. Production registers everything through one
+ * barrel import (lib/ai/context-builder.ts → `import '@/lib/ai/assemblers'`),
+ * and this script imports THE SAME BARREL — the canonical registration path —
+ * so the TRANSACTIONS and ACCOUNTS arms both run the real production
+ * assemblers, not probe re-implementations.
+ *
+ * History: this file once imported only ./transactions, citing the accounts →
+ * lib/account-privacy.ts → 'server-only' chain as un-loadable under tsx. That
+ * constraint is RETIRED here: the npm script wires
+ * scripts/lib/server-only-preload.cjs (see the Run note below), under which the
+ * full barrel loads. W3's first cut added the ACCOUNTS parity arms without
+ * adding any import that executed the ACCOUNTS registration, so the audit
+ * refused at startup ("ACCOUNTS assembler is not registered") on its first real
+ * run. tsc cannot catch that class — a side-effect import is wiring, not a
+ * type — so the wiring is pinned BEHAVIORALLY in
+ * scripts/audit-brief-assessment-parity.test.ts (spawns this script, asserts
+ * the registration gate passes). The SNAPSHOT arm remains deliberately
+ * synthetic and constant (see CONSTANT_SNAPSHOT below); the fixture pins in
+ * lib/ai/intelligence/brief-scope-adequacy.test.ts stay the structural guards.
  *
  * ── Tier ────────────────────────────────────────────────────────────────────
  *
@@ -57,10 +72,13 @@
  *  test runner uses — scripts/lib/server-only-preload.cjs. Nothing else changes.)
  */
 
-// Side-effect import of the ONE assembler under test — deliberately NOT the
-// lib/ai/assemblers barrel, whose accounts.ts → lib/account-privacy.ts chain
-// pulls in 'server-only' and cannot load under tsx outside Next.js.
-import "@/lib/ai/assemblers/transactions";
+// Registration side-effects: the SAME barrel production imports
+// (lib/ai/context-builder.ts:38). It loads under tsx because the npm script
+// wires the server-only preload. Do NOT narrow this back to individual
+// assembler modules — the wiring pin (audit-brief-assessment-parity.test.ts)
+// fails if ACCOUNTS or TRANSACTIONS registration becomes unreachable from this
+// file's import graph.
+import "@/lib/ai/assemblers";
 import { getAssembler } from "@/lib/ai/assembler-registry";
 import { FinanceDomains, type SpaceContext_AI, type ContextDomainSection } from "@/lib/ai/types";
 import { computeAssessment } from "@/lib/ai/intelligence";
