@@ -162,6 +162,13 @@ export const AUDITS: readonly AuditEntry[] = [
     what: "a stored balance component is a magnitude — never negative, never non-finite",
   },
   {
+    // W2 — goals tombstone. Source-only: the corpus it audits is the repository.
+    name: "audit-goals-tombstone", tier: "REQUIRED", needsDb: false,
+    what: "no runtime path reads, writes, or speaks retired goal state — Goals/Retirement are " +
+          "schema-only residue awaiting the migration train; intent-shaped deficit causes stay " +
+          "structurally unreachable; the W2 deletion set stays deleted",
+  },
+  {
     // W1 (D6) — INV-19. Source-only: the corpus it audits is the repository.
     name: "audit-read-identity-consumers", tier: "REQUIRED", needsDb: false,
     what: "no product READ derives transaction identity from a non-event key — the fingerprint " +
@@ -189,7 +196,8 @@ export const AUDITS: readonly AuditEntry[] = [
     what: "v2.6-LEGACY-1 census: what a user can actually create (only `family` and `custom` are " +
           "live), how many Spaces carry each category, and every remaining Emergency Fund " +
           "reference classified CODE / SCHEMA / SEED-ONLY / TEST — the measurement that showed " +
-          "the EF surfaces are unreachable and the goal primitive already lives in SpaceGoal",
+          "the EF surfaces are unreachable and the goal primitive lived in the goal tables " +
+          "(retired W2; schema residue awaits the migration train)",
   },
   {
     name: "audit-ef-hero-coverage-divergence", tier: "INFORMATIONAL", needsDb: true,
