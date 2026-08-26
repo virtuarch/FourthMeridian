@@ -33,6 +33,8 @@
  * empty without a vendor key. A dark provider is an honest absence, never a zero.
  */
 
+import { alchemyRpcUrl, ALCHEMY_NETWORKS } from "./alchemy";
+
 /** 1 ETH = 10^18 wei. */
 export const WEI_PER_ETH = BigInt(10) ** BigInt(18);
 
@@ -57,18 +59,26 @@ function timeoutMs(): number {
 /**
  * The configured JSON-RPC endpoint, or null when this deployment has none.
  *
- * `ETH_RPC_URL` is the direct form (any provider, any plan). `ETHERSCAN_API_KEY`
- * is accepted as a convenience because the key is already declared in lib/env.ts;
- * it is turned into Etherscan's JSON-RPC proxy URL here, at the edge, so nothing
- * above this line knows which vendor answered.
+ * Same precedence as Solana's, for the same reasons: an explicit `ETH_RPC_URL`
+ * override wins, then Alchemy as the preferred multi-chain provider, then
+ * Etherscan as a retained alternative.
+ *
+ * SCOPE NOTE: this serves the CURRENT-BALANCE adapter only. Ethereum history is
+ * a different evidence class and is NOT unlocked by this endpoint existing —
+ * see the ETH completeness finding in docs/systems/crypto-networks.md. ETH
+ * remains CURRENT_POSITION_SUPPORTED.
  *
  * NULL IS A FIRST-CLASS ANSWER. It means "this deployment cannot read Ethereum",
  * which is different from "the wallet holds nothing" and must never collapse
  * into it.
+ *
+ * THE RETURNED URL MAY EMBED A CREDENTIAL. Never log it; log the stage.
  */
 export function ethRpcUrl(): string | null {
   const direct = process.env.ETH_RPC_URL?.trim();
   if (direct) return direct.replace(/\/+$/, "");
+  const alchemy = alchemyRpcUrl(ALCHEMY_NETWORKS.ETHEREUM);
+  if (alchemy) return alchemy;
   const etherscan = process.env.ETHERSCAN_API_KEY?.trim();
   if (etherscan) return `https://api.etherscan.io/v2/api?chainid=1&apikey=${encodeURIComponent(etherscan)}`;
   return null;

@@ -37,7 +37,7 @@ import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import { limitByUser } from "@/lib/rate-limit";
 import {
-  syncWalletByChain, isSyncableChain, chainSupportsHistory, SYNCABLE_CHAINS,
+  syncWalletByChain, isSyncableChain, feedsLegacyWealthHistory, SYNCABLE_CHAINS,
 } from "@/lib/crypto/wallet-sync-dispatch";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { regenerateWealthHistoryForAccounts } from "@/lib/snapshots/regenerate-history";
@@ -111,7 +111,7 @@ export async function POST(
     // movement ledger, so there is no historical quantity to derive and every
     // day would refuse. Skipping is the honest outcome; the current position is
     // already on the canonical spine either way.
-    if (chainSupportsHistory(account.walletChain)) try {
+    if (feedsLegacyWealthHistory(account.walletChain)) try {
       const plan = await resolveHistoricalWorkWindow({
         financialAccountIds: [id],
         changedSince:        syncStartedAt,

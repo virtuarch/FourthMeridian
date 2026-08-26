@@ -316,6 +316,73 @@ async function main(): Promise<void> {
       licenseCoverageByReconciliation(COMPLETE_COVERAGE, reconcileMovementsAgainstBalance([], B3)).kind === "PARTIAL");
   }
 
+  // ══ 11g. THE LICENCE RUNS TO THE BALANCE, NOT TO THE LAST MOVEMENT ════════
+  //
+  // A quiet wallet's newest movement can be months before the balance that
+  // reconciles against it. Bounding coverage at the last movement leaves that
+  // gap "unknown", the replay cannot connect its anchor backward across it, and
+  // a wallet with a ZERO-lamport reconciliation reconstructs nothing. That is
+  // the real behaviour observed on the first production corpus.
+  //
+  // A movement inside the gap would have changed the balance, so the arithmetic
+  // closing IS the proof the gap is empty — the same argument the upgrade
+  // already rests on, applied to the other end of the interval.
+  {
+    const recon = reconcileMovementsAgainstBalance(ALL, B3);
+    const OBSERVED_LATER = "2026-08-26"; // months after the last movement (2026-05-02)
+
+    const bounded = licenseCoverageByReconciliation(COMPLETE_COVERAGE, recon);
+    check("11g. without an observation date the licence stops at the last movement",
+      bounded.kind === "COMPLETE" && bounded.toISO === "2026-05-02", j(bounded));
+
+    const extended = licenseCoverageByReconciliation(COMPLETE_COVERAGE, recon, OBSERVED_LATER);
+    check("11g-i. WITH one, the licence runs to the balance that closed the arithmetic",
+      extended.kind === "COMPLETE" && extended.toISO === OBSERVED_LATER, j(extended));
+    check("11g-ii. …and the lower bound is untouched",
+      extended.kind === "COMPLETE" && extended.fromISO === "2026-01-15");
+
+    // It is an EXTENSION, never a contraction: an observation older than the
+    // newest movement cannot shrink what the scan already covered.
+    const earlier = licenseCoverageByReconciliation(COMPLETE_COVERAGE, recon, "2026-03-01");
+    check("11g-iii. an EARLIER observation never shrinks the licensed interval",
+      earlier.kind === "COMPLETE" && earlier.toISO === "2026-05-02", j(earlier));
+
+    // And it is still an upgrade only — a failed reconciliation extends nothing.
+    check("11g-iv. a FAILED reconciliation extends nothing",
+      licenseCoverageByReconciliation(COMPLETE_COVERAGE, reconcileMovementsAgainstBalance([], B3), OBSERVED_LATER).kind === "PARTIAL");
+    check("11g-v. a blocking caveat still refuses the upgrade even with an observation date",
+      licenseCoverageByReconciliation(
+        { kind: "PARTIAL", coveredFromISO: "2026-01-15", coveredToISO: "2026-05-02", caveats: ["ADDRESS_INDEX_INCOMPLETE", "ARCHIVE_DEPTH_LIMIT"], source: "f" },
+        recon, OBSERVED_LATER).kind === "PARTIAL");
+
+    // THE POINT, modelled as the production corpus actually is: the wallet went
+    // quiet after its last movement and the balance was observed MONTHS later.
+    // `runReplay`'s fixed anchor sits on the last movement date, so it cannot
+    // show this — the gap is the whole phenomenon.
+    const quietReplay = (coverage: ChainCoverage) => replayQuantityTimeline({
+      instrumentId: "inst_sol", accountId: "acc_sol",
+      anchors: [{ ...ANCHOR_TODAY, dateISO: OBSERVED_LATER }],
+      events: movementsToQuantityEvents(ALL, { accountId: "acc_sol", instrumentId: "inst_sol", decimals: 9 }),
+      windowFromISO: "2026-01-01", windowToISO: OBSERVED_LATER,
+      eventStream: toEventStreamCompleteness(coverage),
+      tolerance: ledgerEpsilonFor(SOL_NATIVE),
+    });
+
+    const withExtension = quietReplay(extended);
+    check("11g-vi. the extended licence lets a LATER anchor establish an ABSOLUTE history",
+      withExtension.segments.some((x) => x.kind === "ABSOLUTE" && x.basis !== "OBSERVED_ANCHOR")
+        && !withExtension.segments.some((x) => x.kind === "RELATIVE"),
+      j(withExtension.segments.map((x) => `${x.kind}:${x.kind === "ABSOLUTE" ? x.basis : ""}`)));
+
+    const withoutExtension = quietReplay(bounded);
+    check("11g-vii. …whereas bounding at the last movement leaves the anchor unreachable",
+      withoutExtension.segments.some((x) => x.kind === "RELATIVE"),
+      j(withoutExtension.segments.map((x) => x.kind)));
+    check("11g-viii. …and reports the gap as uncovered rather than guessing across it",
+      withoutExtension.uncovered.some((u) => u.reason === "EVENT_STREAM_COMPLETENESS_UNKNOWN"),
+      j(withoutExtension.uncovered));
+  }
+
   // ══ 12. PROVIDER / CONFIG REFUSAL ═════════════════════════════════════════
   {
     const dark = await acquireSolHistory({ ownerAddress: OWNER }, { rpcUrl: null });

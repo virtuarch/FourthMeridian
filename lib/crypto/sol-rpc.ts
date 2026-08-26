@@ -44,6 +44,8 @@
  * is an honest absence, never a zero.
  */
 
+import { alchemyRpcUrl, ALCHEMY_NETWORKS } from "./alchemy";
+
 /** 1 SOL = 10^9 lamports. */
 export const LAMPORTS_PER_SOL = BigInt(1000000000);
 
@@ -68,22 +70,34 @@ function timeoutMs(): number {
 /**
  * The configured JSON-RPC endpoint, or null when this deployment has none.
  *
- * `SOL_RPC_URL` is the direct form (any provider). `HELIUS_API_KEY` is accepted
- * as a convenience because the key is already declared in lib/env.ts; it is
- * turned into a Helius mainnet URL here, at the edge, so nothing above this line
- * knows which vendor answered.
+ * PRECEDENCE, and the reason for each rung:
+ *   1. `SOL_RPC_URL`     an explicit operator override — a self-hosted archive,
+ *                        a second vendor, a fixture proxy. Always wins.
+ *   2. Alchemy           THE PREFERRED PROVIDER. One credential across chains,
+ *                        and verified archival on standard methods: a live probe
+ *                        of the acceptance wallet resolved signatures back to
+ *                        2022 and fetched the oldest transaction in full.
+ *   3. `HELIUS_API_KEY`  retained as a specialist/fallback. Helius is a capable
+ *                        Solana archive and keeping the rung costs nothing;
+ *                        removing it would throw away a working alternative for
+ *                        a preference that is operational, not epistemic.
  *
  * The public `api.mainnet-beta.solana.com` endpoint is deliberately NOT a
- * default. It is rate-limited to the point of unreliability and is documented as
- * unsuitable for applications; defaulting to it would make an unconfigured
- * deployment look configured and fail intermittently instead of honestly.
+ * default at any rung. Its own documentation says it is not for production, and
+ * its address-history index reaches days rather than years — so defaulting to it
+ * would make an unconfigured deployment look configured and fail intermittently
+ * instead of honestly.
  *
  * NULL IS A FIRST-CLASS ANSWER: "this deployment cannot read Solana" is a
  * different fact from "the wallet holds nothing" and must never collapse into it.
+ *
+ * THE RETURNED URL MAY EMBED A CREDENTIAL. Never log it; log the stage.
  */
 export function solRpcUrl(): string | null {
   const direct = process.env.SOL_RPC_URL?.trim();
   if (direct) return direct.replace(/\/+$/, "");
+  const alchemy = alchemyRpcUrl(ALCHEMY_NETWORKS.SOLANA);
+  if (alchemy) return alchemy;
   const helius = process.env.HELIUS_API_KEY?.trim();
   if (helius) return `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(helius)}`;
   return null;

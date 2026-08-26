@@ -60,6 +60,7 @@ const _e = {
   PLAID_ENV:            process.env.PLAID_ENV,
 
   OPENAI_API_KEY:       process.env.OPENAI_API_KEY,
+  ALCHEMY_API_KEY:      process.env.ALCHEMY_API_KEY,
   ETHERSCAN_API_KEY:    process.env.ETHERSCAN_API_KEY,
   HELIUS_API_KEY:       process.env.HELIUS_API_KEY,
 
@@ -492,6 +493,11 @@ export const env = {
   get OPENAI_API_KEY()  { return _e.OPENAI_API_KEY; },
 
   // ── Crypto ────────────────────────────────────────────────────────────────
+  // NOTE: the acquisition adapters read process.env directly (lib/crypto/alchemy.ts),
+  // the same pattern lib/ai/provider.ts uses, so a missing key fails at the call
+  // site with a staged refusal rather than at import. These accessors exist for
+  // startup validation and the VALUE-FREE env report — never for the SDK path.
+  get ALCHEMY_API_KEY()    { return _e.ALCHEMY_API_KEY; },
   get ETHERSCAN_API_KEY()  { return _e.ETHERSCAN_API_KEY; },
   get HELIUS_API_KEY()     { return _e.HELIUS_API_KEY; },
 

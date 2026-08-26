@@ -272,10 +272,33 @@ export function reconcileMovementsAgainstBalance(
  *
  * This is the one place a coverage claim may strengthen, and it strengthens on
  * EVIDENCE (an independent balance) rather than on the absence of an error.
+ *
+ * ── THE LICENCE RUNS TO THE BALANCE, NOT TO THE LAST MOVEMENT ────────────────
+ * `observedAtISO` is WHEN the balance being reconciled against was observed, and
+ * when supplied it becomes the upper bound of the licensed interval.
+ *
+ * This matters more than it sounds. An adapter's `coveredToISO` is the date of
+ * the newest movement it SAW — which for a quiet wallet can be months before
+ * today. Left there, the interval between the last movement and the observation
+ * reads as unknown, the replay cannot connect its anchor backward across it, and
+ * a wallet with a perfect zero-lamport reconciliation reconstructs no history at
+ * all. That is the real behaviour observed on the first production acceptance
+ * corpus: a four-year history, residual zero, and a timeline of nothing but
+ * RELATIVE segments.
+ *
+ * The extension is the SAME argument the upgrade already rests on, applied to
+ * the other end of the interval. A movement inside that gap would have changed
+ * the balance, so Σ(movements) would NOT equal the balance observed at the end
+ * of it. The arithmetic closing IS the proof that the gap is empty — quietness
+ * is not being mistaken for evidence; the balance is the evidence.
+ *
+ * It remains an UPGRADE ONLY: without a reconciliation, or with any blocking
+ * caveat, nothing is extended and nothing is claimed.
  */
 export function licenseCoverageByReconciliation(
   coverage: ChainCoverage,
   recon: BaseUnitReconciliation,
+  observedAtISO?: string,
 ): ChainCoverage {
   if (!recon.reconciles) return coverage;
   if (coverage.kind !== "PARTIAL") return coverage;
@@ -286,10 +309,15 @@ export function licenseCoverageByReconciliation(
   const blocking: readonly ChainCoverageCaveat[] = ["PAGE_BUDGET_EXHAUSTED", "ARCHIVE_DEPTH_LIMIT", "PROVIDER_THROTTLED", "PROVIDER_ERROR", "INVALID_DATA", "NO_PROVIDER_CONFIGURED"];
   if (coverage.caveats.some((c) => blocking.includes(c))) return coverage;
 
+  // The upper bound runs to the observation the arithmetic closed against, when
+  // the caller states one and it is later than the newest movement seen.
+  const toISO =
+    observedAtISO && observedAtISO > coverage.coveredToISO ? observedAtISO : coverage.coveredToISO;
+
   return {
     kind:    "COMPLETE",
     fromISO: coverage.coveredFromISO,
-    toISO:   coverage.coveredToISO,
+    toISO,
     source:  `${coverage.source}+balance-reconciliation`,
   };
 }

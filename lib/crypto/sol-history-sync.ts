@@ -224,7 +224,10 @@ export async function reconstructSolHistory(args: SolHistorySyncArgs): Promise<S
       : BigInt(Math.round(newestAnchor.quantity * Number(BigInt(10) ** BigInt(SOL_NATIVE.decimals))));
 
   const recon = reconcileMovementsAgainstBalance(movements, observedLamports);
-  const licensed = licenseCoverageByReconciliation(coverage, recon);
+  // The licence runs to the DATE THE BALANCE WAS OBSERVED, not to the newest
+  // movement: a movement in between would have broken the arithmetic, so the
+  // arithmetic closing proves the interval empty. See the function's doc.
+  const licensed = licenseCoverageByReconciliation(coverage, recon, newestAnchor.dateISO);
 
   const dispositions = movements.map((m) => ({
     eventId: m.eventId, movementKey: m.movementKey,

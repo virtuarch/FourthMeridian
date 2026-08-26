@@ -210,8 +210,8 @@ const TERMINAL_CODES = [
     syncRoute.indexOf("if (result.ok)") < syncRoute.indexOf("regenerateSnapshotsForAccounts(")
       && syncRoute.indexOf("if (result.ok)") < syncRoute.indexOf("regenerateWealthHistoryForAccounts("));
   const walletRoute = code(read("app", "api", "accounts", "wallet", "route.ts"));
-  check("12b. the create route regenerates history only for a HISTORY_SUPPORTED chain",
-    (walletRoute.match(/chainSupportsHistory\(chain\)/g) ?? []).length === 3);
+  check("12b. the create route regenerates history only for a chain that feeds it",
+    (walletRoute.match(/feedsLegacyWealthHistory\(chain\)/g) ?? []).length === 3);
   check("12c. a refused sync is best-effort and non-fatal — the wallet is still recorded",
     /if \(!outcome\.ok\)/.test(walletRoute) && !/throw/.test(walletRoute.slice(walletRoute.indexOf("syncWalletBestEffort"))));
 }

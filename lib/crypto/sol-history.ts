@@ -43,6 +43,7 @@ import {
   type FetchFn,
 } from "./sol-rpc";
 import { SOL_NATIVE } from "./native-asset";
+import { redactProviderSecrets } from "./alchemy";
 import type { ChainMovement, ChainCoverage, ChainCoverageCaveat } from "./chain-movement";
 
 /** Provenance stamped on every movement this adapter emits. */
@@ -251,7 +252,11 @@ function rpcResult(rawBody: string, what: string): unknown {
   try { env = JSON.parse(rawBody); }
   catch { throw new SolRpcError("balance", `unparseable JSON-RPC response for ${what}`); }
   if (env.error) {
-    throw new SolRpcError("balance", `provider error ${env.error.code ?? "?"}: ${env.error.message ?? "unknown"} (${what})`);
+    // A provider's error text quotes the request URL surprisingly often, and an
+    // Alchemy RPC URL carries the credential in its path. Redact BEFORE the
+    // message can reach a log line or a persisted SyncIssue detail.
+    throw new SolRpcError("balance", redactProviderSecrets(
+      `provider error ${env.error.code ?? "?"}: ${env.error.message ?? "unknown"} (${what})`));
   }
   return env.result;
 }

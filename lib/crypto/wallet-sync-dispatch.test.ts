@@ -20,7 +20,8 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import {
-  walletChainSupport, isSyncableChain, chainSupportsHistory, SYNCABLE_CHAINS,
+  walletChainSupport, isSyncableChain, chainSupportsHistory, feedsLegacyWealthHistory,
+  SYNCABLE_CHAINS,
 } from "./wallet-sync-dispatch";
 
 let failures = 0;
@@ -69,17 +70,34 @@ check("BTC is HISTORY_SUPPORTED (ledger, reconciliation, licensed carry)",
   walletChainSupport("BTC") === "HISTORY_SUPPORTED");
 check("ETH is CURRENT_POSITION_SUPPORTED — a position, not a history",
   walletChainSupport("ETH") === "CURRENT_POSITION_SUPPORTED");
-check("SOL is CURRENT_POSITION_SUPPORTED — a position, not a history",
-  walletChainSupport("SOL") === "CURRENT_POSITION_SUPPORTED");
+// W-M2b — SOL PROMOTED, and only on real-wallet evidence: acquisition over
+// standard RPC back to 2022, a ZERO-lamport reconciliation against the observed
+// balance, a replayed quantity timeline, and dated valuation that refuses beyond
+// the price floor. Having an adapter never earned this; the evidence did.
+check("SOL is HISTORY_SUPPORTED — earned on real-wallet evidence",
+  walletChainSupport("SOL") === "HISTORY_SUPPORTED");
 
 // A chain is promoted to HISTORY_SUPPORTED only when historical acquisition and
 // reconstruction are PROVEN — never because an adapter exists. Pinned, so
 // promoting ETH or SOL by accident fails here first.
-check("ONLY BTC claims history support",
-  SYNCABLE_CHAINS.filter((c) => chainSupportsHistory(c)).join(",") === "BTC");
-check("having an adapter is NOT the same as having history",
-  isSyncableChain("ETH") && !chainSupportsHistory("ETH")
-    && isSyncableChain("SOL") && !chainSupportsHistory("SOL"));
+check("exactly BTC and SOL claim history support",
+  SYNCABLE_CHAINS.filter((c) => chainSupportsHistory(c)).join(",") === "BTC,SOL");
+// ETH is the live proof that the ladder still bites: it has a working adapter
+// and a configured provider, and it is STILL not history-supported, because its
+// historical acquisition has not been built or proven.
+check("having an adapter is NOT the same as having history (ETH)",
+  isSyncableChain("ETH") && !chainSupportsHistory("ETH"));
+
+// ── W-M2b — HISTORY SUPPORT ≠ NET-WORTH PARTICIPATION ─────────────────────────
+// The wealth-history regenerator composes crypto from FinancialAccount
+// .nativeBalance. SOL has a fully reconstructed timeline on the POSITION SPINE
+// and writes no balance column, so it is invisible to that path however much
+// history it has. Gating regeneration on capability would walk an entire Space
+// to compute nothing.
+check("only the legacy balance-column chain feeds wealth-history regeneration",
+  feedsLegacyWealthHistory("BTC") && !feedsLegacyWealthHistory("SOL") && !feedsLegacyWealthHistory("ETH"));
+check("…so capability and the regeneration gate are genuinely different questions",
+  chainSupportsHistory("SOL") && !feedsLegacyWealthHistory("SOL"));
 
 // UNSUPPORTED CHAINS STAY UNSUPPORTED — including every label the wallet route
 // accepts at CREATION time. Recording custody and reading the chain are
@@ -122,10 +140,16 @@ check("a failed sync reports NO net-worth participation whatever the chain",
 // Scoped to the REGISTRY literal, so the type union's mention of each value
 // does not count as a registration.
 {
-  const registry = dispatch.slice(dispatch.indexOf("const ADAPTERS"));
+  // Bounded to the ADAPTERS literal itself — `feedsLegacyWealthHistory` names the
+  // same constant below, and counting occurrences past the closing brace would
+  // measure the predicate rather than the registrations.
+  const registryStart = dispatch.indexOf("const ADAPTERS");
+  const registry = dispatch.slice(registryStart, dispatch.indexOf("\n};", registryStart));
   check("BTC alone is registered as contributing through the legacy balance column",
     (registry.match(/LEGACY_BALANCE_COLUMN/g) ?? []).length === 1
       && registry.indexOf("LEGACY_BALANCE_COLUMN") < registry.indexOf("ETH_CHAIN"));
+  check("SOL's promotion did NOT quietly expand balance authority",
+    registry.slice(registry.indexOf("SOL_CHAIN")).includes("WITHHELD_PENDING_CONVERGENCE"));
   check("ETH and SOL are both registered WITHHELD_PENDING_CONVERGENCE",
     (registry.match(/WITHHELD_PENDING_CONVERGENCE/g) ?? []).length === 2);
 }
@@ -165,8 +189,8 @@ check("the ORCH-1 changedSince stamp still precedes the sync",
   body(syncRoute).indexOf("syncStartedAt = new Date()") < body(syncRoute).indexOf("syncWalletByChain("));
 
 // HISTORY REGEN IS NOW A CHAIN CAPABILITY, and only BTC has it.
-check("wealth-history regen is gated on chainSupportsHistory",
-  /if \(chainSupportsHistory\(account\.walletChain\)\)/.test(syncRoute));
+check("wealth-history regen is gated on the REGENERATION predicate",
+  /if \(feedsLegacyWealthHistory\(account\.walletChain\)\)/.test(syncRoute));
 check("…and still uses the canonical planner for the chains that have it",
   /resolveHistoricalWorkWindow/.test(syncRoute) && /regenerateWealthHistoryForAccounts/.test(syncRoute));
 
@@ -184,8 +208,8 @@ check("…and that helper goes through the registry",
 check("connection still succeeds when the chain cannot be read (best-effort)",
   /if \(!outcome\.ok\)/.test(walletRoute) && /console\.warn/.test(walletRoute));
 
-check("all THREE wealth-history calls are gated on chain capability",
-  (walletRoute.match(/chainSupportsHistory\(chain\)/g) ?? []).length === 3);
+check("all THREE wealth-history calls are gated on the REGENERATION predicate",
+  (walletRoute.match(/feedsLegacyWealthHistory\(chain\)/g) ?? []).length === 3);
 check("no wealth-history call is left keyed on the BTC literal",
   !/BTC_CHAIN\) await regenWalletWealthHistory/.test(walletRoute));
 

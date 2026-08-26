@@ -154,7 +154,18 @@ const ADAPTERS: Readonly<Record<string, ChainAdapter>> = {
     sync: (id) => syncEthWallet(id),
   },
   [SOL_CHAIN]: {
-    support: "CURRENT_POSITION_SUPPORTED",
+    // W-M2b — PROMOTED on real-wallet evidence, not on an adapter existing.
+    // Against the live acceptance wallet: 36 signatures acquired over standard
+    // RPC back to 2022, pagination reaching the beginning, 27 movements
+    // reconciling to the observed balance with a residual of ZERO lamports,
+    // a 13-segment replayed quantity timeline, and dated valuation that refuses
+    // (UNVALUED) beyond the price provider's floor rather than reporting zero.
+    //
+    // Net-worth participation stays WITHHELD: this adapter writes no balance
+    // column, and the wealth-history snapshot path still composes crypto from
+    // `nativeBalance`. History support and net-worth participation are separate
+    // promises — see `feedsLegacyWealthHistory`.
+    support: "HISTORY_SUPPORTED",
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
     sync: (id) => syncSolWallet(id),
   },
@@ -175,13 +186,36 @@ export function isSyncableChain(chain: string | null | undefined): boolean {
 }
 
 /**
- * May this chain's WEALTH HISTORY be regenerated after a sync?
+ * Does this chain feed the LEGACY wealth-history regeneration path?
  *
- * Only HISTORY_SUPPORTED chains. This is not a performance guard: regeneration
- * derives a historical quantity, and for a chain with no movement ledger there
- * is nothing to derive one FROM. Running it would either refuse every day (noise)
- * or, worse, invite someone to "fix" the refusal by painting today's quantity
- * backwards — which is the one thing this engine must never do.
+ * ── W-M2b — THIS IS NOT THE SAME QUESTION AS "HAS HISTORY" ──────────────────
+ * It used to be `support === "HISTORY_SUPPORTED"`, and while Bitcoin was the
+ * only chain with history the two coincided. They have now come apart, and
+ * conflating them would be wrong in a way that costs real work.
+ *
+ * The wealth-history regenerator composes crypto from
+ * `FinancialAccount.nativeBalance` × a dated close. A chain that writes that
+ * column feeds it; a chain that does not is invisible to it no matter how much
+ * history it has. Solana has a fully reconstructed, reconciled quantity
+ * timeline — on the POSITION SPINE, as DERIVED observations — and writes no
+ * balance column by design, so regenerating for it would walk an entire Space
+ * to compute nothing.
+ *
+ * So the gate is the net-worth participation, which is exactly the property
+ * that decides it. When the wallet net-worth convergence moves that path onto
+ * the position spine, this predicate and the distinction both disappear.
+ */
+export function feedsLegacyWealthHistory(chain: string | null | undefined): boolean {
+  if (!chain) return false;
+  return ADAPTERS[chain.trim().toUpperCase()]?.netWorthParticipation === "LEGACY_BALANCE_COLUMN";
+}
+
+/**
+ * Has this chain's HISTORY been proven — acquisition, reconciliation, replay and
+ * dated valuation, on real evidence?
+ *
+ * Retained as the capability question. It is deliberately NOT the regeneration
+ * gate any more (see `feedsLegacyWealthHistory`).
  */
 export function chainSupportsHistory(chain: string | null | undefined): boolean {
   return walletChainSupport(chain) === "HISTORY_SUPPORTED";
