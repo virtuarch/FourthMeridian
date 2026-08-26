@@ -97,6 +97,35 @@ export interface Account {
   walletChain?: WalletChain;
   nativeBalance?: number;   // amount in native token (e.g. 0.085 BTC)
   /**
+   * W-M3a — the CURRENT position behind a wallet's value, for chains that write
+   * no `FinancialAccount.balance` column (everything since W-M1c: SOL, ETH, BNB,
+   * AVAX). Absent for BTC and for every non-wallet account, which keep the column.
+   *
+   * `balance` alone cannot express this. The column is NOT NULL DEFAULT 0, so a
+   * wallet whose value is WITHHELD or UNKNOWN reached the UI as the number zero
+   * and was rendered as money — a verified 0.751600602 SOL displayed as $0.00.
+   *
+   * The three states are distinct facts and must not be collapsed:
+   *   VALUED          `quantity` and `value` are real. A provider-confirmed zero
+   *                   balance arrives here as `quantity: 0` — a fact.
+   *   NO_PRICE        held, quantity known, worth unknown. `value` is null.
+   *   NO_OBSERVATION  never observed. Both null. NOT zero.
+   *
+   * `balance` falls back to the (zero) column for the latter two, so any surface
+   * that renders money for a wallet must branch on `state` rather than trust it.
+   */
+  cryptoPosition?: {
+    state:     "VALUED" | "NO_PRICE" | "NO_OBSERVATION";
+    /** Native units. Null is UNKNOWN — never 0. */
+    quantity:  number | null;
+    /** Reporting-currency value. Null is UNKNOWN — never 0. */
+    value:     number | null;
+    symbol:    string | null;
+    assetKey:  string | null;
+    priceDate: string | null;
+    asOf:      string;
+  };
+  /**
    * 'manual'  = user-entered asset (AccountType.other, no Plaid connection)
    * 'synced'  = Plaid sync successful
    * 'pending' = sync in progress

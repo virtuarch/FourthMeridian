@@ -40,6 +40,7 @@ import { resolveEffectiveDebtTerms } from "@/lib/debt/effective-terms";
 import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
 import { resolveRowBalances, reconcileAccount } from "@/lib/balances/account-balances";
 import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
+import { loadWalletCurrentValues } from "@/lib/crypto/wallet-current-value";
 
 /** THE sections loader (was inline in /api/spaces/[id]/sections). */
 export async function loadSpaceSections(spaceId: string): Promise<DashboardSection[]> {
@@ -87,6 +88,9 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
           // v2.6-L3 — forwarded RAW into lib/balances (the only interpreter);
           // never read as a value in this file.
           availableBalance: true, walletAddress: true,
+          // W-M3a — names the wallet's asset, so the loader can tell a chain
+          // that writes the balance column (BTC) from one that does not.
+          walletChain: true,
           // v2.6-L1 — the institution's balance-computation clock, carried so the
           // freshness authority can distinguish provider attestation from our own
           // write time instead of every surface assuming they are the same fact.
@@ -132,13 +136,32 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
   // same effective APR/minimum payment as the Personal Debt surface. The
   // normalized shape is unchanged: `interestRate`/`minimumPayment` now simply
   // carry the EFFECTIVE values (DebtProfile > flat column).
+  // W-M3a — a wallet on a chain that writes no `balance` column reached this
+  // loader as a structural 0 and was rendered as money: a Solana wallet holding
+  // a verified 0.751600602 SOL displayed $0.00 on every Space account surface,
+  // while the Investments workspace — reading the position spine — showed it
+  // correctly. The value is resolved from that same spine here.
+  //
+  // Substituted BEFORE normalizeSharedAccounts so a privacy-aggregated row sums
+  // the real value rather than the zero. BTC is absent from the map and keeps
+  // its column byte-identically; a wallet whose value is unknown also falls
+  // through to the column rather than having a number invented for it.
+  const walletValueByAccount = await loadWalletCurrentValues(
+    links.map((l) => ({ id: l.financialAccount.id, walletChain: l.financialAccount.walletChain })),
+    { contextSpaceId: spaceId },
+  );
+
   const effectiveLinks = links.map((l) => {
     const terms = resolveEffectiveDebtTerms(l.financialAccount);
     const { debtProfile: _profile, ...account } = l.financialAccount;
+    const walletValue = walletValueByAccount.get(account.id);
     return {
       ...l,
       financialAccount: {
         ...account,
+        balance: walletValue?.state === "VALUED" && walletValue.value !== null
+          ? walletValue.value
+          : account.balance,
         // v2.6-TRUTH-10 — resolve the canonical identity HERE, once, so every
         // Space surface downstream receives the same name the Credit page shows.
         // ⚠️ `name` is overwritten with the resolved identity, NOT a new field:

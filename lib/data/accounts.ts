@@ -41,6 +41,7 @@ import {
 } from "@/lib/account-privacy";
 import { resolveRowBalances, reconcileAccount } from "@/lib/balances/account-balances";
 import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
+import { loadWalletCurrentValues, type WalletCurrentValue } from "@/lib/crypto/wallet-current-value";
 
 /**
  * One visible account plus the SpaceAccountLink.visibilityLevel that
@@ -175,9 +176,42 @@ export async function getAccountsWithVisibility(
     links.map((l: any) => l.financialAccount.id),
   );
 
+  // W-M3a — THE fix for a wallet rendering $0.00 while holding a verified
+  // position. Chains since W-M1c write no `balance`/`nativeBalance` column, and
+  // those columns are NOT NULL DEFAULT 0, so "withheld" arrived here as the
+  // number zero and every account surface printed it as money. The current value
+  // for those wallets comes from the position spine instead, through the
+  // canonical valuation path.
+  //
+  // Resolved HERE, next to the cash-state claim, for the same reason: this
+  // module is the KD-19 visibility authority, so it is the right place to decide
+  // what each tier may see. A wallet's VALUE is a balance, so it is disclosed at
+  // exactly the tiers a balance is — including BALANCE_ONLY, which is why
+  // `getCurrentPositions` (FULL-detail only) is deliberately not the seam used.
+  //
+  // BTC is absent from this map and keeps its column, unchanged.
+  const walletValueByAccount = await loadWalletCurrentValues(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    links.map((l: any) => ({ id: l.financialAccount.id, walletChain: l.financialAccount.walletChain })),
+    { contextSpaceId: spaceId },
+  );
+
+  /**
+   * The balance a surface should show.
+   *
+   * Only a VALUED wallet displaces the column. NO_PRICE and NO_OBSERVATION
+   * deliberately fall through to it rather than inventing a number — the
+   * position may be real but its value is unknown, and `cryptoPosition` carries
+   * that state so a consumer can say so instead of printing a total.
+   */
+  const displayBalance = (columnBalance: number, v: WalletCurrentValue | undefined): number =>
+    v?.state === "VALUED" && v.value !== null ? v.value : columnBalance;
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return links.map((link: any) => {
     const r = link.financialAccount;
+    // Present ONLY for a wallet whose chain writes no balance column.
+    const walletValue = walletValueByAccount.get(r.id);
 
     // KD-19 — only FULL links may expose account metadata (institution, real
     // name, credit limit, debt fields). BALANCE_ONLY exposes the balance total
@@ -224,7 +258,10 @@ export async function getAccountsWithVisibility(
           id:          r.id,
           type:        r.type,
           debtSubtype: r.debtSubtype ?? null,
-          balance:     r.balance,
+          // W-M3a — a wallet's spine value is its balance, and BALANCE_ONLY
+          // discloses balances. Passing the column here instead would have shown
+          // this tier $0.00 for a wallet the FULL tier values correctly.
+          balance:     displayBalance(r.balance, walletValue),
           currency:    r.currency,
           lastUpdated: r.lastUpdated,
         },
@@ -298,7 +335,7 @@ export async function getAccountsWithVisibility(
       name:          accountDisplayName(r),
       type:          r.type as Account["type"],
       institution:   r.institution,
-      balance:       r.balance,
+      balance:       displayBalance(r.balance, walletValue),
       currency:      r.currency,
       lastUpdated:   r.lastUpdated.toISOString(),
       balanceLastUpdatedAt: r.balanceLastUpdatedAt
@@ -325,7 +362,23 @@ export async function getAccountsWithVisibility(
       } : undefined,
       walletAddress:  r.walletAddress  ?? undefined,
       walletChain:   r.walletChain   as Account["walletChain"] ?? undefined,
-      nativeBalance: r.nativeBalance ?? undefined,
+      // W-M3a — the OBSERVED quantity from the spine when there is one. The
+      // column is never written for these chains, so `?? undefined` on it alone
+      // produced 0, not absence.
+      nativeBalance: walletValue?.quantity ?? r.nativeBalance ?? undefined,
+      // The tri-state behind the number: VALUED / NO_PRICE / NO_OBSERVATION.
+      // A consumer that shows money MUST branch on this — `balance` falls back
+      // to the (zero) column for the two states that have no value, and only
+      // this field distinguishes "holds nothing" from "we do not know".
+      ...(walletValue ? { cryptoPosition: {
+        state:     walletValue.state,
+        quantity:  walletValue.quantity,
+        value:     walletValue.value,
+        symbol:    walletValue.symbol,
+        assetKey:  walletValue.assetKey,
+        priceDate: walletValue.priceDate,
+        asOf:      walletValue.asOf,
+      } } : {}),
       syncStatus:    r.syncStatus    as Account["syncStatus"]  ?? undefined,
       needsReauth:   !!reauthConnection,
       plaidItemId:   reauthConnection?.plaidItemDbId ?? undefined,

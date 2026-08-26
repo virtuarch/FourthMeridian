@@ -62,6 +62,25 @@
  *     different row order could shift the last bits of netWorth. Keeping the
  *     order keeps the totals bit-identical, not merely equal.
  *
+ * W-M3a — ONE DELIBERATE DIVERGENCE FROM THAT IDENTITY
+ * -----------------------------------------------------
+ * `getAccounts` now re-sources the CURRENT value of a wallet whose chain writes
+ * no balance column (SOL/ETH/BNB/AVAX) from the position spine, because the
+ * column is `NOT NULL DEFAULT 0` and was publishing "withheld" as $0.00.
+ *
+ * This read deliberately does NOT do that, and must not start. It feeds
+ * PER-DAY historical computation, and a current observation is evidence about
+ * today only — substituting it here would place today's value on every
+ * historical day, which is the backward paint the crypto doctrine forbids
+ * (invariant 10). Regeneration already values crypto correctly for a licensed
+ * day via `valueCryptoDay`, which REPLACES the digital-asset component outright
+ * (regenerate-history.ts), so the column reaching this read is not consulted on
+ * those days at all.
+ *
+ * The identity above therefore still holds for every field a snapshot may
+ * legitimately read on a historical day. Where the two reads differ, it is
+ * because they are answering questions about different DATES.
+ *
  * SCOPE
  * -----
  * Deliberately NOT a general-purpose account read. It returns the minimum the

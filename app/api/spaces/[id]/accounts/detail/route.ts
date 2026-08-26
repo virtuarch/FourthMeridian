@@ -41,6 +41,7 @@ import { deriveConnectionState, type SyncConnectionState } from "@/lib/sync/stat
 import { resolveAccountFreshness, type AccountFreshness } from "@/lib/freshness/observation";
 import { resolveAccountBalances, reconcileAccount, type AccountBalances, type Reconciliation } from "@/lib/balances/account-balances";
 import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
+import { loadWalletCurrentValues } from "@/lib/crypto/wallet-current-value";
 
 export interface AccountDetailRow {
   id:                 string;      // FinancialAccount.id (FULL) or synthetic (BALANCE_ONLY aggregate)
@@ -160,6 +161,9 @@ export async function GET(
           interestRate:   true,
           minimumPayment: true,
           walletAddress:  true,
+          // W-M3a — names the wallet's asset, so this surface can tell a chain
+          // that writes the balance column from one whose value lives on the spine.
+          walletChain:    true,
           connections: {
             where:  { deletedAt: null },
             select: {
@@ -228,8 +232,23 @@ export async function GET(
   const fullRows: AccountDetailRow[] = [];
   const balanceOnlyShares: ShareRow[] = [];
 
+  // W-M3a — a wallet on a chain that writes no `balance` column arrives from the
+  // DB as a structural 0. Every claim below (freshness, balances, reconciliation)
+  // is composed FROM that number, so the substitution happens once, here, before
+  // any of them see it — rather than in three places that could disagree.
+  const walletValueByAccount = await loadWalletCurrentValues(
+    links.map((l) => ({ id: l.financialAccount.id, walletChain: l.financialAccount.walletChain })),
+    { contextSpaceId: spaceId },
+  );
+
   for (const link of links) {
-    const a = link.financialAccount;
+    const raw = link.financialAccount;
+    const walletValue = walletValueByAccount.get(raw.id);
+    // Only a VALUED wallet displaces the column; an unknown one falls through to
+    // it rather than having a number invented.
+    const a = walletValue?.state === "VALUED" && walletValue.value !== null
+      ? { ...raw, balance: walletValue.value }
+      : raw;
 
     if (link.visibilityLevel !== "FULL") {
       // Reuse the shared normalizer's exact ShareRow shape (FULL/BALANCE_ONLY).
