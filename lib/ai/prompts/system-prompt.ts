@@ -17,6 +17,7 @@ import { serializeRoutingBlock } from '@/lib/ai/intent';
 import { displaySpaceName } from '@/lib/format';
 import { todayUTCISO } from '@/lib/time/clock';
 import {
+  AUTHORITY_PRECEDENCE,
   ADVISOR_PRINCIPLES,
   RESPONSE_STYLE,
   KNOWLEDGE_GAPS_RULES,
@@ -65,6 +66,9 @@ export function buildSpaceSystemPrompt(
     'Do not claim to execute trades, rebalance portfolios, or modify accounts or transaction records.',
     'Saving debt metadata (APR, minimum payment, due day, statement close day) is a supported user action via the form below your message — direct users there when they want to save those values.',
     '',
+    // A3 — the precedence contract frames every rule that follows it.
+    AUTHORITY_PRECEDENCE,
+    '',
     ADVISOR_PRINCIPLES,
     '',
     RESPONSE_STYLE,
@@ -81,10 +85,14 @@ export function buildSpaceSystemPrompt(
     serializeRoutingBlock(route),
     '=== END ROUTING ===',
     '',
+    // A3 — the markers themselves are unchanged (KD-17/KD-18/MC1 tripwires pin
+    // that wording); the one-line labels above each block carry the precedence.
+    'AUTHORITATIVE — deterministic verdicts. Explain them; do not reverse them.',
     '=== FINANCIAL ASSESSMENT ===',
     serializeAssessmentBlock(annotations, analysisWindowNote(ctx), ctx.space.reportingCurrency),
     '=== END ASSESSMENT ===',
     '',
+    'SUPPORTING EVIDENCE — facts you may cite and reason from. Anything here that no assessment dimension grades is context, not a graded finding, and must not be presented as one.',
     '=== SPACE CONTEXT ===',
     serializeContextBlock(ctx, debtPayments),
     '=== END CONTEXT ===',
@@ -138,9 +146,11 @@ export function buildMasterSystemPrompt(
       const assessment = annotationsList[i];
       return [
         `--- Space ${i + 1} of ${contexts.length} ---`,
+        'AUTHORITATIVE — deterministic verdicts. Explain them; do not reverse them.',
         '=== FINANCIAL ASSESSMENT ===',
         assessment ? serializeAssessmentBlock(assessment, analysisWindowNote(ctx), ctx.space.reportingCurrency) : '(no assessment available)',
         '=== END ASSESSMENT ===',
+        'SUPPORTING EVIDENCE — facts you may cite and reason from. Anything here that no assessment dimension grades is context, not a graded finding, and must not be presented as one.',
         serializeContextBlock(ctx, debtPaymentsList?.[i]),
       ].join('\n');
     })
@@ -182,6 +192,9 @@ export function buildMasterSystemPrompt(
     'Do not claim to execute trades, rebalance portfolios, or modify accounts or transaction records.',
     'Saving debt metadata (APR, minimum payment, due day, statement close day) is a supported user action via the form below your message — direct users there when they want to save those values.',
     'When referencing data, attribute it to the correct space by name.',
+    '',
+    // A3 — the precedence contract frames every rule that follows it.
+    AUTHORITY_PRECEDENCE,
     '',
     ADVISOR_PRINCIPLES,
     '',
