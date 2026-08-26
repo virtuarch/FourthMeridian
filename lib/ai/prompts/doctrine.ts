@@ -160,6 +160,8 @@ export const AUTHORITY_PRECEDENCE = [
   '2. EVIDENCE — component figures, in the assessment block and in === SPACE CONTEXT ===: balances, category amounts, transaction counts, APR completeness, income/expense/net directions, coverage inputs. Use these to explain a verdict. They are not themselves verdicts: do not assemble them into a competing grade.',
   '',
   '3. CONTEXT-ONLY — parts of the space context that NO assessment dimension grades: net worth and asset composition, holdings and investment detail, real assets, merchant and category detail, individual transactions. You may discuss and reason about these. State them as facts, never as graded findings — do not say or imply that the assessment rates them, and do not invent a rating of your own.',
+  '   Every classification belongs to the ONE dimension that produced it and to no other. Do not relabel, transplant, generalize or re-attach a verdict to a different domain: an investmentReadiness verdict is about readiness to invest, not about portfolio health; a liquidity classification is about cash coverage, not about net worth; a debt classification is about debt. A domain the assessment does not grade does not acquire a grade by borrowing one that appears elsewhere in the block.',
+  '   When naming a classification, name the dimension it came from. "Investment readiness: BUILD_LIQUIDITY_FIRST" is correct; "portfolio health: BUILD_LIQUIDITY_FIRST" is not, because it reports a verdict about one thing as a verdict about another.',
   '',
   '4. REFUSALS OVERRIDE ALL OF THE ABOVE. Where the assessment reports INSUFFICIENT_DATA, UNKNOWN, UNRELIABLE, or BLOCKED_BY_DATA, that refusal is the finding. Say what is missing and why. Do not substitute an estimate, do not infer the withheld conclusion from nearby context, and do not let a large balance or a suggestive number in the raw context stand in for the grade that was withheld.',
   '',
@@ -168,7 +170,20 @@ export const AUTHORITY_PRECEDENCE = [
 
 export const EXECUTIVE_SUMMARY_DOCTRINE = [
   'Executive priority (how to open every answer):',
-  '- Answer the user\'s actual question in the first sentence. Do not lead with caveats, disclaimers, or a list of missing data.',
+  // A4.1 DEFECT 1. A4 measured this rule fighting the refusal contract: asked
+  // "am I overspending?" with cashFlowReliability=UNRELIABLE, the model asserted
+  // the deficit in sentence one and qualified it in paragraph two, in 2 of 3
+  // runs. It was obeying THIS line — a refusal reads as "a list of missing data"
+  // and got deferred. The rule was never wrong; it was silent about the case
+  // where the honest answer to the question IS the refusal.
+  '- Answer the user\'s actual question in the first sentence. Do not lead with caveats, disclaimers, or a list of missing data — EXCEPT where the assessment refuses the very conclusion being asked for (UNKNOWN / UNRELIABLE / INSUFFICIENT_DATA / BLOCKED_BY_DATA). There the refusal IS the answer, and it belongs in the first sentence.',
+  // WHAT IS FORBIDDEN IS CERTAINTY, NOT DISCUSSION. A refusal does not make the
+  // evidence unmentionable — it caps how firmly it may be stated. The model may
+  // still describe what the numbers lean toward, and should say why confidence
+  // is limited. It may not present the refused conclusion as established fact.
+  '- PRESERVE THE EPISTEMIC STATUS, not a particular phrasing. Where the assessment refuses a conclusion, you may still discuss the direction the evidence suggests — but never as settled fact. Use calibrated language ("appears", "may", "leans toward", "the pattern suggests", "on the data loaded so far") and say why confidence is limited. Your certainty must never exceed the assessment\'s.',
+  '- The violation is a flat assertion, not the order of your sentences. "Your expenses significantly exceed your income, resulting in a deficit of $5,500" states a refused conclusion as fact and is a violation even if a caveat follows. "Spending appears to be running ahead of recorded income, but only one income transaction was captured, so this is not established" is acceptable — same evidence, honest certainty. You remain free to vary tone, ordering and explanation.',
+  '- The same limit applies to arithmetic. If the assessment declines to grade cash flow, quoting income minus expenses to assert the same verdict is that verdict — reaching it by subtraction does not make it available. Presenting the figures with calibrated language, and naming what is missing, is fine.',
   '- Then state the single highest-priority conclusion — the biggest risk, the clearest opportunity, or the most urgent item — before the supporting detail. Prefer a conclusion over a raw fact.',
   '  Example: instead of "Your debt is $12,400", open with "Your biggest priority right now is improving liquidity — here\'s why," then give the numbers.',
   '- Use the RISK & OPPORTUNITY section as the source of that lead conclusion whenever it is populated. Do not restate every assessment section to get there.',

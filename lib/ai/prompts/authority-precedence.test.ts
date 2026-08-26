@@ -202,6 +202,56 @@ console.log('\n[A3] authority precedence contract\n');
     (src.match(/AUTHORITATIVE — deterministic verdicts/g) ?? []).length >= 2);
 }
 
+// ── A4.1 — the two defects A4 MEASURED, pinned as prompt-contract regressions ─
+//
+// These are not hypothetical. Each corresponds to an observed violation in the
+// A4 corpus, so a future doctrine edit that silently removes the repair fails
+// here instead of being rediscovered by paying for another 36 model calls.
+{
+  // DEFECT 1 — refusal is the answer, not a caveat to defer.
+  check('A4.1-1. a refused conclusion is declared to BE the answer',
+    /the refusal IS the answer/.test(prompt) &&
+    /UNKNOWN \/ UNRELIABLE \/ INSUFFICIENT_DATA \/ BLOCKED_BY_DATA/.test(prompt));
+  check('A4.1-2. "do not lead with caveats" cannot subordinate a refusal',
+    /EXCEPT where the assessment refuses the very conclusion being asked for/.test(prompt));
+  // The contract caps CERTAINTY, not phrasing: the model may still discuss what
+  // the evidence leans toward, in calibrated language, and stays free to vary
+  // tone and ordering. Only a flat assertion of the refused conclusion violates.
+  check('A4.1-3. the rule is epistemic — certainty may not exceed the assessment',
+    /PRESERVE THE EPISTEMIC STATUS/.test(prompt) &&
+    /certainty must never exceed the assessment/.test(prompt));
+  check('A4.1-3b. calibrated discussion of the evidence is explicitly permitted',
+    /you may still discuss the direction the evidence suggests/.test(prompt) &&
+    /"appears", "may", "leans toward"/.test(prompt));
+  check('A4.1-3c. a FLAT assertion is the violation, not the sentence order',
+    /The violation is a flat assertion, not the order of your sentences/.test(prompt) &&
+    /free to vary tone, ordering and explanation/.test(prompt));
+  check('A4.1-3d. arithmetic may not be used to assert a refused conclusion',
+    /reaching it by subtraction does not make it available/.test(prompt));
+
+  // DEFECT 2 — classifications are dimension-bound.
+  check('A4.1-4. classifications belong to the dimension that produced them',
+    /Every classification belongs to the ONE dimension that produced it/.test(prompt));
+  check('A4.1-5. transplanting a verdict is named and forbidden',
+    /Do not relabel, transplant, generalize or re-attach a verdict/.test(prompt));
+  check('A4.1-5b. the exact F09 violation is spelled out',
+    /portfolio health: BUILD_LIQUIDITY_FIRST/.test(prompt) &&
+    /investmentReadiness verdict is about readiness to invest, not about portfolio health/.test(prompt));
+  check('A4.1-6. an ungraded domain cannot borrow a grade from elsewhere',
+    /does not acquire a grade by borrowing one that appears elsewhere/.test(prompt));
+
+  // The A4.1 repair must not have disturbed what A3 established.
+  check('A4.1-7. A3 authority hierarchy is unchanged',
+    /1\. AUTHORITATIVE/.test(prompt) && /2\. EVIDENCE/.test(prompt) &&
+    /3\. CONTEXT-ONLY/.test(prompt) && /REFUSALS OVERRIDE ALL OF THE ABOVE/.test(prompt));
+  check('A4.1-8. the DATA_QUALITY vs critical-balance resolution is unchanged',
+    /never demotes a critical balance-derived finding/.test(prompt) &&
+    /currentStatePriority names the TOPIC/.test(prompt));
+  check('A4.1-9. answer-first still holds for questions that are NOT refused',
+    /Answer the user's actual question in the first sentence/.test(prompt),
+    'the repair must scope the rule, not delete it');
+}
+
 // ── Master prompt carries the same contract ─────────────────────────────────
 {
   const master = buildMasterSystemPrompt([ctx], [assessment], route);

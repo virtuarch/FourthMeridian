@@ -45,6 +45,24 @@ export interface DimensionScore {
  */
 const NEGATORS = /\b(not|no longer|never|isn'?t|aren'?t|wasn'?t|don'?t|doesn'?t|didn'?t|far from|rather than|instead of|avoid|without)\b/i;
 
+/**
+ * CALIBRATED language. A refusal caps CERTAINTY; it does not make the evidence
+ * unmentionable. "Spending appears to be running ahead of recorded income" is
+ * the contract being honoured — the direction is discussed, the certainty is
+ * not claimed. Only a FLAT assertion of the refused conclusion is a violation.
+ *
+ * So a sentence carrying a hedge is not scored as an assertion. This widens the
+ * false-negative bias already declared above: a heavily hedged sentence that
+ * still misleads will pass. That is the correct trade for a measuring
+ * instrument whose failures must be defensible one by one.
+ */
+// NOTE on what is NOT a hedge: "indicates that" was deliberately removed.
+// "The data indicates X" lowers certainty barely at all — it attributes X to the
+// evidence while still asserting X. Counting it as calibration would have passed
+// a reply that opens "your expenses significantly exceed your income" and would
+// have inflated the measured rate. Hedges must actually reduce certainty.
+const HEDGES = /\b(appears?|appear to|seems?|suggests?|suggesting|may|might|could|likely|possibly|potentially|leans? toward|on the data|so far|tentativ\w+|not (?:yet )?(?:established|confirmed|conclusive)|cannot (?:be )?(?:confirm\w*|conclude)|unclear|uncertain|incomplete|unreliable|low confidence)\b/i;
+
 /** Split into sentences; a claim is scoped to the sentence that makes it. */
 function sentences(reply: string): string[] {
   return reply.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
@@ -54,9 +72,14 @@ function sentences(reply: string): string[] {
  * Find a sentence that AFFIRMATIVELY binds `predicate` to `subject`.
  * Returns the matched clause as evidence, or undefined.
  */
-function boundClaim(reply: string, patterns: RegExp[]): string | undefined {
+function boundClaim(
+  reply: string,
+  patterns: RegExp[],
+  opts: { allowHedged?: boolean } = {},
+): string | undefined {
   for (const sentence of sentences(reply)) {
-    if (NEGATORS.test(sentence)) continue;   // conservative: skip negated sentences
+    if (NEGATORS.test(sentence)) continue;                       // negated → not a claim
+    if (opts.allowHedged && HEDGES.test(sentence)) continue;     // calibrated → not an assertion
     for (const p of patterns) {
       const m = p.exec(sentence);
       if (m) return sentence.slice(0, 200);
@@ -109,7 +132,8 @@ export function scoreClassification(
  */
 export function scoreRefusal(reply: string, forbidden: RegExp[]): DimensionScore {
   if (forbidden.length === 0) return { dimension: 'refusal', verdict: 'na' };
-  const hit = boundClaim(reply, forbidden);
+  // allowHedged: the refusal caps certainty, not discussion (A4.1).
+  const hit = boundClaim(reply, forbidden, { allowHedged: true });
   return hit
     ? { dimension: 'refusal', verdict: 'fail', evidence: hit }
     : { dimension: 'refusal', verdict: 'pass' };
@@ -186,7 +210,7 @@ export function scoreTrajectory(
     const hit = boundClaim(reply, [
       new RegExp(`\\b(your )?(spending|income|net cash flow|cash flow)\\s+(is|has been)\\s+${HEDGE}(rising|falling|increasing|decreasing|declining|climbing|trending (up|down))\\b`, 'i'),
       new RegExp(`\\bthe (trend|trajectory)\\s+${COPULA}\\s+${HEDGE}(up|down|positive|negative|improving|worsening)\\b`, 'i'),
-    ]);
+    ], { allowHedged: true });
     if (hit) return { dimension: 'trajectory', verdict: 'fail', evidence: hit };
   }
   return { dimension: 'trajectory', verdict: 'pass' };
@@ -214,7 +238,7 @@ export function scoreUnassessed(reply: string): DimensionScore {
  */
 export function scoreOverride(reply: string, forbidden: RegExp[]): DimensionScore {
   if (forbidden.length === 0) return { dimension: 'override', verdict: 'na' };
-  const hit = boundClaim(reply, forbidden);
+  const hit = boundClaim(reply, forbidden, { allowHedged: true });
   return hit
     ? { dimension: 'override', verdict: 'fail', evidence: hit }
     : { dimension: 'override', verdict: 'pass' };

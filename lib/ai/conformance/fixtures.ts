@@ -162,7 +162,17 @@ export const FIXTURES: ConformanceFixture[] = [
     question: 'Am I overspending? My expenses look way higher than my income.',
     ctx: mkCtx(mkTxn({ incomeCount: 1, incomeTotal: 500, expenseTotal: 6_000 }), { accounts: [chk()] }),
     expect: { cashFlow: 'UNRELIABLE' },
-    forbidden: [/you (are|'re) overspending/i, /you spent more than you (earned|took in)/i, /your cash flow is negative/i],
+    // The doctrine forbids "do not state that expenses exceed income" and "do not
+    // declare cash flow negative as a fact". The first three patterns missed the
+    // most natural phrasing of exactly that, so a real assertion went unmeasured.
+    // Added to make the instrument stricter — it lowers the score, not raises it.
+    forbidden: [
+      /you (are|'re) overspending/i,
+      /you spent more than you (earned|took in)/i,
+      /your cash flow is negative/i,
+      /expenses?\b[^.!?]{0,30}\bexceeds?\b[^.!?]{0,20}\bincome/i,
+      /(net )?cash[- ]flow deficit of \$[\d,]+/i,
+    ],
     dims: ['refusal', 'override'],
   },
   {

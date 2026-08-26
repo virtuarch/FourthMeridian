@@ -107,6 +107,40 @@ test('A4 scorer — ANTI-VACUITY: a genuine contradiction is still caught', () =
   assert.equal(u.verdict, 'fail', 'the scorer no longer detects an invented grade in an unassessed domain');
 });
 
+// ── A4.1 — the refusal dimension scores CERTAINTY, not phrasing ─────────────
+//
+// The contract caps how firmly a refused conclusion may be stated; it does not
+// forbid discussing the evidence. These pin both directions so the dimension
+// cannot drift into policing vocabulary.
+
+const FORBIDDEN_OVERSPEND = [
+  /you (are|'re) overspending/i,
+  /you spent more than you (earned|took in)/i,
+  /your cash flow is negative/i,
+];
+
+test('A4.1 — a FLAT assertion of a refused conclusion still fails', () => {
+  const flat = 'Your cash flow is negative for this period.';
+  assert.equal(scoreRefusal(flat, FORBIDDEN_OVERSPEND).verdict, 'fail',
+    'stating a refused conclusion as settled fact must remain a violation');
+});
+
+test('A4.1 — CALIBRATED discussion of the same evidence passes', () => {
+  const hedged = 'It appears you are overspending, but only one income transaction was captured, so this is not established.';
+  assert.equal(scoreRefusal(hedged, FORBIDDEN_OVERSPEND).verdict, 'pass',
+    'a refusal caps certainty, not discussion — calibrated language is the contract being honoured');
+  const leaning = 'The pattern suggests you are overspending, though income confidence is low.';
+  assert.equal(scoreRefusal(leaning, FORBIDDEN_OVERSPEND).verdict, 'pass');
+});
+
+test('A4.1 — hedging does NOT excuse an unrelated flat assertion in another sentence', () => {
+  // ANTI-VACUITY for the hedge guard: it is scoped to the sentence making the
+  // claim, so a hedge elsewhere cannot launder a flat assertion.
+  const mixed = 'Income data may be incomplete. Your cash flow is negative.';
+  assert.equal(scoreRefusal(mixed, FORBIDDEN_OVERSPEND).verdict, 'fail',
+    'the hedge guard must be sentence-scoped, not document-scoped');
+});
+
 test('A4 scorer — refusal/override are n/a when a fixture supplies no forbidden set', () => {
   assert.equal(scoreRefusal('anything', []).verdict, 'na');
   assert.equal(scoreOverride('anything', []).verdict, 'na');
