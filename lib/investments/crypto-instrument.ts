@@ -37,6 +37,7 @@
 
 import { AssetClass, type Prisma, type PrismaClient } from "@prisma/client";
 import { db } from "@/lib/db";
+import { BTC_NATIVE } from "@/lib/crypto/native-asset";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -53,8 +54,21 @@ export interface CryptoAsset {
   currency: string;
 }
 
-/** The only crypto asset this slice defines. ETH/SOL are future descriptors. */
-export const BTC_ASSET: CryptoAsset = { symbol: "BTC", name: "Bitcoin", currency: "USD" };
+/**
+ * The canonical BTC asset descriptor.
+ *
+ * W-M0 — DERIVED from the shared native-asset registry (lib/crypto/native-asset.ts)
+ * rather than declared here. The value is unchanged; what changes is that there
+ * is now exactly ONE place that says Bitcoin's symbol is "BTC". Declaring it
+ * twice would create precisely the identity fork this module exists to prevent
+ * — the ticker that mints the Instrument drifting from the ticker that scopes
+ * the movement ledger and keys the price map.
+ */
+export const BTC_ASSET: CryptoAsset = {
+  symbol:   BTC_NATIVE.symbol,
+  name:     BTC_NATIVE.name,
+  currency: BTC_NATIVE.currency,
+};
 
 // ─── Pure decision core (no I/O) ──────────────────────────────────────────────
 

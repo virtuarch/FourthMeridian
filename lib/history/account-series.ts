@@ -54,7 +54,8 @@ import { historicalHoldingsForWindow } from "@/lib/investments/historical-holdin
 import { valueCryptoDay } from "@/lib/crypto/historical-crypto-valuation.core";
 import { licenseConstantQuantityCarry } from "@/lib/crypto/quantity-carry.core";
 import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
-import { readBtcUsdWindow } from "@/lib/crypto/btc-price";
+import { readCryptoUsdWindows } from "@/lib/crypto/crypto-price-window";
+import { nativeAssetForChain, ledgerEpsilonFor } from "@/lib/crypto/native-asset";
 import { buildSpaceConversionContextById } from "@/lib/money/server-context";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { round2 } from "@/lib/perspective-engine/reconciliation.core";
@@ -292,7 +293,23 @@ async function cryptoAccountNodes(
   args: AccountSeriesArgs, accounts: readonly AccountRow[], client: Client | undefined,
 ): Promise<HistoricalAccountNode[]> {
   const dates = eachDate(args.fromISO, args.toISO);
-  const btcAt = await readBtcUsdWindow(args.fromISO, args.toISO);
+
+  // W-M0 — EACH WALLET IS VALUED IN ITS OWN ASSET.
+  //
+  // This block passed a literal `symbol: "BTC"` and the Bitcoin close to every
+  // crypto account it walked. Correct while Bitcoin is the only chain that
+  // writes a native balance, and a silent mispricing the instant one is not: an
+  // Ethereum wallet's quantity would have been multiplied by the Bitcoin close
+  // and labelled BTC, on a per-account drill-down whose entire purpose is to
+  // explain a number. The asset is now read from the account's own chain, and an
+  // account whose chain this system cannot name is refused rather than defaulted.
+  const assetById = new Map(accounts.map((a) => [a.id, nativeAssetForChain(a.walletChain)] as const));
+  const heldSymbols = [
+    ...new Set([...assetById.values()].filter((x) => x !== null).map((x) => x!.symbol)),
+  ].sort();
+  // ONE range read across every asset held in this bucket (the HIST-2C shape,
+  // widened by the asset dimension rather than repeated per asset).
+  const priceAt = await readCryptoUsdWindows(heldSymbols, args.fromISO, args.toISO, { client: client ?? db });
   // FX through the SAME path every stored crypto total went through, for the
   // WHOLE window in one context — a per-date conversion would be N reads and
   // could disagree with the total it is explaining.
@@ -303,16 +320,24 @@ async function cryptoAccountNodes(
   const movements = await (client ?? db).transaction.findMany({
     where: {
       financialAccountId: { in: accounts.map((a) => a.id) },
-      currency: "BTC", deletedAt: null, settlementState: SettlementState.POSTED,
+      // W-M0 — native-denominated rows for every asset held here, matched back
+      // to each account's OWN asset below. A single literal would let a
+      // Bitcoin-denominated movement reconcile an Ethereum wallet's balance.
+      currency: { in: heldSymbols }, deletedAt: null, settlementState: SettlementState.POSTED,
     },
-    select: { financialAccountId: true, date: true, amount: true },
+    select: { financialAccountId: true, date: true, amount: true, currency: true },
   });
 
   return accounts.map((a) => {
-    const mine = movements.filter((m) => m.financialAccountId === a.id);
+    const asset  = assetById.get(a.id) ?? null;
+    const symbol = asset?.symbol ?? null;
+    // Only rows in THIS account's native asset are this account's movements.
+    const mine = movements.filter((m) => m.financialAccountId === a.id && m.currency === symbol);
     // Ledger completeness gates EVERYTHING historical for a wallet (V26-S1).
     const ledger = reconcileWalletLedger({
       observedBalance: a.nativeBalance ?? null, movements: mine.map((m) => m.amount),
+      // One base unit of this asset — a satoshi for BTC, unchanged.
+      epsilon: ledgerEpsilonFor(asset),
     });
     const anchorISO = a.lastUpdated ? isoDate(truncDateUTC(a.lastUpdated)) : null;
     const eventDates = mine.map((m) => isoDate(truncDateUTC(m.date)));
@@ -324,8 +349,8 @@ async function cryptoAccountNodes(
         targetISO: d, anchorISO, eventDatesISO: eventDates, ledgerComplete: ledger.complete,
       });
       const day = valueCryptoDay({
-        accounts: [{ financialAccountId: a.id, name: a.name, nativeBalance: a.nativeBalance, symbol: "BTC" }],
-        unitPrice: btcAt(d),
+        accounts: [{ financialAccountId: a.id, name: a.name, nativeBalance: a.nativeBalance, symbol }],
+        unitPriceBySymbol: symbol ? { [symbol]: priceAt(symbol, d) } : {},
         quantityLicensed: licensed.licensed,
       });
       if (!day.licensed) {
@@ -333,7 +358,12 @@ async function cryptoAccountNodes(
           dateISO: d, value: null, basis: "reconstructed",
           // A price floor and an unlicensed quantity are different refusals and
           // are reported as such — never a flat carried balance either way.
-          unavailableReason: day.refusal === "NO_PRICE" ? "BELOW_PRICE_PROVIDER_FLOOR"
+          // W-M0 — an asset we cannot NAME is a third refusal, distinct from a
+          // price that has not reached the day. Collapsing it into
+          // BELOW_PRICE_PROVIDER_FLOOR would tell the reader to go acquire a
+          // price for an asset nobody has identified.
+          unavailableReason: day.refusal === "UNKNOWN_ASSET" ? "UNKNOWN_WALLET_ASSET"
+            : day.refusal === "NO_PRICE" ? "BELOW_PRICE_PROVIDER_FLOOR"
             : ledger.complete ? "QUANTITY_NOT_LICENSED" : "WALLET_LEDGER_INCOMPLETE",
         };
       }

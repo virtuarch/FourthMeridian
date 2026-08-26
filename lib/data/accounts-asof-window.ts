@@ -50,6 +50,12 @@ export type WindowAccount = AsOfAccountInput & {
   name:          string;
   institution:   string | null;
   nativeBalance: number | null;
+  /**
+   * W-M0 — `FinancialAccount.walletChain`. The column that says WHICH ASSET
+   * `nativeBalance` counts; without it a consumer has to assume one, and the
+   * historical layer assumed Bitcoin. Null for every non-wallet account.
+   */
+  walletChain:   string | null;
   lastUpdated:   Date;
   /** The evidence-derived intervals and the reasons behind them. */
   coverage:      AccountHistoricalCoverage;
@@ -85,7 +91,7 @@ export async function getAccountBalancesOverWindow(args: {
         select: {
           id: true, name: true, type: true, balance: true, institution: true,
           createdAt: true, debtSubtype: true, creditLimit: true,
-          nativeBalance: true, lastUpdated: true,
+          nativeBalance: true, lastUpdated: true, walletChain: true,
         },
       },
     },
@@ -101,6 +107,9 @@ export async function getAccountBalancesOverWindow(args: {
     }),
     connectionFloorISO: isoDate(maxDate(truncDateUTC(l.financialAccount.createdAt), truncDateUTC(l.createdAt))),
     nativeBalance: l.financialAccount.nativeBalance,
+    // W-M0 — coverage's wallet-ledger check reconciles native quantity against
+    // native movements; it needs to know which asset that is to select them.
+    walletChain:   l.financialAccount.walletChain,
   }));
   // THE one coverage authority — the same call `getAccountsAsOf` makes.
   const coverageById = await getAccountCoverage(refs, { client });
@@ -116,6 +125,7 @@ export async function getAccountBalancesOverWindow(args: {
       debtSubtype: l.financialAccount.debtSubtype,
       creditLimit: l.financialAccount.creditLimit,
       nativeBalance: l.financialAccount.nativeBalance,
+      walletChain:   l.financialAccount.walletChain,
       lastUpdated:   l.financialAccount.lastUpdated,
       // The REPLAY floor drives the resolver; EXISTENCE is carried separately so
       // a node can say "this existed from X" even where no value may appear.

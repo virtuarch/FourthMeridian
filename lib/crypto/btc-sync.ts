@@ -69,13 +69,22 @@ import {
 } from "@/lib/crypto/btc-discovery-core";
 import { captureWalletPosition } from "@/lib/crypto/wallet-position-capture";
 import { BTC_ASSET } from "@/lib/investments/crypto-instrument";
+import { BTC_NATIVE, ledgerEpsilonFor } from "@/lib/crypto/native-asset";
 import { reconcileWalletLedger, type LedgerReconciliation } from "@/lib/crypto/ledger-completeness.core";
 import { economicDateFor } from "@/lib/transactions/economic-date-write";
 // v2.6-OWN-1 — the on-chain ledger names itself as the author of its flow facts.
 import { foreignFlowOwnershipFields } from "@/lib/transactions/flow-authority";
 
-/** The only chain this v1 sync supports. */
-export const BTC_CHAIN = "BTC";
+/**
+ * The only chain this v1 sync supports.
+ *
+ * W-M0 — sourced from the shared native-asset descriptor rather than declared
+ * here, so this adapter's chain token, the currency it stamps on movement rows,
+ * the symbol its ledger predicate selects and the canonical Instrument ticker
+ * are all ONE string. They were four independent literals; four literals that
+ * must agree are a drift waiting to happen.
+ */
+export const BTC_CHAIN = BTC_NATIVE.chain;
 
 export interface BtcWalletSyncResult {
   accountId: string;
@@ -271,7 +280,7 @@ function buildTransactionRow(
     description:           m.description,
     category,
     amount:                m.amountBtc,   // native BTC; inflow +, outflow/fee −
-    currency:              "BTC",
+    currency:              BTC_NATIVE.symbol,
     pending:               m.settlement === "PENDING",
     externalTransactionId: m.externalId,
     flowType,
@@ -515,13 +524,22 @@ async function reconcileWalletLedgerForAccount(
   const rows = await db.transaction.findMany({
     where: {
       financialAccountId: accountId,
-      currency:           "BTC",
+      // W-M0 — the SAME string this adapter stamps on the rows it writes, and
+      // the same one the historical predicates select by. Not a coincidence to
+      // be maintained; one descriptor read from three places.
+      currency:           BTC_NATIVE.symbol,
       deletedAt:          null,
       settlementState:    SettlementState.POSTED,
     },
     select: { amount: true },
   });
-  return reconcileWalletLedger({ observedBalance, movements: rows.map((r) => r.amount) });
+  return reconcileWalletLedger({
+    observedBalance,
+    movements: rows.map((r) => r.amount),
+    // One satoshi — the value this reconciliation always used, now stated as a
+    // property of the asset instead of a constant that happened to be Bitcoin's.
+    epsilon:   ledgerEpsilonFor(BTC_NATIVE),
+  });
 }
 
 export async function syncBtcWallet(

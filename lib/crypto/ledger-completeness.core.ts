@@ -46,7 +46,20 @@
  * Nothing here names a chain, a provider, an account or a user.
  */
 
-/** Native-unit tolerance for the reconciliation. */
+/**
+ * Native-unit tolerance for the reconciliation — THE DEFAULT, not the only one.
+ *
+ * W-M0: this was the sole tolerance, and it is one satoshi. That is correct for
+ * an 8-decimal asset and wrong for every other: a lamport is 1e-9 (so a SOL
+ * ledger short by up to ten lamports would read as complete) and a wei is 1e-18
+ * (below what float64 can even distinguish). The tolerance is therefore a
+ * PROPERTY OF THE ASSET and is now supplied per call by
+ * `ledgerEpsilonFor(asset)` in lib/crypto/native-asset.ts.
+ *
+ * It remains exported and remains the default so that every caller that does
+ * not yet name an asset behaves EXACTLY as it did — the BTC path is unchanged
+ * to the bit.
+ */
 export const LEDGER_EPSILON = 1e-8; // 1 satoshi — the smallest representable BTC unit
 
 export type LedgerRefusal =
@@ -59,8 +72,11 @@ export type LedgerRefusal =
 
 export interface LedgerReconciliationInput {
   /**
-   * The wallet's observed native balance (BTC), or null when none is known.
-   * This is the independent authority; the movements are what must explain it.
+   * The wallet's observed balance in its NATIVE asset's whole units, or null
+   * when none is known. This is the independent authority; the movements are
+   * what must explain it. Which asset that is, is the binding's business — this
+   * module only requires that the balance and the movements denominate the SAME
+   * one (see `epsilon`, which is that asset's base unit).
    */
   observedBalance: number | null;
   /**
@@ -73,10 +89,21 @@ export interface LedgerReconciliationInput {
    * binding, exactly as quantity-carry.core.ts does with its dates.
    */
   movements: readonly number[];
+  /**
+   * W-M0 — the native-unit tolerance for THIS asset, from
+   * `ledgerEpsilonFor(asset)`. Omitted ⇒ `LEDGER_EPSILON` (one satoshi), so
+   * every pre-W-M0 caller is byte-identical.
+   *
+   * The binding supplies it for the same reason it supplies the movements: this
+   * module names no chain and must not acquire one. A non-finite or
+   * non-positive value is ignored in favour of the default — a broken tolerance
+   * must never widen a comparison into silently passing.
+   */
+  epsilon?: number;
 }
 
 export interface LedgerReconciliation {
-  /** True only when the movements account for the balance within LEDGER_EPSILON. */
+  /** True only when the movements account for the balance within `epsilon`. */
   complete:        boolean;
   /** Σ movements. 0 when there are none — which is a sum, not an absence. */
   movementTotal:   number;
@@ -100,6 +127,13 @@ export interface LedgerReconciliation {
 export function reconcileWalletLedger(input: LedgerReconciliationInput): LedgerReconciliation {
   const { observedBalance, movements } = input;
   const movementCount = movements.length;
+  // A tolerance that is itself unusable is not a tolerance. Fall back to the
+  // default rather than compare against NaN (which makes every `>` false and
+  // would bless any shortfall) or against a negative (which refuses everything).
+  const epsilon =
+    input.epsilon !== undefined && Number.isFinite(input.epsilon) && input.epsilon > 0
+      ? input.epsilon
+      : LEDGER_EPSILON;
 
   let movementTotal = 0;
   let anyNonFinite = false;
@@ -121,7 +155,7 @@ export function reconcileWalletLedger(input: LedgerReconciliationInput): LedgerR
   // A wallet holding nothing, with no movements, reconciles trivially and
   // honestly: 0 == 0. Only a wallet that HOLDS something while we hold no
   // movements is a refusal.
-  if (movementCount === 0 && Math.abs(observedBalance) > LEDGER_EPSILON) {
+  if (movementCount === 0 && Math.abs(observedBalance) > epsilon) {
     return {
       complete: false, movementTotal, residual, movementCount,
       refusal: "NO_MOVEMENTS",
@@ -129,7 +163,7 @@ export function reconcileWalletLedger(input: LedgerReconciliationInput): LedgerR
     };
   }
 
-  if (anyNonFinite || Math.abs(residual) > LEDGER_EPSILON) {
+  if (anyNonFinite || Math.abs(residual) > epsilon) {
     return {
       complete: false, movementTotal, residual, movementCount,
       refusal: "LEDGER_SHORTFALL",

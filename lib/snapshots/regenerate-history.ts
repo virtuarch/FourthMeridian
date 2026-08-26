@@ -62,7 +62,9 @@ import {
   REGENERATION_DISPOSITIONS,
   type RegenerationDisposition,
 } from "@/lib/snapshots/regeneration-candidates.core";
-import { resolveBtcInstrumentId, readBtcUsdWindow } from "@/lib/crypto/btc-price";
+import { resolveBtcInstrumentId } from "@/lib/crypto/btc-price";
+import { readCryptoUsdWindows } from "@/lib/crypto/crypto-price-window";
+import { nativeAssetForChain, ledgerEpsilonFor, type NativeAsset } from "@/lib/crypto/native-asset";
 import { amountOwed } from "@/lib/debt/balance-semantics";
 import { getAccountBalancesOverWindow } from "@/lib/data/accounts-asof-window";
 import {
@@ -219,7 +221,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     where:  { spaceId, status: ShareStatus.ACTIVE, financialAccount: { deletedAt: null } },
     select: {
       createdAt: true,
-      financialAccount: { select: { id: true, name: true, type: true, balance: true, currency: true, createdAt: true, debtSubtype: true, creditLimit: true, nativeBalance: true, lastUpdated: true } },
+      financialAccount: { select: { id: true, name: true, type: true, balance: true, currency: true, createdAt: true, debtSubtype: true, creditLimit: true, nativeBalance: true, lastUpdated: true, walletChain: true } },
     },
   });
   if (linkRows.length === 0) return zero;
@@ -232,17 +234,39 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     currency: l.financialAccount.currency,
     debtSubtype: l.financialAccount.debtSubtype,
     creditLimit: l.financialAccount.creditLimit,
-    nativeBalance: l.financialAccount.nativeBalance, // BTC quantity for crypto accounts
+    nativeBalance: l.financialAccount.nativeBalance, // native quantity for crypto accounts
     lastUpdated: l.financialAccount.lastUpdated,     // when nativeBalance was observed
+    // W-M0 — the column that says WHAT nativeBalance counts. Without it the
+    // asset was a literal at the point of use; see cryptoAssetByAccount below.
+    walletChain: l.financialAccount.walletChain,
   }));
 
   // Part-A — crypto accounts get an honest per-day valuation: today's on-chain
   // quantity (nativeBalance, held CONSTANT — the block explorer in use is
   // current-balance-only, so historical per-day balance isn't derivable) × that
-  // day's CoinGecko BTC price. Backfill the window's BTC prices once (best-effort,
-  // dark without COINGECKO_API_KEY). Independent of the per-account floor: the
-  // constant-quantity assumption spans the whole window (a labeled estimate).
+  // day's archived close FOR THAT ASSET. Backfill the window's prices once
+  // (best-effort, dark without COINGECKO_API_KEY). Independent of the
+  // per-account floor: the constant-quantity assumption spans the whole window
+  // (a labeled estimate).
   const cryptoAccounts = accounts.filter((a) => a.type === "crypto" && a.nativeBalance != null);
+
+  // W-M0 — WHICH ASSET DOES EACH WALLET'S nativeBalance DENOMINATE?
+  //
+  // This used to be answered by a literal `"BTC"` at the two places the answer
+  // was needed: the movement-ledger predicate below and the `valueCryptoDay`
+  // call in the day loop. Correct while Bitcoin is the only chain that writes a
+  // native balance; a silent mispricing the moment one is not. Resolved ONCE,
+  // here, from the account's own chain, and null when the chain is unknown —
+  // which the valuation core refuses (UNKNOWN_ASSET) rather than defaulting.
+  const cryptoAssetByAccount = new Map<string, NativeAsset | null>(
+    cryptoAccounts.map((a) => [a.id, nativeAssetForChain(a.walletChain)]),
+  );
+  const cryptoSymbolByAccount = new Map<string, string | null>(
+    cryptoAccounts.map((a) => [a.id, cryptoAssetByAccount.get(a.id)?.symbol ?? null]),
+  );
+  const heldCryptoSymbols = [
+    ...new Set([...cryptoSymbolByAccount.values()].filter((s): s is string => s !== null)),
+  ].sort();
 
   // V26-CRYPTO-QTY-1 — THE CONSTANT-QUANTITY CARRY IS NOW LICENSED, NOT ASSUMED.
   //
@@ -282,7 +306,11 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     const evRows = await client.transaction.findMany({
       where: {
         financialAccountId: { in: cryptoAccounts.map((a) => a.id) },
-        currency:           "BTC",
+        // W-M0 — the native-amount rows for EVERY asset held in this Space, then
+        // matched back to each account's OWN asset below. A single literal here
+        // would hand a Bitcoin-denominated movement to an Ethereum wallet's
+        // reconciliation, where it would be counted as that wallet's quantity.
+        currency:           { in: heldCryptoSymbols },
         deletedAt:          null,
         settlementState:    SettlementState.POSTED,
       },
@@ -290,11 +318,15 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       // reconciliation sums. The same predicates already scope these rows to this
       // wallet's settled native movements, which is exactly the ledger the
       // reconciliation needs, so no second read is introduced.
-      select: { financialAccountId: true, date: true, amount: true },
+      select: { financialAccountId: true, date: true, amount: true, currency: true },
     });
     const movementsByAccount = new Map<string, number[]>();
     for (const r of evRows) {
       if (!r.financialAccountId) continue; // unattached row — not this wallet's activity
+      // W-M0 — a row counts for an account only if it denominates THAT account's
+      // native asset. With one chain this is always true and the filter is inert;
+      // with two it is the whole point.
+      if (r.currency !== cryptoSymbolByAccount.get(r.financialAccountId)) continue;
       const list = cryptoQuantityEventsByAccount.get(r.financialAccountId) ?? [];
       list.push(isoDate(r.date));
       cryptoQuantityEventsByAccount.set(r.financialAccountId, list);
@@ -320,6 +352,10 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       const recon = reconcileWalletLedger({
         observedBalance: a.nativeBalance ?? null,
         movements:       movementsByAccount.get(a.id) ?? [],
+        // W-M0 — one base unit OF THIS ASSET. A satoshi for BTC (unchanged); a
+        // lamport for SOL, which the old fixed satoshi tolerance would have let
+        // a ten-lamport shortfall pass under.
+        epsilon:         ledgerEpsilonFor(cryptoAssetByAccount.get(a.id) ?? null),
       });
       cryptoLedgerCompleteByAccount.set(a.id, recon.complete);
       if (!recon.complete) {
@@ -548,15 +584,19 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     console.warn(`[wealth-regen] ${spaceId}: historical holdings resolution failed (non-fatal, conservative): ${err instanceof Error ? err.message : err}`);
   }
 
-  // HIST-2C — resolve BTC/USD for the whole window in ONE archive read (built
-  // AFTER backfillBtcPrices above, so freshly-fetched closes are included), then
-  // answer each day from memory. Byte-identical to the former per-day
-  // readBtcUsdAsOf; only the D point reads collapse to one range read. Only built
-  // when there is crypto to value (else an all-null resolver, never queried).
-  const btcAt =
+  // HIST-2C — resolve the crypto closes for the whole window in ONE archive read
+  // (built AFTER the price backfill above, so freshly-fetched closes are
+  // included), then answer each day from memory. Byte-identical to the former
+  // per-day readBtcUsdAsOf; only the D point reads collapse to one range read.
+  // Only built when there is crypto to value (else an all-null resolver).
+  //
+  // W-M0 — the read is now keyed by ASSET SYMBOL and covers every asset held in
+  // this Space, not BTC alone. Still ONE range read: the assets are resolved to
+  // instruments up front and the whole set is fetched together.
+  const cryptoPriceAt =
     cryptoAccounts.length > 0
-      ? await readBtcUsdWindow(fromDate, toDate)
-      : (_dISO: string): number | null => null;
+      ? await readCryptoUsdWindows(heldCryptoSymbols, fromDate, toDate, { client })
+      : (_symbol: string, _dISO: string): number | null => null;
 
   const result: RegenerateWealthHistoryResult = { ...zero };
   const writes: Array<{
@@ -685,7 +725,13 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     let hasDigitalAssetEvidence = false;
     let cryptoDayValuation: CryptoDayValuation | null = null;
     if (cryptoAccounts.length > 0) {
-      const btcUsd = btcAt(dISO); // HIST-2C — from the one-shot window read above
+      // HIST-2C / W-M0 — from the one-shot window read above, one entry per asset
+      // actually held. An asset with no close on this day maps to null, which the
+      // valuation core reports as NO_PRICE naming that symbol — never a
+      // substituted price from another asset.
+      const unitPriceBySymbol = Object.fromEntries(
+        heldCryptoSymbols.map((sym) => [sym, cryptoPriceAt(sym, dISO)]),
+      );
       // V26-CRYPTO-QTY-1 — BOTH are required, and they are independent evidence:
       // a price reaching the day says nothing about what was held, and a licensed
       // quantity says nothing about what it was worth. Either one missing leaves
@@ -696,9 +742,10 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       // come from one call and cannot describe different portfolios.
       cryptoDayValuation = valueCryptoDay({
         accounts: cryptoAccounts.map((a) => ({
-          financialAccountId: a.id, name: a.name, nativeBalance: a.nativeBalance, symbol: "BTC",
+          financialAccountId: a.id, name: a.name, nativeBalance: a.nativeBalance,
+          symbol: cryptoSymbolByAccount.get(a.id) ?? null,
         })),
-        unitPrice:        btcUsd,
+        unitPriceBySymbol,
         quantityLicensed: cryptoQuantityLicensed(dISO),
       });
       if (cryptoDayValuation.licensed) {

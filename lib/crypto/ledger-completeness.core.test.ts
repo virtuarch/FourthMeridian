@@ -10,6 +10,7 @@
  */
 
 import { reconcileWalletLedger, LEDGER_EPSILON } from "./ledger-completeness.core";
+import { ledgerEpsilonFor, BTC_NATIVE, ETH_NATIVE, SOL_NATIVE } from "./native-asset";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -96,6 +97,43 @@ function main(): void {
     const a = reconcileWalletLedger({ observedBalance: 0.5, movements: [0.3, 0.1, 0.1] });
     const b = reconcileWalletLedger({ observedBalance: 0.5, movements: [0.1, 0.1, 0.3] });
     check("I. order does not change the verdict", a.complete === b.complete);
+  }
+
+  // ── J. W-M0 — the tolerance is a PROPERTY OF THE ASSET ────────────────────
+  {
+    // Default unchanged: every pre-W-M0 caller omits `epsilon` and gets a
+    // satoshi. Sections A–I above all rely on this and are the real proof.
+    check("J. omitting epsilon is exactly the pre-W-M0 satoshi tolerance",
+      reconcileWalletLedger({ observedBalance: 1, movements: [1 - 5e-9] }).complete
+        && reconcileWalletLedger({ observedBalance: 1, movements: [1 - 5e-9], epsilon: LEDGER_EPSILON }).complete);
+
+    // A lamport-sized shortfall: reconciled under BTC's tolerance, refused under
+    // SOL's. This is the case the single fixed constant could not express, and
+    // it would have blessed a SOL ledger short by up to ten lamports.
+    const shortByFiveLamports = { observedBalance: 10, movements: [10 - 5e-9] };
+    check("J. a 5-lamport shortfall passes at a satoshi and FAILS at a lamport",
+      reconcileWalletLedger({ ...shortByFiveLamports, epsilon: ledgerEpsilonFor(BTC_NATIVE) }).complete
+        && !reconcileWalletLedger({ ...shortByFiveLamports, epsilon: ledgerEpsilonFor(SOL_NATIVE) }).complete);
+
+    check("J. the SOL tolerance still reconciles a genuinely complete ledger",
+      reconcileWalletLedger({ observedBalance: 10, movements: [4, 6], epsilon: ledgerEpsilonFor(SOL_NATIVE) }).complete);
+
+    // ETH: float64 cannot distinguish a wei near unit magnitudes, so the ETH
+    // tolerance is the stated floor. A complete 18-decimal ledger must still
+    // reconcile through ordinary float summation noise.
+    const ethMovements = Array.from({ length: 200 }, () => 0.01);   // Σ = 2, with drift
+    check("J. an 18-decimal ledger reconciles through float summation noise",
+      reconcileWalletLedger({ observedBalance: 2, movements: ethMovements, epsilon: ledgerEpsilonFor(ETH_NATIVE) }).complete);
+    check("J. …while a materially short ETH ledger is still refused",
+      !reconcileWalletLedger({ observedBalance: 2.0001, movements: ethMovements, epsilon: ledgerEpsilonFor(ETH_NATIVE) }).complete);
+
+    // A broken tolerance must never WIDEN the comparison into silently passing.
+    for (const bad of [NaN, 0, -1, Infinity]) {
+      check(`J. an unusable epsilon (${bad}) falls back to the default, never blesses`,
+        !reconcileWalletLedger({ observedBalance: 1, movements: [0.5], epsilon: bad }).complete);
+    }
+    check("J. an unusable epsilon reproduces the default verdict exactly",
+      reconcileWalletLedger({ observedBalance: 1, movements: [1 - 5e-9], epsilon: NaN }).complete);
   }
 
   console.log(failures === 0 ? "\nAll ledger-completeness checks passed" : `\n${failures} failure(s)`);

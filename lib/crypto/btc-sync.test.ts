@@ -287,8 +287,21 @@ async function main(): Promise<void> {
   check("import is idempotent: dedupes on existing externalTransactionId before createMany",
     /transaction\.findMany/.test(sync) && /externalTransactionId/.test(sync) &&
     /new Set\(/.test(sync) && /transaction\.createMany/.test(sync));
-  check("transactions are stored as normal Transaction rows in BTC currency",
-    /currency:\s*["']BTC["']/.test(sync));
+  // W-M0 — the rows are still BTC-denominated; what changed is WHERE that string
+  // comes from. It is read from the shared native-asset descriptor, which is also
+  // what the ledger predicate selects by and what the canonical Instrument is
+  // tickered with, so the write and the reconciliation cannot drift apart. The
+  // second half is the invariant that matters: NO bare currency literal survives
+  // in this adapter, because a literal is exactly what let the historical engine
+  // assume every wallet was Bitcoin.
+  check("transactions are stored as normal Transaction rows in the native asset's currency",
+    /currency:\s*BTC_NATIVE\.symbol/.test(sync));
+  check("no bare currency literal survives in the BTC adapter (one descriptor, not four literals)",
+    !/currency:\s*["']BTC["']/.test(sync));
+  check("the chain token is the descriptor's, not a second declaration",
+    /BTC_CHAIN\s*=\s*BTC_NATIVE\.chain/.test(sync));
+  check("the ledger reconciliation is asked at THIS asset's base unit",
+    /epsilon:\s*ledgerEpsilonFor\(BTC_NATIVE\)/.test(sync));
   check("internal-transfer resolution via ProviderAccountIdentity + counterpartyAccountId",
     /providerAccountIdentity\.findMany/.test(sync) && /counterpartyAccountId/.test(sync) &&
     /FlowDirection\.INTERNAL/.test(sync));

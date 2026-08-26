@@ -124,12 +124,31 @@ function main(): void {
   check("crypto is still valued SEPARATELY into the digital-asset component",
     /digitalAssetValue/.test(code) && /totalDigitalAssets/.test(code));
 
-  // HIST-2C — the BTC/USD series is read ONCE for the window (readBtcUsdWindow),
-  // not one readBtcUsdAsOf point read per day (the last N×date read hot path).
-  check("crypto reads BTC via the batched window (readBtcUsdWindow), built once",
-    /readBtcUsdWindow\s*\(/.test(code));
-  check("crypto does NOT read BTC per day (no readBtcUsdAsOf in the day loop)",
-    !/readBtcUsdAsOf\s*\(/.test(code));
+  // HIST-2C — the crypto close series is read ONCE for the window, not one point
+  // read per day (the last N×date read hot path).
+  //
+  // W-M0 — that one read is now keyed by ASSET SYMBOL and covers every asset the
+  // Space holds (readCryptoUsdWindows), replacing the BTC-only readBtcUsdWindow.
+  // The batching invariant is unchanged; the asset dimension is new.
+  check("crypto reads closes via the batched per-asset window, built once",
+    /readCryptoUsdWindows\s*\(/.test(code));
+  check("crypto does NOT read a price per day (no point read in the day loop)",
+    !/readBtcUsdAsOf\s*\(/.test(code) && !/readLatestOnOrBefore\s*\(/.test(code));
+
+  // ── W-M0 — no asset is assumed. The literal that made every wallet Bitcoin ──
+  check("the wallet's asset is resolved from its chain, never assumed",
+    /nativeAssetForChain\s*\(/.test(code));
+  check("no literal BTC symbol is handed to the day valuation",
+    !/symbol:\s*["']BTC["']/.test(code));
+  check("the movement ledger is scoped to each account's OWN native asset",
+    /currency:\s*\{\s*in:\s*heldCryptoSymbols\s*\}/.test(code)
+      && /cryptoSymbolByAccount\.get\(r\.financialAccountId\)/.test(code));
+  check("no literal BTC currency predicate survives",
+    !/currency:\s*["']BTC["']/.test(code));
+  check("ledger reconciliation uses the asset's own base unit",
+    /epsilon:\s*ledgerEpsilonFor\(/.test(code));
+  check("the day valuation receives a price PER SYMBOL, not one price",
+    /unitPriceBySymbol/.test(code) && !/unitPrice:\s*btc/i.test(code));
 
   if (failures > 0) {
     console.error(`\n${failures} check(s) FAILED`);
