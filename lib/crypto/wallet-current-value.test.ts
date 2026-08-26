@@ -77,8 +77,8 @@ const DETAIL    = code(read("app", "api", "spaces", "[id]", "accounts", "detail"
     !/return\s+0\b/.test(SRC) && !/value:\s*0\b/.test(SRC) && !/quantity:\s*0\b/.test(SRC));
   check("an unpriceable holding reports NO_PRICE with a null value, keeping its quantity",
     /value: null, state: "NO_PRICE"/.test(SRC));
-  check("the tri-state is declared, so a consumer cannot receive a bare number",
-    /"VALUED"\s*\|\s*"NO_PRICE"\s*\|\s*"NO_OBSERVATION"/.test(SRC));
+  check("the state vocabulary is declared, so a consumer cannot receive a bare number",
+    /"VALUED"\s*\|\s*"STALE"\s*\|\s*"NO_PRICE"\s*\|\s*"NO_OBSERVATION"/.test(SRC));
   // A CONFIRMED zero is a different fact and must survive as one.
   check("a confirmed zero balance is a real observation, so it stays VALUED",
     /CONFIRMED ZERO/.test(read("lib", "crypto", "wallet-current-value.ts")));
@@ -118,11 +118,15 @@ const DETAIL    = code(read("app", "api", "spaces", "[id]", "accounts", "detail"
     check(`${name} consults the wallet-value authority`, /loadWalletCurrentValues\(/.test(src));
     check(`${name} selects walletChain, without which no wallet can be identified`,
       /walletChain/.test(src));
-    check(`${name} displaces the column ONLY when the state is VALUED`,
-      /state === "VALUED"/.test(src),
-      "substituting on any other state would publish a null or an invented number as money");
-    check(`${name} guards against a null value even on VALUED`,
-      /value !== null/.test(src));
+    // W6b — the predicate moved into ONE authority (`hasKnownValue`), which
+    // admits VALUED and STALE alike: falling back for staleness would swap a
+    // dated last-known figure for an unwritten column that always reads zero.
+    check(`${name} displaces the column only when a real number exists`,
+      /hasKnownValue\(/.test(src),
+      "substituting on NO_PRICE/NO_OBSERVATION would publish an invented number as money");
+    check(`${name} does NOT re-derive that predicate locally`,
+      !/state === "VALUED"/.test(src),
+      "a second copy of the rule is how VALUED and STALE start disagreeing");
   }
   // The aggregate is composed from member balances; substituting after it would
   // sum the zeros.
@@ -137,6 +141,12 @@ const DETAIL    = code(read("app", "api", "spaces", "[id]", "accounts", "detail"
   // A wallet's value IS a balance, so the tier that discloses balances gets it.
   check("BALANCE_ONLY receives the corrected balance, not the zero column",
     /balance:     displayBalance\(r\.balance, walletValue\)/.test(ACCOUNTS));
+  // W6b — a stale reading is disclosed, never discarded.
+  check("a STALE wallet keeps its number rather than falling back to the column",
+    /state === "VALUED" \|\| v\.state === "STALE"/.test(code(read("lib", "crypto", "wallet-current-value.ts"))),
+    "hasKnownValue must admit STALE, or staleness silently becomes a zero");
+  check("freshness travels to the consumer alongside the number",
+    /freshness:\s*walletValue\.freshness/.test(ACCOUNTS) && /observedAt/.test(ACCOUNTS));
   check("the FULL row carries the spine quantity rather than the unwritten column",
     /nativeBalance: walletValue\?\.quantity \?\? r\.nativeBalance/.test(ACCOUNTS));
   check("…and the tri-state travels with it, so a surface can refuse to show money",

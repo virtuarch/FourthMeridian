@@ -1054,6 +1054,7 @@ model FinancialAccount {
   @@index([createdByUserId])
   @@index([type])
   @@index([deletedAt])
+  positionCoverages     PositionCoverage[]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1457,6 +1458,7 @@ model Instrument {
 
   @@index([tickerSymbol])
   @@index([assetClass])
+  positionCoverages     PositionCoverage[]
 }
 
 // Provider identity mapping — the ProviderAccountIdentity/MerchantAlias twin.
@@ -1641,6 +1643,63 @@ enum ReconstructionStatus {
   COMPLETE // opening residual ≈ 0, no stops
   PARTIAL // nonzero residual or unmatched cancel — an unexplained opening remains
   FAILED // reconstruction stopped at an uninvertible corporate action / unknown
+}
+
+/// W6b — THE PERSISTED COVERAGE LICENCE FOR ONE POSITION.
+///
+/// `ChainCoverage` (lib/crypto/chain-movement.ts) is the authority that decides
+/// whether an acquisition may claim it saw everything, and over which interval.
+/// It was computed at sync time, used to drive the replay, returned to the
+/// caller — and then DISCARDED. Nothing survived except the rows the replay
+/// happened to write, so every downstream question about temporal licence was
+/// answered by row presence: "a row exists at or before this date, therefore the
+/// quantity may represent this date".
+///
+/// That is backwards. Rows are evidence; coverage is the licence to project that
+/// evidence onto a date, and the two are INDEPENDENT facts. The replay's habit
+/// of writing one row per licensed day made them look equivalent, but that is an
+/// implementation detail — a sparse representation with a licensed interval is
+/// equally valid and would have been silently mis-resolved.
+///
+/// This model persists the existing union verbatim. It introduces NO second
+/// coverage vocabulary: `kind`, the bounds and the caveats are the same values
+/// `ChainCoverage` already carries, written by the acquisition that computed
+/// them and read by the resolver that needs them.
+///
+/// One live row per position, upserted on re-sync, exactly like
+/// PositionReconstruction below.
+model PositionCoverage {
+  id                 String           @id @default(cuid())
+  financialAccountId String
+  financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  instrumentId       String
+  instrument         Instrument       @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+
+  /// "COMPLETE" | "PARTIAL" | "UNKNOWN" — reserved-String, write-time guarded by
+  /// `isCoverageKind`, the same pattern as `completenessTier`. Never an enum, so
+  /// a new coverage kind needs no migration.
+  kind String
+
+  /// The licensed interval. NULL on either side means UNBOUNDED-and-unproven for
+  /// that edge, which is NOT the same as "the whole of time": the resolver
+  /// refuses an unbounded edge rather than carrying through it.
+  coveredFromDate DateTime? @db.Date
+  coveredToDate   DateTime? @db.Date
+
+  /// `ChainCoverageCaveat` values, verbatim. Some of them are BLOCKING: a run
+  /// that exhausted its page budget or hit an archive depth limit knows it
+  /// stopped early, and no amount of arithmetic afterwards licenses the window
+  /// it never asked for.
+  caveats String[]
+
+  /// Which acquisition produced this, e.g. "solana:getSignaturesForAddress" or
+  /// the same with "+balance-reconciliation" once the residual closed.
+  source String
+
+  computedAt DateTime @default(now())
+
+  @@unique([financialAccountId, instrumentId])
+  @@index([financialAccountId])
 }
 
 model PositionReconstruction {

@@ -106,8 +106,14 @@ export interface Account {
    * and was rendered as money — a verified 0.751600602 SOL displayed as $0.00.
    *
    * The three states are distinct facts and must not be collapsed:
-   *   VALUED          `quantity` and `value` are real. A provider-confirmed zero
-   *                   balance arrives here as `quantity: 0` — a fact.
+   *   VALUED          `quantity` and `value` are real AND the observation behind
+   *                   them is fresh. A provider-confirmed zero balance arrives
+   *                   here as `quantity: 0` — a fact.
+   *   STALE           (W6b) real numbers from an observation older than the
+   *                   freshness horizon. LAST KNOWN, not confirmed-now. Must not
+   *                   be shown as an unqualified live balance — and a stale
+   *                   non-zero is emphatically not a zero, nor is a stale zero a
+   *                   fresh confirmation that the wallet is empty.
    *   NO_PRICE        held, quantity known, worth unknown. `value` is null.
    *   NO_OBSERVATION  never observed. Both null. NOT zero.
    *
@@ -115,7 +121,11 @@ export interface Account {
    * that renders money for a wallet must branch on `state` rather than trust it.
    */
   cryptoPosition?: {
-    state:     "VALUED" | "NO_PRICE" | "NO_OBSERVATION";
+    state:     "VALUED" | "STALE" | "NO_PRICE" | "NO_OBSERVATION";
+    /** Canonical freshness band of the successful provider read behind this. */
+    freshness: "LIVE" | "RECENT" | "STALE" | "VERY_STALE" | "UNKNOWN";
+    /** When the provider last confirmed it. Null when never / unknown. */
+    observedAt: string | null;
     /** Native units. Null is UNKNOWN — never 0. */
     quantity:  number | null;
     /** Reporting-currency value. Null is UNKNOWN — never 0. */
@@ -204,8 +214,10 @@ export interface Snapshot {
   // `totalDebt` and `netLiquid` never touched crypto and stay valid.
   //
   // All optional so every pre-existing constructor of this DTO is unaffected.
-  cryptoValuationState?: "observed" | "supported" | "unavailable" | "legacy-unrecorded" | "none";
+  cryptoValuationState?: "observed" | "supported" | "unavailable" | "stale" | "legacy-unrecorded" | "none";
   cryptoAssertable?: boolean;
+  /** W6b — the number is a LAST-KNOWN reading, not a confirmation of now. */
+  cryptoLastKnown?: boolean;
   assetSideContaminated?: boolean;
   cryptoUnavailableReason?: string;
 

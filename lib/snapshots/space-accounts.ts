@@ -111,6 +111,16 @@ export interface SnapshotAccount {
   type:     string;
   balance:  number;
   currency: string;
+  /**
+   * W6b — this row's balance is a wallet reading older than the freshness
+   * horizon: the LAST KNOWN position rather than a confirmation of now.
+   *
+   * Additive and optional, so `classifyAccounts` (whose input contract declares
+   * only { type, balance, currency, syncStatus }) is untouched and every total
+   * is computed exactly as before. It exists so the WRITER can stamp the row's
+   * provenance instead of publishing a stale reading as today's observed wealth.
+   */
+  cryptoStale?: boolean;
 }
 
 /**
@@ -129,9 +139,9 @@ export interface SnapshotAccountsClient {
   spaceAccountLink: {
     findMany(args: {
       where:    Prisma.SpaceAccountLinkWhereInput;
-      select:   { visibilityLevel: true; financialAccount: { select: { id: true; type: true; balance: true; currency: true; walletChain: true } } };
+      select:   { visibilityLevel: true; financialAccount: { select: { id: true; type: true; balance: true; currency: true; walletChain: true; lastUpdated: true } } };
       orderBy:  Prisma.SpaceAccountLinkOrderByWithRelationInput[];
-    }): Promise<Array<{ visibilityLevel: string; financialAccount: { id: string; type: string; balance: number; currency: string; walletChain: string | null } }>>;
+    }): Promise<Array<{ visibilityLevel: string; financialAccount: { id: string; type: string; balance: number; currency: string; walletChain: string | null; lastUpdated: Date } }>>;
   };
 }
 
@@ -153,7 +163,8 @@ export async function readSpaceAccountsForSnapshot(
   // be exercised in environments with no database engine at all. Uninjected
   // callers get the shared client exactly as before.
   const prisma = client ?? (await import("@/lib/db")).db;
-  const { loadWalletCurrentValues } = await import("@/lib/crypto/wallet-current-value");
+  const { loadWalletCurrentValues, hasKnownValue, isFreshCurrentValue } =
+    await import("@/lib/crypto/wallet-current-value");
 
   const links = await prisma.spaceAccountLink.findMany({
     where: {
@@ -164,7 +175,7 @@ export async function readSpaceAccountsForSnapshot(
     select: {
       visibilityLevel: true, // read for the W1-D3 disclosure tripwire below
       financialAccount: {
-        select: { id: true, type: true, balance: true, currency: true, walletChain: true },
+        select: { id: true, type: true, balance: true, currency: true, walletChain: true, lastUpdated: true },
       },
     },
     // Mirrors getAccountsWithVisibility so summation order — and therefore the
@@ -202,7 +213,11 @@ export async function readSpaceAccountsForSnapshot(
   // a VALUED result displaces the column; UNKNOWN and NO_PRICE fall through
   // rather than have a number invented, and BTC is absent from the map entirely.
   const walletValueByAccount = await loadWalletCurrentValues(
-    links.map((l) => ({ id: l.financialAccount.id, walletChain: l.financialAccount.walletChain })),
+    links.map((l) => ({
+      id: l.financialAccount.id,
+      walletChain: l.financialAccount.walletChain,
+      lastUpdated: l.financialAccount.lastUpdated,
+    })),
     { client: prisma as never, contextSpaceId: spaceId },
   );
 
@@ -211,8 +226,24 @@ export async function readSpaceAccountsForSnapshot(
     return {
       id:       l.financialAccount.id,
       type:     l.financialAccount.type as string,
-      balance:  v?.state === "VALUED" && v.value !== null ? v.value : l.financialAccount.balance,
+      // W6b — VALUED or STALE alike. A stale reading is the LAST KNOWN position
+      // and is still the best number there is; falling back to the column would
+      // swap it for an unwritten zero. Staleness is DISCLOSED (below), not
+      // expressed by discarding the figure.
+      balance:  hasKnownValue(v) ? v!.value! : l.financialAccount.balance,
       currency: l.financialAccount.currency,
+      /**
+       * W6b — present ONLY when this row's balance came from a wallet
+       * observation older than the freshness horizon: the LAST KNOWN position
+       * rather than a confirmation of now. The writer stamps the snapshot from
+       * it, so a week-old reading is never published as today's confirmed
+       * wealth.
+       *
+       * OMITTED rather than `false` for everything else, so a non-wallet row is
+       * byte-identical to what this read has always returned — the field-level
+       * identity argued in the header stays a fact, not an aspiration.
+       */
+      ...(hasKnownValue(v) && !isFreshCurrentValue(v) ? { cryptoStale: true } : {}),
     };
   });
 }

@@ -45,7 +45,11 @@ function main(): void {
 
   // ── vocabulary + write guard ──────────────────────────────────────────────
   console.log("1. vocabulary");
-  check("exactly two stored values", JSON.stringify(CRYPTO_VALUATION_STATUSES) === '["supported","unavailable"]');
+  check("exactly three stored values — W6b added `stale`, the LAST-KNOWN state",
+    CRYPTO_VALUATION_STATUSES.length === 3
+      && CRYPTO_VALUATION_STATUSES.includes("supported")
+      && CRYPTO_VALUATION_STATUSES.includes("unavailable")
+      && CRYPTO_VALUATION_STATUSES.includes("stale"));
   check("guard accepts members", isCryptoValuationStatus("supported") && isCryptoValuationStatus("unavailable"));
   check("guard rejects a parallel vocabulary",
     !isCryptoValuationStatus("SUPPORTED") && !isCryptoValuationStatus("ok") && !isCryptoValuationStatus("legacy-unrecorded"));

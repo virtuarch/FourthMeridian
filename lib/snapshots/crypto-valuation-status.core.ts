@@ -45,7 +45,7 @@
  * third state and is deliberately NOT a member: it means "never recorded", which
  * is a fact about the row's age, not a classification the writer chose.
  */
-export const CRYPTO_VALUATION_STATUSES = ["supported", "unavailable"] as const;
+export const CRYPTO_VALUATION_STATUSES = ["supported", "unavailable", "stale"] as const;
 export type CryptoValuationStatus = (typeof CRYPTO_VALUATION_STATUSES)[number];
 
 /**
@@ -94,12 +94,23 @@ export const CRYPTO_MATERIALITY_EPSILON = 0.5;
  *   legacy-unrecorded — estimated, status never recorded, material crypto. NOT
  *                       automatically trusted: the row predates this scalar and
  *                       nothing attests to how its number was produced.
+ *   stale             — W6b. The writer valued crypto from a real, dated
+ *                       observation whose provider read is older than the
+ *                       freshness horizon (lib/freshness/observation.ts). The
+ *                       number is the LAST KNOWN position, not a confirmation of
+ *                       the position now. Not assertable as current wealth, and
+ *                       emphatically not zero — including when the last known
+ *                       quantity WAS zero, because a stale zero is a stale
+ *                       reading rather than a fresh confirmation of an empty
+ *                       wallet, and "this wallet has been drained" is itself a
+ *                       material claim.
  *   none              — no material crypto. A legitimate zero.
  */
 export type CryptoValuationState =
   | "observed"
   | "supported"
   | "unavailable"
+  | "stale"
   | "legacy-unrecorded"
   | "none";
 
@@ -126,6 +137,18 @@ export interface CryptoValuationInput {
 export function resolveCryptoValuationState(input: CryptoValuationInput): CryptoValuationState {
   const { crypto, isEstimated, cryptoValuationStatus } = input;
 
+  // 0 — W6b. An EXPLICIT `stale` stamp is honoured ahead of the observation
+  //     rule, and only an explicit stamp: this is not a date-based test and
+  //     nothing here consults a clock, so the protection below is intact. A
+  //     frozen (`isEstimated=false`) historical row is never rewritten and
+  //     therefore never carries a stamp at all — the only rows that reach this
+  //     branch are the ones a writer deliberately marked while composing them.
+  //
+  //     Without this, today's live row — which IS written `isEstimated=false` —
+  //     would launder a week-old wallet reading into "observed, trusted
+  //     unconditionally", which is exactly the fake freshness W6b exists to stop.
+  if (cryptoValuationStatus === "stale") return "stale";
+
   // 1 — an observation is trusted unconditionally.
   if (isEstimated === false) return "observed";
 
@@ -150,6 +173,18 @@ export function resolveCryptoValuationState(input: CryptoValuationInput): Crypto
  */
 export function isCryptoAssertable(state: CryptoValuationState): boolean {
   return state === "observed" || state === "supported" || state === "none";
+}
+
+/**
+ * W6b — is this row's crypto a LAST-KNOWN reading rather than a current one?
+ *
+ * Separate from `isCryptoAssertable` on purpose. Both `stale` and `unavailable`
+ * fail to authorise a current claim, but they fail differently and a surface
+ * should be able to say so: `unavailable` has no number worth showing, `stale`
+ * has a real dated one that simply is not a confirmation of now.
+ */
+export function isCryptoLastKnown(state: CryptoValuationState): boolean {
+  return state === "stale";
 }
 
 /**
@@ -179,6 +214,9 @@ export function cryptoUnavailableReason(state: CryptoValuationState): string | n
   }
   if (state === "legacy-unrecorded") {
     return "HISTORICAL_CRYPTO_VALUATION_UNRECORDED";
+  }
+  if (state === "stale") {
+    return "CRYPTO_OBSERVATION_STALE";
   }
   return null;
 }

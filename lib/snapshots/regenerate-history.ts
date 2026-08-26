@@ -76,6 +76,7 @@ import { feedsLegacyWealthHistory } from "@/lib/crypto/wallet-sync-dispatch";
 // it carries the origin precedence (OBSERVED > IMPORTED > DERIVED > USER_ASSERTED)
 // that keeps an observation ranked above a reconstruction on a shared date.
 import { resolvePositionAsOf, type PositionRow } from "@/lib/investments/reconstruction-read";
+import { loadPositionCoverage, resolveLicensedQuantityAsOf } from "@/lib/crypto/position-coverage";
 import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
 import { valueCryptoDay, type CryptoDayValuation } from "@/lib/crypto/historical-crypto-valuation.core";
 import { toStoredCryptoValuationStatus } from "@/lib/snapshots/crypto-valuation-status.core";
@@ -366,36 +367,39 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
    * NULL means no dated evidence reaches this day, which the valuation core
    * treats as "not a position" — never as a quantity of zero.
    */
-  // ── W6 — THE DEFENSIBLE EXISTENCE INTERVAL OF A SPINE-BACKED WALLET ─────────
+  // ── W6b — THE LICENCE IS PERSISTED COVERAGE, NOT ROW PRESENCE ──────────────
   //
-  // `cryptoQuantityOn` returns null on a day no dated evidence reaches, and the
-  // valuation core now refuses such a day rather than dropping the account. That
-  // is right for a wallet whose history has a hole — and catastrophic for one
-  // that simply was not there yet, which is every CURRENT_POSITION-only chain on
-  // every historical date. An Ethereum wallet has exactly one observation, made
-  // today; without this bound, adding one would refuse a year of Bitcoin history.
+  // W6 bounded the carry at the first and last spine row. That was an
+  // improvement over an unbounded carry and still the wrong authority: it read
+  // the SHAPE of the evidence as the licence to project it. It only looked
+  // right because this replay writes one row per licensed day — an
+  // implementation detail, not doctrine. A sparse representation with a
+  // licensed interval would have been refused inside its own coverage, and a
+  // stray row beyond the edge would have licensed a date nothing proved.
   //
-  // The bound is read from the evidence itself rather than from a connection
-  // date. The replay writes a row for EVERY day it licenses, so the first and
-  // last spine rows ARE the coverage the reconstruction claimed:
+  // `ChainCoverage` is the authority and it is now persisted alongside the rows
+  // it licenses (lib/crypto/position-coverage.ts). Two independent questions,
+  // both of which must pass:
   //
-  //   before the first row — NOT_APPLICABLE. Nothing places the wallet here.
-  //                          (For Solana this is BEFORE_FIRST_DEFENSIBLE_ANCHOR;
-  //                          the day is not zero, it is not this wallet's day.)
-  //   inside the interval  — the resolver answers, and origin precedence applies.
-  //   after the last row   — APPLICABLE and UNKNOWN. The wallet exists — it
-  //                          exists right now — but nothing licenses carrying its
-  //                          last known quantity forward to this date. A current
-  //                          observation licenses a point, not an interval.
+  //   what is the latest defensible quantity?   → the rows
+  //   may it represent THIS date?               → the coverage
   //
-  // Deliberately NOT the account's createdAt: a reconstructed wallet has
-  // defensible evidence long before we connected to it (Solana's runs back to
-  // 2022-03-26 while the account was created 2026-08-26), and flooring on the
-  // connection date would delete four years of proven history.
-  const spineBoundsByAccount = new Map<string, { firstISO: string; lastISO: string }>();
+  // A wallet with no coverage record licenses NOTHING. That is deliberate and it
+  // is not a fallback to the old behaviour: row presence may never stand in for
+  // a licence, so a reconstruction that predates this record must be re-acquired
+  // rather than trusted on the strength of the rows it left behind.
+  const coverageByAccount = await loadPositionCoverage(client, spineCryptoAccounts.map((a) => a.id));
+
+  // EXISTENCE is a separate, weaker claim than LICENCE, and it comes from a
+  // different fact. The earliest dated row says the wallet WAS here; it says
+  // nothing about what it held on any other day. Keeping the two apart is what
+  // lets an unlicensed wallet REFUSE a date (it existed, we cannot say) while a
+  // wallet that was simply not there yet contributes nothing and refuses nothing
+  // — the distinction that stops one current-only ETH wallet blacking out a year
+  // of Bitcoin history.
+  const earliestEvidenceISO = new Map<string, string>();
   for (const [accountId, rows] of spineRowsByAccount) {
-    if (rows.length === 0) continue;
-    spineBoundsByAccount.set(accountId, { firstISO: rows[0].date, lastISO: rows[rows.length - 1].date });
+    if (rows.length > 0) earliestEvidenceISO.set(accountId, rows[0].date);
   }
 
   // W6 — membership by CHAIN, not by whether rows happened to be found. Keying
@@ -410,12 +414,15 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       // Spine-backed: dated evidence or nothing. NEVER the legacy column.
       const rows = spineRowsByAccount.get(accountId);
       if (rows === undefined) return null;
-      // W6 — the replay writes a row for every day it licenses, so the last row
-      // IS where its coverage ends. `resolvePositionAsOf` would happily carry
-      // that quantity forward for ever; beyond the licensed edge that is an
-      // assertion, not a reading. A current observation licenses its own date.
-      const bounds = spineBoundsByAccount.get(accountId);
-      if (bounds !== undefined && dISO > bounds.lastISO) return null;
+      // W6b — licence FIRST. `resolvePositionAsOf` still decides WHICH row wins
+      // (origin precedence: OBSERVED > IMPORTED > DERIVED > USER_ASSERTED); the
+      // coverage decides whether any row may speak for this date at all.
+      const licence = resolveLicensedQuantityAsOf(
+        rows.map((r) => ({ dateISO: r.date, quantity: r.quantity })),
+        coverageByAccount.get(accountId) ?? null,
+        dISO,
+      );
+      if (licence.refusal !== null) return null;
       return resolvePositionAsOf(rows, dISO).quantity;
     }
     return cryptoAccounts.find((a) => a.id === accountId)?.nativeBalance ?? null;
@@ -431,12 +438,16 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     if (!spineAccountIds.has(accountId)) {
       return cryptoAccounts.find((a) => a.id === accountId)?.nativeBalance != null;
     }
-    const bounds = spineBoundsByAccount.get(accountId);
-    // Spine-backed with no dated evidence at all: nothing places it on any day,
-    // so it is applicable nowhere rather than unknown everywhere. This is what
-    // keeps a CURRENT_POSITION-only chain from refusing history it never claimed.
-    if (bounds === undefined) return false;
-    return dISO >= bounds.firstISO;
+    // W6b — EXISTENCE, from evidence. A spine wallet with no dated row anywhere
+    // is placed nowhere; a date before its earliest row is before it was here.
+    // Everything at or after that row is APPLICABLE, and whether a QUANTITY may
+    // be stated there is the coverage's question, asked separately in
+    // `cryptoQuantityOn`. An applicable date with no licensed quantity is
+    // UNKNOWN and refuses the day — it does not silently drop out, which is the
+    // whole point of W6 and must survive W6b.
+    const earliest = earliestEvidenceISO.get(accountId);
+    if (earliest === undefined) return false;
+    return dISO >= earliest;
   };
 
   // An account is MATERIAL if it ever held something across the window — by the

@@ -65,6 +65,7 @@ import {
   describeCoverage,
   type ChainMovement, type ChainCoverage, type MovementDisposition,
 } from "@/lib/crypto/chain-movement";
+import { persistPositionCoverage } from "@/lib/crypto/position-coverage";
 import {
   replayQuantityTimeline, PERMITTED_ANCHOR_ORIGINS,
   type QuantityAnchor, type QuantityTimeline,
@@ -288,6 +289,12 @@ export async function reconstructSolHistory(args: SolHistorySyncArgs): Promise<S
           skipDuplicates: true,
         });
       }
+      // W6b — THE LICENCE, persisted with the evidence it licenses, in the same
+      // transaction. Before this the coverage was computed, used to drive the
+      // replay, returned to the caller and then discarded — so every later
+      // question about temporal licence was answered by row presence. Rows are
+      // evidence; this is the authority to project them onto a date.
+      await persistPositionCoverage(tx, accountId, instrumentId, licensed);
     });
   }
 

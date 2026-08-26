@@ -54,6 +54,7 @@ import {
 import { todayUTCISO } from "@/lib/time/clock";
 import { feedsLegacyWealthHistory } from "./wallet-sync-dispatch";
 import { nativeAssetForChain } from "./native-asset";
+import { bandForAge, ageInDays, type FreshnessBand } from "@/lib/freshness/observation";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -70,12 +71,26 @@ type Client = PrismaClient | Prisma.TransactionClient;
  *   NO_OBSERVATION  nothing has ever been observed for this wallet — never
  *                   synced, or every attempt refused. Both are null.
  *
+ *   STALE           (W6b) the quantity and value are real but the observation
+ *                   behind them is older than the freshness horizon. This is the
+ *                   LAST KNOWN position, not a confirmation of the position now,
+ *                   and it must never be published as an unqualified live
+ *                   balance. The numbers are still carried — a stale non-zero is
+ *                   emphatically not a zero.
+ *
  * A CONFIRMED ZERO is not on this list, and that is the point: a provider that
  * returns a zero balance produces a real observation, so it arrives as VALUED
  * with `quantity: 0`. "Holds nothing" and "we don't know" are distinguishable
  * downstream because one is a number and the other is null.
+ *
+ * ── W6b: ZERO NEEDS THE SAME FRESHNESS AUTHORITY AS ANY OTHER QUANTITY ───────
+ * A stale confirmed zero is a stale reading, not a fresh confirmation that the
+ * wallet is empty. Zero is itself a material claim — "this wallet has been
+ * drained" — and it may only be asserted on evidence as current as any other
+ * number would need. So freshness is applied BEFORE the value is classified,
+ * never only to the non-zero branch.
  */
-export type WalletValueState = "VALUED" | "NO_PRICE" | "NO_OBSERVATION";
+export type WalletValueState = "VALUED" | "STALE" | "NO_PRICE" | "NO_OBSERVATION";
 
 export interface WalletCurrentValue {
   accountId:  string;
@@ -93,12 +108,31 @@ export interface WalletCurrentValue {
   asOf:       string;
   /** The close actually used, which may be earlier than `asOf`. */
   priceDate:  string | null;
+  /**
+   * W6b — WHEN the provider last successfully confirmed this wallet, and the
+   * canonical band for that age.
+   *
+   * The instant is `FinancialAccount.lastUpdated`, which the wallet adapters
+   * write ONLY after a successful read (sol-sync.ts step 4, evm-native.ts): a
+   * refused sync returns before it, so the age grows exactly as it should when a
+   * provider is unavailable. The band is `bandForAge` from lib/freshness —
+   * LIVE / RECENT / STALE / VERY_STALE / UNKNOWN — the same thresholds every
+   * other balance surface discloses against. No new TTL is invented here.
+   */
+  observedAt: Date | null;
+  freshness:  FreshnessBand;
 }
 
 /** One account the caller has already authorized, with the chain that names its asset. */
 export interface WalletAccountRef {
   id:          string;
   walletChain: string | null | undefined;
+  /**
+   * W6b — `FinancialAccount.lastUpdated`: the clock a wallet adapter advances
+   * ONLY on a successful provider read. Omitted or null leaves the freshness
+   * UNKNOWN, which is never treated as fresh.
+   */
+  lastUpdated?: Date | null;
 }
 
 /**
@@ -108,6 +142,26 @@ export interface WalletAccountRef {
  * other account — cash, credit, brokerage, and BTC — is unaffected and keeps
  * whatever authority it already had.
  */
+/**
+ * Does this wallet have a real number behind it, fresh or not?
+ *
+ * TRUE for VALUED and STALE alike, and that is deliberate. A stale reading is
+ * the LAST KNOWN position; falling back to `FinancialAccount.balance` because it
+ * is not fresh would replace a real, dated number with an unwritten column that
+ * always reads zero — trading a disclosable imprecision for a fabricated
+ * absence. Staleness is disclosed by `freshness`, never by discarding the value.
+ *
+ * FALSE for NO_PRICE and NO_OBSERVATION, where there is no number to show.
+ */
+export function hasKnownValue(v: WalletCurrentValue | undefined): boolean {
+  return v !== undefined && (v.state === "VALUED" || v.state === "STALE") && v.value !== null;
+}
+
+/** May this wallet back a CURRENT claim — freshly observed wealth, now? */
+export function isFreshCurrentValue(v: WalletCurrentValue | undefined): boolean {
+  return v !== undefined && v.state === "VALUED";
+}
+
 export function needsSpineValuation(ref: WalletAccountRef): boolean {
   return Boolean(ref.walletChain) && !feedsLegacyWealthHistory(ref.walletChain);
 }
@@ -121,19 +175,34 @@ export function needsSpineValuation(ref: WalletAccountRef): boolean {
  */
 export async function loadWalletCurrentValues(
   refs: readonly WalletAccountRef[],
-  options?: { client?: Client; asOf?: string; contextSpaceId?: string | null; reportingCurrency?: string },
+  options?: { client?: Client; asOf?: string; contextSpaceId?: string | null; reportingCurrency?: string; now?: Date },
 ): Promise<Map<string, WalletCurrentValue>> {
   const out = new Map<string, WalletCurrentValue>();
   const client = options?.client ?? db;
   const asOf   = options?.asOf ?? todayUTCISO();
+  const now    = options?.now ?? new Date();
+
+  // W6b — the freshness of the SUCCESSFUL provider read behind this wallet.
+  // `lastUpdated` is advanced only by an adapter that actually got an answer, so
+  // a day of refused syncs simply ages — which is precisely the signal wanted.
+  const bandOf = (ref: WalletAccountRef): { observedAt: Date | null; band: FreshnessBand } => {
+    const observedAt = ref.lastUpdated ?? null;
+    if (observedAt === null) return { observedAt: null, band: "UNKNOWN" };
+    return { observedAt, band: bandForAge(ageInDays(observedAt, now)) };
+  };
+  /** A band that may back a CURRENT claim. UNKNOWN is never fresh. */
+  const isFresh = (band: FreshnessBand): boolean => band === "LIVE" || band === "RECENT";
 
   const wallets = refs.filter(needsSpineValuation);
   if (wallets.length === 0) return out;
 
   // Seed every wallet as NO_OBSERVATION. Anything that fails to resolve below
   // therefore stays honestly unknown; nothing can fall through to a zero.
+  const freshnessByAccount = new Map<string, { observedAt: Date | null; band: FreshnessBand }>();
   for (const w of wallets) {
     const asset = nativeAssetForChain(w.walletChain);
+    const f = bandOf(w);
+    freshnessByAccount.set(w.id, f);
     out.set(w.id, {
       accountId: w.id,
       chain:     (w.walletChain ?? "").trim().toUpperCase(),
@@ -144,6 +213,8 @@ export async function loadWalletCurrentValues(
       state:     "NO_OBSERVATION",
       asOf,
       priceDate: null,
+      observedAt: f.observedAt,
+      freshness:  f.band,
     });
   }
 
@@ -220,6 +291,11 @@ export async function loadWalletCurrentValues(
       continue;
     }
 
+    // W6b — freshness decides between a CURRENT claim and a LAST-KNOWN one, and
+    // it is asked BEFORE the quantity is looked at. A stale zero is a stale
+    // reading, not a fresh confirmation that the wallet is empty; zero is a
+    // material claim and needs the same evidence authority as any other number.
+    const f = freshnessByAccount.get(accountId) ?? { observedAt: null, band: "UNKNOWN" as FreshnessBand };
     out.set(accountId, {
       accountId,
       chain:     seed.chain,
@@ -227,9 +303,11 @@ export async function loadWalletCurrentValues(
       symbol:    seed.symbol,
       quantity,
       value:     valued.reduce((s, c) => s + (c.reportingValue ?? 0), 0),
-      state:     "VALUED",
+      state:     isFresh(f.band) ? "VALUED" : "STALE",
       asOf,
       priceDate,
+      observedAt: f.observedAt,
+      freshness:  f.band,
     });
   }
 

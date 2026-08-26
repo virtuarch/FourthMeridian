@@ -155,8 +155,9 @@ const acct = (id: string, qty: number | null, assetKey: string, symbol: string, 
 
   // And the binding must not let the resolver carry past the licensed edge.
   const binding = code(read("lib", "snapshots", "regenerate-history.ts"));
-  check("the regeneration bounds the forward carry at the last licensed row",
-    /dISO > bounds\.lastISO\) return null/.test(binding),
+  // W6b — the bound is the persisted COVERAGE, not the shape of the rows.
+  check("the regeneration asks the coverage licence before returning a quantity",
+    /resolveLicensedQuantityAsOf\(/.test(binding) && /licence\.refusal !== null\) return null/.test(binding),
     "without this, a current observation silently licenses every later date");
 }
 
@@ -182,10 +183,10 @@ const acct = (id: string, qty: number | null, assetKey: string, symbol: string, 
 
   const binding = code(read("lib", "snapshots", "regenerate-history.ts"));
   check("existence begins at the wallet's FIRST dated evidence, not its connection date",
-    /dISO >= bounds\.firstISO/.test(binding),
+    /dISO >= earliest/.test(binding),
     "flooring on createdAt would delete Solana's four years of proven history");
   check("a spine wallet with no dated evidence at all is applicable NOWHERE",
-    /if \(bounds === undefined\) return false/.test(binding));
+    /if \(earliest === undefined\) return false/.test(binding));
 }
 
 // ══ NO LEGACY FALLBACK FOR SPINE-BACKED CRYPTO ════════════════════════════════

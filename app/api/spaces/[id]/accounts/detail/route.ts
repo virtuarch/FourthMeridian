@@ -41,7 +41,7 @@ import { deriveConnectionState, type SyncConnectionState } from "@/lib/sync/stat
 import { resolveAccountFreshness, type AccountFreshness } from "@/lib/freshness/observation";
 import { resolveAccountBalances, reconcileAccount, type AccountBalances, type Reconciliation } from "@/lib/balances/account-balances";
 import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
-import { loadWalletCurrentValues } from "@/lib/crypto/wallet-current-value";
+import { loadWalletCurrentValues, hasKnownValue } from "@/lib/crypto/wallet-current-value";
 
 export interface AccountDetailRow {
   id:                 string;      // FinancialAccount.id (FULL) or synthetic (BALANCE_ONLY aggregate)
@@ -237,7 +237,11 @@ export async function GET(
   // is composed FROM that number, so the substitution happens once, here, before
   // any of them see it — rather than in three places that could disagree.
   const walletValueByAccount = await loadWalletCurrentValues(
-    links.map((l) => ({ id: l.financialAccount.id, walletChain: l.financialAccount.walletChain })),
+    links.map((l) => ({
+      id: l.financialAccount.id,
+      walletChain: l.financialAccount.walletChain,
+      lastUpdated: l.financialAccount.lastUpdated,
+    })),
     { contextSpaceId: spaceId },
   );
 
@@ -246,9 +250,7 @@ export async function GET(
     const walletValue = walletValueByAccount.get(raw.id);
     // Only a VALUED wallet displaces the column; an unknown one falls through to
     // it rather than having a number invented.
-    const a = walletValue?.state === "VALUED" && walletValue.value !== null
-      ? { ...raw, balance: walletValue.value }
-      : raw;
+    const a = hasKnownValue(walletValue) ? { ...raw, balance: walletValue!.value! } : raw;
 
     if (link.visibilityLevel !== "FULL") {
       // Reuse the shared normalizer's exact ShareRow shape (FULL/BALANCE_ONLY).

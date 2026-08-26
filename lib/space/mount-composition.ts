@@ -40,7 +40,7 @@ import { resolveEffectiveDebtTerms } from "@/lib/debt/effective-terms";
 import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
 import { resolveRowBalances, reconcileAccount } from "@/lib/balances/account-balances";
 import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
-import { loadWalletCurrentValues } from "@/lib/crypto/wallet-current-value";
+import { loadWalletCurrentValues, hasKnownValue } from "@/lib/crypto/wallet-current-value";
 
 /** THE sections loader (was inline in /api/spaces/[id]/sections). */
 export async function loadSpaceSections(spaceId: string): Promise<DashboardSection[]> {
@@ -147,7 +147,11 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
   // its column byte-identically; a wallet whose value is unknown also falls
   // through to the column rather than having a number invented for it.
   const walletValueByAccount = await loadWalletCurrentValues(
-    links.map((l) => ({ id: l.financialAccount.id, walletChain: l.financialAccount.walletChain })),
+    links.map((l) => ({
+      id: l.financialAccount.id,
+      walletChain: l.financialAccount.walletChain,
+      lastUpdated: l.financialAccount.lastUpdated,
+    })),
     { contextSpaceId: spaceId },
   );
 
@@ -159,9 +163,10 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
       ...l,
       financialAccount: {
         ...account,
-        balance: walletValue?.state === "VALUED" && walletValue.value !== null
-          ? walletValue.value
-          : account.balance,
+        // W6b — VALUED or STALE alike: a dated last-known figure beats an
+        // unwritten column that always reads zero. Staleness is disclosed by the
+        // richer account read, not by discarding the number here.
+        balance: hasKnownValue(walletValue) ? walletValue!.value! : account.balance,
         // v2.6-TRUTH-10 — resolve the canonical identity HERE, once, so every
         // Space surface downstream receives the same name the Credit page shows.
         // ⚠️ `name` is overwritten with the resolved identity, NOT a new field:

@@ -43,7 +43,7 @@ import { convertStampedValues } from "@/lib/snapshots/stamp-conversion";
 import { resolveSnapshotCompleteness, snapshotConfidence, type SnapshotCompleteness } from "@/lib/snapshots/snapshot-completeness.core";
 import {
   resolveCryptoValuationState, isCryptoAssertable, isAssetSideContaminated,
-  cryptoUnavailableReason, type CryptoValuationState,
+  cryptoUnavailableReason, isCryptoLastKnown, type CryptoValuationState,
 } from "@/lib/snapshots/crypto-valuation-status.core";
 import { authoriseAggregates, type AggregateAuthorisationMap } from "@/lib/snapshots/aggregate-authorisation.core";
 import { canonicalWindowChange, type CanonicalWindowChange } from "@/lib/data/snapshot-window";
@@ -82,6 +82,8 @@ export interface SnapshotRowProvenance {
     totalComponentCount:        number | null;
     cryptoValuationState:       CryptoValuationState;
     cryptoAssertable:           boolean;
+    /** W6b — a LAST-KNOWN reading, not a confirmation of now. */
+    cryptoLastKnown:            boolean;
     assetSideContaminated:      boolean;
     aggregateAuthorisation:     AggregateAuthorisationMap;
     cryptoUnavailableReason?:   string;
@@ -125,6 +127,7 @@ export function resolveSnapshotRowProvenance(r: RawSnapshotRow): SnapshotRowProv
       totalComponentCount:        completeness.totalComponentCount,
       cryptoValuationState:       cryptoState,
       cryptoAssertable:           isCryptoAssertable(cryptoState),
+      cryptoLastKnown:            isCryptoLastKnown(cryptoState),
       // RETAINED — several consumers read it today (Wealth, AI, export); it and
       // `aggregates.netWorth.assertable` agree by construction (test-pinned).
       assetSideContaminated:      isAssetSideContaminated(cryptoState),

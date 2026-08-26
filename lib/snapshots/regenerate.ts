@@ -240,7 +240,17 @@ export async function regenerateSpaceSnapshot(
     // status stamped by a historical regeneration describes a computation that
     // no longer produced this number. Omitting it from `update` would let that
     // stale authorization survive onto fresh values.
-    cryptoValuationStatus: null,
+    // W6b — a wallet reading older than the freshness horizon is the LAST KNOWN
+    // position, not a confirmation of the position now. This row is written
+    // `isEstimated=false`, which every consumer reads as "observed, trusted
+    // unconditionally" — so without an explicit stamp a week-old balance would
+    // be laundered into today's confirmed wealth. `stale` is the smallest honest
+    // statement using the column that already exists for exactly this purpose:
+    // the number stays, its authority to be called CURRENT does not.
+    //
+    // Not `unavailable`: there IS a real dated number here, and refusing it
+    // outright would discard evidence rather than qualify it.
+    cryptoValuationStatus: accounts.some((a) => a.cryptoStale === true) ? "stale" as const : null,
   };
 
   await client.spaceSnapshot.upsert({

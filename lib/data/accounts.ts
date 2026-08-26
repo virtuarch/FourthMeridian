@@ -41,7 +41,7 @@ import {
 } from "@/lib/account-privacy";
 import { resolveRowBalances, reconcileAccount } from "@/lib/balances/account-balances";
 import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
-import { loadWalletCurrentValues, type WalletCurrentValue } from "@/lib/crypto/wallet-current-value";
+import { loadWalletCurrentValues, hasKnownValue, type WalletCurrentValue } from "@/lib/crypto/wallet-current-value";
 
 /**
  * One visible account plus the SpaceAccountLink.visibilityLevel that
@@ -192,20 +192,26 @@ export async function getAccountsWithVisibility(
   // BTC is absent from this map and keeps its column, unchanged.
   const walletValueByAccount = await loadWalletCurrentValues(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    links.map((l: any) => ({ id: l.financialAccount.id, walletChain: l.financialAccount.walletChain })),
+    links.map((l: any) => ({
+      id: l.financialAccount.id,
+      walletChain: l.financialAccount.walletChain,
+      // W6b — the successful-read clock, so a stale wallet is not published as live.
+      lastUpdated: l.financialAccount.lastUpdated,
+    })),
     { contextSpaceId: spaceId },
   );
 
   /**
    * The balance a surface should show.
    *
-   * Only a VALUED wallet displaces the column. NO_PRICE and NO_OBSERVATION
-   * deliberately fall through to it rather than inventing a number — the
-   * position may be real but its value is unknown, and `cryptoPosition` carries
-   * that state so a consumer can say so instead of printing a total.
+   * A wallet with a real number displaces the column — VALUED or STALE alike.
+   * W6b: falling back for staleness would swap a dated last-known figure for an
+   * unwritten column that always reads zero, which is strictly worse. Staleness
+   * travels on `cryptoPosition.freshness` instead. NO_PRICE and NO_OBSERVATION
+   * still fall through: there is no number to show.
    */
   const displayBalance = (columnBalance: number, v: WalletCurrentValue | undefined): number =>
-    v?.state === "VALUED" && v.value !== null ? v.value : columnBalance;
+    hasKnownValue(v) ? v!.value! : columnBalance;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return links.map((link: any) => {
@@ -371,7 +377,9 @@ export async function getAccountsWithVisibility(
       // to the (zero) column for the two states that have no value, and only
       // this field distinguishes "holds nothing" from "we do not know".
       ...(walletValue ? { cryptoPosition: {
-        state:     walletValue.state,
+        state:      walletValue.state,
+        freshness:  walletValue.freshness,
+        observedAt: walletValue.observedAt ? walletValue.observedAt.toISOString() : null,
         quantity:  walletValue.quantity,
         value:     walletValue.value,
         symbol:    walletValue.symbol,

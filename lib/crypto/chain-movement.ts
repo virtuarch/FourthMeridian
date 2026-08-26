@@ -43,6 +43,7 @@ import type {
 import type {
   NormalizedQuantityEvent,
 } from "@/lib/investments/quantity-event.core";
+import { BLOCKING_CAVEATS } from "./position-coverage";
 
 // ── Coverage ─────────────────────────────────────────────────────────────────
 
@@ -306,8 +307,10 @@ export function licenseCoverageByReconciliation(
   // A budget-exhausted or depth-limited run is NOT licensed by arithmetic: it
   // knows it stopped early, and a balance that happens to reconcile over a
   // truncated window says nothing about the window that was never asked for.
-  const blocking: readonly ChainCoverageCaveat[] = ["PAGE_BUDGET_EXHAUSTED", "ARCHIVE_DEPTH_LIMIT", "PROVIDER_THROTTLED", "PROVIDER_ERROR", "INVALID_DATA", "NO_PROVIDER_CONFIGURED"];
-  if (coverage.caveats.some((c) => blocking.includes(c))) return coverage;
+  // W6b — ONE list, shared with the READ-TIME licence (position-coverage.ts).
+  // Acquisition-time upgrade and read-time licence must never disagree about
+  // which caveats bite; two copies of this list would eventually differ.
+  if (coverage.caveats.some((c) => BLOCKING_CAVEATS.includes(c))) return coverage;
 
   // The upper bound runs to the observation the arithmetic closed against, when
   // the caller states one and it is later than the newest movement seen.
