@@ -71,6 +71,11 @@ import {
   aggregateIdentityViolations, SERIES_IDENTITY_TOLERANCE,
 } from "@/lib/snapshots/series-integrity.core";
 import { licenseConstantQuantityCarry } from "@/lib/crypto/quantity-carry.core";
+import { feedsLegacyWealthHistory } from "@/lib/crypto/wallet-sync-dispatch";
+// W-M2c — THE canonical as-of position resolver, reused rather than reimplemented:
+// it carries the origin precedence (OBSERVED > IMPORTED > DERIVED > USER_ASSERTED)
+// that keeps an observation ranked above a reconstruction on a shared date.
+import { resolvePositionAsOf, type PositionRow } from "@/lib/investments/reconstruction-read";
 import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
 import { valueCryptoDay, type CryptoDayValuation } from "@/lib/crypto/historical-crypto-valuation.core";
 import { toStoredCryptoValuationStatus } from "@/lib/snapshots/crypto-valuation-status.core";
@@ -295,7 +300,85 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         .map((a) => [a.assetKey, a]),
     ).values(),
   ];
-  const materialCryptoAccounts = cryptoAccounts.filter((a) => Math.abs(a.nativeBalance ?? 0) > 0);
+  //
+  // ── W-M2c — THE SPINE BRIDGE: A DATED POSITION IS ALSO A CRYPTO QUANTITY ────
+  //
+  // Everything above sources a crypto quantity from `FinancialAccount
+  // .nativeBalance` — the legacy column Bitcoin writes at sync time and carries
+  // backward under licence. A chain that writes NO balance column is invisible
+  // to it, however much history it has.
+  //
+  // Solana is exactly that chain, and the consequence was measured on the real
+  // wallet: a fully reconstructed, zero-residual quantity timeline sat on the
+  // position spine — 100.7766 SOL on 26 February, 0.7516 on the 27th — while
+  // every SpaceSnapshot in that window recorded Bitcoin alone. The reconstruction
+  // was correct and reached no consumer, so the year chart showed nothing where a
+  // hundred-SOL custody change had happened.
+  //
+  // The bridge is the doctrine-correct direction and nothing more:
+  //
+  //     dated position (PositionObservation) × dated close = dated crypto value
+  //
+  // NOT today's nativeBalance painted backward, and NOT a missing legacy balance
+  // read as zero. Each account is sourced by exactly ONE authority — the chain
+  // that feeds the legacy path uses the legacy column, every other chain uses
+  // the spine — so no quantity can ever be counted twice.
+  //
+  // DELETION CONDITION: this bridge exists because the wealth-history composer
+  // reads a scalar column at all. When the net-worth convergence moves that
+  // composition onto the position spine for every asset, `legacyCryptoAccounts`
+  // and `spineCryptoAccounts` collapse into one list and this split disappears.
+  // The split is expressed as one predicate applied twice — in `spineCryptoAccounts`
+  // here, and per account in `cryptoQuantityOn` below. A chain that feeds the
+  // legacy column keeps it; every other chain reads the spine. One authority
+  // each, so no quantity can be counted twice.
+  const spineCryptoAccounts = cryptoAccounts.filter((a) => !feedsLegacyWealthHistory(a.walletChain));
+
+  // One bounded read for the whole window, then resolved per day in memory
+  // through THE canonical resolver — never a second position-resolution rule.
+  const spineRowsByAccount = new Map<string, PositionRow[]>();
+  if (spineCryptoAccounts.length > 0) {
+    const spineRows = await client.positionObservation.findMany({
+      where: {
+        financialAccountId: { in: spineCryptoAccounts.map((a) => a.id) },
+        supersededById: null, deletedAt: null,
+        date: { lte: fromISO(toDate) },
+      },
+      select: { financialAccountId: true, date: true, quantity: true, origin: true, completeness: true },
+      orderBy: { date: "asc" },
+    });
+    for (const r of spineRows) {
+      const list = spineRowsByAccount.get(r.financialAccountId) ?? [];
+      list.push({ date: isoDate(r.date), quantity: r.quantity, origin: r.origin, completeness: r.completeness ?? null });
+      spineRowsByAccount.set(r.financialAccountId, list);
+    }
+  }
+
+  /**
+   * The quantity this crypto account held on `dISO`.
+   *
+   * Legacy chains answer with the constant `nativeBalance` (the carry, licensed
+   * separately). Spine chains answer from dated evidence via
+   * `resolvePositionAsOf`, which applies the canonical origin precedence
+   * (OBSERVED > IMPORTED > DERIVED > USER_ASSERTED) — so an observation always
+   * outranks a reconstruction on a shared date.
+   *
+   * NULL means no dated evidence reaches this day, which the valuation core
+   * treats as "not a position" — never as a quantity of zero.
+   */
+  const cryptoQuantityOn = (accountId: string, dISO: string): number | null => {
+    const rows = spineRowsByAccount.get(accountId);
+    if (rows === undefined) {
+      return cryptoAccounts.find((a) => a.id === accountId)?.nativeBalance ?? null;
+    }
+    return resolvePositionAsOf(rows, dISO).quantity;
+  };
+
+  // An account is MATERIAL if it ever held something across the window — by the
+  // legacy column, or by any dated position on the spine.
+  const materialCryptoAccounts = cryptoAccounts.filter((a) =>
+    Math.abs(a.nativeBalance ?? 0) > 0
+    || (spineRowsByAccount.get(a.id) ?? []).some((r) => Math.abs(r.quantity) > 0));
   const heldCryptoAssets =
     materialCryptoAccounts.length > 0 ? assetsOf(materialCryptoAccounts) : assetsOf(cryptoAccounts);
 
@@ -772,8 +855,11 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       // this snapshot stores and the per-position breakdown a drill-down shows
       // come from one call and cannot describe different portfolios.
       cryptoDayValuation = valueCryptoDay({
+        // W-M2c — the quantity is resolved PER DAY per account: the legacy
+        // column for the chain that writes one, dated positions for every other.
         accounts: cryptoAccounts.map((a) => ({
-          financialAccountId: a.id, name: a.name, nativeBalance: a.nativeBalance,
+          financialAccountId: a.id, name: a.name,
+          nativeBalance: cryptoQuantityOn(a.id, dISO),
           assetKey: cryptoAssetByAccount.get(a.id)?.assetKey ?? null,
           symbol:   cryptoSymbolByAccount.get(a.id) ?? null,
         })),

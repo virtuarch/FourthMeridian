@@ -26,17 +26,14 @@ import { Wallet, ChevronDown, Loader2 } from "lucide-react";
 import { WalletChain } from "@/types";
 import { FormModal } from "@/components/atlas/FormModal";
 import { GlassButton } from "@/components/atlas/GlassButton";
+import { PRODUCT_CHAINS } from "@/lib/crypto/product-chains";
 
-const CHAINS: { value: WalletChain; label: string; placeholder: string }[] = [
-  { value: "BTC",   label: "Bitcoin (BTC)",    placeholder: "address (bc1…/1…/3…) or xpub/ypub/zpub" },
-  { value: "ETH",   label: "Ethereum (ETH)",   placeholder: "0x..." },
-  { value: "SOL",   label: "Solana (SOL)",     placeholder: "Base58 address..." },
-  { value: "BNB",   label: "BNB Chain (BNB)",  placeholder: "0x..." },
-  { value: "MATIC", label: "Polygon (MATIC)",  placeholder: "0x..." },
-  { value: "ADA",   label: "Cardano (ADA)",    placeholder: "addr1..." },
-  { value: "XRP",   label: "XRP (XRP)",        placeholder: "r..." },
-  { value: "OTHER", label: "Other",            placeholder: "Wallet address..." },
-];
+// W-M2c — the product surface is ONE definition, shared with the create route.
+// This list and the route's validator had already drifted apart (BNB was
+// offered here and refused there), so the picker now renders the authority
+// rather than a copy of it. Product support is NOT capability: a chain here may
+// still have its balance or its history withheld — see wallet-sync-dispatch.ts.
+const CHAINS = PRODUCT_CHAINS;
 
 interface Props {
   onClose: () => void;

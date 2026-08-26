@@ -147,6 +147,32 @@ function main(): void {
     !/currency:\s*["']BTC["']/.test(code));
   check("ledger reconciliation uses the asset's own base unit",
     /epsilon:\s*ledgerEpsilonFor\(/.test(code));
+
+  // ── W-M2c — THE SPINE BRIDGE: AN EARNED HISTORY MUST REACH THE CONSUMER ────
+  //
+  // Crypto was composed ONLY from `FinancialAccount.nativeBalance`, so a chain
+  // that writes no balance column was invisible here however much history it
+  // had. Measured on the real Solana wallet: a zero-residual reconstruction —
+  // 100.7766 SOL on 26 Feb, 0.7516 on the 27th — sat on the position spine
+  // while every snapshot in the window recorded Bitcoin alone.
+  check("a crypto quantity may come from the DATED POSITION SPINE, not only a scalar column",
+    /spineCryptoAccounts/.test(code) && /positionObservation\.findMany/.test(code));
+  check("…resolved through THE canonical as-of resolver, not a second rule",
+    /resolvePositionAsOf\(/.test(code));
+  check("…and the quantity is resolved PER DAY, never carried from today",
+    /nativeBalance: cryptoQuantityOn\(a\.id, dISO\)/.test(code));
+  check("each account is sourced by exactly ONE authority (no double count)",
+    /feedsLegacyWealthHistory\(a\.walletChain\)/.test(code)
+      && /!feedsLegacyWealthHistory\(a\.walletChain\)/.test(code));
+  check("a spine account with no dated evidence yields NULL, never zero",
+    /resolvePositionAsOf\(rows, dISO\)\.quantity/.test(code));
+  check("materiality now recognises spine-held accounts too",
+    /spineRowsByAccount\.get\(a\.id\).*some\(\(r\) => Math\.abs\(r\.quantity\) > 0\)/.test(code));
+  check("the bridge records its own deletion condition",
+    /DELETION CONDITION/.test(readFileSync(join(process.cwd(), "lib/snapshots/regenerate-history.ts"), "utf8")));
+  // The direction that must never return.
+  check("no crypto quantity is painted backward from a current balance",
+    !/nativeBalance: a\.nativeBalance,?\s*$/m.test(code));
   // W-M1a — the price map is keyed by CANONICAL IDENTITY, not by ticker. Keying
   // it by symbol would let two same-ticker assets overwrite one another in the
   // map, mispricing one of them silently.

@@ -23,6 +23,7 @@ import {
   walletChainSupport, isSyncableChain, chainSupportsHistory, feedsLegacyWealthHistory,
   SYNCABLE_CHAINS,
 } from "./wallet-sync-dispatch";
+import { PRODUCT_CHAIN_VALUES, isProductSupportedChain } from "./product-chains";
 
 let failures = 0;
 let passes = 0;
@@ -219,9 +220,41 @@ check("xpub normalisation remains guarded to BTC",
   /chain === BTC_CHAIN \? normalizeExtendedKeyInput/.test(walletRoute)
     && /chain === BTC_CHAIN && isExtendedKey/.test(walletRoute));
 
-// The route still accepts MORE chains than it can sync, deliberately.
-check("account creation still accepts unreadable chains (custody ≠ readability)",
-  /SUPPORTED_CHAINS = \[/.test(walletRoute) && /"ADA"/.test(walletRoute) && /"XRP"/.test(walletRoute));
+// ── W-M2c — THREE CONCEPTS, THREE ANSWERS ───────────────────────────────────
+// The product surface still offers MORE chains than this system can sync, which
+// is the point: recording that you hold a wallet is useful before the balance
+// can be read. What changed is that "which chains may be added" is now ONE
+// definition shared by the picker and the route, instead of two lists that had
+// already drifted (BNB was offered by the menu and refused by the endpoint).
+check("the create route validates against the ONE product-surface authority",
+  /isProductSupportedChain\(chain\)/.test(walletRoute) && !/SUPPORTED_CHAINS = \[/.test(walletRoute));
+check("product support still exceeds sync capability (custody ≠ readability)",
+  PRODUCT_CHAIN_VALUES.some((c) => !isSyncableChain(c)),
+  PRODUCT_CHAIN_VALUES.filter((c) => !isSyncableChain(c)).join(","));
+check("…and every SYNCABLE chain is also offerable — no capability is unreachable",
+  SYNCABLE_CHAINS.every((c) => PRODUCT_CHAIN_VALUES.includes(c)));
+
+// The narrowed surface, pinned so a removed chain cannot drift back.
+check("the picker offers EXACTLY the six product chains",
+  PRODUCT_CHAIN_VALUES.join(",") === "BTC,ETH,SOL,BNB,MATIC,AVAX", PRODUCT_CHAIN_VALUES.join(","));
+for (const gone of ["ADA", "XRP", "OTHER", "DOT"]) {
+  check(`${gone} is NOT offerable`, !isProductSupportedChain(gone));
+}
+check("…and the API refuses them too — hiding a menu option is not a restriction",
+  ["ADA", "XRP", "OTHER", "DOT", "ada", " xrp "].every((c) => !isProductSupportedChain(c)));
+check("product tokens resolve case-insensitively, as the route normalises them",
+  isProductSupportedChain(" btc ") && isProductSupportedChain("sol"));
+// Hiding is not deleting: the canonical machinery for a removed chain survives.
+check("removing a chain from the surface did NOT delete its canonical type",
+  /'ADA'/.test(read("types", "index.ts")) && /'XRP'/.test(read("types", "index.ts")));
+check("the picker renders the authority rather than a copy of it",
+  /const CHAINS = PRODUCT_CHAINS/.test(code(read("components", "dashboard", "AddWalletModal.tsx"))));
+
+// PRODUCT support earns NOTHING. BNB/MATIC/AVAX are offerable and unreadable.
+check("being offerable does not confer current-position capability",
+  ["BNB", "MATIC", "AVAX"].every((c) => isProductSupportedChain(c) && !isSyncableChain(c)));
+check("…nor history capability",
+  ["BNB", "MATIC", "AVAX"].every((c) => !chainSupportsHistory(c)));
 
 // ── PART B4 — NO ROUTE MAY EXPAND BALANCE AUTHORITY ─────────────────────────
 //

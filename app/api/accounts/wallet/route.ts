@@ -17,7 +17,7 @@
  * Body: {
  *   name:          string   // display name, e.g. "Ledger BTC"
  *   walletAddress: string   // public wallet address
- *   walletChain:   string   // "BTC" | "ETH" | "SOL" | "MATIC" | etc.
+ *   walletChain:   string   // one of PRODUCT_CHAIN_VALUES (lib/crypto/product-chains.ts)
  * }
  */
 
@@ -102,10 +102,15 @@ import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
 import { persistAccountSpine } from "@/lib/accounts/persist-account-spine";
 import { alignWalletProviderSpine } from "@/lib/accounts/wallet-connection";
 import { BTC_CHAIN } from "@/lib/crypto/btc-sync";
+import { isProductSupportedChain, PRODUCT_CHAIN_VALUES } from "@/lib/crypto/product-chains";
 import { syncWalletByChain, feedsLegacyWealthHistory } from "@/lib/crypto/wallet-sync-dispatch";
 import { isExtendedKey, normalizeExtendedKeyInput } from "@/lib/crypto/btc-address-derivation";
 
-const SUPPORTED_CHAINS = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER"];
+// W-M2c — validation reads the SAME product-surface authority the picker
+// renders. It previously kept its own wider list, so the two could disagree in
+// both directions: BNB was offered and refused, while ADA/XRP/DOT/OTHER were
+// accepted by the API after being removed from the menu. Hiding an option is
+// not a restriction if the endpoint behind it still accepts the value.
 
 export async function POST(req: NextRequest) {
   const [, err] = await requireUser();
@@ -118,8 +123,9 @@ export async function POST(req: NextRequest) {
   if (!walletChain?.trim())   return NextResponse.json({ error: "Chain is required." },          { status: 400 });
 
   const chain = walletChain.toUpperCase();
-  if (!SUPPORTED_CHAINS.includes(chain)) {
-    return NextResponse.json({ error: `Unsupported chain. Use: ${SUPPORTED_CHAINS.join(", ")}` }, { status: 400 });
+  if (!isProductSupportedChain(chain)) {
+    return NextResponse.json(
+      { error: `Unsupported chain. Use: ${PRODUCT_CHAIN_VALUES.join(", ")}` }, { status: 400 });
   }
 
   // Wallet Provider v4 — the address field also accepts a BTC xpub/ypub/zpub

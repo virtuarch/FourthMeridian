@@ -165,9 +165,11 @@ These are binding. Each one exists because violating it produced, or would produ
 
 **Capability**
 
-25. **`CURRENT_POSITION_SUPPORTED` does not imply `HISTORY_SUPPORTED`.** They are different promises.
-26. **`HISTORY_SUPPORTED` does not imply NET-WORTH PARTICIPATION.** A chain may hold a fully reconstructed, reconciled quantity timeline on the position spine and still be invisible to a net-worth path that composes from a legacy balance column. Gate each on the property that actually decides it, never on the other.
-27. **A network is promoted to `HISTORY_SUPPORTED` only after its historical acquisition, replay, coverage/refusal and dated-valuation acceptance tests pass — on a real wallet, not a fixture.** Having an adapter is not having history, and neither is having a provider.
+25. **Historical capability is not complete until canonical historical evidence reaches the consumer that makes the historical financial claim.** Acquisition, reconstruction and valuation succeeding in isolation is not the same as a chart being right. If a consumer still paints a current quantity backward, or omits an earned historical position, `HISTORY_SUPPORTED` is not operationally complete for that consumer — however clean the adapter is. The chain is: acquisition → reconstruction → valuation → **consumer**.
+26. **PRODUCT support, CURRENT-POSITION support and HISTORY support are three independent questions.** Which chains a user may add is a product decision; whether a balance can be read and whether a history can be reconstructed are each earned by evidence. A chain is routinely offerable while both capabilities are withheld, and offering it must never be read as claiming either.
+27. **`CURRENT_POSITION_SUPPORTED` does not imply `HISTORY_SUPPORTED`.** They are different promises.
+28. **`HISTORY_SUPPORTED` does not imply NET-WORTH PARTICIPATION.** A chain may hold a fully reconstructed, reconciled quantity timeline on the position spine and still be invisible to a net-worth path that composes from a legacy balance column. Gate each on the property that actually decides it, never on the other.
+29. **A network is promoted to `HISTORY_SUPPORTED` only after its historical acquisition, replay, coverage/refusal and dated-valuation acceptance tests pass — on a real wallet, not a fixture.** Having an adapter is not having history, and neither is having a provider.
 
 ---
 
@@ -178,7 +180,10 @@ These are binding. Each one exists because violating it produced, or would produ
 | Bitcoin | `HISTORY_SUPPORTED` | Movement ledger in `Transaction` (transitional); constant-quantity carry, not replay. |
 | Ethereum | `CURRENT_POSITION_SUPPORTED` | Native balance only. Historical acquisition needs an address index plus internal value transfers — no standard JSON-RPC method provides either. |
 | Solana | **`HISTORY_SUPPORTED`** | Acquisition, zero-residual reconciliation, replay and dated valuation proven on a real wallet. Net-worth participation still **withheld** (writes no balance column). |
-| Everything else | `UNSUPPORTED` | Custody recordable; chain unreadable. |
+| BNB · Polygon · Avalanche | `UNSUPPORTED` (offerable) | Reachable and balance-readable at the provider, but **no capability earned**: no adapter, no registered asset identity, no price mapping. Recordable only. |
+| Everything else | `UNSUPPORTED` | Custody recordable where offered; chain unreadable. |
+
+**Product surface** (which chains a user may add) is a separate, narrower list — see `lib/crypto/product-chains.ts`. Removing a chain from it hides an option; it deletes no canonical machinery and makes no claim about capability.
 
 ---
 
