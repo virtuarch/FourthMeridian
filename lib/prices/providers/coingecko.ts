@@ -102,12 +102,30 @@ export function resolveCoinGeckoFloorISO(utcTodayISO: string, historyDays: numbe
  * INSTRUMENT CONFIGURATION — ticker symbol → CoinGecko coin id.
  *
  * This is the whole of "instrument configuration" in the Solana-readiness
- * criterion: supporting a second crypto asset is one line here plus an
- * Instrument row with that ticker. No new service, no new call site, no new
- * archive path.
+ * criterion, and W-M1a is that criterion being cashed: supporting ETH and SOL is
+ * two lines here. No new service, no new call site, no new archive path, no
+ * change to routing, coverage or the archive.
+ *
+ * ── KEYED BY TICKER, AND WHY THAT IS STILL ACCEPTABLE — FOR NOW ──────────────
+ * Canonical asset identity is `assetKey` (CAIP-19), not the ticker; W-M1a moved
+ * the InstrumentAlias and every valuation lookup onto it precisely because a
+ * ticker is not unique. This table is the ONE place still keyed by ticker, and
+ * deliberately so: the routing key it answers is `Instrument.tickerSymbol`,
+ * supplied by the acquisition layer (jobs/fetch-security-prices.ts,
+ * lib/prices/backfill.ts), and rekeying that layer is price-subsystem work with
+ * no bearing on wallet identity.
+ *
+ * It is safe while every CRYPTO instrument is a NATIVE asset, because native
+ * tickers are unique across the chains we support. It stops being safe the day
+ * a token is minted here: an ERC-20 tickered "ETH" would route to coin id
+ * "ethereum" and be priced as native Ether. THAT is the change token support
+ * must make — provider mapping keyed by assetKey — and it is recorded here
+ * rather than discovered later.
  */
 export const COINGECKO_COIN_IDS: Readonly<Record<string, string>> = {
   BTC: "bitcoin",
+  ETH: "ethereum",
+  SOL: "solana",
 };
 
 /** The coin id for a ticker, or null when this vendor cannot serve it. */

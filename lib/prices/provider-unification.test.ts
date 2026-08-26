@@ -100,14 +100,22 @@ function mustNotBeCalled(source: string, serves: (k: ProviderRoutingKey) => bool
 }
 
 /**
- * A second crypto asset, supported the way the criterion says it must be: an
+ * A FURTHER crypto asset, supported the way the criterion says it must be: an
  * adapter implementation plus a registry entry plus instrument configuration.
  * Nothing in lib/prices is edited to accommodate it.
+ *
+ * W-M1a — this fixture used to serve SOL, back when SOL was the illustrative
+ * "asset we do not support yet". SOL is now really registered to CoinGecko, so
+ * a fixture also claiming it would make routing AMBIGUOUS — which is the
+ * registry behaving correctly, and would have turned this extensibility proof
+ * into a false failure. It therefore serves a ticker no adapter maps (DOGE),
+ * which is what the proof actually needs: an asset arriving from OUTSIDE the
+ * registered set.
  */
-function createSolanaFixtureProvider(): PriceProviderAdapter {
-  const COIN_IDS: Record<string, string> = { SOL: "solana" };
+function createUnregisteredAssetFixtureProvider(): PriceProviderAdapter {
+  const COIN_IDS: Record<string, string> = { DOGE: "dogecoin" };
   return {
-    source: "solana-fixture",
+    source: "unregistered-asset-fixture",
     historicalDepth: "2020-04-10",
     supportedBases: () => [PriceBasis.RAW_CLOSE],
     supportsInstrument: (k) =>
@@ -153,8 +161,13 @@ async function main(): Promise<void> {
   {
     check("BTC maps to the CoinGecko coin id", coinIdForSymbol("BTC") === "bitcoin");
     check("mapping is case-insensitive and trims", coinIdForSymbol(" btc ") === "bitcoin");
-    check("an unconfigured ticker maps to null", coinIdForSymbol("SOL") === null);
-    check("the mapping table is the single configuration point", "BTC" in COINGECKO_COIN_IDS);
+    // W-M1a — ETH and SOL are registered. This is the whole of "adding a native
+    // asset" on the pricing side; nothing else in lib/prices changed.
+    check("ETH maps to the CoinGecko coin id", coinIdForSymbol("ETH") === "ethereum");
+    check("SOL maps to the CoinGecko coin id", coinIdForSymbol("SOL") === "solana");
+    check("an unconfigured ticker still maps to null", coinIdForSymbol("DOGE") === null);
+    check("the mapping table is the single configuration point",
+      "BTC" in COINGECKO_COIN_IDS && "ETH" in COINGECKO_COIN_IDS && "SOL" in COINGECKO_COIN_IDS);
   }
 
   // ── 3. BTC uses the same registry path as equities ────────────────────────
@@ -180,42 +193,75 @@ async function main(): Promise<void> {
       btcReversed.kind === "provider" && btcReversed.adapter.source === "coingecko");
   }
 
-  // ── 4. SOLANA READINESS ───────────────────────────────────────────────────
-  console.log("4. Solana readiness — a second crypto asset needs only adapter + registration + config");
+  // ── 4. MULTI-ASSET REALITY (was: SOLANA READINESS) ────────────────────────
+  console.log("4. ETH and SOL are registered; a further asset still needs only adapter + registration + config");
   {
     const cg = createCoinGeckoPriceProvider("k", { fetchImpl: coinGeckoStub({}) });
-    const sol = createSolanaFixtureProvider();
-    const registry = createPriceRegistry([tiingo, cg, sol]);
+    const extra = createUnregisteredAssetFixtureProvider();
+    const registry = createPriceRegistry([tiingo, cg, extra]);
 
-    const solRoute = resolveProviderForInstrument(registry, key("CRYPTO", "SOL"));
-    check("SOL routes to its own adapter",
-      solRoute.kind === "provider" && solRoute.adapter.source === "solana-fixture");
-    const btcRoute = resolveProviderForInstrument(registry, key("CRYPTO", "BTC"));
-    check("…without disturbing BTC's routing",
-      btcRoute.kind === "provider" && btcRoute.adapter.source === "coingecko");
+    // W-M1a — the readiness claim is now cashed: ETH and SOL route for real,
+    // to the real vendor, through the same orchestration, with no ambiguity.
+    for (const sym of ["BTC", "ETH", "SOL"]) {
+      const route = resolveProviderForInstrument(registry, key("CRYPTO", sym));
+      check(`${sym} routes UNAMBIGUOUSLY to CoinGecko`,
+        route.kind === "provider" && route.adapter.source === "coingecko",
+        JSON.stringify(route));
+    }
+    const eq = resolveProviderForInstrument(registry, key("EQUITY", "AAPL"));
+    check("…without disturbing the equities route",
+      eq.kind === "provider" && eq.adapter.source === "tiingo");
 
-    const res = await fetchInstrumentWindow(
-      request({ instrumentId: "inst_sol", providerSymbol: "SOL" }), registry);
-    check("SOL flows through the SAME fetch orchestration", res.source === "solana-fixture");
-    check("…producing the same PriceResult shape the shared writer consumes",
-      res.rows.length === 1 && res.rows[0].basis === PriceBasis.RAW_CLOSE && res.rows[0].currency === "USD");
+    for (const [instrumentId, providerSymbol] of [["inst_eth", "ETH"], ["inst_sol", "SOL"]]) {
+      const res = await fetchInstrumentWindow(request({ instrumentId, providerSymbol }), registry);
+      check(`${providerSymbol} flows through the SAME fetch orchestration`, res.source === "coingecko");
+      check(`…producing the PriceResult shape the shared writer consumes (${providerSymbol})`,
+        res.rows.length === 3 && res.rows.every((r) => r.basis === PriceBasis.RAW_CLOSE && r.currency === "USD"));
+    }
+
+    // The extensibility criterion itself, proved with an asset from OUTSIDE the
+    // registered set: adapter + registry entry + config, nothing in lib/prices.
+    const dogeRoute = resolveProviderForInstrument(registry, key("CRYPTO", "DOGE"));
+    check("an UNREGISTERED asset routes to its own adapter",
+      dogeRoute.kind === "provider" && dogeRoute.adapter.source === "unregistered-asset-fixture");
+    const dogeRes = await fetchInstrumentWindow(
+      request({ instrumentId: "inst_doge", providerSymbol: "DOGE" }), registry);
+    check("…through the SAME fetch orchestration", dogeRes.source === "unregistered-asset-fixture");
 
     // The negative half of the criterion: no asset-specific machinery exists.
     const priceSrc = readCode("lib/prices/fetch.ts")
       + readCode("lib/prices/backfill.ts")
       + readCode("lib/prices/registry.ts");
     check("fetch/backfill/registry contain no per-coin branching",
-      !/\bBTC\b|bitcoin|\bSOL\b|solana/i.test(priceSrc));
+      !/\bBTC\b|bitcoin|\bETH\b|ethereum|\bSOL\b|solana|\bDOGE\b|dogecoin/i.test(priceSrc));
 
     const adapterSrc = readCode("lib/prices/providers/coingecko.ts");
     check("the adapter never writes to the archive itself (writes stay centralized)",
       !adapterSrc.includes("priceArchive") && !adapterSrc.includes("writeBatch"));
 
+    // ── W-M1a — NO BTC-SPECIFIC PRICE PATH SURVIVES, ACQUISITION OR VALUATION ─
+    //
+    // This previously pinned the OPPOSITE for the read half: "the BTC VALUATION
+    // read is deliberately retained until PRICE-5". W-M0 generalised it anyway,
+    // because a multi-asset valuation core cannot be fed by a reader that can
+    // only answer for Bitcoin, and W-M1a deleted the original rather than
+    // leaving a delegating wrapper with no caller. The invariant is now the
+    // stronger one, and it is pinned in both directions.
     const btcSrc = readCode("lib/crypto/btc-price.ts");
-    check("no BTC-specific acquisition function survives",
+    check("no BTC-specific ACQUISITION function survives",
       !btcSrc.includes("backfillBtcPrices") && !btcSrc.includes("fetchCoinDailyClosesUsd"));
-    check("the BTC VALUATION read is deliberately retained until PRICE-5",
-      btcSrc.includes("readBtcUsdWindow"));
+    check("no BTC-specific VALUATION read survives (readBtcUsdWindow is DELETED)",
+      !btcSrc.includes("readBtcUsdWindow"));
+    check("…and btc-price reads no price archive at all",
+      !btcSrc.includes("priceArchive") && !btcSrc.includes("readRange") && !btcSrc.includes("PriceBasis"));
+    check("the crypto valuation read is the per-asset one, keyed by assetKey",
+      readCode("lib/crypto/crypto-price-window.ts").includes("readCryptoUsdWindows")
+        && /externalId:\s*asset\.assetKey/.test(readCode("lib/crypto/crypto-price-window.ts")));
+
+    // Nothing anywhere may resurrect the deleted reader.
+    for (const f of ["lib/snapshots/regenerate-history.ts", "lib/history/account-series.ts"]) {
+      check(`${f} does not call the deleted BTC reader`, !readCode(f).includes("readBtcUsdWindow"));
+    }
   }
 
   // ── 5. Removal is a stated outcome, never a fall-through ──────────────────

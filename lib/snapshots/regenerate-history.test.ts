@@ -147,8 +147,15 @@ function main(): void {
     !/currency:\s*["']BTC["']/.test(code));
   check("ledger reconciliation uses the asset's own base unit",
     /epsilon:\s*ledgerEpsilonFor\(/.test(code));
-  check("the day valuation receives a price PER SYMBOL, not one price",
-    /unitPriceBySymbol/.test(code) && !/unitPrice:\s*btc/i.test(code));
+  // W-M1a — the price map is keyed by CANONICAL IDENTITY, not by ticker. Keying
+  // it by symbol would let two same-ticker assets overwrite one another in the
+  // map, mispricing one of them silently.
+  check("the day valuation receives a price PER ASSET IDENTITY, not one price",
+    /unitPriceByAssetKey/.test(code) && !/unitPrice:\s*btc/i.test(code));
+  check("the price window is resolved from canonical assets, not tickers",
+    /readCryptoUsdWindows\(heldCryptoAssets/.test(code) && /assetKey/.test(code));
+  check("the deleted BTC-only valuation read is not resurrected",
+    !/readBtcUsdWindow/.test(code));
 
   if (failures > 0) {
     console.error(`\n${failures} check(s) FAILED`);

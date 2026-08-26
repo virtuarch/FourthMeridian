@@ -261,12 +261,24 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   const cryptoAssetByAccount = new Map<string, NativeAsset | null>(
     cryptoAccounts.map((a) => [a.id, nativeAssetForChain(a.walletChain)]),
   );
+  // The DENOMINATION each wallet's movement rows carry (Transaction.currency).
   const cryptoSymbolByAccount = new Map<string, string | null>(
     cryptoAccounts.map((a) => [a.id, cryptoAssetByAccount.get(a.id)?.symbol ?? null]),
   );
   const heldCryptoSymbols = [
     ...new Set([...cryptoSymbolByAccount.values()].filter((s): s is string => s !== null)),
   ].sort();
+  // W-M1a — the CANONICAL IDENTITY each wallet holds, which is what selects a
+  // price. Distinct from the symbol above on purpose: the ledger predicate reads
+  // a denomination off a Transaction row, the valuation resolves an asset.
+  const heldCryptoAssets = [
+    ...new Map(
+      cryptoAccounts
+        .map((a) => cryptoAssetByAccount.get(a.id))
+        .filter((x): x is NonNullable<typeof x> => x != null)
+        .map((a) => [a.assetKey, a]),
+    ).values(),
+  ];
 
   // V26-CRYPTO-QTY-1 — THE CONSTANT-QUANTITY CARRY IS NOW LICENSED, NOT ASSUMED.
   //
@@ -595,8 +607,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // instruments up front and the whole set is fetched together.
   const cryptoPriceAt =
     cryptoAccounts.length > 0
-      ? await readCryptoUsdWindows(heldCryptoSymbols, fromDate, toDate, { client })
-      : (_symbol: string, _dISO: string): number | null => null;
+      ? await readCryptoUsdWindows(heldCryptoAssets, fromDate, toDate, { client })
+      : (_assetKey: string, _dISO: string): number | null => null;
 
   const result: RegenerateWealthHistoryResult = { ...zero };
   const writes: Array<{
@@ -729,8 +741,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       // actually held. An asset with no close on this day maps to null, which the
       // valuation core reports as NO_PRICE naming that symbol — never a
       // substituted price from another asset.
-      const unitPriceBySymbol = Object.fromEntries(
-        heldCryptoSymbols.map((sym) => [sym, cryptoPriceAt(sym, dISO)]),
+      const unitPriceByAssetKey = Object.fromEntries(
+        heldCryptoAssets.map((a) => [a.assetKey, cryptoPriceAt(a.assetKey, dISO)]),
       );
       // V26-CRYPTO-QTY-1 — BOTH are required, and they are independent evidence:
       // a price reaching the day says nothing about what was held, and a licensed
@@ -743,9 +755,10 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       cryptoDayValuation = valueCryptoDay({
         accounts: cryptoAccounts.map((a) => ({
           financialAccountId: a.id, name: a.name, nativeBalance: a.nativeBalance,
-          symbol: cryptoSymbolByAccount.get(a.id) ?? null,
+          assetKey: cryptoAssetByAccount.get(a.id)?.assetKey ?? null,
+          symbol:   cryptoSymbolByAccount.get(a.id) ?? null,
         })),
-        unitPriceBySymbol,
+        unitPriceByAssetKey,
         quantityLicensed: cryptoQuantityLicensed(dISO),
       });
       if (cryptoDayValuation.licensed) {

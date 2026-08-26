@@ -29,6 +29,10 @@ import {
   type CryptoAccountBalance,
   type CryptoDayValuation,
 } from "./historical-crypto-valuation.core";
+import { BTC_NATIVE, ETH_NATIVE } from "./native-asset";
+
+const BTC = BTC_NATIVE.assetKey;
+const ETH = ETH_NATIVE.assetKey;
 
 let failures = 0;
 let passes = 0;
@@ -92,7 +96,8 @@ function valueCryptoDayLegacy(input: {
   };
 }
 
-/** Deep equality over the fields both shapes share. `unpricedSymbols` is additive. */
+/** Deep equality over the fields both shapes share. `unpricedAssetKeys` and
+ *  `assetKey` are additive — the pre-W-M0 core had neither. */
 function sameAsLegacy(now: CryptoDayValuation, legacy: ReturnType<typeof valueCryptoDayLegacy>): boolean {
   return now.licensed === legacy.licensed
     && now.refusal === legacy.refusal
@@ -133,6 +138,15 @@ const SETS: LegacyAccount[][] = [
   [{ financialAccountId: "acc_neg", name: "Negative", nativeBalance: -0.5, symbol: "BTC" }],
 ];
 
+/**
+ * W-M1a — the fixtures are written in the legacy (ticker-only) shape because
+ * that is what the frozen reference takes. Identity is attached here, at the
+ * boundary, so the two implementations see the SAME accounts and any difference
+ * is genuinely the implementation's.
+ */
+const withIdentity = (accounts: readonly LegacyAccount[]): CryptoAccountBalance[] =>
+  accounts.map((a) => ({ ...a, assetKey: BTC }));
+
 let compared = 0;
 let divergences = 0;
 for (const accounts of SETS) {
@@ -140,9 +154,9 @@ for (const accounts of SETS) {
     for (const quantityLicensed of LICENCES) {
       const legacy = valueCryptoDayLegacy({ accounts, unitPrice, quantityLicensed });
       const now = valueCryptoDay({
-        accounts,
+        accounts: withIdentity(accounts),
         // The one-asset case: the map has exactly the entry the old scalar was.
-        unitPriceBySymbol: { BTC: unitPrice },
+        unitPriceByAssetKey: { [BTC]: unitPrice },
         quantityLicensed,
       });
       compared++;
@@ -165,21 +179,21 @@ check(`BTC is BYTE-IDENTICAL to the pre-W-M0 core across ${compared} input combi
 // have to mean the same thing.
 check("a missing price ENTRY behaves as the old explicit null price",
   sameAsLegacy(
-    valueCryptoDay({ accounts: LIVE_BTC, unitPriceBySymbol: {}, quantityLicensed: true }),
+    valueCryptoDay({ accounts: withIdentity(LIVE_BTC), unitPriceByAssetKey: {}, quantityLicensed: true }),
     valueCryptoDayLegacy({ accounts: LIVE_BTC, unitPrice: null, quantityLicensed: true }),
   ));
 
 // ── PART B — what only became expressible once the asset was data ────────────
 
 const MIXED: CryptoAccountBalance[] = [
-  { financialAccountId: "acc_btc", name: "Cold Wallet BTC", nativeBalance: 0.25, symbol: "BTC" },
-  { financialAccountId: "acc_eth", name: "Ledger ETH",      nativeBalance: 1.5,  symbol: "ETH" },
+  { financialAccountId: "acc_btc", name: "Cold Wallet BTC", nativeBalance: 0.25, assetKey: BTC, symbol: "BTC" },
+  { financialAccountId: "acc_eth", name: "Ledger ETH",      nativeBalance: 1.5,  assetKey: ETH, symbol: "ETH" },
 ];
 
 {
   const day = valueCryptoDay({
     accounts: MIXED,
-    unitPriceBySymbol: { BTC: 60000, ETH: 3000 },
+    unitPriceByAssetKey: { [BTC]: 60000, [ETH]: 3000 },
     quantityLicensed: true,
   });
   check("two assets are valued at their OWN prices", day.licensed && day.nativeTotal === 0.25 * 60000 + 1.5 * 3000,
@@ -192,31 +206,51 @@ const MIXED: CryptoAccountBalance[] = [
   // wallet would have been multiplied by the Bitcoin close and labelled BTC.
   check("an ETH wallet is NEVER valued at the Bitcoin price",
     day.positions.find((p) => p.financialAccountId === "acc_eth")!.nativeValue === 4500);
+
+  // W-M1a — the ticker is carried for display and decides nothing. Two assets
+  // sharing one would still be priced apart, because the key is the identity.
+  const spoof = valueCryptoDay({
+    accounts: [
+      { financialAccountId: "acc_native", name: "Native ETH", nativeBalance: 1, assetKey: ETH, symbol: "ETH" },
+      { financialAccountId: "acc_spoof",  name: "Token ETH",  nativeBalance: 1, assetKey: "eip155:1/erc20:0xdead", symbol: "ETH" },
+    ],
+    unitPriceByAssetKey: { [ETH]: 3000, "eip155:1/erc20:0xdead": 0.01 },
+    quantityLicensed: true,
+  });
+  check("TWO assets sharing the ticker ETH are priced by IDENTITY, not by symbol",
+    spoof.licensed
+      && spoof.positions.find((p) => p.financialAccountId === "acc_native")!.nativeValue === 3000
+      && spoof.positions.find((p) => p.financialAccountId === "acc_spoof")!.nativeValue === 0.01);
+  check("…and each position reports the identity it was valued under",
+    spoof.positions.every((p) => p.assetKey.length > 0)
+      && new Set(spoof.positions.map((p) => p.assetKey)).size === 2
+      && new Set(spoof.positions.map((p) => p.symbol)).size === 1);
 }
 
 {
   // One asset priced, one not → the WHOLE day refuses, and says which.
   const day = valueCryptoDay({
-    accounts: MIXED, unitPriceBySymbol: { BTC: 60000 }, quantityLicensed: true,
+    accounts: MIXED, unitPriceByAssetKey: { [BTC]: 60000 }, quantityLicensed: true,
   });
   check("one unpriced asset refuses the whole day (all-or-nothing preserved)",
     !day.licensed && day.refusal === "NO_PRICE" && day.nativeTotal === 0 && day.positions.length === 0);
-  check("…naming exactly the asset that is missing", day.unpricedSymbols.join(",") === "ETH");
+  check("…naming exactly the asset that is missing, by IDENTITY not ticker",
+    day.unpricedAssetKeys.join(",") === ETH);
   check("…while still counting what EXISTED (the denominator is unaffected)", day.positionCount === 2);
 }
 
 {
   // The pre-W-M0 silent case: a wallet whose chain nobody could name.
   const day = valueCryptoDay({
-    accounts: [{ financialAccountId: "acc_x", name: "Some Wallet", nativeBalance: 3, symbol: null }],
-    unitPriceBySymbol: { BTC: 60000 },
+    accounts: [{ financialAccountId: "acc_x", name: "Some Wallet", nativeBalance: 3, assetKey: null, symbol: null }],
+    unitPriceByAssetKey: { [BTC]: 60000 },
     quantityLicensed: true,
   });
   check("an unnamed asset refuses as UNKNOWN_ASSET, not NO_PRICE",
     !day.licensed && day.refusal === "UNKNOWN_ASSET");
   check("…and is NOT valued at whatever price happened to be in hand",
     day.nativeTotal === 0 && day.positions.length === 0);
-  check("…and names no missing symbol (there is no name to give)", day.unpricedSymbols.length === 0);
+  check("…and names no missing symbol (there is no name to give)", day.unpricedAssetKeys.length === 0);
 }
 
 {
@@ -224,10 +258,10 @@ const MIXED: CryptoAccountBalance[] = [
   // position, so an unknown chain on an empty wallet cannot poison a real one.
   const day = valueCryptoDay({
     accounts: [
-      { financialAccountId: "acc_btc", name: "Cold", nativeBalance: 0.25, symbol: "BTC" },
-      { financialAccountId: "acc_x",   name: "Empty MATIC", nativeBalance: 0, symbol: null },
+      { financialAccountId: "acc_btc", name: "Cold", nativeBalance: 0.25, assetKey: BTC, symbol: "BTC" },
+      { financialAccountId: "acc_x",   name: "Empty MATIC", nativeBalance: 0, assetKey: null, symbol: null },
     ],
-    unitPriceBySymbol: { BTC: 60000 },
+    unitPriceByAssetKey: { [BTC]: 60000 },
     quantityLicensed: true,
   });
   check("an EMPTY wallet on an unknown chain is not a position and refuses nothing",
@@ -238,8 +272,8 @@ const MIXED: CryptoAccountBalance[] = [
   // Refusal precedence: an unnamed asset outranks an unlicensed quantity,
   // because "we do not know what this is" is the more fundamental answer.
   const day = valueCryptoDay({
-    accounts: [{ financialAccountId: "a", name: "n", nativeBalance: 1, symbol: null }],
-    unitPriceBySymbol: {}, quantityLicensed: false,
+    accounts: [{ financialAccountId: "a", name: "n", nativeBalance: 1, assetKey: null, symbol: null }],
+    unitPriceByAssetKey: {}, quantityLicensed: false,
   });
   check("UNKNOWN_ASSET outranks both NO_PRICE and QUANTITY_UNLICENSED",
     day.refusal === "UNKNOWN_ASSET");
@@ -247,8 +281,8 @@ const MIXED: CryptoAccountBalance[] = [
 
 {
   // Quantity and price absence stay distinguishable — the acceptance invariant.
-  const noPrice = valueCryptoDay({ accounts: MIXED, unitPriceBySymbol: {}, quantityLicensed: true });
-  const noCarry = valueCryptoDay({ accounts: MIXED, unitPriceBySymbol: { BTC: 1, ETH: 1 }, quantityLicensed: false });
+  const noPrice = valueCryptoDay({ accounts: MIXED, unitPriceByAssetKey: {}, quantityLicensed: true });
+  const noCarry = valueCryptoDay({ accounts: MIXED, unitPriceByAssetKey: { [BTC]: 1, [ETH]: 1 }, quantityLicensed: false });
   check("a missing PRICE and an unlicensed QUANTITY are different refusals",
     noPrice.refusal === "NO_PRICE" && noCarry.refusal === "QUANTITY_UNLICENSED");
   check("…and neither becomes a zero-valued position",
@@ -260,10 +294,10 @@ const MIXED: CryptoAccountBalance[] = [
   // without double counting and without minting a second asset identity.
   const day = valueCryptoDay({
     accounts: [
-      { financialAccountId: "w1", name: "Wallet 1", nativeBalance: 0.1, symbol: "BTC" },
-      { financialAccountId: "w2", name: "Wallet 2", nativeBalance: 0.2, symbol: "BTC" },
+      { financialAccountId: "w1", name: "Wallet 1", nativeBalance: 0.1, assetKey: BTC, symbol: "BTC" },
+      { financialAccountId: "w2", name: "Wallet 2", nativeBalance: 0.2, assetKey: BTC, symbol: "BTC" },
     ],
-    unitPriceBySymbol: { BTC: 50000 }, quantityLicensed: true,
+    unitPriceByAssetKey: { [BTC]: 50000 }, quantityLicensed: true,
   });
   check("two wallets in one asset aggregate at one price, as two positions",
     day.licensed && day.positions.length === 2 && Math.abs(day.nativeTotal - 15000) < 1e-9);
@@ -276,19 +310,19 @@ const MIXED: CryptoAccountBalance[] = [
   // is to decide whether it may assert a digital-asset total at all. Requiring
   // only HELD assets would silently license a zero.
   const drained: CryptoAccountBalance[] = [
-    { financialAccountId: "acc_drained", name: "Drained Wallet", nativeBalance: 0, symbol: "BTC" },
+    { financialAccountId: "acc_drained", name: "Drained Wallet", nativeBalance: 0, assetKey: BTC, symbol: "BTC" },
   ];
-  const noClose = valueCryptoDay({ accounts: drained, unitPriceBySymbol: { BTC: null }, quantityLicensed: true });
+  const noClose = valueCryptoDay({ accounts: drained, unitPriceByAssetKey: { [BTC]: null }, quantityLicensed: true });
   check("a drained wallet on a day with NO close still refuses (absence never becomes zero)",
-    !noClose.licensed && noClose.refusal === "NO_PRICE" && noClose.unpricedSymbols.join(",") === "BTC");
-  const withClose = valueCryptoDay({ accounts: drained, unitPriceBySymbol: { BTC: 60000 }, quantityLicensed: true });
+    !noClose.licensed && noClose.refusal === "NO_PRICE" && noClose.unpricedAssetKeys.join(",") === BTC);
+  const withClose = valueCryptoDay({ accounts: drained, unitPriceByAssetKey: { [BTC]: 60000 }, quantityLicensed: true });
   check("…and the same wallet on a day WITH a close is licensed at zero positions",
     withClose.licensed && withClose.positionCount === 0 && withClose.nativeTotal === 0);
 }
 
 check("determinism — identical input, identical output",
-  JSON.stringify(valueCryptoDay({ accounts: MIXED, unitPriceBySymbol: { BTC: 1, ETH: 2 }, quantityLicensed: true }))
-    === JSON.stringify(valueCryptoDay({ accounts: [...MIXED].reverse(), unitPriceBySymbol: { ETH: 2, BTC: 1 }, quantityLicensed: true })));
+  JSON.stringify(valueCryptoDay({ accounts: MIXED, unitPriceByAssetKey: { [BTC]: 1, [ETH]: 2 }, quantityLicensed: true }))
+    === JSON.stringify(valueCryptoDay({ accounts: [...MIXED].reverse(), unitPriceByAssetKey: { [ETH]: 2, [BTC]: 1 }, quantityLicensed: true })));
 
 console.log(`\nhistorical-crypto-valuation.core: ${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

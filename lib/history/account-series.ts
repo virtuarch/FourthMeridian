@@ -304,12 +304,19 @@ async function cryptoAccountNodes(
   // explain a number. The asset is now read from the account's own chain, and an
   // account whose chain this system cannot name is refused rather than defaulted.
   const assetById = new Map(accounts.map((a) => [a.id, nativeAssetForChain(a.walletChain)] as const));
+  // Denominations, for selecting movement rows…
   const heldSymbols = [
     ...new Set([...assetById.values()].filter((x) => x !== null).map((x) => x!.symbol)),
   ].sort();
+  // …and canonical identities, for selecting prices. W-M1a keeps the two apart.
+  const heldAssets = [
+    ...new Map(
+      [...assetById.values()].filter((x): x is NonNullable<typeof x> => x != null).map((a) => [a.assetKey, a]),
+    ).values(),
+  ];
   // ONE range read across every asset held in this bucket (the HIST-2C shape,
   // widened by the asset dimension rather than repeated per asset).
-  const priceAt = await readCryptoUsdWindows(heldSymbols, args.fromISO, args.toISO, { client: client ?? db });
+  const priceAt = await readCryptoUsdWindows(heldAssets, args.fromISO, args.toISO, { client: client ?? db });
   // FX through the SAME path every stored crypto total went through, for the
   // WHOLE window in one context — a per-date conversion would be N reads and
   // could disagree with the total it is explaining.
@@ -349,8 +356,11 @@ async function cryptoAccountNodes(
         targetISO: d, anchorISO, eventDatesISO: eventDates, ledgerComplete: ledger.complete,
       });
       const day = valueCryptoDay({
-        accounts: [{ financialAccountId: a.id, name: a.name, nativeBalance: a.nativeBalance, symbol }],
-        unitPriceBySymbol: symbol ? { [symbol]: priceAt(symbol, d) } : {},
+        accounts: [{
+          financialAccountId: a.id, name: a.name, nativeBalance: a.nativeBalance,
+          assetKey: asset?.assetKey ?? null, symbol,
+        }],
+        unitPriceByAssetKey: asset ? { [asset.assetKey]: priceAt(asset.assetKey, d) } : {},
         quantityLicensed: licensed.licensed,
       });
       if (!day.licensed) {

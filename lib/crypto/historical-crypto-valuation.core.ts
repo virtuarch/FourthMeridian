@@ -34,11 +34,17 @@
  * Nothing in the type system, the tests or the output could have caught it —
  * the arithmetic is valid and the number is plausible.
  *
- * So the price arrives KEYED BY ASSET SYMBOL, each account states the symbol its
- * own balance denominates, and a symbol with no price refuses the day. The
- * asset a wallet holds is now data (lib/crypto/native-asset.ts), and an account
- * whose chain this system cannot name refuses as UNKNOWN_ASSET rather than
- * falling back to whatever price happens to be in hand.
+ * So the price arrives KEYED BY CANONICAL ASSET IDENTITY, each account states
+ * the asset its own balance denominates, and an asset with no price refuses the
+ * day. The asset a wallet holds is now data (lib/crypto/native-asset.ts), and an
+ * account whose chain this system cannot name refuses as UNKNOWN_ASSET rather
+ * than falling back to whatever price happens to be in hand.
+ *
+ * W-M1a — that key is `assetKey` (CAIP-19), never the ticker. A ticker is not
+ * unique and for tokens is attacker-controlled, so keying a price map by it
+ * would let two assets overwrite each other in the map — mispricing one of them
+ * with no error, which is the same class of defect one layer up. `symbol` is
+ * still carried and still rendered; it just decides nothing.
  *
  * ── Why refusal stays ALL-OR-NOTHING across assets ───────────────────────────
  * If any held asset lacks a price, the whole day refuses — the same rule that
@@ -63,16 +69,18 @@ export interface CryptoAccountBalance {
   /** Whole units of `symbol`. Null/0 ⇒ nothing held. */
   nativeBalance:      number | null;
   /**
-   * The canonical symbol THIS account's native balance denominates, resolved by
-   * the binding from the account's chain (`nativeAssetForChain`). It selects the
-   * price and it is NOT display: hand over the wrong one and the wallet is
-   * valued in the wrong asset.
+   * The CANONICAL IDENTITY of the asset this account's balance denominates,
+   * resolved by the binding from the account's chain (`nativeAssetForChain`). It
+   * selects the price: hand over the wrong one and the wallet is valued as the
+   * wrong asset.
    *
    * NULL when the binding could not name the asset — an absent, blank or
    * unsupported `walletChain`. The day then refuses (UNKNOWN_ASSET). This is the
    * case the pre-W-M0 literal made unrepresentable, by answering "BTC" to a
    * question it had never actually asked.
    */
+  assetKey:           string | null;
+  /** Display ticker for the rendered position. Decides nothing. */
   symbol:             string | null;
 }
 
@@ -80,7 +88,9 @@ export interface CryptoAccountBalance {
 export interface CryptoPositionValuation {
   financialAccountId: string;
   accountName:        string;
-  /** The asset actually valued — never a default, never a label. */
+  /** Canonical identity of the asset actually valued — never a default. */
+  assetKey:           string;
+  /** Display ticker. Empty string when the descriptor carried none. */
   symbol:             string;
   quantity:           number;
   /** Native-currency (USD) unit price used. */
@@ -100,17 +110,18 @@ export interface CryptoDayValuation {
   /** Coded reason when not licensed. */
   refusal: "UNKNOWN_ASSET" | "NO_PRICE" | "QUANTITY_UNLICENSED" | null;
   /**
-   * W-M0 — WHICH assets forced the refusal, sorted, so a caller can say what is
-   * missing instead of only that something is. Empty when licensed, and empty
-   * for UNKNOWN_ASSET (the whole point of which is that the asset has no name).
+   * W-M0 — WHICH assets forced the refusal, as canonical assetKeys, sorted, so a
+   * caller can say what is missing instead of only that something is. Empty when
+   * licensed, and empty for UNKNOWN_ASSET (the whole point of which is that the
+   * asset has no identity to name).
    */
-  unpricedSymbols: readonly string[];
+  unpricedAssetKeys: readonly string[];
 }
 
 export interface CryptoDayInput {
   accounts: readonly CryptoAccountBalance[];
   /**
-   * The day's USD price per whole unit, KEYED BY ASSET SYMBOL.
+   * The day's USD price per whole unit, KEYED BY CANONICAL assetKey.
    *
    * This map is TWO statements, and both are load-bearing:
    *   1. what each asset was worth on this day — null, or absent, meaning no
@@ -132,7 +143,7 @@ export interface CryptoDayInput {
    * in a SUPERSET — every crypto price the deployment knows — would refuse days
    * over assets nobody holds.
    */
-  unitPriceBySymbol: Readonly<Record<string, number | null>>;
+  unitPriceByAssetKey: Readonly<Record<string, number | null>>;
   /** Did the constant-quantity carry licence (incl. ledger completeness) pass? */
   quantityLicensed: boolean;
   /** Below this, a balance is not a position. Mirrors the crypto materiality floor. */
@@ -159,40 +170,41 @@ export function valueCryptoDay(input: CryptoDayInput): CryptoDayValuation {
 
   const refuse = (
     refusal: NonNullable<CryptoDayValuation["refusal"]>,
-    unpricedSymbols: readonly string[] = [],
+    unpricedAssetKeys: readonly string[] = [],
   ): CryptoDayValuation => ({
     positions: [], nativeTotal: 0, positionCount: held.length,
-    licensed: false, refusal, unpricedSymbols,
+    licensed: false, refusal, unpricedAssetKeys,
   });
 
   // 1. AN UNNAMED ASSET IS NOT A PRICING FAILURE. It is a failure to know what
   //    is held, and reporting it as NO_PRICE would send the reader looking for a
   //    price we could not have asked for. Checked FIRST for that reason.
-  if (held.some((a) => !a.symbol)) return refuse("UNKNOWN_ASSET");
+  if (held.some((a) => !a.assetKey)) return refuse("UNKNOWN_ASSET");
 
   // 2. Every asset IN PLAY must have a usable price — the held ones and the ones
-  //    the caller declared by naming them in the map. See `unitPriceBySymbol`:
+  //    the caller declared by naming them in the map. See `unitPriceByAssetKey`:
   //    the declared half is what keeps "no price reached this day" a fact about
   //    the day rather than a fact about holdings, exactly as the pre-W-M0 scalar
   //    was. Collected rather than short-circuited so the refusal can name all of
   //    the missing assets at once.
-  const priceOf = (symbol: string): number | null => {
-    const p = input.unitPriceBySymbol[symbol];
+  const priceOf = (assetKey: string): number | null => {
+    const p = input.unitPriceByAssetKey[assetKey];
     return p != null && Number.isFinite(p) && p > 0 ? p : null;
   };
-  const inPlay = new Set<string>([...Object.keys(input.unitPriceBySymbol), ...held.map((a) => a.symbol!)]);
-  const unpriced = [...inPlay].filter((s) => priceOf(s) === null).sort();
+  const inPlay = new Set<string>([...Object.keys(input.unitPriceByAssetKey), ...held.map((a) => a.assetKey!)]);
+  const unpriced = [...inPlay].filter((k) => priceOf(k) === null).sort();
   if (unpriced.length > 0) return refuse("NO_PRICE", unpriced);
 
   if (!input.quantityLicensed) return refuse("QUANTITY_UNLICENSED");
 
   const positions = held.map((a) => {
     const quantity  = a.nativeBalance ?? 0;
-    const unitPrice = priceOf(a.symbol!)!;
+    const unitPrice = priceOf(a.assetKey!)!;
     return {
       financialAccountId: a.financialAccountId,
       accountName:        a.name,
-      symbol:             a.symbol!,
+      assetKey:           a.assetKey!,
+      symbol:             a.symbol ?? "",
       quantity,
       unitPrice,
       nativeValue:        quantity * unitPrice,
@@ -201,10 +213,10 @@ export function valueCryptoDay(input: CryptoDayInput): CryptoDayValuation {
 
   return {
     positions,
-    nativeTotal:     positions.reduce((n, p) => n + p.nativeValue, 0),
-    positionCount:   positions.length,
-    licensed:        true,
-    refusal:         null,
-    unpricedSymbols: [],
+    nativeTotal:       positions.reduce((n, p) => n + p.nativeValue, 0),
+    positionCount:     positions.length,
+    licensed:          true,
+    refusal:           null,
+    unpricedAssetKeys: [],
   };
 }

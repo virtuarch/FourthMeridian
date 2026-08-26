@@ -11,7 +11,7 @@
 
 import {
   BTC_NATIVE, ETH_NATIVE, SOL_NATIVE, NATIVE_ASSETS,
-  nativeAssetForChain, nativeAssetForSymbol,
+  nativeAssetForChain, nativeAssetForSymbol, nativeAssetForKey,
   ledgerEpsilonFor, LEDGER_EPSILON_FLOOR,
 } from "./native-asset";
 import { LEDGER_EPSILON } from "./ledger-completeness.core";
@@ -39,11 +39,35 @@ check("every descriptor is uniquely keyed by chain AND by symbol",
   new Set(NATIVE_ASSETS.map((a) => a.chain)).size === NATIVE_ASSETS.length
     && new Set(NATIVE_ASSETS.map((a) => a.symbol)).size === NATIVE_ASSETS.length);
 
+// ── W-M1a — assetKey is THE identity ─────────────────────────────────────────
+
+check("each descriptor carries a stable chain-qualified CAIP-19 assetKey",
+  BTC_NATIVE.assetKey === "bip122:000000000019d6689c085ae165831e93/slip44:0"
+    && ETH_NATIVE.assetKey === "eip155:1/slip44:60"
+    && SOL_NATIVE.assetKey === "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/slip44:501");
+check("assetKeys are unique across the registry",
+  new Set(NATIVE_ASSETS.map((a) => a.assetKey)).size === NATIVE_ASSETS.length);
+check("assetKey identifies the CHAIN before the asset (so tickers may repeat)",
+  NATIVE_ASSETS.every((a) => a.assetKey.split("/").length === 2 && a.assetKey.split("/")[0].includes(":")));
+check("identity lookup by assetKey is exact and round-trips",
+  NATIVE_ASSETS.every((a) => nativeAssetForKey(a.assetKey) === a));
+check("an unknown or absent assetKey resolves to nothing",
+  nativeAssetForKey("eip155:1/erc20:0xdead") === null
+    && nativeAssetForKey(null) === null && nativeAssetForKey("") === null);
+// The identity lookup is NOT case-forgiving: an assetKey is a machine
+// identifier, and quietly accepting a variant would make two spellings of one
+// identity — the very thing the key exists to prevent.
+check("assetKey matching is exact, never case-folded",
+  nativeAssetForKey(BTC_NATIVE.assetKey.toUpperCase()) === null);
+
 // ── Resolution ───────────────────────────────────────────────────────────────
 
 check("a known chain resolves to its native asset", nativeAssetForChain("BTC") === BTC_NATIVE);
 check("resolution is case-insensitive and trims", nativeAssetForChain("  eth ") === ETH_NATIVE);
-check("symbol lookup mirrors chain lookup", nativeAssetForSymbol("sol") === SOL_NATIVE);
+// Symbol lookup survives ONLY as a denomination question (Transaction.currency
+// on a native movement row). It is unambiguous today because native tickers are
+// unique — pinned above — and it is never how identity is resolved.
+check("symbol lookup answers the DENOMINATION question", nativeAssetForSymbol("sol") === SOL_NATIVE);
 
 // THE defect W-M0 removes. Every one of these previously answered "BTC" at the
 // point of use, because the point of use was a literal rather than a question.

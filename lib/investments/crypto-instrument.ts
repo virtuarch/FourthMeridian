@@ -24,29 +24,55 @@
  * construction — the position writer's valuation finds the very prices the
  * backfill wrote. `resolveBtcInstrumentId` delegates here.
  *
+ * ── W-M1a — IDENTITY IS assetKey, NEVER THE TICKER ───────────────────────────
+ * The alias `externalId` was the asset's SYMBOL, and step 2 adopted any
+ * `Instrument(tickerSymbol=symbol, assetClass=CRYPTO)`. Both are ticker-as-
+ * identity, and a ticker is not one: it is chosen by whoever mints the asset,
+ * it is not unique, and for tokens it is attacker-controlled. Anyone can deploy
+ * an ERC-20 called SOL. Under the old rule, minting that token's Instrument and
+ * then resolving native Solana would have found it by ticker and ADOPTED IT as
+ * the canonical SOL — every Solana wallet in the system silently repointed at a
+ * scam contract's price series, with no error anywhere.
+ *
+ * Identity is now `assetKey`, a CAIP-19 asset id that names the chain and then
+ * the asset on it (see lib/crypto/native-asset.ts). `tickerSymbol` is still
+ * written, because display and denomination need it and the schema says plainly
+ * what it is worth: "Display / weak identity — never the canonical primary key".
+ *
  * Identity precedence (deterministic — identical inputs, identical decision):
- *   1. crypto alias  (provider="crypto", externalId=asset symbol) — O(1) repeats.
- *   2. adopt the legacy price Instrument (tickerSymbol=symbol, assetClass=CRYPTO),
- *      attaching the alias so every future resolve is step 1.
+ *   1. crypto alias  (provider="crypto", externalId=asset.assetKey) — O(1) repeats.
+ *   2. adopt a pre-alias Instrument by ticker — ONLY for the closed, historical
+ *      set in LEGACY_TICKER_ADOPTABLE, attaching the alias so every future
+ *      resolve is step 1.
  *   3. create a fresh canonical Instrument + alias.
  *
  * Generic by design: `resolveCryptoInstrumentId(asset)` takes a CryptoAsset, so
- * ETH/SOL land by adding their descriptor — no BTC-specific branch. Only BTC is
- * defined today (BTC_ASSET); no other adapter is built in this slice.
+ * a future ERC-20 lands by supplying `{assetKey: "eip155:1/erc20:0x…", …}` — no
+ * new branch, and no way for it to reach step 2.
  */
 
 import { AssetClass, type Prisma, type PrismaClient } from "@prisma/client";
 import { db } from "@/lib/db";
-import { BTC_NATIVE } from "@/lib/crypto/native-asset";
+import { BTC_NATIVE, ETH_NATIVE, SOL_NATIVE } from "@/lib/crypto/native-asset";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
 /** The InstrumentAlias namespace for canonical crypto-asset identity. */
 export const CRYPTO_PROVIDER = "crypto";
 
-/** A canonical crypto asset — the deterministic identity is its `symbol`. */
+/** A canonical crypto asset — the deterministic identity is its `assetKey`. */
 export interface CryptoAsset {
-  /** Canonical asset symbol — the alias externalId AND the Instrument tickerSymbol. */
+  /**
+   * THE identity: a CAIP-19 asset id, used verbatim as the InstrumentAlias
+   * `externalId` under provider "crypto". Globally unique by construction, so
+   * two assets may share a ticker forever without colliding.
+   */
+  assetKey: string;
+  /**
+   * Display ticker → `Instrument.tickerSymbol`. NOT identity: nothing resolves
+   * by it, and `tickerSymbol` carries no unique constraint precisely because
+   * duplicates are expected.
+   */
   symbol:   string;
   /** Human display name (Instrument.name). */
   name:     string;
@@ -55,20 +81,47 @@ export interface CryptoAsset {
 }
 
 /**
- * The canonical BTC asset descriptor.
+ * THE CLOSED, HISTORICAL SET OF ASSETS THAT MAY ADOPT A TICKER-MATCHED INSTRUMENT.
  *
- * W-M0 — DERIVED from the shared native-asset registry (lib/crypto/native-asset.ts)
- * rather than declared here. The value is unchanged; what changes is that there
- * is now exactly ONE place that says Bitcoin's symbol is "BTC". Declaring it
- * twice would create precisely the identity fork this module exists to prevent
- * — the ticker that mints the Instrument drifting from the ticker that scopes
- * the movement ledger and keys the price map.
+ * Ticker adoption exists for exactly one reason: to absorb the global BTC
+ * `Instrument(tickerSymbol="BTC", assetClass=CRYPTO)` that `btc-price.ts` minted
+ * before canonical identity existed, so the position spine and the 378-row
+ * RAW_CLOSE series converge on ONE row rather than forking. That instrument is a
+ * finite historical artefact. The set of assets that predate canonical identity
+ * cannot grow, because canonical identity now exists.
+ *
+ * So this is a grandfather list, not a policy. ETH and SOL are deliberately
+ * ABSENT even though they are native assets we are about to support: there is no
+ * pre-alias ETH or SOL instrument to absorb (verified — the crypto asset class
+ * holds exactly one row, BTC), and admitting them would leave open the very
+ * collision this slice closes. Never add to this set. A new asset gets a fresh
+ * canonical Instrument keyed by its assetKey.
  */
-export const BTC_ASSET: CryptoAsset = {
-  symbol:   BTC_NATIVE.symbol,
-  name:     BTC_NATIVE.name,
-  currency: BTC_NATIVE.currency,
-};
+export const LEGACY_TICKER_ADOPTABLE: ReadonlySet<string> = new Set<string>([BTC_NATIVE.assetKey]);
+
+/** May this asset absorb a pre-alias Instrument that merely shares its ticker? */
+export function legacyTickerAdoptionPermitted(asset: CryptoAsset): boolean {
+  return LEGACY_TICKER_ADOPTABLE.has(asset.assetKey);
+}
+
+/**
+ * The canonical native-asset descriptors.
+ *
+ * W-M0/W-M1a — these ARE the native-asset registry entries, not copies of them.
+ * A `NativeAsset` structurally satisfies `CryptoAsset` (it adds `chain` and
+ * `decimals`), so one declaration serves both the pure valuation layer and the
+ * identity layer, and there is exactly ONE place that says what Bitcoin's
+ * assetKey and ticker are. Declaring them twice would create precisely the
+ * identity fork this module exists to prevent.
+ *
+ * ETH and SOL are declared HERE, in this slice, deliberately ahead of any
+ * adapter that can sync them: identity is what a later adapter must resolve
+ * INTO, and settling it first is what stops the adapter from inventing its own.
+ * Nothing calls these yet.
+ */
+export const BTC_ASSET: CryptoAsset = BTC_NATIVE;
+export const ETH_ASSET: CryptoAsset = ETH_NATIVE;
+export const SOL_ASSET: CryptoAsset = SOL_NATIVE;
 
 // ─── Pure decision core (no I/O) ──────────────────────────────────────────────
 
@@ -84,9 +137,19 @@ export type CryptoResolution =
 export function decideCryptoResolution(input: {
   aliasInstrumentId:  string | null;
   legacyInstrumentId: string | null;
+  /**
+   * W-M1a — is this asset in the closed grandfather set? A ticker match alone is
+   * NOT a reason to adopt, and the permission is carried explicitly rather than
+   * inferred, so a future asset cannot acquire it by resembling an old one.
+   * The binding additionally declines to even LOOK for a legacy row when this is
+   * false, but the pure rule refuses independently: two refusals, not one.
+   */
+  legacyAdoptionPermitted: boolean;
 }): CryptoResolution {
-  if (input.aliasInstrumentId)  return { action: "use",   instrumentId: input.aliasInstrumentId };
-  if (input.legacyInstrumentId) return { action: "adopt", instrumentId: input.legacyInstrumentId };
+  if (input.aliasInstrumentId) return { action: "use", instrumentId: input.aliasInstrumentId };
+  if (input.legacyInstrumentId && input.legacyAdoptionPermitted) {
+    return { action: "adopt", instrumentId: input.legacyInstrumentId };
+  }
   return { action: "create" };
 }
 
@@ -106,15 +169,18 @@ export async function resolveCryptoInstrumentId(
 ): Promise<string> {
   const client = opts?.client ?? db;
 
-  // 1. Canonical alias — the deterministic fast path.
+  // 1. Canonical alias, keyed by assetKey — the deterministic fast path.
   const alias = await client.instrumentAlias.findUnique({
-    where:  { provider_externalId: { provider: CRYPTO_PROVIDER, externalId: asset.symbol } },
+    where:  { provider_externalId: { provider: CRYPTO_PROVIDER, externalId: asset.assetKey } },
     select: { instrumentId: true },
   });
 
-  // 2. Adopt the legacy price Instrument (btc-price.ts's get-or-create predicate),
-  //    oldest-first so adoption is deterministic even if a prior duplicate exists.
-  const legacy = alias
+  // 2. Adopt a pre-alias Instrument by ticker — ONLY for a grandfathered asset.
+  //    The query is not even ISSUED otherwise, so there is no code path on which
+  //    a ticker match for a non-grandfathered asset can be considered. Ordered
+  //    oldest-first so adoption stays deterministic if a duplicate ever existed.
+  const adoptionPermitted = legacyTickerAdoptionPermitted(asset);
+  const legacy = alias || !adoptionPermitted
     ? null
     : await client.instrument.findFirst({
         where:   { tickerSymbol: asset.symbol, assetClass: AssetClass.CRYPTO },
@@ -123,25 +189,30 @@ export async function resolveCryptoInstrumentId(
       });
 
   const decision = decideCryptoResolution({
-    aliasInstrumentId:  alias?.instrumentId ?? null,
-    legacyInstrumentId: legacy?.id ?? null,
+    aliasInstrumentId:       alias?.instrumentId ?? null,
+    legacyInstrumentId:      legacy?.id ?? null,
+    legacyAdoptionPermitted: adoptionPermitted,
   });
 
   if (decision.action === "use") return decision.instrumentId;
 
   if (decision.action === "adopt") {
     // Attach the canonical alias to the adopted price Instrument (idempotent).
+    // Any pre-W-M1a symbol-keyed alias on the same row is LEFT IN PLACE: it was
+    // a true mapping when it was written, an Instrument may carry many aliases,
+    // and deleting it would be a data migration this slice does not perform.
     await client.instrumentAlias.upsert({
-      where:  { provider_externalId: { provider: CRYPTO_PROVIDER, externalId: asset.symbol } },
-      create: { instrumentId: decision.instrumentId, provider: CRYPTO_PROVIDER, externalId: asset.symbol, metadata: { adopted: true } },
+      where:  { provider_externalId: { provider: CRYPTO_PROVIDER, externalId: asset.assetKey } },
+      create: { instrumentId: decision.instrumentId, provider: CRYPTO_PROVIDER, externalId: asset.assetKey, metadata: { adopted: true, adoptedByTicker: asset.symbol } },
       update: {},
     });
     return decision.instrumentId;
   }
 
-  // 3. Create the canonical Instrument + alias in one atomic write. tickerSymbol +
-  //    assetClass match btc-price's findFirst, so the price backfill adopts THIS
-  //    row rather than minting a second one — the two paths converge either order.
+  // 3. Create the canonical Instrument + alias in one atomic write. The alias is
+  //    keyed by assetKey, so the `@@unique([provider, externalId])` that refuses a
+  //    second canonical mapping now refuses it PER ASSET rather than per ticker —
+  //    two assets sharing a ticker each get their own row, which is correct.
   try {
     const created = await client.instrument.create({
       data: {
@@ -150,7 +221,7 @@ export async function resolveCryptoInstrumentId(
         assetClass:       AssetClass.CRYPTO,
         currency:         asset.currency,
         isCashEquivalent: false,
-        aliases: { create: { provider: CRYPTO_PROVIDER, externalId: asset.symbol, metadata: {} } },
+        aliases: { create: { provider: CRYPTO_PROVIDER, externalId: asset.assetKey, metadata: {} } },
       },
       select: { id: true },
     });
@@ -159,7 +230,7 @@ export async function resolveCryptoInstrumentId(
     // Lost a concurrent create race — the alias unique fired and rolled the whole
     // nested create back (no orphan Instrument). Re-read the winner's alias.
     const won = await client.instrumentAlias.findUnique({
-      where:  { provider_externalId: { provider: CRYPTO_PROVIDER, externalId: asset.symbol } },
+      where:  { provider_externalId: { provider: CRYPTO_PROVIDER, externalId: asset.assetKey } },
       select: { instrumentId: true },
     });
     if (won) return won.instrumentId;
