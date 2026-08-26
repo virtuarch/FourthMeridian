@@ -342,6 +342,14 @@ export const AUDITS: readonly AuditEntry[] = [
           "step 2 of the key-rotation runbook (docs/operations/key-rotation.md)",
   },
   {
+    name: "check-assessment-conformance", tier: "OPERATIONAL", needsDb: false,
+    what: "A4 — measures whether the LANGUAGE MODEL follows the deterministic FinancialAssessment " +
+          "and the A3 authority-precedence contract (npm run ai:conformance). A TOOL, never a gate: " +
+          "it calls a paid, stochastic external model, so putting it in CI would buy flakiness with " +
+          "money. Builds the real production prompt and reports per-dimension conformance plus a " +
+          "saved transcript; writes nothing and reads no database",
+  },
+  {
     name: "check-schema-drift", tier: "OPERATIONAL", needsDb: true,
     what: "READ-ONLY comparison of prisma/migrations/ against the target database's " +
           "_prisma_migrations ledger (npm run db:drift); exits 1 on pending, unfinished, " +

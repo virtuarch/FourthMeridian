@@ -14,6 +14,7 @@
     "db:backup": "tsx scripts/db-backup.ts",
     "db:guard": "tsx scripts/db-guard.ts",
     "db:drift": "tsx --env-file=.env.local scripts/check-schema-drift.ts",
+    "ai:conformance": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/check-assessment-conformance.ts",
     "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
     "db:reset": "tsx scripts/db-guard.ts && npm run db:backup && prisma migrate reset --force",
