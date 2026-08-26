@@ -62,24 +62,30 @@
  *     different row order could shift the last bits of netWorth. Keeping the
  *     order keeps the totals bit-identical, not merely equal.
  *
- * W-M3a — ONE DELIBERATE DIVERGENCE FROM THAT IDENTITY
- * -----------------------------------------------------
- * `getAccounts` now re-sources the CURRENT value of a wallet whose chain writes
- * no balance column (SOL/ETH/BNB/AVAX) from the position spine, because the
- * column is `NOT NULL DEFAULT 0` and was publishing "withheld" as $0.00.
+ * W6 — WHY THIS READ *DOES* SOURCE A WALLET FROM THE SPINE
+ * ---------------------------------------------------------
+ * `getAccounts` re-sources the current value of a wallet whose chain writes no
+ * balance column (SOL/ETH/BNB/AVAX) from the position spine, because the column
+ * is `NOT NULL DEFAULT 0` and was publishing "withheld" as $0.00.
  *
- * This read deliberately does NOT do that, and must not start. It feeds
- * PER-DAY historical computation, and a current observation is evidence about
- * today only — substituting it here would place today's value on every
- * historical day, which is the backward paint the crypto doctrine forbids
- * (invariant 10). Regeneration already values crypto correctly for a licensed
- * day via `valueCryptoDay`, which REPLACES the digital-asset component outright
- * (regenerate-history.ts), so the column reaching this read is not consulted on
- * those days at all.
+ * W-M3a left this read on the column, on the stated grounds that it feeds
+ * per-day historical computation. That was WRONG about this function, and the
+ * note is corrected rather than quietly deleted: `readSpaceAccountsForSnapshot`
+ * has exactly ONE caller — lib/snapshots/regenerate.ts, which writes TODAY's row
+ * from TODAY's live balances. The historical writers (regenerate-history.ts,
+ * backfill.ts) never call it; they carry their own dated reads.
  *
- * The identity above therefore still holds for every field a snapshot may
- * legitimately read on a historical day. Where the two reads differ, it is
- * because they are answering questions about different DATES.
+ * So the doctrine applies cleanly rather than being in tension: a current
+ * observation licenses a POINT, and the point it licenses is exactly the row
+ * this read serves. Leaving it on the column meant today's stored snapshot
+ * omitted a wallet the account surfaces valued correctly — the same false zero,
+ * persisted, on a row marked `isEstimated=false` and therefore trusted
+ * unconditionally by every consumer.
+ *
+ * The field-level identity with `getAccounts` above is thereby PRESERVED, not
+ * excepted. What must never happen is this substitution reaching a HISTORICAL
+ * day, which is why it lives behind a single-caller read rather than in a
+ * shared loader.
  *
  * SCOPE
  * -----
@@ -123,9 +129,9 @@ export interface SnapshotAccountsClient {
   spaceAccountLink: {
     findMany(args: {
       where:    Prisma.SpaceAccountLinkWhereInput;
-      select:   { visibilityLevel: true; financialAccount: { select: { id: true; type: true; balance: true; currency: true } } };
+      select:   { visibilityLevel: true; financialAccount: { select: { id: true; type: true; balance: true; currency: true; walletChain: true } } };
       orderBy:  Prisma.SpaceAccountLinkOrderByWithRelationInput[];
-    }): Promise<Array<{ visibilityLevel: string; financialAccount: { id: string; type: string; balance: number; currency: string } }>>;
+    }): Promise<Array<{ visibilityLevel: string; financialAccount: { id: string; type: string; balance: number; currency: string; walletChain: string | null } }>>;
   };
 }
 
@@ -147,6 +153,7 @@ export async function readSpaceAccountsForSnapshot(
   // be exercised in environments with no database engine at all. Uninjected
   // callers get the shared client exactly as before.
   const prisma = client ?? (await import("@/lib/db")).db;
+  const { loadWalletCurrentValues } = await import("@/lib/crypto/wallet-current-value");
 
   const links = await prisma.spaceAccountLink.findMany({
     where: {
@@ -157,7 +164,7 @@ export async function readSpaceAccountsForSnapshot(
     select: {
       visibilityLevel: true, // read for the W1-D3 disclosure tripwire below
       financialAccount: {
-        select: { id: true, type: true, balance: true, currency: true },
+        select: { id: true, type: true, balance: true, currency: true, walletChain: true },
       },
     },
     // Mirrors getAccountsWithVisibility so summation order — and therefore the
@@ -190,10 +197,22 @@ export async function readSpaceAccountsForSnapshot(
     }
   }
 
-  return links.map((l) => ({
-    id:       l.financialAccount.id,
-    type:     l.financialAccount.type as string,
-    balance:  l.financialAccount.balance,
-    currency: l.financialAccount.currency,
-  }));
+  // W6 — a spine-backed wallet's balance for TODAY comes from the spine, valued
+  // through the canonical path, exactly as the account surfaces resolve it. Only
+  // a VALUED result displaces the column; UNKNOWN and NO_PRICE fall through
+  // rather than have a number invented, and BTC is absent from the map entirely.
+  const walletValueByAccount = await loadWalletCurrentValues(
+    links.map((l) => ({ id: l.financialAccount.id, walletChain: l.financialAccount.walletChain })),
+    { client: prisma as never, contextSpaceId: spaceId },
+  );
+
+  return links.map((l) => {
+    const v = walletValueByAccount.get(l.financialAccount.id);
+    return {
+      id:       l.financialAccount.id,
+      type:     l.financialAccount.type as string,
+      balance:  v?.state === "VALUED" && v.value !== null ? v.value : l.financialAccount.balance,
+      currency: l.financialAccount.currency,
+    };
+  });
 }

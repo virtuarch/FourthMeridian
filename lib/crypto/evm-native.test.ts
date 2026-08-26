@@ -167,11 +167,29 @@ async function main(): Promise<void> {
     check("CONFIRMED ZERO: an observed zero is not a position and blacks out nothing",
       zero.licensed && zero.nativeTotal === 15000 && zero.positionCount === 1);
 
+    // W6 — an unknown quantity splits in two, and which one applies is decided by
+    // whether the account was inside its existence interval on the day.
+    //
+    // NOT APPLICABLE: the wallet was not here yet. It is not part of the
+    // question, so it neither contributes nor blacks out BTC.
+    const notYet = valueCryptoDay({
+      accounts: [acct("btc", 0.25, K.btc, "BTC"), { ...acct("avax", null, K.avax, "AVAX"), applicable: false }],
+      unitPriceByAssetKey: { [K.btc]: 60000 }, quantityLicensed: true });
+    check("NOT_APPLICABLE: a wallet outside its existence interval does not black out BTC",
+      notYet.licensed && notYet.nativeTotal === 15000 && notYet.positionCount === 1);
+
+    // UNKNOWN: the wallet WAS here and what it held is unrecoverable. Reporting
+    // BTC's total as the day's crypto would be a complete-looking number with a
+    // material constituent silently missing — the W6 defect.
     const unknown = valueCryptoDay({
       accounts: [acct("btc", 0.25, K.btc, "BTC"), acct("avax", null, K.avax, "AVAX")],
       unitPriceByAssetKey: { [K.btc]: 60000 }, quantityLicensed: true });
-    check("UNKNOWN: no observation is not a position, and does not black out BTC",
-      unknown.licensed && unknown.nativeTotal === 15000 && unknown.positionCount === 1);
+    check("UNKNOWN: an unknown quantity inside the interval REFUSES the day",
+      !unknown.licensed && unknown.refusal === "QUANTITY_UNKNOWN");
+    check("…naming the account whose history is missing, and counting it as existing",
+      unknown.unknownQuantityAccountIds.join(",") === "avax" && unknown.positionCount === 2);
+    check("…and publishing no number at all — never BTC alone passed off as the total",
+      unknown.nativeTotal === 0 && unknown.positions.length === 0);
 
     // The one case that MUST refuse: a MATERIAL asset nobody can price. Reporting
     // BTC alone would claim a complete crypto total while silently omitting a
@@ -206,7 +224,7 @@ async function main(): Promise<void> {
     // A null quantity is not a position, so it contributes nothing and refuses nothing.
     const day = valueCryptoDay({
       accounts: [{ financialAccountId: "evm", name: "evm", nativeBalance: null,
-                   assetKey: AVAX_NATIVE.assetKey, symbol: "AVAX" }],
+                   assetKey: AVAX_NATIVE.assetKey, symbol: "AVAX", applicable: false }],
       unitPriceByAssetKey: {}, quantityLicensed: true });
     check("…so a pre-observation date contributes no crypto value at all",
       day.licensed && day.nativeTotal === 0 && day.positionCount === 0);

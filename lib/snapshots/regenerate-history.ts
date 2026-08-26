@@ -366,12 +366,77 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
    * NULL means no dated evidence reaches this day, which the valuation core
    * treats as "not a position" — never as a quantity of zero.
    */
+  // ── W6 — THE DEFENSIBLE EXISTENCE INTERVAL OF A SPINE-BACKED WALLET ─────────
+  //
+  // `cryptoQuantityOn` returns null on a day no dated evidence reaches, and the
+  // valuation core now refuses such a day rather than dropping the account. That
+  // is right for a wallet whose history has a hole — and catastrophic for one
+  // that simply was not there yet, which is every CURRENT_POSITION-only chain on
+  // every historical date. An Ethereum wallet has exactly one observation, made
+  // today; without this bound, adding one would refuse a year of Bitcoin history.
+  //
+  // The bound is read from the evidence itself rather than from a connection
+  // date. The replay writes a row for EVERY day it licenses, so the first and
+  // last spine rows ARE the coverage the reconstruction claimed:
+  //
+  //   before the first row — NOT_APPLICABLE. Nothing places the wallet here.
+  //                          (For Solana this is BEFORE_FIRST_DEFENSIBLE_ANCHOR;
+  //                          the day is not zero, it is not this wallet's day.)
+  //   inside the interval  — the resolver answers, and origin precedence applies.
+  //   after the last row   — APPLICABLE and UNKNOWN. The wallet exists — it
+  //                          exists right now — but nothing licenses carrying its
+  //                          last known quantity forward to this date. A current
+  //                          observation licenses a point, not an interval.
+  //
+  // Deliberately NOT the account's createdAt: a reconstructed wallet has
+  // defensible evidence long before we connected to it (Solana's runs back to
+  // 2022-03-26 while the account was created 2026-08-26), and flooring on the
+  // connection date would delete four years of proven history.
+  const spineBoundsByAccount = new Map<string, { firstISO: string; lastISO: string }>();
+  for (const [accountId, rows] of spineRowsByAccount) {
+    if (rows.length === 0) continue;
+    spineBoundsByAccount.set(accountId, { firstISO: rows[0].date, lastISO: rows[rows.length - 1].date });
+  }
+
+  // W6 — membership by CHAIN, not by whether rows happened to be found. Keying
+  // off map presence made a spine-backed wallet with no rows in the window fall
+  // through to `nativeBalance` — the legacy column, which for those chains is an
+  // unwritten 0. That is the false zero this slice exists to remove, arriving by
+  // the back door.
+  const spineAccountIds = new Set(spineCryptoAccounts.map((a) => a.id));
+
   const cryptoQuantityOn = (accountId: string, dISO: string): number | null => {
-    const rows = spineRowsByAccount.get(accountId);
-    if (rows === undefined) {
-      return cryptoAccounts.find((a) => a.id === accountId)?.nativeBalance ?? null;
+    if (spineAccountIds.has(accountId)) {
+      // Spine-backed: dated evidence or nothing. NEVER the legacy column.
+      const rows = spineRowsByAccount.get(accountId);
+      if (rows === undefined) return null;
+      // W6 — the replay writes a row for every day it licenses, so the last row
+      // IS where its coverage ends. `resolvePositionAsOf` would happily carry
+      // that quantity forward for ever; beyond the licensed edge that is an
+      // assertion, not a reading. A current observation licenses its own date.
+      const bounds = spineBoundsByAccount.get(accountId);
+      if (bounds !== undefined && dISO > bounds.lastISO) return null;
+      return resolvePositionAsOf(rows, dISO).quantity;
     }
-    return resolvePositionAsOf(rows, dISO).quantity;
+    return cryptoAccounts.find((a) => a.id === accountId)?.nativeBalance ?? null;
+  };
+
+  /** Was this account within its defensible existence interval on `dISO`? */
+  const cryptoApplicableOn = (accountId: string, dISO: string): boolean => {
+    // A legacy-column account is governed by its own carry licence, unchanged —
+    // except that an ABSENT column is no balance evidence at all, so the account
+    // is not applicable rather than unknown. That is exactly the pre-W6
+    // behaviour (a null balance contributed nothing), and keeping it is what
+    // makes the BTC path byte-identical through this slice.
+    if (!spineAccountIds.has(accountId)) {
+      return cryptoAccounts.find((a) => a.id === accountId)?.nativeBalance != null;
+    }
+    const bounds = spineBoundsByAccount.get(accountId);
+    // Spine-backed with no dated evidence at all: nothing places it on any day,
+    // so it is applicable nowhere rather than unknown everywhere. This is what
+    // keeps a CURRENT_POSITION-only chain from refusing history it never claimed.
+    if (bounds === undefined) return false;
+    return dISO >= bounds.firstISO;
   };
 
   // An account is MATERIAL if it ever held something across the window — by the
@@ -862,6 +927,10 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
           nativeBalance: cryptoQuantityOn(a.id, dISO),
           assetKey: cryptoAssetByAccount.get(a.id)?.assetKey ?? null,
           symbol:   cryptoSymbolByAccount.get(a.id) ?? null,
+          // W6 — outside its existence interval a wallet is NOT_APPLICABLE: it
+          // contributes nothing and refuses nothing. Inside it, an unresolved
+          // quantity is a genuine hole and the day refuses.
+          applicable: cryptoApplicableOn(a.id, dISO),
         })),
         unitPriceByAssetKey,
         quantityLicensed: cryptoQuantityLicensed(dISO),

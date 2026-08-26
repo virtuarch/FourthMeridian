@@ -117,6 +117,15 @@ function sameAsLegacy(now: CryptoDayValuation, legacy: ReturnType<typeof valueCr
 
 // The live corpus, exactly: three BTC wallets, one of them the real one, plus
 // the balance-less rows that must stay out of both the count and the total.
+//
+// W6 — `acc_zero` (held nothing) and `acc_null` (knows nothing) are now DIFFERENT
+// facts, and the legacy binding is what keeps this sweep honest: for a
+// legacy-column account an ABSENT column is no balance evidence, so the binding
+// marks it NOT_APPLICABLE and it contributes nothing — precisely the pre-W-M0
+// behaviour. The new QUANTITY_UNKNOWN refusal is reserved for a spine-backed
+// account INSIDE its existence interval, which no BTC wallet is. That is why
+// BTC stays byte-identical while the false zero is removed elsewhere; the
+// divergence is asserted directly further down.
 const LIVE_BTC: LegacyAccount[] = [
   { financialAccountId: "acc_cold", name: "Cold Wallet BTC", nativeBalance: 0.24060252, symbol: "BTC" },
   { financialAccountId: "acc_jane", name: "Jane BTC Wallet", nativeBalance: 0.02,       symbol: "BTC" },
@@ -145,7 +154,12 @@ const SETS: LegacyAccount[][] = [
  * is genuinely the implementation's.
  */
 const withIdentity = (accounts: readonly LegacyAccount[]): CryptoAccountBalance[] =>
-  accounts.map((a) => ({ ...a, assetKey: BTC }));
+  // W6 — `applicable` mirrors what the LEGACY BINDING does for a legacy-column
+  // account (regenerate-history.ts `cryptoApplicableOn`): an absent column is no
+  // balance evidence, so the account is not applicable and contributes nothing.
+  // Attaching it here is what makes this a fair comparison — the sweep compares
+  // implementations, not two different bindings.
+  accounts.map((a) => ({ ...a, assetKey: BTC, applicable: a.nativeBalance != null }));
 
 let compared = 0;
 let divergences = 0;

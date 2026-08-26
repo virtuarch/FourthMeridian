@@ -66,7 +66,21 @@
 export interface CryptoAccountBalance {
   financialAccountId: string;
   name:               string;
-  /** Whole units of `symbol`. Null/0 ⇒ nothing held. */
+  /**
+   * Whole units of `symbol` on this day.
+   *
+   * W6 — `0` and `null` are DIFFERENT FACTS and this field is the boundary where
+   * they used to be confused. `0` is a known quantity: the wallet held nothing,
+   * which is evidence. `null` is UNKNOWN — no licensed quantity reaches this
+   * day — and it is not a quantity at all.
+   *
+   * Before W6 this was read as `nativeBalance ?? 0` and an unknown quantity was
+   * filtered out as immaterial, so a day on which one wallet's history was
+   * unknown still reported `licensed: true` and a total composed of the OTHER
+   * wallets. The aggregate asserted completeness it did not have. An unknown
+   * quantity now refuses the day (QUANTITY_UNKNOWN) unless the account is
+   * outside its existence interval — see `applicable`.
+   */
   nativeBalance:      number | null;
   /**
    * The CANONICAL IDENTITY of the asset this account's balance denominates,
@@ -82,6 +96,24 @@ export interface CryptoAccountBalance {
   assetKey:           string | null;
   /** Display ticker for the rendered position. Decides nothing. */
   symbol:             string | null;
+  /**
+   * W6 — was this account WITHIN its defensible existence interval on this day?
+   *
+   * `false` means NOT_APPLICABLE: no evidence places the account here at all, so
+   * it contributes nothing AND refuses nothing. That is the difference between
+   * "we cannot say what this wallet held in 2023" and "this wallet did not exist
+   * in 2023, and its absence is not a gap in the answer".
+   *
+   * Without this distinction the fix would be unusable: a wallet on a
+   * CURRENT_POSITION-only chain has exactly one observation — today's — so every
+   * historical day would be an unknown quantity, and adding an Ethereum wallet
+   * would black out a year of Bitcoin history. The account is simply not
+   * applicable before its evidence begins.
+   *
+   * Defaults to TRUE when omitted, so a caller that has not thought about
+   * existence gets the conservative answer (refuse) rather than a silent drop.
+   */
+  applicable?:        boolean;
 }
 
 /** One crypto position on one date, explained. */
@@ -107,8 +139,21 @@ export interface CryptoDayValuation {
   /** How many crypto positions EXISTED on this day (the denominator's share). */
   positionCount: number;
   licensed: boolean;
-  /** Coded reason when not licensed. */
-  refusal: "UNKNOWN_ASSET" | "NO_PRICE" | "QUANTITY_UNLICENSED" | null;
+  /**
+   * Coded reason when not licensed.
+   *
+   * QUANTITY_UNKNOWN (W6) — an account within its existence interval had NO
+   * licensed quantity on this day. Distinct from QUANTITY_UNLICENSED, which is
+   * the caller's verdict about the constant-quantity CARRY for the whole day;
+   * this one is per account and says the evidence never reached the date.
+   */
+  refusal: "UNKNOWN_ASSET" | "NO_PRICE" | "QUANTITY_UNLICENSED" | "QUANTITY_UNKNOWN" | null;
+  /**
+   * W6 — WHICH accounts had an unknown quantity, sorted. Named by account rather
+   * than by asset because two wallets on the same chain fail independently: one
+   * may be fully reconstructed while the other has no history at all.
+   */
+  unknownQuantityAccountIds: readonly string[];
   /**
    * W-M0 — WHICH assets forced the refusal, as canonical assetKeys, sorted, so a
    * caller can say what is missing instead of only that something is. Empty when
@@ -164,22 +209,52 @@ const DEFAULT_MATERIALITY = 0;
  */
 export function valueCryptoDay(input: CryptoDayInput): CryptoDayValuation {
   const eps = input.materialityEpsilon ?? DEFAULT_MATERIALITY;
-  const held = [...input.accounts]
-    .filter((a) => Math.abs(a.nativeBalance ?? 0) > eps)
+
+  // W6 — an account outside its defensible existence interval is NOT_APPLICABLE:
+  // it is not part of this day's question, so it neither contributes nor refuses.
+  // Everything below reasons only about accounts that were actually here.
+  const inScope = input.accounts.filter((a) => a.applicable !== false);
+
+  // The three states `nativeBalance` can be in, kept apart on purpose.
+  //   null   → UNKNOWN. No licensed quantity reached this day.
+  //   0      → CONFIRMED ZERO. Known, evidenced, and not a position.
+  //   other  → a held quantity.
+  const unknownQuantityAccountIds = inScope
+    .filter((a) => a.nativeBalance === null)
+    .map((a) => a.financialAccountId)
+    .sort();
+  const held = inScope
+    .filter((a) => a.nativeBalance !== null && Math.abs(a.nativeBalance) > eps)
     .sort((a, b) => a.financialAccountId.localeCompare(b.financialAccountId));
+
+  // A position that EXISTED includes one whose quantity we could not establish —
+  // it is a hole in the answer, and a denominator that omitted it would report
+  // "N of N valued" on a day that was materially incomplete.
+  const existedCount = held.length + unknownQuantityAccountIds.length;
 
   const refuse = (
     refusal: NonNullable<CryptoDayValuation["refusal"]>,
     unpricedAssetKeys: readonly string[] = [],
   ): CryptoDayValuation => ({
-    positions: [], nativeTotal: 0, positionCount: held.length,
-    licensed: false, refusal, unpricedAssetKeys,
+    positions: [], nativeTotal: 0, positionCount: existedCount,
+    licensed: false, refusal, unpricedAssetKeys, unknownQuantityAccountIds,
   });
 
   // 1. AN UNNAMED ASSET IS NOT A PRICING FAILURE. It is a failure to know what
   //    is held, and reporting it as NO_PRICE would send the reader looking for a
   //    price we could not have asked for. Checked FIRST for that reason.
   if (held.some((a) => !a.assetKey)) return refuse("UNKNOWN_ASSET");
+
+  // 1b. W6 — AN UNKNOWN QUANTITY IS NOT AN ABSENT ONE, AND THE DAY MUST SAY SO.
+  //     This is the defect the slice exists to close. The account was here; what
+  //     it held is unrecoverable from the evidence we have. Reporting the other
+  //     wallets' total as the day's crypto would be a complete-looking number
+  //     with a material constituent silently missing — the precise shape of
+  //     dishonesty the all-or-nothing rule prevents everywhere else.
+  //
+  //     Checked before pricing for the same reason UNKNOWN_ASSET is: a price
+  //     cannot rescue a quantity nobody knows.
+  if (unknownQuantityAccountIds.length > 0) return refuse("QUANTITY_UNKNOWN");
 
   // 2. Every asset IN PLAY must have a usable price — the held ones and the ones
   //    the caller declared by naming them in the map. See `unitPriceByAssetKey`:
@@ -198,7 +273,8 @@ export function valueCryptoDay(input: CryptoDayInput): CryptoDayValuation {
   if (!input.quantityLicensed) return refuse("QUANTITY_UNLICENSED");
 
   const positions = held.map((a) => {
-    const quantity  = a.nativeBalance ?? 0;
+    // Non-null by construction — `held` filtered out both unknown and zero.
+    const quantity  = a.nativeBalance!;
     const unitPrice = priceOf(a.assetKey!)!;
     return {
       financialAccountId: a.financialAccountId,
@@ -218,5 +294,6 @@ export function valueCryptoDay(input: CryptoDayInput): CryptoDayValuation {
     licensed:          true,
     refusal:           null,
     unpricedAssetKeys: [],
+    unknownQuantityAccountIds: [],
   };
 }
