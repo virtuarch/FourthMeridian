@@ -27,6 +27,9 @@ import { buildSpaceSystemPrompt, buildMasterSystemPrompt } from '@/lib/ai/prompt
 import { classifyFinancialIntent } from '@/lib/ai/intent';
 import { SCENARIOS, type Scenario } from '@/lib/ai/conformance/scenarios';
 import {
+  detectAssessmentContradiction, buildRepairInstruction, applyGuard, resolveGuardMode,
+} from '@/lib/ai/assessment-guard';
+import {
   scoreClassification, scoreRefusal, scoreLead, scoreTrajectory,
   scoreUnassessed, scoreOverride, type DimensionScore, type Dimension,
 } from '@/lib/ai/conformance/scoring';
@@ -41,6 +44,14 @@ const smoke = args.includes('--smoke');
 const runsArg = args.find((a) => a.startsWith('--runs='));
 const RUNS = smoke ? 1 : runsArg ? Math.max(1, Number(runsArg.split('=')[1])) : 2;
 const SET = smoke ? SCENARIOS.slice(0, 2) : SCENARIOS;
+/**
+ * A5 — exercise the runtime guard exactly as app/api/ai/chat/route.ts does:
+ * pure detection, at most ONE repair call, then the deterministic fallback.
+ * Without --guard the harness measures the bare prompt, as A4.2 did.
+ */
+const GUARD = resolveGuardMode(args.find((a) => a.startsWith('--guard='))?.split('=')[1] ?? 'off');
+const only = args.find((a) => a.startsWith('--only='))?.split('=')[1];
+let repairCalls = 0;
 
 interface TurnResult {
   scenario: string; run: number; turn: number; ask: string; reply: string;
@@ -101,7 +112,7 @@ async function main(): Promise<void> {
 
   const results: TurnResult[] = [];
 
-  for (const s of SET) {
+  for (const s of (only ? SET.filter((x) => x.name.startsWith(only)) : SET)) {
     assertBranches(s);
     const list = assessmentsFor(s);
     const a0 = list[0];
@@ -124,7 +135,27 @@ async function main(): Promise<void> {
           messages: [{ role: 'system', content: prompt }, ...messages],
           temperature: TEMPERATURE, max_tokens: MAX_TOKENS,
         });
-        const reply = completion.choices[0]?.message?.content ?? '';
+        let reply = completion.choices[0]?.message?.content ?? '';
+
+        // A5 guard, mirroring the chat route. One repair attempt maximum.
+        if (GUARD !== 'off') {
+          const findings = list.flatMap((a) => detectAssessmentContradiction(reply, a));
+          if (findings.length > 0) {
+            console.log(`      [guard:${GUARD}] ${findings.map((f) => `${f.kind}:${f.dimension}`).join(',')}`);
+            if (GUARD === 'repair') {
+              repairCalls++;
+              const rep = await client.chat.completions.create({
+                model: CHAT_MODEL,
+                messages: [{ role: 'system', content: `${prompt}\n\n${buildRepairInstruction(findings)}` }, ...messages],
+                temperature: TEMPERATURE, max_tokens: MAX_TOKENS,
+              });
+              const repaired = rep.choices[0]?.message?.content ?? '';
+              const still = list.flatMap((a) => detectAssessmentContradiction(repaired, a));
+              reply = applyGuard(repaired, still, GUARD);
+              console.log(`      [guard] repaired; residual findings=${still.length}${still.length ? ' → deterministic fallback' : ''}`);
+            }
+          }
+        }
         messages.push({ role: 'assistant', content: reply });   // conversation carries forward
 
         const dims = t.dims ?? [];
@@ -171,6 +202,7 @@ async function main(): Promise<void> {
   console.log(`\n${'═'.repeat(78)}\nSUMMARY\n${'═'.repeat(78)}`);
   console.log(`  clean turns         : ${cleanTurns}/${results.length}  ${pct(cleanTurns, results.length)}`);
   console.log(`  clean conversations : ${cleanConvos}/${byScen.size}  ${pct(cleanConvos, byScen.size)}`);
+  console.log(`  guard=${GUARD}  repair calls=${repairCalls}`);
   console.log(`  tokens in=${inTok} out=${outTok}  est. cost ≈ $${(inTok * USD_IN + outTok * USD_OUT).toFixed(4)}`);
 
   const out = '_to_delete/a42-scenarios.json';

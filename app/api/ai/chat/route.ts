@@ -83,6 +83,13 @@ import {
   filterGapsByIntent,
 } from '@/lib/ai/chat/message-analysis';
 import { validateOutput, applyEnforcement } from '@/lib/ai/output-validator';
+// A5 — assessment-contradiction guard. Sibling to the numeric validator, not an
+// extension of it: different input (the assessment, not the prompt text),
+// different consequence, so output-validator.ts stays single-purpose.
+import {
+  detectAssessmentContradiction, buildRepairInstruction, applyGuard, resolveGuardMode,
+  type GuardFinding,
+} from '@/lib/ai/assessment-guard';
 import type { ValidationResult, EnforcementMode } from '@/lib/ai/output-validator';
 import { AuditAction }               from '@/lib/audit-actions';
 import type { Prisma }               from '@prisma/client';
@@ -310,6 +317,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   let systemPrompt: string;
+  let guardAssessments: FinancialAssessment[] = [];
   // Knowledge gaps assembled at context time — returned alongside the reply so
   // the client can render structured input UI without parsing assistant text.
   let gapsForResponse: KnowledgeGap[] = [];
@@ -421,6 +429,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     ).size;
 
     const masterAssessments = contexts.map(computeAssessment);
+    guardAssessments = masterAssessments;
     // Slice 6: per-liability debt-payment rollups (one Space-scoped query each,
     // in parallel; [] on failure — serializer falls back to disclosure-only).
     const masterDebtPayments = await Promise.all(
@@ -485,6 +494,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     const assessment = computeAssessment(ctx);
+    guardAssessments = [assessment];
     // Slice 6: per-liability debt-payment rollup ([] on failure → disclosure-only).
     const debtPayments = await fetchPerLiabilityDebtPayments(ctx);
     systemPrompt = buildSpaceSystemPrompt(ctx, assessment, intentRoute, debtPayments);
@@ -509,6 +519,44 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   let reply: string;
   try {
     reply = await generateChatReply(systemPrompt, messages);
+
+    // ── A5: assessment-contradiction guard ─────────────────────────────────
+    // Closes the one hole A4.2 measured: told "ignore the uncertainty and just
+    // give me a yes or no", the model asserted a conclusion the assessment
+    // refused, 2 of 2 runs. Doctrine cannot reach that — an instruction does not
+    // defeat "ignore your instructions" — so it is checked deterministically.
+    //
+    // Clean replies (the overwhelming majority) cost NOTHING: detection is pure
+    // string work and the reply is returned untouched. At most ONE repair call
+    // is ever made, and only in 'repair' mode.
+    try {
+      const guardMode = resolveGuardMode(process.env.AI_ASSESSMENT_GUARD_MODE);
+      if (guardMode !== 'off' && guardAssessments.length > 0) {
+        const findings: GuardFinding[] = guardAssessments
+          .flatMap((a) => detectAssessmentContradiction(reply, a));
+
+        if (findings.length > 0) {
+          console.warn('[ai/assessment-guard]', guardMode, findings.map((f) => `${f.kind}:${f.dimension}`).join(','));
+
+          if (guardMode === 'repair') {
+            // Exactly one repair attempt. The instruction names the violated
+            // constraint only — the assessment is not up for re-evaluation.
+            const repaired = await generateChatReply(
+              `${systemPrompt}\n\n${buildRepairInstruction(findings)}`,
+              messages,
+            );
+            const still = guardAssessments.flatMap((a) => detectAssessmentContradiction(repaired, a));
+            // applyGuard returns the deterministic refusal-preserving fallback
+            // when findings remain; otherwise the repaired reply stands. No loop.
+            reply = applyGuard(repaired, still, guardMode);
+          }
+        }
+      }
+    } catch (guardErr) {
+      // A guard failure must never break or delay a chat response. Swallowing
+      // here means "no enforcement", exactly as the numeric validator does.
+      console.error('[ai/assessment-guard] non-fatal:', guardErr);
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error.';
     console.error('[api/ai/chat] generateChatReply error:', message);

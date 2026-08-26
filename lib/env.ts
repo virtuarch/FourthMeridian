@@ -171,6 +171,10 @@ const _e = {
   // toggles an optional non-PII flow-distribution log line only (no data-path
   // effect); unset ⇒ "off". Both read directly at their sites — mirrored for docs.
   AI_OUTPUT_VALIDATION_MODE: process.env.AI_OUTPUT_VALIDATION_MODE,
+  // A5 — assessment-contradiction guard: off | shadow | repair.
+  // UNSET ⇒ shadow (detect and log, reply untouched). Enforcement is never
+  // silently on; 'repair' must be set deliberately.
+  AI_ASSESSMENT_GUARD_MODE: process.env.AI_ASSESSMENT_GUARD_MODE,
   FLOWTYPE_SHADOW:           process.env.FLOWTYPE_SHADOW,
 } as const;
 

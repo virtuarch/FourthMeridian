@@ -32,6 +32,9 @@ import { buildSpaceSystemPrompt } from '@/lib/ai/prompts/system-prompt';
 import { classifyFinancialIntent } from '@/lib/ai/intent';
 import { FIXTURES } from '@/lib/ai/conformance/fixtures';
 import {
+  detectAssessmentContradiction, buildRepairInstruction, applyGuard, resolveGuardMode,
+} from '@/lib/ai/assessment-guard';
+import {
   scoreClassification, scoreRefusal, scoreLead, scoreTrajectory,
   scoreUnassessed, scoreOverride, type DimensionScore, type Dimension,
 } from '@/lib/ai/conformance/scoring';
@@ -47,6 +50,9 @@ const smoke  = args.includes('--smoke');
 const runsArg = args.find((a) => a.startsWith('--runs='));
 const RUNS   = smoke ? 1 : runsArg ? Math.max(1, Number(runsArg.split('=')[1])) : 3;
 const SET    = smoke ? FIXTURES.slice(0, 2) : FIXTURES;
+/** A5 — exercise the runtime guard as the chat route does. Default off = bare prompt. */
+const GUARD = resolveGuardMode(args.find((a) => a.startsWith('--guard='))?.split('=')[1] ?? 'off');
+let repairCalls = 0;
 
 // gpt-4o-mini list price (USD per 1M tokens) at time of writing. Used only to
 // print an estimate — never to gate anything.
@@ -112,7 +118,29 @@ async function main(): Promise<void> {
         temperature: TEMPERATURE,
         max_tokens:  MAX_TOKENS,
       });
-      const reply = completion.choices[0]?.message?.content ?? '';
+      let reply = completion.choices[0]?.message?.content ?? '';
+
+      if (GUARD !== 'off') {
+        const findings = detectAssessmentContradiction(reply, assessment);
+        if (findings.length > 0) {
+          console.log(`      [guard:${GUARD}] ${findings.map((f) => `${f.kind}:${f.dimension}`).join(',')}`);
+          if (GUARD === 'repair') {
+            repairCalls++;
+            const rep = await client.chat.completions.create({
+              model: CHAT_MODEL,
+              messages: [
+                { role: 'system', content: `${prompt}\n\n${buildRepairInstruction(findings)}` },
+                { role: 'user',   content: f.question },
+              ],
+              temperature: TEMPERATURE, max_tokens: MAX_TOKENS,
+            });
+            const repaired = rep.choices[0]?.message?.content ?? '';
+            const still = detectAssessmentContradiction(repaired, assessment);
+            reply = applyGuard(repaired, still, GUARD);
+            console.log(`      [guard] repaired; residual=${still.length}${still.length ? ' → fallback' : ''}`);
+          }
+        }
+      }
 
       const a = {
         debt: assessment.debt.classification,
@@ -177,7 +205,8 @@ async function main(): Promise<void> {
   console.log(`  invented grades      : ${fails('unassessed')}`);
   console.log(`  raw-context overrides: ${fails('override')}`);
   console.log(`  classification breaks: ${fails('classification')}`);
-  console.log(`\n  tokens in=${inTok} out=${outTok}  est. cost ≈ $${(inTok * USD_IN + outTok * USD_OUT).toFixed(4)}`);
+  console.log(`\n  guard=${GUARD}  repair calls=${repairCalls}`);
+  console.log(`  tokens in=${inTok} out=${outTok}  est. cost ≈ $${(inTok * USD_IN + outTok * USD_OUT).toFixed(4)}`);
   console.log('\n  NOTE: these checks detect EXPLICIT contradiction only. The rates are a');
   console.log('  LOWER BOUND on violations — an implied contradiction in free prose can');
   console.log('  pass every regex. Read the saved transcript before trusting a high score.');
