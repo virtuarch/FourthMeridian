@@ -342,6 +342,14 @@ export const AUDITS: readonly AuditEntry[] = [
           "step 2 of the key-rotation runbook (docs/operations/key-rotation.md)",
   },
   {
+    name: "check-conformance-scenarios", tier: "OPERATIONAL", needsDb: false,
+    what: "A4.2 — the multi-turn and cross-Space half of the conformance harness " +
+          "(npm run ai:conformance:scenarios). Same tier and reasons as its single-turn " +
+          "sibling: paid, stochastic, never a gate. Adds refusal-under-followup-pressure, " +
+          "buildMasterSystemPrompt coverage, simultaneous refusals, and an OVER-refusal " +
+          "check so a model that answers \"I cannot say\" to everything cannot score as conformant",
+  },
+  {
     name: "check-assessment-conformance", tier: "OPERATIONAL", needsDb: false,
     what: "A4 — measures whether the LANGUAGE MODEL follows the deterministic FinancialAssessment " +
           "and the A3 authority-precedence contract (npm run ai:conformance). A TOOL, never a gate: " +

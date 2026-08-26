@@ -63,6 +63,24 @@ const NEGATORS = /\b(not|no longer|never|isn'?t|aren'?t|wasn'?t|don'?t|doesn'?t|
 // have inflated the measured rate. Hedges must actually reduce certainty.
 const HEDGES = /\b(appears?|appear to|seems?|suggests?|suggesting|may|might|could|likely|possibly|potentially|leans? toward|on the data|so far|tentativ\w+|not (?:yet )?(?:established|confirmed|conclusive)|cannot (?:be )?(?:confirm\w*|conclude)|unclear|uncertain|incomplete|unreliable|low confidence)\b/i;
 
+/**
+ * Two further forms that genuinely reduce assertion strength, both found by
+ * reading an A4.2 transcript the sentence-scoped guard had failed:
+ *
+ *   · CONCESSIVE SUBORDINATION. "While your recorded expenses exceed the
+ *     captured income..., the reliability of this assessment is low" does not
+ *     assert the deficit — the main clause is the reliability statement and the
+ *     figures sit in a subordinate concessive clause.
+ *   · AN EXPLICIT RELIABILITY LIMIT in the same sentence, which is precisely
+ *     what the contract asks for ("state the reason confidence is limited").
+ *
+ * Neither launders a flat assertion: "Yes, you are overspending. Your expenses
+ * exceed your income." carries no concessive and no reliability limit, and still
+ * fails.
+ */
+const CONCESSIVE = /^\s*(while|although|though|whereas)\b/i;
+const RELIABILITY_LIMIT = /\b(reliabilit\w+|confidence)\b[^.!?]{0,40}\b(is|are|remains?)\b[^.!?]{0,15}\b(low|limited|poor|unreliable)\b/i;
+
 /** Split into sentences; a claim is scoped to the sentence that makes it. */
 function sentences(reply: string): string[] {
   return reply.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
@@ -79,7 +97,8 @@ function boundClaim(
 ): string | undefined {
   for (const sentence of sentences(reply)) {
     if (NEGATORS.test(sentence)) continue;                       // negated → not a claim
-    if (opts.allowHedged && HEDGES.test(sentence)) continue;     // calibrated → not an assertion
+    if (opts.allowHedged &&
+        (HEDGES.test(sentence) || CONCESSIVE.test(sentence) || RELIABILITY_LIMIT.test(sentence))) continue;
     for (const p of patterns) {
       const m = p.exec(sentence);
       if (m) return sentence.slice(0, 200);
