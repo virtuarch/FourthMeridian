@@ -10,7 +10,7 @@
  */
 
 import {
-  BTC_NATIVE, ETH_NATIVE, SOL_NATIVE, NATIVE_ASSETS,
+  BTC_NATIVE, ETH_NATIVE, SOL_NATIVE, BNB_NATIVE, POL_NATIVE, AVAX_NATIVE, NATIVE_ASSETS,
   nativeAssetForChain, nativeAssetForSymbol, nativeAssetForKey,
   ledgerEpsilonFor, LEDGER_EPSILON_FLOOR,
 } from "./native-asset";
@@ -71,7 +71,7 @@ check("symbol lookup answers the DENOMINATION question", nativeAssetForSymbol("s
 
 // THE defect W-M0 removes. Every one of these previously answered "BTC" at the
 // point of use, because the point of use was a literal rather than a question.
-for (const chain of [null, undefined, "", "   ", "MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER", "bitcoin"]) {
+for (const chain of [null, undefined, "", "   ", "DOT", "ADA", "XRP", "OTHER", "bitcoin"]) {
   check(`an unnamed/unsupported chain resolves to NOTHING, never to BTC (${JSON.stringify(chain)})`,
     nativeAssetForChain(chain) === null);
 }
@@ -102,6 +102,41 @@ check("an unknown asset gets the floor (and callers refuse on the asset first)",
 
 check("every tolerance is positive and finite",
   NATIVE_ASSETS.every((a) => Number.isFinite(ledgerEpsilonFor(a)) && ledgerEpsilonFor(a) > 0));
+
+// ── W-M3 — EVM native assets ────────────────────────────────────────────────
+check("BNB: chain id 56, SLIP-44 9006 (Smart Chain, NOT the 714 Beacon Chain)",
+  BNB_NATIVE.assetKey === "eip155:56/slip44:9006"
+    && BNB_NATIVE.chain === "BNB" && BNB_NATIVE.symbol === "BNB" && BNB_NATIVE.decimals === 18);
+check("AVAX: chain id 43114 (C-Chain), SLIP-44 9000",
+  AVAX_NATIVE.assetKey === "eip155:43114/slip44:9000"
+    && AVAX_NATIVE.chain === "AVAX" && AVAX_NATIVE.symbol === "AVAX" && AVAX_NATIVE.decimals === 18);
+check("every EVM native asset is 18 decimals",
+  [ETH_NATIVE, BNB_NATIVE, POL_NATIVE, AVAX_NATIVE].every((a) => a.decimals === 18));
+check("each EVM asset key is chain-qualified by its CHAIN ID",
+  [["eip155:1", ETH_NATIVE], ["eip155:56", BNB_NATIVE], ["eip155:137", POL_NATIVE], ["eip155:43114", AVAX_NATIVE]]
+    .every(([ref, a]) => (a as typeof ETH_NATIVE).assetKey.startsWith(`${ref}/`)));
+
+// ── POLYGON — THE CHAIN IS NOT THE TICKER ───────────────────────────────────
+// The native asset was renamed MATIC → POL 1:1 on the same chain. The rename
+// moves the SYMBOL and nothing else: a 1:1 rename of the same coin is not a new
+// economic asset, so the key keeps its slot — renaming it would orphan every
+// position and price already recorded against it.
+check("Polygon's CHAIN CODE and its display SYMBOL are deliberately different",
+  POL_NATIVE.chain === "MATIC" && POL_NATIVE.symbol === "POL");
+check("…the chain identity is the chain id, untouched by the ticker rename",
+  POL_NATIVE.assetKey === "eip155:137/slip44:966");
+check("…and the product chain code still resolves the asset",
+  nativeAssetForChain("MATIC") === POL_NATIVE);
+check("…while the ticker resolves it by its CURRENT symbol only",
+  nativeAssetForSymbol("POL") === POL_NATIVE && nativeAssetForSymbol("MATIC") === null);
+
+// Identity remains globally unique across the widened registry.
+check("all six native assets have distinct keys, chains and symbols",
+  new Set(NATIVE_ASSETS.map((a) => a.assetKey)).size === 6
+    && new Set(NATIVE_ASSETS.map((a) => a.chain)).size === 6
+    && new Set(NATIVE_ASSETS.map((a) => a.symbol)).size === 6);
+check("no EVM asset collides with another chain's key",
+  NATIVE_ASSETS.every((a) => NATIVE_ASSETS.filter((b) => b.assetKey === a.assetKey).length === 1));
 
 console.log(`\nnative-asset: ${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

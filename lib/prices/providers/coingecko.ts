@@ -126,6 +126,26 @@ export const COINGECKO_COIN_IDS: Readonly<Record<string, string>> = {
   BTC: "bitcoin",
   ETH: "ethereum",
   SOL: "solana",
+  // W-M3 — verified against the live vendor, not assumed from the ticker:
+  //   binancecoin → symbol BNB, name "BNB", native
+  //   avalanche-2 → symbol AVAX, name "Avalanche", native
+  BNB:  "binancecoin",
+  AVAX: "avalanche-2",
+  //
+  // ── POL / MATIC IS DELIBERATELY ABSENT ────────────────────────────────────
+  // The vendor lists TWO coins for Polygon's native asset and they do not agree:
+  //   matic-network            symbol MATIC, "MATIC (migrated to POL)", native
+  //   polygon-ecosystem-token  symbol POL,   "POL (ex-MATIC)", platform=ethereum
+  // Measured on the same day they differed by ~15% ($0.1262 vs $0.1072), so this
+  // is not a cosmetic naming question — picking wrong mis-values every Polygon
+  // wallet by that margin. The first is the historical native entry now labelled
+  // as migrated; the second describes the ERC-20 deployed on ETHEREUM, which is
+  // a different thing from the gas coin of chain 137.
+  //
+  // Registering either would be a guess, and an unpriceable MATERIAL asset is
+  // worse than an absent one: it refuses the whole Space's crypto day. So
+  // Polygon is not registered here and not registered for sync — identity is
+  // settled, acquisition waits on a product decision about which coin we mean.
 };
 
 /** The coin id for a ticker, or null when this vendor cannot serve it. */

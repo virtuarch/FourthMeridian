@@ -95,9 +95,19 @@ export interface NativeAsset {
   currency: string;
 }
 
-/** CAIP-2 chain references — truncated genesis-block hashes, not names. */
+/**
+ * CAIP-2 chain references.
+ *
+ * Bitcoin and Solana use a truncated genesis-block hash; EVM chains use their
+ * CHAIN ID, which is the value the network itself returns from `eth_chainId`
+ * and the one thing about an EVM network that cannot be renamed. Each id below
+ * was verified against the configured provider rather than copied from a table.
+ */
 const BITCOIN_MAINNET  = "bip122:000000000019d6689c085ae165831e93";
-const ETHEREUM_MAINNET = "eip155:1";
+const ETHEREUM_MAINNET = "eip155:1";      // eth_chainId → 0x1
+const BNB_MAINNET      = "eip155:56";     // eth_chainId → 0x38
+const POLYGON_MAINNET  = "eip155:137";    // eth_chainId → 0x89
+const AVALANCHE_C      = "eip155:43114";  // eth_chainId → 0xa86a
 const SOLANA_MAINNET   = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
 
 export const BTC_NATIVE: NativeAsset = {
@@ -112,6 +122,51 @@ export const SOL_NATIVE: NativeAsset = {
   assetKey: `${SOLANA_MAINNET}/slip44:501`,
   chain: "SOL", symbol: "SOL", name: "Solana",   decimals: 9,  currency: "USD",
 };
+export const BNB_NATIVE: NativeAsset = {
+  // SLIP-44 9006 is the registered BNB Smart Chain coin type. (714 is the older
+  // BNB Beacon Chain, a different network entirely.) The `eip155:56` half already
+  // pins the chain unambiguously; the suffix names the coin within it.
+  assetKey: `${BNB_MAINNET}/slip44:9006`,
+  chain: "BNB", symbol: "BNB", name: "BNB", decimals: 18, currency: "USD",
+};
+
+/**
+ * ── POLYGON: THE CHAIN IS NOT THE TICKER ────────────────────────────────────
+ *
+ * Polygon PoS renamed its native gas asset from MATIC to POL in September 2024,
+ * 1:1, on the same chain. Three separate authorities move at different speeds
+ * and must not be collapsed:
+ *
+ *   chain identity   `eip155:137` — UNCHANGED. A ticker rename cannot redefine a
+ *                    network, and `eth_chainId` still answers 0x89.
+ *   asset identity   `eip155:137/slip44:966` — UNCHANGED. A 1:1 rename of the
+ *                    same coin on the same chain is not a new economic asset, so
+ *                    it keeps its slot. Renaming the KEY would have orphaned
+ *                    every position and price already recorded against it.
+ *   display symbol   POL — the current ticker. MATIC is the historical one.
+ *   product code     "MATIC" — the `walletChain` token the product surface uses.
+ *                    It is a CHAIN identifier, and it is deliberately left alone:
+ *                    changing a stored chain code to chase a ticker is exactly
+ *                    the conflation this comment exists to prevent.
+ *
+ * The descriptor therefore reads chain "MATIC", symbol "POL", and that asymmetry
+ * is correct rather than an oversight.
+ *
+ * NOT PRICED, AND SO NOT SYNCABLE. See lib/prices/providers/coingecko.ts: the
+ * vendor lists two distinct coins for this asset whose prices differ by ~15%,
+ * and choosing between them is a product decision this system has not made.
+ * Polygon is therefore absent from the sync registry — identity is settled so
+ * the decision has somewhere to land, and nothing acquires a position that
+ * could not be valued.
+ */
+export const POL_NATIVE: NativeAsset = {
+  assetKey: `${POLYGON_MAINNET}/slip44:966`,
+  chain: "MATIC", symbol: "POL", name: "Polygon", decimals: 18, currency: "USD",
+};
+export const AVAX_NATIVE: NativeAsset = {
+  assetKey: `${AVALANCHE_C}/slip44:9000`,
+  chain: "AVAX", symbol: "AVAX", name: "Avalanche", decimals: 18, currency: "USD",
+};
 
 /**
  * Every chain whose native asset this system can name. A chain absent here is
@@ -124,7 +179,8 @@ export const SOL_NATIVE: NativeAsset = {
  * to value it, and conflating the two is what produced the literal this module
  * replaces.
  */
-export const NATIVE_ASSETS: readonly NativeAsset[] = [BTC_NATIVE, ETH_NATIVE, SOL_NATIVE];
+export const NATIVE_ASSETS: readonly NativeAsset[] =
+  [BTC_NATIVE, ETH_NATIVE, SOL_NATIVE, BNB_NATIVE, POL_NATIVE, AVAX_NATIVE];
 
 const BY_CHAIN:  ReadonlyMap<string, NativeAsset> = new Map(NATIVE_ASSETS.map((a) => [a.chain, a]));
 const BY_SYMBOL: ReadonlyMap<string, NativeAsset> = new Map(NATIVE_ASSETS.map((a) => [a.symbol, a]));

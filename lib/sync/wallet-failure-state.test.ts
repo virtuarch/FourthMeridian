@@ -107,8 +107,10 @@ const TERMINAL_CODES = [
   check("4. stage 'config' maps to a code that means UNAVAILABLE, not zero",
     walletSyncErrorCode("config") === "PROVIDER_NOT_CONFIGURED");
   const sol = code(read("lib", "crypto", "sol-sync.ts"));
-  const eth = code(read("lib", "crypto", "eth-sync.ts"));
-  for (const [name, src] of [["sol", sol], ["eth", eth]] as const) {
+  // W-M3 — the EVM orchestration is shared; scanning it covers ETH, BNB,
+  // Polygon and Avalanche at once.
+  const eth = code(read("lib", "crypto", "evm-native.ts"));
+  for (const [name, src] of [["sol", sol], ["evm", eth]] as const) {
     check(`4b. the ${name} adapter returns on the config path BEFORE capturing a position`,
       src.indexOf('stage: "config"') < src.indexOf("await captureWalletPosition("));
     check(`4c. the ${name} adapter writes no balance column on any path`,

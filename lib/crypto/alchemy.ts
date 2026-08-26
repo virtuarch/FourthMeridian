@@ -41,8 +41,8 @@
 export const ALCHEMY_NETWORKS = {
   SOLANA:   "solana-mainnet",
   ETHEREUM: "eth-mainnet",
-  // Reachable with the same credential once enabled on the app. Present so the
-  // shape is obvious when a chain adapter arrives; nothing consumes them yet.
+  BNB:      "bnb-mainnet",
+  // Reachable with the same credential once enabled on the app.
   POLYGON:  "polygon-mainnet",
   BASE:     "base-mainnet",
   ARBITRUM: "arb-mainnet",

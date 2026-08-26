@@ -295,8 +295,13 @@ async function main(): Promise<void> {
     !sync.includes("btc-sync") && !sync.includes("eth-sync") && !sync.includes("eth-rpc"));
   check("BTC still writes its own balance columns (unchanged by this slice)",
     /nativeBalance,\s*balance:\s*balanceUsd/.test(btc));
-  check("all three adapters converge on ONE capture writer",
-    btc.includes("captureWalletPosition") && eth.includes("captureWalletPosition") && sync.includes("captureWalletPosition"));
+  // W-M3 — Ethereum's orchestration moved into the shared EVM adapter, so the
+  // convergence is now BTC + SOL + the one EVM adapter that serves four chains.
+  check("every adapter converges on ONE capture writer",
+    btc.includes("captureWalletPosition") && sync.includes("captureWalletPosition")
+      && code(read("lib", "crypto", "evm-native.ts")).includes("captureWalletPosition"));
+  check("…and Ethereum reaches it through that shared adapter, not a copy",
+    eth.includes("syncEvmWallet") && !eth.includes("captureWalletPosition"));
 
   // W-M1d owns activation.
   const walletRoute = code(read("app", "api", "accounts", "wallet", "route.ts"));

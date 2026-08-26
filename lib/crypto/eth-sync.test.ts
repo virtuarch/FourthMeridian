@@ -193,19 +193,28 @@ async function main(): Promise<void> {
   check("wei is parsed as BigInt, never through Number first",
     /BigInt\(/.test(rpc) && !/Number\(raw/.test(rpc));
 
-  const sync = code(read("lib", "crypto", "eth-sync.ts"));
-  const syncRaw = read("lib", "crypto", "eth-sync.ts");
+  // W-M3 — the orchestration moved to the GENERIC EVM adapter, so these scans
+  // now target it. That is a strengthening rather than a relocation: one scan
+  // covers Ethereum, BNB, Polygon and Avalanche, and an invariant can no longer
+  // hold on one chain while quietly lapsing on another.
+  const sync = code(read("lib", "crypto", "evm-native.ts"));
+  const syncRaw = read("lib", "crypto", "evm-native.ts");
+  const ethBinding = code(read("lib", "crypto", "eth-sync.ts"));
 
   // WRONG-CHAIN GUARD, from the shared descriptor rather than a literal.
-  check("sync guards to ETH only", /walletChain !== ETH_CHAIN/.test(sync));
-  check("the chain token comes from the descriptor, not a literal",
-    /ETH_CHAIN\s*=\s*ETH_NATIVE\.chain/.test(sync) && !/walletChain !== ["']ETH["']/.test(sync));
+  // The guard is now per-CONFIG, so one adapter cannot serve the wrong chain.
+  check("sync guards to the configured chain only",
+    /walletChain !== config\.chain/.test(sync) && !/walletChain !== ["']ETH["']/.test(sync));
+  check("Ethereum's chain token comes from the descriptor, not a literal",
+    /ETH_CHAIN\s*=\s*ETH_NATIVE\.chain/.test(ethBinding));
+  check("…and Ethereum binds the generic adapter to its own network config",
+    /syncEvmWallet\(accountId, ETH_NETWORK, deps\)/.test(ethBinding));
 
   // THE CANONICAL WRITE PATH — the same writer, no chain-specific shape.
   check("sync writes through the SHARED canonical capture path",
     sync.includes("captureWalletPosition"));
-  check("identity is ETH_ASSET (assetKey), never a ticker or a fresh descriptor",
-    /asset:\s*ETH_ASSET/.test(sync) && !/tickerSymbol/.test(sync) && !/assetKey:\s*["']/.test(sync));
+  check("identity is the CONFIGURED canonical asset, never a ticker or a fresh descriptor",
+    /asset:\s*config\.asset/.test(sync) && !/tickerSymbol/.test(sync) && !/assetKey:\s*["']/.test(sync));
   check("no chain-specific PositionObservation shape exists here",
     !/positionObservation/i.test(sync));
   check("sync writes NO InvestmentEvent from a balance",
@@ -213,7 +222,7 @@ async function main(): Promise<void> {
 
   // NET-WORTH BOUNDARY — the invariant this whole slice turns on.
   check("sync NEVER writes FinancialAccount.balance",
-    !/balance:\s/.test(sync.replace(/weiBalance:/g, "")));
+    !/balance:\s/.test(sync.replace(/weiBalance:/g, "").replace(/nativeBalance/g, "")));
   check("sync NEVER writes nativeBalance",
     !/nativeBalance/.test(sync));
   check("the only FinancialAccount update is lifecycle (syncStatus + lastUpdated)",
@@ -221,7 +230,8 @@ async function main(): Promise<void> {
   check("the withheld net-worth boundary is reported, not implied",
     /netWorthParticipation/.test(sync) && /WITHHELD_PENDING_CONVERGENCE/.test(sync));
   check("…and documented at the write site",
-    /SpaceSnapshot/.test(syncRaw) && /NOT NULL DEFAULT 0/.test(syncRaw));
+    /stays explicitly withheld/.test(syncRaw)
+      && /Writes NO `FinancialAccount\.balance` and NO `nativeBalance`/.test(syncRaw));
 
   // LEDGER SEMANTICS.
   check("sync reports ledgerNotApplicable, never a reconciliation",
@@ -234,7 +244,7 @@ async function main(): Promise<void> {
   // written, so an unreachable provider can never leave a position behind.
   {
     const captureAt = sync.indexOf("await captureWalletPosition(");
-    const guards = ['stage: "config"', 'stage: "address"', 'wei < BigInt("0")', "not a syncable ETH wallet"];
+    const guards = ['stage: "config"', 'stage: "address"', 'wei < BigInt("0")', "not a syncable ${config.chain} wallet"];
     check("every refusal returns BEFORE the capture call",
       captureAt > 0 && guards.every((g) => sync.indexOf(g) > 0 && sync.indexOf(g) < captureAt),
       guards.map((g) => `${g}@${sync.indexOf(g)}`).join(" ") + ` capture@${captureAt}`);
@@ -253,17 +263,42 @@ async function main(): Promise<void> {
 
   // BTC IS UNTOUCHED — this adapter shares the spine and nothing else.
   const btc = code(read("lib", "crypto", "btc-sync.ts"));
-  check("btc-sync does not import the ETH adapter", !btc.includes("eth-sync") && !btc.includes("eth-rpc"));
-  check("the ETH adapter does not import the BTC adapter",
-    !sync.includes("btc-sync") && !sync.includes("btc-explorer"));
+  check("btc-sync does not import any EVM adapter",
+    !btc.includes("eth-sync") && !btc.includes("eth-rpc") && !btc.includes("evm-native"));
+  check("the EVM adapter does not import the BTC or SOL adapters",
+    !sync.includes("btc-sync") && !sync.includes("btc-explorer") && !sync.includes("sol-sync"));
+
+  // ── W-M3 — ONE ADAPTER, FOUR NETWORKS, ZERO COPIES ────────────────────────
+  const nets = code(read("lib", "crypto", "evm-networks.ts"));
+  check("every EVM network is CONFIG, not a copied adapter",
+    ["ETH_NETWORK", "BNB_NETWORK", "POLYGON_NETWORK", "AVAX_NETWORK"].every((n) => nets.includes(n)));
+  check("…and there is exactly ONE orchestration for all of them",
+    (sync.match(/export async function syncEvmWallet/g) ?? []).length === 1);
+  check("chain-specific truth models were NOT introduced — no per-chain branch",
+    !/config\.chain === ["']/.test(sync) && !/=== "BNB"|=== "AVAX"|=== "MATIC"/.test(sync));
+  check("BTC and SOL were not rewritten for provider uniformity",
+    code(read("lib", "crypto", "sol-sync.ts")).includes("captureWalletPosition")
+      && btc.includes("fetchConfirmedSatsForAddresses"));
+
+  // Polygon: configured, and deliberately NOT syncable.
+  check("Polygon is configured but absent from the sync registry",
+    nets.includes("POLYGON_NETWORK")
+      && !code(read("lib", "crypto", "wallet-sync-dispatch.ts")).includes("POLYGON_NETWORK"));
+
+  // A provider 403 (a network the vendor has not enabled) is a REFUSAL.
+  check("a non-2xx from any EVM network is a refusal, never a zero balance",
+    /HTTP \$\{res\.status\} from the \$\{config\.chain\} RPC endpoint/.test(sync));
+  check("provider text is redacted before it can reach a log or an incident",
+    /redactProviderSecrets/.test(sync));
   check("BTC still writes its own balance columns (unchanged by this slice)",
     /nativeBalance,\s*balance:\s*balanceUsd/.test(btc));
 
   // W-M1d owns activation. Nothing may dispatch to this adapter yet.
   const walletRoute = code(read("app", "api", "accounts", "wallet", "route.ts"));
   const syncRoute = code(read("app", "api", "accounts", "[id]", "sync", "route.ts"));
-  check("no route dispatches to the ETH adapter yet (W-M1d owns activation)",
-    !walletRoute.includes("syncEthWallet") && !syncRoute.includes("syncEthWallet"));
+  check("routes still name no adapter — dispatch owns activation",
+    !walletRoute.includes("syncEthWallet") && !syncRoute.includes("syncEthWallet")
+      && !walletRoute.includes("syncEvmWallet") && !syncRoute.includes("syncEvmWallet"));
 
   console.log(`\neth-sync: ${passes} passed, ${failures} failed`);
   process.exit(failures ? 1 : 0);

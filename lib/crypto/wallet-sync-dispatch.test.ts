@@ -104,7 +104,7 @@ check("…so capability and the regeneration gate are genuinely different questi
 // accepts at CREATION time. Recording custody and reading the chain are
 // different capabilities, and conflating them is what would turn "we cannot read
 // this" into "it holds nothing".
-for (const chain of ["MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER", "DOGE", "LTC"]) {
+for (const chain of ["MATIC", "DOT", "ADA", "XRP", "OTHER", "DOGE", "LTC"]) {
   check(`${chain} is explicitly UNSUPPORTED by sync`,
     walletChainSupport(chain) === "UNSUPPORTED" && !isSyncableChain(chain) && !chainSupportsHistory(chain));
 }
@@ -114,8 +114,26 @@ for (const absent of [null, undefined, "", "   ", "bitcoin", "Ethereum "]) {
 }
 check("canonical tokens resolve case-insensitively", walletChainSupport(" eth ") === "CURRENT_POSITION_SUPPORTED");
 
-check("the syncable set is exactly the three implemented chains",
-  SYNCABLE_CHAINS.join(",") === "BTC,ETH,SOL");
+check("the syncable set is exactly the five chains that have earned it",
+  SYNCABLE_CHAINS.join(",") === "AVAX,BNB,BTC,ETH,SOL", SYNCABLE_CHAINS.join(","));
+
+// ── W-M3 — PROMOTION IS PER CHAIN, AND POLYGON DID NOT GET ONE ──────────────
+// BNB and Avalanche earned CURRENT_POSITION on the same evidence ETH has.
+// Polygon is configured, reachable and identity-settled — and stays UNSUPPORTED
+// because its native asset has no unambiguous price identity. Being offerable,
+// reachable and implemented are three things; none of them is capability.
+check("BNB and AVAX earned CURRENT_POSITION_SUPPORTED",
+  walletChainSupport("BNB") === "CURRENT_POSITION_SUPPORTED"
+    && walletChainSupport("AVAX") === "CURRENT_POSITION_SUPPORTED");
+check("Polygon is offerable but NOT syncable — an unpriceable asset earns nothing",
+  isProductSupportedChain("MATIC") && !isSyncableChain("MATIC")
+    && walletChainSupport("MATIC") === "UNSUPPORTED");
+check("no EVM chain claims HISTORY",
+  ["ETH", "BNB", "AVAX", "MATIC"].every((c) => !chainSupportsHistory(c)));
+check("…so history remains exactly BTC and SOL",
+  SYNCABLE_CHAINS.filter((c) => chainSupportsHistory(c)).join(",") === "BTC,SOL");
+check("no new chain expanded balance-column authority",
+  ["BNB", "AVAX"].every((c) => !feedsLegacyWealthHistory(c)));
 
 // ── PART B — the registry wires each chain to ITS OWN adapter ────────────────
 
@@ -126,6 +144,14 @@ check("ETH dispatches to syncEthWallet", /\[ETH_CHAIN\]:[\s\S]*?syncEthWallet\(i
 check("SOL dispatches to syncSolWallet", /\[SOL_CHAIN\]:[\s\S]*?syncSolWallet\(id\)/.test(dispatch));
 check("chain keys come from the adapters' descriptors, never literals",
   !/["']BTC["']\s*:/.test(dispatch) && !/["']ETH["']\s*:/.test(dispatch) && !/["']SOL["']\s*:/.test(dispatch));
+
+// The shared EVM adapter is reached once per registered network, each with its
+// OWN config — that is what stops one chain being served another's balance.
+check("each EVM network binds the shared adapter to its own config",
+  /syncEvmWallet\(id, BNB_NETWORK\)/.test(dispatch) && /syncEvmWallet\(id, AVAX_NETWORK\)/.test(dispatch));
+check("…and no two registry entries share a config",
+  (dispatch.match(/syncEvmWallet\(id, \w+\)/g) ?? []).length
+    === new Set(dispatch.match(/syncEvmWallet\(id, \w+\)/g) ?? []).size);
 
 // Each adapter is reached EXACTLY once — no chain can fall through to another's.
 for (const fn of ["syncBtcWallet", "syncEthWallet", "syncSolWallet"]) {
@@ -151,8 +177,8 @@ check("a failed sync reports NO net-worth participation whatever the chain",
       && registry.indexOf("LEGACY_BALANCE_COLUMN") < registry.indexOf("ETH_CHAIN"));
   check("SOL's promotion did NOT quietly expand balance authority",
     registry.slice(registry.indexOf("SOL_CHAIN")).includes("WITHHELD_PENDING_CONVERGENCE"));
-  check("ETH and SOL are both registered WITHHELD_PENDING_CONVERGENCE",
-    (registry.match(/WITHHELD_PENDING_CONVERGENCE/g) ?? []).length === 2);
+  check("every non-BTC registered chain is WITHHELD_PENDING_CONVERGENCE",
+    (registry.match(/WITHHELD_PENDING_CONVERGENCE/g) ?? []).length === 4);
 }
 check("the dispatcher writes nothing itself (no DB access at all)",
   !/@\/lib\/db/.test(dispatch) && !/financialAccount\./.test(dispatch)
@@ -252,7 +278,7 @@ check("the picker renders the authority rather than a copy of it",
 
 // PRODUCT support earns NOTHING. BNB/MATIC/AVAX are offerable and unreadable.
 check("being offerable does not confer current-position capability",
-  ["BNB", "MATIC", "AVAX"].every((c) => isProductSupportedChain(c) && !isSyncableChain(c)));
+  isProductSupportedChain("MATIC") && !isSyncableChain("MATIC"));
 check("…nor history capability",
   ["BNB", "MATIC", "AVAX"].every((c) => !chainSupportsHistory(c)));
 
@@ -291,11 +317,11 @@ check("the dispatcher surfaces the adapter's own stage/reason rather than invent
 
 // Both adapters' config refusals are reachable through the registry — the path a
 // deployment with no ETH/SOL endpoint actually takes.
-for (const f of ["eth-sync", "sol-sync"]) {
+for (const f of ["evm-native", "sol-sync"]) {
   const adapter = code(read("lib", "crypto", `${f}.ts`));
   check(`${f} still refuses on missing provider config (stage=config)`,
     /stage: "config"/.test(adapter) && /is configured on this deployment/.test(adapter));
-  check(`${f} still writes no balance column`, !/nativeBalance/.test(adapter));
+  check(`${f} still writes no balance column`, !/nativeBalance:/.test(adapter));
 }
 
 console.log(`\nwallet-sync-dispatch: ${passes} passed, ${failures} failed`);

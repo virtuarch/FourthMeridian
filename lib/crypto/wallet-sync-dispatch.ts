@@ -46,6 +46,10 @@
 import { syncBtcWallet, BTC_CHAIN } from "@/lib/crypto/btc-sync";
 import { syncEthWallet, ETH_CHAIN } from "@/lib/crypto/eth-sync";
 import { syncSolWallet, SOL_CHAIN } from "@/lib/crypto/sol-sync";
+import { syncEvmWallet } from "@/lib/crypto/evm-native";
+import { BNB_NETWORK, AVAX_NETWORK } from "@/lib/crypto/evm-networks";
+const BNB_CHAIN = BNB_NETWORK.chain;
+const AVAX_CHAIN = AVAX_NETWORK.chain;
 import { recordWalletSyncRefusal } from "@/lib/accounts/wallet-connection";
 
 /** How far this system can go on a given chain. See the header. */
@@ -152,6 +156,25 @@ const ADAPTERS: Readonly<Record<string, ChainAdapter>> = {
     support: "CURRENT_POSITION_SUPPORTED",
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
     sync: (id) => syncEthWallet(id),
+  },
+  // W-M3 — EVM networks whose native balance is acquirable AND whose canonical
+  // asset has an unambiguous price identity. Both conditions are required: a
+  // material position nobody can price would refuse the whole Space's crypto
+  // day under the all-or-nothing rule, taking BTC and SOL down with it.
+  //
+  // Polygon is configured (lib/crypto/evm-networks.ts) and deliberately ABSENT
+  // here: its native asset has two competing vendor identities whose prices
+  // differ by ~15%, and choosing between them is a product decision this system
+  // has not made. Recordable, unreadable, honest.
+  [BNB_CHAIN]: {
+    support: "CURRENT_POSITION_SUPPORTED",
+    netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
+    sync: (id) => syncEvmWallet(id, BNB_NETWORK),
+  },
+  [AVAX_CHAIN]: {
+    support: "CURRENT_POSITION_SUPPORTED",
+    netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
+    sync: (id) => syncEvmWallet(id, AVAX_NETWORK),
   },
   [SOL_CHAIN]: {
     // W-M2b — PROMOTED on real-wallet evidence, not on an adapter existing.

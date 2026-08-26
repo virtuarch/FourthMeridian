@@ -124,52 +124,56 @@ These are binding. Each one exists because violating it produced, or would produ
 2. **Adding a native network requires a new adapter and registrations — not a new portfolio architecture.** If a chain needs canonical changes, the canonical model is wrong, not the chain.
 3. **Tokens may require additional identity and schema machinery**, but must ultimately feed the same position, replay and valuation spine. There is no second portfolio for tokens.
 
+4. **Network identity, asset identity and display symbol are three separate authorities, and one of them changing does not move the other two.** A chain's identity is where it runs (`eip155:137`). An asset's identity is what it is (`slip44:966` — the native coin of that chain). A display symbol is what humans currently call it, and it is the only one of the three anybody may rename. When Polygon's ticker went MATIC → POL, none of that was a new chain and none of it was a new economic asset: the same coin on the same network acquired a new name. Migrating the asset key to chase a ticker would have manufactured a second identity for one holding, split its price history and double-counted it. So the key stays, the symbol moves, and the product's chain code — which is a *chain* identifier — is allowed to differ from the symbol it now displays.
+
 **The adapter boundary**
 
-4. **Chain-specific mechanics stay in adapters** — address formats, base units, RPC behaviour, transaction encodings, finality, pagination.
-5. **Canonical financial meaning never lives in an adapter.** A provider says "I saw this"; only the engine says "this means that". An adapter that emits a `flowType` has already broken this.
-6. **A provider's DTO never crosses the adapter boundary.** A vendor's parsed interpretation of "what a swap is" may be an accelerator, never the truth shape, and must be re-derived against raw chain evidence before it is trusted.
+5. **Chain-specific mechanics stay in adapters** — address formats, base units, RPC behaviour, transaction encodings, finality, pagination.
+6. **Canonical financial meaning never lives in an adapter.** A provider says "I saw this"; only the engine says "this means that". An adapter that emits a `flowType` has already broken this.
+7. **A provider's DTO never crosses the adapter boundary.** A vendor's parsed interpretation of "what a swap is" may be an accelerator, never the truth shape, and must be re-derived against raw chain evidence before it is trusted.
 
 **Arithmetic**
 
-7. **Base-unit arithmetic is exact at acquisition.** Integers in, integers through reconciliation, one conversion at the canonical boundary. Reconciliation in base units needs no tolerance at all.
-8. **Tolerances are properties of the asset.** One satoshi is not one lamport is not one wei.
+8. **Base-unit arithmetic is exact at acquisition.** Integers in, integers through reconciliation, one conversion at the canonical boundary. Reconciliation in base units needs no tolerance at all.
+9. **Tolerances are properties of the asset.** One satoshi is not one lamport is not one wei.
 
 **Time and evidence**
 
-9. **A current balance is an observation, not historical evidence.** It states what is true now and nothing about any other date.
-10. **Never paint today's quantity backward through time.** Historical quantity requires movements plus a defensible anchor plus licensed coverage.
-11. **Absence never becomes zero.** Uncovered time carries a coded reason and no value.
-12. **Missing provider history is not an empty history.** An unconfigured or unreachable archive means unknown, not nothing.
-13. **Missing price is not zero value.** An unpriced position is held, counted and unvalued.
-14. **Spot price is not historical price.** Historical valuation reads the dated archive, never a live quote.
-15. **A successful provider response is not a complete event stream.** Completeness is a claim that must be licensed by evidence — an address index that may omit indirectly-referenced transactions cannot license it, and arithmetic reconciliation against an independent balance can.
+10. **A current balance is an observation, not historical evidence.** It states what is true now and nothing about any other date.
+11. **Never paint today's quantity backward through time.** Historical quantity requires movements plus a defensible anchor plus licensed coverage.
+12. **Absence never becomes zero.** Uncovered time carries a coded reason and no value.
+13. **Missing provider history is not an empty history.** An unconfigured or unreachable archive means unknown, not nothing.
+14. **Missing price is not zero value.** An unpriced position is held, counted and unvalued.
+15. **Spot price is not historical price.** Historical valuation reads the dated archive, never a live quote.
+16. **A successful provider response is not a complete event stream.** Completeness is a claim that must be licensed by evidence — an address index that may omit indirectly-referenced transactions cannot license it, and arithmetic reconciliation against an independent balance can.
 
 **Meaning**
 
-16. **A chain transaction is not automatically a sale, spend or income event.** The chain proves quantity left custody. Where it went economically settles somewhere the chain cannot see.
-17. **Exchange-looking addresses are hints, not financial facts.** Address labels never silently become semantics.
-18. **User-attested semantics are explicitly distinguished from observed facts**, carry an author, and are never blended into evidence.
+17. **A chain transaction is not automatically a sale, spend or income event.** The chain proves quantity left custody. Where it went economically settles somewhere the chain cannot see.
+18. **Exchange-looking addresses are hints, not financial facts.** Address labels never silently become semantics.
+19. **User-attested semantics are explicitly distinguished from observed facts**, carry an author, and are never blended into evidence.
 
 **Representation**
 
-19. **A refused, unavailable, unknown or failed acquisition state must never be represented to a consumer as active synchronization or completed evidence.** In-progress requires POSITIVE evidence that work is outstanding — a resumable checkpoint, a running job — never the mere absence of a success or of a recorded error. An account existing, an identity existing, an address count above zero, a chain being set, and a sync not having succeeded yet are all compatible with nothing running at all.
-20. **A refusal must reach the authority the consumer reads.** Recording it somewhere else — an incident log, a return value, a server log — leaves that authority silent, and silence is what gets misread as progress.
-21. **Never offer a retry that cannot succeed.** Where a failure is terminal until something outside the surface changes, say so instead of presenting an action that will fail identically.
+20. **A refused, unavailable, unknown or failed acquisition state must never be represented to a consumer as active synchronization or completed evidence.** In-progress requires POSITIVE evidence that work is outstanding — a resumable checkpoint, a running job — never the mere absence of a success or of a recorded error. An account existing, an identity existing, an address count above zero, a chain being set, and a sync not having succeeded yet are all compatible with nothing running at all.
+21. **A refusal must reach the authority the consumer reads.** Recording it somewhere else — an incident log, a return value, a server log — leaves that authority silent, and silence is what gets misread as progress.
+22. **Never offer a retry that cannot succeed.** Where a failure is terminal until something outside the surface changes, say so instead of presenting an action that will fail identically.
 
 **Providers**
 
-22. **A provider's capability must be DECLARED, not assumed.** A hardcoded public endpoint is a dependency the system cannot see, cannot monitor and did not choose; a configured one is a dependency it can. Where a chain still relies on an undeclared public service, that is a debt with an exit condition, never a pattern to copy.
-23. **Provider consolidation is an operational preference, never an epistemic one.** Preferring one vendor across chains buys one credential and one bill. It buys no capability: each chain and each evidence class is still earned separately, and a vendor's convenient interpreted endpoint never becomes the truth model just because it is already paid for.
-24. **A reconciliation licenses coverage up to the OBSERVATION it closed against, not to the last movement seen.** A quiet wallet's newest movement may be months before the balance that reconciles to it; bounding the licence at the movement leaves the gap unknown and reconstructs nothing. A movement inside that gap would have broken the arithmetic, so the arithmetic closing is the proof the gap is empty. This strengthens a claim on evidence, and it remains an upgrade only.
+23. **A provider's capability must be DECLARED, not assumed.** A hardcoded public endpoint is a dependency the system cannot see, cannot monitor and did not choose; a configured one is a dependency it can. Where a chain still relies on an undeclared public service, that is a debt with an exit condition, never a pattern to copy.
+24. **Provider consolidation is an operational preference, never an epistemic one.** Preferring one vendor across chains buys one credential and one bill. It buys no capability: each chain and each evidence class is still earned separately, and a vendor's convenient interpreted endpoint never becomes the truth model just because it is already paid for.
+25. **A reconciliation licenses coverage up to the OBSERVATION it closed against, not to the last movement seen.** A quiet wallet's newest movement may be months before the balance that reconciles to it; bounding the licence at the movement leaves the gap unknown and reconstructs nothing. A movement inside that gap would have broken the arithmetic, so the arithmetic closing is the proof the gap is empty. This strengthens a claim on evidence, and it remains an upgrade only.
 
 **Capability**
 
-25. **Historical capability is not complete until canonical historical evidence reaches the consumer that makes the historical financial claim.** Acquisition, reconstruction and valuation succeeding in isolation is not the same as a chart being right. If a consumer still paints a current quantity backward, or omits an earned historical position, `HISTORY_SUPPORTED` is not operationally complete for that consumer — however clean the adapter is. The chain is: acquisition → reconstruction → valuation → **consumer**.
-26. **PRODUCT support, CURRENT-POSITION support and HISTORY support are three independent questions.** Which chains a user may add is a product decision; whether a balance can be read and whether a history can be reconstructed are each earned by evidence. A chain is routinely offerable while both capabilities are withheld, and offering it must never be read as claiming either.
-27. **`CURRENT_POSITION_SUPPORTED` does not imply `HISTORY_SUPPORTED`.** They are different promises.
-28. **`HISTORY_SUPPORTED` does not imply NET-WORTH PARTICIPATION.** A chain may hold a fully reconstructed, reconciled quantity timeline on the position spine and still be invisible to a net-worth path that composes from a legacy balance column. Gate each on the property that actually decides it, never on the other.
-29. **A network is promoted to `HISTORY_SUPPORTED` only after its historical acquisition, replay, coverage/refusal and dated-valuation acceptance tests pass — on a real wallet, not a fixture.** Having an adapter is not having history, and neither is having a provider.
+26. **Historical capability is not complete until canonical historical evidence reaches the consumer that makes the historical financial claim.** Acquisition, reconstruction and valuation succeeding in isolation is not the same as a chart being right. If a consumer still paints a current quantity backward, or omits an earned historical position, `HISTORY_SUPPORTED` is not operationally complete for that consumer — however clean the adapter is. The chain is: acquisition → reconstruction → valuation → **consumer**.
+27. **PRODUCT support, CURRENT-POSITION support and HISTORY support are three independent questions.** Which chains a user may add is a product decision; whether a balance can be read and whether a history can be reconstructed are each earned by evidence. A chain is routinely offerable while both capabilities are withheld, and offering it must never be read as claiming either.
+28. **`CURRENT_POSITION_SUPPORTED` does not imply `HISTORY_SUPPORTED`.** They are different promises.
+
+29. **Current-position evidence licenses a point observation only. It does not license historical carry.** Reading a balance today proves one thing about one date. It is not a smaller version of history, and promoting a chain to `CURRENT_POSITION_SUPPORTED` grants no permission to place that quantity on any earlier date — not by carrying it backward, not by treating the account's creation as its start, not by letting a historical consumer fall back to the current balance when the spine has no row. Before an asset's first observation the correct historical answer is *unknown*, which contributes nothing and claims nothing. This is the rule that makes it safe to turn a chain's balance reading on long before its history is earned: the two capabilities cannot leak into each other.
+30. **`HISTORY_SUPPORTED` does not imply NET-WORTH PARTICIPATION.** A chain may hold a fully reconstructed, reconciled quantity timeline on the position spine and still be invisible to a net-worth path that composes from a legacy balance column. Gate each on the property that actually decides it, never on the other.
+31. **A network is promoted to `HISTORY_SUPPORTED` only after its historical acquisition, replay, coverage/refusal and dated-valuation acceptance tests pass — on a real wallet, not a fixture.** Having an adapter is not having history, and neither is having a provider.
 
 ---
 
@@ -178,9 +182,11 @@ These are binding. Each one exists because violating it produced, or would produ
 | Network | State | Notes |
 |---|---|---|
 | Bitcoin | `HISTORY_SUPPORTED` | Movement ledger in `Transaction` (transitional); constant-quantity carry, not replay. |
-| Ethereum | `CURRENT_POSITION_SUPPORTED` | Native balance only. Historical acquisition needs an address index plus internal value transfers — no standard JSON-RPC method provides either. |
+| Ethereum | `CURRENT_POSITION_SUPPORTED` | Native balance only, via the shared EVM adapter. Historical acquisition needs an address index plus internal value transfers — no standard JSON-RPC method provides either. |
 | Solana | **`HISTORY_SUPPORTED`** | Acquisition, zero-residual reconciliation, replay and dated valuation proven on a real wallet. Net-worth participation still **withheld** (writes no balance column). |
-| BNB · Polygon · Avalanche | `UNSUPPORTED` (offerable) | Reachable and balance-readable at the provider, but **no capability earned**: no adapter, no registered asset identity, no price mapping. Recordable only. |
+| BNB Chain | `CURRENT_POSITION_SUPPORTED` | Native BNB via the shared EVM adapter; real balance acquired at exact wei. No history. |
+| Avalanche C-Chain | `CURRENT_POSITION_SUPPORTED` | Native AVAX via the same adapter. No history. |
+| Polygon | `UNSUPPORTED` (offerable) | **Stopped on an unresolved pricing identity, not on engineering.** Chain identity, asset identity and the adapter are all in place and the balance reads correctly; the price feed carries two coins for this asset (`matic-network`, `polygon-ecosystem-token`) whose quotes diverge materially. Choosing one arbitrarily would price a real holding wrongly, so the chain is not registered for sync and MATIC/POL is deliberately absent from the price mapping. Recordable only. |
 | Everything else | `UNSUPPORTED` | Custody recordable where offered; chain unreadable. |
 
 **Product surface** (which chains a user may add) is a separate, narrower list — see `lib/crypto/product-chains.ts`. Removing a chain from it hides an option; it deletes no canonical machinery and makes no claim about capability.
