@@ -38,6 +38,9 @@ import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
 import { ReconnectAccountButton } from "@/components/dashboard/ReconnectAccountButton";
 import { EnableInvestmentsButton } from "@/components/dashboard/EnableInvestmentsButton";
 import { SyncWalletButton } from "@/components/dashboard/SyncWalletButton";
+// W-M2b — the provider sub-line is a CLAIM ABOUT WHAT HAPPENED, not decoration.
+// It lives in lib/sync so it can be tested; see connection-copy.ts.
+import { providerLine } from "@/lib/sync/connection-copy";
 import { ImportHistoryButton } from "@/components/connections/import/ImportHistoryButton";
 import { providerName, type SyncConnection } from "@/lib/sync/status";
 import { deriveConnectionLifecycle } from "@/lib/sync/lifecycle";
@@ -195,29 +198,6 @@ function InvestmentsCapability({ connection }: { connection: SyncConnection }) {
 }
 
 // ── Shared content fragments (identical across Liquid + Glass) ─────────────────
-
-/**
- * Provider-aware sub-line. Provider is part of the connection's identity.
- *   importing → "Connected via Plaid"
- *   ready     → "Synced via Plaid"
- *   needs_reauth / error → "Previously synced via Plaid"
- */
-function providerLine(connection: SyncConnection): string {
-  const name = providerName(connection.provider);
-  switch (connection.state) {
-    case "importing":
-      return `Connected via ${name}`;
-    case "sync_deferred":
-      // The connection is real and healthy — say so. The reason it has no data
-      // yet is a platform condition, covered by the card body below.
-      return `Connected via ${name}`;
-    case "ready":
-      return `Synced via ${name}`;
-    case "needs_reauth":
-    case "error":
-      return `Previously synced via ${name}`;
-  }
-}
 
 function fmtSyncedAt(iso: string): string {
   const d = new Date(iso);
