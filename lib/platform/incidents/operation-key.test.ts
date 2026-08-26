@@ -129,8 +129,19 @@ async function main() {
       for (const m of code(f).matchAll(/\bstage:\s*"([a-z][a-z-]*)"/g)) stages.add(m[1]);
     }
     const unregistered = [...stages].filter((s) => !isRegisteredOperation(s));
-    // "load" is btc-sync's own result-shape field and never reaches SyncIssue.
-    const realUnregistered = unregistered.filter((s) => s !== "load" && s !== "unit-test" && s !== "s");
+    // RESULT-SHAPE STAGES, which never reach SyncIssue and so are not operations.
+    //   "load"              btc-sync's own "this is not a syncable wallet" result.
+    //   "unsupported-chain" W-M1d — the chain dispatcher's answer for a wallet on
+    //                       a chain with no adapter. Returned to the caller and
+    //                       refused by the route with a 400; no incident is
+    //                       recorded, because nothing failed — the platform simply
+    //                       cannot read that chain yet.
+    //   "adapter-error"     W-M1d — the dispatcher's backstop for an adapter that
+    //                       throws despite its never-throw contract. Logged, not
+    //                       recorded: the adapter that violated the contract is
+    //                       where the incident belongs, not the dispatcher.
+    const RESULT_SHAPE_ONLY = new Set(["load", "unsupported-chain", "adapter-error", "unit-test", "s"]);
+    const realUnregistered = unregistered.filter((s) => !RESULT_SHAPE_ONLY.has(s));
     check(`every production incident stage is registered (${stages.size} found)`,
       realUnregistered.length === 0, realUnregistered.join(", "));
   }

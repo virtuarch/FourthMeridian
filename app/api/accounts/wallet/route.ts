@@ -33,11 +33,18 @@ import { regenerateWealthHistoryForAccounts } from "@/lib/snapshots/regenerate-h
 import { resolveHistoricalWorkWindow } from "@/lib/snapshots/historical-work-window";
 
 /**
- * Part-2 — after a BTC wallet's balance is synced, regenerate its Space's wealth
+ * Part-2 — after a wallet's balance is synced, regenerate its Space's wealth
  * HISTORY (not just today's flat row) so the per-day crypto valuation actually
  * runs for a real wallet. Best-effort/non-fatal and gated internally on
  * WEALTH_REGENERATION_ENABLED. Distinct from regenerateSnapshotsForAccounts
  * (today's live row), which stays as-is.
+ *
+ * W-M1d — CALLED ONLY FOR A HISTORY_SUPPORTED CHAIN (today: BTC). Regeneration
+ * derives a historical quantity, and a chain with no movement ledger has nothing
+ * to derive one from: running it would refuse every day, and a refusal nobody
+ * can act on is an invitation to "fix" it by painting today's quantity backwards.
+ * The gate is `chainSupportsHistory`, so promoting a chain is one registry edit
+ * rather than a hunt through four call sites.
  *
  * V26-ORCH-1 — this used a FIXED 30-DAY window, so a newly connected wallet
  * built one month of history and stopped, even where the price provider could
@@ -64,11 +71,34 @@ async function regenWalletWealthHistory(financialAccountId: string): Promise<voi
     console.warn(`[POST /api/accounts/wallet] wealth-history regen failed for ${financialAccountId} (non-fatal):`, e);
   }
 }
+/**
+ * W-M1d — sync a freshly connected/restored wallet through its chain's adapter.
+ *
+ * BEST-EFFORT AND NON-FATAL, exactly as the BTC call it replaces: connecting a
+ * wallet must succeed even when the chain cannot be read right now. Every
+ * adapter already promises never to throw and to leave the account visible and
+ * "pending" on failure, and the dispatcher catches a contract violation on top.
+ *
+ * An UNSUPPORTED chain is a NORMAL outcome here, not an error: the wallet is
+ * recorded, visible, and honestly unsynced. It is logged rather than surfaced
+ * because the user asked to record custody and that is what happened.
+ */
+async function syncWalletBestEffort(financialAccountId: string, chain: string): Promise<void> {
+  const outcome = await syncWalletByChain(financialAccountId, chain);
+  if (!outcome.ok) {
+    console.warn(
+      `[POST /api/accounts/wallet] ${outcome.chain} sync did not complete for ` +
+      `${financialAccountId} (non-fatal, ${outcome.support}) — ${outcome.stage ?? "?"}: ${outcome.reason ?? ""}`,
+    );
+  }
+}
+
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
 // PROV-4 — canonical per-account conn+SAL spine writer, shared with Plaid exchange.
 import { persistAccountSpine } from "@/lib/accounts/persist-account-spine";
 import { alignWalletProviderSpine } from "@/lib/accounts/wallet-connection";
-import { syncBtcWallet, BTC_CHAIN } from "@/lib/crypto/btc-sync";
+import { BTC_CHAIN } from "@/lib/crypto/btc-sync";
+import { syncWalletByChain, chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch";
 import { isExtendedKey, normalizeExtendedKeyInput } from "@/lib/crypto/btc-address-derivation";
 
 const SUPPORTED_CHAINS = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER"];
@@ -165,10 +195,7 @@ export async function POST(req: NextRequest) {
     // create/reactivate branches). Without this, an already-existing wallet
     // has no automatic sync trigger at all — the reported "re-add does nothing"
     // bug. Runs BEFORE snapshot regen so the snapshot captures the fresh balance.
-    if (chain === BTC_CHAIN) {
-      try { await syncBtcWallet(activeFa.id); }
-      catch (syncErr) { console.warn(`[POST /api/accounts/wallet] BTC sync failed for ${activeFa.id} (non-fatal):`, syncErr); }
-    }
+    await syncWalletBestEffort(activeFa.id, chain);
 
     // Regenerate SpaceSnapshot now that the share is active in this space —
     // same best-effort/non-fatal pattern as the reactivation branch below.
@@ -177,7 +204,7 @@ export async function POST(req: NextRequest) {
     } catch (snapshotErr) {
       console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${activeFa.id} (non-fatal):`, snapshotErr);
     }
-    if (chain === BTC_CHAIN) await regenWalletWealthHistory(activeFa.id);
+    if (chainSupportsHistory(chain)) await regenWalletWealthHistory(activeFa.id);
 
     return NextResponse.json({ success: true, accountId: activeFa.id }, { status: 200 });
   }
@@ -232,10 +259,7 @@ export async function POST(req: NextRequest) {
     // explorer/price failure the account stays visible and "pending" and a
     // SyncIssue is recorded (see lib/crypto/btc-sync.ts). Runs BEFORE snapshot
     // regen so the snapshot captures the freshly-synced balance.
-    if (chain === BTC_CHAIN) {
-      try { await syncBtcWallet(archivedFa.id); }
-      catch (syncErr) { console.warn(`[POST /api/accounts/wallet] BTC sync failed for ${archivedFa.id} (non-fatal):`, syncErr); }
-    }
+    await syncWalletBestEffort(archivedFa.id, chain);
 
     // Regenerate SpaceSnapshot now that the share is active again — see
     // docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md. Best-effort/non-fatal.
@@ -244,7 +268,7 @@ export async function POST(req: NextRequest) {
     } catch (snapshotErr) {
       console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${archivedFa.id} (non-fatal):`, snapshotErr);
     }
-    if (chain === BTC_CHAIN) await regenWalletWealthHistory(archivedFa.id);
+    if (chainSupportsHistory(chain)) await regenWalletWealthHistory(archivedFa.id);
 
     await db.auditLog.create({
       data: {
@@ -315,10 +339,7 @@ export async function POST(req: NextRequest) {
   // failure the wallet stays visible and "pending" and a SyncIssue is recorded
   // (see lib/crypto/btc-sync.ts). Runs BEFORE snapshot regen so the snapshot
   // captures the freshly-synced balance.
-  if (chain === BTC_CHAIN) {
-    try { await syncBtcWallet(fa.id); }
-    catch (syncErr) { console.warn(`[POST /api/accounts/wallet] BTC sync failed for ${fa.id} (non-fatal):`, syncErr); }
-  }
+  await syncWalletBestEffort(fa.id, chain);
 
   // Regenerate SpaceSnapshot now that this new wallet is shared in —
   // same best-effort/non-fatal pattern as every other account-create/
@@ -328,7 +349,7 @@ export async function POST(req: NextRequest) {
   } catch (snapshotErr) {
     console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${fa.id} (non-fatal):`, snapshotErr);
   }
-  if (chain === BTC_CHAIN) await regenWalletWealthHistory(fa.id);
+  if (chainSupportsHistory(chain)) await regenWalletWealthHistory(fa.id);
 
   await db.auditLog.create({
     data: {

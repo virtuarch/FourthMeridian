@@ -158,8 +158,18 @@ async function main(): Promise<void> {
     const manual  = strip(readFileSync("app/api/accounts/[id]/sync/route.ts", "utf8"));
     const cron    = strip(readFileSync("jobs/sync-crypto.ts", "utf8"));
 
-    check("F. the CONNECT route syncs through syncBtcWallet", /syncBtcWallet\s*\(/.test(connect));
-    check("F. the MANUAL sync route uses the same function", /syncBtcWallet\s*\(/.test(manual));
+    // W-M1d — both routes now reach the adapter through the ONE chain registry
+    // rather than naming it. The invariant this section defends is that CONNECT
+    // and MANUAL SYNC take the SAME path (so a wallet cannot be initialised one
+    // way and refreshed another) — which is now structurally guaranteed, because
+    // there is only one path for either to take.
+    check("F. the CONNECT route syncs through the chain dispatcher",
+      /syncWalletByChain\s*\(/.test(connect));
+    check("F. the MANUAL sync route uses the same dispatcher",
+      /syncWalletByChain\s*\(/.test(manual));
+    const dispatch = strip(readFileSync("lib/crypto/wallet-sync-dispatch.ts", "utf8"));
+    check("F. …and BTC still lands on syncBtcWallet inside it",
+      /\[BTC_CHAIN\]:[\s\S]*?syncBtcWallet\(id\)/.test(dispatch));
     check("F. the CRON uses the same function (via syncAllBtcWallets)",
       /syncAllBtcWallets|syncBtcWallet/.test(cron));
     check("F. no route imports the explorer directly (no second import path)",
@@ -170,7 +180,7 @@ async function main(): Promise<void> {
     // unimported ledger.
     // Compare the CALL SITES in the create handler, not the helper's own
     // declaration (which sits near the top of the file).
-    const syncAt    = connect.lastIndexOf("await syncBtcWallet(fa.id)");
+    const syncAt    = connect.lastIndexOf("await syncWalletBestEffort(fa.id, chain)");
     const historyAt = connect.lastIndexOf("await regenWalletWealthHistory(fa.id)");
     check("F. sync runs BEFORE wallet history regeneration on a NEW wallet",
       syncAt !== -1 && historyAt !== -1 && syncAt < historyAt,

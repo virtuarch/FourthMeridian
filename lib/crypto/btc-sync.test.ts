@@ -176,11 +176,24 @@ async function main(): Promise<void> {
   const manual = code(read("app", "api", "accounts", "[id]", "sync", "route.ts"));
   check("manual route authenticates", manual.includes("requireUser"));
   check("manual route is owner-only", /ownerUserId\s*!==\s*user\.id/.test(manual));
-  check("manual route is BTC-only", manual.includes("BTC_CHAIN"));
-  check("manual route runs the sync", manual.includes("syncBtcWallet("));
+  // W-M1d — THE ROUTE NO LONGER NAMES BITCOIN, AND THAT IS THE POINT.
+  //
+  // These asserted `BTC_CHAIN` and `syncBtcWallet(` directly, which pinned the
+  // MECHANISM rather than the guarantee. The route now dispatches by chain
+  // through lib/crypto/wallet-sync-dispatch.ts, so the guarantees are: a wallet
+  // whose chain cannot be read is still refused before any adapter is reached,
+  // and a BTC wallet still reaches syncBtcWallet — which the registry pins.
+  check("manual route refuses a chain it cannot read, before dispatching",
+    manual.includes("isSyncableChain(account.walletChain)"));
+  check("manual route runs the sync through the ONE chain registry",
+    manual.includes("syncWalletByChain(id, account.walletChain)"));
+  check("…and BTC still resolves to syncBtcWallet in that registry",
+    /\[BTC_CHAIN\]:[\s\S]*?syncBtcWallet\(id\)/
+      .test(code(read("lib", "crypto", "wallet-sync-dispatch.ts"))));
 
   const walletRoute = code(read("app", "api", "accounts", "wallet", "route.ts"));
-  check("wallet route runs balance sync on add (run-on-add)", walletRoute.includes("syncBtcWallet("));
+  check("wallet route runs balance sync on add (run-on-add)",
+    walletRoute.includes("syncWalletBestEffort(fa.id, chain)"));
   // No Transaction-model usage / import (the `db.$transaction` atomic wrapper is
   // unrelated and allowed — hence the capital-T model-name boundary check).
   check("wallet route creates/imports no transactions",
@@ -190,12 +203,15 @@ async function main(): Promise<void> {
 
   // Backend correction: the active-duplicate re-add branch now syncs too, so
   // an already-existing BTC wallet has an automatic trigger. All three branches
-  // (active-dup, reactivate, new-create) must call syncBtcWallet.
-  // The active-dup branch is the load-bearing correction (it pins the exact call
-  // target); the former "all three branches" `>= 3` call-count pin was brittle and
-  // is dropped.
+  // (active-dup, reactivate, new-create) must run the balance sync. The
+  // active-dup branch is the load-bearing correction — it pins the exact call
+  // target — and W-M1d moved that target from `syncBtcWallet` to the chain
+  // dispatcher, which routes BTC back to syncBtcWallet. The guarantee is
+  // unchanged: connecting an already-active wallet re-reads its balance.
   check("wallet route syncs on re-add of an existing wallet (active-dup branch)",
-    walletRoute.includes("syncBtcWallet(activeFa.id)"));
+    walletRoute.includes("syncWalletBestEffort(activeFa.id, chain)"));
+  check("…and on restore of an archived one",
+    walletRoute.includes("syncWalletBestEffort(archivedFa.id, chain)"));
 
   // AccountCard was retired with the standalone /dashboard/accounts page; the
   // live surface that renders the wallet sync affordance is now ConnectionCard
@@ -455,8 +471,8 @@ async function main(): Promise<void> {
   // xpub's discovery has a Connection to read the descriptor from.
   // Minimal durable form: the route both aligns the Connection spine and runs the
   // sync (was a brittle `indexOf(...) < indexOf(...)` statement-order pin).
-  check("run-on-add aligns the Connection spine and runs syncBtcWallet (xpub discovery has a Connection)",
-    /alignWalletProviderSpine\(/.test(walletRoute) && /syncBtcWallet\(/.test(walletRoute));
+  check("run-on-add aligns the Connection spine and runs the sync (xpub discovery has a Connection)",
+    /alignWalletProviderSpine\(/.test(walletRoute) && /syncWalletBestEffort\(/.test(walletRoute));
 
   // ── PART H — batch stats provider (multiaddr) ────────────────────────────────
   const multiaddrFixture = {
