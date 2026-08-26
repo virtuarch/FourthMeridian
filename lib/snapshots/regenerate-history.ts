@@ -271,14 +271,33 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // W-M1a — the CANONICAL IDENTITY each wallet holds, which is what selects a
   // price. Distinct from the symbol above on purpose: the ledger predicate reads
   // a denomination off a Transaction row, the valuation resolves an asset.
-  const heldCryptoAssets = [
+  //
+  // W-M1b — THE DECLARED SET IS THE ASSETS ACTUALLY HELD, NOT EVERY ASSET PRESENT.
+  //
+  // `unitPriceByAssetKey`'s keys are the caller's declaration of which assets
+  // this day concerns, and every declared asset must be priced or the day
+  // refuses (all-or-nothing). Declaring every crypto account's asset therefore
+  // had a consequence nobody would want: adding an EMPTY Ethereum wallet — which
+  // the wallet route already lets a user create, with `nativeBalance: 0` — would
+  // put ETH in the declared set, ETH has no archived closes, and the Space's
+  // entire Bitcoin history would refuse. A wallet holding nothing would have
+  // silently blacked out the wallet that holds something.
+  //
+  // So the declaration is the assets with a MATERIAL balance. When none is held
+  // the fallback is every resolved asset, which preserves the pre-W-M0 rule
+  // exactly: a drained wallet on a day with no close still refuses rather than
+  // asserting that digital assets are zero (see the CryptoDayInput contract).
+  const assetsOf = (accts: typeof cryptoAccounts) => [
     ...new Map(
-      cryptoAccounts
+      accts
         .map((a) => cryptoAssetByAccount.get(a.id))
         .filter((x): x is NonNullable<typeof x> => x != null)
         .map((a) => [a.assetKey, a]),
     ).values(),
   ];
+  const materialCryptoAccounts = cryptoAccounts.filter((a) => Math.abs(a.nativeBalance ?? 0) > 0);
+  const heldCryptoAssets =
+    materialCryptoAccounts.length > 0 ? assetsOf(materialCryptoAccounts) : assetsOf(cryptoAccounts);
 
   // V26-CRYPTO-QTY-1 — THE CONSTANT-QUANTITY CARRY IS NOW LICENSED, NOT ASSUMED.
   //

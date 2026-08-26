@@ -71,10 +71,30 @@ export const OPERATION_KEYS = {
   // ── User imports ───────────────────────────────────────────────────────────
   "import-rollback-repair": "import-rollback-repair",
 
-  // ── Wallet sync (BTC) ──────────────────────────────────────────────────────
+  // ── Wallet sync — shared across chains ─────────────────────────────────────
+  // `balance` is deliberately ONE operation for every chain: "we could not read
+  // this wallet's balance" is the same operational failure whether the provider
+  // was a Bitcoin explorer or an Ethereum RPC, and the chain is already carried
+  // in the incident detail. Splitting it per chain would fragment one episode
+  // into N and make the operator's question ("are wallet balances failing?")
+  // unanswerable from the key alone.
   discovery: "discovery",
   balance:   "balance",
   price:     "price",
+  // ── Wallet sync — W-M1b, the balance-only chains ───────────────────────────
+  // `config`  the deployment has no provider endpoint for this chain at all.
+  //           Distinct from `balance`: nothing was attempted and nothing is
+  //           wrong with the wallet. It is an OPERATOR action (configure a
+  //           provider), not a retry, and merging it into `balance` would bury
+  //           a one-line fix inside a pile of transient network failures.
+  // `address` the stored address is not well-formed for its chain. Permanent
+  //           until the user corrects it — never retried, never a provider fault.
+  // `capture` the balance was read but the canonical position could not be
+  //           recorded. The acquisition succeeded and the persistence did not,
+  //           which is a different team's problem from either of the above.
+  config:    "config",
+  address:   "address",
+  capture:   "capture",
 } as const;
 
 export type OperationKey = (typeof OPERATION_KEYS)[keyof typeof OPERATION_KEYS];

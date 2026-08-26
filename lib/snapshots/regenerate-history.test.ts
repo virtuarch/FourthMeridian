@@ -157,6 +157,21 @@ function main(): void {
   check("the deleted BTC-only valuation read is not resurrected",
     !/readBtcUsdWindow/.test(code));
 
+  // ── W-M1b — AN EMPTY WALLET MUST NOT BLACK OUT A FULL ONE ─────────────────
+  //
+  // Every DECLARED asset must be priced or the day refuses (all-or-nothing).
+  // Declaring every crypto account's asset therefore meant that adding an empty
+  // Ethereum wallet — which the wallet route already lets a user create, with
+  // nativeBalance 0 — would put ETH in the declared set, ETH has no archived
+  // closes, and the Space's entire Bitcoin history would refuse. A wallet
+  // holding nothing would have silently blacked out the wallet that holds
+  // something. The declaration is now the assets with a MATERIAL balance.
+  check("the declared asset set is narrowed to MATERIAL holdings",
+    /materialCryptoAccounts/.test(code)
+      && /Math\.abs\(a\.nativeBalance \?\? 0\) > 0/.test(code));
+  check("…with a fallback to every asset when NOTHING is held (drained wallets still refuse)",
+    /materialCryptoAccounts\.length > 0 \? assetsOf\(materialCryptoAccounts\) : assetsOf\(cryptoAccounts\)/.test(code));
+
   if (failures > 0) {
     console.error(`\n${failures} check(s) FAILED`);
     process.exit(1);

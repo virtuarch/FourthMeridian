@@ -68,7 +68,23 @@ export type LedgerRefusal =
   /** The wallet holds a balance and we hold no movements at all. */
   | "NO_MOVEMENTS"
   /** Movements exist but do not sum to the observed balance. */
-  | "LEDGER_SHORTFALL";
+  | "LEDGER_SHORTFALL"
+  /**
+   * W-M1b — THIS CHAIN'S ADAPTER DOES NOT IMPORT A MOVEMENT LEDGER AT ALL.
+   *
+   * Distinct from NO_MOVEMENTS, and the distinction is the whole reason this
+   * value exists. NO_MOVEMENTS says "a ledger was consulted and was empty",
+   * which for Bitcoin is a real defect: the chain states every movement, the
+   * importer should have them, and their absence means something went wrong.
+   * NOT_APPLICABLE says "no ledger was consulted, because this adapter acquires
+   * a balance and nothing else". Nothing went wrong; the question was never
+   * asked.
+   *
+   * Collapsing the two would be dishonest in both directions — it would file a
+   * balance-only chain as a broken Bitcoin wallet, and it would give a genuinely
+   * broken Bitcoin wallet somewhere to hide.
+   */
+  | "NOT_APPLICABLE";
 
 export interface LedgerReconciliationInput {
   /**
@@ -114,6 +130,42 @@ export interface LedgerReconciliation {
   refusal:         LedgerRefusal | null;
   /** Deterministic, name-free explanation. Always populated. */
   reason:          string;
+}
+
+/**
+ * W-M1b — THE STATE OF A WALLET WHOSE CHAIN HAS NO IMPORTED LEDGER.
+ *
+ * A balance-only adapter (native ETH, native SOL) observes a quantity and
+ * imports no movements. It must not call `reconcileWalletLedger`: that function
+ * answers "do the movements explain the balance", and asking it about a wallet
+ * with no movements yields NO_MOVEMENTS — a REFUSAL that reads as a defect.
+ * There is no defect. There is no ledger.
+ *
+ * `complete` is FALSE, and deliberately so. Ledger completeness is what licenses
+ * a historical quantity CARRY (see quantity-carry.core.ts), and a wallet whose
+ * movements are unknown cannot license a claim about any other date — that is
+ * exactly as true when the movements were never imported as when they were
+ * imported short. What changes is the REASON, which is what reaches the user
+ * and what an operator triages on.
+ *
+ * The sync LIFECYCLE reads this differently, and that is the point of separating
+ * them: a balance-only chain may reach "synced" on a successful acquisition,
+ * because for that chain a complete sync genuinely is a balance. It does not
+ * pretend a reconciliation occurred.
+ */
+export function ledgerNotApplicable(observedBalance: number | null): LedgerReconciliation {
+  return {
+    complete:      false,
+    movementTotal: 0,
+    residual:      null,
+    movementCount: 0,
+    refusal:       "NOT_APPLICABLE",
+    reason:
+      "This chain's adapter acquires a balance only and imports no movement ledger, " +
+      "so there is nothing to reconcile the balance against. The observed balance " +
+      `${observedBalance === null ? "is unknown" : `of ${observedBalance} is current`}; ` +
+      "no historical quantity can be derived from it.",
+  };
 }
 
 /**

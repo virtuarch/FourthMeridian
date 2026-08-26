@@ -464,6 +464,16 @@ const OPERATION_PHRASE: Record<OperationKey, string> = {
   discovery:                      "Discovering wallet addresses",
   balance:                        "Reading the wallet balance",
   price:                          "Reading the market price",
+
+  // Wallet sync — the balance-only chains (W-M1b). Each phrase names a
+  // DIFFERENT operator response, which is the whole reason they are separate
+  // operations: configure something, ask the member to fix something, or look at
+  // why a read succeeded and a write did not. Reading "Reading the wallet
+  // balance" for all three would have hidden a one-line configuration fix inside
+  // a pile of transient network failures.
+  config:                         "Connecting to the blockchain network",
+  address:                        "Checking the wallet address",
+  capture:                        "Recording the wallet holding",
 };
 
 /**
