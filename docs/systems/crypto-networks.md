@@ -1,6 +1,6 @@
 # Doctrine — Crypto Networks
 
-*Governs how ANY blockchain network becomes a supported asset in Fourth Meridian: identity, acquisition, position, pricing, history, and the boundary between what a chain proves and what a person asserts. Origin: the P2-6 crypto position spine, the V26 multi-network architecture investigation, and the W-M0 → W-M2 native-wallet arc.*
+*Governs how ANY blockchain network becomes a supported asset in Fourth Meridian: identity, acquisition, position, pricing, history, how a failure is represented, and the boundary between what a chain proves and what a person asserts. Origin: the P2-6 crypto position spine, the V26 multi-network architecture investigation, and the W-M0 → W-M2 native-wallet arc.*
 
 Bitcoin, Ethereum and Solana are the networks implemented today, and they appear below **only as examples**. Nothing in this document is per-chain doctrine. It governs Cardano, XRP, Dogecoin, Litecoin, Avalanche, Polkadot and every network after them, and the test of a new adapter is whether it can satisfy this contract without changing anything canonical.
 
@@ -151,10 +151,16 @@ These are binding. Each one exists because violating it produced, or would produ
 17. **Exchange-looking addresses are hints, not financial facts.** Address labels never silently become semantics.
 18. **User-attested semantics are explicitly distinguished from observed facts**, carry an author, and are never blended into evidence.
 
+**Representation**
+
+19. **A refused, unavailable, unknown or failed acquisition state must never be represented to a consumer as active synchronization or completed evidence.** In-progress requires POSITIVE evidence that work is outstanding — a resumable checkpoint, a running job — never the mere absence of a success or of a recorded error. An account existing, an identity existing, an address count above zero, a chain being set, and a sync not having succeeded yet are all compatible with nothing running at all.
+20. **A refusal must reach the authority the consumer reads.** Recording it somewhere else — an incident log, a return value, a server log — leaves that authority silent, and silence is what gets misread as progress.
+21. **Never offer a retry that cannot succeed.** Where a failure is terminal until something outside the surface changes, say so instead of presenting an action that will fail identically.
+
 **Capability**
 
-19. **`CURRENT_POSITION_SUPPORTED` does not imply `HISTORY_SUPPORTED`.** They are different promises.
-20. **A network is promoted to `HISTORY_SUPPORTED` only after its historical acquisition, replay, coverage/refusal and dated-valuation acceptance tests pass.** Having an adapter is not having history.
+22. **`CURRENT_POSITION_SUPPORTED` does not imply `HISTORY_SUPPORTED`.** They are different promises.
+23. **A network is promoted to `HISTORY_SUPPORTED` only after its historical acquisition, replay, coverage/refusal and dated-valuation acceptance tests pass.** Having an adapter is not having history.
 
 ---
 

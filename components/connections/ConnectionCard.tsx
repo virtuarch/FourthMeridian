@@ -251,6 +251,13 @@ function WalletActions({ connection, accounts }: { connection: SyncConnection; a
   if (connection.provider !== "WALLET") return null;
   const acct = accounts[0];
   if (!acct) return null;
+  // W-M2a — DO NOT OFFER A RETRY THAT CANNOT SUCCEED. A missing provider
+  // endpoint, an unsupported network and a malformed address are all terminal
+  // until something outside this page changes; a Refresh button beside them
+  // manufactures a retry loop and implies the failure is the user's to clear by
+  // clicking. The card's copy already says what would actually change it.
+  const failure = describeWalletFailure(connection.errorCode);
+  if (connection.state === "error" && failure && !failure.retryable) return null;
   const syncStatus: "synced" | "pending" | "error" =
     connection.state === "ready" ? "synced" : connection.state === "error" ? "error" : "pending";
   return (
@@ -582,6 +589,68 @@ function NeedsReauthContent({
   );
 }
 
+/**
+ * W-M2a — truthful copy for a GENERIC wallet sync failure.
+ *
+ * Keyed on the chain-agnostic code the dispatcher records, never on the chain,
+ * so a new network inherits correct wording without a visual branch of its own.
+ * Returns null for codes that already have their own arm (BTC's xpub family) or
+ * for an unrecognised code, both of which fall through to the existing text.
+ *
+ * `retryable` is honest about whether pressing Refresh can change anything.
+ */
+function describeWalletFailure(
+  errorCode: string | null,
+): { eyebrow: string; detail: string; retryable: boolean } | null {
+  switch (errorCode) {
+    case "PROVIDER_NOT_CONFIGURED":
+      return {
+        eyebrow: "Sync unavailable",
+        detail:
+          "This deployment has no connection to this wallet’s blockchain network, so its balance " +
+          "cannot be read. Nothing is wrong with your wallet — the platform needs configuring.",
+        retryable: false,
+      };
+    case "CHAIN_UNSUPPORTED":
+      return {
+        eyebrow: "Network not supported",
+        detail:
+          "Fourth Meridian cannot read this wallet’s network yet. The wallet stays recorded here; " +
+          "only its balance is unavailable.",
+        retryable: false,
+      };
+    case "INVALID_WALLET_ADDRESS":
+      return {
+        eyebrow: "Address not recognised",
+        detail:
+          "This address isn’t in the expected format for its network. Check it against your wallet " +
+          "and re-add it — retrying won’t change the result.",
+        retryable: false,
+      };
+    case "BALANCE_UNAVAILABLE":
+      return {
+        eyebrow: "Couldn’t reach the network",
+        detail: "We couldn’t read this wallet’s balance from the blockchain. Press Refresh to try again.",
+        retryable: true,
+      };
+    case "POSITION_CAPTURE_UNAVAILABLE":
+      return {
+        eyebrow: "Balance not recorded",
+        detail:
+          "We read this wallet’s balance but couldn’t record it. Press Refresh to try again.",
+        retryable: true,
+      };
+    case "ADAPTER_ERROR":
+      return {
+        eyebrow: "Sync error",
+        detail: "Something went wrong reading this wallet. Press Refresh to try again.",
+        retryable: true,
+      };
+    default:
+      return null;
+  }
+}
+
 function ErrorContent({
   connection,
   accounts,
@@ -616,6 +685,40 @@ function ErrorContent({
             Try the Native SegWit zpub/export for this account.
           </span>
         </div>
+        <AccountNames accounts={accounts} />
+      </div>
+    );
+  }
+
+  // ── W-M2a — WALLET FAILURES ARE NOT ALL "ADDRESS DISCOVERY" ────────────────
+  //
+  // Every wallet error arm below used to say "We couldn't complete address
+  // discovery for this wallet. Press Refresh to retry discovery." That is BTC
+  // xpub wording, and it was shown for chains that have no address discovery at
+  // all — including a Solana wallet whose deployment had no RPC endpoint, where
+  // it also invited a Refresh that could not possibly succeed.
+  //
+  // The copy is now keyed on the GENERIC failure code the chain dispatcher
+  // records (lib/crypto/wallet-sync-dispatch.ts), so every chain — Ethereum,
+  // Solana and every network after them — gets truthful wording from one place.
+  // The BTC-specific codes keep their own, more precise text.
+  //
+  // `retryable` decides whether we offer a Refresh at all: manufacturing a retry
+  // loop against a known-missing configuration wastes the user's time and
+  // implies the problem is theirs to fix by clicking.
+  const walletFailure = describeWalletFailure(errorCode);
+  if (isWallet && walletFailure) {
+    return (
+      <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+        <EyebrowHeading eyebrow={walletFailure.eyebrow} institution={connection.institution} />
+        <p className="mt-1.5 text-sm text-[var(--text-secondary)]">{providerLine(connection)}</p>
+        <div className="mt-1.5 flex items-start gap-2 text-sm text-[var(--accent-warning,#f59e0b)]">
+          <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+          <span>{walletFailure.detail}</span>
+        </div>
+        <p className="mt-1.5 text-xs text-[var(--text-muted)]">
+          This wallet has not been synced. No balance, value or history has been recorded for it.
+        </p>
         <AccountNames accounts={accounts} />
       </div>
     );

@@ -264,8 +264,33 @@ export function buildSyncStatus(
 //   - status NEEDS_REAUTH              → "error"  (wallets never reauth; NEVER
 //                                                  surface Plaid reconnect)
 //   - status ACTIVE & lastSyncedAt set → "ready"
-//   - status ACTIVE & errorCode set    → "error"  (first sync failed)
-//   - status ACTIVE & neither          → "importing" (first sync pending)
+//   - status ACTIVE & errorCode set    → "error"  (sync failed / was refused)
+//   - status ACTIVE & discovery cursor → "importing"  (POSITIVE evidence)
+//   - status ACTIVE & none of those    → "error"  (never synced, nothing running)
+//
+// ── W-M2a — "IMPORTING" REQUIRES POSITIVE EVIDENCE, NOT AN ABSENCE ───────────
+//
+// The last clause used to be `→ "importing"`, on the reasoning that a wallet
+// which has neither succeeded nor recorded an error must still be working. That
+// is an inference from silence, and silence is not evidence of work.
+//
+// A real wallet proved it. A Solana wallet was connected on a deployment with no
+// Solana RPC endpoint; the adapter refused immediately at stage "config" and the
+// create route returned 201. The refusal was recorded as a SyncIssue but never
+// on the Connection, so `lastSyncedAt` and `errorCode` were both null — and this
+// function answered "importing". The card then span on "Discovering addresses…
+// (1 so far)" and invited the user to "press Refresh to continue discovery",
+// indefinitely, for a wallet whose sync could never begin. The copy was BTC's
+// xpub wording, applied to a chain that has no address discovery at all.
+//
+// So in-progress now requires a DISCOVERY CHECKPOINT: a resumable cursor written
+// by an adapter that genuinely stopped mid-acquisition and can continue. That is
+// a fact about work, not the absence of a fact about failure. Everything else
+// with no successful sync is terminal, and says so.
+//
+// None of these prove work is running, and none may produce "importing": the
+// account exists · a wallet identity exists · an address count is above zero ·
+// a chain is set · the sync has not succeeded yet.
 
 /** Structural shape from a Connection(provider=WALLET) row + its display name. */
 export interface WalletConnectionStateInput {
@@ -275,10 +300,21 @@ export interface WalletConnectionStateInput {
   status:       "ACTIVE" | "NEEDS_REAUTH" | "ERROR" | "REVOKED";
   lastSyncedAt: Date | null;
   errorCode:    string | null;
+  /**
+   * W-M2a — `Connection.cursor`, the resumable acquisition checkpoint.
+   *
+   * THE ONLY POSITIVE EVIDENCE that acquisition is genuinely mid-flight. An
+   * adapter writes it when it stops part-way through work it can continue (BTC's
+   * xpub discovery is the one that does today). Present ⇒ real, resumable work
+   * is outstanding. Absent ⇒ nothing is running, whatever else is or is not true
+   * about the account.
+   */
+  discoveryCursor: string | null;
 }
 
 export function deriveWalletConnectionState(
-  input: Pick<WalletConnectionStateInput, "status" | "lastSyncedAt" | "errorCode">,
+  input: Pick<WalletConnectionStateInput, "status" | "lastSyncedAt" | "errorCode"> &
+    Partial<Pick<WalletConnectionStateInput, "discoveryCursor">>,
 ): SyncConnectionState | null {
   switch (input.status) {
     case "REVOKED":      return null;
@@ -287,7 +323,10 @@ export function deriveWalletConnectionState(
     case "ACTIVE":
       if (input.lastSyncedAt !== null) return "ready";
       if (input.errorCode !== null)    return "error";
-      return "importing";
+      // Positive evidence of resumable work in flight — and nothing else.
+      if (input.discoveryCursor) return "importing";
+      // Never synced, nothing recorded, nothing running. Terminal, not pending.
+      return "error";
     default:             return null;
   }
 }

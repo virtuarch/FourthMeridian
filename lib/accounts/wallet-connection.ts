@@ -111,6 +111,49 @@ export async function touchWalletConnectionStatus(params: {
 }
 
 /**
+ * W-M2a — RECORD A SYNC REFUSAL ON THE CONNECTION, WHICH IS PROVIDER-SYNC TRUTH.
+ *
+ * `Connection.status / lastSyncedAt / errorCode` is the authority the Connections
+ * surface derives its state from. Until now only BTC's xpub-discovery branch ever
+ * wrote a failure there: every other refusal — a missing provider endpoint, a
+ * malformed address, a transport failure — recorded a `SyncIssue` and left the
+ * Connection saying nothing at all. A Connection that says nothing was then read
+ * as "first sync still pending", so a terminal refusal rendered as active
+ * discovery. The refusal existed; it was simply never told to the authority that
+ * answers the question.
+ *
+ * ONLY WRITES WHEN NO CODE IS ALREADY RECORDED. An adapter that diagnosed its own
+ * failure precisely (INVALID_XPUB, NO_USED_ADDRESSES, RATE_LIMITED) has said
+ * something more useful than a generic stage code, and this must never overwrite
+ * it. The generic code is a floor, not a replacement.
+ *
+ * Best-effort and non-throwing: a wallet's sync outcome must not fail because
+ * recording it failed.
+ */
+export async function recordWalletSyncRefusal(params: {
+  financialAccountId: string;
+  errorCode: string;
+  client?: DbClient;
+}): Promise<void> {
+  try {
+    const client = params.client ?? db;
+    const link = await client.accountConnection.findFirst({
+      where:  { financialAccountId: params.financialAccountId, deletedAt: null, connectionId: { not: null } },
+      select: { connectionId: true },
+    });
+    if (!link?.connectionId) return;
+    const conn = await client.connection.findUnique({
+      where:  { id: link.connectionId },
+      select: { errorCode: true },
+    });
+    if (!conn || conn.errorCode !== null) return; // a more specific diagnosis stands
+    await touchWalletConnectionStatus({ connectionId: link.connectionId, ok: false, errorCode: params.errorCode });
+  } catch (e) {
+    console.warn(`[wallet-connection] could not record sync refusal for ${params.financialAccountId} (non-fatal):`, e);
+  }
+}
+
+/**
  * Clear a stale error WITHOUT marking the connection fully synced. Used when an
  * xpub sync makes partial discovery PROGRESS: a prior run's errorCode must not
  * outlive it (that's what wrongly pinned the card on "Sync Error"), but the

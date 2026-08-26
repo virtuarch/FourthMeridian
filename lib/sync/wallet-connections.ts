@@ -38,6 +38,9 @@ export async function loadWalletSyncConnections(userId: string): Promise<WalletS
       status:       true,
       lastSyncedAt: true,
       errorCode:    true,
+      // W-M2a — the resumable acquisition checkpoint. The ONLY positive evidence
+      // that discovery is genuinely mid-flight; see deriveWalletConnectionState.
+      cursor:       true,
       accountConnections: {
         where:  { deletedAt: null },
         select: { financialAccount: { select: { id: true, name: true, type: true, deletedAt: true } } },
@@ -68,6 +71,7 @@ export async function loadWalletSyncConnections(userId: string): Promise<WalletS
       status:       c.status as WalletConnectionStateInput["status"],
       lastSyncedAt: c.lastSyncedAt,
       errorCode:    c.errorCode,
+      discoveryCursor: c.cursor ?? null,
     });
   }
 

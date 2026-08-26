@@ -137,13 +137,28 @@ check("serialized JSON contains no 'syncIncompleteAt'",
 
 const D = (over: Partial<WalletConnectionStateInput>): WalletConnectionStateInput => ({
   id: "c1", displayName: "My BTC Cold Storage",
-  status: "ACTIVE", lastSyncedAt: null, errorCode: null, ...over,
+  status: "ACTIVE", lastSyncedAt: null, errorCode: null, discoveryCursor: null, ...over,
 });
 
 console.log("wallet — state derivation");
 const SYNCED = new Date("2026-07-09T12:00:00Z");
 check("ACTIVE + lastSyncedAt → ready", deriveWalletConnectionState(D({ lastSyncedAt: SYNCED })) === "ready");
-check("ACTIVE + no lastSyncedAt, no error → importing", deriveWalletConnectionState(D({})) === "importing");
+// ── W-M2a — SILENCE IS NOT PROGRESS ─────────────────────────────────────────
+// This asserted the opposite: no success, no error → "importing". A real Solana
+// wallet on a deployment with no RPC endpoint reached exactly that state and
+// span on "Discovering addresses…" forever. In-progress now requires POSITIVE
+// evidence — a resumable discovery checkpoint — and everything else that has
+// never synced is terminal.
+check("ACTIVE + nothing known → error, NOT importing (silence is not progress)",
+  deriveWalletConnectionState(D({})) === "error");
+check("ACTIVE + a resumable discovery cursor → importing (positive evidence)",
+  deriveWalletConnectionState(D({ discoveryCursor: "ckpt:receive/41" })) === "importing");
+check("a cursor NEVER outranks a recorded failure",
+  deriveWalletConnectionState(D({ discoveryCursor: "ckpt", errorCode: "PROVIDER_NOT_CONFIGURED" })) === "error");
+check("a cursor NEVER outranks a successful sync",
+  deriveWalletConnectionState(D({ discoveryCursor: "ckpt", lastSyncedAt: SYNCED })) === "ready");
+check("an empty-string cursor is not a checkpoint",
+  deriveWalletConnectionState(D({ discoveryCursor: "" })) === "error");
 check("ACTIVE + errorCode (first sync failed) → error", deriveWalletConnectionState(D({ errorCode: "SYNC_FAILED" })) === "error");
 check("status ERROR → error", deriveWalletConnectionState(D({ status: "ERROR" })) === "error");
 check("status NEEDS_REAUTH → error (wallets never reauth)", deriveWalletConnectionState(D({ status: "NEEDS_REAUTH" })) === "error");
@@ -152,7 +167,7 @@ check("status REVOKED → excluded (null)", deriveWalletConnectionState(D({ stat
 console.log("wallet — card shape");
 const cards = buildWalletSyncStatus([
   D({ id: "w1", displayName: "Ledger BTC", status: "ACTIVE", lastSyncedAt: SYNCED }),
-  D({ id: "w2", displayName: "Watch xpub", status: "ACTIVE" }),           // importing
+  D({ id: "w2", displayName: "Watch xpub", status: "ACTIVE", discoveryCursor: "ckpt:receive/41" }), // importing
   D({ id: "w3", displayName: "Revoked",    status: "REVOKED" }),          // excluded
 ]);
 check("REVOKED wallet excluded from cards", cards.length === 2 && !cards.some((c) => c.id === "w3"));

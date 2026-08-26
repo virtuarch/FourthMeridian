@@ -46,12 +46,60 @@
 import { syncBtcWallet, BTC_CHAIN } from "@/lib/crypto/btc-sync";
 import { syncEthWallet, ETH_CHAIN } from "@/lib/crypto/eth-sync";
 import { syncSolWallet, SOL_CHAIN } from "@/lib/crypto/sol-sync";
+import { recordWalletSyncRefusal } from "@/lib/accounts/wallet-connection";
 
 /** How far this system can go on a given chain. See the header. */
 export type WalletChainSupport =
   | "HISTORY_SUPPORTED"
   | "CURRENT_POSITION_SUPPORTED"
   | "UNSUPPORTED";
+
+/**
+ * W-M2a — THE GENERIC, CHAIN-AGNOSTIC REASON A WALLET SYNC DID NOT COMPLETE.
+ *
+ * Recorded on `Connection.errorCode`, which is what the Connections surface
+ * derives its state from. Each code names a DIFFERENT response, which is the
+ * only reason they are separate: configure something, correct an address, wait
+ * and retry, or look at why a read succeeded and a write did not.
+ *
+ * Deliberately not per-chain. "This deployment cannot reach the chain" is the
+ * same operational fact for Solana, Ethereum and every network after them; the
+ * chain is already on the account. A per-chain code set would multiply with the
+ * chain list and teach the UI to branch on chains rather than on states.
+ */
+export type WalletSyncErrorCode =
+  /** No provider endpoint is configured for this chain on this deployment. */
+  | "PROVIDER_NOT_CONFIGURED"
+  /** The stored address is not well-formed for its chain. Permanent until edited. */
+  | "INVALID_WALLET_ADDRESS"
+  /** The chain could not be read this run — transport, rate limit, bad response. */
+  | "BALANCE_UNAVAILABLE"
+  /** The balance was read but the canonical position could not be recorded. */
+  | "POSITION_CAPTURE_UNAVAILABLE"
+  /** No adapter serves this chain. */
+  | "CHAIN_UNSUPPORTED"
+  /** An adapter threw despite its never-throw contract. */
+  | "ADAPTER_ERROR";
+
+/**
+ * Map an adapter's own failure stage onto the generic code. Pure, so the mapping
+ * is testable without a database and cannot drift from what is recorded.
+ *
+ * An unrecognised stage yields BALANCE_UNAVAILABLE rather than nothing: a
+ * refusal whose stage this function has not learned yet is still a refusal, and
+ * defaulting to "no code" would put the connection straight back into the
+ * silence that made a terminal failure look like progress.
+ */
+export function walletSyncErrorCode(stage: string | undefined): WalletSyncErrorCode {
+  switch (stage) {
+    case "config":            return "PROVIDER_NOT_CONFIGURED";
+    case "address":           return "INVALID_WALLET_ADDRESS";
+    case "capture":           return "POSITION_CAPTURE_UNAVAILABLE";
+    case "unsupported-chain": return "CHAIN_UNSUPPORTED";
+    case "adapter-error":     return "ADAPTER_ERROR";
+    default:                  return "BALANCE_UNAVAILABLE";
+  }
+}
 
 /** The unified outcome a ROUTE needs. Adapters keep their own richer results. */
 export interface WalletSyncOutcome {
@@ -73,6 +121,8 @@ export interface WalletSyncOutcome {
    * convergence lands. Surfaced here so a route never has to infer it.
    */
   netWorthParticipation: "LEGACY_BALANCE_COLUMN" | "WITHHELD_PENDING_CONVERGENCE" | "NONE";
+  /** W-M2a — the generic code recorded on the Connection. Present on failure. */
+  errorCode?: WalletSyncErrorCode;
   /** The adapter's own result, for logging. NEVER branched on by a caller. */
   raw?: unknown;
 }
@@ -156,12 +206,14 @@ export async function syncWalletByChain(
   const adapter = ADAPTERS[key];
 
   if (!adapter) {
+    await recordWalletSyncRefusal({ financialAccountId: accountId, errorCode: "CHAIN_UNSUPPORTED" });
     return {
       accountId,
       chain: key || "(none)",
       support: "UNSUPPORTED",
       ok: false,
       stage: "unsupported-chain",
+      errorCode: "CHAIN_UNSUPPORTED",
       reason:
         `Fourth Meridian cannot read ${key || "this"} wallets yet. ` +
         `Balance sync is available for ${SYNCABLE_CHAINS.join(", ")}. ` +
@@ -172,6 +224,16 @@ export async function syncWalletByChain(
 
   try {
     const result = await adapter.sync(accountId);
+    // W-M2a — A REFUSAL MUST REACH THE CONNECTION, NOT ONLY THE INCIDENT LOG.
+    //
+    // Every adapter already records a SyncIssue. None of them (outside BTC's
+    // xpub branch) told `Connection.errorCode`, which is the field the
+    // Connections surface actually derives state from — so a terminal refusal
+    // left the connection saying nothing, and "nothing" was read as "still
+    // working". Recorded HERE so every chain gets it from one place, and
+    // conditionally so an adapter's own more specific diagnosis always wins.
+    const errorCode = result.ok ? undefined : walletSyncErrorCode(result.stage);
+    if (errorCode) await recordWalletSyncRefusal({ financialAccountId: accountId, errorCode });
     return {
       accountId,
       chain: key,
@@ -180,6 +242,7 @@ export async function syncWalletByChain(
       syncStatus: result.syncStatus,
       stage: result.stage,
       reason: result.reason,
+      errorCode,
       // A FAILED sync contributes nothing to net worth whatever the chain
       // normally does — reporting the chain's usual participation on a run that
       // wrote nothing would overstate what the row now contains.
@@ -191,9 +254,10 @@ export async function syncWalletByChain(
     // must still answer honestly rather than 500.
     const reason = e instanceof Error ? e.message : String(e);
     console.warn(`[wallet-sync] ${key} adapter threw for ${accountId} (contract violation):`, reason);
+    await recordWalletSyncRefusal({ financialAccountId: accountId, errorCode: "ADAPTER_ERROR" });
     return {
       accountId, chain: key, support: adapter.support, ok: false,
-      stage: "adapter-error", reason,
+      stage: "adapter-error", reason, errorCode: "ADAPTER_ERROR",
       netWorthParticipation: "NONE",
     };
   }

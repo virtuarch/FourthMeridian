@@ -83,7 +83,10 @@ async function regenWalletWealthHistory(financialAccountId: string): Promise<voi
  * recorded, visible, and honestly unsynced. It is logged rather than surfaced
  * because the user asked to record custody and that is what happened.
  */
-async function syncWalletBestEffort(financialAccountId: string, chain: string): Promise<void> {
+async function syncWalletBestEffort(
+  financialAccountId: string,
+  chain: string,
+): Promise<{ ok: boolean; errorCode?: string; reason?: string }> {
   const outcome = await syncWalletByChain(financialAccountId, chain);
   if (!outcome.ok) {
     console.warn(
@@ -91,6 +94,7 @@ async function syncWalletBestEffort(financialAccountId: string, chain: string): 
       `${financialAccountId} (non-fatal, ${outcome.support}) — ${outcome.stage ?? "?"}: ${outcome.reason ?? ""}`,
     );
   }
+  return { ok: outcome.ok, errorCode: outcome.errorCode, reason: outcome.reason };
 }
 
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
@@ -195,7 +199,7 @@ export async function POST(req: NextRequest) {
     // create/reactivate branches). Without this, an already-existing wallet
     // has no automatic sync trigger at all — the reported "re-add does nothing"
     // bug. Runs BEFORE snapshot regen so the snapshot captures the fresh balance.
-    await syncWalletBestEffort(activeFa.id, chain);
+    const activeSync = await syncWalletBestEffort(activeFa.id, chain);
 
     // Regenerate SpaceSnapshot now that the share is active in this space —
     // same best-effort/non-fatal pattern as the reactivation branch below.
@@ -206,7 +210,7 @@ export async function POST(req: NextRequest) {
     }
     if (chainSupportsHistory(chain)) await regenWalletWealthHistory(activeFa.id);
 
-    return NextResponse.json({ success: true, accountId: activeFa.id }, { status: 200 });
+    return NextResponse.json({ success: true, accountId: activeFa.id, initialSync: activeSync }, { status: 200 });
   }
 
   // No active match — but a previously soft-deleted wallet with this address
@@ -259,7 +263,7 @@ export async function POST(req: NextRequest) {
     // explorer/price failure the account stays visible and "pending" and a
     // SyncIssue is recorded (see lib/crypto/btc-sync.ts). Runs BEFORE snapshot
     // regen so the snapshot captures the freshly-synced balance.
-    await syncWalletBestEffort(archivedFa.id, chain);
+    const archivedSync = await syncWalletBestEffort(archivedFa.id, chain);
 
     // Regenerate SpaceSnapshot now that the share is active again — see
     // docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md. Best-effort/non-fatal.
@@ -278,7 +282,7 @@ export async function POST(req: NextRequest) {
         metadata: { name: name.trim(), chain, address: walletValue },
       },
     });
-    return NextResponse.json({ success: true, accountId: archivedFa.id }, { status: 200 });
+    return NextResponse.json({ success: true, accountId: archivedFa.id, initialSync: archivedSync }, { status: 200 });
   }
 
   // ── KD-4 Phase 3 — new FinancialAccount + AccountConnection + SAL commit
@@ -339,7 +343,7 @@ export async function POST(req: NextRequest) {
   // failure the wallet stays visible and "pending" and a SyncIssue is recorded
   // (see lib/crypto/btc-sync.ts). Runs BEFORE snapshot regen so the snapshot
   // captures the freshly-synced balance.
-  await syncWalletBestEffort(fa.id, chain);
+  const initialSync = await syncWalletBestEffort(fa.id, chain);
 
   // Regenerate SpaceSnapshot now that this new wallet is shared in —
   // same best-effort/non-fatal pattern as every other account-create/
@@ -360,5 +364,16 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  return NextResponse.json({ success: true, accountId: fa.id }, { status: 201 });
+  // W-M2a — 201 IS CORRECT, AND IT NOW SAYS SO PRECISELY.
+  //
+  // Creating the wallet and synchronising it are two operations, and W-M1d made
+  // the second deliberately non-fatal: a provider outage must not stop a user
+  // recording that they hold a wallet. The status code answers the first
+  // question — the connection WAS persisted — and `initialSync` answers the
+  // second, so "created" can no longer be mistaken for "synced".
+  //
+  // The state a surface renders still comes from the Connection (via
+  // /api/sync/status), not from this body; `initialSync` exists so the create
+  // response itself is not silent about an outcome it already knows.
+  return NextResponse.json({ success: true, accountId: fa.id, initialSync }, { status: 201 });
 }
