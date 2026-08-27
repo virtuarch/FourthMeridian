@@ -358,6 +358,14 @@ export const AUDITS: readonly AuditEntry[] = [
           "step 2 of the key-rotation runbook (docs/operations/key-rotation.md)",
   },
   {
+    name: "check-conversation-scope", tier: "OPERATIONAL", needsDb: true,
+    what: "CF-4 — holds real MULTI-TURN conversations against the live model and fails when a " +
+          "later turn answers from a period the user never asked about (drift), or restates the " +
+          "period so insistently the reply reads as a form (robotic). Paid and stochastic, so " +
+          "never a gate; the deterministic half is pinned in CI by " +
+          "lib/ai/chat/conversation-scope.test.ts",
+  },
+  {
     name: "check-temporal-conformance", tier: "OPERATIONAL", needsDb: true,
     what: "CF-2 — asks a live model temporal questions against the REAL production prompt and " +
           "fails in BOTH directions: an unsatisfied scope answered as satisfied (overreach), and " +

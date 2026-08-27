@@ -33,7 +33,7 @@ import { classifyFinancialIntent } from '@/lib/ai/intent';
 import { serializeContextBlock } from './context-serializer';
 import { boundedSelection } from '@/lib/ai/bounded-selection';
 import {
-  TemporalRequests, SelectionReasons, CoverageBounds, unsuppliedScope,
+  TemporalRequests, SelectionReasons, CoverageBounds, ScopeProvenances, unsuppliedScope,
   type TemporalScope,
 } from '@/lib/ai/temporal-scope';
 import { mkTxn, mkCtx } from '@/lib/ai/conformance/fixtures';
@@ -377,6 +377,73 @@ function scopeOf(o: {
     check(`INVARIANT: a ${intent} request never says "no particular period"`,
       !/no particular period/.test(r));
   }
+}
+
+// ══ CF-4 — WHY THIS PERIOD, IN THE RENDERED PROMPT ═══════════════════════════
+//
+// Four provenances, four distinguishable renderings. The model must never have
+// to infer why a period was selected — an inherited scope in particular looks
+// identical to a freshly-asked one unless the prompt says otherwise.
+{
+  const inherited = render({ scope: {
+    ...scopeOf({ intent: 'CALENDAR_YEAR', label: '2025',
+                 reqStart: '2025-01-01', reqEnd: '2025-12-31',
+                 selStart: '2025-01-01', selEnd: '2025-12-31', days: 365,
+                 reason: SelectionReasons.AS_REQUESTED }),
+    requested: { intent: TemporalRequests.CALENDAR_YEAR, label: '2025',
+                 startDate: '2025-01-01', endDate: '2025-12-31',
+                 provenance: ScopeProvenances.INHERITED, inheritedFrom: '2025' },
+  } });
+  check('CF-4: an inherited period says it was NOT restated',
+    /NOT restated in the latest message/.test(inherited));
+  check('CF-4: …names the phrase it came from',
+    /carries forward from earlier in this conversation \("2025"\)/.test(inherited));
+  check('CF-4: …and tells the model to name it so the user can change it',
+    /name it in your reply/.test(inherited) && /change it if they meant another/.test(inherited));
+
+  const cleared = render({ scope: {
+    ...scopeOf({ intent: 'UNSPECIFIED', label: 'no period named' }),
+    requested: { intent: TemporalRequests.UNSPECIFIED, label: 'no period named',
+                 startDate: null, endDate: null,
+                 provenance: ScopeProvenances.CLEARED, inheritedFrom: null },
+  } });
+  check('CF-4: a cleared scope says the earlier period was discarded',
+    /just DISCARDED the period established earlier/.test(cleared));
+  check('CF-4: …and forbids answering from it',
+    /Do not answer from it/.test(cleared));
+
+  const dflt = render({ scope: {
+    ...scopeOf({ intent: 'UNSPECIFIED', label: 'no period named' }),
+    requested: { intent: TemporalRequests.UNSPECIFIED, label: 'no period named',
+                 startDate: null, endDate: null,
+                 provenance: ScopeProvenances.NONE, inheritedFrom: null },
+  } });
+  check('CF-4: a scope-free question names the period as a DEFAULT',
+    /this is the DEFAULT period this system loads/.test(dflt));
+  check('CF-4: …and is still answered directly, with the period named',
+    /Answer directly from it, and name the period your figures describe/.test(dflt));
+  check('CF-4: …rather than the unqualified "no scope caveat" line',
+    !/with no scope caveat/.test(dflt),
+    'a 90-day figure presented with no caveat is how a default becomes a claim');
+
+  // A period the user DID name this turn keeps the original wording.
+  const thisTurn = render({ scope: {
+    ...scopeOf({ intent: 'CALENDAR_YEAR', label: '2025',
+                 reqStart: '2025-01-01', reqEnd: '2025-12-31',
+                 selStart: '2025-01-01', selEnd: '2025-12-31', days: 365,
+                 reason: SelectionReasons.AS_REQUESTED }),
+    requested: { intent: TemporalRequests.CALENDAR_YEAR, label: '2025',
+                 startDate: '2025-01-01', endDate: '2025-12-31',
+                 provenance: ScopeProvenances.THIS_TURN, inheritedFrom: null },
+  } });
+  check('CF-4: a period asked for THIS turn carries no inheritance notice',
+    !/NOT restated/.test(thisTurn) && /FULLY COVERS what was asked/.test(thisTurn));
+
+  // All four are distinguishable from one another.
+  const heads = [inherited, cleared, dflt, thisTurn].map((p) =>
+    p.slice(p.indexOf('TRANSACTION SCOPE'), p.indexOf('TRANSACTION SCOPE') + 700));
+  check('CF-4: the four provenances render four DIFFERENT blocks',
+    new Set(heads).size === 4);
 }
 
 // ══ NEGATIVE — CF-2 ADDS FRAMING AND NOTHING ELSE ════════════════════════════

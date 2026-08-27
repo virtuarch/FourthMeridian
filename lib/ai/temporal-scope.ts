@@ -151,9 +151,41 @@ export const CoverageBounds = {
 
 export type CoverageBound = typeof CoverageBounds[keyof typeof CoverageBounds];
 
+/**
+ * CF-4 — WHERE THIS TURN'S SCOPE CAME FROM.
+ *
+ * Separate from `SelectionReason`, which explains why the INTERVAL has the
+ * bounds it does (a clamp, a default, an interpretation). This explains why the
+ * REQUEST is what it is — and the two are independent: an inherited scope can
+ * also be clamped.
+ *
+ * It reaches the prompt because "why is this period selected?" is otherwise a
+ * question the model has to guess at, and a guessed answer is stated with the
+ * same confidence as a known one.
+ */
+export const ScopeProvenances = {
+  /** The user named this period in the message being answered. */
+  THIS_TURN: 'THIS_TURN',
+  /** Carried forward from an earlier turn; the user did not restate it. */
+  INHERITED: 'INHERITED',
+  /** An active scope was explicitly discarded this turn. */
+  CLEARED:   'CLEARED',
+  /** No scope was named and none was active. */
+  NONE:      'NONE',
+} as const;
+
+export type ScopeProvenance = typeof ScopeProvenances[keyof typeof ScopeProvenances];
+
 /** The temporal claim, as the user's words make it. */
 export interface RequestedScope {
   intent: TemporalRequest;
+  /**
+   * CF-4 — how this turn came to have this scope. Optional for fixtures
+   * predating CF-4; the assembler always emits it.
+   */
+  provenance?: ScopeProvenance;
+  /** The phrase the inherited scope was originally expressed with. */
+  inheritedFrom?: string | null;
   /** The user's phrase, for quoting back — "in 2024", "before June 2024". */
   label:  string;
   /**
@@ -415,6 +447,23 @@ export function describeTemporalScope(scope: TemporalScope): string[] {
         ? '  The user\'s question refers to a period, and this system could not determine which one.'
         : `  The user asked about ${REQUEST_PHRASE[requested.intent]} ("${requested.label}" — ${requestedInterval(requested)}).`,
   );
+  // CF-4 — provenance, before the interval it explains. An inherited period is
+  // the case that matters: the user did not restate it this turn, so the model
+  // must know it is still in force AND that the user can change it.
+  if (requested.provenance === ScopeProvenances.INHERITED) {
+    lines.push(
+      `  This period was NOT restated in the latest message — it carries forward from ` +
+      `earlier in this conversation${requested.inheritedFrom ? ` ("${requested.inheritedFrom}")` : ''}. ` +
+      'Answer within it, and name it in your reply so the user can see which period they are ' +
+      'looking at and change it if they meant another.',
+    );
+  } else if (requested.provenance === ScopeProvenances.CLEARED) {
+    lines.push(
+      '  The user has just DISCARDED the period established earlier in this conversation. Do not ' +
+      'answer from it. The figures below cover the default period named next.',
+    );
+  }
+
   lines.push(
     coverage === null
       ? '  Transactions loaded: NONE. No transaction evidence was assembled for this conversation.'
@@ -431,7 +480,17 @@ export function describeTemporalScope(scope: TemporalScope): string[] {
 
   if (satisfied) {
     if (!selected.interpretation) {
-      lines.push('  The loaded period FULLY COVERS what was asked. Answer directly, with no scope caveat.');
+      // CF-4 — a scope-free question gets the product's default period, and the
+      // prompt says so. "Answer directly" without naming the period as a
+      // DEFAULT is how a ninety-day figure becomes an unqualified claim about
+      // someone's finances.
+      lines.push(
+        requested.provenance === ScopeProvenances.NONE
+       || requested.provenance === ScopeProvenances.CLEARED
+          ? '  No period was requested, so this is the DEFAULT period this system loads. ' +
+            'Answer directly from it, and name the period your figures describe.'
+          : '  The loaded period FULLY COVERS what was asked. Answer directly, with no scope caveat.',
+      );
     }
   } else if (requested.intent === TemporalRequests.UNRESOLVED) {
     // CF-3 — a DIFFERENT sentence from a shortfall. A shortfall compares two

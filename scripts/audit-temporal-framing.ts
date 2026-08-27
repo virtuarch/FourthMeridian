@@ -146,7 +146,8 @@ async function main(): Promise<void> {
 
     const text = block.join(" ");
     const satisfied = /FULLY COVERS what was asked/.test(text)
-                   || /DELIBERATE product interpretation/.test(text);
+                   || /DELIBERATE product interpretation/.test(text)
+                   || /this is the DEFAULT period this system loads/.test(text);
     const shortfall = /DOES NOT COVER what was asked/.test(text);
     const unresolved = /could NOT be resolved to dates/.test(text);
     const noEvidence = /Transactions loaded: NONE/.test(text);

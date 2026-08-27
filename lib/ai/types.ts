@@ -23,7 +23,7 @@
 import type { SpaceMemberRole } from '@prisma/client';
 import type { LiabilityState } from '@/lib/debt/balance-semantics';
 import type { BoundedSelection } from "@/lib/ai/bounded-selection";
-import type { TemporalRequest, TemporalScope } from "@/lib/ai/temporal-scope";
+import type { TemporalRequest, TemporalScope, ScopeProvenance } from "@/lib/ai/temporal-scope";
 
 // ---------------------------------------------------------------------------
 // Domain type
@@ -124,6 +124,13 @@ export interface AssemblerOptions {
     requested?:      TemporalRequest;
     requestedStart?: string | null;
     requestedEnd?:   string | null;
+    /**
+     * CF-4 — whether the caller named this period in the message being
+     * answered, carried it forward from an earlier turn, or discarded one.
+     * The assembler passes it through untouched; only the prompt reads it.
+     */
+    provenance?:     ScopeProvenance;
+    inheritedFrom?:  string | null;
   };
   /**
    * Optional transaction-drilldown request (D6 — category/merchant evidence

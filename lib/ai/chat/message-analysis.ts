@@ -18,6 +18,8 @@ import { classifyFinancialIntent } from '@/lib/ai/intent';
 import type { AssemblerOptions, KnowledgeGap } from '@/lib/ai/types';
 import { NON_SPENDING_CATEGORY_NAMES } from '@/lib/ai/spending-categories';
 import type { BuildContextOptions } from '@/lib/ai/context-builder';
+import { resolveConversationScope, ScopeTransitions } from './conversation-scope';
+import { ScopeProvenances, type ScopeProvenance } from '@/lib/ai/temporal-scope';
 
 type AssemblerTransactionWindow = NonNullable<BuildContextOptions['transactionWindow']>;
 
@@ -114,34 +116,58 @@ function looksLikeFollowUp(message: string): boolean {
 }
 
 /**
- * Resolve the transaction window for the whole conversation (D6 carry-forward).
+ * Resolve the transaction window for the whole conversation.
  *
- * Intent classification still uses only the latest message (routeForMessages).
- * The *window* is resolved with carry-forward:
- *   1. If the latest user message names its own window, use it.
- *   2. Else, if the latest message reads like a follow-up, scan previous user
- *      messages newest → oldest and inherit the most recent explicit window.
- *   3. Else return undefined — the assembler keeps its default 30/90-day window.
+ * CF-4 — this is now a thin read of the ONE conversation-scope authority
+ * (lib/ai/chat/conversation-scope.ts), which both this and `resolveDrilldown`
+ * consume. Before that, each carried its own copy of the carry-forward rule and
+ * both failed the same way: an active 2025 scope, a natural follow-up that
+ * matched none of the ~15 follow-up patterns, and retrieval silently back on
+ * the rolling ninety-day default.
+ *
+ * The signature is unchanged, so the chat route and every probe keep working;
+ * what changed is that inheritance is now the default rather than a special
+ * case, and the provenance travels with the window.
  */
 export function resolveTransactionWindow(
   msgs: ChatMessage[],
   now:  Date,
 ): ReturnType<typeof windowOptionFromRoute> {
-  const userMsgs = msgs.filter((m) => m.role === 'user');
-  if (userMsgs.length === 0) return undefined;
+  const scope = resolveConversationScope(msgs, now);
 
-  const latest = userMsgs[userMsgs.length - 1];
-  const latestWindow = windowOptionFromRoute(classifyFinancialIntent(latest.content, now));
-  if (latestWindow) return latestWindow;
-
-  // Latest message has no window of its own — only inherit for a follow-up.
-  if (!looksLikeFollowUp(latest.content)) return undefined;
-
-  for (let i = userMsgs.length - 2; i >= 0; i--) {
-    const inherited = windowOptionFromRoute(classifyFinancialIntent(userMsgs[i].content, now));
-    if (inherited) return inherited;
+  // A CLEAR produces no window and is NOT the same absence as "no period was
+  // ever named" — the user just discarded one, and the prompt has to say so.
+  // Carrying a date-less window is how that reaches the assembler: `resolveWindow`
+  // already treats a window with no bounds as the default, so retrieval is
+  // identical and only the provenance differs.
+  if (!scope.window) {
+    return scope.transition === ScopeTransitions.CLEAR
+      ? { label: 'no period (previous scope discarded)', provenance: ScopeProvenances.CLEARED }
+      : undefined;
   }
-  return undefined;
+  return {
+    ...scope.window,
+    provenance: scope.transition === ScopeTransitions.INHERIT
+      ? ScopeProvenances.INHERITED
+      : ScopeProvenances.THIS_TURN,
+    inheritedFrom: scope.inheritedFrom,
+  };
+}
+
+/**
+ * CF-4 — the scope PROVENANCE for a turn that produced no window.
+ *
+ * `resolveTransactionWindow` returns undefined for both "no period was ever
+ * named" and "the user just discarded the period" — the same absence, two
+ * different things to tell the model. The chat route reads this so the prompt
+ * can say which happened.
+ */
+export function resolveScopeProvenance(msgs: ChatMessage[], now: Date): ScopeProvenance {
+  const t = resolveConversationScope(msgs, now).transition;
+  if (t === ScopeTransitions.CLEAR)   return ScopeProvenances.CLEARED;
+  if (t === ScopeTransitions.INHERIT) return ScopeProvenances.INHERITED;
+  if (t === ScopeTransitions.DEFAULT) return ScopeProvenances.NONE;
+  return ScopeProvenances.THIS_TURN;
 }
 
 // ── Ambiguity guard (D6) ──────────────────────────────────────────────────────

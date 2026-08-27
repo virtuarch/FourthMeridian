@@ -184,7 +184,7 @@ const BANKING_CATEGORIES: TransactionCategory[] = [
 import { bankingTransactionWhere } from "@/lib/data/banking-population";
 import { boundedSelection, type BoundedSelection } from "@/lib/ai/bounded-selection";
 import {
-  SelectionReasons, TemporalRequests, CoverageBounds,
+  SelectionReasons, TemporalRequests, CoverageBounds, ScopeProvenances,
   type SelectionReason, type TemporalScope,
 } from "@/lib/ai/temporal-scope";
 
@@ -1114,6 +1114,10 @@ async function assembleTransactions(
       label:  transactionWindow?.label ?? 'no period named',
       startDate: transactionWindow?.requestedStart ?? null,
       endDate:   transactionWindow?.requestedEnd   ?? null,
+      // CF-4 — passed through, never derived here. The assembler cannot see the
+      // conversation, so it must not guess where the period came from.
+      provenance:    transactionWindow?.provenance ?? ScopeProvenances.NONE,
+      inheritedFrom: transactionWindow?.inheritedFrom ?? null,
     },
     selected: {
       startDate: win.startIso,
