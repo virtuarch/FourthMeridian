@@ -120,6 +120,10 @@ function coverageNote(a: AccountRow): string | null {
  * archive's close is simply not the quote the balance was struck at. Two
  * authorities for one date is the thing this arc exists to remove.
  */
+// W6e — `balance` reaching here MUST already be the canonical current value.
+// The header above says two authorities for one date is the thing this arc
+// exists to remove; for a spine-backed wallet the legacy column was the second
+// one. The caller substitutes before calling — this stays a pure formatter.
 function observedPoint(dateISO: string, todayISO: string, balance: number): HistoricalSeriesPoint | null {
   // B-6 — the ONE today/history switch (lib/time/basis.ts), never a local
   // comparison: a historical day is reconstructed, the present day is observed.

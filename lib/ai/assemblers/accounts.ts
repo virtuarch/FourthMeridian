@@ -90,6 +90,7 @@ import type {
   TrackedAccountLite,
 } from '@/lib/ai/types';
 import type { SpaceContext } from '@/lib/space';
+import { applyCanonicalWalletBalances } from "@/lib/crypto/wallet-current-value";
 
 // ---------------------------------------------------------------------------
 // Internal query result types
@@ -117,6 +118,8 @@ type AccountLinkRow = {
     availableBalance: number | null;
     creditLimit:      number | null;
     walletAddress:    string | null;
+    /** W6e — the chain that names this wallet's asset; null for non-wallets. */
+    walletChain:      string | null;
     lastUpdated:          Date;
     balanceLastUpdatedAt: Date | null;
     syncStatus:   string | null;
@@ -183,6 +186,12 @@ async function assembleAccounts(
           availableBalance: true,
           creditLimit:      true,
           walletAddress:    true,
+          // W6e — names the wallet's asset. Without it this assembler could not
+          // tell a wallet from a brokerage, and quoted the legacy column as the
+          // current crypto value while every product surface showed the
+          // canonical one. A model reading a different number than the screen is
+          // the worst shape this defect can take.
+          walletChain:      true,
           lastUpdated:          true,
           balanceLastUpdatedAt: true,
           syncStatus:     true,
@@ -234,6 +243,28 @@ async function assembleAccounts(
   // produces NO row; it is disclosed only as a redaction count. Previously every
   // ACTIVE link entered the totals and the per-account list regardless of tier —
   // the AI-path twin of the product defect B-1 closed.
+  // W6e — canonical CURRENT balances BEFORE anything is derived, so every
+  // figure below — per-account, totalDigitalAssets, netWorth, and the
+  // serialized context the model reads — comes from the same authority the
+  // product surfaces use. This assembler decides scope and visibility; it
+  // decides no financial semantics, which is why the substitution is a call
+  // and not a branch.
+  const canonical = new Map(
+    (await applyCanonicalWalletBalances(
+      links.map((l) => ({
+        id: l.financialAccount.id,
+        walletChain: l.financialAccount.walletChain,
+        lastUpdated: l.financialAccount.lastUpdated,
+        balance: l.financialAccount.balance,
+      })),
+      { contextSpaceId: spaceId },
+    )).map((r) => [r.id, r.balance] as const),
+  );
+  for (const l of links) {
+    const b = canonical.get(l.financialAccount.id);
+    if (b !== undefined) l.financialAccount.balance = b;
+  }
+
   const disclosingLinks = links.filter((l) => grantsBalanceDisclosure(l.visibilityLevel));
   const redactedCount   = links.length - disclosingLinks.length;
 
@@ -688,6 +719,7 @@ async function assembleAccounts(
   // scopeHint so the Daily Brief can deduplicate accounts shared across Spaces.
   // IDs only — no balances or names — so this adds no privacy exposure and does
   // not affect the BALANCE_ONLY visibility guarantee.
+
   const accountIds = links.map((l) => l.financialAccount.id);
 
   // Privacy-safe identity roster for the Daily Brief "Accounts Tracked" list.

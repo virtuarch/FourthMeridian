@@ -198,6 +198,51 @@ export function needsSpineValuation(ref: WalletAccountRef): boolean {
 }
 
 /**
+ * W6e — THE convergence helper: canonical CURRENT balances for a caller's own
+ * account list.
+ *
+ * W6d moved four surfaces onto this authority and left seven readers behind,
+ * each of which builds its own account list for its own scope or visibility
+ * reasons. Converging them one by one invited seven slightly different crypto
+ * substitutions — and a financial authority with seven implementations is not an
+ * authority. This is the one place the substitution is written.
+ *
+ * A caller hands over the rows IT resolved, having already made its own scope
+ * and visibility decisions, and gets those same rows back with the balance
+ * replaced wherever the spine can speak for it. What the caller may NOT do is
+ * decide the financial semantics: which chain, legacy or spine, fresh or stale,
+ * which price. Those are settled here and nowhere else.
+ *
+ * Substitution happens for VALUED and STALE alike — a stale reading is the LAST
+ * KNOWN position and beats an unwritten column that always reads zero. NO_PRICE
+ * and NO_OBSERVATION fall through to whatever the caller already had, because
+ * there is no number to put in its place.
+ */
+export async function applyCanonicalWalletBalances<T extends {
+  id: string;
+  walletChain?: string | null;
+  lastUpdated?: Date | null;
+  balance: number;
+}>(
+  rows: readonly T[],
+  options?: { client?: Client; contextSpaceId?: string | null; reportingCurrency?: string; now?: Date },
+): Promise<Array<T & { cryptoPosition?: WalletCurrentValue }>> {
+  const byAccount = await loadWalletCurrentValues(
+    rows.map((r) => ({ id: r.id, walletChain: r.walletChain, lastUpdated: r.lastUpdated })),
+    options,
+  );
+  return rows.map((r) => {
+    const v = byAccount.get(r.id);
+    if (v === undefined) return r;
+    return {
+      ...r,
+      ...(hasKnownValue(v) ? { balance: v.value! } : {}),
+      cryptoPosition: v,
+    };
+  });
+}
+
+/**
  * Current value per account for the wallets that need it, keyed by account id.
  *
  * Accounts that do not need spine valuation are ABSENT from the map rather than

@@ -41,6 +41,7 @@ import {
 } from "./accounts-asof.core";
 import { getAccountCoverage } from "./account-coverage";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
+import { applyCanonicalWalletBalances } from "@/lib/crypto/wallet-current-value";
 
 /**
  * One visible account with its balance resolved to `asOf`. Same shape as
@@ -95,6 +96,8 @@ export async function getAccountsAsOf(args: {
         select: {
           id: true, type: true, balance: true, createdAt: true,
           debtSubtype: true, creditLimit: true,
+          // W6e — the wallet's asset and its successful-read clock.
+          walletChain: true, lastUpdated: true,
         },
       },
     },
@@ -119,10 +122,34 @@ export async function getAccountsAsOf(args: {
   }));
   const coverage = await getAccountCoverage(refs, { client: db });
 
+  // W6e — THE PRESENT DAY IS A CURRENT CLAIM, AND MUST USE THE CURRENT AUTHORITY.
+  //
+  // This module's own contract says `asOf` on or after today resolves `observed`
+  // — so for that one day it is not making a historical claim at all, it is
+  // making the same claim the account card makes, and it was making it from the
+  // legacy column while the card used the spine. One wallet, two current values,
+  // decided by which consumer asked.
+  //
+  // Only the INPUT balance changes. The as-of ladder is untouched: a historical
+  // date still walks back or holds flat exactly as before, and nothing here
+  // carries a current quantity into history — the walk-backs receive the same
+  // shape they always did, and `floorISO` still bounds them.
+  const canonicalBalance = new Map(
+    (await applyCanonicalWalletBalances(
+      linkRows.map((l) => ({
+        id: l.financialAccount.id,
+        walletChain: l.financialAccount.walletChain,
+        lastUpdated: l.financialAccount.lastUpdated,
+        balance: l.financialAccount.balance,
+      })),
+      { contextSpaceId: spaceId },
+    )).map((r) => [r.id, r.balance] as const),
+  );
+
   const accounts: AsOfAccountInput[] = linkRows.map((l, idx) => ({
     id:          l.financialAccount.id,
     type:        l.financialAccount.type as string,
-    balance:     l.financialAccount.balance,
+    balance:     canonicalBalance.get(l.financialAccount.id) ?? l.financialAccount.balance,
     debtSubtype: l.financialAccount.debtSubtype,
     creditLimit: l.financialAccount.creditLimit,
     // The REPLAY floor, never the existence floor: knowing an account is older

@@ -40,6 +40,7 @@ import {
   type ResolvedAsOfBalance,
 } from "./accounts-asof.core";
 import { getAccountCoverage, type AccountHistoricalCoverage } from "./account-coverage";
+import { applyCanonicalWalletBalances } from "@/lib/crypto/wallet-current-value";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -114,6 +115,22 @@ export async function getAccountBalancesOverWindow(args: {
   // THE one coverage authority — the same call `getAccountsAsOf` makes.
   const coverageById = await getAccountCoverage(refs, { client });
 
+  // W6e — the present day in this window is a CURRENT claim, resolved by the
+  // current authority, for the same reason as accounts-asof.ts. Historical days
+  // in the window are untouched: they still resolve through coverage and the
+  // walk-backs, and no current quantity reaches them.
+  const canonicalBalance = new Map(
+    (await applyCanonicalWalletBalances(
+      linkRows.map((l) => ({
+        id: l.financialAccount.id,
+        walletChain: l.financialAccount.walletChain,
+        lastUpdated: l.financialAccount.lastUpdated,
+        balance: l.financialAccount.balance,
+      })),
+      { client, contextSpaceId: args.spaceId },
+    )).map((r) => [r.id, r.balance] as const),
+  );
+
   const accounts: WindowAccount[] = linkRows.map((l, idx) => {
     const coverage = coverageById.get(l.financialAccount.id)!;
     return {
@@ -121,7 +138,7 @@ export async function getAccountBalancesOverWindow(args: {
       name:        l.financialAccount.name,
       type:        l.financialAccount.type as string,
       institution: l.financialAccount.institution,
-      balance:     l.financialAccount.balance,
+      balance:     canonicalBalance.get(l.financialAccount.id) ?? l.financialAccount.balance,
       debtSubtype: l.financialAccount.debtSubtype,
       creditLimit: l.financialAccount.creditLimit,
       nativeBalance: l.financialAccount.nativeBalance,

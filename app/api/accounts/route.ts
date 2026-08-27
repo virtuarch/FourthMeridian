@@ -8,6 +8,7 @@
 import { NextResponse }      from "next/server";
 import { db }                from "@/lib/db";
 import { requireUser } from "@/lib/session";
+import { applyCanonicalWalletBalances } from "@/lib/crypto/wallet-current-value";
 
 export async function GET() {
   const [user, err] = await requireUser();
@@ -27,11 +28,22 @@ export async function GET() {
       currency:    true,
       lastUpdated: true,
       mask:        true,
+      // W6e — the wallet's asset, so a crypto balance shown here is the same
+      // number every other surface shows.
+      walletChain: true,
     },
     orderBy: [{ type: "asc" }, { name: "asc" }],
   });
 
+  // W6e — a balance rendered in a picker is still a current financial claim, so
+  // it comes from the same authority as the account card. No Space context here:
+  // this read is user-owned accounts, and the canonical path falls back to the
+  // account's own currency when no reporting context is supplied.
+  const canonical = await applyCanonicalWalletBalances(accounts);
+
   return NextResponse.json(
-    accounts.map((a) => ({ ...a, lastUpdated: a.lastUpdated.toISOString() }))
+    canonical.map(({ cryptoPosition: _c, walletChain: _w, ...a }) => ({
+      ...a, lastUpdated: a.lastUpdated.toISOString(),
+    }))
   );
 }
