@@ -103,6 +103,12 @@ export function serializeContextBlock(
    * all) leaves this function nothing to derive from.
    */
   temporalScope?: TemporalScope,
+  /**
+   * CF-9 — domains whose RAW JSON the retrieval plan says this question does
+   * not need. Absent or empty ⇒ everything is serialized, which is the
+   * fail-open path: a planner that errors must never remove evidence.
+   */
+  omitDomainJson?: ReadonlySet<string>,
 ): string {
   const lines: string[] = [];
   // REVIEW-3 C-6 — ONE bound money formatter for the whole block, in the
@@ -610,15 +616,34 @@ export function serializeContextBlock(
   }
 
   // ── Domains ───────────────────────────────────────────────────────────────
+  //
+  // CF-9 — a domain the retrieval plan marks NOT_NEEDED for MODEL CONTEXT has
+  // its raw payload omitted here, and ONLY here. The domain is still assembled
+  // and the deterministic assessment still reads it: `omitDomainJson` is a
+  // statement about the prompt, never about the assembler, and conflating those
+  // is how a later optimisation would silently break the assessment.
+  //
+  // Measured: snapshot_history is 5,660 JSON tokens — 23% of a typical prompt —
+  // and only a trajectory question reads them. The compact net-worth trend
+  // reaches the model through the SIGNAL block instead, which is computed from
+  // the same assembled domain and is unaffected by this.
   const domainKeys = Object.keys(ctx.domains);
   if (domainKeys.length > 0) {
     lines.push('Financial context:');
     for (const key of domainKeys) {
       const section = ctx.domains[key];
-      if (section?.data) {
-        lines.push(`  [${key}]`);
-        lines.push(`  ${JSON.stringify(section.data)}`);
+      if (!section?.data) continue;
+      if (omitDomainJson?.has(key)) {
+        // Named, not silently dropped: the model must know the domain exists
+        // and was deliberately not detailed, or absence reads as non-existence.
+        lines.push(
+          `  [${key}] present and used for the deterministic assessment, but its detail was not ` +
+          `loaded for this question. Do not state or imply that this data does not exist.`,
+        );
+        continue;
       }
+      lines.push(`  [${key}]`);
+      lines.push(`  ${JSON.stringify(section.data)}`);
     }
   } else {
     lines.push('Financial context: none assembled for this Space.');

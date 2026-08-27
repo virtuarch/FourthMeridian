@@ -73,7 +73,7 @@ import { planRetrieval, planAuditPayload, type RetrievalPlan } from '@/lib/ai/re
 import { detectsPayoffIntent, detectsExplicitUpdateIntent } from '@/lib/ai/intent';
 import type { IntentRoute }          from '@/lib/ai/intent';
 import { planContextSelection, DEFAULT_CONTEXT_BUDGET_TOKENS } from '@/lib/ai/context-priority';
-import { buildSpaceSystemPrompt, buildMasterSystemPrompt } from '@/lib/ai/prompts/system-prompt';
+import { buildSpaceSystemPrompt, buildMasterSystemPrompt, omitDomainJson } from '@/lib/ai/prompts/system-prompt';
 import { extractKnowledgeGaps } from '@/lib/ai/prompts/context-serializer';
 import {
   routeForMessages,
@@ -131,6 +131,7 @@ async function logShadowRetrievalPlan(
   spaceId: string,
   plan: RetrievalPlan | undefined,
   actualDomains: string[],
+  jsonOmitted: string[],
 ): Promise<void> {
   if (!plan) return;
   try {
@@ -142,6 +143,9 @@ async function logShadowRetrievalPlan(
         metadata: {
           ...planAuditPayload(plan),
           actualDomains,
+          // CF-9 — which domains had their raw JSON withheld this turn. Names
+          // only; no snapshot values, no balances.
+          jsonOmitted,
         } as unknown as Prisma.InputJsonValue,
       },
       select: { id: true },
@@ -533,9 +537,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // planner ran after assembly and could therefore only propose dropping
       // serialized text — it saved no retrieval work and could not widen
       // anything. Nothing consults this plan; it is logged and compared.
-      shadowPlan = planRetrieval({
-        messages, envelope: envelopeForPrompt, now: new Date(),
-      });
+      try {
+        shadowPlan = planRetrieval({
+          messages, envelope: envelopeForPrompt, now: new Date(),
+        });
+      } catch (planErr) {
+        // CF-9 — FAIL OPEN. `shadowPlan` stays undefined, every domain is
+        // serialized as before, and the user loses nothing. A first enforcement
+        // slice must never remove evidence because its planner threw.
+        console.error('[api/ai/chat] retrieval planning failed (non-fatal):', planErr);
+      }
 
       ctx = await buildContext(spaceId, user.id, {
         scopeHint: 'full', transactionWindow, drilldown,
@@ -556,14 +567,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // CF-5: the evidence census — four indexed aggregates, no rows, so it runs
     // alongside rather than in series.
     const debtPayments = await fetchPerLiabilityDebtPayments(ctx);
+    // CF-9 — the plan reaches the prompt for ONE decision: whether a domain's
+    // raw JSON is serialized. `shadowPlan` is undefined if planning failed,
+    // which fails open to serializing everything.
     systemPrompt = buildSpaceSystemPrompt(
       ctx, assessment, intentRoute, debtPayments, envelopeForPrompt,
-      latestUserMessage(messages));
+      latestUserMessage(messages), shadowPlan);
     // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
     await logShadowSelectionPlans(user.id, [ctx], [assessment], intentRoute);
     // CF-8 — the retrieval plan beside what was actually assembled, so the two
     // can be compared after the fact from one audit row.
-    await logShadowRetrievalPlan(user.id, spaceId, shadowPlan, Object.keys(ctx.domains));
+    await logShadowRetrievalPlan(
+      user.id, spaceId, shadowPlan, Object.keys(ctx.domains),
+      [...omitDomainJson(shadowPlan)]);
     gapsForResponse = filterGapsByIntent(
       extractKnowledgeGaps(ctx),
       detectsPayoffIntent(messages),

@@ -40,6 +40,7 @@ import { routeForMessages, resolveTransactionWindow } from '@/lib/ai/chat/messag
 import {
   detectAssessmentContradiction, buildRepairInstruction, applyGuard, resolveGuardMode,
 } from '@/lib/ai/assessment-guard';
+import { planRetrieval } from '@/lib/ai/retrieval-plan';
 import { db } from '@/lib/db';
 
 const CHAT_MODEL = 'gpt-4o-mini';
@@ -110,6 +111,13 @@ const ASKS: Ask[] = [
     mustKnow: /BTC|Bitcoin|ETH|Ethereum|SOL|Solana/i },
   { ask: 'How am I doing financially?',
     mustKnow: /net worth|\$33,|\$34,|assets/i },
+  // CF-9 — the snapshot-omission classes. Historical awareness must survive.
+  { ask: 'How has my net worth changed over the last year?',
+    mustKnow: /33,700|7,7|29\.7|increase|grown|up/i,
+    note: 'plan REQUIRES snapshots here — full historical evidence retained' },
+  { ask: 'What is my net worth?',
+    mustKnow: /33,700/,
+    note: 'answered from account balances; the 90 daily rows are omitted' },
   { ask: 'How much have I ever spent?',
     mustNotQuote: /114,439/,
     note: 'CF-2 shortfall stands; the envelope only lets it say what DOES exist' },
@@ -184,8 +192,10 @@ async function main(): Promise<void> {
         Promise.resolve(computeAssessment(ctx)),
         fetchPerLiabilityDebtPayments(ctx),
       ]);
+      // CF-9 — the plan drives conditional serialization, as the route does.
+      const plan = planRetrieval({ messages, envelope, now });
       const prompt = buildSpaceSystemPrompt(
-        ctx, assessment, routeForMessages(messages), debtPayments, envelope, a.ask);
+        ctx, assessment, routeForMessages(messages), debtPayments, envelope, a.ask, plan);
 
       // Envelope cost, measured from the rendered prompt rather than assumed.
       const s = prompt.indexOf('=== AVAILABLE EVIDENCE ===');

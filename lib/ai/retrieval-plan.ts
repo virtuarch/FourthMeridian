@@ -173,8 +173,21 @@ const INCOME_PHRASE_RE =
   /\b(came? in|coming in|brought in|did i (?:make|take home)|take[- ]home|money (?:in|coming))\b/i;
 const DEBT_RE =
   /\b(debt|owe|owed|loan|loans|mortgage|credit card|balance owed|payoff|pay ?off|apr|interest rate|minimum payment)\b/i;
+/**
+ * Questions about the SHAPE of a change, not its current value.
+ *
+ * The distinction CF-9 measured: ninety daily snapshot rows are 5,660 prompt
+ * tokens, and only a trajectory question actually reads them.
+ */
+const HISTORICAL_RE =
+  /\b(over time|trend|trending|trajectory|history|historical|changed?|change over|grown|growth|growing|progress|since|compared to|month over month|year over year|last year|past year|over the (?:last|past))\b/i;
+
+/** Broad overview phrasings, which legitimately reach for the trajectory. */
+const OVERVIEW_RE =
+  /\b(how am i doing|financial (?:health|position|picture|situation|overview|shape)|overall finances|full picture|whole picture|balance sheet)\b/i;
+
 const NET_WORTH_RE =
-  /\b(net worth|networth|financial (?:health|position|picture|situation|overview|shape)|overall finances|how am i doing|total assets|balance sheet|full picture|whole picture)\b/i;
+  /\b(net worth|networth|financial (?:health|position|picture|situation|overview|shape)|overall finances|how am i doing|total assets|balance sheet|full picture|whole picture|my position|overall position)\b/i;
 
 /**
  * Questions about the DATA rather than about the money.
@@ -320,9 +333,23 @@ export function planRetrieval(input: {
   }
 
   // ── snapshot history ─────────────────────────────────────────────────────
-  if (has(Concepts.NET_WORTH)) {
+  //
+  // CF-9 asked whether a CURRENT net-worth question needs ninety daily rows.
+  // It does not: "what is my net worth?" is answered by `accounts.netWorth`,
+  // and the compact trend signal ("Net worth up $7,726 (+29.7%) since Jun")
+  // is produced by the signal detector and survives independently of this
+  // payload. Only a question about the SHAPE of the change needs the series.
+  //
+  // A broad overview keeps it — a general "how am I doing" reasonably reaches
+  // for the trajectory, and CF-9's rule is not to optimise away evidence the
+  // planner legitimately wants.
+  if (has(Concepts.NET_WORTH) && (HISTORICAL_RE.test(question) || OVERVIEW_RE.test(question))) {
     add(FinanceDomains.SNAPSHOT_HISTORY, NeedLevel.REQUIRED,
-      'net-worth trajectory is the question', snapAvailable);
+      'the question is about the SHAPE of the change over time', snapAvailable);
+  } else if (has(Concepts.NET_WORTH)) {
+    add(FinanceDomains.SNAPSHOT_HISTORY, NeedLevel.NOT_NEEDED,
+      'a current position question is answered by account balances; the trend signal covers direction',
+      snapAvailable);
   } else {
     add(FinanceDomains.SNAPSHOT_HISTORY, NeedLevel.NOT_NEEDED,
       'no position-over-time question', snapAvailable);
@@ -396,7 +423,11 @@ export function planAuditPayload(plan: RetrievalPlan): Record<string, unknown> {
     depth: plan.depth,
     domains: plan.domains.map((d) => ({
       domain: d.domain, need: d.need, available: d.available,
-      assessmentNeedsIt: d.assessmentNeedsIt, reason: d.reason,
+      // CF-9 — the four facts an operator needs to explain a prompt after the
+      // fact, kept separate because they are separate questions.
+      assessmentNeeded:   d.assessmentNeedsIt,
+      modelContextNeeded: d.need !== NeedLevel.NOT_NEEDED,
+      reason: d.reason,
     })),
     unsatisfiable: plan.unsatisfiable,
   };

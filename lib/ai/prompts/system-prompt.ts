@@ -32,6 +32,7 @@ import {
 import {
   composeInvestments, describeInvestmentConcept, resolveConceptBreadth, ConceptBreadth,
 } from '@/lib/ai/economic-concepts';
+import { NeedLevel, type RetrievalPlan } from '@/lib/ai/retrieval-plan';
 import { serializeAssessmentBlock } from './assessment-serializer';
 import { serializeContextBlock } from './context-serializer';
 import type { DebtPaymentLine } from './context-serializer';
@@ -75,6 +76,32 @@ function renderConcepts(ctx: SpaceContext_AI, question: string | undefined): str
 
 
 /**
+ * CF-9 — which domains' raw JSON to leave out, from the retrieval plan.
+ *
+ * Deliberately narrow: ONE domain, and only when the plan says the model does
+ * not need it. Everything else is serialized exactly as before, because a first
+ * enforcement slice should change one variable.
+ *
+ * Fails OPEN in every uncertain case — no plan, no decision, an unexpected
+ * value — because removing evidence on a planner error is worse than the tokens
+ * it would save.
+ */
+const CONDITIONAL_JSON_DOMAINS: ReadonlySet<string> = new Set([
+  FinanceDomains.SNAPSHOT_HISTORY,
+]);
+
+export function omitDomainJson(plan?: RetrievalPlan): ReadonlySet<string> {
+  if (!plan) return new Set();
+  const omit = new Set<string>();
+  for (const d of plan.domains) {
+    if (!CONDITIONAL_JSON_DOMAINS.has(d.domain)) continue;
+    if (d.need === NeedLevel.NOT_NEEDED) omit.add(d.domain);
+  }
+  return omit;
+}
+
+
+/**
  * CF-5 — the envelope block, paired with what THIS turn loaded.
  *
  * The loaded interval comes from the assembled context rather than from the
@@ -110,6 +137,11 @@ export function buildSpaceSystemPrompt(
    * is composed can never disagree about the question being answered.
    */
   question?: string,
+  /**
+   * CF-9 — the CF-8 shadow retrieval plan. Used for ONE decision: whether a
+   * domain's raw JSON is serialized. Absent ⇒ everything is serialized.
+   */
+  plan?: RetrievalPlan,
 ): string {
   return [
     'You are a skilled, direct financial advisor powered by Fourth Meridian.',
@@ -166,7 +198,7 @@ export function buildSpaceSystemPrompt(
     '=== SPACE CONTEXT ===',
     // CF-2 — the route is the only source of the user's ASK; the context is the
     // only source of what was loaded. This is the one place both are in hand.
-    serializeContextBlock(ctx, debtPayments, temporalScopeFor(ctx, route)),
+    serializeContextBlock(ctx, debtPayments, temporalScopeFor(ctx, route), omitDomainJson(plan)),
     '=== END CONTEXT ===',
   ].join('\n');
 }
