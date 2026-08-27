@@ -37,7 +37,7 @@ import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import { limitByUser } from "@/lib/rate-limit";
 import {
-  syncWalletByChain, isSyncableChain, feedsLegacyWealthHistory, SYNCABLE_CHAINS,
+  syncWalletByChain, isSyncableChain, chainSupportsHistory, SYNCABLE_CHAINS,
 } from "@/lib/crypto/wallet-sync-dispatch";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { regenerateWealthHistoryForAccounts } from "@/lib/snapshots/regenerate-history";
@@ -111,7 +111,13 @@ export async function POST(
     // movement ledger, so there is no historical quantity to derive and every
     // day would refuse. Skipping is the honest outcome; the current position is
     // already on the canonical spine either way.
-    if (feedsLegacyWealthHistory(account.walletChain)) try {
+    // W6f — THE GATE WAS DEAD. This asked `feedsLegacyWealthHistory`, which W6c
+    // emptied for every chain when Bitcoin's historical authority moved onto the
+    // spine — so from that commit until this one, pressing Sync regenerated no
+    // history at all. The comment above already described the intent correctly:
+    // HISTORY_SUPPORTED chains only. It now asks that question instead of the
+    // storage question that used to answer it by coincidence.
+    if (chainSupportsHistory(account.walletChain)) try {
       const plan = await resolveHistoricalWorkWindow({
         financialAccountIds: [id],
         changedSince:        syncStartedAt,

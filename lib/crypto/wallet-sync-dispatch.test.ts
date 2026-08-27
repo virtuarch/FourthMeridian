@@ -222,8 +222,15 @@ check("the ORCH-1 changedSince stamp still precedes the sync",
   body(syncRoute).indexOf("syncStartedAt = new Date()") < body(syncRoute).indexOf("syncWalletByChain("));
 
 // HISTORY REGEN IS NOW A CHAIN CAPABILITY, and only BTC has it.
-check("wealth-history regen is gated on the REGENERATION predicate",
-  /if \(feedsLegacyWealthHistory\(account\.walletChain\)\)/.test(syncRoute));
+// W6f — this pinned `feedsLegacyWealthHistory`, which asked where a chain's
+// history was STORED. That answered the capability question only by coincidence,
+// and W6c broke the coincidence: the predicate went empty for every chain and
+// this call site silently stopped regenerating anything. The assertion pinned
+// the defect in place, so it now pins the question the comment always described.
+check("wealth-history regen is gated on the CAPABILITY predicate",
+  /if \(chainSupportsHistory\(account\.walletChain\)\)/.test(syncRoute));
+check("…and not on the emptied storage predicate",
+  !/feedsLegacyWealthHistory\(/.test(syncRoute));
 check("…and still uses the canonical planner for the chains that have it",
   /resolveHistoricalWorkWindow/.test(syncRoute) && /regenerateWealthHistoryForAccounts/.test(syncRoute));
 
@@ -241,8 +248,10 @@ check("…and that helper goes through the registry",
 check("connection still succeeds when the chain cannot be read (best-effort)",
   /if \(!outcome\.ok\)/.test(walletRoute) && /console\.warn/.test(walletRoute));
 
-check("all THREE wealth-history calls are gated on the REGENERATION predicate",
-  (walletRoute.match(/feedsLegacyWealthHistory\(chain\)/g) ?? []).length === 3);
+check("all THREE wealth-history calls are gated on the CAPABILITY predicate",
+  (walletRoute.match(/chainSupportsHistory\(chain\)/g) ?? []).length === 3);
+check("…and none is left on the emptied storage predicate",
+  !/feedsLegacyWealthHistory\(/.test(walletRoute));
 check("no wealth-history call is left keyed on the BTC literal",
   !/BTC_CHAIN\) await regenWalletWealthHistory/.test(walletRoute));
 

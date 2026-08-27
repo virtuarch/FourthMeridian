@@ -50,6 +50,7 @@ import { syncEvmWallet } from "@/lib/crypto/evm-native";
 import { BNB_NETWORK, AVAX_NETWORK } from "@/lib/crypto/evm-networks";
 const BNB_CHAIN = BNB_NETWORK.chain;
 const AVAX_CHAIN = AVAX_NETWORK.chain;
+import { refreshWalletHistory, type WalletHistoryRefresh } from "./wallet-history-refresh";
 import { recordWalletSyncRefusal } from "@/lib/accounts/wallet-connection";
 
 /** How far this system can go on a given chain. See the header. */
@@ -129,6 +130,11 @@ export interface WalletSyncOutcome {
   errorCode?: WalletSyncErrorCode;
   /** The adapter's own result, for logging. NEVER branched on by a caller. */
   raw?: unknown;
+  /**
+   * W6f — what the post-sync history refresh did, when the chain has one.
+   * Absent for a chain with no reconstruction and for a failed sync.
+   */
+  historyRefresh?: WalletHistoryRefresh;
 }
 
 interface ChainAdapter {
@@ -381,6 +387,27 @@ export async function syncWalletByChain(
     // conditionally so an adapter's own more specific diagnosis always wins.
     const errorCode = result.ok ? undefined : walletSyncErrorCode(result.stage);
     if (errorCode) await recordWalletSyncRefusal({ financialAccountId: accountId, errorCode });
+
+    // ── W6f — A SUCCESSFUL SYNC REFRESHES THE HISTORY IT JUST CHANGED ────────
+    //
+    // The adapter has read the balance and imported whatever movements are new.
+    // Until this call existed, that was where a sync stopped: the reconstructed
+    // timeline and its coverage licence were whatever the last MANUAL run left
+    // behind, and both reconstructions had zero production callers. A wallet
+    // could receive a hundred BTC and the year chart would go on drawing the old
+    // quantity — correctly labelled, coverage-licensed, and stale.
+    //
+    // Only on `ok`: a sync that could not read the chain has no new evidence to
+    // reconstruct from, and re-running against a failed acquisition is how a
+    // provider outage turns into a narrower history.
+    //
+    // Never fatal. The reconstruction refuses before it opens a write
+    // transaction, so a refusal leaves the previous rows and licence exactly
+    // where they were, and the balance this sync DID read is still reported.
+    const historyRefresh = result.ok ? await refreshWalletHistory(accountId, key) : null;
+    if (historyRefresh && !historyRefresh.refreshed && historyRefresh.reason) {
+      console.log(`[wallet-sync] ${key} history not refreshed for ${accountId}: ${historyRefresh.reason}`);
+    }
     return {
       accountId,
       chain: key,
@@ -394,6 +421,9 @@ export async function syncWalletByChain(
       // normally does — reporting the chain's usual participation on a run that
       // wrote nothing would overstate what the row now contains.
       netWorthParticipation: result.ok ? adapter.netWorthParticipation : "NONE",
+      // W6f — so the caller can bound its snapshot regeneration to the window
+      // whose evidence actually moved, instead of guessing or rebuilding all.
+      historyRefresh: historyRefresh ?? undefined,
       raw: result,
     };
   } catch (e) {

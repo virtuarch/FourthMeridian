@@ -43,8 +43,14 @@ import { resolveHistoricalWorkWindow } from "@/lib/snapshots/historical-work-win
  * derives a historical quantity, and a chain with no movement ledger has nothing
  * to derive one from: running it would refuse every day, and a refusal nobody
  * can act on is an invitation to "fix" it by painting today's quantity backwards.
- * The gate is `feedsLegacyWealthHistory`, so promoting a chain is one registry edit
+ * The gate is `chainSupportsHistory`, so promoting a chain is one registry edit
  * rather than a hunt through four call sites.
+ *
+ * W6f — it used to be `feedsLegacyWealthHistory`, which asked where a chain's
+ * historical quantity was STORED. That answered the capability question only by
+ * coincidence, and W6c broke the coincidence: Bitcoin's history moved onto the
+ * spine, the predicate went empty for every chain, and all four of these call
+ * sites silently stopped regenerating anything.
  *
  * V26-ORCH-1 — this used a FIXED 30-DAY window, so a newly connected wallet
  * built one month of history and stopped, even where the price provider could
@@ -103,7 +109,7 @@ import { persistAccountSpine } from "@/lib/accounts/persist-account-spine";
 import { alignWalletProviderSpine } from "@/lib/accounts/wallet-connection";
 import { BTC_CHAIN } from "@/lib/crypto/btc-sync";
 import { isProductSupportedChain, PRODUCT_CHAIN_VALUES } from "@/lib/crypto/product-chains";
-import { syncWalletByChain, feedsLegacyWealthHistory } from "@/lib/crypto/wallet-sync-dispatch";
+import { syncWalletByChain, chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch";
 import { isExtendedKey, normalizeExtendedKeyInput } from "@/lib/crypto/btc-address-derivation";
 
 // W-M2c — validation reads the SAME product-surface authority the picker
@@ -214,7 +220,7 @@ export async function POST(req: NextRequest) {
     } catch (snapshotErr) {
       console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${activeFa.id} (non-fatal):`, snapshotErr);
     }
-    if (feedsLegacyWealthHistory(chain)) await regenWalletWealthHistory(activeFa.id);
+    if (chainSupportsHistory(chain)) await regenWalletWealthHistory(activeFa.id);
 
     return NextResponse.json({ success: true, accountId: activeFa.id, initialSync: activeSync }, { status: 200 });
   }
@@ -278,7 +284,7 @@ export async function POST(req: NextRequest) {
     } catch (snapshotErr) {
       console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${archivedFa.id} (non-fatal):`, snapshotErr);
     }
-    if (feedsLegacyWealthHistory(chain)) await regenWalletWealthHistory(archivedFa.id);
+    if (chainSupportsHistory(chain)) await regenWalletWealthHistory(archivedFa.id);
 
     await db.auditLog.create({
       data: {
@@ -359,7 +365,7 @@ export async function POST(req: NextRequest) {
   } catch (snapshotErr) {
     console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${fa.id} (non-fatal):`, snapshotErr);
   }
-  if (feedsLegacyWealthHistory(chain)) await regenWalletWealthHistory(fa.id);
+  if (chainSupportsHistory(chain)) await regenWalletWealthHistory(fa.id);
 
   await db.auditLog.create({
     data: {
