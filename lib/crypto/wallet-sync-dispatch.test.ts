@@ -69,8 +69,12 @@ function callBlock(src: string, needle: string): string {
 // THE DEFINITION THIS SLICE ESTABLISHES. Three levels, three different promises.
 check("BTC is HISTORY_SUPPORTED (ledger, reconciliation, licensed carry)",
   walletChainSupport("BTC") === "HISTORY_SUPPORTED");
-check("ETH is CURRENT_POSITION_SUPPORTED — a position, not a history",
-  walletChainSupport("ETH") === "CURRENT_POSITION_SUPPORTED");
+// ETH-H2 — Ethereum was CURRENT_POSITION_SUPPORTED here for as long as its
+// history was unproven. It was promoted on its own real-wallet acceptance:
+// COMPLETE coverage from state reads alone, 16 movements reconciling at ZERO WEI,
+// 3238 replayed days. The ladder was not weakened to let it through.
+check("ETH is HISTORY_SUPPORTED — earned on real-wallet evidence",
+  walletChainSupport("ETH") === "HISTORY_SUPPORTED");
 // W-M2b — SOL PROMOTED, and only on real-wallet evidence: acquisition over
 // standard RPC back to 2022, a ZERO-lamport reconciliation against the observed
 // balance, a replayed quantity timeline, and dated valuation that refuses beyond
@@ -81,13 +85,15 @@ check("SOL is HISTORY_SUPPORTED — earned on real-wallet evidence",
 // A chain is promoted to HISTORY_SUPPORTED only when historical acquisition and
 // reconstruction are PROVEN — never because an adapter exists. Pinned, so
 // promoting ETH or SOL by accident fails here first.
-check("exactly BTC and SOL claim history support",
-  SYNCABLE_CHAINS.filter((c) => chainSupportsHistory(c)).join(",") === "BTC,SOL");
-// ETH is the live proof that the ladder still bites: it has a working adapter
-// and a configured provider, and it is STILL not history-supported, because its
-// historical acquisition has not been built or proven.
-check("having an adapter is NOT the same as having history (ETH)",
-  isSyncableChain("ETH") && !chainSupportsHistory("ETH"));
+check("exactly BTC, SOL and ETH claim history support",
+  SYNCABLE_CHAINS.filter((c) => chainSupportsHistory(c)).sort().join(",") === "BTC,ETH,SOL");
+// BNB and AVAX are now the live proof that the ladder still bites: both have a
+// working adapter and a configured provider, and neither is history-supported,
+// because neither has had its historical acquisition built or proven. That is
+// the same bar ETH cleared rather than an exception made for it.
+check("having an adapter is NOT the same as having history (BNB, AVAX)",
+  isSyncableChain("BNB") && !chainSupportsHistory("BNB")
+    && isSyncableChain("AVAX") && !chainSupportsHistory("AVAX"));
 
 // ── W6c — THE LEGACY HISTORICAL AUTHORITY IS NOW EMPTY ───────────────────────
 // The wealth-history regenerator used to compose crypto from FinancialAccount
@@ -118,7 +124,7 @@ for (const absent of [null, undefined, "", "   ", "bitcoin", "Ethereum "]) {
   check(`an absent or non-canonical chain token is UNSUPPORTED (${JSON.stringify(absent)})`,
     walletChainSupport(absent) === "UNSUPPORTED");
 }
-check("canonical tokens resolve case-insensitively", walletChainSupport(" eth ") === "CURRENT_POSITION_SUPPORTED");
+check("canonical tokens resolve case-insensitively", walletChainSupport(" eth ") === "HISTORY_SUPPORTED");
 
 check("the syncable set is exactly the five chains that have earned it",
   SYNCABLE_CHAINS.join(",") === "AVAX,BNB,BTC,ETH,SOL", SYNCABLE_CHAINS.join(","));
@@ -134,10 +140,13 @@ check("BNB and AVAX earned CURRENT_POSITION_SUPPORTED",
 check("Polygon is offerable but NOT syncable — an unpriceable asset earns nothing",
   isProductSupportedChain("MATIC") && !isSyncableChain("MATIC")
     && walletChainSupport("MATIC") === "UNSUPPORTED");
-check("no EVM chain claims HISTORY",
-  ["ETH", "BNB", "AVAX", "MATIC"].every((c) => !chainSupportsHistory(c)));
-check("…so history remains exactly BTC and SOL",
-  SYNCABLE_CHAINS.filter((c) => chainSupportsHistory(c)).join(",") === "BTC,SOL");
+// ETH-H2 — Ethereum is now the one EVM chain with history, and it earned it the
+// same way BTC and SOL did: on its own real-wallet acceptance. Adding an EVM
+// adapter still grants nothing, which is exactly what BNB/AVAX/MATIC assert.
+check("no EVM chain claims HISTORY without earning it",
+  ["BNB", "AVAX", "MATIC"].every((c) => !chainSupportsHistory(c)));
+check("…so history is exactly BTC, SOL and ETH",
+  SYNCABLE_CHAINS.filter((c) => chainSupportsHistory(c)).sort().join(",") === "BTC,ETH,SOL");
 check("no new chain expanded balance-column authority",
   ["BNB", "AVAX"].every((c) => !feedsLegacyWealthHistory(c)));
 

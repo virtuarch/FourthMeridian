@@ -196,7 +196,17 @@ const ADAPTERS: Readonly<Record<string, ChainAdapter>> = {
     sync: (id) => syncBtcWallet(id),
   },
   [ETH_CHAIN]: {
-    support: "CURRENT_POSITION_SUPPORTED",
+    // ETH-H2 — PROMOTED ON REAL-WALLET ACCEPTANCE, not on the adapter existing.
+    // Reconstructed from state reads alone (no trace_*, no transfer index):
+    // COMPLETE coverage 2017-10-16..2026-08-27, zero caveats, 16 movements
+    // reconciling at ZERO WEI, 3238 replayed days, dated prices through the
+    // canonical backfill, and a refused acquisition preserving all of it.
+    //
+    // The promise holds for a plain EOA. A contract wallet (Safe, ERC-4337) or an
+    // EOA carrying a live EIP-7702 delegation refuses PROOF_PREMISES_UNMET and
+    // gains no history — an honest boundary, like Bitcoin's unattested xpub
+    // basis and Solana's address-index gap, not a hidden partial answer.
+    support: "HISTORY_SUPPORTED",
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
     historicalQuantityAuthority: "SPINE",
     currentValueAuthority: "SPINE",

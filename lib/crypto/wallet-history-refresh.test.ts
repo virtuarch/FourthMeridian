@@ -77,10 +77,11 @@ const body = (s: string) => {
       "W6c emptied it for every chain, silently disabling every one of these call sites");
   }
   // And the capability answer is the one that makes those gates fire.
-  check("BTC and SOL are the chains that fire it",
-    chainSupportsHistory("BTC") && chainSupportsHistory("SOL"));
+  check("BTC, SOL and ETH are the chains that fire it",
+    chainSupportsHistory("BTC") && chainSupportsHistory("SOL") && chainSupportsHistory("ETH"));
+  check("ETH joined them on its own acceptance", chainSupportsHistory("ETH"));
   check("…and the current-only chains still do not",
-    !chainSupportsHistory("ETH") && !chainSupportsHistory("BNB") && !chainSupportsHistory("AVAX"));
+    !chainSupportsHistory("BNB") && !chainSupportsHistory("AVAX"));
 }
 
 // ══ A REFUSAL MUST NOT DESTROY WHAT IS ALREADY PROVEN ═════════════════════════

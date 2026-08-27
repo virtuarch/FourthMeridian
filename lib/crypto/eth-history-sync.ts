@@ -208,9 +208,25 @@ export async function reconstructEthHistory(args: {
   const events = movementsToQuantityEvents(movements, {
     accountId, instrumentId, decimals: ETH_NATIVE.decimals,
   });
+  // ETH-H2 — THE LICENCE WIDENS THE WINDOW; THE CALLER'S FLOOR MUST NOT NARROW IT.
+  //
+  // Bitcoin and Solana are handed a window derived from evidence ALREADY in the
+  // database — their movements are imported before any reconstruction runs — so
+  // the caller's floor is naturally wide. Ethereum discovers its own range from
+  // the chain during acquisition, and a wallet added today has exactly one row
+  // in the database, so that floor collapses to a single day.
+  //
+  // Measured on the real wallet: the caller's window was 2026-08-27..2026-08-27
+  // while the coverage licensed 2017-10-16..2026-08-27 — 3238 provable days
+  // replayed as one. The replay window is therefore the UNION: the licence
+  // decides how far back the evidence reaches, and the caller only says how far
+  // forward it wants to go.
+  const replayFromISO =
+    coverage.fromISO < args.windowFromISO ? coverage.fromISO : args.windowFromISO;
+
   const timeline = replayQuantityTimeline({
     instrumentId, accountId, anchors, events,
-    windowFromISO: args.windowFromISO,
+    windowFromISO: replayFromISO,
     windowToISO:   args.windowToISO,
     eventStream:   toEventStreamCompleteness(coverage),
     // One wei is below float resolution at this magnitude, so the tolerance is

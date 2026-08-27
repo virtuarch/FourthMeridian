@@ -290,16 +290,18 @@ const OBSERVED_BTC = 0.02028507; // == the three movements, exactly
 
 // ══ CURRENT-ONLY CHAINS AND SOL ARE UNTOUCHED ═════════════════════════════════
 {
-  check("BTC and SOL keep HISTORY; ETH/BNB/AVAX keep CURRENT only",
-    chainSupportsHistory("BTC") && chainSupportsHistory("SOL")
-      && !chainSupportsHistory("ETH") && !chainSupportsHistory("BNB")
-      && !chainSupportsHistory("AVAX"));
+  // ETH-H2 — Ethereum earned HISTORY on its own real-wallet acceptance (state
+  // reads, zero-wei reconciliation). W6c granted it nothing; that is the point
+  // of asserting BNB/AVAX separately below.
+  check("BTC, SOL and ETH have HISTORY; BNB/AVAX keep CURRENT only",
+    chainSupportsHistory("BTC") && chainSupportsHistory("SOL") && chainSupportsHistory("ETH")
+      && !chainSupportsHistory("BNB") && !chainSupportsHistory("AVAX"));
   check("MATIC remains UNSUPPORTED on its pricing question",
     walletChainSupport("MATIC") === "UNSUPPORTED");
   check("teaching history to read BTC positions granted no chain a new capability",
-    walletChainSupport("ETH") === "CURRENT_POSITION_SUPPORTED"
-      && walletChainSupport("BNB") === "CURRENT_POSITION_SUPPORTED"
-      && walletChainSupport("AVAX") === "CURRENT_POSITION_SUPPORTED");
+    walletChainSupport("BNB") === "CURRENT_POSITION_SUPPORTED"
+      && walletChainSupport("AVAX") === "CURRENT_POSITION_SUPPORTED",
+    "ETH's promotion came from ETH-H2's own acceptance, never from this slice");
 
   // A current-only wallet still licenses no historical date.
   check("a fresh current-only observation licenses no historical date",

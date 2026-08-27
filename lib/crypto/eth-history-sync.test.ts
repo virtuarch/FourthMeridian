@@ -158,11 +158,15 @@ const SYNC = code(read("lib", "crypto", "eth-history-sync.ts"));
 
 // ══ CAPABILITY IS NOT PROMOTED BY WRITING CODE ════════════════════════════════
 {
-  check("ETH remains CURRENT_POSITION_SUPPORTED",
-    walletChainSupport("ETH") === "CURRENT_POSITION_SUPPORTED");
-  check("…and claims no history",
-    !chainSupportsHistory("ETH"),
-    "promotion waits on real-wallet acceptance, not on the adapter existing");
+  // ETH-H2 acceptance — PROMOTED on the real wallet, not on the adapter existing:
+  // COMPLETE 2017-10-16..2026-08-27, zero caveats, 16 movements reconciling at
+  // ZERO WEI, 3238 replayed days, dated prices through the canonical backfill,
+  // and a refused acquisition preserving every row.
+  check("ETH is HISTORY_SUPPORTED after real-wallet acceptance",
+    walletChainSupport("ETH") === "HISTORY_SUPPORTED" && chainSupportsHistory("ETH"));
+  check("…which is what makes the sync route regenerate its chart",
+    chainSupportsHistory("ETH"),
+    "the regeneration gate asks capability; an unpromoted chain never redraws");
   check("BTC and SOL keep theirs",
     chainSupportsHistory("BTC") && chainSupportsHistory("SOL"));
   check("BNB/AVAX are untouched by this slice",
