@@ -68,7 +68,7 @@ import { FinanceDomains }            from '@/lib/ai/types';
 import { computeAssessment }         from '@/lib/ai/intelligence';
 import type { FinancialAssessment }  from '@/lib/ai/intelligence';
 import { fetchPerLiabilityDebtPayments } from '@/lib/ai/intelligence/debt-payments';
-import { loadCoverageEnvelope } from '@/lib/ai/coverage-envelope';
+import { loadCoverageEnvelope, type CoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { detectsPayoffIntent, detectsExplicitUpdateIntent } from '@/lib/ai/intent';
 import type { IntentRoute }          from '@/lib/ai/intent';
 import { planContextSelection, DEFAULT_CONTEXT_BUDGET_TOKENS } from '@/lib/ai/context-priority';
@@ -117,6 +117,11 @@ const ELIGIBLE_ROLES: SpaceMemberRole[] = [
 //
 // The existing AI_CONTEXT_ASSEMBLED row is written inside buildContext(), before
 // the intent route and assessment exist, so it cannot carry the plan. A separate
+/** CF-6 — the newest user message, as a domain-RELEVANCE signal. Nothing else reads it. */
+function latestUserMessage(msgs: { role: string; content: string }[]): string | undefined {
+  return [...msgs].reverse().find((m) => m.role === 'user')?.content;
+}
+
 // row is the low-risk, additive way to capture it.
 async function logShadowSelectionPlans(
   userId:      string,
@@ -484,8 +489,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     // buildContext carries a second membership guard internally.
     let ctx: SpaceContext_AI;
+    let envelopeForPrompt: CoverageEnvelope | undefined;
     try {
-      ctx = await buildContext(spaceId, user.id, { scopeHint: 'full', transactionWindow, drilldown });
+      // CF-6 — the evidence census runs FIRST, because it decides which domains
+      // are even reachable. Four indexed aggregates (~68 ms), already required
+      // by CF-5's envelope, so this reorders work rather than adding any.
+      envelopeForPrompt = await loadCoverageEnvelope(spaceId);
+      ctx = await buildContext(spaceId, user.id, {
+        scopeHint: 'full', transactionWindow, drilldown,
+        evidence: envelopeForPrompt,
+        question: latestUserMessage(messages),
+      });
     } catch (err) {
       console.error('[api/ai/chat] buildContext error:', err);
       return NextResponse.json(
@@ -499,11 +513,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // Slice 6: per-liability debt-payment rollup ([] on failure → disclosure-only).
     // CF-5: the evidence census — four indexed aggregates, no rows, so it runs
     // alongside rather than in series.
-    const [debtPayments, envelope] = await Promise.all([
-      fetchPerLiabilityDebtPayments(ctx),
-      loadCoverageEnvelope(spaceId),
-    ]);
-    systemPrompt = buildSpaceSystemPrompt(ctx, assessment, intentRoute, debtPayments, envelope);
+    const debtPayments = await fetchPerLiabilityDebtPayments(ctx);
+    systemPrompt = buildSpaceSystemPrompt(
+      ctx, assessment, intentRoute, debtPayments, envelopeForPrompt);
     // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
     await logShadowSelectionPlans(user.id, [ctx], [assessment], intentRoute);
     gapsForResponse = filterGapsByIntent(

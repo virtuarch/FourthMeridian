@@ -85,11 +85,20 @@ const ASKS: Ask[] = [
   { ask: 'What was my most expensive purchase?',
     mustNotQuote: /114,439|51,127/,
     note: 'CF-4 DEFAULT: answer the loaded period, do not reach into history' },
+  // CF-6 — holdings is now LOADED for this question. `mustKnow` asks for a real
+  // position symbol, which only the holdings domain can supply.
   { ask: 'What are my investments?',
-    mustKnow: /investment|brokerage|crypto|digital/i,
-    note: 'holdings domain is absent; the model must not claim none exist' },
+    mustKnow: /VRT|VGT|VST|QBTS|APLD|OKLO|position/i,
+    note: 'CF-6 must load holdings_summary for a PERSONAL Space that holds positions' },
+  { ask: 'What stocks do I own?',
+    mustKnow: /VRT|VGT|VST|QBTS|APLD|OKLO|TTWO|SIRI/i },
+  { ask: 'Where is my money going?',
+    mustNotQuote: /VRT|VGT|QBTS|OKLO/,
+    note: 'a spending question must not grow holdings merely because they exist' },
   { ask: 'Do you have my crypto history?',
     mustKnow: /BTC|Bitcoin|ETH|Ethereum|SOL|Solana/i },
+  { ask: 'How am I doing financially?',
+    mustKnow: /net worth|\$33,|\$34,|assets/i },
   { ask: 'How much have I ever spent?',
     mustNotQuote: /114,439/,
     note: 'CF-2 shortfall stands; the envelope only lets it say what DOES exist' },
@@ -156,6 +165,9 @@ async function main(): Promise<void> {
       const messages = [{ role: 'user' as const, content: a.ask }];
       const ctx = await buildContext(space.id, owner.userId, {
         scopeHint: 'full', transactionWindow: resolveTransactionWindow(messages, now),
+        // CF-6 — the census and the message drive domain resolution, exactly as
+        // the chat route drives it.
+        evidence: envelope, question: a.ask,
       });
       const [assessment, debtPayments] = await Promise.all([
         Promise.resolve(computeAssessment(ctx)),

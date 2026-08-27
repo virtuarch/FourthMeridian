@@ -460,7 +460,11 @@ export function serializeAssessmentBlock(
     );
   }
   if (!investmentReadiness.holdingsDomainPresent) {
-    lines.push('  No holdings data in this Space context — existing investments not visible here.');
+    lines.push(
+      '  Holdings detail was not loaded into this turn\'s context, so this dimension was graded ' +
+      'without it. That is a fact about THIS CONTEXT, not about the Space — see the available-' +
+      'evidence block for what exists.',
+    );
   }
   if (investmentReadiness.blockers.length > 0) {
     lines.push(`  Blockers: ${investmentReadiness.blockers.join('; ')}`);

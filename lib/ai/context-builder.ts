@@ -41,6 +41,8 @@ import { db } from '@/lib/db';
 import { resolveSpaceContext } from '@/lib/space';
 import { AuditAction } from '@/lib/audit-actions';
 import { getDomainManifest } from '@/lib/ai/domain-manifest';
+import { resolveDomains, type DomainDecision } from '@/lib/ai/domain-relevance';
+import type { CoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { getAssembler } from '@/lib/ai/assembler-registry';
 import { runSignalDetectors } from '@/lib/ai/signals';
 import type {
@@ -83,6 +85,23 @@ export interface BuildContextOptions {
    * rows are surfaced. Other assemblers ignore this field.
    */
   drilldown?: AssemblerOptions['drilldown'];
+  /**
+   * CF-6 — the CF-5 evidence census for this Space.
+   *
+   * Supplies AVAILABILITY: which domains this Space actually holds visible
+   * evidence for. Passed IN rather than loaded here so the census runs once per
+   * turn and the resolver never grows a second copy of the account query.
+   *
+   * Absent → the category manifest decides alone, exactly as before CF-6.
+   */
+  evidence?: CoverageEnvelope;
+  /**
+   * CF-6 — the user's latest message, as a RELEVANCE signal only.
+   *
+   * Never used to fetch, filter or interpret data; it decides whether a domain
+   * the manifest omits is worth assembling this turn. Absent → no expansion.
+   */
+  question?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +122,10 @@ export async function buildContext(
   options: BuildContextOptions = {},
 ): Promise<SpaceContext_AI> {
   const requestedAt = new Date().toISOString();
-  const { scopeOverride, scopeHint = 'full', transactionWindow, drilldown } = options;
+  const {
+    scopeOverride, scopeHint = 'full', transactionWindow, drilldown,
+    evidence, question,
+  } = options;
 
   // ── Step 1: Validate membership ─────────────────────────────────────────
   //
@@ -143,18 +165,30 @@ export async function buildContext(
   //      (when agentScope is non-empty).
 
   let resolvedDomains: ContextDomain[];
+  let domainDecisions: DomainDecision[] = [];
 
   if (scopeOverride && scopeOverride.length > 0) {
     resolvedDomains = scopeOverride;
   } else {
-    const manifest = getDomainManifest(spaceCtx.space.category);
-
-    if (agent.agentScope.length > 0) {
-      const scopeSet = new Set(agent.agentScope);
-      resolvedDomains = manifest.filter((d) => scopeSet.has(d));
-    } else {
-      resolvedDomains = manifest;
-    }
+    // CF-6 — the category supplies DEFAULTS, and no longer a veto.
+    //
+    // Measured before this change: a PERSONAL Space holding eleven live
+    // positions worth $24,021 was told on every question that its investments
+    // were "not visible here" — because PERSONAL maps to FINANCE_CORE and
+    // FINANCE_CORE omits holdings. A label decided what evidence existed.
+    //
+    // `evidence` (CF-5) says what this Space actually holds, already resolved
+    // through the canonical visibility resolver; `question` says whether this
+    // turn needs it. Both absent → exactly the previous behaviour, which is what
+    // keeps the Brief and every existing caller unchanged.
+    const resolution = resolveDomains({
+      manifest:   getDomainManifest(spaceCtx.space.category),
+      agentScope: agent.agentScope,
+      evidence,
+      question,
+    });
+    resolvedDomains = resolution.domains;
+    domainDecisions = resolution.decisions;
   }
 
   // ── Step 4: Assemble domains in parallel ─────────────────────────────────
@@ -229,6 +263,13 @@ export async function buildContext(
         skippedDomains,
         signalCount:     signals.length,
         scopeHint,
+        // CF-6 — why each domain was or was not assembled, so a surprising
+        // context can be explained after the fact from the audit row alone.
+        ...(domainDecisions.length > 0
+          ? { domainDecisions: domainDecisions.map((d) => ({
+              domain: d.domain, included: d.included, reason: d.reason,
+            })) }
+          : {}),
         ...(transactionWindow ? { transactionWindow } : {}),
         ...(scopeOverride ? { scopeOverride } : {}),
       },
