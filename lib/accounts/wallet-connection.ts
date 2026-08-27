@@ -53,7 +53,7 @@ export async function ensureWalletConnection(params: {
   client?: DbClient;
 }): Promise<{ id: string }> {
   const client = params.client ?? db;
-  const credential = walletConnectionCredential(params.address);
+  const credential = walletConnectionCredential(params.address, params.chain);
 
   const existing = await client.connection.findFirst({
     where: { userId: params.userId, provider: ProviderType.WALLET, credential },
@@ -84,8 +84,29 @@ export async function linkAccountConnectionToWalletConnection(params: {
   client?: DbClient;
 }): Promise<void> {
   const client = params.client ?? db;
+  // UI-C1 — RE-POINT A LINK THAT LANDED ON A DIFFERENT ROW FOR THE SAME WALLET.
+  //
+  // This only ever filled a NULL link, which is right while one wallet can have
+  // only one Connection. A case-sensitive credential broke that: Ethereum's
+  // create route stored the checksummed address and its sync adapter the
+  // lower-cased one, so `ensureWalletConnection` produced a SECOND row and the
+  // wallet's identity split across the two — the AccountConnection on one, the
+  // ProviderAccountIdentity and every success stamp on the other. The card read
+  // the linked row, saw `lastSyncedAt: null`, and reported a wallet that had in
+  // fact synced perfectly as a terminal sync error.
+  //
+  // `canonicalWalletAddress` stops new splits. This heals the ones already
+  // written: the caller has just resolved the canonical Connection for this
+  // account, so a link pointing anywhere else is stale by construction and is
+  // moved. Idempotent, and a no-op for every correctly linked wallet.
   await client.accountConnection.updateMany({
-    where: { financialAccountId: params.financialAccountId, connectionId: null, deletedAt: null },
+    where: {
+      financialAccountId: params.financialAccountId,
+      deletedAt:          null,
+      // Plaid rows are never wallet-linked and must not be touched.
+      plaidItemDbId:      null,
+      OR: [{ connectionId: null }, { connectionId: { not: params.connectionId } }],
+    },
     data:  { connectionId: params.connectionId },
   });
 }

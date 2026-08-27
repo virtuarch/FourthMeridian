@@ -704,10 +704,16 @@ function ErrorContent({
     );
   }
 
+  // UI-C1 — chain-specific wording ONLY where the OPERATION is chain-specific.
+  // An xpub is a Bitcoin descriptor concept and address derivation is a Bitcoin
+  // operation, so those keep their precise wording. Everything else describes
+  // what happened rather than who it happened to.
   const walletDetail =
-    errorCode === "RATE_LIMITED"       ? "the Bitcoin explorer is rate-limiting requests"
-    : errorCode === "DISCOVERY_FAILED" ? "the explorer was temporarily unavailable or timed out"
-    : errorCode === "INVALID_XPUB"     ? "this doesn’t look like a valid extended public key (xpub/ypub/zpub)"
+    errorCode === "INVALID_XPUB"       ? "this doesn’t look like a valid extended public key (xpub/ypub/zpub)"
+    : errorCode === "DISCOVERY_FAILED" ? "address discovery could not be completed"
+    : errorCode === "RATE_LIMITED"     ? "the provider is rate-limiting requests"
+    : errorCode === "NO_PROVIDER_CONFIGURED" ? "no provider endpoint is configured for this chain"
+    : errorCode === "POSITION_CAPTURE_UNAVAILABLE" ? "the balance was read but could not be recorded"
     : errorCode;
   return (
     <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
@@ -717,7 +723,23 @@ function ErrorContent({
         <AlertTriangle size={15} className="shrink-0 mt-0.5" />
         <span>
           {isWallet
-            ? "We couldn’t complete address discovery for this wallet. Press Refresh to retry discovery."
+            // UI-C1 — DO NOT DESCRIBE A FAILURE BY ITS PROVIDER.
+            //
+            // This said "we couldn't complete address discovery" for EVERY
+            // wallet, because the only wallet chain that existed when it was
+            // written derived addresses from an xpub. Ethereum, Solana, BNB and
+            // Avalanche have no address discovery at all, so a failed sync on
+            // any of them told the user to retry an operation their wallet never
+            // performs — and W-M2a had already fixed exactly this once, in the
+            // typed arm above, leaving this untyped fallback behind.
+            //
+            // The copy now comes from the ERROR, and the generic sentence names
+            // no operation: a wallet that failed for a reason we have not coded
+            // is one we cannot describe, and saying so is honest where borrowing
+            // Bitcoin's vocabulary is not.
+            ? (walletDetail
+                ? `We hit a problem syncing this wallet — ${walletDetail}.`
+                : "We couldn’t sync this wallet. Press Refresh to try again.")
             : errorCode === "ITEM_NOT_FOUND"
               // Terminal and unambiguous: the Item no longer exists at Plaid
               // (removed here, or access withdrawn at the institution). No amount

@@ -22,6 +22,7 @@ import { db } from "@/lib/db";
 import { ProviderType, ShareStatus, PlaidItemStatus, ConnectionStatus } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
 import { deriveConnectionState, deriveWalletConnectionState } from "@/lib/sync/status";
+import { loadWalletHistoryMetadata, licensedHistoryStart } from "@/lib/crypto/wallet-history-metadata";
 import { deriveConnectionIntelligence, formatAvailableHistory } from "@/lib/connections/intelligence";
 import {
   deriveConnectionHealthState,
@@ -103,6 +104,15 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
   for (const p of plaidItems) faByConn.set(p.id, p.connections.map((c) => c.financialAccountId));
   for (const w of wallets)    faByConn.set(w.id, w.accountConnections.map((c) => c.financialAccountId));
   const uniqFa = [...new Set([...faByConn.values()].flat())];
+
+  // UI-C1 — the chain each wallet account denominates, so the history-metadata
+  // authority can ask the capability question per account rather than per card.
+  const walletChainByAccount = new Map<string, string | null>(
+    (await db.financialAccount.findMany({
+      where:  { id: { in: uniqFa } },
+      select: { id: true, walletChain: true },
+    })).map((a) => [a.id, a.walletChain]),
+  );
 
   // 3. tx aggregates per account (count + earliest + latest) — counts/dates only.
   const txAgg = uniqFa.length
@@ -209,12 +219,30 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
     });
   }
 
+  // UI-C1 — a wallet's history span comes from its persisted COVERAGE LICENCE,
+  // never from its transaction count. Bitcoin writes movements to `Transaction`
+  // and so had a figure by accident; Solana and Ethereum write none, and showed
+  // nothing while holding four and nine years of proven quantity history.
+  const walletHistory = await loadWalletHistoryMetadata(
+    [...faByConn.values()].flat().map((id) => ({ id, walletChain: walletChainByAccount.get(id) ?? null })),
+  );
+
   for (const w of wallets) {
     const faIds = faByConn.get(w.id) ?? [];
     const tx = txForConn(faIds);
+    // The earliest licensed start across this connection's accounts. Null when
+    // nothing is licensed — rendered as silence, never as "no history".
+    const licensedFrom = faIds
+      .map((id) => licensedHistoryStart(walletHistory.get(id)))
+      .filter((d): d is Date => d !== null)
+      .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
     const state = deriveWalletConnectionState({ status: w.status, lastSyncedAt: w.lastSyncedAt, errorCode: w.errorCode }) ?? "error";
     const intel = deriveConnectionIntelligence(
-      { provider: "WALLET", state, historySyncedAt: anchorByConn.get(w.id) ?? (state === "ready" ? w.lastSyncedAt : null), earliestTxDate: tx.min, connectedAt: w.createdAt, lastSyncedAt: w.lastSyncedAt , balanceVerifiedAt: null },
+      // `earliestTxDate` is the field the intelligence layer measures history
+      // from. For a wallet it is fed the COVERAGE start, falling back to the
+      // transaction ledger only where no licence exists — which keeps Bitcoin's
+      // long-standing number intact while giving Solana and Ethereum theirs.
+      { provider: "WALLET", state, historySyncedAt: anchorByConn.get(w.id) ?? (state === "ready" ? w.lastSyncedAt : null), earliestTxDate: licensedFrom ?? tx.min, connectedAt: w.createdAt, lastSyncedAt: w.lastSyncedAt , balanceVerifiedAt: null },
       now,
     );
     out.push({

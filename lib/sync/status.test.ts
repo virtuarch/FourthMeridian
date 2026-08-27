@@ -208,7 +208,16 @@ const card = cardRaw
 check("error card is provider-gated on a wallet branch (isWallet ? … : …)",
   /const isWallet\s*=\s*provider === "WALLET"/.test(card) && /isWallet\s*\?/.test(card));
 
-const walletArm = /isWallet\s*\?\s*"([^"]*)"/.exec(card)?.[1] ?? "";
+// UI-C1 — the wallet arm is no longer a single string literal: its copy is
+// derived from the ERROR CODE rather than from the provider, so it spans a
+// conditional. Capture the whole arm (up to the non-wallet branch) so this guard
+// still reads everything the user can be shown.
+const walletArm = (() => {
+  const i = card.indexOf("{isWallet");
+  if (i < 0) return "";
+  const j = card.indexOf(': errorCode === "ITEM_NOT_FOUND"', i);
+  return j > i ? card.slice(i, j) : card.slice(i, i + 1200);
+})();
 const promisesBackgroundRetry = (s: string) => /keep retrying|we['’]ll[^.]*retr/i.test(s);
 
 check("wallet error arm makes NO background-retry promise (wallets never auto-resync)",

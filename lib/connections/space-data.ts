@@ -66,6 +66,7 @@ import {
   type ConnectionIntelligenceStatus,
 } from "@/lib/connections/intelligence";
 import type { AccountLite } from "@/components/connections/ConnectionCard";
+import { loadWalletHistoryMetadata, licensedHistoryStart } from "@/lib/crypto/wallet-history-metadata";
 
 /**
  * The canonical Connections view model. `status` is the provider-agnostic
@@ -235,6 +236,17 @@ async function loadConnectionIntelligence(
   // 2. Earliest transaction date per account (the same MIN(non-deleted date)
   //    definition the wealth-regen floor + accounts route use).
   const allAccountIds = Object.values(accountsByConnectionId).flat().map((a) => a.id);
+
+  // UI-C1 — the chain each account denominates, so the history-metadata
+  // authority can ask the capability question per account.
+  const walletChainByAccount = new Map<string, string | null>(
+    allAccountIds.length
+      ? (await db.financialAccount.findMany({
+          where:  { id: { in: allAccountIds } },
+          select: { id: true, walletChain: true },
+        })).map((a) => [a.id, a.walletChain])
+      : [],
+  );
   const floors = allAccountIds.length
     ? await db.transaction.groupBy({
         by:    ["financialAccountId"],
@@ -259,6 +271,16 @@ async function loadConnectionIntelligence(
   const balanceVerifiedByAccount = new Map<string, Date>();
   for (const b of balanceRows) balanceVerifiedByAccount.set(b.id, b.lastUpdated);
 
+  // UI-C1 — a WALLET's history span is its persisted COVERAGE LICENCE, never its
+  // transaction count. Bitcoin writes movements to `Transaction` and so had a
+  // figure by accident; Solana and Ethereum write none, and reported "No
+  // historical data yet" while holding four and nine years of proven quantity
+  // coverage. One authority, asked the same way for every chain.
+  const walletAccounts = Object.values(accountsByConnectionId).flat()
+    .map((a) => ({ id: a.id, walletChain: walletChainByAccount.get(a.id) ?? null }))
+    .filter((a) => a.walletChain !== null);
+  const historyMeta = await loadWalletHistoryMetadata(walletAccounts);
+
   const out: Record<string, ConnectionIntelligenceStatus> = {};
   for (const c of connections) {
     // Connection availability = the earliest transaction across its accounts;
@@ -266,7 +288,11 @@ async function loadConnectionIntelligence(
     let earliest: Date | null = null;
     let balanceVerified: Date | null = null;
     for (const a of accountsByConnectionId[c.id] ?? []) {
-      const e = earliestByAccount.get(a.id);
+      // The coverage licence outranks the ledger for a wallet: it is the fact
+      // that proves the span, where the ledger only happens to correlate with it
+      // on the one chain that writes movements.
+      const licensed = licensedHistoryStart(historyMeta.get(a.id));
+      const e = licensed ?? earliestByAccount.get(a.id);
       if (e && (!earliest || e < earliest)) earliest = e;
       const b = balanceVerifiedByAccount.get(a.id);
       if (b && (!balanceVerified || b > balanceVerified)) balanceVerified = b;
