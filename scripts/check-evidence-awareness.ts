@@ -87,11 +87,22 @@ const ASKS: Ask[] = [
     note: 'CF-4 DEFAULT: answer the loaded period, do not reach into history' },
   // CF-6 — holdings is now LOADED for this question. `mustKnow` asks for a real
   // position symbol, which only the holdings domain can supply.
+  // CF-7 — a broad investment question must produce BOTH components, and the
+  // combined total. `mustNotQuote` catches the double-count directly.
   { ask: 'What are my investments?',
-    mustKnow: /VRT|VGT|VST|QBTS|APLD|OKLO|position/i,
-    note: 'CF-6 must load holdings_summary for a PERSONAL Space that holds positions' },
+    mustKnow: /5,006|5006/,   mustNotQuote: /42,957|42957/,
+    note: 'traditional + digital, never holdings.total + digital' },
+  { ask: 'How much do I have invested?',
+    mustKnow: /24,021|24021/, mustNotQuote: /42,957|42957/ },
+  { ask: 'Traditional vs crypto?',
+    mustKnow: /5,006|5006/,   mustNotQuote: /42,957|42957/ },
+  { ask: 'What crypto do I own?',
+    mustKnow: /19,014|19015|BTC|Bitcoin/i, mustNotQuote: /5,006|VRT|VGT/,
+    note: 'digital only — traditional securities must not be injected' },
   { ask: 'What stocks do I own?',
-    mustKnow: /VRT|VGT|VST|QBTS|APLD|OKLO|TTWO|SIRI/i },
+    mustKnow: /VRT|VGT|VST|QBTS|APLD|OKLO|TTWO|SIRI/i,
+    mustNotQuote: /24,021|24021/,
+    note: 'traditional detail — no combined concept total forced in' },
   { ask: 'Where is my money going?',
     mustNotQuote: /VRT|VGT|QBTS|OKLO/,
     note: 'a spending question must not grow holdings merely because they exist' },
@@ -174,7 +185,7 @@ async function main(): Promise<void> {
         fetchPerLiabilityDebtPayments(ctx),
       ]);
       const prompt = buildSpaceSystemPrompt(
-        ctx, assessment, routeForMessages(messages), debtPayments, envelope);
+        ctx, assessment, routeForMessages(messages), debtPayments, envelope, a.ask);
 
       // Envelope cost, measured from the rendered prompt rather than assumed.
       const s = prompt.indexOf('=== AVAILABLE EVIDENCE ===');

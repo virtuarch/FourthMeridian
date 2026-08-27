@@ -52,6 +52,9 @@
 
 import { FinanceDomains, type ContextDomain } from '@/lib/ai/types';
 import type { CoverageEnvelope } from '@/lib/ai/coverage-envelope';
+import {
+  resolveConceptBreadth, breadthNeedsPositionDetail,
+} from '@/lib/ai/economic-concepts';
 
 /** Why a domain is in, or out of, this turn's set. */
 export const DomainReasons = {
@@ -93,36 +96,27 @@ export interface DomainResolution {
 interface ConditionalDomain {
   domain:      ContextDomain;
   hasEvidence: (env: CoverageEnvelope) => boolean;
-  relevant:    RegExp;
+  /** CF-7 — does this question's concept breadth need this domain's evidence? */
+  relevant:    (question: string) => boolean;
 }
 
 /**
- * Investment vocabulary.
+ * Does this question need the position spine?
  *
- * ⚠️ NOT crypto vocabulary. `holdings_summary` is the canonical POSITION spine
- * and already spans securities AND digital assets — measured on the real Space,
- * $19,012 of its $24,021 is BTC and SOL. So a crypto-only question does not
- * need it: the digital-asset facts that question wants (presence, per-chain
- * quantity coverage, account totals) are already in the accounts domain and the
- * CF-5 envelope, and pulling in the whole position spine would spend tokens to
- * add nothing.
+ * CF-7 — relevance is the CONCEPT layer's breadth resolver, so there is ONE
+ * investment vocabulary rather than two that can drift apart. BROAD and
+ * TRADITIONAL_ONLY need the spine; DIGITAL_ONLY does not.
  *
- * That overlap is also the trap waiting for CF-7: `holdings.totalPortfolioValue
- * + accounts.totalDigitalAssets` double-counts by $19k. The disjoint pair is
- * `accounts.totalInvestments + accounts.totalDigitalAssets`.
+ * ⚠️ `holdings_summary` is the canonical POSITION spine and already spans
+ * securities AND digital assets — measured on the real Space, $19,012 of its
+ * $24,021 is BTC and SOL. A crypto-only question therefore does not need it:
+ * everything that question wants is already in the accounts domain and the CF-5
+ * envelope, and the spine would spend tokens to add nothing. The same overlap
+ * is why `lib/ai/economic-concepts.ts` composes from account totals rather than
+ * from this domain's own total.
  */
-const INVESTMENT_VOCABULARY =
-  /\b(invest(?:ed|ing|ment|ments)?|portfolio|holding|holdings|stock|stocks|share|shares|equit(?:y|ies)|securit(?:y|ies)|brokerage|etf|etfs|mutual fund|index fund|fund|funds|bond|bonds|ticker|position|positions|allocation|diversif\w*|asset allocation|401k|ira|roth|retirement account)\b/i;
-
-/**
- * Broad financial questions that legitimately span everything a Space holds.
- *
- * Kept narrow on purpose. "How am I doing financially?" reasonably reaches for
- * a portfolio; "where is my money going?" does not, and treating every general
- * word as broad would reintroduce the load-everything failure by the back door.
- */
-const BROAD_FINANCIAL_VOCABULARY =
-  /\b(net worth|networth|financial (?:health|position|picture|situation|overview|shape)|overall finances|how am i doing|full picture|whole picture|everything i (?:have|own)|total assets|balance sheet)\b/i;
+const needsPositionSpine = (question: string): boolean =>
+  breadthNeedsPositionDetail(resolveConceptBreadth(question));
 
 const CONDITIONAL_DOMAINS: ConditionalDomain[] = [
   {
@@ -130,7 +124,7 @@ const CONDITIONAL_DOMAINS: ConditionalDomain[] = [
     // Either class can produce positions: the spine holds securities and
     // digital assets alike, so a Space with only wallets still has holdings.
     hasEvidence: (env) => env.accounts.investments > 0 || env.accounts.digitalAssets > 0,
-    relevant:    INVESTMENT_VOCABULARY,
+    relevant:    needsPositionSpine,
   },
 ];
 
@@ -177,7 +171,7 @@ export function resolveDomains(input: {
     // question should report NOT_RELEVANT, not NO_EVIDENCE — the domain was
     // never wanted, and reporting absence would read as a finding about the
     // Space rather than about the question.
-    if (!c.relevant.test(question) && !BROAD_FINANCIAL_VOCABULARY.test(question)) {
+    if (!c.relevant(question)) {
       decisions.push({ domain: c.domain, included: false, reason: DomainReasons.NOT_RELEVANT });
       continue;
     }

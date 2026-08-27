@@ -10,7 +10,8 @@
  * Extracted verbatim from app/api/ai/chat/route.ts (AI-ARCH).
  */
 
-import type { SpaceContext_AI } from '@/lib/ai/types';
+import type { SpaceContext_AI, AccountsSectionData } from '@/lib/ai/types';
+import { FinanceDomains } from '@/lib/ai/types';
 import type { FinancialAssessment } from '@/lib/ai/intelligence';
 import type { IntentRoute } from '@/lib/ai/intent';
 import { serializeRoutingBlock } from '@/lib/ai/intent';
@@ -28,6 +29,9 @@ import { analysisWindowNote, temporalScopeFor, getTransactionsSummary } from './
 import {
   describeCoverageEnvelope, type CoverageEnvelope,
 } from '@/lib/ai/coverage-envelope';
+import {
+  composeInvestments, describeInvestmentConcept, resolveConceptBreadth, ConceptBreadth,
+} from '@/lib/ai/economic-concepts';
 import { serializeAssessmentBlock } from './assessment-serializer';
 import { serializeContextBlock } from './context-serializer';
 import type { DebtPaymentLine } from './context-serializer';
@@ -51,6 +55,22 @@ function buildSpaceAliasGuidance(spaceName: string): string {
     '"my finances", "my money", or similar. Interpret these as references to the ' +
     'current space unless context clearly indicates otherwise.'
   );
+}
+
+
+/**
+ * CF-7 — the INVESTMENTS composition, for questions that ask about it.
+ *
+ * The breadth comes from the same resolver CF-6 used to decide retrieval, so
+ * what was loaded and what is composed can never disagree about the question.
+ */
+function renderConcepts(ctx: SpaceContext_AI, question: string | undefined): string[] {
+  const breadth = resolveConceptBreadth(question);
+  if (breadth === ConceptBreadth.NONE) return [];
+  const accounts = ctx.domains[FinanceDomains.ACCOUNTS]?.data as AccountsSectionData | undefined;
+  const lines = describeInvestmentConcept(composeInvestments(accounts ?? null), breadth);
+  if (lines.length === 0) return [];
+  return ['=== INVESTMENT COMPOSITION ===', ...lines, '=== END INVESTMENT COMPOSITION ===', ''];
 }
 
 
@@ -83,6 +103,13 @@ export function buildSpaceSystemPrompt(
    * nothing and simply omits the block.
    */
   envelope?: CoverageEnvelope,
+  /**
+   * CF-7 — the user's message, as the CONCEPT-BREADTH signal.
+   *
+   * The same string CF-6 used to decide retrieval, so what was loaded and what
+   * is composed can never disagree about the question being answered.
+   */
+  question?: string,
 ): string {
   return [
     'You are a skilled, direct financial advisor powered by Fourth Meridian.',
@@ -128,6 +155,13 @@ export function buildSpaceSystemPrompt(
     // record — which is the only reading that makes "I have history back to
     // March 2023, and I'm using the last 90 days here" a natural sentence.
     ...renderEnvelope(ctx, envelope),
+    // ── CF-7 — what INVESTMENTS means, when the question is about it ────────
+    //
+    // After the envelope (what exists) and before the context (what was
+    // loaded), because it is a statement about how two loaded authorities
+    // compose. Rendered only for an investment question, so no other prompt
+    // pays for it.
+    ...renderConcepts(ctx, question),
     'SUPPORTING EVIDENCE — facts you may cite and reason from. Anything here that no assessment dimension grades is context, not a graded finding, and must not be presented as one.',
     '=== SPACE CONTEXT ===',
     // CF-2 — the route is the only source of the user's ASK; the context is the

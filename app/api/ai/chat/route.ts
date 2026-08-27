@@ -515,7 +515,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // alongside rather than in series.
     const debtPayments = await fetchPerLiabilityDebtPayments(ctx);
     systemPrompt = buildSpaceSystemPrompt(
-      ctx, assessment, intentRoute, debtPayments, envelopeForPrompt);
+      ctx, assessment, intentRoute, debtPayments, envelopeForPrompt,
+      latestUserMessage(messages));
     // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
     await logShadowSelectionPlans(user.id, [ctx], [assessment], intentRoute);
     gapsForResponse = filterGapsByIntent(
