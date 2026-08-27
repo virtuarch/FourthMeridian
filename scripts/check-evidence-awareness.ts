@@ -118,6 +118,13 @@ const ASKS: Ask[] = [
   { ask: 'What is my net worth?',
     mustKnow: /33,700/,
     note: 'answered from account balances; the 90 daily rows are omitted' },
+  // CF-10 — transaction-required classes must be indistinguishable from baseline.
+  { ask: 'Who did I spend the most with?',
+    mustKnow: /Airbnb|3,315/i, mustNotQuote: /42,957/,
+    note: 'transactions REQUIRED — bounded merchant list must behave as before' },
+  { ask: 'How much came in last quarter?',
+    mustKnow: /\$[\d,]+/,
+    note: 'income question — transactions REQUIRED' },
   { ask: 'How much have I ever spent?',
     mustNotQuote: /114,439/,
     note: 'CF-2 shortfall stands; the envelope only lets it say what DOES exist' },

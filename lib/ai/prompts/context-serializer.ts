@@ -637,8 +637,9 @@ export function serializeContextBlock(
         // Named, not silently dropped: the model must know the domain exists
         // and was deliberately not detailed, or absence reads as non-existence.
         lines.push(
-          `  [${key}] present and used for the deterministic assessment, but its detail was not ` +
-          `loaded for this question. Do not state or imply that this data does not exist.`,
+          `  [${key}] was assembled and is used by the deterministic assessment. Its full payload ` +
+          'is not included for this question — anything stated about it ABOVE is what was loaded, ' +
+          'and there is no further detail here. Do not state or imply that this data does not exist.',
         );
         continue;
       }

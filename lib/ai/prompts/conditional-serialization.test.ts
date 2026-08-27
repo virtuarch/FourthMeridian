@@ -127,7 +127,12 @@ const render = (ctx: SpaceContext_AI, omit?: ReadonlySet<string>) =>
 
   // Named, not silently dropped — absence must not read as non-existence.
   check('the domain is still NAMED, with its status',
-    /\[snapshot_history\] present and used for the deterministic assessment/.test(trimmed));
+    /\[snapshot_history\] was assembled and is used by the deterministic assessment/.test(trimmed));
+  // CF-10 — the notice must be true of a domain that ALSO has prose. Saying
+  // "its detail was not loaded" was accurate for snapshots (no prose) and false
+  // for transactions, whose merchant and monthly blocks sit above it.
+  check('…and points at what WAS loaded rather than denying it',
+    /anything stated about it ABOVE is what was loaded/.test(trimmed));
   check('…and the model is told not to deny it exists',
     /Do not state or imply that this data does not exist/.test(trimmed));
 
@@ -172,18 +177,61 @@ const render = (ctx: SpaceContext_AI, omit?: ReadonlySet<string>) =>
   const txnNeed = p.domains.find((d) => d.domain === FinanceDomains.TRANSACTIONS_SUMMARY)!.need;
   check('the plan marks transactions NOT_NEEDED for an investment question',
     txnNeed === NeedLevel.NOT_NEEDED, txnNeed);
-  check('…but CF-9 does NOT omit it', !omitDomainJson(p).has(FinanceDomains.TRANSACTIONS_SUMMARY),
-    'one measured domain before the mechanism scales');
-  check('…nor accounts', !omitDomainJson(p).has(FinanceDomains.ACCOUNTS));
-  check('…nor holdings', !omitDomainJson(p).has(FinanceDomains.HOLDINGS_SUMMARY));
-  check('…and it DOES omit snapshots', omitDomainJson(p).has(SNAP));
+  check('CF-10: …and its raw JSON IS omitted',
+    omitDomainJson(p).has(FinanceDomains.TRANSACTIONS_SUMMARY));
+  check('…and snapshots too', omitDomainJson(p).has(SNAP));
+
+  // The two domains that must NOT join the set. `accounts` is required by all
+  // nineteen CF-8 scenarios; `holdings_summary` is already conditional at the
+  // DOMAIN level under CF-6, so conditioning its JSON as well would hide it
+  // twice by two different mechanisms.
+  check('accounts is NEVER conditional', !omitDomainJson(p).has(FinanceDomains.ACCOUNTS));
+  check('holdings is NEVER conditional here',
+    !omitDomainJson(p).has(FinanceDomains.HOLDINGS_SUMMARY));
 
   const src = readFileSync(join(process.cwd(), 'lib/ai/prompts/system-prompt.ts'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
   const set = src.slice(src.indexOf('CONDITIONAL_JSON_DOMAINS'), src.indexOf('function omitDomainJson'));
-  check('exactly one domain is conditional, structurally',
-    (set.match(/FinanceDomains\.\w+/g) ?? []).length === 1
-      && /FinanceDomains\.SNAPSHOT_HISTORY/.test(set));
+  const named = set.match(/FinanceDomains\.\w+/g) ?? [];
+  check('exactly TWO domains are conditional, structurally',
+    named.length === 2
+      && named.includes('FinanceDomains.SNAPSHOT_HISTORY')
+      && named.includes('FinanceDomains.TRANSACTIONS_SUMMARY'),
+    named.join(','));
+  check('…and neither accounts nor holdings has been added quietly',
+    !/FinanceDomains\.ACCOUNTS|FinanceDomains\.HOLDINGS_SUMMARY/.test(set));
+}
+
+// ══ CF-10 — TRANSACTIONS: PROSE IS A DIFFERENT CONSUMER FROM PAYLOAD ═════════
+//
+// The measured reason the snapshot boundary did not generalise. Snapshots have
+// NO prose, so omitting the dump removed the domain from the prompt entirely.
+// Transactions have MORE prose than payload — 5,027 tokens against 3,715 — and
+// that prose carries the CF-1 bounded disclosures and the CF-2/3/4 scope
+// framing, which are protected consumers.
+{
+  const OMITS_TXN = [
+    'What are my investments?', 'What stocks do I own?',
+    'What crypto do I own?', 'How far back can you see my transactions?',
+  ];
+  for (const q of OMITS_TXN) {
+    check(`CF-10: "${q}" omits the transaction JSON`,
+      omitDomainJson(plan(q)).has(FinanceDomains.TRANSACTIONS_SUMMARY), q);
+  }
+
+  const KEEPS_TXN = [
+    'What did I spend in 2025?', 'Who did I spend the most with?',
+    'How much came in last quarter?', 'Where is my money going?',
+    'How am I doing financially?',           // SUPPORTING, not NOT_NEEDED
+  ];
+  for (const q of KEEPS_TXN) {
+    check(`CF-10: "${q}" KEEPS the transaction JSON`,
+      !omitDomainJson(plan(q)).has(FinanceDomains.TRANSACTIONS_SUMMARY), q);
+  }
+  check('CF-10: a SUPPORTING need keeps the payload',
+    plan('How am I doing financially?').domains
+      .find((d) => d.domain === FinanceDomains.TRANSACTIONS_SUMMARY)!.need === NeedLevel.SUPPORTING,
+    'only NOT_NEEDED omits; supporting evidence is still evidence');
 }
 
 // ══ WHICH QUESTIONS KEEP IT ══════════════════════════════════════════════════
