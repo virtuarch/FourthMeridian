@@ -109,6 +109,13 @@ export function serializeContextBlock(
    * fail-open path: a planner that errors must never remove evidence.
    */
   omitDomainJson?: ReadonlySet<string>,
+  /**
+   * CF-11 — omit the transaction ANALYSIS sections (categories, monthly
+   * rollups, merchant and income rankings) while keeping transaction
+   * AUTHORITY (scope, window, disclosures). Absent ⇒ everything renders,
+   * which is the fail-open path.
+   */
+  omitTransactionAnalysis?: boolean,
 ): string {
   const lines: string[] = [];
   // REVIEW-3 C-6 — ONE bound money formatter for the whole block, in the
@@ -270,310 +277,335 @@ export function serializeContextBlock(
     const ncLine = needsClassificationSummaryLine(txn.needsClassification, reportingCur);
     if (ncLine) lines.push(ncLine);
 
-    // ── Spending aggregates: single source of truth (D6.3 Part B) ────────────
-    // Average monthly spending, month-by-month spending, and category averages
-    // ALL derive from the same deterministic monthlyBreakdown rows. Averages are
-    // taken over COMPLETE calendar months only (partial/clipped/in-progress
-    // months are excluded) so a January-through-June average never gets diluted
-    // by a partial July. The prior window-normalized estimate (total ÷ windowDays
-    // × 30) is gone — it could diverge from the monthly rows and let the model
-    // treat the two as separate data sources.
-    // Categories that are NOT discretionary spending. Excluded from every
-    // "spending" figure (monthly category lines AND category averages) so that
-    // per-month category totals always reconcile to that month's expenseTotal
-    // and can never exceed it. Slice 6: flow-derived (see the module-level
-    // definition) — identical membership for legacy categories; Dividend now
-    // excluded, Fee still included.
-    const NON_SPENDING = NON_SPENDING_CATEGORY_NAMES;
+    // ── CF-11 — TRANSACTION ANALYSIS, conditional ────────────────────────────
+    //
+    // ONE decision, HERE, for the whole analytical subtree. Everything above
+    // this point is transaction AUTHORITY — the scope block, the analysis
+    // window, the attribution and coverage disclosures, the per-liability debt
+    // rollup — and renders whatever the question is, because it is what keeps
+    // the model epistemically honest about the period it is answering for.
+    //
+    // Everything below is ANALYSIS: category and monthly rollups, merchant and
+    // income rankings. On a question the retrieval plan does not route to
+    // transactions, that is 1,512 tokens describing something nobody asked
+    // about — and CF-1's bounded disclosures travel WITH their rows, so
+    // dropping a section takes its denominator with it and can never leave a
+    // ranking without its bounds.
+    //
+    // ⚠️ No renderer inside this subtree consults the plan. The plan decides
+    // relevance once; the serializer obeys it once. Scattering the check would
+    // be how a section later loses its disclosure while keeping its rows.
+    //
+    // Drilldown OVERRIDES the omission: an explicit evidence request has asked
+    // for transaction detail by name, and a NOT_NEEDED verdict at the aggregate
+    // level must never suppress it.
+    const renderAnalysis = !omitTransactionAnalysis || Boolean(txn.drilldown);
+    if (renderAnalysis) {
+      // ── Spending aggregates: single source of truth (D6.3 Part B) ────────────
+      // Average monthly spending, month-by-month spending, and category averages
+      // ALL derive from the same deterministic monthlyBreakdown rows. Averages are
+      // taken over COMPLETE calendar months only (partial/clipped/in-progress
+      // months are excluded) so a January-through-June average never gets diluted
+      // by a partial July. The prior window-normalized estimate (total ÷ windowDays
+      // × 30) is gone — it could diverge from the monthly rows and let the model
+      // treat the two as separate data sources.
+      // Categories that are NOT discretionary spending. Excluded from every
+      // "spending" figure (monthly category lines AND category averages) so that
+      // per-month category totals always reconcile to that month's expenseTotal
+      // and can never exceed it. Slice 6: flow-derived (see the module-level
+      // definition) — identical membership for legacy categories; Dividend now
+      // excluded, Fee still included.
+      const NON_SPENDING = NON_SPENDING_CATEGORY_NAMES;
 
-    // KD-7: exclude fetch-cap truncated months from averages, same as partial.
-    // KD-10: reliableMonths is the shared predicate the assessment also uses.
-    const completeMonths = reliableMonths(txn);
-    const completeCount   = completeMonths.length;
+      // KD-7: exclude fetch-cap truncated months from averages, same as partial.
+      // KD-10: reliableMonths is the shared predicate the assessment also uses.
+      const completeMonths = reliableMonths(txn);
+      const completeCount   = completeMonths.length;
 
-    if (completeCount > 0) {
-      const firstM = completeMonths[0].month;
-      const lastM  = completeMonths[completeCount - 1].month;
-      const monthsLabel = firstM === lastM
-        ? fmtMonthYear(`${firstM}-01`)
-        : `${fmtMonthYear(`${firstM}-01`)} – ${fmtMonthYear(`${lastM}-01`)}`;
+      if (completeCount > 0) {
+        const firstM = completeMonths[0].month;
+        const lastM  = completeMonths[completeCount - 1].month;
+        const monthsLabel = firstM === lastM
+          ? fmtMonthYear(`${firstM}-01`)
+          : `${fmtMonthYear(`${firstM}-01`)} – ${fmtMonthYear(`${lastM}-01`)}`;
 
-      // KD-10: single authoritative value shared with the assessment block.
-      // Non-null here because completeCount > 0.
-      const avgSpend   = computeAverageMonthlySpending(txn) ?? 0;
+        // KD-10: single authoritative value shared with the assessment block.
+        // Non-null here because completeCount > 0.
+        const avgSpend   = computeAverageMonthlySpending(txn) ?? 0;
 
-      lines.push(
-        `  AVERAGE MONTHLY SPENDING (deterministic — total spending across the ${completeCount} ` +
-        `complete month(s) ${monthsLabel}, divided by ${completeCount}): ${money(avgSpend)}/month. ` +
-        'Use this exact figure for "average monthly spending". Do NOT recompute it from a window ' +
-        'total, and do NOT include partial months unless the user explicitly asks for a month-to-date figure.',
-      );
-
-      // Per-category spending averages over the SAME complete months, summed from
-      // each month's byCategory (the same rows the monthly section prints), so
-      // category averages reconcile with both the overall average and the monthly
-      // rows. Non-spending categories are excluded so nothing is mislabeled as
-      // spending. These are AVERAGES — never a substitute for a single month's value.
-      const catTotals = new Map<string, number>();
-      for (const m of completeMonths) {
-        for (const c of m.byCategory) {
-          if (NON_SPENDING.has(c.category)) continue;
-          catTotals.set(c.category, (catTotals.get(c.category) ?? 0) + c.total);
-        }
-      }
-
-      // CF-1 — the population is complete HERE (catTotals holds every spending
-      // category across the complete months), so the denominator is honest to
-      // take locally: this array has not been truncated by anyone upstream.
-      const catAverages = boundedSelection(
-        Array.from(catTotals.entries())
-          .map(([category, total]) => ({
-            category,
-            total,
-            avg: Math.round((total / completeCount) * 100) / 100,
-          }))
-          .sort((a, b) => b.avg - a.avg),
-        CATEGORY_RENDER_LIMIT,
-      );
-
-      if (catAverages.items.length > 0) {
         lines.push(
-          `  AVERAGE MONTHLY CATEGORY SPENDING — showing ` +
-          `${describeBounds(catAverages.items.length, catAverages.totalCount)} spending categories, ` +
-          `largest first (each category's total across the ${completeCount} ` +
-          'complete month(s) ÷ month count — these are AVERAGES, valid ONLY when the user asks for ' +
-          'a typical/average month; NEVER use them as any single month\'s value):',
+          `  AVERAGE MONTHLY SPENDING (deterministic — total spending across the ${completeCount} ` +
+          `complete month(s) ${monthsLabel}, divided by ${completeCount}): ${money(avgSpend)}/month. ` +
+          'Use this exact figure for "average monthly spending". Do NOT recompute it from a window ' +
+          'total, and do NOT include partial months unless the user explicitly asks for a month-to-date figure.',
         );
-        for (const c of catAverages.items) {
+
+        // Per-category spending averages over the SAME complete months, summed from
+        // each month's byCategory (the same rows the monthly section prints), so
+        // category averages reconcile with both the overall average and the monthly
+        // rows. Non-spending categories are excluded so nothing is mislabeled as
+        // spending. These are AVERAGES — never a substitute for a single month's value.
+        const catTotals = new Map<string, number>();
+        for (const m of completeMonths) {
+          for (const c of m.byCategory) {
+            if (NON_SPENDING.has(c.category)) continue;
+            catTotals.set(c.category, (catTotals.get(c.category) ?? 0) + c.total);
+          }
+        }
+
+        // CF-1 — the population is complete HERE (catTotals holds every spending
+        // category across the complete months), so the denominator is honest to
+        // take locally: this array has not been truncated by anyone upstream.
+        const catAverages = boundedSelection(
+          Array.from(catTotals.entries())
+            .map(([category, total]) => ({
+              category,
+              total,
+              avg: Math.round((total / completeCount) * 100) / 100,
+            }))
+            .sort((a, b) => b.avg - a.avg),
+          CATEGORY_RENDER_LIMIT,
+        );
+
+        if (catAverages.items.length > 0) {
           lines.push(
-            `    ${c.category}: ${money(c.avg)}/month ` +
-            `(${money(Math.round(c.total * 100) / 100)} across ${completeCount} mo)`,
+            `  AVERAGE MONTHLY CATEGORY SPENDING — showing ` +
+            `${describeBounds(catAverages.items.length, catAverages.totalCount)} spending categories, ` +
+            `largest first (each category's total across the ${completeCount} ` +
+            'complete month(s) ÷ month count — these are AVERAGES, valid ONLY when the user asks for ' +
+            'a typical/average month; NEVER use them as any single month\'s value):',
+          );
+          for (const c of catAverages.items) {
+            lines.push(
+              `    ${c.category}: ${money(c.avg)}/month ` +
+              `(${money(Math.round(c.total * 100) / 100)} across ${completeCount} mo)`,
+            );
+          }
+          if (!isComplete(catAverages)) {
+            lines.push(
+              `    ${catAverages.totalCount - catAverages.items.length} further spending category(ies) ` +
+              'with a smaller average are NOT listed — do not present this as every category.',
+            );
+          }
+        }
+      } else if (txn.byCategory.length > 0) {
+        // No complete calendar month in the window: present exact window totals and
+        // decline to assert a monthly average rather than fabricate one from a
+        // partial window.
+        // CF-1 — as above: byCategory is the complete category population for the
+        // window, so the count before the render cap is the real denominator.
+        const windowCats = boundedSelection(
+          txn.byCategory.filter((c) => c.total > 0), CATEGORY_RENDER_LIMIT,
+        );
+        // The producer's count, because `byCategory` itself may already have been
+        // capped by scopeHint before it reached this function.
+        const windowCatTotal = txn.byCategoryTotalCount ?? windowCats.totalCount;
+        lines.push(
+          `  Category totals for this window — showing ` +
+          `${describeBounds(windowCats.items.length, windowCatTotal)} spending categories, ` +
+          'largest first (exact debit-only sums; the window contains no complete ' +
+          'calendar month, so no monthly average is asserted — do not divide these by a month count):',
+        );
+        // KD-17: totals are debit-only; zero-total entries (pure-credit or
+        // count-only categories such as Income, whose inflow is reported via the
+        // income figures above) are not printed as spending. Credits disclosed.
+        for (const cat of windowCats.items) {
+          lines.push(
+            `    ${cat.category}: ${money(cat.total)} total (${cat.count} txn(s))` +
+            (cat.creditTotal
+              ? ` (excludes ${money(cat.creditTotal)} in credits/refunds — NOT spending)`
+              : ''),
           );
         }
-        if (!isComplete(catAverages)) {
+        if (windowCats.items.length < windowCatTotal) {
           lines.push(
-            `    ${catAverages.totalCount - catAverages.items.length} further spending category(ies) ` +
-            'with a smaller average are NOT listed — do not present this as every category.',
+            `    ${windowCatTotal - windowCats.items.length} further spending category(ies) with a ` +
+            'smaller total are NOT listed — do not present this as every category.',
           );
         }
-      }
-    } else if (txn.byCategory.length > 0) {
-      // No complete calendar month in the window: present exact window totals and
-      // decline to assert a monthly average rather than fabricate one from a
-      // partial window.
-      // CF-1 — as above: byCategory is the complete category population for the
-      // window, so the count before the render cap is the real denominator.
-      const windowCats = boundedSelection(
-        txn.byCategory.filter((c) => c.total > 0), CATEGORY_RENDER_LIMIT,
-      );
-      // The producer's count, because `byCategory` itself may already have been
-      // capped by scopeHint before it reached this function.
-      const windowCatTotal = txn.byCategoryTotalCount ?? windowCats.totalCount;
-      lines.push(
-        `  Category totals for this window — showing ` +
-        `${describeBounds(windowCats.items.length, windowCatTotal)} spending categories, ` +
-        'largest first (exact debit-only sums; the window contains no complete ' +
-        'calendar month, so no monthly average is asserted — do not divide these by a month count):',
-      );
-      // KD-17: totals are debit-only; zero-total entries (pure-credit or
-      // count-only categories such as Income, whose inflow is reported via the
-      // income figures above) are not printed as spending. Credits disclosed.
-      for (const cat of windowCats.items) {
-        lines.push(
-          `    ${cat.category}: ${money(cat.total)} total (${cat.count} txn(s))` +
-          (cat.creditTotal
-            ? ` (excludes ${money(cat.creditTotal)} in credits/refunds — NOT spending)`
-            : ''),
-        );
-      }
-      if (windowCats.items.length < windowCatTotal) {
-        lines.push(
-          `    ${windowCatTotal - windowCats.items.length} further spending category(ies) with a ` +
-          'smaller total are NOT listed — do not present this as every category.',
-        );
-      }
 
-      // KD-17 checked invariant (window scope): same rule as the monthly lines.
-      const windowViolation = checkSpendingCategoryInvariant(
-        txn.byCategory.filter((c) => !NON_SPENDING.has(c.category)),
-        txn.expenseTotal, NON_SPENDING, 'window',
-      );
-      if (windowViolation) {
-        const msg =
-          `KD-17 invariant violated for window: spending categories sum to ` +
-          `${windowViolation.spendingCategorySum} > expenseTotal ${windowViolation.expenseTotal} ` +
-          `(excess ${windowViolation.excess}).`;
-        if (process.env.NODE_ENV !== 'production') throw new Error(msg);
-        console.error(msg);
-        lines.push('    [DATA INCONSISTENCY — category figures under review; do not present as exact]');
-      }
-    }
-
-    // ── Monthly breakdown (D6 deterministic rollups) ─────────────────────────
-    // Authoritative per-calendar-month figures. The model must read these for
-    // any month-by-month question instead of inferring buckets from window
-    // totals or averages (which previously produced inconsistent, invented
-    // monthly numbers). Only months inside the requested window appear here.
-    if (txn.monthlyBreakdown.length > 0) {
-      lines.push('');
-      lines.push(
-        'MONTHLY SPENDING BY MONTH (deterministic per-calendar-month rollup — these are the ONLY ' +
-        'valid month-by-month figures; each line is summed directly from that month\'s transactions). ' +
-        'For every month the listed categories are that month\'s OWN spending and always sum to ≤ ' +
-        'that month\'s "spending" total:',
-      );
-      for (const m of txn.monthlyBreakdown) {
-        // KD-7: a truncated boundary month had older rows dropped by the fetch
-        // cap — mark it incomplete so it is never compared as a full month.
-        const flag = m.truncated
-          ? ' [INCOMPLETE month — older transactions exceed the data cap; figure understated]'
-          : m.partial
-            ? ' [PARTIAL month — window does not fully cover it]'
-            : '';
-        // Per-month category line: SPENDING categories only (income, interest,
-        // transfers, debt payments excluded). Category totals are debit-only
-        // (KD-17) — the same population as expenseTotal — so the categories
-        // reconcile to, and never exceed, this month's expenseTotal. Credits
-        // in a spending category (refunds, misclassified payment credits) are
-        // disclosed inline, never netted or summed as spending.
-        const spendingCats = (m.byCategory ?? []).filter((c) => !NON_SPENDING.has(c.category));
-        const catsStr = spendingCats.length > 0
-          ? spendingCats
-              .map((c) =>
-                `${c.category} ${money(c.total)}` +
-                (c.creditTotal
-                  ? ` (excludes ${money(c.creditTotal)} in credits/refunds — NOT spending)`
-                  : ''),
-              )
-              .join(', ')
-          : '(no categorized spending this month)';
-
-        // KD-17 checked invariant: Σ spending-category totals ≤ expenseTotal.
-        // Previously asserted as prose only, which let a sign-asymmetry defect
-        // serialize mathematically impossible figures as authoritative. Fail
-        // loud in dev/test; in prod log and annotate the line so the model
-        // never presents inconsistent figures as exact.
-        const violation = checkSpendingCategoryInvariant(
-          spendingCats, m.expenseTotal, NON_SPENDING, m.month,
+        // KD-17 checked invariant (window scope): same rule as the monthly lines.
+        const windowViolation = checkSpendingCategoryInvariant(
+          txn.byCategory.filter((c) => !NON_SPENDING.has(c.category)),
+          txn.expenseTotal, NON_SPENDING, 'window',
         );
-        let invariantFlag = '';
-        if (violation) {
+        if (windowViolation) {
           const msg =
-            `KD-17 invariant violated for ${violation.scope}: spending categories sum to ` +
-            `${violation.spendingCategorySum} > expenseTotal ${violation.expenseTotal} ` +
-            `(excess ${violation.excess}). Category totals and expenseTotal aggregate ` +
-            'different populations — see docs/investigations/KD17_TRANSACTION_LEVEL_PROOF.md.';
+            `KD-17 invariant violated for window: spending categories sum to ` +
+            `${windowViolation.spendingCategorySum} > expenseTotal ${windowViolation.expenseTotal} ` +
+            `(excess ${windowViolation.excess}).`;
           if (process.env.NODE_ENV !== 'production') throw new Error(msg);
           console.error(msg);
-          invariantFlag = ' [DATA INCONSISTENCY — category figures under review; do not present as exact]';
+          lines.push('    [DATA INCONSISTENCY — category figures under review; do not present as exact]');
         }
+      }
 
+      // ── Monthly breakdown (D6 deterministic rollups) ─────────────────────────
+      // Authoritative per-calendar-month figures. The model must read these for
+      // any month-by-month question instead of inferring buckets from window
+      // totals or averages (which previously produced inconsistent, invented
+      // monthly numbers). Only months inside the requested window appear here.
+      if (txn.monthlyBreakdown.length > 0) {
+        lines.push('');
         lines.push(
-          `  - ${m.month}${flag}${invariantFlag}: spending ${money(m.expenseTotal)}; categories: ${catsStr}`,
+          'MONTHLY SPENDING BY MONTH (deterministic per-calendar-month rollup — these are the ONLY ' +
+          'valid month-by-month figures; each line is summed directly from that month\'s transactions). ' +
+          'For every month the listed categories are that month\'s OWN spending and always sum to ≤ ' +
+          'that month\'s "spending" total:',
         );
-        // Non-spending flows for the same month, bracketed separately so they can
-        // never be misread as spending categories.
+        for (const m of txn.monthlyBreakdown) {
+          // KD-7: a truncated boundary month had older rows dropped by the fetch
+          // cap — mark it incomplete so it is never compared as a full month.
+          const flag = m.truncated
+            ? ' [INCOMPLETE month — older transactions exceed the data cap; figure understated]'
+            : m.partial
+              ? ' [PARTIAL month — window does not fully cover it]'
+              : '';
+          // Per-month category line: SPENDING categories only (income, interest,
+          // transfers, debt payments excluded). Category totals are debit-only
+          // (KD-17) — the same population as expenseTotal — so the categories
+          // reconcile to, and never exceed, this month's expenseTotal. Credits
+          // in a spending category (refunds, misclassified payment credits) are
+          // disclosed inline, never netted or summed as spending.
+          const spendingCats = (m.byCategory ?? []).filter((c) => !NON_SPENDING.has(c.category));
+          const catsStr = spendingCats.length > 0
+            ? spendingCats
+                .map((c) =>
+                  `${c.category} ${money(c.total)}` +
+                  (c.creditTotal
+                    ? ` (excludes ${money(c.creditTotal)} in credits/refunds — NOT spending)`
+                    : ''),
+                )
+                .join(', ')
+            : '(no categorized spending this month)';
+
+          // KD-17 checked invariant: Σ spending-category totals ≤ expenseTotal.
+          // Previously asserted as prose only, which let a sign-asymmetry defect
+          // serialize mathematically impossible figures as authoritative. Fail
+          // loud in dev/test; in prod log and annotate the line so the model
+          // never presents inconsistent figures as exact.
+          const violation = checkSpendingCategoryInvariant(
+            spendingCats, m.expenseTotal, NON_SPENDING, m.month,
+          );
+          let invariantFlag = '';
+          if (violation) {
+            const msg =
+              `KD-17 invariant violated for ${violation.scope}: spending categories sum to ` +
+              `${violation.spendingCategorySum} > expenseTotal ${violation.expenseTotal} ` +
+              `(excess ${violation.excess}). Category totals and expenseTotal aggregate ` +
+              'different populations — see docs/investigations/KD17_TRANSACTION_LEVEL_PROOF.md.';
+            if (process.env.NODE_ENV !== 'production') throw new Error(msg);
+            console.error(msg);
+            invariantFlag = ' [DATA INCONSISTENCY — category figures under review; do not present as exact]';
+          }
+
+          lines.push(
+            `  - ${m.month}${flag}${invariantFlag}: spending ${money(m.expenseTotal)}; categories: ${catsStr}`,
+          );
+          // Non-spending flows for the same month, bracketed separately so they can
+          // never be misread as spending categories.
+          lines.push(
+            `      [other flows this month — NOT spending: income ${money(m.incomeTotal)}, ` +
+            `debt payments ${money(m.debtPaymentTotal)}, transfers ${money(m.transferTotal)}` +
+            // Slice 6: surface the Slice 4 refundTotal when present — refunds are
+            // reversals of spending, never income, and are not netted anywhere.
+            (m.refundTotal > 0 ? `, refunds received ${money(m.refundTotal)} (reversals of spending — NOT income, already excluded from the spending figure)` : '') +
+            `; ${m.transactionCount} txn(s)]`,
+          );
+        }
         lines.push(
-          `      [other flows this month — NOT spending: income ${money(m.incomeTotal)}, ` +
-          `debt payments ${money(m.debtPaymentTotal)}, transfers ${money(m.transferTotal)}` +
-          // Slice 6: surface the Slice 4 refundTotal when present — refunds are
-          // reversals of spending, never income, and are not netted anywhere.
-          (m.refundTotal > 0 ? `, refunds received ${money(m.refundTotal)} (reversals of spending — NOT income, already excluded from the spending figure)` : '') +
-          `; ${m.transactionCount} txn(s)]`,
+          '  Rules for month-by-month questions: use these exact per-month values. For a month-by-month ' +
+          'table, each category value MUST come only from that same month\'s "categories:" line. NEVER ' +
+          'use an AVERAGE MONTHLY CATEGORY SPENDING value, a window total, or another month\'s value as a ' +
+          'monthly value. Do NOT divide a window total by a month count, and do NOT report a month not ' +
+          'listed above — it has no data in the requested window. Describe any month flagged PARTIAL as incomplete.',
+        );
+        lines.push(
+          '  Category rule (month-by-month category tables): the "categories:" line for each month is the ' +
+          'COMPLETE deterministic list of that month\'s classified spending, and its entries sum to ≤ that ' +
+          'month\'s "spending" total. Use ONLY these values. If a category is not listed for a month, it had ' +
+          'no matching classified spending that month — leave the cell blank, write "—", or omit the column. ' +
+          'NEVER render an unlisted category as $0, and NEVER infer or fill a category figure from an average, ' +
+          'another month, or a window total. A single category can never exceed that month\'s spending total.',
         );
       }
-      lines.push(
-        '  Rules for month-by-month questions: use these exact per-month values. For a month-by-month ' +
-        'table, each category value MUST come only from that same month\'s "categories:" line. NEVER ' +
-        'use an AVERAGE MONTHLY CATEGORY SPENDING value, a window total, or another month\'s value as a ' +
-        'monthly value. Do NOT divide a window total by a month count, and do NOT report a month not ' +
-        'listed above — it has no data in the requested window. Describe any month flagged PARTIAL as incomplete.',
-      );
-      lines.push(
-        '  Category rule (month-by-month category tables): the "categories:" line for each month is the ' +
-        'COMPLETE deterministic list of that month\'s classified spending, and its entries sum to ≤ that ' +
-        'month\'s "spending" total. Use ONLY these values. If a category is not listed for a month, it had ' +
-        'no matching classified spending that month — leave the cell blank, write "—", or omit the column. ' +
-        'NEVER render an unlisted category as $0, and NEVER infer or fill a category figure from an average, ' +
-        'another month, or a window total. A single category can never exceed that month\'s spending total.',
-      );
-    }
 
-    // ── Merchant summary (D6.3A-1 + D6.3 — top SPENDING merchants only) ──────
-    // Canonicalized per-merchant SPENDING totals over the same window. Settled
-    // expense rows only — income/payroll, transfers, and debt payments are
-    // excluded upstream, so this answers "who did I spend the most with" without
-    // ever surfacing payroll or a Chase/Amex payment as a merchant.
-    if (txn.merchants && txn.merchants.items.length > 0) {
-      // CF-1 — the denominator comes from the PRODUCER (buildMerchantRollup),
-      // which is the only place the eligible population ever existed. Measured
-      // on the real Space: 174 eligible → 25 rollup cap → 8 rendered, and the
-      // model was asked to answer "who did I spend the most with" from those 8
-      // with nothing to tell it 164 were withheld. It answered "Your top
-      // merchants are…", unqualified, and every figure in it was correct.
-      const shownMerchants = txn.merchants.items.slice(0, MERCHANT_RENDER_LIMIT);
-      const merchantBounds = describeBounds(shownMerchants.length, txn.merchants.totalCount);
-      const merchantsComplete = shownMerchants.length >= txn.merchants.totalCount;
-      lines.push('');
-      lines.push(
-        `MERCHANT SUMMARY — showing ${merchantBounds} spending merchants, largest first ` +
-        '(settled expenses only in the window above; grouped by canonical merchant name; ' +
-        'totals are exact absolute settled spend). ' +
-        'Income/payroll, internal transfers, and debt payments are already EXCLUDED here:',
-      );
-      for (const mrc of shownMerchants) {
+      // ── Merchant summary (D6.3A-1 + D6.3 — top SPENDING merchants only) ──────
+      // Canonicalized per-merchant SPENDING totals over the same window. Settled
+      // expense rows only — income/payroll, transfers, and debt payments are
+      // excluded upstream, so this answers "who did I spend the most with" without
+      // ever surfacing payroll or a Chase/Amex payment as a merchant.
+      if (txn.merchants && txn.merchants.items.length > 0) {
+        // CF-1 — the denominator comes from the PRODUCER (buildMerchantRollup),
+        // which is the only place the eligible population ever existed. Measured
+        // on the real Space: 174 eligible → 25 rollup cap → 8 rendered, and the
+        // model was asked to answer "who did I spend the most with" from those 8
+        // with nothing to tell it 164 were withheld. It answered "Your top
+        // merchants are…", unqualified, and every figure in it was correct.
+        const shownMerchants = txn.merchants.items.slice(0, MERCHANT_RENDER_LIMIT);
+        const merchantBounds = describeBounds(shownMerchants.length, txn.merchants.totalCount);
+        const merchantsComplete = shownMerchants.length >= txn.merchants.totalCount;
+        lines.push('');
         lines.push(
-          `  ${mrc.canonicalName}: ${money(mrc.total)} across ${mrc.occurrences} txn(s), ` +
-          `mostly ${mrc.category}, ${mrc.firstSeen} → ${mrc.lastSeen}`,
+          `MERCHANT SUMMARY — showing ${merchantBounds} spending merchants, largest first ` +
+          '(settled expenses only in the window above; grouped by canonical merchant name; ' +
+          'totals are exact absolute settled spend). ' +
+          'Income/payroll, internal transfers, and debt payments are already EXCLUDED here:',
+        );
+        for (const mrc of shownMerchants) {
+          lines.push(
+            `  ${mrc.canonicalName}: ${money(mrc.total)} across ${mrc.occurrences} txn(s), ` +
+            `mostly ${mrc.category}, ${mrc.firstSeen} → ${mrc.lastSeen}`,
+          );
+        }
+        lines.push(
+          '  Use these exact totals for "who did I spend the most with / top merchants" questions. ' +
+          'These are SPENDING merchants only — never describe an income source, transfer, or debt ' +
+          'payment as a spending merchant, and never pull a payroll/employer name into this list.',
+        );
+        // CF-1 — the instruction above licenses a SUPERLATIVE. It may only do so
+        // when the rows shown ARE the population; otherwise say what is missing.
+        lines.push(
+          merchantsComplete
+            ? `  This is the COMPLETE set of ${txn.merchants.totalCount} spending merchant(s) in the window — ` +
+              'a ranking over these rows is exhaustive.'
+            : `  ${txn.merchants.totalCount - shownMerchants.length} further spending merchant(s) in this window ` +
+              'are NOT listed above. These rows are the largest by spend, so the leader is reliable, but do ' +
+              'not state or imply that this is the complete set of merchants, and do not answer questions ' +
+              'about counts, totals across all merchants, or "everyone I spent with" from it.',
         );
       }
-      lines.push(
-        '  Use these exact totals for "who did I spend the most with / top merchants" questions. ' +
-        'These are SPENDING merchants only — never describe an income source, transfer, or debt ' +
-        'payment as a spending merchant, and never pull a payroll/employer name into this list.',
-      );
-      // CF-1 — the instruction above licenses a SUPERLATIVE. It may only do so
-      // when the rows shown ARE the population; otherwise say what is missing.
-      lines.push(
-        merchantsComplete
-          ? `  This is the COMPLETE set of ${txn.merchants.totalCount} spending merchant(s) in the window — ` +
-            'a ranking over these rows is exhaustive.'
-          : `  ${txn.merchants.totalCount - shownMerchants.length} further spending merchant(s) in this window ` +
-            'are NOT listed above. These rows are the largest by spend, so the leader is reliable, but do ' +
-            'not state or imply that this is the complete set of merchants, and do not answer questions ' +
-            'about counts, totals across all merchants, or "everyone I spent with" from it.',
-      );
-    }
 
-    // ── Income sources (D6.3 — inflow rollup, kept separate from merchants) ──
-    // Payroll and other inflows live here, NOT in the merchant summary above.
-    if (txn.incomeSources && txn.incomeSources.items.length > 0) {
-      // CF-1 — same contract as merchants: the denominator is the producer's.
-      const shownIncome = txn.incomeSources.items.slice(0, INCOME_RENDER_LIMIT);
-      const incomeBounds = describeBounds(shownIncome.length, txn.incomeSources.totalCount);
-      const incomeComplete = shownIncome.length >= txn.incomeSources.totalCount;
-      lines.push('');
-      lines.push(
-        `INCOME SOURCES — showing ${incomeBounds} sources, largest first (settled inflows only — ` +
-        'Income + Interest — in the window above; grouped by canonical name; totals are exact settled ' +
-        'sums). This is a SEPARATE list from spending merchants:',
-      );
-      for (const src of shownIncome) {
+      // ── Income sources (D6.3 — inflow rollup, kept separate from merchants) ──
+      // Payroll and other inflows live here, NOT in the merchant summary above.
+      if (txn.incomeSources && txn.incomeSources.items.length > 0) {
+        // CF-1 — same contract as merchants: the denominator is the producer's.
+        const shownIncome = txn.incomeSources.items.slice(0, INCOME_RENDER_LIMIT);
+        const incomeBounds = describeBounds(shownIncome.length, txn.incomeSources.totalCount);
+        const incomeComplete = shownIncome.length >= txn.incomeSources.totalCount;
+        lines.push('');
         lines.push(
-          `  ${src.canonicalName}: ${money(src.total)} across ${src.occurrences} txn(s), ` +
-          `${src.firstSeen} → ${src.lastSeen}`,
+          `INCOME SOURCES — showing ${incomeBounds} sources, largest first (settled inflows only — ` +
+          'Income + Interest — in the window above; grouped by canonical name; totals are exact settled ' +
+          'sums). This is a SEPARATE list from spending merchants:',
+        );
+        for (const src of shownIncome) {
+          lines.push(
+            `  ${src.canonicalName}: ${money(src.total)} across ${src.occurrences} txn(s), ` +
+            `${src.firstSeen} → ${src.lastSeen}`,
+          );
+        }
+        lines.push(
+          '  Use these for "top income sources / where does my money come from" questions. ' +
+          'Do NOT describe these as spending merchants and do NOT include them in spending totals or averages.',
+        );
+        lines.push(
+          incomeComplete
+            ? `  This is the COMPLETE set of ${txn.incomeSources.totalCount} income source(s) in the window.`
+            : `  ${txn.incomeSources.totalCount - shownIncome.length} further income source(s) in this window ` +
+              'are NOT listed above — do not present this as the complete set.',
         );
       }
-      lines.push(
-        '  Use these for "top income sources / where does my money come from" questions. ' +
-        'Do NOT describe these as spending merchants and do NOT include them in spending totals or averages.',
-      );
-      lines.push(
-        incomeComplete
-          ? `  This is the COMPLETE set of ${txn.incomeSources.totalCount} income source(s) in the window.`
-          : `  ${txn.incomeSources.totalCount - shownIncome.length} further income source(s) in this window ` +
-            'are NOT listed above — do not present this as the complete set.',
-      );
     }
 
     // ── Transaction drilldown (D6 — evidence for a follow-up; only when present) ─

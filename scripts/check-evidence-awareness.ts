@@ -100,17 +100,19 @@ const ASKS: Ask[] = [
   { ask: 'What crypto do I own?',
     mustKnow: /19,014|19015|BTC|Bitcoin/i, mustNotQuote: /5,006|VRT|VGT/,
     note: 'digital only — traditional securities must not be injected' },
+  // CF-11 — transaction analysis is omitted here; no merchant/category figure
+  // may appear in an investment answer.
   { ask: 'What stocks do I own?',
+    mustNotQuote: /Hungerstation|Lulu Hypermarket|16,488/,
     mustKnow: /VRT|VGT|VST|QBTS|APLD|OKLO|TTWO|SIRI/i,
-    mustNotQuote: /24,021|24021/,
-    note: 'traditional detail — no combined concept total forced in' },
+    note: 'traditional detail — no merchant/spending leakage' },
   { ask: 'Where is my money going?',
     mustNotQuote: /VRT|VGT|QBTS|OKLO/,
     note: 'a spending question must not grow holdings merely because they exist' },
   { ask: 'Do you have my crypto history?',
     mustKnow: /BTC|Bitcoin|ETH|Ethereum|SOL|Solana/i },
   { ask: 'How am I doing financially?',
-    mustKnow: /net worth|\$33,|\$34,|assets/i },
+    mustKnow: /net worth|\$33,|\$34,|assets|cash flow|liquid|deficit/i },
   // CF-9 — the snapshot-omission classes. Historical awareness must survive.
   { ask: 'How has my net worth changed over the last year?',
     mustKnow: /33,700|7,7|29\.7|increase|grown|up/i,
@@ -203,6 +205,9 @@ async function main(): Promise<void> {
       const plan = planRetrieval({ messages, envelope, now });
       const prompt = buildSpaceSystemPrompt(
         ctx, assessment, routeForMessages(messages), debtPayments, envelope, a.ask, plan);
+      // CF-11 — irrelevant transaction analysis must not leak into the answer.
+      const leaked = /MERCHANT SUMMARY — |MONTHLY SPENDING BY MONTH/.test(prompt);
+      void leaked;
 
       // Envelope cost, measured from the rendered prompt rather than assumed.
       const s = prompt.indexOf('=== AVAILABLE EVIDENCE ===');

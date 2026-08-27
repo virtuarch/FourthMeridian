@@ -76,6 +76,23 @@ function renderConcepts(ctx: SpaceContext_AI, question: string | undefined): str
 
 
 /**
+ * CF-11 — should the transaction ANALYSIS sections be omitted?
+ *
+ * The rule is exactly `need === NOT_NEEDED`, and nothing weaker. SUPPORTING is
+ * evidence the plan wants; treating it as optional would let token pressure
+ * narrow a broad overview, which is the failure this whole programme has been
+ * avoiding one slice at a time.
+ *
+ * Fails OPEN: no plan, no decision, an unexpected value ⇒ render everything.
+ */
+export function omitTransactionAnalysis(plan?: RetrievalPlan): boolean {
+  if (!plan) return false;
+  const d = plan.domains.find((x) => x.domain === FinanceDomains.TRANSACTIONS_SUMMARY);
+  return d?.need === NeedLevel.NOT_NEEDED;
+}
+
+
+/**
  * CF-9/CF-10 — which domains' raw JSON to leave out, from the retrieval plan.
  *
  * Two domains, and only when the plan says the model does not need them.
@@ -83,15 +100,17 @@ function renderConcepts(ctx: SpaceContext_AI, question: string | undefined): str
  * required by every one of CF-8's nineteen scenarios, and holdings is already
  * conditional at the DOMAIN level (CF-6), so neither is a candidate here.
  *
- * ⚠️ CF-10 measured that the snapshot boundary does NOT generalise. Snapshots
- * had no prose at all, so omitting the dump removed the domain from the prompt.
- * Transactions have MORE prose than JSON — 5,027 tokens of window framing,
- * categories, merchants, income sources and monthly rollups against 3,715 of
- * dump — and that prose is a different consumer class (MODEL_SUMMARY) carrying
- * the CF-1 bounded disclosures and the CF-2/3/4 scope framing. So this removes
- * the RAW PAYLOAD only, and a question the plan does not route to transactions
- * still carries their summary. Shaping that prose is a separate problem with a
- * separate mechanism.
+ * ⚠️ The snapshot boundary does NOT generalise. Snapshots have no prose at all,
+ * so omitting the dump removes the domain from the prompt; transactions carry
+ * 2,039 tokens of prose that is a different consumer class (MODEL_SUMMARY) and
+ * holds the CF-1 bounded disclosures and the CF-2/3/4 scope framing. So this
+ * removes the RAW PAYLOAD only.
+ *
+ * (CF-10 reported that prose as 5,027 tokens and larger than the payload. That
+ * measurement was wrong — the probe's `indexOf` matched the doctrine
+ * preamble's mention of the section title. The real figure is 2,039, of which
+ * 1,512 is the conditional ANALYSIS pool CF-11 removes. The decision stands on
+ * the consumer-class argument, which never depended on the sizes.)
  *
  * Fails OPEN in every uncertain case — no plan, no decision, an unexpected
  * value — because removing evidence on a planner error is worse than the tokens
@@ -210,7 +229,9 @@ export function buildSpaceSystemPrompt(
     '=== SPACE CONTEXT ===',
     // CF-2 — the route is the only source of the user's ASK; the context is the
     // only source of what was loaded. This is the one place both are in hand.
-    serializeContextBlock(ctx, debtPayments, temporalScopeFor(ctx, route), omitDomainJson(plan)),
+    serializeContextBlock(
+      ctx, debtPayments, temporalScopeFor(ctx, route),
+      omitDomainJson(plan), omitTransactionAnalysis(plan)),
     '=== END CONTEXT ===',
   ].join('\n');
 }
