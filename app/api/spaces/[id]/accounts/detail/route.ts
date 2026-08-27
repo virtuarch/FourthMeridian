@@ -248,8 +248,10 @@ export async function GET(
   for (const link of links) {
     const raw = link.financialAccount;
     const walletValue = walletValueByAccount.get(raw.id);
-    // Only a VALUED wallet displaces the column; an unknown one falls through to
-    // it rather than having a number invented.
+    // A wallet with a real number (VALUED or STALE alike — W6b) displaces the
+    // column; an UNKNOWN one falls through to it rather than having a number
+    // invented. W6d put Bitcoin on this path too, through the same registry
+    // predicate and with no chain named here.
     const a = hasKnownValue(walletValue) ? { ...raw, balance: walletValue!.value! } : raw;
 
     if (link.visibilityLevel !== "FULL") {

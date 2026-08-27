@@ -96,7 +96,7 @@ export interface BtcWalletSyncResult {
   balanceUsd?: number;
   priceUsd?: number;
   /** On failure: which step failed and why (also recorded as a SyncIssue). */
-  stage?: "load" | "discovery" | "balance" | "price" | "transactions";
+  stage?: "load" | "discovery" | "balance" | "price" | "transactions" | "capture";
   reason?: string;
   /**
    * V26-S3-LEDGER — does the imported movement ledger account for the observed
@@ -128,7 +128,7 @@ export interface BtcSyncDeps {
 /** Best-effort SyncIssue writer — never throws (mirrors lib/plaid/syncIssues.ts). */
 async function recordWalletSyncIssue(
   financialAccountId: string,
-  stage: "discovery" | "balance" | "price" | "transactions",
+  stage: "discovery" | "balance" | "price" | "transactions" | "capture",
   message: string,
   extra?: Record<string, unknown>,
 ): Promise<void> {
@@ -168,17 +168,74 @@ async function recordWalletSyncIssue(
  * deleted). scripts/audit-crypto-holding-tombstone.ts keeps the count at zero
  * — do not reintroduce a wallet `Holding` write to satisfy a new reader; new
  * readers consume the spine.
+ *
+ * ── W6d — WHY THIS IS NO LONGER UNCONDITIONALLY NON-FATAL ───────────────────
+ * "Best-effort" was defensible for exactly as long as `FinancialAccount.balance`
+ * was Bitcoin's CURRENT-value authority: a swallowed capture failure cost the
+ * spine a row, and every account surface still read a real number from the
+ * column. W6d moves that authority onto the spine, and the same swallowed
+ * failure then costs the wallet its value — the row would be written with a
+ * balance nothing canonical reads, the spine would hold no observation for
+ * today, and the account would resolve NO_OBSERVATION. A wallet that silently
+ * loses its worth because a non-fatal warning was logged is precisely the
+ * two-chains-of-custody defect this program exists to close.
+ *
+ * So the severity FOLLOWS the authority, read from the ONE registry that owns
+ * it, rather than being a second place where a chain's participation is decided:
+ *
+ *   legacy column still authoritative → warn, continue (today's behaviour,
+ *                                       byte-identical)
+ *   spine is authoritative            → REFUSE the sync at stage "capture"
+ *
+ * This is what Solana already does (sol-sync.ts step 3), and refusing is the
+ * honest outcome: `lastUpdated` is not advanced, so the wallet AGES into STALE
+ * and then VERY_STALE instead of claiming a confirmation it never got.
+ *
+ * The registry is reached by DYNAMIC import on purpose. `wallet-sync-dispatch`
+ * imports `syncBtcWallet` from this module to build its adapter table, so a
+ * static import here would close a module cycle at evaluation time; the lazy
+ * import resolves at call time, when both modules are already initialised.
+ * (Same reason and same shape as lib/snapshots/space-accounts.ts's lazy import
+ * of the wallet-value authority.)
+ *
+ * @returns null on success; a refusal reason when the caller must abort.
  */
 async function writeBtcObservation(
   financialAccountId: string,
   nativeBalance: number,
   date: Date,
-): Promise<void> {
+): Promise<string | null> {
+  const { writesLegacyBalanceColumn } = await import("@/lib/crypto/wallet-sync-dispatch");
+  // The column is Bitcoin's current-value authority ⇒ the spine is a mirror, and
+  // losing the mirror is not a reason to refuse a balance we did read.
+  const spineIsCurrentAuthority = !writesLegacyBalanceColumn(BTC_CHAIN);
+
+  let written = false;
   try {
-    await captureWalletPosition({ financialAccountId, asset: BTC_ASSET, quantity: nativeBalance, date });
+    ({ written } = await captureWalletPosition({ financialAccountId, asset: BTC_ASSET, quantity: nativeBalance, date }));
   } catch (e) {
-    console.warn(`[btc-sync] BTC PositionObservation write failed for account ${financialAccountId} (non-fatal):`, e);
+    const reason = `position capture failed: ${e instanceof Error ? e.message : String(e)}`;
+    if (!spineIsCurrentAuthority) {
+      console.warn(`[btc-sync] BTC PositionObservation write failed for account ${financialAccountId} (non-fatal):`, e);
+      return null;
+    }
+    await recordWalletSyncIssue(financialAccountId, "capture", reason, { nativeBalance });
+    return reason;
   }
+
+  // `written: false` is NOT an error — it is INVESTMENT_OBSERVATIONS_ENABLED
+  // being off on this deployment. It is nevertheless fatal once the spine is the
+  // authority: the balance was read and there is nowhere canonical to record it,
+  // so reporting "synced" would present that silence as a completed sync.
+  if (!written && spineIsCurrentAuthority) {
+    const reason =
+      "The balance was read, but canonical position capture is disabled on this deployment " +
+      "(INVESTMENT_OBSERVATIONS_ENABLED), so there is nowhere to record it.";
+    await recordWalletSyncIssue(financialAccountId, "capture", reason, { nativeBalance });
+    return reason;
+  }
+
+  return null;
 }
 
 // ── Wallet Provider v3 — BTC transactions → normal Transaction rows ───────────
@@ -706,8 +763,19 @@ export async function syncBtcWallet(
   // immediately afterwards cannot license its quantity — until the ledger
   // accounts for the balance.
   // W5 — spine-only position write (the legacy Holding dual-write is retired;
-  // see writeBtcObservation's doc). Gated + non-fatal inside.
-  await writeBtcObservation(accountId, nativeBalance, new Date());
+  // see writeBtcObservation's doc).
+  //
+  // W6d — this runs BEFORE the row is updated, and its refusal aborts before
+  // ANY column is written. That ordering is the point: once the spine carries
+  // the current value, a run that writes `balance` while failing to write the
+  // observation would leave the two stores disagreeing about the same instant,
+  // with the authoritative one empty. Refusing leaves the row exactly as the
+  // previous successful sync left it — the failure policy this file has always
+  // had — and lets freshness age it honestly.
+  const captureRefusal = await writeBtcObservation(accountId, nativeBalance, new Date());
+  if (captureRefusal !== null) {
+    return { accountId, ok: false, stage: "capture", reason: captureRefusal };
+  }
 
   const ledger = await reconcileWalletLedgerForAccount(accountId, nativeBalance);
 
@@ -717,6 +785,19 @@ export async function syncBtcWallet(
   //     on-chain sats) is the stored financial FACT for this wallet. It is the
   //     value the ledger reconciliation checks, the quantity the observation
   //     spine records, and the only number here with provenance.
+  //  1a. W6d — THE USD COLUMN IS NO LONGER A READ AUTHORITY. It is still
+  //     written (below), and deliberately: `nativeBalance` is what
+  //     regenerate-history reads to decide whether a wallet ever held anything
+  //     material, and the pair is the last-resort fallback for a wallet with no
+  //     spine evidence at all. But no canonical CURRENT read composes value from
+  //     it once the registry stops naming BTC LEGACY_BALANCE_COLUMN — the
+  //     account card, the detail route, the Space mount payload and today's
+  //     snapshot all resolve through `loadWalletCurrentValues`, which prices the
+  //     OBSERVED position written above at the canonical dated close.
+  //     Measured on the live wallet, that moved the figure by +$108.86 on
+  //     0.24060252 BTC: an undated 78,426.98 spot against the canonical
+  //     78,879.42 close. The column is a WRITE for compatibility; treating it as
+  //     truth is the defect.
   //  2. THE USD FIGURE IS VALUATION-DERIVED PRESENTATION, NOT FX TRUTH.
   //     `balance`/`currency:"USD"` is quantity × an UNDATED mempool.space spot
   //     quote fetched in this same run (`priceUsd`), deliberately BYPASSING

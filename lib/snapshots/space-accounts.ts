@@ -209,9 +209,20 @@ export async function readSpaceAccountsForSnapshot(
   }
 
   // W6 — a spine-backed wallet's balance for TODAY comes from the spine, valued
-  // through the canonical path, exactly as the account surfaces resolve it. Only
-  // a VALUED result displaces the column; UNKNOWN and NO_PRICE fall through
-  // rather than have a number invented, and BTC is absent from the map entirely.
+  // through the canonical path, exactly as the account surfaces resolve it. A
+  // real number (VALUED or STALE) displaces the column; UNKNOWN and NO_PRICE
+  // fall through rather than have a number invented.
+  //
+  // W6d — Bitcoin is in that map now, which means TODAY'S SNAPSHOT changes
+  // value: the same quantity priced by the canonical dated close instead of an
+  // undated sync-time spot (+$108.86 on the live 0.24060252 BTC wallet). This is
+  // the CURRENT row only — `regenerate-history.ts` owns every prior date and is
+  // untouched, so nothing written here back-paints history.
+  //
+  // ⚠️ A wallet that falls through to the column contributes that column's
+  // figure to net worth with NO disclosure on the snapshot row — `cryptoStale`
+  // covers a stale reading, not an absent one. See the deletion condition in
+  // lib/data/accounts.ts.
   const walletValueByAccount = await loadWalletCurrentValues(
     links.map((l) => ({
       id: l.financialAccount.id,

@@ -20,6 +20,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { needsSpineValuation } from "./wallet-current-value";
+import { writesLegacyBalanceColumn } from "./wallet-sync-dispatch";
 
 let failures = 0, passes = 0;
 function check(name: string, ok: boolean, detail?: string): void {
@@ -49,14 +50,32 @@ const DETAIL    = code(read("app", "api", "spaces", "[id]", "accounts", "detail"
   check("ETH needs the spine",                     needsSpineValuation({ id: "a", walletChain: "ETH" }));
   check("BNB needs the spine",                     needsSpineValuation({ id: "a", walletChain: "BNB" }));
   check("AVAX needs the spine",                    needsSpineValuation({ id: "a", walletChain: "AVAX" }));
-  check("BTC does NOT — it writes the column and keeps it",
-    !needsSpineValuation({ id: "a", walletChain: "BTC" }));
+  // ── W6d — BITCOIN IS A REGISTRY ANSWER, NOT AN EXCEPTION IN THIS FILE ──────
+  //
+  // This used to assert `!needsSpineValuation("BTC")` outright. That is a fact
+  // about the REGISTRY, not about this predicate, and pinning it here meant the
+  // one-line registry change that retires Bitcoin's balance column also had to
+  // edit a test to match — which is exactly how a test stops guarding anything
+  // and starts recording whatever the code last did.
+  //
+  // So what is pinned is the DERIVATION: whatever the registry says about a
+  // chain's net-worth participation is what this predicate answers, in both
+  // directions. Flip BTC in the registry and this still holds; special-case BTC
+  // here and it does not.
+  for (const chain of ["BTC", "SOL", "ETH", "BNB", "AVAX"]) {
+    check(`${chain}'s current authority is derived from the registry, not restated`,
+      needsSpineValuation({ id: "a", walletChain: chain }) === !writesLegacyBalanceColumn(chain),
+      "chain policy belongs to wallet-sync-dispatch; a second copy is a drift");
+  }
   check("a non-wallet account is untouched",
     !needsSpineValuation({ id: "a", walletChain: null }) &&
     !needsSpineValuation({ id: "a", walletChain: undefined }) &&
     !needsSpineValuation({ id: "a", walletChain: "" }));
   check("chain matching is case/whitespace tolerant, as everywhere else",
-    !needsSpineValuation({ id: "a", walletChain: " btc " }));
+    needsSpineValuation({ id: "a", walletChain: " btc " }) === !writesLegacyBalanceColumn("BTC"));
+  check("no chain is named in the predicate's own source",
+    !/["']BTC["']|["']SOL["']|["']ETH["']/.test(SRC),
+    "a chain literal here is the exception the registry exists to remove");
   // An unregistered chain has no adapter, so it cannot write the column either —
   // it belongs on the spine path, where the honest answer is NO_OBSERVATION.
   check("an unregistered chain is re-sourced (and will answer NO_OBSERVATION)",
@@ -153,7 +172,93 @@ const DETAIL    = code(read("app", "api", "spaces", "[id]", "accounts", "detail"
     /cryptoPosition/.test(ACCOUNTS));
 }
 
-// ══ BTC IS UNTOUCHED ══════════════════════════════════════════════════════════
+// ══ W6d — ONE FRESHNESS AUTHORITY, ONE PRICE AUTHORITY ════════════════════════
+//
+// Bitcoin arrives with a habit the other chains never had: its own sync-time
+// spot quote, undated and unreproducible. Moving it onto this path is only worth
+// anything if the answer comes from the SAME two authorities every other chain
+// already uses — otherwise the column is not retired, it is renamed.
+{
+  check("freshness is the canonical band authority, not a local TTL",
+    /from "@\/lib\/freshness\/observation"/.test(SRC) && /bandForAge\(/.test(SRC));
+  check("…and no threshold is restated here",
+    !/STALE_AFTER_DAYS\s*=|LIVE_WITHIN_DAYS\s*=|>\s*\d+\s*\*\s*86_?400/.test(SRC),
+    "a second TTL is a second definition of 'current'");
+  // The price is a DATED close resolved by the canonical service, and the date
+  // must reach the consumer — a current claim priced at an older close is only
+  // honest if the reader can see which close it was.
+  check("the close actually used travels to every consumer",
+    /priceDate/.test(SRC) && /priceDate:\s*walletValue\.priceDate/.test(ACCOUNTS));
+  check("the value is never quantity × a locally fetched quote",
+    !/fetchBtcUsdPrice|btc-explorer|computeUsdBalance/.test(SRC),
+    "the undated sync-time spot is exactly what this path replaces");
+}
+
+// ══ W6d — TODAY'S SNAPSHOT IS THE FOURTH CONSUMER, AND IT IS THE ONE THAT ═════
+// ══        TURNS A DISPLAYED NUMBER INTO PERSISTED WEALTH             ═════════
+//
+// The three surfaces above only SHOW a value. `readSpaceAccountsForSnapshot`
+// feeds `regenerateSpaceSnapshot`, which writes today's SpaceSnapshot row — the
+// number every net-worth chart, Space card and AI answer reads back. If it were
+// left on the column while the surfaces moved, the chart and the card would
+// disagree about the same wallet on the same day, which is the two-chains-of-
+// custody defect the whole program is unwinding.
+{
+  const SNAP = code(read("lib", "snapshots", "space-accounts.ts"));
+  check("the snapshot writer consults the same authority",
+    /loadWalletCurrentValues\(/.test(SNAP));
+  check("…and uses the SAME predicate, not its own idea of a usable value",
+    /hasKnownValue\(/.test(SNAP) && !/state === "VALUED"/.test(SNAP));
+  check("…and selects walletChain and lastUpdated, or freshness cannot be resolved",
+    /walletChain/.test(SNAP) && /lastUpdated/.test(SNAP));
+  check("…and names no chain",
+    !/walletChain === ["']/.test(SNAP) && !/["']BTC["']/.test(SNAP));
+  // W6b — a stale reading must reach the persisted row as a stale reading.
+  check("staleness is DISCLOSED onto the snapshot rather than discarded",
+    /isFreshCurrentValue\(/.test(SNAP) && /cryptoStale/.test(SNAP));
+  check("the snapshot writer stamps that disclosure onto the row it persists",
+    /cryptoStale === true/.test(code(read("lib", "snapshots", "regenerate.ts"))));
+  // The CURRENT writer must not be reachable from the historical one: today's
+  // evidence may not back-paint a prior date. (regenerate-history owns those.)
+  check("the historical regenerator does NOT consult the current authority",
+    !/loadWalletCurrentValues/.test(code(read("lib", "snapshots", "regenerate-history.ts"))),
+    "current evidence back-painting history is the inverse of the W6 defect");
+}
+
+// ══ W6d — THE SPINE WRITE IS NOW LOAD-BEARING FOR BITCOIN ═════════════════════
+//
+// Once the current value comes from the spine, a swallowed capture failure costs
+// the wallet its worth rather than costing the spine a row. btc-sync's write
+// must therefore be able to REFUSE — and must do so before any column is
+// written, so the two stores can never disagree about the same instant.
+{
+  const BTCSYNC = code(read("lib", "crypto", "btc-sync.ts"));
+  check("btc-sync can refuse at the capture stage",
+    /stage: "capture"/.test(BTCSYNC) && /"capture"/.test(BTCSYNC));
+  check("the capture severity is read from the registry, not decided locally",
+    /writesLegacyBalanceColumn/.test(BTCSYNC),
+    "hard-coding the severity re-creates the exception the registry removes");
+  check("a disabled observation gate is caught too, not just a thrown error",
+    /!written/.test(BTCSYNC),
+    "captureWalletPosition returns written:false when the gate is off — that is "
+    + "silence, and silence is fatal once the spine is the authority");
+  // ORDER. The refusal must precede the row update, or a failed run leaves a
+  // balance column written against an empty spine.
+  const b = body(BTCSYNC);
+  check("the capture refusal is evaluated BEFORE the balance columns are written",
+    b.indexOf("captureRefusal") >= 0
+      && b.indexOf("captureRefusal") < b.indexOf("balance: balanceUsd"));
+  // COMPATIBILITY, deliberately kept: `nativeBalance` is still what
+  // regenerate-history reads to decide a wallet ever held anything material, and
+  // the pair is the last-resort fallback for a wallet with no spine evidence.
+  check("btc-sync still WRITES both legacy columns (write compat ≠ read authority)",
+    /nativeBalance, balance: balanceUsd/.test(BTCSYNC));
+  // The current path may not be sourced from the replay, in either direction.
+  check("btc-sync derives nothing current from the historical reconstruction",
+    !/resolvePositionAsOf|regenerateSpace|btc-history-sync|replay/i.test(BTCSYNC));
+}
+
+// ══ NO CHAIN IS SPECIAL-CASED IN A READ SURFACE ═══════════════════════════════
 {
   check("no consumer special-cases a chain by name",
     ![ACCOUNTS, MOUNT, DETAIL].some((s) => /walletChain === ["']/.test(s)),

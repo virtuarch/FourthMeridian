@@ -97,9 +97,12 @@ export interface Account {
   walletChain?: WalletChain;
   nativeBalance?: number;   // amount in native token (e.g. 0.085 BTC)
   /**
-   * W-M3a — the CURRENT position behind a wallet's value, for chains that write
-   * no `FinancialAccount.balance` column (everything since W-M1c: SOL, ETH, BNB,
-   * AVAX). Absent for BTC and for every non-wallet account, which keep the column.
+   * W-M3a — the CURRENT position behind a wallet's value.
+   *
+   * Present for every SYNCABLE wallet chain (W6d added BTC to SOL, ETH, BNB and
+   * AVAX); absent for every non-wallet account, which keeps the column. Which
+   * chains qualify is a registry fact (`writesLegacyBalanceColumn`) and is
+   * deliberately not restated as a list any consumer can drift from.
    *
    * `balance` alone cannot express this. The column is NOT NULL DEFAULT 0, so a
    * wallet whose value is WITHHELD or UNKNOWN reached the UI as the number zero
@@ -117,8 +120,14 @@ export interface Account {
    *   NO_PRICE        held, quantity known, worth unknown. `value` is null.
    *   NO_OBSERVATION  never observed. Both null. NOT zero.
    *
-   * `balance` falls back to the (zero) column for the latter two, so any surface
-   * that renders money for a wallet must branch on `state` rather than trust it.
+   * `balance` falls back to the column for the latter two, so any surface that
+   * renders money for a wallet must branch on `state` rather than trust it.
+   *
+   * ⚠️ W6d — that fallback is no longer always a zero. A BTC wallet never taken
+   * through `syncBtcWallet` (the seeded demo wallets) carries a real-looking USD
+   * figure in the column with no dated provenance behind it, and it arrives here
+   * as `state: "NO_OBSERVATION"` beside a non-zero `balance`. Both readings are
+   * wrong to publish unqualified; only `state` tells them apart.
    */
   cryptoPosition?: {
     state:     "VALUED" | "STALE" | "NO_PRICE" | "NO_OBSERVATION";

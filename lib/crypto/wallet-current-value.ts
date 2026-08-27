@@ -37,11 +37,15 @@
  * silently zeroed every BALANCE_ONLY-shared wallet, re-creating this exact bug
  * one visibility tier down.
  *
- * ── BTC IS UNTOUCHED ────────────────────────────────────────────────────────
- * Chains that DO write the legacy column (`feedsLegacyWealthHistory`) are
- * skipped entirely and keep composing from it, byte-identically. This module
- * fills a gap; it does not migrate anyone out of the column. That migration is
- * the wallet net-worth convergence, and it is not this.
+ * ── WHICH CHAINS THIS SERVES IS A REGISTRY FACT, NOT A LIST HERE ────────────
+ * A chain is served exactly when it does not name the legacy balance column as
+ * its net-worth participation (`writesLegacyBalanceColumn`, wallet-sync-dispatch).
+ * Nothing in this file names a chain, and nothing above it does either.
+ *
+ * W6d is the slice that empties the exception: Bitcoin's CURRENT value moves
+ * onto this path, the same way its HISTORICAL value moved onto the spine in
+ * W6c. See `needsSpineValuation` for why that is one registry line and not a
+ * change here.
  */
 
 import type { Prisma, PrismaClient } from "@prisma/client";
@@ -136,30 +140,6 @@ export interface WalletAccountRef {
 }
 
 /**
- * Does this account's CURRENT value have to come from the spine?
- *
- * True only for a wallet on a chain that writes no legacy balance column. Every
- * other account — cash, credit, brokerage, and BTC — is unaffected and keeps
- * whatever authority it already had.
- *
- * ── W6c — WHY THIS ASKS A DIFFERENT QUESTION THAN THE HISTORICAL PATH ────────
- * Bitcoin's HISTORICAL authority moved to the spine in W6c: it now earns a
- * replayed, reconciled timeline with a persisted coverage licence. Its CURRENT
- * authority deliberately did not move, and this predicate must not follow the
- * historical one or it would drag it along.
- *
- * That is not timidity. The two are different claims (invariant 32), the current
- * column is still what several non-historical consumers read, and switching it
- * would change today's net worth by the difference between an undated sync-time
- * spot and the canonical dated close — a change that belongs to the net-worth
- * convergence, with its own evidence and its own acceptance, not to a slice
- * about history.
- *
- * DELETION CONDITION: when no canonical read requires `FinancialAccount.balance`
- * for a wallet, `LEGACY_BALANCE_COLUMN` disappears from the registry and this
- * predicate becomes `Boolean(ref.walletChain)`.
- */
-/**
  * Does this wallet have a real number behind it, fresh or not?
  *
  * TRUE for VALUED and STALE alike, and that is deliberate. A stale reading is
@@ -179,6 +159,40 @@ export function isFreshCurrentValue(v: WalletCurrentValue | undefined): boolean 
   return v !== undefined && v.state === "VALUED";
 }
 
+/**
+ * Does this account's CURRENT value have to come from the spine?
+ *
+ * True for a wallet on a chain that does not name the legacy balance column as
+ * its net-worth participation. Every non-wallet account — cash, credit,
+ * brokerage — is unaffected and keeps whatever authority it already had.
+ *
+ * ── W6c/W6d — TWO QUESTIONS, TWO PREDICATES, ONE PLACE EACH ─────────────────
+ * Bitcoin's HISTORICAL authority moved to the spine in W6c (replayed,
+ * reconciled, coverage-licensed). Its CURRENT authority deliberately did NOT
+ * move in the same slice, and this predicate deliberately does not read the
+ * historical one: they are different claims (invariant 32), and a single
+ * predicate would have dragged today's net worth along with a slice about
+ * history.
+ *
+ * W6d is that separate move, and it is a REGISTRY change, not a change here.
+ * Bitcoin becomes spine-valued the moment `wallet-sync-dispatch` stops giving
+ * BTC `netWorthParticipation: "LEGACY_BALANCE_COLUMN"` — one line, one place,
+ * and every consumer below follows because none of them names a chain. Writing
+ * `chain !== "BTC"` here instead would put chain policy in a read surface, which
+ * is the drift the registry exists to prevent.
+ *
+ * WHAT THAT CHANGES, MEASURED: the same quantity, priced by a different
+ * authority. The column is quantity × an UNDATED sync-time spot; this path is
+ * quantity × the canonical dated close, the same one the Investments workspace
+ * and every historical point use. On the live wallet that is +$108.86 on
+ * 0.24060252 BTC (78,426.98 spot vs 78,879.42 close on 2026-08-25). The number
+ * moves because the old one was never reproducible, not because this one is new.
+ *
+ * DELETION CONDITION: when `LEGACY_BALANCE_COLUMN` has no member left in the
+ * registry AND no wallet remains without spine evidence (see the fallback note
+ * in the consumers), this becomes `Boolean(ref.walletChain)` and
+ * `writesLegacyBalanceColumn` goes with it.
+ */
 export function needsSpineValuation(ref: WalletAccountRef): boolean {
   return Boolean(ref.walletChain) && !writesLegacyBalanceColumn(ref.walletChain);
 }

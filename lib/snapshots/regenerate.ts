@@ -250,6 +250,17 @@ export async function regenerateSpaceSnapshot(
     //
     // Not `unavailable`: there IS a real dated number here, and refusing it
     // outright would discard evidence rather than qualify it.
+    //
+    // W6d — Bitcoin now reaches this stamp. While its value came from the
+    // sync-time column, a BTC wallet unsynced for a month contributed its stale
+    // figure to today's snapshot with nothing recording that: `cryptoStale` was
+    // structurally unreachable for the one chain most likely to be stale. It is
+    // reachable now, from the same `lastUpdated` clock every other chain uses,
+    // with no new TTL.
+    //
+    // ⚠️ This says nothing about a wallet with NO observation at all — that row
+    // falls through to its column and is stamped as if confirmed. See the
+    // disclosure gap noted in lib/snapshots/space-accounts.ts.
     cryptoValuationStatus: accounts.some((a) => a.cryptoStale === true) ? "stale" as const : null,
   };
 

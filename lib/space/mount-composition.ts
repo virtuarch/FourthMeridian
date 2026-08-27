@@ -143,9 +143,18 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
   // correctly. The value is resolved from that same spine here.
   //
   // Substituted BEFORE normalizeSharedAccounts so a privacy-aggregated row sums
-  // the real value rather than the zero. BTC is absent from the map and keeps
-  // its column byte-identically; a wallet whose value is unknown also falls
-  // through to the column rather than having a number invented for it.
+  // the real value rather than the zero.
+  //
+  // W6d — Bitcoin is now in this map too, and this call did not change: it has
+  // always passed every linked account's chain and let the registry-backed
+  // authority decide which ones it serves. A wallet whose value is UNKNOWN still
+  // falls through to the column rather than having a number invented for it —
+  // see the fallback note in lib/data/accounts.ts for why that stays, and for
+  // its deletion condition.
+  //
+  // ⚠️ This payload carries no tri-state alongside the number, so the fallback
+  // is SILENT here in a way it is not on the account read. That is a knowing
+  // limit of the mount shape, not a claim that the figure is spine-backed.
   const walletValueByAccount = await loadWalletCurrentValues(
     links.map((l) => ({
       id: l.financialAccount.id,

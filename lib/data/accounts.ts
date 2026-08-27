@@ -189,7 +189,10 @@ export async function getAccountsWithVisibility(
   // exactly the tiers a balance is — including BALANCE_ONLY, which is why
   // `getCurrentPositions` (FULL-detail only) is deliberately not the seam used.
   //
-  // BTC is absent from this map and keeps its column, unchanged.
+  // W6d — WHICH wallets are in this map is a registry fact, never a list here.
+  // Bitcoin joined it when the dispatch registry stopped naming its balance
+  // column as its net-worth participation; this call did not change, because it
+  // has always passed EVERY linked account's chain and let the authority decide.
   const walletValueByAccount = await loadWalletCurrentValues(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     links.map((l: any) => ({
@@ -209,6 +212,25 @@ export async function getAccountsWithVisibility(
    * unwritten column that always reads zero, which is strictly worse. Staleness
    * travels on `cryptoPosition.freshness` instead. NO_PRICE and NO_OBSERVATION
    * still fall through: there is no number to show.
+   *
+   * ── W6d — THE FALLBACK IS A LAST RESORT, AND IT IS DISCLOSED ───────────────
+   * With Bitcoin in the map, the column this falls back to is no longer always
+   * an unwritten zero: a BTC wallet that has never been through `syncBtcWallet`
+   * (the seeded demo wallets) carries a real-looking USD figure with no dated
+   * provenance behind it. The fallback is KEPT rather than zeroed — showing
+   * $0.00 for a wallet we simply have not observed is the exact "unknown
+   * rendered as money" defect this module exists to prevent, and it would be a
+   * worse lie than an unprovenanced number.
+   *
+   * What makes it defensible is that it is no longer HIDDEN: `cryptoPosition`
+   * travels on the same row with `state: "NO_OBSERVATION"` and both
+   * `quantity` and `value` null, so a surface that shows money can tell that
+   * this figure is not spine-backed. A consumer that ignores the tri-state and
+   * prints `balance` is making a claim the row explicitly disclaims.
+   *
+   * DELETION CONDITION: when every linked wallet has at least one OBSERVED
+   * PositionObservation, this branch is unreachable for wallets and the column
+   * argument can be dropped for them entirely.
    */
   const displayBalance = (columnBalance: number, v: WalletCurrentValue | undefined): number =>
     hasKnownValue(v) ? v!.value! : columnBalance;
