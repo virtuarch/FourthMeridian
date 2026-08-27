@@ -49,6 +49,11 @@ const body = (s: string) => {
     /reconstructBtcHistory/.test(refresh) && /reconstructSolHistory/.test(refresh));
   check("…and to nothing for a chain without one",
     /: null;/.test(refresh) && /chain has no reconstruction/.test(refresh));
+  // ETH-H2 — Ethereum joined the dispatch. Capability is NOT promoted by this:
+  // the reconstruction runs and persists evidence, and the product claim waits
+  // on real-wallet acceptance.
+  check("Ethereum is dispatched too",
+    /reconstructEthHistory/.test(refresh));
 
   // ONLY on success: re-running against a failed acquisition is how a provider
   // outage turns into a narrower history.
@@ -115,11 +120,18 @@ const body = (s: string) => {
 
 // ══ SKIP IS NOT FAILURE ═══════════════════════════════════════════════════════
 async function skipIsNotFailure(): Promise<void> {
-  const eth = await refreshWalletHistory("no-such-account", "ETH");
+  // ETH-H2 — ETH is no longer in this set: it has a reconstruction now, so it
+  // proceeds to look for evidence rather than being skipped at the dispatch.
+  // BNB and AVAX are the current-only chains left, and they must still be
+  // SKIPPED rather than failed — a chain that never claimed history has not
+  // gone wrong by lacking it.
+  const bnb = await refreshWalletHistory("no-such-account", "BNB");
   check("a current-only chain is skipped, not failed",
-    eth.refreshed === false && eth.reason === "chain has no reconstruction");
+    bnb.refreshed === false && bnb.reason === "chain has no reconstruction");
   check("…and reports the chain it was asked about",
-    eth.chain === "ETH");
+    bnb.chain === "BNB");
+  const avax = await refreshWalletHistory("no-such-account", "AVAX");
+  check("AVAX likewise", avax.refreshed === false && avax.reason === "chain has no reconstruction");
   const none = await refreshWalletHistory("no-such-account", null);
   check("a null chain is skipped too", none.refreshed === false);
 }

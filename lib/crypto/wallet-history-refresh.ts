@@ -35,9 +35,10 @@
 
 import { db } from "@/lib/db";
 import { PositionOrigin } from "@prisma/client";
-import { BTC_NATIVE } from "./native-asset";
+import { BTC_NATIVE, ETH_NATIVE, SOL_NATIVE } from "./native-asset";
 import { reconstructBtcHistory } from "./btc-history-sync";
 import { reconstructSolHistory } from "./sol-history-sync";
+import { reconstructEthHistory } from "./eth-history-sync";
 import { todayUTCISO } from "@/lib/time/clock";
 
 /** What a refresh did, for the log and for the caller's decision to regenerate. */
@@ -98,7 +99,8 @@ export async function refreshWalletHistory(
   // historical licence, exactly as their capability says.
   const run =
     key === BTC_NATIVE.chain ? reconstructBtcHistory
-    : key === "SOL"          ? reconstructSolHistory
+    : key === SOL_NATIVE.chain ? reconstructSolHistory
+    : key === ETH_NATIVE.chain ? reconstructEthHistory
     : null;
   if (run === null) return { accountId, chain: key, refreshed: false, reason: "chain has no reconstruction" };
 

@@ -62,7 +62,7 @@ import {
   REGENERATION_DISPOSITIONS,
   type RegenerationDisposition,
 } from "@/lib/snapshots/regeneration-candidates.core";
-import { resolveBtcInstrumentId } from "@/lib/crypto/btc-price";
+import { resolveCryptoInstrumentId } from "@/lib/investments/crypto-instrument";
 import { readCryptoUsdWindows } from "@/lib/crypto/crypto-price-window";
 import { nativeAssetForChain, ledgerEpsilonFor, type NativeAsset } from "@/lib/crypto/native-asset";
 import { amountOwed } from "@/lib/debt/balance-semantics";
@@ -608,8 +608,19 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       // → archive). This replaced a bespoke backfillBtcPrices that called
       // CoinGecko directly and wrote to the archive itself. Nothing here is
       // crypto-specific except resolving WHICH instrument to price.
-      const btcInstrumentId = await resolveBtcInstrumentId();
-      const r = await backfillHeldInstrumentPrices([btcInstrumentId], fromDate, toDate,
+      // ETH-H2 — PRICE WHAT IS HELD, NOT WHAT BITCOIN IS.
+      //
+      // This resolved BTC's instrument and only ever backfilled Bitcoin, so a
+      // Space holding SOL or ETH had its quantities reconstructed and its prices
+      // never acquired — and an unpriced held asset refuses the whole day under
+      // the all-or-nothing rule. The instruments are now the ones this Space's
+      // crypto accounts actually denominate, resolved through the same identity
+      // authority the observations were written against. Bitcoin is included
+      // because it is held, not because it is Bitcoin.
+      const heldInstrumentIds = [...new Set((await Promise.all(
+        assetsOf(cryptoAccounts).map((a) => resolveCryptoInstrumentId(a).catch(() => null)),
+      )).filter((id): id is string => id !== null))];
+      const r = await backfillHeldInstrumentPrices(heldInstrumentIds, fromDate, toDate,
         (line) => console.log(`[wealth-regen] ${spaceId}: ${line}`));
       console.log(`[wealth-regen] ${spaceId}: crypto price backfill — planned ${r.planned}, ${r.inserted} row(s)`);
     } catch (e) {
