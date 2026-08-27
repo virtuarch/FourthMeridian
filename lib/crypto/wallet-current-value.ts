@@ -52,7 +52,7 @@ import {
   valuePositionRows,
 } from "@/lib/investments/valuation";
 import { todayUTCISO } from "@/lib/time/clock";
-import { feedsLegacyWealthHistory } from "./wallet-sync-dispatch";
+import { writesLegacyBalanceColumn } from "./wallet-sync-dispatch";
 import { nativeAssetForChain } from "./native-asset";
 import { bandForAge, ageInDays, type FreshnessBand } from "@/lib/freshness/observation";
 
@@ -136,11 +136,28 @@ export interface WalletAccountRef {
 }
 
 /**
- * Does this account's value have to come from the spine?
+ * Does this account's CURRENT value have to come from the spine?
  *
  * True only for a wallet on a chain that writes no legacy balance column. Every
  * other account — cash, credit, brokerage, and BTC — is unaffected and keeps
  * whatever authority it already had.
+ *
+ * ── W6c — WHY THIS ASKS A DIFFERENT QUESTION THAN THE HISTORICAL PATH ────────
+ * Bitcoin's HISTORICAL authority moved to the spine in W6c: it now earns a
+ * replayed, reconciled timeline with a persisted coverage licence. Its CURRENT
+ * authority deliberately did not move, and this predicate must not follow the
+ * historical one or it would drag it along.
+ *
+ * That is not timidity. The two are different claims (invariant 32), the current
+ * column is still what several non-historical consumers read, and switching it
+ * would change today's net worth by the difference between an undated sync-time
+ * spot and the canonical dated close — a change that belongs to the net-worth
+ * convergence, with its own evidence and its own acceptance, not to a slice
+ * about history.
+ *
+ * DELETION CONDITION: when no canonical read requires `FinancialAccount.balance`
+ * for a wallet, `LEGACY_BALANCE_COLUMN` disappears from the registry and this
+ * predicate becomes `Boolean(ref.walletChain)`.
  */
 /**
  * Does this wallet have a real number behind it, fresh or not?
@@ -163,7 +180,7 @@ export function isFreshCurrentValue(v: WalletCurrentValue | undefined): boolean 
 }
 
 export function needsSpineValuation(ref: WalletAccountRef): boolean {
-  return Boolean(ref.walletChain) && !feedsLegacyWealthHistory(ref.walletChain);
+  return Boolean(ref.walletChain) && !writesLegacyBalanceColumn(ref.walletChain);
 }
 
 /**

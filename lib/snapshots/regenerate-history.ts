@@ -438,16 +438,35 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     if (!spineAccountIds.has(accountId)) {
       return cryptoAccounts.find((a) => a.id === accountId)?.nativeBalance != null;
     }
-    // W6b — EXISTENCE, from evidence. A spine wallet with no dated row anywhere
-    // is placed nowhere; a date before its earliest row is before it was here.
-    // Everything at or after that row is APPLICABLE, and whether a QUANTITY may
-    // be stated there is the coverage's question, asked separately in
-    // `cryptoQuantityOn`. An applicable date with no licensed quantity is
-    // UNKNOWN and refuses the day — it does not silently drop out, which is the
-    // whole point of W6 and must survive W6b.
+    // W6b — EXISTENCE, from evidence. A date before a wallet's earliest dated
+    // row is before it was here. Everything at or after is APPLICABLE, and
+    // whether a QUANTITY may be stated there is the coverage's separate
+    // question, asked in `cryptoQuantityOn`. An applicable date with no licensed
+    // quantity is UNKNOWN and refuses the day — it does not silently drop out,
+    // which is the whole point of W6.
     const earliest = earliestEvidenceISO.get(accountId);
-    if (earliest === undefined) return false;
-    return dISO >= earliest;
+    if (earliest !== undefined && dISO >= earliest) return true;
+
+    // W6c — A WALLET WITH NO RECONSTRUCTION IS NOT A WALLET THAT WAS NOT THERE.
+    //
+    // Bitcoin's move onto the spine brought with it wallets that hold a MATERIAL
+    // legacy balance and have no canonical quantity evidence at all — the seeded
+    // demo wallets, and any real wallet whose reconstruction refused. Treating
+    // them like a chain that simply was not here yet would drop them silently
+    // from a total that then reads as complete: the exact W6 defect, arriving
+    // through the door W6b opened for current-only chains.
+    //
+    // So a materially-held wallet is APPLICABLE from the day it was linked, and
+    // — having no licensed quantity — refuses every day it touches. That is the
+    // honest cost of retiring the carry, and it is not paid by inventing a
+    // number. A wallet holding nothing material is genuinely absent and refuses
+    // nothing, which is what keeps a current-only ETH wallet from blacking out a
+    // year of history it never claimed.
+    const account = cryptoAccounts.find((a) => a.id === accountId);
+    const materiallyHeld = Math.abs(account?.nativeBalance ?? 0) > 0;
+    if (!materiallyHeld) return false;
+    const floor = floorByAccount.get(accountId);
+    return floor !== undefined && dISO >= isoDate(floor);
   };
 
   // An account is MATERIAL if it ever held something across the window — by the
@@ -562,7 +581,15 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
    * the whole — the precise dishonesty this slice exists to remove.
    */
   const cryptoQuantityLicensed = (dISO: string): boolean =>
-    cryptoAccounts.every((a) =>
+    // W6c — the constant carry now governs LEGACY-authority accounts only, of
+    // which there are none: Bitcoin was the last, and it earns a replayed,
+    // coverage-licensed timeline instead. A spine account's temporal licence is
+    // its PositionCoverage, asked per account in `cryptoQuantityOn`, so gating
+    // it on the carry as well would let one chain's ledger refuse another
+    // chain's proven history. The helper stays — lib/history/account-series.ts
+    // is still a legitimate caller — and this predicate is vacuously true until
+    // a future chain arrives with a legacy ingest path and no reconstruction.
+    cryptoAccounts.filter((a) => !spineAccountIds.has(a.id)).every((a) =>
       licenseConstantQuantityCarry({
         targetISO:      dISO,
         anchorISO:      cryptoAnchorByAccount.get(a.id) ?? null,

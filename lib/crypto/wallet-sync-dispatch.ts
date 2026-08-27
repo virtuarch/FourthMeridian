@@ -134,6 +134,22 @@ export interface WalletSyncOutcome {
 interface ChainAdapter {
   support: WalletChainSupport;
   netWorthParticipation: WalletSyncOutcome["netWorthParticipation"];
+  /**
+   * W6c — where this chain's HISTORICAL quantity comes from.
+   *
+   * SPINE         replayed, reconciled PositionObservations bounded by a
+   *               persisted coverage licence. The only defensible answer.
+   * LEGACY_COLUMN `FinancialAccount.nativeBalance` carried backward across
+   *               intervals with no recorded movement. Transitional, and as of
+   *               W6c no chain uses it.
+   *
+   * Separate from `netWorthParticipation` because they answer different
+   * questions: one is about dates in the past, the other about what the account
+   * surfaces show now. Bitcoin is precisely the case that forced them apart — it
+   * reconstructs its history from the spine while still writing its balance
+   * column for the current path.
+   */
+  historicalQuantityAuthority: "SPINE" | "LEGACY_COLUMN";
   sync(accountId: string): Promise<{
     ok: boolean; syncStatus?: "synced" | "pending"; stage?: string; reason?: string;
   }>;
@@ -150,11 +166,13 @@ const ADAPTERS: Readonly<Record<string, ChainAdapter>> = {
     // column that net worth composes from.
     support: "HISTORY_SUPPORTED",
     netWorthParticipation: "LEGACY_BALANCE_COLUMN",
+    historicalQuantityAuthority: "SPINE",
     sync: (id) => syncBtcWallet(id),
   },
   [ETH_CHAIN]: {
     support: "CURRENT_POSITION_SUPPORTED",
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
+    historicalQuantityAuthority: "SPINE",
     sync: (id) => syncEthWallet(id),
   },
   // W-M3 — EVM networks whose native balance is acquirable AND whose canonical
@@ -169,11 +187,13 @@ const ADAPTERS: Readonly<Record<string, ChainAdapter>> = {
   [BNB_CHAIN]: {
     support: "CURRENT_POSITION_SUPPORTED",
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
+    historicalQuantityAuthority: "SPINE",
     sync: (id) => syncEvmWallet(id, BNB_NETWORK),
   },
   [AVAX_CHAIN]: {
     support: "CURRENT_POSITION_SUPPORTED",
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
+    historicalQuantityAuthority: "SPINE",
     sync: (id) => syncEvmWallet(id, AVAX_NETWORK),
   },
   [SOL_CHAIN]: {
@@ -190,6 +210,7 @@ const ADAPTERS: Readonly<Record<string, ChainAdapter>> = {
     // promises — see `feedsLegacyWealthHistory`.
     support: "HISTORY_SUPPORTED",
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
+    historicalQuantityAuthority: "SPINE",
     sync: (id) => syncSolWallet(id),
   },
 };
@@ -211,6 +232,28 @@ export function isSyncableChain(chain: string | null | undefined): boolean {
 /**
  * Does this chain feed the LEGACY wealth-history regeneration path?
  *
+ * ── W6c — BITCOIN LEFT. THIS PREDICATE IS NOW EMPTY, AND THAT IS THE POINT ──
+ * Bitcoin was the last chain whose HISTORICAL quantity came from
+ * `FinancialAccount.nativeBalance` carried backward. It now earns a replayed,
+ * reconciled timeline on the position spine with a persisted coverage licence,
+ * exactly as Solana does, so no chain answers true here any more.
+ *
+ * The predicate is KEPT rather than deleted, and deliberately: it is the seam
+ * that lets a chain be introduced with a legacy ingest path before it earns a
+ * reconstruction, and deleting it would mean the next such chain has nowhere to
+ * say so. Its emptiness is asserted by a test, so re-populating it is a
+ * deliberate act rather than a drift.
+ *
+ * DELETION CONDITION: when the wallet net-worth convergence moves CURRENT
+ * composition onto the spine too, `LEGACY_BALANCE_COLUMN` loses its last
+ * meaning and this predicate goes with it.
+ *
+ * ── This is the HISTORICAL question only ────────────────────────────────────
+ * `netWorthParticipation` still says where a chain's CURRENT value comes from,
+ * and Bitcoin still writes its balance column for that. Historical authority and
+ * current authority are separate questions (W6b invariant 32), so they are now
+ * separate fields.
+ *
  * ── W-M2b — THIS IS NOT THE SAME QUESTION AS "HAS HISTORY" ──────────────────
  * It used to be `support === "HISTORY_SUPPORTED"`, and while Bitcoin was the
  * only chain with history the two coincided. They have now come apart, and
@@ -228,9 +271,23 @@ export function isSyncableChain(chain: string | null | undefined): boolean {
  * that decides it. When the wallet net-worth convergence moves that path onto
  * the position spine, this predicate and the distinction both disappear.
  */
-export function feedsLegacyWealthHistory(chain: string | null | undefined): boolean {
+/**
+ * Does this chain write `FinancialAccount.balance` / `.nativeBalance` at sync
+ * time — the CURRENT-value authority, not the historical one?
+ *
+ * W6c split this out of `feedsLegacyWealthHistory`. While Bitcoin was the only
+ * chain doing either, one predicate answered both; retiring its historical carry
+ * separated them, and a single predicate would have silently moved the current
+ * path too.
+ */
+export function writesLegacyBalanceColumn(chain: string | null | undefined): boolean {
   if (!chain) return false;
   return ADAPTERS[chain.trim().toUpperCase()]?.netWorthParticipation === "LEGACY_BALANCE_COLUMN";
+}
+
+export function feedsLegacyWealthHistory(chain: string | null | undefined): boolean {
+  if (!chain) return false;
+  return ADAPTERS[chain.trim().toUpperCase()]?.historicalQuantityAuthority === "LEGACY_COLUMN";
 }
 
 /**

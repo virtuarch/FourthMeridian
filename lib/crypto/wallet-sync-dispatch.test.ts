@@ -21,7 +21,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import {
   walletChainSupport, isSyncableChain, chainSupportsHistory, feedsLegacyWealthHistory,
-  SYNCABLE_CHAINS,
+  SYNCABLE_CHAINS, writesLegacyBalanceColumn,
 } from "./wallet-sync-dispatch";
 import { PRODUCT_CHAIN_VALUES, isProductSupportedChain } from "./product-chains";
 
@@ -89,14 +89,20 @@ check("exactly BTC and SOL claim history support",
 check("having an adapter is NOT the same as having history (ETH)",
   isSyncableChain("ETH") && !chainSupportsHistory("ETH"));
 
-// ── W-M2b — HISTORY SUPPORT ≠ NET-WORTH PARTICIPATION ─────────────────────────
-// The wealth-history regenerator composes crypto from FinancialAccount
-// .nativeBalance. SOL has a fully reconstructed timeline on the POSITION SPINE
-// and writes no balance column, so it is invisible to that path however much
-// history it has. Gating regeneration on capability would walk an entire Space
-// to compute nothing.
-check("only the legacy balance-column chain feeds wealth-history regeneration",
-  feedsLegacyWealthHistory("BTC") && !feedsLegacyWealthHistory("SOL") && !feedsLegacyWealthHistory("ETH"));
+// ── W6c — THE LEGACY HISTORICAL AUTHORITY IS NOW EMPTY ───────────────────────
+// The wealth-history regenerator used to compose crypto from FinancialAccount
+// .nativeBalance carried backward. Bitcoin was the last chain doing that; it now
+// earns a replayed, reconciled timeline with a persisted coverage licence, so no
+// chain answers true here any more.
+//
+// The predicate is kept rather than deleted: it is where a future chain with a
+// legacy ingest path and no reconstruction would declare itself. Asserting its
+// EMPTINESS is what makes re-populating it a deliberate act.
+check("no chain uses the legacy historical authority any more",
+  ["BTC", "SOL", "ETH", "BNB", "AVAX", "MATIC"].every((c) => !feedsLegacyWealthHistory(c)));
+check("…while Bitcoin still writes the balance column for the CURRENT path",
+  writesLegacyBalanceColumn("BTC") && !writesLegacyBalanceColumn("SOL"),
+  "historical and current authority are separate questions — W6b invariant 32");
 check("…so capability and the regeneration gate are genuinely different questions",
   chainSupportsHistory("SOL") && !feedsLegacyWealthHistory("SOL"));
 

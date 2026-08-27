@@ -158,8 +158,13 @@ const DETAIL    = code(read("app", "api", "spaces", "[id]", "accounts", "detail"
   check("no consumer special-cases a chain by name",
     ![ACCOUNTS, MOUNT, DETAIL].some((s) => /walletChain === ["']/.test(s)),
     "chain policy belongs to the dispatch registry, never to a read surface");
+  // W6c — the CURRENT authority asks whether the chain writes the balance
+  // column, which is a different question from where its HISTORY comes from.
+  // Bitcoin now answers differently to each, which is exactly why they split.
   check("participation is decided by the registry predicate, in one place",
-    /feedsLegacyWealthHistory/.test(SRC));
+    /writesLegacyBalanceColumn/.test(SRC) && !/feedsLegacyWealthHistory/.test(SRC),
+    "keying the current path on the historical predicate would have dragged "
+    + "Bitcoin's live balance onto the spine as a side effect of W6c");
   check("no consumer writes back to the balance column",
     ![ACCOUNTS, MOUNT, DETAIL, SRC].some((s) => /financialAccount\.update|\.updateMany/.test(s)),
     "the fix is a read correction — writing the column would fabricate the evidence");

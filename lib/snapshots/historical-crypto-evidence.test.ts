@@ -185,8 +185,16 @@ const acct = (id: string, qty: number | null, assetKey: string, symbol: string, 
   check("existence begins at the wallet's FIRST dated evidence, not its connection date",
     /dISO >= earliest/.test(binding),
     "flooring on createdAt would delete Solana's four years of proven history");
-  check("a spine wallet with no dated evidence at all is applicable NOWHERE",
-    /if \(earliest === undefined\) return false/.test(binding));
+  // W6c refined this: a wallet holding NOTHING material is genuinely absent and
+  // refuses nothing, which is what keeps a current-only chain from blacking out
+  // history it never claimed. A wallet holding something material with no
+  // reconstruction is a different case — it existed, so it REFUSES rather than
+  // dropping silently out of a total that would then read as complete.
+  check("a wallet holding nothing material and lacking evidence is applicable NOWHERE",
+    /if \(!materiallyHeld\) return false;/.test(binding));
+  check("…but a materially-held wallet with no reconstruction still refuses",
+    /const materiallyHeld = Math\.abs\(account\?\.nativeBalance \?\? 0\) > 0;/.test(binding),
+    "silently dropping it is the W6 defect arriving through the W6b door");
 }
 
 // ══ NO LEGACY FALLBACK FOR SPINE-BACKED CRYPTO ════════════════════════════════

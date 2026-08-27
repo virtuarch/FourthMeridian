@@ -66,6 +66,7 @@ import {
   type ChainMovement, type ChainCoverage, type MovementDisposition,
 } from "@/lib/crypto/chain-movement";
 import { persistPositionCoverage } from "@/lib/crypto/position-coverage";
+import { derivedRowsFromTimeline } from "@/lib/crypto/wallet-reconstruction";
 import {
   replayQuantityTimeline, PERMITTED_ANCHOR_ORIGINS,
   type QuantityAnchor, type QuantityTimeline,
@@ -316,22 +317,10 @@ export async function reconstructSolHistory(args: SolHistorySyncArgs): Promise<S
  * claim exactly as wide as the evidence, and leaves genuinely uncovered days
  * with no row at all.
  */
-export function derivedRowsFromTimeline(
-  timeline: QuantityTimeline,
-): Array<{ dateISO: string; quantity: number; basis: string }> {
-  const out: Array<{ dateISO: string; quantity: number; basis: string }> = [];
-  const seen = new Set<string>();
-  for (const seg of timeline.segments) {
-    if (seg.kind !== "ABSOLUTE") continue;
-    let d = seg.fromISO;
-    // Bounded walk; both ends are ISO dates from the same engine.
-    for (let guard = 0; d <= seg.toISO && guard < 4000; guard++) {
-      if (!seen.has(d)) { seen.add(d); out.push({ dateISO: d, quantity: seg.quantity, basis: seg.basis }); }
-      d = new Date(Date.parse(`${d}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
-    }
-  }
-  return out.sort((a, b) => a.dateISO.localeCompare(b.dateISO));
-}
+
+// W6c — moved to lib/crypto/wallet-reconstruction.ts (Bitcoin needs it too).
+// Re-exported so every existing importer of this module is unaffected.
+export { derivedRowsFromTimeline };
 
 /** Exported for the acceptance tests — the anchor-origin rule, as data. */
 export const SOL_PERMITTED_ANCHOR_ORIGINS = PERMITTED_ANCHOR_ORIGINS;
