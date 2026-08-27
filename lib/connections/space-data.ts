@@ -66,7 +66,7 @@ import {
   type ConnectionIntelligenceStatus,
 } from "@/lib/connections/intelligence";
 import type { AccountLite } from "@/components/connections/ConnectionCard";
-import { loadWalletHistoryMetadata, licensedHistoryStart } from "@/lib/crypto/wallet-history-metadata";
+import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wallet-history-metadata";
 
 /**
  * The canonical Connections view model. `status` is the provider-agnostic
@@ -288,10 +288,14 @@ async function loadConnectionIntelligence(
     let earliest: Date | null = null;
     let balanceVerified: Date | null = null;
     for (const a of accountsByConnectionId[c.id] ?? []) {
-      // The coverage licence outranks the ledger for a wallet: it is the fact
-      // that proves the span, where the ledger only happens to correlate with it
-      // on the one chain that writes movements.
-      const licensed = licensedHistoryStart(historyMeta.get(a.id));
+      // UI-C2 — the ACTIVITY bound, not the proof floor. The licence may reach
+      // back through a proven-zero interval (Ethereum's runs 1,289 days before
+      // the wallet was first funded); "you have history since 2017" is a
+      // different sentence from "we can prove you held zero since 2017", and
+      // only the second one is true there. The coverage still outranks the
+      // transaction ledger — the ledger only correlates on chains that write
+      // movements — it is simply asked for the right bound.
+      const licensed = walletActivityStart(historyMeta.get(a.id));
       const e = licensed ?? earliestByAccount.get(a.id);
       if (e && (!earliest || e < earliest)) earliest = e;
       const b = balanceVerifiedByAccount.get(a.id);

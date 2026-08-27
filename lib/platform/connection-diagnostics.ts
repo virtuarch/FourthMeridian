@@ -22,7 +22,7 @@ import { db } from "@/lib/db";
 import { ProviderType, ShareStatus, PlaidItemStatus, ConnectionStatus } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
 import { deriveConnectionState, deriveWalletConnectionState } from "@/lib/sync/status";
-import { loadWalletHistoryMetadata, licensedHistoryStart } from "@/lib/crypto/wallet-history-metadata";
+import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wallet-history-metadata";
 import { deriveConnectionIntelligence, formatAvailableHistory } from "@/lib/connections/intelligence";
 import {
   deriveConnectionHealthState,
@@ -230,10 +230,12 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
   for (const w of wallets) {
     const faIds = faByConn.get(w.id) ?? [];
     const tx = txForConn(faIds);
-    // The earliest licensed start across this connection's accounts. Null when
-    // nothing is licensed — rendered as silence, never as "no history".
+    // UI-C2 — the earliest ACTIVITY start across this connection's accounts, not
+    // the proof floor: a licence reaching back through a proven-zero interval is
+    // coverage, not wallet history. Null when nothing is evidenced — rendered as
+    // silence, never as "no history".
     const licensedFrom = faIds
-      .map((id) => licensedHistoryStart(walletHistory.get(id)))
+      .map((id) => walletActivityStart(walletHistory.get(id)))
       .filter((d): d is Date => d !== null)
       .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
     const state = deriveWalletConnectionState({ status: w.status, lastSyncedAt: w.lastSyncedAt, errorCode: w.errorCode }) ?? "error";

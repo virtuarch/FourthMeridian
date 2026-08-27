@@ -29,7 +29,7 @@ import {
   canonicalWalletAddress, isCaseInsensitiveAddressChain,
   walletConnectionCredential, walletExternalConnectionId,
 } from "@/lib/accounts/wallet-connection-format";
-import { licensedHistoryStart, type WalletHistoryMetadata } from "./wallet-history-metadata";
+import { licensedHistoryStart, walletActivityStart, type WalletHistoryMetadata } from "./wallet-history-metadata";
 import { deriveWalletConnectionState } from "@/lib/sync/status";
 import { chainSupportsHistory } from "./wallet-sync-dispatch";
 
@@ -125,8 +125,11 @@ const LOWER       = "0x910eb431e27a4adf555a59d8e11ceb81c645ba2d";
 
 // ══ HISTORY DURATION COMES FROM COVERAGE ══════════════════════════════════════
 {
-  const meta = (from: string | null, claims: boolean): WalletHistoryMetadata =>
-    ({ accountId: "a", licensedFromISO: from, licensedToISO: "2026-08-27", claimsHistory: claims });
+  const meta = (
+    from: string | null, claims: boolean, activity: string | null = from,
+  ): WalletHistoryMetadata =>
+    ({ accountId: "a", activityFromISO: activity, licensedFromISO: from,
+       licensedToISO: "2026-08-27", claimsHistory: claims });
 
   check("a licensed interval yields its START",
     licensedHistoryStart(meta("2017-10-16", true))?.toISOString().slice(0, 10) === "2017-10-16");
@@ -137,6 +140,31 @@ const LOWER       = "0x910eb431e27a4adf555a59d8e11ceb81c645ba2d";
     licensedHistoryStart(meta("2020-01-01", false)) === null,
     "a licensed interval on an unpromoted chain is evidence we have not promised "
     + "to stand behind");
+
+  // ── UI-C2 — THE PROOF FLOOR IS NOT THE WALLET'S HISTORY ───────────────────
+  // Ethereum's licence reaches 2017-10-16 (the Byzantium block the proof floors
+  // at) and proves the account held exactly nothing until 2021-04-27. Both are
+  // true; only one of them is "history".
+  const eth = meta("2017-10-16", true, "2021-04-27");
+  check("the card measures from ACTIVITY, not from the proof floor",
+    walletActivityStart(eth)?.toISOString().slice(0, 10) === "2021-04-27");
+  check("…while the proof itself is preserved and still readable",
+    licensedHistoryStart(eth)?.toISOString().slice(0, 10) === "2017-10-16",
+    "coverage must never be truncated to fix presentation");
+  check("a wallet proven EMPTY has coverage and nothing to say about history",
+    walletActivityStart(meta("2017-10-16", true, null)) === null);
+  check("an unpromoted chain yields no activity bound either",
+    walletActivityStart(meta("2020-01-01", false, "2020-06-01")) === null);
+
+  const src2 = code(read("lib", "crypto", "wallet-history-metadata.ts"));
+  check("activity is the earliest NON-ZERO observation",
+    /NOT: \{ quantity: 0 \}/.test(src2),
+    "a zero is a real fact about a date and is not evidence the wallet was in use");
+  check("…resolved in ONE grouped read, not per account",
+    /positionObservation\.groupBy/.test(src2));
+  check("…and clamped inside the licence",
+    /clampToInterval\(/.test(src2),
+    "evidence outside a proven interval is not a claim we may make");
 
   const src = code(read("lib", "crypto", "wallet-history-metadata.ts"));
   // Capability is decided per ACCOUNT and short-circuits before the interval is
@@ -153,8 +181,10 @@ const LOWER       = "0x910eb431e27a4adf555a59d8e11ceb81c645ba2d";
   // Both card loaders must ask the same authority.
   for (const f of ["lib/connections/space-data.ts", "lib/platform/connection-diagnostics.ts"]) {
     const l = code(read(...f.split("/")));
-    check(`${f} measures wallet history from the licence`,
-      /licensedHistoryStart\(/.test(l) && /loadWalletHistoryMetadata\(/.test(l));
+    check(`${f} measures wallet history from ACTIVITY`,
+      /walletActivityStart\(/.test(l) && /loadWalletHistoryMetadata\(/.test(l));
+    check(`${f} does not measure it from the proof floor`,
+      !/licensedHistoryStart\(/.test(l));
   }
 }
 
