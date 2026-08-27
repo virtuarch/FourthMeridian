@@ -239,6 +239,14 @@ export const AUDITS: readonly AuditEntry[] = [
           "pinned in CI by lib/ai/intelligence/brief-scope-adequacy.test.ts",
   },
   {
+    name: "audit-bounded-disclosure", tier: "INFORMATIONAL", needsDb: true,
+    what: "CF-1: renders the REAL system prompt per Space and reports what every bounded " +
+          "list discloses about its own completeness. Whether a corpus HAS a truncated list " +
+          "is a fact about this database, not an invariant; the invariant (a bounded list " +
+          "states its denominator, and never the length of the array it already truncated) " +
+          "is pinned in CI by lib/ai/prompts/bounded-disclosure.test.ts",
+  },
+  {
     name: "audit-unattested-debt-payments", tier: "INFORMATIONAL", needsDb: true,
     what: "investigation: which counted debt payments rest on provider assertion rather than " +
           "structural destination evidence",
@@ -340,6 +348,14 @@ export const AUDITS: readonly AuditEntry[] = [
     name: "diagnose-invalid-plaid-tokens", tier: "OPERATIONAL", needsDb: true,
     what: "READ-ONLY diagnostic for PlaidItem rows whose encryptedToken is neither v1 nor v2; " +
           "step 2 of the key-rotation runbook (docs/operations/key-rotation.md)",
+  },
+  {
+    name: "check-bounded-superlatives", tier: "OPERATIONAL", needsDb: true,
+    what: "CF-1 — asks a live model superlative questions ('who did I spend the most with') " +
+          "against the REAL production prompt for a REAL Space, and fails when a reply claims " +
+          "more than the rendered bounded list supports. Paid and stochastic, so never a gate; " +
+          "the deterministic half (the disclosure exists in the rendered string) is pinned in " +
+          "CI by lib/ai/prompts/bounded-disclosure.test.ts",
   },
   {
     name: "check-conformance-scenarios", tier: "OPERATIONAL", needsDb: false,

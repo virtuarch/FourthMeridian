@@ -118,7 +118,7 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
     row("Move",      -200, "USD", "2026-06-10", "TRANSFER", "Transfer"),
   ];
   const m = buildMerchantRollup(spend, usdCtx, 25);
-  const by = new Map(m.map((x) => [x.canonicalName, x]));
+  const by = new Map(m.items.map((x) => [x.canonicalName, x]));
 
   check("merchant: Amazon total = 100 + 120 = 220 (per-row converted)", by.get("Amazon")?.total === 220);
   check("merchant: Amazon exact ⇒ no estimated flag", by.get("Amazon")?.estimated === undefined);
@@ -129,8 +129,8 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 
   // Ordering is by CONVERTED magnitude: Carrefour(270) > Amazon(220) > Ikea(110) > Souq(0, excluded).
   check("merchant: ranked by converted total; the unavailable row sinks to 0 (never native-inflated)",
-    m.map((x) => x.canonicalName).join(",") === "Carrefour,Amazon,Ikea,Souq",
-    m.map((x) => `${x.canonicalName}:${x.total}`).join(" "));
+    m.items.map((x) => x.canonicalName).join(",") === "Carrefour,Amazon,Ikea,Souq",
+    m.items.map((x) => `${x.canonicalName}:${x.total}`).join(" "));
 }
 
 // ── Same nominal amount, different currency → different converted totals ───────
@@ -141,7 +141,7 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
     row("EurShop", -100, "EUR", "2026-06-10", "SPENDING"), // @1.20
   ];
   const m = buildMerchantRollup(spend, usdCtx, 25);
-  const by = new Map(m.map((x) => [x.canonicalName, x]));
+  const by = new Map(m.items.map((x) => [x.canonicalName, x]));
   check("same-nominal: 100 USD → 100, 100 EUR → 120 (never treated as parity)",
     by.get("UsdShop")?.total === 100 && by.get("EurShop")?.total === 120);
 }
@@ -160,14 +160,14 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
     row("Amazon",     -80, "USD", "2026-06-10", "SPENDING"),
   ];
   const s = buildIncomeSourceRollup(inflow, usdCtx, 25);
-  const by = new Map(s.map((x) => [x.canonicalName, x]));
+  const by = new Map(s.items.map((x) => [x.canonicalName, x]));
 
   check("income: Acme = 2000 + 1200 = 3200 (per-row converted, negative excluded)", by.get("Acme")?.total === 3200);
   check("income: Dividends AED = 270", by.get("Dividends")?.total === 270);
   check("income: Mystery SAR missing ⇒ excluded to 0 + estimated (not native 100)", by.get("Mystery")?.total === 0 && by.get("Mystery")?.estimated === true);
   check("income: spending merchant never appears as income source", !by.has("Amazon"));
   check("income: ranked by converted total (Acme > Dividends > Mystery)",
-    s.map((x) => x.canonicalName).join(",") === "Acme,Dividends,Mystery");
+    s.items.map((x) => x.canonicalName).join(",") === "Acme,Dividends,Mystery");
 }
 
 // ── Recurring candidates: typicalAmount converted per-row before averaging ─────
@@ -202,7 +202,7 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
     row("Ikea",   -200, "USD", "2026-06-12", "SPENDING"),
   ];
   const m = buildMerchantRollup(spend, IDENTITY, 25);
-  const by = new Map(m.map((x) => [x.canonicalName, x]));
+  const by = new Map(m.items.map((x) => [x.canonicalName, x]));
   check("all-USD merchant: Amazon = |−100| + |−50| = 150, no estimated", by.get("Amazon")?.total === 150 && by.get("Amazon")?.estimated === undefined);
   check("all-USD merchant: Ikea = 200", by.get("Ikea")?.total === 200);
 
@@ -211,10 +211,10 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
     row("Acme", 1500, "USD", "2026-06-20", "INCOME", "Income"),
   ];
   const s = buildIncomeSourceRollup(inflow, IDENTITY, 25);
-  check("all-USD income: Acme = 3500, no estimated", s[0]?.total === 3500 && s[0]?.estimated === undefined);
+  check("all-USD income: Acme = 3500, no estimated", s.items[0]?.total === 3500 && s.items[0]?.estimated === undefined);
 
   // Reconciliation: Σ merchant totals == Σ|converted spend| for these rows.
-  const merchantSum = round2(m.reduce((acc, x) => acc + x.total, 0));
+  const merchantSum = round2(m.items.reduce((acc, x) => acc + x.total, 0));
   check("all-USD reconcile: Σ merchant totals == 350", merchantSum === 350);
 }
 
@@ -230,7 +230,7 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
     row("C", -1000, "AED", "2026-06-10", "SPENDING"), // 270
   ];
   const m = buildMerchantRollup(spend, usdCtx, 25);
-  const rollupSum = round2(m.reduce((acc, x) => acc + x.total, 0));
+  const rollupSum = round2(m.items.reduce((acc, x) => acc + x.total, 0));
   const expected = round2(100 + 120 + 270);
   check("mixed reconcile: Σ merchant totals == Σ per-row converted spend (490)", rollupSum === expected, `${rollupSum} vs ${expected}`);
 }

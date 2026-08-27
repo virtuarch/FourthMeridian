@@ -22,6 +22,7 @@
 
 import type { SpaceMemberRole } from '@prisma/client';
 import type { LiabilityState } from '@/lib/debt/balance-semantics';
+import type { BoundedSelection } from "@/lib/ai/bounded-selection";
 
 // ---------------------------------------------------------------------------
 // Domain type
@@ -585,9 +586,10 @@ export interface MonthlyBreakdownEntry {
    * Always present (possibly empty).
    */
   byCategory:       CategorySpend[];
-  /** Top categories by absolute settled total in this month (≤3). Convenience
+  /** Top categories by absolute settled total in this month, as a CF-1 bounded
+   *  selection (≤3 items, `totalCount` = every category this month). Convenience
    *  slice of `byCategory` — kept for compact summaries. */
-  topCategories?:   Array<{ category: string; total: number }>;
+  topCategories?:   BoundedSelection<{ category: string; total: number }>;
 }
 
 /**
@@ -910,6 +912,18 @@ export interface TransactionsSummaryData {
 
   // ── By category ─────────────────────────────────────────────────────────
   byCategory: CategorySpend[];
+  /**
+   * CF-1 — how many categories with settled debits EXIST in this window, before
+   * both the scope cap (`scopeHint: 'brief'` keeps the top five spending
+   * categories) and the serializer's render cap.
+   *
+   * The denominator for any claim about "your categories". It has to travel
+   * from here because `byCategory` may already be narrowed by the time a
+   * consumer sees it, and measuring a narrowed array reports it as complete.
+   *
+   * Optional only for fixtures predating CF-1; the assembler always emits it.
+   */
+  byCategoryTotalCount?: number;
 
   // ── Monthly rollups (deterministic; D6) ─────────────────────────────────
   /**
@@ -949,7 +963,9 @@ export interface TransactionsSummaryData {
    * Settled expense rows only — income, interest, transfers, and debt payments
    * are excluded (see MerchantSummary). Omitted when scopeHint='brief'.
    */
-  merchants?: MerchantSummary[];
+  /** CF-1 — a bounded selection, denominator included. The array alone could
+   *  not distinguish "the top 8" from "the 8 we chose to send". */
+  merchants?: BoundedSelection<MerchantSummary>;
 
   // ── Income-source rollup (D6.3 stabilization; omitted on scopeHint='brief') ─
   /**
@@ -959,7 +975,8 @@ export interface TransactionsSummaryData {
    * Income/Interest rows only (see IncomeSource). Payroll surfaces here — never
    * in `merchants`. Omitted when scopeHint='brief'.
    */
-  incomeSources?: IncomeSource[];
+  /** CF-1 — bounded selection; see `merchants`. */
+  incomeSources?: BoundedSelection<IncomeSource>;
 
   // ── Drilldown evidence (D6; present only on explicit drilldown follow-ups) ─
   /**
@@ -1105,9 +1122,10 @@ export interface HoldingsSummaryData {
   /** True when some visible accounts are shared below FULL visibility and
    *  their positions are therefore excluded from position/concentration analysis. */
   positionsPartiallyHidden: boolean;
-  /** Largest analyzable positions by value, descending (≤ HOLDINGS_TOP_N).
-   *  Omitted when scopeHint === 'brief'. */
-  topPositions?:       HoldingPosition[];
+  /** Largest analyzable positions by value, descending, as a CF-1 bounded
+   *  selection — `totalCount` is the eligible position population, so a reader
+   *  can tell "the largest 10" from "all 10". Omitted when scopeHint === 'brief'. */
+  topPositions?:       BoundedSelection<HoldingPosition>;
   concentration:       HoldingsConcentration;
   /** Deterministic statements of what this domain cannot answer, so the LLM
    *  never implies cost basis, gains, returns, or asset-class data exists. */

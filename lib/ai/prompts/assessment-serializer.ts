@@ -17,6 +17,13 @@ import { fmtMoney } from './format';
 // them was even compared against a different quantity than the engine compares
 // (span vs row count); a mirror that nothing enforces is a fork in waiting.
 import { MARKET_RETURN_THRESHOLD } from '@/lib/ai/intelligence/annotations/constants';
+import { boundedSelection, describeBounds, isComplete } from "@/lib/ai/bounded-selection";
+
+/** CF-1 — how many classified spending categories this block prints. */
+const ASSESSMENT_CATEGORY_LIMIT = 6;
+/** CF-1 — how many risks / opportunities this block prints. */
+const RISK_OPPORTUNITY_LIMIT = 3;
+
 
 /** Return a one-sentence LLM instruction based on the current priority. */
 function priorityGuidance(assessment: FinancialAssessment): string {
@@ -324,11 +331,27 @@ export function serializeAssessmentBlock(
     }
     lines.push(`  Total discretionary spend: ${money(spendingOpportunities.discretionaryTotal)}/mo`);
 
-    const displayCats = spendingOpportunities.topCategories.slice(0, 6);
-    if (displayCats.length > 0) {
-      lines.push('  By category:');
-      for (const cat of displayCats) {
+    // CF-1 — `topCategories` is the COMPLETE classified category population
+    // (metrics.ts returns every category); the cap is applied here, so the
+    // denominator is honest to take here too. A reader asked "what do I spend
+    // the most on" must be able to tell six-of-six from six-of-nineteen.
+    const displayCats = boundedSelection(
+      spendingOpportunities.topCategories, ASSESSMENT_CATEGORY_LIMIT,
+    );
+    if (displayCats.items.length > 0) {
+      lines.push(
+        `  By category — showing ` +
+        `${describeBounds(displayCats.items.length, displayCats.totalCount)} classified ` +
+        `categories, largest first:`,
+      );
+      for (const cat of displayCats.items) {
         lines.push(`    ${cat.category}: ${money(cat.monthlyEquivalent)}/mo [${cat.classification}]`);
+      }
+      if (!isComplete(displayCats)) {
+        lines.push(
+          `    ${displayCats.totalCount - displayCats.items.length} further classified category(ies) ` +
+          'are NOT listed — this is not the complete set.',
+        );
       }
     }
 
@@ -451,23 +474,46 @@ export function serializeAssessmentBlock(
     lines.push(`RISK & OPPORTUNITY  [confidence: ${riskOpportunities.confidence}]`);
 
     if (riskOpportunities.risks.length > 0) {
-      lines.push('  Top risks:');
-      riskOpportunities.risks.slice(0, 3).forEach((r, i) => {
+      // CF-1 — "Top risks" is a superlative over a list the reader cannot see
+      // the size of. The aggregator hands over every candidate; the cap is here.
+      const shownRisks = boundedSelection(riskOpportunities.risks, RISK_OPPORTUNITY_LIMIT);
+      lines.push(
+        `  Top risks — showing ${describeBounds(shownRisks.items.length, shownRisks.totalCount)} ` +
+        `identified risk(s), most severe first:`,
+      );
+      shownRisks.items.forEach((r, i) => {
         lines.push(
           `    ${i + 1}. [${r.severity.toUpperCase()}] ${r.code} (confidence: ${r.confidence})` +
           ` — ${r.evidence} [${r.affectedSections.join(', ')}]`,
         );
       });
+      if (!isComplete(shownRisks)) {
+        lines.push(
+          `    ${shownRisks.totalCount - shownRisks.items.length} further identified risk(s) are NOT ` +
+          'listed — do not present these as every risk.',
+        );
+      }
     }
 
     if (riskOpportunities.opportunities.length > 0) {
-      lines.push('  Top opportunities:');
-      riskOpportunities.opportunities.slice(0, 3).forEach((o, i) => {
+      const shownOpps = boundedSelection(riskOpportunities.opportunities, RISK_OPPORTUNITY_LIMIT);
+      lines.push(
+        `  Top opportunities — showing ` +
+        `${describeBounds(shownOpps.items.length, shownOpps.totalCount)} identified opportunity(ies), ` +
+        `highest impact first:`,
+      );
+      shownOpps.items.forEach((o, i) => {
         lines.push(
           `    ${i + 1}. [${o.impact.toUpperCase()}] ${o.code} (confidence: ${o.confidence})` +
           ` — ${o.evidence} [${o.affectedSections.join(', ')}]`,
         );
       });
+      if (!isComplete(shownOpps)) {
+        lines.push(
+          `    ${shownOpps.totalCount - shownOpps.items.length} further identified opportunity(ies) ` +
+          'are NOT listed — do not present these as every opportunity.',
+        );
+      }
     }
 
     lines.push('');

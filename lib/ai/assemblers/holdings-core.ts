@@ -44,6 +44,7 @@
  */
 
 import { computeConcentration } from "@/lib/investments/concentration";
+import { boundedSelection } from "@/lib/ai/bounded-selection";
 import type {
   HoldingsSummaryData,
   HoldingPosition,
@@ -224,7 +225,10 @@ export function buildHoldingsSummary(args: {
     dataLimits,
     // topPositions omitted for the Daily Brief aggregator to keep payload lean.
     ...(scopeHint !== "brief"
-      ? { topPositions: rankedPositions.slice(0, HOLDINGS_TOP_N) }
+      // CF-1 — `positionCount` already carried the denominator, but only inside
+      // a JSON dump with no statement of what topPositions is a subset OF. The
+      // selection now says so explicitly, in the shared shape.
+      ? { topPositions: boundedSelection(rankedPositions, HOLDINGS_TOP_N) }
       : {}),
   };
   return data;

@@ -182,6 +182,7 @@ const BANKING_CATEGORIES: TransactionCategory[] = [
 // half without the Space gate and the event projection is exactly how this file
 // came to read a population no other surface did.
 import { bankingTransactionWhere } from "@/lib/data/banking-population";
+import { boundedSelection, type BoundedSelection } from "@/lib/ai/bounded-selection";
 
 // FlowType P5 Slice 4 (D-2) / TI1 — flows counted in expenseTotal (gross
 // Σ|amount|): SPENDING + FEE + INTEREST charges. This membership (the former
@@ -992,6 +993,18 @@ async function assembleTransactions(
     ? byCategory.filter((c) => topSpending.has(c.category) || NON_SPENDING_CATEGORY_NAMES.has(c.category))
     : byCategory;
 
+  // ── CF-1 — the category denominator, taken BEFORE the scope cap ───────────
+  //
+  // The serializer prints a bounded slice of `byCategory` and must say what it
+  // is a slice OF. Under scopeHint='brief' the array it receives has ALREADY
+  // been narrowed here, so measuring it there would report "all 5" about a
+  // Space with eleven categories — a false completeness claim, which is worse
+  // than the silence CF-0 found.
+  //
+  // Counted over the same population the serializer renders (total > 0), so the
+  // two numbers describe one thing and the ratio is meaningful.
+  const byCategoryTotalCount = byCategory.filter((c) => c.total > 0).length;
+
   // ── Monthly rollups (D6 — deterministic, per calendar month) ──────────────
   // Buckets are built directly from the queried rows so month-by-month answers
   // never require the LLM to divide a window total by a month count. The
@@ -1053,7 +1066,7 @@ async function assembleTransactions(
   // P2-7C — the rollup converts each row per its own date into the reporting
   // currency before summing (was a native Σ|amount|), so a merchant total can
   // never be a native-currency sum shown next to a converted expenseTotal.
-  const merchants: MerchantSummary[] | undefined =
+  const merchants: BoundedSelection<MerchantSummary> | undefined =
     scopeHint !== 'brief'
       ? buildMerchantRollup(settled, moneyCtx, MERCHANT_ROLLUP_LIMIT)
       : undefined;
@@ -1068,7 +1081,7 @@ async function assembleTransactions(
 
   // P2-7C — same per-row conversion as the merchant rollup, so income sources
   // reconcile with the converted incomeTotal (never a native Σ txn.amount).
-  const incomeSources: IncomeSource[] | undefined =
+  const incomeSources: BoundedSelection<IncomeSource> | undefined =
     scopeHint !== 'brief'
       ? buildIncomeSourceRollup(settled, moneyCtx, INCOME_SOURCE_ROLLUP_LIMIT,
           (id) => incomeAttrById.get(id)?.incomeClass ?? null)
@@ -1150,6 +1163,7 @@ async function assembleTransactions(
     },
 
     byCategory: byCategoryOutput,
+    byCategoryTotalCount,
 
     monthlyBreakdown,
 
@@ -1405,9 +1419,13 @@ export function buildMonthlyBreakdown(
         .sort((x, y) => y.total - x.total);
 
       // topCategories stays a compact convenience slice of byCategory.
-      const topCategories = byCategory
-        .slice(0, MONTHLY_TOP_CATEGORIES)
-        .map(({ category, total }) => ({ category, total }));
+      // CF-1 — and says so: `byCategory` sits beside it complete, but a
+      // convenience slice that does not name its own denominator is exactly the
+      // shape that produced an unqualified superlative on the merchant rollup.
+      const topCategories = boundedSelection(
+        byCategory.map(({ category, total }) => ({ category, total })),
+        MONTHLY_TOP_CATEGORIES,
+      );
 
       const partial =
         (month === startMonth && startClipped) ||
@@ -1428,7 +1446,7 @@ export function buildMonthlyBreakdown(
         ...(partial ? { partial: true } : {}),
         ...(monthTruncated ? { truncated: true } : {}),
         byCategory,
-        ...(topCategories.length > 0 ? { topCategories } : {}),
+        ...(topCategories.items.length > 0 ? { topCategories } : {}),
       };
     });
 }
@@ -1482,7 +1500,7 @@ export function buildMerchantRollup(
   settled: readonly RollupRow[],
   ctx:     ConversionContext,
   limit:   number,
-): MerchantSummary[] {
+): BoundedSelection<MerchantSummary> {
   type MerchantAgg = {
     canonicalName: string;
     total:         number; // absolute settled expense sum, in ctx.target
@@ -1536,7 +1554,7 @@ export function buildMerchantRollup(
     merchantMap.set(canonicalKey, agg);
   }
 
-  return Array.from(merchantMap.entries())
+  const ranked = Array.from(merchantMap.entries())
     .map(([canonicalKey, agg]): MerchantSummary => {
       // Dominant category: most transactions, ties broken by larger abs total.
       let dominant = '';
@@ -1561,8 +1579,12 @@ export function buildMerchantRollup(
         ...(agg.estimated ? { estimated: true } : {}),
       };
     })
-    .sort((a, b) => b.total - a.total)
-    .slice(0, limit);
+    .sort((a, b) => b.total - a.total);
+  // CF-1 — the eligible population exists HERE and nowhere later. One line ago
+  // this was `.slice(0, limit)` and the count of everything ranked was lost, so
+  // the serializer could only measure the survivors and the model was handed a
+  // bounded list indistinguishable from a complete one.
+  return boundedSelection(ranked, limit);
 }
 
 /**
@@ -1581,7 +1603,7 @@ export function buildIncomeSourceRollup(
    * applied to the AI path). Absent (FX fixtures) ⇒ prior behaviour.
    */
   incomeClassOf?: (id: string) => string | null,
-): IncomeSource[] {
+): BoundedSelection<IncomeSource> {
   type IncomeAgg = {
     canonicalName: string;
     total:         number; // positive settled inflow sum, in ctx.target
@@ -1627,7 +1649,7 @@ export function buildIncomeSourceRollup(
     incomeMap.set(canonicalKey, agg);
   }
 
-  return Array.from(incomeMap.entries())
+  const ranked = Array.from(incomeMap.entries())
     .map(([canonicalKey, agg]): IncomeSource => ({
       canonicalName: agg.canonicalName,
       canonicalKey,
@@ -1637,8 +1659,9 @@ export function buildIncomeSourceRollup(
       lastSeen:      agg.lastSeen,
       ...(agg.estimated ? { estimated: true } : {}),
     }))
-    .sort((a, b) => b.total - a.total)
-    .slice(0, limit);
+    .sort((a, b) => b.total - a.total);
+  // CF-1 — see buildMerchantRollup: the denominator travels with the selection.
+  return boundedSelection(ranked, limit);
 }
 
 /**

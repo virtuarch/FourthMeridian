@@ -27,6 +27,7 @@ import { checkSpendingCategoryInvariant } from '@/lib/ai/assemblers/transactions
 import { NON_SPENDING_CATEGORY_NAMES } from '@/lib/ai/spending-categories';
 import { ATTRIBUTION_DISCLOSURE, GAP_IMPACT } from './doctrine';
 import { fmtMoney, fmtMonthYear, approxMonths, getTransactionsSummary } from './format';
+import { boundedSelection, describeBounds, isComplete } from "@/lib/ai/bounded-selection";
 
 /** One debt account's received payments within the serialized window. */
 export type DebtPaymentLine = { name: string; total: number; count: number };
@@ -78,6 +79,19 @@ export function extractKnowledgeGaps(ctx: SpaceContext_AI): KnowledgeGap[] {
  * knowledge gaps as a human-readable list with impact annotations.
  * The prompt explicitly constrains the model to this data only.
  */
+
+/**
+ * CF-1 — how many rows of a bounded list this serializer PRINTS.
+ *
+ * Named because they are a second narrowing on top of the producer's cap
+ * (merchants: 174 eligible → 25 rollup → 8 printed), and the disclosure beside
+ * each list must survive that composition: the denominator stays the eligible
+ * population, never the rollup's cap.
+ */
+const MERCHANT_RENDER_LIMIT = 8;
+const CATEGORY_RENDER_LIMIT = 8;
+const INCOME_RENDER_LIMIT   = 8;
+
 export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtPaymentLine[]): string {
   const lines: string[] = [];
   // REVIEW-3 C-6 — ONE bound money formatter for the whole block, in the
@@ -275,25 +289,38 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
         }
       }
 
-      const catAverages = Array.from(catTotals.entries())
-        .map(([category, total]) => ({
-          category,
-          total,
-          avg: Math.round((total / completeCount) * 100) / 100,
-        }))
-        .sort((a, b) => b.avg - a.avg)
-        .slice(0, 8);
+      // CF-1 — the population is complete HERE (catTotals holds every spending
+      // category across the complete months), so the denominator is honest to
+      // take locally: this array has not been truncated by anyone upstream.
+      const catAverages = boundedSelection(
+        Array.from(catTotals.entries())
+          .map(([category, total]) => ({
+            category,
+            total,
+            avg: Math.round((total / completeCount) * 100) / 100,
+          }))
+          .sort((a, b) => b.avg - a.avg),
+        CATEGORY_RENDER_LIMIT,
+      );
 
-      if (catAverages.length > 0) {
+      if (catAverages.items.length > 0) {
         lines.push(
-          `  AVERAGE MONTHLY CATEGORY SPENDING (each category's total across the ${completeCount} ` +
+          `  AVERAGE MONTHLY CATEGORY SPENDING — showing ` +
+          `${describeBounds(catAverages.items.length, catAverages.totalCount)} spending categories, ` +
+          `largest first (each category's total across the ${completeCount} ` +
           'complete month(s) ÷ month count — these are AVERAGES, valid ONLY when the user asks for ' +
           'a typical/average month; NEVER use them as any single month\'s value):',
         );
-        for (const c of catAverages) {
+        for (const c of catAverages.items) {
           lines.push(
             `    ${c.category}: ${money(c.avg)}/month ` +
             `(${money(Math.round(c.total * 100) / 100)} across ${completeCount} mo)`,
+          );
+        }
+        if (!isComplete(catAverages)) {
+          lines.push(
+            `    ${catAverages.totalCount - catAverages.items.length} further spending category(ies) ` +
+            'with a smaller average are NOT listed — do not present this as every category.',
           );
         }
       }
@@ -301,19 +328,35 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
       // No complete calendar month in the window: present exact window totals and
       // decline to assert a monthly average rather than fabricate one from a
       // partial window.
+      // CF-1 — as above: byCategory is the complete category population for the
+      // window, so the count before the render cap is the real denominator.
+      const windowCats = boundedSelection(
+        txn.byCategory.filter((c) => c.total > 0), CATEGORY_RENDER_LIMIT,
+      );
+      // The producer's count, because `byCategory` itself may already have been
+      // capped by scopeHint before it reached this function.
+      const windowCatTotal = txn.byCategoryTotalCount ?? windowCats.totalCount;
       lines.push(
-        '  Category totals for this window (exact debit-only sums; the window contains no complete ' +
+        `  Category totals for this window — showing ` +
+        `${describeBounds(windowCats.items.length, windowCatTotal)} spending categories, ` +
+        'largest first (exact debit-only sums; the window contains no complete ' +
         'calendar month, so no monthly average is asserted — do not divide these by a month count):',
       );
       // KD-17: totals are debit-only; zero-total entries (pure-credit or
       // count-only categories such as Income, whose inflow is reported via the
       // income figures above) are not printed as spending. Credits disclosed.
-      for (const cat of txn.byCategory.filter((c) => c.total > 0).slice(0, 8)) {
+      for (const cat of windowCats.items) {
         lines.push(
           `    ${cat.category}: ${money(cat.total)} total (${cat.count} txn(s))` +
           (cat.creditTotal
             ? ` (excludes ${money(cat.creditTotal)} in credits/refunds — NOT spending)`
             : ''),
+        );
+      }
+      if (windowCats.items.length < windowCatTotal) {
+        lines.push(
+          `    ${windowCatTotal - windowCats.items.length} further spending category(ies) with a ` +
+          'smaller total are NOT listed — do not present this as every category.',
         );
       }
 
@@ -428,14 +471,24 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
     // expense rows only — income/payroll, transfers, and debt payments are
     // excluded upstream, so this answers "who did I spend the most with" without
     // ever surfacing payroll or a Chase/Amex payment as a merchant.
-    if (txn.merchants && txn.merchants.length > 0) {
+    if (txn.merchants && txn.merchants.items.length > 0) {
+      // CF-1 — the denominator comes from the PRODUCER (buildMerchantRollup),
+      // which is the only place the eligible population ever existed. Measured
+      // on the real Space: 174 eligible → 25 rollup cap → 8 rendered, and the
+      // model was asked to answer "who did I spend the most with" from those 8
+      // with nothing to tell it 164 were withheld. It answered "Your top
+      // merchants are…", unqualified, and every figure in it was correct.
+      const shownMerchants = txn.merchants.items.slice(0, MERCHANT_RENDER_LIMIT);
+      const merchantBounds = describeBounds(shownMerchants.length, txn.merchants.totalCount);
+      const merchantsComplete = shownMerchants.length >= txn.merchants.totalCount;
       lines.push('');
       lines.push(
-        'MERCHANT SUMMARY — TOP SPENDING MERCHANTS (settled expenses only in the window above; ' +
-        'grouped by canonical merchant name; totals are exact absolute settled spend). ' +
+        `MERCHANT SUMMARY — showing ${merchantBounds} spending merchants, largest first ` +
+        '(settled expenses only in the window above; grouped by canonical merchant name; ' +
+        'totals are exact absolute settled spend). ' +
         'Income/payroll, internal transfers, and debt payments are already EXCLUDED here:',
       );
-      for (const mrc of txn.merchants.slice(0, 8)) {
+      for (const mrc of shownMerchants) {
         lines.push(
           `  ${mrc.canonicalName}: ${money(mrc.total)} across ${mrc.occurrences} txn(s), ` +
           `mostly ${mrc.category}, ${mrc.firstSeen} → ${mrc.lastSeen}`,
@@ -446,17 +499,33 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
         'These are SPENDING merchants only — never describe an income source, transfer, or debt ' +
         'payment as a spending merchant, and never pull a payroll/employer name into this list.',
       );
+      // CF-1 — the instruction above licenses a SUPERLATIVE. It may only do so
+      // when the rows shown ARE the population; otherwise say what is missing.
+      lines.push(
+        merchantsComplete
+          ? `  This is the COMPLETE set of ${txn.merchants.totalCount} spending merchant(s) in the window — ` +
+            'a ranking over these rows is exhaustive.'
+          : `  ${txn.merchants.totalCount - shownMerchants.length} further spending merchant(s) in this window ` +
+            'are NOT listed above. These rows are the largest by spend, so the leader is reliable, but do ' +
+            'not state or imply that this is the complete set of merchants, and do not answer questions ' +
+            'about counts, totals across all merchants, or "everyone I spent with" from it.',
+      );
     }
 
     // ── Income sources (D6.3 — inflow rollup, kept separate from merchants) ──
     // Payroll and other inflows live here, NOT in the merchant summary above.
-    if (txn.incomeSources && txn.incomeSources.length > 0) {
+    if (txn.incomeSources && txn.incomeSources.items.length > 0) {
+      // CF-1 — same contract as merchants: the denominator is the producer's.
+      const shownIncome = txn.incomeSources.items.slice(0, INCOME_RENDER_LIMIT);
+      const incomeBounds = describeBounds(shownIncome.length, txn.incomeSources.totalCount);
+      const incomeComplete = shownIncome.length >= txn.incomeSources.totalCount;
       lines.push('');
       lines.push(
-        'INCOME SOURCES (settled inflows only — Income + Interest — in the window above; grouped ' +
-        'by canonical name; totals are exact settled sums). This is a SEPARATE list from spending merchants:',
+        `INCOME SOURCES — showing ${incomeBounds} sources, largest first (settled inflows only — ` +
+        'Income + Interest — in the window above; grouped by canonical name; totals are exact settled ' +
+        'sums). This is a SEPARATE list from spending merchants:',
       );
-      for (const src of txn.incomeSources.slice(0, 8)) {
+      for (const src of shownIncome) {
         lines.push(
           `  ${src.canonicalName}: ${money(src.total)} across ${src.occurrences} txn(s), ` +
           `${src.firstSeen} → ${src.lastSeen}`,
@@ -465,6 +534,12 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
       lines.push(
         '  Use these for "top income sources / where does my money come from" questions. ' +
         'Do NOT describe these as spending merchants and do NOT include them in spending totals or averages.',
+      );
+      lines.push(
+        incomeComplete
+          ? `  This is the COMPLETE set of ${txn.incomeSources.totalCount} income source(s) in the window.`
+          : `  ${txn.incomeSources.totalCount - shownIncome.length} further income source(s) in this window ` +
+            'are NOT listed above — do not present this as the complete set.',
       );
     }
 

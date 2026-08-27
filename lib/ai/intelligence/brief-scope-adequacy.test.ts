@@ -366,7 +366,9 @@ test("W4: one measured corpus, brief-shaped vs full-shaped transport, assesses d
     monthlyBreakdown: MONTHS,
     // Full-scope-only rollups present (their absence under brief must be
     // invisible to the engine):
-    recurringCandidates: [], merchants: [], incomeSources: [],
+    recurringCandidates: [],
+    merchants:     { items: [], returnedCount: 0, totalCount: 0, limit: 25 },
+    incomeSources: { items: [], returnedCount: 0, totalCount: 0, limit: 25 },
   } as Partial<TransactionsSummaryData>);
   const briefTxn = mkTxn({
     ...MEASURED,

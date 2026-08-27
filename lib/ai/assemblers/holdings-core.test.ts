@@ -80,7 +80,7 @@ console.log("2. FULL detail sourced from canonical current-position rows");
     scopeHint: "full", fullRows,
     allScope: agg({ valuedSubtotal: 12000, cashValue: 2000 }),
   })!;
-  const syms = (out.topPositions ?? []).map((p) => p.symbol);
+  const syms = (out.topPositions?.items ?? []).map((p) => p.symbol);
   check("FULL non-cash positions surfaced", syms.includes("AAA") && syms.includes("BBB"));
   check("cash excluded from positions/concentration", !syms.includes("CASH") && out.positionCount === 2);
   check("analyzedInvestedValue = Σ FULL non-cash (6000+4000)", approx(out.analyzedInvestedValue, 10000));
@@ -109,7 +109,7 @@ console.log("3. hidden value preserved without leaking detail");
   check("partial-visibility flagged", out.positionsPartiallyHidden === true);
   check("dataLimits discloses partial visibility",
     out.dataLimits.some((d) => /shared below full visibility/.test(d)));
-  const syms = (out.topPositions ?? []).map((p) => p.symbol);
+  const syms = (out.topPositions?.items ?? []).map((p) => p.symbol);
   check("no hidden symbol leaks into positions", syms.length === 2 && !syms.includes("CASH"));
 }
 
@@ -157,7 +157,7 @@ console.log("5. unvalued positions honest");
     scopeHint: "full", fullRows,
     allScope: agg({ valuedSubtotal: 5000, cashValue: 0 }),
   })!;
-  const syms = (out.topPositions ?? []).map((p) => p.symbol);
+  const syms = (out.topPositions?.items ?? []).map((p) => p.symbol);
   check("unvalued row excluded from concentration/positions", !syms.includes("MISS") && out.positionCount === 1);
   check("unvalued disclosed in dataLimits", out.dataLimits.some((d) => /could not be valued/.test(d)));
 }
@@ -175,7 +175,7 @@ console.log("6. W5 crypto: spine-only, honest absence");
     ],
     allScope: agg({ valuedSubtotal: 40000, cashValue: 0 }),
   })!;
-  const syms = (out.topPositions ?? []).map((p) => p.symbol);
+  const syms = (out.topPositions?.items ?? []).map((p) => p.symbol);
   check("spine BTC surfaces like any instrument", syms.includes("BTC") && syms.includes("AAA"));
   check("BTC participates in totals (40000)", approx(out.totalPortfolioValue, 40000));
   check("BTC participates in concentration (30000/40000)",
