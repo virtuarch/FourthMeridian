@@ -137,8 +137,11 @@ check("the syncable set is exactly the five chains that have earned it",
 check("BNB and AVAX earned CURRENT_POSITION_SUPPORTED",
   walletChainSupport("BNB") === "CURRENT_POSITION_SUPPORTED"
     && walletChainSupport("AVAX") === "CURRENT_POSITION_SUPPORTED");
-check("Polygon is offerable but NOT syncable — an unpriceable asset earns nothing",
-  isProductSupportedChain("MATIC") && !isSyncableChain("MATIC")
+// PRODUCT-C1 — Polygon left the picker, and its capability answer is unchanged:
+// still UNSUPPORTED, still on the unresolved pricing identity. Withdrawing a
+// chain from the product surface must not disturb what it had earned.
+check("Polygon remains UNSUPPORTED — an unpriceable asset still earns nothing",
+  !isProductSupportedChain("MATIC") && !isSyncableChain("MATIC")
     && walletChainSupport("MATIC") === "UNSUPPORTED");
 // ETH-H2 — Ethereum is now the one EVM chain with history, and it earned it the
 // same way BTC and SOL did: on its own real-wallet acceptance. Adding an EVM
@@ -278,16 +281,24 @@ check("xpub normalisation remains guarded to BTC",
 // already drifted (BNB was offered by the menu and refused by the endpoint).
 check("the create route validates against the ONE product-surface authority",
   /isProductSupportedChain\(chain\)/.test(walletRoute) && !/SUPPORTED_CHAINS = \[/.test(walletRoute));
-check("product support still exceeds sync capability (custody ≠ readability)",
-  PRODUCT_CHAIN_VALUES.some((c) => !isSyncableChain(c)),
+// PRODUCT-C1 — THE RELATIONSHIP INVERTED, AND THAT IS THE POINT.
+//
+// The surface used to exceed capability: Polygon was offerable and unreadable,
+// so recording custody was possible where reading the chain was not. It is now a
+// strict SUBSET — BNB and Avalanche are fully syncable and deliberately not
+// offered — which is the other legitimate direction. Both are product decisions;
+// neither is a capability claim, and the two questions stay independent.
+check("every OFFERED chain is syncable — nothing offered is unreadable",
+  PRODUCT_CHAIN_VALUES.every((c) => isSyncableChain(c)),
   PRODUCT_CHAIN_VALUES.filter((c) => !isSyncableChain(c)).join(","));
-check("…and every SYNCABLE chain is also offerable — no capability is unreachable",
-  SYNCABLE_CHAINS.every((c) => PRODUCT_CHAIN_VALUES.includes(c)));
+check("…and capability EXCEEDS the surface — a withdrawn chain keeps what it earned",
+  SYNCABLE_CHAINS.some((c) => !PRODUCT_CHAIN_VALUES.includes(c)),
+  SYNCABLE_CHAINS.filter((c) => !PRODUCT_CHAIN_VALUES.includes(c)).join(","));
 
 // The narrowed surface, pinned so a removed chain cannot drift back.
-check("the picker offers EXACTLY the six product chains",
-  PRODUCT_CHAIN_VALUES.join(",") === "BTC,ETH,SOL,BNB,MATIC,AVAX", PRODUCT_CHAIN_VALUES.join(","));
-for (const gone of ["ADA", "XRP", "OTHER", "DOT"]) {
+check("the picker offers EXACTLY the three product chains",
+  PRODUCT_CHAIN_VALUES.join(",") === "BTC,ETH,SOL", PRODUCT_CHAIN_VALUES.join(","));
+for (const gone of ["ADA", "XRP", "OTHER", "DOT", "BNB", "MATIC", "AVAX"]) {
   check(`${gone} is NOT offerable`, !isProductSupportedChain(gone));
 }
 check("…and the API refuses them too — hiding a menu option is not a restriction",
@@ -301,9 +312,16 @@ check("the picker renders the authority rather than a copy of it",
   /const CHAINS = PRODUCT_CHAINS/.test(code(read("components", "dashboard", "AddWalletModal.tsx"))));
 
 // PRODUCT support earns NOTHING. BNB/MATIC/AVAX are offerable and unreadable.
-check("being offerable does not confer current-position capability",
-  isProductSupportedChain("MATIC") && !isSyncableChain("MATIC"));
-check("…nor history capability",
+// PRODUCT-C1 — and the converse: being WITHDRAWN does not revoke capability.
+// BNB and Avalanche keep CURRENT_POSITION_SUPPORTED with their adapters, network
+// definitions, asset identities and provider support entirely intact; only the
+// menu changed, so re-offering one is a single line in product-chains.ts.
+check("a withdrawn chain keeps its earned capability",
+  !isProductSupportedChain("BNB") && isSyncableChain("BNB")
+    && walletChainSupport("BNB") === "CURRENT_POSITION_SUPPORTED"
+    && !isProductSupportedChain("AVAX") && isSyncableChain("AVAX")
+    && walletChainSupport("AVAX") === "CURRENT_POSITION_SUPPORTED");
+check("…and still claims no history it did not earn",
   ["BNB", "MATIC", "AVAX"].every((c) => !chainSupportsHistory(c)));
 
 // ── PART B4 — NO ROUTE MAY EXPAND BALANCE AUTHORITY ─────────────────────────

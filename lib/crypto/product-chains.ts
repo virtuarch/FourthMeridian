@@ -35,8 +35,9 @@
  * and per evidence class, and it is earned in the registry — never here.
  *
  * ── HIDING IS NOT DELETING ──────────────────────────────────────────────────
- * Chains removed from this list (Cardano, XRP, and the catch-all "Other") keep
- * every piece of canonical machinery they had. `WalletChain` still names them,
+ * Chains removed from this list — Cardano, XRP and the catch-all "Other", and
+ * since PRODUCT-C1 also BNB Chain, Polygon and Avalanche — keep every piece of
+ * canonical machinery they had. `WalletChain` still names them,
  * the doctrine still governs them, and re-offering one is a single edit here.
  * Narrowing the surface is a statement about what is ready to show, not a claim
  * that the architecture cannot represent them.
@@ -63,9 +64,15 @@ export const PRODUCT_CHAINS: readonly ProductChain[] = [
   { value: "BTC",   label: "Bitcoin (BTC)",   placeholder: "address (bc1…/1…/3…) or xpub/ypub/zpub" },
   { value: "ETH",   label: "Ethereum (ETH)",  placeholder: "0x..." },
   { value: "SOL",   label: "Solana (SOL)",    placeholder: "Base58 address..." },
-  { value: "BNB",   label: "BNB Chain (BNB)", placeholder: "0x..." },
-  { value: "MATIC", label: "Polygon (MATIC)", placeholder: "0x..." },
-  { value: "AVAX",  label: "Avalanche (AVAX)", placeholder: "0x..." },
+  // PRODUCT-C1 — BNB Chain, Polygon and Avalanche were withdrawn from the
+  // picker. Nothing about them was undone: their adapters, network definitions,
+  // asset identities, Alchemy support, capability entries and tests are all
+  // intact and still exercised. Re-offering one is a single line here.
+  //
+  // This is the whole mechanism, which is the point of the file existing: the
+  // picker and the create route both read this list, so a chain cannot be
+  // offered by one and refused by the other — the drift that once let a user
+  // choose BNB and receive a 400 from the endpoint that had just offered it.
 ] as const;
 
 /** The canonical tokens, for validation and diagnostics. */
