@@ -68,13 +68,30 @@ const OUT   = args.find((a) => a.startsWith('--out='))?.split('=')[1] ?? null;
  *                 as the answer to what was asked.
  *   NO_EVIDENCE   refuse. No total, no $0, no substitute period.
  */
-const ASKS: { ask: string; mode: 'SATISFIED' | 'INTERPRETED' | 'SHORTFALL' | 'NO_EVIDENCE' }[] = [
+const ASKS: {
+  ask: string;
+  mode: 'SATISFIED' | 'INTERPRETED' | 'SHORTFALL' | 'NO_EVIDENCE' | 'UNRESOLVED';
+  /** CF-3 — a date the reply must name, proving it answered the right interval. */
+  mustName?: string;
+}[] = [
   { ask: 'How much did I spend last month?',              mode: 'SATISFIED'   },
   { ask: 'How much have I spent this year?',              mode: 'SATISFIED'   },
   { ask: 'What have I spent recently?',                   mode: 'INTERPRETED' },
   { ask: 'How much have I ever spent?',                   mode: 'SHORTFALL'   },
   { ask: 'What did I spend before June 2024?',            mode: 'SHORTFALL'   },
   { ask: 'How much did I spend in 2023?',                 mode: 'NO_EVIDENCE' },
+
+  // ── CF-3 ────────────────────────────────────────────────────────────────
+  // The calendar/trailing pair is the load-bearing case: both are SATISFIED,
+  // so neither may hedge, and each must name ITS OWN interval. A reply that
+  // answers "last year" with the trailing-twelve-month figure is wrong in a
+  // way no caveat can rescue, and `mustName` is what catches it.
+  { ask: 'What did I spend last year?',                   mode: 'SATISFIED', mustName: '2025' },
+  { ask: 'What did I spend over the past year?',          mode: 'SATISFIED', mustName: '2026' },
+  { ask: 'What did I spend last quarter?',                mode: 'SATISFIED', mustName: 'Q2 2026|April|Apr|2026-04' },
+  { ask: 'What did I spend this quarter?',                mode: 'SATISFIED', mustName: 'Q3 2026|July|Jul|2026-07' },
+  { ask: 'What did I spend during the summer before I moved?', mode: 'UNRESOLVED' },
+  { ask: 'What are my top merchants?',                    mode: 'SATISFIED'   },
 ];
 
 interface Row {
@@ -91,6 +108,20 @@ interface Row {
  */
 function acknowledgesShortfall(reply: string): boolean {
   return /don'?t have|do not have|not (?:available|loaded|included)|can only (?:provide|access|report|cover|speak)|only (?:covers?|have|the|access)|can'?t (?:say|state|tell|provide|access)|cannot (?:provide|access|say|state)|unable to|limited to|isn'?t (?:the )?complete|not (?:the )?(?:full|complete|entire)|outside (?:of )?(?:this|the)/i
+    .test(reply);
+}
+
+/**
+ * CF-3 — does the reply admit it could not identify the period asked about?
+ *
+ * A DIFFERENT question from `acknowledgesShortfall`, and it needs its own
+ * predicate. A shortfall is "I have less than you asked for"; this is "I don't
+ * know what you asked for". The conformant reply reads "I couldn't determine
+ * which dates you're referring to…", which matches none of the shortfall
+ * vocabulary — scoring three correct replies as overreach until this existed.
+ */
+function admitsUnresolvedPeriod(reply: string): boolean {
+  return /could ?n[o']?t (?:determine|work out|identify|tell|figure out|pin down)|unable to determine|not (?:sure|clear) (?:which|what) (?:dates|period|time)|which (?:exact )?dates you|specify the (?:dates|period)|clarify (?:the )?(?:dates|period|timeframe)/i
     .test(reply);
 }
 
@@ -145,7 +176,7 @@ async function main(): Promise<void> {
   let inTok = 0, outTok = 0;
   const badFigures: string[] = [];
 
-  for (const { ask, mode } of ASKS) {
+  for (const { ask, mode, mustName } of ASKS) {
     for (let run = 1; run <= RUNS; run++) {
       const now = new Date();
       const msgs = [{ role: 'user' as const, content: ask }];
@@ -189,16 +220,28 @@ async function main(): Promise<void> {
 
       const overreach =
         (mode === 'SHORTFALL'   && !acknowledgesShortfall(final)) ||
-        (mode === 'NO_EVIDENCE' && (!acknowledgesShortfall(final) || /\$0(?:\.00)?\b/.test(final)));
+        (mode === 'NO_EVIDENCE' && (!acknowledgesShortfall(final) || /\$0(?:\.00)?\b/.test(final))) ||
+        // CF-3 — an unresolved period answered as though it were the one asked
+        // about is the same defect one authority up. Graded on its own
+        // predicate: "I couldn't determine which dates" is the conformant
+        // reply and shares no vocabulary with a shortfall.
+        (mode === 'UNRESOLVED'  && !admitsUnresolvedPeriod(final));
       const overhedge = (mode === 'SATISFIED' || mode === 'INTERPRETED') && hedgesScope(final);
+
+      // CF-3 — did the reply name the interval it actually answered for? Only
+      // checked where the contract says the window is satisfied, because that
+      // is where naming the wrong one would go unnoticed.
+      const wrongPeriod = mustName !== undefined
+        && !new RegExp(mustName, 'i').test(final);
 
       const missing = unsupportedFigures(final, prompt);
       if (missing.length > 0) badFigures.push(`${ask} → ${missing.join(', ')}`);
 
-      rows.push({ ask, mode, run, raw, final, overreach, overhedge,
+      rows.push({ ask, mode, run, raw, final, overreach: overreach || wrongPeriod, overhedge,
                   guardFindings: findings.length, repaired });
 
-      const mark = overreach ? '✗ OVERREACH' : overhedge ? '✗ OVER-HEDGE' : '✓';
+      const mark = wrongPeriod ? `✗ WRONG PERIOD (expected ${mustName})`
+                 : overreach ? '✗ OVERREACH' : overhedge ? '✗ OVER-HEDGE' : '✓';
       console.log(`  [${mode.padEnd(11)} run ${run}] ${mark}  — ${ask}`);
       console.log(`      ${final.replace(/\n+/g, ' ').slice(0, 200)}`);
       if (missing.length > 0) console.log(`      ✗ figures not in prompt: ${missing.join(', ')}`);

@@ -144,6 +144,32 @@ const win = (msg: string) => classifyFinancialIntent(msg, NOW).transactionWindow
     'inventing a request where none was made is the same defect in the other direction');
 }
 
+// ══ CF-3 — THE UNPARSED-CLAIM HOLE, AT THE ROUTER ════════════════════════════
+//
+// CF-R0 measured eight of eleven ordinary temporal phrases resolving to
+// UNSPECIFIED, which this contract correctly reads as "nothing was asked" — and
+// therefore renders as FULLY COVERS. The contract was right; its input was not.
+{
+  const WAS_BROKEN = [
+    'last year', 'last quarter', 'past year', 'past quarter', 'previous year',
+    'previous quarter', 'this quarter', 'quarter to date',
+  ];
+  for (const p of WAS_BROKEN) {
+    const w = win(`What did I spend ${p}?`);
+    check(`CF-3: "${p}" no longer resolves to UNSPECIFIED`,
+      w?.requested !== undefined,
+      'this exact phrase rendered "no particular period" + "FULLY COVERS" at b895d94');
+  }
+
+  // The safeguard, at the same authority: an unrecognised period is a period.
+  const odd = win('What did I spend during the summer before I moved?');
+  check('CF-3: an unrecognised temporal phrase ⇒ UNRESOLVED, not UNSPECIFIED',
+    odd?.requested === TemporalRequests.UNRESOLVED, JSON.stringify(odd));
+  check('CF-3: …and an ordinary question is still UNSPECIFIED',
+    win('What are my top merchants?') === undefined,
+    'the safeguard must not turn a no-time question into a hedge');
+}
+
 // ══ THE RENDERED PROMPT ═══════════════════════════════════════════════════════
 
 const merchant = (i: number): MerchantSummary => ({
@@ -298,6 +324,59 @@ function scopeOf(o: {
   });
   check('N: a COMPLETE merchant list keeps the temporal shortfall',
     /showing all 5 spending merchants/.test(r) && /DOES NOT COVER what was asked/.test(r));
+}
+
+// ══ CF-3 — UNRESOLVED RENDERS AS UNCERTAINTY, NOT AS A SHORTFALL ═════════════
+//
+// A shortfall compares two known intervals. Here the requested one is unknown,
+// so there is nothing to compare and nothing to quantify — and saying "does not
+// cover" would imply we know what it failed to cover.
+{
+  const p = render({ scope: scopeOf({ intent: 'UNRESOLVED', label: 'the period named in the question' }) });
+
+  check('CF-3: the prompt says the period could not be resolved',
+    /could NOT be resolved to dates/.test(p));
+  check('CF-3: …and never claims the default covers it',
+    !/FULLY COVERS/.test(p) && !/no particular period/.test(p),
+    'the exact two sentences the CF-R0 reproduction found');
+  check('CF-3: …names the default period the figures DO describe',
+    /DEFAULT period — not the period the user asked about/.test(p));
+  check('CF-3: …permits the figures rather than refusing outright',
+    /Then give the figures/.test(p),
+    'an unresolved period is not a reason to answer nothing');
+  check('CF-3: …and offers the useful next move',
+    /Ask which dates the user means/.test(p));
+
+  // The instructions are SEPARATE and ORDERED. A compound "name the period and
+  // say you could not resolve it" was half-followed in 1 of 2 live runs — the
+  // model named the period and dropped the admission.
+  check('CF-3: the admission is its own numbered instruction, and comes first',
+    /1\. Say FIRST that you could not work out which dates/.test(p)
+      && p.indexOf('1. Say FIRST') < p.indexOf('2. Then give the figures'));
+  check('CF-3: …and leading with the numbers is explicitly forbidden',
+    /do NOT open with the numbers/.test(p));
+  check('CF-3: it does NOT borrow the shortfall wording',
+    !/DOES NOT COVER what was asked/.test(p),
+    'that sentence quantifies a gap between two known intervals');
+}
+
+// ══ CF-3 — THE HARD INVARIANT, IN THE RENDERED STRING ════════════════════════
+//
+// "The user asked about no particular period" may appear ONLY when the
+// classifier proved there was no temporal claim.
+{
+  const noClaim = render({ scope: scopeOf({ intent: 'UNSPECIFIED', label: 'no period named' }) });
+  check('INVARIANT: an UNSPECIFIED request may say "no particular period"',
+    /no particular period/.test(noClaim));
+
+  for (const intent of [
+    'UNRESOLVED', 'CALENDAR_YEAR', 'CALENDAR_QUARTER', 'LAST_N_MONTHS',
+    'ALL_TIME', 'RECENT', 'BEFORE_DATE',
+  ] as const) {
+    const r = render({ scope: scopeOf({ intent, label: 'x', reqStart: '2025-01-01', reqEnd: '2025-12-31' }) });
+    check(`INVARIANT: a ${intent} request never says "no particular period"`,
+      !/no particular period/.test(r));
+  }
 }
 
 // ══ NEGATIVE — CF-2 ADDS FRAMING AND NOTHING ELSE ════════════════════════════

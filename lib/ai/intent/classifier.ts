@@ -324,6 +324,75 @@ function toIsoUtcDate(d: Date): string {
 }
 
 /**
+ * CF-3 — DOES THIS MESSAGE MAKE A TEMPORAL CLAIM AT ALL?
+ *
+ * The safeguard that keeps this contract honest about its own vocabulary.
+ *
+ * Every rule below resolves ONE phrasing. Nothing resolves the phrasings nobody
+ * thought of, and before this slice those became `undefined` — which the CF-2
+ * contract reads as "no period was named", and therefore as a request the
+ * default window fully satisfies. Eight of eleven measured phrases took that
+ * path and produced "The user asked about no particular period. The loaded
+ * period FULLY COVERS what was asked."
+ *
+ * So the parser answers two questions instead of one: WHICH period (the rules),
+ * and WHETHER a period was asked for at all (this). When the second says yes
+ * and the first says nothing, the request is UNRESOLVED — useful window, honest
+ * uncertainty — rather than silently becoming no request.
+ *
+ * ── Why these cues and not tense ────────────────────────────────────────────
+ * "How much am I spending?" is present-tense and makes no temporal claim; it
+ * must keep its default window and answer directly. So the cues are explicit
+ * time EXPRESSIONS — period nouns under a determiner, relative markers,
+ * seasons, named days, durations — never grammatical tense, and never a bare
+ * verb. Over-detection is a real cost: it would turn ordinary questions into
+ * refusals, which is the failure mode in the other direction.
+ *
+ * False negatives here are survivable (the phrase behaves as it did before
+ * CF-3); false positives are not (an ordinary question starts hedging). The
+ * list is therefore deliberately specific, and the ordinary-question corpus in
+ * temporal-claim.test.ts pins that it stays that way.
+ */
+const TEMPORAL_CUES: RegExp[] = [
+  // A period noun under a determiner or ordinal — "that month", "the summer",
+  // "those years", "my first year". A bare "month" is not a claim; "that
+  // month" is.
+  /\b(?:that|those|this|these|the|my|our|his|her|their|previous|prior|following|next|coming|earlier|later|same|first|second|third|last)\s+(?:\w+\s+){0,2}(?:day|days|week|weeks|month|months|quarter|quarters|year|years|decade|season|summer|winter|spring|autumn|fall|holidays?|semester|term)\b/,
+  // Seasons and named periods on their own.
+  /\b(?:summer|winter|spring|autumn|christmas|thanksgiving|ramadan|easter|new year'?s?)\b/,
+  // Relative day words.
+  /\b(?:yesterday|today|tonight|tomorrow|overnight)\b/,
+  // A relative marker followed by something — "before I moved", "during the
+  // move", "since the wedding", "until then", "up to last spring".
+  /\b(?:before|after|during|since|until|till|between|throughout|prior to|up to|as of|by the time)\b/,
+  // "when I was …", "back when …" — an event standing in for a date.
+  /\b(?:when (?:i|we|they|he|she) (?:was|were|had|got|moved|started|joined|lived|bought)|back when)\b/,
+  // Durations and distances in time — "two years ago", "6 weeks back",
+  // "over 3 years", "the past N days".
+  /\b\d{1,3}\s*(?:day|days|week|weeks|month|months|quarter|quarters|year|years)\b/,
+  /\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(?:day|days|week|weeks|month|months|quarter|quarters|year|years)\b/,
+  /\b(?:ago|thereafter|onwards?|henceforth)\b/,
+  // An explicit month name or four-digit year the rules did not consume.
+  /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/,
+  /\b(?:19|20)\d{2}\b/,
+  // Explicit period vocabulary that names a frame without naming its bounds.
+  /\b(?:fiscal|calendar)\s+(?:year|quarter|month)\b/,
+  /\b(?:ytd|mtd|qtd|year[\s-]to[\s-]date|month[\s-]to[\s-]date|quarter[\s-]to[\s-]date)\b/,
+  /\b(?:period|timeframe|time frame|date range|timespan|time span)\b/,
+];
+
+/**
+ * True when the message contains temporal language, whatever it means.
+ *
+ * Exported for the acceptance corpus, which has to prove BOTH directions: that
+ * ordinary questions produce false here, and that unrecognised time phrases
+ * produce true.
+ */
+export function hasTemporalCue(text: string): boolean {
+  return TEMPORAL_CUES.some((re) => re.test(text));
+}
+
+/**
  * Detect a transaction-window request from the message text.
  * Order is specific → general so overlapping phrasings resolve deterministically.
  */
@@ -382,6 +451,112 @@ function detectTransactionWindow(text: string, now: Date): TransactionWindowRequ
       requested: 'CALENDAR_MONTH',
       requestedStart: toIsoUtcDate(start),
       requestedEnd:   today,
+    };
+  }
+
+  // ── CF-3 — CALENDAR QUARTERS ─────────────────────────────────────────────
+  //
+  // A quarter had no representation at all, so every quarter phrase fell
+  // through to UNSPECIFIED and CF-2 declared the 90-day default a full match.
+  // Measured: "last quarter", "previous quarter", "this quarter" and "quarter
+  // to date" all rendered "The user asked about no particular period."
+  //
+  // NOT collapsed into "3 months". A calendar quarter has fixed boundaries; a
+  // trailing three months does not. On 27 August the previous calendar quarter
+  // (Apr–Jun) and the trailing three months (May 27–Aug 27) share no day at
+  // all, so treating them as the same request would answer a different
+  // question from the one asked.
+
+  // 3a-i. Previous calendar quarter.
+  if (/\b(?:last|previous|prior)\s+quarter\b/.test(text) && !/\bthe\s+last\s+quarter\b/.test(text)) {
+    const q = Math.floor(m / 3);                 // current quarter, 0-based
+    const startMonth = (q - 1) * 3;              // may go negative → previous year
+    const start = new Date(Date.UTC(y, startMonth, 1));
+    const end   = new Date(Date.UTC(y, startMonth + 3, 0));
+    const label = `Q${((start.getUTCMonth() / 3) | 0) + 1} ${start.getUTCFullYear()}`;
+    return {
+      mode:      TransactionWindowModes.CUSTOM,
+      startDate: toIsoUtcDate(start),
+      endDate:   toIsoUtcDate(end),
+      label:     `last quarter (${label})`,
+      requested: 'CALENDAR_QUARTER',
+      requestedStart: toIsoUtcDate(start),
+      requestedEnd:   toIsoUtcDate(end),
+    };
+  }
+
+  // 3a-ii. Current calendar quarter to date.
+  if (/\b(?:this|current)\s+quarter\b/.test(text) || /\bquarter[\s-]to[\s-]date\b/.test(text) || /\bqtd\b/.test(text)) {
+    const start = new Date(Date.UTC(y, Math.floor(m / 3) * 3, 1));
+    const label = `Q${Math.floor(m / 3) + 1} ${y}`;
+    return {
+      mode:      TransactionWindowModes.CUSTOM,
+      startDate: toIsoUtcDate(start),
+      endDate:   today,
+      label:     `this quarter (${label} to date)`,
+      requested: 'CALENDAR_QUARTER',
+      requestedStart: toIsoUtcDate(start),
+      requestedEnd:   today,
+    };
+  }
+
+  // 3a-iii. TRAILING three months — "past quarter", "the last quarter".
+  //         A duration, not a calendar bucket; represented by the existing
+  //         LAST_N_MONTHS request rather than a second quarter vocabulary.
+  if (/\b(?:past|trailing)\s+quarter\b/.test(text) || /\bthe\s+last\s+quarter\b/.test(text)) {
+    const start = new Date(Date.UTC(y, m - 3, now.getUTCDate()));
+    return {
+      mode:      TransactionWindowModes.LAST_N_MONTHS,
+      startDate: toIsoUtcDate(start),
+      endDate:   today,
+      label:     'the past quarter (trailing 3 months)',
+      requested: 'LAST_N_MONTHS',
+      requestedStart: toIsoUtcDate(start),
+      requestedEnd:   today,
+    };
+  }
+
+  // ── CF-3 — BARE YEAR PHRASES ─────────────────────────────────────────────
+  //
+  // "last year" and "past year" are DIFFERENT REQUESTS and the difference is
+  // not stylistic: on 27 August 2026 the first means 2025-01-01..2025-12-31
+  // and the second means 2025-08-27..2026-08-27. Answering either with the
+  // other's figure is simply a wrong answer, so they resolve separately.
+  //
+  // The determiner carries the distinction English speakers already make:
+  // bare "last year" is the calendar year, "THE last year" / "over the last
+  // year" is a duration. Both were UNSPECIFIED before this slice.
+
+  // 3c-i. TRAILING twelve months — "past year", "the last year", "over the last year".
+  if (/\b(?:past|trailing)\s+year\b/.test(text)
+      || /\b(?:the|over the|in the|within the)\s+last\s+year\b/.test(text)
+      || /\blast\s+twelve\s+months\b/.test(text)) {
+    const start = new Date(Date.UTC(y - 1, m, now.getUTCDate()));
+    return {
+      mode:      TransactionWindowModes.LAST_N_MONTHS,
+      startDate: toIsoUtcDate(start),
+      endDate:   today,
+      label:     'the past year (trailing 12 months)',
+      requested: 'LAST_N_MONTHS',
+      requestedStart: toIsoUtcDate(start),
+      requestedEnd:   today,
+    };
+  }
+
+  // 3c-ii. PREVIOUS calendar year — bare "last year", "previous year".
+  //        Reuses CALENDAR_YEAR: an existing request that already means
+  //        exactly this, so no duplicate vocabulary is introduced.
+  if (/\b(?:last|previous|prior)\s+year\b/.test(text)) {
+    const start = new Date(Date.UTC(y - 1, 0, 1));
+    const end   = new Date(Date.UTC(y - 1, 11, 31));
+    return {
+      mode:      TransactionWindowModes.YTD,
+      startDate: toIsoUtcDate(start),
+      endDate:   toIsoUtcDate(end),
+      label:     `last year (${y - 1})`,
+      requested: 'CALENDAR_YEAR',
+      requestedStart: toIsoUtcDate(start),
+      requestedEnd:   toIsoUtcDate(end),
     };
   }
 
@@ -535,12 +710,43 @@ function detectTransactionWindow(text: string, now: Date): TransactionWindowRequ
   //
   // No dates are returned: the assembler keeps its default, unchanged.
   if (/\b(?:recent(?:ly)?|lately|these days|of late|past few (?:weeks|days))\b/.test(text)) {
-    return { mode: TransactionWindowModes.DEFAULT, label: 'recently', requested: 'RECENT' };
+    return {
+      mode: TransactionWindowModes.DEFAULT, label: 'recently', requested: 'RECENT',
+      requestedStart: null, requestedEnd: null,
+    };
   }
   if (/\b(?:currently|right now|at the moment|these days|nowadays|at present)\b/.test(text)) {
-    return { mode: TransactionWindowModes.DEFAULT, label: 'currently', requested: 'CURRENT' };
+    return {
+      mode: TransactionWindowModes.DEFAULT, label: 'currently', requested: 'CURRENT',
+      requestedStart: null, requestedEnd: null,
+    };
   }
 
+  // ── CF-3 — THE SAFEGUARD ──────────────────────────────────────────────────
+  //
+  // Nothing above resolved this message, and it is the LAST thing tried. If the
+  // message nonetheless contains temporal language, the honest answer is not
+  // "no period was named" — it is "a period was named and I could not work out
+  // which". The assembler still applies its default window, so the reply stays
+  // useful; what changes is that the prompt stops claiming the default answers
+  // the question.
+  //
+  // The label is deliberately generic rather than the message text: the model
+  // already has the user's words in the conversation, and echoing a normalised
+  // lower-cased copy of the whole question into the prompt reads as noise.
+  if (hasTemporalCue(text)) {
+    return {
+      mode:  TransactionWindowModes.DEFAULT,
+      label: 'the period named in the question',
+      requested: 'UNRESOLVED',
+      // Explicitly null, like every other unservable request: a consumer reading
+      // these must not have to distinguish "absent" from "no bound exists".
+      requestedStart: null, requestedEnd: null,
+    };
+  }
+
+  // Genuinely no temporal claim. The default window is the product's answer to
+  // a question that asked for no particular period — not a substitution.
   return undefined;
 }
 

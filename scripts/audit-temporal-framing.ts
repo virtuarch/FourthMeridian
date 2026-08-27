@@ -42,6 +42,7 @@ import { computeAssessment } from "@/lib/ai/intelligence";
 import { fetchPerLiabilityDebtPayments } from "@/lib/ai/intelligence/debt-payments";
 import { buildSpaceSystemPrompt } from "@/lib/ai/prompts/system-prompt";
 import { routeForMessages, resolveTransactionWindow } from "@/lib/ai/chat/message-analysis";
+import { hasTemporalCue } from "@/lib/ai/intent/classifier";
 import { db } from "@/lib/db";
 
 const bar = (s: string) => console.log(`\n${"═".repeat(78)}\n${s}\n${"═".repeat(78)}`);
@@ -66,6 +67,31 @@ const ASKS: { ask: string; expectSatisfied: boolean | null }[] = [
   { ask: "How much did I spend in 2023?",                           expectSatisfied: false },
   { ask: "What did I spend on dining in the last 3 months?",        expectSatisfied: true  },
   { ask: "How is my debt looking?",                                 expectSatisfied: true  },
+
+  // ── CF-3 — the phrases CF-R0 measured resolving to a FALSE satisfaction ──
+  //
+  // Each of these rendered "The user asked about no particular period" followed
+  // by "FULLY COVERS what was asked. Answer directly, with no scope caveat."
+  // They are in the corpus permanently so that regression cannot return
+  // silently: the audit fails them on `expectResolved`, which is a separate
+  // question from whether the window is satisfiable.
+  { ask: "What did I spend last year?",                             expectSatisfied: null  },
+  { ask: "What did I spend previous year?",                         expectSatisfied: null  },
+  { ask: "What did I spend over the past year?",                    expectSatisfied: true  },
+  { ask: "What did I spend last quarter?",                          expectSatisfied: true  },
+  { ask: "What did I spend previous quarter?",                      expectSatisfied: true  },
+  { ask: "What did I spend this quarter?",                          expectSatisfied: true  },
+  { ask: "What did I spend past quarter?",                          expectSatisfied: true  },
+  { ask: "What did I spend quarter to date?",                       expectSatisfied: true  },
+
+  // The safeguard: temporal language the parser cannot resolve must NOT be
+  // reported as satisfied, and must NOT be reported as "no period named".
+  { ask: "What did I spend during the summer before I moved?",      expectSatisfied: false },
+  { ask: "How much did I spend around the holidays?",               expectSatisfied: false },
+
+  // The counterweight: no temporal claim at all keeps answering directly.
+  { ask: "What are my top merchants?",                              expectSatisfied: true  },
+  { ask: "Where am I spending the most?",                           expectSatisfied: true  },
 ];
 
 /** The scope block, read back out of the rendered prompt. */
@@ -94,6 +120,8 @@ async function main(): Promise<void> {
   bar(`${space.name}  (${space.id})`);
 
   let missingBlock = 0, contractMismatch = 0, silentSubstitution = 0;
+  // CF-3 — the two counts that pin the CF-R0 regression.
+  let falseSatisfaction = 0, claimTreatedAsNoClaim = 0;
 
   for (const { ask, expectSatisfied } of ASKS) {
     const now = new Date();
@@ -120,13 +148,20 @@ async function main(): Promise<void> {
     const satisfied = /FULLY COVERS what was asked/.test(text)
                    || /DELIBERATE product interpretation/.test(text);
     const shortfall = /DOES NOT COVER what was asked/.test(text);
+    const unresolved = /could NOT be resolved to dates/.test(text);
     const noEvidence = /Transactions loaded: NONE/.test(text);
+
+    // CF-3 — did the router see the claim the user made? `hasTemporalCue` is
+    // the same detector the classifier uses, so this asks the question at the
+    // authority that owns it rather than re-deriving it from the ask text.
+    const claimed = hasTemporalCue(ask.toLowerCase());
+    const calledNoClaim = /no particular period/.test(text);
 
     for (const l of block) console.log(`      ${l.trim()}`);
 
     // The property: a request that was not served must SAY so. A silent
     // substitution is a prompt that claims satisfaction it does not have.
-    if (expectSatisfied === false && !shortfall) {
+    if (expectSatisfied === false && !shortfall && !unresolved) {
       silentSubstitution++;
       console.log(`      ✗ SILENT SUBSTITUTION — unservable request rendered without a shortfall`);
     } else if (expectSatisfied === true && !satisfied) {
@@ -136,6 +171,17 @@ async function main(): Promise<void> {
       console.log(`      · corpus-dependent (the lookback clamp decides) — ${shortfall ? "shortfall stated" : "satisfied"}`);
     }
     if (noEvidence) console.log(`      · no evidence supplied; the block refuses rather than reporting $0`);
+
+    // ── The CF-3 invariants, checked on every ask ────────────────────────────
+    if (claimed && calledNoClaim) {
+      claimTreatedAsNoClaim++;
+      console.log(`      ✗ CLAIM TREATED AS NO CLAIM — a temporal phrase rendered "no particular period"`);
+    }
+    if (claimed && satisfied && calledNoClaim) {
+      falseSatisfaction++;
+      console.log(`      ✗ FALSE SATISFACTION — the CF-R0 regression`);
+    }
+    if (unresolved) console.log(`      · unresolved period — default window supplied, satisfaction withheld`);
   }
 
   bar("SUMMARY");
@@ -143,6 +189,8 @@ async function main(): Promise<void> {
   console.log(`  Missing scope block:      ${missingBlock}`);
   console.log(`  SILENT SUBSTITUTIONS:     ${silentSubstitution}`);
   console.log(`  Contract mismatches:      ${contractMismatch}`);
+  console.log(`  FALSE SATISFACTIONS:      ${falseSatisfaction}   (CF-3)`);
+  console.log(`  Claims called "no claim": ${claimTreatedAsNoClaim}   (CF-3)`);
   console.log(
     `\n  INFORMATIONAL: what a corpus can SERVE is a fact about this database.\n` +
     `  The invariants are pinned in CI by lib/ai/temporal-scope.test.ts and\n` +

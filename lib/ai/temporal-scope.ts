@@ -66,8 +66,19 @@
 export const TemporalRequests = {
   /** A named calendar month — "last month", "this month". */
   CALENDAR_MONTH: 'CALENDAR_MONTH',
-  /** A named calendar year — "in 2024". */
+  /** A named calendar year — "in 2024", "last year", "previous year". */
   CALENDAR_YEAR:  'CALENDAR_YEAR',
+  /**
+   * A calendar quarter — "last quarter", "this quarter", "quarter to date".
+   *
+   * CF-3 — the one genuinely new kind. Every other phrase this slice adds is
+   * representable by an existing request: "last year" is a CALENDAR_YEAR,
+   * "past year" is LAST_N_MONTHS with n=12. A quarter had no representation at
+   * all, and collapsing it into "3 months" would erase the distinction the
+   * user is making — a calendar quarter has fixed boundaries, a trailing three
+   * months does not, and on 27 August those two intervals share no day.
+   */
+  CALENDAR_QUARTER: 'CALENDAR_QUARTER',
   /** Year to date. */
   YTD:            'YTD',
   /** "last N months". */
@@ -84,6 +95,32 @@ export const TemporalRequests = {
   RECENT:         'RECENT',
   /** "currently", "right now" — the present, as a period. */
   CURRENT:        'CURRENT',
+  /**
+   * CF-3 — TEMPORAL LANGUAGE WAS PRESENT AND COULD NOT BE RESOLVED.
+   *
+   * The state that makes this contract safe against its own vocabulary. CF-2
+   * had two readings of "the parser produced nothing": no period was named, or
+   * a period was named in words no rule covers. It treated both as UNSPECIFIED,
+   * which means "nothing was asked" — and therefore "nothing can be unmet". On
+   * eight of eleven measured phrases ("last year", "last quarter", "past
+   * quarter", "this quarter", "quarter to date"…) the prompt then read:
+   *
+   *     The user asked about no particular period.
+   *     The loaded period FULLY COVERS what was asked. Answer directly, with
+   *     no scope caveat.
+   *
+   * A confident instruction to answer ninety days as last year. Worse than the
+   * silence CF-2 replaced, because it is an assertion.
+   *
+   * UNRESOLVED is never satisfiable. A window may still be selected so the
+   * answer is useful, but the prompt must say the requested period could not be
+   * pinned down, and the model must not present the default as the answer.
+   *
+   * This exists so the contract does not depend on having enumerated every
+   * human temporal phrase forever. New phrasings degrade to honest uncertainty
+   * rather than to confident error.
+   */
+  UNRESOLVED:     'UNRESOLVED',
   /** No temporal claim at all. The default window is not a substitution here. */
   UNSPECIFIED:    'UNSPECIFIED',
 } as const;
@@ -203,6 +240,11 @@ export function isRequestSatisfied(scope: TemporalScope): boolean {
           || selected.reason === SelectionReasons.DEFAULT_WINDOW;
     case TemporalRequests.ALL_TIME:
       // No bounded window is all of history. Never satisfied, by definition.
+      return false;
+    case TemporalRequests.UNRESOLVED:
+      // CF-3 — a period was asked for and we could not work out which one.
+      // Nothing can be shown to discharge a request whose bounds are unknown,
+      // so this is unsatisfied by construction rather than by comparison.
       return false;
     default:
       // A denoted interval is satisfied only when the selection covers it whole.
@@ -328,6 +370,7 @@ export function unsuppliedScope(requested: RequestedScope): TemporalScope {
 const REQUEST_PHRASE: Record<TemporalRequest, string> = {
   CALENDAR_MONTH: 'a specific calendar month',
   CALENDAR_YEAR:  'a specific calendar year',
+  CALENDAR_QUARTER: 'a specific calendar quarter',
   YTD:            'the year to date',
   LAST_N_MONTHS:  'a trailing number of months',
   EXPLICIT_RANGE: 'an explicit date range',
@@ -336,6 +379,7 @@ const REQUEST_PHRASE: Record<TemporalRequest, string> = {
   ALL_TIME:       'their ENTIRE transaction history',
   RECENT:         'recent activity (no dates given)',
   CURRENT:        'current activity (no dates given)',
+  UNRESOLVED:     'a period this system could not identify',
   UNSPECIFIED:    'no particular period',
 };
 
@@ -363,8 +407,13 @@ export function describeTemporalScope(scope: TemporalScope): string[] {
 
   lines.push('TRANSACTION SCOPE — what was asked for, and what was actually loaded:');
   lines.push(
-    `  The user asked about ${REQUEST_PHRASE[requested.intent]}` +
-    (requested.intent === TemporalRequests.UNSPECIFIED ? '.' : ` ("${requested.label}" — ${requestedInterval(requested)}).`),
+    requested.intent === TemporalRequests.UNSPECIFIED
+      ? `  The user asked about ${REQUEST_PHRASE[requested.intent]}.`
+      // CF-3 — an unresolved request has no interval to state, and quoting the
+      // label back would echo a placeholder. Say what happened instead.
+      : requested.intent === TemporalRequests.UNRESOLVED
+        ? '  The user\'s question refers to a period, and this system could not determine which one.'
+        : `  The user asked about ${REQUEST_PHRASE[requested.intent]} ("${requested.label}" — ${requestedInterval(requested)}).`,
   );
   lines.push(
     coverage === null
@@ -383,6 +432,35 @@ export function describeTemporalScope(scope: TemporalScope): string[] {
   if (satisfied) {
     if (!selected.interpretation) {
       lines.push('  The loaded period FULLY COVERS what was asked. Answer directly, with no scope caveat.');
+    }
+  } else if (requested.intent === TemporalRequests.UNRESOLVED) {
+    // CF-3 — a DIFFERENT sentence from a shortfall. A shortfall compares two
+    // known intervals; here the requested one is unknown, so there is nothing
+    // to compare and nothing to quantify. Saying "does not cover" would imply
+    // we know what it failed to cover.
+    lines.push('  ⚠ The requested period could NOT be resolved to dates.');
+    if (coverage !== null) {
+      lines.push(
+        `  The figures below cover ${selected.startDate} to ${selected.endDate}. That is this ` +
+        "system's DEFAULT period — not the period the user asked about.",
+      );
+      lines.push(
+        '  Your reply MUST do all three of these, in this order:',
+      );
+      lines.push(
+        '    1. Say FIRST that you could not work out which dates the question refers to.',
+      );
+      lines.push(
+        `    2. Then give the figures, naming ${selected.startDate} to ${selected.endDate} as the ` +
+        'period they describe.',
+      );
+      lines.push(
+        '    3. Ask which dates the user means.',
+      );
+      lines.push(
+        '  Do NOT present these figures as the answer to the question as asked, and do NOT open ' +
+        'with the numbers.',
+      );
     }
   } else {
     lines.push(
