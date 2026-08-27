@@ -24,7 +24,10 @@ import {
   EXECUTIVE_SUMMARY_DOCTRINE,
   EXPLAINABILITY_DOCTRINE,
 } from './doctrine';
-import { analysisWindowNote, temporalScopeFor } from './format';
+import { analysisWindowNote, temporalScopeFor, getTransactionsSummary } from './format';
+import {
+  describeCoverageEnvelope, type CoverageEnvelope,
+} from '@/lib/ai/coverage-envelope';
 import { serializeAssessmentBlock } from './assessment-serializer';
 import { serializeContextBlock } from './context-serializer';
 import type { DebtPaymentLine } from './context-serializer';
@@ -50,11 +53,36 @@ function buildSpaceAliasGuidance(spaceName: string): string {
   );
 }
 
+
+/**
+ * CF-5 — the envelope block, paired with what THIS turn loaded.
+ *
+ * The loaded interval comes from the assembled context rather than from the
+ * caller, so the two halves cannot disagree: whatever the assembler actually
+ * summarised is what gets named as loaded.
+ */
+function renderEnvelope(ctx: SpaceContext_AI, envelope?: CoverageEnvelope): string[] {
+  if (!envelope) return [];
+  const txn = getTransactionsSummary(ctx);
+  const loaded = txn?.startDate && txn?.endDate
+    ? { fromISO: txn.startDate, toISO: txn.endDate }
+    : null;
+  const lines = describeCoverageEnvelope(envelope, loaded);
+  if (lines.length === 0) return [];
+  return ['=== AVAILABLE EVIDENCE ===', ...lines, '=== END AVAILABLE EVIDENCE ===', ''];
+}
+
 export function buildSpaceSystemPrompt(
   ctx: SpaceContext_AI,
   annotations: FinancialAssessment,
   route: IntentRoute,
   debtPayments?: DebtPaymentLine[],
+  /**
+   * CF-5 — what evidence EXISTS, as distinct from what was assembled below.
+   * Optional: a census failure, or a caller that has none, costs the user
+   * nothing and simply omits the block.
+   */
+  envelope?: CoverageEnvelope,
 ): string {
   return [
     'You are a skilled, direct financial advisor powered by Fourth Meridian.',
@@ -92,6 +120,14 @@ export function buildSpaceSystemPrompt(
     serializeAssessmentBlock(annotations, analysisWindowNote(ctx), ctx.space.reportingCurrency),
     '=== END ASSESSMENT ===',
     '',
+    // ── CF-5 — the evidence envelope, BEFORE the context it bounds ──────────
+    //
+    // Placement is load-bearing. Read after the context block, "3.5 years exist"
+    // is a correction to an impression already formed; read before it, the
+    // bounded context that follows is understood as a SELECTION from a larger
+    // record — which is the only reading that makes "I have history back to
+    // March 2023, and I'm using the last 90 days here" a natural sentence.
+    ...renderEnvelope(ctx, envelope),
     'SUPPORTING EVIDENCE — facts you may cite and reason from. Anything here that no assessment dimension grades is context, not a graded finding, and must not be presented as one.',
     '=== SPACE CONTEXT ===',
     // CF-2 — the route is the only source of the user's ASK; the context is the

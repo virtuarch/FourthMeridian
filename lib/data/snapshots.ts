@@ -100,6 +100,30 @@ export interface SnapshotReadBound {
 }
 
 /**
+ * CF-5 — how far the snapshot record REACHES, without reading it.
+ *
+ * An extent, not history: one indexed min/max/count, no rows, no values. The
+ * coverage envelope needs to say "net-worth history exists from July 2024"
+ * while loading none of it, and `getRecentSnapshots` is the wrong tool for that
+ * — it would pull hundreds of rows to answer a question about their bounds.
+ *
+ * It lives HERE rather than in the caller because snapshot reads have one
+ * authority (lib/data/snapshot-read-boundary.test.ts enforces it), and an
+ * aggregate is still a read: putting it in lib/ai would be the fourth place
+ * that knows how to query this table.
+ */
+export async function getSnapshotExtent(
+  spaceId: string,
+): Promise<{ fromISO: string | null; toISO: string | null; count: number }> {
+  const agg = await db.spaceSnapshot.aggregate({
+    where: { spaceId },
+    _min: { date: true }, _max: { date: true }, _count: true,
+  });
+  const iso = (d: Date | null | undefined) => (d ? d.toISOString().slice(0, 10) : null);
+  return { fromISO: iso(agg._min.date), toISO: iso(agg._max.date), count: agg._count };
+}
+
+/**
  * Snapshot history for a Space, oldest-first so a chart renders left→right in
  * time order. Bounded by ROW COUNT — see `SnapshotReadBound`.
  */

@@ -68,6 +68,7 @@ import { FinanceDomains }            from '@/lib/ai/types';
 import { computeAssessment }         from '@/lib/ai/intelligence';
 import type { FinancialAssessment }  from '@/lib/ai/intelligence';
 import { fetchPerLiabilityDebtPayments } from '@/lib/ai/intelligence/debt-payments';
+import { loadCoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { detectsPayoffIntent, detectsExplicitUpdateIntent } from '@/lib/ai/intent';
 import type { IntentRoute }          from '@/lib/ai/intent';
 import { planContextSelection, DEFAULT_CONTEXT_BUDGET_TOKENS } from '@/lib/ai/context-priority';
@@ -496,8 +497,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const assessment = computeAssessment(ctx);
     guardAssessments = [assessment];
     // Slice 6: per-liability debt-payment rollup ([] on failure → disclosure-only).
-    const debtPayments = await fetchPerLiabilityDebtPayments(ctx);
-    systemPrompt = buildSpaceSystemPrompt(ctx, assessment, intentRoute, debtPayments);
+    // CF-5: the evidence census — four indexed aggregates, no rows, so it runs
+    // alongside rather than in series.
+    const [debtPayments, envelope] = await Promise.all([
+      fetchPerLiabilityDebtPayments(ctx),
+      loadCoverageEnvelope(spaceId),
+    ]);
+    systemPrompt = buildSpaceSystemPrompt(ctx, assessment, intentRoute, debtPayments, envelope);
     // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
     await logShadowSelectionPlans(user.id, [ctx], [assessment], intentRoute);
     gapsForResponse = filterGapsByIntent(

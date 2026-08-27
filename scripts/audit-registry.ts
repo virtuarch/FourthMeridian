@@ -358,6 +358,15 @@ export const AUDITS: readonly AuditEntry[] = [
           "step 2 of the key-rotation runbook (docs/operations/key-rotation.md)",
   },
   {
+    name: "check-evidence-awareness", tier: "OPERATIONAL", needsDb: true,
+    what: "CF-5 — asks a live model what evidence exists and grades FIVE failure modes: false " +
+          "scarcity ('only 90 days' while more exists), false LOADING (quoting a figure for a " +
+          "period that was merely available), false completeness, false valuation (a crypto " +
+          "quantity range read as a value range), and envelope token regression. Three of those " +
+          "are failures the envelope could CAUSE. Paid and stochastic, so never a gate; the " +
+          "deterministic half is pinned in CI by lib/ai/coverage-envelope.test.ts",
+  },
+  {
     name: "check-conversation-scope", tier: "OPERATIONAL", needsDb: true,
     what: "CF-4 — holds real MULTI-TURN conversations against the live model and fails when a " +
           "later turn answers from a period the user never asked about (drift), or restates the " +

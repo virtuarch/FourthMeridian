@@ -19,6 +19,7 @@
     "ai:bounded-superlatives": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/check-bounded-superlatives.ts",
     "ai:temporal-conformance": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/check-temporal-conformance.ts",
     "ai:conversation-scope": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/check-conversation-scope.ts",
+    "ai:evidence-awareness": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/check-evidence-awareness.ts",
     "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
     "db:reset": "tsx scripts/db-guard.ts && npm run db:backup && prisma migrate reset --force",
