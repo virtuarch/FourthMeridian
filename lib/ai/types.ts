@@ -23,6 +23,7 @@
 import type { SpaceMemberRole } from '@prisma/client';
 import type { LiabilityState } from '@/lib/debt/balance-semantics';
 import type { BoundedSelection } from "@/lib/ai/bounded-selection";
+import type { TemporalRequest, TemporalScope } from "@/lib/ai/temporal-scope";
 
 // ---------------------------------------------------------------------------
 // Domain type
@@ -104,9 +105,25 @@ export interface AssemblerOptions {
    * scope-independent.
    */
   transactionWindow?: {
-    startDate: string; // YYYY-MM-DD, inclusive floor
-    endDate:   string; // YYYY-MM-DD, inclusive ceiling
+    /**
+     * YYYY-MM-DD, inclusive floor. CF-2 — OPTIONAL, because a temporal request
+     * need not denote a servable interval: "ever" and "before June 2024" make a
+     * real claim with no bounded window behind it. When either bound is absent
+     * the assembler keeps its default window and records the request, which is
+     * what lets the prompt say "you asked for X, you were given Y".
+     */
+    startDate?: string;
+    endDate?:   string; // YYYY-MM-DD, inclusive ceiling
     label?:    string; // human phrase for provenance ("year-to-date 2026")
+    /**
+     * CF-2 — the temporal CLAIM behind the interval, carried so the assembler
+     * can report whether its selection discharged it. The interval alone cannot
+     * say: a floor moved by the lookback clamp looks identical to a floor the
+     * user chose.
+     */
+    requested?:      TemporalRequest;
+    requestedStart?: string | null;
+    requestedEnd?:   string | null;
   };
   /**
    * Optional transaction-drilldown request (D6 — category/merchant evidence
@@ -909,6 +926,19 @@ export interface TransactionsSummaryData {
     unknownPaymentAppTotal: number;
     counterpartyResolution: 'PERSISTED_AND_READ_TIME' | 'PERSISTED_ONLY';
   };
+
+  /**
+   * CF-2 — the temporal framing contract: what was asked for, what was
+   * selected, and what the evidence covers.
+   *
+   * Deliberately NOT merged into `startDate`/`endDate`/`windowDays`, which say
+   * only what was queried. A reader given those three cannot tell a period the
+   * user chose from a period the lookback clamp substituted, and that is the
+   * distinction the whole slice exists to preserve.
+   *
+   * Optional for fixtures predating CF-2; the assembler always emits it.
+   */
+  temporalScope?: TemporalScope;
 
   // ── By category ─────────────────────────────────────────────────────────
   byCategory: CategorySpend[];

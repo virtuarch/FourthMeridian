@@ -28,6 +28,7 @@ import { NON_SPENDING_CATEGORY_NAMES } from '@/lib/ai/spending-categories';
 import { ATTRIBUTION_DISCLOSURE, GAP_IMPACT } from './doctrine';
 import { fmtMoney, fmtMonthYear, approxMonths, getTransactionsSummary } from './format';
 import { boundedSelection, describeBounds, isComplete } from "@/lib/ai/bounded-selection";
+import { describeTemporalScope, type TemporalScope } from "@/lib/ai/temporal-scope";
 
 /** One debt account's received payments within the serialized window. */
 export type DebtPaymentLine = { name: string; total: number; count: number };
@@ -92,7 +93,17 @@ const MERCHANT_RENDER_LIMIT = 8;
 const CATEGORY_RENDER_LIMIT = 8;
 const INCOME_RENDER_LIMIT   = 8;
 
-export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtPaymentLine[]): string {
+export function serializeContextBlock(
+  ctx: SpaceContext_AI,
+  debtPayments?: DebtPaymentLine[],
+  /**
+   * CF-2 — what was asked for versus what was loaded. Passed in rather than
+   * derived here: the caller is the only layer that can see BOTH the route and
+   * the assembled context, and the case that matters most (nothing assembled at
+   * all) leaves this function nothing to derive from.
+   */
+  temporalScope?: TemporalScope,
+): string {
   const lines: string[] = [];
   // REVIEW-3 C-6 — ONE bound money formatter for the whole block, in the
   // Space's reporting currency (never a hard-coded `$`). USD output unchanged.
@@ -163,6 +174,18 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
   // never answers a longer-period question ("this year", "YTD") using it
   // without saying only this window is available.
   const txn = getTransactionsSummary(ctx);
+
+  // ── CF-2 — TRANSACTION SCOPE, before the figures it governs ────────────────
+  //
+  // Deliberately FIRST: a reader who has already absorbed a total is being asked
+  // to un-believe it, and a caveat placed after the number is a caveat competing
+  // with one. It also renders when `txn` is absent — the case where a question
+  // was asked, nothing was loaded, and the old prompt said nothing at all.
+  if (temporalScope) {
+    for (const line of describeTemporalScope(temporalScope)) lines.push(line);
+    lines.push('');
+  }
+
   if (txn) {
     lines.push(
       'Transaction analysis window (use this exact period whenever presenting any ' +
@@ -176,11 +199,15 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
     // is false: it is the only period FETCHED for this context (the window is a
     // fetch bound, not a statement about the ledger). A model repeating the old
     // sentence would deny the existence of data the product can show.
+    //
+    // CF-2 — the general warning stays, because it is true of every prompt. What
+    // it could never do is say whether THIS question ran into it: it asks the
+    // model to notice a mismatch the deterministic router had already computed
+    // and thrown away. The TRANSACTION SCOPE block below answers that.
     lines.push(
       '  This is the only period FETCHED into this context — older transactions may exist in the ' +
       'Space but are not available here. Do not describe this window as "this year", "YTD", or any ' +
-      'longer span unless the dates match. If the user asks about a longer period, state plainly ' +
-      'that only this window was loaded for this conversation.',
+      'longer span unless the dates match.',
     );
 
     // ── Attribution limit (KD-18) ────────────────────────────────────────────

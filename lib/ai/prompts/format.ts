@@ -14,6 +14,10 @@
 import type { SpaceContext_AI, TransactionsSummaryData } from '@/lib/ai/types';
 import { FinanceDomains } from '@/lib/ai/types';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
+import {
+  withInterpretation, unsuppliedScope, TemporalRequests,
+  type TemporalScope, type TemporalRequest,
+} from '@/lib/ai/temporal-scope';
 
 /**
  * Format a money string in the given currency (e.g. $4,320.00, €4,320.00).
@@ -64,4 +68,37 @@ export function analysisWindowNote(ctx: SpaceContext_AI): string | null {
     `${period} (~${months} month${months === 1 ? '' : 's'}; ${txn.windowDays}-day window), ` +
     `${txn.transactionCount} transaction(s)`
   );
+}
+
+/**
+ * CF-2 — the temporal scope for this prompt, from the two authorities that know it.
+ *
+ * The assembler emits `temporalScope` whenever it produced a summary. When it
+ * produced NOTHING — zero rows, so the domain is dropped — there is no payload
+ * to read, and that absence is exactly the case §7 cares about: "How much did I
+ * spend in 2023?" clamps to a floor after its own ceiling, returns no rows, and
+ * leaves a prompt with no transaction section at all for a well-formed
+ * question. The route still knows what was asked, so the scope is rebuilt from
+ * it and the block says the period was not supplied — rather than saying
+ * nothing and letting the model improvise.
+ */
+export function temporalScopeFor(
+  ctx: SpaceContext_AI,
+  route?: { transactionWindow?: {
+    label: string;
+    requested?: TemporalRequest;
+    requestedStart?: string | null;
+    requestedEnd?:   string | null;
+  } },
+): TemporalScope {
+  const txn = getTransactionsSummary(ctx);
+  if (txn?.temporalScope) return withInterpretation(txn.temporalScope);
+
+  const w = route?.transactionWindow;
+  return unsuppliedScope({
+    intent:    w?.requested ?? TemporalRequests.UNSPECIFIED,
+    label:     w?.label ?? 'no period named',
+    startDate: w?.requestedStart ?? null,
+    endDate:   w?.requestedEnd   ?? null,
+  });
 }

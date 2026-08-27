@@ -24,7 +24,7 @@ import {
   EXECUTIVE_SUMMARY_DOCTRINE,
   EXPLAINABILITY_DOCTRINE,
 } from './doctrine';
-import { analysisWindowNote } from './format';
+import { analysisWindowNote, temporalScopeFor } from './format';
 import { serializeAssessmentBlock } from './assessment-serializer';
 import { serializeContextBlock } from './context-serializer';
 import type { DebtPaymentLine } from './context-serializer';
@@ -94,7 +94,9 @@ export function buildSpaceSystemPrompt(
     '',
     'SUPPORTING EVIDENCE — facts you may cite and reason from. Anything here that no assessment dimension grades is context, not a graded finding, and must not be presented as one.',
     '=== SPACE CONTEXT ===',
-    serializeContextBlock(ctx, debtPayments),
+    // CF-2 — the route is the only source of the user's ASK; the context is the
+    // only source of what was loaded. This is the one place both are in hand.
+    serializeContextBlock(ctx, debtPayments, temporalScopeFor(ctx, route)),
     '=== END CONTEXT ===',
   ].join('\n');
 }
@@ -151,7 +153,7 @@ export function buildMasterSystemPrompt(
         assessment ? serializeAssessmentBlock(assessment, analysisWindowNote(ctx), ctx.space.reportingCurrency) : '(no assessment available)',
         '=== END ASSESSMENT ===',
         'SUPPORTING EVIDENCE — facts you may cite and reason from. Anything here that no assessment dimension grades is context, not a graded finding, and must not be presented as one.',
-        serializeContextBlock(ctx, debtPaymentsList?.[i]),
+        serializeContextBlock(ctx, debtPaymentsList?.[i], temporalScopeFor(ctx, route)),
       ].join('\n');
     })
     .join('\n\n');

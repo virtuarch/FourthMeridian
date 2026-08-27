@@ -21,6 +21,7 @@
  */
 
 import type { ContextDomain } from '@/lib/ai/types';
+import type { TemporalRequest } from '@/lib/ai/temporal-scope';
 
 /**
  * Recognised financial intents. UNKNOWN is the safe fallback when no rule
@@ -120,6 +121,25 @@ export interface TransactionWindowRequest {
   startDate?: string; // YYYY-MM-DD, inclusive floor
   endDate?:   string; // YYYY-MM-DD, inclusive ceiling
   label:      string;
+  /**
+   * CF-2 — the TEMPORAL CLAIM the user's words make, kept separate from the
+   * interval above.
+   *
+   * These are two different authorities and CF-0 found them collapsed. "How
+   * much have I ever spent" makes an ALL_TIME claim that no bounded interval
+   * can discharge; "what did I spend recently" makes a RECENT claim that a
+   * declared 90-day reading discharges completely. Before this field both
+   * arrived as `undefined` and became the same window, so the prompt could not
+   * tell a legitimate interpretation from a silent substitution.
+   *
+   * `requestedStart` / `requestedEnd` are what the WORDS denote, before any
+   * clamp and before any decision about what can be served. A null bound is
+   * meaningful — BEFORE_DATE has no floor, ALL_TIME has neither — and is what
+   * makes the request unservable rather than merely wide.
+   */
+  requested?:      TemporalRequest;
+  requestedStart?: string | null;
+  requestedEnd?:   string | null;
 }
 
 /**

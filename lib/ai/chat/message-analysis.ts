@@ -17,6 +17,9 @@ import type { IntentRoute } from '@/lib/ai/intent';
 import { classifyFinancialIntent } from '@/lib/ai/intent';
 import type { AssemblerOptions, KnowledgeGap } from '@/lib/ai/types';
 import { NON_SPENDING_CATEGORY_NAMES } from '@/lib/ai/spending-categories';
+import type { BuildContextOptions } from '@/lib/ai/context-builder';
+
+type AssemblerTransactionWindow = NonNullable<BuildContextOptions['transactionWindow']>;
 
 /**
  * Layer 0 (D4) — classify the most recent user message into an IntentRoute.
@@ -38,12 +41,29 @@ export function routeForMessages(msgs: ChatMessage[]): IntentRoute {
  */
 function windowOptionFromRoute(
   route: IntentRoute,
-): { startDate: string; endDate: string; label?: string } | undefined {
+): AssemblerTransactionWindow | undefined {
   const w = route.transactionWindow;
-  if (w && w.startDate && w.endDate) {
-    return { startDate: w.startDate, endDate: w.endDate, label: w.label };
-  }
-  return undefined;
+  if (!w) return undefined;
+
+  // CF-2 — the requested claim rides along, WITH or WITHOUT an interval.
+  //
+  // The old guard was `if (w.startDate && w.endDate)`, so a request that
+  // denotes no servable window — "ever", "recently", "before June 2024" —
+  // returned undefined and the claim was lost. The assembler then applied its
+  // default window and the prompt reported "no particular period", which is the
+  // one thing that was certainly false.
+  const servable = Boolean(w.startDate && w.endDate);
+  if (!servable && !w.requested) return undefined;   // nothing to carry
+
+  return {
+    ...(servable ? { startDate: w.startDate, endDate: w.endDate } : {}),
+    label: w.label,
+    ...(w.requested ? {
+      requested:      w.requested,
+      requestedStart: w.requestedStart ?? null,
+      requestedEnd:   w.requestedEnd ?? null,
+    } : {}),
+  };
 }
 
 /**

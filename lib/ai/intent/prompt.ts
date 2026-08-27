@@ -186,13 +186,22 @@ export function serializeRoutingBlock(route: IntentRoute): string {
   // Dynamic transaction window (D6): when the user named a historical period,
   // the transaction summary below has been assembled for THAT period. Tell the
   // model the exact bounds so its provenance statements match the real window.
+  //
+  // CF-2 — this block used to assert "assembled for EXACTLY this period", which
+  // was not something the routing layer could know. The assembler's 800-day
+  // lookback clamp silently moved the floor of "in 2024" from January to the
+  // following June, and this sentence went on describing the result as the
+  // requested year — a confident falsehood sitting above a context block that
+  // said otherwise. The requested period is still named here, because routing
+  // is where the user's ask belongs; whether it was SERVED is decided by the
+  // TRANSACTION SCOPE block, which compares it against the real selection.
   if (route.transactionWindow && route.transactionWindow.startDate && route.transactionWindow.endDate) {
     const w = route.transactionWindow;
     lines.push('');
     lines.push(
       `Requested transaction period: ${w.label} (${w.startDate} to ${w.endDate}). `
-      + 'The transaction summary in the context below was assembled for exactly this period — '
-      + 'use these dates when stating the analysis window, and do not describe a different span.',
+      + 'See the TRANSACTION SCOPE block in the context below for the period actually loaded, '
+      + 'and use THOSE dates when stating an analysis window.',
     );
   }
 

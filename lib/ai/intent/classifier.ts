@@ -312,6 +312,12 @@ const NUMBER_WORDS: Record<string, number> = {
   eighteen: 18,
 };
 
+/** CF-2 — month name (first three letters) → 0-based index, for "before June 2024". */
+const MONTH_INDEX: Record<string, number> = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
+
 /** Format a Date as a UTC calendar date string (YYYY-MM-DD). */
 function toIsoUtcDate(d: Date): string {
   return d.toISOString().split('T')[0];
@@ -343,6 +349,9 @@ function detectTransactionWindow(text: string, now: Date): TransactionWindowRequ
         startDate: toIsoUtcDate(start),
         endDate:   today,
         label:     `last ${n} months`,
+        requested: 'LAST_N_MONTHS',
+        requestedStart: toIsoUtcDate(start),
+        requestedEnd:   today,
       };
     }
   }
@@ -356,6 +365,9 @@ function detectTransactionWindow(text: string, now: Date): TransactionWindowRequ
       startDate: toIsoUtcDate(start),
       endDate:   toIsoUtcDate(end),
       label:     'last month',
+      requested: 'CALENDAR_MONTH',
+      requestedStart: toIsoUtcDate(start),
+      requestedEnd:   toIsoUtcDate(end),
     };
   }
 
@@ -367,6 +379,118 @@ function detectTransactionWindow(text: string, now: Date): TransactionWindowRequ
       startDate: toIsoUtcDate(start),
       endDate:   today,
       label:     'this month',
+      requested: 'CALENDAR_MONTH',
+      requestedStart: toIsoUtcDate(start),
+      requestedEnd:   today,
+    };
+  }
+
+  // 3b. EXPLICIT_RANGE — "between March 2026 and May 2026", "from Jan to Mar".
+  //
+  // CF-2 — before this, the bare-year rule below matched "2026" and selected the
+  // whole year to date. The totals shown were YTD while the question was about
+  // three months of it, and the routing block announced the year as the
+  // requested period. Runs ahead of the year rule for the same reason the
+  // open-ended rules do: a more specific reading must win.
+  const rangeMatch = text.match(
+    /\b(?:between|from)\s+([a-z]{3,9})\.?\s*(20\d{2})?\s+(?:and|to|through|until|-|–)\s+([a-z]{3,9})\.?\s*(20\d{2})?\b/,
+  );
+  if (rangeMatch) {
+    const m1 = MONTH_INDEX[rangeMatch[1].slice(0, 3)];
+    const m2 = MONTH_INDEX[rangeMatch[3].slice(0, 3)];
+    if (m1 !== undefined && m2 !== undefined) {
+      // A missing year on either side inherits the other's, then the current
+      // one — "from January to March" means one range, not two half-specified.
+      const y2 = rangeMatch[4] ? Number(rangeMatch[4]) : rangeMatch[2] ? Number(rangeMatch[2]) : y;
+      const y1 = rangeMatch[2] ? Number(rangeMatch[2]) : y2;
+      const startIso = toIsoUtcDate(new Date(Date.UTC(y1, m1, 1)));
+      // Inclusive of the whole closing month: day 0 of the following month.
+      const endIso   = toIsoUtcDate(new Date(Date.UTC(y2, m2 + 1, 0)));
+      if (startIso <= endIso) {
+        return {
+          mode:      TransactionWindowModes.CUSTOM,
+          startDate: startIso,
+          endDate:   endIso,
+          label:     rangeMatch[0],
+          requested: 'EXPLICIT_RANGE',
+          requestedStart: startIso,
+          requestedEnd:   endIso,
+        };
+      }
+    }
+  }
+
+  // ── CF-2 — OPEN-ENDED AND UNBOUNDED REQUESTS ─────────────────────────────
+  //
+  // These run BEFORE the bare-year rule below, which is the whole point.
+  // `\b(20\d{2})\b` matched "before June 2024" and selected the WHOLE of 2024,
+  // clamped to June–December — very nearly the complement of the question. The
+  // model received figures for a period disjoint from the one asked about, with
+  // nothing in the prompt saying so.
+  //
+  // Recognising them does NOT widen retrieval. An open-left request still
+  // cannot be served, and says so; an open-right one resolves to an ordinary
+  // bounded range the existing query path already handles.
+
+  // 4a. BEFORE_DATE — open-left. No floor exists, so no window is produced:
+  //     the assembler keeps its default and the scope block declares the
+  //     shortfall. Manufacturing an all-history query here is exactly what this
+  //     slice was told not to do.
+  const beforeMatch = text.match(
+    /\b(?:before|prior to|earlier than|up (?:un)?til|until)\s+(?:the\s+)?([a-z]{3,9}\.?\s+)?(20\d{2})\b/,
+  );
+  if (beforeMatch) {
+    const mon = beforeMatch[1] ? MONTH_INDEX[beforeMatch[1].trim().slice(0, 3)] : undefined;
+    const yr  = Number(beforeMatch[2]);
+    const ceilingExclusive = new Date(Date.UTC(yr, mon ?? 0, 1));
+    const requestedEnd = toIsoUtcDate(new Date(ceilingExclusive.getTime() - 86_400_000));
+    return {
+      mode:  TransactionWindowModes.CUSTOM,
+      label: beforeMatch[0],
+      requested: 'BEFORE_DATE',
+      requestedStart: null,
+      requestedEnd,
+    };
+  }
+
+  // 4b. AFTER_DATE — open-right, and therefore an ORDINARY bounded range
+  //     ending today. The existing query path serves it with no architectural
+  //     change, so it is served rather than merely disclosed.
+  const afterMatch = text.match(
+    /\b(after|since|from|later than)\s+(?:the\s+)?([a-z]{3,9}\.?\s+)?(20\d{2})\b/,
+  );
+  if (afterMatch && !/\bsince (?:jan(?:uary)?\.?\s?1(?:st)?|the (?:start|beginning))/.test(text)) {
+    const mon = afterMatch[2] ? MONTH_INDEX[afterMatch[2].trim().slice(0, 3)] : undefined;
+    const yr  = Number(afterMatch[3]);
+    // "from" is a weak signal — a bare "from 2024" reads as easily as the year
+    // itself, and the existing bare-year rule already serves that well. Require
+    // a month for it, so CF-2 adds a reading rather than reinterpreting one.
+    const bareYearAllowed = afterMatch[1] !== 'from';
+    if (mon !== undefined || (afterMatch[2] === undefined && bareYearAllowed)) {
+      const startIso = toIsoUtcDate(new Date(Date.UTC(yr, mon ?? 0, 1)));
+      return {
+        mode:      TransactionWindowModes.CUSTOM,
+        startDate: startIso,
+        endDate:   today,
+        label:     afterMatch[0],
+        requested: 'AFTER_DATE',
+        requestedStart: startIso,
+        requestedEnd:   today,
+      };
+    }
+  }
+
+  // 4c. ALL_TIME — no bounded window can discharge it. Recorded, not served:
+  //     the shortfall is the honest answer, and loading more rows would not
+  //     change it (this Space's ledger starts before any window the system
+  //     permits).
+  if (/\b(?:ever|all[- ]time|all time|in total|of all time|since (?:i|we) (?:started|began|joined)|lifetime|to date in total)\b/.test(text)) {
+    return {
+      mode:  TransactionWindowModes.CUSTOM,
+      label: 'all time',
+      requested: 'ALL_TIME',
+      requestedStart: null,
+      requestedEnd:   null,
     };
   }
 
@@ -392,7 +516,29 @@ function detectTransactionWindow(text: string, now: Date): TransactionWindowRequ
       startDate: toIsoUtcDate(start),
       endDate:   isPastYear ? toIsoUtcDate(end) : today,
       label:     isPastYear ? `${refYear}` : `year-to-date ${refYear}`,
+      // CF-2 — a PAST year denotes a full calendar year; the current year
+      // denotes only the part that has happened. Different claims, and the
+      // clamp can fail the first while never touching the second.
+      requested:      isPastYear ? 'CALENDAR_YEAR' : 'YTD',
+      requestedStart: toIsoUtcDate(start),
+      requestedEnd:   isPastYear ? toIsoUtcDate(end) : today,
     };
+  }
+
+  // ── CF-2 — VAGUE NEARNESS, DECLARED ──────────────────────────────────────
+  //
+  // "recently" and "currently" name no dates, and the rolling default window is
+  // a perfectly good reading of them. The defect was never the interval — it
+  // was that the prompt could not distinguish this legitimate interpretation
+  // from the silent substitution ALL_TIME received. Recording the request makes
+  // the reading DECLARED, which is the difference between an answer and a guess.
+  //
+  // No dates are returned: the assembler keeps its default, unchanged.
+  if (/\b(?:recent(?:ly)?|lately|these days|of late|past few (?:weeks|days))\b/.test(text)) {
+    return { mode: TransactionWindowModes.DEFAULT, label: 'recently', requested: 'RECENT' };
+  }
+  if (/\b(?:currently|right now|at the moment|these days|nowadays|at present)\b/.test(text)) {
+    return { mode: TransactionWindowModes.DEFAULT, label: 'currently', requested: 'CURRENT' };
   }
 
   return undefined;

@@ -239,6 +239,14 @@ export const AUDITS: readonly AuditEntry[] = [
           "pinned in CI by lib/ai/intelligence/brief-scope-adequacy.test.ts",
   },
   {
+    name: "audit-temporal-framing", tier: "INFORMATIONAL", needsDb: true,
+    what: "CF-2: runs the fixed temporal ask corpus through the REAL production prompt path and " +
+          "reports the four temporal authorities (requested / selected / coverage / satisfied) as " +
+          "they appear in the rendered string. What a corpus can SERVE is a fact about this " +
+          "database, not an invariant; the invariants are pinned in CI by " +
+          "lib/ai/temporal-scope.test.ts and lib/ai/prompts/temporal-framing.test.ts",
+  },
+  {
     name: "audit-bounded-disclosure", tier: "INFORMATIONAL", needsDb: true,
     what: "CF-1: renders the REAL system prompt per Space and reports what every bounded " +
           "list discloses about its own completeness. Whether a corpus HAS a truncated list " +
@@ -348,6 +356,13 @@ export const AUDITS: readonly AuditEntry[] = [
     name: "diagnose-invalid-plaid-tokens", tier: "OPERATIONAL", needsDb: true,
     what: "READ-ONLY diagnostic for PlaidItem rows whose encryptedToken is neither v1 nor v2; " +
           "step 2 of the key-rotation runbook (docs/operations/key-rotation.md)",
+  },
+  {
+    name: "check-temporal-conformance", tier: "OPERATIONAL", needsDb: true,
+    what: "CF-2 — asks a live model temporal questions against the REAL production prompt and " +
+          "fails in BOTH directions: an unsatisfied scope answered as satisfied (overreach), and " +
+          "a satisfied scope hedged anyway (over-hedge). Paid and stochastic, so never a gate; " +
+          "the deterministic half is pinned in CI by lib/ai/prompts/temporal-framing.test.ts",
   },
   {
     name: "check-bounded-superlatives", tier: "OPERATIONAL", needsDb: true,

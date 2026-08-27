@@ -183,6 +183,10 @@ const BANKING_CATEGORIES: TransactionCategory[] = [
 // came to read a population no other surface did.
 import { bankingTransactionWhere } from "@/lib/data/banking-population";
 import { boundedSelection, type BoundedSelection } from "@/lib/ai/bounded-selection";
+import {
+  SelectionReasons, TemporalRequests, CoverageBounds,
+  type SelectionReason, type TemporalScope,
+} from "@/lib/ai/temporal-scope";
 
 // FlowType P5 Slice 4 (D-2) / TI1 — flows counted in expenseTotal (gross
 // Σ|amount|): SPENDING + FEE + INTEREST charges. This membership (the former
@@ -1097,6 +1101,37 @@ async function assembleTransactions(
 
   // ── Assemble payload ──────────────────────────────────────────────────────
 
+  // ── CF-2 — the four temporal authorities, kept apart ───────────────────────
+  //
+  // Assembled HERE because this is the only place all four are known at once:
+  // the caller's request, the clamp's verdict, the rows that came back, and
+  // whether the fetch cap bit. A consumer downstream can derive none of them
+  // from `startDate`/`endDate` alone, which is why CF-0 found the model unable
+  // to distinguish a served period from a substituted one.
+  const temporalScope: TemporalScope = {
+    requested: {
+      intent: transactionWindow?.requested ?? TemporalRequests.UNSPECIFIED,
+      label:  transactionWindow?.label ?? 'no period named',
+      startDate: transactionWindow?.requestedStart ?? null,
+      endDate:   transactionWindow?.requestedEnd   ?? null,
+    },
+    selected: {
+      startDate: win.startIso,
+      endDate:   win.endIso ?? effectiveEndIso,
+      days:      win.days,
+      reason:    win.reason,
+      interpretation: null,   // set by the framing layer, which owns the wording
+    },
+    coverage: {
+      // KD-7 already computed the true evidence floor; reuse it rather than
+      // inventing a second opinion about the same rows.
+      fromDate: coverageStartIso,
+      toDate:   newestDate,
+      transactionCount: rows.length,
+      boundedBy: truncated ? CoverageBounds.FETCH_CAP : null,
+    },
+  };
+
   const data: TransactionsSummaryData = {
     // REVIEW-3 C-6 — the currency every money total below is stated in.
     currency:         moneyCtx.target,
@@ -1104,6 +1139,7 @@ async function assembleTransactions(
     startDate:        win.startIso,
     endDate:          newestDate,
     transactionCount: rows.length,
+    temporalScope,
 
     // KD-7 fetch-cap coverage flags.
     truncated,
@@ -1758,24 +1794,45 @@ function inclusiveDaySpan(startIso: string, endIso: string): number {
 export function resolveWindow(
   _scopeHint:        'full' | 'brief',
   transactionWindow: AssemblerOptions['transactionWindow'],
-): { start: Date; end: Date | null; startIso: string; endIso: string | null; days: number } {
-  if (!transactionWindow) {
+): {
+  start: Date; end: Date | null; startIso: string; endIso: string | null; days: number;
+  /** CF-2 — why these bounds, so the clamp stops being invisible. */
+  reason: SelectionReason;
+} {
+  // CF-2 — a request with no servable interval lands here too, and takes the
+  // same default window it always did. Retrieval is unchanged; the difference
+  // is that the request itself survives on `transactionWindow.requested` for
+  // the framing layer to compare against.
+  if (!transactionWindow?.startDate || !transactionWindow.endDate) {
     const days  = ASSESSMENT_WINDOW_DAYS; // W4 — never keyed on the scope hint
     const start = startOfDay(-days);
-    return { start, end: null, startIso: start.toISOString().split('T')[0], endIso: null, days };
+    return {
+      start, end: null, startIso: start.toISOString().split('T')[0], endIso: null, days,
+      reason: SelectionReasons.DEFAULT_WINDOW,
+    };
   }
 
   // Clamp the floor to the defensive maximum lookback.
+  //
+  // CF-2 — this clamp is correct and stays. What was wrong is that it was
+  // SILENT: "How much did I spend in 2024?" had its floor moved from January to
+  // the following June, and both the routing block and the context block went
+  // on describing the result as the requested period. The clamp now reports
+  // itself, and the framing layer turns that into a shortfall the model can see.
   const earliestAllowed = startOfDay(-MAX_EXPLICIT_WINDOW_DAYS);
-  let start = new Date(`${transactionWindow.startDate}T00:00:00.000Z`);
-  if (start < earliestAllowed) start = earliestAllowed;
+  const asked = new Date(`${transactionWindow.startDate}T00:00:00.000Z`);
+  const clamped = asked < earliestAllowed;
+  const start = clamped ? earliestAllowed : asked;
 
   const startIso = start.toISOString().split('T')[0];
   const endIso   = transactionWindow.endDate;
   // Inclusive ceiling: end of the requested day.
   const end = new Date(`${endIso}T23:59:59.999Z`);
 
-  return { start, end, startIso, endIso, days: inclusiveDaySpan(startIso, endIso) };
+  return {
+    start, end, startIso, endIso, days: inclusiveDaySpan(startIso, endIso),
+    reason: clamped ? SelectionReasons.LOOKBACK_CLAMP : SelectionReasons.AS_REQUESTED,
+  };
 }
 
 /** Resolve a free-text category name to a TransactionCategory, or null. */
