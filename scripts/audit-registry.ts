@@ -239,6 +239,14 @@ export const AUDITS: readonly AuditEntry[] = [
           "pinned in CI by lib/ai/intelligence/brief-scope-adequacy.test.ts",
   },
   {
+    name: "audit-retrieval-plan", tier: "INFORMATIONAL", needsDb: true,
+    what: "CF-8 SHADOW: composes the CF-2/3/4 temporal, CF-5 availability, CF-6 domain and CF-7 " +
+          "concept authorities into one retrieval plan, then reports the DIFFERENCE against what " +
+          "production actually assembles — false widening, missing evidence, unnecessary domain " +
+          "JSON, and envelope-only opportunities. Observational: it changes no retrieval. The " +
+          "plan's semantics are pinned in CI by lib/ai/retrieval-plan.test.ts",
+  },
+  {
     name: "audit-temporal-framing", tier: "INFORMATIONAL", needsDb: true,
     what: "CF-2: runs the fixed temporal ask corpus through the REAL production prompt path and " +
           "reports the four temporal authorities (requested / selected / coverage / satisfied) as " +

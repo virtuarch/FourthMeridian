@@ -69,6 +69,7 @@ import { computeAssessment }         from '@/lib/ai/intelligence';
 import type { FinancialAssessment }  from '@/lib/ai/intelligence';
 import { fetchPerLiabilityDebtPayments } from '@/lib/ai/intelligence/debt-payments';
 import { loadCoverageEnvelope, type CoverageEnvelope } from '@/lib/ai/coverage-envelope';
+import { planRetrieval, planAuditPayload, type RetrievalPlan } from '@/lib/ai/retrieval-plan';
 import { detectsPayoffIntent, detectsExplicitUpdateIntent } from '@/lib/ai/intent';
 import type { IntentRoute }          from '@/lib/ai/intent';
 import { planContextSelection, DEFAULT_CONTEXT_BUDGET_TOKENS } from '@/lib/ai/context-priority';
@@ -120,6 +121,34 @@ const ELIGIBLE_ROLES: SpaceMemberRole[] = [
 /** CF-6 — the newest user message, as a domain-RELEVANCE signal. Nothing else reads it. */
 function latestUserMessage(msgs: { role: string; content: string }[]): string | undefined {
   return [...msgs].reverse().find((m) => m.role === 'user')?.content;
+}
+
+// CF-8 — persist the SHADOW retrieval plan beside the domains production really
+// assembled. Observational only, and failure is swallowed: a planning
+// diagnostic must never cost a user their answer. Carries no financial content.
+async function logShadowRetrievalPlan(
+  userId: string,
+  spaceId: string,
+  plan: RetrievalPlan | undefined,
+  actualDomains: string[],
+): Promise<void> {
+  if (!plan) return;
+  try {
+    await db.auditLog.create({
+      data: {
+        action:  AuditAction.AI_CONTEXT_SELECTION_PLANNED,
+        userId,
+        spaceId,
+        metadata: {
+          ...planAuditPayload(plan),
+          actualDomains,
+        } as unknown as Prisma.InputJsonValue,
+      },
+      select: { id: true },
+    });
+  } catch (err) {
+    console.error('[api/ai/chat] CF-8 shadow retrieval-plan logging failed (non-fatal):', err);
+  }
 }
 
 // row is the low-risk, additive way to capture it.
@@ -490,11 +519,24 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // buildContext carries a second membership guard internally.
     let ctx: SpaceContext_AI;
     let envelopeForPrompt: CoverageEnvelope | undefined;
+    let shadowPlan: RetrievalPlan | undefined;
     try {
       // CF-6 — the evidence census runs FIRST, because it decides which domains
       // are even reachable. Four indexed aggregates (~68 ms), already required
       // by CF-5's envelope, so this reorders work rather than adding any.
       envelopeForPrompt = await loadCoverageEnvelope(spaceId);
+
+      // ── CF-8 — the SHADOW retrieval plan ──────────────────────────────────
+      //
+      // Computed HERE, before any assembler runs, because that is the position
+      // an enforcing planner would have to occupy. The old context-priority
+      // planner ran after assembly and could therefore only propose dropping
+      // serialized text — it saved no retrieval work and could not widen
+      // anything. Nothing consults this plan; it is logged and compared.
+      shadowPlan = planRetrieval({
+        messages, envelope: envelopeForPrompt, now: new Date(),
+      });
+
       ctx = await buildContext(spaceId, user.id, {
         scopeHint: 'full', transactionWindow, drilldown,
         evidence: envelopeForPrompt,
@@ -519,6 +561,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       latestUserMessage(messages));
     // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
     await logShadowSelectionPlans(user.id, [ctx], [assessment], intentRoute);
+    // CF-8 — the retrieval plan beside what was actually assembled, so the two
+    // can be compared after the fact from one audit row.
+    await logShadowRetrievalPlan(user.id, spaceId, shadowPlan, Object.keys(ctx.domains));
     gapsForResponse = filterGapsByIntent(
       extractKnowledgeGaps(ctx),
       detectsPayoffIntent(messages),

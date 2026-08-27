@@ -53,6 +53,7 @@
     "audit:ai-read-parity": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/audit-ai-read-parity.ts",
     "audit:bounded-disclosure": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/audit-bounded-disclosure.ts",
     "audit:temporal-framing": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/audit-temporal-framing.ts",
+    "audit:retrieval-plan": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/audit-retrieval-plan.ts",
     "audit:brief-assessment-parity": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/audit-brief-assessment-parity.ts",
     "audit:coverage-baseline-divergence": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/audit-coverage-baseline-divergence.ts",
     "audit:coverage-fraction-divergence": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/audit-coverage-fraction-divergence.ts",
