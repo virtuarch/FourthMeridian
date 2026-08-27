@@ -89,6 +89,8 @@ async function assembleHoldings(
     instrumentId:   r.instrumentId,
     symbol:         r.symbol,
     name:           r.name,
+    // CF-12 — the canonical AssetClass, already on every valued row.
+    assetClass:     r.assetClass,
     reportingValue: r.reportingValue,
     isCash:         r.isCash,
     // W5 — valuation dating for the staleness disclosure (holdings-core).
@@ -110,7 +112,10 @@ async function assembleHoldings(
     hasAny:         allView.components.length > 0,
   };
 
-  const data = buildHoldingsSummary({ scopeHint, fullRows, allScope });
+  const data = buildHoldingsSummary({
+    scopeHint, fullRows, allScope,
+    positionClass: options.positionClass,
+  });
   if (!data) return null;
 
   return {

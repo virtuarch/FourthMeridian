@@ -42,6 +42,7 @@ import { resolveSpaceContext } from '@/lib/space';
 import { AuditAction } from '@/lib/audit-actions';
 import { getDomainManifest } from '@/lib/ai/domain-manifest';
 import { resolveDomains, type DomainDecision } from '@/lib/ai/domain-relevance';
+import { resolveConceptBreadth, ConceptBreadth } from '@/lib/ai/economic-concepts';
 import type { CoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { getAssembler } from '@/lib/ai/assembler-registry';
 import { runSignalDetectors } from '@/lib/ai/signals';
@@ -107,6 +108,19 @@ export interface BuildContextOptions {
 // ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
+
+/**
+ * CF-12 — which side of the portfolio a question is about.
+ *
+ * Delegates to CF-7's breadth resolver rather than matching on words here, so
+ * the concept layer stays the single investment vocabulary in the codebase.
+ */
+function positionClassForQuestion(question?: string): 'ALL' | 'TRADITIONAL' | 'DIGITAL' {
+  const breadth = resolveConceptBreadth(question);
+  if (breadth === ConceptBreadth.TRADITIONAL_ONLY) return 'TRADITIONAL';
+  if (breadth === ConceptBreadth.DIGITAL_ONLY)     return 'DIGITAL';
+  return 'ALL';
+}
 
 /**
  * Build an AI context object for the given Space and user.
@@ -198,6 +212,11 @@ export async function buildContext(
 
   const assemblerOptions: AssemblerOptions = {
     scopeHint,
+    // CF-12 — CF-7's breadth, one step further down. A securities question gets
+    // the securities subset of the position spine; the spine itself is mixed by
+    // design (W5 routed digital assets through the same seams), so without this
+    // "what stocks do I own?" was answered with Bitcoin at the top.
+    positionClass: positionClassForQuestion(question),
     ...(transactionWindow ? { transactionWindow } : {}),
     ...(drilldown ? { drilldown } : {}),
   };

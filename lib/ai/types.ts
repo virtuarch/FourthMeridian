@@ -104,6 +104,12 @@ export interface AssemblerOptions {
    * field. Absent → default behavior is preserved. Always caller-directed and
    * scope-independent.
    */
+  /**
+   * CF-12 — which side of the portfolio a question is about, from CF-7's
+   * concept breadth. Narrows the holdings POSITION LIST; every total stays
+   * whole-portfolio. Absent ⇒ ALL, which is the pre-CF-12 behaviour.
+   */
+  positionClass?: 'ALL' | 'TRADITIONAL' | 'DIGITAL';
   transactionWindow?: {
     /**
      * YYYY-MM-DD, inclusive floor. CF-2 — OPTIONAL, because a temporal request

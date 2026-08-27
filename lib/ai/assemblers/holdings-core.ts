@@ -55,6 +55,16 @@ export interface CanonicalPositionRow {
   instrumentId:   string;
   symbol:         string | null;
   name:           string | null;
+  /**
+   * CF-12 — the instrument's canonical `AssetClass`, carried so a question
+   * about securities is not answered with crypto.
+   *
+   * The spine is deliberately mixed: W5 routed digital assets through the same
+   * two seams as securities, so BTC and SOL are positions like any other. That
+   * is right for "what do I hold" and wrong for "what STOCKS do I own", and
+   * without this field the serializer had no way to tell them apart.
+   */
+  assetClass?:    string;
   /** reporting-currency value; null ⇒ unvalued (excluded from totals & concentration). */
   reportingValue: number | null;
   isCash:         boolean;
@@ -98,6 +108,35 @@ export const STALE_PRICE_DISCLOSURE_DAYS = 2;
 /** Maximum number of top positions surfaced in the context payload. */
 export const HOLDINGS_TOP_N = 10;
 
+/**
+ * CF-12 — which side of the portfolio a question is about.
+ *
+ * Reuses the canonical `AssetClass.CRYPTO` marker already minted on every
+ * digital-asset instrument (lib/investments/crypto-instrument.ts) rather than
+ * introducing a second notion of "is this crypto?". CF-7 proved the two classes
+ * are disjoint by account classification; this is the same split one level
+ * down, at the instrument.
+ */
+export const PositionClass = {
+  /** Every position. The default, and what "what do I hold" wants. */
+  ALL:         'ALL',
+  /** Securities only — equities, ETFs, funds, bonds, cash equivalents. */
+  TRADITIONAL: 'TRADITIONAL',
+  /** Digital assets only. */
+  DIGITAL:     'DIGITAL',
+} as const;
+
+export type PositionClassKind = typeof PositionClass[keyof typeof PositionClass];
+
+/** True when a row belongs to the requested side. */
+export function positionMatchesClass(
+  row: { assetClass?: string }, want: PositionClassKind,
+): boolean {
+  if (want === PositionClass.ALL) return true;
+  const isCrypto = row.assetClass === 'CRYPTO';
+  return want === PositionClass.DIGITAL ? isCrypto : !isCrypto;
+}
+
 /** The base guardrails: what this value-only summary deliberately does not answer. */
 function baseDataLimits(): string[] {
   return [
@@ -118,8 +157,15 @@ export function buildHoldingsSummary(args: {
   /** FULL-visibility detail rows from getCurrentPositions (visibility enforced upstream). */
   fullRows:  readonly CanonicalPositionRow[];
   allScope:  AllScopeAggregate;
+  /**
+   * CF-12 — which side of the portfolio the question is about. Narrows the
+   * POSITION LIST only: every total below stays whole-portfolio, because
+   * `totalPortfolioValue` is what it says it is and silently redefining it
+   * would be a second, contradictory definition of the same field.
+   */
+  positionClass?: PositionClassKind;
 }): HoldingsSummaryData | null {
-  const { scopeHint, fullRows, allScope } = args;
+  const { scopeHint, fullRows, allScope, positionClass = PositionClass.ALL } = args;
 
   // Domain cleanly empty — no observations in scope. (W5: a crypto wallet with
   // no spine observation is part of this honest emptiness, never back-filled.)
@@ -138,7 +184,12 @@ export function buildHoldingsSummary(args: {
   // weighted position — same as the Allocation panel, giving byte-identical
   // concentration on a FULL fixture). W5: crypto instruments participate here
   // exactly like any other instrument — no separate blend key exists any more.
-  const byKey = new Map<string, { symbol: string | null; name: string | null; value: number }>();
+  const byKey = new Map<string, {
+    symbol: string | null; name: string | null; value: number;
+    // CF-12 — carried through the aggregation so the ranked list can be
+    // narrowed to one side of the portfolio without a second lookup.
+    assetClass?: string;
+  }>();
   let fullSpineInvestedNonCash = 0;
   let unvaluedFullCount = 0;
   let stalePricedCount = 0;
@@ -156,7 +207,10 @@ export function buildHoldingsSummary(args: {
     }
     if (r.isCash) continue;
     fullSpineInvestedNonCash += r.reportingValue;
-    const b = byKey.get(r.instrumentId) ?? { symbol: r.symbol ?? r.name ?? null, name: r.name ?? r.symbol ?? null, value: 0 };
+    const b = byKey.get(r.instrumentId) ?? {
+      symbol: r.symbol ?? r.name ?? null, name: r.name ?? r.symbol ?? null, value: 0,
+      assetClass: r.assetClass,
+    };
     b.value += r.reportingValue;
     byKey.set(r.instrumentId, b);
   }
@@ -174,12 +228,16 @@ export function buildHoldingsSummary(args: {
     .sort((a, b) => b.value - a.value);
   const concentration = computeConcentration(concentrationPositions, analyzedInvestedValue);
 
-  const rankedPositions: HoldingPosition[] = [...byKey.values()]
-    .map((p): HoldingPosition => ({
+  // CF-12 — the class rides along the ranked list. Weights stay relative to the
+  // WHOLE analyzed portfolio: narrowing the list must not silently redefine
+  // what a position's share is a share OF.
+  const rankedPositions: (HoldingPosition & { assetClass?: string })[] = [...byKey.values()]
+    .map((p) => ({
       symbol: p.symbol ?? p.name ?? "—",
       name:   p.name ?? p.symbol ?? "—",
       value:  p.value,
       weight: analyzedInvestedValue > 0 ? p.value / analyzedInvestedValue : 0,
+      assetClass: p.assetClass,
     }))
     .sort((a, b) => b.value - a.value);
 
@@ -228,7 +286,12 @@ export function buildHoldingsSummary(args: {
       // CF-1 — `positionCount` already carried the denominator, but only inside
       // a JSON dump with no statement of what topPositions is a subset OF. The
       // selection now says so explicitly, in the shared shape.
-      ? { topPositions: boundedSelection(rankedPositions, HOLDINGS_TOP_N) }
+      // CF-12 — the denominator is the FILTERED population, so "showing 8 of 9"
+      // counts securities on a securities question rather than quietly keeping
+      // the mixed total. CF-1's rule applied to a second narrowing.
+      ? { topPositions: boundedSelection(
+            rankedPositions.filter((r) => positionMatchesClass(r, positionClass)),
+            HOLDINGS_TOP_N) }
       : {}),
   };
   return data;
