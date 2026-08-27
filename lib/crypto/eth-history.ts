@@ -701,12 +701,12 @@ export async function acquireEthHistory(
     // originating anything, so the balance is not monotone between nonce
     // changes, so no interval can be proven empty. State reading cannot rescue
     // this and neither can arithmetic; the honest answer is that the history is
-    // UNKNOWN. `INVALID_DATA` is the closest coded reason the shared caveat
-    // vocabulary offers — see the note in this file's acceptance report; a
-    // dedicated caveat belongs in `ChainCoverageCaveat`, which this slice does
-    // not own.
+    // UNKNOWN. The caveat is PROOF_PREMISES_UNMET rather than INVALID_DATA: the
+    // provider answered correctly and the data was fine — this account is simply
+    // not the kind of thing the argument is about, and a retry will keep
+    // succeeding without ever helping.
     return {
-      movements: [], coverage: { kind: "UNKNOWN", caveats: ["INVALID_DATA"], source: ETH_HISTORY_SOURCE },
+      movements: [], coverage: { kind: "UNKNOWN", caveats: ["PROOF_PREMISES_UNMET"], source: ETH_HISTORY_SOURCE },
       cursor, changeBlocks: [], anchorBalanceWei: at(hi)?.balance ?? null,
       openingBalanceWei: null, probesUsed, rpcReads,
     };

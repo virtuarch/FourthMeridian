@@ -205,10 +205,10 @@ async function writeBtcObservation(
   nativeBalance: number,
   date: Date,
 ): Promise<string | null> {
-  const { writesLegacyBalanceColumn } = await import("@/lib/crypto/wallet-sync-dispatch");
+  const { usesLegacyColumnForCurrentValue } = await import("@/lib/crypto/wallet-sync-dispatch");
   // The column is Bitcoin's current-value authority ⇒ the spine is a mirror, and
   // losing the mirror is not a reason to refuse a balance we did read.
-  const spineIsCurrentAuthority = !writesLegacyBalanceColumn(BTC_CHAIN);
+  const spineIsCurrentAuthority = !usesLegacyColumnForCurrentValue(BTC_CHAIN);
 
   let written = false;
   try {

@@ -34,7 +34,7 @@ import { replayQuantityTimeline } from "@/lib/investments/quantity-replay.core";
 import { derivedRowsFromTimeline } from "./wallet-reconstruction";
 import { BTC_NATIVE } from "./native-asset";
 import {
-  feedsLegacyWealthHistory, writesLegacyBalanceColumn, walletChainSupport, chainSupportsHistory,
+  feedsLegacyWealthHistory, usesLegacyColumnForCurrentValue, walletChainSupport, chainSupportsHistory,
 } from "./wallet-sync-dispatch";
 import { valueCryptoDay } from "./historical-crypto-valuation.core";
 
@@ -225,9 +225,11 @@ const OBSERVED_BTC = 0.02028507; // == the three movements, exactly
       && !feedsLegacyWealthHistory("ETH") && !feedsLegacyWealthHistory("BNB")
       && !feedsLegacyWealthHistory("AVAX") && !feedsLegacyWealthHistory("MATIC"));
   // But BTC still writes the column for the CURRENT path, deliberately.
-  check("BTC still writes the balance column for the CURRENT path",
-    writesLegacyBalanceColumn("BTC") && !writesLegacyBalanceColumn("SOL"),
-    "historical and current authority are different questions (invariant 32)");
+  // W6d closed the other half: BTC's CURRENT value now comes from the spine too.
+  // The adapter still WRITES the column — the historical materiality signal reads
+  // it — which is why "what was written" and "what is read" are separate fields.
+  check("no chain READS the legacy column for its current value any more",
+    ["BTC", "SOL", "ETH", "BNB", "AVAX", "MATIC"].every((c) => !usesLegacyColumnForCurrentValue(c)));
 
   const binding = code(read("lib", "snapshots", "regenerate-history.ts"));
   check("the constant carry now governs LEGACY accounts only",

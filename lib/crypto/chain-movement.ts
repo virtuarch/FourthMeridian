@@ -79,7 +79,20 @@ export type ChainCoverageCaveat =
   /** A response that parsed but could not be trusted. NOT retryable as-is. */
   | "INVALID_DATA"
   /** No endpoint configured for this chain on this deployment. */
-  | "NO_PROVIDER_CONFIGURED";
+  | "NO_PROVIDER_CONFIGURED"
+  /**
+   * ETH-H1 — the acquisition's PREMISES do not hold for this account, so its
+   * proof does not apply. Distinct from INVALID_DATA in the way that matters:
+   * the provider answered correctly and the data was fine; the account is simply
+   * not the kind of thing the argument is about.
+   *
+   * Ethereum's state-difference reconstruction is the motivating case. It rests
+   * on an EOA being undebitable by anyone but itself, which is false for a
+   * contract wallet (Safe, ERC-4337) and for an EOA carrying a live EIP-7702
+   * delegation. Reporting that as bad data would send someone to retry a request
+   * that will keep succeeding.
+   */
+  | "PROOF_PREMISES_UNMET";
 
 export type ChainCoverage =
   | { kind: "COMPLETE"; fromISO: string; toISO: string; source: string }

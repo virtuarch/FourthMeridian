@@ -21,7 +21,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import {
   walletChainSupport, isSyncableChain, chainSupportsHistory, feedsLegacyWealthHistory,
-  SYNCABLE_CHAINS, writesLegacyBalanceColumn,
+  SYNCABLE_CHAINS, usesLegacyColumnForCurrentValue,
 } from "./wallet-sync-dispatch";
 import { PRODUCT_CHAIN_VALUES, isProductSupportedChain } from "./product-chains";
 
@@ -100,9 +100,9 @@ check("having an adapter is NOT the same as having history (ETH)",
 // EMPTINESS is what makes re-populating it a deliberate act.
 check("no chain uses the legacy historical authority any more",
   ["BTC", "SOL", "ETH", "BNB", "AVAX", "MATIC"].every((c) => !feedsLegacyWealthHistory(c)));
-check("…while Bitcoin still writes the balance column for the CURRENT path",
-  writesLegacyBalanceColumn("BTC") && !writesLegacyBalanceColumn("SOL"),
-  "historical and current authority are separate questions — W6b invariant 32");
+check("…and W6d closed the current half too — no chain reads it either",
+  ["BTC", "SOL", "ETH", "BNB", "AVAX", "MATIC"].every((c) => !usesLegacyColumnForCurrentValue(c)),
+  "the adapter may still WRITE the column; what matters is that nothing READS it");
 check("…so capability and the regeneration gate are genuinely different questions",
   chainSupportsHistory("SOL") && !feedsLegacyWealthHistory("SOL"));
 

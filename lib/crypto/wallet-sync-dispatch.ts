@@ -150,6 +150,22 @@ interface ChainAdapter {
    * column for the current path.
    */
   historicalQuantityAuthority: "SPINE" | "LEGACY_COLUMN";
+  /**
+   * W6d — where this chain's CURRENT value is READ from.
+   *
+   * SPINE         the position spine, valued through the canonical dated price
+   *               path, freshness-aware.
+   * LEGACY_COLUMN `FinancialAccount.balance` — quantity × an undated sync-time
+   *               spot. As of W6d no chain reads this.
+   *
+   * Deliberately NOT the same field as `netWorthParticipation`, which describes
+   * what the ADAPTER WROTE. Bitcoin is exactly why: it still writes the balance
+   * column (the historical materiality signal reads it, and nothing else can
+   * answer "did this wallet ever hold anything"), while no canonical surface
+   * reads it any more. Collapsing the two would force one of those two true
+   * statements to be recorded as false.
+   */
+  currentValueAuthority: "SPINE" | "LEGACY_COLUMN";
   sync(accountId: string): Promise<{
     ok: boolean; syncStatus?: "synced" | "pending"; stage?: string; reason?: string;
   }>;
@@ -165,14 +181,19 @@ const ADAPTERS: Readonly<Record<string, ChainAdapter>> = {
     // historical carry. Also the only one still writing the legacy balance
     // column that net worth composes from.
     support: "HISTORY_SUPPORTED",
+    // W6d — the adapter still WRITES the column (the historical materiality
+    // signal is the only thing that can answer "did this wallet ever hold
+    // anything"), and no canonical surface READS it. Both facts recorded.
     netWorthParticipation: "LEGACY_BALANCE_COLUMN",
     historicalQuantityAuthority: "SPINE",
+    currentValueAuthority: "SPINE",
     sync: (id) => syncBtcWallet(id),
   },
   [ETH_CHAIN]: {
     support: "CURRENT_POSITION_SUPPORTED",
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
     historicalQuantityAuthority: "SPINE",
+    currentValueAuthority: "SPINE",
     sync: (id) => syncEthWallet(id),
   },
   // W-M3 — EVM networks whose native balance is acquirable AND whose canonical
@@ -188,12 +209,14 @@ const ADAPTERS: Readonly<Record<string, ChainAdapter>> = {
     support: "CURRENT_POSITION_SUPPORTED",
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
     historicalQuantityAuthority: "SPINE",
+    currentValueAuthority: "SPINE",
     sync: (id) => syncEvmWallet(id, BNB_NETWORK),
   },
   [AVAX_CHAIN]: {
     support: "CURRENT_POSITION_SUPPORTED",
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
     historicalQuantityAuthority: "SPINE",
+    currentValueAuthority: "SPINE",
     sync: (id) => syncEvmWallet(id, AVAX_NETWORK),
   },
   [SOL_CHAIN]: {
@@ -211,6 +234,7 @@ const ADAPTERS: Readonly<Record<string, ChainAdapter>> = {
     support: "HISTORY_SUPPORTED",
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
     historicalQuantityAuthority: "SPINE",
+    currentValueAuthority: "SPINE",
     sync: (id) => syncSolWallet(id),
   },
 };
@@ -272,17 +296,26 @@ export function isSyncableChain(chain: string | null | undefined): boolean {
  * the position spine, this predicate and the distinction both disappear.
  */
 /**
- * Does this chain write `FinancialAccount.balance` / `.nativeBalance` at sync
- * time — the CURRENT-value authority, not the historical one?
+ * Does this chain READ its CURRENT value from the legacy balance column?
  *
- * W6c split this out of `feedsLegacyWealthHistory`. While Bitcoin was the only
- * chain doing either, one predicate answered both; retiring its historical carry
- * separated them, and a single predicate would have silently moved the current
- * path too.
+ * W6c split this question out of `feedsLegacyWealthHistory`; W6d answered it.
+ * No chain reads the column any more, so — like the historical predicate above —
+ * this is now empty, and its emptiness is asserted rather than assumed.
+ *
+ * It was called `writesLegacyBalanceColumn` until W6d, and the rename is the
+ * point: it was being used to decide what a READER may trust while being named
+ * after what a WRITER does. Those came apart the moment Bitcoin kept writing the
+ * column and stopped reading it, and a predicate whose name disagrees with its
+ * use is how the next reader reintroduces the bug.
+ *
+ * DELETION CONDITION: when every linked wallet carries at least one OBSERVED
+ * PositionObservation, the NO_OBSERVATION fallback in `lib/data/accounts.ts`
+ * becomes unreachable, `LEGACY_COLUMN` loses its last member, and this predicate
+ * goes with it.
  */
-export function writesLegacyBalanceColumn(chain: string | null | undefined): boolean {
+export function usesLegacyColumnForCurrentValue(chain: string | null | undefined): boolean {
   if (!chain) return false;
-  return ADAPTERS[chain.trim().toUpperCase()]?.netWorthParticipation === "LEGACY_BALANCE_COLUMN";
+  return ADAPTERS[chain.trim().toUpperCase()]?.currentValueAuthority === "LEGACY_COLUMN";
 }
 
 export function feedsLegacyWealthHistory(chain: string | null | undefined): boolean {

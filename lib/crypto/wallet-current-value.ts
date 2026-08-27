@@ -39,7 +39,7 @@
  *
  * ── WHICH CHAINS THIS SERVES IS A REGISTRY FACT, NOT A LIST HERE ────────────
  * A chain is served exactly when it does not name the legacy balance column as
- * its net-worth participation (`writesLegacyBalanceColumn`, wallet-sync-dispatch).
+ * its net-worth participation (`usesLegacyColumnForCurrentValue`, wallet-sync-dispatch).
  * Nothing in this file names a chain, and nothing above it does either.
  *
  * W6d is the slice that empties the exception: Bitcoin's CURRENT value moves
@@ -56,7 +56,7 @@ import {
   valuePositionRows,
 } from "@/lib/investments/valuation";
 import { todayUTCISO } from "@/lib/time/clock";
-import { writesLegacyBalanceColumn } from "./wallet-sync-dispatch";
+import { usesLegacyColumnForCurrentValue } from "./wallet-sync-dispatch";
 import { nativeAssetForChain } from "./native-asset";
 import { bandForAge, ageInDays, type FreshnessBand } from "@/lib/freshness/observation";
 
@@ -191,10 +191,10 @@ export function isFreshCurrentValue(v: WalletCurrentValue | undefined): boolean 
  * DELETION CONDITION: when `LEGACY_BALANCE_COLUMN` has no member left in the
  * registry AND no wallet remains without spine evidence (see the fallback note
  * in the consumers), this becomes `Boolean(ref.walletChain)` and
- * `writesLegacyBalanceColumn` goes with it.
+ * `usesLegacyColumnForCurrentValue` goes with it.
  */
 export function needsSpineValuation(ref: WalletAccountRef): boolean {
-  return Boolean(ref.walletChain) && !writesLegacyBalanceColumn(ref.walletChain);
+  return Boolean(ref.walletChain) && !usesLegacyColumnForCurrentValue(ref.walletChain);
 }
 
 /**

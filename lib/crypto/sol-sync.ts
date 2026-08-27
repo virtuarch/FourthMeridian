@@ -124,7 +124,7 @@ export interface SolWalletSyncResult {
   /** Always NOT_APPLICABLE here — a balance-only chain has no ledger. */
   ledger?: LedgerReconciliation;
   /** On failure: which step failed and why (also recorded as a SyncIssue). */
-  stage?: "load" | SolSyncStage;
+  stage?: "load" | SolSyncStage | "capture";
   reason?: string;
 }
 
@@ -260,7 +260,10 @@ export async function syncSolWallet(
       "(INVESTMENT_OBSERVATIONS_ENABLED), so there is nowhere to record it.";
     await recordSolSyncIssue(accountId, "capture", reason, { quantity, lamportBalance: lamports.toString() });
     return {
-      accountId, ok: false, stage: "balance", reason,
+      // W6d — was "balance", while the SyncIssue above records "capture". The
+      // balance WAS read; it is the capture that failed, and reporting the
+      // healthy stage as the failing one sends an operator to the wrong system.
+      accountId, ok: false, stage: "capture", reason,
       quantity, lamportBalance: lamports.toString(), positionCaptured: false,
     };
   }

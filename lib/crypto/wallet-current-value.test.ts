@@ -20,7 +20,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { needsSpineValuation } from "./wallet-current-value";
-import { writesLegacyBalanceColumn } from "./wallet-sync-dispatch";
+import { usesLegacyColumnForCurrentValue } from "./wallet-sync-dispatch";
 
 let failures = 0, passes = 0;
 function check(name: string, ok: boolean, detail?: string): void {
@@ -64,7 +64,7 @@ const DETAIL    = code(read("app", "api", "spaces", "[id]", "accounts", "detail"
   // here and it does not.
   for (const chain of ["BTC", "SOL", "ETH", "BNB", "AVAX"]) {
     check(`${chain}'s current authority is derived from the registry, not restated`,
-      needsSpineValuation({ id: "a", walletChain: chain }) === !writesLegacyBalanceColumn(chain),
+      needsSpineValuation({ id: "a", walletChain: chain }) === !usesLegacyColumnForCurrentValue(chain),
       "chain policy belongs to wallet-sync-dispatch; a second copy is a drift");
   }
   check("a non-wallet account is untouched",
@@ -72,7 +72,7 @@ const DETAIL    = code(read("app", "api", "spaces", "[id]", "accounts", "detail"
     !needsSpineValuation({ id: "a", walletChain: undefined }) &&
     !needsSpineValuation({ id: "a", walletChain: "" }));
   check("chain matching is case/whitespace tolerant, as everywhere else",
-    needsSpineValuation({ id: "a", walletChain: " btc " }) === !writesLegacyBalanceColumn("BTC"));
+    needsSpineValuation({ id: "a", walletChain: " btc " }) === !usesLegacyColumnForCurrentValue("BTC"));
   check("no chain is named in the predicate's own source",
     !/["']BTC["']|["']SOL["']|["']ETH["']/.test(SRC),
     "a chain literal here is the exception the registry exists to remove");
@@ -236,7 +236,7 @@ const DETAIL    = code(read("app", "api", "spaces", "[id]", "accounts", "detail"
   check("btc-sync can refuse at the capture stage",
     /stage: "capture"/.test(BTCSYNC) && /"capture"/.test(BTCSYNC));
   check("the capture severity is read from the registry, not decided locally",
-    /writesLegacyBalanceColumn/.test(BTCSYNC),
+    /usesLegacyColumnForCurrentValue/.test(BTCSYNC),
     "hard-coding the severity re-creates the exception the registry removes");
   check("a disabled observation gate is caught too, not just a thrown error",
     /!written/.test(BTCSYNC),
@@ -267,7 +267,7 @@ const DETAIL    = code(read("app", "api", "spaces", "[id]", "accounts", "detail"
   // column, which is a different question from where its HISTORY comes from.
   // Bitcoin now answers differently to each, which is exactly why they split.
   check("participation is decided by the registry predicate, in one place",
-    /writesLegacyBalanceColumn/.test(SRC) && !/feedsLegacyWealthHistory/.test(SRC),
+    /usesLegacyColumnForCurrentValue/.test(SRC) && !/feedsLegacyWealthHistory/.test(SRC),
     "keying the current path on the historical predicate would have dragged "
     + "Bitcoin's live balance onto the spine as a side effect of W6c");
   check("no consumer writes back to the balance column",
