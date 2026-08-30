@@ -559,6 +559,29 @@ eq('NG9 dates, counts and percentages are never read as money claims',
 eq('NG10 a not-cash amount stated WITH its caveat is the licence working',
   detect('Known future inflows: $37,006.51 (not counted as cash, the net basis is unknown).', ngD),
   []);
+// FORECAST-15 — a measured false positive that redaction turned into a real
+// cost: a clean answer naming the user's investment values had all three
+// figures deleted. Investments are CF-7's authority; this boundary is about
+// forecast CASH.
+eq('NG11a legitimate investment values are out of scope',
+  detect('Your investments are currently worth a total of $24,021.19, which includes '
+    + '$5,006.56 in traditional investments and $19,014.63 in digital assets.', ngB), []);
+eq('NG11b but claiming they are spendable is still a cash claim',
+  detect('Your crypto gives you $19,014.63 available to spend.', ngB),
+  ['UNLICENSED_CASH_CLAIM']);
+eq('NG11c including when the claim follows the figure',
+  detect('You have $24,021.19 in liquid investments you can spend.', ngB),
+  ['UNLICENSED_CASH_CLAIM']);
+// FORECAST-15 — three false-positive mechanisms found by auditing every guard
+// detection against a scorer-clean reply, not by reasoning about the patterns.
+eq('NG11d a rate framed BEFORE the figure is still a rate',
+  detect('Assuming a monthly spending of $4,000 and that your paycheck is net.', ngB), []);
+eq('NG11e a historical window written in words is still historical',
+  detect('Over the last three months, your total spending was $25,048.98.', ngB), []);
+eq('NG11f markdown emphasis does not sever a figure from its period marker',
+  detect('You have projected income of **$11,454.40** per month.', ngB), []);
+eq('NG11g while an invented sum presented as inflows is still caught',
+  detect('You have known inflows totaling $54,006.52.', ngB), ['UNLICENSED_CASH_CLAIM']);
 eq('NG11 a rate mention is never a balance claim',
   detect('Your ending cash reflects $4,000/month of spending.', ngB), []);
 

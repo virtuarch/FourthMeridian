@@ -315,8 +315,8 @@ export const FORECAST_SCENARIOS: ForecastScenario[] = [
       // distinction exactly. Whether it ALSO says "gross" is a matter of
       // precision worth noting, not a conformance failure — the harm this
       // scenario exists to catch is the $17,000 sum, and that is forbidden above.
-      { any: [/gross/i, /(?:can(?:not|'t)|not) be (?:counted|treated) as cash/i,
-        /before deductions/i, /net \(after[- ]tax\) values? (?:have not|are not)/i],
+      { any: [/gross/i, /(?:are |is |be )?not (?:counted|treated|included) as cash/i,
+        /before deductions/i, /net \(after[- ]tax\)/i],
         why: 'must keep the amounts out of cash and say why' },
       { any: [/15,?500/], why: 'must still report the stated amount' },
     ],
@@ -383,7 +383,9 @@ export const FORECAST_SCENARIOS: ForecastScenario[] = [
     question: 'Compare what I spent over the last 3 months with what my cash could look like over the next 3 months.',
     forbidden: [NO_HISTORICAL_AS_FORECAST_INPUT, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE],
     required: [
-      { any: [/8,?349|last three months|past three months|recent(?:ly)?/i],
+      // "Over the last 3 months" is the same answer as "last three months"; the
+      // first pattern only spelled the number out.
+      { any: [/8,?349|25,?048|(?:last|past)\s+(?:3|three)\s+months|recent(?:ly)?/i],
         why: 'must still give the historical spending the user asked for' },
       // "REFUSED", "not available" and "missing" are refusals too — the first
       // pattern demanded a first-person "I cannot" and scored a correct answer

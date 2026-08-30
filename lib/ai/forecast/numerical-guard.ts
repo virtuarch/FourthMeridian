@@ -79,7 +79,43 @@ const ENDING_CLAIM_RE =
  * costs the user real answers.
  */
 const HISTORICAL_CONTEXT_RE =
-  /\b(?:last|past|previous|prior|recent|historical|so far|to date|trailing)\s+(?:\d+\s+)?(?:month|months|week|weeks|year|years|quarter)\b|\byou spent\b|\bspent over\b|\baverage monthly spending\b|\bover the last\b|\bmonths? ago\b/i;
+  // ⚠️ WORD-NUMBERS TOO. "Over the last three months … your total spending was
+  // $25,048.98" was flagged as an unlicensed product — it is 3 x the historical
+  // mean — because the pattern only matched digits.
+  /\b(?:last|past|previous|prior|recent|historical|so far|to date|trailing)\s+(?:(?:\d+|one|two|three|four|five|six|nine|ten|twelve)\s+)?(?:month|months|week|weeks|year|years|quarter)\b|\byou spent\b|\bspent over\b|\baverage monthly spending\b|\bover the last\b|\bmonths? ago\b/i;
+
+/**
+ * A figure being discussed as an INVESTMENT VALUE, which is CF-7's authority.
+ *
+ * ⚠️ MEASURED FALSE POSITIVE WITH A REAL COST. On "your investments are
+ * currently worth a total of $24,021.19, which includes $5,006.56 in
+ * traditional investments and $19,014.63 in digital assets" — a clean answer to
+ * a question the user asked — the guard fired on "worth a total of" and
+ * redaction deleted all three figures. The forecast state says in as many words
+ * that investments are NOT liquid cash; a boundary that polices them is
+ * policing a different authority's figures.
+ *
+ * ⚠️ IT DOES NOT EXEMPT SPENDABILITY. "Your crypto gives you $19,014 available
+ * to spend" is still a cash claim over a non-cash asset, and still a finding —
+ * the exemption is checked against investment framing, and the spendability
+ * vocabulary in CASH_CLAIM_RE is checked separately below.
+ */
+const INVESTMENT_CONTEXT_RE =
+  /\b(?:investments?|holdings?|portfolio|brokerage|crypto|digital assets?|securities|equit(?:y|ies))\b/i;
+/**
+ * A per-period LEVEL framed before the figure — "a monthly spending of $4,000".
+ *
+ * ⚠️ THE SUFFIX IS NOT THE ONLY PLACE THE PERIOD LIVES. Measured false
+ * positives on "assuming a monthly spending of $4,000 and that your paycheck…"
+ * — a correct statement of the assumption, redacted because "spending of" reads
+ * as claim language and no "/month" followed the figure.
+ */
+const RATE_FRAME_RE =
+  /\b(?:monthly|per month|a month|each month|every month|per 28 days)\b[^.$]{0,24}$|\brate of\s*$/i;
+
+/** Claims that make an investment figure a claim about CASH after all. */
+const SPENDABILITY_RE =
+  /\b(?:available to spend|spendable|as cash|in cash|liquid|cash you (?:have|can)|use(?:able)? for spending)\b/i;
 
 /**
  * A caveat that makes a not-cash figure correctly stated.
@@ -225,6 +261,9 @@ interface ReplyFigure {
 const CASH_CLAIM_RE =
   /\b(?:ending cash|end(?:ing)? (?:up )?with|you'?ll have|you will have|balance (?:will|would|is|of)|total(?:ling|s|ing)?|(?:known|total|projected|estimated)?\s*(?:in|out)flows?|(?:total|projected)?\s*spending(?: over| of| for)?|cash (?:position|balance|available|flow)|available to spend|spendable|in (?:cash|hand)|net (?:cash|inflow)|receive|arriving|comes? in)\b[^.]{0,24}$/i;
 
+/** Markdown emphasis removed. Presentation, never part of a claim. */
+const md = (t: string) => t.replace(/\*+|_{2,}|`/g, '');
+
 const MONEY_RE = /(?:\$|\bUSD\s*)(-?[\d,]+(?:\.\d{1,2})?)/g;
 const HEDGE_RE = /\b(?:about|roughly|around|approximately|近|~|nearly|just over|just under|some)\s*$/i;
 
@@ -259,15 +298,25 @@ function replyFigures(reply: string): ReplyFigure[] {
       // …, your ending cash would be $35,144.66" is a correct answer, and a
       // whole-sentence test flagged the $4,000 because the words "ending cash"
       // were somewhere in it. The claim has to attach to THIS figure.
-      const near = sentence.slice(Math.max(0, m.index - 45), m.index);
-      const after = sentence.slice(m.index + m[0].length, m.index + m[0].length + 14);
+      // ⚠️ EMPHASIS STRIPPED FOR ANALYSIS ONLY, NEVER FROM THE EVIDENCE.
+      // "**$11,454.40** per month" put `**` between the figure and its period
+      // marker, so the rate exemption missed. Stripping the whole reply first
+      // fixed that and broke redaction instead: `evidence` is matched back
+      // against the ORIGINAL text, and a stripped sentence is never found in it.
+      // So the windows are cleaned and the sentence is not.
+      const near = md(sentence.slice(Math.max(0, m.index - 45), m.index));
+      const after = md(sentence.slice(m.index + m[0].length, m.index + m[0].length + 20));
+      // ⚠️ SPENDABILITY IS CHECKED AFTER THE FIGURE TOO. English puts it there
+      // as often as before — "$19,014.63 available to spend" — and a
+      // before-only window let a crypto-as-cash claim through untouched.
+      const afterWide = md(sentence.slice(m.index + m[0].length, m.index + m[0].length + 60));
       out.push({
         value: Math.abs(value), sentence: sentence.trim(), hedged: HEDGE_RE.test(before),
-        cashClaim: CASH_CLAIM_RE.test(near),
+        cashClaim: CASH_CLAIM_RE.test(near) || SPENDABILITY_RE.test(afterWide),
         endingClaim: ENDING_CLAIM_RE.test(near),
         historical,
         isRateMention: /^\s*(?:\/|per\s|a\s|each\s|every\s)?\s*(?:month|mo\b|week|year|28 days)/i
-          .test(after),
+          .test(after) || RATE_FRAME_RE.test(near),
       });
     }
   }
@@ -310,6 +359,9 @@ export function detectUnlicensedForecastArithmetic(
     // ⚠️ HISTORY IS OUT OF SCOPE, ENTIRELY. Not "allowed if licensed" — the
     // forecast licence has nothing to say about what the user spent last month.
     if (fig.historical) continue;
+    // Investment values belong to CF-7, not to this boundary — unless the
+    // sentence claims they are spendable, which is a cash claim about them.
+    if (INVESTMENT_CONTEXT_RE.test(fig.sentence) && !SPENDABILITY_RE.test(fig.sentence)) continue;
     const lic = licenceFor(fig.value, licensed, fig.hedged);
 
     // ── 0. An ending balance over a refused path ───────────────────────────
@@ -436,6 +488,20 @@ export function redactUnlicensed(
   const supposed = forecast.accepted.filter((a) => a.origin === 'USER_REQUESTED');
   if (supposed.length > 0 && ending !== null && ending !== undefined) {
     restored.push(`this rests on ${supposed.map((a) => `"${a.statedAs}"`).join(' and ')}`);
+  }
+
+  // ⚠️ AND THE STATED-BUT-NOT-CASH AMOUNTS. Measured: the model summed a
+  // $15,500 GROSS bonus and a $1,500 unknown-basis payout into "$17,000 of
+  // cash", the guard caught it, and redaction removed the only sentence that
+  // named either amount — so the answer lost the honest half of the fact along
+  // with the dishonest half. They are deterministic; they come back with the
+  // caveat that makes them sayable.
+  const notCash = forecast.events.filter((e) => e.included && e.cashDelta === null
+    && e.authoritativeAmount);
+  if (notCash.length > 0) {
+    out += `\n\nStated but NOT counted as cash: ${notCash
+      .map((e) => `${money(e.authoritativeAmount!.value)} on ${e.dateISO} `
+        + `(${e.authoritativeAmount!.basis} basis)`).join('; ')}.`;
   }
   if (restored.length) {
     out += `\n\nTo be precise about the figures: ${restored.join(', and ')}.`;

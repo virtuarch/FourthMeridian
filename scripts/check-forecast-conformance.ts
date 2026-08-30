@@ -37,10 +37,7 @@ import {
   FORECAST_SCENARIOS, realSpaceCtx, STREAMS, HORIZON, AS_OF,
   type ForecastScenario,
 } from '@/lib/ai/conformance/forecast-scenarios';
-import {
-  detectUnlicensedForecastArithmetic, redactUnlicensed,
-  forecastNarrationFallback, applyForecastGuard,
-} from '@/lib/ai/forecast/numerical-guard';
+import { guardForecastReply } from '@/lib/ai/forecast/numerical-guard';
 import { explainForecast, type CashForecast } from '@/lib/forecast/engine';
 import type { AssembledForecast } from '@/lib/ai/forecast/assemble';
 
@@ -84,6 +81,13 @@ const USD_OUT = PRICE.out / 1_000_000;
 
 interface Result {
   id: string; run: number; reply: string;
+  /** FORECAST-15 §1 — the model's own answer, before any enforcement. */
+  rawReply: string;
+  rawFailures: string[];
+  /** What the guard saw, in every mode including shadow. */
+  guardFindings: { kind: string; value: number }[];
+  guardOutcome: string;
+  /** The user-visible answer's failures. Identical to raw in shadow/off. */
   failures: string[]; narration: string[]; promptTokens: number; ms: number;
 }
 
@@ -188,30 +192,30 @@ async function main(): Promise<void> {
       const ms = Date.now() - t0;
       inTok += res.usage?.prompt_tokens ?? 0;
       outTok += res.usage?.completion_tokens ?? 0;
-      let reply = res.choices[0]?.message?.content ?? '';
-      // The production boundary, run exactly as the route runs it: detect,
-      // repair once, fall back to the deterministic narration if it still fails.
+      const rawReply = res.choices[0]?.message?.content ?? '';
+      let reply = rawReply;
+      // FORECAST-15 §1 — the guard runs in EVERY mode so the shadow rate is
+      // measurable; only 'repair' changes what the user would see.
+      let guardOutcome = 'none';
+      let guardFindings: { kind: string; value: number }[] = [];
       let guardNote = '';
       if (GUARD !== 'off' && !('refused' in forecast.forecast)) {
         const fc = forecast.forecast as CashForecast;
-        const found = detectUnlicensedForecastArithmetic(reply, fc);
-        if (found.length > 0) {
-          guardNote = ` [guard:${found.length}]`;
-          if (GUARD === 'repair') {
-            const redacted = redactUnlicensed(reply, found, fc);
-            const still = detectUnlicensedForecastArithmetic(redacted, fc);
-            reply = applyForecastGuard(
-              redacted, still, 'repair', forecastNarrationFallback(explainForecast(fc)));
-            guardNote = still.length === 0 ? ' [redacted]' : ' [fallback]';
-          }
-        }
+        const g = guardForecastReply(reply, fc, GUARD, () => explainForecast(fc));
+        guardFindings = g.findings.map((f) => ({ kind: String(f.kind), value: f.value }));
+        guardOutcome = g.outcome;
+        reply = g.reply;
+        if (g.outcome !== 'clean') guardNote = ` [${g.outcome}]`;
       }
       const failures = score(s, reply);
+      const rawFailures = score(s, rawReply);
       const narration = narrationNotes(s, reply);
-      results.push({ id: s.id, run, reply, failures, narration,
+      results.push({ id: s.id, run, reply, rawReply, rawFailures,
+        guardFindings, guardOutcome, failures, narration,
         promptTokens: res.usage?.prompt_tokens ?? 0, ms });
       const mark = failures.length === 0 ? '✓' : '✗';
-      console.log(`${mark} ${s.id} (run ${run}, prompt ${res.usage?.prompt_tokens} tok)${guardNote}`);
+      const rawMark = rawFailures.length === 0 ? '·' : 'R';
+      console.log(`${mark}${rawMark} ${s.id} (run ${run}, prompt ${res.usage?.prompt_tokens} tok)${guardNote}`);
       for (const f of failures) console.log(`    ${f}`);
       for (const n of narration) console.log(`    · narration: ${n}`);
       if (verbose) console.log(`\n--- reply ---\n${reply}\n-------------\n`);
@@ -221,6 +225,15 @@ async function main(): Promise<void> {
   const failed = results.filter((r) => r.failures.length > 0);
   const byId = new Map<string, number>();
   for (const r of failed) byId.set(r.id, (byId.get(r.id) ?? 0) + 1);
+
+  // FORECAST-15 — the four numbers the rollout decision needs, kept apart.
+  const rawViolations = results.filter((r) => r.rawFailures.length > 0).length;
+  const detected = results.filter((r) => r.guardFindings.length > 0).length;
+  const outcomes = results.reduce<Record<string, number>>((a, r) => {
+    a[r.guardOutcome] = (a[r.guardOutcome] ?? 0) + 1; return a; }, {});
+  console.log(`\n  RAW model failures: ${rawViolations}/${results.length}`
+    + `  ·  guard detected: ${detected}/${results.length}`
+    + `  ·  outcomes ${JSON.stringify(outcomes)}`);
 
   const lat = results.map((r) => r.ms).sort((a, b) => a - b);
   console.log(`\n[${CHAT_MODEL}] ${results.length - failed.length}/${results.length} clean`
