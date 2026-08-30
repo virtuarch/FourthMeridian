@@ -26,6 +26,7 @@
  */
 
 import { describeOperatingState } from '@/lib/forecast/operating-state';
+import { describeAssertedFacts } from './fact-continuity';
 import { explainForecast } from '@/lib/forecast/engine';
 import type { AssembledForecast } from './assemble';
 
@@ -52,9 +53,17 @@ export function renderForecastSection(a: AssembledForecast): string[] {
 
   lines.push('CURRENT STATE', ...describeOperatingState(a.state));
 
-  if (a.appliedFacts.length) {
-    lines.push('STATED AS FACT BY THE USER THIS TURN (applied to the authorities above):');
-    for (const f of a.appliedFacts) lines.push(`  - ${f}`);
+  // ⚠️ "IN THIS CONVERSATION", not "this turn" — FORECAST-13 made the fact
+  // outlive the sentence, and a label saying otherwise would misdescribe where
+  // the number came from. Superseded and ambiguous claims are listed too: a
+  // correction the user made is worth showing as a correction, and a claim
+  // dropped for ambiguity is a question the assistant should ask rather than a
+  // silence it should fill.
+  const factLines = describeAssertedFacts(a.facts);
+  if (factLines.length) {
+    lines.push('STATED AS FACT BY THE USER IN THIS CONVERSATION '
+      + '(already applied to the authorities above — do not re-apply or re-derive):');
+    lines.push(...factLines);
   }
 
   if ('refused' in a.forecast) {

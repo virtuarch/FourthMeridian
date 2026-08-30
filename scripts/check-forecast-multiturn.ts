@@ -91,10 +91,23 @@ const CONVERSATIONS: { id: string; turns: Turn[] }[] = [
     id: 'C-correction-reaches-authority',
     turns: [
       { say: 'Forecast my cash for the next 3 months.' },
-      { say: 'No — $5,286.645 is take-home. And my normal spending is $4,000 a month.',
-        context: (c) => c.facts === 2 ? null : `expected 2 facts applied, got ${c.facts}` },
+      // FORECAST-13: this turn asks for nothing, so no forecast is assembled —
+      // and that is fine, because the sentence stays in the history.
+      { say: 'No — $5,286.645 is take-home. And my normal spending is $4,000 a month.' },
       { say: 'So forecast my cash for the next 3 months.',
-        context: (c) => c.facts === 0 ? null : `a previous turn's fact persisted: ${c.facts}` },
+        context: (c) => c.facts === 2 ? null : `the correction was lost: ${c.facts} facts applied`,
+        // ⚠️ SCOPED TO WHAT FACT CONTINUITY DELIVERS. The reply must USE the
+        // corrected inputs rather than refuse; whether it then quotes the
+        // engine's ending figure or reconstructs one is the D/I premise-echo
+        // defect, which FORECAST-14 owns and which this slice must not be
+        // scored on. Conflating them would either hide this fix or claim a
+        // failure it did not cause.
+        required: [
+          { any: [/5,?286\.6|take[- ]home/i], why: 'must use the corrected basis' },
+          { any: [/4,?000/], why: 'must use the corrected spending level' },
+        ],
+        forbidden: [{ pattern: /can'?t (?:provide|give|project)|cannot (?:provide|give|project)/i,
+          why: 'refused a forecast the user had supplied both inputs for' }] },
     ],
   },
 ];
@@ -123,7 +136,8 @@ async function main(): Promise<void> {
             origin: AssumptionOrigin.SYSTEM_POLICY, statedAs: 'default 3-month horizon' })
           : null;
         const forecast = horizon
-          ? assembleForecast({ ctx, streams: STREAMS, horizon, asOfISO: AS_OF, question: turn.say })
+          ? assembleForecast({ ctx, streams: STREAMS, horizon, asOfISO: AS_OF,
+            question: turn.say, messages })
           : undefined;
 
         const probe = {

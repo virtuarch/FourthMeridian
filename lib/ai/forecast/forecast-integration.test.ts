@@ -29,12 +29,13 @@ import { EvidenceAvailability, type CoverageEnvelope } from '@/lib/ai/coverage-e
 import { resolveForecastHorizon } from './horizon';
 import { extractForecastStatements } from './statements';
 import { assembleForecast, forecastAsk, ForecastAsk } from './assemble';
+import { resolveAssertedFacts } from './fact-continuity';
 import { renderForecastSection } from './render';
 import type { ResolvedIncomeStream } from './streams';
 import { CadenceKind, CadenceProvenance, type Cadence } from '@/lib/forecast/cadence';
 import { resolveStreamActivity } from '@/lib/forecast/stream-activity';
 import { AmountBasis, EventProvenance, FlowRole } from '@/lib/forecast/future-cash-event';
-import { ConclusionStatus } from '@/lib/forecast/policy';
+import { AssumptionOrigin, ConclusionStatus } from '@/lib/forecast/policy';
 import { ComponentState } from '@/lib/ai/economic-concepts';
 import { Conclusion } from '@/lib/forecast/operating-state';
 
@@ -405,16 +406,35 @@ check('HF7 a genuine topic change ENDS it — no resurrection', (() => {
   const c = plan('What about crypto?', [T1, 'What are my investments?']).concepts;
   return !c.includes(Concepts.FORECAST);
 })(), JSON.stringify(plan('What about crypto?', [T1, 'What are my investments?']).concepts));
-check('HF8 assumptions are NOT persisted across turns — each turn re-states its own', (() => {
-  // ⚠️ PINNED RATHER THAN BUILT. CF-4 carries a temporal scope between turns
-  // and nothing else; there is no conversation-state authority for a policy
-  // assumption, and inventing one here would be forecast-specific memory
-  // outside CF-4 — which §4 forbids and which would silently apply a
-  // supposition the user made three turns ago to a number they read as current.
-  // So a scenario applies to the turn that states it. The horizon inherits
-  // because CF-4 already owns period inheritance; the assumption does not.
-  const src = read('lib/ai/forecast/assemble.ts');
-  return !/previous|priorTurn|inherit|persist|history/i.test(src);
+// ⚠️ RESTATED BY FORECAST-13, AND NOW BEHAVIOURAL RATHER THAN STRUCTURAL. The
+// check read the assembler's source for the words "previous" and "history",
+// which was a reasonable proxy while nothing there could look backwards at all.
+// FORECAST-13 makes FACTS look backwards on purpose, so the proxy fires on the
+// feature. The claim worth keeping was never about vocabulary — it is that a
+// SUPPOSITION from an earlier turn does not price this one — and that is now
+// asserted directly, against the two conversations that distinguish them.
+check('HF8 an assumption from an earlier turn does NOT apply to a later forecast', (() => {
+  const r = assembleForecast({
+    ctx, streams: STREAMS, horizon: HORIZON, asOfISO: AS_OF,
+    question: FORECAST_Q,
+    messages: [{ role: 'user', content: 'Assume I spend $4,000 a month.' },
+      { role: 'user', content: FORECAST_Q }],
+  });
+  return r.policy.assumptions.filter((a) => a.origin === AssumptionOrigin.USER_REQUESTED).length === 0
+    && r.appliedFacts.length === 0
+    && r.state.discretionaryBaseline.state === ComponentState.UNKNOWN;
+})());
+check('HF8a while a FACT from an earlier turn DOES', (() => {
+  const r = assembleForecast({
+    ctx, streams: STREAMS, horizon: HORIZON, asOfISO: AS_OF,
+    question: FORECAST_Q,
+    messages: [{ role: 'user', content: 'My normal spending is $4,000 a month.' },
+      { role: 'user', content: 'Thanks.' },
+      { role: 'user', content: FORECAST_Q }],
+  });
+  return r.appliedFacts.length === 1
+    && r.state.discretionaryBaseline.state === ComponentState.ASSERTABLE
+    && r.policy.assumptions.every((a) => a.origin === AssumptionOrigin.SYSTEM_POLICY);
 })());
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -481,6 +501,104 @@ eq('FD7 a basis assertion survives a decimal point in the amount',
     'My Vectrus paycheck is $5,286.645 take-home and my normal spending is $4,000 a month.',
     AS_OF, 'vectrus').map((x) => x.subject.kind).sort(),
   ['SPENDING_LEVEL', 'STREAM_AMOUNT_BASIS']);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FC. FACT CONTINUITY (FORECAST-13)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The FORECAST-12 blocker, and the semantics that had to stay intact around it:
+// a FACT survives the turn it was stated in, a SUPPOSITION does not, and
+// neither may be guessed at.
+
+const U = (...c: string[]) => c.map((content) => ({ role: 'user', content }));
+const conv = (msgs: { role: string; content: string }[]) => assembleForecast({
+  ctx, streams: STREAMS, horizon: HORIZON, asOfISO: AS_OF,
+  question: msgs.filter((m) => m.role === 'user').at(-1)!.content, messages: msgs,
+});
+const FQ = 'Forecast my cash for the next 3 months.';
+const st = (r: ReturnType<typeof conv>) => (r.forecast as { fullCashPath?: { status: string } })
+  .fullCashPath?.status;
+const userAssumptions = (r: ReturnType<typeof conv>) =>
+  r.policy.assumptions.filter((a) => a.origin === AssumptionOrigin.USER_REQUESTED).length;
+
+// A — the measured FORECAST-12 sequence, end to end.
+const A13 = conv(U(FQ, 'No — $5,286.645 is take-home. And my normal spending is $4,000 a month.',
+  'Forecast it again.'));
+eq('FC1 the correction survives the turn and BOTH facts reach the authorities',
+  A13.appliedFacts.length, 2);
+eq('FC2 spending is ASSERTABLE', A13.state.discretionaryBaseline.state, ComponentState.ASSERTABLE);
+eq('FC3 the Vectrus basis is NET',
+  A13.state.incomeStreams.find((x) => x.sourceKey === 'vectrus')!.basis, AmountBasis.NET);
+eq('FC4 and the cash path is FACTUALLY_LICENSED', st(A13), ConclusionStatus.FACTUALLY_LICENSED);
+eq('FC5 with no assumption involved', userAssumptions(A13), 0);
+
+// B — a fact stated on a turn that asked for nothing.
+eq('FC6 a fact survives an unrelated turn',
+  conv(U('My normal spending is $4,000/month.', 'Thanks, that helps.', FQ)).appliedFacts.length, 1);
+
+// C — a supposition does not.
+eq('FC7 a supposition from an earlier turn does NOT survive', (() => {
+  const r = conv(U('Assume I spend $4,000/month.', FQ));
+  return [r.appliedFacts.length, userAssumptions(r), r.state.discretionaryBaseline.state];
+})(), [0, 0, ComponentState.UNKNOWN]);
+
+// D — supersession.
+check('FC8 a correction supersedes deterministically — latest wins, none averaged', (() => {
+  const r = conv(U('My normal spending is $4,000/month.', 'Actually make that $5,000.', FQ));
+  return r.state.discretionaryBaseline.amount === 5000
+    && r.facts.superseded.length === 1
+    && (r.facts.superseded[0] as { amount: number }).amount === 4000;
+})(), JSON.stringify(conv(U('My normal spending is $4,000/month.', 'Actually make that $5,000.', FQ))
+  .facts));
+
+// E/F — both basis phrasings, including the one FORECAST-12 could not parse.
+for (const [id, said] of [['FC9', 'My paycheck is $5,286.645 take-home.'],
+  ['FC10', '$5,286.645 is take-home.'], ['FC11', 'That $5,286.645 amount is net.']] as const) {
+  eq(`${id} "${said}" establishes NET on the right stream`,
+    conv(U(said, FQ)).state.incomeStreams.find((x) => x.sourceKey === 'vectrus')!.basis,
+    AmountBasis.NET);
+}
+
+// G — ambiguity fails closed, three ways, each with a stated reason.
+const TWIN = [VECTRUS, { ...ABACUS, projectionEligible: true,
+  activity: { ...ABACUS.activity, mayGenerateExpectedOccurrences: true },
+  amount: { ...(ABACUS.amount as object), value: 5286.645 } }] as unknown as typeof STREAMS;
+const TWO = [VECTRUS, { ...ABACUS, projectionEligible: true,
+  activity: { ...ABACUS.activity, mayGenerateExpectedOccurrences: true } }] as unknown as typeof STREAMS;
+for (const [id, said, streams, why] of [
+  ['FC12', '$5,286.645 is take-home.', TWIN, /share an amount/],
+  ['FC13', 'My paycheck is take-home.', TWO, /names no amount/],
+  ['FC14', '$9,999.00 is take-home.', STREAMS, /no income stream has an established amount/],
+] as const) {
+  check(`${id} ambiguity attaches nothing and says why`, (() => {
+    const f = resolveAssertedFacts(U(said), AS_OF, streams);
+    return f.basis.length === 0 && f.ambiguous.length === 1 && why.test(f.ambiguous[0].reason);
+  })());
+}
+
+// H — assistant prose is not authority.
+check('FC15 nothing the ASSISTANT said can create a fact', (() => {
+  const f = resolveAssertedFacts([
+    { role: 'assistant', content: 'Your paycheck is take-home and you spend $4,000 a month.' },
+    { role: 'user', content: FQ }], AS_OF, STREAMS);
+  return f.spending === null && f.basis.length === 0;
+})());
+check('FC16 and that is a property of the scan, not a rule to remember',
+  /messages\.filter\(\(m\) => m\.role === 'user'\)/.test(read('lib/ai/forecast/fact-continuity.ts')));
+
+// I/J — a hypothetical does not mutate the fact, and does not outlive its turn.
+check('FC17 a hypothetical over a stated fact leaves the fact intact', (() => {
+  const r = conv(U('My normal spending is $4,000 a month.', 'What if it were $10,000?'));
+  return r.state.discretionaryBaseline.amount === 4000 && userAssumptions(r) === 1;
+})());
+check('FC18 and the next forecast returns to the factual baseline', (() => {
+  const r = conv(U('My normal spending is $4,000 a month.', 'What if it were $10,000?', FQ));
+  return r.state.discretionaryBaseline.amount === 4000 && userAssumptions(r) === 0;
+})());
+
+check('FC19 no store was introduced — facts are re-derived, as CF-4 does with scope',
+  !/db\.|prisma|localStorage|cache|Map<string, AssertedFacts>/.test(
+    read('lib/ai/forecast/fact-continuity.ts')));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FS. HISTORICAL SUPPRESSION IS QUERY-SENSITIVE (FORECAST-11A)
@@ -774,8 +892,8 @@ async function mutations(): Promise<void> {
 
   await mutate('M15 a scenario mutating the authoritative state is caught',
     'lib/ai/forecast/assemble.ts',
-    '    if (st.routing.destination !== \'UPSTREAM_AUTHORITY\' || !st.routing.reachable) continue;',
-    '    if (st.routing.destination === \'NEVER\') continue;',
+    '  if (facts.spending) {',
+    '  if (facts.spending || true) {',
     (m) => (m.assembleForecast as AssembleFn)({
       ctx, streams: STREAMS, horizon: HORIZON, asOfISO: AS_OF,
       question: 'Assume I spend $4,000/month.' })

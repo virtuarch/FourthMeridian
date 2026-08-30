@@ -46,8 +46,10 @@ export async function buildForecastForRequest(args: {
   spaceId: string;
   ctx: SpaceContext_AI;
   question: string;
+  /** The conversation, for FORECAST-13 fact continuity. */
+  messages?: readonly { role: string; content: string }[];
 }): Promise<AssembledForecast | undefined> {
-  const { spaceId, ctx, question } = args;
+  const { spaceId, ctx, question, messages } = args;
   try {
     const asOfISO = todayUTCISO();
     const horizon: ForecastHorizon = resolveForecastHorizon(question, asOfISO) ?? {
@@ -56,7 +58,7 @@ export async function buildForecastForRequest(args: {
       statedAs: `no period was named; the default ${DEFAULT_HORIZON_MONTHS}-month horizon applies`,
     };
     const streams = await loadForecastIncomeStreams(spaceId, asOfISO);
-    return assembleForecast({ ctx, streams, horizon, asOfISO, question });
+    return assembleForecast({ ctx, streams, horizon, asOfISO, question, messages });
   } catch (err) {
     console.error('[ai/forecast] assembly failed (non-fatal):', err);
     return undefined;

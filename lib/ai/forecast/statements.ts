@@ -33,7 +33,7 @@
  * spending is $4,000" hedges nothing and is a claim about the world.
  */
 
-import { PeriodBasis } from '@/lib/forecast/spending-baseline';
+import { PeriodBasis, type PeriodBasisKind } from '@/lib/forecast/spending-baseline';
 import { AmountBasis } from '@/lib/forecast/future-cash-event';
 import {
   StatementMode, routeStatement,
@@ -63,6 +63,34 @@ const MONTHLY_SPEND_RE = new RegExp(
 const SPEND_AMOUNT_FIRST_RE = new RegExp(
   `\\$\\s?([\\d,]+(?:\\.\\d+)?)\\s*(?:a|per|/|each)\\s*(month|mo\\b|week|year)\\b${GAP}{0,30}\\b(?:spend|spending|of (?:normal |ordinary )?spending|in spending)`, 'i');
 
+/**
+ * A bare amount that revises something already under discussion.
+ *
+ * ⚠️ IT FIRES ONLY WITH AN ANTECEDENT (§4, §I). "Actually make that $5,000" and
+ * "What if it were $10,000?" name no subject at all — they are corrections and
+ * suppositions ABOUT the spending level the conversation has already
+ * established, and read alone they mean nothing. So the caller supplies whether
+ * a spending level is under discussion, and without one the sentence produces
+ * no claim rather than a guessed one. That is the whole of the anaphora
+ * supported here: no pronoun resolution, no topic model, one antecedent.
+ */
+const ANAPHORIC_AMOUNT_RE =
+  /\b(?:actually,?\s+)?(?:make (?:that|it)|change (?:that|it) to|what if it (?:were|was)|let'?s say|say)\s+(?:it'?s\s+)?\$?\s?([\d,]+(?:\.\d+)?)\b|^\s*actually,?\s+\$?\s?([\d,]+(?:\.\d+)?)\b/i;
+
+/**
+ * A basis claim whose SUBJECT is the amount, not a paycheck noun.
+ *
+ * ⚠️ MEASURED GAP (FORECAST-12 trace C). "No — $5,286.645 is take-home" is how a
+ * correction is actually phrased, and every pattern below required the words
+ * paycheck / salary / payroll / pay. The truthful correction matched nothing and
+ * was discarded, which is what made FORECAST-9A's fact path unreachable in
+ * conversation. These forms are deliberately narrow: an explicit amount, a
+ * copula, and a basis word. "It's net" is NOT here — there is no amount to
+ * identify a stream by, and guessing which stream is the failure §6 forbids.
+ */
+const AMOUNT_IS_BASIS_RE = new RegExp(
+  `(?:that |the |this )?\\$\\s?([\\d,]+(?:\\.\\d+)?)\\s*(?:amount\\s+|figure\\s+)?(?:is|was|=)\\s+(?:my\\s+|the\\s+)?(take[- ]?home|net|after[- ]?tax|gross)\\b`, 'i');
+
 /** A paycheck figure declared net, or an existing one declared net. */
 const NET_BASIS_RE = new RegExp(
   `\\b(?:paycheck|pay ?check|salary|payroll|pay)\\b${GAP}{0,60}\\b(?:is|are|of|as)\\b${GAP}{0,30}\\b(take[- ]?home|net|after[- ]?tax)\\b`, 'i');
@@ -90,6 +118,15 @@ export interface ExtractedStatement {
   mode: StatementModeKind;
   subject: StatementSubject;
   routing: Routing;
+  /**
+   * The figure the sentence named, when it named one.
+   *
+   * ⚠️ IDENTITY, NOT VALUE. A basis claim changes no amount; this is how the
+   * claim is matched to the stream it is ABOUT. "$5,286.645 is take-home"
+   * belongs to the stream whose established level is $5,286.645 and to no
+   * other, however similar another stream's figure happens to be.
+   */
+  identityAmount: number | null;
 }
 
 /**
@@ -105,23 +142,54 @@ export interface ExtractedStatement {
  * from a sentence would attach an asserted basis to the wrong income. The
  * caller passes the stream the forecast is actually built on, or nothing.
  */
+/**
+ * How a basis claim finds the stream it is about.
+ *
+ * A bare `string` names the stream directly — the pre-FORECAST-13 behaviour,
+ * kept so every existing caller and test is unchanged. A function receives the
+ * figure the sentence named (or null) and answers with a stream or, on any
+ * ambiguity, with null.
+ */
+export type StreamResolver = string | null | ((identityAmount: number | null) => string | null);
+
 export function extractForecastStatements(
-  message: string, asOfISO: string, incomeSourceKey: string | null,
+  message: string, asOfISO: string, incomeSourceKey: StreamResolver,
+  /**
+   * What a bare amount would be revising, when the conversation has established
+   * something. Absent ⇒ anaphoric sentences produce nothing.
+   */
+  antecedent?: { kind: 'SPENDING_LEVEL'; currency: string; periodBasis: PeriodBasisKind },
 ): ExtractedStatement[] {
   const out: ExtractedStatement[] = [];
   const sentences = message.split(/(?<=[.!?;])\s+|\n+/).filter((s) => s.trim().length > 0);
 
   let n = 0;
-  const push = (sentence: string, mode: StatementModeKind, subject: StatementSubject) => {
+  const push = (
+    sentence: string, mode: StatementModeKind, subject: StatementSubject,
+    identityAmount: number | null = null,
+  ) => {
     const statedAs = sentence.trim();
     const statement: UserStatement = { mode, subject, statedAs, asOfISO };
-    out.push({ statedAs, mode, subject, routing: routeStatement(statement, `s${n++}`) });
+    out.push({ statedAs, mode, subject, identityAmount,
+      routing: routeStatement(statement, `s${n++}`) });
   };
+  const streamFor = (identityAmount: number | null): string | null =>
+    typeof incomeSourceKey === 'function' ? incomeSourceKey(identityAmount) : incomeSourceKey;
 
   for (const sentence of sentences) {
     const mode = modeOf(sentence);
 
+    // An explicit spending sentence first; a bare revision only if none matched
+    // and the conversation has something for it to revise.
+    const anaphor = antecedent ? ANAPHORIC_AMOUNT_RE.exec(sentence) : null;
     const spend = SPEND_AMOUNT_FIRST_RE.exec(sentence) ?? MONTHLY_SPEND_RE.exec(sentence);
+    if (!spend && anaphor) {
+      const amount = num(anaphor[1] ?? anaphor[2]);
+      if (Number.isFinite(amount) && amount >= 0) {
+        push(sentence, mode, { kind: 'SPENDING_LEVEL', amount,
+          currency: antecedent!.currency, periodBasis: antecedent!.periodBasis }, amount);
+      }
+    }
     if (spend) {
       const amount = num(spend[1]);
       // ⚠️ A weekly or yearly figure is NOT converted here. FORECAST-6 states
@@ -136,15 +204,34 @@ export function extractForecastStatements(
       }
     }
 
-    if (incomeSourceKey
-      && (NET_BASIS_RE.test(sentence) || NET_BASIS_REVERSED_RE.test(sentence))) {
-      push(sentence, mode, {
-        kind: 'STREAM_AMOUNT_BASIS', sourceKey: incomeSourceKey, basis: AmountBasis.NET,
-      });
-    } else if (incomeSourceKey && GROSS_BASIS_RE.test(sentence)) {
-      push(sentence, mode, {
-        kind: 'STREAM_AMOUNT_BASIS', sourceKey: incomeSourceKey, basis: AmountBasis.GROSS,
-      });
+    // ── Basis claims ────────────────────────────────────────────────────────
+    //
+    // The amount-subject form is tried FIRST, because it carries the identity.
+    // "My paycheck is $5,286.645 take-home" satisfies both patterns, and the one
+    // that names a figure is the one that can be matched to a stream.
+    const amountBasis = AMOUNT_IS_BASIS_RE.exec(sentence);
+    if (amountBasis) {
+      const identity = num(amountBasis[1]);
+      const basis = /gross/i.test(amountBasis[2]) ? AmountBasis.GROSS : AmountBasis.NET;
+      const sourceKey = streamFor(Number.isFinite(identity) ? identity : null);
+      // ⚠️ FAIL CLOSED. No stream, no statement — the claim is dropped rather
+      // than attached to a guess.
+      if (sourceKey) {
+        push(sentence, mode, { kind: 'STREAM_AMOUNT_BASIS', sourceKey, basis },
+          Number.isFinite(identity) ? identity : null);
+      }
+    } else if (NET_BASIS_RE.test(sentence) || NET_BASIS_REVERSED_RE.test(sentence)) {
+      const sourceKey = streamFor(null);
+      if (sourceKey) {
+        push(sentence, mode, {
+          kind: 'STREAM_AMOUNT_BASIS', sourceKey, basis: AmountBasis.NET });
+      }
+    } else if (GROSS_BASIS_RE.test(sentence)) {
+      const sourceKey = streamFor(null);
+      if (sourceKey) {
+        push(sentence, mode, {
+          kind: 'STREAM_AMOUNT_BASIS', sourceKey, basis: AmountBasis.GROSS });
+      }
     }
   }
   return out;

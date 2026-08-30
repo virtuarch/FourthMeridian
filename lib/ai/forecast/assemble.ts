@@ -49,6 +49,9 @@ import {
 import { forecastCash, type CashForecast } from '@/lib/forecast/engine';
 import type { ResolvedIncomeStream } from './streams';
 import { extractForecastStatements, type ExtractedStatement } from './statements';
+import {
+  resolveAssertedFacts, type AssertedFacts, type FactMessage,
+} from './fact-continuity';
 
 /** What a forecast needs that is not already a FORECAST-* authority's job. */
 export interface ForecastAssemblyInput {
@@ -57,8 +60,20 @@ export interface ForecastAssemblyInput {
   streams: readonly ResolvedIncomeStream[];
   horizon: ForecastHorizon;
   asOfISO: string;
-  /** This turn's message, for fact/supposition extraction. */
+  /** This turn's message. Suppositions come from HERE and nowhere else. */
   question: string;
+  /**
+   * The whole conversation, for FACT continuity.
+   *
+   * ⚠️ FACTS AND SUPPOSITIONS READ DIFFERENT INPUTS, and that is the entire
+   * distinction FORECAST-13 exists to draw. A supposition is scoped to the turn
+   * that makes it (`question`); a fact the user asserted is still true three
+   * turns later and is re-derived from the history (`messages`), exactly as CF-4
+   * re-derives the temporal scope. Omitting `messages` falls back to the
+   * question alone — the pre-FORECAST-13 behaviour, so every existing caller
+   * and every prior measurement is unchanged.
+   */
+  messages?: readonly FactMessage[];
   /**
    * Dated events some OTHER authority already licensed — a bonus the user named
    * with a date and an amount, an obligation FORECAST-4 dated.
@@ -81,6 +96,8 @@ export interface AssembledForecast {
   forecast: CashForecast | { refused: true; reason: string };
   /** Every statement recognised this turn, and where it was routed. */
   statements: ExtractedStatement[];
+  /** What the user has asserted across the conversation, latest in force. */
+  facts: AssertedFacts;
   /** Facts applied to the STATE, kept separate from suppositions. */
   appliedFacts: string[];
   /** Why a forecast could not be assembled at all, when it could not. */
@@ -108,26 +125,41 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   const candidates = streams.filter((s) => s.projectionEligible && s.amount !== null);
   const primaryKey = candidates.length === 1 ? candidates[0].sourceKey : null;
 
-  const statements = extractForecastStatements(question, asOfISO, primaryKey);
+  // ── Facts, from the whole conversation, applied to the authorities ───────
+  //
+  // ⚠️ THE HISTORY IS THE SOURCE, NOT THIS TURN. A correction stated on a turn
+  // that asked for nothing is still the user's stated fact when a forecast is
+  // finally requested; re-deriving it here is what makes it reachable without
+  // a store to keep in sync. Latest statement per subject wins.
+  const facts: AssertedFacts = resolveAssertedFacts(
+    input.messages ?? [{ role: 'user', content: question }], asOfISO, streams);
 
-  // ── Facts, applied to the authorities that own them ──────────────────────
   const appliedFacts: string[] = [];
   let assertedBaseline: ReturnType<typeof assertedSpendingBaseline> | null = null;
   const assertedBasis = new Map<string, ReturnType<typeof assertedAmountBasis>>();
 
-  for (const st of statements) {
-    if (st.routing.destination !== 'UPSTREAM_AUTHORITY' || !st.routing.reachable) continue;
-    const sub = st.routing.subject;
-    if (sub.kind === 'SPENDING_LEVEL') {
-      assertedBaseline = assertedSpendingBaseline(sub.amount, sub.currency, sub.periodBasis, asOfISO);
-      appliedFacts.push(`spending baseline ${sub.amount} ${sub.currency}: "${st.statedAs}"`);
-    } else if (sub.kind === 'STREAM_AMOUNT_BASIS' && sub.basis !== AmountBasis.UNKNOWN) {
-      const stream = streams.find((s) => s.sourceKey === sub.sourceKey);
-      if (stream?.amount?.assertable) {
-        assertedBasis.set(sub.sourceKey,
-          assertedAmountBasis(stream.amount, sub.basis as 'NET' | 'GROSS', asOfISO));
-        appliedFacts.push(`${sub.sourceKey} basis ${sub.basis}: "${st.statedAs}"`);
-      }
+  if (facts.spending) {
+    assertedBaseline = assertedSpendingBaseline(
+      facts.spending.amount, facts.spending.currency, facts.spending.periodBasis, asOfISO);
+    appliedFacts.push(
+      `spending baseline ${facts.spending.amount} ${facts.spending.currency}: "${facts.spending.statedAs}"`);
+  }
+  // ⚠️ SUPPOSITIONS ARE READ AFTER THE FACTS, AND FROM THIS TURN ONLY. They
+  // borrow the facts' antecedent — "what if it were $10,000" revises the level
+  // the user established — without becoming one: the result is a HYPOTHETICAL
+  // policy assumption over an unchanged authoritative baseline.
+  const statements = extractForecastStatements(question, asOfISO, primaryKey,
+    facts.spending
+      ? { kind: 'SPENDING_LEVEL', currency: facts.spending.currency,
+        periodBasis: facts.spending.periodBasis }
+      : undefined);
+
+  for (const b of facts.basis) {
+    const stream = streams.find((s) => s.sourceKey === b.sourceKey);
+    if (stream?.amount?.assertable && b.basis !== AmountBasis.UNKNOWN) {
+      assertedBasis.set(b.sourceKey,
+        assertedAmountBasis(stream.amount, b.basis as 'NET' | 'GROSS', asOfISO));
+      appliedFacts.push(`${b.sourceKey} basis ${b.basis}: "${b.statedAs}"`);
     }
   }
 
@@ -211,7 +243,7 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   return {
     state, events, policy,
     forecast: forecastCash(state, events, policy),
-    statements, appliedFacts,
+    statements, facts, appliedFacts,
     unavailable: acc ? null : 'account balances could not be assembled for this Space',
   };
 }
