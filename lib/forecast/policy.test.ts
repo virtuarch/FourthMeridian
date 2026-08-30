@@ -512,6 +512,28 @@ check('G20 no ratio transformation exists — no percentage field, no rate',
   !/percent|ratio|\brate\b|fraction/i.test(codeOnly));
 check('G21 the module estimates no deduction', !/tax|withhold/i.test(codeOnly));
 
+check('G22 a stream-level NET supposition reaches that stream\'s UNKNOWN-basis events', (() => {
+  const payslip: FutureCashEvent = { id: 'vectrus@2026-09-11',
+    timing: { kind: 'EXACT', dateISO: '2026-09-11' }, timingProvenance: EventProvenance.DERIVED,
+    direction: 'INFLOW', role: FlowRole.INCOME, sourceKey: 'vectrus',
+    amount: { value: 5286.645, currency: 'USD', basis: AmountBasis.UNKNOWN,
+      provenance: EventProvenance.DERIVED } };
+  const r = applyPolicy(REAL, [payslip, BONUS], policy([VECTRUS_NET]));
+  const pay = r.events.find((e) => e.id === 'vectrus@2026-09-11')!;
+  const bonus = r.events.find((e) => e.id === 'bonus')!;
+  return pay.assumedBasis === AmountBasis.NET && pay.basisAssumptionId === 'a2'
+    // ⚠️ and does NOT reach an event whose basis is already established.
+    && bonus.assumedBasis === null;
+})());
+check('G23 nor an event belonging to a different stream', (() => {
+  const other: FutureCashEvent = { id: 'abacus@2026-09-15',
+    timing: { kind: 'EXACT', dateISO: '2026-09-15' }, timingProvenance: EventProvenance.DERIVED,
+    direction: 'INFLOW', role: FlowRole.INCOME, sourceKey: 'abacus',
+    amount: { value: 5015.68, currency: 'USD', basis: AmountBasis.UNKNOWN,
+      provenance: EventProvenance.DERIVED } };
+  return applyPolicy(REAL, [other], policy([VECTRUS_NET])).events[0].assumedBasis === null;
+})());
+
 // ═══════════════════════════════════════════════════════════════════════════
 // H. PRECEDENCE (§13)
 // ═══════════════════════════════════════════════════════════════════════════

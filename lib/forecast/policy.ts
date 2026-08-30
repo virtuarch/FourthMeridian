@@ -837,6 +837,9 @@ export function applyPolicy(
   const eventIncl = new Map(accepted
     .filter((a): a is EventInclusionAssumption => a.dimension === AssumptionDimension.EVENT_INCLUSION)
     .map((a) => [a.eventId, a]));
+  /** Income-basis suppositions, reachable by the events their stream produced. */
+  const streamBasisFor = new Map<string, { id: string; basis: AmountBasisKind }>(
+    [...netFor.entries()].map(([k, a]) => [k, { id: a.id, basis: a.basis }]));
 
   const incomeStreams: ResolvedIncomeStream[] = state.incomeStreams.map((s) => {
     const cont = contFor.get(s.sourceKey);
@@ -856,7 +859,23 @@ export function applyPolicy(
   });
 
   const resolvedEvents: ResolvedEvent[] = events.map((e) => {
-    const b = eventBasis.get(e.id);
+    // ⚠️ A STREAM-LEVEL BASIS SUPPOSITION REACHES THAT STREAM'S OWN EVENTS, and
+    // only where nothing is established (FORECAST-9). "Assume that paycheck is
+    // net" is one sentence about one stream; before this it reached the state
+    // and stopped, so a forecast over seven cadence-derived occurrences needed
+    // seven identical id-scoped assumptions to say the same thing — which the
+    // caller had to enumerate, and which then filled the explanation with seven
+    // copies of one supposition.
+    //
+    // This is NOT the generic event policy §12 forbids. It is scoped by
+    // `sourceKey` — exactly as specific as an event id, and matching only the
+    // events that stream generated — and it applies solely to an UNKNOWN basis.
+    // A GROSS event is untouched by it, so the $15,500 bonus still requires its
+    // own explicitly counterfactual assumption and the contradiction guard
+    // cannot be walked around by widening the scope.
+    const streamBasis = e.sourceKey && e.amount?.basis === AmountBasis.UNKNOWN
+      ? streamBasisFor.get(e.sourceKey) : undefined;
+    const b = eventBasis.get(e.id) ?? streamBasis;
     const inc = eventIncl.get(e.id);
     return {
       id: e.id,
@@ -974,14 +993,32 @@ export interface ScenarioCash {
   dependencies: string[];
 }
 
+/**
+ * The amount an event has UNDER THE POLICY — the authoritative one, or the same
+ * amount wearing a supposed basis.
+ *
+ * ⚠️ ONE IMPLEMENTATION OF THE SUBSTITUTION RULE, exported so FORECAST-9's
+ * engine consumes it rather than rebuilding it. Two copies of "which basis
+ * applies here" is exactly how the event layer and the state layer came to
+ * disagree in the first place (see FORECAST-9A). The returned object is a fresh
+ * copy; the event's own `amount` is never touched.
+ */
+export function effectiveEventAmount(e: ResolvedEvent): EventAmount | null {
+  if (!e.event.amount) return null;
+  return e.assumedBasis ? { ...e.event.amount, basis: e.assumedBasis } : e.event.amount;
+}
+
+/** The event as the policy sees it. Never mutates, never escapes as evidence. */
+function policyView(e: ResolvedEvent): FutureCashEvent {
+  const amount = effectiveEventAmount(e);
+  return amount === e.event.amount ? e.event : { ...e.event, amount };
+}
+
 export function scenarioCash(r: PolicyResolution): ScenarioCash {
   const originals = r.events.map((e) => e.event);
   const included = r.events.filter((e) => e.included);
 
-  const shadows: FutureCashEvent[] = included.map((e) => (
-    e.assumedBasis && e.event.amount
-      ? { ...e.event, amount: { ...e.event.amount, basis: e.assumedBasis } }
-      : e.event));
+  const shadows: FutureCashEvent[] = included.map(policyView);
 
   // A basis supposition is a dependency only where the authority was not
   // already NET — restating an established basis changes no figure.

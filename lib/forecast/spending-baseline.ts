@@ -379,6 +379,38 @@ export function assertedSpendingBaseline(
   };
 }
 
+/** The mean Gregorian month, in days. The only month-length constant here. */
+export const MEAN_MONTH_DAYS = 365.2425 / 12;
+
+/**
+ * How many days the stated period covers.
+ *
+ * ⚠️ THE DAY-COUNT CONVENTION LIVES HERE, IN THE AUTHORITY THAT STATES THE
+ * BASIS. Added for FORECAST-9, whose cash path has to spread a level across an
+ * arbitrary horizon: an engine that divided by its own idea of a month would be
+ * a second opinion about what "per month" means, and the first place the two
+ * would disagree is a partial period.
+ */
+export function periodDaysOf(periodBasis: PeriodBasisKind): number {
+  return periodBasis === PeriodBasis.MONTHLY ? MEAN_MONTH_DAYS : BASELINE.PERIOD_DAYS;
+}
+
+/**
+ * The same level expressed per day.
+ *
+ * ⚠️ A LEVEL IS A RATE, NOT A DATED BILL. "$4,000 a month" says how fast money
+ * leaves, not that $4,000 departs on the 1st, and this is the conversion that
+ * keeps it a rate — so a 17-day stretch costs 17 days of it and no calendar
+ * boundary has to be invented to make the arithmetic work.
+ *
+ * It takes an amount and a basis rather than a baseline, because FORECAST-8's
+ * supposed baselines carry exactly the same two facts and must convert by
+ * exactly the same rule.
+ */
+export function dailySpendRate(amount: number, periodBasis: PeriodBasisKind): number {
+  return amount / periodDaysOf(periodBasis);
+}
+
 /**
  * The same level expressed per calendar month.
  *
@@ -389,7 +421,7 @@ export function assertedSpendingBaseline(
 export function monthlyRate(baseline: AssertableSpendingBaseline): number {
   return baseline.periodBasis === PeriodBasis.MONTHLY
     ? baseline.amount
-    : baseline.amount / BASELINE.PERIOD_DAYS * (365.2425 / 12);
+    : baseline.amount / BASELINE.PERIOD_DAYS * MEAN_MONTH_DAYS;
 }
 
 /** Period counts by fate, so exclusions are always inspectable. */

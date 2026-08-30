@@ -354,8 +354,15 @@ check('M4 no consumer outside lib/forecast',
   execSync('grep -rl "forecast/periodic-amount" lib app components jobs scripts 2>/dev/null || true',
     { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
     .every((f: string) => f.startsWith('lib/forecast/')));
-check('M5 FORECAST-1/2/3/4 are untouched',
-  execSync('git diff --name-only f0af73d -- lib/forecast/cadence.ts lib/forecast/stream-activity.ts lib/forecast/future-cash-event.ts lib/forecast/obligation.ts',
+// ⚠️ COMMIT-TO-COMMIT (repaired in FORECAST-9). As written this compared the
+// baseline to the WORKING TREE, which turns "FORECAST-5 touched none of its
+// dependencies" — a true and checkable claim about one commit — into "no later
+// slice may touch them either", which FORECAST-5 has no standing to assert. Three
+// gates of this exact shape had already failed for that reason (FORECAST-6 L5,
+// FORECAST-7 J6, FORECAST-8 J10/J11), each time for a legitimate later edit. The
+// files and the claim are unchanged; only the second ref is.
+check('M5 FORECAST-5 did not touch FORECAST-1/2/3/4',
+  execSync('git diff --name-only f0af73d 0506c67 -- lib/forecast/cadence.ts lib/forecast/stream-activity.ts lib/forecast/future-cash-event.ts lib/forecast/obligation.ts',
     { encoding: 'utf8' }).trim() === '');
 check('M6 no anomaly-detection generalisation leaked in',
   !/anomal|zscore|zScore|stddev|standardDeviation/i.test(code));

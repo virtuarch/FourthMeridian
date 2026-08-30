@@ -354,8 +354,15 @@ check('K4 no consumer outside lib/forecast — behaviour unchanged by constructi
   execSync('grep -rl "forecast/stream-activity" lib app components jobs scripts 2>/dev/null || true',
     { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
     .every((f: string) => f.startsWith('lib/forecast/')));
-check('K5 FORECAST-1 is untouched by this slice',
-  execSync('git diff --name-only abdf72f -- lib/forecast/cadence.ts', { encoding: 'utf8' }).trim() === '');
+// ⚠️ COMMIT-TO-COMMIT (repaired in FORECAST-9). As written this compared the
+// baseline to the WORKING TREE, which turns "FORECAST-2 touched none of its
+// dependencies" — a true and checkable claim about one commit — into "no later
+// slice may touch them either", which FORECAST-2 has no standing to assert. Three
+// gates of this exact shape had already failed for that reason (FORECAST-6 L5,
+// FORECAST-7 J6, FORECAST-8 J10/J11), each time for a legitimate later edit. The
+// files and the claim are unchanged; only the second ref is.
+check('K5 FORECAST-2 did not touch FORECAST-1',
+  execSync('git diff --name-only abdf72f d720d1e -- lib/forecast/cadence.ts', { encoding: 'utf8' }).trim() === '');
 // Amount is FORECAST-3's. Scan for amount-bearing IDENTIFIERS, not for the word
 // — the renderer's "No future amount may be stated" is the prohibition itself.
 check('K6 no amount or basis FIELD exists, and no FutureCashEvent',

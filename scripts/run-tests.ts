@@ -84,6 +84,19 @@ function collectTests(dir: string): string[] {
 // mutable filesystem/DB state. Everything else runs in the bounded pool.
 const SERIAL_FILES = new Set<string>([
   path.join("lib", "atlas", "palette-ratchet.test.ts"),
+  // The forecast mutation suites (FORECAST-8/9A/9). Each writes a deliberately
+  // broken copy of its module into lib/forecast/, imports it, asserts the right
+  // test fails, and deletes it — the only way to prove a negative-regression
+  // test actually pins what it claims. The transient file is a .ts under lib/,
+  // so the many repo-wide source scanners in the pool can glob it and then find
+  // it gone a millisecond later; freshness-convergence.test.ts did exactly that
+  // and died on ENOENT. Isolating the writers is this file's documented remedy
+  // and costs about a second, where teaching a dozen readers to expect a
+  // vanishing file would be a standing tax on every future scanner.
+  path.join("lib", "forecast", "policy.test.ts"),
+  path.join("lib", "forecast", "periodic-amount.test.ts"),
+  path.join("lib", "forecast", "operating-state.test.ts"),
+  path.join("lib", "forecast", "engine.test.ts"),
 ]);
 
 // Deterministic, predictable order. `components` carries colocated presentational
