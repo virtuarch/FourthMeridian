@@ -424,6 +424,14 @@ export const AUDITS: readonly AuditEntry[] = [
           "and reads no database",
   },
   {
+    name: "check-forecast-multiturn", tier: "OPERATIONAL", needsDb: false,
+    what: "FORECAST-12 — acceptance across a CONVERSATION rather than a turn " +
+          "(npm run ai:forecast-multiturn). Re-plans and re-assembles every turn exactly as the " +
+          "chat route does, so CF-4 inheritance, FORECAST-10's refinement rule and the per-turn " +
+          "assumption doctrine are all live; probes the assembled context as well as the reply. A " +
+          "TOOL, never a gate — paid and stochastic. Writes nothing, reads no database",
+  },
+  {
     name: "check-schema-drift", tier: "OPERATIONAL", needsDb: true,
     what: "READ-ONLY comparison of prisma/migrations/ against the target database's " +
           "_prisma_migrations ledger (npm run db:drift); exits 1 on pending, unfinished, " +

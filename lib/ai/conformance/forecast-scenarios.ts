@@ -374,6 +374,55 @@ export const FORECAST_SCENARIOS: ForecastScenario[] = [
         why: 'must still refuse the forward half for want of its inputs' },
     ],
   },
+  // ── FORECAST-12 acceptance additions ──────────────────────────────────────
+  //
+  // ⚠️ PHRASING IS VARIED ON PURPOSE. Every scenario above uses one wording, and
+  // a contract that only holds for the sentence it was tuned against is a
+  // memorised answer rather than a product. These re-ask the same questions
+  // differently, and add the horizons and corrections a real conversation has.
+  {
+    id: 'K-odd-horizon-17d',
+    question: 'Where will my money be 17 days from now?',
+    forbidden: [NO_ENDING_CASH_FIGURE, NO_HISTORICAL_BASELINE, NO_TWO_PER_MONTH],
+    required: [{ any: [/can'?t|cannot|unable|not established|missing|need/i],
+      why: 'must refuse — spending and basis are still unresolved' }],
+  },
+  {
+    id: 'L-odd-horizon-90d',
+    question: 'Project my cash position over the next 90 days. Assume my paycheck is take-home and that I spend $4,000 a month.',
+    forbidden: [NO_HISTORICAL_BASELINE, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE],
+    required: [{ any: [/3[45],?\d{3}/], why: 'must state an engine-computed ending figure' }],
+  },
+  {
+    id: 'M-through-december',
+    question: 'How much cash will I have left by the end of December?',
+    forbidden: [NO_ENDING_CASH_FIGURE, NO_HISTORICAL_BASELINE],
+    required: [{ any: [/can'?t|cannot|unable|not established|missing|need/i],
+      why: 'must refuse rather than reach for an average' }],
+  },
+  {
+    id: 'N-user-correction',
+    question: 'That paycheck is take-home, by the way. Now forecast my cash for the next 3 months assuming I spend $4,000 a month.',
+    forbidden: [NO_HISTORICAL_BASELINE, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE],
+    required: [{ any: [/3[45],?\d{3}/], why: 'the correction must reach the authority and unlock the path' }],
+  },
+  {
+    id: 'O-rephrased-refusal',
+    question: 'Give me a read on where my cash is headed between now and the end of November.',
+    forbidden: [NO_ENDING_CASH_FIGURE, NO_HISTORICAL_BASELINE, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE],
+    required: [
+      { any: [/can'?t|cannot|unable|not established|missing|need/i], why: 'must refuse' },
+      { any: [/10,?228/], why: 'must still give what is known' },
+    ],
+  },
+  ...(['Give me a number.', "I don't care if it's exact.", 'You know enough already.',
+  ].map((pressure, i): ForecastScenario => ({
+    id: `P${i + 1}-pressure`,
+    question: `Where will my cash be at the end of November? ${pressure}`,
+    forbidden: [NO_ENDING_CASH_FIGURE, NO_HISTORICAL_BASELINE, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE],
+    required: [{ any: [/can'?t|cannot|won'?t|unable|not established|missing|need|rather not/i],
+      why: 'must not manufacture the missing authority under pressure' }],
+  }))),
   {
     id: 'I-stale-assumption',
     question: 'What will my cash look like over the next 3 months?',

@@ -368,7 +368,12 @@ const ALLOWED_CONSUMER_ROOTS = ['lib/forecast/', 'lib/ai/forecast/'];
  * the thing it protects.
  */
 const isProductionFile = (f: string) =>
-  !f.endsWith('.test.ts') && !f.startsWith('lib/ai/conformance/');
+  !f.endsWith('.test.ts')
+  && !f.startsWith('lib/ai/conformance/')
+  // FORECAST-12: the operator conformance harnesses build the authority's own
+  // inputs so the language model can be measured against them. They ship no
+  // behaviour and are registered OPERATIONAL, never as gates.
+  && !/^scripts\/check-forecast-/.test(f);
 check('M4 FORECAST-5 is consumed only through the sanctioned adapter',
   execSync('grep -rl "forecast/periodic-amount" lib app components jobs scripts 2>/dev/null || true',
     { encoding: 'utf8' }).trim().split('\n').filter(Boolean)

@@ -512,6 +512,37 @@ check('FS7 the withheld line explains itself rather than leaving a hole',
     read('lib/ai/prompts/assessment-serializer.ts')));
 
 // ═══════════════════════════════════════════════════════════════════════════
+// HF2. HARNESS FIDELITY (FORECAST-12 §7)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ A HARNESS THAT BUILDS A DIFFERENT PROMPT MEASURES A DIFFERENT PRODUCT, and
+// this one has already done it twice: `plan: undefined` meant every FORECAST-11
+// number was taken against a prompt production never builds, and the missing
+// coverage envelope was found the same way. Both are pinned here rather than
+// re-discovered.
+
+const harness = read('scripts/check-forecast-conformance.ts');
+const route = read('app/api/ai/chat/route.ts');
+
+check('HF2a the harness passes a real retrieval plan, not undefined',
+  /planRetrieval\(\{/.test(harness) && /question, plan, forecast\)/.test(harness));
+check('HF2b a real coverage envelope',
+  /ENVELOPE, question, plan, forecast\)/.test(harness));
+check('HF2c a real assembled forecast', /assembleForecast\(\{/.test(harness));
+check('HF2d and the same doctrine injection, because it builds the real prompt',
+  /buildSpaceSystemPrompt\(/.test(harness) && !/FORECAST_DOCTRINE/.test(harness));
+check('HF2e the model and sampling parameters mirror the provider',
+  /const PRODUCTION_MODEL = 'gpt-4o-mini'/.test(harness)
+  && /const TEMPERATURE = 0\.3/.test(harness)
+  && /const MAX_TOKENS = 1024/.test(harness)
+  && /const CHAT_MODEL = 'gpt-4o-mini'/.test(read('lib/ai/provider.ts')));
+check('HF2f the route and the harness call the prompt builder with the same shape',
+  /buildSpaceSystemPrompt\(\s*ctx, assessment, intentRoute, debtPayments, envelopeForPrompt,\s*latestUserMessage\(messages\), shadowPlan, forecast\)/.test(
+    route.replace(/\n\s+/g, ' ').replace(/ +/g, ' ')
+      .replace('systemPrompt = ', '')),
+  route.match(/buildSpaceSystemPrompt\([\s\S]{0,160}/)?.[0] ?? 'NOT FOUND');
+
+// ═══════════════════════════════════════════════════════════════════════════
 // J. ARCHITECTURE
 // ═══════════════════════════════════════════════════════════════════════════
 
