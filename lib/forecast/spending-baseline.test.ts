@@ -341,11 +341,18 @@ check('L4 no consumer outside lib/forecast',
   execSync('grep -rl "forecast/spending-baseline" lib app components jobs scripts 2>/dev/null || true',
     { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
     .every((f: string) => f.startsWith('lib/forecast/')));
-check('L5 FORECAST-1..5 are untouched',
-  execSync('git diff --name-only 0506c67 -- lib/forecast/cadence.ts lib/forecast/stream-activity.ts lib/forecast/future-cash-event.ts lib/forecast/obligation.ts lib/forecast/periodic-amount.ts',
+// ⚠️ COMMIT-TO-COMMIT (FORECAST-9A). Both of these compared FORECAST-6's
+// baseline to the WORKING TREE, which quietly turns "FORECAST-6 touched none of
+// its dependencies" into "no future slice may touch them either" — a claim
+// FORECAST-6 has no standing to make. FORECAST-9A edits periodic-amount.ts by
+// design, to give a user-asserted income basis somewhere to land, and tripped
+// it. The same form is still present in four sibling suites and will trip the
+// next slice that edits one of their dependencies.
+check('L5 FORECAST-6 did not touch FORECAST-1..5',
+  execSync('git diff --name-only 0506c67 5ca025a -- lib/forecast/cadence.ts lib/forecast/stream-activity.ts lib/forecast/future-cash-event.ts lib/forecast/obligation.ts lib/forecast/periodic-amount.ts',
     { encoding: 'utf8' }).trim() === '');
-check('L6 flow-predicates is untouched',
-  execSync('git diff --name-only 0506c67 -- lib/transactions/flow-predicates.ts', { encoding: 'utf8' }).trim() === '');
+check('L6 nor flow-predicates',
+  execSync('git diff --name-only 0506c67 5ca025a -- lib/transactions/flow-predicates.ts', { encoding: 'utf8' }).trim() === '');
 check('L7 no category decomposition was built', !/byCategory|categoryBaseline/.test(code));
 
 // ═══════════════════════════════════════════════════════════════════════════

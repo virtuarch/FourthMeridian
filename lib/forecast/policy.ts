@@ -436,7 +436,14 @@ export function validatePolicy(
         reject(a.id, PolicyIssue.UNKNOWN_STREAM, `no income stream "${a.sourceKey}" exists in this state`);
         continue;
       }
-      if (a.basis !== AmountBasis.NET) {
+      // ⚠️ ORDERED, AND THE ORDER IS THE POINT. Supposing GROSS over an
+      // UNESTABLISHED basis licenses nothing and is rejected here. Supposing
+      // GROSS over a basis the user has ESTABLISHED as NET is a different and
+      // worse thing — it overwrites a stated fact — so it falls through to the
+      // contradiction check, which names the fact being overwritten and offers
+      // the counterfactual route. Rejecting both as "not a net assumption"
+      // would hide the second behind the first.
+      if (a.basis !== AmountBasis.NET && s.basis === AmountBasis.UNKNOWN) {
         reject(a.id, PolicyIssue.NOT_A_NET_ASSUMPTION,
           `supposing a ${a.basis} basis licenses nothing — only NET makes an amount spendable`);
         continue;
@@ -614,9 +621,15 @@ function licensingShadow(
     };
   }
 
-  const netKeys = new Set(accepted
+  // ⚠️ THE SUPPOSED BASIS, NOT A FIXED NET. While UNKNOWN was the only basis a
+  // state could hold, every accepted income-basis supposition was necessarily
+  // NET and hard-coding it was harmless. From FORECAST-9A a stream can arrive
+  // already NET, and a counterfactual may then suppose GROSS over it — at which
+  // point a hard-coded NET would have the shadow LICENSING the conclusion the
+  // counterfactual exists to withdraw.
+  const supposedBasis = new Map(accepted
     .filter((a): a is IncomeBasisAssumption => a.dimension === AssumptionDimension.INCOME_BASIS)
-    .map((a) => a.sourceKey));
+    .map((a) => [a.sourceKey, a.basis]));
   const dropped = new Set(accepted
     .filter((a): a is StreamContinuationAssumption =>
       a.dimension === AssumptionDimension.STREAM_CONTINUATION && a.sourceKey !== null && !a.include)
@@ -624,7 +637,8 @@ function licensingShadow(
 
   const incomeStreams = state.incomeStreams
     .filter((s) => !dropped.has(s.sourceKey))
-    .map((s) => (netKeys.has(s.sourceKey) ? { ...s, basis: AmountBasis.NET } : s));
+    .map((s) => (supposedBasis.has(s.sourceKey)
+      ? { ...s, basis: supposedBasis.get(s.sourceKey)! } : s));
 
   return { ...state, discretionaryBaseline: baseline, incomeStreams };
 }
@@ -876,6 +890,21 @@ export function applyPolicy(
 
     let deps: string[];
     if (factual.licensed) {
+      // ⚠️ A POLICY CAN SUBTRACT, NOT ONLY ADD. Almost every assumption supplies
+      // a component the state lacked, and for those the shadow is a superset of
+      // the facts and this check is a no-op. Two cannot be: a counterfactual
+      // that replaces an established NET basis with GROSS, and an exclusion that
+      // removes the only stream carrying a monthly figure. Both leave the
+      // FACTUAL licence intact while making the conclusion unstatable inside the
+      // scenario, and reporting it as HYPOTHETICAL would offer a net figure in a
+      // world the user has just said has no net figure. Unreachable before
+      // FORECAST-9A, because UNKNOWN was the only basis a state could hold and
+      // no supposition could therefore take anything away.
+      const scoped = accepted.length > 0
+        ? conclusionLicence(licensingShadow(state, accepted), c) : factual;
+      if (!scoped.licensed) {
+        return { conclusion: c, status: ConclusionStatus.REFUSED, dependencies: [], missing: scoped.missing };
+      }
       // §20: a conclusion the facts already support acquires a dependency only
       // from an assumption that changes its VALUE — never from one that merely
       // shares the policy.
@@ -1021,20 +1050,23 @@ export interface UserStatement {
 /**
  * The authority a fact-shaped statement belongs to.
  *
- * ⚠️ `PERIODIC_AMOUNT_BASIS` IS A MEASURED GAP, NOT A DESIGN. FORECAST-5's
- * `assertedPeriodicAmount` takes a value and no basis, and
- * `composeOperatingState` hard-codes `basis: AmountBasis.UNKNOWN` with no input
- * field to override — so a user who states, truthfully, that their paycheck is
- * take-home has today no route by which that fact reaches the operating state.
- * FORECAST-3's `AssertedRecurringAmount` DOES carry basis and provenance
- * together, so the fact can reach the EVENT layer; it cannot reach the STATE
- * layer, and therefore cannot license a surplus.
+ * ⚠️ `PERIODIC_AMOUNT_BASIS` WAS A MEASURED GAP AND IS NOW CLOSED (FORECAST-9A).
+ * FORECAST-5's `assertedPeriodicAmount` took a value and no basis, and
+ * `composeOperatingState` hard-coded `basis: AmountBasis.UNKNOWN` with no input
+ * field to override it — so a user who stated, truthfully, that their paycheck
+ * was take-home had no route by which that fact reached the operating state,
+ * and the same assertion reached the EVENT layer as NET while the STATE layer
+ * said UNKNOWN. A *supposition* was more expressive than a *fact*.
  *
- * The consequence is worth stating plainly because it is backwards: today a
- * *supposition* unlocks more than a *fact* does. This module does not paper
- * over it by accepting the fact as a policy assumption — that would be exactly
- * the laundering §3 forbids — it reports the gap and hands the caller the
- * payload the upstream authority would need.
+ * What kept the fix honest was that this module refused the easy repair. The
+ * cheap way to make "my paycheck is take-home" work was to accept it here as a
+ * policy assumption, where it would have functioned perfectly and been reported
+ * as a supposition the user never made. Routing it upstream and marking it
+ * UNREACHABLE was the expensive answer, and it is the reason the gap was
+ * findable at all: an unreachable route is a defect somebody has to close,
+ * where a quietly-working one is not.
+ *
+ * `assertedAmountBasis` is that door. Every route below is now reachable.
  */
 export const FactAuthority = {
   /** FORECAST-6 · `assertedSpendingBaseline`. Complete; the fact lands. */
@@ -1083,7 +1115,7 @@ export function routeStatement(s: UserStatement, id: string): Routing {
           reachable: true, subject: s.subject, note: note('the spending-baseline authority', true) };
       case 'STREAM_AMOUNT_BASIS':
         return { destination: 'UPSTREAM_AUTHORITY', authority: FactAuthority.PERIODIC_AMOUNT_BASIS,
-          reachable: false, subject: s.subject, note: note('the periodic-amount authority', false) };
+          reachable: true, subject: s.subject, note: note('the periodic-amount authority', true) };
       case 'EVENT_AMOUNT_BASIS':
         return { destination: 'UPSTREAM_AUTHORITY', authority: FactAuthority.EVENT_AMOUNT_BASIS,
           reachable: true, subject: s.subject, note: note('the future-cash-event authority', true) };

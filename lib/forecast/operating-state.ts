@@ -105,8 +105,24 @@ export interface IncomeStreamState {
   /**
    * ⚠️ ALWAYS UNKNOWN for a derived amount. Historical deposits landing as cash
    * proves those were cash; it establishes nothing about a future payment.
+   *
+   * NET or GROSS reaches here only from FORECAST-5's `assertedAmountBasis` —
+   * somebody said so — and this composer carries that verdict rather than
+   * forming one. Until FORECAST-9A the field was hard-coded UNKNOWN here, which
+   * meant a truthful user assertion could not reach the licence at all while a
+   * forecast-policy supposition could: a supposition was more expressive than a
+   * fact.
    */
   basis: AmountBasisKind;
+  /**
+   * Who established the basis. Null exactly when `basis` is UNKNOWN.
+   *
+   * Carried separately from `amountProvenance` because the two honestly differ:
+   * a ledger-derived level the user confirms is take-home is DERIVED in one
+   * field and USER_ASSERTED in the other, and collapsing them would lose which
+   * half to re-ask about.
+   */
+  basisProvenance: EventProvenanceKind | null;
   /**
    * The periodic amount expressed per month, via FORECAST-1's factor.
    *
@@ -200,8 +216,18 @@ export interface IncomeStreamInput {
   cadence: CadenceKindName | null;
   activity: ActivityStateName | 'NONE';
   projectionEligible: boolean;
-  /** FORECAST-5's result, already decided. */
-  amount: { value: number; currency: string; provenance: EventProvenanceKind } | null;
+  /**
+   * FORECAST-5's result, already decided — basis included.
+   *
+   * ⚠️ `basis` IS REQUIRED, NOT OPTIONAL-DEFAULTING-TO-UNKNOWN. An optional
+   * field would leave this composer choosing the value again, which is the
+   * defect FORECAST-9A exists to close in a smaller costume. A caller with a
+   * derived amount passes UNKNOWN and says so.
+   */
+  amount: {
+    value: number; currency: string; provenance: EventProvenanceKind;
+    basis: AmountBasisKind; basisProvenance: EventProvenanceKind | null;
+  } | null;
 }
 
 const CURRENCY = 'USD';
@@ -273,8 +299,11 @@ export function composeOperatingState(input: OperatingStateInput): CurrentOperat
       amountState,
       amount: s.amount?.value ?? null,
       amountProvenance: s.amount?.provenance ?? null,
-      // Never NET. FORECAST-3 owns basis and nobody established it.
-      basis: AmountBasis.UNKNOWN,
+      // ⚠️ CARRIED. FORECAST-3 owns what a basis means and FORECAST-5 owns
+      // whether one was established; this composer does neither, and a stream
+      // with no amount has no basis question to answer.
+      basis: s.amount?.basis ?? AmountBasis.UNKNOWN,
+      basisProvenance: s.amount?.basisProvenance ?? null,
       nominalMonthly,
       currency: s.amount?.currency ?? CURRENCY,
     };
@@ -421,7 +450,14 @@ export function conclusionLicence(
   if (req.incomeAmount && !state.incomeStreams.some((s) => s.nominalMonthly !== null)) {
     missing.push('a projection-eligible income stream with an assertable amount');
   }
-  if (req.netIncomeBasis && !state.incomeStreams.some((s) => s.basis === AmountBasis.NET)) {
+  // ⚠️ THE MONTHLY FIGURE IS PART OF THE REQUIREMENT. A NET basis on a stream
+  // with no monthly equivalent — a good amount on a stream that is not licensed
+  // to continue — would license "net monthly inflow" with no number behind it.
+  // Unreachable while basis was hard-coded UNKNOWN; reachable from FORECAST-9A,
+  // and refused here for the same reason FORECAST-8 refuses the equivalent
+  // supposition. This strictly tightens: it never licenses more than before.
+  if (req.netIncomeBasis
+    && !state.incomeStreams.some((s) => s.basis === AmountBasis.NET && s.nominalMonthly !== null)) {
     missing.push('net (after-tax) basis for income — only nominal amounts are established');
   }
   if (req.obligations && !usable(state.knownObligations.state)) missing.push('known future obligations');
@@ -494,7 +530,9 @@ export function describeOperatingState(state: CurrentOperatingState): string[] {
     lines.push(`   - ${s.sourceKey} · ${s.role.toLowerCase()} · ${s.cadence ?? 'no cadence'}`
       + ` · activity ${s.activity} · ${s.projectionEligible ? 'projection-eligible' : 'NOT projection-eligible'}`
       + ` · ${s.nominalMonthly !== null
-        ? `nominal ${money(s.nominalMonthly, s.currency)}/month (basis ${s.basis} — not spendable cash)`
+        ? `${s.basis === AmountBasis.NET ? 'net' : 'nominal'} ${money(s.nominalMonthly, s.currency)}/month `
+          + `(basis ${s.basis}${s.basisProvenance ? `, stated by ${s.basisProvenance.toLowerCase().replace(/_/g, ' ')}` : ''}`
+          + `${s.basis === AmountBasis.NET ? '' : ' — not spendable cash'})`
         : `amount ${s.amountState}`}`);
   }
 

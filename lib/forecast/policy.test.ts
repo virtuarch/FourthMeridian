@@ -35,6 +35,7 @@ import {
   type FutureCashEvent,
 } from './future-cash-event';
 import { PeriodBasis } from './spending-baseline';
+import { assertedAmountBasis, assertedPeriodicAmount } from './periodic-amount';
 import {
   Conclusion, composeOperatingState, forecastCapabilities,
   type ConclusionKind, type CurrentOperatingState, type OperatingStateInput,
@@ -91,12 +92,14 @@ const realAccounts = () => ({
 const VECTRUS = {
   sourceKey: 'vectrus', role: FlowRole.INCOME, cadence: CadenceKind.BIWEEKLY,
   activity: ActivityState.CURRENT, projectionEligible: true,
-  amount: { value: 5286.645, currency: 'USD', provenance: EventProvenance.DERIVED },
+  amount: { value: 5286.645, currency: 'USD', provenance: EventProvenance.DERIVED,
+    basis: AmountBasis.UNKNOWN, basisProvenance: null },
 };
 const ABACUS = {
   sourceKey: 'abacus', role: FlowRole.INCOME, cadence: CadenceKind.SEMIMONTHLY,
   activity: ActivityState.SILENT, projectionEligible: false,
-  amount: { value: 5015.68, currency: 'USD', provenance: EventProvenance.DERIVED },
+  amount: { value: 5015.68, currency: 'USD', provenance: EventProvenance.DERIVED,
+    basis: AmountBasis.UNKNOWN, basisProvenance: null },
 };
 const INTEREST = {
   sourceKey: 'interest-10th', role: FlowRole.INTEREST, cadence: CadenceKind.MONTHLY,
@@ -350,11 +353,16 @@ const assumeBasis = routeStatement({ mode: StatementMode.REQUESTS_ASSUMPTION, su
 eq('E6 "my paycheck IS take-home" routes to the periodic-amount authority',
   factBasis.destination === 'UPSTREAM_AUTHORITY' ? factBasis.authority : null,
   FactAuthority.PERIODIC_AMOUNT_BASIS);
-eq('E7 and is reported UNREACHABLE — a measured gap, not a silent drop',
-  factBasis.destination === 'UPSTREAM_AUTHORITY' ? factBasis.reachable : null, false);
-check('E8 the unreachable route explicitly forbids the policy fallback',
+// ⚠️ E7 INVERTED BY FORECAST-9A. It pinned `reachable: false` — the measured
+// gap FORECAST-8 found and refused to paper over. FORECAST-9A closed it, so the
+// pin now asserts the repair; the thing it was really protecting, that a stated
+// fact never becomes a policy assumption, is E10 and is unchanged.
+eq('E7 the periodic-amount route is now REACHABLE (FORECAST-9A)',
+  factBasis.destination === 'UPSTREAM_AUTHORITY' ? factBasis.reachable : null, true);
+check('E8 and it tells the caller to apply it there rather than carry it as an assumption',
   factBasis.destination === 'UPSTREAM_AUTHORITY'
-  && /must NOT be accepted as a forecast assumption/.test(factBasis.note));
+  && /belongs to the periodic-amount authority and must be applied there/.test(factBasis.note),
+  factBasis.destination === 'UPSTREAM_AUTHORITY' ? factBasis.note : '');
 eq('E9 "assume it is net" DOES become a policy assumption', assumeBasis.destination, 'FORECAST_POLICY');
 
 check('E10 no fact-mode statement EVER produces a policy assumption', (() => {
@@ -589,13 +597,20 @@ check('J9 no consumer outside lib/forecast',
   execSync('grep -rl "forecast/policy" lib app components jobs scripts 2>/dev/null || true',
     { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
     .every((f: string) => f.startsWith('lib/forecast/')));
-check('J10 FORECAST-1..7 are byte-identical',
-  execSync('git diff --name-only 3bcfce3 -- lib/forecast/cadence.ts lib/forecast/stream-activity.ts '
-    + 'lib/forecast/future-cash-event.ts lib/forecast/obligation.ts lib/forecast/periodic-amount.ts '
-    + 'lib/forecast/spending-baseline.ts lib/forecast/operating-state.ts lib/ai/economic-concepts.ts',
-  { encoding: 'utf8' }).trim() === '');
-check('J11 no CF-era retrieval or prompt surface is touched',
-  execSync('git diff --name-only 3bcfce3 -- lib/ai/ 2>/dev/null || true', { encoding: 'utf8' }).trim() === '');
+// ⚠️ COMMIT-TO-COMMIT, for the reason FORECAST-7's J6 had to be fixed and this
+// pair did not learn from in time. Compared against the WORKING TREE, a claim
+// about what THIS slice did not touch silently becomes a claim that no LATER
+// slice may touch it either — and FORECAST-9A legitimately edits
+// periodic-amount.ts and operating-state.ts to close the gap this module found.
+// Pinned at FORECAST-8's own commit the claim is exact and permanent.
+check('J10 FORECAST-8 did not touch FORECAST-1..7',
+  execSync('git diff --name-only 3bcfce3 109c9e1 -- lib/forecast/cadence.ts '
+    + 'lib/forecast/stream-activity.ts lib/forecast/future-cash-event.ts '
+    + 'lib/forecast/obligation.ts lib/forecast/periodic-amount.ts '
+    + 'lib/forecast/spending-baseline.ts lib/forecast/operating-state.ts '
+    + 'lib/ai/economic-concepts.ts', { encoding: 'utf8' }).trim() === '');
+check('J11 nor any CF-era retrieval or prompt surface',
+  execSync('git diff --name-only 3bcfce3 109c9e1 -- lib/ai/', { encoding: 'utf8' }).trim() === '');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // K. EXPLANATION AND SERIALIZATION (§21/§22)
@@ -641,6 +656,73 @@ if (process.env.DUMP) for (const [n, t] of Object.entries(renders)) {
 }
 console.log(`\n  TOKENS  none=${tok(renders.none)} one=${tok(renders.one)} `
   + `two=${tok(renders.two)} hypothetical=${tok(renders.hypo)}`);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// R. FACT OUTRANKS SUPPOSITION (FORECAST-9A)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The closure test is three-way. Before FORECAST-9A only two of these existed,
+// and the missing one was the fact.
+
+const netAmount = assertedAmountBasis(
+  assertedPeriodicAmount(5286.645, 'USD', AS_OF), AmountBasis.NET, AS_OF);
+const FACT_VECTRUS = { ...VECTRUS, amount: {
+  value: netAmount.value, currency: netAmount.currency, provenance: netAmount.provenance,
+  basis: netAmount.basis, basisProvenance: netAmount.basisProvenance } };
+const FACTUAL = state({ incomeStreams: [FACT_VECTRUS, ABACUS, INTEREST] });
+
+const RA = apply(EMPTY_POLICY);
+const RB = applyPolicy(FACTUAL, [], EMPTY_POLICY);
+const RC = apply(policy([VECTRUS_NET]));
+
+eq('R1 A · no assertion, no policy → net monthly inflow REFUSED',
+  statusOf(RA, Conclusion.NET_MONTHLY_INFLOW), ConclusionStatus.REFUSED);
+eq('R2 B · user-asserted NET fact → FACTUALLY_LICENSED, with no policy at all',
+  statusOf(RB, Conclusion.NET_MONTHLY_INFLOW), ConclusionStatus.FACTUALLY_LICENSED);
+eq('R3 and it depends on nothing, because nothing was supposed',
+  RB.conclusions.find((c) => c.conclusion === Conclusion.NET_MONTHLY_INFLOW)!.dependencies, []);
+eq('R4 C · no fact, "assume NET" → ASSUMPTION_DEPENDENT',
+  statusOf(RC, Conclusion.NET_MONTHLY_INFLOW), ConclusionStatus.ASSUMPTION_DEPENDENT);
+eq('R5 naming the supposition', depsOf(RC, Conclusion.NET_MONTHLY_INFLOW), ['a2']);
+eq('R6 the three cases are genuinely three, not two',
+  new Set([statusOf(RA, Conclusion.NET_MONTHLY_INFLOW), statusOf(RB, Conclusion.NET_MONTHLY_INFLOW),
+    statusOf(RC, Conclusion.NET_MONTHLY_INFLOW)]).size, 3);
+eq('R7 under the fact, the AUTHORITY basis is NET — not an assumption sitting beside UNKNOWN',
+  RB.incomeStreams.find((s) => s.sourceKey === 'vectrus')!.authorityBasis, AmountBasis.NET);
+eq('R8 with no assumed basis at all', RB.incomeStreams.find((s) => s.sourceKey === 'vectrus')!.assumedBasis, null);
+check('R9 and the explanation reports nothing still unknown about basis',
+  !/gross-or-net basis/.test(explainPolicy(RB).join('\n')), explainPolicy(RB).join('\n'));
+eq('R10 policy is no longer more expressive than a fact — both reach the same conclusion',
+  [statusOf(RB, Conclusion.NET_MONTHLY_INFLOW) === ConclusionStatus.FACTUALLY_LICENSED,
+    statusOf(RC, Conclusion.NET_MONTHLY_INFLOW) === ConclusionStatus.ASSUMPTION_DEPENDENT], [true, true]);
+
+// §13 — a supposition may not overwrite the established fact.
+const supposeGross: PolicyAssumption = { id: 'r1', dimension: AssumptionDimension.INCOME_BASIS,
+  sourceKey: 'vectrus', basis: AmountBasis.GROSS, origin: AssumptionOrigin.USER_REQUESTED,
+  stance: AssumptionStance.SUPPOSED, statedAs: 'treat the paycheck as gross' };
+const R11 = validatePolicy(FACTUAL, [], policy([supposeGross]));
+eq('R11 supposing GROSS over an established NET is CONTRADICTS_ESTABLISHED_FACT',
+  R11.rejected[0]?.code, PolicyIssue.CONTRADICTS_ESTABLISHED_FACT);
+check('R12 and the rejection names the established basis',
+  /already established as NET/.test(R11.rejected[0].reason), R11.rejected[0].reason);
+eq('R13 over an UNESTABLISHED basis the same supposition is NOT_A_NET_ASSUMPTION instead',
+  validatePolicy(REAL, [], policy([supposeGross])).rejected[0]?.code,
+  PolicyIssue.NOT_A_NET_ASSUMPTION);
+check('R14 declared counterfactual, it is accepted and WITHDRAWS the conclusion', (() => {
+  const r = applyPolicy(FACTUAL, [],
+    policy([{ ...supposeGross, id: 'r2', stance: AssumptionStance.COUNTERFACTUAL }]));
+  return r.accepted.length === 1
+    && r.conclusions.find((c) => c.conclusion === Conclusion.NET_MONTHLY_INFLOW)!.status
+      === ConclusionStatus.REFUSED;
+})());
+check('R15 a NET supposition restating the established fact contradicts nothing', (() => {
+  const v = validatePolicy(FACTUAL, [], policy([VECTRUS_NET]));
+  return v.accepted.length === 1 && v.rejected.length === 0;
+})());
+eq('R16 and adds no dependency, because it changed nothing', (() => {
+  const r = applyPolicy(FACTUAL, [], policy([VECTRUS_NET]));
+  return depsOf(r, Conclusion.NET_MONTHLY_INFLOW);
+})(), []);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // M. MUTATION TESTING — break it on purpose, and require the right failure

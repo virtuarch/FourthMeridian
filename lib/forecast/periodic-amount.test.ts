@@ -22,11 +22,11 @@
  */
 
 import { execSync } from 'child_process';
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
 import {
   REGIME, ExclusionReason, deriveCurrentPeriodicAmount, assertedPeriodicAmount,
-  exclusionSummary, periodicCashEvents,
+  assertedAmountBasis, exclusionSummary, periodicCashEvents,
   type AmountObservation, type PeriodicAmount,
 } from './periodic-amount';
 import {
@@ -268,9 +268,16 @@ check('H3 so none of it is assertable spendable cash',
   vecEvents.every((e) => !netCashContribution(e).assertable));
 eq('H4 and composition withholds a net figure',
   composeFutureCash(vecEvents).assertableNet, null);
-check('H5 the module never mentions NET or GROSS in code',
-  !/AmountBasis\.NET|AmountBasis\.GROSS/.test(code));
-check('H6 basis is set once, to UNKNOWN', (code.match(/basis: AmountBasis\.UNKNOWN/g) ?? []).length === 1);
+// ⚠️ H5/H6 RESTATED BY FORECAST-9A, INTENT INTACT. They read "never mentions
+// NET or GROSS" and "basis is set once", which held while UNKNOWN was the only
+// basis this module could produce. `assertedAmountBasis` now names both values
+// in its parameter type — that is the point of it — so the pin moves from
+// MENTIONING to ASSIGNING. The claim being protected is unchanged and now
+// stronger: nothing here decides that an amount is net.
+check('H5 the module ASSIGNS no NET or GROSS basis — it only carries a caller\'s',
+  !/basis: AmountBasis\.(NET|GROSS)/.test(code));
+check('H6 every basis it writes of its own is UNKNOWN, on both amount paths',
+  (code.match(/basis: AmountBasis\.UNKNOWN/g) ?? []).length === 2);
 eq('H7 the stated nominal total is still visible',
   composeFutureCash(vecEvents).nominalInflow, ((5286.64 + 5286.65) / 2) * 9);
 
@@ -382,6 +389,123 @@ eq('N-K user assertion is distinctly represented', userSays.provenance, EventPro
 eq('N-L currency mismatch → no averaging', mixed.assertable, false);
 eq('N-M interest keeps its role and gets no amount', interest.assertable, false);
 
-// ── Report ──────────────────────────────────────────────────────────────────
-console.log(`\n${passes} passed, ${failures} failed`);
-process.exit(failures > 0 ? 1 : 0);
+// ═══════════════════════════════════════════════════════════════════════════
+// P. BASIS IS ASSERTED, NEVER DERIVED (FORECAST-9A)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// FORECAST-8 measured an inversion: "assume my paycheck is net" could unlock
+// net-dependent conclusions and "my paycheck IS take-home" could not, because
+// no authority had anywhere to put the second sentence. This is that door. The
+// invariant it must not break is the one this module was built on — a settled
+// historical deposit says nothing about a future payment's basis.
+
+eq('P1 a DERIVED amount has UNKNOWN basis', vec.assertable && vec.basis, AmountBasis.UNKNOWN);
+eq('P2 and no basis provenance, because nobody established one',
+  vec.assertable && vec.basisProvenance, null);
+eq('P3 the Abacus derivation likewise', [aba.assertable && aba.basis, aba.assertable && aba.basisProvenance],
+  [AmountBasis.UNKNOWN, null]);
+eq('P4 asserting an AMOUNT does not assert a BASIS',
+  [userSays.basis, userSays.basisProvenance], [AmountBasis.UNKNOWN, null]);
+
+const takeHome = assertedAmountBasis(userSays, AmountBasis.NET, AS_OF);
+eq('P5 asserting the basis establishes NET', takeHome.basis, AmountBasis.NET);
+eq('P6 with USER_ASSERTED basis provenance', takeHome.basisProvenance, EventProvenance.USER_ASSERTED);
+eq('P7 the amount and its provenance are untouched',
+  [takeHome.value, takeHome.provenance], [userSays.value, userSays.provenance]);
+check('P8 and the derived evidence still travels', takeHome.verdicts.length === userSays.verdicts.length);
+check('P9 the reason records the second assertion', /take-home \(net of deductions\)/.test(takeHome.reason),
+  takeHome.reason);
+
+// §9's mixed case — the user confirms a figure they did not restate.
+const confirmed = vec.assertable ? assertedAmountBasis(vec, AmountBasis.NET, AS_OF) : null;
+eq('P10 a DERIVED amount can carry a USER_ASSERTED basis',
+  confirmed && [confirmed.provenance, confirmed.basisProvenance],
+  [EventProvenance.DERIVED, EventProvenance.USER_ASSERTED]);
+eq('P11 without restating the number', confirmed?.value, vec.assertable ? vec.value : null);
+check('P12 which is why basis provenance is a separate field — one value could not say this',
+  confirmed !== null && confirmed.provenance !== confirmed.basisProvenance);
+
+const grossed = assertedAmountBasis(userSays, AmountBasis.GROSS, AS_OF);
+eq('P13 GROSS is assertable too, and stays GROSS', grossed.basis, AmountBasis.GROSS);
+check('P14 UNKNOWN is not in the assertion signature — "I do not know" establishes nothing',
+  /basis: typeof AmountBasis\.NET \| typeof AmountBasis\.GROSS,/.test(src));
+check('P15 nothing DERIVES a basis — assertedAmountBasis is its only producer',
+  (code.match(/basisProvenance: EventProvenance\.\w+/g) ?? [])
+    .every((m) => m === 'basisProvenance: EventProvenance.USER_ASSERTED')
+  && (code.match(/basis: AmountBasis\.(NET|GROSS)/g) ?? []).length === 0);
+check('P16 the invariant holds: a basis has a provenance exactly when it is established',
+  [vec, aba, userSays, takeHome, grossed, confirmed].every((a) =>
+    a === null || !a.assertable
+    || ((a.basis === AmountBasis.UNKNOWN) === (a.basisProvenance === null))));
+
+// EVENT / STATE PARITY — the defect was the same fact arriving as two answers.
+const netEvents = periodicCashEvents(vecAct, vecCad, takeHome, AS_OF, '2026-09-30', FlowRole.INCOME);
+eq('P17 an asserted NET amount reaches the event layer as NET', netEvents[0].amount!.basis, AmountBasis.NET);
+check('P18 so FORECAST-3 licenses it as spendable cash', netCashContribution(netEvents[0]).assertable);
+eq('P19 while a DERIVED amount still reaches it as UNKNOWN',
+  periodicCashEvents(vecAct, vecCad, vec, AS_OF, '2026-09-30', FlowRole.INCOME)[0].amount!.basis,
+  AmountBasis.UNKNOWN);
+eq('P20 and a GROSS assertion is still not spendable', netCashContribution(
+  periodicCashEvents(vecAct, vecCad, grossed, AS_OF, '2026-09-30', FlowRole.INCOME)[0]).assertable, false);
+check('P21 the activity licence still outranks everything — a NET amount on a dead stream is no events',
+  periodicCashEvents(abaAct, abaCad, assertedAmountBasis(
+    aba.assertable ? aba : takeHome, AmountBasis.NET, AS_OF), AS_OF, '2026-12-31', FlowRole.INCOME)
+    .length === 0);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Q. MUTATION — break the no-automatic-NET invariant on purpose
+// ═══════════════════════════════════════════════════════════════════════════
+
+const MUTANT = join(__dirname, '__periodic_mutant__.ts');
+const cleanup = () => { if (existsSync(MUTANT)) unlinkSync(MUTANT); };
+process.on('exit', cleanup);
+let seq = 0;
+async function mutate(
+  name: string, find: string, replace: string,
+  assertion: (m: typeof import('./periodic-amount')) => boolean,
+): Promise<void> {
+  if (!src.includes(find)) { check(`${name} [anchor]`, false, `anchor not found: ${find}`); return; }
+  writeFileSync(MUTANT, src.replace(find, replace), 'utf8');
+  try {
+    const m = await import(`./__periodic_mutant__?v=${++seq}`) as typeof import('./periodic-amount');
+    let survived: boolean;
+    try { survived = assertion(m); } catch { survived = false; }
+    check(name, !survived, 'the mutant passed — the test does not actually pin this');
+  } finally { cleanup(); }
+}
+
+async function mutations(): Promise<void> {
+  // Derived payroll silently becomes take-home pay.
+  await mutate('Q1 a derived amount promoted to NET is caught',
+    `    basis: AmountBasis.UNKNOWN, basisProvenance: null,
+    regimeStartISO, observationCount: included.length, spread, verdicts,`,
+    `    basis: AmountBasis.NET, basisProvenance: EventProvenance.DERIVED,
+    regimeStartISO, observationCount: included.length, spread, verdicts,`,
+    (m) => {
+      const d = m.deriveCurrentPeriodicAmount(obs(VECTRUS), vecCad);
+      return d.assertable && d.basis === AmountBasis.UNKNOWN && d.basisProvenance === null;
+    });
+
+  // The composition seam flattens an established basis again — the FORECAST-8
+  // defect exactly: NET on the event, UNKNOWN in the state, or the reverse.
+  await mutate('Q2 the event seam discarding an asserted basis is caught',
+    '        basis: amount.basis,',
+    '        basis: AmountBasis.UNKNOWN,',
+    (m) => m.periodicCashEvents(vecAct, vecCad,
+      m.assertedAmountBasis(m.assertedPeriodicAmount(5250, 'USD', AS_OF), AmountBasis.NET, AS_OF),
+      AS_OF, '2026-09-30', FlowRole.INCOME)[0].amount!.basis === AmountBasis.NET);
+
+  // An amount assertion quietly granting a basis it was never given.
+  await mutate('Q3 an amount assertion granting itself a basis is caught',
+    `    basis: AmountBasis.UNKNOWN, basisProvenance: null,
+    regimeStartISO: asOfISO,`,
+    `    basis: AmountBasis.NET, basisProvenance: EventProvenance.USER_ASSERTED,
+    regimeStartISO: asOfISO,`,
+    (m) => m.assertedPeriodicAmount(5250, 'USD', AS_OF).basis === AmountBasis.UNKNOWN);
+
+  console.log(`\n${passes} passed, ${failures} failed`);
+  process.exit(failures > 0 ? 1 : 0);
+}
+
+void mutations();
+

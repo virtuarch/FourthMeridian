@@ -40,7 +40,7 @@ import { occurrencesBetween, type Cadence } from './cadence';
 import { occurrenceSatisfiedBy } from './stream-activity';
 import {
   AmountBasis, EventProvenance, cadenceDerivedEvents,
-  type EventProvenanceKind, type FlowRoleKind, type FutureCashEvent,
+  type AmountBasisKind, type EventProvenanceKind, type FlowRoleKind, type FutureCashEvent,
 } from './future-cash-event';
 import type { StreamActivity } from './stream-activity';
 
@@ -92,7 +92,34 @@ export interface AssertablePeriodicAmount {
   assertable: true;
   value: number;
   currency: string;
+  /** Who established the AMOUNT. */
   provenance: EventProvenanceKind;
+  /**
+   * What the amount is an amount OF — FORECAST-3's vocabulary, not a second one.
+   *
+   * ⚠️ ALWAYS UNKNOWN WHEN DERIVED, and no evidence in this module can change
+   * that. See AMOUNT AUTHORITY: that historical payments landed as cash in a
+   * checking account proves those payments were cash, and establishes nothing
+   * about whether a FUTURE payment is quoted gross or net. The only route to
+   * NET or GROSS is `assertedAmountBasis`, where somebody says so.
+   */
+  basis: AmountBasisKind;
+  /**
+   * Who established the BASIS — a SEPARATE question from who established the
+   * amount, and FORECAST-3's field-level provenance lesson applied again.
+   *
+   * ⚠️ NULL EXACTLY WHEN `basis` IS UNKNOWN. Nobody established it, so nobody
+   * said so, and a provenance for a non-fact would be a name with nothing
+   * behind it. It is also never DERIVED: nothing derives a basis, which is what
+   * makes `{ provenance: DERIVED, basis: NET }` unrepresentable rather than
+   * merely discouraged.
+   *
+   * The two can honestly differ. The ledger derives $5,286.645 and the user
+   * says "that figure is take-home": the amount stays DERIVED, the basis
+   * becomes USER_ASSERTED, and a reader can still tell which half came from
+   * where — including which half to re-ask about when it turns out wrong.
+   */
+  basisProvenance: EventProvenanceKind | null;
   /** The first occurrence of the current regime. Older payments are a different level. */
   regimeStartISO: string;
   /** How many observations licensed the figure. */
@@ -298,6 +325,10 @@ export function deriveCurrentPeriodicAmount(
   return {
     assertable: true, value, currency,
     provenance: EventProvenance.DERIVED,
+    // ⚠️ STATED, NOT DEFAULTED. FORECAST-5 derives a NOMINAL level and refuses
+    // to infer what it is a level of; writing it out here is what stops a later
+    // reader from assuming the field was simply forgotten.
+    basis: AmountBasis.UNKNOWN, basisProvenance: null,
     regimeStartISO, observationCount: included.length, spread, verdicts,
     reason: `${included.length} observations since ${regimeStartISO} hold a level of ${value} ${currency} `
       + `within ${(spread * 100).toFixed(2)}%`
@@ -319,12 +350,58 @@ export function assertedPeriodicAmount(
   return {
     assertable: true, value, currency,
     provenance: EventProvenance.USER_ASSERTED,
+    // ⚠️ AN AMOUNT IS NOT A BASIS. "My paycheck is $5,286.645" states one fact,
+    // and reading a second one out of it is the whole error this program has
+    // been closing since FORECAST-3. A user who also said "take-home" reaches
+    // NET through `assertedAmountBasis`, which composes with this.
+    basis: AmountBasis.UNKNOWN, basisProvenance: null,
     regimeStartISO: asOfISO,
     observationCount: 0,
     spread: 0,
     verdicts: derived?.verdicts ?? [],
     reason: `the user stated the current amount is ${value} ${currency} as at ${asOfISO}`
       + (derived?.assertable ? `; the ledger shows a level of ${derived.value}` : ''),
+  };
+}
+
+/**
+ * What the user said the amount is an amount OF.
+ *
+ * ⚠️ THE ONLY DOOR TO NET OR GROSS. Nothing derives a basis, so this is the
+ * single producer of a non-UNKNOWN one, and it takes the two values a person
+ * can actually state — `AmountBasis.UNKNOWN` is not in the parameter type,
+ * because "I don't know whether it's gross" establishes nothing and must not
+ * look like an assertion that it did.
+ *
+ * ⚠️ IT TAKES AN AMOUNT RATHER THAN A NUMBER, which is what makes the mixed
+ * case work without a general override framework. Two sentences, one function:
+ *
+ *   "My paycheck is $5,286.645 take-home."
+ *     assertedAmountBasis(assertedPeriodicAmount(5286.645, 'USD', asOf), NET, asOf)
+ *     → amount USER_ASSERTED, basis USER_ASSERTED
+ *
+ *   "That figure the ledger shows is take-home."
+ *     assertedAmountBasis(derived, NET, asOf)
+ *     → amount DERIVED, basis USER_ASSERTED
+ *
+ * The user does not have to restate a number the system already derived merely
+ * to say what it is, and the result does not pretend they did.
+ *
+ * The amount, its provenance and the derived verdicts all travel unchanged: an
+ * assertion about basis is not an assertion about the level, and it may not
+ * quietly become one.
+ */
+export function assertedAmountBasis(
+  amount: AssertablePeriodicAmount,
+  basis: typeof AmountBasis.NET | typeof AmountBasis.GROSS,
+  asOfISO: string,
+): AssertablePeriodicAmount {
+  return {
+    ...amount,
+    basis,
+    basisProvenance: EventProvenance.USER_ASSERTED,
+    reason: `${amount.reason}; the user stated as at ${asOfISO} that this amount is `
+      + `${basis === AmountBasis.NET ? 'take-home (net of deductions)' : 'a gross figure'}`,
   };
 }
 
@@ -381,7 +458,13 @@ export function periodicCashEvents(
       ? {
         value: amount.value,
         currency: amount.currency,
-        basis: AmountBasis.UNKNOWN,
+        // ⚠️ CARRIED, NOT DECIDED. This line used to read `AmountBasis.UNKNOWN`
+        // unconditionally, which was correct while a derived amount was the
+        // only kind there was and wrong the moment a user could establish a
+        // basis: the same asserted fact then reached the event layer as NET and
+        // the operating state as UNKNOWN. The refusal now lives in the
+        // authority that owns it — a derived amount still arrives UNKNOWN.
+        basis: amount.basis,
         provenance: amount.provenance,
       }
       : undefined,

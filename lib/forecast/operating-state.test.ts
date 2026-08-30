@@ -21,7 +21,7 @@
  */
 
 import { execSync } from 'child_process';
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
 import {
   IncomeClass, Conclusion, composeOperatingState, conclusionLicence,
@@ -33,6 +33,7 @@ import { composeInvestments } from '../ai/economic-concepts';
 import { CadenceKind, monthlyEquivalent } from './cadence';
 import { ActivityState } from './stream-activity';
 import { AmountBasis, EventProvenance, FlowRole, type FutureCashEvent } from './future-cash-event';
+import { assertedAmountBasis, assertedPeriodicAmount } from './periodic-amount';
 import { PeriodBasis } from './spending-baseline';
 import type { AccountsSectionData } from '../ai/types';
 
@@ -81,13 +82,15 @@ const state = (o: Partial<OperatingStateInput> = {}): CurrentOperatingState => {
 const VECTRUS = {
   sourceKey: 'vectrus', role: FlowRole.INCOME, cadence: CadenceKind.BIWEEKLY,
   activity: ActivityState.CURRENT, projectionEligible: true,
-  amount: { value: 5286.645, currency: 'USD', provenance: EventProvenance.DERIVED },
+  amount: { value: 5286.645, currency: 'USD', provenance: EventProvenance.DERIVED,
+    basis: AmountBasis.UNKNOWN, basisProvenance: null },
 };
 /** The real Abacus stream: SILENT, with a perfectly good amount. */
 const ABACUS = {
   sourceKey: 'abacus', role: FlowRole.INCOME, cadence: CadenceKind.SEMIMONTHLY,
   activity: ActivityState.SILENT, projectionEligible: false,
-  amount: { value: 5015.68, currency: 'USD', provenance: EventProvenance.DERIVED },
+  amount: { value: 5015.68, currency: 'USD', provenance: EventProvenance.DERIVED,
+    basis: AmountBasis.UNKNOWN, basisProvenance: null },
 };
 /** A real interest stream: CURRENT and periodic, with no amount. */
 const INTEREST = {
@@ -308,9 +311,21 @@ check('J5 no consumer outside lib/forecast',
   execSync('grep -rl "forecast/operating-state" lib app components jobs scripts 2>/dev/null || true',
     { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
     .every((f: string) => f.startsWith('lib/forecast/')));
-check('J6 FORECAST-1..6 and CF-7 are untouched',
-  execSync('git diff --name-only 5ca025a -- lib/forecast/ lib/ai/economic-concepts.ts', { encoding: 'utf8' })
-    .trim() === '');
+// ⚠️ COMMIT-TO-COMMIT, AND NARROWED TO THE SIX FILES IT MEANT.
+// As first written this compared 5ca025a to the WORKING TREE over all of
+// lib/forecast/, which had two faults: it swept in operating-state.ts — the
+// file this suite tests, which of course did not exist at 5ca025a — so it
+// failed the moment FORECAST-7 was committed; and it asserted a claim about
+// FORECAST-7's diff against a tree that every later slice is entitled to move.
+// FORECAST-9A legitimately edits periodic-amount.ts, which would have failed it
+// a second time for the opposite reason. The claim being made is about
+// FORECAST-7's own commit, so it is pinned there and is now permanently true.
+check('J6 FORECAST-7 did not touch FORECAST-1..6 or CF-7',
+  execSync('git diff --name-only 5ca025a 3bcfce3 -- lib/forecast/cadence.ts '
+    + 'lib/forecast/stream-activity.ts lib/forecast/future-cash-event.ts '
+    + 'lib/forecast/obligation.ts lib/forecast/periodic-amount.ts '
+    + 'lib/forecast/spending-baseline.ts lib/ai/economic-concepts.ts',
+  { encoding: 'utf8' }).trim() === '');
 check('J7 no tax estimate anywhere', !/tax|withhold/i.test(codeOnly));
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -344,6 +359,151 @@ check('L3 but the basis blocker survives',
 eq('L4 a fully-blocked state still licenses next pay dates',
   licence(state({ accounts: null, investments: null }), Conclusion.NEXT_PAY_DATES).licensed, true);
 
-// ── Report ──────────────────────────────────────────────────────────────────
-console.log(`\n${passes} passed, ${failures} failed`);
-process.exit(failures > 0 ? 1 : 0);
+// ═══════════════════════════════════════════════════════════════════════════
+// N. BASIS IS CARRIED, NOT DECIDED (FORECAST-9A)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const netAmount = assertedAmountBasis(
+  assertedPeriodicAmount(5286.645, 'USD', AS_OF), AmountBasis.NET, AS_OF);
+const NET_VECTRUS = { ...VECTRUS, amount: {
+  value: netAmount.value, currency: netAmount.currency, provenance: netAmount.provenance,
+  basis: netAmount.basis, basisProvenance: netAmount.basisProvenance } };
+const asserted_net = state({ incomeStreams: [NET_VECTRUS, ABACUS, INTEREST] });
+const vecNet = asserted_net.incomeStreams.find((s) => s.sourceKey === 'vectrus')!;
+
+eq('N1 a user-asserted NET basis reaches the state', vecNet.basis, AmountBasis.NET);
+eq('N2 with its own provenance', vecNet.basisProvenance, EventProvenance.USER_ASSERTED);
+eq('N3 and net monthly inflow becomes FACTUALLY licensed — no policy involved',
+  licence(asserted_net, Conclusion.NET_MONTHLY_INFLOW).licensed, true);
+eq('N4 the derived streams are untouched by it',
+  asserted_net.incomeStreams.filter((s) => s.basis === AmountBasis.NET).length, 1);
+eq('N5 the real Space, with no assertion, still has NO net basis anywhere',
+  REAL.incomeStreams.every((s) => s.basis === AmountBasis.UNKNOWN
+    && s.basisProvenance === null), true);
+eq('N6 and still refuses net monthly inflow', refused(REAL, Conclusion.NET_MONTHLY_INFLOW), true);
+
+const grossAmount = assertedAmountBasis(
+  assertedPeriodicAmount(7000, 'USD', AS_OF), AmountBasis.GROSS, AS_OF);
+const gross = state({ incomeStreams: [{ ...VECTRUS, amount: {
+  value: grossAmount.value, currency: grossAmount.currency, provenance: grossAmount.provenance,
+  basis: grossAmount.basis, basisProvenance: grossAmount.basisProvenance } }] });
+eq('N7 an asserted GROSS amount is factual as a nominal figure',
+  licence(gross, Conclusion.NOMINAL_MONTHLY_INCOME).licensed, true);
+eq('N8 but GROSS never satisfies NET', refused(gross, Conclusion.NET_MONTHLY_INFLOW), true);
+eq('N9 nor does an asserted amount with no basis stated', refused(state({
+  incomeStreams: [{ ...VECTRUS, amount: { value: 5250, currency: 'USD',
+    provenance: EventProvenance.USER_ASSERTED, basis: AmountBasis.UNKNOWN, basisProvenance: null } }],
+}), Conclusion.NET_MONTHLY_INFLOW), true);
+
+check('N10 a NET basis on a stream that cannot continue licenses nothing', (() => {
+  // Abacus is SILENT: a perfectly good take-home figure about a job that ended
+  // has no monthly equivalent, so there is no number to state.
+  const s = state({ incomeStreams: [{ ...ABACUS, amount: { value: 5015.68, currency: 'USD',
+    provenance: EventProvenance.DERIVED, basis: AmountBasis.NET,
+    basisProvenance: EventProvenance.USER_ASSERTED } }] });
+  return s.incomeStreams[0].basis === AmountBasis.NET
+    && s.incomeStreams[0].nominalMonthly === null
+    && !licence(s, Conclusion.NET_MONTHLY_INFLOW).licensed;
+})());
+check('N11 a NET stream is not labelled unspendable, because it IS spendable', (() => {
+  const r = describeOperatingState(asserted_net).join('\n');
+  return /net USD \d+\.\d\d\/month \(basis NET, stated by user asserted\)/.test(r)
+    && !/basis NET[^)]*not spendable/.test(r);
+})(), describeOperatingState(asserted_net).join('\n'));
+check('N12 the composer decides no basis of its own',
+  !/basis: AmountBasis\.(NET|GROSS)/.test(codeOnly));
+
+// ═══════════════════════════════════════════════════════════════════════════
+// O. MUTATION — the composer must carry, and the licence must not soften
+// ═══════════════════════════════════════════════════════════════════════════
+
+const MUTANT = join(__dirname, '__state_mutant__.ts');
+const cleanupMutant = () => { if (existsSync(MUTANT)) unlinkSync(MUTANT); };
+process.on('exit', cleanupMutant);
+let seq = 0;
+async function mutate(
+  name: string, find: string, replace: string,
+  assertion: (m: typeof import('./operating-state')) => boolean,
+): Promise<void> {
+  if (!src.includes(find)) { check(`${name} [anchor]`, false, `anchor not found: ${find}`); return; }
+  writeFileSync(MUTANT, src.replace(find, replace), 'utf8');
+  try {
+    const m = await import(`./__state_mutant__?v=${++seq}`) as typeof import('./operating-state');
+    let survived: boolean;
+    try { survived = assertion(m); } catch { survived = false; }
+    check(name, !survived, 'the mutant passed — the test does not actually pin this');
+  } finally { cleanupMutant(); }
+}
+
+/** Rebuild the asserted-NET fixture against a mutated module. */
+const netStateVia = (m: typeof import('./operating-state')) => m.composeOperatingState({
+  asOfISO: AS_OF,
+  accounts: { totalLiquid: 10228.74, totalLiabilities: 549.75, counts: { liquid: 4, liabilities: 2 },
+    redactedCount: 0, totalsUnconverted: false, asOfISO: AS_OF },
+  investments: null, incomeStreams: [NET_VECTRUS, ABACUS, INTEREST],
+  obligations: { licensedEvents: [], activeButUndatedCount: 0, evaluated: true },
+  baseline: { assertable: false, reason: 'x' },
+});
+const realStateVia = (m: typeof import('./operating-state')) => m.composeOperatingState({
+  asOfISO: AS_OF,
+  accounts: { totalLiquid: 10228.74, totalLiabilities: 549.75, counts: { liquid: 4, liabilities: 2 },
+    redactedCount: 0, totalsUnconverted: false, asOfISO: AS_OF },
+  investments: null, incomeStreams: [VECTRUS, ABACUS, INTEREST],
+  obligations: { licensedEvents: [], activeButUndatedCount: 0, evaluated: true },
+  baseline: { assertable: false, reason: 'x' },
+});
+
+async function mutations(): Promise<void> {
+  // The original defect: the composer decides instead of carrying.
+  await mutate('O1 re-hard-coding UNKNOWN in the composer is caught',
+    'basis: s.amount?.basis ?? AmountBasis.UNKNOWN,',
+    'basis: AmountBasis.UNKNOWN,',
+    (m) => netStateVia(m).incomeStreams[0].basis === AmountBasis.NET);
+
+  // The opposite direction, and the worse one.
+  await mutate('O2 a composer that promotes a derived amount to NET is caught',
+    'basis: s.amount?.basis ?? AmountBasis.UNKNOWN,',
+    'basis: s.amount ? AmountBasis.NET : AmountBasis.UNKNOWN,',
+    (m) => realStateVia(m).incomeStreams.every((x) => x.basis === AmountBasis.UNKNOWN));
+
+  await mutate('O3 erasing basis provenance is caught',
+    'basisProvenance: s.amount?.basisProvenance ?? null,',
+    'basisProvenance: null,',
+    (m) => netStateVia(m).incomeStreams[0].basisProvenance === EventProvenance.USER_ASSERTED);
+
+  await mutate('O4 letting GROSS satisfy the net requirement is caught',
+    '&& !state.incomeStreams.some((s) => s.basis === AmountBasis.NET && s.nominalMonthly !== null)) {',
+    '&& !state.incomeStreams.some((s) => s.basis !== AmountBasis.UNKNOWN && s.nominalMonthly !== null)) {',
+    (m) => {
+      const g = m.composeOperatingState({ asOfISO: AS_OF, accounts: null, investments: null,
+        incomeStreams: [{ ...VECTRUS, amount: { value: 7000, currency: 'USD',
+          provenance: EventProvenance.USER_ASSERTED, basis: AmountBasis.GROSS,
+          basisProvenance: EventProvenance.USER_ASSERTED } }],
+        obligations: { licensedEvents: [], activeButUndatedCount: 0, evaluated: true },
+        baseline: { assertable: false, reason: 'x' } });
+      return !m.conclusionLicence(g, m.Conclusion.NET_MONTHLY_INFLOW).licensed;
+    });
+
+  await mutate('O5 letting UNKNOWN satisfy the net requirement is caught',
+    'if (req.netIncomeBasis\n    && !state.incomeStreams.some((s) => s.basis === AmountBasis.NET && s.nominalMonthly !== null)) {',
+    'if (false) {',
+    (m) => !m.conclusionLicence(realStateVia(m), m.Conclusion.NET_MONTHLY_INFLOW).licensed);
+
+  await mutate('O6 licensing a NET basis with no monthly figure behind it is caught',
+    '(s) => s.basis === AmountBasis.NET && s.nominalMonthly !== null)) {',
+    '(s) => s.basis === AmountBasis.NET)) {',
+    (m) => {
+      const dead = m.composeOperatingState({ asOfISO: AS_OF, accounts: null, investments: null,
+        incomeStreams: [{ ...ABACUS, amount: { value: 5015.68, currency: 'USD',
+          provenance: EventProvenance.DERIVED, basis: AmountBasis.NET,
+          basisProvenance: EventProvenance.USER_ASSERTED } }],
+        obligations: { licensedEvents: [], activeButUndatedCount: 0, evaluated: true },
+        baseline: { assertable: false, reason: 'x' } });
+      return !m.conclusionLicence(dead, m.Conclusion.NET_MONTHLY_INFLOW).licensed;
+    });
+
+  console.log(`\n${passes} passed, ${failures} failed`);
+  process.exit(failures > 0 ? 1 : 0);
+}
+
+void mutations();
