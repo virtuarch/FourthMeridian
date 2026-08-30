@@ -62,6 +62,20 @@ export const Concepts = {
   NET_WORTH:   'NET_WORTH',
   /** A question ABOUT the data rather than about the money. */
   COVERAGE:    'COVERAGE',
+  /**
+   * A PREDICTIVE question — what money will do, not what it did.
+   *
+   * ⚠️ A CONCEPT, NOT A SEPARATE ROUTER. It sits beside the others so a
+   * question can be FORECAST *and* SPENDING ("compare what I spent with what my
+   * cash could look like") and get both bodies of evidence, which a dedicated
+   * forecast path outside CF-8 could not express.
+   *
+   * ⚠️ NOT A TENSE. Future words alone do not reach it: "pending transactions",
+   * "upcoming bill" and "next paycheck" are about records and dates that
+   * already exist or are already licensed, and none of them wants a cash path.
+   * The requirement is a predictive ECONOMIC ask.
+   */
+  FORECAST:    'FORECAST',
   /** Nothing recognised. */
   UNKNOWN:     'UNKNOWN',
 } as const;
@@ -196,6 +210,54 @@ const NET_WORTH_RE =
  * answered entirely by CF-5's census, and assembling ninety days of
  * transactions to answer it is pure waste.
  */
+/**
+ * A predictive economic ask.
+ *
+ * Two halves, and both are needed. A VERB of projection ("forecast", "project",
+ * "runway") is enough on its own. Otherwise a future frame must combine with a
+ * cash SUBJECT — "what will my cash look like", "how much cash will I have",
+ * "where will I be financially" — so that a future-tense question about
+ * something else does not drag in the whole substrate.
+ */
+const FORECAST_VERB_RE =
+  /\b(forecast|forecasts|forecasting|project(?:ion|ions|ed|ing)?|runway|cash ?flow projection|ending cash|burn rate)\b/i;
+const FORECAST_PHRASE_RE =
+  // ⚠️ BOTH WORD ORDERS. "what will my cash look like" and "what my cash could
+  // look like" are the same ask, and the second is how it arrives inside a
+  // comparison — "compare what I spent with what my cash could look like" —
+  // which is exactly the multi-concept question §22 requires to load both.
+  /\b(?:what (?:will|would|could) my (?:cash|balance|money|savings|finances|net worth)|my (?:cash|balance|money|savings|finances) (?:will|would|could) (?:look|be|last|end)|how much (?:cash|money) (?:will|would) i have|where will i be (?:financially|in)|how long (?:will|can) my (?:cash|money|savings) last|what (?:will|would) i have (?:left|by)|will i (?:run out|have enough))\b/i;
+
+/**
+ * Future-tense language that is NOT a cash-path request.
+ *
+ * ⚠️ MEASURED FALSE POSITIVES, listed rather than described. Each of these
+ * names a record or a licensed date, and each would otherwise have tripped a
+ * looser future-tense rule: a pending transaction already exists, an upcoming
+ * bill is an obligation question, and "when is my next paycheck" is answerable
+ * from FORECAST-1/2 alone — routing it through the full engine would report a
+ * refusal for a question that is not refused.
+ */
+const FORECAST_EXCLUSION_RE =
+  /\b(pending transactions?|future transactions?|upcoming (?:bill|charge|payment|transaction)s?|long[- ]term investments?|my future\b)\b/i;
+
+/**
+ * A turn that REFINES the previous ask rather than starting a new one.
+ *
+ * ⚠️ CF-4's LESSON, ONE LEVEL IN. CF-8 already inherits the concept when a turn
+ * resolves nothing at all. Measured here: "Forecast my cash for the next 3
+ * months" → "What if I spend $5,000 a month?" resolved SPENDING — on the word
+ * "spend" — and DROPPED forecast, which is a false narrow of the worse kind
+ * because it looks like a successful resolution. A follow-up that supplies a
+ * scenario parameter is refining the forecast, not opening a spending question.
+ *
+ * Deliberately a list of REFINEMENT ACTS ("what if", "instead", "what about"),
+ * not an attempt to detect that a topic continued — the same discipline CF-4's
+ * discard list documents.
+ */
+const REFINEMENT_RE =
+  /\b(what if|what about|how about|and if|instead|assume|assuming|suppose|say i|make it|try)\b/i;
+
 const COVERAGE_RE =
   /\b(?:how far back|how much (?:data|history)|what (?:data|history|records) do you have|can you see|going back to|since when|what (?:period|range) (?:do|can) you|do you have (?:any|my|the )?\s?(?:any ?thing|data|history|records|transactions|crypto|investments?))\b/i;
 
@@ -229,6 +291,13 @@ function detectConcepts(question: string, breadth: ConceptBreadthKind): Concept[
 
   const out: Concept[] = [];
   if (COVERAGE_RE.test(question)) out.push(Concepts.COVERAGE);
+  // ⚠️ The exclusion is checked against the WHOLE question, not the match, so
+  // "what will my cash look like after the pending transactions clear" is still
+  // a forecast — the exclusion removes a question that is ONLY about records.
+  if ((FORECAST_VERB_RE.test(question) || FORECAST_PHRASE_RE.test(question))
+    && !(FORECAST_EXCLUSION_RE.test(question) && !FORECAST_PHRASE_RE.test(question))) {
+    out.push(Concepts.FORECAST);
+  }
   if (breadth !== ConceptBreadth.NONE) out.push(Concepts.INVESTMENTS);
   if (SPENDING_RE.test(question) || SPENDING_PHRASE_RE.test(question)) out.push(Concepts.SPENDING);
   if (INCOME_RE.test(question) || INCOME_PHRASE_RE.test(question)) out.push(Concepts.INCOME);
@@ -287,6 +356,32 @@ export function planRetrieval(input: {
       }
     }
   }
+  // ⚠️ FORECAST SURVIVES A REFINEMENT. Unlike the whole-concept inheritance
+  // above, this ADDS to what this turn resolved rather than replacing it: "what
+  // if I spend $5,000" is genuinely about spending AND still the forecast, and
+  // a rule that replaced the concepts would lose the half the user just named.
+  if (!concepts.includes(Concepts.FORECAST) && REFINEMENT_RE.test(question)) {
+    const users = messages.filter((m) => m.role === 'user');
+    for (let i = users.length - 2; i >= 0; i--) {
+      const prior = detectConcepts(users[i].content, resolveConceptBreadth(users[i].content));
+      if (prior.includes(Concepts.FORECAST)) {
+        concepts = [...concepts.filter((c) => c !== Concepts.UNKNOWN), Concepts.FORECAST];
+        if (conceptProvenance === 'THIS_TURN') conceptProvenance = 'INHERITED';
+        break;
+      }
+      // ⚠️ WALK PAST INTERVENING REFINEMENTS, AND STOP AT A FRESH ASK. Measured:
+      // "forecast my cash" → "what if I spend $5,000?" → "what about 6 months?"
+      // The third turn inherits the SECOND's concepts, which are themselves a
+      // refinement's, so stopping at the first non-UNKNOWN turn loses the
+      // forecast two turns after it was asked for. Walking only through
+      // refinements is what keeps this from resurrecting a forecast the user
+      // moved on from: one turn that names a different economic ask ends it.
+      const priorIsRefinement = REFINEMENT_RE.test(users[i].content)
+        || (prior.length === 1 && prior[0] === Concepts.UNKNOWN);
+      if (!priorIsRefinement) break;
+    }
+  }
+
   const depth = detectDepth(question, concepts);
 
   const has = (c: Concept) => concepts.includes(c);
@@ -303,11 +398,30 @@ export function planRetrieval(input: {
   });
 
   // ── transactions ─────────────────────────────────────────────────────────
+  //
+  // ⚠️ THE EXECUTION / SERIALIZATION SPLIT, AND FORECAST IS ITS SHARPEST CASE
+  // (§6/§7). A forecast NEEDS transaction evidence — FORECAST-1/2/5 derive a
+  // cadence, an activity licence and a current level from dated income rows, and
+  // `loadForecastIncomeStreams` reads them through the canonical authority. What
+  // the MODEL needs is the resulting forecast, not the evidence that produced
+  // it: ninety days of rollups and 1,512 tokens of analysis prose beside a
+  // deterministic cash path is not extra rigour, it is a second opinion the
+  // model can average with the first.
+  //
+  // So a forecast-only question marks this NOT_NEEDED for the model, and the
+  // forecast's own read is unaffected — it does not go through this domain at
+  // all. A question that asks for BOTH keeps the evidence, because then the
+  // history is part of the ask rather than a byproduct of it.
   if (has(Concepts.SPENDING) || has(Concepts.INCOME)) {
     add(FinanceDomains.TRANSACTIONS_SUMMARY, NeedLevel.REQUIRED,
       depth === EvidenceDepth.DETAIL
         ? 'the question asks for a specific row or ranking, not a total'
         : 'the question asks for flow totals',
+      txnAvailable);
+  } else if (has(Concepts.FORECAST)) {
+    add(FinanceDomains.TRANSACTIONS_SUMMARY, NeedLevel.NOT_NEEDED,
+      'the forecast substrate derives its own dated income series through the canonical read; '
+      + 'historical rollups would restate the same period as a competing answer',
       txnAvailable);
   } else if (has(Concepts.NET_WORTH)) {
     add(FinanceDomains.TRANSACTIONS_SUMMARY, NeedLevel.SUPPORTING,
@@ -321,11 +435,14 @@ export function planRetrieval(input: {
   //
   // The one domain almost everything wants: balances, debt and the investment
   // component totals all live here, and it is the cheapest of the three.
-  if (has(Concepts.NET_WORTH) || has(Concepts.DEBT) || has(Concepts.INVESTMENTS)) {
+  if (has(Concepts.NET_WORTH) || has(Concepts.DEBT) || has(Concepts.INVESTMENTS)
+    || has(Concepts.FORECAST)) {
     add(FinanceDomains.ACCOUNTS, NeedLevel.REQUIRED,
       has(Concepts.INVESTMENTS)
         ? 'carries both INVESTMENTS component totals (CF-7 composition authority)'
-        : 'carries balances and debt totals',
+        : has(Concepts.FORECAST)
+          ? 'the liquid total is the forecast opening balance, and nothing else may substitute for it'
+          : 'carries balances and debt totals',
       true);
   } else {
     add(FinanceDomains.ACCOUNTS, NeedLevel.SUPPORTING,
@@ -349,6 +466,11 @@ export function planRetrieval(input: {
   } else if (has(Concepts.NET_WORTH)) {
     add(FinanceDomains.SNAPSHOT_HISTORY, NeedLevel.NOT_NEEDED,
       'a current position question is answered by account balances; the trend signal covers direction',
+      snapAvailable);
+  } else if (has(Concepts.FORECAST)) {
+    add(FinanceDomains.SNAPSHOT_HISTORY, NeedLevel.NOT_NEEDED,
+      'a forecast starts from the CURRENT balance; ninety historical rows are the input to an '
+      + 'extrapolation nobody licensed',
       snapAvailable);
   } else {
     add(FinanceDomains.SNAPSHOT_HISTORY, NeedLevel.NOT_NEEDED,

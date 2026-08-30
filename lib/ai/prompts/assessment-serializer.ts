@@ -81,6 +81,22 @@ export function serializeAssessmentBlock(
   windowNote?: string | null,
   // REVIEW-3 C-6 — the Space's reporting currency; USD default for fixtures.
   reportingCurrency?: string,
+  /**
+   * FORECAST-10 — is a deterministic forecast also in this prompt?
+   *
+   * ⚠️ RELABELS, NEVER SUPPRESSES. Two lines below — implied monthly income and
+   * estimated monthly spending — are measurements over the ANALYSIS WINDOW, and
+   * they are legitimate facts the assessment grades. Beside a forecast section
+   * that says the current-normal spending level is UNKNOWN and the income basis
+   * is unestablished, they read as a competing answer to the same question, and
+   * an $8,349 historical mean is exactly the figure the original live failure
+   * substituted for a baseline nobody had.
+   *
+   * Deleting them would be worse: they are graded dimensions, and a suppressed
+   * assessment line is a hole the model fills. So they keep their numbers and
+   * gain the sentence that makes them a different claim.
+   */
+  forecastPresent?: boolean,
 ): string {
   const money = (n: number) => fmtMoney(n, reportingCurrency);
   const {
@@ -141,9 +157,16 @@ export function serializeAssessmentBlock(
     lines.push('  → Cash deficit is driven by debt payments (canonical net is non-negative) — not overspending; whether this paydown pace is deliberate has not been declared.');
   }
 
+  // FORECAST-10 — the precedence sentence, on the two lines a forecast can
+  // collide with. Attached to the line itself rather than stated once at the
+  // top, because a reader who reaches the number has already formed the reading.
+  const histNote = forecastPresent
+    ? ' — HISTORICAL, measured over the analysis window. NOT a forecast input and NOT the '
+      + 'current-normal level; the FORECAST section is authoritative for anything forward-looking.'
+    : '';
   if (cashFlow.impliedMonthlyIncome !== null) {
     const qualifier = dataQuality.incomeConfidence === 'LOW' ? ' (likely understated — partial data)' : '';
-    lines.push(`  Implied monthly income: ${money(cashFlow.impliedMonthlyIncome)}/mo${qualifier}`);
+    lines.push(`  Implied monthly income: ${money(cashFlow.impliedMonthlyIncome)}/mo${qualifier}${histNote}`);
   }
   if (cashFlow.estimatedMonthlyExpenses !== null) {
     // v2.6-ASSESS-2 — say that THIS one is measured spending.
@@ -154,7 +177,7 @@ export function serializeAssessmentBlock(
     // both were printed as "Est. monthly expenses", so the moment a declared
     // baseline existed the model saw two lines with that label and two different
     // numbers, and nothing to tell it they were answering different questions.
-    lines.push(`  Est. monthly spending: ${money(cashFlow.estimatedMonthlyExpenses)}/mo (measured)`);
+    lines.push(`  Est. monthly spending: ${money(cashFlow.estimatedMonthlyExpenses)}/mo (measured)${histNote}`);
   }
   if (cashFlow.estimatedMonthlyDebtPayments !== null) {
     lines.push(`  Est. monthly debt payments: ${money(cashFlow.estimatedMonthlyDebtPayments)}/mo`);

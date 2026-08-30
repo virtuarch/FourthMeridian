@@ -355,13 +355,19 @@ check('J2 the module reads no clock — every date is a parameter',
   !/Date\.now\(\)|new Date\(\)/.test(src), src.match(/Date\.now\(\)|new Date\(\)/)?.[0]);
 check('J3 the module imports nothing at all — it is pure arithmetic',
   !/^import /m.test(src));
-check('J4 no consumer is wired yet — FORECAST-1 changes no behaviour', (() => {
-  // A grep across the repo would be slow here; the guard that matters is that
-  // nothing in lib/ai imports it, since that is where prompt behaviour lives.
-  const hits = execSync('grep -rl "forecast/cadence" lib app components jobs scripts 2>/dev/null || true',
-    { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
-  return hits.every((f: string) => f.startsWith('lib/forecast/'));
-})());
+// ⚠️ RESTATED BY FORECAST-10, WHICH IS THE SLICE THAT WIRES THESE. The check
+// read "no consumer outside lib/forecast", and through FORECAST-9 that was both
+// true and the point: a substrate with no production reader could not change an
+// answer. FORECAST-10 gives it exactly one reader, so the claim worth keeping is
+// not "nothing consumes this" but "only the sanctioned adapter does" — no
+// assembler, prompt, route or component reaches past `lib/ai/forecast/` into the
+// authorities. That is the protection the original was really providing, and it
+// is now pinned directly.
+const ALLOWED_CONSUMER_ROOTS = ['lib/forecast/', 'lib/ai/forecast/'];
+check('J4 FORECAST-1 is consumed only through the sanctioned adapter',
+  execSync('grep -rl "forecast/cadence" lib app components jobs scripts 2>/dev/null || true',
+    { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
+    .every((f: string) => ALLOWED_CONSUMER_ROOTS.some((r) => f.startsWith(r))));
 check('J5 no future-event persistence was added',
   !/prisma|\.create\(|\.upsert\(|migration/i.test(src));
 

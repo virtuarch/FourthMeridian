@@ -350,11 +350,19 @@ check('M2 no clock', !/Date\.now\(\)|new Date\(\)/.test(code));
 eq('M3 imports only the three prior FORECAST modules — nothing else',
   [...new Set((src.match(/from '\.\/[a-z-]+'/g) ?? []))].sort().join(','),
   ["from './cadence'", "from './future-cash-event'", "from './stream-activity'"].join(','));
-check('M4 no consumer outside lib/forecast',
+// ⚠️ RESTATED BY FORECAST-10, WHICH IS THE SLICE THAT WIRES THESE. The check
+// read "no consumer outside lib/forecast", and through FORECAST-9 that was both
+// true and the point: a substrate with no production reader could not change an
+// answer. FORECAST-10 gives it exactly one reader, so the claim worth keeping is
+// not "nothing consumes this" but "only the sanctioned adapter does" — no
+// assembler, prompt, route or component reaches past `lib/ai/forecast/` into the
+// authorities. That is the protection the original was really providing, and it
+// is now pinned directly.
+const ALLOWED_CONSUMER_ROOTS = ['lib/forecast/', 'lib/ai/forecast/'];
+check('M4 FORECAST-5 is consumed only through the sanctioned adapter',
   execSync('grep -rl "forecast/periodic-amount" lib app components jobs scripts 2>/dev/null || true',
     { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
-    .every((f: string) => f.startsWith('lib/forecast/')));
-// ⚠️ COMMIT-TO-COMMIT (repaired in FORECAST-9). As written this compared the
+    .every((f: string) => ALLOWED_CONSUMER_ROOTS.some((r) => f.startsWith(r))));
 // baseline to the WORKING TREE, which turns "FORECAST-5 touched none of its
 // dependencies" — a true and checkable claim about one commit — into "no later
 // slice may touch them either", which FORECAST-5 has no standing to assert. Three

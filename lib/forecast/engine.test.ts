@@ -558,22 +558,35 @@ console.log(`\n  TOKENS  facts=${tok(renders.facts)} spendOnly=${tok(renders.spe
 // N. ISOLATION
 // ═══════════════════════════════════════════════════════════════════════════
 
-check('N1 no consumer outside lib/forecast',
+// ⚠️ RESTATED BY FORECAST-10, WHICH IS THE SLICE THAT WIRES THESE. The check
+// read "no consumer outside lib/forecast", and through FORECAST-9 that was both
+// true and the point: a substrate with no production reader could not change an
+// answer. FORECAST-10 gives it exactly one reader, so the claim worth keeping is
+// not "nothing consumes this" but "only the sanctioned adapter does" — no
+// assembler, prompt, route or component reaches past `lib/ai/forecast/` into the
+// authorities. That is the protection the original was really providing, and it
+// is now pinned directly.
+const ALLOWED_CONSUMER_ROOTS = ['lib/forecast/', 'lib/ai/forecast/'];
+check('N1 FORECAST-9 is consumed only through the sanctioned adapter',
   execSync('grep -rl "forecast/engine" lib app components jobs scripts 2>/dev/null || true',
     { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
-    .every((f: string) => f.startsWith('lib/forecast/')));
+    .every((f: string) => ALLOWED_CONSUMER_ROOTS.some((r) => f.startsWith(r))));
 check('N2 the engine duplicates no authority decision table',
   !/REQUIRES|conclusionLicence|licensingShadow|validatePolicy|contradicts|deriveCurrent/.test(codeOnly));
 check('N3 it consumes FORECAST-7\'s licence rather than re-deriving one',
   /Conclusion\.FORECAST_ENDING_CASH/.test(src) && /applyPolicy\(/.test(src));
 check('N4 and FORECAST-3\'s net contribution rather than reimplementing it',
   /netCashContribution\(/.test(src) && !/basis === AmountBasis\.GROSS/.test(codeOnly));
-check('N5 FORECAST-1..8 production files carry only the two additions FORECAST-9 needed',
-  execSync('git diff --name-only 6410d82 -- lib/forecast/cadence.ts lib/forecast/stream-activity.ts '
+// Commit-to-commit, per the lesson this suite already records for N6.
+check('N5 FORECAST-9 changed no FORECAST-1..8 production file it did not have to',
+  execSync('git diff --name-only 6410d82 714d099 -- lib/forecast/cadence.ts lib/forecast/stream-activity.ts '
     + 'lib/forecast/future-cash-event.ts lib/forecast/obligation.ts lib/forecast/periodic-amount.ts '
     + 'lib/forecast/operating-state.ts', { encoding: 'utf8' }).trim() === '');
-check('N6 no prompt, retrieval or UI surface is touched',
-  execSync('git diff --name-only 6410d82 -- lib/ai/ app/ components/ prisma/ 2>/dev/null || true',
+// ⚠️ COMMIT-TO-COMMIT (FORECAST-10). Against the working tree this said "no
+// later slice may touch a prompt surface", which FORECAST-10 exists to do. The
+// claim about FORECAST-9's own commit is exact and permanently true.
+check('N6 FORECAST-9 touched no prompt, retrieval or UI surface',
+  execSync('git diff --name-only 6410d82 714d099 -- lib/ai/ app/ components/ prisma/',
     { encoding: 'utf8' }).trim() === '');
 
 // ═══════════════════════════════════════════════════════════════════════════

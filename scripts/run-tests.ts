@@ -97,6 +97,7 @@ const SERIAL_FILES = new Set<string>([
   path.join("lib", "forecast", "periodic-amount.test.ts"),
   path.join("lib", "forecast", "operating-state.test.ts"),
   path.join("lib", "forecast", "engine.test.ts"),
+  path.join("lib", "ai", "forecast", "forecast-integration.test.ts"),
 ]);
 
 // Deterministic, predictable order. `components` carries colocated presentational

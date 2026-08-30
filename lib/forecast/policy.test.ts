@@ -615,11 +615,19 @@ check('J7 no cadence arithmetic — no 26/12, no day counts, no annualisation',
 check('J8 the module imports no transaction, ledger or database surface',
   !/lib\/db|prisma|transactions|queryTransactions/i.test(src.split('\n')
     .filter((l) => l.startsWith('import')).join('\n')));
-check('J9 no consumer outside lib/forecast',
+// ⚠️ RESTATED BY FORECAST-10, WHICH IS THE SLICE THAT WIRES THESE. The check
+// read "no consumer outside lib/forecast", and through FORECAST-9 that was both
+// true and the point: a substrate with no production reader could not change an
+// answer. FORECAST-10 gives it exactly one reader, so the claim worth keeping is
+// not "nothing consumes this" but "only the sanctioned adapter does" — no
+// assembler, prompt, route or component reaches past `lib/ai/forecast/` into the
+// authorities. That is the protection the original was really providing, and it
+// is now pinned directly.
+const ALLOWED_CONSUMER_ROOTS = ['lib/forecast/', 'lib/ai/forecast/'];
+check('J9 FORECAST-8 is consumed only through the sanctioned adapter',
   execSync('grep -rl "forecast/policy" lib app components jobs scripts 2>/dev/null || true',
     { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
-    .every((f: string) => f.startsWith('lib/forecast/')));
-// ⚠️ COMMIT-TO-COMMIT, for the reason FORECAST-7's J6 had to be fixed and this
+    .every((f: string) => ALLOWED_CONSUMER_ROOTS.some((r) => f.startsWith(r))));
 // pair did not learn from in time. Compared against the WORKING TREE, a claim
 // about what THIS slice did not touch silently becomes a claim that no LATER
 // slice may touch it either — and FORECAST-9A legitimately edits

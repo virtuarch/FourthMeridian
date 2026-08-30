@@ -69,7 +69,9 @@ import { computeAssessment }         from '@/lib/ai/intelligence';
 import type { FinancialAssessment }  from '@/lib/ai/intelligence';
 import { fetchPerLiabilityDebtPayments } from '@/lib/ai/intelligence/debt-payments';
 import { loadCoverageEnvelope, type CoverageEnvelope } from '@/lib/ai/coverage-envelope';
-import { planRetrieval, planAuditPayload, type RetrievalPlan } from '@/lib/ai/retrieval-plan';
+import { planRetrieval, planAuditPayload, Concepts, type RetrievalPlan } from '@/lib/ai/retrieval-plan';
+import { buildForecastForRequest } from '@/lib/ai/forecast/for-request';
+import type { AssembledForecast } from '@/lib/ai/forecast/assemble';
 import { detectsPayoffIntent, detectsExplicitUpdateIntent } from '@/lib/ai/intent';
 import type { IntentRoute }          from '@/lib/ai/intent';
 import { planContextSelection, DEFAULT_CONTEXT_BUDGET_TOKENS } from '@/lib/ai/context-priority';
@@ -524,6 +526,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     let ctx: SpaceContext_AI;
     let envelopeForPrompt: CoverageEnvelope | undefined;
     let shadowPlan: RetrievalPlan | undefined;
+    let forecast: AssembledForecast | undefined;
     try {
       // CF-6 — the evidence census runs FIRST, because it decides which domains
       // are even reachable. Four indexed aggregates (~68 ms), already required
@@ -561,6 +564,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       );
     }
 
+    // ── FORECAST-10 — the deterministic forecast, when the plan asked for one ─
+    //
+    // ⚠️ ONE EXECUTION SEAM, GATED ON THE PLAN. `assembleForecast` is the only
+    // production caller of the engine, and it runs only when CF-8 resolved
+    // FORECAST as a concept — so a spending question pays nothing for it, and a
+    // forecast question is not recognised twice. Failure is non-fatal and
+    // never falls back to an average; see `for-request.ts`.
+    if (shadowPlan?.concepts.includes(Concepts.FORECAST)) {
+      forecast = await buildForecastForRequest({
+        spaceId, ctx, question: latestUserMessage(messages) ?? '',
+      });
+    }
+
     const assessment = computeAssessment(ctx);
     guardAssessments = [assessment];
     // Slice 6: per-liability debt-payment rollup ([] on failure → disclosure-only).
@@ -572,7 +588,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // which fails open to serializing everything.
     systemPrompt = buildSpaceSystemPrompt(
       ctx, assessment, intentRoute, debtPayments, envelopeForPrompt,
-      latestUserMessage(messages), shadowPlan);
+      latestUserMessage(messages), shadowPlan, forecast);
     // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
     await logShadowSelectionPlans(user.id, [ctx], [assessment], intentRoute);
     // CF-8 — the retrieval plan beside what was actually assembled, so the two

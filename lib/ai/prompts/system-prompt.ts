@@ -33,6 +33,8 @@ import {
   composeInvestments, describeInvestmentConcept, resolveConceptBreadth, ConceptBreadth,
 } from '@/lib/ai/economic-concepts';
 import { NeedLevel, type RetrievalPlan } from '@/lib/ai/retrieval-plan';
+import { renderForecastSection } from '@/lib/ai/forecast/render';
+import type { AssembledForecast } from '@/lib/ai/forecast/assemble';
 import { serializeAssessmentBlock } from './assessment-serializer';
 import { serializeContextBlock } from './context-serializer';
 import type { DebtPaymentLine } from './context-serializer';
@@ -173,6 +175,16 @@ export function buildSpaceSystemPrompt(
    * domain's raw JSON is serialized. Absent ⇒ everything is serialized.
    */
   plan?: RetrievalPlan,
+  /**
+   * FORECAST-10 — the deterministic forecast, when the question asked for one.
+   *
+   * ⚠️ ALREADY COMPUTED. This carries a `CashForecast` the engine produced;
+   * nothing in the prompt layer runs arithmetic over it, and its absence simply
+   * omits the section. A forecast that could not be ASSEMBLED still arrives
+   * here — as an unavailability, which is a result — because failing open to a
+   * prompt with no forecast section is how a model starts estimating one.
+   */
+  forecast?: AssembledForecast,
 ): string {
   return [
     'You are a skilled, direct financial advisor powered by Fourth Meridian.',
@@ -207,9 +219,18 @@ export function buildSpaceSystemPrompt(
     // that wording); the one-line labels above each block carry the precedence.
     'AUTHORITATIVE — deterministic verdicts. Explain them; do not reverse them.',
     '=== FINANCIAL ASSESSMENT ===',
-    serializeAssessmentBlock(annotations, analysisWindowNote(ctx), ctx.space.reportingCurrency),
+    serializeAssessmentBlock(
+      annotations, analysisWindowNote(ctx), ctx.space.reportingCurrency, forecast !== undefined),
     '=== END ASSESSMENT ===',
     '',
+    // ── FORECAST-10 — the deterministic forecast, when one was asked for ────
+    //
+    // Placed with the AUTHORITATIVE blocks and AFTER the assessment, so the two
+    // lines the assessment measures over the past are read before the forward
+    // statement that supersedes them for anything predictive. Every figure
+    // inside arrives already labelled FACTUALLY_LICENSED, ASSUMPTION_DEPENDENT,
+    // HYPOTHETICAL or REFUSED — see FORECAST-8's vocabulary, rendered verbatim.
+    ...(forecast ? renderForecastSection(forecast) : []),
     // ── CF-5 — the evidence envelope, BEFORE the context it bounds ──────────
     //
     // Placement is load-bearing. Read after the context block, "3.5 years exist"

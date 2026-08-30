@@ -337,11 +337,19 @@ check('L1 no database', !/from ['"]@?\/?lib\/db|prisma/i.test(code));
 check('L2 no clock — asOf is required', !/Date\.now\(\)|new Date\(\)[^.]/.test(code));
 check('L3 no FutureCashEvent is manufactured for a baseline',
   !/FutureCashEvent|cadenceDerivedEvents/.test(code));
-check('L4 no consumer outside lib/forecast',
+// ⚠️ RESTATED BY FORECAST-10, WHICH IS THE SLICE THAT WIRES THESE. The check
+// read "no consumer outside lib/forecast", and through FORECAST-9 that was both
+// true and the point: a substrate with no production reader could not change an
+// answer. FORECAST-10 gives it exactly one reader, so the claim worth keeping is
+// not "nothing consumes this" but "only the sanctioned adapter does" — no
+// assembler, prompt, route or component reaches past `lib/ai/forecast/` into the
+// authorities. That is the protection the original was really providing, and it
+// is now pinned directly.
+const ALLOWED_CONSUMER_ROOTS = ['lib/forecast/', 'lib/ai/forecast/'];
+check('L4 FORECAST-6 is consumed only through the sanctioned adapter',
   execSync('grep -rl "forecast/spending-baseline" lib app components jobs scripts 2>/dev/null || true',
     { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
-    .every((f: string) => f.startsWith('lib/forecast/')));
-// ⚠️ COMMIT-TO-COMMIT (FORECAST-9A). Both of these compared FORECAST-6's
+    .every((f: string) => ALLOWED_CONSUMER_ROOTS.some((r) => f.startsWith(r))));
 // baseline to the WORKING TREE, which quietly turns "FORECAST-6 touched none of
 // its dependencies" into "no future slice may touch them either" — a claim
 // FORECAST-6 has no standing to make. FORECAST-9A edits periodic-amount.ts by
