@@ -23,6 +23,7 @@ import { execSync } from 'child_process';
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
 import { Concepts, planRetrieval, NeedLevel } from '@/lib/ai/retrieval-plan';
+import { suppressHistoricalSpending } from '@/lib/ai/prompts/system-prompt';
 import { FinanceDomains, type AccountsSectionData, type SpaceContext_AI } from '@/lib/ai/types';
 import { EvidenceAvailability, type CoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { resolveForecastHorizon } from './horizon';
@@ -480,6 +481,35 @@ eq('FD7 a basis assertion survives a decimal point in the amount',
     'My Vectrus paycheck is $5,286.645 take-home and my normal spending is $4,000 a month.',
     AS_OF, 'vectrus').map((x) => x.subject.kind).sort(),
   ['SPENDING_LEVEL', 'STREAM_AMOUNT_BASIS']);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FS. HISTORICAL SUPPRESSION IS QUERY-SENSITIVE (FORECAST-11A)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const planFor = (q: string) => plan(q);
+
+eq('FS1 a forecast-only question withholds the historical spending mean',
+  suppressHistoricalSpending(planFor(FORECAST_Q), true), true);
+eq('FS2 a historical+forecast comparison keeps it — the user asked for it',
+  suppressHistoricalSpending(planFor(BOTH_Q), true), false);
+eq('FS3 "use my recent spending" keeps it too — the question names the history',
+  suppressHistoricalSpending(
+    planFor('What will my cash look like over the next 3 months? Use my recent spending if you need to.'),
+    true), false);
+eq('FS4 a non-forecast question is untouched',
+  suppressHistoricalSpending(planFor('What did I spend last month?'), false), false);
+eq('FS5 it fails OPEN with no plan', suppressHistoricalSpending(undefined, true), false);
+check('FS6 the decision is the planner\'s, not a second copy of it', (() => {
+  const body = read('lib/ai/prompts/system-prompt.ts')
+    .match(/export function suppressHistoricalSpending\([\s\S]*?\n\}/)?.[0] ?? '';
+  const code = body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  return /TRANSACTIONS_SUMMARY/.test(code) && /NeedLevel\.NOT_NEEDED/.test(code)
+    && !/Concepts\.|RE\.test|match\(/.test(code);
+})(), read('lib/ai/prompts/system-prompt.ts')
+  .match(/export function suppressHistoricalSpending\([\s\S]*?\n\}/)?.[0] ?? 'NOT FOUND');
+check('FS7 the withheld line explains itself rather than leaving a hole',
+  /Est\. monthly spending: WITHHELD for this question/.test(
+    read('lib/ai/prompts/assessment-serializer.ts')));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // J. ARCHITECTURE

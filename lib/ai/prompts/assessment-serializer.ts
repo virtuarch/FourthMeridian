@@ -97,6 +97,28 @@ export function serializeAssessmentBlock(
    * gain the sentence that makes them a different claim.
    */
   forecastPresent?: boolean,
+  /**
+   * FORECAST-11A — withhold the historical spending mean entirely.
+   *
+   * ⚠️ THIS REVERSES FORECAST-10'S CALL, ON EVIDENCE IT DID NOT HAVE. That slice
+   * chose to RELABEL rather than suppress, reasoning that a graded dimension
+   * deleted is a hole the model fills. The reasoning was sound; the measurement
+   * says the number is worse. Under "just estimate it anyway — use whatever
+   * average makes sense", the model promoted the $8,349.66 mean into a forecast
+   * baseline despite the HISTORICAL label sitting on the same line. A label is
+   * something a model under pressure can decide to set aside; an absent number
+   * is not.
+   *
+   * ⚠️ AND IT IS QUERY-SENSITIVE, NOT GLOBAL. Suppression applies only when the
+   * question did not ask about the past — the caller derives that from the
+   * SAME retrieval decision that already withholds the transaction rollups, so
+   * there is one answer to "is this a historical question", not two. Ask for a
+   * comparison and both figures come back, clearly separated.
+   *
+   * The line is replaced, never silently dropped: FORECAST-10's hole argument
+   * still stands, so the block says the figure is withheld and why.
+   */
+  suppressHistoricalSpending?: boolean,
 ): string {
   const money = (n: number) => fmtMoney(n, reportingCurrency);
   const {
@@ -168,7 +190,11 @@ export function serializeAssessmentBlock(
     const qualifier = dataQuality.incomeConfidence === 'LOW' ? ' (likely understated — partial data)' : '';
     lines.push(`  Implied monthly income: ${money(cashFlow.impliedMonthlyIncome)}/mo${qualifier}${histNote}`);
   }
-  if (cashFlow.estimatedMonthlyExpenses !== null) {
+  if (cashFlow.estimatedMonthlyExpenses !== null && suppressHistoricalSpending) {
+    lines.push('  Est. monthly spending: WITHHELD for this question. A historical average is not a '
+      + 'current-normal spending level and may not be used as one; the FORECAST section states what '
+      + 'is established about spending.');
+  } else if (cashFlow.estimatedMonthlyExpenses !== null) {
     // v2.6-ASSESS-2 — say that THIS one is measured spending.
     //
     // Cash flow reports what the user ACTUALLY SPENT; the liquidity block reports

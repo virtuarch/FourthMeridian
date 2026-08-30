@@ -31,6 +31,8 @@ import { computeAssessment } from '@/lib/ai/intelligence';
 import { buildSpaceSystemPrompt } from '@/lib/ai/prompts/system-prompt';
 import { classifyFinancialIntent } from '@/lib/ai/intent';
 import { assembleForecast } from '@/lib/ai/forecast/assemble';
+import { planRetrieval } from '@/lib/ai/retrieval-plan';
+import { EvidenceAvailability, type CoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import {
   FORECAST_SCENARIOS, realSpaceCtx, STREAMS, HORIZON, AS_OF,
   type ForecastScenario,
@@ -57,9 +59,22 @@ interface Result {
   failures: string[]; promptTokens: number;
 }
 
+// ⚠️ THE REAL PLANNER, because FORECAST-11A's suppression is driven by it.
+// Passing `undefined` measured a prompt production never builds.
+const ENVELOPE = {
+  transactions: { availability: EvidenceAvailability.AVAILABLE },
+  snapshots: { availability: EvidenceAvailability.AVAILABLE },
+  accounts: { investments: 3, digitalAssets: 4 },
+} as unknown as CoverageEnvelope;
+
 function buildPrompt(s: ForecastScenario): { prompt: string; question: string } {
   const ctx = realSpaceCtx();
   const question = s.question;
+  const plan = planRetrieval({
+    messages: [...(s.priorTurns ?? []).map((c) => ({ role: 'user', content: c })),
+      { role: 'user', content: question }],
+    envelope: ENVELOPE, now: new Date(`${AS_OF}T12:00:00.000Z`),
+  });
   const forecast = assembleForecast({
     ctx, streams: STREAMS, horizon: HORIZON, asOfISO: AS_OF,
     question,
@@ -69,7 +84,7 @@ function buildPrompt(s: ForecastScenario): { prompt: string; question: string } 
   const route = classifyFinancialIntent(question);
   return {
     prompt: buildSpaceSystemPrompt(
-      ctx, assessment, route, undefined, undefined, question, undefined, forecast),
+      ctx, assessment, route, undefined, undefined, question, plan, forecast),
     question,
   };
 }

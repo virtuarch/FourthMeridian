@@ -153,6 +153,26 @@ function renderEnvelope(ctx: SpaceContext_AI, envelope?: CoverageEnvelope): stri
   return ['=== AVAILABLE EVIDENCE ===', ...lines, '=== END AVAILABLE EVIDENCE ===', ''];
 }
 
+/**
+ * FORECAST-11A — should the historical spending mean be withheld entirely?
+ *
+ * ⚠️ ONE DECISION, REUSED. "Is this a historical question?" is already answered
+ * by the retrieval plan: FORECAST-10 marks the transaction rollups NOT_NEEDED
+ * for a forecast-only question and REQUIRED the moment the question also asks
+ * about the past. Deriving the same thing a second way here would eventually
+ * disagree with the first, and the disagreement would show up as a prompt that
+ * withholds the mean while displaying the rollups it came from.
+ *
+ * Fails OPEN: no plan, no forecast, or an unexpected value ⇒ the figure stays.
+ */
+export function suppressHistoricalSpending(
+  plan: RetrievalPlan | undefined, forecastPresent: boolean,
+): boolean {
+  if (!plan || !forecastPresent) return false;
+  const txn = plan.domains.find((d) => d.domain === FinanceDomains.TRANSACTIONS_SUMMARY);
+  return txn?.need === NeedLevel.NOT_NEEDED;
+}
+
 export function buildSpaceSystemPrompt(
   ctx: SpaceContext_AI,
   annotations: FinancialAssessment,
@@ -221,7 +241,8 @@ export function buildSpaceSystemPrompt(
     'AUTHORITATIVE — deterministic verdicts. Explain them; do not reverse them.',
     '=== FINANCIAL ASSESSMENT ===',
     serializeAssessmentBlock(
-      annotations, analysisWindowNote(ctx), ctx.space.reportingCurrency, forecast !== undefined),
+      annotations, analysisWindowNote(ctx), ctx.space.reportingCurrency, forecast !== undefined,
+      suppressHistoricalSpending(plan, forecast !== undefined)),
     '=== END ASSESSMENT ===',
     '',
     // ── FORECAST-11 — how to SPEAK the block that follows ──────────────────
