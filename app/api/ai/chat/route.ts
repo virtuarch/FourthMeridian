@@ -70,8 +70,9 @@ import type { FinancialAssessment }  from '@/lib/ai/intelligence';
 import { fetchPerLiabilityDebtPayments } from '@/lib/ai/intelligence/debt-payments';
 import { loadCoverageEnvelope, type CoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { planRetrieval, planAuditPayload, Concepts, type RetrievalPlan } from '@/lib/ai/retrieval-plan';
-import { buildForecastForRequest } from '@/lib/ai/forecast/for-request';
+import { buildForecastForRequest, guardForecastAnswer } from '@/lib/ai/forecast/for-request';
 import type { AssembledForecast } from '@/lib/ai/forecast/assemble';
+
 import { detectsPayoffIntent, detectsExplicitUpdateIntent } from '@/lib/ai/intent';
 import type { IntentRoute }          from '@/lib/ai/intent';
 import { planContextSelection, DEFAULT_CONTEXT_BUDGET_TOKENS } from '@/lib/ai/context-priority';
@@ -359,6 +360,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   let systemPrompt: string;
   let guardAssessments: FinancialAssessment[] = [];
+  let forecast: AssembledForecast | undefined; // FORECAST-13/14 — hoisted; the
+  let forecastGuardOutcome = 'none'; // guard runs after generation.
   // Knowledge gaps assembled at context time — returned alongside the reply so
   // the client can render structured input UI without parsing assistant text.
   let gapsForResponse: KnowledgeGap[] = [];
@@ -526,7 +529,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     let ctx: SpaceContext_AI;
     let envelopeForPrompt: CoverageEnvelope | undefined;
     let shadowPlan: RetrievalPlan | undefined;
-    let forecast: AssembledForecast | undefined;
     try {
       // CF-6 — the evidence census runs FIRST, because it decides which domains
       // are even reachable. Four indexed aggregates (~68 ms), already required
@@ -572,9 +574,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // forecast question is not recognised twice. Failure is non-fatal and
     // never falls back to an average; see `for-request.ts`.
     if (shadowPlan?.concepts.includes(Concepts.FORECAST)) {
+      // FORECAST-13 — `messages` carries earlier-turn facts to their authority.
       forecast = await buildForecastForRequest({
-        spaceId, ctx, question: latestUserMessage(messages) ?? '',
-      });
+        spaceId, ctx, question: latestUserMessage(messages) ?? '', messages });
     }
 
     const assessment = computeAssessment(ctx);
@@ -653,6 +655,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // here means "no enforcement", exactly as the numeric validator does.
       console.error('[ai/assessment-guard] non-fatal:', guardErr);
     }
+
+    try { // FORECAST-14 — numerical boundary; no-op off-forecast. Non-fatal.
+      ({ reply, outcome: forecastGuardOutcome } =
+        await guardForecastAnswer({ reply, forecast, userId: user.id, spaceId }));
+    } catch (fgErr) { console.error('[ai/forecast-guard] non-fatal:', fgErr); }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error.';
     console.error('[api/ai/chat] generateChatReply error:', message);
@@ -686,5 +693,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     message:          reply,
     knowledgeGaps:    gapsForResponse,
     knowledgeGapMode: gapMode,
+    ...(forecastGuardOutcome === 'none' ? {} : { forecastGuard: forecastGuardOutcome }),
   });
 }

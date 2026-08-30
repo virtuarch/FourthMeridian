@@ -37,6 +37,12 @@ import {
   FORECAST_SCENARIOS, realSpaceCtx, STREAMS, HORIZON, AS_OF,
   type ForecastScenario,
 } from '@/lib/ai/conformance/forecast-scenarios';
+import {
+  detectUnlicensedForecastArithmetic, redactUnlicensed,
+  forecastNarrationFallback, applyForecastGuard,
+} from '@/lib/ai/forecast/numerical-guard';
+import { explainForecast, type CashForecast } from '@/lib/forecast/engine';
+import type { AssembledForecast } from '@/lib/ai/forecast/assemble';
 
 // Mirrors lib/ai/provider.ts. Asserted, not assumed — a drift here means the
 // harness is measuring a configuration production does not use.
@@ -78,7 +84,7 @@ const USD_OUT = PRICE.out / 1_000_000;
 
 interface Result {
   id: string; run: number; reply: string;
-  failures: string[]; promptTokens: number; ms: number;
+  failures: string[]; narration: string[]; promptTokens: number; ms: number;
 }
 
 // ⚠️ THE REAL PLANNER, because FORECAST-11A's suppression is driven by it.
@@ -97,7 +103,17 @@ const ENVELOPE: CoverageEnvelope = {
   chains: [],
 };
 
-function buildPrompt(s: ForecastScenario): { prompt: string; question: string } {
+/**
+ * FORECAST-14 — `--guard=repair` exercises the production boundary end to end.
+ * Default `off` measures the bare model, which is how the failure was found and
+ * how a regression would be.
+ */
+const GUARD = (args.find((a) => a.startsWith('--guard='))?.split('=')[1] ?? 'off') as
+  'off' | 'shadow' | 'repair';
+
+function buildPrompt(s: ForecastScenario): {
+  prompt: string; question: string; forecast: AssembledForecast;
+} {
   const ctx = realSpaceCtx();
   const question = s.question;
   const plan = planRetrieval({
@@ -113,6 +129,7 @@ function buildPrompt(s: ForecastScenario): { prompt: string; question: string } 
   const assessment = computeAssessment(ctx);
   const route = classifyFinancialIntent(question);
   return {
+    forecast,
     prompt: buildSpaceSystemPrompt(
       // ⚠️ ARGUMENT-FOR-ARGUMENT WITH app/api/ai/chat/route.ts. `debtPayments`
       // is the one deliberate omission: production passes a per-liability
@@ -121,6 +138,11 @@ function buildPrompt(s: ForecastScenario): { prompt: string; question: string } 
       ctx, assessment, route, undefined, ENVELOPE, question, plan, forecast),
     question,
   };
+}
+
+/** Reported, never counted. See ForecastScenario.narration. */
+function narrationNotes(s: ForecastScenario, reply: string): string[] {
+  return (s.narration ?? []).filter((n) => n.pattern.test(reply)).map((n) => n.why);
 }
 
 function score(s: ForecastScenario, reply: string): string[] {
@@ -141,10 +163,11 @@ async function main(): Promise<void> {
   const client = new OpenAI({ apiKey: key });
 
   const results: Result[] = [];
-  let inTok = 0, outTok = 0;
+  let inTok = 0;
+  let outTok = 0;
 
   for (const s of SET) {
-    const { prompt, question } = buildPrompt(s);
+    const { prompt, question, forecast } = buildPrompt(s);
     const messages = [
       { role: 'system' as const, content: prompt },
       ...(s.priorTurns ?? []).map((c) => ({ role: 'user' as const, content: c })),
@@ -163,15 +186,34 @@ async function main(): Promise<void> {
         ? { model: CHAT_MODEL, max_completion_tokens: REASONING_MAX_TOKENS, messages }
         : { model: CHAT_MODEL, temperature: TEMPERATURE, max_tokens: MAX_TOKENS, messages });
       const ms = Date.now() - t0;
-      const reply = res.choices[0]?.message?.content ?? '';
       inTok += res.usage?.prompt_tokens ?? 0;
       outTok += res.usage?.completion_tokens ?? 0;
+      let reply = res.choices[0]?.message?.content ?? '';
+      // The production boundary, run exactly as the route runs it: detect,
+      // repair once, fall back to the deterministic narration if it still fails.
+      let guardNote = '';
+      if (GUARD !== 'off' && !('refused' in forecast.forecast)) {
+        const fc = forecast.forecast as CashForecast;
+        const found = detectUnlicensedForecastArithmetic(reply, fc);
+        if (found.length > 0) {
+          guardNote = ` [guard:${found.length}]`;
+          if (GUARD === 'repair') {
+            const redacted = redactUnlicensed(reply, found, fc);
+            const still = detectUnlicensedForecastArithmetic(redacted, fc);
+            reply = applyForecastGuard(
+              redacted, still, 'repair', forecastNarrationFallback(explainForecast(fc)));
+            guardNote = still.length === 0 ? ' [redacted]' : ' [fallback]';
+          }
+        }
+      }
       const failures = score(s, reply);
-      results.push({ id: s.id, run, reply, failures,
+      const narration = narrationNotes(s, reply);
+      results.push({ id: s.id, run, reply, failures, narration,
         promptTokens: res.usage?.prompt_tokens ?? 0, ms });
       const mark = failures.length === 0 ? '✓' : '✗';
-      console.log(`${mark} ${s.id} (run ${run}, prompt ${res.usage?.prompt_tokens} tok)`);
+      console.log(`${mark} ${s.id} (run ${run}, prompt ${res.usage?.prompt_tokens} tok)${guardNote}`);
       for (const f of failures) console.log(`    ${f}`);
+      for (const n of narration) console.log(`    · narration: ${n}`);
       if (verbose) console.log(`\n--- reply ---\n${reply}\n-------------\n`);
     }
   }
@@ -185,6 +227,10 @@ async function main(): Promise<void> {
     + `  ·  est $${((inTok * USD_IN) + (outTok * USD_OUT)).toFixed(4)}`
     + `  ·  avg prompt ${Math.round(results.reduce((t, r) => t + r.promptTokens, 0) / results.length)} tok`
     + `  ·  latency p50 ${lat[Math.floor(lat.length / 2)]}ms p95 ${lat[Math.floor(lat.length * 0.95)]}ms`);
+  const narrationCount = results.filter((r) => r.narration.length > 0).length;
+  if (narrationCount) {
+    console.log(`\nNarration notes (reported, not failures): ${narrationCount}/${results.length}`);
+  }
   if (byId.size) {
     console.log('\nFailing scenarios:');
     for (const [id, n] of byId) console.log(`  ${id}: ${n}/${RUNS}`);

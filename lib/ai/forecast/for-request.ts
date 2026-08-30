@@ -21,6 +21,11 @@ import { AssumptionOrigin, type ForecastHorizon } from '@/lib/forecast/policy';
 import { resolveForecastHorizon } from './horizon';
 import { loadForecastIncomeStreams } from './streams';
 import { assembleForecast, type AssembledForecast } from './assemble';
+import { explainForecast } from '@/lib/forecast/engine';
+import { guardForecastReply, resolveForecastGuardMode } from './numerical-guard';
+import { db } from '@/lib/db';
+import { AuditAction } from '@/lib/audit-actions';
+import type { Prisma } from '@prisma/client';
 
 /**
  * The horizon a forecast question with no stated period gets.
@@ -63,4 +68,46 @@ export async function buildForecastForRequest(args: {
     console.error('[ai/forecast] assembly failed (non-fatal):', err);
     return undefined;
   }
+}
+
+/**
+ * FORECAST-14 — apply the numerical boundary to a generated reply.
+ *
+ * ⚠️ HERE RATHER THAN IN THE ROUTE, for the reason FORECAST-10 already learned:
+ * `route-authority.aiarch` caps the chat route at 700 lines, and the answer to
+ * a guard that pushes it over is to move the guard, not the ceiling. The route
+ * asks one question and gets a reply plus an outcome to log.
+ *
+ * Returns the reply unchanged, and outcome 'none', for every non-forecast turn.
+ */
+export async function guardForecastAnswer(args: {
+  reply: string;
+  forecast: AssembledForecast | undefined;
+  userId: string;
+  spaceId: string;
+}): Promise<{ reply: string; outcome: string }> {
+  const { reply, forecast } = args;
+  if (!forecast || 'refused' in forecast.forecast) return { reply, outcome: 'none' };
+  const fc = forecast.forecast;
+  const mode = resolveForecastGuardMode(process.env.AI_FORECAST_GUARD_MODE);
+  const g = guardForecastReply(reply, fc, mode, () => explainForecast(fc));
+
+  if (g.findings.length > 0) {
+    // ⚠️ OBSERVABLE BEFORE IT IS ENFORCING. Written in 'shadow' too, which is
+    // how the rate gets measured on real traffic before anything is rewritten.
+    // Finding kinds and offending values only — no balances, no user prose.
+    await db.auditLog.create({
+      data: {
+        action: AuditAction.AI_OUTPUT_VALIDATION_FLAGGED,
+        userId: args.userId, spaceId: args.spaceId,
+        metadata: {
+          guard: 'forecast-numerical', mode, outcome: g.outcome,
+          status: fc.fullCashPath.status,
+          findings: g.findings.map((f) => ({ kind: f.kind, value: f.value })),
+        } as unknown as Prisma.InputJsonValue,
+      },
+      select: { id: true },
+    }).catch(() => undefined);
+  }
+  return { reply: g.reply, outcome: g.outcome };
 }

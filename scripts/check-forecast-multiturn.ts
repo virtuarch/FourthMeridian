@@ -23,6 +23,8 @@ import { buildSpaceSystemPrompt } from '@/lib/ai/prompts/system-prompt';
 import { classifyFinancialIntent } from '@/lib/ai/intent';
 import { planRetrieval } from '@/lib/ai/retrieval-plan';
 import { assembleForecast } from '@/lib/ai/forecast/assemble';
+import { guardForecastReply, resolveForecastGuardMode } from '@/lib/ai/forecast/numerical-guard';
+import { explainForecast, type CashForecast } from '@/lib/forecast/engine';
 import { resolveForecastHorizon } from '@/lib/ai/forecast/horizon';
 import { EvidenceAvailability, type CoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { AssumptionOrigin } from '@/lib/forecast/policy';
@@ -159,7 +161,18 @@ async function main(): Promise<void> {
           model: CHAT_MODEL, temperature: 0.3, max_tokens: 1024,
           messages: [{ role: 'system', content: prompt }, ...messages],
         });
-        const reply = res.choices[0]?.message?.content ?? '';
+        let reply = res.choices[0]?.message?.content ?? '';
+        // FORECAST-14 — the production boundary, so a conversation is measured
+        // against the answer a user would actually receive.
+        let guardNote = '';
+        if (forecast && !('refused' in forecast.forecast)) {
+          const g = guardForecastReply(
+            reply, forecast.forecast as CashForecast,
+            resolveForecastGuardMode(process.env.AI_FORECAST_GUARD_MODE ?? 'repair'),
+            () => explainForecast(forecast.forecast as CashForecast));
+          reply = g.reply;
+          if (g.outcome !== 'clean') guardNote = ` [${g.outcome}]`;
+        }
 
         for (const f of turn.forbidden ?? []) {
           const m = f.pattern.exec(reply);
@@ -171,7 +184,7 @@ async function main(): Promise<void> {
 
         if (issues.length === 0) pass++; else fail++;
         console.log(`  ${issues.length ? '✗' : '✓'} "${turn.say.slice(0, 52)}"`
-          + `  [concepts ${probe.concepts.join('+')} · horizon ${probe.horizonTo ?? '—'}`
+          + `${guardNote}  [concepts ${probe.concepts.join('+')} · horizon ${probe.horizonTo ?? '—'}`
           + ` · assumptions ${probe.assumptions} · facts ${probe.facts}]`);
         for (const i of issues) console.log(`      ${i}`);
         if (verbose) console.log(`      ${reply.slice(0, 300).replace(/\n/g, ' ')}`);

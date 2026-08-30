@@ -30,11 +30,15 @@ import { resolveForecastHorizon } from './horizon';
 import { extractForecastStatements } from './statements';
 import { assembleForecast, forecastAsk, ForecastAsk } from './assemble';
 import { resolveAssertedFacts } from './fact-continuity';
+import {
+  detectUnlicensedForecastArithmetic, redactUnlicensed, resolveForecastGuardMode,
+} from './numerical-guard';
+import type { CashForecast } from '@/lib/forecast/engine';
 import { renderForecastSection } from './render';
 import type { ResolvedIncomeStream } from './streams';
 import { CadenceKind, CadenceProvenance, type Cadence } from '@/lib/forecast/cadence';
 import { resolveStreamActivity } from '@/lib/forecast/stream-activity';
-import { AmountBasis, EventProvenance, FlowRole } from '@/lib/forecast/future-cash-event';
+import { AmountBasis, EventProvenance, FlowRole, type FutureCashEvent } from '@/lib/forecast/future-cash-event';
 import { AssumptionOrigin, ConclusionStatus } from '@/lib/forecast/policy';
 import { ComponentState } from '@/lib/ai/economic-concepts';
 import { Conclusion } from '@/lib/forecast/operating-state';
@@ -501,6 +505,104 @@ eq('FD7 a basis assertion survives a decimal point in the amount',
     'My Vectrus paycheck is $5,286.645 take-home and my normal spending is $4,000 a month.',
     AS_OF, 'vectrus').map((x) => x.subject.kind).sort(),
   ['SPENDING_LEVEL', 'STREAM_AMOUNT_BASIS']);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NG. THE NUMERICAL RESPONSE BOUNDARY (FORECAST-14)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const ngD = assembleForecast({ ctx, streams: STREAMS, horizon: HORIZON, asOfISO: AS_OF,
+  question: 'Show me a scenario where I spend $10,000 a month over the next 3 months.' })
+  .forecast as CashForecast;
+const ngB = assembleForecast({ ctx, streams: STREAMS, horizon: HORIZON, asOfISO: AS_OF,
+  question: 'Forecast my cash for the next 3 months. Assume I spend $4,000/month and assume my paycheck is net.' })
+  .forecast as CashForecast;
+const detect = (reply: string, f: CashForecast) =>
+  detectUnlicensedForecastArithmetic(reply, f).map((x) => x.kind);
+
+// ── True positives: the measured failures ─────────────────────────────────
+eq('NG1 the D premise echo is caught',
+  detect('Assuming you spend $10,000 a month, total spending would amount to $30,000.', ngD),
+  ['UNLICENSED_PRODUCT']);
+eq('NG2 including when the operand is absent and only a label carries the claim',
+  detect('- **Known Outflows**: $30,000\n- **Opening Cash**: $10,228.74', ngD),
+  ['UNLICENSED_CASH_CLAIM']);
+eq('NG3 the I stale-assumption product is caught',
+  detect('Known outflows: $12,000.00 (assuming $4,000/month for 3 months).', ngB),
+  ['UNLICENSED_PRODUCT']);
+eq('NG4 an ending balance over a REFUSED path is caught, even from a licensed figure',
+  detect('Ending Cash: $10,228.74', ngD), ['ENDING_CASH_OVER_REFUSAL']);
+eq('NG5 a GROSS amount claimed as arriving is caught', (() => {
+  const grossBonus: FutureCashEvent = {
+    id: 'bonus', timing: { kind: 'EXACT', dateISO: '2026-10-15' },
+    timingProvenance: EventProvenance.USER_ASSERTED, direction: 'INFLOW', role: FlowRole.INCOME,
+    amount: { value: 15500, currency: 'USD', basis: AmountBasis.GROSS,
+      provenance: EventProvenance.USER_ASSERTED },
+  };
+  const g = assembleForecast({ ctx, streams: STREAMS, horizon: HORIZON, asOfISO: AS_OF,
+    question: 'Forecast my cash.', additionalEvents: [grossBonus] }).forecast as CashForecast;
+  return detect('You will receive $15,500 in October.', g);
+})(), ['UNLICENSED_CASH_CLAIM']);
+
+// ── False positives: everything that must remain expressible ──────────────
+eq('NG6 a correct assumption-dependent answer is clean',
+  detect('Assuming $4,000/month spending and treating your paycheck as take-home, '
+    + 'your ending cash would be $35,144.66, starting from $10,228.74.', ngB), []);
+eq('NG7 a hedged approximation of a licensed figure is clean',
+  detect('Your ending cash would be roughly $35,000.', ngB), []);
+eq('NG8 historical figures in a mixed answer are out of scope entirely',
+  detect('### Spending Over the Last 3 Months\n- **Total Spending:** $25,048.98\n'
+    + '- **Average Monthly Spending:** $8,349.66\n### Cash Position Over the Next 3 Months\n'
+    + '- **Current Cash:** $10,228.74', ngB), []);
+eq('NG9 dates, counts and percentages are never read as money claims',
+  detect('You have 7 pay dates: 2026-09-11, 2026-09-25, 2026-10-09 — 92 days, 0.16% spread.', ngD),
+  []);
+eq('NG10 a not-cash amount stated WITH its caveat is the licence working',
+  detect('Known future inflows: $37,006.51 (not counted as cash, the net basis is unknown).', ngD),
+  []);
+eq('NG11 a rate mention is never a balance claim',
+  detect('Your ending cash reflects $4,000/month of spending.', ngB), []);
+
+// ── Redaction ─────────────────────────────────────────────────────────────
+check('NG12 redaction removes the claim and keeps the rest', (() => {
+  const bad = 'Opening cash is $10,228.74.\n- **Total Spending**: $30,000\nYour situation is stable.';
+  const out = redactUnlicensed(bad, detectUnlicensedForecastArithmetic(bad, ngD), ngD);
+  return !/30,000/.test(out) && /10,228\.74/.test(out) && /situation is stable/.test(out)
+    && detectUnlicensedForecastArithmetic(out, ngD).length === 0;
+})(), redactUnlicensed('Opening cash is $10,228.74.\n- **Total Spending**: $30,000\nYour situation is stable.',
+  detectUnlicensedForecastArithmetic('Opening cash is $10,228.74.\n- **Total Spending**: $30,000\nYour situation is stable.', ngD), ngD));
+check('NG13 and restores the refusal if the redaction removed it', (() => {
+  const bad = 'Total spending is $30,000, so ending cash cannot be stated.';
+  const out = redactUnlicensed(bad, detectUnlicensedForecastArithmetic(bad, ngD), ngD);
+  return /cannot be stated/.test(out) && !/30,000/.test(out);
+})());
+check('NG14 and restores the assumptions an assumption-dependent figure rests on', (() => {
+  const bad = 'Known outflows: $12,000 for 3 months at $4,000/month. Ending cash: $35,144.66.';
+  const out = redactUnlicensed(bad, detectUnlicensedForecastArithmetic(bad, ngB), ngB);
+  return /rests on/.test(out) && /35,?144\.66/.test(out) && !/12,000/.test(out);
+})(), redactUnlicensed('Known outflows: $12,000 for 3 months at $4,000/month. Ending cash: $35,144.66.',
+  detectUnlicensedForecastArithmetic('Known outflows: $12,000 for 3 months at $4,000/month. Ending cash: $35,144.66.', ngB), ngB));
+
+// ── Architecture ──────────────────────────────────────────────────────────
+check('NG15 the licence is built from the TYPED result, never from the rendered prose',
+  !/explainForecast|describeOperatingState|split\('\\n'\)/.test(
+    read('lib/ai/forecast/numerical-guard.ts')
+      .match(/export function licensedFigures[\s\S]*?\n\}/)?.[0] ?? ''));
+check('NG16 it introduces no forecast arithmetic — every figure is a field or a sum of fields',
+  !/\*|\/(?!\*|\/)/.test(
+    (read('lib/ai/forecast/numerical-guard.ts')
+      .match(/export function licensedFigures[\s\S]*?\n\}/)?.[0] ?? '')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+      .replace(/dailyRate \* f\.horizonDays/, 'RATE_TIMES_DAYS')),
+  'only the engine\'s own rate x horizon appears, and it is the figure the engine prints');
+eq('NG17 enforcement is never silently on', resolveForecastGuardMode(undefined), 'shadow');
+check('NG18 the boundary is gated on a forecast existing at all', (() => {
+  // The gate moved into for-request.ts when the route hit its 700-line ceiling;
+  // the claim is unchanged — a non-forecast turn returns the reply untouched.
+  const src = read('lib/ai/forecast/for-request.ts');
+  return /if \(!forecast \|\| 'refused' in forecast\.forecast\) return \{ reply, outcome: 'none' \};/
+    .test(src);
+})(), read('lib/ai/forecast/for-request.ts')
+  .match(/export async function guardForecastAnswer[\s\S]{0,400}/)?.[0] ?? 'NOT FOUND');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FC. FACT CONTINUITY (FORECAST-13)
