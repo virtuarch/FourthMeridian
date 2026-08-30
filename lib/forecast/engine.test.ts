@@ -357,7 +357,7 @@ eq('F5 debt does not decline over the horizon — this is a cash forecast',
 check('F6 known outflows and baseline consumption are separately inspectable',
   F.points.every((p) => p.outflows >= 0 && (p.discretionarySpend === null || p.discretionarySpend >= 0))
   && /Known outflows:/.test(explainForecast(F).join('\n'))
-  && /Baseline spending:/.test(explainForecast(F).join('\n')));
+  && /Baseline spending over the horizon:/.test(explainForecast(F).join('\n')));
 check('F7 no fabricated discretionary events exist',
   F.events.every((e) => e.id === 'rent@2026-09-01' || e.id.startsWith('vectrus@')));
 
@@ -538,8 +538,26 @@ for (const [n, t] of Object.entries(renders)) {
   check(`L4 ${n}: within the 250-500 token budget`, tok(t) >= 120 && tok(t) <= 500, `${tok(t)} tokens`);
   check(`L5 ${n}: the seven sections are present`,
     /Opening cash:/.test(t) && /Known inflows:/.test(t) && /Known outflows:/.test(t)
-    && /Baseline spending:/.test(t) && /Ending cash:/.test(t), t);
+    && /Baseline spending over the horizon:/.test(t) && /Ending cash:/.test(t), t);
 }
+check('L5a the accrued spending total is stated even when the path is refused', (() => {
+  // FORECAST-11: summing the points gave USD 0.00 here, and the model filled
+  // the silence with arithmetic of its own.
+  const r = explainForecast(run(state(), PAY_UNKNOWN, policy([SPEND_4K]))).join('\n');
+  return /Baseline spending over the horizon: USD 12353\.\d\d total/.test(r)
+    && !/over the horizon: USD 0\.00/.test(r);
+})(), explainForecast(run(state(), PAY_UNKNOWN, policy([SPEND_4K]))).join('\n'));
+check('L5b and a refusal states what a refusal forbids',
+  /state no ending figure, build no month-by-month table/.test(
+    explainForecast(run(state(), PAY_UNKNOWN, policy())).join('\n')));
+check('L5c licensed dates with unlicensed amounts are NOT summed to zero', (() => {
+  // FORECAST-11: "7 × (7 dates) totalling USD 0.00" was read by the model as
+  // "you have no income", and it forecast the user into the red on that basis.
+  const r = explainForecast(run(state(), PAY_UNKNOWN, policy([SPEND_4K]))).join('\n');
+  return /NONE of which is counted as cash/.test(r)
+    && /This is not zero income/.test(r)
+    && !/Known inflows: 7 × \([^)]*\) totalling USD 0\.00/.test(r);
+})(), explainForecast(run(state(), PAY_UNKNOWN, policy([SPEND_4K]))).join('\n'));
 check('L6 the refused render states the refusal, never a number',
   /Ending cash: REFUSED — needs/.test(renders.facts) && !/Ending cash: USD/.test(renders.facts));
 check('L7 the scenario render names its dependencies',
@@ -567,9 +585,20 @@ console.log(`\n  TOKENS  facts=${tok(renders.facts)} spendOnly=${tok(renders.spe
 // authorities. That is the protection the original was really providing, and it
 // is now pinned directly.
 const ALLOWED_CONSUMER_ROOTS = ['lib/forecast/', 'lib/ai/forecast/'];
+/**
+ * ⚠️ PRODUCTION FILES ONLY (FORECAST-11). The claim is about what PRODUCTION
+ * reaches for. A test and a conformance fixture build inputs for the authority
+ * on purpose — `lib/ai/conformance/forecast-scenarios.ts` constructs the real
+ * Space's streams so the language model can be measured against them — and
+ * counting those as consumers would make the gate fail for the act of testing
+ * the thing it protects.
+ */
+const isProductionFile = (f: string) =>
+  !f.endsWith('.test.ts') && !f.startsWith('lib/ai/conformance/');
 check('N1 FORECAST-9 is consumed only through the sanctioned adapter',
   execSync('grep -rl "forecast/engine" lib app components jobs scripts 2>/dev/null || true',
     { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
+    .filter(isProductionFile)
     .every((f: string) => ALLOWED_CONSUMER_ROOTS.some((r) => f.startsWith(r))));
 check('N2 the engine duplicates no authority decision table',
   !/REQUIRES|conclusionLicence|licensingShadow|validatePolicy|contradicts|deriveCurrent/.test(codeOnly));

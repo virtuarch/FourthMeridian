@@ -59,6 +59,19 @@ export interface ForecastAssemblyInput {
   asOfISO: string;
   /** This turn's message, for fact/supposition extraction. */
   question: string;
+  /**
+   * Dated events some OTHER authority already licensed — a bonus the user named
+   * with a date and an amount, an obligation FORECAST-4 dated.
+   *
+   * ⚠️ NO PRODUCTION EXTRACTOR FEEDS THIS YET, and that is a reported gap
+   * rather than a hidden one. FORECAST-3 has licensed a USER_ASSERTED event
+   * since f849c05, and FORECAST-10 built no natural-language route to one; the
+   * conformance harness supplies them directly so the GROSS/UNKNOWN-basis
+   * behaviour can be MEASURED against the real model before anything is built
+   * to produce them. Whatever arrives here has already been licensed by
+   * somebody; this module does not license it.
+   */
+  additionalEvents?: readonly FutureCashEvent[];
 }
 
 export interface AssembledForecast {
@@ -176,7 +189,7 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   // nothing however good its amount. Nothing here reads a merchant frequency,
   // a subscription or a recurring candidate — none of which carry a date, and
   // all of which FORECAST-4 explicitly declined to license.
-  const events: FutureCashEvent[] = [];
+  const events: FutureCashEvent[] = [...(input.additionalEvents ?? [])];
   for (const s of streams) {
     if (!isCadence(s.cadence)) continue;
     const asserted = assertedBasis.get(s.sourceKey);

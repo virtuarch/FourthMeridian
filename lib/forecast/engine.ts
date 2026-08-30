@@ -590,9 +590,26 @@ export function explainForecast(f: CashForecast): string[] {
     const d = [...new Set(xs.map((e) => e.dateISO))].sort();
     return d.length <= 3 ? d.join(', ') : `${d[0]}..${d.at(-1)}, ${d.length} dates`;
   };
-  const listed = (xs: ForecastEvent[]) => xs.length
-    ? `${xs.length} × (${dates(xs)}) totalling ${money(sum(xs))}`
-    : 'none';
+  // ⚠️ UNKNOWN IS NOT ZERO — HERE TOO, AND FORECAST-11 CAUGHT IT LATE.
+  // `sum()` adds licensed cash contributions, so seven paydays whose basis is
+  // unestablished summed to zero and printed "7 × (7 dates) totalling USD 0.00".
+  // Measured against the real model, that line was read as "you have no income":
+  // one run answered a refusal without ever mentioning the basis gap, and
+  // another built a month-by-month table of $0.00 inflows against $10,000 of
+  // spending and projected the user $19,771 into the red. The dates are
+  // licensed; the cash is not; and a total of zero says something false about
+  // both. The count and the refusal are the honest line.
+  const listed = (xs: ForecastEvent[]) => {
+    if (xs.length === 0) return 'none';
+    const counted = xs.filter((e) => e.cashDelta !== null);
+    if (counted.length === 0) {
+      return `${xs.length} × (${dates(xs)}), NONE of which is counted as cash — `
+        + 'see NOT counted below. This is not zero income; it is income whose spendable value '
+        + 'is not established';
+    }
+    return `${counted.length} × (${dates(counted)}) totalling ${money(sum(counted))}`
+      + (counted.length < xs.length ? `, plus ${xs.length - counted.length} not counted as cash` : '');
+  };
 
   lines.push(`  Known inflows: ${listed(inc)}.`);
   lines.push(`  Known outflows: ${listed(out)}.`);
@@ -603,14 +620,44 @@ export function explainForecast(f: CashForecast): string[] {
       const k = e.refusalReason ?? 'no cash contribution is licensed';
       byReason.set(k, [...(byReason.get(k) ?? []), e]);
     }
+    // ⚠️ THE STATED TOTAL, LABELLED AS NOT CASH. Measured: given "$15,500" and
+    // "$1,500" as separate unlicensed events, the model added them and reported
+    // "$17,000 from your completion bonus and vacation payout" — live failure #8
+    // reproduced exactly. Naming the sum HERE, with what it is not, is the only
+    // version of that addition the reader can perform without being wrong.
+    const nominal = unlicensed.reduce((t, e) => t + (e.authoritativeAmount?.value ?? 0), 0);
     lines.push(`  NOT counted as cash: ${[...byReason.entries()].map(([reason, xs]) =>
-      `${xs.length} × (${dates(xs)}) — ${reason}`).join('; ')}.`);
+      `${xs.length} × (${dates(xs)}) — ${reason}`).join('; ')}.`
+      + ` These total ${money(nominal)} STATED, which is NOT spendable cash and may NOT be`
+      + ' added to the balance or described as money arriving.');
   }
 
-  lines.push(`  Baseline spending: ${f.spending.dailyRate !== null
-    ? `${money(f.spending.amount as number)} per ${f.spending.periodBasis === PeriodBasis.MONTHLY
-      ? 'month' : '28 days'} — ${label(f.spending.source)}, accrued as a rate over `
-      + `${f.horizonDays} days, not as dated payments`
+  // ⚠️ THE ACCRUED TOTAL IS PRINTED, AND FORECAST-11 IS WHY. Measured against
+  // the real model: given only the RATE and the horizon, it multiplied
+  // $4,000 by three months, printed "$12,000 (3 months at $4,000/month)" beside
+  // a correct ending balance, and produced a breakdown that did not reconcile
+  // with the total it was explaining. The engine already knows the figure —
+  // $12,090.60 over 92 days — and withholding it was an invitation to derive a
+  // worse one. A number the reader will otherwise compute belongs in the block.
+  //
+  // ⚠️ FROM THE RATE, NOT FROM THE POINTS. `discretionarySpend` is null on every
+  // point when the full path is refused, so summing the points printed
+  // "Total consumed: USD 0.00" over a refused forecast — worse than silence,
+  // and it left the model to compute $30,000 from three months at $10,000. The
+  // spending term is determined whenever the RATE is licensed, even when the
+  // ending balance is not; rate × horizon is the same figure the points carry
+  // when they carry one, so this adds no second arithmetic path.
+  const accrued = f.spending.dailyRate !== null ? f.spending.dailyRate * f.horizonDays : 0;
+  // ⚠️ THE TOTAL COMES FIRST, AND THAT ORDER IS MEASURED. With the rate stated
+  // first and the total appended, the model read "$10,000 a month" — the phrase
+  // from its own question — multiplied by three, and printed $30,000 against a
+  // block that said $30,226.49 two clauses later. The first spending number a
+  // reader meets is the one they use.
+  lines.push(`  Baseline spending over the horizon: ${f.spending.dailyRate !== null
+    ? `${money(accrued)} total — the ONLY spending figure; do not multiply the rate yourself. `
+      + `(${label(f.spending.source)} level of ${money(f.spending.amount as number)} per `
+      + `${f.spending.periodBasis === PeriodBasis.MONTHLY ? 'month' : '28 days'}, accrued as a rate `
+      + `over ${f.horizonDays} days, not as dated payments.)`
     : `UNRESOLVED — ${f.spending.reason}`}`);
 
   if (f.accepted.length) {
@@ -626,6 +673,17 @@ export function explainForecast(f: CashForecast): string[] {
 
   lines.push(path('Known-event balance (excludes ordinary spending)', f.knownEventPath));
   lines.push(path('Ending cash', f.fullCashPath));
+  // ⚠️ THE REFUSAL SAYS WHAT A REFUSAL FORBIDS, BESIDE THE REFUSAL. Measured
+  // against the real model: told only that ending cash was REFUSED, it produced
+  // a month-by-month table of assumed spending against invented inflows, and in
+  // another run assembled "Known outflows: $12,000.00" from an assumption that
+  // belonged to a previous turn. Both read the refusal as applying to the TOTAL
+  // and not to its parts. A general rule stated six thousand tokens earlier did
+  // not reach either; the sentence next to the number did.
+  if (f.fullCashPath.status === ConclusionStatus.REFUSED) {
+    lines.push('  Because ending cash is REFUSED: state no ending figure, build no month-by-month '
+      + 'table, and assemble no total from the parts above. Quote only the figures printed here.');
+  }
   if (f.withoutAssumptions) lines.push(path('Ending cash WITHOUT the assumptions', f.withoutAssumptions));
   if (f.firstNegativeDateISO) lines.push(`  Balance first goes below zero on ${f.firstNegativeDateISO}.`);
   lines.push('  Investments are not liquidated and debt balances do not change; this is a cash path only. '

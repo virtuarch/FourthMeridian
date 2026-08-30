@@ -45,19 +45,31 @@ const ASSUME_RE = /\b(assume|assuming|suppose|supposing|pretend|if i (?:were to 
 /** Explicit counterfactual exploration. */
 const SCENARIO_RE = /\b(show me (?:a |the )?(?:scenario|case|version|world)|scenario where|what (?:would happen|happens) if|worst.case|best.case|model a)\b/i;
 
-/** A money figure with an optional period. */
-const MONTHLY_SPEND_RE =
-  /(?:spend|spending|spends|burn|outgoings?|expenses?)\b[^.$]{0,40}\$\s?([\d,]+(?:\.\d+)?)\s*(?:a|per|\/|each)?\s*(month|mo\b|28 days|week|year)?/i;
-const SPEND_AMOUNT_FIRST_RE =
-  /\$\s?([\d,]+(?:\.\d+)?)\s*(?:a|per|\/|each)\s*(month|mo\b|week|year)\b[^.]{0,30}\b(?:spend|spending|of (?:normal |ordinary )?spending|in spending)/i;
+// ⚠️ THE GAP IS `[^;!?]`, NOT `[^.]`, AND A MEASURED MODEL RUN FOUND OUT WHY.
+// These patterns originally excluded `.` to stop a match running past a
+// sentence end. But a money figure CONTAINS periods — "$5,286.645" — so
+// "My Vectrus paycheck is $5,286.645 take-home" could never match: the class
+// stopped dead at the decimal point in the user's own number, and the truthful
+// assertion silently became no assertion at all. FORECAST-11's trace C caught
+// it: the model correctly refused a forecast the user had just supplied both
+// facts for.
+//
+// The sentence-end guard was redundant anyway — `extractForecastStatements`
+// splits into sentences before matching, so every pattern already runs inside
+// one. What remains excludes only the separators a split does not consume.
+const GAP = '[^;!?]';
+const MONTHLY_SPEND_RE = new RegExp(
+  `(?:spend|spending|spends|burn|outgoings?|expenses?)\\b[^$;!?]{0,40}\\$\\s?([\\d,]+(?:\\.\\d+)?)\\s*(?:a|per|/|each)?\\s*(month|mo\\b|28 days|week|year)?`, 'i');
+const SPEND_AMOUNT_FIRST_RE = new RegExp(
+  `\\$\\s?([\\d,]+(?:\\.\\d+)?)\\s*(?:a|per|/|each)\\s*(month|mo\\b|week|year)\\b${GAP}{0,30}\\b(?:spend|spending|of (?:normal |ordinary )?spending|in spending)`, 'i');
 
 /** A paycheck figure declared net, or an existing one declared net. */
-const NET_BASIS_RE =
-  /\b(?:paycheck|pay ?check|salary|payroll|pay)\b[^.]{0,60}\b(?:is|are|of|as)\b[^.]{0,30}\b(take[- ]?home|net|after[- ]?tax)\b/i;
-const NET_BASIS_REVERSED_RE =
-  /\b(take[- ]?home|net|after[- ]?tax)\b[^.]{0,40}\b(?:paycheck|pay ?check|salary|payroll)\b/i;
-const GROSS_BASIS_RE =
-  /\b(?:paycheck|pay ?check|salary|payroll)\b[^.]{0,60}\b(?:is|are)\b[^.]{0,20}\bgross\b/i;
+const NET_BASIS_RE = new RegExp(
+  `\\b(?:paycheck|pay ?check|salary|payroll|pay)\\b${GAP}{0,60}\\b(?:is|are|of|as)\\b${GAP}{0,30}\\b(take[- ]?home|net|after[- ]?tax)\\b`, 'i');
+const NET_BASIS_REVERSED_RE = new RegExp(
+  `\\b(take[- ]?home|net|after[- ]?tax)\\b${GAP}{0,40}\\b(?:paycheck|pay ?check|salary|payroll)\\b`, 'i');
+const GROSS_BASIS_RE = new RegExp(
+  `\\b(?:paycheck|pay ?check|salary|payroll)\\b${GAP}{0,60}\\b(?:is|are)\\b${GAP}{0,20}\\bgross\\b`, 'i');
 
 const num = (s: string) => Number(s.replace(/,/g, ''));
 

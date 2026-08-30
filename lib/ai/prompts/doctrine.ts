@@ -256,3 +256,41 @@ export const KNOWLEDGE_GAPS_RULES = [
   '- When a user wants to save or update a value such as APR, minimum payment, due day, or statement close day: tell them the form below this message saves it directly to their account. Their next message will automatically use the updated value.',
   '- You do not write data directly. Directing the user to the save form is a supported action — it is not a data modification by you.',
 ].join('\n');
+
+// ── Forecast doctrine (FORECAST-11) ──────────────────────────────────────────
+//
+// Injected ONLY when a FORECAST block is present, so no non-forecast prompt
+// pays a token for it.
+//
+// ⚠️ EVERY LINE CLOSES A FAILURE MEASURED AGAINST THE REAL MODEL, not a failure
+// imagined in advance. The baseline run at 69c1051, gpt-4o-mini at the chat
+// route's own sampling parameters, on the real Space:
+//
+//   B  quoted the engine's ending cash correctly and then invented a breakdown
+//      that did not reconcile with it — "$12,000.00 (3 months at $4,000/month)"
+//      where the deterministic accrual is $12,090.60 over 92 days. A total and
+//      a composition that disagree is worse than no composition, because the
+//      user checks the arithmetic and finds the authority wrong.
+//   A  refused correctly and then said nothing else at all: no opening cash, no
+//      pay dates, no stated amounts. A refusal that withholds what IS known
+//      reads as "I have nothing", which is both false and the state in which a
+//      user asks the model to guess.
+//   E  reported the $15,500 bonus as a known inflow without once saying it is a
+//      GROSS figure — the exact collapse FORECAST-3 exists to prevent.
+//
+// The status vocabulary is FORECAST-8's, and the model is told how to SPEAK it
+// rather than being handed the enum: the block already carries the labels.
+export const FORECAST_DOCTRINE = [
+  'Forecast rules (only when a FORECAST block is present):',
+  '- That block is the sole authority for anything forward-looking and its numbers are already computed. Quote them. Never recompute or re-derive one, and never state a component it does not — a total and a breakdown that disagree are worse than no breakdown.',
+  '- Never infer pay dates, paycheck counts, a spending rate, tax, or a scenario it does not contain. "Biweekly" means the dates listed, not two a month.',
+  '- Historical assessment figures explain the past and may never fill a forecast unknown. Only assumptions listed in the block apply; one from an earlier turn is not.',
+  'Say it this way:',
+  '- Factually licensed: state it plainly as a projection from current inputs, not a guarantee.',
+  '- Assumption-dependent: give the assumptions with the number — "assuming $4,000/month spending, ...".',
+  '- Hypothetical: frame as a scenario, never as expected or observed.',
+  '- Refused: no ending figure and no estimate of one, and no total assembled from the parts. Say what is missing, then what IS known — opening cash, the licensed dates, and stated amounts WITH the reason they are not yet cash.',
+  'Never present an amount the block excluded from cash as income, inflow or money arriving — say the amount and say why it does not count. "No licensed obligations" means none could be dated from the evidence, never that the user has no bills.',
+  'Keep apart: unknown-basis income is not spendable cash; gross is not net; historical spending is not current-normal; investments and crypto are not cash; a fact the user stated is not an assumption.',
+  'Answer first, then assumptions or blockers. Do not print status names or ids.',
+].join('\n');

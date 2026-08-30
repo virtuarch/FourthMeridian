@@ -414,6 +414,16 @@ export const AUDITS: readonly AuditEntry[] = [
           "saved transcript; writes nothing and reads no database",
   },
   {
+    name: "check-forecast-conformance", tier: "OPERATIONAL", needsDb: false,
+    what: "FORECAST-11 — measures whether the LANGUAGE MODEL narrates the deterministic FORECAST " +
+          "block or quietly computes a forecast of its own (npm run ai:forecast-conformance). A " +
+          "TOOL, never a gate, for the same reason A4 is not one: a paid stochastic model in CI " +
+          "buys flakiness with money. Builds the real production prompt on the real Space — with " +
+          "the $8,349.66 historical mean sitting in the assessment block as the attractive wrong " +
+          "answer — and scores nine scenarios against the measured failure family; writes nothing " +
+          "and reads no database",
+  },
+  {
     name: "check-schema-drift", tier: "OPERATIONAL", needsDb: true,
     what: "READ-ONLY comparison of prisma/migrations/ against the target database's " +
           "_prisma_migrations ledger (npm run db:drift); exits 1 on pending, unfinished, " +

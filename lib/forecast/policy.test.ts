@@ -624,9 +624,20 @@ check('J8 the module imports no transaction, ledger or database surface',
 // authorities. That is the protection the original was really providing, and it
 // is now pinned directly.
 const ALLOWED_CONSUMER_ROOTS = ['lib/forecast/', 'lib/ai/forecast/'];
+/**
+ * ⚠️ PRODUCTION FILES ONLY (FORECAST-11). The claim is about what PRODUCTION
+ * reaches for. A test and a conformance fixture build inputs for the authority
+ * on purpose — `lib/ai/conformance/forecast-scenarios.ts` constructs the real
+ * Space's streams so the language model can be measured against them — and
+ * counting those as consumers would make the gate fail for the act of testing
+ * the thing it protects.
+ */
+const isProductionFile = (f: string) =>
+  !f.endsWith('.test.ts') && !f.startsWith('lib/ai/conformance/');
 check('J9 FORECAST-8 is consumed only through the sanctioned adapter',
   execSync('grep -rl "forecast/policy" lib app components jobs scripts 2>/dev/null || true',
     { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
+    .filter(isProductionFile)
     .every((f: string) => ALLOWED_CONSUMER_ROOTS.some((r) => f.startsWith(r))));
 // pair did not learn from in time. Compared against the WORKING TREE, a claim
 // about what THIS slice did not touch silently becomes a claim that no LATER

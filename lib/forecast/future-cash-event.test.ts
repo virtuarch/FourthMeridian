@@ -342,9 +342,20 @@ check('K3 imports only FORECAST-1 and FORECAST-2',
 // authorities. That is the protection the original was really providing, and it
 // is now pinned directly.
 const ALLOWED_CONSUMER_ROOTS = ['lib/forecast/', 'lib/ai/forecast/'];
+/**
+ * ⚠️ PRODUCTION FILES ONLY (FORECAST-11). The claim is about what PRODUCTION
+ * reaches for. A test and a conformance fixture build inputs for the authority
+ * on purpose — `lib/ai/conformance/forecast-scenarios.ts` constructs the real
+ * Space's streams so the language model can be measured against them — and
+ * counting those as consumers would make the gate fail for the act of testing
+ * the thing it protects.
+ */
+const isProductionFile = (f: string) =>
+  !f.endsWith('.test.ts') && !f.startsWith('lib/ai/conformance/');
 check('K4 FORECAST-3 is consumed only through the sanctioned adapter',
   execSync('grep -rl "forecast/future-cash-event" lib app components jobs scripts 2>/dev/null || true',
     { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
+    .filter(isProductionFile)
     .every((f: string) => ALLOWED_CONSUMER_ROOTS.some((r) => f.startsWith(r))));
 // baseline to the WORKING TREE, which turns "FORECAST-3 touched none of its
 // dependencies" — a true and checkable claim about one commit — into "no later

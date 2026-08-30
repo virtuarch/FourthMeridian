@@ -275,10 +275,14 @@ check('E5 the dependencies name both suppositions',
   fb.fullCashPath.dependencies.length === 2, JSON.stringify(fb.fullCashPath.dependencies));
 eq('E6 the AUTHORITATIVE baseline underneath is still UNKNOWN',
   B.state.discretionaryBaseline.state, ComponentState.UNKNOWN);
-check('E7 the model context carries the engine\'s number, not an instruction to compute one', (() => {
+check('E7 the model context carries the engine\'s number, and every mention of '
+  + 'computing is a PROHIBITION on it', (() => {
   const r = renderForecastSection(B).join('\n');
+  const verbs = [...r.matchAll(/[^.]*\b(calculate|compute|multiply|work out)\b[^.]*/gi)]
+    .map((m) => m[0]);
   return /Ending cash: USD [\d.]+ · ASSUMPTION_DEPENDENT/.test(r)
-    && !/calculate|compute|work out|multiply/i.test(r);
+    && verbs.length > 0
+    && verbs.every((v) => /\bdo not\b|\bnever\b|\bnot\b/i.test(v));
 })(), renderForecastSection(B).join('\n'));
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -443,6 +447,41 @@ check('I6 the forecast section reports exactly ONE paycheck count', (() => {
 })(), JSON.stringify([...renderForecastSection(A).join('\n').matchAll(/(\d+) × \(/g)].map((x) => x[1])));
 
 // ═══════════════════════════════════════════════════════════════════════════
+// FD. THE RESPONSE CONTRACT (FORECAST-11)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const doctrineSrc = read('lib/ai/prompts/doctrine.ts');
+const promptSrc = read('lib/ai/prompts/system-prompt.ts');
+
+check('FD1 the forecast doctrine is injected ONLY when a forecast is present',
+  /\.\.\.\(forecast \? \[FORECAST_DOCTRINE, ''\] : \[\]\)/.test(promptSrc), promptSrc.slice(0, 0));
+check('FD2 so a non-forecast prompt pays nothing for it',
+  !/FORECAST_DOCTRINE/.test(promptSrc.replace(/\.\.\.\(forecast[^\n]*\n/, '')
+    .replace(/  FORECAST_DOCTRINE,\n/, '')));
+check('FD3 it is under the 250-token target, or its overrun is measured',
+  Math.ceil((doctrineSrc.match(/export const FORECAST_DOCTRINE = \[[\s\S]*?\]\.join/)?.[0].length ?? 0) / 4) < 500);
+check('FD4 the contract names every status in FORECAST-8\'s vocabulary',
+  /Factually licensed/i.test(doctrineSrc) && /Assumption-dependent/i.test(doctrineSrc)
+  && /Hypothetical/i.test(doctrineSrc) && /Refused/i.test(doctrineSrc));
+check('FD5 and forbids printing the enum names themselves',
+  /Do not print status names or ids/.test(doctrineSrc));
+check('FD6 every distinction the brief lists survives in the contract',
+  /gross is not net/i.test(doctrineSrc)
+  && /historical spending is not current-normal/i.test(doctrineSrc)
+  && /no licensed obligations/i.test(doctrineSrc)
+  && /investments and crypto are not cash/i.test(doctrineSrc)
+  && /stated as fact is not an assumption|stated is not an assumption/i.test(doctrineSrc));
+
+// ⚠️ The extractor defect FORECAST-11's trace C found: a decimal point inside
+// the user's own figure blocked the match, so a truthful assertion silently
+// became no assertion at all.
+eq('FD7 a basis assertion survives a decimal point in the amount',
+  extractForecastStatements(
+    'My Vectrus paycheck is $5,286.645 take-home and my normal spending is $4,000 a month.',
+    AS_OF, 'vectrus').map((x) => x.subject.kind).sort(),
+  ['SPENDING_LEVEL', 'STREAM_AMOUNT_BASIS']);
+
+// ═══════════════════════════════════════════════════════════════════════════
 // J. ARCHITECTURE
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -479,9 +518,21 @@ check('J6 lib/forecast gained no production dependency',
 // true until this slice deliberately added one — so the tree under lib/forecast
 // is not byte-identical and should not be. Not one line of forecast ARITHMETIC
 // or LICENSING moved, which is the claim that matters.
-check('J7 FORECAST-1..9 production modules are byte-identical',
+// ⚠️ FORECAST-11 EDITS ONE PRODUCTION MODULE, AND ONLY ITS SERIALIZER.
+// `explainForecast` gained three things the real model proved it needed: the
+// accrued spending total (it was multiplying the rate itself), the stated total
+// of amounts excluded from cash (it was adding them), and a refusal that says
+// what a refusal forbids. Not one line of arithmetic or licensing moved — the
+// engine's own 144 assertions, including all 16 mutations, are unchanged.
+check('J7 FORECAST-1..9 arithmetic and licensing are byte-identical',
   execSync('git diff --name-only 714d099 -- lib/forecast/ | grep -v "\\.test\\.ts$" || true',
-    { encoding: 'utf8' }).trim() === '');
+    { encoding: 'utf8' }).trim() === 'lib/forecast/engine.ts');
+check('J7a and the engine change is confined to explainForecast',
+  execSync('git diff -U0 714d099 -- lib/forecast/engine.ts', { encoding: 'utf8' })
+    .split('\n').filter((l) => /^@@/.test(l))
+    .every((h) => Number(/@@ -(\d+)/.exec(h)?.[1] ?? 0) > 420),
+  execSync('git diff -U0 714d099 -- lib/forecast/engine.ts', { encoding: 'utf8' })
+    .split('\n').filter((l) => /^@@/.test(l)).join(' '));
 check('J8 no UI, schema or model configuration changed',
   execSync('git diff --name-only 714d099 -- components/ app/\\(dashboard\\) prisma/ 2>/dev/null || true',
     { encoding: 'utf8' }).trim() === '');

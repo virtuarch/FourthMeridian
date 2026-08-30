@@ -24,6 +24,7 @@ import {
   KNOWLEDGE_GAPS_RULES,
   EXECUTIVE_SUMMARY_DOCTRINE,
   EXPLAINABILITY_DOCTRINE,
+  FORECAST_DOCTRINE,
 } from './doctrine';
 import { analysisWindowNote, temporalScopeFor, getTransactionsSummary } from './format';
 import {
@@ -223,6 +224,13 @@ export function buildSpaceSystemPrompt(
       annotations, analysisWindowNote(ctx), ctx.space.reportingCurrency, forecast !== undefined),
     '=== END ASSESSMENT ===',
     '',
+    // ── FORECAST-11 — how to SPEAK the block that follows ──────────────────
+    //
+    // Immediately before the forecast, and only when there is one. Placement is
+    // the same argument CF-5 made for the envelope: read after the numbers, a
+    // rule about how to present them is a correction to a sentence already
+    // formed; read before them, it is the frame they arrive in.
+    ...(forecast ? [FORECAST_DOCTRINE, ''] : []),
     // ── FORECAST-10 — the deterministic forecast, when one was asked for ────
     //
     // Placed with the AUTHORITATIVE blocks and AFTER the assessment, so the two
