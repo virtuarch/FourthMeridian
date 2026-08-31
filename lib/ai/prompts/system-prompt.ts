@@ -329,6 +329,40 @@ function buildMasterAliasGuidance(contexts: SpaceContext_AI[]): string {
  * same dedupe the Brief route applies). Optional so existing fixture callers
  * keep the prior prompt shape.
  */
+/**
+ * PARITY-1 — the question-scoped capability surfaces, for MASTER sessions.
+ *
+ * ⚠️ MASTER IS THE DEFAULT ENTRY, AND IT HAD NONE OF THIS. `AnalyzeClient`
+ * opens on `spaceId: 'master'`, so the ordinary first question a user asks goes
+ * through `buildMasterSystemPrompt` — which took no question at all. Every
+ * question-scoped capability the CF and FORECAST slices built therefore existed
+ * only on a path most turns never reached: CF-7's investment composition was
+ * absent, so "how much do I have in investments?" was answered from the raw
+ * `totalInvestments` scalar in the accounts payload and silently dropped every
+ * digital asset; FORECAST-16's pay-date block was absent, so "when is my next
+ * paycheck?" was answered by the model SPECULATING from the income rows it
+ * could see ("you might expect your next paycheck around the same time next
+ * month") — the precise ungrounded forward claim FORECAST-11 through 15 exist
+ * to make impossible.
+ *
+ * ⚠️ WHAT IS DELIBERATELY NOT HERE: the cash forecast. A pay date and a
+ * composition are both per-Space facts that stay true when several Spaces are
+ * in view. A cash projection is not — it runs off account balances, and Spaces
+ * share accounts, so a cross-Space projection would be a NEW aggregation
+ * authority built on knowingly overlapping inputs. The rollup's existing
+ * CROSS-SPACE ARITHMETIC RULE says why that must never be summed; this
+ * interface honours it by carrying only what composes.
+ *
+ * Optional, like `MasterRollup` and for the same reason: fixture callers keep
+ * the prior prompt shape.
+ */
+export interface MasterCapabilities {
+  /** The latest user message — CF-7 resolves its own breadth from it. */
+  question?:     string;
+  /** FORECAST-16 pay dates, ALIGNED BY INDEX with `contexts`. */
+  payDatesList?: (PayDateResult | undefined)[];
+}
+
 export interface MasterRollup {
   attemptedSpaceCount:  number;
   failedSpaceNames:     string[];
@@ -341,16 +375,26 @@ export function buildMasterSystemPrompt(
   route: IntentRoute,
   debtPaymentsList?: DebtPaymentLine[][],
   rollup?: MasterRollup,
+  capabilities?: MasterCapabilities,
 ): string {
   const spaceBlocks = contexts
     .map((ctx, i) => {
       const assessment = annotationsList[i];
+      const payDates = capabilities?.payDatesList?.[i];
       return [
         `--- Space ${i + 1} of ${contexts.length} ---`,
         'AUTHORITATIVE — deterministic verdicts. Explain them; do not reverse them.',
         '=== FINANCIAL ASSESSMENT ===',
         assessment ? serializeAssessmentBlock(assessment, analysisWindowNote(ctx), ctx.space.reportingCurrency) : '(no assessment available)',
         '=== END ASSESSMENT ===',
+        // PARITY-1 — the capability blocks, per Space and in the single-Space
+        // order. Both are statements about ONE Space, so rendering them inside
+        // that Space's block composes without inventing any cross-Space
+        // authority: pay dates stay a list of dates belonging to a named Space,
+        // and the investment composition stays the CF-7 statement about how two
+        // of THAT Space's loaded authorities combine.
+        ...(payDates ? renderPayDates(payDates) : []),
+        ...renderConcepts(ctx, capabilities?.question),
         'SUPPORTING EVIDENCE — facts you may cite and reason from. Anything here that no assessment dimension grades is context, not a graded finding, and must not be presented as one.',
         serializeContextBlock(ctx, debtPaymentsList?.[i], temporalScopeFor(ctx, route)),
       ].join('\n');

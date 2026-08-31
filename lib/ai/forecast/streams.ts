@@ -22,6 +22,19 @@
  * more income rows than that in the window yields a series that is TRUNCATED
  * and is reported as such rather than silently deriving a cadence from a
  * partial history.
+ *
+ * ⚠️ AND IT TRUNCATES FROM THE PAST, WHICH IS THE ONLY SAFE END. The read was
+ * `sort: 'oldest'` until the local-UI parity investigation measured it on a
+ * real Space: the oldest 100 INCOME rows reached 2026-01-21 while the ledger
+ * ran to 2026-08-28, so seven months of the CURRENT regime were invisible.
+ * That is not a truncated series, it is a WRONG one — `observedThroughISO`
+ * came from a stale page, so FORECAST-2 judged every live stream SILENT and
+ * FORECAST-1 saw three scattered dates instead of nineteen biweekly ones. A
+ * dropped observation from two years ago costs a cadence nothing; a dropped
+ * observation from last fortnight costs it everything, because cadence,
+ * activity and the current periodic amount are all statements about the
+ * RECENT end. So the page is taken newest-first and each series is restored
+ * to chronological order before any authority sees it.
  */
 
 import { queryTransactions } from '@/lib/data/transaction-query';
@@ -74,7 +87,7 @@ export async function loadForecastIncomeStreams(
       dateTo: asOfISO,
       flowTypes: ['INCOME', 'INTEREST'],
       pending: false,
-      sort: 'oldest',
+      sort: 'newest',
       limit: MAX_TRANSACTION_PAGE_SIZE,
     },
   });
@@ -85,17 +98,25 @@ export async function loadForecastIncomeStreams(
   // (5, 6, 7, 21, 25…33 days) that resolves into two clean monthly series the
   // moment the account is part of the identity."
   const groups = new Map<string, {
-    dates: string[]; amounts: number[]; role: FlowRoleKind; label: string;
+    observations: { date: string; amount: number }[]; role: FlowRoleKind; label: string;
   }>();
   for (const row of page.rows) {
     if (row.amount <= 0) continue;
     const norm = normalizeMerchant(row.merchantDisplayName ?? row.merchant);
     const key = `${norm.canonicalKey}@${row.accountId}`;
     const role = row.flowType === 'INTEREST' ? FlowRole.INTEREST : FlowRole.INCOME;
-    const g = groups.get(key) ?? { dates: [], amounts: [], role, label: norm.canonicalName };
-    g.dates.push(row.date);
-    g.amounts.push(row.amount);
+    const g = groups.get(key) ?? { observations: [], role, label: norm.canonicalName };
+    g.observations.push({ date: row.date, amount: row.amount });
     groups.set(key, g);
+  }
+
+  // ⚠️ CHRONOLOGICAL, BECAUSE THE AUTHORITIES READ A SERIES AS A SERIES. The
+  // page arrives newest-first (see the header note); FORECAST-1 walks gaps
+  // between consecutive settlements and FORECAST-5 walks the schedule forward
+  // to find the current regime. Date and amount are re-paired here rather than
+  // sorted in two arrays, so an ordering change can never mis-pair them.
+  for (const g of groups.values()) {
+    g.observations.sort((a, b) => a.date.localeCompare(b.date));
   }
 
   // How far the ledger reaches, for FORECAST-2: beyond it, silence proves nothing.
@@ -105,18 +126,19 @@ export async function loadForecastIncomeStreams(
 
   const out: ResolvedIncomeStream[] = [];
   for (const [sourceKey, g] of groups) {
-    if (g.dates.length < MIN_OBSERVATIONS) continue;
+    const dates = g.observations.map((o) => o.date);
+    if (dates.length < MIN_OBSERVATIONS) continue;
 
-    const cadence = deriveCadence(g.dates, sourceKey);
+    const cadence = deriveCadence(dates, sourceKey);
     const activity = resolveStreamActivity({
-      cadence, settlements: g.dates, observedThroughISO, asOfISO });
+      cadence, settlements: dates, observedThroughISO, asOfISO });
     // ⚠️ A LEVEL NEEDS A SCHEDULE TO BE A LEVEL OF. FORECAST-5 takes an
     // established cadence because its regime detection walks the schedule; an
     // unknown cadence yields no amount, and that is a refusal rather than a gap
     // to fill with a mean.
     const amount = isCadence(cadence)
       ? deriveCurrentPeriodicAmount(
-        g.dates.map((dateISO, i) => ({ dateISO, value: g.amounts[i], currency: 'USD' })),
+        g.observations.map((o) => ({ dateISO: o.date, value: o.amount, currency: 'USD' })),
         cadence)
       : null;
 
@@ -125,7 +147,7 @@ export async function loadForecastIncomeStreams(
       // ⚠️ FORECAST-2's field verbatim. Never `activity.state === CURRENT` —
       // that is a re-derivation of the licence, and the licence is the contract.
       projectionEligible: activity.mayGenerateExpectedOccurrences,
-      observationCount: g.dates.length,
+      observationCount: dates.length,
       truncated: page.hasMore,
     });
   }

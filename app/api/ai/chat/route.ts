@@ -70,7 +70,7 @@ import type { FinancialAssessment }  from '@/lib/ai/intelligence';
 import { fetchPerLiabilityDebtPayments } from '@/lib/ai/intelligence/debt-payments';
 import { loadCoverageEnvelope, type CoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { planRetrieval, planAuditPayload, Concepts, type RetrievalPlan } from '@/lib/ai/retrieval-plan';
-import { buildForecastSurfaces, guardForecastAnswer } from '@/lib/ai/forecast/for-request';
+import { buildForecastSurfaces, buildMasterCapabilities, guardForecastAnswer } from '@/lib/ai/forecast/for-request';
 import type { PayDateResult } from '@/lib/ai/forecast/pay-dates';
 import type { AssembledForecast } from '@/lib/ai/forecast/assemble';
 
@@ -427,10 +427,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       );
     }
 
+    // PARITY-1 — master is the DEFAULT entry, so the question must reach it too.
+    const masterQuestion = latestUserMessage(messages) ?? '';
     const contextResults = await Promise.allSettled(
-      memberships.map((m) =>
-        buildContext(m.spaceId, user.id, { scopeHint: 'full', transactionWindow, drilldown }),
-      ),
+      memberships.map((m) => buildContext(m.spaceId, user.id, {
+        scopeHint: 'full', transactionWindow, drilldown, question: masterQuestion })),
     );
 
     const contexts: SpaceContext_AI[] = contextResults
@@ -480,11 +481,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const masterDebtPayments = await Promise.all(
       contexts.map((c) => fetchPerLiabilityDebtPayments(c)),
     );
-    systemPrompt = buildMasterSystemPrompt(contexts, masterAssessments, intentRoute, masterDebtPayments, {
-      attemptedSpaceCount: memberships.length,
-      failedSpaceNames,
-      distinctAccountCount,
-    });
+    systemPrompt = buildMasterSystemPrompt(contexts, masterAssessments, intentRoute, masterDebtPayments,
+      { attemptedSpaceCount: memberships.length, failedSpaceNames, distinctAccountCount },
+      await buildMasterCapabilities(contexts, masterQuestion));
     // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
     await logShadowSelectionPlans(user.id, contexts, masterAssessments, intentRoute);
     // REVIEW-3 C-9 (KD-8) — deduplicate flat-mapped gaps: an account shared
