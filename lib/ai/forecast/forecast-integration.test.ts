@@ -100,6 +100,8 @@ const VECTRUS: ResolvedIncomeStream = {
     observationCount: 6, spread: 0.0016, verdicts: [], reason: 'six observations hold a level',
   },
   projectionEligible: vecActivity.mayGenerateExpectedOccurrences,
+  // PROJECTION-1 — these settle into a checking account on the real Space.
+  settledDepository: true,
   observationCount: 19, truncated: false,
 };
 const ABACUS: ResolvedIncomeStream = {
@@ -112,6 +114,8 @@ const ABACUS: ResolvedIncomeStream = {
     observationCount: 4, spread: 0.001, verdicts: [], reason: 'four observations',
   },
   projectionEligible: abaActivity.mayGenerateExpectedOccurrences,
+  // PROJECTION-1 — these settle into a checking account on the real Space.
+  settledDepository: true,
   observationCount: 10, truncated: false,
 };
 const STREAMS = [VECTRUS, ABACUS];
@@ -1053,10 +1057,33 @@ check('J6 lib/forecast gained no production dependency',
 // one `FactAuthority` value, one routing case — so a user-named one-off event
 // has somewhere typed to go. Neither touched arithmetic or licensing, which is
 // the claim this gate exists to hold and which J7a and J7b pin directly.
-check('J7 FORECAST-1..9 changes are confined to two files',
-  execSync('git diff --name-only 714d099 -- lib/forecast/ | grep -v "\\.test\\.ts$" || true',
-    { encoding: 'utf8' }).trim().split('\n').sort().join(',')
-    === 'lib/forecast/engine.ts,lib/forecast/policy.ts');
+// ⚠️ PROJECTION-1 ADDS A SECOND PATH, so a FILE LIST stopped being the useful
+// claim. `future-cash-event.ts` gained a second cash gate and `periodic-amount.ts`
+// carries a marker to it; two new modules hold the projection's own arithmetic.
+// What must still be true — and is now pinned directly, rather than inferred
+// from which files were touched — is that the FACTUALLY_LICENSED path did not
+// move: `netCashContribution` and `forecastCash` are byte-identical to baseline.
+// A weaker second path is only safe while the first one is exactly as strict.
+check('J7 the licensed path is untouched — netCashContribution is byte-identical',
+  (() => {
+    const body = (src: string) => {
+      const i = src.indexOf('export function netCashContribution');
+      return i < 0 ? null : src.slice(i, src.indexOf('\n}', i));
+    };
+    const base = execSync('git show 714d099:lib/forecast/future-cash-event.ts', { encoding: 'utf8' });
+    const now  = readFileSync(join(ROOT, 'lib/forecast/future-cash-event.ts'), 'utf8');
+    return body(base) !== null && body(base) === body(now);
+  })());
+check('J7-0 and forecastCash itself is byte-identical',
+  (() => {
+    const body = (src: string) => {
+      const i = src.indexOf('export function forecastCash');
+      return i < 0 ? null : src.slice(i, src.indexOf('\n}', i));
+    };
+    const base = execSync('git show 714d099:lib/forecast/engine.ts', { encoding: 'utf8' });
+    const now  = readFileSync(join(ROOT, 'lib/forecast/engine.ts'), 'utf8');
+    return body(base) !== null && body(base) === body(now);
+  })());
 check('J7b and policy.ts gained no arithmetic and no new licensing rule', (() => {
   const d = execSync('git diff -U0 714d099 -- lib/forecast/policy.ts', { encoding: 'utf8' })
     .split('\n').filter((l) => /^\+/.test(l) && !/^\+\+\+/.test(l))
@@ -1162,8 +1189,8 @@ async function mutations(): Promise<void> {
 
   await mutate('M4 not calling the engine is caught',
     'lib/ai/forecast/assemble.ts',
-    '    forecast: forecastCash(state, events, policy),',
-    "    forecast: { refused: true as const, reason: 'x' },",
+    '  const forecast = forecastCash(state, events, policy);',
+    "  const forecast = { refused: true as const, reason: 'x' } as never;",
     (m) => !('refused' in (m.assembleForecast as AssembleFn)({
       ctx, streams: STREAMS, horizon: HORIZON, asOfISO: AS_OF, question: FORECAST_Q }).forecast));
 
@@ -1200,8 +1227,8 @@ async function mutations(): Promise<void> {
 
   await mutate('M9 including SILENT Abacus events is caught',
     'lib/ai/forecast/assemble.ts',
-    '    events.push(...periodicCashEvents(\n      s.activity, s.cadence, amount, horizon.fromISO, horizon.toISO, s.role));',
-    '    events.push(...periodicCashEvents(\n      { ...s.activity, mayGenerateExpectedOccurrences: true },\n      s.cadence, amount, horizon.fromISO, horizon.toISO, s.role));',
+    '      s.activity, s.cadence, amount, horizon.fromISO, horizon.toISO, s.role,',
+    '      { ...s.activity, mayGenerateExpectedOccurrences: true },\n      s.cadence, amount, horizon.fromISO, horizon.toISO, s.role,',
     (m) => {
       const r = (m.assembleForecast as AssembleFn)({
         ctx, streams: STREAMS, horizon: HORIZON, asOfISO: AS_OF, question: FORECAST_Q });

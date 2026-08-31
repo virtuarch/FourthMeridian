@@ -451,6 +451,12 @@ export function periodicCashEvents(
   fromISO: string,
   toISO: string,
   role: FlowRoleKind,
+  /**
+   * PROJECTION-1 — the settlements this level was derived from landed in a
+   * depository account. Carried onto the amount, where the projection path can
+   * see it; `basis` is untouched and the licensed path still refuses UNKNOWN.
+   */
+  observedSettled = false,
 ): FutureCashEvent[] {
   return cadenceDerivedEvents(
     activity, cadence, fromISO, toISO, role,
@@ -466,6 +472,7 @@ export function periodicCashEvents(
         // authority that owns it — a derived amount still arrives UNKNOWN.
         basis: amount.basis,
         provenance: amount.provenance,
+        observedSettled,
       }
       : undefined,
   );

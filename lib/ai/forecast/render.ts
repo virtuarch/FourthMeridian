@@ -72,6 +72,75 @@ export function renderForecastSection(a: AssembledForecast): string[] {
     lines.push('RESULT', ...explainForecast(a.forecast));
   }
 
+  // ⚠️ THE HAND-OFF IS LOAD-BEARING. Measured: with the projection rendered
+  // below an unqualified refusal, the model answered turn 1 with the refusal
+  // alone and never reached the $42,597.20 the engine had just computed — the
+  // refusal says "do not estimate a cash path", and obeying it literally means
+  // ignoring a section that is not an estimate. The scope of the refusal has to
+  // be stated where the refusal is read.
+  if (a.projection && a.projection.closing !== null) {
+    lines.push(
+      'SCOPE: that refusal is about the LICENSED forecast only. The EVIDENCE-BASED '
+      + 'PROJECTION below IS the answer here. Lead with its figure, conditionally ("if '
+      + 'these patterns continue"), name its windows, then say what the licensed forecast '
+      + 'still needs. Never answer with the refusal alone; never compute your own figure.',
+    );
+  }
+
+  // ── PROJECTION-1 — the evidence-based path, when the licensed one refused ──
+  //
+  // ⚠️ AFTER the licensed result and clearly separated, because it is a weaker
+  // claim about the same question and the reader must meet the refusal first.
+  // Every figure arrives with its window and its transformation, and the block
+  // says in as many words that this is not a forecast — a projection narrated
+  // without those is indistinguishable from one.
+  if (a.projection && a.projection.closing !== null) {
+    const p = a.projection;
+    const closing = a.projection.closing;
+    const m = (n: number) => `${p.currency} ${n.toFixed(2)}`;
+    lines.push(
+      '',
+      'EVIDENCE-BASED PROJECTION (NOT a forecast, NOT what will happen).',
+      'It continues patterns MEASURED over stated windows, and is licensed only as "if '
+      + 'these patterns continue" — always speak that condition and name the window. Never '
+      + 'restate it as an expectation or as a figure the user "will have".',
+      `Opening cash: ${m(p.openingCash ?? 0)} (measured today).`,
+      // ⚠️ SAID EXPLICITLY, because the licensed section directly above calls the
+      // same deposits "stated but NOT counted as cash" and the model repeated
+      // that framing while quoting the projection's own inflow total.
+      'NOTE: deposits the section above calls "not counted as cash" ARE counted here — '
+      + 'there they lack a gross/net basis; here they are included because they were '
+      + 'OBSERVED SETTLING into a depository account. The money arrived.',
+      ...p.components.map((c) => `  ${c.label}: ${m(c.value)} — ${c.derivation}.`),
+      `PROJECTED CASH at horizon end: ${m(closing)}.`,
+      // ⚠️ MEASURED LEAK. The conformance corpus caught the model calling this
+      // average a "current-normal spending level" — F6's own term, which F6
+      // withheld for this user on evidence. The projection may USE the mean; it
+      // may never rename it into the thing F6 refused to assert.
+      'The average above is NOT a "normal" or "current-normal" spending level — that '
+      + 'remains UNKNOWN and refused. It is only the mean of the months named.',
+      'Assumptions carried, all of them OBSERVED_CONTINUATION and all rejectable by the user:',
+      ...p.assumptions.map((x) => `  - ${x}`),
+    );
+    // ⚠️ SUPPLEMENTAL, NEVER INSTEAD OF THE CENTRAL FIGURE. Product policy is
+    // that the projection answers the question; this exists so a window whose
+    // months differ several-fold cannot be read as a settled level.
+    const sp = a.observedSpending;
+    if (p.range && sp?.dispersionRatio && sp.dispersionRatio >= 2) {
+      lines.push(
+        `UNCERTAINTY: the ${sp.monthCount} months averaged were `
+        + `${sp.values.map((v) => p.currency + ' ' + v.toFixed(2)).join(', ')} — a `
+        + `${sp.dispersionRatio.toFixed(1)}x spread. Repeating each of those months instead of `
+        + `their average gives ${m(p.range.low)} to ${m(p.range.high)}. State the projected `
+        + 'figure as the answer, and mention this spread once as the reason it is approximate.',
+      );
+    }
+    if (p.excluded.length > 0) {
+      lines.push(`EXCLUDED from the projection (${p.excluded.length}): `
+        + `${[...new Set(p.excluded.map((e) => e.reason))].slice(0, 3).join('; ')}.`);
+    }
+  }
+
   lines.push('=== END FORECAST ===', '');
   return lines;
 }

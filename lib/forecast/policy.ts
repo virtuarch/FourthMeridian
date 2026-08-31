@@ -132,6 +132,15 @@ export const AssumptionOrigin = {
   USER_REQUESTED: 'USER_REQUESTED',
   /** A deterministic scoping choice this system makes and discloses. */
   SYSTEM_POLICY: 'SYSTEM_POLICY',
+  /**
+   * PROJECTION-1 — "the pattern measured over this window continues".
+   *
+   * ⚠️ SEPARATE FROM `SYSTEM_POLICY`, WHICH BOUNDS A QUESTION. A horizon default
+   * asserts nothing about money; this asserts that behaviour repeats, which is a
+   * claim about the world and the one the user must be able to reject. It is
+   * also the assumption a user override REPLACES — see `USER_REQUESTED`.
+   */
+  OBSERVED_CONTINUATION: 'OBSERVED_CONTINUATION',
 } as const;
 
 export type AssumptionOriginKind = typeof AssumptionOrigin[keyof typeof AssumptionOrigin];
@@ -544,6 +553,24 @@ export function validatePolicy(
 export const ConclusionStatus = {
   FACTUALLY_LICENSED: 'FACTUALLY_LICENSED',
   ASSUMPTION_DEPENDENT: 'ASSUMPTION_DEPENDENT',
+  /**
+   * PROJECTION-1 — a deterministic extrapolation of MEASURED history.
+   *
+   * ⚠️ IT RANKS BELOW ASSUMPTION_DEPENDENT AND IT IS NOT A FORECAST. A licensed
+   * forecast says what the evidence entails; this says what continuing an
+   * observed pattern would produce, and the pattern is a description of the past
+   * with no claim on the future. It exists because REFUSED was the only other
+   * answer available: measured on the real Space, every component of a year-end
+   * cash question is present — opening cash, a biweekly payroll with 20 settled
+   * deposits, thirteen complete months of spending — and the licensed path still
+   * refused, for two reasons that are about EVIDENCE GRADE rather than absence.
+   *
+   * Every figure carrying this status must arrive with the triple that produced
+   * it: the observed value, the measured window it came from, and the
+   * deterministic transformation applied. A projection narrated without its
+   * window is indistinguishable from a forecast, which is the failure mode.
+   */
+  EVIDENCE_BASED_PROJECTION: 'EVIDENCE_BASED_PROJECTION',
   HYPOTHETICAL: 'HYPOTHETICAL',
   REFUSED: 'REFUSED',
 } as const;

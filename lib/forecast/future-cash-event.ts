@@ -179,6 +179,28 @@ export interface EventAmount {
   basis: AmountBasisKind;
   /** Who established the AMOUNT — independent of who established the date. */
   provenance: EventProvenanceKind;
+  /**
+   * PROJECTION-1 — the amount is the level of SETTLED CREDITS that already
+   * landed in a depository account.
+   *
+   * ⚠️ THIS IS NOT A BASIS, AND IT DOES NOT MAKE ONE. `basis` stays UNKNOWN and
+   * `netCashContribution` still refuses it, because whether the employer's
+   * figure was gross or net remains genuinely unknown. What this records is that
+   * the QUESTION does not arise for this amount: the money was observed arriving
+   * in a checking account, and an observed bank credit has no gross/net to
+   * resolve — that distinction belongs to a STATED payroll figure.
+   *
+   * Measured, this is the whole of the income blocker on the real Space: 20
+   * settled Vectrus deposits into `CHASE COLLEGE` (type `checking`), a level of
+   * $5,286.64 held within 1.29% across 11 of them, and every projected
+   * occurrence refused for want of a basis assertion about money that had
+   * already arrived.
+   *
+   * ⚠️ IT NEVER APPLIES TO A STATED FUTURE AMOUNT. A $15,500 bonus the user
+   * mentions is GROSS and stays GROSS; nothing about it was observed settling
+   * anywhere. Only a derived level from settled depository credits sets this.
+   */
+  observedSettled?: boolean;
 }
 
 /** A future cash movement, and the limits of what is known about it. */
@@ -241,6 +263,38 @@ export function netCashContribution(event: FutureCashEvent): NetContribution {
   };
 }
 
+/**
+ * PROJECTION-1 — cash contribution for an EVIDENCE-BASED PROJECTION.
+ *
+ * ⚠️ A SECOND FUNCTION, NOT A LOOSENED FIRST ONE. `netCashContribution` is the
+ * FACTUALLY_LICENSED rule and is unchanged: it admits NET and nothing else, so
+ * every licensed forecast keeps exactly the guarantees F1–F17 gave it. This one
+ * is consulted only by the projection path, and it admits one further case —
+ * an amount that was OBSERVED SETTLING into a depository account.
+ *
+ * GROSS is still refused here, and deliberately so. A gross figure is not the
+ * cash received no matter which path asks; the observed-settled case is not
+ * "we relaxed the basis rule", it is "no basis question was ever open".
+ */
+export function observedCashContribution(event: FutureCashEvent): NetContribution {
+  const a = event.amount;
+  if (!a) return { assertable: false, reason: 'no amount is established for this event' };
+  if (a.basis === AmountBasis.NET) return { assertable: true, value: a.value, currency: a.currency };
+  if (a.basis === AmountBasis.GROSS) {
+    return {
+      assertable: false,
+      reason: `${a.value} ${a.currency} is a GROSS amount — it excludes deductions and is not the cash received`,
+    };
+  }
+  if (a.observedSettled) {
+    return { assertable: true, value: a.value, currency: a.currency };
+  }
+  return {
+    assertable: false,
+    reason: `${a.value} ${a.currency} is stated, but whether it is gross or net was never established`,
+  };
+}
+
 // ── Cadence-derived events ──────────────────────────────────────────────────
 
 /**
@@ -277,6 +331,8 @@ export interface AssertedRecurringAmount {
   currency: string;
   basis: AmountBasisKind;
   provenance: EventProvenanceKind;
+  /** PROJECTION-1 — see `EventAmount.observedSettled`. */
+  observedSettled?: boolean;
 }
 
 /**

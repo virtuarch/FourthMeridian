@@ -27,7 +27,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
   AmountBasis, EventProvenance, FlowRole,
-  exactDateOf, describeTiming, netCashContribution,
+  exactDateOf, describeTiming, netCashContribution, observedCashContribution,
   cadenceDerivedEvents, composeFutureCash, describeFutureCash,
   type FutureCashEvent, type EventTiming, type AmountBasisKind, type EventProvenanceKind,
 } from './future-cash-event';
@@ -48,8 +48,9 @@ const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 
 let seq = 0;
 function ev(o: Partial<FutureCashEvent> & { value?: number; basis?: AmountBasisKind;
-  amountProvenance?: EventProvenanceKind; currency?: string }): FutureCashEvent {
-  const { value, basis, amountProvenance, currency, ...rest } = o;
+  amountProvenance?: EventProvenanceKind; currency?: string;
+  observedSettled?: boolean }): FutureCashEvent {
+  const { value, basis, amountProvenance, currency, observedSettled, ...rest } = o;
   return {
     id: `e${++seq}`,
     timing: { kind: 'EXACT', dateISO: '2026-10-15' },
@@ -60,6 +61,7 @@ function ev(o: Partial<FutureCashEvent> & { value?: number; basis?: AmountBasisK
       value, currency: currency ?? 'USD',
       basis: basis ?? AmountBasis.UNKNOWN,
       provenance: amountProvenance ?? EventProvenance.USER_ASSERTED,
+      observedSettled,
     },
     ...rest,
   };
@@ -141,8 +143,37 @@ check('B7 nothing promotes a basis — NET is only ever compared, never assigned
   (code.match(/AmountBasis\.NET/g) ?? []).length ===
   (code.match(/=== AmountBasis\.NET/g) ?? []).length,
   code.match(/.{0,40}AmountBasis\.NET.{0,20}/g)?.join(' | '));
-check('B8 netCashContribution is the ONLY gate to spendable cash',
-  (code.match(/basis === AmountBasis\.NET/g) ?? []).length <= 2);
+// ⚠️ B8 WAS A COUNT, AND PROJECTION-1 MADE IT THE WRONG MEASUREMENT. It allowed
+// at most two `basis === AmountBasis.NET` comparisons, on the reasoning that one
+// gate needs one comparison. There are now deliberately TWO gates —
+// `netCashContribution` for the FACTUALLY_LICENSED path and
+// `observedCashContribution` for the evidence-based projection — so the count
+// rose to three while the property it protected was untouched. Restated as the
+// property: the gates are enumerable, they both live here, and neither of them
+// can turn a GROSS amount into cash.
+{
+  const gates = [...code.matchAll(/export function (\w*[Cc]ashContribution)\b/g)].map((m) => m[1]);
+  eq('B8 exactly two cash gates exist, both in this module',
+    gates.sort(), ['netCashContribution', 'observedCashContribution']);
+  check('B8b the licensed gate admits NET and nothing else',
+    netCashContribution(ev({ value: 1, basis: AmountBasis.NET })).assertable
+    && !netCashContribution(ev({ value: 1, basis: AmountBasis.UNKNOWN })).assertable
+    && !netCashContribution(ev({ value: 1, basis: AmountBasis.GROSS })).assertable);
+  // ⚠️ THE NEW GATE IS NOT A BASIS LOOPHOLE. It admits an UNKNOWN amount ONLY
+  // when that amount was observed settling into a depository account, and it
+  // refuses GROSS on exactly the same terms as its sibling — a gross figure is
+  // not the cash received no matter which path is asking.
+  check('B8c the observed gate still refuses GROSS',
+    !observedCashContribution(ev({ value: 15500, basis: AmountBasis.GROSS })).assertable);
+  check('B8d it refuses UNKNOWN that was NOT observed settling',
+    !observedCashContribution(ev({ value: 5286.64, basis: AmountBasis.UNKNOWN })).assertable);
+  check('B8e and admits UNKNOWN that WAS',
+    observedCashContribution(
+      ev({ value: 5286.64, basis: AmountBasis.UNKNOWN, observedSettled: true })).assertable);
+  check('B8f an observed marker cannot rescue a GROSS amount',
+    !observedCashContribution(
+      ev({ value: 15500, basis: AmountBasis.GROSS, observedSettled: true })).assertable);
+}
 check('B9 no withholding rate or tax estimate exists anywhere',
   !/withhold|taxRate|0\.7|0\.3\b|afterTax/i.test(code));
 

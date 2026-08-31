@@ -60,7 +60,9 @@ export async function buildForecastForRequest(args: {
   const { spaceId, ctx, question, messages } = args;
   try {
     const asOfISO = todayUTCISO();
-    const horizon: ForecastHorizon = resolveForecastHorizon(question, asOfISO) ?? {
+    const horizon: ForecastHorizon = resolveForecastHorizon(question, asOfISO)
+      ?? inheritedHorizon(messages, asOfISO)
+      ?? {
       fromISO: asOfISO, toISO: addMonths(asOfISO, DEFAULT_HORIZON_MONTHS),
       origin: AssumptionOrigin.SYSTEM_POLICY,
       statedAs: `no period was named; the default ${DEFAULT_HORIZON_MONTHS}-month horizon applies`,
@@ -71,6 +73,32 @@ export async function buildForecastForRequest(args: {
     console.error('[ai/forecast] assembly failed (non-fatal):', err);
     return undefined;
   }
+}
+
+/**
+ * PROJECTION-1 — the horizon a REFINEMENT inherits.
+ *
+ * ⚠️ MEASURED, AND IT CHANGED THE ANSWER. "How much will I have by December?"
+ * resolves 2026-12-31; the follow-up "What if I spend $5,000/month instead?"
+ * names no period, fell to the 3-month default, and answered a 91-day question
+ * the user had not asked — silently, with a smaller number. "Instead" modifies
+ * the question before it; it does not restate it.
+ *
+ * Same shape as FORECAST-13's fact continuity: re-derived from the USER's own
+ * messages each turn, latest in force, with nothing stored. A turn that names
+ * its own period always wins — this only fills a silence.
+ */
+function inheritedHorizon(
+  messages: readonly { role: string; content: string }[] | undefined,
+  asOfISO: string,
+): ForecastHorizon | null {
+  const users = (messages ?? []).filter((m) => m.role === 'user');
+  // Skip the current turn (last), walk backwards to the most recent stated one.
+  for (let i = users.length - 2; i >= 0; i--) {
+    const h = resolveForecastHorizon(users[i]!.content, asOfISO);
+    if (h) return h;
+  }
+  return null;
 }
 
 /**
@@ -95,8 +123,12 @@ export async function guardForecastAnswer(args: {
   if (!forecast || 'refused' in forecast.forecast) return { reply, outcome: 'none' };
   const fc = forecast.forecast;
   const mode = resolveForecastGuardMode(process.env.AI_FORECAST_GUARD_MODE);
+  // PROJECTION-1 — the projection's own figures are FUTURE licences for this
+  // turn. Without them PARITY-3's boundary would redact the very answer the
+  // deterministic projection just computed: it is a claim about a future date,
+  // and the only thing that makes it sayable is that an authority produced it.
   const g = guardForecastReply(reply, fc, mode, () => explainForecast(fc),
-    currentAuthorityFigures(args.ctx));
+    currentAuthorityFigures(args.ctx), projectionFigures(forecast));
 
   if (g.findings.length > 0) {
     // ⚠️ OBSERVABLE BEFORE IT IS ENFORCING. Written in 'shadow' too, which is
@@ -207,4 +239,27 @@ export function currentAuthorityFigures(
   return pairs
     .filter((p): p is [number, string] => typeof p[0] === 'number' && Number.isFinite(p[0]))
     .map(([value, label]) => ({ value, label }));
+}
+
+/**
+ * PROJECTION-1 — the FUTURE-horizon figures an evidence-based projection licenses.
+ *
+ * ⚠️ ONLY WHAT THE ENGINE COMPUTED. The closing figure, each component, and the
+ * range endpoints — never the inputs to somebody's arithmetic. A model that
+ * multiplies the observed monthly rate by four still lands on a number nothing
+ * here licenses, which is the behaviour PARITY-3 exists to catch and which this
+ * must not accidentally authorise.
+ */
+export function projectionFigures(
+  forecast: AssembledForecast | undefined,
+): { value: number; label: string }[] {
+  const p = forecast?.projection;
+  if (!p || p.closing === null) return [];
+  const out = [{ value: p.closing, label: 'the projected closing cash' }];
+  for (const c of p.components) out.push({ value: Math.abs(c.value), label: c.label });
+  if (p.range) {
+    out.push({ value: p.range.low, label: 'the low end of the observed spending range' });
+    out.push({ value: p.range.high, label: 'the high end of the observed spending range' });
+  }
+  return out;
 }

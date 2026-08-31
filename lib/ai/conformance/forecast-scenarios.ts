@@ -119,6 +119,8 @@ export const VECTRUS: ResolvedIncomeStream = {
     reason: 'six observations since 2026-04-10 hold a level of 5286.645 USD within 0.16%',
   },
   projectionEligible: vecActivity.mayGenerateExpectedOccurrences,
+  // PROJECTION-1 — these settle into a checking account on the real Space.
+  settledDepository: true,
   observationCount: 19, truncated: false,
 };
 
@@ -132,6 +134,8 @@ export const ABACUS: ResolvedIncomeStream = {
     observationCount: 4, spread: 0.001, verdicts: [], reason: 'four observations hold a level',
   },
   projectionEligible: abaActivity.mayGenerateExpectedOccurrences,
+  // PROJECTION-1 — these settle into a checking account on the real Space.
+  settledDepository: true,
   observationCount: 10, truncated: false,
 };
 

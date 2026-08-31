@@ -37,6 +37,14 @@ import {
 import { isCadence, type CadenceKindName } from '@/lib/forecast/cadence';
 import { ActivityState } from '@/lib/forecast/stream-activity';
 import { periodicCashEvents } from '@/lib/forecast/periodic-amount';
+import {
+  projectCash, type ProjectedCash, type ProjectionSpending,
+} from '@/lib/forecast/projection';
+import {
+  deriveObservedSpendingRate, type ObservedSpendingRate,
+} from '@/lib/forecast/observed-spending';
+import { reliableMonths } from '@/lib/ai/intelligence/annotations/metrics';
+import type { TransactionsSummaryData } from '@/lib/ai/types';
 import { assertedAmountBasis } from '@/lib/forecast/periodic-amount';
 import { assertedSpendingBaseline, PeriodBasis } from '@/lib/forecast/spending-baseline';
 import {
@@ -44,7 +52,7 @@ import {
   type ConclusionKind, type CurrentOperatingState, type IncomeStreamInput,
 } from '@/lib/forecast/operating-state';
 import {
-  AssumptionDimension, AssumptionOrigin, AssumptionStance, StatementMode,
+  AssumptionDimension, AssumptionOrigin, AssumptionStance, ConclusionStatus, StatementMode,
   continueLicensedCadence,
   type ForecastHorizon, type ForecastPolicy, type PolicyAssumption, type StatementSubject,
 } from '@/lib/forecast/policy';
@@ -104,6 +112,33 @@ export interface AssembledForecast {
   appliedFacts: string[];
   /** Why a forecast could not be assembled at all, when it could not. */
   unavailable: string | null;
+  /**
+   * PROJECTION-1 — the evidence-based path, when the licensed one refused.
+   *
+   * ⚠️ ABSENT WHENEVER THE LICENSED PATH SUCCEEDED. A FACTUALLY_LICENSED answer
+   * is never accompanied by a weaker one competing for the same sentence.
+   */
+  projection?: ProjectedCash;
+  /** The window and dispersion behind the projection's spending term. */
+  observedSpending?: ObservedSpendingRate;
+}
+
+/**
+ * PROJECTION-1 — the capability switch, and why it exists.
+ *
+ * ⚠️ IT IS NOT CAUTION, IT IS ATTRIBUTION. The F15 conformance corpus encodes the
+ * PRE-PROJECTION contract for this Space: ten of its scenarios forbid an ending
+ * cash figure and a historical baseline outright, which is exactly what an
+ * evidence-based projection is authorised to provide. Those scenarios now fail
+ * BY DESIGN, and a flag is what lets the same corpus be run both ways so the
+ * delta is measured rather than argued about — and lets the capability be turned
+ * off in one place if the delta is judged unacceptable.
+ *
+ * Default ON: the product decision to answer these questions has been taken.
+ * `AI_FORECAST_PROJECTION=off` restores the prior contract exactly.
+ */
+export function projectionEnabled(): boolean {
+  return process.env.AI_FORECAST_PROJECTION !== 'off';
 }
 
 const accountsOf = (ctx: SpaceContext_AI) =>
@@ -275,8 +310,13 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
     const asserted = assertedBasis.get(s.sourceKey);
     const amount = asserted ?? s.amount;
     if (!amount) continue;
+    // PROJECTION-1 — the observed-settled marker travels ONLY with the stream's
+    // OWN derived level. A user-asserted basis (`asserted`) is a statement about
+    // a payroll figure and answers the basis question directly; it needs no
+    // observation marker and must not borrow one.
     events.push(...periodicCashEvents(
-      s.activity, s.cadence, amount, horizon.fromISO, horizon.toISO, s.role));
+      s.activity, s.cadence, amount, horizon.fromISO, horizon.toISO, s.role,
+      asserted === undefined && s.settledDepository));
   }
 
   // ── Policy: horizon, the one licensed system default, and suppositions ────
@@ -288,11 +328,55 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   }
 
   const policy: ForecastPolicy = { horizon, assumptions };
+  const forecast = forecastCash(state, events, policy);
+
+  // ── PROJECTION-1 — the evidence-based path ────────────────────────────────
+  //
+  // Runs only where the licensed one could not, and never where the USER supplied
+  // the spending level: their own statement about what they will spend outranks
+  // an average of what they did spend, and the licensed path already carries it.
+  // `forecastCash` can return an outright refusal object; either way a projection
+  // is warranted, so the licensed check reads through it defensively.
+  const licensed = !('refused' in forecast)
+    && forecast.fullCashPath.status === ConclusionStatus.FACTUALLY_LICENSED;
+
+  let projection: ProjectedCash | undefined;
+  let observedSpending: ObservedSpendingRate | undefined;
+  if (!licensed && projectionEnabled()) {
+    // ⚠️ THE USER'S OWN RATE WINS, AND THE ENGINE ALREADY RESOLVED IT. When the
+    // conversation supplied a spending level, `forecast.spending` carries it as
+    // ASSUMED with a daily rate and the assumption's id; the projection takes
+    // that instead of the observed window, so an override CHANGES the answer
+    // rather than removing it.
+    const engineSpending = 'refused' in forecast ? null : forecast.spending;
+    let spending: ProjectionSpending | null = null;
+    if (engineSpending && engineSpending.dailyRate !== null) {
+      spending = {
+        kind: 'USER_ASSUMED',
+        dailyRate: engineSpending.dailyRate,
+        monthlyAmount: engineSpending.amount,
+        statedAs: engineSpending.reason,
+      };
+    } else {
+      const txn = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY]?.data as
+        TransactionsSummaryData | undefined;
+      const rate = deriveObservedSpendingRate(
+        reliableMonths(txn ?? null).map((m) => ({ month: m.month, expenseTotal: m.expenseTotal })));
+      if (rate.assertable) { observedSpending = rate; spending = { kind: 'OBSERVED', rate }; }
+    }
+    projection = projectCash({
+      openingCash: 'refused' in forecast ? null : forecast.openingCash.amount,
+      events, spending,
+      fromISO: horizon.fromISO, toISO: horizon.toISO,
+      currency: state.liquidity.currency ?? 'USD',
+    });
+  }
+
   return {
-    state, events, policy,
-    forecast: forecastCash(state, events, policy),
+    state, events, policy, forecast,
     statements, facts, appliedFacts,
     unavailable: acc ? null : 'account balances could not be assembled for this Space',
+    projection, observedSpending,
   };
 }
 

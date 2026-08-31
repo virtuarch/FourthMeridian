@@ -38,6 +38,7 @@
  */
 
 import { queryTransactions } from '@/lib/data/transaction-query';
+import { db } from '@/lib/db';
 import { MAX_TRANSACTION_PAGE_SIZE } from '@/lib/data/transaction-query-core';
 import { normalizeMerchant } from '@/lib/transactions/merchant';
 import { deriveCadence, isCadence, type CadenceResult } from '@/lib/forecast/cadence';
@@ -49,6 +50,8 @@ import { FlowRole, type FlowRoleKind } from '@/lib/forecast/future-cash-event';
 const LOOKBACK_DAYS = 730;
 /** Below this, no cadence is derivable and the stream is not worth carrying. */
 const MIN_OBSERVATIONS = 3;
+/** Account types where a credit means money ARRIVED and is spendable. */
+const DEPOSITORY_TYPES: ReadonlySet<string> = new Set(['checking', 'savings', 'cash']);
 
 export interface ResolvedIncomeStream {
   /** `<canonical merchant key>@<accountId>` — one stream, one account. */
@@ -60,6 +63,16 @@ export interface ResolvedIncomeStream {
   activity: StreamActivity;
   amount: PeriodicAmount | null;
   projectionEligible: boolean;
+  /**
+   * PROJECTION-1 — the settlements landed in a DEPOSITORY account.
+   *
+   * ⚠️ THE ACCOUNT TYPE IS THE EVIDENCE. A credit that settled into a checking
+   * or savings account is money that arrived; there is no gross/net question to
+   * resolve about it, because the deduction — if any — happened before the
+   * credit. The same merchant paying into a brokerage or against a card is a
+   * different economic event and does not get this.
+   */
+  settledDepository: boolean;
   observationCount: number;
   /** True when the bounded page could not hold the whole series. */
   truncated: boolean;
@@ -117,13 +130,15 @@ export async function loadForecastIncomeStreams(
   // moment the account is part of the identity."
   const groups = new Map<string, {
     observations: { date: string; amount: number }[]; role: FlowRoleKind; label: string;
+    accountId: string;
   }>();
   for (const row of page.rows) {
     if (row.amount <= 0) continue;
     const norm = normalizeMerchant(row.merchantDisplayName ?? row.merchant);
     const key = `${norm.canonicalKey}@${row.accountId}`;
     const role = row.flowType === 'INTEREST' ? FlowRole.INTEREST : FlowRole.INCOME;
-    const g = groups.get(key) ?? { observations: [], role, label: norm.canonicalName };
+    const g = groups.get(key)
+      ?? { observations: [], role, label: norm.canonicalName, accountId: row.accountId };
     g.observations.push({ date: row.date, amount: row.amount });
     groups.set(key, g);
   }
@@ -141,6 +156,22 @@ export async function loadForecastIncomeStreams(
   // settlement's date. Records make that unrepresentable.
   for (const g of groups.values()) {
     g.observations.sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  // PROJECTION-1 — which of these accounts are depository. One indexed read over
+  // the accounts already named by the page, so a stream can say whether its
+  // settlements ARRIVED somewhere spendable.
+  const accountIds = [...new Set(page.rows.map((r) => r.accountId))];
+  const depository = new Set<string>();
+  try {
+    const accts = await db.financialAccount.findMany({
+      where: { id: { in: accountIds } }, select: { id: true, type: true } });
+    for (const a of accts) if (DEPOSITORY_TYPES.has(a.type)) depository.add(a.id);
+  } catch (err) {
+    // ⚠️ FAILS CLOSED: no depository set means no observed-settled licence, which
+    // returns the projection to the pre-PROJECTION-1 refusal rather than
+    // guessing that a credit arrived somewhere spendable.
+    console.error('[ai/forecast] account-type read failed (non-fatal):', err);
   }
 
   // How far the ledger reaches, for FORECAST-2: beyond it, silence proves nothing.
@@ -171,6 +202,7 @@ export async function loadForecastIncomeStreams(
       // ⚠️ FORECAST-2's field verbatim. Never `activity.state === CURRENT` —
       // that is a re-derivation of the licence, and the licence is the contract.
       projectionEligible: activity.mayGenerateExpectedOccurrences,
+      settledDepository: depository.has(g.accountId),
       observationCount: dates.length,
       truncated: page.hasMore,
     });

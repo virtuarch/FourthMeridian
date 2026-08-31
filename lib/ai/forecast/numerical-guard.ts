@@ -298,6 +298,7 @@ const money = (n: number) => `USD ${n.toFixed(2)}`;
  */
 export function licensedFigures(
   f: CashForecast, current: readonly CurrentAuthorityFigure[] = [],
+  projected: readonly CurrentAuthorityFigure[] = [],
 ): LicensedFigure[] {
   const out: LicensedFigure[] = [];
   const add = (
@@ -353,6 +354,11 @@ export function licensedFigures(
   // PARITY-3 — the turn's measured present, so a present fact quoted inside a
   // forward-looking paragraph is recognised rather than redacted as collateral.
   for (const c of current) add(c.value, FigureRole.CASH, c.label, FigureHorizon.CURRENT);
+  // PROJECTION-1 — deterministic figures about a FUTURE date, from the
+  // evidence-based path. They are licences because an authority computed them,
+  // on the same terms as `ending cash`; the standing they carry in the PROMPT is
+  // weaker, and that is the renderer's contract, not this boundary's.
+  for (const p of projected) add(p.value, FigureRole.CASH, p.label, FigureHorizon.FUTURE);
   return out;
 }
 
@@ -505,8 +511,9 @@ function licenceFor(
 export function detectUnlicensedForecastArithmetic(
   reply: string, forecast: CashForecast,
   current: readonly CurrentAuthorityFigure[] = [],
+  projected: readonly CurrentAuthorityFigure[] = [],
 ): ForecastGuardFinding[] {
-  const licensed = licensedFigures(forecast, current);
+  const licensed = licensedFigures(forecast, current, projected);
   const figures = replyFigures(reply);
   const findings: ForecastGuardFinding[] = [];
   const seen = new Set<number>();
@@ -735,13 +742,15 @@ export function guardForecastReply(
   reply: string, forecast: CashForecast, mode: ForecastGuardMode,
   narrate: () => readonly string[],
   current: readonly CurrentAuthorityFigure[] = [],
+  /** PROJECTION-1 — deterministic FUTURE figures from the evidence-based path. */
+  projected: readonly CurrentAuthorityFigure[] = [],
 ): { reply: string; outcome: string; findings: readonly ForecastGuardFinding[] } {
-  const findings = detectUnlicensedForecastArithmetic(reply, forecast, current);
+  const findings = detectUnlicensedForecastArithmetic(reply, forecast, current, projected);
   if (findings.length === 0) return { reply, outcome: 'clean', findings };
   if (mode !== 'repair') return { reply, outcome: `${mode}:${findings.length}`, findings };
 
   const redacted = redactUnlicensed(reply, findings, forecast);
-  const still = detectUnlicensedForecastArithmetic(redacted, forecast, current);
+  const still = detectUnlicensedForecastArithmetic(redacted, forecast, current, projected);
   return {
     reply: applyForecastGuard(redacted, still, mode, forecastNarrationFallback(narrate())),
     outcome: still.length === 0 ? 'redacted' : 'fallback',

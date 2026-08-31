@@ -121,6 +121,8 @@ const STREAM: ResolvedIncomeStream = {
     observationCount: 6, spread: 0, verdicts: [], reason: 'fixture',
   },
   projectionEligible: activity.mayGenerateExpectedOccurrences,
+  // PROJECTION-1 — these settle into a checking account on the real Space.
+  settledDepository: true,
   observationCount: 19, truncated: false,
 };
 
