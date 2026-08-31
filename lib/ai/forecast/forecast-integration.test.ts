@@ -23,6 +23,7 @@ import { execSync } from 'child_process';
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
 import { Concepts, planRetrieval, NeedLevel } from '@/lib/ai/retrieval-plan';
+import { ConclusionStatus as ConclusionStatusForTest } from '@/lib/forecast/policy';
 import { suppressHistoricalSpending } from '@/lib/ai/prompts/system-prompt';
 import { FinanceDomains, type AccountsSectionData, type SpaceContext_AI } from '@/lib/ai/types';
 import { EvidenceAvailability, type CoverageEnvelope } from '@/lib/ai/coverage-envelope';
@@ -1243,6 +1244,55 @@ async function mutations(): Promise<void> {
         ctx, streams: STREAMS, horizon: HORIZON, asOfISO: AS_OF, question: FORECAST_Q });
       return !('refused' in r.forecast)
         && r.forecast.events.every((e) => !e.id.startsWith('abacus'));
+    });
+
+  // ── PROJECTION-3 — a licensed ANSWER is never overlaid by a weaker one ─────
+  //
+  // The defect this pins was measured on the corpus, not imagined: B-assumptions
+  // and H-pressure-biweekly both produce an ASSUMPTION_DEPENDENT closing, and a
+  // predicate testing `status === FACTUALLY_LICENSED` treated that as no answer,
+  // built a projection over the SAME figure, and narrated a user-assumption
+  // result as observed continuation — losing the user's own basis assumption in
+  // the process. Both assertions below are behavioural; the mutation proves the
+  // production predicate is what makes them pass.
+  {
+    const ask = (q: string) => assembleForecast({
+      ctx, streams: STREAMS, horizon: HORIZON, asOfISO: AS_OF, question: q });
+    const assumed = ask('Forecast my cash for the next 3 months. Assume I spend $4,000/month '
+      + 'and that my Vectrus paycheck is net.');
+    check('P-A1 an ASSUMPTION_DEPENDENT path is an ANSWER, and gets no projection',
+      !('refused' in assumed.forecast)
+      && assumed.forecast.fullCashPath.status === ConclusionStatusForTest.ASSUMPTION_DEPENDENT
+      && assumed.forecast.fullCashPath.closing !== null
+      && assumed.projection === undefined,
+      `status=${!('refused' in assumed.forecast) ? assumed.forecast.fullCashPath.status : 'refused'} `
+      + `projection=${assumed.projection ? 'present' : 'absent'}`);
+    check('P-A1b and the licensed result is what the prompt leads with',
+      !renderForecastSection(assumed).join('\n').includes('ANSWER — EVIDENCE-BASED PROJECTION'));
+    // ⚠️ THE GATE IS THE LICENSED PATH, NOT THE EVIDENCE. This fixture carries no
+    // transactions domain, so the projection is REACHED and then refuses for want
+    // of a complete month to average — which is exactly the distinction worth
+    // pinning: a refused forecast always reaches the projection, and whether the
+    // projection can answer is a separate question owned by the evidence.
+    const refused = ask('Forecast my cash for the next 3 months.');
+    check('P-A2 while a REFUSED path still reaches the projection',
+      refused.projection !== undefined,
+      refused.projection ? 'reached' : 'not reached');
+    check('P-A2b and says what the projection itself lacked',
+      (refused.projection?.missing ?? []).some((x) => /month|spending/i.test(x)),
+      JSON.stringify(refused.projection?.missing));
+  }
+
+  await mutate('M11 overlaying a projection on a licensed answer is caught',
+    'lib/ai/forecast/assemble.ts',
+    '    && forecast.fullCashPath.closing !== null;',
+    '    && forecast.fullCashPath.status === ConclusionStatus.FACTUALLY_LICENSED;',
+    (m) => {
+      const r = (m.assembleForecast as AssembleFn)({
+        ctx, streams: STREAMS, horizon: HORIZON, asOfISO: AS_OF,
+        question: 'Forecast my cash for the next 3 months. Assume I spend $4,000/month '
+          + 'and that my Vectrus paycheck is net.' }) as { projection?: unknown };
+      return r.projection === undefined;
     });
 
   await mutate('M10 promoting the activity licence in the state is caught',

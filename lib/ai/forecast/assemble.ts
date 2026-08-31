@@ -335,14 +335,32 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   // Runs only where the licensed one could not, and never where the USER supplied
   // the spending level: their own statement about what they will spend outranks
   // an average of what they did spend, and the licensed path already carries it.
-  // `forecastCash` can return an outright refusal object; either way a projection
-  // is warranted, so the licensed check reads through it defensively.
-  const licensed = !('refused' in forecast)
-    && forecast.fullCashPath.status === ConclusionStatus.FACTUALLY_LICENSED;
+  // ⚠️ THE TEST IS "IS THERE AN ANSWER", NOT "IS IT FACTUALLY_LICENSED". This
+  // read `status === FACTUALLY_LICENSED`, which treated ASSUMPTION_DEPENDENT as
+  // no answer at all — and ASSUMPTION_DEPENDENT is the ordinary result whenever
+  // the user supplies a spending level or a payroll basis. Measured on the
+  // conformance corpus: "Assume I spend $4,000/month and that my Vectrus
+  // paycheck is net" produced a licensed ASSUMPTION_DEPENDENT closing of
+  // $35,144.66, and a projection then computed the SAME $35,144.66 and overlaid
+  // it as the answer. Two harms, both real:
+  //
+  //   · the authority was misattributed — a result resting on the user's own
+  //     stated assumptions was narrated as "if these patterns continue", which
+  //     is observed-continuation framing for a conclusion no observation
+  //     supports on its own; and
+  //   · the assumption provenance disappeared with it. The user's "my paycheck
+  //     is net" is what licenses $37,006.51 as cash, and the projection block
+  //     lists OBSERVED_CONTINUATION assumptions instead, so the one input that
+  //     materially changes the result stopped being visible.
+  //
+  // A path with a closing figure has answered. Only a REFUSED one has not, and
+  // only then is there a gap for a weaker path to fill.
+  const hasLicensedAnswer = !('refused' in forecast)
+    && forecast.fullCashPath.closing !== null;
 
   let projection: ProjectedCash | undefined;
   let observedSpending: ObservedSpendingRate | undefined;
-  if (!licensed && projectionEnabled()) {
+  if (!hasLicensedAnswer && projectionEnabled()) {
     // ⚠️ THE USER'S OWN RATE WINS, AND THE ENGINE ALREADY RESOLVED IT. When the
     // conversation supplied a spending level, `forecast.spending` carries it as
     // ASSUMED with a daily rate and the assumption's id; the projection takes

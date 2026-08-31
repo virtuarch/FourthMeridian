@@ -87,12 +87,18 @@ export function renderForecastSection(a: AssembledForecast): string[] {
       `Projected cash at the end of the horizon: ${m(closing)}.`,
       `From cash of ${m(proj.openingCash ?? 0)} measured today:`,
       ...proj.components.map((c) => `  ${c.label}: ${m(c.value)} — ${c.derivation}.`),
-      'The spending figure is NOT a "normal" spending level — that remains UNKNOWN and '
-      + 'refused. It is the mean of the months named, nothing more.',
       'Rests on, and the user may reject either:',
       ...proj.assumptions.map((x) => `  - ${x}`),
     );
     const sp = a.observedSpending;
+    // ⚠️ ONLY WHERE A MEAN WAS ACTUALLY TAKEN. This disclaimer used to render on
+    // every projection, including one whose rate the USER supplied — where there
+    // are no "months named" and nothing was averaged, so it described the wrong
+    // thing entirely. F6's word is only at risk when the observed mean is in play.
+    if (sp) {
+      lines.push('The spending figure is NOT a "normal" spending level — that remains UNKNOWN '
+        + 'and refused. It is the mean of the months named, nothing more.');
+    }
     if (proj.range && sp?.dispersionRatio && sp.dispersionRatio >= 2) {
       lines.push(
         `SPREAD: months averaged ${sp.values.map((v) => v.toFixed(2)).join(', ')} `
