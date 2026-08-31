@@ -513,6 +513,126 @@ eq('FD7 a basis assertion survives a decimal point in the amount',
   ['SPENDING_LEVEL', 'STREAM_AMOUNT_BASIS']);
 
 // ═══════════════════════════════════════════════════════════════════════════
+// OE. USER-ASSERTED ONE-OFF EVENTS (FORECAST-17)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const U = (...c: string[]) => c.map((content) => ({ role: 'user', content }));
+const DEC = { fromISO: AS_OF, toISO: '2026-12-31',
+  origin: AssumptionOrigin.USER_REQUESTED, statedAs: 'through December' };
+const oeConv = (msgs: { role: string; content: string }[]) => assembleForecast({
+  ctx, streams: STREAMS, horizon: DEC, asOfISO: AS_OF,
+  question: msgs.filter((m) => m.role === 'user').at(-1)!.content, messages: msgs });
+const userEvents = (msgs: { role: string; content: string }[]) => {
+  const f = oeConv(msgs).forecast as CashForecast;
+  return f.events.filter((e) => /^(?:user|supposed):/.test(e.id));
+};
+const FD = 'Forecast my cash through December.';
+
+// A/B/C — basis survives FORECAST-3 exactly.
+check('OE1 a GROSS bonus is visible and NOT counted as cash', (() => {
+  const [e] = userEvents(U('I get a $15,500 gross completion bonus on October 15.', FD));
+  return e?.authoritativeAmount?.value === 15500
+    && e.authoritativeAmount.basis === AmountBasis.GROSS && e.cashDelta === null;
+})());
+check('OE2 a NET payout is counted exactly once', (() => {
+  const e = userEvents(U("I'll receive a $1,500 net vacation payout on November 1.", FD));
+  return e.length === 1 && e[0].cashDelta === 1500;
+})());
+check('OE3 an unstated basis is UNKNOWN, never silently NET', (() => {
+  const [e] = userEvents(U('I get a $1,500 payout on November 1.', FD));
+  return e?.authoritativeAmount?.basis === AmountBasis.UNKNOWN && e.cashDelta === null;
+})());
+
+// D/E — direction and role.
+check('OE4 "I have to pay" is one outflow', (() => {
+  const e = userEvents(U('I have to pay $2,000 on September 20.', FD));
+  return e.length === 1 && e[0].direction === 'OUTFLOW' && e[0].dateISO === '2026-09-20';
+})());
+check('OE5 a refund is one inflow with its own role', (() => {
+  const [e] = userEvents(U("I'm getting a $3,000 refund on October 4.", FD));
+  return e?.direction === 'INFLOW' && e.role === FlowRole.REFUND;
+})());
+
+// F — vague timing fabricates nothing.
+for (const vague of ['I might get a $5,000 bonus sometime in October.',
+  'I get a $5,000 bonus around the holidays.', 'I get a $5,000 bonus in a few weeks.',
+  'I get a $5,000 bonus probably next month.']) {
+  eq(`OE6 "${vague.slice(10, 44)}" fabricates no event`,
+    userEvents(U(vague, FD)).length, 0);
+}
+eq('OE7 nor does a recurring statement — that is FORECAST-1/2/5\'s authority',
+  userEvents(U('I get $4,000 every month.', FD)).length, 0);
+eq('OE8 nor an amount with no date', userEvents(U('I get a $5,000 bonus.', FD)).length, 0);
+eq('OE9 nor a date with no direction', userEvents(U('$5,000 on October 15.', FD)).length, 0);
+
+// G — fact continuity, through the FORECAST-13 mechanism.
+check('OE10 an event survives an unrelated turn', (() => {
+  const e = userEvents(U('I get a $1,500 net payout on November 1.', 'Thanks.', FD));
+  return e.length === 1 && e[0].cashDelta === 1500;
+})());
+
+// H — correction, only with an explicit marker.
+check('OE11 an explicit correction supersedes and does not duplicate', (() => {
+  const r = oeConv(U('My bonus is $15,500 gross on October 15.',
+    'Actually it is $17,000 gross on October 15.', FD));
+  const e = (r.forecast as CashForecast).events.filter((x) => x.id.startsWith('user:'));
+  return e.length === 1 && e[0].authoritativeAmount?.value === 17000
+    && r.facts.superseded.length === 1;
+})());
+
+// I/J — suppositions and hypotheticals do not persist or mutate facts.
+eq('OE12 a supposed event does not survive to a later turn',
+  userEvents(U('Assume I get $5,000 on October 15.', FD)).length, 0);
+check('OE13 a hypothetical event is HYPOTHETICAL and turn-scoped', (() => {
+  const e = userEvents(U('What if I got $5,000 on October 15?'));
+  return e.length === 1 && e[0].id.startsWith('supposed:')
+    && e[0].authoritativeAmount?.provenance === EventProvenance.HYPOTHETICAL;
+})());
+check('OE14 and it does not become an asserted fact',
+  oeConv(U('What if I got $5,000 on October 15?')).facts.events.length === 0);
+
+// K — outside the horizon.
+eq('OE15 an event beyond the horizon does not enter the arithmetic',
+  userEvents(U('I get a $2,000 refund on March 3, 2027.', FD)).length, 0);
+
+// L/M — identity, in both directions.
+eq('OE16 two distinct movements sharing a day and an amount both survive',
+  userEvents(U('I get a $1,500 refund on October 4. I have to pay $1,500 on October 4.',
+    FD)).length, 2);
+eq('OE17 two distinct inflows sharing a day and a role both survive',
+  userEvents(U('I get a $15,500 gross bonus on October 15. I get a $1,500 payout on October 15.',
+    FD)).length, 2);
+check('OE18 the same statement twice is one event, not two', (() => {
+  const e = userEvents(U('I get a $1,500 net payout on November 1.',
+    'My $1,500 net payout is on November 1.', FD));
+  return e.length === 1;
+})());
+
+// N — a NET event on the same day as a licensed paycheck.
+check('OE19 a NET event and a paycheck on one day are both counted, exactly once', (() => {
+  const f = oeConv(U('I receive a $1,500 net payout on November 6.',
+    'Forecast my cash through December. Assume I spend $4,000/month and my paycheck is net.'))
+    .forecast as CashForecast;
+  const pt = f.points.find((p) => p.dateISO === '2026-11-06');
+  return pt?.eventIds.length === 2 && Math.abs((pt?.inflows ?? 0) - (1500 + 5286.645)) < 0.005;
+})());
+
+// Guard coherence.
+check('OE20 a caveated GROSS+UNKNOWN pair passes the numerical guard', (() => {
+  const f = oeConv(U('I get a $15,500 gross bonus on October 15. I get a $1,500 payout on October 15.',
+    FD)).forecast as CashForecast;
+  return detectUnlicensedForecastArithmetic(
+    'You have a $15,500 gross bonus and a $1,500 payout, neither counted as cash '
+    + 'until the net basis is established.', f).length === 0
+    && detectUnlicensedForecastArithmetic(
+      'You will receive a total of $17,000 in October.', f).length === 1;
+})());
+
+check('OE21 no parallel event model was created — FORECAST-3 owns the type',
+  /type FutureCashEvent/.test(read('lib/ai/forecast/assemble.ts'))
+  && !/interface \w*Event\b/.test(read('lib/ai/forecast/statements.ts')));
+
+// ═══════════════════════════════════════════════════════════════════════════
 // PD. CAPABILITY-SCOPED PAY DATES (FORECAST-16)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -730,7 +850,6 @@ check('NG18 the boundary is gated on a forecast existing at all', (() => {
 // a FACT survives the turn it was stated in, a SUPPOSITION does not, and
 // neither may be guessed at.
 
-const U = (...c: string[]) => c.map((content) => ({ role: 'user', content }));
 const conv = (msgs: { role: string; content: string }[]) => assembleForecast({
   ctx, streams: STREAMS, horizon: HORIZON, asOfISO: AS_OF,
   question: msgs.filter((m) => m.role === 'user').at(-1)!.content, messages: msgs,
@@ -928,9 +1047,23 @@ check('J6 lib/forecast gained no production dependency',
 // of amounts excluded from cash (it was adding them), and a refusal that says
 // what a refusal forbids. Not one line of arithmetic or licensing moved — the
 // engine's own 144 assertions, including all 16 mutations, are unchanged.
-check('J7 FORECAST-1..9 arithmetic and licensing are byte-identical',
+// ⚠️ TWO FILES, AND WHAT EACH GAINED. FORECAST-14 extended `engine.ts`'s
+// SERIALIZER (three figures the model was otherwise inventing). FORECAST-17
+// extended `policy.ts`'s STATEMENT VOCABULARY — one `StatementSubject` member,
+// one `FactAuthority` value, one routing case — so a user-named one-off event
+// has somewhere typed to go. Neither touched arithmetic or licensing, which is
+// the claim this gate exists to hold and which J7a and J7b pin directly.
+check('J7 FORECAST-1..9 changes are confined to two files',
   execSync('git diff --name-only 714d099 -- lib/forecast/ | grep -v "\\.test\\.ts$" || true',
-    { encoding: 'utf8' }).trim() === 'lib/forecast/engine.ts');
+    { encoding: 'utf8' }).trim().split('\n').sort().join(',')
+    === 'lib/forecast/engine.ts,lib/forecast/policy.ts');
+check('J7b and policy.ts gained no arithmetic and no new licensing rule', (() => {
+  const d = execSync('git diff -U0 714d099 -- lib/forecast/policy.ts', { encoding: 'utf8' })
+    .split('\n').filter((l) => /^\+/.test(l) && !/^\+\+\+/.test(l))
+    .filter((l) => !/^\+\s*(?:\*|\/\/|\/\*)/.test(l)).join('\n');
+  // No new REQUIRES entry, no new conclusion, no money arithmetic.
+  return !/REQUIRES|Conclusion\.|conclusionLicence|[-+*/]\s*(?:amount|value|closing)/.test(d);
+})(), execSync('git diff --stat 714d099 -- lib/forecast/policy.ts', { encoding: 'utf8' }).trim());
 check('J7a and the engine change is confined to explainForecast',
   execSync('git diff -U0 714d099 -- lib/forecast/engine.ts', { encoding: 'utf8' })
     .split('\n').filter((l) => /^@@/.test(l))

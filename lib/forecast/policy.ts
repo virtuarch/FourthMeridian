@@ -99,7 +99,8 @@
 import { ComponentState } from '../ai/economic-concepts';
 import {
   AmountBasis, EventProvenance, composeFutureCash,
-  type AmountBasisKind, type CashComposition, type EventAmount, type FutureCashEvent,
+  type AmountBasisKind, type CashComposition, type EventAmount, type FlowRoleKind,
+  type FutureCashEvent,
 } from './future-cash-event';
 import { PeriodBasis, type PeriodBasisKind } from './spending-baseline';
 import {
@@ -1074,7 +1075,20 @@ export type StatementSubject =
   | { kind: 'SPENDING_LEVEL'; amount: number; currency: string; periodBasis: PeriodBasisKind }
   | { kind: 'STREAM_AMOUNT_BASIS'; sourceKey: string; basis: AmountBasisKind }
   | { kind: 'EVENT_AMOUNT_BASIS'; eventId: string; basis: AmountBasisKind }
-  | { kind: 'STREAM_CONTINUES'; sourceKey: string; continues: boolean };
+  | { kind: 'STREAM_CONTINUES'; sourceKey: string; continues: boolean }
+  /**
+   * FORECAST-17 — a single dated movement the user named.
+   *
+   * ⚠️ ONE-OFF, AND THE TYPE SAYS SO. There is no cadence here and no way to
+   * express one: a recurring payment is FORECAST-1/2/5's business and a known
+   * obligation is FORECAST-4's, and a subject that could carry a schedule would
+   * be a fourth authority for the same question. `dateISO` is one day because
+   * FORECAST-3 refuses to invent a day inside a range.
+   */
+  | {
+    kind: 'ONE_OFF_EVENT'; amount: number; currency: string; basis: AmountBasisKind;
+    direction: 'INFLOW' | 'OUTFLOW'; role: FlowRoleKind; dateISO: string;
+  };
 
 export interface UserStatement {
   mode: StatementModeKind;
@@ -1114,6 +1128,8 @@ export const FactAuthority = {
   EVENT_AMOUNT_BASIS: 'EVENT_AMOUNT_BASIS',
   /** FORECAST-2 · `UserAssertion` on the activity resolver. */
   STREAM_ACTIVITY: 'STREAM_ACTIVITY',
+  /** FORECAST-3 · a `FutureCashEvent` the user named. Complete; the fact lands. */
+  FUTURE_EVENT: 'FUTURE_EVENT',
 } as const;
 
 export type FactAuthorityKind = typeof FactAuthority[keyof typeof FactAuthority];
@@ -1159,6 +1175,9 @@ export function routeStatement(s: UserStatement, id: string): Routing {
       case 'STREAM_CONTINUES':
         return { destination: 'UPSTREAM_AUTHORITY', authority: FactAuthority.STREAM_ACTIVITY,
           reachable: true, subject: s.subject, note: note('the stream-activity authority', true) };
+      case 'ONE_OFF_EVENT':
+        return { destination: 'UPSTREAM_AUTHORITY', authority: FactAuthority.FUTURE_EVENT,
+          reachable: true, subject: s.subject, note: note('the future-cash-event authority', true) };
     }
   }
 
@@ -1179,6 +1198,21 @@ export function routeStatement(s: UserStatement, id: string): Routing {
       return { destination: 'FORECAST_POLICY', assumption: {
         ...base, dimension: AssumptionDimension.EVENT_BASIS,
         eventId: s.subject.eventId, basis: s.subject.basis } };
+    case 'ONE_OFF_EVENT':
+      // ⚠️ NOT A POLICY ASSUMPTION, AND DELIBERATELY NOT GIVEN A DIMENSION.
+      // FORECAST-8's assumptions are suppositions ABOUT authorities that already
+      // hold something — a basis, a level, an inclusion. "Assume I get $5,000 on
+      // October 15" does not suppose anything about an existing event; it
+      // supposes an event. FORECAST-3 already has somewhere truthful to put
+      // that: `EventProvenance.HYPOTHETICAL`, minted for exactly this and
+      // reserved in writing for "a later forecast-policy slice". So the
+      // supposition reaches the EVENT authority wearing hypothetical
+      // provenance, and the caller scopes it to the turn — which is what keeps
+      // it from becoming a fact without inventing a policy dimension to hold it.
+      return { destination: 'UNROUTABLE', note:
+        'a supposed one-off event is a FutureCashEvent with HYPOTHETICAL provenance, not a '
+        + 'policy assumption: nothing existing is being supposed about. It is scoped to the '
+        + 'turn that states it and never becomes an asserted fact.' };
     case 'STREAM_CONTINUES':
       // ⚠️ NOT ROUTED TO POLICY. "Assume I still work there" is a supposition
       // about EMPLOYMENT, and FORECAST-2 decides that on evidence or on an

@@ -34,7 +34,8 @@
  */
 
 import { PeriodBasis, type PeriodBasisKind } from '@/lib/forecast/spending-baseline';
-import { AmountBasis } from '@/lib/forecast/future-cash-event';
+import { AmountBasis, FlowRole } from '@/lib/forecast/future-cash-event';
+import { resolveExplicitDate } from './horizon';
 import {
   StatementMode, routeStatement,
   type Routing, type StatementModeKind, type StatementSubject, type UserStatement,
@@ -100,6 +101,102 @@ const GROSS_BASIS_RE = new RegExp(
   `\\b(?:paycheck|pay ?check|salary|payroll)\\b${GAP}{0,60}\\b(?:is|are)\\b${GAP}{0,20}\\bgross\\b`, 'i');
 
 const num = (s: string) => Number(s.replace(/,/g, ''));
+
+// ── One-off dated events (FORECAST-17) ──────────────────────────────────────
+//
+// ⚠️ THE VOCABULARY IS A CLOSED LIST, AND SHORT. Each verb below states a
+// direction unambiguously; anything that needs interpretation is absent. There
+// is no attempt to read a merchant, a category or a habit into an event — that
+// is FORECAST-4's territory for obligations and FORECAST-1/2/5's for recurring
+// pay, and a fourth producer guessing at the same questions is how authorities
+// start disagreeing.
+
+/** Money arriving. */
+// ⚠️ PAST-TENSE FORMS ARE HERE ON PURPOSE. "What if I got $5,000 on October 15"
+// is a supposition about the future in the past subjunctive, and excluding
+// "got" lost it. A genuinely historical "I got $5,000 on August 1" is refused
+// one step earlier, by the date resolver, which never returns a day before the
+// as-of — so tense does not have to be policed twice.
+const INFLOW_VERB_RE =
+  /\b(?:get|got|getting|receive|received|receiving|am getting|'ll get|will get|will receive|be paid|paid out|coming in|expect(?:ing)?)\b/i;
+/** Money leaving. */
+const OUTFLOW_VERB_RE =
+  /\b(?:pay|paying|owe|owing|have to pay|need to pay|due|must pay|will pay|settle)\b/i;
+
+/**
+ * The kind of movement, where the sentence names one.
+ *
+ * ⚠️ A ROLE IS NOT A RECURRENCE CLAIM (FORECAST-3's rule, unchanged). A bonus
+ * and a refund are both one-off inflows here; nothing below implies a schedule.
+ */
+const ROLE_WORDS: { re: RegExp; role: typeof FlowRole[keyof typeof FlowRole];
+  direction: 'INFLOW' | 'OUTFLOW' }[] = [
+  { re: /\brefunds?\b/i, role: FlowRole.REFUND, direction: 'INFLOW' },
+  { re: /\b(?:bonus(?:es)?|payout|severance|commission|back ?pay|settlement|rebate|reimbursement)\b/i,
+    role: FlowRole.INCOME, direction: 'INFLOW' },
+  { re: /\b(?:bill|invoice|rent|premium|instal?ment|fee)\b/i,
+    role: FlowRole.SPENDING, direction: 'OUTFLOW' },
+];
+
+/** Basis, only where the sentence states it. Absent ⇒ UNKNOWN, never NET. */
+const EVENT_BASIS_RE = /\b(net|after[- ]?tax|take[- ]?home|gross|before[- ]?tax|pre[- ]?tax)\b/i;
+
+/** A figure with a date somewhere in the same sentence. */
+const EVENT_AMOUNT_RE = /\$\s?([\d,]+(?:\.\d{1,2})?)/;
+
+/** Recurrence words — a one-off producer must refuse these outright. */
+const RECURRING_RE =
+  /\b(?:every|each|per|monthly|weekly|biweekly|fortnightly|annually|yearly|recurring|ongoing|a month|a week|a year)\b/i;
+
+/**
+ * One dated movement the sentence states explicitly, or null.
+ *
+ * ⚠️ FAILS CLOSED ON EVERY MISSING PIECE. No amount, no date, no direction —
+ * no event. "I might get a $5,000 bonus sometime in October" has an amount and
+ * a role and no day, and produces nothing rather than a guessed 15th.
+ */
+function extractOneOffEvent(
+  sentence: string, asOfISO: string,
+): Extract<StatementSubject, { kind: 'ONE_OFF_EVENT' }> | null {
+  if (RECURRING_RE.test(sentence)) return null;
+
+  const amt = EVENT_AMOUNT_RE.exec(sentence);
+  if (!amt) return null;
+  const amount = num(amt[1]);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+
+  const dateISO = resolveExplicitDate(sentence, asOfISO);
+  if (!dateISO) return null;
+
+  // Direction: a role noun decides it; otherwise an explicit verb must.
+  const roleHit = ROLE_WORDS.find((r) => r.re.test(sentence));
+  const inflowVerb = INFLOW_VERB_RE.test(sentence);
+  const outflowVerb = OUTFLOW_VERB_RE.test(sentence);
+  let direction: 'INFLOW' | 'OUTFLOW';
+  let role: typeof FlowRole[keyof typeof FlowRole];
+  if (roleHit) {
+    direction = roleHit.direction;
+    role = roleHit.role;
+  } else if (inflowVerb !== outflowVerb) {
+    direction = inflowVerb ? 'INFLOW' : 'OUTFLOW';
+    role = inflowVerb ? FlowRole.INCOME : FlowRole.SPENDING;
+  } else {
+    // ⚠️ BOTH OR NEITHER IS AMBIGUOUS. "I pay the bonus" and a sentence with no
+    // verb at all are equally unreadable, and a default direction would be a
+    // coin flip over the sign of a cash movement.
+    return null;
+  }
+
+  const basisWord = EVENT_BASIS_RE.exec(sentence)?.[1] ?? '';
+  const basis = /gross|before|pre/i.test(basisWord) ? AmountBasis.GROSS
+    : basisWord ? AmountBasis.NET
+      // ⚠️ NEVER NET BY DEFAULT. "I get a $15,500 bonus October 15" states an
+      // amount and says nothing about deductions; FORECAST-3 has refused to
+      // guess that since f849c05 and this does not start.
+      : AmountBasis.UNKNOWN;
+
+  return { kind: 'ONE_OFF_EVENT', amount, currency: 'USD', basis, direction, role, dateISO };
+}
 
 function modeOf(sentence: string): StatementModeKind {
   if (SCENARIO_RE.test(sentence)) return StatementMode.REQUESTS_SCENARIO;
@@ -202,6 +299,17 @@ export function extractForecastStatements(
           kind: 'SPENDING_LEVEL', amount, currency: 'USD', periodBasis: periodOf(unit),
         });
       }
+    }
+
+    // ── One-off dated events ────────────────────────────────────────────────
+    //
+    // Tried BEFORE the basis claims: "I get a $1,500 net payout on November 1"
+    // states an event whose basis happens to be named, not a claim about an
+    // income stream's basis.
+    const oneOff = extractOneOffEvent(sentence, asOfISO);
+    if (oneOff) {
+      push(sentence, mode, oneOff, oneOff.amount);
+      continue;
     }
 
     // ── Basis claims ────────────────────────────────────────────────────────

@@ -31,7 +31,8 @@
 import { composeInvestments } from '@/lib/ai/economic-concepts';
 import { FinanceDomains, type AccountsSectionData, type SpaceContext_AI } from '@/lib/ai/types';
 import {
-  AmountBasis, EventProvenance, FlowRole, type FutureCashEvent,
+  AmountBasis, EventProvenance, FlowRole,
+  type FlowRoleKind, type FutureCashEvent,
 } from '@/lib/forecast/future-cash-event';
 import { isCadence, type CadenceKindName } from '@/lib/forecast/cadence';
 import { ActivityState } from '@/lib/forecast/stream-activity';
@@ -43,8 +44,9 @@ import {
   type ConclusionKind, type CurrentOperatingState, type IncomeStreamInput,
 } from '@/lib/forecast/operating-state';
 import {
-  AssumptionDimension, AssumptionOrigin, AssumptionStance, continueLicensedCadence,
-  type ForecastHorizon, type ForecastPolicy, type PolicyAssumption,
+  AssumptionDimension, AssumptionOrigin, AssumptionStance, StatementMode,
+  continueLicensedCadence,
+  type ForecastHorizon, type ForecastPolicy, type PolicyAssumption, type StatementSubject,
 } from '@/lib/forecast/policy';
 import { forecastCash, type CashForecast } from '@/lib/forecast/engine';
 import type { ResolvedIncomeStream } from './streams';
@@ -221,7 +223,53 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   // nothing however good its amount. Nothing here reads a merchant frequency,
   // a subscription or a recurring candidate — none of which carry a date, and
   // all of which FORECAST-4 explicitly declined to license.
-  const events: FutureCashEvent[] = [...(input.additionalEvents ?? [])];
+  // ── One-off dated events the user named (FORECAST-17) ────────────────────
+  //
+  // ⚠️ TWO PROVENANCES, TWO SCOPES, ONE AUTHORITY. A fact is re-derived from the
+  // whole conversation and carries USER_ASSERTED; a supposition comes from THIS
+  // turn and carries HYPOTHETICAL — FORECAST-3's own value, reserved in writing
+  // for exactly this. Neither becomes the other, and neither needs a policy
+  // dimension to hold it: the event's provenance says which it is.
+  const assertedEvents: FutureCashEvent[] = facts.events.map((e) => ({
+    // ⚠️ THE ID CARRIES THE AMOUNT, matching fact-continuity's identity exactly.
+    // Without it the dedupe map below collapsed "a $15,500 gross bonus on
+    // October 15" and "a $1,500 payout on October 15" into one event — the
+    // programme's own live-failure fixture, silently losing the payout. Two
+    // identities that must agree and did not is how a movement disappears.
+    id: `user:${e.direction}:${e.role}:${e.dateISO}:${e.amount}`,
+    timing: { kind: 'EXACT', dateISO: e.dateISO },
+    timingProvenance: EventProvenance.USER_ASSERTED,
+    direction: e.direction,
+    role: e.role as FlowRoleKind,
+    amount: { value: e.amount, currency: e.currency, basis: e.basis,
+      provenance: EventProvenance.USER_ASSERTED },
+  }));
+
+  const supposedEvents: FutureCashEvent[] = statements
+    .filter((st) => st.mode !== StatementMode.ASSERTS_FACT
+      && st.subject.kind === 'ONE_OFF_EVENT')
+    .map((st) => {
+      const sub = st.subject as Extract<StatementSubject, { kind: 'ONE_OFF_EVENT' }>;
+      return {
+        id: `supposed:${sub.direction}:${sub.role}:${sub.dateISO}:${sub.amount}`,
+        timing: { kind: 'EXACT' as const, dateISO: sub.dateISO },
+        timingProvenance: EventProvenance.HYPOTHETICAL,
+        direction: sub.direction,
+        role: sub.role,
+        amount: { value: sub.amount, currency: sub.currency, basis: sub.basis,
+          provenance: EventProvenance.HYPOTHETICAL },
+      };
+    });
+
+  // ⚠️ DEDUPED BY ID, NOT BY VALUE. A caller-supplied event and a user-stated
+  // one describing the same movement collapse; two distinct movements that
+  // happen to share an amount and a day do not, because their ids differ in
+  // direction or role.
+  const byId = new Map<string, FutureCashEvent>();
+  for (const e of [...(input.additionalEvents ?? []), ...assertedEvents, ...supposedEvents]) {
+    if (!byId.has(e.id)) byId.set(e.id, e);
+  }
+  const events: FutureCashEvent[] = [...byId.values()];
   for (const s of streams) {
     if (!isCadence(s.cadence)) continue;
     const asserted = assertedBasis.get(s.sourceKey);

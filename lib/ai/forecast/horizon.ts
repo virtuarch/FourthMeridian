@@ -128,3 +128,49 @@ export function resolveForecastHorizon(question: string, todayISO: string): Fore
 
   return null;
 }
+
+/**
+ * FORECAST-17 — an explicit calendar date named in a sentence.
+ *
+ * ⚠️ EXPLICIT FORMS ONLY, AND THE OMISSIONS ARE THE CONTRACT. "October 15",
+ * "Oct 15", "October 15, 2026" and "2026-10-15" all denote one day. "Sometime in
+ * October", "around the holidays", "in a few weeks" and "probably next month"
+ * do NOT, and none of them appears below — FORECAST-3 refused to invent a day
+ * inside a range, and an extractor that guessed one would hand it a date the
+ * user never gave.
+ *
+ * ⚠️ A MISSING YEAR RESOLVES FORWARD, NEVER BACKWARD. "October 15" said in
+ * August means this October; said in December it means next October. Any other
+ * rule would put a future cash event in the past. A date that lands before the
+ * as-of even after rolling forward is refused rather than shifted again.
+ */
+export function resolveExplicitDate(sentence: string, asOfISO: string): string | null {
+  const iso = /\b(\d{4})-(\d{2})-(\d{2})\b/.exec(sentence);
+  if (iso) {
+    const d = `${iso[1]}-${iso[2]}-${iso[3]}`;
+    return d >= asOfISO && isValid(d) ? d : null;
+  }
+
+  const named = new RegExp(
+    `\\b(${MONTHS.map((m) => `${m}|${m.slice(0, 3)}`).join('|')})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?`
+    + '(?:,?\\s+(\\d{4}))?\\b', 'i').exec(sentence);
+  if (!named) return null;
+
+  const monthIdx = MONTHS.findIndex((m) => m.startsWith(named[1].toLowerCase().slice(0, 3)));
+  const day = Number(named[2]);
+  if (monthIdx < 0 || day < 1 || day > 31) return null;
+
+  const year = named[3] ? Number(named[3]) : Number(asOfISO.slice(0, 4));
+  const fmt = (y: number) =>
+    `${y}-${String(monthIdx + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  let candidate = fmt(year);
+  // Roll forward exactly once when the year was not stated.
+  if (!named[3] && candidate < asOfISO) candidate = fmt(year + 1);
+  return candidate >= asOfISO && isValid(candidate) ? candidate : null;
+}
+
+/** A real calendar day — rejects February 30 rather than letting Date roll it. */
+function isValid(d: string): boolean {
+  const dt = new Date(`${d}T00:00:00.000Z`);
+  return Number.isFinite(dt.getTime()) && dt.toISOString().slice(0, 10) === d;
+}

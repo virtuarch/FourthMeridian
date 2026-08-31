@@ -79,15 +79,52 @@ export interface AmbiguousClaim {
   reason: string;
 }
 
+/**
+ * A one-off dated movement the user asserted (FORECAST-17).
+ *
+ * ⚠️ IDENTITY IS (direction, role, date), NOT THE AMOUNT. The amount is the
+ * thing a correction changes — "actually it's $17,000" — so keying on it would
+ * make every correction a second event. Two genuinely distinct movements on one
+ * day stay distinct because they differ in direction or role; two statements
+ * that agree on all three are one event stated twice, and are merged, because
+ * over-counting an inflow is the more damaging of the two mistakes.
+ */
+export interface AssertedEvent extends AssertedFact {
+  direction: 'INFLOW' | 'OUTFLOW';
+  role: string;
+  dateISO: string;
+  amount: number;
+  currency: string;
+  basis: AmountBasisKind;
+}
+
+/**
+ * Direction + role + day + AMOUNT.
+ *
+ * ⚠️ THE AMOUNT IS IN THE KEY, AND THAT IS THE MEASURED CHOICE. Leaving it out
+ * made corrections work and merged "a $15,500 gross bonus on October 15" with
+ * "a $1,500 payout on October 15" — the programme's own live-failure fixture,
+ * two genuinely distinct movements that happen to share a day and a role. Losing
+ * one of them is silent under-counting, which is exactly the class of error a
+ * deterministic substrate exists to prevent.
+ *
+ * So nothing merges by guess. A correction reaches its antecedent through the
+ * explicit anaphoric form below, where the user actually signals one.
+ */
+const eventKey = (e: { direction: string; role: string; dateISO: string; amount: number }) =>
+  `${e.direction}|${e.role}|${e.dateISO}|${e.amount}`;
+
 export interface AssertedFacts {
   /** The level in force. Null when the user never stated one. */
   spending: AssertedSpending | null;
   /** Basis in force, per stream. */
   basis: AssertedBasis[];
   /** Facts a later turn replaced. Kept so a correction can be explained. */
-  superseded: (AssertedSpending | AssertedBasis)[];
+  superseded: (AssertedSpending | AssertedBasis | AssertedEvent)[];
   /** Claims dropped for ambiguity, so the gap is visible rather than silent. */
   ambiguous: AmbiguousClaim[];
+  /** One-off dated movements, latest statement per identity in force. */
+  events: AssertedEvent[];
 }
 
 /**
@@ -126,13 +163,32 @@ function resolveStreamFor(
  * average, never both, and never a choice left to the model. The ordering is
  * the conversation's own, so a correction is a correction by construction.
  */
+/**
+ * A bare amount offered as a correction — "Actually it's $17,000".
+ *
+ * ⚠️ THE MARKER IS REQUIRED. Without "actually" / "make that" / "correction", a
+ * second amount in a later turn is a second event, not a revision of the first,
+ * and treating it as a revision would silently delete a real movement. The
+ * marker is the user telling us which it is.
+ */
+const EVENT_CORRECTION_RE =
+  /\b(?:actually|correction|make (?:that|it)|change (?:that|it) to|it'?s really|scratch that)\b[^.$]{0,30}\$\s?([\d,]+(?:\.\d{1,2})?)/i;
+
+function correctedEventAmount(sentence: string): number | null {
+  const m = EVENT_CORRECTION_RE.exec(sentence);
+  if (!m) return null;
+  const v = Number(m[1].replace(/,/g, ''));
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
 export function resolveAssertedFacts(
   messages: readonly FactMessage[],
   asOfISO: string,
   streams: readonly ResolvedIncomeStream[],
 ): AssertedFacts {
   const userTurns = messages.filter((m) => m.role === 'user');
-  const out: AssertedFacts = { spending: null, basis: [], superseded: [], ambiguous: [] };
+  const out: AssertedFacts = {
+    spending: null, basis: [], superseded: [], ambiguous: [], events: [] };
 
   for (let turn = 0; turn < userTurns.length; turn++) {
     const ambiguousHere: AmbiguousClaim[] = [];
@@ -145,6 +201,12 @@ export function resolveAssertedFacts(
       ? { kind: 'SPENDING_LEVEL' as const, currency: out.spending.currency,
         periodBasis: out.spending.periodBasis }
       : undefined;
+
+    // ⚠️ AN EVENT CORRECTION NEEDS EXACTLY ONE ANTECEDENT. "Actually it's
+    // $17,000" is only readable when there is one event it could be about; with
+    // two, the sentence is ambiguous and is dropped rather than applied to the
+    // more recent one, which would be a guess wearing a rule.
+    const soleEvent = out.events.length === 1 ? out.events[0] : null;
     const statements: ExtractedStatement[] = extractForecastStatements(
       userTurns[turn].content, asOfISO,
       (identityAmount) => {
@@ -155,6 +217,16 @@ export function resolveAssertedFacts(
       },
       antecedent);
     out.ambiguous.push(...ambiguousHere);
+
+    // A bare corrected amount, applied to the one event under discussion.
+    if (soleEvent) {
+      const fix = correctedEventAmount(userTurns[turn].content);
+      if (fix !== null && fix !== soleEvent.amount) {
+        out.superseded.push(soleEvent);
+        out.events[0] = { ...soleEvent, turn, amount: fix,
+          statedAs: userTurns[turn].content.trim() };
+      }
+    }
 
     for (const st of statements) {
       // ⚠️ Facts only. A supposition read here would become permanent, which is
@@ -169,6 +241,15 @@ export function resolveAssertedFacts(
           turn, statedAs: st.statedAs, amount: sub.amount,
           currency: sub.currency, periodBasis: sub.periodBasis,
         };
+      } else if (sub.kind === 'ONE_OFF_EVENT') {
+        const key = eventKey(sub);
+        const prior = out.events.findIndex((e) => eventKey(e) === key);
+        const next: AssertedEvent = {
+          turn, statedAs: st.statedAs, direction: sub.direction, role: sub.role,
+          dateISO: sub.dateISO, amount: sub.amount, currency: sub.currency, basis: sub.basis,
+        };
+        if (prior >= 0) { out.superseded.push(out.events[prior]); out.events[prior] = next; }
+        else out.events.push(next);
       } else if (sub.kind === 'STREAM_AMOUNT_BASIS' && sub.basis !== AmountBasis.UNKNOWN) {
         const prior = out.basis.findIndex((b) => b.sourceKey === sub.sourceKey);
         const next: AssertedBasis = {
@@ -192,6 +273,10 @@ export function describeAssertedFacts(f: AssertedFacts): string[] {
   }
   for (const b of f.basis) {
     lines.push(`  - ${b.sourceKey}'s amount is ${b.basis}: "${b.statedAs}"`);
+  }
+  for (const e of f.events) {
+    lines.push(`  - a one-off ${e.direction.toLowerCase()} of ${e.currency} ${e.amount.toFixed(2)} `
+      + `on ${e.dateISO} (${e.basis} basis): "${e.statedAs}"`);
   }
   for (const s of f.superseded) {
     lines.push(`  - SUPERSEDED by a later correction, do not use: "${s.statedAs}"`);
