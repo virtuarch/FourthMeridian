@@ -30,6 +30,7 @@ import { resolveForecastHorizon } from './horizon';
 import { extractForecastStatements } from './statements';
 import { assembleForecast, forecastAsk, ForecastAsk } from './assemble';
 import { resolveAssertedFacts } from './fact-continuity';
+import { detectPayDateAsk, resolvePayDates, renderPayDates } from './pay-dates';
 import {
   detectUnlicensedForecastArithmetic, redactUnlicensed, resolveForecastGuardMode,
 } from './numerical-guard';
@@ -480,9 +481,14 @@ const promptSrc = read('lib/ai/prompts/system-prompt.ts');
 
 check('FD1 the forecast doctrine is injected ONLY when a forecast is present',
   /\.\.\.\(forecast \? \[FORECAST_DOCTRINE, ''\] : \[\]\)/.test(promptSrc), promptSrc.slice(0, 0));
-check('FD2 so a non-forecast prompt pays nothing for it',
-  !/FORECAST_DOCTRINE/.test(promptSrc.replace(/\.\.\.\(forecast[^\n]*\n/, '')
-    .replace(/  FORECAST_DOCTRINE,\n/, '')));
+check('FD2 so a non-forecast prompt pays nothing for it', (() => {
+  // The doctrine appears exactly twice: the import, and the one gated spread.
+  const hits = (promptSrc.match(/FORECAST_DOCTRINE/g) ?? []).length;
+  return hits <= 3 && /\.\.\.\(forecast \? \[FORECAST_DOCTRINE, ''\] : \[\]\)/.test(promptSrc);
+})());
+check('FD2a and a PAY_DATES answer does not carry the cash-forecast doctrine',
+  /\.\.\.\(payDates \? renderPayDates\(payDates\) : \[\]\)/.test(promptSrc)
+  && !/payDates \? \[FORECAST_DOCTRINE/.test(promptSrc));
 check('FD3 it is under the 250-token target, or its overrun is measured',
   Math.ceil((doctrineSrc.match(/export const FORECAST_DOCTRINE = \[[\s\S]*?\]\.join/)?.[0].length ?? 0) / 4) < 500);
 check('FD4 the contract names every status in FORECAST-8\'s vocabulary',
@@ -505,6 +511,95 @@ eq('FD7 a basis assertion survives a decimal point in the amount',
     'My Vectrus paycheck is $5,286.645 take-home and my normal spending is $4,000 a month.',
     AS_OF, 'vectrus').map((x) => x.subject.kind).sort(),
   ['SPENDING_LEVEL', 'STREAM_AMOUNT_BASIS']);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PD. CAPABILITY-SCOPED PAY DATES (FORECAST-16)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const pd = (q: string) => resolvePayDates(STREAMS, AS_OF, q);
+const pdRender = (q: string) => renderPayDates(pd(q)).join('\n');
+const vecDates = (q: string) => pd(q).streams.find((s) => s.sourceKey === 'vectrus')!.dates;
+
+// A/E — singular.
+eq('PD1 "when is my next paycheck" returns ONE occurrence',
+  vecDates('When is my next paycheck?'), ['2026-08-28']);
+eq('PD2 "when should my next check hit" is the same authority',
+  vecDates('When should my next check hit?'), ['2026-08-28']);
+eq('PD3 "when do I get paid next" too', vecDates('When do I get paid next?'), ['2026-08-28']);
+
+// B/D — an explicit horizon bounds the set exactly.
+eq('PD4 "over the next 3 months" returns all and only the licensed occurrences',
+  vecDates('When do my paychecks land over the next 3 months?'),
+  ['2026-08-28', '2026-09-11', '2026-09-25', '2026-10-09', '2026-10-23', '2026-11-06', '2026-11-20']);
+eq('PD5 "through December" is calendar-bounded',
+  vecDates('Show my pay dates through December.').at(-1), '2026-12-18');
+eq('PD6 "next 90 days" is day-bounded',
+  vecDates('What are my pay dates over the next 90 days?').at(-1), '2026-11-20');
+
+// C — the default, which is NOT the cash-forecast horizon.
+eq('PD7 "upcoming pay dates" with no period returns a bounded set of 5',
+  vecDates('What are my upcoming pay dates?').length, 5);
+check('PD8 and that default is an OCCURRENCE cap, not the 3-month cash horizon',
+  vecDates('What are my upcoming pay dates?').length
+    !== vecDates('When do my paychecks land over the next 3 months?').length);
+
+// F/G — stream safety.
+eq('PD9 the SILENT Abacus stream contributes NO dates',
+  pd('What are my upcoming pay dates?').streams.find((s) => s.sourceKey === 'abacus')!.dates, []);
+check('PD10 and says why, without exposing a mechanical schedule', (() => {
+  const t = pdRender('What are my upcoming pay dates?');
+  return /Abacus: no expected dates \(SILENT/i.test(t)
+    // the SILENT stream's own dates must not appear anywhere
+    && !/Abacus[^\n]*(?:September|October|November)/i.test(t);
+})(), pdRender('What are my upcoming pay dates?'));
+check('PD11 an unknown cadence yields nothing invented', (() => {
+  const noCadence = [{ ...VECTRUS, cadence: { kind: 'UNKNOWN', reason: 'x', evidence: { observations: 2 } },
+    activity: { ...VECTRUS.activity, mayGenerateExpectedOccurrences: false } }] as unknown as typeof STREAMS;
+  const r = resolvePayDates(noCadence, AS_OF, 'What are my upcoming pay dates?');
+  return r.empty && /cannot be established/i.test(renderPayDates(r).join('\n'));
+})());
+check('PD12 every date comes from FORECAST-2\'s generator, none from this module',
+  /expectedOccurrencesBetween\(/.test(read('lib/ai/forecast/pay-dates.ts'))
+  && !/occurrencesBetween\(|addDays|\+ 14|biweekly/i.test(
+    read('lib/ai/forecast/pay-dates.ts')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+      .replace(/expectedOccurrencesBetween/g, 'GEN')));
+
+// H — two eligible streams keep their identity.
+check('PD13 two CURRENT streams stay distinguishable, never merged', (() => {
+  const two = [VECTRUS, { ...ABACUS, projectionEligible: true,
+    activity: { ...ABACUS.activity, mayGenerateExpectedOccurrences: true } }] as unknown as typeof STREAMS;
+  const r = resolvePayDates(two, AS_OF, 'What are my upcoming pay dates?');
+  return r.streams.length === 2 && r.streams.every((s) => s.dates.length > 0)
+    && new Set(r.streams.map((s) => s.sourceKey)).size === 2;
+})());
+
+// ⚠️ A CASH-FORECAST REQUEST IS NEVER THIS CAPABILITY, whatever pay nouns it
+// carries. Measured: "Assume my paycheck is net … forecast my cash for the next
+// 3 months" routed here and four acceptance scenarios lost their forecast.
+for (const q of ['Forecast my cash for the next 3 months. Assume my paycheck is net.',
+  'That paycheck is take-home. Now forecast my cash for the next 3 months.',
+  'My Vectrus paycheck is $5,286.645 take-home. Forecast my cash for the next 3 months.',
+  'What will my cash look like over the next 3 months?']) {
+  eq(`PD13a a cash request is not a pay-date question: "${q.slice(0, 40)}"`,
+    detectPayDateAsk(q), null);
+}
+
+// I/J — questions that must NOT enter the capability.
+for (const q of ['What was my last paycheck?', 'How much was my paycheck?',
+  'How much do I make?', 'Show my income.', 'Why was my paycheck lower?']) {
+  eq(`PD14 "${q}" is not a pay-date question`, detectPayDateAsk(q), null);
+}
+
+// Rendering — the capability and nothing else.
+const pdText = pdRender('When do my paychecks land over the next 3 months?');
+check('PD15 the block renders the dates', /September 11, September 25/.test(pdText), pdText);
+check('PD16 and renders NO cash-forecast furniture',
+  !/Ending cash|REFUSED|Opening cash|discretionary|obligation|investment/i.test(pdText), pdText);
+check('PD17 and does not promise', /not guarantees/.test(pdText));
+check('PD18 nor states an amount', !/\$|USD/.test(pdText), pdText);
+eq('PD19 the block is a fraction of a forecast section',
+  Math.ceil(pdText.length / 4) < 200, true);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // NG. THE NUMERICAL RESPONSE BOUNDARY (FORECAST-14)
@@ -768,9 +863,12 @@ const harness = read('scripts/check-forecast-conformance.ts');
 const route = read('app/api/ai/chat/route.ts');
 
 check('HF2a the harness passes a real retrieval plan, not undefined',
-  /planRetrieval\(\{/.test(harness) && /question, plan, forecast\)/.test(harness));
+  /planRetrieval\(\{/.test(harness) && /question, plan,/.test(harness));
 check('HF2b a real coverage envelope',
-  /ENVELOPE, question, plan, forecast\)/.test(harness));
+  /ENVELOPE, question, plan,/.test(harness));
+check('HF2b1 and the capability surfaces, exclusively — a pay-date question '
+  + 'builds no forecast, which is the seam under test',
+  /payDates \? undefined : forecast, payDates\)/.test(harness));
 check('HF2c a real assembled forecast', /assembleForecast\(\{/.test(harness));
 check('HF2d and the same doctrine injection, because it builds the real prompt',
   /buildSpaceSystemPrompt\(/.test(harness) && !/FORECAST_DOCTRINE/.test(harness));
@@ -779,11 +877,13 @@ check('HF2e the model and sampling parameters mirror the provider',
   && /const TEMPERATURE = 0\.3/.test(harness)
   && /const MAX_TOKENS = 1024/.test(harness)
   && /const CHAT_MODEL = 'gpt-4o-mini'/.test(read('lib/ai/provider.ts')));
+// ⚠️ The harness omits `payDates` deliberately: it measures the cash-forecast
+// surface, and FORECAST-16's capability has its own acceptance path. The shape
+// is pinned up to that argument so a drift in the shared arguments still fails.
 check('HF2f the route and the harness call the prompt builder with the same shape',
-  /buildSpaceSystemPrompt\(\s*ctx, assessment, intentRoute, debtPayments, envelopeForPrompt,\s*latestUserMessage\(messages\), shadowPlan, forecast\)/.test(
-    route.replace(/\n\s+/g, ' ').replace(/ +/g, ' ')
-      .replace('systemPrompt = ', '')),
-  route.match(/buildSpaceSystemPrompt\([\s\S]{0,160}/)?.[0] ?? 'NOT FOUND');
+  /buildSpaceSystemPrompt\(\s*ctx, assessment, intentRoute, debtPayments, envelopeForPrompt,\s*latestUserMessage\(messages\), shadowPlan, forecast, payDates\)/.test(
+    route.replace(/\n\s+/g, ' ').replace(/ +/g, ' ').replace('systemPrompt = ', '')),
+  route.match(/buildSpaceSystemPrompt\([\s\S]{0,180}/)?.[0] ?? 'NOT FOUND');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // J. ARCHITECTURE

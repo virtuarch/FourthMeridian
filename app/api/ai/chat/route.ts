@@ -70,7 +70,8 @@ import type { FinancialAssessment }  from '@/lib/ai/intelligence';
 import { fetchPerLiabilityDebtPayments } from '@/lib/ai/intelligence/debt-payments';
 import { loadCoverageEnvelope, type CoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { planRetrieval, planAuditPayload, Concepts, type RetrievalPlan } from '@/lib/ai/retrieval-plan';
-import { buildForecastForRequest, guardForecastAnswer } from '@/lib/ai/forecast/for-request';
+import { buildForecastSurfaces, guardForecastAnswer } from '@/lib/ai/forecast/for-request';
+import type { PayDateResult } from '@/lib/ai/forecast/pay-dates';
 import type { AssembledForecast } from '@/lib/ai/forecast/assemble';
 
 import { detectsPayoffIntent, detectsExplicitUpdateIntent } from '@/lib/ai/intent';
@@ -360,8 +361,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   let systemPrompt: string;
   let guardAssessments: FinancialAssessment[] = [];
-  let forecast: AssembledForecast | undefined; // FORECAST-13/14 — hoisted; the
-  let forecastGuardOutcome = 'none'; // guard runs after generation.
+  let forecast: AssembledForecast | undefined; // FORECAST-13/14/16 — hoisted;
+  let payDates: PayDateResult | undefined; let forecastGuardOutcome = 'none';
   // Knowledge gaps assembled at context time — returned alongside the reply so
   // the client can render structured input UI without parsing assistant text.
   let gapsForResponse: KnowledgeGap[] = [];
@@ -573,11 +574,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // FORECAST as a concept — so a spending question pays nothing for it, and a
     // forecast question is not recognised twice. Failure is non-fatal and
     // never falls back to an average; see `for-request.ts`.
-    if (shadowPlan?.concepts.includes(Concepts.FORECAST)) {
-      // FORECAST-13 — `messages` carries earlier-turn facts to their authority.
-      forecast = await buildForecastForRequest({
-        spaceId, ctx, question: latestUserMessage(messages) ?? '', messages });
-    }
+    ({ forecast, payDates } = await buildForecastSurfaces({
+      spaceId, ctx, question: latestUserMessage(messages) ?? '', messages,
+      wantsForecast: shadowPlan?.concepts.includes(Concepts.FORECAST) ?? false,
+      wantsPayDates: shadowPlan?.concepts.includes(Concepts.PAY_DATES) ?? false }));
 
     const assessment = computeAssessment(ctx);
     guardAssessments = [assessment];
@@ -590,7 +590,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // which fails open to serializing everything.
     systemPrompt = buildSpaceSystemPrompt(
       ctx, assessment, intentRoute, debtPayments, envelopeForPrompt,
-      latestUserMessage(messages), shadowPlan, forecast);
+      latestUserMessage(messages), shadowPlan, forecast, payDates);
     // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
     await logShadowSelectionPlans(user.id, [ctx], [assessment], intentRoute);
     // CF-8 — the retrieval plan beside what was actually assembled, so the two

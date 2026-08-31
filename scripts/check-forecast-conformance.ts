@@ -31,7 +31,8 @@ import { computeAssessment } from '@/lib/ai/intelligence';
 import { buildSpaceSystemPrompt } from '@/lib/ai/prompts/system-prompt';
 import { classifyFinancialIntent } from '@/lib/ai/intent';
 import { assembleForecast } from '@/lib/ai/forecast/assemble';
-import { planRetrieval } from '@/lib/ai/retrieval-plan';
+import { resolvePayDates } from '@/lib/ai/forecast/pay-dates';
+import { planRetrieval, Concepts } from '@/lib/ai/retrieval-plan';
 import { EvidenceAvailability, type CoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import {
   FORECAST_SCENARIOS, realSpaceCtx, STREAMS, HORIZON, AS_OF,
@@ -125,6 +126,11 @@ function buildPrompt(s: ForecastScenario): {
       { role: 'user', content: question }],
     envelope: ENVELOPE, now: new Date(`${AS_OF}T12:00:00.000Z`),
   });
+  // FORECAST-16 — a pay-date question builds the capability, NOT a forecast:
+  // that is the whole point of the seam, and a harness that built both would be
+  // measuring a prompt production never assembles.
+  const payDates = plan.concepts.includes(Concepts.PAY_DATES)
+    ? resolvePayDates(STREAMS, AS_OF, question) : undefined;
   const forecast = assembleForecast({
     ctx, streams: STREAMS, horizon: HORIZON, asOfISO: AS_OF,
     question,
@@ -139,7 +145,8 @@ function buildPrompt(s: ForecastScenario): {
       // is the one deliberate omission: production passes a per-liability
       // rollup fetched from the database, and this harness reads none. It
       // renders an extra disclosure block and touches no forecast decision.
-      ctx, assessment, route, undefined, ENVELOPE, question, plan, forecast),
+      ctx, assessment, route, undefined, ENVELOPE, question, plan,
+      payDates ? undefined : forecast, payDates),
     question,
   };
 }
@@ -172,6 +179,10 @@ async function main(): Promise<void> {
 
   for (const s of SET) {
     const { prompt, question, forecast } = buildPrompt(s);
+    const payDatesOnly = planRetrieval({
+      messages: [{ role: 'user', content: question }],
+      envelope: ENVELOPE, now: new Date(`${AS_OF}T12:00:00.000Z`),
+    }).concepts.includes(Concepts.PAY_DATES);
     const messages = [
       { role: 'system' as const, content: prompt },
       ...(s.priorTurns ?? []).map((c) => ({ role: 'user' as const, content: c })),
@@ -199,7 +210,7 @@ async function main(): Promise<void> {
       let guardOutcome = 'none';
       let guardFindings: { kind: string; value: number }[] = [];
       let guardNote = '';
-      if (GUARD !== 'off' && !('refused' in forecast.forecast)) {
+      if (GUARD !== 'off' && !payDatesOnly && !('refused' in forecast.forecast)) {
         const fc = forecast.forecast as CashForecast;
         const g = guardForecastReply(reply, fc, GUARD, () => explainForecast(fc));
         guardFindings = g.findings.map((f) => ({ kind: String(f.kind), value: f.value }));

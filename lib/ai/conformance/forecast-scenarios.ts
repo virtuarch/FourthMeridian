@@ -485,6 +485,31 @@ export const FORECAST_SCENARIOS: ForecastScenario[] = [
     forbidden: [],
     required: [{ any: [/19,?014|5,?006|24,?021/], why: 'deterministic investment values must survive' }],
   },
+  // ── FORECAST-16 pay-date capability ───────────────────────────────────────
+  ...([
+    ['S1-next-paycheck', 'When is my next paycheck?',
+      [/august 28|aug\.? 28|2026-08-28/i], [/september 11|2026-09-11/i]],
+    ['S2-next-3-months', 'When do my paychecks land over the next 3 months?',
+      [/november 20|2026-11-20/i], []],
+    ['S3-upcoming', 'What are my upcoming pay dates?',
+      [/october 23|2026-10-23/i], [/november 20|2026-11-20/i]],
+    ['S4-through-december', 'Show my pay dates through December.',
+      [/december 18|2026-12-18/i], []],
+    ['S5-next-check', 'When should my next check hit?',
+      [/august 28|aug\.? 28|2026-08-28/i], [/september 11|2026-09-11/i]],
+  ] as const).map(([id, question, must, mustNot]): ForecastScenario => ({
+    id, question,
+    forbidden: [
+      // ⚠️ THE CAPABILITY MUST NOT DRAG THE CASH FORECAST IN WITH IT.
+      { pattern: /ending cash|REFUSED|current-normal discretionary/i,
+        why: 'brought cash-forecast refusal language into a pay-date answer' },
+      { pattern: /\babacus\b[^.]{0,60}(?:september|october|november|december|will (?:be )?paid)/i,
+        why: 'projected dates for a SILENT stream' },
+      { pattern: /\$\s?[\d,]{3,}/, why: 'stated an amount the capability does not license' },
+      ...mustNot.map((pattern) => ({ pattern, why: 'included a date outside the requested bound' })),
+    ],
+    required: [{ any: [...must], why: 'must give the licensed date(s)' }],
+  })),
   {
     id: 'I-stale-assumption',
     question: 'What will my cash look like over the next 3 months?',

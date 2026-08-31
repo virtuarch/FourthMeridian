@@ -21,6 +21,7 @@ import { AssumptionOrigin, type ForecastHorizon } from '@/lib/forecast/policy';
 import { resolveForecastHorizon } from './horizon';
 import { loadForecastIncomeStreams } from './streams';
 import { assembleForecast, type AssembledForecast } from './assemble';
+import { resolvePayDates, type PayDateResult } from './pay-dates';
 import { explainForecast } from '@/lib/forecast/engine';
 import { guardForecastReply, resolveForecastGuardMode } from './numerical-guard';
 import { db } from '@/lib/db';
@@ -110,4 +111,62 @@ export async function guardForecastAnswer(args: {
     }).catch(() => undefined);
   }
   return { reply: g.reply, outcome: g.outcome };
+}
+
+/**
+ * FORECAST-16 — the pay-date capability, answered on its own terms.
+ *
+ * ⚠️ IT NEVER CONSTRUCTS A FORECAST. The one shared step with
+ * `buildForecastForRequest` is `loadForecastIncomeStreams`, which is where the
+ * cadence and the activity licence come from; after that this reaches
+ * FORECAST-2's occurrence generator directly. No operating state, no policy, no
+ * engine, no accounts payload — none of which contains a pay date.
+ *
+ * Fails closed like its sibling: a throw returns undefined and the section is
+ * simply absent, which is better than a section built from a partial read.
+ */
+export async function buildPayDatesForRequest(args: {
+  spaceId: string;
+  question: string;
+  /** Skips the read entirely when the plan did not ask for this capability. */
+  wanted: boolean;
+}): Promise<PayDateResult | undefined> {
+  if (!args.wanted) return undefined;
+  try {
+    const asOfISO = todayUTCISO();
+    const streams = await loadForecastIncomeStreams(args.spaceId, asOfISO);
+    return resolvePayDates(streams, asOfISO, args.question);
+  } catch (err) {
+    console.error('[ai/pay-dates] resolution failed (non-fatal):', err);
+    return undefined;
+  }
+}
+
+/**
+ * FORECAST-16 — every forecast-derived surface this turn needs, in one call.
+ *
+ * ⚠️ ONE SEAM BECAUSE THERE ARE NOW TWO CAPABILITIES, and the route's job is to
+ * sequence a request rather than to know which forecast surfaces exist. It also
+ * keeps the route under the 700-line ceiling `route-authority.aiarch` enforces,
+ * which is the third time that guard has usefully pushed logic out of it.
+ *
+ * The two are mutually exclusive in practice: a pay-date question does not
+ * resolve FORECAST, and a cash-forecast question does not resolve PAY_DATES.
+ * Both being absent is the ordinary case and costs one comparison.
+ */
+export async function buildForecastSurfaces(args: {
+  spaceId: string;
+  ctx: SpaceContext_AI;
+  question: string;
+  messages: readonly { role: string; content: string }[];
+  wantsForecast: boolean;
+  wantsPayDates: boolean;
+}): Promise<{ forecast?: AssembledForecast; payDates?: PayDateResult }> {
+  const { spaceId, ctx, question, messages } = args;
+  return {
+    forecast: args.wantsForecast
+      ? await buildForecastForRequest({ spaceId, ctx, question, messages })
+      : undefined,
+    payDates: await buildPayDatesForRequest({ spaceId, question, wanted: args.wantsPayDates }),
+  };
 }

@@ -36,6 +36,8 @@ import {
 import { NeedLevel, type RetrievalPlan } from '@/lib/ai/retrieval-plan';
 import { renderForecastSection } from '@/lib/ai/forecast/render';
 import type { AssembledForecast } from '@/lib/ai/forecast/assemble';
+import { renderPayDates } from '@/lib/ai/forecast/pay-dates';
+import type { PayDateResult } from '@/lib/ai/forecast/pay-dates';
 import { serializeAssessmentBlock } from './assessment-serializer';
 import { serializeContextBlock } from './context-serializer';
 import type { DebtPaymentLine } from './context-serializer';
@@ -206,6 +208,14 @@ export function buildSpaceSystemPrompt(
    * prompt with no forecast section is how a model starts estimating one.
    */
   forecast?: AssembledForecast,
+  /**
+   * FORECAST-16 — licensed pay dates, when the question asked for them.
+   *
+   * ⚠️ MUTUALLY EXCLUSIVE WITH `forecast` IN PRACTICE. A pay-date question does
+   * not resolve FORECAST, so the two sections never both appear; the capability
+   * answers itself rather than arriving as a fragment of a refused forecast.
+   */
+  payDates?: PayDateResult,
 ): string {
   return [
     'You are a skilled, direct financial advisor powered by Fourth Meridian.',
@@ -252,6 +262,10 @@ export function buildSpaceSystemPrompt(
     // rule about how to present them is a correction to a sentence already
     // formed; read before them, it is the frame they arrive in.
     ...(forecast ? [FORECAST_DOCTRINE, ''] : []),
+    // FORECAST-16 — the capability's own block. Deliberately NOT behind
+    // FORECAST_DOCTRINE: none of that doctrine is about dates, and a pay-date
+    // answer should not carry 413 tokens of cash-forecast rules.
+    ...(payDates ? renderPayDates(payDates) : []),
     // ── FORECAST-10 — the deterministic forecast, when one was asked for ────
     //
     // Placed with the AUTHORITATIVE blocks and AFTER the assessment, so the two

@@ -76,6 +76,18 @@ export const Concepts = {
    * The requirement is a predictive ECONOMIC ask.
    */
   FORECAST:    'FORECAST',
+  /**
+   * WHEN money arrives, as distinct from what will be left.
+   *
+   * ⚠️ A SEPARATE CONCEPT, NOT A FLAVOUR OF FORECAST, because the two need
+   * different evidence and different answers. FORECAST-7 licenses NEXT_PAY_DATES
+   * from cadence and activity alone — no balance, no spending level, no income
+   * amount — so the question is answerable on a Space where a cash forecast is
+   * refused. Folding it into FORECAST would assemble an operating state and a
+   * policy to reach a generator that needs neither, and would put "Ending cash:
+   * REFUSED" in front of an answer that is not refused.
+   */
+  PAY_DATES:   'PAY_DATES',
   /** Nothing recognised. */
   UNKNOWN:     'UNKNOWN',
 } as const;
@@ -258,6 +270,29 @@ const FORECAST_EXCLUSION_RE =
 const REFINEMENT_RE =
   /\b(what if|what about|how about|and if|instead|assume|assuming|suppose|say i|make it|try)\b/i;
 
+/**
+ * Future pay-date intent. Mirrors `detectPayDateAsk` in lib/ai/forecast/pay-dates.ts,
+ * which owns the capability; this is the retrieval half of the same question.
+ *
+ * ⚠️ THE EXCLUSIONS CARRY THE WEIGHT. Every phrase below names a paycheck, and
+ * only some ask when one arrives.
+ */
+// ⚠️ "check" ONLY WITH A POSSESSIVE OR FORWARD FRAME. Bare "check" is a verb
+// far more often than a noun — "check my balance", "check my spending" — and
+// the capability half of this pair already made that distinction. Measured:
+// "When should my next check hit?" resolved UNKNOWN while the capability
+// detector correctly read it as NEXT_ONE, so the two halves disagreed.
+const PAY_DATE_NOUN_RE =
+  /\b(?:pay ?checks?|pay ?days?|pay dates?|paid|deposits?)\b|\b(?:next|my)\s+check\b/i;
+const PAY_DATE_WHEN_RE = /\b(?:when|what date|which day|how soon)\b/i;
+/** The schedule named directly. "paycheck" is deliberately absent — see the
+ *  capability half in lib/ai/forecast/pay-dates.ts for the measured reason. */
+const PAY_DATE_SCHEDULE_RE = /\b(?:pay ?dates?|pay ?days?)\b/i;
+/** A cash-forecast request, whatever pay nouns it contains, is never this. */
+const PAY_DATE_CASH_RE = /\b(?:forecast|project(?:ion|ed|ing)?|cash|balance|runway|spend|spending|budget)\b/i;
+const PAY_DATE_EXCLUDE_RE =
+  /\b(?:was|were|last (?:pay ?check|pay ?day|month)|how much|amount|lower|higher|why|total|average|earn|make|income (?:is|was|of))\b/i;
+
 const COVERAGE_RE =
   /\b(?:how far back|how much (?:data|history)|what (?:data|history|records) do you have|can you see|going back to|since when|what (?:period|range) (?:do|can) you|do you have (?:any|my|the )?\s?(?:any ?thing|data|history|records|transactions|crypto|investments?))\b/i;
 
@@ -291,6 +326,15 @@ function detectConcepts(question: string, breadth: ConceptBreadthKind): Concept[
 
   const out: Concept[] = [];
   if (COVERAGE_RE.test(question)) out.push(Concepts.COVERAGE);
+  // ⚠️ CHECKED BEFORE FORECAST, AND EXCLUSIVE OF IT. "When do my paychecks land
+  // over the next 3 months" contains a forward frame that FORECAST's own
+  // phrases do not match, so there is no contest today — but a question that
+  // asked for both would want the cheaper, more specific answer first.
+  const payDates = !PAY_DATE_EXCLUDE_RE.test(question)
+    && !PAY_DATE_CASH_RE.test(question)
+    && PAY_DATE_NOUN_RE.test(question)
+    && (PAY_DATE_WHEN_RE.test(question) || PAY_DATE_SCHEDULE_RE.test(question));
+  if (payDates) out.push(Concepts.PAY_DATES);
   // ⚠️ The exclusion is checked against the WHOLE question, not the match, so
   // "what will my cash look like after the pending transactions clear" is still
   // a forecast — the exclusion removes a question that is ONLY about records.
@@ -412,7 +456,15 @@ export function planRetrieval(input: {
   // forecast's own read is unaffected — it does not go through this domain at
   // all. A question that asks for BOTH keeps the evidence, because then the
   // history is part of the ask rather than a byproduct of it.
-  if (has(Concepts.SPENDING) || has(Concepts.INCOME)) {
+  // ⚠️ PAY_DATES FIRST. The word "paycheck" also matches the INCOME vocabulary,
+  // and INCOME requires the rollups — which answer nothing about WHEN the next
+  // payment lands. A question that genuinely asks about spending still wins.
+  if (has(Concepts.PAY_DATES) && !has(Concepts.SPENDING)) {
+    add(FinanceDomains.TRANSACTIONS_SUMMARY, NeedLevel.NOT_NEEDED,
+      'the pay-date capability derives its own dated series; rollups answer nothing about '
+      + 'when the next payment lands',
+      txnAvailable);
+  } else if (has(Concepts.SPENDING) || has(Concepts.INCOME)) {
     add(FinanceDomains.TRANSACTIONS_SUMMARY, NeedLevel.REQUIRED,
       depth === EvidenceDepth.DETAIL
         ? 'the question asks for a specific row or ranking, not a total'
@@ -435,7 +487,18 @@ export function planRetrieval(input: {
   //
   // The one domain almost everything wants: balances, debt and the investment
   // component totals all live here, and it is the cheapest of the three.
-  if (has(Concepts.NET_WORTH) || has(Concepts.DEBT) || has(Concepts.INVESTMENTS)
+  // ⚠️ NOT `concepts.length === 1`. "When is my next paycheck?" also trips the
+  // INCOME vocabulary on the word itself, which is harmless but would have
+  // re-required the largest payload a forecast question loads. The test is
+  // whether any concept in play actually needs a balance.
+  if (has(Concepts.PAY_DATES)
+    && ![Concepts.NET_WORTH, Concepts.DEBT, Concepts.INVESTMENTS, Concepts.FORECAST]
+      .some((c) => has(c))) {
+    // ⚠️ NOT EVEN SUPPORTING. A pay date has no balance in it, and the accounts
+    // payload is the largest thing a forecast question loads.
+    add(FinanceDomains.ACCOUNTS, NeedLevel.NOT_NEEDED,
+      'a pay date is a schedule; no balance contributes to it', true);
+  } else if (has(Concepts.NET_WORTH) || has(Concepts.DEBT) || has(Concepts.INVESTMENTS)
     || has(Concepts.FORECAST)) {
     add(FinanceDomains.ACCOUNTS, NeedLevel.REQUIRED,
       has(Concepts.INVESTMENTS)
@@ -467,6 +530,9 @@ export function planRetrieval(input: {
     add(FinanceDomains.SNAPSHOT_HISTORY, NeedLevel.NOT_NEEDED,
       'a current position question is answered by account balances; the trend signal covers direction',
       snapAvailable);
+  } else if (has(Concepts.PAY_DATES)) {
+    add(FinanceDomains.SNAPSHOT_HISTORY, NeedLevel.NOT_NEEDED,
+      'balance history says nothing about when the next payment lands', snapAvailable);
   } else if (has(Concepts.FORECAST)) {
     add(FinanceDomains.SNAPSHOT_HISTORY, NeedLevel.NOT_NEEDED,
       'a forecast starts from the CURRENT balance; ninety historical rows are the input to an '
