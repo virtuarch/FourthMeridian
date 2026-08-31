@@ -169,9 +169,21 @@ const base = { openingCash: OPENING, events: EVENTS, fromISO: '2026-08-31', toIS
   // level, which answered "what if I spend $5,000?" with nothing at all.
   check('U1 a user rate still produces a projection', p.closing !== null);
   check('U2 and it differs from the observed one', p.closing !== o.closing);
-  check('U3 the component is labelled ASSUMED, not observed',
-    p.components.some((c) => c.label === 'assumed spending')
-    && !p.components.some((c) => c.label === 'observed spending'));
+  // ⚠️ THE LABEL MUST NAME THE SOURCE OF THE RATE. Both are PROJECTED — the
+  // figure is future spending either way — so the distinction that matters is
+  // whose rate produced it. The live UI caught the original labels calling a
+  // projected total "observed income"/"observed spending", which renamed a
+  // projection into a measurement.
+  check('U3 the spending component names the ASSUMED rate, not an observed one',
+    p.components.some((c) => /assumed rate/.test(c.label))
+    && !p.components.some((c) => /observed rate/.test(c.label)),
+    p.components.map((c) => c.label).join(' | '));
+  check('U3b and the observed path names the observed rate',
+    o.components.some((c) => /observed rate/.test(c.label)));
+  // The income component is projected in BOTH paths and must say so.
+  check('U3c neither path calls a projected total "observed income"',
+    ![...p.components, ...o.components].some((c) => /^observed income/.test(c.label)),
+    [...p.components, ...o.components].map((c) => c.label).join(' | '));
   check('U4 no observed-window range is offered for a supposed rate', p.range === null);
   check('U5 and the assumption is attributed to the user',
     p.assumptions.some((a) => /supposition|user/i.test(a)), p.assumptions.join(' | '));

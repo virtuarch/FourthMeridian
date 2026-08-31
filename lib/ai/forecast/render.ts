@@ -66,79 +66,84 @@ export function renderForecastSection(a: AssembledForecast): string[] {
     lines.push(...factLines);
   }
 
-  if ('refused' in a.forecast) {
-    lines.push(`RESULT: no forecast — ${a.forecast.reason}.`);
-  } else {
-    lines.push('RESULT', ...explainForecast(a.forecast));
-  }
-
-  // ⚠️ THE HAND-OFF IS LOAD-BEARING. Measured: with the projection rendered
-  // below an unqualified refusal, the model answered turn 1 with the refusal
-  // alone and never reached the $42,597.20 the engine had just computed — the
-  // refusal says "do not estimate a cash path", and obeying it literally means
-  // ignoring a section that is not an estimate. The scope of the refusal has to
-  // be stated where the refusal is read.
-  if (a.projection && a.projection.closing !== null) {
-    lines.push(
-      'SCOPE: that refusal is about the LICENSED forecast only. The EVIDENCE-BASED '
-      + 'PROJECTION below IS the answer here. Lead with its figure, conditionally ("if '
-      + 'these patterns continue"), name its windows, then say what the licensed forecast '
-      + 'still needs. Never answer with the refusal alone; never compute your own figure.',
-    );
-  }
-
-  // ── PROJECTION-1 — the evidence-based path, when the licensed one refused ──
+  // ── PROJECTION-1 / PROJECTION-2 — WHICH ANSWER LEADS ──────────────────────
   //
-  // ⚠️ AFTER the licensed result and clearly separated, because it is a weaker
-  // claim about the same question and the reader must meet the refusal first.
-  // Every figure arrives with its window and its transformation, and the block
-  // says in as many words that this is not a forecast — a projection narrated
-  // without those is indistinguishable from one.
-  if (a.projection && a.projection.closing !== null) {
-    const p = a.projection;
-    const closing = a.projection.closing;
-    const m = (n: number) => `${p.currency} ${n.toFixed(2)}`;
+  // ⚠️ THE PRECEDENCE CHANGES WHEN AN ANSWER EXISTS. FORECAST-11's rule that a
+  // refusal IS the answer was written for the case where there is nothing else
+  // to say. With a projection in hand there is, and rendering the refusal first
+  // produced the contradiction measured in the live UI: "I cannot provide a
+  // specific ending cash figure" followed immediately by that figure. The
+  // unresolved facts are still true and still shown — as a LIMIT on an answer
+  // that was given, not as a refusal to give one.
+  const proj = a.projection && a.projection.closing !== null ? a.projection : null;
+
+  if (proj) {
+    const m = (n: number) => `${proj.currency} ${n.toFixed(2)}`;
+    const closing = proj.closing as number;
     lines.push(
-      '',
-      'EVIDENCE-BASED PROJECTION (NOT a forecast, NOT what will happen).',
-      'It continues patterns MEASURED over stated windows, and is licensed only as "if '
-      + 'these patterns continue" — always speak that condition and name the window. Never '
-      + 'restate it as an expectation or as a figure the user "will have".',
-      `Opening cash: ${m(p.openingCash ?? 0)} (measured today).`,
-      // ⚠️ SAID EXPLICITLY, because the licensed section directly above calls the
-      // same deposits "stated but NOT counted as cash" and the model repeated
-      // that framing while quoting the projection's own inflow total.
-      'NOTE: deposits the section above calls "not counted as cash" ARE counted here — '
-      + 'there they lack a gross/net basis; here they are included because they were '
-      + 'OBSERVED SETTLING into a depository account. The money arrived.',
-      ...p.components.map((c) => `  ${c.label}: ${m(c.value)} — ${c.derivation}.`),
-      `PROJECTED CASH at horizon end: ${m(closing)}.`,
-      // ⚠️ MEASURED LEAK. The conformance corpus caught the model calling this
-      // average a "current-normal spending level" — F6's own term, which F6
-      // withheld for this user on evidence. The projection may USE the mean; it
-      // may never rename it into the thing F6 refused to assert.
-      'The average above is NOT a "normal" or "current-normal" spending level — that '
-      + 'remains UNKNOWN and refused. It is only the mean of the months named.',
-      'Assumptions carried, all of them OBSERVED_CONTINUATION and all rejectable by the user:',
-      ...p.assumptions.map((x) => `  - ${x}`),
+      'ANSWER — EVIDENCE-BASED PROJECTION, and what to lead with. NOT a forecast and NOT',
+      'what will happen: it continues MEASURED patterns, so speak it conditionally ("if',
+      'these patterns continue") and name the window. Never say the user "will have" it.',
+      `Projected cash at the end of the horizon: ${m(closing)}.`,
+      `From cash of ${m(proj.openingCash ?? 0)} measured today:`,
+      ...proj.components.map((c) => `  ${c.label}: ${m(c.value)} — ${c.derivation}.`),
+      'The spending figure is NOT a "normal" spending level — that remains UNKNOWN and '
+      + 'refused. It is the mean of the months named, nothing more.',
+      'Rests on, and the user may reject either:',
+      ...proj.assumptions.map((x) => `  - ${x}`),
     );
-    // ⚠️ SUPPLEMENTAL, NEVER INSTEAD OF THE CENTRAL FIGURE. Product policy is
-    // that the projection answers the question; this exists so a window whose
-    // months differ several-fold cannot be read as a settled level.
     const sp = a.observedSpending;
-    if (p.range && sp?.dispersionRatio && sp.dispersionRatio >= 2) {
+    if (proj.range && sp?.dispersionRatio && sp.dispersionRatio >= 2) {
       lines.push(
-        `UNCERTAINTY: the ${sp.monthCount} months averaged were `
-        + `${sp.values.map((v) => p.currency + ' ' + v.toFixed(2)).join(', ')} — a `
-        + `${sp.dispersionRatio.toFixed(1)}x spread. Repeating each of those months instead of `
-        + `their average gives ${m(p.range.low)} to ${m(p.range.high)}. State the projected `
-        + 'figure as the answer, and mention this spread once as the reason it is approximate.',
+        `SPREAD: months averaged ${sp.values.map((v) => v.toFixed(2)).join(', ')} `
+        + `(${sp.dispersionRatio.toFixed(1)}x); repeating each gives ${m(proj.range.low)} to `
+        + `${m(proj.range.high)}. Give the projected figure as the answer, and say once that `
+        + 'spending varies month to month so it is an estimate, not a target.',
       );
     }
-    if (p.excluded.length > 0) {
-      lines.push(`EXCLUDED from the projection (${p.excluded.length}): `
-        + `${[...new Set(p.excluded.map((e) => e.reason))].slice(0, 3).join('; ')}.`);
+    // ⚠️ THE LIMITS ARE NAMED, JUST NOT FIRST. Demoting the licensed refusal made
+    // the model drop it entirely, and the corpus caught that: an answer that
+    // treats unestablished-basis deposits as cash must say so, or the user cannot
+    // tell what they are trusting. Lead with the answer; carry the limit in a
+    // clause, not a preamble.
+    const limits = 'refused' in a.forecast ? [] : a.forecast.fullCashPath.missing;
+    if (limits.length > 0) {
+      lines.push(
+        'REQUIRED DISCLOSURES — the answer is incomplete without these, however brief. '
+        + 'Say each in the user\'s own words after the figure:',
+        ...limits.slice(0, 3).map((x) => `  - ${x}`),
+      );
     }
+    // ⚠️ RE-ADDED. Restructuring dropped this, and the corpus caught it: amounts
+    // the projection could not use must still be reported with the authority's
+    // own reason, or a GROSS bonus simply disappears from the answer instead of
+    // being named as excluded — which is FORECAST-3's whole subject.
+    if (proj.excluded.length > 0) {
+      lines.push(`EXCLUDED, and say so with the reason: ${proj.excluded.length} amount(s) — `
+        + `${[...new Set(proj.excluded.map((e) => e.reason))].slice(0, 2).join('; ')}.`);
+    }
+    lines.push(
+      'HOW TO SAY IT: open with the projected figure in plain language. Then, briefly and '
+      + 'in the user\'s words: the opening cash it starts from, what it rests on, the '
+      + 'limits and exclusions above, and that spending varies. Do NOT open by saying you '
+      + 'cannot provide a figure. Do NOT print this section\'s vocabulary (standings, '
+      + 'authorities, day counts). Every one of those disclosures is required — leading '
+      + 'with the answer is not permission to drop them.',
+    );
+  }
+
+  if ('refused' in a.forecast) {
+    lines.push(proj ? 'STRICTER FORECAST (not the answer here):' : '',
+      `RESULT: no forecast — ${a.forecast.reason}.`);
+  } else if (proj) {
+    // Demoted: the same deterministic content, framed as the remaining limit.
+    lines.push(
+      'STRICTER FORECAST — what a fully licensed one would additionally need. A LIMITATION',
+      'on the answer above, never a refusal to answer. Mention briefly, never first:',
+      ...explainForecast(a.forecast),
+    );
+  } else {
+    lines.push('RESULT', ...explainForecast(a.forecast));
   }
 
   lines.push('=== END FORECAST ===', '');

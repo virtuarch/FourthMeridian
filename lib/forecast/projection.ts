@@ -45,6 +45,7 @@ import { monthLabel, type ObservedSpendingRate } from './observed-spending';
 /** One component of a projected total, named so the reply can attribute it. */
 export interface ProjectionComponent {
   label: string;
+  /** MAGNITUDE. Direction is the label's job — see the note at the push sites. */
   value: number;
   /** The measured evidence and the transformation applied to it. */
   derivation: string;
@@ -139,19 +140,34 @@ export function projectCash(input: ProjectCashInput): ProjectedCash {
     };
   }
 
+  // ⚠️ THE LABELS SAY PROJECTED, BECAUSE THAT IS WHAT THEY ARE. This figure is
+  // the sum of FUTURE occurrences — 8 x $5,286.64 on the real Space — generated
+  // from an observed pattern. Calling it "observed income" was measured in the
+  // live UI and is a semantic error of exactly the kind this programme exists to
+  // prevent: it renames a projection into a measurement, which is the same move
+  // as calling a historical average "normal".
   if (inflow > 0) {
     components.push({
-      label: 'observed income', value: inflow,
-      derivation: 'settled deposits at their observed level, on the established cadence, '
-        + `over ${days} day(s)`,
+      label: 'projected income from the observed payroll pattern', value: inflow,
+      derivation: `${days} day(s) of the established cadence at the level those deposits `
+        + 'have actually been settling at',
     });
   }
   if (outflow > 0) {
-    components.push({ label: 'licensed outflows', value: -outflow, derivation: 'dated known obligations' });
+    components.push({
+      label: 'projected outflows from dated obligations', value: outflow,
+      derivation: 'dated known obligations falling inside the horizon',
+    });
   }
   const obs = spending.kind === 'OBSERVED' ? spending.rate : null;
+  // ⚠️ MAGNITUDES, NOT SIGNED VALUES. The renderer used to print "USD -16672.27";
+  // the model quoted "$16,672.27" and `output-validator`'s NUMBER_RE captures the
+  // minus, so the licensed figure and the quoted figure did not reconcile and a
+  // correct answer collected "could not be automatically verified". Direction is
+  // carried by the label, where a reader gets it too.
   components.push({
-    label: obs ? 'observed spending' : 'assumed spending', value: -spend,
+    label: obs ? 'projected spending at the observed rate' : 'projected spending at your assumed rate',
+    value: spend,
     derivation: obs
       ? `${obs.monthlyRate.toFixed(2)}/month across the ${obs.monthCount} `
         + `complete month(s) ${obs.months.map(monthLabel).join(' and ')}, accrued over `

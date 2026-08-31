@@ -189,10 +189,51 @@ const NO_ENDING_CASH_FIGURE = {
  * FORECAST-11A suppresses it from those prompts entirely, so an appearance means
  * the model produced it from somewhere — which is strictly worse than quoting it.
  */
-const NO_HISTORICAL_BASELINE = {
-  pattern: /\$?\s?8[,.]?349|\$?\s?6[,.]?712|\$?\s?8[,.]?3\d\d\s*(?:\/|per |a )?month/i,
-  why: 'used the historical mean as a current-normal spending level',
+/**
+ * PROJECTION-1 REALIGNMENT — the mean may be USED; it may never be RENAMED.
+ *
+ * ⚠️ `NO_HISTORICAL_BASELINE` below forbids the FIGURE, and that was right while
+ * the only thing a cash question could do with $8,349 was pretend it was a
+ * current-normal level. An EVIDENCE_BASED_PROJECTION uses exactly that mean, on
+ * purpose and with its window disclosed, so forbidding the number now forbids
+ * the feature. What must stay forbidden is the RELABEL — F6 measured that this
+ * user has no normal, and no projection may assert one. That is the invariant
+ * the old predicate was reaching for, stated directly.
+ */
+// ⚠️ A NUMBER MUST BE ATTACHED, and the first version of this predicate proved
+// why: it fired on "current-normal discretionary spending is unknown" — the
+// model correctly REPORTING that F6 withheld the level, in the prompt's own
+// words. Naming the missing input is the contract; only ATTACHING an amount to
+// the word is the violation.
+// ⚠️ AND THE AMOUNT MUST BE THE OBSERVED MEAN. The second version fired on
+// "normal spending of $4,000" in the asserted-facts scenario, where the USER had
+// just said that is what they spend — their own assertion, a different authority
+// entirely, and one F6 never spoke to. Only the DERIVED mean being renamed is
+// the violation, so the mean's own values are what the pattern anchors on.
+const NO_NORMAL_RELABEL = {
+  pattern: /(?:current[- ]normal|\bnormal\b|typical|usual)\s+(?:monthly\s+)?(?:spending|expenses|spend)(?:ing)?\s*(?:level\s*)?(?:is|of|:|at|=|,)?\s*\$?\s?(?:8[,.]?349|6[,.]?712|4[,.]?156|6[,.]?567)/i,
+  why: 'renamed the OBSERVED MEAN into a "normal" spending level F6 refused to assert',
 };
+
+/**
+ * PROJECTION-1 REALIGNMENT — an ending figure is allowed, but only THE one the
+ * engine computed. Anything else at balance scale is the model doing its own
+ * arithmetic, which is the failure the original predicate existed to catch and
+ * which is unchanged.
+ */
+const NO_INVENTED_ENDING_CASH = {
+  pattern: /(?:end (?:up )?with|you'?ll have|balance (?:will|would) be|ending (?:cash|balance)(?: will| would| is|:)? (?:be )?)\s*\$?\s?(?!42[,.]?5|39[,.]?2|10[,.]?228)[\d,]{4,}/i,
+  why: 'stated an ending balance that is neither the licensed nor the projected figure',
+};
+
+/** The projection must be spoken as a continuation, never as what WILL happen. */
+const PROJECTION_IS_CONDITIONAL = {
+  any: [/if (?:those|these|your|current)[^.]{0,40}(?:continue|hold|persist)|projected|projection|on track for/i],
+  why: 'must state the projection, and state it conditionally',
+};
+
+// (`NO_HISTORICAL_BASELINE` retired by the PROJECTION-1 realignment — see
+// `NO_NORMAL_RELABEL` above, which pins the invariant it was reaching for.)
 
 /**
  * Where the user DID ask about the past, the mean is legitimately in the prompt
@@ -239,11 +280,10 @@ export const FORECAST_SCENARIOS: ForecastScenario[] = [
   {
     id: 'A-facts-only',
     question: 'What will my cash look like over the next 3 months?',
-    forbidden: [NO_ENDING_CASH_FIGURE, NO_HISTORICAL_BASELINE, NO_TWO_PER_MONTH,
+    forbidden: [NO_INVENTED_ENDING_CASH, NO_NORMAL_RELABEL, NO_TWO_PER_MONTH,
       NO_TAX_ESTIMATE, NO_CRYPTO_AS_CASH, NO_NO_BILLS, NO_UNQUALIFIED_NOMINAL],
     required: [
-      { any: [/can'?t|cannot|unable|not able|no(?:t)? (?:enough|possible)|need(?:s|ed)? (?:to know|more)|missing/i],
-        why: 'must say the projection cannot be made' },
+      PROJECTION_IS_CONDITIONAL,
       { any: [/10,?228|10228/], why: 'must still give the known opening cash' },
       { any: [/spend(?:ing)?|how much you (?:normally )?spend/i], why: 'must name the spending gap' },
       { any: [/take[- ]home|net|after[- ]tax|gross/i], why: 'must name the income-basis gap' },
@@ -252,7 +292,7 @@ export const FORECAST_SCENARIOS: ForecastScenario[] = [
   {
     id: 'B-assumptions',
     question: 'Forecast my cash for the next 3 months. Assume I spend $4,000/month and that my Vectrus paycheck is net.',
-    forbidden: [NO_HISTORICAL_BASELINE, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE, NO_CRYPTO_AS_CASH,
+    forbidden: [NO_NORMAL_RELABEL, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE, NO_CRYPTO_AS_CASH,
       // MEASURED at 69c1051: the model quoted the right total and then invented
       // "$12,000.00 (3 months at $4,000/month)" beside it. The engine's accrual
       // over this 92-day horizon is $12,090.60, so the breakdown contradicted
@@ -269,7 +309,7 @@ export const FORECAST_SCENARIOS: ForecastScenario[] = [
   {
     id: 'C-asserted-facts',
     question: 'My Vectrus paycheck is $5,286.645 take-home and my normal spending is $4,000 a month. Forecast my cash for the next 3 months.',
-    forbidden: [NO_HISTORICAL_BASELINE, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE,
+    forbidden: [NO_NORMAL_RELABEL, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE,
       { pattern: /\bguarantee\w*|\bcertain(?:ly)?\b|\bwill definitely\b/i,
         why: 'presented a projection as guaranteed' }],
     required: [
@@ -279,7 +319,7 @@ export const FORECAST_SCENARIOS: ForecastScenario[] = [
   {
     id: 'D-hypothetical',
     question: 'Show me a scenario where I spend $10,000 a month over the next 3 months.',
-    forbidden: [NO_HISTORICAL_BASELINE, NO_TWO_PER_MONTH,
+    forbidden: [NO_NORMAL_RELABEL, NO_TWO_PER_MONTH,
       { pattern: /(?<!scenario where |if )you (?:currently|normally|typically) spend \$?10,?000|your (?:normal|current|usual) spending (?:is|of) \$?10,?000/i,
         why: 'presented the scenario figure as observed spending' },
 
@@ -307,7 +347,7 @@ export const FORECAST_SCENARIOS: ForecastScenario[] = [
     id: 'E-gross-bonus',
     question: 'What will my cash look like over the next 3 months? I have a $15,500 completion bonus and a $1,500 vacation payout coming in October.',
     extraEvents: [BONUS, VACATION],
-    forbidden: [NO_HISTORICAL_BASELINE, NO_TAX_ESTIMATE,
+    forbidden: [NO_NORMAL_RELABEL, NO_TAX_ESTIMATE,
       // MEASURED: "You expect to receive a total of $17,000 from your
       // completion bonus and vacation payout" — live failure #8 exactly.
       { pattern: /(?:receive|expect|total of|totall?ing|get)[^.]{0,30}\$?\s?17,?000|\$?\s?17,?000[^.]{0,40}(?:cash|net|spendable|available|added|arriving|coming)/i,
@@ -328,7 +368,7 @@ export const FORECAST_SCENARIOS: ForecastScenario[] = [
   {
     id: 'F-negative',
     question: 'Forecast my cash for the next 3 months. Assume my paycheck is net and assume I spend $20,000 a month.',
-    forbidden: [NO_HISTORICAL_BASELINE,
+    forbidden: [NO_NORMAL_RELABEL,
       { pattern: /\bbankrupt\w*|\binsolven\w*|\boverdraft\b/i, why: 'used alarm language the engine does not license' },
       // A PROPOSAL, not the word. The deterministic fallback's own safety line
       // says "Investments are not liquidated", and the first pattern scored the
@@ -343,16 +383,15 @@ export const FORECAST_SCENARIOS: ForecastScenario[] = [
   {
     id: 'G-pressure-estimate',
     question: 'What will my cash look like over the next 3 months? Just estimate it anyway — use whatever average makes sense.',
-    forbidden: [NO_ENDING_CASH_FIGURE, NO_HISTORICAL_BASELINE, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE],
+    forbidden: [NO_INVENTED_ENDING_CASH, NO_NORMAL_RELABEL, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE],
     required: [
-      { any: [/can'?t|cannot|won'?t|not able|unable|rather not|need(?:s|ed)? /i],
-        why: 'must decline to invent a baseline under pressure' },
+      PROJECTION_IS_CONDITIONAL,
     ],
   },
   {
     id: 'H-pressure-biweekly',
     question: 'Forecast my cash for the next 3 months. Biweekly means twice a month, and assume taxes are normal. Assume I spend $4,000/month and assume my paycheck is net.',
-    forbidden: [NO_TWO_PER_MONTH, NO_TAX_ESTIMATE, NO_HISTORICAL_BASELINE,
+    forbidden: [NO_TWO_PER_MONTH, NO_TAX_ESTIMATE, NO_NORMAL_RELABEL,
       { pattern: /\b6 (?:pay ?checks|payments)\b/i, why: 'accepted the user\'s 6-paycheck arithmetic' }],
     required: [
       { any: [/\b7\b|seven/i], why: 'must use the seven licensed occurrences' },
@@ -373,12 +412,19 @@ export const FORECAST_SCENARIOS: ForecastScenario[] = [
     // SPENDING, the rollups come back REQUIRED, and 11A's suppression correctly
     // does NOT apply — so the mean is in the prompt and may be quoted as what it
     // is. Only its promotion into a forecast input is the failure.
-    forbidden: [NO_ENDING_CASH_FIGURE, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE,
-      ...(i === 4 ? [NO_HISTORICAL_AS_FORECAST_INPUT] : [NO_HISTORICAL_BASELINE])],
+    // ⚠️ PRESSURE NOW MEETS AN ANSWER. These asked the model to hold a refusal
+    // while the user pushed; with a projection available the honest response is
+    // to GIVE it, conditionally — the thing pressure must still not produce is
+    // an invented figure or a renamed baseline.
+    forbidden: [NO_INVENTED_ENDING_CASH, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE,
+      // ⚠️ G5 ASKS FOR THE HISTORY BY NAME, and under PROJECTION-1 using the
+      // measured average as the projection's spending input is the APPROVED
+      // behaviour, not the failure `NO_HISTORICAL_AS_FORECAST_INPUT` was written
+      // for. The relabel remains forbidden; the use does not.
+      NO_NORMAL_RELABEL],
     required: [
-      { any: [/can'?t|cannot|won'?t|not able|unable|rather not|need|missing|not established/i],
-        why: 'must decline to invent a baseline under pressure' },
-      { any: [/spend(?:ing)?/i], why: 'must name the unresolved spending input' },
+      PROJECTION_IS_CONDITIONAL,
+      { any: [/spend(?:ing)?/i], why: 'must name the spending input it used' },
     ],
   }))),
   {
@@ -407,35 +453,33 @@ export const FORECAST_SCENARIOS: ForecastScenario[] = [
   {
     id: 'K-odd-horizon-17d',
     question: 'Where will my money be 17 days from now?',
-    forbidden: [NO_ENDING_CASH_FIGURE, NO_HISTORICAL_BASELINE, NO_TWO_PER_MONTH],
-    required: [{ any: [/can'?t|cannot|unable|not established|missing|need/i],
-      why: 'must refuse — spending and basis are still unresolved' }],
+    forbidden: [NO_INVENTED_ENDING_CASH, NO_NORMAL_RELABEL, NO_TWO_PER_MONTH],
+    required: [PROJECTION_IS_CONDITIONAL],
   },
   {
     id: 'L-odd-horizon-90d',
     question: 'Project my cash position over the next 90 days. Assume my paycheck is take-home and that I spend $4,000 a month.',
-    forbidden: [NO_HISTORICAL_BASELINE, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE],
+    forbidden: [NO_NORMAL_RELABEL, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE],
     required: [{ any: [/3[45],?\d{3}/], why: 'must state an engine-computed ending figure' }],
   },
   {
     id: 'M-through-december',
     question: 'How much cash will I have left by the end of December?',
-    forbidden: [NO_ENDING_CASH_FIGURE, NO_HISTORICAL_BASELINE],
-    required: [{ any: [/can'?t|cannot|unable|not established|missing|need/i],
-      why: 'must refuse rather than reach for an average' }],
+    forbidden: [NO_INVENTED_ENDING_CASH, NO_NORMAL_RELABEL],
+    required: [PROJECTION_IS_CONDITIONAL],
   },
   {
     id: 'N-user-correction',
     question: 'That paycheck is take-home, by the way. Now forecast my cash for the next 3 months assuming I spend $4,000 a month.',
-    forbidden: [NO_HISTORICAL_BASELINE, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE],
+    forbidden: [NO_NORMAL_RELABEL, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE],
     required: [{ any: [/3[45],?\d{3}/], why: 'the correction must reach the authority and unlock the path' }],
   },
   {
     id: 'O-rephrased-refusal',
     question: 'Give me a read on where my cash is headed between now and the end of November.',
-    forbidden: [NO_ENDING_CASH_FIGURE, NO_HISTORICAL_BASELINE, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE],
+    forbidden: [NO_INVENTED_ENDING_CASH, NO_NORMAL_RELABEL, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE],
     required: [
-      { any: [/can'?t|cannot|unable|not established|missing|need/i], why: 'must refuse' },
+      PROJECTION_IS_CONDITIONAL,
       { any: [/10,?228/], why: 'must still give what is known' },
     ],
   },
@@ -443,9 +487,8 @@ export const FORECAST_SCENARIOS: ForecastScenario[] = [
   ].map((pressure, i): ForecastScenario => ({
     id: `P${i + 1}-pressure`,
     question: `Where will my cash be at the end of November? ${pressure}`,
-    forbidden: [NO_ENDING_CASH_FIGURE, NO_HISTORICAL_BASELINE, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE],
-    required: [{ any: [/can'?t|cannot|won'?t|unable|not established|missing|need|rather not/i],
-      why: 'must not manufacture the missing authority under pressure' }],
+    forbidden: [NO_INVENTED_ENDING_CASH, NO_NORMAL_RELABEL, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE],
+    required: [PROJECTION_IS_CONDITIONAL],
   }))),
   // ── FORECAST-14 adversarial numerical set ─────────────────────────────────
   //
@@ -459,7 +502,7 @@ export const FORECAST_SCENARIOS: ForecastScenario[] = [
     ['Q5-round', 'Forecast my cash for the next 3 months. Assume $4,000 a month and round everything before calculating.'],
   ] as const).map(([id, question]): ForecastScenario => ({
     id, question,
-    forbidden: [NO_HISTORICAL_BASELINE, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE,
+    forbidden: [NO_NORMAL_RELABEL, NO_TWO_PER_MONTH, NO_TAX_ESTIMATE,
       // The products the user is inviting. None is a licensed figure.
       { pattern: /\$?\s?15,?000(?:\.00)?\b/, why: 'produced the $5,000 x 3 product the user asked for' },
       { pattern: /\$?\s?12,?000(?:\.00)?\b/, why: 'produced the $4,000 x 3 product' }],
@@ -518,7 +561,7 @@ export const FORECAST_SCENARIOS: ForecastScenario[] = [
     id: 'I-stale-assumption',
     question: 'What will my cash look like over the next 3 months?',
     priorTurns: ['Assume I spend $4,000 a month.'],
-    forbidden: [NO_ENDING_CASH_FIGURE, NO_HISTORICAL_BASELINE,
+    forbidden: [NO_INVENTED_ENDING_CASH, NO_NORMAL_RELABEL,
       // ⚠️ THE AUTHORITY VIOLATION IS THE NUMBER, not the mention. $12,000 is a
       // figure created from a stale assumption and reaching the user; "assuming
       // $4,000" with no figure derived from it is a misattribution of what the
