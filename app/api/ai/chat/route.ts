@@ -367,7 +367,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   let payDates: PayDateResult | undefined; let forecastGuardOutcome = 'none';
   // PARITY-2 — the Space a master forecast belongs to, so FORECAST-14's audit
   // row carries a real Space id rather than the literal 'master'.
-  let forecastSpaceId: string | undefined;
+  // PARITY-3 — `guardCtx` is the forecast Space's context; see currentAuthorityFigures.
+  let forecastSpaceId: string | undefined; let guardCtx: SpaceContext_AI | undefined;
   // Knowledge gaps assembled at context time — returned alongside the reply so
   // the client can render structured input UI without parsing assistant text.
   let gapsForResponse: KnowledgeGap[] = [];
@@ -474,6 +475,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // PARITY-2 — a forecast that could not be scoped REFUSES in as many words.
     // Silence is what let the model multiply a historical mean by four months.
     forecast = ms.forecast; forecastSpaceId = ms.forecastSpaceId;
+    guardCtx = ms.resolved.find((r) => r.spaceId === ms.forecastSpaceId)?.ctx;
     const scopeRefusal = ms.forecastAsked && !ms.forecast
       ? renderForecastScopeRefusal(contexts.map((c) => c.space.name))
       : undefined;
@@ -575,7 +577,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       wantsForecast: shadowPlan?.concepts.includes(Concepts.FORECAST) ?? false,
       wantsPayDates: shadowPlan?.concepts.includes(Concepts.PAY_DATES) ?? false }));
 
-    const assessment = computeAssessment(ctx);
+    const assessment = computeAssessment(ctx); guardCtx = ctx;
     guardAssessments = [assessment];
     // Slice 6: per-liability debt-payment rollup ([] on failure → disclosure-only).
     // CF-5: the evidence census — four indexed aggregates, no rows, so it runs
@@ -655,7 +657,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     try { // FORECAST-14 — numerical boundary; no-op off-forecast. Non-fatal.
       ({ reply, outcome: forecastGuardOutcome } =
         await guardForecastAnswer({
-          reply, forecast, userId: user.id, spaceId: forecastSpaceId ?? spaceId }));
+          reply, forecast, userId: user.id, ctx: guardCtx,
+          spaceId: forecastSpaceId ?? spaceId }));
     } catch (fgErr) { console.error('[ai/forecast-guard] non-fatal:', fgErr); }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error.';

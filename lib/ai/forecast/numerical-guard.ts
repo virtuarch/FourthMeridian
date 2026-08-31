@@ -53,12 +53,52 @@ export const FigureRole = {
 
 export type FigureRoleKind = typeof FigureRole[keyof typeof FigureRole];
 
+/**
+ * PARITY-3 — WHEN a figure may be asserted about, alongside what it may be used AS.
+ *
+ * ⚠️ ROLE ALONE COULD NOT HOLD THE LINE. Measured: with an invented projection
+ * in the assistant's own history ("estimated cash flow until EOY: $34,035.64"),
+ * a net-worth follow-up rebuilt on it 5 times out of 5 — in BOTH master and
+ * named-Space mode — and every existing rule passed it. `ENDING_CASH_OVER_REFUSAL`
+ * is keyed to ending-cash vocabulary and "projected increase of" is not that;
+ * `UNLICENSED_PRODUCT` looks for a multiple and $75,022.17 is a SUM; and
+ * `UNLICENSED_CASH_CLAIM` needs cash-claim language, which "net worth of" is not.
+ *
+ * The missing distinction was never about vocabulary. A figure can be perfectly
+ * licensed as a CURRENT fact and carry no authority whatever for a claim about
+ * December — current net worth is exactly that. So the licence gains the axis
+ * it was missing: a claim about a future date requires a licence that reaches
+ * the future, and no amount of conversational history can mint one.
+ */
+export const FigureHorizon = {
+  /** True as of now. Licensed by the current-turn authorities that measured it. */
+  CURRENT: 'CURRENT',
+  /** Licensed for a claim about a future date by the deterministic forecast. */
+  FUTURE:  'FUTURE',
+} as const;
+
+export type FigureHorizonKind = typeof FigureHorizon[keyof typeof FigureHorizon];
+
 export interface LicensedFigure {
   value: number;
   role: FigureRoleKind;
   /** Where it came from, for the repair instruction and for debugging. */
   label: string;
+  horizon: FigureHorizonKind;
 }
+
+/**
+ * PARITY-3 — a CURRENT figure the turn's own authorities measured.
+ *
+ * ⚠️ THESE ARE NOT FORECAST OUTPUT, WHICH IS THE POINT. Net worth, liquid cash
+ * and the investment totals come from the accounts authority, are true of today,
+ * and are freely sayable — the boundary has never policed them and must not
+ * start. They are listed here only so the future rule can tell "your current
+ * net worth is $40,986.53" (a licensed present fact, in a sentence that also
+ * mentions December) from "your net worth would be $75,022.17" (a claim about
+ * December). Without them the first sentence is collateral damage.
+ */
+export interface CurrentAuthorityFigure { value: number; label: string; }
 
 /**
  * Ending-balance language specifically — the one slot a REFUSED path licenses
@@ -137,10 +177,89 @@ const SPENDABILITY_RE =
 const FORWARD_CONTEXT_RE =
   /\b(?:next|upcoming|forecast|projected|going forward|from (?:now|here)|over the next|will|would)\b/i;
 
+/**
+ * PARITY-3 — the sentence is about a FUTURE point in time.
+ *
+ * ⚠️ NARROWER THAN `FORWARD_CONTEXT_RE`, ON PURPOSE. That one ends a historical
+ * SECTION and is deliberately loose — "will" and "would" alone trip it, which is
+ * right for scoping a heading and far too broad for redacting a sentence. This
+ * one requires an actual future REFERENCE POINT: a named horizon, a relative
+ * period, or "then". "I cannot forecast this" mentions the future and asserts
+ * nothing about it, and must not be caught.
+ */
+const FUTURE_POINT_RE =
+  // ⚠️ HYPHENS ARE THE MODEL'S DEFAULT. Measured escape: "Estimated end-of-year
+  // net worth: $75,022.17" — the period was written "end-of-year", and a pattern
+  // that only knew "end of the year" did not see a future reference at all.
+  /\b(?:by (?:the )?(?:end[- ]of[- ](?:the[- ])?(?:year|month|quarter)|eoy|year[- ]?end|then|next \w+)|at (?:the )?(?:end[- ]of[- ](?:the[- ])?(?:year|month|quarter)|year[- ]?end)|end[- ]of[- ](?:the[- ])?year\b|year[- ]end\b|\beoy\b|by \d{4}|in \d+ (?:more )?(?:days?|weeks?|months?|years?)|over (?:the next )?\d+ (?:more )?(?:days?|weeks?|months?|years?)|over the next \d+|(?:next|coming|following) (?:week|month|quarter|year)|(?:\d+|three|four|six|twelve) months? from now)\b/i;
+
+/**
+ * PARITY-3 — the figure is framed as a value AT that future point, rather than
+ * as a present fact mentioned while discussing it.
+ *
+ * Checked against the text immediately BEFORE the figure, the same way
+ * `CASH_CLAIM_RE` is, because "your current net worth of $40,986.53" and "your
+ * net worth would be $75,022.17" differ exactly there and nowhere else.
+ */
+const FUTURE_VALUE_FRAME_RE =
+  // ⚠️ THE WINDOW IS THE WHOLE DIFFICULTY. "Projected increase in cash over the
+  // next 4 months: $34,035.64" puts 50 characters between the framing word and
+  // the figure, because a markdown LABEL is how this model states a projection.
+  // A 30-character window measured that escape.
+  /\b(?:will|would|could|should|might) (?:be|have|reach|grow|rise|come|total|leave you with|end up (?:with|at))\b[^.$]{0,20}$|\b(?:projected|estimated|expected|forecast(?:ed)?|anticipated|increase)\b[^.$]{0,60}$|\b(?:giving|resulting in|bringing (?:your |it )?[\w ]{0,20}to|adds? up to|for a total of|totall?ing)\s*$/i;
+
+/**
+ * PARITY-3 — a line that OPENS a forward-looking section.
+ *
+ * ⚠️ SECTIONS, FOR THE SAME REASON HISTORY NEEDED THEM. The measured escape was
+ * `- $40,986.53 + $34,035.64 = **$75,022.17**` — a line with no framing words at
+ * all, under "your estimated net worth at the end of the year would be:". A
+ * per-sentence test cannot see a future claim in a line that is pure arithmetic;
+ * the scope carries from the line that announced it, exactly as
+ * `HISTORICAL_CONTEXT_RE` carries the past. This is why the rule is not a fourth
+ * vocabulary pattern: the claim is made by the section, not by the sentence.
+ */
+const FUTURE_SECTION_OPEN_RE =
+  /\b(?:will|would|could|projected|estimated|expected|forecast(?:ed)?|anticipated)\b[^$]{0,80}:\s*$/i;
+
+/**
+ * PARITY-3 — framing that is forward-looking on its own, with no date named.
+ *
+ * ⚠️ MEASURED, AND THE LAST SHAPE TO ESCAPE. "**Projected Cash Increase:**
+ * $34,035.64" is a claim about money that has not arrived, and it names no
+ * period at all — so a rule requiring an explicit future reference could never
+ * see it. These words ARE the reference.
+ *
+ * ⚠️ "ESTIMATED" IS DELIBERATELY ABSENT. It reads both ways: "Est. monthly
+ * spending: $4,156.68 (measured)" is a statement about the PAST, and the
+ * assessment block writes exactly that. It stays in `FUTURE_VALUE_FRAME_RE`,
+ * where a named future point is also required, and out of this list.
+ */
+const INHERENTLY_FORWARD_RE =
+  /\b(?:projected|forecast(?:ed)?|expected|anticipated|upcoming)\b/i;
+
+/**
+ * PARITY-3 — the figure is explicitly framed as a PRESENT fact.
+ *
+ * ⚠️ THE EXEMPTION IS WHAT KEEPS THE RULE HONEST. The contaminated answers put
+ * the present and the future in ONE sentence — "start with your current net
+ * worth of $40,986.53 and add the projected increase" — so a sentence-level
+ * future test alone would redact a correct, licensed present fact as collateral.
+ */
+const CURRENT_FRAME_RE =
+  /\b(?:current(?:ly)?|today|as of (?:now|today)|right now|at present|present(?:ly)?|you (?:currently )?have|your (?:current )?(?:balance|net worth|cash|liquid cash) is)\b[^.$]{0,30}$/i;
+
 const CAVEAT_RE =
   /\b(?:not (?:counted|treated|included) as (?:cash|spendable)|gross|not spendable|basis (?:is )?(?:unknown|not established|unestablished)|net \(after[- ]tax\)|before deductions|not yet cash)\b/i;
 
 export type ForecastGuardFindingKind =
+  /**
+   * PARITY-3 — a value asserted about a FUTURE date that no current-turn licence
+   * reaches. The kind that closes assistant-history contamination: a figure the
+   * model itself invented one turn earlier has no licence here, however
+   * confidently the earlier turn stated it.
+   */
+  | 'FUTURE_VALUE_WITHOUT_LICENCE'
   /** A money figure that is a product of two figures in the reply, and licensed by neither. */
   | 'UNLICENSED_PRODUCT'
   /** A cash/balance claim over a figure the forecast never licensed as cash. */
@@ -177,17 +296,23 @@ const money = (n: number) => `USD ${n.toFixed(2)}`;
  * of our own output, and it would drift the first time a line was reworded.
  * Everything below is a field.
  */
-export function licensedFigures(f: CashForecast): LicensedFigure[] {
+export function licensedFigures(
+  f: CashForecast, current: readonly CurrentAuthorityFigure[] = [],
+): LicensedFigure[] {
   const out: LicensedFigure[] = [];
-  const add = (value: number | null | undefined, role: FigureRoleKind, label: string) => {
-    if (typeof value === 'number' && Number.isFinite(value)) out.push({ value, role, label });
+  const add = (
+    value: number | null | undefined, role: FigureRoleKind, label: string,
+    horizon: FigureHorizonKind = FigureHorizon.FUTURE,
+  ) => {
+    if (typeof value === 'number' && Number.isFinite(value)) out.push({ value, role, label, horizon });
   };
 
-  add(f.openingCash.amount, FigureRole.CASH, 'opening cash');
+  // ⚠️ OPENING CASH IS A FACT ABOUT TODAY, not a licence to state a future balance.
+  add(f.openingCash.amount, FigureRole.CASH, 'opening cash', FigureHorizon.CURRENT);
 
-  // A stated rate may be spoken of as a rate. The horizon total below is the
-  // only figure that rate is licensed to produce.
-  add(f.spending.amount, FigureRole.RATE, 'the stated spending level');
+  // A stated rate may be spoken of as a rate, and it is a PRESENT-tense level.
+  // The horizon total below is the only forward figure that rate can produce.
+  add(f.spending.amount, FigureRole.RATE, 'the stated spending level', FigureHorizon.CURRENT);
   if (f.spending.dailyRate !== null) {
     add(f.spending.dailyRate * f.horizonDays, FigureRole.CASH, 'spending over the horizon');
   }
@@ -225,6 +350,9 @@ export function licensedFigures(f: CashForecast): LicensedFigure[] {
   if (f.knownEventPath.status !== ConclusionStatus.REFUSED) {
     add(f.knownEventPath.closing, FigureRole.CASH, 'known-event balance');
   }
+  // PARITY-3 — the turn's measured present, so a present fact quoted inside a
+  // forward-looking paragraph is recognised rather than redacted as collateral.
+  for (const c of current) add(c.value, FigureRole.CASH, c.label, FigureHorizon.CURRENT);
   return out;
 }
 
@@ -241,6 +369,8 @@ interface ReplyFigure {
   endingClaim: boolean;
   /** Inside a section about the past, which this boundary does not police. */
   historical: boolean;
+  /** PARITY-3 — asserted as a value at a future point in time. */
+  futureValue: boolean;
 }
 
 /** Language that makes a figure a claim about cash rather than a mention of an amount. */
@@ -282,7 +412,21 @@ function replyFigures(reply: string): ReplyFigure[] {
   // are one claim, and a boundary that cannot see the label cannot see the
   // claim. Newlines still separate, so a bullet is still its own unit.
   let historical = false;
+  // PARITY-3 — the forward scope, opened by a line that announces a future value
+  // and closed by anything that plants the reader back in the present or past.
+  let futureSection = false;
   for (const sentence of reply.split(/(?<=[.!?])\s+|\n+/)) {
+    if (FUTURE_POINT_RE.test(sentence) && FUTURE_SECTION_OPEN_RE.test(md(sentence))) {
+      futureSection = true;
+    } else if (HISTORICAL_CONTEXT_RE.test(sentence)) {
+      // ⚠️ A PRESENT MENTION DOES NOT CLOSE THE SECTION. Closing on one was
+      // measured leaking: the model lists "- Current net worth: $40,986.53"
+      // and then "- Projected increase in cash: $34,035.64" as consecutive
+      // bullets, and the first bullet closed the scope that the second needed.
+      // The present FIGURE is protected where it belongs — by `CURRENT_FRAME_RE`
+      // on the figure itself — not by tearing down the section around it.
+      futureSection = false;
+    }
     // ⚠️ SECTION SCOPE. A historical heading opens one, a forward-looking line
     // closes it, and both on one line means forward wins — "what I spent last
     // month vs what next month looks like" is a forecast sentence with a
@@ -310,11 +454,25 @@ function replyFigures(reply: string): ReplyFigure[] {
       // as often as before — "$19,014.63 available to spend" — and a
       // before-only window let a crypto-as-cash claim through untouched.
       const afterWide = md(sentence.slice(m.index + m[0].length, m.index + m[0].length + 60));
+      // ⚠️ A WIDER WINDOW, AND ONLY FOR THE TEMPORAL TEST. Measured escape:
+      // "gives an estimated end-of-year net worth of approximately $75,022.17"
+      // puts 48 characters between "estimated" and the figure. `near` stays at
+      // 45 because CASH_CLAIM_RE's proximity argument depends on it — widening
+      // that one reintroduces the false positives FORECAST-14 measured.
+      const nearFuture = md(sentence.slice(Math.max(0, m.index - 80), m.index));
       out.push({
         value: Math.abs(value), sentence: sentence.trim(), hedged: HEDGE_RE.test(before),
         cashClaim: CASH_CLAIM_RE.test(near) || SPENDABILITY_RE.test(afterWide),
         endingClaim: ENDING_CLAIM_RE.test(near),
         historical,
+        // PARITY-3 — a value AT a future point: the sentence names one, the
+        // framing before the figure asserts a value at it, and nothing frames
+        // the figure as a present fact. All three, because any two of them
+        // describe a correct sentence.
+        futureValue: (futureSection
+          || INHERENTLY_FORWARD_RE.test(nearFuture)
+          || (FUTURE_POINT_RE.test(sentence) && FUTURE_VALUE_FRAME_RE.test(nearFuture)))
+          && !CURRENT_FRAME_RE.test(near),
         isRateMention: /^\s*(?:\/|per\s|a\s|each\s|every\s)?\s*(?:month|mo\b|week|year|28 days)/i
           .test(after) || RATE_FRAME_RE.test(near),
       });
@@ -346,8 +504,9 @@ function licenceFor(
  */
 export function detectUnlicensedForecastArithmetic(
   reply: string, forecast: CashForecast,
+  current: readonly CurrentAuthorityFigure[] = [],
 ): ForecastGuardFinding[] {
-  const licensed = licensedFigures(forecast);
+  const licensed = licensedFigures(forecast, current);
   const figures = replyFigures(reply);
   const findings: ForecastGuardFinding[] = [];
   const seen = new Set<number>();
@@ -372,6 +531,30 @@ export function detectUnlicensedForecastArithmetic(
         claim: `${money(fig.value)} as an ending balance — the forecast REFUSED an ending figure`,
       });
       continue;
+    }
+
+    // ── 0b. A value asserted about a FUTURE date, with no licence that reaches it ──
+    //
+    // ⚠️ THE AUTHORITY IS THE TEST, NOT THE TEXT. The question this rule asks is
+    // "does a current-turn deterministic licence cover a claim about that date?"
+    // — never "is this number in the prompt". A figure the model invented last
+    // turn is unlicensed for the same reason an invented one this turn is: no
+    // authority produced it. And a CURRENT licence deliberately does NOT satisfy
+    // it, which is the whole distinction — today's net worth is a fact about
+    // today and says nothing about December.
+    if (fig.futureValue && !fig.isRateMention) {
+      const future = licensed.find((l) => l.horizon === FigureHorizon.FUTURE
+        && licenceFor(fig.value, [l], fig.hedged) !== null);
+      if (!future) {
+        seen.add(fig.value);
+        findings.push({
+          kind: 'FUTURE_VALUE_WITHOUT_LICENCE', value: fig.value, evidence: fig.sentence,
+          claim: `${money(fig.value)} as a value at a future date — no forecast this turn `
+            + 'licenses a figure for that date, and a number stated earlier in this '
+            + 'conversation is not a licence',
+        });
+        continue;
+      }
     }
 
     // ── 1. A product of two figures in the reply, licensed by neither ───────
@@ -551,13 +734,14 @@ export function forecastNarrationFallback(lines: readonly string[]): string {
 export function guardForecastReply(
   reply: string, forecast: CashForecast, mode: ForecastGuardMode,
   narrate: () => readonly string[],
+  current: readonly CurrentAuthorityFigure[] = [],
 ): { reply: string; outcome: string; findings: readonly ForecastGuardFinding[] } {
-  const findings = detectUnlicensedForecastArithmetic(reply, forecast);
+  const findings = detectUnlicensedForecastArithmetic(reply, forecast, current);
   if (findings.length === 0) return { reply, outcome: 'clean', findings };
   if (mode !== 'repair') return { reply, outcome: `${mode}:${findings.length}`, findings };
 
   const redacted = redactUnlicensed(reply, findings, forecast);
-  const still = detectUnlicensedForecastArithmetic(redacted, forecast);
+  const still = detectUnlicensedForecastArithmetic(redacted, forecast, current);
   return {
     reply: applyForecastGuard(redacted, still, mode, forecastNarrationFallback(narrate())),
     outcome: still.length === 0 ? 'redacted' : 'fallback',

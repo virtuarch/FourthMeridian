@@ -128,11 +128,17 @@ export async function loadForecastIncomeStreams(
     groups.set(key, g);
   }
 
-  // ⚠️ CHRONOLOGICAL, BECAUSE THE AUTHORITIES READ A SERIES AS A SERIES. The
-  // page arrives newest-first (see the header note); FORECAST-1 walks gaps
-  // between consecutive settlements and FORECAST-5 walks the schedule forward
-  // to find the current regime. Date and amount are re-paired here rather than
-  // sorted in two arrays, so an ordering change can never mis-pair them.
+  // ⚠️ CHRONOLOGICAL, AS DEFENCE IN DEPTH. The page arrives newest-first (see the
+  // header note). Measured since: both authorities already sort defensively —
+  // `cadence.ts` uniques-and-sorts its dates, `periodic-amount.ts` sorts its
+  // observations — so removing this line changes no verdict today. It stays
+  // because a series handed to an authority should be a series, and the cost is
+  // one sort per stream.
+  //
+  // ⚠️ THE PAIRING IS THE PART THAT MATTERS. This replaced parallel `dates[]` and
+  // `amounts[]` arrays zipped by index, where any reordering of one desynchronised
+  // the other silently and a stream's current amount could come from a different
+  // settlement's date. Records make that unrepresentable.
   for (const g of groups.values()) {
     g.observations.sort((a, b) => a.date.localeCompare(b.date));
   }

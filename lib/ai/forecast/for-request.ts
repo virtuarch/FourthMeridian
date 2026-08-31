@@ -16,14 +16,16 @@
 
 import { todayUTCISO } from '@/lib/time/clock';
 import { addMonths } from '@/lib/perspectives/time-range';
-import type { SpaceContext_AI } from '@/lib/ai/types';
+import { FinanceDomains, type AccountsSectionData, type SpaceContext_AI } from '@/lib/ai/types';
 import { AssumptionOrigin, type ForecastHorizon } from '@/lib/forecast/policy';
 import { resolveForecastHorizon } from './horizon';
 import { loadForecastIncomeStreams } from './streams';
 import { assembleForecast, type AssembledForecast } from './assemble';
 import { resolvePayDates, type PayDateResult } from './pay-dates';
 import { explainForecast } from '@/lib/forecast/engine';
-import { guardForecastReply, resolveForecastGuardMode } from './numerical-guard';
+import {
+  guardForecastReply, resolveForecastGuardMode, type CurrentAuthorityFigure,
+} from './numerical-guard';
 import { db } from '@/lib/db';
 import { AuditAction } from '@/lib/audit-actions';
 import type { Prisma } from '@prisma/client';
@@ -86,12 +88,15 @@ export async function guardForecastAnswer(args: {
   forecast: AssembledForecast | undefined;
   userId: string;
   spaceId: string;
+  /** PARITY-3 — the turn's measured present; see `currentAuthorityFigures`. */
+  ctx?: SpaceContext_AI;
 }): Promise<{ reply: string; outcome: string }> {
   const { reply, forecast } = args;
   if (!forecast || 'refused' in forecast.forecast) return { reply, outcome: 'none' };
   const fc = forecast.forecast;
   const mode = resolveForecastGuardMode(process.env.AI_FORECAST_GUARD_MODE);
-  const g = guardForecastReply(reply, fc, mode, () => explainForecast(fc));
+  const g = guardForecastReply(reply, fc, mode, () => explainForecast(fc),
+    currentAuthorityFigures(args.ctx));
 
   if (g.findings.length > 0) {
     // ⚠️ OBSERVABLE BEFORE IT IS ENFORCING. Written in 'shadow' too, which is
@@ -169,4 +174,37 @@ export async function buildForecastSurfaces(args: {
       : undefined,
     payDates: await buildPayDatesForRequest({ spaceId, question, wanted: args.wantsPayDates }),
   };
+}
+
+/**
+ * PARITY-3 — the CURRENT figures this turn's own authorities measured.
+ *
+ * ⚠️ THEY WIDEN THE LICENCE, THEY DO NOT NARROW IT. Nothing here is policed by
+ * the numerical boundary and nothing here becomes sayable that was not sayable
+ * before. Their only job is to let the future rule recognise a present fact that
+ * appears inside a forward-looking paragraph — "your current net worth is
+ * $40,986.53, so by December…" — instead of redacting the correct half of the
+ * sentence along with the invented half. Omitting them would make the guard
+ * stricter and wronger, which is the failure mode FORECAST-14 spent a slice
+ * learning to avoid.
+ *
+ * Accounts only: these are the totals the assessment and the accounts payload
+ * already state, so a figure listed here is one the model was handed.
+ */
+export function currentAuthorityFigures(
+  ctx: SpaceContext_AI | undefined,
+): CurrentAuthorityFigure[] {
+  const a = ctx?.domains?.[FinanceDomains.ACCOUNTS]?.data as AccountsSectionData | undefined;
+  if (!a) return [];
+  const pairs: [number | undefined, string][] = [
+    [a.netWorth,           'current net worth'],
+    [a.totalAssets,        'current total assets'],
+    [a.totalLiabilities,   'current total liabilities'],
+    [a.totalLiquid,        'current liquid cash'],
+    [a.totalInvestments,   'current traditional investments'],
+    [a.totalDigitalAssets, 'current digital assets'],
+  ];
+  return pairs
+    .filter((p): p is [number, string] => typeof p[0] === 'number' && Number.isFinite(p[0]))
+    .map(([value, label]) => ({ value, label }));
 }
