@@ -198,8 +198,13 @@ console.log('\n[A3] authority precedence contract\n');
   check('12c. every builder emits the precedence doctrine',
     (src.match(/AUTHORITY_PRECEDENCE/g) ?? []).length >= builders.length,
     `${(src.match(/AUTHORITY_PRECEDENCE/g) ?? []).length} references for ${builders.length} builders`);
-  check('12d. the master builder labels its blocks too',
-    (src.match(/AUTHORITATIVE — deterministic verdicts/g) ?? []).length >= 2);
+  // ⚠️ 12d IS BEHAVIOURAL, NOT A SOURCE COUNT. It used to require the literal
+  // label twice in this file — once per builder. PARITY-2 gave both builders
+  // ONE shared per-Space body, so the label is written once and emitted twice,
+  // and the count fell to 1 while the prompts were unchanged. A proxy that
+  // fails on a refactor it should be indifferent to is measuring the source,
+  // not the contract; the assertion below measures the built prompts instead
+  // and is checked where both are in hand (see 13/14 at the end of this file).
 }
 
 // ── A4.1 — the two defects A4 MEASURED, pinned as prompt-contract regressions ─
@@ -255,6 +260,10 @@ console.log('\n[A3] authority precedence contract\n');
 // ── Master prompt carries the same contract ─────────────────────────────────
 {
   const master = buildMasterSystemPrompt([ctx], [assessment], route);
+  check('12d. BOTH builders label their authoritative blocks',
+    master.includes('AUTHORITATIVE — deterministic verdicts') &&
+    prompt.includes('AUTHORITATIVE — deterministic verdicts'),
+    `master=${master.includes('AUTHORITATIVE — deterministic verdicts')} space=${prompt.includes('AUTHORITATIVE — deterministic verdicts')}`);
   check('13. master (cross-Space) prompt carries the precedence doctrine',
     master.includes('Authority precedence'));
   check('14. master prompt orders assessment before context',

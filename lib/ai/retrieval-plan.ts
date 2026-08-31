@@ -234,11 +234,19 @@ const NET_WORTH_RE =
 const FORECAST_VERB_RE =
   /\b(forecast|forecasts|forecasting|project(?:ion|ions|ed|ing)?|runway|cash ?flow projection|ending cash|burn rate)\b/i;
 const FORECAST_PHRASE_RE =
+  // ⚠️ `net ?worth` MATCHES BOTH SPELLINGS. Measured on a real conversation:
+  // "so whhat would my networth be by eoy" resolved INVESTMENTS+NET_WORTH but
+  // NOT forecast, purely because the user wrote "networth" as one word. That
+  // single space decided whether the deterministic substrate ran at all — with
+  // no FORECAST there is no forecast section, no FORECAST_DOCTRINE and no
+  // FORECAST-14 guard, and the turn met a forward question holding only
+  // historical means. The typo in "whhat" is not the cause and is not chased
+  // here; the spelling variant is bounded and worth matching.
   // ⚠️ BOTH WORD ORDERS. "what will my cash look like" and "what my cash could
   // look like" are the same ask, and the second is how it arrives inside a
   // comparison — "compare what I spent with what my cash could look like" —
   // which is exactly the multi-concept question §22 requires to load both.
-  /\b(?:what (?:will|would|could) my (?:cash|balance|money|savings|finances|net worth)|my (?:cash|balance|money|savings|finances) (?:will|would|could) (?:look|be|last|end)|how much (?:cash|money) (?:will|would) i have|where will i be (?:financially|in)|how long (?:will|can) my (?:cash|money|savings) last|what (?:will|would) i have (?:left|by)|will i (?:run out|have enough))\b/i;
+  /\b(?:what (?:will|would|could) my (?:cash|balance|money|savings|finances|net ?worth)|my (?:cash|balance|money|savings|finances) (?:will|would|could) (?:look|be|last|end)|how much (?:cash|money) (?:will|would) i have|where will i be (?:financially|in)|how long (?:will|can) my (?:cash|money|savings) last|what (?:will|would) i have (?:left|by)|will i (?:run out|have enough))\b/i;
 
 /**
  * Future-tense language that is NOT a cash-path request.

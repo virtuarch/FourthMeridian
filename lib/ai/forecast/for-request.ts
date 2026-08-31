@@ -21,13 +21,12 @@ import { AssumptionOrigin, type ForecastHorizon } from '@/lib/forecast/policy';
 import { resolveForecastHorizon } from './horizon';
 import { loadForecastIncomeStreams } from './streams';
 import { assembleForecast, type AssembledForecast } from './assemble';
-import { detectPayDateAsk, resolvePayDates, type PayDateResult } from './pay-dates';
+import { resolvePayDates, type PayDateResult } from './pay-dates';
 import { explainForecast } from '@/lib/forecast/engine';
 import { guardForecastReply, resolveForecastGuardMode } from './numerical-guard';
 import { db } from '@/lib/db';
 import { AuditAction } from '@/lib/audit-actions';
 import type { Prisma } from '@prisma/client';
-import type { MasterCapabilities } from '@/lib/ai/prompts/system-prompt';
 
 /**
  * The horizon a forecast question with no stated period gets.
@@ -170,40 +169,4 @@ export async function buildForecastSurfaces(args: {
       : undefined,
     payDates: await buildPayDatesForRequest({ spaceId, question, wanted: args.wantsPayDates }),
   };
-}
-
-/**
- * PARITY-1 — every question-scoped capability a MASTER turn needs, in one call.
- *
- * ⚠️ N PER-SPACE ANSWERS, NEVER ONE MERGED ONE. Each Space resolves its own
- * streams against its own ledger and keeps its own verdict, aligned by index
- * with the contexts the prompt renders. Merging them would need a rule for
- * whose cadence wins when the same employer pays into two Spaces, and there is
- * no such rule — the honest cross-Space answer is "here are the dates, per
- * Space", which is what the per-Space blocks say.
- *
- * ⚠️ THE GATE IS THE CAPABILITY'S OWN DETECTOR. Master mode builds no CF-8
- * plan (the retrieval planner is envelope-scoped and an envelope is per Space),
- * so `detectPayDateAsk` — the same predicate `resolvePayDates` uses to choose
- * NEXT_ONE vs UPCOMING — decides whether the read happens at all. A non-pay
- * question pays nothing: no gate, no query, N times.
- *
- * Fails closed per Space, like its siblings: one Space throwing leaves that
- * Space without a block instead of removing everyone's.
- */
-export async function buildMasterCapabilities(
-  contexts: readonly { space: { id: string } }[], question: string,
-): Promise<MasterCapabilities> {
-  if (detectPayDateAsk(question) === null) return { question };
-  const asOfISO = todayUTCISO();
-  const payDatesList = await Promise.all(contexts.map(async (c) => {
-    try {
-      const streams = await loadForecastIncomeStreams(c.space.id, asOfISO);
-      return resolvePayDates(streams, asOfISO, question);
-    } catch (err) {
-      console.error(`[ai/pay-dates] master resolution failed for ${c.space.id}:`, err);
-      return undefined;
-    }
-  }));
-  return { question, payDatesList };
 }

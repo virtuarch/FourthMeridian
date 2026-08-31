@@ -65,6 +65,24 @@ export interface ResolvedIncomeStream {
   truncated: boolean;
 }
 
+/**
+ * PARITY-2 — the read itself, injectable.
+ *
+ * ⚠️ THE SEAM EXISTS BECAUSE THE PAGE BOUNDARY IS THE DEFECT SURFACE. PARITY-1
+ * found this loader taking the OLDEST page of its window, which on a real Space
+ * hid seven months of the current regime; no test could reach that, because the
+ * behaviour only appears once a corpus exceeds the read authority's 100-row cap
+ * and `queryTransactions` talks to Postgres. So the ONE dependency that decides
+ * which rows arrive is a parameter with a production default.
+ *
+ * ⚠️ IT IS `typeof queryTransactions`, DELIBERATELY. Not a hand-written port,
+ * and not a repository abstraction: a narrowed structural type would let a fake
+ * satisfy a contract the real read authority does not, which is the fidelity
+ * gap this seam exists to close. Widening `queryTransactions` breaks the fakes,
+ * which is the correct direction for the failure to travel.
+ */
+export type IncomeTransactionReader = typeof queryTransactions;
+
 const DAY_MS = 86_400_000;
 const shift = (iso: string, n: number) =>
   new Date(Date.parse(`${iso}T00:00:00.000Z`) + n * DAY_MS).toISOString().slice(0, 10);
@@ -78,9 +96,9 @@ const shift = (iso: string, n: number) =>
  * assembler shows. Everything after the grouping is a delegated verdict.
  */
 export async function loadForecastIncomeStreams(
-  spaceId: string, asOfISO: string,
+  spaceId: string, asOfISO: string, read: IncomeTransactionReader = queryTransactions,
 ): Promise<ResolvedIncomeStream[]> {
-  const page = await queryTransactions({
+  const page = await read({
     spaceId,
     query: {
       dateFrom: shift(asOfISO, -LOOKBACK_DAYS),

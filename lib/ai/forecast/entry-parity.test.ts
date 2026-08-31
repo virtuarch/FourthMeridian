@@ -26,17 +26,37 @@
  * for the single-Space assembler, and both prompts are perfectly faithful there.
  * The defect was never in the assembler — it was that the product's default door
  * opened onto a different one. So the invariant here is a RELATION between the
- * two entry points, not a property of either, and it keeps holding as new
- * question-scoped capabilities land.
+ * two entry points, not a property of either.
+ *
+ * ── PARITY-2 — why the relation is now stated over CLASSES ──────────────────
+ * PARITY-1 pinned the two prompts that had failed. The next real conversation
+ * failed two more ways: `holdings_summary` was never assembled on any master
+ * turn (master passed no evidence envelope, so CF-6 could not license the
+ * domain) and no forecast ever ran (master never planned, so the model met a
+ * forecast question holding a monthly income, a monthly spend and a cash
+ * balance, and multiplied — 4 of 6 primed turns produced an unlicensed year-end
+ * figure, and with one such figure in history 5 of 5 follow-ups treated the
+ * assistant's own prose as evidence).
+ *
+ * Pinning prompts would have pinned the same two prompts again. So the gate now
+ * asserts BLOCK-SET EQUALITY for a question in every capability class: whatever
+ * the named-Space prompt renders for a question, master renders too. A future
+ * capability wired into one entry point and not the other fails here without
+ * anyone adding a case for it — which is the only version of this test that
+ * stops the pattern rather than the instance.
  */
 
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { buildMasterSystemPrompt, buildSpaceSystemPrompt } from '@/lib/ai/prompts/system-prompt';
+import {
+  buildMasterSystemPrompt, buildSpaceSystemPrompt, renderForecastScopeRefusal,
+  type SpaceSurfaces,
+} from '@/lib/ai/prompts/system-prompt';
+import { planRetrieval, Concepts } from '@/lib/ai/retrieval-plan';
 import { routeForMessages } from '@/lib/ai/chat/message-analysis';
 import { FinanceDomains, type AccountsSectionData, type SpaceContext_AI } from '@/lib/ai/types';
 import { EvidenceAvailability, type CoverageEnvelope } from '@/lib/ai/coverage-envelope';
-import { resolvePayDates } from './pay-dates';
+import { detectPayDateAsk, resolvePayDates } from './pay-dates';
 import { resolveStreamActivity, ActivityState } from '@/lib/forecast/stream-activity';
 import { CadenceKind, CadenceProvenance, type Cadence } from '@/lib/forecast/cadence';
 import { AmountBasis, EventProvenance, FlowRole } from '@/lib/forecast/future-cash-event';
@@ -108,20 +128,33 @@ const payDates = resolvePayDates([STREAM], AS_OF, Q_PAY);
 const msgs = (q: string) => [{ role: 'user' as const, content: q }];
 const assessment = computeAssessment(ctx);
 
-const master = (q: string, withPayDates: boolean) => buildMasterSystemPrompt(
-  [ctx], [], routeForMessages(msgs(q) as never), undefined,
-  { attemptedSpaceCount: 1, failedSpaceNames: [], distinctAccountCount: 1 },
-  { question: q, payDatesList: withPayDates ? [payDates] : undefined });
+/** The surfaces a named-Space turn would resolve for this question. */
+const surfacesFor = (q: string): SpaceSurfaces => ({
+  envelope, plan: planRetrieval({ messages: msgs(q), envelope, now: new Date(`${AS_OF}T12:00:00Z`) }),
+  payDates: detectPayDateAsk(q) ? payDates : undefined,
+});
 
-const space = (q: string, withPayDates: boolean) => buildSpaceSystemPrompt(
-  ctx, assessment, routeForMessages(msgs(q) as never), undefined, envelope, q,
-  undefined, undefined, withPayDates ? payDates : undefined);
+const master = (q: string, s: SpaceSurfaces = surfacesFor(q), refusal?: string[]) =>
+  buildMasterSystemPrompt([ctx], [assessment], routeForMessages(msgs(q) as never), undefined,
+    { attemptedSpaceCount: 1, failedSpaceNames: [], distinctAccountCount: 1 },
+    { question: q, surfaces: [s], forecastScopeRefusal: refusal });
+
+const space = (q: string, s: SpaceSurfaces = surfacesFor(q)) =>
+  buildSpaceSystemPrompt(ctx, assessment, routeForMessages(msgs(q) as never), s.debtPayments,
+    s.envelope, q, s.plan, s.forecast, s.payDates);
+
+/** Every `=== BLOCK ===` marker a prompt renders, deduped. */
+const blocks = (p: string) => new Set(
+  [...p.matchAll(/^=== ([A-Z][A-Z0-9 :()/&-]+) ===$/gm)].map((m) => m[1]!));
 
 // ── EP1 — the entry seam itself ─────────────────────────────────────────────
 //
 // The reason master is the path that matters. If this default ever changes,
 // the rest of this file is measuring a door nobody opens, and the comment above
 // stops being true — so it is pinned rather than assumed.
+/** Source proxies read CODE, never the prose that explains it — see EP8. */
+const codeOnly = (t: string) =>
+  t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 const client = read('components/dashboard/AnalyzeClient.tsx');
 check('EP1 the Analyze client defaults to master mode',
   /useState<string>\("master"\)/.test(client),
@@ -129,73 +162,107 @@ check('EP1 the Analyze client defaults to master mode',
 check('EP1b master is a real option the route branches on',
   /spaceId === 'master'/.test(read('app/api/ai/chat/route.ts')));
 
-// ── EP2 — the capability blocks reach the DEFAULT entry ─────────────────────
-const mInvest = master(Q_INVEST, false);
-check('EP2 master renders the CF-7 composition for the investments prompt',
-  mInvest.includes('=== INVESTMENT COMPOSITION ==='),
-  'the default entry answers an investments question with no composition block');
-check('EP2b master names BOTH components, not the traditional total alone',
-  /Traditional investments:/.test(mInvest) && /Digital assets:/.test(mInvest) &&
-  /Combined investments:/.test(mInvest),
-  'digital assets are missing from the default entry\'s investment statement');
-
-const mPay = master(Q_PAY, true);
-check('EP3 master renders the FORECAST-16 pay-date block',
-  mPay.includes('=== EXPECTED PAY DATES ==='),
-  'the default entry answers a pay-date question with nothing but raw income rows to guess from');
-
-// ── EP4 — PARITY, the invariant that outlives these two prompts ─────────────
+// ── EP2 — BLOCK-SET PARITY, one question per capability class ───────────────
 //
-// Stated as a relation so a future question-scoped capability wired into the
-// named-Space assembler and forgotten in master fails HERE rather than in a
-// user's first conversation.
-const CAPABILITY_BLOCKS = ['=== INVESTMENT COMPOSITION ===', '=== EXPECTED PAY DATES ==='];
-for (const [label, q, wantPay] of [['investments', Q_INVEST, false], ['pay dates', Q_PAY, true]] as const) {
-  const s = space(q, wantPay), m = master(q, wantPay);
-  for (const block of CAPABILITY_BLOCKS) {
-    check(`EP4 ${label}: master matches named-Space on ${block}`,
-      s.includes(block) === m.includes(block),
-      `named-Space=${s.includes(block)} master=${m.includes(block)}`);
-  }
+// The invariant that outlives any particular prompt. Master may add blocks a
+// named Space has no use for (the cross-Space arithmetic rule, a scope
+// refusal); it may never render FEWER.
+const CLASSES: [string, string][] = [
+  ['PAY_DATES',              Q_PAY],
+  ['INVESTMENTS composition', Q_INVEST],
+  ['INVESTMENTS holdings',   'can you not see my portfolio holdings?'],
+  ['NET_WORTH',              'what is my net worth?'],
+  ['SPENDING',               'where can I cut spending?'],
+  ['DEBT',                   'how is my debt situation?'],
+  ['COVERAGE',               'how far back does my data go?'],
+];
+for (const [label, q] of CLASSES) {
+  const missing = [...blocks(space(q))].filter((b) => !blocks(master(q)).has(b));
+  check(`EP2 ${label}: master renders every block the named Space does`,
+    missing.length === 0, `master is missing: ${missing.join(', ')}`);
 }
 
-// ── EP5 — master carries no capability the named entry lacks ────────────────
+// ── EP3 — the two blocks PARITY-1 fixed, named explicitly ───────────────────
+check('EP3 investments composition names BOTH components in master',
+  /Traditional investments:/.test(master(Q_INVEST)) &&
+  /Digital assets:/.test(master(Q_INVEST)) &&
+  /Combined investments:/.test(master(Q_INVEST)),
+  'digital assets are missing from the default entry\'s investment statement');
+check('EP3b pay dates render in master',
+  blocks(master(Q_PAY)).has('EXPECTED PAY DATES'));
+
+// ── EP4 — FORECAST: master answers deterministically or REFUSES ─────────────
 //
-// The converse direction. A cross-Space CASH FORECAST is the case this guards:
-// Spaces share accounts, so projecting over summed balances would be a new
-// aggregation authority built on knowingly overlapping inputs. Pay dates and a
-// composition compose per Space; a projection does not.
-check('EP5 master builds no cross-Space cash forecast',
-  !master('what will my balance be in three months?', false).includes('=== CASH FORECAST ==='),
+// Never silently. The measured failure was not that master lacked a forecast —
+// it was that lacking one, it computed a year-end figure from historical means.
+const Q_EOY = 'how much money would i have by the eoy based on my financial data';
+const forecastPlan = planRetrieval({
+  messages: msgs(Q_EOY), envelope, now: new Date(`${AS_OF}T12:00:00Z`) });
+check('EP4 the EOY question resolves FORECAST',
+  forecastPlan.concepts.includes(Concepts.FORECAST), forecastPlan.concepts.join(','));
+
+const refusal = renderForecastScopeRefusal(['Personal', 'Household']);
+const mRefused = master(Q_EOY, surfacesFor(Q_EOY), refusal);
+check('EP4b an unscopeable forecast REFUSES in the prompt',
+  blocks(mRefused).has('CASH FORECAST: REFUSED (SCOPE)'),
+  'master met a forecast question with no forecast and no refusal — the exact silence that was filled with arithmetic');
+check('EP4c the refusal forbids the substitute arithmetic by name',
+  /do not multiply any monthly income, monthly spending, or net cash flow figure by a number of months/i
+    .test(mRefused) && /do not add such a product to a cash or net-worth balance/i.test(mRefused));
+check('EP4d the refusal names the Spaces to choose between',
+  /"Personal"/.test(mRefused) && /"Household"/.test(mRefused));
+
+// ── EP5 — forecast follow-up: the assistant's own prose is not authority ────
+//
+// FORECAST-13 re-derives facts from USER messages for this reason; master had
+// no equivalent, and 5 of 5 follow-ups reused a projection the assistant itself
+// had invented one turn earlier.
+check('EP5 the refusal strips authority from prior assistant figures',
+  /appeared in your own earlier replies/i.test(mRefused) &&
+  /are NOT evidence/i.test(mRefused));
+
+// ── EP6 — master builds no cross-Space cash forecast ────────────────────────
+//
+// The converse direction, and the refusal PARITY-1 got right. Spaces share
+// accounts, so projecting over summed balances would be a new aggregation
+// authority over knowingly overlapping inputs.
+check('EP6 a multi-Space master turn resolves NO forecast',
+  !blocks(master(Q_EOY, surfacesFor(Q_EOY), refusal)).has('CASH FORECAST'),
   'master grew a forecast section — a cross-Space projection over shared accounts');
+check('EP6b the resolver refuses to forecast when more than one Space is eligible',
+  /const forecastable = spaceIds\.length === 1;/.test(codeOnly(read('lib/ai/chat/master-surfaces.ts'))));
 
-// ── EP6 — the wiring, at the seam the route owns ────────────────────────────
-const route = read('app/api/ai/chat/route.ts');
-check('EP6 master-mode buildContext receives the question',
-  /buildContext\(m\.spaceId, user\.id, \{[^}]*question: masterQuestion/s.test(route),
+// ── EP7 — the wiring, at the seam the route owns ────────────────────────────
+const route = codeOnly(read('app/api/ai/chat/route.ts'));
+check('EP7 master resolves surfaces through the shared resolver',
+  /resolveMasterSurfaces\(\{/.test(route),
   'master assembles a context that cannot answer the question it was assembled for');
-check('EP6b master-mode prompt receives the capabilities',
-  /buildMasterCapabilities\(contexts, masterQuestion\)/.test(route));
+check('EP7b the master forecast reaches FORECAST-14\'s guard',
+  /forecast = ms\.forecast; forecastSpaceId = ms\.forecastSpaceId;/.test(route) &&
+  /spaceId: forecastSpaceId \?\? spaceId/.test(route),
+  'a master forecast would be generated but never guarded');
+check('EP7c the evidence envelope reaches master assembly',
+  /evidence: envelope/.test(codeOnly(read('lib/ai/chat/master-surfaces.ts'))),
+  'without the envelope CF-6 never licenses holdings_summary — the holdings defect');
 
-// ── EP7 — the read that fed the pay-date failure ────────────────────────────
+// ── EP8 — the read that fed the pay-date failure ────────────────────────────
 //
-// The masked SECOND defect. `loadForecastIncomeStreams` took the OLDEST page of
-// a 730-day window: on a real Space that page ended 2026-01-21 while the ledger
-// ran to 2026-08-28, so seven months of the current regime were unreadable.
-// A source assertion because the truncation only appears past the read
-// authority's 100-row page cap and `queryTransactions` is a database edge with
-// no injection seam; EP7b pins the CONSEQUENCE behaviourally, which is the part
+// The masked SECOND defect of PARITY-1. `loadForecastIncomeStreams` took the
+// OLDEST page of a 730-day window: on a real Space that page ended 2026-01-21
+// while the ledger ran to 2026-08-28, so seven months of the current regime
+// were unreadable. EP8b pins the CONSEQUENCE behaviourally, which is the part
 // that explains why the direction is not a stylistic choice.
+//
 // ⚠️ COMMENTS STRIPPED FIRST. The first version of this check failed on the
-// header note above, which QUOTES the old value while explaining it — the same
-// way CF-10's size probe matched the doctrine preamble instead of the section.
-// A source proxy has to read code, or it is reading prose about code.
+// header note in `streams.ts`, which QUOTES the old value while explaining it —
+// the same way CF-10's size probe matched the doctrine preamble instead of the
+// section. A source proxy has to read code, or it is reading prose about code.
 const streams = read('lib/ai/forecast/streams.ts')
   .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
-check('EP7 the income read takes the NEWEST page',
+check('EP8 the income read takes the NEWEST page',
   /sort: 'newest'/.test(streams) && !/sort: 'oldest'/.test(streams),
   'truncating from the recent end makes every live stream look silent');
-check('EP7b a stale observation horizon withholds the projection licence',
+check('EP8b a stale observation horizon withholds the projection licence',
   resolveStreamActivity({
     cadence, settlements: ['2026-07-17', '2026-07-31', '2026-08-14'],
     observedThroughISO: '2026-01-21', asOfISO: AS_OF,
@@ -203,6 +270,6 @@ check('EP7b a stale observation horizon withholds the projection licence',
   'a stale ledger horizon must not read as a current stream');
 
 console.log(failures === 0
-  ? `\nPARITY-1 entry parity: ${passes} checks passed.`
-  : `\nPARITY-1 entry parity: ${failures} FAILURE(S) (${passes} passed).`);
+  ? `\nPARITY-1/2 entry parity: ${passes} checks passed.`
+  : `\nPARITY-1/2 entry parity: ${failures} FAILURE(S) (${passes} passed).`);
 process.exit(failures === 0 ? 0 : 1);

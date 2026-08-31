@@ -70,14 +70,16 @@ import type { FinancialAssessment }  from '@/lib/ai/intelligence';
 import { fetchPerLiabilityDebtPayments } from '@/lib/ai/intelligence/debt-payments';
 import { loadCoverageEnvelope, type CoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { planRetrieval, planAuditPayload, Concepts, type RetrievalPlan } from '@/lib/ai/retrieval-plan';
-import { buildForecastSurfaces, buildMasterCapabilities, guardForecastAnswer } from '@/lib/ai/forecast/for-request';
+import { buildForecastSurfaces, guardForecastAnswer } from '@/lib/ai/forecast/for-request';
+import { resolveMasterSurfaces } from '@/lib/ai/chat/master-surfaces';
 import type { PayDateResult } from '@/lib/ai/forecast/pay-dates';
 import type { AssembledForecast } from '@/lib/ai/forecast/assemble';
 
 import { detectsPayoffIntent, detectsExplicitUpdateIntent } from '@/lib/ai/intent';
 import type { IntentRoute }          from '@/lib/ai/intent';
 import { planContextSelection, DEFAULT_CONTEXT_BUDGET_TOKENS } from '@/lib/ai/context-priority';
-import { buildSpaceSystemPrompt, buildMasterSystemPrompt, omitDomainJson } from '@/lib/ai/prompts/system-prompt';
+import { buildSpaceSystemPrompt, buildMasterSystemPrompt, omitDomainJson,
+  renderForecastScopeRefusal } from '@/lib/ai/prompts/system-prompt';
 import { extractKnowledgeGaps } from '@/lib/ai/prompts/context-serializer';
 import {
   routeForMessages,
@@ -363,6 +365,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   let guardAssessments: FinancialAssessment[] = [];
   let forecast: AssembledForecast | undefined; // FORECAST-13/14/16 — hoisted;
   let payDates: PayDateResult | undefined; let forecastGuardOutcome = 'none';
+  // PARITY-2 — the Space a master forecast belongs to, so FORECAST-14's audit
+  // row carries a real Space id rather than the literal 'master'.
+  let forecastSpaceId: string | undefined;
   // Knowledge gaps assembled at context time — returned alongside the reply so
   // the client can render structured input UI without parsing assistant text.
   let gapsForResponse: KnowledgeGap[] = [];
@@ -427,33 +432,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       );
     }
 
-    // PARITY-1 — master is the DEFAULT entry, so the question must reach it too.
+    // PARITY-2 — master resolves the SAME per-Space surfaces a named Space
+    // does: envelope, plan, context, forecast and pay dates, in that order.
     const masterQuestion = latestUserMessage(messages) ?? '';
-    const contextResults = await Promise.allSettled(
-      memberships.map((m) => buildContext(m.spaceId, user.id, {
-        scopeHint: 'full', transactionWindow, drilldown, question: masterQuestion })),
-    );
-
-    const contexts: SpaceContext_AI[] = contextResults
-      .filter(
-        (r): r is PromiseFulfilledResult<SpaceContext_AI> =>
-          r.status === 'fulfilled',
-      )
-      .map((r) => r.value);
-
+    const ms = await resolveMasterSurfaces({
+      userId: user.id, spaceIds: memberships.map((m) => m.spaceId),
+      messages, question: masterQuestion, transactionWindow, drilldown });
+    const contexts: SpaceContext_AI[] = ms.resolved.map((r) => r.ctx);
     // REVIEW-3 C-9 (KD-8) — failed Spaces are logged AND surfaced. The prompt
     // previously stated the SURVIVOR count as the user's Space count, so a
     // build failure silently shrank the user's financial world.
-    const failedSpaceNames: string[] = [];
-    contextResults.forEach((r, i) => {
-      if (r.status === 'rejected') {
-        failedSpaceNames.push(memberships[i]?.space.name ?? 'Unknown space');
-        console.error(
-          `[api/ai/chat] buildContext failed for Space ${memberships[i]?.spaceId}:`,
-          r.reason,
-        );
-      }
-    });
+    const failedSpaceNames = ms.failedIds.map(
+      (id) => memberships.find((m) => m.spaceId === id)?.space.name ?? 'Unknown space');
 
     if (contexts.length === 0) {
       return NextResponse.json(
@@ -481,9 +471,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const masterDebtPayments = await Promise.all(
       contexts.map((c) => fetchPerLiabilityDebtPayments(c)),
     );
+    // PARITY-2 — a forecast that could not be scoped REFUSES in as many words.
+    // Silence is what let the model multiply a historical mean by four months.
+    forecast = ms.forecast; forecastSpaceId = ms.forecastSpaceId;
+    const scopeRefusal = ms.forecastAsked && !ms.forecast
+      ? renderForecastScopeRefusal(contexts.map((c) => c.space.name))
+      : undefined;
     systemPrompt = buildMasterSystemPrompt(contexts, masterAssessments, intentRoute, masterDebtPayments,
       { attemptedSpaceCount: memberships.length, failedSpaceNames, distinctAccountCount },
-      await buildMasterCapabilities(contexts, masterQuestion));
+      { question: masterQuestion, surfaces: ms.resolved.map((r) => r.surfaces),
+        forecastScopeRefusal: scopeRefusal });
     // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
     await logShadowSelectionPlans(user.id, contexts, masterAssessments, intentRoute);
     // REVIEW-3 C-9 (KD-8) — deduplicate flat-mapped gaps: an account shared
@@ -657,7 +654,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     try { // FORECAST-14 — numerical boundary; no-op off-forecast. Non-fatal.
       ({ reply, outcome: forecastGuardOutcome } =
-        await guardForecastAnswer({ reply, forecast, userId: user.id, spaceId }));
+        await guardForecastAnswer({
+          reply, forecast, userId: user.id, spaceId: forecastSpaceId ?? spaceId }));
     } catch (fgErr) { console.error('[ai/forecast-guard] non-fatal:', fgErr); }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error.';

@@ -246,57 +246,10 @@ export function buildSpaceSystemPrompt(
     serializeRoutingBlock(route),
     '=== END ROUTING ===',
     '',
-    // A3 — the markers themselves are unchanged (KD-17/KD-18/MC1 tripwires pin
-    // that wording); the one-line labels above each block carry the precedence.
-    'AUTHORITATIVE — deterministic verdicts. Explain them; do not reverse them.',
-    '=== FINANCIAL ASSESSMENT ===',
-    serializeAssessmentBlock(
-      annotations, analysisWindowNote(ctx), ctx.space.reportingCurrency, forecast !== undefined,
-      suppressHistoricalSpending(plan, forecast !== undefined)),
-    '=== END ASSESSMENT ===',
-    '',
-    // ── FORECAST-11 — how to SPEAK the block that follows ──────────────────
-    //
-    // Immediately before the forecast, and only when there is one. Placement is
-    // the same argument CF-5 made for the envelope: read after the numbers, a
-    // rule about how to present them is a correction to a sentence already
-    // formed; read before them, it is the frame they arrive in.
-    ...(forecast ? [FORECAST_DOCTRINE, ''] : []),
-    // FORECAST-16 — the capability's own block. Deliberately NOT behind
-    // FORECAST_DOCTRINE: none of that doctrine is about dates, and a pay-date
-    // answer should not carry 413 tokens of cash-forecast rules.
-    ...(payDates ? renderPayDates(payDates) : []),
-    // ── FORECAST-10 — the deterministic forecast, when one was asked for ────
-    //
-    // Placed with the AUTHORITATIVE blocks and AFTER the assessment, so the two
-    // lines the assessment measures over the past are read before the forward
-    // statement that supersedes them for anything predictive. Every figure
-    // inside arrives already labelled FACTUALLY_LICENSED, ASSUMPTION_DEPENDENT,
-    // HYPOTHETICAL or REFUSED — see FORECAST-8's vocabulary, rendered verbatim.
-    ...(forecast ? renderForecastSection(forecast) : []),
-    // ── CF-5 — the evidence envelope, BEFORE the context it bounds ──────────
-    //
-    // Placement is load-bearing. Read after the context block, "3.5 years exist"
-    // is a correction to an impression already formed; read before it, the
-    // bounded context that follows is understood as a SELECTION from a larger
-    // record — which is the only reading that makes "I have history back to
-    // March 2023, and I'm using the last 90 days here" a natural sentence.
-    ...renderEnvelope(ctx, envelope),
-    // ── CF-7 — what INVESTMENTS means, when the question is about it ────────
-    //
-    // After the envelope (what exists) and before the context (what was
-    // loaded), because it is a statement about how two loaded authorities
-    // compose. Rendered only for an investment question, so no other prompt
-    // pays for it.
-    ...renderConcepts(ctx, question),
-    'SUPPORTING EVIDENCE — facts you may cite and reason from. Anything here that no assessment dimension grades is context, not a graded finding, and must not be presented as one.',
-    '=== SPACE CONTEXT ===',
-    // CF-2 — the route is the only source of the user's ASK; the context is the
-    // only source of what was loaded. This is the one place both are in hand.
-    serializeContextBlock(
-      ctx, debtPayments, temporalScopeFor(ctx, route),
-      omitDomainJson(plan), omitTransactionAnalysis(plan)),
-    '=== END CONTEXT ===',
+    // PARITY-2 — the SHARED per-Space body. Identical text in master mode, so
+    // a capability cannot reach one entry point and not the other.
+    ...renderSpaceEvidenceBody(ctx, annotations, route, question,
+      { envelope, plan, debtPayments, forecast, payDates }),
   ].join('\n');
 }
 
@@ -357,16 +310,121 @@ function buildMasterAliasGuidance(contexts: SpaceContext_AI[]): string {
  * the prior prompt shape.
  */
 export interface MasterCapabilities {
-  /** The latest user message — CF-7 resolves its own breadth from it. */
-  question?:     string;
-  /** FORECAST-16 pay dates, ALIGNED BY INDEX with `contexts`. */
-  payDatesList?: (PayDateResult | undefined)[];
+  /** The latest user message — CF-7 and CF-6 resolve their own breadth from it. */
+  question?: string;
+  /**
+   * PARITY-2 — the resolved surfaces, ALIGNED BY INDEX with `contexts`. One bag
+   * per Space, rendered by the same body the named-Space prompt uses.
+   */
+  surfaces?: (SpaceSurfaces | undefined)[];
+  /**
+   * PARITY-2 — set when FORECAST was asked for and could not be scoped to one
+   * Space. Renders an explicit refusal instead of leaving a silent hole the
+   * model fills with historical means. See `renderForecastScopeRefusal`.
+   */
+  forecastScopeRefusal?: string[];
 }
 
 export interface MasterRollup {
   attemptedSpaceCount:  number;
   failedSpaceNames:     string[];
   distinctAccountCount: number;
+}
+
+/**
+ * PARITY-2 — EVERY per-Space surface a prompt can carry, in one bag.
+ *
+ * ⚠️ THIS EXISTS BECAUSE PARITY-1 PICKED THE WRONG SEAM. That slice wired the
+ * two capabilities it had just watched fail — a question and pay dates — into
+ * master by hand, and the very next real conversation found the next two:
+ * holdings never assembled (master passed no `evidence`, so CF-6 never licensed
+ * the domain) and no forecast at all (master never planned, so FORECAST-10
+ * never ran and the model multiplied a historical mean by four months). An
+ * allowlist of capabilities is a list that is always one capability out of
+ * date; the failure mode is structural, not a series of oversights.
+ *
+ * So the surfaces travel as ONE value and both modes render the SAME body from
+ * it. A capability added to `renderSpaceEvidenceBody` reaches master by
+ * construction, and the parity gate can then assert an equality of BLOCKS
+ * rather than enumerating the capabilities anybody remembered to list.
+ */
+export interface SpaceSurfaces {
+  envelope?:     CoverageEnvelope;
+  plan?:         RetrievalPlan;
+  debtPayments?: DebtPaymentLine[];
+  forecast?:     AssembledForecast;
+  payDates?:     PayDateResult;
+}
+
+/**
+ * PARITY-2 — the evidence body for ONE Space: identical in both modes.
+ *
+ * Everything here is a statement about a single Space, which is what makes
+ * master's per-Space blocks composable without inventing cross-Space authority.
+ * The ORDER is FORECAST-10/CF-5/CF-7's and is load-bearing — see the comments
+ * on each block, which explain why each is read before the next.
+ */
+function renderSpaceEvidenceBody(
+  ctx: SpaceContext_AI,
+  assessment: FinancialAssessment | undefined,
+  route: IntentRoute,
+  question: string | undefined,
+  s: SpaceSurfaces,
+): string[] {
+  const { envelope, plan, debtPayments, forecast, payDates } = s;
+  return [
+    'AUTHORITATIVE — deterministic verdicts. Explain them; do not reverse them.',
+    '=== FINANCIAL ASSESSMENT ===',
+    assessment
+      ? serializeAssessmentBlock(
+        assessment, analysisWindowNote(ctx), ctx.space.reportingCurrency, forecast !== undefined,
+        suppressHistoricalSpending(plan, forecast !== undefined))
+      : '(no assessment available)',
+    '=== END ASSESSMENT ===',
+    '',
+    ...(forecast ? [FORECAST_DOCTRINE, ''] : []),
+    ...(payDates ? renderPayDates(payDates) : []),
+    ...(forecast ? renderForecastSection(forecast) : []),
+    ...renderEnvelope(ctx, envelope),
+    ...renderConcepts(ctx, question),
+    'SUPPORTING EVIDENCE — facts you may cite and reason from. Anything here that no assessment dimension grades is context, not a graded finding, and must not be presented as one.',
+    '=== SPACE CONTEXT ===',
+    serializeContextBlock(
+      ctx, debtPayments, temporalScopeFor(ctx, route),
+      omitDomainJson(plan), omitTransactionAnalysis(plan)),
+    '=== END CONTEXT ===',
+  ];
+}
+
+/**
+ * PARITY-2 — what master says when a forecast is ASKED FOR but cannot be scoped.
+ *
+ * ⚠️ THE REFUSAL IS THE FEATURE. A cash projection runs off account balances and
+ * Spaces share accounts, so a cross-Space forecast would be a new aggregation
+ * authority over knowingly overlapping inputs — PARITY-1 declined to build one
+ * and that decision stands. But declining to BUILD is not declining to ANSWER:
+ * with no forecast section and no suppression, the model met a forecast question
+ * holding a measured monthly income, a measured monthly spend and a cash
+ * balance, and did the arithmetic itself. Measured on the real corpus, 4 of 6
+ * primed turns produced an unlicensed year-end figure.
+ *
+ * So the absence is made EXPLICIT and the substitutes are named and forbidden.
+ * The last line addresses the other half of the same failure: with the prior
+ * projection in history, 5 of 5 follow-ups treated the assistant's own prose as
+ * evidence — FORECAST-13 re-derives facts from USER messages for exactly this
+ * reason, and master had no equivalent.
+ */
+export function renderForecastScopeRefusal(spaceNames: string[]): string[] {
+  return [
+    'AUTHORITATIVE — deterministic verdict. Explain it; do not reverse it.',
+    '=== CASH FORECAST: REFUSED (SCOPE) ===',
+    'A forward cash projection was asked for and is NOT AVAILABLE in all-spaces mode.',
+    `A projection runs off account balances, and an account shared into several spaces appears in each of them — so there is no deduplicated cross-space balance to project from. Ask the user which space to forecast (${spaceNames.map((n) => `"${displaySpaceName(n)}"`).join(', ')}) and answer the rest of their question normally.`,
+    'You MUST NOT construct the projection yourself. Specifically: do not multiply any monthly income, monthly spending, or net cash flow figure by a number of months; do not add such a product to a cash or net-worth balance; and do not present any year-end, month-end or "by then" total. These figures are measurements of the PAST and license no forward statement.',
+    'Figures that appeared in your own earlier replies in this conversation are NOT evidence and carry no authority here. If a projection is needed, it comes from a forecast section in this prompt or it does not exist.',
+    '=== END CASH FORECAST ===',
+    '',
+  ];
 }
 
 export function buildMasterSystemPrompt(
@@ -378,27 +436,14 @@ export function buildMasterSystemPrompt(
   capabilities?: MasterCapabilities,
 ): string {
   const spaceBlocks = contexts
-    .map((ctx, i) => {
-      const assessment = annotationsList[i];
-      const payDates = capabilities?.payDatesList?.[i];
-      return [
-        `--- Space ${i + 1} of ${contexts.length} ---`,
-        'AUTHORITATIVE — deterministic verdicts. Explain them; do not reverse them.',
-        '=== FINANCIAL ASSESSMENT ===',
-        assessment ? serializeAssessmentBlock(assessment, analysisWindowNote(ctx), ctx.space.reportingCurrency) : '(no assessment available)',
-        '=== END ASSESSMENT ===',
-        // PARITY-1 — the capability blocks, per Space and in the single-Space
-        // order. Both are statements about ONE Space, so rendering them inside
-        // that Space's block composes without inventing any cross-Space
-        // authority: pay dates stay a list of dates belonging to a named Space,
-        // and the investment composition stays the CF-7 statement about how two
-        // of THAT Space's loaded authorities combine.
-        ...(payDates ? renderPayDates(payDates) : []),
-        ...renderConcepts(ctx, capabilities?.question),
-        'SUPPORTING EVIDENCE — facts you may cite and reason from. Anything here that no assessment dimension grades is context, not a graded finding, and must not be presented as one.',
-        serializeContextBlock(ctx, debtPaymentsList?.[i], temporalScopeFor(ctx, route)),
-      ].join('\n');
-    })
+    .map((ctx, i) => [
+      `--- Space ${i + 1} of ${contexts.length} ---`,
+      // PARITY-2 — the SAME body as the named-Space prompt. `debtPaymentsList`
+      // stays a separate positional argument because callers predating the
+      // surfaces bag still pass it; the surfaces value wins when present.
+      ...renderSpaceEvidenceBody(ctx, annotationsList[i], route, capabilities?.question,
+        { debtPayments: debtPaymentsList?.[i], ...(capabilities?.surfaces?.[i] ?? {}) }),
+    ].join('\n'))
     .join('\n\n');
 
   // REVIEW-3 C-9 (KD-8) — honest coverage. The prompt used to state the
@@ -457,6 +502,7 @@ export function buildMasterSystemPrompt(
     serializeRoutingBlock(route),
     '=== END ROUTING ===',
     '',
+    ...(capabilities?.forecastScopeRefusal ?? []),
     '=== SPACE CONTEXTS ===',
     spaceBlocks,
     '=== END CONTEXTS ===',
