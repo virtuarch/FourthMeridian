@@ -193,6 +193,16 @@ const _e = {
   // to provide): ~21/35 with it on vs 32/35 with it off. That delta is a stale
   // corpus, not a regression. Set 'off' to restore the prior contract exactly.
   AI_FORECAST_PROJECTION:   process.env.AI_FORECAST_PROJECTION,
+  // V26-REASONING Slice 1 — the typed answer boundary: 'prose' | 'typed'.
+  // UNSET ⇒ 'prose', which is today's pipeline and all four guards, unchanged.
+  // 'typed' asks the model for { claims[], prose } against a licensed figure
+  // table and verifies by IDENTITY rather than by reading the English back.
+  //
+  // ⚠️ REGISTERED IN THE SLICE THAT CREATES IT, not as a follow-up. Every flag
+  // this project added since FORECAST-14 defaulted to the non-enforcing side
+  // and was then forgotten — AI_FORECAST_GUARD_MODE was set in no environment
+  // at all for nineteen commits. Registering a flag is part of the slice.
+  AI_ANSWER_MODE:           process.env.AI_ANSWER_MODE,
 } as const;
 
 // ── Deployment-environment classification (V26-ENV-1) ─────────────────────────

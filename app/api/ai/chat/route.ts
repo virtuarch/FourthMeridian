@@ -71,6 +71,7 @@ import { fetchPerLiabilityDebtPayments } from '@/lib/ai/intelligence/debt-paymen
 import { loadCoverageEnvelope, type CoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { planRetrieval, planAuditPayload, Concepts, type RetrievalPlan } from '@/lib/ai/retrieval-plan';
 import { buildForecastSurfaces, guardForecastAnswer } from '@/lib/ai/forecast/for-request';
+import { answerTyped, resolveAnswerMode } from '@/lib/reasoning/answer/for-request';
 import { resolveMasterSurfaces } from '@/lib/ai/chat/master-surfaces';
 import type { PayDateResult } from '@/lib/ai/forecast/pay-dates';
 import type { AssembledForecast } from '@/lib/ai/forecast/assemble';
@@ -567,7 +568,38 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // If OPENAI_API_KEY is not set it throws a clear error caught below.
 
   let reply: string;
+  // ── V26-REASONING Slice 1 — the typed answer boundary ─────────────────────
+  //
+  // ⚠️ `typed` BYPASSES G1/G2/G3 ENTIRELY, AND THAT IS THE POINT RATHER THAN A
+  // RISK. All three exist to reconstruct, from the model's English, what the
+  // model meant — the assessment-contradiction guard, the forecast numerical
+  // boundary, and the output validator's tolerance ladder. Under `typed` the
+  // model states its claims against addressed figures and verification is an
+  // identity check, so running the prose readers on top would not add a fourth
+  // opinion, it would add three chances to redact a licensed sentence. The
+  // three `repair`-only failures the Slice 0 baseline recorded are exactly that
+  // failure mode.
+  const answerMode = resolveAnswerMode(process.env.AI_ANSWER_MODE);
   try {
+    if (answerMode === 'typed') {
+      const typed = await answerTyped({
+        systemPrompt, messages, userId: user.id,
+        spaceId: forecastSpaceId ?? spaceId,
+        forecast, ctx: guardCtx, assessment: guardAssessments[0],
+        history: messages,
+        // ⚠️ SAME SCOPE THE PROSE PROMPT ALREADY APPLIES three lines above, where
+        // `buildSpaceSystemPrompt` is handed `payDates ? undefined : forecast`.
+        // A pay-date turn is answered with dates; every money figure offered on
+        // one is a figure the answer is forbidden to state.
+        scope: payDates && !forecast ? 'PAY_DATES' : 'FULL',
+      });
+      return NextResponse.json({
+        message:          typed.reply,
+        knowledgeGaps:    gapsForResponse,
+        knowledgeGapMode: gapMode,
+        ...(typed.outcome === 'clean' ? {} : { answerBoundary: typed.outcome }),
+      });
+    }
     reply = await generateChatReply(systemPrompt, messages);
 
     // ── A5: assessment-contradiction guard ─────────────────────────────────

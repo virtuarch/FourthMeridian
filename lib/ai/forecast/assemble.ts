@@ -53,6 +53,7 @@ import {
 } from '@/lib/forecast/operating-state';
 import {
   AssumptionDimension, AssumptionOrigin, AssumptionStance, ConclusionStatus, StatementMode,
+  type ConclusionStatusKind,
   continueLicensedCadence,
   type ForecastHorizon, type ForecastPolicy, type PolicyAssumption, type StatementSubject,
 } from '@/lib/forecast/policy';
@@ -414,4 +415,13 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
 // replaces question interpretation wholesale, and a fourth vocabulary of
 // forward-looking regexes is precisely what that slice exists to remove.
 
-export { PeriodBasis, AssumptionDimension, AssumptionOrigin, AssumptionStance, EventProvenance, FlowRole, ActivityState };
+// ⚠️ THE ADAPTER IS THE DOOR, AND THIS LINE IS THE DOOR (V26-REASONING Slice 1).
+// `engine.test.ts` N1, `policy.test.ts` J9 and `spending-baseline.test.ts` L4
+// all pin the same rule: no assembler, prompt, route or component reaches past
+// `lib/ai/forecast/` into the authorities. The reasoning layer needs three
+// vocabularies from behind that door — the conclusion statuses, the period
+// basis, and the forecast's own result type — and the right way to give it them
+// is to widen this re-export, not to widen the allowlist. A second consumer
+// root would be the first crack in the rule the three tests exist to hold.
+export { PeriodBasis, AssumptionDimension, AssumptionOrigin, AssumptionStance, EventProvenance, FlowRole, ActivityState, ConclusionStatus };
+export type { CashForecast, ConclusionStatusKind };

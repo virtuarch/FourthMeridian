@@ -39,6 +39,13 @@ import {
   type ForecastScenario,
 } from '@/lib/ai/conformance/forecast-scenarios';
 import { guardForecastReply } from '@/lib/ai/forecast/numerical-guard';
+import { buildTypedPromptSuffix } from '@/lib/reasoning/answer/for-request';
+import { ANSWER_SCHEMA } from '@/lib/reasoning/answer/schema';
+import { verifyAnswer, buildRepairInstruction } from '@/lib/reasoning/verify/verify';
+import { deterministicFallback } from '@/lib/reasoning/answer/generate';
+import { generateStructured } from '@/lib/ai/provider';
+import type { Answer } from '@/lib/reasoning/answer/types';
+import type { FigureTable } from '@/lib/reasoning/figures/types';
 import { explainForecast, type CashForecast } from '@/lib/forecast/engine';
 import type { AssembledForecast } from '@/lib/ai/forecast/assemble';
 
@@ -116,8 +123,25 @@ const ENVELOPE: CoverageEnvelope = {
 const GUARD = (args.find((a) => a.startsWith('--guard='))?.split('=')[1] ?? 'off') as
   'off' | 'shadow' | 'repair';
 
+/**
+ * V26-REASONING Slice 1 — `--answer-mode=typed` runs the SAME corpus, the SAME
+ * fixture and the SAME prompt through the typed answer boundary instead of
+ * through free prose plus the regex guards.
+ *
+ * ⚠️ IT IS THE COMPARISON, NOT A SECOND HARNESS. The plan's acceptance is
+ * exactly this: run the corpus in both modes and compare how many unlicensed
+ * figures reach the user, and at what cost to the answers. Building a separate
+ * corpus for the new path would have measured a different question.
+ *
+ * `--guard` is ignored under `typed`, and deliberately: the three prose guards
+ * are bypassed on that path, so running one here would measure a configuration
+ * production cannot produce.
+ */
+const ANSWER_MODE = (args.find((a) => a.startsWith('--answer-mode='))?.split('=')[1] ?? 'prose') as
+  'prose' | 'typed';
+
 function buildPrompt(s: ForecastScenario): {
-  prompt: string; question: string; forecast: AssembledForecast;
+  prompt: string; question: string; forecast: AssembledForecast; table: FigureTable;
 } {
   const ctx = realSpaceCtx();
   const question = s.question;
@@ -138,16 +162,29 @@ function buildPrompt(s: ForecastScenario): {
   });
   const assessment = computeAssessment(ctx);
   const route = classifyFinancialIntent(question);
-  return {
-    forecast,
-    prompt: buildSpaceSystemPrompt(
+  const history = [...(s.priorTurns ?? []).map((c) => ({ role: 'user', content: c })),
+    { role: 'user', content: question }];
+  // ⚠️ A PAY-DATE TURN BUILDS NO FORECAST IN PRODUCTION, so it must build none
+  // here. FORECAST-16's whole finding is that the two capabilities are separate
+  // — folding pay dates into the forecast ask is what made a pay-date question
+  // answer "Ending cash: REFUSED" — and the route reflects that: `forecast` is
+  // undefined on a PAY_DATES turn. Handing the typed table a forecast the route
+  // would not have built licenses seven paycheck AMOUNTS on a question that
+  // asked only for DATES, which is precisely what the S* scenarios forbid.
+  const typed = buildTypedPromptSuffix({
+    forecast: payDates ? undefined : forecast, ctx, assessment, messages: history,
+    scope: payDates ? 'PAY_DATES' : 'FULL',
+  });
+  const base = buildSpaceSystemPrompt(
       // ⚠️ ARGUMENT-FOR-ARGUMENT WITH app/api/ai/chat/route.ts. `debtPayments`
       // is the one deliberate omission: production passes a per-liability
       // rollup fetched from the database, and this harness reads none. It
       // renders an extra disclosure block and touches no forecast decision.
       ctx, assessment, route, undefined, ENVELOPE, question, plan,
-      payDates ? undefined : forecast, payDates),
-    question,
+      payDates ? undefined : forecast, payDates);
+  return {
+    forecast, question, table: typed.table,
+    prompt: ANSWER_MODE === 'typed' ? `${base}\n${typed.suffix}` : base,
   };
 }
 
@@ -178,7 +215,7 @@ async function main(): Promise<void> {
   let outTok = 0;
 
   for (const s of SET) {
-    const { prompt, question, forecast } = buildPrompt(s);
+    const { prompt, question, forecast, table } = buildPrompt(s);
     const payDatesOnly = planRetrieval({
       messages: [{ role: 'user', content: question }],
       envelope: ENVELOPE, now: new Date(`${AS_OF}T12:00:00.000Z`),
@@ -190,6 +227,46 @@ async function main(): Promise<void> {
     ];
     for (let run = 1; run <= RUNS; run++) {
       const t0 = Date.now();
+      if (ANSWER_MODE === 'typed') {
+        // ── The typed boundary, exactly as the route runs it ────────────────
+        const userTurns = messages.filter((m) => m.role === 'user')
+          .map((m) => ({ role: 'user' as const, content: m.content }));
+        let served = '';
+        let outcome: string = 'clean';
+        let calls = 1;
+        let firstFailures: string[] = [];
+        try {
+          const first = await generateStructured<Answer>(
+            prompt, userTurns, ANSWER_SCHEMA, { model: CHAT_MODEL });
+          const v1 = verifyAnswer(first, table);
+          firstFailures = v1.failures.map((f) => `${f.kind}:${f.offending ?? ''}`);
+          if (v1.ok) served = first.prose;
+          else {
+            calls = 2;
+            const rep = await generateStructured<Answer>(
+              `${prompt}\n\n${buildRepairInstruction(v1.failures)}`, userTurns,
+              ANSWER_SCHEMA, { model: CHAT_MODEL });
+            if (verifyAnswer(rep, table).ok) { served = rep.prose; outcome = 'repaired'; }
+            else { served = deterministicFallback(table); outcome = 'fallback'; }
+          }
+        } catch (err) {
+          served = ''; outcome = `error:${err instanceof Error ? err.message : ''}`;
+        }
+        const ms = Date.now() - t0;
+        const failures = score(s, served);
+        results.push({ id: s.id, run, reply: served, rawReply: served,
+          rawFailures: failures, guardFindings: [], guardOutcome: outcome,
+          failures, narration: narrationNotes(s, served),
+          promptTokens: Math.ceil(prompt.length / 4), ms });
+        console.log(`${failures.length === 0 ? '✓' : '✗'} ${s.id} (run ${run}, `
+          + `~${Math.ceil(prompt.length / 4)} tok, ${calls} call(s)) [${outcome}]`);
+        for (const f of failures) console.log(`    ${f}`);
+        if (outcome !== 'clean' && firstFailures.length > 0) {
+          console.log(`    first: ${firstFailures.slice(0, 3).join(' | ')}`);
+        }
+        if (verbose) console.log(`\n--- reply ---\n${served}\n-------------\n`);
+        continue;
+      }
       // gpt-5 and the reasoning tiers reject `temperature` and rename the token
       // cap; everything else takes the chat route's own parameters unchanged.
       const isReasoning = /^(gpt-5|o[134])/.test(CHAT_MODEL);

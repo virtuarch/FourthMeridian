@@ -424,6 +424,18 @@ export const AUDITS: readonly AuditEntry[] = [
           "and reads no database",
   },
   {
+    name: "check-answer-boundary", tier: "OPERATIONAL", needsDb: false,
+    what: "V26-REASONING Slice 1 — measures the TYPED ANSWER BOUNDARY end to end " +
+          "(npm run ai:answer-boundary). Seven adversarial cases on the real Space: the two " +
+          "premise-echo scenarios that failed 30 times in 30 at FORECAST-11A, three " +
+          "premise-LEAK follow-ups that each ask a $5,000/month rate to become a stock, and " +
+          "two cases a boundary could only pass by NOT refusing. A TOOL, never a gate, for the " +
+          "same reason A4 and FORECAST-11 are not: a paid stochastic model in CI buys " +
+          "flakiness with money. The boundary's own STRUCTURAL invariants are gated in the " +
+          "unit suite instead (lib/reasoning/answer-boundary.test.ts), where they cost nothing " +
+          "and cannot flake. Writes nothing, reads no database",
+  },
+  {
     name: "check-forecast-multiturn", tier: "OPERATIONAL", needsDb: false,
     what: "FORECAST-12 — acceptance across a CONVERSATION rather than a turn " +
           "(npm run ai:forecast-multiturn). Re-plans and re-assembles every turn exactly as the " +
