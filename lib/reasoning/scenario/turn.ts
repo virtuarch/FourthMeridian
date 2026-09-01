@@ -208,6 +208,16 @@ export function resolveTurn(args: {
   defaultHorizon: ForecastHorizon;
   lastAnswer?: ConversationState['lastAnswer'];
   currency?: string;
+  /**
+   * Slice 5 — the planner's selection, when the planner owns this turn's class.
+   *
+   * ⚠️ IT REPLACES `selectMeasures` AND NOTHING ELSE. The scenario lifecycle,
+   * the horizon, the fallback rules and every figure still come from exactly
+   * where they came from before; what the planner changes is WHICH question is
+   * being answered, which is the one thing it is allowed to decide. A wrong plan
+   * costs relevance and cannot cost truth.
+   */
+  plan?: { measures: readonly MeasureIdName[]; horizon: { iso: string; statedAs: string } | null } | null;
 }): TurnResolution {
   const { messages, ctx, streams, asOfISO, defaultHorizon } = args;
   const currency = args.currency ?? 'USD';
@@ -222,13 +232,23 @@ export function resolveTurn(args: {
   // though?" changes the answer, and an answer that silently reverts to BASE
   // without saying it dropped the assumptions has changed the question under the
   // user.
-  const dismissedThisTurn = state.deltas.some(
-    (d) => d.status === DeltaStatus.DISMISSED) && active.length === 0;
+  // ⚠️ THIS TURN, NOT EVER. A dismissal is news once. Re-announcing it on every
+  // subsequent turn cost a correct answer: the model read the notice as "do not
+  // use the scenarios below", answered "what will Bitcoin be worth?" with a
+  // single flat figure, and called a FUTURE value "measured".
+  const dismissedThisTurn = state.deltas.some((d) => d.dismissedAtTurn === state.turn);
 
-  const horizon: ForecastHorizon = state.horizon
-    ? { ...defaultHorizon, toISO: state.horizon.iso, statedAs: state.horizon.statedAs }
+  // ⚠️ THE CONVERSATION'S OWN HORIZON WINS OVER THE PLANNER'S. `deriveConversationState`
+  // reads it from the user's messages across turns and a planner reading one
+  // question cannot see turn 1's December. The planner fills a silence; it does
+  // not overrule the history.
+  const planHorizon = state.horizon ?? (args.plan?.horizon
+    ? { iso: args.plan.horizon.iso, statedAs: args.plan.horizon.statedAs, statedAtTurn: state.turn }
+    : null);
+  const horizon: ForecastHorizon = planHorizon
+    ? { ...defaultHorizon, toISO: planHorizon.iso, statedAs: planHorizon.statedAs }
     : defaultHorizon;
-  const when: Instant = state.horizon ? at(state.horizon.iso) : at(horizon.toISO);
+  const when: Instant = planHorizon ? at(planHorizon.iso) : at(horizon.toISO);
 
   let forecast: AssembledForecast | undefined;
   try {
@@ -246,7 +266,9 @@ export function resolveTurn(args: {
     returnBasis: returnBasisOf(active),
   };
 
-  const ids = selectMeasures(question, state);
+  const ids = args.plan?.measures && args.plan.measures.length > 0
+    ? [...args.plan.measures]
+    : selectMeasures(question, state);
   const bands = illustrativeBands(ids, active, when, mc);
   const withheld: LicensedRefusal[] = [];
   if (bands.length > 0) {
@@ -276,7 +298,7 @@ export function resolveTurn(args: {
   // attributed an illustrative band to the user ("as you suggested") three turns
   // after they had dropped that very assumption.
   const framing = active.map((d) => d.statedAs);
-  const dismissed = state.deltas.filter((d) => d.status === DeltaStatus.DISMISSED);
+  const dismissed = state.deltas.filter((d) => d.dismissedAtTurn === state.turn);
   if (dismissedThisTurn) {
     // ⚠️ THE DIMENSION, NOT THE AMOUNT — AND THIS IS THE SECOND TIME IN ONE SLICE
     // THAT PUTTING A NUMBER IN A LABEL BROKE THE BOUNDARY. The illustrative
@@ -289,9 +311,16 @@ export function resolveTurn(args: {
     // user's own turn, and the model may cite it like anything else. What this
     // line has to convey is that the assumptions are OFF, which is a fact about
     // status and needs no figure at all.
+    // ⚠️ IT FORBIDS ATTRIBUTION, NOT USE — AND THE FIRST WORDING FORBADE BOTH.
+    // "do not attribute any scenario below to them" was read as "do not use the
+    // scenarios", and the answer collapsed to one number described as measured.
+    // Illustrations are still the right answer to an unknowable question; what
+    // must not happen is calling one the user's.
     framing.push('THE USER HAS DROPPED THEIR EARLIER ASSUMPTIONS ('
       + [...new Set(dismissed.map((d) => d.dimension.toLowerCase().replace(/_/g, ' ')))].join(', ')
-      + '). Say so plainly, and do not attribute any scenario below to them.');
+      + '). Say so plainly. Any scenario or illustration below is OURS, offered to '
+      + 'show a range — use them freely, and do not describe one as something the '
+      + 'user asked for.');
     // ⚠️ A DISMISSED VALUE MUST STAY QUOTABLE, OR THE SYSTEM CANNOT TELL THE USER
     // WHAT IT STOPPED ASSUMING. Measured: the model wrote "dropping your
     // $5,000/month assumption" — exactly the right sentence — and the answer was
@@ -311,7 +340,8 @@ export function resolveTurn(args: {
   }
 
   return {
-    state, scenario, when,
+    state: planHorizon === state.horizon ? state : { ...state, horizon: planHorizon },
+    scenario, when,
     measures: [...measures, ...bands, ...present],
     forecast,
     framing,

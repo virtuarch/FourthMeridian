@@ -16,6 +16,7 @@
     "db:drift": "tsx --env-file=.env.local scripts/check-schema-drift.ts",
     "ai:conformance": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/check-assessment-conformance.ts",
     "ai:forecast-conformance": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/check-forecast-conformance.ts",
+    "ai:compare-plans": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/compare-plans.ts",
     "ai:conversation-gate": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/check-conversation-gate.ts",
     "ai:answer-boundary": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/check-answer-boundary.ts",
     "ai:forecast-multiturn": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/check-forecast-multiturn.ts",

@@ -121,6 +121,14 @@ eq('A6b and the dismissed deltas are FLAGGED, not erased',
 
 check('A7 turn 7 offers illustrations rather than a single number',
   T[6].measures.filter((m) => m.scenarioId.startsWith('ILLUSTRATION')).length >= 2);
+// ⚠️ A DISMISSAL IS NEWS ONCE. Re-announcing it on every later turn cost a
+// correct answer: the model read the notice as "do not use the scenarios below",
+// answered "what will Bitcoin be worth?" with one flat figure, and called a
+// FUTURE value "measured".
+eq('A7d the dismissal is announced on its own turn and not after',
+  [T[5].dismissedThisTurn, T[6].dismissedThisTurn], [true, false]);
+check('A7e and no framing line forbids USING the illustrations',
+  !/do not attribute any scenario below to them\.$/m.test(T[5].framing.join('\n')));
 check('A7b and says plainly that nobody can know',
   T[6].withheld.some((w) => /nobody can know/i.test(w.detail)));
 check('A7c and no future crypto figure claims to be MEASURED',

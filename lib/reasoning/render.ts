@@ -75,6 +75,15 @@ export function renderFigureTable(t: FigureTable, framing: readonly string[] = [
       `${f.fid.padEnd(4)} ${fmt(f.value, f.unit, f.currency).padEnd(22)} `
       + `${(f.label + (f.horizon === 'FUTURE' ? ' (a claim about a FUTURE date)' : '')).padEnd(35)} `
       + `${STANDING_NOTE[f.standing] ?? f.standing}`
+      // ⚠️ A FUTURE FIGURE THAT IS NOT MEASURED MUST NOT BE CALLED MEASURED, and
+      // the standing column alone did not stop it: asked what Bitcoin would be
+      // worth, the model wrote a held-flat December figure and added "this is
+      // based on measured amounts, not a forecast or scenario". Nothing today
+      // measures December. The column says the standing; this says what saying
+      // it wrongly would be.
+      + (f.horizon === 'FUTURE' && f.standing !== Standing.MEASURED
+        ? '  — NOTHING MEASURED THIS; do not call it measured or observed'
+        : '')
       + (f.basis ? `  ("${f.basis}")` : ''));
   }
 

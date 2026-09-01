@@ -41,6 +41,8 @@ import {
   realSpaceCtx, STREAMS, HORIZON, AS_OF,
 } from '@/lib/ai/conformance/forecast-scenarios';
 import { resolveTurn } from '@/lib/reasoning/scenario/turn';
+import { planTurn } from '@/lib/reasoning/plan/planner';
+import { deriveConversationState } from '@/lib/reasoning/scenario/derive';
 import { DeltaStatus, DeltaDimension, activeDeltas } from '@/lib/reasoning/scenario/types';
 import { buildTypedPromptSuffix } from '@/lib/reasoning/answer/for-request';
 import { ANSWER_SCHEMA } from '@/lib/reasoning/answer/schema';
@@ -57,6 +59,13 @@ const MODEL = args.find((a) => a.startsWith('--model='))?.split('=')[1];
 /** Structural checks only — no model calls, no key, no cost. */
 const STRUCTURE_ONLY = args.includes('--structure-only');
 const PACE_MS = Number(args.find((a) => a.startsWith('--pace='))?.split('=')[1] ?? 45_000);
+/**
+ * ⚠️ THE SAME SEVEN TURNS, WITH THE PLANNER CHOOSING THE MEASURES. Slice 4's
+ * `selectMeasures` is a quarantined stand-in marked for deletion; `--planner`
+ * runs the gate through `planTurn` instead, which is the only way to know
+ * whether the planner can hold a conversation rather than answer a question.
+ */
+const USE_PLANNER = args.includes('--planner');
 
 const TURNS = [
   'How much will I probably have by December?',
@@ -273,9 +282,14 @@ async function main(): Promise<void> {
     if (i > 0 && !STRUCTURE_ONLY) await new Promise((r) => setTimeout(r, PACE_MS));
     history.push({ role: 'user', content: question });
 
+    let plan = null as Awaited<ReturnType<typeof planTurn>>;
+    if (USE_PLANNER && !STRUCTURE_ONLY) {
+      const st = deriveConversationState(history, AS_OF, { lastAnswer });
+      plan = await planTurn({ question, state: st, todayISO: AS_OF, model: MODEL });
+    }
     const r = resolveTurn({
       messages: history, ctx, streams: STREAMS, asOfISO: AS_OF,
-      defaultHorizon: HORIZON, lastAnswer,
+      defaultHorizon: HORIZON, lastAnswer, plan,
     });
     resolutions.push(r);
 

@@ -82,6 +82,16 @@ export interface AssumptionDelta {
   status: DeltaStatusName;
   /** The delta that replaced this one. Set on SUPERSEDED, never on DISMISSED. */
   supersededBy?: string;
+  /**
+   * The turn on which this was dismissed. Set only on DISMISSED.
+   *
+   * ⚠️ WITHOUT IT, "A DISMISSAL HAPPENED" AND "A DISMISSAL HAPPENED THIS TURN"
+   * ARE THE SAME QUESTION, and they are not. Measured: the turn after
+   * "what's realistic though?" also announced the dismissal, and the model read
+   * "do not attribute any scenario below to them" as "do not use the scenarios",
+   * answered with a single flat figure, and called a FUTURE value "measured".
+   */
+  dismissedAtTurn?: number;
   payload: DeltaPayload;
 }
 

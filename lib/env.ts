@@ -211,6 +211,15 @@ const _e = {
   // the reverse. Setting one without the other buys the cost of the frontier
   // tier without the boundary that makes it worth paying.
   AI_CHAT_MODEL:            process.env.AI_CHAT_MODEL,
+  // V26-REASONING Slice 5 — the strangler: 'legacy' | 'new'.
+  // UNSET ⇒ 'legacy', which is the whole of today's routing, unchanged.
+  //
+  // ⚠️ `new` DOES NOT REPLACE ROUTING WHOLESALE, AND MUST NOT BE READ AS DOING
+  // SO. Two question classes flipped on measurement (forecast and broad); three
+  // did not, because the measure catalogue has no vocabulary for a transaction
+  // record or a coverage claim and legacy's domain routing serves those
+  // correctly. See docs/systems/planner.md for the per-class numbers.
+  AI_REASONING_PATH:        process.env.AI_REASONING_PATH,
 } as const;
 
 // ── Deployment-environment classification (V26-ENV-1) ─────────────────────────

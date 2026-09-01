@@ -71,7 +71,7 @@ import { fetchPerLiabilityDebtPayments } from '@/lib/ai/intelligence/debt-paymen
 import { loadCoverageEnvelope, type CoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { planRetrieval, planAuditPayload, Concepts, type RetrievalPlan } from '@/lib/ai/retrieval-plan';
 import { buildForecastSurfaces, guardForecastAnswer } from '@/lib/ai/forecast/for-request';
-import { answerTyped, resolveAnswerMode } from '@/lib/reasoning/answer/for-request';
+import { answerThisTurn } from '@/lib/reasoning/answer/for-request';
 import { resolveMasterSurfaces } from '@/lib/ai/chat/master-surfaces';
 import type { PayDateResult } from '@/lib/ai/forecast/pay-dates';
 import type { AssembledForecast } from '@/lib/ai/forecast/assemble';
@@ -322,6 +322,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // row carries a real Space id rather than the literal 'master'.
   // PARITY-3 — `guardCtx` is the forecast Space's context; see currentAuthorityFigures.
   let forecastSpaceId: string | undefined; let guardCtx: SpaceContext_AI | undefined;
+  // V26-REASONING Slice 5 — hoisted so the planner seam below can read which
+  // concepts CF-8 resolved. Undefined in master mode, which computes no plan.
+  let shadowPlan: RetrievalPlan | undefined;
   // Knowledge gaps assembled at context time — returned alongside the reply so
   // the client can render structured input UI without parsing assistant text.
   let gapsForResponse: KnowledgeGap[] = [];
@@ -478,7 +481,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // buildContext carries a second membership guard internally.
     let ctx: SpaceContext_AI;
     let envelopeForPrompt: CoverageEnvelope | undefined;
-    let shadowPlan: RetrievalPlan | undefined;
     try {
       // CF-6 — the evidence census runs FIRST, because it decides which domains
       // are even reachable. Four indexed aggregates (~68 ms), already required
@@ -579,20 +581,24 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // opinion, it would add three chances to redact a licensed sentence. The
   // three `repair`-only failures the Slice 0 baseline recorded are exactly that
   // failure mode.
-  const answerMode = resolveAnswerMode(process.env.AI_ANSWER_MODE);
+  // ── V26-REASONING Slices 1/5 — the typed answer, when it is turned on ─────
+  //
+  // ⚠️ ONE CALL, FOR THE REASON `route-authority.aiarch` HAS NOW ENFORCED FOUR
+  // TIMES: the route sequences a request, and a block that pushes it past 700
+  // lines gets moved rather than having the ceiling raised. `answerThisTurn`
+  // owns the planner seam, the figure table, the verifier and the repair, and
+  // returns undefined whenever the prose path should answer instead.
+  const typed = await answerThisTurn({
+    answerMode: process.env.AI_ANSWER_MODE,
+    reasoningPath: process.env.AI_REASONING_PATH,
+    systemPrompt, messages, userId: user.id, spaceId,
+    guardSpaceId: forecastSpaceId ?? spaceId,
+    ctx: guardCtx, assessment: guardAssessments[0],
+    forecast, payDates: payDates !== undefined, retrieval: shadowPlan,
+    question: latestUserMessage(messages) ?? '',
+  });
   try {
-    if (answerMode === 'typed') {
-      const typed = await answerTyped({
-        systemPrompt, messages, userId: user.id,
-        spaceId: forecastSpaceId ?? spaceId,
-        forecast, ctx: guardCtx, assessment: guardAssessments[0],
-        history: messages,
-        // ⚠️ SAME SCOPE THE PROSE PROMPT ALREADY APPLIES three lines above, where
-        // `buildSpaceSystemPrompt` is handed `payDates ? undefined : forecast`.
-        // A pay-date turn is answered with dates; every money figure offered on
-        // one is a figure the answer is forbidden to state.
-        scope: payDates && !forecast ? 'PAY_DATES' : 'FULL',
-      });
+    if (typed) {
       return NextResponse.json({
         message:          typed.reply,
         knowledgeGaps:    gapsForResponse,

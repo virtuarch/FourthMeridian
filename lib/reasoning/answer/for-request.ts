@@ -29,6 +29,7 @@ import type { Prisma } from '@prisma/client';
 import { buildFigureTable } from '../figures/table';
 import { renderFigureTable, TYPED_NARRATION_INSTRUCTION } from '../render';
 import { generateTypedAnswer, type TypedAnswerOutcome } from './generate';
+import { resolvePlannedTurn, resolveReasoningPath } from '../plan/for-request';
 import type { FigureTable } from '../figures/types';
 
 export type AnswerMode = 'prose' | 'typed';
@@ -108,11 +109,13 @@ export async function answerTyped(args: {
   measures?:    readonly import('../measure/types').Measure[];
   /** Slice 4 — every ACTIVE assumption, in the user's own words. Rule 1. */
   framing?:     readonly string[];
+  /** Slice 4 — turn-level withholdings, such as "nobody knows a future price". */
+  turnWithheld?: readonly import('../figures/types').LicensedRefusal[];
 }): Promise<TypedAnswerOutcome> {
   const { suffix, table } = buildTypedPromptSuffix({
     forecast: args.forecast, ctx: args.ctx, assessment: args.assessment,
     messages: args.history ?? args.messages, scope: args.scope,
-    measures: args.measures, framing: args.framing,
+    measures: args.measures, framing: args.framing, turnWithheld: args.turnWithheld,
   });
 
   const result = await generateTypedAnswer({
@@ -143,4 +146,58 @@ export async function answerTyped(args: {
     }).catch(() => undefined);
   }
   return result;
+}
+
+/**
+ * The whole typed path for one turn, or undefined when prose should answer.
+ *
+ * ⚠️ EVERY FLAG DECISION AND EVERY FAILURE PATH IS HERE RATHER THAN IN THE
+ * ROUTE. The route asks one question — "is there a typed answer for this turn?"
+ * — and gets a reply or nothing, which is the same shape `buildForecastSurfaces`
+ * and `guardForecastAnswer` already have and for the same reason.
+ *
+ * ⚠️ THE PLANNER ONLY RUNS UNDER `typed`. It selects MEASURES, and a measure
+ * reaches the user through the typed answer boundary; selecting them and then
+ * narrating in free prose would buy the interpretation without the verification.
+ */
+export async function answerThisTurn(args: {
+  answerMode:    string | undefined;
+  reasoningPath: string | undefined;
+  systemPrompt:  string;
+  messages:      ChatMessage[];
+  userId:        string;
+  spaceId:       string;
+  /** The Space the guard row is attributed to, which master mode overrides. */
+  guardSpaceId:  string;
+  ctx?:          SpaceContext_AI;
+  assessment?:   FinancialAssessment;
+  forecast?:     AssembledForecast;
+  /** True when the turn resolved PAY_DATES — dates are licensed, amounts are not. */
+  payDates:      boolean;
+  retrieval?:    import('@/lib/ai/retrieval-plan').RetrievalPlan;
+  question:      string;
+}): Promise<TypedAnswerOutcome | undefined> {
+  if (resolveAnswerMode(args.answerMode) !== 'typed') return undefined;
+
+  const planned = await resolvePlannedTurn({
+    enabled: resolveReasoningPath(args.reasoningPath) === 'new',
+    spaceId: args.spaceId, ctx: args.ctx, messages: args.messages,
+    retrieval: args.retrieval, question: args.question,
+  });
+
+  return answerTyped({
+    systemPrompt: args.systemPrompt, messages: args.messages,
+    userId: args.userId, spaceId: args.guardSpaceId,
+    forecast: planned?.forecast ?? args.forecast,
+    ctx: args.ctx, assessment: args.assessment,
+    history: args.messages,
+    measures: planned?.measures,
+    framing: planned?.framing,
+    turnWithheld: planned?.withheld,
+    // ⚠️ THE SAME SCOPE THE PROSE PROMPT APPLIES, where `buildSpaceSystemPrompt`
+    // is handed `payDates ? undefined : forecast`. A pay-date turn is answered
+    // with dates; every money figure offered on one is a figure the answer is
+    // forbidden to state.
+    scope: args.payDates && !args.forecast ? 'PAY_DATES' : 'FULL',
+  });
 }

@@ -424,6 +424,19 @@ export const AUDITS: readonly AuditEntry[] = [
           "and reads no database",
   },
   {
+    name: "compare-plans", tier: "OPERATIONAL", needsDb: false,
+    what: "V26-REASONING Slice 5 — SCAFFOLDING, and it ships with its own " +
+          "deletion condition (npm run ai:compare-plans). Runs the typed planner " +
+          "and the legacy routing over the same 112 real questions — every " +
+          "question this repository actually holds across its corpora, harnesses " +
+          "and tests — and reports agreement per cutover class. DELETED WHEN THE " +
+          "LAST CLASS FLIPS. This repository has shipped two shadow planners and " +
+          "ended neither (context-priority was never once consulted and wrote a " +
+          "DB row per turn; retrieval-plan carried a false SHADOW ONLY header at " +
+          "five call sites), which is why this one's ending is written down. A " +
+          "paid stochastic TOOL, never a gate. Writes nothing, reads no database",
+  },
+  {
     name: "check-conversation-gate", tier: "OPERATIONAL", needsDb: false,
     what: "V26-REASONING Slice 4 — DOES THE PRODUCT WORK? " +
           "(npm run ai:conversation-gate). ONE conversation, seven turns, on the " +

@@ -251,7 +251,13 @@ check('F5 the typed path returns before the three prose guards run', (() => {
   // check used `indexOf` over the whole source and failed, because every one of
   // these names appears in the IMPORT BLOCK at the top — which is above the
   // branch and says nothing about execution order.
-  const i = ROUTE.indexOf("if (answerMode === 'typed')");
+  //
+  // The branch moved in Slice 5: `answerThisTurn` owns the whole typed path
+  // (flags, planner seam, table, verifier, repair) because inlining it took the
+  // route past the 700-line ceiling `route-authority.aiarch` enforces. What must
+  // still be true is unchanged — a typed answer RETURNS before any prose guard
+  // runs, and a prose answer still meets all three.
+  const i = ROUTE.indexOf('if (typed) {');
   if (i < 0) return false;
   const after = ROUTE.slice(i);
   const branchEnd = after.indexOf('\n    }\n');
@@ -263,7 +269,9 @@ check('F5 the typed path returns before the three prose guards run', (() => {
     && !branch.includes('applyEnforcement(')
     && rest.includes('detectAssessmentContradiction(')
     && rest.includes('guardForecastAnswer(')
-    && rest.includes('applyEnforcement(');
+    && rest.includes('applyEnforcement(')
+    // …and the typed path is REACHED before the prose call, not merely defined.
+    && ROUTE.indexOf('await answerThisTurn(') < ROUTE.indexOf('await generateChatReply(systemPrompt');
 })());
 
 check('F6 and prose mode still runs all three',

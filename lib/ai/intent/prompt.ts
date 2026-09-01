@@ -70,7 +70,7 @@ function temporalGuidance(route: IntentRoute): string {
  * Confidence-band directive (POLISH 4). Tunes how strictly the LLM should
  * confine itself to the routed PRIMARY sections.
  */
-function confidenceGuidance(route: IntentRoute): string {
+function confidenceGuidance(route: IntentRoute, understoodElsewhere = false): string {
   switch (confidenceBand(route)) {
     case 'HIGH':
       return 'Routing confidence is HIGH. Strongly prioritize the PRIMARY sections; treat SUPPORTING '
@@ -80,8 +80,12 @@ function confidenceGuidance(route: IntentRoute): string {
         + 'across SUPPORTING sections if the question clearly needs them.';
     case 'UNKNOWN':
     default:
-      return 'Intent is UNKNOWN. You may draw on any section as needed. If the question is ambiguous, '
-        + 'briefly ask what the user wants to focus on rather than guessing.';
+      return understoodElsewhere
+        ? 'This classifier did not recognise the question, but another authority did and the '
+          + 'relevant evidence is assembled below. Draw on any section as needed, and answer the '
+          + 'question rather than asking what it meant.'
+        : 'Intent is UNKNOWN. You may draw on any section as needed. If the question is ambiguous, '
+          + 'briefly ask what the user wants to focus on rather than guessing.';
   }
 }
 
@@ -168,7 +172,30 @@ function riskOpportunityFocus(intent: FinancialIntent): string {
  * (without the surrounding === markers — the caller adds those, matching the
  * FINANCIAL ASSESSMENT / SPACE CONTEXT block convention).
  */
-export function serializeRoutingBlock(route: IntentRoute): string {
+/**
+ * Whether another authority already understood the question.
+ *
+ * ⚠️ MEASURED ACROSS 112 REAL QUESTIONS (V26-REASONING Slice 5): the classifier
+ * returns UNKNOWN on 97 of them, and the UNKNOWN branch below then prints
+ *
+ *     "If the question is ambiguous, briefly ask what the user wants to focus on
+ *      rather than guessing."
+ *
+ * directly above a computed forecast. On "what are my projections?" it returns
+ * UNKNOWN / 0.20 / CLARIFY while CF-8 has resolved FORECAST and the engine has
+ * produced a cash path. The question was not ambiguous — THIS classifier did not
+ * understand it, which is a different fact and must not be reported as the
+ * user's problem.
+ *
+ * So the invitation is withheld when CF-8 resolved any concept at all. The rest
+ * of the UNKNOWN guidance — "you may draw on any section as needed" — is still
+ * correct and still printed.
+ */
+export function serializeRoutingBlock(
+  route: IntentRoute,
+  /** Concepts another authority resolved for this turn, when it resolved any. */
+  resolvedConcepts?: readonly string[],
+): string {
   const lines: string[] = [];
 
   lines.push(`Classified intent: ${route.intent} (confidence ${route.confidence.toFixed(2)} — ${confidenceBand(route)})`);
@@ -179,7 +206,7 @@ export function serializeRoutingBlock(route: IntentRoute): string {
   lines.push(`  SUPPORTING — may be referenced briefly for support: ${fmtSections(route.supportingSections)}`);
   lines.push(`  SUPPRESS   — present in context but must NOT drive the answer: ${fmtSections(route.suppressSections)}`);
   lines.push('');
-  lines.push(confidenceGuidance(route));
+  lines.push(confidenceGuidance(route, (resolvedConcepts?.length ?? 0) > 0));
   lines.push('');
   lines.push(temporalGuidance(route));
 

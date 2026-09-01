@@ -170,7 +170,9 @@ export function deriveConversationState(
     // delta the same sentence just created.
     if (DISMISS_ALL_RE.test(m.content)) {
       for (const d of deltas) {
-        if (d.status === DeltaStatus.ACTIVE) d.status = DeltaStatus.DISMISSED;
+        if (d.status !== DeltaStatus.ACTIVE) continue;
+        d.status = DeltaStatus.DISMISSED;
+        d.dismissedAtTurn = turn;
       }
     }
 

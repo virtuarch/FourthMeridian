@@ -243,7 +243,7 @@ export function buildSpaceSystemPrompt(
     EXPLAINABILITY_DOCTRINE,
     '',
     '=== QUESTION ROUTING ===',
-    serializeRoutingBlock(route),
+    serializeRoutingBlock(route, plan?.concepts),
     '=== END ROUTING ===',
     '',
     // PARITY-2 — the SHARED per-Space body. Identical text in master mode, so
