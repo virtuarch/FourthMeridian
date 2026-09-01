@@ -218,3 +218,114 @@ Worth recording, because each was invisible to reading and obvious to running:
    paycheck?" turn every assessment scalar it had and the model duly used one.
    FORECAST-16's finding is that a pay-date question is answered with DATES; the
    table is now scoped by the capability CF-8 already resolved.
+
+---
+
+# Measures on a time axis (Slice 3)
+
+`lib/reasoning/measure/**` — one primitive under which `net_worth@now` and
+`net_worth@2026-12-31` are the same object, differently licensed. Forecast stops
+being a subsystem and becomes an **operation**.
+
+## No new arithmetic
+
+Every evaluator is a thin adapter over an authority that already exists:
+
+| Measure | Authority |
+|---|---|
+| `liquid_cash@NOW` · `debt_balance@NOW` · `net_worth@NOW` | the accounts payload's own totals |
+| `monthly_spending` · `monthly_income` · `savings_rate` | the assessment's cash-flow section |
+| `runway_months` | the assessment's liquidity section |
+| `liquid_cash@DATE` | `forecastCash`, then `projectCash` |
+| `concentration_top_weight` | `computeConcentration`'s published verdict, read not re-run |
+
+`parity.test.ts` asserts each equals what the original produces on the real
+fixture. **Parity, not novelty.** The whole layer contains exactly **six**
+multiplications and the test names every one of them; a seventh has to be
+justified in a diff.
+
+`net_worth@NOW` reads the payload's own `netWorth` rather than re-summing the
+components — the accounts authority already decided what participates and how
+currency was converted, and this repository has a whole memory of what happens
+when two chains compute the same current value.
+
+## A value or reasons — never both, never neither
+
+`Resolution` is a discriminated union, so `value: null` beside
+`standing: MEASURED` is **unrepresentable** rather than merely wrong. That
+combination is the shape of the most-repeated defect in this repository's record:
+`nativeBalance ?? 0` making UNKNOWN equal a confirmed zero, and a
+NOT-NULL-DEFAULT-0 balance column rendering a withheld account as $0.00.
+
+## `net_worth@FUTURE` does not refuse wholesale
+
+```
+1. leg resolves to a VALUE                     → use it
+2. leg UNRESOLVED, leg@NOW is MEASURED,
+   and leg is not the SUBJECT of the question  → persistence fallback
+3. otherwise                                   → UNRESOLVED, carrying its reasons
+
+standing = the WEAKEST leg
+```
+
+Two constraints stop this becoming invention:
+
+- **A fallback may only hold a currently-MEASURED value constant.** It may never
+  originate one. There is exactly **one** fallback form, so the set is closed and
+  cannot grow into a library of guesses.
+- **It may never be applied to the SUBJECT of the question.** Asked *"what will
+  my debt be in December?"*, holding debt flat and answering $549.75 would answer
+  a different question in the voice of an answer — the shape of the defect
+  PROJECTION-3 closed, inverted.
+
+Currency is checked at every join, which it was not before: `forecastCash` sums
+`cashDelta` with no currency check at all (`cashDeltaOf` discards `c.currency`).
+
+**Rejected: a `completeness: COMPLETE | CONDITIONAL | PARTIAL` axis.** Derivable —
+if any leg used a fallback the composition is `ASSUMPTION_DEPENDENT` and
+`dependsOn` names which one — and a parallel enum is how a codebase gets from
+three vocabularies to forty-two, in the slice whose purpose is to unify them.
+
+## Investments forward are deliberately poor
+
+`FLAT` (the base case) or `SCENARIO_BAND` (the user's own "what if it goes up
+10%", carrying HYPOTHETICAL standing). **There is no `DERIVED_FROM_HISTORY` and
+it must not be added**: BTC prices exist only from 2025-08-03, ETH is a rolling
+365 days, and investment *quantities* are back-projected where no event replay
+exists. A return derived from that series would be a prediction wearing an
+authority's clothes.
+
+Flat-as-base is not a limitation; it is the honest answer, and it is the register
+the brief asked for: *"nobody knows where Bitcoin will be in December — if your
+portfolio stays flat, around A; at +5%, around B."*
+
+## Dispersion is a product feature
+
+Everything else here works to stop the assistant refusing useful answers.
+`dispersion` is the only thing stopping that degrading into a confident point
+estimate: this Space's discretionary spending runs $2,290 to $14,061, a 6.1×
+spread with **no current regime**, and a mean over that is arithmetically correct
+and reads as a settled level.
+
+It is carried on `monthly_spending` and is **not** promoted into `range` —
+`range` is reserved for scenarios, which are two answers to two questions, where
+dispersion is a statement about the past.
+
+## Two corrections to the plan, from repository evidence
+
+**"One shared authority, not two comments" — there was nothing to merge.**
+The plan read `projection.ts:29-38` and `spending-baseline.ts:66-71` as two
+copies of the double-count rule. They are different statements:
+`spending-baseline` **exports** `isOrdinaryConsumption`, which is the shared
+authority and already has one implementation; `projection.ts`'s comment is a
+measured finding about why it projects no debt paydown at all. What was actually
+missing is the rule **at the join**, where three ledgers meet — now stated in
+`composeNetWorth` and pinned.
+
+**The join is safe today only because debt is held flat.** A card purchase
+reduces future cash through the spending accrual and would also raise the card
+balance. It cannot double-count now, because the debt leg contributes nothing
+that moves with spending. The composition therefore gets the **total** right and
+the **split** wrong — a card purchase is modelled as cash leaving rather than
+debt rising, and net worth is the same either way. **If `debt_balance@FUTURE`
+ever gains a real schedule, this join gains a double count on the same day.**

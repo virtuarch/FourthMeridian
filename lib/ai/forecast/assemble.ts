@@ -239,7 +239,23 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
     // context carries a licensed due date today, so this reports "evaluated,
     // none licensed" — ABSENT, which FORECAST-7 treats as usable evidence and
     // renders as a statement about the EVIDENCE, not about the user's bills.
-    obligations: { licensedEvents: [], activeButUndatedCount: 0, evaluated: true },
+    //
+    // ⚠️ BUT THE COUNT WAS HARD-CODED ZERO, AND ZERO IS A DIFFERENT SENTENCE
+    // (V26-REASONING Slice 3). `operating-state.ts` appends "; N obligation(s)
+    // are active but carry no due date" to the user-visible reason, so a
+    // hard-coded 0 turns "five bills we know about and cannot date" into
+    // "nothing to say". FORECAST-4's census of the real database found exactly
+    // five such accounts — balance owed, a stated minimum, and `dueDay` null —
+    // and this counts them from the payload rather than asserting none exist.
+    //
+    // ⚠️ THIS CHANGES NO PROJECTED NUMBER. `licensedEvents` stays empty, because
+    // no authority can invent a due date that was never captured; only the
+    // COMPLETENESS OF THE DISCLOSURE changes. `obligation.ts` stays unwired: it
+    // would be a no-op with a false air of capability.
+    obligations: {
+      licensedEvents: [], evaluated: true,
+      activeButUndatedCount: activeUndatedObligations(acc),
+    },
     baseline: assertedBaseline
       ? {
         assertable: true, amount: assertedBaseline.amount,
@@ -397,6 +413,30 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
     unavailable: acc ? null : 'account balances could not be assembled for this Space',
     projection, observedSpending,
   };
+}
+
+/**
+ * Debt accounts that are ACTIVE and carry NO due date.
+ *
+ * ⚠️ THE BINDING CONSTRAINT IS TIMING, NOT AMOUNT. An account with a balance
+ * owed and a stated minimum is a bill we know about; without a `dueDay` it is a
+ * bill we cannot place on a calendar, and a projection that silently omits it is
+ * not the same thing as a projection that says so.
+ *
+ * Reads the payload's own resolved debt fields (`amountOwed`, `minimumPayment`,
+ * `dueDay` — all from `lib/debt/balance-semantics` and `effective-terms`), so
+ * this counts rows rather than deciding anything about them. BALANCE_ONLY rows
+ * carry none of these fields and are therefore not counted, which is correct:
+ * their absence is a visibility fact, not a due-date fact, and counting them
+ * would disclose that a hidden account is a debt account.
+ */
+function activeUndatedObligations(acc: AccountsSectionData | undefined): number {
+  const rows = acc?.accounts;
+  if (!Array.isArray(rows)) return 0;
+  return rows.filter((r) =>
+    typeof r.amountOwed === 'number' && r.amountOwed > 0
+    && typeof r.minimumPayment === 'number' && r.minimumPayment > 0
+    && (r.dueDay === null || r.dueDay === undefined)).length;
 }
 
 // ── Question-specific capability (§17) — DELETED (V26-REASONING Slice 0) ─────

@@ -68,9 +68,48 @@ constraint on every dated outflow is timing, not amount, and no authority can
 invent a date that was never captured.
 
 So the module stands ready and its caller reports the gap. Connecting it would be
-a no-op with a false air of capability. The actual unlock is a `dueDay`
-KnowledgeGap — the system currently asks the user for APR, which it can partly
-live without, and never asks for the one field it cannot.
+a no-op with a false air of capability.
+
+### ⚠️ OPEN PRODUCT TICKET: `dueDay` has no KnowledgeGap
+
+**This is the actual unlock, and it costs one entry in a mechanism that already
+exists.** `lib/ai/assemblers/accounts.ts` builds KnowledgeGaps for `apr` and
+`minimumPayment` only. So the system asks the user for an APR — which it can
+partly live without, since interest is a second-order term on a $549.75 balance —
+and never asks for the one field that is the binding constraint on every dated
+outflow the product could compute.
+
+Adding a `dueDay` gap would turn "five bills we know about and cannot date" into
+five bills with a schedule, which is what makes `obligation.ts` reachable,
+`debt_balance@FUTURE` an amortisation rather than a persistence fallback, and a
+dated cash path possible at all.
+
+Two things it must not break, both already decided elsewhere:
+
+- **BALANCE_ONLY accounts must be excluded**, for the reason `accounts.ts:462-465`
+  already gives about the existing gaps: surfacing one would implicitly reveal
+  that a hidden account is a debt account.
+- **The moment `debt_balance@FUTURE` gains a real schedule, the net-worth
+  composition gains a double count** — a card purchase would reduce cash through
+  the spending accrual AND increase the balance on the same day. The join in
+  `lib/reasoning/measure/evaluate.ts` states this and names the authority to use
+  (`isOrdinaryConsumption`); it is safe today only because debt forward is held
+  flat.
+
+Recorded here rather than built, because it is a data-capture and UI change, not
+a reasoning one.
+
+### What V26-REASONING Slice 3 did change
+
+`activeButUndatedCount` was hard-coded `0` at `assemble.ts:242`, and
+`operating-state.ts` appends *"; N obligation(s) are active but carry no due
+date"* to the user-visible reason. A hard-coded zero turned "five bills we know
+about and cannot date" into "nothing to say." It is now counted from the accounts
+payload's own resolved debt fields.
+
+⚠️ **This changes no projected number.** `licensedEvents` is still empty, because
+no authority can invent a due date that was never captured. Only the completeness
+of the disclosure changed.
 
 ---
 
