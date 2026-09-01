@@ -51,7 +51,12 @@ import type { AssembledForecast } from '@/lib/ai/forecast/assemble';
 
 // Mirrors lib/ai/provider.ts. Asserted, not assumed — a drift here means the
 // harness is measuring a configuration production does not use.
-const PRODUCTION_MODEL = 'gpt-4o-mini';
+//
+// ⚠️ READ FROM THE SAME FLAG PRODUCTION READS (V26-REASONING Slice 2). Hard-coding
+// the tier here was correct while `provider.ts` hard-coded it too; now that the
+// tier is a decision, a harness that ignores the decision measures a
+// configuration nobody runs. `--model=` still overrides, for the comparison.
+const PRODUCTION_MODEL = process.env.AI_CHAT_MODEL || 'gpt-4o-mini';
 const TEMPERATURE = 0.3;
 const MAX_TOKENS = 1024;
 /** Reasoning tokens are billed and counted against the same cap. */

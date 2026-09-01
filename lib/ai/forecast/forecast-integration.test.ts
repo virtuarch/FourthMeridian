@@ -1014,11 +1014,19 @@ check('HF2b1 and the capability surfaces, exclusively — a pay-date question '
 check('HF2c a real assembled forecast', /assembleForecast\(\{/.test(harness));
 check('HF2d and the same doctrine injection, because it builds the real prompt',
   /buildSpaceSystemPrompt\(/.test(harness) && !/FORECAST_DOCTRINE/.test(harness));
+// ⚠️ RESTATED, AND STRICTLY STRONGER (V26-REASONING Slice 2). This pinned the
+// LITERAL 'gpt-4o-mini' in both files, which was the right check while the tier
+// WAS a literal. It is now a decision behind `AI_CHAT_MODEL`, and pinning the
+// literal would have forced the harness to measure a tier production is no
+// longer required to run — the exact drift this check exists to catch, arriving
+// through the check itself. What matters is that BOTH READ THE SAME FLAG WITH
+// THE SAME DEFAULT, which the literal could only imply.
 check('HF2e the model and sampling parameters mirror the provider',
-  /const PRODUCTION_MODEL = 'gpt-4o-mini'/.test(harness)
+  /const PRODUCTION_MODEL = process\.env\.AI_CHAT_MODEL \|\| 'gpt-4o-mini'/.test(harness)
   && /const TEMPERATURE = 0\.3/.test(harness)
   && /const MAX_TOKENS = 1024/.test(harness)
-  && /const CHAT_MODEL = 'gpt-4o-mini'/.test(read('lib/ai/provider.ts')));
+  && /const CHAT_MODEL = process\.env\.AI_CHAT_MODEL \|\| 'gpt-4o-mini'/
+    .test(read('lib/ai/provider.ts')));
 // ⚠️ The harness omits `payDates` deliberately: it measures the cash-forecast
 // surface, and FORECAST-16's capability has its own acceptance path. The shape
 // is pinned up to that argument so a drift in the shared arguments still fails.

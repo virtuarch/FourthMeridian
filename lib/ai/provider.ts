@@ -43,7 +43,23 @@ function getClient(): OpenAI {
 
 // ── Model ────────────────────────────────────────────────────────────────────
 
-const CHAT_MODEL = 'gpt-4o-mini';
+/**
+ * The chat tier.
+ *
+ * ⚠️ PARAMETERISED, NOT CHANGED (V26-REASONING Slice 2). The default is exactly
+ * what it has always been, so an unset environment is byte-identical to before.
+ * What this buys is that the tier becomes a decision somebody makes rather than
+ * a literal nobody revisits — the same lesson `AI_FORECAST_GUARD_MODE` taught
+ * expensively, where a flag read via bare `process.env` and set in no
+ * environment left a rejected posture in force for nineteen commits.
+ *
+ * ⚠️ AND THE MEASURED ANSWER IS NOW "IT DEPENDS ON AI_ANSWER_MODE", which is why
+ * this is a flag and not a new literal. Against the PROSE architecture,
+ * FORECAST-11 measured a stronger tier and correctly answered no. Against the
+ * typed answer boundary the same question answers yes, decisively — see
+ * `docs/systems/model-tier.md` for the numbers and the recorded decision.
+ */
+const CHAT_MODEL = process.env.AI_CHAT_MODEL || 'gpt-4o-mini';
 
 // ── Public types ─────────────────────────────────────────────────────────────
 

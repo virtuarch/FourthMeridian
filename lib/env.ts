@@ -203,6 +203,14 @@ const _e = {
   // and was then forgotten — AI_FORECAST_GUARD_MODE was set in no environment
   // at all for nineteen commits. Registering a flag is part of the slice.
   AI_ANSWER_MODE:           process.env.AI_ANSWER_MODE,
+  // V26-REASONING Slice 2 — the chat tier. UNSET ⇒ 'gpt-4o-mini', which is what
+  // `provider.ts` has always hard-coded, so an unset environment is unchanged.
+  // ⚠️ THE RIGHT VALUE DEPENDS ON `AI_ANSWER_MODE` AND THE TWO MUST MOVE
+  // TOGETHER. Under `prose`, FORECAST-11 measured a stronger tier and answered
+  // no. Under `typed`, the recorded decision in docs/systems/model-tier.md is
+  // the reverse. Setting one without the other buys the cost of the frontier
+  // tier without the boundary that makes it worth paying.
+  AI_CHAT_MODEL:            process.env.AI_CHAT_MODEL,
 } as const;
 
 // ── Deployment-environment classification (V26-ENV-1) ─────────────────────────
