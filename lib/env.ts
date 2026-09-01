@@ -177,6 +177,22 @@ const _e = {
   // silently on; 'repair' must be set deliberately.
   AI_ASSESSMENT_GUARD_MODE: process.env.AI_ASSESSMENT_GUARD_MODE,
   FLOWTYPE_SHADOW:           process.env.FLOWTYPE_SHADOW,
+  // FORECAST-14 — forecast numerical boundary: off | shadow | repair.
+  // UNSET ⇒ shadow (detect and log; the reply is NOT repaired).
+  // ⚠️ FORECAST-15's acceptance measured shadow at 8 raw authority violations →
+  // 8 reach the user, and repair at 10 → 0, and concluded that controlled active
+  // should launch with repair ENABLED. Registered here (V26-REASONING Slice 0)
+  // because it was previously read via bare process.env and set nowhere, so the
+  // non-enforcing default was in force in production by omission rather than by
+  // decision.
+  AI_FORECAST_GUARD_MODE:   process.env.AI_FORECAST_GUARD_MODE,
+  // PROJECTION-1 — the evidence-based cash projection beside the licensed
+  // forecast. Any value except the literal 'off' ⇒ ON, which is the shipped
+  // product decision. ⚠️ With it ON, ten scenarios of the FORECAST-15 acceptance
+  // corpus fail BY CONTRACT (they forbid exactly what this path was authorised
+  // to provide): ~21/35 with it on vs 32/35 with it off. That delta is a stale
+  // corpus, not a regression. Set 'off' to restore the prior contract exactly.
+  AI_FORECAST_PROJECTION:   process.env.AI_FORECAST_PROJECTION,
 } as const;
 
 // ── Deployment-environment classification (V26-ENV-1) ─────────────────────────

@@ -474,23 +474,7 @@ export function composeFutureCash(events: readonly FutureCashEvent[]): CashCompo
 
 // ── Rendering ───────────────────────────────────────────────────────────────
 
-/**
- * A compact statement of a composition. Built to exercise the authority in
- * tests; NOT wired into any prompt or retrieval path.
- */
-export function describeFutureCash(c: CashComposition): string[] {
-  if (c.components.length === 0) return ['Expected cash events: none.'];
-  const cur = c.currency ? `${c.currency} ` : '';
-  const lines = ['Expected cash events:'];
-  for (const k of c.components) {
-    lines.push(`  - ${k.timing} · ${k.value === null ? 'amount not established' : `${k.value}`}`
-      + ` · ${k.role.toLowerCase()} · ${k.basis ?? 'no basis'}`
-      + (k.countsTowardNet ? '' : ' · NOT counted as spendable cash'));
-  }
-  lines.push(`  Stated inflows: ${cur}${c.nominalInflow}. Stated outflows: ${cur}${c.nominalOutflow}.`);
-  lines.push(c.assertableNet !== null
-    ? `  Spendable cash contribution: ${cur}${c.assertableNet}.`
-    : `  Spendable cash contribution: NOT ASSERTABLE — ${c.netRefusalReason}. `
-      + 'The stated amounts above may be reported as stated amounts, and may NOT be described as money available to spend.');
-  return lines;
-}
+// ⚠️ `describeFutureCash` DELETED (V26-REASONING Slice 0). A prose renderer for
+// the composition, reachable only from this module's own test. The composition
+// itself — `composeFutureCash`, and its refusal to call a GROSS or unknown-basis
+// event spendable cash — is untouched and is what production consumes.

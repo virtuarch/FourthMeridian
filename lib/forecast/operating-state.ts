@@ -44,6 +44,7 @@
  * decision point, and a distinction with no decision behind it is vocabulary.
  */
 
+import { money } from './_num';
 import { ComponentState, type ComponentStateKind, type ConceptComposition } from '../ai/economic-concepts';
 import { annualFactor, monthlyEquivalent, type CadenceKindName } from './cadence';
 import type { ActivityStateName } from './stream-activity';
@@ -499,8 +500,6 @@ export function forecastBlockers(state: CurrentOperatingState): string[] {
 
 // ── Serialization ───────────────────────────────────────────────────────────
 
-const money = (n: number | null, cur = CURRENCY) =>
-  n === null ? 'unknown' : `${cur} ${n.toFixed(2)}`;
 
 /**
  * A compact statement of the state. Designed and measured; NOT production-wired.

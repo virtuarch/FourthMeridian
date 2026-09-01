@@ -42,6 +42,9 @@
  * a schedule.
  */
 
+import { DAY_MS } from './_time';
+import { median } from './_num';
+
 /** How often money arrives. */
 export const CadenceKind = {
   /** Every 7 days. 52 a year. */
@@ -182,7 +185,6 @@ export function monthlyEquivalent(amount: number, kind: CadenceKindName): number
 
 // ── Occurrence generation ────────────────────────────────────────────────────
 
-const DAY_MS = 86_400_000;
 
 const toISO = (d: Date): string => d.toISOString().slice(0, 10);
 const fromISO = (s: string): Date => new Date(`${s}T00:00:00.000Z`);
@@ -306,13 +308,6 @@ export const DERIVATION = {
   /** Below this spread, an interval cadence is indistinguishable from a calendar one. */
   MIN_BIWEEKLY_DISTINCT_DAYS: 8,
 } as const;
-
-const median = (xs: readonly number[]): number => {
-  if (xs.length === 0) return 0;
-  const s = [...xs].sort((a, b) => a - b);
-  const m = s.length >> 1;
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-};
 
 /** Whether a kind is generated from a fixed interval or from the calendar. */
 function isIntervalKind(kind: CadenceKindName): boolean {
@@ -481,42 +476,6 @@ export function missedSinceAnchor(cadence: Cadence, asOfISO: string): number {
 
 // ── Rendering ────────────────────────────────────────────────────────────────
 
-/**
- * A compact statement of a cadence.
- *
- * Exists for acceptance and future use; NOT wired into chat retrieval. When
- * forecast context is retrieved (FORECAST-6) this is what it would carry, and
- * building it now keeps the arithmetic out of any prompt: the factor and the
- * dates are stated, never derived by the reader.
- */
-export function describeCadence(c: CadenceResult, asOfISO: string): string[] {
-  if (!isCadence(c)) {
-    return [`Income cadence: UNKNOWN — ${c.reason}. No pay dates or monthly equivalence may be stated.`];
-  }
-  const next = nextOccurrences(c, asOfISO, 4);
-  const lines = [
-    `Income cadence: ${c.kind} (${annualFactor(c.kind)} per year, monthly factor ${annualFactor(c.kind)}/12).`,
-    `  Anchor (last confirmed): ${c.anchorISO}. Provenance: ${c.provenance}.`,
-    `  Next occurrences: ${next.join(' · ')}. These are generated from the cadence — do not compute or adjust them.`,
-  ];
-  if (c.evidence) {
-    lines.push(
-      `  Evidence: ${c.evidence.observations} observations ${c.evidence.firstISO}–${c.evidence.lastISO}, ` +
-      `median spacing ${c.evidence.medianGapDays}d, ${Math.round(c.evidence.regularity * 100)}% on schedule` +
-      (c.evidence.irregularGaps.length ? `, ${c.evidence.irregularGaps.length} irregular gap(s)` : '') + '.',
-    );
-  }
-  const missed = missedSinceAnchor(c, asOfISO);
-  if (missed > 0) {
-    lines.push(
-      `  ⚠️ ${missed} scheduled occurrence(s) have passed since ${c.anchorISO} with no confirmed ` +
-      'payment. The schedule still generates dates; whether this income is still being received ' +
-      'is NOT established here.',
-    );
-  }
-  lines.push(
-    '  A cadence states WHEN money arrives. It does not establish the current amount, that the ' +
-    'income is still active, or any tax treatment.',
-  );
-  return lines;
-}
+// ⚠️ `describeCadence` DELETED (V26-REASONING Slice 0). A prose renderer with no
+// caller but its own test. `deriveCadence` and `occurrencesBetween` are the
+// authority and are unchanged.

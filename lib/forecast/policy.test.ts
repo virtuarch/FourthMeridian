@@ -43,8 +43,7 @@ import {
 import {
   AssumptionDimension, AssumptionOrigin, AssumptionStance, ConclusionStatus,
   EMPTY_POLICY, FactAuthority, HORIZON_DEPENDENCY, PolicyIssue, StatementMode,
-  applyPolicy, continueLicensedCadence, explainPolicy, routeStatement, scenarioCash,
-  unlockedByPolicy, validatePolicy,
+  applyPolicy, continueLicensedCadence, routeStatement, validatePolicy,
   type ForecastPolicy, type PolicyAssumption, type PolicyResolution,
 } from './policy';
 import type { AccountsSectionData } from '../ai/types';
@@ -263,8 +262,13 @@ eq('C13 naming both assumptions AND the horizon',
 eq('C14 the exact matrix without a horizon', countBy(C),
   { FACTUALLY_LICENSED: 6, ASSUMPTION_DEPENDENT: 7, REFUSED: 1 });
 eq('C15 and with one', countBy(CH), { FACTUALLY_LICENSED: 6, ASSUMPTION_DEPENDENT: 8 });
+// V26-REASONING Slice 0 — `unlockedByPolicy` was a dead one-line export; the
+// invariant it served is the assertion, so it is inlined rather than lost.
 check('C16 every unlocked conclusion names at least one dependency',
-  unlockedByPolicy(C).every((c) => c.dependencies.length > 0));
+  C.conclusions
+    .filter((c) => c.status === ConclusionStatus.ASSUMPTION_DEPENDENT
+      || c.status === ConclusionStatus.HYPOTHETICAL)
+    .every((c) => c.dependencies.length > 0));
 check('C17 no conclusion carries a bare assumed flag',
   !/assumed\s*:\s*(true|false)/.test(codeOnly) && !/\bisAssumed\b/.test(codeOnly));
 
@@ -292,18 +296,12 @@ eq('D1 a counterfactual scenario yields HYPOTHETICAL, not assumption-dependent',
   statusOf(D, Conclusion.MONTHLY_DISCRETIONARY_SPEND), ConclusionStatus.HYPOTHETICAL);
 eq('D2 the resolved baseline is HYPOTHETICAL too', D.baseline.status, ConclusionStatus.HYPOTHETICAL);
 eq('D3 the OBSERVED baseline is still UNKNOWN', D.baseline.authority.state, ComponentState.UNKNOWN);
-check('D4 the rendering keeps it out of the assumptions section', (() => {
-  const t = explainPolicy(D).join('\n');
-  return /Hypotheticals \(NOT observed, NOT the user's actual figures\)/.test(t)
-    && /Assumptions:\n   - none/.test(t)
-    && /asked as "show me a scenario where I spend \$10,000\/month"/.test(t);
-})(), explainPolicy(D).join('\n'));
-check('D5 and never calls it observed or current-normal spending', (() => {
-  const t = explainPolicy(D).join('\n');
-  return /current-normal spending is UNKNOWN/.test(t)
-    && /above figure supposed, not observed/.test(t)
-    && !/observed .{0,20}10000/.test(t);
-})(), explainPolicy(D).join('\n'));
+// ⚠️ D4/D5 DELETED WITH `explainPolicy` (V26-REASONING Slice 0). Both asserted
+// only on that renderer's prose. It was never production-wired — the model has
+// never seen a line of it — and Slice 1 replaces prose provenance with a typed
+// figure table the verifier checks by identity. The INVARIANTS they guarded
+// (a hypothetical is not an assumption; a supposed figure is never called
+// observed) are pinned on the resolution itself by D1, D2 and D3 above.
 check('D6 there is no producer of a scenario amount without provenance', (() => {
   // The module holds no money literal of its own, the only origin it can
   // manufacture is SYSTEM_POLICY, and the single thing that manufactures one
@@ -421,11 +419,14 @@ check('F5 excluding a CURRENT stream is permitted, and is a real dependency', ((
     && statusOf(r, Conclusion.CURRENT_LIQUID_BALANCE) === ConclusionStatus.FACTUALLY_LICENSED;
 })());
 check('F6 the one system default is disclosed, not implicit', (() => {
+  // The rendering half of this check went with `explainPolicy`; the structural
+  // half is the one that matters and is the one kept — a system default that is
+  // ACCEPTED and carries SYSTEM_POLICY origin is disclosable by construction.
   const d = continueLicensedCadence();
   const r = apply(policy([d]));
   return d.origin === AssumptionOrigin.SYSTEM_POLICY
     && r.accepted.some((a) => a.id === d.id)
-    && /system policy/.test(explainPolicy(r).join('\n'));
+    && r.accepted.find((a) => a.id === d.id)!.statedAs.length > 0;
 })());
 check('F7 the system default reactivates nothing — abacus stays excluded', (() => {
   const r = apply(policy([continueLicensedCadence()]));
@@ -488,12 +489,11 @@ eq('G10 FORECAST-3 still refuses spendable cash on the raw events',
   netCashContribution(BONUS).assertable, false);
 eq('G11 and the composition is byte-identical to before the policy',
   JSON.stringify(composeFutureCash(EVENTS)), JSON.stringify(before));
-const GS = scenarioCash(G);
-eq('G12 the authoritative composition still refuses spendable cash', GS.authoritative.assertableNet, null);
-eq('G13 the scenario may calculate using the full stated amount', GS.scenario.assertableNet, 17000);
-eq('G14 and it depends on BOTH basis assumptions', GS.dependencies.sort(), ['g1', 'g2']);
-eq('G15 with HYPOTHETICAL status, because one of them contradicts a fact',
-  GS.status, ConclusionStatus.HYPOTHETICAL);
+// ⚠️ G12–G15 DELETED WITH `scenarioCash` (V26-REASONING Slice 0). It composed a
+// scenario figure beside the authoritative one for a caller that never existed:
+// the engine consumes `effectiveEventAmount` directly, and no production path
+// ever read a ScenarioCash. G11 above still pins the composition FORECAST-3
+// actually produces, which is the half that ships.
 eq('G16 the scenario figure changes no conclusion licence — ending cash is still REFUSED',
   statusOf(G, Conclusion.FORECAST_ENDING_CASH), ConclusionStatus.REFUSED);
 check('G17 because the spending baseline is still unknown, and it says so',
@@ -502,12 +502,10 @@ check('G17 because the spending baseline is still unknown, and it says so',
 check('G18 a supposition supplies a basis, never a missing amount', (() => {
   const noAmount: FutureCashEvent = { ...VACATION, id: 'nil', amount: null };
   const r = applyPolicy(REAL, [noAmount], policy([netEvent('g9', 'nil', AssumptionStance.SUPPOSED)]));
+  // The composition half went with `scenarioCash`; the rejection is the rule.
   return r.rejected[0].code === PolicyIssue.INVALID_AMOUNT
-    && scenarioCash(r).scenario.assertableNet === null;
+    && composeFutureCash([noAmount]).assertableNet === null;
 })());
-check('G19 the rendering says the events are treated as NET by supposition only',
-  /bonus is GROSS[\s\S]{0,60}treated as NET by supposition only/.test(explainPolicy(G).join('\n')),
-  explainPolicy(G).join('\n'));
 check('G20 no ratio transformation exists — no percentage field, no rate',
   !/percent|ratio|\brate\b|fraction/i.test(codeOnly));
 check('G21 the module estimates no deduction', !/tax|withhold/i.test(codeOnly));
@@ -659,49 +657,23 @@ check('J11 nor any CF-era retrieval or prompt surface',
   execSync('git diff --name-only 3bcfce3 109c9e1 -- lib/ai/', { encoding: 'utf8' }).trim() === '');
 
 // ═══════════════════════════════════════════════════════════════════════════
-// K. EXPLANATION AND SERIALIZATION (§21/§22)
+// K. EXPLANATION AND SERIALIZATION — DELETED (V26-REASONING Slice 0)
 // ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ THE WHOLE SECTION WENT WITH `explainPolicy`, AND THAT IS THE POINT OF THE
+// SLICE THAT FOLLOWS IT. Fourteen checks measured a prose renderer's sections,
+// its token budget, and the regexes it had to satisfy — for a function that was
+// never production-wired and that the model has never once seen. That is the
+// shape this program is removing: provenance flattened into English and then
+// policed by reading the English back. Slice 1 replaces it with a typed figure
+// table whose claims are checked by identity, not by pattern.
+//
+// Nothing here guarded a resolution invariant. Every rule these regexes were
+// looking for is asserted directly on `PolicyResolution` elsewhere in this file:
+// dependencies on unlocked conclusions (C16), origin on every accepted
+// assumption (F6), a hypothetical kept apart from an assumption (D1–D3), and
+// the untouched authority composition (G11).
 
-const renders = {
-  none: explainPolicy(A).join('\n'),
-  one: explainPolicy(B).join('\n'),
-  two: explainPolicy(CH).join('\n'),
-  hypo: explainPolicy(D).join('\n'),
-};
-const tok = (s: string) => Math.ceil(s.length / 4);
-
-for (const [name, text] of Object.entries(renders)) {
-  check(`K1 ${name}: the six sections are all present`,
-    /Facts used:/.test(text) && /Assumptions:/.test(text) && /Still unknown:/.test(text)
-    && /Unlocked by assumption:/.test(text)
-    && (/Still REFUSED, by what is missing:/.test(text) || !/REFUSED/.test(text)), text);
-}
-// ⚠️ THE HYPOTHETICAL BAND IS WIDER ON PURPOSE. A counterfactual scenario
-// quotes the request that produced it, which nothing else in the payload does,
-// and that quote is the only provenance a manufactured figure can ever have.
-// Trimming it to reach 250 would be optimising away exactly what §9 requires.
-for (const [name, text] of Object.entries(renders)) {
-  const cap = name === 'hypo' ? 270 : 250;
-  check(`K2 ${name}: within the token budget (<= ${cap})`, tok(text) >= 60 && tok(text) <= cap,
-    `${tok(text)} tokens`);
-}
-check('K6 every unlocked conclusion is rendered WITH its dependencies',
-  /monthly surplus \(needs a1 \+ a2\)/.test(renders.two), renders.two);
-check('K7 the rendering forbids reporting an assumption as observed',
-  /may NOT be reported as observed/.test(renders.one));
-check('K8 and forbids the historical-average substitution',
-  /Never substitute a historical average/.test(renders.one));
-check('K9 provenance survives the token budget — origin is on every line',
-  renders.two.split('\n').filter((l) => /^\s+- \[/.test(l))
-    .every((l) => /\((user-requested|system policy)\)/.test(l)), renders.two);
-check('K10 it dumps no raw transactions', !/merchant|category|transaction/i.test(renders.two));
-
-if (process.env.DUMP) for (const [n, t] of Object.entries(renders)) {
-  console.log(`\n### ${n} (${tok(t)} tok)`);
-  for (const l of t.split('\n')) console.log(`${String(Math.ceil(l.length / 4)).padStart(4)} | ${l}`);
-}
-console.log(`\n  TOKENS  none=${tok(renders.none)} one=${tok(renders.one)} `
-  + `two=${tok(renders.two)} hypothetical=${tok(renders.hypo)}`);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // R. FACT OUTRANKS SUPPOSITION (FORECAST-9A)
@@ -736,8 +708,8 @@ eq('R6 the three cases are genuinely three, not two',
 eq('R7 under the fact, the AUTHORITY basis is NET — not an assumption sitting beside UNKNOWN',
   RB.incomeStreams.find((s) => s.sourceKey === 'vectrus')!.authorityBasis, AmountBasis.NET);
 eq('R8 with no assumed basis at all', RB.incomeStreams.find((s) => s.sourceKey === 'vectrus')!.assumedBasis, null);
-check('R9 and the explanation reports nothing still unknown about basis',
-  !/gross-or-net basis/.test(explainPolicy(RB).join('\n')), explainPolicy(RB).join('\n'));
+// R9 deleted with `explainPolicy`; R7 and R8 above pin the same fact on the
+// resolution — an ESTABLISHED authority basis with no assumed basis beside it.
 eq('R10 policy is no longer more expressive than a fact — both reach the same conclusion',
   [statusOf(RB, Conclusion.NET_MONTHLY_INFLOW) === ConclusionStatus.FACTUALLY_LICENSED,
     statusOf(RC, Conclusion.NET_MONTHLY_INFLOW) === ConclusionStatus.ASSUMPTION_DEPENDENT], [true, true]);

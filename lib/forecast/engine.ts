@@ -44,6 +44,8 @@
  * for FORECAST_ENDING_CASH, consumed rather than re-derived.
  */
 
+import { addDays, daysBetween } from './_time';
+import { CURRENCY, money } from './_num';
 import { ComponentState } from '../ai/economic-concepts';
 import {
   AmountBasis, netCashContribution,
@@ -68,10 +70,6 @@ import {
 // second opinion. Nothing here turns "three months" into a date; a horizon
 // arrives as two dates somebody already chose.
 
-const DAY_MS = 86_400_000;
-const at = (iso: string) => Date.parse(`${iso}T00:00:00.000Z`);
-const daysBetween = (fromISO: string, toISO: string) => Math.round((at(toISO) - at(fromISO)) / DAY_MS);
-const addDays = (iso: string, n: number) => new Date(at(iso) + n * DAY_MS).toISOString().slice(0, 10);
 
 // ── Money ───────────────────────────────────────────────────────────────────
 //
@@ -88,8 +86,6 @@ const addDays = (iso: string, n: number) => new Date(at(iso) + n * DAY_MS).toISO
 // the edge, does not. `money()` below is that edge and the ONLY place a figure
 // is rounded.
 
-const CURRENCY = 'USD';
-const money = (n: number) => `${CURRENCY} ${n.toFixed(2)}`;
 
 // ── Spending treatment ──────────────────────────────────────────────────────
 

@@ -137,9 +137,26 @@ check(
   'found a visibilityLevel: VisibilityLevel.<LITERAL> — use TRANSACTION_DETAIL_VISIBILITY instead',
 );
 
+// ⚠️ THIS CHECK WAS BEING SATISFIED BY AN EMPTY IMPORT (V26-REASONING Slice 0).
+// Since v2.6-PARITY-1 the assembler delegates its gate to
+// `bankingTransactionWhere` and uses nothing from `lib/ai/visibility` — but the
+// statement `import { } from '@/lib/ai/visibility';` was left behind, importing
+// no binding and executing no code, and it is the ONLY reason this line passed.
+// A check kept green by a syntactically empty import is testing nothing.
+//
+// The real question is the one above: is the KD-1 gate REACHED? That check
+// reads the delegate's source and proves it applies the predicate. What is left
+// to pin here is the other half — that the assembler has not quietly grown a
+// SECOND, ungated path to transaction rows.
+const txReadWheres = [...source.matchAll(
+  /db\.transaction\.(?:findMany|findFirst|count|aggregate|groupBy)\(\{\s*\n\s*where:\s*([A-Za-z_$][\w$]*)\(/g,
+)].map((m) => m[1]);
 check(
-  'assembler imports the canonical predicate module',
-  source.includes("from '@/lib/ai/visibility'"),
+  'every transaction read is built by a gated where-builder, and there is at least one',
+  txReadWheres.length > 0 &&
+    txReadWheres.every((f) => f === 'aiTransactionWhere' || f === 'aiDrilldownWhere'),
+  `transaction-read where builders: [${txReadWheres.join(', ')}] — a read whose ` +
+    'where clause is written inline bypasses the delegate proven gated above',
 );
 
 // ---------------------------------------------------------------------------

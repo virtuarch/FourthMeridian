@@ -33,7 +33,7 @@ import {
   CadenceKind, CadenceProvenance, DERIVATION,
   annualFactor, monthlyFactor, monthlyEquivalent,
   occurrencesBetween, nextOccurrences, missedSinceAnchor,
-  deriveCadence, isCadence, describeCadence,
+  deriveCadence, isCadence,
   type Cadence, type CadenceResult,
 } from './cadence';
 
@@ -324,27 +324,14 @@ check('H6 silence does NOT stop generation — cadence answers WHEN, not WHETHER
     '2026-08-27', 1).length === 1);
 
 // ═══════════════════════════════════════════════════════════════════════════
-// I. Rendering states the arithmetic; it never asks for it
+// I. Rendering — DELETED WITH `describeCadence` (V26-REASONING Slice 0)
 // ═══════════════════════════════════════════════════════════════════════════
-
-const renderedBw = describeCadence(bw, '2026-08-27').join('\n');
-check('I1 the rendering states the annual factor', /26 per year/.test(renderedBw), renderedBw);
-check('I2 the rendering states the monthly factor as 26/12', /26\/12/.test(renderedBw));
-check('I3 the rendering lists generated dates', /2026-08-28/.test(renderedBw));
-check('I4 the rendering forbids recomputing them', /do not compute or adjust/i.test(renderedBw));
-check('I5 the rendering never claims the income is still active',
-  /does not establish[\s\S]*still active/i.test(renderedBw));
-check('I6 the rendering carries no amount', !/\$/.test(renderedBw), renderedBw);
-
-const renderedUnknown = describeCadence(deriveCadence(['2026-05-04']), '2026-08-27').join('\n');
-check('I7 UNKNOWN renders as UNKNOWN', /UNKNOWN/.test(renderedUnknown));
-check('I8 UNKNOWN forbids stating pay dates or monthly equivalence',
-  /No pay dates or monthly equivalence may be stated/.test(renderedUnknown), renderedUnknown);
-check('I9 UNKNOWN renders no dates at all', !/\d{4}-\d{2}-\d{2}/.test(renderedUnknown), renderedUnknown);
-
-const renderedStale = describeCadence(
-  cadence({ kind: CadenceKind.SEMIMONTHLY, anchorISO: '2025-12-24', daysOfMonth: [10, 25] }), '2026-08-27').join('\n');
-check('I10 a silent stream renders its silence', /17 scheduled occurrence/.test(renderedStale), renderedStale);
+//
+// Ten checks on a prose renderer with no production caller. What they were
+// really pinning is that a cadence's arithmetic is STATED rather than left to
+// the model to recompute — and that survives, structurally, in `deriveCadence`'s
+// own fields (`perYear`, `perMonth`, UNKNOWN as a kind rather than a hedge) and
+// in sections A–H above, which assert on those fields directly.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // J. Structure — this slice stays a substrate
@@ -353,8 +340,16 @@ check('I10 a silent stream renders its silence', /17 scheduled occurrence/.test(
 check('J1 the module reaches no database', !/from ['"]@?\/?lib\/db|prisma/i.test(src));
 check('J2 the module reads no clock — every date is a parameter',
   !/Date\.now\(\)|new Date\(\)/.test(src), src.match(/Date\.now\(\)|new Date\(\)/)?.[0]);
-check('J3 the module imports nothing at all — it is pure arithmetic',
-  !/^import /m.test(src));
+// ⚠️ RESTATED BY V26-REASONING SLICE 0. This read "the module imports nothing
+// at all", which was true and was the point — until `DAY_MS` and `median` were
+// deduplicated out of seven and three private copies. The property worth
+// pinning was never the import COUNT: it is that nothing arrives here but pure
+// arithmetic over its own arguments. J1 and J2 already forbid the database and
+// the clock; this now names the closed set of siblings it may reach.
+check('J3 the module imports only pure sibling arithmetic',
+  [...src.matchAll(/from '([^']+)'/g)].map((m) => m[1])
+    .every((t) => t === './_time' || t === './_num'),
+  [...src.matchAll(/from '([^']+)'/g)].map((m) => m[1]).join(' | '));
 // ⚠️ RESTATED BY FORECAST-10, WHICH IS THE SLICE THAT WIRES THESE. The check
 // read "no consumer outside lib/forecast", and through FORECAST-9 that was both
 // true and the point: a substrate with no production reader could not change an

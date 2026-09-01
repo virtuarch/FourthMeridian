@@ -63,45 +63,22 @@ const FINANCE_WITH_HOLDINGS: ContextDomain[] = [
 ];
 
 /**
- * Finance core + member management emphasis.
- * Used for the FAMILY category, where member roles matter. (HOUSEHOLD was
- * retired in W1 — FAMILY is the sole shared-family-space concept.)
- * SNAPSHOT_HISTORY included: multi-member Spaces benefit from net-worth trend
- * context to show collective progress across members.
- */
-const FINANCE_WITH_MEMBERS: ContextDomain[] = [
-  FinanceDomains.ACCOUNTS,
-  FinanceDomains.TRANSACTIONS_SUMMARY,
-  FinanceDomains.SNAPSHOT_HISTORY,
-];
-
-/**
- * Focused debt payoff domain list.
- * SNAPSHOT_HISTORY included: 90-day balance trend is the primary signal for
- * debt reduction velocity — essential for questions like "am I paying this down
- * fast enough?" or "how has my total debt changed?"
- */
-const FINANCE_DEBT_FOCUSED: ContextDomain[] = [
-  FinanceDomains.ACCOUNTS,
-  FinanceDomains.TRANSACTIONS_SUMMARY,
-  FinanceDomains.SNAPSHOT_HISTORY,
-];
-
-/**
- * Emergency fund / savings-focused domain list.
- * SNAPSHOT_HISTORY included: savings trajectory over 90 days is the primary
- * signal for emergency-fund questions.
+ * ⚠️ FINANCE_WITH_MEMBERS / FINANCE_DEBT_FOCUSED / FINANCE_GOAL_FOCUSED DELETED
+ * (V26-REASONING Slice 0).
  *
- * W2 — GOALS removed; the member set now duplicates FINANCE_CORE, but this
- * stays a NAMED list: the EMERGENCY_FUND and GOAL categories still reference
- * it, and their domain set is its own declaration — aliasing it to
- * FINANCE_CORE would silently couple those categories to future core edits.
+ * All three were byte-identical to FINANCE_CORE. The last one carried an
+ * explicit argument for staying named — "their domain set is its own
+ * declaration; aliasing it to FINANCE_CORE would silently couple those
+ * categories to future core edits" — and that argument is why the duplication
+ * survived W2. It is the wrong way round: three lists that no reader can tell
+ * apart do not record an independent decision, they record a divergence that
+ * does not exist, and the coupling they were meant to prevent is invisible
+ * either way. When a category's domain set genuinely differs, it gets its own
+ * list again at that moment, with the difference visible in the diff.
+ *
+ * (FAMILY's list was never about members in any case: REVIEW-3 C-10 removed
+ * MEMBERS from every manifest because no assembler was ever registered for it.)
  */
-const FINANCE_GOAL_FOCUSED: ContextDomain[] = [
-  FinanceDomains.ACCOUNTS,
-  FinanceDomains.TRANSACTIONS_SUMMARY,
-  FinanceDomains.SNAPSHOT_HISTORY,
-];
 
 // ---------------------------------------------------------------------------
 // Manifest map
@@ -122,13 +99,13 @@ const FINANCE_GOAL_FOCUSED: ContextDomain[] = [
 const DOMAIN_MANIFEST_BY_CATEGORY: Record<string, ContextDomain[]> = {
   // Finance categories
   PERSONAL:        FINANCE_CORE,
-  FAMILY:          FINANCE_WITH_MEMBERS,
+  FAMILY:          FINANCE_CORE,
   BUSINESS:        FINANCE_CORE,
   INVESTMENT:      FINANCE_WITH_HOLDINGS,
   RETIREMENT:      FINANCE_WITH_HOLDINGS,
-  DEBT_PAYOFF:     FINANCE_DEBT_FOCUSED,
-  EMERGENCY_FUND:  FINANCE_GOAL_FOCUSED,
-  GOAL:            FINANCE_GOAL_FOCUSED,
+  DEBT_PAYOFF:     FINANCE_CORE,
+  EMERGENCY_FUND:  FINANCE_CORE,
+  GOAL:            FINANCE_CORE,
 
   // Non-finance categories — placeholder domain lists.
   // These will be replaced when their templates land (D9 or later).

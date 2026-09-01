@@ -44,15 +44,16 @@ export type ContextDomain = string;
 export const FinanceDomains = {
   ACCOUNTS:             'accounts',
   TRANSACTIONS_SUMMARY: 'transactions_summary',
-  TRANSACTIONS_RAW:     'transactions_raw',
   HOLDINGS_SUMMARY:     'holdings_summary',
-  HOLDINGS_RAW:         'holdings_raw',
+  SNAPSHOT_HISTORY:     'snapshot_history',
   // W2 — GOALS deleted (Goals retired; the 'goals' domain has no assembler,
   // no manifest entry, and no payload types any more).
-  MEMBERS:              'members',
-  SNAPSHOT_HISTORY:     'snapshot_history',
-  PROVIDERS:            'providers',
-  PLATFORM_HEALTH:      'platform_health',
+  //
+  // V26-REASONING Slice 0 — TRANSACTIONS_RAW, HOLDINGS_RAW, MEMBERS, PROVIDERS
+  // and PLATFORM_HEALTH deleted. Each named a domain with no assembler, no
+  // manifest entry and no reader; REVIEW-3 C-10 had already removed
+  // MEMBERS/PROVIDERS from every manifest and every classifier rule. A domain
+  // constant nothing can assemble is a promise the registry cannot keep.
 } as const;
 
 export type FinanceDomain = typeof FinanceDomains[keyof typeof FinanceDomains];

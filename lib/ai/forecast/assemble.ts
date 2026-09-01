@@ -398,41 +398,20 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   };
 }
 
-// ── Question-specific capability (§17) ──────────────────────────────────────
-
-/**
- * Which conclusion the question actually asks for.
- *
- * ⚠️ THE CAPABILITY MATRIX, NOT A SECOND ROUTER. FORECAST-7 already decided
- * that "when is my next payday" and "what is my cash in three months" have
- * different evidence costs, and the second is licensed while the first is not.
- * Routing every forecast-shaped question through the full engine would make a
- * question that IS answerable today report a refusal.
- */
-export const ForecastAsk = {
-  ENDING_CASH: Conclusion.FORECAST_ENDING_CASH,
-  RUNWAY: Conclusion.CASH_RUNWAY,
-  NEXT_PAY_DATES: Conclusion.NEXT_PAY_DATES,
-  NOMINAL_INCOME: Conclusion.NOMINAL_MONTHLY_INCOME,
-} as const;
-
-const NEXT_PAY_RE = /\b(next (?:pay ?check|pay ?day|payment|deposit)|when (?:do|will) i (?:get|be) paid|when is my next)\b/i;
-const RUNWAY_RE = /\b(runway|how long (?:will|can) my (?:cash|money|savings)|how long (?:do|will) i have|months of (?:cash|runway|expenses))\b/i;
-const NOMINAL_INCOME_RE = /\b(monthly income|how much (?:do|will) i (?:earn|make) (?:a|per|each) month)\b/i;
-
-/** The conclusion a forecast question is asking for. */
-export function forecastAsk(question: string): ConclusionKind {
-  if (NEXT_PAY_RE.test(question)) return ForecastAsk.NEXT_PAY_DATES;
-  if (RUNWAY_RE.test(question)) return ForecastAsk.RUNWAY;
-  if (NOMINAL_INCOME_RE.test(question)) return ForecastAsk.NOMINAL_INCOME;
-  return ForecastAsk.ENDING_CASH;
-}
-
-/** Whether the state alone already licenses what was asked. Delegated, not re-derived. */
-export function asksSomethingAlreadyLicensed(
-  state: CurrentOperatingState, question: string,
-): boolean {
-  return conclusionLicence(state, forecastAsk(question)).licensed;
-}
+// ── Question-specific capability (§17) — DELETED (V26-REASONING Slice 0) ─────
+//
+// ⚠️ A THIRD ROUTER, AND IT HAD NO CALLERS. `ForecastAsk`, `forecastAsk`,
+// `asksSomethingAlreadyLicensed` and the three regexes behind them
+// (NEXT_PAY_RE / RUNWAY_RE / NOMINAL_INCOME_RE) were reachable only from
+// `forecast-integration.test.ts`. Nothing in production ever asked this module
+// which conclusion a question wanted: CF-8's retrieval plan decides FORECAST vs
+// PAY_DATES before assembly, and FORECAST-16's own finding was that folding pay
+// dates into the forecast ask is what made a pay-date question answer "Ending
+// cash: REFUSED". The capability matrix it documented survives where it is
+// actually consulted — `conclusionLicence(state, conclusion)`.
+//
+// Deleted here rather than kept "until the planner lands" because Slice 5
+// replaces question interpretation wholesale, and a fourth vocabulary of
+// forward-looking regexes is precisely what that slice exists to remove.
 
 export { PeriodBasis, AssumptionDimension, AssumptionOrigin, AssumptionStance, EventProvenance, FlowRole, ActivityState };

@@ -77,7 +77,6 @@ import type { AssembledForecast } from '@/lib/ai/forecast/assemble';
 
 import { detectsPayoffIntent, detectsExplicitUpdateIntent } from '@/lib/ai/intent';
 import type { IntentRoute }          from '@/lib/ai/intent';
-import { planContextSelection, DEFAULT_CONTEXT_BUDGET_TOKENS } from '@/lib/ai/context-priority';
 import { buildSpaceSystemPrompt, buildMasterSystemPrompt, omitDomainJson,
   renderForecastScopeRefusal } from '@/lib/ai/prompts/system-prompt';
 import { extractKnowledgeGaps } from '@/lib/ai/prompts/context-serializer';
@@ -114,16 +113,6 @@ const ELIGIBLE_ROLES: SpaceMemberRole[] = [
   SpaceMemberRole.MEMBER,
 ];
 
-// ── Shadow-mode context selection logging (D6.3D-1) ──────────────────────────
-//
-// Computes a deterministic SelectionPlan for each assembled context and writes
-// it to the AuditLog as AI_CONTEXT_SELECTION_PLANNED. This is OBSERVATIONAL
-// ONLY: the plan is never consulted when building the system prompt, so prompt
-// output is byte-for-byte unchanged. Any failure here is swallowed so shadow
-// logging can never affect the chat response.
-//
-// The existing AI_CONTEXT_ASSEMBLED row is written inside buildContext(), before
-// the intent route and assessment exist, so it cannot carry the plan. A separate
 /** CF-6 — the newest user message, as a domain-RELEVANCE signal. Nothing else reads it. */
 function latestUserMessage(msgs: { role: string; content: string }[]): string | undefined {
   return [...msgs].reverse().find((m) => m.role === 'user')?.content;
@@ -158,43 +147,6 @@ async function logShadowRetrievalPlan(
     });
   } catch (err) {
     console.error('[api/ai/chat] CF-8 shadow retrieval-plan logging failed (non-fatal):', err);
-  }
-}
-
-// row is the low-risk, additive way to capture it.
-async function logShadowSelectionPlans(
-  userId:      string,
-  contexts:    SpaceContext_AI[],
-  assessments: FinancialAssessment[],
-  intentRoute: IntentRoute,
-): Promise<void> {
-  try {
-    await Promise.all(
-      contexts.map((context, i) => {
-        const assessment = assessments[i];
-        if (!assessment) return Promise.resolve(null);
-
-        const plan = planContextSelection({
-          intentRoute,
-          context,
-          assessment,
-          budgetTokens: DEFAULT_CONTEXT_BUDGET_TOKENS,
-        });
-
-        return db.auditLog.create({
-          data: {
-            action:   AuditAction.AI_CONTEXT_SELECTION_PLANNED,
-            userId,
-            spaceId:  context.spaceId,
-            metadata: plan as unknown as Prisma.InputJsonValue,
-          },
-          select: { id: true },
-        });
-      }),
-    );
-  } catch (err) {
-    // Non-fatal: shadow logging must never break the chat response.
-    console.error('[api/ai/chat] shadow selection-plan logging failed (non-fatal):', err);
   }
 }
 
@@ -483,8 +435,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       { attemptedSpaceCount: memberships.length, failedSpaceNames, distinctAccountCount },
       { question: masterQuestion, surfaces: ms.resolved.map((r) => r.surfaces),
         forecastScopeRefusal: scopeRefusal });
-    // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
-    await logShadowSelectionPlans(user.id, contexts, masterAssessments, intentRoute);
     // REVIEW-3 C-9 (KD-8) — deduplicate flat-mapped gaps: an account shared
     // into several Spaces surfaced the SAME gap once per Space, and the client
     // rendered duplicate cards.
@@ -540,7 +490,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // an enforcing planner would have to occupy. The old context-priority
       // planner ran after assembly and could therefore only propose dropping
       // serialized text — it saved no retrieval work and could not widen
-      // anything. Nothing consults this plan; it is logged and compared.
+      // anything; it was deleted in V26-REASONING Slice 0.
+      //
+      // ⚠️ THE NAME IS NOW STALE AND THE HEADER USED TO LIE. "Nothing consults
+      // this plan" was written when that was true and left in place after CF-9
+      // wired it: the plan decides FORECAST/PAY_DATES execution below and the
+      // omitDomainJson set in the prompt. It IS consulted, and it is also
+      // logged for comparison.
       try {
         shadowPlan = planRetrieval({
           messages, envelope: envelopeForPrompt, now: new Date(),
@@ -589,8 +545,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     systemPrompt = buildSpaceSystemPrompt(
       ctx, assessment, intentRoute, debtPayments, envelopeForPrompt,
       latestUserMessage(messages), shadowPlan, forecast, payDates);
-    // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
-    await logShadowSelectionPlans(user.id, [ctx], [assessment], intentRoute);
     // CF-8 — the retrieval plan beside what was actually assembled, so the two
     // can be compared after the fact from one audit row.
     await logShadowRetrievalPlan(

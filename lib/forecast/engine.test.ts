@@ -433,7 +433,10 @@ eq('H4 an unknown baseline refuses; it does not become $8,349.66 or $6,712.88',
 near('H5 an explicit $4,000 assumption uses exactly $4,000', B.spending.amount as number, 4000);
 const importTargets = [...src.matchAll(/from '([^']+)'/g)].map((m) => m[1]);
 check('H6 every import is a forecast authority or CF-7\'s concept vocabulary',
-  importTargets.every((t) => /^\.\/[a-z-]+$/.test(t) || t === '../ai/economic-concepts'),
+  // `_time` / `_num` are the shared arithmetic extracted in V26-REASONING
+  // Slice 0; the underscore prefix marks them as private to lib/forecast, which
+  // is why the original `[a-z-]+` pattern did not admit them.
+  importTargets.every((t) => /^\.\/_?[a-z-]+$/.test(t) || t === '../ai/economic-concepts'),
   importTargets.join(' | '));
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -523,9 +526,18 @@ check('L1 the half-cent level is carried at full precision, per D-4',
   Math.abs((C.events.reduce((t, e) => t + (e.cashDelta ?? 0), 0)) - sixExact) < 1e-9);
 check('L2 rounding each occurrence first would have drifted',
   Math.abs(sixRounded - sixExact) > 0.001, `${sixRounded} vs ${sixExact}`);
-eq('L3 the engine rounds in exactly one place, at the rendering edge',
-  (src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
-    .match(/toFixed\(/g) ?? []).length, 1);
+// ⚠️ THE EDGE MOVED, THE RULE DID NOT (V26-REASONING Slice 0). `money()` was
+// one of four near-identical copies and now lives in `lib/forecast/_num.ts`. So
+// the engine must round ZERO times of its own, and the shared edge must round
+// exactly once — which is a stricter statement of the same D-4 doctrine than
+// "exactly one toFixed in this file" ever was.
+const numSrc = readFileSync(join(process.cwd(), 'lib/forecast/_num.ts'), 'utf8');
+const stripped = (t: string) =>
+  t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+eq('L3 the engine itself rounds nowhere',
+  (stripped(src).match(/toFixed\(/g) ?? []).length, 0);
+eq('L3b and the one shared rendering edge rounds exactly once',
+  (stripped(numSrc).match(/toFixed\(/g) ?? []).length, 1);
 
 const renders = {
   facts: explainForecast(A).join('\n'),

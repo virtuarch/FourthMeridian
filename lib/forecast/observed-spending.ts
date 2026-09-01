@@ -136,17 +136,6 @@ export function deriveObservedSpendingRate(
   };
 }
 
-/**
- * The window, in the words a reply may reuse.
- *
- * ⚠️ NEVER THE WORD "NORMAL". F6 owns that word and withheld it for this user;
- * a projection input that borrowed it would assert precisely the thing F6
- * measured to be false.
- */
-export function describeObservedSpending(r: ObservedSpendingRate): string {
-  const span = r.monthCount === 1
-    ? r.months[0]
-    : `${r.months[0]} – ${r.months[r.months.length - 1]}`;
-  return `spending averaged ${r.monthlyRate.toFixed(2)} per month across the `
-    + `${r.monthCount} complete month(s) ${span}`;
-}
+// ⚠️ `describeObservedSpending` DELETED (V26-REASONING Slice 0). A prose
+// renderer with no caller but its own test. `deriveObservedSpendingRate` and its
+// completeness reasons are the authority and are unchanged.

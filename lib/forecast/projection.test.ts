@@ -30,7 +30,7 @@
  */
 
 import {
-  deriveObservedSpendingRate, describeObservedSpending, monthLabel, WINDOW_MONTHS,
+  deriveObservedSpendingRate, monthLabel, WINDOW_MONTHS,
 } from './observed-spending';
 import { projectCash, type ProjectionSpending } from './projection';
 import {
@@ -68,10 +68,13 @@ const MONTHS = [
       r.origin === AssumptionOrigin.OBSERVED_CONTINUATION);
     // ⚠️ F6 OWNS THE WORD "NORMAL" AND WITHHELD IT FOR THIS USER. A projection
     // input that borrowed it would assert exactly what F6 measured to be false.
-    check('S5 the description never calls the average "normal"',
-      !/normal/i.test(describeObservedSpending(r)), describeObservedSpending(r));
-    check('S5b and it names the window it came from',
-      /3 complete month\(s\)/.test(describeObservedSpending(r)));
+    // S5/S5b went with `describeObservedSpending` (V26-REASONING Slice 0); they
+    // policed a dead renderer's wording. The rule itself is structural and is
+    // kept: the rate carries OBSERVED_CONTINUATION (S4), never a normality
+    // claim, and it carries the window it was derived from as a field.
+    check('S5 the rate names the window it came from, and claims no normality',
+      r.monthCount === 3 && r.months.length === 3 && !/normal/i.test(JSON.stringify(r)),
+      JSON.stringify(r));
   }
   // Window selection must not be opportunistic: a longer history is available and
   // is not used, and the two windows genuinely disagree.

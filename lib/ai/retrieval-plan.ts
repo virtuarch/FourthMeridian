@@ -3,9 +3,13 @@
  *
  * CF-8 — ONE OBJECT ANSWERING "WHAT EVIDENCE SHOULD THIS QUESTION NEED?"
  *
- * SHADOW ONLY. Nothing here changes what is assembled, what is serialized, or
- * what the model sees. The plan is computed, logged, and compared against what
- * production actually loaded; the difference is the deliverable.
+ * ⚠️ NO LONGER SHADOW. This header said "SHADOW ONLY. Nothing here changes what
+ * is assembled, what is serialized, or what the model sees" — true when written,
+ * false since CF-9. The plan is ENFORCING at five call sites: it gates forecast
+ * and pay-date execution (`route.ts` buildForecastSurfaces), it decides which
+ * domains have their raw JSON omitted (`omitDomainJson`), and it is still logged
+ * for comparison. Corrected in V26-REASONING Slice 0; the plan is also what
+ * Slice 5's typed planner replaces.
  *
  * ── Why it exists ───────────────────────────────────────────────────────────
  * Every input already exists as its own deterministic authority, and they are
@@ -23,10 +27,11 @@
  *
  * ── Position in the pipeline ────────────────────────────────────────────────
  * BEFORE assembly, deliberately. The previous shadow planner
- * (lib/ai/context-priority) ran AFTER every domain had been fetched and folded,
- * so it could only ever propose dropping serialized text — it saved no
- * retrieval work and could not widen anything. That is the structural mistake
- * this replaces, and it is why the position matters more than the scoring.
+ * (lib/ai/context-priority, deleted in V26-REASONING Slice 0 having never once
+ * been consulted) ran AFTER every domain had been fetched and folded, so it
+ * could only ever propose dropping serialized text — it saved no retrieval work
+ * and could not widen anything. That is the structural mistake this replaces,
+ * and it is why the position matters more than the scoring.
  *
  * ── The two dependency questions, kept apart ────────────────────────────────
  * A domain can be needed to COMPUTE the deterministic assessment while its raw

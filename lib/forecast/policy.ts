@@ -96,6 +96,7 @@
  *                        module because there is nowhere to put the history.
  */
 
+import { money } from './_num';
 import { ComponentState } from '../ai/economic-concepts';
 import {
   AmountBasis, EventProvenance, composeFutureCash,
@@ -363,7 +364,6 @@ export interface RejectedAssumption {
 const isDate = (s: unknown): s is string =>
   typeof s === 'string' && s.length === 10 && Number.isFinite(Date.parse(`${s}T00:00:00.000Z`));
 
-const money = (n: number | null, cur: string) => (n === null ? 'unknown' : `${cur} ${n.toFixed(2)}`);
 
 const perPeriod = (b: PeriodBasisKind) => (b === PeriodBasis.MONTHLY ? 'month' : '28 days');
 
@@ -989,38 +989,6 @@ export function applyPolicy(
   };
 }
 
-/** The conclusions a policy unlocked that the facts alone did not. */
-export function unlockedByPolicy(r: PolicyResolution): PolicyConclusion[] {
-  return r.conclusions.filter((c) =>
-    c.status === ConclusionStatus.ASSUMPTION_DEPENDENT || c.status === ConclusionStatus.HYPOTHETICAL);
-}
-
-/**
- * WHAT THE EVENTS ADD UP TO UNDER THE POLICY — and what they add up to without it.
- *
- * ⚠️ BOTH COMPOSITIONS ARE RETURNED. `authoritative` is FORECAST-3's answer
- * about the events exactly as they are, which for the measured fixture is
- * "$17,000 stated, spendable cash NOT ASSERTABLE". `scenario` is the same
- * function's answer about the same events under the accepted suppositions. A
- * caller cannot read the second without the first sitting beside it, which is
- * §3's requirement expressed as a return type.
- *
- * The scenario composition is produced by handing FORECAST-3's UNMODIFIED
- * `composeFutureCash` a set of throwaway copies. The originals are never
- * touched, `EventAmount.basis` is never reassigned, and every refusal
- * FORECAST-3 would make about a GROSS or amount-less event still happens —
- * a supposition can supply a basis, it cannot supply a missing amount.
- */
-export interface ScenarioCash {
-  /** The events as they are. Assumption-free, always. */
-  authoritative: CashComposition;
-  /** The same events under the accepted suppositions. */
-  scenario: CashComposition;
-  status: ConclusionStatusKind;
-  /** The suppositions the scenario figure rests on. Empty means it rests on none. */
-  dependencies: string[];
-}
-
 /**
  * The amount an event has UNDER THE POLICY — the authoritative one, or the same
  * amount wearing a supposed basis.
@@ -1034,41 +1002,6 @@ export interface ScenarioCash {
 export function effectiveEventAmount(e: ResolvedEvent): EventAmount | null {
   if (!e.event.amount) return null;
   return e.assumedBasis ? { ...e.event.amount, basis: e.assumedBasis } : e.event.amount;
-}
-
-/** The event as the policy sees it. Never mutates, never escapes as evidence. */
-function policyView(e: ResolvedEvent): FutureCashEvent {
-  const amount = effectiveEventAmount(e);
-  return amount === e.event.amount ? e.event : { ...e.event, amount };
-}
-
-export function scenarioCash(r: PolicyResolution): ScenarioCash {
-  const originals = r.events.map((e) => e.event);
-  const included = r.events.filter((e) => e.included);
-
-  const shadows: FutureCashEvent[] = included.map(policyView);
-
-  // A basis supposition is a dependency only where the authority was not
-  // already NET — restating an established basis changes no figure.
-  const used = included
-    .filter((e) => e.assumedBasis && e.authorityAmount?.basis !== e.assumedBasis)
-    .map((e) => e.basisAssumptionId as string);
-  const dropped = r.events.filter((e) => !e.included && e.inclusionAssumptionId)
-    .map((e) => e.inclusionAssumptionId as string);
-  const dependencies = [...new Set([...used, ...dropped])];
-
-  const counterfactual = new Set(r.accepted
-    .filter((a) => a.stance === AssumptionStance.COUNTERFACTUAL).map((a) => a.id));
-  const scenario = composeFutureCash(shadows);
-  const status = scenario.assertableNet === null
-    ? ConclusionStatus.REFUSED
-    : dependencies.length === 0
-      ? ConclusionStatus.FACTUALLY_LICENSED
-      : dependencies.some((d) => counterfactual.has(d))
-        ? ConclusionStatus.HYPOTHETICAL
-        : ConclusionStatus.ASSUMPTION_DEPENDENT;
-
-  return { authoritative: composeFutureCash(originals), scenario, status, dependencies };
 }
 
 // ── Routing: a fact is not an assumption ────────────────────────────────────
@@ -1272,87 +1205,3 @@ const describeAssumption = (a: PolicyAssumption): string => {
         + `${a.include ? 'continues' : 'EXCLUDED'} (${who})`;
   }
 };
-
-/**
- * A compact statement of the policy and what it did. Designed and measured;
- * NOT production-wired.
- *
- * ⚠️ THE MODEL IS NEVER ASKED TO RECONSTRUCT PROVENANCE. Every section below is
- * computed. The one thing this must never become is a list of numbers with a
- * general instruction to be careful about them, which is the shape every
- * measured failure in this program had.
- */
-export function explainPolicy(r: PolicyResolution): string[] {
-  const lines: string[] = [];
-  const by = (s: ConclusionStatusKind) => r.conclusions.filter((c) => c.status === s);
-
-  lines.push(r.horizon
-    ? `Forecast policy, ${r.horizon.fromISO}..${r.horizon.toISO}:`
-    : 'Forecast policy (no horizon set):');
-
-  // FACTS USED — from the authorities, never from an assumption.
-  const facts = by(ConclusionStatus.FACTUALLY_LICENSED).map((c) => label(c.conclusion));
-  lines.push(`  Facts used: ${facts.length ? facts.join(', ') : 'none'}.`);
-
-  const supposed = r.accepted.filter((a) => a.stance === AssumptionStance.SUPPOSED);
-  const counter = r.accepted.filter((a) => a.stance === AssumptionStance.COUNTERFACTUAL);
-  lines.push('  Assumptions:');
-  if (supposed.length === 0) lines.push('   - none');
-  for (const a of supposed) lines.push(`   - ${describeAssumption(a)}`);
-  if (counter.length) {
-    lines.push("  Hypotheticals (NOT observed, NOT the user's actual figures):");
-    // ⚠️ The request is quoted here and nowhere else. A counterfactual figure is
-    // the one number in this program with nothing behind it but somebody asking
-    // for it, so the asking travels with it.
-    for (const a of counter) lines.push(`   - ${describeAssumption(a)} · asked as "${a.statedAs}"`);
-  }
-
-  // STILL UNKNOWN — the authoritative gap an assumption did not close. Grouped,
-  // because three streams sharing one gap is one fact, not three.
-  const unknown: string[] = [];
-  if (r.baseline.authority.state !== ComponentState.ASSERTABLE) {
-    unknown.push(`current-normal spending is ${r.baseline.authority.state}`
-      + (r.baseline.assumption ? ' (above figure supposed, not observed)' : ''));
-  }
-  const nonNet = r.incomeStreams.filter(
-    (s) => s.hasEstablishedAmount && s.authorityBasis !== AmountBasis.NET);
-  const supposedNet = nonNet.filter((s) => s.assumedBasis);
-  if (nonNet.length) {
-    unknown.push(`gross-or-net basis for ${nonNet.map((s) => s.sourceKey).join(', ')}`
-      + (supposedNet.length
-        ? ` (${supposedNet.map((s) => s.sourceKey).join(', ')} treated as NET by supposition only)`
-        : ''));
-  }
-  const evNonNet = r.events.filter((e) => e.authorityAmount && e.authorityAmount.basis !== AmountBasis.NET);
-  if (evNonNet.length) {
-    unknown.push(`events ${evNonNet.map((e) => `${e.id} is ${e.authorityAmount!.basis}`).join(', ')}`
-      + (evNonNet.some((e) => e.assumedBasis) ? ' (treated as NET by supposition only)' : ''));
-  }
-  lines.push(`  Still unknown: ${unknown.length ? unknown.join('; ') : 'nothing blocking'}.`);
-
-  const dep = (c: PolicyConclusion) => `${label(c.conclusion)} (needs ${c.dependencies.join(' + ')})`;
-  const unlocked = [...by(ConclusionStatus.ASSUMPTION_DEPENDENT), ...by(ConclusionStatus.HYPOTHETICAL)];
-  lines.push(`  Unlocked by assumption: ${unlocked.length ? unlocked.map(dep).join(', ') : 'none'}.`);
-
-  // ⚠️ INVERTED — keyed by the MISSING INPUT, not by the conclusion. Grouping
-  // the other way round repeats FORECAST-7's blocker wording once per refused
-  // conclusion, which on the real Space spends half the budget restating one
-  // sentence four times. Ordered by how much each input unblocks, so the reader
-  // sees the single most valuable thing to establish first.
-  const blocks = new Map<string, string[]>();
-  for (const c of by(ConclusionStatus.REFUSED)) {
-    for (const m of c.missing) blocks.set(m, [...(blocks.get(m) ?? []), label(c.conclusion)]);
-  }
-  if (blocks.size) {
-    lines.push(`  Still REFUSED, by what is missing: ${[...blocks.entries()]
-      .sort((a, b) => b[1].length - a[1].length)
-      .map(([missing, cs]) => `${missing} → ${cs.join(', ')}`).join('; ')}.`);
-  }
-  if (r.rejected.length) {
-    lines.push(`  Rejected assumptions: ${r.rejected
-      .map((x) => `${x.assumptionId} (${x.code})`).join('; ')}.`);
-  }
-  lines.push('  An assumed figure may be used in arithmetic; it may NOT be reported as observed. '
-    + 'Never substitute a historical average for anything still unknown.');
-  return lines;
-}

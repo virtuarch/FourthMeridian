@@ -348,8 +348,14 @@ check('J7 no rendering carries an amount',
 check('K1 no database', !/from ['"]@?\/?lib\/db|prisma/i.test(activitySrc));
 check('K2 no clock — asOf is a required argument',
   !/Date\.now\(\)|new Date\(\)/.test(activitySrc));
-check('K3 imports ONLY FORECAST-1',
-  (activitySrc.match(/^import /gm) ?? []).length === 1 && /from '\.\/cadence'/.test(activitySrc));
+// V26-REASONING Slice 0 — `./_time` joins `./cadence` as an allowed import.
+// The local date helpers this module carried included a `daysBetween` that ran
+// the OPPOSITE direction from the two other functions of that name; the shared
+// one is the fix, and the set of things this module may reach is still closed.
+check('K3 imports ONLY FORECAST-1 and the shared date arithmetic',
+  [...activitySrc.matchAll(/from '([^']+)'/g)].map((m) => m[1])
+    .every((t) => t === './cadence' || t === './_time'),
+  [...activitySrc.matchAll(/from '([^']+)'/g)].map((m) => m[1]).join(' | '));
 // ⚠️ RESTATED BY FORECAST-10, WHICH IS THE SLICE THAT WIRES THESE. The check
 // read "no consumer outside lib/forecast", and through FORECAST-9 that was both
 // true and the point: a substrate with no production reader could not change an

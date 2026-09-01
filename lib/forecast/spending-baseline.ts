@@ -41,6 +41,8 @@
  * confidence makes it one.
  */
 
+import { addDays } from './_time';
+import { median } from './_num';
 import { SERIALIZED_SPENDING_FLOWS } from '../transactions/flow-predicates';
 import { EventProvenance, type EventProvenanceKind } from './future-cash-event';
 
@@ -194,14 +196,7 @@ export interface AssertedException {
   note: string;
 }
 
-const DAY_MS = 86_400_000;
-const parse = (s: string) => Date.parse(`${s}T00:00:00.000Z`);
-const shift = (iso: string, n: number) => new Date(parse(iso) + n * DAY_MS).toISOString().slice(0, 10);
-const median = (xs: readonly number[]): number => {
-  const s = [...xs].sort((a, b) => a - b);
-  const m = s.length >> 1;
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-};
+const shift = addDays;
 
 // ── Derivation ──────────────────────────────────────────────────────────────
 

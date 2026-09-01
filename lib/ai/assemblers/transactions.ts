@@ -5,8 +5,9 @@
  *
  * Assembles aggregated transaction intelligence for the validated Space.
  * RAW TRANSACTION ROWS ARE NEVER RETURNED — this domain is intentionally
- * summary-only. FinanceDomains.TRANSACTIONS_RAW is a separate future domain
- * for explicit opt-in raw access.
+ * summary-only. Raw access would be a separate domain with its own assembler
+ * and its own opt-in; the unbuilt FinanceDomains.TRANSACTIONS_RAW constant that
+ * used to stand in for it was deleted in V26-REASONING Slice 0.
  *
  * ── Transaction visibility ────────────────────────────────────────────────────
  * Transactions reach a Space via the canonical path (mirroring
@@ -58,7 +59,6 @@ import { ShareStatus, TransactionCategory, FlowType } from '@prisma/client';
 import type { FlowDirection, Prisma } from '@prisma/client';
 
 import { registerAssembler } from '@/lib/ai/assembler-registry';
-import { } from '@/lib/ai/visibility';
 import { FinanceDomains } from '@/lib/ai/types';
 import type {
   AssemblerOptions,

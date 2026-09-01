@@ -28,7 +28,7 @@ import { join } from 'path';
 import {
   AmountBasis, EventProvenance, FlowRole,
   exactDateOf, describeTiming, netCashContribution, observedCashContribution,
-  cadenceDerivedEvents, composeFutureCash, describeFutureCash,
+  cadenceDerivedEvents, composeFutureCash,
   type FutureCashEvent, type EventTiming, type AmountBasisKind, type EventProvenanceKind,
 } from './future-cash-event';
 import { deriveCadence, isCadence, occurrencesBetween, type Cadence } from './cadence';
@@ -103,9 +103,10 @@ check('A3 and it says why', /unestablished basis/.test(liveFailure.netRefusalRea
 eq('A4 the whole $17,000 sits in unresolved', liveFailure.unresolved.unknownBasis, 17000);
 check('A5 there is NO single field a caller could read $17,000 of spendable cash from',
   !/futureCashTotal|totalFutureCash|spendableTotal/.test(code));
-check('A6 the rendering forbids the spendable claim in words',
-  /may NOT be described as money available to spend/.test(describeFutureCash(liveFailure).join('\n')),
-  describeFutureCash(liveFailure).join('\n'));
+// A6 deleted with `describeFutureCash` (V26-REASONING Slice 0). It asserted
+// that a prose renderer said in English what A2, A3 and A5 already assert
+// structurally: there is no assertable net, the refusal names its reason, and
+// no field exists from which a caller could read the total as spendable.
 
 // Mixed basis: the resolved part must not be lost, and the unresolved part must
 // not be absorbed into it.

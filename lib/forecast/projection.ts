@@ -38,6 +38,7 @@
  * an outflow against a debt that no longer exists.
  */
 
+import { daysBetween } from './_time';
 import { observedCashContribution, exactDateOf, type FutureCashEvent } from './future-cash-event';
 import { ConclusionStatus, type ConclusionStatusKind } from './policy';
 import { monthLabel, type ObservedSpendingRate } from './observed-spending';
@@ -74,9 +75,6 @@ export interface ProjectedCash {
   excluded: { id: string; reason: string }[];
 }
 
-const DAY_MS = 86_400_000;
-const daysBetween = (a: string, b: string) =>
-  Math.max(0, Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / DAY_MS));
 
 /**
  * Where the spending term comes from.
@@ -128,7 +126,12 @@ export function projectCash(input: ProjectCashInput): ProjectedCash {
     if (e.direction === 'INFLOW') inflow += c.value; else outflow += c.value;
   }
 
-  const days = daysBetween(fromISO, toISO);
+  // ⚠️ THE CLAMP IS AT THE CALL SITE NOW, NOT INSIDE THE HELPER (V26-REASONING
+  // Slice 0). The private `daysBetween` this module used to carry silently
+  // returned 0 for a reversed horizon, and two sibling modules had the same name
+  // with different semantics. A horizon whose end precedes its start spends zero
+  // days, which is a decision this line makes visibly.
+  const days = Math.max(0, daysBetween(fromISO, toISO));
   const dailyRate = spending === null ? null
     : spending.kind === 'OBSERVED' ? spending.rate.dailyRate : spending.dailyRate;
   const spend = dailyRate === null ? null : dailyRate * days;

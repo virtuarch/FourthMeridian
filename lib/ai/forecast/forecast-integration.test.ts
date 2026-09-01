@@ -29,7 +29,7 @@ import { FinanceDomains, type AccountsSectionData, type SpaceContext_AI } from '
 import { EvidenceAvailability, type CoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { resolveForecastHorizon } from './horizon';
 import { extractForecastStatements } from './statements';
-import { assembleForecast, forecastAsk, ForecastAsk } from './assemble';
+import { assembleForecast } from './assemble';
 import { resolveAssertedFacts } from './fact-continuity';
 import { detectPayDateAsk, resolvePayDates, renderPayDates } from './pay-dates';
 import {
@@ -381,13 +381,10 @@ eq('H8 a yearly figure is not silently rescaled into a monthly level',
 eq('H9 with no unambiguous stream, a basis statement is not attached to a guess',
   extractForecastStatements('My paycheck is take-home.', AS_OF, null), []);
 
-// §17 — the capability matrix, not a second router.
-eq('H10 "what will my cash be" asks for ending cash',
-  forecastAsk('What will my cash look like in 3 months?'), ForecastAsk.ENDING_CASH);
-eq('H11 "how long will my cash last" asks for runway',
-  forecastAsk('How long will my cash last?'), ForecastAsk.RUNWAY);
-eq('H12 "when is my next paycheck" asks for pay dates',
-  forecastAsk('When is my next paycheck?'), Conclusion.NEXT_PAY_DATES);
+// §17 — H10/H11/H12 DELETED WITH `forecastAsk` (V26-REASONING Slice 0). They
+// were the only callers of a router no production path ever consulted, and they
+// pinned three regexes rather than a capability: the matrix itself lives in
+// `conclusionLicence(state, conclusion)`, which is what production reads.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // HF. FOLLOW-UPS (§23) — a refinement does not end a forecast
@@ -838,6 +835,27 @@ check('NG16 it introduces no forecast arithmetic — every figure is a field or 
       .replace(/dailyRate \* f\.horizonDays/, 'RATE_TIMES_DAYS')),
   'only the engine\'s own rate x horizon appears, and it is the figure the engine prints');
 eq('NG17 enforcement is never silently on', resolveForecastGuardMode(undefined), 'shadow');
+// ── V26-REASONING Slice 0 — the flag must be IMPOSSIBLE to forget again ──────
+//
+// ⚠️ NG17 IS THE HALF THAT WAS ALREADY TRUE AND WAS NOT ENOUGH. "Enforcement is
+// never silently on" is a good rule, and its consequence went unnoticed for
+// nineteen commits: the key was read via bare `process.env` and set in NO
+// environment — not `.env.local`, not `.env.example`, not `lib/env.ts` — so the
+// posture FORECAST-15's own acceptance rejected was in force by omission. This
+// slice measured it again: unset serves 8 authority violations per corpus run,
+// `repair` serves 0.
+//
+// So the rule now has both halves. Enforcement is never silently ON (NG17), and
+// the flag can never again be silently ABSENT (NG17a/b).
+check('NG17a the flag is registered in lib/env.ts, so it appears in the env report',
+  /AI_FORECAST_GUARD_MODE:\s*process\.env\.AI_FORECAST_GUARD_MODE/.test(read('lib/env.ts')));
+check('NG17b and .env.example carries `repair`, not a blank waiting to be missed',
+  /^AI_FORECAST_GUARD_MODE=repair$/m.test(read('.env.example')),
+  // ⚠️ DELIBERATELY UNLIKE `AI_ASSESSMENT_GUARD_MODE`, whose own boundary test
+  // pins its example value EMPTY. The two flags fail in opposite directions:
+  // an unset assessment guard declines to enforce something unmeasured, while
+  // an unset forecast guard SERVES arithmetic already measured to be wrong.
+  read('.env.example').match(/^AI_FORECAST_GUARD_MODE=.*$/m)?.[0] ?? 'NOT PRESENT');
 check('NG18 the boundary is gated on a forecast existing at all', (() => {
   // The gate moved into for-request.ts when the route hit its 700-line ceiling;
   // the claim is unchanged — a non-forecast turn returns the reply untouched.
@@ -1092,12 +1110,32 @@ check('J7b and policy.ts gained no arithmetic and no new licensing rule', (() =>
   // No new REQUIRES entry, no new conclusion, no money arithmetic.
   return !/REQUIRES|Conclusion\.|conclusionLicence|[-+*/]\s*(?:amount|value|closing)/.test(d);
 })(), execSync('git diff --stat 714d099 -- lib/forecast/policy.ts', { encoding: 'utf8' }).trim());
-check('J7a and the engine change is confined to explainForecast',
-  execSync('git diff -U0 714d099 -- lib/forecast/engine.ts', { encoding: 'utf8' })
-    .split('\n').filter((l) => /^@@/.test(l))
-    .every((h) => Number(/@@ -(\d+)/.exec(h)?.[1] ?? 0) > 420),
-  execSync('git diff -U0 714d099 -- lib/forecast/engine.ts', { encoding: 'utf8' })
-    .split('\n').filter((l) => /^@@/.test(l)).join(' '));
+// ⚠️ J7a REPLACED (V26-REASONING Slice 0). It asserted that every diff hunk in
+// engine.ts since 714d099 begins after LINE 420 — a positional proxy for "the
+// change is confined to the rendering half", written when FORECAST-10 was the
+// most recent slice. Line numbers are not a property of the code: V26-REASONING
+// Slice 0 added two import lines at the top of the file (the shared `_time` /
+// `_num` helpers that replaced seven copies of `DAY_MS`, three disagreeing
+// `daysBetween`s and four `money`s) and the gate failed without a single
+// arithmetic byte changing.
+//
+// The header four checks above already says the right thing — "pinned directly,
+// rather than inferred from which files were touched" — and J7/J7-0 do exactly
+// that for the two licensed function bodies. What J7a adds beyond them is the
+// claim that the FORECASTING half of the module gained no arithmetic, so that
+// is what it asserts now: the computational surface is byte-identical, and only
+// rendering and imports may differ.
+check('J7a and the engine gained no arithmetic outside the rendering edge', (() => {
+  const arithmeticSurface = (src: string) => {
+    const start = src.indexOf('export function forecastCash');
+    const end   = src.indexOf('export function explainForecast');
+    return start < 0 || end < 0 || end < start ? null : src.slice(start, end);
+  };
+  const base = execSync('git show 714d099:lib/forecast/engine.ts', { encoding: 'utf8' });
+  const now  = readFileSync(join(ROOT, 'lib/forecast/engine.ts'), 'utf8');
+  const a = arithmeticSurface(base), b = arithmeticSurface(now);
+  return a !== null && a === b;
+})());
 check('J8 no UI, schema or model configuration changed',
   execSync('git diff --name-only 714d099 -- components/ app/\\(dashboard\\) prisma/ 2>/dev/null || true',
     { encoding: 'utf8' }).trim() === '');

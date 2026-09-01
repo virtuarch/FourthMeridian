@@ -43,6 +43,7 @@
  * projection-eligible as a SCHEDULE, which is not a claim that it is salary.
  */
 
+import { addDays, daysBetween } from './_time';
 import {
   CadenceProvenance, isCadence, occurrencesBetween,
   type Cadence, type CadenceResult, type CadenceProvenanceKind,
@@ -170,14 +171,12 @@ export const ACTIVITY = {
 } as const;
 
 // ── Dates ───────────────────────────────────────────────────────────────────
-// Deliberately local. FORECAST-1 is left byte-identical by this slice, so a
-// three-line helper is duplicated rather than exported from it.
+// V26-REASONING Slice 0 — these were local copies, and the local `daysBetween`
+// ran (a, b) => a − b, the OPPOSITE direction from the two other functions of
+// that name. Its single use below is wrapped in `Math.abs`, so the inversion
+// cancelled and nothing was ever wrong; the name was.
 
-const DAY_MS = 86_400_000;
-const parse = (s: string): number => Date.parse(`${s}T00:00:00.000Z`);
-const shift = (iso: string, n: number): string =>
-  new Date(parse(iso) + n * DAY_MS).toISOString().slice(0, 10);
-const daysBetween = (a: string, b: string): number => Math.round((parse(a) - parse(b)) / DAY_MS);
+const shift = addDays;
 
 // ── Schedule versus settlement ──────────────────────────────────────────────
 
