@@ -213,9 +213,14 @@ check('E4 no regex literal in the reasoning layer carries a non-ASCII letter',
     // CJK character inside its hedge vocabulary, and two regexes written here
     // acquired a Cyrillic look-alike before this check existed. A homoglyph in a
     // character class is invisible in review and silently never matches.
+    // ⚠️ COMMENTS ARE STRIPPED FIRST, and the check needed that within an hour
+    // of being written: a `// ⚠️ …"$5K/month"…` line contains two slashes and a
+    // naive scanner reads the span between them as a regex literal. The
+    // codebase's own structural tests all strip comments before scanning source,
+    // for exactly this reason.
     const files = ['figures/types.ts', 'figures/premise.ts', 'verify/verify.ts', 'render.ts'];
     return files.every((f) => {
-      const src = read(`lib/reasoning/${f}`);
+      const src = codeOnly(read(`lib/reasoning/${f}`));
       const literals = src.match(/\/(?![/*])(?:\\.|\[[^\]]*\]|[^/\\\n])+\/[gimsuy]*/g) ?? [];
       return literals.every((l) => [...l].every((ch) => ch.charCodeAt(0) < 128));
     });

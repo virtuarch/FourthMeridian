@@ -464,4 +464,4 @@ function activeUndatedObligations(acc: AccountsSectionData | undefined): number 
 // is to widen this re-export, not to widen the allowlist. A second consumer
 // root would be the first crack in the rule the three tests exist to hold.
 export { PeriodBasis, AssumptionDimension, AssumptionOrigin, AssumptionStance, EventProvenance, FlowRole, ActivityState, ConclusionStatus };
-export type { CashForecast, ConclusionStatusKind };
+export type { CashForecast, ConclusionStatusKind, ForecastHorizon };

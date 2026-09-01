@@ -43,6 +43,13 @@ const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june',
 const MAX_HORIZON_MONTHS = 24;
 
 /**
+ * A sentence that points at the PAST, so a bare period in it is a window rather
+ * than a horizon. "The last 6 months" inside a comparison is not the horizon
+ * being changed.
+ */
+const BACKWARD_RE = /\b(last|past|previous|ago|so far|to date|year.to.date|ytd)\b/;
+
+/**
  * The forward interval a question asks about, or null.
  *
  * ⚠️ NULL IS A REAL ANSWER. A forecast question with no horizon is not given a
@@ -112,7 +119,30 @@ export function resolveForecastHorizon(question: string, todayISO: string): Fore
   // there is a forward re-scoping. It still refuses when the sentence points
   // backwards, because "the last 6 months" inside a comparison is not the
   // horizon being changed.
-  if (!/\b(last|past|previous|ago|so far|to date|year.to.date|ytd)\b/.test(q)) {
+  if (!BACKWARD_RE.test(q)) {
+    // A bare MONTH NAME in a refinement — "And what about February?"
+    //
+    // ⚠️ FOUND BY THE V26-REASONING SLICE 4 CONVERSATION GATE, and it is an
+    // ordinary sentence the resolver could not read. The named-month branch
+    // above requires a preposition (through/until/by/to), so the single most
+    // natural way to move a horizon in conversation resolved to NOTHING — and
+    // the turn silently kept December while the user had asked about February.
+    // That is PROJECTION-1's defect exactly: answering a question the user did
+    // not ask, silently, with a different number.
+    //
+    // Guarded the same way the bare-duration branch below is, plus past-tense
+    // verbs: "how much did I spend in February" points backwards, and a bare
+    // month there is a window rather than a horizon.
+    const bareMonth = q.match(/\b(january|february|march|april|may|june|july|august|september|october|november|december)\b/);
+    if (bareMonth && !/\b(did|was|were|spent|earned|made|had)\b/.test(q)) {
+      const idx = MONTHS.indexOf(bareMonth[1]);
+      const [ty, tm] = [Number(todayISO.slice(0, 4)), Number(todayISO.slice(5, 7))];
+      const year = idx + 1 >= tm ? ty : ty + 1;
+      const firstOfNext = addMonths(`${year}-${String(idx + 1).padStart(2, '0')}-01`, 1);
+      const end = addDays(firstOfNext, -1);
+      if (end > todayISO) return stated(bareMonth[0], end);
+    }
+
     const bare = q.match(/\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|twelve)[- ](day|days|week|weeks|month|months|year|years)\b/);
     if (bare) {
       const n = /^\d+$/.test(bare[1]) ? Number(bare[1]) : WORDS[bare[1]];

@@ -71,11 +71,18 @@ export function buildTypedPromptSuffix(args: {
   currency?:   string;
   /** See `buildFigureTable`. A pay-date turn licenses dates, not amounts. */
   scope?:      'FULL' | 'PAY_DATES';
+  /** Slice 4 — measures resolved for this turn, under this turn's scenario. */
+  measures?:   readonly import('../measure/types').Measure[];
+  /** Slice 4 — every ACTIVE assumption, in the user's own words. Rule 1. */
+  framing?:    readonly string[];
+  /** Slice 4 — turn-level withholdings, such as "nobody knows a future price". */
+  turnWithheld?: readonly import('../figures/types').LicensedRefusal[];
 }): { suffix: string; table: FigureTable } {
   const table = buildFigureTable(args);
   return {
     table,
-    suffix: `${OVERRIDE_HEADER}${renderFigureTable(table)}\n\n${TYPED_NARRATION_INSTRUCTION}\n`,
+    suffix: `${OVERRIDE_HEADER}${renderFigureTable(table, args.framing ?? [])}`
+      + `\n\n${TYPED_NARRATION_INSTRUCTION}\n`,
   };
 }
 
@@ -97,10 +104,15 @@ export async function answerTyped(args: {
   model?:       string;
   /** See `buildFigureTable`. A pay-date turn licenses dates, not amounts. */
   scope?:       'FULL' | 'PAY_DATES';
+  /** Slice 4 — measures resolved for this turn, under this turn's scenario. */
+  measures?:    readonly import('../measure/types').Measure[];
+  /** Slice 4 — every ACTIVE assumption, in the user's own words. Rule 1. */
+  framing?:     readonly string[];
 }): Promise<TypedAnswerOutcome> {
   const { suffix, table } = buildTypedPromptSuffix({
     forecast: args.forecast, ctx: args.ctx, assessment: args.assessment,
     messages: args.history ?? args.messages, scope: args.scope,
+    measures: args.measures, framing: args.framing,
   });
 
   const result = await generateTypedAnswer({

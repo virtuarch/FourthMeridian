@@ -45,8 +45,22 @@ const STANDING_NOTE: Record<string, string> = {
  * put the caveat where the model reads the figure rather than to add a fourth
  * prose guard downstream.
  */
-export function renderFigureTable(t: FigureTable): string {
+export function renderFigureTable(t: FigureTable, framing: readonly string[] = []): string {
   const lines: string[] = [];
+
+  // ⚠️ RULE 1 — EVERY ACTIVE ASSUMPTION APPEARS IN THE ANSWER IT PRICES. First,
+  // and as an instruction rather than a note: an assumption the user cannot see
+  // is the dangerous one, and an assumption named in every sentence it prices is
+  // not. This is what makes carrying assumptions across turns SAFE, and without
+  // it the lifecycle would be exactly the stale-assumption defect
+  // `fact-continuity.ts` closed by forgetting.
+  if (framing.length > 0) {
+    lines.push('=== ASSUMPTIONS IN FORCE — you MUST name these in your answer ===');
+    for (const f of framing) lines.push(`- the user said: "${f}"`);
+    lines.push('Every figure below that rests on one of these is priced BY it.');
+    lines.push('Say so plainly, in the same sentence as the figure.');
+    lines.push('');
+  }
   const measures = t.figures.filter(
     (f) => f.kind === FigureKind.MEASURE && f.role !== FigureRole.STATED_NOT_CASH);
   const stated = t.figures.filter(
@@ -119,6 +133,22 @@ export const TYPED_NARRATION_INSTRUCTION = `
 
 4. A figure about today is not a figure about a future date, however reasonable
    the projection would be.
+
+── A WORKED EXAMPLE, BECAUSE RULE 1 IS THE ONE PEOPLE GET WRONG ──
+
+Suppose the table holds f04 = $37,274.24 (projected cash), p01 = $5,000.00/month
+(the user's own words) and f09 = 10% (an illustrative move). You write:
+
+  prose:  "Assuming you spend $5,000/month, you'd have about $37,274.24 by
+           December. If it moved 10% the other way, that changes."
+  claims: [ {"fid":"p01","statedAs":"$5,000/month"},
+            {"fid":"f04","statedAs":"$37,274.24"},
+            {"fid":"f09","statedAs":"10%"} ]
+
+THREE figures in the prose, THREE claims. Notice that the $5,000/month is the
+user's own number quoted back and it STILL needs a claim, and that the 10% is a
+percentage and it STILL needs a claim. Those two are the ones most often
+forgotten, and forgetting either discards the whole answer.
 
 Then answer the question the user actually asked. Speak WITHHELD subjects as
 limitations inside a useful answer, not as the answer. If the honest answer is a

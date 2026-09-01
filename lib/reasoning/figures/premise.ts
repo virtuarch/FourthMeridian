@@ -59,7 +59,12 @@ import {
  * dead at the decimal point in the user's own figure. The same mistake is
  * available here and is not made.
  */
-const MONEY_RE   = /(?:\$|\bUSD\s*)(-?\d[\d,]*(?:\.\d+)?)/gi;
+// ⚠️ THE MAGNITUDE SUFFIX IS PART OF THE NUMBER. Omitting it is a silent
+// thousand-fold error, and it was found twice in one slice: `statements.ts`
+// read "assume I spend $5K/month" as $5.00 and projected $20.53 of spending
+// over four months, and this pattern had the same hole. `$5K`, `$5k` and
+// `$1.5M` are notations people type.
+const MONEY_RE   = /(?:\$|\bUSD\s*)(-?\d[\d,]*(?:\.\d+)?)\s*([kKmM])?/g;
 const PERCENT_RE = /(-?\d[\d,]*(?:\.\d+)?)\s*(?:%|\bpercent\b)/gi;
 const MONTHS_RE  = /\b(\d[\d,]*(?:\.\d+)?)\s*months?\b/gi;
 
@@ -105,7 +110,11 @@ function scan(text: string): RawPremise[] {
     const unit = PER_MONTH_RE.test(after) ? FigureUnit.CURRENCY_PER_MONTH
       : PER_YEAR_RE.test(after) ? FigureUnit.CURRENCY_PER_YEAR
         : FigureUnit.CURRENCY;
-    push(num(m[1]), unit, m.index);
+    const raw = num(m[1]);
+    const suffix = (m[2] ?? '').toLowerCase();
+    push(raw === null ? null
+      : suffix === 'k' ? raw * 1_000 : suffix === 'm' ? raw * 1_000_000 : raw,
+    unit, m.index);
   }
   for (const m of text.matchAll(PERCENT_RE)) push(num(m[1]), FigureUnit.PERCENT, m.index);
   for (const m of text.matchAll(MONTHS_RE)) push(num(m[1]), FigureUnit.MONTHS, m.index);

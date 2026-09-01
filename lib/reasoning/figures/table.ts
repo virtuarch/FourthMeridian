@@ -45,6 +45,7 @@ import type { SpaceContext_AI } from '@/lib/ai/types';
 import type { FinancialAssessment } from '@/lib/ai/intelligence/annotations/types';
 import type { UngradedReasonCode } from '@/lib/ai/intelligence/annotations/types';
 import type { RefusalCode } from '../refusal';
+import type { Measure } from '../measure/types';
 import { premiseFigures } from './premise';
 import {
   FigureKind, FigureHorizon, FigureUnit, Standing,
@@ -159,6 +160,12 @@ export function buildFigureTable(args: {
    * the resolution; this is where its answer lands.
    */
   scope?:      'FULL' | 'PAY_DATES';
+  /** Slice 4 — measures resolved for this turn, under this turn's scenario. */
+  measures?:   readonly Measure[];
+  /** Slice 4 — every ACTIVE assumption, in the user's own words. Rule 1. */
+  framing?:    readonly string[];
+  /** Slice 4 — turn-level withholdings, such as "nobody knows a future price". */
+  turnWithheld?: readonly LicensedRefusal[];
 }): FigureTable {
   const currency = args.currency ?? 'USD';
   const figures: LicensedFigure[] = [];
@@ -323,9 +330,60 @@ export function buildFigureTable(args: {
     }
   }
 
+  // ── Measures, when the caller resolved a turn against the measure layer ───
+  //
+  // ⚠️ ADDITIVE, AND THE ADDRESSES DO NOT COLLIDE. Slice 3's measures answer a
+  // question ("net worth in December") that the forecast's own licence does not
+  // address, and Slice 4's scenarios are what make them move. A measure that
+  // resolved to a VALUE becomes a figure; one that did not becomes a WITHHELD
+  // line carrying its own reasons, which is the same discipline
+  // `assessment.ungraded[]` already follows.
+  for (const m of args.measures ?? []) {
+    if (m.resolution.kind === 'UNRESOLVED') {
+      for (const r of m.resolution.reasons) {
+        withheld.push({ subject: measureSubject(m), code: r.code, detail: r.detail });
+      }
+      continue;
+    }
+    figures.push({
+      fid: nextFid(), kind: FigureKind.MEASURE,
+      value: m.resolution.value, unit: m.unit, currency: m.currency,
+      label: measureSubject(m),
+      horizon: m.at.kind === 'NOW' ? FigureHorizon.CURRENT : FigureHorizon.FUTURE,
+      standing: m.resolution.standing,
+      role: m.unit === FigureUnit.CURRENCY_PER_MONTH || m.unit === FigureUnit.CURRENCY_PER_YEAR
+        ? FigureRole.RATE : FigureRole.CASH,
+      basis: args.framing?.[0],
+    });
+    // ⚠️ A BAND IS TWO ANSWERS TO TWO QUESTIONS, so both endpoints get their own
+    // address. Offering only the midpoint would make the range unsayable, which
+    // is the failure `dispersion` exists to prevent.
+    if (m.range) {
+      figures.push({
+        fid: nextFid(), kind: FigureKind.MEASURE, value: m.range.low, unit: m.unit,
+        currency: m.currency, label: `the low end of ${measureSubject(m)}`,
+        horizon: FigureHorizon.FUTURE, standing: m.resolution.standing,
+        role: FigureRole.CASH, basis: m.range.basis,
+      });
+      figures.push({
+        fid: nextFid(), kind: FigureKind.MEASURE, value: m.range.high, unit: m.unit,
+        currency: m.currency, label: `the high end of ${measureSubject(m)}`,
+        horizon: FigureHorizon.FUTURE, standing: m.resolution.standing,
+        role: FigureRole.CASH, basis: m.range.basis,
+      });
+    }
+  }
+
+  withheld.push(...(args.turnWithheld ?? []));
+
   // The user's own numbers, addressed as premises. Last, so a `p` id never
   // shifts when a measure appears or disappears.
   figures.push(...premiseFigures(args.messages, currency));
 
   return { figures, withheld };
+}
+
+/** A measure's label, with the date it is about. */
+function measureSubject(m: Measure): string {
+  return m.at.kind === 'NOW' ? `${m.label} today` : `${m.label} on ${m.at.iso}`;
 }

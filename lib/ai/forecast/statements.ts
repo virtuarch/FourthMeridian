@@ -59,10 +59,22 @@ const SCENARIO_RE = /\b(show me (?:a |the )?(?:scenario|case|version|world)|scen
 // splits into sentences before matching, so every pattern already runs inside
 // one. What remains excludes only the separators a split does not consume.
 const GAP = '[^;!?]';
+// ⚠️ THE `k` SUFFIX IS PART OF THE NUMBER, AND OMITTING IT WAS A SILENT
+// THOUSAND-FOLD ERROR (V26-REASONING Slice 4). "Nah, assume I spend $5K/month"
+// — the second turn of the conversation this product exists for — extracted
+// $5.00, and the forecast dutifully projected $20.53 of spending over four
+// months and an ending balance of $57,788. Nothing refused, nothing flagged: the
+// number was licensed, the arithmetic was correct, and the premise was wrong by
+// three orders of magnitude.
+//
+// This is the same lesson the GAP comment below records at a different
+// character: a pattern that cannot read the user's own notation does not fail
+// loudly, it silently reads something else. `$5K`, `$5k`, `$1.5M` are all
+// notations people type.
 const MONTHLY_SPEND_RE = new RegExp(
-  `(?:spend|spending|spends|burn|outgoings?|expenses?)\\b[^$;!?]{0,40}\\$\\s?([\\d,]+(?:\\.\\d+)?)\\s*(?:a|per|/|each)?\\s*(month|mo\\b|28 days|week|year)?`, 'i');
+  `(?:spend|spending|spends|burn|outgoings?|expenses?)\\b[^$;!?]{0,40}\\$\\s?([\\d,]+(?:\\.\\d+)?)\\s*([kKmM])?\\s*(?:a|per|/|each)?\\s*(month|mo\\b|28 days|week|year)?`, 'i');
 const SPEND_AMOUNT_FIRST_RE = new RegExp(
-  `\\$\\s?([\\d,]+(?:\\.\\d+)?)\\s*(?:a|per|/|each)\\s*(month|mo\\b|week|year)\\b${GAP}{0,30}\\b(?:spend|spending|of (?:normal |ordinary )?spending|in spending)`, 'i');
+  `\\$\\s?([\\d,]+(?:\\.\\d+)?)\\s*([kKmM])?\\s*(?:a|per|/|each)\\s*(month|mo\\b|week|year)\\b${GAP}{0,30}\\b(?:spend|spending|of (?:normal |ordinary )?spending|in spending)`, 'i');
 
 /**
  * A bare amount that revises something already under discussion.
@@ -76,7 +88,7 @@ const SPEND_AMOUNT_FIRST_RE = new RegExp(
  * supported here: no pronoun resolution, no topic model, one antecedent.
  */
 const ANAPHORIC_AMOUNT_RE =
-  /\b(?:actually,?\s+)?(?:make (?:that|it)|change (?:that|it) to|what if it (?:were|was)|let'?s say|say)\s+(?:it'?s\s+)?\$?\s?([\d,]+(?:\.\d+)?)\b|^\s*actually,?\s+\$?\s?([\d,]+(?:\.\d+)?)\b/i;
+  /\b(?:actually,?\s+)?(?:make (?:that|it)|change (?:that|it) to|what if it (?:were|was)|let'?s say|say)\s+(?:it'?s\s+)?\$?\s?([\d,]+(?:\.\d+)?)\s*([kKmM])?\b|^\s*actually,?\s+\$?\s?([\d,]+(?:\.\d+)?)\s*([kKmM])?\b/i;
 
 /**
  * A basis claim whose SUBJECT is the amount, not a paycheck noun.
@@ -101,6 +113,16 @@ const GROSS_BASIS_RE = new RegExp(
   `\\b(?:paycheck|pay ?check|salary|payroll)\\b${GAP}{0,60}\\b(?:is|are)\\b${GAP}{0,20}\\bgross\\b`, 'i');
 
 const num = (s: string) => Number(s.replace(/,/g, ''));
+/**
+ * A magnitude suffix applied to a parsed amount.
+ *
+ * ⚠️ ONE HELPER, SO EVERY PATTERN THAT GAINS A SUFFIX GROUP APPLIES IT THE SAME
+ * WAY. Two spellings of "thousand" is how one caller comes to read $5K as $5.
+ */
+const scaled = (n: number, suffix: string | undefined): number => {
+  const k = (suffix ?? '').toLowerCase();
+  return k === 'k' ? n * 1_000 : k === 'm' ? n * 1_000_000 : n;
+};
 
 // ── One-off dated events (FORECAST-17) ──────────────────────────────────────
 //
@@ -281,19 +303,21 @@ export function extractForecastStatements(
     const anaphor = antecedent ? ANAPHORIC_AMOUNT_RE.exec(sentence) : null;
     const spend = SPEND_AMOUNT_FIRST_RE.exec(sentence) ?? MONTHLY_SPEND_RE.exec(sentence);
     if (!spend && anaphor) {
-      const amount = num(anaphor[1] ?? anaphor[2]);
+      const amount = anaphor[1] !== undefined
+        ? scaled(num(anaphor[1]), anaphor[2])
+        : scaled(num(anaphor[3]), anaphor[4]);
       if (Number.isFinite(amount) && amount >= 0) {
         push(sentence, mode, { kind: 'SPENDING_LEVEL', amount,
           currency: antecedent!.currency, periodBasis: antecedent!.periodBasis }, amount);
       }
     }
     if (spend) {
-      const amount = num(spend[1]);
+      const amount = scaled(num(spend[1]), spend[2]);
       // ⚠️ A weekly or yearly figure is NOT converted here. FORECAST-6 states
       // levels per month or per 28 days and nothing else; silently rescaling a
       // yearly figure into a monthly one would be this file inventing a
       // financial fact, which is precisely what it must not do.
-      const unit = spend[2];
+      const unit = spend[3];
       if (Number.isFinite(amount) && amount >= 0 && (!unit || /month|mo|28 days/i.test(unit))) {
         push(sentence, mode, {
           kind: 'SPENDING_LEVEL', amount, currency: 'USD', periodBasis: periodOf(unit),

@@ -424,6 +424,23 @@ export const AUDITS: readonly AuditEntry[] = [
           "and reads no database",
   },
   {
+    name: "check-conversation-gate", tier: "OPERATIONAL", needsDb: false,
+    what: "V26-REASONING Slice 4 — DOES THE PRODUCT WORK? " +
+          "(npm run ai:conversation-gate). ONE conversation, seven turns, on the " +
+          "real Space: a December projection, an assumption that must move the " +
+          "figure, a follow-up that must inherit the scenario, a second scenario " +
+          "beside the first, a horizon move that keeps both, a dismissal that " +
+          "returns to BASE, and a seventh turn that must DECLINE. A different " +
+          "question from ai:forecast-conformance, which asks whether the product " +
+          "LIES — a system answering 'I cannot say' to everything scores " +
+          "perfectly there and zero here. A fallback counts as a FAILURE: the " +
+          "deterministic list is safe and is not an answer. Structural " +
+          "expectations run with --structure-only and no model at all, and are " +
+          "GATED in the unit suite (lib/reasoning/scenario/lifecycle.test.ts); " +
+          "the served-reply half is a paid stochastic TOOL, never a CI gate. " +
+          "Writes nothing, reads no database",
+  },
+  {
     name: "check-answer-boundary", tier: "OPERATIONAL", needsDb: false,
     what: "V26-REASONING Slice 1 — measures the TYPED ANSWER BOUNDARY end to end " +
           "(npm run ai:answer-boundary). Seven adversarial cases on the real Space: the two " +

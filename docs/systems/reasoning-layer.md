@@ -329,3 +329,91 @@ that moves with spending. The composition therefore gets the **total** right and
 the **split** wrong — a card purchase is modelled as cash leaving rather than
 debt rising, and net worth is the same either way. **If `debt_balance@FUTURE`
 ever gains a real schedule, this join gains a double count on the same day.**
+
+---
+
+# Scenario and ConversationState (Slice 4)
+
+`lib/reasoning/scenario/**` — the conversation in the brief, working.
+
+## Lifecycle, not forgetting
+
+`fact-continuity.ts:40-44` makes assumptions per-turn by explicit doctrine; only
+the horizon survives. **The concern behind that rule is exactly right** — a stale
+assumption silently pricing today's answer is a real defect. But the rule breaks
+four of the five turns of the conversation the product exists for.
+
+What is needed is neither memory nor forgetting. It is **lifecycle**: a delta
+that is ACTIVE, visible in every answer it prices, and dismissable in one
+sentence is not a stale assumption — it is a stated one.
+
+## The five rules that make it safe
+
+1. **Every ACTIVE delta appears in the answer it prices.** Passed to narration as
+   a required framing item, rendered as `you MUST name these in your answer`. An
+   assumption the user cannot see is the dangerous one.
+2. **Deltas supersede, never overwrite.** `statedAtTurn`, `supersededBy`,
+   `effectiveFrom/Until`. "Make that $6K" does not erase the $5K — it records
+   that at turn 2 the user said one thing and at turn 4 another.
+3. **`DISMISS_ALL` is first-class**, and it runs **before** the same turn's own
+   deltas are collected — otherwise "forget that, what if it's $6K?" dismisses
+   the delta the same sentence just created.
+4. **An assumption licenses a calculation; it never rewrites a fact.** Pinned:
+   no scenario, across all seven turns, changes a present value.
+5. **Scoped to the conversation. Never persisted.** That is the line between
+   conversation state and memory, and it is why this ships and memory does not.
+
+## How an assumption reaches a figure
+
+`assembleForecast` reads suppositions from `question` and nothing else —
+FORECAST-13 drew that line deliberately. So an ACTIVE delta is replayed into the
+effective question **as the user's own sentence, verbatim**.
+
+That is not a workaround: it is what *"the assumption is still in force"* means,
+expressed in the only vocabulary the forecast authorities accept, and it means no
+second path can price an answer differently from the first.
+
+An INVESTMENT_RETURN delta does **not** go that way — it becomes a
+`ReturnBasis.SCENARIO_BAND` on the measure layer, because no forecast authority
+models returns and inventing one there is what `DERIVED_FROM_HISTORY` is banned
+for.
+
+## The gate
+
+```
+npm run ai:conversation-gate                     # seven turns, with the model
+npm run ai:conversation-gate -- --structure-only # no model, no key, no cost
+```
+
+**A fallback counts as a FAILURE.** The deterministic list is safe — that is what
+`ai:answer-boundary` measures and why it exists — and it is not an answer. The
+first version of this gate passed two turns on fallbacks, because the bullet dump
+happens to contain the words the prose patterns were looking for.
+
+The seventh turn **must decline**, and it is not decoration: a gate made only of
+turns that must be answered is passed by a system that answers everything.
+
+**Result, `gpt-4.1`: 7/7 clean, no repairs, no fallbacks.**
+
+> T7 — *"Nobody can know what Bitcoin will actually be worth in December. If it
+> stays at its current value, your digital assets would be $19,014.63. If it went
+> up 10% (just as an illustration, not a prediction), $20,916.09. If it went down
+> 10%, $17,113.16. These are just examples, not forecasts."*
+
+## Five defects the gate found, all in code that already shipped
+
+| Defect | What it did |
+|---|---|
+| **`$5K` read as `$5.00`** | `statements.ts` extracted $5.00 from *"assume I spend $5K/month"* — the second turn of the conversation the product exists for. The forecast projected **$20.53** of spending over four months and an ending balance of $57,788. Nothing refused, nothing flagged: the number was licensed, the arithmetic correct, the premise wrong by three orders of magnitude. **The same hole existed in four separate patterns** — `statements.ts`, `premise.ts`, the verifier's prose sweep, and its `valueOf`. |
+| **The horizon resolver could not read a bare month** | *"And what about February?"* resolved to nothing — the named-month branch requires a preposition (`through`/`until`/`by`) — so the turn silently kept December while the user had asked about February. PROJECTION-1's defect exactly: a different question, answered silently, with a different number. |
+| **An unaddressed number inside a licensed label** (twice) | An illustrative band carried `10%` in its **label** and a dismissal notice carried `$5K` in its **text**. Both put a number in front of the model inside content with no `fid`; the model wrote it, the sweep found it unaddressed, and a correct answer was discarded. Now pinned: no rendered label or withheld line may carry a money token that is not a figure. |
+| **A dismissed assumption was unquotable** | The model wrote *"dropping your $5,000/month assumption"* — the right sentence — and the answer was discarded, because with the delta dismissed nothing carried 5000. Dismissing removes an assumption's **licence to price an answer**; it does not remove the user's right to hear what they said. |
+| **The gate's own scorer, twice** | It scored *"future price movements are not predictable"* a failure because it looked for `unpredictable`, and *"Nobody can know…"* a failure because it looked for `nobody knows`. This programme's own record: a scorer that disagrees with the transcript is the thing that is wrong. |
+
+## What is temporary here
+
+`derive.ts`'s extractor and `turn.ts`'s `selectMeasures` are **marked for
+deletion in Slice 5** and quarantined so they can be deleted whole. Deciding what
+a sentence means is the planner's job; these are the smallest thing that
+demonstrates the lifecycle, not the right way to read a sentence. Nothing else in
+`lib/reasoning/**` reads a message.

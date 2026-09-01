@@ -46,8 +46,14 @@ import type { Answer, VerificationFailure } from '../answer/types';
  * `numerical-guard.ts` settled on after measuring, and it is right for the same
  * reason: this boundary is about financial claims, not about digits.
  */
+// ⚠️ THE `k` SUFFIX IS PART OF THE TOKEN, AND THIS IS THE FOURTH PLACE IN THIS
+// CODEBASE THAT HAD TO LEARN IT. `statements.ts` read "$5K" as $5 and projected
+// $20.53 of spending over four months; `premise.ts` had the same hole; and here
+// the sweep saw an unaddressed "$5" inside the model's own "$5K/month" and
+// discarded a correct answer. A pattern that stops short of the user's notation
+// does not fail loudly — it silently reads a different number.
 const PROSE_TOKEN_RE =
-  /(?:\$|\bUSD\s*)-?\d[\d,]*(?:\.\d+)?(?:\s*(?:\/|per|a|each)\s*(?:month|mo\b|year|yr\b))?|-?\d[\d,]*(?:\.\d+)?\s*(?:%|percent\b|months?\b)/gi;
+  /(?:\$|\bUSD\s*)-?\d[\d,]*(?:\.\d+)?\s*[kKmM]?(?:\s*(?:\/|per|a|each)\s*(?:month|mo\b|year|yr\b))?|-?\d[\d,]*(?:\.\d+)?\s*(?:%|percent\b|months?\b)/g;
 
 /** Markdown emphasis is presentation and is never part of a claim. */
 const stripMd = (t: string) => t.replace(/\*+|_{2,}|`/g, '');
@@ -60,10 +66,15 @@ const stripMd = (t: string) => t.replace(/\*+|_{2,}|`/g, '');
  * of its numbers.
  */
 export function valueOf(statedAs: string): number | null {
-  const digits = stripMd(statedAs).match(/-?\d[\d,]*(?:\.\d+)?/g);
+  const flat = stripMd(statedAs);
+  const digits = flat.match(/-?\d[\d,]*(?:\.\d+)?/g);
   if (!digits || digits.length !== 1) return null;
   const n = Number(digits[0].replace(/,/g, ''));
-  return Number.isFinite(n) ? n : null;
+  if (!Number.isFinite(n)) return null;
+  // The magnitude suffix, applied here so every caller gets it. See PROSE_TOKEN_RE.
+  const suffix = new RegExp(`${digits[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*([kKmM])\\b`)
+    .exec(flat)?.[1]?.toLowerCase();
+  return suffix === 'k' ? n * 1_000 : suffix === 'm' ? n * 1_000_000 : n;
 }
 
 /**
@@ -160,7 +171,17 @@ export function verifyAnswer(answer: Answer, table: FigureTable): VerificationRe
  * dimension — "$5,000" and "$5,000/month" normalise differently, on purpose.
  */
 function normalise(s: string): string {
-  return stripMd(s)
+  // ⚠️ THE SUFFIX IS FOLDED INTO THE DIGITS, so "$5K/month" and "$5,000/month"
+  // normalise identically. They are the same statement, and a sweep that
+  // treated them as different would reject the user's own notation quoted back.
+  const expanded = stripMd(s).replace(
+    /(-?\d[\d,]*(?:\.\d+)?)\s*([kKmM])\b/g,
+    (_, d: string, k: string) => {
+      const n = Number(d.replace(/,/g, ''));
+      if (!Number.isFinite(n)) return `${d}${k}`;
+      return String(k.toLowerCase() === 'k' ? n * 1_000 : n * 1_000_000);
+    });
+  return expanded
     .toLowerCase()
     .replace(/\busd\s*/g, '$')
     .replace(/(?:\/|\s+(?:per|a|each)\s+)(month|mo)\b/g, '/month')
@@ -169,6 +190,7 @@ function normalise(s: string): string {
     .replace(/\bannually\b/g, '/year')
     .replace(/\bpercent\b/g, '%')
     .replace(/\s+/g, '')
+    .replace(/(\d)\.00\b/g, '$1')
     .trim();
 }
 
