@@ -30,6 +30,8 @@ import { buildFigureTable } from '../figures/table';
 import { renderFigureTable, TYPED_NARRATION_INSTRUCTION } from '../render';
 import { generateTypedAnswer, type TypedAnswerOutcome } from './generate';
 import { resolvePlannedTurn, resolveReasoningPath } from '../plan/for-request';
+import { masterMeasureContext } from '../master/dedupe';
+import type { Refusal } from '../refusal';
 import type { FigureTable } from '../figures/types';
 
 export type AnswerMode = 'prose' | 'typed';
@@ -176,12 +178,35 @@ export async function answerThisTurn(args: {
   payDates:      boolean;
   retrieval?:    import('@/lib/ai/retrieval-plan').RetrievalPlan;
   question:      string;
+  /**
+   * Slice 6 — every Space in scope, in master mode.
+   *
+   * ⚠️ THE DEFAULT ENTRY POINT STOPS REFUSING. `master-surfaces.ts` declined a
+   * forecast whenever `spaceIds.length !== 1`, on the grounds that there was
+   * "no deduplicated balance to project from". There is one: the product
+   * already deduplicates account IDS three lines away, for
+   * `distinctAccountCount`, and this applies the same technique to BALANCES.
+   */
+  masterContexts?: readonly SpaceContext_AI[];
 }): Promise<TypedAnswerOutcome | undefined> {
   if (resolveAnswerMode(args.answerMode) !== 'typed') return undefined;
 
+  // ⚠️ ONE SHARED BODY, NOT A MASTER BRANCH. PARITY-1/2/3 exist because master
+  // and named-Space diverged once already, and `system-prompt.ts` records the
+  // lesson: "an allowlist of capabilities is a list that is always one
+  // capability out of date." So master composes a deduplicated context and then
+  // takes exactly the path a named Space takes.
+  let ctx = args.ctx;
+  let masterRefusal: Refusal | undefined;
+  if (args.masterContexts && args.masterContexts.length > 1) {
+    const m = masterMeasureContext(args.masterContexts);
+    if (m.ok) ctx = m.ctx;
+    else masterRefusal = m.reason;
+  }
+
   const planned = await resolvePlannedTurn({
     enabled: resolveReasoningPath(args.reasoningPath) === 'new',
-    spaceId: args.spaceId, ctx: args.ctx, messages: args.messages,
+    spaceId: args.spaceId, ctx, messages: args.messages,
     retrieval: args.retrieval, question: args.question,
   });
 
@@ -189,11 +214,18 @@ export async function answerThisTurn(args: {
     systemPrompt: args.systemPrompt, messages: args.messages,
     userId: args.userId, spaceId: args.guardSpaceId,
     forecast: planned?.forecast ?? args.forecast,
-    ctx: args.ctx, assessment: args.assessment,
+    ctx, assessment: args.assessment,
     history: args.messages,
     measures: planned?.measures,
     framing: planned?.framing,
-    turnWithheld: planned?.withheld,
+    // A deduplication that could not be done is a WITHHOLDING with a reason,
+    // never a silent omission and never the number of Spaces.
+    turnWithheld: masterRefusal
+      ? [...(planned?.withheld ?? []), {
+        subject: 'a combined figure across all your Spaces',
+        code: masterRefusal.code, detail: masterRefusal.detail,
+      }]
+      : planned?.withheld,
     // ⚠️ THE SAME SCOPE THE PROSE PROMPT APPLIES, where `buildSpaceSystemPrompt`
     // is handed `payDates ? undefined : forecast`. A pay-date turn is answered
     // with dates; every money figure offered on one is a figure the answer is

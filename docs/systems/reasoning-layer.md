@@ -417,3 +417,95 @@ deletion in Slice 5** and quarantined so they can be deleted whole. Deciding wha
 a sentence means is the planner's job; these are the smallest thing that
 demonstrates the lifecycle, not the right way to read a sentence. Nothing else in
 `lib/reasoning/**` reads a message.
+
+---
+
+# Master composition (Slice 6)
+
+`lib/reasoning/master/dedupe.ts` — the default entry point stops refusing.
+
+## What master did
+
+```ts
+// master-surfaces.ts:87
+const forecastable = spaceIds.length === 1;
+```
+
+With two or more eligible Spaces, a forecast question got ~1,600 characters of
+*"You MUST NOT construct the projection yourself"* — and **master is the entry
+point most turns use.** The stated reason was sound as far as it went: *"with two
+or more there is no deduplicated balance to project from."*
+
+**But the product already deduplicates, three lines away.** `route.ts` computes
+`distinctAccountCount` as a set over every Space's `accountIds`, and the Brief
+route does the same — *"an account shared into two Spaces counts once"*. What was
+missing was not the technique but the will to apply it to **balances**.
+
+## What it refuses, and why each refusal is real
+
+Deduplication is only sound when the rows can be identified and their values
+added. Four conditions make that false, and **each is a defect this repository
+has already recorded once**:
+
+| Condition | The defect it prevents |
+|---|---|
+| **rows don't add up to the declared totals** | ⚠️ found by the acceptance run — see below |
+| `reportingBalance: null` | V25-FINAL-1 made it nullable *"so no consumer can read an unavailable balance as worth 0"* |
+| `redactedCount > 0` | a hidden account is not an absent one |
+| `totalsUnconverted` | the payload says its own totals are partial |
+
+It **never falls back to adding the totals** — that is the cross-Space sum over
+overlapping accounts the whole product forbids, and it is the one thing a caller
+might reach for when this refuses.
+
+## ⚠️ The defect the acceptance found
+
+The first implementation recomputed totals from the per-account rows and
+**silently lost any class that had no rows.** The fixture Space declares
+`totalDigitalAssets: 19,014.63` with `counts.digitalAssets: 4` and carries no
+digital-asset rows, so the composition returned `$0.00` — and the answer read:
+
+> *"Your digital assets (including Bitcoin) are projected to be $0.00 on December
+> 31, 2026, even if Bitcoin goes up 10%."*
+
+That is the single most-repeated defect in this repository's record wearing a new
+costume: `nativeBalance ?? 0` making UNKNOWN equal a confirmed zero, a
+NOT-NULL-DEFAULT-0 balance column rendering a withheld account as $0.00. **An
+absent row is not an empty class.**
+
+Each Space's rows are now checked against that Space's own declared totals before
+anything is unioned, and a mismatch refuses by name.
+
+*(The fixture's incompleteness is a fixture gap, not a product one: the accounts
+assembler emits a row per account at `scopeHint: 'full'`, which is what master
+uses. The gate completes the rows in its own setup rather than perturbing a
+fixture every other corpus depends on being byte-stable.)*
+
+## It was never about the count of Spaces
+
+`forecastable = spaceIds.length === 1` refused on arithmetic about *Spaces*.
+Whether a combined figure can be stated is a question about *accounts*. Three
+Spaces that deduplicate cleanly compose; **one** Space with a hidden account does
+not — and that is pinned.
+
+## Acceptance
+
+The Slice 4 conversation gate, re-run against two Spaces sharing a checking
+account:
+
+```
+[MASTER] 5 distinct accounts, 1 shared placement(s) deduplicated
+[MASTER] liquid: 10228.74 (one Space) -> 12728.74 (two Spaces, one shared
+         account + $2,500 savings)
+[MASTER] dedup correct — the shared account is counted once.
+  7/7 turns clean
+```
+
+A naive sum would have read $22,957.48 of liquid cash from $12,728.74 of actual
+money.
+
+**One shared body, not a master branch.** PARITY-1/2/3 exist because master and
+named-Space diverged once already, and `system-prompt.ts` records the lesson:
+*"an allowlist of capabilities is a list that is always one capability out of
+date."* Master composes a deduplicated context and then takes exactly the path a
+named Space takes.

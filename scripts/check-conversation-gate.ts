@@ -40,6 +40,8 @@ import { generateStructured } from '@/lib/ai/provider';
 import {
   realSpaceCtx, STREAMS, HORIZON, AS_OF,
 } from '@/lib/ai/conformance/forecast-scenarios';
+import { masterMeasureContext } from '@/lib/reasoning/master/dedupe';
+import { FinanceDomains, type AccountsSectionData, type AccountSummaryItem } from '@/lib/ai/types';
 import { resolveTurn } from '@/lib/reasoning/scenario/turn';
 import { planTurn } from '@/lib/reasoning/plan/planner';
 import { deriveConversationState } from '@/lib/reasoning/scenario/derive';
@@ -66,6 +68,14 @@ const PACE_MS = Number(args.find((a) => a.startsWith('--pace='))?.split('=')[1] 
  * whether the planner can hold a conversation rather than answer a question.
  */
 const USE_PLANNER = args.includes('--planner');
+/**
+ * ⚠️ SLICE 6'S ACCEPTANCE, AND IT IS THE SAME SEVEN TURNS. `--master` runs the
+ * conversation against TWO Spaces that SHARE AN ACCOUNT, through the
+ * deduplicated composition, and must produce the same answers as the
+ * single-Space run — plus correct dedup. Anything else means master and
+ * named-Space have diverged again, which is what PARITY-1/2/3 exist because of.
+ */
+const MASTER = args.includes('--master');
 
 const TURNS = [
   'How much will I probably have by December?',
@@ -261,7 +271,82 @@ const EXPECT: Expect[] = [
 ];
 
 async function main(): Promise<void> {
-  const ctx = realSpaceCtx();
+  // ── The Space, or two overlapping Spaces composed into one ────────────────
+  //
+  // ⚠️ THE SECOND SPACE SHARES THE CHECKING ACCOUNT AND ADDS ONE OF ITS OWN, so
+  // a naive sum would double-count $10,228.74 and a correct dedup counts it
+  // once. That is the whole question Slice 6 answers.
+  const single = realSpaceCtx();
+  let ctx = single;
+  if (MASTER) {
+    // ⚠️ THE SHARED FIXTURE'S ROWS DO NOT ACCOUNT FOR ITS OWN TOTALS, and the
+    // composition guard caught it. `realSpaceCtx` declares
+    // `totalDigitalAssets: 19,014.63` with `counts.digitalAssets: 4` and carries
+    // NO digital-asset rows in `accounts[]` — so recomputing from the rows
+    // returned $0.00 and the answer read "your digital assets are projected to
+    // be $0.00, even if Bitcoin goes up 10%".
+    //
+    // That is a FIXTURE gap, not a product one: the accounts assembler emits a
+    // row per account at `scopeHint: 'full'`, which is what master uses. The
+    // fixture only ever needed the totals, because nothing before this composed
+    // over rows. So the rows are completed HERE rather than in the shared
+    // fixture, which every other corpus depends on being byte-stable.
+    const completeRows = (c: ReturnType<typeof realSpaceCtx>) => {
+      const a = c.domains[FinanceDomains.ACCOUNTS]?.data as AccountsSectionData;
+      const rows = [...(a.accounts ?? [])] as AccountSummaryItem[];
+      const proto = rows[0];
+      const missing = a.totalDigitalAssets
+        - rows.filter((r) => r.type === 'crypto' || r.type === 'wallet')
+          .reduce((t, r) => t + (r.reportingBalance ?? 0), 0);
+      if (Math.abs(missing) > 0.01) {
+        rows.push({ ...proto, id: 'w1', name: 'Wallet', type: 'crypto',
+          balance: missing, reportingBalance: missing });
+      }
+      a.accounts = rows;
+      a.accountIds = rows.map((r: AccountSummaryItem) => r.id);
+      return c;
+    };
+    completeRows(single);
+
+    const shared = completeRows(realSpaceCtx());
+    const a = shared.domains[FinanceDomains.ACCOUNTS]?.data as AccountsSectionData;
+    // Same checking account (same id), plus one savings account only this Space
+    // can see — and its totals restated to match, since this Space is a
+    // different Space and not a copy.
+    const checking = (a.accounts ?? [])[0] as AccountSummaryItem;
+    a.accounts = [
+      checking,
+      { ...checking, id: 's9', name: 'Shared Savings', type: 'savings',
+        balance: 2_500, reportingBalance: 2_500 },
+    ];
+    a.accountIds = a.accounts.map((r: AccountSummaryItem) => r.id);
+    a.totalLiquid = (checking.reportingBalance ?? 0) + 2_500;
+    a.totalInvestments = 0; a.totalDigitalAssets = 0;
+    a.totalRealAssets = 0;  a.totalLiabilities = 0;
+    a.totalAssets = a.totalLiquid; a.netWorth = a.totalLiquid;
+    a.counts = { liquid: 2, investments: 0, digitalAssets: 0, realAssets: 0, liabilities: 0 };
+
+    const m = masterMeasureContext([single, shared]);
+    if (!m.ok) {
+      console.log(`[MASTER] composition REFUSED: ${m.reason.code} — ${m.reason.detail}`);
+      process.exit(1);
+    }
+    ctx = m.ctx;
+    const composed = ctx.domains[FinanceDomains.ACCOUNTS]?.data as AccountsSectionData;
+    const singleAcc = single.domains[FinanceDomains.ACCOUNTS]?.data as AccountsSectionData;
+    console.log(`[MASTER] ${m.distinctCount} distinct accounts, `
+      + `${m.sharedCount} shared placement(s) deduplicated`);
+    console.log(`[MASTER] liquid: ${singleAcc.totalLiquid} (one Space) `
+      + `-> ${composed.totalLiquid} (two Spaces, one shared account + $2,500 savings)`);
+    // ⚠️ THE DEDUP IS ASSERTED HERE, NOT ASSUMED. A shared checking account
+    // counted twice would read $22,957.48.
+    const expected = (singleAcc.totalLiquid ?? 0) + 2_500;
+    if (Math.abs((composed.totalLiquid ?? 0) - expected) > 0.005) {
+      console.log(`[MASTER] FAILED — expected ${expected}, got ${composed.totalLiquid}`);
+      process.exit(1);
+    }
+    console.log('[MASTER] dedup correct — the shared account is counted once.\n');
+  }
   const history: { role: string; content: string }[] = [];
   const resolutions: TurnResolution[] = [];
   const transcript: unknown[] = [];

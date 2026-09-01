@@ -322,6 +322,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // row carries a real Space id rather than the literal 'master'.
   // PARITY-3 — `guardCtx` is the forecast Space's context; see currentAuthorityFigures.
   let forecastSpaceId: string | undefined; let guardCtx: SpaceContext_AI | undefined;
+  // Slice 6 — every Space in scope, so the typed path can compose one
+  // deduplicated account set rather than declining on the count of Spaces.
+  let masterContexts: SpaceContext_AI[] = [];
   // V26-REASONING Slice 5 — hoisted so the planner seam below can read which
   // concepts CF-8 resolved. Undefined in master mode, which computes no plan.
   let shadowPlan: RetrievalPlan | undefined;
@@ -396,6 +399,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       userId: user.id, spaceIds: memberships.map((m) => m.spaceId),
       messages, question: masterQuestion, transactionWindow, drilldown });
     const contexts: SpaceContext_AI[] = ms.resolved.map((r) => r.ctx);
+    masterContexts = contexts;
     // REVIEW-3 C-9 (KD-8) — failed Spaces are logged AND surfaced. The prompt
     // previously stated the SURVIVOR count as the user's Space count, so a
     // build failure silently shrank the user's financial world.
@@ -596,6 +600,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     ctx: guardCtx, assessment: guardAssessments[0],
     forecast, payDates: payDates !== undefined, retrieval: shadowPlan,
     question: latestUserMessage(messages) ?? '',
+    // Slice 6 — every Space in scope, so master composes over a deduplicated
+    // account set instead of refusing on the count of Spaces.
+    masterContexts: masterContexts.length > 0 ? masterContexts : undefined,
   });
   try {
     if (typed) {
