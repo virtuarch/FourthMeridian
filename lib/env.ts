@@ -220,6 +220,14 @@ const _e = {
   // record or a coverage claim and legacy's domain routing serves those
   // correctly. See docs/systems/planner.md for the per-class numbers.
   AI_REASONING_PATH:        process.env.AI_REASONING_PATH,
+  // V26-REASONING Slice 7 — how much prompt a TYPED turn gets: 'full' | 'minimal'.
+  // UNSET ⇒ 'full', which is today's prompt with the typed table appended.
+  //
+  // ⚠️ `minimal` DROPS THE DOCTRINE, and that is measured rather than assumed:
+  // on the seven-case answer-boundary corpus it is 1,570 tokens against 11,400
+  // with no change in compliance either way. The default stays `full` until the
+  // 35-scenario corpus says the same thing.
+  AI_PROMPT_SHAPE:          process.env.AI_PROMPT_SHAPE,
 } as const;
 
 // ── Deployment-environment classification (V26-ENV-1) ─────────────────────────

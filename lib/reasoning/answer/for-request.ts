@@ -23,6 +23,7 @@ import type { SpaceContext_AI } from '@/lib/ai/types';
 import type { FinancialAssessment } from '@/lib/ai/intelligence/annotations/types';
 import type { AssembledForecast } from '@/lib/ai/forecast/assemble';
 import { db } from '@/lib/db';
+import { todayUTCISO } from '@/lib/time/clock';
 import { AuditAction } from '@/lib/audit-actions';
 import type { Prisma } from '@prisma/client';
 
@@ -35,6 +36,51 @@ import type { Refusal } from '../refusal';
 import type { FigureTable } from '../figures/types';
 
 export type AnswerMode = 'prose' | 'typed';
+
+/**
+ * How much prompt a typed turn gets.
+ *
+ * ⚠️ MEASURED BEFORE IT WAS OFFERED. The plan predicted that the ~4,250 tokens
+ * of prose doctrine were suppressing the model's compliance with the typed
+ * contract, and that cutting them belonged to Slice 1. Measured with them
+ * removed entirely — 1,570 tokens against 11,400 on the same seven adversarial
+ * cases — compliance did not improve. It also did not get worse in any way the
+ * gates could see.
+ *
+ * So the doctrine is not a confound and it is not load-bearing under `typed`
+ * either: it is 86% of a prompt saying in English what the figure table says
+ * structurally. `minimal` is that finding turned into a switch.
+ *
+ * ⚠️ AND `full` IS STILL THE DEFAULT, because the 86% was measured on seven
+ * cases and not on the 35-scenario corpus. A saving this large deserves the
+ * larger measurement before it becomes what everybody gets.
+ */
+export type PromptShape = 'full' | 'minimal';
+
+export function resolvePromptShape(raw: string | undefined): PromptShape {
+  return String(raw ?? '').toLowerCase() === 'minimal' ? 'minimal' : 'full';
+}
+
+/**
+ * The whole prompt for a typed turn, when the doctrine is not carried.
+ *
+ * ⚠️ THIS IS NOT A TRIMMED DOCTRINE, IT IS THE ABSENCE OF ONE. Every rule the
+ * doctrine states about which figures may be used, how to hedge them and when to
+ * refuse is expressed structurally by the table and enforced by the verifier;
+ * restating them here would put back the second, weaker copy that drifts.
+ *
+ * What survives is what the types cannot say: who is speaking, to whom, and the
+ * date.
+ */
+export function minimalPreamble(spaceName: string | undefined, todayISO: string): string {
+  return [
+    `You are the financial assistant for ${spaceName ? `"${spaceName}"` : 'this Space'}.`,
+    "Answer the user's question directly, in plain language, in the second person.",
+    'Be brief. Do not pad, do not lecture, and do not refuse a question you can',
+    'partly answer.',
+    `Today's date is ${todayISO}.`,
+  ].join('\n');
+}
 
 /**
  * ⚠️ UNSET IS `prose`, AND THAT IS THE CORRECT DEFAULT FOR THIS ONE. A boundary
@@ -165,6 +211,8 @@ export async function answerTyped(args: {
 export async function answerThisTurn(args: {
   answerMode:    string | undefined;
   reasoningPath: string | undefined;
+  /** Slice 7 — `minimal` drops the doctrine the typed table replaces. */
+  promptShape?:  string | undefined;
   systemPrompt:  string;
   messages:      ChatMessage[];
   userId:        string;
@@ -210,8 +258,13 @@ export async function answerThisTurn(args: {
     retrieval: args.retrieval, question: args.question,
   });
 
+  // ⚠️ THE DOCTRINE IS DROPPED, NOT SHORTENED. See `minimalPreamble`.
+  const systemPrompt = resolvePromptShape(args.promptShape) === 'minimal'
+    ? minimalPreamble(ctx?.space?.name, todayUTCISO())
+    : args.systemPrompt;
+
   return answerTyped({
-    systemPrompt: args.systemPrompt, messages: args.messages,
+    systemPrompt, messages: args.messages,
     userId: args.userId, spaceId: args.guardSpaceId,
     forecast: planned?.forecast ?? args.forecast,
     ctx, assessment: args.assessment,

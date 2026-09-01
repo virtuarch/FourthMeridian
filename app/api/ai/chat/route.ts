@@ -595,6 +595,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const typed = await answerThisTurn({
     answerMode: process.env.AI_ANSWER_MODE,
     reasoningPath: process.env.AI_REASONING_PATH,
+    promptShape: process.env.AI_PROMPT_SHAPE,
     systemPrompt, messages, userId: user.id, spaceId,
     guardSpaceId: forecastSpaceId ?? spaceId,
     ctx: guardCtx, assessment: guardAssessments[0],

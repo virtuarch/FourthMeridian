@@ -45,6 +45,23 @@ import type { DebtPaymentLine } from './context-serializer';
 /** Today's UTC calendar day, from THE one clock (REVIEW-3 B-6 — lib/time).
  *  Computed per-request. This was one of the two recorded lib/ai inline day
  *  derivations; the clock-authority guard now scans lib/ai like everything else. */
+/**
+ * Today's date, at the END of the prompt rather than on line 3.
+ *
+ * ⚠️ ONE LINE, AND IT WAS THE WHOLE CACHE. Provider prompt caching matches on a
+ * byte-identical PREFIX, and `Today's date: 2026-09-01.` sat on line 3 of every
+ * prompt this product has ever built — so no two turns on different days shared
+ * a prefix, and no cache could ever engage on the ~4,250 tokens of doctrine that
+ * follow it and never change at all.
+ *
+ * Moving it to the end costs nothing semantically: the date is a fact about the
+ * request, it belongs with the request, and everything between the first
+ * character and the evidence is now identical from turn to turn and from day to
+ * day. (The evidence itself varies per Space and per turn, which is inherent —
+ * what this recovers is the doctrine, which does not.)
+ */
+const TODAY_BLOCK = (): string[] => ['', `Today's date: ${todayDateString()}.`];
+
 function todayDateString(): string {
   return todayUTCISO();
 }
@@ -220,7 +237,6 @@ export function buildSpaceSystemPrompt(
   return [
     'You are a skilled, direct financial advisor powered by Fourth Meridian.',
     'You advise on the space described below.',
-    `Today's date: ${todayDateString()}.`,
     'Answer using ONLY the supplied financial context.',
     'Never invent accounts, balances, transactions, or any financial data.',
     'If the context is insufficient, explain what is missing and why.',
@@ -250,6 +266,7 @@ export function buildSpaceSystemPrompt(
     // a capability cannot reach one entry point and not the other.
     ...renderSpaceEvidenceBody(ctx, annotations, route, question,
       { envelope, plan, debtPayments, forecast, payDates }),
+    ...TODAY_BLOCK(),
   ].join('\n');
 }
 
@@ -475,7 +492,6 @@ export function buildMasterSystemPrompt(
   return [
     'You are a skilled, direct financial advisor powered by Fourth Meridian.',
     ...coverageLines,
-    `Today's date: ${todayDateString()}.`,
     'Answer using ONLY the supplied financial context.',
     'Never invent accounts, balances, transactions, or any financial data.',
     'If the context is insufficient, explain what is missing and why.',
@@ -506,5 +522,6 @@ export function buildMasterSystemPrompt(
     '=== SPACE CONTEXTS ===',
     spaceBlocks,
     '=== END CONTEXTS ===',
+    ...TODAY_BLOCK(),
   ].join('\n');
 }

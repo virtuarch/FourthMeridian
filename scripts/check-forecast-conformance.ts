@@ -39,7 +39,7 @@ import {
   type ForecastScenario,
 } from '@/lib/ai/conformance/forecast-scenarios';
 import { guardForecastReply } from '@/lib/ai/forecast/numerical-guard';
-import { buildTypedPromptSuffix } from '@/lib/reasoning/answer/for-request';
+import { buildTypedPromptSuffix, minimalPreamble } from '@/lib/reasoning/answer/for-request';
 import { ANSWER_SCHEMA } from '@/lib/reasoning/answer/schema';
 import { verifyAnswer, buildRepairInstruction } from '@/lib/reasoning/verify/verify';
 import { deterministicFallback } from '@/lib/reasoning/answer/generate';
@@ -144,6 +144,13 @@ const GUARD = (args.find((a) => a.startsWith('--guard='))?.split('=')[1] ?? 'off
  */
 const ANSWER_MODE = (args.find((a) => a.startsWith('--answer-mode='))?.split('=')[1] ?? 'prose') as
   'prose' | 'typed';
+/**
+ * V26-REASONING Slice 7 — `--prompt-shape=minimal` drops the ~4,250 tokens of
+ * doctrine that the typed figure table replaces, and measures what that costs on
+ * the corpus rather than on the seven adversarial cases alone.
+ */
+const PROMPT_SHAPE = (args.find((a) => a.startsWith('--prompt-shape='))?.split('=')[1] ?? 'full') as
+  'full' | 'minimal';
 
 function buildPrompt(s: ForecastScenario): {
   prompt: string; question: string; forecast: AssembledForecast; table: FigureTable;
@@ -189,7 +196,10 @@ function buildPrompt(s: ForecastScenario): {
       payDates ? undefined : forecast, payDates);
   return {
     forecast, question, table: typed.table,
-    prompt: ANSWER_MODE === 'typed' ? `${base}\n${typed.suffix}` : base,
+    prompt: ANSWER_MODE !== 'typed' ? base
+      : PROMPT_SHAPE === 'minimal'
+        ? `${minimalPreamble(ctx.space?.name, AS_OF)}\n${typed.suffix}`
+        : `${base}\n${typed.suffix}`,
   };
 }
 

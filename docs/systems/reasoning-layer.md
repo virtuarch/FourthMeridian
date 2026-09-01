@@ -509,3 +509,93 @@ named-Space diverged once already, and `system-prompt.ts` records the lesson:
 *"an allowlist of capabilities is a list that is always one capability out of
 date."* Master composes a deduplicated context and then takes exactly the path a
 named Space takes.
+
+---
+
+# Prompt and cost (Slice 7)
+
+## One line was the whole cache
+
+```
+line 1  You are a skilled, direct financial advisor powered by Fourth Meridian.
+line 2  You advise on the space described below.
+line 3  Today's date: 2026-09-01.          ← every prompt this product ever built
+line 4  Answer using ONLY the supplied financial context.
+...     ~4,250 tokens of doctrine, identical on every single turn
+```
+
+Provider prompt caching matches on a **byte-identical prefix**. With the date on
+line 3, no two turns on different days shared one, and the doctrine that follows
+— the largest and least variable thing in the prompt — could never be cached.
+
+The date is at the end now. It costs nothing semantically: a date is a fact about
+the request and belongs with the request.
+
+| | before | after |
+|---|---|---|
+| shared prefix across two different questions | ~120 chars | **4,479 tokens** |
+| doctrine inside the cacheable prefix | no | **yes** |
+
+Pinned by `lib/ai/prompts/prompt-cost.test.ts`, which computes the shared prefix
+of two real prompts and asserts the date is not in it.
+
+## The measured sizes
+
+```
+PROMPT TOKENS  full=8,874  typed=10,768  minimal=1,956
+               (typed figure table = 1,894 · cacheable prefix = 4,479)
+```
+
+## ⚠️ The 78% saving is real, and the default stays `full`
+
+`AI_PROMPT_SHAPE=minimal` drops the doctrine entirely under `typed` — 1,956
+tokens against 10,768. On the seven-case answer-boundary corpus it cost nothing:
+compliance was identical in both directions.
+
+**On the 35-scenario corpus it costs 15 scenarios.**
+
+| shape | clean | boundary outcomes | FORBIDDEN | MISSING |
+|---|---|---|---|---|
+| `full` (10,768 tok) | **31/35** | 27 clean · 5 repaired · 3 fallback | 1 | 3 |
+| `minimal` (1,956 tok) | **16/35** | 32 clean · 1 repaired · 2 fallback | **1** | **20** |
+
+**Every one of the extra failures is a `MISSING`, and the FORBIDDEN count is
+identical — the same single one, in both.** Dropping the doctrine costs
+**completeness**, never **truth**:
+
+- *"must name the spending input it used"* (×4 pressure scenarios)
+- *"must state the engine's ending cash"*
+- *"must report the balance going negative"*
+- *"must name the income-basis gap"*
+
+The typed boundary held **better** without the doctrine (32 clean answers against
+27), because there was less competing instruction. It just answered thinner.
+
+### Which is Slice 1's limit, restated in tokens
+
+**The typed boundary is a figure boundary, not a framing boundary.** It proves
+every number is addressed. The doctrine is what says *name the gap*, *report the
+negative balance*, *say which spending input you used* — and none of that is
+expressible as a figure, so none of it survives the cut.
+
+**This also corrects the plan's Slice 7 estimate.** It predicted *"~14k → ~5k
+tokens"* as a straightforward consequence of the typed layer. The saving is
+available only if the framing rules move into the typed layer first, and they
+have not. The next thing to build here is not a smaller prompt — it is
+**required framing items as typed objects**, the way `AssumptionDelta` already
+is: a withheld subject that must be named, a component that must be shown, a
+negative crossing that must be reported. Then the doctrine has nothing left to
+say and can go.
+
+## What is not claimed
+
+`ApiUsageCounter` has no `userId` or `spaceId`, so a **per-turn** cost saving
+cannot be read back from the usage ledger — only a per-model daily total. Nothing
+here claims a bill went down. Every number above is a property of the string,
+which is exact and free to measure.
+
+The dimension is deliberately **not** added: two migrations are already unapplied
+in this repository and `build` never runs `migrate deploy`, so a third would ship
+code ahead of its columns. `prompt-cost.test.ts` asserts the ledger still has no
+dimension — so if one is ever added, that check fails and somebody reconsiders
+the claim rather than inheriting this caveat silently.
