@@ -35,6 +35,8 @@ import {
 import {
   evaluate, composeNetWorth, persistenceFallback, type MeasureContext,
 } from './evaluate';
+import { buildFigureTable } from '../figures/table';
+import { buildTypedPromptSuffix } from '../answer/for-request';
 
 let failures = 0, passes = 0;
 function check(name: string, ok: boolean, detail?: string): void {
@@ -444,6 +446,70 @@ check('K3 with the sample size, so a two-month spread is not read as a regime',
 // product has no authority to state.
 check('K4 dispersion is not silently promoted into a range',
   spend.range === undefined);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// L. THE SYSTEM FALLBACK'S DISCLOSURE SURVIVES TO THE NARRATOR
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ INVARIANT 4 FAILED HERE AND IT FAILED SILENTLY. `persistenceFallback` built
+// the sentence — "holding today's debt balance flat because no due dates are
+// recorded…" — and every call site discarded it. `composeNetWorth` pushed the
+// strings into a local array and then spread `{ range: undefined }`, a NO-OP,
+// beneath a comment claiming the fallbacks were "named here so narration can say
+// them"; `debtAtDate` took `fb.value` and dropped `fb.statedAs`. So a $45,451.83
+// answer rested on an assumption nobody had made, the user could not see, and
+// the system had already written down. The one place this codebase asserted its
+// own principle in a comment and contradicted it on the line beneath.
+
+const debtFwd = evaluate(MeasureId.DEBT_BALANCE, FUTURE, C);
+check('L1 the leg that used a fallback carries its own disclosure',
+  (debtFwd.systemAssumptions ?? []).some((a) => /holding today's debt balance flat/.test(a)),
+  JSON.stringify(debtFwd.systemAssumptions));
+
+// ⚠️ AND THE COMPOSITION INHERITS IT. This is the path the fallback actually
+// takes: `debtAtDate` applies it INTERNALLY and returns a VALUE, so the
+// composition's own fallback branch never runs for that leg. Without the
+// inheritance the composed figure carried no disclosure at all.
+check('L2 the composition inherits its legs\' disclosures',
+  (nwFuture.systemAssumptions ?? []).some((a) => /holding today's debt balance flat/.test(a)),
+  JSON.stringify(nwFuture.systemAssumptions));
+
+check('L3 no fallback used in a calculation disappears', (() => {
+  // Every leg that resolved via the fallback must be named. Debt is the one that
+  // does on this fixture; the assertion is that the COUNT matches, so a second
+  // silent fallback cannot be added without this failing.
+  const usedFallback = nwFuture.dependsOn.filter((d) => d.endsWith('@NOW')).length;
+  return (nwFuture.systemAssumptions ?? []).length >= usedFallback;
+})(), `${JSON.stringify(nwFuture.dependsOn.filter((d) => d.endsWith('@NOW')))} vs `
+  + `${JSON.stringify(nwFuture.systemAssumptions)}`);
+
+// ── It reaches the narrator, and it is attributed to US ────────────────────
+const withFallback = buildTypedPromptSuffix({
+  forecast, ctx, assessment, messages: [{ role: 'user', content: 'net worth in December?' }],
+  measures: [nwFuture], framing: ['assume I spend $5,000/month'],
+});
+check('L4 the disclosure reaches the prompt the narrator reads',
+  /holding today's debt balance flat/.test(withFallback.suffix),
+  withFallback.suffix.split('\n').filter((l) => /net worth on|ASSUMED/.test(l)).join(' // '));
+
+// ⚠️ AND IT IS NOT ATTRIBUTED TO THE USER. `table.ts` used to set
+// `basis: args.framing?.[0]` — the first item of an unrelated list — so a figure
+// resting on a SYSTEM fallback about DEBT was rendered as
+// `- the user said: "assume I spend $5,000/month"`. Telling somebody they
+// assumed something they did not is worse than disclosing nothing.
+check('L5 an unrelated user assumption cannot become a system fallback\'s basis', (() => {
+  const t = buildFigureTable({
+    forecast, ctx, assessment, measures: [nwFuture],
+    framing: ['assume I spend $5,000/month'],
+    messages: [{ role: 'user', content: 'net worth in December?' }],
+  });
+  const nwFig = t.figures.find((f) => /net worth on/.test(f.label));
+  return !!nwFig && nwFig.basis === undefined;
+})());
+
+check('L6 the two authorities render as different sentences',
+  /WE ASSUMED/.test(withFallback.suffix)
+  && !/the user said: "holding today/.test(withFallback.suffix));
 
 console.log(`\n${passes} passed, ${failures} failed`);
 if (failures > 0) process.exit(1);

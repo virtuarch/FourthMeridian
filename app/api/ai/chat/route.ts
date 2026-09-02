@@ -587,25 +587,23 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // failure mode.
   // ── V26-REASONING Slices 1/5 — the typed answer, when it is turned on ─────
   //
-  // ⚠️ ONE CALL, FOR THE REASON `route-authority.aiarch` HAS NOW ENFORCED FOUR
-  // TIMES: the route sequences a request, and a block that pushes it past 700
-  // lines gets moved rather than having the ceiling raised. `answerThisTurn`
-  // owns the planner seam, the figure table, the verifier and the repair, and
-  // returns undefined whenever the prose path should answer instead.
-  const typed = await answerThisTurn({
-    answerMode: process.env.AI_ANSWER_MODE,
-    reasoningPath: process.env.AI_REASONING_PATH,
-    promptShape: process.env.AI_PROMPT_SHAPE,
-    systemPrompt, messages, userId: user.id, spaceId,
-    guardSpaceId: forecastSpaceId ?? spaceId,
-    ctx: guardCtx, assessment: guardAssessments[0],
-    forecast, payDates: payDates !== undefined, retrieval: shadowPlan,
-    question: latestUserMessage(messages) ?? '',
-    // Slice 6 — every Space in scope, so master composes over a deduplicated
-    // account set instead of refusing on the count of Spaces.
-    masterContexts: masterContexts.length > 0 ? masterContexts : undefined,
-  });
+  // ⚠️ ONE CALL, AND INSIDE THE `try`. `route-authority.aiarch` has now enforced
+  // the first half FIVE times and the second half is why the call moved here at
+  // all — see `answerThisTurn`'s header for both.
   try {
+    const typed = await answerThisTurn({
+      answerMode: process.env.AI_ANSWER_MODE,
+      reasoningPath: process.env.AI_REASONING_PATH,
+      promptShape: process.env.AI_PROMPT_SHAPE,
+      systemPrompt, messages, userId: user.id, spaceId,
+      guardSpaceId: forecastSpaceId ?? spaceId,
+      ctx: guardCtx, assessment: guardAssessments[0],
+      forecast, payDates: payDates !== undefined, retrieval: shadowPlan,
+      question: latestUserMessage(messages) ?? '',
+      // Slice 6 — every Space in scope, so master composes over a deduplicated
+      // account set instead of refusing on the count of Spaces.
+      masterContexts: masterContexts.length > 0 ? masterContexts : undefined,
+    });
     if (typed) {
       return NextResponse.json({
         message:          typed.reply,

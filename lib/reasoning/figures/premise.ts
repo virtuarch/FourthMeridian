@@ -48,6 +48,7 @@ import {
   FigureKind, FigureHorizon, FigureUnit, Standing,
   FigureRole, type LicensedFigure, type FigureUnitName,
 } from './types';
+import { MAGNITUDE_SRC, scaleOf } from './magnitude';
 
 /**
  * A money, percent, month-count or bare-count token, with everything that
@@ -59,12 +60,18 @@ import {
  * dead at the decimal point in the user's own figure. The same mistake is
  * available here and is not made.
  */
-// ⚠️ THE MAGNITUDE SUFFIX IS PART OF THE NUMBER. Omitting it is a silent
-// thousand-fold error, and it was found twice in one slice: `statements.ts`
-// read "assume I spend $5K/month" as $5.00 and projected $20.53 of spending
-// over four months, and this pattern had the same hole. `$5K`, `$5k` and
-// `$1.5M` are notations people type.
-const MONEY_RE   = /(?:\$|\bUSD\s*)(-?\d[\d,]*(?:\.\d+)?)\s*([kKmM])?/g;
+// ⚠️ THE MAGNITUDE SUFFIX HAS TWO EDGES, AND THIS PATTERN ONLY HAD ONE.
+// It read `([kKmM])?` with no right-hand boundary, so the `m` beginning the NEXT
+// WORD became the suffix: "I spend $5,000 monthly" minted a licensed PREMISE of
+// $5,000,000,000, and — because the `m` was already eaten — the rate window
+// began at "onthly." and the figure was ALSO downgraded from
+// CURRENCY_PER_MONTH to CURRENCY. A million-fold corruption plus the loss of
+// the one axis that structurally holds, in an entirely ordinary sentence.
+//
+// The grammar now lives in `./magnitude`, shared with the verifier's prose
+// sweep and its claim parser, because all three had the identical hole.
+const MONEY_RE   = new RegExp(
+  `(?:\\$|\\bUSD\\s*)(-?\\d[\\d,]*(?:\\.\\d+)?)${MAGNITUDE_SRC}`, 'gi');
 const PERCENT_RE = /(-?\d[\d,]*(?:\.\d+)?)\s*(?:%|\bpercent\b)/gi;
 const MONTHS_RE  = /\b(\d[\d,]*(?:\.\d+)?)\s*months?\b/gi;
 
@@ -106,15 +113,16 @@ function scan(text: string): RawPremise[] {
   };
 
   for (const m of text.matchAll(MONEY_RE)) {
-    const after = text.slice(m.index + m[0].length, m.index + m[0].length + RATE_WINDOW);
+    // ⚠️ THE RATE WINDOW OPENS AFTER THE SUFFIX, WHICH IS THE SECOND HALF OF THE
+    // SAME DEFECT. With the `m` of "monthly" consumed as a magnitude, the window
+    // started mid-word and no per-month marker was ever found.
+    const end = m.index + m[0].length;
+    const after = text.slice(end, end + RATE_WINDOW);
     const unit = PER_MONTH_RE.test(after) ? FigureUnit.CURRENCY_PER_MONTH
       : PER_YEAR_RE.test(after) ? FigureUnit.CURRENCY_PER_YEAR
         : FigureUnit.CURRENCY;
     const raw = num(m[1]);
-    const suffix = (m[2] ?? '').toLowerCase();
-    push(raw === null ? null
-      : suffix === 'k' ? raw * 1_000 : suffix === 'm' ? raw * 1_000_000 : raw,
-    unit, m.index);
+    push(raw === null ? null : raw * scaleOf(m[2], m[3]), unit, m.index);
   }
   for (const m of text.matchAll(PERCENT_RE)) push(num(m[1]), FigureUnit.PERCENT, m.index);
   for (const m of text.matchAll(MONTHS_RE)) push(num(m[1]), FigureUnit.MONTHS, m.index);

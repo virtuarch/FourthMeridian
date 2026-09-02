@@ -85,6 +85,13 @@ export function renderFigureTable(t: FigureTable, framing: readonly string[] = [
         ? '  — NOTHING MEASURED THIS; do not call it measured or observed'
         : '')
       + (f.basis ? `  ("${f.basis}")` : ''));
+    // ⚠️ ON ITS OWN LINE, AND ATTRIBUTED TO US. A system fallback is not
+    // something the user said, and rendering it beside `- the user said:` was
+    // the misattribution this pass closed. It is indented under its figure so a
+    // reader can see which number it priced.
+    for (const a of f.systemAssumptions ?? []) {
+      lines.push(`       ↳ WE ASSUMED, and you must say so: ${a}`);
+    }
   }
 
   if (stated.length > 0) {
@@ -110,8 +117,16 @@ export function renderFigureTable(t: FigureTable, framing: readonly string[] = [
   if (t.withheld.length > 0) {
     lines.push('');
     lines.push('=== WITHHELD — say these as limitations, never as the whole answer ===');
+    lines.push('If you state no figure at all, put the SUBJECT line verbatim — the');
+    lines.push('quoted text only — into the answer\'s `withheld` field.');
     for (const w of t.withheld) {
-      lines.push(`- ${w.subject} — ${w.code} — ${w.detail}`);
+      // ⚠️ THE SUBJECT IS QUOTED AND ON ITS OWN LINE because the model is asked
+      // to copy it verbatim, and a subject run together with its code and detail
+      // on one line got copied whole — costing a repair call on an otherwise
+      // correct refusal. What must be copied should look like what must be
+      // copied.
+      lines.push(`- SUBJECT: "${w.subject}"`);
+      lines.push(`    ${w.code} — ${w.detail}`);
     }
   }
   return lines.join('\n');
@@ -139,9 +154,27 @@ export const TYPED_NARRATION_INSTRUCTION = `
 
 3. A rate is not a balance. "$5,000/month" and "$5,000" are different
    statements, and a figure listed as a rate may only be written as a rate.
+   A minus sign is part of the figure too: -$4,000.00 and $4,000.00 are opposite
+   statements, and writing the wrong one turns an overdraft into a surplus.
 
 4. A figure about today is not a figure about a future date, however reasonable
    the projection would be.
+
+5. Say whose number it is. Each claim carries a frame:
+     FACT        you are asserting it of their money — "Your net worth is X"
+     ASSUMPTION  you are supposing it, or quoting theirs — "Assuming X, you'd…"
+   A figure under THE USER'S OWN NUMBERS is their supposition, never a
+   measurement. You may quote it back; you may not say "you have X" of a number
+   they asked you to assume.
+
+6. Anything marked "WE ASSUMED, and you must say so" is an assumption the SYSTEM
+   made in order to reach a figure — the user has not agreed to it and cannot see
+   it unless you say it. Name it in the same sentence as the figure it priced.
+
+7. If you state no figure at all, that is allowed — a limitation, a refusal or a
+   genuinely qualitative answer may need none. But set the withheld field to the
+   WITHHELD subject you are speaking to. You may not reach a financial
+   conclusion out of nothing.
 
 ── A WORKED EXAMPLE, BECAUSE RULE 1 IS THE ONE PEOPLE GET WRONG ──
 
@@ -150,14 +183,17 @@ Suppose the table holds f04 = $37,274.24 (projected cash), p01 = $5,000.00/month
 
   prose:  "Assuming you spend $5,000/month, you'd have about $37,274.24 by
            December. If it moved 10% the other way, that changes."
-  claims: [ {"fid":"p01","statedAs":"$5,000/month"},
-            {"fid":"f04","statedAs":"$37,274.24"},
-            {"fid":"f09","statedAs":"10%"} ]
+  claims: [ {"fid":"p01","statedAs":"$5,000/month","frame":"ASSUMPTION"},
+            {"fid":"f04","statedAs":"$37,274.24","frame":"ASSUMPTION"},
+            {"fid":"f09","statedAs":"10%","frame":"ASSUMPTION"} ]
+  withheld: null
 
 THREE figures in the prose, THREE claims. Notice that the $5,000/month is the
 user's own number quoted back and it STILL needs a claim, and that the 10% is a
 percentage and it STILL needs a claim. Those two are the ones most often
-forgotten, and forgetting either discards the whole answer.
+forgotten, and forgetting either discards the whole answer. Notice too that
+p01 is the user's own number, so its frame is ASSUMPTION — and that f04 is
+ASSUMPTION as well, because that projection is priced BY p01.
 
 Then answer the question the user actually asked. Speak WITHHELD subjects as
 limitations inside a useful answer, not as the answer. If the honest answer is a

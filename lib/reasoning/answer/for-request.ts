@@ -207,6 +207,15 @@ export async function answerTyped(args: {
  * ⚠️ THE PLANNER ONLY RUNS UNDER `typed`. It selects MEASURES, and a measure
  * reaches the user through the typed answer boundary; selecting them and then
  * narrating in free prose would buy the interpretation without the verification.
+ *
+ * ⚠️ AND THE CALLER MUST INVOKE THIS INSIDE ITS ERROR BOUNDARY. It sat ABOVE the
+ * chat route's `try` until an audit found it — harmless while `AI_ANSWER_MODE`
+ * is unset, because it returns immediately, and not harmless under `typed`,
+ * where it makes one or two OpenAI calls and an `auditLog.create`. A throw from
+ * any of them became an unhandled 500 instead of the 502 / 503 envelope the
+ * client is built to distinguish between "provider is misconfigured" and
+ * "provider is having a bad minute". The boundary itself needed no change; only
+ * the position of this call did.
  */
 export async function answerThisTurn(args: {
   answerMode:    string | undefined;

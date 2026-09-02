@@ -599,3 +599,167 @@ in this repository and `build` never runs `migrate deploy`, so a third would shi
 code ahead of its columns. `prompt-cost.test.ts` asserts the ledger still has no
 dimension — so if one is ever added, that check fails and somebody reconsiders
 the claim rather than inheriting this caveat silently.
+
+---
+
+# The blocker pass (2026-09-02)
+
+Five defects from `docs/plans/V26-POST-IMPLEMENTATION-AUDIT.md`, plus the two
+protections it asked for. **Every one was reproduced against the running code
+before it was touched**, and every fix was mutation-tested — the fix reverted,
+the new test confirmed red, the fix restored.
+
+## D1 — the magnitude suffix had one edge
+
+`([kKmM])?` with no right-hand boundary consumed the letter that began the next
+word:
+
+| input | before | after |
+|---|---|---|
+| `I spend $5,000 monthly.` | **$5,000,000,000** as `CURRENCY` | $5,000 as `CURRENCY_PER_MONTH` |
+| `I pay $1,200 mortgage` | **$1,200,000,000** | $1,200 |
+| `$50 million` | $50 (in `valueOf`) | $50,000,000 |
+
+A million-fold corruption **and** a unit downgrade — with the `m` eaten, the rate
+window opened at `"onthly."` and the one axis that structurally holds was lost.
+
+⚠️ **It was in four parsers, and one of them is not behind a flag.**
+`lib/ai/forecast/statements.ts` feeds the forecast engine on the path that serves
+users today: *"Assume I spend $5,000 monthly"* produced a spending level of
+**$5,000,000,000/month**. `AI_ANSWER_MODE` was never the containment for that one.
+
+The grammar now lives once, in `figures/magnitude.ts`. The rule is **positional,
+not lexical** — there is no `monthly` exception and no `mortgage` exception; a
+letter scales a number only when no letter follows it. A property test sweeps the
+whole alphabet.
+
+A second inconsistency fell out of it: `statedAsRendersUnit` accepted
+`"$5,000 monthly"` while the prose sweep could not tokenise the word at all, so a
+claim written the way the unit check permits could never match its own prose.
+Both sides now share `PER_MONTH_SRC` / `PER_YEAR_SRC`. **A token is whatever both
+sides say it is, or it is nothing.**
+
+## D2 — an overdraft could be narrated as a surplus
+
+`sameValue` ended `|| q(parsed) === q(Math.abs(f.value))`. A licensed **−$4,000**
+verified against prose reading `"$4,000.00"`.
+
+It was not even a convenience. `renderFigure` emitted the malformed
+`$-4,000.00`, and the sweep rejected the natural `-$4,000.00` — so **the only two
+renderings that verified were the malformed one and the wrong one.**
+
+| | before | after |
+|---|---|---|
+| `renderFigure(-4000)` | `$-4,000.00` | `-$4,000.00` |
+| −4000 vs `"$4,000.00"` | **PASS** | FAIL |
+| −4000 vs `"-$4,000.00"` | FAIL | **PASS** |
+
+Negative rates and percentages are covered too — a monthly net and a savings rate
+can both be below zero. No absolute-value equivalence remains anywhere in the
+file, pinned by a source check.
+
+## D3 — the disclosure was computed and dropped
+
+`persistenceFallback` built the sentence — *"holding today's debt balance flat
+because no due dates are recorded…"* — and **every call site discarded it.**
+`composeNetWorth` pushed the strings into a local array and then spread
+`{ range: undefined }`, a no-op, beneath a comment claiming narration could say
+them. `debtAtDate` took `fb.value` and dropped `fb.statedAs`.
+
+So a $45,451.83 answer rested on an assumption nobody had made, the user could
+not see, and the system had already written down. **The one place this codebase
+asserted its own principle in a comment and contradicted it on the line
+beneath.**
+
+`Measure` and `LicensedFigure` now carry `systemAssumptions`, and the
+composition inherits its legs' — which is the path the fallback actually takes,
+since `debtAtDate` applies it internally and returns a VALUE.
+
+And the misattribution is gone. `table.ts` set `basis: args.framing?.[0]` — the
+first item of an unrelated list — so a figure resting on a **system** fallback
+about debt was rendered as `- the user said: "assume I spend $5,000/month"`.
+**Telling somebody they assumed something they did not is worse than disclosing
+nothing.** The two authorities now render as different sentences.
+
+## D4 — a premise could be asserted as a measurement
+
+`verifyAnswer` never read `f.kind`. Prose *"You have $50,000.00 saved."* citing
+the user's own supposition verified clean.
+
+**The unit axis cannot reach this**, and that is why it survived: a rate and a
+stock *render* differently, but a supposed $50,000 and a measured $50,000 render
+identically. What separates them is what the sentence claims — and only the
+writer of the sentence knows that.
+
+So `Claim` gains one field, symmetric with `fid`:
+
+```ts
+frame: 'FACT' | 'ASSUMPTION'
+```
+
+A `PREMISE` figure may only ever be `ASSUMPTION`; a `MEASURE` may be either,
+because a measured figure inside a scenario sentence is ordinary. Legitimate
+premise use is preserved and tested — *"Assuming $50,000…"*, *"If we use your
+$50,000 assumption…"*, *"Under that scenario…"* all pass.
+
+**The honest limit, stated rather than hidden:** a model can declare `ASSUMPTION`
+and still write a declarative sentence. That is the same trust boundary `claims`
+itself rests on, and it is acceptable for the same reason — it converts a
+**silent** category error into a **detectable** misdeclaration. Before this field
+there was nothing to detect.
+
+## D7 — the typed call was outside the error boundary
+
+It sat above the `try` every other provider call in the handler sits inside.
+Harmless while `AI_ANSWER_MODE` is unset; under `typed` it makes one or two
+OpenAI calls and an `auditLog.create`, and a throw became an unhandled 500
+instead of the 503 / 502 envelope. Moved; the boundary itself is unchanged.
+
+⚠️ **The first version of the test for this was vacuous** — it asked whether
+*some* `try` preceded the call and *some* `catch` followed it, and the handler has
+three earlier, already-closed `try` blocks, so both halves held wherever the call
+sat. Moving the call back out did not turn it red. It now balances braces from the
+nearest preceding `try`. **A check that cannot fail is not protection.**
+
+## Anti-vacuity
+
+`{ claims: [], prose: "You are on track and can comfortably afford it." }`
+verified clean — nothing for the sweep to catch, nothing for the identity check to
+check. `provider.ts` asserted `strict: true` made this *"unrepresentable at the
+provider"*; it does not, and that comment is corrected.
+
+The rule is deliberately **not** "an answer must state a figure" — a refusal, a
+limitation and a genuinely qualitative reply are all legitimate. It is: **if you
+state none, cite the withholding you are speaking to**, checked by identity
+against the table like everything else. No sentiment classifier, no prose reading.
+
+## What the corpus says afterwards
+
+`ai:forecast-conformance --answer-mode=typed --model=gpt-4.1`: **29/35**, against
+31/35 before.
+
+⚠️ **The delta is framing and one rate limit, not truth.** Both runs contain
+exactly **one** FORBIDDEN, and neither is an unaddressed figure:
+
+- `Q4-two-per-month` failed on a **429 rate limit** — infrastructure.
+- `Q2-arith` now shows `$15,000` — **which the user typed in the question**
+  (*"$5,000 for three months means $15,000, right?"*). It is addressed as `p03`,
+  claimed with `frame: ASSUMPTION`, and the reply says *"This is your own
+  assumption and not based on your actual spending."* **D4's invariant holds.**
+  Verified not a regression: the pre-fix verifier never read `f.kind`, and the
+  pre-fix extractor produced the same `p03` — that run merely fell back because
+  the model's claim string held two numbers. The corpus's expectation here
+  (*do not affirm the user's arithmetic*) is a **framing** obligation, and framing
+  is out of scope for this pass.
+- `D`, `E`, `J`, `I` are all `MISSING` — the documented figure-versus-framing gap.
+
+## Still open before typed mode is exercised
+
+Nothing blocking, and two things worth knowing:
+
+1. **Framing is still one-directional.** The boundary constrains what may be said
+   and never what must be. `Q2` is the sharpest example of what that costs.
+2. **`D5`, `D6` (partly), `D8` and the audit's §11 findings are untouched** by
+   design — `horizon`/`kind` header accuracy, the unshipped Slice 6 default path,
+   the three met-and-unexecuted deletion conditions. None of them corrupts a
+   value; all of them are the next pass, not this one.

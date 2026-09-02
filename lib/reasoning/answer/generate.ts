@@ -34,7 +34,14 @@ export interface TypedAnswerOutcome {
 function isAnswer(v: unknown): v is Answer {
   return !!v && typeof v === 'object'
     && typeof (v as Answer).prose === 'string'
-    && Array.isArray((v as Answer).claims);
+    && Array.isArray((v as Answer).claims)
+    // ⚠️ EVERY CLAIM MUST DECLARE ITS FRAME. A claim without one is not a
+    // partially-valid claim to be defaulted — defaulting it would pick an
+    // authority the model did not choose, which is the whole thing `frame`
+    // exists to stop. A malformed answer takes the deterministic fallback.
+    && (v as Answer).claims.every((c) => !!c && typeof c.fid === 'string'
+      && typeof c.statedAs === 'string'
+      && (c.frame === 'FACT' || c.frame === 'ASSUMPTION'));
 }
 
 export async function generateTypedAnswer(args: {

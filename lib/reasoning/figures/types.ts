@@ -122,8 +122,23 @@ export interface LicensedFigure {
    * to choose the right sentence.
    */
   role:     FigureRoleKind;
-  /** For ASSUMPTION_DEPENDENT and HYPOTHETICAL: the user's own words. Required. */
+  /**
+   * For ASSUMPTION_DEPENDENT and HYPOTHETICAL: THE USER'S OWN WORDS.
+   *
+   * ⚠️ THE USER'S, AND NOBODY ELSE'S. The table used to set this to
+   * `args.framing?.[0]` — the first item of an unrelated list — so a figure
+   * resting on a SYSTEM fallback about debt was rendered as
+   * `- the user said: "assume I spend $5,000/month"`. Attributing to somebody an
+   * assumption they never made is worse than disclosing nothing.
+   */
   basis?:   string;
+  /**
+   * SYSTEM_POLICY fallbacks that priced this figure, in the system's own words.
+   *
+   * Kept apart from `basis` because they are a different authority. See
+   * `Measure.systemAssumptions`, where the sentence is built.
+   */
+  systemAssumptions?: readonly string[];
 }
 
 /** Stated withholdings — what may NOT be said, and why. */
@@ -154,8 +169,21 @@ export interface FigureTable {
  * Deliberately NOT a tolerance ladder and NOT a hedge vocabulary. It answers one
  * question about one string.
  */
-const PER_MONTH_RE = /(?:\/|\bper\b|\ba\b|\beach\b)\s*(?:month|mo\b)|\bmonthly\b|\/\s*mo\b/i;
-const PER_YEAR_RE  = /(?:\/|\bper\b|\ba\b|\beach\b)\s*(?:year|yr\b|annum)|\bannually\b|\bper annum\b/i;
+/**
+ * The per-period marker, as a regex SOURCE fragment.
+ *
+ * ⚠️ EXPORTED BECAUSE THE TWO SIDES OF THE BOUNDARY DISAGREED ABOUT IT. This
+ * check accepted `"$5,000.00 monthly"` as rendering CURRENCY_PER_MONTH while the
+ * verifier's prose sweep could not tokenise the word `monthly` at all — so the
+ * sweep saw a bare `$5,000.00`, the claim said `$5,000.00 monthly`, they did not
+ * match, and a correct answer was discarded. A token is whatever BOTH sides say
+ * it is, or it is nothing.
+ */
+export const PER_MONTH_SRC = '(?:\\/|\\bper\\b|\\ba\\b|\\beach\\b|\\bevery\\b)\\s*(?:month|mo\\b)|\\bmonthly\\b';
+export const PER_YEAR_SRC  = '(?:\\/|\\bper\\b|\\ba\\b|\\beach\\b|\\bevery\\b)\\s*(?:year|yr\\b|annum)|\\bannually\\b';
+
+const PER_MONTH_RE = new RegExp(PER_MONTH_SRC, 'i');
+const PER_YEAR_RE  = new RegExp(PER_YEAR_SRC, 'i');
 const MONTHS_RE    = /\bmonths?\b/i;
 const PERCENT_RE   = /%|\bpercent\b/i;
 
@@ -202,7 +230,14 @@ export function renderFigure(
   value: number, unit: FigureUnitName, currency?: string,
 ): string {
   const sym = currency === 'USD' || currency === undefined ? '$' : `${currency} `;
-  const money = `${sym}${Number(value.toFixed(2)).toLocaleString('en-US', {
+  // ⚠️ THE SIGN GOES OUTSIDE THE CURRENCY SYMBOL. This used to emit
+  // `$-4,000.00`, which nobody writes, while the sweep rejected the natural
+  // `-$4,000.00` — so the only renderings a negative figure could verify against
+  // were the malformed one and the sign-flipped one that `sameValue` wrongly
+  // accepted. Both halves of that are fixed; this is the rendering half.
+  const abs = Math.abs(Number(value.toFixed(2)));
+  const sign = Number(value.toFixed(2)) < 0 ? '-' : '';
+  const money = `${sign}${sym}${abs.toLocaleString('en-US', {
     minimumFractionDigits: 2, maximumFractionDigits: 2,
   })}`;
   switch (unit) {

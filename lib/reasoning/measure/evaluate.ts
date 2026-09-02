@@ -417,6 +417,13 @@ export function composeNetWorth(c: MeasureContext, when: Instant): Measure {
       total += leg.sign * m.resolution.value;
       standings.push(m.resolution.standing);
       dependsOn.push(...m.dependsOn, `${leg.id}@${instantKey(when)}`);
+      // ⚠️ A LEG'S DISCLOSURE IS THE COMPOSITION'S DISCLOSURE, and this is the
+      // path the fallback actually takes. `debt_balance@FUTURE` applies the
+      // persistence fallback INSIDE `debtAtDate` and returns a VALUE, so the
+      // composition's own fallback branch below never runs for it — and without
+      // this line the composed net worth rested on "holding today's debt balance
+      // flat" with nothing anywhere saying so.
+      fallbacks.push(...(m.systemAssumptions ?? []));
       continue;
     }
 
@@ -434,9 +441,14 @@ export function composeNetWorth(c: MeasureContext, when: Instant): Measure {
   return mk(MeasureId.NET_WORTH, when,
     resolved(total, weakestStanding(standings)), c, {
       dependsOn,
-      // The fallbacks are carried in `dependsOn` and named here so narration can
-      // say them. An assumption the user cannot see is the dangerous one.
-      ...(fallbacks.length > 0 ? { range: undefined } : {}),
+      // ⚠️ THE FALLBACKS TRAVEL WITH THE FIGURE THEY PRICED. This line used to be
+      // `...(fallbacks.length > 0 ? { range: undefined } : {})` — a spread of an
+      // undefined key, which is nothing at all — under a comment asserting that
+      // narration could say them. `dependsOn` carries IDS, not sentences, and is
+      // rendered nowhere. An assumption the user cannot see is the dangerous one,
+      // and this composition was the one place the codebase stated that principle
+      // in a comment and contradicted it on the line beneath.
+      ...(fallbacks.length > 0 ? { systemAssumptions: fallbacks } : {}),
     });
 }
 
@@ -527,5 +539,9 @@ function debtAtDate(c: MeasureContext, when: Instant): Measure {
   if (fb === null) return mk(id, when, unresolved(reason), c);
   return mk(id, when, resolved(fb.value, Standing.ASSUMPTION_DEPENDENT), c, {
     dependsOn: [`${id}@NOW`],
+    // Same rule as the composition above: the sentence that licensed the number
+    // travels with the number. This used to take `fb.value` and drop
+    // `fb.statedAs` on the floor.
+    systemAssumptions: [fb.statedAs],
   });
 }

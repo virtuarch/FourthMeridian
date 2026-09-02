@@ -125,11 +125,10 @@ export async function generateChatReply(
  * paths are measured against each other. A shared helper that "just" refactored
  * the two together would make the comparison meaningless.
  *
- * ⚠️ `strict: true`. Without it the schema is a suggestion, and a model that
- * partially satisfies it returns `claims: []` beside a prose full of numbers —
- * which the verifier would then reject as entirely unlicensed, turning a
- * formatting slip into a refused answer. Making the shape unrepresentable at the
- * provider is cheaper than repairing it downstream.
+ * ⚠️ `strict: true` MAKES EVERY PROPERTY REQUIRED AND FORBIDS EXTRAS. It does
+ * NOT bound array lengths — this comment used to say it made `claims: []`
+ * "unrepresentable at the provider", which was wrong and was caught by audit.
+ * Emptiness is the verifier's problem and the verifier now handles it.
  *
  * Throws on an empty or unparseable response, exactly as its sibling does, so
  * the caller's existing failure path covers it.

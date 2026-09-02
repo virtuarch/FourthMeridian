@@ -353,7 +353,17 @@ export function buildFigureTable(args: {
       standing: m.resolution.standing,
       role: m.unit === FigureUnit.CURRENCY_PER_MONTH || m.unit === FigureUnit.CURRENCY_PER_YEAR
         ? FigureRole.RATE : FigureRole.CASH,
-      basis: args.framing?.[0],
+      // ⚠️ `basis: args.framing?.[0]` USED TO SIT HERE, AND IT MISATTRIBUTED.
+      // `framing` is the list of the user's ACTIVE assumptions for the turn; its
+      // first element has no relationship to this particular measure. A figure
+      // priced by a SYSTEM fallback about debt was therefore labelled with the
+      // user's spending assumption and rendered as `- the user said: "…"`.
+      //
+      // A measure's disclosure comes from the measure. The user's assumptions
+      // already reach narration through the ASSUMPTIONS IN FORCE block, which is
+      // where they belong and where they are attributed correctly.
+      ...(m.systemAssumptions && m.systemAssumptions.length > 0
+        ? { systemAssumptions: m.systemAssumptions } : {}),
     });
     // ⚠️ A BAND IS TWO ANSWERS TO TWO QUESTIONS, so both endpoints get their own
     // address. Offering only the midpoint would make the range unsayable, which

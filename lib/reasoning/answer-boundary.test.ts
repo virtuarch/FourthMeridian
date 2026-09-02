@@ -36,6 +36,7 @@ import { verifyAnswer, valueOf } from './verify/verify';
 import { deterministicFallback } from './answer/generate';
 import { renderFigureTable } from './render';
 import { resolveAnswerMode } from './answer/for-request';
+import type { Answer, Claim } from './answer/types';
 
 let failures = 0, passes = 0;
 function check(name: string, ok: boolean, detail?: string): void {
@@ -54,7 +55,21 @@ const fig = (o: Partial<LicensedFigure> & { fid: string; value: number }): Licen
   label: 'a figure', horizon: FigureHorizon.CURRENT, standing: Standing.MEASURED,
   role: FigureRole.CASH, ...o,
 });
-const table = (figures: LicensedFigure[]): FigureTable => ({ figures, withheld: [] });
+const table = (figures: LicensedFigure[], withheld: FigureTable['withheld'] = []): FigureTable =>
+  ({ figures, withheld });
+
+/**
+ * ⚠️ `frame` AND `withheld` ARE REQUIRED BY THE TYPE, NOT DEFAULTED BY IT, and
+ * these helpers exist so that stays visible. Every existing assertion below is
+ * unchanged in what it asserts; each one gained the declaration the blocker pass
+ * made mandatory. `frame: 'FACT'` is the honest default for a test that was
+ * written before the axis existed — it asserts the STRONGER claim, so nothing
+ * here was weakened to get green.
+ */
+const claim = (fid: string, statedAs: string, frame: 'FACT' | 'ASSUMPTION' = 'FACT'): Claim =>
+  ({ fid, statedAs, frame });
+const answer = (claims: Claim[], prose: string, withheld: string | null = null): Answer =>
+  ({ claims, prose, withheld });
 
 // ═══════════════════════════════════════════════════════════════════════════
 // A. IDENTITY — a number with no address cannot be written
@@ -70,50 +85,58 @@ const T = table([
 ]);
 
 check('A1 a claim citing an unknown address is a finding',
-  verifyAnswer({ claims: [{ fid: 'f99', statedAs: '$1.00' }], prose: 'It is $1.00.' }, T)
+  verifyAnswer(answer([claim('f99', '$1.00')], 'It is $1.00.'), T)
     .failures.some((f) => f.kind === 'UNKNOWN_FID'));
 
 check('A2 a figure in the prose that no claim accounts for is a finding',
-  verifyAnswer({ claims: [], prose: 'You will have $30,000 left.' }, T)
+  verifyAnswer(answer([], 'You will have $30,000 left.'), T)
     .failures.some((f) => f.kind === 'UNCLAIMED_FIGURE'));
 
 check('A3 a claim at a value the figure does not have is a finding',
-  verifyAnswer({ claims: [{ fid: 'f01', statedAs: '$10,228.75' }], prose: 'You have $10,228.75.' }, T)
+  verifyAnswer(answer([claim('f01', '$10,228.75')], 'You have $10,228.75.'), T)
     .failures.some((f) => f.kind === 'VALUE_MISMATCH'));
 
 check('A4 a correctly addressed figure verifies',
-  verifyAnswer({ claims: [{ fid: 'f01', statedAs: '$10,228.74' }],
-    prose: 'You have $10,228.74 in liquid cash.' }, T).ok);
+  verifyAnswer(answer([claim('f01', '$10,228.74')], 'You have $10,228.74 in liquid cash.'), T).ok);
 
 // ⚠️ THE PRODUCT THE MODEL WANTS TO WRITE. $5,000 x 3 is the failure family this
 // whole slice exists to close, and it closes because 15000 is not in the table.
 check('A5 an arithmetic product of licensed figures has no address',
-  verifyAnswer({ claims: [], prose: 'That totals $15,000 over three months.' }, T)
+  verifyAnswer(answer([], 'That totals $15,000 over three months.'), T)
     .failures.some((f) => f.kind === 'UNCLAIMED_FIGURE'));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // B. THE PREMISE LEAK — the axis the plan is on trial for
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ⚠️ B1 AND B2 GAINED `frame: 'ASSUMPTION'`, AND THAT IS A CORRECTION RATHER
+// THAN A RELAXATION. Both cite `p01`, which is a PREMISE — the user's own
+// supposition. Written before the authority axis existed they implied
+// `frame: 'FACT'`, which the blocker pass proved unsafe: a premise asserted as
+// fact is exactly the D4 defect. B1's own sentence ("At $5,000/month, that
+// changes things") is an assumption frame in plain English, so declaring it is
+// what the test always meant. B2 declares it so the claim REACHES the unit
+// check it was written to exercise, instead of being rejected one step earlier
+// for a different reason — the unit invariant is still asserted, unchanged.
+// A premise claimed as FACT is now its own check, in section J below.
 check('B1 a monthly rate may be restated as a rate',
-  verifyAnswer({ claims: [{ fid: 'p01', statedAs: '$5,000/month' }],
-    prose: 'At $5,000/month, that changes things.' }, T).ok);
+  verifyAnswer(answer([claim('p01', '$5,000/month', 'ASSUMPTION')],
+    'At $5,000/month, that changes things.'), T).ok);
 
 check('B2 the same rate may NOT be claimed as a bare stock',
-  verifyAnswer({ claims: [{ fid: 'p01', statedAs: '$5,000' }],
-    prose: 'Your projected savings will be $5,000.' }, T)
+  verifyAnswer(answer([claim('p01', '$5,000', 'ASSUMPTION')],
+    'Your projected savings will be $5,000.'), T)
     .failures.some((f) => f.kind === 'UNIT_NOT_RENDERED'));
 
 check('B3 and writing it as a stock without claiming it is caught by the sweep',
-  verifyAnswer({ claims: [], prose: 'Your ending debt will be $5,000.' }, T)
+  verifyAnswer(answer([], 'Your ending debt will be $5,000.'), T)
     .failures.some((f) => f.kind === 'UNCLAIMED_FIGURE'));
 
 // ⚠️ AND THE OTHER DIRECTION, WHICH MATTERS JUST AS MUCH. A boundary that simply
 // suppressed the number would pass B2 and B3 and be a worse product: the user's
 // own premise must remain sayable back to them.
 check('B4 a stock may NOT be dressed as a rate either',
-  verifyAnswer({ claims: [{ fid: 'f01', statedAs: '$10,228.74/month' }],
-    prose: 'You have $10,228.74/month.' }, T)
+  verifyAnswer(answer([claim('f01', '$10,228.74/month')], 'You have $10,228.74/month.'), T)
     .failures.some((f) => f.kind === 'UNIT_NOT_RENDERED'));
 
 check('B5 the several spellings of a monthly rate all render the unit',
@@ -174,8 +197,8 @@ check('C8 a figure with a decimal is captured whole',
 const HALF_CENT = fig({ fid: 'f03', value: 5286.645 * 7, label: 'seven paychecks' });
 const H = table([HALF_CENT]);
 check('D1 the verifier accepts the exact string the table printed',
-  verifyAnswer({ claims: [{ fid: 'f03', statedAs: renderFigure(HALF_CENT.value, HALF_CENT.unit, 'USD') }],
-    prose: `They total ${renderFigure(HALF_CENT.value, HALF_CENT.unit, 'USD')}.` }, H).ok,
+  verifyAnswer(answer([claim('f03', renderFigure(HALF_CENT.value, HALF_CENT.unit, 'USD'))],
+    `They total ${renderFigure(HALF_CENT.value, HALF_CENT.unit, 'USD')}.`), H).ok,
   renderFigure(HALF_CENT.value, HALF_CENT.unit, 'USD'));
 check('D2 the rendered table and the deterministic fallback agree with it',
   renderFigureTable(H).includes(renderFigure(HALF_CENT.value, HALF_CENT.unit, 'USD'))
@@ -272,6 +295,45 @@ check('F5 the typed path returns before the three prose guards run', (() => {
     && rest.includes('applyEnforcement(')
     // …and the typed path is REACHED before the prose call, not merely defined.
     && ROUTE.indexOf('await answerThisTurn(') < ROUTE.indexOf('await generateChatReply(systemPrompt');
+})());
+
+// ⚠️ D7 — THE TYPED CALL MUST BE INSIDE THE ROUTE'S ERROR BOUNDARY. It sat
+// ABOVE the `try` that every other provider call in the handler sits inside.
+// Harmless while `AI_ANSWER_MODE` is unset, because it returns immediately —
+// and not harmless under `typed`, where it makes one or two OpenAI calls and an
+// `auditLog.create`, and a throw from any of them became an unhandled 500
+// instead of the 503 / 502 envelope the client is built to distinguish.
+//
+// ⚠️ AND THE FIRST VERSION OF THIS CHECK WAS VACUOUS, which is worth recording
+// because it is the same failure mode the audit found elsewhere. It asked
+// "is there a `try` somewhere before the call, and a `catch` somewhere after"
+// — and the handler has three EARLIER, already-closed `try` blocks, so both
+// halves were satisfied no matter where the call sat. Moving the call back
+// outside the boundary did not turn it red. A check that cannot fail is not
+// protection. This one BALANCES the braces from the nearest preceding `try`
+// and asserts the block is still open when the call is reached.
+check('F5a the typed call is made INSIDE the route\'s try/catch', (() => {
+  const call = ROUTE.indexOf('await answerThisTurn(');
+  if (call < 0) return false;
+  const openTry = ROUTE.lastIndexOf('\n  try {', call);
+  if (openTry < 0) return false;
+  const between = ROUTE.slice(openTry, call);
+  let depth = 0;
+  for (const ch of between) {
+    if (ch === '{') depth++;
+    else if (ch === '}') depth--;
+  }
+  // Depth > 0 means every brace opened since that `try` is still open — so the
+  // call is genuinely inside it, not after a sibling block that already closed.
+  return depth > 0;
+})());
+check('F5b and that boundary is the one producing the provider envelope', (() => {
+  const call = ROUTE.indexOf('await answerThisTurn(');
+  const closeCatch = ROUTE.indexOf('\n  } catch (err) {', call);
+  const body = ROUTE.slice(closeCatch, closeCatch + 700);
+  // 503 when the key is absent, 502 for everything else — never an unhandled 500.
+  return /status: 503/.test(body) && /status: 502/.test(body)
+    && /OPENAI_API_KEY/.test(body);
 })());
 
 check('F6 and prose mode still runs all three',

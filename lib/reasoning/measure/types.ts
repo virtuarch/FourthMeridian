@@ -100,6 +100,27 @@ export interface Measure {
    * produce a point estimate."
    */
   dispersion?: { cv: number; min: number; max: number; sampleN: number };
+  /**
+   * SYSTEM_POLICY fallbacks that priced this measure, in their own words.
+   *
+   * ⚠️ INVARIANT 4 FAILED HERE, AND IT FAILED SILENTLY. `persistenceFallback`
+   * already built the sentence — "holding today's debt balance flat because no
+   * due dates are recorded" — and EVERY CALL SITE DISCARDED IT. `composeNetWorth`
+   * pushed the strings into a local array and then spread `{ range: undefined }`,
+   * a no-op, under a comment claiming the fallbacks were "named here so
+   * narration can say them". `debtAtDate` took `fb.value` and dropped
+   * `fb.statedAs`. So an answer of $45,451.83 rested on an assumption nobody had
+   * made, that the user could not see, and that the system had already written
+   * down.
+   *
+   * ⚠️ SEPARATE FROM THE USER'S OWN ASSUMPTIONS, DELIBERATELY. A system fallback
+   * and a user premise are different authorities and must stay distinguishable:
+   * the figure table used to label a system-fallback figure with the user's
+   * unrelated first assumption (`basis: args.framing?.[0]`) and render it as
+   * `- the user said: "…"`. Telling somebody they assumed something they did not
+   * is worse than saying nothing.
+   */
+  systemAssumptions?: readonly string[];
 }
 
 /**
