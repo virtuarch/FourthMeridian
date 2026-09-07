@@ -25,7 +25,7 @@ import {
   monthEndsBetween, yearEndsBetween,
 } from './tools';
 import {
-  runScenarioLedger, growthFactor, validateReturns, expandContributions,
+  runScenarioLedger, growthFactor, validateReturns, expandContributions, solveForTarget,
   PROVENANCE, MAX_EXPANDED_CONTRIBUTIONS,
 } from './scenario-ledger';
 import { compactToolHistory, DEFAULT_COMPACTION } from './compaction';
@@ -130,7 +130,7 @@ console.log('3. evidence arms');
 // ══ 4. The tool surface is read-only ═════════════════════════════════════════
 console.log('4. tool surface');
 {
-  check('eleven tools', TOOLS.length === 11, String(TOOLS.length));
+  check('twelve tools', TOOLS.length === 12, String(TOOLS.length));
   check('names are unique', new Set(TOOLS.map((t) => t.name)).size === TOOLS.length);
   check('every tool describes itself', TOOLS.every((t) => t.description.length > 40));
   check('every schema is a closed object',
@@ -830,7 +830,7 @@ console.log('16. as-of coherence');
   check('…and windows its spending evidence to the cutoff',
     /evidence through \$\{asOf\}/.test(src));
   check('…and runs the engine from that date, not from today',
-    /asOfISO: asOf, statements/.test(src) && /fromISO: asOf/.test(src));
+    /assembleForecast\(\{[\s\S]*?asOfISO: asOf,/.test(src) && /fromISO: asOf/.test(src));
   check('…and says what it is, so it is never read as a current expectation',
     /retrospective: true/.test(src) && /do not\n?\s*\/\/?\s*present it as a current expectation|not\s+'\s*\+\s*'present it as a current expectation|present it as a current expectation/.test(src));
   check('a past date never returns the CURRENT investment composition',
@@ -1022,7 +1022,7 @@ console.log('17b. one spine');
   check('…and both projection tools reach it through the same spine',
     (src.match(/buildCashSpine\(ctx, \{/g) ?? []).length === 2);
   check('every checkpoint is an INDEPENDENT run from the same asOf',
-    /runTo\(date\)\.projection\?\.closing/.test(src) && /runTo\(end\)/.test(src));
+    /runTo\(date, override\)\.projection\?\.closing/.test(src) && /runTo\(end\)/.test(src));
   check('the last checkpoint date IS the horizon, monthly and yearly alike',
     monthEndsBetween('2026-09-08', '2027-03-15').slice(-1)[0] === '2027-03-15'
       && yearEndsBetween('2026-09-08', '2030-06-30').slice(-1)[0] === '2030-06-30');
@@ -1048,7 +1048,7 @@ console.log('17b. one spine');
   check('a withheld investment total refuses rather than treating null as zero',
     /arithmetic on an unknown/.test(read('scripts/ai-baseline/tools.ts')));
   check('the ledger opening is reconciled against the accounts authority, out loud',
-    /reconciliation: \{/.test(src) && /accountsNetWorth: accounts\.netWorth/.test(src));
+    /reconciliation: \{/.test(src) && /accountsNetWorth: setup\.accounts\.netWorth/.test(src));
 }
 
 // ══ 17c. "Half my liquidity" — a share is not an amount ══════════════════════
@@ -1141,6 +1141,140 @@ console.log('17c. proportional contributions');
     { properties: Record<string, { items?: { properties: Record<string, unknown> } }> };
   check('…and the model is told that a proportion goes in its own field',
     'fractionOfLiquid' in (schema.properties.contributions.items!.properties));
+}
+
+// ══ 18. Goal seek (slice 5) ══════════════════════════════════════════════════
+//
+// Turn 13 of the dogfood asked "how could I reach $1M by 2030?" and got back
+// *"mid-40% annualized returns"* and *"~$90K/year additional investable
+// surplus"* — two advice-shaped figures derivable from nothing at all. The
+// solver's job is to make those derivable; the bracket's job is to make "no"
+// sayable.
+console.log('18. goal seek');
+{
+  // A deliberately simple function so the bisection's own behaviour is visible:
+  // f(x) = 1000 + 100x, which reaches 2000 at exactly x = 10.
+  const linear = (x: number) => 1000 + 100 * x;
+
+  const hit = solveForTarget({ solveFor: 'x', evaluate: linear, target: 2000,
+    lo: 0, hi: 100, precision: 0.01 });
+  check('the solver finds the value that reaches the target',
+    hit.feasible && approx(hit.required, 10, 0.011), JSON.stringify(hit));
+
+  // ⚠️ §12.15 — THE ROUND TRIP IS THE WHOLE POINT. Solving for a value and then
+  // evaluating at that value must reach the target, or the number and the table
+  // beneath it disagree.
+  check('…and evaluating at the answer actually reaches the target',
+    hit.feasible && linear(hit.required) >= 2000 && hit.reached >= 2000);
+  check('…and it does not overshoot by more than the reportable precision',
+    hit.feasible && linear(hit.required - 0.02) < 2000);
+
+  const already = solveForTarget({ solveFor: 'x', evaluate: linear, target: 500,
+    lo: 0, hi: 100, precision: 0.01 });
+  check('a target already reached needs nothing, and says so',
+    already.feasible && already.alreadyMet && already.required === 0);
+
+  // ⚠️ §12.16 — AN UNREACHABLE TARGET IS A REAL ANSWER. What it must never be is
+  // a huge number invented to avoid saying "no".
+  const impossible = solveForTarget({ solveFor: 'x', evaluate: linear, target: 1_000_000,
+    lo: 0, hi: 100, precision: 0.01 });
+  check('an unreachable target is refused rather than answered with a huge number',
+    !impossible.feasible);
+  check('…and the refusal reports how far the range actually got',
+    !impossible.feasible && impossible.bestReached === 11_000 && impossible.bestAt === 100);
+  check('…and names the range it searched',
+    !impossible.feasible && impossible.lo === 0 && impossible.hi === 100);
+
+  // ⚠️ THE MOST USEFUL REFUSAL THIS TOOL PRODUCES. Moving cash into investments
+  // relocates money; at a 0% return it creates none, so NO monthly contribution
+  // reaches a net-worth target. "You would need $90K a year" was the
+  // fabrication standing in for exactly this.
+  const flat = solveForTarget({ solveFor: 'monthlyContribution', evaluate: () => 50_000,
+    target: 1_000_000, lo: 0, hi: 1_000_000, precision: 0.01 });
+  check('a variable the target does not respond to is named as such',
+    !flat.feasible && /does not respond/.test(flat.reason));
+
+  const refusing = solveForTarget({ solveFor: 'x', evaluate: () => null, target: 10,
+    lo: 0, hi: 100, precision: 0.01 });
+  check('a projection that refuses is "did not reach", never zero',
+    !refusing.feasible && refusing.bestReached === null);
+
+  check('the search is bounded even against a pathological function',
+    solveForTarget({ solveFor: 'x', evaluate: linear, target: 2000, lo: 0, hi: 1e12,
+      precision: 1e-12, maxIterations: 5 }).feasible);
+}
+
+// ══ 18a. The goal-seek tool ══════════════════════════════════════════════════
+console.log('18a. goal seek tool');
+{
+  const src = code(read('scripts/ai-baseline/tools.ts'));
+  const tool = findTool('scenario_goal_seek');
+  check('scenario_goal_seek exists', !!tool);
+  const schema = tool!.parameters as { properties: Record<string, unknown>; required: string[] };
+  check('it needs a target, a date and one unknown',
+    schema.required.slice().sort().join(',') === 'by,solveFor,target');
+  check('…and accepts the same scenario inputs, so nothing is stated twice',
+    ['contributions', 'outflows', 'returns', 'annualReturnPct', 'assumedMonthlySpending']
+      .every((p) => p in schema.properties));
+  check('one shared definition supplies those inputs to both tools',
+    (src.match(/\.\.\.SCENARIO_INPUTS/g) ?? []).length === 2);
+  check('there is still exactly ONE place a forecast is assembled',
+    (src.match(/assembleForecast\(\{/g) ?? []).length === 1);
+  check('…and one place a scenario is set up, so a solve and its table cannot diverge',
+    (src.match(/prepareScenario\(a, ctx,/g) ?? []).length === 2
+      && (src.match(/^async function prepareScenario/m) ?? []).length === 1);
+  check('…and one place a scenario is presented',
+    (src.match(/^function presentScenario/m) ?? []).length === 1
+      && (src.match(/presentScenario\(setup,/g) ?? []).length === 2);
+
+  // ⚠️ THE LEDGER RETURNED IS THE ONE RUN AT THE ANSWER, not a re-derivation.
+  check('the answer is rendered from the scenario the solution actually produces',
+    /const ledger = setup\.run\(atSolution\)/.test(src));
+
+  // ⚠️ REPORT AND LET THE MODEL JUDGE (open question 5). Nothing in the code
+  // decides that a required return is unrealistic; the bracket is wide and
+  // stated, and out-of-range is reported with how far it got.
+  check('a required return is reported however large, inside a wide stated bracket',
+    /MAX_SOLVED_RETURN_PCT = 500/.test(src) && /searchRange: \{ from: lo, to: hi/.test(src));
+  check('the spending-cut bound is what the user actually spends',
+    /nobody can cut more than they spend/.test(read('scripts/ai-baseline/tools.ts')));
+  check('a Space with no established spending level cannot be asked for a cut',
+    /nothing to solve a cut against/.test(read('scripts/ai-baseline/tools.ts')));
+
+  // ⚠️ RELOCATING MONEY IS NOT CREATING IT, AND THE SCHEMA SAYS SO. A monthly
+  // contribution at 0% leaves net worth exactly where it was.
+  const solveForDesc = (schema.properties.solveFor as { description: string }).description;
+  check('the schema tells the model a contribution relocates money rather than creating it',
+    /RELOCATES money/.test(solveForDesc) && /does not change net worth/.test(solveForDesc));
+  check('…and which lever actually creates net worth',
+    /actually creates net worth/.test(solveForDesc));
+  check('the tool tells the model to judge achievability rather than the code doing it',
+    /judgement about the world/.test(read('scripts/ai-baseline/tools.ts')));
+
+  // ⚠️ FOUND BY RUNNING IT. Asked "how could I reach $1M?", gpt-4.1 called the
+  // goal seek with a bare target — no return, no contributions — got an honest
+  // "not reachable", and then described it as "investing half your liquidity each
+  // year at 8%", because that is what the conversation had said. The figure was
+  // right and the sentence around it was not.
+  check('the assumptions actually in force are echoed on EVERY path, refusal included',
+    /assumptionsInForce: scenarioAssumptions\(setup, baseLedger, setup\.returns\)/.test(src)
+      && /^function scenarioAssumptions/m.test(src));
+  check('…and it is the same function the projection reports from',
+    (src.match(/scenarioAssumptions\(setup,/g) ?? []).length === 2);
+  check('…so an absent return says it was absent, rather than saying nothing',
+    /do not describe this result as carrying a return/
+      .test(read('scripts/ai-baseline/tools.ts')));
+  check('…and an absent contribution likewise',
+    /No contributions were in force/.test(read('scripts/ai-baseline/tools.ts')));
+  check('a refusal tells the model to describe it from that echo and not from memory',
+    /it was NOT applied/.test(read('scripts/ai-baseline/tools.ts')));
+
+  // The spine is memoised per spending level; a return solve must not pay for it.
+  check('varying a return or a contribution re-uses one set of projection runs',
+    /const spineCache = new Map/.test(src)
+      && /\$\{monthlySpending \?\? 'base'\}/.test(src));
+  check('a horizon in the past is refused before anything is projected',
+    /is not in the future; a scenario needs a/.test(read('scripts/ai-baseline/tools.ts')));
 }
 
 console.log(failures === 0 ? '\nAll baseline-harness checks passed.' : `\n${failures} check(s) failed.`);

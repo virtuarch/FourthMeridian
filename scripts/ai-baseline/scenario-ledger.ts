@@ -588,3 +588,90 @@ export function runScenarioLedger(input: LedgerInput): LedgerResult {
     basis: LEDGER_BASIS,
   };
 }
+
+// ── Goal seek ────────────────────────────────────────────────────────────────
+
+/**
+ * The bisection behind `scenario_goal_seek`.
+ *
+ * ⚠️ IT SOLVES; IT DOES NOT MODEL. `evaluate` is supplied by the caller and runs
+ * the same ledger the user would have got by stating the value themselves, so a
+ * solved answer and a stated answer are the same arithmetic. That is what makes
+ * the round trip — solve for a return, run the ledger at it, reach the target —
+ * a property rather than a coincidence.
+ *
+ * ⚠️ THE BRACKET IS THE HONESTY MECHANISM. Nothing here decides that 142%/yr is
+ * unrealistic; the model owns that judgement, as it owns every other one. What
+ * the solver owes is a WIDE, STATED bracket and, when the target sits outside it,
+ * how far the bracket actually got — "even at 500% a year you reach $612K" is an
+ * answer. A huge number invented to avoid saying "no" is not.
+ *
+ * `evaluate` may return null (the projection refused for that input); a null is
+ * treated as "did not reach", never as zero.
+ */
+export interface SolveOutcome {
+  solveFor:   string;
+  lo:         number;
+  hi:         number;
+  iterations: number;
+}
+
+export type SolveResult =
+  | (SolveOutcome & { feasible: true;  required: number; alreadyMet: boolean; reached: number })
+  | (SolveOutcome & { feasible: false; reason: string; bestReached: number | null; bestAt: number });
+
+const ceilTo = (n: number, step: number) => Math.ceil(n / step - 1e-9) * step;
+
+export function solveForTarget(args: {
+  solveFor:  string;
+  evaluate:  (x: number) => number | null;
+  target:    number;
+  lo:        number;
+  hi:        number;
+  /** The smallest step worth reporting: 0.01 of a percentage point, or a cent. */
+  precision: number;
+  maxIterations?: number;
+}): SolveResult {
+  const { solveFor, evaluate, target, lo, hi, precision } = args;
+  const maxIterations = args.maxIterations ?? 80;
+  const frame = { solveFor, lo, hi };
+  const at = (x: number) => evaluate(x) ?? Number.NEGATIVE_INFINITY;
+
+  const atLo = at(lo);
+  if (atLo >= target) {
+    return { ...frame, iterations: 0, feasible: true, required: lo,
+      alreadyMet: true, reached: atLo };
+  }
+
+  const atHi = at(hi);
+  if (atHi < target) {
+    return { ...frame, iterations: 1, feasible: false,
+      bestReached: Number.isFinite(atHi) ? atHi : null, bestAt: hi,
+      reason: atHi === atLo
+        // ⚠️ A FLAT FUNCTION IS THE MOST USEFUL REFUSAL THIS TOOL PRODUCES.
+        // Moving cash into investments at a 0% return relocates money; it does
+        // not create any, so NO monthly contribution reaches a net-worth target.
+        // "You would need $90K a year" was the fabrication; "no amount of this
+        // changes the answer" is the truth it was standing in for.
+        ? `the target does not respond to ${solveFor} at all under these assumptions — `
+          + 'every value in the range produces the same result, so no amount of it reaches '
+          + 'the target'
+        : `no value of ${solveFor} between ${lo} and ${hi} reaches the target`,
+    };
+  }
+
+  let low = lo, high = hi, iterations = 0;
+  while (high - low > precision && iterations < maxIterations) {
+    const mid = (low + high) / 2;
+    if (at(mid) >= target) high = mid; else low = mid;
+    iterations++;
+  }
+
+  // Report the smallest reportable value that still clears the target, and
+  // verify it — a value rounded to the cent must not land a cent short.
+  let required = ceilTo(high, precision);
+  let reached  = at(required);
+  if (reached < target) { required = ceilTo(required + precision, precision); reached = at(required); }
+
+  return { ...frame, iterations, feasible: true, required, alreadyMet: false, reached };
+}

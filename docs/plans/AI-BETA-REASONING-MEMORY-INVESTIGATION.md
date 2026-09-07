@@ -437,7 +437,26 @@ Slices 1–3 are the beta blocker and are **~140 lines total**.
 > gained `fractionOfLiquid`; a dollar amount under $1 is refused. **Q1 is answered as
 > proposed** — the default return is 0% and the payload says so in words.
 >
-> Slices 5–7 remain open.
+> **✅ SLICE 5 SHIPPED 2026-09-08.** `scenario_goal_seek` — bisection over slice 4's ledger.
+> See the harness doc §13f. `prepareScenario` / `presentScenario` were factored out so a solve
+> and the table it renders cannot diverge. Round trip verified: required **60.04%/yr**, and
+> running the projection at 60.04% returns **$1,000,091.08**.
+>
+> **§4.3's `monthlySurplus` is shipped as `monthlySpendingCut`,** named for what the code
+> actually models — spending less by *X* and investing *X* — because its honest bound is what
+> the user actually spends. And the most useful thing the solver produces is a refusal:
+> `monthlyContribution` at a 0% return **relocates money rather than creating it**, so no
+> amount reaches a net-worth target. That is the truth turn 13's "~$90K/year" was standing in
+> for. **Q5 is answered as proposed** — report and let the model judge; the live run had the
+> model call $60,782/month unachievable on its own.
+>
+> **Another framing defect found only by running it:** the model called the goal seek with a
+> bare target, got an honest refusal, then described it using the return and contributions from
+> two turns earlier. A refusal that echoes nothing invites the model to supply the frame from
+> memory — `assumptionsInForce` now travels on every path, and after the fix the model passed
+> those assumptions into the call instead of narrating them.
+>
+> Slices 6–7 remain open.
 
 ---
 

@@ -109,7 +109,7 @@ artifact for the human reader only, and a test pins that.
 
 ## 6. Tool surface
 
-Eleven adapters over authorities that already exist. **Not one computes a financial figure.**
+Twelve adapters over authorities that already exist. **Not one computes a financial figure.**
 
 | Tool | Adapts | Notes |
 |---|---|---|
@@ -124,6 +124,7 @@ Eleven adapters over authorities that already exist. **Not one computes a financ
 | `get_pay_dates` | `resolvePayDates` | licence-gated occurrences |
 | `investment_scenario` | new, §7 | a stated % move, at the current instant |
 | `scenario_projection` | `scenario-ledger.ts` over the same cash spine, §7b | net worth over time under stated contributions and returns |
+| `scenario_goal_seek` | bisection over the same ledger, §7b | the return / contribution / spending cut that reaches a target, or `feasible: false` |
 
 **Read and calculate only.** No write verb exists in the vocabulary; `tools.ts` imports no
 Prisma client and contains no `.create(`/`.update(`/`.delete(`. Tested.
@@ -454,6 +455,53 @@ on a date carrying both, an outflow settles first.
 | 13 — "how could I reach $1M?" | invented *"mid-40% annualized returns"* and *"~$90K/year additional surplus"* | **no figure invented** — names the levers, states the $375k gap from the tool's own number, and offers to run them. Slice 5 (goal-seek) is what makes it numeric |
 
 Payload is ~4.3–5.7 KB (~1.1–1.4k tokens) for a five-year table with every movement itemised.
+
+## 13f. Goal seek (slice 5, 2026-09-08)
+
+Turn 13 asked *"how could I reach $1M by 2030?"* and got back **"mid-40% annualized returns"**
+and **"~$90K/year additional investable surplus"** — two advice-shaped figures derivable from
+nothing at all. `scenario_goal_seek` bisects over slice 4's ledger.
+
+`solveForTarget` is pure and lives beside the ledger. It takes an `evaluate` the caller
+supplies, which runs **the same ledger the user would have got by stating the value
+themselves** — so solve-then-run reaches the target as a property, not a coincidence.
+Measured: required **60.04%/yr**, and `scenario_projection` at 60.04% returns
+**$1,000,091.08**.
+
+`prepareScenario` and `presentScenario` were factored out of slice 4, so a solve and the table
+it renders cannot diverge — tested by counting call sites (one definition, two callers, each).
+The spine is memoised per spending level, so eighty bisection steps over a return or a
+contribution re-use one set of projection runs; only a spending cut pays for a rebuild.
+**40–160 ms end to end.**
+
+**Three levers, and the differences between them are the honest part:**
+
+| `solveFor` | Bound | What it means |
+|---|---|---|
+| `annualReturnPct` | 0 – **500%** | reported however large; the bracket is wide and stated, and the model judges plausibility |
+| `monthlyContribution` | 0 – target | **relocates** money. At a 0% return it changes net worth by nothing, so the solver returns *"the target does not respond to this at all"* — measured, on the real Space |
+| `monthlySpendingCut` | 0 – **what they actually spend** | the lever that creates net worth. Nobody can cut more than their outgoings, so "you'd need to free up $12,400/month" said to someone who spends $4,346 is impossible by construction |
+
+**Open question 5 — the honesty ceiling — is answered as proposed: report and let the model
+judge.** Nothing in the code decides a number is unrealistic. What the tool owes is a wide
+stated bracket and, outside it, how far it got: *"even cutting spending to zero you reach
+$723,500"* is an answer; a huge number invented to avoid saying no is not. In the live run the
+model called $60,782/month *"far above your current income… not realistically achievable"*
+without being told to.
+
+**The defect the live run found.** Asked *"how could I reach $1M?"*, gpt-4.1 called the tool
+with a **bare target** — no return, no contributions — got an honest refusal, and then
+described the result as *"investing half your liquidity each year at 8%"*, because that is
+what the conversation had said two turns earlier. The figure was right and the sentence around
+it was not. A refusal that echoes nothing invites the model to supply the frame from memory.
+`assumptionsInForce` now travels on **every path, refusal included**, and an absent return says
+so in words. After the fix the model **passed the return and the contributions into the call**
+and narrated only what came back.
+
+| Turn | Before | After |
+|---|---|---|
+| 13 — "reach $1M by 2030?" | invented *"mid-40%"* and *"~$90K/yr"* | one call → *"even cutting spending to zero, $723,500"*, then names the levers it did not search |
+| follow-up — "save more each month?" | — | one call → **$60,782/month**, and the model calls it unachievable itself |
 
 ## 14b. Interactive operator mode
 
