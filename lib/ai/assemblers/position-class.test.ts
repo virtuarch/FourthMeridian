@@ -41,7 +41,10 @@ const ROWS: CanonicalPositionRow[] = [
   { instrumentId: 'i-cash', symbol: 'CASH', name: 'Cash',   reportingValue: 3_557.74,  isCash: true,  assetClass: 'CASH' },
 ] as CanonicalPositionRow[];
 
-const allScope = { valuedSubtotal: 23_070.08, cashValue: 3_557.74, anyFxEstimated: false, hasAny: true };
+const allScope = {
+  valuedSubtotal: 23_070.08, cashValue: 3_557.74, anyFxEstimated: false, hasAny: true,
+  completeness: { tier: 'observed', reason: null, valuedCount: 5, unvaluedCount: 0 },
+};
 const build = (positionClass?: Parameters<typeof buildHoldingsSummary>[0]['positionClass']) =>
   buildHoldingsSummary({ scopeHint: 'full', fullRows: ROWS, allScope, positionClass });
 
@@ -87,15 +90,15 @@ const symbols = (d: ReturnType<typeof build>) => d!.topPositions!.items.map((p) 
 
 // ══ NARROWING THE LIST NEVER REDEFINES A TOTAL ═══════════════════════════════
 //
-// `totalPortfolioValue` is what it says it is. Silently making it mean
+// `valuedPositionsTotal` is what it says it is. Silently making it mean
 // "securities only" on a stocks question would be a second, contradictory
 // definition of the same field — the CF-7 double-count trap in another form.
 {
   const all = build(), trad = build(PositionClass.TRADITIONAL), dig = build(PositionClass.DIGITAL);
   for (const [name, get] of [
-    ['totalPortfolioValue', (d: typeof all) => d!.totalPortfolioValue],
-    ['investedValue',       (d: typeof all) => d!.investedValue],
-    ['cashValue',           (d: typeof all) => d!.cashValue],
+    ['valuedPositionsTotal', (d: typeof all) => d!.valuedPositionsTotal],
+    ['investedValue',       (d: typeof all) => d!.valuedNonCashTotal],
+    ['cashValue',           (d: typeof all) => d!.valuedCashTotal],
     ['positionCount',       (d: typeof all) => d!.positionCount],
     ['analyzedInvestedValue', (d: typeof all) => d!.analyzedInvestedValue],
   ] as const) {
@@ -145,7 +148,7 @@ const symbols = (d: ReturnType<typeof build>) => d!.topPositions!.items.map((p) 
     cryptoOnly!.topPositions!.items.length === 0 && cryptoOnly!.topPositions!.totalCount === 0,
     'an honest empty answer beats the wrong asset class');
   check('…and the payload still exists so the totals can be stated',
-    cryptoOnly !== null && cryptoOnly.totalPortfolioValue !== undefined);
+    cryptoOnly !== null && cryptoOnly.valuedPositionsTotal !== undefined);
 
   check('the render cap still applies after filtering', HOLDINGS_TOP_N === 10);
 }

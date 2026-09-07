@@ -96,6 +96,11 @@ async function assembleHoldings(
     // W5 — valuation dating for the staleness disclosure (holdings-core).
     priceDate:      r.priceDate,
     staleDays:      r.staleDays,
+    // The identity of an UNPRICED position, so the exclusion can be named
+    // instead of counted. Quantity is observed; only the price is missing, and
+    // nothing downstream multiplies the two.
+    quantity:       r.quantity,
+    reason:         r.reason,
   }));
 
   // All-visibility aggregate derived from the canonical "all"-scope valuation view.
@@ -110,6 +115,16 @@ async function assembleHoldings(
     cashValue:      allCash,
     anyFxEstimated,
     hasAny:         allView.components.length > 0,
+    // ⚠️ CARRIED, NOT RE-DERIVED. The seam already answered "how much of this
+    // could I value?" — tier, sentence and both counts. Recomputing it from the
+    // FULL-visibility rows alone (which is what happened before) cannot see a
+    // position withheld by visibility, so the two answers could disagree.
+    completeness: {
+      tier:          allView.completeness.tier,
+      reason:        allView.completeness.reason ?? null,
+      valuedCount:   allView.valuedCount,
+      unvaluedCount: allView.unvaluedCount,
+    },
   };
 
   const data = buildHoldingsSummary({

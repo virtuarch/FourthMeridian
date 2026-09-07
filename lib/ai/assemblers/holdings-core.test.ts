@@ -40,7 +40,12 @@ function check(name: string, cond: boolean, detail?: string): void {
 const approx = (a: number, b: number, eps = 1e-6) => Math.abs(a - b) <= eps;
 
 function agg(over: Partial<AllScopeAggregate> = {}): AllScopeAggregate {
-  return { valuedSubtotal: 0, cashValue: 0, anyFxEstimated: false, hasAny: true, ...over };
+  return {
+    valuedSubtotal: 0, cashValue: 0, anyFxEstimated: false, hasAny: true,
+    // The seam's completeness verdict. Default: everything in scope was priced.
+    completeness: { tier: "observed", reason: null, valuedCount: 0, unvaluedCount: 0 },
+    ...over,
+  };
 }
 function row(over: Partial<CanonicalPositionRow>): CanonicalPositionRow {
   return { instrumentId: "i1", symbol: "AAA", name: "Alpha", reportingValue: 1000, isCash: false, ...over };
@@ -84,9 +89,9 @@ console.log("2. FULL detail sourced from canonical current-position rows");
   check("FULL non-cash positions surfaced", syms.includes("AAA") && syms.includes("BBB"));
   check("cash excluded from positions/concentration", !syms.includes("CASH") && out.positionCount === 2);
   check("analyzedInvestedValue = Σ FULL non-cash (6000+4000)", approx(out.analyzedInvestedValue, 10000));
-  check("cashValue from all-scope aggregate", approx(out.cashValue, 2000));
-  check("totalPortfolioValue = all-scope valued subtotal", approx(out.totalPortfolioValue, 12000));
-  check("investedValue = total − cash", approx(out.investedValue, 10000));
+  check("valuedCashTotal from all-scope aggregate", approx(out.valuedCashTotal, 2000));
+  check("valuedPositionsTotal = all-scope valued subtotal", approx(out.valuedPositionsTotal, 12000));
+  check("valuedNonCashTotal = total − cash", approx(out.valuedNonCashTotal, 10000));
   check("cashPct = 2000/12000", approx(out.cashPct, 2000 / 12000));
   check("not partially hidden when all value is FULL", out.positionsPartiallyHidden === false);
 }
@@ -103,8 +108,8 @@ console.log("3. hidden value preserved without leaking detail");
     scopeHint: "full", fullRows,
     allScope: agg({ valuedSubtotal: 15000, cashValue: 0 }),
   })!;
-  check("aggregate includes hidden value (total 15000)", approx(out.totalPortfolioValue, 15000));
-  check("hidden invested value preserved in investedValue", approx(out.investedValue, 15000));
+  check("aggregate includes hidden value (total 15000)", approx(out.valuedPositionsTotal, 15000));
+  check("hidden invested value preserved in valuedNonCashTotal", approx(out.valuedNonCashTotal, 15000));
   check("concentration only sees FULL detail (analyzed = 10000)", approx(out.analyzedInvestedValue, 10000));
   check("partial-visibility flagged", out.positionsPartiallyHidden === true);
   check("dataLimits discloses partial visibility",
@@ -138,9 +143,20 @@ console.log("4. concentration parity — same helper + per-instrument aggregatio
     allScope: agg({ valuedSubtotal: 15000, cashValue: 1000 }),
   })!;
 
-  check("AI concentration === Allocation-panel concentration (byte-identical)",
-    JSON.stringify(out.concentration) === JSON.stringify(uiConcentration),
-    `ai=${JSON.stringify(out.concentration)} ui=${JSON.stringify(uiConcentration)}`);
+  // The parity claim is about the METRICS, and it is unchanged: the AI payload
+  // runs the same helper over the same per-instrument aggregation, so every
+  // number matches the Allocation panel exactly. What the AI object additionally
+  // carries is `population` — the denominator the panel does not need because its
+  // reader can see the chart. Comparing the whole objects would now fail for the
+  // act of adding scope, so the comparison is over the shared metric keys and the
+  // superset relationship is asserted separately.
+  const { population, ...aiMetrics } = out.concentration;
+  check("AI concentration metrics === Allocation-panel concentration (byte-identical)",
+    JSON.stringify(aiMetrics) === JSON.stringify(uiConcentration),
+    `ai=${JSON.stringify(aiMetrics)} ui=${JSON.stringify(uiConcentration)}`);
+  check("…and the AI object additionally states its population",
+    population !== undefined && population.value === out.analyzedInvestedValue
+      && population.positionCount === out.positionCount);
   check("same-instrument-across-accounts collapses (NVDA = 8000, top)",
     out.concentration.topSymbol === "NVDA" && approx(out.concentration.topWeight!, 8000 / 14000));
   check("positionCount is distinct instruments, not rows (NVDA once)", out.positionCount === 3);
@@ -177,7 +193,7 @@ console.log("6. W5 crypto: spine-only, honest absence");
   })!;
   const syms = (out.topPositions?.items ?? []).map((p) => p.symbol);
   check("spine BTC surfaces like any instrument", syms.includes("BTC") && syms.includes("AAA"));
-  check("BTC participates in totals (40000)", approx(out.totalPortfolioValue, 40000));
+  check("BTC participates in totals (40000)", approx(out.valuedPositionsTotal, 40000));
   check("BTC participates in concentration (30000/40000)",
     out.concentration.topSymbol === "BTC" && approx(out.concentration.topWeight!, 30000 / 40000));
   check("no wallet-balance provenance caveat remains (crypto is ON the spine now)",
@@ -219,7 +235,7 @@ console.log("8. W5 staleness disclosure");
     allScope: agg({ valuedSubtotal: 25176.17, cashValue: 0 }),
   })!;
   check("stale-priced value stays in the totals (disclosure, not exclusion)",
-    approx(out.totalPortfolioValue, 25176.17));
+    approx(out.valuedPositionsTotal, 25176.17));
   const staleNote = out.dataLimits.find((d) => /day\(s\) old/.test(d));
   check("staleness disclosed in dataLimits", staleNote !== undefined);
   check("disclosure names the max age and its price date",

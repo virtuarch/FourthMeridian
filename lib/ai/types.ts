@@ -1120,6 +1120,79 @@ export interface HoldingsConcentration {
   top5Weight:        number | null;
   herfindahl:        number | null;
   effectiveHoldings: number | null;
+  /**
+   * ⚠️ WHAT THE WEIGHTS ARE A SHARE OF. Required, and deliberately INSIDE this
+   * object so a consumer cannot serialize `classification` without it.
+   *
+   * A concentration statistic is a ratio, and a ratio without its denominator is
+   * not evidence. Measured on the real Space: two positions worth $11.62 could be
+   * priced out of thirteen positions worth ~$23,983, and this object said
+   * `HIGHLY_CONCENTRATED / topSymbol TTWO / topWeight 0.75` with nothing stating
+   * that the population was 0.05% of the money. Every one of those numbers is
+   * arithmetically correct about its population. Nothing said what the population
+   * was, and a downstream reader would reasonably render it as
+   * "your portfolio is highly concentrated in TTWO".
+   */
+  population: ConcentrationPopulation;
+}
+
+/**
+ * The population a `HoldingsConcentration` describes.
+ *
+ * Generic by construction — it names the SHAPE of the exclusion (unpriced,
+ * withheld for visibility, cash), never a particular instrument, account or
+ * provider. Nothing here re-prices, re-classifies or re-composes anything: every
+ * figure is carried from the canonical valuation seam.
+ */
+export interface ConcentrationPopulation {
+  /**
+   * One sentence naming the population, for a consumer that will quote it.
+   * e.g. "2 of 13 positions that could be priced, held in fully visible accounts".
+   */
+  label:              string;
+  /** The denominator, in reporting currency. Equals `analyzedInvestedValue`. */
+  value:              number;
+  /** Distinct instruments inside the population. */
+  positionCount:      number;
+  /** Positions excluded because no price could be resolved. Never re-priced here. */
+  unvaluedCount:      number;
+  /** Non-cash value present in the spine but withheld from the population by visibility. */
+  hiddenValue:        number;
+  /**
+   * The population's share of every position value this domain could price
+   * (`valuedPositionsTotal`), 0..1. Null when nothing could be priced.
+   *
+   * ⚠️ THE FIELD THAT MAKES THE STATISTIC READABLE. Well below 1 means the
+   * classification describes a SUBSET and must not be restated as a claim about
+   * the portfolio.
+   */
+  shareOfValuedTotal: number | null;
+  /**
+   * True when every position in scope could be priced and none was withheld —
+   * i.e. the population IS the whole analyzable portfolio. Derived from the two
+   * counts above, stated so a consumer need not re-derive it.
+   */
+  isComplete:         boolean;
+}
+
+/**
+ * A position the canonical valuation seam could not price.
+ *
+ * ⚠️ CARRIED AS DATA, NOT AS A COUNT IN A SENTENCE. The prose note said
+ * "9 position(s) could not be valued"; it could not say WHICH, so a reader had no
+ * way to know the missing ones included every crypto position on the Space.
+ * `reason` is the seam's own words — nothing is paraphrased and no price is
+ * invented or walked forward.
+ */
+export interface UnvaluedPosition {
+  symbol:     string | null;
+  name:       string | null;
+  /** The canonical `AssetClass` (EQUITY, ETF, CRYPTO, …). */
+  assetClass: string | null;
+  /** Observed quantity. Present because the quantity IS known; only the price is not. */
+  quantity:   number | null;
+  /** The valuation seam's reason, verbatim. */
+  reason:     string | null;
 }
 
 /**
@@ -1133,9 +1206,17 @@ export interface HoldingsConcentration {
  * (not yet threaded through the conversion seam — recorded as a Phase 3
  * closeout finding alongside F-3); all-USD data is unaffected.
  *
+ * ⚠️ THIS DOMAIN IS THE POSITION SPINE, NOT THE PORTFOLIO. Every figure below is
+ * scoped to positions the canonical valuation seam could PRICE. The authority on
+ * what the user's investments are WORTH is the accounts domain composed through
+ * `composeInvestments` (CF-7) — traditional investments + digital assets,
+ * disjoint by construction. Do not add a figure from this domain to one from
+ * that one, and do not present a figure from here as an investment total.
+ *
  * ── Visibility model (mirrors lib/ai/assemblers/accounts.ts) ─────────────────
- * Aggregate value totals (totalPortfolioValue, investedValue, cashValue,
- * cashPct) include EVERY visible account regardless of visibility level — these
+ * Aggregate value totals (valuedPositionsTotal, valuedNonCashTotal,
+ * valuedCashTotal, cashPct) include EVERY visible account regardless of
+ * visibility level — these
  * are sums and reveal nothing identifying, exactly like the accounts domain
  * totals. Position-level detail (topPositions, positionCount, concentration) is
  * computed ONLY over FULL-visibility accounts. When any visible account is
@@ -1151,18 +1232,54 @@ export interface HoldingsSummaryData {
    * currency). Data-only: no prompt or serializer consumes it yet.
    */
   totalsEstimated:     boolean;
-  /** All visible holdings incl. synthetic cash rows (converted into the Space's reporting currency). */
-  totalPortfolioValue: number;
-  /** Non-cash holdings across all visible accounts. */
-  investedValue:       number;
-  /** Synthetic uninvested-cash rows (isCash) across all visible accounts. */
-  cashValue:           number;
-  /** cashValue / totalPortfolioValue, 0..1 (0 when total is 0). */
+  /**
+   * Σ of every position this domain COULD PRICE, cash rows included, across all
+   * visibility levels, in the Space's reporting currency.
+   *
+   * ⚠️ NOT THE PORTFOLIO, AND THE OLD NAME SAID IT WAS. This field was called
+   * `totalPortfolioValue`. On the real Space it reads $4,040.60 while the
+   * canonical account composition (`composeInvestments`) reads $23,982.89,
+   * because nine of thirteen positions had no resolvable price. A consumer given
+   * a field called "total portfolio value" will state it as the portfolio.
+   * Read `valuationCompleteness` before quoting this as any kind of total.
+   */
+  valuedPositionsTotal: number;
+  /** Non-cash portion of `valuedPositionsTotal`. Same scope, same caveat. */
+  valuedNonCashTotal:   number;
+  /** Uninvested-cash rows (isCash) inside `valuedPositionsTotal`. */
+  valuedCashTotal:      number;
+  /** valuedCashTotal / valuedPositionsTotal, 0..1 (0 when the total is 0). */
   cashPct:             number;
-  /** Count of distinct symbols in the analyzable (FULL, non-cash) set. */
+  /**
+   * Count of distinct instruments in the analyzable set: FULL visibility,
+   * non-cash, AND successfully priced.
+   *
+   * ⚠️ IT IS NOT "HOW MANY POSITIONS YOU HOLD". On the real Space it reads 2
+   * against 13 held positions. `valuationCompleteness` carries both numbers.
+   */
   positionCount:       number;
-  /** Value the concentration analysis is computed over (FULL, non-cash). */
+  /** Value the concentration analysis is computed over — its denominator. */
   analyzedInvestedValue: number;
+  /**
+   * What the canonical valuation seam said about its own completeness, carried
+   * verbatim rather than re-derived.
+   *
+   * ⚠️ THE SEAM ALREADY KNEW. `getInvestmentValueAsOf` returns
+   * `{ tier, reason, valuedCount, unvaluedCount }` — "9 of 13 holdings could not
+   * be valued for 2026-09-07; the total shown is a partial subtotal" — and this
+   * payload used to discard it and rebuild a weaker sentence from the
+   * FULL-visibility rows alone.
+   */
+  valuationCompleteness: {
+    /** The seam's own tier, e.g. 'observed' | 'incomplete'. */
+    tier:          string;
+    /** The seam's own sentence. Never paraphrased. */
+    reason:        string | null;
+    valuedCount:   number;
+    unvaluedCount: number;
+  };
+  /** The positions that could not be priced, so a consumer can name them. */
+  unvaluedPositions:   UnvaluedPosition[];
   /** True when some visible accounts are shared below FULL visibility and
    *  their positions are therefore excluded from position/concentration analysis. */
   positionsPartiallyHidden: boolean;

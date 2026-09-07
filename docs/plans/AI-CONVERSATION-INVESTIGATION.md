@@ -169,7 +169,7 @@ deterministic computation genuinely required?
 | **Projection follow-up** | the previous answer + its inputs | *(none)* | n/a | n/a | n/a | nothing carries the last answer | **answer memory** | ✅ if the prior turn's structured result is in history | ❌ |
 | **Spending / cash flow** | categories, merchants, monthly rollups, drilldown | transactions assembler | ✅ full | any window ≤800 d | assembler | "Other" = 27% of spend; card payments framed as debt | category quality | ✅ | ❌ |
 | **Income** | per-month paycheck **count and dates** | `loadForecastIncomeStreams` **only** | ✅ cadence | 730 d | streams | **cadence is not in `buildContext`**; `monthlyBreakdown.byCategory` omits Income entirely | cadence in evidence | ⚠️ inferable, not stated | ❌ — wire, don't build |
-| **Investments** | positions, values, crypto, concentration | `holdings_summary` **broken** + accounts totals + `lib/investments` | ⚠️ partial | `lib/investments` has full history | accounts domain | holdings reports 2 positions / $11.62 analysed / "HIGHLY_CONCENTRATED in TTWO" against $19K BTC | one investment view | ❌ not on this evidence | ⚠️ compose, don't compute |
+| **Investments** | positions, values, crypto, concentration | `holdings_summary` (scope now stated) + accounts totals + `lib/investments` | ⚠️ partial | `lib/investments` has full history | accounts domain | on this Space only 4 of 13 positions can be priced, so the position view is a tiny subset — now declared as one | one composed investment view | ⚠️ needs the composition beside it | ⚠️ compose, don't compute |
 | **Debt** | balances, APR, minimums, interest | accounts domain + `computeAssessment` | ✅ | 90 d | accounts | **$25.46 hijacks 6 assessment outputs** | **materiality** | ✅ from facts | ❌ |
 | **Affordability** | cash, income, spending, obligations, goals | all of the above | ⚠️ arithmetic only | — | accounts | no single judgment surface | judgment (correctly a model job) | ✅ | ❌ |
 | **Change explanation** | net-worth deltas by component | `lib/history/**` — **zero AI consumers** | ✅ **excellent** | 1,100 snapshot rows | exploration tree | never wired to AI; context has 90 d | wiring | ✅ over the tree | ❌ |
@@ -230,7 +230,15 @@ On a Space that is **66% crypto by net worth**. The category manifest for `PERSO
 did not fire for a plainly broad question. Family F is unreachable and family A is
 answering with a third of the picture missing.
 
-**(b) The holdings assembler is materially wrong on real data.**
+**(b) The holdings assembler exposes a narrow statistic with no statement of its
+scope.**
+
+> **⚠️ CORRECTED 2026-09-07 (post-fix).** The first version of this section said the
+> assembler was "materially wrong" and "would tell Chris his portfolio is concentrated in
+> Take-Two Interactive". **The arithmetic was never wrong.** Every figure below is correct
+> *about its own population*; what was missing was any statement of what that population
+> was. The precise finding is recorded after the payload. The defect was **semantic
+> scope**, and it is fixed — see "the correction", below.
 
 ```
 totalPortfolioValue   $4,040.60      (accounts domain says $5,005.85 + $18,977.04)
@@ -240,9 +248,44 @@ concentration          HIGHLY_CONCENTRATED, topSymbol TTWO, topWeight 75%
 dataLimits             "9 position(s) could not be valued and are excluded"
 ```
 
-A model handed that section would tell Chris his portfolio is concentrated in Take-Two
-Interactive. His portfolio is 79% Bitcoin. **This is the single most dangerous surviving
-surface** — it is not missing data, it is confidently wrong framing over partial data.
+**The precise finding.** `analyzedInvestedValue` is the concentration denominator, and it
+was **$11.62** — the only two positions the canonical valuation seam could price. The
+canonical account composition (`composeInvestments`) reads **$23,982.89**, of which
+$18,977.04 is Bitcoin. So the statistic described **0.05% of the money** and said so
+nowhere.
+
+The root cause is upstream of the assembler and is not an assembler bug: on this Space
+`getInvestmentValueAsOf` reports `completeness: incomplete` with *"9 of 13 holdings could
+not be valued for 2026-09-07"* — every crypto position and six equities returned **"No
+RAW_CLOSE price within 7 days"**. The assembler then **discarded that completeness verdict**
+and re-derived a weaker prose note from the FULL-visibility rows alone.
+
+`totalPortfolioValue` compounded it: the name asserts portfolio scope for a number that is
+the *priced subtotal*.
+
+So the honest statement of the defect is:
+
+> the holdings assembler exposed a ~75% concentration over a narrow valued-stock population
+> without sufficient scope for a downstream consumer to distinguish it from portfolio-level
+> concentration.
+
+**The correction** (commit `fix(ai-data): preserve investment concentration scope`) is
+semantic, not arithmetic:
+
+- `concentration.population` — the denominator, the counts, the exclusions and
+  `shareOfValuedTotal`, **inside** the concentration object so a serializer cannot emit the
+  classification without it;
+- `unvaluedPositions[]` — the excluded positions as data (symbol, asset class, quantity and
+  the seam's own reason), so "every crypto holding is missing here" is visible rather than a
+  count in a sentence;
+- `valuationCompleteness` — the canonical seam's tier, sentence and counts, carried verbatim
+  instead of re-derived;
+- `totalPortfolioValue` → **`valuedPositionsTotal`**, `investedValue` →
+  **`valuedNonCashTotal`**, `cashValue` → **`valuedCashTotal`** — three names that asserted
+  a scope they did not have.
+
+`computeConcentration` itself is untouched: it is the shared authority the Investments
+Allocation panel runs, and it answers exactly the question it is asked.
 
 **(c) Payroll cadence is absent from the context, and so is any per-month income count.**
 Measured: `monthlyBreakdown[].byCategory` contains **no Income entry at all** for any of the
@@ -557,7 +600,7 @@ worth building?*
 | **C** | *"did my income go down?"* | Three-vs-two paychecks identified **unprompted**. The single best test of model-over-rules. |
 | **D** | *"$36K by November" → "break it down"* | Explains **that** figure. **Fails** on a figure dump. This is the reset's founding failure. |
 | **E** | 6-turn assumption sequence (golden 2) | Assumptions carry, retract individually, and "realistic" drops the user's. |
-| **F** | *"what am I invested in"* | Bitcoin dominates. **Fails** if TTWO is called the top position. |
+| **F** | *"what am I invested in"* | Bitcoin dominates the composition; any narrow position statistic is qualified by its population. **Fails** if a within-subset concentration is restated as portfolio concentration. |
 | **G** | *"lose the bullet points, just talk to me regular"* | Prose. It returned a 502 in the dogfood. |
 | **H** | *"am I spending more?"* | Sample size stated before the verdict. |
 | **I** | *"what's bitcoin going to do"* | Declines once, briefly, offers scenarios. |
@@ -606,7 +649,7 @@ Treat quality/latency/cost as an **empirical product decision**. Do not change p
 |---|---|---|---|
 | 1 | **Rebuilding the last architecture by accident.** | Every stage was added for a good reason. So will the next eleven be. | No new abstraction without a transcript showing the failure it fixes. |
 | 2 | **The assessment quietly becomes the doctrine.** | It is deterministic, it survived, and it already emits verdicts. | A1 arm. Measure it as a *hypothesis*, not a foundation. |
-| 3 | **A confidently wrong number reaches Chris.** | The holdings assembler will state TTWO is 75% of the portfolio. | Fix the composition; do not add a guard that scans prose for it. |
+| 3 | **A correctly-computed number is read at the wrong scope.** | A ~75% concentration over $11.62 of priced positions could be restated as portfolio concentration. **Fixed** by attaching the population to the statistic. | Scope the evidence; never add a guard that scans prose for it. |
 | 4 | **Over-fitting to one Space.** | Every measurement here is Chris' Space. Jane's has 151 transactions; the seeded Spaces have zero snapshots. | Run at least one probe against a thin Space. |
 | 5 | **The model invents a figure.** | The failure the last architecture existed for. | Test whether it *actually happens* with good evidence and a strong model **before** building anything to prevent it. Probe (i) measures it. |
 | 6 | **Latency.** | Tool-calling multiplies round trips; 4 calls × 2 s ≈ 8 s. | Measure it in the experiment. Streaming is not built. |
@@ -661,9 +704,9 @@ per-turn latency, tokens and cost — and Chris's read.
 
 **Explicitly out of scope until those transcripts exist:** any route change, any prompt
 committed to `lib/`, any planner, any schema, any new abstraction, and any fix to the
-defects catalogued above. **Except one, which should be fixed regardless of what the
-experiment says because it will state something false to a user:** the holdings assembler
-telling Chris his portfolio is 75% Take-Two Interactive.
+defects catalogued above. **Except one, which was fixed before the experiment because it
+could let a correct number be read at the wrong scope:** the holdings concentration
+statistic now carries its population (§5b).
 
 ---
 

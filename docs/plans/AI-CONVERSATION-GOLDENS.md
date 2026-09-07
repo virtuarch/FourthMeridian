@@ -306,10 +306,14 @@ a golden is about the *shape* of the answer.
 > So realistically: you own Bitcoin, and you have a brokerage account with money in it that
 > isn't invested yet.
 >
-> ⟨⚠️ **GAP.** Today `holdings_summary` reports `positionCount: 2`, `HIGHLY_CONCENTRATED`
-> in **TTWO at 75%**, and total portfolio $4,040 — because 9 positions could not be valued
-> and crypto lives in a different domain. A model handed that section alone would tell
-> Chris his portfolio is concentrated in a video-game publisher.⟩
+> ⟨⚠️ **GAP, PARTLY CLOSED.** On this Space only 4 of 13 positions can be priced ("no
+> RAW_CLOSE price within 7 days"), so `holdings_summary` analyses two positions worth
+> $11.62 and reports `HIGHLY_CONCENTRATED` at ~75% — arithmetically correct about that
+> population and, before the scope fix, silent about what the population was. It now
+> carries `concentration.population`, `unvaluedPositions` and the seam's own
+> `valuationCompleteness`. What is **still** missing is a single composed investment view:
+> the whole picture lives in `composeInvestments` on the accounts domain, and nothing puts
+> the two side by side.⟩
 
 > **Chris:** am i too heavy in bitcoin
 

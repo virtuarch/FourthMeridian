@@ -48,6 +48,7 @@ import { boundedSelection } from "@/lib/ai/bounded-selection";
 import type {
   HoldingsSummaryData,
   HoldingPosition,
+  UnvaluedPosition,
 } from "@/lib/ai/types";
 
 /** The subset of a canonical CurrentPositionRow this core consumes (FULL detail). */
@@ -76,6 +77,14 @@ export interface CanonicalPositionRow {
    */
   priceDate?: string | null;
   staleDays?: number | null;
+  /**
+   * Observed quantity, and the seam's reason when a row could not be priced.
+   *
+   * ⚠️ CARRIED ONLY TO DESCRIBE AN EXCLUSION. Nothing here multiplies a quantity
+   * by anything: an unpriced position stays unpriced and is reported as such.
+   */
+  quantity?: number | null;
+  reason?:   string | null;
 }
 
 /**
@@ -92,6 +101,22 @@ export interface AllScopeAggregate {
   anyFxEstimated: boolean;
   /** any component present at all (spine has investment observations in scope). */
   hasAny:         boolean;
+  /**
+   * The canonical seam's OWN completeness verdict, carried verbatim.
+   *
+   * ⚠️ IT WAS BEING DISCARDED. `getInvestmentValueAsOf` returns a tier, a
+   * sentence and both counts; this core used to drop all four and re-derive a
+   * weaker note by counting nulls among the FULL-visibility rows — which cannot
+   * see a position withheld by visibility, and which produced
+   * "9 position(s) could not be valued" where the seam had already said
+   * "9 of 13 holdings could not be valued … the total shown is a partial subtotal".
+   */
+  completeness:   {
+    tier:          string;
+    reason:        string | null;
+    valuedCount:   number;
+    unvaluedCount: number;
+  };
 }
 
 const EPS = 1e-6;
@@ -137,6 +162,29 @@ export function positionMatchesClass(
   return want === PositionClass.DIGITAL ? isCrypto : !isCrypto;
 }
 
+/**
+ * One sentence naming the concentration population.
+ *
+ * ⚠️ SHAPE, NEVER IDENTITY. It counts positions and names the KIND of exclusion
+ * (unpriced, withheld). It never mentions an instrument, an account, a provider
+ * or an asset class, so it stays true on any Space.
+ */
+export function describePopulation(
+  analyzed: number, held: number, unvalued: number, anyHidden: boolean,
+): string {
+  if (analyzed === 0) return 'no positions could be analysed';
+  // ⚠️ NEVER CLAIM A FRACTION THE INPUTS CANNOT SUPPORT. `held` comes from the
+  // valuation seam's own counts; a caller that supplies none (a fixture, a Space
+  // with nothing in scope) gets the count without a denominator rather than
+  // "3 of 0".
+  const parts = [held >= analyzed
+    ? `${analyzed} of ${held} held position(s)`
+    : `${analyzed} position(s)`];
+  if (unvalued > 0) parts.push(`${unvalued} could not be priced and are excluded`);
+  if (anyHidden)    parts.push('some positions are withheld by account visibility');
+  return `${parts.join('; ')} — weights are a share of this population only`;
+}
+
 /** The base guardrails: what this value-only summary deliberately does not answer. */
 function baseDataLimits(): string[] {
   return [
@@ -171,13 +219,19 @@ export function buildHoldingsSummary(args: {
   // no spine observation is part of this honest emptiness, never back-filled.)
   if (!allScope.hasAny) return null;
 
-  // ── Aggregate totals (all visibility, ONE spine — crypto included) ──────────
-  const allInvestedSpine = allScope.valuedSubtotal - allScope.cashValue;
-  const totalPortfolioValue = allScope.valuedSubtotal;
-  const cashValue           = allScope.cashValue;
-  const investedValue       = allInvestedSpine;
-  const totalsEstimated     = allScope.anyFxEstimated;
-  const cashPct = totalPortfolioValue > 0 ? cashValue / totalPortfolioValue : 0;
+  // ── Aggregate totals — SCOPED TO WHAT COULD BE PRICED ───────────────────────
+  //
+  // ⚠️ THESE ARE NOT PORTFOLIO TOTALS AND THE FIELD NAMES NOW SAY SO. A position
+  // whose price could not be resolved contributes NOTHING here, so on a Space
+  // where the price archive is behind, this "total" can be a rounding error
+  // against the account-level composition. The names changed from
+  // totalPortfolioValue / investedValue / cashValue for exactly that reason.
+  const allInvestedSpine   = allScope.valuedSubtotal - allScope.cashValue;
+  const valuedPositionsTotal = allScope.valuedSubtotal;
+  const valuedCashTotal      = allScope.cashValue;
+  const valuedNonCashTotal   = allInvestedSpine;
+  const totalsEstimated      = allScope.anyFxEstimated;
+  const cashPct = valuedPositionsTotal > 0 ? valuedCashTotal / valuedPositionsTotal : 0;
 
   // ── FULL detail → concentration ─────────────────────────────────────────────
   // Spine rows aggregate PER INSTRUMENT (VTI in two brokerages collapses to one
@@ -191,12 +245,24 @@ export function buildHoldingsSummary(args: {
     assetClass?: string;
   }>();
   let fullSpineInvestedNonCash = 0;
-  let unvaluedFullCount = 0;
+  const unvaluedPositions: UnvaluedPosition[] = [];
   let stalePricedCount = 0;
   let maxStaleDays = 0;
   let maxStalePriceDate: string | null = null;
   for (const r of fullRows) {
-    if (r.reportingValue == null) { unvaluedFullCount++; continue; }
+    if (r.reportingValue == null) {
+      // ⚠️ NAMED, NOT COUNTED. Which positions are missing is the whole content
+      // of the disclosure: on the real Space the unpriced set is every crypto
+      // holding, and a bare count could not say so.
+      unvaluedPositions.push({
+        symbol:     r.symbol ?? null,
+        name:       r.name ?? r.symbol ?? null,
+        assetClass: r.assetClass ?? null,
+        quantity:   r.quantity ?? null,
+        reason:     r.reason ?? null,
+      });
+      continue;
+    }
     // W5 — staleness bookkeeping for the disclosure below (valued rows only).
     if ((r.staleDays ?? 0) >= STALE_PRICE_DISCLOSURE_DAYS) {
       stalePricedCount++;
@@ -226,7 +292,33 @@ export function buildHoldingsSummary(args: {
       value:  p.value,
     }))
     .sort((a, b) => b.value - a.value);
-  const concentration = computeConcentration(concentrationPositions, analyzedInvestedValue);
+  const metrics = computeConcentration(concentrationPositions, analyzedInvestedValue);
+
+  // ── The population the statistic describes ──────────────────────────────────
+  //
+  // ⚠️ ATTACHED TO THE METRICS, NOT BESIDE THEM. `computeConcentration` is the
+  // shared authority (the Allocation panel runs the same function) and it is
+  // correct — it answers "given these weights, how concentrated is this?". What
+  // was missing is what the weights are a share OF, and the only structural way
+  // to stop that being dropped is for it to live inside the object a serializer
+  // reaches for.
+  const hiddenValue = Math.max(0, allInvestedSpine - fullSpineInvestedNonCash);
+  const isComplete  = unvaluedPositions.length === 0 && hiddenValue <= EPS;
+  const concentration = {
+    ...metrics,
+    population: {
+      label: describePopulation(
+        byKey.size, allScope.completeness.valuedCount + allScope.completeness.unvaluedCount,
+        unvaluedPositions.length, hiddenValue > EPS),
+      value:              analyzedInvestedValue,
+      positionCount:      byKey.size,
+      unvaluedCount:      unvaluedPositions.length,
+      hiddenValue,
+      shareOfValuedTotal: valuedPositionsTotal > 0
+        ? analyzedInvestedValue / valuedPositionsTotal : null,
+      isComplete,
+    },
+  };
 
   // CF-12 — the class rides along the ranked list. Weights stay relative to the
   // WHOLE analyzed portfolio: narrowing the list must not silently redefine
@@ -253,10 +345,19 @@ export function buildHoldingsSummary(args: {
       "counted in the totals).",
     );
   }
-  if (unvaluedFullCount > 0) {
+  // ⚠️ THE SEAM'S OWN SENTENCE, not a second one derived from a subset of its
+  // rows. `unvaluedPositions` carries the identities; this carries the verdict.
+  if (allScope.completeness.unvaluedCount > 0 && allScope.completeness.reason) {
+    dataLimits.push(allScope.completeness.reason);
+  }
+  if (unvaluedPositions.length > 0) {
+    // Wording note: "could not be valued" is pinned by holdings-core.test.ts and
+    // predates this change; it stays, and what is ADDED is where to look and the
+    // instruction not to restate a percentage without its population.
     dataLimits.push(
-      `${unvaluedFullCount} position(s) could not be valued and are excluded from ` +
-      "the value totals — treat the totals as a subtotal, not the whole.",
+      `${unvaluedPositions.length} position(s) could not be valued and are excluded ` +
+      "from every value and every concentration figure here — see unvaluedPositions " +
+      "for which, and read concentration.population before restating any percentage.",
     );
   }
   // W5 — staleness disclosure: a value priced from an archive date older than
@@ -271,13 +372,20 @@ export function buildHoldingsSummary(args: {
   }
 
   const data: HoldingsSummaryData = {
-    totalPortfolioValue,
-    investedValue,
-    cashValue,
+    valuedPositionsTotal,
+    valuedNonCashTotal,
+    valuedCashTotal,
     totalsEstimated,
     cashPct,
     positionCount: rankedPositions.length,
     analyzedInvestedValue,
+    valuationCompleteness: {
+      tier:          allScope.completeness.tier,
+      reason:        allScope.completeness.reason,
+      valuedCount:   allScope.completeness.valuedCount,
+      unvaluedCount: allScope.completeness.unvaluedCount,
+    },
+    unvaluedPositions,
     positionsPartiallyHidden,
     concentration,
     dataLimits,
