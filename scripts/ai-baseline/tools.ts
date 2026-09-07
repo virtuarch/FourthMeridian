@@ -28,6 +28,9 @@ import {
 } from '@/lib/ai/types';
 import { composeInvestments } from '@/lib/ai/economic-concepts';
 import { queryTransactions } from '@/lib/data/transaction-query';
+import { MAX_TRANSACTION_PAGE_SIZE, type TransactionQuery } from '@/lib/data/transaction-query-core';
+import { TRANSACTION_FETCH_LIMIT } from '@/lib/ai/assemblers/transactions';
+import type { Transaction } from '@/types';
 import { getRecentSnapshots } from '@/lib/data/snapshots';
 import { projectSnapshotSection } from '@/lib/ai/assemblers/snapshot';
 import type { Snapshot } from '@/types';
@@ -76,8 +79,59 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 const SNAPSHOT_READ_ROWS = 1100;
 /** Ceiling on a DAILY series, so one call cannot return a year of rows by accident. */
 const MAX_DAILY_POINTS = 200;
-/** Page taken when ranking by size. Its bound is always reported alongside the result. */
-const RANKING_PAGE = 100;
+/**
+ * Read a bounded window to EXHAUSTION through the canonical keyset cursor.
+ *
+ * ⚠️ RANKING NEEDS THE WHOLE POPULATION, NOT A PAGE. `sort: 'largest'` used to rank
+ * the newest 100 matching rows and present the winner as "your biggest" — on a
+ * 173-row month that silently answered from 58% of the data. Raising 100 to some
+ * other number would only move the cliff to 201 or 501; the fix is to page until
+ * the seam says `hasMore: false`, which is the mechanism the read authority
+ * already provides.
+ *
+ * ⚠️ THE CEILING IS THE REPOSITORY'S OWN, AND IT FAILS LOUDLY. `TRANSACTION_FETCH_LIMIT`
+ * is the same 5,000-row guard the transactions assembler applies to the same
+ * population, so a ranking and the summary beside it can never disagree about what
+ * "all of them" covered. Hitting it returns `complete: false`, which the caller
+ * turns into a stated caveat — it is never absorbed.
+ *
+ * Terminates on three conditions: the seam reports no more, the ceiling is reached,
+ * or a page fails to advance the cursor (a defensive stop, never expected).
+ */
+/**
+ * The read, injectable.
+ *
+ * ⚠️ INJECTED ONLY SO TERMINATION CAN BE TESTED WITHOUT A DATABASE — the same
+ * idiom `lib/ai/forecast/streams.ts` uses for its own bounded read. The three
+ * ways this loop can end (exhausted, ceiling, non-advancing cursor) are exactly
+ * the parts worth a test, and two of them cannot be reached with real data.
+ */
+export type TransactionPager = typeof queryTransactions;
+
+export async function readWindowToExhaustion(
+  spaceId: string, query: Omit<TransactionQuery, 'cursor' | 'limit'>,
+  read: TransactionPager = queryTransactions,
+): Promise<{ rows: Transaction[]; complete: boolean; pages: number }> {
+  const rows: Transaction[] = [];
+  let cursor: TransactionQuery['cursor'];
+  let pages = 0;
+
+  for (;;) {
+    const page = await read({
+      spaceId, query: { ...query, limit: MAX_TRANSACTION_PAGE_SIZE, ...(cursor ? { cursor } : {}) },
+    });
+    pages++;
+    rows.push(...page.rows);
+    if (!page.hasMore || !page.nextCursor) return { rows, complete: true, pages };
+    if (page.rows.length === 0) return { rows, complete: true, pages };
+    if (rows.length >= TRANSACTION_FETCH_LIMIT) return { rows, complete: false, pages };
+    const advanced = !cursor
+      || cursor.lastId !== page.nextCursor.lastId
+      || cursor.lastDate !== page.nextCursor.lastDate;
+    if (!advanced) return { rows, complete: false, pages };
+    cursor = page.nextCursor;
+  }
+}
 const daysAgoISO = (asOf: string, n: number) =>
   new Date(Date.parse(`${asOf}T00:00:00.000Z`) - n * 86_400_000).toISOString().slice(0, 10);
 
@@ -236,25 +290,30 @@ const getTransactions: ToolDefinition = {
     const flowKey = String(a.flow ?? 'all');
     const flowTypes = FLOW_SETS[flowKey] ?? null;
 
-    // ⚠️ THE READ AUTHORITY SORTS BY DATE ONLY (newest|oldest). "Largest" is a
-    // presentation ranking over one bounded page, and the bound is REPORTED —
-    // silently ranking the newest 100 rows of a two-year window and calling the
-    // winner "your biggest" is the kind of wrong that reads as right.
-    const page = await queryTransactions({
-      spaceId: ctx.spaceId,
-      query: {
-        sort: 'oldest' === String(a.sort) ? 'oldest' : 'newest',
-        limit: wantLargest ? RANKING_PAGE : limit,
-        ...(flowTypes ? { flowTypes } : {}),
-        ...(a.from ? { dateFrom: String(a.from) } : {}),
-        ...(a.to   ? { dateTo:   String(a.to)   } : {}),
-        ...(a.text ? { text:     String(a.text) } : {}),
-        ...(a.category ? { categories: [String(a.category)] as never } : {}),
-      },
-    });
+    const filters: Omit<TransactionQuery, 'cursor' | 'limit'> = {
+      sort: 'oldest' === String(a.sort) ? 'oldest' : 'newest',
+      ...(flowTypes ? { flowTypes } : {}),
+      ...(a.from ? { dateFrom: String(a.from) } : {}),
+      ...(a.to   ? { dateTo:   String(a.to)   } : {}),
+      ...(a.text ? { text:     String(a.text) } : {}),
+      ...(a.category ? { categories: [String(a.category)] as never } : {}),
+    };
+
+    // ⚠️ TWO READ SHAPES, FOR TWO DIFFERENT QUESTIONS. "Show me the latest 15" is a
+    // page and the seam already orders it. "Which was the largest" is a question
+    // about the whole window, and answering it from a page is how a payroll deposit
+    // became somebody's biggest purchase.
+    const { rows: population, complete, pages } = wantLargest
+      ? await readWindowToExhaustion(ctx.spaceId, filters)
+      : await (async () => {
+          const page = await queryTransactions({ spaceId: ctx.spaceId, query: { ...filters, limit } });
+          return { rows: page.rows, complete: !page.hasMore, pages: 1 };
+        })();
+
     const rows = wantLargest
-      ? [...page.rows].sort((x, y) => Math.abs(y.amount) - Math.abs(x.amount)).slice(0, limit)
-      : page.rows;
+      ? [...population].sort((x, y) => Math.abs(y.amount) - Math.abs(x.amount)).slice(0, limit)
+      : population;
+
     return {
       asOf: ctx.asOfISO,
       window: { from: a.from ?? null, to: a.to ?? null },
@@ -266,13 +325,14 @@ const getTransactions: ToolDefinition = {
       })),
       shown: rows.length,
       ...(wantLargest ? {
-        rankedOver: page.rows.length,
-        rankingIsComplete: !page.hasMore,
-        ...(page.hasMore ? { rankingCaveat:
-          `Ranked over the ${page.rows.length} most recent matching rows only — more exist, `
-          + 'so this is the largest of that page, not necessarily of the whole window.' } : {}),
-      } : {}),
-      moreAvailable: page.hasMore,
+        rankedOver: population.length,
+        rankingIsComplete: complete,
+        pagesRead: pages,
+        ...(complete ? {} : { rankingCaveat:
+          `Ranked over ${population.length} rows — the ${TRANSACTION_FETCH_LIMIT}-row read `
+          + 'ceiling was reached, so this is the largest of what was read, not necessarily '
+          + 'of the whole window. Narrow the date range to rank it completely.' }),
+      } : { moreAvailable: !complete }),
     };
   },
 };

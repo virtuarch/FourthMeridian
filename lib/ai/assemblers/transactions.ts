@@ -200,7 +200,11 @@ import {
  * if a Space has more than this many banking transactions in the window the
  * summary reflects the most recent TRANSACTION_FETCH_LIMIT rows only.
  */
-const TRANSACTION_FETCH_LIMIT = 5_000;
+// ⚠️ EXPORTED so a second reader of the same population shares ONE ceiling. The
+// AI baseline harness pages the canonical keyset read to exhaustion when it must
+// rank a whole window, and a ranking bounded differently from the summary it sits
+// beside would let the two disagree about what "all of them" means.
+export const TRANSACTION_FETCH_LIMIT = 5_000;
 
 /**
  * W4 — THE assessment window: 90 rolling days, invariant across scopeHint.

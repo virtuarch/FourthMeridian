@@ -20,7 +20,8 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { applyInvestmentScenario, SCENARIO_BASIS } from './scenario';
-import { TOOLS, openAiToolSchemas, findTool } from './tools';
+import { TOOLS, openAiToolSchemas, findTool, readWindowToExhaustion } from './tools';
+import { TRANSACTION_FETCH_LIMIT } from '@/lib/ai/assemblers/transactions';
 import { PROBES, PROBE_IDS, findProbe } from './probes';
 import { ARMS, ARM_USES_TOOLS, ARM_QUESTION } from './evidence';
 import { SYSTEM_INSTRUCTION, supportsTools } from './run';
@@ -514,5 +515,85 @@ console.log('13f. clip 5 — temporal identity');
     /horizon: \{ asOf: ctx\.asOfISO, to: toISO/.test(src));
 }
 
+// ══ 14. Complete-window ranking ══════════════════════════════════════════════
+//
+// `sort: 'largest'` ranked the newest 100 matching rows and called the winner
+// "your biggest". On a 173-row month that answered from 58% of the data, and on a
+// 144-row spending population it is the difference between a $680 Shein purchase
+// and a $5,306 payroll deposit. Raising the page would move the cliff, not remove
+// it — the ranking now pages the keyset cursor to exhaustion.
+// ⚠️ THE ONLY ASYNC SECTION, so it runs inside an IIFE — the house pattern is a
+// top-level script and tsx compiles these to CJS, where top-level await is not
+// available. The summary and exit code move inside it so nothing can report a
+// pass before this section has run.
+void (async () => {
+console.log('14. complete-window ranking');
+{
+  type Row = { id: string; date: string; amount: number };
+  const row = (i: number): Row => ({ id: `t${i}`, date: '2026-08-01', amount: -i });
+
+  /** A fake seam that hands out fixed-size pages and a strictly advancing cursor. */
+  const pagerOf = (total: number) => {
+    let calls = 0;
+    const read = (async (args: { query: { limit?: number; cursor?: { lastId: string } } }) => {
+      calls++;
+      const limit = args.query.limit ?? 100;
+      const start = args.query.cursor ? Number(args.query.cursor.lastId.slice(1)) + 1 : 0;
+      const rows = Array.from({ length: Math.max(0, Math.min(limit, total - start)) },
+        (_, k) => row(start + k));
+      const last = rows[rows.length - 1];
+      const hasMore = start + rows.length < total;
+      return { rows, hasMore,
+        nextCursor: hasMore && last ? { sort: 'newest', lastDate: last.date, lastId: last.id } : null,
+        cursorReset: false };
+    }) as unknown as Parameters<typeof readWindowToExhaustion>[2];
+    return { read, calls: () => calls };
+  };
+  const q = { sort: 'newest' } as unknown as Parameters<typeof readWindowToExhaustion>[1];
+
+  const one = await readWindowToExhaustion('s', q, pagerOf(40).read);
+  check('a window inside one page reads once and is complete',
+    one.rows.length === 40 && one.pages === 1 && one.complete === true);
+
+  const two = await readWindowToExhaustion('s', q, pagerOf(173).read);
+  check('a 173-row window is read WHOLE, not to the first page',
+    two.rows.length === 173 && two.complete === true && two.pages === 2);
+
+  const exact = await readWindowToExhaustion('s', q, pagerOf(100).read);
+  check('a window exactly one page long does not lose its last row',
+    exact.rows.length === 100 && exact.complete === true);
+
+  const big = await readWindowToExhaustion('s', q, pagerOf(3392).read);
+  check('a multi-year window still completes', big.complete === true && big.rows.length === 3392);
+
+  // The ceiling must FAIL LOUDLY. This is the property that stops "raise 100 to 500"
+  // from being the fix: whatever the bound, reaching it is reported.
+  const over = await readWindowToExhaustion('s', q, pagerOf(TRANSACTION_FETCH_LIMIT + 500).read);
+  check('reaching the read ceiling reports incomplete, never silently truncates',
+    over.complete === false && over.rows.length >= TRANSACTION_FETCH_LIMIT);
+  check('…and the ceiling is the repository\'s own, shared with the assembler',
+    TRANSACTION_FETCH_LIMIT === 5_000);
+
+  // A seam that stops advancing would otherwise loop forever.
+  const stuck = (async () => ({
+    rows: [row(1)], hasMore: true,
+    nextCursor: { sort: 'newest', lastDate: '2026-08-01', lastId: 't1' }, cursorReset: false,
+  })) as unknown as Parameters<typeof readWindowToExhaustion>[2];
+  const halted = await readWindowToExhaustion('s', q, stuck);
+  check('a non-advancing cursor halts instead of looping',
+    halted.complete === false && halted.pages <= 3);
+
+  const src = code(read('scripts/ai-baseline/tools.ts'));
+  check('ranking uses the exhaustive read; a plain page does not',
+    /wantLargest\s*\n?\s*\? await readWindowToExhaustion/.test(src));
+  check('…and the population size and completeness are always reported',
+    /rankedOver: population\.length/.test(src) && /rankingIsComplete: complete/.test(src));
+  check('…with a caveat only when it is genuinely incomplete',
+    /complete \? \{\} : \{ rankingCaveat/.test(src));
+  check('the page size is the read authority\'s own constant, not a local number',
+    /limit: MAX_TRANSACTION_PAGE_SIZE/.test(src) && !/RANKING_PAGE/.test(src));
+}
+
 console.log(failures === 0 ? '\nAll baseline-harness checks passed.' : `\n${failures} check(s) failed.`);
 process.exit(failures ? 1 : 0);
+})();

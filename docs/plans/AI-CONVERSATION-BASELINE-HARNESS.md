@@ -272,8 +272,12 @@ no `lib/` financial authority changed.
    hand-rolled the arithmetic. It also gained deterministic month-end checkpoints and an
    explicit `basis`, and its spending source is no longer mislabelled `USER_ASSUMED`.
 4. **`get_transactions` gained a semantic `flow`** (spending / income / transfers /
-   card_payments / refunds) mapped onto canonical `FlowType`, and a bounded ranking now
-   reports its bound.
+   card_payments / refunds) mapped onto canonical `FlowType`, and **`sort: "largest"` now
+   pages the keyset cursor to exhaustion** so a ranking covers the whole requested window
+   rather than the newest page of it. The ceiling is the assembler's own
+   `TRANSACTION_FETCH_LIMIT` (5,000), shared so a ranking and the summary beside it agree
+   about what "all of them" covered; reaching it reports `rankingIsComplete: false` with a
+   caveat rather than truncating silently. Plain `newest`/`oldest` still read one page.
 5. **Every tool result names one instant** — `asOf`, `window` or `horizon`.
    `investment_scenario` states `effectiveAt` and that it does not move forward in time.
 
