@@ -76,7 +76,12 @@ export function LiquidityHero({
   verdict,
   verdictAsOf,
   redactions,
+  compact = false,
 }: {
+  /** OVERVIEW-CONSOLIDATION — rendered as the CASH SECTION HEADER inside the
+   *  unified Assets page (a section figure, not a page hero). Same figures, same
+   *  trust, same verdict; only the type scale changes. */
+  compact?:      boolean;
   /** Present-day accessible cash (cashNow tier) — the figure of record. */
   cashNow:       number;
   /** Reachable within days (marketable tier), for the secondary line. */
@@ -123,8 +128,8 @@ export function LiquidityHero({
       <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-2">
         <Figure
           value={`${approx}${formatCurrency(cashNow, currency)}`}
-          size="hero"
-          className="sm:text-5xl leading-none"
+          size={compact ? "figure" : "hero"}
+          className={compact ? "sm:text-3xl leading-none" : "sm:text-5xl leading-none"}
         />
         {/* The window delta rides the balance-history (cashNow snapshot) basis. Present-day
             it coincides with this headline, so it's coherent; in a HISTORICAL view the

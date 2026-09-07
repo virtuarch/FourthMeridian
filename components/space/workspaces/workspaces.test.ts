@@ -212,7 +212,7 @@ console.log("7. Navigation ownership left the host (SD-8b) — useSpaceNavigatio
   check("host no longer calls the URL authority directly", !DASHCODE.includes("useSpaceUrl"));
   check("host no longer owns the URL tab reader", !DASHCODE.includes("readUrlTabState"));
   check("host no longer owns the perspective slug helper", !DASHCODE.includes("perspectiveIdToSlug"));
-  for (const cell of ["const [activeTab", "const [selectedPerspectiveId", "const [chartMetric", "const [initialAccountFilter"]) {
+  for (const cell of ["const [activeTab", "const [selectedPerspectiveId", "const [chartMetric", "const [wealthMode", "const [initialAccountFilter"]) {
     check(`host no longer holds ${cell}]`, !DASHCODE.includes(cell));
   }
 
@@ -225,8 +225,11 @@ console.log("7. Navigation ownership left the host (SD-8b) — useSpaceNavigatio
   check("nav hook owns the URL authority (useSpaceUrl commit/subscribe)",
     USE_SPACE_NAV.includes("useSpaceUrl(") && USE_SPACE_NAV.includes("spaceUrl.commit(") && USE_SPACE_NAV.includes("spaceUrl.subscribe("));
   check("nav hook owns the tab reader + slug helper", USE_SPACE_NAV.includes("readUrlTabState") && USE_SPACE_NAV.includes("perspectiveIdToSlug"));
-  check("nav hook owns activeTab + activePerspectiveId + chartMetric",
-    USE_SPACE_NAV.includes("activePerspectiveId") && USE_SPACE_NAV.includes("chartMetric") && USE_SPACE_NAV.includes("?metric="));
+  // OVERVIEW-CONSOLIDATION — the chart metric became the Net Worth page subject
+  // (wealthMode) + Assets slice; still the nav hook's, still ?metric=.
+  check("nav hook owns activeTab + activePerspectiveId + wealthMode/assetsSlice (?metric= / ?slice=)",
+    USE_SPACE_NAV.includes("activePerspectiveId") && USE_SPACE_NAV.includes("wealthMode") && USE_SPACE_NAV.includes("assetsSlice")
+    && USE_SPACE_NAV.includes("?metric=") && USE_SPACE_NAV.includes("?slice="));
   check("nav constants (TAB_ORDER / lens ids) live in the nav hook",
     USE_SPACE_NAV.includes("export const TAB_ORDER") && USE_SPACE_NAV.includes("export const NET_WORTH_LENS_ID"));
 

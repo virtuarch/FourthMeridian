@@ -57,15 +57,25 @@ import { useHistoryExploration } from "@/components/history/useHistoryExploratio
 import { LiabilitiesLedger } from "./LiabilitiesLedger";
 import { PayoffScenarioStrip } from "./PayoffScenarioStrip";
 
-/** The Debt workspace's section anchors — what the sidebar shows as "what's inside". */
-const DEBT_SECTIONS: SpaceChromeSection[] = [
-  { label: "Summary",         anchor: "debt-summary" },
-  { label: "Balance history", anchor: "debt-history" },
-  { label: "Liabilities",     anchor: "debt-liabilities" },
-  { label: "Cost & risk",     anchor: "debt-costrisk" },
-  { label: "Payoff",          anchor: "debt-payoff" },
-  { label: "Credit health",   anchor: "debt-credit" },
-];
+/**
+ * The Debt workspace's section anchors — what the sidebar shows as "what's inside".
+ * OVERVIEW-CONSOLIDATION — the list is BUILT per render from what actually mounts:
+ * Liabilities renders only when a liability account exists, and Cost & risk /
+ * Payoff only when a balance is owed. A published anchor with no element scrolled
+ * nowhere in silence; now a row exists iff its section does.
+ */
+export function debtSections(args: { hasLiabilities: boolean; hasDebt: boolean }): SpaceChromeSection[] {
+  return [
+    { label: "Summary",         anchor: "debt-summary" },
+    { label: "Balance history", anchor: "debt-history" },
+    ...(args.hasLiabilities ? [{ label: "Liabilities", anchor: "debt-liabilities" }] : []),
+    ...(args.hasDebt ? [
+      { label: "Cost & risk", anchor: "debt-costrisk" },
+      { label: "Payoff",      anchor: "debt-payoff" },
+    ] : []),
+    { label: "Credit health",   anchor: "debt-credit" },
+  ];
+}
 
 export function DebtWorkspace({
   spaceId,
@@ -173,12 +183,14 @@ export function DebtWorkspace({
   const verdictAsOf = verdict && lens?.provenance.dataAsOf ? formatDate(lens.provenance.dataAsOf) : null;
   const redactions = verdict ? (lens?.provenance.redactions?.length ?? 0) : 0;
 
-  // Publish section anchors to the sidebar (cleared on unmount).
+  // Publish section anchors to the sidebar (cleared on unmount) — only the
+  // sections that render (see debtSections).
   const publishSections = useSpaceSectionsPublisher();
+  const hasLiabilities = liabilityCount > 0;
   useEffect(() => {
-    publishSections(DEBT_SECTIONS);
+    publishSections(debtSections({ hasLiabilities, hasDebt }));
     return () => publishSections([]);
-  }, [publishSections]);
+  }, [publishSections, hasLiabilities, hasDebt]);
 
   const exploration = useHistoryExploration();
 

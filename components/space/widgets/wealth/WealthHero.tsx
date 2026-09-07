@@ -3,25 +3,32 @@
 /**
  * components/space/widgets/wealth/WealthHero.tsx
  *
- * Surface ① of the Wealth Perspective — the ONE place net worth is stated as a
- * number (single-instance doctrine): the headline, its change vs Compare To, an
- * inline confidence chip (Observed / Reconstructed / No history — tone straight
- * from the read model's completeness), then three secondary rows — Total Assets ·
- * Total Liabilities · Liquid Net Worth — as label · value · delta lines (NOT
- * cards, NO sparklines). The Liquid Net Worth row carries a "→ Liquidity"
- * affordance that switches the active lens while the shell's time context stays
- * fixed (P1). Honest states: an As Of before coverage shows "No history for this
- * date" (never zeros-as-facts); a missing comparison shows values without deltas.
+ * Surface ① of the Wealth Perspective — the ONE place the page's subject is
+ * stated as a number (single-instance doctrine): the headline, its change vs
+ * Compare To, an inline confidence chip (Observed / Reconstructed / No history —
+ * tone straight from the read model's completeness), then a quiet secondary
+ * stat line (NOT cards, NO sparklines):
+ *
+ *   Total  (netWorth)  → Assets · Liabilities · Liquid NW
+ *   Assets (any slice) → Cash · Investments
+ *
+ * OVERVIEW-CONSOLIDATION — Liquid Net Worth is no longer a page; it survives
+ * here as the derived stat it always was (netLiquid, read off the same
+ * snapshot). Cash and Investments are the two disjoint dimensions of Total
+ * Assets (cash + invested ≤ totalAssets; the remainder is real-world assets).
+ * Honest states: an As Of before coverage shows "No history for this date"
+ * (never zeros-as-facts); a missing comparison shows values without deltas.
  * Presentation only — every number comes from the WealthResult.
  */
 
+import type { ReactNode } from "react";
 import { formatCurrency } from "@/lib/currency";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { Figure } from "@/components/atlas/Surface";
 import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
-import type { WealthMetricKey } from "./WealthTrendChart";
+import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import { WealthUnavailable, DeltaBadge } from "./wealth-ui";
 
 /** Hero eyebrow label per metric — mirrors the chart's metric switcher so the
@@ -31,6 +38,35 @@ const METRIC_LABEL: Record<WealthMetricKey, string> = {
   totalAssets:      "Total assets",
   totalLiabilities: "Total liabilities",
   liquidNetWorth:   "Liquid net worth",
+  cash:             "Cash",
+  invested:         "Investments & crypto",
+};
+
+/** The secondary stat line per headline — each row is a real WealthMetrics key. */
+const SECONDARY: Record<WealthMetricKey, { key: WealthMetricKey; label: string; goodDirection: "up" | "down" }[]> = {
+  netWorth: [
+    { key: "totalAssets",      label: "Assets",      goodDirection: "up" },
+    { key: "totalLiabilities", label: "Liabilities", goodDirection: "down" },
+    { key: "liquidNetWorth",   label: "Liquid NW",   goodDirection: "up" },
+  ],
+  // "Investments & crypto" — the invested series is stocks + crypto (the two
+  // disjoint snapshot buckets the Investments lens always plotted), while the
+  // composition card below names "Investments" and "Crypto" as separate classes.
+  // The stat says which it is so the two never read as one figure disagreeing.
+  totalAssets: [
+    { key: "cash",     label: "Cash",                 goodDirection: "up" },
+    { key: "invested", label: "Investments & crypto", goodDirection: "up" },
+  ],
+  cash: [
+    { key: "totalAssets", label: "Total assets",         goodDirection: "up" },
+    { key: "invested",    label: "Investments & crypto", goodDirection: "up" },
+  ],
+  invested: [
+    { key: "totalAssets", label: "Total assets", goodDirection: "up" },
+    { key: "cash",        label: "Cash",         goodDirection: "up" },
+  ],
+  totalLiabilities: [],
+  liquidNetWorth: [],
 };
 
 export function WealthHero({
@@ -43,8 +79,8 @@ export function WealthHero({
   currency: string;
   /** The workspace's canonical trust envelope — drives the confidence chip. */
   envelope: PerspectiveEnvelope;
-  /** The chart's selected series — the hero reflects the SAME metric so the
-   *  headline changes to Assets / Liabilities / Liquid NW when the user does. */
+  /** The page's resolved series — the hero reflects the SAME metric the chart
+   *  plots, so Total / Assets / a slice change the headline too. */
   metric?:  WealthMetricKey;
 }) {
   const { asOfState, deltas, compareState } = result;
@@ -98,6 +134,36 @@ export function WealthHero({
         )}
       </div>
       {asOfLabel && <p className="mt-2.5 text-sm text-[var(--text-secondary)]">{asOfLabel}</p>}
+
+      {/* Secondary stats — the subject's dimensions, each a real WealthMetrics
+          key off the same as-of snapshot (label · value · signed change). */}
+      {SECONDARY[metric].length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-[var(--text-muted)]">
+          {SECONDARY[metric].map((row) => {
+            const d = deltas?.[row.key];
+            const good = d ? (row.goodDirection === "up" ? d.abs >= 0 : d.abs <= 0) : true;
+            return (
+              <Stat key={row.key} label={row.label}>
+                {formatCurrency(asOfState[row.key], currency)}
+                {d && Math.abs(d.abs) >= 0.5 && (
+                  <span className="ml-1.5" style={{ color: good ? "var(--accent-positive)" : "var(--accent-negative)" }}>
+                    {d.abs >= 0 ? "+" : "−"}{formatCurrency(Math.abs(d.abs), currency)}
+                  </span>
+                )}
+              </Stat>
+            );
+          })}
+        </div>
+      )}
     </section>
+  );
+}
+
+function Stat({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <span className="inline-flex items-baseline gap-1.5 tabular-nums">
+      <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">{label}</span>
+      <span className="text-[var(--text-secondary)]">{children}</span>
+    </span>
   );
 }

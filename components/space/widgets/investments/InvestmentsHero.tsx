@@ -36,7 +36,12 @@ export function InvestmentsHero({
   asOf,
   envelope,
   attribution,
+  compact = false,
 }: {
+  /** OVERVIEW-CONSOLIDATION — rendered as the INVESTMENTS SECTION HEADER inside
+   *  the unified Assets page (a section figure, not a page hero). Same figures,
+   *  same coverage line, same trust; only the type scale changes. */
+  compact?:          boolean;
   portfolio:         InvestmentsPortfolio;
   reconciliation:    InvestmentsReconciliation | null;
   reportingCurrency: string;
@@ -72,7 +77,11 @@ export function InvestmentsHero({
       </div>
 
       <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-2">
-        <Figure value={formatCurrency(portfolio.valuedSubtotal, ccy)} size="hero" className="sm:text-5xl leading-none" />
+        <Figure
+          value={formatCurrency(portfolio.valuedSubtotal, ccy)}
+          size={compact ? "figure" : "hero"}
+          className={compact ? "sm:text-3xl leading-none" : "sm:text-5xl leading-none"}
+        />
         {change != null ? (
           <DeltaBadge
             abs={change}

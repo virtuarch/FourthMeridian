@@ -44,6 +44,7 @@ const ROUTEC = strip(ROUTE);
 const DASH  = strip(read("components/dashboard/SpaceDashboard.tsx"));
 // SD-2 closeout — perspective render impls live in the component-layer renderer map.
 const REND  = strip(read("components/space/workspaces/workspaceRenderers.tsx"));
+const WEALTH = strip(read("components/space/widgets/wealth/WealthWorkspace.tsx"));
 // Editorial redesign — the extracted surface components (present-day anchor + shared chart).
 const HERO    = strip(read(`${DIR}/LiquidityHero.tsx`));
 const HISTORY = strip(read(`${DIR}/LiquidityBalanceHistory.tsx`));
@@ -167,11 +168,17 @@ console.log("7. FX correctness — historical values CONVERTED (no symbol-only r
 
 console.log("8. Envelope bridge — emitted up, consumed by the host");
 {
-  check("workspace emits the envelope via onEnvelopeChange", CODE.includes("onEnvelopeChange("));
+  // OVERVIEW-CONSOLIDATION — the workspace still resolves + emits its envelope
+  // (optional callback: as the embedded Cash section it emits nothing upward,
+  // the Assets page owns the ONE shell slot, and the section keeps its own
+  // per-figure TrustIndicator).
+  check("workspace emits the envelope via onEnvelopeChange (optional when embedded)", CODE.includes("onEnvelopeChange?.("));
   check("workspace reuses the canonical resolver", CODE.includes("resolvePerspectiveEnvelope("));
   check("host consumes the consolidated envelope in the shell chip", DASH.includes("activeEnvelope"));
-  check("renderer wires envelope up + host relays it (consolidated)",
-    REND.includes("<LiquidityWorkspace") && REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && DASH.includes("useActiveEnvelope"));
+  check("embedded in Assets, the Cash section does NOT emit to the shell (no onEnvelopeChange wired)",
+    WEALTH.includes("<LiquidityWorkspace") && !/<LiquidityWorkspace[\s\S]*?onEnvelopeChange=/.test(WEALTH.slice(WEALTH.indexOf("<LiquidityWorkspace"), WEALTH.indexOf("<InvestmentsWorkspace"))));
+  check("the Cash section keeps its own per-figure trust (LiquidityHero TrustIndicator)", strip(read(`${DIR}/LiquidityHero.tsx`)).includes("<TrustIndicator"));
+  check("host relays the ONE envelope via useActiveEnvelope", DASH.includes("useActiveEnvelope"));
 }
 
 console.log("9. Route serves the WHOLE contract via loadLiquiditySpaceData (authz-gated single authority)");
@@ -184,9 +191,14 @@ console.log("9. Route serves the WHOLE contract via loadLiquiditySpaceData (auth
     !ROUTEC.includes("assembleLiquiditySpaceData") && !ROUTEC.includes("spliceLiquidityRows") && !ROUTEC.includes("computeLiquidity"));
 }
 
-console.log("10. Host RELAYS — the renderer map mounts <LiquidityWorkspace>, dropped <LiquidityPerspective>");
+console.log("10. Host RELAYS — Liquidity renders as the CASH SECTION of Net Worth → Assets (OVERVIEW-CONSOLIDATION)");
 {
-  check("renderer map mounts LiquidityWorkspace (the liquidity destination's renderer)", REND.includes("<LiquidityWorkspace"));
+  check("liquidity is no longer a peer renderer entry", !REND.includes("liquidity: (ctx)") && !REND.includes("<LiquidityWorkspace"));
+  check("the Net Worth workspace embeds LiquidityWorkspace (embedded) as the Cash section",
+    WEALTH.includes("<LiquidityWorkspace") && /<LiquidityWorkspace\s+embedded/.test(WEALTH) && WEALTH.includes('id="wealth-cash"'));
+  check("embedded, the workspace publishes no sidebar sections of its own", CODE.includes("if (embedded) return;"));
+  check("embedded, the workspace draws no second balance-history chart (the Assets chart slices to cashNow)",
+    /\{!embedded && \([\s\S]*?<LiquidityBalanceHistory/.test(SRC));
   check("neither host nor renderer mounts LiquidityPerspective", !DASH.includes("<LiquidityPerspective") && !REND.includes("<LiquidityPerspective"));
   check("host dispatches via WORKSPACE_RENDERERS", DASH.includes("WORKSPACE_RENDERERS["));
 }

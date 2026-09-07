@@ -24,9 +24,11 @@
  *   totalLiabilities = liabilities                                 (the one part)
  *   liquidNetWorth = cash − liabilities  (cash folds savings; liabilities = debt)
  *   netWorth       = assets − liabilities                          (all five)
+ *   cash           = cash                     (OVERVIEW-CONSOLIDATION: the Cash slice)
+ *   invested       = investments + crypto     (the Investments slice — disjoint from cash)
  */
 
-import type { WealthMetricKey } from "./WealthTrendChart";
+import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import type { WealthComposition } from "@/lib/wealth/wealth-time-machine";
 
 /** A WealthComposition component id — the shape of a WealthDriver.id. */
@@ -40,6 +42,8 @@ export const METRIC_COMPOSITION_REGIME: Record<WealthMetricKey, CompositionRegim
   totalAssets:      "assets",       // assets donut, NO liabilities row
   totalLiabilities: "liabilities",  // debt composition (present-day)
   liquidNetWorth:   "liquid",       // liquidity ladder (present-day)
+  cash:             "assets",       // the Assets slices keep the assets donut (the whole is the subject)
+  invested:         "assets",
 };
 
 /**
@@ -51,6 +55,8 @@ export const METRIC_DRIVER_COMPONENTS: Record<WealthMetricKey, WealthComponentId
   totalAssets:      ["cash", "investments", "crypto", "real"],
   totalLiabilities: ["liabilities"],
   liquidNetWorth:   ["cash", "liabilities"],
+  cash:             ["cash"],
+  invested:         ["investments", "crypto"],
 };
 
 /** Possessive phrase for headings ("What moved <phrase>?"). */
@@ -59,6 +65,8 @@ export const METRIC_POSSESSIVE: Record<WealthMetricKey, string> = {
   totalAssets:      "your assets",
   totalLiabilities: "your liabilities",
   liquidNetWorth:   "your liquid net worth",
+  cash:             "your cash",
+  invested:         "your investments",
 };
 
 /** True only for Net Worth — the one metric whose composition shows the

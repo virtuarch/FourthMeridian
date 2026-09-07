@@ -180,7 +180,7 @@ export function SpaceDashboard({
     activeTab, setActiveTab,
     setSelectedPerspectiveId,
     activePerspectiveId, activeLensId, selectLens, switchLens,
-    chartMetric, setChartMetric,
+    wealthMode, setWealthMode, assetsSlice, setAssetsSlice, wealthFocus,
     initialAccountFilter,
     applyInitialTab,
   } = useSpaceNavigation({ category, availablePerspectives });
@@ -238,14 +238,17 @@ export function SpaceDashboard({
   // for a category with no wealth lens — where the slot renders nothing.
 
   // ── SD-3 — declarative lazy activation. The host asks the canonical registry
-  //    what the OPEN perspective declared (WORKSPACE_REGISTRY[id].dataNeeds):
-  //    among perspectives only {wealth,debt} declare `snapshots`, only
-  //    {cashFlow,liquidity} declare `transactions`, only investments declares
-  //    `investmentsHistory` (ratcheted in lib/space/workspace-resources.test.ts).
-  const openNeeds = openPerspectiveDataNeeds(activeTab, activePerspectiveId);
-  const perspectiveNeedsSnapshots = openNeeds.has("snapshots");       // ⇔ wealth | debt
-  const perspectiveNeedsTransactions = openNeeds.has("transactions"); // ⇔ cashFlow | liquidity
-  const perspectiveNeedsInvestments = openNeeds.has("investmentsHistory"); // ⇔ investments
+  //    what the OPEN perspective declared (WORKSPACE_REGISTRY[id].dataNeeds plus,
+  //    since the Overview consolidation, its `modeDataNeeds` for the open Net
+  //    Worth mode): wealth declares `snapshots`; wealth→assets adds
+  //    `transactions` + `investmentsHistory` (the former Liquidity / Investments
+  //    lenses); cashFlow declares `transactions` (ratcheted in
+  //    lib/space/workspace-resources.test.ts).
+  const openNeeds = openPerspectiveDataNeeds(activeTab, activePerspectiveId, wealthMode);
+  const perspectiveNeedsSnapshots = openNeeds.has("snapshots");
+  const perspectiveNeedsTransactions = openNeeds.has("transactions");
+  // (investmentsHistory is fetched INSIDE the embedded Investments section, gated
+  // on assetsActive below — the registry need is what activates that mode's data.)
 
   // ── SD-7b — shared structural data lifecycle (useSpaceData) ─────────────────
   // Fold the nav-derived lazy-activation gates into two booleans and hand the
@@ -338,14 +341,15 @@ export function SpaceDashboard({
     [accounts],
   );
 
-  // M3-Reset — the Overview LENS row, reconciled to the Design Lab's set + feel.
+  // OVERVIEW-CONSOLIDATION — the Overview LENS row is now TWO lenses:
   //
-  //   Net Worth · Cash Flow · Liquidity · Investments · Debt   (text-only, no icons)
+  //   Net Worth · Cash Flow   (text-only, no icons)
   //
-  // "Net Worth" is the DEFAULT lens — REVIEW-3: selecting it clears the engaged
-  // selection, which re-resolves to the Wealth workspace (the summary canvas it
-  // used to return to is retired). The other four engage their extracted
-  // Workspaces. ONE shared PerspectiveTabs renders inside PerspectiveShell.
+  // "Net Worth" is the DEFAULT lens — selecting it clears the engaged selection,
+  // which re-resolves to the Wealth workspace, itself read through the page-level
+  // Total · Assets · Debt modes (the former Liquidity / Investments / Debt lenses
+  // live inside it). "Cash Flow" engages its workspace unchanged. ONE shared
+  // PerspectiveTabs renders inside PerspectiveShell.
   // SD-2/W2 — "is this Perspective workspace-backed?" is answered by the renderer
   // contract alone (a dedicated WORKSPACE_RENDERERS entry); the widgets[]/
   // virtual-section alternative retired with the Goals surface.
@@ -432,9 +436,9 @@ export function SpaceDashboard({
   // WealthResult; it only relays the workspace's trust envelope to the shell chip via
   // `wealthEnvelope` state (the Investments onEnvelopeChange bridge, below).
 
-  // SD-8b — the Wealth chart metric (chartMetric + ?metric= sync) and the
-  // switch-lens-from-workspace handler moved into useSpaceNavigation. The host
-  // consumes chartMetric / setChartMetric / switchLens from it.
+  // SD-8b — the Net Worth subject + Assets slice (wealthMode / assetsSlice +
+  // ?metric= / ?slice= sync) and the switch-lens-from-workspace handler live in
+  // useSpaceNavigation. The host consumes them from it.
 
   // SD-9B — the trust-PUBLICATION seam. useActiveEnvelope holds the engaged
   // workspace's emitted envelope and owns the workspace-backed-vs-lens-only
@@ -448,12 +452,13 @@ export function SpaceDashboard({
   // gate — the completeness stamp AND its trust envelope are now workspace-owned too
   // (emitted up via cashFlowEnvelope, below); the host retains only the canonical-time
   // seam (cashFlowPeriod).
-  // Debt/Investments/Liquidity own their own historical fetch (inside each
-  // Workspace) and gate it on being the open perspective. The strictly-earlier
-  // compareTo (those historical routes 400 on compareTo >= asOf) is now a CANONICAL
-  // derived value — shell.derived.historicalCompareTo — not computed host-local.
-  const debtActive = activeTab === "OVERVIEW" && activePerspectiveId === "debt";
-  const liquidityActive = activeTab === "OVERVIEW" && activePerspectiveId === "liquidity";
+  // The embedded Debt / Investments / Cash (Liquidity) data hooks own their own
+  // historical fetch (inside each workspace) and gate it on their Net Worth MODE
+  // being open. The strictly-earlier compareTo (those historical routes 400 on
+  // compareTo >= asOf) is a CANONICAL derived value — shell.derived.historicalCompareTo.
+  const netWorthOpen = activeTab === "OVERVIEW" && activePerspectiveId === "wealth";
+  const debtActive = netWorthOpen && wealthMode === "debt";
+  const assetsActive = netWorthOpen && wealthMode === "assets";
   const txConversionCtx = useMemo(() => {
     const serialized = transactionsMoneyCtxOverride ?? spaceMoneyCtx;
     return serialized ? rehydrateContext(serialized) : undefined;
@@ -578,7 +583,8 @@ export function SpaceDashboard({
   // block below. The route stays Space-level rather than liquidity-scoped: the
   // baseline is a UNIT, and the next surface to express an answer in months of
   // expenses should read it rather than mint a second one.
-  const liquidityOpen = openNeeds.has("transactions") && activePerspectiveId === "liquidity";
+  // OVERVIEW-CONSOLIDATION — the Cash section lives inside Net Worth → Assets.
+  const liquidityOpen = assetsActive;
   const [expenseBaseline, setExpenseBaseline] =
     useState<ExpenseBaseline | null>(null);
   useEffect(() => {
@@ -649,12 +655,14 @@ export function SpaceDashboard({
     historicalCompareTo: shell.derived.historicalCompareTo,
     today: shellToday,
     debtActive,
-    liquidityActive,
-    investmentsActive: perspectiveNeedsInvestments,
+    assetsActive,
     lensResults,
     cashFlowPeriod,
-    chartMetric,
-    onMetricChange: setChartMetric,
+    wealthMode,
+    assetsSlice,
+    wealthFocus,
+    onModeChange: setWealthMode,
+    onSliceChange: setAssetsSlice,
     onSwitchLens: switchLens,
     onEnvelopeChange,
     onSelectCashFlowPeriod: setCashFlowExplicitPeriod,
@@ -809,10 +817,11 @@ export function SpaceDashboard({
             />
 
             {/* Row 4 — Perspective-specific controls slot. These stay
-                Perspective-specific (never shared): Cash Flow's perspective /
-                measure controls currently live in their own widgets below;
-                future Perspectives surface their controls in this slot. Below it
-                begins the existing widget/card stack. */}
+                Perspective-specific (never shared): Net Worth's page-level
+                Total · Assets · Debt selector is the first thing its workspace
+                renders (WealthWorkspace); Cash Flow's perspective / measure
+                controls live in its own widgets. Below it begins the existing
+                widget/card stack. */}
             <div
               role="tabpanel"
               aria-labelledby={activePerspectiveId ? `ptab-${activePerspectiveId}` : undefined}

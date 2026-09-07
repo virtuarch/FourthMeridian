@@ -93,6 +93,25 @@ function check(name: string, cond: boolean, detail?: string): void {
   }
 }
 
+// ── OVERVIEW-CONSOLIDATION — per-MODE needs ────────────────────────────────────
+// liquidity / investments / debt are no longer OPENABLE perspectives (they render
+// inside the Net Worth workspace), so the reductions above describe registry
+// membership only. The host now passes the Net Worth mode, and the gate unions
+// the registry's `modeDataNeeds` — so Assets reaches the former Liquidity +
+// Investments fetches and Debt the former Debt ones, still from ONE registry.
+{
+  const has = (mode: string, need: string) => openPerspectiveDataNeeds("OVERVIEW", "wealth", mode).has(need as never);
+  check("wealth/total does NOT activate transactions", !has("total", "transactions"));
+  check("wealth/assets activates transactions (the former liquidity need)", has("assets", "transactions"));
+  check("wealth/assets activates investmentsHistory (the former investments need)", has("assets", "investmentsHistory"));
+  check("wealth/assets activates lens (the liquidity verdict)", has("assets", "lens"));
+  check("wealth/debt activates lens + fico (the former debt needs)", has("debt", "lens") && has("debt", "fico"));
+  check("wealth/debt does NOT activate transactions", !has("debt", "transactions"));
+  check("every mode keeps the base needs", ["total", "assets", "debt"].every((m) => has(m, "accounts") && has(m, "snapshots")));
+  check("an unknown mode ⇒ base needs only", [...openPerspectiveDataNeeds("OVERVIEW", "wealth", "nope")].sort().join() === "accounts,snapshots");
+  check("a non-Overview tab ignores the mode", openPerspectiveDataNeeds("ACCOUNTS", "wealth", "assets").size === 0);
+}
+
 // NOTE (TEST-3): the former source-scan tail — which pinned the host's now-removed
 // per-perspective fetch booleans (debtWorkspaceActive, …) and the host-internal
 // `perspectiveNeeds*` identifier spellings — was removed. It pinned deleted host

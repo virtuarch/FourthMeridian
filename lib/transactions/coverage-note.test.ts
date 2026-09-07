@@ -68,8 +68,12 @@ console.log("PROPAGATION — the sentinel is not discarded on the path");
     /^\s*transactionsMeta,\s*$/m.test(host));
 
   const rend = code("components/space/workspaces/workspaceRenderers.tsx");
-  check("renderer ctx carries transactionsMeta to Cash Flow + Liquidity",
-    (rend.match(/transactionsMeta=\{ctx\.transactionsMeta\}/g) ?? []).length >= 2);
+  // OVERVIEW-CONSOLIDATION — Cash Flow takes it as a JSX prop; the Cash section
+  // (the former Liquidity workspace, embedded in Net Worth → Assets) receives it
+  // through the wealth renderer's `cash` input bundle.
+  check("renderer ctx carries transactionsMeta to Cash Flow + the Cash (Liquidity) section",
+    (rend.match(/transactionsMeta=\{ctx\.transactionsMeta\}/g) ?? []).length >= 1
+    && /transactionsMeta:\s*ctx\.transactionsMeta/.test(rend));
 }
 
 console.log("SURFACES — the note is gated on truncation, not always-on");

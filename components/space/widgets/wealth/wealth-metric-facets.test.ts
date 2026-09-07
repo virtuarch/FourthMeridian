@@ -37,7 +37,10 @@ function check(name: string, cond: boolean, detail?: string): void {
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 
-const ALL_METRICS: WealthMetricKey[] = ["netWorth", "totalAssets", "totalLiabilities", "liquidNetWorth"];
+// OVERVIEW-CONSOLIDATION — the two Assets slices (cash / invested) join the four
+// original series. The legacy four are RETAINED (their series and facets still
+// exist even though Liabilities / Liquid NW are no longer page destinations).
+const ALL_METRICS: WealthMetricKey[] = ["netWorth", "totalAssets", "totalLiabilities", "liquidNetWorth", "cash", "invested"];
 const ALL_COMPONENTS: WealthComponentId[] = ["cash", "investments", "crypto", "real", "liabilities"];
 
 /**
@@ -66,6 +69,9 @@ function metricFromComposition(metric: WealthMetricKey, comp: Record<WealthCompo
     case "totalLiabilities": return comp.liabilities;
     case "liquidNetWorth":   return comp.cash - comp.liabilities;
     case "netWorth":         return assets - comp.liabilities;
+    // The Assets slices: disjoint buckets of `assets` (cash + invested ≤ assets).
+    case "cash":             return comp.cash;
+    case "invested":         return comp.investments + comp.crypto;
   }
 }
 
@@ -100,6 +106,8 @@ function main(): void {
   check("totalAssets renders the assets regime", METRIC_COMPOSITION_REGIME.totalAssets === "assets");
   check("totalLiabilities renders the liabilities regime", METRIC_COMPOSITION_REGIME.totalLiabilities === "liabilities");
   check("liquidNetWorth renders the liquid regime", METRIC_COMPOSITION_REGIME.liquidNetWorth === "liquid");
+  check("cash slice keeps the assets regime (the whole is the subject)", METRIC_COMPOSITION_REGIME.cash === "assets");
+  check("invested slice keeps the assets regime", METRIC_COMPOSITION_REGIME.invested === "assets");
 
   console.log("assets exclude liabilities; liabilities exclude assets");
   check("Assets driver set has NO liabilities component",
@@ -114,17 +122,32 @@ function main(): void {
   check("Net Worth driver set is all five components",
     ALL_COMPONENTS.every((c) => METRIC_DRIVER_COMPONENTS.netWorth.includes(c)));
 
+  console.log("Assets slices are disjoint and sum to the assets driver set (no double count)");
+  {
+    const cash = METRIC_DRIVER_COMPONENTS.cash;
+    const inv  = METRIC_DRIVER_COMPONENTS.invested;
+    check("cash slice is cash-only", cash.join() === "cash");
+    check("invested slice is investments + crypto (both, once)", inv.slice().sort().join() === "crypto,investments");
+    check("cash ∩ invested = ∅", !cash.some((c) => inv.includes(c)));
+    check("cash ∪ invested ⊆ totalAssets components", [...cash, ...inv].every((c) => METRIC_DRIVER_COMPONENTS.totalAssets.includes(c)));
+    check("neither slice touches liabilities", ![...cash, ...inv].includes("liabilities"));
+  }
+
   console.log("liability contribution row shows for Net Worth only");
   check("netWorth shows the liabilities contribution", showsLiabilityContribution("netWorth"));
   check("totalAssets does NOT", !showsLiabilityContribution("totalAssets"));
   check("totalLiabilities does NOT (it IS the liabilities view)", !showsLiabilityContribution("totalLiabilities"));
   check("liquidNetWorth does NOT", !showsLiabilityContribution("liquidNetWorth"));
+  check("cash slice does NOT", !showsLiabilityContribution("cash"));
+  check("invested slice does NOT", !showsLiabilityContribution("invested"));
 
   console.log("headings");
   check("net worth phrase", METRIC_POSSESSIVE.netWorth === "your net worth");
   check("assets phrase", METRIC_POSSESSIVE.totalAssets === "your assets");
   check("liabilities phrase", METRIC_POSSESSIVE.totalLiabilities === "your liabilities");
   check("liquid phrase", METRIC_POSSESSIVE.liquidNetWorth === "your liquid net worth");
+  check("cash phrase", METRIC_POSSESSIVE.cash === "your cash");
+  check("invested phrase", METRIC_POSSESSIVE.invested === "your investments");
 
   console.log(failures === 0 ? "\nPASS" : `\nFAIL — ${failures} check(s)`);
   process.exit(failures === 0 ? 0 : 1);

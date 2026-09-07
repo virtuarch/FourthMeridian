@@ -39,6 +39,16 @@
  * reporting-currency sentence.
  *
  * Owns NO time state — asOf / compareTo / today are shell props threaded into the hook.
+ *
+ * OVERVIEW-CONSOLIDATION — Liquidity is no longer a peer Overview lens. This
+ * workspace now renders EMBEDDED as the CASH SECTION of the unified Net Worth →
+ * Assets page (`embedded`): the same data hook, the same figure authorities, the
+ * same Sources / Resilience / What-changed surfaces. Embedded, it (a) renders its
+ * hero as a compact section header, (b) omits its own balance-history chart —
+ * the Assets chart directly above slices to the SAME cashNow series — and (c)
+ * publishes neither sidebar sections nor the shell envelope: the Assets page owns
+ * both, while the Cash section keeps its own per-figure TrustIndicator so mixed
+ * evidence is never flattened into page-wide certainty.
  */
 
 import { useCallback, useEffect, useMemo, type ReactNode } from "react";
@@ -104,7 +114,10 @@ export function LiquidityWorkspace({
   period,
   onOpenCashFlow,
   onEnvelopeChange,
+  embedded = false,
 }: {
+  /** Rendered as the Cash section inside Net Worth → Assets (see header). */
+  embedded?: boolean;
   spaceId: string;
   /** Resolved closing date (YYYY-MM-DD) from the shell. */
   asOf: string;
@@ -140,8 +153,9 @@ export function LiquidityWorkspace({
   period?: CashFlowPeriod;
   onOpenCashFlow?: () => void;
   /** Emit the trust envelope up to the shell Completeness chip (the host owns no
-   *  Liquidity data). Present-day ⇒ the current lens; historical ⇒ the atAsOf lens. */
-  onEnvelopeChange: (env: PerspectiveEnvelope) => void;
+   *  Liquidity data). Present-day ⇒ the current lens; historical ⇒ the atAsOf lens.
+   *  Omitted when embedded — the Assets page owns the shell slot. */
+  onEnvelopeChange?: (env: PerspectiveEnvelope) => void;
 }) {
   // v2.6 — the LIQUIDITY root. Its children are TIERS, not buckets: liquidity
   // classifies by how fast an asset converts, and has no liability side at all.
@@ -183,7 +197,7 @@ export function LiquidityWorkspace({
     () => resolvePerspectiveEnvelope({ perspectiveId: "liquidity", lensResult: ledeLens }),
     [ledeLens],
   );
-  useEffect(() => { onEnvelopeChange(envelope); }, [envelope, onEnvelopeChange]);
+  useEffect(() => { onEnvelopeChange?.(envelope); }, [envelope, onEnvelopeChange]);
 
   // FIGURES OF RECORD — present-day, from the accounts array (never the lens). The Hero
   // headline (cashNow tier) is the SAME figure the SourcesLedger sums, so they agree.
@@ -263,9 +277,11 @@ export function LiquidityWorkspace({
     : null;
   const redactions = verdict ? (ledeLens?.provenance.redactions?.length ?? 0) : 0;
 
-  // Publish section anchors to the sidebar (cleared on unmount).
+  // Publish section anchors to the sidebar (cleared on unmount). Embedded, the
+  // Assets page publishes ONE list for the whole page; this section stays quiet.
   const publishSections = useSpaceSectionsPublisher();
   useEffect(() => {
+    if (embedded) return;
     const sections: SpaceChromeSection[] = [
       { label: "Summary",         anchor: "liquidity-summary" },
       { label: "Balance history", anchor: "liquidity-history" },
@@ -275,7 +291,7 @@ export function LiquidityWorkspace({
     ];
     publishSections(sections);
     return () => publishSections([]);
-  }, [publishSections, period]);
+  }, [publishSections, period, embedded]);
 
   const liquidityPoints = cashHistory?.points ?? [];
   const handleSelectPoint = useCallback(
@@ -295,9 +311,10 @@ export function LiquidityWorkspace({
         </div>
       )}
 
-      {/* ① Summary — the editorial lede. */}
+      {/* ① Summary — the editorial lede (embedded: the Cash section header). */}
       <div id="liquidity-summary" className="scroll-mt-20">
         <LiquidityHero
+          compact={embedded}
           cashNow={cashNow}
           reachableSoon={reachableSoon}
           sharePctNow={sharePctNow}
@@ -320,15 +337,20 @@ export function LiquidityWorkspace({
         />
       </div>
 
-      {/* ② Balance history — accessible cash over time, the SHARED TrendChart. */}
+      {/* ② Balance history — accessible cash over time, the SHARED TrendChart.
+           Embedded, the unified Assets chart above already slices to this SAME
+           series (WealthChartPoint.cash === totalCash + totalSavings), so a second
+           identical chart is not drawn; the as-of retry affordance stays. */}
       <div id="liquidity-history" className="scroll-mt-20">
-        <LiquidityBalanceHistory
-          history={cashHistory}
-          currency={displayCurrency}
-          asOf={asOf}
-          compareTo={compareTo}
-          onSelectPoint={handleSelectPoint}
-        />
+        {!embedded && (
+          <LiquidityBalanceHistory
+            history={cashHistory}
+            currency={displayCurrency}
+            asOf={asOf}
+            compareTo={compareTo}
+            onSelectPoint={handleSelectPoint}
+          />
+        )}
         {error && (
           <button
             type="button"

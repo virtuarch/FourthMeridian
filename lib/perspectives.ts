@@ -181,6 +181,15 @@ export interface WorkspaceDefinition {
   temporalCapability?: TemporalCapability;
   /** The trust-envelope source for this workspace (see WorkspaceEnvelopeSource). */
   envelope?: WorkspaceEnvelopeSource;
+  /**
+   * OVERVIEW-CONSOLIDATION — data primitives a workspace consumes ONLY in one of
+   * its page-level MODES, keyed by mode id. The Net Worth workspace hosts Total ·
+   * Assets · Debt; opening Assets activates the former Liquidity + Investments
+   * fetches, opening Debt the former Debt ones — declared here so the host keeps
+   * reading ONE registry (openPerspectiveDataNeeds unions base + mode) instead
+   * of growing per-mode booleans. Absent ⇒ the workspace has no modal needs.
+   */
+  modeDataNeeds?: Readonly<Record<string, readonly WorkspaceDataNeed[]>>;
 }
 
 /**
@@ -259,10 +268,20 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     id: "wealth", kind: "perspective", label: "Wealth", icon: "Gem", status: "available", group: "Financial",
     description: "Where your money is — assets by account, institution, and class.",
     // UX-PER-3 Wealth workspace. Doctrine: Wealth answers "Where is my money?"
-    // and is ASSETS ONLY. (REVIEW-3: the widgets[] array was deleted — Wealth
-    // renders via its dedicated WORKSPACE_RENDERERS entry, which always wins
-    // the dispatch, so the virtual-section list could never be read.)
+    // (REVIEW-3: the widgets[] array was deleted — Wealth renders via its
+    // dedicated WORKSPACE_RENDERERS entry, which always wins the dispatch.)
+    //
+    // OVERVIEW-CONSOLIDATION — this is the "Net Worth" Overview lens, read through
+    // three page-level modes (Total · Assets · Debt). The former Liquidity and
+    // Investments workspaces render INSIDE Assets (as Cash / Investments
+    // sections) and the Debt workspace IS the Debt mode, so their data needs are
+    // declared here PER MODE rather than on peer lenses: opening Assets or Debt
+    // activates exactly the fetches the retired peer lens used to.
     dataNeeds: ["accounts", "snapshots"],
+    modeDataNeeds: {
+      assets: ["transactions", "lens", "investmentsHistory"],
+      debt:   ["lens", "fico"],
+    },
     temporalCapability: { asOf: "full", compareTo: "full", period: "none" },
     envelope: "wealth",
   },
@@ -286,6 +305,13 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     temporalCapability: { asOf: "full", compareTo: "full", period: "full" },
     envelope: "cashFlow",
   },
+  // OVERVIEW-CONSOLIDATION — `investments`, `debt` and `liquidity` are NO LONGER
+  // Overview lens destinations: they render inside the Net Worth workspace
+  // (Assets / Debt / Assets). Their registry entries remain because the engine
+  // lenses (lensId), the category lists, the present-day verdict batch and the
+  // Brief/AI consumers still read them; `?perspective=<id>` canonicalises to the
+  // Net Worth mode (lib/wealth/wealth-mode.ts). None has a WORKSPACE_RENDERERS
+  // entry any more.
   investments: {
     id: "investments", kind: "perspective", label: "Investments", icon: "TrendingUp", status: "available", group: "Financial",
     description: "What you own and what happened to it — holdings, weights, and the period's activity, valued as of any date.",

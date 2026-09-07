@@ -7,7 +7,8 @@
  * It owns the URL ⇄ state synchronization and every piece of "where am I" state:
  *   - the active rail tab (activeTab) + one-shot initial-tab resolution,
  *   - the engaged analytical lens (selectedPerspectiveId → activePerspectiveId),
- *   - the Wealth chart metric (chartMetric, ?metric=),
+ *   - the Net Worth page subject + Assets slice (wealthMode ?metric=, assetsSlice
+ *     ?slice=) — the evolved WealthMetric mechanism (OVERVIEW-CONSOLIDATION),
  *   - the account deep-link seed (?account= → initialAccountFilter),
  *   - and the ONE URL writer + ONE popstate reader (via useSpaceUrl).
  *
@@ -33,7 +34,12 @@ import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
 import { readSpaceParam, legacyTabPerspective } from "@/lib/space/space-url";
 import { PERSPECTIVE_LIBRARY } from "@/lib/perspectives";
 import { hasSpaceTrendHero } from "@/lib/space-hero";
-import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
+import {
+  legacyPerspectiveTarget, parseAssetsSlice, parseWealthMode,
+  serializeAssetsSlice, serializeWealthMode,
+  DEFAULT_ASSETS_SLICE, DEFAULT_WEALTH_MODE,
+  type AssetsSlice, type LegacyPerspectiveTarget, type WealthMode,
+} from "@/lib/wealth/wealth-mode";
 import type { DashboardSection } from "@/lib/space/dashboard-types";
 
 // ─── URL ⇄ tab vocabulary ───────────────────────────────────────────────────────
@@ -71,26 +77,44 @@ function slugToPerspectiveId(slug: string): string {
   return slug.toLowerCase().replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase());
 }
 /** URL "perspective" param → id. Present-but-invalid ⇒ null. Absent ⇒ null. */
-function parsePerspectiveParam(raw: string | null): string | null {
+export function parsePerspectiveParam(raw: string | null): string | null {
   if (!raw) return null;
   const id = slugToPerspectiveId(raw);
   // M3-Reset — "wealth" is the underlying implementation of the Net Worth DEFAULT,
   // not a separate destination: canonicalize the legacy ?perspective=wealth alias
   // (and any unknown id) to the clean Net Worth default (null).
   if (id === "wealth") return null;
+  // OVERVIEW-CONSOLIDATION — the retired peer lenses (liquidity / investments /
+  // debt) are NOT engageable any more: they resolve to a Net Worth MODE (see
+  // resolveUrlLens) and never to an engaged perspective.
+  if (legacyPerspectiveTarget(id)) return null;
   return id in PERSPECTIVE_LIBRARY ? id : null;
 }
-function readUrlTabState(): { tab: string | null; perspective: string | null } {
-  if (typeof window === "undefined") return { tab: null, perspective: null };
+
+/**
+ * OVERVIEW-CONSOLIDATION — the ONE reading of the URL's lens vocabulary. A
+ * legacy peer-lens link (`?perspective=liquidity|investments|debt`, or the older
+ * `?tab=debt|credit|investments`) is a Net Worth mode + slice + one-shot section
+ * focus; anything else is the engaged perspective (or the Net Worth default).
+ * Pure over the raw params so it is unit-testable without a window.
+ */
+export function resolveUrlLens(params: { tab: string | null; perspective: string | null }): {
+  perspective: string | null;
+  legacy: LegacyPerspectiveTarget | null;
+} {
+  const forced = legacyTabPerspective(params.tab);
+  const rawId = forced ?? (params.perspective ? slugToPerspectiveId(params.perspective) : null);
+  const legacy = legacyPerspectiveTarget(rawId);
+  if (legacy) return { perspective: null, legacy };
+  return { perspective: forced ?? parsePerspectiveParam(params.perspective), legacy: null };
+}
+
+function readUrlTabState(): { tab: string | null; perspective: string | null; legacy: LegacyPerspectiveTarget | null } {
+  if (typeof window === "undefined") return { tab: null, perspective: null, legacy: null };
   const p = new URLSearchParams(window.location.search);
   const rawTab = p.get("tab");
-  // M2: a legacy perspective-routing tab (debt/credit/investments) forces its lens;
-  // otherwise the ?perspective= param drives it (null ⇒ Overview summary).
-  const forced = legacyTabPerspective(rawTab);
-  return {
-    tab: parseTabParam(rawTab),
-    perspective: forced ?? parsePerspectiveParam(p.get("perspective")),
-  };
+  const { perspective, legacy } = resolveUrlLens({ tab: rawTab, perspective: p.get("perspective") });
+  return { tab: parseTabParam(rawTab), perspective, legacy };
 }
 
 // M2: DEBT / INVESTMENTS removed — perspectives under Overview.
@@ -98,13 +122,13 @@ function readUrlTabState(): { tab: string | null; perspective: string | null } {
 // live-but-orphaned routed-modal surfaces and their deep links are gone; the
 // order is exactly the section-derived default-tab candidates.
 export const TAB_ORDER = ["OVERVIEW", "ACCOUNTS", "ACTIVITY"];
-// M3-Reset — the canonical Overview LENS set (prototype parity). "Net Worth" is the
-// default lens (a null engaged perspective = the Overview summary); the rest engage
-// their extracted Workspaces.
+// OVERVIEW-CONSOLIDATION — the canonical Overview LENS set is now TWO lenses:
+// "Net Worth" is the default (a null engaged perspective ⇒ the wealth workspace,
+// read through its Total · Assets · Debt modes); "Cash Flow" is the one other
+// engageable lens — it describes movement, not balance-sheet position.
+// Liquidity / Investments / Debt live INSIDE Net Worth (Assets / Assets / Debt).
 export const NET_WORTH_LENS_ID = "networth";
-export const CORE_LENS_IDS = ["cashFlow", "liquidity", "investments", "debt"];
-
-const WEALTH_METRICS: WealthMetricKey[] = ["netWorth", "totalAssets", "totalLiabilities", "liquidNetWorth"];
+export const CORE_LENS_IDS = ["cashFlow"];
 
 export interface UseSpaceNavigationArgs {
   /** Space category — drives the trend-hero default-tab shortcut. */
@@ -127,9 +151,16 @@ export interface SpaceNavigation {
   selectLens: (id: string) => void;
   /** Engage a lens from within a workspace (keeps time context fixed). */
   switchLens: (id: string) => void;
-  chartMetric: WealthMetricKey;
-  /** Set the Wealth chart metric + mirror to ?metric= (netWorth clears the param). */
-  setChartMetric: (m: WealthMetricKey) => void;
+  /** The Net Worth page subject (Total · Assets · Debt) — mirrored to ?metric=. */
+  wealthMode: WealthMode;
+  /** Set the subject + mirror to ?metric= (total clears the param). */
+  setWealthMode: (m: WealthMode) => void;
+  /** The Assets balance-history slice (All · Cash · Investments) — mirrored to ?slice=. */
+  assetsSlice: AssetsSlice;
+  /** Set the slice + mirror to ?slice= (all clears the param). */
+  setAssetsSlice: (s: AssetsSlice) => void;
+  /** One-shot Assets section focus from a legacy peer-lens deep link, else null. */
+  wealthFocus: "cash" | "investments" | null;
   /** ?account= deep-link seed for the Transactions tab (read once on mount). */
   initialAccountFilter: string | null;
   /** Resolve + apply the initial tab ONCE, from the URL / sections. */
@@ -142,7 +173,9 @@ export function useSpaceNavigation({
 }: UseSpaceNavigationArgs): SpaceNavigation {
   const [activeTab, setActiveTab] = useState("");
   const [selectedPerspectiveId, setSelectedPerspectiveId] = useState<string | null>(null);
-  const [chartMetric, setChartMetric] = useState<WealthMetricKey>("netWorth");
+  const [wealthMode, setWealthMode] = useState<WealthMode>(DEFAULT_WEALTH_MODE);
+  const [assetsSlice, setAssetsSlice] = useState<AssetsSlice>(DEFAULT_ASSETS_SLICE);
+  const [wealthFocus, setWealthFocus] = useState<"cash" | "investments" | null>(null);
   const [initialAccountFilter, setInitialAccountFilter] = useState<string | null>(null);
   const initialTabSet = useRef(false);
 
@@ -202,17 +235,33 @@ export function useSpaceNavigation({
     if (wrote) urlInitDone.current = true;
   }, [activeTab, selectedPerspectiveId, spaceUrl]);
 
+  // OVERVIEW-CONSOLIDATION — a legacy peer-lens link canonicalises to the mode
+  // it now lives in. Applied from the URL read (mount + back/forward) below.
+  const applyLegacy = useCallback((legacy: LegacyPerspectiveTarget | null) => {
+    if (!legacy) return;
+    setWealthMode(legacy.mode);
+    setAssetsSlice(legacy.slice);
+    setWealthFocus(legacy.focus);
+    // Self-heal the URL: the mode + slice become the canonical params (the tab
+    // write above drops the retired `perspective` value on the same tick).
+    spaceUrl.commit(
+      { metric: serializeWealthMode(legacy.mode), slice: serializeAssetsSlice(legacy.slice) },
+      { history: "replace" },
+    );
+  }, [spaceUrl]);
+
   // ── URL-backed tab state (read: browser back/forward) ───────────────────────
   useEffect(
     () =>
       spaceUrl.subscribe(() => {
-        const { tab, perspective } = readUrlTabState();
+        const { tab, perspective, legacy } = readUrlTabState();
         // Set unconditionally: navigating BACK to a summary URL (no perspective)
         // must clear an engaged lens, not leave the previous one stuck.
         setSelectedPerspectiveId(perspective);
+        applyLegacy(legacy);
         if (tab) setActiveTab(tab);
       }),
-    [spaceUrl],
+    [spaceUrl, applyLegacy],
   );
 
   // ── Account deep-link (Banking→Transactions retarget) — `?account=<id>` seeds
@@ -223,22 +272,43 @@ export function useSpaceNavigation({
     if (account) setInitialAccountFilter(account);
   }, [spaceUrl]);
 
-  // ── Wealth chart metric (?metric=) — a wealth-only view toggle kept OUT of the
-  //    canonical time model. Read on mount + re-read on back/forward.
+  // ── Net Worth subject (?metric=) + Assets slice (?slice=) — wealth-only view
+  //    toggles kept OUT of the canonical time model. Read on mount + re-read on
+  //    back/forward. The param keeps its historical name: the four legacy values
+  //    (netWorth / totalAssets / totalLiabilities / liquidNetWorth) canonicalise
+  //    to a mode (parseWealthMode), so old links keep resolving. A legacy
+  //    peer-lens link (?perspective=liquidity | …) outranks ?metric= — it names
+  //    the subject the user asked for.
   useEffect(() => {
     const syncFromUrl = () => {
-      const m = readSpaceParam(spaceUrl.getSearch(), "metric");
-      setChartMetric(m && (WEALTH_METRICS as string[]).includes(m) ? (m as WealthMetricKey) : "netWorth");
+      const search = spaceUrl.getSearch();
+      const legacy = readUrlTabState().legacy;
+      if (legacy) { applyLegacy(legacy); return; }
+      setWealthMode(parseWealthMode(readSpaceParam(search, "metric")));
+      setAssetsSlice(parseAssetsSlice(readSpaceParam(search, "slice")));
     };
     syncFromUrl();
     return spaceUrl.subscribe(syncFromUrl);
-  }, [spaceUrl]);
-  const handleMetricChange = useCallback(
-    (m: WealthMetricKey) => {
-      setChartMetric(m);
-      // metric is a wealth-only view toggle → always replace (never a history
-      // entry); netWorth (the default) clears the param.
-      spaceUrl.commit({ metric: m === "netWorth" ? null : m }, { history: "replace" });
+  }, [spaceUrl, applyLegacy]);
+  const handleModeChange = useCallback(
+    (m: WealthMode) => {
+      setWealthMode(m);
+      setWealthFocus(null);
+      // A view toggle → always replace (never a history entry); the default clears
+      // the param. Leaving Assets also clears the slice (it has no meaning elsewhere).
+      spaceUrl.commit(
+        { metric: serializeWealthMode(m), ...(m !== "assets" ? { slice: null } : {}) },
+        { history: "replace" },
+      );
+      if (m !== "assets") setAssetsSlice(DEFAULT_ASSETS_SLICE);
+    },
+    [spaceUrl],
+  );
+  const handleSliceChange = useCallback(
+    (sl: AssetsSlice) => {
+      setAssetsSlice(sl);
+      setWealthFocus(null);
+      spaceUrl.commit({ slice: serializeAssetsSlice(sl) }, { history: "replace" });
     },
     [spaceUrl],
   );
@@ -268,9 +338,10 @@ export function useSpaceNavigation({
           : TAB_ORDER.find((t) => t !== "ACTIVITY" && enabledTabs.has(t)) ??
             (enabledTabs.has("ACTIVITY") ? "ACTIVITY" : "OVERVIEW"));
       if (url.perspective) setSelectedPerspectiveId(url.perspective);
+      applyLegacy(url.legacy);
       setActiveTab(nextTab);
     },
-    [category],
+    [category, applyLegacy],
   );
 
   return {
@@ -282,8 +353,11 @@ export function useSpaceNavigation({
     activeLensId,
     selectLens,
     switchLens,
-    chartMetric,
-    setChartMetric: handleMetricChange,
+    wealthMode,
+    setWealthMode: handleModeChange,
+    assetsSlice,
+    setAssetsSlice: handleSliceChange,
+    wealthFocus,
     initialAccountFilter,
     applyInitialTab,
   };

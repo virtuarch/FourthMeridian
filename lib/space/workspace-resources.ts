@@ -72,7 +72,16 @@ export function workspaceDataNeeds(
 export function openPerspectiveDataNeeds(
   activeTab: string,
   activePerspectiveId: string | null,
+  /** OVERVIEW-CONSOLIDATION — the open workspace's page-level mode (the Net
+   *  Worth Total · Assets · Debt subject). Unions the registry's `modeDataNeeds`
+   *  for that mode onto the base needs; absent ⇒ base needs only. */
+  mode?: string | null,
 ): ReadonlySet<WorkspaceDataNeed> {
   if (activeTab !== "OVERVIEW") return NO_NEEDS;
-  return workspaceDataNeeds(activePerspectiveId);
+  const base = workspaceDataNeeds(activePerspectiveId);
+  const modal = mode && activePerspectiveId
+    ? getWorkspaceDefinition(activePerspectiveId)?.modeDataNeeds?.[mode]
+    : undefined;
+  if (!modal || modal.length === 0) return base;
+  return new Set<WorkspaceDataNeed>([...base, ...modal]);
 }

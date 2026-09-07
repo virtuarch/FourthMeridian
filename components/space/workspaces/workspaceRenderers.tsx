@@ -24,10 +24,7 @@ import { HistoryExplorationSheet } from "@/components/history/HistoryExploration
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { WealthWorkspace } from "@/components/space/widgets/wealth/WealthWorkspace";
 import { CashFlowWorkspace } from "@/components/space/widgets/cashflow/CashFlowWorkspace";
-import { LiquidityWorkspace } from "@/components/space/widgets/liquidity/LiquidityWorkspace";
-import { InvestmentsWorkspace } from "@/components/space/widgets/investments/InvestmentsWorkspace";
-import { DebtWorkspace } from "@/components/space/widgets/debt/DebtWorkspace";
-import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
+import type { AssetsSlice, WealthMode } from "@/lib/wealth/wealth-mode";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
@@ -76,20 +73,25 @@ export interface WorkspaceRenderCtx {
   historicalCompareTo:     string | null;
   today:                   string;
 
-  // Per-lens activation (true when that lens is the engaged Perspective)
+  // OVERVIEW-CONSOLIDATION — per-MODE activation inside Net Worth (true when
+  // that mode of the engaged Net Worth lens is open). Gates the embedded
+  // historical fetches exactly as the retired peer lenses were gated.
   debtActive:              boolean;
-  liquidityActive:         boolean;
-  investmentsActive:       boolean;
+  assetsActive:            boolean;
 
   // Perspective-engine results (host-owned loader)
   lensResults:             Record<string, LensResult> | null;
 
-  // Cash Flow period + Wealth chart metric
+  // Cash Flow period + the Net Worth page subject / Assets slice (URL-synced)
   cashFlowPeriod:          CashFlowPeriod;
-  chartMetric:             WealthMetricKey;
+  wealthMode:              WealthMode;
+  assetsSlice:             AssetsSlice;
+  /** One-shot Assets section focus from a legacy lens deep link. */
+  wealthFocus:             "cash" | "investments" | null;
 
   // Callbacks
-  onMetricChange:          (m: WealthMetricKey) => void;
+  onModeChange:            (m: WealthMode) => void;
+  onSliceChange:           (s: AssetsSlice) => void;
   onSwitchLens:            (id: string) => void;
   onEnvelopeChange:        (env: PerspectiveEnvelope) => void;
   onSelectCashFlowPeriod:  (p: CashFlowPeriod) => void;
@@ -98,8 +100,10 @@ export interface WorkspaceRenderCtx {
 
 /**
  * id → render implementation. Keys are exactly the financial Perspective ids that
- * own an inline workspace (registry `kind: "perspective"`, `status: "available"`,
- * no routed-modal). The registry↔renderer parity test enforces this set.
+ * are OVERVIEW LENS DESTINATIONS with an inline workspace (registry `kind:
+ * "perspective"`, `status: "available"`). Since the Overview consolidation that
+ * is Net Worth (`wealth`) and Cash Flow; the registry↔renderer parity test
+ * (lib/perspectives/overview-lenses.test.ts) enforces this set.
  */
 /**
  * THE ONE exploration sheet, mounted ONCE for every workspace.
@@ -140,6 +144,12 @@ export function WorkspaceExplorationHost({
 }
 
 export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => React.ReactNode> = {
+  // OVERVIEW-CONSOLIDATION — the Net Worth workspace hosts Total · Assets (Cash +
+  // Investments embedded) · Debt. Liquidity / Investments / Debt are no longer
+  // peer lenses with their own renderer entries; their workspaces render INSIDE
+  // this one (see WealthWorkspace). The registry entries for those ids remain
+  // (engine lenses, category lists, present-day verdicts) — they are just not
+  // Overview destinations any more.
   wealth: (ctx) => (
     <WealthWorkspace
       spaceId={ctx.spaceId}
@@ -147,10 +157,31 @@ export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => Re
       snapshotCurrency={ctx.snapshotCurrency}
       asOf={ctx.asOf}
       compareTo={ctx.compareTo}
+      historicalCompareTo={ctx.historicalCompareTo}
+      today={ctx.today}
       accounts={ctx.accounts}
       ctx={ctx.widgetCtx}
-      metric={ctx.chartMetric}
-      onMetricChange={ctx.onMetricChange}
+      mode={ctx.wealthMode}
+      onModeChange={ctx.onModeChange}
+      slice={ctx.assetsSlice}
+      onSliceChange={ctx.onSliceChange}
+      focusSection={ctx.wealthFocus}
+      active={ctx.assetsActive || ctx.debtActive}
+      cash={{
+        expenseBaseline:  ctx.liquidityExpenseBaseline,
+        presentLens:      ctx.lensResults?.["liquidity"] ?? null,
+        transactions:     ctx.transactions,
+        transactionsMeta: ctx.transactionsMeta,
+        txCtx:            ctx.txCtx,
+        period:           ctx.cashFlowPeriod,
+        onOpenCashFlow:   ctx.onOpenCashFlow,
+      }}
+      debt={{
+        ficoScore:      ctx.ficoScore,
+        ficoUpdatedAt:  ctx.ficoUpdatedAt,
+        presentLens:    ctx.lensResults?.["debt"] ?? null,
+        targetCurrency: ctx.perspectiveTargetCurrency,
+      }}
       onSwitchLens={ctx.onSwitchLens}
       onEnvelopeChange={ctx.onEnvelopeChange}
       backfillInProgress={ctx.snapshotsBackfilling}
@@ -166,57 +197,6 @@ export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => Re
       asOf={ctx.asOf}
       compareTo={ctx.historicalCompareTo}
       onSelectPeriod={ctx.onSelectCashFlowPeriod}
-      onEnvelopeChange={ctx.onEnvelopeChange}
-    />
-  ),
-  liquidity: (ctx) => (
-    <LiquidityWorkspace
-      spaceId={ctx.spaceId}
-      asOf={ctx.asOf}
-      compareTo={ctx.historicalCompareTo}
-      today={ctx.today}
-      active={ctx.liquidityActive}
-      accounts={ctx.accounts}
-      ctx={ctx.widgetCtx}
-      snapshots={ctx.snapshots}
-      snapshotCurrency={ctx.snapshotCurrency}
-      expenseBaseline={ctx.liquidityExpenseBaseline}
-      presentLens={ctx.lensResults?.["liquidity"] ?? null}
-      transactions={ctx.transactions}
-      transactionsMeta={ctx.transactionsMeta}
-      txCtx={ctx.txCtx}
-      period={ctx.cashFlowPeriod}
-      onOpenCashFlow={ctx.onOpenCashFlow}
-      onEnvelopeChange={ctx.onEnvelopeChange}
-    />
-  ),
-  investments: (ctx) => (
-    <InvestmentsWorkspace
-      spaceId={ctx.spaceId}
-      asOf={ctx.asOf}
-      compareTo={ctx.historicalCompareTo}
-      active={ctx.investmentsActive}
-      today={ctx.today}
-      accounts={ctx.accounts}
-      ctx={ctx.widgetCtx}
-      onEnvelopeChange={ctx.onEnvelopeChange}
-    />
-  ),
-  debt: (ctx) => (
-    <DebtWorkspace
-      spaceId={ctx.spaceId}
-      asOf={ctx.asOf}
-      compareTo={ctx.historicalCompareTo}
-      today={ctx.today}
-      active={ctx.debtActive}
-      accounts={ctx.accounts}
-      ctx={ctx.widgetCtx}
-      snapshots={ctx.snapshots}
-      snapshotCurrency={ctx.snapshotCurrency}
-      ficoScore={ctx.ficoScore}
-      ficoUpdatedAt={ctx.ficoUpdatedAt}
-      presentLens={ctx.lensResults?.["debt"] ?? null}
-      targetCurrency={ctx.perspectiveTargetCurrency}
       onEnvelopeChange={ctx.onEnvelopeChange}
     />
   ),

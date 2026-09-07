@@ -23,6 +23,17 @@
  * the canonical persisted SpaceSnapshot window (investments + crypto, no double-count).
  * All money is display-converted through the ONE canonical seam; the envelope is emitted
  * from the UNCONVERTED historical (trust is currency-agnostic). No new data contracts.
+ *
+ * OVERVIEW-CONSOLIDATION — Investments is no longer a peer Overview lens. This
+ * workspace now renders EMBEDDED as the INVESTMENTS SECTION of the unified Net
+ * Worth → Assets page (`embedded`): the same data hook, the same contract, the
+ * same bridge / holdings / allocation / concentration / activity / connections
+ * surfaces. Embedded, it (a) renders its hero as a compact section header, (b)
+ * omits its own balance-history chart — the Assets chart directly above slices to
+ * the SAME stocks + crypto series, carrying this lens's three-state confidence and
+ * "N of M positions valued" disclosure per point — and (c) publishes neither
+ * sidebar sections nor the shell envelope: the Assets page owns both, while the
+ * section keeps its own per-figure TrustIndicator.
  */
 
 import { useCallback, useEffect, useMemo, type ReactNode } from "react";
@@ -61,7 +72,7 @@ const INVESTMENTS_SECTIONS: SpaceChromeSection[] = [
 ];
 
 export function InvestmentsWorkspace({
-  spaceId, asOf, compareTo, active, today, accounts, ctx, onEnvelopeChange,
+  spaceId, asOf, compareTo, active, today, accounts, ctx, onEnvelopeChange, embedded = false,
 }: {
   spaceId:   string;
   asOf:      string;
@@ -70,7 +81,10 @@ export function InvestmentsWorkspace({
   today:     string;
   accounts:  { id: string; name: string }[];
   ctx?:      ConversionContext;
-  onEnvelopeChange: (env: PerspectiveEnvelope) => void;
+  /** Omitted when embedded — the Assets page owns the shell slot. */
+  onEnvelopeChange?: (env: PerspectiveEnvelope) => void;
+  /** Rendered as the Investments section inside Net Worth → Assets (see header). */
+  embedded?: boolean;
 }) {
   const { data: raw, series: rawSeries, loading, error, reload, serverToday } = useInvestmentsSpaceData(spaceId, asOf, compareTo, active);
   // V26-S3-DETAIL — which historical point the reader asked about. The chart
@@ -97,7 +111,7 @@ export function InvestmentsWorkspace({
     () => resolvePerspectiveEnvelope({ perspectiveId: "investments", investmentsResult: raw?.historical ?? null }),
     [raw],
   );
-  useEffect(() => { onEnvelopeChange(envelope); }, [envelope, onEnvelopeChange]);
+  useEffect(() => { onEnvelopeChange?.(envelope); }, [envelope, onEnvelopeChange]);
 
   // Display-currency conversion (pure; identity when reporting === target).
   const data = useMemo(() => (raw && ctx ? convertInvestmentsSpaceData(raw, ctx, asOf) : raw), [raw, ctx, asOf]);
@@ -116,9 +130,10 @@ export function InvestmentsWorkspace({
   const publishSections = useSpaceSectionsPublisher();
   const showSections = !!primary && (primary.holdings.length > 0 || primary.portfolio.unvaluedCount > 0);
   useEffect(() => {
+    if (embedded) return; // the Assets page publishes ONE list for the whole page
     publishSections(showSections ? INVESTMENTS_SECTIONS : []);
     return () => publishSections([]);
-  }, [publishSections, showSections]);
+  }, [publishSections, showSections, embedded]);
 
   if (!data || !primary) {
     if (error) {
@@ -146,6 +161,7 @@ export function InvestmentsWorkspace({
     return (
       <div className="space-y-8 min-w-0">
         <InvestmentsHero
+          compact={embedded}
           attribution={data?.historical?.attribution ?? null}
           portfolio={primary.portfolio} reconciliation={reconciliation}
           reportingCurrency={reportingCurrency} figureLabel={figureLabel} asOf={asOf} envelope={envelope}
@@ -171,9 +187,10 @@ export function InvestmentsWorkspace({
         </div>
       )}
 
-      {/* ① Lede. */}
+      {/* ① Lede (embedded: the Investments section header). */}
       <div id="investments-summary" className="scroll-mt-20">
         <InvestmentsHero
+          compact={embedded}
           attribution={data?.historical?.attribution ?? null}
           portfolio={primary.portfolio} reconciliation={reconciliation}
           reportingCurrency={reportingCurrency} figureLabel={figureLabel} asOf={asOf} envelope={envelope}
@@ -193,10 +210,15 @@ export function InvestmentsWorkspace({
         </div>
       )}
 
-      {/* ③ Balance history — invested value over time (the SHARED Net Worth chart). */}
-      <div id="investments-history" className="scroll-mt-20">
-        <InvestmentsBalanceHistory points={series} currency={reportingCurrency} asOf={asOf} compareTo={compareTo} onSelectPoint={handleSelectPoint} />
-      </div>
+      {/* ③ Balance history — invested value over time (the SHARED Net Worth chart).
+           Embedded, the unified Assets chart above already slices to this SAME
+           series WITH this lens's per-point confidence + coverage disclosures
+           (wealth-trend-points.ts), so a second identical chart is not drawn. */}
+      {!embedded && (
+        <div id="investments-history" className="scroll-mt-20">
+          <InvestmentsBalanceHistory points={series} currency={reportingCurrency} asOf={asOf} compareTo={compareTo} onSelectPoint={handleSelectPoint} />
+        </div>
+      )}
 
       {/* ④ This period — the opening → in → out → change → closing movement bridge. */}
       <div id="investments-period" className="scroll-mt-20">

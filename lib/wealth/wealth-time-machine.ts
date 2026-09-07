@@ -39,6 +39,17 @@ export interface WealthMetrics {
   totalAssets:      number;
   totalLiabilities: number;
   liquidNetWorth:   number;
+  /**
+   * OVERVIEW-CONSOLIDATION — the two ASSET dimensions the unified Assets view
+   * slices by. Both are projections of columns already on the row, and both are
+   * the SAME arithmetic the former peer lenses plotted:
+   *   cash     = totalCash + totalSavings          (Liquidity's cashNow tier)
+   *   invested = totalInvestments + totalCrypto    (Investments' portfolio value)
+   * They are disjoint buckets of totalAssets — never double-counted, and never
+   * a third derivation of either series.
+   */
+  cash:             number;
+  invested:         number;
 }
 
 export interface WealthComposition {
@@ -115,6 +126,8 @@ export interface WealthDeltas {
   totalAssets:      WealthDelta;
   totalLiabilities: WealthDelta;
   liquidNetWorth:   WealthDelta;
+  cash:             WealthDelta;
+  invested:         WealthDelta;
   composition:      WealthComposition; // signed component deltas (as-of − comparison)
 }
 
@@ -194,6 +207,8 @@ function toState(s: Snapshot): Omit<WealthState, "found"> {
     // copies agreeing, and would silently disagree the moment one was fixed.
     // The `??` fallback covers a pre-column DTO only.
     liquidNetWorth: s.netLiquid ?? (s.totalCash + s.totalSavings - s.totalDebt),
+    cash,
+    invested:       investments + crypto,
     composition:    { cash, investments, crypto, real, liabilities },
   };
 }
@@ -201,16 +216,18 @@ function toState(s: Snapshot): Omit<WealthState, "found"> {
 const EMPTY_STATE: WealthState = {
   found: false, date: null, isEstimated: false,
   netWorth: 0, totalAssets: 0, totalLiabilities: 0, liquidNetWorth: 0,
+  cash: 0, invested: 0,
   composition: { cash: 0, investments: 0, crypto: 0, real: 0, liabilities: 0 },
 };
 
-/** A snapshot → chart point (all four metric series + the estimated flag). */
+/** A snapshot → chart point (every metric series + the estimated flag). */
 function toChartPoint(s: Snapshot): WealthChartPoint {
   const st = toState(s);
   return {
     date: s.date, isEstimated: st.isEstimated,
     netWorth: st.netWorth, totalAssets: st.totalAssets,
     totalLiabilities: st.totalLiabilities, liquidNetWorth: st.liquidNetWorth,
+    cash: st.cash, invested: st.invested,
   };
 }
 
@@ -311,6 +328,8 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
       totalAssets:      delta(asOfState.totalAssets, c.totalAssets),
       totalLiabilities: delta(asOfState.totalLiabilities, c.totalLiabilities),
       liquidNetWorth:   delta(asOfState.liquidNetWorth, c.liquidNetWorth),
+      cash:             delta(asOfState.cash, c.cash),
+      invested:         delta(asOfState.invested, c.invested),
       composition: {
         cash:        asOfState.composition.cash        - c.composition.cash,
         investments: asOfState.composition.investments - c.composition.investments,

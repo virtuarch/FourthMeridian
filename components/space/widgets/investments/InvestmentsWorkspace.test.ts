@@ -41,6 +41,7 @@ const ROUTEC  = strip(ROUTE);
 const HOSTC   = strip(read("components/dashboard/SpaceDashboard.tsx"));
 // SD-2 closeout — perspective render impls live in the component-layer renderer map.
 const REND    = strip(read("components/space/workspaces/workspaceRenderers.tsx"));
+const WEALTH  = strip(read("components/space/widgets/wealth/WealthWorkspace.tsx"));
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -88,11 +89,22 @@ console.log("2. Data OWNERSHIP + envelope BRIDGE");
   check("Workspace owns the hook", CODE.includes("useInvestmentsSpaceData("));
   check("host does NOT call the hook", !HOSTC.includes("useInvestmentsSpaceData"));
   check("host retains no Investments data", !HOSTC.includes("investments.data"));
-  check("Workspace emits envelope via canonical resolver", CODE.includes("onEnvelopeChange(") && CODE.includes("resolvePerspectiveEnvelope("));
-  check("renderer wires envelope up + host relays it (consolidated)",
-    REND.includes("<InvestmentsWorkspace") && REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && HOSTC.includes("useActiveEnvelope"));
-  check("renderer map mounts <InvestmentsWorkspace> + host dispatches via WORKSPACE_RENDERERS",
-    REND.includes("<InvestmentsWorkspace") && HOSTC.includes("WORKSPACE_RENDERERS["));
+  // OVERVIEW-CONSOLIDATION — the workspace still resolves its envelope through the
+  // canonical resolver; the callback is OPTIONAL because, as the embedded
+  // Investments section of Net Worth → Assets, it emits nothing upward (the
+  // Assets page owns the ONE shell slot) and keeps its own per-figure trust.
+  check("Workspace emits envelope via canonical resolver (optional when embedded)",
+    CODE.includes("onEnvelopeChange?.(") && CODE.includes("resolvePerspectiveEnvelope("));
+  check("investments is no longer a peer renderer entry", !REND.includes("investments: (ctx)") && !REND.includes("<InvestmentsWorkspace"));
+  check("the Net Worth workspace embeds InvestmentsWorkspace (embedded) as the Investments section",
+    /<InvestmentsWorkspace\s+embedded/.test(WEALTH) && WEALTH.includes('id="wealth-investments"'));
+  check("embedded, the section does NOT emit to the shell (no onEnvelopeChange wired)",
+    !/onEnvelopeChange=/.test(WEALTH.slice(WEALTH.indexOf("<InvestmentsWorkspace"), WEALTH.indexOf("</section>", WEALTH.indexOf("<InvestmentsWorkspace")))));
+  check("embedded, the workspace publishes no sidebar sections of its own", CODE.includes("if (embedded) return;"));
+  check("embedded, no second balance-history chart (the Assets chart slices to invested value WITH this lens's trust)",
+    /\{!embedded && \([\s\S]*?<InvestmentsBalanceHistory/.test(SRC));
+  check("host relays the ONE envelope + dispatches via WORKSPACE_RENDERERS",
+    HOSTC.includes("useActiveEnvelope") && HOSTC.includes("WORKSPACE_RENDERERS["));
 }
 
 console.log("3. Valuation chart — canonical SpaceSnapshot series, no double-count, no N×date");

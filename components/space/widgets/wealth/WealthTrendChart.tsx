@@ -3,59 +3,68 @@
 /**
  * components/space/widgets/wealth/WealthTrendChart.tsx
  *
- * The Net Worth workspace's Balance History — the metric switcher (Net Worth /
- * Assets / Liabilities / Liquid) over the canonical WealthResult, rendered through
- * the SHARED honesty plotter (components/space/widgets/charts/TrendChart). The
- * plotting core (observed/reconstructed lines, no-data hatch, hover, legend) now
- * lives once in TrendChart so Net Worth and Investments read as one system; this
- * file owns only the Wealth-specific bits: the metric options and the WealthResult
- * → points mapping. The chart owns no time state — range/asOf/compare are the shell's.
+ * The Net Worth page's Balance History — one series of the canonical WealthResult
+ * rendered through the SHARED honesty plotter (components/space/widgets/charts/
+ * TrendChart). The plotting core (observed/reconstructed lines, no-data hatch,
+ * hover, legend) lives once in TrendChart so Net Worth, Debt and the former
+ * Investments / Liquidity charts read as one system; this file owns only the
+ * Wealth-specific bits: the series titles and the WealthResult → points mapping.
+ *
+ * OVERVIEW-CONSOLIDATION — the series switcher no longer lives in this header.
+ * The page SUBJECT (Total · Assets · Debt) is the page-level selector above the
+ * hero; inside Assets the caller passes the All · Cash · Investments slice
+ * control through `headerRight`. The chart owns no time state and no selection
+ * state — `metric` is the shell's resolved series.
  */
 
-import { useState } from "react";
+import type { ReactNode } from "react";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
-import { Chips } from "@/components/atlas/Chips";
-import { TrendChart, type TrendPoint } from "@/components/space/widgets/charts/TrendChart";
+import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
+import type { PortfolioValuePoint } from "@/lib/investments/portfolio-series";
+import { TrendChart } from "@/components/space/widgets/charts/TrendChart";
+import { projectWealthTrendPoints } from "./wealth-trend-points";
 
-export type WealthMetricKey = "netWorth" | "totalAssets" | "totalLiabilities" | "liquidNetWorth";
+export type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 
-const METRICS: { key: WealthMetricKey; label: string; title: string }[] = [
-  { key: "netWorth",         label: "Net Worth",   title: "net worth" },
-  { key: "totalAssets",      label: "Assets",      title: "total assets" },
-  { key: "totalLiabilities", label: "Liabilities", title: "total liabilities" },
-  { key: "liquidNetWorth",   label: "Liquid NW",   title: "liquid net worth" },
-];
+/** Series copy — every plottable series, including the retained legacy ones. */
+export const WEALTH_SERIES_TITLE: Record<WealthMetricKey, string> = {
+  netWorth:         "net worth",
+  totalAssets:      "total assets",
+  totalLiabilities: "total liabilities",
+  liquidNetWorth:   "liquid net worth",
+  cash:             "cash",
+  invested:         "invested value",
+};
 
 export function WealthTrendChart({
   result,
   currency,
-  metric: controlledMetric,
-  onMetricChange,
+  metric = "netWorth",
+  investedSeries,
+  headerRight,
   onSelectPoint,
 }: {
   result:          WealthResult;
   currency:        string;
+  /** The series to plot — resolved by the page (mode + slice), never chosen here. */
   metric?:         WealthMetricKey;
-  onMetricChange?: (m: WealthMetricKey) => void;
+  /** The canonical Investments series for the `invested` slice's per-point trust. */
+  investedSeries?: readonly PortfolioValuePoint[] | null;
+  /** The caller's slice control (Assets: All · Cash · Investments), if any. */
+  headerRight?:    ReactNode;
   /** v2.6 — open the shared historical exploration sheet for a clicked point. */
-  onSelectPoint?: (dateISO: string) => void;
+  onSelectPoint?:  (dateISO: string) => void;
 }) {
-  const [internalMetric, setInternalMetric] = useState<WealthMetricKey>("netWorth");
-  const metric = controlledMetric ?? internalMetric;
-  const metricDef = METRICS.find((m) => m.key === metric) ?? METRICS[0];
-  const setMetric = (m: WealthMetricKey) => { setInternalMetric(m); onMetricChange?.(m); };
-
-  const points: TrendPoint[] = result.chart.points.map((p) => ({
-    date: p.date, value: p[metric], estimated: p.isEstimated,
-  }));
+  const title = WEALTH_SERIES_TITLE[metric];
+  const points = projectWealthTrendPoints(result, metric, investedSeries);
 
   const subtitle =
     result.chart.compareDate
       ? `${formatWealthDate(result.chart.asOfDate ?? result.asOf)} vs ${formatWealthDate(result.chart.compareDate)}`
       : result.chart.asOfDate
         ? `As of ${formatWealthDate(result.chart.asOfDate)}`
-        : `${metricDef.title} over time`;
+        : `${title} over time`;
 
   return (
     <TrendChart
@@ -64,17 +73,10 @@ export function WealthTrendChart({
       currency={currency}
       title="Balance history"
       subtitle={subtitle}
-      ariaLabel={`${metricDef.title} over time`}
+      ariaLabel={`${title} over time`}
       emptyMessage="No snapshot history in this range yet. Widen the range or connect accounts to build history."
       formatDate={formatWealthDate}
-      headerRight={
-        <Chips
-          options={METRICS.map((m) => ({ id: m.key, label: m.label }))}
-          value={metric}
-          onChange={setMetric}
-          ariaLabel="Chart metric"
-        />
-      }
+      headerRight={headerRight}
     />
   );
 }

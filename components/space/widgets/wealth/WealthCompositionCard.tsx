@@ -46,7 +46,7 @@ import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate, wealthCompositionItems } from "@/lib/wealth/wealth-time-machine";
 import { Surface, Block } from "@/components/atlas/Surface";
 import { WealthUnavailable, formatSigned } from "./wealth-ui";
-import type { WealthMetricKey } from "./WealthTrendChart";
+import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import {
   METRIC_COMPOSITION_REGIME,
   METRIC_DRIVER_COMPONENTS,

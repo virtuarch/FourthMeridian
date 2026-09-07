@@ -25,7 +25,7 @@ import type { WealthResult, WealthDriver } from "@/lib/wealth/wealth-time-machin
 import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
 import { Surface, Block, Figure } from "@/components/atlas/Surface";
 import { WealthUnavailable, formatSigned } from "./wealth-ui";
-import type { WealthMetricKey } from "./WealthTrendChart";
+import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import { METRIC_DRIVER_COMPONENTS, METRIC_POSSESSIVE } from "./wealth-metric-facets";
 
 /**
