@@ -188,6 +188,38 @@ export const PROBES: readonly Probe[] = [
       'evidence pulls a model toward bullets and whether it can simply be asked to stop.',
     goldens: '11, 16',
   },
+  {
+    id: 'session',
+    title: 'A whole natural session (the context-retention measurement)',
+    turns: [
+      'what is my financial situation looking like',
+      'what are my pendning transactions',
+      'pull em up in table for me',
+      'which one was the biggest?',
+      'what would my end of the year net worth be? break it down',
+      'can you show me in a table by month how my cash would grow from now until eoy',
+      'what was my turning point this year?',
+      'how much in assets did i have month by month 2025?',
+      'what about 2027 month by month?',
+      'can i afford a trip to st maarten at the end of the year?',
+      'what should i invest in based on what i already own?',
+      'what am i spending too much on?',
+      'where do i fall in my age range for net worth and debt?',
+      'what was my biggest purchase in august?',
+      'are you sure?',
+      'based on what you said earlier about my pending transactions, were any of them unusual?',
+    ],
+    whatItDiscriminates:
+      'THE CONTEXT-RETENTION MEASUREMENT, and the only probe long enough to make one. ' +
+      'Sixteen turns of the sequence Chris actually types, including four referential ' +
+      'follow-ups placed at deliberate distances: "pull em up in table" and "which one was ' +
+      'the biggest?" are immediate drill-downs; "are you sure?" asks the model to re-verify ' +
+      'a figure one turn old; and the last turn reaches back FIFTEEN turns to a payload any ' +
+      'compaction policy will have elided. The last one is the test that matters — the model ' +
+      'should understand the reference from preserved prose and re-fetch, not claim it lost ' +
+      'the conversation.',
+    goldens: '1, 2, 3, 8, 9, 11, 12, 18',
+  },
 ] as const;
 
 export const PROBE_IDS = PROBES.map((p) => p.id);

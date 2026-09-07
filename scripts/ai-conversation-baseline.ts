@@ -151,6 +151,7 @@ Selection (nothing runs without one):
   --all              every probe × arm × tier                       (120 cases)
   --space <id>       override the Space (default: the PERSONAL Space with the most transactions)
   --dry-run          resolve and print the matrix, call no model
+  --no-compaction    resend every tool payload forever (the pre-Clip-6 behaviour)
 `);
 }
 
@@ -214,7 +215,8 @@ async function main(): Promise<void> {
     }
     const runDir = join(process.cwd(), 'tmp', 'ai-baseline',
       `interactive-${new Date().toISOString().replace(/[:.]/g, '-')}`);
-    await runInteractive({ spaceCtx, agentId, asOfISO, model, runDir });
+    await runInteractive({ spaceCtx, agentId, asOfISO, model, runDir,
+      compaction: has('no-compaction') ? null : undefined });
     return;
   }
 
@@ -273,7 +275,8 @@ async function main(): Promise<void> {
     process.stdout.write(`${label} … `);
     try {
       const r = await runCase({ probeId: cell.probe, arm: cell.arm, model: cell.model,
-        spaceCtx, agentId, asOfISO, runDir });
+        spaceCtx, agentId, asOfISO, runDir,
+        compaction: has('no-compaction') ? null : undefined });
       results.push(r);
       console.log(`${r.ok ? 'ok ' : 'ERR'} ${(r.totals.latencyMs / 1000).toFixed(1)}s  ` +
         `${r.totals.totalTokens} tok  ${r.totals.toolCalls} tool call(s)`);

@@ -24,6 +24,7 @@ import { join } from 'path';
 import { assembleFullContext, buildEvidence, ARM_QUESTION } from './evidence';
 import { openAiToolSchemas, type ToolContext } from './tools';
 import { executeTurn, sumTurns, supportsTools, SYSTEM_INSTRUCTION, type TurnRecord } from './run';
+import { compactToolHistory, DEFAULT_COMPACTION, type CompactionPolicy } from './compaction';
 import type { SpaceContext } from '@/lib/space';
 
 /** The arm this mode is. Fixed — choosing it per session would make sessions incomparable. */
@@ -37,10 +38,13 @@ export interface InteractiveArgs {
   asOfISO:  string;
   model:    string;
   runDir:   string;
+  /** null disables context compaction. */
+  compaction?: CompactionPolicy | null;
 }
 
 export async function runInteractive(args: InteractiveArgs): Promise<void> {
   const { spaceCtx, agentId, asOfISO, model, runDir } = args;
+  const compaction = args.compaction === undefined ? DEFAULT_COMPACTION : args.compaction;
 
   const ctx = await assembleFullContext(spaceCtx, agentId);
   const evidence = await buildEvidence(ARM, ctx, spaceCtx.spaceId);
@@ -51,7 +55,7 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
   const toolSchemas = useTools ? openAiToolSchemas() : [];
   const toolCtx: ToolContext = { spaceCtx, spaceId: spaceCtx.spaceId, asOfISO };
 
-  const messages: unknown[] = [
+  let messages: unknown[] = [
     { role: 'system', content: `${SYSTEM_INSTRUCTION}\n\nToday is ${asOfISO}.` },
   ];
   if (evidence.body) messages.push({ role: 'user', content: evidence.body });
@@ -82,6 +86,7 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
       sessionId,
       startedAt: startedAt.toISOString(),
       arm: ARM, armQuestion: ARM_QUESTION[ARM], model,
+      compaction: compaction ?? null,
       toolsOffered: useTools
         ? toolSchemas.map((t) => (t as { function: { name: string } }).function.name) : [],
       toolsUnavailableReason: useTools
@@ -120,6 +125,9 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
   }
   console.log(`  Evidence   ${evidence.summary}  (~${evidence.approxTokens} tok)`);
   console.log(`  Tools      ${useTools ? `${toolSchemas.length} available` : 'NONE — this model cannot call tools'}`);
+  console.log(`  Context    ${compaction
+    ? `raw tool results kept for the last ${compaction.retainCompletedTurns} completed turns, then elided`
+    : 'no compaction — every tool payload is resent forever'}`);
   console.log(`  Transcript ${artifactPath.replace(`${process.cwd()}/`, '')}`);
   console.log('');
   console.log('  ⚠️  Experimental. Known failures are NOT fixed — see');
@@ -178,6 +186,12 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
       messages, user: line, index: turns.length, model, toolSchemas, toolCtx,
     });
     turns.push(rec);
+    // Only a completed turn is compacted; a failed one keeps its evidence.
+    if (compaction && !rec.error) {
+      const { messages: next, stats } = compactToolHistory(messages, compaction);
+      messages = next;
+      rec.compaction = stats;
+    }
     save();
     process.stdout.write(' '.repeat(20) + '\r');
 

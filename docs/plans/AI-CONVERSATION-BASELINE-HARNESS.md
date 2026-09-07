@@ -306,6 +306,68 @@ directly comparable and are the dominant driver.)*
 **Clip 6 (context compaction) is deliberately not implemented** — re-measure retention now
 that a turn makes one call instead of thirty-three.
 
+## 13c. Clip 6 — context compaction (2026-09-07)
+
+**Context garbage collection. Not memory, not summarisation, not state.** One helper,
+`scripts/ai-baseline/compaction.ts`, ~150 lines, pure.
+
+**The policy.** After a turn's assistant prose lands, raw `role: 'tool'` content older than
+the last **two completed turns** is replaced by `{"elided":true,"tool":"<name>"}` — 49 bytes
+against a 3,222-byte mean payload. Everything else survives byte for byte: user messages,
+assistant answers, and every assistant tool CALL (name and arguments, so `tool_call_id`
+linkage is untouched).
+
+**A turn is read off the transcript, not modelled.** It runs from a user message to the
+assistant message that answers in prose. An assistant message carrying `tool_calls` is
+mid-turn; one with **empty content is a failure, not an answer**, so a blank turn never
+closes and never advances the window — its evidence is intact exactly when somebody would
+look at it, and ages out later like any other turn. The **artifact keeps every payload
+verbatim regardless**; diagnosis happens there, not in the model's context.
+
+**What is deliberately not done:** nothing is summarised, no financial value is carried
+forward, no judgement is made about which evidence mattered, and no message is dropped —
+only emptied. If a later turn needs an elided figure the model calls the tool again. **That
+is the feature**, not a cost: a stale payload sitting in context is exactly what would stop
+a re-fetch.
+
+**Measured — same 16-turn `session` probe, same model (`gpt-5.5`), before and after:**
+
+| | Before | After | Δ |
+|---|---|---|---|
+| Total prompt tokens | 549,613 | **178,167** | **−67.6%** |
+| Largest single prompt | 65,102 | **19,517** | **−70.0%** |
+| Final retained tool tokens | 19,994 | **366** | **−98.2%** |
+| Final tool-result share of transcript | 81.6% | **7.9%** | −73.7 pp |
+| Late-turn (T8+) share | 82.0% | **34.1%** | −47.9 pp |
+| Latency | 140.0 s | **106.1 s** | −24.2% |
+| Completion / reasoning tokens | 7,980 / 3,518 | 7,073 / 2,823 | −11% / −20% |
+| Turns answered · errors · blanks | 16 · 0 · 0 | 16 · 0 · 0 | — |
+
+11 elisions removed **43,999 bytes** from context across the session.
+
+**Continuity held on every referential follow-up:**
+
+| Turn | Behaviour |
+|---|---|
+| *"pull em up in table for me"* | Same table, no re-fetch — the payload was still in the window. |
+| *"which one was the biggest?"* | Same answer ($146.60, My Skin Health Care). |
+| *"are you sure?"* | Answered from the retained payload; **before** it re-fetched, **after** it did not need to. Same figure. |
+| *"based on what you said earlier about my pending transactions…"* (15 turns back, long elided) | **Re-fetched with 6 tool calls** and answered coherently. It understood the reference from preserved prose and never claimed to have lost the conversation. |
+
+**Privacy side effect — quantified, not built.** After two completed turns, raw financial
+payloads stop being retransmitted on every subsequent request. Across this session
+**87.4% of tool-payload bytes (47,867 of 54,774) were no longer resent** by the final turn.
+By category, entirely elided by the end: account balances and per-account detail
+(`get_financial_snapshot`, 12,435 B), cash projections (`project_cash`, 10,565 B), net-worth
+history (`get_net_worth_history`, 6,160 B), category and merchant rollups (`get_spending`,
+5,410 B), and holdings (`get_investments`, 4,693 B). Only the most recent
+`get_transactions` rows (6,907 B of 15,511 B) remained in flight. Conversational prose is
+unchanged. *No privacy feature was built and no product copy changed — this is a
+measurement for the later AI-egress audit.*
+
+**Turn it off** with `--no-compaction` on either mode, which is also how the "before" column
+above was produced.
+
 ## 14b. Interactive operator mode
 
 **The A2 arm with a keyboard on the front.** Same thin-core evidence, same ten tools,
@@ -350,6 +412,8 @@ npm run ai:baseline -- --arm A0,A1 --model ceiling --all-probes
 npm run ai:baseline -- --probe debt --arm A0,A1 --model control,mid,ceiling
 npm run ai:baseline -- --space <spaceId> --probe broad --arm A2 --model mid
 npm run ai:baseline -- --all                               # 120 cases — must be asked for
+npm run ai:baseline -- --probe session --arm A2 --model ceiling   # the 16-turn retention probe
+npm run ai:baseline -- --probe session --arm A2 --model ceiling --no-compaction
 ```
 
 **Nothing runs without an explicit selection.** `--all` is 120 whole conversations against a

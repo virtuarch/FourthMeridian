@@ -22,6 +22,10 @@ import {
   buildEvidence, assembleFullContext, ARM_USES_TOOLS, ARM_QUESTION, type Arm,
 } from './evidence';
 import { openAiToolSchemas, findTool, type ToolContext } from './tools';
+import {
+  compactToolHistory, DEFAULT_COMPACTION,
+  type CompactionPolicy, type CompactionStats,
+} from './compaction';
 import type { SpaceContext } from '@/lib/space';
 
 /**
@@ -63,7 +67,37 @@ export interface TurnRecord {
   usage: { promptTokens: number; completionTokens: number; totalTokens: number;
     reasoningTokens: number } | null;
   finishReason: string | null;
+  /**
+   * What the transcript CONTAINED when this turn was sent, by kind.
+   *
+   * ⚠️ MEASUREMENT ONLY, AND IT NEVER REACHES THE MODEL. The provider reports one
+   * `prompt_tokens` number; this says what that number is made OF, which is the
+   * only way to tell "the conversation got long" from "one tool payload is being
+   * resent thirty times". Estimated at 4 chars/token — good enough to compare a
+   * share against itself before and after a change, and never quoted as a cost.
+   */
+  retained: TranscriptComposition;
+  /** What compaction removed AFTER this turn completed. Absent when disabled. */
+  compaction?: CompactionStats;
   error?: string;
+}
+
+export interface TranscriptComposition {
+  /** The behavioural instruction. Constant. */
+  system:        number;
+  /** Everything the user typed, including the evidence pack in a broad-context arm. */
+  user:          number;
+  /** Assistant natural-language answers. */
+  assistant:     number;
+  /** Assistant messages that are tool CALLS (names + arguments), not prose. */
+  toolCallArgs:  number;
+  /** `role: 'tool'` payloads — the thing compaction targets. */
+  toolResults:   number;
+  /** Sum of the above. */
+  total:         number;
+  /** toolResults / total, 0..1. The share a compaction policy can address. */
+  toolResultShare: number;
+  messageCount:  number;
 }
 
 export interface CaseResult {
@@ -146,6 +180,9 @@ export async function executeTurn(args: {
   const rec: TurnRecord = {
     index, user, toolCalls: [], roundTrips: 0, retries: [], assistant: null,
     latencyMs: 0, usage: null, finishReason: null,
+    // Measured AFTER the user message is appended and BEFORE the first call, so
+    // it describes exactly what this turn was sent.
+    retained: measureTranscript(messages),
   };
 
   try {
@@ -214,6 +251,31 @@ export async function executeTurn(args: {
   return rec;
 }
 
+/**
+ * What the transcript is made of, by kind. PURE.
+ *
+ * ⚠️ IT INSPECTS SHAPE, NOT PROTOCOL. A message is a tool result when it carries
+ * `role: 'tool'`; an assistant message is a CALL when it carries `tool_calls` and
+ * prose otherwise. Nothing here depends on which provider produced it.
+ */
+export function measureTranscript(messages: readonly unknown[]): TranscriptComposition {
+  const tok = (v: unknown) => Math.ceil(JSON.stringify(v ?? '').length / 4);
+  const c = { system: 0, user: 0, assistant: 0, toolCallArgs: 0, toolResults: 0 };
+  for (const raw of messages) {
+    const m = raw as { role?: string; content?: unknown; tool_calls?: unknown[] };
+    if (m.role === 'system')      c.system       += tok(m.content);
+    else if (m.role === 'user')   c.user         += tok(m.content);
+    else if (m.role === 'tool')   c.toolResults  += tok(m.content);
+    else if (m.role === 'assistant') {
+      if (m.tool_calls?.length) c.toolCallArgs += tok(m.tool_calls);
+      c.assistant += tok(m.content);
+    }
+  }
+  const total = c.system + c.user + c.assistant + c.toolCallArgs + c.toolResults;
+  return { ...c, total, messageCount: messages.length,
+    toolResultShare: total > 0 ? c.toolResults / total : 0 };
+}
+
 /** Sum a set of turn records the way both modes report totals. */
 export function sumTurns(turns: readonly TurnRecord[]): CaseResult['totals'] {
   return turns.reduce((t, r) => ({
@@ -239,8 +301,11 @@ export async function runCase(args: {
   agentId: string;
   asOfISO: string;
   runDir: string;
+  /** null disables context compaction, for a before/after comparison. */
+  compaction?: CompactionPolicy | null;
 }): Promise<CaseResult> {
   const { probeId, arm, model, spaceCtx, agentId, asOfISO, runDir } = args;
+  const compaction = args.compaction === undefined ? DEFAULT_COMPACTION : args.compaction;
   const probe = findProbe(probeId);
   if (!probe) throw new Error(`unknown probe: ${probeId}`);
 
@@ -250,7 +315,7 @@ export async function runCase(args: {
   const toolSchemas = useTools ? openAiToolSchemas() : [];
   const toolCtx: ToolContext = { spaceCtx, spaceId: spaceCtx.spaceId, asOfISO };
 
-  const messages: unknown[] = [
+  let messages: unknown[] = [
     { role: 'system', content: `${SYSTEM_INSTRUCTION}\n\nToday is ${asOfISO}.` },
   ];
   if (evidence.body) messages.push({ role: 'user', content: evidence.body });
@@ -262,6 +327,14 @@ export async function runCase(args: {
     const rec = await executeTurn({ messages, user, index, model, toolSchemas, toolCtx });
     turns.push(rec);
     if (rec.error) { ok = false; break; }
+    // ⚠️ AFTER THE ANSWER LANDS, NEVER BEFORE. `executeTurn` has appended the final
+    // prose, so the turn is closed and its evidence has served its purpose. The
+    // helper decides what is old enough; this only says when to ask.
+    if (compaction) {
+      const { messages: next, stats } = compactToolHistory(messages, compaction);
+      messages = next;
+      rec.compaction = stats;
+    }
   }
 
   const totals = sumTurns(turns);

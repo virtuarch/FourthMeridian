@@ -21,6 +21,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { applyInvestmentScenario, SCENARIO_BASIS } from './scenario';
 import { TOOLS, openAiToolSchemas, findTool, readWindowToExhaustion } from './tools';
+import { compactToolHistory, DEFAULT_COMPACTION } from './compaction';
 import { TRANSACTION_FETCH_LIMIT } from '@/lib/ai/assemblers/transactions';
 import { PROBES, PROBE_IDS, findProbe } from './probes';
 import { ARMS, ARM_USES_TOOLS, ARM_QUESTION } from './evidence';
@@ -52,7 +53,9 @@ const code = (src: string) =>
 // ══ 1. Probes are conversations, and the goldens do not leak ═════════════════
 console.log('1. probes');
 {
-  check('ten probes', PROBES.length === 10, String(PROBES.length));
+  check('eleven probes', PROBES.length === 11, String(PROBES.length));
+  check('…one of which is long enough to measure context retention',
+    (findProbe('session')?.turns.length ?? 0) >= 15);
   check('ids are unique', new Set(PROBE_IDS).size === PROBES.length);
   check('every probe is multi-turn', PROBES.every((p) => p.turns.length >= 3));
   check('the state probe is the long one',
@@ -198,8 +201,10 @@ console.log('5. investment scenario arithmetic');
 console.log('6. conversation state');
 {
   const src = code(read('scripts/ai-baseline/run.ts'));
+  // `let`, not `const`, since Clip 6: compaction returns a NEW array and the loop
+  // rebinds it. It is still ONE transcript carried across every turn.
   check('one growing message array across all turns',
-    /const messages: unknown\[\]/.test(src) && /for \(const \[index, user\] of probe\.turns/.test(src));
+    /let messages: unknown\[\]/.test(src) && /for \(const \[index, user\] of probe\.turns/.test(src));
   check('turns are NOT independent requests', !/messages = \[/.test(src.split('const messages')[1] ?? ''));
   check('tool results are appended to the transcript',
     /role: 'tool', tool_call_id/.test(src));
@@ -347,7 +352,9 @@ console.log('12. interactive operator mode');
   check('it is labelled as interactive so it is never mistaken for a probe run',
     /mode: 'interactive'/.test(src));
   check('the transcript is written after EVERY turn, not only on a clean exit',
-    /const save = \(\): void =>/.test(src) && /turns\.push\(rec\);\s*\n\s*save\(\);/.test(src));
+    /const save = \(\): void =>/.test(src)
+      // compaction may sit between the push and the save; the save still happens.
+      && /turns\.push\(rec\);[\s\S]{0,320}?\n\s*save\(\);/.test(src));
   check('…and on Ctrl-C', /SIGINT/.test(src));
 
   // It must not quietly become a different experiment.
@@ -592,6 +599,168 @@ console.log('14. complete-window ranking');
     /complete \? \{\} : \{ rankingCaveat/.test(src));
   check('the page size is the read authority\'s own constant, not a local number',
     /limit: MAX_TRANSACTION_PAGE_SIZE/.test(src) && !/RANKING_PAGE/.test(src));
+}
+
+// ══ 15. Context compaction ═══════════════════════════════════════════════════
+//
+// Old raw tool payloads are garbage-collected; conversation prose is not. The
+// checks below are all about what must SURVIVE — a compaction that loses a user
+// message or breaks tool linkage is not a saving, it is a bug that presents as
+// one.
+console.log('15. context compaction');
+{
+  let uid = 0;
+  const sys  = { role: 'system', content: 'be brief' };
+  const usr  = (t: string) => ({ role: 'user', content: t });
+  const say  = (t: string) => ({ role: 'assistant', content: t });
+  const call = (name: string, args: unknown) => {
+    const id = `call_${++uid}`;
+    return { msg: { role: 'assistant', content: null,
+      tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] }, id };
+  };
+  const res  = (id: string, payload: unknown) =>
+    ({ role: 'tool', tool_call_id: id, content: JSON.stringify(payload) });
+
+  /** A turn: user → n tool hops → prose. */
+  const turn = (q: string, tools: [string, unknown][], answer: string): unknown[] => {
+    const out: unknown[] = [usr(q)];
+    for (const [n, a] of tools) {
+      const c = call(n, a);
+      out.push(c.msg, res(c.id, { big: 'x'.repeat(2000), n }));
+    }
+    out.push(say(answer));
+    return out;
+  };
+
+  const build = (n: number): unknown[] => ([sys, usr('EVIDENCE')] as unknown[]).concat(
+    ...Array.from({ length: n }, (_, i) =>
+      turn(`q${i}`, [['get_spending', { i }]], `a${i}`)));
+
+  const toolMsgs = (ms: readonly unknown[]) =>
+    ms.filter((m) => (m as { role?: string }).role === 'tool');
+  const isStub = (m: unknown) => {
+    try { return JSON.parse(String((m as { content?: string }).content)).elided === true; }
+    catch { return false; }
+  };
+
+  // ── the retention window ───────────────────────────────────────────────────
+  const five = build(5);
+  const { messages: c5, stats } = compactToolHistory(five);
+  check('the default policy retains two completed turns', DEFAULT_COMPACTION.retainCompletedTurns === 2);
+  check('five completed turns are recognised', stats.completedTurns === 5);
+  const stubs5 = toolMsgs(c5).map(isStub);
+  check('the last two completed turns keep raw results',
+    stubs5[3] === false && stubs5[4] === false);
+  check('…and everything older is a stub',
+    stubs5[0] === true && stubs5[1] === true && stubs5[2] === true);
+  check('bytes actually fall', stats.bytesAfter < stats.bytesBefore / 2, `${stats.bytesBefore}→${stats.bytesAfter}`);
+
+  // ── the active turn is untouchable ─────────────────────────────────────────
+  const mid: unknown[] = [...build(4)];
+  const open = call('get_transactions', { live: true });
+  mid.push(usr('q-active'), open.msg, res(open.id, { big: 'y'.repeat(2000) }));
+  const { messages: cMid } = compactToolHistory(mid);
+  check('an UNFINISHED turn keeps its evidence — no answer has landed yet',
+    isStub(toolMsgs(cMid)[toolMsgs(cMid).length - 1]) === false);
+
+  const multi: unknown[] = [sys, usr('EVIDENCE'), ...build(4).slice(2)];
+  const h1 = call('get_income', {}); const h2 = call('get_spending', {}); const h3 = call('project_cash', {});
+  multi.push(usr('q-multi'), h1.msg, res(h1.id, { a: 1 }), h2.msg, res(h2.id, { b: 2 }), h3.msg, res(h3.id, { c: 3 }));
+  const { messages: cMulti } = compactToolHistory(multi);
+  const lastThree = toolMsgs(cMulti).slice(-3);
+  check('a turn with THREE tool hops stays whole while it is still running',
+    lastThree.every((m) => isStub(m) === false));
+
+  // ── a failed turn ──────────────────────────────────────────────────────────
+  //
+  // ⚠️ THE POLICY, STATED: a blank assistant message is not an ANSWER, so it does
+  // not close a turn and does not advance the retention window. A failure is
+  // therefore always inside the window immediately after it happens — which is
+  // when somebody would look at it — and it ages out later like any other turn.
+  // It is not pinned in the model's context forever; the ARTIFACT keeps every
+  // payload verbatim regardless, and that is where diagnosis actually happens.
+  const mkFailed = (completedAfter: number) => {
+    const t: unknown[] = [sys, usr('EVIDENCE')];
+    const f = call('get_spending', {});
+    t.push(usr('q-fail'), f.msg, res(f.id, { big: 'z'.repeat(2000) }),
+      { role: 'assistant', content: '' }); // finish_reason: length — NOT an answer
+    for (let i = 0; i < completedAfter; i++) t.push(...turn(`q-after${i}`, [['get_income', {}]], `a${i}`));
+    return t;
+  };
+  const justFailed = compactToolHistory(mkFailed(0));
+  check('a turn that just failed keeps its evidence', justFailed.stats.elided === 0);
+  check('…because a blank answer does not close a turn', justFailed.stats.completedTurns === 0);
+  const failedThenOne = compactToolHistory(mkFailed(1));
+  check('…and it is still there one completed turn later', failedThenOne.stats.elided === 0);
+  const failedThenTwo = compactToolHistory(mkFailed(2));
+  check('…and two completed turns later, still inside the window',
+    failedThenTwo.stats.elided === 0 && failedThenTwo.stats.completedTurns === 2);
+  const failedThenThree = compactToolHistory(mkFailed(3));
+  check('…then it ages out like any other turn, once THREE answers have landed',
+    isStub(toolMsgs(failedThenThree.messages)[0]) === true
+      // The failed turn AND the oldest completed turn both fall outside the window.
+      && failedThenThree.stats.elided === 2);
+
+  // ── prose survives byte for byte ───────────────────────────────────────────
+  const before = build(6);
+  const { messages: after } = compactToolHistory(before);
+  const proseOf = (ms: readonly unknown[]) => ms
+    .filter((m) => ['user', 'system'].includes((m as { role?: string }).role ?? '')
+      || ((m as { role?: string }).role === 'assistant' && (m as { content?: unknown }).content))
+    .map((m) => JSON.stringify(m));
+  check('every user and system message is unchanged, byte for byte',
+    JSON.stringify(proseOf(before).filter((x) => !x.includes('"assistant"')))
+      === JSON.stringify(proseOf(after).filter((x) => !x.includes('"assistant"'))));
+  check('every assistant ANSWER is unchanged, byte for byte',
+    JSON.stringify(proseOf(before).filter((x) => x.includes('"assistant"')))
+      === JSON.stringify(proseOf(after).filter((x) => x.includes('"assistant"'))));
+  check('the message COUNT is unchanged — nothing is dropped, only emptied',
+    before.length === after.length);
+
+  // ── protocol linkage ───────────────────────────────────────────────────────
+  const ids = (ms: readonly unknown[]) => ms.map((m) => (m as { tool_call_id?: string }).tool_call_id);
+  check('every tool_call_id survives compaction', JSON.stringify(ids(before)) === JSON.stringify(ids(after)));
+  check('every tool message keeps role: tool',
+    toolMsgs(after).length === toolMsgs(before).length);
+  check('assistant tool_calls (name + arguments) are untouched',
+    JSON.stringify(before.filter((m) => (m as { tool_calls?: unknown }).tool_calls))
+      === JSON.stringify(after.filter((m) => (m as { tool_calls?: unknown }).tool_calls)));
+
+  // ── the stub itself ────────────────────────────────────────────────────────
+  const stub = JSON.parse(String((toolMsgs(after).find(isStub) as { content: string }).content));
+  check('the stub says it was elided', stub.elided === true);
+  check('…and names the tool so the model knows what to re-fetch',
+    typeof stub.tool === 'string' && stub.tool.length > 0);
+  check('…and carries NOTHING else — no values, no summary, no byte counts',
+    Object.keys(stub).sort().join(',') === 'elided,tool');
+  check('the stub is small', JSON.stringify(stub).length < 60, String(JSON.stringify(stub).length));
+  check('no financial value is synthesised into it',
+    !/\d{3,}|\$|balance|cash|networth/i.test(JSON.stringify(stub)));
+
+  // ── idempotence ────────────────────────────────────────────────────────────
+  const once = compactToolHistory(build(6));
+  const twice = compactToolHistory(once.messages);
+  const thrice = compactToolHistory(twice.messages);
+  check('compaction is idempotent', JSON.stringify(twice.messages) === JSON.stringify(thrice.messages));
+  check('…and a second pass elides nothing new on an unchanged transcript', twice.stats.elided === 0);
+  check('repeated passes do not damage a stub',
+    JSON.stringify(once.messages.filter(isStub)) === JSON.stringify(thrice.messages.filter(isStub)));
+
+  // ── nothing to do ──────────────────────────────────────────────────────────
+  const short = compactToolHistory(build(2));
+  check('two completed turns are entirely retained', short.stats.elided === 0);
+  const one = compactToolHistory(build(1));
+  check('one completed turn is retained', one.stats.elided === 0);
+  const none = compactToolHistory([sys, usr('hello')]);
+  check('a transcript with no tools is untouched', none.stats.elided === 0 && none.stats.bytesBefore === 0);
+
+  // ── stats are for the artifact, not the model ──────────────────────────────
+  check('stats carry the byte counts the artifact needs',
+    typeof stats.bytesBefore === 'number' && typeof stats.bytesAfter === 'number'
+      && stats.bytesBefore > stats.bytesAfter);
+  const wire = JSON.stringify(c5);
+  check('…and none of those diagnostics reach the model',
+    !wire.includes('originalBytes') && !wire.includes('bytesBefore') && !wire.includes('elidedBytes'));
 }
 
 console.log(failures === 0 ? '\nAll baseline-harness checks passed.' : `\n${failures} check(s) failed.`);
