@@ -29,6 +29,9 @@ import {
 import { composeInvestments } from '@/lib/ai/economic-concepts';
 import { queryTransactions } from '@/lib/data/transaction-query';
 import { getRecentSnapshots } from '@/lib/data/snapshots';
+import { projectSnapshotSection } from '@/lib/ai/assemblers/snapshot';
+import type { Snapshot } from '@/types';
+import { FlowType } from '@prisma/client';
 import { resolveExplorationNode } from '@/lib/history/exploration';
 import { loadForecastIncomeStreams } from '@/lib/ai/forecast/streams';
 import { assembleForecast } from '@/lib/ai/forecast/assemble';
@@ -69,8 +72,35 @@ const str = (description: string) => ({ type: 'string', description });
 const num = (description: string) => ({ type: 'number', description });
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+/** The bound `lib/history/exploration` uses. Enough for all-time on this corpus. */
+const SNAPSHOT_READ_ROWS = 1100;
+/** Ceiling on a DAILY series, so one call cannot return a year of rows by accident. */
+const MAX_DAILY_POINTS = 200;
+/** Page taken when ranking by size. Its bound is always reported alongside the result. */
+const RANKING_PAGE = 100;
 const daysAgoISO = (asOf: string, n: number) =>
   new Date(Date.parse(`${asOf}T00:00:00.000Z`) - n * 86_400_000).toISOString().slice(0, 10);
+
+/**
+ * Every calendar month-end strictly after `fromISO` and not after `toISO`, plus
+ * `toISO` itself when it is not already one.
+ *
+ * ⚠️ THE LAST ENTRY IS ALWAYS THE HORIZON, which is what makes the final
+ * checkpoint and the standalone endpoint the same number rather than nearly.
+ */
+function monthEndsBetween(fromISO: string, toISO: string): string[] {
+  const out: string[] = [];
+  const from = new Date(`${fromISO}T00:00:00.000Z`);
+  const to   = new Date(`${toISO}T00:00:00.000Z`);
+  const cur  = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 0));
+  while (cur <= to) {
+    const iso = cur.toISOString().slice(0, 10);
+    if (iso > fromISO) out.push(iso);
+    cur.setUTCMonth(cur.getUTCMonth() + 2, 0);
+  }
+  if (out[out.length - 1] !== toISO && toISO > fromISO) out.push(toISO);
+  return out;
+}
 
 async function assemble<T>(
   domain: string, ctx: ToolContext, options: Record<string, unknown> = {},
@@ -164,32 +194,58 @@ const getSpending: ToolDefinition = {
 
 // ── 3. Transactions ──────────────────────────────────────────────────────────
 
+/**
+ * The user's vocabulary for "what kind of money movement", mapped onto the
+ * canonical `FlowType` population.
+ *
+ * ⚠️ THE MODEL PICKS; THIS ONLY HONOURS. No keyword matching happens anywhere —
+ * the parameter is an enum on the schema and the model chooses it from the
+ * question. Ranking "largest" over every flow is what made "my biggest purchase
+ * last month" answer with a payroll deposit.
+ */
+const FLOW_SETS: Record<string, FlowType[] | null> = {
+  spending:      [FlowType.SPENDING, FlowType.FEE, FlowType.INTEREST],
+  income:        [FlowType.INCOME],
+  transfers:     [FlowType.TRANSFER],
+  card_payments: [FlowType.DEBT_PAYMENT],
+  refunds:       [FlowType.REFUND],
+  all:           null,
+};
+
 const getTransactions: ToolDefinition = {
   name: 'get_transactions',
   description:
-    'Individual transactions, filtered and ranked. Use for "show me exactly", ' +
-    '"what was my biggest purchase", or to check a specific merchant.',
+    'Individual transactions, filtered and ranked. Set `flow` to say what KIND of movement ' +
+    'you mean — "spending" for purchases, "income" for deposits, "transfers" for movements ' +
+    'between the user\'s own accounts, "card_payments" for paying a card off. Use ' +
+    'flow:"spending" with sort:"largest" for "my biggest purchase".',
   parameters: obj({
     from:     str('YYYY-MM-DD inclusive.'),
     to:       str('YYYY-MM-DD inclusive.'),
+    flow:     { type: 'string', enum: Object.keys(FLOW_SETS),
+                description: 'Default "all". Choose the one the question means.' },
     category: str('One presentation category, e.g. Dining, Shopping, Travel, Other.'),
     text:     str('Case-insensitive substring over merchant and description.'),
     sort:     { type: 'string', enum: ['newest', 'oldest', 'largest'],
-                description: 'Default newest. "largest" ranks by absolute amount.' },
+                description: 'Default newest. "largest" ranks by amount WITHIN the chosen flow.' },
     limit:    num('1–50. Default 15.'),
   }),
   async run(a, ctx) {
     const limit = Math.min(Math.max(Number(a.limit ?? 15), 1), 50);
     const wantLargest = String(a.sort ?? 'newest') === 'largest';
+    const flowKey = String(a.flow ?? 'all');
+    const flowTypes = FLOW_SETS[flowKey] ?? null;
+
     // ⚠️ THE READ AUTHORITY SORTS BY DATE ONLY (newest|oldest). "Largest" is a
-    // presentation ranking over a bounded page, so it is done here — over a
-    // deliberately larger page — rather than by inventing a sort the keyset
-    // cursor cannot express.
+    // presentation ranking over one bounded page, and the bound is REPORTED —
+    // silently ranking the newest 100 rows of a two-year window and calling the
+    // winner "your biggest" is the kind of wrong that reads as right.
     const page = await queryTransactions({
       spaceId: ctx.spaceId,
       query: {
         sort: 'oldest' === String(a.sort) ? 'oldest' : 'newest',
-        limit: wantLargest ? 100 : limit,
+        limit: wantLargest ? RANKING_PAGE : limit,
+        ...(flowTypes ? { flowTypes } : {}),
         ...(a.from ? { dateFrom: String(a.from) } : {}),
         ...(a.to   ? { dateTo:   String(a.to)   } : {}),
         ...(a.text ? { text:     String(a.text) } : {}),
@@ -200,13 +256,22 @@ const getTransactions: ToolDefinition = {
       ? [...page.rows].sort((x, y) => Math.abs(y.amount) - Math.abs(x.amount)).slice(0, limit)
       : page.rows;
     return {
+      asOf: ctx.asOfISO,
+      window: { from: a.from ?? null, to: a.to ?? null },
+      flow: flowKey,
       rows: rows.map((r) => ({
         date: r.date, merchant: r.merchantDisplayName ?? r.merchant,
         description: r.description, amount: r.amount,
         category: r.category, pending: r.pending,
       })),
       shown: rows.length,
-      rankedOver: wantLargest ? page.rows.length : undefined,
+      ...(wantLargest ? {
+        rankedOver: page.rows.length,
+        rankingIsComplete: !page.hasMore,
+        ...(page.hasMore ? { rankingCaveat:
+          `Ranked over the ${page.rows.length} most recent matching rows only — more exist, `
+          + 'so this is the largest of that page, not necessarily of the whole window.' } : {}),
+      } : {}),
       moreAvailable: page.hasMore,
     };
   },
@@ -274,6 +339,10 @@ const getInvestments: ToolDefinition = {
     ]);
     const composition = acc ? composeInvestments(acc) : null;
     return {
+      // ⚠️ EVERY RESULT NAMES ITS INSTANT. Two of these tools carried none, and
+      // a current-position figure was composed with a future cash figure and
+      // presented as one answer.
+      asOf: ctx.asOfISO,
       // ⚠️ THE AUTHORITY ON WHAT THE INVESTMENTS ARE WORTH. Account-level,
       // components disjoint by construction. Do not add anything below to this.
       composition,
@@ -304,33 +373,101 @@ const getInvestments: ToolDefinition = {
 const getNetWorthHistory: ToolDefinition = {
   name: 'get_net_worth_history',
   description:
-    'Daily net-worth history and its components (cash, investments, digital assets, ' +
-    'debt). Use for "compared to last month", "a year ago", or before explaining a move.',
+    'Net worth and its components (cash, investments, digital assets, debt) over time. ' +
+    'Ask for `granularity: "monthly"` to get one point per calendar month — that is the ' +
+    'right shape for a month-by-month table and is the default for ranges over ~3 months. ' +
+    'A point whose net worth could not be established is returned as null WITH a reason; ' +
+    'read `coverage` before describing older history as fact.',
   parameters: obj({
     from: str('YYYY-MM-DD. Omit for the last 90 days.'),
     to:   str('YYYY-MM-DD. Omit for today.'),
-    maxPoints: num('Downsample evenly to at most this many points. Default 40.'),
+    granularity: { type: 'string', enum: ['monthly', 'daily'],
+      description: 'monthly = the last observation in each calendar month. Default '
+        + 'monthly for ranges over 92 days, daily otherwise.' },
+    maxPoints: num('Daily granularity only: downsample evenly to at most this many points.'),
   }),
   async run(a, ctx) {
     const to   = (a.to as string) || ctx.asOfISO;
     const from = (a.from as string) || daysAgoISO(to, 89);
-    const rows = await getRecentSnapshots({ rows: 1100 }, { spaceId: ctx.spaceId });
-    const inRange = rows
-      .map((r) => ({ ...r, dateISO: String(r.date).slice(0, 10) }))
-      .filter((r) => r.dateISO >= from && r.dateISO <= to);
-    if (inRange.length === 0) return { unavailable: `no snapshots between ${from} and ${to}` };
-    const cap = Math.min(Math.max(Number(a.maxPoints ?? 40), 2), 200);
-    const step = Math.max(1, Math.ceil(inRange.length / cap));
-    const picked = inRange.filter((_, i) => i % step === 0 || i === inRange.length - 1);
-    const pt = (r: (typeof inRange)[number]) => ({
-      date: r.dateISO, netWorth: r.netWorth,
-      cash: round2((r.totalCash ?? 0) + (r.totalSavings ?? 0)),
-      investments: r.totalInvestments, digitalAssets: r.totalCrypto, debt: r.totalDebt,
+
+    // ⚠️ THROUGH THE ASSEMBLER'S OWN PROJECTION, NOT THE RAW ROWS. The canonical
+    // snapshot read carries `aggregateAuthorisation` — for 407 of this Space's 770
+    // points it says `netWorth.assertable: false` with
+    // `HISTORICAL_CRYPTO_VALUATION_UNAVAILABLE` — and `projectSnapshotSection` is
+    // the pure, tested function that turns that into nulls plus a reason. Reading
+    // `r.netWorth` / `r.totalCrypto` directly (which this tool used to do) took the
+    // depth and threw away the refusal, so a stale figure carried on a contaminated
+    // row was reported as a fact and the model told the user he had negative net
+    // worth in early 2025.
+    const rows = await getRecentSnapshots({ rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
+    const section = projectSnapshotSection(rows as Snapshot[], 'full');
+    if (!section) return { unavailable: 'no usable snapshot history for this Space' };
+
+    const inRange = section.history.filter((p) => p.date >= from && p.date <= to);
+    if (inRange.length === 0) {
+      return { unavailable: `no snapshots between ${from} and ${to}`,
+        earliestAvailable: section.oldestDate, latestAvailable: section.newestDate };
+    }
+
+    const spanDays = Math.round(
+      (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000) + 1;
+    const granularity = (a.granularity as string) === 'daily' ? 'daily'
+      : (a.granularity as string) === 'monthly' ? 'monthly'
+      : spanDays > 92 ? 'monthly' : 'daily';
+
+    // ⚠️ MONTH-END MEANS THE LAST OBSERVATION IN THE MONTH, not every Nth day. The
+    // previous even downsample (`i % step`) never landed on a month boundary, so a
+    // month-by-month question could only be answered by re-querying each month —
+    // which is exactly what happened: 33 tool calls and 145,550 prompt tokens to
+    // recover twelve rows that were already in the first payload.
+    let picked = inRange;
+    let clamped = false;
+    if (granularity === 'monthly') {
+      const byMonth = new Map<string, (typeof inRange)[number]>();
+      for (const p of inRange) byMonth.set(p.date.slice(0, 7), p); // ordered ⇒ last wins
+      picked = [...byMonth.values()];
+    } else if (a.maxPoints !== undefined) {
+      const cap = Math.min(Math.max(Number(a.maxPoints), 2), MAX_DAILY_POINTS);
+      clamped = Number(a.maxPoints) > cap;
+      const step = Math.max(1, Math.ceil(inRange.length / cap));
+      picked = inRange.filter((_, i) => i % step === 0 || i === inRange.length - 1);
+    }
+
+    const pt = (p: (typeof inRange)[number]) => ({
+      date: p.date,
+      // Null means EXPLICITLY UNKNOWN and always travels with its reason.
+      netWorth: p.netWorth, totalAssets: p.totalAssets,
+      cash: p.liquid, investments: p.investments, digitalAssets: p.digitalAssets,
+      debt: p.liabilities,
+      ...(p.digitalAssetsUnavailableReason
+        ? { unassertableBecause: p.digitalAssetsUnavailableReason } : {}),
     });
+
+    const unassertable = picked.filter((p) => p.netWorth === null);
+    const firstAssertable = inRange.find((p) => p.netWorth !== null)?.date ?? null;
+
     return {
-      window: { from, to },
-      pointsAvailable: inRange.length, pointsShown: picked.length,
-      earliestAvailable: rows.length ? String(rows[0].date).slice(0, 10) : null,
+      window: { from, to, granularity },
+      // ⚠️ COVERAGE IS EVIDENCE, NOT A CAVEAT. It is the difference between "your
+      // net worth was −$6,837" and "net worth cannot be established before
+      // September 2025 because crypto could not be valued".
+      coverage: {
+        pointsReturned: picked.length,
+        pointsUnassertable: unassertable.length,
+        firstAssertableDate: firstAssertable,
+        reason: unassertable.length > 0
+          ? (unassertable[0] as { digitalAssetsUnavailableReason?: string })
+              .digitalAssetsUnavailableReason ?? 'component unassertable'
+          : null,
+        note: unassertable.length > 0
+          ? 'Points with netWorth null are NOT zero and NOT measured — the underlying '
+            + 'component could not be valued for that date. Do not state them as amounts, '
+            + 'and do not treat a series containing them as a complete trend.'
+          : null,
+        historyAvailableFrom: section.oldestDate,
+        historyAvailableTo:   section.newestDate,
+        ...(clamped ? { maxPointsClamped: MAX_DAILY_POINTS } : {}),
+      },
       first: pt(inRange[0]), last: pt(inRange[inRange.length - 1]),
       series: picked.map(pt),
     };
@@ -383,23 +520,33 @@ const explainNetWorthChange: ToolDefinition = {
 const projectCash: ToolDefinition = {
   name: 'project_cash',
   description:
-    'Deterministic cash projection to a future date. Returns BOTH paths and never ' +
-    'picks one for you: the strictly-licensed path (which refuses unless every ' +
-    'income basis is established) and the evidence-based projection (which uses ' +
-    'observed spending). Optionally override the monthly spending assumption.',
+    'Deterministic cash projection to a future date, with month-end checkpoints. The ' +
+    'headline answer is `projection` — an evidence-based estimate built from observed ' +
+    'payroll cadence and observed spending. `establishment` says how firmly each input is ' +
+    'pinned down; it is provenance, not a competing answer. Pass ' +
+    '`assumedMonthlySpending` when the user states a spending level.',
   parameters: obj({
     to: str('YYYY-MM-DD horizon end. Required.'),
     assumedMonthlySpending: num('If the user stated a monthly spending level, pass it here.'),
     statedAs: str('The user\'s own words for that assumption, e.g. "assume I spend 6k".'),
+    checkpoints: { type: 'string', enum: ['monthly', 'none'],
+      description: 'monthly = a balance at each month-end between now and the horizon. '
+        + 'Default monthly for horizons over ~45 days.' },
   }, ['to']),
   async run(a, ctx) {
     const toISO = String(a.to);
-    const streams = await loadForecastIncomeStreams(ctx.spaceId, ctx.asOfISO);
-    const accounts = await assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx);
-    const fakeCtx = {
-      space: { name: '', reportingCurrency: 'USD' },
-      domains: { [FinanceDomains.ACCOUNTS]: { data: accounts } },
-    } as unknown as SpaceContext_AI;
+    const [streams, accounts, transactions] = await Promise.all([
+      loadForecastIncomeStreams(ctx.spaceId, ctx.asOfISO),
+      assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx),
+      // ⚠️ THE ONE LINE THAT MADE THIS TOOL WORK. PROJECTION-1 derives its spending
+      // rate from `reliableMonths(transactionsDomain)`; with only the accounts
+      // domain in scope it sees zero months, cannot assert a rate, and returns
+      // `closing: null` — always, for every horizon. Measured before the fix:
+      // null / null. After: $38,243.50 to end-2026 and $128,827.54 to end-2027.
+      // Both models papered over the null by doing the arithmetic in prose, and
+      // one of them was $745.86 out.
+      assemble<TransactionsSummaryData>(FinanceDomains.TRANSACTIONS_SUMMARY, ctx),
+    ]);
 
     const statements: UserStatement[] = [];
     if (typeof a.assumedMonthlySpending === 'number') {
@@ -411,31 +558,99 @@ const projectCash: ToolDefinition = {
           currency: 'USD', periodBasis: PeriodBasis.MONTHLY },
       });
     }
-    const horizon = { fromISO: ctx.asOfISO, toISO, origin: AssumptionOrigin.USER_REQUESTED,
-      statedAs: `through ${toISO}` } as unknown as ForecastHorizon;
 
-    const f = assembleForecast({ ctx: fakeCtx, streams, horizon, asOfISO: ctx.asOfISO, statements });
-    const licensed = 'refused' in f.forecast ? null : f.forecast.fullCashPath;
-    return {
-      horizon: { from: ctx.asOfISO, to: toISO },
-      openingCash: 'refused' in f.forecast ? null : f.forecast.openingCash.amount,
-      // ⚠️ BOTH PATHS, ALWAYS. Which of these deserves product authority is an
-      // open question the experiment exists to inform — the harness must not
-      // quietly pick the one that reads better.
-      strictlyLicensed: {
-        status: licensed?.status ?? 'UNAVAILABLE',
-        endingCash: licensed?.closing ?? null,
-        refusedBecause: licensed?.status === 'REFUSED' ? licensed.missing : null,
+    const forecastCtx = {
+      space: { name: '', reportingCurrency: 'USD' },
+      domains: {
+        [FinanceDomains.ACCOUNTS]: { data: accounts },
+        [FinanceDomains.TRANSACTIONS_SUMMARY]: { data: transactions },
       },
-      evidenceBasedProjection: f.projection ? {
-        endingCash: f.projection.closing,
-        spendingBasis: f.observedSpending
-          ? { kind: 'OBSERVED', dailyRate: f.observedSpending.dailyRate,
-              monthsUsed: (f.observedSpending as { months?: string[] }).months ?? null }
-          : { kind: 'USER_ASSUMED' },
+    } as unknown as SpaceContext_AI;
+
+    const runTo = (end: string) => assembleForecast({
+      ctx: forecastCtx, streams, asOfISO: ctx.asOfISO, statements,
+      horizon: { fromISO: ctx.asOfISO, toISO: end, origin: AssumptionOrigin.USER_REQUESTED,
+        statedAs: `through ${end}` } as unknown as ForecastHorizon,
+    });
+
+    const f = runTo(toISO);
+    const licensed = 'refused' in f.forecast ? null : f.forecast.fullCashPath;
+    const userAssumed = f.appliedFacts.length > 0;
+
+    // ── Month-end checkpoints ────────────────────────────────────────────────
+    //
+    // ⚠️ EACH CHECKPOINT IS AN INDEPENDENT RUN FROM THE SAME `asOf`, never a
+    // balance carried forward from the previous one. Compounding checkpoint on
+    // checkpoint would accumulate rounding and — worse — would let a series drift
+    // away from the endpoint the same authority produces for the same horizon.
+    // Because every point is `projectCash(asOf → thatMonthEnd)`, the last
+    // checkpoint IS the endpoint by construction, and a test pins it.
+    const horizonDays = Math.round(
+      (Date.parse(`${toISO}T00:00:00Z`) - Date.parse(`${ctx.asOfISO}T00:00:00Z`)) / 86_400_000);
+    const wantCheckpoints = (a.checkpoints as string) === 'monthly'
+      || ((a.checkpoints as string) !== 'none' && horizonDays > 45);
+
+    let checkpoints: unknown[] | undefined;
+    if (wantCheckpoints) {
+      const ends = monthEndsBetween(ctx.asOfISO, toISO);
+      let prevClosing: number | null = f.projection ? (f.projection.openingCash ?? null) : null;
+      checkpoints = ends.map((end) => {
+        const run = runTo(end);
+        const closing = run.projection?.closing ?? null;
+        const delta = closing !== null && prevClosing !== null ? round2(closing - prevClosing) : null;
+        prevClosing = closing;
+        return { monthEnd: end, closingCash: closing === null ? null : round2(closing),
+          changeInMonth: delta };
+      });
+    }
+
+    return {
+      horizon: { asOf: ctx.asOfISO, to: toISO, days: horizonDays },
+      openingCash: f.projection?.openingCash
+        ?? ('refused' in f.forecast ? null : f.forecast.openingCash.amount),
+
+      // ⚠️ THE ANSWER. Product decision (2026-09-07): for an ordinary conversational
+      // projection the evidence-based estimate IS the answer when it is available.
+      // The strict path's refusal qualifies it; it does not suppress it, and the two
+      // are deliberately not presented as competing candidates.
+      projection: f.projection && f.projection.closing !== null ? {
+        endingCash: round2(f.projection.closing),
+        kind: 'EVIDENCE_BASED_ESTIMATE',
+        checkpoints,
+        basis: {
+          openingCash: f.projection.openingCash,
+          spending: userAssumed
+            ? { source: 'USER_STATED', statedAs: f.appliedFacts }
+            : f.observedSpending
+              ? { source: 'OBSERVED', dailyRate: f.observedSpending.dailyRate,
+                  monthsAveraged: (f.observedSpending as { months?: string[] }).months ?? null }
+              : { source: 'NONE' },
+          incomeEventsCounted: f.events.length,
+          components: f.projection.components,
+          assumptions: f.projection.assumptions,
+          excluded: f.projection.excluded,
+          range: f.projection.range,
+        },
+        qualification:
+          'An evidence-based estimate, not a guaranteed forecast: future payroll is '
+          + 'inferred from the observed deposit cadence, and investments and debt are held '
+          + 'flat. Say so once; do not restate the strict-path refusal as a second answer.',
       } : null,
+
+      // ⚠️ PROVENANCE, NOT A RIVAL ANSWER. Kept because its `missing` list is the
+      // honest account of what is not established — a NET/GROSS basis per income
+      // event, a current-normal spending level. Useful for describing confidence.
+      establishment: {
+        status: licensed?.status ?? 'UNAVAILABLE',
+        strictEndingCash: licensed?.closing ?? null,
+        notEstablished: licensed?.status === 'REFUSED' ? licensed.missing : [],
+        meaning: 'What a strictly-licensed forecast would still need. It qualifies the '
+          + 'estimate above and must not be offered as an alternative figure.',
+      },
+
+      unavailableReason: f.projection && f.projection.closing !== null ? null
+        : (f.projection?.missing?.join('; ') ?? f.unavailable ?? 'no projection could be built'),
       appliedUserFacts: f.appliedFacts,
-      incomeEventsCounted: f.events.length,
       policyAssumptions: f.policy.assumptions.map((p) => ({
         origin: p.origin, stance: p.stance, statedAs: p.statedAs,
       })),
@@ -470,8 +685,9 @@ const investmentScenario: ToolDefinition = {
   name: 'investment_scenario',
   description:
     'Apply a percentage the USER stated to a named investment component and report ' +
-    'the arithmetic effect on net worth. This is arithmetic over a hypothesis, not ' +
-    'a prediction — never call it to guess what a market will do.',
+    'the arithmetic effect on net worth AS OF TODAY. This is arithmetic over a ' +
+    'hypothesis, not a prediction — never call it to guess what a market will do, and ' +
+    'never add its result to a future projection without saying they are different dates.',
   parameters: obj({
     moves: { type: 'array', description: 'One entry per component to move.',
       items: obj({
@@ -492,7 +708,18 @@ const investmentScenario: ToolDefinition = {
     for (const m of (a.moves as { component: string; changePercent: number }[]) ?? []) {
       moves[m.component] = m.changePercent / 100;
     }
-    return applyInvestmentScenario({ components, moves, currentNetWorth: acc.netWorth });
+    const result = applyInvestmentScenario({ components, moves, currentNetWorth: acc.netWorth });
+    return {
+      // ⚠️ A CURRENT-INSTANT SCENARIO, SAID OUT LOUD. Without this the result was a
+      // bare net-worth number with no date on it, and it was glued to a February
+      // cash projection and presented as one figure.
+      effectiveAt: ctx.asOfISO,
+      appliesTo: 'the position as it stands today — this does NOT move forward in time',
+      doNotComposeWith:
+        'a projected future cash balance, unless you state that the two refer to '
+        + 'different instants',
+      ...result,
+    };
   },
 };
 

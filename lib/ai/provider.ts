@@ -143,14 +143,43 @@ export interface ToolTurnResult {
   toolCalls: ToolCallRequest[];
   /** The assistant message verbatim, to be appended to the transcript. */
   raw:       unknown;
-  usage:     { promptTokens: number; completionTokens: number; totalTokens: number } | null;
+  usage:     {
+    promptTokens: number; completionTokens: number; totalTokens: number;
+    /**
+     * ⚠️ REASONING TOKENS SPEND THE COMPLETION BUDGET. On gpt-5.x they are billed
+     * inside `completion_tokens` and counted against `max_completion_tokens`, so a
+     * cap that looks generous for prose can be entirely consumed before a single
+     * visible character is emitted. Measured 2026-09-07: a 1,500 cap produced
+     * 1,500 reasoning tokens, zero content and `finish_reason: 'length'`. Carried
+     * so a blank answer can be explained rather than guessed at.
+     */
+    reasoningTokens: number;
+  } | null;
   latencyMs: number;
   finishReason: string | null;
 }
 
 /** True for model families that reject `max_tokens` and a non-default temperature. */
-function usesModernParams(model: string): boolean {
+export function usesModernParams(model: string): boolean {
   return /^(gpt-5|gpt-6|o\d)/.test(model);
+}
+
+/**
+ * The completion budget, by dialect.
+ *
+ * ⚠️ THE TWO NUMBERS MEASURE DIFFERENT THINGS, which is why they differ so much.
+ * On the classic dialect `max_tokens` bounds VISIBLE OUTPUT. On the modern one
+ * `max_completion_tokens` bounds reasoning + output together, and the reasoning
+ * half is invisible and unbounded by anything else. A shared 1,500 silently
+ * turned two hard questions into blank answers; the modern cap is set well above
+ * the observed reasoning spend (~1,500 tok on a month-by-month projection) so
+ * the visible answer is never the part that gets truncated.
+ */
+export const CLASSIC_COMPLETION_BUDGET = 1_500;
+export const REASONING_COMPLETION_BUDGET = 8_000;
+
+export function completionBudgetFor(model: string): number {
+  return usesModernParams(model) ? REASONING_COMPLETION_BUDGET : CLASSIC_COMPLETION_BUDGET;
 }
 
 export async function generateWithTools(args: {
@@ -159,10 +188,12 @@ export async function generateWithTools(args: {
   messages: unknown[];
   /** OpenAI function-tool definitions. Omit or empty to run without tools. */
   tools?:   unknown[];
+  /** Omit to take the dialect-appropriate budget — see `completionBudgetFor`. */
   maxTokens?: number;
 }): Promise<ToolTurnResult> {
   const client = getClient();
-  const { model, messages, tools, maxTokens = 1500 } = args;
+  const { model, messages, tools } = args;
+  const maxTokens = args.maxTokens ?? completionBudgetFor(model);
   const modern = usesModernParams(model);
 
   const body = {
@@ -178,7 +209,8 @@ export async function generateWithTools(args: {
   const completion = await client.chat.completions.create(body) as {
     choices: { message: { content: string | null; tool_calls?: { id: string;
       function: { name: string; arguments: string } }[] }; finish_reason?: string }[];
-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number;
+      completion_tokens_details?: { reasoning_tokens?: number } };
   };
   const latencyMs = Date.now() - started;
 
@@ -199,7 +231,8 @@ export async function generateWithTools(args: {
     raw:       choice?.message,
     usage:     usage
       ? { promptTokens: usage.prompt_tokens ?? 0, completionTokens: usage.completion_tokens ?? 0,
-          totalTokens: usage.total_tokens ?? 0 }
+          totalTokens: usage.total_tokens ?? 0,
+          reasoningTokens: usage.completion_tokens_details?.reasoning_tokens ?? 0 }
       : null,
     latencyMs,
     finishReason: choice?.finish_reason ?? null,

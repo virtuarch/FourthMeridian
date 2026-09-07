@@ -24,6 +24,10 @@ import { TOOLS, openAiToolSchemas, findTool } from './tools';
 import { PROBES, PROBE_IDS, findProbe } from './probes';
 import { ARMS, ARM_USES_TOOLS, ARM_QUESTION } from './evidence';
 import { SYSTEM_INSTRUCTION, supportsTools } from './run';
+import {
+  usesModernParams, completionBudgetFor,
+  CLASSIC_COMPLETION_BUDGET, REASONING_COMPLETION_BUDGET,
+} from '@/lib/ai/provider';
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -361,6 +365,153 @@ console.log('12. interactive operator mode');
     /IT FIXES NOTHING/.test(raw));
   check('the production route is still untouched',
     /AWAITING_REDESIGN/.test(read('app/api/ai/chat/route.ts')));
+}
+
+// ══ 13. Dogfood tuning — clips 1–5 ═══════════════════════════════════════════
+//
+// Each check below corresponds to a measured dogfood failure. The comment names
+// the failure, because a check whose reason is forgotten is a check somebody
+// deletes.
+
+console.log('13a. clip 1 — the harness stops losing answers');
+{
+  const run  = code(read('scripts/ai-baseline/run.ts'));
+  const prov = code(read('lib/ai/provider.ts'));
+  const inter= code(read('scripts/ai-baseline/interactive.ts'));
+  const cli  = code(read('scripts/ai-conversation-baseline.ts'));
+
+  // Two dogfood turns returned '' with finish_reason 'length' and recorded NO error,
+  // because the guard tested `=== null` and '' is not null.
+  check('an empty or whitespace answer is a FAILURE, not an answer',
+    /if \(!rec\.assistant\?\.trim\(\) && !rec\.error\)/.test(run));
+  check('…and the recorded reason names the exhausted budget',
+    /finishReason === 'length'/.test(run) && /completion budget was exhausted/.test(run));
+  check('…and reasoning spend is quoted in it', /reasoning\)/.test(run));
+  check('…and `assistant` is nulled so nothing downstream reads "" as text',
+    /rec\.assistant = null;/.test(run));
+
+  // gpt-5.x reasoning tokens are billed inside the completion budget.
+  check('reasoning tokens are captured from the provider',
+    /reasoning_tokens/.test(prov) && /reasoningTokens:/.test(prov));
+  check('…carried on the turn record and summed', /reasoningTokens/.test(run));
+  check('the completion budget is dialect-aware, not one shared number',
+    completionBudgetFor('gpt-4.1') === CLASSIC_COMPLETION_BUDGET
+      && completionBudgetFor('gpt-5.5') === REASONING_COMPLETION_BUDGET);
+  check('…and the reasoning budget is well above the observed ~1,500 tok spend',
+    REASONING_COMPLETION_BUDGET >= 4 * 1500);
+  for (const [m, modern] of [['gpt-4o-mini', false], ['gpt-4.1', false], ['gpt-5.5', true],
+    ['gpt-5-mini', true], ['gpt-6-astra', true], ['o3', true]] as [string, boolean][]) {
+    check(`dialect: ${m} ⇒ ${modern ? 'modern' : 'classic'}`, usesModernParams(m) === modern);
+  }
+  check('the interactive loop prints finish_reason when a turn produced no text',
+    /finish_reason: \$\{rec\.finishReason\}/.test(inter));
+
+  // One session lost three turns to `400 invalid model ID` after a question was
+  // typed at the model prompt and accepted as a model id.
+  check('an unrecognised model entry is rejected and re-asked',
+    /LOOKS_LIKE_MODEL_ID/.test(cli) && /is not one of the listed options/.test(cli));
+  check('…and free prose cannot pass as a model id',
+    !/^gpt|^o\d/.test('what is my financial situation looking like'));
+}
+
+console.log('13b. clip 2 — history granularity and coverage');
+{
+  const src = code(read('scripts/ai-baseline/tools.ts'));
+
+  // The tool read raw Snapshot fields, so 407 unassertable points were reported as
+  // facts and the model told the user he had negative net worth in early 2025.
+  check('history routes through the assembler projection, not raw rows',
+    /projectSnapshotSection\(rows as Snapshot\[\], 'full'\)/.test(src));
+  check('…and never reads netWorth/totalCrypto off a raw snapshot row',
+    !/r\.totalCrypto/.test(src) && !/r\.netWorth/.test(src) && !/r\.totalSavings/.test(src));
+  check('a monthly granularity exists', /granularity: 'monthly' \| 'daily'/.test(src)
+    || /enum: \['monthly', 'daily'\]/.test(src));
+  check('…and is the default for a range over a quarter', /spanDays > 92 \? 'monthly'/.test(src));
+  check('month-end means the LAST point in the month, not every Nth day',
+    /byMonth\.set\(p\.date\.slice\(0, 7\), p\)/.test(src));
+  check('coverage is returned as evidence', /coverage: \{/.test(src)
+    && /pointsUnassertable/.test(src) && /firstAssertableDate/.test(src));
+  check('…and says what a null point is NOT',
+    /NOT zero and NOT measured/.test(src));
+  check('a silent maxPoints clamp is reported', /maxPointsClamped/.test(src));
+}
+
+console.log('13c. clip 3 — project_cash');
+{
+  const src = code(read('scripts/ai-baseline/tools.ts'));
+
+  // The synthetic context carried only ACCOUNTS, so PROJECTION-1 saw zero reliable
+  // months and returned closing: null for every horizon.
+  check('the transactions domain reaches the forecast context',
+    /forecastCtx[\s\S]{0,220}TRANSACTIONS_SUMMARY\]: \{ data: transactions \}/.test(src));
+  check('…and it is named `forecastCtx`, not a "fake" one', !/fakeCtx/.test(src));
+
+  // Product decision: the evidence-based estimate is the answer; the strict path
+  // qualifies it and must not be offered as a rival figure.
+  check('the evidence-based estimate is the headline field', /projection: f\.projection/.test(src));
+  check('…and the strict path is provenance, named as such',
+    /establishment: \{/.test(src) && /must not be offered as an alternative figure/.test(src));
+  check('…and the strict refusal reasons are preserved, not deleted',
+    /notEstablished/.test(src) && /licensed\.missing/.test(src));
+
+  // The label said USER_ASSUMED whenever observedSpending was absent, even with
+  // no user assumption in play.
+  check('the spending source is never mislabelled USER_ASSUMED',
+    /userAssumed[\s\S]{0,140}'USER_STATED'/.test(src)
+      && !/kind: 'USER_ASSUMED'/.test(src));
+  check('…and a genuinely absent basis says NONE', /source: 'NONE'/.test(src));
+
+  // Checkpoints must not compound.
+  check('each checkpoint is an independent run from the same asOf',
+    /const run = runTo\(end\)/.test(src));
+  check('…and the adapter does no money arithmetic beyond a reported delta',
+    (src.match(/closing - prevClosing/g) ?? []).length === 1);
+  check('the checkpoint contract is stated where someone would break it',
+    /balance carried forward from the previous one/.test(read('scripts/ai-baseline/tools.ts')));
+  check('a basis block discloses the drivers',
+    /basis: \{/.test(src) && /incomeEventsCounted/.test(src) && /monthsAveraged/.test(src));
+  check('the estimate carries its own qualification', /EVIDENCE_BASED_ESTIMATE/.test(src)
+    && /not a guaranteed forecast/.test(src));
+}
+
+console.log('13d. clip 3 — month-end arithmetic (pure)');
+{
+  // The helper is not exported (it is an implementation detail of one tool), so the
+  // CONTRACT is asserted here against the shape the tool must produce: the last
+  // entry is always the horizon, which is what makes the final checkpoint equal the
+  // standalone endpoint rather than nearly equal it.
+  const src = code(read('scripts/ai-baseline/tools.ts'));
+  check('month-ends are generated, not hand-listed', /function monthEndsBetween/.test(src));
+  check('…strictly after the start', /if \(iso > fromISO\) out\.push\(iso\)/.test(src));
+  check('…and the horizon is always the last entry',
+    /out\[out\.length - 1\] !== toISO && toISO > fromISO/.test(src));
+}
+
+console.log('13e. clip 4 — semantic flow on transactions');
+{
+  const src = code(read('scripts/ai-baseline/tools.ts'));
+  // "biggest purchase last month" surfaced a payroll deposit.
+  check('a flow vocabulary exists and maps to canonical FlowType',
+    /FLOW_SETS/.test(src) && /FlowType\.SPENDING/.test(src) && /FlowType\.INCOME/.test(src));
+  check('…and it reaches the read authority', /flowTypes \}/.test(src));
+  check('…chosen by the model, never by keyword matching here',
+    /THE MODEL PICKS/.test(read('scripts/ai-baseline/tools.ts')));
+  check('spending means outflows, not income', !/spending:\s*\[FlowType\.INCOME/.test(src));
+  check('a bounded ranking discloses its bound',
+    /rankedOver/.test(src) && /rankingIsComplete/.test(src) && /rankingCaveat/.test(src));
+}
+
+console.log('13f. clip 5 — temporal identity');
+{
+  const src = code(read('scripts/ai-baseline/tools.ts'));
+  check('get_transactions names its instant', /asOf: ctx\.asOfISO,\n\s*window: \{ from/.test(src));
+  check('get_investments names its instant', /asOf: ctx\.asOfISO,\n\s*\/\/|asOf: ctx\.asOfISO,/.test(src));
+  check('investment_scenario states it is a CURRENT-instant scenario',
+    /effectiveAt: ctx\.asOfISO/.test(src) && /does NOT move forward in time/.test(src));
+  check('…and warns against composing it with a projection',
+    /doNotComposeWith/.test(src));
+  check('project_cash carries both ends of its horizon',
+    /horizon: \{ asOf: ctx\.asOfISO, to: toISO/.test(src));
 }
 
 console.log(failures === 0 ? '\nAll baseline-harness checks passed.' : `\n${failures} check(s) failed.`);

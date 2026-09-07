@@ -60,7 +60,8 @@ export interface TurnRecord {
   retries: { attempt: number; waitedMs: number; reason: string }[];
   assistant: string | null;
   latencyMs: number;
-  usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null;
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number;
+    reasoningTokens: number } | null;
   finishReason: string | null;
   error?: string;
 }
@@ -72,7 +73,7 @@ export interface CaseResult {
   ok: boolean;
   turns: TurnRecord[];
   totals: { latencyMs: number; promptTokens: number; completionTokens: number;
-    totalTokens: number; toolCalls: number; roundTrips: number;
+    totalTokens: number; reasoningTokens: number; toolCalls: number; roundTrips: number;
     retries: number; rateLimitWaitMs: number };
   artifactPath: string;
 }
@@ -157,7 +158,8 @@ export async function executeTurn(args: {
         rec.usage = rec.usage
           ? { promptTokens: rec.usage.promptTokens + out.usage.promptTokens,
               completionTokens: rec.usage.completionTokens + out.usage.completionTokens,
-              totalTokens: rec.usage.totalTokens + out.usage.totalTokens }
+              totalTokens: rec.usage.totalTokens + out.usage.totalTokens,
+              reasoningTokens: rec.usage.reasoningTokens + out.usage.reasoningTokens }
           : out.usage;
       }
       rec.finishReason = out.finishReason;
@@ -185,8 +187,23 @@ export async function executeTurn(args: {
         messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
       }
     }
-    if (rec.assistant === null && !rec.error) {
-      rec.error = `no final answer after ${MAX_TOOL_ROUNDTRIPS} tool round trips`;
+    // ⚠️ AN EMPTY STRING IS NOT AN ANSWER, AND USED TO PASS THIS CHECK. The test
+    // was `=== null`, so a reply of `''` — which is exactly what a reasoning
+    // model returns when the completion budget is spent before it emits a
+    // character — broke the loop, recorded no error, and left `ok: true`. Two
+    // dogfood turns disappeared that way with `finish_reason: 'length'` sitting
+    // unread on the record. A turn that produced no text now says why.
+    if (!rec.assistant?.trim() && !rec.error) {
+      const spent = rec.usage
+        ? ` (${rec.usage.completionTokens} completion tok, of which ${rec.usage.reasoningTokens} reasoning)`
+        : '';
+      rec.error = rec.finishReason === 'length'
+        ? `the model produced no text: the completion budget was exhausted${spent}. `
+          + 'On a reasoning model the budget covers reasoning AND output.'
+        : rec.finishReason && rec.finishReason !== 'stop'
+          ? `the model produced no text (finish_reason: ${rec.finishReason})${spent}`
+          : `no final answer after ${MAX_TOOL_ROUNDTRIPS} tool round trips`;
+      rec.assistant = null;
     }
   } catch (err) {
     // ⚠️ A PROVIDER FAILURE IS A RESULT, NOT A CRASH. The caller records the turn
@@ -204,13 +221,14 @@ export function sumTurns(turns: readonly TurnRecord[]): CaseResult['totals'] {
     promptTokens: t.promptTokens + (r.usage?.promptTokens ?? 0),
     completionTokens: t.completionTokens + (r.usage?.completionTokens ?? 0),
     totalTokens: t.totalTokens + (r.usage?.totalTokens ?? 0),
+    reasoningTokens: t.reasoningTokens + (r.usage?.reasoningTokens ?? 0),
     toolCalls: t.toolCalls + r.toolCalls.length,
     roundTrips: t.roundTrips + r.roundTrips,
     retries: t.retries + r.retries.length,
     // ⚠️ KEPT OUT OF `latencyMs`. Waiting on a quota is not the model being slow.
     rateLimitWaitMs: t.rateLimitWaitMs + r.retries.reduce((w, x) => w + x.waitedMs, 0),
   }), { latencyMs: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0,
-        toolCalls: 0, roundTrips: 0, retries: 0, rateLimitWaitMs: 0 });
+        reasoningTokens: 0, toolCalls: 0, roundTrips: 0, retries: 0, rateLimitWaitMs: 0 });
 }
 
 export async function runCase(args: {

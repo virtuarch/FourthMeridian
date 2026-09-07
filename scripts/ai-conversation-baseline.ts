@@ -63,6 +63,9 @@ const SMOKE_PROBES = ['projection', 'debt', 'investments'];
  */
 const INTERACTIVE_DEFAULT_TIER = 'mid';
 
+/** A raw model id, so an unlisted model stays reachable without free text passing through. */
+const LOOKS_LIKE_MODEL_ID = /^(gpt|o\d|claude|chatgpt)[\w.-]*$/i;
+
 /**
  * Ask which model to talk to.
  *
@@ -85,12 +88,20 @@ async function chooseModel(preselected?: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   let chosen = TIERS[INTERACTIVE_DEFAULT_TIER];
   try {
-    const raw = (await rl.question(`\nChoose [1-${keys.length}, Enter for ${TIERS[INTERACTIVE_DEFAULT_TIER]}]: `)).trim();
-    if (raw !== '') {
+    // ⚠️ VALIDATED, BECAUSE UNVALIDATED FREE TEXT COST A WHOLE SESSION. Typing a
+    // question at this prompt used to be accepted as a model id, and every turn
+    // after it failed with `400 invalid model ID` while the prompt kept taking
+    // input. An entry is now a listed number, a tier name, or a model id that
+    // looks like one — anything else re-asks.
+    for (;;) {
+      const raw = (await rl.question(
+        `\nChoose [1-${keys.length}, Enter for ${TIERS[INTERACTIVE_DEFAULT_TIER]}]: `)).trim();
+      if (raw === '') break;
       const n = Number(raw);
-      chosen = Number.isInteger(n) && n >= 1 && n <= keys.length
-        ? TIERS[keys[n - 1]]
-        : (TIERS[raw] ?? raw); // a tier name or a raw model id both work
+      if (Number.isInteger(n) && n >= 1 && n <= keys.length) { chosen = TIERS[keys[n - 1]]; break; }
+      if (TIERS[raw]) { chosen = TIERS[raw]; break; }
+      if (LOOKS_LIKE_MODEL_ID.test(raw)) { chosen = raw; break; }
+      console.log(`  ✗ "${raw.slice(0, 40)}" is not one of the listed options, a tier name, or a model id.`);
     }
   } finally {
     rl.close();

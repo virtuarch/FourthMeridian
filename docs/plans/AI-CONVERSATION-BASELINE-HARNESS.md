@@ -252,6 +252,56 @@ never populated automatically.
 9. **Single sample per cell.** Nothing here is statistically significant, and it is not
    meant to be — it is meant to be read.
 
+## 13b. Dogfood tuning (clips 1–5, 2026-09-07)
+
+Applied after the gpt-4.1 vs gpt-5.5 dogfood comparison. Evidence and root causes:
+[AI-CONVERSATION-DOGFOOD-TUNING.md](AI-CONVERSATION-DOGFOOD-TUNING.md). All five are tool
+contract, harness or payload — no planner, router, state machine, memory or prose guard, and
+no `lib/` financial authority changed.
+
+1. **Reasoning-aware completion budget.** `gpt-5.x` reasoning tokens are billed inside
+   `max_completion_tokens`; a shared 1,500 cap was fully consumed by reasoning on two
+   questions, returning `''` with `finish_reason: length`. Modern dialect now gets 8,000, and
+   **an empty answer is recorded as a failure** instead of passing a `=== null` check.
+2. **`get_net_worth_history` routes through `projectSnapshotSection`** — the pure function the
+   snapshot assembler already uses — and gained `granularity: monthly` plus a `coverage`
+   block. It previously read raw snapshot rows, which discarded
+   `aggregateAuthorisation.netWorth.assertable` and reported 407 unassertable points as facts.
+3. **`project_cash` receives the transactions domain.** Without it PROJECTION-1 saw zero
+   reliable months and returned `closing: null` for every horizon, which is why both models
+   hand-rolled the arithmetic. It also gained deterministic month-end checkpoints and an
+   explicit `basis`, and its spending source is no longer mislabelled `USER_ASSUMED`.
+4. **`get_transactions` gained a semantic `flow`** (spending / income / transfers /
+   card_payments / refunds) mapped onto canonical `FlowType`, and a bounded ranking now
+   reports its bound.
+5. **Every tool result names one instant** — `asOf`, `window` or `horizon`.
+   `investment_scenario` states `effectiveAt` and that it does not move forward in time.
+
+**The projection product decision (2026-09-07).** For an ordinary conversational projection
+the **evidence-based estimate is the answer** when it is available. The strictly-licensed path
+is retained as `establishment` — its `notEstablished` list is the honest account of what is
+not pinned down — and it qualifies the estimate rather than competing with it. The strict path
+is not deleted and its refusal reasons are preserved.
+
+**The checkpoint invariant.** Every month-end checkpoint is an independent
+`projectCash(asOf → thatMonthEnd)`. Balances are never carried forward from the previous
+checkpoint, so the last checkpoint **is** the standalone endpoint for the same horizon rather
+than nearly it. Verified on real data at 2026-12-31, 2027-12-31 and a mid-horizon 2027-06-30.
+
+**Measured, same three questions, same model (`gpt-5.5`):**
+
+| | Tool calls | Tokens | Payload | Latency | Answer |
+|---|---|---|---|---|---|
+| Before | 36 | 243,495 | 61,754 B | 103.0 s | contaminated · prose arithmetic · **blank** |
+| After | **3** | **28,047** | **14,265 B** | **22.6 s** | coverage stated · engine figures · answered |
+
+−92% calls, −88.5% tokens, −77% payload, −78% latency. *(Not perfectly controlled: the
+"before" turns carried six turns of prior context. Tool-call counts and payload bytes are
+directly comparable and are the dominant driver.)*
+
+**Clip 6 (context compaction) is deliberately not implemented** — re-measure retention now
+that a turn makes one call instead of thirty-three.
+
 ## 14b. Interactive operator mode
 
 **The A2 arm with a keyboard on the front.** Same thin-core evidence, same ten tools,

@@ -154,7 +154,8 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
     if (line === '/cost') {
       const t = sumTurns(turns);
       console.log(`\n  ${turns.length} turn(s) · ${t.promptTokens.toLocaleString()} in · `
-        + `${t.completionTokens.toLocaleString()} out · ${t.totalTokens.toLocaleString()} total · `
+        + `${t.completionTokens.toLocaleString()} out (${t.reasoningTokens.toLocaleString()} reasoning) · `
+        + `${t.totalTokens.toLocaleString()} total · `
         + `${t.toolCalls} tool call(s) · ${(t.latencyMs / 1000).toFixed(1)}s`
         + `${t.retries ? ` · ${t.retries} rate-limit retry/retries (+${(t.rateLimitWaitMs / 1000).toFixed(0)}s)` : ''}\n`);
       continue;
@@ -184,13 +185,20 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
       console.log(`    [${rec.toolCalls.map((c) => c.name).join(', ')}]`);
     }
     if (rec.error) {
-      console.log(`\n  ⚠️  ${rec.error}\n`);
+      // ⚠️ A TURN THAT PRODUCED NO TEXT MUST SAY WHY. Two dogfood turns ended in
+      // a blank line with no explanation; the reason was on the record and
+      // nothing printed it.
+      console.log(`\n  ⚠️  ${rec.error}`);
+      if (rec.finishReason) console.log(`      finish_reason: ${rec.finishReason}`);
+      console.log('');
     } else {
       console.log(`\n${rec.assistant ?? '(empty response)'}\n`);
     }
     const u = rec.usage;
     console.log(`    ${(rec.latencyMs / 1000).toFixed(1)}s`
       + (u ? ` · ${u.totalTokens.toLocaleString()} tok` : '')
+      + (u?.reasoningTokens ? ` (${u.reasoningTokens.toLocaleString()} reasoning)` : '')
+      + (rec.toolCalls.length ? ` · ${rec.toolCalls.length} call(s)` : '')
       + (rec.retries.length ? ` · ${rec.retries.length} retry` : '') + '\n');
   }
 
