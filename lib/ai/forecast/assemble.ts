@@ -482,5 +482,11 @@ function activeUndatedObligations(acc: AccountsSectionData | undefined): number 
 // basis, and the forecast's own result type — and the right way to give it them
 // is to widen this re-export, not to widen the allowlist. A second consumer
 // root would be the first crack in the rule the three tests exist to hold.
-export { PeriodBasis, AssumptionDimension, AssumptionOrigin, AssumptionStance, EventProvenance, FlowRole, ActivityState, ConclusionStatus };
-export type { CashForecast, ConclusionStatusKind, ForecastHorizon };
+// ⚠️ THE ADAPTER RE-EXPORTS THE VOCABULARY ITS CALLERS NEED, which is what makes
+// "consumed only through the sanctioned adapter" (FORECAST-6/8/9's guard) a
+// boundary a caller can actually live behind rather than one it must breach.
+// `StatementMode` and `UserStatement` joined the list when `assembleForecast`
+// started taking `UserStatement[]` — a caller cannot construct the input
+// without them, so omitting them forced the exact reach-past the guard forbids.
+export { PeriodBasis, AssumptionDimension, AssumptionOrigin, AssumptionStance, EventProvenance, FlowRole, ActivityState, ConclusionStatus, StatementMode };
+export type { CashForecast, ConclusionStatusKind, ForecastHorizon, UserStatement };

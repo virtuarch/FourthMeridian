@@ -115,6 +115,98 @@ export async function generateChatReply(
 }
 
 /**
+ * ⚠️ EXPERIMENT SEAM (model-first conversation baseline). ADDITIVE, and it has
+ * NO production caller — `app/api/ai/chat` returns 503 AWAITING_REDESIGN.
+ *
+ * One completion with tools offered. The tool LOOP is deliberately NOT here: the
+ * caller owns which tools exist, how their results are shaped and when to stop,
+ * and burying that in the provider would make the boundary an agent runtime.
+ * This function does exactly what the other two do — one request, one response,
+ * usage recorded — plus it hands back the raw tool calls.
+ *
+ * ⚠️ TWO PARAMETER DIALECTS, MEASURED NOT ASSUMED (2026-09-07, live API):
+ *   gpt-4o-mini / gpt-4.1   `max_tokens`, `temperature` honoured
+ *   gpt-5.x / gpt-6.x / o*  `max_completion_tokens`, temperature MUST be default
+ * Sending the wrong one is a 400, so the dialect is selected by model family
+ * rather than by hope. See docs/plans/AI-CONVERSATION-BASELINE-HARNESS.md.
+ */
+export interface ToolCallRequest {
+  id:        string;
+  name:      string;
+  /** Raw JSON string exactly as the model emitted it. Parsed by the caller. */
+  arguments: string;
+}
+
+export interface ToolTurnResult {
+  /** Assistant prose, when the model answered instead of calling a tool. */
+  content:   string | null;
+  toolCalls: ToolCallRequest[];
+  /** The assistant message verbatim, to be appended to the transcript. */
+  raw:       unknown;
+  usage:     { promptTokens: number; completionTokens: number; totalTokens: number } | null;
+  latencyMs: number;
+  finishReason: string | null;
+}
+
+/** True for model families that reject `max_tokens` and a non-default temperature. */
+function usesModernParams(model: string): boolean {
+  return /^(gpt-5|gpt-6|o\d)/.test(model);
+}
+
+export async function generateWithTools(args: {
+  model:    string;
+  /** The full transcript: system first, then user/assistant/tool messages. */
+  messages: unknown[];
+  /** OpenAI function-tool definitions. Omit or empty to run without tools. */
+  tools?:   unknown[];
+  maxTokens?: number;
+}): Promise<ToolTurnResult> {
+  const client = getClient();
+  const { model, messages, tools, maxTokens = 1500 } = args;
+  const modern = usesModernParams(model);
+
+  const body = {
+    model,
+    messages,
+    ...(tools && tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
+    ...(modern
+      ? { max_completion_tokens: maxTokens }
+      : { max_tokens: maxTokens, temperature: 0.3 }),
+  } as unknown as Parameters<typeof client.chat.completions.create>[0];
+
+  const started = Date.now();
+  const completion = await client.chat.completions.create(body) as {
+    choices: { message: { content: string | null; tool_calls?: { id: string;
+      function: { name: string; arguments: string } }[] }; finish_reason?: string }[];
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  };
+  const latencyMs = Date.now() - started;
+
+  const usage = completion.usage;
+  if (usage) {
+    const metric = `chat.completions:${model}`;
+    void recordApiUsage('OPENAI', metric, 'calls', 1);
+    void recordApiUsage('OPENAI', metric, 'prompt_tokens', usage.prompt_tokens ?? 0);
+    void recordApiUsage('OPENAI', metric, 'completion_tokens', usage.completion_tokens ?? 0);
+  }
+
+  const choice = completion.choices[0];
+  return {
+    content:   choice?.message?.content ?? null,
+    toolCalls: (choice?.message?.tool_calls ?? []).map((t) => ({
+      id: t.id, name: t.function.name, arguments: t.function.arguments,
+    })),
+    raw:       choice?.message,
+    usage:     usage
+      ? { promptTokens: usage.prompt_tokens ?? 0, completionTokens: usage.completion_tokens ?? 0,
+          totalTokens: usage.total_tokens ?? 0 }
+      : null,
+    latencyMs,
+    finishReason: choice?.finish_reason ?? null,
+  };
+}
+
+/**
  * Generate a reply that conforms to a JSON schema.
  *
  * A structured-output seam, kept through the AI conversation reset.

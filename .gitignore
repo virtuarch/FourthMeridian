@@ -99,3 +99,9 @@ fintracker_backup.sql
 
 # DB backups (Recovery/Hardening slice) — never commit dumps
 backups/
+
+# Experiment artifacts (model-first conversation baseline). These contain REAL
+# balances, merchant names and transaction detail from a live Space, plus full
+# model transcripts. Research output for local human review — never committed.
+# See docs/plans/AI-CONVERSATION-BASELINE-HARNESS.md.
+tmp/
