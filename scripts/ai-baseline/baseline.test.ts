@@ -308,5 +308,60 @@ console.log('11. production boundary');
     !/aiAdvice|conversation\.create|prisma\.conversation/i.test(cli + runSrc));
 }
 
+// ══ 12. Interactive mode is the SAME experiment with a keyboard ══════════════
+console.log('12. interactive operator mode');
+{
+  const src  = code(read('scripts/ai-baseline/interactive.ts'));
+  const raw  = read('scripts/ai-baseline/interactive.ts');
+  const cli  = code(read('scripts/ai-conversation-baseline.ts'));
+  const run  = code(read('scripts/ai-baseline/run.ts'));
+
+  // The whole point: one turn loop, not two.
+  check('it runs the batch runner\'s turn executor, not a copy',
+    /import \{[^}]*executeTurn[^}]*\} from '\.\/run'/.test(src)
+      && !/generateWithTools\(/.test(src));
+  check('…which is exported from run.ts and used by BOTH',
+    /export async function executeTurn/.test(run)
+      && /executeTurn\(\{ messages, user, index, model, toolSchemas, toolCtx \}\)/.test(run));
+  check('totals are summed by the shared helper', /sumTurns/.test(src) && /export function sumTurns/.test(run));
+
+  // Same arm, same evidence, same instruction, same tools.
+  check('the arm is fixed to A2', /const ARM = 'A2' as const/.test(src));
+  check('evidence comes from buildEvidence, not a bespoke pack',
+    /buildEvidence\(ARM, ctx, spaceCtx\.spaceId\)/.test(src));
+  check('the tool surface is the shared one', /openAiToolSchemas\(\)/.test(src));
+  check('the instruction is the shared one — not a second prompt',
+    /SYSTEM_INSTRUCTION/.test(src) && !/You are Fourth Meridian/.test(src));
+
+  // Artifact parity — a session must be readable beside a recorded run.
+  for (const field of ['probe', 'arm', 'armQuestion', 'model', 'toolsOffered',
+    'spaceId', 'asOfISO', 'systemInstruction', 'evidence', 'turns', 'totals',
+    'ok', 'humanReview']) {
+    check(`session artifact carries \`${field}\``, new RegExp(`\\b${field}:`).test(src));
+  }
+  check('it is labelled as interactive so it is never mistaken for a probe run',
+    /mode: 'interactive'/.test(src));
+  check('the transcript is written after EVERY turn, not only on a clean exit',
+    /const save = \(\): void =>/.test(src) && /turns\.push\(rec\);\s*\n\s*save\(\);/.test(src));
+  check('…and on Ctrl-C', /SIGINT/.test(src));
+
+  // It must not quietly become a different experiment.
+  check('a model that cannot call tools is REFUSED, not silently downgraded',
+    /supportsTools\(model\)/.test(cli) && /cannot call tools through this provider seam/.test(cli));
+  check('the picker names that limitation next to the model',
+    /cannot call tools — not usable for this mode/.test(cli));
+  check('the default tier is the one the recorded runs used',
+    /INTERACTIVE_DEFAULT_TIER = 'mid'/.test(cli));
+
+  // Read-only, no production reach, no new machinery.
+  for (const banned of ['db.', '.create(', '.update(', '.delete(', 'lib/ai/chat', 'AiAdvice']) {
+    check(`interactive.ts contains no \`${banned}\``, !src.includes(banned));
+  }
+  check('it declares that it fixes none of the known failures',
+    /IT FIXES NOTHING/.test(raw));
+  check('the production route is still untouched',
+    /AWAITING_REDESIGN/.test(read('app/api/ai/chat/route.ts')));
+}
+
 console.log(failures === 0 ? '\nAll baseline-harness checks passed.' : `\n${failures} check(s) failed.`);
 process.exit(failures ? 1 : 0);

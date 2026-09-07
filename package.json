@@ -15,6 +15,7 @@
     "db:guard": "tsx scripts/db-guard.ts",
     "db:drift": "tsx --env-file=.env.local scripts/check-schema-drift.ts",
     "ai:baseline": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-conversation-baseline.ts",
+  "ai:chat": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-conversation-baseline.ts --interactive",
   "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
     "db:reset": "tsx scripts/db-guard.ts && npm run db:backup && prisma migrate reset --force",

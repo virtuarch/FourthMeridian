@@ -8,6 +8,7 @@
  * docs/plans/AI-CONVERSATION-GOLDENS.md? Full contract:
  * docs/plans/AI-CONVERSATION-BASELINE-HARNESS.md.
  *
+ *   npm run ai:chat                                 # interactive operator mode
  *   npm run ai:baseline -- --list
  *   npm run ai:baseline -- --probe projection --arm A0 --model mid
  *   npm run ai:baseline -- --probe projection --all-models
@@ -31,7 +32,9 @@ import { todayUTCISO } from '@/lib/time/clock';
 import { PROBES, PROBE_IDS } from './ai-baseline/probes';
 import { ARMS, ARM_QUESTION, type Arm } from './ai-baseline/evidence';
 import { runCase, supportsTools, type CaseResult } from './ai-baseline/run';
+import { runInteractive } from './ai-baseline/interactive';
 import { writeIndex } from './ai-baseline/artifacts';
+import { createInterface } from 'readline/promises';
 import type { SpaceContext } from '@/lib/space';
 
 /**
@@ -50,6 +53,50 @@ export const TIERS: Record<string, string> = {
 };
 
 const SMOKE_PROBES = ['projection', 'debt', 'investments'];
+
+/**
+ * The interactive default.
+ *
+ * ⚠️ THE SAME MODEL THE SMOKE RUN USED. A dogfooding session is only worth
+ * anything beside the recorded transcripts, and it stops being comparable the
+ * moment the default drifts to a different tier.
+ */
+const INTERACTIVE_DEFAULT_TIER = 'mid';
+
+/**
+ * Ask which model to talk to.
+ *
+ * ⚠️ IT NAMES WHAT EACH ONE CANNOT DO. `gpt-6-astra` cannot call tools through
+ * this seam, and the interactive mode is a TOOL arm — choosing it silently would
+ * hand the operator a different experiment wearing the same label.
+ */
+async function chooseModel(preselected?: string): Promise<string> {
+  if (preselected) return TIERS[preselected] ?? preselected;
+
+  const keys = Object.keys(TIERS);
+  console.log('\nModel:');
+  keys.forEach((k, i) => {
+    const m = TIERS[k];
+    const dflt = k === INTERACTIVE_DEFAULT_TIER ? '  (default)' : '';
+    const warn = supportsTools(m) ? '' : '  ⚠️  cannot call tools — not usable for this mode';
+    console.log(`  ${i + 1}) ${k.padEnd(9)} ${m.padEnd(14)}${dflt}${warn}`);
+  });
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  let chosen = TIERS[INTERACTIVE_DEFAULT_TIER];
+  try {
+    const raw = (await rl.question(`\nChoose [1-${keys.length}, Enter for ${TIERS[INTERACTIVE_DEFAULT_TIER]}]: `)).trim();
+    if (raw !== '') {
+      const n = Number(raw);
+      chosen = Number.isInteger(n) && n >= 1 && n <= keys.length
+        ? TIERS[keys[n - 1]]
+        : (TIERS[raw] ?? raw); // a tier name or a raw model id both work
+    }
+  } finally {
+    rl.close();
+  }
+  return chosen;
+}
 
 /**
  * Read `--name=value` OR `--name value`.
@@ -81,6 +128,10 @@ function usage(): void {
     console.log(`  ${k.padEnd(9)} ${v.padEnd(14)}${supportsTools(v) ? '' : '  (A0/A1 only — no tool support)'}`);
   }
   console.log(`
+Interactive (arm A2 — thin core + tools, the same one the probes run):
+  npm run ai:chat                    pick a model at startup, default gpt-4.1
+  npm run ai:chat -- --model ceiling  skip the picker
+
 Selection (nothing runs without one):
   --probe a,b        --all-probes
   --arm A0,A2        --all-arms
@@ -134,6 +185,27 @@ async function resolveSpace(explicit?: string): Promise<{ spaceCtx: SpaceContext
 
 async function main(): Promise<void> {
   if (has('list') || has('help') || process.argv.length <= 2) { usage(); return; }
+
+  // ── Interactive operator mode ─────────────────────────────────────────────
+  if (has('interactive') || has('chat')) {
+    const { spaceCtx, agentId } = await resolveSpace(flag('space') || undefined);
+    const asOfISO = todayUTCISO();
+    const txnCount = await db.transaction.count({
+      where: { financialAccount: { spaceAccountLinks: { some: { spaceId: spaceCtx.spaceId } } } },
+    });
+    console.log(`\nSpace: ${spaceCtx.space.name} (${spaceCtx.spaceId})  ${txnCount} transactions  [READ-ONLY]`);
+    const model = await chooseModel(flag('model') || undefined);
+    if (!supportsTools(model)) {
+      console.error(`\n✗ ${model} cannot call tools through this provider seam, and this mode is a`);
+      console.error('  tool arm. Pick another model rather than running a different experiment.\n');
+      process.exitCode = 1;
+      return;
+    }
+    const runDir = join(process.cwd(), 'tmp', 'ai-baseline',
+      `interactive-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+    await runInteractive({ spaceCtx, agentId, asOfISO, model, runDir });
+    return;
+  }
 
   const smoke = has('smoke');
   const all   = has('all');

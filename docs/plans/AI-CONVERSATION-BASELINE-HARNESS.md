@@ -252,9 +252,41 @@ never populated automatically.
 9. **Single sample per cell.** Nothing here is statistically significant, and it is not
    meant to be — it is meant to be read.
 
+## 14b. Interactive operator mode
+
+**The A2 arm with a keyboard on the front.** Same thin-core evidence, same ten tools,
+same ~140-word instruction, **same turn executor**, same artifact shape. Nothing about the
+system under test differs — a session that had drifted from the batch runs would not be
+comparable with them, and comparability is the whole reason the batch runs exist.
+
+```bash
+npm run ai:chat                     # pick a model at startup, default gpt-4.1
+npm run ai:chat -- --model ceiling  # skip the picker
+npm run ai:chat -- --space <id>     # a different Space
+```
+
+- **Model chosen at startup**, defaulting to `gpt-4.1` — the tier the recorded smoke run
+  used, so a session and a probe run are directly readable against each other. The picker
+  marks any model that **cannot call tools**, and choosing one is **refused** rather than
+  silently downgraded: A2 is a tool arm, and running it without tools would be a different
+  experiment wearing the same label.
+- **In-session:** `/tools` shows the last turn's calls with their arguments and results,
+  `/cost` shows tokens so far, `/exit` ends it.
+- **The transcript is written after every turn and on Ctrl-C**, not only on a clean exit —
+  a dogfooding session is abandoned at least as often as it is finished.
+- Artifact: `tmp/ai-baseline/interactive-<timestamp>/interactive__A2__<model>.json`, with
+  every field a probe artifact has plus `mode: "interactive"`, `sessionId` and `startedAt`.
+  Key parity is asserted by test.
+
+> **⚠️ It fixes nothing.** Every failure in §14 is still present: the current-versus-future
+> instant confusion when `investment_scenario` meets `project_cash`, the licensed forecast's
+> refusal, `get_transactions` ranking by absolute amount so "largest" can surface income.
+> Those are what there is to dogfood.
+
 ## 15. Commands
 
 ```bash
+npm run ai:chat                                            # interactive operator mode (A2)
 npm run ai:baseline -- --list                              # probes, arms, models
 npm run ai:baseline -- --smoke --dry-run                   # resolve the matrix, call nothing
 npm run ai:baseline -- --smoke                             # 12 cases: 3 probes × 4 arms × mid

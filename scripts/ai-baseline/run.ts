@@ -117,6 +117,102 @@ export function supportsTools(model: string): boolean {
   return !/^(gpt-6|gpt-5\.6)/.test(model);
 }
 
+/**
+ * ONE TURN: append the user's message, let the model call tools until it answers,
+ * and record everything that happened.
+ *
+ * ⚠️ `messages` IS MUTATED, AND THAT IS THE STATE MODEL. The transcript — user
+ * turns, assistant turns, tool calls and their JSON results — is the only memory
+ * this experiment has. A later "break it down" works because the object that
+ * produced the earlier number is still sitting in this array.
+ *
+ * ⚠️ EXTRACTED SO THE INTERACTIVE MODE RUNS THE SAME CODE, not a copy of it. A
+ * dogfooding session whose turn loop had drifted from the batch runner's would
+ * produce transcripts that are not comparable with the recorded runs, which is
+ * the entire value of having recorded runs.
+ */
+export async function executeTurn(args: {
+  /** The growing transcript. Mutated in place. */
+  messages:    unknown[];
+  user:        string;
+  index:       number;
+  model:       string;
+  toolSchemas: unknown[];
+  toolCtx:     ToolContext;
+}): Promise<TurnRecord> {
+  const { messages, user, index, model, toolSchemas, toolCtx } = args;
+  messages.push({ role: 'user', content: user });
+  const rec: TurnRecord = {
+    index, user, toolCalls: [], roundTrips: 0, retries: [], assistant: null,
+    latencyMs: 0, usage: null, finishReason: null,
+  };
+
+  try {
+    for (let hop = 0; hop < MAX_TOOL_ROUNDTRIPS; hop++) {
+      rec.roundTrips++;
+      const out = await callWithRateLimitRetry(
+        () => generateWithTools({ model, messages, tools: toolSchemas }), rec);
+      rec.latencyMs += out.latencyMs;
+      if (out.usage) {
+        rec.usage = rec.usage
+          ? { promptTokens: rec.usage.promptTokens + out.usage.promptTokens,
+              completionTokens: rec.usage.completionTokens + out.usage.completionTokens,
+              totalTokens: rec.usage.totalTokens + out.usage.totalTokens }
+          : out.usage;
+      }
+      rec.finishReason = out.finishReason;
+      messages.push(out.raw);
+
+      if (out.toolCalls.length === 0) { rec.assistant = out.content; break; }
+
+      for (const call of out.toolCalls) {
+        const started = Date.now();
+        let result: unknown; let error: string | undefined;
+        try {
+          const tool = findTool(call.name);
+          if (!tool) throw new Error(`no such tool: ${call.name}`);
+          const parsed = JSON.parse(call.arguments || '{}') as Record<string, unknown>;
+          result = await tool.run(parsed, toolCtx);
+        } catch (err) {
+          error = err instanceof Error ? err.message : String(err);
+          result = { error };
+        }
+        rec.toolCalls.push({
+          name: call.name,
+          arguments: safeParse(call.arguments),
+          result, latencyMs: Date.now() - started, ...(error ? { error } : {}),
+        });
+        messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
+      }
+    }
+    if (rec.assistant === null && !rec.error) {
+      rec.error = `no final answer after ${MAX_TOOL_ROUNDTRIPS} tool round trips`;
+    }
+  } catch (err) {
+    // ⚠️ A PROVIDER FAILURE IS A RESULT, NOT A CRASH. The caller records the turn
+    // and decides whether to continue; the batch runner stops the case, the
+    // interactive session keeps the prompt open.
+    rec.error = err instanceof Error ? err.message : String(err);
+  }
+  return rec;
+}
+
+/** Sum a set of turn records the way both modes report totals. */
+export function sumTurns(turns: readonly TurnRecord[]): CaseResult['totals'] {
+  return turns.reduce((t, r) => ({
+    latencyMs: t.latencyMs + r.latencyMs,
+    promptTokens: t.promptTokens + (r.usage?.promptTokens ?? 0),
+    completionTokens: t.completionTokens + (r.usage?.completionTokens ?? 0),
+    totalTokens: t.totalTokens + (r.usage?.totalTokens ?? 0),
+    toolCalls: t.toolCalls + r.toolCalls.length,
+    roundTrips: t.roundTrips + r.roundTrips,
+    retries: t.retries + r.retries.length,
+    // ⚠️ KEPT OUT OF `latencyMs`. Waiting on a quota is not the model being slow.
+    rateLimitWaitMs: t.rateLimitWaitMs + r.retries.reduce((w, x) => w + x.waitedMs, 0),
+  }), { latencyMs: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0,
+        toolCalls: 0, roundTrips: 0, retries: 0, rateLimitWaitMs: 0 });
+}
+
 export async function runCase(args: {
   probeId: string;
   arm: Arm;
@@ -145,80 +241,12 @@ export async function runCase(args: {
   let ok = true;
 
   for (const [index, user] of probe.turns.entries()) {
-    messages.push({ role: 'user', content: user });
-    const rec: TurnRecord = {
-      index, user, toolCalls: [], roundTrips: 0, retries: [], assistant: null,
-      latencyMs: 0, usage: null, finishReason: null,
-    };
-
-    try {
-      for (let hop = 0; hop < MAX_TOOL_ROUNDTRIPS; hop++) {
-        rec.roundTrips++;
-        const out = await callWithRateLimitRetry(
-          () => generateWithTools({ model, messages, tools: toolSchemas }), rec);
-        rec.latencyMs += out.latencyMs;
-        if (out.usage) {
-          rec.usage = rec.usage
-            ? { promptTokens: rec.usage.promptTokens + out.usage.promptTokens,
-                completionTokens: rec.usage.completionTokens + out.usage.completionTokens,
-                totalTokens: rec.usage.totalTokens + out.usage.totalTokens }
-            : out.usage;
-        }
-        rec.finishReason = out.finishReason;
-        messages.push(out.raw);
-
-        if (out.toolCalls.length === 0) { rec.assistant = out.content; break; }
-
-        // ⚠️ TOOL RESULTS STAY IN THE TRANSCRIPT. They are the only "state" this
-        // experiment has: a later "break it down" can see the object that
-        // produced the earlier number, because it is still in the messages.
-        for (const call of out.toolCalls) {
-          const started = Date.now();
-          let result: unknown; let error: string | undefined;
-          try {
-            const tool = findTool(call.name);
-            if (!tool) throw new Error(`no such tool: ${call.name}`);
-            const parsed = JSON.parse(call.arguments || '{}') as Record<string, unknown>;
-            result = await tool.run(parsed, toolCtx);
-          } catch (err) {
-            error = err instanceof Error ? err.message : String(err);
-            result = { error };
-          }
-          rec.toolCalls.push({
-            name: call.name,
-            arguments: safeParse(call.arguments),
-            result, latencyMs: Date.now() - started, ...(error ? { error } : {}),
-          });
-          messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
-        }
-      }
-      if (rec.assistant === null && !rec.error) {
-        rec.error = `no final answer after ${MAX_TOOL_ROUNDTRIPS} tool round trips`;
-        ok = false;
-      }
-    } catch (err) {
-      // ⚠️ ONE CASE'S PROVIDER FAILURE MUST NOT KILL THE RUN. The artifact is
-      // written either way — a failure is a result.
-      rec.error = err instanceof Error ? err.message : String(err);
-      ok = false;
-      turns.push(rec);
-      break;
-    }
+    const rec = await executeTurn({ messages, user, index, model, toolSchemas, toolCtx });
     turns.push(rec);
+    if (rec.error) { ok = false; break; }
   }
 
-  const totals = turns.reduce((t, r) => ({
-    latencyMs: t.latencyMs + r.latencyMs,
-    promptTokens: t.promptTokens + (r.usage?.promptTokens ?? 0),
-    completionTokens: t.completionTokens + (r.usage?.completionTokens ?? 0),
-    totalTokens: t.totalTokens + (r.usage?.totalTokens ?? 0),
-    toolCalls: t.toolCalls + r.toolCalls.length,
-    roundTrips: t.roundTrips + r.roundTrips,
-    retries: t.retries + r.retries.length,
-    // ⚠️ KEPT OUT OF `latencyMs`. Waiting on a quota is not the model being slow.
-    rateLimitWaitMs: t.rateLimitWaitMs + r.retries.reduce((w, x) => w + x.waitedMs, 0),
-  }), { latencyMs: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0,
-        toolCalls: 0, roundTrips: 0, retries: 0, rateLimitWaitMs: 0 });
+  const totals = sumTurns(turns);
 
   const artifactPath = join(runDir, `${probeId}__${arm}__${model.replace(/[^\w.-]/g, '_')}.json`);
   mkdirSync(runDir, { recursive: true });
