@@ -20,7 +20,14 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { applyInvestmentScenario, SCENARIO_BASIS } from './scenario';
-import { TOOLS, openAiToolSchemas, findTool, readWindowToExhaustion, clampToCeiling } from './tools';
+import {
+  TOOLS, openAiToolSchemas, findTool, readWindowToExhaustion, clampToCeiling,
+  monthEndsBetween, yearEndsBetween,
+} from './tools';
+import {
+  runScenarioLedger, growthFactor, validateReturns, expandContributions,
+  PROVENANCE, MAX_EXPANDED_CONTRIBUTIONS,
+} from './scenario-ledger';
 import { compactToolHistory, DEFAULT_COMPACTION } from './compaction';
 import { TRANSACTION_FETCH_LIMIT } from '@/lib/ai/assemblers/transactions';
 import { PROBES, PROBE_IDS, findProbe } from './probes';
@@ -123,7 +130,7 @@ console.log('3. evidence arms');
 // ══ 4. The tool surface is read-only ═════════════════════════════════════════
 console.log('4. tool surface');
 {
-  check('ten tools', TOOLS.length === 10, String(TOOLS.length));
+  check('eleven tools', TOOLS.length === 11, String(TOOLS.length));
   check('names are unique', new Set(TOOLS.map((t) => t.name)).size === TOOLS.length);
   check('every tool describes itself', TOOLS.every((t) => t.description.length > 40));
   check('every schema is a closed object',
@@ -828,6 +835,312 @@ console.log('16. as-of coherence');
     /retrospective: true/.test(src) && /do not\n?\s*\/\/?\s*present it as a current expectation|not\s+'\s*\+\s*'present it as a current expectation|present it as a current expectation/.test(src));
   check('a past date never returns the CURRENT investment composition',
     /composeInvestments reads today's account totals|reads today's account totals/.test(read('scripts/ai-baseline/tools.ts')));
+}
+
+// ══ 17. The scenario ledger (slice 4) ════════════════════════════════════════
+//
+// Turns 11–13 of the gpt-5.5 dogfood did three consecutive turns of consequential
+// arithmetic in prose — a five-year contribution-and-compounding table, then the
+// same table with per-year returns. Every figure happened to be correct, and not
+// one of them was reproducible, testable or traceable. These checks are what
+// makes the same arithmetic boring.
+console.log('17. scenario ledger');
+{
+  const OPENING = {
+    asOfISO: '2026-01-01',
+    liquid: 10_000, investments: 20_000, debt: 500, otherAssets: 300_000,
+  };
+  const SPINE = [
+    { date: '2026-12-31', liquid: 15_000, isCheckpoint: true },
+    { date: '2027-12-31', liquid: 20_000, isCheckpoint: true },
+  ];
+  const flat = runScenarioLedger({
+    opening: OPENING, spine: SPINE, contributions: [], outflows: [], returns: [] });
+
+  // ── §12.10 — the ledger is the cash spine plus movements, never a rival ────
+  check('with nothing stated, every checkpoint IS the spine',
+    flat.checkpoints.every((c, i) => c.liquid!.amount === SPINE[i].liquid));
+  check('…and no figure claims a user assumption that was never made',
+    flat.checkpoints.every((c) => !c.netWorth!.provenance.includes(PROVENANCE.USER_ASSUMED)));
+  check('…and the untouched investment pot says it is being held flat',
+    flat.checkpoints[0].investments.provenance.includes(PROVENANCE.HELD_FLAT)
+      && flat.checkpoints[0].investments.amount === 20_000);
+  check('opening net worth composes the four lines',
+    flat.opening.netWorth === 10_000 + 20_000 + 300_000 - 500);
+
+  // ── §12.11 — one movement, two signs, no double count ─────────────────────
+  const contributed = runScenarioLedger({
+    opening: OPENING, spine: SPINE, returns: [], outflows: [],
+    contributions: [{ date: '2026-06-01', amount: 5_000, label: 'half my cash' }] });
+  check('a contribution leaves cash', contributed.checkpoints[0].liquid!.amount === 10_000);
+  check('…and arrives in investments, to the cent',
+    contributed.checkpoints[0].investments.amount === 25_000);
+  check('…so at a zero return the composed net worth is UNCHANGED',
+    contributed.checkpoints[0].netWorth!.amount === flat.checkpoints[0].netWorth!.amount);
+  check('…and the movement is reported, not merely applied',
+    contributed.checkpoints[0].movements.contributionsToDate.total === 5_000
+      && contributed.checkpoints[0].movements.investmentGrowthToDate === 0);
+
+  // ── §12.12 — a per-year rate compounds only inside its own year ───────────
+  const perYear = runScenarioLedger({
+    opening: OPENING, spine: SPINE, contributions: [], outflows: [],
+    returns: [
+      { fromISO: '2026-01-01', toISO: '2026-12-31', annualPct: 100 },
+      { fromISO: '2027-01-01', toISO: '2027-12-31', annualPct: 0 },
+    ] });
+  check('100% for 2026 doubles the pot over the full year',
+    approx(perYear.checkpoints[1].investments.amount, 40_000, 0.005));
+  // 2027 contributes a factor of exactly 1, so the whole gain is 2026's — and the
+  // only difference between the two checkpoints is 2026's own last day.
+  check('…and 2027 at 0% neither extends nor undoes it',
+    approx(perYear.checkpoints[1].movements.investmentGrowthToDate, 20_000, 0.005)
+      && perYear.checkpoints[1].investments.amount > perYear.checkpoints[0].investments.amount
+      && perYear.checkpoints[1].investments.amount - perYear.checkpoints[0].investments.amount < 100);
+
+  // ⚠️ A 31 DECEMBER CHECKPOINT IS 364 DAYS AFTER 1 JANUARY, NOT 365. Rounding it
+  // up to a clean ×2 would flatter every table by the width of a day, forever.
+  check('the year-end checkpoint is one day short of the full year, and says so in the number',
+    perYear.checkpoints[0].investments.amount < 40_000
+      && perYear.checkpoints[0].investments.amount > 39_900);
+
+  // ── §12.14 — a stated return can never be read as measured ────────────────
+  const assumed = runScenarioLedger({
+    opening: OPENING, spine: SPINE, outflows: [],
+    contributions: [{ date: '2026-06-01', amount: 5_000, label: 'monthly' }],
+    returns: [{ fromISO: '2026-01-01', toISO: '2027-12-31', annualPct: 8 }] });
+  check('an investment balance built on a stated return carries USER_ASSUMED',
+    assumed.checkpoints.every((c) => c.investments.provenance.includes(PROVENANCE.USER_ASSUMED)));
+  check('…and so does the net worth composed from it',
+    assumed.checkpoints.every((c) => c.netWorth!.provenance.includes(PROVENANCE.USER_ASSUMED)));
+  check('…and cash touched by a stated contribution says so too',
+    assumed.checkpoints.every((c) => c.liquid!.provenance.includes(PROVENANCE.USER_ASSUMED)));
+  check('the spine is never labelled MEASURED — it is a projection',
+    flat.checkpoints.every((c) => c.liquid!.provenance.includes(PROVENANCE.PROJECTED_FROM_EVIDENCE)
+      && !c.liquid!.provenance.includes(PROVENANCE.MEASURED)));
+  check('debt and other assets are measured AND held flat, which are different claims',
+    flat.checkpoints.every((c) => c.debt.provenance.includes(PROVENANCE.MEASURED)
+      && c.debt.provenance.includes(PROVENANCE.HELD_FLAT)));
+
+  // ⚠️ A HOUSE MUST NOT VANISH FROM A FIVE-YEAR TABLE. Composing net worth as
+  // cash + investments − debt is the obvious shape and it is wrong by the value
+  // of every asset that is neither.
+  check('assets that are neither cash nor investments are carried, not dropped',
+    flat.checkpoints.every((c) => c.otherAssets.amount === 300_000
+      && c.netWorth!.amount === c.liquid!.amount + c.investments.amount + 300_000 - 500));
+
+  // ── Nothing is clamped to what the projection can afford ──────────────────
+  const overspent = runScenarioLedger({
+    opening: OPENING, spine: SPINE, contributions: [], returns: [],
+    outflows: [{ date: '2026-03-01', amount: 50_000, label: 'a car' }] });
+  check('a plan that does not fund itself goes negative rather than being trimmed',
+    overspent.checkpoints[0].liquid!.amount === -35_000);
+  check('…and says so out loud', overspent.warnings.some((w) => /negative/i.test(w)));
+
+  // ── A refused spine point stays refused ───────────────────────────────────
+  const refused = runScenarioLedger({
+    opening: OPENING, contributions: [], outflows: [], returns: [],
+    spine: [{ date: '2026-12-31', liquid: null, isCheckpoint: true }] });
+  check('a checkpoint the projection could not produce is null, never zero',
+    refused.checkpoints[0].liquid === null && refused.checkpoints[0].netWorth === null
+      && !!refused.checkpoints[0].unavailable);
+}
+
+// ══ 17a. Compounding, schedules and the inputs that are refused ══════════════
+console.log('17a. ledger arithmetic primitives');
+{
+  const eight = [{ fromISO: '2026-01-01', toISO: '2026-12-31', annualPct: 8 }];
+  check('no stated period means 0%, never a market average',
+    growthFactor([], '2026-01-01', '2030-12-31') === 1);
+  check('a full year at 8% is exactly ×1.08',
+    approx(growthFactor(eight, '2026-01-01', '2027-01-01'), 1.08, 1e-12));
+  check('growth from a date to itself is nothing',
+    growthFactor(eight, '2026-06-01', '2026-06-01') === 1);
+  check('a period ends where it says it ends — nothing accrues past it',
+    approx(growthFactor(eight, '2026-01-01', '2030-01-01'), 1.08, 1e-12));
+  check('adjacent years tile exactly, with no gap and no overlap at the boundary',
+    approx(growthFactor([...eight, { fromISO: '2027-01-01', toISO: '2027-12-31', annualPct: 8 }],
+      '2026-01-01', '2028-01-01'), 1.08 * 1.08, 1e-12));
+
+  // ⚠️ TWO RATES IN FORCE AT ONCE HAS NO HONEST READING. Neither "the later one
+  // wins" nor "multiply them" is what anyone meant, so neither is applied.
+  const clash = validateReturns([
+    { fromISO: '2026-01-01', toISO: '2026-12-31', annualPct: 8 },
+    { fromISO: '2026-06-01', toISO: '2027-06-01', annualPct: 5 },
+  ]);
+  check('overlapping return periods are refused, not blended',
+    clash.ok.length === 1 && clash.rejected.length === 1);
+  check('…and the refusal names what it collided with',
+    /overlaps/.test(clash.rejected[0].reason));
+  check('a period that ends before it starts is refused',
+    validateReturns([{ fromISO: '2027-01-01', toISO: '2026-01-01', annualPct: 8 }]).ok.length === 0);
+
+  // ── Schedules ─────────────────────────────────────────────────────────────
+  const monthly = expandContributions(
+    [{ from: '2026-01-31', amount: 500, cadence: 'monthly' }], '2026-01-01', '2026-06-30');
+  check('a monthly schedule produces one movement per month',
+    monthly.movements.length === 6);
+  // ⚠️ MEASURED FROM THE ORIGINAL DATE, NOT STEPPED. Stepping one month at a time
+  // walks a 31st back to the 28th in February and leaves it there forever.
+  check('…and a 31st clamps into February without dragging the rest of the year back',
+    monthly.movements[1].date === '2026-02-28' && monthly.movements[2].date === '2026-03-31');
+  const yearly = expandContributions(
+    [{ from: '2026-06-01', amount: 10_000, cadence: 'yearly' }], '2026-01-01', '2029-12-31');
+  check('a yearly schedule steps twelve months',
+    yearly.movements.map((m) => m.date).join(',') === '2026-06-01,2027-06-01,2028-06-01,2029-06-01');
+  check('a contribution dated before the projection starts is refused, not moved',
+    expandContributions([{ onDate: '2025-01-01', amount: 100 }], '2026-01-01', '2026-12-31')
+      .rejected.length === 1);
+  check('a contribution past the horizon is refused',
+    expandContributions([{ onDate: '2027-01-01', amount: 100 }], '2026-01-01', '2026-12-31')
+      .rejected.length === 1);
+  check('a schedule with no occurrence in the window says so rather than returning nothing',
+    expandContributions([{ from: '2030-01-01', amount: 100, cadence: 'monthly' }],
+      '2026-01-01', '2026-12-31').rejected.length === 1);
+  check('a zero amount is refused',
+    expandContributions([{ onDate: '2026-02-01', amount: 0 }], '2026-01-01', '2026-12-31')
+      .rejected.length === 1);
+  check('a schedule cannot run away',
+    expandContributions([{ from: '2026-01-01', amount: 1, cadence: 'monthly' }],
+      '2026-01-01', '2126-01-01').movements.length <= MAX_EXPANDED_CONTRIBUTIONS);
+  check('the ledger reads no data at all — it is arithmetic, and importable anywhere',
+    !/^import /m.test(read('scripts/ai-baseline/scenario-ledger.ts')));
+}
+
+// ══ 17b. One spine, two tools ════════════════════════════════════════════════
+//
+// §12.13 — the last checkpoint must equal a standalone run to the same horizon.
+// That holds because there is exactly ONE place a forecast is assembled and both
+// tools go through it, not because two code paths were checked against each other.
+console.log('17b. one spine');
+{
+  const src = code(read('scripts/ai-baseline/tools.ts'));
+  check('scenario_projection exists and is read-only like the rest',
+    !!findTool('scenario_projection'));
+  check('there is exactly ONE place a forecast is assembled',
+    (src.match(/assembleForecast\(\{/g) ?? []).length === 1,
+    String((src.match(/assembleForecast\(\{/g) ?? []).length));
+  check('…and both projection tools reach it through the same spine',
+    (src.match(/buildCashSpine\(ctx, \{/g) ?? []).length === 2);
+  check('every checkpoint is an INDEPENDENT run from the same asOf',
+    /runTo\(date\)\.projection\?\.closing/.test(src) && /runTo\(end\)/.test(src));
+  check('the last checkpoint date IS the horizon, monthly and yearly alike',
+    monthEndsBetween('2026-09-08', '2027-03-15').slice(-1)[0] === '2027-03-15'
+      && yearEndsBetween('2026-09-08', '2030-06-30').slice(-1)[0] === '2030-06-30');
+  check('…and a horizon that is already a period end is not duplicated',
+    yearEndsBetween('2026-09-08', '2027-12-31').filter((d) => d === '2027-12-31').length === 1);
+  check('yearly checkpoints are December year-ends',
+    yearEndsBetween('2026-09-08', '2029-12-31').join(',')
+      === '2026-12-31,2027-12-31,2028-12-31,2029-12-31');
+
+  const schema = findTool('scenario_projection')!.parameters as
+    { properties: Record<string, unknown>; required: string[] };
+  check('the horizon is the only required argument', schema.required.join(',') === 'to');
+  for (const p of ['contributions', 'outflows', 'returns', 'annualReturnPct', 'granularity']) {
+    check(`…and the model can state ${p}`, p in schema.properties);
+  }
+  // ⚠️ THE DEFAULT RETURN IS ZERO AND THE DESCRIPTION SAYS SO. An unstated return
+  // quietly becoming a market average is how a scenario tool turns into a
+  // prediction engine.
+  check('the schema tells the model never to supply a rate the user did not state',
+    /never supply a rate the user did not state/i.test(findTool('scenario_projection')!.description));
+  check('the investment pot comes from the canonical composer, not a sum here',
+    /composeInvestments\(accounts\)/.test(src) && /composition\.combined === null/.test(src));
+  check('a withheld investment total refuses rather than treating null as zero',
+    /arithmetic on an unknown/.test(read('scripts/ai-baseline/tools.ts')));
+  check('the ledger opening is reconciled against the accounts authority, out loud',
+    /reconciliation: \{/.test(src) && /accountsNetWorth: accounts\.netWorth/.test(src));
+}
+
+// ══ 17c. "Half my liquidity" — a share is not an amount ══════════════════════
+//
+// ⚠️ FOUND BY RUNNING IT, NOT BY READING IT. Asked to redo the table investing
+// half his liquidity each year, gpt-4.1 filled in `amount: -0.5`. The ledger
+// moved fifty cents, the table came back internally consistent to the penny, and
+// it answered a question nobody had asked. The fix is both halves: a share can be
+// stated, and a dollar amount under a dollar is refused.
+console.log('17c. proportional contributions');
+{
+  const OPENING = {
+    asOfISO: '2026-01-01',
+    liquid: 10_000, investments: 0, debt: 0, otherAssets: 0,
+  };
+  // Two checkpoints, and a mid-year date that exists only to settle a share.
+  const SPINE = [
+    { date: '2026-06-30', liquid: 12_000, isCheckpoint: false },
+    { date: '2026-12-31', liquid: 20_000, isCheckpoint: true },
+    { date: '2027-12-31', liquid: 40_000, isCheckpoint: true },
+  ];
+
+  const half = runScenarioLedger({
+    opening: OPENING, spine: SPINE, returns: [], outflows: [],
+    contributions: [
+      { date: '2026-12-31', fractionOfLiquid: 0.5, label: 'half my liquidity' },
+      { date: '2027-12-31', fractionOfLiquid: 0.5, label: 'half my liquidity' },
+    ] });
+  check('half of 20,000 is 10,000 — settled from the projection, not from today',
+    half.movements[0].amount === 10_000);
+  // ⚠️ HALF OF WHAT IS LEFT, NOT HALF OF THE HEADLINE. By the second year 10,000
+  // has already moved out, so the balance is 30,000 and half of it is 15,000.
+  check('…and the next share is of what remains, not of the projection again',
+    half.movements[1].amount === 15_000);
+  check('the settled amounts are reported, because only they can be checked',
+    half.movements.every((m) => m.fractionOfLiquid === 0.5 && typeof m.amount === 'number'));
+  check('cash and investments still move by the same amount',
+    half.checkpoints[0].liquid!.amount === 10_000
+      && half.checkpoints[0].investments.amount === 10_000);
+  check('a date evaluated only to settle a share is NOT a row in the table',
+    half.checkpoints.length === 2 && half.checkpoints[0].date === '2026-12-31');
+
+  // ── The defect that made this necessary ───────────────────────────────────
+  const disguised = expandContributions(
+    [{ from: '2026-12-31', amount: -0.5, cadence: 'yearly', label: 'half my liquidity' }],
+    '2026-01-01', '2030-12-31');
+  check('a dollar amount under a dollar is refused as a fraction in disguise',
+    disguised.movements.length === 0 && disguised.rejected.length === 1);
+  check('…and the refusal says which field to use instead',
+    /fractionOfLiquid/.test(disguised.rejected[0].reason));
+  check('stating both an amount and a fraction is refused',
+    expandContributions([{ onDate: '2026-06-01', amount: 100, fractionOfLiquid: 0.5 }],
+      '2026-01-01', '2026-12-31').rejected.length === 1);
+  check('stating neither is refused',
+    expandContributions([{ onDate: '2026-06-01' }], '2026-01-01', '2026-12-31')
+      .rejected.length === 1);
+  check('a fraction outside 0–1 is refused',
+    expandContributions([{ onDate: '2026-06-01', fractionOfLiquid: 1.5 }],
+      '2026-01-01', '2026-12-31').rejected.length === 1);
+
+  // ── Order on a shared date, and a balance that is already gone ────────────
+  const withCar = runScenarioLedger({
+    opening: OPENING, spine: SPINE, returns: [],
+    outflows:      [{ date: '2026-12-31', amount: 8_000, label: 'a car' }],
+    contributions: [{ date: '2026-12-31', fractionOfLiquid: 0.5, label: 'half of what is left' }],
+  });
+  check('on one date the outflow settles first, and the share is of what remains',
+    withCar.movements[0].kind === 'OUTFLOW' && withCar.movements[1].amount === 6_000);
+
+  const nothingLeft = runScenarioLedger({
+    opening: OPENING, returns: [],
+    spine: [{ date: '2026-12-31', liquid: 5_000, isCheckpoint: true }],
+    outflows:      [{ date: '2026-12-31', amount: 9_000, label: 'a car' }],
+    contributions: [{ date: '2026-12-31', fractionOfLiquid: 0.5, label: 'half my liquidity' }],
+  });
+  check('half of a balance that is already spent is nothing, and it says so',
+    nothingLeft.movements[1].amount === 0
+      && nothingLeft.warnings.some((w) => /nothing was available/i.test(w)));
+
+  const noPoint = runScenarioLedger({
+    opening: OPENING, spine: SPINE, returns: [], outflows: [],
+    contributions: [{ date: '2028-03-01', fractionOfLiquid: 0.5, label: 'half' }] });
+  check('a share on a date the projection was never run for is refused, not guessed',
+    noPoint.movements.length === 0 && noPoint.rejected.length === 1);
+
+  const src = code(read('scripts/ai-baseline/tools.ts'));
+  check('the tool evaluates the spine on every share date, not only at checkpoints',
+    /shareDates/.test(src) && /isCheckpoint: checkpointDates\.has\(date\)/.test(src));
+  const schema = findTool('scenario_projection')!.parameters as
+    { properties: Record<string, { items?: { properties: Record<string, unknown> } }> };
+  check('…and the model is told that a proportion goes in its own field',
+    'fractionOfLiquid' in (schema.properties.contributions.items!.properties));
 }
 
 console.log(failures === 0 ? '\nAll baseline-harness checks passed.' : `\n${failures} check(s) failed.`);

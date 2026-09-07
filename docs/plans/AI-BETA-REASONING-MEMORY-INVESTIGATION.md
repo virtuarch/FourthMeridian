@@ -422,7 +422,22 @@ Slices 1–3 are the beta blocker and are **~140 lines total**.
 > **✅ SLICES 1–3 SHIPPED 2026-09-08.** See the harness doc §13d. The dogfood question that
 > exposed the blocker now answers **$9,517 liquid / $37,316 debt correctly on the first
 > attempt**, and a follow-up challenge produces the checking/savings distinction rather than a
-> contradiction. Slices 4–7 remain open.
+> contradiction.
+>
+> **✅ SLICE 4 SHIPPED 2026-09-08.** `scenario_projection` over `scenario-ledger.ts`, a pure
+> function with no imports. See the harness doc §13e. Turns 10–12 now resolve to **one tool
+> call each with zero prose arithmetic**, and turn 13 no longer invents a figure. The
+> invariant holds by construction: `buildCashSpine` was factored out of `project_cash` and
+> there is exactly **one** `assembleForecast` call site, so the last checkpoint and a
+> standalone run to the same horizon are the same number (**$384,719.74**, measured).
+>
+> **§4.2's argument shape was incomplete, and only running it showed that.** A contribution
+> cannot always be an amount: asked to *"invest half my liquidity each year"*, gpt-4.1 wrote
+> `amount: -0.5` and the ledger moved fifty cents, consistently and wrongly. Contributions
+> gained `fractionOfLiquid`; a dollar amount under $1 is refused. **Q1 is answered as
+> proposed** — the default return is 0% and the payload says so in words.
+>
+> Slices 5–7 remain open.
 
 ---
 

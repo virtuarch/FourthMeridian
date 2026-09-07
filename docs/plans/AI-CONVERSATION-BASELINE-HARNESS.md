@@ -109,7 +109,7 @@ artifact for the human reader only, and a test pins that.
 
 ## 6. Tool surface
 
-Ten adapters over authorities that already exist. **Not one computes a financial figure.**
+Eleven adapters over authorities that already exist. **Not one computes a financial figure.**
 
 | Tool | Adapts | Notes |
 |---|---|---|
@@ -122,7 +122,8 @@ Ten adapters over authorities that already exist. **Not one computes a financial
 | `explain_net_worth_change` | `resolveExplorationNode` | `lib/history` — 9 lenses, progressive drilldown, **first AI consumer** |
 | `project_cash` | `assembleForecast` | **both paths, always** (§8) |
 | `get_pay_dates` | `resolvePayDates` | licence-gated occurrences |
-| `investment_scenario` | new, §7 | the one genuinely new calculation |
+| `investment_scenario` | new, §7 | a stated % move, at the current instant |
+| `scenario_projection` | `scenario-ledger.ts` over the same cash spine, §7b | net worth over time under stated contributions and returns |
 
 **Read and calculate only.** No write verb exists in the vocabulary; `tools.ts` imports no
 Prisma client and contains no `.create(`/`.update(`/`.delete(`. Tested.
@@ -407,6 +408,52 @@ itself `retrospective: true` so it is never read as a current expectation. From 
 | First answer | *"only $1,255.20 cash"* → wrong advice | *"$9,517 liquid, $37,316 debt"* — **correct first time** |
 | Under challenge | flip-flopped to $9,517 | explains checking $1,255 / savings $8,262 / liquid $9,517 and refines the advice |
 | Tool calls · tokens | 4 · 28,804 | **3 · 10,701** |
+
+## 13e. The scenario ledger (slice 4, 2026-09-08)
+
+Turns 11–13 of the gpt-5.5 dogfood did three consecutive turns of consequential arithmetic
+**in prose**: a five-year contribution-and-compounding table, then the same table with
+per-year returns. Every figure was correct — I re-derived all of them — and not one was
+reproducible, testable or traceable.
+
+`scenario_projection` is one tool over `scenario-ledger.ts`, a pure function with **no
+imports at all**. It computes nothing about cash: every checkpoint's balance arrives from
+`projectCash(asOf → that date)`, and the ledger applies only what the user stated.
+
+**One spine, two tools.** `buildCashSpine` was factored out of `project_cash`; both tools go
+through it and a test asserts there is exactly **one** `assembleForecast` call site in
+`tools.ts`. That is why the last checkpoint equals a standalone run to the same horizon —
+by construction, not by comparison. Measured: the 2030-12-31 checkpoint and
+`project_cash(to: 2030-12-31)` both return **$384,719.74**.
+
+| Property | How it is guaranteed |
+|---|---|
+| No double count | a contribution is **one movement, two signs, one step** — cash down, investments up. At 0% the composed net worth is unchanged, asserted |
+| No drift | investments at *d* are `opening × G(asOf,d) + Σ contribution × G(c,d)` — never last checkpoint carried forward |
+| Returns compound only inside their stated period | half-open interval intersection; adjacent years tile exactly (×1.08 × ×1.08), and overlapping periods are **refused**, not blended |
+| Default return is **0%** | an unstated return never becomes a market average; the result says so in words |
+| A house does not vanish | assets that are neither cash nor investments are carried as `otherAssets`, held flat, and the opening is **reconciled against the accounts authority** in the payload |
+| Provenance | every line carries the *set* of sources that produced it — `PROJECTED_FROM_EVIDENCE`, `MEASURED`, `HELD_FLAT`, `USER_ASSUMED`. A stated return can never read as measured |
+
+**The defect the live run found — and reading the code would not have.** Asked to *"invest
+half my liquidity each year at 8%"*, gpt-4.1 filled in `amount: -0.5`. The ledger moved fifty
+cents. The table came back internally consistent to the penny and answered a question nobody
+asked. **A share is not an amount** — half of the balance is only knowable at each date, from
+the projection — so contributions gained `fractionOfLiquid`, the spine is evaluated on every
+share date (marked `isCheckpoint: false`, so it is not a row in the table), and a dollar
+amount under **$1** is now refused as a fraction in disguise. The share is of what *remains*:
+on a date carrying both, an outflow settles first.
+
+**Turns 10–13 re-run, gpt-4.1, one tool call each, zero prose arithmetic:**
+
+| Turn | Before | After |
+|---|---|---|
+| 10 — yearly table to 2030 | the whole "implied net worth" column was model arithmetic | `scenario_projection` → **$408,677** at 2030, 1 call, 7.9k tok |
+| 11 — "invest half my liquidity at 8%" | **zero tool calls**, five years of compounding in prose | `fractionOfLiquid: 0.5` → **$457,182**, with each year's share settled and reported ($19,193 → $54,889 → … → $81,478) |
+| 12 — per-year returns 50/23/31 | zero tool calls, inherited scenario re-derived in prose | one call, correctly inherits the contributions → **$624,548** |
+| 13 — "how could I reach $1M?" | invented *"mid-40% annualized returns"* and *"~$90K/year additional surplus"* | **no figure invented** — names the levers, states the $375k gap from the tool's own number, and offers to run them. Slice 5 (goal-seek) is what makes it numeric |
+
+Payload is ~4.3–5.7 KB (~1.1–1.4k tokens) for a five-year table with every movement itemised.
 
 ## 14b. Interactive operator mode
 

@@ -1,13 +1,19 @@
 /**
  * scripts/ai-baseline/tools.ts
  *
- * THE TOOL SURFACE — ten adapters over authorities that already exist.
+ * THE TOOL SURFACE — eleven adapters over authorities that already exist.
  *
  * ⚠️ ADAPTERS, NOT AUTHORITIES. Not one line here computes a financial figure.
  * Every tool resolves parameters, calls a canonical function, and reshapes the
  * result into something compact and semantically explicit. If a tool ever needs
  * to add two money numbers together, that is a signal the composition belongs in
  * an authority, not here.
+ *
+ * There is exactly ONE arithmetic exception, and it is named rather than hidden:
+ * `scenario_projection` reconciles the accounts authority's own totals to find
+ * what is neither cash nor an investment (a house, a car) so the ledger can hold
+ * it flat instead of dropping it. The scenario arithmetic itself is not here — it
+ * is `scenario-ledger.ts`, which is a pure function with no data access at all.
  *
  * ⚠️ READ AND CALCULATE ONLY. No tool writes anything. There is no correction
  * tool, no categorise tool, no memory tool — the harness must be incapable of
@@ -50,6 +56,10 @@ import {
   type AssembledForecast, type ForecastHorizon, type UserStatement,
 } from './forecast-vocabulary';
 import { applyInvestmentScenario, type ScenarioComponent } from './scenario';
+import {
+  runScenarioLedger, expandContributions, PROVENANCE,
+  type ContributionSpec, type PlannedMovement, type ReturnPeriod, type SpinePoint,
+} from './scenario-ledger';
 import type { SpaceContext } from '@/lib/space';
 
 // ── The tool contract ────────────────────────────────────────────────────────
@@ -152,7 +162,7 @@ const daysAgoISO = (asOf: string, n: number) =>
  * ⚠️ THE LAST ENTRY IS ALWAYS THE HORIZON, which is what makes the final
  * checkpoint and the standalone endpoint the same number rather than nearly.
  */
-function monthEndsBetween(fromISO: string, toISO: string): string[] {
+export function monthEndsBetween(fromISO: string, toISO: string): string[] {
   const out: string[] = [];
   const from = new Date(`${fromISO}T00:00:00.000Z`);
   const to   = new Date(`${toISO}T00:00:00.000Z`);
@@ -736,6 +746,108 @@ const explainNetWorthChange: ToolDefinition = {
   },
 };
 
+/**
+ * THE CASH SPINE — everything `project_cash` needs to answer, factored out so a
+ * second tool cannot grow a second copy of it.
+ *
+ * ⚠️ ONE SPINE, TWO TOOLS, ONE SET OF NUMBERS. `scenario_projection` layers
+ * stated contributions and returns over exactly these checkpoints. If it loaded
+ * its own streams, its own accounts or its own spending window, the two tools
+ * would eventually disagree about the same month — and the user would be told
+ * both figures in the same conversation. The invariant that the last checkpoint
+ * equals a standalone run holds because there is only ever one `runTo`.
+ *
+ * ⚠️ A RETROSPECTIVE RUN MUST START FROM THE BALANCE THAT WAS TRUE THEN, and
+ * must not see a transaction dated after the cutoff. Opening cash comes from the
+ * snapshot authority for that date, income cadence from the streams authority AT
+ * that date (which reconstructs the then-current employer), and the spending
+ * window is bounded by it. Anything else quietly projects the past using the
+ * future.
+ */
+interface CashSpine {
+  asOf:          string;
+  retrospective: boolean;
+  openingBasis:  string;
+  /** The accounts payload the projection opened from. Null for a refused build. */
+  accounts:      AccountsSectionData | null;
+  runTo:         (end: string) => AssembledForecast;
+}
+
+async function buildCashSpine(
+  ctx: ToolContext,
+  opts: { asOf: string; assumedMonthlySpending?: number; statedAs?: string },
+): Promise<CashSpine | { unavailable: string; asOf: string }> {
+  const asOf = opts.asOf;
+  const retrospective = asOf < ctx.asOfISO;
+
+  const [streams, accounts, transactions] = await Promise.all([
+    loadForecastIncomeStreams(ctx.spaceId, asOf),
+    assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx),
+    // ⚠️ THE ONE LINE THAT MADE THIS TOOL WORK. PROJECTION-1 derives its spending
+    // rate from `reliableMonths(transactionsDomain)`; with only the accounts
+    // domain in scope it sees zero months, cannot assert a rate, and returns
+    // `closing: null` — always, for every horizon. Measured before the fix:
+    // null / null. After: $38,243.50 to end-2026 and $128,827.54 to end-2027.
+    // Both models papered over the null by doing the arithmetic in prose, and
+    // one of them was $745.86 out.
+    assemble<TransactionsSummaryData>(FinanceDomains.TRANSACTIONS_SUMMARY, ctx,
+      retrospective
+        ? { transactionWindow: { startDate: daysAgoISO(asOf, 179), endDate: asOf,
+            label: `evidence through ${asOf}` } }
+        : {}),
+  ]);
+
+  const statements: UserStatement[] = [];
+  if (typeof opts.assumedMonthlySpending === 'number') {
+    statements.push({
+      mode: StatementMode.ASSERTS_FACT,
+      statedAs: String(opts.statedAs ?? `assumed monthly spending ${opts.assumedMonthlySpending}`),
+      asOfISO: ctx.asOfISO,
+      subject: { kind: 'SPENDING_LEVEL', amount: opts.assumedMonthlySpending,
+        currency: 'USD', periodBasis: PeriodBasis.MONTHLY },
+    });
+  }
+
+  // For a retrospective run the accounts payload is rebuilt from the snapshot
+  // authority for that date — the CURRENT accounts domain would supply today's
+  // opening cash to a projection that starts nine months ago.
+  let openingAccounts: AccountsSectionData | null = accounts;
+  let openingBasis = 'CURRENT_ACCOUNTS';
+  if (retrospective) {
+    const snap = await historicalSnapshot(ctx, asOf) as Record<string, unknown>;
+    if (snap.unavailable) return { unavailable: snap.unavailable as string, asOf };
+    openingAccounts = {
+      totalLiquid: snap.liquid as number,
+      totalLiabilities: snap.debt as number,
+      netWorth: (snap.netWorth as number | null) ?? 0,
+      totalAssets: (snap.totalAssets as number | null) ?? 0,
+      totalInvestments: (snap.investments as number | null) ?? 0,
+      totalDigitalAssets: (snap.digitalAssets as number | null) ?? 0,
+      counts: accounts?.counts ?? { liquid: 0, investments: 0, digitalAssets: 0,
+        realAssets: 0, liabilities: 0 },
+      redactedCount: 0, totalsUnconverted: false,
+    } as unknown as AccountsSectionData;
+    openingBasis = 'HISTORICAL_SNAPSHOT';
+  }
+
+  const forecastCtx = {
+    space: { name: '', reportingCurrency: 'USD' },
+    domains: {
+      [FinanceDomains.ACCOUNTS]: { data: openingAccounts },
+      [FinanceDomains.TRANSACTIONS_SUMMARY]: { data: transactions },
+    },
+  } as unknown as SpaceContext_AI;
+
+  return {
+    asOf, retrospective, openingBasis, accounts: openingAccounts,
+    runTo: (end: string) => assembleForecast({
+      ctx: forecastCtx, streams, asOfISO: asOf, statements,
+      horizon: { fromISO: asOf, toISO: end, origin: AssumptionOrigin.USER_REQUESTED,
+        statedAs: `through ${end}` } as unknown as ForecastHorizon,
+    }),
+  };
+}
+
 // ── 8. Cash projection ───────────────────────────────────────────────────────
 
 const projectCash: ToolDefinition = {
@@ -758,77 +870,15 @@ const projectCash: ToolDefinition = {
   }, ['to']),
   async run(a, ctx) {
     const toISO = String(a.to);
-    const asOf = (a.asOf as string) || ctx.asOfISO;
-    const retrospective = asOf < ctx.asOfISO;
-
-    // ⚠️ A RETROSPECTIVE RUN MUST START FROM THE BALANCE THAT WAS TRUE THEN, and
-    // must not see a transaction dated after the cutoff. Opening cash comes from
-    // the snapshot authority for that date, income cadence from the streams
-    // authority AT that date (which reconstructs the then-current employer), and
-    // the spending window is bounded by it. Anything else quietly projects the
-    // past using the future.
-    const [streams, accounts, transactions] = await Promise.all([
-      loadForecastIncomeStreams(ctx.spaceId, asOf),
-      assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx),
-      // ⚠️ THE ONE LINE THAT MADE THIS TOOL WORK. PROJECTION-1 derives its spending
-      // rate from `reliableMonths(transactionsDomain)`; with only the accounts
-      // domain in scope it sees zero months, cannot assert a rate, and returns
-      // `closing: null` — always, for every horizon. Measured before the fix:
-      // null / null. After: $38,243.50 to end-2026 and $128,827.54 to end-2027.
-      // Both models papered over the null by doing the arithmetic in prose, and
-      // one of them was $745.86 out.
-      assemble<TransactionsSummaryData>(FinanceDomains.TRANSACTIONS_SUMMARY, ctx,
-        retrospective
-          ? { transactionWindow: { startDate: daysAgoISO(asOf, 179), endDate: asOf,
-              label: `evidence through ${asOf}` } }
-          : {}),
-    ]);
-
-    const statements: UserStatement[] = [];
-    if (typeof a.assumedMonthlySpending === 'number') {
-      statements.push({
-        mode: StatementMode.ASSERTS_FACT,
-        statedAs: String(a.statedAs ?? `assumed monthly spending ${a.assumedMonthlySpending}`),
-        asOfISO: ctx.asOfISO,
-        subject: { kind: 'SPENDING_LEVEL', amount: a.assumedMonthlySpending,
-          currency: 'USD', periodBasis: PeriodBasis.MONTHLY },
-      });
-    }
-
-    // For a retrospective run the accounts payload is rebuilt from the snapshot
-    // authority for that date — the CURRENT accounts domain would supply today's
-    // opening cash to a projection that starts nine months ago.
-    let openingAccounts: AccountsSectionData | null = accounts;
-    let openingBasis = 'CURRENT_ACCOUNTS';
-    if (retrospective) {
-      const snap = await historicalSnapshot(ctx, asOf) as Record<string, unknown>;
-      if (snap.unavailable) return { unavailable: snap.unavailable, asOf };
-      openingAccounts = {
-        totalLiquid: snap.liquid as number,
-        totalLiabilities: snap.debt as number,
-        netWorth: (snap.netWorth as number | null) ?? 0,
-        totalInvestments: (snap.investments as number | null) ?? 0,
-        totalDigitalAssets: (snap.digitalAssets as number | null) ?? 0,
-        counts: accounts?.counts ?? { liquid: 0, investments: 0, digitalAssets: 0,
-          realAssets: 0, liabilities: 0 },
-        redactedCount: 0, totalsUnconverted: false,
-      } as unknown as AccountsSectionData;
-      openingBasis = 'HISTORICAL_SNAPSHOT';
-    }
-
-    const forecastCtx = {
-      space: { name: '', reportingCurrency: 'USD' },
-      domains: {
-        [FinanceDomains.ACCOUNTS]: { data: openingAccounts },
-        [FinanceDomains.TRANSACTIONS_SUMMARY]: { data: transactions },
-      },
-    } as unknown as SpaceContext_AI;
-
-    const runTo = (end: string) => assembleForecast({
-      ctx: forecastCtx, streams, asOfISO: asOf, statements,
-      horizon: { fromISO: asOf, toISO: end, origin: AssumptionOrigin.USER_REQUESTED,
-        statedAs: `through ${end}` } as unknown as ForecastHorizon,
+    const spine = await buildCashSpine(ctx, {
+      asOf: (a.asOf as string) || ctx.asOfISO,
+      ...(typeof a.assumedMonthlySpending === 'number'
+        ? { assumedMonthlySpending: a.assumedMonthlySpending,
+            statedAs: a.statedAs === undefined ? undefined : String(a.statedAs) }
+        : {}),
     });
+    if ('unavailable' in spine) return spine;
+    const { asOf, retrospective, openingBasis, runTo } = spine;
 
     const f = runTo(toISO);
     const licensed = 'refused' in f.forecast ? null : f.forecast.fullCashPath;
@@ -984,11 +1034,267 @@ const investmentScenario: ToolDefinition = {
   },
 };
 
+// ── 11. Scenario projection ──────────────────────────────────────────────────
+
+/**
+ * Every 31 December strictly after `fromISO` and not after `toISO`, plus the
+ * horizon itself. The yearly analogue of `monthEndsBetween`, and it keeps the
+ * same property: the last entry IS the horizon.
+ */
+export function yearEndsBetween(fromISO: string, toISO: string): string[] {
+  const out: string[] = [];
+  const firstYear = Number(fromISO.slice(0, 4));
+  const lastYear  = Number(toISO.slice(0, 4));
+  for (let y = firstYear; y <= lastYear; y++) {
+    const iso = `${y}-12-31`;
+    if (iso > fromISO && iso <= toISO) out.push(iso);
+  }
+  if (out[out.length - 1] !== toISO && toISO > fromISO) out.push(toISO);
+  return out;
+}
+
+/** A ceiling on how many independent projection runs one question can trigger. */
+const MAX_SCENARIO_CHECKPOINTS = 80;
+
+const scenarioProjection: ToolDefinition = {
+  name: 'scenario_projection',
+  description:
+    'Net worth over time under assumptions the USER stated: money moved into investments, ' +
+    'one-off amounts in or out, and an annual return. Cash comes from the same deterministic ' +
+    'projection as project_cash; this adds only what the user said. Use it for "if I invest ' +
+    'half my cash each year at 8%, where am I in 2030?" and for any year-by-year table — ' +
+    'do NOT do this arithmetic yourself. The default return is 0%: never supply a rate the ' +
+    'user did not state.',
+  parameters: obj({
+    to: str('YYYY-MM-DD horizon end. Required.'),
+    granularity: { type: 'string', enum: ['yearly', 'monthly'],
+      description: 'yearly = 31 December of each year. Default yearly beyond ~18 months.' },
+    annualReturnPct: num('One flat annual return for the whole horizon, e.g. 8. Only if the '
+      + 'user stated it. Ignored when `returns` is given. Default 0.'),
+    returns: { type: 'array', description: 'Per-period returns, when the user gave different '
+      + 'rates for different years. Periods must not overlap.',
+      items: obj({ from: str('YYYY-MM-DD'), to: str('YYYY-MM-DD, inclusive'),
+        annualPct: num('e.g. 50 for "50% in 2028"') }, ['from', 'to', 'annualPct']) },
+    contributions: { type: 'array',
+      description: 'Money moved from cash into investments. WHEN: give either `onDate` for a '
+        + 'one-off or `from` + `cadence` for a schedule. HOW MUCH: give either `amount` in '
+        + 'dollars or `fractionOfLiquid` for a share of the balance — exactly one of the two.',
+      items: obj({
+        amount:  num('A dollar amount. Positive moves cash into investments; negative takes '
+          + 'it back out. Do NOT put a fraction here.'),
+        fractionOfLiquid: num('A share of the projected cash on each date: 0.5 for "half my '
+          + 'liquidity", 1 for "everything". Use this whenever the user said a proportion — '
+          + 'the dollar amount differs at every date and only the projection knows it.'),
+        onDate:  str('YYYY-MM-DD for a single contribution.'),
+        from:    str('YYYY-MM-DD first occurrence of a repeating contribution.'),
+        to:      str('YYYY-MM-DD last occurrence. Omit to continue to the horizon.'),
+        cadence: { type: 'string', enum: ['monthly', 'yearly'] },
+        label:   str('The user\'s own words, e.g. "half my liquidity".'),
+      }) },
+    outflows: { type: 'array',
+      description: 'One-off cash leaving entirely — a car, a trip, a tax bill. Use a NEGATIVE '
+        + 'amount for a one-off inflow such as a bonus.',
+      items: obj({ onDate: str('YYYY-MM-DD'), amount: num('Positive = cash out.'),
+        label: str('What it is.') }, ['onDate', 'amount']) },
+    assumedMonthlySpending: num('If the user stated a monthly spending level, pass it here — '
+      + 'it changes the cash spine exactly as it does in project_cash.'),
+    statedAs: str('The user\'s own words for that spending assumption.'),
+  }, ['to']),
+  async run(a, ctx) {
+    const toISO = String(a.to);
+    const spine = await buildCashSpine(ctx, {
+      asOf: ctx.asOfISO,
+      ...(typeof a.assumedMonthlySpending === 'number'
+        ? { assumedMonthlySpending: a.assumedMonthlySpending,
+            statedAs: a.statedAs === undefined ? undefined : String(a.statedAs) }
+        : {}),
+    });
+    if ('unavailable' in spine) return spine;
+    const { asOf, runTo, accounts } = spine;
+    if (!accounts) return { unavailable: 'no accounts in scope' };
+
+    // ⚠️ THE INVESTMENT POT COMES FROM THE CANONICAL COMPOSER, NOT FROM A SUM
+    // HERE. Traditional investments and digital assets are disjoint by
+    // construction; when either is withheld the composer returns null, and a
+    // ledger that treated null as zero would grow a hole at 8% a year.
+    const composition = composeInvestments(accounts);
+    if (!composition || composition.combined === null) {
+      return { unavailable: 'the investment total cannot be stated for this Space, so a '
+        + 'scenario over it would be arithmetic on an unknown',
+        reason: composition?.withheldReason ?? 'no investment accounts in scope' };
+    }
+
+    const endpoint = runTo(toISO);
+    // The spine's own opening balance — checking plus savings. Named `liquid`
+    // below for the same reason nothing in the result is named `cash`.
+    const openingLiquid = endpoint.projection?.openingCash
+      ?? ('refused' in endpoint.forecast ? null : endpoint.forecast.openingCash.amount);
+    if (openingLiquid === null) {
+      return { unavailable: 'no opening cash balance could be established, so nothing can be '
+        + 'projected from it',
+        reason: endpoint.projection?.missing?.join('; ') ?? endpoint.unavailable };
+    }
+
+    const horizonDays = Math.round(
+      (Date.parse(`${toISO}T00:00:00Z`) - Date.parse(`${asOf}T00:00:00Z`)) / 86_400_000);
+    const granularity = (a.granularity as string) === 'monthly' ? 'monthly'
+      : (a.granularity as string) === 'yearly' ? 'yearly'
+      : horizonDays > 550 ? 'yearly' : 'monthly';
+    let dates = granularity === 'yearly'
+      ? yearEndsBetween(asOf, toISO) : monthEndsBetween(asOf, toISO);
+    const clamped = dates.length > MAX_SCENARIO_CHECKPOINTS;
+    // Keep the HORIZON when trimming — a table that stops short of the date the
+    // question named has not answered it.
+    if (clamped) dates = [...dates.slice(0, MAX_SCENARIO_CHECKPOINTS - 1), toISO];
+
+    // ── The stated assumptions, normalised ───────────────────────────────────
+    const rejected: { input: string; reason: string }[] = [];
+
+    const flatPct = typeof a.annualReturnPct === 'number' ? a.annualReturnPct : 0;
+    const statedReturns = (a.returns as { from: string; to: string; annualPct: number }[]) ?? [];
+    // ⚠️ ONE SOURCE OF RETURNS, NOT TWO BLENDED. Per-period rates are the whole
+    // truth when given; a flat rate filling their gaps would apply a number the
+    // user only meant for the years they named.
+    const returns: ReturnPeriod[] = statedReturns.length > 0
+      ? statedReturns.map((r) => ({ fromISO: String(r.from), toISO: String(r.to),
+          annualPct: Number(r.annualPct) }))
+      : flatPct === 0 ? []
+      : [{ fromISO: asOf, toISO, annualPct: flatPct }];
+
+    const contribSpecs: ContributionSpec[] = [];
+    for (const c of (a.contributions as Record<string, unknown>[]) ?? []) {
+      const label  = c.label === undefined ? undefined : String(c.label);
+      // How much: a dollar amount, or a share of the balance. The ledger refuses
+      // both and neither; this only passes through what was said.
+      const size = {
+        ...(c.amount !== undefined ? { amount: Number(c.amount) } : {}),
+        ...(c.fractionOfLiquid !== undefined
+          ? { fractionOfLiquid: Number(c.fractionOfLiquid) } : {}),
+      };
+      if (c.onDate) {
+        contribSpecs.push({ onDate: String(c.onDate), ...size, ...(label ? { label } : {}) });
+      } else if (c.from && c.cadence) {
+        contribSpecs.push({ from: String(c.from), ...size,
+          cadence: String(c.cadence) === 'yearly' ? 'yearly' : 'monthly',
+          ...(c.to ? { to: String(c.to) } : {}), ...(label ? { label } : {}) });
+      } else {
+        rejected.push({ input: label ?? 'a contribution',
+          reason: 'needs either `onDate`, or `from` together with `cadence`' });
+      }
+    }
+    const expanded = expandContributions(contribSpecs, asOf, toISO);
+    rejected.push(...expanded.rejected);
+
+    const outflows: PlannedMovement[] = [];
+    for (const o of (a.outflows as Record<string, unknown>[]) ?? []) {
+      const amount = Number(o.amount);
+      const date   = String(o.onDate);
+      const label  = String(o.label ?? 'one-off');
+      if (!Number.isFinite(amount) || amount === 0) {
+        rejected.push({ input: `${label} on ${date}`, reason: 'the amount is zero or not a number' });
+      } else if (date < asOf || date > toISO) {
+        rejected.push({ input: `${label} on ${date}`,
+          reason: `outside the projection window (${asOf}..${toISO})` });
+      } else {
+        outflows.push({ date, amount, label });
+      }
+    }
+
+    // ── The cash spine, one independent run per date ─────────────────────────
+    //
+    // ⚠️ SHARE-BASED CONTRIBUTIONS NEED THE PROJECTION ON THEIR OWN DATE. "Half my
+    // liquidity every June" falls nowhere near a year end, and half of a balance
+    // the ledger cannot see is not something to guess at. Those dates are
+    // evaluated too and marked as not being rows in the table.
+    const shareDates = expanded.movements
+      .filter((m) => m.fractionOfLiquid !== undefined).map((m) => m.date);
+    const checkpointDates = new Set(dates);
+    const allDates = [...new Set([...dates, ...shareDates])].sort();
+    const points: SpinePoint[] = allDates.map((date) => ({
+      date, liquid: runTo(date).projection?.closing ?? null,
+      isCheckpoint: checkpointDates.has(date),
+    }));
+
+    // ⚠️ WHAT IS NOT CASH, NOT AN INVESTMENT AND NOT A DEBT STILL COUNTS. On this
+    // Space the residual is a rounding cent; on a Space with a house it is the
+    // house, and a five-year net-worth table that quietly dropped it would be
+    // wrong by six figures while looking perfectly consistent.
+    const otherAssets = round2(
+      (accounts.totalAssets ?? 0) - (accounts.totalLiquid ?? 0) - composition.combined);
+
+    const ledger = runScenarioLedger({
+      opening: { asOfISO: asOf, liquid: openingLiquid, investments: composition.combined,
+        debt: accounts.totalLiabilities ?? 0, otherAssets },
+      spine: points,
+      contributions: expanded.movements,
+      outflows,
+      returns,
+    });
+    ledger.rejected.unshift(...rejected);
+    const ledgerMovements = ledger.movements;
+
+    const difference = round2(ledger.opening.netWorth - (accounts.netWorth ?? 0));
+    if (Math.abs(difference) > 1) {
+      ledger.warnings.push(`The ledger's opening net worth differs from the accounts total by `
+        + `${difference.toFixed(2)}; state the accounts figure, not this one, as today's position.`);
+    }
+
+    return {
+      asOf,
+      horizon: { to: toISO, granularity, checkpoints: dates.length,
+        ...(clamped ? { clampedTo: MAX_SCENARIO_CHECKPOINTS } : {}) },
+      // ⚠️ THE LEDGER'S OPENING RECONCILED AGAINST THE ACCOUNTS AUTHORITY, out
+      // loud. Two net-worth figures for today in one answer is exactly the class
+      // of contradiction this whole slice exists to stop.
+      reconciliation: {
+        accountsNetWorth: accounts.netWorth,
+        ledgerOpeningNetWorth: ledger.opening.netWorth,
+        difference,
+      },
+      assumptions: {
+        returns: returns.length === 0
+          ? { statedRate: null,
+              note: 'No return was stated, so investments are held flat at 0%. Do not '
+                + 'substitute a market average.' }
+          : returns.map((r) => ({ from: r.fromISO, to: r.toISO, annualPct: r.annualPct,
+              provenance: PROVENANCE.USER_ASSUMED })),
+        // ⚠️ WHAT THE SHARE ACTUALLY CAME TO, EVERY TIME. "Half my liquidity" is
+        // the instruction; the dollar figures are the answer, they differ at
+        // every date, and only the settled ones can be checked against the table.
+        contributions: {
+          scheduled: ledgerMovements.filter((m) => m.kind === 'CONTRIBUTION').length,
+          total: round2(ledgerMovements.filter((m) => m.kind === 'CONTRIBUTION')
+            .reduce((s, m) => s + m.amount, 0)),
+          settled: ledgerMovements.filter((m) => m.kind === 'CONTRIBUTION').slice(0, 12),
+          provenance: PROVENANCE.USER_ASSUMED,
+        },
+        outflows: {
+          count: ledgerMovements.filter((m) => m.kind === 'OUTFLOW').length,
+          settled: ledgerMovements.filter((m) => m.kind === 'OUTFLOW').slice(0, 12),
+          provenance: PROVENANCE.USER_ASSUMED },
+        spending: typeof a.assumedMonthlySpending === 'number'
+          ? { source: 'USER_STATED', monthly: a.assumedMonthlySpending }
+          : { source: 'OBSERVED',
+              note: 'from the same observed rate project_cash uses' },
+      },
+      ...ledger,
+      // ⚠️ SAID ONCE, PLAINLY, WHERE THE MODEL WILL READ IT. Every earlier
+      // version of this answer was composed in prose, and the assumption that a
+      // stated return was a forecast is the failure that follows.
+      qualification:
+        'The cash line is an evidence-based projection; the returns and contributions are '
+        + 'the user\'s own assumptions and nothing here predicts a market. Present the '
+        + 'result as "if these assumptions hold", and never as an expectation.',
+    };
+  },
+};
+
 // ── Registry ─────────────────────────────────────────────────────────────────
 
 export const TOOLS: readonly ToolDefinition[] = [
   getFinancialSnapshot, getSpending, getTransactions, getIncome, getInvestments,
   getNetWorthHistory, explainNetWorthChange, projectCash, getPayDates, investmentScenario,
+  scenarioProjection,
 ];
 
 /** OpenAI function-tool definitions for the tool-capable arms. */
