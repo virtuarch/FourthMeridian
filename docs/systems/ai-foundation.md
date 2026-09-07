@@ -1,6 +1,6 @@
 # AI Foundation — Financial Intelligence
 
-*Governs how the platform thinks: deterministic modules compute financial knowledge, the LLM narrates it, and a validator enforces honesty. The north-star reference every future architectural proposal is measured against. These are binding rules, not a status report. See also [Financial Truth Spine](../architecture/FINANCIAL_TRUTH_SPINE.md), [money & FX](./money-and-fx.md).*
+*Governs how the platform thinks: deterministic modules compute financial knowledge, and anything that speaks about money narrates what they computed. The north-star reference every future architectural proposal is measured against. These are binding rules, not a status report — and as of the AI conversation reset there is no conversational consumer of them in the repository. See also [Financial Truth Spine](../architecture/FINANCIAL_TRUTH_SPINE.md), [money & FX](./money-and-fx.md).*
 
 > **New here? The one inversion.** **Financial Intelligence is NOT AI.** Financial
 > Intelligence is *deterministic knowledge* — computed by pure, versioned code from
@@ -11,9 +11,29 @@
 > (`lib/ai/provider.ts`, the only OpenAI import site), reading grounded context built
 > by `buildContext`, gated by the **one** visibility predicate (`[FULL]`), narrating
 > facts the [Financial Truth Spine](../architecture/FINANCIAL_TRUTH_SPINE.md) already
-> computed — and checked by an output validator that referees the model's numbers.
+> computed. (An output validator used to referee the model's numbers; it was removed
+> with the conversation layer. The principle survives; that implementation does not.)
 > The implementation section at the end of this doc is the map; the doctrine below is
 > the law.
+
+> ## ⚠️ The conversation layer was removed (AI conversation reset)
+>
+> **The doctrine below is unchanged and still binding. The conversational layer
+> that consumed it is gone.** `/api/ai/chat` returns an explicit
+> `503 AWAITING_REDESIGN`; there is no prompt builder, no router, no planner, no
+> output validator and no answer verifier in this repository today. Nothing in
+> the product issues a chat completion.
+>
+> What survives is exactly the half this document calls binding: the
+> deterministic financial intelligence (`lib/ai/intelligence/**`), the grounded
+> context builder and its assemblers, the visibility gate, the forecast engine,
+> and the single provider seam. See
+> [`docs/plans/AI-CONVERSATION-RESET.md`](../plans/AI-CONVERSATION-RESET.md) for
+> what was removed, what was kept, and why. **No replacement architecture has
+> been chosen.**
+>
+> Read the "Implementation map" at the end of this document with that in mind —
+> it has been corrected, and it now names fewer things.
 
 This is the foundational architectural doctrine for Financial Intelligence inside
 Fourth Meridian. It defines how the platform thinks, how future systems must be
@@ -337,14 +357,15 @@ requesting Space is not permitted to see.
   excluded; absence of a grant is exclusion. `VIEWER` role is excluded from chat as
   defense in depth. The data layer and the assemblers share the one predicate so a
   drifted copy can never leak.
-- **Output validator** — `lib/ai/output-validator.ts` enforces "the model narrates, it
-  never calculates" by **membership with tolerance**: each flag-eligible numeric claim
-  in the reply must reconcile (within `max($0.01, 0.5%)` + coarse-rounding tolerance)
-  to a number already in the prompt or a prior user turn. It is membership, not
-  recomputation — a pure, fast, side-effect-free string function (Enforcement, "referee
-  not player"). Modes (`AI_OUTPUT_VALIDATION_MODE`): `shadow | annotate | block`
-  (default `annotate`); enforcement is append-only and never edits the model's text;
-  validation failures are swallowed so they can never break the chat.
+- **Enforcement — currently NONE, and deliberately so.** `lib/ai/output-validator.ts`
+  (membership-with-tolerance over the reply's numbers) was deleted in the AI
+  conversation reset, along with the assessment-contradiction guard, the forecast
+  figure licence, the typed answer boundary and the answer verifier. The
+  *principle* in this document stands: a referee that judges artifacts and never
+  finances. What was removed is one particular referee, built to police prose,
+  which grew until it became the product's behaviour rather than its backstop.
+  **A new conversation layer must arrive with its own enforcement story; it does
+  not inherit one.**
 - **Stateless by design** — there is **no** `Conversation`/`ChatMessage`/`conversationId`
   model. Each turn is stateless; the client owns history. Only `AuditLog` and
   `ApiUsageCounter` are persisted. Conversation persistence and durable memory are
@@ -352,9 +373,15 @@ requesting Space is not permitted to see.
   deterministic-and-narrate core is proven, and the prompt forbids the model implying
   a persistence capability it lacks. (This is the major unbuilt AI layer — see
   `/STATUS.md`.)
-- **Orchestration** — `app/api/ai/chat/route.ts` sequences permission → context →
-  prompt → model call → validation → response, emitting an `AI_CONTEXT_ASSEMBLED`
-  audit event.
+- **Orchestration — absent.** `app/api/ai/chat/route.ts` authenticates, rate
+  limits, and returns `503 AWAITING_REDESIGN`. `AI_CONTEXT_ASSEMBLED` is still
+  emitted, by `buildContext` itself, on every Brief and expense-baseline build.
+- **Deterministic forecast** — `lib/forecast/**` (the engine and its authorities)
+  and `lib/ai/forecast/{assemble,streams,pay-dates}.ts` (the Space adapter, the
+  bounded ledger read, the pay-date resolver) project cash from EXPLICIT typed
+  inputs. They read no sentence and have no conversational dependency; the
+  natural-language extractors that used to feed them were deleted with the
+  conversation layer.
 
 **Where AI attaches, in one line:** one provider import site (`lib/ai/provider.ts`),
 one visibility gate (`lib/ai/visibility.ts` `[FULL]`), one context entry

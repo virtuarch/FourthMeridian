@@ -19,7 +19,7 @@ import { SignalType } from '@/lib/ai/signals/types';
 import { registerDetector } from '@/lib/ai/signals/registry';
 // REVIEW-3 C-6 — money in titles renders in the section's own reporting
 // currency (TransactionsSummaryData.currency); never a hard-coded symbol.
-import { fmtMoney } from '@/lib/ai/prompts/format';
+import { fmtMoney } from '@/lib/ai/format';
 
 // ---------------------------------------------------------------------------
 // Detector

@@ -109,20 +109,19 @@ const code = (s: string) => s.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
     /boundedSelection\(/.test(holdings));
 }
 
-// ══ THE SERIALIZER RENDERS THE DENOMINATOR IT WAS GIVEN ═══════════════════════
-{
-  const ser = code(read("lib", "ai", "prompts", "context-serializer.ts"));
-  check("the merchant block renders bounds",
-    /describeBounds\(/.test(ser));
-  check("…and never derives a total from the array it just truncated",
-    !/of \$\{[a-z]+\.(merchants|incomeSources)\.length\}/i.test(ser),
-    "the truncated array's length is the one number guaranteed to be wrong");
-
-  // The instruction that made this dangerous must no longer promise exhaustiveness.
-  check("the model is no longer told to answer superlatives from a bounded list "
-      + "without qualification",
-    /describeBounds|of \$\{/.test(ser.slice(ser.indexOf("MERCHANT SUMMARY"), ser.indexOf("MERCHANT SUMMARY") + 2500)));
-}
+// ══ THE SERIALIZER SECTION WAS DELETED WITH THE SERIALIZER ═══════════════════
+//
+// ⚠️ THREE CHECKS REMOVED BY THE AI CONVERSATION RESET. They asserted that
+// `lib/ai/prompts/context-serializer.ts` called `describeBounds`, never derived
+// a total from the array it had just truncated, and no longer told the model to
+// answer superlatives from a bounded list. That serializer was deleted with the
+// prompt layer, and rewriting the checks against nothing would be theatre.
+//
+// The half that survives is the half that matters to the next layer: the
+// PRODUCER hands on its denominator (above), because the eligible population
+// exists exactly once — inside the function that ranked it. Whatever renders a
+// bounded list next inherits `BoundedSelection<T>` already carrying its total,
+// and cannot make CF-0's mistake by omission.
 
 console.log(`\nbounded-selection: ${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

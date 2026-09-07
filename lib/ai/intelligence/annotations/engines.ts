@@ -45,7 +45,7 @@ import {
 } from './constants';
 import type { SpaceContext_AI, TransactionsSummaryData } from '@/lib/ai/types';
 import { FinanceDomains } from '@/lib/ai/types';
-import { fmtMoney } from '@/lib/ai/prompts/format';
+import { fmtMoney } from '@/lib/ai/format';
 
 // W2 — computeGoalAlignment (engine 2.4) DELETED with the Goals retirement:
 // with no goal rows and no declaration mechanism there is nothing to align.

@@ -300,19 +300,15 @@ check('J6 no `recurring` flag substituting for semantics', !/recurring/i.test(co
 const ALLOWED_CONSUMER_ROOTS = ['lib/forecast/', 'lib/ai/forecast/'];
 /**
  * ⚠️ PRODUCTION FILES ONLY (FORECAST-11). The claim is about what PRODUCTION
- * reaches for. A test and a conformance fixture build inputs for the authority
- * on purpose — `lib/ai/conformance/forecast-scenarios.ts` constructs the real
- * Space's streams so the language model can be measured against them — and
- * counting those as consumers would make the gate fail for the act of testing
- * the thing it protects.
+ * reaches for; a test builds inputs for the authority on purpose, and counting
+ * those as consumers would make the gate fail for the act of testing the thing
+ * it protects.
+ *
+ * The two former exceptions — `lib/ai/conformance/` fixtures and the
+ * `scripts/check-forecast-*` operator harnesses — were deleted in the AI
+ * conversation reset, so the exclusions went with them.
  */
-const isProductionFile = (f: string) =>
-  !f.endsWith('.test.ts')
-  && !f.startsWith('lib/ai/conformance/')
-  // FORECAST-12: the operator conformance harnesses build the authority's own
-  // inputs so the language model can be measured against them. They ship no
-  // behaviour and are registered OPERATIONAL, never as gates.
-  && !/^scripts\/check-forecast-/.test(f);
+const isProductionFile = (f: string) => !f.endsWith('.test.ts');
 check('J7 FORECAST-4 is consumed only through the sanctioned adapter',
   execSync('grep -rl "forecast/obligation" lib app components jobs scripts 2>/dev/null || true',
     { encoding: 'utf8' }).trim().split('\n').filter(Boolean)

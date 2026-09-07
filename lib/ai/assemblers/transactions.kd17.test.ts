@@ -321,9 +321,11 @@ const janRows: Row[] = [
 
 {
   const assemblerSrc = readFileSync(join(process.cwd(), 'lib/ai/assemblers/transactions.ts'), 'utf8');
-  // AI-ARCH: serializeContextBlock (with its KD-17 invariant checks) was
-  // extracted from the chat route into lib/ai/prompts/context-serializer.ts.
-  const serializerSrc = readFileSync(join(process.cwd(), 'lib/ai/prompts/context-serializer.ts'), 'utf8');
+  // ⚠️ TWO SERIALIZER TRIPWIRES WERE DELETED HERE (AI conversation reset). They
+  // pinned that lib/ai/prompts/context-serializer.ts called the spending-category
+  // invariant for both scopes and threw outside production. That serializer was
+  // removed with the prompt layer; the ASSEMBLER-side invariants below are the
+  // half that guards the financial data, and they are untouched.
 
   check('Tripwire: no signed-net accumulation remains in the assembler',
     !/agg\.signed|Math\.abs\(signed\)|\{ signed: 0/.test(assemblerSrc),
@@ -334,12 +336,6 @@ const janRows: Row[] = [
 
   check('Tripwire: window-level byCategory keeps zero-total entries (annotations reads Income count)',
     /Zero-total entries are intentionally KEPT/.test(assemblerSrc));
-
-  check('Tripwire: serializer calls the checked invariant for monthly AND window scopes',
-    (serializerSrc.match(/checkSpendingCategoryInvariant\(/g) ?? []).length >= 2);
-
-  check('Tripwire: serializer fails loud outside production on violation',
-    /NODE_ENV !== 'production'\) throw new Error\(msg\)/.test(serializerSrc));
 
   check('Tripwire: drilldown still aggregates the debits-only population (lt: 0)',
     /amount: \{ lt: 0 \}/.test(assemblerSrc));

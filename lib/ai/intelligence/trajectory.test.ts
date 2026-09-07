@@ -24,7 +24,6 @@ import assert from "node:assert/strict";
 import { computeAssessment } from "@/lib/ai/intelligence";
 import { computeSpendingTrends } from "@/lib/ai/intelligence/annotations/metrics";
 import { computeTrajectory } from "@/lib/ai/intelligence/annotations/engines";
-import { serializeAssessmentBlock } from "@/lib/ai/prompts/assessment-serializer";
 import { FinanceDomains } from "@/lib/ai/types";
 import type {
   SpaceContext_AI, TransactionsSummaryData, MonthlyBreakdownEntry,
@@ -251,10 +250,17 @@ test("A2 — trajectory reads complete months only, so scope cannot move it", ()
   assert.deepEqual(brief, wide);
 });
 
-// ── 4. Serialization ─────────────────────────────────────────────────────────
+// ── 4. The refusal is DECLARED, not merely absent ────────────────────────────
+//
+// ⚠️ THE SERIALIZATION HALF OF THIS SECTION WAS DELETED WITH THE PROMPT LAYER
+// (AI conversation reset). It asserted that a refused trajectory reached the
+// model as "Classification: INSUFFICIENT_DATA" plus an instruction not to infer
+// a direction — a property of a prompt serializer that no longer exists. What
+// is kept is the property that survives any narration layer: the assessment
+// itself declares the refusal in `ungraded[]`, so a future conversation layer
+// can find it without a parallel mechanism.
 
-test("A2 — the serializer states a refusal instead of leaving a silence", () => {
-  const ctxLike = { space: { reportingCurrency: "USD" } };
+test("A2 — an ungradeable trajectory declares its refusal in ungraded[]", () => {
   const a = computeAssessment({
     requestedAt: "2026-06-30T00:00:00.000Z",
     spaceId: "s", userId: "u", role: "OWNER", agentId: "a", resolvedDomains: [],
@@ -268,23 +274,12 @@ test("A2 — the serializer states a refusal instead of leaving a silence", () =
 
   assert.equal(a.trajectory.classification, "INSUFFICIENT_DATA", "anti-vacuity: fixture must refuse");
 
-  const block = serializeAssessmentBlock(a, "window note", ctxLike.space.reportingCurrency);
-  assert.ok(block.includes("TRAJECTORY"), "The trajectory block must be emitted even when refused.");
-  assert.ok(/Classification: INSUFFICIENT_DATA/.test(block),
-    "The refusal must survive serialization as a stated verdict.");
-  assert.ok(/do not infer direction/i.test(block) || /Do NOT describe/.test(block),
-    "A refusal must carry its instruction, or the model fills the silence with a direction.");
-  assert.ok(!/Classification: (IMPROVING|WORSENING|STABLE|MIXED)/.test(block),
-    "A refused trajectory must never serialize as a directional verdict.");
-
-  // The refusal is also DECLARED in the machine-readable record every other
-  // section uses — no parallel mechanism.
   const u = a.ungraded.find((x) => x.section === "trajectory");
   assert.ok(u, "A withheld trajectory must be declared in ungraded[].");
   assert.equal(u!.reason, "INSUFFICIENT_COMPLETE_MONTHS");
 });
 
-test("A2 — a graded trajectory serializes as a conclusion over the trend evidence", () => {
+test("A2 — a graded trajectory does not also declare a refusal", () => {
   const a = computeAssessment({
     requestedAt: "2026-06-30T00:00:00.000Z",
     spaceId: "s", userId: "u", role: "OWNER", agentId: "a", resolvedDomains: [],
@@ -297,10 +292,6 @@ test("A2 — a graded trajectory serializes as a conclusion over the trend evide
   } as unknown as SpaceContext_AI);
 
   assert.equal(a.trajectory.classification, "IMPROVING", "anti-vacuity: fixture must grade");
-  const block = serializeAssessmentBlock(a, "window note", "USD");
-  assert.ok(/Classification: IMPROVING/.test(block));
-  assert.ok(/evidence; this line is the conclusion/.test(block),
-    "The evidence-vs-conclusion contract must reach the model, not just the code.");
   assert.ok(!a.ungraded.some((x) => x.section === "trajectory"),
     "A graded trajectory must not also declare a refusal.");
 });

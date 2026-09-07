@@ -46,18 +46,17 @@ function getClient(): OpenAI {
 /**
  * The chat tier.
  *
- * ⚠️ PARAMETERISED, NOT CHANGED (V26-REASONING Slice 2). The default is exactly
- * what it has always been, so an unset environment is byte-identical to before.
- * What this buys is that the tier becomes a decision somebody makes rather than
- * a literal nobody revisits — the same lesson `AI_FORECAST_GUARD_MODE` taught
- * expensively, where a flag read via bare `process.env` and set in no
- * environment left a rejected posture in force for nineteen commits.
+ * ⚠️ PARAMETERISED, NOT CHANGED. The default is exactly what it has always been,
+ * so an unset environment is byte-identical to before. What this buys is that
+ * the tier becomes a decision somebody makes rather than a literal nobody
+ * revisits.
  *
- * ⚠️ AND THE MEASURED ANSWER IS NOW "IT DEPENDS ON AI_ANSWER_MODE", which is why
- * this is a flag and not a new literal. Against the PROSE architecture,
- * FORECAST-11 measured a stronger tier and correctly answered no. Against the
- * typed answer boundary the same question answers yes, decisively — see
- * `docs/systems/model-tier.md` for the numbers and the recorded decision.
+ * ⚠️ AND THE RECORDED TIER DECISION WAS RETIRED WITH THE ARCHITECTURE IT WAS
+ * MEASURED AGAINST. Both prior answers were conditional on a pipeline that no
+ * longer exists — FORECAST-11 measured a stronger tier against prose reasoning
+ * and said no; V26-REASONING measured it against a typed answer boundary and
+ * said yes. Neither conclusion transfers. The next conversation layer must
+ * measure the tier for itself; see docs/plans/AI-CONVERSATION-RESET.md.
  */
 const CHAT_MODEL = process.env.AI_CHAT_MODEL || 'gpt-4o-mini';
 
@@ -118,12 +117,13 @@ export async function generateChatReply(
 /**
  * Generate a reply that conforms to a JSON schema.
  *
- * V26-REASONING Slice 1 — THE MODEL IS GIVEN A WAY TO SAY WHAT IT MEANT.
+ * A structured-output seam, kept through the AI conversation reset.
  *
- * ⚠️ `generateChatReply` ABOVE IS UNTOUCHED, and that is deliberate: it is the
- * `prose` branch of `AI_ANSWER_MODE` and it must stay byte-identical while both
- * paths are measured against each other. A shared helper that "just" refactored
- * the two together would make the comparison meaningless.
+ * ⚠️ IT HAS NO CALLER TODAY, AND THAT IS THE POINT OF A SEAM. The typed answer
+ * boundary that used it was deleted; the provider boundary is not architecture,
+ * it is the one place this codebase is allowed to import the OpenAI SDK, and
+ * removing a capability from it would only mean re-adding it later in a worse
+ * place. `generateChatReply` beside it is likewise callable and uncalled.
  *
  * ⚠️ `strict: true` MAKES EVERY PROPERTY REQUIRED AND FORBIDS EXTRAS. It does
  * NOT bound array lengths — this comment used to say it made `claims: []`

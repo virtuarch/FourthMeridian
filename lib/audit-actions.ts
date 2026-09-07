@@ -248,14 +248,18 @@ export const AuditAction = {
   SECURITY_ANOMALY_DETECTED:    "SECURITY_ANOMALY_DETECTED",
 
   // ── AI Context ───────────────────────────────────────────────────────────────
+  // Written by lib/ai/context-builder.ts on every context assembly. Still live:
+  // the Brief and the expense-baseline route both build contexts.
   AI_CONTEXT_ASSEMBLED:     "AI_CONTEXT_ASSEMBLED",
-  // Shadow-mode selection plan (D6.3D-1). Records what a token-budgeted
-  // selection WOULD include/trim. Purely observational — no prompt is changed.
-  AI_CONTEXT_SELECTION_PLANNED: "AI_CONTEXT_SELECTION_PLANNED",
-  // Shadow-mode output validation (AI-4 / KD-2). Written ONLY when an LLM reply
-  // contains a numeric claim that cannot be reconciled to the grounding context.
-  // Observational only — the reply is returned byte-for-byte unchanged.
-  AI_OUTPUT_VALIDATION_FLAGGED: "AI_OUTPUT_VALIDATION_FLAGGED",
+  //
+  // ⚠️ TWO CONSTANTS WERE REMOVED HERE BY THE AI CONVERSATION RESET, because
+  // their only writers were deleted with the conversation layer:
+  //   AI_CONTEXT_SELECTION_PLANNED   the shadow retrieval plan, per turn
+  //   AI_OUTPUT_VALIDATION_FLAGGED   an unreconciled numeric claim in a reply
+  // `AuditLog.action` is a plain String, so historical rows carrying those two
+  // values are unaffected and still render in the admin audit view. Neither
+  // appears in AUDIT_ACTION_GROUPS, so no filter changes. A constant with no
+  // writer is a promise the codebase no longer keeps.
 } as const;
 
 export type AuditActionType = typeof AuditAction[keyof typeof AuditAction];

@@ -14,8 +14,11 @@
  *
  *   app/api/brief/route.ts                      "over the last N days"
  *   lib/ai/signals/detectors/snapshot.ts        "Net worth up $X over N days"
- *   lib/ai/prompts/assessment-serializer.ts     "N-day history in 90-day window"
  *   lib/ai/intelligence/.../engines.ts          "N-day span in 90-day window"
+ *
+ * (A fourth, lib/ai/prompts/assessment-serializer.ts, was deleted with the
+ * conversation layer in the AI conversation reset. The defect it shared with the
+ * three above is unchanged — the count is a row count wherever it is rendered.)
  *
  * The count equals the day span only when snapshots are daily AND contiguous.
  * Nothing enforces that, and the trend attached to the claim is measured across

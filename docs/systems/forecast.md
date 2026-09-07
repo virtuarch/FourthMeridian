@@ -14,15 +14,38 @@ Written in V26-REASONING Slice 0 because until then the commit log was the only
 map of this subsystem — nineteen FORECAST commits, three PARITY, three
 PROJECTION, and no committed document naming a single module.
 
+
+> ## ⚠️ Reachable only by code, since the AI conversation reset
+>
+> **The forecast engine and its authorities are intact, tested and correct. What
+> was removed is everything that turned a sentence into a forecast, and a
+> forecast into prose.** Deleted: `horizon.ts` (a date phrase → a window),
+> `statements.ts` and `fact-continuity.ts` (regex extraction of asserted facts
+> and suppositions), `render.ts` (the prompt block), `for-request.ts` (route
+> orchestration) and `numerical-guard.ts` (the figure licence and reply
+> redaction).
+>
+> `assembleForecast` now takes `UserStatement[]` — FORECAST-8's own typed
+> vocabulary — instead of `question: string` and a message history, so the whole
+> subsystem is a function of values with no natural-language surface anywhere.
+> `resolvePayDates` likewise takes an explicit ask and window. Nothing in
+> production calls either today; the capability is preserved and pinned by
+> `lib/ai/forecast/assemble.test.ts` for whatever conversation layer comes next.
+>
+> See [`docs/plans/AI-CONVERSATION-RESET.md`](../plans/AI-CONVERSATION-RESET.md).
+
 ---
 
 ## The two halves
 
 ```
 lib/forecast/**          the AUTHORITIES — pure, no database, no clock, no model
-lib/ai/forecast/**       the ADAPTER    — reads the Space, calls the authorities,
-                                          renders for the prompt, guards the reply
+lib/ai/forecast/**       the ADAPTER    — reads the Space, calls the authorities
 ```
+
+There used to be a third job in the adapter — rendering for a prompt and guarding
+the reply — and it is gone. The adapter's whole surface is now: read the ledger,
+compose the inputs, run the engine once.
 
 The split is load-bearing. Nothing in `lib/forecast/**` may reach a database, read
 a clock, or know that a language model exists; every date is a parameter and every
@@ -91,10 +114,11 @@ Two things it must not break, both already decided elsewhere:
   that a hidden account is a debt account.
 - **The moment `debt_balance@FUTURE` gains a real schedule, the net-worth
   composition gains a double count** — a card purchase would reduce cash through
-  the spending accrual AND increase the balance on the same day. The join in
-  `lib/reasoning/measure/evaluate.ts` states this and names the authority to use
-  (`isOrdinaryConsumption`); it is safe today only because debt forward is held
-  flat.
+  the spending accrual AND increase the balance on the same day. The measure
+  layer that used to state this (`lib/reasoning/measure/evaluate.ts`) was deleted
+  with the conversation layer, so the warning is recorded HERE, where the
+  subsystem lives: the authority to reach for is `isOrdinaryConsumption`, and the
+  composition is safe today only because debt forward is held flat.
 
 Recorded here rather than built, because it is a data-capture and UI change, not
 a reasoning one.
@@ -116,45 +140,45 @@ of the disclosure changed.
 ## `lib/ai/forecast/**` — the adapter
 
 ```
-statements.ts     what the user asserted, extracted from their own words
-fact-continuity.ts  which of those survive the turn (facts do; assumptions are per-turn)
-horizon.ts        the date being asked about, and its provenance
-streams.ts        income streams read from the ledger
-for-request.ts    assembles the authorities' inputs for one request
-assemble.ts       ONE execution seam — the only production caller of the engine
+streams.ts        income streams read from the ledger (the only database edge)
+assemble.ts       ONE execution seam — the only caller of the engine
 pay-dates.ts      FORECAST-16: "when do I get paid", which is NOT a cash question
-render.ts         the deterministic block the model is given
-numerical-guard.ts  FORECAST-14: what the model may state, and the reply boundary
 ```
 
-### The licence is an address, not a number
+Three files, and each takes explicit values. `assembleForecast` receives a
+`ForecastHorizon`, the resolved streams, and `UserStatement[]`; it decides where
+each statement belongs by calling FORECAST-8's `routeStatement`, so an
+`ASSERTS_FACT` reaches the operating state and everything else becomes a
+`PolicyAssumption`. It parses nothing, and a test pins that it declares no regular
+expression at all.
 
-`numerical-guard.ts` is the boundary. Its lesson, learned across FORECAST-14
-through PARITY-3, is that **possession of a number is never permission to use it**.
-A licence is keyed on ROLE and SLOT and HORIZON — not on "this number appears in
-the prompt" — because a current figure and a future figure that happen to be
-equal are different claims, and conversational history can never mint a licence.
+### What produced those statements, and what must produce them next
+
+The licence machinery that used to sit here — `numerical-guard.ts`, keyed on ROLE
+and SLOT and HORIZON rather than on "this number appears in the prompt" — was
+deleted with the conversation layer, along with the five acceptance corpora
+(`ai:forecast-conformance`, `ai:forecast-multiturn` and their siblings) that
+measured a language model against it and the `AI_FORECAST_GUARD_MODE` flag that
+switched it on.
+
+**The lesson it taught is worth more than the code was, and it is recorded here
+rather than in a deleted file:** possession of a number is never permission to
+use it. A current figure and a future figure that happen to be equal are
+different claims. Conversational history can never mint a licence. Whatever
+speaks about a forecast next has to answer that, and it does not inherit an
+answer.
+
+What is *not* in question is the arithmetic. Every figure the engine produces is
+licensed or refused by `lib/forecast/**` before any narration exists, and that
+half is unit-tested without a model.
 
 ### Flags
 
 | Flag | Values | Unset means | Notes |
 |---|---|---|---|
-| `AI_FORECAST_GUARD_MODE` | `off` · `shadow` · `repair` | `shadow` | ⚠️ shadow DETECTS and SERVES. FORECAST-15 measured shadow at 8 authority violations reaching the user and repair at 0, and its recorded decision was to launch with `repair`. Set it deliberately in every environment. |
-| `AI_FORECAST_PROJECTION` | anything but `off` ⇒ ON | ON | PROJECTION-1's evidence-based projection. Ten scenarios of the FORECAST-15 corpus fail *by contract* with it on — they forbid what this path was authorised to provide. Stale corpus, not a regression. |
+| `AI_FORECAST_PROJECTION` | anything but `off` ⇒ ON | ON | PROJECTION-1's evidence-based projection, used only where the licensed path refused. Kept through the AI conversation reset because it selects between two DETERMINISTIC engine results, not between two narrations. |
 
----
-
-## The acceptance corpora
-
-| Script | Question it answers |
-|---|---|
-| `npm run ai:forecast-conformance` | does the product **lie**? 35 scenarios against one real fixture |
-| `npm run ai:forecast-multiturn` | do facts and assumptions survive a conversation correctly? |
-
-Both are truth-regression nets. Neither measures whether the product is
-*useful* — a system that answers "I cannot say" to everything scores perfectly on
-both. That is a known and deliberate limitation; V26-REASONING Slice 4 adds
-`ai:conversation-gate` as the other half.
+`AI_FORECAST_GUARD_MODE` was removed: the guard it switched no longer exists.
 
 ---
 
@@ -175,49 +199,15 @@ subsystem: rounding each of seven occurrences and then summing drifts from the
 true total, and carrying full f64 precision to a single display edge does not.
 
 ---
+## Recorded baselines
 
-## Recorded baseline — V26-REASONING Slice 0 (2026-09-01, `dd846fc`+)
+The V26-REASONING Slice 0 acceptance table that stood here measured a **language
+model** against the forecast guard across 35 scenarios, and both the model path
+and the guard are gone. It is preserved in git and summarised in
+[`docs/plans/AI-CONVERSATION-RESET.md`](../plans/AI-CONVERSATION-RESET.md), whose
+short version is the one worth carrying forward: under the non-enforcing default
+**eight raw arithmetic failures per run reached the user**, and three of them were
+the `$5,000 × 3` multiplication in its purest form — the user asks for arithmetic
+and the model does it, beside a deterministic block holding the right answer.
 
-Measured on the real fixture, one run per scenario, `gpt-4o-mini`, prompt
-avg 8,070 tok, est. $0.046/run.
-
-| Posture | Clean | Raw model failures | Guard findings | Reaching the user |
-|---|---|---|---|---|
-| `--guard=off` (what UNSET gives you) | 27/35 | **8** | 0 | **8** |
-| `--guard=repair` (now set everywhere) | 31/35 | 6 | 25 | **0** |
-
-`ai:forecast-multiturn`: **10/10 turns clean.**
-
-### The decision on `AI_FORECAST_PROJECTION`: leave it ON, and do NOT mark the corpus
-
-r2 predicted that with the projection ON, "~14 of 35 accepted scenarios fail by
-design" (~21/35 passing), and recommended marking those scenarios superseded.
-**Measurement does not support that.** With the projection ON and the guard in
-its shipped `repair` posture the corpus scores **31/35**, and none of the four
-failures is a projection-versus-corpus contract conflict:
-
-| Failing | Mode | What it is |
-|---|---|---|
-| `J-historical-plus-forecast` | both | a real model failure — it answers the historical half and does not refuse the forward half |
-| `G3-pressure` · `P1-pressure` · `R2-investments-expressible` | `repair` only | **guard over-restriction** — redaction removed a sentence that was licensed |
-
-So no scenario is marked superseded. The three `repair`-only failures are the
-same class FORECAST-15 recorded as guard false positives (an investment figure
-that belongs to CF-7, a rate framed before the window, word-numbers, markdown):
-the redaction deletes SENTENCES, and a licensed figure sharing a sentence with
-an unlicensed one goes with it.
-
-**That is the cost of policing prose by reading it back, and it is the argument
-for Slice 1** — under a typed answer boundary a licensed figure carries its own
-address and cannot be collateral damage. These three are expected to disappear
-there rather than be patched here; patching them would mean a fifth guard.
-
-### What the raw column is actually saying
-
-Eight raw failures under `off`, and every one reached the user. The three `Q*`
-scenarios are the `$5,000 × 3` multiplication in its purest form — the user asks
-for arithmetic, and the model does it. `repair` catches all three. `I-stale-
-assumption` mints `$12,000` from a conversational assumption that no longer
-applies. `D-hypothetical` echoes the user's own `$30,000` as though it were a
-finding. Neither is a prompt-wording problem; both are the class Slice 1 removes
-structurally by giving every stateable figure an address.
+That is the failure the next conversation layer is being designed against.

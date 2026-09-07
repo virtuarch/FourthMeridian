@@ -5,7 +5,7 @@
  *
  * The project has no test runner (no jest/vitest). This file is a standalone,
  * dependency-free script runnable with the already-installed `tsx`, mirroring
- * lib/ai/intent/classifier.test.ts:
+ * every other test in this repository:
  *
  *     npx tsx lib/ai/assemblers/transactions.privacy.test.ts
  *

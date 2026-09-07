@@ -239,30 +239,6 @@ export const AUDITS: readonly AuditEntry[] = [
           "pinned in CI by lib/ai/intelligence/brief-scope-adequacy.test.ts",
   },
   {
-    name: "audit-retrieval-plan", tier: "INFORMATIONAL", needsDb: true,
-    what: "CF-8 SHADOW: composes the CF-2/3/4 temporal, CF-5 availability, CF-6 domain and CF-7 " +
-          "concept authorities into one retrieval plan, then reports the DIFFERENCE against what " +
-          "production actually assembles — false widening, missing evidence, unnecessary domain " +
-          "JSON, and envelope-only opportunities. Observational: it changes no retrieval. The " +
-          "plan's semantics are pinned in CI by lib/ai/retrieval-plan.test.ts",
-  },
-  {
-    name: "audit-temporal-framing", tier: "INFORMATIONAL", needsDb: true,
-    what: "CF-2: runs the fixed temporal ask corpus through the REAL production prompt path and " +
-          "reports the four temporal authorities (requested / selected / coverage / satisfied) as " +
-          "they appear in the rendered string. What a corpus can SERVE is a fact about this " +
-          "database, not an invariant; the invariants are pinned in CI by " +
-          "lib/ai/temporal-scope.test.ts and lib/ai/prompts/temporal-framing.test.ts",
-  },
-  {
-    name: "audit-bounded-disclosure", tier: "INFORMATIONAL", needsDb: true,
-    what: "CF-1: renders the REAL system prompt per Space and reports what every bounded " +
-          "list discloses about its own completeness. Whether a corpus HAS a truncated list " +
-          "is a fact about this database, not an invariant; the invariant (a bounded list " +
-          "states its denominator, and never the length of the array it already truncated) " +
-          "is pinned in CI by lib/ai/prompts/bounded-disclosure.test.ts",
-  },
-  {
     name: "audit-unattested-debt-payments", tier: "INFORMATIONAL", needsDb: true,
     what: "investigation: which counted debt payments rest on provider assertion rather than " +
           "structural destination evidence",
@@ -366,114 +342,6 @@ export const AUDITS: readonly AuditEntry[] = [
           "step 2 of the key-rotation runbook (docs/operations/key-rotation.md)",
   },
   {
-    name: "check-evidence-awareness", tier: "OPERATIONAL", needsDb: true,
-    what: "CF-5 — asks a live model what evidence exists and grades FIVE failure modes: false " +
-          "scarcity ('only 90 days' while more exists), false LOADING (quoting a figure for a " +
-          "period that was merely available), false completeness, false valuation (a crypto " +
-          "quantity range read as a value range), and envelope token regression. Three of those " +
-          "are failures the envelope could CAUSE. Paid and stochastic, so never a gate; the " +
-          "deterministic half is pinned in CI by lib/ai/coverage-envelope.test.ts",
-  },
-  {
-    name: "check-conversation-scope", tier: "OPERATIONAL", needsDb: true,
-    what: "CF-4 — holds real MULTI-TURN conversations against the live model and fails when a " +
-          "later turn answers from a period the user never asked about (drift), or restates the " +
-          "period so insistently the reply reads as a form (robotic). Paid and stochastic, so " +
-          "never a gate; the deterministic half is pinned in CI by " +
-          "lib/ai/chat/conversation-scope.test.ts",
-  },
-  {
-    name: "check-temporal-conformance", tier: "OPERATIONAL", needsDb: true,
-    what: "CF-2 — asks a live model temporal questions against the REAL production prompt and " +
-          "fails in BOTH directions: an unsatisfied scope answered as satisfied (overreach), and " +
-          "a satisfied scope hedged anyway (over-hedge). Paid and stochastic, so never a gate; " +
-          "the deterministic half is pinned in CI by lib/ai/prompts/temporal-framing.test.ts",
-  },
-  {
-    name: "check-bounded-superlatives", tier: "OPERATIONAL", needsDb: true,
-    what: "CF-1 — asks a live model superlative questions ('who did I spend the most with') " +
-          "against the REAL production prompt for a REAL Space, and fails when a reply claims " +
-          "more than the rendered bounded list supports. Paid and stochastic, so never a gate; " +
-          "the deterministic half (the disclosure exists in the rendered string) is pinned in " +
-          "CI by lib/ai/prompts/bounded-disclosure.test.ts",
-  },
-  {
-    name: "check-conformance-scenarios", tier: "OPERATIONAL", needsDb: false,
-    what: "A4.2 — the multi-turn and cross-Space half of the conformance harness " +
-          "(npm run ai:conformance:scenarios). Same tier and reasons as its single-turn " +
-          "sibling: paid, stochastic, never a gate. Adds refusal-under-followup-pressure, " +
-          "buildMasterSystemPrompt coverage, simultaneous refusals, and an OVER-refusal " +
-          "check so a model that answers \"I cannot say\" to everything cannot score as conformant",
-  },
-  {
-    name: "check-assessment-conformance", tier: "OPERATIONAL", needsDb: false,
-    what: "A4 — measures whether the LANGUAGE MODEL follows the deterministic FinancialAssessment " +
-          "and the A3 authority-precedence contract (npm run ai:conformance). A TOOL, never a gate: " +
-          "it calls a paid, stochastic external model, so putting it in CI would buy flakiness with " +
-          "money. Builds the real production prompt and reports per-dimension conformance plus a " +
-          "saved transcript; writes nothing and reads no database",
-  },
-  {
-    name: "check-forecast-conformance", tier: "OPERATIONAL", needsDb: false,
-    what: "FORECAST-11 — measures whether the LANGUAGE MODEL narrates the deterministic FORECAST " +
-          "block or quietly computes a forecast of its own (npm run ai:forecast-conformance). A " +
-          "TOOL, never a gate, for the same reason A4 is not one: a paid stochastic model in CI " +
-          "buys flakiness with money. Builds the real production prompt on the real Space — with " +
-          "the $8,349.66 historical mean sitting in the assessment block as the attractive wrong " +
-          "answer — and scores nine scenarios against the measured failure family; writes nothing " +
-          "and reads no database",
-  },
-  {
-    name: "compare-plans", tier: "OPERATIONAL", needsDb: false,
-    what: "V26-REASONING Slice 5 — SCAFFOLDING, and it ships with its own " +
-          "deletion condition (npm run ai:compare-plans). Runs the typed planner " +
-          "and the legacy routing over the same 112 real questions — every " +
-          "question this repository actually holds across its corpora, harnesses " +
-          "and tests — and reports agreement per cutover class. DELETED WHEN THE " +
-          "LAST CLASS FLIPS. This repository has shipped two shadow planners and " +
-          "ended neither (context-priority was never once consulted and wrote a " +
-          "DB row per turn; retrieval-plan carried a false SHADOW ONLY header at " +
-          "five call sites), which is why this one's ending is written down. A " +
-          "paid stochastic TOOL, never a gate. Writes nothing, reads no database",
-  },
-  {
-    name: "check-conversation-gate", tier: "OPERATIONAL", needsDb: false,
-    what: "V26-REASONING Slice 4 — DOES THE PRODUCT WORK? " +
-          "(npm run ai:conversation-gate). ONE conversation, seven turns, on the " +
-          "real Space: a December projection, an assumption that must move the " +
-          "figure, a follow-up that must inherit the scenario, a second scenario " +
-          "beside the first, a horizon move that keeps both, a dismissal that " +
-          "returns to BASE, and a seventh turn that must DECLINE. A different " +
-          "question from ai:forecast-conformance, which asks whether the product " +
-          "LIES — a system answering 'I cannot say' to everything scores " +
-          "perfectly there and zero here. A fallback counts as a FAILURE: the " +
-          "deterministic list is safe and is not an answer. Structural " +
-          "expectations run with --structure-only and no model at all, and are " +
-          "GATED in the unit suite (lib/reasoning/scenario/lifecycle.test.ts); " +
-          "the served-reply half is a paid stochastic TOOL, never a CI gate. " +
-          "Writes nothing, reads no database",
-  },
-  {
-    name: "check-answer-boundary", tier: "OPERATIONAL", needsDb: false,
-    what: "V26-REASONING Slice 1 — measures the TYPED ANSWER BOUNDARY end to end " +
-          "(npm run ai:answer-boundary). Seven adversarial cases on the real Space: the two " +
-          "premise-echo scenarios that failed 30 times in 30 at FORECAST-11A, three " +
-          "premise-LEAK follow-ups that each ask a $5,000/month rate to become a stock, and " +
-          "two cases a boundary could only pass by NOT refusing. A TOOL, never a gate, for the " +
-          "same reason A4 and FORECAST-11 are not: a paid stochastic model in CI buys " +
-          "flakiness with money. The boundary's own STRUCTURAL invariants are gated in the " +
-          "unit suite instead (lib/reasoning/answer-boundary.test.ts), where they cost nothing " +
-          "and cannot flake. Writes nothing, reads no database",
-  },
-  {
-    name: "check-forecast-multiturn", tier: "OPERATIONAL", needsDb: false,
-    what: "FORECAST-12 — acceptance across a CONVERSATION rather than a turn " +
-          "(npm run ai:forecast-multiturn). Re-plans and re-assembles every turn exactly as the " +
-          "chat route does, so CF-4 inheritance, FORECAST-10's refinement rule and the per-turn " +
-          "assumption doctrine are all live; probes the assembled context as well as the reply. A " +
-          "TOOL, never a gate — paid and stochastic. Writes nothing, reads no database",
-  },
-  {
     name: "check-schema-drift", tier: "OPERATIONAL", needsDb: true,
     what: "READ-ONLY comparison of prisma/migrations/ against the target database's " +
           "_prisma_migrations ledger (npm run db:drift); exits 1 on pending, unfinished, " +
@@ -514,6 +382,83 @@ export const AUDITS: readonly AuditEntry[] = [
     what: "one-time data fix marking the four dev seed users' emails verified",
     retiredBecause: "prisma/seed.ts sets emailVerified itself; despite the `verify-` prefix this " +
                     "script WROTE, so it must never be mistaken for an audit",
+  },
+
+  // ── RETIRED — the AI conversation harnesses ───────────────────────────────
+  // ⚠️ FOURTEEN TOMBSTONES FROM ONE DECISION. Every one measured the behaviour of
+  // the conversation architecture removed in the AI conversation reset; each was a
+  // paid, stochastic OPERATIONAL tool, never a gate. They are recorded rather than
+  // erased so the next conversation layer can see what was being measured, and so
+  // the runner refuses a script quietly reappearing under one of these names.
+  {
+    name: "audit-retrieval-plan", tier: "RETIRED", tombstone: true, needsDb: false,
+    what: "CF-8 — reported the difference between the retrieval plan and what production assembled",
+    retiredBecause: "the retrieval planner was deleted with the conversation layer; the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+  },
+  {
+    name: "audit-temporal-framing", tier: "RETIRED", tombstone: true, needsDb: false,
+    what: "CF-2 — ran a temporal ask corpus through the real production prompt and reported the four authorities as rendered",
+    retiredBecause: "there is no production prompt to render; the temporal AUTHORITIES survive and are pinned by lib/ai/temporal-scope.test.ts. the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+  },
+  {
+    name: "audit-bounded-disclosure", tier: "RETIRED", tombstone: true, needsDb: false,
+    what: "CF-1 — rendered the real system prompt per Space and reported what every bounded list disclosed",
+    retiredBecause: "the system prompt was deleted; boundedSelection survives and is pinned by lib/ai/bounded-selection.test.ts. the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+  },
+  {
+    name: "check-evidence-awareness", tier: "RETIRED", tombstone: true, needsDb: false,
+    what: "CF-5 — asked a live model what evidence exists and graded five failure modes",
+    retiredBecause: "the prompt path it exercised is gone; the coverage envelope survives and is pinned by lib/ai/coverage-envelope.test.ts. the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+  },
+  {
+    name: "check-conversation-scope", tier: "RETIRED", tombstone: true, needsDb: false,
+    what: "CF-4 — held live multi-turn conversations and failed on temporal drift or robotic restatement",
+    retiredBecause: "conversation scope was conversation machinery and went with it; the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+  },
+  {
+    name: "check-temporal-conformance", tier: "RETIRED", tombstone: true, needsDb: false,
+    what: "CF-2 — graded a live model for temporal overreach and over-hedging against the real prompt",
+    retiredBecause: "the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+  },
+  {
+    name: "check-bounded-superlatives", tier: "RETIRED", tombstone: true, needsDb: false,
+    what: "CF-1 — graded a live model's superlative claims against the rendered bounded list",
+    retiredBecause: "the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+  },
+  {
+    name: "check-conformance-scenarios", tier: "RETIRED", tombstone: true, needsDb: false,
+    what: "A4.2 — the multi-turn and cross-Space half of the assessment conformance harness",
+    retiredBecause: "the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+  },
+  {
+    name: "check-assessment-conformance", tier: "RETIRED", tombstone: true, needsDb: false,
+    what: "A4 — measured whether the model followed the deterministic assessment and the A3 precedence contract",
+    retiredBecause: "the assessment SURVIVES (lib/ai/intelligence) and is pinned by its own unit tests; what was measured here was the model's obedience to a prompt that no longer exists. the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+  },
+  {
+    name: "check-forecast-conformance", tier: "RETIRED", tombstone: true, needsDb: false,
+    what: "FORECAST-11 — measured whether the model narrated the deterministic forecast block or computed its own",
+    retiredBecause: "the forecast ENGINE survives (lib/forecast, lib/ai/forecast) with its own unit suite; the narration it graded does not. the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+  },
+  {
+    name: "check-forecast-multiturn", tier: "RETIRED", tombstone: true, needsDb: false,
+    what: "FORECAST-12 — forecast acceptance across a conversation rather than a turn",
+    retiredBecause: "the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+  },
+  {
+    name: "check-answer-boundary", tier: "RETIRED", tombstone: true, needsDb: false,
+    what: "V26-REASONING Slice 1 — measured the typed answer boundary end to end on seven adversarial cases",
+    retiredBecause: "the typed answer boundary was deleted; the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+  },
+  {
+    name: "check-conversation-gate", tier: "RETIRED", tombstone: true, needsDb: false,
+    what: "V26-REASONING Slice 4 — one seven-turn conversation asking whether the product worked",
+    retiredBecause: "the scenario lifecycle it drove was deleted; the QUESTION it asked is the right one and should shape the exemplar conversations the next layer is designed from. the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+  },
+  {
+    name: "compare-plans", tier: "RETIRED", tombstone: true, needsDb: false,
+    what: "V26-REASONING Slice 5 — ran the typed planner and the legacy routing over 112 real questions and reported agreement per class",
+    retiredBecause: "it shipped with a deletion condition and both planners are now gone; the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
   },
 ];
 

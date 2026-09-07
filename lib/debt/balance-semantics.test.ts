@@ -416,13 +416,11 @@ console.log("11. AI wiring — semantics reach the model, not just the math");
   check("both visibility branches spread the semantics (FULL + BALANCE_ONLY)",
     (asm.match(/\.\.\.liability/g) ?? []).length === 2);
 
-  const ser = readFileSync("lib/ai/prompts/context-serializer.ts", "utf8");
-  check("serializer gates its warning on an actual credit-balance account",
-    /liabilityState\s*===\s*'credit'/.test(ser));
-  check("serializer tells the model a credit balance is ZERO debt",
-    /A credit balance is ZERO debt/.test(ser));
-  check("serializer forbids recommending payoff of a credit balance",
-    /never recommend paying it off/.test(ser));
+  // ⚠️ THREE SERIALIZER WORDING CHECKS WERE DELETED HERE (AI conversation reset).
+  // They pinned that the prompt told the model a credit balance is zero debt and
+  // must never be "paid off". That serializer was removed with the prompt layer.
+  // The SEMANTICS it narrated live in lib/debt (amountOwed / creditBalance /
+  // liabilityState) and are pinned above, where they belong.
 }
 
 // ── 12. Liabilities section stays structurally gated ─────────────────────────

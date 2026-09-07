@@ -166,68 +166,37 @@ const _e = {
   // validateEnv() warns loudly on any non-off value; see .env.example.
   QUANTITY_AUTHORITY_MODE: process.env.QUANTITY_AUTHORITY_MODE,
 
-  // ── AI output enforcement / diagnostics ─────────────────────────────────────
-  // AI_OUTPUT_VALIDATION_MODE: shadow | annotate | block; unset/unrecognized ⇒
-  // 'annotate' (the live KD-2 default) at app/api/ai/chat/route.ts. FLOWTYPE_SHADOW
-  // toggles an optional non-PII flow-distribution log line only (no data-path
-  // effect); unset ⇒ "off". Both read directly at their sites — mirrored for docs.
-  AI_OUTPUT_VALIDATION_MODE: process.env.AI_OUTPUT_VALIDATION_MODE,
-  // A5 — assessment-contradiction guard: off | shadow | repair.
-  // UNSET ⇒ shadow (detect and log, reply untouched). Enforcement is never
-  // silently on; 'repair' must be set deliberately.
-  AI_ASSESSMENT_GUARD_MODE: process.env.AI_ASSESSMENT_GUARD_MODE,
+  // ── AI ───────────────────────────────────────────────────────────────────
+  //
+  // ⚠️ SIX AI FLAGS WERE REMOVED HERE BY THE AI CONVERSATION RESET, because the
+  // machinery each one gated was deleted rather than switched off:
+  //   AI_OUTPUT_VALIDATION_MODE  the prose numerical sweep over model replies
+  //   AI_ASSESSMENT_GUARD_MODE   the assessment-contradiction guard + repair
+  //   AI_FORECAST_GUARD_MODE     the forecast figure licence + redaction
+  //   AI_ANSWER_MODE             the typed answer boundary
+  //   AI_REASONING_PATH          the legacy/new planner strangler
+  //   AI_PROMPT_SHAPE            the prompt-shape experiment
+  // A flag whose code is gone is not a kill switch, it is a lie in the
+  // environment surface. See docs/plans/AI-CONVERSATION-RESET.md.
+  //
+  // FLOWTYPE_SHADOW toggles an optional non-PII flow-distribution log line only
+  // (no data-path effect); unset ⇒ "off". Read directly at its site — mirrored
+  // here for docs.
   FLOWTYPE_SHADOW:           process.env.FLOWTYPE_SHADOW,
-  // FORECAST-14 — forecast numerical boundary: off | shadow | repair.
-  // UNSET ⇒ shadow (detect and log; the reply is NOT repaired).
-  // ⚠️ FORECAST-15's acceptance measured shadow at 8 raw authority violations →
-  // 8 reach the user, and repair at 10 → 0, and concluded that controlled active
-  // should launch with repair ENABLED. Registered here (V26-REASONING Slice 0)
-  // because it was previously read via bare process.env and set nowhere, so the
-  // non-enforcing default was in force in production by omission rather than by
-  // decision.
-  AI_FORECAST_GUARD_MODE:   process.env.AI_FORECAST_GUARD_MODE,
   // PROJECTION-1 — the evidence-based cash projection beside the licensed
-  // forecast. Any value except the literal 'off' ⇒ ON, which is the shipped
-  // product decision. ⚠️ With it ON, ten scenarios of the FORECAST-15 acceptance
-  // corpus fail BY CONTRACT (they forbid exactly what this path was authorised
-  // to provide): ~21/35 with it on vs 32/35 with it off. That delta is a stale
-  // corpus, not a regression. Set 'off' to restore the prior contract exactly.
+  // forecast, in lib/ai/forecast/assemble.ts. Any value except the literal 'off'
+  // ⇒ ON, which is the shipped product decision.
+  //
+  // ⚠️ KEPT DELIBERATELY THROUGH THE RESET. It is not conversation machinery: it
+  // selects between two DETERMINISTIC results of the forecast engine, both of
+  // which are computed, tested and correct. Turning it off restores the prior
+  // contract exactly; nothing dormant hides behind either setting.
   AI_FORECAST_PROJECTION:   process.env.AI_FORECAST_PROJECTION,
-  // V26-REASONING Slice 1 — the typed answer boundary: 'prose' | 'typed'.
-  // UNSET ⇒ 'prose', which is today's pipeline and all four guards, unchanged.
-  // 'typed' asks the model for { claims[], prose } against a licensed figure
-  // table and verifies by IDENTITY rather than by reading the English back.
-  //
-  // ⚠️ REGISTERED IN THE SLICE THAT CREATES IT, not as a follow-up. Every flag
-  // this project added since FORECAST-14 defaulted to the non-enforcing side
-  // and was then forgotten — AI_FORECAST_GUARD_MODE was set in no environment
-  // at all for nineteen commits. Registering a flag is part of the slice.
-  AI_ANSWER_MODE:           process.env.AI_ANSWER_MODE,
-  // V26-REASONING Slice 2 — the chat tier. UNSET ⇒ 'gpt-4o-mini', which is what
-  // `provider.ts` has always hard-coded, so an unset environment is unchanged.
-  // ⚠️ THE RIGHT VALUE DEPENDS ON `AI_ANSWER_MODE` AND THE TWO MUST MOVE
-  // TOGETHER. Under `prose`, FORECAST-11 measured a stronger tier and answered
-  // no. Under `typed`, the recorded decision in docs/systems/model-tier.md is
-  // the reverse. Setting one without the other buys the cost of the frontier
-  // tier without the boundary that makes it worth paying.
+  // The chat tier used by lib/ai/provider.ts. UNSET ⇒ 'gpt-4o-mini', which is
+  // what the provider has always defaulted to, so an unset environment is
+  // unchanged. The provider boundary survived the reset; the conversation layer
+  // that called it did not.
   AI_CHAT_MODEL:            process.env.AI_CHAT_MODEL,
-  // V26-REASONING Slice 5 — the strangler: 'legacy' | 'new'.
-  // UNSET ⇒ 'legacy', which is the whole of today's routing, unchanged.
-  //
-  // ⚠️ `new` DOES NOT REPLACE ROUTING WHOLESALE, AND MUST NOT BE READ AS DOING
-  // SO. Two question classes flipped on measurement (forecast and broad); three
-  // did not, because the measure catalogue has no vocabulary for a transaction
-  // record or a coverage claim and legacy's domain routing serves those
-  // correctly. See docs/systems/planner.md for the per-class numbers.
-  AI_REASONING_PATH:        process.env.AI_REASONING_PATH,
-  // V26-REASONING Slice 7 — how much prompt a TYPED turn gets: 'full' | 'minimal'.
-  // UNSET ⇒ 'full', which is today's prompt with the typed table appended.
-  //
-  // ⚠️ `minimal` DROPS THE DOCTRINE, and that is measured rather than assumed:
-  // on the seven-case answer-boundary corpus it is 1,570 tokens against 11,400
-  // with no change in compliance either way. The default stays `full` until the
-  // 35-scenario corpus says the same thing.
-  AI_PROMPT_SHAPE:          process.env.AI_PROMPT_SHAPE,
 } as const;
 
 // ── Deployment-environment classification (V26-ENV-1) ─────────────────────────

@@ -22,7 +22,7 @@ Every open item below is classified. Nothing sits in an unlabelled "future" buck
 |---|---|---|
 | **A** | Must complete before v2.5 closure | **None — class A is empty.** V25-CLOSE-1 closed ledger reconciliation, prototype containment, test-discovery boundary, archive removal and `.gitignore` ordering; V25-CLOSE-1A greened the CI lint gate; V25-CLOSE-2 expanded the Atlas ratchet and added the prototype-route and visibility-parity guards. |
 | **B** | Good v2.5 polish — improves honesty/safety, does not gate closure | FX rate-miss disclosure (*anchor corrected V26-PRE:* `convertMoney` now returns `amount: null` on a known-currency miss — V25-FINAL-1 landed; the one surviving native-relabel is `lib/investments/display-conversion.ts:59`, which returns the unconverted magnitude under the target label and drops the `estimated` taint on partial-coverage contexts); audit + fresh-access on the three `app/api/admin/plaid/*` operator routes; Debt/Liquidity zero-data workspace states; Space template picker descriptions; dead-code sweep (~694 LOC). **From V25-CLOSE-2:** `resolveSingleAccountScope` should honour `spaceIdHint` when supplied (a semantics decision, not a guard); convert the in-memory `=== VisibilityLevel.FULL` comparisons to `grantsTransactionDetail()`; burn down the 937 baselined palette violations (551 in `app/admin`, 223 in `components/admin` — both retiring into Platform HQ). |
-| **C** | v2.6 work — do not pull forward | Conversation state / `conversationId` (v2.6a); `AiAdvice` write path KD-14 (v2.6b); `context-priority` planner activation; `comingSoon` lenses (tax/property/businessHealth); provider expansion. |
+| **C** | v2.6 work — do not pull forward | Conversation state / `conversationId` (v2.6a — but see the reset note in that section); `AiAdvice` write path KD-14 (v2.6b); ~~`context-priority` planner activation~~ (that planner was deleted, and so was its successor — [AI-CONVERSATION-RESET.md](AI-CONVERSATION-RESET.md)); `comingSoon` lenses (tax/property/businessHealth); provider expansion. |
 | **D** | Later scaling work | TX-5 explorer query cost (gated on KD-15 boundary relocation); PROV-6 provider-neutral ingestion payload (correctly deferred until a second real ingesting provider); `SectionCard.tsx:160-163` legacy section-key data migration. |
 
 **Boundary note (binding):** the only v2.5-side obligations that v2.6 genuinely depends on are relocating `lib/ai/visibility.ts` out of the AI namespace (13 non-AI files import it, making the privacy predicate load-bearing for the financial data layer) and btc-sync flow-authority convergence. Everything conversational is additive and touches no financial code.
@@ -70,6 +70,21 @@ Extend a **provider-neutral** ingestion architecture to further institutions. De
 
 ## v2.6a — Advisor Intelligence (AI-5)
 
+> ### ⚠️ SUPERSEDED BY THE AI CONVERSATION RESET (2026-09-07)
+>
+> Everything below was scoped as *additions* to a conversational layer that has
+> since been **deleted** — see [AI-CONVERSATION-RESET.md](AI-CONVERSATION-RESET.md).
+> AI5-0's "failure-corpus reconstruction", KD-8, KD-16 and "validator authority
+> unchanged" all name machinery that no longer exists, and the shipped layer they
+> were meant to improve produced the dogfood session recorded in that document.
+>
+> **The next design starts from exemplar conversations, not from this plan and
+> not from the removed architecture.** The paragraphs below are kept as the
+> record of what was believed before the reset, and specifically because the two
+> *problems* they name are still real and will reappear in any design:
+> conversation state does not exist, and a reply must not silently change its
+> time window. The *solutions* they propose are void.
+
 Conversation-state substrate (no `conversationId` exists today); active-window + context-change disclosure; confidence/completeness propagation; intent-path consistency (KD-16); graceful context compression; advisor-quality presentation. KD-8 rides here.
 
 **Layered entry gates (do not collapse):** zero-schema foundation (AI5-0 failure-corpus reconstruction, AI5-1 window semantics, AI5-2 disclosure) may begin now in a parallel worktree under a **bounds-not-dollars** test rule; shadow persisted-state integration gates on v2.5 A1-M1 + v2.5.5 items 1–4; live user-facing state persistence gates on full v2.5.5 closeout + the OPS-1 beta floor.
@@ -78,9 +93,9 @@ Conversation-state substrate (no `conversationId` exists today); active-window +
 
 ## v2.6b — Ambient Intelligence
 
-Scheduler substrate; `AiAdvice` write path; Daily Brief generation; signals → notifications; AI Inbox; context-priority planner; advisory modes. KD-9, KD-12, KD-14 close here. Start the Plaid production application during this window (longest external lead time).
+Scheduler substrate; `AiAdvice` write path; Daily Brief generation; signals → notifications; AI Inbox; advisory modes. (The `context-priority` planner named here was deleted, as was the retrieval planner that replaced it.) KD-9, KD-12, KD-14 close here. Start the Plaid production application during this window (longest external lead time).
 
-**Entry:** v2.6a exit — the system may not speak unprompted until it cannot misquote a number **and** can hold a coherent conversation when prompted. **Exit:** one week of scheduled briefs with zero validator failures; notification opt-in/out; audit-log growth bounded.
+**Entry:** v2.6a exit — the system may not speak unprompted until it cannot misquote a number **and** can hold a coherent conversation when prompted. **Exit:** one week of scheduled briefs with zero honesty failures (the output validator this criterion assumed was removed in the AI conversation reset; the criterion needs an owner in whatever replaces it); notification opt-in/out; audit-log growth bounded.
 
 ## v3.0 — Launch (L-1)
 

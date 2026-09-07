@@ -26,6 +26,15 @@
  * and never touches it. That is the whole of FORECAST-8/9A reaching production,
  * and the two paths are visibly different code below rather than one path with
  * a flag.
+ *
+ * ⚠️ AND IT NO LONGER READS ENGLISH. Until the AI conversation reset this
+ * function took `question: string` and the whole message history, and ran two
+ * regex extractors (`./statements.ts`, `./fact-continuity.ts`) to turn prose
+ * into those statements. Both were removed with the conversation layer. The
+ * input is now `UserStatement[]` — FORECAST-8's own typed vocabulary, from
+ * `lib/forecast/policy.ts` — so this module is a function of VALUES end to end
+ * and whatever produces those statements is somebody else's problem. Nothing
+ * here parses, matches or interprets a sentence.
  */
 
 import { composeInvestments } from '@/lib/ai/economic-concepts';
@@ -53,16 +62,14 @@ import {
 } from '@/lib/forecast/operating-state';
 import {
   AssumptionDimension, AssumptionOrigin, AssumptionStance, ConclusionStatus, StatementMode,
+  routeStatement,
   type ConclusionStatusKind,
   continueLicensedCadence,
   type ForecastHorizon, type ForecastPolicy, type PolicyAssumption, type StatementSubject,
+  type UserStatement,
 } from '@/lib/forecast/policy';
 import { forecastCash, type CashForecast } from '@/lib/forecast/engine';
 import type { ResolvedIncomeStream } from './streams';
-import { extractForecastStatements, type ExtractedStatement } from './statements';
-import {
-  resolveAssertedFacts, type AssertedFacts, type FactMessage,
-} from './fact-continuity';
 
 /** What a forecast needs that is not already a FORECAST-* authority's job. */
 export interface ForecastAssemblyInput {
@@ -71,20 +78,20 @@ export interface ForecastAssemblyInput {
   streams: readonly ResolvedIncomeStream[];
   horizon: ForecastHorizon;
   asOfISO: string;
-  /** This turn's message. Suppositions come from HERE and nowhere else. */
-  question: string;
   /**
-   * The whole conversation, for FACT continuity.
+   * What the user stated, ALREADY TYPED.
    *
-   * ⚠️ FACTS AND SUPPOSITIONS READ DIFFERENT INPUTS, and that is the entire
-   * distinction FORECAST-13 exists to draw. A supposition is scoped to the turn
-   * that makes it (`question`); a fact the user asserted is still true three
-   * turns later and is re-derived from the history (`messages`), exactly as CF-4
-   * re-derives the temporal scope. Omitting `messages` falls back to the
-   * question alone — the pre-FORECAST-13 behaviour, so every existing caller
-   * and every prior measurement is unchanged.
+   * ⚠️ THE CALLER DECIDES WHAT IS IN HERE, INCLUDING ITS SCOPE. FORECAST-13's
+   * rule — a fact survives the turn it was stated in, a supposition does not —
+   * is a rule about which statements a caller collects, not one this module can
+   * enforce, and pretending otherwise is what put a regex extractor inside a
+   * deterministic assembler. `ASSERTS_FACT` statements are applied to the STATE
+   * through FORECAST-6/9A; every other mode becomes a `PolicyAssumption`.
+   *
+   * Order matters: for a given subject the LAST statement wins, so a correction
+   * is expressed by appending, never by mutating.
    */
-  messages?: readonly FactMessage[];
+  statements?: readonly UserStatement[];
   /**
    * Dated events some OTHER authority already licensed — a bonus the user named
    * with a date and an amount, an obligation FORECAST-4 dated.
@@ -105,10 +112,8 @@ export interface AssembledForecast {
   events: FutureCashEvent[];
   policy: ForecastPolicy;
   forecast: CashForecast | { refused: true; reason: string };
-  /** Every statement recognised this turn, and where it was routed. */
-  statements: ExtractedStatement[];
-  /** What the user has asserted across the conversation, latest in force. */
-  facts: AssertedFacts;
+  /** The statements this assembly consumed, echoed back in the order applied. */
+  statements: readonly UserStatement[];
   /** Facts applied to the STATE, kept separate from suppositions. */
   appliedFacts: string[];
   /** Why a forecast could not be assembled at all, when it could not. */
@@ -153,51 +158,55 @@ const accountsOf = (ctx: SpaceContext_AI) =>
  * eventually two answers.
  */
 export function assembleForecast(input: ForecastAssemblyInput): AssembledForecast {
-  const { ctx, streams, horizon, asOfISO, question } = input;
+  const { ctx, streams, horizon, asOfISO } = input;
   const acc = accountsOf(ctx);
+  const statements = input.statements ?? [];
 
-  // The stream a bare "my paycheck" refers to: the one licensed to continue
-  // that carries an amount. Null when there is no single obvious candidate —
-  // in which case a basis statement is not extracted at all rather than
-  // attached to a guess.
-  const candidates = streams.filter((s) => s.projectionEligible && s.amount !== null);
-  const primaryKey = candidates.length === 1 ? candidates[0].sourceKey : null;
-
-  // ── Facts, from the whole conversation, applied to the authorities ───────
+  // ── Facts, applied to the authorities that own them ──────────────────────
   //
-  // ⚠️ THE HISTORY IS THE SOURCE, NOT THIS TURN. A correction stated on a turn
-  // that asked for nothing is still the user's stated fact when a forecast is
-  // finally requested; re-deriving it here is what makes it reachable without
-  // a store to keep in sync. Latest statement per subject wins.
-  const facts: AssertedFacts = resolveAssertedFacts(
-    input.messages ?? [{ role: 'user', content: question }], asOfISO, streams);
+  // ⚠️ ONE PASS, LAST WINS. A later statement about the same subject supersedes
+  // an earlier one, which is how a correction reaches the substrate without a
+  // store to keep in sync. Nothing is merged by guess and nothing is inferred:
+  // a statement that names no subject this module can route simply does not
+  // appear below.
+  const assertedFacts = statements.filter((st) => st.mode === StatementMode.ASSERTS_FACT);
 
   const appliedFacts: string[] = [];
   let assertedBaseline: ReturnType<typeof assertedSpendingBaseline> | null = null;
   const assertedBasis = new Map<string, ReturnType<typeof assertedAmountBasis>>();
 
-  if (facts.spending) {
+  // ⚠️ THE LAST STATEMENT IS SELECTED BEFORE ANYTHING IS APPLIED, not applied
+  // over the top of the earlier one. Applying each in turn produced the right
+  // baseline and a `appliedFacts` list naming BOTH — a report that two spending
+  // levels were in force when only one was, which is precisely the kind of
+  // parallel-authority statement this substrate exists to prevent.
+  const lastSpending = [...assertedFacts].reverse()
+    .find((st) => st.subject.kind === 'SPENDING_LEVEL');
+  if (lastSpending && lastSpending.subject.kind === 'SPENDING_LEVEL') {
+    const sub = lastSpending.subject;
     assertedBaseline = assertedSpendingBaseline(
-      facts.spending.amount, facts.spending.currency, facts.spending.periodBasis, asOfISO);
+      sub.amount, sub.currency, sub.periodBasis, asOfISO);
     appliedFacts.push(
-      `spending baseline ${facts.spending.amount} ${facts.spending.currency}: "${facts.spending.statedAs}"`);
+      `spending baseline ${sub.amount} ${sub.currency}: "${lastSpending.statedAs}"`);
   }
-  // ⚠️ SUPPOSITIONS ARE READ AFTER THE FACTS, AND FROM THIS TURN ONLY. They
-  // borrow the facts' antecedent — "what if it were $10,000" revises the level
-  // the user established — without becoming one: the result is a HYPOTHETICAL
-  // policy assumption over an unchanged authoritative baseline.
-  const statements = extractForecastStatements(question, asOfISO, primaryKey,
-    facts.spending
-      ? { kind: 'SPENDING_LEVEL', currency: facts.spending.currency,
-        periodBasis: facts.spending.periodBasis }
-      : undefined);
 
-  for (const b of facts.basis) {
-    const stream = streams.find((s) => s.sourceKey === b.sourceKey);
-    if (stream?.amount?.assertable && b.basis !== AmountBasis.UNKNOWN) {
-      assertedBasis.set(b.sourceKey,
-        assertedAmountBasis(stream.amount, b.basis as 'NET' | 'GROSS', asOfISO));
-      appliedFacts.push(`${b.sourceKey} basis ${b.basis}: "${b.statedAs}"`);
+  // Per stream, the same rule: the latest claim about a stream's basis is the
+  // one in force, and it is the only one reported.
+  const lastBasis = new Map<string, UserStatement>();
+  for (const st of assertedFacts) {
+    if (st.subject.kind === 'STREAM_AMOUNT_BASIS') lastBasis.set(st.subject.sourceKey, st);
+  }
+  for (const st of lastBasis.values()) {
+    if (st.subject.kind !== 'STREAM_AMOUNT_BASIS') continue;
+    const { sourceKey, basis } = st.subject;
+    const stream = streams.find((s) => s.sourceKey === sourceKey);
+    // ⚠️ UNKNOWN IS NOT A BASIS. FORECAST-9A's `assertedAmountBasis` produces
+    // NET or GROSS and nothing else; a claim that resolves neither is dropped
+    // rather than downgraded into one.
+    if (stream?.amount?.assertable && basis !== AmountBasis.UNKNOWN) {
+      assertedBasis.set(sourceKey,
+        assertedAmountBasis(stream.amount, basis as 'NET' | 'GROSS', asOfISO));
+      appliedFacts.push(`${sourceKey} basis ${basis}: "${st.statedAs}"`);
     }
   }
 
@@ -282,20 +291,25 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   // turn and carries HYPOTHETICAL — FORECAST-3's own value, reserved in writing
   // for exactly this. Neither becomes the other, and neither needs a policy
   // dimension to hold it: the event's provenance says which it is.
-  const assertedEvents: FutureCashEvent[] = facts.events.map((e) => ({
-    // ⚠️ THE ID CARRIES THE AMOUNT, matching fact-continuity's identity exactly.
-    // Without it the dedupe map below collapsed "a $15,500 gross bonus on
-    // October 15" and "a $1,500 payout on October 15" into one event — the
-    // programme's own live-failure fixture, silently losing the payout. Two
-    // identities that must agree and did not is how a movement disappears.
-    id: `user:${e.direction}:${e.role}:${e.dateISO}:${e.amount}`,
-    timing: { kind: 'EXACT', dateISO: e.dateISO },
-    timingProvenance: EventProvenance.USER_ASSERTED,
-    direction: e.direction,
-    role: e.role as FlowRoleKind,
-    amount: { value: e.amount, currency: e.currency, basis: e.basis,
-      provenance: EventProvenance.USER_ASSERTED },
-  }));
+  const assertedEvents: FutureCashEvent[] = assertedFacts
+    .filter((st) => st.subject.kind === 'ONE_OFF_EVENT')
+    .map((st) => {
+      const sub = st.subject as Extract<StatementSubject, { kind: 'ONE_OFF_EVENT' }>;
+      return {
+        // ⚠️ THE ID CARRIES THE AMOUNT. Without it the dedupe map below
+        // collapsed "a $15,500 gross bonus on October 15" and "a $1,500 payout
+        // on October 15" into one event — the programme's own live-failure
+        // fixture, silently losing the payout. Two movements that share a day
+        // and a role are still two movements.
+        id: `user:${sub.direction}:${sub.role}:${sub.dateISO}:${sub.amount}`,
+        timing: { kind: 'EXACT' as const, dateISO: sub.dateISO },
+        timingProvenance: EventProvenance.USER_ASSERTED,
+        direction: sub.direction,
+        role: sub.role as FlowRoleKind,
+        amount: { value: sub.amount, currency: sub.currency, basis: sub.basis,
+          provenance: EventProvenance.USER_ASSERTED },
+      };
+    });
 
   const supposedEvents: FutureCashEvent[] = statements
     .filter((st) => st.mode !== StatementMode.ASSERTS_FACT
@@ -340,8 +354,13 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   const assumptions: PolicyAssumption[] = [continueLicensedCadence()];
   let n = 0;
   for (const st of statements) {
-    if (st.routing.destination !== 'FORECAST_POLICY') continue;
-    assumptions.push({ ...st.routing.assumption, id: `p${n++}` });
+    // ⚠️ FORECAST-8 DECIDES, NOT THIS MODULE. `routeStatement` is the authority
+    // on where a statement belongs; an ASSERTS_FACT statement routes UPSTREAM
+    // and is skipped here by its own verdict, never by a mode check duplicated
+    // in the caller.
+    const routing = routeStatement(st, `p${n}`);
+    if (routing.destination !== 'FORECAST_POLICY') continue;
+    assumptions.push({ ...routing.assumption, id: `p${n++}` });
   }
 
   const policy: ForecastPolicy = { horizon, assumptions };
@@ -409,7 +428,7 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
 
   return {
     state, events, policy, forecast,
-    statements, facts, appliedFacts,
+    statements, appliedFacts,
     unavailable: acc ? null : 'account balances could not be assembled for this Space',
     projection, observedSpending,
   };

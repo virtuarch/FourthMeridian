@@ -151,14 +151,13 @@ check(
 // (REVIEW-3 C: the recorded lib/ai exception was deleted together with its
 // exclusion above — the AI layer now delegates to the seam and is scanned by
 // the main invariant like every other directory.)
-{
-  const aiSystemPrompt = readFileSync(join(ROOT, "lib", "ai", "prompts", "system-prompt.ts"), "utf8");
-  check(
-    "lib/ai delegates to the seam (system-prompt imports todayUTCISO from lib/time)",
-    aiSystemPrompt.includes("@/lib/time/clock") &&
-      !/new Date\(\)\.toISOString\(\)\.split\('T'\)\[0\]/.test(aiSystemPrompt),
-  );
-}
+//
+// ⚠️ THE NAMED lib/ai WITNESS WAS DELETED BY THE AI CONVERSATION RESET. It
+// pointed at lib/ai/prompts/system-prompt.ts, which is gone. No replacement
+// witness was invented: the whole point of REVIEW-3 C was that lib/ai has no
+// exception, so it is covered by the directory-wide scan above — which is
+// stronger than any single named file, and which still runs over every file
+// lib/ai has today.
 
 // The delegations themselves: fx and prices re-export the seam instead of
 // defining their own (the byte-identical-clone defect this slice removed).

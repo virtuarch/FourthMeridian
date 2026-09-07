@@ -7,7 +7,7 @@
  * evidence strings) and never read Space.reportingCurrency — an all-USD corpus
  * made that latent, and exactly latent defects are what a settings change turns
  * live. Money is now formatted through currency-aware formatters
- * (lib/ai/prompts/format.ts fmtMoney(n, currency), lib/currency
+ * (lib/ai/format.ts fmtMoney(n, currency), lib/currency
  * formatCurrency/currencySymbol) fed from the section/context's own reporting
  * currency.
  *
@@ -86,7 +86,7 @@ check(
   check('the Brief reads the Space reporting currency',
     /reportingCurrency/.test(brief) && /currencySymbol/.test(brief));
 
-  const fmt = readFileSync(join(ROOT, 'lib', 'ai', 'prompts', 'format.ts'), 'utf8');
+  const fmt = readFileSync(join(ROOT, 'lib', 'ai', 'format.ts'), 'utf8');
   check('fmtMoney is currency-parameterised (Intl currency style, no literal symbol)',
     /currency:\s*string\s*=\s*DEFAULT_DISPLAY_CURRENCY/.test(fmt) && /style:\s*'currency'/.test(fmt));
 

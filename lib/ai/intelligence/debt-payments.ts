@@ -39,10 +39,16 @@ import { tierResolver } from '@/lib/transactions/liquidity';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
 import { identityContext, convertMoney } from '@/lib/money/convert';
 import { buildSpaceConversionContext } from '@/lib/money/server-context';
-import { getTransactionsSummary } from '@/lib/ai/prompts/format';
-import type { DebtPaymentLine } from '@/lib/ai/prompts/context-serializer';
+import { getTransactionsSummary } from '@/lib/ai/format';
 
-export type { DebtPaymentLine };
+/**
+ * One debt account's received payments within the summarized window.
+ *
+ * ⚠️ DEFINED HERE SINCE THE AI CONVERSATION RESET. It used to be imported from
+ * the prompt context-serializer that consumed it; that layer was removed, and
+ * the type belongs with the function that produces it.
+ */
+export type DebtPaymentLine = { name: string; total: number; count: number };
 
 export async function fetchPerLiabilityDebtPayments(ctx: SpaceContext_AI): Promise<DebtPaymentLine[]> {
   const txn = getTransactionsSummary(ctx);
