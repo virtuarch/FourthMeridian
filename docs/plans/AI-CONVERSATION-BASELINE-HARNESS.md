@@ -368,6 +368,46 @@ measurement for the later AI-egress audit.*
 **Turn it off** with `--no-compaction` on either mode, which is also how the "before" column
 above was produced.
 
+## 13d. As-of coherence + information ceiling (slices 1–3, 2026-09-08)
+
+The beta blocker from
+[AI-BETA-REASONING-MEMORY-INVESTIGATION.md](AI-BETA-REASONING-MEMORY-INVESTIGATION.md).
+Three tool-contract changes, no new authority, no engine change.
+
+**1 — the naming collision.** `get_net_worth_history` mapped `cash: p.liquid` (checking +
+savings) while `explain_net_worth_change{lens:'cash'}` returns the checking bucket. On
+2026-01-01 that is **$9,517.46 vs $1,255.20**, both called "cash", both correct about their
+own population. 4M quoted the smaller one and built debt advice on it.
+**No result field is named `cash` any more** — `liquid` and `checking` are separate and
+named — and a single-lens answer now carries `population { covers, siblingLenses }`.
+
+**2 — `get_financial_snapshot(asOf)`.** Omit `asOf` for today (accounts authority: per-account
+freshness, APRs, available balances). Pass a past date and it composes
+`projectSnapshotSection` totals with the exploration tree's account-level buckets —
+**213 ms, ~344 tokens, five buckets, coverage attached**. Nothing in the adapter adds two
+money numbers: `liquid`, `checking` and `savings` each come from a different authority that
+already computed them.
+
+**3 — an information ceiling.** `get_spending`, `get_income`, `get_transactions`,
+`get_investments` and `project_cash` take `asOf`. It is a **ceiling, not a default** — it
+overrides a later explicit `to`, because a model that resolves the window first and the cutoff
+second leaks the future without noticing. Critically it reaches
+`loadForecastIncomeStreams(ceiling)`, which reconstructs the income world as it was: at
+2026-01-01 the Abacus payroll is CURRENT and **Vectrus does not exist**.
+
+`project_cash(asOf)` runs a **retrospective projection** — opening balance from the snapshot
+authority for that date, spending windowed to the cutoff, engine run from that date. It labels
+itself `retrospective: true` so it is never read as a current expectation. From 2026-01-01:
+**$27,966.38** projected for 2026-09-07 against an actual **$12,382.81**.
+
+**Measured, the exact question that failed:**
+
+| | Before | After |
+|---|---|---|
+| First answer | *"only $1,255.20 cash"* → wrong advice | *"$9,517 liquid, $37,316 debt"* — **correct first time** |
+| Under challenge | flip-flopped to $9,517 | explains checking $1,255 / savings $8,262 / liquid $9,517 and refines the advice |
+| Tool calls · tokens | 4 · 28,804 | **3 · 10,701** |
+
 ## 14b. Interactive operator mode
 
 **The A2 arm with a keyboard on the front.** Same thin-core evidence, same ten tools,

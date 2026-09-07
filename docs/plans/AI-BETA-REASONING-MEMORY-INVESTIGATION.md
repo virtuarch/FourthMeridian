@@ -22,7 +22,7 @@ account-level components. And `loadForecastIncomeStreams(asOf)` already reconstr
 income world *as it then was*. The gap is that **every tool pins `asOf` to today**.
 
 **The second-strongest:** a retrospective projection **already runs**. From 2026-01-01, using
-only evidence through that date, the engine projects **$18,448.92** for 2026-09-07. Actual:
+only evidence through that date, the engine projects **$27,966.38** for 2026-09-07. Actual:
 **$12,382.81**. Forecast reconciliation is computable today.
 
 ---
@@ -238,12 +238,16 @@ from evidence through that date only:
 
 | Horizon | Projected then | Actual |
 |---|---|---|
-| 2026-06-30 | $15,512.04 | — |
-| **2026-09-07** | **$18,448.92** | **$12,382.81** |
-| 2026-12-31 | $30,031.28 | — |
+| **2026-09-07** | **$27,966.38** | **$12,382.81** |
 
 Spending basis: $248.20/day over Oct–Dec 2025. Income: the Abacus stream. **This is forecast
 reconciliation, and it needs no new machinery** — see §7 for the one thing it *cannot* do.
+
+> **⚠️ FIGURE CORRECTED 2026-09-08 (during slice 3).** This section first read $18,448.92,
+> from a probe that passed `totalLiquid: 0` because I misread `getAccountsAsOf`'s nested row
+> shape. With the correct opening balance of $9,517.46 the projection is **$27,966.38** —
+> exactly $9,517.46 higher, which is the arithmetic confirming both runs. The shipped tool
+> takes opening cash from the snapshot authority and returns the corrected figure.
 
 ---
 
@@ -415,6 +419,11 @@ Each slice is independently shippable and independently revertible.
 
 Slices 1–3 are the beta blocker and are **~140 lines total**.
 
+> **✅ SLICES 1–3 SHIPPED 2026-09-08.** See the harness doc §13d. The dogfood question that
+> exposed the blocker now answers **$9,517 liquid / $37,316 debt correctly on the first
+> attempt**, and a follow-up challenge produces the checking/savings distinction rather than a
+> contradiction. Slices 4–7 remain open.
+
 ---
 
 ## 10. Explicitly NOT to build
@@ -471,8 +480,8 @@ Slices 1–3 are the beta blocker and are **~140 lines total**.
 6. `get_investments(asOf)` / `project_cash(asOf)` return nothing dated after `asOf`.
 7. `loadForecastIncomeStreams(2026-01-01)` yields Abacus CURRENT and **no Vectrus** (pins the
    behaviour §5.3 measured).
-8. A retrospective projection from 2026-01-01 to 2026-09-07 returns **$18,448.92**, and
-   changing the cutoff changes the answer.
+8. A retrospective projection from 2026-01-01 to 2026-09-07 returns **$27,966.38** from an
+   opening of $9,517.46, and changing the cutoff changes the answer.
 9. Live: *"what would you have advised me on Jan 1?"* cites no post-Jan-1 evidence.
 
 **Slice 4–5 — scenario arithmetic**

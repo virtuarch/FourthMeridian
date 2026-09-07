@@ -132,6 +132,16 @@ export async function readWindowToExhaustion(
     cursor = page.nextCursor;
   }
 }
+/**
+ * An information ceiling, applied.
+ *
+ * ⚠️ A CEILING IS NOT A DEFAULT — it OVERRIDES a later explicit bound. "Act as if
+ * you know nothing after Jan 1" must hold even when the same call also asks for a
+ * window ending in September, because a model that resolves the window first and
+ * the cutoff second leaks the future without ever noticing.
+ */
+export const clampToCeiling = (date: string, ceiling: string) => (date > ceiling ? ceiling : date);
+
 const daysAgoISO = (asOf: string, n: number) =>
   new Date(Date.parse(`${asOf}T00:00:00.000Z`) - n * 86_400_000).toISOString().slice(0, 10);
 
@@ -167,31 +177,110 @@ async function assemble<T>(
 
 // ── 1. Snapshot ──────────────────────────────────────────────────────────────
 
+/**
+ * The historical position on a date, composed from authorities that already exist.
+ *
+ * ⚠️ THREE AUTHORITIES, ZERO ARITHMETIC HERE. `projectSnapshotSection` supplies the
+ * totals AND the crypto-coverage refusal; the exploration tree supplies the
+ * account-level breakdown of each bucket. Nothing in this function adds two money
+ * numbers together — `liquid`, `checking` and `savings` each come from a
+ * different authority that already computed them, which is exactly why they can
+ * be reported side by side without one being mistaken for another.
+ */
+async function historicalSnapshot(ctx: ToolContext, asOf: string) {
+  const rows = await getRecentSnapshots({ rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
+  const section = projectSnapshotSection(rows as Snapshot[], 'full');
+  if (!section) return { unavailable: 'no usable snapshot history for this Space' };
+
+  // The latest observation ON OR BEFORE the requested date. A date with no
+  // observation reports the one it actually used rather than interpolating.
+  const point = [...section.history].reverse().find((p) => p.date <= asOf);
+  if (!point) {
+    return { unavailable: `no snapshot on or before ${asOf}`,
+      historyAvailableFrom: section.oldestDate, historyAvailableTo: section.newestDate };
+  }
+
+  const BUCKETS = ['cash', 'savings', 'investments', 'crypto', 'debt'] as const;
+  const nodes = await Promise.all(BUCKETS.map((lens) => resolveExplorationNode({
+    spaceId: ctx.spaceId, lens, nodeType: 'lens', nodeId: null,
+    dateISO: point.date, fromISO: point.date, toISO: point.date,
+  })));
+
+  return {
+    asOf, basis: 'HISTORICAL_SNAPSHOT',
+    observedOn: point.date,
+    ...(point.date !== asOf
+      ? { note: `No observation on ${asOf}; using the latest on or before it.` } : {}),
+    netWorth: point.netWorth, totalAssets: point.totalAssets,
+    /** Checking + savings — the spendable total. */
+    liquid: point.liquid,
+    /** Checking only. The `cash` lens covers exactly this. */
+    checking: point.cashOnHand,
+    investments: point.investments, digitalAssets: point.digitalAssets,
+    debt: point.liabilities,
+    coverage: {
+      netWorthAssertable: point.netWorth !== null,
+      ...(point.digitalAssetsUnavailableReason
+        ? { unassertableBecause: point.digitalAssetsUnavailableReason,
+            note: 'netWorth, totalAssets and digitalAssets are null because a component '
+              + 'could not be valued on that date. They are NOT zero and NOT measured.' }
+        : {}),
+      historyAvailableFrom: section.oldestDate, historyAvailableTo: section.newestDate,
+    },
+    buckets: BUCKETS.map((lens, i) => {
+      const n = nodes[i].node;
+      return {
+        bucket: lens, value: n?.displayedValue ?? null,
+        assertable: n?.assertable ?? false,
+        ...(n?.unavailableReason ? { unavailableReason: n.unavailableReason } : {}),
+        // A bucket whose components do not sum to its value says so, rather than
+        // presenting a partial breakdown as complete.
+        explainedByAccounts: n?.explainedValue ?? null,
+        accounts: (n?.components ?? []).map((c) => ({ name: c.label, value: c.displayedValue })),
+      };
+    }),
+  };
+}
+
 const getFinancialSnapshot: ToolDefinition = {
   name: 'get_financial_snapshot',
   description:
-    'Current position: cash, net worth, assets, liabilities, per-account balances with ' +
-    'freshness, and the canonical investment composition. Start here for anything broad.',
-  parameters: obj({}),
-  async run(_a, ctx) {
+    'The position on a date. Omit `asOf` for today (adds per-account freshness, APRs and ' +
+    'available balances); pass `asOf` for a past date (adds the account-level breakdown of ' +
+    'each bucket and the coverage of that date). `liquid` is checking + savings; `checking` ' +
+    'is checking alone. Start here for anything broad, and for any "how was I doing on X".',
+  parameters: obj({
+    asOf: str('YYYY-MM-DD. Omit for today. A past date returns the position AS IT WAS then.'),
+  }),
+  async run(a, ctx) {
+    const asOf = (a.asOf as string) || ctx.asOfISO;
+    // ⚠️ TWO BASES, AND THE RESULT SAYS WHICH. Today's position comes from the
+    // accounts authority, which carries freshness, APRs and pending reconciliation
+    // that simply do not exist for a past date. A historical snapshot that
+    // pretended to those fields would be inventing them.
+    if (asOf < ctx.asOfISO) return historicalSnapshot(ctx, asOf);
+
     const acc = await assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx);
     if (!acc) return { unavailable: 'no accounts in scope' };
     return {
-      asOf: ctx.asOfISO,
+      asOf: ctx.asOfISO, basis: 'CURRENT_ACCOUNTS',
       netWorth: acc.netWorth, totalAssets: acc.totalAssets,
-      totalLiabilities: acc.totalLiabilities, cash: acc.totalLiquid,
+      totalLiabilities: acc.totalLiabilities,
+      /** Checking + savings. Deliberately not named `cash` — see get_net_worth_history. */
+      liquid: acc.totalLiquid,
       counts: acc.counts,
       // CF-7's composer is the authority on what "investments" means; the two
       // components are disjoint by construction and must not be re-derived.
       investmentComposition: composeInvestments(acc),
-      accounts: (acc.accounts ?? []).map((a) => ({
-        name: a.name, type: a.type, institution: a.institution,
-        balance: a.reportingBalance, currency: a.currency,
-        amountOwed: a.amountOwed, creditBalance: a.creditBalance, liabilityState: a.liabilityState,
-        apr: a.apr, minimumPayment: a.minimumPayment,
-        freshness: a.balanceFreshness?.band, needsReauth: a.needsReauth,
-        available: a.availableQuantity?.label && a.availableQuantity?.amount !== undefined
-          ? { label: a.availableQuantity.label, amount: a.availableQuantity.amount } : undefined,
+      accounts: (acc.accounts ?? []).map((a2) => ({
+        name: a2.name, type: a2.type, institution: a2.institution,
+        balance: a2.reportingBalance, currency: a2.currency,
+        amountOwed: a2.amountOwed, creditBalance: a2.creditBalance,
+        liabilityState: a2.liabilityState,
+        apr: a2.apr, minimumPayment: a2.minimumPayment,
+        freshness: a2.balanceFreshness?.band, needsReauth: a2.needsReauth,
+        available: a2.availableQuantity?.label && a2.availableQuantity?.amount !== undefined
+          ? { label: a2.availableQuantity.label, amount: a2.availableQuantity.amount } : undefined,
       })),
       missingDebtFields: acc.knowledgeGaps,
       totalsEstimated: acc.totalsEstimated,
@@ -208,11 +297,13 @@ const getSpending: ToolDefinition = {
     'category and merchant rollups, month-by-month, largest expense, transfers and ' +
     'card payments kept separate from spending. Default window is the last 90 days.',
   parameters: obj({
-    from: str('YYYY-MM-DD inclusive. Omit for the last 90 days.'),
+    from: str('YYYY-MM-DD inclusive. Omit for the 90 days before `to`.'),
     to:   str('YYYY-MM-DD inclusive. Omit for today.'),
+    asOf: str('Information ceiling: pretend today is this date. Nothing after it is read.'),
   }),
   async run(a, ctx) {
-    const to   = (a.to   as string) || ctx.asOfISO;
+    const ceiling = (a.asOf as string) || ctx.asOfISO;
+    const to   = clampToCeiling((a.to as string) || ceiling, ceiling);
     const from = (a.from as string) || daysAgoISO(to, 89);
     const t = await assemble<TransactionsSummaryData>(
       FinanceDomains.TRANSACTIONS_SUMMARY, ctx,
@@ -276,6 +367,7 @@ const getTransactions: ToolDefinition = {
   parameters: obj({
     from:     str('YYYY-MM-DD inclusive.'),
     to:       str('YYYY-MM-DD inclusive.'),
+    asOf:     str('Information ceiling: nothing dated after this is returned.'),
     flow:     { type: 'string', enum: Object.keys(FLOW_SETS),
                 description: 'Default "all". Choose the one the question means.' },
     category: str('One presentation category, e.g. Dining, Shopping, Travel, Other.'),
@@ -290,11 +382,13 @@ const getTransactions: ToolDefinition = {
     const flowKey = String(a.flow ?? 'all');
     const flowTypes = FLOW_SETS[flowKey] ?? null;
 
+    const ceiling = (a.asOf as string) || ctx.asOfISO;
+    const dateTo = clampToCeiling((a.to as string) || ceiling, ceiling);
     const filters: Omit<TransactionQuery, 'cursor' | 'limit'> = {
       sort: 'oldest' === String(a.sort) ? 'oldest' : 'newest',
       ...(flowTypes ? { flowTypes } : {}),
       ...(a.from ? { dateFrom: String(a.from) } : {}),
-      ...(a.to   ? { dateTo:   String(a.to)   } : {}),
+      dateTo,
       ...(a.text ? { text:     String(a.text) } : {}),
       ...(a.category ? { categories: [String(a.category)] as never } : {}),
     };
@@ -315,8 +409,8 @@ const getTransactions: ToolDefinition = {
       : population;
 
     return {
-      asOf: ctx.asOfISO,
-      window: { from: a.from ?? null, to: a.to ?? null },
+      asOf: ceiling,
+      window: { from: a.from ?? null, to: dateTo },
       flow: flowKey,
       rows: rows.map((r) => ({
         date: r.date, merchant: r.merchantDisplayName ?? r.merchant,
@@ -347,18 +441,27 @@ const getIncome: ToolDefinition = {
     'still active. Use this before concluding income rose or fell — a month can ' +
     'hold two or three biweekly paychecks.',
   parameters: obj({
-    from: str('YYYY-MM-DD. Omit for the last 12 months.'),
+    from: str('YYYY-MM-DD. Omit for the 12 months before `to`.'),
     to:   str('YYYY-MM-DD. Omit for today.'),
+    asOf: str('Information ceiling: pretend today is this date. Nothing after it is read.'),
   }),
   async run(a, ctx) {
-    const to   = (a.to as string) || ctx.asOfISO;
+    const ceiling = (a.asOf as string) || ctx.asOfISO;
+    const to   = clampToCeiling((a.to as string) || ceiling, ceiling);
     const from = (a.from as string) || daysAgoISO(to, 364);
     const [t, streams] = await Promise.all([
       assemble<TransactionsSummaryData>(FinanceDomains.TRANSACTIONS_SUMMARY, ctx,
         { transactionWindow: { startDate: from, endDate: to, label: `income ${from}..${to}` } }),
-      loadForecastIncomeStreams(ctx.spaceId, ctx.asOfISO),
+      // ⚠️ THE CEILING REACHES THE CADENCE AUTHORITY TOO, and this is the half that
+      // matters. `loadForecastIncomeStreams(asOf)` reconstructs the income world as
+      // it WAS: at 2026-01-01 the Abacus payroll is CURRENT and Vectrus does not
+      // exist yet; at 2026-09-07 Vectrus is CURRENT and Abacus is SILENT. Passing
+      // today's date here while windowing the totals to last year would describe an
+      // old year with this year's employer.
+      loadForecastIncomeStreams(ctx.spaceId, ceiling),
     ]);
     return {
+      asOf: ceiling,
       window: { from, to },
       byMonth: (t?.monthlyBreakdown ?? []).map((m) => ({
         month: m.month, income: m.incomeTotal, partialMonth: m.partial ?? false,
@@ -390,9 +493,35 @@ const getInvestments: ToolDefinition = {
     'What the user is invested in. Returns the canonical composition (traditional ' +
     'investments vs digital assets, disjoint) AND the position-level detail, which ' +
     'is a SUBSET limited to positions that could be priced. Every concentration ' +
-    'figure states the population it is a share of.',
-  parameters: obj({}),
-  async run(_a, ctx) {
+    'figure states the population it is a share of. Pass `asOf` for a past date.',
+  parameters: obj({
+    asOf: str('YYYY-MM-DD. Omit for today. A past date returns the composition as it was.'),
+  }),
+  async run(a, ctx) {
+    const asOf = (a.asOf as string) || ctx.asOfISO;
+    if (asOf < ctx.asOfISO) {
+      // ⚠️ A PAST DATE HAS NO ACCOUNT COMPOSITION TO COMPOSE. `composeInvestments`
+      // reads today's account totals; the historical authority is the snapshot's
+      // own investments / digitalAssets split, which carries its own coverage.
+      // Returning the current composition under a past `asOf` would be the exact
+      // leakage this parameter exists to prevent.
+      const snap = await historicalSnapshot(ctx, asOf) as Record<string, unknown>;
+      if (snap.unavailable) return snap;
+      return {
+        asOf, basis: 'HISTORICAL_SNAPSHOT',
+        observedOn: snap.observedOn,
+        composition: {
+          traditionalInvestments: snap.investments,
+          digitalAssets: snap.digitalAssets,
+          note: 'Disjoint by construction, from the snapshot authority for that date.',
+        },
+        coverage: snap.coverage,
+        buckets: (snap.buckets as unknown[] | undefined)?.filter(
+          (b) => ['investments', 'crypto'].includes((b as { bucket: string }).bucket)),
+        positionDetailUnavailable:
+          'Position-level detail and concentration are current-only in this harness.',
+      };
+    }
     const [acc, hold] = await Promise.all([
       assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx),
       assemble<HoldingsSummaryData>(FinanceDomains.HOLDINGS_SUMMARY, ctx),
@@ -433,7 +562,8 @@ const getInvestments: ToolDefinition = {
 const getNetWorthHistory: ToolDefinition = {
   name: 'get_net_worth_history',
   description:
-    'Net worth and its components (cash, investments, digital assets, debt) over time. ' +
+    'Net worth and its components over time. `liquid` is checking + savings; `checking` ' +
+    'is the checking bucket alone — there is deliberately no field called "cash". ' +
     'Ask for `granularity: "monthly"` to get one point per calendar month — that is the ' +
     'right shape for a month-by-month table and is the default for ranges over ~3 months. ' +
     'A point whose net worth could not be established is returned as null WITH a reason; ' +
@@ -493,11 +623,23 @@ const getNetWorthHistory: ToolDefinition = {
       picked = inRange.filter((_, i) => i % step === 0 || i === inRange.length - 1);
     }
 
+    // ⚠️ NO FIELD HERE IS CALLED `cash`, AND THAT IS THE WHOLE POINT. It used to
+    // be: `cash: p.liquid`, where `liquid` is checking PLUS savings. Meanwhile
+    // `explain_net_worth_change{lens:'cash'}` returns the CHECKING bucket alone.
+    // Both were correct about their own population and both were called "cash",
+    // so on 2026-01-01 one tool said $1,255.20 and the other said $9,517.46. The
+    // model quoted the smaller one, built debt advice on it, and only corrected
+    // when the user pushed back. A model cannot reconcile two fields that share a
+    // name and not a population, and it should never have to.
     const pt = (p: (typeof inRange)[number]) => ({
       date: p.date,
       // Null means EXPLICITLY UNKNOWN and always travels with its reason.
       netWorth: p.netWorth, totalAssets: p.totalAssets,
-      cash: p.liquid, investments: p.investments, digitalAssets: p.digitalAssets,
+      /** Checking + savings. The spendable total. */
+      liquid: p.liquid,
+      /** Checking only — the `cash` bucket, matching explain_net_worth_change's `cash` lens. */
+      checking: p.cashOnHand,
+      investments: p.investments, digitalAssets: p.digitalAssets,
       debt: p.liabilities,
       ...(p.digitalAssetsUnavailableReason
         ? { unassertableBecause: p.digitalAssetsUnavailableReason } : {}),
@@ -536,12 +678,19 @@ const getNetWorthHistory: ToolDefinition = {
 
 // ── 7. Net-worth explanation ─────────────────────────────────────────────────
 
+/** The lens roots `lib/history` exposes. Listed so a single-lens answer can name its siblings. */
+const EXPLAINABLE_LENSES = [
+  'net-worth', 'assets', 'liquid-net-worth', 'investments',
+  'crypto', 'cash', 'savings', 'debt', 'liquidity',
+] as const;
+
 const explainNetWorthChange: ToolDefinition = {
   name: 'explain_net_worth_change',
   description:
-    'Break a net-worth figure into its components on a date, with each component\'s ' +
-    'own value and whether it can be drilled into further. Call again with a ' +
-    'component id to go deeper. Use for "why did my net worth drop/rise".',
+    'Break ONE total into its components on a date. Each result names the population ' +
+    'the lens covers and its sibling lenses — `cash` is checking only, `savings` is ' +
+    'separate. For a whole position on a date use get_financial_snapshot(asOf) instead. ' +
+    'Call again with a component id to drill deeper. Use for "why did my net worth drop".',
   parameters: obj({
     date: str('YYYY-MM-DD to explain. Required.'),
     lens: { type: 'string',
@@ -561,16 +710,28 @@ const explainNetWorthChange: ToolDefinition = {
     });
     if (res.error || !res.node) return { unavailable: res.error ?? 'node not resolved' };
     const n = res.node;
+    const components = (n.components ?? []).map((c) => ({
+      id: c.id, label: c.label, value: c.displayedValue,
+      canDrillDeeper: c.drilldown?.available ?? false,
+    }));
     return {
       date: dateISO, lens, label: n.label,
       value: n.displayedValue, currency: n.currency,
       explainedByComponents: n.explainedValue,
       unexplainedRemainder: n.unattributedObservedAmount,
       assertable: n.assertable, unavailableReason: n.unavailableReason,
-      components: (n.components ?? []).map((c) => ({
-        id: c.id, label: c.label, value: c.displayedValue,
-        canDrillDeeper: c.drilldown?.available ?? false,
-      })),
+      components,
+      // ⚠️ WHAT THIS LENS COVERS, AND WHAT IT DOES NOT. `cash` is the checking
+      // bucket; `savings` is a SEPARATE lens; and a reader who wants the spendable
+      // total wants neither on its own. Stating the population and the siblings is
+      // what stops a single-bucket figure being read as a whole-position one.
+      population: {
+        lens, label: n.label,
+        covers: components.map((c) => c.label),
+        siblingLenses: EXPLAINABLE_LENSES.filter((l) => l !== lens),
+        note: 'This is ONE component of the position on that date. For the whole '
+          + 'picture in one call, use get_financial_snapshot with an asOf.',
+      },
     };
   },
 };
@@ -592,11 +753,22 @@ const projectCash: ToolDefinition = {
     checkpoints: { type: 'string', enum: ['monthly', 'none'],
       description: 'monthly = a balance at each month-end between now and the horizon. '
         + 'Default monthly for horizons over ~45 days.' },
+    asOf: str('Project FROM this date using only evidence available then. Omit for today. '
+      + 'Use for "what would you have predicted back in January?".'),
   }, ['to']),
   async run(a, ctx) {
     const toISO = String(a.to);
+    const asOf = (a.asOf as string) || ctx.asOfISO;
+    const retrospective = asOf < ctx.asOfISO;
+
+    // ⚠️ A RETROSPECTIVE RUN MUST START FROM THE BALANCE THAT WAS TRUE THEN, and
+    // must not see a transaction dated after the cutoff. Opening cash comes from
+    // the snapshot authority for that date, income cadence from the streams
+    // authority AT that date (which reconstructs the then-current employer), and
+    // the spending window is bounded by it. Anything else quietly projects the
+    // past using the future.
     const [streams, accounts, transactions] = await Promise.all([
-      loadForecastIncomeStreams(ctx.spaceId, ctx.asOfISO),
+      loadForecastIncomeStreams(ctx.spaceId, asOf),
       assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx),
       // ⚠️ THE ONE LINE THAT MADE THIS TOOL WORK. PROJECTION-1 derives its spending
       // rate from `reliableMonths(transactionsDomain)`; with only the accounts
@@ -605,7 +777,11 @@ const projectCash: ToolDefinition = {
       // null / null. After: $38,243.50 to end-2026 and $128,827.54 to end-2027.
       // Both models papered over the null by doing the arithmetic in prose, and
       // one of them was $745.86 out.
-      assemble<TransactionsSummaryData>(FinanceDomains.TRANSACTIONS_SUMMARY, ctx),
+      assemble<TransactionsSummaryData>(FinanceDomains.TRANSACTIONS_SUMMARY, ctx,
+        retrospective
+          ? { transactionWindow: { startDate: daysAgoISO(asOf, 179), endDate: asOf,
+              label: `evidence through ${asOf}` } }
+          : {}),
     ]);
 
     const statements: UserStatement[] = [];
@@ -619,17 +795,38 @@ const projectCash: ToolDefinition = {
       });
     }
 
+    // For a retrospective run the accounts payload is rebuilt from the snapshot
+    // authority for that date — the CURRENT accounts domain would supply today's
+    // opening cash to a projection that starts nine months ago.
+    let openingAccounts: AccountsSectionData | null = accounts;
+    let openingBasis = 'CURRENT_ACCOUNTS';
+    if (retrospective) {
+      const snap = await historicalSnapshot(ctx, asOf) as Record<string, unknown>;
+      if (snap.unavailable) return { unavailable: snap.unavailable, asOf };
+      openingAccounts = {
+        totalLiquid: snap.liquid as number,
+        totalLiabilities: snap.debt as number,
+        netWorth: (snap.netWorth as number | null) ?? 0,
+        totalInvestments: (snap.investments as number | null) ?? 0,
+        totalDigitalAssets: (snap.digitalAssets as number | null) ?? 0,
+        counts: accounts?.counts ?? { liquid: 0, investments: 0, digitalAssets: 0,
+          realAssets: 0, liabilities: 0 },
+        redactedCount: 0, totalsUnconverted: false,
+      } as unknown as AccountsSectionData;
+      openingBasis = 'HISTORICAL_SNAPSHOT';
+    }
+
     const forecastCtx = {
       space: { name: '', reportingCurrency: 'USD' },
       domains: {
-        [FinanceDomains.ACCOUNTS]: { data: accounts },
+        [FinanceDomains.ACCOUNTS]: { data: openingAccounts },
         [FinanceDomains.TRANSACTIONS_SUMMARY]: { data: transactions },
       },
     } as unknown as SpaceContext_AI;
 
     const runTo = (end: string) => assembleForecast({
-      ctx: forecastCtx, streams, asOfISO: ctx.asOfISO, statements,
-      horizon: { fromISO: ctx.asOfISO, toISO: end, origin: AssumptionOrigin.USER_REQUESTED,
+      ctx: forecastCtx, streams, asOfISO: asOf, statements,
+      horizon: { fromISO: asOf, toISO: end, origin: AssumptionOrigin.USER_REQUESTED,
         statedAs: `through ${end}` } as unknown as ForecastHorizon,
     });
 
@@ -646,13 +843,13 @@ const projectCash: ToolDefinition = {
     // Because every point is `projectCash(asOf → thatMonthEnd)`, the last
     // checkpoint IS the endpoint by construction, and a test pins it.
     const horizonDays = Math.round(
-      (Date.parse(`${toISO}T00:00:00Z`) - Date.parse(`${ctx.asOfISO}T00:00:00Z`)) / 86_400_000);
+      (Date.parse(`${toISO}T00:00:00Z`) - Date.parse(`${asOf}T00:00:00Z`)) / 86_400_000);
     const wantCheckpoints = (a.checkpoints as string) === 'monthly'
       || ((a.checkpoints as string) !== 'none' && horizonDays > 45);
 
     let checkpoints: unknown[] | undefined;
     if (wantCheckpoints) {
-      const ends = monthEndsBetween(ctx.asOfISO, toISO);
+      const ends = monthEndsBetween(asOf, toISO);
       let prevClosing: number | null = f.projection ? (f.projection.openingCash ?? null) : null;
       checkpoints = ends.map((end) => {
         const run = runTo(end);
@@ -665,7 +862,11 @@ const projectCash: ToolDefinition = {
     }
 
     return {
-      horizon: { asOf: ctx.asOfISO, to: toISO, days: horizonDays },
+      horizon: { asOf, to: toISO, days: horizonDays },
+      ...(retrospective ? { retrospective: true, openingBasis,
+        meaning: `What this projection would have said standing at ${asOf}, using only `
+          + 'evidence available then. Compare it with what actually happened; do not '
+          + 'present it as a current expectation.' } : {}),
       openingCash: f.projection?.openingCash
         ?? ('refused' in f.forecast ? null : f.forecast.openingCash.amount),
 

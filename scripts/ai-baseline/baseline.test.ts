@@ -20,7 +20,7 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { applyInvestmentScenario, SCENARIO_BASIS } from './scenario';
-import { TOOLS, openAiToolSchemas, findTool, readWindowToExhaustion } from './tools';
+import { TOOLS, openAiToolSchemas, findTool, readWindowToExhaustion, clampToCeiling } from './tools';
 import { compactToolHistory, DEFAULT_COMPACTION } from './compaction';
 import { TRANSACTION_FETCH_LIMIT } from '@/lib/ai/assemblers/transactions';
 import { PROBES, PROBE_IDS, findProbe } from './probes';
@@ -512,14 +512,16 @@ console.log('13e. clip 4 — semantic flow on transactions');
 console.log('13f. clip 5 — temporal identity');
 {
   const src = code(read('scripts/ai-baseline/tools.ts'));
-  check('get_transactions names its instant', /asOf: ctx\.asOfISO,\n\s*window: \{ from/.test(src));
+  // Since the information ceiling landed, the instant a result describes is the
+  // CEILING, not unconditionally today — which is the point of the parameter.
+  check('get_transactions names its instant', /asOf: ceiling,\n\s*window: \{ from/.test(src));
   check('get_investments names its instant', /asOf: ctx\.asOfISO,\n\s*\/\/|asOf: ctx\.asOfISO,/.test(src));
   check('investment_scenario states it is a CURRENT-instant scenario',
     /effectiveAt: ctx\.asOfISO/.test(src) && /does NOT move forward in time/.test(src));
   check('…and warns against composing it with a projection',
     /doNotComposeWith/.test(src));
   check('project_cash carries both ends of its horizon',
-    /horizon: \{ asOf: ctx\.asOfISO, to: toISO/.test(src));
+    /horizon: \{ asOf, to: toISO, days: horizonDays \}/.test(src));
 }
 
 // ══ 14. Complete-window ranking ══════════════════════════════════════════════
@@ -761,6 +763,71 @@ console.log('15. context compaction');
   const wire = JSON.stringify(c5);
   check('…and none of those diagnostics reach the model',
     !wire.includes('originalBytes') && !wire.includes('bytesBefore') && !wire.includes('elidedBytes'));
+}
+
+// ══ 16. As-of coherence and the information ceiling (slices 1–3) ═════════════
+//
+// The beta blocker: on 2026-01-01 one tool reported cash $1,255.20 (checking) and
+// another reported $9,517.46 (checking + savings), both under the name "cash".
+// 4M quoted the smaller one, built debt advice on it, and corrected only when the
+// user pushed back.
+console.log('16. as-of coherence');
+{
+  const src = code(read('scripts/ai-baseline/tools.ts'));
+  const schemaOf = (n: string) => findTool(n)!.parameters as
+    { properties: Record<string, unknown> };
+
+  // ── slice 1: the collision cannot come back ──────────────────────────────
+  check('no tool result field is named `cash`',
+    !/\bcash:\s/.test(src), (src.match(/\bcash:\s\S+/g) ?? []).join(' '));
+  check('the history point names checking and liquid separately',
+    /liquid: p\.liquid/.test(src) && /checking: p\.cashOnHand/.test(src));
+  check('a single-lens answer states the population it covers',
+    /population: \{/.test(src) && /covers: components\.map/.test(src));
+  check('…and names its sibling lenses so a bucket is not read as a whole',
+    /siblingLenses: EXPLAINABLE_LENSES\.filter/.test(src));
+  check('…including savings beside cash',
+    /'cash', 'savings'/.test(src) || /'savings'/.test(src));
+
+  // ── slice 2: one tool for the whole position on a date ───────────────────
+  check('get_financial_snapshot takes an asOf', 'asOf' in schemaOf('get_financial_snapshot').properties);
+  check('a past date takes the historical path, today takes the accounts path',
+    /if \(asOf < ctx\.asOfISO\) return historicalSnapshot/.test(src));
+  check('both paths declare which basis produced them',
+    /basis: 'HISTORICAL_SNAPSHOT'/.test(src) && /basis: 'CURRENT_ACCOUNTS'/.test(src));
+  check('the historical path reports the date it actually observed',
+    /observedOn: point\.date/.test(src));
+  check('…and carries coverage, not just totals',
+    /netWorthAssertable/.test(src) && /NOT zero and NOT measured/.test(src));
+  check('the historical composition comes from authorities, not from adapter addition',
+    // liquid / checking / savings each come from a different authority that already
+    // computed them; nothing here sums two money numbers.
+    /liquid: point\.liquid/.test(src) && /checking: point\.cashOnHand/.test(src)
+      && !/point\.cashOnHand \+/.test(src) && !/\+ point\.liquid/.test(src));
+
+  // ── slice 3: the ceiling ─────────────────────────────────────────────────
+  for (const t of ['get_spending', 'get_income', 'get_transactions', 'get_investments', 'project_cash']) {
+    check(`${t} accepts an information ceiling`, 'asOf' in schemaOf(t).properties);
+  }
+  check('a ceiling OVERRIDES a later explicit bound, it is not merely a default',
+    clampToCeiling('2026-09-01', '2026-01-01') === '2026-01-01');
+  check('…and leaves an earlier bound alone',
+    clampToCeiling('2025-06-01', '2026-01-01') === '2025-06-01');
+  check('…and is applied to every windowed read',
+    (src.match(/clampToCeiling\(/g) ?? []).length >= 3);
+  check('the ceiling reaches the income CADENCE authority, not only the totals',
+    /loadForecastIncomeStreams\(ctx\.spaceId, ceiling\)/.test(src));
+  check('a retrospective projection starts from the balance that was true THEN',
+    /openingBasis = 'HISTORICAL_SNAPSHOT'/.test(src)
+      && /historicalSnapshot\(ctx, asOf\)/.test(src));
+  check('…and windows its spending evidence to the cutoff',
+    /evidence through \$\{asOf\}/.test(src));
+  check('…and runs the engine from that date, not from today',
+    /asOfISO: asOf, statements/.test(src) && /fromISO: asOf/.test(src));
+  check('…and says what it is, so it is never read as a current expectation',
+    /retrospective: true/.test(src) && /do not\n?\s*\/\/?\s*present it as a current expectation|not\s+'\s*\+\s*'present it as a current expectation|present it as a current expectation/.test(src));
+  check('a past date never returns the CURRENT investment composition',
+    /composeInvestments reads today's account totals|reads today's account totals/.test(read('scripts/ai-baseline/tools.ts')));
 }
 
 console.log(failures === 0 ? '\nAll baseline-harness checks passed.' : `\n${failures} check(s) failed.`);
