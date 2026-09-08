@@ -25,7 +25,16 @@ function check(name: string, cond: boolean) {
   else { failures++; console.error(`  ✗ ${name}`); }
 }
 
-const q = code("lib/data/transaction-query.ts");
+const qFile = code("lib/data/transaction-query.ts");
+/**
+ * The row-query region — everything before the corpus-span authority. The two
+ * live in one file because they compose the SAME population, but they answer
+ * different questions and the "no aggregates" tripwires below belong to the
+ * pager: a bounds read is not a money analytic, and a pager that grew a `_sum`
+ * still must fail.
+ */
+const q = qFile.slice(0, qFile.indexOf("export async function transactionCorpusSpan"));
+const span = qFile.slice(qFile.indexOf("export async function transactionCorpusSpan"));
 const tx = code("lib/data/transactions.ts");
 
 console.log("SINGLE AUTHORITY — reuse population/visibility, never re-derive");
@@ -117,6 +126,39 @@ console.log("COUNT PARITY — the count and the list are the same population");
 
   check("the ROW query still computes no aggregates",
     !/groupBy|_sum|_count|\.aggregate\(/.test(q));
+}
+
+console.log("CORPUS SPAN — the boundary a windowed result declares about itself");
+{
+  // The 2×2 causal-evidence experiment (bb2f6ec): 28/28 searches windowed, every
+  // window verified genuinely empty, the unwindowed search returning the evidence,
+  // and 11/18 negative answers escalating a windowed miss into an absence claim.
+  // These pin WHERE the bounds come from — the pure shaping is proved in
+  // transaction-corpus-coverage.test.ts.
+  check("the region exists and is separate from the pager",
+    span.length > 0 && !q.includes("transactionCorpusSpan"));
+  check("bounds come from the SAME population authority the page composes",
+    span.includes("bankingTransactionWhere(args.spaceId)"));
+  check("bounds do NOT re-derive a population gate",
+    !/flowType:\s*\{\s*not:/.test(span) && !/BANKING_POPULATION/.test(span));
+
+  check("bounds are NOT derived from the requested window",
+    !/dateFrom|dateTo|query\.|buildFilterWhere/.test(span));
+  check("bounds are NOT derived from the returned rows",
+    !/findMany|rows|projectTransactionListRows|transactionListInclude/.test(span));
+  check("bounds are NOT derived from a filter (text / flow / category)",
+    !/\btext\b|flowTypes|categories/.test(span));
+  check("bounds are NOT hard-coded (no literal date anywhere)",
+    !/\d{4}-\d{2}-\d{2}/.test(span.replace(/\$\{[^}]*\}/g, "")));
+
+  check("the INFORMATION CEILING bounds the span (a retrospective read cannot learn the future exists)",
+    /asOf/.test(span) && /lte:\s*ceiling/.test(span));
+  check("the L8-B economic chronology is the column, and nulls are excluded",
+    /economicDate:\s*\{\s*not:\s*null/.test(span));
+  check("a min/max only — no money analytic joins the bounds read",
+    /_min:|_max:/.test(span) && !/_sum|_count|groupBy/.test(span));
+  check("missing bounds stay NULL with a reason, never a substituted date",
+    /from:\s*null,\s*to:\s*null/.test(span) && /unavailableReason/.test(span));
 }
 
 console.log("M6 MERCHANT PIVOT — the filter has a real source on the row");

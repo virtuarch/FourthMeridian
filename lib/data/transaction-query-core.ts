@@ -537,3 +537,76 @@ export function parseTransactionQuery(
   if (errors.length > 0) return { ok: false, errors };
   return { ok: true, query, cursorReset };
 }
+
+// ── Corpus coverage — the boundary a windowed result declares about itself ───
+
+/**
+ * The bounds of the transaction record a query could have reached. Resolved by
+ * the server authority (`transactionCorpusSpan`) from the SAME population
+ * `queryTransactions` composes; shaped for a consumer by `transactionCoverage`
+ * below, which is pure so the semantics are testable without a database.
+ *
+ * ⚠️ NULL IS NOT A DATE AND MUST NEVER BECOME ONE. When the record has no dated
+ * transaction to bound, both ends are null with a reason. Substituting the
+ * requested window, today, or the earliest returned row would manufacture exactly
+ * the certainty this pair exists to withhold.
+ */
+export interface TransactionCorpusBounds {
+  from: string | null;
+  to: string | null;
+  unavailableReason: string | null;
+}
+
+export interface TransactionCoverage {
+  /** Earliest transaction available to search, independent of this query. */
+  transactionsAvailableFrom: string | null;
+  /** Latest available at or before the information ceiling, independent of this query. */
+  transactionsAvailableTo: string | null;
+  /**
+   * Whether the searched window spans the whole available record. FALSE is the
+   * load-bearing value: it says an empty result establishes an absence in this
+   * window and nothing more.
+   */
+  windowCoversAvailableRecord: boolean;
+  unavailableReason?: string;
+  note?: string;
+}
+
+/**
+ * Shape the corpus bounds against the window a result actually searched.
+ *
+ * ⚠️ THE INPUTS ARE THE WINDOW AND THE CORPUS — NEVER THE ROWS. Filters (`text`,
+ * flow, category) shrink what MATCHED; they do not shrink what was AVAILABLE. A
+ * "coinbase" search returning nothing must still report the full span it searched
+ * inside, because the whole point is to qualify the miss.
+ *
+ * An open-ended `searchedFrom` (null — no `from` supplied) reaches the start of
+ * the record, so it covers the corpus whenever `searchedTo` reaches the end.
+ */
+export function transactionCoverage(args: {
+  corpus: TransactionCorpusBounds;
+  /** The `from` actually applied, or null when the query was left open-ended. */
+  searchedFrom: string | null;
+  /** The `to` actually applied after ceiling clamping. Always present. */
+  searchedTo: string;
+}): TransactionCoverage {
+  const { corpus, searchedFrom, searchedTo } = args;
+  if (corpus.from === null || corpus.to === null) {
+    return {
+      transactionsAvailableFrom: null,
+      transactionsAvailableTo: null,
+      windowCoversAvailableRecord: false,
+      ...(corpus.unavailableReason ? { unavailableReason: corpus.unavailableReason } : {}),
+    };
+  }
+  const covers = (searchedFrom === null || searchedFrom <= corpus.from) && searchedTo >= corpus.to;
+  return {
+    transactionsAvailableFrom: corpus.from,
+    transactionsAvailableTo: corpus.to,
+    windowCoversAvailableRecord: covers,
+    ...(covers ? {} : { note:
+      `Searched ${searchedFrom ?? corpus.from}..${searchedTo}. Transactions are available from `
+      + `${corpus.from} to ${corpus.to}; rows outside the searched window were not read, so an `
+      + 'empty or short result describes this window only, not the whole available record.' }),
+  };
+}

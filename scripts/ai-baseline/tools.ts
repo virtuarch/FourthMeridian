@@ -38,7 +38,7 @@ import {
   type HoldingsSummaryData, type SpaceContext_AI,
 } from '@/lib/ai/types';
 import { composeInvestments } from '@/lib/ai/economic-concepts';
-import { queryTransactions } from '@/lib/data/transaction-query';
+import { queryTransactions, transactionCorpusSpan, transactionCoverage } from '@/lib/data/transaction-query';
 import { MAX_TRANSACTION_PAGE_SIZE, type TransactionQuery } from '@/lib/data/transaction-query-core';
 import { TRANSACTION_FETCH_LIMIT } from '@/lib/ai/assemblers/transactions';
 import type { Transaction } from '@/types';
@@ -437,9 +437,30 @@ const getTransactions: ToolDefinition = {
       ? [...population].sort((x, y) => Math.abs(y.amount) - Math.abs(x.amount)).slice(0, limit)
       : population;
 
+    // ⚠️ THE RESULT DECLARES THE BOUNDARY OF ITS OWN AUTHORITY. `window` is the
+    // evidence actually searched; `coverage` is the evidence there was to search.
+    // Without the second, an empty page cannot distinguish "nothing matched in
+    // these 90 days" from "nothing matched, ever" — and the 2×2 experiment
+    // (bb2f6ec) measured 11 of 18 negative answers making exactly that leap, off
+    // windows that were all genuinely empty inside a corpus that was not.
+    //
+    // This ADDS a fact and changes no behaviour: no default window is introduced,
+    // no window is widened, nothing is re-queried, and the rows are the same rows.
+    // What to do about a partial window is the model's decision, not this
+    // adapter's.
+    const coverage = transactionCoverage({
+      corpus: await transactionCorpusSpan({ spaceId: ctx.spaceId, asOf: ceiling }),
+      searchedFrom: (a.from as string) ?? null,
+      searchedTo: dateTo,
+    });
+
     return {
       asOf: ceiling,
       window: { from: a.from ?? null, to: dateTo },
+      // ⚠️ NOT DERIVED FROM THE WINDOW, THE ROWS, OR THE FILTERS. A `text` search
+      // that matches nothing still reports the span it searched inside — shrinking
+      // this to the matching rows would erase the very thing it exists to qualify.
+      coverage,
       flow: flowKey,
       rows: rows.map((r) => ({
         date: r.date, merchant: r.merchantDisplayName ?? r.merchant,
@@ -449,6 +470,10 @@ const getTransactions: ToolDefinition = {
       shown: rows.length,
       ...(wantLargest ? {
         rankedOver: population.length,
+        // ⚠️ SCOPED TO THE SEARCHED POPULATION, AND ONLY THAT. True means every row
+        // matching these filters INSIDE `window` was read and ranked. It says
+        // nothing about `coverage` — a complete ranking of a 90-day window of a
+        // 26-month record is still a ranking of 90 days.
         rankingIsComplete: complete,
         pagesRead: pages,
         ...(complete ? {} : { rankingCaveat:

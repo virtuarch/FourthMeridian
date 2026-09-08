@@ -40,6 +40,8 @@ import {
   nextCursorFrom,
   resolveCursor,
   parseTransactionQuery,
+  toDbDate,
+  type TransactionCorpusBounds,
   type TransactionQuery,
   type TransactionCursor,
   type TransactionQueryParseResult,
@@ -51,7 +53,8 @@ export type {
   TransactionSort,
   TransactionSource,
 } from "@/lib/data/transaction-query-core";
-export { MAX_TRANSACTION_PAGE_SIZE, encodeCursor } from "@/lib/data/transaction-query-core";
+export { MAX_TRANSACTION_PAGE_SIZE, encodeCursor, transactionCoverage } from "@/lib/data/transaction-query-core";
+export type { TransactionCorpusBounds, TransactionCoverage } from "@/lib/data/transaction-query-core";
 
 /**
  * The live enum vocabularies the M3 parser validates against. The pure core stays
@@ -159,4 +162,68 @@ export async function queryTransactions(args: {
   assertOneRowPerEvent(pageRows, "queryTransactions");
   const rows = await projectTransactionListRows(pageRows, spaceId);
   return { rows, nextCursor, hasMore, cursorReset };
+}
+
+/**
+ * The span of transaction history a query over this Space could reach — the
+ * CORPUS, as distinct from the WINDOW any one query searched.
+ *
+ * ⚠️ THIS IS AN AUTHORITY BOUNDARY, NOT A CONVENIENCE. `queryTransactions`
+ * answers "what is in this window"; a window with nothing in it and a Space with
+ * nothing in it produce the same empty page. A consumer that cannot tell those
+ * apart will state the second when it has only established the first. The 2×2
+ * causal-evidence experiment (bb2f6ec) measured exactly that: 28 of 28 searches
+ * were windowed, every window was genuinely empty, the unwindowed search returned
+ * the evidence, and 11 of 18 negative answers escalated a windowed miss into an
+ * absence claim.
+ *
+ * ⚠️ SAME POPULATION AS THE PAGE IT ACCOMPANIES. The bounds come from
+ * `bankingTransactionWhere` — the one population/visibility/soft-delete authority
+ * `queryTransactions` itself composes. They are NOT derived from the requested
+ * window, from the rows returned, or from any filter (`text`, `flowTypes`,
+ * `categories`): a search for "coinbase" that matches nothing must still report
+ * the span it searched inside, or the metadata would shrink to the miss it is
+ * meant to qualify.
+ *
+ * ⚠️ THE INFORMATION CEILING REACHES THIS TOO. `asOf` bounds the span, so a
+ * retrospective read cannot learn from the corpus metadata that later
+ * transactions exist. Without it this function would leak the future through the
+ * back door the date filter closes at the front.
+ *
+ * `economicDate` is the L8-B chronology and the column `orderByForSort` orders
+ * on. Rows with a null `economicDate` cannot be placed in time and are therefore
+ * excluded from the bounds — the same rows the keyset already refuses to page.
+ */
+export async function transactionCorpusSpan(args: {
+  spaceId: string;
+  /** Information ceiling: nothing dated after this contributes to the span. */
+  asOf?: string;
+}): Promise<TransactionCorpusBounds> {
+  const ceiling = args.asOf ? toDbDate(args.asOf) : null;
+  const agg = await db.transaction.aggregate({
+    where: {
+      AND: [
+        bankingTransactionWhere(args.spaceId),
+        { economicDate: { not: null, ...(ceiling ? { lte: ceiling } : {}) } },
+      ],
+    },
+    _min: { economicDate: true },
+    _max: { economicDate: true },
+  });
+  const from = agg._min.economicDate;
+  const to = agg._max.economicDate;
+  if (!from || !to) {
+    return {
+      from: null, to: null,
+      unavailableReason: args.asOf
+        ? `no dated transactions are available on or before ${args.asOf}`
+        : 'no dated transactions are available for this Space',
+    };
+  }
+  return { from: isoDay(from), to: isoDay(to), unavailableReason: null };
+}
+
+/** A `@db.Date` column back to the YYYY-MM-DD it encodes, in UTC. */
+function isoDay(d: Date): string {
+  return d.toISOString().slice(0, 10);
 }

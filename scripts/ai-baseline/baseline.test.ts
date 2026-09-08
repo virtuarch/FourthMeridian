@@ -570,6 +570,50 @@ console.log('13f. clip 5 — temporal identity');
     /horizon: \{ asOf, to: toISO, days: horizonDays \}/.test(src));
 }
 
+console.log('13g. corpus span — the result declares the boundary of its own authority');
+{
+  const src = code(read('scripts/ai-baseline/tools.ts'));
+  const gt = src.slice(src.indexOf("name: 'get_transactions'"), src.indexOf("// ── 4. Income"));
+
+  // WHAT WAS SEARCHED vs WHAT THERE WAS TO SEARCH. The 2×2 (bb2f6ec) measured
+  // 28/28 windowed searches, every window genuinely empty, and 11/18 negatives
+  // escalating a windowed miss into an absence claim.
+  check('every result carries coverage alongside window',
+    /window: \{ from: a\.from \?\? null, to: dateTo \},\n[\s\S]{0,40}coverage,/.test(gt));
+  check('coverage is composed from the corpus authority, not computed here',
+    gt.includes('transactionCoverage({') && gt.includes('transactionCorpusSpan({'));
+  check('the corpus read inherits the information ceiling',
+    /transactionCorpusSpan\(\{ spaceId: ctx\.spaceId, asOf: ceiling \}\)/.test(gt));
+  check('the searched window it reports is the one actually applied',
+    /searchedFrom: \(a\.from as string\) \?\? null/.test(gt) && /searchedTo: dateTo/.test(gt));
+
+  // THE BEHAVIOUR THAT MUST NOT HAVE CHANGED. A fact was added to the result;
+  // nothing about which rows are read moved with it.
+  check('NO default window was introduced — `from` is still applied only when supplied',
+    /\.\.\.\(a\.from \? \{ dateFrom: String\(a\.from\) \} : \{\}\)/.test(gt));
+  check('explicit windows are still honoured', /dateTo,/.test(gt));
+  check('the window is never widened, and nothing is re-queried',
+    !/widen|retry|reQuery|secondPass/i.test(gt)
+    && (gt.match(/queryTransactions\(|readWindowToExhaustion\(/g) ?? []).length === 2);
+  check('the corpus read returns no rows to merge into the answer',
+    !/corpus[\s\S]{0,80}rows/.test(gt));
+  check('rows are still the rows the ranking produced',
+    /rows: rows\.map\(\(r\) => \(\{/.test(gt));
+
+  // rankingIsComplete keeps its own, narrower meaning.
+  check('`rankingIsComplete` still reports the searched population, unchanged',
+    /rankingIsComplete: complete,/.test(gt));
+  check('…and is not fused with corpus coverage',
+    !/rankingIsComplete[^\n]*(coverage|AvailableRecord)/.test(gt)
+    && !/windowCoversAvailableRecord[^\n]*complete/.test(gt));
+
+  // The experiment's only variable is the RESULT. The description is prompt
+  // surface, and moving it would have made the rerun measure two things.
+  check('the tool description was NOT changed to advertise the field',
+    !/coverage|corpus|available record/i.test(
+      src.slice(src.indexOf("name: 'get_transactions'"), src.indexOf('parameters: obj({', src.indexOf("name: 'get_transactions'")))));
+}
+
 // ══ 14. Complete-window ranking ══════════════════════════════════════════════
 //
 // `sort: 'largest'` ranked the newest 100 matching rows and called the winner

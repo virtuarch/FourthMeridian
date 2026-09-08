@@ -201,11 +201,17 @@ consecutive runs, unused.
 
 Per-trial dollar cost was **not captured**. `AiInvocation` recorded **0 rows** for
 `surface: 'causal-experiment'` despite the harness wrapping every turn in
-`runWithAiInvocationContext`. Cause: the Slice-3 chokepoint writes fire-and-forget
-(`void recordAiInvocation(...)`), which is correct for a long-lived server process and **loses the
-insert in a short-lived script that exits immediately after the last turn**. This is an incidental
-observation about telemetry in scripts, not a defect in the production path, and no code was
-changed for it here.
+`runWithAiInvocationContext`.
+
+> **Corrected 2026-09-09.** This section originally attributed that to the Slice-3 chokepoint's
+> fire-and-forget write (`void recordAiInvocation(...)`) being lost when a short-lived script exits.
+> The corpus-span rerun added a 6-second flush before disconnect and still recorded **zero** rows,
+> which falsifies that explanation. The actual cause: this harness calls the **OpenAI SDK directly**
+> (`client.chat.completions.create`) and never reaches `lib/ai/provider.ts`, so `recordOpenAiUsage`
+> — and the `AiInvocation` write with it — is never invoked. `runWithAiInvocationContext` was
+> setting a context nothing consumed. The exit-race remains a plausible risk in the fire-and-forget
+> design but is **unproven**, and this observation is no longer evidence for it. See
+> `AI-GPT51-CORPUS-SPAN-SLICE.md` §6. No code was changed for this in either slice.
 
 **107 model invocations** total (102 primary + 5 calibration). At the $0.0120/turn gpt-5.1 figure
 measured in Cost Clip 4, the whole experiment is **≈$0.5–0.9 — an estimate, not a measurement.**
