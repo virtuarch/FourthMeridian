@@ -184,6 +184,9 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
     process.stdout.write('    …thinking\r');
     const rec = await executeTurn({
       messages, user: line, index: turns.length, model, toolSchemas, toolCtx,
+      // The session already has an identity for its artifact; reuse it as the
+      // opaque grouping key so a dogfood session's cost is summable (Slice 3).
+      correlationId: `interactive:${sessionId}`,
     });
     turns.push(rec);
     // Only a completed turn is compacted; a failed one keeps its evidence.

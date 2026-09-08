@@ -18,6 +18,7 @@ import 'server-only';
 import OpenAI from 'openai';
 import { recordApiUsage } from '@/lib/usage/record';
 import { aiUsageUnits, type OpenAiUsage } from '@/lib/usage/ai-tokens';
+import { recordAiInvocation } from '@/lib/ai/invocation';
 
 // ── Client ───────────────────────────────────────────────────────────────────
 // Lazy-initialised singleton. Fails loudly if the key is absent so
@@ -75,10 +76,36 @@ const CHAT_MODEL = process.env.AI_CHAT_MODEL || 'gpt-4o-mini';
  * errors, so `void` here can neither fail a generation nor leave an unhandled
  * rejection. A metrics write must never break a chat call.
  */
-function recordOpenAiUsage(metric: string, usage: OpenAiUsage | null | undefined): void {
+function recordOpenAiUsage(args: {
+  model: string;
+  usage: OpenAiUsage | null | undefined;
+  latencyMs: number;
+  toolCallCount?: number;
+  finishReason?: string | null;
+}): void {
+  const { model, usage } = args;
+  if (!usage) return;
+
+  // (a) The DAY-GRAIN aggregate. Cheap, durable, race-safe, and the input to
+  //     provider health. Kept exactly as it was — Slice 3 adds a grain, it does
+  //     not replace one, and summing (b) against (a) is an independent
+  //     reconciliation of two separately-written figures.
+  const metric = `chat.completions:${model}`;
   for (const { unit, count } of aiUsageUnits(usage)) {
     void recordApiUsage('OPENAI', metric, unit, count);
   }
+
+  // (b) The INVOCATION-GRAIN immutable fact. The finest grain at which a bill is
+  //     incurred, and the one the counter's (provider, metric, unit, day) key
+  //     structurally cannot reach: "what did this turn cost?" is unanswerable
+  //     from a daily sum. Correlation comes from ambient context, so no generator
+  //     signature changes and no caller has to thread it.
+  void recordAiInvocation({
+    provider: 'OPENAI', model, usage,
+    latencyMs: args.latencyMs,
+    toolCallCount: args.toolCallCount ?? 0,
+    finishReason: args.finishReason ?? null,
+  });
 }
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -106,6 +133,7 @@ export async function generateChatReply(
 ): Promise<string> {
   const client = getClient();
 
+  const started = Date.now();
   const completion = await client.chat.completions.create({
     model: CHAT_MODEL,
     messages: [
@@ -115,10 +143,15 @@ export async function generateChatReply(
     temperature: 0.3,
     max_tokens:  1024,
   });
+  const latencyMs = Date.now() - started;
 
-  // Wave 2 S7 — record API usage (calls + tokens per model). The metric embeds
-  // the model so the per-model breakdown needs no extra dimension.
-  recordOpenAiUsage(`chat.completions:${CHAT_MODEL}`, completion.usage);
+  // Wave 2 S7 + cost Slice 3 — the day aggregate and the invocation fact.
+  recordOpenAiUsage({
+    model: CHAT_MODEL, usage: completion.usage, latencyMs,
+    // This path cannot request tools, so zero is a FACT rather than a missing value.
+    toolCallCount: 0,
+    finishReason: completion.choices[0]?.finish_reason ?? null,
+  });
 
   const reply = completion.choices[0]?.message?.content ?? '';
   if (!reply) {
@@ -227,9 +260,15 @@ export async function generateWithTools(args: {
   const latencyMs = Date.now() - started;
 
   const usage = completion.usage;
-  recordOpenAiUsage(`chat.completions:${model}`, usage);
-
   const choice = completion.choices[0];
+  recordOpenAiUsage({
+    model, usage, latencyMs,
+    // Tool calls this invocation ASKED FOR — known exactly at this seam, and the
+    // reason a single turn can produce several invocations.
+    toolCallCount: choice?.message?.tool_calls?.length ?? 0,
+    finishReason: choice?.finish_reason ?? null,
+  });
+
   return {
     content:   choice?.message?.content ?? null,
     toolCalls: (choice?.message?.tool_calls ?? []).map((t) => ({
@@ -274,6 +313,7 @@ export async function generateStructured<T>(
   const client = getClient();
   const model = options?.model ?? CHAT_MODEL;
 
+  const started = Date.now();
   const completion = await client.chat.completions.create({
     model,
     messages: [
@@ -287,8 +327,13 @@ export async function generateStructured<T>(
       json_schema: { name: schema.name, schema: schema.schema, strict: true },
     },
   });
+  const latencyMs = Date.now() - started;
 
-  recordOpenAiUsage(`chat.completions:${model}`, completion.usage);
+  recordOpenAiUsage({
+    model, usage: completion.usage, latencyMs,
+    toolCallCount: 0,   // structured output, not tools
+    finishReason: completion.choices[0]?.finish_reason ?? null,
+  });
 
   const raw = completion.choices[0]?.message?.content ?? '';
   if (!raw) throw new Error('[ai/provider] Model returned an empty structured response.');

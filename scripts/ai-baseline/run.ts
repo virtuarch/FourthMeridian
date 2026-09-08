@@ -22,6 +22,7 @@ import {
   buildEvidence, assembleFullContext, ARM_USES_TOOLS, ARM_QUESTION, type Arm,
 } from './evidence';
 import { openAiToolSchemas, findTool, type ToolContext } from './tools';
+import { runWithAiInvocationContext } from '@/lib/ai/invocation-context';
 import { checkpointProjection } from './memory-tools';
 import {
   compactToolHistory, DEFAULT_COMPACTION,
@@ -171,6 +172,30 @@ export function supportsTools(model: string): boolean {
  */
 export async function executeTurn(args: {
   /** The growing transcript. Mutated in place. */
+  messages:    unknown[];
+  user:        string;
+  index:       number;
+  model:       string;
+  toolSchemas: unknown[];
+  toolCtx:     ToolContext;
+  /**
+   * Opaque key grouping this turn's invocations into one session (cost Slice 3).
+   *
+   * ⚠️ TELEMETRY ONLY, AND IT CHANGES NOTHING THE MODEL SEES. It is not sent to
+   * the provider, not added to the transcript, and not read by any tool. Absent
+   * → invocations are still recorded and still billed, just not groupable.
+   */
+  correlationId?: string;
+}): Promise<TurnRecord> {
+  // A tool loop makes SEVERAL invocations for ONE user turn; the ambient context
+  // is what lets the ledger sum them back into that turn.
+  return runWithAiInvocationContext(
+    { correlationId: args.correlationId ?? 'ai-baseline', turnIndex: args.index, surface: 'harness' },
+    () => executeTurnInner(args),
+  );
+}
+
+async function executeTurnInner(args: {
   messages:    unknown[];
   user:        string;
   index:       number;
@@ -335,7 +360,8 @@ export async function runCase(args: {
   let ok = true;
 
   for (const [index, user] of probe.turns.entries()) {
-    const rec = await executeTurn({ messages, user, index, model, toolSchemas, toolCtx });
+    const rec = await executeTurn({ messages, user, index, model, toolSchemas, toolCtx,
+      correlationId: `${probeId}:${arm}:${model}:${runDir}` });
     turns.push(rec);
     if (rec.error) { ok = false; break; }
     // ⚠️ AFTER THE ANSWER LANDS, NEVER BEFORE. `executeTurn` has appended the final

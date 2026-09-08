@@ -3088,6 +3088,90 @@ model BetaAccessRequest {
 // not schema.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AiInvocation  (Platform Ops cost accounting — Slice 3)
+//
+// ONE IMMUTABLE FACT PER MODEL INVOCATION. The finest grain at which a bill is
+// actually incurred, and the grain ApiUsageCounter structurally cannot reach:
+// its key is (provider, metric, unit, UTC day), so "what did this turn cost?"
+// and "which conversation was expensive?" are unanswerable from it. Both stay —
+// the counter is the cheap durable aggregate and the provider-health input, and
+// summing invocations against it is an independent reconciliation of two
+// separately-written figures.
+//
+// ⚠️ TELEMETRY, NOT CONVERSATION MEMORY. No prompt, no completion, no message,
+// no tool argument or result, no financial value, no account identifier. Only
+// counts, an opaque grouping key, and timings — the ProviderCall allowlist
+// doctrine applied to AI. Financial truth stays in the financial authorities;
+// SpaceMemory stays the memory authority; this table is neither and can never
+// become either, because it has no field in which to hold what they hold.
+//
+// ⚠️ NO DOLLAR COLUMN, DELIBERATELY. A stored cost freezes a price into a fact
+// and makes a rate correction unrepresentable. Cost is derived at read time from
+// these counts through the effective-dated pricing authority (lib/usage/pricing),
+// so a corrected rate restates exactly the period it applied to.
+//
+// ⚠️ NO STORED DERIVATIONS. `uncachedPromptTokens` is `promptTokens −
+// cachedPromptTokens` and `totalTokens` is a sum; both are computed where they
+// are read. A stored derivation can drift from the parts it came from.
+//
+// SUBSET SEMANTICS (Slice 1), preserved exactly as the provider reported them:
+//   cachedPromptTokens ⊆ promptTokens        (changes the RATE)
+//   reasoningTokens    ⊆ completionTokens    (explanatory; already billed as output)
+//
+// EXACTLY ONCE: the row is written at the provider chokepoint, after a response
+// carrying usage has been returned. A call that threw — including a rate-limited
+// attempt the caller later retries — produced no usage and writes no row, so a
+// retry can neither overwrite nor double-count. Every write is an insert with a
+// fresh id; nothing is ever updated.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AiInvocation {
+  id         String   @id @default(cuid())
+  provider   String // "OPENAI"
+  /// Typed, not parsed out of an overloaded metric string.
+  model      String // "gpt-5.5"
+  /// When the provider returned. The day the effective-dated rate resolves at.
+  occurredAt DateTime @default(now())
+
+  /// Exactly as the provider reported them. cached ⊆ prompt, reasoning ⊆ completion.
+  promptTokens       Int
+  cachedPromptTokens Int @default(0)
+  completionTokens   Int
+  reasoningTokens    Int @default(0)
+
+  /// Provider round-trip only — excludes local processing after the response.
+  latencyMs     Int
+  /// Tool calls this invocation ASKED FOR. Known at the seam; 0 where the path
+  /// cannot request tools, which is a fact rather than a missing value.
+  toolCallCount Int     @default(0)
+  finishReason  String?
+
+  /// V26-ENV-1 classification at write time. One provider account spans local,
+  /// preview and production, so total platform spend and production
+  /// cost-to-serve are otherwise indistinguishable.
+  environment String // "production" | "preview" | "development"
+
+  /// OPAQUE GROUPING KEYS — never business entities, never foreign keys, never
+  /// resolvable to a person. `correlationId` groups the invocations of one
+  /// conversation/session; (`correlationId`, `turnIndex`) groups the one-or-many
+  /// invocations of a single user turn (a tool loop makes several). Null when the
+  /// caller established no context: the invocation is still billable and is still
+  /// recorded — cost does not depend on being groupable.
+  correlationId String?
+  turnIndex     Int?
+  /// Where the call originated ("chat", "brief", "harness"). Separates
+  /// experimental traffic from product traffic at read time.
+  surface       String?
+
+  createdAt DateTime @default(now())
+
+  @@index([occurredAt])
+  @@index([model, occurredAt])
+  @@index([correlationId, turnIndex])
+  @@index([environment, occurredAt])
+}
+
 model ApiUsageCounter {
   id       String   @id @default(cuid())
   provider String // "PLAID" | "OPENAI"

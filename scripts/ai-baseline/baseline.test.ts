@@ -369,7 +369,16 @@ console.log('12. interactive operator mode');
       && !/generateWithTools\(/.test(src));
   check('…which is exported from run.ts and used by BOTH',
     /export async function executeTurn/.test(run)
-      && /executeTurn\(\{ messages, user, index, model, toolSchemas, toolCtx \}\)/.test(run));
+      && /executeTurn\(\{[\s\S]{0,200}toolCtx[\s\S]{0,120}\}\)/.test(run)
+      && /executeTurn\(\{[\s\S]{0,200}toolCtx[\s\S]{0,200}\}\)/.test(code(raw)));
+  // ⚠️ ONE TURN, MANY INVOCATIONS. A tool loop calls the model several times for
+  // a single user turn; the ambient context is what lets the cost ledger sum them
+  // back into that turn, and it is telemetry only — nothing the model sees.
+  check('both paths establish an invocation correlation context',
+    /runWithAiInvocationContext\(/.test(run)
+      && /correlationId:/.test(run) && /correlationId:/.test(code(raw)));
+  check('…and the turn index is the grouping key within a session',
+    /turnIndex: args\.index/.test(run));
   check('totals are summed by the shared helper', /sumTurns/.test(src) && /export function sumTurns/.test(run));
 
   // Same arm, same evidence, same instruction, same tools.
