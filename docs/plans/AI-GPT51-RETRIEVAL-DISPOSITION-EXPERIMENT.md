@@ -11,6 +11,36 @@ Authority for the "before" baselines: [AI-COST-CLIP-4-GPT-5-1-EVALUATION.md](AI-
 
 ---
 
+
+---
+
+## 0. Erratum — the Coinbase result was mis-scored (2026-09-09)
+
+This document originally recorded probe C's **Coinbase evidence found** marker as **3/5**. The
+correct figure is **0/5**. Every occurrence has been amended in place and each amendment points
+here.
+
+**Cause.** The scorer tested for the *presence of the word* "Coinbase" in the answer. In all five
+trials the word appears inside a **negative** sentence — *"there's no transfer that clearly looks
+like Coinbase sell proceeds in this 90-day window"* — so a marker intended to detect retrieval
+instead detected the model **naming what it had failed to find**. Re-reading the five transcripts
+directly shows **no trial returned the 2026-02-27 rows** and **no trial cited $8,141.98 or
+$1,902.12**.
+
+**What this changes.** Criterion 3 was already recorded as **FAIL**; it fails harder. The overall
+verdict (**PARTIAL**) and the §10 diagnosis (*willingness fixed, window open*) are unaffected — in
+fact the corrected figure strengthens the window diagnosis, because it removes the two apparent
+successes that made window selection look intermittent rather than systematic.
+
+**Doctrinal note.** A presence-of-token marker cannot distinguish a citation from a denial. Any
+marker for *retrieved evidence* must assert on the **tool result** (rows returned) or on a
+**figure only obtainable from those rows**, never on the vocabulary of the prose. This rule was
+applied to the follow-on experiment in
+`AI-GPT51-CAUSAL-EVIDENCE-EXPERIMENT.md`, whose primary marker is the returned row set.
+
+**Isolation.** This correction is documentation only. No runtime, prompt, tool, or schema behaviour
+was changed by it.
+
 ## 1. Verdict
 
 # PARTIAL
@@ -77,7 +107,7 @@ say so once and move on."*
 | **B** *"Go back to Jan 1…"* | liquid **$9,517** surfaced | 0/3 | **5/5** ✅ | improved |
 | **B** | **debt $37,316** surfaced | 1/3 | **0/5** ❌ | **not closed** |
 | **C** *"sold any crypto to cover debt?"* | transaction record queried | 0/3 | **5/5** ✅ | improved |
-| **C** | **Coinbase evidence found** | 0/3 | **3/5** ⚠️ | **not at target** |
+| **C** | **Coinbase evidence found** | 0/3 | **0/5** ❌ | **not closed** — corrected, see §0 |
 
 **A is a false alarm, and I am reclassifying it.** Cost Clip 4 marked A `PASS_WITH_DIFFERENCE`, not
 a regression — every figure gpt-5.1 gave was correct. Re-reading the answers here confirms it: net
@@ -94,10 +124,12 @@ diligently. It just never asks for the *position*, so the debt never appears.
 > failure concluded *"you're okay for now"* over an unmentioned $37k of debt. The new answers make
 > no such claim — they simply stop at cash. Better, and still not right.
 
-**C — the two misses are scoping, not refusal.** Both failing trials queried
+**C — every miss is scoping, not refusal.** *(Corrected — see §0. This paragraph originally
+described "the two misses".)* **All five** trials queried
 `{from: '2026-06-10', to: '2026-09-07'}` — the default 90-day window — found crypto *up* $4.5k over
 that window, and answered *"no, it doesn't look like you sold crypto to cover debt."* The sale was
-in **February**. The model looked hard, in the wrong place, and stated a confident negative.
+in **February**. The model looked hard, in the wrong place, and stated a confident negative. The
+retrieval disposition made the model **query**; it did nothing about **where**.
 
 ---
 
@@ -241,7 +273,7 @@ against a Cost Clip 4 baseline of **0.33**, at **$0.0088/turn**.
 |---|---|---|
 | 1 | Zero truth regressions in the targeted probes | **FAIL** — B never surfaces the $37,316 debt (0/5); the challenge went 3/3 → 2/3 |
 | 2 | Correct historical cutoff | **PASS** — 6/6 both conditions |
-| 3 | Coinbase evidence retrieved reliably | **FAIL** — 3/5 against a 5/5 target (from 0/3) |
+| 3 | Coinbase evidence retrieved reliably | **FAIL** — **0/5** against a 5/5 target (unchanged from 0/3) — corrected, see §0 |
 | 4 | No consequential prose arithmetic where deterministic tooling applies | **PASS** — 6/6 when the tool can express the input (§7); the rest is Cost Clip 2 |
 | 5 | No silent scenario-assumption substitution | **PASS** — asked for clarification instead, 4/4 |
 | 6 | No material over-retrieval regression | **PASS** — 0 pointless re-fetches in 20 follow-ups |
@@ -298,8 +330,8 @@ works. **It works for willingness and not for scope, and that is the answer.**
 1. **Instruction tested:** §2, verbatim.
 2. **Token cost:** **73 tokens** (60 words); instruction grows 170 → 243 tokens; ~$0.00001/invocation.
 3. **Primary retrieval before/after:** transaction querying **0/3 → 5/5**; Jan-1 cash **0/3 → 5/5**;
-   Coinbase **0/3 → 3/5**; Jan-1 debt **1/3 → 0/5**; broad assessment 0/3 → 0/5 (correctly).
-4. **Stochastic 5×:** §3 — B liquid 5/5, B debt 0/5, C transactions 5/5, C Coinbase 3/5, A 0/5.
+   Coinbase **0/3 → 0/5** (corrected, §0); Jan-1 debt **1/3 → 0/5**; broad assessment 0/3 → 0/5 (correctly).
+4. **Stochastic 5×:** §3 — B liquid 5/5, B debt 0/5, C transactions 5/5, C Coinbase **0/5**, A 0/5.
 5. **Historical cutoff:** **6/6 correct in both conditions**; the Cost Clip 4 leak did not reproduce.
 6. **Scenario tool use:** 0/16 on inexpressible inputs (both conditions); **6/6 on an expressible
    one** (both conditions) — the clause is inert and the gap is Cost Clip 2.
@@ -307,7 +339,7 @@ works. **It works for willingness and not for scope, and that is the answer.**
 8. **Tool calls/turn:** 0.47 → 0.53 on the comparable sets (+13%); 0.33 → 1.73 on A/B/C.
 9. **Cost/turn:** $0.0065 → $0.0065 (−0.4%) on the comparable sets.
 10. **Remaining saving vs gpt-5.5:** **−79.6%** ($0.0585 → $0.0120).
-11. **Remaining regressions:** Jan-1 debt not surfaced (0/5); Coinbase 3/5; one false-ignorance in 3.
+11. **Remaining regressions:** Jan-1 debt not surfaced (0/5); Coinbase **0/5**; one false-ignorance in 3.
 12. **Model vs contract vs schema gap:** §10 — willingness is **contract** (fixed); lens is
     **contract** (open); window is **model** (open); scenario arithmetic is the **known Cost Clip 2
     schema gap** (reassigned from gpt-5.1).
