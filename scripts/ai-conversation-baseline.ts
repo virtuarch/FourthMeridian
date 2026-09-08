@@ -46,10 +46,19 @@ import type { SpaceContext } from '@/lib/space';
  * `frontier` is therefore usable on A0/A1 only, and the runner records why.
  */
 export const TIERS: Record<string, string> = {
-  control:  'gpt-4o-mini',   // the surviving production default
-  mid:      'gpt-4.1',
-  ceiling:  'gpt-5.5',       // strongest model that supports tools through this seam
-  frontier: 'gpt-6-astra',   // no tools via chat.completions — A0/A1 only
+  control:   'gpt-4o-mini',  // the surviving production default
+  mid:       'gpt-4.1',
+  ceiling:   'gpt-5.5',      // strongest model that supports tools through this seam
+  // ⚠️ EVALUATED, NOT ADOPTED. Measured at 79.4% cheaper and 52% faster than the
+  // ceiling across 42 replayed turns, with three truth regressions traced to
+  // under-retrieval — see docs/plans/AI-COST-CLIP-4-GPT-5-1-EVALUATION.md. It is
+  // here so the operator can dogfood that trade-off directly; the default stays
+  // `mid` and nothing about the prompt, tools or budgets differs from any other
+  // tier. Running it plain is deliberate: it IS the configuration Cost Clip 4
+  // measured, and the retrieval-disposition paragraph tested against it was
+  // explicitly not recommended for shipping.
+  candidate: 'gpt-5.1',
+  frontier:  'gpt-6-astra',  // no tools via chat.completions — A0/A1 only
 };
 
 const SMOKE_PROBES = ['projection', 'debt', 'investments'];
