@@ -40,6 +40,7 @@ import { composeInvestments } from '@/lib/ai/economic-concepts';
 import { loadCoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { runSignalDetectors } from '@/lib/ai/signals';
 import type { SpaceContext } from '@/lib/space';
+import { recallMemories, MemoryKind } from './memory-store';
 
 export const ARMS = ['A0', 'A1', 'A2', 'A3'] as const;
 export type Arm = (typeof ARMS)[number];
@@ -116,7 +117,12 @@ function thinCore(ctx: SpaceContext_AI): Record<string, unknown> {
   return {
     space: ctx.space.name, currency: ctx.space.reportingCurrency ?? 'USD',
     current: acc ? {
-      netWorth: acc.netWorth, cash: acc.totalLiquid, totalAssets: acc.totalAssets,
+      // ⚠️ `liquid`, NOT `cash`. Slice 1 removed that name from every tool result
+      // because the exploration tree's `cash` lens is CHECKING ALONE while this
+      // is checking plus savings — on 2026-01-01, $1,255.20 against $9,517.46. The
+      // orientation core was still handing the model the collided name, one file
+      // outside the scan that caught it.
+      netWorth: acc.netWorth, liquid: acc.totalLiquid, totalAssets: acc.totalAssets,
       liabilities: acc.totalLiabilities, accountCounts: acc.counts,
       investments: composeInvestments(acc),
     } : null,
@@ -135,6 +141,49 @@ function thinCore(ctx: SpaceContext_AI): Record<string, unknown> {
   };
 }
 
+/** How many intentions the orientation will name before it stops listing them. */
+const MAX_CORE_INTENTIONS = 8;
+
+/**
+ * The active-intentions line — subjects and targets, never balances.
+ *
+ * ⚠️ IT IS HERE BECAUSE THE MEASUREMENT DEMANDED IT, and it was measured before
+ * it was built. The investigation proposed this as "one concession worth
+ * testing: drop it if the model finds goals without it". Run without it: the
+ * user said "I want to hit $1M by 2030" and the model answered well, recorded
+ * NOTHING, and a fresh session asked "how are we doing?" answered from balances
+ * alone and never called `recall`. Zero rows written, zero reads. A capability
+ * nothing reaches for is not a capability.
+ *
+ * ⚠️ IT IS NOT DOCTRINE, AND IT DELIBERATELY DID NOT GO IN THE SYSTEM PROMPT.
+ * That instruction is ~140 words and the experiment's rule is that growth in it
+ * is itself a finding. This is evidence — the same shape as the coverage
+ * envelope beside it — and it says what exists, not how to behave.
+ *
+ * Targets, dates and subjects only. No balance can appear here, because no
+ * memory payload can hold one.
+ */
+async function activeIntentions(spaceId: string, ownerUserId: string) {
+  const rows = await recallMemories({ spaceId, ownerUserId }, { kind: MemoryKind.INTENTION });
+  if (rows.length === 0) {
+    return { count: 0,
+      note: 'Nothing has been recorded for this user yet. When they state a goal, a plan, or '
+        + 'a change of mind, record it with `remember` so a later session can pick it up.' };
+  }
+  return {
+    count: rows.length,
+    items: rows.slice(0, MAX_CORE_INTENTIONS).map((r) => {
+      const p = r.payload as Record<string, unknown>;
+      return { subject: r.subject, statedAt: r.statedAt.slice(0, 10),
+        target: p.targetMetric
+          ? `${p.targetAmount} ${p.targetMetric} by ${p.byDate}`
+          : `${p.label} ~${p.amount}${p.earliest ? ` from ${p.earliest}` : ''}` };
+    }),
+    note: 'What this user has decided. Call `recall` for the words they used and the full '
+      + 'history; call the financial tools for where they actually stand.',
+  };
+}
+
 /** Build the evidence for one arm. */
 export async function buildEvidence(
   arm: Arm, ctx: SpaceContext_AI, spaceId: string,
@@ -147,11 +196,16 @@ export async function buildEvidence(
   }
 
   if (arm === 'A2') {
-    const envelope = await loadCoverageEnvelope(spaceId);
-    const body = JSON.stringify({ ...thinCore(ctx), evidenceCoverage: envelope }, null, 1);
+    const [envelope, intentions] = await Promise.all([
+      loadCoverageEnvelope(spaceId),
+      activeIntentions(spaceId, ctx.userId),
+    ]);
+    const body = JSON.stringify(
+      { ...thinCore(ctx), evidenceCoverage: envelope, activeIntentions: intentions }, null, 1);
     return {
       arm, body: `FINANCIAL ORIENTATION\n${body}`, includesAssessment: false,
-      approxTokens: tok(body), summary: 'thin core + coverage envelope, tools available',
+      approxTokens: tok(body),
+      summary: 'thin core + coverage envelope + active intentions, tools available',
     };
   }
 

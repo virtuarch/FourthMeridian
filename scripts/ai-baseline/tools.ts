@@ -1,7 +1,8 @@
 /**
  * scripts/ai-baseline/tools.ts
  *
- * THE TOOL SURFACE — twelve adapters over authorities that already exist.
+ * THE TOOL SURFACE — twelve adapters over authorities that already exist, plus
+ * the two memory tools that live in `memory-tools.ts`.
  *
  * ⚠️ ADAPTERS, NOT AUTHORITIES. Not one line here computes a financial figure.
  * Every tool resolves parameters, calls a canonical function, and reshapes the
@@ -15,9 +16,13 @@
  * it flat instead of dropping it. The scenario arithmetic itself is not here — it
  * is `scenario-ledger.ts`, which is a pure function with no data access at all.
  *
- * ⚠️ READ AND CALCULATE ONLY. No tool writes anything. There is no correction
- * tool, no categorise tool, no memory tool — the harness must be incapable of
- * mutating financial data, and a test asserts the shape of every schema.
+ * ⚠️ READ AND CALCULATE ONLY, WITH ONE NAMED EXCEPTION. Nothing in THIS file
+ * writes: there is no correction tool, no categorise tool, and no Prisma client
+ * in scope, all of which a test asserts. The single write verb in the harness is
+ * `remember`, which lives in `memory-tools.ts` and can reach exactly one table —
+ * `SpaceMemory`, which holds intentions and dated statements and structurally
+ * cannot hold a balance. The harness remains incapable of mutating financial
+ * data.
  *
  * ⚠️ THE VOCABULARY IS THE USER'S, NOT THE ARCHITECTURE'S. `get_spending`, not
  * `assembleTransactionsSummary`; `explain_net_worth_change`, not
@@ -62,6 +67,12 @@ import {
   type ReturnPeriod, type SpinePoint,
 } from './scenario-ledger';
 import type { SpaceContext } from '@/lib/space';
+// ⚠️ THE ONE WRITE PATH, IMPORTED RATHER THAN INLINED. Keeping the memory tools
+// in their own module is what lets THIS file keep an exact "no Prisma client,
+// no write op" scan while `memory-tools.ts` gets its own, equally exact, "may
+// reach db.spaceMemory and nothing else". One loose assertion covering both
+// would have protected neither.
+import { MEMORY_TOOLS } from './memory-tools';
 
 // ── The tool contract ────────────────────────────────────────────────────────
 
@@ -1578,6 +1589,7 @@ export const TOOLS: readonly ToolDefinition[] = [
   getFinancialSnapshot, getSpending, getTransactions, getIncome, getInvestments,
   getNetWorthHistory, explainNetWorthChange, projectCash, getPayDates, investmentScenario,
   scenarioProjection, scenarioGoalSeek,
+  ...MEMORY_TOOLS,
 ];
 
 /** OpenAI function-tool definitions for the tool-capable arms. */

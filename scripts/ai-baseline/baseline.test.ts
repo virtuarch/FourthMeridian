@@ -29,6 +29,8 @@ import {
   PROVENANCE, MAX_EXPANDED_CONTRIBUTIONS,
 } from './scenario-ledger';
 import { compactToolHistory, DEFAULT_COMPACTION } from './compaction';
+import { WRITE_TOOL_NAME } from './memory-tools';
+import { validatePayload, MemoryKind } from './memory-store';
 import { TRANSACTION_FETCH_LIMIT } from '@/lib/ai/assemblers/transactions';
 import { PROBES, PROBE_IDS, findProbe } from './probes';
 import { ARMS, ARM_USES_TOOLS, ARM_QUESTION } from './evidence';
@@ -130,22 +132,47 @@ console.log('3. evidence arms');
 // ══ 4. The tool surface is read-only ═════════════════════════════════════════
 console.log('4. tool surface');
 {
-  check('twelve tools', TOOLS.length === 12, String(TOOLS.length));
+  check('fourteen tools', TOOLS.length === 14, String(TOOLS.length));
   check('names are unique', new Set(TOOLS.map((t) => t.name)).size === TOOLS.length);
   check('every tool describes itself', TOOLS.every((t) => t.description.length > 40));
   check('every schema is a closed object',
     TOOLS.every((t) => (t.parameters as { type: string; additionalProperties: boolean }).type === 'object'
       && (t.parameters as { additionalProperties: boolean }).additionalProperties === false));
 
-  // No write verb may exist in the vocabulary — a model cannot call what is absent.
-  const WRITE = /^(set|update|create|delete|write|save|record|apply|correct|categorise|categorize|remember|store|sync|refresh)_/;
-  check('no tool name is a write verb', TOOLS.every((t) => !WRITE.test(t.name)));
+  // ⚠️ ONE WRITE VERB EXISTS NOW, AND IT IS NAMED HERE RATHER THAN TOLERATED.
+  // Slice 6 added memory. The rule did not soften from "nothing writes" to
+  // "writes are fine"; it became "exactly one tool writes, it is `remember`, and
+  // it can reach exactly one table". A second write verb appearing anywhere in
+  // the surface fails this.
+  const WRITE = /^(set|update|create|delete|write|save|record|apply|correct|categorise|categorize|remember|store|sync|refresh)/;
+  const writeNamed = TOOLS.filter((t) => WRITE.test(t.name)).map((t) => t.name);
+  check('exactly one tool name is a write verb', writeNamed.length === 1, writeNamed.join(','));
+  check('…and it is `remember`', writeNamed[0] === WRITE_TOOL_NAME && WRITE_TOOL_NAME === 'remember');
 
   const src = code(read('scripts/ai-baseline/tools.ts'));
   for (const op of ['db.', '.create(', '.update(', '.delete(', '.upsert(', 'deleteMany', 'updateMany']) {
     check(`tools.ts contains no \`${op}\``, !src.includes(op));
   }
   check('tools.ts imports no Prisma client', !/from '@\/lib\/db'/.test(src));
+
+  // ── The exception, bounded exactly ──────────────────────────────────────────
+  //
+  // ⚠️ THE FINANCIAL SURFACE IS STILL INCAPABLE OF MUTATING ANYTHING. The memory
+  // store is the whole write path in the harness, and the only Prisma accessor
+  // it may name is `db.spaceMemory`. A `db.transaction`, a `db.financialAccount`
+  // or a `db.space` write here fails the build.
+  const storeSrc = code(read('scripts/ai-baseline/memory-store.ts'));
+  const accessors = [...storeSrc.matchAll(/\bdb\.(\w+)/g)].map((m) => m[1]);
+  const txAccessors = [...storeSrc.matchAll(/\btx\.(\w+)/g)].map((m) => m[1]);
+  check('the only Prisma model the write path can reach is SpaceMemory',
+    [...new Set([...accessors, ...txAccessors])].every((x) => x === 'spaceMemory' || x === '$transaction'),
+    [...new Set([...accessors, ...txAccessors])].join(','));
+  check('no other harness file holds a Prisma client',
+    ['tools.ts', 'scenario-ledger.ts', 'scenario.ts', 'compaction.ts', 'memory-tools.ts']
+      .every((f) => !/from '@\/lib\/db'/.test(code(read(`scripts/ai-baseline/${f}`)))));
+  check('the ledger and the compactor remain pure',
+    !/^import /m.test(read('scripts/ai-baseline/scenario-ledger.ts'))
+      && !/from '@\//m.test(code(read('scripts/ai-baseline/compaction.ts'))));
 
   // The vocabulary is the user's, not the architecture's.
   const LEAKED = /assembler|assemble|domain|measure|licence|license|scope_?hint|spine|planner/i;
@@ -1275,6 +1302,133 @@ console.log('18a. goal seek tool');
       && /\$\{monthlySpending \?\? 'base'\}/.test(src));
   check('a horizon in the past is refused before anything is projected',
     /is not in the future; a scenario needs a/.test(read('scripts/ai-baseline/tools.ts')));
+}
+
+// ══ 19. Memory (slice 6) ═════════════════════════════════════════════════════
+//
+// Memory is for the two things re-fetching cannot reconstruct: what the user
+// DECIDED, and what we SAID, when, on what basis. Compaction already proved
+// conversational continuity does not need it.
+//
+// Ownership (product decision, 2026-09-08): USER-OWNED WITHIN A SPACE. The Space
+// identifies the financial world; the user identifies whose intention it is.
+console.log('19. memory shape');
+{
+  const K = MemoryKind;
+
+  // ── §12.20 — the invariant, enforced by shape ─────────────────────────────
+  //
+  // ⚠️ NOT A DENYLIST SOMEBODY HAS TO MAINTAIN. Each kind declares a CLOSED key
+  // set, so a key naming a current balance is not forbidden — it simply does not
+  // exist in any kind, and cannot be written.
+  for (const forbidden of ['currentCash', 'balance', 'liquid', 'netWorth', 'totalAssets',
+                           'investments', 'debt', 'holdings']) {
+    const r = validatePayload(K.INTENTION, { targetMetric: 'netWorth', targetAmount: 1e6,
+      byDate: '2030-12-31', [forbidden]: 12_345 });
+    check(`no memory payload can carry \`${forbidden}\``, !r.ok);
+  }
+  check('…and the refusal says why, and what the payload is for',
+    (() => { const r = validatePayload(K.INTENTION, { targetMetric: 'x', currentCash: 1 });
+      return !r.ok && /never a current balance/.test(r.reason); })());
+
+  check('an INTENTION holds a target and a date',
+    validatePayload(K.INTENTION,
+      { targetMetric: 'netWorth', targetAmount: 1_000_000, byDate: '2030-12-31' }).ok);
+  check('…or a planned outlay',
+    validatePayload(K.INTENTION, { intent: 'purchase', amount: 20_000, label: 'car' }).ok);
+  check('…but not a bare number with no target and no date',
+    !validatePayload(K.INTENTION, { targetAmount: 1_000_000 }).ok);
+
+  // ⚠️ §12.22 — `horizon` IS THE SAFETY PROPERTY. A value with a horizon and a
+  // statedAt is "what we said on the 8th about year end". Without one it is a
+  // balance, so the write is refused.
+  check('a CHECKPOINT with a metric, a horizon and a value is storable',
+    validatePayload(K.CHECKPOINT,
+      { metric: 'cash', horizon: '2026-12-31', value: 38_243.5, basis: { x: 1 } }).ok);
+  check('a CHECKPOINT without a horizon is refused — that would be a balance',
+    !validatePayload(K.CHECKPOINT, { metric: 'cash', value: 38_243.5 }).ok);
+  check('an ASSUMPTION carries a rate or a level, and nothing else',
+    validatePayload(K.ASSUMPTION, { monthlySpending: 6_000 }).ok
+      && validatePayload(K.ASSUMPTION, { annualReturnPct: 8, appliesTo: 'investments' }).ok
+      && !validatePayload(K.ASSUMPTION, { monthlySpending: 6_000, cashOnHand: 12_000 }).ok);
+  check('an empty payload is refused', !validatePayload(K.INTENTION, {}).ok);
+
+  // ── Ownership, in the shapes themselves ──────────────────────────────────
+  const storeSrc = code(read('scripts/ai-baseline/memory-store.ts'));
+  const toolSrc  = code(read('scripts/ai-baseline/memory-tools.ts'));
+  check('every read and write is scoped to (spaceId, ownerUserId) together',
+    /ownerUserId: scope\.ownerUserId/.test(storeSrc)
+      && (storeSrc.match(/spaceId: scope\.spaceId/g) ?? []).length >= 3);
+  // Scoped to the model block: `MerchantRule` has carried a NULLABLE
+  // `ownerUserId` since long before this, and a whole-file scan reads it as ours.
+  const memoryModel = read('prisma/schema.prisma')
+    .split(/^model SpaceMemory \{/m)[1]?.split(/^\}/m)[0] ?? '';
+  check('ownership is required, never nullable',
+    /ownerUserId String\b/.test(memoryModel) && !/ownerUserId String\?/.test(memoryModel));
+  check('…and both scopes are indexed together, so no query is cheap without the owner',
+    /@@index\(\[spaceId, ownerUserId,/.test(memoryModel)
+      && !/@@index\(\[spaceId\]\)/.test(memoryModel));
+  check('the supersession chain is one nullable self-relation, not an event log',
+    /supersedesId String\?\s+@unique/.test(memoryModel)
+      && /supersededBy SpaceMemory\?/.test(memoryModel));
+  // ⚠️ THE MODEL CANNOT NAME AN OWNER, SO IT CANNOT ADDRESS ANOTHER MEMBER'S.
+  const memSchemas = ['recall', 'remember'].map((n) => findTool(n)!.parameters as
+    { properties: Record<string, unknown> });
+  check('neither memory tool takes a user id — the owner is the authenticated user',
+    memSchemas.every((s) => !('userId' in s.properties) && !('ownerUserId' in s.properties)));
+  check('…which the tool derives from the resolved Space context',
+    /ownerUserId: ctx\.spaceCtx\.userId/.test(toolSrc));
+  check('there is no sharing, visibility or ACL vocabulary in the memory path',
+    !/\b(visibility|acl|shared|household|consensus)\b/i.test(storeSrc + toolSrc));
+
+  // ── Retrieval is model-driven, like every other tool ─────────────────────
+  check('no memory is injected into the system instruction',
+    !/recall|memory|intention/i.test(SYSTEM_INSTRUCTION));
+  check('recall tells the model a checkpoint is not a balance',
+    /NOT a current[\s'+]+balance/.test(read('scripts/ai-baseline/memory-tools.ts')));
+  check('recall says so plainly when nothing has been recorded',
+    /rather than guessing/.test(read('scripts/ai-baseline/memory-tools.ts')));
+}
+
+// ══ 19a. The active-intentions line ══════════════════════════════════════════
+//
+// ⚠️ MEASURED BEFORE IT WAS BUILT, WHICH IS THE ONLY REASON IT EXISTS. The
+// investigation proposed it as "one concession worth testing — drop it if the
+// model finds goals without it". Run without it: the user said "I want to hit
+// $1M by 2030", the model answered well and recorded NOTHING, and a fresh
+// session asked "how are we doing?" answered from balances alone and never
+// called `recall`. Zero rows written, zero reads.
+console.log('19a. active-intentions line');
+{
+  const ev = code(read('scripts/ai-baseline/evidence.ts'));
+
+  check('the A2 orientation carries the user\'s active intentions',
+    /activeIntentions: intentions/.test(ev) && /async function activeIntentions/.test(ev));
+  check('…scoped to the authenticated user, not the Space',
+    /activeIntentions\(spaceId, ctx\.userId\)/.test(ev)
+      && /recallMemories\(\{ spaceId, ownerUserId \}/.test(ev));
+  check('…and to intentions only — a checkpoint is a dated statement, not orientation',
+    /kind: MemoryKind\.INTENTION/.test(ev));
+  check('…bounded, so a long list cannot grow the core without limit',
+    /MAX_CORE_INTENTIONS = 8/.test(ev) && /slice\(0, MAX_CORE_INTENTIONS\)/.test(ev));
+  check('the empty state names the tool rather than saying nothing',
+    /record it with `remember`/.test(read('scripts/ai-baseline/evidence.ts')));
+
+  // ⚠️ IT IS EVIDENCE, NOT DOCTRINE. It deliberately did NOT go in the system
+  // instruction, which is ~140 words and whose growth is itself a finding.
+  check('the system instruction still says nothing about memory',
+    !/recall|remember|memory|intention|goal/i.test(SYSTEM_INSTRUCTION));
+  check('…and its length is unchanged in spirit — still a short instruction',
+    SYSTEM_INSTRUCTION.split(/\s+/).length < 200, String(SYSTEM_INSTRUCTION.split(/\s+/).length));
+
+  // ⚠️ NO BALANCE REACHES THE ORIENTATION THROUGH MEMORY. Only three keys are
+  // ever emitted per intention, and none of them can hold a position.
+  check('an intention in the core emits only subject, statedAt and target',
+    /return \{ subject: r\.subject, statedAt: r\.statedAt\.slice\(0, 10\),/.test(ev));
+
+  // The collision slice 1 removed from every tool result survived one file.
+  check('the orientation core calls checking-plus-savings `liquid`, not `cash`',
+    /liquid: acc\.totalLiquid/.test(ev) && !/\bcash: acc\./.test(ev));
 }
 
 console.log(failures === 0 ? '\nAll baseline-harness checks passed.' : `\n${failures} check(s) failed.`);

@@ -109,7 +109,8 @@ artifact for the human reader only, and a test pins that.
 
 ## 6. Tool surface
 
-Twelve adapters over authorities that already exist. **Not one computes a financial figure.**
+Fourteen tools. Twelve are adapters over authorities that already exist and **not one computes a
+financial figure**; two are memory (§13g) and one of those is the harness's only write verb.
 
 | Tool | Adapts | Notes |
 |---|---|---|
@@ -125,9 +126,15 @@ Twelve adapters over authorities that already exist. **Not one computes a financ
 | `investment_scenario` | new, §7 | a stated % move, at the current instant |
 | `scenario_projection` | `scenario-ledger.ts` over the same cash spine, §7b | net worth over time under stated contributions and returns |
 | `scenario_goal_seek` | bisection over the same ledger, §7b | the return / contribution / spending cut that reaches a target, or `feasible: false` |
+| `recall` | `SpaceMemory`, §13g | this user's intentions, assumptions and past checkpoints — never a balance |
+| `remember` | `SpaceMemory`, §13g | **the only write in the harness**, and it can reach exactly one table |
 
-**Read and calculate only.** No write verb exists in the vocabulary; `tools.ts` imports no
-Prisma client and contains no `.create(`/`.update(`/`.delete(`. Tested.
+**Read and calculate only, with one named exception.** `tools.ts` imports no Prisma client and
+contains no `.create(`/`.update(`/`.delete(`. Since slice 6 the rule is not "nothing writes"
+but **"exactly one tool writes, it is `remember`, and it can reach exactly one table"** — the
+test asserts the count is one, asserts the name, and asserts that the only Prisma accessor in
+`memory-store.ts` is `db.spaceMemory`. The financial surface remains incapable of mutating
+anything.
 
 Names are the **user's** vocabulary. No `assembler`, `domain`, `measure`, `licence`,
 `scope`, `spine` or `planner` may appear in a tool name — tested — because a model should
@@ -502,6 +509,66 @@ and narrated only what came back.
 |---|---|---|
 | 13 — "reach $1M by 2030?" | invented *"mid-40%"* and *"~$90K/yr"* | one call → *"even cutting spending to zero, $723,500"*, then names the levers it did not search |
 | follow-up — "save more each month?" | — | one call → **$60,782/month**, and the model calls it unachievable itself |
+
+## 13g. Memory (slice 6, 2026-09-08)
+
+One table, two tools, one migration. Memory is for the two things re-fetching cannot
+reconstruct — **what the user decided**, and **what we said, when, on what basis**. Clip 6
+already proved conversational continuity does not need it.
+
+**Ownership (product decision, 2026-09-08): user-owned within a Space.** `spaceId` identifies
+the financial world; `ownerUserId` identifies whose intention it is. Both required, neither
+nullable. `recall` and `remember` see only the authenticated user's rows, and **neither schema
+has a user-id argument**, so no prompt can address another member's memories. No sharing, no
+visibility model, no ACLs, no household consensus.
+
+**The invariant is enforced by shape, not by a rule.** Each kind declares a **closed** payload
+key set. A key called `currentCash` is not on a denylist somebody has to maintain — it is in no
+kind, so it cannot be written. A `CHECKPOINT` requires a `horizon`, which is exactly what makes
+its `value` a statement about a future date rather than a balance; a `CHECKPOINT` without one
+is refused.
+
+| Decision | Shipped as |
+|---|---|
+| Supersession always creates a new record | new row + `supersedesId`; the prior goes `SUPERSEDED`, in one transaction. Nothing edited in place |
+| Standalone assumptions do not persist | an `ASSUMPTION` is stored **only** when an ACTIVE `INTENTION` or `CHECKPOINT` exists on the same subject for the same owner. The subject is the attachment — no extra column |
+| Checkpoints automatic/silent on a projection | the `CHECKPOINT` kind and its shape are here; the automatic write is **slice 7**, not built |
+| `TESTIMONY` | still deferred — the only kind that could contradict a provider authority |
+
+**The concession, measured before it was built.** §6.5 proposed a ≤200-token active-intentions
+line in the thin core and said to drop it if the model found goals without one. Run without it:
+the user said *"I want to hit $1M by 2030"*, the model answered well, **recorded nothing**, and
+a fresh session asked *"how are we doing?"* answered from balances alone and never called
+`recall`. **Zero rows written, zero reads.** So the line ships — as *evidence*, beside the
+coverage envelope, **not** in the system instruction, which is still ~140 words and says
+nothing about memory.
+
+**Cross-session continuity, live (gpt-4.1, four separate conversations):**
+
+| | Asked | Result |
+|---|---|---|
+| A | *"Remember that I want to hit $1M by 2030"* | `remember` with the right kind, subject and payload |
+| B | new session — *"How are we doing?"* | states the goal **and** current truth from the financial tools, and never quotes the target as a balance (§12.24) |
+| C | new session — *"Am I on track?"* | `scenario_projection` → **$409K**, compared against the remembered goal |
+| D | new session — *"make the target $600K instead"* | `remember` supersedes; the $1M row is kept `SUPERSEDED` and retrievable (§12.18/19) |
+
+**The open behaviour, reported rather than patched.** An *unprompted* goal statement — *"I want
+$1M by 2030. Is that realistic?"* — still does not trigger `remember`; the model answers the
+question and moves on. Closing that means either a line in the system instruction (doctrine
+growth, which this experiment treats as a finding in itself) or slice 7's automatic write. Both
+are product calls, not fixes to make quietly.
+
+**Also fixed here:** the A2 orientation core still handed the model `cash: <checking + savings>`
+— the exact collision slice 1 removed from every tool result, surviving in the one file the
+source scan did not cover. It is `liquid` now, and the scan covers it.
+
+**Where the DB check lives.** `run-tests.ts` discovers `*.test.ts` and runs all 495 with no
+database — the suite is pure by design. Supersession, ownership isolation and the attachment
+rule are properties of rows and a transaction, so they live in
+`scripts/ai-baseline/memory-store.check.ts`, run by **`npm run ai:memory-check`**. It creates
+two throwaway users and a throwaway Space and deletes them in a `finally`. **It is not run by
+CI** — that is a real gap, stated rather than hidden behind a test that would skip itself and
+report green.
 
 ## 14b. Interactive operator mode
 

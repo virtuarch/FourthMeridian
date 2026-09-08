@@ -466,6 +466,11 @@ model User {
 
   // Wealth-timeline amendment system (Phase 2) — amendments this user requested.
   requestedSnapshotAmendments SnapshotAmendment[] @relation("SnapshotAmendmentRequester")
+
+  // AI memory OWNED by this user (see SpaceMemory). Memory is user-owned WITHIN
+  // a Space: the Space identifies the financial world, the user identifies whose
+  // intention it is.
+  aiMemories                  SpaceMemory[]       @relation("SpaceMemoryOwner")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -521,6 +526,7 @@ model Space {
   snapshots     SpaceSnapshot[]
   aiAgent       AiAgent?
   adviceHistory AiAdvice[]
+  aiMemories    SpaceMemory[]
   auditLogs     AuditLog[]
 
   // New financial account relations
@@ -639,8 +645,14 @@ model SpaceInvite {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AiAgent
-// One agent per Space. Owns all advice and (future) memory for that
-// Space. Created automatically when a Space is created.
+// One agent per Space. Owns all advice for that Space. Created automatically
+// when a Space is created.
+//
+// ⚠️ IT DOES NOT OWN MEMORY, AND THAT WAS A DELIBERATE REVERSAL. This comment
+// used to promise "(future) memory for that Space". Memory landed user-owned
+// within a Space instead — one agent per Space cannot say WHOSE intention a
+// goal is, and in a household that difference is the whole question. See
+// SpaceMemory.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model AiAgent {
@@ -662,6 +674,92 @@ model AiAgent {
   adviceHistory AiAdvice[]
 
   @@index([spaceId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SpaceMemory
+//
+// WHAT THE USER DECIDED, AND WHAT WE SAID — never what they have.
+//
+// ── The invariant, enforced by SHAPE ────────────────────────────────────────
+// Memory may hold intentions, assumptions and dated statements. It may NEVER
+// hold current financial truth. That is not a rule somebody has to remember: a
+// CHECKPOINT payload requires a `horizon`, and its `value` is only meaningful
+// beside `statedAt`, so there is no field here in which "current cash" could be
+// stored without lying about what it is. An INTENTION holds a TARGET, never a
+// balance. Every payload is validated against a CLOSED key set per kind, so a
+// key named `currentBalance` cannot be written at all.
+//
+// Balances, positions and history are re-read from the financial authorities
+// every time. Nothing in this table is ever the answer to "how much do I have".
+//
+// ── Ownership: user-owned WITHIN a Space ────────────────────────────────────
+// `spaceId` identifies the financial world; `ownerUserId` identifies whose
+// intention, assumption or checkpoint it is. Both are REQUIRED. A shared
+// household Space holds one financial picture and two people's goals, and an
+// agent scoped only to the Space could not tell them apart — which is why this
+// did not hang off AiAgent. For beta the read and write paths see ONLY the
+// authenticated user's own rows: no sharing, no visibility model, no ACLs, no
+// household consensus, and no nullable ownership to fall back to.
+//
+// ── Three kinds, deliberately not four ──────────────────────────────────────
+// INTENTION  what the user decided or wants     { targetMetric, targetAmount, byDate }
+// ASSUMPTION a stated premise, attached to one  { monthlySpending } | { annualReturnPct }
+// CHECKPOINT what we said, when, on what basis  { metric, horizon, value, basis }
+//
+// TESTIMONY ("my employer pays my housing") is DEFERRED. It is the only kind
+// that would let memory contradict a provider authority, and no transcript has
+// needed it yet.
+//
+// ⚠️ RESEARCH SCHEMA WITH NO PRODUCTION READER. Written and read only by the
+// AI baseline harness (scripts/ai-baseline/memory-store.ts). Additive and
+// unreferenced by any route, job or assembler.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum MemoryKind {
+  INTENTION
+  ASSUMPTION
+  CHECKPOINT
+}
+
+enum MemoryStatus {
+  ACTIVE
+  SUPERSEDED
+  RETIRED
+}
+
+model SpaceMemory {
+  id          String @id @default(cuid())
+  spaceId     String
+  space       Space  @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  // REQUIRED. Whose memory this is. Never nullable — an unowned intention in a
+  // shared Space belongs to everybody, which is the one thing it must not do.
+  ownerUserId String
+  owner       User   @relation("SpaceMemoryOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  kind    MemoryKind
+  /// The thing this is about: "net-worth-target", "summer-2027-spending".
+  /// Also the supersession key, within (space, owner, kind).
+  subject String
+  /// Small and typed per kind. Validated against a closed key set on write.
+  payload Json
+  /// The user's own words, or the sentence 4M stated.
+  statedAs String
+
+  statedAt    DateTime  @default(now())
+  appliesFrom DateTime?
+  appliesTo   DateTime?
+
+  status MemoryStatus @default(ACTIVE)
+  /// One nullable self-relation IS the version history. No event log.
+  supersedesId String?      @unique
+  supersedes   SpaceMemory? @relation("SpaceMemoryChain", fields: [supersedesId], references: [id], onDelete: SetNull)
+  supersededBy SpaceMemory? @relation("SpaceMemoryChain")
+
+  createdAt DateTime @default(now())
+
+  @@index([spaceId, ownerUserId, kind, status])
+  @@index([spaceId, ownerUserId, subject, statedAt])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

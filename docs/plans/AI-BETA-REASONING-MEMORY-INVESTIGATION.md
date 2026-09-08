@@ -456,7 +456,31 @@ Slices 1–3 are the beta blocker and are **~140 lines total**.
 > memory — `assumptionsInForce` now travels on every path, and after the fix the model passed
 > those assumptions into the call instead of narrating them.
 >
-> Slices 6–7 remain open.
+> **✅ SLICE 6 SHIPPED 2026-09-08.** `SpaceMemory` + `recall`/`remember`, one migration
+> (`20260907234638_space_memory_user_owned`, purely additive). See the harness doc §13g.
+>
+> **Q6 is decided: memory is USER-OWNED WITHIN A SPACE.** `ownerUserId` is required and never
+> nullable; both tools see only the authenticated user's rows and neither schema takes a user
+> id. §6.2's `createdByUserId String?` is therefore superseded — a nullable owner in a shared
+> Space belongs to everybody, which is the one thing it must not do. The `AiAgent` comment
+> promising "(future) memory for that Space" was corrected in the schema: one agent per Space
+> cannot say whose intention a goal is.
+>
+> Also decided and shipped: supersession always creates a new record; a standalone
+> `ASSUMPTION` does not persist unless an ACTIVE `INTENTION` or `CHECKPOINT` shares its
+> subject (Q4, answered as leaned). Checkpoints-on-projection is **slice 7** and was not built.
+>
+> **§6.5's "one concession worth testing" is earned by measurement.** Without the
+> active-intentions line the model recorded nothing and recalled nothing across two sessions —
+> zero rows, zero reads. With it, four separate conversations carry a goal, compare it against
+> live truth, and supersede it. It ships as EVIDENCE beside the coverage envelope, never in the
+> system instruction, which still says nothing about memory.
+>
+> **Open, and a product call rather than a defect:** an unprompted goal statement still does
+> not trigger `remember`. Closing it needs either a system-instruction line (doctrine growth,
+> which this experiment counts as a finding) or slice 7's automatic write.
+>
+> Slice 7 remains open.
 
 ---
 
