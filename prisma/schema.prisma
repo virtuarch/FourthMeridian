@@ -832,6 +832,24 @@ model PlaidItem {
   // lib/plaid/exchangeToken.ts; the future "Enable Investment Holdings" UI
   // renders when this is CONSENT_REQUIRED.
   investmentsConsent    PlaidInvestmentsConsent?
+  // Platform Ops cost accounting Slice 4 — the deployment environment that
+  // MINTED this Item, stamped once at the exchangeToken chokepoint.
+  //
+  // ⚠️ NULLABLE AND NEVER BACKFILLED. Nothing in this repository records where an
+  // existing Item came from — not on the row, not on the CH-2 transition ledger
+  // (whose metadata is {provider, plaidItemId, from, to, errorCode}), not on the
+  // audit row (ipAddress and userAgent are null). Historical environment is
+  // therefore UNKNOWN, and a null here means exactly that. Inferring it from
+  // today's runtime would assign every historical Item to whichever environment
+  // happened to run the query.
+  //
+  // ⚠️ WHY IT IS CAPTURED AT ALL: one Plaid client id serves local, preview and
+  // production, so an Item minted from a laptop is billed identically to one
+  // minted by a customer — and the reconciled July invoice showed ~97% of the
+  // charge was development churn. Without this, "total platform spend" and
+  // "production cost to serve" are the same number forever. Capture cannot be
+  // reconstructed later, which is why it lands before the accounting needs it.
+  environment           String?
   createdAt             DateTime                 @default(now())
   updatedAt             DateTime                 @updatedAt
 

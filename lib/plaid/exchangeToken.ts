@@ -53,6 +53,7 @@ import { syncInvestmentsForItem } from "@/lib/plaid/sync-investments";
 // PROV-4 — the canonical per-account conn+SAL spine writer (was inline here).
 import { persistAccountSpine } from "@/lib/accounts/persist-account-spine";
 import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identity";
+import { deploymentEnvironment } from "@/lib/env";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -247,6 +248,10 @@ export async function performPlaidTokenExchange(
       institutionId:   institution_id,
       institutionName: institution_name,
       encryptedToken,
+      // Cost Slice 4 — stamped ONCE, at creation, and never updated: it records
+      // where this Item was minted, not where it is being read from. Set only on
+      // create so a relink from another environment cannot rewrite the origin.
+      environment:     deploymentEnvironment(),
       status:          PlaidItemStatus.ACTIVE,
       syncIncompleteAt,
     },

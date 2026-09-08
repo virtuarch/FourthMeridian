@@ -86,6 +86,67 @@ export const AI_RATES: readonly AiRate[] = [
     usdPerMillion: { input: 0.15,  cachedInput: 0.075,  output:  0.60 } },
 ];
 
+// ── Plaid: the billable unit is the Item-subscription-month ──────────────────
+
+/**
+ * ⚠️ PLAID IS NOT PRICED PER CALL, AND THAT IS THE WHOLE POINT OF THIS BLOCK.
+ * Invoice `S-J7Y5657ZK0-2607` (July 2026) reconciles exactly to the Plaid
+ * dashboard: Transactions qty 40 = "Items billed in the 7/1–7/31 cycle";
+ * Investments qty 4 = Investments-Transactions billed. `/transactions/sync` is
+ * included in the subscription and `/transactions/refresh` has zero call sites
+ * (the dashboard's Refresh chart reads 0), so REFRESHES COST $0. The
+ * `PLAID/<method>/calls` counters are operational telemetry with no monotonic
+ * relationship to the bill, and `modelFromMetric` already keeps them out of AI
+ * pricing structurally.
+ */
+export interface PlaidRate {
+  provider: 'PLAID';
+  /** The billable product line as the invoice names it. */
+  product: PlaidBillableProduct;
+  /** Inclusive YYYY-MM-DD. Applies to billing cycles starting on or after this. */
+  effectiveFrom: string;
+  usdPerItemMonth: number;
+  source: string;
+}
+
+export type PlaidBillableProduct = 'transactions' | 'investments';
+
+/**
+ * ⚠️ ONE PERIOD OF EVIDENCE, AND THE RATES ARE SCOPED TO IT. These unit prices
+ * are DERIVED from the single reconciled invoice, not read from a price sheet:
+ *
+ *   Transactions  $12.00 / 40 Item-months = $0.30   — independently confirmed by
+ *                 the recorded orphan estimate, "9 orphans, ~$2.70/mo" (9 × $0.30)
+ *   Investments   ($13.40 total − $12.00) / 4       = $0.35, forced by subtraction
+ *
+ * `effectiveFrom` is the cycle the evidence covers. Cycles before it are
+ * UNPRICED — not zero — because no invoice evidences a rate for them, and
+ * inventing one would fabricate provenance. A later cycle inherits these rates
+ * only because no evidence yet contradicts them; a second invoice showing a
+ * different unit price should be added as its own dated entry rather than
+ * overwriting this one.
+ */
+export const PLAID_RATES: readonly PlaidRate[] = [
+  { provider: 'PLAID', product: 'transactions', effectiveFrom: '2026-07-01', usdPerItemMonth: 0.30,
+    source: 'invoice S-J7Y5657ZK0-2607 (Jul 2026): $12.00 Transactions / 40 Item-months; cross-checked against the recorded 9-orphan estimate of ~$2.70/mo' },
+  { provider: 'PLAID', product: 'investments', effectiveFrom: '2026-07-01', usdPerItemMonth: 0.35,
+    source: 'invoice S-J7Y5657ZK0-2607 (Jul 2026): ($13.40 total − $12.00 Transactions) / 4 Investments Item-months — derived by subtraction, not quoted' },
+];
+
+/**
+ * The Plaid rate in force for a product on a billing cycle, or null when no
+ * evidenced rate covers it.
+ */
+export function plaidRateAt(product: PlaidBillableProduct, cycleStart: string,
+                            rates: readonly PlaidRate[] = PLAID_RATES): PlaidRate | null {
+  let best: PlaidRate | null = null;
+  for (const r of rates) {
+    if (r.product !== product || r.effectiveFrom > cycleStart) continue;
+    if (!best || r.effectiveFrom > best.effectiveFrom) best = r;
+  }
+  return best;
+}
+
 /** True iff any rate is configured — drives whether a surface shows a figure at all. */
 export function isPricingConfigured(): boolean {
   return AI_RATES.length > 0;
