@@ -22,6 +22,7 @@ import {
   buildEvidence, assembleFullContext, ARM_USES_TOOLS, ARM_QUESTION, type Arm,
 } from './evidence';
 import { openAiToolSchemas, findTool, type ToolContext } from './tools';
+import { checkpointProjection } from './memory-tools';
 import {
   compactToolHistory, DEFAULT_COMPACTION,
   type CompactionPolicy, type CompactionStats,
@@ -59,6 +60,8 @@ export interface TurnRecord {
   index: number;
   user: string;
   toolCalls: { name: string; arguments: unknown; result: unknown; latencyMs: number; error?: string }[];
+  /** Subjects of any checkpoints written silently during this turn (slice 7). */
+  checkpoints?: string[];
   roundTrips: number;
   /** 429s absorbed on this turn, with how long each wait was. Reported, never hidden. */
   retries: { attempt: number; waitedMs: number; reason: string }[];
@@ -221,6 +224,14 @@ export async function executeTurn(args: {
           arguments: safeParse(call.arguments),
           result, latencyMs: Date.now() - started, ...(error ? { error } : {}),
         });
+        // ⚠️ SLICE 7 — SILENT, AND SILENT IS THE PRODUCT DECISION. When a
+        // deterministic projection is stated, what it said and what it rested on
+        // are recorded so a later session can reconcile them. Nothing is added
+        // to the transcript, the model is not told, and a failure here cannot
+        // affect the answer: `checkpointProjection` swallows its own errors and
+        // returns null for every tool that is not `project_cash`.
+        const checkpointed = await checkpointProjection(toolCtx, call.name, result);
+        if (checkpointed) (rec.checkpoints ??= []).push(checkpointed.subject);
         messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
       }
     }

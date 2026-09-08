@@ -31,6 +31,9 @@ import {
 import { compactToolHistory, DEFAULT_COMPACTION } from './compaction';
 import { WRITE_TOOL_NAME } from './memory-tools';
 import { validatePayload, MemoryKind } from './memory-store';
+import {
+  compareToStatement, diffBasis, readCheckpoint, ON_TRACK_BAND,
+} from './reconcile';
 import { TRANSACTION_FETCH_LIMIT } from '@/lib/ai/assemblers/transactions';
 import { PROBES, PROBE_IDS, findProbe } from './probes';
 import { ARMS, ARM_USES_TOOLS, ARM_QUESTION } from './evidence';
@@ -132,7 +135,7 @@ console.log('3. evidence arms');
 // ══ 4. The tool surface is read-only ═════════════════════════════════════════
 console.log('4. tool surface');
 {
-  check('fourteen tools', TOOLS.length === 14, String(TOOLS.length));
+  check('fifteen tools', TOOLS.length === 15, String(TOOLS.length));
   check('names are unique', new Set(TOOLS.map((t) => t.name)).size === TOOLS.length);
   check('every tool describes itself', TOOLS.every((t) => t.description.length > 40));
   check('every schema is a closed object',
@@ -1046,8 +1049,8 @@ console.log('17b. one spine');
   check('there is exactly ONE place a forecast is assembled',
     (src.match(/assembleForecast\(\{/g) ?? []).length === 1,
     String((src.match(/assembleForecast\(\{/g) ?? []).length));
-  check('…and both projection tools reach it through the same spine',
-    (src.match(/buildCashSpine\(ctx, \{/g) ?? []).length === 2);
+  check('…and every tool that projects reaches it through the same spine',
+    (src.match(/buildCashSpine\(ctx, \{/g) ?? []).length === 3);
   check('every checkpoint is an INDEPENDENT run from the same asOf',
     /runTo\(date, override\)\.projection\?\.closing/.test(src) && /runTo\(end\)/.test(src));
   check('the last checkpoint date IS the horizon, monthly and yearly alike',
@@ -1390,7 +1393,7 @@ console.log('19. memory shape');
     /rather than guessing/.test(read('scripts/ai-baseline/memory-tools.ts')));
 }
 
-// ══ 19a. The active-intentions line ══════════════════════════════════════════
+// ══ 19a. The memory line in the orientation core ═════════════════════════════
 //
 // ⚠️ MEASURED BEFORE IT WAS BUILT, WHICH IS THE ONLY REASON IT EXISTS. The
 // investigation proposed it as "one concession worth testing — drop it if the
@@ -1398,37 +1401,190 @@ console.log('19. memory shape');
 // $1M by 2030", the model answered well and recorded NOTHING, and a fresh
 // session asked "how are we doing?" answered from balances alone and never
 // called `recall`. Zero rows written, zero reads.
-console.log('19a. active-intentions line');
+console.log('19a. memory line');
 {
   const ev = code(read('scripts/ai-baseline/evidence.ts'));
 
-  check('the A2 orientation carries the user\'s active intentions',
-    /activeIntentions: intentions/.test(ev) && /async function activeIntentions/.test(ev));
+  check('the A2 orientation carries this user\'s memory',
+    /memory \}/.test(ev) && /async function memoryLine/.test(ev));
   check('…scoped to the authenticated user, not the Space',
-    /activeIntentions\(spaceId, ctx\.userId\)/.test(ev)
-      && /recallMemories\(\{ spaceId, ownerUserId \}/.test(ev));
-  check('…and to intentions only — a checkpoint is a dated statement, not orientation',
-    /kind: MemoryKind\.INTENTION/.test(ev));
-  check('…bounded, so a long list cannot grow the core without limit',
-    /MAX_CORE_INTENTIONS = 8/.test(ev) && /slice\(0, MAX_CORE_INTENTIONS\)/.test(ev));
+    /memoryLine\(spaceId, ctx\.userId\)/.test(ev)
+      && /const scope = \{ spaceId, ownerUserId \}/.test(ev));
+  check('…bounded on both kinds, so a long history cannot grow the core without limit',
+    /MAX_CORE_INTENTIONS = 8/.test(ev) && /MAX_CORE_CHECKPOINTS = 6/.test(ev));
   check('the empty state names the tool rather than saying nothing',
     /record it with `remember`/.test(read('scripts/ai-baseline/evidence.ts')));
+
+  // ⚠️ FOUND BY RUNNING IT, IN THE SLICE THAT BROKE IT. The first version listed
+  // intentions only and its empty note said "nothing has been recorded for this
+  // user yet". Slice 7 then started recording projections silently, so asked "am
+  // I ahead of where you said I would be?", the model read that note, believed
+  // it, and answered "I have no record of a previous projection" while two
+  // checkpoints sat in the table.
+  check('the line speaks for ALL of memory, not only for goals',
+    /projectionsOnRecord: \{ count: projections\.length/.test(ev)
+      && /kind: MemoryKind\.CHECKPOINT/.test(ev) && /kind: MemoryKind\.INTENTION/.test(ev));
+  check('…so "nothing recorded" is said only when nothing at all is recorded',
+    /goals\.length === 0 && projections\.length === 0/.test(ev));
+  check('…and recorded projections point at the tool that reconciles them',
+    /`reconcile_projection` compares them/.test(read('scripts/ai-baseline/evidence.ts')));
+  check('…and say what they are, so they are not read as balances',
+    /never current balances/.test(read('scripts/ai-baseline/evidence.ts')));
 
   // ⚠️ IT IS EVIDENCE, NOT DOCTRINE. It deliberately did NOT go in the system
   // instruction, which is ~140 words and whose growth is itself a finding.
   check('the system instruction still says nothing about memory',
     !/recall|remember|memory|intention|goal/i.test(SYSTEM_INSTRUCTION));
-  check('…and its length is unchanged in spirit — still a short instruction',
+  check('…and it is still a short instruction',
     SYSTEM_INSTRUCTION.split(/\s+/).length < 200, String(SYSTEM_INSTRUCTION.split(/\s+/).length));
 
-  // ⚠️ NO BALANCE REACHES THE ORIENTATION THROUGH MEMORY. Only three keys are
-  // ever emitted per intention, and none of them can hold a position.
+  // ⚠️ NO BALANCE REACHES THE ORIENTATION THROUGH MEMORY. Only subjects, targets,
+  // dates and horizons are ever emitted.
   check('an intention in the core emits only subject, statedAt and target',
     /return \{ subject: r\.subject, statedAt: r\.statedAt\.slice\(0, 10\),/.test(ev));
+  check('…and a projection emits only its horizon',
+    /\.map\(\(r\) => \(r\.payload as \{ horizon\?: string \}\)\.horizon\)/.test(ev));
 
   // The collision slice 1 removed from every tool result survived one file.
   check('the orientation core calls checking-plus-savings `liquid`, not `cash`',
     /liquid: acc\.totalLiquid/.test(ev) && !/\bcash: acc\./.test(ev));
+}
+
+// ══ 20. Reconciliation (slice 7) ═════════════════════════════════════════════
+//
+// §5.5 gave us the retrospective: what we WOULD say today, standing in January.
+// That is a recomputation with today's code — it cannot know what was actually
+// said, or that the user asserted a spending level in the conversation.
+// A CHECKPOINT records a STATEMENT; the retrospective records a CAPABILITY.
+console.log('20. reconciliation arithmetic');
+{
+  const ahead = compareToStatement(38_243.50, 40_700);
+  check('a settled statement produces a signed variance',
+    ahead.difference === 2_456.5 && ahead.direction === 'AHEAD');
+  check('…and a share of what was stated',
+    ahead.percentOfStated !== null && Math.abs(ahead.percentOfStated - 6.42) < 0.01);
+  check('a shortfall is BEHIND, and the sign says so',
+    compareToStatement(38_243.50, 30_000).direction === 'BEHIND'
+      && compareToStatement(38_243.50, 30_000).difference === -8_243.5);
+
+  // ⚠️ "ON TRACK" IS A BAND. Reporting `difference: 0.37, direction: BEHIND` on a
+  // five-figure statement invites a sentence about being behind that is false in
+  // every way that matters.
+  check('a difference inside the band is ON_TRACK, not a rounding-error verdict',
+    compareToStatement(38_243.50, 38_243.87).direction === 'ON_TRACK');
+  check('…and the band is a dollar, stated rather than hidden', ON_TRACK_BAND === 1);
+  check('a percentage of nothing is null, not Infinity',
+    compareToStatement(0, 500).percentOfStated === null);
+
+  // ── The cause, not just the score ────────────────────────────────────────
+  const changes = diffBasis(
+    { spendingSource: 'OBSERVED', dailyRate: 142.9, incomeEvents: 8,
+      monthsAveraged: ['2026-07', '2026-08'] },
+    { spendingSource: 'OBSERVED', dailyRate: 131.2, incomeEvents: 9,
+      monthsAveraged: ['2026-09', '2026-10'] });
+  check('the basis diff names every field that moved',
+    changes.map((c) => c.field).sort().join(',') === 'dailyRate,incomeEvents,monthsAveraged');
+  check('…with the signed move on the numbers',
+    changes.find((c) => c.field === 'dailyRate')!.delta === -11.7
+      && changes.find((c) => c.field === 'incomeEvents')!.delta === 1);
+  check('…and no delta on the things that are not numbers',
+    changes.find((c) => c.field === 'monthsAveraged')!.delta === null);
+  check('an unchanged basis reports nothing at all',
+    diffBasis({ dailyRate: 142.9 }, { dailyRate: 142.9 }).length === 0);
+  check('a field that appeared or vanished IS a change',
+    diffBasis({ a: 1 }, {}).length === 1 && diffBasis({}, { b: 2 }).length === 1);
+  // ⚠️ FOUND BY RUNNING IT. A rate stored as 142.8979726027397 came back out of
+  // the engine as 142.89797260273974 and was reported as a basis change with a
+  // delta of zero — noise dressed as an explanation.
+  check('a sub-cent float round-trip is not a change',
+    diffBasis({ dailyRate: 142.8979726027397 },
+              { dailyRate: 142.89797260273974 }).length === 0);
+  check('…but a real move of a cent still is',
+    diffBasis({ dailyRate: 142.89 }, { dailyRate: 142.90 }).length === 1);
+
+  // ── A row read back is data, and fails closed ────────────────────────────
+  const good = readCheckpoint({ id: 'm1', subject: 'liquid-2026-12-31',
+    statedAs: 'x', statedAt: '2026-09-08T00:00:00.000Z',
+    payload: { metric: 'liquid', horizon: '2026-12-31', value: 38_243.5, basis: {} } });
+  check('a well-formed checkpoint reads back as a statement', !('unusable' in good));
+  for (const [name, payload] of [
+    ['no horizon', { metric: 'liquid', value: 1 }],
+    ['no value',   { metric: 'liquid', horizon: '2026-12-31' }],
+    ['no metric',  { horizon: '2026-12-31', value: 1 }],
+  ] as [string, unknown][]) {
+    check(`a checkpoint with ${name} is refused rather than reconciled against a guess`,
+      'unusable' in readCheckpoint({ id: 'm', subject: 's', statedAs: 'x',
+        statedAt: '2026-09-08T00:00:00.000Z', payload }));
+  }
+  check('the reconciler reads no data at all — it is arithmetic',
+    !/^import /m.test(read('scripts/ai-baseline/reconcile.ts')));
+}
+
+// ══ 20a. The silent checkpoint and the tool ══════════════════════════════════
+console.log('20a. checkpoint-on-projection');
+{
+  const mt  = code(read('scripts/ai-baseline/memory-tools.ts'));
+  const run = code(read('scripts/ai-baseline/run.ts'));
+  const src = code(read('scripts/ai-baseline/tools.ts'));
+
+  // ⚠️ THE WRITE LIVES IN THE TURN LOOP, NOT IN THE TOOL. Making `project_cash`
+  // write would have made the "tools.ts holds no Prisma client" assertion a lie
+  // told by indirection.
+  check('the checkpoint is written by the conversation loop, not by the tool',
+    /checkpointProjection\(toolCtx, call\.name, result\)/.test(run));
+  check('…and `project_cash` itself still writes nothing',
+    !/checkpointProjection/.test(src));
+  check('…and only that one tool produces a checkpoint',
+    /toolName !== 'project_cash'/.test(mt));
+
+  // ⚠️ A RETROSPECTIVE RUN IS A RECOMPUTATION, NOT A STATEMENT. Checkpointing it
+  // would let the system mark its own homework.
+  check('a retrospective projection is never checkpointed',
+    /r\.retrospective === true/.test(mt));
+  // A scenario ending balance is conditional on the user's assumptions;
+  // reconciling it later would measure their compliance, not our accuracy.
+  check('a scenario projection is never checkpointed either',
+    !/scenario_projection/.test(mt.split('checkpointProjection')[1] ?? ''));
+
+  check('the write is a copy of project_cash\'s own basis, not a computation',
+    /spendingSource: spending\.source/.test(mt) && /dailyRate: spending\.dailyRate/.test(mt)
+      && /incomeEvents: basis\.incomeEventsCounted/.test(mt));
+  check('it is silent — nothing is added to the transcript',
+    !/messages\.push[\s\S]{0,80}checkpoint/i.test(run));
+  check('and non-fatal — a memory failure cannot break a correct answer',
+    /catch \{[\s\S]{0,200}return null;/.test(mt));
+
+  // ⚠️ THE STORED METRIC IS `liquid`. A tool result carrying the loose name is
+  // read beside its own description; a stored row is read months later with
+  // neither.
+  check('the stored metric is `liquid`, not `cash`',
+    /metric: 'liquid', horizon, value: projection\.endingCash/.test(mt)
+      && /subject: `liquid-\$\{horizon\}`/.test(mt));
+  check('…and the statement says in words what population that is',
+    /checking plus savings/.test(read('scripts/ai-baseline/memory-tools.ts')));
+  check('the conversation\'s clock is what a statement is dated with',
+    /statedAt: ctx\.asOfISO/.test(mt));
+
+  // ── The tool ─────────────────────────────────────────────────────────────
+  const tool = findTool('reconcile_projection');
+  check('reconcile_projection exists and needs no arguments', !!tool
+    && ((tool.parameters as { required: string[] }).required.length === 0));
+  check('a settled horizon is compared against what actually happened',
+    /historicalSnapshot\(ctx, cp\.horizon\)/.test(src));
+  // ⚠️ MID-FLIGHT, PROJECTION AGAINST PROJECTION. Setting a year-end statement
+  // beside today's balance and subtracting produces a number about two different
+  // instants that means nothing at all.
+  check('an open horizon is compared against the same projection re-run today',
+    /the same projection re-run today, to the same horizon/.test(read('scripts/ai-baseline/tools.ts')));
+  check('…and the result says so, so it is not described as a current balance',
+    /must not be described as one/.test(read('scripts/ai-baseline/tools.ts')));
+  check('nothing recorded is reported as nothing recorded, never as nothing said',
+    /there is nothing to/.test(read('scripts/ai-baseline/tools.ts')));
+  check('an unknown metric is refused rather than mapped to something plausible',
+    /no authority in this harness answers the metric/.test(read('scripts/ai-baseline/tools.ts')));
+  check('the reconciliation is bounded', /MAX_RECONCILED = 6/.test(src));
+  check('tools.ts still holds no Prisma client after gaining a memory read',
+    !/from '@\/lib\/db'/.test(src) && !src.includes('db.'));
 }
 
 console.log(failures === 0 ? '\nAll baseline-harness checks passed.' : `\n${failures} check(s) failed.`);

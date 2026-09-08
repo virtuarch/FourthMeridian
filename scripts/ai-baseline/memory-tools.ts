@@ -38,6 +38,83 @@ const str = (description: string) => ({ type: 'string', description });
 const scopeOf = (ctx: { spaceId: string; spaceCtx: { userId: string } }): MemoryScope =>
   ({ spaceId: ctx.spaceId, ownerUserId: ctx.spaceCtx.userId });
 
+// ── Slice 7: the automatic checkpoint ────────────────────────────────────────
+
+/**
+ * Record what a projection SAID, silently, when `project_cash` states one.
+ *
+ * ⚠️ THE WRITE IS A COPY, NOT A COMPUTATION. Every field below already exists in
+ * `project_cash`'s own `basis` block. Nothing is derived, rounded or summarised
+ * on the way in — a checkpoint that recomputed anything would be a second
+ * authority on the same number.
+ *
+ * ⚠️ IT LIVES IN THE CONVERSATION LOOP, NOT IN THE TOOL. `tools.ts` holds no
+ * Prisma client and no write op, and a test asserts it; making `project_cash`
+ * write would have made that assertion a lie told by indirection. "4M writes a
+ * checkpoint when it states a projection" is a property of the turn, so the turn
+ * is where it happens.
+ *
+ * ⚠️ ONLY THE DETERMINISTIC PROJECTION IS CHECKPOINTED. A `scenario_projection`
+ * ending balance is conditional on assumptions the user supplied; reconciling it
+ * against reality later would measure whether they did what they said, not
+ * whether we were right. And a RETROSPECTIVE run is a recomputation, not a
+ * statement — checkpointing it would let the system mark its own homework.
+ *
+ * Silent by product decision, and non-fatal by design: a memory failure must
+ * never take down an answer that was already correct.
+ */
+export async function checkpointProjection(
+  ctx: { spaceId: string; asOfISO: string; spaceCtx: { userId: string } },
+  toolName: string,
+  result: unknown,
+): Promise<{ subject: string } | null> {
+  if (toolName !== 'project_cash') return null;
+  const r = result as Record<string, unknown> | null;
+  const horizonBlock = r?.horizon as { to?: string; asOf?: string } | undefined;
+  const projection = r?.projection as Record<string, unknown> | null | undefined;
+  if (!r || r.retrospective === true) return null;
+  if (!projection || typeof projection.endingCash !== 'number') return null;
+  const horizon = horizonBlock?.to;
+  if (typeof horizon !== 'string' || !horizon) return null;
+
+  const basis = (projection.basis ?? {}) as Record<string, unknown>;
+  const spending = (basis.spending ?? {}) as Record<string, unknown>;
+
+  try {
+    const written = await rememberMemory(scopeOf(ctx), {
+      kind: MemoryKind.CHECKPOINT,
+      // ⚠️ THE SUBJECT IS METRIC + HORIZON, WHICH MAKES REPETITION SELF-LIMITING.
+      // Ten calls about the same year end leave ONE active statement and nine in
+      // the chain, rather than ten rows competing to be the thing we said.
+      //
+      // ⚠️ AND THE METRIC IS `liquid`, NOT `cash`. `project_cash` returns
+      // checking PLUS savings; the exploration tree's `cash` lens is checking
+      // alone. A tool result carrying the loose name is read beside its own
+      // description — a STORED row is read months later with neither, so it gets
+      // the precise name. Slice 1's source scan caught this draft too.
+      subject: `liquid-${horizon}`,
+      payload: {
+        metric: 'liquid', horizon, value: projection.endingCash,
+        basis: {
+          spendingSource: spending.source ?? null,
+          dailyRate: spending.dailyRate ?? null,
+          monthsAveraged: spending.monthsAveraged ?? null,
+          incomeEvents: basis.incomeEventsCounted ?? null,
+          userAssumptions: (r.appliedUserFacts as unknown[]) ?? [],
+          openingCash: basis.openingCash ?? null,
+        },
+      },
+      statedAs: `Projected ${projection.endingCash} liquid (checking plus savings) for `
+        + `${horizon}, stated on ${ctx.asOfISO}.`,
+      statedAt: ctx.asOfISO,
+    });
+    return written.stored ? { subject: written.memory.subject } : null;
+  } catch {
+    // A memory failure must never break a turn that already answered correctly.
+    return null;
+  }
+}
+
 const KIND_VALUES = Object.values(MemoryKind);
 
 const recall: ToolDefinition = {
@@ -112,6 +189,8 @@ const remember: ToolDefinition = {
       subject:  String(a.subject ?? ''),
       payload:  (a.payload ?? {}) as MemoryPayload,
       statedAs: String(a.statedAs ?? ''),
+      // The conversation's clock, so a stated date and a recorded one agree.
+      statedAt: ctx.asOfISO,
       ...(a.appliesFrom ? { appliesFrom: String(a.appliesFrom) } : {}),
       ...(a.appliesTo   ? { appliesTo:   String(a.appliesTo)   } : {}),
     });

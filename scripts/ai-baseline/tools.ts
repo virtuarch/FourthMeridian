@@ -1,7 +1,7 @@
 /**
  * scripts/ai-baseline/tools.ts
  *
- * THE TOOL SURFACE — twelve adapters over authorities that already exist, plus
+ * THE TOOL SURFACE — thirteen adapters over authorities that already exist, plus
  * the two memory tools that live in `memory-tools.ts`.
  *
  * ⚠️ ADAPTERS, NOT AUTHORITIES. Not one line here computes a financial figure.
@@ -73,6 +73,13 @@ import type { SpaceContext } from '@/lib/space';
 // reach db.spaceMemory and nothing else". One loose assertion covering both
 // would have protected neither.
 import { MEMORY_TOOLS } from './memory-tools';
+// ⚠️ READING memory, never writing it. `recallMemories` is the store's read half;
+// the write half lives in the turn loop (slice 7) and in `remember`. This file
+// still holds no Prisma client, which a test asserts.
+import { recallMemories, MemoryKind } from './memory-store';
+import {
+  readCheckpoint, compareToStatement, diffBasis,
+} from './reconcile';
 
 // ── The tool contract ────────────────────────────────────────────────────────
 
@@ -1583,12 +1590,141 @@ const scenarioGoalSeek: ToolDefinition = {
   },
 };
 
+// ── 13. Reconciliation ───────────────────────────────────────────────────────
+
+/** How many statements one reconciliation call will settle. */
+const MAX_RECONCILED = 6;
+
+/**
+ * Which authority answers a checkpoint's metric. Unknown metrics are refused.
+ *
+ * ⚠️ THE STORED METRIC IS `liquid`, NOT `cash`, AND THE SCAN CAUGHT THE FIRST
+ * DRAFT. The investigation's sketch wrote `metric: "cash"`, and a row saying
+ * `cash: 38243.50` read back in December — with no conversation around it and no
+ * tool description in sight — is the beta blocker with a longer fuse. A stored
+ * record is read further from its context than any tool result, so it needs the
+ * more precise name, not the more familiar one.
+ */
+const METRIC_FIELD: Record<string, 'liquid' | 'netWorth'> = {
+  liquid: 'liquid', netWorth: 'netWorth',
+};
+
+const reconcileProjection: ToolDefinition = {
+  name: 'reconcile_projection',
+  description:
+    'Compare what we PREVIOUSLY told this user with what actually happened, or with what we ' +
+    'would say today. Use it for "were you right?", "how did that projection turn out?", ' +
+    '"am I ahead of where you said I would be?". A past horizon is compared against the ' +
+    'measured position on that date; a future one against the projection re-run today, which ' +
+    'is the only like-for-like comparison. It also names which part of the basis changed.',
+  parameters: obj({
+    subject: str('One checkpoint subject, e.g. "liquid-2026-12-31". Omit for all of them.'),
+    includeSuperseded: { type: 'boolean',
+      description: 'True to reconcile earlier statements too, not just the latest per horizon.' },
+  }),
+  async run(a, ctx) {
+    const statements = await recallMemories(
+      { spaceId: ctx.spaceId, ownerUserId: ctx.spaceCtx.userId },
+      { kind: MemoryKind.CHECKPOINT,
+        ...(a.subject ? { subject: String(a.subject) } : {}),
+        ...(a.includeSuperseded ? { includeSuperseded: true } : {}) },
+    );
+    if (statements.length === 0) {
+      return { count: 0,
+        // ⚠️ NOTHING RECORDED IS NOT THE SAME AS NOTHING SAID, and pretending
+        // otherwise would invent a history. Checkpoints only exist from the
+        // moment a projection was made in a conversation.
+        unavailable: 'no projection has been recorded for this user yet — there is nothing to '
+          + 'reconcile against. Ask for a projection first; it will be recorded automatically.' };
+    }
+
+    const spine = await buildCashSpine(ctx, { asOf: ctx.asOfISO });
+    const reconciled = [];
+
+    for (const m of statements.slice(0, MAX_RECONCILED)) {
+      const cp = readCheckpoint(m);
+      if ('unusable' in cp) { reconciled.push({ subject: m.subject, unusable: cp.unusable }); continue; }
+
+      const field = METRIC_FIELD[cp.metric];
+      if (!field) {
+        reconciled.push({ subject: cp.subject,
+          unusable: `no authority in this harness answers the metric "${cp.metric}"` });
+        continue;
+      }
+
+      const settled = cp.horizon < ctx.asOfISO;
+      let compared: number | null = null;
+      let comparedFrom = '';
+      let basisNow: Record<string, unknown> | null = null;
+
+      if (settled) {
+        // ⚠️ ACCURACY, MEASURED AGAINST WHAT ACTUALLY HAPPENED. The horizon has
+        // passed, so the financial authorities can say what the position on that
+        // date really was, and the difference is the honest score.
+        const snap = await historicalSnapshot(ctx, cp.horizon) as Record<string, unknown>;
+        if (snap.unavailable) {
+          reconciled.push({ subject: cp.subject, stated: cp, status: 'SETTLED',
+            unavailable: snap.unavailable });
+          continue;
+        }
+        compared = (snap[field] as number | null) ?? null;
+        comparedFrom = `measured position on ${snap.observedOn ?? cp.horizon}`;
+      } else if (!('unavailable' in spine)) {
+        // ⚠️ MID-FLIGHT, THE COMPARISON IS PROJECTION AGAINST PROJECTION. Setting
+        // a year-end statement beside today's balance and subtracting produces a
+        // number about two different instants that means nothing at all. Re-running
+        // to the SAME horizon is the only like-for-like reading of "am I ahead?".
+        const f = spine.runTo(cp.horizon);
+        compared = f.projection?.closing ?? null;
+        comparedFrom = `the same projection re-run today, to the same horizon (${cp.horizon})`;
+        const b = (f.projection ? {
+          spendingSource: f.observedSpending ? 'OBSERVED' : (f.appliedFacts.length ? 'USER_STATED' : 'NONE'),
+          dailyRate: f.observedSpending?.dailyRate ?? null,
+          monthsAveraged: (f.observedSpending as { months?: string[] } | undefined)?.months ?? null,
+          incomeEvents: f.events.length,
+          userAssumptions: f.appliedFacts,
+          openingCash: f.projection.openingCash,
+        } : null);
+        basisNow = b;
+      }
+
+      reconciled.push({
+        subject: cp.subject,
+        status: settled ? 'SETTLED' : 'IN_FLIGHT',
+        stated: { value: cp.value, metric: cp.metric, horizon: cp.horizon,
+          on: cp.statedAt.slice(0, 10), inWords: cp.statedAs },
+        comparedWith: comparedFrom,
+        ...(compared === null
+          ? { unavailable: settled
+              ? 'the position on that date cannot be established'
+              : 'the projection cannot be re-run to that horizon today' }
+          : { variance: compareToStatement(cp.value, compared) }),
+        // ⚠️ A VARIANCE WITHOUT ITS CAUSE IS A SCORE, NOT AN EXPLANATION.
+        ...(basisNow ? { basisChanged: diffBasis(cp.basis, basisNow) } : {}),
+        meaning: settled
+          ? 'What we said, against what happened. The difference is our error, not the user\'s.'
+          : 'Both figures describe the SAME future date — one said then, one said now. This is '
+            + 'not a comparison with the current balance, and must not be described as one.',
+      });
+    }
+
+    return {
+      asOf: ctx.asOfISO,
+      count: reconciled.length,
+      ofTotal: statements.length,
+      reconciled,
+      note: 'A checkpoint records what we STATED and when. It is never a current balance — for '
+        + 'that, call get_financial_snapshot.',
+    };
+  },
+};
+
 // ── Registry ─────────────────────────────────────────────────────────────────
 
 export const TOOLS: readonly ToolDefinition[] = [
   getFinancialSnapshot, getSpending, getTransactions, getIncome, getInvestments,
   getNetWorthHistory, explainNetWorthChange, projectCash, getPayDates, investmentScenario,
-  scenarioProjection, scenarioGoalSeek,
+  scenarioProjection, scenarioGoalSeek, reconcileProjection,
   ...MEMORY_TOOLS,
 ];
 

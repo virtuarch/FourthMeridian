@@ -143,44 +143,74 @@ function thinCore(ctx: SpaceContext_AI): Record<string, unknown> {
 
 /** How many intentions the orientation will name before it stops listing them. */
 const MAX_CORE_INTENTIONS = 8;
+/** And how many recorded projections it will name. One survives per horizon. */
+const MAX_CORE_CHECKPOINTS = 6;
 
 /**
- * The active-intentions line — subjects and targets, never balances.
+ * The memory line — subjects, targets and horizons. Never balances.
  *
  * ⚠️ IT IS HERE BECAUSE THE MEASUREMENT DEMANDED IT, and it was measured before
- * it was built. The investigation proposed this as "one concession worth
- * testing: drop it if the model finds goals without it". Run without it: the
- * user said "I want to hit $1M by 2030" and the model answered well, recorded
- * NOTHING, and a fresh session asked "how are we doing?" answered from balances
- * alone and never called `recall`. Zero rows written, zero reads. A capability
- * nothing reaches for is not a capability.
+ * it was built. The investigation proposed it as "one concession worth testing:
+ * drop it if the model finds goals without it". Run without it: the user said
+ * "I want to hit $1M by 2030" and the model answered well, recorded NOTHING, and
+ * a fresh session asking "how are we doing?" answered from balances alone and
+ * never called `recall`. Zero rows written, zero reads. A capability nothing
+ * reaches for is not a capability.
  *
  * ⚠️ IT IS NOT DOCTRINE, AND IT DELIBERATELY DID NOT GO IN THE SYSTEM PROMPT.
  * That instruction is ~140 words and the experiment's rule is that growth in it
  * is itself a finding. This is evidence — the same shape as the coverage
  * envelope beside it — and it says what exists, not how to behave.
  *
- * Targets, dates and subjects only. No balance can appear here, because no
+ * ⚠️ AND IT SPEAKS FOR ALL OF MEMORY, NOT JUST FOR GOALS. The first version
+ * listed intentions only, and its empty-state note said "nothing has been
+ * recorded for this user yet". Slice 7 then started recording projections
+ * silently — so when the user asked "am I ahead of where you said I would be?",
+ * the model read that note, believed it, and answered "I have no record of a
+ * previous projection" while two checkpoints sat in the table. A summary that
+ * covers part of a store must not narrate the whole of it.
+ *
+ * Targets, dates and horizons only. No balance can appear here, because no
  * memory payload can hold one.
  */
-async function activeIntentions(spaceId: string, ownerUserId: string) {
-  const rows = await recallMemories({ spaceId, ownerUserId }, { kind: MemoryKind.INTENTION });
-  if (rows.length === 0) {
-    return { count: 0,
-      note: 'Nothing has been recorded for this user yet. When they state a goal, a plan, or '
-        + 'a change of mind, record it with `remember` so a later session can pick it up.' };
-  }
+async function memoryLine(spaceId: string, ownerUserId: string) {
+  const scope = { spaceId, ownerUserId };
+  const [goals, projections] = await Promise.all([
+    recallMemories(scope, { kind: MemoryKind.INTENTION }),
+    recallMemories(scope, { kind: MemoryKind.CHECKPOINT }),
+  ]);
+
+  const intentions = goals.slice(0, MAX_CORE_INTENTIONS).map((r) => {
+    const p = r.payload as Record<string, unknown>;
+    return { subject: r.subject, statedAt: r.statedAt.slice(0, 10),
+      target: p.targetMetric
+        ? `${p.targetAmount} ${p.targetMetric} by ${p.byDate}`
+        : `${p.label} ~${p.amount}${p.earliest ? ` from ${p.earliest}` : ''}` };
+  });
+
+  const horizons = projections.slice(0, MAX_CORE_CHECKPOINTS)
+    .map((r) => (r.payload as { horizon?: string }).horizon)
+    .filter((h): h is string => typeof h === 'string');
+
+  const note = goals.length === 0 && projections.length === 0
+    ? 'Nothing has been recorded for this user yet. When they state a goal, a plan, or a '
+      + 'change of mind, record it with `remember` so a later session can pick it up.'
+    : [
+        goals.length > 0
+          ? 'What this user has decided. Call `recall` for the words they used and the full '
+            + 'history; call the financial tools for where they actually stand.'
+          : 'No goals recorded for this user.',
+        projections.length > 0
+          ? `${projections.length} projection(s) we previously stated are on record — `
+            + '`reconcile_projection` compares them with what actually happened. They are '
+            + 'statements about a horizon, never current balances.'
+          : 'No projections have been recorded yet.',
+      ].join(' ');
+
   return {
-    count: rows.length,
-    items: rows.slice(0, MAX_CORE_INTENTIONS).map((r) => {
-      const p = r.payload as Record<string, unknown>;
-      return { subject: r.subject, statedAt: r.statedAt.slice(0, 10),
-        target: p.targetMetric
-          ? `${p.targetAmount} ${p.targetMetric} by ${p.byDate}`
-          : `${p.label} ~${p.amount}${p.earliest ? ` from ${p.earliest}` : ''}` };
-    }),
-    note: 'What this user has decided. Call `recall` for the words they used and the full '
-      + 'history; call the financial tools for where they actually stand.',
+    intentions: { count: goals.length, ...(intentions.length ? { items: intentions } : {}) },
+    projectionsOnRecord: { count: projections.length, ...(horizons.length ? { horizons } : {}) },
+    note,
   };
 }
 
@@ -196,16 +226,16 @@ export async function buildEvidence(
   }
 
   if (arm === 'A2') {
-    const [envelope, intentions] = await Promise.all([
+    const [envelope, memory] = await Promise.all([
       loadCoverageEnvelope(spaceId),
-      activeIntentions(spaceId, ctx.userId),
+      memoryLine(spaceId, ctx.userId),
     ]);
     const body = JSON.stringify(
-      { ...thinCore(ctx), evidenceCoverage: envelope, activeIntentions: intentions }, null, 1);
+      { ...thinCore(ctx), evidenceCoverage: envelope, memory }, null, 1);
     return {
       arm, body: `FINANCIAL ORIENTATION\n${body}`, includesAssessment: false,
       approxTokens: tok(body),
-      summary: 'thin core + coverage envelope + active intentions, tools available',
+      summary: 'thin core + coverage envelope + memory line, tools available',
     };
   }
 

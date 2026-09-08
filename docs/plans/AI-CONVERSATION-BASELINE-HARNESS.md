@@ -109,8 +109,8 @@ artifact for the human reader only, and a test pins that.
 
 ## 6. Tool surface
 
-Fourteen tools. Twelve are adapters over authorities that already exist and **not one computes a
-financial figure**; two are memory (§13g) and one of those is the harness's only write verb.
+Fifteen tools. Thirteen are adapters over authorities that already exist and **not one computes
+a financial figure**; two are memory (§13g) and one of those is the harness's only write verb.
 
 | Tool | Adapts | Notes |
 |---|---|---|
@@ -128,6 +128,7 @@ financial figure**; two are memory (§13g) and one of those is the harness's onl
 | `scenario_goal_seek` | bisection over the same ledger, §7b | the return / contribution / spending cut that reaches a target, or `feasible: false` |
 | `recall` | `SpaceMemory`, §13g | this user's intentions, assumptions and past checkpoints — never a balance |
 | `remember` | `SpaceMemory`, §13g | **the only write in the harness**, and it can reach exactly one table |
+| `reconcile_projection` | `reconcile.ts` over memory + the same spine, §13h | what we said, against what happened — with the basis that changed |
 
 **Read and calculate only, with one named exception.** `tools.ts` imports no Prisma client and
 contains no `.create(`/`.update(`/`.delete(`. Since slice 6 the rule is not "nothing writes"
@@ -569,6 +570,67 @@ rule are properties of rows and a transaction, so they live in
 two throwaway users and a throwaway Space and deletes them in a `finally`. **It is not run by
 CI** — that is a real gap, stated rather than hidden behind a test that would skip itself and
 report green.
+
+## 13h. Reconciliation (slice 7, 2026-09-08)
+
+Slice 3 gave us the retrospective — *what we WOULD say today, standing in January*. That is a
+recomputation with today's code, so it cannot know what was actually said, or that the user
+asserted a spending level in the conversation. **A checkpoint records a STATEMENT; the
+retrospective records a CAPABILITY.** Confusing them is how a system marks its own homework.
+
+**The write is a copy, not a computation.** Every field comes straight out of `project_cash`'s
+own `basis` block. It is **silent** (product decision): nothing enters the transcript, the model
+is not told, and a memory failure cannot affect an answer that was already right.
+
+**It lives in the turn loop, not in the tool.** `tools.ts` holds no Prisma client and no write
+op, and a test asserts it — making `project_cash` write would have turned that assertion into a
+lie told by indirection. *"4M writes a checkpoint when it states a projection"* is a property of
+the turn, so the turn is where it happens.
+
+| Not checkpointed | Why |
+|---|---|
+| a **retrospective** `project_cash(asOf: past)` | a recomputation, not a statement — checkpointing it lets the system mark its own homework |
+| a **`scenario_projection`** endpoint | conditional on assumptions the user supplied; reconciling it later measures whether *they* did what they said, not whether *we* were right |
+| every other tool | a checkpoint is a claim about the actual future |
+
+The subject is `liquid-<horizon>`, so ten calls about the same year end leave **one** ACTIVE
+statement and nine in the chain.
+
+**Two comparisons, because they answer different questions:**
+
+| | Compared against | Measured |
+|---|---|---|
+| **SETTLED** (horizon passed) | what the authorities say actually happened on that date | stated $20,000 for 2026-06-30 → actual **$4,461.57**, **−$15,538.43 (−77.7%) BEHIND** |
+| **IN FLIGHT** | the same projection **re-run today to the same horizon** | plus `basisChanged`, naming every field that moved |
+
+⚠️ Mid-flight, setting a year-end statement beside *today's balance* and subtracting produces a
+number about two different instants that means nothing. Projection-against-projection is the
+only like-for-like reading of *"am I ahead?"*, and the payload says so where the model reads it.
+A variance without its cause is a score, not an explanation — so `diffBasis` names every field
+that moved, with the signed delta on the numbers.
+
+**Live, three separate conversations:** *"where will my cash be at the end of the year?"* →
+$38,400, checkpoint written silently. New session, *"were your earlier projections right?"* →
+`reconcile_projection`, both reported correctly. New session, *"am I ahead of where you said I
+would be?"* → *"You are behind the projection we made for June 30… for December 31 you are
+currently on track."*
+
+**Two defects this slice found in the previous two.**
+
+1. **The stored metric was about to be `cash`.** The investigation's sketch wrote
+   `metric: "cash"`, and slice 1's source scan caught it. A tool result carrying the loose name
+   is read beside its own description; a **stored row is read months later with neither**, so it
+   gets the precise name — `liquid`, plus "checking plus savings" in the sentence.
+2. **Slice 6's core line narrated the whole of memory while covering part of it.** Its
+   empty-state note said *"nothing has been recorded for this user yet"*; slice 7 then began
+   recording projections silently, so asked *"am I ahead of where you said I would be?"* the
+   model read that note, believed it, and answered **"I have no record of a previous
+   projection"** with two checkpoints sitting in the table. The line now reports intentions
+   **and** projections on record, and says "nothing recorded" only when nothing at all is.
+
+Also fixed: a stored rate round-tripping through JSON as `142.8979726027397` and returning from
+the engine as `142.89797260273974` was reported as a basis change with a delta of zero. A field
+that moved by less than a cent did not move.
 
 ## 14b. Interactive operator mode
 

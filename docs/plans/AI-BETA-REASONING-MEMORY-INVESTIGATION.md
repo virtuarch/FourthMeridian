@@ -480,7 +480,36 @@ Slices 1–3 are the beta blocker and are **~140 lines total**.
 > not trigger `remember`. Closing it needs either a system-instruction line (doctrine growth,
 > which this experiment counts as a finding) or slice 7's automatic write.
 >
-> Slice 7 remains open.
+> **✅ SLICE 7 SHIPPED 2026-09-08 — the sequence is complete.** Checkpoint-on-projection plus
+> `reconcile_projection`. See the harness doc §13h. No schema change: it is slice 4's spine,
+> slice 6's table, and one pure comparison module.
+>
+> **§7's sketch said `metric: "cash"`; it ships as `liquid`.** A tool result carrying the loose
+> name is read beside its own description — a STORED row is read months later with neither, so
+> it takes the precise name. Slice 1's source scan caught the draft.
+>
+> **The write lives in the turn loop, not in `project_cash`.** `tools.ts` holds no Prisma
+> client and a test asserts it; making the tool write would have made that assertion a lie told
+> by indirection. Neither a retrospective run nor a `scenario_projection` is checkpointed — the
+> first is a recomputation, the second is conditional on the user's own assumptions.
+>
+> **Mid-flight, the comparison is projection against projection.** §7 said "compares against
+> `financial_snapshot(today)`"; that subtracts two different instants and produces a number
+> that means nothing. Re-running to the SAME horizon is the only like-for-like reading of "am I
+> ahead?", and `diffBasis` names what changed — a variance without its cause is a score, not an
+> explanation.
+>
+> **Slice 7 found a defect in slice 6.** The core memory line listed intentions only, and its
+> empty-state note spoke for all of memory: asked "am I ahead of where you said I would be?",
+> the model read "nothing has been recorded for this user yet", believed it, and denied having
+> any projection while two checkpoints sat in the table. A summary that covers part of a store
+> must not narrate the whole of it.
+>
+> **All seven slices are shipped.** Of the six §11 product questions, Q1, Q4, Q5 and Q6 are
+> decided and shipped; Q2 (automatic checkpoints) is decided and shipped as silent-and-visible-
+> on-request; Q3 (superseded intentions resurfacing) never arose in practice — supersession
+> always creates a new record, so the chain answers it either way. The one behaviour still open
+> is that an UNPROMPTED goal statement does not trigger `remember`.
 
 ---
 

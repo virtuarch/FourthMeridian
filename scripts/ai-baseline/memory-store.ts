@@ -161,6 +161,17 @@ export interface RememberArgs {
   statedAs:    string;
   appliesFrom?: string;
   appliesTo?:   string;
+  /**
+   * When the statement was made. Defaults to the database clock.
+   *
+   * ⚠️ THE CONVERSATION'S CLOCK, NOT POSTGRES'S, IS WHAT A CHECKPOINT MEANS. A
+   * projection made "standing at 2026-09-08" must carry that date, or a
+   * reconciliation compares a statement against a basis from a different day and
+   * attributes the difference to the wrong thing. The harness runs on a fixed
+   * `asOfISO`; without this the row silently recorded the UTC wall clock, which
+   * on the first live run was already the previous day.
+   */
+  statedAt?:   string;
 }
 
 export type RememberResult =
@@ -224,6 +235,7 @@ export async function rememberMemory(
         kind: args.kind, subject,
         payload: args.payload as never,
         statedAs: args.statedAs.trim(),
+        ...(args.statedAt ? { statedAt: new Date(args.statedAt) } : {}),
         ...(args.appliesFrom ? { appliesFrom: new Date(args.appliesFrom) } : {}),
         ...(args.appliesTo   ? { appliesTo:   new Date(args.appliesTo)   } : {}),
         ...(prior ? { supersedesId: prior.id } : {}),
