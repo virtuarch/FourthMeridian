@@ -5,8 +5,11 @@
  *
  * AI usage trend, over GET /api/platform/platform-ops/ai-usage-trend
  * (PLATFORM_OPS READ). Presentation-only: totals, models, and per-day series
- * arrive precomputed. Spend renders "—" when no pricing is configured (never a
- * fabricated 0). Aggregate-only — no per-user/per-workspace claim.
+ * arrive precomputed. Spend renders "—" when nothing could be priced (never a
+ * fabricated 0), and when a rate covers only part of the window the footnote
+ * says how much it does not cover — a partial figure presented as a whole one is
+ * the same defect as a fabricated one. Aggregate-only — no per-user/per-workspace
+ * claim.
  */
 
 import { Sparkles } from "lucide-react";
@@ -40,6 +43,9 @@ export function OpsAiTrendWidget({ section }: { section: PlatformSection }) {
           <p className="text-[11px] text-[var(--text-muted)] mt-1">
             {data.models.length} model(s) · since {data.since} · {data.days.length} active day(s)
             {!data.pricingConfigured ? " · spend unknown (no pricing configured)" : ""}
+            {data.pricingConfigured && data.unpricedTokens > 0
+              ? ` · ${data.unpricedDays.length} day(s) unpriced (no rate in force) — spend covers the rest`
+              : ""}
           </p>
           {data.days.length > 0 ? (
             <ul className="flex flex-col gap-1 mt-1">

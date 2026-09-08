@@ -44,8 +44,16 @@ async function main() {
     check("days sorted ascending", t.days[0].day <= t.days[1].day);
     check("distinct OpenAI models extracted from metric", t.models.includes("gpt-4o-mini") && t.models.includes("gpt-4o"));
     check("totals summed across days", t.totals.calls === 15 && t.totals.promptTokens === 1500);
-    check("spend UNKNOWN with no pricing (null, not 0)", d16.estimatedSpendUsd === null && t.totals.estimatedSpendUsd === null);
-    check("tier observed when unpriced (counts are observed)", t.tier === "observed" && t.pricingConfigured === false);
+    // ⚠️ RATES ARE CONFIGURED, AND THIS JULY USAGE IS STILL UNPRICED. That is the
+    // effective-date mechanism working: the configured rates carry
+    // effectiveFrom 2026-09-08, so adding them repriced nothing historical.
+    check("spend UNKNOWN for usage predating every rate (null, not 0)",
+      d16.estimatedSpendUsd === null && t.totals.estimatedSpendUsd === null);
+    check("…even though pricing IS configured", t.pricingConfigured === true);
+    check("tier stays observed when nothing priced (counts are observed)", t.tier === "observed");
+    // Coverage is stated, not implied: which tokens went unpriced, and on which days.
+    check("unpriced usage is reported as coverage",
+      t.unpricedTokens === 2000 && t.unpricedDays.includes("2026-07-16"));
   }
 
   console.log("authority · injected reader");
@@ -59,7 +67,11 @@ async function main() {
   console.log("doctrine · aggregate-only, no second cost engine");
   {
     const src = readFileSync(path.join(process.cwd(), "lib/platform/ai/ai-usage.ts"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-    check("reuses the ONE pricing helper (no bespoke price map)", /estimateUnitSpendUsd|isPricingConfigured/.test(src) && !/UNIT_PRICES_USD\s*=/.test(src));
+    check("reuses the ONE pricing reducer (no bespoke price map)", /priceAiUsage|isPricingConfigured/.test(src) && !/AI_RATES\s*=|usdPerMillion\s*:/.test(src));
+    // ⚠️ SET-BASED, NOT ROW-BASED. Per-row accumulation cannot see that cached
+    // tokens are a subset of prompt tokens, so it must either ignore caching or
+    // double count it.
+    check("prices whole days as a set, never row by row", /priceAiUsage\(rowsByDay/.test(src));
     check("reads only ApiUsageCounter (no per-user/space dimension claimed)", /apiUsageCounter/.test(src) && !/userId|spaceId/.test(src));
     check("writes nothing", !/\.(create|update|delete|upsert)\(/.test(src));
   }

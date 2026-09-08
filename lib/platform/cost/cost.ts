@@ -92,11 +92,17 @@ export function deriveCostMetrics(hist: OperationalHistoryResult, conv: Converge
     tier: "derived", provenance: "S9 convergence · correlated episode count",
   });
 
-  // Dollar spend: HONESTLY UNKNOWN — no unit pricing is configured (UNIT_PRICES_USD
-  // ships empty). Never a fabricated figure.
+  // Dollar spend: NOT KNOWABLE FROM THIS AUTHORITY. S10 is a pure reduction over
+  // S7 history and S9 convergence — it holds no usage ledger and, by its own
+  // doctrine, performs no direct ledger read. AI rates ARE configured now
+  // (lib/usage/pricing AI_RATES), and AI spend is reported by the AI usage
+  // authority, which owns the counter rows the subset-aware reducer needs.
+  // Combining AI and Plaid into one MTD figure here is a later slice; until then
+  // this stays null and says where the number actually lives, rather than
+  // claiming no pricing exists.
   metrics.push({
     id: "spend-usd", label: "Estimated spend", value: null, unit: "usd", tier: "unknown",
-    provenance: "no unit pricing configured (lib/usage/pricing UNIT_PRICES_USD empty) — unknown, not zero",
+    provenance: "not derivable from S7/S9 — AI spend is reported by the AI usage authority (ops_ai_trend); combined AI+Plaid cost is not yet wired",
   });
 
   return metrics;

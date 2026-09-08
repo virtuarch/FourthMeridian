@@ -7,15 +7,17 @@
  *
  * HONEST LEADING INDICATOR, not a bill: neither Plaid nor OpenAI exposes a
  * billing API this app can poll, so this reports call volume + token counts
- * (from ApiUsageCounter). A dollar figure is returned ONLY if lib/usage/pricing.ts
- * has been populated with contract-specific per-unit prices, and it is then
- * explicitly labeled an estimate — the GrowthSignupsWidget honesty-footnote idiom.
+ * (from ApiUsageCounter). A dollar figure is returned ONLY for usage a configured
+ * rate was in force for, and it is explicitly labeled an estimate — the
+ * GrowthSignupsWidget honesty-footnote idiom. Usage outside any rate's effective
+ * window is reported as `unpricedTokens`/`unpricedDays` rather than folded in at
+ * zero.
  */
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
-import { estimateUnitSpendUsd, isPricingConfigured } from "@/lib/usage/pricing";
+import { priceAiUsage, isPricingConfigured } from "@/lib/usage/pricing";
 
 export const runtime = "nodejs";
 
@@ -39,7 +41,10 @@ export interface ApiUsageResponse {
   providers:         ProviderUsage[];
   models:            ModelTokenUsage[];
   pricingConfigured: boolean;
-  estimatedSpendUsd: number | null; // null unless pricing.ts is populated
+  estimatedSpendUsd: number | null; // null unless a rate was in force in the window
+  /** Token usage in the window that no rate covered — coverage, not a caveat. */
+  unpricedTokens:    number;
+  unpricedDays:      string[];
 }
 
 /** Start of the UTC day, matching the recorder's day bucket. */
@@ -62,7 +67,6 @@ export async function GET() {
 
   const providers = new Map<string, ProviderUsage>();
   const models    = new Map<string, ModelTokenUsage>();
-  let estimate: number | null = null;
 
   for (const r of rows) {
     const n = Number(r.count);
@@ -79,17 +83,23 @@ export async function GET() {
       else                            m.completionTokens30d += n;
       models.set(r.metric, m);
     }
-
-    // Optional dollar estimate — only accrues when a price exists for this tuple.
-    const unitSpend = estimateUnitSpendUsd(r.provider, r.metric, r.unit, n);
-    if (unitSpend !== null) estimate = (estimate ?? 0) + unitSpend;
   }
+
+  // ⚠️ PRICED OVER THE WHOLE SET, NOT ROW BY ROW. Cached prompt tokens are a
+  // SUBSET of prompt tokens and bill at a different rate, so the input term is
+  // `(prompt − cached) × input + cached × cachedInput`. That subtraction needs
+  // two rows at once, which the previous per-row accumulation could not see: it
+  // priced the raw prompt at the full input rate and overstated input cost by
+  // roughly five times on measured traffic.
+  const priced = priceAiUsage(rows.map((r) => ({ ...r, count: Number(r.count) })));
 
   return NextResponse.json({
     since:             monthStart.toISOString(),
     providers:         [...providers.values()].sort((a, b) => b.calls30d - a.calls30d),
     models:            [...models.values()].sort((a, b) => b.promptTokens30d - a.promptTokens30d),
     pricingConfigured: isPricingConfigured(),
-    estimatedSpendUsd: isPricingConfigured() ? (estimate ?? 0) : null,
+    estimatedSpendUsd: priced.usd,
+    unpricedTokens:    priced.unpricedTokens,
+    unpricedDays:      priced.unpricedDays,
   } satisfies ApiUsageResponse);
 }
