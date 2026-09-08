@@ -17,6 +17,7 @@
 import 'server-only';
 import OpenAI from 'openai';
 import { recordApiUsage } from '@/lib/usage/record';
+import { aiUsageUnits, type OpenAiUsage } from '@/lib/usage/ai-tokens';
 
 // ── Client ───────────────────────────────────────────────────────────────────
 // Lazy-initialised singleton. Fails loudly if the key is absent so
@@ -60,6 +61,26 @@ function getClient(): OpenAI {
  */
 const CHAT_MODEL = process.env.AI_CHAT_MODEL || 'gpt-4o-mini';
 
+/**
+ * Record one OpenAI call against `ApiUsageCounter` — the ONLY usage-write path
+ * in this module.
+ *
+ * ⚠️ IT EXISTS BECAUSE THREE COPIES HAD ALREADY DRIFTED. Each generator used to
+ * inline its own three `recordApiUsage` lines; `reasoning_tokens` was read in one
+ * of the three and thrown away at the counter, and `cached_tokens` was read in
+ * none — so every dollar figure derivable from the ledger overstated input cost
+ * by roughly five times on measured traffic. One list, one loop, every path.
+ *
+ * Fire-and-forget and non-throwing, unchanged: `recordApiUsage` swallows its own
+ * errors, so `void` here can neither fail a generation nor leave an unhandled
+ * rejection. A metrics write must never break a chat call.
+ */
+function recordOpenAiUsage(metric: string, usage: OpenAiUsage | null | undefined): void {
+  for (const { unit, count } of aiUsageUnits(usage)) {
+    void recordApiUsage('OPENAI', metric, unit, count);
+  }
+}
+
 // ── Public types ─────────────────────────────────────────────────────────────
 
 export interface ChatMessage {
@@ -95,17 +116,9 @@ export async function generateChatReply(
     max_tokens:  1024,
   });
 
-  // Wave 2 S7 — record API usage (calls + tokens per model). Fire-and-forget:
-  // recordApiUsage is internally non-throwing, so `void` here can neither fail
-  // the chat nor produce an unhandled rejection. Metric embeds the model so the
-  // per-model breakdown needs no extra dimension.
-  const usage = completion.usage;
-  if (usage) {
-    const metric = `chat.completions:${CHAT_MODEL}`;
-    void recordApiUsage('OPENAI', metric, 'calls', 1);
-    void recordApiUsage('OPENAI', metric, 'prompt_tokens', usage.prompt_tokens ?? 0);
-    void recordApiUsage('OPENAI', metric, 'completion_tokens', usage.completion_tokens ?? 0);
-  }
+  // Wave 2 S7 — record API usage (calls + tokens per model). The metric embeds
+  // the model so the per-model breakdown needs no extra dimension.
+  recordOpenAiUsage(`chat.completions:${CHAT_MODEL}`, completion.usage);
 
   const reply = completion.choices[0]?.message?.content ?? '';
   if (!reply) {
@@ -209,18 +222,12 @@ export async function generateWithTools(args: {
   const completion = await client.chat.completions.create(body) as {
     choices: { message: { content: string | null; tool_calls?: { id: string;
       function: { name: string; arguments: string } }[] }; finish_reason?: string }[];
-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number;
-      completion_tokens_details?: { reasoning_tokens?: number } };
+    usage?: OpenAiUsage;
   };
   const latencyMs = Date.now() - started;
 
   const usage = completion.usage;
-  if (usage) {
-    const metric = `chat.completions:${model}`;
-    void recordApiUsage('OPENAI', metric, 'calls', 1);
-    void recordApiUsage('OPENAI', metric, 'prompt_tokens', usage.prompt_tokens ?? 0);
-    void recordApiUsage('OPENAI', metric, 'completion_tokens', usage.completion_tokens ?? 0);
-  }
+  recordOpenAiUsage(`chat.completions:${model}`, usage);
 
   const choice = completion.choices[0];
   return {
@@ -281,13 +288,7 @@ export async function generateStructured<T>(
     },
   });
 
-  const usage = completion.usage;
-  if (usage) {
-    const metric = `chat.completions:${model}`;
-    void recordApiUsage('OPENAI', metric, 'calls', 1);
-    void recordApiUsage('OPENAI', metric, 'prompt_tokens', usage.prompt_tokens ?? 0);
-    void recordApiUsage('OPENAI', metric, 'completion_tokens', usage.completion_tokens ?? 0);
-  }
+  recordOpenAiUsage(`chat.completions:${model}`, completion.usage);
 
   const raw = completion.choices[0]?.message?.content ?? '';
   if (!raw) throw new Error('[ai/provider] Model returned an empty structured response.');
