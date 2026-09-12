@@ -648,6 +648,59 @@ console.log('13h. applied facts — nothing reaches the applied channel that did
     !/applied[A-Za-z]*:\s*(a\.|String\(a\.)/.test(cash));
 }
 
+console.log('13i. tool contracts — the capability boundary is in the descriptions');
+{
+  const schema = (name: string) =>
+    (openAiToolSchemas() as { function: { name: string; description: string; parameters: unknown } }[])
+      .find((t) => t.function.name === name)!.function;
+  const cash = schema('project_cash');
+  const scen = schema('scenario_projection');
+
+  // 1 — project_cash must not claim arbitrary one-off hypothetical movements.
+  check('project_cash says a dated one-off amount is NOT part of it',
+    /one-off amount arriving or leaving is not part of this projection/.test(cash.description));
+  check('…and names its one applicable assumption',
+    /`assumedMonthlySpending` is the only assumption it can apply/.test(cash.description));
+  check('…while still offering the ordinary projection it is for',
+    /evidence-based estimate/.test(cash.description) && /month-end checkpoints/.test(cash.description));
+  check('…and does not single out a bonus — the boundary is generic',
+    !/bonus/i.test(cash.description));
+
+  // 2 — scenario_projection advertises what the ledger actually supports.
+  check('scenario_projection leads with the dated one-off movement',
+    /dated one-off amount arriving or leaving/.test(scen.description));
+  check('…and says it reports CASH, not only net worth',
+    /reports cash, investments, debt and net worth/.test(scen.description));
+  check('…every capability it claims exists in the schema',
+    ['outflows', 'contributions', 'annualReturnPct'].every((k) =>
+      k in ((scen.parameters as { properties: Record<string, unknown> }).properties)));
+  check('…and it claims no capability the schema lacks',
+    !/recurring income|salary change|debt payoff schedule|inflation/i.test(scen.description));
+
+  // 3 — the sign convention still lives where the argument is described.
+  const outflows = (scen.parameters as { properties: Record<string, { description?: string;
+    items?: { properties?: { amount?: { description?: string } } } }> }).properties.outflows;
+  check('`outflows` still states the negative-is-an-inflow convention',
+    /NEGATIVE amount for a one-off inflow/.test(String(outflows.description)));
+  check('…and the amount field states its direction',
+    /Positive = cash out/.test(String(outflows.items?.properties?.amount?.description)));
+
+  // 4 — compatibility: the arguments deterministic callers pass are unchanged.
+  for (const k of ['to', 'granularity', 'annualReturnPct', 'returns', 'contributions',
+    'outflows', 'assumedMonthlySpending']) {
+    check(`scenario_projection still accepts \`${k}\``,
+      k in ((scen.parameters as { properties: Record<string, unknown> }).properties));
+  }
+  check('project_cash still accepts its structured override',
+    'assumedMonthlySpending' in ((cash.parameters as { properties: Record<string, unknown> }).properties));
+
+  // 5 — no routing doctrine crept in with the wording.
+  for (const d of [cash.description, scen.description]) {
+    check('no instruction about which tool to pick',
+      !/use (this|it) (whenever|when the user|if the user)|prefer |instead of project_cash|always call/i.test(d));
+  }
+}
+
 // ══ 14. Complete-window ranking ══════════════════════════════════════════════
 //
 // `sort: 'largest'` ranked the newest 100 matching rows and called the winner

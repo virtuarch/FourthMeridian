@@ -920,12 +920,20 @@ async function buildCashSpine(
 
 const projectCash: ToolDefinition = {
   name: 'project_cash',
+  // ⚠️ THE BOUNDARY BELONGS IN THE DESCRIPTION, NOT ONLY ON A PARAMETER. 54eb8e1
+  // put "a one-off amount on a date is not part of this projection" on
+  // `assumedMonthlySpending`, where a model choosing between tools never reads
+  // it — and kept choosing this one for bonuses (5/5, then 8/10, then 9/10).
+  // Measured A/B: moving that sentence up here, and saying plainly what
+  // scenario_projection is for, took establishment from 0/5 to 5/5 on a bonus
+  // and 2/5 to 5/5 on a car, with the ordinary-projection control unmoved.
   description:
     'Deterministic cash projection to a future date, with month-end checkpoints. The ' +
     'headline answer is `projection` — an evidence-based estimate built from observed ' +
-    'payroll cadence and observed spending. `establishment` says how firmly each input is ' +
-    'pinned down; it is provenance, not a competing answer. Pass ' +
-    '`assumedMonthlySpending` when the user states a spending level.',
+    'payroll cadence and observed spending continuing as they are. ' +
+    '`assumedMonthlySpending` is the only assumption it can apply; a dated one-off amount ' +
+    'arriving or leaving is not part of this projection. `establishment` says how firmly ' +
+    'each input is pinned down; it is provenance, not a competing answer.',
   parameters: obj({
     to: str('YYYY-MM-DD horizon end. Required.'),
     assumedMonthlySpending: num('If the user stated a monthly spending level, pass it here. '
@@ -1441,13 +1449,19 @@ const SCENARIO_INPUTS = {
 
 const scenarioProjection: ToolDefinition = {
   name: 'scenario_projection',
+  // ⚠️ IT LED WITH "NET WORTH" AND EXEMPLIFIED ONLY INVESTING, so a question
+  // about CASH this year did not look like this tool's job — the one-off
+  // capability was four words between two sentences about investment returns.
+  // What changed is the framing and the examples, not the arithmetic: this says
+  // what the ledger has always done.
   description:
-    'Net worth over time under assumptions the USER stated: money moved into investments, ' +
-    'one-off amounts in or out, and an annual return. Cash comes from the same deterministic ' +
-    'projection as project_cash; this adds only what the user said. Use it for "if I invest ' +
-    'half my cash each year at 8%, where am I in 2030?" and for any year-by-year table — ' +
-    'do NOT do this arithmetic yourself. The default return is 0%: never supply a rate the ' +
-    'user did not state.',
+    'Deterministic projection when something specific happens that the observed pattern ' +
+    'does not contain: a dated one-off amount arriving or leaving — a bonus, an ' +
+    'inheritance, a car, a tax bill, proceeds from a sale — money moved into investments, ' +
+    'and an annual return. Cash comes from the same deterministic projection as ' +
+    'project_cash; this adds only what the user said, and reports cash, investments, debt ' +
+    'and net worth at every checkpoint. Do NOT do this arithmetic yourself. The default ' +
+    'return is 0%: never supply a rate the user did not state.',
   parameters: obj({ to: str('YYYY-MM-DD horizon end. Required.'), ...SCENARIO_INPUTS }, ['to']),
   async run(a, ctx) {
     const setup = await prepareScenario(a, ctx, String(a.to));
