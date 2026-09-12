@@ -14,5 +14,13 @@ export { Composer, type ComposerProps } from "@/components/ai/Composer";
 export { SuggestedPrompt } from "@/components/ai/SuggestedPrompt";
 export { KnowledgeGapCard } from "@/components/ai/KnowledgeGapCard";
 export { AiMark } from "@/components/ai/AiMark";
+export { StarterLine } from "@/components/ai/StarterLine";
 export { Markdown } from "@/components/ai/Markdown";
 export type { AiMessage } from "@/components/ai/types";
+export {
+  conversationLayoutMode,
+  STARTER_LINES,
+  EMPTY_STATE_SUGGESTIONS,
+  starterIndexFrom,
+  type ConversationLayoutMode,
+} from "@/components/ai/conversation-surface";

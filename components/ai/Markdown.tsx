@@ -15,9 +15,9 @@ import remarkGfm from "remark-gfm";
 // `any` at the call site — react-markdown@8 component-map types are incompatible with
 // React 19's JSX namespace changes.
 const MD_COMPONENTS = {
-  h1: ({ children }: { children: React.ReactNode }) => <p className="font-bold text-base mt-4 first:mt-0 mb-2" style={{ color: "var(--text-primary)" }}>{children}</p>,
-  h2: ({ children }: { children: React.ReactNode }) => <p className="font-bold text-[15px] mt-4 first:mt-0 mb-1.5" style={{ color: "var(--text-primary)" }}>{children}</p>,
-  h3: ({ children }: { children: React.ReactNode }) => <p className="font-semibold text-sm mt-3 first:mt-0 mb-1" style={{ color: "var(--text-primary)" }}>{children}</p>,
+  h1: ({ children }: { children: React.ReactNode }) => <p className="font-bold text-[17px] mt-5 first:mt-0 mb-2" style={{ color: "var(--text-primary)" }}>{children}</p>,
+  h2: ({ children }: { children: React.ReactNode }) => <p className="font-bold text-base mt-5 first:mt-0 mb-1.5" style={{ color: "var(--text-primary)" }}>{children}</p>,
+  h3: ({ children }: { children: React.ReactNode }) => <p className="font-semibold text-[15px] mt-4 first:mt-0 mb-1" style={{ color: "var(--text-primary)" }}>{children}</p>,
   p:  ({ children }: { children: React.ReactNode }) => <p className="mb-3 last:mb-0 leading-relaxed">{children}</p>,
   strong: ({ children }: { children: React.ReactNode }) => <strong className="font-semibold tabular-nums" style={{ color: "var(--text-primary)" }}>{children}</strong>,
   em: ({ children }: { children: React.ReactNode }) => <em className="italic" style={{ color: "var(--text-secondary)" }}>{children}</em>,

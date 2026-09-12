@@ -13,16 +13,26 @@
  * empty state; the other cards were hardcoded/derived descriptive chrome). The
  * backend contract is untouched: request `{spaceId, messages}` → response
  * `{message, knowledgeGaps, knowledgeGapMode}`, non-streaming, stateless.
+ *
+ * AI-3 (conversation-first layout): the layout is derived from `messages.length`
+ * alone — empty ⇒ the composer is centered under a starter line; any turn ⇒ the
+ * conversation column with the composer docked. The synthetic opening greeting is
+ * gone (the empty state replaces it); it was never sent, so the request body is
+ * byte-identical. There is no history restore, so a visit always opens empty and
+ * there is no loading state to wait on before choosing the layout.
  */
 
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, SquarePen } from "lucide-react";
 import {
   AiShell,
   ConversationView,
   Composer,
   SuggestedPrompt,
   KnowledgeGapCard,
+  StarterLine,
+  conversationLayoutMode,
+  EMPTY_STATE_SUGGESTIONS,
 } from "@/components/ai";
 import { Select } from "@/components/atlas/fields";
 import { AdviceBanner } from "@/components/dashboard/AdviceBanner";
@@ -55,28 +65,18 @@ interface SpaceOption {
 
 interface Props {
   advice: AiAdvice | null;
-  userName: string;
+  /** Index into STARTER_LINES, chosen per request by the server page. */
+  starterIndex: number;
 }
-
-const SUGGESTED_PROMPTS = [
-  "How is my debt situation?",
-  "Where can I cut spending?",
-  "Break down my 2026 spending.",
-  "Am I ready to invest?",
-  "What is my biggest risk?",
-];
 
 const ELIGIBLE_ROLES = new Set(["OWNER", "ADMIN", "MEMBER"]);
 
-export function AnalyzeClient({ advice, userName }: Props) {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: "assistant",
-      content:
-        `Hi ${userName} — I'm your Fourth Meridian AI advisor. I have access to your financial data. Ask me anything about your portfolio, debt, cash position, or whether now is a good time to make a move.`,
-    },
-  ]);
+export function AnalyzeClient({ advice, starterIndex }: Props) {
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
+  /** Latches once the composer is focused or typed into — the starter line stops swapping. */
+  const [composerEngaged, setComposerEngaged] = useState(false);
+  const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const [loading, setLoading] = useState(false);
   const [selectedSpaceId, setSelectedSpaceId] = useState<string>("master");
   const [spaces, setSpaces] = useState<SpaceOption[]>([]);
@@ -133,6 +133,16 @@ export function AnalyzeClient({ advice, userName }: Props) {
     setLoading(false);
   }, []);
 
+  /** Clears the (session-only) conversation back to the empty state. Nothing is persisted. */
+  function startNewConversation(): void {
+    stopGeneration();
+    setMessages([]);
+    setSnoozedGapKeys(new Set());
+    setExpandedGapIndices(new Set());
+    setDismissedFormIndices(new Set());
+    requestAnimationFrame(() => composerInputRef.current?.focus());
+  }
+
   async function sendMessage(text?: string) {
     const msg = text ?? input.trim();
     if (!msg || loading) return;
@@ -152,9 +162,9 @@ export function AnalyzeClient({ advice, userName }: Props) {
         signal: controller.signal,
         body: JSON.stringify({
           spaceId: selectedSpaceId,
-          // Send only user/assistant turns; skip the initial assistant greeting
-          // (index 0) as it is UI copy, not real conversation history.
-          messages: nextMessages.slice(1).map((m) => ({ role: m.role, content: m.content })),
+          // Only real user/assistant turns exist in state (no UI greeting), so the
+          // whole list is the conversation history.
+          messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
         }),
       });
 
@@ -231,24 +241,36 @@ export function AnalyzeClient({ advice, userName }: Props) {
     return <KnowledgeGapCard>{inner}</KnowledgeGapCard>;
   }
 
-  const emptyState = (
-    <div className="space-y-4 pt-1">
-      {advice && <AdviceBanner advice={advice} />}
-      <div>
-        <p className="text-xs font-medium uppercase tracking-widest mb-2" style={{ color: "var(--text-muted)" }}>
-          Try asking
-        </p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {SUGGESTED_PROMPTS.map((p) => (
-            <SuggestedPrompt key={p} label={p} onSelect={() => sendMessage(p)} variant="card" />
-          ))}
-        </div>
+  const mode = conversationLayoutMode(messages.length);
+
+  const suggestions = (
+    <div className="max-w-3xl mx-auto w-full">
+      <div role="group" aria-label="Suggestions" className="mt-4 flex flex-wrap justify-center gap-2">
+        {EMPTY_STATE_SUGGESTIONS.map((s) => (
+          <SuggestedPrompt key={s.label} label={s.label} onSelect={() => sendMessage(s.prompt)} variant="chip" />
+        ))}
       </div>
+      {advice && (
+        <div className="mx-auto mt-10 max-w-xl">
+          <AdviceBanner advice={advice} />
+        </div>
+      )}
     </div>
   );
 
-  const contextControl = (
-    <div className="relative">
+  const controls = (
+    <>
+      {mode === "conversation" && (
+        <button
+          type="button"
+          onClick={startNewConversation}
+          className="inline-flex items-center gap-1.5 h-8 rounded-lg px-2.5 text-xs font-medium transition-colors text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]"
+        >
+          <SquarePen size={14} aria-hidden />
+          <span className="max-sm:sr-only">New chat</span>
+        </button>
+      )}
+      <div className="relative">
       <Select
         value={selectedSpaceId}
         onChange={(e) => setSelectedSpaceId(e.target.value)}
@@ -264,28 +286,29 @@ export function AnalyzeClient({ advice, userName }: Props) {
         className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none"
         style={{ color: "var(--text-muted)" }}
       />
-    </div>
+      </div>
+    </>
   );
 
   return (
     <AiShell
-      contextControl={contextControl}
+      mode={mode}
+      controls={controls}
+      lead={<StarterLine initialIndex={starterIndex} frozen={composerEngaged || input.length > 0} />}
+      aside={suggestions}
       composer={
         <Composer
           value={input}
-          onChange={setInput}
+          onChange={(v) => { setInput(v); setComposerEngaged(true); }}
+          onFocus={() => setComposerEngaged(true)}
           onSubmit={() => sendMessage()}
           onStop={stopGeneration}
           busy={loading}
+          textareaRef={composerInputRef}
         />
       }
     >
-      <ConversationView
-        messages={messages}
-        busy={loading}
-        renderExtras={renderExtras}
-        emptyState={emptyState}
-      />
+      <ConversationView messages={messages} busy={loading} renderExtras={renderExtras} />
     </AiShell>
   );
 }

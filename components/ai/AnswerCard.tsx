@@ -34,7 +34,7 @@ export function AnswerCard({ message, children }: AnswerCardProps) {
       <div className="pt-1.5 shrink-0">
         <AiMark />
       </div>
-      <div className="min-w-0 flex-1 space-y-2.5 text-sm" style={{ color: "var(--text-secondary)" }}>
+      <div className="min-w-0 flex-1 space-y-3 text-[15px]" style={{ color: "var(--text-secondary)" }}>
         <div className="leading-relaxed">
           <Markdown>{message}</Markdown>
         </div>
