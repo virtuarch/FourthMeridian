@@ -614,6 +614,40 @@ console.log('13g. corpus span — the result declares the boundary of its own au
       src.slice(src.indexOf("name: 'get_transactions'"), src.indexOf('parameters: obj({', src.indexOf("name: 'get_transactions'")))));
 }
 
+console.log('13h. applied facts — nothing reaches the applied channel that did not move the number');
+{
+  const src = code(read('scripts/ai-baseline/tools.ts'));
+
+  // THE HOLE (1d67786 §7): `statedAs` was handed to the SPENDING_LEVEL statement
+  // verbatim, and `assembleForecast` quotes a statement's wording into
+  // `appliedFacts`. A sentence about a $15k bonus therefore arrived attached to a
+  // $4,346.48 spending figure, moved the projection by $10.43, and was reported as
+  // applied — and carried into the durable checkpoint.
+  check('no tool exposes a free-text `statedAs` the model can fill',
+    !(openAiToolSchemas() as { function: { name: string; parameters: unknown } }[])
+      .filter((t) => t.function.name !== WRITE_TOOL_NAME)
+      .some((t) => JSON.stringify(t.function.parameters).includes('statedAs')));
+  check('the cash spine takes no wording from its caller',
+    /opts: \{ asOf: string; assumedMonthlySpending\?: number \},/.test(src));
+  check('the statement\'s wording is DERIVED from the amount it applies',
+    /statedAs: `assumed monthly spending \$\{monthly\}`/.test(src));
+  check('…and there is exactly one derivation of it',
+    (src.match(/assumed monthly spending \$\{monthly\}/g) ?? []).length === 1);
+  check('the internal spending override carries a number only, no prose',
+    /spendingOverride\?: \{ monthly: number \}/.test(src)
+    && !/statedAs: `monthly spending of/.test(src));
+
+  // The two places a reader could take as "this was applied" are fed by the same
+  // list, so one derivation covers both. A third would be a new hole.
+  const cash = src.slice(src.indexOf("name: 'project_cash'"), src.indexOf('// ── 9. Pay dates'));
+  check('`appliedUserFacts` is the assembler\'s own list, unedited',
+    /appliedUserFacts: f\.appliedFacts,/.test(cash));
+  check('the spending basis echoes that same list and derives nothing of its own',
+    /source: 'USER_STATED', statedAs: f\.appliedFacts/.test(cash));
+  check('no other field in the result asserts application from free text',
+    !/applied[A-Za-z]*:\s*(a\.|String\(a\.)/.test(cash));
+}
+
 // ══ 14. Complete-window ranking ══════════════════════════════════════════════
 //
 // `sort: 'largest'` ranked the newest 100 matching rows and called the winner

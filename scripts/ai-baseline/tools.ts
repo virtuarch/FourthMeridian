@@ -815,12 +815,12 @@ interface CashSpine {
   /** The accounts payload the projection opened from. Null for a refused build. */
   accounts:      AccountsSectionData | null;
   runTo:         (end: string,
-                  spendingOverride?: { monthly: number; statedAs: string }) => AssembledForecast;
+                  spendingOverride?: { monthly: number }) => AssembledForecast;
 }
 
 async function buildCashSpine(
   ctx: ToolContext,
-  opts: { asOf: string; assumedMonthlySpending?: number; statedAs?: string },
+  opts: { asOf: string; assumedMonthlySpending?: number },
 ): Promise<CashSpine | { unavailable: string; asOf: string }> {
   const asOf = opts.asOf;
   const retrospective = asOf < ctx.asOfISO;
@@ -847,16 +847,29 @@ async function buildCashSpine(
   // spending levels; the expensive part is the three reads above, and
   // `assembleForecast` itself is pure. Baking one statement into the closure
   // would have forced a fresh set of reads per bisection step.
-  const spendingStatement = (monthly: number, statedAs: string): UserStatement[] => ([{
+  // ⚠️ ONE DERIVATION OF THE WORDING, AND IT IS THE AMOUNT. See the note below.
+  const spendingStatement = (monthly: number): UserStatement[] => ([{
     mode: StatementMode.ASSERTS_FACT,
-    statedAs,
+    statedAs: `assumed monthly spending ${monthly}`,
     asOfISO: ctx.asOfISO,
     subject: { kind: 'SPENDING_LEVEL', amount: monthly,
       currency: 'USD', periodBasis: PeriodBasis.MONTHLY },
   }]);
+  // ⚠️ THE WORDING IS DERIVED FROM THE NUMBER, NEVER SUPPLIED. This took a caller's
+  // `statedAs` verbatim, and `assembleForecast` quotes it into `appliedFacts` as the
+  // words for the SPENDING LEVEL it applied — so any sentence could ride into the
+  // applied channel attached to a figure it did not describe. Measured (1d67786):
+  // the model passed "user has a $15k net bonus on 2026-12-07 added on top of current
+  // pattern", the projection moved $10.43, and the result reported
+  // `spending baseline 4346.48 USD: "…$15k net bonus…"` — a $15,000 assumption
+  // presented as applied when it was discarded, and carried on into the durable
+  // checkpoint's `basis.userAssumptions`.
+  //
+  // Generating the sentence from the amount makes the fact self-describing: what it
+  // says and what it applied are the same value, by construction. There is no longer
+  // a channel through which uninterpreted prose can become an applied fact.
   const statements: UserStatement[] = typeof opts.assumedMonthlySpending === 'number'
-    ? spendingStatement(opts.assumedMonthlySpending,
-        String(opts.statedAs ?? `assumed monthly spending ${opts.assumedMonthlySpending}`))
+    ? spendingStatement(opts.assumedMonthlySpending)
     : [];
 
   // For a retrospective run the accounts payload is rebuilt from the snapshot
@@ -891,11 +904,11 @@ async function buildCashSpine(
 
   return {
     asOf, retrospective, openingBasis, accounts: openingAccounts,
-    runTo: (end: string, spendingOverride?: { monthly: number; statedAs: string }) =>
+    runTo: (end: string, spendingOverride?: { monthly: number }) =>
       assembleForecast({
         ctx: forecastCtx, streams, asOfISO: asOf,
         statements: spendingOverride
-          ? spendingStatement(spendingOverride.monthly, spendingOverride.statedAs)
+          ? spendingStatement(spendingOverride.monthly)
           : statements,
         horizon: { fromISO: asOf, toISO: end, origin: AssumptionOrigin.USER_REQUESTED,
           statedAs: `through ${end}` } as unknown as ForecastHorizon,
@@ -915,8 +928,9 @@ const projectCash: ToolDefinition = {
     '`assumedMonthlySpending` when the user states a spending level.',
   parameters: obj({
     to: str('YYYY-MM-DD horizon end. Required.'),
-    assumedMonthlySpending: num('If the user stated a monthly spending level, pass it here.'),
-    statedAs: str('The user\'s own words for that assumption, e.g. "assume I spend 6k".'),
+    assumedMonthlySpending: num('If the user stated a monthly spending level, pass it here. '
+      + 'It is the only user assumption this tool can apply. A one-off amount on a date — '
+      + 'a bonus, an inheritance, a purchase, a sale — is not part of this projection.'),
     checkpoints: { type: 'string', enum: ['monthly', 'none'],
       description: 'monthly = a balance at each month-end between now and the horizon. '
         + 'Default monthly for horizons over ~45 days.' },
@@ -928,8 +942,7 @@ const projectCash: ToolDefinition = {
     const spine = await buildCashSpine(ctx, {
       asOf: (a.asOf as string) || ctx.asOfISO,
       ...(typeof a.assumedMonthlySpending === 'number'
-        ? { assumedMonthlySpending: a.assumedMonthlySpending,
-            statedAs: a.statedAs === undefined ? undefined : String(a.statedAs) }
+        ? { assumedMonthlySpending: a.assumedMonthlySpending }
         : {}),
     });
     if ('unavailable' in spine) return spine;
@@ -1150,8 +1163,7 @@ async function prepareScenario(
   const spine = await buildCashSpine(ctx, {
     asOf: ctx.asOfISO,
     ...(typeof a.assumedMonthlySpending === 'number'
-      ? { assumedMonthlySpending: a.assumedMonthlySpending,
-          statedAs: a.statedAs === undefined ? undefined : String(a.statedAs) }
+      ? { assumedMonthlySpending: a.assumedMonthlySpending }
       : {}),
   });
   if ('unavailable' in spine) return spine;
@@ -1269,8 +1281,7 @@ async function prepareScenario(
     const hit = spineCache.get(key);
     if (hit) return hit;
     const allDates = [...new Set([...dates, ...shareDates])].sort();
-    const override = monthlySpending === undefined ? undefined
-      : { monthly: monthlySpending, statedAs: `monthly spending of ${monthlySpending}` };
+    const override = monthlySpending === undefined ? undefined : { monthly: monthlySpending };
     const points = allDates.map((date) => ({
       date, liquid: runTo(date, override).projection?.closing ?? null,
       isCheckpoint: checkpointDates.has(date),
@@ -1426,7 +1437,6 @@ const SCENARIO_INPUTS = {
       label: str('What it is.') }, ['onDate', 'amount']) },
   assumedMonthlySpending: num('If the user stated a monthly spending level, pass it here — '
     + 'it changes the cash spine exactly as it does in project_cash.'),
-  statedAs: str('The user\'s own words for that spending assumption.'),
 };
 
 const scenarioProjection: ToolDefinition = {
