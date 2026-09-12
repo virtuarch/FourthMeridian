@@ -47,7 +47,7 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
   const compaction = args.compaction === undefined ? DEFAULT_COMPACTION : args.compaction;
 
   const ctx = await assembleFullContext(spaceCtx, agentId);
-  const evidence = await buildEvidence(ARM, ctx, spaceCtx.spaceId);
+  const evidence = await buildEvidence(ARM, ctx, spaceCtx);
 
   // A2 is a tool arm. A model that cannot take tools would silently become a
   // different experiment, so it is stated rather than absorbed.

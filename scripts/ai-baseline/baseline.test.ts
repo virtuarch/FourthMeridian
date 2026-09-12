@@ -120,7 +120,7 @@ console.log('3. evidence arms');
   check('A3 is given no financial body at all',
     /arm === 'A3'[\s\S]{0,160}body: null/.test(src));
   check('A2 gets a thin core, not the assembled context',
-    /arm === 'A2'[\s\S]{0,260}thinCore\(ctx\)/.test(src));
+    /arm === 'A2'[\s\S]{0,400}thinCore\(ctx, activity\)/.test(src));
   check('the thin core omits per-account rows and the snapshot series',
     !/function thinCore[\s\S]{0,1200}acc\.accounts/.test(src)
       && !/function thinCore[\s\S]{0,1200}snap\.history/.test(src));
@@ -384,7 +384,7 @@ console.log('12. interactive operator mode');
   // Same arm, same evidence, same instruction, same tools.
   check('the arm is fixed to A2', /const ARM = 'A2' as const/.test(src));
   check('evidence comes from buildEvidence, not a bespoke pack',
-    /buildEvidence\(ARM, ctx, spaceCtx\.spaceId\)/.test(src));
+    /buildEvidence\(ARM, ctx, spaceCtx\)/.test(src));
   check('the tool surface is the shared one', /openAiToolSchemas\(\)/.test(src));
   check('the instruction is the shared one — not a second prompt',
     /SYSTEM_INSTRUCTION/.test(src) && !/You are Fourth Meridian/.test(src));

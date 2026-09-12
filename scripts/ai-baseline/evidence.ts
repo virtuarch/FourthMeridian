@@ -41,6 +41,11 @@ import { loadCoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { runSignalDetectors } from '@/lib/ai/signals';
 import type { SpaceContext } from '@/lib/space';
 import { recallMemories, MemoryKind } from './memory-store';
+import { transactionCorpusSpan } from '@/lib/data/transaction-query';
+import { todayUTCISO } from '@/lib/time/clock';
+import {
+  resolveActivityWindow, projectActivityFrame, type ActivityFrame,
+} from './activity-frame';
 
 export const ARMS = ['A0', 'A1', 'A2', 'A3'] as const;
 export type Arm = (typeof ARMS)[number];
@@ -90,6 +95,65 @@ export async function assembleFullContext(
   };
 }
 
+/**
+ * The instant this orientation describes: the end of the window `recent`'s own
+ * figures were measured over. Reading it from the assessment section rather than
+ * from a clock is what keeps `activity` and `recent` on the same day — and it
+ * means a caller that assembles the context retrospectively gets a coherent
+ * orientation without passing anything.
+ */
+function assessmentCeiling(ctx: SpaceContext_AI): string {
+  const txn = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY]?.data as
+    TransactionsSummaryData | undefined;
+  return txn?.endDate ?? todayUTCISO();
+}
+
+/**
+ * Assemble the trailing-six-month frame, or return null when it must not exist.
+ *
+ * ⚠️ THE WINDOW IS RESOLVED BEFORE ANYTHING IS ASSEMBLED. A frame that will not
+ * be emitted therefore costs NO extra query — the existence rule is decided from
+ * `asOf` and the corpus bound alone, and the second TRANSACTIONS_SUMMARY runs
+ * exactly once, only when there is a frame to measure.
+ *
+ * ⚠️ THE THRESHOLD IS READ FROM `recent`, NOT RE-DECLARED. `windowDays` comes
+ * from the assessment section this orientation already holds, so
+ * `2 × ASSESSMENT_WINDOW_DAYS` cannot drift from W4 — there is no second copy of
+ * the number to go stale.
+ */
+async function buildActivityFrame(
+  ctx: SpaceContext_AI, spaceCtx: SpaceContext, asOf: string,
+): Promise<ActivityFrame | null> {
+  const txn = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY]?.data as
+    TransactionsSummaryData | undefined;
+  if (!txn?.windowDays) return null;
+
+  // 55a2c22 — the corpus bound taken UNDER the ceiling, so a retrospective
+  // orientation cannot learn from the frame's existence that later history runs on.
+  const { from: coverageFrom } = await transactionCorpusSpan({ spaceId: spaceCtx.spaceId, asOf });
+  const window = resolveActivityWindow({
+    asOf, coverageFrom, assessmentWindowDays: txn.windowDays,
+  });
+  if (!window) return null;
+
+  const assembler = getAssembler(FinanceDomains.TRANSACTIONS_SUMMARY);
+  if (!assembler) return null;
+  try {
+    const section = await assembler(
+      spaceCtx,
+      { scopeHint: 'full', transactionWindow: {
+        startDate: window.from, endDate: window.to, label: `activity ${window.from}..${window.to}` } },
+    );
+    const data = section?.data as TransactionsSummaryData | undefined;
+    return data ? projectActivityFrame(data) : null;
+  } catch (err) {
+    // Non-fatal by construction: a failed second frame must never cost the
+    // orientation its assessment. The single-frame body is the proven control.
+    console.error('[evidence] activity frame threw:', err);
+    return null;
+  }
+}
+
 export interface EvidencePack {
   arm: Arm;
   /** The message body handed to the model as evidence, or null for none. */
@@ -110,7 +174,15 @@ const tok = (s: string) => Math.ceil(s.length / 4);
  * Deliberately excludes: per-account rows, the snapshot series, category and
  * merchant rollups, position detail. Those are what the tools are for.
  */
-function thinCore(ctx: SpaceContext_AI): Record<string, unknown> {
+function thinCore(
+  ctx: SpaceContext_AI,
+  /**
+   * The trailing-six-month measured frame, or null when it must not exist.
+   * Placed as a SIBLING of `recent` and only when present — the key is omitted,
+   * never null. See activity-frame.ts for why both of those are load-bearing.
+   */
+  activity: ActivityFrame | null = null,
+): Record<string, unknown> {
   const acc  = ctx.domains[FinanceDomains.ACCOUNTS]?.data as AccountsSectionData | undefined;
   const txn  = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY]?.data as TransactionsSummaryData | undefined;
   const snap = ctx.domains[FinanceDomains.SNAPSHOT_HISTORY]?.data as SnapshotSectionData | undefined;
@@ -132,6 +204,10 @@ function thinCore(ctx: SpaceContext_AI): Record<string, unknown> {
       cardAndDebtPayments: txn.debtPaymentTotal, netCashFlow: txn.netCashFlow,
       transactionCount: txn.transactionCount,
     } : null,
+    // ⚠️ SIBLING OF `recent`, NOT A FIELD INSIDE IT, AND OMITTED WHEN ABSENT.
+    // `recent` above is byte-for-byte what it was before this key existed; the
+    // second frame adds a view and changes nothing about the assessment.
+    ...(activity ? { activity } : {}),
     netWorthHistory: snap?.latest ? {
       latest: snap.latest.date, pointsInContext: snap.snapshotCount,
       earliest: snap.oldestDate, changeThisMonth: snap.canonicalChange,
@@ -216,8 +292,16 @@ async function memoryLine(spaceId: string, ownerUserId: string) {
 
 /** Build the evidence for one arm. */
 export async function buildEvidence(
-  arm: Arm, ctx: SpaceContext_AI, spaceId: string,
+  arm: Arm, ctx: SpaceContext_AI, spaceCtx: SpaceContext,
+  /**
+   * The orientation's information ceiling. Defaults to the end of the assessment
+   * window this orientation already carries, so the two frames ALWAYS share an
+   * end date — two frames ending on different days is a confound, not a design.
+   * Falls back to the one clock when the section is absent.
+   */
+  asOf: string = assessmentCeiling(ctx),
 ): Promise<EvidencePack> {
+  const { spaceId } = spaceCtx;
   if (arm === 'A3') {
     return {
       arm, body: null, includesAssessment: false, approxTokens: 0,
@@ -226,12 +310,13 @@ export async function buildEvidence(
   }
 
   if (arm === 'A2') {
-    const [envelope, memory] = await Promise.all([
+    const [envelope, memory, activity] = await Promise.all([
       loadCoverageEnvelope(spaceId),
       memoryLine(spaceId, ctx.userId),
+      buildActivityFrame(ctx, spaceCtx, asOf),
     ]);
     const body = JSON.stringify(
-      { ...thinCore(ctx), evidenceCoverage: envelope, memory }, null, 1);
+      { ...thinCore(ctx, activity), evidenceCoverage: envelope, memory }, null, 1);
     return {
       arm, body: `FINANCIAL ORIENTATION\n${body}`, includesAssessment: false,
       approxTokens: tok(body),

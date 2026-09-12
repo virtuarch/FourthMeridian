@@ -346,7 +346,7 @@ export async function runCase(args: {
   if (!probe) throw new Error(`unknown probe: ${probeId}`);
 
   const ctx = await assembleFullContext(spaceCtx, agentId);
-  const evidence = await buildEvidence(arm, ctx, spaceCtx.spaceId);
+  const evidence = await buildEvidence(arm, ctx, spaceCtx);
   const useTools = ARM_USES_TOOLS[arm] && supportsTools(model);
   const toolSchemas = useTools ? openAiToolSchemas() : [];
   const toolCtx: ToolContext = { spaceCtx, spaceId: spaceCtx.spaceId, asOfISO };
