@@ -25,6 +25,7 @@ import { assembleFullContext, buildEvidence, ARM_QUESTION } from './evidence';
 import { openAiToolSchemas, type ToolContext } from './tools';
 import { executeTurn, sumTurns, supportsTools, SYSTEM_INSTRUCTION, type TurnRecord } from './run';
 import { compactToolHistory, DEFAULT_COMPACTION, type CompactionPolicy } from './compaction';
+import { newScenarioSlot } from './active-scenario';
 import type { SpaceContext } from '@/lib/space';
 
 /** The arm this mode is. Fixed — choosing it per session would make sessions incomparable. */
@@ -66,6 +67,8 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
   mkdirSync(runDir, { recursive: true });
 
   const turns: TurnRecord[] = [];
+  /** ⚠️ ONE SLOT, ONE CONVERSATION. Dies with the process; nothing is persisted. */
+  const scenario = newScenarioSlot();
 
   /**
    * ⚠️ WRITTEN AFTER EVERY TURN, not at the end. A dogfooding session ends by
@@ -183,7 +186,7 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
 
     process.stdout.write('    …thinking\r');
     const rec = await executeTurn({
-      messages, user: line, index: turns.length, model, toolSchemas, toolCtx,
+      messages, user: line, index: turns.length, model, toolSchemas, toolCtx, scenario,
       // The session already has an identity for its artifact; reuse it as the
       // opaque grouping key so a dogfood session's cost is summable (Slice 3).
       correlationId: `interactive:${sessionId}`,

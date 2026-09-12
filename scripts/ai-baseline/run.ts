@@ -25,6 +25,10 @@ import { openAiToolSchemas, findTool, type ToolContext } from './tools';
 import { runWithAiInvocationContext } from '@/lib/ai/invocation-context';
 import { checkpointProjection } from './memory-tools';
 import {
+  captureActiveScenario, applyCapture, injectScenario, newScenarioSlot,
+  type ScenarioSlot,
+} from './active-scenario';
+import {
   compactToolHistory, DEFAULT_COMPACTION,
   type CompactionPolicy, type CompactionStats,
 } from './compaction';
@@ -63,6 +67,8 @@ export interface TurnRecord {
   toolCalls: { name: string; arguments: unknown; result: unknown; latencyMs: number; error?: string }[];
   /** Subjects of any checkpoints written silently during this turn (slice 7). */
   checkpoints?: string[];
+  /** What this turn did to the conversation's hypothetical, when it did anything. */
+  scenarioCapture?: 'REPLACE' | 'CLEAR';
   roundTrips: number;
   /** 429s absorbed on this turn, with how long each wait was. Reported, never hidden. */
   retries: { attempt: number; waitedMs: number; reason: string }[];
@@ -186,6 +192,14 @@ export async function executeTurn(args: {
    * → invocations are still recorded and still billed, just not groupable.
    */
   correlationId?: string;
+  /**
+   * The conversation's single hypothetical slot, if it has one.
+   *
+   * ⚠️ OWNED BY THE CALLER, NOT BY THE TURN. A turn reads it to inject and writes
+   * it when a scenario succeeds or fails; it belongs to whoever owns the
+   * transcript, and it dies with them.
+   */
+  scenario?: ScenarioSlot;
 }): Promise<TurnRecord> {
   // A tool loop makes SEVERAL invocations for ONE user turn; the ambient context
   // is what lets the ledger sum them back into that turn.
@@ -201,9 +215,15 @@ async function executeTurnInner(args: {
   index:       number;
   model:       string;
   toolSchemas: unknown[];
+  scenario?:   ScenarioSlot;
   toolCtx:     ToolContext;
 }): Promise<TurnRecord> {
   const { messages, user, index, model, toolSchemas, toolCtx } = args;
+  // ⚠️ THE RESERVED TRAILING SLOT, REWRITTEN EACH TURN. Independent of Clip 6 —
+  // compaction only rewrites `role: 'tool'` content and counts turns by assistant
+  // completions, so a system message is inert to it. This is the whole continuity
+  // contract: raw scenario payloads keep ageing out exactly as before.
+  if (args.scenario) injectScenario(messages, args.scenario);
   messages.push({ role: 'user', content: user });
   const rec: TurnRecord = {
     index, user, toolCalls: [], roundTrips: 0, retries: [], assistant: null,
@@ -257,6 +277,17 @@ async function executeTurnInner(args: {
         // returns null for every tool that is not `project_cash`.
         const checkpointed = await checkpointProjection(toolCtx, call.name, result);
         if (checkpointed) (rec.checkpoints ??= []).push(checkpointed.subject);
+        // ⚠️ THE SAME LIFECYCLE POSITION, THE OPPOSITE TOOL FILTER, AND A
+        // DIFFERENT DESTINATION. `checkpointProjection` writes a durable record
+        // for `project_cash`; this holds a transient pair for
+        // `scenario_projection` and touches no store. Their persistence
+        // semantics must not be mixed: one is what we told the user, the other
+        // is what we are supposing with them.
+        if (args.scenario) {
+          const capture = captureActiveScenario(call.name, safeParse(call.arguments), result);
+          applyCapture(args.scenario, capture);
+          if (capture.action !== 'IGNORE') rec.scenarioCapture = capture.action;
+        }
         messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
       }
     }
@@ -357,11 +388,15 @@ export async function runCase(args: {
   if (evidence.body) messages.push({ role: 'user', content: evidence.body });
 
   const turns: TurnRecord[] = [];
+  // ⚠️ ONE SLOT, ONE CONVERSATION. Not an array and not a history: the failure
+  // involved a single hypothetical revised in place, and a second slot would need
+  // user-visible identity nobody asked for.
+  const scenario = newScenarioSlot();
   let ok = true;
 
   for (const [index, user] of probe.turns.entries()) {
     const rec = await executeTurn({ messages, user, index, model, toolSchemas, toolCtx,
-      correlationId: `${probeId}:${arm}:${model}:${runDir}` });
+      scenario, correlationId: `${probeId}:${arm}:${model}:${runDir}` });
     turns.push(rec);
     if (rec.error) { ok = false; break; }
     // ⚠️ AFTER THE ANSWER LANDS, NEVER BEFORE. `executeTurn` has appended the final
