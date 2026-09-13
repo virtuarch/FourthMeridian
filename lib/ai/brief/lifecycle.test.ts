@@ -439,6 +439,26 @@ async function main() {
       && r.store.get(today)!.promptVersion === BRIEF_PROMPT_VERSION);
   }
 
+  console.log('\n13. a refresh-policy change is re-evaluated, never forced');
+  {
+    const r = harness();
+    const t = (m: number) => new Date(T0.getTime() + m * 60_000);
+    await r.ensure(t(0));
+    const cached = await r.ensure(t(1));
+    check('A. unchanged policy and evidence → cached, no model call', cached.status === 'FRESH' && cached.path === 'CACHED' && r.state.generations === 1);
+    r.state.watermark = 'wm-policy-12h';   // the policy rows' hash moved; no source changed state
+    const same = await r.ensure(t(2));
+    check('B. policy version moved, health unchanged → watermark check, digest equal, no model call',
+      same.status === 'FRESH' && same.path === 'WATERMARK_REFRESHED' && r.state.generations === 1);
+    r.state.watermark = 'wm-policy-6h';
+    r.state.pkg.freshness = { ...r.state.pkg.freshness!, staleSources: [{ label: 'Ethereum Wallet', state: 'OUT_OF_DATE', lastUpdated: '2026-09-12' }] };
+    r.state.delayMs = 20;
+    const [x, y] = await Promise.all([r.ensure(t(3)), r.ensure(t(3))]);
+    r.state.delayMs = 0;
+    check('C/D. the policy made a source overdue → exactly one regeneration across two tabs, reason change',
+      r.state.generations === 2 && [x.status, y.status].sort().join(',') === 'GENERATED,IN_PROGRESS' && r.state.lastReason === 'change');
+  }
+
   console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);
   process.exit(failures === 0 ? 0 : 1);
 }

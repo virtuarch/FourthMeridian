@@ -19,13 +19,14 @@ import type { PrismaClient, VisibilityLevel } from '@prisma/client';
 import { grantsAccountDetail } from '@/lib/ai/visibility';
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from '@/lib/accounts/display-identity';
 import { deriveSpaceDataHealth, type DataHealthAccountInput, type SpaceDataHealth } from './space-data-health.core';
+import { loadRefreshPolicies } from '@/lib/platform/refresh-policy';
 
-type Client = Pick<PrismaClient, 'spaceAccountLink'>;
+type Client = Pick<PrismaClient, 'spaceAccountLink' | 'platformSetting'>;
 
 export async function loadSpaceDataHealth(
   client: Client, args: { spaceId: string; viewerUserId: string; now: Date },
 ): Promise<SpaceDataHealth> {
-  const links = await client.spaceAccountLink.findMany({
+  const [links, policies] = await Promise.all([client.spaceAccountLink.findMany({
     where: { spaceId: args.spaceId, status: 'ACTIVE', financialAccount: { deletedAt: null } },
     select: {
       visibilityLevel: true,
@@ -45,7 +46,7 @@ export async function loadSpaceDataHealth(
         },
       },
     },
-  });
+  }), loadRefreshPolicies(client)]);
 
   const rows: DataHealthAccountInput[] = links.map((l) => {
     const fa = l.financialAccount;
@@ -69,5 +70,5 @@ export async function loadSpaceDataHealth(
     };
   });
 
-  return deriveSpaceDataHealth(rows, args.viewerUserId, args.now);
+  return deriveSpaceDataHealth(rows, args.viewerUserId, args.now, policies);
 }

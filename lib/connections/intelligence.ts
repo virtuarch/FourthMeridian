@@ -197,6 +197,8 @@ export function sourceHealthForConnection(
     accountsUpdated: (Date | null)[];
     plaid?: SourceHealthInput["plaid"];
     wallet?: SourceHealthInput["wallet"];
+    /** The resolved BANK (Plaid) or WALLET refresh policy. */
+    policy?: SourceHealthInput["policy"];
   },
   now: Date,
 ): SourceHealth {
@@ -205,6 +207,7 @@ export function sourceHealthForConnection(
     accountsUpdated: input.accountsUpdated,
     plaid: input.provider === "PLAID" ? input.plaid ?? null : null,
     wallet: input.provider === "WALLET" ? input.wallet ?? null : null,
+    policy: input.policy ?? null,
   }, now);
 }
 

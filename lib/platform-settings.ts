@@ -6,6 +6,7 @@
  */
 
 import { db } from "@/lib/db";
+import { DEFAULT_REFRESH_CADENCE, REFRESH_CADENCE_SETTING_KEY } from "@/lib/platform/refresh-policy.core";
 
 export const PlatformSettingKey = {
   REQUIRE_TOTP_SYSTEM_ADMIN: "require_totp_system_admin",
@@ -36,6 +37,11 @@ export const PlatformSettingKey = {
   // exception is bounded to never-configured and not extended to unreadable.
   MAINTENANCE_MODE:          "maintenance_mode",
   INGESTION_PAUSED:          "ingestion_paused",
+  // Expected refresh cadence per source kind — policy that source health judges
+  // "overdue" against. Read only through lib/platform/refresh-policy.ts; the
+  // enum, grace and defaults live in refresh-policy.core.ts.
+  REFRESH_CADENCE_BANK:      REFRESH_CADENCE_SETTING_KEY.BANK,
+  REFRESH_CADENCE_WALLET:    REFRESH_CADENCE_SETTING_KEY.WALLET,
 } as const;
 
 export type PlatformSettingKeyType = typeof PlatformSettingKey[keyof typeof PlatformSettingKey];
@@ -76,6 +82,8 @@ const DEFAULTS: Record<PlatformSettingKeyType, string> = {
   // `?? DEFAULTS[key]` deliberately collapses.
   maintenance_mode:          "false",
   ingestion_paused:          "false",
+  refresh_cadence_bank:      DEFAULT_REFRESH_CADENCE.BANK,
+  refresh_cadence_wallet:    DEFAULT_REFRESH_CADENCE.WALLET,
 };
 
 /** Read all platform settings as a key→value map. */

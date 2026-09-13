@@ -52,6 +52,11 @@
  * retired: jobs/sync-crypto.ts was always production-ready — only the schedule
  * was gated, and the tier that gated it is gone.
  *
+ * UNIFIED WALLET REFRESH (2026-09-13): sync-crypto sweeps EVERY syncable wallet
+ * (BTC, ETH, SOL and any chain the sync registry can read) through
+ * lib/crypto/wallet-refresh.ts, not Bitcoin only; sync-crypto-continuation at :30
+ * finishes anything its work budget deferred.
+ *
  * DELIBERATELY NOT HERE (S0 rulings): dead-job detection (S5) ·
  * run-ai-advice, take-snapshot (v2.6b / deferred — R7).
  *
@@ -130,6 +135,16 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   },
   // Pre-S2 slot: vercel.json "0 7 * * *". Single-purpose since S3 — the
   // OPS-3 notification-cleanup tail moved to its own 07:30 registration.
+  {
+    // The wallet sweep's continuation: wallets the :00 run's work budget deferred.
+    // The :30 ticks of these hours already fire (vercel.json). The sweep skips
+    // wallets not yet due, so with nothing deferred this run is one query.
+    name: "sync-crypto-continuation",
+    hourUTC: [0, 6, 12, 18],
+    minuteUTC: 30,
+    expectedEveryHours: 6,
+    run: async () => (await import("@/jobs/sync-crypto")).syncCrypto({ continuation: true }),
+  },
   {
     name: "process-deletions",
     hourUTC: 7,

@@ -35,6 +35,9 @@
  *   Space                   updatedAt                      reporting currency
  *   SpaceDashboardSection   updatedAt                      declared monthly expenses
  *   SpaceMemory             count, ACTIVE count, max(createdAt) — for THIS OWNER in THIS Space only
+ *   PlatformSetting         hash of the refresh-cadence rows the expected refresh cadence that decides
+ *                                                         "overdue" — a policy change moves health
+ *                                                         with no financial row changing
  *   clock                   floor(now / 1 h)               freshness bands that move with time alone
  *
  * ⚠️ DELIBERATELY NOT INPUTS. Merchant renames and the names of users who added a
@@ -51,9 +54,10 @@
 
 import { createHash } from 'node:crypto';
 import { Prisma } from '@prisma/client';
+import { REFRESH_CADENCE_SETTING_KEY } from '@/lib/platform/refresh-policy.core';
 import { WATERMARK_CLOCK_BUCKET_MS } from './policy';
 
-export const WATERMARK_VERSION = 'brief-source-v2';
+export const WATERMARK_VERSION = 'brief-source-v3';
 
 /** What the watermark is computed from. Counts, clocks and opaque row hashes only. */
 export interface WatermarkInputs {
@@ -76,6 +80,7 @@ export interface WatermarkInputs {
   spaceUpdatedAt: Date | null;
   expenseSectionUpdatedAt: Date | null;
   memoryCount: number; memoryActiveCount: number; memoryCreatedAt: Date | null;
+  refreshPolicyHash: string | null;
 }
 
 const iso = (d: Date | null) => (d ? d.toISOString() : null);
@@ -157,7 +162,9 @@ export async function readWatermarkInputs(
       (SELECT "updatedAt" FROM "SpaceDashboardSection" WHERE "spaceId" = ${spaceId} AND key = 'emergency_fund_progress') AS "expenseSectionUpdatedAt",
       (SELECT count(*) FROM "SpaceMemory" WHERE "spaceId" = ${spaceId} AND "ownerUserId" = ${ownerUserId}) AS "memoryCount",
       (SELECT count(*) FROM "SpaceMemory" WHERE "spaceId" = ${spaceId} AND "ownerUserId" = ${ownerUserId} AND status = 'ACTIVE') AS "memoryActiveCount",
-      (SELECT max("createdAt") FROM "SpaceMemory" WHERE "spaceId" = ${spaceId} AND "ownerUserId" = ${ownerUserId}) AS "memoryCreatedAt"
+      (SELECT max("createdAt") FROM "SpaceMemory" WHERE "spaceId" = ${spaceId} AND "ownerUserId" = ${ownerUserId}) AS "memoryCreatedAt",
+      (SELECT md5(string_agg(key || '=' || value || '@' || "updatedAt"::text, ',' ORDER BY key)) FROM "PlatformSetting"
+        WHERE key IN (${REFRESH_CADENCE_SETTING_KEY.BANK}, ${REFRESH_CADENCE_SETTING_KEY.WALLET})) AS "refreshPolicyHash"
   `);
   const r = rows[0] ?? {};
   return {
@@ -180,6 +187,7 @@ export async function readWatermarkInputs(
     spaceUpdatedAt: date(r.spaceUpdatedAt),
     expenseSectionUpdatedAt: date(r.expenseSectionUpdatedAt),
     memoryCount: num(r.memoryCount), memoryActiveCount: num(r.memoryActiveCount), memoryCreatedAt: date(r.memoryCreatedAt),
+    refreshPolicyHash: text(r.refreshPolicyHash),
   };
 }
 

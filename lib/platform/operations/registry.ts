@@ -179,7 +179,7 @@ export const OPERATION_TARGETS: readonly OperationTarget[] = [
     targetJob: "sync-crypto",
     label: "Crypto Wallets",
     description:
-      "Sweep BTC wallet balances and regenerate affected wealth history. Idempotent; never-throws per wallet.",
+      "Refresh every syncable wallet (BTC, ETH, SOL, …) through the one wallet pipeline, oldest first, skipping wallets not yet due under the WALLET refresh policy; regenerate affected snapshots and history. Idempotent; never-throws per wallet.",
     kinds: ["run-now", "dry-run"],
   },
   {

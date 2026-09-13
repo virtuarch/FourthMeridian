@@ -80,8 +80,8 @@ async function main(): Promise<void> {
   // ── 2. Registry integrity — pre-S2 jobs at their slots + S3 maintenance ───
   {
     const byName = new Map(SCHEDULED_JOBS.map((j) => [j.name, j]));
-    check("registry holds the eight S2+S3+S4 jobs + A8-3 price fetch + CH-3 sync-crypto + OPS-5 S5 alert evaluator",
-      SCHEDULED_JOBS.length === 10, `got ${SCHEDULED_JOBS.length}`);
+    check("registry holds the eight S2+S3+S4 jobs + A8-3 price fetch + CH-3 sync-crypto (+ continuation) + OPS-5 S5 alert evaluator",
+      SCHEDULED_JOBS.length === 11, `got ${SCHEDULED_JOBS.length}`);
     check("names unique", byName.size === SCHEDULED_JOBS.length);
     check("sync-banks keeps its 06:00 UTC slot",
       byName.get("sync-banks")?.hourUTC === 6 && byName.get("sync-banks")?.minuteUTC === 0);
@@ -113,6 +113,10 @@ async function main(): Promise<void> {
         (crypto!.hourUTC as number[]).join() === "0,6,12,18" && crypto?.minuteUTC === 0);
     check("sync-crypto declares expectedEveryHours:6 for the dead-job detector",
       crypto?.expectedEveryHours === 6);
+    const continuation = byName.get("sync-crypto-continuation");
+    check("sync-crypto-continuation runs at :30 of the same four hours (ticks vercel.json already fires)",
+      Array.isArray(continuation?.hourUTC) && (continuation!.hourUTC as number[]).join() === "0,6,12,18"
+        && continuation?.minuteUTC === 30 && continuation?.expectedEveryHours === 6);
   }
 
   // ── 2b. Multi-slot (array hourUTC) dispatch — CH-3 ────────────────────────

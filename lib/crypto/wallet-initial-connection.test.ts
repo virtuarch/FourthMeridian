@@ -170,8 +170,9 @@ async function main(): Promise<void> {
     const dispatch = strip(readFileSync("lib/crypto/wallet-sync-dispatch.ts", "utf8"));
     check("F. …and BTC still lands on syncBtcWallet inside it",
       /\[BTC_CHAIN\]:[\s\S]*?syncBtcWallet\(id\)/.test(dispatch));
-    check("F. the CRON uses the same function (via syncAllBtcWallets)",
-      /syncAllBtcWallets|syncBtcWallet/.test(cron));
+    check("F. the CRON runs the unified sweep, which uses the same dispatcher",
+      /refreshScheduledWallets/.test(cron)
+        && /syncWalletByChain\(accountId, chain\)/.test(readFileSync("lib/crypto/wallet-refresh.ts", "utf8")));
     check("F. no route imports the explorer directly (no second import path)",
       !/fetchAddressTxsRaw/.test(connect) && !/fetchAddressTxsRaw/.test(manual));
 

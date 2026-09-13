@@ -90,6 +90,8 @@ const PRODUCERS = [
   // It is the only consumer that declares BOTH work classes; its detailed
   // contract lives in connection-establishment.test.ts.
   { file: "lib/plaid/exchangeToken.ts",                 migrated: true, note: "connection establishment + initial ingestion (two work classes)" },
+  // The scheduled wallet sweep (every syncable chain) — provider ingestion, gated once per sweep like sync-banks.
+  { file: "lib/crypto/wallet-refresh.ts",               migrated: true, note: "the scheduled wallet sweep" },
 ] as const;
 
 function main() {
@@ -222,7 +224,7 @@ function main() {
     // list forces a deliberate decision rather than defaulting to "migrated".
     check("every censused producer is migrated (OPS-2D-4)",
       PRODUCERS.filter((p) => p.migrated).length === PRODUCERS.length);
-    check("the census still holds all nine known producers", PRODUCERS.length === 9);
+    check("the census still holds all ten known producers", PRODUCERS.length === 10);
 
     // No producer OUTSIDE the census may consume admission.
     const consumers = [...walk("app"), ...walk("jobs"), ...walk("lib")]

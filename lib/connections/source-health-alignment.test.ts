@@ -15,6 +15,7 @@
 import { readFileSync } from "node:fs";
 import { deriveSpaceDataHealth, type DataHealthAccountInput, type SourceHealthInput } from "./space-data-health.core";
 import { deriveConnectionIntelligence, deriveConnectionTimeline, sourceHealthForConnection } from "./intelligence";
+import { resolveRefreshPolicy } from "@/lib/platform/refresh-policy.core";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -92,6 +93,35 @@ console.log("\n10. no reader relies on an unwritten error state or the newest ch
     SPACE_DATA + code("lib/connections/space-data-health.core.ts") + code("lib/connections/space-data-health.ts") + PACKAGE));
   check("one wording for states, used by both pages",
     /sourceStatusText\(/.test(code("components/brief/DailyBriefClient.tsx")) && /sourceStatusText\(/.test(code("components/connections/ConnectionCard.tsx")));
+}
+
+console.log("\nJ. the same refresh policy on both pages");
+{
+  const policies = { BANK: resolveRefreshPolicy({ sourceKind: "BANK" }, null), WALLET: resolveRefreshPolicy({ sourceKind: "WALLET" }, null) };
+  const hours = (h: number) => new Date(NOW.getTime() - h * 3_600_000);
+  const cases: { name: string; provider: "PLAID" | "WALLET"; h: number; expect: string }[] = [
+    { name: "wallet 10h under WALLET 6h", provider: "WALLET", h: 10, expect: "OUT_OF_DATE" },
+    { name: "wallet 5h under WALLET 6h", provider: "WALLET", h: 5, expect: "CURRENT" },
+    { name: "bank 19h under BANK 24h", provider: "PLAID", h: 19, expect: "CURRENT" },
+    { name: "bank 31h under BANK 24h", provider: "PLAID", h: 31, expect: "OUT_OF_DATE" },
+  ];
+  for (const c of cases) {
+    const p = c.provider === "PLAID" ? plaid({ lastSyncedAt: hours(c.h) }) : undefined;
+    const wl = c.provider === "WALLET" ? wallet({ lastSyncedAt: hours(c.h) }) : undefined;
+    const brief = deriveSpaceDataHealth([{
+      detailVisible: true, accountName: "A", lastUpdated: hours(c.h), syncStatus: "synced",
+      plaid: p ? { key: "k", ownerUserId: VIEWER, institutionName: "Bank", ...p } : null,
+      wallet: wl ? { key: "k", ownerUserId: VIEWER, ...wl } : null,
+    }], VIEWER, NOW, policies).sources[0];
+    const conn = sourceHealthForConnection({ provider: c.provider, accountsUpdated: [hours(c.h)], plaid: p, wallet: wl,
+      policy: c.provider === "PLAID" ? policies.BANK : policies.WALLET }, NOW);
+    check(`${c.name}: ${c.expect} on both pages`, brief.state === c.expect && conn.state === c.expect && brief.lastUpdatedAt === conn.lastUpdatedAt,
+      `${brief.state}/${conn.state}`);
+  }
+  const code = (p: string) => readFileSync(p, "utf8");
+  check("both loaders resolve the policy from the one loader, and neither holds a threshold of its own",
+    /loadRefreshPolicies\(/.test(code("lib/connections/space-data.ts")) && /loadRefreshPolicies\(/.test(code("lib/connections/space-data-health.ts"))
+      && !/overdueAfterHours\s*[:=]\s*\d|STALE_MS|_HOURS\s*=/.test(code("lib/connections/space-data.ts") + code("lib/connections/space-data-health.ts")));
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

@@ -192,7 +192,20 @@ async function watermarkSection() {
     const w5 = await wm();
     check('a same-day position rewrite (quantity/value in place) moves it', w5.watermark !== w4.watermark);
     check('no secret is readable in it', !w4.watermark.includes(fa1.id) && !/150|Check Bank|a-goal/.test(w4.watermark)
-      && /^brief-source-v2:[0-9a-f]{40}$/.test(w4.watermark));
+      && /^brief-source-v3:[0-9a-f]{40}$/.test(w4.watermark));
+
+    // A refresh-policy change moves health without any financial row — so it must move the watermark.
+    const key = 'refresh_cadence_wallet';
+    const original = await db.platformSetting.findUnique({ where: { key } });
+    try {
+      const before = (await wm()).watermark;
+      await db.platformSetting.upsert({ where: { key }, update: { value: original?.value === '12h' ? '24h' : '12h' },
+        create: { key, value: '12h' } });
+      check('a WALLET refresh-cadence change moves it (no financial row changed)', (await wm()).watermark !== before);
+    } finally {
+      if (original) await db.platformSetting.update({ where: { key }, data: { value: original.value } });
+      else await db.platformSetting.deleteMany({ where: { key } });
+    }
   } finally {
     await cleanup(ids, accounts, instruments);
   }

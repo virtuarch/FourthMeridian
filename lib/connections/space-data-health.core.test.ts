@@ -7,8 +7,9 @@
  *   npx tsx lib/connections/space-data-health.core.test.ts
  */
 
+import { resolveRefreshPolicy } from '@/lib/platform/refresh-policy.core';
 import {
-  deriveSpaceDataHealth, staleSourcesForBrief, type DataHealthAccountInput,
+  deriveSourceHealth, deriveSpaceDataHealth, staleSourcesForBrief, type DataHealthAccountInput,
 } from './space-data-health.core';
 
 let failures = 0;
@@ -128,6 +129,45 @@ console.log('\nI. nothing internal crosses; the model sees only what the page sh
   check('stale sources for the Brief: label, state, a day', forModel.length === 3
     && JSON.stringify(Object.keys(forModel[0])) === '["label","state","lastUpdated"]' && /^\d{4}-\d{2}-\d{2}$/.test(forModel[0].lastUpdated!));
   check('…and none when everything is current', staleSourcesForBrief(derive([bank()])).length === 0 && staleSourcesForBrief(null).length === 0);
+}
+
+console.log('\nJ. cadence-aware health — expected cadence is policy, overdue is derived');
+{
+  const WALLET = resolveRefreshPolicy({ sourceKind: 'WALLET' }, null);
+  const BANK = resolveRefreshPolicy({ sourceKind: 'BANK' }, null);
+  const ago = (h: number) => new Date(NOW.getTime() - h * 3_600_000);
+  const w = (h: number, over: Partial<NonNullable<DataHealthAccountInput['wallet']>> = {}, policy: typeof WALLET | null = WALLET) =>
+    deriveSourceHealth({ kind: 'WALLET', accountsUpdated: [ago(h)],
+      wallet: { status: 'ACTIVE', errorCode: null, lastSyncedAt: ago(h), discoveryCursor: false, ...over }, policy }, NOW);
+  const b = (h: number, over: Partial<NonNullable<DataHealthAccountInput['plaid']>> = {}) =>
+    deriveSourceHealth({ kind: 'BANK', accountsUpdated: [ago(h)],
+      plaid: { status: 'ACTIVE', lastSyncedAt: ago(h), syncIncompleteAt: null, historyBuildStartedAt: null, ...over }, policy: BANK }, NOW);
+
+  check('A. wallet at 5h under a 6h policy → CURRENT', w(5).state === 'CURRENT');
+  check('B. wallet at 7h → inside grace, CURRENT', w(7).state === 'CURRENT');
+  check('C. wallet past 8h → OUT_OF_DATE, needs attention', w(8.5).state === 'OUT_OF_DATE' && w(8.5).needsAttention);
+  check('D. a bank needing reauth one hour after syncing → NEEDS_RECONNECT', b(1, { status: 'NEEDS_REAUTH' }).state === 'NEEDS_RECONNECT');
+  check('D. …a wallet never reauthenticates: its NEEDS_REAUTH is CONNECTION_ERROR, as lib/sync/status says',
+    w(1, { status: 'NEEDS_REAUTH' }).state === 'CONNECTION_ERROR');
+  check('E. wallet provider error at 1h → CONNECTION_ERROR', w(1, { status: 'ERROR' }).state === 'CONNECTION_ERROR');
+  check('F. bank at 19h under 24h → CURRENT', b(19).state === 'CURRENT');
+  check('G. bank past 30h → OUT_OF_DATE', b(31).state === 'OUT_OF_DATE');
+  check('H. 26h is a "recent" age band, yet operationally overdue under 6h → OUT_OF_DATE (not CONNECTION_ERROR)',
+    w(26).state === 'OUT_OF_DATE' && w(26, {}, null).state === 'CURRENT');
+  check('I. explicit provider facts outrank cadence: an errored overdue wallet is SYNC_INCOMPLETE, a reauth bank NEEDS_RECONNECT',
+    w(26, { errorCode: 'BALANCE_UNAVAILABLE' }).state === 'SYNC_INCOMPLETE' && b(40, { status: 'NEEDS_REAUTH' }).state === 'NEEDS_RECONNECT');
+  check('an import still running is IMPORTING until it is overdue',
+    b(3, { syncIncompleteAt: ago(3) }).state === 'IMPORTING' && b(40, { syncIncompleteAt: ago(40) }).state === 'OUT_OF_DATE');
+  const space = deriveSpaceDataHealth([
+    { detailVisible: true, accountName: 'Cold storage', lastUpdated: ago(10), syncStatus: 'synced', plaid: null,
+      wallet: { key: 'w', ownerUserId: VIEWER, status: 'ACTIVE', errorCode: null, lastSyncedAt: ago(10), discoveryCursor: false } },
+    { detailVisible: true, accountName: 'Checking', lastUpdated: ago(19), syncStatus: 'synced', wallet: null,
+      plaid: { key: 'p', ownerUserId: VIEWER, institutionName: 'Chase', status: 'ACTIVE', lastSyncedAt: ago(19), syncIncompleteAt: null, historyBuildStartedAt: null } },
+    { detailVisible: true, accountName: 'House', lastUpdated: ago(24 * 10), syncStatus: 'manual', plaid: null, wallet: null },
+  ], VIEWER, NOW, { BANK, WALLET });
+  const by = (label: string) => space.sources.find((s) => s.label === label)?.state;
+  check('the Space derivation applies each kind\'s policy: wallet 10h OUT_OF_DATE, bank 19h CURRENT, manual untouched',
+    by('Cold storage') === 'OUT_OF_DATE' && by('Chase') === 'CURRENT' && by('House') === 'CURRENT');
 }
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);

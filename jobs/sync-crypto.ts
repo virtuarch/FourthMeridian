@@ -1,122 +1,130 @@
 /**
  * jobs/sync-crypto.ts
  *
- * BTC wallet balance sync — the scheduled batch job body (CH-3).
+ * The scheduled wallet refresh — EVERY syncable wallet, not Bitcoin only.
  *
- * Delegates to lib/crypto/btc-sync.ts#syncAllBtcWallets(): refreshes the
- * confirmed on-chain balance + USD value of every active BTC wallet, then
- * regenerates each synced wallet's 30-day wealth HISTORY so the CoinGecko-driven
- * per-day BTC valuation (a05ffbd) runs on the scheduled path too.
+ * REGISTERED in lib/jobs/registry.ts at 00/06/12/18 UTC (`sync-crypto`), with a
+ * `sync-crypto-continuation` run at :30 of the same hours for any wallet the
+ * first run's work budget deferred. The expected WALLET cadence is policy
+ * (lib/platform/refresh-policy.core.ts, default 6h); the sweep skips wallets not
+ * yet due under it, so a slower policy is honoured and a continuation run with
+ * nothing deferred is one query.
  *
- * REGISTERED (CH-3, 2026-07-14): lib/jobs/registry.ts fires this every 6 hours
- * (00/06/12/18 UTC) via the dispatcher, unlocked by the Vercel plan upgrade off
- * the Hobby tier (sub-daily cron now permitted). Idempotent and safe to re-run —
- * syncBtcWallet dedupes transactions and never throws; a failed wallet is
- * counted, not fatal.
+ * THE SYNC ITSELF is lib/crypto/wallet-refresh.ts → `syncWalletByChain`, the same
+ * call POST /api/accounts/[id]/sync makes. Balances, positions, success clocks,
+ * refusal recording and the W6f history refresh are therefore identical for a
+ * scheduled and a manual refresh of the same wallet.
  *
- * WEALTH-HISTORY REGEN (the step 965e0bd anticipated for this path): the two
- * wallet ROUTES already run regenerateWealthHistoryForAccounts alongside their
- * flat snapshot regen, but 965e0bd wired it at the route level, NOT inside
- * syncBtcWallet/syncAllBtcWallets — so this cron, which calls syncAllBtcWallets
- * directly, would otherwise get no history regen. We add it here, at the job
- * body (the cron's equivalent of "route level"), keeping the balance-sync layer
- * free of snapshot coupling exactly as that commit decided.
+ * AFTER THE SWEEP, mirroring the manual route for the wallets that synced:
+ *   · the flat snapshot is regenerated (Overview / Wealth read it);
+ *   · wealth HISTORY is regenerated for HISTORY_SUPPORTED chains only, through
+ *     the canonical planner. Gated on WEALTH_REGENERATION_ENABLED here because
+ *     this is a fleet fan-out (the manual route is one account).
+ * Both best-effort: a regeneration failure never fails the sweep or its JobRun.
  *
- * ONE DELIBERATE DIVERGENCE FROM THE ROUTES: the routes call regen
- * unconditionally (one account, on user action); this bulk path runs across
- * EVERY space with a synced wallet, four times a day. A 30-day per-space
- * walk-back that writes nothing when WEALTH_REGENERATION_ENABLED is off is pure
- * waste at that fan-out (it still does the BTC price backfill + full day
- * computation before discarding the writes), so we gate the regen on the flag
- * here. When the flag is on, behavior matches the routes.
+ * CAPABILITY RECONCILIATION (V26-CAP-1) runs on the main slot only, before the
+ * sweep: a declared widening of the price provider's reach is noticed where the
+ * affected accounts are already being fanned out over.
+ *
+ * Idempotent and safe to re-run: each adapter dedupes and never throws, and a
+ * failed wallet is counted, not fatal.
  */
 
-import { syncAllBtcWallets, type BtcSyncDeps, type SyncAllBtcWalletsResult } from "@/lib/crypto/btc-sync";
+import { refreshScheduledWallets, type WalletRefreshDeps, type WalletRefreshResult } from "@/lib/crypto/wallet-refresh";
+import { chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch";
 import {
   regenerateWealthHistoryForAccounts,
   wealthRegenerationEnabled,
 } from "@/lib/snapshots/regenerate-history";
+import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { resolveHistoricalWorkWindow } from "@/lib/snapshots/historical-work-window";
 import { reconcileProviderCapability, type CapabilityWideningPlan } from "@/lib/prices/capability-reconciliation";
 import { BTC_PRICE_SOURCE } from "@/lib/crypto/btc-price";
 
-export interface SyncCryptoResult extends SyncAllBtcWalletsResult {
-  /** Spaces whose wealth history was regenerated this run (empty when the flag is off). */
+export interface SyncCryptoResult extends WalletRefreshResult {
+  continuation: boolean;
+  /** Spaces whose flat snapshot was regenerated this run. */
+  snapshotSpaces: number;
+  /** Spaces whose wealth history was regenerated this run (0 when the flag is off). */
   wealthRegenSpaces: number;
 }
 
-export async function syncCrypto(deps?: BtcSyncDeps): Promise<SyncCryptoResult> {
-  // V26-ORCH-1 — stamped BEFORE the sync so every row the sync writes falls at or
-  // after it. This is what makes the refresh genuinely INCREMENTAL rather than a
-  // guess: the planner asks which transactions and prices were written from this
-  // instant onward and takes their earliest DATE as `impactedFrom`. A quiet
-  // sweep measures "nothing changed" and rebuilds only the recent interval; a
-  // sweep that discovers a two-year-old movement rebuilds from that movement.
+export async function syncCrypto(options: {
+  continuation?: boolean;
+  /** Test seam for the sweep; production passes nothing. */
+  refresh?: Partial<WalletRefreshDeps>;
+} = {}): Promise<SyncCryptoResult> {
+  const continuation = options.continuation === true;
+  // V26-ORCH-1 — stamped BEFORE the sweep so every row it writes falls at or
+  // after it: the planner measures what changed from this instant onward.
   const runStartedAt = new Date();
 
-  // V26-CAP-1 — reconcile the price provider's DECLARED capability once a day,
-  // here, before the sweep. Cheapest reliable place in this repository: already
-  // scheduled, already fans out over exactly the accounts a crypto capability
-  // change affects, and not a request path. One indexed read plus one insert;
-  // it plans work ONLY when the declaration actually widened.
-  //
-  // It reports a plan and nothing more — no acquisition, no regeneration, no
-  // snapshot write. A wider declaration expands what may be ATTEMPTED; support
-  // still moves only when a regeneration succeeds.
   let capabilityWidening: CapabilityWideningPlan | null = null;
-  try {
-    const plan = await reconcileProviderCapability(BTC_PRICE_SOURCE, {
-      secret: process.env.COINGECKO_API_KEY,
-    });
-    if (plan.observation.rejectedReason) {
-      console.warn(`[sync-crypto] capability observation refused: ${plan.observation.rejectedReason}`);
-    } else {
-      console.log(`[sync-crypto] capability ${plan.observation.provider}: ${plan.observation.comparison}`);
-    }
-    if (plan.window) {
-      capabilityWidening = plan;
-      console.log(
-        `[sync-crypto] capability WIDENED — newly available ` +
-        `${plan.observation.newlyAvailable?.fromISO}..${plan.observation.newlyAvailable?.toISO}; ` +
-        `planned ${plan.window.fromDate}..${plan.window.toDate} over ${plan.affectedAccountIds.length} account(s)`,
-      );
-    }
-  } catch (err) {
-    // Non-fatal by construction: a capability check must never fail the sweep.
-    console.warn("[sync-crypto] capability reconciliation failed (non-fatal):", err instanceof Error ? err.message : err);
-  }
-
-  const result = await syncAllBtcWallets(deps);
-
-  // Regenerate the wealth history of every space touched by a successful sync —
-  // mirrors the route-level wiring (965e0bd), gated on the flag for the bulk
-  // fan-out (see header). Best-effort/non-fatal: regen failures must never fail
-  // the sweep or its JobRun.
-  //
-  // This used a FIXED 30-DAY window, which capped every wallet's history at one
-  // month no matter how much the provider could serve.
-  let wealthRegenSpaces = 0;
-  if (wealthRegenerationEnabled() && result.syncedAccountIds.length > 0) {
+  if (!continuation) {
     try {
-      // A capability widening supersedes the ordinary incremental window: the
-      // newly reachable dates have no stored prices yet, so a measurement-based
-      // window would not reach them.
-      const plan = capabilityWidening?.window
-        ?? await resolveHistoricalWorkWindow({
-          financialAccountIds: result.syncedAccountIds,
-          changedSince:        runStartedAt,
-        });
-      console.log(
-        `[sync-crypto] historical window ${plan.fromDate}..${plan.toDate} (${plan.mode}) — ${plan.reasons.join("; ")}`,
-      );
-      const spaces = await regenerateWealthHistoryForAccounts(
-        result.syncedAccountIds, { fromDate: plan.fromDate, toDate: plan.toDate },
-      );
-      wealthRegenSpaces = spaces.length;
+      const plan = await reconcileProviderCapability(BTC_PRICE_SOURCE, {
+        secret: process.env.COINGECKO_API_KEY,
+      });
+      if (plan.observation.rejectedReason) {
+        console.warn(`[sync-crypto] capability observation refused: ${plan.observation.rejectedReason}`);
+      } else {
+        console.log(`[sync-crypto] capability ${plan.observation.provider}: ${plan.observation.comparison}`);
+      }
+      if (plan.window) {
+        capabilityWidening = plan;
+        console.log(
+          `[sync-crypto] capability WIDENED — newly available ` +
+          `${plan.observation.newlyAvailable?.fromISO}..${plan.observation.newlyAvailable?.toISO}; ` +
+          `planned ${plan.window.fromDate}..${plan.window.toDate} over ${plan.affectedAccountIds.length} account(s)`,
+        );
+      }
     } catch (err) {
-      console.warn("[sync-crypto] wealth-history regen failed (non-fatal):", err instanceof Error ? err.message : err);
+      // Non-fatal by construction: a capability check must never fail the sweep.
+      console.warn("[sync-crypto] capability reconciliation failed (non-fatal):", err instanceof Error ? err.message : err);
     }
   }
 
-  return { ...result, wealthRegenSpaces };
+  const result = await refreshScheduledWallets({ deps: options.refresh });
+  console.log(
+    `[sync-crypto]${continuation ? " (continuation)" : ""} ${result.attempted} attempted, ${result.succeeded} synced, ` +
+    `${result.failed} failed, ${result.deferred} deferred, ${result.notDue} not due — ${result.elapsedMs} ms ` +
+    `(policy ${result.policy.cadence}) ${JSON.stringify(result.byChain)}`,
+  );
+
+  let snapshotSpaces = 0;
+  let wealthRegenSpaces = 0;
+  if (result.syncedAccountIds.length > 0) {
+    try {
+      snapshotSpaces = (await regenerateSnapshotsForAccounts(result.syncedAccountIds)).length;
+    } catch (err) {
+      console.warn("[sync-crypto] snapshot regen failed (non-fatal):", err instanceof Error ? err.message : err);
+    }
+
+    if (wealthRegenerationEnabled()) {
+      // The manual route's gate: history exists to regenerate only where it has been proven.
+      const { db } = await import("@/lib/db");
+      const chains = await db.financialAccount.findMany({
+        where:  { id: { in: result.syncedAccountIds } },
+        select: { id: true, walletChain: true },
+      });
+      const historyAccountIds = chains.filter((a) => chainSupportsHistory(a.walletChain)).map((a) => a.id);
+      if (historyAccountIds.length > 0) {
+        try {
+          // A capability widening supersedes the ordinary incremental window: the
+          // newly reachable dates have no stored prices yet, so a measured window
+          // would not reach them.
+          const plan = capabilityWidening?.window
+            ?? await resolveHistoricalWorkWindow({ financialAccountIds: historyAccountIds, changedSince: runStartedAt });
+          console.log(`[sync-crypto] historical window ${plan.fromDate}..${plan.toDate} (${plan.mode}) — ${plan.reasons.join("; ")}`);
+          wealthRegenSpaces = (await regenerateWealthHistoryForAccounts(
+            historyAccountIds, { fromDate: plan.fromDate, toDate: plan.toDate },
+          )).length;
+        } catch (err) {
+          console.warn("[sync-crypto] wealth-history regen failed (non-fatal):", err instanceof Error ? err.message : err);
+        }
+      }
+    }
+  }
+
+  return { ...result, continuation, snapshotSpaces, wealthRegenSpaces };
 }

@@ -42,6 +42,7 @@ const inputs: WatermarkInputs = {
   spaceUpdatedAt: T('2026-07-20T16:59:23.162Z'),
   expenseSectionUpdatedAt: null,
   memoryCount: 44, memoryActiveCount: 6, memoryCreatedAt: T('2026-09-13T11:34:23.692Z'),
+  refreshPolicyHash: null,
 };
 const NOW = T('2026-09-13T09:10:00.000Z');
 const w0 = computeWatermark(inputs, NOW);
@@ -79,6 +80,7 @@ console.log('\n2. different when anything the package reads could have moved');
     ['the reporting currency', { spaceUpdatedAt: T('2026-09-13T08:00:00.000Z') }],
     ['the owner remembering something', { memoryCount: 45, memoryCreatedAt: T('2026-09-13T08:00:00.000Z') }],
     ['the owner retiring a memory', { memoryActiveCount: 5 }],
+    ['the expected refresh cadence changed (PlatformSetting)', { refreshPolicyHash: '7f1d' }],
   ];
   for (const [name, patch] of cases) check(name, withChange(patch) !== w0);
 }

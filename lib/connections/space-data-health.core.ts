@@ -13,6 +13,13 @@
  * already use; ages are graded by the customer freshness bands in
  * lib/freshness/observation.ts. No TTL is invented here.
  *
+ * ⚠️ OVERDUE IS POLICY, AGE IS A BAND. When a caller passes a resolved refresh
+ * policy (lib/platform/refresh-policy.core.ts), a synced source is OUT_OF_DATE
+ * once its last success is older than cadence + grace — a wallet at 10h under a
+ * 6h policy, though still a "recent" age. Without a policy the general stale
+ * band applies. Provider failure and reauth outrank either; age alone never
+ * becomes CONNECTION_ERROR.
+ *
  * ⚠️ THE CLOCK IS SUCCESS-ONLY, AND THE OLDEST WINS. A source's `lastUpdatedAt` is
  * the older of "balances last written after a successful read" (the oldest
  * `FinancialAccount.lastUpdated` among ITS accounts in this Space — never the
@@ -35,6 +42,7 @@
  */
 
 import { bandForAge, isStaleBand, VERY_STALE_AFTER_DAYS } from "@/lib/freshness/observation";
+import { isOverdue, type RefreshPolicy } from "@/lib/platform/refresh-policy.core";
 
 export type DataSourceKind = "BANK" | "WALLET" | "MANUAL";
 
@@ -113,25 +121,28 @@ const minDate = (ds: (Date | null)[]): Date | null => {
 };
 const ageDays = (d: Date | null, now: Date) => (d ? Math.max(0, (now.getTime() - d.getTime()) / DAY_MS) : null);
 const stale = (d: Date | null, now: Date) => isStaleBand(bandForAge(ageDays(d, now)));
+/** Operationally late: past the refresh policy when one is given, else past the general stale band. */
+const late = (clock: Date, now: Date, policy: SourceHealthInput["policy"]) =>
+  policy ? isOverdue(clock, policy, now) : stale(clock, now);
 
-function bankState(p: SourceHealthInput["plaid"] & object, clock: Date | null, now: Date): DataSourceState {
+function bankState(p: SourceHealthInput["plaid"] & object, clock: Date | null, now: Date, policy: SourceHealthInput["policy"]): DataSourceState {
   if (p.status === "NEEDS_REAUTH") return "NEEDS_RECONNECT";
   if (p.status === "ERROR") return "CONNECTION_ERROR";
   if (p.status === "REVOKED") return "DISCONNECTED";
   // A stalled import that has aged is out of date, not "importing".
-  if (clock && stale(clock, now)) return "OUT_OF_DATE";
+  if (clock && late(clock, now, policy)) return "OUT_OF_DATE";
   if (p.syncIncompleteAt !== null || p.historyBuildStartedAt !== null) return "IMPORTING";
   return clock ? "CURRENT" : "NEVER_UPDATED";
 }
 
-function walletState(w: SourceHealthInput["wallet"] & object, clock: Date | null, now: Date): DataSourceState {
+function walletState(w: SourceHealthInput["wallet"] & object, clock: Date | null, now: Date, policy: SourceHealthInput["policy"]): DataSourceState {
   if (w.status === "REVOKED") return "DISCONNECTED";
   // Wallets never reauthenticate: NEEDS_REAUTH is an error (lib/sync/status.ts).
   if (w.status === "ERROR" || w.status === "NEEDS_REAUTH") return "CONNECTION_ERROR";
   if (w.errorCode !== null) return "SYNC_INCOMPLETE";
   if (w.lastSyncedAt === null && w.discoveryCursor) return "IMPORTING";
   if (!clock) return "NEVER_UPDATED";
-  return stale(clock, now) ? "OUT_OF_DATE" : "CURRENT";
+  return late(clock, now, policy) ? "OUT_OF_DATE" : "CURRENT";
 }
 
 /** One source's raw provider fields — what any page that shows a source's health must pass. */
@@ -141,6 +152,8 @@ export interface SourceHealthInput {
   accountsUpdated: (Date | null)[];
   plaid?: { status: string; lastSyncedAt: Date | null; syncIncompleteAt: Date | null; historyBuildStartedAt: Date | null } | null;
   wallet?: { status: string; errorCode: string | null; lastSyncedAt: Date | null; discoveryCursor: boolean } | null;
+  /** The resolved refresh policy for this source's kind. Omitted ⇒ the general stale band. */
+  policy?: Pick<RefreshPolicy, "overdueAfterHours"> | null;
 }
 
 export interface SourceHealth {
@@ -158,12 +171,12 @@ export function deriveSourceHealth(input: SourceHealthInput, now: Date): SourceH
   const accountsClock = minDate(input.accountsUpdated);
   if (input.plaid) {
     const clock = minDate([accountsClock, input.plaid.lastSyncedAt]);
-    const state = bankState(input.plaid, clock, now);
+    const state = bankState(input.plaid, clock, now, input.policy);
     return { state, lastUpdatedAt: clock?.toISOString() ?? null, needsAttention: state !== "CURRENT" && state !== "IMPORTING" };
   }
   if (input.wallet) {
     const clock = minDate([accountsClock, input.wallet.lastSyncedAt]);
-    const state = walletState(input.wallet, clock, now);
+    const state = walletState(input.wallet, clock, now, input.policy);
     return { state, lastUpdatedAt: clock?.toISOString() ?? null, needsAttention: state !== "CURRENT" && state !== "IMPORTING" };
   }
   // Manual balances are entered, not synced: they are out of date only past
@@ -175,6 +188,8 @@ export function deriveSourceHealth(input: SourceHealthInput, now: Date): SourceH
 
 export function deriveSpaceDataHealth(
   rows: DataHealthAccountInput[], viewerUserId: string, now: Date,
+  /** Resolved refresh policies by kind (lib/platform/refresh-policy.ts). Manual accounts take none. */
+  policies?: Partial<Record<"BANK" | "WALLET", Pick<RefreshPolicy, "overdueAfterHours">>>,
 ): SpaceDataHealth {
   const bySource = new Map<string, { kind: DataSourceKind; rows: DataHealthAccountInput[] }>();
   for (const r of rows) {
@@ -190,7 +205,8 @@ export function deriveSpaceDataHealth(
   for (const { kind, rows: rs } of bySource.values()) {
     const p = rs[0].plaid;
     const w = rs[0].wallet;
-    const health = deriveSourceHealth({ kind, accountsUpdated: rs.map((r) => r.lastUpdated), plaid: p, wallet: w }, now);
+    const policy = kind === "BANK" ? policies?.BANK : kind === "WALLET" ? policies?.WALLET : null;
+    const health = deriveSourceHealth({ kind, accountsUpdated: rs.map((r) => r.lastUpdated), plaid: p, wallet: w, policy }, now);
     const named = rs.find((r) => r.detailVisible);
     const label = kind === "BANK" ? (named ? p!.institutionName : "A bank connection")
       : kind === "WALLET" ? (named ? named.accountName : "A crypto wallet")

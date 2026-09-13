@@ -159,7 +159,7 @@ async function main(): Promise<void> {
   // (v4: xpub is now IN scope for sync — the former "no xpub" guard is retired.)
 
   const job = code(read("jobs", "sync-crypto.ts"));
-  check("job body delegates to syncAllBtcWallets", job.includes("syncAllBtcWallets"));
+  check("job body runs the unified wallet sweep (every syncable chain, not BTC only)", job.includes("refreshScheduledWallets"));
   // CH-3 — the cron body also regenerates wealth history for the wallets it
   // synced (the step 965e0bd anticipated for this path), gated on the flag.
   check("job body regenerates wealth history for synced wallets",

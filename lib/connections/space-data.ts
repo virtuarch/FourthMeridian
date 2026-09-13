@@ -67,6 +67,7 @@ import {
   type ConnectionIntelligenceStatus,
 } from "@/lib/connections/intelligence";
 import type { SourceHealthInput } from "@/lib/connections/space-data-health.core";
+import { loadRefreshPolicies, type RefreshPolicies } from "@/lib/platform/refresh-policy";
 import type { AccountLite } from "@/components/connections/ConnectionCard";
 import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wallet-history-metadata";
 
@@ -214,6 +215,8 @@ async function loadConnectionIntelligence(
   connectedAtByConnId: Map<string, Date>,
   /** Raw provider fields per connection id, for sourceHealthForConnection. */
   rawByConnId: Map<string, Pick<SourceHealthInput, "plaid" | "wallet">>,
+  /** Resolved once per page load — the same policies the Brief's data health uses. */
+  policies: RefreshPolicies,
 ): Promise<Record<string, ConnectionIntelligenceStatus>> {
   const now = new Date();
 
@@ -326,7 +329,8 @@ async function loadConnectionIntelligence(
         connectedAt:    connectedAtByConnId.get(c.id) ?? null,
         lastSyncedAt:   c.lastSyncedAt ? new Date(c.lastSyncedAt) : null,
         balancesUpdatedAt: balancesUpdated,
-        sourceHealth: sourceHealthForConnection({ provider: c.provider, accountsUpdated, ...rawByConnId.get(c.id) }, now),
+        sourceHealth: sourceHealthForConnection({ provider: c.provider, accountsUpdated, ...rawByConnId.get(c.id),
+          policy: c.provider === "PLAID" ? policies.BANK : policies.WALLET }, now),
       },
       now,
     );
@@ -398,6 +402,7 @@ export async function loadConnectionsSpaceData(userId: string): Promise<Connecti
     accountsByConnectionId,
     connectedAtByConnId,
     rawByConnId,
+    await loadRefreshPolicies(),
   );
 
   return { status, accountsByConnectionId, intelligenceByConnectionId };
