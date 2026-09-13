@@ -96,6 +96,7 @@ const NOW = Date.parse("2026-07-26T09:12:00.000Z");
 function row(over: Partial<PlatformJobRow> & Pick<PlatformJobRow, "job" | "status">): PlatformJobRow {
   return {
     expectedEveryHours: 24,
+    source: null,
     lastStartedAt: "2026-07-26T06:00:00.000Z",
     lastRunStatus: "succeeded",
     lastCompletedAt: "2026-07-26T06:00:42.000Z",

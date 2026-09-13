@@ -8,8 +8,8 @@
 
 import { readFileSync } from 'node:fs';
 import {
-  DEFAULT_REFRESH_CADENCE, REFRESH_CADENCES, REFRESH_CADENCE_SETTING_KEY, SCHEDULER_FLOOR_HOURS,
-  isDueForScheduledRefresh, isOverdue, parseRefreshCadence, resolveRefreshPolicy, schedulerCanHonour,
+  DEFAULT_REFRESH_CADENCE, REFRESH_CADENCES, REFRESH_CADENCE_SETTING_KEY,
+  assessCadence, honourableCadences, isDueForScheduledRefresh, isOverdue, parseRefreshCadence, resolveRefreshPolicy, schedulerCanHonour,
   type RefreshPolicyRequest,
 } from './refresh-policy.core';
 
@@ -74,12 +74,17 @@ console.log('\nF/G. version and environment');
     /platformSetting\.findMany/.test(loader) && !/process\.env/.test(loader + readFileSync('lib/platform/refresh-policy.core.ts', 'utf8')));
 }
 
-console.log('\nscheduler honesty');
+console.log('\nscheduler honesty — a cadence is honourable iff it is a whole multiple of the attempt period');
 {
-  check('wallets: 6h and slower are honoured, 4h is not', schedulerCanHonour('WALLET', '6h') && schedulerCanHonour('WALLET', '24h')
-    && !schedulerCanHonour('WALLET', '4h'));
-  check('banks: only 24h is attempted today', schedulerCanHonour('BANK', '24h') && !schedulerCanHonour('BANK', '12h'));
-  check('floors match the registry: banks daily, wallets 6-hourly', SCHEDULER_FLOOR_HOURS.BANK === 24 && SCHEDULER_FLOOR_HOURS.WALLET === 6);
+  // The attempt periods here are LITERAL fixtures (6-hourly, daily); the real
+  // registry is bound and pinned in lib/platform/scheduler-capability.test.ts
+  // and lib/jobs/cadence.test.ts — this file never reads a floor constant.
+  check('6-hourly attempts honour 6h, 12h, 24h', honourableCadences(6).join() === '6h,12h,24h');
+  check('6-hourly attempts do NOT honour 4h (nothing attempts that fast)', !schedulerCanHonour('4h', 6));
+  check('6-hourly attempts do NOT honour 8h — the due filter lands on the 12h slot', !schedulerCanHonour('8h', 6)
+    && assessCadence('8h', 6).effectiveHours === 12);
+  check('daily attempts honour 24h only', honourableCadences(24).join() === '24h');
+  check('no attempt period honours nothing', honourableCadences(null).length === 0);
   const wallet = resolveRefreshPolicy({ sourceKind: 'WALLET' }, null);
   check('a wallet refreshed 30 min ago is not due (the :30 continuation skips it)', !isDueForScheduledRefresh(hoursAgo(0.5), wallet, NOW));
   check('…one refreshed at the previous 6-hourly slot is due', isDueForScheduledRefresh(hoursAgo(5.9), wallet, NOW));

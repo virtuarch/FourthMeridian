@@ -1,16 +1,34 @@
 /**
  * GET  /api/admin/security/settings  — read all platform settings
- * PATCH /api/admin/security/settings  — update one or more settings
+ * PATCH /api/admin/security/settings  — update one or more SECURITY settings
  *
  * Body for PATCH: { key: string, value: string }[]
+ *
+ * PLATFORM OPS POLICIES (Slice 1) — THE BOUNDARY. This route may write only the
+ * keys whose descriptor names ADMIN_SECURITY as a write surface
+ * (lib/platform-settings.ts SETTING_DESCRIPTORS). It used to accept every
+ * registered key and validate two of them, which made a security console the
+ * unvalidated writer of operational policy: a malformed `maintenance_mode`
+ * written here would have denied all refresh work platform-wide, and a wallet
+ * cadence below what the scheduler attempts would have declared every wallet
+ * overdue. Operational policy belongs to Platform Ops and is written only
+ * through the canonical validated setter, when a write path exists there.
+ *
+ * Every write here goes through `setSetting`, which validates against the
+ * descriptor; the whole batch is validated BEFORE the first write so a rejected
+ * entry never leaves a half-applied batch behind.
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getAllSettings, setSetting, PlatformSettingKey, REGISTRATION_MODES } from "@/lib/platform-settings";
+import {
+  getAllSettings, setSetting, settingKeysForSurface, validateSetting,
+  PlatformSettingKey, type PlatformSettingKeyType,
+} from "@/lib/platform-settings";
 import { db } from "@/lib/db";
 import { requireSystemAdmin, requireFreshSystemAdmin } from "@/lib/session";
 
-const ALLOWED_KEYS = new Set(Object.values(PlatformSettingKey));
+/** Derived from the descriptors — the security console never lists keys itself. */
+const ALLOWED_KEYS = new Set<string>(settingKeysForSurface("ADMIN_SECURITY"));
 
 export async function GET() {
   const [, err] = await requireSystemAdmin();
@@ -32,35 +50,38 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "Body must be an array of {key, value}" }, { status: 400 });
   }
 
+  // Validate the whole batch first; write nothing until every entry passes.
+  const changes: { key: PlatformSettingKeyType; value: string }[] = [];
   for (const { key, value } of body) {
-    if (!ALLOWED_KEYS.has(key as never)) {
-      return NextResponse.json({ error: `Unknown setting key: ${key}` }, { status: 400 });
+    if (!ALLOWED_KEYS.has(key)) {
+      return NextResponse.json({ error: `Setting "${key}" is not editable from the security console.` }, { status: 400 });
     }
-    // require_totp_system_admin is permanently locked — cannot be disabled via API
-    if (key === "require_totp_system_admin" && value !== "true") {
+    const typedKey = key as PlatformSettingKeyType;
+    // require_totp_system_admin is permanently locked — cannot be disabled via API.
+    // The descriptor refuses it too; this keeps the historical 403 shape.
+    if (typedKey === PlatformSettingKey.REQUIRE_TOTP_SYSTEM_ADMIN && String(value) !== "true") {
       return NextResponse.json(
         { error: "require_totp_system_admin cannot be disabled. SYSTEM_ADMIN accounts must always use 2FA." },
         { status: 403 },
       );
     }
-    // registration_mode is a closed enum — reject anything outside it so a typo
-    // can't write a value the register route won't recognize (it would fall back
-    // to `open`, but rejecting here keeps the stored state honest).
-    if (key === PlatformSettingKey.REGISTRATION_MODE && !(REGISTRATION_MODES as readonly string[]).includes(String(value))) {
-      return NextResponse.json(
-        { error: `registration_mode must be one of: ${REGISTRATION_MODES.join(", ")}.` },
-        { status: 400 },
-      );
-    }
-    await setSetting(key as never, String(value), admin.id);
+    const v = validateSetting(typedKey, String(value));
+    if (!v.ok) return NextResponse.json({ error: `${key}: ${v.reason}` }, { status: 400 });
+    changes.push({ key: typedKey, value: v.value });
   }
 
-  // Audit log the settings change
+  const before = await getAllSettings();
+  for (const { key, value } of changes) {
+    await setSetting(key, value, admin.id);
+  }
+
+  // Audit log the settings change — with what each key held before, so the
+  // row says what CHANGED and not only what was sent.
   await db.auditLog.create({
     data: {
       userId: admin.id,
       action: "PLATFORM_SETTINGS_UPDATED",
-      metadata: { changes: body },
+      metadata: { changes: changes.map((c) => ({ key: c.key, previous: before[c.key] ?? null, value: c.value })) },
     },
   });
 

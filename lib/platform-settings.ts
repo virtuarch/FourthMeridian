@@ -1,12 +1,33 @@
 /**
  * lib/platform-settings.ts
  *
- * Keys and helpers for PlatformSetting.
- * All reads/writes go through these helpers to avoid typos.
+ * Keys, descriptors and helpers for PlatformSetting.
+ * All reads/writes go through these helpers to avoid typos — and, since
+ * PLATFORM OPS POLICIES (Slice 1), every application WRITE is validated here
+ * against the key's descriptor. A route cannot bypass validation by knowing the
+ * key string: `setSetting` is the canonical setter and it refuses what the
+ * descriptor refuses.
+ *
+ * ⚠️ THE DESCRIPTOR TABLE LIVES HERE, NOT IN A SEPARATE MODULE, because the
+ * admission boundary (lib/platform/admission/admission-boundary.test.ts) pins
+ * that the two control-plane keys appear only in this registry and the fact
+ * adapter. The SHAPE and the validation engine are pure and live in
+ * lib/platform/settings/descriptor.core.ts.
  */
 
 import { db } from "@/lib/db";
-import { DEFAULT_REFRESH_CADENCE, REFRESH_CADENCE_SETTING_KEY } from "@/lib/platform/refresh-policy.core";
+import {
+  DEFAULT_REFRESH_CADENCE, REFRESH_CADENCES, REFRESH_CADENCE_SETTING_KEY,
+  type RefreshCadence, type RefreshSourceKind,
+} from "@/lib/platform/refresh-policy.core";
+import { cadenceIsHonourable } from "@/lib/platform/scheduler-capability";
+import {
+  PlatformSettingValidationError, descriptorsForSurface, validateSettingValue,
+  type SettingDescriptor, type SettingValidation, type SettingWriteSurface,
+} from "@/lib/platform/settings/descriptor.core";
+
+export { PlatformSettingValidationError } from "@/lib/platform/settings/descriptor.core";
+export type { SettingDescriptor, SettingValidation, SettingWriteSurface, PolicyClass } from "@/lib/platform/settings/descriptor.core";
 
 export const PlatformSettingKey = {
   REQUIRE_TOTP_SYSTEM_ADMIN: "require_totp_system_admin",
@@ -86,6 +107,126 @@ const DEFAULTS: Record<PlatformSettingKeyType, string> = {
   refresh_cadence_wallet:    DEFAULT_REFRESH_CADENCE.WALLET,
 };
 
+// ── Descriptors — one per key; the shape is descriptor.core.ts ────────────────
+
+type Descriptor = SettingDescriptor<PlatformSettingKeyType>;
+
+const security = (
+  key: PlatformSettingKeyType, label: string, description: string,
+  over: Partial<Descriptor> = {},
+): Descriptor => ({
+  key, label, description,
+  class: "SECURITY_SENSITIVE", valueType: "boolean", default: DEFAULTS[key],
+  missingRow: "FALLBACK_TO_DEFAULT",
+  writeSurfaces: ["ADMIN_SECURITY"], writeCapability: "SYSTEM_ADMIN",
+  operatorConfigurable: false, resettable: false,
+  ...over,
+});
+
+const refreshCadence = (sourceKind: RefreshSourceKind, label: string, description: string): Descriptor => ({
+  key: REFRESH_CADENCE_SETTING_KEY[sourceKind], label, description,
+  class: "OPERATOR_CONFIGURABLE", valueType: "enum", allowedValues: REFRESH_CADENCES,
+  default: DEFAULT_REFRESH_CADENCE[sourceKind], missingRow: "FALLBACK_TO_DEFAULT",
+  // Intended gate: control-plane-policy (lib/platform/capability-classification.ts).
+  // No application writer exists until that capability is issuable.
+  writeSurfaces: ["PLATFORM_OPS"], writeCapability: "CONTROL",
+  operatorConfigurable: true, resettable: true,
+  // The scheduler-honourability rule, from the ONE derived authority. A cadence
+  // the deployed slots cannot deliver is refused at the setter, never stored and
+  // degraded — see refresh-policy.core.ts assessCadence.
+  constraint: (v) => {
+    const a = cadenceIsHonourable(sourceKind, v as RefreshCadence);
+    return a.honourable ? null : a.reason;
+  },
+});
+
+const admissionFact = (key: PlatformSettingKeyType, label: string, description: string): Descriptor => ({
+  key, label, description,
+  class: "OPERATOR_CONFIGURABLE", valueType: "boolean", default: DEFAULTS[key],
+  // Absence is OFF by contract (policy-core.ts); an explicit "false" row is
+  // equivalent, and reset = delete returns to the never-configured state.
+  missingRow: "ABSENT_MEANS_OFF",
+  writeSurfaces: ["PLATFORM_OPS"], writeCapability: "CONTROL",
+  operatorConfigurable: true, resettable: true,
+});
+
+/**
+ * THE descriptor table. Exhaustive by type: a new key without a descriptor is a
+ * compile error, so nothing can be written that was never described.
+ */
+export const SETTING_DESCRIPTORS: Readonly<Record<PlatformSettingKeyType, Descriptor>> = {
+  require_totp_system_admin: security(
+    "require_totp_system_admin", "Require 2FA for system administrators",
+    "Locked on. A SYSTEM_ADMIN session always requires TOTP.",
+    { constraint: (v) => (v === "true" ? null : "require_totp_system_admin cannot be disabled. SYSTEM_ADMIN accounts must always use 2FA.") },
+  ),
+  require_totp_admins: security(
+    "require_totp_admins", "Require 2FA for Space admins", "Any ADMIN Space role must have 2FA enabled.",
+  ),
+  require_totp_all_users: security(
+    "require_totp_all_users", "Require 2FA for all users", "All users must set up 2FA before accessing the dashboard.",
+  ),
+  recovery_codes_enabled: security(
+    "recovery_codes_enabled", "Recovery codes enabled", "Users can generate one-time backup codes as a 2FA fallback.",
+  ),
+  min_password_length: security(
+    "min_password_length", "Minimum password length", "Enforced at registration and every password change. Never below 8.",
+    { valueType: "integer", min: 8 },
+  ),
+  registration_mode: security(
+    "registration_mode", "Registration mode", "Who may sign up: open, invite_only or closed.",
+    { valueType: "enum", allowedValues: REGISTRATION_MODES, writeSurfaces: ["ADMIN_SECURITY", "GROWTH_REVENUE"], writeCapability: "WRITE" },
+  ),
+  product_status: {
+    key: "product_status", label: "Product status", description: "Launch maturity shown to customers: development, beta or live. Gates nothing.",
+    class: "OPERATOR_CONFIGURABLE", valueType: "enum", allowedValues: PRODUCT_STATUSES,
+    default: DEFAULTS.product_status, missingRow: "FALLBACK_TO_DEFAULT",
+    writeSurfaces: ["GROWTH_REVENUE"], writeCapability: "WRITE",
+    operatorConfigurable: true, resettable: false,
+  },
+  maintenance_mode: admissionFact(
+    "maintenance_mode", "Maintenance mode",
+    "While on, no refresh execution and no new connection may begin. An unreadable value also denies work.",
+  ),
+  ingestion_paused: admissionFact(
+    "ingestion_paused", "Ingestion paused",
+    "While on, no refresh execution may begin; connections may still be established.",
+  ),
+  refresh_cadence_bank: refreshCadence(
+    "BANK", "Bank refresh cadence",
+    "How often every bank connection is expected to refresh. Source health judges a bank overdue past this cadence plus grace.",
+  ),
+  refresh_cadence_wallet: refreshCadence(
+    "WALLET", "Wallet refresh cadence",
+    "How often every wallet is expected to refresh. The scheduled sweep attempts a wallet once it is due under this cadence.",
+  ),
+};
+
+export function listSettingDescriptors(): Descriptor[] {
+  return Object.values(SETTING_DESCRIPTORS);
+}
+
+export function getSettingDescriptor(key: PlatformSettingKeyType): Descriptor {
+  return SETTING_DESCRIPTORS[key];
+}
+
+/** The keys a given surface may write — derived from the descriptors, never listed twice. */
+export function settingKeysForSurface(surface: SettingWriteSurface): PlatformSettingKeyType[] {
+  return descriptorsForSurface(listSettingDescriptors(), surface).map((d) => d.key);
+}
+
+/** True for a registered key (the typed API requires registration). */
+export function isPlatformSettingKey(key: unknown): key is PlatformSettingKeyType {
+  return typeof key === "string" && Object.prototype.hasOwnProperty.call(SETTING_DESCRIPTORS, key);
+}
+
+/** Validate without writing — the same rule the setter applies. */
+export function validateSetting(key: PlatformSettingKeyType, raw: unknown): SettingValidation {
+  return validateSettingValue(SETTING_DESCRIPTORS[key], raw);
+}
+
+// ── Reads ─────────────────────────────────────────────────────────────────────
+
 /** Read all platform settings as a key→value map. */
 export async function getAllSettings(): Promise<Record<string, string>> {
   const rows = await db.platformSetting.findMany();
@@ -138,15 +279,40 @@ export async function getProductStatus(): Promise<ProductStatus> {
     : "beta";
 }
 
-/** Write a setting value. */
+// ── Writes — the canonical, validated seam ────────────────────────────────────
+
+/**
+ * Write a setting value. THE ONLY application write path for PlatformSetting.
+ * Validates against the key's descriptor first and throws
+ * PlatformSettingValidationError on refusal — before any database call — so a
+ * malformed admission flag or an unhonourable cadence can never be stored by a
+ * route that merely knows the key string. The stored value is the NORMALISED
+ * form ("true", "12h"), never the caller's raw text.
+ */
 export async function setSetting(
   key: PlatformSettingKeyType,
   value: string,
   updatedById?: string,
 ): Promise<void> {
+  const v = validateSetting(key, value);
+  if (!v.ok) throw new PlatformSettingValidationError(key, value, v.reason);
   await db.platformSetting.upsert({
     where:  { key },
-    update: { value, updatedById: updatedById ?? null },
-    create: { key, value, updatedById: updatedById ?? null },
+    update: { value: v.value, updatedById: updatedById ?? null },
+    create: { key, value: v.value, updatedById: updatedById ?? null },
   });
+}
+
+/**
+ * Reset a setting to its default by DELETING the override row — never by
+ * writing the default value, so `origin` stays DEFAULT and a later change to
+ * the code default propagates. Only `resettable` descriptors allow it. Returns
+ * true when a row was removed. No route calls this yet: it is the seam the
+ * future policy editor's reset lands on.
+ */
+export async function deleteSetting(key: PlatformSettingKeyType): Promise<boolean> {
+  const d = SETTING_DESCRIPTORS[key];
+  if (!d.resettable) throw new PlatformSettingValidationError(key, "", `${key} has no default to reset to; it must be set explicitly.`);
+  const { count } = await db.platformSetting.deleteMany({ where: { key } });
+  return count > 0;
 }

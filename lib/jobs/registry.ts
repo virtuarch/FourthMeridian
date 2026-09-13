@@ -45,8 +45,8 @@
  *
  * CH-3 (2026-07-14): sync-crypto registered — the BTC wallet sweep, every 6
  * hours ([0, 6, 12, 18] UTC via the multi-slot hourUTC array; see SCHEDULE
- * SEMANTICS), expectedEveryHours:6 so the dead-job detector tracks the
- * 6-hourly cadence for free. Unlocked by the Vercel plan upgrade off Hobby
+ * SEMANTICS); the dead-job detector derives the 6-hourly expectation from
+ * those slots (lib/jobs/cadence.ts). Unlocked by the Vercel plan upgrade off Hobby
  * (sub-daily cron now permitted); vercel.json restores the paid-tier
  * multi-slot schedule. The stale "deferred — R7" ruling for sync-crypto is
  * retired: jobs/sync-crypto.ts was always production-ready — only the schedule
@@ -68,6 +68,8 @@
  * credential-free context.
  */
 
+import type { RefreshSourceKind } from "@/lib/platform/refresh-policy.core";
+
 /** One daily scheduled unit of work. */
 export interface ScheduledJob {
   /** JobRun ledger name — must stay stable (pre/post ledger comparison). */
@@ -82,10 +84,29 @@ export interface ScheduledJob {
   minuteUTC: 0 | 30;
   /**
    * Expected cadence for dead-job detection (OPS-4 S5, lib/jobs/health.ts).
-   * Optional — absent means daily (every current job). Read ONLY by the
-   * health check; the dispatcher never consults it.
+   * Optional — absent means DERIVED from the fire slots (lib/jobs/cadence.ts
+   * slotPeriodHours: once daily → 24, [0,6,12,18] → 6), so no entry has to
+   * restate its own schedule. Set it only for a job whose expectation differs
+   * from its slots. Read ONLY by the health check; the dispatcher never
+   * consults it.
    */
   expectedEveryHours?: number;
+  /**
+   * PLATFORM OPS POLICIES (Slice 1) — the source kind this job REFRESHES, when
+   * it is a refresh job. This binding is what lets scheduler capability be
+   * DERIVED ("wallets are attempted every 6 hours because the job bound to
+   * WALLET fires at [0,6,12,18]") instead of hand-copied into a constant, and
+   * what lets job health carry the source's refresh policy beside the job's
+   * own attempt expectation.
+   */
+  refreshes?: RefreshSourceKind;
+  /**
+   * The primary job this entry finishes deferred work for. A continuation is
+   * the SAME refresh opportunity 30 minutes later, never an opportunity of its
+   * own — capability derivation excludes it, so the :30 slot can never be
+   * mistaken for a 30-minute cadence.
+   */
+  continuationOf?: string;
   /** The job body. Result becomes the JobRun summary (counts/kinds/IDs only). */
   run: () => Promise<unknown>;
 }
@@ -98,6 +119,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "sync-banks",
     hourUTC: 6,
     minuteUTC: 0,
+    refreshes: "BANK",
     run: async () => (await import("@/jobs/sync-banks")).syncBanks(),
   },
   // Pre-S2 slot: vercel.json "30 6 * * *"
@@ -118,33 +140,37 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     minuteUTC: 30,
     run: async () => (await import("@/jobs/fetch-security-prices")).fetchSecurityPrices(),
   },
-  // CH-3 — BTC wallet balance sweep, every 6 hours (00/06/12/18 UTC via the
-  // multi-slot hourUTC array). The 06:00 tick co-tenants with sync-banks /
-  // fetch-fx-rates (the dispatcher ledgers each job per-slot individually, so
-  // co-tenancy is fine). expectedEveryHours:6 lets ops_job_health flag a
-  // stalled sweep for free. Idempotent + never-throws (jobs/sync-crypto.ts →
-  // syncAllBtcWallets); the job body also regenerates wealth history for the
-  // wallets it synced (the regen step the 965e0bd route wiring anticipated for
-  // this cron path). Enabled by the Vercel plan upgrade off Hobby.
+  // CH-3 — the wallet sweep, every 6 hours (00/06/12/18 UTC via the multi-slot
+  // hourUTC array). The 06:00 tick co-tenants with sync-banks / fetch-fx-rates
+  // (the dispatcher ledgers each job per-slot individually, so co-tenancy is
+  // fine). Its 6-hourly health expectation is DERIVED from those slots, and its
+  // `refreshes: "WALLET"` binding is what scheduler capability derives the
+  // wallet attempt period from. Idempotent + never-throws; the job body also
+  // regenerates wealth history for the wallets it synced (the regen step the
+  // 965e0bd route wiring anticipated for this cron path). Enabled by the Vercel
+  // plan upgrade off Hobby.
   {
     name: "sync-crypto",
     hourUTC: [0, 6, 12, 18],
     minuteUTC: 0,
-    expectedEveryHours: 6,
+    refreshes: "WALLET",
     run: async () => (await import("@/jobs/sync-crypto")).syncCrypto(),
   },
-  // Pre-S2 slot: vercel.json "0 7 * * *". Single-purpose since S3 — the
-  // OPS-3 notification-cleanup tail moved to its own 07:30 registration.
   {
     // The wallet sweep's continuation: wallets the :00 run's work budget deferred.
     // The :30 ticks of these hours already fire (vercel.json). The sweep skips
     // wallets not yet due, so with nothing deferred this run is one query.
+    // `continuationOf` keeps it OUT of the attempt period: it is the same
+    // opportunity, 30 minutes on, not a 30-minute cadence.
     name: "sync-crypto-continuation",
     hourUTC: [0, 6, 12, 18],
     minuteUTC: 30,
-    expectedEveryHours: 6,
+    refreshes: "WALLET",
+    continuationOf: "sync-crypto",
     run: async () => (await import("@/jobs/sync-crypto")).syncCrypto({ continuation: true }),
   },
+  // Pre-S2 slot: vercel.json "0 7 * * *". Single-purpose since S3 — the
+  // OPS-3 notification-cleanup tail moved to its own 07:30 registration.
   {
     name: "process-deletions",
     hourUTC: 7,

@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { deriveSpaceDataHealth, type DataHealthAccountInput, type SourceHealthInput } from "./space-data-health.core";
 import { deriveConnectionIntelligence, deriveConnectionTimeline, sourceHealthForConnection } from "./intelligence";
 import { resolveRefreshPolicy } from "@/lib/platform/refresh-policy.core";
+import { deriveConnectionHealthState, staleWindowMs } from "@/lib/connections/health";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -122,6 +123,41 @@ console.log("\nJ. the same refresh policy on both pages");
   check("both loaders resolve the policy from the one loader, and neither holds a threshold of its own",
     /loadRefreshPolicies\(/.test(code("lib/connections/space-data.ts")) && /loadRefreshPolicies\(/.test(code("lib/connections/space-data-health.ts"))
       && !/overdueAfterHours\s*[:=]\s*\d|STALE_MS|_HOURS\s*=/.test(code("lib/connections/space-data.ts") + code("lib/connections/space-data-health.ts")));
+}
+
+console.log("\nK. Platform Ops operator health and customer source health agree on OVERDUE (threshold, not vocabulary)");
+{
+  const hours = (h: number) => new Date(NOW.getTime() - h * 3_600_000);
+  const policies = (walletRaw: string | null) => ({
+    BANK: resolveRefreshPolicy({ sourceKind: "BANK" }, null),
+    WALLET: resolveRefreshPolicy({ sourceKind: "WALLET" }, walletRaw ? { value: walletRaw, updatedAt: NOW } : null),
+  });
+  const cases: { name: string; provider: "PLAID" | "WALLET"; h: number; walletPolicy: string | null; overdue: boolean }[] = [
+    { name: "wallet 7h under 6h", provider: "WALLET", h: 7, walletPolicy: null, overdue: false },
+    { name: "wallet 9h under 6h", provider: "WALLET", h: 9, walletPolicy: null, overdue: true },
+    { name: "wallet 14h under 12h", provider: "WALLET", h: 14, walletPolicy: "12h", overdue: false },
+    { name: "wallet 16h under 12h", provider: "WALLET", h: 16, walletPolicy: "12h", overdue: true },
+    { name: "bank 29h under 24h", provider: "PLAID", h: 29, walletPolicy: null, overdue: false },
+    { name: "bank 31h under 24h", provider: "PLAID", h: 31, walletPolicy: null, overdue: true },
+  ];
+  for (const c of cases) {
+    const pol = policies(c.walletPolicy);
+    const policy = c.provider === "PLAID" ? pol.BANK : pol.WALLET;
+    const customer = sourceHealthForConnection({
+      provider: c.provider, accountsUpdated: [hours(c.h)],
+      plaid: c.provider === "PLAID" ? plaid({ lastSyncedAt: hours(c.h) }) : undefined,
+      wallet: c.provider === "WALLET" ? wallet({ lastSyncedAt: hours(c.h) }) : undefined,
+      policy,
+    }, NOW);
+    const operator = deriveConnectionHealthState("ACTIVE", null, hours(c.h), staleWindowMs(policy), NOW.getTime());
+    check(`${c.name}: customer ${customer.state} / operator ${operator} — both ${c.overdue ? "overdue" : "current"}`,
+      (customer.state === "OUT_OF_DATE") === c.overdue && (operator === "STALE") === c.overdue, `${customer.state}/${operator}`);
+  }
+  const code = (p: string) => readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  check("the operator module holds no threshold of its own — it reads the same loader",
+    /loadRefreshPolicies\(/.test(code("lib/connections/health.ts")) && !/_STALE_MS\s*=|_HOURS\s*=\s*\d/.test(code("lib/connections/health.ts")));
+  check("connection diagnostics reads the same loader too",
+    /loadRefreshPolicies\(/.test(code("lib/platform/connection-diagnostics.ts")) && !/STALE_MS_EXPORT/.test(code("lib/platform/connection-diagnostics.ts")));
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

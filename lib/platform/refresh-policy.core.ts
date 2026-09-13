@@ -22,11 +22,14 @@
  * the cadence, never the grace.
  *
  * ⚠️ POLICY IS NOT A PROMISE THE SCHEDULER CAN KEEP BY ITSELF. The dispatcher
- * fires on fixed half-hour slots (vercel.json). `SCHEDULER_FLOOR_HOURS` is the
- * fastest cadence each source kind is actually attempted at today; a policy
- * faster than that would declare sources overdue that nothing tried to refresh,
- * so the write path refuses it (`schedulerCanHonour`). The enum keeps 4h for the
- * day the scheduler can.
+ * fires on fixed half-hour slots (vercel.json), so a source kind is ATTEMPTED at
+ * a fixed period (lib/jobs/cadence.ts derives it from the registry — nothing here
+ * copies it). A cadence is honourable only when it is a MULTIPLE of that period:
+ * faster than the period, nothing attempts it; not a multiple (8h on 6-hourly
+ * slots), the due filter lands on the next slot and the real interval is 12h.
+ * `assessCadence` is the one authority for that judgement and for its reason;
+ * the future write path refuses what it rejects. The enum keeps 4h and 8h for
+ * the day the scheduler can.
  *
  * ⚠️ TIER SEAM, NOT TIERS. `RefreshPolicyRequest.tier` is reserved and typed
  * `never`: a future Free/Paid override is added HERE, and every consumer keeps
@@ -51,16 +54,6 @@ export const REFRESH_CADENCE_SETTING_KEY = {
 export const DEFAULT_REFRESH_CADENCE: Readonly<Record<RefreshSourceKind, RefreshCadence>> = {
   BANK:   '24h',
   WALLET: '6h',
-};
-
-/**
- * The fastest cadence the production scheduler attempts per source kind today:
- * sync-banks runs once a day; the wallet sweep every six hours. Slower cadences
- * are honoured (wallets: the sweep skips a wallet not yet due); faster ones are not.
- */
-export const SCHEDULER_FLOOR_HOURS: Readonly<Record<RefreshSourceKind, number>> = {
-  BANK:   24,
-  WALLET: 6,
 };
 
 export const GRACE_FLOOR_HOURS = 2;
@@ -124,9 +117,61 @@ export function resolveRefreshPolicy(
   };
 }
 
-/** Is this cadence one the production scheduler actually attempts at (or slower)? */
-export function schedulerCanHonour(sourceKind: RefreshSourceKind, cadence: RefreshCadence): boolean {
-  return cadenceHours(cadence) >= SCHEDULER_FLOOR_HOURS[sourceKind];
+// ── Scheduler honourability ───────────────────────────────────────────────────
+
+export interface CadenceAssessment {
+  cadence: RefreshCadence;
+  /** True when the deployed attempt schedule can deliver exactly this cadence. */
+  honourable: boolean;
+  /** Why not, in the operator's words. Null when honourable. */
+  reason: string | null;
+  /** The interval the schedule would actually deliver for this cadence, in hours. */
+  effectiveHours: number | null;
+}
+
+/**
+ * Can an attempt period of `attemptPeriodHours` deliver `cadence`? The ONE rule:
+ * the cadence must be a whole multiple of the period. Pure; the period comes from
+ * the registry (lib/platform/scheduler-capability.ts), never from a constant here.
+ */
+export function assessCadence(
+  cadence: RefreshCadence,
+  attemptPeriodHours: number | null,
+  sourceNoun = 'source',
+): CadenceAssessment {
+  const hours = cadenceHours(cadence);
+  if (attemptPeriodHours === null) {
+    return { cadence, honourable: false, effectiveHours: null,
+      reason: `No scheduled job refreshes this ${sourceNoun}; no cadence can be honoured.` };
+  }
+  if (hours < attemptPeriodHours) {
+    return { cadence, honourable: false, effectiveHours: attemptPeriodHours,
+      reason: `Not supported by the current scheduler; ${sourceNoun} attempts occur every ${attemptPeriodHours} hours.` };
+  }
+  if (hours % attemptPeriodHours !== 0) {
+    const effective = Math.ceil(hours / attemptPeriodHours) * attemptPeriodHours;
+    return { cadence, honourable: false, effectiveHours: effective,
+      reason: `Cannot be represented by the current ${attemptPeriodHours}-hour attempt schedule; effective execution would be ${effective} hours.` };
+  }
+  return { cadence, honourable: true, reason: null, effectiveHours: hours };
+}
+
+/** Is this cadence one the deployed attempt period can deliver exactly? */
+export function schedulerCanHonour(cadence: RefreshCadence, attemptPeriodHours: number | null): boolean {
+  return assessCadence(cadence, attemptPeriodHours).honourable;
+}
+
+/** Every cadence in the menu the given attempt period can honour, in menu order. */
+export function honourableCadences(attemptPeriodHours: number | null): RefreshCadence[] {
+  return REFRESH_CADENCES.filter((c) => schedulerCanHonour(c, attemptPeriodHours));
+}
+
+/** The product defaults, resolved — for callers with no settings client. */
+export function defaultRefreshPolicies(): Readonly<Record<RefreshSourceKind, RefreshPolicy>> {
+  return {
+    BANK:   resolveRefreshPolicy({ sourceKind: 'BANK' }, null),
+    WALLET: resolveRefreshPolicy({ sourceKind: 'WALLET' }, null),
+  };
 }
 
 const HOUR_MS = 3_600_000;

@@ -93,6 +93,14 @@ export const PLATFORM_WORKSPACES: Record<string, WorkspaceDefinition> = {
     id: "platform-refresh", kind: "standard", domain: "platform",
     label: "Refresh", icon: "RefreshCw",
   },
+  // PLATFORM OPS POLICIES (Slice 1) — the Policies workspace: declared operational
+  // policy beside what the deployment can honour and what actually executed. It
+  // answers a question no other workspace does ("what is the platform SUPPOSED
+  // to do, and can it?"); Jobs answers whether work ran, Refresh what it did.
+  "platform-policies": {
+    id: "platform-policies", kind: "standard", domain: "platform",
+    label: "Policies", icon: "SlidersHorizontal",
+  },
 };
 
 // ── Composition: which workspaces each area exposes, and their section-widgets ───
@@ -128,9 +136,11 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
       // heavy detail (Manual Operations WRITE controls, connection + API-usage
       // breakdowns) continues to live in its own Workspace.
       sections: ["ops_scheduler", "ops_job_health", "ops_platform_health"],
-      doorways: ["platform-jobs", "platform-refresh", "platform-providers", "platform-operations", "platform-alerts", "platform-trends", "platform-ai", "platform-costs"],
+      doorways: ["platform-jobs", "platform-policies", "platform-refresh", "platform-providers", "platform-operations", "platform-alerts", "platform-trends", "platform-ai", "platform-costs"],
     },
     { workspaceId: "platform-jobs", sections: ["ops_scheduler", "ops_job_health"] },
+    // PLATFORM OPS POLICIES (Slice 1) — read-only financial refresh policy.
+    { workspaceId: "platform-policies", sections: ["ops_policies"] },
     // OPS-2C-2 — Refresh: outcomes + the execution rows + per-account coverage.
     // Provider-operation attempt facts (route shipped in 2C-1) deliberately do
     // NOT live here — they are provider-shaped and land in Providers at 2C-5.

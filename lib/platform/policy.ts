@@ -122,6 +122,10 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       // Jobs → Platform Health); this materialized order is just a unique Int.
       // Backfilled onto the live Space by ensurePlatformSections.
       { key: "ops_platform_health", label: "Platform Health", order: 21 },
+      // PLATFORM OPS POLICIES (Slice 1) — declared operational policy, read-only:
+      // what is configured, what is effective, what the deployed scheduler can
+      // honour, what the latest sweep ran under. Backfilled by ensurePlatformSections.
+      { key: "ops_policies", label: "Policies", order: 22 },
     ],
   },
   SECURITY_OPS: {

@@ -24,12 +24,8 @@ import { AuditAction } from "@/lib/audit-actions";
 import { deriveConnectionState, deriveWalletConnectionState } from "@/lib/sync/status";
 import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wallet-history-metadata";
 import { deriveConnectionIntelligence, formatAvailableHistory } from "@/lib/connections/intelligence";
-import {
-  deriveConnectionHealthState,
-  PLAID_STALE_MS_EXPORT,
-  WALLET_STALE_MS_EXPORT,
-  type HealthState,
-} from "@/lib/connections/health";
+import { deriveConnectionHealthState, staleWindowMs, type HealthState } from "@/lib/connections/health";
+import { loadRefreshPolicies } from "@/lib/platform/refresh-policy";
 
 export interface ConnectionDiagnostic {
   id:          string;   // the operator handle (already used by resync/reauth)
@@ -73,8 +69,9 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
   const now = new Date();
   const nowMs = now.getTime();
 
-  // 1. Connections across all owners (operator view) + owner email + account links.
-  const [plaidItems, wallets] = await Promise.all([
+  // 1. Connections across all owners (operator view) + owner email + account links,
+  //    and the refresh policy that decides what "stale" means for each kind.
+  const [plaidItems, wallets, policies] = await Promise.all([
     db.plaidItem.findMany({
       where:   { status: { not: PlaidItemStatus.REVOKED } },
       select:  {
@@ -97,7 +94,10 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
       orderBy: { createdAt: "desc" },
       take:    cap,
     }),
+    loadRefreshPolicies(db),
   ]);
+  const plaidStaleMs = staleWindowMs(policies.BANK);
+  const walletStaleMs = staleWindowMs(policies.WALLET);
 
   // 2. fa ids per connection.
   const faByConn = new Map<string, string[]>();
@@ -198,7 +198,7 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
     out.push({
       id: p.id, owner: p.user?.email ?? "—", source: p.institutionName, provider: "PLAID",
       status: p.status,
-      healthState: deriveConnectionHealthState(p.status, p.errorCode, p.lastSyncedAt, PLAID_STALE_MS_EXPORT, nowMs),
+      healthState: deriveConnectionHealthState(p.status, p.errorCode, p.lastSyncedAt, plaidStaleMs, nowMs),
       acquisition: {
         lastAcquiredAt: p.lastSyncedAt?.toISOString() ?? null,
         transactionCount: tx.count,
@@ -250,7 +250,7 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
     out.push({
       id: w.id, owner: w.user?.email ?? "—", source: walletLabel(w.externalConnectionId), provider: "WALLET",
       status: w.status,
-      healthState: deriveConnectionHealthState(w.status, w.errorCode, w.lastSyncedAt, WALLET_STALE_MS_EXPORT, nowMs),
+      healthState: deriveConnectionHealthState(w.status, w.errorCode, w.lastSyncedAt, walletStaleMs, nowMs),
       acquisition: {
         lastAcquiredAt: w.lastSyncedAt?.toISOString() ?? null,
         transactionCount: tx.count,

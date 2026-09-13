@@ -30,6 +30,8 @@ import {
   type JobRunReadClient,
 } from "@/lib/jobs/health";
 import { SCHEDULED_JOBS } from "@/lib/jobs/registry";
+import { attemptPeriodHours } from "@/lib/jobs/cadence";
+import { defaultRefreshPolicies, resolveRefreshPolicy } from "@/lib/platform/refresh-policy.core";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -258,6 +260,51 @@ async function main(): Promise<void> {
     // jobs layer (this module), and no other module queries jobRun for health.
     check("single detector implementation",
       (healthSrc.match(/export function classifyJobHealth/g) ?? []).length === 1);
+  }
+
+  // ── 8. PLATFORM OPS POLICIES (Slice 1) — opportunity vs expectation ───────
+  console.log("8. source-bound jobs: the job's expectation is its slot; the source's policy rides beside it");
+  {
+    const crypto = SCHEDULED_JOBS.find((j) => j.name === "sync-crypto")!;
+    const attempt = attemptPeriodHours(SCHEDULED_JOBS, "WALLET");
+    const six = { policy: defaultRefreshPolicies().WALLET, attemptPeriodHours: attempt };
+    const twelve = { policy: resolveRefreshPolicy({ sourceKind: "WALLET" }, { value: "12h", updatedAt: NOW }), attemptPeriodHours: attempt };
+    const eight = { policy: resolveRefreshPolicy({ sourceKind: "WALLET" }, { value: "8h", updatedAt: NOW }), attemptPeriodHours: attempt };
+
+    check("sync-crypto's expectation is derived from its slots (6h), with no registry literal",
+      classifyJobHealth(crypto, [run(1, "succeeded")], NOW).expectedEveryHours === 6 && crypto.expectedEveryHours === undefined);
+    check("wallet policy 6h: a run 7h ago is healthy and the source policy is carried beside the job",
+      (() => { const r = classifyJobHealth(crypto, [run(7, "succeeded")], NOW, six);
+        return r.status === "healthy" && r.source?.sourceKind === "WALLET" && r.source.policyCadence === "6h"
+          && r.source.attemptPeriodHours === 6 && r.source.policyHonoured === true; })());
+    check("wallet policy 12h: the job is still expected every 6h (it fires and finds nothing due) — a 7h-old run is healthy, not overdue",
+      (() => { const r = classifyJobHealth(crypto, [run(7, "succeeded")], NOW, twelve);
+        return r.status === "healthy" && r.expectedEveryHours === 6 && r.source?.policyExpectedEveryHours === 12 && r.source.policyHonoured === true; })());
+    check("wallet policy 12h: a missed SLOT is still overdue (the scheduler opportunity, not the policy, was missed)",
+      classifyJobHealth(crypto, [run(9, "succeeded")], NOW, twelve).status === "overdue");
+    check("an unhonourable policy (8h) is reported as not honoured beside the job, without changing the job's own health",
+      (() => { const r = classifyJobHealth(crypto, [run(1, "succeeded")], NOW, eight);
+        return r.status === "healthy" && r.source?.policyHonoured === false; })());
+    check("the continuation carries its primary's name in the source block",
+      classifyJobHealth(SCHEDULED_JOBS.find((j) => j.name === "sync-crypto-continuation")!, [run(1, "succeeded")], NOW, six).source?.continuationOf === "sync-crypto");
+    check("a non-refresh job carries no source block and keeps its daily expectation",
+      (() => { const r = classifyJobHealth(SCHEDULED_JOBS.find((j) => j.name === "fetch-fx-rates")!, [run(1, "succeeded")], NOW);
+        return r.source === null && r.expectedEveryHours === 24; })());
+    check("without a policy context a source-bound job still classifies (source null)",
+      classifyJobHealth(crypto, [run(1, "succeeded")], NOW).source === null);
+
+    // The detector threads INJECTED policies to source-bound jobs; a pure fake
+    // client (no platformSetting) falls back to the defaults, never a database.
+    const client: JobRunReadClient = { jobRun: { findMany: async () => [run(1, "succeeded")] } };
+    const withTwelve = await checkScheduledJobHealth(client, NOW, SCHEDULED_JOBS, { policies: { BANK: defaultRefreshPolicies().BANK, WALLET: twelve.policy } });
+    check("checkScheduledJobHealth threads the injected wallet policy to sync-crypto and sync-banks gets BANK",
+      withTwelve.jobs.find((j) => j.job === "sync-crypto")?.source?.policyCadence === "12h"
+        && withTwelve.jobs.find((j) => j.job === "sync-banks")?.source?.sourceKind === "BANK"
+        && withTwelve.jobs.find((j) => j.job === "sync-banks")?.source?.attemptPeriodHours === 24);
+    const defaults = await checkScheduledJobHealth(client, NOW, SCHEDULED_JOBS);
+    check("a fake client without settings resolves the product defaults (6h wallets, 24h banks)",
+      defaults.jobs.find((j) => j.job === "sync-crypto")?.source?.policyCadence === "6h"
+        && defaults.jobs.find((j) => j.job === "sync-banks")?.source?.policyCadence === "24h");
   }
 
   if (failures > 0) {

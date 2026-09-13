@@ -42,7 +42,7 @@ import {
 } from "@/lib/space/space-chrome-context";
 import type { SpaceMountContext } from "@/lib/space/mount-context";
 import type { LucideIcon } from "lucide-react";
-import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, ArrowRight } from "lucide-react";
+import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal, ArrowRight } from "lucide-react";
 import type { PlatformArea } from "@prisma/client";
 import { SpaceShell, type SpaceShellRailOption } from "@/components/space/shell/SpaceShell";
 import { getPlatformAreaWorkspaces, getPlatformWorkspace } from "@/lib/platform/workspaces";
@@ -74,6 +74,7 @@ import { OpsRefreshExecutionsWidget } from "./widgets/OpsRefreshExecutionsWidget
 import { OpsRefreshCoverageWidget } from "./widgets/OpsRefreshCoverageWidget";
 import { OpsProviderOperationsWidget } from "./widgets/OpsProviderOperationsWidget";
 import { OpsSchedulerWidget } from "./widgets/OpsSchedulerWidget";
+import { OpsPoliciesWidget } from "./widgets/OpsPoliciesWidget";
 import { OpsPlatformHealthWidget } from "./widgets/OpsPlatformHealthWidget";
 import { WorkspaceSessionProvider } from "./workspace-session";
 import { GrowthSignupsWidget } from "./widgets/GrowthSignupsWidget";
@@ -134,6 +135,8 @@ const PLATFORM_WIDGET_REGISTRY: Record<
   ops_provider_operations: OpsProviderOperationsWidget,
   ops_scheduler:          OpsSchedulerWidget,
   ops_platform_health:    OpsPlatformHealthWidget,
+  // PLATFORM OPS POLICIES (Slice 1) — read-only financial refresh policy.
+  ops_policies:           OpsPoliciesWidget,
   // Growth & Revenue
   growth_signups:       GrowthSignupsWidget,
   growth_beta_requests: GrowthBetaRequestsWidget,
@@ -197,7 +200,7 @@ const NO_SECTION_KEYS: readonly string[] = [];
 
 /** Lucide icon-name → component, for the Platform workspace identities. */
 const WORKSPACE_ICONS: Record<string, LucideIcon> = {
-  LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw,
+  LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal,
 };
 
 interface Props {

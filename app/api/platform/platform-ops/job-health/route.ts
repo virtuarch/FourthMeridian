@@ -16,7 +16,7 @@
 
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
-import { checkScheduledJobHealth, type JobHealthStatus } from "@/lib/jobs/health";
+import { checkScheduledJobHealth, type JobHealthStatus, type JobSourcePolicy } from "@/lib/jobs/health";
 
 export const runtime = "nodejs";
 
@@ -24,6 +24,8 @@ export interface PlatformJobRow {
   job:                 string;
   status:              JobHealthStatus;
   expectedEveryHours:  number;
+  /** The refresh policy of the source this job refreshes — beside the job's own expectation. Null for non-refresh jobs. */
+  source:              JobSourcePolicy | null;
   lastStartedAt:       string | null; // ISO
   lastRunStatus:       string | null;
   lastCompletedAt:     string | null; // ISO
@@ -82,6 +84,7 @@ export async function GET() {
       job:                 j.job,
       status:              j.status,
       expectedEveryHours:  j.expectedEveryHours,
+      source:              j.source,
       lastStartedAt:       iso(j.lastStartedAt),
       lastRunStatus:       j.lastRunStatus,
       lastCompletedAt:     iso(j.lastCompletedAt),

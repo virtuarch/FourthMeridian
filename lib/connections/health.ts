@@ -21,7 +21,17 @@
  * DERIVED HEALTH: wallet failures set `errorCode` WITHOUT flipping `status`
  * (a transient explorer error is recoverable), so raw status alone is not the
  * signal. Precedence: REVOKED/ERROR/NEEDS_REAUTH (from status) → DEGRADED
- * (errorCode present) → STALE (lastSyncedAt beyond a provider window) → HEALTHY.
+ * (errorCode present) → STALE (lastSyncedAt beyond the source kind's overdue
+ * threshold) → HEALTHY.
+ *
+ * THE THRESHOLD IS THE REFRESH POLICY (PLATFORM OPS POLICIES, Slice 1). STALE
+ * means "older than cadence + grace" under the SAME resolved RefreshPolicy the
+ * customer's Connections page and the Brief judge OUT_OF_DATE by
+ * (lib/platform/refresh-policy.ts). This module used to hold its own 48h/12h
+ * windows — a frozen copy of a policy that is now runtime-editable, which would
+ * have let the operator's overdue count silently disagree with the customer's
+ * the moment a cadence changed. The vocabularies stay different (STALE here,
+ * OUT_OF_DATE there); the threshold does not.
  *
  * "BROKEN SINCE": joined from the durable transition log (CH-2 audit actions
  * PLAID_ITEM_STATUS_CHANGED / WALLET_CONNECTION_STATUS_CHANGED) — the most
@@ -35,6 +45,8 @@
 import { db } from "@/lib/db";
 import { ProviderType } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
+import { loadRefreshPolicies, type RefreshPolicies } from "@/lib/platform/refresh-policy";
+import type { RefreshPolicy } from "@/lib/platform/refresh-policy.core";
 
 export type HealthState = "HEALTHY" | "STALE" | "DEGRADED" | "NEEDS_REAUTH" | "ERROR" | "REVOKED";
 
@@ -56,11 +68,12 @@ export interface ConnectionHealthResult {
 }
 
 const HOUR_MS = 60 * 60 * 1000;
-// Plaid: >48h is stale given the daily-to-6-hourly sync cron.
-const PLAID_STALE_MS = 48 * HOUR_MS;
-// Wallet: 2× the 6-hourly crypto cadence Wave 1④ shipped = 12h.
-const WALLET_STALE_MS = 12 * HOUR_MS;
 const DEFAULT_CAP = 20;
+
+/** The operator staleness window for a source kind: its policy's overdue threshold, in ms. */
+export function staleWindowMs(policy: Pick<RefreshPolicy, "overdueAfterHours">): number {
+  return policy.overdueAfterHours * HOUR_MS;
+}
 
 /** Worst-first ordering: higher = more severe. HEALTHY never appears in the list. */
 const SEVERITY: Record<HealthState, number> = {
@@ -87,10 +100,6 @@ export function deriveConnectionHealthState(
   if (lastSyncedAt == null || now - lastSyncedAt.getTime() > staleMs) return "STALE";
   return "HEALTHY";
 }
-
-/** Staleness windows (exported so tests and callers share the same constants). */
-export const PLAID_STALE_MS_EXPORT = PLAID_STALE_MS;
-export const WALLET_STALE_MS_EXPORT = WALLET_STALE_MS;
 
 /** Derive a non-PII wallet/exchange label from its opaque external id. */
 function connectionLabel(provider: string, externalConnectionId: string | null): string {
@@ -134,10 +143,13 @@ async function loadBrokenSince(): Promise<Map<string, string>> {
  * Normalized connection-health snapshot across all providers. `cap` bounds the
  * returned non-healthy list (default 20); `counts` and `total` are unbounded.
  */
-export async function getConnectionHealth(cap: number = DEFAULT_CAP): Promise<ConnectionHealthResult> {
+export async function getConnectionHealth(
+  cap: number = DEFAULT_CAP,
+  policies?: RefreshPolicies,
+): Promise<ConnectionHealthResult> {
   const now = Date.now();
 
-  const [plaidItems, connections, brokenSince] = await Promise.all([
+  const [plaidItems, connections, brokenSince, resolved] = await Promise.all([
     db.plaidItem.findMany({
       select: { id: true, institutionName: true, status: true, errorCode: true, lastSyncedAt: true },
     }),
@@ -146,12 +158,15 @@ export async function getConnectionHealth(cap: number = DEFAULT_CAP): Promise<Co
       select: { id: true, provider: true, externalConnectionId: true, status: true, errorCode: true, lastSyncedAt: true },
     }),
     loadBrokenSince(),
+    policies ? Promise.resolve(policies) : loadRefreshPolicies(db),
   ]);
+  const plaidStaleMs = staleWindowMs(resolved.BANK);
+  const walletStaleMs = staleWindowMs(resolved.WALLET);
 
   const rows: ConnectionHealthRow[] = [];
 
   for (const it of plaidItems) {
-    const healthState = deriveConnectionHealthState(it.status, it.errorCode, it.lastSyncedAt, PLAID_STALE_MS, now);
+    const healthState = deriveConnectionHealthState(it.status, it.errorCode, it.lastSyncedAt, plaidStaleMs, now);
     rows.push({
       source:       "PLAID",
       id:           it.id,
@@ -165,7 +180,7 @@ export async function getConnectionHealth(cap: number = DEFAULT_CAP): Promise<Co
   }
 
   for (const c of connections) {
-    const healthState = deriveConnectionHealthState(c.status, c.errorCode, c.lastSyncedAt, WALLET_STALE_MS, now);
+    const healthState = deriveConnectionHealthState(c.status, c.errorCode, c.lastSyncedAt, walletStaleMs, now);
     rows.push({
       source:       c.provider,
       id:           c.id,

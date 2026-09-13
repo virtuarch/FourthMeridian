@@ -170,8 +170,8 @@ async function main(): Promise<void> {
   const registry = code(read("lib", "jobs", "registry.ts"));
   // CH-3 — sync-crypto is now REGISTERED (every 6 hours), unlocked by the Vercel
   // plan upgrade off Hobby. The former "deferred — R7" ruling is retired.
-  check("sync-crypto is registered in the dispatcher (6-hourly)",
-    /name:\s*["']sync-crypto["']/.test(registry) && registry.includes("expectedEveryHours: 6"));
+  check("sync-crypto is registered in the dispatcher (6-hourly, derived from its [0,6,12,18] slots)",
+    /name:\s*["']sync-crypto["']/.test(registry) && /hourUTC:\s*\[0,\s*6,\s*12,\s*18\]/.test(registry));
 
   const manual = code(read("app", "api", "accounts", "[id]", "sync", "route.ts"));
   check("manual route authenticates", manual.includes("requireUser"));

@@ -111,12 +111,17 @@ async function main(): Promise<void> {
     check("sync-crypto fires every 6 hours (00/06/12/18 UTC, :00 slot)",
       Array.isArray(crypto?.hourUTC) &&
         (crypto!.hourUTC as number[]).join() === "0,6,12,18" && crypto?.minuteUTC === 0);
-    check("sync-crypto declares expectedEveryHours:6 for the dead-job detector",
-      crypto?.expectedEveryHours === 6);
+    check("sync-crypto's 6-hourly expectation is DERIVED from its slots (no literal) and it refreshes WALLET",
+      crypto?.expectedEveryHours === undefined && crypto?.refreshes === "WALLET" && crypto?.continuationOf === undefined);
     const continuation = byName.get("sync-crypto-continuation");
     check("sync-crypto-continuation runs at :30 of the same four hours (ticks vercel.json already fires)",
       Array.isArray(continuation?.hourUTC) && (continuation!.hourUTC as number[]).join() === "0,6,12,18"
-        && continuation?.minuteUTC === 30 && continuation?.expectedEveryHours === 6);
+        && continuation?.minuteUTC === 30 && continuation?.expectedEveryHours === undefined);
+    check("the continuation names sync-crypto as its primary and binds the same source kind",
+      continuation?.continuationOf === "sync-crypto" && continuation?.refreshes === "WALLET");
+    check("sync-banks refreshes BANK; no other job binds a source kind",
+      byName.get("sync-banks")?.refreshes === "BANK"
+        && SCHEDULED_JOBS.filter((j) => j.refreshes).map((j) => j.name).sort().join() === "sync-banks,sync-crypto,sync-crypto-continuation");
   }
 
   // ── 2b. Multi-slot (array hourUTC) dispatch — CH-3 ────────────────────────
