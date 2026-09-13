@@ -37,7 +37,7 @@ import {
 import { TRANSACTION_FETCH_LIMIT } from '@/lib/ai/assemblers/transactions';
 import { PROBES, PROBE_IDS, findProbe } from './probes';
 import { ARMS, ARM_USES_TOOLS, ARM_QUESTION } from '@/lib/ai/conversation/evidence';
-import { SYSTEM_INSTRUCTION, supportsTools } from './run';
+import { SYSTEM_INSTRUCTION, supportsTools } from '@/lib/ai/conversation/turn';
 import {
   usesModernParams, completionBudgetFor,
   CLASSIC_COMPLETION_BUDGET, REASONING_COMPLETION_BUDGET,
@@ -238,38 +238,47 @@ console.log('5. investment scenario arithmetic');
 console.log('6. conversation state');
 {
   const src = code(read('scripts/ai-baseline/run.ts'));
+  // ⚠️ THE TRANSCRIPT IS ASSEMBLED HERE AND CONSUMED THERE. run.ts owns the
+  // message array across a case; turn.ts owns what one turn does to it. Both
+  // halves of "history IS the state" are asserted, each where it now lives.
+  const turn = code(read('lib/ai/conversation/turn.ts'));
   // `let`, not `const`, since Clip 6: compaction returns a NEW array and the loop
   // rebinds it. It is still ONE transcript carried across every turn.
   check('one growing message array across all turns',
     /let messages: unknown\[\]/.test(src) && /for \(const \[index, user\] of probe\.turns/.test(src));
   check('turns are NOT independent requests', !/messages = \[/.test(src.split('const messages')[1] ?? ''));
   check('tool results are appended to the transcript',
-    /role: 'tool', tool_call_id/.test(src));
+    /role: 'tool', tool_call_id/.test(turn));
   check('…so a later turn can still see an earlier tool result',
-    /messages\.push\(\{ role: 'tool'/.test(src));
+    /messages\.push\(\{ role: 'tool'/.test(turn));
   for (const banned of ['ScenarioState', 'ConversationLifecycle', 'assumptionStore', 'MeasureId', 'LicensedFigure']) {
-    check(`no \`${banned}\``, !src.includes(banned));
+    check(`no \`${banned}\``, !src.includes(banned) && !turn.includes(banned));
   }
-  check('a tool loop is bounded', /MAX_TOOL_ROUNDTRIPS/.test(src));
+  check('a tool loop is bounded', /MAX_TOOL_ROUNDTRIPS/.test(turn));
 }
 
 // ══ 7. Failure is recorded, not fatal ════════════════════════════════════════
 console.log('7. failure handling');
 {
   const runSrc = code(read('scripts/ai-baseline/run.ts'));
+  const turnSrc = code(read('lib/ai/conversation/turn.ts'));
   check('a provider error is caught per turn and stored on the record',
-    /catch \(err\)[\s\S]{0,200}rec\.error =/.test(runSrc));
+    /catch \(err\)[\s\S]{0,200}rec\.error =/.test(turnSrc));
   // The write happens after the loop, so a failed case still leaves a transcript.
+  // ⚠️ ANCHORED ON A STRING THAT IS ACTUALLY THERE. `rec.error =` moved to
+  // turn.ts with the loop; a `lastIndexOf` of an absent needle returns -1 and
+  // would have made this comparison pass for the wrong reason.
   check('the artifact is written after the turn loop, on every path',
-    runSrc.lastIndexOf('writeFileSync(artifactPath') > runSrc.lastIndexOf('rec.error ='));
+    runSrc.includes('if (rec.error)')
+      && runSrc.lastIndexOf('writeFileSync(artifactPath') > runSrc.lastIndexOf('if (rec.error)'));
   check('…and `ok: false` is recorded in it',
     /ok = false/.test(runSrc) && /turns, totals, ok,/.test(runSrc));
 
   check('a rate limit is retried, and ONLY a rate limit',
-    /isRateLimit = \/rate limit\|429\/i\.test\(message\)/.test(runSrc)
-      && /if \(!isRateLimit \|\| attempt > MAX_RATE_LIMIT_RETRIES\) throw err/.test(runSrc));
-  check('…bounded', /MAX_RATE_LIMIT_RETRIES = \d/.test(runSrc));
-  check('…recorded on the turn, never hidden', /rec\.retries\.push/.test(runSrc));
+    /isRateLimit = \/rate limit\|429\/i\.test\(message\)/.test(turnSrc)
+      && /if \(!isRateLimit \|\| attempt > MAX_RATE_LIMIT_RETRIES\) throw err/.test(turnSrc));
+  check('…bounded', /MAX_RATE_LIMIT_RETRIES = \d/.test(turnSrc));
+  check('…recorded on the turn, never hidden', /rec\.retries\.push/.test(turnSrc));
   check('…and quota waiting is kept OUT of the latency figure',
     /rateLimitWaitMs: t\.rateLimitWaitMs/.test(runSrc)
       && !/latencyMs: t\.latencyMs \+ [\s\S]{0,40}waitedMs/.test(runSrc));
@@ -322,11 +331,13 @@ console.log('10. artifacts');
     'toolsOffered', 'turns', 'totals', 'humanReview', 'spaceId', 'asOfISO']) {
     check(`artifact records \`${field}\``, new RegExp(`${field}[:,]`).test(src));
   }
+  const rec = code(read('lib/ai/conversation/turn.ts'));
   check('a turn records its tool calls AND their results',
-    /toolCalls: \{ name: string; arguments: unknown; result: unknown/.test(src));
-  check('a turn records latency and usage', /latencyMs: number/.test(src) && /usage:/.test(src));
+    /toolCalls: \{ name: string; arguments: unknown; result: unknown/.test(rec));
+  check('a turn records latency and usage', /latencyMs: number/.test(rec) && /usage:/.test(rec));
 
-  const all = [src, read('scripts/ai-baseline/artifacts.ts'), read('scripts/ai-conversation-baseline.ts')].join('\n');
+  const all = [src, rec, read('scripts/ai-baseline/artifacts.ts'),
+    read('scripts/ai-conversation-baseline.ts')].join('\n');
   for (const secret of ['OPENAI_API_KEY', 'DATABASE_URL', 'ENCRYPTION_KEY', 'apiKey', 'process.env.OPENAI']) {
     check(`no \`${secret}\` reaches an artifact`, !all.includes(secret));
   }
@@ -363,22 +374,28 @@ console.log('12. interactive operator mode');
   const cli  = code(read('scripts/ai-conversation-baseline.ts'));
   const run  = code(read('scripts/ai-baseline/run.ts'));
 
-  // The whole point: one turn loop, not two.
-  check('it runs the batch runner\'s turn executor, not a copy',
-    /import \{[^}]*executeTurn[^}]*\} from '\.\/run'/.test(src)
+  // The whole point: one turn loop, not two — and since the production route
+  // runs it too, the one loop lives in lib/, not in this harness.
+  const turn = code(read('lib/ai/conversation/turn.ts'));
+  check('it runs the shared turn executor, not a copy',
+    /import \{[\s\S]{0,160}executeTurn[\s\S]{0,160}\} from '@\/lib\/ai\/conversation\/turn'/.test(src)
       && !/generateWithTools\(/.test(src));
-  check('…which is exported from run.ts and used by BOTH',
-    /export async function executeTurn/.test(run)
+  check('…which is exported from lib/ai/conversation/turn.ts and used by BOTH',
+    /export async function executeTurn/.test(turn)
+      && !/export async function executeTurn/.test(run)
       && /executeTurn\(\{[\s\S]{0,200}toolCtx[\s\S]{0,120}\}\)/.test(run)
       && /executeTurn\(\{[\s\S]{0,200}toolCtx[\s\S]{0,200}\}\)/.test(code(raw)));
+  check('…and the model call itself happens in exactly one place',
+    (turn.match(/generateWithTools\(/g) ?? []).length === 1
+      && !/generateWithTools\(/.test(run));
   // ⚠️ ONE TURN, MANY INVOCATIONS. A tool loop calls the model several times for
   // a single user turn; the ambient context is what lets the cost ledger sum them
   // back into that turn, and it is telemetry only — nothing the model sees.
   check('both paths establish an invocation correlation context',
-    /runWithAiInvocationContext\(/.test(run)
+    /runWithAiInvocationContext\(/.test(turn)
       && /correlationId:/.test(run) && /correlationId:/.test(code(raw)));
   check('…and the turn index is the grouping key within a session',
-    /turnIndex: args\.index/.test(run));
+    /turnIndex: args\.index/.test(turn));
   check('totals are summed by the shared helper', /sumTurns/.test(src) && /export function sumTurns/.test(run));
 
   // Same arm, same evidence, same instruction, same tools.
@@ -429,7 +446,7 @@ console.log('12. interactive operator mode');
 
 console.log('13a. clip 1 — the harness stops losing answers');
 {
-  const run  = code(read('scripts/ai-baseline/run.ts'));
+  const run  = code(read('lib/ai/conversation/turn.ts'));
   const prov = code(read('lib/ai/provider.ts'));
   const inter= code(read('scripts/ai-baseline/interactive.ts'));
   const cli  = code(read('scripts/ai-conversation-baseline.ts'));
@@ -1768,7 +1785,7 @@ console.log('20. reconciliation arithmetic');
 console.log('20a. checkpoint-on-projection');
 {
   const mt  = code(read('lib/ai/conversation/memory-tools.ts'));
-  const run = code(read('scripts/ai-baseline/run.ts'));
+  const run = code(read('lib/ai/conversation/turn.ts'));
   const src = code(read('lib/ai/conversation/tools.ts'));
 
   // ⚠️ THE WRITE LIVES IN THE TURN LOOP, NOT IN THE TOOL. Making `project_cash`

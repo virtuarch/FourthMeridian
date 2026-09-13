@@ -197,7 +197,9 @@ console.log('\n7. STRUCTURE — no partial write exists');
 {
   const code = (rel: string) => readFileSync(rel, 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
   const mod = code('lib/ai/conversation/active-scenario.ts');
-  const run = code('scripts/ai-baseline/run.ts');
+  // The turn loop moved to lib/ when the production route began running it;
+  // the write hook it carries is the same one, in the same position.
+  const run = code('lib/ai/conversation/turn.ts');
   check('the pair is built in ONE object literal',
     (mod.match(/assumptions:[\s\S]{0,200}?result: \{ asOf, to, liquid, investments, debt, netWorth \}/g) ?? []).length === 1);
   check('the slot is only ever assigned a WHOLE scenario or null',

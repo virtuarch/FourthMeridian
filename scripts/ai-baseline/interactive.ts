@@ -23,7 +23,10 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { assembleFullContext, buildEvidence, ARM_QUESTION } from '@/lib/ai/conversation/evidence';
 import { openAiToolSchemas, type ToolContext } from '@/lib/ai/conversation/tools';
-import { executeTurn, sumTurns, supportsTools, SYSTEM_INSTRUCTION, type TurnRecord } from './run';
+import { sumTurns } from './run';
+import {
+  executeTurn, supportsTools, SYSTEM_INSTRUCTION, type TurnRecord,
+} from '@/lib/ai/conversation/turn';
 import { compactToolHistory, DEFAULT_COMPACTION, type CompactionPolicy } from '@/lib/ai/conversation/compaction';
 import { newScenarioSlot } from '@/lib/ai/conversation/active-scenario';
 import type { SpaceContext } from '@/lib/space';
