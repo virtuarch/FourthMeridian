@@ -76,15 +76,34 @@ export interface LedgerLine {
  * answer came back arithmetically flawless and about a different question. Half
  * of the balance is only knowable at each date, from the projection.
  *
- * Exactly one of `amount` and `fractionOfLiquid` is set. Amounts are SIGNED:
- * positive moves cash into investments, negative takes it back out.
+ * Exactly one of `amount`, `fractionOfLiquid` and `surplusFraction` is set.
+ * Amounts are SIGNED: positive moves cash into investments, negative takes it
+ * back out.
  */
 export interface PlannedMovement {
   date:   string;
   label:  string;
   amount?: number;
-  /** A share of the projected cash on that date: 0.5 for "half". */
+  /** A share of the projected cash BALANCE on that date: 0.5 for "half". */
   fractionOfLiquid?: number;
+  /**
+   * A share of the month's projected cash SURPLUS: 0.75 for "invest three
+   * quarters of what I'm putting aside".
+   *
+   * ⚠️ A DIFFERENT BASE FROM `fractionOfLiquid`, AND THE DIFFERENCE IS THE WHOLE
+   * POINT. A share of the balance sweeps everything the account holds, every
+   * month, including money that was already there — measured on the live Space,
+   * 0.75 of the balance monthly drains cash to about $2,300 and holds it there.
+   * A share of the surplus touches only what the month ADDED, so the opening
+   * balance is never swept and a month that adds nothing contributes nothing.
+   */
+  surplusFraction?: number;
+  /**
+   * The date whose projected balance opens the month this movement closes.
+   * Present only for a surplus share; absent means the projection's own start,
+   * whose balance is the opening cash.
+   */
+  baseDate?: string;
 }
 
 /** A movement with its amount settled, ready to apply. */
@@ -92,8 +111,20 @@ export interface DatedMovement {
   date:   string;
   amount: number;
   label:  string;
-  /** The share it was stated as, when it was stated as a share. */
+  /** The share it was stated as, when it was stated as a share of the balance. */
   fractionOfLiquid?: number;
+  /** The share it was stated as, when it was stated as a share of the surplus. */
+  surplusFraction?: number;
+  /**
+   * The month's projected cash movement this contribution was taken from.
+   *
+   * ⚠️ THE RULE IS COMPACT; THE MONEY IS NOT. "75% of the surplus" is one
+   * sentence and forty different amounts, and a reader owed the second cannot
+   * check the first without it. Negative when the month projected a fall — the
+   * contribution is then zero, and saying so is the difference between a month
+   * that was skipped and a month that was never there.
+   */
+  projectedSurplus?: number;
 }
 
 /**
@@ -107,11 +138,21 @@ export interface ReturnPeriod {
   annualPct: number;
 }
 
-/** What the user said about putting money in — one date, or a repeating schedule. */
+/**
+ * What the user said about putting money in — one date, a repeating schedule, or
+ * a standing share of what each month adds.
+ *
+ * ⚠️ THE SURPLUS RULE CARRIES NO CADENCE, because it has only one. A month's
+ * surplus is a monthly fact: the cash spine is month-grain, the solver already
+ * works in month-ends, and a "yearly share of the monthly surplus" is not a
+ * thing anybody means. Offering a cadence that has one legal value invites a
+ * caller to state the illegal one.
+ */
 export type ContributionSpec =
   | { onDate: string; amount?: number; fractionOfLiquid?: number; label?: string }
   | { from: string; to?: string; amount?: number; fractionOfLiquid?: number;
-      cadence: 'monthly' | 'yearly'; label?: string };
+      cadence: 'monthly' | 'yearly'; label?: string }
+  | { surplusFraction: number; from?: string; to?: string; label?: string };
 
 export interface LedgerOpening {
   asOfISO:     string;
@@ -239,6 +280,31 @@ export function addMonths(startISO: string, n: number): string {
 export const MAX_EXPANDED_CONTRIBUTIONS = 600;
 
 /**
+ * Every calendar month-end strictly after `fromISO` and not after `toISO`, plus
+ * `toISO` itself when it is not already one.
+ *
+ * ⚠️ THE LAST ENTRY IS ALWAYS THE HORIZON, which is what makes the final
+ * checkpoint and the standalone endpoint the same number rather than nearly.
+ *
+ * ⚠️ IT LIVES HERE NOW BECAUSE THE LEDGER NEEDS IT. A surplus share is a monthly
+ * fact and has to generate its own dates; `tools.ts` re-exports this so every
+ * existing caller is unmoved, and there is still exactly one implementation.
+ */
+export function monthEndsBetween(fromISO: string, toISO: string): string[] {
+  const out: string[] = [];
+  const from = new Date(`${fromISO}T00:00:00.000Z`);
+  const to   = new Date(`${toISO}T00:00:00.000Z`);
+  const cur  = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 0));
+  while (cur <= to) {
+    const iso = cur.toISOString().slice(0, 10);
+    if (iso > fromISO) out.push(iso);
+    cur.setUTCMonth(cur.getUTCMonth() + 2, 0);
+  }
+  if (out[out.length - 1] !== toISO && toISO > fromISO) out.push(toISO);
+  return out;
+}
+
+/**
  * Reject overlapping return periods rather than silently applying both.
  *
  * Two rates in force at once has no honest reading — neither "the later one
@@ -316,28 +382,83 @@ export function expandContributions(
   for (const spec of specs) {
     const label = spec.label ?? ('cadence' in spec
       ? `${spec.cadence} contribution` : 'one-off contribution');
-    const stated = spec.fractionOfLiquid !== undefined
-      ? `${spec.fractionOfLiquid * 100}% of cash` : String(spec.amount);
+    const hasSurplus  = 'surplusFraction' in spec && spec.surplusFraction !== undefined;
+    const hasAmount   = 'amount' in spec && spec.amount !== undefined;
+    const hasFraction = 'fractionOfLiquid' in spec && spec.fractionOfLiquid !== undefined;
+    const stated = hasSurplus ? `${(spec as { surplusFraction: number }).surplusFraction * 100}% of monthly surplus`
+      : hasFraction ? `${(spec as { fractionOfLiquid: number }).fractionOfLiquid * 100}% of cash`
+      : String((spec as { amount?: number }).amount);
     const name = 'onDate' in spec
       ? `${label} ${stated} on ${spec.onDate}`
-      : `${label} ${stated} ${spec.cadence} from ${spec.from}`;
+      : 'cadence' in spec
+        ? `${label} ${stated} ${spec.cadence} from ${spec.from}`
+        : `${label} ${stated} monthly from ${('from' in spec && spec.from) || asOfISO}`;
 
-    const hasAmount   = spec.amount !== undefined;
-    const hasFraction = spec.fractionOfLiquid !== undefined;
-    if (hasAmount === hasFraction) {
+    // ⚠️ ONE BASIS PER RULE, AND NEITHER IS THE DEFAULT. A rule naming two bases
+    // is a rule whose author had two different scenarios in mind; picking one of
+    // them silently would answer a question nobody asked, in a table that looks
+    // exactly as authoritative as a right one.
+    const bases = [hasAmount, hasFraction, hasSurplus].filter(Boolean).length;
+    if (bases !== 1) {
       rejected.push({ input: name,
-        reason: 'state EITHER an amount in dollars OR a fraction of cash, not both and not neither' });
+        reason: 'state EXACTLY ONE of: an amount in dollars, `fractionOfLiquid` for a share of '
+          + 'the cash balance, or `surplusFraction` for a share of the month\'s projected surplus' });
+      continue;
+    }
+
+    // ── A share of what each month adds ────────────────────────────────────
+    if (hasSurplus) {
+      const f = (spec as { surplusFraction: number }).surplusFraction;
+      if (!Number.isFinite(f) || f <= 0 || f > 1) {
+        rejected.push({ input: name,
+          reason: 'a share of the surplus must be greater than 0 and at most 1 (0.75 for three quarters)' });
+        continue;
+      }
+      const sFrom = 'from' in spec && spec.from && spec.from > asOfISO ? spec.from : asOfISO;
+      const sTo   = 'to' in spec && spec.to && spec.to < horizonISO ? spec.to : horizonISO;
+      if (sFrom >= sTo) {
+        rejected.push({ input: name, reason: 'the window ends before the projection starts' });
+        continue;
+      }
+      // ⚠️ MONTH-ENDS, GENERATED, AND THE BASE TRAVELS WITH THE MOVEMENT. Each
+      // contribution closes one month; the month it closes opens at the previous
+      // month-end, or at the projection's own start for the first one. Carrying
+      // that date here is what lets the settler subtract two balances it can see
+      // rather than infer a neighbour from whatever else is in the spine.
+      // ⚠️ THE GRID RUNS FROM THE PROJECTION'S START, NOT FROM THE WINDOW'S. A
+      // rule that begins in 2030 still closes a MONTH, and the month it closes
+      // opens at the month-end before it — not at today. Generating from `asOf`
+      // and then taking the tail is what makes the first contribution of a
+      // late-starting rule one month's surplus instead of four years of it.
+      const grid = monthEndsBetween(asOfISO, sTo);
+      const firstIdx = grid.findIndex((d) => d >= sFrom);
+      const dates = firstIdx === -1 ? [] : grid.slice(firstIdx);
+      if (dates.length === 0) {
+        rejected.push({ input: name, reason: 'no month-end falls inside the projection window' });
+        continue;
+      }
+      let n = 0;
+      for (const [k, date] of dates.entries()) {
+        const i = firstIdx + k;
+        movements.push({ date, label, surplusFraction: f,
+          ...(i > 0 ? { baseDate: grid[i - 1] } : {}) });
+        if (++n >= MAX_EXPANDED_CONTRIBUTIONS) {
+          rejected.push({ input: name,
+            reason: `stopped after ${MAX_EXPANDED_CONTRIBUTIONS} occurrences` });
+          break;
+        }
+      }
       continue;
     }
     if (hasFraction) {
-      const f = spec.fractionOfLiquid as number;
+      const f = (spec as { fractionOfLiquid: number }).fractionOfLiquid;
       if (!Number.isFinite(f) || f <= 0 || f > 1) {
         rejected.push({ input: name,
           reason: 'a fraction of cash must be greater than 0 and at most 1 (0.5 for half)' });
         continue;
       }
     } else {
-      const amt = spec.amount as number;
+      const amt = (spec as { amount: number }).amount;
       if (!Number.isFinite(amt) || amt === 0) {
         rejected.push({ input: name, reason: 'the amount is zero or not a number' }); continue;
       }
@@ -352,8 +473,8 @@ export function expandContributions(
       }
     }
     const planned = (date: string): PlannedMovement => ({ date, label,
-      ...(hasAmount ? { amount: spec.amount as number }
-                    : { fractionOfLiquid: spec.fractionOfLiquid as number }) });
+      ...(hasAmount ? { amount: (spec as { amount: number }).amount }
+                    : { fractionOfLiquid: (spec as { fractionOfLiquid: number }).fractionOfLiquid }) });
 
     if ('onDate' in spec) {
       if (spec.onDate < asOfISO) {
@@ -366,9 +487,10 @@ export function expandContributions(
       continue;
     }
 
-    const step  = spec.cadence === 'yearly' ? 12 : 1;
-    const start = spec.from < asOfISO ? asOfISO : spec.from;
-    const end   = spec.to && spec.to < horizonISO ? spec.to : horizonISO;
+    const sched = spec as { from: string; to?: string; cadence: 'monthly' | 'yearly' };
+    const step  = sched.cadence === 'yearly' ? 12 : 1;
+    const start = sched.from < asOfISO ? asOfISO : sched.from;
+    const end   = sched.to && sched.to < horizonISO ? sched.to : horizonISO;
     if (start > end) {
       rejected.push({ input: name, reason: 'the schedule ends before the projection starts' });
       continue;
@@ -377,7 +499,7 @@ export function expandContributions(
     // Occurrences are measured from the STATED start, not from the clamped one,
     // so trimming a schedule to the projection window shifts no pay-in date.
     for (let i = 0; ; i++) {
-      const date = addMonths(spec.from, i * step);
+      const date = addMonths(sched.from, i * step);
       if (date > end) break;
       if (date < start) continue;
       movements.push(planned(date));
@@ -415,11 +537,21 @@ type Kind = 'CONTRIBUTION' | 'OUTFLOW';
  * how a scenario stops answering the question that was asked. The one exception
  * is a SHARE of a balance that has already gone negative: half of nothing is
  * nothing, and half of a negative number is a contribution that pays the user.
+ *
+ * ⚠️ A SURPLUS SHARE IS TAKEN FROM THE MONTH, NOT FROM THE ACCOUNT. Its base is
+ * the projected cash movement between two dates the spine can both show —
+ * BEFORE this contribution or any other is applied — so the rule can never eat
+ * into the base it is computed from, and a scenario with a 100% share moves
+ * exactly the money the month brought in and not a cent of what was already
+ * there. A month that projects a fall contributes nothing: no negative
+ * contribution, no sale of investments, no deficit carried into the next month.
  */
 export function settleMovements(
   contributions: readonly PlannedMovement[],
   outflows:      readonly PlannedMovement[],
   spine:         readonly SpinePoint[],
+  /** The projection's opening cash — the base for the first month's surplus. */
+  openingLiquid: number = 0,
 ): {
   movements: (DatedMovement & { kind: Kind })[];
   rejected:  { input: string; reason: string }[];
@@ -445,6 +577,37 @@ export function settleMovements(
       consumed += m.amount;
       continue;
     }
+
+    // ── A share of the month's projected surplus ──────────────────────────
+    if (m.surplusFraction !== undefined) {
+      const closing = liquidOn.get(m.date);
+      // The month opens at the previous month-end, or at the projection's start.
+      const opening = m.baseDate === undefined ? openingLiquid : liquidOn.get(m.baseDate);
+      if (closing === undefined || opening === undefined) {
+        rejected.push({ input: name,
+          reason: 'a share of the surplus needs the projection at both ends of the month, and '
+            + 'one of them was not supplied' });
+        continue;
+      }
+      if (closing === null || opening === null) {
+        rejected.push({ input: name,
+          reason: 'the projection could not produce a balance for one end of the month, so the '
+            + 'surplus cannot be stated' });
+        continue;
+      }
+      // ⚠️ THE BASE IS THE PROJECTION, NEVER THE RUNNING BALANCE. `consumed` is
+      // deliberately not subtracted here: the spine is the cash path before any
+      // contribution, so two rules taking a share of the same month each take a
+      // share of the same month, and neither shrinks the other's base.
+      const projectedSurplus = round2(closing - opening);
+      const eligible = projectedSurplus > 0 ? projectedSurplus : 0;
+      const amount = round2(m.surplusFraction * eligible);
+      movements.push({ date: m.date, label: m.label, amount, kind: m.kind,
+        surplusFraction: m.surplusFraction, projectedSurplus });
+      consumed += amount;
+      continue;
+    }
+
     const fraction = m.fractionOfLiquid as number;
     if (!liquidOn.has(m.date)) {
       rejected.push({ input: name,
@@ -482,7 +645,8 @@ const uniq = (xs: ProvenanceKind[]): ProvenanceKind[] => [...new Set(xs)];
 export function runScenarioLedger(input: LedgerInput): LedgerResult {
   const { opening, spine } = input;
   const { ok: returns, rejected } = validateReturns(input.returns);
-  const settled = settleMovements(input.contributions, input.outflows, spine);
+  const settled = settleMovements(
+    input.contributions, input.outflows, spine, opening.liquid);
   rejected.push(...settled.rejected);
   const warnings: string[] = [...settled.warnings];
   const contributions = settled.movements.filter((m) => m.kind === 'CONTRIBUTION');

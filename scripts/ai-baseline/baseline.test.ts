@@ -581,11 +581,16 @@ console.log('13d. clip 3 — month-end arithmetic (pure)');
   // CONTRACT is asserted here against the shape the tool must produce: the last
   // entry is always the horizon, which is what makes the final checkpoint equal the
   // standalone endpoint rather than nearly equal it.
-  const src = code(read('lib/ai/conversation/tools.ts'));
+  // ⚠️ THE GRID MOVED TO THE LEDGER, which is where a surplus share generates its
+  // own month-ends. `tools.ts` re-exports it, so every caller and the behavioural
+  // check below are unmoved — and there is still exactly one implementation.
+  const src = code(read('lib/ai/conversation/scenario-ledger.ts'));
   check('month-ends are generated, not hand-listed', /function monthEndsBetween/.test(src));
   check('…strictly after the start', /if \(iso > fromISO\) out\.push\(iso\)/.test(src));
   check('…and the horizon is always the last entry',
     /out\[out\.length - 1\] !== toISO && toISO > fromISO/.test(src));
+  check('…and tools.ts holds no second copy',
+    !/function monthEndsBetween/.test(code(read('lib/ai/conversation/tools.ts'))));
 }
 
 console.log('13e. clip 4 — semantic flow on transactions');

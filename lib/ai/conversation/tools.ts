@@ -67,6 +67,7 @@ import {
 } from './forecast-vocabulary';
 import { applyInvestmentScenario, type ScenarioComponent } from './scenario';
 import {
+  monthEndsBetween,
   runScenarioLedger, expandContributions, solveForTarget, PROVENANCE,
   type ContributionSpec, type LedgerResult, type PlannedMovement,
   type ReturnPeriod, type SpinePoint,
@@ -182,25 +183,11 @@ const daysAgoISO = (asOf: string, n: number) =>
   new Date(Date.parse(`${asOf}T00:00:00.000Z`) - n * 86_400_000).toISOString().slice(0, 10);
 
 /**
- * Every calendar month-end strictly after `fromISO` and not after `toISO`, plus
- * `toISO` itself when it is not already one.
- *
- * ⚠️ THE LAST ENTRY IS ALWAYS THE HORIZON, which is what makes the final
- * checkpoint and the standalone endpoint the same number rather than nearly.
+ * ⚠️ RE-EXPORTED, NOT REIMPLEMENTED. The month-end grid moved into
+ * `scenario-ledger.ts` when a surplus share had to generate its own dates. Every
+ * caller here is unmoved and there is still exactly one implementation.
  */
-export function monthEndsBetween(fromISO: string, toISO: string): string[] {
-  const out: string[] = [];
-  const from = new Date(`${fromISO}T00:00:00.000Z`);
-  const to   = new Date(`${toISO}T00:00:00.000Z`);
-  const cur  = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 0));
-  while (cur <= to) {
-    const iso = cur.toISOString().slice(0, 10);
-    if (iso > fromISO) out.push(iso);
-    cur.setUTCMonth(cur.getUTCMonth() + 2, 0);
-  }
-  if (out[out.length - 1] !== toISO && toISO > fromISO) out.push(toISO);
-  return out;
-}
+export { monthEndsBetween };
 
 async function assemble<T>(
   domain: string, ctx: ToolContext, options: Record<string, unknown> = {},
@@ -1619,6 +1606,20 @@ async function prepareScenario(
       ...(c.fractionOfLiquid !== undefined
         ? { fractionOfLiquid: Number(c.fractionOfLiquid) } : {}),
     };
+    // ⚠️ A SURPLUS SHARE IS ITS OWN SHAPE, NOT A SIZE ON A SCHEDULE. It carries
+    // no cadence and no single date; the ledger generates its month-ends. Anything
+    // else stated alongside it is passed through untouched so that a rule naming
+    // two bases is REJECTED by the one authority that decides that, rather than
+    // silently resolved into one of them here.
+    if (c.surplusFraction !== undefined) {
+      contribSpecs.push({ surplusFraction: Number(c.surplusFraction), ...size,
+        ...(c.onDate ? { onDate: String(c.onDate) } : {}),
+        ...(c.from ? { from: String(c.from) } : {}),
+        ...(c.to ? { to: String(c.to) } : {}),
+        ...(c.cadence ? { cadence: String(c.cadence) === 'yearly' ? 'yearly' : 'monthly' } : {}),
+        ...(label ? { label } : {}) } as unknown as ContributionSpec);
+      continue;
+    }
     if (c.onDate) {
       contribSpecs.push({ onDate: String(c.onDate), ...size, ...(label ? { label } : {}) });
     } else if (c.from && c.cadence) {
@@ -1695,8 +1696,15 @@ async function prepareScenario(
       // my liquidity every June" falls nowhere near a year end, and half of a
       // balance the ledger cannot see is not something to guess at. Those dates
       // are evaluated too and marked as not being rows in the table.
+      // ⚠️ A SURPLUS SHARE NEEDS BOTH ENDS OF ITS MONTH. The contribution date
+      // closes the month and `baseDate` opens it; a month whose opening balance
+      // the spine cannot show is a month whose surplus cannot be stated, and the
+      // settler refuses it rather than inferring a neighbour from whatever else
+      // happens to be in the spine.
       const shareDates = useContribs
-        .filter((m) => m.fractionOfLiquid !== undefined).map((m) => m.date).sort();
+        .filter((m) => m.fractionOfLiquid !== undefined || m.surplusFraction !== undefined)
+        .flatMap((m) => (m.baseDate ? [m.baseDate, m.date] : [m.date]))
+        .sort();
       return runScenarioLedger({
         opening,
         spine: spineFor(shareDates, o.monthlySpending),
@@ -1720,6 +1728,32 @@ async function prepareScenario(
  * invites the model to supply the frame from memory; a refusal that names its own
  * assumptions does not.
  */
+/**
+ * The surplus share in force, as the rule it is.
+ *
+ * ⚠️ IT IS READ BACK OFF THE SETTLED MOVEMENTS, not carried alongside them, so
+ * what is echoed is what was actually applied. A scenario cannot claim a share it
+ * did not run.
+ */
+function surplusRule(ledger: LedgerResult) {
+  const taken = ledger.movements.filter(
+    (m) => m.kind === 'CONTRIBUTION' && m.surplusFraction !== undefined);
+  if (taken.length === 0) return null;
+  const fractions = [...new Set(taken.map((m) => m.surplusFraction as number))];
+  const funded = taken.filter((m) => m.amount > 0);
+  return {
+    surplusFraction: fractions.length === 1 ? fractions[0] : fractions,
+    from: taken[0].date, to: taken[taken.length - 1].date,
+    months: taken.length,
+    monthsWithNoSurplus: taken.length - funded.length,
+    contributed: round2(taken.reduce((s, m) => s + m.amount, 0)),
+    meaning: 'A share of the cash each month is projected to ADD, taken at month-end. The '
+      + 'balance already held is never touched, and a month projecting no gain contributes '
+      + 'nothing. At a 0% return this moves money between lines and changes net worth by '
+      + 'nothing at all.',
+  };
+}
+
 function scenarioAssumptions(
   setup: ScenarioSetup, ledger: LedgerResult, returns: ReturnPeriod[],
 ) {
@@ -1739,6 +1773,12 @@ function scenarioAssumptions(
       total: round2(kind('CONTRIBUTION').reduce((s, m) => s + m.amount, 0)),
       settled: kind('CONTRIBUTION').slice(0, 12),
       provenance: PROVENANCE.USER_ASSUMED,
+      // ⚠️ THE RULE, NOT ONLY ITS ARTIFACTS. "75% of each month's surplus" is one
+      // sentence that expands into a hundred and thirty-five dated amounts; a
+      // later turn saying "make it 8%" has to inherit the SENTENCE, and a
+      // scenario state carrying only the amounts would inherit an accident of
+      // one horizon. `settled` above stays the evidence; this is the assumption.
+      ...(surplusRule(ledger) ? { surplusRule: surplusRule(ledger) } : {}),
       ...(kind('CONTRIBUTION').length === 0
         ? { note: 'No contributions were in force. Do not describe this result as including '
             + 'any.' } : {}),
@@ -1802,15 +1842,23 @@ const SCENARIO_INPUTS = {
     items: obj({ from: str('YYYY-MM-DD'), to: str('YYYY-MM-DD, inclusive'),
       annualPct: num('e.g. 50 for "50% in 2028"') }, ['from', 'to', 'annualPct']) },
   contributions: { type: 'array',
-    description: 'Money moved from cash into investments. WHEN: give either `onDate` for a '
-      + 'one-off or `from` + `cadence` for a schedule. HOW MUCH: give either `amount` in '
-      + 'dollars or `fractionOfLiquid` for a share of the balance — exactly one of the two.',
+    description: 'Money moved from cash into investments. HOW MUCH — exactly one of three: '
+      + '`amount` in dollars, `fractionOfLiquid` for a share of the cash BALANCE, or '
+      + '`surplusFraction` for a share of what each month ADDS. WHEN: `amount` and '
+      + '`fractionOfLiquid` need either `onDate` for a one-off or `from` + `cadence` for a '
+      + 'schedule; `surplusFraction` is monthly by nature and needs neither.',
     items: obj({
       amount:  num('A dollar amount. Positive moves cash into investments; negative takes '
         + 'it back out. Do NOT put a fraction here.'),
-      fractionOfLiquid: num('A share of the projected cash on each date: 0.5 for "half my '
-        + 'liquidity", 1 for "everything". Use this whenever the user said a proportion — '
-        + 'the dollar amount differs at every date and only the projection knows it.'),
+      fractionOfLiquid: num('A share of the projected cash BALANCE on each date: 0.5 for '
+        + '"half my liquidity", 1 for "everything I have". The dollar amount differs at every '
+        + 'date and only the projection knows it.'),
+      surplusFraction: num('A share of what each month ADDS: 0.75 for "invest three quarters '
+        + 'of the cash I am putting aside", 1 for "invest everything I save". This is the one '
+        + 'for "invest some of the growing cash" — it never touches the balance the user '
+        + 'already has, and a month that projects no gain contributes nothing. It runs at '
+        + 'every month-end: give `from`/`to` only to start or stop it early, and never a '
+        + '`cadence` or an `onDate`. There is no default share — state the one the user meant.'),
       onDate:  str('YYYY-MM-DD for a single contribution.'),
       from:    str('YYYY-MM-DD first occurrence of a repeating contribution.'),
       to:      str('YYYY-MM-DD last occurrence. Omit to continue to the horizon.'),
