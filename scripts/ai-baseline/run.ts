@@ -22,13 +22,9 @@
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { findProbe, type Probe } from './probes';
-import {
-  buildEvidence, assembleFullContext, ARM_USES_TOOLS, ARM_QUESTION, type Arm,
-} from '@/lib/ai/conversation/evidence';
-import { openAiToolSchemas, type ToolContext } from '@/lib/ai/conversation/tools';
-import {
-  executeTurn, supportsTools, SYSTEM_INSTRUCTION, type TurnRecord,
-} from '@/lib/ai/conversation/turn';
+import { ARM_USES_TOOLS, ARM_QUESTION, type Arm } from '@/lib/ai/conversation/evidence';
+import { openTranscript } from '@/lib/ai/conversation/engine';
+import { executeTurn, SYSTEM_INSTRUCTION, type TurnRecord } from '@/lib/ai/conversation/turn';
 import { newScenarioSlot } from '@/lib/ai/conversation/active-scenario';
 import {
   compactToolHistory, DEFAULT_COMPACTION, type CompactionPolicy,
@@ -80,16 +76,12 @@ export async function runCase(args: {
   const probe = findProbe(probeId);
   if (!probe) throw new Error(`unknown probe: ${probeId}`);
 
-  const ctx = await assembleFullContext(spaceCtx, agentId);
-  const evidence = await buildEvidence(arm, ctx, spaceCtx);
-  const useTools = ARM_USES_TOOLS[arm] && supportsTools(model);
-  const toolSchemas = useTools ? openAiToolSchemas() : [];
-  const toolCtx: ToolContext = { spaceCtx, spaceId: spaceCtx.spaceId, asOfISO };
-
-  let messages: unknown[] = [
-    { role: 'system', content: `${SYSTEM_INSTRUCTION}\n\nToday is ${asOfISO}.` },
-  ];
-  if (evidence.body) messages.push({ role: 'user', content: evidence.body });
+  // ⚠️ THE SHARED PROLOGUE. Instruction, dated, then the orientation evidence —
+  // opened by the same function the product route opens its transcript with, so
+  // a recorded run and a user's conversation begin identically.
+  const { messages: opened, evidence, toolSchemas, toolCtx, usesTools: useTools } =
+    await openTranscript({ spaceCtx, agentId, asOfISO, model, arm });
+  let messages: unknown[] = opened;
 
   const turns: TurnRecord[] = [];
   // ⚠️ ONE SLOT, ONE CONVERSATION. Not an array and not a history: the failure

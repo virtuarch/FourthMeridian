@@ -21,12 +21,10 @@
 import { createInterface } from 'readline/promises';
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { assembleFullContext, buildEvidence, ARM_QUESTION } from '@/lib/ai/conversation/evidence';
-import { openAiToolSchemas, type ToolContext } from '@/lib/ai/conversation/tools';
+import { ARM_QUESTION } from '@/lib/ai/conversation/evidence';
+import { openTranscript } from '@/lib/ai/conversation/engine';
 import { sumTurns } from './run';
-import {
-  executeTurn, supportsTools, SYSTEM_INSTRUCTION, type TurnRecord,
-} from '@/lib/ai/conversation/turn';
+import { executeTurn, SYSTEM_INSTRUCTION, type TurnRecord } from '@/lib/ai/conversation/turn';
 import { compactToolHistory, DEFAULT_COMPACTION, type CompactionPolicy } from '@/lib/ai/conversation/compaction';
 import { newScenarioSlot } from '@/lib/ai/conversation/active-scenario';
 import type { SpaceContext } from '@/lib/space';
@@ -50,19 +48,12 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
   const { spaceCtx, agentId, asOfISO, model, runDir } = args;
   const compaction = args.compaction === undefined ? DEFAULT_COMPACTION : args.compaction;
 
-  const ctx = await assembleFullContext(spaceCtx, agentId);
-  const evidence = await buildEvidence(ARM, ctx, spaceCtx);
-
-  // A2 is a tool arm. A model that cannot take tools would silently become a
-  // different experiment, so it is stated rather than absorbed.
-  const useTools = supportsTools(model);
-  const toolSchemas = useTools ? openAiToolSchemas() : [];
-  const toolCtx: ToolContext = { spaceCtx, spaceId: spaceCtx.spaceId, asOfISO };
-
-  let messages: unknown[] = [
-    { role: 'system', content: `${SYSTEM_INSTRUCTION}\n\nToday is ${asOfISO}.` },
-  ];
-  if (evidence.body) messages.push({ role: 'user', content: evidence.body });
+  // The shared prologue — the same one the batch runner and the product route
+  // open with. A2 is a tool arm; a model that cannot take tools would silently
+  // become a different experiment, so `usesTools` is stated, never absorbed.
+  const { messages: opened, context: ctx, evidence, toolSchemas, toolCtx, usesTools: useTools } =
+    await openTranscript({ spaceCtx, agentId, asOfISO, model, arm: ARM });
+  let messages: unknown[] = opened;
 
   const startedAt = new Date();
   const sessionId = startedAt.toISOString().replace(/[:.]/g, '-');

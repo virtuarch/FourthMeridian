@@ -194,7 +194,7 @@ export async function executeTurn(args: {
   // A tool loop makes SEVERAL invocations for ONE user turn; the ambient context
   // is what lets the ledger sum them back into that turn.
   return runWithAiInvocationContext(
-    { correlationId: args.correlationId ?? 'ai-baseline', turnIndex: args.index,
+    { correlationId: args.correlationId ?? 'conversation', turnIndex: args.index,
       surface: args.surface ?? 'harness' },
     () => executeTurnInner(args),
   );

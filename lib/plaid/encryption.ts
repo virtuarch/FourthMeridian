@@ -38,6 +38,18 @@ export const EncryptionPurpose = {
   DATE_OF_BIRTH:         "date_of_birth",
   /** Connection.credential — provider OAuth token / API key (non-Plaid) */
   CONNECTION_CREDENTIAL: "connection_credential",
+  /**
+   * The AI conversation's runtime state as it crosses the browser boundary.
+   *
+   * ⚠️ NOT A STORED FIELD — the only purpose here that seals something the
+   * SERVER hands out and takes back. A stateless chat turn must carry the
+   * hypothetical under discussion across an HTTP hop; sealing it with an
+   * authenticated cipher is what makes the thing that comes back trustworthy
+   * without trusting the client that returned it. Same mechanism, same root
+   * key, its own subkey — inventing a second signing scheme for one cookie
+   * would be two idioms for one problem.
+   */
+  AI_RUNTIME_STATE:      "ai_runtime_state",
 } as const;
 
 export type EncryptionPurpose = typeof EncryptionPurpose[keyof typeof EncryptionPurpose];

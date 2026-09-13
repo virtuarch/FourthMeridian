@@ -350,20 +350,34 @@ console.log('10. artifacts');
   check('…and the investment scope diagnostic', /SEMANTIC SCOPE/.test(idx));
 }
 
-// ══ 11. The production boundary is untouched ═════════════════════════════════
+// ══ 11. The production boundary — crossed one way only ══════════════════════
+//
+// ⚠️ THE ROUTE NOW ANSWERS, AND THE DIRECTION IS THE INVARIANT. The product
+// imports the conversation runtime out of lib/; the runtime imports nothing
+// from the harness, and the harness is imported by no route. That is what keeps
+// "the experiment" and "the product" one system without making the experiment
+// load-bearing for users.
 console.log('11. production boundary');
 {
-  const route = read('app/api/ai/chat/route.ts');
-  check('the chat route still refuses', /AWAITING_REDESIGN/.test(route));
+  const route = code(read('app/api/ai/chat/route.ts'));
+  check('the chat route answers rather than refusing', !/AWAITING_REDESIGN/.test(route));
+  check('…through the shared runtime in lib/', /@\/lib\/ai\/conversation\//.test(route));
   check('…and imports nothing from the harness', !/ai-baseline/.test(route));
 
   const cli = code(read('scripts/ai-conversation-baseline.ts'));
   const runSrc = code(read('scripts/ai-baseline/run.ts'));
+  const runtimeFiles = ['turn', 'engine', 'evidence', 'tools', 'request', 'runtime-state']
+    .map((m) => code(read(`lib/ai/conversation/${m}.ts`)));
   check('the harness is not imported by any app route',
     !/app\//.test(cli.split('\n').filter((l) => l.startsWith('import')).join('\n')));
+  check('…nor by the runtime the route depends on',
+    runtimeFiles.every((f) => !f.split('\n')
+      .filter((l) => l.startsWith('import') || l.includes("} from '"))
+      .join('\n').match(/ai-baseline|scripts\//)));
   check('the harness does not create lib/ai/chat', !/lib\/ai\/chat/.test(cli + runSrc));
-  check('no persistence of conversations',
-    !/aiAdvice|conversation\.create|prisma\.conversation/i.test(cli + runSrc));
+  check('no persistence of conversations, in the harness or the runtime',
+    ![cli, runSrc, ...runtimeFiles].some(
+      (f) => /aiAdvice|conversation\.create|prisma\.conversation/i.test(f)));
 }
 
 // ══ 12. Interactive mode is the SAME experiment with a keyboard ══════════════
@@ -400,9 +414,17 @@ console.log('12. interactive operator mode');
 
   // Same arm, same evidence, same instruction, same tools.
   check('the arm is fixed to A2', /const ARM = 'A2' as const/.test(src));
+  // ⚠️ THE PROLOGUE MOVED, THE PROPERTY DID NOT. Instruction, evidence and tool
+  // surface are opened by lib/ai/conversation/engine.ts now, because the product
+  // route opens a transcript the same way. The session still gets the shared
+  // pack — it just no longer assembles it itself.
+  const eng = code(read('lib/ai/conversation/engine.ts'));
+  check('the transcript is opened by the shared prologue, not a bespoke one',
+    /openTranscript\(\{[^}]*arm: ARM[^}]*\}\)/.test(src) && !/buildEvidence\(/.test(src));
   check('evidence comes from buildEvidence, not a bespoke pack',
-    /buildEvidence\(ARM, ctx, spaceCtx\)/.test(src));
-  check('the tool surface is the shared one', /openAiToolSchemas\(\)/.test(src));
+    /buildEvidence\(arm, ctx, spaceCtx\)/.test(eng));
+  check('the tool surface is the shared one',
+    /openAiToolSchemas\(\)/.test(eng) && !/openAiToolSchemas\(\)/.test(src));
   check('the instruction is the shared one — not a second prompt',
     /SYSTEM_INSTRUCTION/.test(src) && !/You are Fourth Meridian/.test(src));
 
@@ -434,8 +456,12 @@ console.log('12. interactive operator mode');
   }
   check('it declares that it fixes none of the known failures',
     /IT FIXES NOTHING/.test(raw));
-  check('the production route is still untouched',
-    /AWAITING_REDESIGN/.test(read('app/api/ai/chat/route.ts')));
+  // The operator session and the product now run the same code; what makes the
+  // session still an EXPERIMENT is that it writes an artifact and the route
+  // writes nothing, not that the route is disabled.
+  check('the production route runs the same runtime, and keeps no transcript',
+    /runStatelessTurn/.test(code(read('app/api/ai/chat/route.ts')))
+      && !/writeFileSync/.test(code(read('app/api/ai/chat/route.ts'))));
 }
 
 // ══ 13. Dogfood tuning — clips 1–5 ═══════════════════════════════════════════
