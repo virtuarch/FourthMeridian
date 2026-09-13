@@ -108,6 +108,63 @@ export function canonicalWindowChange(
 }
 
 /**
+ * A change measured between two observations the CALLER already holds, as
+ * distinct from one the product defines.
+ *
+ * ⚠️ THIS EXISTS SO SUBTRACTION HAS AN OWNER. `canonicalWindowChange` above
+ * resolves its own opening point from a preset; an arbitrary "between these two
+ * dates" comparison has no preset to resolve, and the two figures were being
+ * subtracted by whoever happened to need the answer. Measured (58b352f, twice):
+ * an AI tool named for change returned a COMPOSITION instead, and the model read
+ * a savings BALANCE of $12,345.80 as "a big chunk" of an $11,242.40 rise. A
+ * level is not a contribution to a change, and the way to stop that confusion is
+ * for the change to be a computed thing with a name.
+ *
+ * ⚠️ IT REPORTS THE OBSERVATIONS IT ACTUALLY USED. Snapshots are not guaranteed
+ * daily or contiguous, so the effective dates are rarely the requested ones and
+ * a comparison that hides which rows it compared is a comparison nobody can
+ * check.
+ *
+ * ⚠️ IT MEASURES AND DOES NOT INTERPRET. `abs` is `to − from` for whatever metric
+ * was passed. It is not a contribution, not a gain, not a cause: investments
+ * rising does not mean the market rose, cash rising does not mean income arrived,
+ * and debt falling is a debt fact whose effect on net worth is the reader's to
+ * state. Naming any of those here would be the causal engine this is not.
+ */
+export interface ObservedChange {
+  /** The date of the observation actually used as the opening. */
+  fromDate:  string;
+  /** The date of the observation actually used as the closing. */
+  toDate:    string;
+  fromValue: number;
+  toValue:   number;
+  /** to − from, in the metric's own direction. Never re-signed. */
+  abs:       number;
+  /** (to − from) / |from| × 100. Null when `from` is 0 — never Infinity. */
+  pct:       number | null;
+}
+
+export function observedChange(
+  from: SeriesPoint | null | undefined,
+  to:   SeriesPoint | null | undefined,
+): ObservedChange | null {
+  if (!from || !to) return null;
+  if (!Number.isFinite(from.value) || !Number.isFinite(to.value)) return null;
+  const fromDate = from.date.toISOString().slice(0, 10);
+  const toDate   = to.date.toISOString().slice(0, 10);
+  // One observation is not a change. Refusing is the honest answer — a zero would
+  // read as "nothing moved", which is a measurement nobody made.
+  if (fromDate === toDate) return null;
+  const abs = to.value - from.value;
+  return {
+    fromDate, toDate,
+    fromValue: from.value, toValue: to.value,
+    abs,
+    pct: from.value === 0 ? null : (abs / Math.abs(from.value)) * 100,
+  };
+}
+
+/**
  * The TRUE calendar distance in days between the first and last point.
  *
  * ⚠️ The only value that may be described as a duration. A snapshot ROW COUNT is

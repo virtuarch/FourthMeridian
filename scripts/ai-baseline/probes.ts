@@ -139,7 +139,7 @@ export const PROBES: readonly Probe[] = [
     whatItDiscriminates:
       'Net worth is UP ~30% over the month. Does the model correct the premise rather ' +
       'than inventing a drop or arguing? Then: A0/A1 have 90 daily points in context; ' +
-      'A2/A3 can call explain_net_worth_change against lib/history, which no AI has ever ' +
+      'A2/A3 can call explain_net_worth_composition against lib/history, which no AI has ever ' +
       'used. Component attribution versus reading a series.',
     goldens: '7',
   },

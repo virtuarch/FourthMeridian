@@ -750,6 +750,56 @@ console.log('13j. page coverage — a page is not the population');
     && /pagesRead: pages,/.test(gt));
 }
 
+console.log('13k. composition is not change — the tool names match the capabilities');
+{
+  const src = code(read('scripts/ai-baseline/tools.ts'));
+  const win = code(read('lib/data/snapshot-window.ts'));
+  const names = (openAiToolSchemas() as { function: { name: string; description: string } }[])
+    .map((t) => t.function);
+  const comp = names.find((t) => t.name === 'explain_net_worth_composition');
+  const hist = names.find((t) => t.name === 'get_net_worth_history');
+
+  check('no tool named for a change it cannot compute',
+    !names.some((t) => t.name === 'explain_net_worth_change') && comp !== undefined);
+  check('the composition tool says it is a point in time, not a movement',
+    /composition at a point in time, not a movement/.test(comp!.description));
+  check('…and points at the tool that does answer change',
+    /use get_net_worth_history/.test(comp!.description));
+  check('…and no longer invites "why did my net worth drop"',
+    !/why did my net worth/i.test(comp!.description));
+  check('the history tool advertises the change it returns',
+    /CHANGED by across the requested range/.test(hist!.description)
+    && /what changed/i.test(hist!.description));
+
+  // The subtraction has an owner, and it is not this adapter.
+  check('the delta comes from an authority, not from arithmetic here',
+    /observedChange\(at\(first, m\), at\(last, m\)\)/.test(src)
+    && /export function observedChange/.test(win));
+  check('…and the adapter performs no subtraction of its own',
+    !/\b(last|to)\.\w+\s*-\s*(first|from)\.\w+/.test(
+      src.slice(src.indexOf('function changeBlock'), src.indexOf('const EXPLAINABLE_LENSES'))));
+  check('one observation is refused rather than reported as zero',
+    /if \(fromDate === toDate\) return null;/.test(win));
+  check('the authority reports the observations it actually compared',
+    /fromDate, toDate,\s*\n\s*fromValue: from\.value, toValue: to\.value,/.test(win));
+
+  // No level may be emitted under a movement name.
+  const block = src.slice(src.indexOf('function changeBlock'), src.indexOf('const EXPLAINABLE_LENSES'));
+  check('a metric null at either end is OMITTED, never zeroed',
+    /if \(c\) out\[m\] = /.test(block) && !/\?\? 0/.test(block));
+  check('debt is not re-signed into a net-worth effect',
+    !/debtContribution|effectOnNetWorth|-\s*c\.debt/.test(block));
+  check('nothing in the block is named for a cause',
+    !/\b(contribution|gain|caused|driver)\b\s*:/.test(block));
+
+  // The ceiling reaches every date-ranged read, which it did not.
+  check('get_net_worth_history clamps `to` to the information ceiling',
+    /const to   = clampToCeiling\(\(a\.to as string\) \|\| ceiling, ceiling\);/.test(
+      src.slice(src.indexOf("name: 'get_net_worth_history'"))));
+  check('explain_net_worth_composition clamps its date too',
+    /const dateISO = clampToCeiling\(String\(a\.date\), ctx\.asOfISO\);/.test(src));
+}
+
 // ══ 14. Complete-window ranking ══════════════════════════════════════════════
 //
 // `sort: 'largest'` ranked the newest 100 matching rows and called the winner

@@ -25,7 +25,7 @@
  * data.
  *
  * ⚠️ THE VOCABULARY IS THE USER'S, NOT THE ARCHITECTURE'S. `get_spending`, not
- * `assembleTransactionsSummary`; `explain_net_worth_change`, not
+ * `assembleTransactionsSummary`; `explain_net_worth_composition`, not
  * `resolveExplorationNode`. A model should not have to learn Fourth Meridian's
  * internal names to ask a question, and exposing them would leak the thing the
  * reset removed.
@@ -49,6 +49,7 @@ import { projectSnapshotSection } from '@/lib/ai/assemblers/snapshot';
 import type { Snapshot } from '@/types';
 import { FlowType } from '@prisma/client';
 import { resolveExplorationNode } from '@/lib/history/exploration';
+import { observedChange } from '@/lib/data/snapshot-window';
 import { loadForecastIncomeStreams } from '@/lib/ai/forecast/streams';
 import { assembleForecast } from '@/lib/ai/forecast/assemble';
 import { resolvePayDates, PayDateAsk } from '@/lib/ai/forecast/pay-dates';
@@ -681,13 +682,21 @@ const getInvestments: ToolDefinition = {
 
 const getNetWorthHistory: ToolDefinition = {
   name: 'get_net_worth_history',
+  // ⚠️ THIS IS THE CHANGE TOOL, AND IT NOW SAYS SO. It already returned both
+  // endpoints with every component; what it did not do was say that this is what
+  // answers "what changed" — so the model reached for a tool whose NAME promised
+  // change and whose payload was a composition, and read balances as movements
+  // (58b352f, twice). The `change` block below is the same fact, subtracted by an
+  // authority instead of by whoever is reading.
   description:
-    'Net worth and its components over time. `liquid` is checking + savings; `checking` ' +
-    'is the checking bucket alone — there is deliberately no field called "cash". ' +
-    'Ask for `granularity: "monthly"` to get one point per calendar month — that is the ' +
-    'right shape for a month-by-month table and is the default for ranges over ~3 months. ' +
-    'A point whose net worth could not be established is returned as null WITH a reason; ' +
-    'read `coverage` before describing older history as fact.',
+    'Net worth and its components over time, and what they CHANGED by across the ' +
+    'requested range — `change` gives the measured movement of net worth, liquid, ' +
+    'investments, digital assets and debt between the first and last observation. Use it ' +
+    'for "what changed", "why did my net worth move", "how does this compare with a month ' +
+    'ago". `liquid` is checking + savings; `checking` is the checking bucket alone — there ' +
+    'is deliberately no field called "cash". Ask for `granularity: "monthly"` to get one ' +
+    'point per calendar month. A point whose net worth could not be established is returned ' +
+    'as null WITH a reason; read `coverage` before describing older history as fact.',
   parameters: obj({
     from: str('YYYY-MM-DD. Omit for the last 90 days.'),
     to:   str('YYYY-MM-DD. Omit for today.'),
@@ -697,7 +706,13 @@ const getNetWorthHistory: ToolDefinition = {
     maxPoints: num('Daily granularity only: downsample evenly to at most this many points.'),
   }),
   async run(a, ctx) {
-    const to   = (a.to as string) || ctx.asOfISO;
+    // ⚠️ THE CEILING APPLIES HERE TOO, AND DID NOT. `get_spending`,
+    // `get_transactions` and `get_income` all clamp; this one took `to` raw, so a
+    // retrospective read at `asOf: 2026-01-31` asking `to: 2026-09-12` returned
+    // SEPTEMBER balances. Found while proving the new `change` block respects the
+    // ceiling — which it could not, because the endpoints it subtracts did not.
+    const ceiling = ctx.asOfISO;
+    const to   = clampToCeiling((a.to as string) || ceiling, ceiling);
     const from = (a.from as string) || daysAgoISO(to, 89);
 
     // ⚠️ THROUGH THE ASSEMBLER'S OWN PROJECTION, NOT THE RAW ROWS. The canonical
@@ -745,7 +760,7 @@ const getNetWorthHistory: ToolDefinition = {
 
     // ⚠️ NO FIELD HERE IS CALLED `cash`, AND THAT IS THE WHOLE POINT. It used to
     // be: `cash: p.liquid`, where `liquid` is checking PLUS savings. Meanwhile
-    // `explain_net_worth_change{lens:'cash'}` returns the CHECKING bucket alone.
+    // `explain_net_worth_composition{lens:'cash'}` returns the CHECKING bucket alone.
     // Both were correct about their own population and both were called "cash",
     // so on 2026-01-01 one tool said $1,255.20 and the other said $9,517.46. The
     // model quoted the smaller one, built debt advice on it, and only corrected
@@ -757,7 +772,7 @@ const getNetWorthHistory: ToolDefinition = {
       netWorth: p.netWorth, totalAssets: p.totalAssets,
       /** Checking + savings. The spendable total. */
       liquid: p.liquid,
-      /** Checking only — the `cash` bucket, matching explain_net_worth_change's `cash` lens. */
+      /** Checking only — the `cash` bucket, matching explain_net_worth_composition's `cash` lens. */
       checking: p.cashOnHand,
       investments: p.investments, digitalAssets: p.digitalAssets,
       debt: p.liabilities,
@@ -791,6 +806,14 @@ const getNetWorthHistory: ToolDefinition = {
         ...(clamped ? { maxPointsClamped: MAX_DAILY_POINTS } : {}),
       },
       first: pt(inRange[0]), last: pt(inRange[inRange.length - 1]),
+      // ⚠️ MEASURED MOVEMENT, NOT ATTRIBUTION. Each entry is the closing
+      // observation minus the opening one for that metric, computed by
+      // `observedChange` and carrying the dates it actually compared. Nothing
+      // here says WHY: investments rising is not a market gain, cash rising is
+      // not income received, and debt falling is a debt fact whose effect on net
+      // worth is the reader's to state. A metric that could not be established at
+      // either end is absent rather than zero.
+      change: changeBlock(pt(inRange[0]), pt(inRange[inRange.length - 1])),
       series: picked.map(pt),
     };
   },
@@ -798,19 +821,73 @@ const getNetWorthHistory: ToolDefinition = {
 
 // ── 7. Net-worth explanation ─────────────────────────────────────────────────
 
+/**
+ * The measured movement of each component between two observations.
+ *
+ * ⚠️ ONE SUBTRACTION AUTHORITY, CALLED FIVE TIMES. `observedChange` owns what a
+ * change between two observations IS — including refusing when the two are the
+ * same day, and reporting which rows it compared. This maps components onto it
+ * and adds nothing: no re-signing, no net-worth-effect interpretation, no
+ * labels. A metric that is null at either end is OMITTED rather than treated as
+ * zero, because "not established" and "did not move" are different answers.
+ *
+ * ⚠️ `debt` IS THE DEBT'S OWN DIRECTION. Debt falling from 20,000 to 10,000 is
+ * `abs: -10000`. That it IMPROVED net worth by 10,000 is a true sentence and is
+ * the reader's to write — a field called `debtContribution: -10000` would be the
+ * ambiguity this deliberately refuses to ship.
+ */
+interface ChangeableSnapshotPoint {
+  date: string;
+  netWorth: number | null; liquid: number | null; checking: number | null;
+  investments: number | null; digitalAssets: number | null; debt: number | null;
+}
+type ChangeMetric = Exclude<keyof ChangeableSnapshotPoint, 'date'>;
+
+function changeBlock(first: ChangeableSnapshotPoint, last: ChangeableSnapshotPoint) {
+  const metrics: ChangeMetric[] =
+    ['netWorth', 'liquid', 'checking', 'investments', 'digitalAssets', 'debt'];
+  const at = (p: ChangeableSnapshotPoint, k: ChangeMetric) =>
+    (typeof p[k] === 'number' ? { date: new Date(`${p.date}T00:00:00.000Z`), value: p[k] } : null);
+  const out: Record<string, unknown> = {};
+  for (const m of metrics) {
+    const c = observedChange(at(first, m), at(last, m));
+    if (c) out[m] = { from: c.fromValue, to: c.toValue, abs: round2(c.abs), pct: c.pct };
+  }
+  if (Object.keys(out).length === 0) return null;
+  return {
+    between: { from: first.date, to: last.date },
+    ...out,
+    meaning: 'Each figure is the closing observation minus the opening one for that metric, '
+      + 'in the metric\'s own direction — `debt` negative means debt fell. These are MEASURED '
+      + 'movements, not causes: an investments rise is not necessarily a market gain, a cash '
+      + 'rise is not necessarily income, and what drove either is a transaction question.',
+  };
+}
+
 /** The lens roots `lib/history` exposes. Listed so a single-lens answer can name its siblings. */
 const EXPLAINABLE_LENSES = [
   'net-worth', 'assets', 'liquid-net-worth', 'investments',
   'crypto', 'cash', 'savings', 'debt', 'liquidity',
 ] as const;
 
-const explainNetWorthChange: ToolDefinition = {
-  name: 'explain_net_worth_change',
+// ⚠️ RENAMED, BECAUSE IT NEVER EXPLAINED A CHANGE. It took one `date`, passed
+// `fromISO === toISO`, and returned a COMPOSITION — and its own description
+// invited "why did my net worth drop". Measured twice in dogfood (58b352f and the
+// 1b83384 re-run): the model asked it what changed and narrated BALANCES as
+// contributions, calling a $12,345.80 savings level "a big chunk" of an
+// $11,242.40 rise. The capability is real and unduplicated — one lens, drilled
+// bucket → account → holding — so the name moved to meet it rather than the
+// other way round. Change now lives where the two endpoints always did:
+// `get_net_worth_history`.
+const explainNetWorthComposition: ToolDefinition = {
+  name: 'explain_net_worth_composition',
   description:
-    'Break ONE total into its components on a date. Each result names the population ' +
-    'the lens covers and its sibling lenses — `cash` is checking only, `savings` is ' +
-    'separate. For a whole position on a date use get_financial_snapshot(asOf) instead. ' +
-    'Call again with a component id to drill deeper. Use for "why did my net worth drop".',
+    'Break ONE total into the components it is MADE OF on a single date, and drill into '
+    + 'them. This is a composition at a point in time, not a movement: for what CHANGED '
+    + 'between two dates use get_net_worth_history, and for a whole position on one date '
+    + 'use get_financial_snapshot(asOf). Each result names the population the lens covers '
+    + 'and its sibling lenses — `cash` is checking only, `savings` is separate. Call again '
+    + 'with a component id to drill deeper.',
   parameters: obj({
     date: str('YYYY-MM-DD to explain. Required.'),
     lens: { type: 'string',
@@ -819,7 +896,9 @@ const explainNetWorthChange: ToolDefinition = {
     componentId: str('A component id from a previous call, to drill one level deeper.'),
   }, ['date']),
   async run(a, ctx) {
-    const dateISO = String(a.date);
+    // ⚠️ SAME CEILING, SAME REASON. A composition on a date after the cutoff is a
+    // balance from the future wearing a historical label.
+    const dateISO = clampToCeiling(String(a.date), ctx.asOfISO);
     const lens = String(a.lens ?? 'net-worth');
     const nodeId = a.componentId ? String(a.componentId) : null;
     const res = await resolveExplorationNode({
@@ -1838,7 +1917,7 @@ const reconcileProjection: ToolDefinition = {
 
 export const TOOLS: readonly ToolDefinition[] = [
   getFinancialSnapshot, getSpending, getTransactions, getIncome, getInvestments,
-  getNetWorthHistory, explainNetWorthChange, projectCash, getPayDates, investmentScenario,
+  getNetWorthHistory, explainNetWorthComposition, projectCash, getPayDates, investmentScenario,
   scenarioProjection, scenarioGoalSeek, reconcileProjection,
   ...MEMORY_TOOLS,
 ];

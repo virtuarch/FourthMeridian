@@ -20,6 +20,7 @@
     "ai:activity-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/activity-frame.check.ts",
     "ai:applied-facts-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/applied-facts.check.ts",
     "ai:scenario-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/active-scenario.check.ts",
+    "ai:networth-change-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/net-worth-change.check.ts",
   "ai:chat": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-conversation-baseline.ts --interactive",
   "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
