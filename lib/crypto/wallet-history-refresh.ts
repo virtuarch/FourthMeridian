@@ -53,6 +53,14 @@ export interface WalletHistoryRefresh {
   /** The window actually handed to the reconstruction. */
   windowFromISO?: string;
   windowToISO?:   string;
+  /**
+   * ETH only — what the reconstruction did and the earliest date whose stored
+   * quantity changed. BTC and SOL rebuild wholesale and do not measure it, so
+   * these stay undefined for them (not measured, never "unchanged").
+   */
+  mode?: "FULL" | "INCREMENTAL" | "NO_CHANGE";
+  impactedFromISO?: string | null;
+  fallbackReason?: string;
 }
 
 /**
@@ -125,6 +133,9 @@ export async function refreshWalletHistory(
       accountId, chain: key, refreshed: true,
       rowsWritten: result.derivedRowsWritten,
       windowFromISO: fromISO, windowToISO: toISO,
+      ...("mode" in result && result.mode
+        ? { mode: result.mode, impactedFromISO: result.impactedFromISO ?? null, fallbackReason: result.fallbackReason }
+        : {}),
     };
   } catch (e) {
     // Defensive: both reconstructions promise not to throw. If one does, Sync

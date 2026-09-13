@@ -17,6 +17,7 @@
 import { db } from "@/lib/db";
 import { AssetClass, InvestmentCoverageOutcome } from "@prisma/client";
 import {
+  earliestImpactedFrom,
   planHistoricalWorkWindow,
   type ChangeDetection,
   type HistoricalWorkWindow,
@@ -24,7 +25,7 @@ import {
 import { recentWealthWindow } from "./regenerate-history";
 
 export type { HistoricalWorkWindow, ChangeDetection };
-export { planHistoricalWorkWindow };
+export { planHistoricalWorkWindow, earliestImpactedFrom };
 
 export interface ResolveHistoricalWorkWindowArgs {
   financialAccountIds: string[];
@@ -58,7 +59,16 @@ export interface ResolveHistoricalWorkWindowArgs {
     blockingPriceFloorISO: string;
     impactedFromISO:       string;
   };
+  /**
+   * The earliest date whose RECONSTRUCTED position history this run changed, as
+   * measured by the reconstruction itself (ETH). Position rows are rewritten by
+   * a reconstruction, so their createdAt cannot be read as change; the
+   * reconstruction reports the boundary instead. Joins the measured evidence —
+   * never a second pipeline.
+   */
+  positionHistoryImpactedFromISO?: string | null;
 }
+
 
 /**
  * The earliest date at which every PRICE-BLOCKING holding of this account set
@@ -227,6 +237,7 @@ export async function resolveHistoricalWorkWindow(
         .map((d) => d.toISOString().slice(0, 10))
         .reduce((min, d) => (d < min ? d : min));
     }
+    impactedFromISO = earliestImpactedFrom(impactedFromISO, args.positionHistoryImpactedFromISO);
   }
 
   // Initial build — no snapshot row for these accounts' Spaces below the recent

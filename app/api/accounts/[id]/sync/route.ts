@@ -121,6 +121,8 @@ export async function POST(
       const plan = await resolveHistoricalWorkWindow({
         financialAccountIds: [id],
         changedSince:        syncStartedAt,
+        // The reconstruction's own measured boundary, when it changed stored history.
+        positionHistoryImpactedFromISO: result.historyRefresh?.impactedFromISO,
       });
       console.log(
         `[POST /api/accounts/${id}/sync] historical window ${plan.fromDate}..${plan.toDate} ` +

@@ -117,6 +117,52 @@ async function main() {
     check('a 12h policy is honoured: refreshed one slot ago is skipped, two slots ago is attempted', tw.attempted === 1 && tw.notDue === 1);
   }
 
+  console.log('\nFAIRNESS. a recently failing wallet cannot monopolise the sweep');
+  {
+    const minsAgo = (m: number) => new Date(NOW.getTime() - m * 60_000);
+    const w = (id: string, success: Date | null, failure: Date | null = null): ScheduledWalletCandidate =>
+      ({ accountId: id, chain: 'ETH', lastSuccessAt: success, lastFailureAt: failure });
+
+    const a = harness([w('A-failed', hoursAgo(30), minsAgo(10)), w('B-untried', hoursAgo(20))], { stepMs: 60_000 });
+    const ra = await a.run(30_000);
+    check('A. an old wallet that failed 10 minutes ago yields to an old wallet not yet attempted',
+      a.calls[0] === 'ETH:B-untried' && ra.deprioritizedRecentFailures === 1, a.calls.join());
+
+    const b = harness([w('A-deferred', hoursAgo(10)), w('B-newer', hoursAgo(7))], { stepMs: 60_000 });
+    await b.run(30_000);
+    check('B. a wallet deferred only by the budget (no failure) keeps its urgency', b.calls.join() === 'ETH:A-deferred');
+
+    const c = harness([w('A-failed-earlier', hoursAgo(30), hoursAgo(4)), w('B', hoursAgo(7))], { stepMs: 60_000 });
+    await c.run(30_000);
+    check('C. once the failure window passes (3h at a 6h policy) the failed wallet leads again by age',
+      c.calls.join() === 'ETH:A-failed-earlier');
+
+    const failing = { accountId: 'X', chain: 'ETH', lastSuccessAt: hoursAgo(30), lastFailureAt: null as Date | null };
+    const d = harness([failing], { sync: async (id, chain) => fail(id, chain, 'BALANCE_UNAVAILABLE') });
+    const rd = await d.run();
+    check('D. a failure never advances the success clock or counts as synced',
+      failing.lastSuccessAt.getTime() === hoursAgo(30).getTime() && rd.syncedAccountIds.length === 0 && rd.failed === 1);
+
+    const e = harness([w('c', hoursAgo(30), minsAgo(5)), w('a', hoursAgo(40), minsAgo(20)), w('b', hoursAgo(10), minsAgo(20))], { stepMs: 60_000 });
+    const re = await e.run(90_000);
+    check('E. an all-failing population is ordered deterministically (oldest failure, then id) and stays bounded',
+      e.calls.join() === 'ETH:a,ETH:b' && re.deferred === 1, e.calls.join());
+
+    const x = { accountId: 'X', chain: 'ETH', lastSuccessAt: hoursAgo(30), lastFailureAt: null as Date | null };
+    const y = { accountId: 'Y', chain: 'ETH', lastSuccessAt: hoursAgo(20), lastFailureAt: null as Date | null };
+    const f = harness([x, y], { stepMs: 60_000, sync: async (id, chain) => (id === 'X' ? fail(id, chain, 'BALANCE_UNAVAILABLE') : ok(id, chain)) });
+    await f.run(30_000);                         // :00 — X (oldest) is attempted and fails; Y is deferred
+    x.lastFailureAt = NOW;                       // the incident the failure recorded
+    let contClock = 0;
+    const cont = await refreshScheduledWallets({ now: new Date(NOW.getTime() + 30 * 60_000), budgetMs: 30_000, deps: {
+      listWallets: async () => [x, y], policy: async () => resolveRefreshPolicy({ sourceKind: 'WALLET' }, null),
+      admit: async () => ({ decision: 'ADMIT' as const }), clock: () => contClock,
+      sync: async (id, chain) => { contClock += 40_000; return ok(id, chain); },
+    } });
+    check('F. at the :30 continuation the untouched wallet goes first, not the one that just failed at :00',
+      cont.syncedAccountIds[0] === 'Y' && cont.deprioritizedRecentFailures === 1, JSON.stringify(cont.syncedAccountIds));
+  }
+
   console.log('\nH. scheduled and manual take the same sync');
   {
     const refresh = readFileSync('lib/crypto/wallet-refresh.ts', 'utf8');

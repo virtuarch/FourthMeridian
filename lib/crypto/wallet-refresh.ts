@@ -14,7 +14,11 @@
  *   select   every live wallet whose chain the sync registry can read
  *            (SYNCABLE_CHAINS — a chain that gains an adapter is scheduled by
  *            that fact alone; nothing here names a chain)
- *   order    oldest successful refresh first, never-synced first of all
+ *   order    oldest successful refresh first, never-synced first of all — except
+ *            that a wallet whose last attempt FAILED recently goes after every
+ *            wallet that did not (fairness: a persistently failing wallet never
+ *            advances its success clock, so by age alone it would lead every run
+ *            forever). It is not suppressed and nothing about its freshness moves.
  *   due      skip a wallet refreshed recently enough under the WALLET refresh
  *            policy (so a :30 continuation slot does not repeat the :00 slot,
  *            and a 12h policy is honoured by attempting every other slot)
@@ -56,6 +60,44 @@ export interface ScheduledWalletCandidate {
   chain: string;
   /** The older of account lastUpdated and Connection.lastSyncedAt; null when never fully synced. */
   lastSuccessAt: Date | null;
+  /** The latest WALLET_SYNC_FAILED occurrence for this account (SyncIssue.lastOccurredAt), if any. */
+  lastFailureAt?: Date | null;
+}
+
+const HOUR_MS = 3_600_000;
+
+/**
+ * How long a failure deprioritises a wallet: half the expected cadence, at most
+ * three hours. At the 6h default a wallet that failed at :00 yields the :30
+ * continuation to untouched wallets and is back at full priority by the next
+ * 6-hourly run.
+ */
+export function recentFailureWindowMs(policy: Pick<RefreshPolicy, "expectedEveryHours">): number {
+  return Math.min(3 * HOUR_MS, (policy.expectedEveryHours * HOUR_MS) / 2);
+}
+
+/** A failure newer than the last success, inside the window. */
+export function failedRecently(w: ScheduledWalletCandidate, policy: Pick<RefreshPolicy, "expectedEveryHours">, now: Date): boolean {
+  if (!w.lastFailureAt) return false;
+  if (w.lastSuccessAt && w.lastFailureAt <= w.lastSuccessAt) return false;
+  return now.getTime() - w.lastFailureAt.getTime() < recentFailureWindowMs(policy);
+}
+
+/**
+ * Deterministic sweep order: wallets not recently failed first (never-synced,
+ * then oldest success — a budget-deferred wallet keeps its urgency), then the
+ * recently failed (oldest failure first). Ties break on account id.
+ */
+export function sweepOrder(
+  wallets: readonly ScheduledWalletCandidate[], policy: Pick<RefreshPolicy, "expectedEveryHours">, now: Date,
+): ScheduledWalletCandidate[] {
+  const t = (d: Date | null | undefined) => d?.getTime() ?? -Infinity;
+  return [...wallets].sort((a, b) => {
+    const fa = failedRecently(a, policy, now), fb = failedRecently(b, policy, now);
+    if (fa !== fb) return fa ? 1 : -1;
+    const primary = fa ? t(a.lastFailureAt) - t(b.lastFailureAt) : t(a.lastSuccessAt) - t(b.lastSuccessAt);
+    return primary !== 0 && !Number.isNaN(primary) ? primary : a.accountId.localeCompare(b.accountId);
+  });
 }
 
 export interface WalletRefreshDeps {
@@ -82,6 +124,10 @@ export interface WalletRefreshResult {
   /** Failure stages, counted — never ids or provider text. */
   failureStages: Record<string, number>;
   syncedAccountIds: string[];
+  /** Due wallets placed after the rest because their last attempt failed recently. */
+  deprioritizedRecentFailures: number;
+  /** The earliest reconstructed-history date any synced wallet changed (measured by ETH), for regeneration. */
+  historyImpactedFromISO: string | null;
   slowestWalletMs: number;
   elapsedMs: number;
   policy: { cadence: string; overdueAfterHours: number; version: string };
@@ -110,6 +156,13 @@ async function defaultDeps(): Promise<WalletRefreshDeps> {
           },
         },
       });
+      // The recent-failure authority that already exists: the wallet sync incident's last occurrence.
+      const failures = rows.length === 0 ? [] : await db.syncIssue.groupBy({
+        by: ['financialAccountId'],
+        where: { kind: 'WALLET_SYNC_FAILED', financialAccountId: { in: rows.map((r) => r.id) } },
+        _max: { lastOccurredAt: true, createdAt: true },
+      });
+      const failedAt = new Map(failures.map((f) => [f.financialAccountId, f._max.lastOccurredAt ?? f._max.createdAt ?? null]));
       return rows.map((r) => {
         const synced = r.connections.map((c) => c.connection?.lastSyncedAt).find((d): d is Date => d instanceof Date) ?? null;
         return {
@@ -117,6 +170,7 @@ async function defaultDeps(): Promise<WalletRefreshDeps> {
           chain: r.walletChain!,
           // Never fully synced ⇒ no success clock, however recent the row's creation.
           lastSuccessAt: synced ? new Date(Math.min(synced.getTime(), r.lastUpdated.getTime())) : null,
+          lastFailureAt: failedAt.get(r.id) ?? null,
         };
       });
     },
@@ -139,14 +193,14 @@ export async function refreshScheduledWallets(options: {
   const now = options.now ?? new Date(start);
 
   const [wallets, policy] = await Promise.all([deps.listWallets(), deps.policy()]);
-  const due = wallets
-    .filter((w) => isDueForScheduledRefresh(w.lastSuccessAt, policy, now))
-    .sort((a, b) => (a.lastSuccessAt?.getTime() ?? -Infinity) - (b.lastSuccessAt?.getTime() ?? -Infinity));
+  const due = sweepOrder(wallets.filter((w) => isDueForScheduledRefresh(w.lastSuccessAt, policy, now)), policy, now);
 
   const result: WalletRefreshResult = {
     total: wallets.length, notDue: wallets.length - due.length,
     attempted: 0, succeeded: 0, failed: 0, deferred: 0,
     byChain: {}, failureStages: {}, syncedAccountIds: [], slowestWalletMs: 0, elapsedMs: 0,
+    deprioritizedRecentFailures: due.filter((w) => failedRecently(w, policy, now)).length,
+    historyImpactedFromISO: null,
     policy: { cadence: policy.cadence, overdueAfterHours: policy.overdueAfterHours, version: policy.version },
   };
   const finish = () => { result.elapsedMs = deps.clock() - start; return result; };
@@ -184,6 +238,8 @@ export async function refreshScheduledWallets(options: {
     if (outcome.ok) {
       tally.succeeded++; result.succeeded++;
       result.syncedAccountIds.push(w.accountId);
+      const impacted = outcome.historyRefresh?.impactedFromISO ?? null;
+      if (impacted && (!result.historyImpactedFromISO || impacted < result.historyImpactedFromISO)) result.historyImpactedFromISO = impacted;
     } else {
       tally.failed++; result.failed++;
       const stage = outcome.errorCode ?? outcome.stage ?? 'unknown';

@@ -100,9 +100,9 @@ const SYNC = code(read("lib", "crypto", "eth-history-sync.ts"));
   check("…and says the data was fine, so nobody retries forever",
     /not a plain EOA/.test(read("lib", "crypto", "eth-history-sync.ts")));
   check("a non-COMPLETE coverage never reaches the replay",
-    b.indexOf('coverage.kind !== "COMPLETE"') < b.indexOf("replayQuantityTimeline"));
+    b.indexOf('coverage.kind !== "COMPLETE"') < b.indexOf("replayEthHistory("));
   check("a broken reconciliation never reaches the replay",
-    b.indexOf('"LEDGER_DOES_NOT_RECONCILE"') < b.indexOf("replayQuantityTimeline"),
+    b.indexOf('"LEDGER_DOES_NOT_RECONCILE"') < b.indexOf("replayEthHistory("),
     "COMPLETE coverage plus an unclosed residual is not a licence");
   check("a missing anchor balance refuses rather than assuming zero",
     /anchorBalanceWei === null/.test(SYNC));
@@ -110,10 +110,12 @@ const SYNC = code(read("lib", "crypto", "eth-history-sync.ts"));
 
 // ══ ONE ENGINE, ONE LICENCE, ONE IDENTITY ═════════════════════════════════════
 {
-  check("Ethereum replays through THE engine",
-    /replayQuantityTimeline\(/.test(SYNC) && !/function replay/.test(SYNC));
+  const ROWS = code(read("lib", "crypto", "eth-history-rows.ts"));
+  check("Ethereum replays through THE engine, via the one derivation both paths share",
+    /replayEthHistory\(/.test(SYNC) && /replayQuantityTimeline\(/.test(ROWS) && !/function replay[A-Z]/.test(SYNC)
+      && /replayEthHistory\(/.test(code(read("lib", "crypto", "eth-history-incremental.ts"))));
   check("…and converts movements with the shared normaliser",
-    /movementsToQuantityEvents\(/.test(SYNC));
+    /movementsToQuantityEvents\(/.test(ROWS));
   check("…and persists its licence beside the rows, in one transaction",
     /persistPositionCoverage\(tx, accountId, instrumentId, coverage\)/.test(SYNC));
   check("…resolving identity through the canonical crypto instrument authority",

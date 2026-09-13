@@ -42,26 +42,28 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { PositionOrigin } from "@prisma/client";
 import { db } from "@/lib/db";
-import {
-  reconcileMovementsAgainstBalance, toEventStreamCompleteness, movementsToQuantityEvents,
-  type ChainCoverage,
-} from "./chain-movement";
+import { reconcileMovementsAgainstBalance, type ChainCoverage } from "./chain-movement";
 import { persistPositionCoverage } from "./position-coverage";
-import { derivedRowsFromTimeline } from "./wallet-reconstruction";
 import { ETH_NATIVE } from "./native-asset";
+import {
+  ETH_RECONSTRUCTION_SOURCE, ETH_RECONSTRUCTION_VERSION, earliestRowDifference, replayEthHistory,
+  type EthHistoryMode,
+} from "./eth-history-rows";
+import {
+  prismaEthHistoryStore, runIncrementalEthHistory, type EthIncrementalFallback,
+} from "./eth-history-incremental";
 import {
   acquireEthHistory, finalizedBlockNumber, EARLIEST_PROVABLE_BLOCK, type EthHistoryDeps,
 } from "./eth-history";
 import { resolveCryptoInstrumentId, ETH_ASSET } from "@/lib/investments/crypto-instrument";
 import {
-  replayQuantityTimeline, PERMITTED_ANCHOR_ORIGINS,
-  type QuantityAnchor, type QuantityTimeline,
+  PERMITTED_ANCHOR_ORIGINS, type QuantityAnchor, type QuantityTimeline,
 } from "@/lib/investments/quantity-replay.core";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
-/** Source stamped on every row this reconstruction owns. */
-export const ETH_RECONSTRUCTION_SOURCE = "eth-reconstruction";
+export { ETH_RECONSTRUCTION_SOURCE, ETH_RECONSTRUCTION_VERSION };
+export type { EthHistoryMode, EthIncrementalFallback };
 
 export type EthHistoryRefusal =
   /** Not an ETH wallet, or no address to read. */
@@ -89,6 +91,16 @@ export interface EthHistoryResult {
   reconciliation?: { reconciles: boolean; residualWei: string; movementCount: number };
   /** The instrument the rows were written against, for the price backfill. */
   instrumentId?: string;
+  /** FULL rebuild, INCREMENTAL suffix, or NO_CHANGE (proven nothing moved). */
+  mode?: EthHistoryMode;
+  /** Why a FULL rebuild ran instead of the incremental path. */
+  fallbackReason?: EthIncrementalFallback;
+  /** The earliest date whose stored quantity this run changed (or a new movement's date). Null: no historical change. */
+  impactedFromISO?: string | null;
+  /** The last date the proven coverage reaches. */
+  coveredThroughISO?: string;
+  /** DERIVED rows deleted + inserted by this run. */
+  rowsChanged?: number;
 }
 
 /**
@@ -107,6 +119,8 @@ export async function reconstructEthHistory(args: {
   client?: Client;
   deps?: EthHistoryDeps;
   dryRun?: boolean;
+  /** Skip the incremental path: an explicit repair / full rebuild. */
+  full?: boolean;
 }): Promise<EthHistoryResult> {
   const client = args.client ?? db;
   const { accountId } = args;
@@ -122,6 +136,24 @@ export async function reconstructEthHistory(args: {
   ) {
     return { accountId, ok: false, refusal: "NOT_AN_ETH_WALLET",
       reason: `not a syncable ${ETH_NATIVE.chain} wallet` };
+  }
+
+  // ── 0. INCREMENTAL, WHEN THE STORED HISTORY CAN BE VERIFIED ─────────────────
+  //    eth-history-incremental.ts reuses proven rows only after checking them
+  //    against the chain; any failed invariant hands back here for the full
+  //    rebuild below, and a provider failure is a refusal that writes nothing.
+  let fallbackReason: EthIncrementalFallback = "EXPLICIT_FULL";
+  if (!args.full) {
+    const incremental = await runIncrementalEthHistory({
+      accountId, walletAddress: account.walletAddress, instrumentId: await resolveCryptoInstrumentId(ETH_ASSET),
+      todayISO: args.windowToISO, store: prismaEthHistoryStore(db), deps: args.deps, dryRun: args.dryRun,
+    });
+    if (incremental.kind === "DONE") return incremental.result;
+    if (incremental.kind === "REFUSED") {
+      return { accountId, ok: false, refusal: incremental.refusal, reason: incremental.reason, mode: "INCREMENTAL" };
+    }
+    fallbackReason = incremental.reason;
+    console.log(`[eth-history] full rebuild for ${accountId}: ${incremental.reason}${incremental.detail ? ` — ${incremental.detail}` : ""}`);
   }
 
   // ── 1. ACQUIRE. Every judgement about what the chain proves lives in
@@ -204,10 +236,8 @@ export async function reconstructEthHistory(args: {
     completeness:         anchorRow.completeness ?? "observed",
   }];
 
-  // ── 5. REPLAY — THE engine, the one Bitcoin and Solana use.
-  const events = movementsToQuantityEvents(movements, {
-    accountId, instrumentId, decimals: ETH_NATIVE.decimals,
-  });
+  // ── 5. REPLAY — THE engine, the one Bitcoin and Solana use, through the
+  //    derivation the incremental path shares (eth-history-rows.ts).
   // ETH-H2 — THE LICENCE WIDENS THE WINDOW; THE CALLER'S FLOOR MUST NOT NARROW IT.
   //
   // Bitcoin and Solana are handed a window derived from evidence ALREADY in the
@@ -224,19 +254,19 @@ export async function reconstructEthHistory(args: {
   const replayFromISO =
     coverage.fromISO < args.windowFromISO ? coverage.fromISO : args.windowFromISO;
 
-  const timeline = replayQuantityTimeline({
-    instrumentId, accountId, anchors, events,
-    windowFromISO: replayFromISO,
-    windowToISO:   args.windowToISO,
-    eventStream:   toEventStreamCompleteness(coverage),
-    // One wei is below float resolution at this magnitude, so the tolerance is
-    // the smallest value that is meaningful rather than the smallest unit.
-    // Reconciliation above is where exactness is enforced; this only guards the
-    // replay's own arithmetic.
-    tolerance:     1e-12,
+  const { timeline, rows: derived } = replayEthHistory({
+    accountId, instrumentId, anchor: anchors[0], movements, coverage,
+    windowFromISO: replayFromISO, windowToISO: args.windowToISO,
   });
 
-  const derived = derivedRowsFromTimeline(timeline);
+  // The IMPACT: the earliest date whose stored quantity this rebuild changes.
+  // A version-bump rebuild over identical evidence changes nothing downstream.
+  const existingRows = await client.positionObservation.findMany({
+    where:  { financialAccountId: accountId, instrumentId, origin: PositionOrigin.DERIVED, source: ETH_RECONSTRUCTION_SOURCE },
+    select: { date: true, quantity: true },
+  });
+  const impactedFromISO = earliestRowDifference(
+    existingRows.map((r) => ({ dateISO: r.date.toISOString().slice(0, 10), quantity: r.quantity })), derived);
   if (!args.dryRun) {
     await db.$transaction(async (tx) => {
       await tx.positionObservation.deleteMany({
@@ -256,6 +286,7 @@ export async function reconstructEthHistory(args: {
             source:   ETH_RECONSTRUCTION_SOURCE,
             completeness: r.basis,
             isCash:   false,
+            reconstructionVersion: ETH_RECONSTRUCTION_VERSION,
           })),
           skipDuplicates: true,
         });
@@ -269,6 +300,9 @@ export async function reconstructEthHistory(args: {
     accountId, ok: true, coverage, timeline, instrumentId,
     derivedRowsWritten: derived.length,
     reconciliation: { reconciles: true, residualWei: recon.residual.toString(), movementCount: recon.movementCount },
+    mode: "FULL", fallbackReason, impactedFromISO,
+    coveredThroughISO: coverage.toISO,
+    rowsChanged: existingRows.length + derived.length,
   };
 }
 

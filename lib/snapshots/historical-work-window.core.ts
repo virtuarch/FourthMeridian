@@ -116,6 +116,17 @@ export interface HistoricalWorkWindow {
 const maxISO = (a: string, b: string): string => (a > b ? a : b);
 
 /**
+ * The earlier of two impacted-from dates; null only when neither is known. Used
+ * to join a reconstruction's measured position-history boundary to the
+ * transaction/price evidence the binding measures.
+ */
+export function earliestImpactedFrom(a: string | null, b: string | null | undefined): string | null {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  return a < b ? a : b;
+}
+
+/**
  * Plan the historical rebuild window. Total and deterministic — never throws.
  *
  * A future capability-widening trigger supplies a lower `blockingPriceFloorISO`

@@ -271,6 +271,34 @@ export function reconcileMovementsAgainstBalance(
 }
 
 /**
+ * Do these movements account for the change from an OPENING balance to a later one?
+ *
+ * The incremental form of the reconciliation above: when history before a
+ * boundary is already proven and stored, the suffix must satisfy
+ *
+ *     opening + Σ(movements after the boundary) = anchor
+ *
+ * EXACTLY, in base units. It is the same integer comparison with the opening
+ * moved to the other side, so it inherits every property above — no tolerance,
+ * no float — and a suffix that does not close is never published.
+ */
+export function reconcileMovementsAgainstOpening(
+  movements: readonly ChainMovement[],
+  openingBaseUnits: bigint | null,
+  anchorBaseUnits: bigint | null,
+): BaseUnitReconciliation {
+  if (openingBaseUnits === null || anchorBaseUnits === null) {
+    let total = BigInt(0);
+    for (const m of movements) total += m.baseUnitsDelta;
+    return {
+      reconciles: false, movementTotal: total, residual: BigInt(0), movementCount: movements.length,
+      reason: "No opening or anchor balance to reconcile the acquired suffix against.",
+    };
+  }
+  return reconcileMovementsAgainstBalance(movements, anchorBaseUnits - openingBaseUnits);
+}
+
+/**
  * ARITHMETIC MAY LICENSE WHAT A SCAN CANNOT PROVE.
  *
  * An address-index scan can never establish COMPLETE by itself (see

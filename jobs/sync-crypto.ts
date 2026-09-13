@@ -114,7 +114,11 @@ export async function syncCrypto(options: {
           // newly reachable dates have no stored prices yet, so a measured window
           // would not reach them.
           const plan = capabilityWidening?.window
-            ?? await resolveHistoricalWorkWindow({ financialAccountIds: historyAccountIds, changedSince: runStartedAt });
+            ?? await resolveHistoricalWorkWindow({
+              financialAccountIds: historyAccountIds, changedSince: runStartedAt,
+              // Reconstructed position history the sweep changed (ETH measures it).
+              positionHistoryImpactedFromISO: result.historyImpactedFromISO,
+            });
           console.log(`[sync-crypto] historical window ${plan.fromDate}..${plan.toDate} (${plan.mode}) — ${plan.reasons.join("; ")}`);
           wealthRegenSpaces = (await regenerateWealthHistoryForAccounts(
             historyAccountIds, { fromDate: plan.fromDate, toDate: plan.toDate },

@@ -900,10 +900,53 @@ export function blockEvidence(
  * endpoint (observed ~70 blocks behind `latest`).
  */
 export async function finalizedBlockNumber(deps: EthHistoryDeps = {}): Promise<number> {
+  return (await finalizedHead(deps)).number;
+}
+
+/** The finalized head's number AND timestamp, in one read. */
+export async function finalizedHead(deps: EthHistoryDeps = {}): Promise<{ number: number; timestampSec: bigint }> {
   const transport = buildTransport(deps);
   const [header] = await callBatchWithBackoff([{ method: "eth_getBlockByNumber", params: ["finalized", false] }], transport, { retries: deps.throttleRetries, sleepImpl: deps.sleepImpl });
-  const h = (header ?? {}) as { number?: unknown };
-  return Number(parseHexQuantity(h.number));
+  const h = (header ?? {}) as { number?: unknown; timestamp?: unknown };
+  return { number: Number(parseHexQuantity(h.number)), timestampSec: parseHexQuantity(h.timestamp) };
+}
+
+/** Balance, nonce and code at one block — the three facts the emptiness proof reads. One batched request. */
+export async function readAccountStateAt(
+  ownerAddress: string, block: number, deps: EthHistoryDeps = {},
+): Promise<EthAccountState> {
+  const address = normalizeEthAddress(ownerAddress);
+  const tag = "0x" + block.toString(16);
+  const [balance, nonce, code] = await callBatchWithBackoff([
+    { method: "eth_getBalance",          params: [address, tag] },
+    { method: "eth_getTransactionCount", params: [address, tag] },
+    { method: "eth_getCode",             params: [address, tag] },
+  ], buildTransport(deps), { retries: deps.throttleRetries, sleepImpl: deps.sleepImpl });
+  if (typeof code !== "string" || !code.startsWith("0x")) {
+    throw new EthRpcError("balance", `eth_getCode returned a non-hex value for block ${block}`);
+  }
+  return { balance: parseHexQuantity(balance), nonce: parseHexQuantity(nonce), code };
+}
+
+/** The Paris (Merge) block and its timestamp. From here on a block occupies a 12 s slot, and a slot holds at most one block. */
+export const PARIS_BLOCK = 15_537_394;
+export const PARIS_TIMESTAMP_SEC = 1_663_224_179;
+export const SLOT_SECONDS = 12;
+
+/**
+ * A block that CANNOT be later than a post-Merge instant, near it — the lower bound
+ * for `blockAtOrBefore`.
+ *
+ * Since Paris every block sits in its own 12 s slot and slots can be empty but
+ * never shared, so N blocks span at least 12·N seconds. Walking back
+ * ceil(Δt / 12) blocks from the head therefore lands at or before the instant.
+ * Before Paris block times varied, so no such bound holds and the search starts
+ * at the provable floor.
+ */
+export function postMergeSearchFloor(head: { number: number; timestampSec: bigint }, instantSec: number): number {
+  if (instantSec < PARIS_TIMESTAMP_SEC) return EARLIEST_PROVABLE_BLOCK;
+  const slots = Math.ceil((Number(head.timestampSec) - instantSec) / SLOT_SECONDS);
+  return Math.max(PARIS_BLOCK, head.number - Math.max(0, slots));
 }
 
 /**
