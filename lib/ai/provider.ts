@@ -18,7 +18,7 @@ import 'server-only';
 import OpenAI from 'openai';
 import { recordApiUsage } from '@/lib/usage/record';
 import { aiUsageUnits, type OpenAiUsage } from '@/lib/usage/ai-tokens';
-import { recordAiInvocation } from '@/lib/ai/invocation';
+import { recordAiInvocation, type AiInvocationWriteClient } from '@/lib/ai/invocation';
 
 // ── Client ───────────────────────────────────────────────────────────────────
 // Lazy-initialised singleton. Fails loudly if the key is absent so
@@ -76,12 +76,27 @@ const CHAT_MODEL = process.env.AI_CHAT_MODEL || 'gpt-4o-mini';
  * errors, so `void` here can neither fail a generation nor leave an unhandled
  * rejection. A metrics write must never break a chat call.
  */
+/**
+ * Where the invocation fact is written. Defaults to the real ledger.
+ *
+ * ⚠️ INJECTABLE ONLY SO THE ACCOUNTING CAN BE TESTED WITHOUT A DATABASE — the
+ * write-client idiom `recordAiInvocation` already takes. The invocation writer
+ * still runs for real under a fake client, so a test reads the row this module
+ * would have written, ambient correlation included. The day-grain counter is
+ * deliberately NOT injectable: it stays the one direct, fire-and-forget
+ * `recordApiUsage` call site the usage guards pin, and it swallows its own errors.
+ */
+export interface UsageSinks {
+  invocationClient?: AiInvocationWriteClient;
+}
+
 function recordOpenAiUsage(args: {
   model: string;
   usage: OpenAiUsage | null | undefined;
   latencyMs: number;
   toolCallCount?: number;
   finishReason?: string | null;
+  sinks?: UsageSinks;
 }): void {
   const { model, usage } = args;
   if (!usage) return;
@@ -105,7 +120,7 @@ function recordOpenAiUsage(args: {
     latencyMs: args.latencyMs,
     toolCallCount: args.toolCallCount ?? 0,
     finishReason: args.finishReason ?? null,
-  });
+  }, args.sinks?.invocationClient);
 }
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -286,60 +301,164 @@ export async function generateWithTools(args: {
 }
 
 /**
- * Generate a reply that conforms to a JSON schema.
+ * How long a structured call may take, end to end, before it is abandoned.
  *
- * A structured-output seam, kept through the AI conversation reset.
+ * ⚠️ THE SDK'S OWN DEFAULT IS TEN MINUTES. A structured call backs a surface that
+ * has a page waiting on it; a generation that has not returned in a minute has
+ * failed in every sense a reader cares about, and the caller's failure path is
+ * the right place for it to land. Generous against the observed ~3–8 s.
+ */
+export const STRUCTURED_TIMEOUT_MS = 60_000;
+
+/** The structured call was abandoned at its deadline. Nothing was recorded. */
+export class StructuredOutputTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`[ai/provider] Structured response did not arrive within ${timeoutMs} ms.`);
+    this.name = 'StructuredOutputTimeoutError';
+  }
+}
+
+/** The model declined to answer in the schema. Billed, and recorded as such. */
+export class StructuredOutputRefusalError extends Error {
+  constructor(readonly refusal: string) {
+    super('[ai/provider] Model refused the structured request.');
+    this.name = 'StructuredOutputRefusalError';
+  }
+}
+
+export interface StructuredOptions {
+  model?:       string;
+  /** Classic dialect only. The modern dialect rejects any non-default value. */
+  temperature?: number;
+  maxTokens?:   number;
+  timeoutMs?:   number;
+}
+
+/** The narrow client surface a structured call uses — injectable for tests. */
+export interface StructuredClient {
+  chat: { completions: { create(body: unknown, options?: { signal?: AbortSignal }): Promise<unknown> } };
+}
+
+export interface StructuredResult<T> {
+  value:        T;
+  model:        string;
+  latencyMs:    number;
+  finishReason: string | null;
+  usage: {
+    promptTokens: number; cachedPromptTokens: number;
+    completionTokens: number; reasoningTokens: number;
+  } | null;
+}
+
+/**
+ * Generate a reply that conforms to a JSON schema, with what it cost.
  *
- * ⚠️ IT HAS NO CALLER TODAY, AND THAT IS THE POINT OF A SEAM. The typed answer
- * boundary that used it was deleted; the provider boundary is not architecture,
- * it is the one place this codebase is allowed to import the OpenAI SDK, and
- * removing a capability from it would only mean re-adding it later in a worse
- * place. `generateChatReply` beside it is likewise callable and uncalled.
+ * ⚠️ THE PRE-FIX VERSION COULD NOT CALL THE MODEL THE PRODUCT RUNS ON. It always
+ * sent `temperature` and `max_tokens`, and the dialect note above
+ * `generateWithTools` records (measured, 2026-09-07) that gpt-5.x answers both
+ * with a 400. The seam had no caller, so nothing noticed. The dialect is now
+ * chosen exactly as `generateWithTools` chooses it — `usesModernParams` — and
+ * the classic dialect is byte-for-byte what it was.
  *
  * ⚠️ `strict: true` MAKES EVERY PROPERTY REQUIRED AND FORBIDS EXTRAS. It does
  * NOT bound array lengths — this comment used to say it made `claims: []`
  * "unrepresentable at the provider", which was wrong and was caught by audit.
- * Emptiness is the verifier's problem and the verifier now handles it.
+ * Lengths and emptiness are the caller's verifier's problem.
  *
- * Throws on an empty or unparseable response, exactly as its sibling does, so
- * the caller's existing failure path covers it.
+ * Throws on a timeout, a refusal, or an empty or unparseable response, so the
+ * caller's existing failure path covers every one of them. Usage is recorded
+ * whenever the provider returned it — a refusal is still a billed request.
  */
-export async function generateStructured<T>(
+export async function generateStructuredWithUsage<T>(
   systemPrompt: string,
   messages:     ChatMessage[],
   schema:       { name: string; schema: Record<string, unknown> },
-  options?:     { model?: string; temperature?: number; maxTokens?: number },
-): Promise<T> {
-  const client = getClient();
+  options?:     StructuredOptions,
+  deps?:        { client?: StructuredClient; sinks?: UsageSinks },
+): Promise<StructuredResult<T>> {
+  const client = deps?.client ?? (getClient() as unknown as StructuredClient);
   const model = options?.model ?? CHAT_MODEL;
+  const modern = usesModernParams(model);
+  const timeoutMs = options?.timeoutMs ?? STRUCTURED_TIMEOUT_MS;
 
-  const started = Date.now();
-  const completion = await client.chat.completions.create({
+  const body = {
     model,
     messages: [
       { role: 'system', content: systemPrompt },
       ...messages,
     ],
-    temperature: options?.temperature ?? 0.3,
-    max_tokens:  options?.maxTokens ?? 1024,
+    ...(modern
+      ? { max_completion_tokens: options?.maxTokens ?? completionBudgetFor(model) }
+      : { temperature: options?.temperature ?? 0.3, max_tokens: options?.maxTokens ?? 1024 }),
     response_format: {
       type: 'json_schema',
       json_schema: { name: schema.name, schema: schema.schema, strict: true },
     },
-  });
+  };
+
+  // One deadline for the whole request, retries included: the signal is what the
+  // SDK abandons on, so a slow first attempt cannot buy a second full timeout.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const started = Date.now();
+  let completion: {
+    choices: { message?: { content?: string | null; refusal?: string | null }; finish_reason?: string }[];
+    usage?: OpenAiUsage;
+  };
+  try {
+    completion = await client.chat.completions.create(body, { signal: controller.signal }) as typeof completion;
+  } catch (err) {
+    if (controller.signal.aborted) throw new StructuredOutputTimeoutError(timeoutMs);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   const latencyMs = Date.now() - started;
 
+  const choice = completion.choices?.[0];
+  const finishReason = choice?.finish_reason ?? null;
   recordOpenAiUsage({
     model, usage: completion.usage, latencyMs,
     toolCallCount: 0,   // structured output, not tools
-    finishReason: completion.choices[0]?.finish_reason ?? null,
+    finishReason,
+    sinks: deps?.sinks,
   });
 
-  const raw = completion.choices[0]?.message?.content ?? '';
+  const refusal = choice?.message?.refusal;
+  if (refusal) throw new StructuredOutputRefusalError(refusal);
+
+  const raw = choice?.message?.content ?? '';
   if (!raw) throw new Error('[ai/provider] Model returned an empty structured response.');
+  let value: T;
   try {
-    return JSON.parse(raw) as T;
+    value = JSON.parse(raw) as T;
   } catch {
     throw new Error('[ai/provider] Model returned a structured response that is not JSON.');
   }
+
+  const u = completion.usage;
+  return {
+    value, model, latencyMs, finishReason,
+    usage: u ? {
+      promptTokens:       u.prompt_tokens ?? 0,
+      cachedPromptTokens: u.prompt_tokens_details?.cached_tokens ?? 0,
+      completionTokens:   u.completion_tokens ?? 0,
+      reasoningTokens:    u.completion_tokens_details?.reasoning_tokens ?? 0,
+    } : null,
+  };
+}
+
+/**
+ * Generate a reply that conforms to a JSON schema — the value alone.
+ *
+ * A structured-output seam, kept through the AI conversation reset. Same
+ * signature as ever; `generateStructuredWithUsage` does the work.
+ */
+export async function generateStructured<T>(
+  systemPrompt: string,
+  messages:     ChatMessage[],
+  schema:       { name: string; schema: Record<string, unknown> },
+  options?:     StructuredOptions,
+): Promise<T> {
+  return (await generateStructuredWithUsage<T>(systemPrompt, messages, schema, options)).value;
 }
