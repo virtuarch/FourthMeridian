@@ -19,26 +19,27 @@
  *   chat API. buildContext() runs fresh on every /api/ai/chat request, so
  *   the AI's next reply automatically sees the newly persisted DebtProfile.
  *
- * The `GapEntry` type mirrors KnowledgeGap from lib/ai/types — defined locally
- * here so this client component does not touch the server-only AI barrel.
+ * `GapEntry` is now an alias of `AiKnowledgeGap` (@/types) — the public shape the
+ * route serialises, so the client and the server agree at compile time instead of
+ * by two hand-kept copies.
  */
 
 import { useState } from "react";
 import { PenLine, CheckCircle, Info } from "lucide-react";
+import type { AiKnowledgeGap } from "@/types";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /**
- * Client-side mirror of KnowledgeGap from lib/ai/types.
- * Received from /api/ai/chat as plain JSON — no server-only imports needed.
+ * The public knowledge-gap shape, as POST /api/ai/chat returns it.
+ *
+ * ⚠️ ONE DECLARATION NOW, NOT A MIRROR. This was a hand-copied twin of
+ * `KnowledgeGap` from lib/ai/types, kept local so the component would not touch
+ * the server-only AI barrel. `AiKnowledgeGap` in @/types is that shape made
+ * public — client-safe by construction and the same type the route serialises —
+ * so the copy is retired and the alias keeps every existing import working.
  */
-export interface GapEntry {
-  accountId:    string;
-  accountName:  string;
-  field:        "apr" | "minimumPayment";
-  label:        string;
-  debtSubtype?: string | null;
-}
+export type GapEntry = AiKnowledgeGap;
 
 // ── Field configuration ───────────────────────────────────────────────────────
 

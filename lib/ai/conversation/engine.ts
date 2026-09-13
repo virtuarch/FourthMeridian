@@ -29,9 +29,11 @@ import {
 import { openAiToolSchemas, type ToolContext } from './tools';
 import { executeTurn, supportsTools, SYSTEM_INSTRUCTION, type TurnRecord } from './turn';
 import { newScenarioSlot, type ScenarioSlot, type ActiveScenario } from './active-scenario';
+import { collectKnowledgeGaps } from './knowledge-gaps';
 import { todayUTCISO } from '@/lib/time/clock';
 import type { SpaceContext } from '@/lib/space';
 import type { SpaceContext_AI } from '@/lib/ai/types';
+import type { AiKnowledgeGap } from '@/types';
 
 /**
  * The model the conversation runs on.
@@ -142,6 +144,19 @@ export interface StatelessTurn {
   evidence: EvidencePack;
   /** The hypothetical under discussion when the turn ended, if there is one. */
   scenario: ActiveScenario | null;
+  /**
+   * Evidence this answer wanted and did not have, ready to show.
+   *
+   * ⚠️ PART OF THE ANSWER, NOT A FAULT. What Fourth Meridian could say and what
+   * it could not yet establish are both results of the turn; a surface that
+   * renders one is expected to render the other. Empty is the ordinary case.
+   *
+   * ⚠️ PRESENTATION-SAFE, SO ANY SERVER CONSUMER MAY FORWARD IT. Nothing here
+   * is tool state, provider metadata or internal classification — it is the
+   * public shape from `@/types`, projected field by field from what a tool
+   * returned.
+   */
+  knowledgeGaps: AiKnowledgeGap[];
 }
 
 /**
@@ -187,5 +202,8 @@ export async function runStatelessTurn(args: {
   });
 
   return { answer: record.assistant, record, evidence: open.evidence,
-    scenario: slot.active };
+    scenario: slot.active,
+    // Read off THIS turn's tool results, so a gap is a remark about this answer
+    // rather than a standing notice about the Space.
+    knowledgeGaps: collectKnowledgeGaps(record.toolCalls) };
 }

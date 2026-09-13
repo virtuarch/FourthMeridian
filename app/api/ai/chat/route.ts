@@ -19,8 +19,10 @@
  * the Space id is checked hard: a caller who names a Space they cannot reach
  * gets 403, not a quiet fallback to their own money under someone else's label.
  * MAY NOT: a system message, a tool message, a tool result, an owner id, an
- * as-of date, a model, an agent id, the memory line, the evidence, or the
- * active scenario. Every one of those is built here from authorities.
+ * as-of date, a model, an agent id, the memory line, the evidence, the active
+ * scenario, or a knowledge gap. Every one of those is built here from
+ * authorities; a gap posted by a client is stripped with every other unknown
+ * property and is never read back as context.
  *
  * ── Continuity without persistence ──────────────────────────────────────────
  * Nothing about a conversation is stored. The hypothetical under discussion
@@ -39,6 +41,7 @@ import { todayUTCISO }               from '@/lib/time/clock';
 import '@/lib/ai/assemblers';
 import { runStatelessTurn } from '@/lib/ai/conversation/engine';
 import { readChatRequest, type ChatRequestRefusal } from '@/lib/ai/conversation/request';
+import type { AiChatResponse } from '@/types';
 import {
   sealRuntimeState, openRuntimeState, conversationTail, RUNTIME_STATE_TTL_MS,
 } from '@/lib/ai/conversation/runtime-state';
@@ -146,7 +149,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       return refuse(SAY.silent, 502);
     }
 
-    const res = NextResponse.json({ message: turn.answer });
+    // ⚠️ BOTH HALVES OF THE ANSWER, ON A 200. A knowledge gap is not an error
+    // and must never become one: the prose renders normally and the missing
+    // evidence renders beside it. The key is omitted entirely when there is
+    // none, so an ordinary answer is the same single-field body it was.
+    const body: AiChatResponse = {
+      message: turn.answer,
+      ...(turn.knowledgeGaps.length ? { knowledgeGaps: turn.knowledgeGaps } : {}),
+    };
+    const res = NextResponse.json(body);
     // ⚠️ RE-SEALED EVERY TURN, AGAINST THE ANSWER JUST GIVEN. The next request's
     // transcript will end with this reply, so this reply's digest is the tail
     // the seal must be bound to. When the hypothetical is gone — cleared by a

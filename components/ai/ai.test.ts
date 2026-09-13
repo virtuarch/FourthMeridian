@@ -28,6 +28,9 @@ import {
   starterIndexFrom,
 } from "@/components/ai/conversation-surface";
 import { AnalyzeClient } from "@/components/dashboard/AnalyzeClient";
+import { KnowledgeGapCard } from "@/components/ai/KnowledgeGapCard";
+import { KnowledgeClarificationCard } from "@/components/dashboard/KnowledgeAcquisitionCard";
+import { readKnowledgeGaps } from "@/lib/ai/conversation/knowledge-gaps";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -172,6 +175,64 @@ console.log("5. backend contract unchanged");
     /spaceId: selectedSpaceId,/.test(client) && /messages: nextMessages\.map\(\(m\) => \(\{ role: m\.role, content: m\.content \}\)\)/.test(client));
   check("reads {message, knowledgeGaps, knowledgeGapMode}", /data\.message/.test(client) && /data\.knowledgeGaps/.test(client) && /data\.knowledgeGapMode/.test(client));
   check("still non-streaming (one JSON response)", /await res\.json\(\)/.test(client) && !/getReader\(\)|EventSource/.test(client));
+  // ⚠️ ONE DECLARATION OF THE RESPONSE, SHARED WITH THE ROUTE. The client used to
+  // restate the shape inline, which is how a server field and a client field drift
+  // into two subtly different contracts.
+  check("the response is typed by the shared contract, not an inline literal",
+    /as AiChatResponse/.test(client) && /AiChatResponse/.test(readFileSync(path.join(process.cwd(), "types", "index.ts"), "utf8")));
+  check("the gaps are narrowed at the boundary, not trusted wholesale",
+    /readKnowledgeGaps\(data\.knowledgeGaps\)/.test(client));
+  // A knowledge gap travels with a 200; a refusal is the other branch entirely.
+  check("gaps are read on the OK path and never on the error path",
+    client.indexOf("readKnowledgeGaps(") < client.indexOf("data.error ??"));
+  check("the request still sends role and content only — a gap cannot be posted back",
+    !/knowledgeGaps:[^\n]*JSON\.stringify|body: JSON\.stringify\([^)]*knowledgeGap/.test(client));
+}
+
+console.log("5a. a knowledge gap renders beneath the answer it belongs to");
+{
+  const gaps = [
+    { accountId: "a1", accountName: "Amex Platinum", field: "apr" as const, label: "APR", debtSubtype: "credit_card" },
+  ];
+  const extras = () => h(KnowledgeGapCard, {
+    children: h(KnowledgeClarificationCard, { gaps, onExpand: noop, onSnooze: noop }),
+  });
+  const view = renderToStaticMarkup(h(ConversationView, {
+    messages: [
+      { role: "user" as const, content: "How fast can I clear the card?" },
+      { role: "assistant" as const, content: "About eleven months at your current pace." },
+    ],
+    renderExtras: (i: number) => (i === 1 ? extras() : null),
+  }));
+
+  check("the answer renders", view.includes("About eleven months at your current pace."));
+  check("the gap renders too", view.includes("APR") && view.includes("Amex Platinum"));
+  check("…in words, not by icon or colour alone",
+    view.includes("missing for") && view.includes("adding it improves accuracy"));
+  check("…beneath the answer, in document order",
+    view.indexOf("About eleven months") < view.indexOf("Amex Platinum"));
+  check("…under a quiet eyebrow, not a warning box",
+    view.includes("Sharpen this answer") && !/role="alert"|aria-live/.test(view));
+  check("the conversation log is the only announced region",
+    (view.match(/role="log"/g) ?? []).length === 1);
+  check("it offers an action and a way out", view.includes("Update APR") && view.includes("Not now"));
+  check("it stays inside the reading column — no overflow container of its own",
+    !/overflow-x|w-screen|absolute/.test(view.slice(view.indexOf("Sharpen this answer"))));
+
+  // The control: the same answer with no gap is the answer and nothing else.
+  const plain = renderToStaticMarkup(h(ConversationView, {
+    messages: [{ role: "assistant" as const, content: "About eleven months at your current pace." }],
+    renderExtras: () => null,
+  }));
+  check("an answer with no gap renders no frame at all",
+    !plain.includes("Sharpen this answer") && !plain.includes("Not now"));
+  check("…and the empty conversation is untouched by any of it",
+    !renderToStaticMarkup(h(ConversationView, { messages: [] })).includes("Sharpen this answer"));
+
+  // A malformed extra must cost the extra, never the answer.
+  const junk = readKnowledgeGaps([{ accountId: "a1" }, "nope", null]);
+  check("a malformed payload narrows to nothing, so nothing renders", junk.length === 0);
+  check("…and the answer is unaffected by that", plain.includes("About eleven months"));
 }
 
 console.log("6. starter copy — approved lines only, never fights the user");

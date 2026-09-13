@@ -88,11 +88,22 @@ console.log('\n4. THE SERVER OWNS THE PROMPT');
 
 console.log('\n5. WHAT LEAVES THE SERVER');
 {
-  check('the success body is the message and nothing else',
-    /NextResponse\.json\(\{ message: turn\.answer \}\)/.test(src));
+  // ⚠️ THE ANSWER AND WHAT IT COULD NOT ESTABLISH — and nothing else. The body is
+  // declared as the shared public type, so a field that is not in the contract
+  // cannot be added here without changing the contract on purpose.
+  check('the success body is typed by the shared contract',
+    /const body: AiChatResponse = \{/.test(src)
+      && /from '@\/types'/.test(src));
+  check('…it is the answer, plus gaps only when there are gaps',
+    /message: turn\.answer,/.test(src)
+      && /turn\.knowledgeGaps\.length \? \{ knowledgeGaps: turn\.knowledgeGaps \}/.test(src));
+  check('…and a knowledge gap is a 200, never a status of its own',
+    !/knowledgeGap[\s\S]{0,120}(refuse\(|status: [45])/.test(src));
   check('no evidence, tool result, record or usage is returned',
     !/turn\.record[^.]/.test(src.replace(/turn\.record\.error/g, ''))
       && !/evidence:|toolCalls:|usage:/.test(src));
+  check('the gaps are forwarded, not re-derived here',
+    /turn\.knowledgeGaps/.test(src) && !/missingDebtFields|collectKnowledgeGaps/.test(src));
   check('an error response carries a sentence, never the error',
     !/error: err|err\.message|String\(err\)|\.stack/.test(src));
   check('…and the error itself is logged server-side', /console\.error\(/.test(src));

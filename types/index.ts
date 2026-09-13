@@ -560,6 +560,60 @@ export interface TransactionDetail extends Transaction {
   needsClassificationReason: NeedsClassificationReason | null;
 }
 
+/**
+ * A piece of evidence Fourth Meridian does not have, in the shape a client may
+ * render it.
+ *
+ * ⚠️ THE PUBLIC MIRROR OF `KnowledgeGap` (lib/ai/types), AND DELIBERATELY A
+ * SEPARATE DECLARATION. The server type lives beside the assembler that computes
+ * it and may grow fields that are nobody's business outside the server; this one
+ * is the contract a browser is allowed to see, and the route projects field by
+ * field into it rather than spreading. `lib/ai/conversation/knowledge-gaps.test.ts`
+ * asserts the two stay mutually assignable, so they cannot drift apart silently.
+ *
+ * ⚠️ ONE MEANING TODAY, AND ONLY ONE. A gap is a debt metadata field — an APR or
+ * a minimum payment — that is null on a debt account the viewer can see in full.
+ * It is actionable (the user can supply it), it is never computed for accounts
+ * whose detail is withheld, and it is not a general taxonomy of things the model
+ * does not know. Nothing else in the runtime produces one.
+ */
+export interface AiKnowledgeGap {
+  /** The account the field belongs to. Needed to save it back. */
+  accountId:    string;
+  /** Display-safe account name, already resolved server-side. */
+  accountName:  string;
+  /** Stable machine key for the missing field. */
+  field:        'apr' | 'minimumPayment';
+  /** Human-readable field name, contextualised by debt subtype ("Mortgage Rate"). */
+  label:        string;
+  /** FinancialAccount.debtSubtype when present — lets a client phrase the label. */
+  debtSubtype?: string | null;
+}
+
+/**
+ * What POST /api/ai/chat returns when it answers.
+ *
+ * ⚠️ A KNOWLEDGE GAP IS NOT A FAILURE. It travels WITH a successful answer, on a
+ * 200, beside the prose — what Fourth Meridian could say and what it could not
+ * yet establish are both part of the response. A refusal is a different thing
+ * entirely: a non-OK status carrying `{ error }`.
+ *
+ * ⚠️ `knowledgeGapMode` IS THE CLIENT'S, NOT THE SERVER'S. The distinction
+ * between "evidence is limited, here it is anyway" and "give me this before I
+ * continue" does not exist in the conversation runtime, so the server never sets
+ * this field; a gap arrives unqualified and the surface decides how loudly to
+ * ask. It is declared because the client's rendering branch already reads it —
+ * not because the server has an opinion to express through it.
+ */
+export interface AiChatResponse {
+  /** The assistant's answer. Markdown, as the surface already renders it. */
+  message: string;
+  /** Evidence the answer wanted and did not have. Omitted when there is none. */
+  knowledgeGaps?: AiKnowledgeGap[];
+  /** Never emitted by the current runtime. See above. */
+  knowledgeGapMode?: 'clarification' | 'form';
+}
+
 export interface AiAdvice {
   id: string;
   summary: string;

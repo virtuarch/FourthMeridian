@@ -41,7 +41,8 @@ import {
   KnowledgeClarificationCard,
 } from "@/components/dashboard/KnowledgeAcquisitionCard";
 import type { GapEntry } from "@/components/dashboard/KnowledgeAcquisitionCard";
-import type { AiAdvice } from "@/types";
+import { readKnowledgeGaps } from "@/lib/ai/conversation/knowledge-gaps";
+import type { AiAdvice, AiChatResponse } from "@/types";
 
 interface Message {
   role: "user" | "assistant";
@@ -169,19 +170,19 @@ export function AnalyzeClient({ advice, starterIndex }: Props) {
       });
 
       if (res.ok) {
-        const data = (await res.json()) as {
-          message: string;
-          knowledgeGaps?: GapEntry[];
-          knowledgeGapMode?: "clarification" | "form";
-        };
+        // One declaration of the response, shared with the route (@/types), so the
+        // two cannot drift. The gaps are narrowed rather than trusted wholesale:
+        // a malformed extra must cost the user the extra, never the answer.
+        const data = (await res.json()) as AiChatResponse;
+        const gaps = readKnowledgeGaps(data.knowledgeGaps);
         setMessages((prev) => [
           ...prev,
           {
             role: "assistant",
             content: data.message,
-            // Only attach gaps / mode when the context actually has missing fields.
-            ...(data.knowledgeGaps?.length
-              ? { knowledgeGaps: data.knowledgeGaps, knowledgeGapMode: data.knowledgeGapMode }
+            // Only attach gaps / mode when the answer actually named missing fields.
+            ...(gaps.length
+              ? { knowledgeGaps: gaps, knowledgeGapMode: data.knowledgeGapMode }
               : {}),
           },
         ]);

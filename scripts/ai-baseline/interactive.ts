@@ -27,6 +27,7 @@ import { sumTurns } from './run';
 import { executeTurn, SYSTEM_INSTRUCTION, type TurnRecord } from '@/lib/ai/conversation/turn';
 import { compactToolHistory, DEFAULT_COMPACTION, type CompactionPolicy } from '@/lib/ai/conversation/compaction';
 import { newScenarioSlot } from '@/lib/ai/conversation/active-scenario';
+import { collectKnowledgeGaps } from '@/lib/ai/conversation/knowledge-gaps';
 import type { SpaceContext } from '@/lib/space';
 
 /** The arm this mode is. Fixed — choosing it per session would make sessions incomparable. */
@@ -198,6 +199,10 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
     if (rec.toolCalls.length > 0) {
       console.log(`    [${rec.toolCalls.map((c) => c.name).join(', ')}]`);
     }
+    // ⚠️ THE SAME RESULT THE PRODUCT RENDERS, PRINTED PLAINLY. The operator sees
+    // what a browser would be shown beneath the answer — read off the turn's own
+    // tool results by the shared collector, never re-derived here.
+    const gaps = collectKnowledgeGaps(rec.toolCalls);
     if (rec.error) {
       // ⚠️ A TURN THAT PRODUCED NO TEXT MUST SAY WHY. Two dogfood turns ended in
       // a blank line with no explanation; the reason was on the record and
@@ -207,6 +212,10 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
       console.log('');
     } else {
       console.log(`\n${rec.assistant ?? '(empty response)'}\n`);
+    }
+    if (gaps.length > 0) {
+      console.log(`    missing, and it would sharpen this: ${gaps
+        .map((g) => `${g.label} on ${g.accountName}`).join(' · ')}\n`);
     }
     const u = rec.usage;
     console.log(`    ${(rec.latencyMs / 1000).toFixed(1)}s`
