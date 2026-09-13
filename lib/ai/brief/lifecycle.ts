@@ -11,7 +11,9 @@
  *   no linked accounts                   → NO_DATA                      nothing generated for an empty Space
  *   today's Brief, same watermark        → FRESH (CACHED)              nothing assembled, no model
  *   today's Brief, watermark moved       → assemble package, digest it
- *       digest unchanged                 → FRESH (WATERMARK_REFRESHED)  no model
+ *   (or written under an older generation version — same path)
+ *       digest unchanged, version current → FRESH (WATERMARK_REFRESHED) no model
+ *       digest unchanged, version older   → (cooldown?) → claim ─┤      reason 'version'
  *       digest changed                   → (cooldown?) → claim ─┐
  *   no successful Brief today            → (cooldown?) → claim ─┤
  *       failed within the cooldown       → COOLING_DOWN + fallback      no model
@@ -42,18 +44,24 @@ import { canonicalJson, materialDigest } from './digest';
 import { BriefScopeError } from './errors';
 import type { BriefGenerationResult } from './generate';
 import type { LoadedBriefPackage } from './load';
-import { GENERATION_FAILURE_COOLDOWN_MS } from './policy';
+import { BRIEF_GENERATION_VERSION, GENERATION_FAILURE_COOLDOWN_MS } from './policy';
 import { BRIEF_SYSTEM_PROMPT } from './prompt';
 import { applyRelevance, readStandingFacts, standingFactsOf } from './relevance';
 import { decideArtifactState, type ArtifactDecision, type BriefFallback, type BriefRow } from './state';
 import type { BriefScope, BriefStore } from './store';
 import type { BriefPackage, DailyBrief } from './types';
 
-export type GenerationReason = 'daily' | 'change';
+export type GenerationReason = 'daily' | 'change' | 'version';
 
-/** Changes whenever the instruction or the output schema does. */
-export const BRIEF_PROMPT_VERSION = `brief-prompt-${createHash('sha256')
-  .update(BRIEF_SYSTEM_PROMPT).update(canonicalJson(BRIEF_SCHEMA)).digest('hex').slice(0, 12)}`;
+/** Changes whenever the instruction or the output schema does — diagnostic, and pinned by a test. */
+export const BRIEF_PROMPT_HASH = createHash('sha256')
+  .update(BRIEF_SYSTEM_PROMPT).update(canonicalJson(BRIEF_SCHEMA)).digest('hex').slice(0, 12);
+
+/**
+ * What a completed row stores in `promptVersion`: the intentional generation
+ * version (the validity key) plus the prompt hash (for diagnosis only).
+ */
+export const BRIEF_PROMPT_VERSION = `${BRIEF_GENERATION_VERSION}+prompt-${BRIEF_PROMPT_HASH}`;
 
 export interface LifecycleDeps {
   store: BriefStore;
@@ -63,7 +71,9 @@ export interface LifecycleDeps {
   /**
    * `reason` is what the lifecycle genuinely knows about why it is generating:
    * `daily` — no successful Brief for today yet; `change` — today's Brief exists
-   * and the evidence digest moved. (It cannot know WHY the evidence moved — a
+   * and the evidence digest moved; `version` — today's Brief exists, the evidence
+   * did not move, but it was written under an older generation contract. (It
+   * cannot know WHY the evidence moved — a
    * reconnect, a sync or a new transaction all look the same here — and says so.)
    */
   generate(pkg: BriefPackage, now: Date, reason?: GenerationReason): Promise<BriefGenerationResult>;
@@ -151,7 +161,8 @@ async function prepare(
     lap('watermark', () => deps.watermark(scope, now)),
     deps.hasFinancialData ? lap('hasData', () => deps.hasFinancialData!(scope)) : Promise.resolve(true),
   ]);
-  const decision = decideArtifactState({ today, now, todayRow: stored.todayRow, latestPrior: stored.latestPrior, watermark });
+  const decision = decideArtifactState({ today, now, todayRow: stored.todayRow, latestPrior: stored.latestPrior, watermark,
+    generationVersion: BRIEF_GENERATION_VERSION });
   return { deps, spaceCtx, scope, today, watermark, hasData, decision, latestPrior: stored.latestPrior };
 }
 
@@ -219,7 +230,8 @@ export async function ensureDailyBrief(
   if (state.kind === 'CHECK_MATERIAL') {
     loaded = await lap('package', () => deps.loadPackage(spaceCtx, now));
     digest = materialDigest(loaded.package);
-    if (digest === state.row.materialDigest) {
+    // An equal digest keeps the Brief only if the rules that wrote it are still current.
+    if (digest === state.row.materialDigest && state.generationCurrent) {
       await lap('refreshWatermark', () => deps.store.refreshWatermark(key, digest as string, watermark));
       return done({ status: 'FRESH', path: 'WATERMARK_REFRESHED', brief: briefFromRow(state.row),
         row: { ...state.row, sourceWatermark: watermark }, timings });
@@ -247,7 +259,8 @@ export async function ensureDailyBrief(
     // DAY's Brief. The digest above was computed on the full package.
     const { pkg: modelPkg } = applyRelevance(pkg, latestPrior
       ? { facts: readStandingFacts(latestPrior.content), briefDay: latestPrior.briefDay } : null);
-    const reason: GenerationReason = state.kind === 'CHECK_MATERIAL' ? 'change' : 'daily';
+    const reason: GenerationReason = state.kind === 'NEEDS_GENERATION' ? 'daily'
+      : digest !== state.row.materialDigest ? 'change' : 'version';
     const result = await lap('generate', () => deps.generate(modelPkg, now, reason));
     if (!result.ok) {
       await lap('release', () => deps.store.fail(key, claim.token, result.reason, failedAt()));

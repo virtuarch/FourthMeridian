@@ -162,10 +162,10 @@ export interface GenerateBriefOptions {
   surface?: string;
   /**
    * Why the lifecycle is generating, carried in the correlation id so AiInvocation
-   * rows can be told apart at read time (brief_daily_… / brief_change_…). No
+   * rows can be told apart at read time (brief_daily_… / brief_change_… / brief_version_…). No
    * second cost ledger: AiInvocation stays the accounting authority.
    */
-  reason?: 'daily' | 'change';
+  reason?: 'daily' | 'change' | 'version';
   timeoutMs?: number;
   now?: Date;
   deps?: { structured?: StructuredCall; client?: StructuredClient; sinks?: UsageSinks };

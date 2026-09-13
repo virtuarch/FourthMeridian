@@ -114,7 +114,7 @@ const minDate = (ds: (Date | null)[]): Date | null => {
 const ageDays = (d: Date | null, now: Date) => (d ? Math.max(0, (now.getTime() - d.getTime()) / DAY_MS) : null);
 const stale = (d: Date | null, now: Date) => isStaleBand(bandForAge(ageDays(d, now)));
 
-function bankState(p: NonNullable<DataHealthAccountInput["plaid"]>, clock: Date | null, now: Date): DataSourceState {
+function bankState(p: SourceHealthInput["plaid"] & object, clock: Date | null, now: Date): DataSourceState {
   if (p.status === "NEEDS_REAUTH") return "NEEDS_RECONNECT";
   if (p.status === "ERROR") return "CONNECTION_ERROR";
   if (p.status === "REVOKED") return "DISCONNECTED";
@@ -124,7 +124,7 @@ function bankState(p: NonNullable<DataHealthAccountInput["plaid"]>, clock: Date 
   return clock ? "CURRENT" : "NEVER_UPDATED";
 }
 
-function walletState(w: NonNullable<DataHealthAccountInput["wallet"]>, clock: Date | null, now: Date): DataSourceState {
+function walletState(w: SourceHealthInput["wallet"] & object, clock: Date | null, now: Date): DataSourceState {
   if (w.status === "REVOKED") return "DISCONNECTED";
   // Wallets never reauthenticate: NEEDS_REAUTH is an error (lib/sync/status.ts).
   if (w.status === "ERROR" || w.status === "NEEDS_REAUTH") return "CONNECTION_ERROR";
@@ -132,6 +132,45 @@ function walletState(w: NonNullable<DataHealthAccountInput["wallet"]>, clock: Da
   if (w.lastSyncedAt === null && w.discoveryCursor) return "IMPORTING";
   if (!clock) return "NEVER_UPDATED";
   return stale(clock, now) ? "OUT_OF_DATE" : "CURRENT";
+}
+
+/** One source's raw provider fields — what any page that shows a source's health must pass. */
+export interface SourceHealthInput {
+  kind: DataSourceKind;
+  /** When Fourth Meridian last wrote each of the source's relevant accounts after a successful read. */
+  accountsUpdated: (Date | null)[];
+  plaid?: { status: string; lastSyncedAt: Date | null; syncIncompleteAt: Date | null; historyBuildStartedAt: Date | null } | null;
+  wallet?: { status: string; errorCode: string | null; lastSyncedAt: Date | null; discoveryCursor: boolean } | null;
+}
+
+export interface SourceHealth {
+  state: DataSourceState;
+  /** The OLDEST relevant successful update. ISO-8601, or null. */
+  lastUpdatedAt: string | null;
+  needsAttention: boolean;
+}
+
+/**
+ * THE per-source health rule — the Brief's data health and the Connections page
+ * both call this, so they cannot disagree about a source they both show.
+ */
+export function deriveSourceHealth(input: SourceHealthInput, now: Date): SourceHealth {
+  const accountsClock = minDate(input.accountsUpdated);
+  if (input.plaid) {
+    const clock = minDate([accountsClock, input.plaid.lastSyncedAt]);
+    const state = bankState(input.plaid, clock, now);
+    return { state, lastUpdatedAt: clock?.toISOString() ?? null, needsAttention: state !== "CURRENT" && state !== "IMPORTING" };
+  }
+  if (input.wallet) {
+    const clock = minDate([accountsClock, input.wallet.lastSyncedAt]);
+    const state = walletState(input.wallet, clock, now);
+    return { state, lastUpdatedAt: clock?.toISOString() ?? null, needsAttention: state !== "CURRENT" && state !== "IMPORTING" };
+  }
+  // Manual balances are entered, not synced: they are out of date only past
+  // the very-stale band (the accounts assembler's existing 30-day rule).
+  const age = ageDays(accountsClock, now);
+  const state: DataSourceState = age === null ? "NEVER_UPDATED" : age >= VERY_STALE_AFTER_DAYS ? "OUT_OF_DATE" : "CURRENT";
+  return { state, lastUpdatedAt: accountsClock?.toISOString() ?? null, needsAttention: state !== "CURRENT" };
 }
 
 export function deriveSpaceDataHealth(
@@ -149,41 +188,17 @@ export function deriveSpaceDataHealth(
 
   const sources: DataSourceView[] = [];
   for (const { kind, rows: rs } of bySource.values()) {
-    const accountsClock = minDate(rs.map((r) => r.lastUpdated));
-    const anyDetail = rs.some((r) => r.detailVisible);
-    if (kind === "BANK") {
-      const p = rs[0].plaid!;
-      const clock = minDate([accountsClock, p.lastSyncedAt]);
-      const state = bankState(p, clock, now);
-      sources.push({
-        kind, state, label: anyDetail ? p.institutionName : "A bank connection",
-        lastUpdatedAt: clock?.toISOString() ?? null, accountCount: rs.length,
-        needsAttention: state !== "CURRENT" && state !== "IMPORTING",
-        actionable: p.ownerUserId === viewerUserId,
-      });
-    } else if (kind === "WALLET") {
-      const w = rs[0].wallet!;
-      const clock = minDate([accountsClock, w.lastSyncedAt]);
-      const state = walletState(w, clock, now);
-      const named = rs.find((r) => r.detailVisible);
-      sources.push({
-        kind, state, label: named ? named.accountName : "A crypto wallet",
-        lastUpdatedAt: clock?.toISOString() ?? null, accountCount: rs.length,
-        needsAttention: state !== "CURRENT" && state !== "IMPORTING",
-        actionable: w.ownerUserId === viewerUserId,
-      });
-    } else {
-      // Manual balances are entered, not synced: they are out of date only past
-      // the very-stale band (the accounts assembler's existing 30-day rule).
-      const oldest = accountsClock;
-      const age = ageDays(oldest, now);
-      const state: DataSourceState = age === null ? "NEVER_UPDATED" : age >= VERY_STALE_AFTER_DAYS ? "OUT_OF_DATE" : "CURRENT";
-      sources.push({
-        kind, state, label: rs.length === 1 && rs[0].detailVisible ? rs[0].accountName : "Manual accounts",
-        lastUpdatedAt: oldest?.toISOString() ?? null, accountCount: rs.length,
-        needsAttention: state !== "CURRENT", actionable: false,
-      });
-    }
+    const p = rs[0].plaid;
+    const w = rs[0].wallet;
+    const health = deriveSourceHealth({ kind, accountsUpdated: rs.map((r) => r.lastUpdated), plaid: p, wallet: w }, now);
+    const named = rs.find((r) => r.detailVisible);
+    const label = kind === "BANK" ? (named ? p!.institutionName : "A bank connection")
+      : kind === "WALLET" ? (named ? named.accountName : "A crypto wallet")
+      : rs.length === 1 && rs[0].detailVisible ? rs[0].accountName : "Manual accounts";
+    const actionable = kind === "BANK" ? p!.ownerUserId === viewerUserId
+      : kind === "WALLET" ? w!.ownerUserId === viewerUserId : false;
+    sources.push({ kind, label, state: health.state, lastUpdatedAt: health.lastUpdatedAt,
+      accountCount: rs.length, needsAttention: health.needsAttention, actionable });
   }
 
   sources.sort((a, b) => SEVERITY[b.state] - SEVERITY[a.state]

@@ -21,8 +21,8 @@ import { basePackage } from './fixtures';
 import { materialDigest } from './digest';
 import { BriefScopeError } from './errors';
 import type { BriefGenerationResult } from './generate';
-import { BRIEF_PROMPT_VERSION, ensureDailyBrief, inspectDailyBrief, type EnsureResult, type LifecycleDeps } from './lifecycle';
-import { GENERATION_FAILURE_COOLDOWN_MS, GENERATION_LEASE_MS } from './policy';
+import { BRIEF_PROMPT_HASH, BRIEF_PROMPT_VERSION, ensureDailyBrief, inspectDailyBrief, type EnsureResult, type LifecycleDeps } from './lifecycle';
+import { BRIEF_GENERATION_VERSION, GENERATION_FAILURE_COOLDOWN_MS, GENERATION_LEASE_MS } from './policy';
 import type { BriefRow } from './state';
 import type { BriefCompletion, BriefKey, BriefScope, BriefStore, ClaimResult } from './store';
 import type { BriefPackage } from './types';
@@ -127,6 +127,8 @@ function harness() {
 }
 
 const headlineOf = (r: EnsureResult) => ('brief' in r ? r.brief.headline : null);
+/** An IN_PROGRESS result that still carries a usable Brief to show. */
+const loader = (r: EnsureResult) => r.status === 'IN_PROGRESS' && !!r.fallback?.usable && r.fallback.row.content !== null;
 const key = (day: string): BriefKey => ({ spaceId: SPACE, ownerUserId: OWNER, briefDay: day });
 
 async function main() {
@@ -139,7 +141,7 @@ async function main() {
     check('persisted with its provenance',
       !!row.generatedAt && row.content !== null && row.sourceWatermark === 'wm-1'
         && row.materialDigest === materialDigest({ ...basePackage(), identity: { ...basePackage().identity } })
-        && row.promptVersion === BRIEF_PROMPT_VERSION && /^brief-prompt-[0-9a-f]{12}$/.test(BRIEF_PROMPT_VERSION)
+        && row.promptVersion === BRIEF_PROMPT_VERSION && /^brief-generation-\d+\+prompt-[0-9a-f]{12}$/.test(BRIEF_PROMPT_VERSION)
         && row.model === 'gpt-5.1' && row.correlationId === 'brief_1' && row.historyThrough === '2026-09-12'
         && row.balancesAsOf?.toISOString() === basePackage().freshness!.oldestBalanceObservedAt
         && row.generationStartedAt === null);
@@ -382,6 +384,59 @@ async function main() {
     const again = await r.ensure(new Date(t(6).getTime() + 30_000));
     check('F. a failed regeneration after a reconnect is cooled, not retried on every visit',
       down.status === 'FAILED' && again.status === 'COOLING_DOWN' && r.state.generations === 4);
+  }
+
+  console.log('\n12. the generation contract — valid evidence, outdated rules');
+  {
+    // If this fails, the prompt or output schema changed. Decide whether what a Brief
+    // may say changed meaningfully: if so bump BRIEF_GENERATION_VERSION (policy.ts);
+    // either way, update the pin. The version, not this hash, decides validity.
+    check('the prompt/schema hash is pinned (review BRIEF_GENERATION_VERSION when it moves)',
+      BRIEF_PROMPT_HASH === 'f649c8f6be8a', BRIEF_PROMPT_HASH);
+    check('what a row stores is the intentional version plus the hash', BRIEF_PROMPT_VERSION === `${BRIEF_GENERATION_VERSION}+prompt-${BRIEF_PROMPT_HASH}`);
+
+    const r = harness();
+    const t = (m: number) => new Date(T0.getTime() + m * 60_000);
+    const today = key('2026-09-13');
+    const headline = () => (r.store.get(today)!.content as { headline: string }).headline;
+    await r.ensure(t(0));
+    const cached = await r.ensure(t(1));
+    check('A. current version, same evidence → FRESH CACHED, no model call',
+      cached.status === 'FRESH' && cached.path === 'CACHED' && r.state.generations === 1);
+
+    r.store.get(today)!.promptVersion = 'brief-prompt-88fd92878b42';   // written before the contract was versioned
+    const inspected = await r.inspect(t(2));
+    check('B. older version, same watermark → not FRESH (CHECK_MATERIAL, generation not current), no model call',
+      inspected.decision.state.kind === 'CHECK_MATERIAL' && !inspected.decision.state.generationCurrent && r.state.generations === 1);
+
+    r.state.delayMs = 20;
+    const [x, y] = await Promise.all([r.ensure(t(3)), r.ensure(t(3))]);
+    r.state.delayMs = 0;
+    const loser = [x, y].find((e) => e.status === 'IN_PROGRESS');
+    check('D. two clients after the bump → exactly one model call, the other IN_PROGRESS',
+      r.state.generations === 2 && [x.status, y.status].sort().join(',') === 'GENERATED,IN_PROGRESS');
+    check('C. the loser keeps the older Brief to show meanwhile', !!loser && loader(loser));
+    check('H + I. an equal watermark AND an equal digest did not suppress it; reason version', r.state.lastReason === 'version');
+    check('F. the row now carries the current generation version', r.store.get(today)!.promptVersion === BRIEF_PROMPT_VERSION
+      && headline() === 'Quiet day. #2');
+    const after = await r.ensure(t(4));
+    check('G. the next visit is FRESH CACHED, no model call', after.status === 'FRESH' && after.path === 'CACHED' && r.state.generations === 2);
+
+    r.store.get(today)!.promptVersion = 'brief-generation-0+prompt-old';
+    r.state.fail = 'TIMEOUT';
+    const failed = await r.ensure(t(5));
+    check('E. a failed version regeneration → FAILED, the older content kept', failed.status === 'FAILED'
+      && headline() === 'Quiet day. #2' && r.state.generations === 3);
+    const cooled = await r.ensure(t(6));
+    check('…retried inside the cooldown → COOLING_DOWN, no model call (the digest check cannot save it)',
+      cooled.status === 'COOLING_DOWN' && r.state.generations === 3);
+    const coolInspect = await r.inspect(t(6));
+    check('…and inspection reports the cooldown with the old Brief still in place',
+      coolInspect.retryAfterMs > 0 && coolInspect.decision.state.kind === 'CHECK_MATERIAL');
+    r.state.fail = null;
+    const recovered = await r.ensure(new Date(t(5).getTime() + GENERATION_FAILURE_COOLDOWN_MS + 1_000));
+    check('…after the cooldown it regenerates once and is current', recovered.status === 'GENERATED' && r.state.generations === 4
+      && r.store.get(today)!.promptVersion === BRIEF_PROMPT_VERSION);
   }
 
   console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);

@@ -25,6 +25,7 @@
  */
 
 import type { SyncConnection, SyncConnectionState } from "@/lib/sync/status";
+import { deriveSourceHealth, type SourceHealth, type SourceHealthInput } from "@/lib/connections/space-data-health.core";
 
 export type TransactionHistoryStatus = "READY" | "IMPORTING" | "UNKNOWN";
 export type IntelligenceStatus = "READY" | "REBUILDING" | "NOT_READY";
@@ -70,10 +71,15 @@ export interface ConnectionIntelligenceStatus {
   connectedAt:             string | null; // ISO
   /** DATA freshness — last successful transaction acquisition (PlaidItem.lastSyncedAt). */
   lastSyncedAt:            string | null; // ISO
-  /** BALANCE freshness (CONN-3) — when current balances were last confirmed via
-   *  accountsGet (MAX FinancialAccount.lastUpdated across the connection's
-   *  accounts). A timestamp only — never a balance value (PCS-2-safe). null if unknown. */
-  balanceVerifiedAt:       string | null; // ISO
+  /** BALANCE freshness (CONN-3) — the OLDEST FinancialAccount.lastUpdated across the
+   *  connection's accounts: every balance was received at least this recently.
+   *  (Slice 4.1: this was the NEWEST, so one fresh account hid a stale one, and it
+   *  was labelled "Verified", which a write timestamp does not prove.) A timestamp
+   *  only — never a balance value (PCS-2-safe). null if unknown. */
+  balancesUpdatedAt:       string | null; // ISO
+  /** The source's health by the SAME rule the Daily Brief shows
+   *  (space-data-health.core deriveSourceHealth). null when not derived. */
+  sourceHealth:            SourceHealth | null;
 }
 
 /** Structural input for the pure derivation — gathered by the loader. */
@@ -90,9 +96,11 @@ export interface IntelligenceInput {
   connectedAt:     Date | null;
   /** Connection.lastSyncedAt — last successful acquisition (data freshness), or null. */
   lastSyncedAt:    Date | null;
-  /** MAX FinancialAccount.lastUpdated across the connection's accounts — balance
+  /** OLDEST FinancialAccount.lastUpdated across the connection's accounts — balance
    *  freshness (CONN-3). Timestamp only. null if unknown. */
-  balanceVerifiedAt: Date | null;
+  balancesUpdatedAt: Date | null;
+  /** From sourceHealthForConnection — omitted by callers that do not derive it (ops). */
+  sourceHealth?: SourceHealth | null;
 }
 
 const MS_PER_DAY = 86_400_000;
@@ -173,8 +181,31 @@ export function deriveConnectionIntelligence(
     lastReconstructedAt: input.historySyncedAt ? input.historySyncedAt.toISOString() : null,
     connectedAt:  input.connectedAt  ? input.connectedAt.toISOString()  : null,
     lastSyncedAt: input.lastSyncedAt ? input.lastSyncedAt.toISOString() : null,
-    balanceVerifiedAt: input.balanceVerifiedAt ? input.balanceVerifiedAt.toISOString() : null,
+    balancesUpdatedAt: input.balancesUpdatedAt ? input.balancesUpdatedAt.toISOString() : null,
+    sourceHealth: input.sourceHealth ?? null,
   };
+}
+
+/**
+ * Slice 4.1 — a connection's source health, by the Daily Brief's rule. The
+ * Connections loader passes the connection's raw provider fields and the
+ * lastUpdated of its accounts; nothing here re-decides a state.
+ */
+export function sourceHealthForConnection(
+  input: {
+    provider: SyncConnection["provider"];
+    accountsUpdated: (Date | null)[];
+    plaid?: SourceHealthInput["plaid"];
+    wallet?: SourceHealthInput["wallet"];
+  },
+  now: Date,
+): SourceHealth {
+  return deriveSourceHealth({
+    kind: input.provider === "PLAID" ? "BANK" : "WALLET",
+    accountsUpdated: input.accountsUpdated,
+    plaid: input.provider === "PLAID" ? input.plaid ?? null : null,
+    wallet: input.provider === "WALLET" ? input.wallet ?? null : null,
+  }, now);
 }
 
 /** True iff any connection is still building intelligence (importing OR
@@ -221,9 +252,10 @@ export function deriveConnectionTimeline(s: ConnectionIntelligenceStatus): Conne
       cashFlow:       transactionsAvailable,
       lastBuiltAt:    s.lastReconstructedAt,
     },
-    // Current freshness prefers the balance-verified time (CONN-3, the truest
-    // "is today's state current?"), falling back to the last data sync.
-    freshness: { lastUpdatedAt: s.balanceVerifiedAt ?? s.lastSyncedAt },
+    // Current freshness is the source's health clock when derived — the oldest
+    // successful update, the same date the Daily Brief shows — else the oldest
+    // balance update, else the last data sync.
+    freshness: { lastUpdatedAt: s.sourceHealth?.lastUpdatedAt ?? s.balancesUpdatedAt ?? s.lastSyncedAt },
   };
 }
 

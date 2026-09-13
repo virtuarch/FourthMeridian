@@ -83,11 +83,15 @@ export function responseFromInspection(args: {
   }
   if (state.kind === 'CHECK_MATERIAL') {
     const brief = artifactFromRow(state.row, today, now);
-    return claimActive
-      ? { ...base, state: 'IN_PROGRESS', brief, needsGeneration: false }
-      // Even in a failure cooldown: the server's digest check spends nothing, and
-      // generation itself is refused by the lifecycle until the cooldown ends.
-      : { ...base, state: 'CHECK_REQUIRED', brief, needsGeneration: true };
+    if (claimActive) return { ...base, state: 'IN_PROGRESS', brief, needsGeneration: false };
+    // A Brief written under an older generation contract can only be replaced by a
+    // generation, so inside a failure cooldown there is nothing to ask the server for.
+    if (!state.generationCurrent && retryAfterMs > 0) {
+      return { ...base, state: 'FAILED', brief, needsGeneration: false, retryAfterMs };
+    }
+    // Otherwise even in a cooldown: the server's digest check spends nothing, and
+    // generation itself is refused by the lifecycle until the cooldown ends.
+    return { ...base, state: 'CHECK_REQUIRED', brief, needsGeneration: true };
   }
   const brief = usable(state.fallback, today, now);
   if (claimActive) return { ...base, state: 'IN_PROGRESS', brief, needsGeneration: false };

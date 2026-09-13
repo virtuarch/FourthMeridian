@@ -63,8 +63,10 @@ import { loadWalletSyncConnections } from "@/lib/sync/wallet-connections";
 import { AuditAction } from "@/lib/audit-actions";
 import {
   deriveConnectionIntelligence,
+  sourceHealthForConnection,
   type ConnectionIntelligenceStatus,
 } from "@/lib/connections/intelligence";
+import type { SourceHealthInput } from "@/lib/connections/space-data-health.core";
 import type { AccountLite } from "@/components/connections/ConnectionCard";
 import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wallet-history-metadata";
 
@@ -210,6 +212,8 @@ async function loadConnectionIntelligence(
   connections: SyncConnection[],
   accountsByConnectionId: Record<string, AccountLite[]>,
   connectedAtByConnId: Map<string, Date>,
+  /** Raw provider fields per connection id, for sourceHealthForConnection. */
+  rawByConnId: Map<string, Pick<SourceHealthInput, "plaid" | "wallet">>,
 ): Promise<Record<string, ConnectionIntelligenceStatus>> {
   const now = new Date();
 
@@ -284,9 +288,10 @@ async function loadConnectionIntelligence(
   const out: Record<string, ConnectionIntelligenceStatus> = {};
   for (const c of connections) {
     // Connection availability = the earliest transaction across its accounts;
-    // balance freshness = the MOST RECENT balance verification across them.
+    // balance freshness = the OLDEST balance update across them (Slice 4.1).
     let earliest: Date | null = null;
-    let balanceVerified: Date | null = null;
+    let balancesUpdated: Date | null = null;
+    const accountsUpdated: (Date | null)[] = [];
     for (const a of accountsByConnectionId[c.id] ?? []) {
       // UI-C2 — the ACTIVITY bound, not the proof floor. The licence may reach
       // back through a proven-zero interval (Ethereum's runs 1,289 days before
@@ -298,8 +303,11 @@ async function loadConnectionIntelligence(
       const licensed = walletActivityStart(historyMeta.get(a.id));
       const e = licensed ?? earliestByAccount.get(a.id);
       if (e && (!earliest || e < earliest)) earliest = e;
-      const b = balanceVerifiedByAccount.get(a.id);
-      if (b && (!balanceVerified || b > balanceVerified)) balanceVerified = b;
+      const b = balanceVerifiedByAccount.get(a.id) ?? null;
+      accountsUpdated.push(b);
+      // The OLDEST, never the newest: one fresh account must not make a source
+      // with a stale one look current. The same rule the Daily Brief applies.
+      if (b && (!balancesUpdated || b < balancesUpdated)) balancesUpdated = b;
     }
     const historySyncedAt =
       (anchorByConn.get(c.id) ?? null) ??
@@ -317,7 +325,8 @@ async function loadConnectionIntelligence(
         earliestTxDate: earliest,
         connectedAt:    connectedAtByConnId.get(c.id) ?? null,
         lastSyncedAt:   c.lastSyncedAt ? new Date(c.lastSyncedAt) : null,
-        balanceVerifiedAt: balanceVerified,
+        balancesUpdatedAt: balancesUpdated,
+        sourceHealth: sourceHealthForConnection({ provider: c.provider, accountsUpdated, ...rawByConnId.get(c.id) }, now),
       },
       now,
     );
@@ -367,8 +376,18 @@ export async function loadConnectionsSpaceData(userId: string): Promise<Connecti
   // createdAt (already selected) + wallet Connection.createdAt (a tiny id→date read).
   const walletCreatedRows = await db.connection.findMany({
     where:  { userId, status: { not: ConnectionStatus.REVOKED } },
-    select: { id: true, createdAt: true },
+    // status/errorCode/lastSyncedAt/cursor — the raw fields source health reads
+    // (the cursor only as "is there one"; its value never leaves this function).
+    select: { id: true, createdAt: true, status: true, errorCode: true, lastSyncedAt: true, cursor: true },
   });
+  const rawByConnId = new Map<string, Pick<SourceHealthInput, "plaid" | "wallet">>();
+  for (const i of items) {
+    rawByConnId.set(i.id, { plaid: { status: i.status, lastSyncedAt: i.lastSyncedAt,
+      syncIncompleteAt: i.syncIncompleteAt, historyBuildStartedAt: i.historyBuildStartedAt } });
+  }
+  for (const w of walletCreatedRows) {
+    rawByConnId.set(w.id, { wallet: { status: w.status, errorCode: w.errorCode, lastSyncedAt: w.lastSyncedAt, discoveryCursor: !!w.cursor } });
+  }
   const connectedAtByConnId = new Map<string, Date>();
   for (const i of items) connectedAtByConnId.set(i.id, i.createdAt);
   for (const w of walletCreatedRows) connectedAtByConnId.set(w.id, w.createdAt);
@@ -378,6 +397,7 @@ export async function loadConnectionsSpaceData(userId: string): Promise<Connecti
     status.connections,
     accountsByConnectionId,
     connectedAtByConnId,
+    rawByConnId,
   );
 
   return { status, accountsByConnectionId, intelligenceByConnectionId };

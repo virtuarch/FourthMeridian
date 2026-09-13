@@ -52,6 +52,31 @@ export const CONCENTRATION_WEIGHT_STEP_PCT = 10;
 export const RELEVANCE_PRIOR_MAX_DAYS = 30;
 
 /**
+ * THE BRIEF'S GENERATION CONTRACT — bumped BY HAND when what a generated Brief may
+ * say, or which of its sentences code keeps, changes meaningfully: the
+ * instruction, the output schema, or a deterministic acceptance rule
+ * (SHOWN_ON_PAGE, relevance, the figure licence). A stored Brief written under
+ * another version is rewritten once, lazily, on its next visit, from the same
+ * financial evidence — never by a background sweep.
+ *
+ * ⚠️ INTENTIONAL, NOT AUTOMATIC. Not a git SHA, build id, package version or boot
+ * time: a deploy that changes nothing about the Brief must not cost a model call
+ * per Space. lifecycle.test.ts pins the prompt/schema hash, so editing the prompt
+ * forces the question "does this need a bump?" at review time.
+ *
+ * History — 2: Slice 4.1 (freshness belongs to the page: no connection talk in
+ * headline or cards, stale sources named only where they matter, NEW is not a change).
+ */
+export const BRIEF_GENERATION_VERSION = 'brief-generation-2';
+
+/**
+ * The generation version a stored `promptVersion` was written under. Stored as
+ * `<version>+prompt-<hash>`; rows from before versioning (`brief-prompt-<hash>`)
+ * parse as their whole value, which no current version equals.
+ */
+export const generationVersionOf = (stored: string | null): string | null => (stored ? stored.split('+')[0] : null);
+
+/**
  * The width of the clock component of the source watermark.
  *
  * Some package inputs change with time alone: per-account freshness bands (LIVE

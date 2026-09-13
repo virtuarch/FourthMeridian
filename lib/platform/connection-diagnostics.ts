@@ -192,7 +192,7 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
     const tx = txForConn(faIds);
     const state = deriveConnectionState({ status: p.status, syncIncompleteAt: p.syncIncompleteAt }) ?? "error";
     const intel = deriveConnectionIntelligence(
-      { provider: "PLAID", state, historySyncedAt: anchorByConn.get(p.id) ?? null, earliestTxDate: tx.min, connectedAt: p.createdAt, lastSyncedAt: p.lastSyncedAt , balanceVerifiedAt: null },
+      { provider: "PLAID", state, historySyncedAt: anchorByConn.get(p.id) ?? null, earliestTxDate: tx.min, connectedAt: p.createdAt, lastSyncedAt: p.lastSyncedAt , balancesUpdatedAt: null },
       now,
     );
     out.push({
@@ -244,7 +244,7 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
       // from. For a wallet it is fed the COVERAGE start, falling back to the
       // transaction ledger only where no licence exists — which keeps Bitcoin's
       // long-standing number intact while giving Solana and Ethereum theirs.
-      { provider: "WALLET", state, historySyncedAt: anchorByConn.get(w.id) ?? (state === "ready" ? w.lastSyncedAt : null), earliestTxDate: licensedFrom ?? tx.min, connectedAt: w.createdAt, lastSyncedAt: w.lastSyncedAt , balanceVerifiedAt: null },
+      { provider: "WALLET", state, historySyncedAt: anchorByConn.get(w.id) ?? (state === "ready" ? w.lastSyncedAt : null), earliestTxDate: licensedFrom ?? tx.min, connectedAt: w.createdAt, lastSyncedAt: w.lastSyncedAt , balancesUpdatedAt: null },
       now,
     );
     out.push({

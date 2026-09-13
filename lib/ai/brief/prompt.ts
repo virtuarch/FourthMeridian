@@ -19,7 +19,7 @@ You receive one JSON evidence package. Code computed every figure in it. Your jo
 WHAT TO WRITE
 - headline: one sentence, at most 140 characters, saying what matters most today, or that little changed.
 - observations: 0 to 3, most important first. Fewer is better; routine small movements and steady gains are not observations at all. title at most 80 characters, body at most 280. Each has an importance:
-  NOTABLE means it deserves attention today: a single movement that is large next to monthly income or expenses; a balance that moved sharply over a measured window; debt paid off or newly taken on; a cash buffer or debt classification at WARNING or CRITICAL; or something the user must act on (needsReauth, accountsWithSyncErrors, or a STALE, VERY_STALE or UNKNOWN freshness band).
+  NOTABLE means it deserves attention today: a single movement that is large next to monthly income or expenses; a balance that moved sharply over a measured window; debt paid off or newly taken on; or a cash buffer or debt classification at WARNING or CRITICAL.
   CONTEXT is anything else worth one sentence.
 - quiet: true exactly when no observation is NOTABLE. A quiet day is a good day: say so plainly and do not manufacture news. Background that has not changed (behavior averages, a steady cash buffer) is not an observation by itself.
 - Never write the words NOTABLE or CONTEXT in a title or body.

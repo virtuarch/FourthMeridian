@@ -80,7 +80,8 @@ export interface BriefPackage {
     oldestBalanceAgeDays:    number | null;
     staleAccounts:           number;
     unknownFreshnessAccounts: number;
-    accountsWithSyncErrors:  number;
+    /** Sources behind the Space that need attention (lib/connections/space-data-health); absent when unreadable. */
+    connectionsNeedingAttention?: number;
     needsReauth:             boolean;
     /**
      * The sources that need attention, by the name the viewer may see, with their

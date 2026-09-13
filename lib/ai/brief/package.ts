@@ -208,7 +208,8 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
           oldestBalanceAgeDays: f.anchor.ageDays === null ? null : pct1(f.anchor.ageDays),
           staleAccounts: f.staleAccountCount,
           unknownFreshnessAccounts: f.unknownCount,
-          accountsWithSyncErrors: acc.health.errorCount,
+          // Not the assembler's errorCount: it counts syncStatus 'error', which nothing writes.
+          ...(i.dataHealth ? { connectionsNeedingAttention: i.dataHealth.attention } : {}),
           needsReauth: acc.health.needsReauthCount > 0,
           ...(stale.length > 0 ? { staleSources: stale } : {}),
         };

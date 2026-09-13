@@ -141,7 +141,8 @@ const pkg = projectBriefPackage(inputs());
 
 console.log('\n2. freshness and data quality');
 {
-  check('reauth and sync errors reach the package', pkg.freshness?.needsReauth === true && pkg.freshness.accountsWithSyncErrors === 1);
+  check('reauth reaches the package; the unwritten sync-error count does not', pkg.freshness?.needsReauth === true
+    && !('accountsWithSyncErrors' in pkg.freshness) && !('connectionsNeedingAttention' in pkg.freshness));
   check('the band is the OLDEST observation\'s (11 days ⇒ STALE)', pkg.freshness?.band === 'STALE', pkg.freshness?.band);
   check('knowledge gaps are account name + missing label only',
     JSON.stringify(pkg.dataQuality.knowledgeGaps) === JSON.stringify([{ account: 'Chase Sapphire', missing: 'APR' }]));
@@ -222,6 +223,7 @@ console.log('\n5b. sources that need attention, named for qualification');
   check('no staleSources key when every source is current',
     !!pkg.freshness && !('staleSources' in projectBriefPackage(inputs({ dataHealth: { ...dataHealth, sources: [dataHealth.sources[1]], attention: 0 } })).freshness!));
   check('none when data health could not be read', !!pkg.freshness && !('staleSources' in projectBriefPackage(inputs()).freshness!));
+  check('the attention count is data health\'s, not an unwritten sync-error flag', pkg.freshness?.connectionsNeedingAttention === 1);
 }
 
 console.log('\n6. the information ceiling');

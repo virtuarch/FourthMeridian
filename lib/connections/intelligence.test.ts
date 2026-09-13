@@ -38,7 +38,8 @@ function derive(p: Partial<IntelligenceInput>) {
       earliestTxDate:  p.earliestTxDate ?? null,
       connectedAt:     p.connectedAt ?? null,
       lastSyncedAt:    p.lastSyncedAt ?? null,
-      balanceVerifiedAt: p.balanceVerifiedAt ?? null,
+      balancesUpdatedAt: p.balancesUpdatedAt ?? null,
+      sourceHealth:    p.sourceHealth ?? null,
     },
     NOW,
   );
@@ -141,9 +142,13 @@ console.log("CONN-2D timeline — provider-neutral projection, no fabricated tim
 
   // CONN-3 balance freshness is separate from data (lastSynced) + intelligence.
   const verified = new Date("2026-07-19T09:00:00.000Z");
-  const withBal = derive({ provider: "PLAID", state: "ready", historySyncedAt: ANCHOR, lastSyncedAt: synced, balanceVerifiedAt: verified });
-  check("balanceVerifiedAt surfaced separately from lastSyncedAt", withBal.balanceVerifiedAt === verified.toISOString() && withBal.lastSyncedAt === synced.toISOString());
-  check("no balance verification → null (never fabricated)", derive({ state: "ready", historySyncedAt: ANCHOR }).balanceVerifiedAt === null);
+  const withBal = derive({ provider: "PLAID", state: "ready", historySyncedAt: ANCHOR, lastSyncedAt: synced, balancesUpdatedAt: verified });
+  check("balancesUpdatedAt surfaced separately from lastSyncedAt", withBal.balancesUpdatedAt === verified.toISOString() && withBal.lastSyncedAt === synced.toISOString());
+  check("no balance update → null (never fabricated)", derive({ state: "ready", historySyncedAt: ANCHOR }).balancesUpdatedAt === null);
+  const health = { state: "OUT_OF_DATE" as const, lastUpdatedAt: "2026-07-01T00:00:00.000Z", needsAttention: true };
+  const withHealth = derive({ provider: "PLAID", state: "ready", historySyncedAt: ANCHOR, lastSyncedAt: synced, balancesUpdatedAt: verified, sourceHealth: health });
+  check("Slice 4.1: the timeline's freshness is the source-health clock when derived",
+    deriveConnectionTimeline(withHealth).freshness.lastUpdatedAt === health.lastUpdatedAt && withHealth.sourceHealth?.state === "OUT_OF_DATE");
 
   // Building phase: acquisition done, but profile NOT built, no fabricated build time.
   const building = derive({ provider: "PLAID", state: "ready", historySyncedAt: null, connectedAt: connected });

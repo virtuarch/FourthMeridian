@@ -3,9 +3,17 @@
  *
  * WHAT THE STORED BRIEF IS WORTH RIGHT NOW — a pure decision over rows and clocks.
  *
- *   today's Brief + same watermark     → FRESH           serve it; read nothing else
+ *   today's Brief + same watermark + current generation version → FRESH   serve it; read nothing else
  *   today's Brief + moved watermark    → CHECK_MATERIAL  assemble, compare digests
+ *   today's Brief + older generation   → CHECK_MATERIAL, generationCurrent false: rewrite it
+ *                                        even if the digest is equal — the evidence is
+ *                                        still valid, the rules that wrote the prose are not
  *   no successful Brief today          → NEEDS_GENERATION, with the best fallback
+ *
+ * ⚠️ TWO VALIDITIES, KEPT APART. The watermark and digest ask "did the financial
+ * evidence change?"; the generation version asks "was this prose written under
+ * the current Brief contract?". Folding the version into the digest would make a
+ * contract change look like a financial one in every diagnostic.
  *
  * ⚠️ A NEW DAY ALWAYS NEEDS ITS OWN BRIEF. "Nothing meaningful changed" is itself
  * today's Brief, so yesterday's is never promoted to today's on an equal digest.
@@ -21,7 +29,7 @@
  */
 
 import { ageInDays, bandForAge, type FreshnessBand } from '@/lib/freshness/observation';
-import { GENERATION_LEASE_MS, STALE_FALLBACK_MAX_DAYS } from './policy';
+import { GENERATION_LEASE_MS, STALE_FALLBACK_MAX_DAYS, generationVersionOf } from './policy';
 
 /** The persisted row, in the shape decisions need. `briefDay` is YYYY-MM-DD. */
 export interface BriefRow {
@@ -55,7 +63,9 @@ export interface BriefFallback {
 
 export type ArtifactState =
   | { kind: 'FRESH'; row: BriefRow }
-  | { kind: 'CHECK_MATERIAL'; row: BriefRow; fallback: BriefFallback }
+  | { kind: 'CHECK_MATERIAL'; row: BriefRow; fallback: BriefFallback;
+      /** The row was written under the current generation version; false ⇒ an equal digest cannot keep it. */
+      generationCurrent: boolean }
   | { kind: 'NEEDS_GENERATION'; row: BriefRow | null; fallback: BriefFallback | null };
 
 export interface ArtifactDecision {
@@ -96,18 +106,21 @@ export function decideArtifactState(args: {
   /** The newest earlier row that holds a successful Brief. */
   latestPrior: BriefRow | null;
   watermark: string;
+  /** The current generation contract version (policy.ts BRIEF_GENERATION_VERSION). */
+  generationVersion: string;
 }): ArtifactDecision {
-  const { today, now, todayRow, latestPrior, watermark } = args;
+  const { today, now, todayRow, latestPrior, watermark, generationVersion } = args;
   const claimActive = claimIsActive(todayRow, now);
   const lastFailure = todayRow?.lastFailedAt
     && (!todayRow.generatedAt || todayRow.lastFailedAt > todayRow.generatedAt)
     ? { at: todayRow.lastFailedAt, reason: todayRow.lastFailureReason } : null;
 
   if (todayRow?.generatedAt && todayRow.content !== null) {
-    if (todayRow.sourceWatermark === watermark) {
+    const generationCurrent = generationVersionOf(todayRow.promptVersion) === generationVersion;
+    if (todayRow.sourceWatermark === watermark && generationCurrent) {
       return { state: { kind: 'FRESH', row: todayRow }, claimActive, lastFailure };
     }
-    return { state: { kind: 'CHECK_MATERIAL', row: todayRow, fallback: fallbackFrom(todayRow, today, now) },
+    return { state: { kind: 'CHECK_MATERIAL', row: todayRow, fallback: fallbackFrom(todayRow, today, now), generationCurrent },
       claimActive, lastFailure };
   }
 

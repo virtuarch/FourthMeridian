@@ -53,7 +53,7 @@ console.log('1. the policy, pinned');
   check('income and debt payments are material from $250',
     isMaterialActivity(row(300, 'INCOME'), 6240) && isMaterialActivity(row(-300, 'DEBT_PAYMENT'), 6240)
       && !isMaterialActivity(row(-300, 'TRANSFER'), 6240));
-  check('the digest is versioned', d0.startsWith(`${DIGEST_VERSION}:`) && /^brief-material-v2:[0-9a-f]{40}$/.test(d0));
+  check('the digest is versioned', d0.startsWith(`${DIGEST_VERSION}:`) && /^brief-material-v3:[0-9a-f]{40}$/.test(d0));
 }
 
 console.log('\n2. what must NOT move it');

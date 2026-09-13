@@ -7,7 +7,7 @@
  */
 
 import { STRUCTURED_TIMEOUT_MS } from '@/lib/ai/provider';
-import { GENERATION_LEASE_MS, STALE_FALLBACK_MAX_DAYS } from './policy';
+import { BRIEF_GENERATION_VERSION, GENERATION_LEASE_MS, STALE_FALLBACK_MAX_DAYS, generationVersionOf } from './policy';
 import { claimIsActive, decideArtifactState, fallbackFrom, type BriefRow } from './state';
 
 let failures = 0;
@@ -22,17 +22,31 @@ const row = (over: Partial<BriefRow> = {}): BriefRow => ({
   id: 'r1', spaceId: 's', ownerUserId: 'u', briefDay: TODAY,
   content: { headline: 'Quiet day.' }, generatedAt: new Date('2026-09-13T08:00:00.000Z'),
   balancesAsOf: new Date('2026-09-13T06:00:00.000Z'), historyThrough: '2026-09-12',
-  sourceWatermark: 'wm-1', materialDigest: 'dg-1', model: 'gpt-5.1', promptVersion: 'p', correlationId: 'c',
+  sourceWatermark: 'wm-1', materialDigest: 'dg-1', model: 'gpt-5.1', promptVersion: `${BRIEF_GENERATION_VERSION}+prompt-abc123`, correlationId: 'c',
   generationStartedAt: null, lastFailedAt: null, lastFailureReason: null, ...over,
 });
 const decide = (todayRow: BriefRow | null, latestPrior: BriefRow | null, watermark = 'wm-1', now = NOW) =>
-  decideArtifactState({ today: TODAY, now, todayRow, latestPrior, watermark });
+  decideArtifactState({ today: TODAY, now, todayRow, latestPrior, watermark, generationVersion: BRIEF_GENERATION_VERSION });
 
 console.log('1. policy');
 {
   check('the lease outlives the provider deadline with room for assembly and persistence',
     GENERATION_LEASE_MS >= STRUCTURED_TIMEOUT_MS + 20_000, `${GENERATION_LEASE_MS} vs ${STRUCTURED_TIMEOUT_MS}`);
   check('a fallback may be at most two days old', STALE_FALLBACK_MAX_DAYS === 2);
+}
+
+console.log('\n1b. the generation contract');
+{
+  check('the stored version parses to its generation part', generationVersionOf(`${BRIEF_GENERATION_VERSION}+prompt-abc123`) === BRIEF_GENERATION_VERSION);
+  check('a row from before versioning never matches', generationVersionOf('brief-prompt-88fd92878b42') !== BRIEF_GENERATION_VERSION
+    && generationVersionOf(null) === null);
+  const old = decide(row({ promptVersion: 'brief-prompt-88fd92878b42' }), null);
+  check('I. same watermark, older generation → not FRESH: CHECK_MATERIAL with generationCurrent false',
+    old.state.kind === 'CHECK_MATERIAL' && old.state.generationCurrent === false);
+  check('…and it is still the Brief to show (usable fallback of itself)', old.state.kind === 'CHECK_MATERIAL' && old.state.fallback.usable);
+  const moved = decide(row(), null, 'wm-2');
+  check('a moved watermark on a current generation keeps generationCurrent true', moved.state.kind === 'CHECK_MATERIAL' && moved.state.generationCurrent);
+  check('A. same watermark, current generation → FRESH', decide(row(), null).state.kind === 'FRESH');
 }
 
 console.log('\n2. today');

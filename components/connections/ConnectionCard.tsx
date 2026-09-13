@@ -32,6 +32,7 @@ import {
   AlertTriangle,
   Info,
 } from "lucide-react";
+import { sourceStatusText } from "@/lib/connections/source-health-copy";
 import { DataCard } from "@/components/atlas/DataCard";
 import { AtlasLiquidCard } from "@/components/atlas/AtlasLiquidCard";
 import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
@@ -467,11 +468,30 @@ function fmtFreshnessRelative(iso: string): string {
   return `on ${new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
 }
 
+const fmtShortDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+/**
+ * Slice 4.1 — the source's health, by the same rule and in the same words as the
+ * Daily Brief's "Financial data" disclosure. Shown only when it needs attention;
+ * a current source is already described by the freshness rows.
+ */
+function SourceHealthLine({ intelligence }: { intelligence?: ConnectionIntelligenceStatus }) {
+  const h = intelligence?.sourceHealth;
+  if (!h || !h.needsAttention) return null;
+  return (
+    <p className="mt-0.5 text-sm text-[var(--accent-warning,#f59e0b)]">
+      {sourceStatusText(h.state, h.lastUpdatedAt, { date: fmtShortDate, recent: fmtFreshnessRelative })}
+    </p>
+  );
+}
+
 function FreshnessRows({ intelligence }: { intelligence: ConnectionIntelligenceStatus }) {
+  // "Balances: Updated" is the OLDEST account's last successful write — every
+  // balance arrived at least that recently. It is not a provider verification.
   const rows: Array<{ label: string; verb: string; iso: string | null }> = [
     { label: "Transactions",      verb: "Updated",  iso: intelligence.lastSyncedAt },
     { label: "Financial profile", verb: "Built",    iso: intelligence.lastReconstructedAt },
-    { label: "Balance",           verb: "Verified", iso: intelligence.balanceVerifiedAt },
+    { label: "Balances",          verb: "Updated",  iso: intelligence.balancesUpdatedAt },
   ];
   const shown = rows.filter((r) => r.iso);
   if (shown.length === 0) return null;
@@ -509,6 +529,7 @@ function ReadyContent({
         institution={connection.institution}
       />
       <p className="mt-1.5 text-sm text-[var(--text-secondary)]">{providerLine(connection)}</p>
+      <SourceHealthLine intelligence={intelligence} />
       {/* CONN-3 — three unambiguous freshness lines when intelligence data is
           present; otherwise the pre-CONN-3 single "Last synced" fallback. */}
       {intelligence ? (
@@ -550,10 +571,13 @@ function ReadyContent({
 function NeedsReauthContent({
   connection,
   accounts,
+  intelligence,
 }: {
   connection: SyncConnection;
   accounts:   AccountLite[];
+  intelligence?: ConnectionIntelligenceStatus;
 }) {
+  const lastUpdated = intelligence?.sourceHealth?.lastUpdatedAt ?? null;
   return (
     <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
       <div className="flex items-start justify-between gap-3">
@@ -564,6 +588,9 @@ function NeedsReauthContent({
       </div>
       <p className="mt-1.5 text-sm text-[var(--text-secondary)]">{providerLine(connection)}</p>
       <p className="mt-0.5 text-sm text-[var(--accent-warning,#f59e0b)]">Reconnect required</p>
+      {lastUpdated && (
+        <p className="mt-0.5 text-xs text-[var(--text-muted)]">Last successful update {fmtShortDate(lastUpdated)}</p>
+      )}
       <AccountNames accounts={accounts} />
     </div>
   );
@@ -782,7 +809,7 @@ export function ConnectionCard({ connection, accounts, intelligence, slow, allow
         : <ReadyContent connection={connection} accounts={accounts} intelligence={intelligence} />;
       break;
     case "needs_reauth":
-      content = <NeedsReauthContent connection={connection} accounts={accounts} />;
+      content = <NeedsReauthContent connection={connection} accounts={accounts} intelligence={intelligence} />;
       break;
     case "error":
       content = <ErrorContent connection={connection} accounts={accounts} />;

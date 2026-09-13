@@ -25,7 +25,7 @@ import { createHash } from 'node:crypto';
 import { MATERIALITY } from './policy';
 import type { BriefActivityRow, BriefChangeWindow, BriefDelta, BriefPackage } from './types';
 
-export const DIGEST_VERSION = 'brief-material-v2';
+export const DIGEST_VERSION = 'brief-material-v3';
 
 const finite = (v: number | null | undefined): v is number => typeof v === 'number' && Number.isFinite(v);
 
@@ -117,7 +117,6 @@ export function materialProjection(pkg: BriefPackage) {
       needsReauth: f?.needsReauth ?? false,
       staleAccounts: f?.staleAccounts ?? 0,
       unknownFreshnessAccounts: f?.unknownFreshnessAccounts ?? 0,
-      accountsWithSyncErrors: f?.accountsWithSyncErrors ?? 0,
       // A source changing state (reconnected, fell behind, recovered) changes what
       // the Brief must qualify; its date alone does not (the band carries age).
       sources: sorted((f?.staleSources ?? []).map((s) => `${s.label}|${s.state}`)),

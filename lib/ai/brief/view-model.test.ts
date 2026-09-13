@@ -68,10 +68,17 @@ console.log('1. GET — every state');
   check('data health is null, not invented, when it could not be read',
     responseFromInspection({ spaceId: 'space_A', inspection: inspection({ state: { kind: 'FRESH', row: row() } }), now: NOW, metrics }).dataHealth === null);
 
-  const check_ = keep(read(inspection({ state: { kind: 'CHECK_MATERIAL', row: row(), fallback: fallbackFrom(row(), TODAY, NOW) } })));
+  const check_ = keep(read(inspection({ state: { kind: 'CHECK_MATERIAL', row: row(), fallback: fallbackFrom(row(), TODAY, NOW), generationCurrent: true } })));
   check('CHECK_MATERIAL → CHECK_REQUIRED: keep showing it, ask the server', check_.state === 'CHECK_REQUIRED' && check_.needsGeneration && !!check_.brief);
-  const checkClaimed = keep(read(inspection({ claimActive: true, state: { kind: 'CHECK_MATERIAL', row: row(), fallback: fallbackFrom(row(), TODAY, NOW) } })));
+  const checkClaimed = keep(read(inspection({ claimActive: true, state: { kind: 'CHECK_MATERIAL', row: row(), fallback: fallbackFrom(row(), TODAY, NOW), generationCurrent: true } })));
   check('…already being regenerated → IN_PROGRESS, no POST', checkClaimed.state === 'IN_PROGRESS' && !checkClaimed.needsGeneration && !!checkClaimed.brief);
+  const olderGen = { kind: 'CHECK_MATERIAL' as const, row: row(), fallback: fallbackFrom(row(), TODAY, NOW), generationCurrent: false };
+  const oldGen = keep(read(inspection({ state: olderGen })));
+  check('C. a Brief from an older generation contract → CHECK_REQUIRED, still shown while it is rewritten',
+    oldGen.state === 'CHECK_REQUIRED' && oldGen.needsGeneration && oldGen.brief?.headline === 'Quiet day.');
+  const oldGenCooling = keep(read(inspection({ lastFailure: { at: NOW, reason: 'TIMEOUT' }, state: olderGen }, { retryAfterMs: 120_000 })));
+  check('E. …inside a failure cooldown → FAILED with the old Brief kept, no POST',
+    oldGenCooling.state === 'FAILED' && !oldGenCooling.needsGeneration && oldGenCooling.retryAfterMs === 120_000 && oldGenCooling.brief?.headline === 'Quiet day.');
 
   const absent = keep(read(inspection({ state: { kind: 'NEEDS_GENERATION', row: null, fallback: null } })));
   check('nothing at all → ABSENT: skeleton, generate', absent.state === 'ABSENT' && absent.needsGeneration && absent.brief === null);

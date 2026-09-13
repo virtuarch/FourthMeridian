@@ -50,7 +50,7 @@ export function basePackage(): BriefPackage {
     freshness: {
       band: 'LIVE', basis: 'INGESTION',
       oldestBalanceObservedAt: '2026-09-13T06:04:11.000Z', oldestBalanceAgeDays: 0.3,
-      staleAccounts: 0, unknownFreshnessAccounts: 0, accountsWithSyncErrors: 0, needsReauth: false,
+      staleAccounts: 0, unknownFreshnessAccounts: 0, needsReauth: false,
     },
     currentState: {
       basis: 'CURRENT_ACCOUNTS',
@@ -215,7 +215,7 @@ export const BRIEF_SCENARIOS: BriefScenario[] = [
     p.freshness = {
       band: 'STALE', basis: 'INGESTION',
       oldestBalanceObservedAt: '2026-09-01T06:02:00.000Z', oldestBalanceAgeDays: 12.3,
-      staleAccounts: 3, unknownFreshnessAccounts: 0, accountsWithSyncErrors: 0, needsReauth: false,
+      staleAccounts: 3, unknownFreshnessAccounts: 0, needsReauth: false,
     };
     delete p.recentChanges.d1;
     p.recentActivity!.transactionsInWindow = 2;

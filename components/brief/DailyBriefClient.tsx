@@ -32,6 +32,7 @@ import type {
   BriefArtifactView, BriefDataHealthView, BriefMetricsView, BriefObservationView, BriefResponse,
   DataGroupView, DataSourceKind, DataSourceView,
 } from "@/lib/brief-types";
+import { sourceStatusText } from "@/lib/connections/source-health-copy";
 import { BriefNewUser } from "./BriefNewUser";
 import {
   browserClock, createBriefController, httpBriefTransport, initialView,
@@ -104,19 +105,7 @@ function groupPhrase(g: DataGroupView): string {
   return g.oldestUpdatedAt ? `updated ${relDay(g.oldestUpdatedAt)}` : "not updated yet";
 }
 
-function sourceStatus(s: DataSourceView): string {
-  const since = s.lastUpdatedAt ? shortDate(s.lastUpdatedAt) : null;
-  switch (s.state) {
-    case "CURRENT":          return s.lastUpdatedAt ? `Updated ${relDay(s.lastUpdatedAt)}` : "Up to date";
-    case "IMPORTING":        return "Still importing";
-    case "OUT_OF_DATE":      return since ? `Hasn’t updated since ${since}` : "Hasn’t updated recently";
-    case "NEEDS_RECONNECT":  return since ? `Needs to be reconnected · last updated ${since}` : "Needs to be reconnected";
-    case "CONNECTION_ERROR": return since ? `Connection error · last updated ${since}` : "Connection error";
-    case "SYNC_INCOMPLETE":  return since ? `Last update didn’t finish · data from ${since}` : "Last update didn’t finish";
-    case "DISCONNECTED":     return since ? `Disconnected · last updated ${since}` : "Disconnected";
-    case "NEVER_UPDATED":    return "Hasn’t updated yet";
-  }
-}
+const sourceStatus = (s: DataSourceView) => sourceStatusText(s.state, s.lastUpdatedAt, { date: shortDate, recent: relDay });
 
 /** One sentence naming the source — never a reason the data does not contain. */
 function attentionSentence(s: DataSourceView): string {
