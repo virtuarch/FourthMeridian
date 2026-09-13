@@ -117,6 +117,52 @@ export function isGlobalDestActive(id: GlobalDestId, pathname: string): boolean 
 }
 
 /**
+ * The MOBILE bottom bar (AI-4): Brief · My Space · AI · Spaces · Connections.
+ *
+ * ⚠️ A SEPARATE LIST, NOT A REORDERED GLOBAL_NAV. GLOBAL_NAV is also the desktop
+ * rail's global mode, which keeps its order and keeps Settings; only the bar
+ * changed. Hrefs are read from GLOBAL_NAV, so a route cannot drift between the two.
+ * Settings is off the bar and stays in the account menu.
+ *
+ * ⚠️ "MY SPACE" IS /dashboard — the dashboard of the ACTIVE Space, resolved per
+ * request by getSpaceContext (active-Space cookie → preferred Space → personal).
+ * It is not "the personal Space", and opening it switches nothing: switching
+ * happens under Spaces (/dashboard/spaces). So the two are distinct destinations
+ * with distinct active states here — GLOBAL_NAV's Spaces rule, which also claims
+ * /dashboard, is left as it is for the desktop rail.
+ */
+export type BottomDestId = "brief" | "myspace" | "ai" | "spaces" | "connections";
+
+export interface BottomDest {
+  id:    BottomDestId;
+  label: string;
+  href:  string;
+}
+
+export const MY_SPACE_HREF = "/dashboard";
+
+function globalHref(id: GlobalDestId): string {
+  const dest = GLOBAL_NAV.find((d) => d.id === id);
+  if (!dest) throw new Error(`GLOBAL_NAV has no "${id}" destination`);
+  return dest.href;
+}
+
+export const BOTTOM_NAV: BottomDest[] = [
+  { id: "brief",       label: "Brief",       href: globalHref("brief") },
+  { id: "myspace",     label: "My Space",    href: MY_SPACE_HREF },
+  { id: "ai",          label: "AI",          href: globalHref("ai") },
+  { id: "spaces",      label: "Spaces",      href: globalHref("spaces") },
+  { id: "connections", label: "Connections", href: globalHref("connections") },
+];
+
+/** Is a bottom-bar destination active? At most one is, for any pathname. */
+export function isBottomDestActive(id: BottomDestId, pathname: string): boolean {
+  if (id === "myspace") return pathname === MY_SPACE_HREF;
+  if (id === "spaces") return pathname.startsWith(globalHref("spaces"));
+  return isGlobalDestActive(id, pathname);
+}
+
+/**
  * Cross-component CustomEvent names (window-level pub/sub between
  * Sidebar / CreateSpaceModal / ManageSpaceModal / SpacesClient /
  * SpaceDashboard / DashboardChrome — no shared parent state, so these

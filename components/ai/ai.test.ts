@@ -26,6 +26,7 @@ import {
   nextStarterIndex,
   normalizeStarterIndex,
   starterIndexFrom,
+  composeStarters,
 } from "@/components/ai/conversation-surface";
 import { AnalyzeClient } from "@/components/dashboard/AnalyzeClient";
 import { KnowledgeGapCard } from "@/components/ai/KnowledgeGapCard";
@@ -98,7 +99,9 @@ console.log("layout mode is derived from the turn count alone");
 
 console.log("1. empty conversation — centered composer + starter, no docked state");
 {
-  const html = renderToStaticMarkup(h(AnalyzeClient, { advice: null, starterIndex: 2 }));
+  const html = renderToStaticMarkup(h(AnalyzeClient, {
+    advice: null, starterIndex: 2, spaceId: "space_active", spaceName: "Household", starter: composeStarters(null),
+  }));
   check("layout is empty", html.includes('data-ai-layout="empty"'));
   check("composer sits in the centered (empty) dock", html.includes('data-ai-dock="empty"') && !html.includes('data-ai-dock="conversation"'));
   check("no conversation scroll region / log", !html.includes("data-ai-scroll") && !html.includes('role="log"'));
@@ -109,6 +112,58 @@ console.log("1. empty conversation — centered composer + starter, no docked st
   check("no 'New chat' control before a conversation exists", !html.includes("New chat"));
   check("the starter precedes the composer, suggestions follow it",
     html.indexOf(STARTER_LINES[2]) < html.indexOf("<textarea") && html.indexOf("<textarea") < html.indexOf(EMPTY_STATE_SUGGESTIONS[0].label));
+  // AI-4: no Space selector — the active Space is named as plain text.
+  check("no Space selector (no <select>, no \"All My Spaces\")", !html.includes("<select") && !html.includes("All My Spaces"));
+  check("the active Space name is shown as plain text in the header",
+    /<header[\s\S]*<span class="sr-only">Space: <\/span>Household<\/p>[\s\S]*<\/header>/.test(html));
+}
+
+console.log("1a. personal starters (memory-backed) render as ordinary chips");
+{
+  const starter = composeStarters({
+    headline: "Still aiming for $750K by 2029?",
+    prompts: [
+      { label: "Am I on pace for $750K by 2029?", prompt: "Am I still on pace for my $750K net worth goal by the end of 2029?", topic: "goal" },
+      { label: "Check my year-end cash projection", prompt: "How is my cash projection for the end of this year tracking?", topic: "cash-projection" },
+    ],
+  });
+  const html = renderToStaticMarkup(h(AnalyzeClient, { advice: null, starterIndex: 0, spaceId: "s1", spaceName: "Mine", starter }));
+  check("the personal headline replaces the generic line", html.includes(">Still aiming for $750K by 2029?</h2>") && !STARTER_LINES.some((l) => html.includes(l)));
+  check("personal chips lead, generics fill, the duplicate cash chip steps aside",
+    html.indexOf(">Am I on pace for $750K by 2029?</button>") > -1
+    && html.indexOf(">Am I on pace for $750K by 2029?</button>") < html.indexOf(">Check my year-end cash projection</button>")
+    && html.includes(">How am I looking?</button>") && !html.includes(">Project my cash</button>"));
+  check("no data attributes or hidden fields ride on a chip", !/<button[^>]*data-(memory|topic|id)/.test(html) && !html.includes('type="hidden"'));
+  const client = readFileSync(path.join(process.cwd(), "components", "dashboard", "AnalyzeClient.tsx"), "utf8");
+  check("a chip sends its prose through the ordinary sendMessage path",
+    /starter\.prompts\.map\(\(s\) => \([\s\S]*onSelect=\{\(\) => sendMessage\(s\.prompt\)\}/.test(client));
+  check("a personal headline never idles away", /const still = frozen \|\| Boolean\(headline\);/.test(read("StarterLine.tsx")));
+}
+
+console.log("1b. one conversation, one active Space");
+{
+  const client = readFileSync(path.join(process.cwd(), "components", "dashboard", "AnalyzeClient.tsx"), "utf8");
+  const page = readFileSync(path.join(process.cwd(), "app", "(shell)", "dashboard", "analyze", "page.tsx"), "utf8");
+  const route = readFileSync(path.join(process.cwd(), "app", "api", "ai", "chat", "route.ts"), "utf8");
+  const code = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  check("the client fetches no Space list and keeps no selector state",
+    !/api\/spaces|selectedSpaceId|setSelectedSpaceId|ELIGIBLE_ROLES|"master"|<Select/.test(code(client)));
+  check("the page resolves the dashboard's ACTIVE Space", /const ctx = await getSpaceContext\(\);/.test(page));
+  check("…and hands the client its id and name", /spaceId=\{ctx\.spaceId\}/.test(page) && /spaceName=\{ctx\.space\.name\}/.test(page));
+  check("a different Space remounts the client (new chat)", /key=\{ctx\.spaceId\}/.test(page));
+  check("the client posts exactly that id", /body: JSON\.stringify\(\{\s*spaceId,/.test(client));
+  check("advice is read for the same Space", /getLatestAdvice\(\{ spaceId: ctx\.spaceId \}\)/.test(page));
+  check("memory is read scoped to this Space AND this user",
+    /recallMemories\(\s*\{ spaceId: ctx\.spaceId, ownerUserId: ctx\.userId \}/.test(page));
+  check("memory failure falls back instead of failing the page", /catch \{\s*return null;\s*\}/.test(page));
+  check("no model call, no transcript read on page load",
+    !/openai|runStatelessTurn|CHAT_MODEL|from "@\/lib\/ai\/conversation\/(engine|turn)"/.test(page));
+  check("raw memory rows never reach the client (only composed display strings)",
+    /starter=\{composeStarters\(personal\)\}/.test(page) && !/memories=|payload=/.test(page));
+  check("the route still re-resolves the posted Space and refuses a mismatch",
+    /resolveSpaceContext\(user\.id, parsed\.spaceId\)/.test(route) && /spaceCtx\.spaceId !== parsed\.spaceId[\s\S]{0,80}403/.test(route));
+  check("the sealed carrier still binds user + Space + tail",
+    /const binding = \{ userId: user\.id, spaceId: spaceCtx\.spaceId,/.test(route) && /openRuntimeState\(/.test(route));
 }
 
 console.log("2. existing conversation — first paint is already conversation mode");
@@ -172,7 +227,7 @@ console.log("5. backend contract unchanged");
   const client = readFileSync(path.join(process.cwd(), "components", "dashboard", "AnalyzeClient.tsx"), "utf8");
   check("posts to /api/ai/chat", /fetch\("\/api\/ai\/chat", \{\s*method: "POST"/.test(client));
   check("body is {spaceId, messages[{role, content}]}",
-    /spaceId: selectedSpaceId,/.test(client) && /messages: nextMessages\.map\(\(m\) => \(\{ role: m\.role, content: m\.content \}\)\)/.test(client));
+    /spaceId,/.test(client) && /messages: nextMessages\.map\(\(m\) => \(\{ role: m\.role, content: m\.content \}\)\)/.test(client));
   check("reads {message, knowledgeGaps, knowledgeGapMode}", /data\.message/.test(client) && /data\.knowledgeGaps/.test(client) && /data\.knowledgeGapMode/.test(client));
   check("still non-streaming (one JSON response)", /await res\.json\(\)/.test(client) && !/getReader\(\)|EventSource/.test(client));
   // ⚠️ ONE DECLARATION OF THE RESPONSE, SHARED WITH THE ROUTE. The client used to
@@ -249,7 +304,7 @@ console.log("6. starter copy — approved lines only, never fights the user");
     check(`starter ${i} renders its approved line, fully visible`, html.includes(STARTER_LINES[i]) && html.includes("opacity:1"));
   }
   const starter = read("StarterLine.tsx");
-  check("the swap timer does not run once frozen", /if \(frozen\) return;/.test(starter));
+  check("the swap timer does not run once frozen (or when personal)", /const still = frozen \|\| Boolean\(headline\);/.test(starter) && /if \(still\) return;/.test(starter));
   check("the swapping heading is not a live region", !/aria-live|role="status"/.test(starter));
   const client = readFileSync(path.join(process.cwd(), "components", "dashboard", "AnalyzeClient.tsx"), "utf8");
   check("focus or typing freezes the starter", /onFocus=\{\(\) => setComposerEngaged\(true\)\}/.test(client) && /frozen=\{composerEngaged \|\| input\.length > 0\}/.test(client));
@@ -268,7 +323,10 @@ console.log("7. responsive / layout classes");
   check("conversation column is max-w-3xl (768px) and centered", log.includes("max-w-3xl mx-auto w-full"));
   check("conversation leaves bottom padding above the dock", /role="log"[^>]*class="[^"]*pb-10/.test(log));
   const shell = read("AiShell.tsx");
-  check("shell height uses dynamic viewport units", /100dvh/.test(shell));
+  const shellCode = shell.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  check("shell height uses dynamic viewport units, in CSS", /h-\[calc\(100dvh-/.test(shell) && !/ResizeObserver/.test(shellCode));
+  check("the FLIP still re-measures on resize (animation origin, not sizing)",
+    /window\.addEventListener\("resize", remeasure\)/.test(shell));
   check("scrolling stays inside the conversation container", /overflow-y-auto overscroll-contain/.test(shell) && /closest<HTMLElement>\("\[data-ai-scroll\]"\)/.test(read("ConversationView.tsx")));
 }
 

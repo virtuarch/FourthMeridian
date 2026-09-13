@@ -16,6 +16,12 @@
  * the composer's position is measured each commit, and when the mode flips it is
  * animated from where it was to where it now is (transform only, skipped under
  * prefers-reduced-motion). Presentation + layout only.
+ *
+ * AI-4 — HEIGHT IS CSS, NOT MEASUREMENT. The shell is exactly the viewport left
+ * over by the chrome around it, so the document never scrolls and the one scroller
+ * is the conversation. That is only expressible because DashboardChrome, on this
+ * route, mounts nothing variable above the page (no 2FA nudge) and pads <main> by
+ * the BottomNav's exact footprint. The former ResizeObserver fit is gone.
  */
 
 import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
@@ -34,13 +40,14 @@ export interface AiShellProps {
   lead?: ReactNode;
   /** Empty mode only: shown below the composer. */
   aside?: ReactNode;
+  /** The Space this conversation belongs to, shown as plain text beside the title. */
+  contextLabel?: string;
 }
 
 const MOVE_MS = 420;
 
-export function AiShell({ mode, controls, children, composer, lead, aside }: AiShellProps) {
+export function AiShell({ mode, controls, children, composer, lead, aside, contextLabel }: AiShellProps) {
   const empty = mode === "empty";
-  const shellRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const lastTop = useRef<number | null>(null);
   const lastMode = useRef(mode);
@@ -64,35 +71,6 @@ export function AiShell({ mode, controls, children, composer, lead, aside }: AiS
     lastTop.current = top;
   });
 
-  // Fit the shell to the viewport from where it ACTUALLY starts. The calc() classes
-  // assume nothing sits above the page inside <main>; the chrome can render a nudge
-  // there (TotpNudgeBanner), which would push a docked composer below the fold. So
-  // measure the shell's document offset + the bottom padding it must leave, and
-  // refit on resize or whenever the document's size changes (e.g. a banner closes).
-  // Written straight to the element — layout, not React state. The classes remain
-  // the server-render fallback.
-  useLayoutEffect(() => {
-    const el = shellRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const fit = () => {
-      const parent = el.parentElement;
-      const bottomPad = parent ? parseFloat(getComputedStyle(parent).paddingBottom) || 0 : 0;
-      const marginBottom = parseFloat(getComputedStyle(el).marginBottom) || 0;
-      const top = el.getBoundingClientRect().top + window.scrollY;
-      const offset = Math.round(top + bottomPad + marginBottom);
-      const next = `calc(100dvh - ${offset}px)`;
-      if (el.style.height !== next) el.style.height = next;
-    };
-    fit();
-    const observer = new ResizeObserver(fit);
-    observer.observe(document.documentElement);
-    window.addEventListener("resize", fit);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", fit);
-    };
-  }, []);
-
   // A resize between commits would leave the measured origin stale.
   useEffect(() => {
     const remeasure = () => {
@@ -103,21 +81,30 @@ export function AiShell({ mode, controls, children, composer, lead, aside }: AiS
   }, []);
 
   return (
-    // Fallback height (refined by the fit effect above) = viewport minus the dashboard
-    // chrome around <main>: GlobalHeader (49px) +
-    // main's pt-6 (24px) + its bottom padding — pb-24 on mobile (clears BottomNav and
-    // the safe area), pb-16 on lg, of which the shell reclaims 48px so the docked
-    // composer sits 16px off the bottom instead of floating 64px up.
+    // Height = the viewport minus the chrome around <main> on this route:
+    //   above — GlobalHeader (h-12 + border-b = 49px) + main's pt-6 (24px) = 4.5625rem;
+    //   below — mobile: the BottomNav footprint <main> pads by (3.5rem + 1px + safe
+    //           area, the SAME expression as DashboardChrome); lg: main's pb-4 (1rem).
+    // No min-height: a floor taller than a landscape phone's leftover viewport is
+    // what made the document scroll and slid the composer under the bar; below it
+    // the conversation (min-h-0) simply gets less room.
     <div
-      ref={shellRef}
       data-ai-layout={mode}
-      className="flex flex-col h-[calc(100dvh-172px)] lg:h-[calc(100dvh-89px)] lg:-mb-12 min-h-[360px]"
+      className="flex flex-col h-[calc(100dvh-4.5625rem-3.5rem-1px-env(safe-area-inset-bottom))] lg:h-[calc(100dvh-5.5625rem)]"
     >
       <header className="shrink-0 flex items-center gap-2.5 pb-3">
         <AiMark />
-        <h1 className="min-w-0 flex-1 truncate text-base font-semibold leading-tight text-[var(--text-primary)]">
-          Fourth Meridian AI
-        </h1>
+        <div className="min-w-0 flex-1 flex items-baseline gap-2">
+          <h1 className="shrink-0 text-base font-semibold leading-tight text-[var(--text-primary)]">
+            Fourth Meridian AI
+          </h1>
+          {contextLabel && (
+            <p className="min-w-0 truncate text-xs text-[var(--text-muted)]">
+              <span className="sr-only">Space: </span>
+              {contextLabel}
+            </p>
+          )}
+        </div>
         {controls && <div className="shrink-0 flex items-center gap-1.5">{controls}</div>}
       </header>
 

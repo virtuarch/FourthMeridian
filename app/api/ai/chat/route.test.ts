@@ -138,8 +138,9 @@ console.log('\n6. CONTINUITY WITHOUT PERSISTENCE');
 console.log('\n7. THE CLIENT CONTRACT IS UNCHANGED');
 {
   const client = readFileSync('components/dashboard/AnalyzeClient.tsx', 'utf8');
+  // AI-4: the id is the page's resolved active Space, posted as the `spaceId` prop.
   check('the client still posts {spaceId, messages}',
-    /spaceId: selectedSpaceId/.test(client) && /messages: nextMessages\.map/.test(client));
+    /body: JSON\.stringify\(\{\s*spaceId,/.test(client) && /messages: nextMessages\.map/.test(client));
   check('…and still reads {message} on success', /data\.message/.test(client));
   check('…and renders `error` from a refusal as the assistant\'s turn',
     /data\.error \?\?/.test(client));

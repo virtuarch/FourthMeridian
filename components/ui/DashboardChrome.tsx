@@ -29,7 +29,7 @@
  * open state, opened via the decoupled "open-create-space" window event.
  */
 
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { ReactNode, Suspense, useEffect, useState } from "react";
 // TI5-3C — single, shell-level Transaction Detail drawer host. Every transaction
 // surface opens THIS drawer via ?transaction=; there is exactly one instance.
@@ -40,11 +40,23 @@ import { BottomNav } from "@/components/ui/BottomNav";
 import { CreateSpaceModal } from "@/components/dashboard/CreateSpaceModal";
 import { TotpNudgeBanner } from "@/components/dashboard/TotpNudgeBanner";
 import { SpaceChromeProvider } from "@/lib/space/space-chrome-context";
-import { OPEN_CREATE_SPACE_EVENT } from "@/lib/space-nav";
+import { OPEN_CREATE_SPACE_EVENT, isGlobalDestActive } from "@/lib/space-nav";
 
 export function DashboardChrome({ children }: { children: ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname() ?? "";
   const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
+
+  // AI-4 — the AI page is a full-height conversation surface: it owns exactly the
+  // viewport left between the GlobalHeader and the bottom edge, and scrolls inside
+  // itself. Two things in this frame would break that, so on that ONE route:
+  //  • the 2FA nudge is not mounted (not hidden — so it makes no status request
+  //    there); its dismissal, its status and every other page are unchanged;
+  //  • <main>'s bottom padding is exactly the BottomNav's footprint (h-14 + its
+  //    1px border-t + the safe-area inset it pads by) instead of pb-24, and 16px on
+  //    lg, so the docked composer sits directly on the bar. AiShell's height
+  //    subtracts the same expression — change one, change both.
+  const conversationSurface = isGlobalDestActive("ai", pathname);
 
   useEffect(() => {
     function handleOpen() { setCreateSpaceOpen(true); }
@@ -60,10 +72,17 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
         <div className="mx-auto flex w-full max-w-[1320px] gap-0 px-4 sm:px-5 lg:gap-8 lg:px-8">
           <ContextualNavbar />
 
-          <main className="min-w-0 flex-1 pb-24 pt-6 lg:pb-16">
+          <main
+            className={
+              conversationSurface
+                ? "min-w-0 flex-1 pt-6 pb-[calc(3.5rem+1px+env(safe-area-inset-bottom))] lg:pb-4"
+                : "min-w-0 flex-1 pb-24 pt-6 lg:pb-16"
+            }
+          >
             {/* S8 — dismissible 2FA nudge; renders nothing for users with TOTP
-                enabled, for SYSTEM_ADMIN, or once dismissed (per-browser). */}
-            <TotpNudgeBanner />
+                enabled, for SYSTEM_ADMIN, or once dismissed (per-browser). Not
+                mounted on the AI conversation surface (AI-4). */}
+            {!conversationSurface && <TotpNudgeBanner />}
             {children}
           </main>
         </div>

@@ -1,5 +1,5 @@
 /**
- * components/ai/conversation-surface.ts  (AI Experience Convergence — AI-3)
+ * components/ai/conversation-surface.ts  (AI Experience Convergence — AI-3, AI-4)
  *
  * The pure decisions behind the conversation-first AI surface: which layout the
  * page is in, the curated starter copy, the empty-state suggestions, and the send
@@ -9,6 +9,13 @@
  * The layout rule is deliberately one line: a conversation exists as soon as there
  * is any turn, and the user's own turn is appended synchronously on submit — so the
  * first send flips the layout before the request is even in flight.
+ *
+ * AI-4: the empty state may be personal. The server page turns the user's own
+ * memory into a headline and a few prompts (lib/ai/conversation/starter-topics);
+ * `composeStarters` lays those over the generic set here. Personal prompts lead,
+ * generic ones fill the remaining slots, and a generic prompt on a topic a personal
+ * one already covers steps aside. With nothing personal it is exactly the generic
+ * empty state.
  */
 
 export type ConversationLayoutMode = "empty" | "conversation";
@@ -48,13 +55,48 @@ export function nextStarterIndex(index: number): number {
   return normalizeStarterIndex(index + 1);
 }
 
-/** Secondary empty-state chips: a short label, sent as a natural-language prompt. */
-export const EMPTY_STATE_SUGGESTIONS: ReadonlyArray<{ label: string; prompt: string }> = [
+/** One empty-state chip: a short label, sent as a natural-language prompt. */
+export interface StarterPrompt {
+  label: string;
+  prompt: string;
+  /** What it is about — a personal prompt on the same topic replaces a generic one. */
+  topic?: string;
+}
+
+/** The generic chips. Also the fallback whenever memory offers nothing. */
+export const EMPTY_STATE_SUGGESTIONS: ReadonlyArray<StarterPrompt> = [
   { label: "How am I looking?", prompt: "How am I looking financially?" },
-  { label: "Project my cash", prompt: "Project my cash over the next few months." },
+  { label: "Project my cash", prompt: "Project my cash over the next few months.", topic: "cash-projection" },
   { label: "Where did I spend most?", prompt: "Where did I spend the most recently?" },
   { label: "Check my investments", prompt: "How are my investments doing?" },
 ];
+
+export const MAX_STARTER_PROMPTS = 4;
+
+/** What the empty state renders — display strings only, nothing else reaches the browser. */
+export interface StarterModel {
+  /** A personal headline, or null for the rotating generic line. */
+  headline: string | null;
+  prompts: ReadonlyArray<{ label: string; prompt: string }>;
+}
+
+/** Lay personal starters (if any) over the generic set. */
+export function composeStarters(
+  personal: { headline: string | null; prompts: ReadonlyArray<StarterPrompt> } | null,
+): StarterModel {
+  const mine = (personal?.prompts ?? []).slice(0, MAX_STARTER_PROMPTS);
+  const topics = new Set(mine.map((p) => p.topic).filter((t): t is string => Boolean(t)));
+  const labels = new Set(mine.map((p) => p.label.toLowerCase()));
+  const fill = EMPTY_STATE_SUGGESTIONS.filter(
+    (g) => !(g.topic && topics.has(g.topic)) && !labels.has(g.label.toLowerCase()),
+  );
+  return {
+    headline: personal?.headline ?? null,
+    prompts: [...mine, ...fill]
+      .slice(0, MAX_STARTER_PROMPTS)
+      .map(({ label, prompt }) => ({ label, prompt })),
+  };
+}
 
 /** Enter sends; Shift+Enter is a newline; Enter that confirms an IME composition is not a send. */
 export function isSendKey(e: { key: string; shiftKey: boolean; isComposing?: boolean }): boolean {

@@ -4,9 +4,9 @@
  * components/dashboard/AnalyzeClient.tsx  (AI Experience Convergence — AI-2)
  *
  * ORCHESTRATION ONLY. This client owns the AI conversation's data + state — the
- * message list, the /api/ai/chat request (unchanged), loading/abort, the Space
- * selector, and the knowledge-gap session state — and composes the presentation
- * from `components/ai/*`. No markup lives here beyond wiring the shells.
+ * message list, the /api/ai/chat request (unchanged), loading/abort, and the
+ * knowledge-gap session state — and composes the presentation from
+ * `components/ai/*`. No markup lives here beyond wiring the shells.
  *
  * The surface is now conversation-first: the former ML Review tab is retired (its
  * only real capability — scheduled advice — is preserved via AdviceBanner in the
@@ -20,10 +20,20 @@
  * gone (the empty state replaces it); it was never sent, so the request body is
  * byte-identical. There is no history restore, so a visit always opens empty and
  * there is no loading state to wait on before choosing the layout.
+ *
+ * AI-4 (one Space per conversation): there is no Space selector. Its default,
+ * "All My Spaces", was never an aggregate — the route resolved it to the user's
+ * PERSONAL Space while the rest of the page used the active one, and switching it
+ * mid-chat carried one Space's transcript into another. The server page now
+ * resolves the dashboard's active Space and passes its id and name; every request
+ * posts exactly that id (the route still re-resolves it and refuses a mismatch),
+ * and the page keys this client by it, so a different Space is a new conversation.
+ * The starter headline and chips arrive already composed — display strings only —
+ * and a chip is sent as ordinary prose through `sendMessage`.
  */
 
-import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
-import { ChevronDown, SquarePen } from "lucide-react";
+import { useState, useRef, useCallback, type ReactNode } from "react";
+import { SquarePen } from "lucide-react";
 import {
   AiShell,
   ConversationView,
@@ -32,9 +42,8 @@ import {
   KnowledgeGapCard,
   StarterLine,
   conversationLayoutMode,
-  EMPTY_STATE_SUGGESTIONS,
+  type StarterModel,
 } from "@/components/ai";
-import { Select } from "@/components/atlas/fields";
 import { AdviceBanner } from "@/components/dashboard/AdviceBanner";
 import {
   KnowledgeAcquisitionCard,
@@ -58,29 +67,25 @@ interface Message {
   knowledgeGapMode?: "clarification" | "form";
 }
 
-interface SpaceOption {
-  id: string;
-  name: string;
-  myRole: string;
-}
-
 interface Props {
   advice: AiAdvice | null;
   /** Index into STARTER_LINES, chosen per request by the server page. */
   starterIndex: number;
+  /** The active Space this conversation belongs to, resolved by the server page. */
+  spaceId: string;
+  /** Its name, shown as plain text in the header. */
+  spaceName: string;
+  /** The empty state's headline + chips (personal where memory supports it). */
+  starter: StarterModel;
 }
 
-const ELIGIBLE_ROLES = new Set(["OWNER", "ADMIN", "MEMBER"]);
-
-export function AnalyzeClient({ advice, starterIndex }: Props) {
+export function AnalyzeClient({ advice, starterIndex, spaceId, spaceName, starter }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   /** Latches once the composer is focused or typed into — the starter line stops swapping. */
   const [composerEngaged, setComposerEngaged] = useState(false);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const [loading, setLoading] = useState(false);
-  const [selectedSpaceId, setSelectedSpaceId] = useState<string>("master");
-  const [spaces, setSpaces] = useState<SpaceOption[]>([]);
   /** Holds the AbortController for the in-flight /api/ai/chat request, if any. */
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -116,18 +121,6 @@ export function AnalyzeClient({ advice, starterIndex }: Props) {
     setDismissedFormIndices((prev) => new Set([...prev, index]));
   }
 
-  // Fetch spaces once for the selector
-  useEffect(() => {
-    fetch("/api/spaces")
-      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-      .then((data: { mine: SpaceOption[] }) => {
-        setSpaces(data.mine.filter((s) => ELIGIBLE_ROLES.has(s.myRole)));
-      })
-      .catch(() => {
-        // Non-fatal: selector will just show "All My Spaces"
-      });
-  }, []);
-
   const stopGeneration = useCallback(() => {
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
@@ -162,7 +155,7 @@ export function AnalyzeClient({ advice, starterIndex }: Props) {
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
-          spaceId: selectedSpaceId,
+          spaceId,
           // Only real user/assistant turns exist in state (no UI greeting), so the
           // whole list is the conversation history.
           messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
@@ -247,7 +240,7 @@ export function AnalyzeClient({ advice, starterIndex }: Props) {
   const suggestions = (
     <div className="max-w-3xl mx-auto w-full">
       <div role="group" aria-label="Suggestions" className="mt-4 flex flex-wrap justify-center gap-2">
-        {EMPTY_STATE_SUGGESTIONS.map((s) => (
+        {starter.prompts.map((s) => (
           <SuggestedPrompt key={s.label} label={s.label} onSelect={() => sendMessage(s.prompt)} variant="chip" />
         ))}
       </div>
@@ -259,43 +252,30 @@ export function AnalyzeClient({ advice, starterIndex }: Props) {
     </div>
   );
 
-  const controls = (
-    <>
-      {mode === "conversation" && (
-        <button
-          type="button"
-          onClick={startNewConversation}
-          className="inline-flex items-center gap-1.5 h-8 rounded-lg px-2.5 text-xs font-medium transition-colors text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]"
-        >
-          <SquarePen size={14} aria-hidden />
-          <span className="max-sm:sr-only">New chat</span>
-        </button>
-      )}
-      <div className="relative">
-      <Select
-        value={selectedSpaceId}
-        onChange={(e) => setSelectedSpaceId(e.target.value)}
-        aria-label="Analysis context"
-        className="max-w-[11rem] pr-7 py-1.5 text-xs truncate"
-        options={[
-          { value: "master", label: "All My Spaces" },
-          ...spaces.map((s) => ({ value: s.id, label: s.name })),
-        ]}
-      />
-      <ChevronDown
-        size={13}
-        className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none"
-        style={{ color: "var(--text-muted)" }}
-      />
-      </div>
-    </>
-  );
+  const controls =
+    mode === "conversation" ? (
+      <button
+        type="button"
+        onClick={startNewConversation}
+        className="inline-flex items-center gap-1.5 h-8 rounded-lg px-2.5 text-xs font-medium transition-colors text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]"
+      >
+        <SquarePen size={14} aria-hidden />
+        <span className="max-sm:sr-only">New chat</span>
+      </button>
+    ) : undefined;
 
   return (
     <AiShell
       mode={mode}
       controls={controls}
-      lead={<StarterLine initialIndex={starterIndex} frozen={composerEngaged || input.length > 0} />}
+      contextLabel={spaceName}
+      lead={
+        <StarterLine
+          initialIndex={starterIndex}
+          headline={starter.headline}
+          frozen={composerEngaged || input.length > 0}
+        />
+      }
       aside={suggestions}
       composer={
         <Composer

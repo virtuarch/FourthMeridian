@@ -10,15 +10,18 @@
  * (components/app/UserMenu.tsx): identity at the top of an anchored 232px
  * menu, destructive Sign out separated by a rule at the bottom.
  *
- * Real actions (production, not the prototype's inert menu): Settings / Profile
- * are links into the settings tree; Sign out calls next-auth signOut exactly
- * as the old Sidebar footer did.
+ * Real actions (production, not the prototype's inert menu): Settings is the link
+ * into the settings tree; Sign out calls next-auth signOut exactly as the old
+ * Sidebar footer did. (AI-4: the former "Profile" item linked to
+ * /dashboard/settings/account — exactly where /dashboard/settings redirects — so
+ * it duplicated Settings and was removed. Settings is also this menu's only
+ * route to settings on mobile, where the bottom bar no longer carries it.)
  */
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useSession, signOut } from "next-auth/react";
-import { ChevronDown, CircleUser, LogOut, Settings } from "lucide-react";
+import { ChevronDown, LogOut, Settings } from "lucide-react";
 
 export function UserMenu() {
   const { data: session } = useSession();
@@ -104,15 +107,6 @@ export function UserMenu() {
               <Settings size={13} strokeWidth={1.75} className="shrink-0 text-[var(--text-muted)]" />
               <span className="flex-1 text-[13px] text-[var(--text-secondary)]">Settings</span>
               <span className="text-[11px] text-[var(--text-muted)]">⌘,</span>
-            </Link>
-            <Link
-              href="/dashboard/settings/account"
-              role="menuitem"
-              onClick={() => setOpen(false)}
-              className="flex w-full items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 py-1.5 text-left transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)] hover:bg-[var(--surface-hover)]"
-            >
-              <CircleUser size={13} strokeWidth={1.75} className="shrink-0 text-[var(--text-muted)]" />
-              <span className="flex-1 text-[13px] text-[var(--text-secondary)]">Profile</span>
             </Link>
           </div>
 

@@ -22,5 +22,8 @@ export {
   STARTER_LINES,
   EMPTY_STATE_SUGGESTIONS,
   starterIndexFrom,
+  composeStarters,
   type ConversationLayoutMode,
+  type StarterModel,
+  type StarterPrompt,
 } from "@/components/ai/conversation-surface";
