@@ -101,6 +101,32 @@ console.log('2. system instruction');
   check('names no financial figure', !/\$|\d{3,}/.test(SYSTEM_INSTRUCTION));
 }
 
+// ══ 2a. The one principle that lets an exploration be answered ══════════════
+//
+// ⚠️ ADDED ON MEASUREMENT, NOT ON TASTE. With the tool contracts already fixed,
+// "what if I invest some of the growing cash?" still produced a scenario call in
+// only 1 of 5 runs — the model gathered more data or asked for a percentage
+// instead of choosing one. These four lines took it to 5 of 5, and to 9 of 10
+// across the shipped configuration. They are the whole of the prompt change.
+console.log('2a. exploratory hypotheticals');
+{
+  check('the instruction permits choosing a missing number',
+    /invitation to choose one/.test(SYSTEM_INSTRUCTION));
+  check('…through the tools, never in prose',
+    /put it through the tools/.test(SYSTEM_INSTRUCTION));
+  check('…saying which value was used, and that it can be changed',
+    /say which value you used and that it can be/.test(SYSTEM_INSTRUCTION));
+  // ⚠️ THE TWO THINGS IT MUST NOT BECOME. A chosen value is not the user's
+  // decision, and it is not a prediction.
+  check('…and never presenting it as the user\'s choice or as what will happen',
+    /Never present a value you chose as one they chose, or/.test(SYSTEM_INSTRUCTION)
+      && /as what will happen/.test(SYSTEM_INSTRUCTION));
+  check('it is a principle, not a branch table — no tool names, no examples, no percentages',
+    !/scenario_|surplusFraction|75%|annualReturnPct/.test(SYSTEM_INSTRUCTION));
+  const words = SYSTEM_INSTRUCTION.split(/\s+/).filter(Boolean).length;
+  check(`the instruction is still ~100–210 words (is ${words})`, words >= 90 && words <= 210);
+}
+
 // ══ 3. Arms get what they claim, and nothing more ════════════════════════════
 console.log('3. evidence arms');
 {
@@ -1367,8 +1393,22 @@ console.log('17b. one spine');
   // ⚠️ THE DEFAULT RETURN IS ZERO AND THE DESCRIPTION SAYS SO. An unstated return
   // quietly becoming a market average is how a scenario tool turns into a
   // prediction engine.
-  check('the schema tells the model never to supply a rate the user did not state',
-    /never supply a rate the user did not state/i.test(findTool('scenario_projection')!.description));
+  //
+  // ⚠️ THE SENTENCE CHANGED BECAUSE IT WAS MEASURED BLOCKING THE TOOL. It read
+  // "never supply a rate the user did not state", and asked "what if I invest
+  // some of the growing cash?" the model made ZERO tool calls in 5 of 5 runs and
+  // asked the user for a percentage — correctly, by that contract. The harm it
+  // was written to prevent is a chosen rate being PRESENTED as a prediction, and
+  // that is what it forbids now; running one, labelled, is how an exploratory
+  // question gets answered at all.
+  const projectionDescription = findTool('scenario_projection')!.description;
+  check('the default return is zero, and named as a baseline rather than a forecast',
+    /default[\s\S]{0,20}return is 0%/i.test(projectionDescription)
+      && /not a prediction that markets return nothing/i.test(projectionDescription));
+  check('…a rate the user did not state may only be run as a labelled illustration',
+    /explicitly labelled[\s\S]{0,20}illustration/i.test(projectionDescription));
+  check('…and may never be called expected, likely, or a forecast',
+    /never be called expected, likely, or a forecast/i.test(projectionDescription));
   check('the investment pot comes from the canonical composer, not a sum here',
     /composeInvestments\(accounts\)/.test(src) && /composition\.combined === null/.test(src));
   check('a withheld investment total refuses rather than treating null as zero',

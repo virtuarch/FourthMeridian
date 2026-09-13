@@ -1865,8 +1865,10 @@ const SCENARIO_QUALIFICATION =
 const SCENARIO_INPUTS = {
   granularity: { type: 'string', enum: ['yearly', 'monthly'],
     description: 'yearly = 31 December of each year. Default yearly beyond ~18 months.' },
-  annualReturnPct: num('One flat annual return for the whole horizon, e.g. 8. Only if the '
-    + 'user stated it. Ignored when `returns` is given. Default 0.'),
+  annualReturnPct: num('One flat annual return for the whole horizon, e.g. 8. Default 0 — the '
+    + 'no-growth baseline. Use the rate the user stated; when they invited one without naming '
+    + 'it ("say, some return"), run an illustration and say in the answer which rate it was. '
+    + 'Ignored when `returns` is given.'),
   returns: { type: 'array', description: 'Per-period returns, when the user gave different '
     + 'rates for different years. Periods must not overlap.',
     items: obj({ from: str('YYYY-MM-DD'), to: str('YYYY-MM-DD, inclusive'),
@@ -1888,7 +1890,9 @@ const SCENARIO_INPUTS = {
         + 'for "invest some of the growing cash" — it never touches the balance the user '
         + 'already has, and a month that projects no gain contributes nothing. It runs at '
         + 'every month-end: give `from`/`to` only to start or stop it early, and never a '
-        + '`cadence` or an `onDate`. There is no default share — state the one the user meant.'),
+        + '`cadence` or an `onDate`. The engine has no default share: when the user named one '
+        + '("75%", "half") use it; when they said only "some" or "most", choose a share, run it, '
+        + 'and say in the answer which share it was.'),
       onDate:  str('YYYY-MM-DD for a single contribution.'),
       from:    str('YYYY-MM-DD first occurrence of a repeating contribution.'),
       to:      str('YYYY-MM-DD last occurrence. Omit to continue to the horizon.'),
@@ -1918,7 +1922,9 @@ const scenarioProjection: ToolDefinition = {
     'and an annual return. Cash comes from the same deterministic projection as ' +
     'project_cash; this adds only what the user said, and reports cash, investments, debt ' +
     'and net worth at every checkpoint. Do NOT do this arithmetic yourself. The default ' +
-    'return is 0%: never supply a rate the user did not state.',
+    'return is 0% — the no-growth baseline, which is not a prediction that markets return ' +
+    'nothing. A rate the user did not state may be run as an explicitly labelled ' +
+    'illustration; it may never be called expected, likely, or a forecast.',
   parameters: obj({ to: str('YYYY-MM-DD horizon end. Required.'), ...SCENARIO_INPUTS }, ['to']),
   async run(a, ctx) {
     const setup = await prepareScenario(a, ctx, String(a.to));
