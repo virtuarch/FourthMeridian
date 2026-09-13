@@ -139,7 +139,7 @@ console.log('4. tool surface');
   // model: first / last / highest / lowest over one balance are arithmetic, and
   // a scanned series answered 2026-04-24 to "when did debt first hit zero" on a
   // day whose debt was $5,353.81.
-  check('sixteen tools', TOOLS.length === 16, String(TOOLS.length));
+  check('seventeen tools', TOOLS.length === 17, String(TOOLS.length));
   check('names are unique', new Set(TOOLS.map((t) => t.name)).size === TOOLS.length);
   check('every tool describes itself', TOOLS.every((t) => t.description.length > 40));
   check('every schema is a closed object',
@@ -1542,16 +1542,23 @@ console.log('18a. goal seek tool');
   check('…and accepts the same scenario inputs, so nothing is stated twice',
     ['contributions', 'outflows', 'returns', 'annualReturnPct', 'assumedMonthlySpending']
       .every((p) => p in schema.properties));
-  check('one shared definition supplies those inputs to both tools',
-    (src.match(/\.\.\.SCENARIO_INPUTS/g) ?? []).length === 2);
+  // ⚠️ THREE TOOLS, ONE SCENARIO LANGUAGE. `scenario_crossing` joined the table
+  // and takes the identical inputs — a search with its own reduced vocabulary
+  // would be a second scenario system wearing the first one's name.
+  check('one shared definition supplies those inputs to every scenario tool',
+    (src.match(/\.\.\.SCENARIO_INPUTS/g) ?? []).length === 3);
   check('there is still exactly ONE place a forecast is assembled',
     (src.match(/assembleForecast\(\{/g) ?? []).length === 1);
-  check('…and one place a scenario is set up, so a solve and its table cannot diverge',
-    (src.match(/prepareScenario\(a, ctx,/g) ?? []).length === 2
+  check('…and one place a scenario is set up, so a solve, a table and a search cannot diverge',
+    (src.match(/prepareScenario\(a, ctx,/g) ?? []).length === 3
       && (src.match(/^async function prepareScenario/m) ?? []).length === 1);
   check('…and one place a scenario is presented',
     (src.match(/^function presentScenario/m) ?? []).length === 1
       && (src.match(/presentScenario\(setup,/g) ?? []).length === 2);
+  // The crossing returns no table, so it presents nothing — but it must still echo
+  // the SAME assumptions block, or a later turn inherits a different sentence.
+  check('…and the crossing echoes assumptions through that same authority',
+    (src.match(/scenarioAssumptions\(setup, ledger, setup\.returns\)/g) ?? []).length === 1);
 
   // ⚠️ THE LEDGER RETURNED IS THE ONE RUN AT THE ANSWER, not a re-derivation.
   check('the answer is rendered from the scenario the solution actually produces',
@@ -1585,8 +1592,8 @@ console.log('18a. goal seek tool');
   check('the assumptions actually in force are echoed on EVERY path, refusal included',
     /assumptionsInForce: scenarioAssumptions\(setup, baseLedger, setup\.returns\)/.test(src)
       && /^function scenarioAssumptions/m.test(src));
-  check('…and it is the same function the projection reports from',
-    (src.match(/scenarioAssumptions\(setup,/g) ?? []).length === 2);
+  check('…and it is the same function the projection and the crossing report from',
+    (src.match(/scenarioAssumptions\(setup,/g) ?? []).length === 3);
   check('…so an absent return says it was absent, rather than saying nothing',
     /do not describe this result as carrying a return/
       .test(read('lib/ai/conversation/tools.ts')));

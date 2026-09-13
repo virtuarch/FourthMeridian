@@ -41,8 +41,20 @@
  * envelope says what the stated hypothetical comes to; it never says what is.
  */
 
-/** The tool whose success establishes a scenario. Goal-seek is NOT in this slice. */
+/** The tool whose success establishes a scenario. Goal-seek is NOT one of these. */
 export const SCENARIO_TOOL = 'scenario_projection' as const;
+
+/**
+ * The tool that answers WHEN the same hypothetical reaches a number.
+ *
+ * ⚠️ THE SAME SCENARIO, ASKED A DIFFERENT QUESTION. "When do I hit a million?"
+ * and "what about two?" are one evolving hypothetical, and the second inherits
+ * the first only if the first was captured. It takes the identical scenario
+ * inputs, so its arguments are an assumption set exactly as
+ * `scenario_projection`'s are — including the target, which is what makes "what
+ * about $2M?" a change of one field rather than a new conversation.
+ */
+export const CROSSING_TOOL = 'scenario_crossing' as const;
 
 /**
  * The figures a later turn needs to keep talking about the hypothetical.
@@ -115,28 +127,20 @@ const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFi
 export function captureActiveScenario(
   toolName: string, args: unknown, result: unknown,
 ): ScenarioCapture {
-  if (toolName !== SCENARIO_TOOL) return { action: 'IGNORE' };
+  if (toolName !== SCENARIO_TOOL && toolName !== CROSSING_TOOL) return { action: 'IGNORE' };
 
   const r = result as Record<string, unknown> | null | undefined;
   if (!r || typeof r !== 'object') return { action: 'CLEAR', reason: 'no result' };
   if ('error' in r) return { action: 'CLEAR', reason: String(r.error) };
   if ('unavailable' in r) return { action: 'CLEAR', reason: String(r.unavailable) };
 
-  const checkpoints = r.checkpoints;
-  if (!Array.isArray(checkpoints) || checkpoints.length === 0) {
-    return { action: 'CLEAR', reason: 'no checkpoints' };
-  }
-  const last = checkpoints[checkpoints.length - 1] as LedgerCheckpointish;
-  const liquid = num(last?.liquid?.amount);
-  const investments = num(last?.investments?.amount);
-  const debt = num(last?.debt?.amount);
-  const netWorth = num(last?.netWorth?.amount);
-  const asOf = typeof r.asOf === 'string' ? r.asOf : null;
-  const to = (r.horizon as { to?: unknown } | undefined)?.to;
-  if (liquid === null || investments === null || debt === null || netWorth === null
-    || asOf === null || typeof to !== 'string') {
-    return { action: 'CLEAR', reason: 'incomplete final checkpoint' };
-  }
+  // ⚠️ EACH TOOL SAYS WHERE ITS POSITION IS; NEITHER MINTS THE PAIR. A projection's
+  // is its last checkpoint, a crossing's is the month it found — and both arrive
+  // here as the same six numbers, so there is still exactly one place a scenario
+  // comes into existence.
+  const position = toolName === CROSSING_TOOL ? crossingPosition(r) : finalCheckpoint(r);
+  if ('reason' in position) return { action: 'CLEAR', reason: position.reason };
+  const { asOf, to, liquid, investments, debt, netWorth } = position;
 
   // ⚠️ ONE LITERAL, ONE EXECUTION. The pair's coupling is this expression.
   return {
@@ -146,6 +150,56 @@ export function captureActiveScenario(
       result: { asOf, to, liquid, investments, debt, netWorth },
     },
   };
+}
+
+/** Six numbers and the two dates that place them, or why they could not be read. */
+type Position =
+  | { asOf: string; to: string; liquid: number; investments: number;
+      debt: number; netWorth: number }
+  | { reason: string };
+
+const position = (
+  r: Record<string, unknown>, to: unknown, c: Record<string, unknown> | undefined,
+  missing: string,
+): Position => {
+  const liquid = num(c?.liquid);
+  const investments = num(c?.investments);
+  const debt = num(c?.debt);
+  const netWorth = num(c?.netWorth);
+  const asOf = typeof r.asOf === 'string' ? r.asOf : null;
+  if (liquid === null || investments === null || debt === null || netWorth === null
+    || asOf === null || typeof to !== 'string') return { reason: missing };
+  return { asOf, to, liquid, investments, debt, netWorth };
+};
+
+/** A projection's position: its last checkpoint, at the horizon it was asked for. */
+function finalCheckpoint(r: Record<string, unknown>): Position {
+  const checkpoints = r.checkpoints;
+  if (!Array.isArray(checkpoints) || checkpoints.length === 0) return { reason: 'no checkpoints' };
+  const last = checkpoints[checkpoints.length - 1] as LedgerCheckpointish;
+  return position(r, (r.horizon as { to?: unknown } | undefined)?.to, {
+    liquid: last?.liquid?.amount, investments: last?.investments?.amount,
+    debt: last?.debt?.amount, netWorth: last?.netWorth?.amount,
+  }, 'incomplete final checkpoint');
+}
+
+/**
+ * A crossing's position, as the scenario's standing result.
+ *
+ * ⚠️ THE DATE IS THE ANSWER, SO THE DATE IS THE HORIZON. A projection's result is
+ * its last checkpoint; a crossing's is the month it found — or, when it found
+ * none, the month it searched to, which is the honest end of the same path. Both
+ * are positions the scenario actually produced; neither is a fresh computation.
+ *
+ * ⚠️ A SEARCH THAT WAS ALREADY TRUE CARRIES NO POSITION. "You are already there"
+ * is a statement about today, and today is what the financial tools are for — an
+ * envelope repeating it would put a current balance inside a hypothetical.
+ */
+function crossingPosition(r: Record<string, unknown>): Position {
+  const at = (r.crossing ?? r.neverCrossesBy) as
+    { date?: unknown; composition?: Record<string, unknown> } | null | undefined;
+  if (!at || typeof at !== 'object') return { reason: 'no crossing position to carry' };
+  return position(r, at.date, at.composition, 'incomplete crossing position');
 }
 
 /** Apply a capture to the slot. The only way the slot ever changes. */

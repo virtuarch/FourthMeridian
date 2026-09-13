@@ -67,10 +67,13 @@ import {
 } from './forecast-vocabulary';
 import { applyInvestmentScenario, type ScenarioComponent } from './scenario';
 import {
+  findScenarioCrossing, type CrossingDirection, type LedgerMetric,
+} from './scenario-crossing';
+import {
   monthEndsBetween,
   runScenarioLedger, expandContributions, solveForTarget, PROVENANCE,
-  type ContributionSpec, type LedgerResult, type PlannedMovement,
-  type ReturnPeriod, type SpinePoint,
+  type ContributionSpec, type LedgerCheckpoint, type LedgerResult,
+  type PlannedMovement, type ReturnPeriod, type SpinePoint,
 } from './scenario-ledger';
 import type { SpaceContext } from '@/lib/space';
 // ⚠️ THE ONE WRITE PATH, IMPORTED RATHER THAN INLINED. Keeping the memory tools
@@ -112,6 +115,14 @@ const num = (description: string) => ({ type: 'number', description });
 const round2 = (n: number) => Math.round(n * 100) / 100;
 /** A Date back to the calendar day it represents. UTC, like every date in this layer. */
 const isoDay = (d: Date) => d.toISOString().slice(0, 10);
+/** The same calendar day, N years on. Clamps 29 February the way a calendar does. */
+const addYearsISO = (iso: string, years: number): string => {
+  const d = new Date(`${iso}T00:00:00.000Z`);
+  const target = new Date(Date.UTC(d.getUTCFullYear() + years, d.getUTCMonth(), d.getUTCDate()));
+  return target.getUTCMonth() === d.getUTCMonth() ? target.toISOString().slice(0, 10)
+    : new Date(Date.UTC(d.getUTCFullYear() + years, d.getUTCMonth() + 1, 0))
+      .toISOString().slice(0, 10);
+};
 /** The bound `lib/history/exploration` uses. Enough for all-time on this corpus. */
 const SNAPSHOT_READ_ROWS = 1100;
 /** Ceiling on a DAILY series, so one call cannot return a year of rows by accident. */
@@ -1533,6 +1544,17 @@ interface ScenarioSetup {
  */
 async function prepareScenario(
   a: Record<string, unknown>, ctx: ToolContext, toISO: string,
+  /**
+   * The checkpoint dates to evaluate, when the caller owns them.
+   *
+   * ⚠️ FOR A SEARCH, NOT FOR A TABLE. `scenario_crossing` walks month-ends to
+   * find one date and returns none of them; granularity and the
+   * MAX_SCENARIO_CHECKPOINTS trim exist to keep a READABLE table readable, and
+   * applying them to a search would delete the answer — which is precisely how
+   * the historical series used to lose the day it was asked about. Given a grid,
+   * this uses it verbatim.
+   */
+  explicitDates?: string[],
 ): Promise<ScenarioSetup | { unavailable: string; reason?: unknown }> {
   const spine = await buildCashSpine(ctx, {
     asOf: ctx.asOfISO,
@@ -1572,12 +1594,13 @@ async function prepareScenario(
 
   const horizonDays = Math.round(
     (Date.parse(`${toISO}T00:00:00Z`) - Date.parse(`${asOf}T00:00:00Z`)) / 86_400_000);
-  const granularity = (a.granularity as string) === 'monthly' ? 'monthly'
+  const granularity = explicitDates ? 'monthly'
+    : (a.granularity as string) === 'monthly' ? 'monthly'
     : (a.granularity as string) === 'yearly' ? 'yearly'
     : horizonDays > 550 ? 'yearly' : 'monthly';
-  let dates = granularity === 'yearly'
-    ? yearEndsBetween(asOf, toISO) : monthEndsBetween(asOf, toISO);
-  const clamped = dates.length > MAX_SCENARIO_CHECKPOINTS;
+  let dates = explicitDates ?? (granularity === 'yearly'
+    ? yearEndsBetween(asOf, toISO) : monthEndsBetween(asOf, toISO));
+  const clamped = !explicitDates && dates.length > MAX_SCENARIO_CHECKPOINTS;
   // Keep the HORIZON when trimming — a table that stops short of the date the
   // question named has not answered it.
   if (clamped) dates = [...dates.slice(0, MAX_SCENARIO_CHECKPOINTS - 1), toISO];
@@ -1824,14 +1847,21 @@ function presentScenario(setup: ScenarioSetup, ledger: LedgerResult, returns: Re
     // ⚠️ SAID ONCE, PLAINLY, WHERE THE MODEL WILL READ IT. Every earlier
     // version of this answer was composed in prose, and the assumption that a
     // stated return was a forecast is the failure that follows.
-    qualification:
-      'The cash line is an evidence-based projection; the returns and contributions are '
-      + 'the user\'s own assumptions and nothing here predicts a market. Present the '
-      + 'result as "if these assumptions hold", and never as an expectation.',
+    qualification: SCENARIO_QUALIFICATION,
   };
 }
 
-/** The scenario arguments both tools accept, so the model states them once, one way. */
+/**
+ * ⚠️ SAID ONCE, PLAINLY, WHERE THE MODEL WILL READ IT. Every earlier version of
+ * this answer was composed in prose, and the assumption that a stated return was
+ * a forecast is the failure that follows.
+ */
+const SCENARIO_QUALIFICATION =
+  'The cash line is an evidence-based projection; the returns and contributions are '
+  + 'the user\'s own assumptions and nothing here predicts a market. Present the '
+  + 'result as "if these assumptions hold", and never as an expectation.';
+
+/** The scenario arguments every scenario tool accepts, so the model states them one way. */
 const SCENARIO_INPUTS = {
   granularity: { type: 'string', enum: ['yearly', 'monthly'],
     description: 'yearly = 31 December of each year. Default yearly beyond ~18 months.' },
@@ -1894,6 +1924,150 @@ const scenarioProjection: ToolDefinition = {
     const setup = await prepareScenario(a, ctx, String(a.to));
     if ('unavailable' in setup) return setup;
     return presentScenario(setup, setup.run(), setup.returns);
+  },
+};
+
+// ── 11b. Scenario threshold crossing ─────────────────────────────────────────
+
+/** What each line means to a reader. The values themselves are the ledger's. */
+const CROSSING_METRICS: Record<LedgerMetric, string> = {
+  netWorth:    'everything owned less everything owed',
+  liquid:      'checking + savings',
+  investments: 'traditional investments + crypto',
+  debt:        'what is owed, as a positive amount',
+  otherAssets: 'property and anything else that is not cash, an investment or a debt',
+};
+const CROSSING_DIRECTIONS: CrossingDirection[] = ['at_or_above', 'at_or_below'];
+
+/**
+ * How far forward a search may look when nobody says.
+ *
+ * ⚠️ A SEARCH NEEDS A WALL, AND THE WALL IS PRODUCT. `scenario_projection` will
+ * happily run to 2100 because a caller naming a horizon has said what they mean;
+ * a caller asking "when?" has not, and an unbounded forward walk is a loop. Thirty
+ * years covers every goal anybody states in a sentence and costs about a third of
+ * a second to search.
+ */
+const CROSSING_DEFAULT_YEARS = 30;
+const CROSSING_MAX_YEARS = 30;
+
+const scenarioCrossing: ToolDefinition = {
+  name: 'scenario_crossing',
+  description:
+    'WHEN a scenario first reaches a number: the first future month-end where net worth, cash, '
+    + 'investments or debt crosses a threshold, under the same assumptions scenario_projection '
+    + 'takes. Use it for "when do I hit a million", "when will I be debt free", "how long until '
+    + 'I have X" — anything asking WHEN rather than HOW MUCH. It returns the crossing month, the '
+    + 'month before it, and what the position looks like there. Do NOT read a date off a '
+    + 'projection table yourself, and do NOT guess a deadline to hand scenario_goal_seek: that '
+    + 'tool answers "what would it take by DATE", this one answers "when".',
+  parameters: obj({
+    metric: { type: 'string', enum: Object.keys(CROSSING_METRICS),
+      description: 'Which line crosses. `liquid` is checking + savings; `debt` is what is owed, '
+        + 'as a positive amount.' },
+    direction: { type: 'string', enum: CROSSING_DIRECTIONS,
+      description: 'at_or_above for reaching a target; at_or_below for falling to one. '
+        + '"When is my debt gone" is metric `debt`, at_or_below, threshold 0.' },
+    threshold: num('The number to reach, in dollars. Required.'),
+    searchThrough: str('YYYY-MM-DD to stop looking. Omit to search '
+      + `${CROSSING_DEFAULT_YEARS} years ahead. Use it when the user named a window — `
+      + '"do I get there by 2035?" — and the search will not look past it.'),
+    ...SCENARIO_INPUTS,
+  }, ['metric', 'direction', 'threshold']),
+  async run(a, ctx) {
+    const metric = a.metric as LedgerMetric;
+    const direction = a.direction as CrossingDirection;
+    const threshold = Number(a.threshold);
+    if (!(metric in CROSSING_METRICS)) {
+      return { unavailable: `unknown metric: ${String(a.metric)}`,
+        canSearch: Object.keys(CROSSING_METRICS) };
+    }
+    if (!CROSSING_DIRECTIONS.includes(direction)) {
+      return { unavailable: `unknown direction: ${String(a.direction)}`,
+        canSearch: CROSSING_DIRECTIONS };
+    }
+    if (!Number.isFinite(threshold)) {
+      return { unavailable: 'the threshold is not a number' };
+    }
+
+    // ⚠️ THE CAP IS ABSOLUTE AND THE REQUEST IS NOT EXTENDED PAST IT. A user who
+    // said "through 2035" is answered about 2035; silently searching to 2056 and
+    // reporting a date they excluded would answer a question they did not ask.
+    const capISO = addYearsISO(ctx.asOfISO, CROSSING_MAX_YEARS);
+    const asked = (a.searchThrough as string) || addYearsISO(ctx.asOfISO, CROSSING_DEFAULT_YEARS);
+    const searchThrough = asked > capISO ? capISO : asked;
+    if (searchThrough <= ctx.asOfISO) {
+      return { unavailable: `the search window ${searchThrough} is not in the future` };
+    }
+
+    // ⚠️ EVERY MONTH-END, IN ORDER, THROUGH ONE LEDGER RUN. Not a bisection: a
+    // scenario path is not guaranteed to rise — a one-off outflow, a negative
+    // return or a falling month can take a line back down — so a search that
+    // assumed monotonicity could report the second crossing as the first, or
+    // miss one entirely. Walking the grid is O(months) and costs less than the
+    // model reading a table.
+    const dates = monthEndsBetween(ctx.asOfISO, searchThrough);
+    const setup = await prepareScenario(a, ctx, searchThrough, dates);
+    if ('unavailable' in setup) return setup;
+    const ledger = setup.run();
+
+    const composition = (c: LedgerCheckpoint) => ({
+      liquid: c.liquid?.amount ?? null, investments: c.investments.amount,
+      debt: c.debt.amount, otherAssets: c.otherAssets.amount,
+      netWorth: c.netWorth?.amount ?? null,
+    });
+    // ⚠️ THE WALK IS PURE AND LIVES NEXT DOOR. Nothing about money is decided
+    // here: the ledger produced the path, `findScenarioCrossing` says where the
+    // line is first crossed on it, and this only says it in words.
+    const found = findScenarioCrossing({ checkpoints: ledger.checkpoints,
+      opening: ledger.opening, metric, direction, threshold });
+
+    const head = {
+      asOf: setup.asOf, metric, metricMeans: CROSSING_METRICS[metric], direction, threshold,
+      searchedThrough: { to: searchThrough, monthsExamined: found.examined,
+        grain: 'month-end',
+        ...(asked > capISO ? { cappedAt: `${CROSSING_MAX_YEARS} years` } : {}) },
+      assumptionsInForce: scenarioAssumptions(setup, ledger, setup.returns),
+      rejected: [...setup.rejected, ...ledger.rejected],
+      warnings: ledger.warnings,
+      basis: ledger.basis,
+      qualification: SCENARIO_QUALIFICATION,
+    };
+
+    // ⚠️ ALREADY TRUE IS NOT A CROSSING, AND SAYING SO IS THE WHOLE POINT. The
+    // goal seek's `alreadyMet` is what produced "the solver says 0% is needed",
+    // narrated as though a future event had been found. A position that already
+    // satisfies the condition has a date, and it is today.
+    if (found.alreadySatisfied) {
+      return { ...head, crossing: null, alreadySatisfied: found.alreadySatisfied,
+        meaning: 'This is already true today. Nothing here is a future event.' };
+    }
+
+    if (!found.crossing) {
+      return { ...head, crossing: null,
+        neverCrossesBy: found.end
+          ? { date: found.end.checkpoint.date, value: found.end.value,
+              composition: composition(found.end.checkpoint) }
+          : null,
+        meaning: 'Under these assumptions the condition is not met at any month-end through '
+          + `${searchThrough}. That is a statement about this search window, not about ever.` };
+    }
+
+    const hit = found.crossing;
+    return {
+      ...head,
+      crossing: {
+        date: hit.checkpoint.date, value: hit.value,
+        // ⚠️ THE MONTH BEFORE IS WHAT MAKES IT A FIRST. Without it a reader
+        // cannot tell a crossing from a value that merely happens to be above
+        // the line.
+        previousCheckpoint: hit.previous,
+        composition: composition(hit.checkpoint),
+      },
+      alreadySatisfied: null,
+      meaning: 'The first month-end at which this is true. The projection is month-grain, so '
+        + 'say "by the end of that month" — nothing here establishes a day within it.',
+    };
   },
 };
 
@@ -2208,7 +2382,7 @@ export const TOOLS: readonly ToolDefinition[] = [
   getFinancialSnapshot, getSpending, getTransactions, getIncome, getInvestments,
   getNetWorthHistory, findInBalanceHistory, explainNetWorthComposition, projectCash,
   getPayDates, investmentScenario,
-  scenarioProjection, scenarioGoalSeek, reconcileProjection,
+  scenarioProjection, scenarioCrossing, scenarioGoalSeek, reconcileProjection,
   ...MEMORY_TOOLS,
 ];
 
