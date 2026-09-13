@@ -33,6 +33,7 @@ const inputs: WatermarkInputs = {
   transactionEventUpdatedAt: T('2026-09-12T19:34:14.264Z'),
   positionCount: 6529, positionCreatedAt: T('2026-09-12T19:34:41.807Z'),
   positionSupersededCount: 0, positionDeletedCount: 0,
+  recentPositionHash: '0f3c1a2b9d8e7f6a5b4c3d2e1f0a9b8c',
   reconstructionHash: '4a9b77581d661d89cf9c28df55460c09',
   instrumentUpdatedAt: T('2026-08-27T12:46:11.979Z'),
   priceCreatedAt: T('2026-09-07T23:46:26.875Z'),

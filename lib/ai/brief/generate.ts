@@ -12,6 +12,8 @@
  *   an observation states one    → that observation is dropped (UNLICENSED_FIGURE)
  *   an observation cites nothing real → dropped (NO_EVIDENCE); bad paths stripped
  *   SPENDING citing a debt payment or own-account transfer → dropped (MISLABELED_MOVEMENT)
+ *   an observation resting only on data freshness → dropped (SHOWN_ON_PAGE): the
+ *     page shows freshness and connection problems itself, every day they last
  *   `quiet` contradicting the kept observations' importance → reconciled to them
  *     (quietCorrected) — quiet means "nothing NOTABLE", so it is derived, not trusted
  *
@@ -37,7 +39,7 @@ import { rateAt } from '@/lib/usage/pricing';
 import { todayUTCISO } from '@/lib/time/clock';
 import {
   BRIEF_SCHEMA, MAX_EVIDENCE_PATHS,
-  citesNonSpendingAsSpending, resolveEvidencePath, validateNarration,
+  citesNonSpendingAsSpending, onlyReportsFreshness, resolveEvidencePath, validateNarration,
 } from './contract';
 import { licenceFromPackage, unlicensedFigures } from './licence';
 import { BRIEF_SYSTEM_PROMPT, approxTokens, briefUserMessage, serializePackage } from './prompt';
@@ -54,7 +56,7 @@ export type StructuredCall = <T>(
 export interface DroppedObservation {
   index:  number;
   kind:   string;
-  reason: 'NO_EVIDENCE' | 'UNLICENSED_FIGURE' | 'MISLABELED_MOVEMENT';
+  reason: 'NO_EVIDENCE' | 'UNLICENSED_FIGURE' | 'MISLABELED_MOVEMENT' | 'SHOWN_ON_PAGE';
   figures?: string[];
 }
 
@@ -96,6 +98,10 @@ export function acceptNarration(pkg: BriefPackage, raw: unknown): AcceptanceResu
     }
     if (evidence.length === 0) {
       validation.droppedObservations.push({ index, kind: ob.kind, reason: 'NO_EVIDENCE' });
+      return;
+    }
+    if (onlyReportsFreshness({ ...ob, evidence })) {
+      validation.droppedObservations.push({ index, kind: ob.kind, reason: 'SHOWN_ON_PAGE' });
       return;
     }
     const figures = unlicensedFigures(`${ob.title}\n${ob.body}`, licence);
@@ -154,6 +160,12 @@ export interface GenerateBriefOptions {
   model: string;
   /** Where the invocation is attributed. 'brief' for product traffic. */
   surface?: string;
+  /**
+   * Why the lifecycle is generating, carried in the correlation id so AiInvocation
+   * rows can be told apart at read time (brief_daily_… / brief_change_…). No
+   * second cost ledger: AiInvocation stays the accounting authority.
+   */
+  reason?: 'daily' | 'change';
   timeoutMs?: number;
   now?: Date;
   deps?: { structured?: StructuredCall; client?: StructuredClient; sinks?: UsageSinks };
@@ -175,7 +187,7 @@ export async function generateBriefFromPackage(
 ): Promise<BriefGenerationResult> {
   const now = options.now ?? new Date();
   const surface = options.surface ?? 'brief';
-  const correlationId = `brief_${randomUUID()}`;
+  const correlationId = options.reason ? `brief_${options.reason}_${randomUUID()}` : `brief_${randomUUID()}`;
   const serialized = serializePackage(pkg);
   const meta: BriefGenerationMeta = {
     correlationId, surface, model: options.model,

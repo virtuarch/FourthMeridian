@@ -28,6 +28,7 @@ const content = {
   headline: 'Quiet day.', quiet: true, briefDay: TODAY, generatedAt: '2026-09-13T08:00:00.000Z', evidenceAsOf: TODAY,
   observations: [{ kind: 'DATA_QUALITY', title: 'Reconnect', body: 'One connection needs you.', importance: 'NOTABLE', evidence: ['freshness.needsReauth'] }],
   secretExtra: 'should-not-leak',
+  standingFacts: { v: 1, concentration: { classification: 'HIGHLY_CONCENTRATED', topSymbol: 'SECRET_SYMBOL', topWeightPct: 85, populationIsComplete: false } },
 };
 const row = (over: Partial<BriefRow> = {}): BriefRow => ({
   id: 'row_secret', spaceId: 'space_A', ownerUserId: 'owner_secret', briefDay: TODAY, content,
@@ -41,7 +42,14 @@ const inspection = (decision: Partial<ArtifactDecision> & Pick<ArtifactDecision,
   today: TODAY, hasData: true, retryAfterMs: 0, timings: { watermark: 12 },
   decision: { claimActive: false, lastFailure: null, ...decision }, ...over,
 });
-const read = (i: BriefInspection) => responseFromInspection({ spaceId: 'space_A', inspection: i, now: NOW, metrics });
+// Carries extra keys a careless spread would leak.
+const dataHealth = {
+  sources: [{ kind: 'BANK', label: 'Chase', state: 'NEEDS_RECONNECT', lastUpdatedAt: '2026-08-18T09:00:00.000Z', accountCount: 2,
+    needsAttention: true, actionable: true, key: 'item_secret', errorCode: 'ITEM_LOGIN_REQUIRED_SECRET' }],
+  groups: [{ kind: 'BANK', sources: 1, attention: 1, oldestUpdatedAt: '2026-08-18T09:00:00.000Z', ownerUserId: 'owner_secret' }],
+  attention: 1,
+} as never;
+const read = (i: BriefInspection) => responseFromInspection({ spaceId: 'space_A', inspection: i, now: NOW, metrics, dataHealth });
 const all: BriefResponse[] = [];
 const keep = (r: BriefResponse) => { all.push(r); return r; };
 
@@ -54,6 +62,11 @@ console.log('1. GET — every state');
     JSON.stringify(fresh.brief?.observations) === JSON.stringify([{ kind: 'DATA_QUALITY', title: 'Reconnect', body: 'One connection needs you.', importance: 'NOTABLE' }]));
   check('…the metrics, the Space echoed, and when it was checked',
     fresh.spaceId === 'space_A' && fresh.metrics?.netWorth === 128450.22 && fresh.checkedAt === NOW.toISOString());
+  check('…and, separately, when each source last delivered',
+    fresh.dataHealth?.attention === 1 && fresh.dataHealth.sources[0].label === 'Chase' && fresh.dataHealth.sources[0].state === 'NEEDS_RECONNECT'
+      && fresh.dataHealth.groups[0].oldestUpdatedAt === '2026-08-18T09:00:00.000Z');
+  check('data health is null, not invented, when it could not be read',
+    responseFromInspection({ spaceId: 'space_A', inspection: inspection({ state: { kind: 'FRESH', row: row() } }), now: NOW, metrics }).dataHealth === null);
 
   const check_ = keep(read(inspection({ state: { kind: 'CHECK_MATERIAL', row: row(), fallback: fallbackFrom(row(), TODAY, NOW) } })));
   check('CHECK_MATERIAL → CHECK_REQUIRED: keep showing it, ask the server', check_.state === 'CHECK_REQUIRED' && check_.needsGeneration && !!check_.brief);
@@ -105,16 +118,16 @@ console.log('\n2. POST — every lifecycle outcome');
   const failed = post({ status: 'FAILED', reason: 'REASON_SECRET', retryAfterMs: 180_000, fallback: null, timings: t });
   check('FAILED → FAILED, no reason text', failed.state === 'FAILED' && failed.brief === null && failed.retryAfterMs === 180_000);
   check('NO_DATA → NO_DATA', post({ status: 'NO_DATA', timings: t }).state === 'NO_DATA');
-  check('generation responses carry no metrics', !('metrics' in generated));
+  check('generation responses carry no metrics and no data health (the page keeps the last read)', !('metrics' in generated) && !('dataHealth' in generated));
 }
 
 console.log('\n3. nothing internal crosses');
 {
   const FORBIDDEN_KEYS = ['sourceWatermark', 'materialDigest', 'generationStartedAt', 'correlationId', 'model', 'promptVersion',
     'evidence', 'lastFailureReason', 'lastFailedAt', 'ownerUserId', 'id', 'secretExtra', 'timings', 'payload', 'statedAs',
-    'reason', 'persisted', 'row', 'fallback', 'decision', 'historyThrough', 'evidenceAsOf'];
+    'reason', 'persisted', 'row', 'fallback', 'decision', 'historyThrough', 'evidenceAsOf', 'standingFacts', 'key', 'errorCode'];
   const FORBIDDEN_VALUES = ['wm-secret', 'dg-secret', 'brief_secret', 'owner_secret', 'REASON_SECRET', 'should-not-leak',
-    'brief-prompt-secret', 'gpt-5.1', 'row_secret', 'freshness.needsReauth'];
+    'brief-prompt-secret', 'gpt-5.1', 'row_secret', 'freshness.needsReauth', 'SECRET_SYMBOL', 'item_secret', 'LOGIN_REQUIRED_SECRET'];
   const leaks: string[] = [];
   const walk = (v: unknown, path: string) => {
     if (Array.isArray(v)) { v.forEach((x, i) => walk(x, `${path}[${i}]`)); return; }
@@ -130,7 +143,7 @@ console.log('\n3. nothing internal crosses');
   all.forEach((r, i) => walk(r, `response${i}`));
   check(`${all.length} responses, no internal key or value in any`, leaks.length === 0, leaks.slice(0, 6).join(', '));
   check('only the contract\'s top-level keys', all.every((r) => Object.keys(r).every((k) =>
-    ['spaceId', 'state', 'brief', 'needsGeneration', 'retryAfterMs', 'metrics', 'checkedAt'].includes(k))));
+    ['spaceId', 'state', 'brief', 'needsGeneration', 'retryAfterMs', 'metrics', 'dataHealth', 'checkedAt'].includes(k))));
 }
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);

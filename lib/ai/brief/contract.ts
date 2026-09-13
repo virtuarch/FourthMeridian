@@ -107,6 +107,18 @@ export function resolveEvidencePath(pkg: BriefPackage, path: string): unknown {
   return cur;
 }
 
+/**
+ * True when an observation rests only on data freshness.
+ *
+ * The page shows when each source last updated and which connections need
+ * attention, deterministically and for as long as the problem lasts. A generated
+ * observation that only restates that would say the same warning twice — and, on
+ * the next day, say it again as if it were new.
+ */
+export function onlyReportsFreshness(ob: BriefObservation): boolean {
+  return ob.evidence.length > 0 && ob.evidence.every((p) => /^freshness(\.|\[|$)/.test(p.trim()));
+}
+
 /** Flow types that are movements of the user's own money, never spending. */
 const NOT_SPENDING_FLOWS = new Set(['DEBT_PAYMENT', 'TRANSFER', 'INVESTMENT']);
 

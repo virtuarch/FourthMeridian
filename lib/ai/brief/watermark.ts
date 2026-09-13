@@ -22,7 +22,10 @@
  *   TransactionEvent        max(updatedAt)                 which row represents an event
  *   PositionObservation     count, max(createdAt), superseded count, deleted count
  *                                                         (append-only, no updatedAt — the counts
- *                                                         are the workaround)
+ *                                                         are the workaround), and a hash of the
+ *                                                         last 7 days' rows: a same-day capture
+ *                                                         UPSERTS quantity and value in place,
+ *                                                         which moves none of the counts
  *   PositionReconstruction  hash of rows                   upserted with no moving timestamp
  *   Instrument              max(updatedAt)                 held instruments' metadata
  *   PriceObservation        max(createdAt), last 14 days   held instruments' prices
@@ -50,7 +53,7 @@ import { createHash } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { WATERMARK_CLOCK_BUCKET_MS } from './policy';
 
-export const WATERMARK_VERSION = 'brief-source-v1';
+export const WATERMARK_VERSION = 'brief-source-v2';
 
 /** What the watermark is computed from. Counts, clocks and opaque row hashes only. */
 export interface WatermarkInputs {
@@ -64,6 +67,7 @@ export interface WatermarkInputs {
   transactionEventUpdatedAt: Date | null;
   positionCount: number; positionCreatedAt: Date | null;
   positionSupersededCount: number; positionDeletedCount: number;
+  recentPositionHash: string | null;
   reconstructionHash: string | null;
   instrumentUpdatedAt: Date | null;
   priceCreatedAt: Date | null;
@@ -138,6 +142,9 @@ export async function readWatermarkInputs(
       (SELECT max("createdAt") FROM "PositionObservation" WHERE "financialAccountId" IN (SELECT id FROM links)) AS "positionCreatedAt",
       (SELECT count(*) FROM "PositionObservation" WHERE "financialAccountId" IN (SELECT id FROM links) AND "supersededById" IS NOT NULL) AS "positionSupersededCount",
       (SELECT count(*) FROM "PositionObservation" WHERE "financialAccountId" IN (SELECT id FROM links) AND "deletedAt" IS NOT NULL) AS "positionDeletedCount",
+      (SELECT md5(string_agg(md5(concat_ws('|', p.id, p.quantity, p."institutionValue", p."institutionPrice", p."costBasis",
+          p."deletedAt", p."supersededById")), '' ORDER BY p.id)) FROM "PositionObservation" p
+        WHERE p."financialAccountId" IN (SELECT id FROM links) AND p.date >= current_date - 7) AS "recentPositionHash",
       (SELECT md5(string_agg(md5(row_to_json(r)::text), '' ORDER BY r.id)) FROM "PositionReconstruction" r
         WHERE r."financialAccountId" IN (SELECT id FROM links)) AS "reconstructionHash",
       (SELECT max("updatedAt") FROM "Instrument" WHERE id IN (SELECT id FROM held)) AS "instrumentUpdatedAt",
@@ -164,6 +171,7 @@ export async function readWatermarkInputs(
     transactionEventUpdatedAt: date(r.transactionEventUpdatedAt),
     positionCount: num(r.positionCount), positionCreatedAt: date(r.positionCreatedAt),
     positionSupersededCount: num(r.positionSupersededCount), positionDeletedCount: num(r.positionDeletedCount),
+    recentPositionHash: text(r.recentPositionHash),
     reconstructionHash: text(r.reconstructionHash),
     instrumentUpdatedAt: date(r.instrumentUpdatedAt),
     priceCreatedAt: date(r.priceCreatedAt),

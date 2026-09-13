@@ -14,7 +14,7 @@
  */
 
 import type {
-  BriefArtifactView, BriefMetricsView, BriefObservationView, BriefResponse,
+  BriefArtifactView, BriefDataHealthView, BriefMetricsView, BriefObservationView, BriefResponse,
 } from '@/lib/brief-types';
 import { ageInDays, bandForAge, isStaleBand } from '@/lib/freshness/observation';
 import type { BriefInspection, EnsureResult } from './lifecycle';
@@ -50,16 +50,30 @@ export function artifactFromRow(row: BriefRow, today: string, now: Date): BriefA
     balancesAsOf: row.balancesAsOf, today, now });
 }
 
+/** The second clock, copied by name like everything else here. */
+function dataHealthView(h: BriefDataHealthView | null | undefined): BriefDataHealthView | null {
+  if (!h) return null;
+  return {
+    sources: h.sources.map((s) => ({
+      kind: s.kind, label: s.label, state: s.state, lastUpdatedAt: s.lastUpdatedAt,
+      accountCount: s.accountCount, needsAttention: s.needsAttention, actionable: s.actionable,
+    })),
+    groups: h.groups.map((g) => ({ kind: g.kind, sources: g.sources, attention: g.attention, oldestUpdatedAt: g.oldestUpdatedAt })),
+    attention: h.attention,
+  };
+}
+
 const usable = (f: BriefFallback | null, today: string, now: Date) =>
   f && f.usable ? artifactFromRow(f.row, today, now) : null;
 
 /** GET: the inspected state. */
 export function responseFromInspection(args: {
   spaceId: string; inspection: BriefInspection; now: Date; metrics: BriefMetricsView | null;
+  dataHealth?: BriefDataHealthView | null;
 }): BriefResponse {
   const { spaceId, inspection, now, metrics } = args;
   const { decision, today, retryAfterMs, hasData } = inspection;
-  const base = { spaceId, metrics, checkedAt: now.toISOString() };
+  const base = { spaceId, metrics, dataHealth: dataHealthView(args.dataHealth), checkedAt: now.toISOString() };
 
   if (!hasData) return { ...base, state: 'NO_DATA', brief: null, needsGeneration: false };
 

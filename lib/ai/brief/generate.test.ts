@@ -106,6 +106,20 @@ async function main() {
     check('DEBT citing the same row is kept', r.ok && r.narration.observations.length === 1 && r.narration.observations[0].kind === 'DEBT');
   }
 
+  console.log('\n4b. freshness is the page\'s to show');
+  {
+    const stale = fixture('09-stale');
+    const r = acceptNarration(stale, narration({ quiet: false, observations: [
+      ob({ kind: 'DATA_QUALITY', title: 'Data may be out of date', body: 'Some accounts have not updated recently.', importance: 'NOTABLE', evidence: ['freshness.band', 'freshness.oldestBalanceAgeDays'] }),
+      ob({ kind: 'CASH', title: 'Cash may be behind', body: 'Your cash of $18.9K may not reflect recent activity.', evidence: ['currentState.liquid', 'freshness.band'] }),
+    ] }));
+    check('an observation resting only on freshness is dropped — the page already says it',
+      r.ok && r.validation.droppedObservations[0]?.reason === 'SHOWN_ON_PAGE');
+    check('…one that qualifies a real conclusion with freshness is kept', r.ok && r.narration.observations.length === 1 && r.narration.observations[0].kind === 'CASH');
+    check('the instruction tells the model the page shows freshness', /page shows the user when their financial data was last updated/.test(BRIEF_SYSTEM_PROMPT)
+      && !/deserve a brief CONTEXT observation even on a quiet day/.test(BRIEF_SYSTEM_PROMPT));
+  }
+
   console.log('\n5. the instruction');
   {
     check('stale data must be named', /STALE, VERY_STALE or UNKNOWN/.test(BRIEF_SYSTEM_PROMPT) && /out of date/.test(BRIEF_SYSTEM_PROMPT));
@@ -157,6 +171,10 @@ async function main() {
     check('cost is priced from the gpt-5.1 rate (2,000 in / 300 out = $0.0055)',
       r.ok && Math.abs((r.meta.costUsd ?? 0) - 0.0055) < 1e-9, String(r.ok && r.meta.costUsd));
     check('package size is reported', r.meta.packageBytes > 1000 && r.meta.packageApproxTokens > 250);
+    const withReason = await generateBriefFromPackage(pkg, { model: 'gpt-5.1', now, reason: 'change', deps: { structured: (async () => ({
+      value: narration(), model: 'gpt-5.1', latencyMs: 1, finishReason: 'stop', usage: null })) as unknown as StructuredCall } });
+    check('a generation reason is carried in the correlation id, and only there',
+      /^brief_change_[0-9a-f-]{36}$/.test(withReason.meta.correlationId));
   }
 
   console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);

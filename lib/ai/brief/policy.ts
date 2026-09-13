@@ -39,6 +39,19 @@ export const GENERATION_FAILURE_COOLDOWN_MS = 180_000;
 export const STALE_FALLBACK_MAX_DAYS = 2;
 
 /**
+ * Standing facts (relevance.ts): how far a concentration weight must move, in
+ * percentage points, before an unchanged-looking concentration is news again.
+ * Ten points is "60% → 70%", not a daily price wobble.
+ */
+export const CONCENTRATION_WEIGHT_STEP_PCT = 10;
+
+/**
+ * A previous Brief older than this does not suppress a standing fact: after a month
+ * away, "your crypto is almost all BTC" is a fair re-introduction.
+ */
+export const RELEVANCE_PRIOR_MAX_DAYS = 30;
+
+/**
  * The width of the clock component of the source watermark.
  *
  * Some package inputs change with time alone: per-account freshness bands (LIVE

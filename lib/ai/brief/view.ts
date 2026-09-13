@@ -18,8 +18,10 @@
 import 'server-only';
 import { resolveSpaceContext, type SpaceContext } from '@/lib/space';
 import { getSpaceNetWorthSummaries } from '@/lib/data/snapshots';
+import { db } from '@/lib/db';
+import { loadSpaceDataHealth } from '@/lib/connections/space-data-health';
 import { todayUTCISO } from '@/lib/time/clock';
-import type { BriefMetricsView, BriefResponse } from '@/lib/brief-types';
+import type { BriefDataHealthView, BriefMetricsView, BriefResponse } from '@/lib/brief-types';
 import { ensureDailyBrief, inspectDailyBrief, type LifecycleDeps } from './lifecycle';
 import { responseFromEnsure, responseFromInspection } from './view-model';
 
@@ -47,6 +49,20 @@ async function loadMetrics(spaceId: string): Promise<BriefMetricsView | null> {
   }
 }
 
+/**
+ * When each source behind the Space last delivered, for this viewer. Read on every
+ * GET — never stored with the Brief — so a reconnect shows at once, before (and
+ * whether or not) the Brief itself is reconsidered. Null when it cannot be read.
+ */
+async function loadDataHealth(spaceId: string, viewerUserId: string, now: Date): Promise<BriefDataHealthView | null> {
+  try {
+    return await loadSpaceDataHealth(db, { spaceId, viewerUserId, now });
+  } catch (err) {
+    console.error('[brief] data health unavailable:', err);
+    return null;
+  }
+}
+
 /** GET /api/brief and the page's first render. Never a model call. */
 export async function readBriefResponse(
   userId: string, spaceId: string,
@@ -55,12 +71,13 @@ export async function readBriefResponse(
   const spaceCtx = await resolveNamedSpace(userId, spaceId);
   if (!spaceCtx) return { ok: false, status: 403 };
   const now = options.now ?? new Date();
-  const [inspection, metrics] = await Promise.all([
+  const [inspection, metrics, dataHealth] = await Promise.all([
     inspectDailyBrief({ spaceId, ownerUserId: userId },
       { now, deps: { ...options.deps, resolveSpace: async () => spaceCtx } }),
     loadMetrics(spaceId),
+    loadDataHealth(spaceId, userId, now),
   ]);
-  return { ok: true, body: responseFromInspection({ spaceId, inspection, now, metrics }) };
+  return { ok: true, body: responseFromInspection({ spaceId, inspection, now, metrics, dataHealth }) };
 }
 
 /** POST /api/brief/generate. At most one model call, and only when the evidence warrants it. */

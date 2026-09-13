@@ -25,7 +25,7 @@
  * a poll finds the other request's claim expired without a Brief. Never a loop.
  */
 
-import type { BriefArtifactView, BriefMetricsView, BriefResponse } from "@/lib/brief-types";
+import type { BriefArtifactView, BriefDataHealthView, BriefMetricsView, BriefResponse } from "@/lib/brief-types";
 
 export const BRIEF_POLL_INTERVAL_MS = 2_000;
 export const BRIEF_POLL_MAX_MS = 40_000;
@@ -49,6 +49,8 @@ export interface BriefView {
   phase:   BriefPhase;
   brief:   BriefArtifactView | null;
   metrics: BriefMetricsView | null;
+  /** When each source last delivered; carried from the last page/GET response. */
+  dataHealth: BriefDataHealthView | null;
   /** Epoch ms after which a retry may be attempted, when one is being withheld. */
   retryAt: number | null;
 }
@@ -75,10 +77,10 @@ export interface BriefController {
 }
 
 export function initialView(initial: BriefResponse | null): BriefView {
-  if (!initial) return { phase: "LOADING", brief: null, metrics: null, retryAt: null };
+  if (!initial) return { phase: "LOADING", brief: null, metrics: null, dataHealth: null, retryAt: null };
   const phase: BriefPhase = initial.state === "NO_DATA" ? "NO_DATA"
     : initial.brief ? "SHOWING" : "LOADING";
-  return { phase, brief: initial.brief, metrics: initial.metrics ?? null, retryAt: null };
+  return { phase, brief: initial.brief, metrics: initial.metrics ?? null, dataHealth: initial.dataHealth ?? null, retryAt: null };
 }
 
 class Aborted extends Error {}
@@ -122,6 +124,7 @@ export function createBriefController(opts: {
     for (;;) {
       guard(current, signal);
       if (current.metrics !== undefined) view = { ...view, metrics: current.metrics };
+      if (current.dataHealth !== undefined) view = { ...view, dataHealth: current.dataHealth };
       // A response without a Brief while IN_PROGRESS/FAILED keeps what is on screen:
       // it was a safe Brief for this Space a moment ago.
       const keep = (current.state === "IN_PROGRESS" || current.state === "FAILED") && !current.brief;

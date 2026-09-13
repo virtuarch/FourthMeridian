@@ -207,6 +207,23 @@ console.log('\n5. nothing that identifies an account or a provider');
   check('no ungraded prose (it can carry figures and names)', !json.includes('has no APR ('));
 }
 
+console.log('\n5b. sources that need attention, named for qualification');
+{
+  const dataHealth = {
+    sources: [
+      { kind: 'BANK' as const, label: 'Chase', state: 'NEEDS_RECONNECT' as const, lastUpdatedAt: '2026-08-18T09:00:00.000Z', accountCount: 2, needsAttention: true, actionable: true },
+      { kind: 'BANK' as const, label: 'Amex', state: 'CURRENT' as const, lastUpdatedAt: '2026-09-13T09:00:00.000Z', accountCount: 1, needsAttention: false, actionable: true },
+    ],
+    groups: [], attention: 1,
+  };
+  const pkg = projectBriefPackage(inputs({ dataHealth }));
+  check('only the source needing attention, with its state and day',
+    JSON.stringify(pkg.freshness?.staleSources) === JSON.stringify([{ label: 'Chase', state: 'NEEDS_RECONNECT', lastUpdated: '2026-08-18' }]));
+  check('no staleSources key when every source is current',
+    !!pkg.freshness && !('staleSources' in projectBriefPackage(inputs({ dataHealth: { ...dataHealth, sources: [dataHealth.sources[1]], attention: 0 } })).freshness!));
+  check('none when data health could not be read', !!pkg.freshness && !('staleSources' in projectBriefPackage(inputs()).freshness!));
+}
+
 console.log('\n6. the information ceiling');
 {
   const cut = history('2026-08-01', '2026-09-01');

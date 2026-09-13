@@ -6,10 +6,11 @@
  * The flow lives in ./brief-flow (framework-free, tested); this file wires it to
  * the page's lifecycle and renders what it says:
  *
- *   a Brief on screen      → headline, metric row, what deserves attention, context,
- *                            with a provenance line that says when it was written,
- *                            when its balances were last checked, and whether it is
- *                            updating or could not update
+ *   a Brief on screen      → headline, metric row, what deserves attention, what is
+ *                            worth knowing, under TWO clocks: when the Brief was
+ *                            written (and whether it is updating), and — separately —
+ *                            when each source behind the Space last delivered data,
+ *                            with the sources that need attention named
  *   nothing safe to show   → the Brief's own shape as a skeleton, one truthful label
  *   no connected accounts  → onboarding
  *
@@ -22,12 +23,15 @@
  * snapshot figures; nothing is ever read out of the narration.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, ShieldCheck } from "lucide-react";
+import { ArrowRight, ChevronDown, ShieldCheck } from "lucide-react";
 import { Surface, Figure } from "@/components/atlas/Surface";
 import { formatCurrency } from "@/lib/currency";
-import type { BriefArtifactView, BriefMetricsView, BriefObservationView, BriefResponse } from "@/lib/brief-types";
+import type {
+  BriefArtifactView, BriefDataHealthView, BriefMetricsView, BriefObservationView, BriefResponse,
+  DataGroupView, DataSourceKind, DataSourceView,
+} from "@/lib/brief-types";
 import { BriefNewUser } from "./BriefNewUser";
 import {
   browserClock, createBriefController, httpBriefTransport, initialView,
@@ -41,6 +45,15 @@ const shortDate = (iso: string) => new Date(iso).toLocaleDateString([], { month:
 const utcDay = (day: string) => new Date(`${day}T00:00:00Z`).toLocaleDateString([], {
   weekday: "long", month: "short", day: "numeric", timeZone: "UTC",
 });
+
+/** "today" / "yesterday" / "Sep 10", in the browser's calendar. */
+const relDay = (iso: string) => {
+  const d = new Date(iso);
+  const n = new Date();
+  const days = Math.round((new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime()
+    - new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()) / 86_400_000);
+  return days <= 0 ? "today" : days === 1 ? "yesterday" : shortDate(iso);
+};
 
 function greeting(firstName: string | null): string {
   const h = new Date().getHours();
@@ -59,19 +72,15 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** Clock one: when the Brief was written, and whether it is being reconsidered. */
 function Provenance({ brief, phase }: { brief: BriefArtifactView; phase: BriefView["phase"] }) {
   const status = phase === "UPDATING" || phase === "WAITING" ? "Updating…"
     : phase === "COULD_NOT_UPDATE" ? "Couldn’t update" : null;
   return (
     <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-muted)]">
       <span suppressHydrationWarning>
-        {brief.fromPriorDay ? `From ${utcDay(brief.briefDay)} · ` : ""}Updated {time(brief.generatedAt)}
+        {brief.fromPriorDay ? `From ${utcDay(brief.briefDay)} · ` : ""}Brief updated {time(brief.generatedAt)}
       </span>
-      {brief.balancesMayBeStale ? (
-        <><span aria-hidden>·</span><span className="text-[var(--accent-warning)]">Some balances may be out of date</span></>
-      ) : brief.balancesAsOf ? (
-        <><span aria-hidden>·</span><span suppressHydrationWarning>Balances last checked {shortDate(brief.balancesAsOf)}</span></>
-      ) : null}
       <span role="status" aria-live="polite" className="inline-flex items-center gap-1.5">
         {status && (
           <>
@@ -82,6 +91,122 @@ function Provenance({ brief, phase }: { brief: BriefArtifactView; phase: BriefVi
         )}
       </span>
     </p>
+  );
+}
+
+const GROUP_NAME: Record<DataSourceKind, string> = { BANK: "Banks", WALLET: "Crypto", MANUAL: "Manual" };
+
+/** A provider group never reads better than its worst source: attention first, then its OLDEST update. */
+function groupPhrase(g: DataGroupView): string {
+  if (g.attention > 0) {
+    return g.sources === 1 ? "needs attention" : `${g.attention} of ${g.sources} ${g.attention === 1 ? "needs" : "need"} attention`;
+  }
+  return g.oldestUpdatedAt ? `updated ${relDay(g.oldestUpdatedAt)}` : "not updated yet";
+}
+
+function sourceStatus(s: DataSourceView): string {
+  const since = s.lastUpdatedAt ? shortDate(s.lastUpdatedAt) : null;
+  switch (s.state) {
+    case "CURRENT":          return s.lastUpdatedAt ? `Updated ${relDay(s.lastUpdatedAt)}` : "Up to date";
+    case "IMPORTING":        return "Still importing";
+    case "OUT_OF_DATE":      return since ? `Hasn’t updated since ${since}` : "Hasn’t updated recently";
+    case "NEEDS_RECONNECT":  return since ? `Needs to be reconnected · last updated ${since}` : "Needs to be reconnected";
+    case "CONNECTION_ERROR": return since ? `Connection error · last updated ${since}` : "Connection error";
+    case "SYNC_INCOMPLETE":  return since ? `Last update didn’t finish · data from ${since}` : "Last update didn’t finish";
+    case "DISCONNECTED":     return since ? `Disconnected · last updated ${since}` : "Disconnected";
+    case "NEVER_UPDATED":    return "Hasn’t updated yet";
+  }
+}
+
+/** One sentence naming the source — never a reason the data does not contain. */
+function attentionSentence(s: DataSourceView): string {
+  const since = s.lastUpdatedAt ? shortDate(s.lastUpdatedAt) : null;
+  switch (s.state) {
+    case "NEEDS_RECONNECT":  return `${s.label} needs to be reconnected`;
+    case "CONNECTION_ERROR": return `${s.label} has a connection error`;
+    case "SYNC_INCOMPLETE":  return `${s.label}’s last update didn’t finish`;
+    case "DISCONNECTED":     return `${s.label} is disconnected`;
+    case "OUT_OF_DATE":      return since ? `${s.label} hasn’t updated since ${since}` : `${s.label} hasn’t updated recently`;
+    default:                 return `${s.label} hasn’t updated yet`;
+  }
+}
+
+function sourceHint(s: DataSourceView): string | null {
+  if (!s.needsAttention) return null;
+  if (s.kind === "MANUAL") return "Update the balance on the account itself.";
+  return s.actionable ? null : "The member who connected it can fix this.";
+}
+
+/**
+ * Clock two: when the money was last observed. A summary per provider group, the
+ * first source needing attention named in the open, and every source behind a
+ * disclosure. Rendered from the GET's data health — no request of its own.
+ */
+function DataFreshness({ dataHealth, brief }: { dataHealth: BriefDataHealthView | null; brief: BriefArtifactView }) {
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+  if (!dataHealth || dataHealth.sources.length === 0) {
+    // No per-source detail could be read: only then is the generic line all that can be said.
+    if (brief.balancesMayBeStale) return <p className="mt-1 text-xs text-[var(--accent-warning)]">Some balances may be out of date</p>;
+    return brief.balancesAsOf
+      ? <p className="mt-1 text-xs text-[var(--text-muted)]" suppressHydrationWarning>Balances last checked {shortDate(brief.balancesAsOf)}</p>
+      : null;
+  }
+  const attention = dataHealth.sources.filter((s) => s.needsAttention);
+  const first = attention[0];
+  const link = "rounded underline decoration-[var(--border-hairline-strong)] underline-offset-2 transition-colors hover:text-[var(--text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--meridian-400)]";
+  return (
+    <div className="mt-1 text-xs">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => setOpen((o) => !o)}
+        className="-mx-1 inline-flex min-h-[32px] max-w-full flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded px-1 text-left text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--meridian-400)]"
+      >
+        <span>Financial data</span>
+        {dataHealth.groups.map((g) => (
+          <span key={g.kind} className="inline-flex items-center gap-1.5" suppressHydrationWarning>
+            <span aria-hidden>·</span>
+            <span className={g.attention > 0 ? "text-[var(--accent-warning)]" : undefined}>{GROUP_NAME[g.kind]} {groupPhrase(g)}</span>
+          </span>
+        ))}
+        <ChevronDown size={12} aria-hidden className={`shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {first && (
+        <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[var(--accent-warning)]" suppressHydrationWarning>
+          <span>{attentionSentence(first)}{attention.length > 1 ? ` · ${attention.length - 1} more` : ""}</span>
+          {attention.some((s) => s.actionable) && (
+            <Link href="/dashboard/connections" className={`${link} text-[var(--text-secondary)]`}>Review connections</Link>
+          )}
+        </p>
+      )}
+      <div id={panelId} hidden={!open}>
+        <ul className="mt-2 divide-y divide-[var(--border-hairline)] rounded-[var(--radius-md)] border border-[var(--border-hairline)]">
+          {dataHealth.sources.map((s, i) => {
+            const hint = sourceHint(s);
+            return (
+              <li key={`${s.kind}-${i}`} className="px-3 py-2">
+                <div className="flex flex-col gap-0.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-3">
+                  <span className="text-[var(--text-primary)]">
+                    {s.label}
+                    <span className="text-[var(--text-muted)]"> · {s.accountCount} {s.accountCount === 1 ? "account" : "accounts"}</span>
+                  </span>
+                  <span className={s.needsAttention ? "text-[var(--accent-warning)]" : "text-[var(--text-secondary)]"} suppressHydrationWarning>
+                    {sourceStatus(s)}
+                  </span>
+                </div>
+                {hint && <p className="mt-0.5 text-[var(--text-muted)]">{hint}</p>}
+              </li>
+            );
+          })}
+        </ul>
+        <p className="mt-2 text-[var(--text-muted)]">
+          Dates show when Fourth Meridian last received data from each source, not when your Brief was written.{" "}
+          <Link href="/dashboard/connections" className={link}>Manage connections</Link>
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -127,13 +252,16 @@ function Observation({ o, quietStyle }: { o: BriefObservationView; quietStyle?: 
   );
 }
 
-function BriefBody({ brief, metrics, phase }: { brief: BriefArtifactView; metrics: BriefMetricsView | null; phase: BriefView["phase"] }) {
+function BriefBody({ brief, metrics, dataHealth, phase }: {
+  brief: BriefArtifactView; metrics: BriefMetricsView | null; dataHealth: BriefDataHealthView | null; phase: BriefView["phase"];
+}) {
   const notable = brief.observations.filter((o) => o.importance === "NOTABLE");
   const context = brief.observations.filter((o) => o.importance === "CONTEXT");
   return (
     <>
       <div className="mb-8">
         <Provenance brief={brief} phase={phase} />
+        <DataFreshness dataHealth={dataHealth} brief={brief} />
         <p className="mt-3 max-w-[62ch] text-lg font-medium leading-relaxed text-[var(--text-primary)] sm:text-xl">{brief.headline}</p>
       </div>
 
@@ -154,8 +282,8 @@ function BriefBody({ brief, metrics, phase }: { brief: BriefArtifactView; metric
       )}
 
       {context.length > 0 && (
-        <section className="mb-9" aria-label="Context">
-          <SectionLabel>Context</SectionLabel>
+        <section className="mb-9" aria-label="Worth knowing">
+          <SectionLabel>Worth knowing</SectionLabel>
           <ul className="space-y-4">{context.map((o, i) => <Observation key={`c${i}`} o={o} quietStyle />)}</ul>
         </section>
       )}
@@ -242,7 +370,7 @@ export function DailyBriefClient({ spaceId, spaceName, firstName, initial }: {
   }, [spaceId]);
 
   const retry = () => controllerRef.current?.retry();
-  const { phase, brief, metrics, retryAt } = view;
+  const { phase, brief, metrics, dataHealth, retryAt } = view;
 
   return (
     <div className="mx-auto w-full max-w-[680px]">
@@ -259,7 +387,7 @@ export function DailyBriefClient({ spaceId, spaceName, firstName, initial }: {
       {phase === "NO_DATA" ? (
         <BriefNewUser />
       ) : brief ? (
-        <BriefBody brief={brief} metrics={metrics} phase={phase} />
+        <BriefBody brief={brief} metrics={metrics} dataHealth={dataHealth} phase={phase} />
       ) : phase === "FAILED_EMPTY" ? (
         <BriefError message="Your brief couldn’t be prepared right now." onRetry={retry} retryAt={retryAt} />
       ) : phase === "LOAD_ERROR" ? (

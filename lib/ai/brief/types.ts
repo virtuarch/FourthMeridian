@@ -82,6 +82,14 @@ export interface BriefPackage {
     unknownFreshnessAccounts: number;
     accountsWithSyncErrors:  number;
     needsReauth:             boolean;
+    /**
+     * The sources that need attention, by the name the viewer may see, with their
+     * state and the last day Fourth Meridian successfully received data from each
+     * (lib/connections/space-data-health.core.ts) — so a conclusion can be
+     * qualified with "Chase hasn't updated since Sep 10" rather than "some
+     * balances". Omitted when every source is current.
+     */
+    staleSources?: { label: string; state: string; lastUpdated: string | null }[];
   };
 
   currentState: {
@@ -104,6 +112,13 @@ export interface BriefPackage {
       /** The value the weight is a share of. */
       populationValue: number;
       populationIsComplete: boolean;
+      /**
+       * Set by relevance.ts on the model's copy only: NEW / CHANGED since the
+       * previous day's Brief, or UNCHANGED (present only because today's
+       * investment movement makes it relevant). An unchanged, irrelevant
+       * concentration is removed from the model's copy altogether.
+       */
+      novelty?: 'NEW' | 'CHANGED' | 'UNCHANGED';
     };
     /** Accounts in the Space this package cannot see. A count, never an identity. */
     hiddenAccounts?: number;

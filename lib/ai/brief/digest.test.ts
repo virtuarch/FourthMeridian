@@ -53,7 +53,7 @@ console.log('1. the policy, pinned');
   check('income and debt payments are material from $250',
     isMaterialActivity(row(300, 'INCOME'), 6240) && isMaterialActivity(row(-300, 'DEBT_PAYMENT'), 6240)
       && !isMaterialActivity(row(-300, 'TRANSFER'), 6240));
-  check('the digest is versioned', d0.startsWith(`${DIGEST_VERSION}:`) && /^brief-material-v1:[0-9a-f]{40}$/.test(d0));
+  check('the digest is versioned', d0.startsWith(`${DIGEST_VERSION}:`) && /^brief-material-v2:[0-9a-f]{40}$/.test(d0));
 }
 
 console.log('\n2. what must NOT move it');
@@ -116,6 +116,20 @@ console.log('\n3. what MUST move it');
   differs('concentration appearing', (p) => {
     p.currentState.concentration = { classification: 'HIGHLY_CONCENTRATED', topSymbol: 'NVDA', topWeightPct: 45.2, populationValue: 84300.1, populationIsComplete: true };
   });
+}
+
+console.log('\n3b. a source changing state');
+{
+  const stale = structuredClone(base);
+  stale.freshness = { ...stale.freshness!, staleSources: [{ label: 'Chase', state: 'NEEDS_RECONNECT', lastUpdated: '2026-08-18' }] };
+  const dStale = materialDigest(stale);
+  check('a source newly needing attention moves it', dStale !== d0);
+  const later = structuredClone(stale);
+  later.freshness!.staleSources![0].lastUpdated = '2026-08-10';
+  check('its date alone does not (the band carries age)', materialDigest(later) === dStale);
+  const recovered = structuredClone(stale);
+  recovered.freshness!.staleSources = [{ label: 'Chase', state: 'OUT_OF_DATE', lastUpdated: '2026-08-18' }];
+  check('the same source changing state moves it', materialDigest(recovered) !== dStale);
 }
 
 console.log('\n4. what the projection may hold');

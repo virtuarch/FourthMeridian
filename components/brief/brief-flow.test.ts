@@ -225,6 +225,15 @@ async function main() {
       && foreign.calls.generate === 0);
   }
 
+  console.log("\n7b. the second clock survives a generation response");
+  {
+    const health = { sources: [], groups: [], attention: 0 } as NonNullable<BriefResponse["dataHealth"]>;
+    const r = run([res("CHECK_REQUIRED", { brief: brief("Old."), dataHealth: health, metrics: null })], [res("FRESH", { brief: brief("New.") })]);
+    r.controller.start(); await flush();
+    const last = r.views[r.views.length - 1];
+    check("data health read by GET is kept after the POST that carries none", last.brief?.headline === "New." && last.dataHealth === health);
+  }
+
   console.log("\n8. no data");
   {
     const r = run([res("NO_DATA")]);

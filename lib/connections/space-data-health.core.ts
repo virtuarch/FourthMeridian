@@ -1,0 +1,212 @@
+/**
+ * lib/connections/space-data-health.core.ts
+ *
+ * WHEN THE MONEY IN THIS SPACE WAS LAST OBSERVED — per source, derived, pure.
+ *
+ * A Daily Brief has two clocks: when the Brief was written, and when the data it
+ * was written over was last received. This module is the second clock, for the
+ * sources behind ONE Space, as a viewer is allowed to see them.
+ *
+ * ⚠️ EXISTING AUTHORITIES, NOT A NEW HEALTH MODEL. Status precedence is the one
+ * `deriveConnectionHealthState` (lib/connections/health.ts) and
+ * `deriveConnectionState` / `deriveWalletConnectionState` (lib/sync/status.ts)
+ * already use; ages are graded by the customer freshness bands in
+ * lib/freshness/observation.ts. No TTL is invented here.
+ *
+ * ⚠️ THE CLOCK IS SUCCESS-ONLY, AND THE OLDEST WINS. A source's `lastUpdatedAt` is
+ * the older of "balances last written after a successful read" (the oldest
+ * `FinancialAccount.lastUpdated` among ITS accounts in this Space — never the
+ * newest, which is how one fresh account hid stale ones on the Connections card)
+ * and, for banks, "transactions last completed a full sync" (`PlaidItem.lastSyncedAt`).
+ * Attempt clocks (`lastManualRefreshAt`, `syncLockedAt`) and `updatedAt` columns
+ * are never read: they move when nothing was received.
+ *
+ * ⚠️ A SUMMARY NEVER HIDES A CHILD. A provider group reports how many of its
+ * sources need attention and the OLDEST update among them. "Banks: today" cannot
+ * be said while one bank has been silent for three weeks.
+ *
+ * ⚠️ STATES, NOT REASONS. NEEDS_RECONNECT is the provider's own verdict (status
+ * NEEDS_REAUTH); OUT_OF_DATE says only that nothing arrived since a date. No
+ * cause is guessed, and no provider error code, id or token crosses out of here.
+ *
+ * ⚠️ NAMES FOLLOW THE DETAIL GRANT. An institution or wallet name is shown only
+ * when the viewer may see the account's detail (or owns the account); otherwise
+ * the source is described generically, as the accounts assembler already does.
+ */
+
+import { bandForAge, isStaleBand, VERY_STALE_AFTER_DAYS } from "@/lib/freshness/observation";
+
+export type DataSourceKind = "BANK" | "WALLET" | "MANUAL";
+
+/**
+ * CURRENT          received within the freshness bands' "recent" window
+ * IMPORTING        a first sync (or resumable discovery) is genuinely in progress
+ * OUT_OF_DATE      nothing received since `lastUpdatedAt`, old enough to be stale
+ * NEEDS_RECONNECT  the provider requires the connection's owner to sign in again
+ * CONNECTION_ERROR the provider reports the connection in error
+ * SYNC_INCOMPLETE  the last sync did not finish (a wallet error); data may be behind
+ * DISCONNECTED     the connection was revoked; its accounts no longer update
+ * NEVER_UPDATED    no successful update has ever been recorded
+ */
+export type DataSourceState =
+  | "CURRENT" | "IMPORTING" | "OUT_OF_DATE" | "NEEDS_RECONNECT"
+  | "CONNECTION_ERROR" | "SYNC_INCOMPLETE" | "DISCONNECTED" | "NEVER_UPDATED";
+
+export interface DataSourceView {
+  kind:  DataSourceKind;
+  /** The institution or wallet name when the viewer may see it; otherwise generic. */
+  label: string;
+  state: DataSourceState;
+  /** The last successful update Fourth Meridian recorded for this source. ISO-8601, or null. */
+  lastUpdatedAt: string | null;
+  /** Accounts in this Space that this source feeds. */
+  accountCount: number;
+  needsAttention: boolean;
+  /** The viewer can resolve it on the Connections page (they own the connection). */
+  actionable: boolean;
+}
+
+export interface DataGroupView {
+  kind: DataSourceKind;
+  sources: number;
+  attention: number;
+  /** The OLDEST last update among the group's sources — never the newest. */
+  oldestUpdatedAt: string | null;
+}
+
+export interface SpaceDataHealth {
+  /** Attention first (most severe), then oldest first. */
+  sources: DataSourceView[];
+  groups:  DataGroupView[];
+  attention: number;
+}
+
+// ── Input (one row per ACTIVE link to a live account) ─────────────────────────
+
+export interface DataHealthAccountInput {
+  /** The viewer may see this account's identifying detail. */
+  detailVisible: boolean;
+  accountName:   string;
+  /** When Fourth Meridian last wrote this account after a successful read. */
+  lastUpdated:   Date | null;
+  syncStatus:    string | null;
+  /** The live, canonical connection behind the account, if any. `key` groups only; it is never output. */
+  plaid: {
+    key: string; ownerUserId: string; institutionName: string;
+    status: string; lastSyncedAt: Date | null; syncIncompleteAt: Date | null; historyBuildStartedAt: Date | null;
+  } | null;
+  wallet: {
+    key: string; ownerUserId: string;
+    status: string; errorCode: string | null; lastSyncedAt: Date | null; discoveryCursor: boolean;
+  } | null;
+}
+
+const SEVERITY: Record<DataSourceState, number> = {
+  NEEDS_RECONNECT: 7, CONNECTION_ERROR: 6, DISCONNECTED: 5, SYNC_INCOMPLETE: 4,
+  OUT_OF_DATE: 3, NEVER_UPDATED: 2, IMPORTING: 1, CURRENT: 0,
+};
+
+const DAY_MS = 86_400_000;
+const minDate = (ds: (Date | null)[]): Date | null => {
+  const xs = ds.filter((d): d is Date => d instanceof Date);
+  return xs.length ? new Date(Math.min(...xs.map((d) => d.getTime()))) : null;
+};
+const ageDays = (d: Date | null, now: Date) => (d ? Math.max(0, (now.getTime() - d.getTime()) / DAY_MS) : null);
+const stale = (d: Date | null, now: Date) => isStaleBand(bandForAge(ageDays(d, now)));
+
+function bankState(p: NonNullable<DataHealthAccountInput["plaid"]>, clock: Date | null, now: Date): DataSourceState {
+  if (p.status === "NEEDS_REAUTH") return "NEEDS_RECONNECT";
+  if (p.status === "ERROR") return "CONNECTION_ERROR";
+  if (p.status === "REVOKED") return "DISCONNECTED";
+  // A stalled import that has aged is out of date, not "importing".
+  if (clock && stale(clock, now)) return "OUT_OF_DATE";
+  if (p.syncIncompleteAt !== null || p.historyBuildStartedAt !== null) return "IMPORTING";
+  return clock ? "CURRENT" : "NEVER_UPDATED";
+}
+
+function walletState(w: NonNullable<DataHealthAccountInput["wallet"]>, clock: Date | null, now: Date): DataSourceState {
+  if (w.status === "REVOKED") return "DISCONNECTED";
+  // Wallets never reauthenticate: NEEDS_REAUTH is an error (lib/sync/status.ts).
+  if (w.status === "ERROR" || w.status === "NEEDS_REAUTH") return "CONNECTION_ERROR";
+  if (w.errorCode !== null) return "SYNC_INCOMPLETE";
+  if (w.lastSyncedAt === null && w.discoveryCursor) return "IMPORTING";
+  if (!clock) return "NEVER_UPDATED";
+  return stale(clock, now) ? "OUT_OF_DATE" : "CURRENT";
+}
+
+export function deriveSpaceDataHealth(
+  rows: DataHealthAccountInput[], viewerUserId: string, now: Date,
+): SpaceDataHealth {
+  const bySource = new Map<string, { kind: DataSourceKind; rows: DataHealthAccountInput[] }>();
+  for (const r of rows) {
+    const key = r.plaid ? `p:${r.plaid.key}` : r.wallet ? `w:${r.wallet.key}` : r.syncStatus === "manual" ? "manual" : null;
+    if (!key) continue;   // no connection and not manual: there is no update clock to report honestly
+    const kind: DataSourceKind = r.plaid ? "BANK" : r.wallet ? "WALLET" : "MANUAL";
+    const entry = bySource.get(key) ?? { kind, rows: [] };
+    entry.rows.push(r);
+    bySource.set(key, entry);
+  }
+
+  const sources: DataSourceView[] = [];
+  for (const { kind, rows: rs } of bySource.values()) {
+    const accountsClock = minDate(rs.map((r) => r.lastUpdated));
+    const anyDetail = rs.some((r) => r.detailVisible);
+    if (kind === "BANK") {
+      const p = rs[0].plaid!;
+      const clock = minDate([accountsClock, p.lastSyncedAt]);
+      const state = bankState(p, clock, now);
+      sources.push({
+        kind, state, label: anyDetail ? p.institutionName : "A bank connection",
+        lastUpdatedAt: clock?.toISOString() ?? null, accountCount: rs.length,
+        needsAttention: state !== "CURRENT" && state !== "IMPORTING",
+        actionable: p.ownerUserId === viewerUserId,
+      });
+    } else if (kind === "WALLET") {
+      const w = rs[0].wallet!;
+      const clock = minDate([accountsClock, w.lastSyncedAt]);
+      const state = walletState(w, clock, now);
+      const named = rs.find((r) => r.detailVisible);
+      sources.push({
+        kind, state, label: named ? named.accountName : "A crypto wallet",
+        lastUpdatedAt: clock?.toISOString() ?? null, accountCount: rs.length,
+        needsAttention: state !== "CURRENT" && state !== "IMPORTING",
+        actionable: w.ownerUserId === viewerUserId,
+      });
+    } else {
+      // Manual balances are entered, not synced: they are out of date only past
+      // the very-stale band (the accounts assembler's existing 30-day rule).
+      const oldest = accountsClock;
+      const age = ageDays(oldest, now);
+      const state: DataSourceState = age === null ? "NEVER_UPDATED" : age >= VERY_STALE_AFTER_DAYS ? "OUT_OF_DATE" : "CURRENT";
+      sources.push({
+        kind, state, label: rs.length === 1 && rs[0].detailVisible ? rs[0].accountName : "Manual accounts",
+        lastUpdatedAt: oldest?.toISOString() ?? null, accountCount: rs.length,
+        needsAttention: state !== "CURRENT", actionable: false,
+      });
+    }
+  }
+
+  sources.sort((a, b) => SEVERITY[b.state] - SEVERITY[a.state]
+    || (a.lastUpdatedAt ?? "").localeCompare(b.lastUpdatedAt ?? "")
+    || a.label.localeCompare(b.label));
+
+  const groups: DataGroupView[] = (["BANK", "WALLET", "MANUAL"] as const).flatMap((kind) => {
+    const g = sources.filter((s) => s.kind === kind);
+    if (g.length === 0) return [];
+    const dated = g.map((s) => s.lastUpdatedAt).filter((x): x is string => x !== null).sort();
+    return [{ kind, sources: g.length, attention: g.filter((s) => s.needsAttention).length, oldestUpdatedAt: dated[0] ?? null }];
+  });
+
+  return { sources, groups, attention: sources.filter((s) => s.needsAttention).length };
+}
+
+/**
+ * The sources a Brief's conclusions may need qualifying by — for the evidence
+ * package. Names and states only, dated to the day; nothing the page does not
+ * already show the same viewer.
+ */
+export function staleSourcesForBrief(health: SpaceDataHealth | null):
+  { label: string; state: DataSourceState; lastUpdated: string | null }[] {
+  return (health?.sources ?? []).filter((s) => s.needsAttention)
+    .map((s) => ({ label: s.label, state: s.state, lastUpdated: s.lastUpdatedAt?.slice(0, 10) ?? null }));
+}

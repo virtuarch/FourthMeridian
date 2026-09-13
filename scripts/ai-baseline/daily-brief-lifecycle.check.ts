@@ -183,12 +183,16 @@ async function watermarkSection() {
 
     const inst = await db.instrument.create({ data: { tickerSymbol: `${TAG.slice(-8)}`, name: TAG, assetClass: 'EQUITY' } });
     instruments.push(inst.id);
-    await db.positionObservation.create({ data: { financialAccountId: fa1.id, instrumentId: inst.id,
+    const po = await db.positionObservation.create({ data: { financialAccountId: fa1.id, instrumentId: inst.id,
       date: new Date(`${DAY}T00:00:00Z`), quantity: 3, origin: 'OBSERVED', source: 'check' } });
     const w4 = await wm();
     check('an investment position moves it', w4.watermark !== w3);
+    // A same-day holdings capture UPSERTS in place: no count or createdAt moves.
+    await db.positionObservation.update({ where: { id: po.id }, data: { quantity: 4, institutionValue: 400 } });
+    const w5 = await wm();
+    check('a same-day position rewrite (quantity/value in place) moves it', w5.watermark !== w4.watermark);
     check('no secret is readable in it', !w4.watermark.includes(fa1.id) && !/150|Check Bank|a-goal/.test(w4.watermark)
-      && /^brief-source-v1:[0-9a-f]{40}$/.test(w4.watermark));
+      && /^brief-source-v2:[0-9a-f]{40}$/.test(w4.watermark));
   } finally {
     await cleanup(ids, accounts, instruments);
   }

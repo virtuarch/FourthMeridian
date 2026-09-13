@@ -93,7 +93,8 @@ const T0 = new Date('2026-09-13T09:00:00.000Z');
 function harness() {
   const store = new MemoryStore();
   const state = { watermark: 'wm-1', pkg: basePackage(), loads: 0, generations: 0, delayMs: 0,
-    fail: null as null | string, throwOnLoad: false, headline: 'Quiet day.' };
+    fail: null as null | string, throwOnLoad: false, headline: 'Quiet day.',
+    lastInput: null as BriefPackage | null, lastReason: undefined as string | undefined };
   const withDay = (p: BriefPackage, day: string) => ({ ...structuredClone(p), identity: { ...p.identity, briefDay: day, asOf: day } });
   const deps: LifecycleDeps = {
     store,
@@ -105,8 +106,10 @@ function harness() {
       if (state.throwOnLoad) throw new Error('assembly exploded');
       return { package: withDay(state.pkg, todayUTCISO(now)), degraded: [], timings: {}, historyThrough: '2026-09-12' };
     },
-    generate: async (pkg, now): Promise<BriefGenerationResult> => {
+    generate: async (pkg, now, reason): Promise<BriefGenerationResult> => {
       state.generations++;
+      state.lastInput = pkg;
+      state.lastReason = reason;
       const n = state.generations;
       if (state.delayMs) await new Promise((r) => setTimeout(r, state.delayMs));
       const meta = { correlationId: `brief_${n}`, surface: 'brief', model: 'gpt-5.1', packageBytes: 1, packageApproxTokens: 1 };
@@ -306,6 +309,79 @@ async function main() {
     await i.store.claim(key('2026-09-14'), new Date('2026-09-14T08:00:00.000Z'));
     const claimed = await i.inspect(new Date('2026-09-14T08:00:05.000Z'));
     check('a claim held by another request is visible to inspection', claimed.decision.claimActive && claimed.decision.state.kind === 'NEEDS_GENERATION');
+  }
+
+  console.log('\n10. relevance across days — standing facts are introduced once');
+  {
+    const r = harness();
+    r.state.pkg.currentState.concentration = { classification: 'HIGHLY_CONCENTRATED', topSymbol: 'BTC', topWeightPct: 85,
+      populationValue: 28440.27, populationIsComplete: false };
+    const day1 = new Date('2026-09-13T08:00:00.000Z');
+    await r.ensure(day1);
+    check('day 1 (first Brief): the model sees the concentration, marked NEW; reason daily',
+      r.state.lastInput?.currentState.concentration?.novelty === 'NEW' && r.state.lastReason === 'daily');
+    const row1 = r.store.get(key('2026-09-13'))!;
+    check('…the standing facts are persisted inside the artifact',
+      (row1.content as { standingFacts?: { concentration?: { topSymbol?: string } } }).standingFacts?.concentration?.topSymbol === 'BTC');
+
+    r.state.watermark = 'wm-same-day'; r.state.pkg.currentState.liquid = 9_000;
+    await r.ensure(new Date('2026-09-13T15:00:00.000Z'));
+    check('a same-day material regeneration keeps it NEW (judged against the previous DAY) — reason change',
+      r.state.lastInput?.currentState.concentration?.novelty === 'NEW' && r.state.lastReason === 'change');
+
+    await r.ensure(new Date('2026-09-14T08:00:00.000Z'));
+    check('day 2, unchanged and a quiet market: the model does not see it at all',
+      r.state.lastInput !== null && r.state.lastInput.currentState.concentration === undefined && r.state.lastReason === 'daily');
+    check('…while the stored facts still carry it for tomorrow',
+      (r.store.get(key('2026-09-14'))!.content as { standingFacts?: { concentration?: unknown } }).standingFacts?.concentration !== null);
+
+    r.state.pkg.currentState.concentration = { ...r.state.pkg.currentState.concentration, topWeightPct: 97 };
+    await r.ensure(new Date('2026-09-15T08:00:00.000Z'));
+    check('day 3, weight 85% → 97%: eligible again, marked CHANGED', r.state.lastInput?.currentState.concentration?.novelty === 'CHANGED');
+  }
+
+  console.log('\n11. reconnect — re-evaluated through the watermark and digest, never forced');
+  {
+    const r = harness();
+    r.state.pkg.freshness = { ...r.state.pkg.freshness!, band: 'VERY_STALE', oldestBalanceAgeDays: 26, needsReauth: true,
+      staleSources: [{ label: 'Chase', state: 'NEEDS_RECONNECT', lastUpdated: '2026-08-18' }] };
+    const t = (h: number) => new Date(T0.getTime() + h * 3_600_000);
+    await r.ensure(t(0));
+    check('the day\'s Brief is written over the connection that needs reconnecting', r.state.generations === 1
+      && r.state.lastInput?.freshness?.staleSources?.[0]?.label === 'Chase');
+
+    r.state.watermark = 'wm-reauth-attempt';   // a reconnect that failed: a row was touched, nothing material moved
+    const failedAttempt = await r.ensure(t(1));
+    check('A. a failed reconnect attempt → digest unchanged → no model call',
+      failedAttempt.status === 'FRESH' && failedAttempt.path === 'WATERMARK_REFRESHED' && r.state.generations === 1);
+
+    r.state.watermark = 'wm-reconnected';
+    r.state.pkg.freshness = { ...r.state.pkg.freshness!, band: 'LIVE', oldestBalanceAgeDays: 0.1, needsReauth: false, staleSources: undefined };
+    const reconnected = await r.ensure(t(2));
+    check('B. a successful reconnect changes the evidence → exactly one regeneration, reason change',
+      reconnected.status === 'GENERATED' && r.state.generations === 2 && r.state.lastReason === 'change');
+    check('…and the model no longer sees a stale source', r.state.lastInput?.freshness?.staleSources === undefined);
+
+    r.state.watermark = 'wm-post-sync';        // the history sync that follows touches rows again
+    const settled = await r.ensure(t(3));
+    check('C. the follow-up sync with nothing material → no second model call', settled.status === 'FRESH' && r.state.generations === 2);
+
+    r.state.watermark = 'wm-same-state';
+    r.state.pkg.freshness = { ...r.state.pkg.freshness!, oldestBalanceAgeDays: 0.4 };
+    check('D. only the age moving inside its band is not material', (await r.ensure(t(4))).status === 'FRESH' && r.state.generations === 2);
+
+    r.state.watermark = 'wm-two-tabs'; r.state.pkg.currentState.liquid = (r.state.pkg.currentState.liquid ?? 0) + 25_000; r.state.delayMs = 20;
+    const [x, y] = await Promise.all([r.ensure(t(5)), r.ensure(t(5))]);
+    check('E. two tabs return after the reconnect sync → one model call, the other IN_PROGRESS',
+      r.state.generations === 3 && [x.status, y.status].sort().join(',') === 'GENERATED,IN_PROGRESS');
+    r.state.delayMs = 0;
+
+    r.state.watermark = 'wm-down'; r.state.pkg.currentState.liquid = (r.state.pkg.currentState.liquid ?? 0) + 25_000; r.state.fail = 'TIMEOUT';
+    const down = await r.ensure(t(6));
+    r.state.watermark = 'wm-down-again';
+    const again = await r.ensure(new Date(t(6).getTime() + 30_000));
+    check('F. a failed regeneration after a reconnect is cooled, not retried on every visit',
+      down.status === 'FAILED' && again.status === 'COOLING_DOWN' && r.state.generations === 4);
   }
 
   console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);

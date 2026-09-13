@@ -31,6 +31,7 @@ import type {
 import type { FinancialAssessment } from '@/lib/ai/intelligence';
 import type { MemoryScope, RecalledMemory } from '@/lib/ai/conversation/memory-store';
 import type { SpaceContext } from '@/lib/space';
+import type { SpaceDataHealth } from '@/lib/connections/space-data-health.core';
 import type { Snapshot } from '@/types';
 import { todayUTCISO } from '@/lib/time/clock';
 import { projectBriefPackage } from './package';
@@ -49,6 +50,8 @@ export interface BriefLoadDeps {
   recall(scope: MemoryScope): Promise<RecalledMemory[]>;
   recentActivity(spaceId: string, asOf: string): Promise<BriefRecentActivity>;
   assess(ctx: SpaceContext_AI): FinancialAssessment;
+  /** Optional: per-source freshness (what the page shows), so conclusions can name a stale source. */
+  dataHealth?(spaceId: string, viewerUserId: string, now: Date): Promise<SpaceDataHealth>;
 }
 
 async function defaultDeps(): Promise<BriefLoadDeps> {
@@ -58,6 +61,8 @@ async function defaultDeps(): Promise<BriefLoadDeps> {
   const { projectSnapshotSection } = await import('@/lib/ai/assemblers/snapshot');
   const { recallMemories } = await import('@/lib/ai/conversation/memory-store');
   const { computeAssessment } = await import('@/lib/ai/intelligence');
+  const { loadSpaceDataHealth } = await import('@/lib/connections/space-data-health');
+  const { db } = await import('@/lib/db');
   return {
     assemble: async (domain, spaceCtx, options) => {
       const assembler = getAssembler(domain);
@@ -68,6 +73,7 @@ async function defaultDeps(): Promise<BriefLoadDeps> {
     recall: (scope) => recallMemories(scope, { limit: 50 }),
     recentActivity: (spaceId, asOf) => loadRecentActivity(spaceId, asOf),
     assess: computeAssessment,
+    dataHealth: (spaceId, viewerUserId, now) => loadSpaceDataHealth(db, { spaceId, viewerUserId, now }),
   };
 }
 
@@ -138,6 +144,10 @@ export async function loadBriefPackage(args: {
     attempt('memory', () => deps.recall({ spaceId, ownerUserId: spaceCtx.userId }), [] as RecalledMemory[]),
     attempt('recentActivity', () => deps.recentActivity(spaceId, asOf), null),
   ]);
+  // Freshness is a claim about today: never read for a retrospective package.
+  const dataHealth = !retrospective && deps.dataHealth
+    ? await attempt('dataHealth', () => deps.dataHealth!(spaceId, spaceCtx.userId, now), null)
+    : null;
 
   const t0 = Date.now();
   const snapshot = rows.length > 0
@@ -181,6 +191,7 @@ export async function loadBriefPackage(args: {
     assessment,
     memories,
     recentActivity,
+    dataHealth,
   });
 
   return { package: pkg, degraded, timings, historyThrough: snapshot?.newestDate ?? null };

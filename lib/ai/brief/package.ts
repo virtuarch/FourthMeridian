@@ -26,6 +26,7 @@
 import { composeInvestments, ComponentState } from '@/lib/ai/economic-concepts';
 import { canonicalWindowChange, observedChange, type SeriesPoint } from '@/lib/data/snapshot-window';
 import { resolveSpaceFreshness } from '@/lib/freshness/space-freshness';
+import { staleSourcesForBrief, type SpaceDataHealth } from '@/lib/connections/space-data-health.core';
 import { selectMemoryPlans } from '@/lib/ai/conversation/starter-topics';
 import { readKnowledgeGaps } from '@/lib/ai/conversation/knowledge-gaps';
 import type { RecalledMemory } from '@/lib/ai/conversation/memory-store';
@@ -45,6 +46,8 @@ export interface BriefInputs {
   now:      Date;
   currency: string;
   accounts:     AccountsSectionData | null;
+  /** Per-source freshness for the owner viewing this Space; null when unavailable. Current packages only. */
+  dataHealth?:  SpaceDataHealth | null;
   transactions: TransactionsSummaryData | null;
   /** Projected from the FULL series, already cut at asOf. */
   snapshot:     SnapshotSectionData | null;
@@ -197,6 +200,7 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
           providerBalanceAt: a.balanceLastUpdatedAt ?? null,
           balance: a.reportingBalance ?? a.balance,
         })), i.now);
+        const stale = staleSourcesForBrief(i.dataHealth ?? null);
         return {
           band: f.anchor.band,
           basis: f.anchor.basis,
@@ -206,6 +210,7 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
           unknownFreshnessAccounts: f.unknownCount,
           accountsWithSyncErrors: acc.health.errorCount,
           needsReauth: acc.health.needsReauthCount > 0,
+          ...(stale.length > 0 ? { staleSources: stale } : {}),
         };
       })()
     : undefined;

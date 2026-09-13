@@ -130,5 +130,29 @@ console.log("\n6. the page rechecks when the tab returns");
     /role="status"/.test(CLIENT) && /Preparing your brief…/.test(CLIENT) && !/Analyzing|Looking for|Crunching/.test(CLIENT));
 }
 
+console.log("\n6. the second clock — when the money was last observed");
+{
+  const HEALTH = code("lib/connections/space-data-health.ts");
+  const CORE = code("lib/connections/space-data-health.core.ts");
+  check("data health is read, never refreshed: no provider client, sync or refresh",
+    !/lib\/plaid|plaidClient|transactionsSync|accountsGet|syncWallet|refreshPlaidItem|fetch\(/.test(HEALTH + CORE));
+  check("…it selects no token, credential or external id", !/encryptedToken|credential|externalItemId|externalConnectionId|accessToken/.test(HEALTH));
+  check("…it never reads an attempt clock or updatedAt as success", !/lastManualRefreshAt|syncLockedAt|updatedAt/.test(HEALTH + CORE));
+  check("the derivation is pure and client-importable", !/@\/lib\/db|server-only|from ['"]@prisma\/client['"]/.test(CORE));
+  check("GET reads it beside the Brief; generation never re-reads it",
+    /loadDataHealth\(/.test(body(VIEW, "readBriefResponse")) && !/dataHealth|loadDataHealth/.test(body(VIEW, "generateBriefResponse")));
+  check("the view model copies it field by field", /function dataHealthView/.test(VIEW_MODEL) && !/\.\.\.(h|s|g)\b/.test(VIEW_MODEL));
+  check("the page names the Brief's clock and the data's clock separately", /Brief updated/.test(CLIENT) && /Financial data/.test(CLIENT));
+  check("the generic stale line survives only as the fallback when no source detail exists",
+    /Some balances may be out of date/.test(CLIENT) && /!dataHealth/.test(CLIENT));
+  check("the disclosure is a button with aria-expanded and aria-controls", /<button[\s\S]{0,200}aria-expanded=\{/.test(CLIENT) && /aria-controls=\{/.test(CLIENT));
+  check("attention points at the existing Connections page", /href="\/dashboard\/connections"/.test(CLIENT));
+  check("the lifecycle knows nothing about reconnects or providers", !/reconnect|plaid|wallet/i.test(LIFECYCLE));
+  const INGESTION = ["lib/plaid/exchangeToken.ts", "lib/plaid/refresh.ts", "lib/plaid/backgroundHistorySync.ts", "lib/plaid/syncTransactions.ts",
+    "jobs/sync-banks.ts", "app/api/plaid/webhook/route.ts", "app/api/plaid/refresh/route.ts", "lib/crypto/btc-sync.ts"].filter((p) => existsSync(p));
+  check(`provider ingestion never learns about the Brief (${INGESTION.length} paths)`,
+    INGESTION.length >= 6 && INGESTION.every((p) => !/brief/i.test(code(p))));
+}
+
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);

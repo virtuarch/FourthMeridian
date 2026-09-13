@@ -9,7 +9,8 @@
  * (model, prompt version, correlation id), observation evidence paths, the
  * evidence package, and memory payloads all stay on the server. What arrives is
  * the narration, when it was written, what its balances were last checked at, and
- * what the page should do next. lib/ai/brief/view-model.ts builds this field by
+ * what the page should do next, plus — separately — when each source behind the
+ * Space last delivered data. lib/ai/brief/view-model.ts builds this field by
  * field and a test walks the result for anything else.
  *
  * (REVIEW-3 history: the earlier rule-based Brief's sections, tracked-account
@@ -79,6 +80,15 @@ export interface BriefMetricsView {
   monthChange: { abs: number; pct: number | null; fromDate: string } | null;
 }
 
+/**
+ * WHEN THE MONEY WAS LAST OBSERVED — the second clock, per source, for the viewer.
+ * Derived by lib/connections/space-data-health.core.ts; no ids, error codes or
+ * provider internals. A group's date is its OLDEST source, never its newest.
+ */
+export type {
+  DataSourceKind, DataSourceState, DataSourceView, DataGroupView, SpaceDataHealth as BriefDataHealthView,
+} from "@/lib/connections/space-data-health.core";
+
 export interface BriefResponse {
   /** Echoed so a response for a Space the page has left can be ignored. */
   spaceId: string;
@@ -91,6 +101,8 @@ export interface BriefResponse {
   retryAfterMs?: number;
   /** Present on page and GET responses; absent from generation responses. */
   metrics?: BriefMetricsView | null;
+  /** Present on page and GET responses: when each source last delivered. Null when it could not be read. */
+  dataHealth?: import("@/lib/connections/space-data-health.core").SpaceDataHealth | null;
   /** When the server evaluated this state. ISO-8601. */
   checkedAt: string;
 }

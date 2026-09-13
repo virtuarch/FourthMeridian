@@ -44,9 +44,12 @@ import type { BriefGenerationResult } from './generate';
 import type { LoadedBriefPackage } from './load';
 import { GENERATION_FAILURE_COOLDOWN_MS } from './policy';
 import { BRIEF_SYSTEM_PROMPT } from './prompt';
+import { applyRelevance, readStandingFacts, standingFactsOf } from './relevance';
 import { decideArtifactState, type ArtifactDecision, type BriefFallback, type BriefRow } from './state';
 import type { BriefScope, BriefStore } from './store';
 import type { BriefPackage, DailyBrief } from './types';
+
+export type GenerationReason = 'daily' | 'change';
 
 /** Changes whenever the instruction or the output schema does. */
 export const BRIEF_PROMPT_VERSION = `brief-prompt-${createHash('sha256')
@@ -57,7 +60,13 @@ export interface LifecycleDeps {
   resolveSpace(ownerUserId: string, spaceId: string): Promise<SpaceContext>;
   watermark(scope: BriefScope, now: Date): Promise<string>;
   loadPackage(spaceCtx: SpaceContext, now: Date): Promise<LoadedBriefPackage>;
-  generate(pkg: BriefPackage, now: Date): Promise<BriefGenerationResult>;
+  /**
+   * `reason` is what the lifecycle genuinely knows about why it is generating:
+   * `daily` — no successful Brief for today yet; `change` — today's Brief exists
+   * and the evidence digest moved. (It cannot know WHY the evidence moved — a
+   * reconnect, a sync or a new transaction all look the same here — and says so.)
+   */
+  generate(pkg: BriefPackage, now: Date, reason?: GenerationReason): Promise<BriefGenerationResult>;
   /**
    * Whether the Space holds any active account link. A Space with nothing in it
    * has nothing to brief, so no model call is spent on it. Optional only so pure
@@ -81,7 +90,7 @@ async function defaultDeps(): Promise<LifecycleDeps> {
     resolveSpace: resolveSpaceContext,
     watermark: async (scope, now) => (await sourceWatermark(db, scope, now)).watermark,
     loadPackage: (spaceCtx, now) => loadBriefPackage({ spaceCtx, now }),
-    generate: (pkg, now) => generateBriefFromPackage(pkg, { model: CHAT_MODEL, now, surface: 'brief' }),
+    generate: (pkg, now, reason) => generateBriefFromPackage(pkg, { model: CHAT_MODEL, now, surface: 'brief', reason }),
     hasFinancialData: async (scope) =>
       (await db.spaceAccountLink.count({ where: { spaceId: scope.spaceId, status: 'ACTIVE' } })) > 0,
   };
@@ -121,6 +130,8 @@ interface Prepared {
   watermark: string;
   hasData: boolean;
   decision: ArtifactDecision;
+  /** The newest successful Brief from an EARLIER day — the relevance baseline. */
+  latestPrior: BriefRow | null;
 }
 
 async function prepare(
@@ -141,7 +152,7 @@ async function prepare(
     deps.hasFinancialData ? lap('hasData', () => deps.hasFinancialData!(scope)) : Promise.resolve(true),
   ]);
   const decision = decideArtifactState({ today, now, todayRow: stored.todayRow, latestPrior: stored.latestPrior, watermark });
-  return { deps, spaceCtx, scope, today, watermark, hasData, decision };
+  return { deps, spaceCtx, scope, today, watermark, hasData, decision, latestPrior: stored.latestPrior };
 }
 
 function timer() {
@@ -193,7 +204,7 @@ export async function ensureDailyBrief(
   // so an injected clock and the cooldown it is measured against always agree.
   const failedAt = () => new Date(now.getTime() + (Date.now() - t0));
 
-  const { deps, spaceCtx, scope, today, watermark, hasData, decision } = await prepare(args, now, options.deps, lap);
+  const { deps, spaceCtx, scope, today, watermark, hasData, decision, latestPrior } = await prepare(args, now, options.deps, lap);
   const { state } = decision;
   const key = { ...scope, briefDay: today };
 
@@ -231,7 +242,13 @@ export async function ensureDailyBrief(
       digest = materialDigest(loaded.package);
     }
     const pkg = loaded.package;
-    const result = await lap('generate', () => deps.generate(pkg, now));
+    // The model sees today's facts minus standing facts that are neither new,
+    // changed nor needed to explain today's movement — judged against the previous
+    // DAY's Brief. The digest above was computed on the full package.
+    const { pkg: modelPkg } = applyRelevance(pkg, latestPrior
+      ? { facts: readStandingFacts(latestPrior.content), briefDay: latestPrior.briefDay } : null);
+    const reason: GenerationReason = state.kind === 'CHECK_MATERIAL' ? 'change' : 'daily';
+    const result = await lap('generate', () => deps.generate(modelPkg, now, reason));
     if (!result.ok) {
       await lap('release', () => deps.store.fail(key, claim.token, result.reason, failedAt()));
       return done({ status: 'FAILED', reason: result.reason, retryAfterMs: GENERATION_FAILURE_COOLDOWN_MS, fallback, timings });
@@ -240,7 +257,9 @@ export async function ensureDailyBrief(
     const balancesAsOf = anchor ? new Date(anchor) : null;
     const historyThrough = loaded?.historyThrough ?? null;
     const persisted = await lap('persist', () => deps.store.complete(key, claim.token, {
-      content: result.brief,
+      // The narration, plus the standing facts the NEXT day's relevance compares
+      // against. Stored inside the artifact; the view model never copies them out.
+      content: { ...result.brief, standingFacts: standingFactsOf(pkg) },
       generatedAt: new Date(result.brief.generatedAt),
       balancesAsOf,
       historyThrough,
