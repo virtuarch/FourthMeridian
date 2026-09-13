@@ -20,6 +20,7 @@
     "ai:activity-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/activity-frame.check.ts",
     "ai:applied-facts-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/applied-facts.check.ts",
     "ai:scenario-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/active-scenario.check.ts",
+    "ai:liquid-floor-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/liquid-floor.check.ts",
     "ai:networth-change-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/net-worth-change.check.ts",
     "ai:chat-route-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/chat-route.check.ts",
     "ai:temporal-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/temporal-history.check.ts",

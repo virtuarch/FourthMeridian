@@ -128,6 +128,13 @@ export function captureActiveScenario(
   toolName: string, args: unknown, result: unknown,
 ): ScenarioCapture {
   if (toolName !== SCENARIO_TOOL && toolName !== CROSSING_TOOL) return { action: 'IGNORE' };
+  // ⚠️ A BASELINE QUESTION IS NOT A HYPOTHETICAL. "When do I hit $50k on my
+  // current trend?" is a crossing with no assumption in it, and measured live it
+  // REPLACED the sweep scenario the conversation had just built — the next turn's
+  // "quarterly table of that" was answered with the baseline, rule dropped. A
+  // crossing that states nothing hypothetical leaves the hypothetical alone,
+  // whether it succeeds or fails: it said nothing about the scenario either way.
+  if (toolName === CROSSING_TOOL && !carriesAssumptions(args)) return { action: 'IGNORE' };
 
   const r = result as Record<string, unknown> | null | undefined;
   if (!r || typeof r !== 'object') return { action: 'CLEAR', reason: 'no result' };
@@ -150,6 +157,25 @@ export function captureActiveScenario(
       result: { asOf, to, liquid, investments, debt, netWorth },
     },
   };
+}
+
+/**
+ * The scenario inputs that make a call a hypothetical rather than a reading of
+ * the current trend. The same list `SCENARIO_INPUTS` offers, minus presentation
+ * (`granularity`) and the search window.
+ */
+const ASSUMPTION_KEYS = [
+  'annualReturnPct', 'returns', 'contributions', 'outflows', 'assumedMonthlySpending',
+] as const;
+
+function carriesAssumptions(args: unknown): boolean {
+  if (!args || typeof args !== 'object') return false;
+  const a = args as Record<string, unknown>;
+  return ASSUMPTION_KEYS.some((k) => {
+    const v = a[k];
+    if (v === undefined || v === null) return false;
+    return Array.isArray(v) ? v.length > 0 : true;
+  });
 }
 
 /** Six numbers and the two dates that place them, or why they could not be read. */

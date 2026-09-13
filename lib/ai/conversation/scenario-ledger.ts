@@ -76,9 +76,9 @@ export interface LedgerLine {
  * answer came back arithmetically flawless and about a different question. Half
  * of the balance is only knowable at each date, from the projection.
  *
- * Exactly one of `amount`, `fractionOfLiquid` and `surplusFraction` is set.
- * Amounts are SIGNED: positive moves cash into investments, negative takes it
- * back out.
+ * Exactly one basis is set: `amount`, `fractionOfLiquid`, `surplusFraction`, or
+ * the pair `liquidFloor` + `fractionOfExcess`. Amounts are SIGNED: positive
+ * moves cash into investments, negative takes it back out.
  */
 export interface PlannedMovement {
   date:   string;
@@ -86,6 +86,23 @@ export interface PlannedMovement {
   amount?: number;
   /** A share of the projected cash BALANCE on that date: 0.5 for "half". */
   fractionOfLiquid?: number;
+  /**
+   * A floor under the cash balance, and the share of whatever sits ABOVE it to
+   * move: "keep $50k liquid and invest everything above it" is
+   * `{ liquidFloor: 50000, fractionOfExcess: 1 }`.
+   *
+   * ⚠️ A STOCK RULE, NOT A FLOW RULE, AND THE DISTINCTION IS THE WHOLE PRIMITIVE.
+   * `surplusFraction` reads what a month ADDED; this reads what the account
+   * HOLDS, after every earlier movement, against a line. Measured on the live
+   * Space, the nearest flow-shaped substitute — a full surplus share started the
+   * month after the floor was reached — left the crossing month's excess in cash
+   * for ever and, on any path with a falling month, swept every recovery so the
+   * floor was never rebuilt. Neither is what "keep $50k" means.
+   *
+   * The two fields travel together; one without the other is refused.
+   */
+  liquidFloor?: number;
+  fractionOfExcess?: number;
   /**
    * A share of the month's projected cash SURPLUS: 0.75 for "invest three
    * quarters of what I'm putting aside".
@@ -115,6 +132,15 @@ export interface DatedMovement {
   fractionOfLiquid?: number;
   /** The share it was stated as, when it was stated as a share of the surplus. */
   surplusFraction?: number;
+  /** The floor and share it was stated as, when it was stated as an excess over a floor. */
+  liquidFloor?: number;
+  fractionOfExcess?: number;
+  /**
+   * The running cash balance the floor rule read on this date — the projection
+   * less every outflow and contribution settled before it. At or below the floor
+   * the contribution is zero, and this says by how much the month fell short.
+   */
+  availableBefore?: number;
   /**
    * The month's projected cash movement this contribution was taken from.
    *
@@ -152,7 +178,14 @@ export type ContributionSpec =
   | { onDate: string; amount?: number; fractionOfLiquid?: number; label?: string }
   | { from: string; to?: string; amount?: number; fractionOfLiquid?: number;
       cadence: 'monthly' | 'yearly'; label?: string }
-  | { surplusFraction: number; from?: string; to?: string; label?: string };
+  | { surplusFraction: number; from?: string; to?: string; label?: string }
+  /**
+   * Keep `liquidFloor` in cash; each month-end move `fractionOfExcess` of
+   * whatever the running balance holds above it. Monthly by nature, like the
+   * surplus share, and for the same reason: the balance is read at month-ends
+   * and a cadence with one legal value invites the illegal one.
+   */
+  | { liquidFloor: number; fractionOfExcess: number; from?: string; to?: string; label?: string };
 
 export interface LedgerOpening {
   asOfISO:     string;
@@ -385,7 +418,12 @@ export function expandContributions(
     const hasSurplus  = 'surplusFraction' in spec && spec.surplusFraction !== undefined;
     const hasAmount   = 'amount' in spec && spec.amount !== undefined;
     const hasFraction = 'fractionOfLiquid' in spec && spec.fractionOfLiquid !== undefined;
+    // Either half of the floor pair claims the basis, so a rule that states one
+    // half is refused as an incomplete floor rule rather than passed as no rule.
+    const floorSpec   = spec as { liquidFloor?: number; fractionOfExcess?: number };
+    const hasFloor    = floorSpec.liquidFloor !== undefined || floorSpec.fractionOfExcess !== undefined;
     const stated = hasSurplus ? `${(spec as { surplusFraction: number }).surplusFraction * 100}% of monthly surplus`
+      : hasFloor ? `${(floorSpec.fractionOfExcess ?? NaN) * 100}% of cash above ${floorSpec.liquidFloor}`
       : hasFraction ? `${(spec as { fractionOfLiquid: number }).fractionOfLiquid * 100}% of cash`
       : String((spec as { amount?: number }).amount);
     const name = 'onDate' in spec
@@ -398,11 +436,61 @@ export function expandContributions(
     // is a rule whose author had two different scenarios in mind; picking one of
     // them silently would answer a question nobody asked, in a table that looks
     // exactly as authoritative as a right one.
-    const bases = [hasAmount, hasFraction, hasSurplus].filter(Boolean).length;
+    const bases = [hasAmount, hasFraction, hasSurplus, hasFloor].filter(Boolean).length;
     if (bases !== 1) {
       rejected.push({ input: name,
         reason: 'state EXACTLY ONE of: an amount in dollars, `fractionOfLiquid` for a share of '
-          + 'the cash balance, or `surplusFraction` for a share of the month\'s projected surplus' });
+          + 'the cash balance, `surplusFraction` for a share of the month\'s projected surplus, '
+          + 'or `liquidFloor` + `fractionOfExcess` for a share of the cash held above a floor' });
+      continue;
+    }
+
+    // ── A share of what sits above a floor ─────────────────────────────────
+    if (hasFloor) {
+      const floor = floorSpec.liquidFloor;
+      const f     = floorSpec.fractionOfExcess;
+      if (floor === undefined || f === undefined) {
+        rejected.push({ input: name,
+          reason: '`liquidFloor` and `fractionOfExcess` go together: the floor to keep in cash '
+            + 'AND the share of what sits above it to move' });
+        continue;
+      }
+      if (!Number.isFinite(floor) || floor < 0) {
+        rejected.push({ input: name,
+          reason: 'the liquid floor must be a dollar amount of zero or more' });
+        continue;
+      }
+      if (!Number.isFinite(f) || f <= 0 || f > 1) {
+        rejected.push({ input: name,
+          reason: 'a share of the excess must be greater than 0 and at most 1 (0.5 for half)' });
+        continue;
+      }
+      const sFrom = 'from' in spec && spec.from && spec.from > asOfISO ? spec.from : asOfISO;
+      const sTo   = 'to' in spec && spec.to && spec.to < horizonISO ? spec.to : horizonISO;
+      if (sFrom >= sTo) {
+        rejected.push({ input: name, reason: 'the window ends before the projection starts' });
+        continue;
+      }
+      // ⚠️ THE SAME MONTH-END GRID AS THE SURPLUS SHARE, AND NO BASE DATE. A floor
+      // rule reads one balance on one date; there is no "month it closes". The
+      // balance it reads is settled by `settleMovements`, which is where every
+      // earlier movement has already been subtracted.
+      const grid = monthEndsBetween(asOfISO, sTo);
+      const firstIdx = grid.findIndex((d) => d >= sFrom);
+      const dates = firstIdx === -1 ? [] : grid.slice(firstIdx);
+      if (dates.length === 0) {
+        rejected.push({ input: name, reason: 'no month-end falls inside the projection window' });
+        continue;
+      }
+      let n = 0;
+      for (const date of dates) {
+        movements.push({ date, label, liquidFloor: floor, fractionOfExcess: f });
+        if (++n >= MAX_EXPANDED_CONTRIBUTIONS) {
+          rejected.push({ input: name,
+            reason: `stopped after ${MAX_EXPANDED_CONTRIBUTIONS} occurrences` });
+          break;
+        }
+      }
       continue;
     }
 
@@ -538,6 +626,12 @@ type Kind = 'CONTRIBUTION' | 'OUTFLOW';
  * is a SHARE of a balance that has already gone negative: half of nothing is
  * nothing, and half of a negative number is a contribution that pays the user.
  *
+ * ⚠️ A FLOOR RULE IS TAKEN FROM WHAT IS LEFT ABOVE THE LINE. It reads the same
+ * running balance a balance share does — the projection less everything settled
+ * before it on or before that date — and moves its share of the part above the
+ * floor. On a date carrying an outflow and a floor rule, the outflow goes first,
+ * so "buy the car, then keep $50k and invest the rest" reads in that order.
+ *
  * ⚠️ A SURPLUS SHARE IS TAKEN FROM THE MONTH, NOT FROM THE ACCOUNT. Its base is
  * the projected cash movement between two dates the spine can both show —
  * BEFORE this contribution or any other is applied — so the rule can never eat
@@ -608,7 +702,6 @@ export function settleMovements(
       continue;
     }
 
-    const fraction = m.fractionOfLiquid as number;
     if (!liquidOn.has(m.date)) {
       rejected.push({ input: name,
         reason: 'a share of the balance needs the projection on that date, and none was supplied' });
@@ -622,6 +715,32 @@ export function settleMovements(
       continue;
     }
     const available = projected - consumed;
+
+    // ── A share of what sits above a floor ──────────────────────────────────
+    //
+    // ⚠️ THE BASE IS THE RUNNING BALANCE, AND HERE THAT IS CORRECT. The surplus
+    // share must not see `consumed` because its base is a month's delta and
+    // subtracting last month's contribution would shrink every month. A floor
+    // rule reads a STOCK: the cash actually held after every earlier outflow and
+    // contribution. Without `consumed` it would find the same excess again next
+    // month and sweep it twice. Its own contribution never enters `available` —
+    // that is read first — and nothing here touches the spine.
+    //
+    // ⚠️ THE RULE NEVER TAKES CASH BELOW THE FLOOR, AND PROMISES NOTHING ELSE.
+    // A falling month or a stated outflow can leave the balance under the line;
+    // then the excess is zero, the contribution is zero, nothing is sold to put
+    // it back, and the month is on the record as one the rule sat out.
+    if (m.liquidFloor !== undefined && m.fractionOfExcess !== undefined) {
+      const availableBefore = round2(available);
+      const excess = availableBefore > m.liquidFloor ? availableBefore - m.liquidFloor : 0;
+      const amount = round2(m.fractionOfExcess * excess);
+      movements.push({ date: m.date, label: m.label, amount, kind: m.kind,
+        liquidFloor: m.liquidFloor, fractionOfExcess: m.fractionOfExcess, availableBefore });
+      consumed += amount;
+      continue;
+    }
+
+    const fraction = m.fractionOfLiquid as number;
     if (available <= 0) {
       warnings.push(`${name}: nothing was available to move (the projected balance at that `
         + 'date is already spent), so this contribution is zero.');

@@ -1624,10 +1624,16 @@ async function prepareScenario(
     const label  = c.label === undefined ? undefined : String(c.label);
     // How much: a dollar amount, or a share of the balance. The ledger refuses
     // both and neither; this only passes through what was said.
+    // ⚠️ EVERY BASIS THE MODEL STATED TRAVELS, so a rule naming two of them is
+    // refused by the ledger — the one authority on that — rather than trimmed to
+    // one of them here. The floor pair rides along for the same reason.
     const size = {
       ...(c.amount !== undefined ? { amount: Number(c.amount) } : {}),
       ...(c.fractionOfLiquid !== undefined
         ? { fractionOfLiquid: Number(c.fractionOfLiquid) } : {}),
+      ...(c.liquidFloor !== undefined ? { liquidFloor: Number(c.liquidFloor) } : {}),
+      ...(c.fractionOfExcess !== undefined
+        ? { fractionOfExcess: Number(c.fractionOfExcess) } : {}),
     };
     // ⚠️ A SURPLUS SHARE IS ITS OWN SHAPE, NOT A SIZE ON A SCHEDULE. It carries
     // no cadence and no single date; the ledger generates its month-ends. Anything
@@ -1640,6 +1646,15 @@ async function prepareScenario(
         ...(c.from ? { from: String(c.from) } : {}),
         ...(c.to ? { to: String(c.to) } : {}),
         ...(c.cadence ? { cadence: String(c.cadence) === 'yearly' ? 'yearly' : 'monthly' } : {}),
+        ...(label ? { label } : {}) } as unknown as ContributionSpec);
+      continue;
+    }
+    // ⚠️ A FLOOR RULE IS ITS OWN SHAPE TOO: a balance read at every month-end,
+    // no cadence, no single date. `from`/`to` only trim the window.
+    if (c.liquidFloor !== undefined || c.fractionOfExcess !== undefined) {
+      contribSpecs.push({ ...size,
+        ...(c.from ? { from: String(c.from) } : {}),
+        ...(c.to ? { to: String(c.to) } : {}),
         ...(label ? { label } : {}) } as unknown as ContributionSpec);
       continue;
     }
@@ -1725,7 +1740,8 @@ async function prepareScenario(
       // settler refuses it rather than inferring a neighbour from whatever else
       // happens to be in the spine.
       const shareDates = useContribs
-        .filter((m) => m.fractionOfLiquid !== undefined || m.surplusFraction !== undefined)
+        .filter((m) => m.fractionOfLiquid !== undefined || m.surplusFraction !== undefined
+          || m.liquidFloor !== undefined)
         .flatMap((m) => (m.baseDate ? [m.baseDate, m.date] : [m.date]))
         .sort();
       return runScenarioLedger({
@@ -1777,11 +1793,61 @@ function surplusRule(ledger: LedgerResult) {
   };
 }
 
+/**
+ * The liquid floor in force, as the rule it is — read back off the settled
+ * movements like `surplusRule`, so what is echoed is what was applied.
+ *
+ * ⚠️ IT SAYS WHEN THE FLOOR WAS FIRST REACHED AND HOW OFTEN IT WAS NOT HELD.
+ * "Keep $50k" is one sentence; the projection may sit under $50k for months
+ * before it gets there and may fall under it again in a bad month. A reader
+ * told only "the rule was in force" would narrate a floor that was maintained
+ * throughout, which the arithmetic did not do.
+ */
+function floorRule(ledger: LedgerResult) {
+  const taken = ledger.movements.filter(
+    (m) => m.kind === 'CONTRIBUTION' && m.liquidFloor !== undefined);
+  if (taken.length === 0) return null;
+  const floors = [...new Set(taken.map((m) => m.liquidFloor as number))];
+  const shares = [...new Set(taken.map((m) => m.fractionOfExcess as number))];
+  const isAbove = (m: typeof taken[number]) => (m.availableBefore ?? 0) > (m.liquidFloor as number);
+  const firstAbove = taken.findIndex(isAbove);
+  // ⚠️ TWO DIFFERENT KINDS OF "UNDER THE FLOOR", COUNTED APART. The months before
+  // the balance first reaches the line are the run-up the user asked for; the
+  // months under it AFTER that are the ones where ordinary cash activity undid
+  // the floor and the rule sat out. Only the second is a fact a reader needs
+  // before saying the floor was kept.
+  const afterReached = firstAbove === -1 ? [] : taken.slice(firstAbove);
+  return {
+    liquidFloor: floors.length === 1 ? floors[0] : floors,
+    fractionOfExcess: shares.length === 1 ? shares[0] : shares,
+    from: taken[0].date, to: taken[taken.length - 1].date,
+    months: taken.length,
+    alreadyAboveFloorAtStart: floors.length === 1 && ledger.opening.liquid > floors[0],
+    firstMonthEndAtOrAboveFloor: firstAbove === -1 ? null : taken[firstAbove].date,
+    monthsBeforeFloorReached: firstAbove === -1 ? taken.length : firstAbove,
+    monthsBelowFloor: afterReached.filter((m) => !isAbove(m)).length,
+    contributed: round2(taken.reduce((s, m) => s + m.amount, 0)),
+    meaning: 'At each month-end, the share of cash held ABOVE the floor is moved into '
+      + 'investments; cash is left at the floor. Nothing moves until the balance first '
+      + 'reaches the floor (`firstMonthEndAtOrAboveFloor`). The rule itself never takes cash '
+      + 'below the floor, but ordinary spending or a stated outflow can; `monthsBelowFloor` '
+      + 'counts the month-ends AFTER the floor was first reached where the balance was under '
+      + 'it — in those months the rule moves nothing and sells nothing, and the floor was not '
+      + 'held. At a 0% return this moves money between lines and changes net worth by nothing '
+      + 'at all.',
+  };
+}
+
 function scenarioAssumptions(
   setup: ScenarioSetup, ledger: LedgerResult, returns: ReturnPeriod[],
 ) {
   const kind = (k: 'CONTRIBUTION' | 'OUTFLOW') => ledger.movements.filter((m) => m.kind === k);
   return {
+    // ⚠️ THE HORIZON IS AN ASSUMPTION, AND IT IS ECHOED WITH THE OTHERS. A solve
+    // to mid-2030 and a projection to end-2029 were narrated as the same scenario
+    // at different rates; every scenario tool now states the date its ledger ran
+    // to in the same field, so a later turn cannot inherit one and quote the other.
+    horizon: { to: setup.toISO },
     returns: returns.length === 0
       ? { statedRate: null,
           note: 'No return was in force. Investments are held flat at 0% — do not substitute '
@@ -1802,6 +1868,7 @@ function scenarioAssumptions(
       // scenario state carrying only the amounts would inherit an accident of
       // one horizon. `settled` above stays the evidence; this is the assumption.
       ...(surplusRule(ledger) ? { surplusRule: surplusRule(ledger) } : {}),
+      ...(floorRule(ledger) ? { floorRule: floorRule(ledger) } : {}),
       ...(kind('CONTRIBUTION').length === 0
         ? { note: 'No contributions were in force. Do not describe this result as including '
             + 'any.' } : {}),
@@ -1874,11 +1941,12 @@ const SCENARIO_INPUTS = {
     items: obj({ from: str('YYYY-MM-DD'), to: str('YYYY-MM-DD, inclusive'),
       annualPct: num('e.g. 50 for "50% in 2028"') }, ['from', 'to', 'annualPct']) },
   contributions: { type: 'array',
-    description: 'Money moved from cash into investments. HOW MUCH — exactly one of three: '
-      + '`amount` in dollars, `fractionOfLiquid` for a share of the cash BALANCE, or '
-      + '`surplusFraction` for a share of what each month ADDS. WHEN: `amount` and '
+    description: 'Money moved from cash into investments. HOW MUCH — exactly one of four: '
+      + '`amount` in dollars, `fractionOfLiquid` for a share of the cash BALANCE, '
+      + '`surplusFraction` for a share of what each month ADDS, or `liquidFloor` + '
+      + '`fractionOfExcess` for a share of the cash held ABOVE A FLOOR. WHEN: `amount` and '
       + '`fractionOfLiquid` need either `onDate` for a one-off or `from` + `cadence` for a '
-      + 'schedule; `surplusFraction` is monthly by nature and needs neither.',
+      + 'schedule; `surplusFraction` and the floor pair are monthly by nature and need neither.',
     items: obj({
       amount:  num('A dollar amount. Positive moves cash into investments; negative takes '
         + 'it back out. Do NOT put a fraction here.'),
@@ -1893,6 +1961,16 @@ const SCENARIO_INPUTS = {
         + '`cadence` or an `onDate`. The engine has no default share: when the user named one '
         + '("75%", "half") use it; when they said only "some" or "most", choose a share, run it, '
         + 'and say in the answer which share it was.'),
+      liquidFloor: num('The cash balance to KEEP, in dollars: 50000 for "keep $50k liquid". '
+        + 'Goes with `fractionOfExcess`. This is the one for "once I have X in cash, invest '
+        + 'what is above it", "keep a buffer of X and invest the rest", "everything above X": '
+        + 'at each month-end the share of cash above the floor moves into investments and '
+        + 'cash is left AT the floor; while cash is at or below the floor nothing moves. It '
+        + 'starts on its own the first month-end the balance is above the floor — do not '
+        + 'derive a start date and pass `from`; do not use `surplusFraction` for this.'),
+      fractionOfExcess: num('The share of cash ABOVE `liquidFloor` to move each month-end: 1 '
+        + 'for "everything above it", 0.5 for "half of what is above it". Goes with '
+        + '`liquidFloor`.'),
       onDate:  str('YYYY-MM-DD for a single contribution.'),
       from:    str('YYYY-MM-DD first occurrence of a repeating contribution.'),
       to:      str('YYYY-MM-DD last occurrence. Omit to continue to the horizon.'),

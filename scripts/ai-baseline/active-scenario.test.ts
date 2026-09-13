@@ -122,6 +122,41 @@ console.log('\n4. ORDINARY TURNS AND project_cash LEAVE IT ALONE');
   check('scenario_goal_seek is NOT in this slice', SCENARIO_TOOL === 'scenario_projection');
 }
 
+console.log('\n4b. A BASELINE CROSSING IS NOT A HYPOTHETICAL — it leaves the slot alone');
+{
+  const slot = newScenarioSlot();
+  applyCapture(slot, captureActiveScenario(SCENARIO_TOOL, A1, R1));
+  const before = JSON.stringify(slot.active);
+  const baselineArgs = { metric: 'liquid', direction: 'at_or_above', threshold: 50000 };
+  const crossingResult = { asOf: '2026-09-12', crossing: { date: '2027-02-28', value: 54044.4,
+    composition: { liquid: 54044.4, investments: 23578.03, debt: 0, otherAssets: 0, netWorth: 77622.43 } } };
+  const c = captureActiveScenario('scenario_crossing', baselineArgs, crossingResult);
+  check('a crossing with no assumption IGNOREs', c.action === 'IGNORE', c.action);
+  applyCapture(slot, c);
+  check('…and the hypothetical is byte-identical afterwards', JSON.stringify(slot.active) === before);
+  for (const [label, args] of [
+    ['searchThrough + granularity only', { ...baselineArgs, searchThrough: '2029-12-31', granularity: 'monthly' }],
+    ['an EMPTY contributions list', { ...baselineArgs, contributions: [] }],
+    ['a null return', { ...baselineArgs, annualReturnPct: null }],
+  ] as [string, unknown][]) {
+    check(`${label} is still a baseline question`, captureActiveScenario('scenario_crossing', args, crossingResult).action === 'IGNORE');
+  }
+  check('a FAILED baseline crossing also leaves it alone — it said nothing about the scenario',
+    captureActiveScenario('scenario_crossing', baselineArgs, { unavailable: 'x' }).action === 'IGNORE'
+      && JSON.stringify(slot.active) === before);
+  for (const [label, args] of [
+    ['a return', { ...baselineArgs, annualReturnPct: 7 }],
+    ['a contribution', { ...baselineArgs, contributions: [{ liquidFloor: 50000, fractionOfExcess: 1 }] }],
+    ['an outflow', { ...baselineArgs, outflows: [{ onDate: '2026-12-31', amount: 5000 }] }],
+    ['a spending level', { ...baselineArgs, assumedMonthlySpending: 4000 }],
+    ['per-period returns', { ...baselineArgs, returns: [{ from: '2027-01-01', to: '2027-12-31', annualPct: 5 }] }],
+  ] as [string, unknown][]) {
+    check(`a crossing carrying ${label} REPLACEs`, captureActiveScenario('scenario_crossing', args, crossingResult).action === 'REPLACE');
+  }
+  check('…and a FAILED crossing carrying an assumption still CLEARs',
+    captureActiveScenario('scenario_crossing', { ...baselineArgs, annualReturnPct: 7 }, { unavailable: 'x' }).action === 'CLEAR');
+}
+
 console.log('\n5. CLIP 6 — the raw result is elided, the envelope is not');
 {
   const slot = newScenarioSlot();
