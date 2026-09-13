@@ -21,15 +21,11 @@ import { resolveSpaceContext } from '@/lib/space';
 import { CHAT_MODEL } from '@/lib/ai/conversation/engine';
 import { loadBriefPackage, type BriefLoadDeps, type LoadedBriefPackage } from './load';
 import { generateBriefFromPackage, type BriefGenerationResult, type GenerateBriefOptions } from './generate';
+import { BriefScopeError } from './errors';
 
 export const BRIEF_MODEL = CHAT_MODEL;
 
-export class BriefScopeError extends Error {
-  constructor(readonly requestedSpaceId: string) {
-    super('[brief] the owner is not an active member of the requested Space');
-    this.name = 'BriefScopeError';
-  }
-}
+export { BriefScopeError };
 
 export interface DailyBriefRun {
   evidence: LoadedBriefPackage;

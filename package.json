@@ -24,6 +24,7 @@
     "ai:chat-route-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/chat-route.check.ts",
     "ai:temporal-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/temporal-history.check.ts",
     "ai:brief-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/daily-brief.check.ts",
+    "ai:brief-lifecycle-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/daily-brief-lifecycle.check.ts",
   "ai:chat": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-conversation-baseline.ts --interactive",
   "db:seed": "prisma db seed",
     "db:studio": "prisma studio",

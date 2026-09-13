@@ -471,6 +471,10 @@ model User {
   // a Space: the Space identifies the financial world, the user identifies whose
   // intention it is.
   aiMemories                  SpaceMemory[]       @relation("SpaceMemoryOwner")
+
+  // Daily Briefs generated FOR this user (see DailyBrief). Owner-scoped because
+  // the narration reads the owner's own memory, even in a shared Space.
+  dailyBriefs                 DailyBrief[]        @relation("DailyBriefOwner")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -527,6 +531,7 @@ model Space {
   aiAgent       AiAgent?
   adviceHistory AiAdvice[]
   aiMemories    SpaceMemory[]
+  dailyBriefs   DailyBrief[]
   auditLogs     AuditLog[]
 
   // New financial account relations
@@ -760,6 +765,68 @@ model SpaceMemory {
 
   @@index([spaceId, ownerUserId, kind, status])
   @@index([spaceId, ownerUserId, subject, statedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DailyBrief
+//
+// A CACHED GENERATED INTERPRETATION — never financial truth, never memory, never
+// a transcript, and not AiAdvice (Space-scoped, ownerless, markdown, seed-only).
+//
+// One row per (Space, owner, UTC brief day). Financial evidence is Space-scoped;
+// the narration reads the OWNER's memory, so two members of one Space get two rows.
+//
+// ── No status enum: nullability IS the state ────────────────────────────────
+//   generatedAt set (content set)          a usable Brief for this day exists
+//   generationStartedAt within the lease   one caller holds the generation claim
+//   lastFailedAt newer than generatedAt    the latest attempt failed; content, if
+//                                          any, is the previous successful Brief
+//   generatedAt null + lastFailedAt set    the first generation for this day failed
+// Transitions (lib/ai/brief/store.ts): claim sets generationStartedAt; success
+// writes content + provenance and clears it; failure clears it and stamps
+// lastFailedAt; a dead process's claim simply expires (no cleanup job).
+//
+// The evidence package is NOT stored — only digests and honest provenance.
+// Retention: none yet; ~30 days is the recommended future policy.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model DailyBrief {
+  id          String @id @default(cuid())
+  spaceId     String
+  space       Space  @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  ownerUserId String
+  owner       User   @relation("DailyBriefOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  /// The UTC calendar day this Brief is for (lib/time/clock), like SpaceSnapshot.date.
+  briefDay    DateTime @db.Date
+
+  /// The validated Slice 1 narration. Null until a generation for this day succeeds.
+  content        Json?
+  /// When `content` was successfully generated. Not when a claim started.
+  generatedAt    DateTime?
+  /// The package's balance-freshness anchor (oldest balance observation), when it had one.
+  balancesAsOf   DateTime?
+  /// The newest snapshot observation the package could see.
+  historyThrough DateTime? @db.Date
+  /// "Something the Brief reads may have changed" — a hash of source clocks and counts.
+  sourceWatermark String?
+  /// "The Brief deserves reconsideration" — a hash of the package's material projection.
+  materialDigest  String?
+  model           String?
+  /// A hash of the generation instruction and output schema actually used.
+  promptVersion   String?
+  /// Joins the one AiInvocation row of the generation. AiInvocation owns the accounting.
+  correlationId   String?
+
+  /// The generation claim, and its fencing token. Null when nobody holds it.
+  generationStartedAt DateTime?
+  lastFailedAt        DateTime?
+  /// The typed Slice 1 failure reason (TIMEOUT, PROVIDER_ERROR, …) — never prose.
+  lastFailureReason   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([spaceId, ownerUserId, briefDay])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

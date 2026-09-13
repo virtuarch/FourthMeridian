@@ -75,6 +75,8 @@ export interface LoadedBriefPackage {
   package: BriefPackage;
   /** The reads that failed, by name. Empty on a complete package. */
   degraded: string[];
+  /** The newest snapshot observation the package could see (≤ asOf), or null. Provenance only. */
+  historyThrough: string | null;
   /** Milliseconds per read, for the report. */
   timings: Record<string, number>;
 }
@@ -181,5 +183,5 @@ export async function loadBriefPackage(args: {
     recentActivity,
   });
 
-  return { package: pkg, degraded, timings };
+  return { package: pkg, degraded, timings, historyThrough: snapshot?.newestDate ?? null };
 }
