@@ -135,7 +135,11 @@ console.log('3. evidence arms');
 // ══ 4. The tool surface is read-only ═════════════════════════════════════════
 console.log('4. tool surface');
 {
-  check('fifteen tools', TOOLS.length === 15, String(TOOLS.length));
+  // 15 + `find_in_balance_history`, which took the exact-date predicates off the
+  // model: first / last / highest / lowest over one balance are arithmetic, and
+  // a scanned series answered 2026-04-24 to "when did debt first hit zero" on a
+  // day whose debt was $5,353.81.
+  check('sixteen tools', TOOLS.length === 16, String(TOOLS.length));
   check('names are unique', new Set(TOOLS.map((t) => t.name)).size === TOOLS.length);
   check('every tool describes itself', TOOLS.every((t) => t.description.length > 40));
   check('every schema is a closed object',

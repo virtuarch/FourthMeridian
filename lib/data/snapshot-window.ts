@@ -165,6 +165,123 @@ export function observedChange(
 }
 
 /**
+ * Half a cent, in the reporting currency.
+ *
+ * ⚠️ A COMPARISON RULE, NOT A ROUNDING RULE. Nothing here rewrites a stored
+ * value: the series keeps whatever the snapshot recorded, and a caller that
+ * prints a figure prints the real one. This only decides when two amounts are
+ * THE SAME AMOUNT OF MONEY, because a sum of floats does not land where the
+ * money does — this Space's own debt series holds `2.842170943040401e-14` on a
+ * day the debt was paid off, and `32575.96000000001` on a day it was not. A
+ * predicate that asked `value <= 0` would answer "no" for a debt of nothing.
+ *
+ * Half a cent is the width of the smallest difference that can be WRITTEN in a
+ * currency with two decimal places, so anything narrower is representation, not
+ * money.
+ */
+export const MONEY_EPSILON = 0.005;
+
+/** Same amount of money, whatever the float says. */
+export const sameMoney = (a: number, b: number): boolean => Math.abs(a - b) < MONEY_EPSILON;
+
+/**
+ * The exact temporal questions a series can answer.
+ *
+ * ⚠️ THESE ARE PREDICATES, AND CODE OWNS THEM. "First", "last", "highest",
+ * "lowest" and "when did it cross" are arithmetic over an ordered series; asking
+ * a reader to scan two hundred rows for them is asking for an error, and it got
+ * one — the assistant named a day as the first zero-debt day whose debt, in the
+ * same payload, was $5,353.81.
+ */
+export type TemporalOperation =
+  | 'minimum' | 'maximum'
+  | 'first_below' | 'first_above'
+  | 'last_below'  | 'last_above';
+
+/**
+ * ⚠️ `below` AND `above` ARE INCLUSIVE, and the short names are measured, not
+ * taste. The first vocabulary read `first_at_or_below`; in six live calls the
+ * model assembled `first_at_or_at_or_below` twice — a repeated segment is a
+ * segment that gets repeated. A name that cannot be mis-composed costs a round
+ * trip less, and the inclusiveness is stated everywhere it is used instead.
+ */
+
+/** Whether an operation compares against a threshold the caller supplies. */
+export const NEEDS_THRESHOLD: Record<TemporalOperation, boolean> = {
+  minimum: false, maximum: false,
+  first_below: true, first_above: true,
+  last_below: true, last_above: true,
+};
+
+export interface ObservedMatch {
+  /** The observation that answers the question. */
+  match:    SeriesPoint;
+  /**
+   * The observation immediately before it, when the series has one.
+   *
+   * ⚠️ WHAT IT CROSSED FROM, AND THE REASON A CROSSING IS NOT A DATE ALONE.
+   * Debt reaching zero on the 22nd having been $89.46 on the 21st is a
+   * different fact from debt that had been zero for a week, and a reader
+   * deserves the one that is true.
+   */
+  previous: SeriesPoint | null;
+}
+
+/**
+ * Answer one exact temporal question over an ordered series. PURE.
+ *
+ * ⚠️ OBSERVED, NEVER INTERPOLATED. The answer is always a date the series
+ * actually holds. If debt was $17.12 on the 19th and $0 on the 22nd, the first
+ * observed zero is the 22nd — not a modelled day in between, and not a hedge.
+ * Callers should say "first observed" where the distinction can matter.
+ *
+ * ⚠️ TIES GO TO THE EARLIER OBSERVATION, within `MONEY_EPSILON`. A balance that
+ * sits at its low for three days has one lowest day, and it is the first — a
+ * later one would be an arbitrary choice presented as a fact.
+ *
+ * `points` must be ordered oldest-first and must already exclude observations
+ * where the metric could not be established; an unestablished value is not a
+ * low, and treating a null as a zero is how a gap becomes a milestone.
+ */
+export function findObservation(
+  points: readonly SeriesPoint[],
+  operation: TemporalOperation,
+  threshold?: number,
+): ObservedMatch | null {
+  const usable = points.filter((p) => Number.isFinite(p.value));
+  if (usable.length === 0) return null;
+  const found = (i: number): ObservedMatch =>
+    ({ match: usable[i], previous: i > 0 ? usable[i - 1] : null });
+
+  if (operation === 'minimum' || operation === 'maximum') {
+    let best = 0;
+    for (let i = 1; i < usable.length; i++) {
+      const v = usable[i].value, b = usable[best].value;
+      if (sameMoney(v, b)) continue;              // a tie keeps the earlier day
+      if (operation === 'minimum' ? v < b : v > b) best = i;
+    }
+    return found(best);
+  }
+
+  if (threshold === undefined || !Number.isFinite(threshold)) return null;
+  // ⚠️ THE EPSILON WIDENS THE CONDITION, IT DOES NOT MOVE IT. "At or below zero"
+  // must include a debt of 2.8e-14; it must not include a debt of one cent.
+  // Strict at the widened bound, exactly as `sameMoney` is strict: half a cent is
+  // the first difference that can be written down, so it is a real difference.
+  const meets = (v: number) =>
+    operation === 'first_below' || operation === 'last_below'
+      ? v < threshold + MONEY_EPSILON
+      : v > threshold - MONEY_EPSILON;
+
+  const fromEnd = operation.startsWith('last_');
+  for (let n = 0; n < usable.length; n++) {
+    const i = fromEnd ? usable.length - 1 - n : n;
+    if (meets(usable[i].value)) return found(i);
+  }
+  return null;
+}
+
+/**
  * The TRUE calendar distance in days between the first and last point.
  *
  * ⚠️ The only value that may be described as a duration. A snapshot ROW COUNT is

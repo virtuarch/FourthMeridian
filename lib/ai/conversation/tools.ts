@@ -49,7 +49,9 @@ import { projectSnapshotSection } from '@/lib/ai/assemblers/snapshot';
 import type { Snapshot } from '@/types';
 import { FlowType } from '@prisma/client';
 import { resolveExplorationNode } from '@/lib/history/exploration';
-import { observedChange } from '@/lib/data/snapshot-window';
+import {
+  observedChange, findObservation, NEEDS_THRESHOLD, type TemporalOperation,
+} from '@/lib/data/snapshot-window';
 import { loadForecastIncomeStreams } from '@/lib/ai/forecast/streams';
 import { assembleForecast } from '@/lib/ai/forecast/assemble';
 import { resolvePayDates, PayDateAsk } from '@/lib/ai/forecast/pay-dates';
@@ -107,6 +109,8 @@ const str = (description: string) => ({ type: 'string', description });
 const num = (description: string) => ({ type: 'number', description });
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+/** A Date back to the calendar day it represents. UTC, like every date in this layer. */
+const isoDay = (d: Date) => d.toISOString().slice(0, 10);
 /** The bound `lib/history/exploration` uses. Enough for all-time on this corpus. */
 const SNAPSHOT_READ_ROWS = 1100;
 /** Ceiling on a DAILY series, so one call cannot return a year of rows by accident. */
@@ -327,7 +331,11 @@ const getSpending: ToolDefinition = {
   description:
     'Deterministic spending and cash-flow totals over any window up to ~26 months: ' +
     'category and merchant rollups, month-by-month, largest expense, transfers and ' +
-    'card payments kept separate from spending. Default window is the last 90 days.',
+    'card payments kept separate from spending. Use it whenever an answer needs a ' +
+    'per-month spending figure — "how much do I spend", "how long would my cash last", ' +
+    'emergency-fund questions: `monthlySpending` gives the mean over whole months and ' +
+    'the highest and lowest month, so a one-off month is never mistaken for a normal ' +
+    'one. Default window is the last 90 days.',
   parameters: obj({
     from: str('YYYY-MM-DD inclusive. Omit for the 90 days before `to`.'),
     to:   str('YYYY-MM-DD inclusive. Omit for today.'),
@@ -341,6 +349,31 @@ const getSpending: ToolDefinition = {
       FinanceDomains.TRANSACTIONS_SUMMARY, ctx,
       { transactionWindow: { startDate: from, endDate: to, label: `${from}..${to}` } });
     if (!t) return { unavailable: `no transactions between ${from} and ${to}` };
+
+    const months = t.monthlyBreakdown.map((m) => ({
+      month: m.month, income: m.incomeTotal, spending: m.expenseTotal,
+      cardAndDebtPayments: m.debtPaymentTotal, transfers: m.transferTotal,
+      transactionCount: m.transactionCount, partialMonth: m.partial ?? false,
+    }));
+    // Whole months only. A partial month is a fraction of a month's spending and
+    // averaging it in understates every month beside it.
+    const whole = months.filter((m) => !m.partialMonth);
+    const low  = whole.reduce((a, b) => (b.spending < a.spending ? b : a), whole[0]);
+    const high = whole.reduce((a, b) => (b.spending > a.spending ? b : a), whole[0]);
+    const monthly = whole.length >= 2 ? {
+      completeMonths: whole.length,
+      mean: round2(whole.reduce((n, m) => n + m.spending, 0) / whole.length),
+      lowest:  { month: low.month,  spending: low.spending },
+      highest: { month: high.month, spending: high.spending },
+      basis:
+        'Ordinary spending per WHOLE calendar month in this window — card and debt '
+        + 'payments and movements between your own accounts are NOT in it. Use these '
+        + 'rather than dividing a window total. This is what was spent, not a core or '
+        + 'recurring commitment: a month containing a one-off purchase is in the mean, '
+        + 'and a debt payoff is not spending at all. Say which month a figure came from '
+        + 'when the spread matters.',
+    } : null;
+
     return {
       window: { from: t.startDate, to: t.endDate, days: t.windowDays,
         transactionCount: t.transactionCount, truncated: t.truncated },
@@ -354,11 +387,15 @@ const getSpending: ToolDefinition = {
         transfersBetweenOwnAccounts: t.transferTotal,
       },
       byCategory: t.byCategory,
-      byMonth: t.monthlyBreakdown.map((m) => ({
-        month: m.month, income: m.incomeTotal, spending: m.expenseTotal,
-        cardAndDebtPayments: m.debtPaymentTotal, transfers: m.transferTotal,
-        transactionCount: m.transactionCount, partialMonth: m.partial ?? false,
-      })),
+      byMonth: months,
+      // ⚠️ THE MONTHLY FIGURE, COMPUTED OVER WHOLE MONTHS — because dividing a
+      // window total by its length is where "how long would my cash last"
+      // quietly goes wrong. On this Space ordinary spending ran $2,290 in one
+      // month and $14,142 in another; a mean alone describes neither, and a
+      // window that opens or closes mid-month puts a fraction of a month's
+      // spending against a whole one. Nothing here is a burn rate, a target or
+      // a recommendation — it is the spread the months actually have.
+      ...(monthly ? { monthlySpending: monthly } : {}),
       largestExpense: t.largestExpense,
       topMerchants: t.merchants
         ? { shown: t.merchants.items.slice(0, 12), ofTotalMerchants: t.merchants.totalCount }
@@ -486,6 +523,16 @@ const getTransactions: ToolDefinition = {
       ? [...population].sort((x, y) => Math.abs(y.amount) - Math.abs(x.amount)).slice(0, limit)
       : population;   // completable ⇒ this IS the whole matching set
 
+    // ⚠️ NAMES FROM THE ASSEMBLER THAT ALREADY DECIDES WHO MAY SEE THEM. The row
+    // DTOs carry account IDs — the counterparty's already privacy-gated by the
+    // read authority — and an id is not something a reader can pair. This maps
+    // the ids this page uses onto the names the accounts surface already
+    // discloses, so an account the viewer cannot see simply has no name here and
+    // the leg stays honestly anonymous.
+    const acc = await assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx);
+    const names = new Map((acc?.accounts ?? []).map((x) => [x.id, x.name]));
+    const accountName = (id: string | null | undefined) => (id ? names.get(id) : undefined);
+
     // ⚠️ THE RESULT DECLARES THE BOUNDARY OF ITS OWN AUTHORITY. `window` is the
     // evidence actually searched; `coverage` is the evidence there was to search.
     // Without the second, an empty page cannot distinguish "nothing matched in
@@ -515,6 +562,23 @@ const getTransactions: ToolDefinition = {
         date: r.date, merchant: r.merchantDisplayName ?? r.merchant,
         description: r.description, amount: r.amount,
         category: r.category, pending: r.pending,
+        // ⚠️ WHICH SIDE OF THE MOVEMENT THIS ROW IS. A card payment posts TWICE —
+        // once on the checking account it left and once on the card it landed on —
+        // and the two rows used to arrive as `-5,000 Payment to Chase card` and
+        // `+5,000 Payment Thank You-Mobile` with nothing to say they are one
+        // event. Naming the account each row sits on, and the owned account on
+        // the other side, is what makes the pair legible. Both legs stay in the
+        // ledger: the raw record is never collapsed, because a leg is real
+        // evidence about the account it posted to.
+        ...(accountName(r.accountId) ? { account: accountName(r.accountId) } : {}),
+        ...(accountName(r.counterpartyAccountId) ? {
+          counterpartyAccount: accountName(r.counterpartyAccountId),
+          movementNote: 'Both sides of this movement are your own accounts. This row '
+            + 'is ONE LEG of it — do not add it to the other leg.',
+        } : {}),
+        // The transfer authority's own verdict about where the money went.
+        // Absent when it did not assess the row.
+        ...(r.transferMaturity ? { movementKind: r.transferMaturity } : {}),
       })),
       shown: rows.length,
       // ⚠️ THE EVIDENCE CEILING FOR THE PAGE, BESIDE THE ONE FOR THE WINDOW.
@@ -696,7 +760,10 @@ const getNetWorthHistory: ToolDefinition = {
     'ago". `liquid` is checking + savings; `checking` is the checking bucket alone — there ' +
     'is deliberately no field called "cash". Ask for `granularity: "monthly"` to get one ' +
     'point per calendar month. A point whose net worth could not be established is returned ' +
-    'as null WITH a reason; read `coverage` before describing older history as fact.',
+    'as null WITH a reason; read `coverage` before describing older history as fact. For an ' +
+    'EXACT date — the first or last time something crossed a number, a highest or a lowest — ' +
+    'use `find_in_balance_history` instead: a long series here is downsampled and the day you ' +
+    'need may not be in it.',
   parameters: obj({
     from: str('YYYY-MM-DD. Omit for the last 90 days.'),
     to:   str('YYYY-MM-DD. Omit for today.'),
@@ -790,6 +857,22 @@ const getNetWorthHistory: ToolDefinition = {
       // September 2025 because crypto could not be valued".
       coverage: {
         pointsReturned: picked.length,
+        // ⚠️ HOW MANY THERE ACTUALLY ARE, BESIDE HOW MANY CAME BACK. A monthly
+        // roll-up and a downsampled daily read both look exactly like the record
+        // from inside the payload, and both have been read as it: a 786-day
+        // range capped to 194 points does not contain the day debt first hit
+        // zero, so every answer derived from scanning it was wrong before it
+        // started. The series is for shape; exact days come from
+        // `find_in_balance_history`, which searches all of them.
+        observationsInRange: inRange.length,
+        ...(picked.length < inRange.length ? {
+          seriesIsSample: true,
+          sampleNote:
+            `This is ${picked.length} of ${inRange.length} observations in the range. Days `
+            + 'not shown are NOT missing from the record, they are missing from this '
+            + 'payload — never state a first, last, highest or lowest from it. '
+            + 'Use find_in_balance_history for those.',
+        } : {}),
         pointsUnassertable: unassertable.length,
         firstAssertableDate: firstAssertable,
         reason: unassertable.length > 0
@@ -815,6 +898,157 @@ const getNetWorthHistory: ToolDefinition = {
       // either end is absent rather than zero.
       change: changeBlock(pt(inRange[0]), pt(inRange[inRange.length - 1])),
       series: picked.map(pt),
+    };
+  },
+};
+
+// ── 6b. Exact temporal facts over the balance history ────────────────────────
+
+const BALANCE_METRICS = {
+  netWorth:      'net worth',
+  liquid:        'checking + savings',
+  checking:      'the checking bucket alone',
+  investments:   'traditional investments',
+  digitalAssets: 'crypto',
+  debt:          'total debt owed',
+} as const;
+type BalanceMetric = keyof typeof BALANCE_METRICS;
+
+const TEMPORAL_OPERATIONS: readonly TemporalOperation[] = [
+  'minimum', 'maximum',
+  'first_below', 'first_above', 'last_below', 'last_above',
+];
+
+/**
+ * THE EXACT DAY, COMPUTED RATHER THAN READ OFF A LIST.
+ *
+ * ⚠️ IT EXISTS BECAUSE THE SERIES ANSWER WAS WRONG IN PRODUCTION. Asked when
+ * debt first hit zero, the assistant answered 2026-04-24 — a date whose debt, in
+ * the very payload it was reading, was $5,353.81. The true answer, 2026-07-22,
+ * was in the same series. Scanning two hundred rows for a first/last/highest/
+ * lowest is arithmetic, and arithmetic over money is not the model's to do.
+ *
+ * ⚠️ AND BECAUSE THE SERIES COULD NOT ALWAYS ANSWER IT. `get_net_worth_history`
+ * downsamples a long daily range, so the day the answer lives on can simply not
+ * be in the payload: a 786-day read capped to 194 points does not contain
+ * 2026-07-22 at all, and every reading of it is wrong before the model starts.
+ * This scans EVERY observation in range and returns one.
+ */
+const findInBalanceHistory: ToolDefinition = {
+  name: 'find_in_balance_history',
+  description:
+    'The EXACT date and amount for a question about one balance over time — the first ' +
+    'or last time it crossed a number, and its highest or lowest point. Use it for ' +
+    '"when did I first hit zero", "when did my debt first fall below 1,000", "when was ' +
+    'the last time X was zero", "what was my highest debt", "my lowest cash balance", ' +
+    '"when did I cross above/below". ALWAYS use this rather than reading dates off a ' +
+    'series yourself: it checks every observation in the range, while a long history ' +
+    'series is downsampled and may not even contain the day you need. Returns the ' +
+    'matching observation, the observation before it, and the coverage it searched.',
+  parameters: obj({
+    metric: { type: 'string', enum: Object.keys(BALANCE_METRICS),
+      description: 'Which balance. `liquid` is checking + savings; `checking` is the '
+        + 'checking bucket alone; `debt` is what is owed, as a positive amount.' },
+    operation: { type: 'string', enum: [...TEMPORAL_OPERATIONS],
+      description: 'minimum and maximum need no threshold. first_below, first_above, '
+        + 'last_below and last_above each need one, and INCLUDE the threshold itself: '
+        + '"the first time debt was zero" is first_below with threshold 0; "when did it '
+        + 'first go over 10,000" is first_above with threshold 10000.' },
+    threshold: num('The amount to compare against. Required for first_below, first_above, last_below and last_above.'),
+    from: str('YYYY-MM-DD. Omit for the whole available history.'),
+    to:   str('YYYY-MM-DD. Omit for today.'),
+  }, ['metric', 'operation']),
+  async run(a, ctx) {
+    const metric = a.metric as BalanceMetric;
+    const operation = a.operation as TemporalOperation;
+    if (!BALANCE_METRICS[metric]) return { error: `unknown metric: ${String(a.metric)}` };
+    if (!TEMPORAL_OPERATIONS.includes(operation)) {
+      return { error: `unknown operation: ${String(a.operation)}` };
+    }
+    const threshold = a.threshold === undefined ? undefined : Number(a.threshold);
+    if (NEEDS_THRESHOLD[operation] && (threshold === undefined || !Number.isFinite(threshold))) {
+      return { error: `${operation} needs a numeric threshold` };
+    }
+
+    // The same read, the same projection, the same refusals as the series tool.
+    // A second historical pipeline would be a second version of the truth.
+    const ceiling = ctx.asOfISO;
+    const to = clampToCeiling((a.to as string) || ceiling, ceiling);
+    const rows = await getRecentSnapshots({ rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
+    const section = projectSnapshotSection(rows as Snapshot[], 'full');
+    if (!section) return { unavailable: 'no usable snapshot history for this Space' };
+    // ⚠️ THE WHOLE RECORD BY DEFAULT. "When did I FIRST" has no natural start
+    // date, and defaulting to ninety days the way the series tool does would
+    // answer a different question and sound certain doing it. `oldestDate` is
+    // null only for an empty section, which is already refused above.
+    const from = (a.from as string) || section.oldestDate || '0000-01-01';
+
+    const inRange = section.history.filter((p) => p.date >= from && p.date <= to);
+    const valueOf = (p: (typeof inRange)[number]): number | null =>
+      metric === 'netWorth' ? p.netWorth
+      : metric === 'liquid' ? p.liquid
+      : metric === 'checking' ? p.cashOnHand
+      : metric === 'investments' ? p.investments
+      : metric === 'digitalAssets' ? p.digitalAssets
+      : p.liabilities;
+
+    // ⚠️ AN UNESTABLISHED VALUE IS NOT A LOW AND NOT A ZERO. Points the
+    // assembler refused are removed from the scan and counted, so "crypto could
+    // not be valued for 407 days" can never become "your net worth bottomed out".
+    const usable = inRange
+      .map((p) => ({ date: new Date(`${p.date}T00:00:00.000Z`), value: valueOf(p) }))
+      .filter((p): p is { date: Date; value: number } => p.value !== null);
+    const unassertable = inRange.length - usable.length;
+
+    const coverage = {
+      window: { from, to },
+      observationsInRange: inRange.length,
+      observationsSearched: usable.length,
+      observationsUnassertable: unassertable,
+      firstObservation: usable[0] ? isoDay(usable[0].date) : null,
+      lastObservation: usable.length ? isoDay(usable[usable.length - 1].date) : null,
+      historyAvailableFrom: section.oldestDate,
+      historyAvailableTo:   section.newestDate,
+      ...(unassertable > 0 ? { note:
+        `${unassertable} observation(s) in this range could not be established and were `
+        + 'not searched. They are not zeroes.' } : {}),
+    };
+
+    // ⚠️ TWO DIFFERENT ANSWERS, NEVER THE SAME ONE. "It never happened in a range
+    // I can see" and "I cannot see that range" are opposite statements, and a
+    // single empty result would let either be told as the other.
+    if (usable.length === 0) {
+      return { metric, operation, ...(threshold !== undefined ? { threshold } : {}),
+        result: null,
+        unavailable: inRange.length === 0
+          ? 'NO_OBSERVATIONS_IN_RANGE'
+          : 'NO_ESTABLISHED_OBSERVATIONS_IN_RANGE',
+        coverage };
+    }
+
+    const found = findObservation(usable, operation, threshold);
+    if (!found) {
+      return { metric, operation, ...(threshold !== undefined ? { threshold } : {}),
+        result: null, unmatched: 'NO_OBSERVATION_MEETS_THE_CONDITION', coverage };
+    }
+
+    return {
+      metric, metricMeans: BALANCE_METRICS[metric], operation,
+      ...(threshold !== undefined ? { threshold } : {}),
+      result: {
+        date: isoDay(found.match.date),
+        value: found.match.value,
+        ...(found.previous
+          ? { previousObservation: { date: isoDay(found.previous.date), value: found.previous.value } }
+          : {}),
+      },
+      // ⚠️ OBSERVED, NOT INTERPOLATED, AND THE ANSWER SHOULD SAY SO WHEN IT
+      // MATTERS. Debt was $17.12 on the 19th and $0 on the 22nd; nothing was
+      // measured in between, so the 22nd is the first day it was OBSERVED at
+      // zero, not provably the day it became zero.
+      basis: 'Observed daily snapshots only — nothing between two observations is modelled. '
+        + 'Describe the answer as the first/last OBSERVED date where that distinction matters.',
+      coverage,
     };
   },
 };
@@ -1924,7 +2158,8 @@ const reconcileProjection: ToolDefinition = {
 
 export const TOOLS: readonly ToolDefinition[] = [
   getFinancialSnapshot, getSpending, getTransactions, getIncome, getInvestments,
-  getNetWorthHistory, explainNetWorthComposition, projectCash, getPayDates, investmentScenario,
+  getNetWorthHistory, findInBalanceHistory, explainNetWorthComposition, projectCash,
+  getPayDates, investmentScenario,
   scenarioProjection, scenarioGoalSeek, reconcileProjection,
   ...MEMORY_TOOLS,
 ];

@@ -2,7 +2,7 @@
  * POST /api/ai/chat
  *
  * THE CONVERSATION, IN PRODUCTION. The runtime measured under arm A2 — thin
- * orientation, coverage envelope, memory line, the fifteen tools, the
+ * orientation, coverage envelope, memory line, the sixteen tools, the
  * active-scenario envelope, Clip 6 — answering a real user through a real
  * session, on the model every gate was run on.
  *
