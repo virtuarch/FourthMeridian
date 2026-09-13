@@ -1,5 +1,5 @@
 /**
- * scripts/ai-baseline/evidence.ts
+ * lib/ai/conversation/evidence.ts
  *
  * THE FOUR EVIDENCE ARMS — what each one puts in front of the model.
  *

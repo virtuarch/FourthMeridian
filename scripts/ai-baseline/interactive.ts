@@ -21,11 +21,11 @@
 import { createInterface } from 'readline/promises';
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { assembleFullContext, buildEvidence, ARM_QUESTION } from './evidence';
-import { openAiToolSchemas, type ToolContext } from './tools';
+import { assembleFullContext, buildEvidence, ARM_QUESTION } from '@/lib/ai/conversation/evidence';
+import { openAiToolSchemas, type ToolContext } from '@/lib/ai/conversation/tools';
 import { executeTurn, sumTurns, supportsTools, SYSTEM_INSTRUCTION, type TurnRecord } from './run';
-import { compactToolHistory, DEFAULT_COMPACTION, type CompactionPolicy } from './compaction';
-import { newScenarioSlot } from './active-scenario';
+import { compactToolHistory, DEFAULT_COMPACTION, type CompactionPolicy } from '@/lib/ai/conversation/compaction';
+import { newScenarioSlot } from '@/lib/ai/conversation/active-scenario';
 import type { SpaceContext } from '@/lib/space';
 
 /** The arm this mode is. Fixed — choosing it per session would make sessions incomparable. */

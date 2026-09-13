@@ -1,5 +1,5 @@
 /**
- * scripts/ai-baseline/tools.ts
+ * lib/ai/conversation/tools.ts
  *
  * THE TOOL SURFACE — thirteen adapters over authorities that already exist, plus
  * the two memory tools that live in `memory-tools.ts`.
@@ -1638,9 +1638,16 @@ const MAX_SOLVED_RETURN_PCT = 500;
 const scenarioGoalSeek: ToolDefinition = {
   name: 'scenario_goal_seek',
   description:
+    // ⚠️ THE EXAMPLE CARRIES NO CURRENCY SYMBOL. Anywhere under lib/ai a quoted
+    // dollar-then-digit is a hard-coded currency in a money string, and
+    // `lib/ai/currency-presentation.test.ts` refuses it — correctly: this tool is
+    // currency-agnostic and a Space that reports in anything but USD should not
+    // read a dollar sign in its own tool surface. The guard only started applying
+    // when the runtime moved out of scripts/, which is the guard working.
     'Solve for the one number that reaches a target: the annual return needed, the monthly ' +
     'contribution needed, or the monthly spending cut needed. Use it for "how could I reach ' +
-    '$1M by 2030?" — do NOT estimate a required return or a required saving rate yourself. ' +
+    'a million by 2030?" — do NOT estimate a required return or a required saving rate ' +
+    'yourself. ' +
     'It returns the value AND the full scenario at that value, or `feasible: false` with how ' +
     'far the range actually got. Takes the same scenario inputs as scenario_projection, ' +
     'which are held fixed while the one unknown is solved.',

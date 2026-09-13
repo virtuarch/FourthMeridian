@@ -20,7 +20,7 @@
 
 import '@/lib/ai/assemblers';
 import { db } from '@/lib/db';
-import { findTool, type ToolContext } from '@/scripts/ai-baseline/tools';
+import { findTool, type ToolContext } from '@/lib/ai/conversation/tools';
 import type { SpaceContext } from '@/lib/space';
 
 let failures = 0;
@@ -125,7 +125,7 @@ async function main() {
   }
 
   console.log('\n5. CHECKPOINT PROPAGATION — the durable record cannot inherit prose');
-  const { checkpointProjection } = await import('@/scripts/ai-baseline/memory-tools');
+  const { checkpointProjection } = await import('@/lib/ai/conversation/memory-tools');
   const withProse = await cash({ to: TO, assumedMonthlySpending: 4346.48,
     statedAs: 'user has a $15k net bonus on 2026-12-07' });
   const before = await db.spaceMemory.count({ where: { spaceId } });
@@ -154,7 +154,7 @@ async function main() {
     scen.assumptions.outflows.count === 1 && scen.assumptions.outflows.settled[0].amount === -15000);
 
   console.log('\n7. THE SCHEMAS NO LONGER INVITE IT');
-  const { openAiToolSchemas } = await import('@/scripts/ai-baseline/tools');
+  const { openAiToolSchemas } = await import('@/lib/ai/conversation/tools');
   for (const name of ['project_cash', 'scenario_projection', 'scenario_goal_seek']) {
     const t = (openAiToolSchemas() as { function: { name: string; parameters: unknown } }[])
       .find((x) => x.function.name === name)!;

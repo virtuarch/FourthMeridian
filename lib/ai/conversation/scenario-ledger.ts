@@ -1,5 +1,5 @@
 /**
- * scripts/ai-baseline/scenario-ledger.ts
+ * lib/ai/conversation/scenario-ledger.ts
  *
  * THE SCENARIO LEDGER — the one piece of arithmetic the repository does not
  * already own, at the smallest size that retires three turns of prose maths.

@@ -1,5 +1,5 @@
 /**
- * scripts/ai-baseline/memory-store.ts
+ * lib/ai/conversation/memory-store.ts
  *
  * THE ONLY WRITE PATH IN THE HARNESS — and it can reach exactly one table.
  *

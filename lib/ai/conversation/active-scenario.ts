@@ -1,5 +1,5 @@
 /**
- * scripts/ai-baseline/active-scenario.ts
+ * lib/ai/conversation/active-scenario.ts
  *
  * THE ONE HYPOTHETICAL CURRENTLY UNDER DISCUSSION — assumptions and result, as a
  * pair, for as long as a conversation lives.

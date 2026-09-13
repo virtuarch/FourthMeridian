@@ -17,7 +17,7 @@
 
 import { db } from '@/lib/db';
 import '@/lib/ai/assemblers';
-import { findTool, type ToolContext } from '@/scripts/ai-baseline/tools';
+import { findTool, type ToolContext } from '@/lib/ai/conversation/tools';
 import type { SpaceContext } from '@/lib/space';
 const SPACE='cmrrm846r000j7znwsl67gt1g';
 let fail=0; const ck=(n:string,c:boolean,d?:string)=>{console.log((c?'  ✓ ':'  ✗ ')+n+(d?'  '+d:'')); if(!c)fail++;};

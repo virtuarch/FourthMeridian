@@ -1,5 +1,5 @@
 /**
- * scripts/ai-baseline/forecast-vocabulary.ts
+ * lib/ai/conversation/forecast-vocabulary.ts
  *
  * The forecast vocabulary the harness needs, re-exported THROUGH the sanctioned
  * adapter rather than reached for directly.

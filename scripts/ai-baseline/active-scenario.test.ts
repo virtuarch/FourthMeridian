@@ -14,8 +14,8 @@ import { readFileSync } from 'node:fs';
 import {
   captureActiveScenario, applyCapture, injectScenario, newScenarioSlot,
   scenarioMessage, ACTIVE_SCENARIO_MARKER, SCENARIO_TOOL, type ActiveScenario,
-} from '@/scripts/ai-baseline/active-scenario';
-import { compactToolHistory, DEFAULT_COMPACTION } from '@/scripts/ai-baseline/compaction';
+} from '@/lib/ai/conversation/active-scenario';
+import { compactToolHistory, DEFAULT_COMPACTION } from '@/lib/ai/conversation/compaction';
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -196,7 +196,7 @@ console.log('\n6. SIZE');
 console.log('\n7. STRUCTURE — no partial write exists');
 {
   const code = (rel: string) => readFileSync(rel, 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
-  const mod = code('scripts/ai-baseline/active-scenario.ts');
+  const mod = code('lib/ai/conversation/active-scenario.ts');
   const run = code('scripts/ai-baseline/run.ts');
   check('the pair is built in ONE object literal',
     (mod.match(/assumptions:[\s\S]{0,200}?result: \{ asOf, to, liquid, investments, debt, netWorth \}/g) ?? []).length === 1);
@@ -217,8 +217,8 @@ console.log('\n7. STRUCTURE — no partial write exists');
   check('the envelope is injected before the user message, replaced not appended',
     /injectScenario\(messages, args\.scenario\);\s*messages\.push\(\{ role: 'user'/.test(run));
   check('compaction is untouched',
-    !code('scripts/ai-baseline/compaction.ts').includes('ACTIVE_SCENARIO')
-    && /retainCompletedTurns: 2/.test(code('scripts/ai-baseline/compaction.ts')));
+    !code('lib/ai/conversation/compaction.ts').includes('ACTIVE_SCENARIO')
+    && /retainCompletedTurns: 2/.test(code('lib/ai/conversation/compaction.ts')));
 }
 
 console.log(failures === 0 ? '\nALL PASSED' : `\n${failures} FAILED`);

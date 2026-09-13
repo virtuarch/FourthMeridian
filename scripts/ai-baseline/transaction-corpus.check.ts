@@ -16,7 +16,7 @@
 
 import '@/lib/ai/assemblers';
 import { db } from '@/lib/db';
-import { findTool, type ToolContext } from '@/scripts/ai-baseline/tools';
+import { findTool, type ToolContext } from '@/lib/ai/conversation/tools';
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {

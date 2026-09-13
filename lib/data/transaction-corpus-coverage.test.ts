@@ -76,7 +76,7 @@ console.log("\n4. `rankingIsComplete` DOES NOT IMPLY CORPUS COMPLETENESS");
   // DESCRIBES the separation ("`windowCoversAvailableRecord: false` AND an
   // incomplete page") tripped the very assertion that forbids deriving one from
   // the other. The claim is about code, so scan code.
-  const src = readFileSync("scripts/ai-baseline/tools.ts", "utf8")
+  const src = readFileSync("lib/ai/conversation/tools.ts", "utf8")
     .replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
   check("a complete ranking coexists with incomplete coverage", c.windowCoversAvailableRecord === false);
   check("`rankingIsComplete` is still `complete` — the searched-population fact, unchanged",

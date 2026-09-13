@@ -1,5 +1,5 @@
 /**
- * scripts/ai-baseline/memory-tools.ts
+ * lib/ai/conversation/memory-tools.ts
  *
  * THE TWO MEMORY TOOLS — and the harness's only write verb.
  *

@@ -1,5 +1,5 @@
 /**
- * scripts/ai-baseline/compaction.ts
+ * lib/ai/conversation/compaction.ts
  *
  * CONTEXT GARBAGE COLLECTION. Not memory, not summarisation, not state.
  *

@@ -12,7 +12,7 @@
 import { writeFileSync } from 'fs';
 import { join, basename } from 'path';
 import type { CaseResult } from './run';
-import { ARM_QUESTION, type Arm } from './evidence';
+import { ARM_QUESTION, type Arm } from '@/lib/ai/conversation/evidence';
 import { findProbe } from './probes';
 
 export function writeIndex(

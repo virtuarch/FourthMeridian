@@ -14,8 +14,8 @@
 
 import '@/lib/ai/assemblers';
 import { db } from '@/lib/db';
-import { buildEvidence, assembleFullContext } from '@/scripts/ai-baseline/evidence';
-import { findTool, type ToolContext } from '@/scripts/ai-baseline/tools';
+import { buildEvidence, assembleFullContext } from '@/lib/ai/conversation/evidence';
+import { findTool, type ToolContext } from '@/lib/ai/conversation/tools';
 import type { SpaceContext } from '@/lib/space';
 
 let failures = 0;

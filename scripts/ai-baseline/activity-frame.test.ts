@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs';
 import { subMonths } from '@/lib/perspectives/time-range';
 import {
   ACTIVITY_PRESET, resolveActivityWindow, projectActivityFrame,
-} from '@/scripts/ai-baseline/activity-frame';
+} from '@/lib/ai/conversation/activity-frame';
 import type { TransactionsSummaryData } from '@/lib/ai/types';
 
 let failures = 0;
@@ -160,8 +160,8 @@ console.log('\n13–14. ASSEMBLY PATH — source tripwires');
 {
   const code = (rel: string) =>
     readFileSync(rel, 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
-  const ev = code('scripts/ai-baseline/evidence.ts');
-  const af = code('scripts/ai-baseline/activity-frame.ts');
+  const ev = code('lib/ai/conversation/evidence.ts');
+  const af = code('lib/ai/conversation/activity-frame.ts');
 
   check('the preset comes from the ONE parser', af.includes('compareToForPreset('));
   check('…and the module hand-rolls no date maths',

@@ -1,5 +1,5 @@
 /**
- * scripts/ai-baseline/activity-frame.ts
+ * lib/ai/conversation/activity-frame.ts
  *
  * THE SECOND MEASURED FINANCIAL FRAME — `activity`, trailing six months.
  *

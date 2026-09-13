@@ -1,5 +1,5 @@
 /**
- * scripts/ai-baseline/scenario.ts
+ * lib/ai/conversation/scenario.ts
  *
  * INVESTMENT SCENARIO ARITHMETIC — the one genuinely new calculation the
  * investigation identified, at the smallest size that answers the goldens.

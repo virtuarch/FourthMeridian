@@ -18,12 +18,12 @@
 
 import '@/lib/ai/assemblers';
 import { db } from '@/lib/db';
-import { findTool, type ToolContext } from '@/scripts/ai-baseline/tools';
+import { findTool, type ToolContext } from '@/lib/ai/conversation/tools';
 import {
   captureActiveScenario, applyCapture, injectScenario, newScenarioSlot,
   ACTIVE_SCENARIO_MARKER, SCENARIO_TOOL,
-} from '@/scripts/ai-baseline/active-scenario';
-import { compactToolHistory, DEFAULT_COMPACTION } from '@/scripts/ai-baseline/compaction';
+} from '@/lib/ai/conversation/active-scenario';
+import { compactToolHistory, DEFAULT_COMPACTION } from '@/lib/ai/conversation/compaction';
 import type { SpaceContext } from '@/lib/space';
 
 let failures = 0;

@@ -20,18 +20,18 @@ import { generateWithTools } from '@/lib/ai/provider';
 import { findProbe, type Probe } from './probes';
 import {
   buildEvidence, assembleFullContext, ARM_USES_TOOLS, ARM_QUESTION, type Arm,
-} from './evidence';
-import { openAiToolSchemas, findTool, type ToolContext } from './tools';
+} from '@/lib/ai/conversation/evidence';
+import { openAiToolSchemas, findTool, type ToolContext } from '@/lib/ai/conversation/tools';
 import { runWithAiInvocationContext } from '@/lib/ai/invocation-context';
-import { checkpointProjection } from './memory-tools';
+import { checkpointProjection } from '@/lib/ai/conversation/memory-tools';
 import {
   captureActiveScenario, applyCapture, injectScenario, newScenarioSlot,
   type ScenarioSlot,
-} from './active-scenario';
+} from '@/lib/ai/conversation/active-scenario';
 import {
   compactToolHistory, DEFAULT_COMPACTION,
   type CompactionPolicy, type CompactionStats,
-} from './compaction';
+} from '@/lib/ai/conversation/compaction';
 import type { SpaceContext } from '@/lib/space';
 
 /**

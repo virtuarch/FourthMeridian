@@ -28,7 +28,7 @@
 import { db } from '@/lib/db';
 import {
   recallMemories, rememberMemory, MemoryKind, MemoryStatus,
-} from './memory-store';
+} from '@/lib/ai/conversation/memory-store';
 
 let failures = 0;
 const check = (name: string, cond: boolean, detail?: string): void => {

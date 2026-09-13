@@ -1,5 +1,5 @@
 /**
- * scripts/ai-baseline/reconcile.ts
+ * lib/ai/conversation/reconcile.ts
  *
  * WHAT WE SAID, AGAINST WHAT HAPPENED — the arithmetic only. No data access,
  * no imports, like `scenario-ledger.ts` beside it.

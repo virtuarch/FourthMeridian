@@ -30,7 +30,7 @@ import { db } from '@/lib/db';
 import '@/lib/ai/assemblers';
 import { todayUTCISO } from '@/lib/time/clock';
 import { PROBES, PROBE_IDS } from './ai-baseline/probes';
-import { ARMS, ARM_QUESTION, type Arm } from './ai-baseline/evidence';
+import { ARMS, ARM_QUESTION, type Arm } from '@/lib/ai/conversation/evidence';
 import { runCase, supportsTools, type CaseResult } from './ai-baseline/run';
 import { runInteractive } from './ai-baseline/interactive';
 import { writeIndex } from './ai-baseline/artifacts';
