@@ -19,6 +19,18 @@
 export const GENERATION_LEASE_MS = 90_000;
 
 /**
+ * After a failed generation, how long before another may be attempted.
+ *
+ * A fixed cooldown from `lastFailedAt`, not a progressive backoff: the row records
+ * one failure time and one reason, and a beta surface visited a few times a day
+ * does not need a retry count. Three minutes stops a page left open, a refresh
+ * loop or several tabs from spending a model call per visit against a provider
+ * that is down, while a transient failure still heals within a coffee. An older
+ * Brief stays visible throughout; a digest check (no model call) is never cooled.
+ */
+export const GENERATION_FAILURE_COOLDOWN_MS = 180_000;
+
+/**
  * The oldest earlier Brief that may stand in, clearly dated, while today's generates.
  *
  * Two days covers "yesterday's" plus a missed day. Older than that, a Brief is a

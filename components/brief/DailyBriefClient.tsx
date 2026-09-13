@@ -1,404 +1,271 @@
 "use client";
 
 /**
- * DailyBriefClient — the Daily Brief as narrative intelligence (v2.5 editorial).
+ * DailyBriefClient — the Daily Brief, as a cached daily surface.
  *
- * Fourth Meridian initiates the conversation once a day. The page now reads
- * top-to-bottom like a briefing (prototype components/brief/Brief.tsx): a dated
- * greeting, one lede that earns the first glance, then what changed, then what
- * needs you, then what can wait (folded). Density and urgency DECREASE down the
- * page — the opposite of a notification feed.
+ * The flow lives in ./brief-flow (framework-free, tested); this file wires it to
+ * the page's lifecycle and renders what it says:
  *
- * The cinematic Earth hero was retired here in favour of the text-first
- * editorial header — the Brief's authority now comes from hierarchy and honest
- * grounding, not a backdrop. (EarthBackground/BriefHero were deleted in the
- * v2.6 REVIEW-3 cleanup — this route never depended on them.)
+ *   a Brief on screen      → headline, metric row, what deserves attention, context,
+ *                            with a provenance line that says when it was written,
+ *                            when its balances were last checked, and whether it is
+ *                            updating or could not update
+ *   nothing safe to show   → the Brief's own shape as a skeleton, one truthful label
+ *   no connected accounts  → onboarding
  *
- * NOTHING about the data changed: same `fetch("/api/brief")` → `BriefPayload`,
- * same `POST /api/brief/viewed`, same section contract. The production sections
- * map onto the editorial buckets:
- *   insight            → the LEDE (FM's one read for today)
- *   since_last_visit   → "Since you were last here" (the metric quartet)
- *   attention          → "Worth your attention" (or the all-clear line)
- *   onboarding         → "Can wait" (folded)
- * The rich detail still lives in the SAME modals (SinceLastVisitModal,
- * AttentionModal), opened from the editorial surfaces.
+ * ⚠️ RECHECKED, NOT REGENERATED, WHEN THE TAB RETURNS. `visibilitychange` (the tab
+ * shown again) and `pageshow` with `persisted` (Safari's back-forward cache) ask
+ * the server for the current state, at most once a minute; the server decides
+ * whether anything needs doing.
  *
- * HONESTY: the prototype's evidence chips, "Ask about this", and Space-jumps
- * are presentational SLOTS here — a jump chip renders only when an item has an
- * `href`. Nothing is fabricated. (The trust-dot seam and its `basis` field were
- * deleted in REVIEW-3: the builder never emitted a basis, so the dot never
- * rendered.) "View AI Analysis" opens the existing conversational AI at
- * /dashboard/analyze — the Brief→AI handoff.
+ * ⚠️ MONEY IS CODE'S. The metric row comes from the response's deterministic
+ * snapshot figures; nothing is ever read out of the narration.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, ArrowUpRight, ChevronDown, LayoutGrid, Sparkles, ShieldCheck } from "lucide-react";
+import { ArrowRight, ShieldCheck } from "lucide-react";
 import { Surface, Figure } from "@/components/atlas/Surface";
+import { formatCurrency } from "@/lib/currency";
+import type { BriefArtifactView, BriefMetricsView, BriefObservationView, BriefResponse } from "@/lib/brief-types";
 import { BriefNewUser } from "./BriefNewUser";
-import { SinceLastVisitModal } from "./SinceLastVisitModal";
-import { AttentionModal } from "./AttentionModal";
-import type { BriefPayload, BriefSection, BriefItem, BriefTone, VisitState } from "@/lib/brief-types";
+import {
+  browserClock, createBriefController, httpBriefTransport, initialView,
+  type BriefController, type BriefView,
+} from "./brief-flow";
 
-// ── Copy helpers (ported from the retired BriefHero) ────────────────────────────
+// ── Formatting (browser-local time; the Brief day itself is a UTC day) ──────────
 
-function formatDateLabel(iso: string): string {
-  return new Date(iso).toLocaleString([], {
-    weekday: "long",
-    day:     "numeric",
-    month:   "long",
-    hour:    "numeric",
-    minute:  "2-digit",
-  });
-}
+const time = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+const shortDate = (iso: string) => new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
+const utcDay = (day: string) => new Date(`${day}T00:00:00Z`).toLocaleDateString([], {
+  weekday: "long", month: "short", day: "numeric", timeZone: "UTC",
+});
 
-function extractFirstName(contextLine: string): string | null {
-  const m = contextLine.match(/,\s+([A-Z][a-z]+)/);
-  return m ? m[1] : null;
-}
-
-function greeting(state: VisitState, firstName: string | null): string {
-  if (state === "new_user") return "Welcome to Fourth Meridian";
+function greeting(firstName: string | null): string {
   const h = new Date().getHours();
   const verb = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
   return firstName ? `${verb}, ${firstName}.` : `${verb}.`;
 }
 
-function statusLine(state: VisitState): string {
-  switch (state) {
-    case "new_user":  return "Let's build your financial picture.";
-    case "immediate": return "You're up to date.";
-    case "short":     return "You're up to date.";
-    case "day":       return "Here's your daily check-in.";
-    case "away":      return "Here's what happened since your last visit.";
-  }
-}
-
-// A number carries gain/loss colour only when its own tone claims it — never the
-// brand. Maps the Brief's tone vocabulary onto the Figure's up/down/neutral.
-function figureTone(tone?: BriefTone): "up" | "down" | "neutral" {
-  if (tone === "positive") return "up";
-  if (tone === "warning" || tone === "danger") return "down";
-  return "neutral";
-}
-
-// ── Small presentational parts ──────────────────────────────────────────────────
-
-/** A jump chip — an honest deep-link, shown only when the item/section has an
- *  href. This is the prototype's `spaceJump`/evidence affordance over the real
- *  `href` the builder already emits (e.g. /dashboard?tab=accounts). */
-function JumpChip({ href, label }: { href: string; label: string }) {
-  return (
-    <Link
-      href={href}
-      className="inline-flex items-center gap-1 rounded-full border border-[var(--border-hairline)] px-2.5 py-1 text-[11px] text-[var(--text-secondary)] transition-colors duration-[var(--dur-base)] ease-[var(--ease-standard)] hover:border-[var(--border-hairline-strong)] hover:text-[var(--text-primary)]"
-    >
-      {label}
-      <ArrowRight size={11} className="text-[var(--text-muted)]" />
-    </Link>
-  );
-}
-
-/** The Brief→AI handoff — opens the existing conversational AI. */
-function AskChip({ href = "/dashboard/analyze", label = "View AI Analysis" }: { href?: string; label?: string }) {
-  return (
-    <Link
-      href={href}
-      className="inline-flex items-center gap-1 rounded-full border border-[rgba(125,168,255,.32)] px-2.5 py-1 text-[11px] text-[var(--meridian-300)] transition-colors duration-[var(--dur-base)] ease-[var(--ease-standard)] hover:bg-[rgba(125,168,255,.12)]"
-    >
-      <Sparkles size={11} />
-      {label}
-    </Link>
-  );
-}
+// ── Pieces ─────────────────────────────────────────────────────────────────────
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="mb-4 flex items-center gap-3">
-      <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{children}</span>
+    <div className="mb-3 flex items-center gap-3">
+      <h2 className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{children}</h2>
       <span className="h-px flex-1 bg-[var(--border-hairline)]" aria-hidden />
     </div>
   );
 }
 
-// ── The lede — FM's one read for today (the `insight` section) ───────────────────
-
-function Lede({ section }: { section: BriefSection }) {
-  const body = section.body ?? "";
-  if (!body) return null;
-  const dest = section.actionHref ?? "/dashboard/analyze";
-  const label = section.actionLabel ?? "View AI Analysis";
+function Provenance({ brief, phase }: { brief: BriefArtifactView; phase: BriefView["phase"] }) {
+  const status = phase === "UPDATING" || phase === "WAITING" ? "Updating…"
+    : phase === "COULD_NOT_UPDATE" ? "Couldn’t update" : null;
   return (
-    <section className="mb-10">
-      <p className="text-base leading-relaxed text-[var(--text-primary)] sm:text-lg max-w-[62ch]">{body}</p>
-      <div className="mt-4 flex flex-wrap items-center gap-1.5">
-        <AskChip href={dest} label={label} />
+    <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-muted)]">
+      <span suppressHydrationWarning>
+        {brief.fromPriorDay ? `From ${utcDay(brief.briefDay)} · ` : ""}Updated {time(brief.generatedAt)}
+      </span>
+      {brief.balancesMayBeStale ? (
+        <><span aria-hidden>·</span><span className="text-[var(--accent-warning)]">Some balances may be out of date</span></>
+      ) : brief.balancesAsOf ? (
+        <><span aria-hidden>·</span><span suppressHydrationWarning>Balances last checked {shortDate(brief.balancesAsOf)}</span></>
+      ) : null}
+      <span role="status" aria-live="polite" className="inline-flex items-center gap-1.5">
+        {status && (
+          <>
+            <span aria-hidden>·</span>
+            {status === "Updating…" && <span className="presence-dot size-1.5 rounded-full bg-[var(--meridian-400)]" aria-hidden />}
+            <span className={status === "Couldn’t update" ? "text-[var(--accent-warning)]" : "text-[var(--text-secondary)]"}>{status}</span>
+          </>
+        )}
+      </span>
+    </p>
+  );
+}
+
+function Metrics({ metrics }: { metrics: BriefMetricsView }) {
+  const change = metrics.monthChange;
+  return (
+    <Surface className="mb-9 p-4 sm:p-5">
+      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Net worth</p>
+      <div className="mt-1">
+        <Figure value={formatCurrency(metrics.netWorth, metrics.currency)} size="figure" />
       </div>
-    </section>
+      <p className="mt-1 text-xs text-[var(--text-secondary)]" suppressHydrationWarning>
+        {change && change.abs !== 0
+          ? `${change.abs > 0 ? "+" : "−"}${formatCurrency(Math.abs(change.abs), metrics.currency)} since ${shortDate(`${change.fromDate}T00:00:00Z`)} · `
+          : ""}
+        as of {shortDate(`${metrics.asOf}T00:00:00Z`)}{metrics.estimated ? " · estimated" : ""}
+      </p>
+    </Surface>
   );
 }
 
-// ── "Since you were last here" — the metric quartet, opens the modal ─────────────
-
-function ChangedBlock({ section }: { section: BriefSection }) {
-  const [open, setOpen] = useState(false);
-  const items = section.items ?? [];
-  if (items.length === 0) return null;
-
-  return (
-    <section className="mb-9">
-      <SectionLabel>Since you were last here</SectionLabel>
-      <Surface className="overflow-hidden">
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          aria-label={`${section.title} — view activity`}
-          className="group block w-full p-4 text-left sm:p-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-inset"
-        >
-          <div className="flex flex-wrap gap-x-10 gap-y-5">
-            {items.map((item) => (
-              <div key={item.id} className="min-w-0">
-                <p className="truncate text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{item.label}</p>
-                {item.value && (
-                  <div className="mt-1">
-                    <Figure value={item.value} size="lede" tone={figureTone(item.tone)} />
-                  </div>
-                )}
-                {item.detail && <p className="mt-1 truncate text-xs text-[var(--text-secondary)]">{item.detail}</p>}
-              </div>
-            ))}
-          </div>
-          <span className="mt-4 inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)] transition-colors group-hover:text-[var(--text-secondary)]">
-            View activity
-            <ArrowUpRight size={12} />
-          </span>
-        </button>
-      </Surface>
-      <SinceLastVisitModal open={open} onClose={() => setOpen(false)} section={section} />
-    </section>
-  );
-}
-
-// ── "Worth your attention" — accent rows, or the all-clear line ──────────────────
-
-function AttentionBlock({ section }: { section?: BriefSection }) {
-  const [open, setOpen] = useState(false);
-  const items = (section?.items ?? []).slice(0, 3);
-  const hasAlerts = items.length > 0;
-
-  if (!hasAlerts) {
+function Observation({ o, quietStyle }: { o: BriefObservationView; quietStyle?: boolean }) {
+  const needsConnections = o.kind === "DATA_QUALITY";
+  if (quietStyle) {
     return (
-      <section className="mb-9">
-        <SectionLabel>Worth your attention</SectionLabel>
-        <div className="flex items-center gap-3 py-1">
-          <ShieldCheck size={16} className="shrink-0 text-[var(--accent-positive)]" />
-          <div>
-            <p className="text-sm font-medium text-[var(--text-primary)]">Everything looks healthy today.</p>
-            <p className="mt-0.5 text-xs text-[var(--text-muted)]">No issues detected across your accounts and assets.</p>
-          </div>
-        </div>
-      </section>
+      <li>
+        <h3 className="text-sm font-medium text-[var(--text-primary)]">{o.title}</h3>
+        <p className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">{o.body}</p>
+      </li>
     );
   }
-
   return (
-    <section className="mb-9">
-      <SectionLabel>Worth your attention</SectionLabel>
-      <div className="space-y-2.5">
-        {items.map((item) => (
-          <Surface key={item.id} className="border-[rgba(224,122,95,.28)]">
-            <button
-              type="button"
-              onClick={() => setOpen(true)}
-              aria-label={`${item.label} — review`}
-              className="group block w-full p-4 text-left sm:p-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-inset"
-            >
-              <div className="flex items-baseline gap-2.5">
-                <p className="text-[15px] font-medium leading-6 text-[var(--text-primary)]">{item.label}</p>
-              </div>
-              {item.detail && <p className="mt-1.5 text-xs leading-5 text-[var(--text-secondary)]">{item.detail}</p>}
-              {item.value && <p className="mt-1.5 tabular-nums text-sm text-[var(--accent-negative)]">{item.value}</p>}
-              <span className="mt-3 inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)] transition-colors group-hover:text-[var(--text-secondary)]">
-                Review
-                <ArrowUpRight size={12} />
-              </span>
-            </button>
-          </Surface>
-        ))}
-      </div>
-      <AttentionModal open={open} onClose={() => setOpen(false)} section={section} />
-    </section>
+    <Surface as="li" className="p-4 sm:p-5">
+      <h3 className="text-[15px] font-medium leading-6 text-[var(--text-primary)]">{o.title}</h3>
+      <p className="mt-1.5 text-sm leading-6 text-[var(--text-secondary)]">{o.body}</p>
+      {needsConnections && (
+        <Link href="/dashboard/connections"
+          className="mt-3 inline-flex items-center gap-1 rounded-full border border-[var(--border-hairline)] px-2.5 py-1 text-[11px] text-[var(--text-secondary)] transition-colors hover:border-[var(--border-hairline-strong)] hover:text-[var(--text-primary)]">
+          Review connections <ArrowRight size={11} aria-hidden />
+        </Link>
+      )}
+    </Surface>
   );
 }
 
-// ── "Can wait" — folded away, low urgency ────────────────────────────────────────
-
-function CanWaitBlock({ items }: { items: BriefItem[] }) {
-  const [show, setShow] = useState(false);
-  if (items.length === 0) return null;
+function BriefBody({ brief, metrics, phase }: { brief: BriefArtifactView; metrics: BriefMetricsView | null; phase: BriefView["phase"] }) {
+  const notable = brief.observations.filter((o) => o.importance === "NOTABLE");
+  const context = brief.observations.filter((o) => o.importance === "CONTEXT");
   return (
-    <div className="mt-10 border-t border-[var(--border-hairline)] pt-5">
-      <button
-        type="button"
-        onClick={() => setShow((s) => !s)}
-        className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]"
-      >
-        Can wait · {items.length}
-        <ChevronDown size={12} className={`transition-transform duration-[var(--dur-base)] ${show ? "rotate-180" : ""}`} />
-      </button>
-      {show && (
-        <div className="mt-4 space-y-4">
-          {items.map((item) => (
-            <div key={item.id}>
-              <p className="text-xs font-medium text-[var(--text-secondary)]">{item.label}</p>
-              {item.detail && <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">{item.detail}</p>}
-              {item.href && (
-                <div className="mt-2">
-                  <JumpChip href={item.href} label={item.value ?? "Open"} />
-                </div>
-              )}
-            </div>
-          ))}
+    <>
+      <div className="mb-8">
+        <Provenance brief={brief} phase={phase} />
+        <p className="mt-3 max-w-[62ch] text-lg font-medium leading-relaxed text-[var(--text-primary)] sm:text-xl">{brief.headline}</p>
+      </div>
+
+      {metrics && <Metrics metrics={metrics} />}
+
+      {notable.length > 0 && (
+        <section className="mb-9" aria-label="Worth your attention">
+          <SectionLabel>Worth your attention</SectionLabel>
+          <ul className="space-y-2.5">{notable.map((o, i) => <Observation key={`n${i}`} o={o} />)}</ul>
+        </section>
+      )}
+
+      {brief.observations.length === 0 && (
+        <div className="mb-9 flex items-center gap-3 py-1">
+          <ShieldCheck size={16} className="shrink-0 text-[var(--accent-positive)]" aria-hidden />
+          <p className="text-sm text-[var(--text-secondary)]">Nothing major changed.</p>
         </div>
       )}
-    </div>
+
+      {context.length > 0 && (
+        <section className="mb-9" aria-label="Context">
+          <SectionLabel>Context</SectionLabel>
+          <ul className="space-y-4">{context.map((o, i) => <Observation key={`c${i}`} o={o} quietStyle />)}</ul>
+        </section>
+      )}
+    </>
   );
 }
 
-// ── Skeleton / error ─────────────────────────────────────────────────────────────
-
+/** The Brief's own shape, pulsing. One truthful label; no invented stages. */
 function BriefSkeleton() {
+  const bar = "rounded bg-[var(--surface-hover)]";
   return (
-    <div className="mx-auto max-w-[680px] px-5 pt-24 pb-24 md:pt-28">
-      <div className="animate-pulse space-y-8">
-        <div className="space-y-3">
-          <div className="h-3 w-40 rounded bg-[var(--surface-hover)]" />
-          <div className="h-8 w-64 rounded bg-[var(--surface-hover)]" />
+    <div>
+      <p role="status" aria-live="polite" className="text-xs text-[var(--text-muted)]">Preparing your brief…</p>
+      <div className="animate-pulse" aria-hidden>
+        <div className="mb-8 mt-3 space-y-2">
+          <div className={`h-5 w-full ${bar}`} />
+          <div className={`h-5 w-4/5 ${bar}`} />
         </div>
-        <div className="space-y-2">
-          <div className="h-4 w-full rounded bg-[var(--surface-hover)]" />
-          <div className="h-4 w-5/6 rounded bg-[var(--surface-hover)]" />
+        <div className="mb-9 h-[92px] rounded-[var(--radius-lg)] bg-[var(--surface-hover)]" />
+        <div className={`mb-3 h-2.5 w-32 ${bar}`} />
+        <div className="space-y-2.5">
+          <div className="h-[88px] rounded-[var(--radius-lg)] bg-[var(--surface-hover)]" />
+          <div className="h-[88px] rounded-[var(--radius-lg)] bg-[var(--surface-hover)]" />
         </div>
-        <div className="h-28 rounded-[var(--radius-lg)] bg-[var(--surface-hover)]" />
-        <div className="h-20 rounded-[var(--radius-lg)] bg-[var(--surface-hover)]" />
       </div>
     </div>
   );
 }
 
-function BriefError({ onRetry }: { onRetry: () => void }) {
+function BriefError({ message, onRetry, retryAt }: { message: string; onRetry: () => void; retryAt: number | null }) {
+  const [now, setNow] = useState(() => Date.now());
+  const waitMs = retryAt !== null ? retryAt - now : 0;
+  useEffect(() => {
+    if (retryAt === null || retryAt <= Date.now()) return;
+    const h = setTimeout(() => setNow(Date.now()), retryAt - Date.now() + 50);
+    return () => clearTimeout(h);
+  }, [retryAt]);
+  const minutes = Math.ceil(waitMs / 60_000);
   return (
-    <div className="mx-auto flex min-h-[60vh] max-w-[680px] flex-col items-center justify-center gap-4 px-5 text-center">
-      <p className="text-sm text-[var(--text-muted)]">Couldn&apos;t load your brief.</p>
+    <div role="alert" className="flex min-h-[40vh] flex-col items-center justify-center gap-4 text-center">
+      <p className="text-sm text-[var(--text-muted)]">{message}</p>
       <button
+        type="button"
         onClick={onRetry}
-        className="text-xs text-[var(--meridian-400)] underline transition-colors hover:text-[var(--meridian-300)]"
+        disabled={waitMs > 0}
+        className="text-xs text-[var(--meridian-400)] underline transition-colors hover:text-[var(--meridian-300)] disabled:cursor-not-allowed disabled:text-[var(--text-muted)] disabled:no-underline"
       >
-        Try again
+        {waitMs > 0 ? `Try again in ${minutes} min` : "Try again"}
       </button>
     </div>
   );
 }
 
-// ── Main component ───────────────────────────────────────────────────────────────
+// ── Main ───────────────────────────────────────────────────────────────────────
 
-export function DailyBriefClient() {
-  const [payload, setPayload] = useState<BriefPayload | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error,   setError]   = useState(false);
+export function DailyBriefClient({ spaceId, spaceName, firstName, initial }: {
+  spaceId: string;
+  spaceName: string;
+  firstName: string | null;
+  initial: BriefResponse | null;
+}) {
+  const [view, setView] = useState<BriefView>(() => initialView(initial));
+  const controllerRef = useRef<BriefController | null>(null);
+  // The server-rendered state belongs to the first mount of this Space only.
+  const initialRef = useRef(initial);
 
-  // Fetch core — no synchronous setState (state only changes inside the async
-  // then/catch callbacks), so it's safe to call directly from the effect below
-  // without tripping react-hooks/set-state-in-effect.
-  function fetchBrief() {
-    fetch("/api/brief")
-      .then((res) => {
-        if (!res.ok) throw new Error("Failed");
-        return res.json() as Promise<BriefPayload>;
-      })
-      .then((data) => { setPayload(data); setLoading(false); })
-      .catch(() => { setError(true); setLoading(false); });
-  }
-
-  // Retry — an event handler, so the synchronous resets are fine here.
-  function retry() {
-    setLoading(true);
-    setError(false);
-    fetchBrief();
-  }
-
-  // Initial load
   useEffect(() => {
-    fetchBrief();
-  }, []);
+    const controller = createBriefController({
+      spaceId, initial: initialRef.current, transport: httpBriefTransport, clock: browserClock, onView: setView,
+    });
+    controllerRef.current = controller;
+    controller.start();
 
-  // Mark viewed — best effort, non-blocking
-  useEffect(() => {
-    if (!payload) return;
-    fetch("/api/brief/viewed", { method: "POST" }).catch(() => {});
-  }, [payload]);
+    const onVisibility = () => { if (document.visibilityState === "visible") controller.onVisible(); };
+    const onPageShow = (event: PageTransitionEvent) => { if (event.persisted) controller.onVisible(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pageshow", onPageShow);
+      controller.dispose();
+      controllerRef.current = null;
+    };
+  }, [spaceId]);
 
-  if (loading) return <BriefSkeleton />;
-  if (error || !payload) return <BriefError onRetry={retry} />;
-
-  const { visitState, contextLine, hasData, sections, generatedAt } = payload;
-  const firstName = extractFirstName(contextLine);
-  const isNewUser = visitState === "new_user" && !hasData;
-
-  // Bucket the sections into the editorial hierarchy (order is fixed by
-  // decreasing urgency, not by section.priority).
-  const insight      = sections.find((s) => s.type === "insight");
-  const sinceLast    = sections.find((s) => s.type === "since_last_visit");
-  const attention    = sections.find((s) => s.type === "attention");
-  const canWaitItems = sections
-    .filter((s) => !isNewUser && s.type === "onboarding")
-    .flatMap((s) => s.items ?? []);
+  const retry = () => controllerRef.current?.retry();
+  const { phase, brief, metrics, retryAt } = view;
 
   return (
-    <div className="mx-auto max-w-[680px] px-5 pt-24 pb-24 md:pt-28">
-      {/* ── Dated greeting ──────────────────────────────────────────────────── */}
-      <header className="mb-9">
-        <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
-          {formatDateLabel(generatedAt)}
+    <div className="mx-auto w-full max-w-[680px]">
+      <header className="mb-6">
+        <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]" suppressHydrationWarning>
+          {new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}
         </p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-[28px]">
-          {greeting(visitState, firstName)}
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-[28px]" suppressHydrationWarning>
+          {greeting(firstName)}
         </h1>
-        <p className="mt-2 text-sm text-[var(--text-secondary)]">{statusLine(visitState)}</p>
-
-        {/* The Brief is chrome-less — keep the two portals reachable up top so a
-            reader who knows their intent needn't scroll. */}
-        {!isNewUser && (
-          <div className="mt-5 flex flex-wrap items-center gap-2">
-            <Link
-              href="/dashboard/spaces"
-              className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-hairline)] px-3 py-1.5 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--border-hairline-strong)] hover:text-[var(--text-primary)]"
-            >
-              <LayoutGrid size={13} />
-              Continue to Spaces
-              <ArrowRight size={12} className="text-[var(--text-muted)]" />
-            </Link>
-            <Link
-              href="/dashboard/analyze"
-              className="inline-flex items-center gap-1.5 rounded-full border border-[rgba(125,168,255,.32)] px-3 py-1.5 text-xs text-[var(--meridian-300)] transition-colors hover:bg-[rgba(125,168,255,.12)]"
-            >
-              <Sparkles size={13} />
-              View AI Analysis
-            </Link>
-          </div>
-        )}
+        <p className="mt-1 text-sm text-[var(--text-secondary)]">Your brief for {spaceName}</p>
       </header>
 
-      {isNewUser ? (
+      {phase === "NO_DATA" ? (
         <BriefNewUser />
+      ) : brief ? (
+        <BriefBody brief={brief} metrics={metrics} phase={phase} />
+      ) : phase === "FAILED_EMPTY" ? (
+        <BriefError message="Your brief couldn’t be prepared right now." onRetry={retry} retryAt={retryAt} />
+      ) : phase === "LOAD_ERROR" ? (
+        <BriefError message="Couldn’t load your brief." onRetry={retry} retryAt={null} />
       ) : (
-        <>
-          {insight && <Lede section={insight} />}
-          {sinceLast && <ChangedBlock section={sinceLast} />}
-          <AttentionBlock section={attention} />
-          <CanWaitBlock items={canWaitItems} />
-        </>
+        <BriefSkeleton />
       )}
     </div>
   );

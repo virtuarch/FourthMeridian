@@ -82,9 +82,12 @@ check(
 // formatter takes a currency parameter; the detectors format via fmtMoney /
 // formatCurrency rather than string-building.
 {
-  const brief = readFileSync(join(ROOT, 'app', 'api', 'brief', 'route.ts'), 'utf8');
-  check('the Brief reads the Space reporting currency',
-    /reportingCurrency/.test(brief) && /currencySymbol/.test(brief));
+  // The Brief's money is its metric row: the snapshot summary's own effective
+  // currency travels in the response, and the page formats with exactly that.
+  const briefView = readFileSync(join(ROOT, 'lib', 'ai', 'brief', 'view.ts'), 'utf8');
+  const briefClient = readFileSync(join(ROOT, 'components', 'brief', 'DailyBriefClient.tsx'), 'utf8');
+  check('the Brief carries the Space currency and formats with it',
+    /currency: s\.currency/.test(briefView) && /formatCurrency\([^)]*metrics\.currency\)/.test(briefClient));
 
   const fmt = readFileSync(join(ROOT, 'lib', 'ai', 'format.ts'), 'utf8');
   check('fmtMoney is currency-parameterised (Intl currency style, no literal symbol)',

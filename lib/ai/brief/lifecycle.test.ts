@@ -21,8 +21,8 @@ import { basePackage } from './fixtures';
 import { materialDigest } from './digest';
 import { BriefScopeError } from './errors';
 import type { BriefGenerationResult } from './generate';
-import { BRIEF_PROMPT_VERSION, ensureDailyBrief, type EnsureResult, type LifecycleDeps } from './lifecycle';
-import { GENERATION_LEASE_MS } from './policy';
+import { BRIEF_PROMPT_VERSION, ensureDailyBrief, inspectDailyBrief, type EnsureResult, type LifecycleDeps } from './lifecycle';
+import { GENERATION_FAILURE_COOLDOWN_MS, GENERATION_LEASE_MS } from './policy';
 import type { BriefRow } from './state';
 import type { BriefCompletion, BriefKey, BriefScope, BriefStore, ClaimResult } from './store';
 import type { BriefPackage } from './types';
@@ -118,7 +118,9 @@ function harness() {
   };
   const ensure = (now: Date, over: Partial<LifecycleDeps> = {}) =>
     ensureDailyBrief({ spaceId: SPACE, ownerUserId: OWNER }, { now, deps: { ...deps, ...over } });
-  return { store, state, ensure };
+  const inspect = (now: Date, over: Partial<LifecycleDeps> = {}) =>
+    inspectDailyBrief({ spaceId: SPACE, ownerUserId: OWNER }, { now, deps: { ...deps, ...over } });
+  return { store, state, ensure, inspect };
 }
 
 const headlineOf = (r: EnsureResult) => ('brief' in r ? r.brief.headline : null);
@@ -217,8 +219,12 @@ async function main() {
       (row.content as { headline: string }).headline === 'Quiet day. #1' && row.generationStartedAt === null
         && row.lastFailureReason === 'TIMEOUT' && !!row.lastFailedAt && row.sourceWatermark === 'wm-1');
     f.state.fail = null;
-    const retry = await f.ensure(new Date(T0.getTime() + 61_000));
-    check('…and an immediate retry succeeds', retry.status === 'GENERATED' && headlineOf(retry) === 'Quiet day. #3');
+    const soon = await f.ensure(new Date(T0.getTime() + 61_000));
+    check('…an immediate retry is held by the cooldown — no model call, the old Brief offered',
+      soon.status === 'COOLING_DOWN' && f.state.generations === 2 && soon.retryAfterMs > 0
+        && soon.fallback?.usable === true && (soon.fallback.row.content as { headline: string }).headline === 'Quiet day. #1');
+    const later = await f.ensure(new Date(T0.getTime() + 60_000 + GENERATION_FAILURE_COOLDOWN_MS + 1_000));
+    check('…and once the cooldown has passed the retry generates', later.status === 'GENERATED' && headlineOf(later) === 'Quiet day. #3');
 
     const e = harness();
     e.state.throwOnLoad = true;
@@ -229,7 +235,8 @@ async function main() {
       exploded.status === 'FAILED' && exploded.reason === 'INTERNAL_ERROR'
         && e.store.get(key('2026-09-13'))!.generationStartedAt === null);
     e.state.throwOnLoad = false;
-    check('…so the next caller can generate at once', (await e.ensure(new Date(T0.getTime() + 1000))).status === 'GENERATED');
+    check('…the next caller within the cooldown is held', (await e.ensure(new Date(T0.getTime() + 1000))).status === 'COOLING_DOWN');
+    check('…and after it can generate', (await e.ensure(new Date(T0.getTime() + GENERATION_FAILURE_COOLDOWN_MS + 5_000))).status === 'GENERATED');
   }
 
   console.log('\n7. a process that died holding the claim');
@@ -264,6 +271,41 @@ async function main() {
     check('the same Space for another member is a separate artifact',
       s.store.rows.size === 2 && !!s.store.get({ spaceId: SPACE, ownerUserId: 'owner_B', briefDay: '2026-09-13' })
         && s.state.generations === 2);
+  }
+
+  console.log('\n9. cooldown policy, no data, and inspection');
+  {
+    check('the failure cooldown is three minutes', GENERATION_FAILURE_COOLDOWN_MS === 180_000);
+
+    const first = harness();
+    first.state.fail = 'PROVIDER_ERROR';
+    const failed = await first.ensure(T0);
+    check('a first-ever failure → FAILED with the cooldown as retryAfterMs, nothing to show',
+      failed.status === 'FAILED' && failed.retryAfterMs === GENERATION_FAILURE_COOLDOWN_MS && failed.fallback === null);
+    for (let i = 1; i <= 5; i++) await first.ensure(new Date(T0.getTime() + i * 10_000));
+    check('…five more visits inside the cooldown spend no further model call', first.state.generations === 1);
+    const inspected = await first.inspect(new Date(T0.getTime() + 60_000));
+    check('…and inspection reports how long until a retry', inspected.retryAfterMs > 0 && inspected.retryAfterMs <= GENERATION_FAILURE_COOLDOWN_MS - 59_000);
+
+    const empty = harness();
+    const none = await empty.ensure(T0, { hasFinancialData: async () => false });
+    check('a Space with no accounts → NO_DATA: no claim, no package, no model call',
+      none.status === 'NO_DATA' && empty.state.loads === 0 && empty.state.generations === 0 && empty.store.rows.size === 0);
+
+    const i = harness();
+    const before = await i.inspect(T0);
+    check('inspecting an empty store claims, assembles and generates nothing',
+      before.decision.state.kind === 'NEEDS_GENERATION' && i.state.loads === 0 && i.state.generations === 0 && i.store.rows.size === 0);
+    await i.ensure(T0);
+    const afterGen = await i.inspect(new Date(T0.getTime() + 60_000));
+    check('after a generation, inspection sees FRESH', afterGen.decision.state.kind === 'FRESH' && i.state.loads === 1);
+    i.state.watermark = 'wm-moved';
+    const moved = await i.inspect(new Date(T0.getTime() + 90_000));
+    check('a moved watermark is CHECK_MATERIAL — and inspection still assembled nothing',
+      moved.decision.state.kind === 'CHECK_MATERIAL' && i.state.loads === 1 && i.state.generations === 1);
+    await i.store.claim(key('2026-09-14'), new Date('2026-09-14T08:00:00.000Z'));
+    const claimed = await i.inspect(new Date('2026-09-14T08:00:05.000Z'));
+    check('a claim held by another request is visible to inspection', claimed.decision.claimActive && claimed.decision.state.kind === 'NEEDS_GENERATION');
   }
 
   console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);
