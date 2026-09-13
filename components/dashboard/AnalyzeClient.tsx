@@ -32,7 +32,7 @@
  * and a chip is sent as ordinary prose through `sendMessage`.
  */
 
-import { useState, useRef, useCallback, type ReactNode } from "react";
+import { useState, useRef, useCallback, useLayoutEffect, type ReactNode } from "react";
 import { SquarePen } from "lucide-react";
 import {
   AiShell,
@@ -42,6 +42,9 @@ import {
   KnowledgeGapCard,
   StarterLine,
   conversationLayoutMode,
+  readTranscript,
+  writeTranscript,
+  clearTranscript,
   type StarterModel,
 } from "@/components/ai";
 import { AdviceBanner } from "@/components/dashboard/AdviceBanner";
@@ -77,10 +80,30 @@ interface Props {
   spaceName: string;
   /** The empty state's headline + chips (personal where memory supports it). */
   starter: StarterModel;
+  /** Who this browser is, for the local transcript cache's key. */
+  userId: string;
+  /**
+   * Whether a cached transcript was last written for THIS Space.
+   *
+   * ⚠️ A FIRST-PAINT HINT, NOT A FACT. The server cannot read `localStorage`, so
+   * without it the empty state always paints first and a returning user watches
+   * their conversation replace a starter headline. With it the first paint is
+   * already the conversation layout and only the messages arrive late. The cache
+   * itself still decides what is restored.
+   */
+  expectTranscript: boolean;
 }
 
-export function AnalyzeClient({ advice, starterIndex, spaceId, spaceName, starter }: Props) {
+export function AnalyzeClient({
+  advice, starterIndex, spaceId, spaceName, starter, userId, expectTranscript,
+}: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
+  /**
+   * True until the local cache has been consulted. Seeded from the server's hint
+   * so the first client render agrees with the server's HTML, then cleared by the
+   * layout effect below — before the browser paints the frame after hydration.
+   */
+  const [restoring, setRestoring] = useState(expectTranscript);
   const [input, setInput] = useState("");
   /** Latches once the composer is focused or typed into — the starter line stops swapping. */
   const [composerEngaged, setComposerEngaged] = useState(false);
@@ -121,16 +144,58 @@ export function AnalyzeClient({ advice, starterIndex, spaceId, spaceName, starte
     setDismissedFormIndices((prev) => new Set([...prev, index]));
   }
 
+  /**
+   * ⚠️ RESTORE IS PRESENTATION, AND ONLY PRESENTATION. It puts prose back on the
+   * screen. Nothing is sent, no turn is taken, no tool runs, no model is called —
+   * the next thing the user types goes to the server exactly as it would have on
+   * a cold start, and the runtime reads the ledger fresh. A restored sentence is
+   * what we were TALKING ABOUT; it is never what is TRUE.
+   *
+   * `useLayoutEffect`, not `useEffect`: it runs before the browser paints the
+   * frame after hydration, so the conversation is already there rather than
+   * appearing a beat later.
+   */
+  //
+  // ⚠️ THE ONE PLACE AN EFFECT MAY WRITE STATE SYNCHRONOUSLY HERE, and the reason
+  // is hydration. React's documented alternative — adjusting state during render —
+  // cannot be used: reading `localStorage` during the first client render would
+  // produce different output from the server's HTML, which is a hydration
+  // mismatch. The read must happen after hydration, it happens exactly once per
+  // mount, and mirroring an external system into state is what this repo's other
+  // three uses of this escape do (SpaceDashboard, ConnectionsList).
+  useLayoutEffect(() => {
+    const cached = readTranscript(userId, spaceId);
+    // Knowledge-gap cards are deliberately NOT reconstructed: a gap belonged to
+    // the turn that found it, and the answer it sat under is still here to read.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (cached && cached.length > 0) setMessages(cached.map((m) => ({ role: m.role, content: m.content })));
+    setRestoring(false);
+  }, [userId, spaceId]);
+
+  /** Keep the browser's copy in step with what is on screen. Prose only. */
+  const remember = useCallback((list: Message[]) => {
+    writeTranscript(userId, spaceId, list.map((m) => ({ role: m.role, content: m.content })));
+  }, [userId, spaceId]);
+
   const stopGeneration = useCallback(() => {
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
     setLoading(false);
   }, []);
 
-  /** Clears the (session-only) conversation back to the empty state. Nothing is persisted. */
+  /**
+   * Back to the empty state, and gone from the browser too.
+   *
+   * ⚠️ ONE RESET, NOT TWO. The sealed scenario cookie needs no clearing here and
+   * must not get a second mechanism: it is bound to the digest of the last
+   * assistant message in the posted transcript, and a new conversation posts
+   * none — so it opens against nothing and the next turn simply has no
+   * hypothetical. Clearing the local copy is the only new thing to do.
+   */
   function startNewConversation(): void {
     stopGeneration();
     setMessages([]);
+    clearTranscript(userId, spaceId);
     setSnoozedGapKeys(new Set());
     setExpandedGapIndices(new Set());
     setDismissedFormIndices(new Set());
@@ -144,6 +209,11 @@ export function AnalyzeClient({ advice, starterIndex, spaceId, spaceName, starte
 
     const nextMessages: Message[] = [...messages, { role: "user", content: msg }];
     setMessages(nextMessages);
+    // ⚠️ WRITTEN AT TURN BOUNDARIES, NEVER PER KEYSTROKE. `localStorage` is
+    // synchronous: a write on every character would cost a frame on every
+    // character. A question is remembered as soon as it is asked, so a refresh
+    // mid-answer still shows what was asked.
+    remember(nextMessages);
     setLoading(true);
 
     const controller = new AbortController();
@@ -168,18 +238,26 @@ export function AnalyzeClient({ advice, starterIndex, spaceId, spaceName, starte
         // a malformed extra must cost the user the extra, never the answer.
         const data = (await res.json()) as AiChatResponse;
         const gaps = readKnowledgeGaps(data.knowledgeGaps);
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content: data.message,
-            // Only attach gaps / mode when the answer actually named missing fields.
-            ...(gaps.length
-              ? { knowledgeGaps: gaps, knowledgeGapMode: data.knowledgeGapMode }
-              : {}),
-          },
-        ]);
+        setMessages((prev) => {
+          const next: Message[] = [
+            ...prev,
+            {
+              role: "assistant",
+              content: data.message,
+              // Only attach gaps / mode when the answer actually named missing fields.
+              ...(gaps.length
+                ? { knowledgeGaps: gaps, knowledgeGapMode: data.knowledgeGapMode }
+                : {}),
+            },
+          ];
+          remember(next);
+          return next;
+        });
       } else {
+        // ⚠️ A REFUSAL IS NOT REMEMBERED. It is a message about this attempt, not a
+        // turn of the conversation — restoring "Something went wrong" tomorrow
+        // would show the user a failure that is no longer happening. It stays on
+        // screen for this session and dies with it.
         const data = (await res.json().catch(() => ({}))) as { error?: string };
         setMessages((prev) => [
           ...prev,
@@ -235,7 +313,9 @@ export function AnalyzeClient({ advice, starterIndex, spaceId, spaceName, starte
     return <KnowledgeGapCard>{inner}</KnowledgeGapCard>;
   }
 
-  const mode = conversationLayoutMode(messages.length);
+  // While restoring, the layout is already the conversation's — the starter and
+  // its chips never paint for a returning user, so there is nothing to replace.
+  const mode = conversationLayoutMode(restoring ? 1 : messages.length);
 
   const suggestions = (
     <div className="max-w-3xl mx-auto w-full">

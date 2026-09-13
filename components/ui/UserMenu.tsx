@@ -21,6 +21,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useSession, signOut } from "next-auth/react";
+import { clearAllTranscripts } from "@/components/ai/transcript-cache";
 import { ChevronDown, LogOut, Settings } from "lucide-react";
 
 export function UserMenu() {
@@ -115,6 +116,10 @@ export function UserMenu() {
               role="menuitem"
               onClick={async () => {
                 setOpen(false);
+                // The AI transcript cache is bound to the user id, so it cannot be read
+                // by the next account — but leaving a conversation on a shared
+                // machine after someone deliberately signs out is its own problem.
+                clearAllTranscripts();
                 await signOut({ redirect: false });
                 window.location.href = "/login";
               }}

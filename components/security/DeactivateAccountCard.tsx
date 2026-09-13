@@ -14,6 +14,7 @@
 
 import { useState } from "react";
 import { signOut } from "next-auth/react";
+import { clearAllTranscripts } from "@/components/ai/transcript-cache";
 import { Loader2, UserX } from "lucide-react";
 
 export function DeactivateAccountCard() {
@@ -41,6 +42,7 @@ export function DeactivateAccountCard() {
       }
       // All sessions (including this one) are already revoked server-side —
       // signOut clears the local cookie and returns the user to /login.
+      clearAllTranscripts();
       await signOut({ callbackUrl: "/login" });
     } catch {
       setError("Something went wrong. Please try again.");

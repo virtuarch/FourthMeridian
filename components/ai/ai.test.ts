@@ -92,8 +92,15 @@ console.log("layout mode is derived from the turn count alone");
   check("one (just-submitted) user turn ⇒ conversation", conversationLayoutMode(1) === "conversation");
   check("restored history ⇒ conversation", conversationLayoutMode(6) === "conversation");
   const client = readFileSync(path.join(process.cwd(), "components", "dashboard", "AnalyzeClient.tsx"), "utf8");
-  check("AnalyzeClient derives mode from messages.length (no page state machine)",
-    /conversationLayoutMode\(messages\.length\)/.test(client));
+  // ⚠️ STILL ONE AUTHORITY, WITH ONE EXTRA INPUT. A returning user's first paint
+  // must not be the empty state — watching a starter headline be replaced by your
+  // own conversation is the flicker this avoids — so `restoring` counts as a turn
+  // until the local cache has been consulted. It is not a state machine: the
+  // layout is still `conversationLayoutMode` of a number.
+  check("AnalyzeClient derives mode from the turn count (no page state machine)",
+    /conversationLayoutMode\(restoring \? 1 : messages\.length\)/.test(client));
+  check("…and `restoring` is seeded by the server so the first render agrees with the HTML",
+    /useState\(expectTranscript\)/.test(client));
   check("AnalyzeClient starts with no synthetic greeting turn", /useState<Message\[\]>\(\[\]\)/.test(client));
 }
 
@@ -101,6 +108,7 @@ console.log("1. empty conversation — centered composer + starter, no docked st
 {
   const html = renderToStaticMarkup(h(AnalyzeClient, {
     advice: null, starterIndex: 2, spaceId: "space_active", spaceName: "Household", starter: composeStarters(null),
+    userId: "usr_1", expectTranscript: false,
   }));
   check("layout is empty", html.includes('data-ai-layout="empty"'));
   check("composer sits in the centered (empty) dock", html.includes('data-ai-dock="empty"') && !html.includes('data-ai-dock="conversation"'));
@@ -127,7 +135,8 @@ console.log("1a. personal starters (memory-backed) render as ordinary chips");
       { label: "Check my year-end cash projection", prompt: "How is my cash projection for the end of this year tracking?", topic: "cash-projection" },
     ],
   });
-  const html = renderToStaticMarkup(h(AnalyzeClient, { advice: null, starterIndex: 0, spaceId: "s1", spaceName: "Mine", starter }));
+  const html = renderToStaticMarkup(h(AnalyzeClient, { advice: null, starterIndex: 0, spaceId: "s1", spaceName: "Mine", starter,
+    userId: "usr_1", expectTranscript: false }));
   check("the personal headline replaces the generic line", html.includes(">Still aiming for $750K by 2029?</h2>") && !STARTER_LINES.some((l) => html.includes(l)));
   check("personal chips lead, generics fill, the duplicate cash chip steps aside",
     html.indexOf(">Am I on pace for $750K by 2029?</button>") > -1

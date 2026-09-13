@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useSession, signOut } from "next-auth/react";
+import { clearAllTranscripts } from "@/components/ai/transcript-cache";
 import { LogOut, Settings, Wallet } from "lucide-react";
 import Link from "next/link";
 import { ConnectAccountButton } from "@/components/dashboard/ConnectAccountButton";
@@ -78,7 +79,7 @@ export function UserButton() {
                 Settings
               </Link>
               <button
-                onClick={async () => { await signOut({ redirect: false }); window.location.href = "/login"; }}
+                onClick={async () => { clearAllTranscripts(); await signOut({ redirect: false }); window.location.href = "/login"; }}
                 className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm text-red-400 hover:bg-red-500/10 transition-colors"
               >
                 <LogOut size={14} />

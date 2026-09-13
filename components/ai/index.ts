@@ -27,3 +27,12 @@ export {
   type StarterModel,
   type StarterPrompt,
 } from "@/components/ai/conversation-surface";
+export {
+  readTranscript,
+  writeTranscript,
+  clearTranscript,
+  clearAllTranscripts,
+  TRANSCRIPT_HINT_COOKIE,
+  TRANSCRIPT_TTL_MS,
+  type CachedMessage,
+} from "@/components/ai/transcript-cache";
