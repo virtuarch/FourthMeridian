@@ -592,9 +592,18 @@ console.log('13g. corpus span — the result declares the boundary of its own au
   check('NO default window was introduced — `from` is still applied only when supplied',
     /\.\.\.\(a\.from \? \{ dateFrom: String\(a\.from\) \} : \{\}\)/.test(gt));
   check('explicit windows are still honoured', /dateTo,/.test(gt));
-  check('the window is never widened, and nothing is re-queried',
+  // A second read now exists — the bounded completion that finishes a small
+  // matching set instead of sampling it. The guarantee is unchanged and is
+  // asserted more precisely than a call count: it reads the SAME filters, and the
+  // only thing it changes is `limit`.
+  check('the window is never widened, and any re-read keeps the same filters',
     !/widen|retry|reQuery|secondPass/i.test(gt)
-    && (gt.match(/queryTransactions\(|readWindowToExhaustion\(/g) ?? []).length === 2);
+    && (gt.match(/queryTransactions\(|readWindowToExhaustion\(/g) ?? []).length === 3
+    && (gt.match(/query: \{ \.\.\.filters, limit/g) ?? []).length === 2
+    && !/\.\.\.filters,\s*(dateFrom|dateTo)/.test(gt));
+  check('…and the completion is bounded by a stated ceiling, not unbounded',
+    /matchedInWindow <= COMPLETABLE_SEARCH_ROWS/.test(gt)
+    && /const COMPLETABLE_SEARCH_ROWS = \d+;/.test(code(read('scripts/ai-baseline/tools.ts'))));
   check('the corpus read returns no rows to merge into the answer',
     !/corpus[\s\S]{0,80}rows/.test(gt));
   check('rows are still the rows the ranking produced',
@@ -701,6 +710,46 @@ console.log('13i. tool contracts — the capability boundary is in the descripti
   }
 }
 
+console.log('13j. page coverage — a page is not the population');
+{
+  const src = code(read('scripts/ai-baseline/tools.ts'));
+  const q = code(read('lib/data/transaction-query.ts'));
+  const gt = src.slice(src.indexOf("name: 'get_transactions'"), src.indexOf('// ── 4. Income'));
+
+  check('the population SIZE is counted, not the rows exhausted',
+    /countTransactions\(\{ spaceId: ctx\.spaceId, query: filters \}\)/.test(gt)
+    && !/readWindowToExhaustion[\s\S]{0,80}wantLargest \? Promise/.test(gt));
+  check('…and only on the paged path — sort:largest already reads the whole set',
+    /wantLargest \? Promise\.resolve\(null\) : countTransactions/.test(gt));
+  check('…concurrently with the page, so a browse pays no extra round trip',
+    /await Promise\.all\(\[/.test(gt));
+  check('the count composes the SAME population authority the page does',
+    /bankingTransactionWhere\(spaceId\),\s*buildFilterWhere/.test(
+      q.slice(q.indexOf('export async function countTransactions'))));
+  check('…and applies no keyset — a cursor bounds a page, not a population',
+    !/keysetWhere/.test(q.slice(q.indexOf('export async function countTransactions'),
+      q.indexOf('export async function transactionCorpusSpan'))));
+  check('…and materializes no rows',
+    !/findMany|transactionListInclude|projectListRows/.test(
+      q.slice(q.indexOf('export async function countTransactions'),
+        q.indexOf('export async function transactionCorpusSpan'))));
+
+  check('the result reports the matched size and whether the rows covered it',
+    /matchedInWindow,\s*searchIsComplete: complete,/.test(gt));
+  check('`moreAvailable` is retired, not left alongside',
+    !/moreAvailable/.test(gt.replace(/\/\/[^\n]*/g, '')));
+  check('the caveat says what absence from the rows does NOT mean',
+    /absence from these rows is NOT absence from the window/.test(gt));
+  check('…and appears only when the page was short',
+    /\.\.\.\(complete \? \{\} : \{ searchCaveat:/.test(gt));
+  check('page coverage and WINDOW coverage stay separate blocks',
+    /coverage,/.test(gt) && /matchedInWindow,/.test(gt)
+    && !/windowCoversAvailableRecord[\s\S]{0,60}matchedInWindow/.test(gt));
+  check('597745a ranking fields are untouched',
+    /rankedOver: population\.length,/.test(gt) && /rankingIsComplete: complete,/.test(gt)
+    && /pagesRead: pages,/.test(gt));
+}
+
 // ══ 14. Complete-window ranking ══════════════════════════════════════════════
 //
 // `sort: 'largest'` ranked the newest 100 matching rows and called the winner
@@ -770,8 +819,13 @@ console.log('14. complete-window ranking');
     halted.complete === false && halted.pages <= 3);
 
   const src = code(read('scripts/ai-baseline/tools.ts'));
+  // The two reads now run beside a population count in one `Promise.all`, so the
+  // `await` moved off the ternary. The claim is unchanged: ranking exhausts, a
+  // plain page reads ONE page.
   check('ranking uses the exhaustive read; a plain page does not',
-    /wantLargest\s*\n?\s*\? await readWindowToExhaustion/.test(src));
+    /wantLargest\s*\n?\s*\? readWindowToExhaustion\(ctx\.spaceId, filters\)/.test(src)
+    && /queryTransactions\(\{ spaceId: ctx\.spaceId, query: \{ \.\.\.filters, limit \} \}\)/.test(src)
+    && (src.match(/readWindowToExhaustion\(ctx\.spaceId/g) ?? []).length === 1);
   check('…and the population size and completeness are always reported',
     /rankedOver: population\.length/.test(src) && /rankingIsComplete: complete/.test(src));
   check('…with a caveat only when it is genuinely incomplete',

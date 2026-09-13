@@ -165,6 +165,48 @@ export async function queryTransactions(args: {
 }
 
 /**
+ * How many rows a query MATCHES, as distinct from how many a page RETURNS.
+ *
+ * ⚠️ THE PAGE IS NOT THE POPULATION, AND A CONSUMER THAT CONFLATES THEM WILL
+ * STATE AN ABSENCE IT NEVER ESTABLISHED. Measured (58b352f): a correct nine-month
+ * window matched 80 transfers; the first page returned the newest 50, ending
+ * three days short of the evidence; the assistant reported that none existed.
+ * `hasMore` was true in the same payload and said only "another page exists" —
+ * a transport fact, not an evidence one. This says how much was not looked at.
+ *
+ * ⚠️ A COUNT, NOT AN EXHAUSTION. One indexed aggregate over the same WHERE the
+ * page uses — no rows materialized, no FX, no transfer assessment, and it stays
+ * correct above the row ceiling where exhaustion cannot. `readWindowToExhaustion`
+ * remains the right tool when the ROWS themselves are needed (597745a's ranking);
+ * this is for when only the SIZE is.
+ *
+ * Population, visibility, soft-delete and the filters are the query's own —
+ * `bankingTransactionWhere` + `buildFilterWhere`, exactly as `queryTransactions`
+ * composes them. The keyset is deliberately absent: a cursor bounds a page, and
+ * a page is the thing this is counting past.
+ */
+export async function countTransactions(args: {
+  spaceId?: string;
+  query: Omit<TransactionQuery, 'cursor' | 'limit'>;
+}): Promise<number> {
+  const spaceId = args.spaceId ?? (await getSpaceContext()).spaceId;
+  let accountIds = args.query.accountIds;
+  if (accountIds && accountIds.length > 0) {
+    const visible = await resolveVisibleAccountIds(spaceId);
+    accountIds = accountIds.filter((id) => visible.has(id));
+    if (accountIds.length === 0) return 0;
+  }
+  return db.transaction.count({
+    where: {
+      AND: [
+        bankingTransactionWhere(spaceId),
+        buildFilterWhere({ ...args.query, accountIds } as TransactionQuery),
+      ].filter((w): w is Prisma.TransactionWhereInput => w != null),
+    },
+  });
+}
+
+/**
  * The span of transaction history a query over this Space could reach — the
  * CORPUS, as distinct from the WINDOW any one query searched.
  *

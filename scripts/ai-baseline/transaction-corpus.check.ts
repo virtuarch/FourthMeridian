@@ -97,6 +97,70 @@ async function main() {
   check('and returns the same evidence the unwindowed search did',
     whole.rows.some((r) => r.date.startsWith('2026-02-27')));
 
+  console.log('\n6. PAGE COVERAGE — a page is not the population');
+  // The 58b352f blocker: a correct nine-month window, a page of the newest rows,
+  // the evidence just past the page edge, and an assistant that reported it did
+  // not exist. Asserted as a PROPERTY, not against corpus-specific counts — the
+  // first version of this check hard-coded 80 and broke the moment the ceiling
+  // moved the window by four days.
+  type Paged = Result & { matchedInWindow?: number; searchIsComplete?: boolean;
+    searchCaveat?: string; moreAvailable?: unknown };
+  const windowArgs = { from: '2026-01-01', to: '2026-09-12', flow: 'transfers' };
+
+  const ranked = await run({ ...windowArgs, limit: 50, sort: 'largest' }) as Result & {
+    rankedOver?: number; rankingIsComplete?: boolean; pagesRead?: number };
+  const population = ranked.rankedOver ?? 0;
+  check('the window matches more rows than one small page shows', population > 10, `${population} rows`);
+
+  // Under the completion ceiling a search FINISHES rather than samples.
+  const finished = await run({ ...windowArgs, limit: 15 }) as Paged;
+  check('a small population is completed, not sampled',
+    finished.searchIsComplete === true && finished.shown === finished.matchedInWindow,
+    `${finished.shown} of ${finished.matchedInWindow} (asked for 15)`);
+  check('…so the evidence a newest-first page would have cut off is present',
+    finished.rows.some((r) => /coinbase/i.test(String((r as { description?: string }).description))));
+  check('…and it carries no caveat, because nothing was unseen',
+    finished.searchCaveat === undefined);
+  check('`moreAvailable` is gone — subsumed, not duplicated', !('moreAvailable' in finished));
+
+  // Above it a page stays a page, and says so. This is the branch that keeps a
+  // browse a browse.
+  const big = await run({ from: '2026-01-01', to: '2026-09-12', limit: 15 }) as Paged;
+  check('a large population stays a page',
+    big.searchIsComplete === false && (big.matchedInWindow ?? 0) > 100 && big.shown === 15,
+    `${big.shown} of ${big.matchedInWindow}`);
+  check('…and says what absence from those rows does not mean',
+    /absence from these rows is NOT absence from the window/.test(String(big.searchCaveat)));
+  check('…and is not silently inflated by the completion rule',
+    big.shown === 15);
+
+  const filtered = await run({ ...windowArgs, text: 'coinbase', limit: 50 }) as Paged;
+  check('the same window, FILTERED, is complete and finds the evidence',
+    filtered.searchIsComplete === true && filtered.matchedInWindow === filtered.shown
+    && filtered.rows.length > 0, `${filtered.shown} of ${filtered.matchedInWindow}`);
+  check('…and they are the Feb-27 rows',
+    filtered.rows.every((r) => r.date.startsWith('2026-02-27')));
+
+  const empty = await run({ from: '2026-01-01', to: '2026-09-12', text: 'kraken', limit: 50 }) as Paged;
+  check('a complete empty search supports an absence claim',
+    empty.shown === 0 && empty.matchedInWindow === 0 && empty.searchIsComplete === true);
+  check('…and carries no caveat, because nothing was unseen', empty.searchCaveat === undefined);
+
+  check('sort:largest is untouched — it exhausts and ranks (597745a)',
+    ranked.rankingIsComplete === true && typeof ranked.pagesRead === 'number');
+  check('…and carries no page-coverage block, because it read the whole set',
+    !('matchedInWindow' in ranked) && !('searchIsComplete' in ranked));
+  check('…and ranking surfaces the evidence a newest-first page can miss',
+    ranked.rows.some((r) => /coinbase/i.test(String((r as { description?: string }).description))));
+
+  const retroCount = await run({ asOf: '2026-02-01', ...windowArgs, limit: 50 }) as Paged;
+  check('the count obeys the information ceiling — no future rows counted',
+    (retroCount.matchedInWindow ?? Infinity) < population,
+    `matched ${retroCount.matchedInWindow} at asOf 2026-02-01 vs ${population} at the ceiling`);
+  check('…and a retrospective page that covers its population says complete',
+    retroCount.shown >= (retroCount.matchedInWindow ?? 0)
+      ? retroCount.searchIsComplete === true : true);
+
   console.log(failures === 0 ? '\nALL PASSED' : `\n${failures} FAILED`);
   await db.$disconnect();
   process.exit(failures === 0 ? 0 : 1);

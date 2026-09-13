@@ -72,7 +72,12 @@ console.log("\n4. `rankingIsComplete` DOES NOT IMPLY CORPUS COMPLETENESS");
   // The tool emits both. They answer different questions and must never be fused:
   // a complete ranking of 90 days is still a ranking of 90 days.
   const c = transactionCoverage({ corpus: CORPUS, searchedFrom: "2026-06-10", searchedTo: "2026-09-08" });
-  const src = readFileSync("scripts/ai-baseline/tools.ts", "utf8");
+  // ⚠️ COMMENTS STRIPPED FIRST. This read the raw file, and a comment that
+  // DESCRIBES the separation ("`windowCoversAvailableRecord: false` AND an
+  // incomplete page") tripped the very assertion that forbids deriving one from
+  // the other. The claim is about code, so scan code.
+  const src = readFileSync("scripts/ai-baseline/tools.ts", "utf8")
+    .replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
   check("a complete ranking coexists with incomplete coverage", c.windowCoversAvailableRecord === false);
   check("`rankingIsComplete` is still `complete` — the searched-population fact, unchanged",
     /rankingIsComplete:\s*complete,/.test(src));
