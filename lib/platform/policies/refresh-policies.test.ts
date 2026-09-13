@@ -134,13 +134,15 @@ async function main(): Promise<void> {
     check("the loader touches no provider, job runner, or AI client",
       !/plaid|rpc|openai|generate|syncWallet|runJob|fetch\(/i.test(loader));
     check("the loader selects no email", !/email/.test(loader));
-    check("the route is READ-gated and has no mutating handler",
-      /requirePlatformAccess\("PLATFORM_OPS", "READ"\)/.test(route) && !/export async function (PUT|POST|PATCH|DELETE)/.test(route));
+    check("the route's GET is READ-gated; its PATCH and DELETE (Slice 2) require fresh CONTROL",
+      /requirePlatformAccess\("PLATFORM_OPS", "READ"\)/.test(route)
+        && (route.match(/requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/g) ?? []).length === 2
+        && !/export async function (PUT|POST)/.test(route));
     check("the read model is composed at read time, never persisted", !/\.(create|upsert|update|delete)\(/.test(loader + code("lib/platform/policies/refresh-policies.core.ts")));
     const widget = code("components/platform/widgets/OpsPoliciesWidget.tsx");
-    check("the widget renders no control (no select, input, button, form, or handler)",
-      !/<select|<input|<button|<form|onClick|onChange|onSubmit/.test(widget));
-    check("the widget fetches only the policies route", (widget.match(/\/api\/platform\/platform-ops\/[a-z-]+/g) ?? []).every((u) => u === "/api/platform/platform-ops/policies"));
+    check("the widget renders no free-form input (its controls are bounded buttons behind canControl)",
+      !/<select|<input|<form|onChange|onSubmit/.test(widget) && /canControl/.test(widget));
+    check("the widget talks only to the policies route", (widget.match(/\/api\/platform\/platform-ops\/[a-z-]+/g) ?? []).every((u) => u === "/api/platform/platform-ops/policies"));
   }
 
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

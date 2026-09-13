@@ -7,13 +7,12 @@
  *   npx tsx components/platform/widgets/policies.test.ts
  */
 
-import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SCHEDULED_JOBS } from "@/lib/jobs/registry";
 import { schedulerCapability } from "@/lib/platform/scheduler-capability";
 import { composeRefreshPoliciesReadModel, type ComposeRefreshPolicyInput } from "@/lib/platform/policies/refresh-policies.core";
-import { PoliciesSurface } from "./OpsPoliciesWidget";
+import { PoliciesSurface, PolicyEditor, ResetConfirm } from "./OpsPoliciesWidget";
 import { cadenceText, effectiveHeadline, originText, schedulerSupportText } from "./policies-view";
 
 let failures = 0;
@@ -28,8 +27,8 @@ const input = (kind: "BANK" | "WALLET", over: Partial<ComposeRefreshPolicyInput>
   sourceKind: kind, label: kind === "BANK" ? "Bank refresh" : "Wallet refresh", description: "d", row: null, updatedByName: null,
   capability: schedulerCapability(kind, SCHEDULED_JOBS), evidence: null, ...over,
 });
-const render = (state: { data: unknown; loading: boolean; error: string | null }) =>
-  renderToStaticMarkup(createElement(PoliciesSurface, { section, state: state as never }));
+const render = (state: { data: unknown; loading: boolean; error: string | null }, canControl = false) =>
+  renderToStaticMarkup(createElement(PoliciesSurface, { section, state: state as never, canControl }));
 
 console.log("1. the default picture (the real database today)");
 {
@@ -80,15 +79,48 @@ console.log("\n4. loading and failure states are distinct from data");
   check("failure is an alert and shows no cadence", /role="alert"/.test(failed) && !/Every/.test(failed));
 }
 
-console.log("\n5. read-only means read-only");
+console.log("\n5. read-only for READ and WRITE operators — the Slice 1 card, no actionable control");
+{
+  const model = composeRefreshPoliciesReadModel([input("BANK"), input("WALLET", { row: { value: "12h", updatedAt: NOW, updatedById: null } })], NOW);
+  const html = render({ data: model, loading: false, error: null }, false);
+  check("no select, input, button or form in the markup without canControl", !/<select|<input|<button|<form/.test(html));
+  check("no Edit, Save or Reset affordance", !/ Edit<\/button>|Save|Reset to default/.test(html));
+  check("the same policy information is still shown (effective, overdue, capability, actual)", /Every 12 hours/.test(html) && /15 hours/.test(html) && /6h · 12h · 24h/.test(html) && /Unknown/.test(html));
+  check("no email, no secret-shaped text", !/@|token|secret/i.test(html));
+}
+
+console.log("\n6. the control (Slice 2) — rendered only behind canControl");
 {
   const model = composeRefreshPoliciesReadModel([input("BANK"), input("WALLET")], NOW);
-  const html = render({ data: model, loading: false, error: null });
-  check("no select, input, button or form in the markup", !/<select|<input|<button|<form/.test(html));
-  check("no save affordance", !/Save/.test(html));
-  check("no email, no secret-shaped text", !/@|token|secret/i.test(html));
-  const src = readFileSync("components/platform/widgets/OpsPoliciesWidget.tsx", "utf8");
-  check("no handler props in the widget source", !/onClick|onChange|onSubmit/.test(src));
+  const html = render({ data: model, loading: false, error: null }, true);
+  check("wallet offers Edit (alternatives exist); no Reset (no override)", (html.match(/ Edit<\/button>/g) ?? []).length === 1 && !/Reset to default/.test(html));
+  check("bank offers neither Edit (24h is the only honourable cadence) nor Reset (no override)", (html.match(/<button/g) ?? []).length === 1);
+  const withOverride = composeRefreshPoliciesReadModel([input("BANK", { row: { value: "24h", updatedAt: NOW, updatedById: null } }), input("WALLET")], NOW);
+  const html2 = render({ data: withOverride, loading: false, error: null }, true);
+  check("a bank override makes Reset available even though no alternative cadence exists", /Reset to default/.test(html2));
+  const invalidBank = composeRefreshPoliciesReadModel([input("BANK", { row: { value: "soon", updatedAt: NOW, updatedById: null } })], NOW);
+  const html3 = render({ data: invalidBank, loading: false, error: null }, true);
+  check("an invalid bank override offers Edit (to replace it) and Reset", / Edit<\/button>/.test(html3) && /Reset to default/.test(html3));
+}
+
+console.log("\n7. the editor: bounded options, unsupported disabled with reasons, consequences, Save gating");
+{
+  const model = composeRefreshPoliciesReadModel([input("WALLET")], NOW);
+  const view = model.policies[0];
+  const editor = (selected: "4h" | "6h" | "8h" | "12h" | "24h", busy = false) =>
+    renderToStaticMarkup(createElement(PolicyEditor, { view, selected, busy, notice: null, onSelect: () => {}, onSave: () => {}, onCancel: () => {} }));
+  const at12 = editor("12h");
+  check("all five cadences are listed", ["Every 4 hours", "Every 6 hours", "Every 8 hours", "Every 12 hours", "Every 24 hours"].every((t) => at12.includes(t)));
+  check("4h and 8h are disabled with the scheduler's reasons", (at12.match(/disabled=""/g) ?? []).length >= 2 && /attempts occur every 6 hours/.test(at12) && /effective execution would be 12 hours/.test(at12));
+  check("12h consequences: overdue after 15 hours, half as many opportunities, no refresh now",
+    /overdue after 15 hours/.test(at12) && /half as many scheduled refresh opportunities/.test(at12) && /refreshes nothing now/.test(at12));
+  const at24 = editor("24h");
+  check("24h consequences: overdue after 30 hours, a quarter as many opportunities", /overdue after 30 hours/.test(at24) && /a quarter as many/.test(at24));
+  const unchanged = editor("6h");
+  check("Save is disabled while the selection equals the cadence in force", /<button[^>]*disabled=""[^>]*>[^<]*<svg[^>]*>[\s\S]*?Save/.test(unchanged) || /disabled=""[^>]*> Save|Save<\/button>/.test(unchanged));
+  check("no dollar claims anywhere in the editor", !/\$/.test(at12) && !/cost|saving/i.test(at12));
+  const reset = renderToStaticMarkup(createElement(ResetConfirm, { view, busy: false, notice: null, onConfirm: () => {}, onCancel: () => {} }));
+  check("reset asks for confirmation and says nothing is refreshed now", /Confirm reset/.test(reset) && /Nothing is refreshed now/.test(reset));
 }
 
 console.log("\n6. the wording helpers");

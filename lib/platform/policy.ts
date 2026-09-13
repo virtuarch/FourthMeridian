@@ -234,24 +234,21 @@ export const ALL_ACCESS_LEVELS: readonly PlatformAccessLevel[] =
 
 /**
  * The levels the grant-administration surface (POST /api/admin/platform-grants)
- * may actually mint. Deliberately NARROWER than the enum.
+ * may actually mint. Derived from the same exhaustive list the matrix renders.
  *
- * CONTROL is canonical but NOT issuable in OPS-2D-2. The reason is truthfulness,
- * not caution: nothing consumes CONTROL yet, and the admin matrix
- * (app/admin/platform-access/page.tsx) renders exactly two cells per area — so a
- * CONTROL grant would confer no capability anyone asks for while displaying as
- * *no* grant at all in the operator's own UI. An unrenderable grant is worse
- * than an absent one.
+ * OPS-2D-2 kept CONTROL canonical but NOT issuable, for truthfulness: nothing
+ * consumed it and the admin matrix could not render it. PLATFORM OPS POLICIES
+ * (Slice 2) shipped the first consumer — the financial-refresh cadence editor
+ * (control-plane-policy, app/api/platform/platform-ops/policies) — and the
+ * matrix's third cell in the same change, so a CONTROL grant now confers
+ * exactly one thing anyone asks for and displays as what it is.
  *
- * This list — not `Object.values(PlatformAccessLevel)` — is what the grant route
- * validates against, which is precisely why adding CONTROL to the enum changed
- * no authorization behaviour: `level: "CONTROL"` was a 400 before this slice and
- * is a 400 after it.
- *
- * Whoever makes CONTROL issuable owes the admin matrix a third cell in the same
- * change. `capability-classification.ts` records what would justify that.
+ * CONTROL stays a RANK above WRITE (LEVEL_RANK): every existing WRITE holder
+ * keeps exactly the reach they had, and CONTROL must be granted deliberately.
+ * It grants no Space, financial, or grant-administration authority
+ * (capability-classification.ts, grant-administration).
  */
-export const ISSUABLE_LEVELS: readonly PlatformAccessLevel[] = ["READ", "WRITE"];
+export const ISSUABLE_LEVELS: readonly PlatformAccessLevel[] = ALL_ACCESS_LEVELS;
 
 /** Is `level` a level the grant surface may mint today? */
 export function isIssuableLevel(level: PlatformAccessLevel): boolean {

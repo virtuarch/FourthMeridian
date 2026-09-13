@@ -13,7 +13,8 @@
 import { readFileSync } from "node:fs";
 import {
   PlatformSettingKey, PlatformSettingValidationError, SETTING_DESCRIPTORS,
-  isPlatformSettingKey, listSettingDescriptors, setSetting, settingKeysForSurface, validateSetting,
+  createSettingIfAbsent, deleteSettingIfVersion, isPlatformSettingKey, listSettingDescriptors, setSetting,
+  settingKeysForSurface, updateSettingIfVersion, validateSetting,
 } from "@/lib/platform-settings";
 
 let failures = 0;
@@ -119,6 +120,38 @@ async function main(): Promise<void> {
     const settings = readFileSync("lib/platform-settings.ts", "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
     check("setSetting validates before it upserts", settings.indexOf("validateSetting(key, value)") < settings.indexOf("platformSetting.upsert"));
     check("reset is a DELETE of the override row, never a write of the default", /deleteSetting[\s\S]*platformSetting\.deleteMany/.test(settings));
+  }
+
+  console.log("\n6. the conditional write primitives (Slice 2) validate and predicate on the version");
+  {
+    const calls: string[] = [];
+    const rows = new Map<string, { value: string; updatedAt: Date }>();
+    const client = {
+      platformSetting: {
+        create: async (a: { data: { key: string; value: string } }) => { calls.push("create"); if (rows.has(a.data.key)) throw Object.assign(new Error(), { code: "P2002" }); rows.set(a.data.key, { value: a.data.value, updatedAt: new Date(1) }); return a.data; },
+        updateMany: async (a: { where: { key: string; updatedAt: Date }; data: { value: string } }) => { calls.push("updateMany"); const r = rows.get(a.where.key); if (!r || r.updatedAt.getTime() !== a.where.updatedAt.getTime()) return { count: 0 }; rows.set(a.where.key, { value: a.data.value, updatedAt: new Date(2) }); return { count: 1 }; },
+        deleteMany: async (a: { where: { key: string; updatedAt: Date } }) => { calls.push("deleteMany"); const r = rows.get(a.where.key); if (!r || r.updatedAt.getTime() !== a.where.updatedAt.getTime()) return { count: 0 }; rows.delete(a.where.key); return { count: 1 }; },
+      },
+    } as never;
+    let thrown: unknown = null;
+    try { await createSettingIfAbsent(client, "refresh_cadence_wallet", "8h", "u"); } catch (e) { thrown = e; }
+    check("create refuses an unhonourable cadence BEFORE touching the client", thrown instanceof PlatformSettingValidationError && calls.length === 0);
+    check("create stores the normalised value", await createSettingIfAbsent(client, "refresh_cadence_wallet", " 12H ", "u") === true && rows.get("refresh_cadence_wallet")?.value === "12h");
+    check("a second create of the same key is false (P2002), never an overwrite", await createSettingIfAbsent(client, "refresh_cadence_wallet", "24h", "u") === false && rows.get("refresh_cadence_wallet")?.value === "12h");
+    check("update with the right version succeeds", await updateSettingIfVersion(client, "refresh_cadence_wallet", "24h", new Date(1), "u") === true && rows.get("refresh_cadence_wallet")?.value === "24h");
+    check("update with a stale version is false and writes nothing", await updateSettingIfVersion(client, "refresh_cadence_wallet", "12h", new Date(1), "u") === false && rows.get("refresh_cadence_wallet")?.value === "24h");
+    thrown = null;
+    try { await updateSettingIfVersion(client, "refresh_cadence_bank", "12h", new Date(2), "u"); } catch (e) { thrown = e; }
+    check("update refuses an unhonourable bank cadence", thrown instanceof PlatformSettingValidationError);
+    check("delete with a stale version is false", await deleteSettingIfVersion(client, "refresh_cadence_wallet", new Date(1)) === false && rows.has("refresh_cadence_wallet"));
+    check("delete with the right version removes the row", await deleteSettingIfVersion(client, "refresh_cadence_wallet", new Date(2)) === true && !rows.has("refresh_cadence_wallet"));
+    thrown = null;
+    try { await deleteSettingIfVersion(client, "min_password_length", new Date(2)); } catch (e) { thrown = e; }
+    check("a non-resettable key cannot be deleted", thrown instanceof PlatformSettingValidationError);
+    const settings = readFileSync("lib/platform-settings.ts", "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+    const writers = ["lib/platform/policies/mutate.ts", "app/api/platform/platform-ops/policies/route.ts"].map((f) => readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, ""));
+    check("PlatformSetting is written from this module only (the mutation service composes its primitives)",
+      /platformSetting\.create\(/.test(settings) && writers.every((w) => !/platformSetting\.(create|update|upsert|delete|updateMany|deleteMany)\(/.test(w)));
   }
 
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

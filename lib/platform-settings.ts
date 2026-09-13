@@ -16,6 +16,7 @@
  */
 
 import { db } from "@/lib/db";
+import type { PrismaClient } from "@prisma/client";
 import {
   DEFAULT_REFRESH_CADENCE, REFRESH_CADENCES, REFRESH_CADENCE_SETTING_KEY,
   type RefreshCadence, type RefreshSourceKind,
@@ -127,8 +128,8 @@ const refreshCadence = (sourceKind: RefreshSourceKind, label: string, descriptio
   key: REFRESH_CADENCE_SETTING_KEY[sourceKind], label, description,
   class: "OPERATOR_CONFIGURABLE", valueType: "enum", allowedValues: REFRESH_CADENCES,
   default: DEFAULT_REFRESH_CADENCE[sourceKind], missingRow: "FALLBACK_TO_DEFAULT",
-  // Intended gate: control-plane-policy (lib/platform/capability-classification.ts).
-  // No application writer exists until that capability is issuable.
+  // Gate: control-plane-policy (lib/platform/capability-classification.ts).
+  // The one application writer is lib/platform/policies/mutate.ts, behind CONTROL.
   writeSurfaces: ["PLATFORM_OPS"], writeCapability: "CONTROL",
   operatorConfigurable: true, resettable: true,
   // The scheduler-honourability rule, from the ONE derived authority. A cadence
@@ -280,6 +281,69 @@ export async function getProductStatus(): Promise<ProductStatus> {
 }
 
 // ── Writes — the canonical, validated seam ────────────────────────────────────
+
+/** The narrow client the write primitives need — the root client or a transaction client. */
+export type SettingWriteClient = Pick<PrismaClient, "platformSetting">;
+
+/**
+ * PLATFORM OPS POLICIES (Slice 2) — CONDITIONAL primitives for the policy
+ * mutation service (lib/platform/policies/mutate.ts). Each is validated by the
+ * same descriptor rule as `setSetting`, takes a transaction-capable client, and
+ * is CONDITIONAL on the row version the caller observed, so a concurrent change
+ * is refused rather than overwritten:
+ *
+ *   createSettingIfAbsent   the caller observed NO row; a row appearing in the
+ *                           meantime is a unique-key violation ⇒ false.
+ *   updateSettingIfVersion  the caller observed `expectedUpdatedAt`; the update
+ *                           is predicated on it ⇒ 0 rows ⇒ false.
+ *   deleteSettingIfVersion  reset, predicated the same way ⇒ 0 rows ⇒ false.
+ *
+ * `updatedAt` is the version token (Prisma @updatedAt; no version column).
+ * These stay in THIS file so PlatformSetting keeps exactly one writer module.
+ */
+export async function createSettingIfAbsent(
+  client: SettingWriteClient,
+  key: PlatformSettingKeyType,
+  value: string,
+  updatedById: string,
+): Promise<boolean> {
+  const v = validateSetting(key, value);
+  if (!v.ok) throw new PlatformSettingValidationError(key, value, v.reason);
+  try {
+    await client.platformSetting.create({ data: { key, value: v.value, updatedById } });
+    return true;
+  } catch (err) {
+    if ((err as { code?: string })?.code === "P2002") return false; // a row won the race
+    throw err;
+  }
+}
+
+export async function updateSettingIfVersion(
+  client: SettingWriteClient,
+  key: PlatformSettingKeyType,
+  value: string,
+  expectedUpdatedAt: Date,
+  updatedById: string,
+): Promise<boolean> {
+  const v = validateSetting(key, value);
+  if (!v.ok) throw new PlatformSettingValidationError(key, value, v.reason);
+  const { count } = await client.platformSetting.updateMany({
+    where: { key, updatedAt: expectedUpdatedAt },
+    data:  { value: v.value, updatedById },
+  });
+  return count === 1;
+}
+
+export async function deleteSettingIfVersion(
+  client: SettingWriteClient,
+  key: PlatformSettingKeyType,
+  expectedUpdatedAt: Date,
+): Promise<boolean> {
+  const d = SETTING_DESCRIPTORS[key];
+  if (!d.resettable) throw new PlatformSettingValidationError(key, "", `${key} has no default to reset to; it must be set explicitly.`);
+  const { count } = await client.platformSetting.deleteMany({ where: { key, updatedAt: expectedUpdatedAt } });
+  return count === 1;
+}
 
 /**
  * Write a setting value. THE ONLY application write path for PlatformSetting.

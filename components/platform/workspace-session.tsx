@@ -74,6 +74,14 @@ export interface WorkspaceSessionStore {
   /** The current snapshot for `url`. Stable identity between changes. */
   read(url: string): SharedFetchState<unknown>;
   subscribe(url: string, listener: () => void): () => void;
+  /**
+   * PLATFORM OPS POLICIES (Slice 2) — replace `url`'s snapshot with a response a
+   * MUTATION just returned. The canonical read model comes back from the write
+   * route itself, so publishing it keeps every widget on the same operational
+   * moment without a second fetch. Consumption only: the data is stored
+   * verbatim, exactly as `ensure` stores a GET response.
+   */
+  set(url: string, snap: SharedFetchState<unknown>): void;
   /** Abort everything in flight — called when the workspace unmounts. */
   dispose(): void;
   /** Test/verification aid: how many requests this session has issued. */
@@ -140,6 +148,13 @@ export function createWorkspaceSessionStore(): WorkspaceSessionStore {
       return () => {
         e.listeners.delete(listener);
       };
+    },
+
+    set(url, snap) {
+      const e = entryFor(url);
+      e.started = true; // a published answer is this session's answer; no fetch is owed
+      e.snap = snap;
+      emit(e);
     },
 
     dispose() {
@@ -212,4 +227,17 @@ export function useSharedWidgetFetch<T>(url: string): SharedFetchState<T> {
   );
 
   return snap as SharedFetchState<T>;
+}
+
+/**
+ * The publish side of `useSharedWidgetFetch`: a stable function that replaces
+ * the shared snapshot for `url`. A widget that performed a mutation hands the
+ * route's returned read model here, so the surface it sits on — and any sibling
+ * reading the same url — shows the canonical result, not a client-side guess.
+ */
+export function useSharedWidgetPublish<T>(url: string): (data: T) => void {
+  const shared = useContext(WorkspaceSessionContext);
+  const [fallback] = useState(createWorkspaceSessionStore);
+  const store = shared ?? fallback;
+  return useMemo(() => (data: T) => store.set(url, { data, loading: false, error: null }), [store, url]);
 }

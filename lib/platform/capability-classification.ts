@@ -156,7 +156,7 @@ export const MUTATION_FAMILIES: readonly MutationFamily[] = [
     routes: ["app/api/platform/growth-revenue/users/[userId]/route.ts"],
   },
 
-  // ── CONTROL (all PLANNED — nothing here exists) ─────────────────────────────
+  // ── CONTROL (one SHIPPED — control-plane-policy; the rest PLANNED) ──────────
   {
     key: "ingestion-hold",
     label: "Pause / resume ingestion for a connection, provider, or the platform",
@@ -199,12 +199,18 @@ export const MUTATION_FAMILIES: readonly MutationFamily[] = [
   },
   {
     key: "control-plane-policy",
-    label: "Edit declared operational policy (cadence, admission rules, recovery policy)",
-    status: "PLANNED",
+    label: "Edit declared operational policy (financial refresh cadence)",
+    status: "SHIPPED",
     capability: "CONTROL",
     rationale:
       "Editing the rule outranks any single action the rule permits. This is the " +
-      "family CONTROL exists for; if it were WRITE, WRITE would be the umbrella.",
+      "family CONTROL exists for; if it were WRITE, WRITE would be the umbrella. " +
+      "PLATFORM OPS POLICIES (Slice 2) shipped its first and only consumer: the " +
+      "bank / wallet refresh-cadence editor, closed to those two keys. Admission " +
+      "flags (maintenance, ingestion) and every other setting remain OUTSIDE this " +
+      "route by contract — they are separate control decisions, still PLANNED " +
+      "under ingestion-hold.",
+    routes: ["app/api/platform/platform-ops/policies/route.ts"],
   },
 
   // ── SYSTEM_ADMIN-only ───────────────────────────────────────────────────────

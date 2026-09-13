@@ -9,7 +9,7 @@
  * No React, no clock: deterministic under test.
  */
 
-import type { RefreshCadence } from "@/lib/platform/refresh-policy.core";
+import { graceHoursFor, type RefreshCadence } from "@/lib/platform/refresh-policy.core";
 import type { RefreshPolicyView } from "@/lib/platform/policies/refresh-policies.core";
 
 export const POLICIES_SUBJECT = "refresh policies";
@@ -88,3 +88,45 @@ export function lastChangedText(view: RefreshPolicyView, formatDate: (iso: strin
 export const POLICIES_FOOTNOTE =
   "Effective values are resolved from platform settings at read time; scheduler support is derived from the job registry; " +
   "the actual state is read from the job ledger. Nothing here refreshes a source or changes a policy.";
+
+// ── PLATFORM OPS POLICIES (Slice 2) — editor wording ──────────────────────────
+
+/** Scheduled refresh opportunities per day at a cadence the schedule honours. */
+export function opportunitiesPerDay(cadenceHours: number): number {
+  return Math.round(24 / cadenceHours);
+}
+
+/**
+ * "≈ half as many scheduled refresh opportunities" — directional, relative to the
+ * cadence in force. Never a cost claim: no provider pricing authority exists.
+ */
+export function opportunityChangeText(fromHours: number, toHours: number): string | null {
+  if (fromHours === toHours) return null;
+  const ratio = fromHours / toHours;
+  const word =
+    ratio === 0.5 ? "half as many" : ratio === 0.25 ? "a quarter as many"
+    : ratio === 2 ? "twice as many" : ratio === 4 ? "four times as many"
+    : ratio < 1 ? `about ${Math.round((1 / ratio) * 10) / 10}× fewer` : `about ${Math.round(ratio * 10) / 10}× more`;
+  return `≈ ${word} scheduled refresh opportunities (${opportunitiesPerDay(toHours)} per day instead of ${opportunitiesPerDay(fromHours)})`;
+}
+
+/** What choosing `cadence` means, in the operator's terms. Derived from the read model's own numbers. */
+export function consequenceLines(view: RefreshPolicyView, cadence: RefreshCadence): string[] {
+  const option = view.capability.options.find((o) => o.cadence === cadence);
+  if (!option) return [];
+  if (!option.honourable) return [option.reason ?? "The deployed scheduler cannot honour this cadence."];
+  const hours = Number.parseInt(cadence, 10);
+  // The resolver's own grace rule (refresh-policy.core.ts) — never restated here.
+  const lines = [`Sources would be considered overdue after ${hoursText(hours + graceHoursFor(hours))}.`];
+  const change = opportunityChangeText(view.effective.expectedEveryHours, hours);
+  if (change) lines.push(change);
+  lines.push("Changing the cadence refreshes nothing now; the next scheduled attempt applies it.");
+  return lines;
+}
+
+/** Are there honourable cadences other than the one in force? Decides whether Edit is offered. */
+export function hasAlternativeCadence(view: RefreshPolicyView): boolean {
+  return view.capability.honourable.some((c) => c !== view.effective.cadence);
+}
+
+export const CONFLICT_TEXT = "This policy changed since you opened the editor. The current values are shown below; edit again if you still want to change it.";

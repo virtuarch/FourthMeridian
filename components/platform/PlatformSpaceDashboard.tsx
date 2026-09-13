@@ -40,7 +40,7 @@ import {
   useSpaceSectionsPublisher,
   type SpaceChromeSection,
 } from "@/lib/space/space-chrome-context";
-import type { SpaceMountContext } from "@/lib/space/mount-context";
+import type { SpaceMountContext, SpaceMountAccess } from "@/lib/space/mount-context";
 import type { LucideIcon } from "lucide-react";
 import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal, ArrowRight } from "lucide-react";
 import type { PlatformArea } from "@prisma/client";
@@ -101,9 +101,12 @@ type Section = PlatformSection;
  * existing widget stays assignable to this registry unchanged; a widget that does
  * not take it simply never moves the rail.
  */
+/** The fail-safe access a workspace body renders with when none is supplied. */
+const READ_ONLY_ACCESS: SpaceMountAccess = { canRead: true, canWrite: false, canControl: false, level: "READ" };
+
 const PLATFORM_WIDGET_REGISTRY: Record<
   string,
-  ComponentType<{ section: Section; onOpenWorkspace?: (id: string) => void }>
+  ComponentType<{ section: Section; onOpenWorkspace?: (id: string) => void; access?: SpaceMountAccess }>
 > = {
   // Security Operations
   sec_audit_feed:       SecAuditFeedWidget,
@@ -263,11 +266,16 @@ export function PlatformWorkspaceBody({
   doorways,
   dbByKey,
   onOpen,
+  access = READ_ONLY_ACCESS,
 }: {
   sectionKeys: readonly string[];
   doorways?:   readonly string[];
   dbByKey:     Map<string, Section>;
   onOpen:      (id: string) => void;
+  /** The operator's resolved access (descriptive). Widgets that RENDER a control
+   *  read it; the server gate decides. Optional and FAIL-SAFE: an absent value
+   *  renders every widget as READ-only. */
+  access?:     SpaceMountAccess;
 }) {
   const rows = resolveWorkspaceRows(sectionKeys, dbByKey);
 
@@ -292,7 +300,7 @@ export function PlatformWorkspaceBody({
                  the row is still one child of the same editorial stack. */
               return (
                 <div key={row.id} id={platformSectionAnchor(row.key)} className="scroll-mt-20">
-                  <Widget section={row} onOpenWorkspace={onOpen} />
+                  <Widget section={row} onOpenWorkspace={onOpen} access={access} />
                 </div>
               );
             })}
@@ -401,6 +409,7 @@ export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) 
             sectionKeys={active.sections}
             doorways={active.doorways}
             dbByKey={dbByKey}
+            access={mountContext.access}
             onOpen={setActiveTab}
           />
         </div>

@@ -1,18 +1,17 @@
 /**
  * lib/platform/capability-control.test.ts  (OPS-2D-2)
  *
- * CONTROL exists canonically, and NOTHING consumes it.
+ * CONTROL exists canonically, and EXACTLY ONE thing consumes it.
  *
- * That sentence is the whole slice, and both halves need guarding. The positive
- * half (§1–§3) is easy and would be caught by the compiler anyway. The negative
- * half is the one that rots: a rank sitting in an enum with no consumers is an
- * invitation, and the failure mode is not that someone forgets CONTROL — it is
- * that someone reaches for it early, on one endpoint, without the admission
- * model or the grant surface that makes it mean anything. Then WRITE holders and
- * CONTROL holders differ by exactly one route and the distinction is noise.
- *
- * So §4–§7 assert the ABSENCE: no route requires it, no UI checks it, no grant
- * can be minted at it, and the classification table stays a table.
+ * OPS-2D-2 shipped CONTROL as a rank with no consumers and this file guarded the
+ * absence. PLATFORM OPS POLICIES (Slice 2) shipped the first consumer — the
+ * financial-refresh cadence editor — and the contract evolved on purpose rather
+ * than being deleted: §4–§7 now pin that CONTROL is issuable, that the matrix
+ * offers it, that exactly ONE route family requires it (the policies route),
+ * that exactly ONE UI surface branches on it (the Policies widget), and that
+ * every OTHER CONTROL family stays PLANNED. The failure mode this guards is the
+ * same as before: a second endpoint reaching for CONTROL casually, or a WRITE
+ * surface quietly acquiring control-plane power.
  *
  * Run:  npx tsx lib/platform/capability-control.test.ts
  */
@@ -130,72 +129,61 @@ function main() {
       platformCapability("SECURITY_OPS", "WRITE")   === "SECURITY_OPS_MANAGE");
   }
 
-  // ── 4. NOT issuable — the grant surface is unchanged ────────────────────────
-  console.log("4. No grant can be minted at CONTROL (behaviour preserved)");
+  // ── 4. ISSUABLE — the grant surface and the matrix offer all three levels ───
+  console.log("4. CONTROL is issuable; the matrix offers it; READ/WRITE are unchanged");
   {
-    check("ISSUABLE_LEVELS is exactly READ, WRITE",
-      JSON.stringify([...ISSUABLE_LEVELS].sort()) === JSON.stringify(["READ", "WRITE"]));
+    check("ISSUABLE_LEVELS is exactly READ, WRITE, CONTROL",
+      JSON.stringify([...ISSUABLE_LEVELS].sort()) === JSON.stringify(["CONTROL", "READ", "WRITE"]));
     check("isIssuableLevel(READ/WRITE) === true", isIssuableLevel("READ") && isIssuableLevel("WRITE"));
-    check("isIssuableLevel(CONTROL) === false", isIssuableLevel("CONTROL") === false);
+    check("isIssuableLevel(CONTROL) === true", isIssuableLevel("CONTROL") === true);
 
     const grantRoute = code("app/api/admin/platform-grants/route.ts");
-    check("the grant route validates against isIssuableLevel", /isIssuableLevel\(/.test(grantRoute));
+    check("the grant route validates against isIssuableLevel (the one policy list)", /isIssuableLevel\(/.test(grantRoute));
     check("grant administration is still SYSTEM_ADMIN-only",
       /requireSystemAdmin\(\)/.test(grantRoute) && /requireFreshSystemAdmin\(\)/.test(grantRoute) &&
       !/requirePlatformAccess|requireFreshPlatformAccess/.test(grantRoute));
-    check("the grant route still rejects with 400", /"Invalid level"[\s\S]{0,60}400/.test(grantRoute));
-    check("the grant route never writes a CONTROL level", !/"CONTROL"/.test(grantRoute));
+    check("the grant route still rejects unknown levels with 400", /"Invalid level"[\s\S]{0,60}400/.test(grantRoute));
+    check("the grant route never hardcodes a level", !/"CONTROL"/.test(grantRoute));
 
-    // ── The admin matrix REPRESENTS CONTROL without offering it ──────────────
-    // OPS-2D-2 admin completion. The surface previously hardcoded ["READ",
-    // "WRITE"], which is how it silently fell behind the model; it now
-    // enumerates ALL_ACCESS_LEVELS, so a future level cannot go unrepresented.
+    // The matrix enumerates from the model and renders the third cell live.
     const matrix = code("app/admin/platform-access/page.tsx");
     check("the matrix enumerates levels from the canonical list, not a literal",
-      /const LEVELS = ALL_ACCESS_LEVELS;/.test(matrix) &&
-      !/\["READ",\s*"WRITE"\]/.test(matrix));
+      /const LEVELS = ALL_ACCESS_LEVELS;/.test(matrix) && !/\["READ",\s*"WRITE"\]/.test(matrix));
     check("ALL_ACCESS_LEVELS is derived from LEVEL_RANK (exhaustive + ordered)",
       /Object\.keys\(LEVEL_RANK\)/.test(code("lib/platform/policy.ts")));
-
-    // Representation: all three levels get a cell label and a description.
-    check("the matrix labels all three levels",
-      /READ: "R", WRITE: "W", CONTROL: "C"/.test(matrix));
-    check("the legend describes CONTROL as reserved and not issuable",
-      /CONTROL:\s*\n?\s*"Reserved for future authority to change platform behavior\. Not currently issuable\."/.test(matrix));
-
-    // Non-issuability, enforced in the UI at TWO independent points.
-    check("reserved cells render disabled", /disabled=\{isCurrent \|\| !issuable\}/.test(matrix));
-    check("reserved cells are visually differentiated (not a plain choice)",
-      /cursor-not-allowed/.test(matrix) && /border-dashed/.test(matrix));
-    check("setLevel refuses a non-issuable level before the fetch",
-      /if \(!isIssuableLevel\(level\)\) return;/.test(matrix));
-    check("the click handler is gated on issuable",
-      /onClick=\{\(\) => issuable && !isCurrent && setLevel/.test(matrix));
+    check("the matrix labels all three levels", /READ: "R", WRITE: "W", CONTROL: "C"/.test(matrix));
+    check("the legend describes CONTROL as the operational-policy authority, distinct from WRITE",
+      /CONTROL:\s*\n?\s*"Can change declared operational policy/.test(matrix) && !/Not currently issuable/.test(matrix));
+    check("the matrix keeps a reserved path for any future non-issuable level (driven by isIssuableLevel)",
+      /disabled=\{isCurrent \|\| !issuable\}/.test(matrix) && /if \(!isIssuableLevel\(level\)\) return;/.test(matrix)
+        && /onClick=\{\(\) => issuable && !isCurrent && setLevel/.test(matrix));
     check("the matrix never hardcodes CONTROL as a submitted value",
       !/level:\s*"CONTROL"/.test(matrix) && !/setLevel\([^)]*"CONTROL"/.test(matrix));
-
-    // READ and WRITE remain exactly as selectable as before: the ONLY levels
-    // isIssuableLevel admits, and their existing current-state styling is intact.
-    check("READ/WRITE remain the issuable pair", ISSUABLE_LEVELS.length === 2);
-    check("the selected-state styling for READ/WRITE is unchanged",
-      /bg-amber-500\/15 text-amber-400/.test(matrix) && /bg-blue-500\/15 text-blue-400/.test(matrix));
+    check("the selected-state styling for READ/WRITE is unchanged and CONTROL has its own (Atlas tokens, no raw palette)",
+      /bg-amber-500\/15 text-amber-400/.test(matrix) && /bg-blue-500\/15 text-blue-400/.test(matrix) && /CHIP_CONTROL_CURRENT/.test(matrix) && !/purple/.test(matrix));
+    // Grant / revoke: the same two routes as before, no new permission system.
+    check("revoke is the existing PATCH route, unchanged in shape",
+      /action !== "revoke"/.test(code("app/api/admin/platform-grants/[grantId]/route.ts")));
   }
 
-  // ── 5. NO endpoint requires CONTROL ─────────────────────────────────────────
-  console.log("5. No route asks the authorization layer for CONTROL");
+  // ── 5. EXACTLY ONE route family requires CONTROL ────────────────────────────
+  console.log("5. Exactly one route asks the authorization layer for CONTROL");
   {
+    const CONTROL_ROUTE = "app/api/platform/platform-ops/policies/route.ts";
     const routes = walk("app").filter((f) => /route\.tsx?$/.test(f) || /page\.tsx$/.test(f));
-    const offenders = routes.filter((f) => {
+    const requiring = routes.filter((f) => {
       const src = code(f);
-      // Structural: the authorization call with CONTROL as the needed level, in
-      // any of its shapes. Comments are already stripped, so a route that merely
-      // DISCUSSES CONTROL does not trip this.
       return /require(Fresh)?PlatformAccess\(\s*[^)]*"CONTROL"/.test(src) ||
              /hasPlatformAccess\(\s*[^)]*"CONTROL"/.test(src) ||
              /decidePlatformAccess\(\s*[^)]*"CONTROL"/.test(src);
     });
-    check(`no route requires CONTROL (scanned ${routes.length})`, offenders.length === 0,
-      offenders.join(", "));
+    check(`the policies route is the only route requiring CONTROL (scanned ${routes.length})`,
+      requiring.length === 1 && requiring[0] === CONTROL_ROUTE, requiring.join(", "));
+    const control = code(CONTROL_ROUTE);
+    check("its mutations require FRESH CONTROL (live revocation check), never cached",
+      (control.match(/requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/g) ?? []).length === 2 && !/requirePlatformAccess\([^)]*"CONTROL"/.test(control));
+    check("its read stays at READ", /requirePlatformAccess\("PLATFORM_OPS", "READ"\)/.test(control));
+    check("it delegates every rule to the one mutation service", /from "@\/lib\/platform\/policies\/mutate"/.test(control) && !/platformSetting|auditLog/.test(control));
 
     // And the mutation routes that exist still require exactly WRITE.
     const WRITE_GATED = [
@@ -216,49 +204,45 @@ function main() {
       check(`${f}: still gated at WRITE`, /requireFreshPlatformAccess\([^)]*"WRITE"\)/.test(src));
     }
     check(`the WRITE-gated census is complete (${WRITE_GATED.length} routes)`,
-      walk("app/api").filter((f) => /requireFreshPlatformAccess\(/.test(code(f))).length === WRITE_GATED.length);
+      walk("app/api").filter((f) => /requireFreshPlatformAccess\([^)]*"WRITE"\)/.test(code(f))).length === WRITE_GATED.length);
+    check("no WRITE-gated route was silently promoted to CONTROL", WRITE_GATED.every((f) => !/"CONTROL"/.test(code(f))));
   }
 
-  // ── 6. NO UI consumes CONTROL ───────────────────────────────────────────────
-  console.log("6. No UI surface checks CONTROL");
+  // ── 6. EXACTLY ONE UI surface branches on control-plane access ──────────────
+  console.log("6. Only the Policies editor branches on control-plane access");
   {
-    // The CONTROL *representation* is confined to the SYSTEM_ADMIN grant matrix.
-    // No customer-facing surface — and no Platform Space (HQ) surface, which
-    // operators with a mere READ/WRITE grant can reach — mentions it at all.
     const ADMIN_SURFACE = "app/admin/platform-access/page.tsx";
+    const POLICIES_WIDGET = "components/platform/widgets/OpsPoliciesWidget.tsx";
+    // The literal CONTROL stays confined to the SYSTEM_ADMIN grant matrix: the
+    // widget branches on the descriptive `canControl` flag, never on the level.
     const mentionsControl = [...walk("components"), ...walk("app").filter((f) => /\.tsx$/.test(f))]
       .filter((f) => f !== ADMIN_SURFACE)
       .filter((f) => /\bCONTROL\b/.test(code(f)));
-    check("CONTROL appears in no UI outside the admin grant matrix", mentionsControl.length === 0,
-      mentionsControl.join(", "));
-    check("no customer-facing or HQ Platform Space surface was touched",
-      !mentionsControl.some((f) => f.startsWith("components/platform/") || f.startsWith("components/space/")));
+    check("the literal CONTROL appears in no UI outside the admin grant matrix", mentionsControl.length === 0, mentionsControl.join(", "));
 
-    const ui = [...walk("components"), ...walk("app").filter((f) => /\.tsx$/.test(f))];
-    const offenders = ui.filter((f) => {
+    const ui = [...walk("components"), ...walk("app").filter((f) => /\.tsx$/.test(f))]
+      .filter((f) => !/\.test\.tsx?$/.test(f)); // a test that RENDERS the editor with canControl is not a consumer
+    const consumers = ui.filter((f) => {
       const src = code(f);
-      // A component "consumes" CONTROL if it compares an access level to it or
-      // renders it as a selectable grant level.
       return /(level|accessLevel|access)\s*[!=]==?\s*"CONTROL"/.test(src) ||
              /"CONTROL"\s*[!=]==?\s*(level|accessLevel|access)/.test(src) ||
              /canControl/.test(src);
-    });
-    check(`no component checks CONTROL (scanned ${ui.length})`, offenders.length === 0,
-      offenders.join(", "));
+    }).filter((f) => f !== "components/platform/PlatformSpaceDashboard.tsx"); // the host only forwards `access`
+    check(`the Policies widget is the only component that consumes control-plane access (scanned ${ui.length})`,
+      consumers.length === 1 && consumers[0] === POLICIES_WIDGET, consumers.join(", "));
+    const widget = code(POLICIES_WIDGET);
+    check("the widget renders its controls only behind canControl and never a control that 403s",
+      /offerEdit = canControl &&/.test(widget) && /offerReset = canControl &&/.test(widget));
 
-    // The mount contract exposes canRead/canWrite only — no third flag was
-    // introduced, so no consumer can branch on control-plane access yet.
+    // The mount contract carries the flag, computed by RANK like canWrite.
     const mount = code("lib/space/mount-context.ts");
-    check("SpaceMountContext.access exposes no CONTROL flag", !/canControl/.test(mount));
-
-    // …and canWrite is computed by RANK, so a hypothetical CONTROL holder could
-    // never read as having LESS write access than WRITE. Behaviour for the two
-    // levels that can exist today is identical to the previous `=== "WRITE"`.
     const mountServer = code("lib/space/mount-context.server.ts");
-    check("platform canWrite is rank-based, not string equality",
+    check("SpaceMountContext.access exposes canControl (descriptive)", /canControl: boolean/.test(mount));
+    check("platform canControl is rank-based (CONTROL ≥ CONTROL), never string equality",
+      /canControl: LEVEL_RANK\[input\.accessLevel\]\s*>=\s*LEVEL_RANK\.CONTROL/.test(mountServer) && !/=== "CONTROL"/.test(mountServer));
+    check("platform canWrite is still rank-based",
       /canWrite:\s*LEVEL_RANK\[input\.accessLevel\]\s*>=\s*LEVEL_RANK\.WRITE/.test(mountServer));
-    check("platform canWrite no longer compares to the WRITE literal",
-      !/canWrite:\s*input\.accessLevel === "WRITE"/.test(mountServer));
+    check("a financial Space never carries control-plane authority", /canControl: false/.test(mountServer));
   }
 
   // ── 7. The classification table is a TABLE, not a second authority ──────────
@@ -302,13 +286,19 @@ function main() {
       }
     }
 
-    // Every CONTROL classification must still be PLANNED — the moment one goes
-    // SHIPPED, this slice's negative contract is over and §5 must be revisited.
-    for (const fam of all.filter((f) => f.capability === "CONTROL")) {
-      check(`${fam.key}: CONTROL family is PLANNED, not shipped`, fam.status === "PLANNED");
+    // Exactly ONE CONTROL family is SHIPPED — the policy editor — and it cites
+    // the one CONTROL route (§5). Every other CONTROL family stays PLANNED:
+    // maintenance / ingestion holds, scheduler holds, provider enablement and
+    // admission overrides are separate product decisions, not this route.
+    const controlFamilies = all.filter((f) => f.capability === "CONTROL");
+    const shipped = controlFamilies.filter((f) => f.status === "SHIPPED");
+    check("exactly one CONTROL family is SHIPPED: control-plane-policy",
+      shipped.length === 1 && shipped[0].key === "control-plane-policy", shipped.map((f) => f.key).join(", "));
+    check("control-plane-policy cites the policies route and only it",
+      JSON.stringify(shipped[0]?.routes) === JSON.stringify(["app/api/platform/platform-ops/policies/route.ts"]));
+    for (const fam of controlFamilies.filter((f) => f.key !== "control-plane-policy")) {
+      check(`${fam.key}: CONTROL family remains PLANNED`, fam.status === "PLANNED");
     }
-    check("at least one CONTROL family is recorded",
-      MUTATION_FAMILIES.some((f) => f.capability === "CONTROL"));
 
     // Unresolved means unresolved — an UNRESOLVED row without a stated tension
     // is a guess wearing a label.
@@ -331,6 +321,8 @@ function main() {
       "lib/platform/capability-classification.ts",
       "app/api/admin/platform-grants/route.ts",
       "lib/space/mount-context.server.ts",
+      "app/api/platform/platform-ops/policies/route.ts",
+      "lib/platform/policies/mutate.ts",
     ];
     const forbidden = /\bmayRun\b|JobControlState|JobAdmissionPolicy|declaredPolicy|pausedUntil|admissionResolver/;
     for (const f of touched) {

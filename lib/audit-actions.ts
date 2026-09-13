@@ -238,6 +238,18 @@ export const AuditAction = {
   PLATFORM_OPERATION_EXECUTED:  "PLATFORM_OPERATION_EXECUTED",
   PLATFORM_OPERATION_DRY_RUN:   "PLATFORM_OPERATION_DRY_RUN",
 
+  // ── Platform policy (PLATFORM OPS POLICIES — Slice 2) ────────────────────
+  // A CONTROL grant-holder changed declared operational policy through the
+  // canonical mutation service (lib/platform/policies/mutate.ts). CHANGED is an
+  // override written (created or updated); RESET is the override row DELETED so
+  // the code default is in force again. Both are written in the SAME transaction
+  // as the PlatformSetting mutation — neither can exist without the other — and
+  // both carry performedByAdminId (the acting operator) plus metadata
+  // { key, sourceKind, previous: { raw, origin, cadence, overdueAfterHours,
+  // updatedAt }, next: { … } }: policy facts only, never a secret or a value.
+  PLATFORM_POLICY_CHANGED:      "PLATFORM_POLICY_CHANGED",
+  PLATFORM_POLICY_RESET:        "PLATFORM_POLICY_RESET",
+
   // ── Security Ops anomalies (Wave 3 ⑧) ────────────────────────────────────
   // Written once per open anomaly window by lib/security/anomaly-alerts.ts when
   // a threshold trips (failed-login burst per identifier/IP, recovery-code
@@ -331,6 +343,8 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.PLATFORM_GRANT_REINSTATED,
   AuditAction.PLATFORM_OPERATION_EXECUTED,
   AuditAction.PLATFORM_OPERATION_DRY_RUN,
+  AuditAction.PLATFORM_POLICY_CHANGED,
+  AuditAction.PLATFORM_POLICY_RESET,
   AuditAction.BETA_ACCESS_APPROVED,
   AuditAction.BETA_ACCESS_DENIED,
   AuditAction.BETA_MODE_CHANGED,
@@ -377,6 +391,13 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
       AuditAction.PLATFORM_GRANT_LEVEL_CHANGED,
       AuditAction.PLATFORM_GRANT_REVOKED,
       AuditAction.PLATFORM_GRANT_REINSTATED,
+    ],
+  },
+  {
+    label: "Platform Policy",
+    actions: [
+      AuditAction.PLATFORM_POLICY_CHANGED,
+      AuditAction.PLATFORM_POLICY_RESET,
     ],
   },
   {

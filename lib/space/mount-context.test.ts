@@ -110,6 +110,12 @@ check("READ grant → canRead true, canWrite false, level 'READ'",
   plat.access.canRead === true && plat.access.canWrite === false && plat.access.level === "READ");
 check("WRITE grant → canWrite true",
   platformMountContext({ spaceId: "s", spaceName: "n", area: "PLATFORM_OPS" as never, areaLabel: "l", accessLevel: "WRITE" as never, userId: "u" }).access.canWrite === true);
+// PLATFORM OPS POLICIES (Slice 2) — canControl is the same rank rule one step up.
+check("READ / WRITE grants → canControl false; CONTROL grant → canControl true (and canWrite true)",
+  plat.access.canControl === false
+    && platformMountContext({ spaceId: "s", spaceName: "n", area: "PLATFORM_OPS" as never, areaLabel: "l", accessLevel: "WRITE" as never, userId: "u" }).access.canControl === false
+    && (() => { const c = platformMountContext({ spaceId: "s", spaceName: "n", area: "PLATFORM_OPS" as never, areaLabel: "l", accessLevel: "CONTROL" as never, userId: "u" }).access; return c.canControl === true && c.canWrite === true; })());
+check("a financial Space never carries control-plane authority", fin.access.canControl === false);
 const expectPlat = getPlatformAreaWorkspaces("PLATFORM_OPS" as never).map((c) => c.workspaceId);
 check("platform workspaces from shared registry (area composition)",
   plat.workspaces.available.length > 0 &&
