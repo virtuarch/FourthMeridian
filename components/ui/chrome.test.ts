@@ -19,6 +19,7 @@ const read = (...p: string[]) => readFileSync(path.join(process.cwd(), ...p), 'u
 
 const chrome = read('components', 'ui', 'DashboardChrome.tsx');
 const bottomNav = read('components', 'ui', 'BottomNav.tsx');
+const rail = read('components', 'ui', 'ContextualNavbar.tsx');
 const header = read('components', 'ui', 'GlobalHeader.tsx');
 const shell = read('components', 'ai', 'AiShell.tsx');
 const menu = read('components', 'ui', 'UserMenu.tsx');
@@ -28,7 +29,7 @@ const settingsIndex = read('app', '(shell)', 'dashboard', 'settings', 'page.tsx'
 console.log('2FA nudge: not mounted on the AI page, unchanged everywhere else');
 {
   check('the route predicate is the existing AI destination rule',
-    /const conversationSurface = isGlobalDestActive\("ai", pathname\);/.test(chrome));
+    /const conversationSurface = isPrimaryDestActive\("ai", pathname\);/.test(chrome));
   check('the nudge is mounted only when NOT on the AI page (not hidden after mounting)',
     /\{!conversationSurface && <TotpNudgeBanner \/>\}/.test(chrome) && (chrome.match(/<TotpNudgeBanner/g) ?? []).length === 1);
   check('no CSS suppression of the nudge', !/TotpNudgeBanner[^\n]*(hidden|display)/.test(chrome));
@@ -66,12 +67,24 @@ console.log('account menu: Settings stays, the duplicate Profile goes');
   check('identity block unchanged', menu.includes('{user?.name ?? "—"}') && menu.includes('{username}'));
 }
 
-console.log('bottom bar reads its own model');
+console.log('one primary nav, two presentations: rail and bar read the SAME model');
 {
-  check('BottomNav renders BOTTOM_NAV with its own active rule',
-    /BOTTOM_NAV\.map/.test(bottomNav) && /isBottomDestActive\(d\.id, pathname\)/.test(bottomNav) && !/GLOBAL_NAV/.test(bottomNav.replace(/\/\*[\s\S]*?\*\//g, '')));
-  check('no Settings icon on the bar', !/Settings as SettingsIcon/.test(bottomNav));
-  check('AI keeps its filled-disc emphasis', /const isAI = d\.id === "ai";/.test(bottomNav));
+  const code = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  check('BottomNav renders PRIMARY_NAV with the shared active rule',
+    /PRIMARY_NAV\.map/.test(bottomNav) && /isPrimaryDestActive\(d\.id, pathname\)/.test(bottomNav));
+  check('ContextualNavbar global mode renders PRIMARY_NAV with the shared active rule',
+    /PRIMARY_NAV\.map/.test(rail) && /isPrimaryDestActive\(d\.id, pathname\)/.test(rail));
+  check('no second nav list anywhere (GLOBAL_NAV / BOTTOM_NAV retired)',
+    !/GLOBAL_NAV|BOTTOM_NAV|isGlobalDestActive|isBottomDestActive/.test(code(bottomNav) + code(rail) + code(chrome)));
+  check('neither presentation carries a Settings item or icon',
+    !/Settings as SettingsIcon|\/dashboard\/settings/.test(code(bottomNav) + code(rail)));
+  check('the rail has no "soon" stub — every primary destination is live',
+    !/aria-disabled=\{!live\}/.test(rail) && !/>soon</.test(rail));
+  check('AI keeps its filled-disc emphasis on the bar', /const isAI = d\.id === "ai";/.test(bottomNav));
+  check('rail is desktop-only, bar is mobile-only (no duplicate presentation at one width)',
+    /<aside className="hidden w-\[212px\] shrink-0 lg:block">/.test(rail) && /lg:hidden/.test(bottomNav));
+  check('both presentations keep aria-current for the active destination',
+    (bottomNav.match(/aria-current=\{on \? "true" : undefined\}/g) ?? []).length === 1 && /aria-current=\{on \? "true" : undefined\}/.test(rail));
 }
 
 if (failures > 0) {

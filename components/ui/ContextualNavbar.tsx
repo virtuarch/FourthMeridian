@@ -6,9 +6,11 @@
  * The one desktop sidebar (prototype DS-4 §6 — components/shell/Sidebar.tsx).
  * It TRANSFORMS rather than appears:
  *
- *   global   — on the launcher and every non-Space route: the top-level app
- *              destinations (Spaces · Brief · AI · Connections · Settings), plus
- *              any platform-HQ destinations the user is granted.
+ *   global   — on the launcher and every non-Space route: the five primary
+ *              destinations (Brief · My Space · AI · Spaces · Connections —
+ *              lib/space-nav PRIMARY_NAV, the same list the mobile BottomNav
+ *              renders; Settings is in the account menu, not here), plus any
+ *              platform-HQ destinations the user is granted.
  *   space    — inside a Space (published through SpaceChrome by SpaceDashboard):
  *              back-to-Spaces, the Space's identity, its display-currency + Manage
  *              controls, and the section anchors for the active workspace. Inside
@@ -32,11 +34,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import {
+  House,
   Layers,
   Newspaper,
   Sparkles,
   Link2,
-  Settings as SettingsIcon,
   Shield,
   ArrowLeft,
   LayoutGrid,
@@ -46,21 +48,21 @@ import {
 import { useSpaceChrome, type SpaceChromeSpace, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
 import { SpaceControls } from "@/components/space/shell/SpaceControls";
 import {
-  GLOBAL_NAV,
-  isGlobalDestActive,
-  type GlobalDestId,
+  PRIMARY_NAV,
+  isPrimaryDestActive,
+  type PrimaryDestId,
 } from "@/lib/space-nav";
 import {
   SPACE_LIST_CHANGED_EVENT,
   SPACE_INVITES_CHANGED_EVENT,
 } from "@/lib/space-nav";
 
-const NAV_ICONS: Record<GlobalDestId, LucideIcon> = {
-  spaces: Layers,
+const NAV_ICONS: Record<PrimaryDestId, LucideIcon> = {
   brief: Newspaper,
+  myspace: House,
   ai: Sparkles,
+  spaces: Layers,
   connections: Link2,
-  settings: SettingsIcon,
 };
 
 type PlatformItem = { id: string; name: string; platformArea: string };
@@ -264,28 +266,20 @@ function GlobalMode() {
         Fourth Meridian
       </p>
       <nav aria-label="Global" className="flex flex-col gap-0.5">
-        {GLOBAL_NAV.map((d) => {
+        {PRIMARY_NAV.map((d) => {
           const Icon = NAV_ICONS[d.id];
-          const on = isGlobalDestActive(d.id, pathname);
-          const live = d.live;
+          const on = isPrimaryDestActive(d.id, pathname);
           return (
             <Link
               key={d.id}
               href={d.href}
               aria-current={on ? "true" : undefined}
-              aria-disabled={!live}
-              tabIndex={live ? undefined : -1}
-              onClick={(e) => {
-                if (!live) e.preventDefault();
-              }}
               className={[
                 "group relative flex items-center gap-2.5 rounded-[var(--radius-sm)] py-1.5 pl-3 pr-2 text-left text-[13px]",
                 "transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
-                !live
-                  ? "cursor-default text-[var(--text-muted)]"
-                  : on
-                    ? "text-[var(--text-primary)]"
-                    : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+                on
+                  ? "text-[var(--text-primary)]"
+                  : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
               ].join(" ")}
             >
               <span
@@ -293,7 +287,7 @@ function GlobalMode() {
                 className={[
                   "absolute inset-y-1 left-0 w-0.5 rounded-full bg-[var(--meridian-400)]",
                   "transition-opacity duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
-                  on && live ? "opacity-100" : "opacity-0",
+                  on ? "opacity-100" : "opacity-0",
                 ].join(" ")}
               />
               <Icon size={14} strokeWidth={1.75} className="shrink-0" />
@@ -306,7 +300,6 @@ function GlobalMode() {
                   {pendingInvites > 9 ? "9+" : pendingInvites}
                 </span>
               )}
-              {!live && <span className="text-[10px] text-[var(--text-muted)]">soon</span>}
             </Link>
           );
         })}

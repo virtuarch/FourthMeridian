@@ -3,11 +3,11 @@
 /**
  * components/ui/BottomNav.tsx
  *
- * The mobile bar: Brief · My Space · AI · Spaces · Connections (lib/space-nav
- * BOTTOM_NAV, AI-4). It shares its routes with the desktop rail's GLOBAL_NAV but
- * not its order: My Space (/dashboard, the active Space's dashboard) is a
- * destination of its own, distinct from the Spaces launcher, and Settings lives in
- * the account menu instead of on the bar.
+ * The mobile bar: Brief · My Space · AI · Spaces · Connections — the mobile
+ * presentation of lib/space-nav PRIMARY_NAV, the SAME list, order, routes and
+ * active rule the desktop rail (ContextualNavbar, global mode) renders. My Space
+ * (/dashboard, the active Space's dashboard) is a destination of its own, distinct
+ * from the Spaces launcher, and Settings lives in the account menu, not here.
  *
  * Prototype behaviour (DS-5 §6): a phone has room for one nav level, so it shows
  * the top-level app destinations and lets in-Space navigation become the
@@ -26,9 +26,9 @@ import {
   Link2,
   type LucideIcon,
 } from "lucide-react";
-import { BOTTOM_NAV, isBottomDestActive, type BottomDestId } from "@/lib/space-nav";
+import { PRIMARY_NAV, isPrimaryDestActive, type PrimaryDestId } from "@/lib/space-nav";
 
-const NAV_ICONS: Record<BottomDestId, LucideIcon> = {
+const NAV_ICONS: Record<PrimaryDestId, LucideIcon> = {
   brief: Newspaper,
   myspace: House,
   ai: Sparkles,
@@ -50,9 +50,9 @@ export function BottomNav() {
       }}
     >
       <div className="flex h-14 items-stretch">
-        {BOTTOM_NAV.map((d) => {
+        {PRIMARY_NAV.map((d) => {
           const Icon = NAV_ICONS[d.id];
-          const on = isBottomDestActive(d.id, pathname);
+          const on = isPrimaryDestActive(d.id, pathname);
           const isAI = d.id === "ai";
           return (
             <Link

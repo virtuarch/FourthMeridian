@@ -40,7 +40,7 @@ import { BottomNav } from "@/components/ui/BottomNav";
 import { CreateSpaceModal } from "@/components/dashboard/CreateSpaceModal";
 import { TotpNudgeBanner } from "@/components/dashboard/TotpNudgeBanner";
 import { SpaceChromeProvider } from "@/lib/space/space-chrome-context";
-import { OPEN_CREATE_SPACE_EVENT, isGlobalDestActive } from "@/lib/space-nav";
+import { OPEN_CREATE_SPACE_EVENT, isPrimaryDestActive } from "@/lib/space-nav";
 
 export function DashboardChrome({ children }: { children: ReactNode }) {
   const router = useRouter();
@@ -56,7 +56,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   //    1px border-t + the safe-area inset it pads by) instead of pb-24, and 16px on
   //    lg, so the docked composer sits directly on the bar. AiShell's height
   //    subtracts the same expression — change one, change both.
-  const conversationSurface = isGlobalDestActive("ai", pathname);
+  const conversationSurface = isPrimaryDestActive("ai", pathname);
 
   useEffect(() => {
     function handleOpen() { setCreateSpaceOpen(true); }
