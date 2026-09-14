@@ -66,7 +66,7 @@ async function main() {
   check('…horizon echoed in assumptionsInForce', typeof q2.r.at('assumptionsInForce.horizon.to') === 'string', String(q2.r.at('assumptionsInForce.horizon.to')));
   console.log(`   ${q2.ms} ms, ${q2.bytes} B, months examined ${q2.r.at('searchedThrough.monthsExamined')}`);
   const proj = await run('scenario_projection', { to: '2027-03-31', granularity: 'monthly', annualReturnPct: 7, contributions: floor(50000, 1) });
-  const first = list(proj.r.at('movements')).find((m) => m.kind === 'CONTRIBUTION' && num(m.amount) > 0);
+  const first = list(proj.r.at('movements.first')).find((m) => m.kind === 'CONTRIBUTION' && num(m.amount) > 0);
   check('first floor contribution 2027-02-28 of 4,044.40', first?.date === '2027-02-28' && first?.amount === 4044.4, JSON.stringify(first));
   check('projection at 2027-02-28 shows liquid 50,000', read(list(proj.r.at('checkpoints')).find((c) => c.date === '2027-02-28')).at('liquid.amount') === 50000);
   console.log(`   projection to 2027-03-31: ${proj.ms} ms, ${proj.bytes} B`);
@@ -83,12 +83,16 @@ async function main() {
   check('$2M → 2040-08-31', q2m.r.at('crossing.date') === '2040-08-31', String(q2m.r.at('crossing.date')));
 
   console.log('4. conservation on the real spine at 0%');
+  // Thirty years of monthly detail exceeds the row ceiling, so both runs come back
+  // thinned to the same coarser cadence — the comparison is still row for row.
   const base = await run('scenario_projection', { to: '2056-09-13', granularity: 'monthly' });
   const zero = await run('scenario_projection', { to: '2056-09-13', granularity: 'monthly', contributions: floor(50000, 1) });
+  check('both runs returned the same dates', JSON.stringify(list(base.r.at('checkpoints')).map((c) => c.date))
+    === JSON.stringify(list(zero.r.at('checkpoints')).map((c) => c.date)), String(zero.r.at('horizon.granularity')));
   const zeroCps = list(zero.r.at('checkpoints')); const baseCps = list(base.r.at('checkpoints'));
   const maxDiff = Math.max(...zeroCps.map((c, i) => Math.abs(num(read(c).at('netWorth.amount')) - num(read(baseCps[i]).at('netWorth.amount')))));
-  check('max net-worth difference vs baseline = 0.00 across the (clamped) monthly checkpoints', maxDiff === 0, `${maxDiff} over ${zeroCps.length} checkpoints`);
-  console.log(`   30-year monthly projection: ${zero.ms} ms, ${zero.bytes} B (baseline ${base.bytes} B)`);
+  check('max net-worth difference vs baseline = 0.00 across every returned checkpoint', maxDiff === 0, `${maxDiff} over ${zeroCps.length} checkpoints`);
+  console.log(`   30-year projection (${zero.r.at('horizon.granularity')}): ${zero.ms} ms, ${zero.bytes} B (baseline ${base.bytes} B)`);
 
   console.log('5. goal seek receives the rule');
   const gs = await run('scenario_goal_seek', { target: 1_000_000, by: '2035-02-28', solveFor: 'annualReturnPct', contributions: floor(50000, 1) });
@@ -103,6 +107,39 @@ async function main() {
   check('two bases rejected', list(bad.r.at('rejected')).length === 1 && /EXACTLY ONE/.test(String(list(bad.r.at('rejected'))[0].reason)) && list(bad.r.at('movements')).length === 0, String(list(bad.r.at('rejected'))[0]?.reason).slice(0, 80));
   const half = await run('scenario_projection', { to: '2027-12-31', contributions: [{ liquidFloor: 50000 }] });
   check('a floor without a share rejected', list(half.r.at('rejected')).length === 1 && /go together/.test(String(list(half.r.at('rejected'))[0].reason)));
+
+  console.log('7. a quarterly table of the same scenario, from the same ledger (Slice B)');
+  const qt = await run('scenario_projection', { to: '2035-02-28', granularity: 'quarterly', annualReturnPct: 7, contributions: floor(50000, 1) });
+  const rows = list(qt.r.at('checkpoints'));
+  const row = (d: string) => read(rows.find((c) => c.date === d));
+  check('quarterly was returned as requested, nothing omitted',
+    qt.r.at('horizon.granularity') === 'quarterly' && qt.r.at('horizon.cadenceSource') === 'REQUESTED' && qt.r.at('horizon.omitted') === undefined,
+    JSON.stringify(qt.r.at('horizon')));
+  check('35 rows, ending at the horizon', rows.length === 35 && rows[rows.length - 1].date === '2035-02-28', String(rows.length));
+  check('2027-03-31: liquid 50,000.00 / investments 34,675.38 / net worth 84,675.38',
+    row('2027-03-31').at('liquid.amount') === 50000 && row('2027-03-31').at('investments.amount') === 34675.38 && row('2027-03-31').at('netWorth.amount') === 84675.38,
+    JSON.stringify([row('2027-03-31').at('liquid.amount'), row('2027-03-31').at('investments.amount'), row('2027-03-31').at('netWorth.amount')]));
+  check('2029-12-31: liquid 50,000.00 / investments 301,271.97 / net worth 351,271.97',
+    row('2029-12-31').at('liquid.amount') === 50000 && row('2029-12-31').at('investments.amount') === 301271.97 && row('2029-12-31').at('netWorth.amount') === 351271.97,
+    JSON.stringify([row('2029-12-31').at('liquid.amount'), row('2029-12-31').at('investments.amount'), row('2029-12-31').at('netWorth.amount')]));
+  check('the last quarterly row IS the crossing the search found', row('2035-02-28').at('netWorth.amount') === 1001443.24);
+  const monthly = await run('scenario_projection', { to: '2029-12-31', granularity: 'monthly', annualReturnPct: 7, contributions: floor(50000, 1) });
+  const mrows = list(monthly.r.at('checkpoints'));
+  check('every quarterly row through 2029 equals the same date\'s row in the monthly run — one ledger, no second path',
+    rows.filter((c) => String(c.date) <= '2029-12-31').every((c) => {
+      const m = mrows.find((x) => x.date === c.date); return !!m && read(m).at('netWorth.amount') === read(c).at('netWorth.amount') && read(m).at('liquid.amount') === read(c).at('liquid.amount'); }));
+  const mv = read(qt.r.at('movements'));
+  check('movements are compacted: 102 counted, 12 shown, total conserved',
+    mv.at('count') === 102 && list(mv.at('first')).length === 12 && mv.at('compacted') === true
+      && mv.at('contributions.total') === row('2035-02-28').at('movements.contributionsToDate.total'), JSON.stringify([mv.at('count'), mv.at('contributions.total')]));
+  console.log(`   quarterly to 2035-02-28: ${qt.ms} ms, ${qt.bytes} B`);
+  const thinned = await run('scenario_projection', { to: '2035-02-28', granularity: 'monthly', annualReturnPct: 7, contributions: floor(50000, 1) });
+  check('explicit monthly past the ceiling is thinned to quarterly and says which dates fell out',
+    thinned.r.at('horizon.granularity') === 'quarterly' && thinned.r.at('horizon.requested') === 'monthly'
+      && read(thinned.r.at('horizon.omitted')).at('count') === 67 && read(thinned.r.at('horizon.omitted')).at('how') === 'THINNED',
+    JSON.stringify(thinned.r.at('horizon.omitted')));
+  check('…and the dates once invented by the model are real rows now',
+    ['2033-06-30', '2033-12-31', '2034-06-30', '2034-12-31'].every((d) => list(thinned.r.at('checkpoints')).some((c) => c.date === d)));
 
   console.log(failures === 0 ? '\nACCEPTANCE PASSED' : `\n${failures} FAILED`);
   await db.$disconnect();

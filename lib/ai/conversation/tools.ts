@@ -199,6 +199,11 @@ const daysAgoISO = (asOf: string, n: number) =>
  * caller here is unmoved and there is still exactly one implementation.
  */
 export { monthEndsBetween };
+import {
+  planCheckpoints, compactMovements, yearEndsBetween, CADENCES, MAX_SCENARIO_CHECKPOINTS,
+  type Cadence, type CheckpointPlan,
+} from './scenario-checkpoints';
+export { yearEndsBetween };
 
 async function assemble<T>(
   domain: string, ctx: ToolContext, options: Record<string, unknown> = {},
@@ -1490,24 +1495,10 @@ const investmentScenario: ToolDefinition = {
 // ── 11. Scenario projection and goal seek ────────────────────────────────────
 
 /**
- * Every 31 December strictly after `fromISO` and not after `toISO`, plus the
- * horizon itself. The yearly analogue of `monthEndsBetween`, and it keeps the
- * same property: the last entry IS the horizon.
+ * The checkpoint calendar — which dates a table has rows for — lives in
+ * `scenario-checkpoints.ts`, pure and beside the ledger. `yearEndsBetween` and
+ * the ceiling are re-exported above so existing callers are unmoved.
  */
-export function yearEndsBetween(fromISO: string, toISO: string): string[] {
-  const out: string[] = [];
-  const firstYear = Number(fromISO.slice(0, 4));
-  const lastYear  = Number(toISO.slice(0, 4));
-  for (let y = firstYear; y <= lastYear; y++) {
-    const iso = `${y}-12-31`;
-    if (iso > fromISO && iso <= toISO) out.push(iso);
-  }
-  if (out[out.length - 1] !== toISO && toISO > fromISO) out.push(toISO);
-  return out;
-}
-
-/** A ceiling on how many independent projection runs one question can trigger. */
-const MAX_SCENARIO_CHECKPOINTS = 80;
 /** Days per month, for turning an observed daily spending rate into a monthly one. */
 const DAYS_PER_MONTH = 365 / 12;
 
@@ -1520,8 +1511,10 @@ interface ScenarioOverrides {
 }
 
 interface ScenarioSetup {
-  asOf: string; toISO: string; granularity: string;
-  dates: string[]; clamped: boolean;
+  asOf: string; toISO: string;
+  /** Which dates the table carries and why — cadence, source, anything omitted. */
+  plan: CheckpointPlan;
+  dates: string[];
   accounts: AccountsSectionData;
   returns: ReturnPeriod[];
   contributions: PlannedMovement[];
@@ -1592,18 +1585,16 @@ async function prepareScenario(
       reason: endpoint.projection?.missing?.join('; ') ?? endpoint.unavailable };
   }
 
-  const horizonDays = Math.round(
-    (Date.parse(`${toISO}T00:00:00Z`) - Date.parse(`${asOf}T00:00:00Z`)) / 86_400_000);
-  const granularity = explicitDates ? 'monthly'
-    : (a.granularity as string) === 'monthly' ? 'monthly'
-    : (a.granularity as string) === 'yearly' ? 'yearly'
-    : horizonDays > 550 ? 'yearly' : 'monthly';
-  let dates = explicitDates ?? (granularity === 'yearly'
-    ? yearEndsBetween(asOf, toISO) : monthEndsBetween(asOf, toISO));
-  const clamped = !explicitDates && dates.length > MAX_SCENARIO_CHECKPOINTS;
-  // Keep the HORIZON when trimming — a table that stops short of the date the
-  // question named has not answered it.
-  if (clamped) dates = [...dates.slice(0, MAX_SCENARIO_CHECKPOINTS - 1), toISO];
+  // ⚠️ THE DATES ARE PLANNED, NOT CLAMPED. A caller-owned grid (the crossing
+  // search) is used verbatim; a table's cadence is chosen, thinned to fit the
+  // ceiling if it must be, and the plan says what was asked, what was returned
+  // and which dates fell out — so a row that is not there is a row the reader
+  // was told is not there.
+  const requested = CADENCES.includes(a.granularity as Cadence) ? a.granularity as Cadence : null;
+  const plan: CheckpointPlan = explicitDates
+    ? { cadence: 'monthly', source: 'REQUESTED', requested: 'monthly', dates: explicitDates }
+    : planCheckpoints({ asOfISO: asOf, toISO, requested });
+  const dates = plan.dates;
 
   // ── The stated assumptions, normalised ─────────────────────────────────────
   const rejected: { input: string; reason: string }[] = [];
@@ -1725,7 +1716,7 @@ async function prepareScenario(
         : { amount: null, source: 'NONE' };
 
   return {
-    asOf, toISO, granularity, dates, clamped, accounts, returns,
+    asOf, toISO, plan, dates, accounts, returns,
     contributions: expanded.movements, outflows, rejected, monthlySpending,
     run: (o: ScenarioOverrides = {}) => {
       const useContribs = o.extraContributions
@@ -1894,8 +1885,22 @@ function presentScenario(setup: ScenarioSetup, ledger: LedgerResult, returns: Re
   }
   return {
     asOf: setup.asOf,
-    horizon: { to: setup.toISO, granularity: setup.granularity, checkpoints: setup.dates.length,
-      ...(setup.clamped ? { clampedTo: MAX_SCENARIO_CHECKPOINTS } : {}) },
+    // ⚠️ WHAT THE TABLE HAS ROWS FOR, AND WHAT IT DOES NOT. `granularity` is the
+    // cadence actually returned; `requested` appears when it differs from what
+    // was asked; `omitted` names the dates that have no row. A model reading
+    // this can tell a missing date from a date it forgot to look at — the hole
+    // it once filled with invented rows is now a field.
+    horizon: { to: setup.toISO, granularity: setup.plan.cadence, checkpoints: setup.dates.length,
+      cadenceSource: setup.plan.source,
+      ...(setup.plan.requested && setup.plan.requested !== setup.plan.cadence
+        ? { requested: setup.plan.requested,
+            thinning: `${setup.plan.requested} would exceed ${MAX_SCENARIO_CHECKPOINTS} checkpoints; `
+              + `returned ${setup.plan.cadence} instead` } : {}),
+      ...(setup.plan.omitted ? { omitted: { ...setup.plan.omitted,
+        meaning: 'These requested dates have NO row in this result. Do not estimate a value '
+          + 'for any of them; re-run with a shorter horizon or a coarser granularity to see '
+          + 'them, or say they were not computed.' } } : {}),
+      ...(setup.plan.clampedTo ? { clampedTo: setup.plan.clampedTo } : {}) },
     // ⚠️ THE LEDGER'S OPENING RECONCILED AGAINST THE ACCOUNTS AUTHORITY, out
     // loud. Two net-worth figures for today in one answer is exactly the class
     // of contradiction this whole slice exists to stop.
@@ -1907,7 +1912,9 @@ function presentScenario(setup: ScenarioSetup, ledger: LedgerResult, returns: Re
     assumptions: scenarioAssumptions(setup, ledger, returns),
     opening: ledger.opening,
     checkpoints: ledger.checkpoints,
-    movements: ledger.movements,
+    // ⚠️ BOUNDED. A thirty-year rule settles 361 dated amounts and the result was
+    // repeating every one beside a table whose rows already carry the same money.
+    movements: compactMovements(ledger.movements),
     rejected: [...setup.rejected, ...ledger.rejected],
     warnings,
     basis: ledger.basis,
@@ -1930,8 +1937,13 @@ const SCENARIO_QUALIFICATION =
 
 /** The scenario arguments every scenario tool accepts, so the model states them one way. */
 const SCENARIO_INPUTS = {
-  granularity: { type: 'string', enum: ['yearly', 'monthly'],
-    description: 'yearly = 31 December of each year. Default yearly beyond ~18 months.' },
+  granularity: { type: 'string', enum: ['monthly', 'quarterly', 'yearly'],
+    description: 'How often the table has a row: monthly = every month-end, quarterly = every '
+      + 'quarter-end, yearly = every 31 December; the horizon is always the last row. Use the '
+      + 'cadence the user asked for ("quarterly table" = quarterly). Omit for the default: '
+      + 'monthly within 18 months, quarterly to about 20 years, yearly beyond. A cadence that '
+      + 'would exceed the row ceiling is returned one step coarser and the result says so '
+      + 'under `horizon.requested` / `horizon.omitted`.' },
   annualReturnPct: num('One flat annual return for the whole horizon, e.g. 8. Default 0 — the '
     + 'no-growth baseline. Use the rate the user stated; when they invited one without naming '
     + 'it ("say, some return"), run an illustration and say in the answer which rate it was. '
