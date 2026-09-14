@@ -594,7 +594,7 @@ console.log('13c. clip 3 — project_cash');
 
   // Checkpoints must not compound.
   check('each checkpoint is an independent run from the same asOf',
-    /const run = runTo\(end\)/.test(src));
+    /const run = runTo\(date\)/.test(src));
   check('…and the adapter does no money arithmetic beyond a reported delta',
     (src.match(/closing - prevClosing/g) ?? []).length === 1);
   check('the checkpoint contract is stated where someone would break it',
@@ -648,8 +648,8 @@ console.log('13f. clip 5 — temporal identity');
     /effectiveAt: ctx\.asOfISO/.test(src) && /does NOT move forward in time/.test(src));
   check('…and warns against composing it with a projection',
     /doNotComposeWith/.test(src));
-  check('project_cash carries both ends of its horizon',
-    /horizon: \{ asOf, to: toISO, days: horizonDays \}/.test(src));
+  check('project_cash carries both ends of its horizon, and how far apart they are',
+    /horizon: \{ asOf, to: toISO, days: horizonDays, elapsed: elapsedBetween\(asOf, toISO\)/.test(src));
 }
 
 console.log('13g. corpus span — the result declares the boundary of its own authority');
@@ -753,7 +753,7 @@ console.log('13i. tool contracts — the capability boundary is in the descripti
   check('…and names its one applicable assumption',
     /`assumedMonthlySpending` is the only assumption it can apply/.test(cash.description));
   check('…while still offering the ordinary projection it is for',
-    /evidence-based estimate/.test(cash.description) && /month-end checkpoints/.test(cash.description));
+    /evidence-based estimate/.test(cash.description) && /checkpoints along the way/.test(cash.description));
   check('…and does not single out a bonus — the boundary is generic',
     !/bonus/i.test(cash.description));
 
@@ -1378,7 +1378,7 @@ console.log('17b. one spine');
   check('…and every tool that projects reaches it through the same spine',
     (src.match(/buildCashSpine\(ctx, \{/g) ?? []).length === 3);
   check('every checkpoint is an INDEPENDENT run from the same asOf',
-    /runTo\(date, override\)\.projection\?\.closing/.test(src) && /runTo\(end\)/.test(src));
+    /runTo\(date, override\)\.projection\?\.closing/.test(src) && /const run = runTo\(date\)/.test(src));
   check('the last checkpoint date IS the horizon, monthly and yearly alike',
     monthEndsBetween('2026-09-08', '2027-03-15').slice(-1)[0] === '2027-03-15'
       && yearEndsBetween('2026-09-08', '2030-06-30').slice(-1)[0] === '2030-06-30');

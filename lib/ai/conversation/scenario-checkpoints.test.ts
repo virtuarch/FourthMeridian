@@ -14,7 +14,8 @@
 
 import {
   quarterEndsBetween, yearEndsBetween, periodEndsBetween, defaultCadence, planCheckpoints,
-  compactMovements, MAX_SCENARIO_CHECKPOINTS, MONTHLY_DEFAULT_MAX_DAYS, MOVEMENTS_SHOWN, CADENCES,
+  compactMovements, compactExcludedEvents, describePlan, MAX_SCENARIO_CHECKPOINTS, MONTHLY_DEFAULT_MAX_DAYS,
+  MOVEMENTS_SHOWN, CADENCES,
 } from './scenario-checkpoints';
 import { monthEndsBetween, expandContributions, runScenarioLedger,
   type SpinePoint } from './scenario-ledger';
@@ -172,6 +173,41 @@ console.log('\nK–L. movement compaction');
   check('the compact form is far smaller than the list it stands for',
     JSON.stringify(c).length < JSON.stringify(ledger.movements).length / 10,
     `${JSON.stringify(c).length} B vs ${JSON.stringify(ledger.movements).length} B`);
+}
+
+console.log('\nM. one description of a plan, for every tool that plans');
+{
+  const plain = describePlan(planCheckpoints({ asOfISO: ASOF, toISO: '2029-12-31' }));
+  check('a default plan: cadence, count, source, and nothing about omission',
+    JSON.stringify(plain) === JSON.stringify({ granularity: 'quarterly', checkpoints: 14, cadenceSource: 'DEFAULT' }));
+  const thinned = describePlan(planCheckpoints({ asOfISO: ASOF, toISO: '2035-02-28', requested: 'monthly' }));
+  check('a thinned plan names what was asked, says why, and lists the omission with its meaning',
+    thinned.granularity === 'quarterly' && thinned.requested === 'monthly' && /exceed 80/.test(String(thinned.thinning))
+      && thinned.omitted?.count === 67 && /NO row/.test(String(thinned.omitted?.meaning)) && !('clampedTo' in thinned));
+  const clamped = describePlan(planCheckpoints({ asOfISO: ASOF, toISO: '2126-09-13', requested: 'yearly' }));
+  check('a clamped plan carries the ceiling and the contiguous hole', clamped.clampedTo === 80 && clamped.omitted?.how === 'CLAMPED');
+}
+
+console.log('\nN. excluded events are grouped by stream and reason');
+{
+  const events = [
+    ...monthEndsBetween(ASOF, '2029-12-31').map((d) => ({ id: `INTEREST@acct1@${d}`, reason: 'no amount is established for this event' })),
+    ...monthEndsBetween(ASOF, '2027-12-31').map((d) => ({ id: `FEE@acct2@${d}`, reason: 'no amount is established for this event' })),
+    { id: 'BONUS@acct1@2027-03-01', reason: 'dated before the horizon opens' },
+    { id: 'odd-id-without-date', reason: 'x' },
+  ];
+  const c = compactExcludedEvents(events);
+  check('every occurrence is counted', c.count === events.length && c.compacted === true && !!c.note);
+  check('one group per stream and reason, with span and occurrences',
+    c.groups.length === 4 && c.groups[0].stream === 'INTEREST@acct1' && c.groups[0].occurrences === 40
+      && c.groups[0].first === '2026-09-30' && c.groups[0].last === '2029-12-31'
+      && c.groups[1].stream === 'FEE@acct2' && c.groups[1].occurrences === 16);
+  check('an id without a date is its own stream', c.groups[3].stream === 'odd-id-without-date' && c.groups[3].first === '');
+  check('the grouped form is a fraction of the list', JSON.stringify(c).length < JSON.stringify(events).length / 5,
+    `${JSON.stringify(c).length} B vs ${JSON.stringify(events).length} B`);
+  const few = compactExcludedEvents(events.slice(-2));
+  check('two distinct events are not called compacted', few.compacted === false && few.groups.length === 2 && !few.note);
+  check('an empty list is an empty, uncompacted group set', JSON.stringify(compactExcludedEvents([])) === JSON.stringify({ count: 0, groups: [], compacted: false }));
 }
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} FAILED`);

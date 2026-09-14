@@ -200,8 +200,8 @@ const daysAgoISO = (asOf: string, n: number) =>
  */
 export { monthEndsBetween };
 import {
-  planCheckpoints, compactMovements, yearEndsBetween, CADENCES, MAX_SCENARIO_CHECKPOINTS,
-  type Cadence, type CheckpointPlan,
+  planCheckpoints, compactMovements, compactExcludedEvents, describePlan, yearEndsBetween,
+  CADENCES, type Cadence, type CheckpointPlan,
 } from './scenario-checkpoints';
 export { yearEndsBetween };
 
@@ -1310,7 +1310,7 @@ const projectCash: ToolDefinition = {
   // scenario_projection is for, took establishment from 0/5 to 5/5 on a bonus
   // and 2/5 to 5/5 on a car, with the ordinary-projection control unmoved.
   description:
-    'Deterministic cash projection to a future date, with month-end checkpoints. The ' +
+    'Deterministic cash projection to a future date, with checkpoints along the way. The ' +
     'headline answer is `projection` — an evidence-based estimate built from observed ' +
     'payroll cadence and observed spending continuing as they are. ' +
     '`assumedMonthlySpending` is the only assumption it can apply; a dated one-off amount ' +
@@ -1321,9 +1321,13 @@ const projectCash: ToolDefinition = {
     assumedMonthlySpending: num('If the user stated a monthly spending level, pass it here. '
       + 'It is the only user assumption this tool can apply. A one-off amount on a date — '
       + 'a bonus, an inheritance, a purchase, a sale — is not part of this projection.'),
-    checkpoints: { type: 'string', enum: ['monthly', 'none'],
-      description: 'monthly = a balance at each month-end between now and the horizon. '
-        + 'Default monthly for horizons over ~45 days.' },
+    checkpoints: { type: 'string', enum: ['monthly', 'quarterly', 'yearly', 'none'],
+      description: 'How often to report a balance between now and the horizon: monthly = '
+        + 'every month-end, quarterly = every quarter-end, yearly = every 31 December; the '
+        + 'horizon is always the last row. Omit for the default: none under ~45 days, then '
+        + 'monthly within 18 months, quarterly to about 20 years, yearly beyond. A cadence '
+        + 'that would exceed the row ceiling is returned one step coarser and the result says '
+        + 'so under `horizon.requested` / `horizon.omitted`.' },
     asOf: str('Project FROM this date using only evidence available then. Omit for today. '
       + 'Use for "what would you have predicted back in January?".'),
   }, ['to']),
@@ -1342,35 +1346,49 @@ const projectCash: ToolDefinition = {
     const licensed = 'refused' in f.forecast ? null : f.forecast.fullCashPath;
     const userAssumed = f.appliedFacts.length > 0;
 
-    // ── Month-end checkpoints ────────────────────────────────────────────────
+    // ── Checkpoints ──────────────────────────────────────────────────────────
     //
     // ⚠️ EACH CHECKPOINT IS AN INDEPENDENT RUN FROM THE SAME `asOf`, never a
     // balance carried forward from the previous one. Compounding checkpoint on
     // checkpoint would accumulate rounding and — worse — would let a series drift
     // away from the endpoint the same authority produces for the same horizon.
-    // Because every point is `projectCash(asOf → thatMonthEnd)`, the last
-    // checkpoint IS the endpoint by construction, and a test pins it.
+    // Because every point is `projectCash(asOf → thatDate)`, the last checkpoint
+    // IS the endpoint by construction, and a test pins it.
+    //
+    // ⚠️ THE DATES ARE PLANNED BY THE SAME AUTHORITY THE SCENARIO TABLE USES. A
+    // thirty-year horizon was returning 364 month-ends — 112 KB the model then
+    // carried in every later prompt — and no row said how far away it was. The
+    // plan chooses the cadence (or honours the one asked for, thinned if it must
+    // be, and says so); the values at the chosen dates are exactly what a monthly
+    // run produces at those dates, because the spine is not the plan's to touch.
     const horizonDays = Math.round(
       (Date.parse(`${toISO}T00:00:00Z`) - Date.parse(`${asOf}T00:00:00Z`)) / 86_400_000);
-    const wantCheckpoints = (a.checkpoints as string) === 'monthly'
+    const requested = CADENCES.includes(a.checkpoints as Cadence) ? a.checkpoints as Cadence : null;
+    const wantCheckpoints = requested !== null
       || ((a.checkpoints as string) !== 'none' && horizonDays > 45);
 
     let checkpoints: unknown[] | undefined;
+    let plan: CheckpointPlan | undefined;
     if (wantCheckpoints) {
-      const ends = monthEndsBetween(asOf, toISO);
+      plan = planCheckpoints({ asOfISO: asOf, toISO, requested });
       let prevClosing: number | null = f.projection ? (f.projection.openingCash ?? null) : null;
-      checkpoints = ends.map((end) => {
-        const run = runTo(end);
+      checkpoints = plan.dates.map((date) => {
+        const run = runTo(date);
         const closing = run.projection?.closing ?? null;
         const delta = closing !== null && prevClosing !== null ? round2(closing - prevClosing) : null;
         prevClosing = closing;
-        return { monthEnd: end, closingCash: closing === null ? null : round2(closing),
-          changeInMonth: delta };
+        return { date, closingCash: closing === null ? null : round2(closing),
+          changeSincePrevious: delta,
+          // ⚠️ HOW FAR AWAY, IN THE ENGINE'S NUMBERS. A month-end read off this
+          // list was narrated as "1 year and 5½ months" when it was five and a
+          // half months out; the date was right and the subtraction was not.
+          elapsed: elapsedBetween(asOf, date) };
       });
     }
 
     return {
-      horizon: { asOf, to: toISO, days: horizonDays },
+      horizon: { asOf, to: toISO, days: horizonDays, elapsed: elapsedBetween(asOf, toISO),
+        ...(plan ? describePlan(plan) : { checkpoints: 0 }) },
       ...(retrospective ? { retrospective: true, openingBasis,
         meaning: `What this projection would have said standing at ${asOf}, using only `
           + 'evidence available then. Compare it with what actually happened; do not '
@@ -1397,7 +1415,9 @@ const projectCash: ToolDefinition = {
           incomeEventsCounted: f.events.length,
           components: f.projection.components,
           assumptions: f.projection.assumptions,
-          excluded: f.projection.excluded,
+          // ⚠️ GROUPED, NOT LISTED. One entry per unlicensed occurrence was 83 KB
+          // over thirty years, all saying the same thing about the same streams.
+          excluded: compactExcludedEvents(f.projection.excluded as { id: string; reason: string }[]),
           range: f.projection.range,
         },
         qualification:
@@ -1890,17 +1910,7 @@ function presentScenario(setup: ScenarioSetup, ledger: LedgerResult, returns: Re
     // was asked; `omitted` names the dates that have no row. A model reading
     // this can tell a missing date from a date it forgot to look at — the hole
     // it once filled with invented rows is now a field.
-    horizon: { to: setup.toISO, granularity: setup.plan.cadence, checkpoints: setup.dates.length,
-      cadenceSource: setup.plan.source,
-      ...(setup.plan.requested && setup.plan.requested !== setup.plan.cadence
-        ? { requested: setup.plan.requested,
-            thinning: `${setup.plan.requested} would exceed ${MAX_SCENARIO_CHECKPOINTS} checkpoints; `
-              + `returned ${setup.plan.cadence} instead` } : {}),
-      ...(setup.plan.omitted ? { omitted: { ...setup.plan.omitted,
-        meaning: 'These requested dates have NO row in this result. Do not estimate a value '
-          + 'for any of them; re-run with a shorter horizon or a coarser granularity to see '
-          + 'them, or say they were not computed.' } } : {}),
-      ...(setup.plan.clampedTo ? { clampedTo: setup.plan.clampedTo } : {}) },
+    horizon: { to: setup.toISO, ...describePlan(setup.plan) },
     // ⚠️ THE LEDGER'S OPENING RECONCILED AGAINST THE ACCOUNTS AUTHORITY, out
     // loud. Two net-worth figures for today in one answer is exactly the class
     // of contradiction this whole slice exists to stop.

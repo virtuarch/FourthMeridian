@@ -219,3 +219,71 @@ export function compactMovements<M extends { kind: 'CONTRIBUTION' | 'OUTFLOW'; a
       + 'previous checkpoint and the totals to date.' } : {}),
   };
 }
+
+/**
+ * The plan, as the fields every tool's `horizon` carries.
+ *
+ * ⚠️ ONE WORDING FOR TWO TOOLS. `scenario_projection` and `project_cash` both
+ * plan their rows here; if each described the plan in its own words, a reader
+ * could learn "thinned" from one and never be told by the other. `granularity`
+ * is the cadence actually returned, `requested` appears only when it differs,
+ * and `omitted` names the dates that have no row.
+ */
+export function describePlan(plan: CheckpointPlan) {
+  return {
+    granularity: plan.cadence,
+    checkpoints: plan.dates.length,
+    cadenceSource: plan.source,
+    ...(plan.requested && plan.requested !== plan.cadence
+      ? { requested: plan.requested,
+          thinning: `${plan.requested} would exceed ${MAX_SCENARIO_CHECKPOINTS} checkpoints; `
+            + `returned ${plan.cadence} instead` } : {}),
+    ...(plan.omitted ? { omitted: { ...plan.omitted,
+      meaning: 'These requested dates have NO row in this result. Do not estimate a value '
+        + 'for any of them; re-run with a shorter horizon or a coarser granularity to see '
+        + 'them, or say they were not computed.' } } : {}),
+    ...(plan.clampedTo ? { clampedTo: plan.clampedTo } : {}),
+  };
+}
+
+export interface ExcludedEvent { id: string; reason: string }
+
+export interface CompactExcludedEvents {
+  count: number;
+  /** One line per stream and reason: how many occurrences, over what span. */
+  groups: { stream: string; reason: string; occurrences: number; first: string; last: string }[];
+  compacted: boolean;
+  note?: string;
+}
+
+/**
+ * The events a projection could not license, grouped.
+ *
+ * ⚠️ THE OTHER 83 KB. With the thirty-year table bounded to 31 rows, the
+ * `project_cash` result was still 91 KB: `basis.excluded` listed every
+ * occurrence of every unlicensed stream — 727 entries, one per month, all with
+ * the same reason. A reader needs to know WHICH streams were left out, WHY, and
+ * how often; the dates are the stream's own calendar. The id convention is
+ * `LABEL@account@YYYY-MM-DD`, so the stream is the id without its date; an id
+ * that does not end in a date is its own stream.
+ */
+export function compactExcludedEvents(events: readonly ExcludedEvent[]): CompactExcludedEvents {
+  const groups = new Map<string, CompactExcludedEvents['groups'][number]>();
+  for (const e of events) {
+    const m = /^(.*)@(\d{4}-\d{2}-\d{2})$/.exec(e.id);
+    const stream = m ? m[1] : e.id;
+    const date = m ? m[2] : '';
+    const key = `${stream}\u0000${e.reason}`;
+    const g = groups.get(key);
+    if (!g) groups.set(key, { stream, reason: e.reason, occurrences: 1, first: date, last: date });
+    else { g.occurrences++; if (date && (date < g.first || !g.first)) g.first = date; if (date > g.last) g.last = date; }
+  }
+  const compacted = events.length > groups.size;
+  return {
+    count: events.length,
+    groups: [...groups.values()],
+    compacted,
+    ...(compacted ? { note: `${events.length} excluded occurrences, grouped by stream and reason. `
+      + 'Every occurrence between `first` and `last` on that stream\'s own cadence was excluded.' } : {}),
+  };
+}
