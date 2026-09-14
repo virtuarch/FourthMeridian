@@ -51,6 +51,12 @@ async function main() {
   check('2027-02-28, 54,044.40, previous 47,472.04', q1.r.at('crossing.date') === '2027-02-28' && q1.r.at('crossing.value') === 54044.4
     && q1.r.at('crossing.previousCheckpoint.value') === 47472.04, JSON.stringify(q1.r.at('crossing')).slice(0, 120));
 
+  const el = read(q1.r.at('crossing.elapsed'));
+  check('…5 months, 15 days from asOf — about 5.5 months, about 0.46 years (Slice C)',
+    el.at('months') === 5 && el.at('days') === 15 && el.at('monthsFractional') === 5.5 && el.at('years') === 0.46
+      && el.at('label') === '5 months, 15 days', JSON.stringify(el.raw));
+  check('…the month before carries its own distance', read(q1.r.at('crossing.previousCheckpoint.elapsed')).at('months') === 4);
+
   console.log('2. floor 50k / 100% / 7% → $1M');
   const q2 = await run('scenario_crossing', { metric: 'netWorth', direction: 'at_or_above', threshold: 1_000_000, annualReturnPct: 7, contributions: floor(50000, 1) });
   const fr = read(q2.r.at('assumptionsInForce.contributions.floorRule'));
@@ -59,6 +65,8 @@ async function main() {
   check('liquid 50,000.00', q2.r.at('crossing.composition.liquid') === 50000, String(q2.r.at('crossing.composition.liquid')));
   check('investments 951,443.24', q2.r.at('crossing.composition.investments') === 951443.24, String(q2.r.at('crossing.composition.investments')));
   check('previous net worth 989,979.48', q2.r.at('crossing.previousCheckpoint.value') === 989979.48, String(q2.r.at('crossing.previousCheckpoint.value')));
+  check('…101 months, 15 days away, about 8.46 years', read(q2.r.at('crossing.elapsed')).at('months') === 101
+    && read(q2.r.at('crossing.elapsed')).at('days') === 15 && read(q2.r.at('crossing.elapsed')).at('years') === 8.46, JSON.stringify(q2.r.at('crossing.elapsed')));
   check('floorRule echoed: first month-end at/above floor 2027-02-28', fr.at('firstMonthEndAtOrAboveFloor') === '2027-02-28', JSON.stringify(fr.raw));
   check('…not already above the floor at start; 5 run-up months; 0 months below after it was reached',
     fr.at('alreadyAboveFloorAtStart') === false && fr.at('monthsBeforeFloorReached') === 5 && fr.at('monthsBelowFloor') === 0,
@@ -97,6 +105,7 @@ async function main() {
   console.log('5. goal seek receives the rule');
   const gs = await run('scenario_goal_seek', { target: 1_000_000, by: '2035-02-28', solveFor: 'annualReturnPct', contributions: floor(50000, 1) });
   check('solves to ≈7% for the date the 7% crossing found', gs.r.at('feasible') === true && Math.abs(num(gs.r.at('required')) - 7) < 0.05, `required ${gs.r.at('required')}, reached ${gs.r.at('reachedAtSolution')}`);
+  check('the deadline carries its distance', read(gs.r.at('timeToTarget')).at('months') === 101 && read(gs.r.at('timeToTarget')).at('days') === 15);
   check('assumptionsInForce echoes the floor rule and the horizon', gs.r.at('assumptionsInForce.contributions.floorRule.liquidFloor') === 50000
     && gs.r.at('assumptionsInForce.horizon.to') === '2035-02-28', JSON.stringify(gs.r.at('assumptionsInForce.horizon')));
   const gsProj = gs.r.at('scenario.assumptions.horizon.to');

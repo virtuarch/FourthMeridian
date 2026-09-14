@@ -90,7 +90,8 @@ console.log('1. probes');
 console.log('2. system instruction');
 {
   const words = SYSTEM_INSTRUCTION.split(/\s+/).filter(Boolean).length;
-  check(`~100–200 words (is ${words})`, words >= 90 && words <= 210, String(words));
+  // ⚠️ 195 → 234 WORDS IN SLICE C, BY ONE MEASURED SENTENCE (the evidence rule).
+  check(`~100–240 words (is ${words})`, words >= 90 && words <= 240, String(words));
   check('no worked example', !/for example|e\.g\.|example:/i.test(SYSTEM_INSTRUCTION));
   check('no phrase table', !/say "|respond with "|use the phrase/i.test(SYSTEM_INSTRUCTION));
   // The goldens evaluate behaviour; their wording must not become the prompt.
@@ -124,7 +125,10 @@ console.log('2a. exploratory hypotheticals');
   check('it is a principle, not a branch table — no tool names, no examples, no percentages',
     !/scenario_|surplusFraction|75%|annualReturnPct/.test(SYSTEM_INSTRUCTION));
   const words = SYSTEM_INSTRUCTION.split(/\s+/).filter(Boolean).length;
-  check(`the instruction is still ~100–210 words (is ${words})`, words >= 90 && words <= 210);
+  // ⚠️ THE CEILING MOVED ONCE, BY ONE MEASURED SENTENCE. Slice C added the
+  // evidence rule (no tool names, no examples) after the structural fixes, and
+  // measured it against the same conversation with and without it.
+  check(`the instruction is still ~100–240 words (is ${words})`, words >= 90 && words <= 240);
 }
 
 // ══ 3. Arms get what they claim, and nothing more ════════════════════════════
@@ -1779,7 +1783,7 @@ console.log('19a. memory line');
   check('the system instruction still says nothing about memory',
     !/recall|remember|memory|intention|goal/i.test(SYSTEM_INSTRUCTION));
   check('…and it is still a short instruction',
-    SYSTEM_INSTRUCTION.split(/\s+/).length < 200, String(SYSTEM_INSTRUCTION.split(/\s+/).length));
+    SYSTEM_INSTRUCTION.split(/\s+/).length < 240, String(SYSTEM_INSTRUCTION.split(/\s+/).length));
 
   // ⚠️ NO BALANCE REACHES THE ORIENTATION THROUGH MEMORY. Only subjects, targets,
   // dates and horizons are ever emitted.

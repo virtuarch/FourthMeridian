@@ -67,7 +67,7 @@ import {
 } from './forecast-vocabulary';
 import { applyInvestmentScenario, type ScenarioComponent } from './scenario';
 import {
-  findScenarioCrossing, type CrossingDirection, type LedgerMetric,
+  findScenarioCrossing, elapsedBetween, type CrossingDirection, type LedgerMetric,
 } from './scenario-crossing';
 import {
   monthEndsBetween,
@@ -2135,7 +2135,9 @@ const scenarioCrossing: ToolDefinition = {
     // narrated as though a future event had been found. A position that already
     // satisfies the condition has a date, and it is today.
     if (found.alreadySatisfied) {
-      return { ...head, crossing: null, alreadySatisfied: found.alreadySatisfied,
+      return { ...head, crossing: null,
+        alreadySatisfied: { ...found.alreadySatisfied,
+          elapsed: elapsedBetween(setup.asOf, found.alreadySatisfied.date) },
         meaning: 'This is already true today. Nothing here is a future event.' };
     }
 
@@ -2143,6 +2145,7 @@ const scenarioCrossing: ToolDefinition = {
       return { ...head, crossing: null,
         neverCrossesBy: found.end
           ? { date: found.end.checkpoint.date, value: found.end.value,
+              elapsed: elapsedBetween(setup.asOf, found.end.checkpoint.date),
               composition: composition(found.end.checkpoint) }
           : null,
         meaning: 'Under these assumptions the condition is not met at any month-end through '
@@ -2154,10 +2157,15 @@ const scenarioCrossing: ToolDefinition = {
       ...head,
       crossing: {
         date: hit.checkpoint.date, value: hit.value,
+        // ⚠️ HOW FAR AWAY, IN NUMBERS THE ENGINE OWNS. The date was always
+        // right; "1.5 years" for a gap of five and a half months was the model
+        // subtracting. Measured from the scenario's own asOf.
+        elapsed: elapsedBetween(setup.asOf, hit.checkpoint.date),
         // ⚠️ THE MONTH BEFORE IS WHAT MAKES IT A FIRST. Without it a reader
         // cannot tell a crossing from a value that merely happens to be above
         // the line.
-        previousCheckpoint: hit.previous,
+        previousCheckpoint: hit.previous
+          ? { ...hit.previous, elapsed: elapsedBetween(setup.asOf, hit.previous.date) } : null,
         composition: composition(hit.checkpoint),
       },
       alreadySatisfied: null,
@@ -2285,6 +2293,8 @@ const scenarioGoalSeek: ToolDefinition = {
 
     const head = {
       asOf: setup.asOf, target, by: toISO, measure, solveFor, unit,
+      /** How far off the deadline is, from the scenario's asOf — the engine's subtraction, not the model's. */
+      timeToTarget: elapsedBetween(setup.asOf, toISO),
       // ⚠️ ON EVERY PATH, INCLUDING THE REFUSAL. See `scenarioAssumptions`.
       assumptionsInForce: scenarioAssumptions(setup, baseLedger, setup.returns),
       baseline: { reached: baseline,

@@ -18,7 +18,7 @@
 
 import { readFileSync } from 'node:fs';
 import {
-  findScenarioCrossing, satisfiesThreshold, metricAt, openingMetric,
+  findScenarioCrossing, satisfiesThreshold, metricAt, openingMetric, elapsedBetween,
   type LedgerMetric,
 } from './scenario-crossing';
 import { runScenarioLedger, expandContributions,
@@ -229,6 +229,45 @@ console.log('\n9. THE SURPLUS RULE CROSSES THE SAME LINE ON THE SAME DAY');
     (find(grown, 'liquid', 'at_or_above', 100_000).crossing?.checkpoint.date ?? '9999')
       > (find(base, 'liquid', 'at_or_above', 100_000).crossing?.checkpoint.date ?? '0000'));
 }
+
+console.log('\n11. ELAPSED — the distance to a date the engine produced, in numbers the engine owns');
+{
+  const e = (a: string, b: string) => elapsedBetween(a, b);
+  const gap = e('2026-09-13', '2027-02-28');
+  check('the dogfood gap is 5 months, 15 days — not 1.5 years',
+    gap.months === 5 && gap.days === 15 && gap.totalDays === 168, JSON.stringify(gap));
+  check('…about 5.5 months, about 0.46 years',
+    gap.monthsFractional === 5.5 && gap.years === 0.46 && gap.label === '5 months, 15 days');
+  check('the same date is today: zeros and the label "today"',
+    JSON.stringify(e('2026-09-13', '2026-09-13')) === JSON.stringify({ months: 0, days: 0, totalDays: 0,
+      monthsFractional: 0, years: 0, label: 'today' }));
+  check('the next day is one day', e('2026-09-13', '2026-09-14').days === 1 && e('2026-09-13', '2026-09-14').months === 0
+    && e('2026-09-13', '2026-09-14').label === '1 day');
+  check('a month boundary: 13 Sep → 13 Oct is exactly one month', e('2026-09-13', '2026-10-13').months === 1
+    && e('2026-09-13', '2026-10-13').days === 0 && e('2026-09-13', '2026-10-13').label === '1 month');
+  check('…and 13 Sep → 12 Oct is 29 days, not a month', e('2026-09-13', '2026-10-12').months === 0
+    && e('2026-09-13', '2026-10-12').days === 29);
+  check('a year boundary: 13 Sep → 13 Sep next year is 12 months, 0 days, 1.00 year',
+    e('2026-09-13', '2027-09-13').months === 12 && e('2026-09-13', '2027-09-13').days === 0
+    && e('2026-09-13', '2027-09-13').years === 1);
+  check('end of month steps with the ledger\'s own clamp: 31 Jan → 28 Feb is one month',
+    e('2026-01-31', '2026-02-28').months === 1 && e('2026-01-31', '2026-02-28').days === 0);
+  check('…and 28 Feb → 31 Mar is one month and three days',
+    e('2026-02-28', '2026-03-31').months === 1 && e('2026-02-28', '2026-03-31').days === 3);
+  check('a leap year: 31 Jan 2028 → 29 Feb 2028 is one month; → 1 Mar is one month and one day',
+    e('2028-01-31', '2028-02-29').months === 1 && e('2028-01-31', '2028-02-29').days === 0
+    && e('2028-01-31', '2028-03-01').months === 1 && e('2028-01-31', '2028-03-01').days === 1);
+  check('…and 29 Feb 2028 → 28 Feb 2029 is 12 months (the clamp lands on the 28th)',
+    e('2028-02-29', '2029-02-28').months === 12 && e('2028-02-29', '2029-02-28').days === 0);
+  const long = e('2026-09-13', '2035-02-28');
+  check('a multi-year span: to the $1M crossing is 101 months, 15 days ≈ 8.46 years',
+    long.months === 101 && long.days === 15 && long.years === 8.46, JSON.stringify(long));
+  check('a distance, not a direction: the dates may be given either way round',
+    JSON.stringify(e('2035-02-28', '2026-09-13')) === JSON.stringify(long));
+  check('no clock: the result is a function of its arguments only',
+    JSON.stringify(e('2026-09-13', '2027-02-28')) === JSON.stringify(gap));
+}
+
 
 console.log('\n10. THE COMPOSITION IS THE LEDGER\'S OWN');
 {

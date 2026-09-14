@@ -21,7 +21,7 @@
  */
 
 import { MONEY_EPSILON } from '@/lib/data/snapshot-window';
-import type { LedgerCheckpoint, LedgerOpening } from './scenario-ledger';
+import { addMonths, type LedgerCheckpoint, type LedgerOpening } from './scenario-ledger';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -123,3 +123,57 @@ export function findScenarioCrossing(args: {
   return { crossing: null, alreadySatisfied: null, end, examined: usable.length };
 }
 
+
+// ── Elapsed time ─────────────────────────────────────────────────────────────
+
+/**
+ * The calendar distance between two dates. PURE, and no clock.
+ *
+ * ⚠️ THE ENGINE HAD THE DATE AND THE MODEL DID THE SUBTRACTION. A crossing found
+ * at 2027-02-28 from 2026-09-13 was narrated as "1.5 years from now"; the gap is
+ * five months and fifteen days. The ledger owns every figure in a scenario, and
+ * the distance to a date it produced is a figure. This says it once, in numbers,
+ * beside the date.
+ *
+ * ⚠️ CALENDAR MONTHS FIRST, THEN DAYS, with the repository's own month step.
+ * `addMonths` clamps into the target month (the 31st steps to the 28th), so
+ * 31 January to 28 February is one month and no days — the reading a person
+ * gives it. The fractional forms use the mean month and year (365.25 / 12) so
+ * "about five and a half months" is the same number whichever month it spans.
+ *
+ * A distance, not a direction: the two dates may be given either way round.
+ */
+export interface Elapsed {
+  /** Whole calendar months, then the days left over. */
+  months: number;
+  days:   number;
+  /** The whole span in days. */
+  totalDays: number;
+  /** The span as months and as years, to one and two places, for "about" phrasing. */
+  monthsFractional: number;
+  years: number;
+  /** "5 months, 15 days" — a label, not a sentence. */
+  label: string;
+}
+
+const DAY_MS = 86_400_000;
+const MEAN_MONTH_DAYS = 365.25 / 12;
+const dayCount = (a: string, b: string) =>
+  Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / DAY_MS);
+
+export function elapsedBetween(fromISO: string, toISO: string): Elapsed {
+  const [a, b] = fromISO <= toISO ? [fromISO, toISO] : [toISO, fromISO];
+  const totalDays = dayCount(a, b);
+  // The most whole months that do not overshoot; a linear scan is fine for any
+  // span a scenario can name, and it uses the ledger's own month arithmetic.
+  let months = Math.floor(totalDays / 31);
+  while (addMonths(a, months + 1) <= b) months++;
+  const days = dayCount(addMonths(a, months), b);
+  const monthsFractional = Math.round((totalDays / MEAN_MONTH_DAYS) * 10) / 10;
+  const years = Math.round((totalDays / 365.25) * 100) / 100;
+  const part = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'}`;
+  const label = totalDays === 0 ? 'today'
+    : [months > 0 ? part(months, 'month') : '', days > 0 ? part(days, 'day') : '']
+      .filter(Boolean).join(', ');
+  return { months, days, totalDays, monthsFractional, years, label };
+}

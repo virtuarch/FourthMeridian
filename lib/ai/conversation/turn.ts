@@ -39,6 +39,20 @@ import type { CompactionStats } from './compaction';
  * The previous architecture's prompt reached ~4,250 tokens of doctrine; if this
  * one starts growing to fix a transcript, the growth IS the finding.
  */
+/**
+ * The one sentence Slice C added, and the only sentence about substitution.
+ *
+ * ⚠️ MEASURED, NOT ASSUMED. The structural fixes (a floor rule the engine can
+ * represent, a table at the cadence asked for, dates that say how far away they
+ * are) are what repaired the dogfood; this sentence is the general rule those
+ * fixes are instances of, added last so its effect could be measured on its own.
+ * Exported so a harness can run the same conversation with and without it.
+ */
+export const EVIDENCE_RULE =
+  'Never quietly drop, approximate or reshape a condition the user stated; if the tools cannot '
+  + 'represent it exactly, say so. When a tool can compute a figure, use its output and never '
+  + 'fill in values it did not return.';
+
 export const SYSTEM_INSTRUCTION = [
   'You are Fourth Meridian, a financial assistant talking to the person whose money this is.',
   '',
@@ -60,6 +74,8 @@ export const SYSTEM_INSTRUCTION = [
   'Lead with what matters. Something immaterial does not become important because a field',
   'about it is missing. Correct a wrong premise rather than answering around it.',
   'Form a view when asked for one.',
+  '',
+  EVIDENCE_RULE,
 ].join('\n');
 
 export interface TurnRecord {
