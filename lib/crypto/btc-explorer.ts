@@ -3,8 +3,13 @@
  *
  * BTC wallet balance sync v1 — pure provider layer.
  *
- * Fetches a public BTC address's CONFIRMED balance and a BTC→USD spot price
- * from a keyless block explorer (mempool.space by default). Deliberately has
+ * Fetches a public BTC address's CONFIRMED balance, usage and confirmed
+ * transactions from a keyless block explorer (mempool.space by default).
+ * NO PRICE: the BTC→USD figure a sync writes is the CANONICAL dated close from
+ * the price archive (see btc-sync.ts), never a live spot quote from here — a
+ * second provider's undated quote was gating the canonical reconciliation
+ * (2026-09-15: mempool.space unreachable ⇒ every BTC refresh failed at "price"
+ * although the balance had been read). Deliberately has
  * NO dependency on @/lib/db or next/* so it imports cleanly under the bare-tsx
  * unit runner (scripts/run-tests.ts) and can be exercised offline with an
  * injected `fetch`.
@@ -21,11 +26,10 @@
 export const SATS_PER_BTC = 100_000_000;
 
 const DEFAULT_EXPLORER_BASE = "https://mempool.space";
-const DEFAULT_PRICE_URL = "https://mempool.space/api/v1/prices";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /** Which external call failed — carried on the error and into any SyncIssue. */
-export type BtcSyncStage = "balance" | "price" | "transactions" | "discovery";
+export type BtcSyncStage = "balance" | "transactions" | "discovery";
 
 /** Typed failure so callers can record an honest, staged sync issue. */
 export class BtcSyncError extends Error {
@@ -39,11 +43,6 @@ export class BtcSyncError extends Error {
 export function btcExplorerBaseUrl(): string {
   const base = process.env.BTC_EXPLORER_BASE_URL?.trim() || DEFAULT_EXPLORER_BASE;
   return base.replace(/\/+$/, "");
-}
-
-/** BTC→USD price endpoint. Overridable, keyless default. */
-export function btcPriceUrl(): string {
-  return process.env.BTC_PRICE_URL?.trim() || DEFAULT_PRICE_URL;
 }
 
 function timeoutMs(): number {
@@ -73,19 +72,6 @@ export function parseConfirmedSats(json: unknown): number {
     throw new BtcSyncError("balance", `invalid confirmed balance: ${sats}`);
   }
   return sats;
-}
-
-/**
- * BTC→USD price from a mempool.space `/api/v1/prices` response (`{ USD: n }`).
- * Throws BtcSyncError("price") when USD is missing or non-positive — we never
- * value a wallet at a bogus price.
- */
-export function parseUsdPrice(json: unknown): number {
-  const usd = (json as { USD?: unknown } | null)?.USD;
-  if (typeof usd !== "number" || !Number.isFinite(usd) || usd <= 0) {
-    throw new BtcSyncError("price", "unexpected/invalid price response (missing USD)");
-  }
-  return usd;
 }
 
 /**
@@ -157,7 +143,8 @@ async function getJson(url: string, stage: BtcSyncStage, fetchImpl: FetchFn): Pr
 
   for (let attempt = 0; ; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs());
+    const budgetMs = timeoutMs();
+    const timer = setTimeout(() => controller.abort(), budgetMs);
     let retryAfterMs: number | undefined;
     try {
       const res = await fetchImpl(url, {
@@ -175,7 +162,16 @@ async function getJson(url: string, stage: BtcSyncStage, fetchImpl: FetchFn): Pr
       }
     } catch (err) {
       if (err instanceof BtcSyncError) throw err;
-      throw new BtcSyncError(stage, err instanceof Error ? err.message : String(err));
+      // NAME THE FAILURE. Node reports the abort timer as "This operation was
+      // aborted", which says neither that it was a timeout nor which provider
+      // stopped answering — and that text reached the SyncIssue, the Connection
+      // and the 502 body verbatim (2026-09-15), so an operator could not tell an
+      // upstream outage from an application defect.
+      const host = new URL(url).host;
+      if (controller.signal.aborted) {
+        throw new BtcSyncError(stage, `${host} did not respond within ${budgetMs} ms`);
+      }
+      throw new BtcSyncError(stage, `network error reaching ${host}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       clearTimeout(timer);
     }
@@ -270,11 +266,6 @@ export async function fetchAddressStatsBatch(addresses: string[], fetchImpl: Fet
     for (const [k, v] of stats) result.set(k, v);
   }
   return result;
-}
-
-/** Current BTC→USD spot price. */
-export async function fetchBtcUsdPrice(fetchImpl: FetchFn = fetch): Promise<number> {
-  return parseUsdPrice(await getJson(btcPriceUrl(), "price", fetchImpl));
 }
 
 // ── Transactions (Wallet Provider v3) ────────────────────────────────────────

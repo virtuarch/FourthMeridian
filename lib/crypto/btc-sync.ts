@@ -4,10 +4,11 @@
  * BTC wallet balance sync v1 — orchestration + persistence.
  *
  * Reads a self-custodied BTC FinancialAccount (walletChain="BTC"), fetches its
- * confirmed on-chain balance and a BTC→USD spot price (lib/crypto/btc-explorer.ts),
- * and writes:
+ * confirmed on-chain balance (lib/crypto/btc-explorer.ts), reads the CANONICAL
+ * BTC→USD close from the price archive (lib/crypto/crypto-price-window.ts), and
+ * writes:
  *   - nativeBalance : balance in BTC
- *   - balance       : USD value at the spot price
+ *   - balance       : USD value at the canonical dated close
  *   - currency      : "USD"
  *   - syncStatus    : "pending" → "synced"
  *   - lastUpdated   : now
@@ -44,7 +45,6 @@ import {
 } from "@/lib/accounts/wallet-connection";
 import {
   fetchConfirmedSatsForAddresses,
-  fetchBtcUsdPrice,
   fetchAddressTxsRaw,
   fetchAddressStatsBatch,
   normalizeBtcAddressTxs,
@@ -69,6 +69,8 @@ import {
 } from "@/lib/crypto/btc-discovery-core";
 import { captureWalletPosition } from "@/lib/crypto/wallet-position-capture";
 import { BTC_ASSET } from "@/lib/investments/crypto-instrument";
+import { readCryptoUsdWindows } from "@/lib/crypto/crypto-price-window";
+import { todayUTCISO } from "@/lib/time/clock";
 import { BTC_NATIVE, ledgerEpsilonFor } from "@/lib/crypto/native-asset";
 import { reconcileWalletLedger, type LedgerReconciliation } from "@/lib/crypto/ledger-completeness.core";
 import { economicDateFor } from "@/lib/transactions/economic-date-write";
@@ -112,7 +114,7 @@ export interface BtcSyncDeps {
   fetchImpl?: FetchFn;
   /** Override the balance fetch — returns confirmed satoshis for an address. */
   balanceFetcher?: (address: string) => Promise<number>;
-  /** Override the price fetch — returns BTC→USD. */
+  /** Override the BTC→USD read (offline tests). Default: the canonical archived close. */
   priceFetcher?: () => Promise<number>;
   /** Override the confirmed-transactions fetch (offline tests). */
   txFetcher?: (address: string) => Promise<RawBtcTx[]>;
@@ -599,6 +601,22 @@ async function reconcileWalletLedgerForAccount(
   });
 }
 
+/**
+ * The canonical BTC→USD figure for the legacy USD column: the archived
+ * RAW_CLOSE nearest on or before today, through the SAME reader every crypto
+ * valuation uses (`readCryptoUsdWindows`, with its own staleness bound).
+ * Throws when the archive has no usable close — never a live quote instead.
+ */
+async function canonicalBtcCloseUsd(now: Date = new Date()): Promise<number> {
+  const todayISO = todayUTCISO(now);
+  const window = await readCryptoUsdWindows([BTC_ASSET], todayISO, todayISO);
+  const close = window(BTC_ASSET.assetKey, todayISO);
+  if (close === null || !Number.isFinite(close) || close <= 0) {
+    throw new Error(`no canonical BTC close in the price archive on or before ${todayISO}`);
+  }
+  return close;
+}
+
 export async function syncBtcWallet(
   accountId: string,
   deps: BtcSyncDeps = {},
@@ -658,7 +676,7 @@ export async function syncBtcWallet(
     return { accountId, ok: false, stage: "load", reason: "no addresses to sync" };
   }
 
-  const priceFetcher = deps.priceFetcher ?? (() => fetchBtcUsdPrice(deps.fetchImpl));
+  const priceFetcher = deps.priceFetcher ?? canonicalBtcCloseUsd;
 
   // 1) Confirmed balance across every KNOWN address — batch (one request per 50)
   //    for xpub, per-address for single-address. For a partially-discovered xpub
@@ -683,7 +701,18 @@ export async function syncBtcWallet(
     return { accountId, ok: false, stage: "balance", reason };
   }
 
-  // 2) BTC→USD spot price.
+  // 2) BTC→USD for the legacy USD column — the CANONICAL dated close.
+  //
+  // This was a live spot quote from a SECOND provider (mempool.space
+  // /api/v1/prices), fetched even for an xpub wallet whose balance comes from
+  // the batch provider — so a wallet whose canonical quantity HAD been read was
+  // refused, before the observation was written, by a figure no canonical
+  // surface reads (W6d). On 2026-09-15 mempool.space stopped completing TLS
+  // handshakes and every BTC refresh spent the 10 s timeout and failed here.
+  // The archive is the authority the account card already values against
+  // (loadWalletCurrentValues), so the column now agrees with it by construction.
+  // No fallback to a live quote: a wallet with no archived close refuses at this
+  // stage, by name, exactly as before.
   let priceUsd: number;
   try {
     priceUsd = await priceFetcher();
@@ -799,16 +828,16 @@ export async function syncBtcWallet(
   //     78,879.42 close. The column is a WRITE for compatibility; treating it as
   //     truth is the defect.
   //  2. THE USD FIGURE IS VALUATION-DERIVED PRESENTATION, NOT FX TRUTH.
-  //     `balance`/`currency:"USD"` is quantity × an UNDATED mempool.space spot
-  //     quote fetched in this same run (`priceUsd`), deliberately BYPASSING
+  //     `balance`/`currency:"USD"` is quantity × the canonical RAW_CLOSE from
+  //     the price archive (`priceUsd`, nearest on or before today), deliberately BYPASSING
   //     convertMoney: BTC is an asset with a fiat valuation, not a cash
   //     currency, so this is a price×quantity valuation, not a currency
   //     conversion (docs/systems/money-and-fx.md). Nothing downstream may
   //     treat this column as a dated FX fact — historical crypto valuation
   //     re-values from `nativeBalance` × the dated price archive
   //     (historical-crypto-valuation.core.ts), never from this column.
-  //  3. VALUATION INSTANT / SOURCE — DOCUMENTED LIMIT. The quote's own
-  //     timestamp is not supplied by the spot endpoint and FinancialAccount has
+  //  3. VALUATION INSTANT / SOURCE — DOCUMENTED LIMIT. The close's date is not
+  //     stored alongside the column and FinancialAccount has
   //     NO column for a valuation source or instant; `lastUpdated` (written
   //     below, same run as the price fetch) is the closest recorded instant,
   //     and `balanceLastUpdatedAt` is deliberately NOT reused — it is typed as
@@ -897,7 +926,7 @@ export interface SyncAllBtcWalletsResult {
 }
 
 /**
- * Sync every active BTC wallet. The BTC→USD price is fetched once and shared
+ * Sync every active BTC wallet. The BTC→USD close is read once and shared
  * across accounts (they all value at the same spot). One wallet's failure never
  * blocks the rest — each is wrapped by syncBtcWallet's own never-throw contract.
  */
@@ -907,11 +936,11 @@ export async function syncAllBtcWallets(deps: BtcSyncDeps = {}): Promise<SyncAll
     select: { id: true },
   });
 
-  // Memoize the price fetch for the batch (unless the caller injected one).
+  // Memoize the archive read for the batch (unless the caller injected one).
   let priceOnce: Promise<number> | null = null;
   const sharedPriceFetcher =
     deps.priceFetcher ??
-    (() => (priceOnce ??= fetchBtcUsdPrice(deps.fetchImpl)));
+    (() => (priceOnce ??= canonicalBtcCloseUsd()));
 
   let succeeded = 0;
   let failed = 0;

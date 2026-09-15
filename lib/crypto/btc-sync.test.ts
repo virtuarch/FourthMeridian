@@ -24,11 +24,9 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import {
   parseConfirmedSats,
-  parseUsdPrice,
   satsToBtc,
   computeUsdBalance,
   fetchConfirmedSats,
-  fetchBtcUsdPrice,
   fetchAddressTxCount,
   parseMultiaddrStats,
   fetchAddressStatsBatch,
@@ -101,10 +99,6 @@ async function main(): Promise<void> {
   check("parseConfirmedSats throws on negative balance",
     await throwsAsync(async () => parseConfirmedSats({ chain_stats: { funded_txo_sum: 1, spent_txo_sum: 2 } })));
 
-  check("parseUsdPrice reads USD", parseUsdPrice({ USD: 65000 }) === 65000);
-  check("parseUsdPrice throws on missing USD", await throwsAsync(async () => parseUsdPrice({ EUR: 1 })));
-  check("parseUsdPrice throws on non-positive USD", await throwsAsync(async () => parseUsdPrice({ USD: 0 })));
-
   check("computeUsdBalance rounds to cents",
     computeUsdBalance(EXPECTED_BTC, 65000) === 4117.82,
     `got ${computeUsdBalance(EXPECTED_BTC, 65000)}`);
@@ -113,19 +107,37 @@ async function main(): Promise<void> {
   const sats = await fetchConfirmedSats("1Cn7RXTTd5aN1ys32GfXVdXUzTyDxdpS1D", stubFetch(okResponse(ADDR_FIXTURE)));
   check("fetchConfirmedSats (injected fetch) returns confirmed sats", sats === EXPECTED_SATS, `got ${sats}`);
 
-  const price = await fetchBtcUsdPrice(stubFetch(okResponse({ USD: 65000, EUR: 60000 })));
-  check("fetchBtcUsdPrice (injected fetch) returns USD", price === 65000, `got ${price}`);
-
-  // Explorer / price failure → typed, staged BtcSyncError (drives honest SyncIssue).
+  // Explorer failure → typed, staged BtcSyncError (drives honest SyncIssue).
   let balErr: unknown;
   try { await fetchConfirmedSats("addr", stubFetch(failResponse(500))); } catch (e) { balErr = e; }
   check("balance HTTP failure throws BtcSyncError stage=balance",
     balErr instanceof BtcSyncError && balErr.stage === "balance");
 
-  let priceErr: unknown;
-  try { await fetchBtcUsdPrice(stubFetch(failResponse(503))); } catch (e) { priceErr = e; }
-  check("price HTTP failure throws BtcSyncError stage=price",
-    priceErr instanceof BtcSyncError && priceErr.stage === "price");
+  // ── 2026-09-15 — A PROVIDER THAT NEVER ANSWERS IS NAMED, WITH ITS BUDGET ───
+  //
+  // mempool.space accepted TCP and then never completed a TLS handshake. Node's
+  // abort timer fired and the error that reached the SyncIssue, the Connection
+  // and the 502 body was "This operation was aborted" — no host, no duration,
+  // nothing to tell an upstream outage from an application defect. The fetch
+  // below honours the abort signal exactly as undici does and never resolves.
+  const hangingFetch = ((_url: string, init?: RequestInit) => new Promise<Response>((_, reject) => {
+    const signal = init?.signal;
+    if (!signal) return;
+    const abort = () => { const e = new Error("This operation was aborted"); e.name = "AbortError"; reject(e); };
+    if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true });
+  })) as unknown as typeof fetch;
+  const savedTimeout = process.env.BTC_SYNC_TIMEOUT_MS;
+  process.env.BTC_SYNC_TIMEOUT_MS = "25";
+  let hangErr: unknown;
+  const hangStart = Date.now();
+  try { await fetchConfirmedSats("addr", hangingFetch); } catch (e) { hangErr = e; }
+  const hangMs = Date.now() - hangStart;
+  if (savedTimeout === undefined) delete process.env.BTC_SYNC_TIMEOUT_MS; else process.env.BTC_SYNC_TIMEOUT_MS = savedTimeout;
+  check("a hanging provider fails as a staged BtcSyncError, once, within its budget",
+    hangErr instanceof BtcSyncError && hangErr.stage === "balance" && hangMs < 2000, `took ${hangMs} ms`);
+  check("…whose reason names the host and the timeout budget, not Node's abort text",
+    hangErr instanceof Error && /^mempool\.space did not respond within 25 ms$/.test(hangErr.message),
+    hangErr instanceof Error ? hangErr.message : String(hangErr));
 
   // ── PART B — source-scan invariants on the DB-touching modules ──────────────
 
@@ -133,7 +145,27 @@ async function main(): Promise<void> {
   check("explorer stays pure (no @/lib/db import)", !explorer.includes("@/lib/db"));
   check("explorer stays pure (no next/* import)", !/from\s+["']next\//.test(explorer));
 
+  // ── 2026-09-15 — THE USD COLUMN IS PRICED FROM THE CANONICAL ARCHIVE ───────
+  //
+  // The sync fetched a live BTC→USD spot from a SECOND provider endpoint
+  // (mempool.space /api/v1/prices) and failed the WHOLE sync — before the
+  // canonical observation was written — when that quote did not arrive, even
+  // though the balance HAD been read from the batch provider. No canonical
+  // surface reads that column (W6d); the account card values the observed
+  // position at the archived close. The column now derives from that same
+  // reader, so a BTC refresh has exactly ONE live dependency: the chain read.
+  check("explorer has no price endpoint (no spot-price fetch survives)",
+    !/prices|fetchBtcUsdPrice|btcPriceUrl|parseUsdPrice|BTC_PRICE_URL/.test(explorer));
+
   const sync = code(read("lib", "crypto", "btc-sync.ts"));
+  // 2026-09-15 — see the explorer pin above: the USD column derives from the
+  // canonical archived close, through the shared reader, with no live fallback.
+  check("sync prices the legacy USD column through the canonical crypto reader",
+    sync.includes("readCryptoUsdWindows([BTC_ASSET]") && !/fetchBtcUsdPrice|btcPriceUrl/.test(sync));
+  const closeFn = sync.slice(sync.indexOf("async function canonicalBtcCloseUsd"));
+  const closeBody = closeFn.slice(0, closeFn.indexOf("\n}\n"));
+  check("…and refuses by name when the archive has no close — never a live quote",
+    /no canonical BTC close in the price archive/.test(closeBody) && !/fetch/.test(closeBody));
   // Honest partial→pending invariant, without pinning the exact ternary spelling
   // (`syncStatus: discoveryComplete ? "synced" : "pending"`): assert the status is
   // driven by discoveryComplete and only "synced"/"pending" appear (never "error").
