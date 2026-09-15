@@ -36,6 +36,7 @@ backup  →  migrate  →  verify
 |---|---|
 | `npm run db:backup` | Timestamped `pg_dump` → `backups/<db>-<iso>.sql` (gitignored). Fails loudly on an empty/partial dump. Restore: `psql "$DATABASE_URL" < backups/<file>.sql`. |
 | `npm run db:migrate:safe` | `db:backup` then `prisma migrate deploy` — applies pending migrations **additively** (never resets). This is the normal way to apply a new migration to your dev DB. |
+| `npm run db:migrate` | Routed through `db-guard --mode=migrate-dev` **+ backup** first. **Refuses a non-interactive shell** against a populated (or unreachable) database — on 2026-09-15 a bare `prisma migrate dev` run by an agent session with drift pending reset the dev DB before Prisma's own interactivity refusal printed. From a real terminal it proceeds and Prisma prompts you. |
 | `npm run db:reset` | Routed through `db-guard` **+ backup** first. Refuses unless `ALLOW_DESTRUCTIVE_DB=true`. Even then, a backup is taken before the reset. |
 
 The **guard** (`scripts/db-guard.ts`, run by the destructive scripts) blocks unless **both**:
