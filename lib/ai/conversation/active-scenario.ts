@@ -166,6 +166,7 @@ export function captureActiveScenario(
  */
 const ASSUMPTION_KEYS = [
   'annualReturnPct', 'returns', 'contributions', 'outflows', 'assumedMonthlySpending',
+  'liabilityAssumptions',
 ] as const;
 
 function carriesAssumptions(args: unknown): boolean {

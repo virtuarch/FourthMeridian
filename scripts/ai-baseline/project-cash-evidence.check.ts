@@ -64,8 +64,12 @@ async function main() {
     && thirty.at('horizon.cadenceSource') === 'DEFAULT' && thirty.at('horizon.omitted') === undefined);
   check('…and under a tenth of the old payload', thirty.bytes < 112_136 / 10, `${thirty.bytes} B vs 112,136 B before`);
   const ex = thirty.at('projection.basis.excluded') as { count: number; groups: unknown[]; compacted: boolean };
+  // ⚠️ THE COUNT IS THE SPACE'S, NOT THE CONTRACT'S. How many unlicensed streams a
+  // Space has, and how far they run, moves with its data (727 occurrences in 2
+  // groups on 2026-09-14; 364 in 1 the next day, after a stream lapsed). What the
+  // contract promises is the SHAPE: many occurrences, a handful of groups.
   check('…the unlicensed events are grouped by stream, not listed per occurrence',
-    ex.count > 700 && ex.groups.length <= 5 && ex.compacted === true, `${ex.count} occurrences in ${ex.groups.length} groups`);
+    ex.count >= 100 && ex.groups.length <= 5 && ex.groups.length < ex.count && ex.compacted === true, `${ex.count} occurrences in ${ex.groups.length} groups`);
   const thirtyMonthly = await cash({ to: '2056-12-31', checkpoints: 'monthly' });
   check('explicit monthly over 30 years is thinned to yearly and says which dates fell out',
     thirtyMonthly.at('horizon.granularity') === 'yearly' && thirtyMonthly.at('horizon.requested') === 'monthly'

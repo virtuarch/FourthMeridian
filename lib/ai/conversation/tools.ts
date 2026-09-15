@@ -34,7 +34,7 @@
 import { getAssembler } from '@/lib/ai/assembler-registry';
 import {
   FinanceDomains,
-  type AccountsSectionData, type TransactionsSummaryData,
+  type AccountsSectionData, type TransactionsSummaryData, type AccountSummaryItem,
   type HoldingsSummaryData, type SpaceContext_AI,
 } from '@/lib/ai/types';
 import { composeInvestments } from '@/lib/ai/economic-concepts';
@@ -74,6 +74,7 @@ import {
   runScenarioLedger, expandContributions, solveForTarget, PROVENANCE,
   type ContributionSpec, type LedgerCheckpoint, type LedgerResult,
   type PlannedMovement, type ReturnPeriod, type SpinePoint,
+  type LiabilityLine, type AllocationTarget,
 } from './scenario-ledger';
 import type { SpaceContext } from '@/lib/space';
 // ⚠️ THE ONE WRITE PATH, IMPORTED RATHER THAN INLINED. Keeping the memory tools
@@ -1413,6 +1414,11 @@ const projectCash: ToolDefinition = {
                   monthsAveraged: (f.observedSpending as { months?: string[] }).months ?? null }
               : { source: 'NONE' },
           incomeEventsCounted: f.events.length,
+          // ⚠️ SAID WHERE THE FIGURE IS. This projection is cash only: an existing
+          // liability is neither accrued nor paid down by it, and card purchases
+          // already sit in the spending rate. A scenario tool moves liabilities.
+          liabilities: 'not modelled here: existing balances are not accrued or paid down by '
+            + 'this projection; use scenario_projection / scenario_crossing for dynamic debt',
           components: f.projection.components,
           assumptions: f.projection.assumptions,
           // ⚠️ GROUPED, NOT LISTED. One entry per unlicensed occurrence was 83 KB
@@ -1539,6 +1545,8 @@ interface ScenarioSetup {
   returns: ReturnPeriod[];
   contributions: PlannedMovement[];
   outflows: PlannedMovement[];
+  /** The liabilities the ledger moves, built from the position and the stated assumptions. */
+  liabilities: LiabilityLine[];
   rejected: { input: string; reason: string }[];
   /** The spending level the base run used, and where it came from. */
   monthlySpending: { amount: number | null; source: 'USER_STATED' | 'OBSERVED' | 'NONE' };
@@ -1638,7 +1646,22 @@ async function prepareScenario(
     // ⚠️ EVERY BASIS THE MODEL STATED TRAVELS, so a rule naming two of them is
     // refused by the ledger — the one authority on that — rather than trimmed to
     // one of them here. The floor pair rides along for the same reason.
+    // ⚠️ WHERE THE MONEY GOES, NORMALISED ONCE. The model states a target as a
+    // word (`investments`, `highest_apr`) or a liability id, singly or as an
+    // ordered list; the ledger takes `{ liability: id }` objects. Anything else
+    // is passed through so the ledger refuses it by name.
+    const toTarget = (t: unknown): AllocationTarget => {
+      if (t === 'investments' || t === 'highest_apr') return t;
+      if (typeof t === 'string') return { liability: t };
+      if (t && typeof t === 'object' && typeof (t as { liability?: unknown }).liability === 'string') {
+        return { liability: (t as { liability: string }).liability };
+      }
+      return t as AllocationTarget;
+    };
+    const target = c.target === undefined ? {}
+      : { target: Array.isArray(c.target) ? c.target.map(toTarget) : toTarget(c.target) };
     const size = {
+      ...target,
       ...(c.amount !== undefined ? { amount: Number(c.amount) } : {}),
       ...(c.fractionOfLiquid !== undefined
         ? { fractionOfLiquid: Number(c.fractionOfLiquid) } : {}),
@@ -1704,8 +1727,57 @@ async function prepareScenario(
   // wrong by six figures while looking perfectly consistent.
   const otherAssets = round2(
     (accounts.totalAssets ?? 0) - (accounts.totalLiquid ?? 0) - composition.combined);
+  // ── The liabilities the ledger moves ───────────────────────────────────────
+  //
+  // ⚠️ ONE LINE PER FULL-VISIBILITY DEBT ACCOUNT, FROM THE SAME PAYLOAD THE
+  // POSITION IS READ FROM. The balance is `amountOwed` (a card in credit opens
+  // at 0), the terms are the assembler's effective terms — DebtProfile over the
+  // flat column, resolved once in `lib/debt/effective-terms.ts` — and nothing is
+  // estimated. A withheld account is not a line: it stays inside the aggregate
+  // the ledger holds flat, so it counts without being named.
+  //
+  // ⚠️ A STATED ASSUMPTION OVERRIDES A TERM FOR THIS SCENARIO ONLY. The account
+  // is not touched; the line says the term was USER_ASSUMED; an id that is not
+  // a liability the viewer can see is refused by name.
+  const liabilities: LiabilityLine[] = [];
+  const rows = Array.isArray((accounts as { accounts?: unknown }).accounts)
+    ? (accounts as { accounts: AccountSummaryItem[] }).accounts : [];
+  for (const r of rows) {
+    if (r.type !== 'debt' || r.visibilityLevel !== 'FULL') continue;
+    const reporting = r.reportingBalance;
+    const balance = typeof reporting === 'number' ? Math.max(0, reporting)
+      : typeof r.amountOwed === 'number' ? r.amountOwed : Math.max(0, r.balance);
+    const apr = typeof r.apr === 'number' ? r.apr : null;
+    const minimumPayment = typeof r.minimumPayment === 'number' ? r.minimumPayment : null;
+    liabilities.push({ id: r.id, label: r.name, balance: round2(balance), apr, minimumPayment,
+      subtype: (r as { debtSubtype?: string | null }).debtSubtype ?? null,
+      termsProvenance: { apr: apr === null ? 'UNKNOWN' : 'STATED',
+        minimumPayment: minimumPayment === null ? 'UNKNOWN' : 'STATED' } });
+  }
+  for (const la of (a.liabilityAssumptions as Record<string, unknown>[]) ?? []) {
+    const id = String(la.liabilityId ?? la.id ?? '');
+    const line = liabilities.find((l) => l.id === id);
+    if (!line) {
+      rejected.push({ input: `liability assumption for ${id || '(no id)'}`,
+        reason: 'no liability with that id is in this position; use an id from get_financial_snapshot' });
+      continue;
+    }
+    if (la.apr !== undefined) {
+      const apr = Number(la.apr);
+      if (!Number.isFinite(apr) || apr < 0 || apr > 100) {
+        rejected.push({ input: `assumed APR for ${line.label}`, reason: 'an APR is a percentage between 0 and 100' });
+      } else { line.apr = apr; line.termsProvenance!.apr = 'USER_ASSUMED'; }
+    }
+    if (la.minimumPayment !== undefined) {
+      const min = Number(la.minimumPayment);
+      if (!Number.isFinite(min) || min < 0) {
+        rejected.push({ input: `assumed minimum for ${line.label}`, reason: 'a minimum payment is zero or more' });
+      } else { line.minimumPayment = min; line.termsProvenance!.minimumPayment = 'USER_ASSUMED'; }
+    }
+  }
+
   const opening = { asOfISO: asOf, liquid: openingLiquid, investments: composition.combined,
-    debt: accounts.totalLiabilities ?? 0, otherAssets };
+    debt: accounts.totalLiabilities ?? 0, otherAssets, liabilities };
 
   const checkpointDates = new Set(dates);
   // ⚠️ THE SPINE IS MEMOISED PER SPENDING LEVEL, WHICH IS WHAT MAKES A SOLVE
@@ -1736,7 +1808,7 @@ async function prepareScenario(
         : { amount: null, source: 'NONE' };
 
   return {
-    asOf, toISO, plan, dates, accounts, returns,
+    asOf, toISO, plan, dates, accounts, returns, liabilities,
     contributions: expanded.movements, outflows, rejected, monthlySpending,
     run: (o: ScenarioOverrides = {}) => {
       const useContribs = o.extraContributions
@@ -1750,11 +1822,17 @@ async function prepareScenario(
       // the spine cannot show is a month whose surplus cannot be stated, and the
       // settler refuses it rather than inferring a neighbour from whatever else
       // happens to be in the spine.
-      const shareDates = useContribs
-        .filter((m) => m.fractionOfLiquid !== undefined || m.surplusFraction !== undefined
-          || m.liquidFloor !== undefined)
-        .flatMap((m) => (m.baseDate ? [m.baseDate, m.date] : [m.date]))
-        .sort();
+      // ⚠️ A LIABILITY MOVES MONTHLY WHATEVER THE TABLE'S CADENCE. Interest and
+      // minimums settle on spine dates, so a yearly table over an owed balance
+      // still evaluates every month-end — otherwise the same scenario would
+      // accrue differently depending on how often it was asked to print a row.
+      const shareDates = [
+        ...useContribs
+          .filter((m) => m.fractionOfLiquid !== undefined || m.surplusFraction !== undefined
+            || m.liquidFloor !== undefined)
+          .flatMap((m) => (m.baseDate ? [m.baseDate, m.date] : [m.date])),
+        ...(liabilities.some((l) => l.balance > 0) ? monthEndsBetween(asOf, toISO) : []),
+      ].sort();
       return runScenarioLedger({
         opening,
         spine: spineFor(shareDates, o.monthlySpending),
@@ -1889,6 +1967,47 @@ function scenarioAssumptions(
     spending: { source: setup.monthlySpending.source, monthly: setup.monthlySpending.amount,
       ...(setup.monthlySpending.source === 'OBSERVED'
         ? { note: 'from the same observed rate project_cash uses' } : {}) },
+    ...(ledger.liabilities ? { liabilities: liabilityEcho(ledger) } : {}),
+  };
+}
+
+/**
+ * The liabilities in force, as the ledger moved them.
+ *
+ * ⚠️ `interestBasis` IS THE FIELD A PAYOFF DATE MUST BE READ WITH. PARTIAL means
+ * at least one owed line has no rate, nothing accrued on it, and any payoff
+ * date is a payments-only lower bound; the unmodelled lines are named so the
+ * answer can say which. A user-assumed rate is echoed as USER_ASSUMED so a term
+ * the user supplied is never presented as the issuer's.
+ */
+function liabilityEcho(ledger: LedgerResult) {
+  const L = ledger.liabilities!;
+  const last = ledger.checkpoints[ledger.checkpoints.length - 1];
+  const paid = ledger.movements.filter((m) => m.kind === 'CONTRIBUTION' && m.placed && m.placed.liabilities.length > 0);
+  const targetsUsed = [...new Set(ledger.movements
+    .filter((m) => m.kind === 'CONTRIBUTION' && m.placed)
+    .flatMap((m) => m.placed!.liabilities.map((l) => l.id)))];
+  return {
+    lines: L.lines.map((l) => ({ id: l.id, label: l.label, openingBalance: l.balance,
+      apr: l.apr, minimumPayment: l.minimumPayment, subtype: l.subtype ?? null,
+      terms: l.termsProvenance ?? null })),
+    interestBasis: L.interestBasis,
+    unmodelled: L.unmodelled,
+    withheldAggregate: L.withheldAggregate,
+    totals: last ? { interestToDate: last.movements.interestToDate,
+      minimumPaymentsToDate: last.movements.minimumPaymentsToDate,
+      extraPaymentsToDate: round2(paid.reduce((s, m) => s + m.placed!.liabilities.reduce((t, l) => t + l.amount, 0), 0)),
+      closingDebt: last.debt.amount } : null,
+    allocationsToLiabilities: { rules: paid.length, liabilitiesPaid: targetsUsed },
+    meaning: L.interestBasis === 'PARTIAL' || L.interestBasis === 'NONE'
+      ? 'Interest is NOT modelled on the unmodelled liabilities — no rate is known for them. '
+        + 'Any balance or payoff date over them is a payments-only lower bound: with a positive '
+        + 'rate the balance would be higher and payoff later. Say so; do not call it exact. '
+        + 'The user may state a rate with `liabilityAssumptions`.'
+      : L.interestBasis === 'COMPLETE'
+        ? 'Every owed liability accrues simple interest at its known rate over actual days on the '
+          + 'balance carried into each month-end, before its stated minimum and any allocation.'
+        : 'Nothing is owed on the modelled liabilities.',
   };
 }
 
@@ -1963,7 +2082,7 @@ const SCENARIO_INPUTS = {
     items: obj({ from: str('YYYY-MM-DD'), to: str('YYYY-MM-DD, inclusive'),
       annualPct: num('e.g. 50 for "50% in 2028"') }, ['from', 'to', 'annualPct']) },
   contributions: { type: 'array',
-    description: 'Money moved from cash into investments. HOW MUCH — exactly one of four: '
+    description: 'Money moved from cash into investments OR toward a liability (`target`). HOW MUCH — exactly one of four: '
       + '`amount` in dollars, `fractionOfLiquid` for a share of the cash BALANCE, '
       + '`surplusFraction` for a share of what each month ADDS, or `liquidFloor` + '
       + '`fractionOfExcess` for a share of the cash held ABOVE A FLOOR. WHEN: `amount` and '
@@ -1993,6 +2112,15 @@ const SCENARIO_INPUTS = {
       fractionOfExcess: num('The share of cash ABOVE `liquidFloor` to move each month-end: 1 '
         + 'for "everything above it", 0.5 for "half of what is above it". Goes with '
         + '`liquidFloor`.'),
+      target: { description: 'WHERE the money goes. `investments` (the default), '
+          + '`highest_apr` (the liability with the highest known rate first — the avalanche; '
+          + 'when it is cleared the same month\'s remainder continues to the next), or a '
+          + 'liability account id from get_financial_snapshot. An ORDERED LIST waterfalls: '
+          + '["highest_apr","investments"] pays debt while any remains and invests the rest '
+          + '— "pay the cards first, then invest" in one scenario. A payment never exceeds the '
+          + 'balance; what is left over stays in cash unless a later target takes it. This '
+          + 'allocates cash the user already has — it is NOT a way to borrow.',
+        anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
       onDate:  str('YYYY-MM-DD for a single contribution.'),
       from:    str('YYYY-MM-DD first occurrence of a repeating contribution.'),
       to:      str('YYYY-MM-DD last occurrence. Omit to continue to the horizon.'),
@@ -2006,6 +2134,14 @@ const SCENARIO_INPUTS = {
       label: str('What it is.') }, ['onDate', 'amount']) },
   assumedMonthlySpending: num('If the user stated a monthly spending level, pass it here — '
     + 'it changes the cash spine exactly as it does in project_cash.'),
+  liabilityAssumptions: { type: 'array',
+    description: 'Terms the user STATED for an existing liability, for this scenario only: '
+      + '"assume the card is at 18%", "my minimum is $300". Overrides that liability\'s known '
+      + 'term; never changes the account. Use it when a liability shows apr or minimumPayment '
+      + 'null and the user supplies one — never invent a rate yourself.',
+    items: obj({ liabilityId: str('The liability account id from get_financial_snapshot.'),
+      apr: num('Percent per year, 0–100. 0 is a real rate (no interest).'),
+      minimumPayment: num('Per-cycle minimum in dollars, 0 or more.') }, ['liabilityId']) },
 };
 
 const scenarioProjection: ToolDefinition = {
@@ -2163,9 +2299,22 @@ const scenarioCrossing: ToolDefinition = {
     }
 
     const hit = found.crossing;
+    // ⚠️ A PAYOFF OVER AN UNMODELLED RATE IS A LOWER BOUND, AND THE DATE SAYS SO
+    // ITSELF. The echo above carries the basis; this puts it beside the number
+    // the model is about to quote, so "exact" cannot be read off a field that
+    // was never exact.
+    const interest = ledger.liabilities && ledger.liabilities.interestBasis !== 'NOT_APPLICABLE'
+      ? { basis: ledger.liabilities.interestBasis,
+          aprMissingFor: ledger.liabilities.unmodelled.map((u) => u.label),
+          reading: ledger.liabilities.interestBasis === 'COMPLETE'
+            ? 'interest modelled on every owed liability'
+            : 'PAYMENTS-ONLY LOWER BOUND: interest was not modelled on the liabilities named; '
+              + 'with a positive rate this crossing would come later (for debt) — say so' }
+      : null;
     return {
       ...head,
       crossing: {
+        ...(interest ? { interestEvidence: interest } : {}),
         date: hit.checkpoint.date, value: hit.value,
         // ⚠️ HOW FAR AWAY, IN NUMBERS THE ENGINE OWNS. The date was always
         // right; "1.5 years" for a gap of five and a half months was the model
@@ -2230,16 +2379,32 @@ const scenarioGoalSeek: ToolDefinition = {
         + 'to move into investments each month (this RELOCATES money — at a 0% return it does '
         + 'not change net worth at all). monthlySpendingCut = how much less to spend each '
         + 'month, with that amount invested; this is the lever that actually creates net worth.' },
-    measure: { type: 'string', enum: ['netWorth', 'liquid', 'investments'],
-      description: 'What the target is a target FOR. Default netWorth.' },
+    measure: { type: 'string', enum: ['netWorth', 'liquid', 'investments', 'debt'],
+      description: 'What the target is a target FOR. Default netWorth. `debt` solves DOWNWARD: '
+        + 'the smallest value that brings debt at `by` to at or below the target ("what extra '
+        + 'monthly payment gets me debt free by December" = monthlyContribution, measure debt, '
+        + 'target 0, contributionTarget highest_apr).' },
+    contributionTarget: { description: 'For solveFor monthlyContribution: where the solved '
+        + 'monthly amount goes — `investments` (default), `highest_apr`, a liability id, or an '
+        + 'ordered list, exactly as `contributions[].target`.',
+      anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
     ...SCENARIO_INPUTS,
   }, ['target', 'by', 'solveFor']),
   async run(a, ctx) {
     const toISO  = String(a.by);
     const target = Number(a.target);
     const solveFor = String(a.solveFor);
-    const measure = ['liquid', 'investments'].includes(String(a.measure))
-      ? String(a.measure) as 'liquid' | 'investments' : 'netWorth';
+    const measure = ['liquid', 'investments', 'debt'].includes(String(a.measure))
+      ? String(a.measure) as 'liquid' | 'investments' | 'debt' : 'netWorth';
+    // ⚠️ DEBT IS SOLVED DOWNWARD. The bisection assumes "more of X reaches a
+    // higher value"; for a debt target the value that rises with X is minus the
+    // balance, so the ledger's debt is negated on the way in and the target on
+    // the way out. Nothing else about the solver changes.
+    const sign = measure === 'debt' ? -1 : 1;
+    const toTarget = (t: unknown): AllocationTarget => (t === 'investments' || t === 'highest_apr') ? t
+      : typeof t === 'string' ? { liability: t } : t as AllocationTarget;
+    const contributionTargets: AllocationTarget[] | undefined = a.contributionTarget === undefined ? undefined
+      : Array.isArray(a.contributionTarget) ? a.contributionTarget.map(toTarget) : [toTarget(a.contributionTarget)];
     if (!Number.isFinite(target)) return { unavailable: 'the target is not a number' };
     if (!(solveFor in SOLVABLE)) {
       return { unavailable: `cannot solve for "${solveFor}"`,
@@ -2254,14 +2419,16 @@ const scenarioGoalSeek: ToolDefinition = {
       const last = l.checkpoints[l.checkpoints.length - 1];
       if (!last) return null;
       const line = measure === 'liquid' ? last.liquid
-        : measure === 'investments' ? last.investments : last.netWorth;
-      return line?.amount ?? null;
+        : measure === 'investments' ? last.investments
+        : measure === 'debt' ? last.debt : last.netWorth;
+      return line?.amount === undefined || line?.amount === null ? null : sign * line.amount;
     };
 
     // A monthly schedule of a solved dollar amount, on the same month-ends the
     // projection already knows how to produce.
     const monthly = (amount: number, label: string): PlannedMovement[] =>
-      monthEndsBetween(setup.asOf, toISO).map((date) => ({ date, amount, label }));
+      monthEndsBetween(setup.asOf, toISO).map((date) => ({ date, amount, label,
+        ...(contributionTargets ? { targets: contributionTargets } : {}) }));
 
     let evaluate: (x: number) => number | null;
     let hi = 0, unit = '';
@@ -2277,7 +2444,12 @@ const scenarioGoalSeek: ToolDefinition = {
         returns: [{ fromISO: setup.asOf, toISO, annualPct: x }] }));
     } else if (solveFor === SOLVABLE.monthlyContribution) {
       unit = 'USD per month';
-      hi = Math.max(Math.abs(target), 1_000);
+      // ⚠️ THE BRACKET FOR A DEBT TARGET IS THE DEBT. A monthly amount equal to
+      // everything owed clears it in the first month whatever the rate, so the
+      // top of the range is a fact, not a guess.
+      hi = measure === 'debt'
+        ? Math.max(setup.liabilities.reduce((t, l) => t + l.balance, 0) + (setup.accounts.totalLiabilities ?? 0), 1_000)
+        : Math.max(Math.abs(target), 1_000);
       evaluate = (x) => valueOf(setup.run({
         extraContributions: monthly(x, 'solved monthly contribution') }));
     } else {
@@ -2299,7 +2471,7 @@ const scenarioGoalSeek: ToolDefinition = {
 
     const baseLedger = setup.run();
     const baseline = valueOf(baseLedger);
-    const solved = solveForTarget({ solveFor, evaluate, target, lo, hi, precision });
+    const solved = solveForTarget({ solveFor, evaluate, target: sign * target, lo, hi, precision });
 
     const head = {
       asOf: setup.asOf, target, by: toISO, measure, solveFor, unit,
@@ -2307,8 +2479,9 @@ const scenarioGoalSeek: ToolDefinition = {
       timeToTarget: elapsedBetween(setup.asOf, toISO),
       // ⚠️ ON EVERY PATH, INCLUDING THE REFUSAL. See `scenarioAssumptions`.
       assumptionsInForce: scenarioAssumptions(setup, baseLedger, setup.returns),
-      baseline: { reached: baseline,
-        gap: baseline === null ? null : round2(target - baseline),
+      ...(contributionTargets ? { contributionTarget: contributionTargets } : {}),
+      baseline: { reached: baseline === null ? null : sign * baseline,
+        gap: baseline === null ? null : round2(target - sign * baseline),
         meaning: 'where the stated assumptions land WITHOUT the solved variable' },
       searchRange: { from: lo, to: hi, unit, iterations: solved.iterations,
         note: solveFor === SOLVABLE.monthlySpendingCut
@@ -2319,7 +2492,7 @@ const scenarioGoalSeek: ToolDefinition = {
 
     if (!solved.feasible) {
       return { ...head, feasible: false, reason: solved.reason,
-        bestReached: solved.bestReached, bestAt: solved.bestAt,
+        bestReached: solved.bestReached === null ? null : sign * solved.bestReached, bestAt: solved.bestAt,
         // ⚠️ HOW FAR THE RANGE GOT IS AN ANSWER; A HUGE INVENTED NUMBER IS NOT.
         meaning: `Nothing in the searched range reaches ${target}. The best it did was `
           + `${solved.bestReached ?? 'nothing'} at ${solved.bestAt} ${unit}. Say that, and `
@@ -2349,7 +2522,7 @@ const scenarioGoalSeek: ToolDefinition = {
       feasible: true,
       required: solved.required,
       alreadyMet: solved.alreadyMet,
-      reachedAtSolution: solved.reached,
+      reachedAtSolution: sign * solved.reached,
       ...(solved.alreadyMet
         ? { meaning: `The target is already reached without any ${solveFor} at all.` }
         : {}),
