@@ -49,6 +49,7 @@
 
 import "server-only";
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { db } from "@/lib/db";
 import { captureLedgerWriteFailure } from "@/lib/monitoring/capture";
 import { currentDeploymentSha } from "@/lib/monitoring/deployment";
@@ -96,6 +97,34 @@ export interface JobRunWriteClient {
 }
 
 const jobRunDb = db as unknown as JobRunWriteClient;
+
+// ── Ambient run identity (PLATFORM OPS OBSERVABILITY) ────────────────────────
+//
+// The batch a piece of work is running under, readable by anything executed
+// inside the wrapped body without threading an argument through every layer.
+// It exists for ONE purpose: letting a per-item refresh execution stamp
+// `RefreshExecution.parentJobRunId`, which had a column and an index but no
+// producer — every cron bank refresh and every scheduled wallet refresh ran
+// uncorrelated to the JobRun that fired it. AsyncLocalStorage is the same
+// mechanism the Plaid provider-call attribution already uses.
+//
+// `id` is null when the start write failed (the run left no ledger row); a
+// consumer must treat that as "no parent", never invent one.
+
+export interface CurrentJobRun {
+  /** JobRun.id, or null when the start write never landed. */
+  id: string | null;
+  jobName: string;
+  trigger: JobTrigger;
+  executionId: string;
+}
+
+const jobRunContext = new AsyncLocalStorage<CurrentJobRun>();
+
+/** The JobRun this code is executing under, or null outside any runJob body. */
+export function currentJobRun(): CurrentJobRun | null {
+  return jobRunContext.getStore() ?? null;
+}
 
 // ── Helpers (pure) ────────────────────────────────────────────────────────────
 
@@ -178,7 +207,7 @@ export async function runJob<T>(
   }
 
   try {
-    const result = await fn();
+    const result = await jobRunContext.run({ id: runId, jobName, trigger, executionId }, fn);
     await complete({
       status: "succeeded",
       completedAt: new Date(),

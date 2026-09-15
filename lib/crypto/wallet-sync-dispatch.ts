@@ -52,6 +52,18 @@ const BNB_CHAIN = BNB_NETWORK.chain;
 const AVAX_CHAIN = AVAX_NETWORK.chain;
 import { refreshWalletHistory, type WalletHistoryRefresh } from "./wallet-history-refresh";
 import { recordWalletSyncRefusal } from "@/lib/accounts/wallet-connection";
+// PLATFORM OPS OBSERVABILITY — every wallet sync is now an EXECUTION in the one
+// refresh ledger (RefreshExecution), exactly like a Plaid refresh: a start row,
+// the adapter's run as a PROVIDER stage, the history refresh as a DERIVED
+// stage, one completion write carrying duration, status and verdict. Before
+// this, a manual or scheduled wallet refresh left no run, no trigger, no
+// duration and no status anywhere — a failure survived only as a SyncIssue.
+// The envelope is best-effort and never alters control flow: this function
+// keeps its never-throw contract and its result shape byte-for-byte.
+import { runFullRefresh } from "@/lib/plaid/refresh-execution";
+import { classifyFailureCategory } from "@/lib/plaid/refresh-verdict.core";
+import type { RefreshTrigger, RefreshStageRecorder } from "@/lib/plaid/refresh-execution-types";
+import { currentJobRun } from "@/lib/jobs/run";
 
 /** How far this system can go on a given chain. See the header. */
 export type WalletChainSupport =
@@ -103,6 +115,30 @@ export function walletSyncErrorCode(stage: string | undefined): WalletSyncErrorC
     case "unsupported-chain": return "CHAIN_UNSUPPORTED";
     case "adapter-error":     return "ADAPTER_ERROR";
     default:                  return "BALANCE_UNAVAILABLE";
+  }
+}
+
+/**
+ * PLATFORM OPS OBSERVABILITY — how a wallet sync was initiated, in the refresh
+ * ledger's trigger vocabulary. A caller that knows (the manual route: MANUAL)
+ * says so; one that does not gets the ambient JobRun's answer: a cron sweep
+ * records CRON, an operator's Run Now records OPERATOR, a script ADMIN, and
+ * code running under no job at all — a customer action such as adding or
+ * restoring a wallet — records MANUAL.
+ */
+export interface WalletSyncContext {
+  trigger?: RefreshTrigger;
+}
+
+export function walletRefreshTrigger(explicit?: RefreshTrigger): RefreshTrigger {
+  if (explicit) return explicit;
+  const job = currentJobRun();
+  if (!job) return "MANUAL";
+  switch (job.trigger) {
+    case "cron":   return "CRON";
+    case "manual": return "OPERATOR";
+    case "script": return "ADMIN";
+    default:       return "MANUAL";
   }
 }
 
@@ -364,6 +400,7 @@ export function chainSupportsHistory(chain: string | null | undefined): boolean 
 export async function syncWalletByChain(
   accountId: string,
   chain: string | null | undefined,
+  context: WalletSyncContext = {},
 ): Promise<WalletSyncOutcome> {
   const key = chain?.trim().toUpperCase() ?? "";
   const adapter = ADAPTERS[key];
@@ -385,8 +422,16 @@ export async function syncWalletByChain(
     };
   }
 
+  // PLATFORM OPS OBSERVABILITY — the adapter run and the history refresh are
+  // recorded as stages of ONE execution. The runner below never throws (every
+  // branch returns an outcome), so runFullRefresh never rethrows and the
+  // never-throw contract of this function is preserved by construction.
+  const runner = async ({ recorder }: { recorder: RefreshStageRecorder }): Promise<WalletSyncOutcome> => {
   try {
+    recorder.begin("WALLET_SYNC", "PROVIDER");
     const result = await adapter.sync(accountId);
+    if (result.ok) recorder.succeed("WALLET_SYNC");
+    else recorder.fail("WALLET_SYNC", new Error(result.reason ?? `wallet sync failed at ${result.stage ?? "unknown"} stage`));
     // W-M2a — A REFUSAL MUST REACH THE CONNECTION, NOT ONLY THE INCIDENT LOG.
     //
     // Every adapter already records a SyncIssue. None of them (outside BTC's
@@ -414,10 +459,12 @@ export async function syncWalletByChain(
     // Never fatal. The reconstruction refuses before it opens a write
     // transaction, so a refusal leaves the previous rows and licence exactly
     // where they were, and the balance this sync DID read is still reported.
+    if (result.ok) recorder.begin("HISTORY_BACKFILL", "DERIVED");
     const historyRefresh = result.ok ? await refreshWalletHistory(accountId, key) : null;
     if (historyRefresh && !historyRefresh.refreshed && historyRefresh.reason) {
       console.log(`[wallet-sync] ${key} history not refreshed for ${accountId}: ${historyRefresh.reason}`);
     }
+    recordHistoryStage(recorder, historyRefresh);
     return {
       accountId,
       chain: key,
@@ -441,6 +488,7 @@ export async function syncWalletByChain(
     // must still answer honestly rather than 500.
     const reason = e instanceof Error ? e.message : String(e);
     console.warn(`[wallet-sync] ${key} adapter threw for ${accountId} (contract violation):`, reason);
+    recorder.failOpen(e);
     await recordWalletSyncRefusal({ financialAccountId: accountId, errorCode: "ADAPTER_ERROR" });
     return {
       accountId, chain: key, support: adapter.support, ok: false,
@@ -448,4 +496,53 @@ export async function syncWalletByChain(
       netWorthParticipation: "NONE",
     };
   }
+  };
+
+  return runFullRefresh<WalletSyncOutcome>(
+    {
+      source: { kind: "WALLET", ref: accountId, network: key },
+      trigger: walletRefreshTrigger(context.trigger),
+      profile: "WALLET_SYNC",
+    },
+    {
+      refresh: runner,
+      // The adapter names its own failed stage ("balance", "price", "capture",
+      // …) and the dispatcher's generic code classifies it — both facts this
+      // envelope cannot read off a stage record, so they are contributed here.
+      verdict: ({ result }) =>
+        result && !result.ok
+          ? {
+              failureStage: result.stage,
+              failureCategory: classifyFailureCategory({ code: result.errorCode, message: result.reason }),
+            }
+          : undefined,
+    },
+  );
+}
+
+/**
+ * The history refresh as a DERIVED stage. What it PROVES about canonical
+ * history rows is reported as counts, so the execution's outcome can be
+ * derived rather than asserted:
+ *   refreshed, NO_CHANGE mode  → the reconstruction verified nothing moved (0/0)
+ *   refreshed, rows written    → UPDATED (the writer's own count)
+ *   refreshed, count unknown   → succeeded with no count (outcome stays unknown)
+ *   not refreshed              → SKIPPED / NOT_APPLICABLE (no reconstruction for
+ *                                the chain, or the reconstruction refused —
+ *                                nothing was written, nothing is claimed)
+ */
+function recordHistoryStage(recorder: RefreshStageRecorder, h: WalletHistoryRefresh | null): void {
+  if (!h) return;
+  if (!h.refreshed) {
+    recorder.skip("HISTORY_BACKFILL", "DERIVED", "NOT_APPLICABLE");
+    return;
+  }
+  if (h.mode === "NO_CHANGE") {
+    recorder.succeed("HISTORY_BACKFILL", { recordsWritten: 0, recordsChanged: 0 });
+    return;
+  }
+  recorder.succeed(
+    "HISTORY_BACKFILL",
+    h.rowsWritten == null ? undefined : { recordsWritten: h.rowsWritten, recordsChanged: h.rowsWritten },
+  );
 }

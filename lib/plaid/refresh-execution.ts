@@ -31,10 +31,15 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
-import { summarizeError } from "@/lib/jobs/run";
+import { summarizeError, currentJobRun } from "@/lib/jobs/run";
 import { captureLedgerWriteFailure } from "@/lib/monitoring/capture";
 import { currentDeploymentSha } from "@/lib/monitoring/deployment";
-import { refreshPlaidItem, type RefreshItemResult } from "@/lib/plaid/refresh";
+// PLATFORM OPS OBSERVABILITY — the Plaid runner is imported LAZILY (inside the
+// default runner) rather than at module load. lib/plaid/refresh.ts pulls in the
+// Plaid client, which validates credentials at import time; now that the wallet
+// dispatcher records through this envelope, a static import here would make
+// every wallet path — and every credential-free test of it — require Plaid.
+import type { RefreshItemResult } from "@/lib/plaid/refresh";
 // DF-2D — the provider-call correlation context. runFullRefresh establishes it
 // around the runner so every Plaid call inside attributes to this execution.
 import { runWithProviderCallContext, type ProviderCallContext } from "@/lib/plaid/provider-call-context";
@@ -48,7 +53,10 @@ import type {
   RefreshStageFacts,
   RefreshStageRecord,
   RefreshStageRecorder,
+  ExecutionSource,
+  ExecutionVerdict,
 } from "@/lib/plaid/refresh-execution-types";
+import { buildVerdict } from "@/lib/plaid/refresh-verdict.core";
 
 // ── Narrow write-client seam (the JobRunWriteClient idiom) ───────────────────
 //
@@ -58,7 +66,12 @@ import type {
 
 export interface RefreshExecutionStartData {
   runId: string;
-  plaidItemId: string;
+  /** The Plaid item, or null for a non-Plaid source (see sourceKind/sourceRef). */
+  plaidItemId: string | null;
+  /** PLATFORM OPS OBSERVABILITY — generic source identity; see prisma/schema.prisma. */
+  sourceKind: string;
+  sourceRef: string | null;
+  network: string | null;
   trigger: string;
   profile: string;
   parentJobRunId: string | null;
@@ -78,6 +91,10 @@ export interface RefreshExecutionCompletionData {
   durationMs: number;
   overallStatus: RefreshOverallStatus;
   errorSummary?: string;
+  /** PLATFORM OPS OBSERVABILITY — the derived verdict (refresh-verdict.core.ts). */
+  failureStage?: string;
+  failureCategory?: string;
+  outcome?: string;
   /**
    * OPS-2D-3 — the typed admission reason, set ONLY when the execution was
    * denied before any stage ran. Optional here rather than on the start data
@@ -261,10 +278,22 @@ export function deriveOverallStatus(stages: RefreshStageRecord[]): RefreshOveral
 // ── The orchestrator ──────────────────────────────────────────────────────────
 
 export interface RunFullRefreshParams {
-  itemId: string;
+  /** The Plaid item being refreshed. Required for the default runner; may be
+   *  omitted when `source` names a non-Plaid source. */
+  itemId?: string;
+  /**
+   * PLATFORM OPS OBSERVABILITY — what is being refreshed, generically. When
+   * omitted the execution is a Plaid item (`itemId`), exactly as before.
+   */
+  source?: ExecutionSource;
   trigger: RefreshTrigger;
   profile: RefreshProfile;
-  /** Soft link to a JobRun.id when this refresh runs under a batch (cron); DF-2B. */
+  /**
+   * Soft link to a JobRun.id when this refresh runs under a batch (cron); DF-2B.
+   * When omitted, the ambient JobRun (lib/jobs/run.ts `currentJobRun`) is used,
+   * so a refresh fired from inside a job body is correlated without every
+   * caller threading the id. Explicit always wins.
+   */
   parentJobRunId?: string;
 }
 
@@ -286,6 +315,15 @@ export interface RunFullRefreshDeps<T> {
    * records the stage outcomes for their own pipeline.
    */
   refresh?: RefreshStageRunner<T>;
+  /**
+   * PLATFORM OPS OBSERVABILITY — a producer's contribution to the verdict, for
+   * the fields it genuinely knows better than the generic derivation (a wallet
+   * adapter's own failure stage name; a typed error code). Called once at
+   * completion with the runner's result or the thrown error and the finalized
+   * stage records. Fields left undefined keep the derived value. Never throws
+   * into the refresh: an exception here is swallowed like any ledger failure.
+   */
+  verdict?: (ctx: { result?: T; error?: unknown; stages: readonly RefreshStageRecord[] }) => ExecutionVerdict | undefined;
 }
 
 /**
@@ -303,6 +341,13 @@ export async function runFullRefresh<T = RefreshItemResult>(
   const startedAt = new Date();
   const t0 = Date.now();
 
+  // The default runner refreshes a Plaid item; it needs to know which one
+  // BEFORE any ledger row is opened, so a caller mistake leaves no orphan row.
+  const itemId = plaidItemIdOf(params);
+  if (!deps.refresh && !itemId) {
+    throw new TypeError("runFullRefresh: the default (Plaid) runner requires itemId or a PLAID_ITEM source");
+  }
+
   const executionId = await openExecution(client, startData(params, runId, startedAt));
 
   // DF-2D — attribute provider calls to this execution only when the ledger row
@@ -317,16 +362,30 @@ export async function runFullRefresh<T = RefreshItemResult>(
   // sound because `deps.refresh` is undefined only when T defaulted to it.
   const runStages: RefreshStageRunner<T> =
     deps.refresh ??
-    (((o) => refreshPlaidItem(params.itemId, { recorder: o.recorder, runId: o.runId })) as RefreshStageRunner<T>);
+    ((async (o) => {
+      const { refreshPlaidItem } = await import("@/lib/plaid/refresh");
+      return refreshPlaidItem(itemId as string, { recorder: o.recorder, runId: o.runId });
+    }) as RefreshStageRunner<T>);
+
+  // The producer's verdict override, guarded: a defect in a verdict callback
+  // must never become a refresh failure.
+  const overrideFor = (ctx: { result?: T; error?: unknown }): ExecutionVerdict | undefined => {
+    if (!deps.verdict) return undefined;
+    try { return deps.verdict({ ...ctx, stages: recorder.records }); }
+    catch (verdictErr) {
+      console.error(`[refresh-execution] ${runId}: verdict callback threw (ignored):`, verdictErr);
+      return undefined;
+    }
+  };
 
   const execute = async (): Promise<T> => {
     try {
       const result = await runStages({ recorder, runId });
-      await closeExecution(client, executionId, recorder.records, startedAt, t0, undefined);
+      await closeExecution(client, executionId, recorder.records, startedAt, t0, undefined, overrideFor({ result }));
       return result;
     } catch (err) {
       recorder.failOpen(err);
-      await closeExecution(client, executionId, recorder.records, startedAt, t0, err);
+      await closeExecution(client, executionId, recorder.records, startedAt, t0, err, overrideFor({ error: err }));
       throw err;
     }
   };
@@ -343,17 +402,28 @@ export async function runFullRefresh<T = RefreshItemResult>(
  * an execution (runFullRefresh, recordAdmissionDenial) goes through here, so
  * that requirement is satisfied by construction rather than by repetition.
  */
+function plaidItemIdOf(params: RunFullRefreshParams): string | null {
+  if (params.itemId) return params.itemId;
+  if (params.source?.kind === "PLAID_ITEM") return params.source.ref;
+  return null;
+}
+
 function startData(
   params: RunFullRefreshParams,
   runId: string,
   startedAt: Date,
 ): RefreshExecutionStartData {
+  const source: ExecutionSource = params.source ?? { kind: "PLAID_ITEM", ref: params.itemId ?? "" };
   return {
     runId,
-    plaidItemId: params.itemId,
+    plaidItemId: plaidItemIdOf(params),
+    sourceKind: source.kind,
+    // A Plaid item's identity lives in plaidItemId; sourceRef names the other kinds.
+    sourceRef: source.kind === "PLAID_ITEM" ? null : source.ref,
+    network: source.kind === "WALLET" ? source.network : null,
     trigger: params.trigger,
     profile: params.profile,
-    parentJobRunId: params.parentJobRunId ?? null,
+    parentJobRunId: params.parentJobRunId ?? currentJobRun()?.id ?? null,
     startedAt,
     overallStatus: "RUNNING",
     deploymentSha: currentDeploymentSha(),
@@ -387,6 +457,7 @@ async function closeExecution(
   startedAt: Date,
   t0: number,
   err: unknown,
+  override?: ExecutionVerdict,
 ): Promise<void> {
   if (executionId === null) return; // start write never landed — nothing to complete (append-only)
 
@@ -445,6 +516,16 @@ async function closeExecution(
       ? summarizeError(err)
       : records.find((r) => r.status === "FAILED")?.errorSummary;
 
+  // PLATFORM OPS OBSERVABILITY — the verdict, derived once from the evidence
+  // above and the producer's override. A verdict is a fact about THIS run and
+  // is written with the same single completion write, never later.
+  const verdict = buildVerdict({
+    stages: records,
+    failed: overallStatus === "FAILED" || overallStatus === "PARTIAL",
+    error: err !== undefined ? { message: summarizeError(err), code: errorCodeOf(err) } : undefined,
+    override,
+  });
+
   try {
     await client.refreshExecution.update({
       where: { id: executionId },
@@ -453,11 +534,22 @@ async function closeExecution(
         durationMs: Date.now() - t0,
         overallStatus,
         errorSummary,
+        ...(verdict.failureStage ? { failureStage: verdict.failureStage } : {}),
+        ...(verdict.failureCategory ? { failureCategory: verdict.failureCategory } : {}),
+        ...(verdict.outcome ? { outcome: verdict.outcome } : {}),
       },
     });
   } catch (writeErr) {
     console.error(`[refresh-execution] ${executionId}: completion write failed (non-fatal):`, writeErr);
   }
+}
+
+/** A typed provider code carried on a thrown error, when one exists (Plaid errors carry `error_code`). */
+function errorCodeOf(err: unknown): string | null {
+  if (!err || typeof err !== "object") return null;
+  const e = err as { error_code?: unknown; code?: unknown; response?: { data?: { error_code?: unknown } } };
+  const candidate = e.error_code ?? e.response?.data?.error_code ?? e.code;
+  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
 }
 
 // ── OPS-2D-3 — admission evidence ────────────────────────────────────────────

@@ -198,6 +198,21 @@ check("a failed sync reports NO net-worth participation whatever the chain",
   check("every non-BTC registered chain is WITHHELD_PENDING_CONVERGENCE",
     (registry.match(/WITHHELD_PENDING_CONVERGENCE/g) ?? []).length === 4);
 }
+// PLATFORM OPS OBSERVABILITY — every wallet sync is an execution in the ONE
+// refresh ledger, recorded through the canonical envelope (never a second
+// ledger, never a direct row write), with the adapter's own stage name and the
+// generic code contributing the verdict.
+check("the dispatcher records each sync through the canonical execution envelope",
+  /runFullRefresh<WalletSyncOutcome>\(/.test(dispatch) && /source: \{ kind: "WALLET", ref: accountId, network: key \}/.test(dispatch)
+    && /profile: "WALLET_SYNC"/.test(dispatch));
+check("…the adapter run is the PROVIDER stage and the history refresh the DERIVED stage",
+  /recorder\.begin\("WALLET_SYNC", "PROVIDER"\)/.test(dispatch) && /recorder\.begin\("HISTORY_BACKFILL", "DERIVED"\)/.test(dispatch));
+check("…the verdict carries the adapter's stage and the classified category, on failure only",
+  /failureStage: result\.stage/.test(dispatch) && /classifyFailureCategory\(\{ code: result\.errorCode, message: result\.reason \}\)/.test(dispatch));
+check("…the trigger comes from the caller or the ambient JobRun, never guessed from a chain",
+  /walletRefreshTrigger\(context\.trigger\)/.test(dispatch) && /currentJobRun\(\)/.test(dispatch));
+check("…and it never writes the ledger directly",
+  !/refreshExecution\./.test(dispatch) && !/refreshEndpointResult\./.test(dispatch));
 check("the dispatcher writes nothing itself (no DB access at all)",
   !/@\/lib\/db/.test(dispatch) && !/financialAccount\./.test(dispatch)
     && !/positionObservation/i.test(dispatch));
@@ -210,7 +225,9 @@ check("the sync route names no chain and no adapter",
   !/syncBtcWallet|syncEthWallet|syncSolWallet/.test(syncRoute)
     && !/BTC_CHAIN|ETH_CHAIN|SOL_CHAIN/.test(syncRoute));
 check("…and dispatches through the registry",
-  /syncWalletByChain\(id, account\.walletChain\)/.test(syncRoute));
+  /syncWalletByChain\(id, account\.walletChain(, \{ trigger: "MANUAL" \})?\)/.test(syncRoute));
+check("…and records the press as a MANUAL execution",
+  /syncWalletByChain\(id, account\.walletChain, \{ trigger: "MANUAL" \}\)/.test(syncRoute));
 check("the BTC-only rejection message is gone",
   !/Only BTC wallet sync is supported/.test(syncRoute));
 {

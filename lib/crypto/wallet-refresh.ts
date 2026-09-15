@@ -41,7 +41,7 @@
  * refusal. This module writes no clock and no financial row of its own.
  */
 
-import { SYNCABLE_CHAINS, syncWalletByChain, type WalletSyncOutcome } from './wallet-sync-dispatch';
+import { SYNCABLE_CHAINS, syncWalletByChain, walletRefreshTrigger, type WalletSyncOutcome } from './wallet-sync-dispatch';
 import { isDueForScheduledRefresh, type RefreshPolicy } from '@/lib/platform/refresh-policy.core';
 
 /**
@@ -174,7 +174,9 @@ async function defaultDeps(): Promise<WalletRefreshDeps> {
         };
       });
     },
-    sync: (accountId, chain) => syncWalletByChain(accountId, chain),
+    // PLATFORM OPS OBSERVABILITY — the trigger is the ambient JobRun's (CRON for
+    // the sweep, OPERATOR for Run Now); the envelope links the execution to it.
+    sync: (accountId, chain) => syncWalletByChain(accountId, chain, { trigger: walletRefreshTrigger() }),
     policy: async () => (await loadRefreshPolicies(db)).WALLET,
     admit: () => admitOperationalWork({ work: 'REFRESH_EXECUTION' }),
     clock: () => Date.now(),

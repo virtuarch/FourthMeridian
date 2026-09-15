@@ -69,6 +69,13 @@ function execution(over: Partial<ExecutionFact> = {}): ExecutionFact {
     parentJobRunId: null,
     errorSummary: null,
     deploymentSha: null,   // OPS-2C-4 — required on ExecutionFact; tests override via `over`
+    admissionReason: null,
+    sourceKind: "PLAID_ITEM",
+    sourceRef: null,
+    network: null,
+    failureStage: null,
+    failureCategory: null,
+    outcome: null,
     ...over,
   };
 }
@@ -129,6 +136,7 @@ function fakeReaders(over: Partial<RefreshProjectionReaders> = {}): RefreshProje
     providerCalls: async () => [call()],
     coverage: async () => [coverage()],
     execution: async () => execution(),
+    lastSucceededByKind: async () => null,
     ...over,
   };
 }

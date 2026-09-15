@@ -56,7 +56,59 @@ export type RefreshProfile =
   | "FULL_REFRESH"      // balances → holdings → transactions → reconciliation → snapshot
   | "RECONNECT"         // the deferred post-connect / webhook historical pipeline
   | "TRANSACTIONS_ONLY" // the cursor-based transaction sync alone — no balances, no holdings
-  | "IMPORT_RECOVERY";  // continuation of an INCOMPLETE first-run import from its cursor
+  | "IMPORT_RECOVERY"   // continuation of an INCOMPLETE first-run import from its cursor
+  // PLATFORM OPS OBSERVABILITY — a self-custody wallet refresh through its chain
+  // adapter (balance read → position capture → history refresh). One profile for
+  // every chain: the chain is the execution's `network`, not its workflow.
+  | "WALLET_SYNC";
+
+/**
+ * PLATFORM OPS OBSERVABILITY — WHAT an execution refreshed. The ledger was
+ * born with `plaidItemId` alone; a wallet has no Plaid item, so it could not be
+ * represented and every crypto refresh ran off-ledger. A source is now named
+ * generically: a KIND, the source's own id, and (for a chain read) the network.
+ * Never an address, never a credential — the id is a soft reference an operator
+ * surface can label, nothing more.
+ */
+export type ExecutionSource =
+  | { kind: "PLAID_ITEM"; ref: string }
+  | { kind: "WALLET"; ref: string; network: string };
+
+/** The closed vocabulary of execution source kinds (mirrors ExecutionSource). */
+export type ExecutionSourceKind = ExecutionSource["kind"];
+
+/**
+ * PLATFORM OPS OBSERVABILITY — a CODE-OWNED classification of why an
+ * execution failed, derived once at the completion write from the producer's
+ * error code and message (lib/plaid/refresh-verdict.core.ts). Deliberately
+ * coarse and provider-neutral: an operator needs "the provider timed out" or
+ * "this deployment is misconfigured", not the provider's own taxonomy, which
+ * stays on ProviderCall / SyncIssue where it belongs.
+ */
+export type RefreshFailureCategory =
+  | "PROVIDER_TIMEOUT"      // the upstream did not answer in time (abort / timeout)
+  | "PROVIDER_RATE_LIMITED" // the upstream refused for rate/quota reasons
+  | "PROVIDER_AUTH"         // the upstream needs re-authentication / consent
+  | "PROVIDER_ERROR"        // the upstream answered with an error or could not be read
+  | "CONFIGURATION"         // this deployment lacks a provider endpoint / credential
+  | "INPUT"                 // the stored source is malformed (e.g. an invalid address)
+  | "UNSUPPORTED"           // no adapter serves this source
+  | "INTERNAL"              // we read the provider but could not record the result
+  | "UNKNOWN";              // failed, and nothing above could be established
+
+/**
+ * PLATFORM OPS OBSERVABILITY — what happened to CANONICAL STATE, when provable.
+ * Absent (null) means "not provable from what the stages reported" and must be
+ * rendered as unknown — never as unchanged.
+ */
+export type RefreshOutcome = "UPDATED" | "NO_CHANGE";
+
+/** The derived verdict stamped on an execution at completion. All optional. */
+export interface ExecutionVerdict {
+  failureStage?: string;
+  failureCategory?: RefreshFailureCategory;
+  outcome?: RefreshOutcome;
+}
 
 /** Execution-level status, DERIVED from child stage results — never a stored success boolean. */
 export type RefreshOverallStatus = "RUNNING" | "SUCCEEDED" | "PARTIAL" | "FAILED" | "SKIPPED";
@@ -77,7 +129,13 @@ export type RefreshEndpoint =
   // price backfill + MAX-window wealth history + historical snapshots) recorded
   // as ONE DERIVED stage. It is the reconnect/webhook-defining work; manual/cron
   // never run it (empty ≠ uncovered).
-  | "HISTORY_BACKFILL";
+  | "HISTORY_BACKFILL"
+  // PLATFORM OPS OBSERVABILITY — the chain adapter's run (balance read + position
+  // capture) recorded as ONE PROVIDER stage. The adapter's finer stage names
+  // ("balance", "price", "capture", …) are its own vocabulary and land on the
+  // execution's `failureStage`; the history refresh that follows a successful
+  // read is the existing DERIVED HISTORY_BACKFILL stage.
+  | "WALLET_SYNC";
 
 export type RefreshStageKind = "PROVIDER" | "DERIVED";
 

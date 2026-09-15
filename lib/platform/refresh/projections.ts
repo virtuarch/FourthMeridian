@@ -45,6 +45,7 @@ import {
   buildProviderOperationSummary,
   buildRefreshSummary,
   countOpenExecutions,
+  buildPipelineStatus,
 } from "@/lib/platform/refresh/projections-core";
 import type {
   CoverageFact,
@@ -56,6 +57,7 @@ import type {
   ProviderCallFact,
   ProviderOperationSummary,
   RefreshSummary,
+  PipelineStatus,
 } from "@/lib/platform/refresh/types";
 
 const DEFAULT_WINDOW_DAYS = 14;
@@ -85,6 +87,12 @@ export interface RefreshProjectionReaders {
   coverage(executionIds: readonly string[]): Promise<CoverageFact[]>;
   /** One execution by id, or null. Used by the timeline projection. */
   execution(id: string): Promise<ExecutionFact | null>;
+  /**
+   * PLATFORM OPS OBSERVABILITY — the newest SUCCEEDED execution of one source
+   * kind, ANY window (one indexed row). The pipeline status reads it beside the
+   * window so a quiet day still shows when each kind last worked.
+   */
+  lastSucceededByKind(kind: string): Promise<ExecutionFact | null>;
 }
 
 export interface RefreshProjectionDeps {
@@ -166,6 +174,13 @@ function realReaders(now: Date): RefreshProjectionReaders {
           parentJobRunId: true,
           errorSummary: true,
           deploymentSha: true,
+          admissionReason: true,
+          sourceKind: true,
+          sourceRef: true,
+          network: true,
+          failureStage: true,
+          failureCategory: true,
+          outcome: true,
         },
         orderBy: [{ startedAt: "desc" }, { id: "desc" }],
         take: MAX_FACT_ROWS,
@@ -234,6 +249,13 @@ function realReaders(now: Date): RefreshProjectionReaders {
         take: MAX_FACT_ROWS,
       });
     },
+    async lastSucceededByKind(kind) {
+      return db.refreshExecution.findFirst({
+        where: { sourceKind: kind, overallStatus: "SUCCEEDED" },
+        orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+        select: EXECUTION_FACT_SELECT,
+      });
+    },
     async execution(id) {
       return db.refreshExecution.findUnique({
         where: { id },
@@ -250,6 +272,13 @@ function realReaders(now: Date): RefreshProjectionReaders {
           parentJobRunId: true,
           errorSummary: true,
           deploymentSha: true,
+          admissionReason: true,
+          sourceKind: true,
+          sourceRef: true,
+          network: true,
+          failureStage: true,
+          failureCategory: true,
+          outcome: true,
         },
       });
     },
@@ -259,6 +288,15 @@ function realReaders(now: Date): RefreshProjectionReaders {
 function resolveReaders(deps?: RefreshProjectionDeps): RefreshProjectionReaders {
   return deps?.readers ?? realReaders(new Date());
 }
+
+/** The execution select shared by the two single-row readers below. */
+const EXECUTION_FACT_SELECT = {
+  id: true, runId: true, plaidItemId: true, trigger: true, profile: true,
+  startedAt: true, completedAt: true, durationMs: true, overallStatus: true,
+  parentJobRunId: true, errorSummary: true, deploymentSha: true, admissionReason: true,
+  sourceKind: true, sourceRef: true, network: true, failureStage: true,
+  failureCategory: true, outcome: true,
+} as const;
 
 /** True when the caller explicitly scoped to nothing — fail closed, never widen. */
 function scopedToNothing(args: RefreshProjectionArgs): boolean {
@@ -377,6 +415,26 @@ export async function getCoverageSummary(
  *
  * Returns null when the execution does not exist — never a fabricated shell.
  */
+/**
+ * PLATFORM OPS OBSERVABILITY — Pipeline Status: what the data pipeline did in
+ * the window, by source kind and network, plus the last successful execution
+ * per kind. Read by the operations overview. Same window loader, same
+ * envelope, same determinism rule as every other projection.
+ */
+export const PIPELINE_SOURCE_KINDS: readonly string[] = ["PLAID_ITEM", "WALLET"];
+
+export async function getPipelineStatus(
+  args: RefreshProjectionArgs = {},
+  deps?: RefreshProjectionDeps,
+): Promise<PipelineStatus> {
+  const loaded = await loadExecutionWindow(args, deps);
+  const lastByKind: Record<string, ExecutionFact | null> = {};
+  await Promise.all(PIPELINE_SOURCE_KINDS.map(async (kind) => {
+    lastByKind[kind] = await loaded.readers.lastSucceededByKind(kind);
+  }));
+  return { ...envelopeFor(loaded), ...buildPipelineStatus(loaded.executions, lastByKind) };
+}
+
 export async function getExecutionTimeline(
   executionId: string,
   deps?: RefreshProjectionDeps,
@@ -435,7 +493,7 @@ export async function getIngestionDeferrals(
 
   const latest = new Map<string, { overallStatus: string; admissionReason: string | null }>();
   for (const r of rows) {
-    if (!latest.has(r.plaidItemId)) {
+    if (r.plaidItemId !== null && !latest.has(r.plaidItemId)) {
       latest.set(r.plaidItemId, { overallStatus: r.overallStatus, admissionReason: r.admissionReason });
     }
   }

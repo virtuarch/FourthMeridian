@@ -218,7 +218,7 @@ async function main(): Promise<void> {
   check("manual route refuses a chain it cannot read, before dispatching",
     manual.includes("isSyncableChain(account.walletChain)"));
   check("manual route runs the sync through the ONE chain registry",
-    manual.includes("syncWalletByChain(id, account.walletChain)"));
+    /syncWalletByChain\(id, account\.walletChain(, \{ trigger: "MANUAL" \})?\)/.test(manual));
   check("…and BTC still resolves to syncBtcWallet in that registry",
     /\[BTC_CHAIN\]:[\s\S]*?syncBtcWallet\(id\)/
       .test(code(read("lib", "crypto", "wallet-sync-dispatch.ts"))));

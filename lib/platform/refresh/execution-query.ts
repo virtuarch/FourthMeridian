@@ -45,6 +45,7 @@ import {
   resolveScope,
   type ExecutionDetailDTO,
   type ExecutionPageDTO,
+  type ExecutionRowDTO,
   type ExecutionScope,
   type SeamAudience,
 } from "@/lib/platform/refresh/execution-query-core";
@@ -65,6 +66,11 @@ export interface ExecutionQueryArgs {
   filter?: {
     overallStatus?: readonly string[];
     trigger?: readonly string[];
+    /** PLATFORM OPS OBSERVABILITY — source kind ("PLAID_ITEM" | "WALLET") and network ("BTC", …). */
+    sourceKind?: readonly string[];
+    network?: readonly string[];
+    /** One source's own id (a wallet's FinancialAccount.id, or a Plaid item id) — "this source's refreshes". */
+    sourceRef?: string;
     /** ISO instant lower bound (inclusive) on `startedAt`. */
     since?: Date;
     /** ISO instant upper bound (inclusive) on `startedAt`. */
@@ -86,12 +92,21 @@ export interface ExecutionQueryReaders {
     plaidItemIds: readonly string[] | undefined;
     overallStatus: readonly string[] | undefined;
     trigger: readonly string[] | undefined;
+    sourceKind: readonly string[] | undefined;
+    network: readonly string[] | undefined;
+    sourceRef: string | undefined;
     since: Date | undefined;
     until: Date | undefined;
     cursor: { startedAt: Date; id: string } | null;
     take: number;
   }): Promise<ExecutionFact[]>;
   execution(id: string): Promise<ExecutionFact | null>;
+  /**
+   * PLATFORM OPS OBSERVABILITY — the newest SUCCEEDED execution for one source
+   * (the "last successful refresh" beside a failed one), or null when none is
+   * recorded. Bounded: one indexed row.
+   */
+  lastSucceeded(source: { plaidItemId: string | null; sourceRef: string | null }): Promise<ExecutionFact | null>;
   endpoints(executionId: string): Promise<EndpointFact[]>;
   providerCalls(executionId: string): Promise<ProviderCallFact[]>;
   coverage(executionId: string): Promise<CoverageFact[]>;
@@ -116,6 +131,13 @@ const EXECUTION_SELECT = {
   parentJobRunId: true,
   errorSummary: true,
   deploymentSha: true,
+  admissionReason: true,
+  sourceKind: true,
+  sourceRef: true,
+  network: true,
+  failureStage: true,
+  failureCategory: true,
+  outcome: true,
 } as const;
 
 function realReaders(): ExecutionQueryReaders {
@@ -126,6 +148,9 @@ function realReaders(): ExecutionQueryReaders {
           ...(params.plaidItemIds ? { plaidItemId: { in: [...params.plaidItemIds] } } : {}),
           ...(params.overallStatus ? { overallStatus: { in: [...params.overallStatus] } } : {}),
           ...(params.trigger ? { trigger: { in: [...params.trigger] } } : {}),
+          ...(params.sourceKind ? { sourceKind: { in: [...params.sourceKind] } } : {}),
+          ...(params.network ? { network: { in: [...params.network] } } : {}),
+          ...(params.sourceRef ? { OR: [{ sourceRef: params.sourceRef }, { plaidItemId: params.sourceRef }] } : {}),
           ...(params.since || params.until
             ? {
                 startedAt: {
@@ -152,6 +177,17 @@ function realReaders(): ExecutionQueryReaders {
     },
     async execution(id) {
       return db.refreshExecution.findUnique({ where: { id }, select: EXECUTION_SELECT });
+    },
+    async lastSucceeded(source) {
+      if (!source.plaidItemId && !source.sourceRef) return null;
+      return db.refreshExecution.findFirst({
+        where: {
+          overallStatus: "SUCCEEDED",
+          ...(source.plaidItemId ? { plaidItemId: source.plaidItemId } : { sourceRef: source.sourceRef }),
+        },
+        select: EXECUTION_SELECT,
+        orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+      });
     },
     async endpoints(executionId) {
       return db.refreshEndpointResult.findMany({
@@ -222,6 +258,9 @@ export async function queryRefreshExecutions(
     plaidItemIds: scope.plaidItemIds,
     overallStatus: args.filter?.overallStatus,
     trigger: args.filter?.trigger,
+    sourceKind: args.filter?.sourceKind,
+    network: args.filter?.network,
+    sourceRef: args.filter?.sourceRef,
     since: args.filter?.since,
     until: args.filter?.until,
     cursor: decoded ? { startedAt: new Date(decoded.startedAt), id: decoded.id } : null,
@@ -260,7 +299,7 @@ export async function getRefreshExecutionDetail(
 
   // Scope re-check on the resolved row — a direct id lookup must never let a
   // scoped caller read outside its connections.
-  if (scope.plaidItemIds && !scope.plaidItemIds.includes(execution.plaidItemId)) return null;
+  if (scope.plaidItemIds && (execution.plaidItemId === null || !scope.plaidItemIds.includes(execution.plaidItemId))) return null;
 
   const [endpoints, providerCalls, coverage] = await Promise.all([
     readers.endpoints(execution.id),
@@ -287,6 +326,24 @@ export async function getRefreshExecutionDetail(
  * is a LOOKUP: null means the correlator named no execution, which is the honest
  * and common answer, not a reason to fabricate a link.
  */
+/**
+ * PLATFORM OPS OBSERVABILITY — the operator's CONTEXT for one execution: the
+ * source's last successful execution, so a failed run can be read beside the
+ * last time the same source worked. Operator audience only (it is composed by
+ * the platform detail route, never by a customer surface). Null when the
+ * execution is unknown.
+ */
+export async function getExecutionContext(
+  executionId: string,
+  deps?: ExecutionQueryDeps,
+): Promise<{ lastSucceeded: ExecutionRowDTO | null } | null> {
+  const readers = resolveReaders(deps);
+  const execution = await readers.execution(executionId);
+  if (!execution) return null;
+  const last = await readers.lastSucceeded({ plaidItemId: execution.plaidItemId, sourceRef: execution.sourceRef });
+  return { lastSucceeded: last ? projectExecutionRow(last, "operator") : null };
+}
+
 export async function getExecutionIdByRunId(runId: string): Promise<string | null> {
   try {
     const row = await db.refreshExecution.findUnique({ where: { runId }, select: { id: true } });

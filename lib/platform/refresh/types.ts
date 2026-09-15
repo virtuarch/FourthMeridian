@@ -34,7 +34,12 @@ import type { OperationalTier } from "@/lib/platform/history/types";
 export interface ExecutionFact {
   id: string;
   runId: string;
-  plaidItemId: string;
+  /** The Plaid item, or null for a non-Plaid source. */
+  plaidItemId: string | null;
+  /** PLATFORM OPS OBSERVABILITY — generic source identity (schema RefreshExecution). */
+  sourceKind: string;
+  sourceRef: string | null;
+  network: string | null;
   trigger: string;
   profile: string;
   startedAt: Date;
@@ -51,6 +56,12 @@ export interface ExecutionFact {
    * honest answer rather than a gap to be filled.
    */
   deploymentSha: string | null;
+  /** OPS-2D-3 — the typed admission reason on a denied execution; null when admitted. */
+  admissionReason: string | null;
+  /** PLATFORM OPS OBSERVABILITY — the derived verdict; null when not failed / not provable. */
+  failureStage: string | null;
+  failureCategory: string | null;
+  outcome: string | null;
 }
 
 /** One `RefreshEndpointResult` row — stage facts within one execution. */
@@ -282,5 +293,44 @@ export interface ExecutionTimeline {
   complete: boolean;
   /** Chronological, with a stable tiebreak so equal timestamps never reorder. */
   entries: readonly TimelineEntry[];
+  tier: OperationalTier;
+}
+
+/**
+ * PLATFORM OPS OBSERVABILITY — the data pipeline's recent state for the
+ * operations overview: what ran in the window by source kind and network, what
+ * failed, what is still open, and when each source kind last succeeded (looked
+ * up beyond the window, so a quiet day still shows the last good run). A
+ * projection like the others: derived from the ledger, carrying the envelope.
+ */
+export interface PipelineKindRollup {
+  kind: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+  partial: number;
+  skipped: number;
+  running: number;
+  /** ISO instant of the newest SUCCEEDED execution of this kind, any window; null = never recorded. */
+  lastSucceededAt: string | null;
+}
+
+export interface PipelineNetworkRollup {
+  network: string;
+  total: number;
+  failed: number;
+  lastStatus: string;
+  lastStartedAt: string;
+}
+
+export interface PipelineStatus extends ProjectionEnvelope {
+  executions: number;
+  byStatus: Readonly<Record<string, number>>;
+  kinds: readonly PipelineKindRollup[];
+  networks: readonly PipelineNetworkRollup[];
+  /** Executions still open in the window (RUNNING, or never completed). */
+  openExecutions: number;
+  /** The newest failed / partial executions in the window, newest first, bounded. */
+  latestFailures: readonly ExecutionFact[];
   tier: OperationalTier;
 }

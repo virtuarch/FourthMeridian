@@ -21,6 +21,7 @@ import {
   buildLedgerWriteCapture,
   isSchemaDriftCode,
 } from "@/lib/monitoring/capture";
+import { currentJobRun } from "@/lib/jobs/run";
 import {
   runJob,
   summarizeError,
@@ -100,6 +101,21 @@ async function main(): Promise<void> {
     });
     check("success: fn result returned verbatim", result.added === 3 && result.removed === 1);
     check("success: exactly one start row", creates.length === 1);
+
+    // PLATFORM OPS OBSERVABILITY — the ambient run identity: visible inside the
+    // body, bound to the created row, absent outside.
+    let seen: ReturnType<typeof currentJobRun> = null;
+    const ctxFake = makeFake();
+    await runJob("ctx-job", async () => { seen = currentJobRun(); }, { trigger: "cron", client: ctxFake.client });
+    check("context: the body sees its own JobRun id, name and trigger",
+      seen !== null && (seen as NonNullable<typeof seen>).id === "row-1"
+        && (seen as NonNullable<typeof seen>).jobName === "ctx-job" && (seen as NonNullable<typeof seen>).trigger === "cron");
+    check("context: nothing outside a runJob body", currentJobRun() === null);
+    const failingClient = { jobRun: { create: async () => { throw new Error("db down"); }, update: async () => ({}) } };
+    let seenNoRow: ReturnType<typeof currentJobRun> = null;
+    await runJob("ctx-job-2", async () => { seenNoRow = currentJobRun(); }, { trigger: "cron", client: failingClient });
+    check("context: a failed start write yields id null, never an invented id",
+      seenNoRow !== null && (seenNoRow as NonNullable<typeof seenNoRow>).id === null);
     check(
       "success: start row shape (name/trigger/status/executionId)",
       creates[0].jobName === "test-job" &&

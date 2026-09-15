@@ -45,6 +45,10 @@ import type {
   ProviderCallFact,
   ProviderOperationRollup,
   TimelineEntry,
+  PipelineStatus,
+  PipelineKindRollup,
+  PipelineNetworkRollup,
+  ProjectionEnvelope,
 } from "@/lib/platform/refresh/types";
 import type { OperationalTier } from "@/lib/platform/history/types";
 
@@ -325,6 +329,61 @@ const KIND_ORDER: Record<TimelineEntry["kind"], number> = {
  * byte-stable regardless of input order — a timeline that reshuffles on re-read
  * is not citable in an incident record.
  */
+/**
+ * PLATFORM OPS OBSERVABILITY — the pipeline status fold. Pure: counts by
+ * status, by source kind and by network over the window's executions, the open
+ * count by the ONE open-execution rule, and a bounded list of the newest
+ * failures. `lastSucceededByKind` is supplied by the authority (it is a lookup
+ * beyond the window) and passed through per kind; a kind with executions in the
+ * window but no successful execution ever recorded reports null, never "now".
+ */
+export function buildPipelineStatus(
+  executions: readonly ExecutionFact[],
+  lastSucceededByKind: Readonly<Record<string, ExecutionFact | null>>,
+  failuresLimit = 5,
+): Omit<PipelineStatus, keyof ProjectionEnvelope> {
+  const byStatus = tally(executions.map((e) => e.overallStatus));
+  const kindKeys = new Set<string>([...executions.map((e) => e.sourceKind), ...Object.keys(lastSucceededByKind)]);
+  const kinds: PipelineKindRollup[] = [...kindKeys].sort().map((kind) => {
+    const rows = executions.filter((e) => e.sourceKind === kind);
+    return {
+      kind,
+      total: rows.length,
+      succeeded: rows.filter((e) => e.overallStatus === "SUCCEEDED").length,
+      failed: rows.filter((e) => e.overallStatus === "FAILED").length,
+      partial: rows.filter((e) => e.overallStatus === "PARTIAL").length,
+      skipped: rows.filter((e) => e.overallStatus === "SKIPPED").length,
+      running: countOpenExecutions(rows),
+      lastSucceededAt: lastSucceededByKind[kind]?.startedAt.toISOString() ?? null,
+    };
+  });
+  const networks: PipelineNetworkRollup[] = [...groupBy(executions.filter((e) => e.network !== null), (e) => e.network as string).entries()]
+    .map(([network, rows]) => {
+      const newest = [...rows].sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime() || (a.id < b.id ? 1 : -1))[0];
+      return {
+        network,
+        total: rows.length,
+        failed: rows.filter((e) => e.overallStatus === "FAILED" || e.overallStatus === "PARTIAL").length,
+        lastStatus: newest.overallStatus,
+        lastStartedAt: newest.startedAt.toISOString(),
+      };
+    })
+    .sort((a, b) => a.network.localeCompare(b.network));
+  const latestFailures = executions
+    .filter((e) => e.overallStatus === "FAILED" || e.overallStatus === "PARTIAL")
+    .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime() || (a.id < b.id ? 1 : -1))
+    .slice(0, Math.max(0, failuresLimit));
+  return {
+    executions: executions.length,
+    byStatus,
+    kinds,
+    networks,
+    openExecutions: countOpenExecutions(executions),
+    latestFailures,
+    tier: tierFor(executions.length, false),
+  };
+}
+
 export function buildExecutionTimeline(
   execution: ExecutionFact,
   endpoints: readonly EndpointFact[],

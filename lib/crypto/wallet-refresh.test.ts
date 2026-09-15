@@ -168,8 +168,8 @@ async function main() {
     const refresh = readFileSync('lib/crypto/wallet-refresh.ts', 'utf8');
     const manual = readFileSync('app/api/accounts/[id]/sync/route.ts', 'utf8');
     const job = readFileSync('jobs/sync-crypto.ts', 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
-    check('H. the scheduled sweep calls syncWalletByChain', /sync: \(accountId, chain\) => syncWalletByChain\(accountId, chain\)/.test(refresh));
-    check('H. …the manual route calls syncWalletByChain', /syncWalletByChain\(id, account\.walletChain\)/.test(manual));
+    check('H. the scheduled sweep calls syncWalletByChain', /sync: \(accountId, chain\) => syncWalletByChain\(accountId, chain(, \{ trigger: walletRefreshTrigger\(\) \})?\)/.test(refresh));
+    check('H. …the manual route calls syncWalletByChain', /syncWalletByChain\(id, account\.walletChain(, \{ trigger: "MANUAL" \})?\)/.test(manual));
     check('H. the job runs the unified sweep and no chain-specific batch', /refreshScheduledWallets\(/.test(job)
       && !/syncAllBtcWallets|syncAllSolWallets|syncAllEthWallets|syncBtcWallet\(/.test(job));
     check('H. the job regenerates what the manual route regenerates, for synced wallets only',

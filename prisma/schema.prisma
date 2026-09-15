@@ -3691,9 +3691,26 @@ model JobRun {
 model RefreshExecution {
   id              String    @id @default(cuid())
   runId           String    @unique // first-class run correlator; stamped into SyncIssue.detail.runId and (later) provider-usage rows
-  plaidItemId     String // soft reference (no FK) — ledger survives item deletion
-  trigger         String // "MANUAL" | "CRON" | "RECONNECT" | "WEBHOOK" | "ADMIN"
-  profile         String // "FULL_REFRESH" | "RECONNECT"
+  // PLATFORM OPS OBSERVABILITY — EXECUTION SOURCE IDENTITY. The ledger was born
+  // Plaid-shaped: `plaidItemId` was required, so a wallet refresh could not be
+  // represented and every crypto execution (manual or scheduled) left no run,
+  // no trigger, no duration and no status behind — a failure lived only in a
+  // SyncIssue with no runId. The three columns below name WHAT was refreshed
+  // generically, so one ledger serves every source kind:
+  //   sourceKind  "PLAID_ITEM" | "WALLET"        (string, the JobRun idiom)
+  //   sourceRef   the source's own id: FinancialAccount.id for a wallet; null for
+  //               a Plaid item, whose id stays in plaidItemId (one identity, one
+  //               column — the reader coalesces them)
+  //   network     the chain symbol for a wallet ("BTC", "ETH", "SOL", "BNB",
+  //               "AVAX"); null for every other source. Never an address.
+  // `plaidItemId` becomes nullable: null means "not a Plaid item", never
+  // "unknown item". Soft references throughout, no FKs — unchanged doctrine.
+  plaidItemId     String? // soft reference (no FK) — ledger survives item deletion; null for non-Plaid sources
+  sourceKind      String    @default("PLAID_ITEM")
+  sourceRef       String?
+  network         String?
+  trigger         String // "MANUAL" | "CRON" | "RECONNECT" | "WEBHOOK" | "ADMIN" | "OPERATOR" | "RESUME"
+  profile         String // "FULL_REFRESH" | "RECONNECT" | "TRANSACTIONS_ONLY" | "IMPORT_RECOVERY" | "WALLET_SYNC"
   startedAt       DateTime
   completedAt     DateTime? // set by the single completion write
   durationMs      Int? // wall-clock, set at completion
@@ -3743,6 +3760,27 @@ model RefreshExecution {
   // read as a failure on the Refresh workspace.
   // ───────────────────────────────────────────────────────────────────────────
   admissionReason String?
+  // ───────────────────────────────────────────────────────────────────────────
+  // PLATFORM OPS OBSERVABILITY — THE VERDICT, derived ONCE at the completion
+  // write from the stage records and the thrown error, never rewritten.
+  //   failureStage     which stage failed, in the PRODUCER's own vocabulary
+  //                    (a Plaid endpoint name; a wallet adapter's "balance",
+  //                    "price", "capture", "config", "address"). Null unless the
+  //                    execution failed.
+  //   failureCategory  a CODE-OWNED classification of the failure
+  //                    (lib/plaid/refresh-verdict.core.ts): PROVIDER_TIMEOUT,
+  //                    PROVIDER_RATE_LIMITED, PROVIDER_AUTH, PROVIDER_ERROR,
+  //                    CONFIGURATION, INPUT, UNSUPPORTED, INTERNAL, UNKNOWN.
+  //                    Null unless the execution failed.
+  //   outcome          what happened to canonical state: "UPDATED" | "NO_CHANGE",
+  //                    set ONLY when the stages prove it (records written, or a
+  //                    verified no-change reconstruction). Null = not provable,
+  //                    which a reader must render as unknown, never as unchanged.
+  // Generic by construction: no column names a chain or a provider.
+  // ───────────────────────────────────────────────────────────────────────────
+  failureStage    String?
+  failureCategory String?
+  outcome         String?
   createdAt       DateTime  @default(now())
 
   endpoints       RefreshEndpointResult[]
@@ -3753,6 +3791,8 @@ model RefreshExecution {
   @@index([overallStatus, startedAt]) // failure / partial scans
   @@index([parentJobRunId]) // executions under a batch
   @@index([deploymentSha, startedAt]) // "which refreshes belong to deployment X", newest first
+  @@index([sourceKind, startedAt]) // "recent wallet / Plaid executions", newest first
+  @@index([sourceRef, startedAt]) // "recent refreshes of this wallet"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

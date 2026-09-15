@@ -83,7 +83,9 @@ export async function POST(
   // V26-ORCH-1 — stamped BEFORE the sync so rows it writes fall at/after it,
   // which is what lets the planner MEASURE what changed instead of guessing.
   const syncStartedAt = new Date();
-  const result = await syncWalletByChain(id, account.walletChain);
+  // PLATFORM OPS OBSERVABILITY — the owner pressed Sync: a MANUAL execution in
+  // the refresh ledger, so the run, its duration and its verdict are inspectable.
+  const result = await syncWalletByChain(id, account.walletChain, { trigger: "MANUAL" });
 
   if (result.ok) {
     // Best-effort/non-fatal — same pattern as every other account-mutation path.

@@ -172,7 +172,7 @@ async function main(): Promise<void> {
       /\[BTC_CHAIN\]:[\s\S]*?syncBtcWallet\(id\)/.test(dispatch));
     check("F. the CRON runs the unified sweep, which uses the same dispatcher",
       /refreshScheduledWallets/.test(cron)
-        && /syncWalletByChain\(accountId, chain\)/.test(readFileSync("lib/crypto/wallet-refresh.ts", "utf8")));
+        && /syncWalletByChain\(accountId, chain(, \{ trigger: walletRefreshTrigger\(\) \})?\)/.test(readFileSync("lib/crypto/wallet-refresh.ts", "utf8")));
     check("F. no route imports the explorer directly (no second import path)",
       !/fetchAddressTxsRaw/.test(connect) && !/fetchAddressTxsRaw/.test(manual));
 
