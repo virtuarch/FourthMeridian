@@ -8,7 +8,7 @@
  * acquisition (L1), intelligence build (L2), and freshness (L3) side by side.
  *
  * Read-only, metadata only: status, health, counts, timestamps, institution
- * label, owner email (the support identifier). NO balances, NO transaction
+ * label, an opaque owner reference (never an email). NO balances, NO transaction
  * amounts. Backed by GET /api/platform/platform-ops/connection-diagnostics
  * (requirePlatformAccess PLATFORM_OPS READ). Reuses the same pure derivations as
  * the customer surface — no new financial authority.
@@ -82,7 +82,7 @@ export function OpsConnectionDiagnosticsWidget({ section }: { section: PlatformS
                 className="flex w-full items-center justify-between gap-2 px-1 py-2 text-left transition-colors hover:bg-[var(--surface-hover)] focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--meridian-400)]"
               >
                 <span className="min-w-0 truncate text-xs text-[var(--text-primary)]">
-                  {c.source} <span className="text-[var(--text-muted)]">· {c.owner}</span>
+                  {c.source} <span className="text-[var(--text-muted)]">· {c.ownerRef}</span>
                 </span>
                 <span className="shrink-0 text-[11px] text-[var(--text-secondary)]">
                   {HEALTH_LABEL[c.healthState] ?? c.healthState}
@@ -100,7 +100,7 @@ export function OpsConnectionDiagnosticsWidget({ section }: { section: PlatformS
             <PanelContent>
               <div className="flex flex-col gap-3 text-xs">
                 <Group title="Connection">
-                  <Row label="Owner" value={selected.owner} />
+                  <Row label="Owner ref" value={selected.ownerRef} />
                   <Row label="Source" value={selected.source} />
                   <Row label="Provider" value={selected.provider} />
                   <Row label="Status" value={selected.status} />

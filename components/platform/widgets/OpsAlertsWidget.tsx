@@ -54,7 +54,7 @@ export function OpsAlertsWidget({ section }: { section: PlatformSection }) {
           </ul>
 
           <p className="text-[11px] text-[var(--text-muted)] mt-1">
-            Destination: {data.destination ?? "not configured"}
+            Destination: {data.destinationConfigured ? "configured" : "not configured"}
           </p>
 
           {data.history.length > 0 ? (

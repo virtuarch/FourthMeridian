@@ -320,7 +320,11 @@ export interface EnvKeyReport {
 /** The structured, value-free environment report surfaced by the ops_env_status
  *  widget. `ok` is true iff nothing is a hard `fail`. */
 export interface EnvReport {
+  /** The build mode (NODE_ENV). Kept for the record; on Vercel Preview it reads "production". */
   nodeEnv: string;
+  /** PLATFORM OPS — the DEPLOYMENT environment (`deploymentEnvironment()`), the
+   *  value an operator means by "environment". */
+  deploymentEnv: DeploymentEnvironment;
   ok:      boolean;
   counts:  { pass: number; warn: number; fail: number };
   keys:    EnvKeyReport[];
@@ -389,7 +393,7 @@ export function getEnvReport(): EnvReport {
   const counts = { pass: 0, warn: 0, fail: 0 };
   for (const k of keys) counts[k.status]++;
 
-  return { nodeEnv: _e.NODE_ENV ?? "development", ok: counts.fail === 0, counts, keys };
+  return { nodeEnv: _e.NODE_ENV ?? "development", deploymentEnv: deploymentEnvironment(), ok: counts.fail === 0, counts, keys };
 }
 
 /**

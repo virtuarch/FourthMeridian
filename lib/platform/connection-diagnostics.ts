@@ -7,7 +7,7 @@
  * current freshness (L3) — without touching customer financial data.
  *
  * BOUNDARY (binding): operational METADATA only — status, health, counts,
- * timestamps, institution label, and the owner's email (the support identifier).
+ * timestamps, institution label, and an opaque owner reference (never the email).
  * NO balances, NO transaction amounts, NO SpaceSnapshot value columns (only its
  * `date` is read, as a FRESHNESS signal). This is NOT a new financial authority —
  * it reuses the same pure derivations the customer surface uses:
@@ -29,7 +29,11 @@ import { loadRefreshPolicies } from "@/lib/platform/refresh-policy";
 
 export interface ConnectionDiagnostic {
   id:          string;   // the operator handle (already used by resync/reauth)
-  owner:       string;   // owner email — the support identifier (grant-gated)
+  /** PLATFORM OPS PRIVACY — an OPAQUE owner reference (last 6 of the user id),
+   *  enough to correlate two connections of one owner and to hand to Customer
+   *  Success, which holds the directory. The email no longer crosses this
+   *  boundary: a monitoring grant is not a customer directory. */
+  ownerRef:    string;
   source:      string;   // institution / wallet label
   provider:    "PLAID" | "WALLET";
   status:      string;   // raw provider status (ACTIVE/NEEDS_REAUTH/ERROR)
@@ -60,6 +64,11 @@ export interface ConnectionDiagnostic {
 
 const DEFAULT_CAP = 50;
 
+/** Opaque owner reference: correlates, never identifies. */
+function ownerRefOf(userId: string | null | undefined): string {
+  return userId ? `user …${userId.slice(-6)}` : "—";
+}
+
 function walletLabel(externalConnectionId: string | null): string {
   if (!externalConnectionId) return "Self-custody wallet";
   return `Self-custody wallet …${externalConnectionId.slice(-6)}`;
@@ -77,7 +86,7 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
       select:  {
         id: true, institutionName: true, status: true, errorCode: true,
         lastSyncedAt: true, syncIncompleteAt: true, createdAt: true,
-        user: { select: { email: true } },
+        user: { select: { id: true } },
         connections: { where: { deletedAt: null }, select: { financialAccountId: true } },
       },
       orderBy: { createdAt: "desc" },
@@ -88,7 +97,7 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
       select:  {
         id: true, externalConnectionId: true, status: true, errorCode: true,
         lastSyncedAt: true, createdAt: true,
-        user: { select: { email: true } },
+        user: { select: { id: true } },
         accountConnections: { where: { deletedAt: null }, select: { financialAccountId: true } },
       },
       orderBy: { createdAt: "desc" },
@@ -196,7 +205,7 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
       now,
     );
     out.push({
-      id: p.id, owner: p.user?.email ?? "—", source: p.institutionName, provider: "PLAID",
+      id: p.id, ownerRef: ownerRefOf(p.user?.id), source: p.institutionName, provider: "PLAID",
       status: p.status,
       healthState: deriveConnectionHealthState(p.status, p.errorCode, p.lastSyncedAt, plaidStaleMs, nowMs),
       acquisition: {
@@ -248,7 +257,7 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
       now,
     );
     out.push({
-      id: w.id, owner: w.user?.email ?? "—", source: walletLabel(w.externalConnectionId), provider: "WALLET",
+      id: w.id, ownerRef: ownerRefOf(w.user?.id), source: walletLabel(w.externalConnectionId), provider: "WALLET",
       status: w.status,
       healthState: deriveConnectionHealthState(w.status, w.errorCode, w.lastSyncedAt, walletStaleMs, nowMs),
       acquisition: {

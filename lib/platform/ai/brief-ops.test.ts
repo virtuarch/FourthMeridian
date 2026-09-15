@@ -10,7 +10,7 @@
  *     uncorrelated count reported beside it — and cache reuse NOT counted.
  */
 
-import { briefGenerationReason, classifyBriefRow, getBriefOps, type BriefOpsReaders, type BriefRowFact } from "./brief-ops";
+import { briefGenerationReason, classifyBriefRow, getBriefOps, type BriefInvocationFact, type BriefOpsReaders, type BriefRowFact } from "./brief-ops";
 import { BRIEF_GENERATION_VERSION } from "@/lib/ai/brief/policy";
 import { priceInvocation, type InvocationFact } from "./invocation-economics";
 
@@ -30,7 +30,7 @@ function row(over: Partial<BriefRowFact>): BriefRowFact {
     model: "gpt-5.1", promptVersion: CURRENT, correlationId: "brief_daily_uuid-1", updatedAt: now, ...over,
   };
 }
-function inv(correlationId: string, over: Partial<InvocationFact> = {}): InvocationFact & { correlationId: string } {
+function inv(correlationId: string, over: Partial<Omit<InvocationFact, "correlationId">> = {}): BriefInvocationFact {
   return {
     provider: "OPENAI", model: "gpt-5.1", occurredAt: D("2026-09-15T06:00:00.000Z"), promptTokens: 20_000,
     cachedPromptTokens: 10_000, completionTokens: 1_000, reasoningTokens: 0, latencyMs: 3_000, toolCallCount: 0,

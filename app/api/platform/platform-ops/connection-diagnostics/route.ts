@@ -15,7 +15,7 @@
  *
  * OWNER EMAIL — a deliberate deviation from the aggregate/no-PII posture of
  * connection-health: a support operator must identify WHOSE connection a ticket
- * refers to, so the owner's email is exposed HERE (grant-gated, PLATFORM_OPS
+ * refers to, so an OPAQUE owner reference is exposed HERE (grant-gated, PLATFORM_OPS
  * READ). It remains metadata — no financial data is exposed alongside it.
  */
 

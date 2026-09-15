@@ -76,6 +76,10 @@ import { OpsProviderOperationsWidget } from "./widgets/OpsProviderOperationsWidg
 import { OpsSchedulerWidget } from "./widgets/OpsSchedulerWidget";
 import { OpsPoliciesWidget } from "./widgets/OpsPoliciesWidget";
 import { OpsPlatformHealthWidget } from "./widgets/OpsPlatformHealthWidget";
+import { OpsOverviewWidget } from "./widgets/OpsOverviewWidget";
+import { OpsAiInvocationsWidget } from "./widgets/OpsAiInvocationsWidget";
+import { OpsBriefOpsWidget } from "./widgets/OpsBriefOpsWidget";
+import { OpsPlaidUsageWidget } from "./widgets/OpsPlaidUsageWidget";
 import { WorkspaceSessionProvider } from "./workspace-session";
 import { GrowthSignupsWidget } from "./widgets/GrowthSignupsWidget";
 import { GrowthBetaRequestsWidget } from "./widgets/GrowthBetaRequestsWidget";
@@ -140,6 +144,11 @@ const PLATFORM_WIDGET_REGISTRY: Record<
   ops_platform_health:    OpsPlatformHealthWidget,
   // PLATFORM OPS POLICIES (Slice 1) — read-only financial refresh policy.
   ops_policies:           OpsPoliciesWidget,
+  // PLATFORM OPS OBSERVABILITY — the cockpit and the new authority readers.
+  ops_overview:           OpsOverviewWidget,
+  ops_ai_invocations:     OpsAiInvocationsWidget,
+  ops_brief_ops:          OpsBriefOpsWidget,
+  ops_plaid_usage:        OpsPlaidUsageWidget,
   // Growth & Revenue
   growth_signups:       GrowthSignupsWidget,
   growth_beta_requests: GrowthBetaRequestsWidget,

@@ -77,9 +77,9 @@ const AGO = (mins: number) => new Date(NOW - mins * 60_000).toISOString();
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 /** Alert rule views through the REAL derivation over the REAL registry. */
-function alerts(runs: AlertRunSummary[], destination: string | null = "ops@example.test"): PlatformAlertsResponse {
+function alerts(runs: AlertRunSummary[], destinationConfigured = true): PlatformAlertsResponse {
   return {
-    destination,
+    destinationConfigured,
     lastEvaluatedAt: runs[0]?.evaluatedAtISO ?? null,
     rules: deriveAlertRuleViews(ALERT_RULES, () => true, runs),
     history: collectAlertHistory(runs),
@@ -189,6 +189,7 @@ const ENV: PlatformEnvStatusResponse = getEnvReport();
  *  which variables happen to be set in the process running the test. */
 const ENV_CLEAN: PlatformEnvStatusResponse = {
   nodeEnv: "test",
+  deploymentEnv: "development",
   ok: true,
   counts: { pass: 2, warn: 0, fail: 0 },
   keys: [
@@ -328,7 +329,7 @@ function main() {
     const { html, text } = renderSurface({
       providers: ok(providersResponse([])),
       freshness: ok(freshnessResponse([])),
-      alerts: ok({ destination: null, lastEvaluatedAt: null, rules: [], history: [] }),
+      alerts: ok({ destinationConfigured: false, lastEvaluatedAt: null, rules: [], history: [] }),
       rateLimits: ok(EMPTY_RATE_LIMITS),
       env: ok(ENV_CLEAN),
     });
@@ -352,14 +353,14 @@ function main() {
   // ── 6. Never evaluated is unknown, not "no firings" ───────────────────────
   console.log("6. an evaluator that never ran is unknown, not quiet");
   {
-    const { text } = renderSurface({ alerts: ok(alerts([], null)) });
+    const { text } = renderSurface({ alerts: ok(alerts([], false)) });
     check("states the destination is not configured",
       text.includes("Not configured — deliveries have nowhere to go"), text);
   }
   {
     // Rules exist, evaluator has never run.
     const neverRun: PlatformAlertsResponse = {
-      destination: "ops@example.test",
+      destinationConfigured: true,
       lastEvaluatedAt: null,
       rules: deriveAlertRuleViews(ALERT_RULES, () => true, []),
       history: [],
@@ -380,7 +381,7 @@ function main() {
     // workspace. If this surface did not represent them, consolidating would
     // delete two operator reads from the product.
     check("rate-limit buckets are represented", text.includes("ip:pre-login") && text.includes("47 hits"), text);
-    check("the environment report is represented", text.includes(ENV.nodeEnv), text);
+    check("the environment report is represented", text.includes(ENV.deploymentEnv), text);
     check("both Configuration captions render",
       text.includes("Environment") && text.includes("Rate limits"), text);
 
@@ -511,10 +512,11 @@ function main() {
   // ── 12. Each group is a DOORWAY onto the workspace that owns its detail ───
   console.log("12. every group names the workspace carrying its full read");
   {
-    // The prototype's doorways: Alerts → Providers → Providers → Operations.
-    // Two groups deliberately share a target — resource freshness lives in the
-    // Providers workspace — so the pairs are asserted by TARGET, not by count
-    // of distinct labels.
+    // The doorways: Policies → Providers → Providers → Policies. Two pairs
+    // deliberately share a target — resource freshness lives in the Providers
+    // workspace; alerts and configuration both live in Policies & controls
+    // (PLATFORM OPS OBSERVABILITY folded the Alerts and Operations workspaces)
+    // — so the pairs are asserted by TARGET, not by count of distinct labels.
     const wired = renderSurface({ onOpenWorkspace: () => {} });
     const doorways = [
       ...wired.html.matchAll(/<button type="button" aria-label="([^"]*)"[^>]*>([^<]*)<svg/g),
@@ -534,8 +536,8 @@ function main() {
     // Asserted on the doorway's own class list, so the guard fails if the
     // overlay is dropped OR if someone "simplifies" it into layout-affecting
     // spacing.
-    const doorwayClass = (wired.html.match(/<button[^>]*aria-label="Alerts[^"]*"[^>]*class="([^"]*)"/) ??
-                          wired.html.match(/<button[^>]*class="([^"]*)"[^>]*aria-label="Alerts[^"]*"/))?.[1] ?? "";
+    const doorwayClass = (wired.html.match(/<button[^>]*aria-label="[^"]*behind Alerts"[^>]*class="([^"]*)"/) ??
+                          wired.html.match(/<button[^>]*class="([^"]*)"[^>]*aria-label="[^"]*behind Alerts"/))?.[1] ?? "";
     check("the doorway carries a 44px overlay hit area",
       /before:h-11/.test(doorwayClass) && /before:absolute/.test(doorwayClass), doorwayClass);
     check("…at least 44px wide too", /before:min-w-\[44px\]/.test(doorwayClass), doorwayClass);
@@ -554,8 +556,8 @@ function main() {
       !/(^|\s)-m[trbl]?-\d/.test(layoutClasses), layoutClasses);
     check("no breakpoint scoping — the overlay is layout-neutral at every width",
       !/(sm|md|lg|xl):/.test(doorwayClass), doorwayClass);
-    check("the doorway labels are the prototype's",
-      doorways.map((d) => d.visible).join(",") === "Alerts,Providers,Providers,Operations",
+    check("the doorway labels are the registry's workspace labels",
+      doorways.map((d) => d.visible).join(",") === "Policies,Providers,Providers,Policies",
       doorways.map((d) => d.visible).join(","));
 
     // Every target resolves to a REAL rail workspace, and its label is the

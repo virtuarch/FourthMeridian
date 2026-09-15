@@ -164,11 +164,15 @@ function realReaders(now: Date): ConvergenceReaders {
           ? db.plaidItem.findMany({ where: { id: { in: itemIds } }, select: { id: true, institutionName: true } })
           : Promise.resolve([]),
         acctIds.length
-          ? db.financialAccount.findMany({ where: { id: { in: acctIds } }, select: { id: true, name: true, institution: true } })
+          ? db.financialAccount.findMany({ where: { id: { in: acctIds } }, select: { id: true, institution: true } })
           : Promise.resolve([]),
       ]);
       const itemById = new Map(items.map((i) => [i.id, i.institutionName]));
-      const acctById = new Map(accounts.map((a) => [a.id, a.institution ? `${a.institution} · ${a.name}` : a.name]));
+      // PLATFORM OPS PRIVACY — the operator label is the institution, or an
+      // opaque account reference. The customer's own account NAME is customer
+      // data and never crosses into an operator payload (it did, as
+      // "institution · name", until this line).
+      const acctById = new Map(accounts.map((a) => [a.id, a.institution ?? `Account …${a.id.slice(-6)}`]));
 
       return rows.map((r) => {
         // A row with no referent at all (neither id set) cannot be orphaned —

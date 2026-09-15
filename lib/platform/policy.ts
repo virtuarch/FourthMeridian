@@ -126,6 +126,13 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       // what is configured, what is effective, what the deployed scheduler can
       // honour, what the latest sweep ran under. Backfilled by ensurePlatformSections.
       { key: "ops_policies", label: "Policies", order: 22 },
+      // PLATFORM OPS OBSERVABILITY — the operations cockpit and the readers over
+      // authorities that had none (AiInvocation, DailyBrief, Plaid Item-months).
+      // Backfilled onto the live Space by ensurePlatformSections.
+      { key: "ops_overview",       label: "Operations",     order: 23 },
+      { key: "ops_ai_invocations", label: "AI Invocations", order: 24 },
+      { key: "ops_brief_ops",      label: "Daily Brief",    order: 25 },
+      { key: "ops_plaid_usage",    label: "Plaid Usage",    order: 26 },
     ],
   },
   SECURITY_OPS: {

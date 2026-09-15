@@ -106,7 +106,7 @@ export interface ExecutionQueryReaders {
    * (the "last successful refresh" beside a failed one), or null when none is
    * recorded. Bounded: one indexed row.
    */
-  lastSucceeded(source: { plaidItemId: string | null; sourceRef: string | null }): Promise<ExecutionFact | null>;
+  lastSucceeded(source: { plaidItemId: string | null; sourceRef: string | null; before: Date; excludeId: string }): Promise<ExecutionFact | null>;
   endpoints(executionId: string): Promise<EndpointFact[]>;
   providerCalls(executionId: string): Promise<ProviderCallFact[]>;
   coverage(executionId: string): Promise<CoverageFact[]>;
@@ -183,6 +183,8 @@ function realReaders(): ExecutionQueryReaders {
       return db.refreshExecution.findFirst({
         where: {
           overallStatus: "SUCCEEDED",
+          startedAt: { lt: source.before },
+          id: { not: source.excludeId },
           ...(source.plaidItemId ? { plaidItemId: source.plaidItemId } : { sourceRef: source.sourceRef }),
         },
         select: EXECUTION_SELECT,
@@ -340,7 +342,12 @@ export async function getExecutionContext(
   const readers = resolveReaders(deps);
   const execution = await readers.execution(executionId);
   if (!execution) return null;
-  const last = await readers.lastSucceeded({ plaidItemId: execution.plaidItemId, sourceRef: execution.sourceRef });
+  // Strictly BEFORE this execution: "the last time this source worked before
+  // this run", so a successful execution never reports itself as its own context.
+  const last = await readers.lastSucceeded({
+    plaidItemId: execution.plaidItemId, sourceRef: execution.sourceRef,
+    before: execution.startedAt, excludeId: execution.id,
+  });
   return { lastSucceeded: last ? projectExecutionRow(last, "operator") : null };
 }
 

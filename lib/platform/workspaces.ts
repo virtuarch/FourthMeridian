@@ -57,14 +57,6 @@ export const PLATFORM_WORKSPACES: Record<string, WorkspaceDefinition> = {
     id: "platform-providers", kind: "standard", domain: "platform",
     label: "Providers", icon: "PlugZap",
   },
-  "platform-operations": {
-    id: "platform-operations", kind: "standard", domain: "platform",
-    label: "Operations", icon: "Wrench",
-  },
-  "platform-alerts": {
-    id: "platform-alerts", kind: "standard", domain: "platform",
-    label: "Alerts", icon: "BellRing",
-  },
   // OPS-5 Wave B — the operational INTELLIGENCE workspace: history (S7),
   // convergence (S9), and cost/latency (S10) are Workspace CONTENT here, not a new
   // dashboard. Still a standard Workspace (no fabricated Perspective); the
@@ -82,7 +74,7 @@ export const PLATFORM_WORKSPACES: Record<string, WorkspaceDefinition> = {
   // Composition only — no second spend engine; each metric keeps its truth tier.
   "platform-costs": {
     id: "platform-costs", kind: "standard", domain: "platform",
-    label: "Costs", icon: "Gauge",
+    label: "Economics", icon: "Gauge",
   },
   // OPS-2C-2 — the Refresh workspace. It answers a question no existing
   // workspace does ("what did this refresh do, to which accounts, and did it
@@ -91,7 +83,7 @@ export const PLATFORM_WORKSPACES: Record<string, WorkspaceDefinition> = {
   // already carries six sections and answers whether a provider is trustworthy.
   "platform-refresh": {
     id: "platform-refresh", kind: "standard", domain: "platform",
-    label: "Refresh", icon: "RefreshCw",
+    label: "Pipeline", icon: "RefreshCw",
   },
   // PLATFORM OPS POLICIES (Slice 1) — the Policies workspace: declared operational
   // policy beside what the deployment can honour and what actually executed. It
@@ -127,38 +119,38 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
   PLATFORM_OPS: [
     {
       workspaceId: "platform-overview",
-      // PM-1 — Overview reads as ONE operational question in three movements:
-      // Scheduler (is the clock ticking?) → Jobs (did the work run?) → Platform
-      // Health (is the platform, end to end, healthy?). The five formerly-separate
-      // summary cards (alerts, provider health, resource freshness, rate limits,
-      // environment) are CONSOLIDATED into ops_platform_health rather than deleted;
-      // see PLATFORM_SECTION_REPRESENTATION for the keys it now stands in for. The
-      // heavy detail (Manual Operations WRITE controls, connection + API-usage
-      // breakdowns) continues to live in its own Workspace.
-      sections: ["ops_scheduler", "ops_job_health", "ops_platform_health"],
-      doorways: ["platform-jobs", "platform-policies", "platform-refresh", "platform-providers", "platform-operations", "platform-alerts", "platform-trends", "platform-ai", "platform-costs"],
+      // PLATFORM OPS OBSERVABILITY — Overview is the COCKPIT: one verdict per
+      // operational domain (refresh pipeline, sources, jobs, Daily Brief, AI,
+      // Plaid) from ops_overview, then the consolidated Platform Health surface
+      // (alerts, provider health, resource freshness, rate limits, environment —
+      // see PLATFORM_SECTION_REPRESENTATION). Every domain has a doorway into
+      // the workspace that holds its detail, so "something is wrong" is two
+      // clicks from "this exact execution failed".
+      sections: ["ops_overview", "ops_platform_health"],
+      doorways: ["platform-refresh", "platform-jobs", "platform-providers", "platform-ai", "platform-costs", "platform-policies", "platform-trends"],
     },
-    { workspaceId: "platform-jobs", sections: ["ops_scheduler", "ops_job_health"] },
-    // PLATFORM OPS POLICIES (Slice 1) — read-only financial refresh policy.
-    { workspaceId: "platform-policies", sections: ["ops_policies"] },
-    // OPS-2C-2 — Refresh: outcomes + the execution rows + per-account coverage.
-    // Provider-operation attempt facts (route shipped in 2C-1) deliberately do
-    // NOT live here — they are provider-shaped and land in Providers at 2C-5.
-    { workspaceId: "platform-refresh", sections: ["ops_refresh_summary", "ops_refresh_executions", "ops_refresh_coverage"] },
-    // OPS-2C-5 order: health interpretation → observed behaviour → connections →
-    // consumption → freshness → delivery. Provider Operations sits directly under
-    // Provider Health (the behaviour that supports the interpretation) and well
-    // clear of API Usage, whose question is consumption over time.
+    // Jobs — the scheduler observation, the per-job health table, and the
+    // manual Run Now / Dry Run controls (formerly their own Operations workspace:
+    // "are scheduled jobs working? are manual runs working?" is one question).
+    { workspaceId: "platform-jobs", sections: ["ops_scheduler", "ops_job_health", "ops_manual_operations"] },
+    // Policies & controls — the financial refresh policy (with its CONTROL
+    // editor) and the alert rules, which are declared policy too.
+    { workspaceId: "platform-policies", sections: ["ops_policies", "ops_alerts"] },
+    // Pipeline — the execution ROWS first (every source kind, filterable, each
+    // opening its inspection), then outcomes, the operator's source health,
+    // and per-account coverage.
+    { workspaceId: "platform-refresh", sections: ["ops_refresh_executions", "ops_refresh_summary", "ops_connection_health", "ops_refresh_coverage"] },
+    // Providers — health interpretation → observed behaviour → per-connection
+    // diagnostics → consumption → freshness → delivery.
     { workspaceId: "platform-providers", sections: ["ops_provider_health", "ops_provider_operations", "ops_connection_health", "ops_connection_diagnostics", "ops_api_usage", "ops_resource_freshness", "ops_email_delivery"] },
-    { workspaceId: "platform-operations", sections: ["ops_manual_operations"] },
-    { workspaceId: "platform-alerts", sections: ["ops_alerts"] },
-    // OPS-5 Wave B intelligence layer (S7 → S9 → S10 add their sections here).
-    { workspaceId: "platform-trends", sections: ["ops_history", "ops_convergence", "ops_timeline", "ops_cost"] },
-    // OPS-6D AI operations — usage volume (existing) + usage trend (new).
-    { workspaceId: "platform-ai", sections: ["ops_api_usage", "ops_ai_trend"] },
-    // OPS-6G unified cost console — operational cost (S10) + AI cost (6D), each
-    // carrying its own truth tier. Composition only, no second spend engine.
-    { workspaceId: "platform-costs", sections: ["ops_cost", "ops_ai_trend"] },
+    // History — the OPS-5 Wave B intelligence layer.
+    { workspaceId: "platform-trends", sections: ["ops_history", "ops_convergence", "ops_timeline"] },
+    // AI — per-invocation operations + economics, Daily Brief operations, and
+    // the day-grain usage trend.
+    { workspaceId: "platform-ai", sections: ["ops_ai_invocations", "ops_brief_ops", "ops_ai_trend"] },
+    // Economics — Plaid Item-months and their estimated cost, the operational
+    // cost & latency intelligence, and the AI spend trend. Composition only.
+    { workspaceId: "platform-costs", sections: ["ops_plaid_usage", "ops_cost", "ops_ai_trend"] },
   ],
   SECURITY_OPS: [
     { workspaceId: "platform-overview", sections: ["sec_auth_posture", "sec_operator_actions", "sec_audit_feed", "sec_sessions", "sec_anomalies"] },

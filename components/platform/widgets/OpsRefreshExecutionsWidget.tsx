@@ -1,71 +1,235 @@
 "use client";
 
 /**
- * components/platform/widgets/OpsRefreshExecutionsWidget.tsx  (OPS-2C-2 · ops_refresh_executions)
+ * components/platform/widgets/OpsRefreshExecutionsWidget.tsx  (ops_refresh_executions)
  *
- * The most recent refresh executions, over
- * GET /api/platform/platform-ops/refresh/executions — the EXECUTION QUERY SEAM's
- * read surface (requirePlatformAccess PLATFORM_OPS READ).
+ * Recent refresh executions across EVERY source kind — Plaid items and
+ * self-custody wallets alike — over the EXECUTION QUERY SEAM's read surface
+ * (GET /api/platform/platform-ops/refresh/executions, PLATFORM_OPS READ).
  *
- * This is the ROW surface, so it renders rows and nothing else: no totals, no
- * rates, no health verdict. A count here would be an aggregation the seam
- * deliberately does not perform, and computing one client-side would be exactly
- * the "widget computes truth" defect the read boundary exists to prevent.
+ * This is the ROW surface: it renders rows and nothing else — no totals, no
+ * rates, no health verdict (the seam deliberately does not aggregate, and a
+ * widget computing truth is the defect the read boundary exists to prevent).
  *
- * OPS-2C-3: a row now OPENS an inspection panel (Panel = inspect, Modal =
- * decide), carrying only the id + the header context the operator clicked. The
- * panel fetches the timeline projection itself; this widget passes no data down,
- * so there is exactly one consumer path per surface.
+ * PLATFORM OPS OBSERVABILITY — an operator filters by source kind, network,
+ * status and trigger. The unfiltered page comes through the static-url hook;
+ * a filtered page is a keyed body remounted per query (`FilteredExecutions`,
+ * reading through the shared keyed reader), which is the sanctioned way to
+ * give a widget a new url. Every row opens the same inspection panel
+ * (ExecutionTimelinePanel): the execution's verdict, its source's last
+ * success, the policy in force, and its timeline.
  *
  * OPS-2C-4 — DEPLOYMENT IS EVIDENCE ON AN EXECUTION, NEVER A SUBJECT:
  *
  *     Execution → deploymentSha        ✅ one observed attribute of the object
  *     Deployment → execution summary   ❌ the inversion this must never become
  *
- * So the list stays FLAT and TIME-ORDERED. It is never grouped or bucketed by
- * deployment; there is no deployment heading that owns rows, no per-deployment
- * count, and no deployment section. A change of deployment between two adjacent
- * rows renders as an inline RULE — an annotation on the sequence, not a group.
- *
- * ONLY OBSERVED EVIDENCE IS DISPLAYED. Each row shows the deployment recorded on
- * THAT execution, or "unknown" when none was observed. Nothing here claims
- * "current", "earlier", or "served by": the client bundle inlines only
- * NEXT_PUBLIC_ vars, so a client-derived notion of the running deployment would
- * read `unknown` whenever only the non-public var is set — a comparison basis
- * that is silently absent is worse than no comparison. Such a marker returns only
- * if a canonical SERVER-side contract ever exposes current runtime deployment
- * identity.
+ * The list stays FLAT and TIME-ORDERED; a change of deployment between two
+ * adjacent rows renders as an inline RULE — an annotation on the sequence,
+ * not a group. Only the deploymentSha recorded on THAT execution is shown;
+ * nothing here claims "current", and the panel receives it only as header
+ * context.
  */
 
 import { useState } from "react";
 import { ListOrdered } from "lucide-react";
-import {
-  PlatformWidgetCard,
-  WidgetMessage,
-  timeAgo,
-  useWidgetFetch,
-  type PlatformSection,
-} from "../widget-kit";
-import type { ExecutionPageDTO } from "@/lib/platform/refresh/execution-query-core";
+import { PlatformWidgetCard, WidgetMessage, timeAgo, useWidgetFetch, type PlatformSection } from "../widget-kit";
+import { useKeyedFetch } from "../keyed-fetch";
+import { SectionSurface, TONE_COLOR, TwoLine } from "../platform-surface";
+import type { ExecutionPageDTO, ExecutionRowDTO } from "@/lib/platform/refresh/execution-query-core";
 import { ExecutionTimelinePanel } from "./ExecutionTimelinePanel";
-import { formatDuration, isDeploymentBoundary, shortSha } from "./refresh-format";
+import { formatDuration, humanizeToken, isDeploymentBoundary, shortSha } from "./refresh-format";
+import { describeCategory, describeSource, describeTrigger } from "./execution-format";
+
+// ── Vocabulary ───────────────────────────────────────────────────────────────
 
 /** Status → tone. Presentation only; the status itself is the ledger's own value. */
-const STATUS_TONE: Record<string, string> = {
-  SUCCEEDED: "var(--accent-positive, #34d399)",
-  PARTIAL: "var(--brass-300, #d9b25a)",
-  FAILED: "var(--accent-negative, #f87171)",
-  SKIPPED: "var(--text-muted)",
-  RUNNING: "var(--meridian-400, #7da8ff)",
+export const EXECUTION_STATUS_TOKEN: Record<string, string> = {
+  SUCCEEDED: TONE_COLOR.ok,
+  PARTIAL: TONE_COLOR.warn,
+  FAILED: TONE_COLOR.bad,
+  SKIPPED: TONE_COLOR.muted,
+  RUNNING: TONE_COLOR.info,
 };
+
+export const triggerWord = describeTrigger;
+
+export interface ExecutionSelection { id: string; eyebrow: string; title: string }
+
+/** The header context handed to the panel: kind, trigger, and the deployment recorded on the row. */
+export function selectionFor(row: ExecutionRowDTO): ExecutionSelection {
+  const source = describeSource(row);
+  return {
+    id: row.id,
+    eyebrow: `${source.kind} · ${triggerWord(row.trigger)} · deploy ${shortSha(row.deploymentSha)}`,
+    title: source.label,
+  };
+}
+
+const SOURCE_OPTIONS = [
+  { value: "", label: "All sources" },
+  { value: "PLAID_ITEM", label: "Banks" },
+  { value: "WALLET", label: "Wallets" },
+] as const;
+const NETWORK_OPTIONS = ["", "BTC", "ETH", "SOL", "BNB", "AVAX"] as const;
+const STATUS_OPTIONS = [
+  { value: "", label: "Any status" },
+  { value: "FAILED", label: "Failed" },
+  { value: "PARTIAL", label: "Partial" },
+  { value: "SUCCEEDED", label: "Succeeded" },
+  { value: "RUNNING", label: "Running" },
+  { value: "SKIPPED", label: "Skipped" },
+] as const;
+const TRIGGER_OPTIONS = [
+  { value: "", label: "Any trigger" },
+  { value: "MANUAL", label: "Manual" },
+  { value: "CRON", label: "Scheduled" },
+  { value: "OPERATOR", label: "Operator" },
+  { value: "WEBHOOK", label: "Webhook" },
+  { value: "RECONNECT", label: "Reconnect" },
+] as const;
+
+const PAGE = 30;
+const FOOTNOTE =
+  "Rows are the refresh execution ledger's own values, newest first. A wallet row is a chain adapter run; a bank row is a Plaid item refresh. Source references are opaque ids, never addresses or names.";
+
+// ── Row list (the house CSS-grid row idiom) ──────────────────────────────────
+
+const COLS = "minmax(0,1.8fr) 6rem 6.5rem 7rem 5.5rem minmax(0,1.6fr)";
+const HEADINGS = ["Source", "Trigger", "Status", "Started", "Duration", "Verdict"] as const;
+
+export function ExecutionRows({ rows, onSelect }: { rows: readonly ExecutionRowDTO[]; onSelect: (s: ExecutionSelection) => void }) {
+  return (
+    <div className="overflow-x-auto">
+      <div className="mb-1 hidden items-center gap-3 border-b px-1 pb-2 md:grid" style={{ gridTemplateColumns: COLS, borderColor: "var(--border-hairline)" }}>
+        {HEADINGS.map((h) => (
+          <span key={h} className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">{h}</span>
+        ))}
+      </div>
+      <ul className="flex flex-col">
+        {rows.map((row, i) => {
+          const source = describeSource(row);
+          const status = EXECUTION_STATUS_TOKEN[row.overallStatus] ?? TONE_COLOR.muted;
+          const category = describeCategory(row.failureCategory);
+          const verdict =
+            row.failureStage ? `failed at ${row.failureStage}${category ? ` · ${category}` : ""}`
+            : row.outcome === "UPDATED" ? "canonical state updated"
+            : row.outcome === "NO_CHANGE" ? "no change (verified)"
+            : row.overallStatus === "SUCCEEDED" ? "outcome not proven"
+            : "";
+          return (
+            <li key={row.id}>
+              {/* An inline RULE between two time-ordered rows — never a heading
+                  that owns the rows beneath it. The list is never grouped by
+                  deployment; this only marks where the attribute changed. */}
+              {isDeploymentBoundary(rows, i) && (
+                <div className="my-1 flex items-center gap-2" aria-hidden>
+                  <span className="h-px flex-1" style={{ background: "var(--border-hairline)" }} />
+                  <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">deployment changed · {shortSha(row.deploymentSha)}</span>
+                  <span className="h-px flex-1" style={{ background: "var(--border-hairline)" }} />
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => onSelect(selectionFor(row))}
+                className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 border-b px-1 py-2.5 text-left transition-colors last:border-b-0 hover:bg-[var(--surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--meridian-400)] md:grid"
+                style={{ gridTemplateColumns: COLS, borderColor: "var(--border-hairline)", minHeight: 48 }}
+                aria-label={`Inspect ${triggerWord(row.trigger)} execution of ${source.label}`}
+                title={`run ${row.runId} · deployment ${row.deploymentSha ?? "not observed"}`}
+              >
+                <TwoLine value={<span className="font-medium">{source.label}</span>} qualifier={`${source.kind} · ${humanizeToken(row.profile)}`} />
+                <span className="text-xs text-[var(--text-primary)]">{triggerWord(row.trigger)}</span>
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium" style={{ color: status }}>
+                  <span aria-hidden className="rounded-full" style={{ width: 6, height: 6, background: status }} />
+                  {humanizeToken(row.overallStatus)}
+                </span>
+                <TwoLine value={`${timeAgo(row.startedAt)} ago`} qualifier={`${row.startedAt.slice(0, 16).replace("T", " ")} UTC`} />
+                <span className="text-xs tabular-nums text-[var(--text-primary)]">{formatDuration(row.durationMs)}</span>
+                <TwoLine
+                  value={<span style={row.failureStage ? { color: TONE_COLOR.bad } : undefined}>{verdict || "—"}</span>}
+                  qualifier={row.hasError && row.errorSummary ? row.errorSummary : undefined}
+                />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/** The keyed, filtered reader. Remounted per `query` by the caller. */
+function FilteredExecutions({ query, onSelect }: { query: string; onSelect: (s: ExecutionSelection) => void }) {
+  const { data, loading, error } = useKeyedFetch<ExecutionPageDTO>(`/api/platform/platform-ops/refresh/executions?${query}`);
+  if (loading || error || !data) return <WidgetMessage loading={loading} error={error} />;
+  if (data.scopeDenied) return <p className="text-xs text-[var(--text-muted)]">No connections in scope — this read was refused rather than widened.</p>;
+  if (data.rows.length === 0) {
+    return (
+      <p className="text-xs text-[var(--text-muted)]">
+        No executions match — <em>not observed</em> for this filter; the ledger holds no such rows.
+      </p>
+    );
+  }
+  return (
+    <>
+      <ExecutionRows rows={data.rows} onSelect={onSelect} />
+      {data.nextCursor && <p className="mt-2 text-[11px] text-[var(--text-muted)]">Older executions exist beyond this page.</p>}
+    </>
+  );
+}
+
+// ── Filter control ───────────────────────────────────────────────────────────
+
+function Segmented<V extends string>({ label, value, options, onChange }: {
+  label: string; value: V; options: readonly { value: V; label: string }[]; onChange: (v: V) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1" role="group" aria-label={label}>
+      {options.map((o) => {
+        const active = o.value === value;
+        return (
+          <button
+            key={o.value || "all"}
+            type="button"
+            onClick={() => onChange(o.value)}
+            aria-pressed={active}
+            className="rounded-[var(--radius-sm)] border px-2 py-0.5 text-[11px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--meridian-400)]"
+            style={{
+              borderColor: active ? "var(--meridian-400)" : "var(--border-hairline)",
+              color: active ? "var(--text-primary)" : "var(--text-secondary)",
+              background: active ? "color-mix(in srgb, var(--meridian-500) 10%, transparent)" : "transparent",
+            }}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── The widget ───────────────────────────────────────────────────────────────
 
 export function OpsRefreshExecutionsWidget({ section }: { section: PlatformSection }) {
   const { data, loading, error } = useWidgetFetch<ExecutionPageDTO>(
-    "/api/platform/platform-ops/refresh/executions?limit=20",
+    "/api/platform/platform-ops/refresh/executions?limit=30",
   );
   // The inspected execution. Only the id + its header context are held here —
-  // the panel fetches its own timeline, so no execution data is threaded down.
-  const [selected, setSelected] = useState<{ id: string; eyebrow: string; title: string } | null>(null);
+  // the panel fetches its own inspection and timeline.
+  const [selected, setSelected] = useState<ExecutionSelection | null>(null);
+  const [sourceKind, setSourceKind] = useState<"" | "PLAID_ITEM" | "WALLET">("");
+  const [network, setNetwork] = useState<(typeof NETWORK_OPTIONS)[number]>("");
+  const [status, setStatus] = useState<(typeof STATUS_OPTIONS)[number]["value"]>("");
+  const [trigger, setTrigger] = useState<(typeof TRIGGER_OPTIONS)[number]["value"]>("");
+
+  const params = new URLSearchParams();
+  params.set("limit", String(PAGE));
+  if (sourceKind) params.set("sourceKind", sourceKind);
+  if (sourceKind === "WALLET" && network) params.set("network", network);
+  if (status) params.set("status", status);
+  if (trigger) params.set("trigger", trigger);
+  const filtered = Boolean(sourceKind || status || trigger);
+  const query = params.toString();
 
   if (loading || error || !data) {
     return (
@@ -77,83 +241,40 @@ export function OpsRefreshExecutionsWidget({ section }: { section: PlatformSecti
 
   return (
     <>
-      <PlatformWidgetCard label={section.label} icon={ListOrdered}>
-      {data.scopeDenied ? (
-        <p className="text-xs text-[var(--text-muted)]">
-          No connections in scope — this read was refused rather than widened.
-        </p>
-      ) : data.rows.length === 0 ? (
-        <p className="text-xs text-[var(--text-muted)]">
-          No refresh executions recorded — <em>not observed</em>. The ledger holds no rows
-          for this view; that is not the same as a successful quiet period.
-        </p>
-      ) : (
-        <>
-          <ul className="flex flex-col gap-1">
-            {data.rows.map((row, i) => (
-              <li key={row.id}>
-              {/* An inline RULE between two time-ordered rows — never a heading
-                  that owns the rows beneath it. The list is never grouped by
-                  deployment; this only marks where the attribute changed. */}
-              {isDeploymentBoundary(data.rows, i) && (
-                <div className="my-1 flex items-center gap-2" aria-hidden>
-                  <span className="h-px flex-1 bg-[var(--border-subtle,rgba(255,255,255,0.08))]" />
-                  <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-                    deployment changed · {shortSha(row.deploymentSha)}
-                  </span>
-                  <span className="h-px flex-1 bg-[var(--border-subtle,rgba(255,255,255,0.08))]" />
-                </div>
-              )}
-              <button
-                type="button"
-                onClick={() =>
-                  setSelected({
-                    id: row.id,
-                    eyebrow: `${row.trigger} · ${row.profile} · deploy ${shortSha(row.deploymentSha)}`,
-                    title: new Date(row.startedAt).toLocaleString(),
-                  })
-                }
-                className="flex w-full items-center justify-between gap-2 rounded-md px-1 py-0.5 text-left text-xs transition-colors hover:bg-[var(--surface-hover,rgba(255,255,255,0.04))] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--meridian-400,#7da8ff)]"
-                title={`run ${row.runId} · item ${row.plaidItemId}`}
-                aria-label={`Inspect ${row.trigger} execution from ${row.startedAt}`}
-              >
-                <span className="flex min-w-0 items-center gap-2">
-                  <span
-                    aria-hidden
-                    className="inline-block size-1.5 shrink-0 rounded-full"
-                    style={{ background: STATUS_TONE[row.overallStatus] ?? "var(--text-muted)" }}
-                  />
-                  <span className="truncate text-[var(--text-primary)]">{row.trigger}</span>
-                  <span className="shrink-0 text-[var(--text-muted)]">{row.overallStatus}</span>
-                  <span
-                    className="shrink-0 text-[10px] text-[var(--text-muted)]"
-                    title={`deployment ${row.deploymentSha ?? "not observed"}`}
-                  >
-                    {shortSha(row.deploymentSha)}
-                  </span>
-                </span>
-                <span className="shrink-0 tabular-nums text-[var(--text-secondary)]">
-                  {formatDuration(row.durationMs)}
-                  <span className="text-[var(--text-muted)]"> · {timeAgo(row.startedAt)}</span>
-                  {row.hasError && (
-                    <span style={{ color: "var(--accent-negative, #f87171)" }} title={row.errorSummary ?? undefined}>
-                      {" "}
-                      · error
-                    </span>
-                  )}
-                </span>
-              </button>
-              </li>
-            ))}
-          </ul>
-          {data.nextCursor && (
-            <p className="mt-2 text-[11px] text-[var(--text-muted)]">
-              Older executions exist beyond this page.
-            </p>
-          )}
-        </>
+      <SectionSurface icon={ListOrdered} title={section.label} footnote={FOOTNOTE}>
+        <div className="mb-5 flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <Segmented label="Source" value={sourceKind} options={SOURCE_OPTIONS} onChange={(v) => { setSourceKind(v); if (v !== "WALLET") setNetwork(""); }} />
+            {sourceKind === "WALLET" && (
+              <Segmented label="Network" value={network} options={NETWORK_OPTIONS.map((n) => ({ value: n, label: n || "Any network" }))} onChange={setNetwork} />
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <Segmented label="Status" value={status} options={STATUS_OPTIONS} onChange={setStatus} />
+            <Segmented label="Trigger" value={trigger} options={TRIGGER_OPTIONS} onChange={setTrigger} />
+          </div>
+        </div>
+
+        {filtered ? (
+          <FilteredExecutions key={query} query={query} onSelect={setSelected} />
+        ) : data.scopeDenied ? (
+          <p className="text-xs text-[var(--text-muted)]">
+            No connections in scope — this read was refused rather than widened.
+          </p>
+        ) : data.rows.length === 0 ? (
+          <p className="text-xs text-[var(--text-muted)]">
+            No refresh executions recorded — <em>not observed</em>. The ledger holds no rows
+            for this view; that is not the same as a successful quiet period.
+          </p>
+        ) : (
+          <>
+            <ExecutionRows rows={data.rows} onSelect={setSelected} />
+            {data.nextCursor && (
+              <p className="mt-2 text-[11px] text-[var(--text-muted)]">Older executions exist beyond this page.</p>
+            )}
+          </>
         )}
-      </PlatformWidgetCard>
+      </SectionSurface>
 
       <ExecutionTimelinePanel
         executionId={selected?.id ?? null}

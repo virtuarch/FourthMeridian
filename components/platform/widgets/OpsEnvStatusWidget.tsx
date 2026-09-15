@@ -42,7 +42,7 @@ export function OpsEnvStatusWidget({ section }: { section: PlatformSection }) {
           </div>
           {attention.length === 0 ? (
             <p className="text-xs text-[var(--text-secondary)] mt-1">
-              All checked variables set ({data.nodeEnv}).
+              All checked variables set ({data.deploymentEnv}).
             </p>
           ) : (
             <ul className="flex flex-col gap-1 mt-1">

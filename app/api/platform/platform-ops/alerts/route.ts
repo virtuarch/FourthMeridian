@@ -30,7 +30,9 @@ import {
 export const runtime = "nodejs";
 
 export interface PlatformAlertsResponse {
-  destination: string | null;
+  /** PLATFORM OPS PRIVACY — whether an alert destination is configured. The
+   *  address is an environment value and never crosses into a payload. */
+  destinationConfigured: boolean;
   lastEvaluatedAt: string | null;
   rules: AlertRuleView[];
   history: AlertFiredRecord[];
@@ -47,7 +49,7 @@ export async function GET() {
   };
 
   return NextResponse.json({
-    destination: env.PLATFORM_ALERTS_EMAIL,
+    destinationConfigured: Boolean(env.PLATFORM_ALERTS_EMAIL),
     lastEvaluatedAt: recentRuns[0]?.evaluatedAtISO ?? null,
     rules: deriveAlertRuleViews(ALERT_RULES, isEnabled, recentRuns),
     history: collectAlertHistory(recentRuns),

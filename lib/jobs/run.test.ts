@@ -104,18 +104,17 @@ async function main(): Promise<void> {
 
     // PLATFORM OPS OBSERVABILITY — the ambient run identity: visible inside the
     // body, bound to the created row, absent outside.
-    let seen: ReturnType<typeof currentJobRun> = null;
+    const seen: { run: ReturnType<typeof currentJobRun> } = { run: null };
     const ctxFake = makeFake();
-    await runJob("ctx-job", async () => { seen = currentJobRun(); }, { trigger: "cron", client: ctxFake.client });
+    await runJob("ctx-job", async () => { seen.run = currentJobRun(); }, { trigger: "cron", client: ctxFake.client });
     check("context: the body sees its own JobRun id, name and trigger",
-      seen !== null && (seen as NonNullable<typeof seen>).id === "row-1"
-        && (seen as NonNullable<typeof seen>).jobName === "ctx-job" && (seen as NonNullable<typeof seen>).trigger === "cron");
+      seen.run !== null && seen.run.id === "row-1" && seen.run.jobName === "ctx-job" && seen.run.trigger === "cron");
     check("context: nothing outside a runJob body", currentJobRun() === null);
     const failingClient = { jobRun: { create: async () => { throw new Error("db down"); }, update: async () => ({}) } };
-    let seenNoRow: ReturnType<typeof currentJobRun> = null;
-    await runJob("ctx-job-2", async () => { seenNoRow = currentJobRun(); }, { trigger: "cron", client: failingClient });
+    const seenNoRow: { run: ReturnType<typeof currentJobRun> } = { run: null };
+    await runJob("ctx-job-2", async () => { seenNoRow.run = currentJobRun(); }, { trigger: "cron", client: failingClient });
     check("context: a failed start write yields id null, never an invented id",
-      seenNoRow !== null && (seenNoRow as NonNullable<typeof seenNoRow>).id === null);
+      seenNoRow.run !== null && seenNoRow.run.id === null);
     check(
       "success: start row shape (name/trigger/status/executionId)",
       creates[0].jobName === "test-job" &&

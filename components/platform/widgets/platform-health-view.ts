@@ -178,10 +178,10 @@ export const GROUP_LABEL: Record<HealthGroupId, string> = {
 
 /** Group → the rail workspace id that owns its detail (PLATFORM_AREA_WORKSPACES). */
 export const GROUP_DOORWAY: Record<HealthGroupId, string> = {
-  alerts:        "platform-alerts",
+  alerts:        "platform-policies",
   providers:     "platform-providers",
   freshness:     "platform-providers",
-  configuration: "platform-operations",
+  configuration: "platform-policies",
 };
 
 /** The accessible name of a doorway. Begins with the visible text (WCAG 2.5.3)
@@ -279,8 +279,8 @@ export function alertsView(d: PlatformAlertsResponse, nowMs: number): SourceView
       label: "Destination",
       // Not configured is a real operational fact: a firing rule with nowhere to
       // go is silent. It is worded, not blanked.
-      detail: d.destination ?? "Not configured — deliveries have nowhere to go",
-      tone: d.destination ? "normal" : "unknown",
+      detail: d.destinationConfigured ? "Configured" : "Not configured — deliveries have nowhere to go",
+      tone: d.destinationConfigured ? "normal" : "unknown",
     },
     ...d.history.slice(0, 2).map((h): HealthLine => ({
       label: h.summary,
@@ -420,7 +420,7 @@ export function envView(d: PlatformEnvStatusResponse): SourceView {
     status,
     headline,
     lines: [
-      { label: "Environment", detail: d.nodeEnv, tone: "normal" },
+      { label: "Environment", detail: d.deploymentEnv, tone: "normal" },
       ...[...failing, ...warning].map((k): HealthLine => ({
         label: k.key,
         detail: `${k.status} · required ${k.scope}${k.note ? ` · ${k.note}` : ""}`,
