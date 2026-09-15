@@ -34,8 +34,10 @@ const pkg = JSON.parse(src("package.json")) as { scripts: Record<string, string>
 
 // The guard enforces explicit opt-in + blocks the shadow-DB footgun.
 {
-  const guard = src("scripts/db-guard.ts");
-  check("guard requires ALLOW_DESTRUCTIVE_DB=true", guard.includes('ALLOW_DESTRUCTIVE_DB !== "true"'));
+  // cdeac7e — the decision moved into the pure core (scripts/lib/db-guard.core.ts);
+  // the script wires it. The contract is pinned across both files.
+  const guard = src("scripts/db-guard.ts") + src("scripts/lib/db-guard.core.ts");
+  check("guard requires ALLOW_DESTRUCTIVE_DB=true", guard.includes('allowDestructive !== "true"') && src("scripts/db-guard.ts").includes("process.env.ALLOW_DESTRUCTIVE_DB"));
   check("guard blocks SHADOW_DATABASE_URL === DATABASE_URL (the actual footgun)",
     guard.includes("SHADOW_DATABASE_URL") && /shadow[\s\S]*dbUrl|dbUrl[\s\S]*shadow/i.test(guard));
   check("guard exits non-zero when blocking", guard.includes("process.exit(1)"));
