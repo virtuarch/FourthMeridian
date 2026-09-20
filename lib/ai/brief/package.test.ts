@@ -95,10 +95,10 @@ const assessment = {
     reason: { scope: 'LIQUID_CASH_VS_MONTHLY_EXPENSES', reasonCode: 'COVERAGE_BELOW_EXCELLENT',
       reasonMetrics: { coverageMonths: 3.04, liquid: 18920.4, monthlyExpenses: 6240.35, monthlyExpensesBasis: 'MEASURED',
         criticalBelowMonths: 1, warningBelowMonths: 3, excellentFromMonths: 6 },
-      evidencePopulation: { kind: 'LIQUID_ACCOUNTS', accounts: 2, graded: 2 } } },
+      evidencePopulation: { kind: 'LIQUID_ACCOUNTS', unit: 'accounts', count: 2, graded: 2 } } },
   debt: { classification: 'INSUFFICIENT_DATA', confidence: 'LOW', aprCompleteness: 'NONE', totalLiabilities: 3210.55,
     reason: { scope: 'RATE_ON_OWED_BALANCE', reasonCode: 'APR_UNKNOWN', reasonMetrics: {},
-      evidencePopulation: { kind: 'DEBT_ACCOUNTS', accounts: 1, graded: 0 } },
+      evidencePopulation: { kind: 'DEBT_ACCOUNTS', unit: 'accounts', count: 1, graded: 0 } },
     burden: { ratedOwed: 0, monthlyInterestIfCarried: null, monthlyIncome: 9620, monthlyExpenses: 6240.35, liquid: 18920.4,
       interestOfMonthlyIncomePct: null, interestOfMonthlyExpensesPct: null, owedOfLiquidPct: 16.97 } },
   ungraded: [{ section: 'debt', verdict: 'INSUFFICIENT_DATA', reason: 'APR_MISSING', detail: 'Chase Sapphire has no APR ($3,210.55)' }],
@@ -303,7 +303,7 @@ console.log('\n7. a classification never ships as a bare label');
       && b.debtRate.reasonMetrics.criticalAbovePct === 22 && b.debtRate.reasonMetrics.ratedOwed === 1600,
     JSON.stringify(b.debtRate?.reasonMetrics));
   check('…its confidence and the population it was computed over',
-    b.debtRate?.confidence === 'HIGH' && JSON.stringify(b.debtRate.evidencePopulation) === '{"kind":"DEBT_ACCOUNTS","accounts":2,"graded":2}');
+    b.debtRate?.confidence === 'HIGH' && JSON.stringify(b.debtRate.evidencePopulation) === '{"kind":"DEBT_ACCOUNTS","unit":"accounts","count":2,"graded":2}');
   check('a rising balance is NOT offered as the reason for a rate verdict', !('liabilitiesChangeOverWindow' in (b.debtRate?.reasonMetrics ?? {})));
   check('the burden is separate, relative to the user\'s own position, with its operands',
     b.debtBurden?.monthlyInterestIfCarried === 32.59 && b.debtBurden.interestOfMonthlyIncomePct === 0.28

@@ -82,7 +82,8 @@ export interface BriefClassification {
   reasonCode:     string;
   reasonMetrics:  Record<string, number | string | null>;
   confidence:     string;
-  evidencePopulation: { kind: string; accounts: number; graded: number };
+  /** `unit` says what `count` and `graded` count — accounts, or transaction rows. */
+  evidencePopulation: { kind: string; unit: string; count: number; graded: number };
 }
 
 /** The claim families a Brief makes, each resting on its own population of sources. */

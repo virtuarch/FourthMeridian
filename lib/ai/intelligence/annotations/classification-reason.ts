@@ -79,7 +79,7 @@ export function gradeDebtRate(i: DebtRateInputs): {
         ...(classification === 'IMPROVING' || classification === 'HEALTHY'
           ? { liabilitiesChangeOverWindow: i.liabilitiesChangeAbs === null ? null : round2(i.liabilitiesChangeAbs) } : {}),
       },
-      evidencePopulation: { kind: 'DEBT_ACCOUNTS', accounts: i.debtAccounts, graded: i.debtAccountsWithApr },
+      evidencePopulation: { kind: 'DEBT_ACCOUNTS', unit: 'accounts', count: i.debtAccounts, graded: i.debtAccountsWithApr },
     },
   };
 }
@@ -93,7 +93,7 @@ export function ungradedDebtReason(
     scope: 'RATE_ON_OWED_BALANCE',
     reasonCode,
     reasonMetrics: {},
-    evidencePopulation: { kind: 'DEBT_ACCOUNTS', accounts: population.debtAccounts, graded: population.debtAccountsWithApr },
+    evidencePopulation: { kind: 'DEBT_ACCOUNTS', unit: 'accounts', count: population.debtAccounts, graded: population.debtAccountsWithApr },
   };
 }
 
@@ -153,7 +153,7 @@ export function liquidityReason(i: {
       warningBelowMonths:   LIQUIDITY_WARNING_MONTHS,
       excellentFromMonths:  LIQUIDITY_EXCELLENT_MONTHS,
     },
-    evidencePopulation: { kind: 'LIQUID_ACCOUNTS', accounts: i.liquidAccounts,
+    evidencePopulation: { kind: 'LIQUID_ACCOUNTS', unit: 'accounts', count: i.liquidAccounts,
       graded: i.coverageMonths === null ? 0 : i.liquidAccounts },
   };
 }

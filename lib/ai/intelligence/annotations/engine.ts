@@ -212,7 +212,7 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
       netAfterDebtPaydown:     netAfterDebtPayments === null ? null : money2(netAfterDebtPayments),
       windowDays,
     },
-    evidencePopulation: { kind: 'BANKING_ROWS', accounts: transactionCount, graded: transactionCount },
+    evidencePopulation: { kind: 'BANKING_ROWS', unit: 'rows', count: transactionCount, graded: transactionCount },
   };
 
   const cashFlowReliability: CashFlowReliability =

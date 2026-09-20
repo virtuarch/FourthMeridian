@@ -81,12 +81,6 @@ export type DebtRateClassification =
   | 'INSUFFICIENT_DATA' // APR missing for one or more debt accounts — the rate cannot be graded
   | 'NO_DEBT';          // no liabilities in context
 
-/**
- * @deprecated The former name. It described a health grade the rule never
- * computed (a rate threshold presented as debt health). Kept as an alias so no
- * import breaks; new code names the rate.
- */
-export type DebtHealthClassification = DebtRateClassification;
 
 
 export type LiquidityCoverageClassification =
@@ -246,14 +240,23 @@ export interface ClassificationReason<Code extends string = string> {
   /** The operands the rule compared AND the thresholds it compared them with. */
   reasonMetrics: Record<string, number | string | null>;
   /** What the operands were computed over. Counts only — never an identity. */
-  evidencePopulation: {
-    /** For BANKING_ROWS, `accounts` and `graded` count transaction rows in the window, not accounts. */
-    kind:     'DEBT_ACCOUNTS' | 'LIQUID_ACCOUNTS' | 'BANKING_ROWS';
-    /** Accounts of that kind in the payload. */
-    accounts: number;
-    /** Of those, how many the rule could actually use (e.g. debt accounts with a known APR). */
-    graded:   number;
-  };
+  evidencePopulation: EvidencePopulation;
+}
+
+/**
+ * A population, WITH ITS UNIT. The count used to be a field named `accounts`
+ * whatever was counted, so a cash-flow verdict computed over 431 transaction rows
+ * told the model `{"kind":"BANKING_ROWS","accounts":431}` — 431 accounts. A count
+ * without its unit is a number the reader has to guess the meaning of.
+ */
+export interface EvidencePopulation {
+  kind:   'DEBT_ACCOUNTS' | 'LIQUID_ACCOUNTS' | 'BANKING_ROWS';
+  /** What `count` and `graded` count: accounts, or transaction rows in the window. */
+  unit:   'accounts' | 'rows';
+  /** Members of that kind in the payload. */
+  count:  number;
+  /** Of those, how many the rule could actually use (e.g. debt accounts with a known APR). */
+  graded: number;
 }
 
 /** The rung of the deficit ladder that fired (engine.ts Step 2). */

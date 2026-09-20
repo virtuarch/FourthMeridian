@@ -109,7 +109,7 @@ test("the debt classification is scoped to the RATE on the owed balance, and say
   assert.equal(d.reason.reasonMetrics.criticalAbovePct, APR_CRITICAL_THRESHOLD, "the threshold it compared it with");
   assert.equal(d.reason.reasonMetrics.warningAbovePct, APR_WARNING_THRESHOLD);
   assert.equal(d.reason.reasonMetrics.ratedOwed, 1600);
-  assert.deepEqual(d.reason.evidencePopulation, { kind: "DEBT_ACCOUNTS", accounts: 2, graded: 2 });
+  assert.deepEqual(d.reason.evidencePopulation, { kind: "DEBT_ACCOUNTS", unit: "accounts", count: 2, graded: 2 });
   assert.equal(d.confidence, "HIGH", "confidence is in the RATE classification: both APRs are known");
 });
 
@@ -231,10 +231,22 @@ test("liquidity ships the SAME reason shape: scope, rung, operands, thresholds, 
     coverageMonths: 3, liquid: 12_000, monthlyExpenses: 4_000, monthlyExpensesBasis: "MEASURED",
     criticalBelowMonths: 1, warningBelowMonths: 3, excellentFromMonths: 6,
   });
-  assert.deepEqual(l.reason.evidencePopulation, { kind: "LIQUID_ACCOUNTS", accounts: 1, graded: 1 });
+  assert.deepEqual(l.reason.evidencePopulation, { kind: "LIQUID_ACCOUNTS", unit: "accounts", count: 1, graded: 1 });
 
   const low = computeAssessment(mkCtx(mkAccts(SMALL, 3_000))).liquidity;
   assert.equal(`${low.classification}/${low.reason.reasonCode}`, "CRITICAL/COVERAGE_BELOW_CRITICAL");
+});
+
+test("a population states its UNIT: accounts are accounts, and transaction rows are never called accounts", () => {
+  const a = computeAssessment(mkCtx(mkAccts(SMALL)));
+  assert.equal(a.debt.reason.evidencePopulation.unit, "accounts");
+  assert.equal(a.liquidity.reason.evidencePopulation.unit, "accounts");
+  const rows = a.cashFlow.deficitReason.evidencePopulation;
+  assert.deepEqual(rows, { kind: "BANKING_ROWS", unit: "rows", count: 120, graded: 120 },
+    "the cash-flow verdict is computed over 120 transaction ROWS; it used to ship them as `accounts: 120`");
+  for (const p of [a.debt.reason, a.liquidity.reason, a.cashFlow.deficitReason]) {
+    assert.ok(!("accounts" in p.evidencePopulation), "no population carries a unit-less `accounts` count");
+  }
 });
 
 test("a refused liquidity grade names WHY, in the same shape", () => {
