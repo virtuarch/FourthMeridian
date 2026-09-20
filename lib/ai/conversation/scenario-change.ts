@@ -31,6 +31,13 @@
  * six digits: M1's rule (lib/ai/measures/measure.ts `compare`), with the one
  * shared tolerance. A debt that opens at 2.8e-14 has no percentage change.
  *
+ * ⚠️ STATED WHERE A QUESTION LANDS, NOT ON EVERY ROW. The measured failure was
+ * the HORIZON figure, so the block rides on the horizon (the date the caller
+ * named) and on a crossing's own position. A copy on each table row cost ~100 B a
+ * row — ~9 KB at the 80-row ceiling — for a benefit nobody measured, and a field
+ * that is justified by symmetry rather than by evidence is how payloads got to
+ * 110 KB the first time. A test pins that E adds a constant, not a per-row, cost.
+ *
  * It lives beside the ledger rather than inside it for the same reason the
  * crossing search does: the ledger imports nothing, and this needs the
  * repository's money tolerance.
@@ -45,9 +52,20 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 export const CHANGE_LINES = ['liquid', 'investments', 'debt', 'netWorth'] as const;
 export type ChangeLine = typeof CHANGE_LINES[number];
 
+/**
+ * Which authority a position's figures are.
+ *
+ * ⚠️ "TODAY" HAS TWO NET-WORTH FIGURES WHEN THE LEDGER AND THE ACCOUNTS DISAGREE,
+ * and the result tells the model to quote the accounts one. A change measured
+ * from the LEDGER's opening, attached in a sentence to the accounts figure, is a
+ * sum that does not add up. So the base is named by code, not left to the reader.
+ */
+export type PositionBasis = 'LEDGER_OPENING' | 'LEDGER_CHECKPOINT' | 'STATED';
+
 /** A dated position. A line the spine could not produce is null and yields no change. */
 export interface ScenarioPosition {
   date: string;
+  basis: PositionBasis;
   liquid: number | null;
   investments: number | null;
   debt: number | null;
@@ -66,14 +84,17 @@ export interface LineChange {
 
 export type PositionChange = {
   between: { from: string; to: string };
+  /** What every `from` below IS. Never implied. */
+  base: PositionBasis;
   meaning: string;
 } & Partial<Record<ChangeLine, LineChange>>;
 
 const CHANGE_MEANING =
-  'This position minus the opening one, line by line, in the line\'s own direction: `debt` '
-  + 'positive = MORE owed, negative = less; `netWorth` already contains the debt effect. Quote '
-  + '`abs` for "how much higher/lower" — never subtract the levels yourself. `pct` null = the '
-  + 'opening figure was zero. A movement, not a cause: `movements` says what drove it.';
+  'This position minus the `base` position, per line, in the line\'s own direction: `debt` '
+  + 'positive = MORE owed; `netWorth` already contains the debt effect. Quote `abs` for "how much '
+  + 'higher/lower" — never subtract levels yourself — against the `from` printed here: base '
+  + 'LEDGER_OPENING is the ledger\'s opening, NOT the accounts total when `baseVsAccounts` is '
+  + 'present. `pct` null = `from` was zero. `movements` says what drove it.';
 
 /** to − from for one line, at currency precision. Null when either side is not a number. */
 export function lineChange(from: number | null | undefined, to: number | null | undefined): LineChange | null {
@@ -99,32 +120,14 @@ export function positionChange(from: ScenarioPosition, to: ScenarioPosition): Po
     if (c) out[line] = c;
   }
   if (Object.keys(out).length === 0) return null;
-  return { between: { from: from.date, to: to.date }, ...out, meaning: CHANGE_MEANING };
-}
-
-/**
- * The compact form a TABLE ROW carries: `abs` per line and nothing else.
- *
- * ⚠️ A ROW IS ~1 KB AND THERE CAN BE EIGHTY OF THEM. The operands are already in
- * the payload — the row's own lines and `opening` — so a row repeats neither
- * them nor the explanation; the full block (operands, pct, meaning) is stated
- * once, for the horizon, under the result's `changeSinceOpening`. Same
- * arithmetic, same function, fewer bytes.
- */
-export function compactChange(from: ScenarioPosition, to: ScenarioPosition):
-  Partial<Record<ChangeLine, number>> | null {
-  const full = positionChange(from, to);
-  if (!full) return null;
-  const out: Partial<Record<ChangeLine, number>> = {};
-  for (const line of CHANGE_LINES) if (full[line]) out[line] = full[line]!.abs;
-  return out;
+  return { between: { from: from.date, to: to.date }, base: from.basis, ...out, meaning: CHANGE_MEANING };
 }
 
 /** The ledger's opening, as a position. */
 export const openingPosition = (o: LedgerOpening & { netWorth: number }): ScenarioPosition => ({
-  date: o.asOfISO, liquid: o.liquid, investments: o.investments, debt: o.debt, netWorth: o.netWorth });
+  date: o.asOfISO, basis: 'LEDGER_OPENING', liquid: o.liquid, investments: o.investments, debt: o.debt, netWorth: o.netWorth });
 
 /** A ledger checkpoint, as a position. */
 export const checkpointPosition = (c: LedgerCheckpoint): ScenarioPosition => ({
-  date: c.date, liquid: c.liquid?.amount ?? null, investments: c.investments.amount,
+  date: c.date, basis: 'LEDGER_CHECKPOINT', liquid: c.liquid?.amount ?? null, investments: c.investments.amount,
   debt: c.debt.amount, netWorth: c.netWorth?.amount ?? null });

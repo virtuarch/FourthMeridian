@@ -226,7 +226,7 @@ import {
   CADENCES, type Cadence, type CheckpointPlan,
 } from './scenario-checkpoints';
 export { yearEndsBetween };
-import { positionChange, compactChange, openingPosition, checkpointPosition } from './scenario-change';
+import { positionChange, openingPosition, checkpointPosition } from './scenario-change';
 
 async function assemble<T>(
   domain: string, ctx: ToolContext, options: Record<string, unknown> = {},
@@ -2471,14 +2471,33 @@ function liabilityEcho(ledger: LedgerResult) {
 }
 
 /**
+ * How far one ledger position is from the ledger's opening — the ONE call both
+ * the projection's horizon and a crossing's position go through.
+ *
+ * ⚠️ THE BASE IS THE LEDGER'S OPENING, AND WHEN THAT IS NOT THE ACCOUNTS TOTAL
+ * THE BLOCK SAYS SO ITSELF. The result tells the model to quote the accounts
+ * figure as today's position; "X higher than today" is X above the LEDGER figure.
+ * `base` names it on every block, and `baseVsAccounts` appears exactly when the
+ * reconciliation warning does, carrying both figures, so the sentence cannot be
+ * attached to the wrong "today".
+ */
+function changeSinceOpeningAt(setup: ScenarioSetup, ledger: LedgerResult, c: LedgerCheckpoint | undefined) {
+  const change = c ? positionChange(openingPosition(ledger.opening), checkpointPosition(c)) : null;
+  if (!change) return null;
+  const difference = round2(ledger.opening.netWorth - (setup.accounts.netWorth ?? 0));
+  return Math.abs(difference) > 1
+    ? { ...change, baseVsAccounts: { ledgerOpeningNetWorth: ledger.opening.netWorth,
+        accountsNetWorth: setup.accounts.netWorth, difference } }
+    : change;
+}
+
+/**
  * The scenario payload both tools return, so a solved answer and a stated one
  * are read the same way.
  */
 function presentScenario(setup: ScenarioSetup, ledger: LedgerResult, returns: ReturnPeriod[]) {
   const difference = round2(ledger.opening.netWorth - (setup.accounts.netWorth ?? 0));
   const warnings = [...ledger.warnings];
-  const from = openingPosition(ledger.opening);
-  const last = ledger.checkpoints[ledger.checkpoints.length - 1];
   if (Math.abs(difference) > 1) {
     warnings.push('The ledger\'s opening net worth differs from the accounts total by '
       + `${difference.toFixed(2)}; state the accounts figure, not this one, as today's position.`);
@@ -2504,16 +2523,12 @@ function presentScenario(setup: ScenarioSetup, ledger: LedgerResult, returns: Re
     // ⚠️ THE DIFFERENCE IS A FIELD, NOT A SUBTRACTION LEFT TO THE READER. "About
     // $65k higher by next June" was the projected net worth minus the opening one,
     // composed in prose in 4 of 8 runs because the payload stated both levels and
-    // never the movement. Stated ONCE in full for the horizon — operands, `abs`,
-    // `pct`, and what the sign of `debt` means — and as bare `abs` figures on every
-    // row, whose operands (`opening` and the row's own lines) are already here.
-    // Every row the ledger produced is kept as it was: the fields are ADDED, and
-    // the six numbers the active-scenario envelope reads have not moved.
-    changeSinceOpening: last ? positionChange(from, checkpointPosition(last)) : null,
-    checkpoints: ledger.checkpoints.map((c) => {
-      const changeSinceOpening = compactChange(from, checkpointPosition(c));
-      return changeSinceOpening ? { ...c, changeSinceOpening } : c;
-    }),
+    // never the movement. Stated ONCE, for the horizon — the date the caller named
+    // — with its operands, `abs`, `pct`, its `base`, and what the sign of `debt`
+    // means. NOT on every row: that was ~100 B a row for an unmeasured benefit, and
+    // `checkpoints` below is the ledger's own array, untouched.
+    changeSinceOpening: changeSinceOpeningAt(setup, ledger, ledger.checkpoints[ledger.checkpoints.length - 1]),
+    checkpoints: ledger.checkpoints,
     // ⚠️ BOUNDED. A thirty-year rule settles 361 dated amounts and the result was
     // repeating every one beside a table whose rows already carry the same money.
     movements: compactMovements(ledger.movements),
@@ -2749,8 +2764,7 @@ const scenarioCrossing: ToolDefinition = {
     // ⚠️ BESIDE `composition`, NEVER INSIDE IT. The active-scenario envelope reads
     // its six numbers off `composition`; how far the position is from the opening
     // is a sibling, computed by the same function the projection table uses.
-    const changeAt = (c: LedgerCheckpoint) =>
-      positionChange(openingPosition(ledger.opening), checkpointPosition(c));
+    const changeAt = (c: LedgerCheckpoint) => changeSinceOpeningAt(setup, ledger, c);
     // ⚠️ THE WALK IS PURE AND LIVES NEXT DOOR. Nothing about money is decided
     // here: the ledger produced the path, `findScenarioCrossing` says where the
     // line is first crossed on it, and this only says it in words.
