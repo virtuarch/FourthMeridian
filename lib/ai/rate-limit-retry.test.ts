@@ -101,13 +101,15 @@ async function main() {
       await callWithRateLimitRetry(noDeadline.call, noDeadline.options) === 'ok' && noDeadline.sleeps[0] === 71_500);
   }
 
-  console.log('\n5. one rule, not two — pinned against the private copy in turn.ts');
+  console.log('\n5. one rule, not two — the chat turn CALLS this function and keeps no copy');
   {
-    const turn = readFileSync('lib/ai/conversation/turn.ts', 'utf8');
-    check('same bound', new RegExp(`MAX_RATE_LIMIT_RETRIES = ${DEFAULT_MAX_RATE_LIMIT_RETRIES};`).test(turn));
-    check('same predicate', /\/rate limit\|429\/i/.test(turn));
-    check('same suggested-wait parse and margin', /try again in \(\[\\d\.\]\+\)s/.test(turn) && new RegExp(`\\+ ${SUGGESTED_WAIT_MARGIN_MS}\\b`).test(turn.replace(/_/g, '')));
-    check('same fallback backoff', /Math\.min\(60_000, 5_000 \* attempt\)/.test(turn) && BACKOFF_MAX_MS === 60_000 && BACKOFF_STEP_MS === 5_000);
+    const turn = readFileSync('lib/ai/conversation/turn.ts', 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
+    check('turn.ts imports the canonical retry', /import \{ callWithRateLimitRetry \} from '@\/lib\/ai\/rate-limit-retry';/.test(turn));
+    check('…and defines none of its own', !/function callWithRateLimitRetry/.test(turn) && !/MAX_RATE_LIMIT_RETRIES/.test(turn));
+    check('…nor a private predicate, wait parse or backoff', !/rate limit\|429/.test(turn) && !/try again in/.test(turn) && !/setTimeout/.test(turn));
+    check('every wait is still written into the turn artifact', /onRetry: \(r\) => rec\.retries\.push\(r\)/.test(turn));
+    check('the defaults are the constants the private copy used', DEFAULT_MAX_RATE_LIMIT_RETRIES === 5
+      && SUGGESTED_WAIT_MARGIN_MS === 1_500 && BACKOFF_MAX_MS === 60_000 && BACKOFF_STEP_MS === 5_000);
   }
 
   console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);

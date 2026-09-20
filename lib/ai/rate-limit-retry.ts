@@ -11,9 +11,8 @@
  * refused Brief and a three-minute cooldown (measured: 23 of 23 "refusals" in a
  * concurrent run were 429s). This module is that same rule as a function anyone
  * can call — same predicate, same wait formula, same default bound — so a second
- * surface does not grow a second policy. `rate-limit-retry.test.ts` pins the
- * constants against turn.ts's source so the two cannot drift silently while
- * turn.ts still holds its private copy.
+ * surface does not grow a second policy. turn.ts now CALLS this function and
+ * keeps no copy; `rate-limit-retry.test.ts` pins that it never grows one back.
  *
  * ⚠️ QUOTA, NOT BEHAVIOUR. Every other provider error (a timeout, a refusal, a
  * 5xx, malformed output) is rethrown immediately. Retrying those would be asking

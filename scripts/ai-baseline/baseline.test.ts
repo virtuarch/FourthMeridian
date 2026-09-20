@@ -318,10 +318,18 @@ console.log('7. failure handling');
   check('…and `ok: false` is recorded in it',
     /ok = false/.test(runSrc) && /turns, totals, ok,/.test(runSrc));
 
+  // The rule moved to lib/ai/rate-limit-retry.ts so a second surface (the Daily
+  // Brief) could reach it. The SAME properties are asserted, in the module that
+  // owns them now — and the turn must call that function, never regrow a copy.
+  const retrySrc = read('lib/ai/rate-limit-retry.ts');
+  check('the turn calls the canonical retry and keeps no private copy',
+    /import \{ callWithRateLimitRetry \} from '@\/lib\/ai\/rate-limit-retry'/.test(turnSrc)
+      && !/function callWithRateLimitRetry/.test(turnSrc));
   check('a rate limit is retried, and ONLY a rate limit',
-    /isRateLimit = \/rate limit\|429\/i\.test\(message\)/.test(turnSrc)
-      && /if \(!isRateLimit \|\| attempt > MAX_RATE_LIMIT_RETRIES\) throw err/.test(turnSrc));
-  check('…bounded', /MAX_RATE_LIMIT_RETRIES = \d/.test(turnSrc));
+    /return \/rate limit\|429\/i\.test\(messageOf\(err\)\)/.test(retrySrc)
+      && /if \(!isRateLimitError\(err\) \|\| attempt > maxRetries\) throw err/.test(retrySrc));
+  check('…bounded', /DEFAULT_MAX_RATE_LIMIT_RETRIES = \d/.test(retrySrc)
+    && /maxRetries = options\.maxRetries \?\? DEFAULT_MAX_RATE_LIMIT_RETRIES/.test(retrySrc));
   check('…recorded on the turn, never hidden', /rec\.retries\.push/.test(turnSrc));
   check('…and quota waiting is kept OUT of the latency figure',
     /rateLimitWaitMs: t\.rateLimitWaitMs/.test(runSrc)

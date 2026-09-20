@@ -22,6 +22,7 @@
  */
 
 import { generateWithTools } from '@/lib/ai/provider';
+import { callWithRateLimitRetry } from '@/lib/ai/rate-limit-retry';
 import { findTool, type ToolContext } from './tools';
 import { runWithAiInvocationContext } from '@/lib/ai/invocation-context';
 import { checkpointProjection } from './memory-tools';
@@ -129,39 +130,12 @@ export interface TranscriptComposition {
 }
 
 const MAX_TOOL_ROUNDTRIPS = 6;
-const MAX_RATE_LIMIT_RETRIES = 5;
-
-/**
- * Absorb a provider rate limit, and record that it happened.
- *
- * ⚠️ THIS IS QUOTA, NOT BEHAVIOUR. The first smoke run lost three of twelve cases
- * to a 30,000 tokens-per-minute organisation cap while sending ~20,000-token
- * A0/A1 prompts — two turns in a minute exceeds it. That measures the account,
- * not the architecture, and letting it stand would have read as "the broad-context
- * arms fail". Only a 429 is retried; every other provider error still fails the
- * turn immediately, and the waits are written into the artifact so a slow case is
- * never mistaken for a slow model.
- */
-async function callWithRateLimitRetry<T>(
-  call: () => Promise<T>, rec: TurnRecord,
-): Promise<T> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await call();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const isRateLimit = /rate limit|429/i.test(message);
-      if (!isRateLimit || attempt > MAX_RATE_LIMIT_RETRIES) throw err;
-      // The provider states how long to wait; honour it, with a small margin.
-      const suggested = /try again in ([\d.]+)s/i.exec(message);
-      const waitedMs = suggested
-        ? Math.ceil(Number(suggested[1]) * 1000) + 1500
-        : Math.min(60_000, 5_000 * attempt);
-      rec.retries.push({ attempt, waitedMs, reason: message.slice(0, 160) });
-      await new Promise((r) => setTimeout(r, waitedMs));
-    }
-  }
-}
+// ⚠️ THE RATE-LIMIT RULE LIVES IN lib/ai/rate-limit-retry.ts. It was written here
+// first, privately ("quota, not behaviour": only a 429 is retried, the provider's
+// own wait is honoured, the attempts are bounded), and the Daily Brief could not
+// reach it. It is one function now; this turn calls it with no deadline — a chat
+// turn holds no lease — and writes every wait into the artifact, so a slow case is
+// never mistaken for a slow model.
 
 /** Models that cannot take function tools through /v1/chat/completions (measured). */
 export function supportsTools(model: string): boolean {
@@ -266,7 +240,8 @@ async function executeTurnInner(args: {
     for (let hop = 0; hop < MAX_TOOL_ROUNDTRIPS; hop++) {
       rec.roundTrips++;
       const out = await callWithRateLimitRetry(
-        () => generateWithTools({ model, messages, tools: toolSchemas }), rec);
+        () => generateWithTools({ model, messages, tools: toolSchemas }),
+        { onRetry: (r) => rec.retries.push(r) });
       rec.latencyMs += out.latencyMs;
       if (out.usage) {
         rec.usage = rec.usage
