@@ -115,7 +115,7 @@ async function main(): Promise<void> {
     const plan = (apr: number | null) => planPayoff({ balance: 1174, aprPct: apr, payment: 500, startISO: "2026-01-01" });
     const est = plan(before.apr);
     check("payoff: unknown ⇒ a PRINCIPAL_ONLY estimate, the APR still null in its basis",
-      est.status === "paid_off" && est.basis.interest === "PRINCIPAL_ONLY" && est.basis.aprPct === null && est.finalPayment === 174);
+      est.status === "paid_off" && est.basis.interest === "PRINCIPAL_ONLY" && est.liabilities[0].aprPct === null && est.finalPayment === 174);
     check("…and the canonical authority still says UNKNOWN — the estimate wrote nothing", resolveEffectiveDebtTerms({ interestRate: null, debtProfile: null }).apr === null);
     const p = plan(after.apr);
     check("payoff: after the save ⇒ the SAME calculation, now interest-aware",

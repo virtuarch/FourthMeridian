@@ -36,6 +36,8 @@ import { computeDebtKpis } from "./debt-kpis";
 import { renderDebtByAccount, type DebtPerspectiveAccount } from "@/components/space/widgets/debt-perspective-adapters";
 import { renderDebtBreakdownChart } from "@/components/space/widgets/debt-adapters";
 import { resolvePerspectiveEnvelope } from "@/lib/perspectives/envelope";
+import { planPayoff } from "@/lib/debt/payoff";
+import { payoffOverBudgetNotice, payoffHeadline, payoffHorizonLabel } from "./payoff-copy";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -150,17 +152,37 @@ console.log("B. PAYOFF STRATEGY — $50 default, monthly only, precise timing");
   check("mixed ⇒ PARTIAL_INTEREST on the markup — not presented as interest-aware", mixedHtml.includes('data-payoff-basis="PARTIAL_INTEREST"'));
   check("…'Estimated without some interest', naming the account with no APR",
     mixed.includes("Estimated without some interest") && mixed.includes("No APR on file: Card B."), mixed);
-  check("…the rate shown is Card A's OWN 24.00%, labelled as known-only — not a blend spread over Card B",
-    mixed.includes("Avg APR (known) 24.00%"), mixed);
+  check("…the average shown is over the KNOWN card only and is labelled REFERENCE — it drives nothing",
+    mixed.includes("Avg APR (known) · reference 24.00%"), mixed);
   check("…'About' on the horizon", /Debt-free in About /.test(mixed));
   // Card B gains an APR (what the host's re-read delivers after a save in Interest cost).
   const upgradedHtml = renderToStaticMarkup(createElement(DebtPayoffSection, {
     accounts: [acct("a", "Card A", 600, { interestRate: 24 }), acct("b", "Card B", 600, { interestRate: 18 })], today: TODAY, onAddApr: () => {},
   }));
   const upgraded = text(upgradedHtml);
-  check("adding the APR upgrades the SAME panel to interest-aware: no notice, no 'About', blended 21.00%",
+  check("adding the APR upgrades the SAME panel to interest-aware: no notice, no 'About'; the 21.00% average is reference-only",
     !upgradedHtml.includes("data-payoff-basis") && !upgraded.includes("Estimated without") && !/Debt-free in About/.test(upgraded)
-      && upgraded.includes("Avg APR 21.00%"), upgraded);
+      && upgraded.includes("Avg APR · reference 21.00%"), upgraded);
+
+  console.log("   by-account breakdown (each liability's OWN schedule, from plan.liabilities)");
+  check("collapsed <details> so the panel stays a summary", /<details data-payoff-by-account[^>]*>/.test(mixedHtml) && !/<details[^>]* open/.test(mixedHtml));
+  const row = (html: string, id: string) => text(html.match(new RegExp(`<li data-liability="${id}"[\\s\\S]*?</li>`))?.[0] ?? "");
+  const rowA = row(mixedHtml, "a"), rowB = row(mixedHtml, "b");
+  check("Card A: its OWN 24.00% APR, all $600.00 principal paid, $0.00 remaining, its own estimated interest",
+    rowA.includes("Card A 24.00% APR") && rowA.includes("$600.00 of $600.00 principal paid · $0.00 remaining") && /Estimated interest: \$\d+\.\d\d/.test(rowA), rowA);
+  check("Card B: 'APR unknown', 'Interest not included — APR unknown', 'estimated on principal only' — and NO rate",
+    rowB.includes("Card B APR unknown") && rowB.includes("Interest not included — APR unknown") && rowB.includes("estimated on principal only") && !/\d% APR/.test(rowB), rowB);
+  const rowBup = row(upgradedHtml, "b");
+  check("after Card B gains 18%: its row shows 18.00% APR and an estimated-interest figure", rowBup.includes("Card B 18.00% APR") && /Estimated interest: \$\d+\.\d\d/.test(rowBup), rowBup);
+  // Both cards' interest differ because each accrues at its own rate on its own balance.
+  const interestOf = (r: string) => Number(r.match(/Estimated interest: \$([\d,.]+)/)?.[1].replace(/,/g, ""));
+  check("the 24% card's modelled interest exceeds the 18% card's on equal principal (independent accrual)",
+    interestOf(row(upgradedHtml, "a")) > interestOf(rowBup), `${interestOf(row(upgradedHtml, "a"))} vs ${interestOf(rowBup)}`);
+  check("the by-account rows contain no input — still no APR editor in Payoff Strategy",
+    !/<input/.test(mixedHtml.match(/<details data-payoff-by-account[\s\S]*?<\/details>/)?.[0] ?? "<input"));
+  check("says what the model is NOT: an issuer payoff quote; grace periods / statement timing not modelled",
+    upgraded.includes("not an issuer payoff quote") && upgraded.includes("grace periods, statement timing and fees are not modelled"));
+  check("states the allocation rule in the user's terms", upgraded.includes("each payment is split across debts in proportion to what each owes"));
 
   const rated = text(renderToStaticMarkup(createElement(DebtPayoffSection, {
     accounts: [acct("a", "Card A", 124, { interestRate: 30 })], today: TODAY,
@@ -183,6 +205,95 @@ console.log("B. PAYOFF STRATEGY — $50 default, monthly only, precise timing");
   check("'is this an estimate?' is read from the engine's basis — never inferred from a rate",
     planner.includes("payoffEstimateNotice(plan)") && !/isEstimate\s*=\s*[^;]*interestRate/.test(planner) && !/isEstimate\s*=\s*!hasRates/.test(planner));
   check("the planner never manufactures a 0% for an unknown account", !/interestRate\s*\?\?\s*0/.test(planner) && !/apr:\s*[^,\n]*\?\?\s*0/.test(planner));
+}
+
+// ── B2. Payment budget larger than the debt needs ────────────────────────────
+console.log("B2. PAYMENT BUDGET > MODELLED REQUIREMENT — information, clamped, qualified by basis");
+{
+  const usd = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const plan = (aprPct: number | null, payment: number, balance = 1174) =>
+    planPayoff({ balance, aprPct, payment, startISO: TODAY });
+
+  // The brief's example, through the copy layer: 1,174 owed, 2,000 entered, known 0%.
+  const n0 = payoffOverBudgetNotice(plan(0, 2000), usd)!;
+  check("known 0%: says the payment is more than the debt needs", n0.headline === "Your payment amount is more than this debt needs.");
+  check("known 0%: 'Payoff amount: $1,174.00.' + '$826.00 … would not be needed.'",
+    n0.required === "Payoff amount: $1,174.00." && n0.unused === "$826.00 of this payment would not be needed.", `${n0.required} | ${n0.unused}`);
+  const n24 = payoffOverBudgetNotice(plan(24, 2000), usd)!;
+  check("known 24%: the requirement is the MODELLED payoff ($1,188.67), so $811.33 is spare — not $826",
+    n24.required.includes("$1,188.67") && n24.unused.startsWith("$811.33"), `${n24.required} | ${n24.unused}`);
+  const nU = payoffOverBudgetNotice(plan(null, 2000), usd)!;
+  check("unknown APR: qualified — 'Based on the interest currently known, about $1,174.00 would be needed.'",
+    nU.required === "Based on the interest currently known, about $1,174.00 would be needed." && nU.unused.startsWith("About $826.00")
+      && nU.headline.includes("likely"), `${nU.headline} | ${nU.required}`);
+  check("unknown APR: never worded as an exact payoff quote", !/Payoff amount:/.test(nU.required));
+  const nM = payoffOverBudgetNotice(planPayoff({
+    liabilities: [{ id: "a", balance: 600, aprPct: 24 }, { id: "u", balance: 600, aprPct: null }], payment: 2000, startISO: TODAY,
+  }), usd)!;
+  check("mixed: qualified too, on the partial-interest requirement ($1,207.50)", nM.required.includes("about $1,207.50") && nM.unused.startsWith("About $792.50"));
+  check("EXACT payment (500 for 500) ⇒ NO 'more than' notice", payoffOverBudgetNotice(plan(0, 500, 500), usd) === null);
+  check("budget BELOW the requirement ⇒ no notice", payoffOverBudgetNotice(plan(24, 500), usd) === null);
+  check("budget above principal but below the modelled requirement (1,180 vs 1,197.93) ⇒ no notice",
+    payoffOverBudgetNotice(plan(24, 1180), usd) === null);
+
+  console.log("   single-payment headline");
+  check("one payment ⇒ 'Paid off with' / 'One payment' (not a '2 weeks, 5 days' duration)",
+    JSON.stringify(payoffHeadline(plan(0, 2000))) === JSON.stringify({ caption: "Paid off with", label: "One payment" }));
+  check("an exact single payment reads the same way", payoffHeadline(plan(0, 500, 500)).label === "One payment");
+  check("several payments ⇒ the duration headline is unchanged", JSON.stringify(payoffHeadline(plan(24, 500))) === JSON.stringify({ caption: "Debt-free in", label: "2 months, 2 weeks" }));
+  check("the strip's label agrees", payoffHorizonLabel(plan(0, 2000)) === "One payment");
+
+  console.log("   rendered planner (default $50 budget against a $30 debt)");
+  // 30 @ 0%, 50/mo: first d with 50·d/31 ≥ 30 ⇒ 19 ⇒ 2026-01-20; $20.00 spare.
+  const overHtml = renderToStaticMarkup(createElement(DebtPayoffSection, { accounts: [acct("a", "Card A", 30, { interestRate: 0 })], today: TODAY }));
+  const over = text(overHtml);
+  check("headline: 'Paid off with One payment', dated Jan 20, 2026", over.includes("Paid off with One payment") && over.includes("Jan 20, 2026"), over);
+  check("no awkward duration headline", !/Debt-free in/.test(over));
+  check("the duration survives in the detail line: '$30.00 payment · in 2 weeks, 5 days'", over.includes("$30.00 payment · in 2 weeks, 5 days"), over);
+  check("the notice renders the engine's numbers: $30.00 needed, $20.00 not needed",
+    over.includes("Your payment amount is more than this debt needs. Payoff amount: $30.00. $20.00 of this payment would not be needed."), over);
+  check("total paid is the $30.00 owed — never the $50 budget", over.includes("Total paid $30.00") && !over.includes("Total paid $50"));
+  check("presented as information (status role, info accent) — not an error",
+    /data-payoff-over-budget[^>]*role="status"/.test(overHtml.replace(/role="status" /, 'role="status" ')) || overHtml.includes('data-payoff-over-budget="" role="status"'));
+  check("…with no warning/negative colour on the notice",
+    !/data-payoff-over-budget[\s\S]{0,400}?(accent-negative|accent-warning)/.test(overHtml.split("data-payoff-basis")[0]));
+
+  // 30 @ 24%: day 19 needs 30 + r2(30 × .24 × 19/365 = 0.37) = 30.37 ⇒ 19.63 spare.
+  const rated = text(renderToStaticMarkup(createElement(DebtPayoffSection, { accounts: [acct("a", "Card A", 30, { interestRate: 24 })], today: TODAY })));
+  check("known APR: compares against the modelled $30.37, leaving $19.63", rated.includes("Payoff amount: $30.37.") && rated.includes("$19.63 of this payment would not be needed."), rated);
+
+  const unkHtml = renderToStaticMarkup(createElement(DebtPayoffSection, { accounts: [acct("b", "Card B", 30)], today: TODAY, onAddApr: () => {} }));
+  const unk = text(unkHtml);
+  check("unknown APR: qualified notice AND the PRINCIPAL_ONLY estimate notice, together",
+    unk.includes("Based on the interest currently known, about $30.00 would be needed.") && unk.includes("Estimated without interest")
+      && unkHtml.includes('data-payoff-basis="PRINCIPAL_ONLY"'), unk);
+  check("unknown APR: still no rate displayed for the account", !unk.includes("0.00%"));
+
+  const exact = text(renderToStaticMarkup(createElement(DebtPayoffSection, { accounts: [acct("a", "Card A", 50, { interestRate: 0 })], today: TODAY })));
+  check("exact ($50 for $50): one payment on Feb 1, 2026 and NO 'more than' notice",
+    exact.includes("Paid off with One payment") && exact.includes("Feb 1, 2026") && !exact.includes("more than this debt needs"), exact);
+
+  const below = text(renderToStaticMarkup(createElement(DebtPayoffSection, { accounts: [acct("a", "Card A", 124, { interestRate: 0 })], today: TODAY })));
+  check("below the requirement: the multi-payment view is unchanged and carries no notice",
+    below.includes("Debt-free in 2 months, 2 weeks, 1 day") && below.includes("$24.00 final payment after 2 of $50") && !below.includes("this debt needs"), below);
+
+  console.log("   copy review (unknown-APR footnote)");
+  const planner = code("components/space/sections/DebtPayoffSection.tsx");
+  check("no claim about the DIRECTION of unknown interest ('takes longer') — an unknown APR may be 0%",
+    !/takes longer|will take longer|longer once/i.test(src("components/space/sections/DebtPayoffSection.tsx")) && !/takes longer/i.test(src("components/space/widgets/debt/payoff-copy.ts")));
+  check("the footnote states only what is known", unk.includes("interest is not included for accounts with an unknown APR"));
+  const oneCard = renderToStaticMarkup(createElement(DebtPayoffSection, { accounts: [acct("a", "Chase Sapphire", 30, { interestRate: 0 })], today: TODAY }));
+  const oneRow = text(oneCard.match(/<li data-liability="a"[\s\S]*?<\/li>/)?.[0] ?? "");
+  check("by-account, one-payment card: '$30.00 of $30.00 principal paid', 'Estimated interest: $0.00', 'Paid off with one payment'",
+    oneRow.includes("$30.00 of $30.00 principal paid") && oneRow.includes("Estimated interest: $0.00") && oneRow.includes("Paid off with one payment"), oneRow);
+  check("…worded as the MODEL's estimate — never 'will charge you $0'", !/will charge|no interest will/i.test(text(oneCard)));
+  const unkRow = text(unkHtml.match(/<li data-liability="b"[\s\S]*?<\/li>/)?.[0] ?? "");
+  check("by-account, unknown APR: principal paid in full, 'Interest not included — APR unknown', principal-only",
+    unkRow.includes("$30.00 of $30.00 principal paid") && unkRow.includes("Interest not included — APR unknown") && unkRow.includes("estimated on principal only"), unkRow);
+  check("the planner holds no blended-rate INPUT: the engine is handed liabilities, not a total + APR",
+    planner.includes("planPayoff({ liabilities, payment: amount, startISO })") && !/planPayoff\(\{[^}]*\baprPct\b/.test(planner) && !/planPayoff\(\{[^}]*balance: total/.test(planner));
+  check("the panel renders the engine's clamp — it does not subtract budget − balance itself",
+    planner.includes("payoffOverBudgetNotice(plan") && !/amount\s*-\s*total|total\s*-\s*amount|amount\s*>\s*total/.test(planner));
 }
 
 // ── C. Credit health ─────────────────────────────────────────────────────────

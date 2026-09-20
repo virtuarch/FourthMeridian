@@ -9,18 +9,25 @@
  * Extracted from SpaceDashboard.tsx to keep that file manageable.
  *
  * CODE OWNS MONEY — this component holds the user's CHOICES (which accounts,
- * how much a month) and nothing else. The schedule, the elapsed time, the final
- * partial payment and every refusal come from `planPayoff` (lib/debt/payoff.ts);
- * the blended rate comes from `computeDebtAggregate`. Nothing here divides a
- * balance by a payment.
+ * how much a month) and nothing else. The schedule — PER LIABILITY: every debt's
+ * own balance, own APR, own interest, own payments — the elapsed time, the final
+ * partial payment and every refusal come from `planPayoff` (lib/debt/payoff.ts).
+ * Every aggregate on screen is the engine's sum of those liability schedules.
+ * The "Avg APR" is `computeDebtAggregate`'s, shown for reference only: it drives
+ * no calculation. Nothing here divides a balance by a payment.
+ *
+ * The amount the user enters is a BUDGET — the most they can pay a month. The
+ * engine never pays more than extinguishes the debt; when one payment clears it
+ * with budget to spare, the engine reports the spare amount and this panel says
+ * so as information (never an error — any amount may be entered).
  *
  * Inputs to the schedule are balance + APR + the chosen payment. Minimum
  * payments are not read, shown, or required. There is ONE cadence — monthly —
  * and no other mode exists in this component's state.
  *
- * UNKNOWN APR does not block the planner, and is never turned into a rate. The
- * selection's owed balance is handed to the engine in two parts — the part with
- * an APR on file (at ITS blended rate) and the part without — and the engine
+ * UNKNOWN APR does not block the planner, and is never turned into a rate. Each
+ * selected account goes to the engine with its own APR or `null`; an unknown one
+ * accrues nothing as a labelled assumption on THAT liability, and the engine
  * returns an ESTIMATE whose `basis` says PRINCIPAL_ONLY / PARTIAL_INTEREST. This
  * component reads that basis; it never infers "estimate" from a number, and it
  * never writes or displays a 0% for an account whose rate is unknown.
@@ -41,9 +48,15 @@ import { computeDebtAggregate, type DebtAggregateRow } from "@/lib/debt/aggregat
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
 import { useBodyScrollLock } from "@/components/atlas/useBodyScrollLock";
-import { planPayoff, DEFAULT_PAYOFF_PAYMENT } from "@/lib/debt/payoff";
+import { planPayoff, DEFAULT_PAYOFF_PAYMENT, type PayoffLiabilityInput } from "@/lib/debt/payoff";
 import { todayUTCISO } from "@/lib/time/clock";
-import { payoffHorizonLabel, payoffEstimateNotice, ADD_APR_PROMPT } from "@/components/space/widgets/debt/payoff-copy";
+import {
+  payoffHeadline,
+  payoffEstimateNotice,
+  payoffOverBudgetNotice,
+  isSinglePaymentPayoff,
+  ADD_APR_PROMPT,
+} from "@/components/space/widgets/debt/payoff-copy";
 import { PayoffScenarioStrip } from "@/components/space/widgets/debt/PayoffScenarioStrip";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -187,8 +200,8 @@ export function DebtPayoffSection({
   // triple; five of them wrote it out again, and one of those five disagreed.
   const filteredConv = filtered.map((a) => ({ a, bal: inDisp(a.balance, a.currency) }));
 
-  // Minimum payments are not an input to this experience — the aggregate is
-  // asked only for what is owed and at what blended rate.
+  // DESCRIPTIVE ONLY — the total owed and an owed-weighted "Avg APR" to show.
+  // Neither is an input to the schedule: the engine gets the liabilities below.
   const agg = computeDebtAggregate(
     filteredConv.map(({ a, bal }): DebtAggregateRow => ({
       balance:        bal.amount,
@@ -198,16 +211,15 @@ export function DebtPayoffSection({
   );
 
   const total = agg.totalOwed;
-  // UNKNOWN NEVER MEANS ZERO — and never borrows a neighbour's rate. The
-  // aggregate's blend is over the RATED rows only (`ratedOwed`), so it is handed
-  // to the engine together with how much of the balance it does NOT describe.
-  // The engine accrues interest on the rated part alone and reports the rest as
-  // an estimation assumption in `plan.basis`.
+  // The engine's input: ONE ROW PER LIABILITY, each with its own APR or null
+  // (UNKNOWN — never 0, never a neighbour's rate; there is no shared rate).
+  const liabilities: PayoffLiabilityInput[] = filteredConv.map(({ a, bal }) => ({
+    id: a.id, label: a.name, balance: bal.amount, aprPct: a.interestRate ?? null,
+  }));
   const unratedNames = filteredConv
     .filter(({ a, bal }) => bal.amount > 0 && a.interestRate == null)
     .map(({ a }) => a.name);
-  const aprPct            = agg.weightedApr;               // null ⇔ no selected owing account has a rate
-  const unknownAprBalance = Math.max(0, total - agg.ratedOwed);
+  const aprPct            = agg.weightedApr;               // for the reference label only
   const weightedApr       = aprPct;
   const hasRates          = aprPct != null;
 
@@ -219,7 +231,7 @@ export function DebtPayoffSection({
 
   // The clock seam (lib/time) — never an inline current-day derivation.
   const startISO = today ?? todayUTCISO();
-  const plan     = planPayoff({ balance: total, aprPct, unknownAprBalance, payment: amount, startISO });
+  const plan     = planPayoff({ liabilities, payment: amount, startISO });
   // STRUCTURAL, from the engine — not inferred from a missing rate or a 0.
   const notice     = payoffEstimateNotice(plan);
   const isEstimate = notice != null;
@@ -228,13 +240,19 @@ export function DebtPayoffSection({
   const totalPaid     = paidOff?.totalPaid ?? null;
   const payoffDate    = paidOff ? formatDate(paidOff.payoffISO) : null;
 
-  const timeLabel = () => payoffHorizonLabel(plan);
+  const headline = payoffHeadline(plan);
+  const timeLabel = () => headline.label;
+  const onePayment = isSinglePaymentPayoff(plan);
+  // The engine's figures (totalPaid / unusedPaymentCapacity), worded per its basis.
+  const overBudget = payoffOverBudgetNotice(plan, (n) => `${est}${formatCurrencyExact(n, disp)}`);
 
   /** "$174.23 final payment" — the engine's figure, to the cent; qualified by the
    *  same basis as the timeline when interest evidence is incomplete. */
   const finalPaymentLine = paidOff
-    ? `${est}${isEstimate ? "about " : ""}${formatCurrencyExact(paidOff.finalPayment, disp)} final payment`
+    ? `${est}${isEstimate ? "about " : ""}${formatCurrencyExact(paidOff.finalPayment, disp)} ${onePayment ? "payment" : "final payment"}`
       + (paidOff.fullPayments > 0 ? ` after ${paidOff.fullPayments} of ${formatBalance(amount, disp)}` : "")
+      // One payment: the headline no longer carries the duration, so it lives here.
+      + (onePayment ? ` · in ${paidOff.elapsed.label}` : "")
       + (isEstimate ? (paidOff.basis.interest === "PRINCIPAL_ONLY" ? " · before interest" : " · before unknown interest") : "")
     : null;
 
@@ -330,7 +348,7 @@ export function DebtPayoffSection({
         </div>
         <div className="flex items-center justify-between px-3 py-2">
           <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-            Interest{hasRates ? ` (${weightedApr!.toFixed(2)}% APR${isEstimate ? ", known APRs only" : ""})` : ""}
+            Estimated interest{isEstimate && hasRates ? " (known APRs only)" : ""}
           </p>
           {paidOff?.basis.interest === "PRINCIPAL_ONLY" ? (
             <p className="text-xs" style={{ color: "var(--text-faint)" }}>Not included — APR unknown</p>
@@ -347,6 +365,21 @@ export function DebtPayoffSection({
           </p>
         </div>
       </div>
+    </div>
+  );
+
+  /** "Your payment is more than this debt needs" — information in the info accent,
+   *  never the warning/negative treatment: entering a larger amount is allowed. */
+  const overBudgetNotice = overBudget && (
+    <div
+      data-payoff-over-budget
+      role="status"
+      className="rounded-lg border px-3 py-2"
+      style={{ borderColor: "var(--border-hairline)", background: "var(--surface-muted)" }}
+    >
+      <p className="text-[11px] font-semibold" style={{ color: "var(--accent-info)" }}>{overBudget.headline}</p>
+      <p className="mt-0.5 text-[11px] leading-snug" style={{ color: "var(--text-muted)" }}>{overBudget.required}</p>
+      <p className="text-[11px] leading-snug" style={{ color: "var(--text-muted)" }}>{overBudget.unused}</p>
     </div>
   );
 
@@ -396,11 +429,50 @@ export function DebtPayoffSection({
     );
   };
 
+  /** BY ACCOUNT — each liability's OWN schedule, straight from the engine
+   *  (`plan.liabilities`). Collapsed by default so the panel stays a summary. */
+  const byAccount = paidOff && (
+    <details data-payoff-by-account className="rounded-xl border" style={{ borderColor: "var(--border-hairline)" }}>
+      <summary className="cursor-pointer select-none px-3 py-2 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--text-faint)" }}>
+        By account · {paidOff.liabilities.length}
+      </summary>
+      <ul className="divide-y divide-[var(--border-hairline)] border-t" style={{ borderColor: "var(--border-hairline)" }}>
+        {paidOff.liabilities.map((l) => {
+          const known = l.interestBasis === "KNOWN_APR";
+          return (
+            <li key={l.id} data-liability={l.id} className="px-3 py-2">
+              <div className="flex items-baseline justify-between gap-2">
+                <p className="truncate text-xs font-medium" style={{ color: "var(--text-primary)" }}>{l.label}</p>
+                <p className="shrink-0 text-[10px] tabular-nums" style={{ color: "var(--text-faint)" }}>
+                  {known ? `${(l.aprPct as number).toFixed(2)}% APR` : "APR unknown"}
+                </p>
+              </div>
+              <p className="mt-0.5 text-[11px] tabular-nums" style={{ color: "var(--text-muted)" }}>
+                {est}{formatCurrencyExact(l.principalPaid, disp)} of {est}{formatCurrencyExact(l.startingPrincipal, disp)} principal paid
+                {" · "}{formatCurrencyExact(l.remainingBalance, disp)} remaining
+              </p>
+              <p className="text-[11px] tabular-nums" style={{ color: "var(--text-muted)" }}>
+                {known
+                  ? `Estimated interest: ${est}${formatCurrencyExact(l.interestPaid, disp)}`
+                  : "Interest not included — APR unknown"}
+              </p>
+              <p className="text-[11px]" style={{ color: "var(--text-faint)" }}>
+                {l.paidOffWithFirstPayment ? "Paid off with one payment" : `Paid off over ${l.paymentCount} payments`}
+                {" · "}{formatDate(l.payoffISO)}
+                {known ? "" : " · estimated on principal only"}
+              </p>
+            </li>
+          );
+        })}
+      </ul>
+    </details>
+  );
+
   const disclaimer = (
     <p className="text-[10px] text-center" style={{ color: "var(--text-faint)" }}>
       {!isEstimate
-        ? "Monthly payments · interest accrues daily on the balance · actual totals vary with billing cycles, fees, and rate changes"
-        : "An estimate: a debt with no APR on file is counted without interest, so the real payoff takes longer. Its APR stays unknown — nothing is saved as 0%."}
+        ? "An estimate, not an issuer payoff quote · each debt accrues interest daily at its own APR · each payment is split across debts in proportion to what each owes · grace periods, statement timing and fees are not modelled"
+        : "An estimate, not an issuer payoff quote: interest is not included for accounts with an unknown APR. Their APR stays unknown — nothing is saved as 0%. Each payment is split across debts in proportion to what each owes."}
     </p>
   );
 
@@ -419,7 +491,7 @@ export function DebtPayoffSection({
               <p className="text-base font-bold" style={{ color: "var(--text-primary)" }}>Payoff Planner</p>
               <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
                 {debtAccounts.length} account{debtAccounts.length !== 1 ? "s" : ""}
-                {hasRates ? ` · ${weightedApr!.toFixed(2)}% avg APR` : ""}
+                {hasRates ? ` · ${weightedApr!.toFixed(2)}% avg APR (reference)` : ""}
               </p>
             </div>
             <button
@@ -487,7 +559,7 @@ export function DebtPayoffSection({
               <div className="rounded-2xl px-4 py-3 border" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
                 <div className="flex items-end justify-between gap-2">
                   <div>
-                    <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>Debt-free in</p>
+                    <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>{headline.caption}</p>
                     <p className="text-2xl font-bold leading-tight" style={{ color: "var(--text-primary)" }}>
                       {timeLabel()}
                     </p>
@@ -501,6 +573,7 @@ export function DebtPayoffSection({
                 </div>
                 {resultDetail("text-[11px] mt-1.5 pt-1.5 border-t")}
               </div>
+              {overBudgetNotice}
               {estimateNotice}
 
               <div className="space-y-2">
@@ -516,6 +589,7 @@ export function DebtPayoffSection({
               </div>
 
               {paidOff && breakdown}
+              {byAccount}
               {disclaimer}
             </div>
 
@@ -579,7 +653,7 @@ export function DebtPayoffSection({
                   </div>
                   {hasRates && (
                     <div className="flex justify-between text-xs">
-                      <span style={{ color: "var(--text-muted)" }}>{isEstimate ? "Avg APR (known)" : "Avg APR"}</span>
+                      <span style={{ color: "var(--text-muted)" }}>{isEstimate ? "Avg APR (known) · reference" : "Avg APR · reference"}</span>
                       <span className="font-semibold" style={{ color: debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length) }}>{weightedApr!.toFixed(2)}%</span>
                     </div>
                   )}
@@ -589,13 +663,14 @@ export function DebtPayoffSection({
               {/* Right — simulator */}
               <div className="p-5 space-y-5 overflow-y-auto">
                 <div className="rounded-2xl p-5 border" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
-                  <p className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>Debt-free in</p>
+                  <p className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>{headline.caption}</p>
                   <p className="text-3xl font-bold leading-tight" style={{ color: "var(--text-primary)" }}>
                     {timeLabel()}
                   </p>
                   {payoffDate && <p className="text-sm mt-1" style={{ color: "var(--text-secondary)" }} suppressHydrationWarning>by {payoffDate}</p>}
                   {resultDetail("text-xs mt-2")}
                 </div>
+                {overBudgetNotice}
                 {estimateNotice}
 
                 <div className="space-y-3">
@@ -614,6 +689,7 @@ export function DebtPayoffSection({
                 </div>
 
                 {paidOff && breakdown}
+                {byAccount}
                 {disclaimer}
               </div>
             </div>
@@ -668,7 +744,7 @@ export function DebtPayoffSection({
         </div>
         {hasRates && (
           <div className="text-right">
-            <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>{isEstimate ? "Avg APR (known)" : "Avg APR"}</p>
+            <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>{isEstimate ? "Avg APR (known) · reference" : "Avg APR · reference"}</p>
             <p className="text-sm font-semibold" style={{ color: debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length) }}>{weightedApr!.toFixed(2)}%</p>
           </div>
         )}
@@ -688,7 +764,7 @@ export function DebtPayoffSection({
 
       <div className="rounded-xl px-4 py-3 flex items-center justify-between" style={{ background: "var(--surface-inset)" }}>
         <div>
-          <p className="text-xs" style={{ color: "var(--text-muted)" }}>Debt-free in</p>
+          <p className="text-xs" style={{ color: "var(--text-muted)" }}>{headline.caption}</p>
           <p className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>
             {timeLabel()}
           </p>
@@ -702,9 +778,11 @@ export function DebtPayoffSection({
       </div>
 
       {resultDetail("text-[11px] px-1")}
+      {overBudgetNotice}
       {estimateNotice}
       {paidOff && breakdown}
-      <PayoffScenarioStrip input={{ total, aprPct, unknownAprBalance, payment: amount, startISO }} currency={disp} />
+      {byAccount}
+      <PayoffScenarioStrip input={{ liabilities, payment: amount, startISO }} currency={disp} />
       {disclaimer}
     </div>
   );
