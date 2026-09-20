@@ -57,7 +57,6 @@ import {
   isSinglePaymentPayoff,
   ADD_APR_PROMPT,
 } from "@/components/space/widgets/debt/payoff-copy";
-import { PayoffScenarioStrip } from "@/components/space/widgets/debt/PayoffScenarioStrip";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -246,13 +245,15 @@ export function DebtPayoffSection({
   // The engine's figures (totalPaid / unusedPaymentCapacity), worded per its basis.
   const overBudget = payoffOverBudgetNotice(plan, (n) => `${est}${formatCurrencyExact(n, disp)}`);
 
-  /** "$174.23 final payment" — the engine's figure, to the cent; qualified by the
-   *  same basis as the timeline when interest evidence is incomplete. */
+  /** "$174.23 final payment after 2 of $500" — the engine's figure, to the cent;
+   *  qualified by the same basis as the timeline when interest evidence is
+   *  incomplete. ONE payment reads "$1,146.32 estimated payoff": the headline
+   *  already says "One payment" and the card shows the date, so a duration here
+   *  ("· in 1 month") would say it a third time. Multi-payment schedules keep
+   *  their duration in the headline. */
   const finalPaymentLine = paidOff
-    ? `${est}${isEstimate ? "about " : ""}${formatCurrencyExact(paidOff.finalPayment, disp)} ${onePayment ? "payment" : "final payment"}`
+    ? `${est}${isEstimate ? "about " : ""}${formatCurrencyExact(paidOff.finalPayment, disp)} ${onePayment ? "estimated payoff" : "final payment"}`
       + (paidOff.fullPayments > 0 ? ` after ${paidOff.fullPayments} of ${formatBalance(amount, disp)}` : "")
-      // One payment: the headline no longer carries the duration, so it lives here.
-      + (onePayment ? ` · in ${paidOff.elapsed.label}` : "")
       + (isEstimate ? (paidOff.basis.interest === "PRINCIPAL_ONLY" ? " · before interest" : " · before unknown interest") : "")
     : null;
 
@@ -418,7 +419,7 @@ export function DebtPayoffSection({
         <p className={cls} style={{ color: "var(--text-faint)", borderColor: "var(--border-hairline)" }}>
           {finalPaymentLine}
           {totalInterest != null && totalInterest > 0
-            ? ` · ${est}${formatCurrencyExact(totalInterest, disp)} in interest${isEstimate ? " on known APRs" : ""}`
+            ? ` · ${est}${formatCurrencyExact(totalInterest, disp)} ${onePayment ? "estimated interest" : "in interest"}${isEstimate ? " on known APRs" : ""}`
             : ""}
         </p>
       );
@@ -782,7 +783,6 @@ export function DebtPayoffSection({
       {estimateNotice}
       {paidOff && breakdown}
       {byAccount}
-      <PayoffScenarioStrip input={{ liabilities, payment: amount, startISO }} currency={disp} />
       {disclaimer}
     </div>
   );

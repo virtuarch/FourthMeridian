@@ -1,8 +1,8 @@
 /**
  * components/space/widgets/debt/payoff-copy.ts
  *
- * The ONE wording of a payoff plan's horizon, shared by the planner and the
- * "pay a little more" strip so a status can never read two ways in one panel.
+ * The ONE wording of a payoff plan — its horizon, its headline, and the notices
+ * that qualify it — so a status can never read two ways in one panel.
  *
  * Presentation only: every figure and every status comes from `planPayoff`
  * (lib/debt/payoff.ts). This module formats; it computes nothing.
@@ -39,7 +39,7 @@ export function isSinglePaymentPayoff(plan: PayoffPlan): boolean {
  * The planner's two-line headline. A debt cleared by its first payment reads
  * "Paid off with / One payment" — a duration of "2 weeks, 5 days" answers a
  * question nobody asked. The payment DATE is still shown beside it by the
- * planner, and the elapsed time stays in the detail line.
+ * planner.
  */
 export function payoffHeadline(plan: PayoffPlan): { caption: string; label: string } {
   return isSinglePaymentPayoff(plan)

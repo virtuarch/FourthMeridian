@@ -25,7 +25,7 @@
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DebtPayoffSection } from "@/components/space/sections/DebtPayoffSection";
 import { InterestCostWidget } from "./InterestCostWidget";
@@ -112,7 +112,11 @@ console.log("B. PAYOFF STRATEGY — $50 default, monthly only, precise timing");
   check("no weekly toggle rendered", !/>\s*Wk\s*</.test(html) && !/>\s*Mo\s*</.test(html) && !/week(ly)? payment/i.test(t));
   check("cadence stated once: Monthly payment", t.includes("Monthly payment"));
   check("no minimum payment shown, though the account carries one", !/\bmin\b|minimum/i.test(t), t);
-  check("'pay a little more' presets sit over the chosen payment", t.includes("+$50/mo") && t.includes("+$250/mo") && !t.includes("Minimums"));
+  // "PAY A LITTLE MORE" IS GONE — the slider/input is the user's control; the
+  // engine explains the result. No preset amounts, no "saves $X" recommendation.
+  check("no 'Pay a little more' section", !/pay a little more/i.test(t));
+  check("no +$50 / +$100 / +$250 preset recommendations", !/\+\$(50|100|250)\/mo/.test(t), t);
+  check("no 'saves $X' copy and no 'Interest saved vs the payment you chose' footer", !/\bsaves \$/i.test(t) && !/interest saved/i.test(t));
 
   // ── UNKNOWN APR — supersedes "no timeline": an estimate, visibly qualified ──
   // 124 owed, NO APR on file, 50/mo: same money as the 0% case above, so the same
@@ -241,7 +245,7 @@ console.log("B2. PAYMENT BUDGET > MODELLED REQUIREMENT — information, clamped,
     JSON.stringify(payoffHeadline(plan(0, 2000))) === JSON.stringify({ caption: "Paid off with", label: "One payment" }));
   check("an exact single payment reads the same way", payoffHeadline(plan(0, 500, 500)).label === "One payment");
   check("several payments ⇒ the duration headline is unchanged", JSON.stringify(payoffHeadline(plan(24, 500))) === JSON.stringify({ caption: "Debt-free in", label: "2 months, 2 weeks" }));
-  check("the strip's label agrees", payoffHorizonLabel(plan(0, 2000)) === "One payment");
+  check("the shared horizon label agrees", payoffHorizonLabel(plan(0, 2000)) === "One payment");
 
   console.log("   rendered planner (default $50 budget against a $30 debt)");
   // 30 @ 0%, 50/mo: first d with 50·d/31 ≥ 30 ⇒ 19 ⇒ 2026-01-20; $20.00 spare.
@@ -249,7 +253,9 @@ console.log("B2. PAYMENT BUDGET > MODELLED REQUIREMENT — information, clamped,
   const over = text(overHtml);
   check("headline: 'Paid off with One payment', dated Jan 20, 2026", over.includes("Paid off with One payment") && over.includes("Jan 20, 2026"), over);
   check("no awkward duration headline", !/Debt-free in/.test(over));
-  check("the duration survives in the detail line: '$30.00 payment · in 2 weeks, 5 days'", over.includes("$30.00 payment · in 2 weeks, 5 days"), over);
+  check("one-payment summary is clean: '$30.00 estimated payoff' — no redundant '· in …' duration",
+    over.includes("$30.00 estimated payoff") && !/estimated payoff · in /.test(over) && !/payment · in /.test(over), over);
+  check("…the payoff DATE is still on the card", over.includes("Jan 20, 2026"));
   check("the notice renders the engine's numbers: $30.00 needed, $20.00 not needed",
     over.includes("Your payment amount is more than this debt needs. Payoff amount: $30.00. $20.00 of this payment would not be needed."), over);
   check("total paid is the $30.00 owed — never the $50 budget", over.includes("Total paid $30.00") && !over.includes("Total paid $50"));
@@ -261,6 +267,9 @@ console.log("B2. PAYMENT BUDGET > MODELLED REQUIREMENT — information, clamped,
   // 30 @ 24%: day 19 needs 30 + r2(30 × .24 × 19/365 = 0.37) = 30.37 ⇒ 19.63 spare.
   const rated = text(renderToStaticMarkup(createElement(DebtPayoffSection, { accounts: [acct("a", "Card A", 30, { interestRate: 24 })], today: TODAY })));
   check("known APR: compares against the modelled $30.37, leaving $19.63", rated.includes("Payoff amount: $30.37.") && rated.includes("$19.63 of this payment would not be needed."), rated);
+  check("known APR, one payment: '$30.37 estimated payoff · $0.37 estimated interest'", rated.includes("$30.37 estimated payoff · $0.37 estimated interest"), rated);
+  check("estimated total paid still works ($30.37 = $30.00 principal + $0.37 interest)",
+    rated.includes("Principal $30") && rated.includes("Estimated interest +$0.37") && rated.includes("Total paid $30.37"), rated);
 
   const unkHtml = renderToStaticMarkup(createElement(DebtPayoffSection, { accounts: [acct("b", "Card B", 30)], today: TODAY, onAddApr: () => {} }));
   const unk = text(unkHtml);
@@ -268,12 +277,16 @@ console.log("B2. PAYMENT BUDGET > MODELLED REQUIREMENT — information, clamped,
     unk.includes("Based on the interest currently known, about $30.00 would be needed.") && unk.includes("Estimated without interest")
       && unkHtml.includes('data-payoff-basis="PRINCIPAL_ONLY"'), unk);
   check("unknown APR: still no rate displayed for the account", !unk.includes("0.00%"));
+  check("unknown APR, one payment: qualified — 'about $30.00 estimated payoff · before interest', and no interest figure implied",
+    unk.includes("about $30.00 estimated payoff · before interest") && !/\$[\d.]+ estimated interest/.test(unk.split("By account")[0]), unk);
 
   const exact = text(renderToStaticMarkup(createElement(DebtPayoffSection, { accounts: [acct("a", "Card A", 50, { interestRate: 0 })], today: TODAY })));
   check("exact ($50 for $50): one payment on Feb 1, 2026 and NO 'more than' notice",
     exact.includes("Paid off with One payment") && exact.includes("Feb 1, 2026") && !exact.includes("more than this debt needs"), exact);
 
   const below = text(renderToStaticMarkup(createElement(DebtPayoffSection, { accounts: [acct("a", "Card A", 124, { interestRate: 0 })], today: TODAY })));
+  check("multi-payment keeps its useful duration: headline 'Debt-free in 2 months, 2 weeks, 1 day' + 'final payment after 2 of $50'",
+    below.includes("Debt-free in 2 months, 2 weeks, 1 day") && below.includes("$24.00 final payment after 2 of $50") && !below.includes("estimated payoff"), below);
   check("below the requirement: the multi-payment view is unchanged and carries no notice",
     below.includes("Debt-free in 2 months, 2 weeks, 1 day") && below.includes("$24.00 final payment after 2 of $50") && !below.includes("this debt needs"), below);
 
@@ -340,7 +353,16 @@ console.log("D. REDUNDANT INTEREST / APR / MINIMUM-PAYMENT SURFACES REMOVED");
   const ws = code("components/space/widgets/debt/DebtWorkspace.tsx");
   check("the workspace mounts exactly ONE interest surface", (ws.match(/<InterestCostWidget/g) ?? []).length === 1 && !ws.includes("renderDebtCost"));
   check("no 'Complete debt details' panel", !src("components/space/widgets/debt/DebtWorkspace.tsx").includes("Complete debt details"));
-  check("the minimums-based scenario strip is no longer mounted by the workspace", !ws.includes("PayoffScenarioStrip") && !ws.includes("computePayoffAggregate"));
+  check("no scenario strip is mounted by the workspace", !ws.includes("PayoffScenarioStrip") && !ws.includes("computePayoffAggregate"));
+  check("the preset machinery is deleted, not orphaned",
+    !existsSync(join(ROOT, "components/space/widgets/debt/payoff-scenarios.ts"))
+      && !existsSync(join(ROOT, "components/space/widgets/debt/payoff-scenarios.test.ts"))
+      && !existsSync(join(ROOT, "components/space/widgets/debt/PayoffScenarioStrip.tsx")));
+  const plannerSrc = code("components/space/sections/DebtPayoffSection.tsx");
+  check("the planner references no preset/scenario machinery", !/PayoffScenario|buildPayoffScenarios|payoff-scenarios|PAYOFF_SCENARIO/.test(plannerSrc));
+  check("the monthly payment control still drives the calculation: input + slider set `amount`, and `amount` is the engine's budget",
+    /function handleInput[\s\S]*?setAmount\(/.test(plannerSrc) && /function handleSlider[\s\S]*?setAmount\(/.test(plannerSrc)
+      && plannerSrc.includes("planPayoff({ liabilities, payment: amount, startISO })"));
 
   const legacy = code("components/dashboard/DebtClient.tsx");
   check("legacy credit page: no APR input", !legacy.includes("debtForm.apr") && !legacy.includes(">APR %<"));
@@ -360,7 +382,6 @@ console.log("D. REDUNDANT INTEREST / APR / MINIMUM-PAYMENT SURFACES REMOVED");
     "components/space/sections/DebtPayoffSection.tsx",
     "components/space/widgets/debt/DebtWorkspace.tsx",
     "components/space/widgets/debt/CreditHealthInputs.tsx",
-    "components/space/widgets/debt/PayoffScenarioStrip.tsx",
     "components/space/widgets/debt/LiabilitiesLedger.tsx",
     "components/space/widgets/debt/DebtAccountDetail.tsx",
     "components/space/widgets/debt-perspective-adapters.tsx",

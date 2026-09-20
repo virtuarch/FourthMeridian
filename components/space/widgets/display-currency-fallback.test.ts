@@ -19,9 +19,7 @@
  * Itemized rows formatting in their own row `currency` are untouched by this
  * ratchet (per the lib/currency-context doctrine, itemized ≠ aggregate).
  *
- * Runtime proof lives beside it: buildCashFlowInsights and
- * buildPayoffScenarios label checks (payoff-scenarios.test.ts §6, and the
- * insight fmt checks below).
+ * Runtime proof lives beside it: the buildCashFlowInsights fmt checks below.
  *
  * Standalone tsx script:
  *   npx tsx components/space/widgets/display-currency-fallback.test.ts

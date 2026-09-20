@@ -13,7 +13,7 @@
  *   ② Balance history DebtBalanceChart — liability balance over time (Net Worth chart idiom)
  *   ③ Liabilities    LiabilitiesLedger — grouped weight-bar ledger → Left/Right panels
  *   ④ Cost & risk    utilization + INTEREST COST — the one place an APR is viewed and edited
- *   ⑤ Payoff strategy the interactive planner (+ its "pay a little more" presets)
+ *   ⑤ Payoff strategy the interactive planner — the user picks the monthly budget
  *   ⑥ Credit health  the user's score + limits, editable in place; derived signals read-only
  *
  * ONE APR PATH: Interest cost writes DebtProfile.apr; the host re-reads `accounts`;
@@ -313,8 +313,8 @@ export function DebtWorkspace({
             </div>
           </Block>
 
-          {/* ⑤ Payoff strategy — the interactive planner; it renders its own
-              "pay a little more" presets over the payment the user chose. */}
+          {/* ⑤ Payoff strategy — the interactive planner. The user chooses the
+              monthly budget; the engine explains the result. No preset amounts. */}
           <Block id="debt-payoff" label="Payoff strategy">
             <Surface className="p-4 min-w-0">
               {renderDebtPayoffCalculator(accounts, false, undefined, ctx, today, handleAddApr)}
