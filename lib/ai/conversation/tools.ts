@@ -78,7 +78,7 @@ import {
   type LiabilityLine, type AllocationTarget,
 } from './scenario-ledger';
 import {
-  clausesInForce, contributionName, unknownContributionKeys,
+  clausesInForce, contributionName, outflowName, unknownContributionKeys,
   refuseUnknownArguments, refuseUnknownItemKeys, notAppliedEcho, type RefusedInput,
 } from './scenario-rules';
 import type { SpaceContext } from '@/lib/space';
@@ -2182,7 +2182,8 @@ async function prepareScenario(
   for (const o of (a.outflows as Record<string, unknown>[]) ?? []) {
     const amount = Number(o.amount);
     const date   = String(o.onDate);
-    const label  = String(o.label ?? 'one-off');
+    // The name is led by what code knows; the caller's words follow, quoted and bounded.
+    const label  = outflowName(o);
     if (!declared('outflows', `${label} on ${date}`)(o)) continue;
     if (!Number.isFinite(amount) || amount === 0) {
       rejected.push({ input: `${label} on ${date}`, reason: 'the amount is zero or not a number' });
@@ -2413,7 +2414,7 @@ function scenarioAssumptions(
     // closed roster — a floor that was dropped on the way into the arguments is
     // reported here as `cashFloor.ran: false`, with the lowest cash the scenario
     // reached, in the same turn the model is about to narrate it.
-    clauses: clausesInForce(ledger, setup.contributions,
+    clauses: clausesInForce(ledger,
       setup.floorDerivations.map((d) => ({ liquidFloor: d.liquidFloor, derivedFrom: d.derivedFrom }))),
     returns: returns.length === 0
       ? { statedRate: null,

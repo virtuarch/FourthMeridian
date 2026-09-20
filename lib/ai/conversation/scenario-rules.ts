@@ -39,7 +39,7 @@
  * this module only reports it.
  */
 
-import type { DatedMovement, PlannedMovement, LedgerResult } from './scenario-ledger';
+import type { DatedMovement, LedgerResult } from './scenario-ledger';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -223,6 +223,22 @@ export function contributionName(raw: Record<string, unknown>): string {
 }
 
 /**
+ * The name a one-off outflow carries.
+ *
+ * ⚠️ THE SAME DEMOTION, FOR THE SAME REASON (review NB4). An outflow's label is
+ * the name of a thing — "car", "bonus" — and that is worth keeping; but it was
+ * unbounded caller text reaching every settled movement and the envelope, which
+ * is exactly the channel the contribution label was. It is now led by what code
+ * knows (cash out, or cash in for a negative amount), and the caller's words
+ * follow, quoted and bounded.
+ */
+export function outflowName(raw: Record<string, unknown>): string {
+  const kind = Number(raw.amount) < 0 ? 'one-off inflow' : 'one-off outflow';
+  const name = boundedLabel(raw.label);
+  return name ? `${kind}, named "${name}" by the caller` : kind;
+}
+
+/**
  * Scenario arguments with the free text the contract never applies taken off
  * the rules, for anything that REMEMBERS the arguments (the active-scenario
  * envelope).
@@ -230,18 +246,23 @@ export function contributionName(raw: Record<string, unknown>): string {
  * ⚠️ EVERY STRUCTURED FIELD IS UNTOUCHED, so the arguments still re-run to the
  * same figures. Only a rule's `label` goes — it sized nothing, and left in place
  * it is a sentence about the scenario that no execution vouches for, re-read on
- * every later turn. A fixed amount's label stays, bounded. Outflow labels are
- * names of things ("car", "bonus") and are not touched.
+ * every later turn. A fixed amount's label stays, bounded; so does an outflow's
+ * ("car", "bonus" — the name of a thing), bounded the same way.
  */
 export function withoutUnappliedLabels(args: Record<string, unknown>): Record<string, unknown> {
-  const contributions = args.contributions;
-  if (!Array.isArray(contributions)) return args;
-  return { ...args, contributions: contributions.map((c) => {
-    if (!c || typeof c !== 'object' || !('label' in c)) return c;
-    const { label, ...rest } = c as Record<string, unknown>;
-    const name = contributionBasis(rest) === 'AMOUNT' ? boundedLabel(label) : null;
-    return name ? { ...rest, label: name } : rest;
-  }) };
+  const relabel = (list: unknown, keeps: (rest: Record<string, unknown>) => boolean): unknown =>
+    !Array.isArray(list) ? list : list.map((c) => {
+      if (!c || typeof c !== 'object' || !('label' in c)) return c;
+      const { label, ...rest } = c as Record<string, unknown>;
+      const name = keeps(rest) ? boundedLabel(label) : null;
+      // Key order is preserved for a label that was already a bounded name.
+      return name === label ? c : name ? { ...rest, label: name } : rest;
+    });
+  if (!Array.isArray(args.contributions) && !Array.isArray(args.outflows)) return args;
+  return { ...args,
+    ...(Array.isArray(args.contributions)
+      ? { contributions: relabel(args.contributions, (rest) => contributionBasis(rest) === 'AMOUNT') } : {}),
+    ...(Array.isArray(args.outflows) ? { outflows: relabel(args.outflows, () => true) } : {}) };
 }
 
 // ── The roster ───────────────────────────────────────────────────────────────
@@ -261,6 +282,12 @@ export interface ClausesInForce {
   cashFloor:
     | { ran: true; keep: OneOrMany<number>; fractionOfExcess: OneOrMany<number>;
         statedAs?: OneOrMany<{ monthsOfExpenses: number; atMonthlySpending: number; spendingBasis: string }>;
+        /**
+         * Whether the floor ever BOUND. The first month-end the running balance was at
+         * or above the floor (null = never, within this horizon), and how many month-ends
+         * after that it sat under it.
+         */
+        firstReached: string | null; monthsBelowAfterReached: number; neverReached?: string;
         /** Other rules that ran beside the floor rule and are NOT bound by it. */
         notBoundByFloor?: { rules: string[]; meaning: string } }
     | { ran: false; lowestLiquid?: { date: string; amount: number }; meaning?: string };
@@ -296,6 +323,19 @@ const UNBOUND_MEANING =
   + '`floorRule.monthsBelowFloor` before saying it was kept. If the user wants the floor to come '
   + 'first, run the floor rule alone.';
 
+/**
+ * ⚠️ A FLOOR RULE THAT RAN IS NOT A FLOOR THAT WAS KEPT (review NB3a). `ran: true`
+ * is the truth about the rule and said nothing about the cash: a nine-month floor
+ * over a balance that never gets there settles a zero every month, and the
+ * envelope then showed `keep: 45000` beside `liquid: 13,300` with nothing to say
+ * the line was never reached. The settled movements know (`availableBefore`
+ * against the floor), so the roster says it.
+ */
+const NEVER_REACHED_MEANING =
+  'The floor rule ran but cash never reached the floor within this horizon, so the rule moved '
+  + 'nothing and cash was NOT held at the floor — it is still building toward it. Do not say the '
+  + 'buffer is in place.';
+
 const NO_DEBT_MEANING =
   'No rule named a liability: every contribution went to investments, and debts moved only by '
   + 'interest and their stated minimums. If the user asked to pay debt first, re-run with `target`.';
@@ -311,9 +351,10 @@ const targetWord = (t: unknown): string =>
  * ⚠️ READ OFF THE SETTLED MOVEMENTS, like `surplusRule` and `floorRule` beside
  * it — never off the arguments and never off a label. A rule the ledger rejected
  * settled nothing and is therefore reported as not having run, which is the
- * truth about it. The allocation ORDER alone comes from the planned movements
- * (a settled movement records where money went, not the order it was offered),
- * and only from rules that actually settled.
+ * truth about it. The allocation ORDER is the ledger's own record of the rules it
+ * PLACED (`allocationOrders`), written by the settler at the placement — never
+ * re-derived by matching movements back to a plan, which cannot tell two
+ * same-date rules apart and once reported the order of a rule that was refused.
  *
  * ⚠️ ABSENCE IS ONLY EXPLAINED WHEN IT CAN MATTER. A floor constrains rules that
  * move cash; with no contribution in force there is nothing for it to constrain,
@@ -322,8 +363,7 @@ const targetWord = (t: unknown): string =>
  * target — the two clauses measured to vanish.
  */
 export function clausesInForce(
-  ledger: Pick<LedgerResult, 'movements' | 'checkpoints'>,
-  planned: readonly PlannedMovement[] = [],
+  ledger: Pick<LedgerResult, 'movements' | 'checkpoints' | 'allocationOrders'>,
   floors: readonly FloorIdentity[] = [],
 ): ClausesInForce {
   const ran: Settled[] = ledger.movements.filter((m) => m.kind === 'CONTRIBUTION');
@@ -343,14 +383,16 @@ export function clausesInForce(
     atMonthlySpending: f.derivedFrom.baseline.amount,
     spendingBasis: f.derivedFrom.baseline.basis }));
 
-  // The order each settled rule offered its cash in. A rule is matched to its
-  // plan by date and size fields — the same fields the settler copied across.
-  const settledKeys = new Set(ran.map((m) => `${m.date}|${m.liquidFloor ?? ''}|${m.surplusFraction ?? ''}|${m.fractionOfLiquid ?? ''}`));
-  const orders = uniq(planned
-    .filter((p) => p.targets && p.targets.some((t) => t !== 'investments')
-      && settledKeys.has(`${p.date}|${p.liquidFloor ?? ''}|${p.surplusFraction ?? ''}|${p.fractionOfLiquid ?? ''}`))
-    .map((p) => JSON.stringify((p.targets as readonly unknown[]).map(targetWord))))
-    .map((s) => JSON.parse(s) as string[]);
+  // The orders of the rules the settler actually placed, less any that name no liability.
+  const orders = ledger.allocationOrders
+    .filter((order) => order.some((t) => t !== 'investments'))
+    .map((order) => order.map(targetWord));
+
+  // Whether the floor ever bound: the running balance each floor movement read.
+  const atOrAbove = (m: Settled) => (m.availableBefore ?? -Infinity) >= (m.liquidFloor as number);
+  const firstAt = floor.findIndex(atOrAbove);
+  const firstReached = firstAt === -1 ? null : floor[firstAt].date;
+  const monthsBelowAfterReached = firstAt === -1 ? 0 : floor.slice(firstAt).filter((m) => !atOrAbove(m)).length;
   const paidToDebt = round2(ran.reduce((s, m) =>
     s + (m.placed ? m.placed.liabilities.reduce((t, l) => t + l.amount, 0) : 0), 0));
 
@@ -367,6 +409,8 @@ export function clausesInForce(
       ? { ran: true, keep: oneOrMany(floorsKept),
           fractionOfExcess: oneOrMany(uniq(floor.map((m) => m.fractionOfExcess as number))),
           ...(identities.length ? { statedAs: oneOrMany(identities) } : {}),
+          firstReached, monthsBelowAfterReached,
+          ...(firstReached === null ? { neverReached: NEVER_REACHED_MEANING } : {}),
           ...(unbound.length ? { notBoundByFloor: { rules: unbound, meaning: UNBOUND_MEANING } } : {}) }
       : ran.length > 0
         ? { ran: false, ...(lowest ? { lowestLiquid: lowest } : {}), meaning: NO_FLOOR_MEANING }
@@ -400,6 +444,10 @@ export function compactClauses(c: ClausesInForce): ClausesRan {
       ? { keep: c.cashFloor.keep,
           ...(c.cashFloor.statedAs && !Array.isArray(c.cashFloor.statedAs)
             ? { monthsOfExpenses: c.cashFloor.statedAs.monthsOfExpenses } : {}),
+          // ⚠️ `false`, NOT A MISSING KEY: `keep: 45000` beside `liquid: 13300` has to
+          // be readable as "never got there" without a second call.
+          reached: c.cashFloor.firstReached ?? false,
+          ...(c.cashFloor.monthsBelowAfterReached > 0 ? { monthsBelow: c.cashFloor.monthsBelowAfterReached } : {}),
           ...(c.cashFloor.notBoundByFloor ? { notBoundByFloor: c.cashFloor.notBoundByFloor.rules } : {}) }
       : 'NONE',
     surplusShare: c.surplusShare.ran ? c.surplusShare.share : 'NONE',

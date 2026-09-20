@@ -19,10 +19,10 @@
 import { readFileSync } from 'node:fs';
 import {
   expandContributions, runScenarioLedger,
-  type ContributionSpec, type LedgerOpening, type LedgerResult, type PlannedMovement, type SpinePoint,
+  type ContributionSpec, type LedgerOpening, type LedgerResult, type SpinePoint,
 } from './scenario-ledger';
 import {
-  clausesInForce, compactClauses, contributionBasis, contributionName, boundedLabel,
+  clausesInForce, compactClauses, contributionBasis, contributionName, outflowName, boundedLabel,
   isClausesInForce, unknownContributionKeys, withoutUnappliedLabels,
   refuseUnknownArguments, refuseUnknownItemKeys, schemaKeys, schemaItemKeys, notAppliedEcho,
   NOT_APPLIED_SHOWN, CONTRIBUTION_KEYS, MAX_LABEL_CHARS, type FloorIdentity,
@@ -56,7 +56,7 @@ const SPINE: SpinePoint[] = PATH.map(([date, liquid]) => ({ date, liquid, isChec
  * NAME taken from `contributionName`, never from the caller's label.
  */
 function runRaw(raws: Record<string, unknown>[], statedSpending: number | null = 5_000): {
-  ledger: LedgerResult; planned: PlannedMovement[]; floors: FloorIdentity[];
+  ledger: LedgerResult; floors: FloorIdentity[];
   rejected: { input: string; reason: string }[]; result: Record<string, unknown>;
 } {
   const floors: FloorIdentity[] = [];
@@ -83,11 +83,11 @@ function runRaw(raws: Record<string, unknown>[], statedSpending: number | null =
   const ledger = runScenarioLedger({ opening: OPENING, spine: SPINE, contributions: expanded.movements,
     outflows: [], returns: [] });
   rejected.push(...expanded.rejected, ...ledger.rejected);
-  const clauses = clausesInForce(ledger, expanded.movements, floors);
+  const clauses = clausesInForce(ledger, floors);
   // The slice of a `scenario_projection` result the envelope reads.
   const result = { asOf: ASOF, horizon: { to: HORIZON }, assumptions: { clauses },
     checkpoints: ledger.checkpoints };
-  return { ledger, planned: expanded.movements, floors, rejected, result };
+  return { ledger, floors, rejected, result };
 }
 
 const TARGET = ['highest_apr', 'investments'];
@@ -99,8 +99,8 @@ const FLOOR_9 = { ...FLOOR_6, liquidFloorMonthsOfExpenses: 9 };
 
 console.log('1. A LABEL CANNOT CLAIM A CLAUSE THAT DID NOT RUN — the live substitution');
 {
-  const { ledger, planned, floors, rejected, result } = runRaw([SUBSTITUTED]);
-  const clauses = clausesInForce(ledger, planned, floors);
+  const { ledger, floors, rejected, result } = runRaw([SUBSTITUTED]);
+  const clauses = clausesInForce(ledger, floors);
   check('the flow rule RAN — it is legal, and it is not refused', rejected.length === 0
     && clauses.surplusShare.ran === true && clauses.surplusShare.share === 1);
   check('the roster says NO cash floor ran', clauses.cashFloor.ran === false);
@@ -140,8 +140,8 @@ console.log('1. A LABEL CANNOT CLAIM A CLAUSE THAT DID NOT RUN — the live subs
 
 console.log('\n2. A FLOOR STATED AS MONTHS SURVIVES WITH ITS DERIVATION');
 {
-  const { ledger, planned, floors, rejected, result } = runRaw([FLOOR_6]);
-  const clauses = clausesInForce(ledger, planned, floors);
+  const { ledger, floors, rejected, result } = runRaw([FLOOR_6]);
+  const clauses = clausesInForce(ledger, floors);
   check('nothing refused', rejected.length === 0, JSON.stringify(rejected));
   check('the floor ran, at six months of the stated $5k',
     clauses.cashFloor.ran === true && clauses.cashFloor.keep === 30_000 && clauses.cashFloor.fractionOfExcess === 1);
@@ -158,10 +158,10 @@ console.log('\n2. A FLOOR STATED AS MONTHS SURVIVES WITH ITS DERIVATION');
     contributions: [FLOOR_6] }, result);
   check('the envelope carries the floor as it ran', cap.action === 'REPLACE'
     && JSON.stringify((cap.scenario.ran as Record<string, unknown>).cashFloor)
-      === JSON.stringify({ keep: 30_000, monthsOfExpenses: 6 }));
+      === JSON.stringify({ keep: 30_000, monthsOfExpenses: 6, reached: '2026-12-31' }));
   check('a literal-dollar floor has no months identity invented for it', (() => {
     const lit = runRaw([{ liquidFloor: 50_000, fractionOfExcess: 1 }]);
-    const c = clausesInForce(lit.ledger, lit.planned, lit.floors).cashFloor;
+    const c = clausesInForce(lit.ledger, lit.floors).cashFloor;
     return c.ran === true && c.keep === 50_000 && c.statedAs === undefined
       && lit.ledger.movements.every((m) => m.label === 'cash above the floor');
   })());
@@ -171,7 +171,7 @@ console.log('\n3. SIX → NINE, AND A MUTATION OF AN EXISTING SCENARIO');
 {
   const six = runRaw([FLOOR_6]);
   const nine = runRaw([FLOOR_9]);
-  const c9 = clausesInForce(nine.ledger, nine.planned, nine.floors).cashFloor;
+  const c9 = clausesInForce(nine.ledger, nine.floors).cashFloor;
   check('nine months re-runs the same sentence at the same spending: 45,000',
     c9.ran === true && c9.keep === 45_000 && !Array.isArray(c9.statedAs) && c9.statedAs?.monthsOfExpenses === 9);
   const a6 = { to: HORIZON, assumedMonthlySpending: 5000, contributions: [FLOOR_6] };
@@ -186,7 +186,7 @@ console.log('\n3. SIX → NINE, AND A MUTATION OF AN EXISTING SCENARIO');
   const cap7 = captureActiveScenario(SCENARIO_TOOL, seven, nine.result);
   check('a return added to an existing scenario keeps the floor in `ran`', cap7.action === 'REPLACE'
     && JSON.stringify((cap7.scenario.ran as Record<string, unknown>).cashFloor)
-      === JSON.stringify({ keep: 45_000, monthsOfExpenses: 9 }));
+      === JSON.stringify({ keep: 45_000, monthsOfExpenses: 9, reached: '2027-02-28' }));
   // The same question asked of a crossing: the roster is read from `assumptionsInForce`.
   const crossing = { asOf: ASOF, assumptionsInForce: nine.result.assumptions,
     crossing: { date: '2027-03-31', composition: { liquid: 45_000, investments: 30_000, debt: 0, netWorth: 75_000 } } };
@@ -218,7 +218,7 @@ console.log('\n4. FRESH ESTABLISHMENT — what the envelope keeps of the argumen
   check('a fixed amount keeps its name', cs[1].label === 'Roth IRA');
   check(`…bounded to ${MAX_LABEL_CHARS} characters`, typeof cs[2].label === 'string'
     && (cs[2].label as string).length === MAX_LABEL_CHARS && (cs[2].label as string).endsWith('…'));
-  check('an outflow label is the name of a thing and is untouched',
+  check('an outflow label that is already a short name is byte-identical',
     JSON.stringify(kept.outflows) === JSON.stringify(args.outflows));
   check('the caller\'s object is not mutated', FLOOR_6.label.startsWith('keep 6 months')
     && 'label' in (args.contributions[0] as Record<string, unknown>));
@@ -244,22 +244,22 @@ console.log('\n4. FRESH ESTABLISHMENT — what the envelope keeps of the argumen
 console.log('\n5. A CLAUSE INTENTIONALLY REMOVED IS ALLOWED, AND ECHOED AS ABSENT');
 {
   // "Forget the buffer — just put everything I save toward the cards, then invest."
-  const { ledger, planned, floors, rejected } = runRaw([{ surplusFraction: 1, target: TARGET }]);
-  const clauses = clausesInForce(ledger, planned, floors);
+  const { ledger, floors, rejected } = runRaw([{ surplusFraction: 1, target: TARGET }]);
+  const clauses = clausesInForce(ledger, floors);
   check('NOT rejected: dropping a floor is the user\'s right', rejected.length === 0);
   check('the scenario ran', ledger.movements.length > 0);
   check('…and the echo says the floor is absent rather than staying silent', clauses.cashFloor.ran === false
     && typeof (clauses.cashFloor as { meaning?: string }).meaning === 'string');
   // And the other way: debt paydown removed.
   const noDebt = runRaw([{ liquidFloorMonthsOfExpenses: 6, fractionOfExcess: 1 }]);
-  const c2 = clausesInForce(noDebt.ledger, noDebt.planned, noDebt.floors);
+  const c2 = clausesInForce(noDebt.ledger, noDebt.floors);
   check('a removed debt clause is allowed and echoed as absent', noDebt.rejected.length === 0
     && c2.debtPaydown.ran === false && /No rule named a liability/.test((c2.debtPaydown as { meaning?: string }).meaning ?? ''));
   check('a debt target with nothing left owed still RAN — it is the rule, not the payment, that is echoed', (() => {
     const paidOff = { ...OPENING, debt: 0, liabilities: [{ ...CARD, balance: 0 }] };
     const e = expandContributions([{ surplusFraction: 1, target: ['highest_apr', 'investments'] }], ASOF, HORIZON);
     const l = runScenarioLedger({ opening: paidOff, spine: SPINE, contributions: e.movements, outflows: [], returns: [] });
-    const d = clausesInForce(l, e.movements).debtPaydown;
+    const d = clausesInForce(l).debtPaydown;
     return d.ran === true && d.paidToDebt === 0;
   })());
 }
@@ -375,10 +375,10 @@ console.log('\n7. BOTH BASES STATED — the ledger\'s refusal stays, and the ros
   const raw = { surplusFraction: 1, liquidFloorMonthsOfExpenses: 6, fractionOfExcess: 1, target: TARGET };
   check('two bases have no single name', contributionBasis(raw) === 'UNDETERMINED'
     && contributionName(raw) === 'contribution');
-  const { ledger, planned, floors, rejected } = runRaw([raw]);
+  const { ledger, floors, rejected } = runRaw([raw]);
   check('refused by the ledger, in its own words', rejected.length === 1 && /EXACTLY ONE/.test(rejected[0].reason));
   check('nothing ran', ledger.movements.length === 0);
-  const clauses = clausesInForce(ledger, planned, floors);
+  const clauses = clausesInForce(ledger, floors);
   check('the roster reports every clause as not having run',
     Object.values(clauses).every((c) => (c as { ran: boolean }).ran === false));
   check('…without the absence sentences: with nothing moving cash, a floor constrains nothing',
@@ -390,8 +390,8 @@ console.log('\n7. BOTH BASES STATED — the ledger\'s refusal stays, and the ros
 console.log('\n7b. A FLOOR BESIDE A FLOW SHARE — the floor does not govern the share, and the roster says so');
 {
   // Measured live: the model ran a 50% surplus share AND a nine-month floor.
-  const { ledger, planned, floors, rejected } = runRaw([{ surplusFraction: 0.5, target: TARGET }, FLOOR_9]);
-  const c = clausesInForce(ledger, planned, floors);
+  const { ledger, floors, rejected } = runRaw([{ surplusFraction: 0.5, target: TARGET }, FLOOR_9]);
+  const c = clausesInForce(ledger, floors);
   check('both rules are legal and both ran', rejected.length === 0 && c.cashFloor.ran && c.surplusShare.ran);
   const last = ledger.checkpoints[ledger.checkpoints.length - 1];
   check('the arithmetic: cash ends UNDER the floor, because the share is taken regardless',
@@ -400,13 +400,118 @@ console.log('\n7b. A FLOOR BESIDE A FLOW SHARE — the floor does not govern the
     && JSON.stringify(c.cashFloor.notBoundByFloor?.rules) === '["surplusShare"]'
     && /BELOW the floor/.test(c.cashFloor.notBoundByFloor?.meaning ?? ''));
   check('…and so does the envelope, by name', JSON.stringify(compactClauses(c).cashFloor)
-    === '{"keep":45000,"monthsOfExpenses":9,"notBoundByFloor":["surplusShare"]}');
+    === '{"keep":45000,"monthsOfExpenses":9,"reached":false,"notBoundByFloor":["surplusShare"]}',
+    JSON.stringify(compactClauses(c).cashFloor));
   const alone = runRaw([FLOOR_9]);
-  const ca = clausesInForce(alone.ledger, alone.planned, alone.floors).cashFloor;
+  const ca = clausesInForce(alone.ledger, alone.floors).cashFloor;
   check('a floor rule alone carries no such caveat', ca.ran === true && ca.notBoundByFloor === undefined);
   const zero = runRaw([FLOOR_9, { amount: 500, onDate: '2099-01-01', label: 'never' }]);
-  const cz = clausesInForce(zero.ledger, zero.planned, zero.floors).cashFloor;
+  const cz = clausesInForce(zero.ledger, zero.floors).cashFloor;
   check('…nor does one beside a rule that settled nothing', cz.ran === true && cz.notBoundByFloor === undefined);
+}
+
+console.log('\n7c. A FLOOR RULE THAT RAN IS NOT A FLOOR THAT WAS KEPT (review NB3a)');
+{
+  // Nine months of a stated 20k = 180,000: the path tops out at 73,500 and never gets there.
+  const never = runRaw([FLOOR_9], 20_000);
+  const c = clausesInForce(never.ledger, never.floors).cashFloor;
+  check('the rule ran — that is still the truth about the rule', c.ran === true && c.keep === 180_000);
+  check('…and the roster says the floor was NEVER reached, from the balances the settler read',
+    c.ran === true && c.firstReached === null && c.monthsBelowAfterReached === 0
+    && /never reached the floor/.test(c.neverReached ?? ''));
+  check('…and nothing moved', never.ledger.movements.every((m) => m.amount === 0));
+  const cap = captureActiveScenario(SCENARIO_TOOL, { to: HORIZON, assumedMonthlySpending: 20_000,
+    contributions: [FLOOR_9] }, never.result);
+  check('the ENVELOPE says `reached: false` beside `keep`, so 180,000 next to 73,500 reads as "not there yet"',
+    cap.action === 'REPLACE' && JSON.stringify((cap.scenario.ran as Record<string, unknown>).cashFloor)
+      === '{"keep":180000,"monthsOfExpenses":9,"reached":false}');
+  const reached = runRaw([FLOOR_6]);
+  const r = clausesInForce(reached.ledger, reached.floors).cashFloor;
+  check('a floor that WAS reached says when, and carries no never-reached sentence',
+    r.ran === true && r.firstReached === '2026-12-31' && r.neverReached === undefined && r.monthsBelowAfterReached === 0);
+  // Reached, then knocked under by a later fall: the path drops 20k in March.
+  const dip = (() => {
+    const path: [string, number][] = PATH.map(([d, v]) => [d, d >= '2027-03-31' ? v - 40_000 : v]);
+    const e = expandContributions([{ liquidFloor: 30_000, fractionOfExcess: 1, label: 'cash above the floor' }], ASOF, HORIZON);
+    const l = runScenarioLedger({ opening: { ...OPENING, debt: 0, liabilities: [] },
+      spine: path.map(([date, liquid]) => ({ date, liquid, isCheckpoint: true })),
+      contributions: e.movements, outflows: [], returns: [] });
+    return clausesInForce(l).cashFloor;
+  })();
+  check('a floor reached and then broken counts the month-ends under it, and the envelope carries the count',
+    dip.ran === true && dip.firstReached === '2026-12-31' && dip.monthsBelowAfterReached > 0
+    && (compactClauses({ ...clausesInForce(reached.ledger, reached.floors), cashFloor: dip }).cashFloor as { monthsBelow?: number }).monthsBelow
+      === dip.monthsBelowAfterReached, JSON.stringify(dip));
+  // The pinned ceilings are NOT raised by any of this.
+  const worst = runRaw([{ surplusFraction: 0.5, target: TARGET }, FLOOR_9,
+    { amount: 500, from: '2026-10-31', cadence: 'monthly', label: 'Roth IRA' }], 20_000);
+  const worstCompact = JSON.stringify(compactClauses(clausesInForce(worst.ledger, worst.floors)));
+  const floorCompact = JSON.stringify(compactClauses(clausesInForce(never.ledger, never.floors)));
+  const reachedCompact = JSON.stringify(compactClauses(clausesInForce(reached.ledger, reached.floors)));
+  check('a floor scenario\'s envelope roster still fits the pinned 200 B, reached or not',
+    floorCompact.length < 200 && reachedCompact.length < 200, `${floorCompact.length} B / ${reachedCompact.length} B`);
+  // ⚠️ A NEW, SEPARATE BOUND — not the 200 B pin raised. Every clause kind running at once
+  // (floor + months + two unbound rules + share + fixed amounts + a debt order) was already
+  // 225 B before `reached` existed; the 200 B pin never covered it. It is bounded here so it
+  // cannot grow unnoticed, and the raw envelope ceiling (900 B) is what protects the cookie.
+  check('every clause at once is bounded too (its own bound: 260 B)', worstCompact.length < 260, `${worstCompact.length} B`);
+}
+
+console.log('\n7d. THE ORDER IS THE SETTLER\'S RECORD, NOT A MATCH (review NB3b)');
+{
+  // Two fixed amounts, same date, same size. One names a liability that does not exist and is
+  // REFUSED at settlement; the other goes to investments. Nothing a movement carries tells them apart.
+  const specs: ContributionSpec[] = [
+    { onDate: '2026-10-31', amount: 500, target: [{ liability: 'ghost-card' }, 'investments'], label: 'fixed amount' },
+    { onDate: '2026-10-31', amount: 500, target: ['investments'], label: 'fixed amount' },
+  ];
+  const e = expandContributions(specs, ASOF, HORIZON);
+  const l = runScenarioLedger({ opening: OPENING, spine: SPINE, contributions: e.movements, outflows: [], returns: [] });
+  check('the fixture is what it claims: one rule refused, one settled',
+    l.rejected.length === 1 && /ghost-card/.test(l.rejected[0].reason) && l.movements.length === 1);
+  check('the ledger recorded only the order it PLACED', JSON.stringify(l.allocationOrders) === '[["investments"]]');
+  const d = clausesInForce(l).debtPaydown;
+  check('the roster does NOT report the refused rule\'s order — no debt clause ran',
+    d.ran === false, JSON.stringify(d));
+  // And the mirror image: the settled one pays debt, the refused one did not.
+  const mirror = expandContributions([
+    { onDate: '2026-10-31', amount: 500, target: [{ liability: 'ghost-card' }], label: 'fixed amount' },
+    { onDate: '2026-10-31', amount: 500, target: ['highest_apr', 'investments'], label: 'fixed amount' },
+  ], ASOF, HORIZON);
+  const lm = runScenarioLedger({ opening: OPENING, spine: SPINE, contributions: mirror.movements, outflows: [], returns: [] });
+  const dm = clausesInForce(lm).debtPaydown;
+  check('…and reports exactly the settled rule\'s order when that one does',
+    dm.ran === true && JSON.stringify(dm.order) === '["highest_apr","investments"]' && dm.paidToDebt === 500);
+  check('an untargeted (pre-L1) rule records no order and the movement is the object it always was',
+    (() => { const u = expandContributions([{ onDate: '2026-10-31', amount: 500 }], ASOF, HORIZON);
+      const lu = runScenarioLedger({ opening: OPENING, spine: SPINE, contributions: u.movements, outflows: [], returns: [] });
+      return lu.allocationOrders.length === 0 && !('placed' in lu.movements[0]); })());
+  check('a monthly rule records its order ONCE, not once per month', (() => {
+    const r = runRaw([SUBSTITUTED]); return r.ledger.allocationOrders.length === 1; })());
+  const rules = readFileSync('lib/ai/conversation/scenario-rules.ts', 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
+  check('the roster no longer takes the plan at all — there is nothing left to mis-match',
+    !/PlannedMovement|planned/.test(rules));
+}
+
+console.log('\n7e. AN OUTFLOW LABEL IS BOUNDED AND DEMOTED LIKE A CONTRIBUTION\'S (review NB4)');
+{
+  const LONG = 'a trip that I will definitely pay for after keeping nine months of expenses in cash';
+  check('named by code first, the caller\'s words quoted after',
+    outflowName({ amount: 30_000, label: 'car' }) === 'one-off outflow, named "car" by the caller');
+  check('a negative amount is an INFLOW, and code says so whatever the label says',
+    outflowName({ amount: -15_000, label: 'bonus (net)' }) === 'one-off inflow, named "bonus (net)" by the caller');
+  check('no label ⇒ just what it is', outflowName({ amount: 100 }) === 'one-off outflow');
+  check(`a sentence is cut to ${MAX_LABEL_CHARS} characters`, outflowName({ amount: 1, label: LONG }).length
+    === 'one-off outflow, named "" by the caller'.length + MAX_LABEL_CHARS && !outflowName({ amount: 1, label: LONG }).includes('nine months'));
+  const kept = withoutUnappliedLabels({ to: HORIZON, outflows: [{ onDate: '2027-01-01', amount: 1, label: LONG },
+    { onDate: '2027-01-02', amount: 2 }] });
+  const o = kept.outflows as Record<string, unknown>[];
+  check('the envelope bounds it too, and leaves a label-less outflow alone',
+    (o[0].label as string).length === MAX_LABEL_CHARS && !('label' in o[1]) && o[0].amount === 1 && o[0].onDate === '2027-01-01');
+  const tools = readFileSync('lib/ai/conversation/tools.ts', 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
+  const prep = tools.slice(tools.indexOf('async function prepareScenario('), tools.indexOf('function surplusRule('));
+  check('prepareScenario names every outflow by code and never reads its label',
+    /const label\s+= outflowName\(o\);/.test(prep) && !/o\.label/.test(prep));
 }
 
 console.log('\n8. THE ROSTER IS CLOSED — every clause kind, on every result');
@@ -420,22 +525,22 @@ console.log('\n8. THE ROSTER IS CLOSED — every clause kind, on every result');
     ['fixed amount', [{ amount: 500, from: '2026-10-31', cadence: 'monthly', label: 'Roth IRA' }]],
   ] as [string, Record<string, unknown>[]][]) {
     const r = runRaw(raws);
-    const c = clausesInForce(r.ledger, r.planned, r.floors);
+    const c = clausesInForce(r.ledger, r.floors);
     check(`${name}: five keys, each with a boolean \`ran\``, Object.keys(c).join(',') === KEYS && isClausesInForce(c));
     check(`${name}: the compact form keeps all five`, Object.keys(compactClauses(c)).join(',') === KEYS);
   }
   const fixed = runRaw([{ amount: 500, from: '2026-10-31', cadence: 'monthly', label: 'Roth IRA' }]);
-  const cf = clausesInForce(fixed.ledger, fixed.planned, fixed.floors);
+  const cf = clausesInForce(fixed.ledger, fixed.floors);
   check('fixed amounts are counted and totalled from what settled', cf.fixedAmounts.ran === true
     && cf.fixedAmounts.count === 9 && cf.fixedAmounts.total === 4_500, JSON.stringify(cf.fixedAmounts));
   check('…and a fixed amount keeps no floor either, which the roster says', cf.cashFloor.ran === false);
   const bal = runRaw([{ fractionOfLiquid: 0.5, from: '2026-12-31', cadence: 'yearly' }]);
-  const cb = clausesInForce(bal.ledger, bal.planned, bal.floors);
+  const cb = clausesInForce(bal.ledger, bal.floors);
   check('a balance share is its own clause, not a surplus share', cb.balanceShare.ran === true
     && cb.balanceShare.share === 0.5 && cb.surplusShare.ran === false);
   const sub = runRaw([SUBSTITUTED]);
-  const full = JSON.stringify(clausesInForce(sub.ledger, sub.planned, sub.floors));
-  const small = JSON.stringify(compactClauses(clausesInForce(sub.ledger, sub.planned, sub.floors)));
+  const full = JSON.stringify(clausesInForce(sub.ledger, sub.floors));
+  const small = JSON.stringify(compactClauses(clausesInForce(sub.ledger, sub.floors)));
   check('bounded: the result roster < 1,100 B, the envelope roster < 200 B', full.length < 1_100 && small.length < 200,
     `${full.length} B / ${small.length} B`);
   check('isClausesInForce refuses anything else', !isClausesInForce(null) && !isClausesInForce({})
@@ -451,7 +556,7 @@ console.log('\n9. STRUCTURE — where the label can and cannot go');
     && /const label = name;/.test(prep));
   check('…and never reads the caller\'s contribution label', !/raw\.label|c\.label/.test(prep));
   check('the roster is part of `scenarioAssumptions`, so all three scenario tools echo it',
-    /function scenarioAssumptions\([\s\S]{0,400}?clauses: clausesInForce\(ledger, setup\.contributions/.test(tools)
+    /function scenarioAssumptions\([\s\S]{0,400}?clauses: clausesInForce\(ledger,\s+setup\.floorDerivations/.test(tools)
     && (tools.match(/scenarioAssumptions\(setup, /g) ?? []).length >= 3);
   const rules = code('lib/ai/conversation/scenario-rules.ts');
   check('scenario-rules is pure: type-only imports, no clock, no I/O',

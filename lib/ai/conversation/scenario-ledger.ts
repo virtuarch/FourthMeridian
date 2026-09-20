@@ -376,6 +376,19 @@ export interface LedgerResult {
   movements: (DatedMovement & { kind: 'CONTRIBUTION' | 'OUTFLOW' })[];
   /** Present when the opening carried liability lines. */
   liabilities?: LedgerLiabilities;
+  /**
+   * The distinct target ORDERS of the allocation rules that actually SETTLED, in
+   * the order they first settled.
+   *
+   * ⚠️ RECORDED AT THE PLACEMENT, NOT MATCHED BACK AFTERWARDS. A settled movement
+   * says where its cash went, not the order it was offered in, and two rules on
+   * one date can be identical in every field a movement carries while naming
+   * different targets. Re-deriving the order by matching settled movements to
+   * planned ones therefore could — and did — report the order of a rule the
+   * settler had REFUSED. The settler is the only place that knows which rule it
+   * is placing, so it writes the order down there.
+   */
+  allocationOrders: AllocationTarget[][];
   /** Inputs that were not applied, with the reason. Never silently dropped. */
   rejected: { input: string; reason: string }[];
   /** Things that happened and are worth saying out loud, e.g. cash going negative. */
@@ -783,6 +796,8 @@ export interface SettledLedger {
   warnings:  string[];
   /** Every modelled liability after each spine date's settlement. Empty without liabilities. */
   liabilitiesByDate: Map<string, LiabilityCheckpoint[]>;
+  /** Distinct target orders of the rules that settled — see `LedgerResult.allocationOrders`. */
+  allocationOrders: AllocationTarget[][];
   /** Stated minimums settled on each spine date, and interest accrued on it. */
   minimumsByDate: Map<string, number>;
   interestByDate: Map<string, number>;
@@ -848,6 +863,8 @@ export function settleMovements(
   const liabilitiesByDate = new Map<string, LiabilityCheckpoint[]>();
   const minimumsByDate = new Map<string, number>();
   const interestByDate = new Map<string, number>();
+  const allocationOrders: AllocationTarget[][] = [];
+  const seenOrders = new Set<string>();
   let consumed = 0;
 
   const states: LiabilityState[] = liabilities.map((l) => ({ line: l, balance: Math.max(0, round2(l.balance)),
@@ -988,6 +1005,9 @@ export function settleMovements(
             + 'a target must be a liability the position lists' });
         continue;
       }
+      // The rule is being placed: its order is now a fact about this ledger.
+      const orderKey = JSON.stringify(m.targets);
+      if (!seenOrders.has(orderKey)) { seenOrders.add(orderKey); allocationOrders.push([...m.targets]); }
       let remaining = Math.max(requested, 0);
       let investments = 0;
       const placedLiabilities: { id: string; amount: number }[] = [];
@@ -1020,7 +1040,7 @@ export function settleMovements(
     }
   }
 
-  return { movements, rejected, warnings, liabilitiesByDate, minimumsByDate, interestByDate };
+  return { movements, rejected, warnings, liabilitiesByDate, minimumsByDate, interestByDate, allocationOrders };
 }
 
 // ── The ledger ───────────────────────────────────────────────────────────────
@@ -1179,6 +1199,7 @@ export function runScenarioLedger(input: LedgerInput): LedgerResult {
     opening: { ...opening, netWorth: openingNetWorth },
     checkpoints,
     movements: settled.movements,
+    allocationOrders: settled.allocationOrders,
     ...(lines.length > 0 ? { liabilities: { lines, unmodelled, interestBasis, withheldAggregate } } : {}),
     rejected,
     warnings: collapseNegativeCash([...new Set(warnings)]),
