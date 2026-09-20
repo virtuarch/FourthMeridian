@@ -41,6 +41,10 @@
  * envelope says what the stated hypothetical comes to; it never says what is.
  */
 
+import {
+  compactClauses, isClausesInForce, withoutUnappliedLabels, type ClausesRan,
+} from './scenario-rules';
+
 /** The tool whose success establishes a scenario. Goal-seek is NOT one of these. */
 export const SCENARIO_TOOL = 'scenario_projection' as const;
 
@@ -83,6 +87,19 @@ export interface ActiveScenario {
    * first place the two could disagree.
    */
   assumptions: Record<string, unknown>;
+  /**
+   * The clauses that execution actually RAN, by kind — `'NONE'` where one did not.
+   *
+   * ⚠️ THE ENVELOPE KEPT A MISTAKE AS FAITHFULLY AS IT KEPT A RULE (G5). With the
+   * floor dropped on the way into the first scenario, every later turn re-sent
+   * the floorless arguments: 0/6 recovered, against 14/14 when the floor was
+   * there. Nothing in `assumptions` could show the difference — a clause that
+   * was never stated leaves no key behind. This is the ledger's own roster
+   * (`scenario-rules.ts`), read from the SAME tool result in the SAME literal, so
+   * it is a third member of the atomic pair and never a second opinion about it.
+   * Absent only when the result carried no roster.
+   */
+  ran?: ClausesRan;
   result: ActiveScenarioResult;
 }
 
@@ -149,14 +166,34 @@ export function captureActiveScenario(
   if ('reason' in position) return { action: 'CLEAR', reason: position.reason };
   const { asOf, to, liquid, investments, debt, netWorth } = position;
 
+  // ⚠️ VERBATIM, MINUS THE ONE KEY THE CONTRACT NEVER APPLIES. A rule's `label`
+  // sized nothing; kept here it is a sentence about the scenario that no
+  // execution vouches for, re-read on every later turn. Every structured field
+  // is untouched, so the arguments still replay to the same figures.
+  const stated = withoutUnappliedLabels(
+    (args && typeof args === 'object' ? args : {}) as Record<string, unknown>);
+  const ran = clausesRan(r);
+
   // ⚠️ ONE LITERAL, ONE EXECUTION. The pair's coupling is this expression.
   return {
     action: 'REPLACE',
     scenario: {
-      assumptions: (args && typeof args === 'object' ? args : {}) as Record<string, unknown>,
+      assumptions: stated,
+      ...(ran ? { ran } : {}),
       result: { asOf, to, liquid, investments, debt, netWorth },
     },
   };
+}
+
+/**
+ * The roster a scenario result carries, at envelope size. A projection echoes
+ * its assumptions under `assumptions`, a crossing under `assumptionsInForce`;
+ * both are `scenarioAssumptions`' output, so both carry the same `clauses`.
+ */
+function clausesRan(r: Record<string, unknown>): ClausesRan | null {
+  const echo = (r.assumptions ?? r.assumptionsInForce) as { clauses?: unknown } | null | undefined;
+  const clauses = echo && typeof echo === 'object' ? echo.clauses : undefined;
+  return isClausesInForce(clauses) ? compactClauses(clauses) : null;
 }
 
 /**

@@ -77,6 +77,7 @@ import {
   type PlannedMovement, type ReturnPeriod, type SpinePoint,
   type LiabilityLine, type AllocationTarget,
 } from './scenario-ledger';
+import { clausesInForce, contributionName, unknownContributionKeys } from './scenario-rules';
 import type { SpaceContext } from '@/lib/space';
 // ⚠️ THE ONE WRITE PATH, IMPORTED RATHER THAN INLINED. Keeping the memory tools
 // in their own module is what lets THIS file keep an exact "no Prisma client,
@@ -1989,6 +1990,23 @@ async function prepareScenario(
 
   const contribSpecs: ContributionSpec[] = [];
   for (const raw of (a.contributions as Record<string, unknown>[]) ?? []) {
+    // ⚠️ THE NAME IS CODE'S, NEVER THE CALLER'S SENTENCE (G5). A rule's `label` was
+    // free text that rode into every settled movement and into the envelope, and
+    // it said "after keeping 6 months of expenses" over a surplus share that kept
+    // nothing. The name is now derived from the basis that sized the rule; only a
+    // fixed amount keeps its caller's name, quoted and bounded (`scenario-rules`).
+    const name = contributionName(raw);
+    // ⚠️ A CLOSED KEY SET. A key the contract does not define is a clause it cannot
+    // represent; running the rest of the rule without it would be the silent
+    // approximation the evidence rule forbids, so the rule is refused by name.
+    const unknown = unknownContributionKeys(raw);
+    if (unknown.length > 0) {
+      rejected.push({ input: name,
+        reason: `the contribution carries ${unknown.map((k) => `\`${k}\``).join(', ')}, which is not a `
+          + 'field of this contract, so that condition cannot be applied and the rule was NOT run '
+          + 'without it. Express it with the fields that exist, or tell the user it cannot be modelled.' });
+      continue;
+    }
     // ⚠️ M1 — "N MONTHS OF EXPENSES" BECOMES THE FLOOR LITERAL HERE, NOT IN THE
     // MODEL AND NOT IN THE LEDGER. The threshold is resolved through the canonical
     // expense-baseline authority from the scenario's own spending level, and the
@@ -1998,8 +2016,7 @@ async function prepareScenario(
     // months of expenses", and a later "make it nine" re-runs the same sentence.
     let c = raw;
     if (raw.liquidFloorMonthsOfExpenses !== undefined) {
-      const what = raw.label === undefined
-        ? `${raw.liquidFloorMonthsOfExpenses} months of expenses` : String(raw.label);
+      const what = name;
       if (raw.liquidFloor !== undefined) {
         rejected.push({ input: what, reason: 'state the floor ONCE: `liquidFloor` in dollars or '
           + '`liquidFloorMonthsOfExpenses` in months, not both' });
@@ -2014,9 +2031,9 @@ async function prepareScenario(
       floorDerivations.push(floor);
       const { liquidFloorMonthsOfExpenses: _months, ...rest } = raw;
       void _months;
-      c = { ...rest, liquidFloor: floor.liquidFloor, label: what };
+      c = { ...rest, liquidFloor: floor.liquidFloor };
     }
-    const label  = c.label === undefined ? undefined : String(c.label);
+    const label = name;
     // How much: a dollar amount, or a share of the balance. The ledger refuses
     // both and neither; this only passes through what was said.
     // ⚠️ EVERY BASIS THE MODEL STATED TRAVELS, so a rule naming two of them is
@@ -2310,6 +2327,13 @@ function scenarioAssumptions(
     // at different rates; every scenario tool now states the date its ledger ran
     // to in the same field, so a later turn cannot inherit one and quote the other.
     horizon: { to: setup.toISO },
+    // ⚠️ EVERY CLAUSE KIND, RAN OR NOT (G5). `surplusRule` and `floorRule` below
+    // describe a rule that ran; neither can say the OTHER did not. This is the
+    // closed roster — a floor that was dropped on the way into the arguments is
+    // reported here as `cashFloor.ran: false`, with the lowest cash the scenario
+    // reached, in the same turn the model is about to narrate it.
+    clauses: clausesInForce(ledger, setup.contributions,
+      setup.floorDerivations.map((d) => ({ liquidFloor: d.liquidFloor, derivedFrom: d.derivedFrom }))),
     returns: returns.length === 0
       ? { statedRate: null,
           note: 'No return was in force. Investments are held flat at 0% — do not substitute '

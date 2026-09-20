@@ -139,6 +139,12 @@ export interface LiabilityCheckpoint {
 
 export interface PlannedMovement {
   date:   string;
+  /**
+   * A NAME, carried through and never read. ⚠️ It sizes nothing and proves
+   * nothing: the production caller derives it from the rule's basis
+   * (`scenario-rules.contributionName`) precisely so a caller's sentence cannot
+   * sit beside a settled amount claiming a clause that did not run.
+   */
   label:  string;
   /** Destinations in order. Absent = investments, byte-for-byte the old behaviour. */
   targets?: readonly AllocationTarget[];

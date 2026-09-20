@@ -55,8 +55,23 @@ console.log('1. CAPTURE — success establishes the pair');
     c.scenario.result.asOf === '2026-09-12' && c.scenario.result.to === '2026-12-31');
   check('exactly the six figures and nothing else',
     Object.keys(c.scenario.result).join(',') === 'asOf,to,liquid,investments,debt,netWorth');
-  check('exactly two keys on the envelope',
+  check('exactly two keys on the envelope when the result carries no clause roster',
     Object.keys(c.scenario).join(',') === 'assumptions,result');
+  // ⚠️ THE THIRD MEMBER (G5). A result that echoes which clauses RAN hands that
+  // roster to the envelope in the same literal — so a floor that never ran is a
+  // stated `'NONE'` on every later turn, not a key that was never there.
+  const none = { ran: false };
+  const withRoster = { ...R1, assumptions: { clauses: { cashFloor: none, surplusShare: { ran: true, share: 1 },
+    balanceShare: none, fixedAmounts: none, debtPaydown: none } } };
+  const c3 = captureActiveScenario(SCENARIO_TOOL, A1, withRoster);
+  check('…and exactly three, in one order, when it does',
+    c3.action === 'REPLACE' && Object.keys(c3.scenario).join(',') === 'assumptions,ran,result');
+  check('…the roster says NONE in a named slot rather than omitting the clause',
+    c3.action === 'REPLACE' && JSON.stringify(c3.scenario.ran)
+      === '{"cashFloor":"NONE","surplusShare":1,"balanceShare":"NONE","fixedAmounts":"NONE","debtPaydown":"NONE"}');
+  check('…and a malformed roster is not carried at all',
+    (() => { const x = captureActiveScenario(SCENARIO_TOOL, A1, { ...R1, assumptions: { clauses: { cashFloor: 'yes' } } });
+      return x.action === 'REPLACE' && !('ran' in x.scenario); })());
   for (const absent of ['id', 'fingerprint', 'hash', 'name', 'status', 'createdAt', 'turn', 'label']) {
     check(`no \`${absent}\``, !(absent in c.scenario));
   }
