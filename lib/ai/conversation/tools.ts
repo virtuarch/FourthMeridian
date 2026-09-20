@@ -2500,7 +2500,11 @@ const SCENARIO_INPUTS = {
         + 'every month-end: give `from`/`to` only to start or stop it early, and never a '
         + '`cadence` or an `onDate`. The engine has no default share: when the user named one '
         + '("75%", "half") use it; when they said only "some" or "most", choose a share, run it, '
-        + 'and say in the answer which share it was.'),
+        + 'and say in the answer which share it was. It keeps NO cash floor: it moves its share '
+        + 'every month whatever the balance is. When the user also wants cash kept (a buffer, $X '
+        + 'liquid, N months of expenses), what is left to move is the cash ABOVE that floor — use '
+        + '`liquidFloor` or `liquidFloorMonthsOfExpenses` + `fractionOfExcess` with the same '
+        + '`target`, not this.'),
       liquidFloor: num('The cash balance to KEEP, in DOLLARS THE USER STATED: 50000 for "keep $50k '
         + 'liquid". When the user said it in months of expenses, use `liquidFloorMonthsOfExpenses` '
         + 'instead and do not convert it to dollars yourself. '
@@ -2532,7 +2536,9 @@ const SCENARIO_INPUTS = {
       from:    str('YYYY-MM-DD first occurrence of a repeating contribution.'),
       to:      str('YYYY-MM-DD last occurrence. Omit to continue to the horizon.'),
       cadence: { type: 'string', enum: ['monthly', 'yearly'] },
-      label:   str('The user\'s own words, e.g. "half my liquidity".'),
+      label:   str('Optional short NAME for a fixed `amount` ("Roth IRA"). Never applied, and never '
+        + 'a rule: the result names every rule from its fields, so a condition written only here '
+        + 'does not run.'),
     }) },
   outflows: { type: 'array',
     description: 'One-off cash leaving entirely — a car, a trip, a tax bill. Use a NEGATIVE '
