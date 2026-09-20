@@ -4,19 +4,27 @@
  * components/ui/ContextualNavbar.tsx
  *
  * The one desktop sidebar (prototype DS-4 §6 — components/shell/Sidebar.tsx).
- * It TRANSFORMS rather than appears:
  *
- *   global   — on the launcher and every non-Space route: the five primary
- *              destinations (Brief · My Space · AI · Spaces · Connections —
- *              lib/space-nav PRIMARY_NAV, the same list the mobile BottomNav
- *              renders; Settings is in the account menu, not here), plus any
+ * SITE NAVIGATION IS CONSTANT; the sidebar's CONTEXT block is what transforms.
+ * `PrimaryNav` — the five primary destinations (Brief · My Space · AI · Spaces ·
+ * Connections — lib/space-nav PRIMARY_NAV, the same list the mobile BottomNav
+ * renders; Settings is in the account menu, not here) — is rendered FIRST in
+ * BOTH modes, by one component, so entering a Space never takes Fourth Meridian
+ * away. It used to live inside global mode only, and the two modes were an
+ * either/or: the moment a Space published itself into SpaceChrome the site nav
+ * was unmounted, and desktop (where BottomNav is hidden) had no way to another
+ * destination except out through the launcher.
+ *
+ *   global   — on the launcher and every non-Space route: the site nav, plus any
  *              platform-HQ destinations the user is granted.
  *   space    — inside a Space (published through SpaceChrome by SpaceDashboard):
- *              back-to-Spaces, the Space's identity, its display-currency + Manage
- *              controls, and the section anchors for the active workspace. Inside
- *              a PLATFORM Space it additionally carries the same access-derived
- *              Platform destinations global mode shows, so the operator can move
- *              between HQ Spaces without first leaving to the launcher.
+ *              the site nav, THEN — under a hairline, so the hierarchy reads
+ *              site → Space → section — back-to-Spaces, the Space's identity, its
+ *              display-currency + Manage controls, and the section anchors for
+ *              the active workspace. Inside a PLATFORM Space it additionally
+ *              carries the same access-derived Platform destinations global mode
+ *              shows, so the operator can move between HQ Spaces without first
+ *              leaving to the launcher.
  *
  * Both modes share DOM position and the left-accent-bar selection idiom, so
  * moving between them reads as the sidebar re-resolving, not one panel replacing
@@ -196,12 +204,18 @@ export function PlatformNav({
 
 export function ContextualNavbar() {
   const { space, currencyControl, sections, activeSection, setActiveSection } = useSpaceChrome();
+  // Owned HERE, above the mode switch: the site nav's inputs must not reset (and
+  // the badge must not re-fetch) when a Space publishes or clears its chrome.
+  const pathname = usePathname();
+  const pendingInvites = usePendingInvites();
 
   return (
     <aside className="hidden w-[212px] shrink-0 lg:block">
       <div className="sticky top-12 flex max-h-[calc(100dvh-3rem)] flex-col gap-5 overflow-y-auto py-6 pr-5">
         {space ? (
           <SpaceMode
+            pathname={pathname}
+            pendingInvites={pendingInvites}
             space={space}
             currencyControl={currencyControl}
             sections={sections}
@@ -209,27 +223,26 @@ export function ContextualNavbar() {
             onSelectSection={setActiveSection}
           />
         ) : (
-          <GlobalMode />
+          <GlobalMode pathname={pathname} pendingInvites={pendingInvites} />
         )}
       </div>
     </aside>
   );
 }
 
-// ── global mode ──────────────────────────────────────────────────────────────
+// ── site navigation (both modes) ─────────────────────────────────────────────
 
-function GlobalMode() {
-  const pathname = usePathname();
-  // The access-derived platform destinations — the SAME hook Space mode uses.
-  const platform = usePlatformDestinations(true);
+/**
+ * The pending-invite count for the Spaces badge. The sidebar does not inline the
+ * Spaces list (the prototype's flat nav model — switching happens on the Spaces
+ * launcher); it still needs this one number from the network, a no-op for users
+ * without invites. State is set only from the fetch callback
+ * (external-subscription shape), so a route change / re-fire never races a slow
+ * response into a stale setState.
+ */
+function usePendingInvites(): number {
   const [pendingInvites, setPendingInvites] = useState(0);
 
-  // Lightweight: the sidebar no longer inlines the Spaces list (the prototype's
-  // flat nav model — switching happens on the Spaces launcher). It still needs
-  // the pending-invite badge on Spaces from the network; a no-op for users
-  // without invites. State is set only from the fetch callback
-  // (external-subscription shape), so a route change / re-fire never races a
-  // slow response into a stale setState.
   const load = useCallback((signal: () => boolean) => {
     fetch("/api/spaces/invites/pending")
       .then((res) => (res.ok ? res.json() : null))
@@ -260,9 +273,35 @@ function GlobalMode() {
     };
   }, [load]);
 
+  return pendingInvites;
+}
+
+/**
+ * The SITE NAVIGATION block — ONE component, rendered by BOTH sidebar modes, so
+ * there is one desktop presentation of lib/space-nav PRIMARY_NAV and it cannot
+ * differ between "on the launcher" and "inside a Space". The list, the order,
+ * the routes and the active rule (`isPrimaryDestActive`) all come from
+ * lib/space-nav; nothing about a destination is restated here.
+ *
+ * Inside a Space the active rule is unchanged, deliberately: /dashboard IS the
+ * active Space's dashboard, so My Space is lit there exactly as it is on the
+ * mobile bar; a platform HQ route lights nothing, as it always has.
+ *
+ * Pure over its props (pathname + badge count) so it renders in a test without
+ * the App Router.
+ */
+export function PrimaryNav({
+  pathname: rawPathname,
+  pendingInvites = 0,
+}: {
+  pathname: string | null;
+  pendingInvites?: number;
+}) {
+  // Before hydration there may be no pathname: nothing is lit, nothing throws.
+  const pathname = rawPathname ?? "";
   return (
-    <>
-      <p className="px-1 text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+    <div>
+      <p className="mb-1.5 px-1 text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
         Fourth Meridian
       </p>
       <nav aria-label="Global" className="flex flex-col gap-0.5">
@@ -304,7 +343,19 @@ function GlobalMode() {
           );
         })}
       </nav>
+    </div>
+  );
+}
 
+// ── global mode ──────────────────────────────────────────────────────────────
+
+function GlobalMode({ pathname, pendingInvites }: { pathname: string | null; pendingInvites: number }) {
+  // The access-derived platform destinations — the SAME hook Space mode uses.
+  const platform = usePlatformDestinations(true);
+
+  return (
+    <>
+      <PrimaryNav pathname={pathname} pendingInvites={pendingInvites} />
       <PlatformNav items={platform} pathname={pathname} />
     </>
   );
@@ -382,13 +433,18 @@ export function SectionsNav({
 
 // ── space mode ───────────────────────────────────────────────────────────────
 
-function SpaceMode({
+/** Exported so the COMPOSITION (site nav above the Space block) renders in a test. */
+export function SpaceMode({
+  pathname,
+  pendingInvites,
   space,
   currencyControl,
   sections,
   activeSection,
   onSelectSection,
 }: {
+  pathname: string | null;
+  pendingInvites: number;
   space: SpaceChromeSpace;
   currencyControl: React.ReactNode;
   sections: SpaceChromeSection[];
@@ -409,13 +465,20 @@ function SpaceMode({
   //
   // The list itself is still access-derived (usePlatformDestinations → the same
   // /api/spaces `platform` projection): the route only decides WHETHER to ask.
-  const pathname = usePathname();
   const onPlatformAxis = isPlatformSpaceRoute(pathname);
   const platform = usePlatformDestinations(onPlatformAxis);
 
   return (
     <>
-      <div>
+      {/* SITE — the same block global mode renders. Fourth Meridian stays on
+          screen; the Space is a place INSIDE it, not a shell that replaces it. */}
+      <PrimaryNav pathname={pathname} pendingInvites={pendingInvites} />
+
+      {/* SPACE — under a hairline, so the order reads site → this Space → its
+          sections. "All Spaces" is the Space's own way back up and stays: it is
+          part of the Space's context (it sits with the name it leaves), where
+          the Spaces item above is a site destination. Same route, one hop. */}
+      <div data-nav-context="space" className="border-t border-[var(--border-hairline)] pt-5">
         <button
           onClick={onLeave}
           className="-ml-1 mb-2.5 flex items-center gap-1.5 rounded-[var(--radius-sm)] px-1 py-0.5 text-[11px] font-medium text-[var(--text-muted)] transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)] hover:text-[var(--text-secondary)]"

@@ -72,8 +72,12 @@ console.log('one primary nav, two presentations: rail and bar read the SAME mode
   const code = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   check('BottomNav renders PRIMARY_NAV with the shared active rule',
     /PRIMARY_NAV\.map/.test(bottomNav) && /isPrimaryDestActive\(d\.id, pathname\)/.test(bottomNav));
-  check('ContextualNavbar global mode renders PRIMARY_NAV with the shared active rule',
+  check('ContextualNavbar renders PRIMARY_NAV with the shared active rule',
     /PRIMARY_NAV\.map/.test(rail) && /isPrimaryDestActive\(d\.id, pathname\)/.test(rail));
+  // The site nav is ONE block rendered by both sidebar modes (global AND inside a
+  // Space) — see components/ui/site-nav-in-space.test.ts for the rendered proof.
+  check('…from one block, mapped once and mounted in both modes',
+    (code(rail).match(/PRIMARY_NAV\.map/g) ?? []).length === 1 && (code(rail).match(/<PrimaryNav\b/g) ?? []).length === 2);
   check('no second nav list anywhere (GLOBAL_NAV / BOTTOM_NAV retired)',
     !/GLOBAL_NAV|BOTTOM_NAV|isGlobalDestActive|isBottomDestActive/.test(code(bottomNav) + code(rail) + code(chrome)));
   check('neither presentation carries a Settings item or icon',
