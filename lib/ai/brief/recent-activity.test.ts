@@ -94,7 +94,7 @@ async function main() {
     const lookup = (id: string) => types[id];
     const w = recentActivityWindow('2026-09-13');
     const classed = projectRecentActivity([
-      tx('2026-09-12', -1440.83, { accountId: 'fa_card', merchantDisplayName: 'Hotel', category: 'Travel' as Transaction['category'] }),
+      tx('2026-09-12', -1275.40, { accountId: 'fa_card', merchantDisplayName: 'Hotel', category: 'Travel' as Transaction['category'] }),
       tx('2026-09-12', -900, { accountId: 'fa_checking', merchantDisplayName: 'Rent' }),
       tx('2026-09-11', 800, { accountId: 'fa_savings', merchantDisplayName: 'Interest' }),
       tx('2026-09-10', -700, { accountId: 'fa_broker', merchantDisplayName: 'Buy' }),
@@ -107,7 +107,7 @@ async function main() {
     check('an account the lookup does not know carries NO class — no connection is established, none is guessed',
       by('Mystery') !== undefined && !('account' in by('Mystery')!));
     check('the class is decided by the account, never by merchant, category or flow',
-      projectRecentActivity([tx('2026-09-12', -1440.83, { accountId: 'fa_checking', merchantDisplayName: 'Hotel', category: 'Travel' as Transaction['category'] })],
+      projectRecentActivity([tx('2026-09-12', -1275.40, { accountId: 'fa_checking', merchantDisplayName: 'Hotel', category: 'Travel' as Transaction['category'] })],
         w, true, lookup).top[0].account === 'LIQUID');
     check('the id used for the lookup is still never emitted', !/fa_/.test(JSON.stringify(classed)));
     check('without a lookup no row carries a class (retrospective and legacy callers unchanged)',

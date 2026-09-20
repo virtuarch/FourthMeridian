@@ -97,7 +97,7 @@ function seriesOf(history: readonly SnapshotDataPoint[], metric: Metric): Series
 /**
  * ⚠️ THE PERCENTAGE RULE IS THE AUTHORITY'S (`pctOfOpening`). This module only
  * asks for the narrating-consumer option: a base smaller than the movement gives
- * no percentage (`debt.pct: 11937.8` over a $9.75 opening was arithmetic without
+ * no percentage (a five-digit `debt.pct` over a ten-dollar opening was arithmetic without
  * meaning). When it is withheld, the opening value rides along so the change can
  * be told as two amounts.
  */

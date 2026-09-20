@@ -4,9 +4,9 @@
  * A CLASSIFICATION TRAVELS WITH ITS SCOPE AND ITS REASON — and a rate is not a
  * burden.
  *
- * The forensic case (docs/plans/AI-CONVERSATION-STATE-…, §12a): $1,173.69 owed
- * across two cards at 24.99% / 28.99% graded `debt: CRITICAL` at HIGH
- * confidence. The arithmetic was right — 25.16% > 22 — and the label was read as
+ * The forensic case (docs/plans/AI-CONVERSATION-STATE-…, §12a): a small balance
+ * across two high-rate cards graded `debt: CRITICAL` at HIGH confidence. The
+ * arithmetic was right — the blended rate was above 22 — and the label was read as
  * "your debt situation is in the most severe tier, driven by how you've been
  * using and repaying it", because a bare label told a narrator nothing about
  * what had been graded or why.
@@ -20,6 +20,9 @@
  *     burden — which is stated relative to the user's own income, expenses and
  *     cash, with the operands echoed, and is never graded
  *   · no downstream verdict moved: the same ladder, the same thresholds
+ *
+ * ⚠️ SYNTHETIC FIGURES. The shape of the case is reproduced (a small balance, two
+ * rates above the critical threshold); no value here is anyone's real money.
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/ai/intelligence/debt-rate-reason.test.ts
  */
@@ -90,10 +93,10 @@ function mkCtx(accts: AccountsSectionData | null, snap: Record<string, unknown> 
   } as unknown as SpaceContext_AI;
 }
 
-// The forensic pair: 1,123.25 @ 24.99% and 50.44 @ 28.99%.
-const SMALL = [card("a", 1123.25, 24.99), card("b", 50.44, 28.99)];
+// A small balance at two high rates: 1,480 @ 23.99% and 120 @ 29.99% ⇒ 24.44% on 1,600.
+const SMALL = [card("a", 1480, 23.99), card("b", 120, 29.99)];
 // The same two rates on a hundred times the balance.
-const LARGE = [card("a", 112_325, 24.99), card("b", 5_044, 28.99)];
+const LARGE = [card("a", 148_000, 23.99), card("b", 12_000, 29.99)];
 
 // ── 1. Scope and reason ─────────────────────────────────────────────────────
 
@@ -102,10 +105,10 @@ test("the debt classification is scoped to the RATE on the owed balance, and say
   assert.equal(d.classification, "CRITICAL");
   assert.equal(d.reason.scope, "RATE_ON_OWED_BALANCE");
   assert.equal(d.reason.reasonCode, "WEIGHTED_APR_ABOVE_CRITICAL");
-  assert.equal(d.reason.reasonMetrics.weightedAprPct, 25.16, "the operand the rule compared");
+  assert.equal(d.reason.reasonMetrics.weightedAprPct, 24.44, "the operand the rule compared");
   assert.equal(d.reason.reasonMetrics.criticalAbovePct, APR_CRITICAL_THRESHOLD, "the threshold it compared it with");
   assert.equal(d.reason.reasonMetrics.warningAbovePct, APR_WARNING_THRESHOLD);
-  assert.equal(d.reason.reasonMetrics.ratedOwed, 1173.69);
+  assert.equal(d.reason.reasonMetrics.ratedOwed, 1600);
   assert.deepEqual(d.reason.evidencePopulation, { kind: "DEBT_ACCOUNTS", accounts: 2, graded: 2 });
   assert.equal(d.confidence, "HIGH", "confidence is in the RATE classification: both APRs are known");
 });
@@ -153,15 +156,15 @@ test("…and differ ONLY in the burden, stated against the user's own position w
   assert.equal(small.monthlyExpenses, 4_000);
   assert.equal(small.liquid, 12_000);
 
-  assert.equal(small.monthlyInterestIfCarried, 24.61);
-  assert.equal(small.interestOfMonthlyIncomePct, 0.25);
-  assert.equal(small.interestOfMonthlyExpensesPct, 0.62);
-  assert.equal(small.owedOfLiquidPct, 9.78);
+  assert.equal(small.monthlyInterestIfCarried, 32.59);
+  assert.equal(small.interestOfMonthlyIncomePct, 0.33);
+  assert.equal(small.interestOfMonthlyExpensesPct, 0.81);
+  assert.equal(small.owedOfLiquidPct, 13.33);
 
-  assert.equal(large.monthlyInterestIfCarried, 2461.02);
-  assert.equal(large.interestOfMonthlyIncomePct, 24.61);
-  assert.equal(large.interestOfMonthlyExpensesPct, 61.53);
-  assert.equal(large.owedOfLiquidPct, 978.08);
+  assert.equal(large.monthlyInterestIfCarried, 3258.67);
+  assert.equal(large.interestOfMonthlyIncomePct, 32.59);
+  assert.equal(large.interestOfMonthlyExpensesPct, 81.47);
+  assert.equal(large.owedOfLiquidPct, 1333.33);
 
   assert.ok(!("classification" in small) && !("severity" in small),
     "the burden is facts with operands — no scoring model exists, so none is invented");
@@ -176,9 +179,9 @@ test("low APR / heavy balance: the rate is HEALTHY and the burden still shows wh
 });
 
 test("a ratio whose base is not established is null — never 0, never Infinity", () => {
-  assert.equal(pctOf(24.61, 0), null);
-  assert.equal(pctOf(24.61, 0.004), null, "under half a cent is no base (MONEY_EPSILON)");
-  assert.equal(pctOf(24.61, null), null);
+  assert.equal(pctOf(32.59, 0), null);
+  assert.equal(pctOf(32.59, 0.004), null, "under half a cent is no base (MONEY_EPSILON)");
+  assert.equal(pctOf(32.59, null), null);
   assert.equal(pctOf(null, 100), null);
   const b = computeDebtBurden({ ratedOwed: 1000, monthlyInterestIfCarried: 20, totalLiabilities: 1000,
     monthlyIncome: null, monthlyExpenses: 0, liquid: null });

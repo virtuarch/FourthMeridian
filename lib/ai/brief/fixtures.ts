@@ -436,14 +436,15 @@ export const BRIEF_SCENARIOS: BriefScenario[] = [
   }, { quiet: true, quietCeiling: 1 }),
 
   // ── The forensic case (investigation §12a) ────────────────────────────────
-  // $1,173.69 across two cards at a blended 25.16%: the RATE is above the critical
-  // threshold and the cost is ~$25 a month if carried, 0.3% of income. Real Briefs
+  // (Synthetic figures, the real case's shape.) $1,600 across two cards at a blended
+  // 24.44%: the RATE is above the critical threshold and the cost is ~$33 a month if
+  // carried, 0.3% of income. Real Briefs over the real case
   // said "debt remains in a critical zone", "the most severe tier, driven by how
   // you've been using and repaying it", "a tight debt situation". A high rate is
   // never hidden — it may be said — but a rate is not a situation.
   scenario('16-high-rate-small-balance', 'high APR on a small balance — a rate, not a debt crisis', (p) => {
-    p.currentState.debt = 1173.69;
-    p.currentState.netWorth = 130487.08;
+    p.currentState.debt = 1600.00;
+    p.currentState.netWorth = 130060.77;
   }, {
     // The high APR must NOT be hidden because the balance is small …
     mentionsAny: [/\brate\b|interest|APR/i],
@@ -458,9 +459,9 @@ export const BRIEF_SCENARIOS: BriefScenario[] = [
       /debt (situation|position|picture|health)[^.]{0,40}(critical|severe|serious|stressed)|(critical|severe|serious)[^.]{0,20}debt (situation|position|picture)/i,
       /how you(['’]ve| have) been (using|repaying|paying)|(using|use) and (repaying|repay)/i,
     ],
-  }, { debt: { aprPct: 25.16, accounts: 2 } }),
+  }, { debt: { aprPct: 24.44, accounts: 2 } }),
 
-  // The same rate where it costs real money: ~$805 a month if carried, 8.4% of
+  // The same rate where it costs real money: ~$782 a month if carried, 8.1% of
   // income and twice the liquid buffer. The rate AND the burden are the news.
   scenario('17-high-rate-large-balance', 'the same APR on a large balance — the burden is the news', (p) => {
     p.currentState.debt = 38400.00;
@@ -469,7 +470,7 @@ export const BRIEF_SCENARIOS: BriefScenario[] = [
     quiet: false,
     mentionsAny: [/interest|rate|APR/i],
     forbids: [/how you(['’]ve| have) been (using|repaying|paying)|(using|use) and (repaying|repay)/i],
-  }, { debt: { aprPct: 25.16, accounts: 2 } }),
+  }, { debt: { aprPct: 24.44, accounts: 2 } }),
 
   // ── Claim-scoped freshness, both directions ───────────────────────────────
   // The brokerage has been silent for four weeks and needs reconnecting. Card debt
@@ -478,8 +479,8 @@ export const BRIEF_SCENARIOS: BriefScenario[] = [
   // old" about exactly this kind of debt claim. The brokerage feeds investments,
   // priced positions and net worth — and nothing else.
   scenario('18-stale-brokerage-debt-claim', 'a stale brokerage must not qualify a debt claim', (p) => {
-    p.freshness = { ...p.freshness!, band: 'VERY_STALE', oldestBalanceObservedAt: '2026-08-17T23:41:39.000Z',
-      oldestBalanceAgeDays: 26.3, staleAccounts: 1, needsReauth: true };
+    p.freshness = { ...p.freshness!, band: 'VERY_STALE', oldestBalanceObservedAt: '2026-08-10T09:15:00.000Z',
+      oldestBalanceAgeDays: 33.9, staleAccounts: 1, needsReauth: true };
     p.recentActivity!.top = [
       { date: '2026-09-11', amount: -2480.00, flow: 'SPENDING', merchant: 'Delta Air Lines', category: 'Travel', account: 'LIABILITY' },
       ...p.recentActivity!.top.slice(0, 4),
@@ -492,14 +493,14 @@ export const BRIEF_SCENARIOS: BriefScenario[] = [
     quiet: false,
     mentionsAny: [/debt|card|owe/i],
     mustNotQualifyKinds: ['DEBT', 'CASH', 'SPENDING'],
-  }, { health: fixtureSources({ brokerage: { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-08-17T23:41:39.000Z' } }) }),
+  }, { health: fixtureSources({ brokerage: { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-08-10T09:15:00.000Z' } }) }),
 
   // The same stale brokerage, where it DOES matter: part of the traditional
   // investments figure is four weeks old, so a conclusion about a sharp investment
   // move must say so — and still say nothing of the kind about cash or debt.
   scenario('19-stale-brokerage-investment-claim', 'the same stale brokerage must qualify an investment claim', (p) => {
-    p.freshness = { ...p.freshness!, band: 'VERY_STALE', oldestBalanceObservedAt: '2026-08-17T23:41:39.000Z',
-      oldestBalanceAgeDays: 26.3, staleAccounts: 1, needsReauth: true };
+    p.freshness = { ...p.freshness!, band: 'VERY_STALE', oldestBalanceObservedAt: '2026-08-10T09:15:00.000Z',
+      oldestBalanceAgeDays: 33.9, staleAccounts: 1, needsReauth: true };
     p.recentChanges.w1 = { from: '2026-09-06', to: '2026-09-13',
       netWorth: { abs: -9562.72, pct: -6.9 }, liquid: { abs: 310.44, pct: 1.7 },
       investments: { abs: -9800.00, pct: -10.4 }, digitalAssets: { abs: -73.16, pct: -0.3 },
@@ -510,7 +511,7 @@ export const BRIEF_SCENARIOS: BriefScenario[] = [
     // scenario is for. What it pins is the claim scoping, per observation.
     mustQualifyKinds: ['INVESTMENTS'],
     mustNotQualifyKinds: ['DEBT', 'CASH', 'SPENDING'],
-  }, { health: fixtureSources({ brokerage: { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-08-17T23:41:39.000Z' } }) }),
+  }, { health: fixtureSources({ brokerage: { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-08-10T09:15:00.000Z' } }) }),
 
   // ── A type-attested debt payment (review B3) ──────────────────────────────
   // The debt-payment authority also admits a payment it cannot pair with a named

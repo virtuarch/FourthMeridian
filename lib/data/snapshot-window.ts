@@ -179,8 +179,8 @@ export function observedChange(
  * and a flow comparison now refuse a percentage at the same point.
  *
  * ⚠️ A BASE SMALLER THAN THE MOVEMENT (opt-in: `baseMustCoverChange`). Measured:
- * a card carrying $9.75 took a $1,164 week of charges, and the Daily Brief
- * package shipped `debt.pct: 11937.8`. The arithmetic is right and the figure
+ * a card carrying about ten dollars took a four-figure week of charges, and the
+ * Daily Brief package shipped a five-digit `debt.pct`. The arithmetic is right and the figure
  * says nothing about the change — it measures how small the opening happened to
  * be. When |opening| < |change| the ratio describes the BASE, not the movement,
  * so a narrating consumer asks for it to be withheld and states the two values

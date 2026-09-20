@@ -217,7 +217,7 @@ const base = { openingCash: OPENING, events: EVENTS, fromISO: '2026-08-31', toIS
       provenance: EventProvenance.DERIVED, observedSettled: true },
   } as unknown as FutureCashEvent);
   const events = [...biweekly, rent('2027-01-01'), rent('2027-12-31'), rent('2028-01-01')];
-  const input = { openingCash: 13330.97, events, spending: observed, fromISO: ASOF,
+  const input = { openingCash: 14250.40, events, spending: observed, fromISO: ASOF,
     toISO: '2028-12-31', currency: 'USD' };
   const cum = (toISO: string) => projectCash({ ...input, toISO });
   const part = (p: ReturnType<typeof projectCash>, re: RegExp) =>
@@ -272,7 +272,7 @@ const base = { openingCash: OPENING, events: EVENTS, fromISO: '2026-08-31', toIS
   const h2 = projectCashInterval(input, { fromISO: '2027-07-01', toISO: '2028-12-31' });
   const whole = cum('2028-12-31');
   near('I5 adjacent intervals tile the cumulative projection',
-    (h1.cashChange as number) + (h2.cashChange as number), (whole.closing as number) - 13330.97, 1e-6);
+    (h1.cashChange as number) + (h2.cashChange as number), (whole.closing as number) - 14250.40, 1e-6);
 
   // ⚠️ THE PAST IS MEASURED, NOT PROJECTED.
   const past = projectCashInterval(input, { fromISO: '2026-01-01', toISO: '2026-06-30' });
@@ -294,7 +294,7 @@ const base = { openingCash: OPENING, events: EVENTS, fromISO: '2026-08-31', toIS
     && straddle.requested.fromISO === '2026-01-01');
   check('I7b and is then exactly the cumulative projection — same components, same closing',
     JSON.stringify(straddle.components) === JSON.stringify(toYearEnd.components)
-    && straddle.closing?.cash === toYearEnd.closing && straddle.opening?.cash === 13330.97
+    && straddle.closing?.cash === toYearEnd.closing && straddle.opening?.cash === 14250.40
     && straddle.days === 102);
 
   check('I8 no projection, no interval: a missing spending rate refuses rather than accruing zero',

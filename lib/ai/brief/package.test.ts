@@ -284,14 +284,14 @@ console.log('\n6. the information ceiling');
 
 console.log('\n7. a classification never ships as a bare label');
 {
-  // The forensic pair: 1,123.25 @ 24.99% + 50.44 @ 28.99% = 25.16% on 1,173.69.
-  const graded = gradeDebtRate({ weightedAprPct: 25.1619, ratedOwed: 1173.69, liabilitiesChangeAbs: 1039.31,
+  // Synthetic, shaped like the forensic case: a small balance at a blended 24.44% (1,480 @ 23.99% + 120 @ 29.99%).
+  const graded = gradeDebtRate({ weightedAprPct: 24.44, ratedOwed: 1600, liabilitiesChangeAbs: 1450,
     debtAccounts: 2, debtAccountsWithApr: 2 });
   const rateOnly = { ...assessment,
-    debt: { classification: graded.classification, confidence: 'HIGH', aprCompleteness: 'FULL', totalLiabilities: 1173.69,
+    debt: { classification: graded.classification, confidence: 'HIGH', aprCompleteness: 'FULL', totalLiabilities: 1600,
       reason: graded.reason,
-      burden: computeDebtBurden({ ratedOwed: 1173.69, monthlyInterestIfCarried: 24.61, totalLiabilities: 1173.69,
-        monthlyIncome: 13214.52, monthlyExpenses: 4346.48, liquid: 13330.97 }) },
+      burden: computeDebtBurden({ ratedOwed: 1600, monthlyInterestIfCarried: 32.59, totalLiabilities: 1600,
+        monthlyIncome: 11800, monthlyExpenses: 5150, liquid: 14600 }) },
   } as unknown as FinancialAssessment;
   const b = projectBriefPackage(inputs({ assessment: rateOnly })).behavior!;
 
@@ -299,16 +299,16 @@ console.log('\n7. a classification never ships as a bare label');
   check('the debt classification is named for what it grades, and scoped',
     b.debtRate?.classification === 'CRITICAL' && b.debtRate.scope === 'RATE_ON_OWED_BALANCE');
   check('it says WHICH rung fired, with the operand and the threshold it was compared with',
-    b.debtRate?.reasonCode === 'WEIGHTED_APR_ABOVE_CRITICAL' && b.debtRate.reasonMetrics.weightedAprPct === 25.16
-      && b.debtRate.reasonMetrics.criticalAbovePct === 22 && b.debtRate.reasonMetrics.ratedOwed === 1173.69,
+    b.debtRate?.reasonCode === 'WEIGHTED_APR_ABOVE_CRITICAL' && b.debtRate.reasonMetrics.weightedAprPct === 24.44
+      && b.debtRate.reasonMetrics.criticalAbovePct === 22 && b.debtRate.reasonMetrics.ratedOwed === 1600,
     JSON.stringify(b.debtRate?.reasonMetrics));
   check('…its confidence and the population it was computed over',
     b.debtRate?.confidence === 'HIGH' && JSON.stringify(b.debtRate.evidencePopulation) === '{"kind":"DEBT_ACCOUNTS","accounts":2,"graded":2}');
   check('a rising balance is NOT offered as the reason for a rate verdict', !('liabilitiesChangeOverWindow' in (b.debtRate?.reasonMetrics ?? {})));
   check('the burden is separate, relative to the user\'s own position, with its operands',
-    b.debtBurden?.monthlyInterestIfCarried === 24.61 && b.debtBurden.interestOfMonthlyIncomePct === 0.19
-      && b.debtBurden.interestOfMonthlyExpensesPct === 0.57 && b.debtBurden.owedOfLiquidPct === 8.8
-      && JSON.stringify(b.debtBurden.comparedWith) === '{"monthlyIncome":13214.52,"monthlyExpenses":4346.48,"liquid":13330.97}',
+    b.debtBurden?.monthlyInterestIfCarried === 32.59 && b.debtBurden.interestOfMonthlyIncomePct === 0.28
+      && b.debtBurden.interestOfMonthlyExpensesPct === 0.63 && b.debtBurden.owedOfLiquidPct === 10.96
+      && JSON.stringify(b.debtBurden.comparedWith) === '{"monthlyIncome":11800,"monthlyExpenses":5150,"liquid":14600}',
     JSON.stringify(b.debtBurden));
   check('the burden carries no grade of its own', !/classification|severity|level/i.test(Object.keys(b.debtBurden ?? {}).join(',')));
   check('liquidity ships the SAME shape',
@@ -325,7 +325,7 @@ console.log('\n7. a classification never ships as a bare label');
   const noDebt = { ...assessment, debt: { ...(rateOnly.debt as object), classification: 'NO_DEBT', totalLiabilities: 0 } } as unknown as FinancialAssessment;
   check('nothing owed ⇒ no burden key', !('debtBurden' in projectBriefPackage(inputs({ assessment: noDebt })).behavior!));
   check('every percentage key is licensable (ends in Pct), so a quoted rate is a licensed figure',
-    licenceFromPackage(projectBriefPackage(inputs({ assessment: rateOnly }))).percents.includes(25.16));
+    licenceFromPackage(projectBriefPackage(inputs({ assessment: rateOnly }))).percents.includes(24.44));
 }
 
 console.log('\n8. claim-scoped evidence — a stale source qualifies only what it feeds');
@@ -334,7 +334,7 @@ console.log('\n8. claim-scoped evidence — a stale source qualifies only what i
     kind: 'BANK', label, state: 'CURRENT', lastUpdatedAt: '2026-09-13T06:00:00.000Z', accountCount: feeds.length,
     needsAttention: false, actionable: true, feeds, ...over });
   const dataHealth = { groups: [], attention: 1, sources: [
-    source('Charles Schwab', ['investments'], { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-08-17T23:41:39.000Z' }),
+    source('Charles Schwab', ['investments'], { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-08-10T09:15:00.000Z' }),
     source('Chase', ['liquid', 'liabilities', 'bankingRows']),
     source('American Express', ['liabilities', 'bankingRows']),
     source('Ledger Wallet', ['digitalAssets'], { kind: 'WALLET' }),
@@ -350,10 +350,10 @@ console.log('\n8. claim-scoped evidence — a stale source qualifies only what i
   check('when one source is behind, EVERY source of that claim is listed with its tier (M1 byComponent)',
     JSON.stringify(e.netWorth?.completeness.byComponent)
       === '{"Charles Schwab":"incomplete","Chase":"observed","American Express":"observed","Ledger Wallet":"observed"}');
-  check('the reason names the source, its state and its date', /Charles Schwab \(NEEDS_RECONNECT, last updated 2026-08-17\)/.test(e.investments?.completeness.reason ?? ''));
+  check('the reason names the source, its state and its date', /Charles Schwab \(NEEDS_RECONNECT, last updated 2026-08-10\)/.test(e.investments?.completeness.reason ?? ''));
   check('the global stale list says what it reaches — and only that',
     JSON.stringify(p.freshness?.staleSources) === JSON.stringify([{ label: 'Charles Schwab', state: 'NEEDS_RECONNECT',
-      lastUpdated: '2026-08-17', affects: ['netWorth', 'investments', 'pricedPositions'] }]));
+      lastUpdated: '2026-08-10', affects: ['netWorth', 'investments', 'pricedPositions'] }]));
   check('each entry names the package paths it governs',
     !!(e.debt?.covers.includes('behavior.debtRate') && e.debt.covers.includes('recentChanges.*.debt')
       && e.cashFlow?.covers.includes('recentActivity') && e.liquid?.covers.includes('behavior.liquidity')));
@@ -389,7 +389,7 @@ console.log('\n8b. the model\'s view — per claim, terse, and nothing Space-wid
     kind: 'BANK', label, state: 'CURRENT', lastUpdatedAt: '2026-09-13T06:00:00.000Z', accountCount: 1,
     needsAttention: false, actionable: true, feeds, ...over });
   const dataHealth = { groups: [], attention: 1, sources: [
-    source('Charles Schwab', ['investments'], { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-08-17T23:41:39.000Z' }),
+    source('Charles Schwab', ['investments'], { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-08-10T09:15:00.000Z' }),
     source('Chase', ['liquid', 'liabilities', 'bankingRows']),
   ] };
   const full = projectBriefPackage(inputs({ dataHealth, bankingPopulationKnown: true }));
@@ -399,7 +399,7 @@ console.log('\n8b. the model\'s view — per claim, terse, and nothing Space-wid
   check('an observed claim is its paths and its tier, nothing to narrate',
     JSON.stringify(view.claimEvidence.debt) === JSON.stringify({ covers: full.claimEvidence!.debt!.covers, tier: 'observed' }));
   check('a claim that is behind names the source and since when — and only that',
-    JSON.stringify(view.claimEvidence.investments.outOfDate) === '[{"source":"Charles Schwab","lastUpdated":"2026-08-17"}]'
+    JSON.stringify(view.claimEvidence.investments.outOfDate) === '[{"source":"Charles Schwab","lastUpdated":"2026-08-10"}]'
       && view.claimEvidence.investments.tier === 'incomplete');
   check('the stale source appears ONLY under the claims it feeds', !/Schwab/.test(JSON.stringify([view.claimEvidence.debt, view.claimEvidence.liquid, view.claimEvidence.cashFlow]))
     && /Schwab/.test(JSON.stringify(view.claimEvidence.netWorth)));
@@ -413,15 +413,15 @@ console.log('\n8b. the model\'s view — per claim, terse, and nothing Space-wid
 
 console.log('\n9. a percentage over a base smaller than the movement is withheld — by the authority');
 {
-  // Debt: 9.75 on the 6th, 1,173.69 today. 134.38 a month ago.
+  // Debt (synthetic): 150 a month ago, 12.50 a week ago, 1,600 today.
   const h = history('2026-08-01', TODAY, (pt, i) => {
-    pt.liabilities = pt.date <= '2026-08-13' ? 134.38 : pt.date < TODAY ? 9.75 : 1173.69;
+    pt.liabilities = pt.date <= '2026-08-13' ? 150 : pt.date < TODAY ? 12.5 : 1600;
     void i;
   });
   const c = projectBriefPackage(inputs({ snapshot: snapshot(h) })).recentChanges;
   check('w1 debt: the change is measured, the percentage is not, and the opening rides along',
-    c.w1?.debt?.abs === 1163.94 && c.w1.debt.pct === null && c.w1.debt.from === 9.75, JSON.stringify(c.w1?.debt));
-  check('m1 debt likewise (134.38 → 1,173.69)', c.m1?.debt?.pct === null && c.m1.debt.from === 134.38, JSON.stringify(c.m1?.debt));
+    c.w1?.debt?.abs === 1587.5 && c.w1.debt.pct === null && c.w1.debt.from === 12.5, JSON.stringify(c.w1?.debt));
+  check('m1 debt likewise (150 → 1,600)', c.m1?.debt?.pct === null && c.m1.debt.from === 150, JSON.stringify(c.m1?.debt));
   check('an ordinary movement keeps its percentage and carries no `from`',
     typeof c.w1?.liquid?.pct === 'number' && !('from' in (c.w1?.liquid ?? {})));
   check('no five-digit percentage can reach the model', !/"pct":\d{4,}/.test(JSON.stringify(c)));
