@@ -39,9 +39,9 @@ function check(name: string, cond: boolean, detail?: string) {
 
 const ASOF = '2026-09-20';
 const HORIZON = '2027-06-30';
-const CARD = { id: 'card-a', label: 'Card A', balance: 1_174, apr: 24.99, minimumPayment: 35 };
+const CARD = { id: 'card-a', label: 'Card A', balance: 1_600, apr: 23.99, minimumPayment: 35 };
 const OPENING: LedgerOpening = {
-  asOfISO: ASOF, liquid: 13_000, investments: 24_000, debt: 1_174, otherAssets: 0, liabilities: [CARD] };
+  asOfISO: ASOF, liquid: 13_000, investments: 24_000, debt: 1_600, otherAssets: 0, liabilities: [CARD] };
 /** Cash rises $6,500 a month at a stated $5k spending level. */
 const PATH: [string, number][] = [
   ['2026-09-30', 15_000], ['2026-10-31', 21_500], ['2026-11-30', 28_000], ['2026-12-31', 34_500],
