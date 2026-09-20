@@ -180,6 +180,37 @@ console.log('\nI/J/K. unknown APR vs stated 0% vs user override');
     && override.liabilities?.lines[0].termsProvenance?.apr === 'USER_ASSUMED');
 }
 
+// ⚠️ PINNED HERE SO THE LIVE CHECK NEED NOT DEPEND ON ANYONE'S CARDS. The live
+// harness (`ai:liability-check`) used to assert "a payments-only payoff over an
+// unknown rate is marked PARTIAL/NONE" against the dogfood Space, which was true
+// only while its owner had not entered an APR. The day he did, COMPLETE became
+// the right answer and the harness called it a regression. The semantic belongs
+// to a fixture: the payoff DATE exists, and the basis that travels with it says
+// it is a lower bound.
+console.log('\nI2. a payments-only PAYOFF over an unknown rate — a date, and a basis that is never COMPLETE');
+{
+  const debtFree = (r: LedgerResult) => findScenarioCrossing({ checkpoints: r.checkpoints, opening: r.opening,
+    metric: 'debt', direction: 'at_or_below', threshold: 0 }).crossing?.checkpoint.date ?? null;
+  const blind = run([line('A', 1_000, null, null)], [monthly(250, 'highest_apr')]);
+  check('payments alone clear an unknown-rate balance: 1,000 at 250 a month is the fourth month-end',
+    debtFree(blind) === DATES[3] && blind.checkpoints.every((c) => liab(blind, c.date, 'A').interest === 0), String(debtFree(blind)));
+  check('…and the ledger that produced that date says NONE of what was owed had a rate, naming the line',
+    blind.liabilities?.interestBasis === 'NONE' && blind.liabilities.unmodelled.map((u) => u.id).join() === 'A');
+  const known = run([line('A', 1_000, 24, null)], [monthly(250, 'highest_apr')]);
+  check('the same payoff with the rate KNOWN is COMPLETE, accrues, and comes LATER — the unknown-rate date is a lower bound',
+    known.liabilities?.interestBasis === 'COMPLETE' && known.liabilities.unmodelled.length === 0
+      && at(known, HORIZON).movements.interestToDate > 0 && (debtFree(known) ?? '') > (debtFree(blind) ?? '9999'),
+    `${debtFree(blind)} → ${debtFree(known)}`);
+  const mixed = run([line('A', 1_000, null, null), line('B', 1_000, 24, null)], [monthly(250, 'highest_apr')]);
+  check('one known rate beside one unknown is PARTIAL, and names only the unknown one',
+    mixed.liabilities?.interestBasis === 'PARTIAL' && mixed.liabilities.unmodelled.map((u) => u.id).join() === 'A');
+  check('…the known rate is paid first — an unknown rate ranks last, it is never assumed to be the cheapest',
+    liab(mixed, DATES[0], 'B').extraPaid === 250 && liab(mixed, DATES[0], 'A').extraPaid === 0);
+  check('…and it still reaches zero, on a date whose basis stays PARTIAL to the end',
+    debtFree(mixed) !== null && (debtFree(mixed) ?? '') > (debtFree(blind) ?? '9999') && mixed.liabilities?.interestBasis === 'PARTIAL', String(debtFree(mixed)));
+  check('V. identity on all three', identityHolds(blind) && identityHolds(known) && identityHolds(mixed));
+}
+
 console.log('\nL/M. unknown minimum, and minimum + extra do not double count');
 {
   const r = run([line('A', 5_000, 20, null)]);
