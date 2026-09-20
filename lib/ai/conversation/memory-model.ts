@@ -810,6 +810,19 @@ export const LINE_EMPTY =
   'Nothing has been remembered for this user yet. When they ask you to remember a goal, a plan, a standing rule or a '
   + 'planning figure — or change one — record it with `remember`.';
 
+/**
+ * Said ONCE, and only when a planning figure is listed.
+ *
+ * ⚠️ MEASURED, THEN ADDED. With the per-item sentence alone, "what will my cash be
+ * next June?" in a fresh chat applied the remembered figure 4/6 — called "what you
+ * asked us to plan with", with no word that it came from an earlier conversation
+ * and no measured figure beside it — and answered on measured evidence 2/6 without
+ * saying a planning figure existed.
+ */
+export const PLANNING_NOTE =
+  'Unless they ask to use a planning figure, answer on measured evidence and mention that the figure is available. If you use one, '
+  + 'say it is the figure they asked you to remember on its date, and give the measured figure beside it.';
+
 export const PROJECTIONS_NOTE =
   'statements we made; `reconcile_projection` compares them with what happened. They are never current balances.';
 
@@ -846,9 +859,10 @@ export function composeMemoryLine(
       rules.push(opts.rules === 'clause' ? { ...head, rule: read.fields } : { ...head, inWords: describeMemory('RULE', read.fields) });
     } else if (read.cls === 'BASELINE' && figures.length < LINE_CAPS.planningAssumptions) {
       const f = read.fields;
+      const kind = f.monthlySpending !== undefined ? 'spending' : 'return';
       const what = f.monthlySpending !== undefined ? `${amountWords(f.monthlySpending as number)}/month of spending` : `a ${f.annualReturnPct}% annual return`;
       figures.push({ ...head, ...f, basis: REMEMBERED, ...(state === 'STALE' ? { stale: true } : {}),
-        meaning: `On ${head.statedAt} the user asked to plan with ${what} — not their measured ${f.monthlySpending !== undefined ? 'spending' : 'return'}, and not in effect unless they say so.` });
+        meaning: `On ${head.statedAt} the user asked to plan with ${what} — not their measured ${kind}, and not in effect unless they say so.` });
     }
   }
 
@@ -858,6 +872,7 @@ export function composeMemoryLine(
     ...(goals.length ? { goals } : {}),
     ...(rules.length ? { rules } : {}),
     planningAssumptions: figures.length ? figures : 'none remembered',
+    ...(figures.length ? { planningNote: PLANNING_NOTE } : {}),
     ...(planned.length ? { planned } : {}),
     projectionsOnRecord: { count: projections, ...(horizons.length ? { horizons } : {}), ...(projections ? { note: PROJECTIONS_NOTE } : {}) },
   };

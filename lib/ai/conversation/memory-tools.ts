@@ -265,7 +265,8 @@ const remember: ToolDefinition = {
     '`goal`, `plannedExpense`, `rule`, `baseline`. Store what they SAID: a multiple stays a multiple (six ' +
     'months is `liquidFloorMonthsOfExpenses: 6`, never the dollars it works out to), and a money value must be ' +
     'a figure they stated — never a balance, a projection or anything you read from another tool. Leave out ' +
-    'every field they did not say: a floor alone is a complete rule. When they change part of something remembered, use `op: "amend"` with `set`; when ' +
+    'every field they did not say, and never complete a rule for them: "keep six months of expenses in cash" is ' +
+    '`{liquidFloorMonthsOfExpenses: 6}` and nothing else — where the rest goes is theirs to state. When they change part of something remembered, use `op: "amend"` with `set`; when ' +
     'they withdraw it, `op: "retire"`. Remembering never runs or applies anything.',
   parameters: obj({
     op: { type: 'string', enum: ['record', 'amend', 'retire'],
@@ -288,10 +289,10 @@ const remember: ToolDefinition = {
       liquidFloorMonthsOfExpenses: num('Cash to keep, as a number of MONTHS of expenses ("six months" = 6). '
         + 'Resolved against the spending level in force whenever it is run — never stored as dollars.'),
       liquidFloor: num('Cash to keep, in DOLLARS — only when the user stated a dollar level ("keep $50k").'),
-      fractionOfExcess: num('Share (0–1] of the cash ABOVE the floor moved each month-end. "The rest" = 1. '
-        + 'Omit if they did not say what happens to the rest.'),
+      fractionOfExcess: num('ONLY if they said what happens to cash above the floor: the share (0–1] moved each '
+        + 'month-end ("the rest" = 1). Otherwise omit it.'),
       surplusFraction: num('Share (0–1] of what each MONTH adds. Keeps no cash floor. Not with a floor.'),
-      target: { description: 'Where it goes, ONLY if they said: "investments", "highest_apr", or an ordered list — '
+      target: { description: 'ONLY if they said where it goes: "investments", "highest_apr", or an ordered list — '
         + '["highest_apr","investments"] pays debt first, then invests.',
         anyOf: [{ type: 'string', enum: [...ALLOCATION_TARGET_WORDS] },
           { type: 'array', items: { type: 'string', enum: [...ALLOCATION_TARGET_WORDS] } }] },

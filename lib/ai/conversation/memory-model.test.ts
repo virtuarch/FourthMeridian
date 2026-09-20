@@ -293,6 +293,10 @@ console.log('9. words and the memory line');
   check('the rule\'s line is identical whatever the expense baseline is — it holds no level', !/\d{3,}/.test(JSON.stringify(line.rules[0].rule)));
   check('a planning figure is REMEMBERED, dated, not measured, not in effect', line.planningAssumptions[0].basis === REMEMBERED
     && /On 2026-09-20 the user asked to plan with 5,000\/month of spending — not their measured spending, and not in effect unless they say so\./.test(line.planningAssumptions[0].meaning));
+  check('…and the line says what to do with it: measured by default; if used, said to be remembered, measured figure beside it',
+    /answer on measured evidence and mention that the figure is available/.test(String(line.planningNote))
+      && /asked you to remember on its date, and give the measured figure beside it/.test(String(line.planningNote))
+      && !('planningNote' in composeMemoryLine([rows[0]], TODAY)));
   check('…and never wears M1\'s words', !/STATED|DECLARED|MEASURED/.test(text));
   check('nothing listed is in effect, said once', /Nothing listed is in effect/.test(line.meaning));
   check('no projection value or basis reaches the line', !text.includes('51598') && !text.includes('13330') && line.projectionsOnRecord.count === 1
@@ -325,7 +329,7 @@ console.log('9. words and the memory line');
     ...many(9, (i) => row('CHECKPOINT', { v: 2, class: 'PROJECTION', metric: 'liquid', horizon: `2027-0${i + 1}-28`, value: 1 })),
   ], TODAY), null, 1).length;
   console.log(`     memory line bytes (indent 1): typical=${typical} cappedWorstCase=${worst} empty=${JSON.stringify({ note: LINE_EMPTY }, null, 1).length}`);
-  check('typical line (rule + planning figure + goal) within budget', typical <= 1100, String(typical));
+  check('typical line (rule + planning figure + goal) within budget', typical <= 1250, String(typical));
   check('capped worst case within budget', worst <= 3000, String(worst));
   check('caps hold', (() => { const l = composeMemoryLine(many(9, () => row('INTENTION', toPayload('RULE', RULE3))), TODAY) as unknown as Line; return l.rules.length === LINE_CAPS.rules; })());
 }
