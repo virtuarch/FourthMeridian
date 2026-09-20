@@ -129,6 +129,62 @@ async function main() {
   check('the horizon carries its own distance', at(thirty.at('horizon.elapsed'), 'years') === 30.3
     && at(short.at('horizon.elapsed'), 'label') === '15 months, 18 days', JSON.stringify(short.at('horizon.elapsed')));
 
+  // ⚠️ RELATIONAL, NOT PINNED. No figure below is this Space's money: every
+  // assertion is that an interval AGREES WITH the cumulative runs either side of
+  // it, which holds for any Space on any day.
+  console.log('6. an interval of the projection');
+  type Comp = { label: string; value: number };
+  const comp = (p: Payload, path: string, re: RegExp) =>
+    ((p.at(path) as Comp[] | undefined) ?? []).find((c) => re.test(c.label))?.value ?? 0;
+  const year = (Number(ASOF.slice(0, 4)) + 1).toString();
+  const [wFrom, wTo, wBefore] = [`${year}-01-01`, `${year}-12-31`, `${Number(year) - 1}-12-31`];
+  const win = await cash({ from: wFrom, to: wTo });
+  const toEnd = await cash({ to: wTo });
+  const toStart = await cash({ to: wBefore });
+  const cent = (a: number, b: number) => Math.abs(a - b) <= 0.011;
+  check(`next calendar year states its window: ${wFrom}..${wTo}, inclusive days`,
+    win.at('interval.from') === wFrom && win.at('interval.to') === wTo
+      && win.at('interval.days') === (Number(year) % 4 === 0 ? 366 : 365) && win.at('interval.clamped') === undefined);
+  for (const [name, re] of [['income', /income/], ['obligations', /obligations/], ['spending', /spending/]] as [string, RegExp][]) {
+    const want = comp(toEnd, 'projection.basis.components', re) - comp(toStart, 'projection.basis.components', re);
+    check(`interval ${name} = cumulative(${wTo}) − cumulative(${wBefore}), to the cent`,
+      cent(comp(win, 'interval.components', re), want), `${comp(win, 'interval.components', re)} vs ${want.toFixed(2)}`);
+  }
+  check('its two balances ARE the standalone runs\' ending cash, and cashChange is their difference',
+    at(win.at('interval.cashAtEnd'), 'amount') === toEnd.at('projection.endingCash')
+      && at(win.at('interval.cashAtStart'), 'amount') === toStart.at('projection.endingCash')
+      && at(win.at('interval.cashAtStart'), 'date') === wBefore
+      && cent(win.at('interval.cashChange') as number,
+        (toEnd.at('projection.endingCash') as number) - (toStart.at('projection.endingCash') as number)));
+  check('the parts explain the change, to the cent of rounding',
+    Math.abs(comp(win, 'interval.components', /income/) - comp(win, 'interval.components', /obligations/)
+      - comp(win, 'interval.components', /spending/) - (win.at('interval.cashChange') as number)) <= 0.021);
+  // ⚠️ WHAT THE SILENT CHECKPOINT COPIES IS UNCHANGED BY A WINDOW. `checkpointProjection`
+  // reads `horizon.to` and `projection.endingCash` and nothing else; both must be the
+  // cumulative answer whether or not `from` was passed, so a CHANGE is never stored as a BALANCE.
+  check('a window leaves the two fields the checkpoint copies exactly as they were',
+    win.at('projection.endingCash') === toEnd.at('projection.endingCash') && win.at('horizon.to') === toEnd.at('horizon.to')
+      && win.at('horizon.asOf') === toEnd.at('horizon.asOf') && win.at('openingCash') === toEnd.at('openingCash'));
+  const assumed = await cash({ from: wFrom, to: wTo, assumedMonthlySpending: 5000 });
+  const assumedEnd = await cash({ to: wTo, assumedMonthlySpending: 5000 });
+  const assumedStart = await cash({ to: wBefore, assumedMonthlySpending: 5000 });
+  check('a stated spending level reaches the interval, and is again the difference of the two runs made under it',
+    comp(assumed, 'interval.components', /assumed rate/) > 0 && comp(assumed, 'interval.components', /observed rate/) === 0
+      && cent(comp(assumed, 'interval.components', /assumed rate/),
+        comp(assumedEnd, 'projection.basis.components', /assumed rate/) - comp(assumedStart, 'projection.basis.components', /assumed rate/)),
+    String(comp(assumed, 'interval.components', /assumed rate/)));
+  const past = await cash({ from: `${Number(year) - 2}-01-01`, to: `${Number(year) - 2}-06-30` });
+  check('an interval entirely in the past is refused and points at the measured tools',
+    typeof past.at('interval.unavailable') === 'string' && past.at('interval.cashChange') === undefined
+      && /measure_flows/.test(String(past.at('interval.instead'))), String(past.at('interval.unavailable')).slice(0, 90));
+  const straddle = await cash({ from: `${Number(year) - 1}-01-01`, to: wBefore });
+  check('one that starts in the past is clamped to today, says why, and equals the ordinary projection',
+    straddle.at('interval.from') === ASOF && typeof straddle.at('interval.clamped') === 'string'
+      && at(straddle.at('interval.requested'), 'from') === `${Number(year) - 1}-01-01`
+      && cent(comp(straddle, 'interval.components', /spending/), comp(toStart, 'projection.basis.components', /spending/))
+      && at(straddle.at('interval.cashAtEnd'), 'amount') === toStart.at('projection.endingCash'));
+  check('no `from`, no interval block', toEnd.at('interval') === undefined);
+
   console.log(failures === 0 ? '\nPROJECT_CASH EVIDENCE CHECK PASSED' : `\n${failures} FAILED`);
   await db.$disconnect();
   process.exit(failures === 0 ? 0 : 1);

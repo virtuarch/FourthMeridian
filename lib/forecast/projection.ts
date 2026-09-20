@@ -38,7 +38,7 @@
  * an outflow against a debt that no longer exists.
  */
 
-import { daysBetween } from './_time';
+import { addDays, daysBetween } from './_time';
 import { observedCashContribution, exactDateOf, type FutureCashEvent } from './future-cash-event';
 import { ConclusionStatus, type ConclusionStatusKind } from './policy';
 import { monthLabel, type ObservedSpendingRate } from './observed-spending';
@@ -103,6 +103,80 @@ export interface ProjectCashInput {
   currency: string;
 }
 
+/** The spending term's daily rate, whichever source it came from. */
+const dailyRateOf = (spending: ProjectionSpending | null): number | null =>
+  spending === null ? null
+    : spending.kind === 'OBSERVED' ? spending.rate.dailyRate : spending.dailyRate;
+
+/**
+ * THE ONE FOLD. Dated events inside `[eventsFromISO, eventsToISO]` (inclusive)
+ * and a daily rate accrued over `days`.
+ *
+ * ⚠️ BOTH THE CUMULATIVE PROJECTION AND AN INTERVAL OF IT ARE THIS FUNCTION, over
+ * different bounds. An interval that summed its own events or accrued its own
+ * rate would be a second opinion about the same future, and the first time the
+ * two disagreed by a paycheck nobody could say which was right.
+ *
+ * Income is DATED — it is whatever occurrences fall inside the bounds, never a
+ * rate times a length. Spending is a RATE — it has no dates to fall anywhere.
+ */
+function foldWindow(
+  events: readonly FutureCashEvent[], dailyRate: number | null,
+  eventsFromISO: string, eventsToISO: string, days: number,
+) {
+  const excluded: { id: string; reason: string }[] = [];
+  let inflow = 0, outflow = 0, counted = 0;
+  for (const e of events) {
+    const date = exactDateOf(e.timing);
+    if (date === null || date < eventsFromISO || date > eventsToISO) continue;
+    const c = observedCashContribution(e);
+    if (!c.assertable) { excluded.push({ id: e.id, reason: c.reason }); continue; }
+    counted += 1;
+    if (e.direction === 'INFLOW') inflow += c.value; else outflow += c.value;
+  }
+  return { inflow, outflow, counted, excluded,
+    spend: dailyRate === null ? null : dailyRate * days };
+}
+
+/**
+ * The named components of a fold. One wording, shared by the cumulative
+ * projection and an interval of it.
+ *
+ * ⚠️ THE LABELS SAY PROJECTED, BECAUSE THAT IS WHAT THEY ARE — see the note in
+ * `projectCash`. ⚠️ MAGNITUDES, NOT SIGNED VALUES: direction is the label's job.
+ */
+function namedComponents(
+  fold: { inflow: number; outflow: number; spend: number },
+  spending: ProjectionSpending, days: number,
+): ProjectionComponent[] {
+  const components: ProjectionComponent[] = [];
+  if (fold.inflow > 0) {
+    components.push({
+      label: 'projected income from the observed payroll pattern', value: fold.inflow,
+      derivation: `${days} day(s) of the established cadence at the level those deposits `
+        + 'have actually been settling at',
+    });
+  }
+  if (fold.outflow > 0) {
+    components.push({
+      label: 'projected outflows from dated obligations', value: fold.outflow,
+      derivation: 'dated known obligations falling inside the horizon',
+    });
+  }
+  const obs = spending.kind === 'OBSERVED' ? spending.rate : null;
+  components.push({
+    label: obs ? 'projected spending at the observed rate' : 'projected spending at your assumed rate',
+    value: fold.spend,
+    derivation: obs
+      ? `${obs.monthlyRate.toFixed(2)}/month across the ${obs.monthCount} `
+        + `complete month(s) ${obs.months.map(monthLabel).join(' and ')}, accrued over `
+        + `${days} day(s)`
+      : `${spending.kind === 'USER_ASSUMED' ? spending.statedAs : ''} — the user's own figure, `
+        + `accrued over ${days} day(s)`,
+  });
+  return components;
+}
+
 /**
  * Project cash forward from measured evidence.
  *
@@ -114,27 +188,15 @@ export function projectCash(input: ProjectCashInput): ProjectedCash {
   if (openingCash === null) missing.push('current cash balance');
   if (!spending) missing.push('a complete calendar month of spending to average');
 
-  const components: ProjectionComponent[] = [];
-  const excluded: { id: string; reason: string }[] = [];
-  let inflow = 0, outflow = 0;
-
-  for (const e of events) {
-    const date = exactDateOf(e.timing);
-    if (date === null || date < fromISO || date > toISO) continue;
-    const c = observedCashContribution(e);
-    if (!c.assertable) { excluded.push({ id: e.id, reason: c.reason }); continue; }
-    if (e.direction === 'INFLOW') inflow += c.value; else outflow += c.value;
-  }
-
   // ⚠️ THE CLAMP IS AT THE CALL SITE NOW, NOT INSIDE THE HELPER (V26-REASONING
   // Slice 0). The private `daysBetween` this module used to carry silently
   // returned 0 for a reversed horizon, and two sibling modules had the same name
   // with different semantics. A horizon whose end precedes its start spends zero
   // days, which is a decision this line makes visibly.
   const days = Math.max(0, daysBetween(fromISO, toISO));
-  const dailyRate = spending === null ? null
-    : spending.kind === 'OBSERVED' ? spending.rate.dailyRate : spending.dailyRate;
-  const spend = dailyRate === null ? null : dailyRate * days;
+  const fold = foldWindow(events, dailyRateOf(spending), fromISO, toISO, days);
+  const { inflow, outflow, spend, excluded } = fold;
+  const components: ProjectionComponent[] = [];
 
   if (openingCash === null || spending === null || spend === null) {
     return {
@@ -149,35 +211,13 @@ export function projectCash(input: ProjectCashInput): ProjectedCash {
   // live UI and is a semantic error of exactly the kind this programme exists to
   // prevent: it renames a projection into a measurement, which is the same move
   // as calling a historical average "normal".
-  if (inflow > 0) {
-    components.push({
-      label: 'projected income from the observed payroll pattern', value: inflow,
-      derivation: `${days} day(s) of the established cadence at the level those deposits `
-        + 'have actually been settling at',
-    });
-  }
-  if (outflow > 0) {
-    components.push({
-      label: 'projected outflows from dated obligations', value: outflow,
-      derivation: 'dated known obligations falling inside the horizon',
-    });
-  }
-  const obs = spending.kind === 'OBSERVED' ? spending.rate : null;
   // ⚠️ MAGNITUDES, NOT SIGNED VALUES. The renderer used to print "USD -16672.27";
   // the model quoted "$16,672.27" and `output-validator`'s NUMBER_RE captures the
   // minus, so the licensed figure and the quoted figure did not reconcile and a
   // correct answer collected "could not be automatically verified". Direction is
   // carried by the label, where a reader gets it too.
-  components.push({
-    label: obs ? 'projected spending at the observed rate' : 'projected spending at your assumed rate',
-    value: spend,
-    derivation: obs
-      ? `${obs.monthlyRate.toFixed(2)}/month across the ${obs.monthCount} `
-        + `complete month(s) ${obs.months.map(monthLabel).join(' and ')}, accrued over `
-        + `${days} day(s)`
-      : `${spending.kind === 'USER_ASSUMED' ? spending.statedAs : ''} — the user's own figure, `
-        + `accrued over ${days} day(s)`,
-  });
+  components.push(...namedComponents({ inflow, outflow, spend }, spending, days));
+  const obs = spending.kind === 'OBSERVED' ? spending.rate : null;
 
   const closing = openingCash + inflow - outflow - spend;
   // The same arithmetic at the window's own extremes. Not a distribution, and
@@ -202,5 +242,128 @@ export function projectCash(input: ProjectCashInput): ProjectedCash {
   return {
     status: ConclusionStatus.EVIDENCE_BASED_PROJECTION,
     closing, currency, openingCash, components, assumptions, missing: [], range, excluded,
+  };
+}
+
+// ── An interval of the projection ────────────────────────────────────────────
+
+/**
+ * The projected components INSIDE a future-dated window, and the cash change
+ * across it.
+ *
+ * ⚠️ THE MISSING HALF OF A WINDOW WAS ITS START. The projection has always owned
+ * forward spending — `dailyRate × days` — but only FROM TODAY, so "how much will
+ * I spend during 2027?" took two cumulative runs and a subtraction the model
+ * performed (66,733.35 − 14,575.59). That subtraction is this function. It is
+ * not an annual-spending figure and knows nothing about years: any `[from, to]`
+ * after today, over the same events and the same rate the cumulative run used.
+ *
+ * ⚠️ DEFINED AS A DIFFERENCE OF TWO CUMULATIVE POSITIONS, SO IT CANNOT DISAGREE
+ * WITH THEM. `opening` is the cumulative run to the day before `from`; `closing`
+ * is the cumulative run to `to`; both are `projectCash`'s own closing, to the
+ * bit. The components come from the one fold over the window's own bounds, and
+ * a test pins that they equal the difference of the two runs.
+ *
+ * ⚠️ INCOME IS DATED, SPENDING IS A RATE. Interval income is the occurrences
+ * dated inside `[from, to]`, both ends inclusive — never a rate times a length,
+ * which would put a thirteenth paycheck in some years and lose one in others.
+ * Spending accrues over the inclusive day count of the same window.
+ *
+ * ⚠️ THE PAST IS NOT PROJECTED. A window that ends on or before `asOf` is
+ * REFUSED: what happened is a measurement, and answering it from a forward rate
+ * would restate history as a forecast. A window that merely STARTS on or before
+ * `asOf` is CLAMPED to the projection's own start and says so — it is then
+ * exactly the cumulative projection (income dated from `asOf`, spending accrued
+ * from the day after it, because today's balance already contains today), and
+ * `clamped` carries what was asked and why it moved.
+ */
+export interface ProjectedInterval {
+  status: 'PROJECTED' | 'REFUSED';
+  /** Why nothing was produced. Null when it was. */
+  refusal: string | null;
+  /** What the caller asked for, verbatim. */
+  requested: { fromISO: string; toISO: string };
+  /** The window measured: dated events in [fromISO, toISO] inclusive; spending over `days`. */
+  fromISO: string | null;
+  toISO: string | null;
+  days: number | null;
+  /** Present when the measured window is not the requested one. */
+  clamped: { requestedFromISO: string; reason: string } | null;
+  /** Projected cash at the close of the day BEFORE the window (or `asOf`, when clamped). */
+  opening: { dateISO: string; cash: number } | null;
+  /** Projected cash at the close of `toISO` — `projectCash`'s closing for that horizon. */
+  closing: { dateISO: string; cash: number } | null;
+  /** closing − opening. Equals income − obligations − spending over the window. */
+  cashChange: number | null;
+  components: ProjectionComponent[];
+  eventsCounted: number;
+  excluded: { id: string; reason: string }[];
+}
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+export function projectCashInterval(
+  input: ProjectCashInput, window: { fromISO: string; toISO: string },
+): ProjectedInterval {
+  const { openingCash, events, spending, fromISO: asOf, toISO: horizon } = input;
+  const requested = { fromISO: window.fromISO, toISO: window.toISO };
+  const refuse = (refusal: string): ProjectedInterval => ({
+    status: 'REFUSED', refusal, requested, fromISO: null, toISO: null, days: null,
+    clamped: null, opening: null, closing: null, cashChange: null, components: [],
+    eventsCounted: 0, excluded: [] });
+
+  if (!ISO_DATE.test(window.fromISO) || !ISO_DATE.test(window.toISO)) {
+    return refuse('an interval needs a `from` and a `to` as YYYY-MM-DD');
+  }
+  if (window.fromISO > window.toISO) {
+    return refuse(`the interval ${window.fromISO}..${window.toISO} ends before it starts`);
+  }
+  if (window.toISO <= asOf) {
+    return refuse(`the interval ${window.fromISO}..${window.toISO} is not in the future of `
+      + `${asOf}: the projection owns only what has not happened yet, and what already `
+      + 'happened is measured from transactions, not projected');
+  }
+  if (window.toISO > horizon) {
+    return refuse(`the interval ends ${window.toISO}, after the projection's horizon ${horizon}; `
+      + 'dated income beyond the horizon was never generated');
+  }
+  const dailyRate = dailyRateOf(spending);
+  if (openingCash === null || spending === null || dailyRate === null) {
+    return refuse('the projection itself could not be built: '
+      + [openingCash === null ? 'current cash balance' : null,
+        spending === null ? 'a complete calendar month of spending to average' : null]
+        .filter(Boolean).join('; '));
+  }
+
+  // The cumulative position on a date, exactly as `projectCash` computes it.
+  const cumulative = (toISO: string): number => {
+    const f = foldWindow(events, dailyRate, asOf, toISO, Math.max(0, daysBetween(asOf, toISO)));
+    return openingCash + f.inflow - f.outflow - (f.spend as number);
+  };
+
+  const isClamped = window.fromISO <= asOf;
+  // Clamped: the cumulative projection itself — events dated from `asOf`, spending
+  // from the day after it. Otherwise: both ends inclusive.
+  const measuredFrom = isClamped ? asOf : window.fromISO;
+  const openingDate = isClamped ? asOf : addDays(window.fromISO, -1);
+  const days = daysBetween(openingDate, window.toISO);
+  const fold = foldWindow(events, dailyRate, measuredFrom, window.toISO, days);
+  const opening = isClamped ? openingCash : cumulative(openingDate);
+  const closing = cumulative(window.toISO);
+
+  return {
+    status: 'PROJECTED', refusal: null, requested,
+    fromISO: measuredFrom, toISO: window.toISO, days,
+    clamped: isClamped ? { requestedFromISO: window.fromISO,
+      reason: `the part of the interval up to ${asOf} has already happened and is not projected; `
+        + `this is the projection from ${asOf}: income dated from ${asOf}, spending accrued `
+        + `from the day after it. Measure ${window.fromISO}..${asOf} from transactions.` } : null,
+    opening: { dateISO: openingDate, cash: opening },
+    closing: { dateISO: window.toISO, cash: closing },
+    cashChange: closing - opening,
+    components: namedComponents(
+      { inflow: fold.inflow, outflow: fold.outflow, spend: fold.spend as number }, spending, days),
+    eventsCounted: fold.counted,
+    excluded: fold.excluded,
   };
 }

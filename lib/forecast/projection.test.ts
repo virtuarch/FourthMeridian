@@ -32,7 +32,9 @@
 import {
   deriveObservedSpendingRate, monthLabel, WINDOW_MONTHS,
 } from './observed-spending';
-import { projectCash, type ProjectionSpending } from './projection';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { projectCash, projectCashInterval, type ProjectionSpending } from './projection';
 import {
   AmountBasis, EventProvenance, FlowRole, observedCashContribution,
   type FutureCashEvent,
@@ -190,6 +192,128 @@ const base = { openingCash: OPENING, events: EVENTS, fromISO: '2026-08-31', toIS
   check('U4 no observed-window range is offered for a supposed rate', p.range === null);
   check('U5 and the assumption is attributed to the user',
     p.assumptions.some((a) => /supposition|user/i.test(a)), p.assumptions.join(' | '));
+}
+
+// ── I. an interval of the projection ────────────────────────────────────────
+//
+// ⚠️ THE INVARIANT IS A DIFFERENCE OF TWO CUMULATIVE RUNS. "How much will I spend
+// during 2027?" was two `projectCash` runs and a subtraction performed in prose.
+// An interval is that subtraction, owned by the projection — so the property
+// worth pinning is not a figure but that, for ANY future window, every component
+// equals `cumulative(to) − cumulative(day before from)`, and the cash change
+// equals the difference of the two closings.
+{
+  const ASOF = '2026-09-20';
+  // Biweekly payroll for two and a half years, at the sub-cent level payroll
+  // really settles at — the figure that makes rounded parts miss a rounded whole.
+  const biweekly: FutureCashEvent[] = [];
+  for (let t = Date.parse('2026-09-25T00:00:00Z'); t <= Date.parse('2028-12-31T00:00:00Z'); t += 14 * 86_400_000) {
+    const e = payroll(new Date(t).toISOString().slice(0, 10));
+    biweekly.push({ ...e, amount: { ...e.amount, value: 5286.645 } } as FutureCashEvent);
+  }
+  const rent = (dateISO: string): FutureCashEvent => ({
+    ...payroll(dateISO), id: `rent@${dateISO}`, direction: 'OUTFLOW', role: FlowRole.DEBT_PAYMENT,
+    amount: { value: 1850, currency: 'USD', basis: AmountBasis.NET,
+      provenance: EventProvenance.DERIVED, observedSettled: true },
+  } as unknown as FutureCashEvent);
+  const events = [...biweekly, rent('2027-01-01'), rent('2027-12-31'), rent('2028-01-01')];
+  const input = { openingCash: 13330.97, events, spending: observed, fromISO: ASOF,
+    toISO: '2028-12-31', currency: 'USD' };
+  const cum = (toISO: string) => projectCash({ ...input, toISO });
+  const part = (p: ReturnType<typeof projectCash>, re: RegExp) =>
+    p.components.find((c) => re.test(c.label))?.value ?? 0;
+
+  const windows: [string, string][] = [
+    ['2027-01-01', '2027-12-31'],   // a calendar year — the question that prompted this
+    ['2026-09-21', '2026-12-31'],   // starts tomorrow
+    ['2027-03-15', '2027-03-15'],   // one day
+    ['2027-02-01', '2027-02-28'],   // a month
+    ['2028-01-01', '2028-12-31'],   // a leap year, ending on the horizon
+    ['2026-09-25', '2026-10-08'],   // opens ON a pay date, closes the day before the next
+  ];
+  let exact = true, detail = '';
+  for (const [from, to] of windows) {
+    const i = projectCashInterval(input, { fromISO: from, toISO: to });
+    const before = new Date(Date.parse(`${from}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+    const a = cum(before), b = cum(to);
+    const want = { income: part(b, /income/) - part(a, /income/),
+      obligations: part(b, /obligations/) - part(a, /obligations/),
+      spending: part(b, /spending/) - part(a, /spending/),
+      cash: (b.closing as number) - (a.closing as number) };
+    const got = { income: i.components.find((c) => /income/.test(c.label))?.value ?? 0,
+      obligations: i.components.find((c) => /obligations/.test(c.label))?.value ?? 0,
+      spending: i.components.find((c) => /spending/.test(c.label))?.value ?? 0,
+      cash: i.cashChange as number };
+    for (const k of ['income', 'obligations', 'spending', 'cash'] as const) {
+      if (Math.abs(got[k] - want[k]) > 1e-6) { exact = false; detail += `${from}..${to} ${k}: ${got[k]} vs ${want[k]}; `; }
+    }
+    if (Math.abs((got.income - got.obligations - got.spending) - got.cash) > 1e-6) {
+      exact = false; detail += `${from}..${to} parts do not sum to the change; `; }
+    if (i.opening?.cash !== a.closing || i.closing?.cash !== b.closing) {
+      exact = false; detail += `${from}..${to} endpoints are not the cumulative closings to the bit; `; }
+  }
+  check('I1 every component of an interval is the difference of two cumulative runs, and the '
+    + 'parts sum to the cash change', exact, detail);
+
+  const y27 = projectCashInterval(input, { fromISO: '2027-01-01', toISO: '2027-12-31' });
+  check('I2 the window is stated: from, to, and an inclusive day count',
+    y27.fromISO === '2027-01-01' && y27.toISO === '2027-12-31' && y27.days === 365 && y27.clamped === null);
+  near('I3 interval spending is the daily rate over the window\'s own days, not a year of anything',
+    part(y27 as never, /spending/), (rate.assertable ? rate.dailyRate : 0) * 365, 1e-6);
+  check('I4 interval income is the DATED occurrences inside the window, both ends inclusive',
+    y27.eventsCounted === events.filter((e) => e.timing.kind === 'EXACT'
+      && e.timing.dateISO >= '2027-01-01' && e.timing.dateISO <= '2027-12-31').length
+    && part(y27 as never, /obligations/) === 3700, `${y27.eventsCounted} events, obligations ${part(y27 as never, /obligations/)}`);
+  check('I4b a leap year accrues 366 days',
+    projectCashInterval(input, { fromISO: '2028-01-01', toISO: '2028-12-31' }).days === 366);
+
+  // Adjacent windows tile the horizon: nothing counted twice, nothing dropped.
+  const h1 = projectCashInterval(input, { fromISO: '2026-09-21', toISO: '2027-06-30' });
+  const h2 = projectCashInterval(input, { fromISO: '2027-07-01', toISO: '2028-12-31' });
+  const whole = cum('2028-12-31');
+  near('I5 adjacent intervals tile the cumulative projection',
+    (h1.cashChange as number) + (h2.cashChange as number), (whole.closing as number) - 13330.97, 1e-6);
+
+  // ⚠️ THE PAST IS MEASURED, NOT PROJECTED.
+  const past = projectCashInterval(input, { fromISO: '2026-01-01', toISO: '2026-06-30' });
+  check('I6 an interval entirely in the past is REFUSED, with no figure of any kind',
+    past.status === 'REFUSED' && past.cashChange === null && past.components.length === 0
+    && past.opening === null && /not in the future/.test(past.refusal ?? ''), past.refusal ?? '');
+  check('I6b so is one that ends today',
+    projectCashInterval(input, { fromISO: '2026-09-01', toISO: ASOF }).status === 'REFUSED');
+  check('I6c and a reversed one, and one past the horizon the events were generated for',
+    projectCashInterval(input, { fromISO: '2027-06-01', toISO: '2027-05-01' }).status === 'REFUSED'
+    && projectCashInterval(input, { fromISO: '2028-01-01', toISO: '2029-06-30' }).status === 'REFUSED');
+
+  // A window that STARTS in the past is the projection itself, and says so.
+  const straddle = projectCashInterval(input, { fromISO: '2026-01-01', toISO: '2026-12-31' });
+  const toYearEnd = cum('2026-12-31');
+  check('I7 a window starting before today is CLAMPED to the projection\'s start, and echoes why',
+    straddle.status === 'PROJECTED' && straddle.fromISO === ASOF
+    && straddle.clamped?.requestedFromISO === '2026-01-01' && /already happened/.test(straddle.clamped?.reason ?? '')
+    && straddle.requested.fromISO === '2026-01-01');
+  check('I7b and is then exactly the cumulative projection — same components, same closing',
+    JSON.stringify(straddle.components) === JSON.stringify(toYearEnd.components)
+    && straddle.closing?.cash === toYearEnd.closing && straddle.opening?.cash === 13330.97
+    && straddle.days === 102);
+
+  check('I8 no projection, no interval: a missing spending rate refuses rather than accruing zero',
+    projectCashInterval({ ...input, spending: null }, { fromISO: '2027-01-01', toISO: '2027-12-31' }).status === 'REFUSED'
+    && projectCashInterval({ ...input, openingCash: null }, { fromISO: '2027-01-01', toISO: '2027-12-31' }).status === 'REFUSED');
+
+  const user: ProjectionSpending = { kind: 'USER_ASSUMED', dailyRate: 5000 / (365 / 12),
+    monthlyAmount: 5000, statedAs: 'supposed for this forecast: 5,000/month' };
+  const assumed = projectCashInterval({ ...input, spending: user }, { fromISO: '2027-01-01', toISO: '2027-12-31' });
+  near('I9 a user-assumed rate flows through the same interval: 5,000 a month over 365 days',
+    part(assumed as never, /assumed rate/), 5000 / (365 / 12) * 365, 1e-6);
+  check('I9b and a GROSS event inside the window is excluded and named, exactly as in the cumulative run',
+    projectCashInterval({ ...input, events: [...events, { ...ev({ value: 15500, basis: AmountBasis.GROSS }), id: 'bonus',
+      timing: { kind: 'EXACT', dateISO: '2027-03-01' } } as FutureCashEvent] },
+      { fromISO: '2027-01-01', toISO: '2027-12-31' }).excluded.some((e) => e.id === 'bonus'));
+
+  // ⚠️ NO ANNUAL SPECIAL CASE, PINNED AS TEXT. The authority knows windows, not years.
+  const src = readFileSync(join(__dirname, 'projection.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+  check('I10 the projection has no annual-spending special case', !/annual|perYear|yearly|\b12\b\s*\*/i.test(src));
 }
 
 console.log(failures === 0

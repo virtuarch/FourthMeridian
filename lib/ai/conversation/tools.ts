@@ -54,7 +54,7 @@ import {
   observedChange, findObservation, NEEDS_THRESHOLD, type TemporalOperation,
 } from '@/lib/data/snapshot-window';
 import { loadForecastIncomeStreams } from '@/lib/ai/forecast/streams';
-import { assembleForecast } from '@/lib/ai/forecast/assemble';
+import { assembleForecast, projectInterval } from '@/lib/ai/forecast/assemble';
 import { resolvePayDates, PayDateAsk } from '@/lib/ai/forecast/pay-dates';
 // ⚠️ NOTHING HERE IMPORTS lib/forecast/** DIRECTLY, AND A GUARD ENFORCES IT.
 // FORECAST-6/8/9 each carry a "consumed only through the sanctioned adapter"
@@ -1638,6 +1638,48 @@ async function buildCashSpine(
 
 // ── 8. Cash projection ───────────────────────────────────────────────────────
 
+/**
+ * An interval of the projection, as the model reads it.
+ *
+ * ⚠️ NOTHING IS COMPUTED HERE. The window, its clamp, its refusal and every
+ * figure are the projection authority's (`projectCashInterval`, reached through
+ * the forecast adapter); this rounds at the display edge and names the fields.
+ * `{from, to, days}` are stated on every answer because an interval whose bounds
+ * are implied is how two different windows end up compared.
+ */
+function presentInterval(
+  i: ReturnType<typeof projectInterval>, requestedFrom: string, requestedTo: string,
+) {
+  if (!i) {
+    return { unavailable: 'there is no evidence-based projection to take an interval of',
+      requested: { from: requestedFrom, to: requestedTo } };
+  }
+  if (i.status === 'REFUSED') {
+    return { unavailable: i.refusal, requested: { from: requestedFrom, to: requestedTo },
+      instead: 'a period that has already happened is measured, not projected: use '
+        + 'measure_flows (or get_spending / get_income) for it' };
+  }
+  return {
+    from: i.fromISO, to: i.toISO, days: i.days,
+    ...(i.clamped ? { requested: { from: i.clamped.requestedFromISO, to: requestedTo },
+      clamped: i.clamped.reason } : {}),
+    cashAtStart: { date: i.opening!.dateISO, amount: round2(i.opening!.cash) },
+    cashAtEnd: { date: i.closing!.dateISO, amount: round2(i.closing!.cash) },
+    // ⚠️ FROM THE TWO PRINTED BALANCES, so the figure reproduces from its operands.
+    // Payroll settles at sub-cent precision (…645), so the rounded components can
+    // sit a cent away from it; the balances are the figures a standalone run to
+    // either date prints, and they are the ones this agrees with exactly.
+    cashChange: round2(round2(i.closing!.cash) - round2(i.opening!.cash)),
+    components: i.components.map((c) => ({ ...c, value: round2(c.value) })),
+    incomeEventsCounted: i.eventsCounted,
+    meaning: 'What the SAME projection puts inside this window: income and obligations dated '
+      + '`from`..`to` inclusive, spending accrued over `days` days. `cashChange` = `cashAtEnd` − '
+      + '`cashAtStart` (the balance at the close of the day before the window) = income − '
+      + 'obligations − spending, to the cent of rounding. `projection.endingCash` is still the '
+      + 'balance at `to`. Quote these; never difference two projections yourself.',
+  };
+}
+
 const projectCash: ToolDefinition = {
   name: 'project_cash',
   // ⚠️ THE BOUNDARY BELONGS IN THE DESCRIPTION, NOT ONLY ON A PARAMETER. 54eb8e1
@@ -1653,9 +1695,20 @@ const projectCash: ToolDefinition = {
     'payroll cadence and observed spending continuing as they are. ' +
     '`assumedMonthlySpending` is the only assumption it can apply; a dated one-off amount ' +
     'arriving or leaving is not part of this projection. `establishment` says how firmly ' +
-    'each input is pinned down; it is provenance, not a competing answer.',
+    'each input is pinned down; it is provenance, not a competing answer. With `from` it ' +
+    'also states what is projected to come in and go out INSIDE a future window.',
   parameters: obj({
     to: str('YYYY-MM-DD horizon end. Required.'),
+    // ⚠️ A WINDOW, NOT A YEAR. "How much will I spend during 2027?" took two
+    // cumulative calls and a subtraction in prose (66,733.35 − 14,575.59). The
+    // projection already owned both figures; what it lacked was a start. There is
+    // deliberately no annual-spending special case here or anywhere: any future
+    // `[from, to]` is the same fold over the same events at the same rate.
+    from: str('YYYY-MM-DD, after today. Set it only when the question is about a future '
+      + 'WINDOW rather than from now — "how much will I spend during 2027", "what comes in '
+      + 'next quarter". The result adds `interval`: projected income, spending and '
+      + 'obligations inside from..to (both dates inclusive) and the cash change across it. '
+      + 'Never subtract two projections yourself. Omit for an ordinary projection.'),
     assumedMonthlySpending: num('If the user stated a monthly spending level, pass it here. '
       + 'It is the only user assumption this tool can apply. A one-off amount on a date — '
       + 'a bonus, an inheritance, a purchase, a sale — is not part of this projection.'),
@@ -1727,6 +1780,13 @@ const projectCash: ToolDefinition = {
     return {
       horizon: { asOf, to: toISO, days: horizonDays, elapsed: elapsedBetween(asOf, toISO),
         ...(plan ? describePlan(plan) : { checkpoints: 0 }) },
+      // ⚠️ A SIBLING OF THE ANSWER, NEVER A REPLACEMENT FOR IT. `projection.endingCash`
+      // stays the cumulative balance at `to` and `horizon.to` stays `to`, whether or
+      // not a window was asked for — those are the two fields the turn loop's silent
+      // checkpoint copies, so a window's CHANGE cannot be recorded as a BALANCE.
+      ...(typeof a.from === 'string' && a.from
+        ? { interval: presentInterval(projectInterval(f, { fromISO: a.from, toISO }), a.from, toISO) }
+        : {}),
       ...(retrospective ? { retrospective: true, openingBasis,
         meaning: `What this projection would have said standing at ${asOf}, using only `
           + 'evidence available then. Compare it with what actually happened; do not '

@@ -47,7 +47,8 @@ import { isCadence, type CadenceKindName } from '@/lib/forecast/cadence';
 import { ActivityState } from '@/lib/forecast/stream-activity';
 import { periodicCashEvents } from '@/lib/forecast/periodic-amount';
 import {
-  projectCash, type ProjectedCash, type ProjectionSpending,
+  projectCash, projectCashInterval,
+  type ProjectedCash, type ProjectedInterval, type ProjectCashInput, type ProjectionSpending,
 } from '@/lib/forecast/projection';
 import {
   deriveObservedSpendingRate, type ObservedSpendingRate,
@@ -128,6 +129,15 @@ export interface AssembledForecast {
   projection?: ProjectedCash;
   /** The window and dispersion behind the projection's spending term. */
   observedSpending?: ObservedSpendingRate;
+  /**
+   * Exactly what `projection` was computed from. Present whenever it is.
+   *
+   * ⚠️ KEPT SO AN INTERVAL OF THE PROJECTION IS THE SAME PROJECTION. `projectInterval`
+   * folds THESE events at THIS rate over a narrower window; an interval that
+   * re-resolved its own spending term or regenerated its own events could
+   * disagree with the cumulative figure printed beside it.
+   */
+  projectionInput?: ProjectCashInput;
 }
 
 /**
@@ -397,6 +407,7 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
 
   let projection: ProjectedCash | undefined;
   let observedSpending: ObservedSpendingRate | undefined;
+  let projectionInput: ProjectCashInput | undefined;
   if (!hasLicensedAnswer && projectionEnabled()) {
     // ⚠️ THE USER'S OWN RATE WINS, AND THE ENGINE ALREADY RESOLVED IT. When the
     // conversation supplied a spending level, `forecast.spending` carries it as
@@ -425,20 +436,37 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
           month: m.month, expenseTotal: clampEconomicSpend(m.expenseTotal, m.refundTotal) })));
       if (rate.assertable) { observedSpending = rate; spending = { kind: 'OBSERVED', rate }; }
     }
-    projection = projectCash({
+    projectionInput = {
       openingCash: 'refused' in forecast ? null : forecast.openingCash.amount,
       events, spending,
       fromISO: horizon.fromISO, toISO: horizon.toISO,
       currency: state.liquidity.currency ?? 'USD',
-    });
+    };
+    projection = projectCash(projectionInput);
   }
 
   return {
     state, events, policy, forecast,
     statements, appliedFacts,
     unavailable: acc ? null : 'account balances could not be assembled for this Space',
-    projection, observedSpending,
+    projection, observedSpending, projectionInput,
   };
+}
+
+/**
+ * The projected components inside a future-dated window of an assembled forecast.
+ *
+ * ⚠️ THE SANCTIONED WAY TO ASK, FOR THE SAME REASON `assembleForecast` IS. The
+ * conversation tools may not reach past this adapter into the projection
+ * authority, and they do not need to: an interval is a property of a forecast
+ * that was already assembled, so it takes that forecast and a window and nothing
+ * else. Null when there is no evidence-based projection to take an interval OF —
+ * the licensed path answered, or nothing did.
+ */
+export function projectInterval(
+  assembled: AssembledForecast, window: { fromISO: string; toISO: string },
+): ProjectedInterval | null {
+  return assembled.projectionInput ? projectCashInterval(assembled.projectionInput, window) : null;
 }
 
 /**
@@ -496,4 +524,4 @@ function activeUndatedObligations(acc: AccountsSectionData | undefined): number 
 // started taking `UserStatement[]` — a caller cannot construct the input
 // without them, so omitting them forced the exact reach-past the guard forbids.
 export { PeriodBasis, AssumptionDimension, AssumptionOrigin, AssumptionStance, EventProvenance, FlowRole, ActivityState, ConclusionStatus, StatementMode };
-export type { CashForecast, ConclusionStatusKind, ForecastHorizon, UserStatement };
+export type { CashForecast, ConclusionStatusKind, ForecastHorizon, UserStatement, ProjectedInterval };
