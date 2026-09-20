@@ -317,18 +317,17 @@ test("W3: no debt consumer remains on the accidental fetched-row window", () => 
 // conclusions cannot tell the two shapes apart: one identical measured corpus,
 // presented once full-shaped and once brief-shaped, must assess deep-equal.
 //
-// ⚠️ Known, deliberate exclusion — spendingOpportunities / riskOpportunities:
-// computeSpendingOpportunities iterates ALL of txn.byCategory, and the brief
-// transport cap keeps only the top-5 spending categories, so those two sections
-// CAN differ across shapes for a Space with 6+ spending categories. No Brief
-// surface consumes either section (riskOpportunities is deliberately
-// unconsumed — W3), and the parity audit's Conclusions projection does not
-// compare them, but the residual is REAL and is reported to the operator as an
-// open W4 follow-up rather than silently equalized here. Every other section —
-// including everything the Brief renders and the parity audit measures — is
-// pinned invariant below.
+// post-M1 D2 — the documented residual is GONE, and its exclusion with it.
+// computeSpendingOpportunities used to iterate the window-level txn.byCategory,
+// which the brief transport cap trims to the top-5 spending categories, so
+// spendingOpportunities / riskOpportunities COULD differ across shapes for a
+// Space with 6+ spending categories. They were held out of the deep-equal and
+// the residual was pinned as real, with the instruction to delete the exclusion
+// the day the cap stopped reaching the engine. It has: every category figure is
+// now a mean over the reliable months' OWN per-month byCategory lists, which
+// are complete at every scope hint. The WHOLE assessment is deep-equal below.
 
-test("W4: one measured corpus, brief-shaped vs full-shaped transport, assesses deep-equal (minus the documented byCategory-cap residual)", () => {
+test("W4: one measured corpus, brief-shaped vs full-shaped transport, assesses deep-equal — every section", () => {
   // The measured figures — IDENTICAL in both shapes (same corpus, same day,
   // same 90-day assessment window). Negative canonical net so the deficit
   // ladder and priority selection actually run (the live drift class W4 fixed).
@@ -351,13 +350,19 @@ test("W4: one measured corpus, brief-shaped vs full-shaped transport, assesses d
     { category: "Subscriptions", total: 300,  count: 7 }, // dropped under brief
   ];
   // Two COMPLETE months → estimatedMonthlyExpenses is a measurement, not null.
+  // post-M1 D2 — each month carries its own COMPLETE per-category list (the
+  // assembler emits it uncapped at every scope hint): all six categories,
+  // including the one the brief cap drops from the window-level list.
+  const monthCats = (share: number) => SPENDING.map((c) => ({
+    category: c.category, total: Math.round(c.total * share * 100) / 100, count: Math.ceil(c.count / 3),
+  }));
   const MONTHS = [
     { month: "2026-04", incomeTotal: 3000, expenseTotal: 3300, refundTotal: 0,
       debtPaymentTotal: 200, transferTotal: 0, transactionCount: 20, estimated: false,
-      byCategory: [] },
+      byCategory: monthCats(0.33) },
     { month: "2026-05", incomeTotal: 3000, expenseTotal: 3400, refundTotal: 0,
       debtPaymentTotal: 200, transferTotal: 0, transactionCount: 20, estimated: false,
-      byCategory: [] },
+      byCategory: monthCats(0.34) },
   ];
 
   const fullTxn = mkTxn({
@@ -401,19 +406,16 @@ test("W4: one measured corpus, brief-shaped vs full-shaped transport, assesses d
   const full  = computeAssessment(mkCtx(fullTxn,  fullAccts,  60, fullSnap));
   const brief = computeAssessment(mkCtx(briefTxn, briefAccts, 60, briefSnap));
 
-  // The documented residual, held OUT of the deep-equal and pinned as real so
-  // this exclusion can never silently widen: the dropped 6th category is
-  // visible to computeSpendingOpportunities.
-  assert.equal(full.spendingOpportunities.topCategories.length,
-               brief.spendingOpportunities.topCategories.length + 1,
-    "the byCategory cap residual disappeared — if the cap no longer reaches the engine, " +
-    "DELETE this exclusion and fold spendingOpportunities/riskOpportunities into the deep-equal");
+  // post-M1 D2 — the former residual, now pinned the other way: the category
+  // the brief cap drops from the WINDOW-level list still reaches the engine at
+  // both shapes, because the engine reads the per-month lists.
+  assert.equal(brief.spendingOpportunities.topCategories.length, SPENDING.length,
+    "the brief-shaped payload must rank every category the full-shaped one does");
+  assert.ok(brief.spendingOpportunities.topCategories.some((c) => c.category === "Subscriptions"),
+    "the category dropped by the window-level brief cap must still be assessed under brief");
+  assert.deepEqual(brief.spendingOpportunities.monthsAnalyzed, ["2026-04", "2026-05"]);
 
-  const project = (a: ReturnType<typeof computeAssessment>) => {
-    const { spendingOpportunities: _so, riskOpportunities: _ro, ...rest } = a;
-    return rest;
-  };
-  assert.deepEqual(project(brief), project(full),
+  assert.deepEqual(brief, full,
     "same corpus + same day + different scopeHint must yield identical assessment " +
     "conclusions — transport shape leaked into semantics");
 

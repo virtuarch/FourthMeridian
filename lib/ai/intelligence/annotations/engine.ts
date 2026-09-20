@@ -38,7 +38,7 @@ import {
   // W2 — DEBT_FRACTION_DOMINANT / DEBT_FRACTION_PARTIAL no longer imported:
   // their only consumers were the deleted intent rungs of the deficit ladder.
 } from './constants';
-import { computeAverageMonthlyIncome, computeAverageMonthlySpending, computeMonthlySpendingBasis, computeDebtStrategy, computeSpendingOpportunities, computeSpendingTrends, getAcctsData, getSnapData, getTxnData } from './metrics';
+import { computeAverageMonthlyDebtPayments, computeAverageMonthlyIncome, computeAverageMonthlySpending, computeMonthlySpendingBasis, computeDebtStrategy, computeSpendingOpportunities, computeSpendingTrends, getAcctsData, getSnapData, getTxnData } from './metrics';
 import { deriveHeuristics, derivePriorities } from './rules';
 import { computeCapitalAllocation, computeInvestmentReadiness, computeRiskOpportunities, computeTrajectory } from './engines';
 import type { SpaceContext_AI } from '@/lib/ai/types';
@@ -136,15 +136,32 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   const spendingBasis = computeMonthlySpendingBasis(txn);
   const estimatedMonthlyExpenses: number | null = spendingBasis?.net ?? null;
 
-  const estimatedMonthlyDebtPayments: number | null = txn && windowDays > 0 && debtPaymentTotal > 0
-    ? Math.round((debtPaymentTotal / windowDays * 30) * 100) / 100
-    : null;
+  // post-M1 D1 — the same complete-month mean, over the same months, as the two
+  // figures above. This was the last day-normalised money figure in the
+  // assessment (window total ÷ window days × a nominal month), printed beside two
+  // complete-month means under one "monthly averages" label. OBSERVED historical
+  // card-and-debt payment flow — not Σ stated minimums (lib/debt/aggregates.ts),
+  // not the payoff planner's chosen payment (lib/debt/payoff.ts), not L1's
+  // projected minimums (scenario-ledger.ts). Null = no reliable month; 0 = none
+  // observed in the reliable months.
+  const estimatedMonthlyDebtPayments: number | null = computeAverageMonthlyDebtPayments(txn);
 
-  // REVIEW-3 C-3 — graded on the CANONICAL figures. The trigger is the full cash
-  // deficit (net after debt payments < 0); the OVERSPENDING claim specifically
-  // requires the canonical economic net to be negative — that is the exact
-  // number the Cash Flow workspace renders, so "you spent more than you took in"
-  // can no longer contradict a surplus on screen.
+  // REVIEW-3 C-3 — graded on the CANONICAL figures. The trigger is the deficit
+  // after debt PAYDOWN (netAfterDebtPayments < 0); the OVERSPENDING claim
+  // specifically requires the canonical economic net to be negative — that is
+  // the exact number the Cash Flow workspace renders, so "you spent more than
+  // you took in" can no longer contradict a surplus on screen.
+  //
+  // post-M1 D3 — `netAfterDebtPayments` is `netCashFlow − NET paydown`, no longer
+  // `netCashFlow − debtPaymentTotal`. The economic net already contains every
+  // purchase made ON a card; subtracting the payments that settle those
+  // purchases counted the same consumption twice, and graded a household that
+  // pays its cards in full DEBT_DRIVEN over a five-figure surplus. The ladder
+  // below is unchanged — the DEFINITION moved, in the assembler, to the
+  // debt-service decomposition (lib/transactions/debt-service.ts): payments
+  // beyond the new charges they settle and the borrowing that funded them.
+  // New borrowing is never credited (the figure is ≤ the economic net), so
+  // overspending financed on a card still reads as overspending.
   //
   // W2 — the two goal-gated rungs (INTENTIONAL_DEBT_PAYOFF / MIXED, each
   // requiring an ACTIVE DEBT_REDUCTION goal) were DELETED with the Goals

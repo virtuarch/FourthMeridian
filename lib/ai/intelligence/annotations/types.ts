@@ -32,13 +32,20 @@ export type DeficitCauseClassification =
   | 'LOW_INCOME_SAMPLE'        // income data is incomplete — deficit is a data artifact
   /**
    * REVIEW-3 C-3 — the after-paydown position is negative but the CANONICAL
-   * economic net is not: debt payments fully explain the cash deficit — a
+   * economic net is not: debt PAYDOWN fully explains the cash deficit — a
    * measured fact about the money, with no claim about intent. Distinct from
    * POSSIBLE_OVERSPENDING so a consumer can never say "you spent more than you
    * took in" while the Cash Flow workspace shows a surplus for the same window.
+   *
+   * post-M1 D3 — "paydown" is the NET paydown (lib/transactions/debt-service.ts):
+   * payments beyond the new charges they settle and the borrowing that funded
+   * them. A card payment that settles purchases already counted in spending is
+   * NOT paydown, so a household paying its cards in full is never DEBT_DRIVEN.
+   * What this verdict now states is exact: income covered spending, and more
+   * cash than the surplus went to REDUCING what is owed.
    */
   | 'DEBT_DRIVEN'
-  | 'NOT_APPLICABLE';          // no cash deficit (net after debt payments ≥ 0)
+  | 'NOT_APPLICABLE';          // no deficit (economic net after NET debt paydown ≥ 0)
 
 
 export type DebtHealthClassification =
@@ -188,6 +195,12 @@ export interface CashFlowSection {
   reliability:                  CashFlowReliability;
   /** Mirrors income confidence — income is the volatile input in the cash flow equation. */
   confidence:                   ConfidenceLevel;
+  /**
+   * WHY the window ran a deficit, if it did. Graded on two figures only: the
+   * canonical economic net (`netCashFlow`) and that net after the cash which
+   * genuinely REDUCED debt (`netAfterDebtPayments` = economic net − net
+   * paydown). See DeficitCauseClassification.
+   */
   deficitCause:                 DeficitCauseClassification;
   transactionCompleteness:      CompletenessLevel;
   /**
@@ -210,7 +223,20 @@ export interface CashFlowSection {
    */
   monthlyExpensesGross?:        number;
   monthlyRefundEffect?:         number;
-  /** Annualized debt payment flow divided into monthly equivalent. Reliable when window is ≥ 30 days. */
+  /**
+   * post-M1 D1 — mean OBSERVED card-and-debt payment flow per reliable month
+   * (the debt-payment authority's counted cash legs): the same month population
+   * as the two figures above. Null when no reliable month exists; 0 when those
+   * months hold no payment. Never a window total normalised by days.
+   *
+   * ⚠️ One of FOUR quantities called "monthly debt payment" — keep them apart:
+   *   1. THIS: observed historical flow. It includes card payments that only
+   *      settle purchases already inside `estimatedMonthlyExpenses`, so it is
+   *      NOT debt burden and must never be added to expenses.
+   *   2. Σ stated minimums now            — lib/debt/aggregates.ts
+   *   3. the payoff planner's chosen payment — lib/debt/payoff.ts
+   *   4. L1's projected minimums          — lib/ai/conversation/scenario-ledger.ts
+   */
   estimatedMonthlyDebtPayments: number | null;
   incomeTransactionCount:       number;
   /**
@@ -420,8 +446,15 @@ export type SpendingCategoryClassification =
 
 export interface SpendingCategoryOpportunity {
   category:          string;
+  /**
+   * post-M1 D2 — mean debit-only spend per RELIABLE month (the section's
+   * `monthsAnalyzed`), a month without the category counting as zero. Same
+   * basis as `cashFlow.estimatedMonthlyExpenses`; never a window total
+   * normalised by days.
+   */
   monthlyEquivalent: number;
   classification:    SpendingCategoryClassification;
+  /** Rows in this category across the same reliable months. */
   transactionCount:  number;
 }
 
@@ -433,11 +466,19 @@ export interface SpendingCategoryOpportunity {
 
 export interface SpendingOpportunitySection {
   confidence:              ConfidenceLevel;
+  /** The assessment window the rows came from. Descriptive only — no figure here is normalised by it. */
   windowDays:              number;
+  /**
+   * post-M1 D2 — the RELIABLE months (YYYY-MM, oldest → newest) every
+   * `monthlyEquivalent` below is a mean over: the figure travels with its
+   * population. EMPTY means the section REFUSED — no complete month exists, so
+   * no category is ranked and nothing downstream is graded from it.
+   */
+  monthsAnalyzed:          string[];
   /** Expense categories sorted by monthly equivalent descending. Excludes Income/Interest/Transfer/Payment. */
   topCategories:           SpendingCategoryOpportunity[];
-  /** Sum of monthly equivalents for DISCRETIONARY categories. */
-  discretionaryTotal:      number;
+  /** Sum of monthly equivalents for DISCRETIONARY categories. Null when no reliable month exists (refusal, never 0). */
+  discretionaryTotal:      number | null;
   /** Largest DISCRETIONARY category — highest-leverage reduction opportunity. */
   topReductionOpportunity: SpendingCategoryOpportunity | null;
   /** Categories classified as REVIEW_NEEDED with ≥ $20/mo in spend. */

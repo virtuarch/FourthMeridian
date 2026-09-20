@@ -88,6 +88,33 @@ export function classifySpendingCategory(category: string): SpendingCategoryClas
 /**
  * Classifies and ranks expense categories by monthly equivalent.
  * Pure function. No DB queries. Excludes income, transfer, and debt-payment categories.
+ *
+ * post-M1 D2 — `monthlyEquivalent` is the mean over the assessment's RELIABLE
+ * MONTHS (`meanPerReliableMonth` — the one month-normalisation in this layer),
+ * read from each month's own `byCategory`. It used to be a day-normalised share
+ * of the 90-day window total — a window that includes two clipped months —
+ * printed beside, and graded against thresholds calibrated like, the
+ * complete-month expense mean. It FEEDS CLASSIFICATION (the opportunity impact
+ * rungs in engines.ts, and REVIEW_MIN_MONTHLY below), so the basis is not
+ * cosmetic.
+ *
+ * Three consequences, all deliberate:
+ *   · The category figures and `estimatedMonthlyExpenses` are means of the SAME
+ *     months, so they reconcile instead of describing two populations.
+ *   · A month in which a category has no row contributes ZERO to that
+ *     category's mean. That is arithmetic over a stated population, not an
+ *     invented $0 row: the denominator is the reliable months named in
+ *     `monthsAnalyzed`, never "the months this category happened to appear in".
+ *   · The per-month lists are complete at every scope hint, so the brief
+ *     transport cap on the window-level `byCategory` no longer reaches this
+ *     section (the documented W4 residual is gone).
+ *
+ * NO RELIABLE MONTH ⇒ REFUSAL. `monthsAnalyzed: []`, no categories, no top
+ * opportunity, `discretionaryTotal: null`. Never an extrapolation from a partial
+ * month. Downstream that means no CUT_TOP_DISCRETIONARY_CATEGORY and no
+ * REVIEW_OTHER_CATEGORY opportunity is graded at all — silence, not a severity
+ * computed from a guess. `hasTransactionData` stays true: rows exist; what is
+ * missing is a complete month to measure them over.
  */
 
 export function computeSpendingOpportunities(
@@ -98,33 +125,40 @@ export function computeSpendingOpportunities(
     return {
       confidence:              'LOW',
       windowDays:              txn?.windowDays ?? 0,
+      monthsAnalyzed:          [],
       topCategories:           [],
-      discretionaryTotal:      0,
+      discretionaryTotal:      null,
       topReductionOpportunity: null,
       categoriesNeedingReview: [],
       hasTransactionData:      false,
     };
   }
 
-  const windowDays = txn.windowDays > 0 ? txn.windowDays : 90;
+  const months         = reliableMonths(txn);
+  const monthsAnalyzed = months.map((m) => m.month);
+
+  // Every category that appears in ANY reliable month, with its row count over
+  // those same months (the population the figure beside it is a mean of).
+  // `?? []` is for hand-built payloads only — the assembler always emits the list.
+  const counts = new Map<string, number>();
+  for (const m of months) {
+    for (const c of m.byCategory ?? []) counts.set(c.category, (counts.get(c.category) ?? 0) + c.count);
+  }
 
   const categories: SpendingCategoryOpportunity[] = [];
-  for (const cat of txn.byCategory) {
-    const classification = classifySpendingCategory(cat.category);
+  for (const [category, transactionCount] of counts) {
+    const classification = classifySpendingCategory(category);
     if (classification === null) continue;
-    const monthlyEquivalent = Math.round((cat.total / windowDays * 30) * 100) / 100;
-    if (monthlyEquivalent < 1) continue; // skip negligible amounts
-    categories.push({
-      category: cat.category,
-      monthlyEquivalent,
-      classification,
-      transactionCount: cat.count,
-    });
+    const monthlyEquivalent = meanPerReliableMonth(
+      txn, (m) => (m.byCategory ?? []).find((c) => c.category === category)?.total ?? 0,
+    );
+    if (monthlyEquivalent === null || monthlyEquivalent < 1) continue; // skip negligible amounts
+    categories.push({ category, monthlyEquivalent, classification, transactionCount });
   }
 
   categories.sort((a, b) => b.monthlyEquivalent - a.monthlyEquivalent);
 
-  const discretionaryTotal = Math.round(
+  const discretionaryTotal = months.length === 0 ? null : Math.round(
     categories
       .filter((c) => c.classification === 'DISCRETIONARY')
       .reduce((sum, c) => sum + c.monthlyEquivalent, 0) * 100,
@@ -139,7 +173,8 @@ export function computeSpendingOpportunities(
 
   return {
     confidence:              dataQuality.transactionHistoryCompleteness,
-    windowDays,
+    windowDays:              txn.windowDays,
+    monthsAnalyzed,
     topCategories:           categories,
     discretionaryTotal,
     topReductionOpportunity,
@@ -260,6 +295,28 @@ export function reliableMonths(
 }
 
 /**
+ * THE one month-normalisation in the assessment: the mean of a per-month figure
+ * over the RELIABLE months (complete calendar months the fetch cap did not
+ * truncate). Every "monthly" money figure this layer emits goes through here —
+ * spending, income, debt payments, each category — so they share one month
+ * population and can be printed side by side under one label.
+ *
+ * NULL when no reliable month exists. That is a REFUSAL, and every caller must
+ * keep it one: never fall back to a window total normalised by days (the
+ * retired day-normalisation, which a source scan now forbids anywhere in this
+ * directory), and never average a partial month.
+ */
+export function meanPerReliableMonth(
+  txn:  TransactionsSummaryData | null,
+  pick: (month: MonthlyBreakdownEntry) => number,
+): number | null {
+  const months = reliableMonths(txn);
+  if (months.length === 0) return null;
+  const total = months.reduce((s, m) => s + pick(m), 0);
+  return Math.round((total / months.length) * 100) / 100;
+}
+
+/**
  * KD-10: the single authoritative monthly-spending value. Returns null when no
  * reliable month exists, so every caller preserves the "no complete month =>
  * UNKNOWN" behavior instead of falling back to a window-normalized estimate (the
@@ -274,8 +331,13 @@ export function reliableMonths(
  * of this function asks "how much do I spend", so every caller moves together.
  * `computeMonthlySpendingBasis` carries the gross figure and the refund effect
  * for a surface that needs to explain the difference.
+ *
+ * ⚠️ IT DOES NOT ROUTE THROUGH `meanPerReliableMonth`, AND THAT IS DELIBERATE.
+ * Both average over the SAME month population (`reliableMonths`); this one
+ * clamps each month's net at 0 before averaging, which is the refund authority's
+ * rule and lives with it. Routing it through the generic helper would put a
+ * second copy of that rule here.
  */
-
 export function computeAverageMonthlySpending(
   txn: TransactionsSummaryData | null,
 ): number | null {
@@ -289,9 +351,10 @@ export function computeMonthlySpendingBasis(
   return meanMonthlyEconomicSpend(reliableMonths(txn));
 }
 
+
 /**
  * M1 — the single authoritative monthly-INCOME figure, over the SAME reliable
- * months as spending. Replaces `incomeTotal / windowDays × 30`, which normalised
+ * months as spending. Replaces the day-normalised window total, which divided
  * a 90-day window by days while spending was a calendar-month mean — so the two
  * figures the Brief printed side by side were on different bases, and a window
  * holding seven biweekly paychecks read as a higher "monthly" income than any
@@ -301,10 +364,34 @@ export function computeMonthlySpendingBasis(
 export function computeAverageMonthlyIncome(
   txn: TransactionsSummaryData | null,
 ): number | null {
-  const months = reliableMonths(txn);
-  if (months.length === 0) return null;
-  const total = months.reduce((s, m) => s + m.incomeTotal, 0);
-  return Math.round((total / months.length) * 100) / 100;
+  return meanPerReliableMonth(txn, (m) => m.incomeTotal);
+}
+
+/**
+ * post-M1 D1 — mean OBSERVED card-and-debt payment flow per reliable month: the
+ * debt-payment authority's counted CASH legs (`MonthlyBreakdownEntry.
+ * debtPaymentTotal`), over the SAME months as the income and spending figures it
+ * is printed beside. Replaces the last day-normalised money figure in the
+ * assessment. Agrees with `measure_flows(cardAndDebtPayments).perCompleteMonth`
+ * over the same months.
+ *
+ * Null when no reliable month exists. ZERO when the reliable months hold no
+ * payment — a measurement ("none observed"), where the old figure said null.
+ *
+ * ⚠️ This is ONE of four quantities that share the words "monthly debt payment",
+ * and it must never stand in for the other three:
+ *   1. THIS — observed historical flow. It includes card payments that merely
+ *      settle purchases already counted in spending, so it is NOT debt burden
+ *      and must never be added to, or subtracted alongside, monthly expenses
+ *      (see lib/transactions/debt-service.ts for the part that is real paydown).
+ *   2. Σ stated minimums now — lib/debt/aggregates.ts. The contractual floor.
+ *   3. The payoff planner's chosen payment — lib/debt/payoff.ts. A user budget.
+ *   4. L1's projected minimums — lib/ai/conversation/scenario-ledger.ts. A forecast.
+ */
+export function computeAverageMonthlyDebtPayments(
+  txn: TransactionsSummaryData | null,
+): number | null {
+  return meanPerReliableMonth(txn, (m) => m.debtPaymentTotal);
 }
 
 /**
