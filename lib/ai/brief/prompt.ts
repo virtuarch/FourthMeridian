@@ -18,6 +18,7 @@
  * the model where to read them.
  */
 
+import { outOfDateNames } from './claim-evidence';
 import type { BriefPackage } from './types';
 
 export const BRIEF_SYSTEM_PROMPT = `You write the Daily Brief for Fourth Meridian: a short, calm note, like a trusted chief of staff, about what deserves the user's attention today in one financial Space.
@@ -76,10 +77,10 @@ TONE
  */
 export function modelView(pkg: BriefPackage): unknown {
   if (!pkg.claimEvidence) return pkg;
-  const since = new Map((pkg.freshness?.staleSources ?? []).map((s) => [s.label, s.lastUpdated]));
+  // Each NAME once per claim, from the claim's own per-source components — never a
+  // label looked up in the Space-wide list (two "Chase" items are one "Chase").
   const claimEvidence = Object.fromEntries(Object.entries(pkg.claimEvidence).map(([claim, e]) => {
-    const behind = Object.entries(e!.completeness.byComponent ?? {}).filter(([, tier]) => tier !== 'observed')
-      .map(([source]) => ({ source, lastUpdated: since.get(source) ?? null }));
+    const behind = outOfDateNames(e!);
     return [claim, { covers: e!.covers, tier: e!.completeness.tier, ...(behind.length > 0 ? { outOfDate: behind } : {}) }];
   }));
   const { freshness: _spaceWide, ...rest } = pkg;

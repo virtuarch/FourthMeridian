@@ -12,7 +12,9 @@
  */
 
 import type { DataSourceView, SpaceDataHealth } from '@/lib/connections/space-data-health.core';
-import { CLAIM_SPECS, claimCovering, claimEvidence, claimsAffectedBy } from './claim-evidence';
+import { CLAIM_SPECS, claimCovering, claimEvidence, claimsReachedBy, outOfDateNames } from './claim-evidence';
+import { modelView } from './prompt';
+import { basePackage } from './fixtures';
 import { BRIEF_CLAIMS } from './types';
 
 let failures = 0;
@@ -29,10 +31,11 @@ const health = (sources: DataSourceView[]): SpaceDataHealth =>
   ({ sources, groups: [], attention: sources.filter((s) => s.needsAttention).length });
 
 const SCHWAB_STALE = source('Charles Schwab', ['investments'],
-  { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-08-17T23:41:39.000Z' });
+  { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-08-10T09:15:00.000Z' });
 const CHASE = source('Chase', ['liquid', 'liabilities', 'bankingRows']);
 const AMEX = source('American Express', ['liabilities', 'bankingRows']);
 const WALLET = source('Ledger Wallet', ['digitalAssets'], { kind: 'WALLET' });
+const SCOPE = { asOf: ASOF, bankingPopulationKnown: true };
 const evidenceOf = (sources: DataSourceView[], bankingPopulationKnown = true) =>
   claimEvidence({ health: health(sources), asOf: ASOF, bankingPopulationKnown })!;
 
@@ -48,13 +51,16 @@ console.log('1. the forensic Space — a stale brokerage, current cards');
   check('digital assets: the wallet, observed — a brokerage is not a wallet', e.digitalAssets?.completeness.tier === 'observed');
   check('investments: incomplete, and says which source and since when',
     e.investments?.completeness.tier === 'incomplete' && e.investments.completeness.byComponent?.['Charles Schwab'] === 'incomplete'
-      && /Charles Schwab \(NEEDS_RECONNECT, last updated 2026-08-17\)/.test(e.investments.completeness.reason));
+      && /Charles Schwab \(NEEDS_RECONNECT, last updated 2026-08-10\)/.test(e.investments.completeness.reason));
   check('investment concentration (priced positions): incomplete', e.pricedPositions?.completeness.tier === 'incomplete');
   check('net worth: every population contributes, so the same source qualifies it',
     e.netWorth?.sources === 4 && e.netWorth.completeness.tier === 'incomplete');
   check('exactly the claims the source feeds are affected — three of seven, not "the Space"',
-    JSON.stringify(claimsAffectedBy('Charles Schwab', e)) === '["netWorth","investments","pricedPositions"]');
-  check('a current source affects nothing', claimsAffectedBy('Chase', e).length === 0);
+    JSON.stringify(claimsReachedBy(SCHWAB_STALE, SCOPE)) === '["netWorth","investments","pricedPositions"]');
+  check('a current source affects nothing', claimsReachedBy(CHASE, SCOPE).length === 0);
+  check('the per-source components list every source of a claim that is behind, one entry each',
+    JSON.stringify(e.investments?.components) === '[{"label":"Charles Schwab","tier":"incomplete","state":"NEEDS_RECONNECT","lastUpdated":"2026-08-10"}]'
+      && e.netWorth?.components?.length === 4 && e.debt?.components === undefined);
 }
 
 console.log('\n2. the mirror image — a stale card, a current brokerage');
@@ -69,6 +75,57 @@ console.log('\n2. the mirror image — a stale card, a current brokerage');
     [e.investments, e.digitalAssets, e.pricedPositions, e.liquid].every((c) => c?.completeness.tier === 'observed'));
   check('byComponent lists every source of the claim, the current one included (M1)',
     JSON.stringify(e.debt?.completeness.byComponent) === '{"Chase":"observed","American Express":"incomplete"}');
+}
+
+console.log('\n2b. a label is not an identity');
+{
+  // Two Plaid items at ONE institution: the card item needs reconnecting, the
+  // checking item is current. Source health sorts most-severe first, so the
+  // current "Chase" comes LAST — and, keyed by label, used to overwrite the stale one.
+  const chaseCards = source('Chase', ['liabilities', 'bankingRows'],
+    { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-09-03T04:00:00.000Z' });
+  const chaseChecking = source('Chase', ['liquid', 'bankingRows']);
+  const e = evidenceOf([chaseCards, chaseChecking, WALLET]);
+  check('the debt claim is incomplete AND its evidence says which source — the stale Chase is not erased',
+    e.debt?.completeness.tier === 'incomplete' && e.debt.completeness.byComponent?.Chase === 'incomplete');
+  check('where both Chase items feed one claim, the label summary holds the WORST tier, never the last written',
+    e.cashFlow?.completeness.tier === 'incomplete' && JSON.stringify(e.cashFlow.completeness.byComponent) === '{"Chase":"incomplete"}'
+      && e.netWorth?.completeness.byComponent?.Chase === 'incomplete');
+  check('…and the per-source components keep BOTH, in order, label as a value',
+    JSON.stringify(e.cashFlow?.components?.map((c) => [c.label, c.tier])) === '[["Chase","incomplete"],["Chase","observed"]]');
+  check('the current Chase item\'s own claim is untouched', e.liquid?.completeness.tier === 'observed' && e.liquid.components === undefined);
+  check('what each source reaches is computed from the SOURCE: the stale item reaches debt, cash flow and net worth; its namesake nothing',
+    JSON.stringify(claimsReachedBy(chaseCards, SCOPE)) === '["netWorth","debt","cashFlow"]' && claimsReachedBy(chaseChecking, SCOPE).length === 0);
+  check('the reader is told "Chase" ONCE, and that it is out of date',
+    JSON.stringify(outOfDateNames(e.cashFlow!)) === '[{"source":"Chase","lastUpdated":"2026-09-03"}]'
+      && JSON.stringify(outOfDateNames(e.debt!)) === '[{"source":"Chase","lastUpdated":"2026-09-03"}]');
+  const view = modelView({ ...basePackage(), claimEvidence: e }) as { claimEvidence: Record<string, { tier: string; outOfDate?: unknown }> };
+  check('…which is exactly what the model\'s view carries — never an incomplete tier with nobody named',
+    JSON.stringify(view.claimEvidence.debt.outOfDate) === '[{"source":"Chase","lastUpdated":"2026-09-03"}]'
+      && Object.values(view.claimEvidence).every((c) => c.tier === 'observed' || Array.isArray(c.outOfDate)));
+
+  // Two sources the viewer may not name: both are "A bank connection".
+  const anonStale = source('A bank connection', ['investments'],
+    { state: 'OUT_OF_DATE', needsAttention: true, lastUpdatedAt: '2026-08-28T00:00:00.000Z' });
+  const anonCurrent = source('A bank connection', ['liquid', 'liabilities', 'bankingRows']);
+  const a = evidenceOf([anonStale, anonCurrent]);
+  check('two anonymous sources: the stale one still marks investments and net worth, by position not by name',
+    a.investments?.completeness.tier === 'incomplete' && a.netWorth?.completeness.byComponent?.['A bank connection'] === 'incomplete'
+      && JSON.stringify(a.netWorth?.components?.map((c) => c.tier)) === '["incomplete","observed"]'
+      && JSON.stringify(claimsReachedBy(anonStale, SCOPE)) === '["netWorth","investments","pricedPositions"]');
+  check('…and the anonymous CURRENT source\'s claims stay observed', [a.debt, a.liquid, a.cashFlow].every((c) => c?.completeness.tier === 'observed'));
+
+  const bothStale = evidenceOf([chaseCards, source('Chase', ['liquid', 'bankingRows'],
+    { state: 'OUT_OF_DATE', needsAttention: true, lastUpdatedAt: '2026-08-30T00:00:00.000Z' })]);
+  check('two stale sources under one name are named once, with the OLDEST date',
+    JSON.stringify(outOfDateNames(bothStale.cashFlow!)) === '[{"source":"Chase","lastUpdated":"2026-08-30"}]');
+  const neverAndStale = evidenceOf([chaseCards, source('Chase', ['liquid', 'bankingRows'],
+    { state: 'NEVER_UPDATED', needsAttention: true, lastUpdatedAt: null })]);
+  check('…and "never" outranks any date', outOfDateNames(neverAndStale.cashFlow!)[0].lastUpdated === null
+    && neverAndStale.cashFlow?.completeness.byComponent?.Chase === 'unknown');
+  check('whenever a claim is not observed, at least one component is not observed (the invariant the collision broke)',
+    [e, a, bothStale, neverAndStale].every((ev) => Object.values(ev).every((c) =>
+      c!.completeness.tier === 'observed' || (c!.components ?? []).some((x) => x.tier !== 'observed'))));
 }
 
 console.log('\n3. M1\'s gap rule: behind AND not delivered up to the day the figure is for');

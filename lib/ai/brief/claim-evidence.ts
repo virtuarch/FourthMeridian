@@ -27,6 +27,16 @@
  * below is the whole mapping. The model is told which entry covers which path
  * (`covers`) and never decides what a figure depends on.
  *
+ * ⚠️ A LABEL IS NOT AN IDENTITY. Two Plaid items at one institution are both
+ * "Chase"; every source the viewer may not name is "A bank connection" or "A
+ * crypto wallet". Keyed by label, the CURRENT one overwrote the STALE one (sources
+ * sort most-severe first) and a claim came out `incomplete` with every component
+ * `observed`, no source named, and the stale row affecting nothing. So nothing
+ * here looks a source up by its label: a claim lists one `components` entry PER
+ * SOURCE (position is identity, label is a value), what a source reaches is
+ * computed from the source itself (`claimsReachedBy`), and M1's label-keyed
+ * `byComponent` summary takes the WORST tier among sources sharing a label.
+ *
  * ⚠️ NOT ESTABLISHED IS NOT STALE. When the source health could not be read, or
  * carried no populations, there is no evidence block at all; when no source
  * feeds a population (or the banking population was not read), that claim has no
@@ -40,7 +50,7 @@ import type { Completeness, Tier } from '@/lib/ai/measures/measure';
 import type {
   DataSourceView, FedPopulation, SpaceDataHealth,
 } from '@/lib/connections/space-data-health.core';
-import { BRIEF_CLAIMS, type BriefClaim, type BriefClaimEvidence } from './types';
+import { BRIEF_CLAIMS, type BriefClaim, type BriefClaimComponent, type BriefClaimEvidence } from './types';
 
 interface ClaimSpec {
   /** What the figures were computed over — a name for the reader, not a rule. */
@@ -127,26 +137,57 @@ export function claimEvidence(i: ClaimEvidenceInput): Partial<Record<BriefClaim,
     if (contributing.length === 0) continue;
 
     const gaps = contributing.filter((s) => isGap(s, i.asOf));
+    // One entry per SOURCE — never collapsed by label.
+    const components: BriefClaimComponent[] = contributing.map((s) => ({
+      label: s.label, tier: isGap(s, i.asOf) ? tierOf(s) : 'observed', state: s.state, lastUpdated: day(s.lastUpdatedAt) }));
     const completeness: Completeness = gaps.length === 0
       ? { tier: 'observed', reason: `every source of this figure (${contributing.length}) delivered up to ${i.asOf}` }
-      : { tier: gaps.map(tierOf).reduce<Tier>((w, t) => (RANK[t] > RANK[w] ? t : w), 'observed'),
+      : { tier: worst(gaps.map(tierOf)),
           reason: `${gaps.map(describe).join(', ')} ${gaps.length === 1 ? 'feeds' : 'feed'} this figure and `
             + `${gaps.length === 1 ? 'has' : 'have'} not delivered up to ${i.asOf}`,
-          byComponent: Object.fromEntries(contributing.map((s) => [s.label, isGap(s, i.asOf) ? tierOf(s) : 'observed' as Tier])) };
+          byComponent: worstTierByLabel(components) };
 
-    out[claim] = { covers: [...spec.covers], population: spec.population, sources: contributing.length, completeness };
+    out[claim] = { covers: [...spec.covers], population: spec.population, sources: contributing.length, completeness,
+      ...(gaps.length > 0 ? { components } : {}) };
   }
   return out;
 }
 
-/** The claims one stale source actually reaches — the inverse projection of the block above. */
-export function claimsAffectedBy(
-  label: string, evidence: Partial<Record<BriefClaim, BriefClaimEvidence>>,
-): BriefClaim[] {
-  return BRIEF_CLAIMS.filter((c) => {
-    const tier = evidence[c]?.completeness.byComponent?.[label];
-    return tier !== undefined && tier !== 'observed';
-  });
+const worst = (tiers: Tier[]): Tier => tiers.reduce<Tier>((w, t) => (RANK[t] > RANK[w] ? t : w), 'observed');
+
+/** M1's label-keyed summary: sources sharing a label collapse to their WORST tier, never the last one written. */
+function worstTierByLabel(components: readonly BriefClaimComponent[]): Record<string, Tier> {
+  const out: Record<string, Tier> = {};
+  for (const c of components) out[c.label] = c.label in out ? worst([out[c.label], c.tier]) : c.tier;
+  return out;
+}
+
+/**
+ * The claims ONE source's staleness actually reaches — the inverse projection of
+ * the block above, computed from the source itself (what it feeds, whether it is
+ * a gap), never by looking its label up in another structure.
+ */
+export function claimsReachedBy(source: DataSourceView, i: Omit<ClaimEvidenceInput, 'health'>): BriefClaim[] {
+  if (!isGap(source, i.asOf)) return [];
+  return BRIEF_CLAIMS.filter((c) => !(c === 'cashFlow' && !i.bankingPopulationKnown)
+    && (source.feeds ?? []).some((f) => CLAIM_SPECS[c].feeds.includes(f)));
+}
+
+/**
+ * What a reader should be told is out of date for one claim: each distinct NAME
+ * once, with the oldest last update among the behind sources that carry it (null
+ * when any of them never delivered). Two stale "Chase" items are one "Chase".
+ */
+export function outOfDateNames(e: BriefClaimEvidence): { source: string; lastUpdated: string | null }[] {
+  const byName = new Map<string, string | null>();
+  for (const c of e.components ?? []) {
+    if (c.tier === 'observed') continue;
+    const prior = byName.get(c.label);
+    byName.set(c.label, !byName.has(c.label) ? c.lastUpdated
+      : prior === null || c.lastUpdated === null ? null
+      : c.lastUpdated < (prior as string) ? c.lastUpdated : (prior as string));
+  }
+  return [...byName].map(([source, lastUpdated]) => ({ source, lastUpdated }));
 }
 
 /** The evidence entry that governs a package path, or undefined. */

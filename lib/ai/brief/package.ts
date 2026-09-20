@@ -35,7 +35,7 @@ import type {
   SnapshotSectionData, TransactionsSummaryData,
 } from '@/lib/ai/types';
 import type { ClassificationReason, FinancialAssessment } from '@/lib/ai/intelligence';
-import { claimEvidence, claimsAffectedBy } from './claim-evidence';
+import { claimEvidence, claimsReachedBy } from './claim-evidence';
 import type {
   BriefChangeWindow, BriefClassification, BriefDelta, BriefPackage, BriefRecentActivity,
 } from './types';
@@ -233,6 +233,9 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
           balance: a.reportingBalance ?? a.balance,
         })), i.now);
         const stale = staleSourcesForBrief(i.dataHealth ?? null);
+        // The same rows, in the same order, as the sources they were projected
+        // from — so each row's reach is computed from ITS source, never by label.
+        const staleSources = (i.dataHealth?.sources ?? []).filter((s) => s.needsAttention);
         return {
           band: f.anchor.band,
           basis: f.anchor.basis,
@@ -245,8 +248,9 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
           needsReauth: acc.health.needsReauthCount > 0,
           // Each stale source says which claims it reaches — possibly none. The
           // global list is never a licence to qualify a figure it does not feed.
-          ...(stale.length > 0 ? { staleSources: stale.map((s) => ({
-            ...s, ...(evidence ? { affects: claimsAffectedBy(s.label, evidence) } : {}) })) } : {}),
+          ...(stale.length > 0 ? { staleSources: stale.map((s, k) => ({
+            ...s, ...(evidence ? { affects: staleSources[k] ? claimsReachedBy(staleSources[k], {
+              asOf: i.asOf, bankingPopulationKnown: i.bankingPopulationKnown === true }) : [] } : {}) })) } : {}),
         };
       })()
     : undefined;

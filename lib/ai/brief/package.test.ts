@@ -360,6 +360,20 @@ console.log('\n8. claim-scoped evidence — a stale source qualifies only what i
   check('the claim evidence is the first-class citizen of M1\'s contract: tier + reason on every claim',
     Object.values(e).every((c) => typeof c!.completeness.tier === 'string' && typeof c!.completeness.reason === 'string'));
 
+  // A label is not an identity: two items at one institution, the stale one sorted first.
+  const twoChase = projectBriefPackage(inputs({ bankingPopulationKnown: true, dataHealth: { groups: [], attention: 1, sources: [
+    source('Chase', ['liabilities', 'bankingRows'], { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-09-03T04:00:00.000Z' }),
+    source('Chase', ['liquid', 'bankingRows']),
+  ] } }));
+  check('two sources under one name: the stale row\'s `affects` comes from ITS source, not from a label lookup',
+    JSON.stringify(twoChase.freshness?.staleSources) === JSON.stringify([{ label: 'Chase', state: 'NEEDS_RECONNECT',
+      lastUpdated: '2026-09-03', affects: ['netWorth', 'debt', 'cashFlow'] }]));
+  check('…the claim it reaches keeps it marked, and the model\'s view names Chase once as out of date',
+    twoChase.claimEvidence?.cashFlow?.completeness.byComponent?.Chase === 'incomplete'
+      && JSON.stringify((modelView(twoChase) as { claimEvidence: Record<string, { outOfDate?: unknown }> }).claimEvidence.cashFlow.outOfDate)
+        === '[{"source":"Chase","lastUpdated":"2026-09-03"}]'
+      && twoChase.claimEvidence?.liquid?.completeness.tier === 'observed');
+
   const noBanking = projectBriefPackage(inputs({ dataHealth })).claimEvidence!;
   check('banking population not read ⇒ the cash-flow claim has NO entry (not established is not stale)',
     !('cashFlow' in noBanking) && !!noBanking.debt);

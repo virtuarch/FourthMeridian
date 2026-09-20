@@ -109,11 +109,30 @@ export interface BriefClaimEvidence {
   sources:    number;
   /**
    * `reason` names each out-of-date source this claim rests on, with its state and
-   * last update; `byComponent` (present only then) lists every source of the claim
-   * with its tier. The same source's row in `freshness.staleSources` says which
-   * claims it `affects` — one mapping, read from either side.
+   * last update. `byComponent` (present only then) is M1's per-LABEL summary, and a
+   * label is not an identity: two connections at one institution are both "Chase",
+   * every source the viewer may not name is "A bank connection". It therefore
+   * holds the WORST tier among the sources sharing a label — a current "Chase" can
+   * never overwrite a stale one. The per-source truth is `components`.
    */
   completeness: import('@/lib/ai/measures/measure').Completeness;
+  /**
+   * ONE ENTRY PER SOURCE of this claim, in source-health order — identity is the
+   * position, the label is a value. Present only when a source is behind (then
+   * every source is listed, so a reader sees which are fine and which are not).
+   * The same source's row in `freshness.staleSources` says which claims it
+   * `affects` — one mapping, read from either side, and neither side looks a
+   * source up by its label.
+   */
+  components?: BriefClaimComponent[];
+}
+
+export interface BriefClaimComponent {
+  label: string;
+  tier:  import('@/lib/ai/measures/measure').Tier;
+  state: string;
+  /** The day the source last delivered, or null when it never has. */
+  lastUpdated: string | null;
 }
 
 export interface BriefRecentActivity {

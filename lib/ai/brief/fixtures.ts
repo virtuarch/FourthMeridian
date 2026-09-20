@@ -36,7 +36,7 @@ import {
   computeDebtBurden, gradeDebtRate, gradeLiquidityCoverage, liquidityReason, ungradedDebtReason,
 } from '@/lib/ai/intelligence/annotations/classification-reason';
 import type { DataSourceView, SpaceDataHealth } from '@/lib/connections/space-data-health.core';
-import { claimEvidence, claimsAffectedBy } from './claim-evidence';
+import { claimEvidence, claimsReachedBy } from './claim-evidence';
 import type { BriefPackage, ObservationKind } from './types';
 
 export interface BriefScenario {
@@ -152,7 +152,7 @@ export function deriveContract(p: BriefPackage, debt: DebtFacts = DEFAULT_DEBT, 
       p.claimEvidence = evidence;
       const stale = health.sources.filter((x) => x.needsAttention)
         .map((x) => ({ label: x.label, state: x.state, lastUpdated: x.lastUpdatedAt?.slice(0, 10) ?? null,
-          affects: claimsAffectedBy(x.label, evidence) }));
+          affects: claimsReachedBy(x, { asOf: p.identity.asOf, bankingPopulationKnown: true }) }));
       if (p.freshness) {
         if (stale.length > 0) { p.freshness.staleSources = stale; p.freshness.connectionsNeedingAttention = stale.length; }
         else delete p.freshness.staleSources;
