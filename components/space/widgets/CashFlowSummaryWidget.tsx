@@ -39,7 +39,7 @@ import {
 } from "@/lib/transactions/liquidity";
 import { groupLiquidityByReason } from "@/lib/transactions/liquidity-breakdown";
 import { groupCashFlowContext, type CashFlowContext } from "@/lib/transactions/cash-flow-context";
-import { aggregateDayFacts, economicSpend, type CashFlowPerspective, type DayFacts } from "@/lib/transactions/cash-flow-projection";
+import { aggregateDayFacts, economicSpend, economicSpendByTier, type CashFlowPerspective, type DayFacts } from "@/lib/transactions/cash-flow-projection";
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 import { CashFlowFilterControls, DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { TransactionSliceDrawer, useTransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
@@ -204,8 +204,11 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
   // (no second fold); its per-side totals equal facts.cashIn/out by construction.
   const breakdown = groupLiquidityByReason(facts);
   const econSpendTotal = economicSpend(facts);
-  const econCard = Math.min(facts.creditCardSpending, econSpendTotal);
-  const econOther = Math.max(0, econSpendTotal - econCard);
+  // CF-RECON-1 — the parts of Spending come from the fold, each net of the refunds
+  // on its OWN tier. This was `min(cardGross, net)` / `net − that` in React, which
+  // credited every card refund to direct spending (a $27.86 direct line printed as
+  // $0 while the card line absorbed it). Floored excess is disclosed, never moved.
+  const econTier = economicSpendByTier(facts);
   const econNet = facts.income - econSpendTotal;
   // CF-1 — human context projection (presentation only; never feeds Cash In/Out/Net).
   const context = contextProp ?? groupCashFlowContext(rows, liqCtx, ctx);
@@ -250,16 +253,23 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
         rows: rows.filter((r) => isIncome(r.flowType) && r.incomeClass !== "NOT_INCOME"),
       });
     } else if (line.reason === "CARD_SPEND") {
-      setSlice({ title: "Credit-card spending", subtitle: "Bought on credit this period", rows: rows.filter((r) => isCostFlow(r.flowType) && isLiabilityRow(r)) });
+      // Charges AND refunds on card accounts — the rows the net line folded.
+      setSlice({ title: "Credit-card spending", subtitle: "Spending & refunds on credit this period", total: line.amount, totalLabel: "Net",
+        rows: rows.filter((r) => (isCostFlow(r.flowType) || isRefund(r.flowType)) && isLiabilityRow(r)) });
+    } else if (line.reason === "REFUNDS_UNAPPLIED") {
+      setSlice({ title: "Refunds beyond charges", subtitle: "Refunds larger than the charges on the same accounts this period", total: line.amount, totalLabel: "Total",
+        rows: rows.filter((r) => isRefund(r.flowType)) });
     } else {
-      setSlice({ title: "Direct & other spending", subtitle: "Spending & refunds this period", rows: rows.filter((r) => (isCostFlow(r.flowType) || isRefund(r.flowType)) && !isLiabilityRow(r)) });
+      setSlice({ title: "Direct & other spending", subtitle: "Spending & refunds this period", total: line.amount, totalLabel: "Net",
+        rows: rows.filter((r) => (isCostFlow(r.flowType) || isRefund(r.flowType)) && !isLiabilityRow(r)) });
     }
   };
 
   const econInLines:  TileLine[] = [{ reason: "INCOME", label: "Income (bank transactions)", amount: facts.income }].filter((l) => l.amount > 0);
   const econOutLines: TileLine[] = [
-    { reason: "CARD_SPEND",   label: "Credit-card spending",   amount: econCard },
-    { reason: "DIRECT_SPEND", label: "Direct & other spending", amount: econOther },
+    { reason: "CARD_SPEND",        label: "Credit-card spending",    amount: econTier.creditCard },
+    { reason: "DIRECT_SPEND",      label: "Direct & other spending", amount: econTier.direct },
+    { reason: "REFUNDS_UNAPPLIED", label: "Less refunds beyond charges", amount: econTier.refundsUnapplied },
   ].filter((l) => l.amount > 0);
 
   return (
@@ -304,11 +314,13 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
       {/* Credit-card spending is honestly visible in BOTH perspectives: on the
           liquidity axis it is NOT Cash Out (the cash leaves later as a Debt
           payment), so it surfaces here as a context figure that drills into the
-          card cost-flow rows — reconciles with Spending by Category. */}
+          card cost-flow rows. CF-RECON-1 — it is GROSS (what was charged, before
+          refunds, fees included), so it says "Charged", never "Spent": the word
+          "spending" on this page is the NET figure (Spending tile = Total spending). */}
       {!economic && facts.creditCardSpending > 0 && (
         <div className="pt-1 border-t border-[var(--border-hairline)]">
           <ContextRow
-            label="Spent on credit (no cash moved at purchase)"
+            label="Charged on credit (no cash moved at purchase)"
             value={fmt(facts.creditCardSpending, ctx)}
             onOpen={() => setSlice({ title: "Credit-card spending", subtitle: "Bought on credit this period", rows: rows.filter((r) => isCostFlow(r.flowType) && isLiabilityRow(r)) })}
           />

@@ -153,7 +153,8 @@ console.log("7. P2-1B — credit insight is a two-fact statement (no unpaid-bala
   const cCombined = combined.find((i) => i.id === "credit")!;
   check("combined bullet present", !!cCombined);
   check("combined bullet states BOTH facts (on credit + debt payments)",
-    /went on credit this period/.test(cCombined.text) && /of cash went to debt payments/.test(cCombined.text));
+    // CF-RECON-1 — the card figure is GROSS, so it is "charged", never "of spending".
+    /charged to credit this period/.test(cCombined.text) && !/of spending/.test(cCombined.text) && /of cash went to debt payments/.test(cCombined.text));
   check("combined bullet carries the no-subtraction clarifier (earlier periods)",
     /earlier periods/.test(cCombined.text) && /won.t necessarily match/.test(cCombined.text));
   check("combined bullet NEVER implies unpaid balance / subtraction",

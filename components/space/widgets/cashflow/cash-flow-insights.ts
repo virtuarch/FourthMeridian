@@ -223,9 +223,12 @@ export function buildCashFlowInsights(args: {
   //     to the timing-only sentence rather than announcing "$0 of payments".
   if (facts.creditCardSpending > 0) {
     const debtPaid = facts.byReason.DEBT_PAYMENT ?? 0;
+    // CF-RECON-1 — `creditCardSpending` is GROSS (charges before refunds), so the
+    // sentence says "charged", not "of spending": beside a NET Spending figure,
+    // "$9.8k of spending" and "Spending $9.0k" read as one concept disagreeing.
     const text = debtPaid > 0
-      ? `${fmt(facts.creditCardSpending)} of spending went on credit this period, and ${fmt(debtPaid)} of cash went to debt payments. Payments can cover balances from earlier periods, so the two won't necessarily match.`
-      : `${fmt(facts.creditCardSpending)} of spending was charged to credit this period — it counts as spending now; the cash leaves when you pay the balance.`;
+      ? `${fmt(facts.creditCardSpending)} was charged to credit this period, and ${fmt(debtPaid)} of cash went to debt payments. Payments can cover balances from earlier periods, so the two won't necessarily match.`
+      : `${fmt(facts.creditCardSpending)} was charged to credit this period — it counts as spending now; the cash leaves when you pay the balance.`;
     insights.push({ id: "credit", text, tone: "neutral" });
   }
 

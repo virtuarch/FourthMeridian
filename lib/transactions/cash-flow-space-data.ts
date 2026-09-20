@@ -44,12 +44,14 @@ import {
   type CashFlowPeriod,
   type CashFlowContribution,
   type AvailableHistoricalPeriods,
-  outflowByCategory,
+  categorySpendLedger,
+  rankCategorySpend,
   incomeBySource,
   economicTotals,
 } from "@/lib/transactions/cash-flow";
 import {
   aggregateDayFacts,
+  economicSpend,
   projectDailyFacts,
   bucketDayFacts,
   type DayFacts,
@@ -92,6 +94,21 @@ export interface CashFlowSpaceData {
   // ── derived presentation slices (each straight from an authority) ──
   /** Spending by Category (economic outflow). */
   outflowByCategory: CashFlowContribution[];
+  /**
+   * CF-RECON-1 — THE window's spending total, for every surface that prints one.
+   *
+   * `net` is `economicSpend(summary)` — the same figure the Spending tile shows —
+   * so "Total spending" under the category list and the Spending tile are ONE
+   * number, not two computations that usually agree. (The list's total used to be
+   * a React sum of the floored category lines, which exceeds the headline by
+   * exactly `refundsUnapplied` whenever a refund lands in a category with no
+   * matching charge in the window.)
+   *
+   * `refundsUnapplied` is the ledger's disclosure of that gap, so the lines
+   * reconcile to the total on screen: Σ category net − refundsUnapplied = net
+   * (whenever gross ≥ refunds; otherwise net floors at 0 and so do the lines).
+   */
+  spending: CashFlowSpending;
   /** Income by Source (economic income). Presentation grouping by payer LABEL —
    *  not a classification. `income` below is the canonical taxonomy. */
   incomeBySource: CashFlowContribution[];
@@ -129,6 +146,18 @@ export interface CashFlowSpaceData {
    * authority that produces the headline figures, so flag and figures agree.
    */
   unconverted: boolean;
+}
+
+/** CF-RECON-1 — the window's spending figures, each straight from an authority. */
+export interface CashFlowSpending {
+  /** Net economic spending — `economicSpend(summary)`. THE "Total spending". */
+  net: number;
+  /** Gross cost flows charged in the window — `summary.spendGross` ("charged"). */
+  gross: number;
+  /** Refunds dated in the window — `summary.refunds`. */
+  refunds: number;
+  /** Σ categorySpendLedger `refundsUnapplied` — refunds beyond their category's charges. */
+  refundsUnapplied: number;
 }
 
 /** Converted absolute magnitude of a row at its own date; absent ctx ⇒ raw abs.
@@ -176,6 +205,9 @@ export function buildCashFlowSpaceData(input: {
 
   const summary = aggregateDayFacts(rows, liqCtx, moneyCtx);
   const breakdown = groupLiquidityByReason(summary);
+  // CF-RECON-1 — the category ledger is folded ONCE: its ranking feeds the list and
+  // its `refundsUnapplied` feeds the disclosure beside the ONE spending total.
+  const spendLedger = categorySpendLedger(windowed, moneyCtx);
 
   // v2.6-TRUTH-7 — the counted leg comes from the ONE debt-payment authority. This
   // was a third inline copy of the predicate; the widget had a fourth, and
@@ -208,7 +240,13 @@ export function buildCashFlowSpaceData(input: {
     summary,
     daily: projectDailyFacts(rows, liqCtx, moneyCtx),
     buckets: bucketDayFacts(rows, liqCtx, period, moneyCtx),
-    outflowByCategory: outflowByCategory(windowed, moneyCtx),
+    outflowByCategory: rankCategorySpend(spendLedger),
+    spending: {
+      net: economicSpend(summary),
+      gross: summary.spendGross,
+      refunds: summary.refunds,
+      refundsUnapplied: spendLedger.reduce((s, l) => s + l.refundsUnapplied, 0),
+    },
     cashInByReason: breakdown.cashIn,
     // v2.6-TRUTH-9 — grouped by CREDITOR ACCOUNT, from the same account graph the
     // tier resolver uses. A payment whose creditor cannot be named lands in one

@@ -49,6 +49,8 @@ interface ColoredItem extends CashFlowContribution {
 
 export function CashFlowCategoryLedger({
   items,
+  total,
+  adjustment,
   ctx,
   totalLabel = "Total spending",
   browserTitle,
@@ -65,6 +67,20 @@ export function CashFlowCategoryLedger({
   topN = DEFAULT_TOP_N,
 }: {
   items:          CashFlowContribution[];   // descending, value > 0
+  /**
+   * CF-RECON-1 — the headline total, FROM THE AUTHORITY that owns it (the
+   * contract's `spending.net`, the income rollup's `broad`, `summary.cashIn`).
+   * Never summed here: a React sum of floored category lines is a second
+   * definition of "Total spending", and it disagreed with the Spending tile by
+   * every refund that landed in a category with no charge in the window.
+   */
+  total:          number;
+  /**
+   * CF-RECON-1 — the disclosed reconciling line between the listed items and
+   * `total` (e.g. refunds with no matching purchase in the window), so the lines
+   * on screen add up to the total on screen. Omitted / ≤ 0 ⇒ nothing rendered.
+   */
+  adjustment?:    { label: string; value: number } | null;
   ctx?:           ConversionContext;
   totalLabel?:    string;
   /** Panel header title, e.g. "Spending categories" / "Income sources". */
@@ -101,11 +117,13 @@ export function CashFlowCategoryLedger({
   const aggregateCurrency = useAggregateCurrency(ctx);
   const fmt = (v: number) => formatCurrency(v, aggregateCurrency);
 
-  const total = items.reduce((s, c) => s + c.value, 0);
+  // Proportions only — the SHARE of each listed line among the listed lines (bar
+  // widths, "% of spending"). Never printed as money; the printed total is `total`.
+  const shareBase = items.reduce((s, c) => s + c.value, 0);
 
   const colored: ColoredItem[] = useMemo(
-    () => items.map((c, i) => ({ ...c, color: PALETTE[i % PALETTE.length], pct: total > 0 ? (c.value / total) * 100 : 0 })),
-    [items, total],
+    () => items.map((c, i) => ({ ...c, color: PALETTE[i % PALETTE.length], pct: shareBase > 0 ? (c.value / shareBase) * 100 : 0 })),
+    [items, shareBase],
   );
 
   const selected = selectedId ? colored.find((c) => c.id === selectedId) ?? null : null;
@@ -116,7 +134,7 @@ export function CashFlowCategoryLedger({
     return colored.filter((c) => c.label.toLowerCase().includes(q));
   }, [colored, query]);
 
-  if (items.length === 0 || total <= 0) {
+  if (items.length === 0 || shareBase <= 0) {
     return (
       <div className="py-5 space-y-1 text-center">
         <p className="text-sm text-[var(--text-secondary)]">{emptyHeadline}</p>
@@ -141,6 +159,11 @@ export function CashFlowCategoryLedger({
         <span className="text-[11px] uppercase tracking-wide text-[var(--text-faint)]">{totalLabel}</span>
         <span className="text-sm font-semibold tabular-nums text-[var(--text-primary)]">{fmt(total)}</span>
       </div>
+      {adjustment && adjustment.value > 0 && (
+        <p className="-mt-2 text-[11px] text-[var(--text-faint)]">
+          {adjustment.label} <span className="tabular-nums">−{fmt(adjustment.value)}</span>
+        </p>
+      )}
 
       {/* Allocation strip — the Cash Flow composition-at-a-glance (identity signal). */}
       <div className="flex h-2.5 w-full overflow-hidden rounded-full" style={{ background: "var(--surface-inset)" }}>
@@ -204,7 +227,7 @@ export function CashFlowCategoryLedger({
               <CashFlowCategoryDetail
                 label={selected.label}
                 value={selected.value}
-                total={total}
+                total={shareBase}
                 color={selected.color}
                 rows={sliceFor(selected)}
                 ctx={ctx}

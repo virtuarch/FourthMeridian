@@ -240,6 +240,11 @@ export function CashFlowWorkspace({
       <CashFlowCategoryLedger
         invalidationKey={periodKey(period)}
         items={data.outflowByCategory}
+        // CF-RECON-1 — THE window's spending total (economicSpend(summary), the
+        // Spending tile's figure), plus the refunds that no listed category could
+        // absorb, so the lines reconcile to it on screen.
+        total={data.spending.net}
+        adjustment={{ label: "Net of refunds with no matching purchase in this period", value: data.spending.refundsUnapplied }}
         ctx={txCtx}
         totalLabel="Total spending"
         browserTitle="Spending categories"
@@ -273,6 +278,7 @@ export function CashFlowWorkspace({
             id: l.reason, label: l.label, value: l.amount,
             transactionIds: cashInIds.get(l.reason) ?? [],
           }))}
+          total={data.summary.cashIn}
           ctx={txCtx}
           totalLabel="Total cash in"
           browserTitle="Cash in by source"
@@ -299,6 +305,7 @@ export function CashFlowWorkspace({
         items={data.income.lines.map((l) => ({
           id: l.incomeClass, label: l.label, value: l.amount, transactionIds: l.rowIds,
         }))}
+        total={data.income.broad}
         ctx={txCtx}
         totalLabel="Total income (bank transactions)"
         browserTitle="Income sources"

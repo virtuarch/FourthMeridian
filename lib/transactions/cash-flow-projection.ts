@@ -114,6 +114,15 @@ export interface DayFacts {
    */
   creditCardSpending: number;
   directSpending:     number;  // cost flow charged to a NON-liability account (⊂ spendGross)
+  /**
+   * CF-RECON-1 — the SAME tier split, applied to `refunds`: a REFUND landing on a
+   * liability-tier account vs any other account. `creditCardRefunds + directRefunds
+   * === refunds`. Without it the only way to show "credit-card spending" NET was a
+   * guess in React (`min(cardGross, netSpend)`), which credited every card refund
+   * to direct spending instead. Read through `economicSpendByTier`, never directly.
+   */
+  creditCardRefunds:  number;
+  directRefunds:      number;
   cashWithdrawals:    number;  // physical-cash withdrawals (⊄ cashOut, ⊄ spend)
 }
 
@@ -126,7 +135,7 @@ export interface DayFacts {
 const NEUTRAL_CONTEXT_REASONS = new Set<LiquidityReason>(["INTERNAL_TRANSFER", "ASSET_CONVERSION", "NON_CASH"]);
 
 function emptyFacts(): DayFacts {
-  return { cashIn: 0, cashOut: 0, unresolved: 0, byReason: {}, income: 0, spendGross: 0, refunds: 0, creditCardSpending: 0, directSpending: 0, cashWithdrawals: 0 };
+  return { cashIn: 0, cashOut: 0, unresolved: 0, byReason: {}, income: 0, spendGross: 0, refunds: 0, creditCardSpending: 0, directSpending: 0, creditCardRefunds: 0, directRefunds: 0, cashWithdrawals: 0 };
 }
 
 // V25-FINAL-1 — `null` when the row's conversion is UNAVAILABLE (no rate); the
@@ -163,6 +172,11 @@ function foldDayFacts(acc: DayFacts, t: LiquidityTx, liqCtx: LiquidityContext, m
   if (isCostFlow(ft)) {
     if (liqCtx.tierOf(t.financialAccountId ?? t.accountId ?? null) === "liability") acc.creditCardSpending += amt;
     else acc.directSpending += amt;
+  } else if (isRefund(ft)) {
+    // CF-RECON-1 — mirrors foldEconomicRow's refund branch exactly (cost first,
+    // then refund), so the two refund tiers always partition `refunds`.
+    if (liqCtx.tierOf(t.financialAccountId ?? t.accountId ?? null) === "liability") acc.creditCardRefunds += amt;
+    else acc.directRefunds += amt;
   }
 
   // ── Physical cash (form change, Part 5) — CASH_MOVEMENT disposition, out ──
@@ -228,6 +242,38 @@ export interface PerspectiveTotals {
  *  clamp authority (clampEconomicSpend) shared with economicTotals. */
 export function economicSpend(f: DayFacts): number {
   return clampEconomicSpend(f.spendGross, f.refunds);
+}
+
+/**
+ * CF-RECON-1 — economic spending split by WHERE it was charged, each part NET of
+ * the refunds that landed on the same tier. The parts of the one "Spending" figure:
+ *
+ *     creditCard       max(0, card cost flows − refunds on card accounts)
+ *     direct           max(0, other cost flows − refunds on other accounts)
+ *     refundsUnapplied refunds exceeding their own tier's charges (floored away)
+ *
+ * Same rule as categorySpendLedger (a part never costs less than nothing, and the
+ * floored excess is DISCLOSED rather than moved to another part), so the identity
+ *
+ *     creditCard + direct − refundsUnapplied === spendGross − refunds
+ *
+ * holds, and whenever that is ≥ 0 it IS `economicSpend(f)`. A card refund reduces
+ * card spending — never direct spending, which is what `min(cardGross, net)` did.
+ */
+export interface EconomicSpendByTier {
+  creditCard:       number;
+  direct:           number;
+  refundsUnapplied: number;
+}
+
+export function economicSpendByTier(f: DayFacts): EconomicSpendByTier {
+  const cardRefunds   = Number.isFinite(f.creditCardRefunds) ? f.creditCardRefunds : 0;
+  const directRefunds = Number.isFinite(f.directRefunds) ? f.directRefunds : 0;
+  return {
+    creditCard:       clampEconomicSpend(f.creditCardSpending, cardRefunds),
+    direct:           clampEconomicSpend(f.directSpending, directRefunds),
+    refundsUnapplied: Math.max(0, cardRefunds - f.creditCardSpending) + Math.max(0, directRefunds - f.directSpending),
+  };
 }
 
 /** Collapse a `DayFacts` to the selected perspective's in/out/net.

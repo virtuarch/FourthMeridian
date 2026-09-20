@@ -640,7 +640,13 @@ export function categorySpendLedger(transactions: Transaction[], ctx?: Conversio
  *  descending. Refunds reduce their category's total (clamped ≥ 0). A projection
  *  of categorySpendLedger — the ledger is the arithmetic, this is the ranking. */
 export function outflowByCategory(transactions: Transaction[], ctx?: ConversionContext): CashFlowContribution[] {
-  return categorySpendLedger(transactions, ctx)
+  return rankCategorySpend(categorySpendLedger(transactions, ctx));
+}
+
+/** The ranking step of outflowByCategory, over a ledger already built — so a caller
+ *  that also needs the ledger's `refundsUnapplied` folds the rows ONCE. */
+export function rankCategorySpend(ledger: readonly CategorySpendLine[]): CashFlowContribution[] {
+  return ledger
     .map((l): CashFlowContribution => ({
       id: l.category, label: l.category, value: l.net,
       transactionIds: l.transactionIds,
