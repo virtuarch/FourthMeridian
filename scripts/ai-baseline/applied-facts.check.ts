@@ -183,20 +183,30 @@ async function main() {
   const scratch = await db.space.create({ data: { name: TAG, type: 'PERSONAL', category: 'PERSONAL',
     members: { create: [{ userId: scratchUser.id, role: 'OWNER' }] } } });
   try {
-    const written = await checkpointProjection({ spaceId: scratch.id, asOfISO: ASOF, spaceCtx: { userId: scratchUser.id } },
-      'project_cash', withProse);
+    const scratchCtx = { spaceId: scratch.id, asOfISO: ASOF, spaceCtx: { userId: scratchUser.id } };
+    // ⚠️ MEMORY V2 — CHECKPOINT NARROWING. A projection resting on a figure the user
+    // STATED is a hypothetical, and a hypothetical is not a durable statement of
+    // ours: it is not recorded at all. That closes the prose route by construction
+    // — there is no row for a "$15k bonus" sentence to ride in on.
+    const stated = await checkpointProjection(scratchCtx, 'project_cash', withProse);
+    check('a projection resting on a user-stated figure is NOT checkpointed',
+      stated === null && (await db.spaceMemory.count({ where: { spaceId: scratch.id } })) === 0,
+      `${JSON.stringify(stated)}, ${await db.spaceMemory.count({ where: { spaceId: scratch.id } })} row(s)`);
+    // The evidence-based projection IS recorded — exactly one row, the figure it
+    // stated, for the horizon it stated it for, resting on no user assumption.
+    const written = await checkpointProjection(scratchCtx, 'project_cash', base);
     const rows = await db.spaceMemory.findMany({ where: { spaceId: scratch.id } });
     const row = rows[0] as { kind?: string; subject?: string; payload?: { value?: number; horizon?: string;
       basis?: { userAssumptions?: unknown[]; spendingSource?: string } } } | undefined;
     const payload = JSON.stringify(row?.payload ?? {});
-    check('a checkpoint was written (the path is live) — exactly one, for this horizon',
+    check('an evidence-based projection IS checkpointed (the path is live) — exactly one, for this horizon',
       rows.length === 1 && row?.kind === 'CHECKPOINT' && written?.subject === `liquid-${TO}` && row?.subject === `liquid-${TO}`,
       `${rows.length} row(s), ${row?.subject}`);
     check('…holding the figure the projection stated, and the horizon it stated it for',
-      row?.payload?.value === withProse.projection!.endingCash && row?.payload?.horizon === TO, String(row?.payload?.value));
-    check('its basis.userAssumptions is the applied override and nothing else',
-      JSON.stringify(row?.payload?.basis?.userAssumptions) === JSON.stringify(withProse.appliedUserFacts)
-        && withProse.appliedUserFacts.length === 1 && row?.payload?.basis?.spendingSource === 'USER_STATED', payload.slice(0, 200));
+      row?.payload?.value === base.projection!.endingCash && row?.payload?.horizon === TO, String(row?.payload?.value));
+    check('…resting on observed spending and no user assumption',
+      row?.payload?.basis?.spendingSource !== 'USER_STATED'
+        && (row?.payload?.basis?.userAssumptions ?? []).length === 0, payload.slice(0, 200));
     check('…so it carries no bonus prose', !/bonus/i.test(payload), payload.slice(0, 200));
     check('…and no $15k', !/15,?000|15k/i.test(payload));
   } finally {
