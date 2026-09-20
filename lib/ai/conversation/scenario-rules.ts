@@ -39,7 +39,7 @@
  * this module only reports it.
  */
 
-import type { DatedMovement, LedgerResult } from './scenario-ledger';
+import type { DatedMovement, LedgerResult, AllocationTarget } from './scenario-ledger';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -60,6 +60,27 @@ export const CONTRIBUTION_KEYS = [
 export function unknownKeys(raw: Record<string, unknown>, known: readonly string[]): string[] {
   const set = new Set<string>(known);
   return Object.keys(raw).filter((k) => !set.has(k) && raw[k] !== undefined);
+}
+
+/**
+ * The WORDS a `target` may be, in the one place anything outside the ledger reads
+ * them from. The ledger's third form, `{ liability: id }`, is an identifier and
+ * not a word — ids churn when a connection is re-linked, so nothing durable keeps one.
+ *
+ * ⚠️ TIED TO THE LEDGER'S OWN TYPE BY THE COMPILER, because the ledger is
+ * import-free and cannot read this constant: `satisfies` refuses a word the
+ * ledger's `AllocationTarget` does not have, and `_EveryTargetWord` refuses to
+ * compile if the ledger gains a word this list lacks.
+ */
+type TargetWord = Extract<AllocationTarget, string>;
+export const ALLOCATION_TARGET_WORDS = ['investments', 'highest_apr'] as const satisfies readonly TargetWord[];
+export type AllocationTargetWord = typeof ALLOCATION_TARGET_WORDS[number];
+type _EveryTargetWord = [TargetWord] extends [AllocationTargetWord] ? true : never;
+const _everyTargetWord: _EveryTargetWord = true;
+
+/** Is this value one of the contract's target words? */
+export function isAllocationTargetWord(t: unknown): t is AllocationTargetWord {
+  return typeof t === 'string' && (ALLOCATION_TARGET_WORDS as readonly string[]).includes(t);
 }
 
 /** The keys on a raw contribution that the contract does not define. */

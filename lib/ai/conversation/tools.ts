@@ -78,7 +78,7 @@ import {
   type LiabilityLine, type AllocationTarget,
 } from './scenario-ledger';
 import {
-  clausesInForce, contributionName, outflowName, unknownContributionKeys,
+  clausesInForce, contributionName, outflowName, unknownContributionKeys, isAllocationTargetWord,
   refuseUnknownArguments, refuseUnknownItemKeys, notAppliedEcho, type RefusedInput,
 } from './scenario-rules';
 import type { SpaceContext } from '@/lib/space';
@@ -2123,7 +2123,7 @@ async function prepareScenario(
     // ordered list; the ledger takes `{ liability: id }` objects. Anything else
     // is passed through so the ledger refuses it by name.
     const toTarget = (t: unknown): AllocationTarget => {
-      if (t === 'investments' || t === 'highest_apr') return t;
+      if (isAllocationTargetWord(t)) return t;
       if (typeof t === 'string') return { liability: t };
       if (t && typeof t === 'object' && typeof (t as { liability?: unknown }).liability === 'string') {
         return { liability: (t as { liability: string }).liability };

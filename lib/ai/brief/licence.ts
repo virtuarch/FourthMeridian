@@ -27,71 +27,18 @@
  * exists to stop.
  */
 
-export type FigureKind = 'MONEY' | 'PERCENT' | 'NUMBER';
+import { extractFigures, type FigureKind, type ProseFigure } from '@/lib/ai/figures';
 
-export interface ProseFigure {
-  text:  string;
-  kind:  FigureKind;
-  value: number;
-  /** The unit the token was written at — the width of its implied rounding. */
-  unit: number;
-}
+// ⚠️ THE FIGURE READER LIVES IN `lib/ai/figures.ts` (shared with durable memory's
+// provenance gate). Re-exported so every existing import of it from here holds.
+export { extractFigures };
+export type { FigureKind, ProseFigure };
 
 export interface Licence {
   /** Absolute values of every finite number in the package. */
   numbers: number[];
   /** Absolute values of every percentage field (`pct`, `…Pct`). */
   percents: number[];
-}
-
-const MULTIPLIER: Record<string, number> = {
-  k: 1e3, thousand: 1e3, m: 1e6, million: 1e6, b: 1e9, bn: 1e9, billion: 1e9,
-};
-
-// currency? · digits (grouped or plain) · decimals? · suffix? · percent?
-const FIGURE =
-  /(?<![\w.,])(US\$|\$|USD\s?)?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(?:\s?(k|K|m|M|bn|B|thousand|million|billion)(?![\w]))?(\s?%|\s?percent\b)?(?![\w]|[.,]\d)/g;
-
-/** The tokens in `prose` that state an amount. */
-export function extractFigures(prose: string): ProseFigure[] {
-  const text = prose
-    .replace(/\b\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z?)?\b/g, ' ')
-    .replace(/\b\d{1,2}:\d{2}\b/g, ' ');
-
-  const out: ProseFigure[] = [];
-  for (const m of text.matchAll(FIGURE)) {
-    const [whole, currency, digits, decimals, suffix, percent] = m;
-    const intPart = digits.replace(/,/g, '');
-    const decimalPlaces = decimals ? decimals.length - 1 : 0;
-    const grouped = digits.includes(',');
-    const mult = suffix ? MULTIPLIER[suffix.toLowerCase()] ?? 1 : 1;
-    const base = Number(`${intPart}${decimals ?? ''}`);
-    if (!Number.isFinite(base)) continue;
-
-    // The unit the token was written at: its decimals, else its trailing zeros.
-    const trailingZeros = decimalPlaces === 0
-      ? Math.min((intPart.match(/0+$/)?.[0].length ?? 0), Math.max(intPart.length - 1, 0)) : 0;
-    const unit = (decimalPlaces > 0 ? 10 ** -decimalPlaces : 10 ** trailingZeros) * mult;
-
-    if (percent) {
-      out.push({ text: whole.trim(), kind: 'PERCENT', value: base,
-        unit: decimalPlaces > 0 ? 10 ** -decimalPlaces : 1 });
-      continue;
-    }
-    if (currency || suffix) {
-      out.push({ text: whole.trim(), kind: 'MONEY', value: base * mult, unit });
-      continue;
-    }
-    if (grouped || decimalPlaces > 0) {
-      out.push({ text: whole.trim(), kind: 'NUMBER', value: base, unit });
-      continue;
-    }
-    // A bare integer: a year or a count is not a financial figure.
-    if (base >= 1900 && base <= 2100) continue;
-    if (base < 1000) continue;
-    out.push({ text: whole.trim(), kind: 'NUMBER', value: base, unit });
-  }
-  return out;
 }
 
 const PERCENT_KEY = /(^pct$|Pct$)/;

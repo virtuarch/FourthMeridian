@@ -31,6 +31,8 @@ import {
 import { compactToolHistory, DEFAULT_COMPACTION } from '@/lib/ai/conversation/compaction';
 import { WRITE_TOOL_NAME } from '@/lib/ai/conversation/memory-tools';
 import { validatePayload, MemoryKind } from '@/lib/ai/conversation/memory-store';
+import { fieldNames as memoryFieldNames, GOAL_METRICS } from '@/lib/ai/conversation/memory-model';
+import { CONTRIBUTION_KEYS, ALLOCATION_TARGET_WORDS } from '@/lib/ai/conversation/scenario-rules';
 import {
   compareToStatement, diffBasis, readCheckpoint, ON_TRACK_BAND,
 } from '@/lib/ai/conversation/reconcile';
@@ -1746,7 +1748,46 @@ console.log('19. memory shape');
     /rather than guessing/.test(read('lib/ai/conversation/memory-tools.ts')));
 }
 
-// ══ 19a. The memory line in the orientation core ═════════════════════════════
+// ══ 19b. Memory V2 — one vocabulary, read off the EXPORTED tool definitions ═══
+//
+// ⚠️ A REMEMBERED RULE IS A `contributions[]` ITEM, so "run my remembered
+// strategy" is an identity copy and nothing has to be compiled. That is only true
+// while the two vocabularies are one: a renamed or removed contribution field is a
+// memory-visible change, and this is where it fails loudly. It reads the exported
+// schema object, not source text, so re-shaping the schema cannot hide a drift.
+console.log('19b. memory vocabulary parity');
+{
+  const contribution = ((findTool('scenario_projection')!.parameters as { properties: Record<string, { items: { properties: Record<string, unknown> } }> })
+    .properties.contributions.items.properties);
+  check('every RULE field is a `contributions[]` property, by the same name',
+    memoryFieldNames('RULE').every((k) => k in contribution), memoryFieldNames('RULE').filter((k) => !(k in contribution)).join(','));
+  check('…and a member of the contract\'s closed key set',
+    memoryFieldNames('RULE').every((k) => (CONTRIBUTION_KEYS as readonly string[]).includes(k)));
+  const measure = (findTool('scenario_goal_seek')!.parameters as { properties: { measure: { enum: string[] } } }).properties.measure.enum;
+  check('a GOAL names exactly the measures goal-seek can seek',
+    JSON.stringify([...GOAL_METRICS].sort()) === JSON.stringify([...measure].sort()), measure.join(','));
+  check('the target words are the ledger\'s: it accepts each and refuses any other word', (() => {
+    const refused = (target: unknown) => expandContributions(
+      [{ onDate: '2026-06-30', amount: 100, target } as never], '2026-01-01', '2026-12-31',
+    ).rejected.some((r) => /a target must be/.test(r.reason));
+    return ALLOCATION_TARGET_WORDS.every((w) => !refused(w) && !refused([w])) && refused(7) && refused([{ card: 'x' }]);
+  })());
+
+  // The memory files never reach into the scenario tools, the ledger's runtime, the measures or the slot.
+  for (const f of ['memory-model.ts', 'memory-store.ts', 'memory-tools.ts']) {
+    const src = code(read(`lib/ai/conversation/${f}`));
+    check(`${f} calls no tool and imports no scenario runtime, measure or slot`,
+      !/findTool\(/.test(src) && !/from '\.\/(tools|scenario-ledger|scenario-crossing|active-scenario|scenario)'/.test(src.replace(/import type [^;]+;/g, ''))
+        && !/@\/lib\/ai\/measures|@\/lib\/liquidity/.test(src));
+  }
+  check('the pure model holds no database and no clock',
+    !/@\/lib\/db|@prisma\/client|Date\.now|new Date\(\)/.test(code(read('lib/ai/conversation/memory-model.ts'))));
+  check('no tool reads memory into a calculation: `recallMemories(` has one call site in tools.ts',
+    (code(read('lib/ai/conversation/tools.ts')).match(/recallMemories\(/g) ?? []).length === 1);
+  check('the active scenario never reads the store', !/memory-store|memory-model/.test(code(read('lib/ai/conversation/active-scenario.ts'))));
+}
+
+// ══ 19a. The memory line in the orientation core═════════════════════════════
 //
 // ⚠️ MEASURED BEFORE IT WAS BUILT, WHICH IS THE ONLY REASON IT EXISTS. The
 // investigation proposed it as "one concession worth testing — drop it if the
