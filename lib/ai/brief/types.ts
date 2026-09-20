@@ -138,8 +138,12 @@ export interface BriefPackage {
 
   behavior?: {
     window: { from: string; to: string; days: number };
+    /** M1 — mean income per complete calendar month, the same population as expenses. */
     monthlyIncome:       number | null;
+    /** M1 — the canonical expense baseline (the figure `liquidity.coverageMonths` divided by). */
     monthlyExpenses:     number | null;
+    /** Which rung supplied `monthlyExpenses`: DECLARED by the user or MEASURED. Absent when refused. */
+    monthlyExpensesBasis?: 'STATED' | 'DECLARED' | 'MEASURED';
     monthlyDebtPayments: number | null;
     cashFlowReliability: string;
     incomeConfidence:    string;

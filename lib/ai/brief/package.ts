@@ -230,7 +230,16 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
   const behavior: BriefPackage['behavior'] = txn && a ? {
     window: { from: txn.startDate, to: txn.endDate, days: txn.windowDays },
     monthlyIncome:       moneyOrNull(a.cashFlow.impliedMonthlyIncome),
-    monthlyExpenses:     moneyOrNull(a.cashFlow.estimatedMonthlyExpenses),
+    // ⚠️ M1 — THE BASELINE THE COVERAGE FIGURE DIVIDED BY, NOT THE RAW MEASUREMENT.
+    // This read `cashFlow.estimatedMonthlyExpenses` (always the measured mean)
+    // while `liquidity.coverageMonths` beside it was computed over the canonical
+    // expense baseline (DECLARED > MEASURED, lib/liquidity/expense-baseline) — so
+    // a Space with a declared figure would have printed the measured one next to
+    // a coverage it does not explain. One authority chose; this prints its choice
+    // and names the rung.
+    monthlyExpenses:     moneyOrNull(a.liquidity.estimatedMonthlyExpense),
+    ...(a.liquidity.estimatedMonthlyExpenseBasis
+      ? { monthlyExpensesBasis: a.liquidity.estimatedMonthlyExpenseBasis } : {}),
     monthlyDebtPayments: moneyOrNull(a.cashFlow.estimatedMonthlyDebtPayments),
     cashFlowReliability: a.cashFlow.reliability,
     incomeConfidence:    a.dataQuality.incomeConfidence,

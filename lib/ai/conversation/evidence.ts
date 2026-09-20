@@ -213,7 +213,18 @@ function thinCore(
       earliest: snap.oldestDate, changeThisMonth: snap.canonicalChange,
     } : null,
     signals: ctx.signals.map((s) => `${s.severity}: ${s.title}`),
-    note: 'This is an orientation only. Use the tools for anything specific.',
+    // ⚠️ M1 — THE PROHIBITION SITS ON THE EVIDENCE THAT GETS DIVIDED. A tool
+    // description cannot reach a turn in which no tool is considered, and that is
+    // exactly where the defect lived: told "keep six months of expenses…", the
+    // model made zero calls, divided `recent.spending` by three ("about
+    // $5.4k/month") and built a $32k cushion on it — 3 of 6 runs. Both frames
+    // above are byte-for-byte unchanged; only this sentence, which was already
+    // the orientation's own instruction about itself, says what it must not be
+    // used for and where those figures come from instead.
+    note: 'This is an orientation only. Use the tools for anything specific. `recent` and '
+      + '`activity` are WINDOW TOTALS that include partial months: never divide or multiply them '
+      + 'into a monthly figure, a surplus, a savings rate, a runway or "N months of expenses" — '
+      + 'those are computed by the tools, with their window and basis named.',
   };
 }
 

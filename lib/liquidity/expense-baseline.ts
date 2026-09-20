@@ -27,9 +27,17 @@
  *
  * ── The precedence, and why this order ──────────────────────────────────────
  *
+ *   0. STATED     what the user said in THIS conversation ("use $5k") — M1
  *   1. DECLARED   the user's own figure, when they have set one
  *   2. MEASURED   the reliable-month average, when they have not
  *   3. refusal    neither ⇒ null
+ *
+ * M1 (measures & comparison) added the STATED rung so that the conversation's
+ * "use $5k instead" outranks a product setting for the turn it was said in,
+ * without becoming one: nothing here persists. A STATED figure is echoed as
+ * STATED wherever it is used — a threshold, a runway, a scenario floor — so a
+ * reader can always tell the user's sentence from the user's setting from the
+ * measurement. Three bases, never substituted for one another.
  *
  * A declaration outranks a measurement for the same reason `displayName`
  * outranks `officialName` in `lib/accounts/display-identity.ts`: it is the
@@ -54,6 +62,8 @@
 
 /** Which figure answered. Recorded so a surface can never be wrong about it. */
 export type ExpenseBaselineBasis =
+  /** The user stated this figure in the current conversation. Never persisted. */
+  | "STATED"
   /** The user set this figure themselves. */
   | "DECLARED"
   /** Averaged from complete, untruncated months of transactions. */
@@ -67,6 +77,8 @@ export interface ExpenseBaseline {
 
 /** The candidate figures a caller may hold. Either may be absent. */
 export interface ExpenseBaselineEvidence {
+  /** What the user said in THIS conversation ("use $5k"). M1. */
+  stated?: number | null;
   /** The user's declared monthly expenses (`emergency_fund_progress` config). */
   declared?: number | null;
   /** The reliable-month average (`computeAverageMonthlySpending`). */
@@ -84,6 +96,11 @@ export interface ExpenseBaselineEvidence {
 export function resolveExpenseBaseline(e: ExpenseBaselineEvidence): ExpenseBaseline | null {
   const usable = (v: number | null | undefined): number | null =>
     typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
+
+  // A stated 0 is not a baseline either: it falls through like any other
+  // non-positive figure, so "I spend nothing" never becomes infinite runway.
+  const stated = usable(e.stated);
+  if (stated !== null) return { amount: stated, basis: "STATED" };
 
   const declared = usable(e.declared);
   if (declared !== null) return { amount: declared, basis: "DECLARED" };
@@ -105,7 +122,9 @@ export function describeExpenseBaseline(
   b: ExpenseBaseline,
   formatMoney: (n: number) => string,
 ): string {
-  return b.basis === "DECLARED"
+  return b.basis === "STATED"
+    ? `at ${formatMoney(b.amount)}/mo — the figure you gave in this conversation`
+    : b.basis === "DECLARED"
     ? `at ${formatMoney(b.amount)}/mo — the figure you set`
     : `at ${formatMoney(b.amount)}/mo — your average across complete months`;
 }

@@ -273,6 +273,24 @@ export function computeAverageMonthlySpending(
 }
 
 /**
+ * M1 — the single authoritative monthly-INCOME figure, over the SAME reliable
+ * months as spending. Replaces `incomeTotal / windowDays × 30`, which normalised
+ * a 90-day window by days while spending was a calendar-month mean — so the two
+ * figures the Brief printed side by side were on different bases, and a window
+ * holding seven biweekly paychecks read as a higher "monthly" income than any
+ * month actually delivered. Null when no reliable month exists; a month can still
+ * hold two or three paychecks, which is a property of the month, not of a divisor.
+ */
+export function computeAverageMonthlyIncome(
+  txn: TransactionsSummaryData | null,
+): number | null {
+  const months = reliableMonths(txn);
+  if (months.length === 0) return null;
+  const total = months.reduce((s, m) => s + m.incomeTotal, 0);
+  return Math.round((total / months.length) * 100) / 100;
+}
+
+/**
  * 2.3B Spending Trends Engine.
  *
  * Deterministically derives month-over-month deltas, a 3-month rolling average,

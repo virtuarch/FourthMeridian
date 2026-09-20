@@ -169,7 +169,10 @@ console.log('4. tool surface');
   // model: first / last / highest / lowest over one balance are arithmetic, and
   // a scanned series answered 2026-04-24 to "when did debt first hit zero" on a
   // day whose debt was $5,353.81.
-  check('seventeen tools', TOOLS.length === 17, String(TOOLS.length));
+  // 17 + the two M1 heads: `measure_flows` (a measure and its comparison in one
+  // call) and `get_baselines` (the monthly rates and what is derived from them).
+  // Two heads, not a catalogue: no per-question measure tool exists.
+  check('nineteen tools', TOOLS.length === 19, String(TOOLS.length));
   check('names are unique', new Set(TOOLS.map((t) => t.name)).size === TOOLS.length);
   check('every tool describes itself', TOOLS.every((t) => t.description.length > 40));
   check('every schema is a closed object',
@@ -212,7 +215,10 @@ console.log('4. tool surface');
       && !/from '@\//m.test(code(read('lib/ai/conversation/compaction.ts'))));
 
   // The vocabulary is the user's, not the architecture's.
-  const LEAKED = /assembler|assemble|domain|measure|licence|license|scope_?hint|spine|planner/i;
+  // ⚠️ `measure` NARROWED TO THE INTERNAL NAME IT GUARDED (M1). The word was listed
+  // for the V26-REASONING `MeasureId` registry; M1's head is named for the plain
+  // verb ("measure my spending"), which is the user's vocabulary, not ours.
+  const LEAKED = /assembler|assemble|domain|measure_?id|licence|license|scope_?hint|spine|planner/i;
   check('no tool name leaks internal architecture vocabulary',
     TOOLS.every((t) => !LEAKED.test(t.name)));
 

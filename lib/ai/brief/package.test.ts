@@ -82,7 +82,7 @@ const assessment = {
   cashFlow: { reliability: 'RELIABLE', confidence: 'HIGH', deficitCause: 'NOT_APPLICABLE',
     transactionCompleteness: 'HIGH', impliedMonthlyIncome: 9620.004, estimatedMonthlyExpenses: 6240.349,
     estimatedMonthlyDebtPayments: 1850.1, incomeTransactionCount: 12, incompleteIncomeWarning: false },
-  liquidity: { classification: 'SAFE', coverageMonths: 3.04 },
+  liquidity: { classification: 'SAFE', coverageMonths: 3.04, estimatedMonthlyExpense: 6240.349, estimatedMonthlyExpenseBasis: 'MEASURED' },
   debt: { classification: 'INSUFFICIENT_DATA', aprCompleteness: 'NONE' },
   ungraded: [{ section: 'debt', verdict: 'INSUFFICIENT_DATA', reason: 'APR_MISSING', detail: 'Chase Sapphire has no APR ($3,210.55)' }],
 } as unknown as FinancialAssessment;
@@ -224,6 +224,29 @@ console.log('\n5b. sources that need attention, named for qualification');
     !!pkg.freshness && !('staleSources' in projectBriefPackage(inputs({ dataHealth: { ...dataHealth, sources: [dataHealth.sources[1]], attention: 0 } })).freshness!));
   check('none when data health could not be read', !!pkg.freshness && !('staleSources' in projectBriefPackage(inputs()).freshness!));
   check('the attention count is data health\'s, not an unwritten sync-error flag', pkg.freshness?.connectionsNeedingAttention === 1);
+}
+
+console.log('\n5b. M1 — the Brief prints the baseline the coverage divided by');
+{
+  check('measured Space: the measured figure, labelled MEASURED',
+    pkg.behavior?.monthlyExpenses === 6240.35 && pkg.behavior.monthlyExpensesBasis === 'MEASURED');
+  // A Space with a DECLARED figure: the engine divides coverage by 4,000, so the
+  // Brief must print 4,000 — not the 6,240.35 measurement sitting in cashFlow.
+  const declared = { ...assessment,
+    liquidity: { ...assessment.liquidity, coverageMonths: 4.73, estimatedMonthlyExpense: 4000, estimatedMonthlyExpenseBasis: 'DECLARED' },
+  } as unknown as FinancialAssessment;
+  const d = projectBriefPackage(inputs({ assessment: declared }));
+  check('declared Space: the DECLARED figure beside the coverage it explains, never the raw measurement',
+    d.behavior?.monthlyExpenses === 4000 && d.behavior.monthlyExpensesBasis === 'DECLARED' && d.behavior.liquidity?.coverageMonths === 4.7,
+    JSON.stringify([d.behavior?.monthlyExpenses, d.behavior?.monthlyExpensesBasis]));
+  check('…and the two figures reconcile: liquid ÷ monthlyExpenses ≈ coverageMonths',
+    Math.abs((d.currentState.liquid ?? 0) / (d.behavior?.monthlyExpenses ?? 1) - 4.73) < 0.01);
+  const refused = { ...assessment,
+    liquidity: { ...assessment.liquidity, coverageMonths: null, estimatedMonthlyExpense: null, estimatedMonthlyExpenseBasis: null },
+  } as unknown as FinancialAssessment;
+  const r = projectBriefPackage(inputs({ assessment: refused }));
+  check('no baseline: null, and NO basis key rather than a guessed one',
+    r.behavior?.monthlyExpenses === null && !('monthlyExpensesBasis' in (r.behavior ?? {})));
 }
 
 console.log('\n6. the information ceiling');

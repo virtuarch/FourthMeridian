@@ -41,13 +41,14 @@ import { composeInvestments } from '@/lib/ai/economic-concepts';
 import {
   queryTransactions, countTransactions, transactionCorpusSpan, transactionCoverage,
 } from '@/lib/data/transaction-query';
+import { transactionAccountPopulation } from '@/lib/data/transaction-population';
 import { MAX_TRANSACTION_PAGE_SIZE, type TransactionQuery } from '@/lib/data/transaction-query-core';
 import { TRANSACTION_FETCH_LIMIT } from '@/lib/ai/assemblers/transactions';
 import type { Transaction } from '@/types';
 import { getRecentSnapshots } from '@/lib/data/snapshots';
 import { projectSnapshotSection } from '@/lib/ai/assemblers/snapshot';
 import type { Snapshot } from '@/types';
-import { FlowType } from '@prisma/client';
+import { FlowType, TransactionCategory } from '@prisma/client';
 import { resolveExplorationNode } from '@/lib/history/exploration';
 import {
   observedChange, findObservation, NEEDS_THRESHOLD, type TemporalOperation,
@@ -90,6 +91,25 @@ import { recallMemories, MemoryKind } from './memory-store';
 import {
   readCheckpoint, compareToStatement, diffBasis,
 } from './reconcile';
+// ── M1: measures & comparison ────────────────────────────────────────────────
+// ⚠️ THE ARITHMETIC LIVES IN `lib/ai/measures`, NOT HERE. Period resolution, the
+// measure, the comparison, the baselines and every derived figure are pure
+// functions over the monthly rows the ONE economic fold already produced. The two
+// heads below resolve arguments, perform the reads, and hand the rows over.
+import {
+  parsePeriodSpec, parseCompareToSpec, resolvePeriod, resolveCompareTo, completeMonthsPeriod,
+  type ResolvedPeriod,
+} from '@/lib/ai/measures/period';
+import {
+  measure, compare, FLOW_MEASURES,
+  type FlowMeasure, type MonthRow, type DataCoverage, type Tier,
+} from '@/lib/ai/measures/measure';
+import {
+  resolveExpenseBaselineFromEvidence, resolveIncomeBaseline, derive,
+  resolveMonthsOfExpensesFloor, type FloorDerivation,
+} from '@/lib/ai/measures/baseline';
+import { incomeStreamEvidence, OBSERVED_SPENDING_WINDOW_MONTHS } from '@/lib/ai/forecast/income-evidence';
+import { computeDebtAggregate } from '@/lib/debt/aggregates';
 
 // ── The tool contract ────────────────────────────────────────────────────────
 
@@ -333,13 +353,13 @@ const getFinancialSnapshot: ToolDefinition = {
 const getSpending: ToolDefinition = {
   name: 'get_spending',
   description:
-    'Deterministic spending and cash-flow totals over any window up to ~26 months: ' +
-    'category and merchant rollups, month-by-month, largest expense, transfers and ' +
-    'card payments kept separate from spending. Use it whenever an answer needs a ' +
-    'per-month spending figure — "how much do I spend", "how long would my cash last", ' +
-    'emergency-fund questions: `monthlySpending` gives the mean over whole months and ' +
-    'the highest and lowest month, so a one-off month is never mistaken for a normal ' +
-    'one. Default window is the last 90 days.',
+    'WHAT the money went on over a window up to ~26 months: category and merchant ' +
+    'rollups, month-by-month, largest expense, recurring merchants, with transfers and ' +
+    'card payments kept separate from spending. This is the evidence behind a window. ' +
+    'For HOW MUCH per month, MORE OR LESS than another period, runway, surplus or ' +
+    '"N months of expenses", use measure_flows / get_baselines — they compute the ' +
+    'figure and the comparison; never divide this tool\'s totals yourself. Default ' +
+    'window is the last 90 days.',
   parameters: obj({
     from: str('YYYY-MM-DD inclusive. Omit for the 90 days before `to`.'),
     to:   str('YYYY-MM-DD inclusive. Omit for today.'),
@@ -670,6 +690,310 @@ const getIncome: ToolDefinition = {
         seriesTruncated: s.truncated,
       })),
       incomeSources: t?.incomeSources?.items,
+    };
+  },
+};
+
+// ── 4b. Measures & comparison, baselines & derived figures (M1) ──────────────
+
+/**
+ * The period argument, DESCRIBED ONCE. It appears three times on the surface
+ * (`period`, `compareTo`, `spendingWindow`); the explanation rides on the first
+ * and the other two carry the bare shape and point back, because a model reads
+ * every schema byte on every turn.
+ */
+const PERIOD_SHAPE = obj({
+  preset: { type: 'string' }, month: { type: 'string' }, quarter: { type: 'string' },
+  year: { type: 'number' }, completeMonths: { type: 'number' },
+  from: { type: 'string' }, to: { type: 'string' },
+});
+const PERIOD_SCHEMA = {
+  ...PERIOD_SHAPE,
+  description: 'WHICH DAYS. Exactly one of: `preset` (MTD | QTD | YTD | PAST_WEEK | PAST_MONTH | '
+    + 'PAST_QUARTER | PAST_6_MONTHS | PAST_YEAR — rolling ones are calendar months back, not 30 days), '
+    + '`month` "YYYY-MM", `quarter` "YYYY-Q3", `year`, `completeMonths` N (the last N WHOLE calendar '
+    + 'months, never the current one — the one for "normally", "on average", "per month"), or `from` + '
+    + '`to` (YYYY-MM-DD, inclusive). A period that runs past today is cut at today and says so.',
+};
+
+interface FlowRead { rows: MonthRow[]; truncated: boolean; readFrom: string | null;
+  declaredMonthlyExpenses: number | null }
+
+/** One window of monthly rows, exactly as the ONE fold produced them. */
+async function readFlowMonths(
+  ctx: ToolContext, window: { from: string; to: string; label: string } | null,
+): Promise<FlowRead | null> {
+  const t = await assemble<TransactionsSummaryData>(FinanceDomains.TRANSACTIONS_SUMMARY, ctx,
+    window ? { transactionWindow: { startDate: window.from, endDate: window.to, label: window.label } } : {});
+  if (!t) return null;
+  return {
+    rows: t.monthlyBreakdown.map((m) => ({
+      month: m.month, incomeTotal: m.incomeTotal, expenseTotal: m.expenseTotal,
+      refundTotal: m.refundTotal, debtPaymentTotal: m.debtPaymentTotal, transferTotal: m.transferTotal,
+      partial: m.partial, truncated: m.truncated,
+      byCategory: m.byCategory.map((c) => ({ category: c.category, total: c.total, count: c.count })),
+    })),
+    truncated: t.truncated,
+    // The assembler clamps a floor older than its maximum lookback; the clamp is
+    // a completeness fact about THIS read, so it travels with the rows.
+    readFrom: window && t.startDate > window.from ? t.startDate : null,
+    declaredMonthlyExpenses: t.declaredMonthlyExpenses ?? null,
+  };
+}
+
+/**
+ * What the record covers, and which sources feed the banking population.
+ *
+ * ⚠️ POPULATION-AWARE. A source is a component of a flow measure only when its
+ * accounts put rows into the banking population. A brokerage that needs
+ * reconnecting but posts no banking rows is not a component of spending and
+ * cannot make a spending figure incomplete; a card that stopped delivering rows
+ * can — for windows that run past the day it last delivered.
+ */
+async function flowCoverage(
+  ctx: ToolContext, ceiling: string, accounts?: AccountsSectionData | null,
+): Promise<Pick<DataCoverage, 'corpusFrom' | 'corpusTo' | 'components'>> {
+  const [span, population, acc] = await Promise.all([
+    transactionCorpusSpan({ spaceId: ctx.spaceId, asOf: ceiling }),
+    transactionAccountPopulation({ spaceId: ctx.spaceId, asOf: ceiling }),
+    accounts !== undefined ? Promise.resolve(accounts)
+      : assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx),
+  ]);
+  const byKey = new Map<string, { key: string; tier: Tier; deliveredThrough: string | null }>();
+  for (const a of acc?.accounts ?? []) {
+    const pop = population.find((p) => p.accountId === a.id);
+    if (!pop || pop.rows === 0) continue;
+    const band = a.balanceFreshness?.band;
+    const behind = !!a.needsReauth || band === 'STALE' || band === 'VERY_STALE';
+    const key = `${a.type}:${a.institution ?? a.name}`;
+    const deliveredThrough = behind ? (a.lastUpdated ? a.lastUpdated.slice(0, 10) : pop.lastDate) : null;
+    const prior = byKey.get(key);
+    if (!prior || (behind && prior.tier === 'observed')) {
+      byKey.set(key, { key, tier: behind ? 'incomplete' : 'observed', deliveredThrough });
+    } else if (behind && prior.deliveredThrough && deliveredThrough && deliveredThrough < prior.deliveredThrough) {
+      prior.deliveredThrough = deliveredThrough;
+    }
+  }
+  return { corpusFrom: span.from, corpusTo: span.to, components: [...byKey.values()] };
+}
+
+/** A category named by the model, matched to the canonical vocabulary or refused by name. */
+function resolveCategoryArg(raw: unknown): { category?: string } | { unavailable: string } {
+  if (raw === undefined || raw === null || raw === '') return {};
+  const wanted = String(raw).trim().toLowerCase().replace(/[\s_-]+/g, '');
+  const hit = Object.values(TransactionCategory).find((c) => c.toLowerCase() === wanted);
+  return hit ? { category: hit }
+    : { unavailable: `unknown category "${raw}"; one of ${Object.values(TransactionCategory).join(', ')}` };
+}
+
+const measureFlows: ToolDefinition = {
+  name: 'measure_flows',
+  description:
+    'HOW MUCH over a period, and MORE OR LESS than another period — computed, not narrated. ' +
+    'Spending, income, economic net, card/debt payments, transfers or refunds for any month, ' +
+    'quarter, year, the last N complete months, a to-date or rolling window; with `compareTo` it ' +
+    'returns both sides AND the difference, percentage and direction. Use it for "how much did I ' +
+    'spend / earn in X", "am I spending more than I used to", "was August higher than July", ' +
+    '"compare the last three complete months with the three before", "did I spend more on travel", ' +
+    '"is my income up this quarter". Every figure names its window, which months are whole, and ' +
+    'whether the record covers it; `perCompleteMonth` is the monthly figure. NEVER divide a window ' +
+    'total by its days or months yourself, never compute a difference or percentage between two ' +
+    'figures yourself, and never compare figures from two different windows by hand — ask for the ' +
+    'comparison here. "PREVIOUS" of a period to date is the same elapsed days of the period before.',
+  parameters: obj({
+    measure: { type: 'string', enum: [...FLOW_MEASURES],
+      description: 'WHAT is measured, by the one economic fold. `spending` never contains card '
+        + 'payments or transfers; `economicNet` = income − spending over the window (what actually '
+        + 'happened — for the steady monthly surplus use get_baselines); debt payments are NOT '
+        + 'subtracted from it.' },
+    period: PERIOD_SCHEMA,
+    compareTo: { description: 'Optional. "PREVIOUS" (the equivalent earlier period: last month for a '
+        + 'month, the same elapsed days of last month for a month to date, the N months before for '
+        + 'completeMonths, the same number of days before for a rolling window), '
+        + '"SAME_PERIOD_LAST_YEAR", or an explicit period (inside `compareTo`, `completeMonths` N '
+        + 'means the N whole months BEFORE `period` begins). The result carries both sides, the '
+        + 'difference, the percentage and the direction.',
+      anyOf: [{ type: 'string', enum: ['PREVIOUS', 'SAME_PERIOD_LAST_YEAR'] }, PERIOD_SHAPE] },
+    category: str('Optional spending category (Groceries, Dining, Travel, Shopping, Subscriptions, '
+      + 'Utilities, Medical, Entertainment, Transport, …) to measure one line of spending instead of '
+      + 'all of it; the result also carries all spending over the same window and this line\'s share '
+      + 'of it (`ofAllSpending`). Only with `measure: "spending"`.'),
+    asOf: str('Information ceiling: pretend today is this date. Nothing after it is read.'),
+  }, ['measure', 'period']),
+  async run(a, ctx) {
+    const ceiling = clampToCeiling((a.asOf as string) || ctx.asOfISO, ctx.asOfISO);
+    const kind = String(a.measure) as FlowMeasure;
+    if (!FLOW_MEASURES.includes(kind)) {
+      return { unavailable: `unknown measure "${a.measure}"; one of ${FLOW_MEASURES.join(', ')}` };
+    }
+    const spec = parsePeriodSpec(a.period);
+    if ('unavailable' in spec) return spec;
+    const cat = resolveCategoryArg(a.category);
+    if ('unavailable' in cat) return cat;
+    if (cat.category && kind !== 'spending') {
+      return { unavailable: 'a category is a line of SPENDING; use `measure: "spending"` with it' };
+    }
+    const compareSpec = a.compareTo === undefined || a.compareTo === null
+      ? null : parseCompareToSpec(a.compareTo);
+    if (compareSpec && typeof compareSpec === 'object' && 'unavailable' in compareSpec) return compareSpec;
+
+    const period = resolvePeriod(spec, ceiling);
+    if (period.from > ceiling) {
+      return { unavailable: `the period ${period.label} begins ${period.from}, after ${ceiling}; nothing in it can be read` };
+    }
+    const cov = await flowCoverage(ctx, ceiling);
+    const one = async (p: ResolvedPeriod) => {
+      const read = await readFlowMonths(ctx, { from: p.from, to: p.to, label: p.label });
+      return measure(kind, read?.rows ?? [], p,
+        { ...cov, fetchCapHit: read?.truncated ?? false, readFrom: read?.readFrom ?? null }, cat.category);
+    };
+    if (!compareSpec) return { asOf: ceiling, ...(await one(period)) };
+
+    const other = resolveCompareTo(period, spec, compareSpec as Parameters<typeof resolveCompareTo>[2], ceiling);
+    if (other.from === period.from && other.to === period.to) {
+      return { unavailable: `\`compareTo\` resolves to the same window as \`period\` (${period.from}..${period.to}); `
+        + 'a window compared with itself says nothing — use "PREVIOUS" for the equivalent earlier period' };
+    }
+    // ⚠️ BOTH SIDES IN ONE CALL, SO THE MODEL NEVER HOLDS ONE AND COMPUTES THE OTHER.
+    const [left, right] = await Promise.all([one(period), one(other)]);
+    return { asOf: ceiling, ...compare(left, right) };
+  },
+};
+
+const getBaselines: ToolDefinition = {
+  name: 'get_baselines',
+  description:
+    'THE MONTHLY RATES TO REASON FORWARD FROM, AND EVERYTHING COMPUTED FROM THEM: monthly surplus, ' +
+    'savings rate, runway in months of current cash, and "N months of expenses" in dollars with ' +
+    'how far current cash is from it. Call it AGAIN whenever the user changes the monthly figure ' +
+    'or the number of months — every derived figure changes with it, and none is to be recomputed ' +
+    'in prose: never multiply a baseline by months, subtract cash from a threshold, or subtract ' +
+    'spending from income yourself. The expense baseline is STATED in this conversation > DECLARED ' +
+    'in the product > MEASURED over named complete months; income is STATED > CADENCE of settled ' +
+    'paychecks > MEASURED. Use it for "how much do I normally spend", "what is my monthly ' +
+    'surplus", "what is my savings rate", "how many months of expenses do I have", "how much cash ' +
+    'should I keep". `measuredSpending.byWindow` shows how the measured figure differs by window — ' +
+    'choose the window that fits the question (pass `spendingWindow`) and SAY which one. ' +
+    '`thresholds` always carries 3, 6 and 12 months; pass `monthsOfExpenses` for any other ' +
+    'multiple. Every derived figure ships with its numerator, denominator and basis — quote them. ' +
+    'Never divide an orientation or window total to get a monthly figure. For WHEN cash reaches a ' +
+    'threshold, give its amount to scenario_crossing — do not divide a shortfall by the surplus. ' +
+    'It does not say what the user SHOULD spend or keep — that judgement is yours, over these numbers.',
+  parameters: obj({
+    statedMonthlySpending: num('The monthly spending the user STATED in this conversation, if any '
+      + '("use $5k"). Wins over the product setting and the measured figure, and is echoed as STATED.'),
+    statedMonthlyIncome: num('The monthly income the user STATED in this conversation, if any.'),
+    spendingWindow: { ...PERIOD_SHAPE, description: 'Optional: which PAST months the MEASURED spending '
+      + 'baseline is AVERAGED over, e.g. {"completeMonths": 6} — the same shape as measure_flows '
+      + '`period`. Default is the complete months the cash projection averages. This is NOT how many '
+      + 'months of expenses to keep — "six months of expenses" is `monthsOfExpenses: [6]`.' },
+    monthsOfExpenses: { type: 'array', items: { type: 'number' },
+      description: 'How many months of expenses to price, e.g. [9] for "keep nine months of expenses" '
+        + '— a MULTIPLIER of the baseline, not an averaging window. 3, 6 and 12 are always returned. '
+        + 'Each comes back in dollars with the rule, the baseline it multiplied, and the gap to '
+        + 'current cash.' },
+    asOf: str('Information ceiling: pretend today is this date. Nothing after it is read.'),
+  }),
+  async run(a, ctx) {
+    const ceiling = clampToCeiling((a.asOf as string) || ctx.asOfISO, ctx.asOfISO);
+    const windowSpec = a.spendingWindow === undefined || a.spendingWindow === null
+      ? null : parsePeriodSpec(a.spendingWindow);
+    if (windowSpec && 'unavailable' in windowSpec) return windowSpec;
+    // ⚠️ 3, 6 AND 12 ARE ALWAYS PRICED. Told "keep six months of that" one turn
+    // after a baseline call, the model multiplied 5,000 × 6 and subtracted liquid in
+    // prose because neither figure was in evidence. The common candidates cost a
+    // few hundred bytes; any other multiple is asked for by name.
+    const asked = (Array.isArray(a.monthsOfExpenses) ? a.monthsOfExpenses : [])
+      .map(Number).filter((n) => Number.isFinite(n)).slice(0, 8);
+    const wanted = [...new Set([3, 6, 12, ...asked])].sort((x, y) => x - y);
+
+    const year = resolvePeriod({ completeMonths: 12 }, ceiling);
+    const [acc, streams, assessmentRead, yearRead] = await Promise.all([
+      assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx),
+      loadForecastIncomeStreams(ctx.spaceId, ceiling),
+      // The default window is the cash projection's own: the reliable months of
+      // the assembler's assessment window, at most `OBSERVED_SPENDING_WINDOW_MONTHS`.
+      readFlowMonths(ctx, ceiling < ctx.asOfISO
+        ? { from: daysAgoISO(ceiling, 89), to: ceiling, label: `evidence through ${ceiling}` } : null),
+      readFlowMonths(ctx, { from: year.from, to: year.to, label: year.label }),
+    ]);
+    const cov = await flowCoverage(ctx, ceiling, acc);
+    const covOf = (r: FlowRead | null): DataCoverage =>
+      ({ ...cov, fetchCapHit: r?.truncated ?? false, readFrom: r?.readFrom ?? null });
+
+    // ── The measured rung, over a NAMED window ──
+    let measuredSpending;
+    if (windowSpec) {
+      const p = resolvePeriod(windowSpec, ceiling);
+      const read = await readFlowMonths(ctx, { from: p.from, to: p.to, label: p.label });
+      measuredSpending = measure('spending', read?.rows ?? [], p, covOf(read));
+    } else {
+      const reliable = (assessmentRead?.rows ?? []).filter((m) => !m.partial && !m.truncated)
+        .slice(-OBSERVED_SPENDING_WINDOW_MONTHS);
+      const p = reliable.length ? completeMonthsPeriod(reliable[0].month, reliable[reliable.length - 1].month,
+        `the ${reliable.length} complete month${reliable.length === 1 ? '' : 's'} the cash projection averages`,
+        ceiling) : null;
+      measuredSpending = p ? measure('spending', reliable, p, covOf(assessmentRead)) : null;
+    }
+
+    const expense = resolveExpenseBaselineFromEvidence({
+      stated: typeof a.statedMonthlySpending === 'number' ? a.statedMonthlySpending : null,
+      declared: assessmentRead?.declaredMonthlyExpenses ?? yearRead?.declaredMonthlyExpenses ?? null,
+      measured: measuredSpending,
+    });
+
+    // The cadence → monthly conversion is the forecast authority's, through its adapter.
+    const streamEvidence = streams.map((s) => incomeStreamEvidence({
+      label: s.label, cadence: s.cadence,
+      typicalAmount: s.amount?.assertable ? s.amount.value : null,
+      stillPaying: s.projectionEligible,
+    }));
+    const half = resolvePeriod({ completeMonths: 6 }, ceiling);
+    const income = resolveIncomeBaseline({
+      stated: typeof a.statedMonthlyIncome === 'number' ? a.statedMonthlyIncome : null,
+      streams: streamEvidence,
+      measured: yearRead ? measure('income', yearRead.rows, half, covOf(yearRead)) : null,
+    });
+
+    // ── The position the derived figures divide into ──
+    const liquid = acc && typeof acc.totalLiquid === 'number' ? acc.totalLiquid : null;
+    const debts = (acc?.accounts ?? []).filter((r) => r.type === 'debt' && r.visibilityLevel === 'FULL');
+    const aggregate = computeDebtAggregate(debts.map((r) => ({
+      balance: r.reportingBalance ?? r.balance, apr: typeof r.apr === 'number' ? r.apr : null,
+      minimumPayment: typeof r.minimumPayment === 'number' ? r.minimumPayment : null })));
+
+    const derived = derive({ expense, income, liquid,
+      minimumDebtService: aggregate.minimumPayment > 0 ? aggregate.minimumPayment : null,
+      monthsOfExpenses: wanted });
+
+    // ⚠️ THE SPREAD OF LEGITIMATE FIGURES, FROM ONE READ. "Monthly spending" has a
+    // different honest answer over 3, 6 and 12 complete months; showing them side
+    // by side is what lets the model choose a window on purpose and say so.
+    const byWindow = yearRead ? [3, 6, 12].map((n) => {
+      const m = measure('spending', yearRead.rows, resolvePeriod({ completeMonths: n }, ceiling), covOf(yearRead));
+      return { completeMonths: n, from: m.period.from, to: m.period.to, perCompleteMonth: m.perCompleteMonth,
+        highest: m.highest, lowest: m.lowest, completeness: m.completeness.tier };
+    }) : [];
+    const liquidBehind = (acc?.accounts ?? []).filter((r) =>
+      (r.type === 'checking' || r.type === 'savings') && r.needsReauth).length;
+
+    return {
+      asOf: ceiling,
+      expense: expense ?? { unavailable: 'no expense baseline: nothing stated, nothing declared, and no '
+        + 'complete calendar month of spending to average' },
+      income: income ?? { unavailable: 'no income baseline: nothing stated, no settled recurring deposits, '
+        + 'and no complete month of observed income' },
+      ...derived,
+      liquid: liquid === null ? { unavailable: 'no accounts in scope' } : {
+        amount: liquid, basis: 'checking + savings from the current accounts — the same figure as '
+          + 'get_financial_snapshot.liquid; investments and digital assets are not in it',
+        ...(liquidBehind > 0 ? { completeness: { tier: 'incomplete' as Tier,
+          reason: `${liquidBehind} liquid account(s) need reconnecting; the balance is the last one read` } } : {}) },
+      ...(aggregate.missingMinimumCount > 0
+        ? { minimumDebtServiceUnknownFor: aggregate.missingMinimumCount } : {}),
+      measuredSpending: { byWindow,
+        note: 'The measured monthly figure depends on the window. None of these is wrong; say which one '
+          + 'an answer used, and pass `spendingWindow` to make the baseline use it.' },
     };
   },
 };
@@ -1550,6 +1874,8 @@ interface ScenarioSetup {
   rejected: { input: string; reason: string }[];
   /** The spending level the base run used, and where it came from. */
   monthlySpending: { amount: number | null; source: 'USER_STATED' | 'OBSERVED' | 'NONE' };
+  /** M1 — floors stated as months of expenses, with the derivation each resolved through. */
+  floorDerivations: FloorDerivation[];
   run: (o?: ScenarioOverrides) => LedgerResult;
 }
 
@@ -1627,6 +1953,18 @@ async function prepareScenario(
   // ── The stated assumptions, normalised ─────────────────────────────────────
   const rejected: { input: string; reason: string }[] = [];
 
+  // ⚠️ THE SPENDING LEVEL THIS SCENARIO RUNS AT, RESOLVED BEFORE THE RULES THAT
+  // MAY DEPEND ON IT. "Keep six months of expenses" multiplies this figure, so
+  // the floor and the spending in force are one number by construction.
+  const observedDaily = endpoint.observedSpending?.dailyRate ?? null;
+  const monthlySpending: ScenarioSetup['monthlySpending'] =
+    typeof a.assumedMonthlySpending === 'number'
+      ? { amount: a.assumedMonthlySpending, source: 'USER_STATED' }
+      : observedDaily !== null
+        ? { amount: round2(observedDaily * DAYS_PER_MONTH), source: 'OBSERVED' }
+        : { amount: null, source: 'NONE' };
+  const floorDerivations: FloorDerivation[] = [];
+
   const flatPct = typeof a.annualReturnPct === 'number' ? a.annualReturnPct : 0;
   const statedReturns = (a.returns as { from: string; to: string; annualPct: number }[]) ?? [];
   // ⚠️ ONE SOURCE OF RETURNS, NOT TWO BLENDED. Per-period rates are the whole
@@ -1639,7 +1977,34 @@ async function prepareScenario(
     : [{ fromISO: asOf, toISO, annualPct: flatPct }];
 
   const contribSpecs: ContributionSpec[] = [];
-  for (const c of (a.contributions as Record<string, unknown>[]) ?? []) {
+  for (const raw of (a.contributions as Record<string, unknown>[]) ?? []) {
+    // ⚠️ M1 — "N MONTHS OF EXPENSES" BECOMES THE FLOOR LITERAL HERE, NOT IN THE
+    // MODEL AND NOT IN THE LEDGER. The threshold is resolved through the canonical
+    // expense-baseline authority from the scenario's own spending level, and the
+    // dollar amount then feeds the EXISTING `liquidFloor` rule unchanged — the
+    // ledger never learns the floor was derived. Its identity travels beside it
+    // (`floorDerivations` → `floorRule.derivedFrom`) so the answer can say "six
+    // months of expenses", and a later "make it nine" re-runs the same sentence.
+    let c = raw;
+    if (raw.liquidFloorMonthsOfExpenses !== undefined) {
+      const what = raw.label === undefined
+        ? `${raw.liquidFloorMonthsOfExpenses} months of expenses` : String(raw.label);
+      if (raw.liquidFloor !== undefined) {
+        rejected.push({ input: what, reason: 'state the floor ONCE: `liquidFloor` in dollars or '
+          + '`liquidFloorMonthsOfExpenses` in months, not both' });
+        continue;
+      }
+      const floor = resolveMonthsOfExpensesFloor({
+        monthsOfExpenses: Number(raw.liquidFloorMonthsOfExpenses),
+        stated: monthlySpending.source === 'USER_STATED' ? monthlySpending.amount : null,
+        observedMonthly: monthlySpending.source === 'OBSERVED' ? monthlySpending.amount : null,
+      });
+      if ('unavailable' in floor) { rejected.push({ input: what, reason: floor.unavailable }); continue; }
+      floorDerivations.push(floor);
+      const { liquidFloorMonthsOfExpenses: _months, ...rest } = raw;
+      void _months;
+      c = { ...rest, liquidFloor: floor.liquidFloor, label: what };
+    }
     const label  = c.label === undefined ? undefined : String(c.label);
     // How much: a dollar amount, or a share of the balance. The ledger refuses
     // both and neither; this only passes through what was said.
@@ -1799,17 +2164,9 @@ async function prepareScenario(
     return points;
   };
 
-  const observedDaily = endpoint.observedSpending?.dailyRate ?? null;
-  const monthlySpending: ScenarioSetup['monthlySpending'] =
-    typeof a.assumedMonthlySpending === 'number'
-      ? { amount: a.assumedMonthlySpending, source: 'USER_STATED' }
-      : observedDaily !== null
-        ? { amount: round2(observedDaily * DAYS_PER_MONTH), source: 'OBSERVED' }
-        : { amount: null, source: 'NONE' };
-
   return {
     asOf, toISO, plan, dates, accounts, returns, liabilities,
-    contributions: expanded.movements, outflows, rejected, monthlySpending,
+    contributions: expanded.movements, outflows, rejected, monthlySpending, floorDerivations,
     run: (o: ScenarioOverrides = {}) => {
       const useContribs = o.extraContributions
         ? [...expanded.movements, ...o.extraContributions] : expanded.movements;
@@ -1892,7 +2249,7 @@ function surplusRule(ledger: LedgerResult) {
  * told only "the rule was in force" would narrate a floor that was maintained
  * throughout, which the arithmetic did not do.
  */
-function floorRule(ledger: LedgerResult) {
+function floorRule(ledger: LedgerResult, derivations: FloorDerivation[] = []) {
   const taken = ledger.movements.filter(
     (m) => m.kind === 'CONTRIBUTION' && m.liquidFloor !== undefined);
   if (taken.length === 0) return null;
@@ -1906,8 +2263,13 @@ function floorRule(ledger: LedgerResult) {
   // the floor and the rule sat out. Only the second is a fact a reader needs
   // before saying the floor was kept.
   const afterReached = firstAbove === -1 ? [] : taken.slice(firstAbove);
+  const derived = derivations.filter((d) => floors.includes(d.liquidFloor)).map((d) => d.derivedFrom);
   return {
     liquidFloor: floors.length === 1 ? floors[0] : floors,
+    // ⚠️ M1 — THE FLOOR KEEPS ITS IDENTITY. When the dollars came from "N months of
+    // expenses", the rule and the baseline it multiplied are echoed beside them:
+    // say "six months of expenses ($X at $Y/month)", not only the dollar figure.
+    ...(derived.length ? { derivedFrom: derived.length === 1 ? derived[0] : derived } : {}),
     fractionOfExcess: shares.length === 1 ? shares[0] : shares,
     from: taken[0].date, to: taken[taken.length - 1].date,
     months: taken.length,
@@ -1957,7 +2319,8 @@ function scenarioAssumptions(
       // scenario state carrying only the amounts would inherit an accident of
       // one horizon. `settled` above stays the evidence; this is the assumption.
       ...(surplusRule(ledger) ? { surplusRule: surplusRule(ledger) } : {}),
-      ...(floorRule(ledger) ? { floorRule: floorRule(ledger) } : {}),
+      ...(floorRule(ledger, setup.floorDerivations)
+        ? { floorRule: floorRule(ledger, setup.floorDerivations) } : {}),
       ...(kind('CONTRIBUTION').length === 0
         ? { note: 'No contributions were in force. Do not describe this result as including '
             + 'any.' } : {}),
@@ -2085,7 +2448,8 @@ const SCENARIO_INPUTS = {
     description: 'Money moved from cash into investments OR toward a liability (`target`). HOW MUCH — exactly one of four: '
       + '`amount` in dollars, `fractionOfLiquid` for a share of the cash BALANCE, '
       + '`surplusFraction` for a share of what each month ADDS, or `liquidFloor` + '
-      + '`fractionOfExcess` for a share of the cash held ABOVE A FLOOR. WHEN: `amount` and '
+      + '`fractionOfExcess` for a share of the cash held ABOVE A FLOOR (the floor in dollars, or '
+      + 'as `liquidFloorMonthsOfExpenses` for "keep six months of expenses"). WHEN: `amount` and '
       + '`fractionOfLiquid` need either `onDate` for a one-off or `from` + `cadence` for a '
       + 'schedule; `surplusFraction` and the floor pair are monthly by nature and need neither.',
     items: obj({
@@ -2102,16 +2466,24 @@ const SCENARIO_INPUTS = {
         + '`cadence` or an `onDate`. The engine has no default share: when the user named one '
         + '("75%", "half") use it; when they said only "some" or "most", choose a share, run it, '
         + 'and say in the answer which share it was.'),
-      liquidFloor: num('The cash balance to KEEP, in dollars: 50000 for "keep $50k liquid". '
+      liquidFloor: num('The cash balance to KEEP, in DOLLARS THE USER STATED: 50000 for "keep $50k '
+        + 'liquid". When the user said it in months of expenses, use `liquidFloorMonthsOfExpenses` '
+        + 'instead and do not convert it to dollars yourself. '
         + 'Goes with `fractionOfExcess`. This is the one for "once I have X in cash, invest '
         + 'what is above it", "keep a buffer of X and invest the rest", "everything above X": '
         + 'at each month-end the share of cash above the floor moves into investments and '
         + 'cash is left AT the floor; while cash is at or below the floor nothing moves. It '
         + 'starts on its own the first month-end the balance is above the floor — do not '
         + 'derive a start date and pass `from`; do not use `surplusFraction` for this.'),
+      liquidFloorMonthsOfExpenses: num('The floor as MONTHS OF EXPENSES instead of dollars: 6 for '
+        + '"keep six months of expenses in cash". Resolved in code by the same monthly spending this '
+        + 'scenario runs at (`assumedMonthlySpending` when the user stated one, else the observed '
+        + 'level) and echoed under `floorRule.derivedFrom` with the dollars it became. Use INSTEAD of '
+        + '`liquidFloor`, never both, and never multiply spending by months yourself. Goes with '
+        + '`fractionOfExcess` exactly as `liquidFloor` does.'),
       fractionOfExcess: num('The share of cash ABOVE `liquidFloor` to move each month-end: 1 '
         + 'for "everything above it", 0.5 for "half of what is above it". Goes with '
-        + '`liquidFloor`.'),
+        + '`liquidFloor` or `liquidFloorMonthsOfExpenses`.'),
       target: { description: 'WHERE the money goes. `investments` (the default), '
           + '`highest_apr` (the liability with the highest known rate first — the avalanche; '
           + 'when it is cleared the same month\'s remainder continues to the next), or a '
@@ -2668,7 +3040,8 @@ const reconcileProjection: ToolDefinition = {
 // ── Registry ─────────────────────────────────────────────────────────────────
 
 export const TOOLS: readonly ToolDefinition[] = [
-  getFinancialSnapshot, getSpending, getTransactions, getIncome, getInvestments,
+  getFinancialSnapshot, getSpending, measureFlows, getBaselines, getTransactions, getIncome,
+  getInvestments,
   getNetWorthHistory, findInBalanceHistory, explainNetWorthComposition, projectCash,
   getPayDates, investmentScenario,
   scenarioProjection, scenarioCrossing, scenarioGoalSeek, reconcileProjection,

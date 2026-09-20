@@ -38,7 +38,7 @@ import {
   // W2 — DEBT_FRACTION_DOMINANT / DEBT_FRACTION_PARTIAL no longer imported:
   // their only consumers were the deleted intent rungs of the deficit ladder.
 } from './constants';
-import { computeAverageMonthlySpending, computeDebtStrategy, computeSpendingOpportunities, computeSpendingTrends, getAcctsData, getSnapData, getTxnData } from './metrics';
+import { computeAverageMonthlyIncome, computeAverageMonthlySpending, computeDebtStrategy, computeSpendingOpportunities, computeSpendingTrends, getAcctsData, getSnapData, getTxnData } from './metrics';
 import { deriveHeuristics, derivePriorities } from './rules';
 import { computeCapitalAllocation, computeInvestmentReadiness, computeRiskOpportunities, computeTrajectory } from './engines';
 import type { SpaceContext_AI } from '@/lib/ai/types';
@@ -124,9 +124,10 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
 
   // ── Step 2: Cash flow ────────────────────────────────────────────────────
 
-  const impliedMonthlyIncome: number | null = txn && windowDays > 0
-    ? Math.round((incomeTotal / windowDays * 30) * 100) / 100
-    : null;
+  // M1: the complete-month mean, on the SAME month population as the expense
+  // figure beside it. The former `incomeTotal / windowDays × 30` normalised by
+  // days while spending was a calendar-month mean — two bases under one label.
+  const impliedMonthlyIncome: number | null = computeAverageMonthlyIncome(txn);
 
   // KD-10: authoritative monthly spending (reliable-month average). Replaces the
   // window-normalized estimate that competed with the prompt context block.

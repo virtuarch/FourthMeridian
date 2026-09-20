@@ -66,6 +66,27 @@ test("ASSESS-2: non-finite input never becomes a baseline", () => {
   assert.equal(resolveExpenseBaseline({ declared: NaN, measured: 2_000 })?.basis, "MEASURED");
 });
 
+test("M1: what the user STATED in the conversation outranks both, and says so", () => {
+  // "Use $5k instead" is the user's explicit statement for THIS conversation. It
+  // outranks the product setting for the turn it was said in without becoming
+  // one — nothing here persists — and it is labelled STATED wherever it is used.
+  const b = resolveExpenseBaseline({ stated: 5_000, declared: 4_000, measured: 5_494.09 });
+  assert.equal(b?.amount, 5_000);
+  assert.equal(b?.basis, "STATED");
+
+  // A stated 0 (or NaN, or a negative) is not a baseline: it falls through the
+  // same positive-or-refuse rule every other rung obeys.
+  assert.equal(resolveExpenseBaseline({ stated: 0, declared: 4_000 })?.basis, "DECLARED");
+  assert.equal(resolveExpenseBaseline({ stated: NaN, measured: 2_000 })?.basis, "MEASURED");
+  assert.equal(resolveExpenseBaseline({ stated: -1 }), null);
+
+  // Callers that never state anything are unmoved.
+  assert.equal(resolveExpenseBaseline({ declared: 4_000, measured: 5_494.09 })?.basis, "DECLARED");
+
+  const fmt = (n: number) => `$${n.toLocaleString("en-US")}`;
+  assert.match(describeExpenseBaseline({ amount: 5_000, basis: "STATED" }, fmt), /this conversation/);
+});
+
 test("ASSESS-2: the description states which baseline was used", () => {
   const fmt = (n: number) => `$${n.toLocaleString("en-US")}`;
   const declared = describeExpenseBaseline({ amount: 4_000, basis: "DECLARED" }, fmt);

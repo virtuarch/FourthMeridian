@@ -190,6 +190,11 @@ export interface CashFlowSection {
   confidence:                   ConfidenceLevel;
   deficitCause:                 DeficitCauseClassification;
   transactionCompleteness:      CompletenessLevel;
+  /**
+   * M1 — mean observed INCOME per reliable (complete, untruncated) calendar
+   * month: the same month population as `estimatedMonthlyExpenses`. Never a
+   * window total normalised by days. Null when no reliable month exists.
+   */
   impliedMonthlyIncome:         number | null;
   estimatedMonthlyExpenses:     number | null;
   /** Annualized debt payment flow divided into monthly equivalent. Reliable when window is ≥ 30 days. */
