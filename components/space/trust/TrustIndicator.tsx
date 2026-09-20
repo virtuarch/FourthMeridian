@@ -16,8 +16,14 @@
  * FX). This primitive renders both without collapsing them.
  *
  * Variants:
- *   compact   — a tone-colored tier pill (+ a warning glyph); clickable → the
- *               shell Completeness popover when the envelope carries a reason.
+ *   compact   — a tone-colored tier pill (+ a warning glyph), rendered ONLY when
+ *               something is noteworthy — the same rule `inline` has always had.
+ *               The clean tier ("Observed") says nothing a reader needs beside a
+ *               headline figure, so on the Overview heroes it is silent; a tier
+ *               that changes how the number should be read (Reconstructed /
+ *               Estimated / Incomplete / Unavailable) or an orthogonal caveat
+ *               (FX, syncing) still shows. Clickable → the Completeness popover
+ *               when the envelope carries a reason.
  *   inline    — a muted caveat LINE, rendered ONLY when something is noteworthy
  *               (tier is not the positive/observed tier, or a warning is present).
  *               The honest replacement for a workspace's "≈ …" / reason note.
@@ -82,13 +88,17 @@ export function TrustIndicator({ envelope, variant = "compact", showEvidence = f
     );
   }
 
+  // ── compact: silent on the clean tier — a caveat earns the space, "Observed" does not.
+  if (variant === "compact" && !noteworthy) return null;
+  const showTier = !!completeness && (variant === "expanded" || completeness.tone !== "positive");
+
   // ── compact / expanded: a tier pill, with orthogonal warning + evidence ───────
   const warned = warnings.length > 0;
   const warnTitle = warnings.map((w) => w.detail ?? w.label).join("\n");
 
   return (
     <span className={["inline-flex flex-wrap items-center gap-1.5", className].join(" ")}>
-      {completeness && (
+      {showTier && completeness && (
         <button
           type="button"
           onClick={canPopover ? () => setPopoverOpen(true) : undefined}

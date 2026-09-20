@@ -9,9 +9,10 @@
  *
  *   Container 2 — "the lens" (lighter, --border-hairline):
  *     PerspectiveTabs (one SegmentedControl track)
- *   Container 1 — "time & trust":
- *     TimelineLens (the ONE canonical time selector) · ShellTrustRow
- *       (Completeness · Evidence · orthogonal warnings)
+ *   Container 1 — "time":
+ *     TimelineLens (the ONE canonical time selector — a compact period trigger
+ *       + the resolved range) · ShellTrustRow (orthogonal caveats ONLY, and only
+ *       when one exists — the Completeness / Evidence chips no longer sit here)
  *
  * SHELL_NAV redesign (§2.2): the lens tab track now sits ABOVE the time/trust +
  * period-preset block — you pick the lens first, then read/adjust time beneath
@@ -123,63 +124,21 @@ export function PerspectiveShell(props: Props) {
         />
       </div>
 
-      {/* Container 1 — time & trust, LIGHTENED (M3-Reset).
-          The temporal capability (As of / Compare to / Completeness / Evidence +
-          presets) is UNCHANGED, but it no longer sits in a heavy bordered glass
-          instrument panel — the controls sit inline on the page, like the
-          prototype's light TimeBar, so a lens reads as an editorial surface, not
-          a dashboard control deck. Nothing about asOf/compareTo/evidence semantics
-          changes; this is purely the surrounding chrome. */}
-      <div className="@container space-y-3 px-1">
-        {/* ONE canonical time selector, unconditionally. The As-of/⇄/Compare-to
-            row and the preset strip both collapsed into TimelineLens; the trust
-            chips sit beside it, unchanged — data honesty and time window are
-            separate concerns and the chips were never temporally gated.
+      {/* Container 1 — time. ONE canonical time selector, unconditionally, as two
+          compact controls (period trigger + resolved range) — see TimelineLens.
+          temporalCapability still gates the lens's explicit boundary fields
+          (capabilityForLens); the period choice itself remains UNIVERSAL — never
+          capability-gated, because the `period` axis describes interpretation,
+          not availability.
 
-            temporalCapability still gates the lens's explicit boundary fields
-            (capabilityForLens), exactly as it gated the old date inputs. The
-            period choice itself remains UNIVERSAL — never capability-gated,
-            because the `period` axis describes interpretation, not availability. */}
-        {/* Centred once the trust chips wrap beneath the lens, spread while the
-            two still share a row. Left-aligning a wrapped stack under a
-            full-width header reads as an accident; centring reads as a
-            deliberate narrow layout.
-
-            A CONTAINER query, not a viewport breakpoint: the wrap depends on how
-            much room this row actually has, which is the viewport MINUS the
-            space rail and page padding. Keyed to the viewport it would drift the
-            moment the rail's width changes or a workspace renders at a different
-            inset.
-
-            850px is the WIDEST perspective's requirement, not the average one.
-            The trust row is content-sized and varies a lot by perspective,
-            because the completeness LABEL varies: Cash Flow reads "Complete
-            within transaction depth" where Net Worth reads "Observed". Measured
-            chip widths — completeness 176 (Observed) vs 313 (Cash Flow's), and
-            evidence 106 ("—") vs 177 ("365 snapshots"). So the widest pairing is
-            313 + gap-2 (8) + 177 = 498 of chips, and 340 (lens max-w) + gap-3
-            (12) + 498 = 850 before the two can no longer share a line.
-
-            Keyed to the narrower 714 that Net Worth alone needs, Cash Flow wraps
-            at 850 but keeps space-between down to 714 — wrapped AND left-
-            aligned, which is exactly the artefact this block exists to remove.
-
-            The cost of taking the widest number is that narrow-chip
-            perspectives centre before they strictly must. Measured bands where
-            the row is centred but would still have fit inline: Cash Flow
-            778–850, Net Worth 714–850, Debt 693–850, Liquidity 599–850 — so
-            Liquidity, the narrowest, carries the most, up to ~125px of inset per
-            side at the top of its band. That is the deliberate direction to err:
-            centring slightly early is a cosmetic softness, whereas left-
-            aligning a wrapped stack is the visible defect. Flex exposes no
-            wrap-aware selector, so one number has to serve every perspective.
-
-            Residual, knowingly accepted: a space carrying an orthogonal warning
-            chip (an FX caveat) adds ~170 + gap and needs ~1028, so it can still
-            wrap while spread between 850 and 1028. Raising the threshold that
-            far would centre the row on ordinary laptop widths, which is a worse
-            trade than the rare warning case. Re-measure before changing it. */}
-        <div className="flex flex-wrap items-start justify-center @min-[850px]:justify-between gap-3">
+          The row is centred under the centred lens tabs and wraps on its own, so
+          it needs no breakpoint. (The former container query and its measured
+          850px threshold existed only to stop the always-on Completeness /
+          Evidence chips wrapping left-aligned beneath a 340px card; with both
+          gone there is nothing wide enough to need it.) A caveat chip, when one
+          exists, joins the same wrapping row. */}
+      <div className="px-1">
+        <div className="flex flex-wrap items-center justify-center gap-2">
           <TimelineLens
             activeOptionId={deriveActiveOptionId(props.timeState)}
             boundaries={deriveBoundaries(props.timeState)}
@@ -190,7 +149,7 @@ export function PerspectiveShell(props: Props) {
             boundaryError={boundaryError}
             onIntent={handleTimelineIntent}
           />
-          <ShellTrustRow envelope={props.envelope} className="" />
+          <ShellTrustRow envelope={props.envelope} />
         </div>
       </div>
     </div>

@@ -3,32 +3,29 @@
 /**
  * components/atlas/TimelineLens/TimelineLens.tsx
  *
- * The closed readout: what lens am I looking through? Period, exact boundaries,
- * and — when the consumer supports one — a note about the opening boundary.
- * Opens the Atlas LeftPanel (context / control, per the panel doctrine) for
- * editing.
+ * The closed readout, as TWO compact controls instead of one card:
+ *
+ *   [ ▦ 1 month ▾ ]   [ Aug 20, 2026 → Sep 20, 2026 ]
+ *
+ *   • the PERIOD trigger — the one interactive element. It opens the Atlas
+ *     LeftPanel (context / control, per the panel doctrine), which still owns
+ *     every period option, the exact-boundary fields, swap/clear and the
+ *     return-to-present escape hatch. Nothing about editing moved.
+ *   • the RESOLVED RANGE — informational, not a second selector. It prints the
+ *     parent's `summary.rangeLabel` verbatim; this component resolves no dates.
+ *
+ * The old readout was a three-row card (anchor eyebrow · period · range) that
+ * out-weighed the content beneath it. The "AS OF TODAY" eyebrow is gone from the
+ * closed state: the range already shows the endpoint and the period names the
+ * window. The vantage point is NOT lost — a historical anchor tints the range
+ * pill (the state a user can otherwise forget they are in), and the panel still
+ * names the anchor in words and offers the way back to the present.
  *
  * Every displayed value is derived by the parent. The only state here is `open`.
  *
- * Typography note: Atlas defines --font-ui and --font-data only; there is no
- * serif token in the design language. The editorial weight comes from scale,
- * leading, and tracking. Earlier drafts referenced a --font-serif that does not
- * exist and silently fell back to sans.
- *
- * DENSITY (visual refinement — no behaviour, contract, or layout-ownership
- * change): the closed readout was reading as a hero card next to the 28px
- * workspace tabs. Only three levers moved — container vertical padding
- * (py-3.5 → py-2), icon container (h-9/36px → h-8/32px, with the grid column
- * tracking it), and the text stack's internal gap (gap-1 → gap-0.5). Type scale,
- * weights, and the eyebrow → title → range hierarchy are untouched.
- *
- * The floor is the text itself: eyebrow 15px + title 21.85px + range 16.5px is
- * 53.35px of line boxes before any padding or gap. A target of ~2x the 28px tab
- * row (~56px) is therefore not reachable without shrinking the type, which would
- * trade the hierarchy for the height. ~75px (3-row state) is the honest minimum
- * that keeps the hierarchy intact; the 4-row state (comparison label shown) sits
- * ~19px taller. Do not close the remaining gap by dropping a row or reducing the
- * title — the readout's whole job is saying which lens you are looking through.
+ * Both controls are h-9 (36px) — a reasonable touch target — and sit in a
+ * wrapping row, so at narrow widths the range drops beneath the trigger instead
+ * of overflowing or re-forming a card.
  */
 
 import { useId, useState } from "react";
@@ -52,6 +49,7 @@ export function TimelineLens({
 }: TimelineLensProps) {
   const [open, setOpen] = useState(false);
   const summaryId = useId();
+  const periodId = useId();
 
   // Choosing a period is a complete action — the same single click the segmented
   // slicer costs today — so apply it and get out of the way. Boundary edits need
@@ -62,7 +60,7 @@ export function TimelineLens({
   }
 
   return (
-    <div className={`w-full max-w-[340px] sm:shrink-0 ${className}`}>
+    <div className={`flex max-w-full min-w-0 flex-wrap items-center gap-2 ${className}`}>
       <GlassPanel
         as="button"
         type="button"
@@ -73,44 +71,40 @@ export function TimelineLens({
         disabled={disabled}
         onClick={() => setOpen(true)}
         aria-label={ariaLabel}
-        aria-describedby={summaryId}
+        // The label names the ACTION; the description carries the current state —
+        // the selected period, then the range it resolves to.
+        aria-describedby={`${periodId} ${summaryId}`}
         aria-haspopup="dialog"
         aria-expanded={open}
-        className="w-full border-l-2 border-l-[var(--meridian-400)] px-3.5 py-2 text-left disabled:cursor-not-allowed disabled:opacity-50"
-        contentClassName="grid w-full min-w-0 grid-cols-[32px_minmax(0,1fr)_16px] items-start gap-3"
+        data-timeline-period
+        className="h-9 shrink-0 px-3 text-left disabled:cursor-not-allowed disabled:opacity-50"
+        contentClassName="flex h-full items-center gap-2"
       >
-        <span
-          className="grid h-8 w-8 place-items-center rounded-[var(--radius-md)] border border-[var(--border-hairline)] bg-[var(--surface-inset)] text-[var(--meridian-400)]"
-          aria-hidden
-        >
-          <CalendarRange size={16} strokeWidth={1.6} />
-        </span>
-
-        <span id={summaryId} className="grid min-w-0 gap-0.5">
-          {/* The eyebrow names the VANTAGE POINT, not a generic verb. A bare
-              range shows both dates without saying which one you are standing
-              on; this resolves that. Emphasised when the anchor is historical,
-              because that is the state a user can otherwise forget they are in. */}
-          <span
-            className={`text-[10px] font-semibold uppercase tracking-[0.14em] ${
-              summary.anchoredToPresent ? "text-[var(--text-faint)]" : "text-[var(--meridian-400)]"
-            }`}
-          >
-            {summary.anchorLabel}
-          </span>
-          <strong className="truncate text-[19px] font-normal leading-[1.15] tracking-[-0.01em] text-[var(--text-primary)]">
-            {summary.periodLabel}
-          </strong>
-          <span className="truncate text-[11px] tabular-nums text-[var(--text-muted)]">
-            {summary.rangeLabel}
-          </span>
-          {capability.comparison && summary.comparisonLabel && (
-            <span className="truncate text-[11px] text-[var(--text-faint)]">{summary.comparisonLabel}</span>
-          )}
-        </span>
-
-        <ChevronDown size={16} strokeWidth={1.6} className="mt-5 text-[var(--text-faint)]" aria-hidden />
+        <CalendarRange size={14} strokeWidth={1.6} className="shrink-0 text-[var(--meridian-400)]" aria-hidden />
+        <strong id={periodId} className="whitespace-nowrap text-[13px] font-medium text-[var(--text-primary)]">
+          {summary.periodLabel}
+        </strong>
+        <ChevronDown size={14} strokeWidth={1.6} className="shrink-0 text-[var(--text-faint)]" aria-hidden />
       </GlassPanel>
+
+      {/* The resolved range — a readout, deliberately not a control. A historical
+          anchor tints it, which is the closed state's only vantage-point cue. */}
+      <span
+        id={summaryId}
+        data-timeline-range
+        data-anchored={summary.anchoredToPresent ? "present" : "past"}
+        className={`inline-flex h-9 min-w-0 max-w-full items-center rounded-[var(--radius-lg)] border bg-[var(--surface-inset)] px-3 text-[12px] tabular-nums ${
+          summary.anchoredToPresent
+            ? "border-[var(--border-hairline)] text-[var(--text-muted)]"
+            : "border-[var(--meridian-400)] text-[var(--text-primary)]"
+        }`}
+      >
+        <span className="truncate">{summary.rangeLabel}</span>
+      </span>
+
+      {capability.comparison && summary.comparisonLabel && (
+        <span className="min-w-0 truncate text-[11px] text-[var(--text-faint)]">{summary.comparisonLabel}</span>
+      )}
 
       <TimelineLensPanel
         open={open}

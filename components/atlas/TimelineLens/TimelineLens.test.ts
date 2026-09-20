@@ -160,9 +160,25 @@ console.log("5. Contract — intent surface and prior-iteration regressions");
   check("returnToPresent is an anchor action, never a period option",
     !/optionId:\s*["'`]today["'`]/i.test(panel));
 
-  // TIME-1B: the anchor must be NAMED, not merely visible as a range endpoint.
+  // TIME-1B: the anchor must be NAMED, not merely visible as a range endpoint —
+  // in the PANEL, where the anchor is edited and the way back to the present
+  // lives. The CLOSED readout deliberately dropped its "AS OF TODAY" eyebrow
+  // (Overview header cleanup): the range already shows the endpoint. What it
+  // keeps is the historical CUE, structurally, on the range pill.
   check("the summary names the anchor", /anchorLabel:\s*string/.test(types));
-  check("the closed readout renders the anchor label", lens.includes("summary.anchorLabel"));
+  check("the PANEL still renders the anchor label", panel.includes("summary.anchorLabel"));
+  check("the closed readout no longer renders an 'As of …' label", !lens.replace(/\/\*[\s\S]*?\*\//g, "").includes("summary.anchorLabel"));
+  check("…but still marks a historical anchor on the range pill",
+    lens.includes('data-anchored={summary.anchoredToPresent ? "present" : "past"}'));
+  check("the closed readout is TWO controls: a period trigger and a separate, non-interactive range",
+    lens.includes("data-timeline-period") && lens.includes("data-timeline-range")
+      && /<span\s+id=\{summaryId\}\s+data-timeline-range/.test(lens) && (lens.match(/<GlassPanel/g) ?? []).length === 1);
+  check("the range is the PARENT's resolved label — the component computes no dates", lens.includes("{summary.rangeLabel}"));
+  check("the period label is inside the trigger, the range is not",
+    /<GlassPanel[\s\S]*?\{summary\.periodLabel\}[\s\S]*?<\/GlassPanel>/.test(lens)
+      && !/<GlassPanel[\s\S]*?\{summary\.rangeLabel\}[\s\S]*?<\/GlassPanel>/.test(lens));
+  check("no oversized card: both controls are h-9 in a wrapping row, no fixed 340px column",
+    (lens.match(/\bh-9\b/g) ?? []).length >= 2 && lens.includes("flex-wrap") && !lens.includes("max-w-[340px]"));
   check("the readout no longer shows a generic verb in place of the anchor",
     !lens.includes(">\n            Viewing"));
   check("props carry maxDate", /maxDate:\s*string/.test(types));
