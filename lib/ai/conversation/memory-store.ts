@@ -37,6 +37,7 @@
 
 import { db } from '@/lib/db';
 import { MemoryKind, MemoryStatus } from '@prisma/client';
+import { MEMORY_VERSION, validateShape } from './memory-model';
 
 export { MemoryKind, MemoryStatus };
 
@@ -203,6 +204,12 @@ export async function rememberMemory(
     return { stored: false, reason: 'a memory needs the words it was stated in' };
   }
 
+  // ⚠️ A PROJECTION IS NOT SOMETHING ANYBODY STATES. The four checkpoints a model
+  // ever wrote through this path were all scenario results — hypotheticals stored
+  // as "what we said". Only `recordProjection`, called by the turn loop on an
+  // evidence-based `project_cash` result, writes one.
+  if (args.kind === MemoryKind.CHECKPOINT) return { stored: false, reason: PROJECTIONS_ARE_AUTOMATIC };
+
   const valid = validatePayload(args.kind, args.payload);
   if (!valid.ok) return { stored: false, reason: valid.reason, allowedKeys: valid.allowedKeys };
 
@@ -222,6 +229,17 @@ export async function rememberMemory(
     }
   }
 
+  return writeSuperseding(scope, { ...args, subject, statedAs: args.statedAs.trim() });
+}
+
+/**
+ * Create one row, superseding the owner's ACTIVE row on the same (kind, subject).
+ * One transaction; nothing is edited in place.
+ */
+async function writeSuperseding(
+  scope: MemoryScope, args: RememberArgs,
+): Promise<Extract<RememberResult, { stored: true }>> {
+  const { subject } = args;
   const written = await db.$transaction(async (tx) => {
     const prior = await tx.spaceMemory.findFirst({
       where: { spaceId: scope.spaceId, ownerUserId: scope.ownerUserId,
@@ -261,4 +279,49 @@ export async function rememberMemory(
       supersedesId: written.created.supersedesId,
     },
   };
+}
+
+// ── Projections — written by code, never on a caller's say-so ────────────────
+
+export const PROJECTIONS_ARE_AUTOMATIC =
+  'Projections are recorded automatically when the deterministic cash projection states one from '
+  + 'observed evidence. A hypothetical result is never remembered. To keep the plan behind it, record '
+  + 'what the user stated: their rule, their planning figure or their goal.';
+
+export interface ProjectionStatement {
+  /** `<metric>-<horizon>`: one ACTIVE statement per horizon, the rest in its chain. */
+  subject:  string;
+  /** What was measured. `liquid` = checking plus savings. */
+  metric:   'liquid';
+  horizon:  string;
+  value:    number;
+  /** Copied from the projection's own basis block. The key set is closed by the model. */
+  basis:    Record<string, unknown>;
+  statedAs: string;
+  statedAt: string;
+}
+
+/**
+ * Record what a projection SAID. The ONLY writer of a PROJECTION, and only the
+ * turn loop calls it.
+ *
+ * ⚠️ NOT REACHABLE FROM A TOOL ARGUMENT. `remember` has no projection shape and
+ * `rememberMemory` refuses the kind: a model that could mint "what we said" could
+ * record a scenario result — a hypothetical — as a statement, which is exactly
+ * what the four model-written checkpoints on record were. The payload is
+ * validated by the same pure function every reader uses, so `basis` cannot carry
+ * a key the code writer does not write.
+ */
+export async function recordProjection(
+  scope: MemoryScope, p: ProjectionStatement,
+): Promise<RememberResult> {
+  const payload = { v: MEMORY_VERSION, class: 'PROJECTION',
+    metric: p.metric, horizon: p.horizon, value: p.value, basis: p.basis };
+  const shape = validateShape(payload);
+  if (!shape.ok) return { stored: false, reason: shape.reason };
+  if (p.subject !== `${p.metric}-${p.horizon}`) return { stored: false, reason: 'a projection is filed under its metric and horizon' };
+  return writeSuperseding(scope, {
+    kind: MemoryKind.CHECKPOINT, subject: p.subject,
+    payload, statedAs: p.statedAs, statedAt: p.statedAt,
+  });
 }

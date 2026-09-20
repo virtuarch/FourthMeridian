@@ -29,9 +29,11 @@ import {
   PROVENANCE, MAX_EXPANDED_CONTRIBUTIONS,
 } from '@/lib/ai/conversation/scenario-ledger';
 import { compactToolHistory, DEFAULT_COMPACTION } from '@/lib/ai/conversation/compaction';
-import { WRITE_TOOL_NAME } from '@/lib/ai/conversation/memory-tools';
-import { validatePayload, MemoryKind } from '@/lib/ai/conversation/memory-store';
-import { fieldNames as memoryFieldNames, GOAL_METRICS } from '@/lib/ai/conversation/memory-model';
+import { WRITE_TOOL_NAME, projectionStatement } from '@/lib/ai/conversation/memory-tools';
+import { validatePayload, rememberMemory, MemoryKind } from '@/lib/ai/conversation/memory-store';
+import {
+  fieldNames as memoryFieldNames, GOAL_METRICS, validateShape, PROJECTION_BASIS_KEYS,
+} from '@/lib/ai/conversation/memory-model';
 import { CONTRIBUTION_KEYS, ALLOCATION_TARGET_WORDS } from '@/lib/ai/conversation/scenario-rules';
 import {
   compareToStatement, diffBasis, readCheckpoint, ON_TRACK_BAND,
@@ -1958,6 +1960,46 @@ console.log('20a. checkpoint-on-projection');
     /checking plus savings/.test(read('lib/ai/conversation/memory-tools.ts')));
   check('the conversation\'s clock is what a statement is dated with',
     /statedAt: ctx\.asOfISO/.test(mt));
+
+  // ── Memory V2 — only an evidence-based statement is a statement ───────────
+  //
+  // ⚠️ FIXTURES OF `project_cash`'s RESULT SHAPE, so a re-shaping of the three
+  // fields the writer copies (`projection.endingCash`, `horizon.to`,
+  // `projection.basis.spending.source`) fails here instead of silently ending
+  // checkpoints — or silently recording the wrong thing.
+  const cashResult = (over: Record<string, unknown> = {}, spending: Record<string, unknown> = { source: 'OBSERVED', dailyRate: 142.89, monthsAveraged: ['2026-07', '2026-08'] }) => ({
+    horizon: { asOf: '2026-09-20', to: '2026-12-31', days: 102 },
+    projection: { endingCash: 51598.84, basis: { openingCash: 13330.97, incomeEventsCounted: 7, spending } },
+    appliedUserFacts: [], ...over });
+  const observed = projectionStatement('project_cash', cashResult(), '2026-09-20');
+  check('an OBSERVED projection is a statement: liquid, its horizon, its ending balance',
+    observed?.subject === 'liquid-2026-12-31' && observed.metric === 'liquid' && observed.value === 51598.84 && observed.horizon === '2026-12-31');
+  check('…with the closed, code-written basis — it reads back through the one validator',
+    !!observed && validateShape({ v: 2, class: 'PROJECTION', metric: observed.metric, horizon: observed.horizon, value: observed.value, basis: observed.basis }).ok
+      && Object.keys(observed.basis).every((k) => (PROJECTION_BASIS_KEYS as readonly string[]).includes(k)));
+  check('a projection resting on a USER-STATED figure is a hypothetical, and is NOT recorded',
+    projectionStatement('project_cash', cashResult({ appliedUserFacts: ['spending baseline 5000 USD'] },
+      { source: 'USER_STATED', statedAs: ['spending baseline 5000 USD'] }), '2026-09-20') === null);
+  check('a retrospective run is still not a statement',
+    projectionStatement('project_cash', cashResult({ retrospective: true }), '2026-09-20') === null);
+  const windowed = cashResult({ interval: { from: '2027-01-01', to: '2027-12-31', days: 365,
+    cashAtStart: { date: '2026-12-31', amount: 51598.84 }, cashAtEnd: { date: '2027-12-31', amount: 66733.35 }, cashChange: 15134.51 } });
+  check('an INTERVAL projection is never recorded as an ending balance',
+    projectionStatement('project_cash', windowed, '2026-09-20') === null);
+  check('a scenario result is never a statement, whatever it carries',
+    projectionStatement('scenario_' + 'projection', cashResult(), '2026-09-20') === null);
+  check('a result without the fields the writer copies fails SAFE (no statement)',
+    projectionStatement('project_cash', { horizon: { to: '2026-12-31' }, projection: {} }, '2026-09-20') === null
+      && projectionStatement('project_cash', { projection: { endingCash: 1 } }, '2026-09-20') === null);
+  check('the turn loop\'s writer is the store\'s code-only entry point',
+    /recordProjection\(scopeOf\(ctx\)/.test(mt) && !/rememberMemory\([^)]*CHECKPOINT/.test(mt));
+  check('`remember` offers no projection shape',
+    !JSON.stringify(findTool('remember')!.parameters).includes('CHECKPOINT'));
+  const minted = await rememberMemory({ spaceId: 'none', ownerUserId: 'none' }, { kind: MemoryKind.CHECKPOINT,
+    subject: 'net-worth-2027-06-30', payload: { metric: 'net-worth', horizon: '2027-06-30', value: 88617.84, basis: { surplusRule: 'x' } },
+    statedAs: 'a scenario result' });
+  check('…and the store refuses one from any caller but the turn loop (before touching the database)',
+    !minted.stored && /recorded automatically/.test(minted.reason));
 
   // ── The tool ─────────────────────────────────────────────────────────────
   const tool = findTool('reconcile_projection');

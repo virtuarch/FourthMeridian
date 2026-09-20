@@ -27,7 +27,7 @@
 
 import { db } from '@/lib/db';
 import {
-  recallMemories, rememberMemory, MemoryKind, MemoryStatus,
+  recallMemories, rememberMemory, recordProjection, MemoryKind, MemoryStatus,
 } from '@/lib/ai/conversation/memory-store';
 
 let failures = 0;
@@ -118,22 +118,23 @@ async function main(): Promise<void> {
     check('…without disturbing the intention it belongs to',
       (await recallMemories(A, { kind: MemoryKind.INTENTION })).length === 1);
 
-    // ── A checkpoint is a dated statement, never a balance ─────────────────
-    const cp = await rememberMemory(A, {
-      kind: MemoryKind.CHECKPOINT, subject: 'cash-2026-12-31',
-      payload: { metric: 'cash', horizon: '2026-12-31', value: 38_243.5,
-        basis: { spendingSource: 'OBSERVED', dailyRate: 142.9 } },
-      statedAs: 'you are tracking toward about $38.2K by year end',
+    // ── A projection is a dated statement, written by code only ─────────────
+    const cp = await recordProjection(A, {
+      subject: 'liquid-2026-12-31', metric: 'liquid', horizon: '2026-12-31', value: 38_243.5,
+      basis: { spendingSource: 'OBSERVED', dailyRate: 142.9 },
+      statedAs: 'Projected 38243.5 liquid (checking plus savings) for 2026-12-31.', statedAt: '2026-09-20',
     });
-    check('a checkpoint with a horizon is stored', cp.stored);
+    check('a projection with a horizon is stored by the code-only entry point', cp.stored);
     check('…and carries the date it was said on',
-      cp.stored && typeof cp.memory.statedAt === 'string' && cp.memory.statedAt.length >= 10);
-    const noHorizon = await rememberMemory(A, {
+      cp.stored && cp.memory.statedAt.slice(0, 10) === '2026-09-20');
+    check('…and a basis key the code writer does not write is refused',
+      !(await recordProjection(A, { subject: 'liquid-2027-06-30', metric: 'liquid', horizon: '2027-06-30', value: 1,
+        basis: { surplusRule: 'all of it' }, statedAs: 'x', statedAt: '2026-09-20' })).stored);
+    const minted = await rememberMemory(A, {
       kind: MemoryKind.CHECKPOINT, subject: 'cash-now',
-      payload: { metric: 'cash', value: 12_382.81 }, statedAs: 'you have $12,382.81',
+      payload: { metric: 'cash', horizon: '2026-12-31', value: 12_382.81 }, statedAs: 'a scenario result',
     });
-    check('…and one without a horizon is refused, because that is a balance',
-      !noHorizon.stored);
+    check('…and no caller can mint one through the stated-memory path', !minted.stored);
 
     // ── Refusals, at the edges ─────────────────────────────────────────────
     check('a memory with no subject is refused',
