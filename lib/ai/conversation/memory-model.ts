@@ -377,7 +377,10 @@ export function readMemory(row: Pick<MemoryRow, 'kind' | 'payload'>): ReadMemory
     if (!shape.ok) return { readable: false, tombstone: false, why: shape.reason };
     if (KIND_OF_CLASS[shape.cls] !== row.kind) return { readable: false, tombstone: false, why: `a ${shape.cls} is not stored under ${row.kind}` };
     if ('tombstone' in shape) return { readable: false, tombstone: true, why: 'a retirement marker' };
-    return { readable: true, cls: shape.cls, fields: shape.fields, legacy: false };
+    // Postgres `jsonb` does not keep key order; every reader sees the class's declared order.
+    const order = shape.cls === 'PROJECTION' ? [] : Object.keys(FIELDS[shape.cls]);
+    const fields = { ...Object.fromEntries(order.filter((k) => k in shape.fields).map((k) => [k, shape.fields[k]])), ...shape.fields };
+    return { readable: true, cls: shape.cls, fields, legacy: false };
   }
 
   const no = (why: string): ReadMemory => ({ readable: false, tombstone: false, why });
@@ -738,8 +741,10 @@ export function admitWrite(a: AdmitArgs): Verdict {
 // ── Refusals that teach ──────────────────────────────────────────────────────
 
 export const EXAMPLES: Record<StatedClass, Record<string, unknown>> = {
-  RULE: { subject: 'cash-strategy', statedAs: 'Keep six months of expenses, pay highest-APR debt first, then invest the rest',
-    rule: { liquidFloorMonthsOfExpenses: 6, fractionOfExcess: 1, target: ['highest_apr', 'investments'] } },
+  // ⚠️ A FLOOR ALONE, ON PURPOSE. The first live run stored `fractionOfExcess` and a
+  // debt-first `target` for a user who had said only "keep six months of expenses in
+  // cash" — copied from a three-clause example. An example is a template.
+  RULE: { subject: 'cash-buffer', statedAs: 'Keep six months of expenses in cash', rule: { liquidFloorMonthsOfExpenses: 6 } },
   BASELINE: { subject: 'planning-spending', statedAs: 'Use $5k monthly spending for planning', baseline: { monthlySpending: 5000 } },
   GOAL: { subject: 'net-worth-target', statedAs: 'I want $1M of net worth by the end of 2030',
     goal: { targetMetric: 'netWorth', targetAmount: 1000000, byDate: '2030-12-31' } },

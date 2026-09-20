@@ -88,6 +88,7 @@ import type { SpaceContext } from '@/lib/space';
 // reach db.spaceMemory and nothing else". One loose assertion covering both
 // would have protected neither.
 import { MEMORY_TOOLS } from './memory-tools';
+import type { TurnEvidence } from './memory-model';
 // ⚠️ READING memory, never writing it. `recallMemories` is the store's read half;
 // the write half lives in the turn loop (slice 7) and in `remember`. This file
 // still holds no Prisma client, which a test asserts.
@@ -122,6 +123,13 @@ export interface ToolContext {
   spaceId:  string;
   /** The clock for the whole run, so two tools can never disagree about today. */
   asOfISO:  string;
+  /**
+   * Who said what in this turn — set by the turn loop, read ONLY by `remember`'s
+   * provenance gate. Optional and harness-safe: a context built without it still
+   * runs every tool, and a memory write carrying money then fails closed. It is
+   * never sent to the model and no financial tool reads it.
+   */
+  turn?:    TurnEvidence;
 }
 
 export interface ToolDefinition {

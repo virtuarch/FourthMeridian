@@ -19,13 +19,15 @@
 
 import type { ToolDefinition } from './tools';
 import {
-  recallMemories, rememberMemory, recordProjection, MemoryKind, PROJECTIONS_ARE_AUTOMATIC,
-  type MemoryPayload, type MemoryScope, type ProjectionStatement,
+  recallMemories, rememberStated, recordProjection, PROJECTIONS_ARE_AUTOMATIC,
+  type MemoryScope, type ProjectionStatement,
 } from './memory-store';
 import {
-  STATED_CLASSES, SHAPE_KEY, REMEMBERED, readMemory, stateOf, describeMemory,
-  type MemoryClass, type MemoryRow,
+  STATED_CLASSES, SHAPE_KEY, REMEMBERED, GOAL_METRICS, EXAMPLES, readMemory, stateOf, describeMemory, expectedFrom,
+  admitWrite,
+  type MemoryClass, type MemoryRow, type Fields,
 } from './memory-model';
+import { ALLOCATION_TARGET_WORDS } from './scenario-rules';
 
 const obj = (props: Record<string, unknown>, required: string[] = []) =>
   ({ type: 'object', properties: props, required, additionalProperties: false });
@@ -144,9 +146,6 @@ export async function checkpointProjection(
   }
 }
 
-const KIND_VALUES = Object.values(MemoryKind);
-/** What a caller may write. A CHECKPOINT is written by the turn loop only. */
-const STATED_KINDS = KIND_VALUES.filter((k) => k !== MemoryKind.CHECKPOINT);
 
 const CLASS_VALUES: readonly MemoryClass[] = [...STATED_CLASSES, 'PROJECTION'];
 
@@ -235,57 +234,134 @@ const recall: ToolDefinition = {
   },
 };
 
+const num = (description: string) => ({ type: 'number', description });
+const shape = (props: Record<string, unknown>, description: string) =>
+  ({ type: 'object', properties: props, additionalProperties: false, description });
+
+/** The shape keys, in the order a refusal names them. */
+const SHAPES = STATED_CLASSES.map((c) => [c, SHAPE_KEY[c]] as const);
+
+/**
+ * `remember` — record, amend or retire ONE thing the user stated.
+ *
+ * ⚠️ THE CLASS IS NAMED BY WHICH PROPERTY IS PRESENT, so a class and a shape
+ * cannot disagree. ⚠️ THE `rule` PROPERTIES ARE ENUMERATED, NOT DESCRIBED: of 138
+ * first attempts at a rule in the recorded traces, 4 used the contract's exact
+ * key and the dominant wrong one was `monthsOfExpenses` — a key the model had to
+ * guess because the schema said `additionalProperties: true` and named shapes in
+ * prose. A key it can read is a key it does not have to invent.
+ *
+ * ⚠️ AND A REFUSAL HANDS BACK THE RIGHT SHAPE, NEVER A LIST OF MISSING KEYS. "an
+ * INTENTION needs intent + amount + label" is the sentence that produced
+ * `amount: 0`: 32 of the 45 rows stored after a refusal carried a coerced amount.
+ */
 const remember: ToolDefinition = {
   name: 'remember',
   description:
-    'Record ONE thing this user decided, assumed, or that we projected, so a later session ' +
-    'can pick it up. Use it when they state a goal ("I want $1M by 2030"), a plan ("a car ' +
-    'around 20k in 2027"), or when they change one. A later memory on the same subject ' +
-    'supersedes the earlier one and the history is kept. It stores intentions and dated ' +
-    'statements ONLY — never a balance, a holding or anything you read from another tool.',
+    'Record ONE thing this user asked you to remember, so a later session can pick it up — or change or ' +
+    'withdraw one. Use it when they say to remember a goal ("I want $1M by 2030"), a planned expense ("a car ' +
+    'around 20k in 2027"), a standing rule ("keep six months of expenses in cash"), or a planning figure ' +
+    '("use $5k monthly spending for planning"). Give exactly one of ' +
+    '`goal`, `plannedExpense`, `rule`, `baseline`. Store what they SAID: a multiple stays a multiple (six ' +
+    'months is `liquidFloorMonthsOfExpenses: 6`, never the dollars it works out to), and a money value must be ' +
+    'a figure they stated — never a balance, a projection or anything you read from another tool. Leave out ' +
+    'every field they did not say: a floor alone is a complete rule. When they change part of something remembered, use `op: "amend"` with `set`; when ' +
+    'they withdraw it, `op: "retire"`. Remembering never runs or applies anything.',
   parameters: obj({
-    kind: { type: 'string', enum: STATED_KINDS,
-      description: 'INTENTION for a decision or goal. ASSUMPTION only when it belongs to an '
-        + 'intention or checkpoint that already exists on the same subject. Projections are '
-        + 'recorded automatically and cannot be written here.' },
-    subject: str('A short stable key for what this is about: "net-worth-target", '
-      + '"summer-2027-spending", "car". Re-use it to update the same thing.'),
-    payload: { type: 'object', additionalProperties: true,
-      description: 'INTENTION: {targetMetric, targetAmount, byDate} or {intent, amount, '
-        + 'label, earliest}. ASSUMPTION: {monthlySpending} or {annualReturnPct, appliesTo}. '
-        + 'No other keys are accepted.' },
-    statedAs: str('The user\'s own words, or the sentence you stated. Required.'),
-    appliesFrom: str('YYYY-MM-DD, when this starts to apply. Optional.'),
-    appliesTo:   str('YYYY-MM-DD, when it stops. Optional.'),
-  }, ['kind', 'subject', 'payload', 'statedAs']),
+    op: { type: 'string', enum: ['record', 'amend', 'retire'],
+      description: 'record (default) = a new item, or a whole re-statement. amend = change some fields of the item '
+        + 'already under `subject`, keeping the rest. retire = they no longer want it used.' },
+    subject: str('A short stable key: "cash-strategy", "planning-spending", "net-worth-target", "car". '
+      + 'Re-use the subject shown in memory to change or retire that item.'),
+    statedAs: str('The user\'s own words for this, or a faithful one-sentence paraphrase. Required.'),
+    goal: shape({
+      targetMetric: { type: 'string', enum: [...GOAL_METRICS], description: 'What should reach the level.' },
+      targetAmount: num('The level, in dollars, as they stated it. 0 only with `debt` (debt-free).'),
+      byDate: str('YYYY-MM-DD, only if they gave a date.'),
+    }, 'A level they want a measure to reach.'),
+    plannedExpense: shape({
+      label: str('What it is for, as a short name: "car".'),
+      amount: num('Roughly how much, in dollars, as they stated it.'),
+      earliest: str('YYYY-MM-DD, only if they said not before a date.'),
+    }, 'A one-off outlay they intend.'),
+    rule: shape({
+      liquidFloorMonthsOfExpenses: num('Cash to keep, as a number of MONTHS of expenses ("six months" = 6). '
+        + 'Resolved against the spending level in force whenever it is run — never stored as dollars.'),
+      liquidFloor: num('Cash to keep, in DOLLARS — only when the user stated a dollar level ("keep $50k").'),
+      fractionOfExcess: num('Share (0–1] of the cash ABOVE the floor moved each month-end. "The rest" = 1. '
+        + 'Omit if they did not say what happens to the rest.'),
+      surplusFraction: num('Share (0–1] of what each MONTH adds. Keeps no cash floor. Not with a floor.'),
+      target: { description: 'Where it goes, ONLY if they said: "investments", "highest_apr", or an ordered list — '
+        + '["highest_apr","investments"] pays debt first, then invests.',
+        anyOf: [{ type: 'string', enum: [...ALLOCATION_TARGET_WORDS] },
+          { type: 'array', items: { type: 'string', enum: [...ALLOCATION_TARGET_WORDS] } }] },
+      from: str('YYYY-MM-DD the rule starts, if they said.'),
+      to: str('YYYY-MM-DD the rule ends, if they said.'),
+    }, 'A standing allocation policy, in the SAME fields, with the same meanings, as a scenario `contributions` item.'),
+    baseline: shape({
+      monthlySpending: num('A monthly spending level they asked to PLAN with, in dollars, as they stated it.'),
+      annualReturnPct: num('An annual return they asked to plan with, in percent.'),
+    }, 'A planning figure they gave. Exactly one. It is remembered as theirs — not measured, and not applied to anything.'),
+    set: { type: 'object', additionalProperties: true,
+      description: 'amend: the fields to change and their new values, e.g. {"liquidFloorMonthsOfExpenses": 9}.' },
+    unset: { type: 'array', items: { type: 'string' }, description: 'amend: field names to remove.' },
+    replace: { type: 'boolean',
+      description: 'record over an existing item: true ONLY when the user replaced the whole thing, accepting that fields they did not repeat are dropped.' },
+  }, ['subject', 'statedAs']),
   async run(a, ctx) {
-    const kind = String(a.kind) as MemoryKind;
-    // ⚠️ `remember` CANNOT MINT A PROJECTION. Every checkpoint a model ever wrote
-    // here was a hypothetical's result recorded as "what we said".
-    if (kind === MemoryKind.CHECKPOINT) return { stored: false, reason: PROJECTIONS_ARE_AUTOMATIC };
-    if (!STATED_KINDS.includes(kind)) {
-      return { stored: false, reason: `unknown kind "${a.kind}"`, kinds: STATED_KINDS };
+    const op = a.op === 'amend' || a.op === 'retire' ? a.op : 'record';
+    const given = SHAPES.filter(([, key]) => a[key] !== undefined && a[key] !== null);
+    // ⚠️ A V1-SHAPED CALL IS ANSWERED WITH THE V2 SHAPE BUILT FROM ITS OWN PAYLOAD.
+    if (op === 'record' && given.length !== 1) {
+      return { stored: false,
+        reason: a.kind === 'CHECKPOINT' ? PROJECTIONS_ARE_AUTOMATIC
+          : given.length === 0
+            ? 'give exactly one of `goal`, `plannedExpense`, `rule` or `baseline`, holding what the user stated. '
+              + 'A standing policy such as "keep N months of expenses" is a `rule`; a planning figure is a `baseline`'
+            : `one call records one thing: ${given.map(([, k]) => `\`${k}\``).join(' and ')} are separate items, each with its own subject`,
+        ...(expectedFrom(a) ? { expected: expectedFrom(a) } : {}),
+        example: EXAMPLES.RULE };
     }
-    const result = await rememberMemory(scopeOf(ctx), {
-      kind,
+    const [cls, key] = given[0] ?? [];
+    const fields = key ? a[key] : undefined;
+    // ⚠️ WITH NO CONVERSATION EVIDENCE A MONEY VALUE FAILS CLOSED — before the
+    // store is reached, so a context built without the turn loop writes no money.
+    if (op === 'record' && cls && !ctx.turn && fields && typeof fields === 'object') {
+      const blind = admitWrite({ cls, supplied: fields as Fields, current: null, evidence: null, asOf: ctx.asOfISO });
+      if (!blind.ok) return { stored: false, reason: blind.reason };
+    }
+    const result = await rememberStated(scopeOf(ctx), {
+      op,
+      ...(cls ? { cls } : {}),
       subject:  String(a.subject ?? ''),
-      payload:  (a.payload ?? {}) as MemoryPayload,
       statedAs: String(a.statedAs ?? ''),
+      ...(op === 'record' ? { fields: (fields && typeof fields === 'object' ? fields : {}) as Fields } : {}),
+      ...(op === 'amend' ? { set: { ...(typeof fields === 'object' && fields ? fields as Fields : {}), ...((a.set ?? {}) as Fields) },
+        unset: Array.isArray(a.unset) ? a.unset.map(String) : [] } : {}),
+      ...(a.replace === true ? { replace: true } : {}),
       // The conversation's clock, so a stated date and a recorded one agree.
       statedAt: ctx.asOfISO,
-      ...(a.appliesFrom ? { appliesFrom: String(a.appliesFrom) } : {}),
-      ...(a.appliesTo   ? { appliesTo:   String(a.appliesTo)   } : {}),
-    });
+    },
+    // ⚠️ THE GATE RIDES ON THE TOOL PATH, WHICH IS WHERE A MODEL IS. With no
+    // conversation evidence on the context, a money value fails closed.
+    { evidence: ctx.turn ?? null, asOf: ctx.asOfISO });
+
+    // `stored` stays the FIRST key of every result: `turnEvidence` recognises a
+    // memory write's own echo by it, so a refusal is never evidence against its retry.
     if (!result.stored) return result;
+    const { memory, superseded, ...rest } = result;
     return {
-      ...result,
-      // ⚠️ A SUPERSESSION IS WORTH A SENTENCE, NOT A CEREMONY. The user changed
-      // their mind and should hear that it landed; the previous statement is
-      // kept and still retrievable.
-      note: result.superseded
-        ? `This replaces what was recorded before: "${result.superseded.statedAs}". The `
-          + 'earlier one is kept and can be retrieved with includeSuperseded.'
-        : 'Recorded. Mention it in one clause at most — this is bookkeeping, not the answer.',
+      ...rest,
+      subject: memory.subject, statedAt: memory.statedAt.slice(0, 10),
+      // ⚠️ A CHANGE IS WORTH A SENTENCE, NOT A CEREMONY. The user changed their
+      // mind and should hear that it landed — and what was kept.
+      note: result.unchanged
+        ? 'Already remembered, exactly so. Nothing was written.'
+        : op === 'retire'
+        ? 'Retired: it will no longer be listed or used. The history is kept; the user can erase it under Memory.'
+        : superseded
+          ? `This replaces what was remembered before ("${superseded.statedAs}"). The earlier version is kept in the history.`
+          : 'Remembered. Nothing was run or applied. Mention it in one clause at most — this is bookkeeping, not the answer.',
     };
   },
 };

@@ -199,6 +199,9 @@ export async function runStatelessTurn(args: {
     messages: open.messages, user: args.user, index: args.history.length,
     model, toolSchemas: open.toolSchemas, toolCtx: open.toolCtx,
     scenario: slot, correlationId: args.correlationId, surface: args.surface,
+    // The user's own prior turns, for the memory gate — never the transcript's
+    // `role: 'user'` messages, which include the orientation.
+    userTexts: args.history.filter((m) => m.role === 'user').map((m) => m.content),
   });
 
   return { answer: record.assistant, record, evidence: open.evidence,

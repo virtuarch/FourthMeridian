@@ -30,9 +30,9 @@ import {
 } from '@/lib/ai/conversation/scenario-ledger';
 import { compactToolHistory, DEFAULT_COMPACTION } from '@/lib/ai/conversation/compaction';
 import { WRITE_TOOL_NAME, projectionStatement, presentRecall } from '@/lib/ai/conversation/memory-tools';
-import { validatePayload, rememberMemory, MemoryKind } from '@/lib/ai/conversation/memory-store';
 import {
   fieldNames as memoryFieldNames, GOAL_METRICS, validateShape, PROJECTION_BASIS_KEYS, composeMemoryLine, LINE_CAPS,
+  STATED_CLASSES, SHAPE_KEY, validateFields, readMemory,
 } from '@/lib/ai/conversation/memory-model';
 import { CONTRIBUTION_KEYS, ALLOCATION_TARGET_WORDS } from '@/lib/ai/conversation/scenario-rules';
 import {
@@ -1674,44 +1674,83 @@ console.log('18a. goal seek tool');
 // identifies the financial world; the user identifies whose intention it is.
 console.log('19. memory shape');
 {
-  const K = MemoryKind;
-
   // ── §12.20 — the invariant, enforced by shape ─────────────────────────────
   //
-  // ⚠️ NOT A DENYLIST SOMEBODY HAS TO MAINTAIN. Each kind declares a CLOSED key
-  // set, so a key naming a current balance is not forbidden — it simply does not
-  // exist in any kind, and cannot be written.
+  // ⚠️ NOT A DENYLIST SOMEBODY HAS TO MAINTAIN. Each CLASS declares a CLOSED,
+  // TYPED field set (Memory V2: `memory-model.ts`), so a key naming a current
+  // balance is not forbidden — it simply does not exist in any class, and cannot
+  // be written. `liquid` and `netWorth` exist only as VALUES of a goal's
+  // `targetMetric`, never as keys.
+  const goalOk = { targetMetric: 'netWorth', targetAmount: 1e6, byDate: '2030-12-31' };
   for (const forbidden of ['currentCash', 'balance', 'liquid', 'netWorth', 'totalAssets',
                            'investments', 'debt', 'holdings']) {
-    const r = validatePayload(K.INTENTION, { targetMetric: 'netWorth', targetAmount: 1e6,
-      byDate: '2030-12-31', [forbidden]: 12_345 });
-    check(`no memory payload can carry \`${forbidden}\``, !r.ok);
+    check(`no memory payload can carry \`${forbidden}\``,
+      STATED_CLASSES.every((c) => !memoryFieldNames(c).includes(forbidden))
+        && !validateFields('GOAL', { ...goalOk, [forbidden]: 12_345 }).ok);
   }
   check('…and the refusal says why, and what the payload is for',
-    (() => { const r = validatePayload(K.INTENTION, { targetMetric: 'x', currentCash: 1 });
-      return !r.ok && /never a current balance/.test(r.reason); })());
+    (() => { const r = validateFields('GOAL', { ...goalOk, currentCash: 1 });
+      return !r.ok && /never holds a current balance/.test(r.reason); })());
 
-  check('an INTENTION holds a target and a date',
-    validatePayload(K.INTENTION,
-      { targetMetric: 'netWorth', targetAmount: 1_000_000, byDate: '2030-12-31' }).ok);
-  check('…or a planned outlay',
-    validatePayload(K.INTENTION, { intent: 'purchase', amount: 20_000, label: 'car' }).ok);
-  check('…but not a bare number with no target and no date',
-    !validatePayload(K.INTENTION, { targetAmount: 1_000_000 }).ok);
+  // ⚠️ V2 SHAPES ARE WRITABLE; V1 SHAPES ARE REFUSED ON WRITE AND STILL READABLE.
+  // These three checks used to assert the V1 shapes were WRITABLE. The V1
+  // contract is what made every admissible intention require a number, and is
+  // what produced `amount: 6`, `amount: 0` and `byDate: null`.
+  check('a GOAL holds a measure and a level; the date is optional, never null',
+    validateFields('GOAL', goalOk).ok && validateFields('GOAL', { targetMetric: 'netWorth', targetAmount: 1e6 }).ok
+      && !validateFields('GOAL', { ...goalOk, byDate: null }).ok);
+  check('…a PLANNED_EXPENSE a name and an amount — and V1\'s free-text `intent` is gone',
+    validateFields('PLANNED_EXPENSE', { label: 'car', amount: 20_000 }).ok
+      && !validateFields('PLANNED_EXPENSE', { intent: 'purchase', amount: 20_000, label: 'car' }).ok);
+  check('…but not a bare number with no measure', !validateFields('GOAL', { targetAmount: 1_000_000 }).ok);
+  check('a RULE needs NO money: "keep six months of expenses" is storable as what it is',
+    validateFields('RULE', { liquidFloorMonthsOfExpenses: 6 }).ok);
+  check('a V1 row is still READABLE through the one reader',
+    readMemory({ kind: 'INTENTION', payload: goalOk }).readable
+      && readMemory({ kind: 'INTENTION', payload: { intent: 'purchase', amount: 20_000, label: 'car' } }).readable);
 
   // ⚠️ §12.22 — `horizon` IS THE SAFETY PROPERTY. A value with a horizon and a
   // statedAt is "what we said on the 8th about year end". Without one it is a
-  // balance, so the write is refused.
-  check('a CHECKPOINT with a metric, a horizon and a value is storable',
-    validatePayload(K.CHECKPOINT,
-      { metric: 'cash', horizon: '2026-12-31', value: 38_243.5, basis: { x: 1 } }).ok);
-  check('a CHECKPOINT without a horizon is refused — that would be a balance',
-    !validatePayload(K.CHECKPOINT, { metric: 'cash', value: 38_243.5 }).ok);
-  check('an ASSUMPTION carries a rate or a level, and nothing else',
-    validatePayload(K.ASSUMPTION, { monthlySpending: 6_000 }).ok
-      && validatePayload(K.ASSUMPTION, { annualReturnPct: 8, appliesTo: 'investments' }).ok
-      && !validatePayload(K.ASSUMPTION, { monthlySpending: 6_000, cashOnHand: 12_000 }).ok);
-  check('an empty payload is refused', !validatePayload(K.INTENTION, {}).ok);
+  // balance, so it neither validates nor reads.
+  check('a PROJECTION with a metric, a horizon and a value is a statement',
+    validateShape({ v: 2, class: 'PROJECTION', metric: 'liquid', horizon: '2026-12-31', value: 38_243.5 }).ok);
+  check('a PROJECTION without a horizon is refused — that would be a balance',
+    !validateShape({ v: 2, class: 'PROJECTION', metric: 'liquid', value: 38_243.5 }).ok
+      && !readMemory({ kind: 'CHECKPOINT', payload: { metric: 'cash', value: 38_243.5 } }).readable);
+  check('a BASELINE carries a rate or a level, and nothing else',
+    validateFields('BASELINE', { monthlySpending: 6_000 }).ok && validateFields('BASELINE', { annualReturnPct: 8 }).ok
+      && !validateFields('BASELINE', { monthlySpending: 6_000, cashOnHand: 12_000 }).ok);
+  check('an empty payload is refused', !validateFields('GOAL', {}).ok);
+
+  // ── The write tool's schema IS the model's field table ────────────────────
+  //
+  // ⚠️ ENUMERATED, NOT DESCRIBED. Of 138 first attempts at a rule in the recorded
+  // traces, 4 used the contract's exact key; the dominant wrong key was
+  // `monthsOfExpenses`, guessed because V1's `payload` was `additionalProperties:
+  // true` with its shapes named in prose. A key the model can read is a key it
+  // does not have to invent.
+  const rememberProps = (findTool('remember')!.parameters as { properties: Record<string, { properties?: Record<string, unknown> }> }).properties;
+  for (const cls of STATED_CLASSES) {
+    check(`remember.${SHAPE_KEY[cls]} enumerates exactly the ${cls} fields`,
+      JSON.stringify(Object.keys(rememberProps[SHAPE_KEY[cls]]?.properties ?? {}).sort()) === JSON.stringify([...memoryFieldNames(cls)].sort()));
+  }
+  check('V1\'s free-form `kind` + `payload` are gone from the schema', !('kind' in rememberProps) && !('payload' in rememberProps));
+  check('…and the three operations live in ONE tool', JSON.stringify((rememberProps.op as { enum?: string[] }).enum) === '["record","amend","retire"]');
+  const noCtx = { spaceId: 'none', asOfISO: '2026-09-20', spaceCtx: { userId: 'none' } } as never;
+  const v1Call = await findTool('remember')!.run({ kind: 'INTENTION', subject: 'cash-buffer', statedAs: 'Keep six months of expenses',
+    payload: { intent: 'keep-buffer', label: 'months of expenses', monthsOfExpenses: 6, allocationOrder: ['highest_apr', 'investments'] } }, noCtx) as Record<string, unknown>;
+  check('a refusal hands back the RIGHT SHAPE built from the caller\'s own payload — never a list of missing keys',
+    v1Call.stored === false && JSON.stringify(v1Call.expected) === '{"rule":{"liquidFloorMonthsOfExpenses":6,"target":["highest_apr","investments"]}}'
+      && !/needs all of|amount/.test(String(v1Call.reason)), JSON.stringify(v1Call));
+  check('…and `stored` is its first key, which is how the turn evidence recognises a write\'s own echo',
+    JSON.stringify(v1Call).startsWith('{"stored":'));
+  const blind = await findTool('remember')!.run({ subject: 'planning-spending', statedAs: 'use 5k', baseline: { monthlySpending: 5000 } }, noCtx) as { stored: boolean; reason: string };
+  check('with no conversation evidence on the context a money value fails closed — before the store',
+    !blind.stored && /no conversation evidence/.test(blind.reason));
+  const turnSrc = code(read('lib/ai/conversation/turn.ts'));
+  check('the turn loop supplies that evidence from EXPLICIT user texts, never from the transcript\'s user messages',
+    /toolCtx\.turn = turnEvidence\(\[\.\.\.\(args\.userTexts \?\? toolCtx\.turn\?\.userTexts \?\? \[\]\), user\], messages\);/.test(turnSrc)
+      && /userTexts: args\.history\.filter\(\(m\) => m\.role === 'user'\)\.map\(\(m\) => m\.content\)/.test(code(read('lib/ai/conversation/engine.ts'))));
 
   // ── Ownership, in the shapes themselves ──────────────────────────────────
   const storeSrc = code(read('lib/ai/conversation/memory-store.ts'));
@@ -2045,10 +2084,10 @@ console.log('20a. checkpoint-on-projection');
     /recordProjection\(scopeOf\(ctx\)/.test(mt) && !/rememberMemory\([^)]*CHECKPOINT/.test(mt));
   check('`remember` offers no projection shape',
     !JSON.stringify(findTool('remember')!.parameters).includes('CHECKPOINT'));
-  const minted = await rememberMemory({ spaceId: 'none', ownerUserId: 'none' }, { kind: MemoryKind.CHECKPOINT,
-    subject: 'net-worth-2027-06-30', payload: { metric: 'net-worth', horizon: '2027-06-30', value: 88617.84, basis: { surplusRule: 'x' } },
-    statedAs: 'a scenario result' });
-  check('…and the store refuses one from any caller but the turn loop (before touching the database)',
+  const minted = await findTool('remember')!.run({ kind: 'CHECKPOINT', subject: 'net-worth-2027-06-30',
+    payload: { metric: 'net-worth', horizon: '2027-06-30', value: 88617.84, basis: { surplusRule: 'x' } },
+    statedAs: 'a scenario result' }, { spaceId: 'none', asOfISO: '2026-09-20', spaceCtx: { userId: 'none' } } as never) as { stored: boolean; reason: string };
+  check('…and a V1-style attempt to mint one is refused before anything touches the database',
     !minted.stored && /recorded automatically/.test(minted.reason));
 
   // ── The tool ─────────────────────────────────────────────────────────────

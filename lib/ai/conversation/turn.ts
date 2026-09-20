@@ -25,6 +25,7 @@ import { generateWithTools } from '@/lib/ai/provider';
 import { findTool, type ToolContext } from './tools';
 import { runWithAiInvocationContext } from '@/lib/ai/invocation-context';
 import { checkpointProjection } from './memory-tools';
+import { turnEvidence } from './memory-model';
 import {
   captureActiveScenario, applyCapture, injectScenario, type ScenarioSlot,
 } from './active-scenario';
@@ -211,6 +212,19 @@ export async function executeTurn(args: {
    * transcript, and it dies with them.
    */
   scenario?: ScenarioSlot;
+  /**
+   * The conversation's PRIOR user turns, verbatim — for durable memory's
+   * provenance gate and nothing else.
+   *
+   * ⚠️ PASSED IN, NEVER READ OFF `messages`. The financial orientation is a
+   * `role: 'user'` message and the active scenario a trailing `role: 'system'`
+   * one, so "the user messages of the transcript" contain every balance we hold;
+   * a gate that trusted them would let "Remember this." store a projected net
+   * worth as the user's goal. A caller that replays history supplies it; a caller
+   * that keeps one growing transcript may omit it, and the turns seen so far on
+   * the same tool context are used. It changes nothing the model sees.
+   */
+  userTexts?: readonly string[];
 }): Promise<TurnRecord> {
   // A tool loop makes SEVERAL invocations for ONE user turn; the ambient context
   // is what lets the ledger sum them back into that turn.
@@ -229,8 +243,11 @@ async function executeTurnInner(args: {
   toolSchemas: unknown[];
   scenario?:   ScenarioSlot;
   toolCtx:     ToolContext;
+  userTexts?:  readonly string[];
 }): Promise<TurnRecord> {
   const { messages, user, index, model, toolSchemas, toolCtx } = args;
+  // What the USER said, explicitly — and everything else in the transcript is ours.
+  toolCtx.turn = turnEvidence([...(args.userTexts ?? toolCtx.turn?.userTexts ?? []), user], messages);
   // ⚠️ THE RESERVED TRAILING SLOT, REWRITTEN EACH TURN. Independent of Clip 6 —
   // compaction only rewrites `role: 'tool'` content and counts turns by assistant
   // completions, so a system message is inert to it. This is the whole continuity

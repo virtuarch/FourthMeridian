@@ -17,90 +17,39 @@
  * what we SAID, when, on what basis.
  *
  * ── The invariant, enforced by shape rather than by rule ────────────────────
- * Memory may hold intentions, assumptions and dated statements. It may NEVER
- * hold current financial truth. Each kind declares a CLOSED set of payload keys;
- * an unknown key is refused with the allowed list. There is therefore no field
- * in which "current cash" could be stored — not because somebody remembered not
- * to, but because no such key exists in any kind.
+ * Memory may hold goals, plans, standing rules, planning figures and dated
+ * statements. It may NEVER hold current financial truth. WHAT a row may mean is
+ * decided by the pure model beside this file (`memory-model.ts`): semantic
+ * classes with closed, typed field sets, so there is no field in which "current
+ * cash" could be stored — not because somebody remembered not to, but because
+ * no such field exists in any class. This file is the I/O: it finds the current
+ * version, asks the model whether the write is valid and admissible, and writes
+ * one new row.
+ *
+ * ── Every change of mind is a row ───────────────────────────────────────────
+ * Nothing is edited in place. A re-statement, a field-wise amendment and a
+ * retirement each create ONE row that points at the version it replaces, so
+ * "six months, then nine, then stop" is three rows and a chain. Retirement is a
+ * tombstone row — when it was withdrawn and in what words — with no column added.
+ * Only the owner, through their own panel, can erase a chain.
  *
  * ── Ownership (product decision, 2026-09-08) ────────────────────────────────
  * Memory is USER-OWNED WITHIN A SPACE. The Space identifies the financial world;
- * the user identifies whose intention it is. `ownerUserId` is required, and both
- * `recall` and `remember` operate ONLY on the authenticated user's own rows. No
- * sharing, no visibility model, no ACLs, no household consensus, no nullable
- * ownership. A shared Space holds one financial picture and two people's goals.
- *
- * ⚠️ RESEARCH CODE UNDER scripts/, like `scenario-ledger.ts` beside it. There is
- * no production reader. If the experiment shows the product needs it, it moves
- * to lib/ with a real consumer — not before.
+ * the user identifies whose intention it is. `ownerUserId` is required, and every
+ * function here takes `{spaceId, ownerUserId}` as ONE argument, so no query shape
+ * exists that returns, retires or erases another member's rows.
  */
 
 import { db } from '@/lib/db';
 import { MemoryKind, MemoryStatus } from '@prisma/client';
-import { MEMORY_VERSION, validateShape } from './memory-model';
+import {
+  MEMORY_VERSION, KIND_OF_CLASS, MAX_WORDS_CHARS, EXAMPLES, SHAPE_KEY,
+  validateShape, validateFields, admitWrite, mergeAmend, droppedFields, readMemory,
+  describeMemory, toPayload, tombstonePayload, expectedFrom, validSubject,
+  type StatedClass, type MemoryClass, type Fields, type FieldChange, type TurnEvidence,
+} from './memory-model';
 
 export { MemoryKind, MemoryStatus };
-
-// ── Payload shapes ───────────────────────────────────────────────────────────
-
-/**
- * A closed key set per kind. THIS IS THE INVARIANT, not a validation nicety.
- *
- * ⚠️ NOTHING HERE CAN NAME A CURRENT BALANCE. An INTENTION carries a TARGET and
- * a date; a CHECKPOINT carries a horizon, which is what makes its `value` a
- * statement about the future rather than a claim about now; an ASSUMPTION
- * carries a rate or a level the user asserted. A payload key called
- * `currentCash` is not forbidden by a denylist that somebody has to maintain —
- * it simply is not in any of these sets, so it cannot be written.
- */
-const PAYLOAD_KEYS: Record<MemoryKind, { allowed: string[]; requireOneOf: string[][] }> = {
-  [MemoryKind.INTENTION]: {
-    allowed: ['targetMetric', 'targetAmount', 'byDate', 'intent', 'amount', 'label', 'earliest'],
-    // Either a target ("$1M of net worth by 2030") or a planned outlay ("a car,
-    // about $20K, not before March 2027"). Both are things the user DECIDED.
-    requireOneOf: [['targetMetric', 'targetAmount', 'byDate'], ['intent', 'amount', 'label']],
-  },
-  [MemoryKind.ASSUMPTION]: {
-    allowed: ['monthlySpending', 'annualReturnPct', 'appliesTo'],
-    requireOneOf: [['monthlySpending'], ['annualReturnPct']],
-  },
-  [MemoryKind.CHECKPOINT]: {
-    // ⚠️ `horizon` IS REQUIRED, AND THAT IS THE WHOLE SAFETY PROPERTY. A value
-    // with a horizon and a `statedAt` is "what we said on the 8th about the end
-    // of the year". The same value without one would be a balance.
-    allowed: ['metric', 'horizon', 'value', 'basis', 'toolCallId'],
-    requireOneOf: [['metric', 'horizon', 'value']],
-  },
-};
-
-export interface MemoryPayload { [key: string]: unknown }
-
-export interface ValidationFailure { rejected: string; allowedKeys: string[] }
-
-export function validatePayload(
-  kind: MemoryKind, payload: MemoryPayload,
-): { ok: true } | { ok: false; reason: string; allowedKeys: string[] } {
-  const spec = PAYLOAD_KEYS[kind];
-  if (!spec) return { ok: false, reason: `unknown memory kind "${kind}"`, allowedKeys: [] };
-
-  const keys = Object.keys(payload ?? {});
-  if (keys.length === 0) {
-    return { ok: false, reason: 'the payload is empty', allowedKeys: spec.allowed };
-  }
-  const unknown = keys.filter((k) => !spec.allowed.includes(k));
-  if (unknown.length > 0) {
-    return { ok: false, allowedKeys: spec.allowed,
-      reason: `${kind} payloads cannot carry ${unknown.join(', ')}. Memory records what was `
-        + 'decided, assumed or said — never a current balance, which is always re-read from '
-        + 'the financial authorities.' };
-  }
-  const satisfied = spec.requireOneOf.some((set) => set.every((k) => keys.includes(k)));
-  if (!satisfied) {
-    return { ok: false, allowedKeys: spec.allowed,
-      reason: `a ${kind} needs all of ${spec.requireOneOf.map((s) => s.join(' + ')).join(', or all of ')}` };
-  }
-  return { ok: true };
-}
 
 // ── Reading ──────────────────────────────────────────────────────────────────
 
@@ -122,12 +71,26 @@ export interface RecalledMemory {
   supersedesId: string | null;
 }
 
+type Row = Awaited<ReturnType<typeof db.spaceMemory.findFirstOrThrow>>;
+
+const present = (r: Row): RecalledMemory => ({
+  id: r.id, kind: r.kind, subject: r.subject, status: r.status,
+  payload: r.payload, statedAs: r.statedAs,
+  statedAt: r.statedAt.toISOString(),
+  appliesFrom: r.appliesFrom?.toISOString() ?? null,
+  appliesTo:   r.appliesTo?.toISOString() ?? null,
+  supersedesId: r.supersedesId,
+});
+
 /**
- * The authenticated user's own memories, newest statement first.
+ * The authenticated user's own memories, newest statement first — RAW rows.
  *
  * ⚠️ THE SCOPE IS NOT A FILTER THE CALLER MAY OMIT. `spaceId` and `ownerUserId`
  * are one argument, required together, so no query shape exists that returns
  * another member's intentions.
+ *
+ * ⚠️ RAW ON PURPOSE. What a row MEANS is `readMemory`'s answer, and every reader
+ * asks it; this returns what is stored.
  */
 export async function recallMemories(
   scope: MemoryScope, args: RecallArgs = {},
@@ -143,142 +106,243 @@ export async function recallMemories(
     orderBy: [{ statedAt: 'desc' }, { createdAt: 'desc' }],
     take: Math.min(Math.max(args.limit ?? 20, 1), MAX_RECALL),
   });
-  return rows.map((r) => ({
-    id: r.id, kind: r.kind, subject: r.subject, status: r.status,
-    payload: r.payload, statedAs: r.statedAs,
-    statedAt: r.statedAt.toISOString(),
-    appliesFrom: r.appliesFrom?.toISOString() ?? null,
-    appliesTo:   r.appliesTo?.toISOString() ?? null,
-    supersedesId: r.supersedesId,
-  }));
+  return rows.map(present);
 }
 
-// ── Writing ──────────────────────────────────────────────────────────────────
+// ── Writing what the user stated ─────────────────────────────────────────────
 
-export interface RememberArgs {
-  kind:        MemoryKind;
-  subject:     string;
-  payload:     MemoryPayload;
-  statedAs:    string;
+export type StatedOp = 'record' | 'amend' | 'retire';
+
+export interface StatedWrite {
+  op?:       StatedOp;
+  /** Required for `record`. For `amend` / `retire` it is read off the current version. */
+  cls?:      StatedClass;
+  subject:   string;
+  statedAs:  string;
+  /** `record`: the item's fields, whole. */
+  fields?:   Fields;
+  /** `amend`: fields to set, and fields to remove. Everything else is kept. */
+  set?:      Fields;
+  unset?:    readonly string[];
+  /** `record` over an existing item that would lose fields: true says the user replaced the whole thing. */
+  replace?:  boolean;
   appliesFrom?: string;
   appliesTo?:   string;
   /**
    * When the statement was made. Defaults to the database clock.
    *
-   * ⚠️ THE CONVERSATION'S CLOCK, NOT POSTGRES'S, IS WHAT A CHECKPOINT MEANS. A
+   * ⚠️ THE CONVERSATION'S CLOCK, NOT POSTGRES'S, IS WHAT A STATEMENT MEANS. A
    * projection made "standing at 2026-09-08" must carry that date, or a
-   * reconciliation compares a statement against a basis from a different day and
-   * attributes the difference to the wrong thing. The harness runs on a fixed
-   * `asOfISO`; without this the row silently recorded the UTC wall clock, which
-   * on the first live run was already the previous day.
+   * reconciliation compares a statement against a basis from a different day.
    */
-  statedAt?:   string;
+  statedAt?: string;
 }
 
-export type RememberResult =
-  | { stored: true; memory: RecalledMemory; superseded: { id: string; statedAs: string } | null }
-  | { stored: false; reason: string; allowedKeys?: string[] };
+/**
+ * The provenance gate's inputs. Supplied by the TOOL path, which is where a model
+ * is. Absent (scripts, live checks), the gate is not applied; present with
+ * `evidence: null`, a money value fails closed.
+ */
+export interface WriteGate { evidence: TurnEvidence | null; asOf: string }
+
+export type StatedResult =
+  | { stored: true; unchanged?: true; op: StatedOp; class: MemoryClass; inWords: string | null; memory: RecalledMemory;
+      superseded: { id: string; statedAs: string } | null;
+      changed?: FieldChange[]; kept?: Fields; dropped?: string[];
+      otherRulesInForce?: { subject: string; inWords: string }[] }
+  | { stored: false; reason: string; expected?: unknown; example?: unknown; conflict?: true };
+
+const refuse = (reason: string, extra: { expected?: unknown; example?: unknown } = {}): StatedResult =>
+  ({ stored: false, reason, ...extra });
+
+/** The newest row of a (kind, subject) chain — the one no other row supersedes. */
+async function chainHead(scope: MemoryScope, kind: MemoryKind, subject: string): Promise<Row | null> {
+  const rows = await db.spaceMemory.findMany({
+    where: { spaceId: scope.spaceId, ownerUserId: scope.ownerUserId, kind, subject },
+    orderBy: [{ createdAt: 'desc' }], take: 200,
+  });
+  const replaced = new Set(rows.map((r) => r.supersedesId).filter(Boolean));
+  return rows.find((r) => !replaced.has(r.id)) ?? null;
+}
 
 /**
- * Record one memory, superseding the owner's previous ACTIVE one on the same
- * subject and kind.
+ * Record, amend or retire ONE thing the user stated.
  *
  * ⚠️ SUPERSESSION ALWAYS CREATES A NEW RECORD (product decision). Nothing is
- * edited in place, so "$15K, then $8K, then cancelled" is three rows and a
- * chain rather than one row that has forgotten it ever said $15K. The chain is
- * one nullable self-relation — there is no versioning system and no event log.
+ * edited in place; the chain is one nullable self-relation — there is no
+ * versioning system and no event log.
  *
- * ⚠️ A STANDALONE ASSUMPTION DOES NOT PERSIST (product decision). "Assume I
- * spend $6K" said in passing is a per-turn statement the forecast substrate
- * already handles; it earns a row only when it is attached to something the user
- * actually decided. The attachment is the SUBJECT: an ASSUMPTION is stored only
- * when an ACTIVE INTENTION or CHECKPOINT on the same subject already exists for
- * the same owner. That needs no extra column and no second relation.
+ * ⚠️ AND IT NEVER SILENTLY LOSES A FIELD. The observed failure was a strategy
+ * ("six months; cards first; then invest") replaced by `{liquid: 39118.32}`: the
+ * ordering left memory without anyone deciding it should. So an `amend` merges
+ * field-wise onto the current version and re-validates the whole; a `record`
+ * that would drop a field the current version holds is refused unless the caller
+ * says `replace: true`, and then echoes what was dropped; and a `record` on a
+ * subject that already names a DIFFERENT class is refused outright.
+ *
+ * ⚠️ A STANDALONE PLANNING FIGURE PERSISTS. V1 refused an assumption with no
+ * decision to attach to, to keep passing remarks out. Measured, the model does
+ * not store passing remarks ("use $5k instead": 0 writes in 39); the rule only
+ * blocked the explicit "remember that" (refused 10/10, carried into a fresh chat
+ * 2/21). What stands in for it is what the user can see and stop: the figure is
+ * stamped REMEMBERED, rendered apart from anything measured, shown stale, and
+ * theirs to retire or delete.
  */
-export async function rememberMemory(
-  scope: MemoryScope, args: RememberArgs,
-): Promise<RememberResult> {
-  const subject = args.subject?.trim();
-  if (!subject) return { stored: false, reason: 'a memory needs a subject to be about' };
-  if (!args.statedAs?.trim()) {
-    return { stored: false, reason: 'a memory needs the words it was stated in' };
+export async function rememberStated(
+  scope: MemoryScope, w: StatedWrite, gate?: WriteGate,
+): Promise<StatedResult> {
+  const op: StatedOp = w.op ?? 'record';
+  const subject = w.subject?.trim();
+  const words = w.statedAs?.trim().slice(0, MAX_WORDS_CHARS);
+  if (!subject) return refuse('a memory needs a subject to be about — a short stable key such as "cash-strategy"');
+  if (!words) return refuse('a memory needs the words it was stated in (`statedAs`)');
+
+  // ── Which item is this about? ──────────────────────────────────────────────
+  let cls = w.cls;
+  let head: Row | null = null;
+  if (op === 'record') {
+    if (!cls) {
+      return refuse('say what is being recorded: exactly one of `goal`, `plannedExpense`, `rule` or `baseline`',
+        { expected: expectedFrom(w), example: EXAMPLES.RULE });
+    }
+    if (!validSubject(subject)) return refuse(`"${subject}" is not a subject key: lowercase words joined by hyphens, e.g. "cash-strategy"`);
+    head = await chainHead(scope, KIND_OF_CLASS[cls] as MemoryKind, subject);
+  } else {
+    const heads = (await Promise.all([MemoryKind.INTENTION, MemoryKind.ASSUMPTION].map((k) => chainHead(scope, k, subject))))
+      .filter((r): r is Row => r !== null && r.status === MemoryStatus.ACTIVE)
+      .filter((r) => { const x = readMemory(r); return !cls || (x.readable && x.cls === cls); });
+    if (heads.length !== 1) {
+      return refuse(heads.length === 0
+        ? `nothing is remembered under "${subject}", so there is nothing to ${op}. The subjects on record are in the memory line; `
+          + 'to remember something new, use `op: "record"`'
+        : `"${subject}" names more than one item. Say which with the shape key of its class`);
+    }
+    [head] = heads;
   }
+  const current = head && head.status === MemoryStatus.ACTIVE ? readMemory(head) : null;
+  const currentFields = current?.readable && current.cls !== 'PROJECTION' ? current.fields : null;
 
-  // ⚠️ A PROJECTION IS NOT SOMETHING ANYBODY STATES. The four checkpoints a model
-  // ever wrote through this path were all scenario results — hypotheticals stored
-  // as "what we said". Only `recordProjection`, called by the turn loop on an
-  // evidence-based `project_cash` result, writes one.
-  if (args.kind === MemoryKind.CHECKPOINT) return { stored: false, reason: PROJECTIONS_ARE_AUTOMATIC };
+  // ── What would be stored? ──────────────────────────────────────────────────
+  let fields: Fields = {};
+  let supplied: Fields = {};
+  let echo: { changed?: FieldChange[]; kept?: Fields; dropped?: string[] } = {};
 
-  const valid = validatePayload(args.kind, args.payload);
-  if (!valid.ok) return { stored: false, reason: valid.reason, allowedKeys: valid.allowedKeys };
-
-  if (args.kind === MemoryKind.ASSUMPTION) {
-    const anchor = await db.spaceMemory.findFirst({
-      where: { spaceId: scope.spaceId, ownerUserId: scope.ownerUserId, subject,
-        status: MemoryStatus.ACTIVE,
-        kind: { in: [MemoryKind.INTENTION, MemoryKind.CHECKPOINT] } },
-      select: { id: true },
-    });
-    if (!anchor) {
-      return { stored: false,
-        reason: `an assumption only persists when it is attached to something decided. There `
-          + `is no active intention or checkpoint about "${subject}" for this user, so this `
-          + 'was not stored. Record the intention first, or let the assumption stay a '
-          + 'statement in this conversation — the forecast already applies it there.' };
+  if (op === 'retire') {
+    if (!current?.readable || current.cls === 'PROJECTION') {
+      return refuse(`what is stored under "${subject}" cannot be read reliably, so it cannot be retired from here. Its owner can delete it under Memory`);
+    }
+    cls = current.cls;
+  } else if (op === 'amend') {
+    if (!current?.readable || current.cls === 'PROJECTION' || !currentFields) {
+      return refuse(`what is stored under "${subject}" cannot be read reliably, so it cannot be amended. Record it again, whole, with \`op: "record"\``);
+    }
+    cls = current.cls;
+    supplied = w.set ?? {};
+    if (Object.keys(supplied).length === 0 && (w.unset ?? []).length === 0) {
+      return refuse('an amendment changes something: give `set` (fields and their new values) or `unset` (field names)',
+        { example: { op: 'amend', subject, statedAs: 'Actually make it nine months', set: { liquidFloorMonthsOfExpenses: 9 } } });
+    }
+    const merged = mergeAmend(cls, currentFields, supplied, w.unset ?? []);
+    if (!merged.ok) return refuse(merged.reason, { expected: { [SHAPE_KEY[cls]]: currentFields } });
+    fields = merged.fields;
+    echo = { changed: merged.changed, kept: merged.kept };
+  } else {
+    const chosen = cls as StatedClass;
+    const verdict = validateFields(chosen, w.fields);
+    if (!verdict.ok) {
+      return refuse(verdict.reason, { expected: expectedFrom(w.fields) ?? undefined, example: EXAMPLES[chosen] });
+    }
+    fields = supplied = w.fields as Fields;
+    if (current?.readable && current.cls !== chosen) {
+      return refuse(`"${subject}" already names a ${current.cls} (${describeMemory(current.cls, current.fields)}). `
+        + 'Use another subject for this, or retire that item first');
+    }
+    if (currentFields) {
+      const dropped = droppedFields(currentFields, fields);
+      if (dropped.length > 0 && w.replace !== true) {
+        return refuse(`the current ${chosen} under "${subject}" also says ${dropped.map((k) => `\`${k}: ${JSON.stringify(currentFields[k])}\``).join(', ')}, `
+          + 'and this would silently lose it. If the user changed one part, use `op: "amend"` with `set`. If they replaced '
+          + 'the whole thing, repeat this call with `replace: true`',
+          { expected: { op: 'amend', subject, set: Object.fromEntries(Object.entries(fields).filter(([k, v]) => JSON.stringify(currentFields[k]) !== JSON.stringify(v))) } });
+      }
+      if (dropped.length > 0) echo = { dropped };
+      // ⚠️ SAYING IT AGAIN IS NOT A CHANGE OF MIND. "Remember that." after the item
+      // is already on record, word for word in its fields, writes nothing.
+      if (dropped.length === 0 && Object.keys(fields).length === Object.keys(currentFields).length
+        && Object.entries(fields).every(([k, v]) => JSON.stringify(currentFields[k]) === JSON.stringify(v)) && head) {
+        return { stored: true, unchanged: true, op, class: chosen, inWords: describeMemory(chosen, fields),
+          memory: present(head), superseded: null };
+      }
     }
   }
 
-  return writeSuperseding(scope, { ...args, subject, statedAs: args.statedAs.trim() });
-}
+  if (op !== 'retire' && gate) {
+    const admitted = admitWrite({ cls: cls as StatedClass, supplied, current: currentFields, evidence: gate.evidence, asOf: gate.asOf });
+    if (!admitted.ok) return refuse(admitted.reason, { example: EXAMPLES[cls as StatedClass] });
+  }
+  for (const [name, value] of [['appliesFrom', w.appliesFrom], ['appliesTo', w.appliesTo]] as const) {
+    if (value !== undefined && Number.isNaN(Date.parse(value))) return refuse(`\`${name}\` is not a date (YYYY-MM-DD)`);
+  }
+  if (w.appliesFrom && w.appliesTo && w.appliesFrom > w.appliesTo) return refuse('`appliesTo` is before `appliesFrom`');
 
-/**
- * Create one row, superseding the owner's ACTIVE row on the same (kind, subject).
- * One transaction; nothing is edited in place.
- */
-async function writeSuperseding(
-  scope: MemoryScope, args: RememberArgs,
-): Promise<Extract<RememberResult, { stored: true }>> {
-  const { subject } = args;
-  const written = await db.$transaction(async (tx) => {
-    const prior = await tx.spaceMemory.findFirst({
-      where: { spaceId: scope.spaceId, ownerUserId: scope.ownerUserId,
-        kind: args.kind, subject, status: MemoryStatus.ACTIVE },
-      orderBy: { statedAt: 'desc' },
-      select: { id: true, statedAs: true },
+  const chosen = cls as StatedClass;
+  const payload = op === 'retire' ? tombstonePayload(chosen) : toPayload(chosen, fields);
+  const shape = validateShape(payload);
+  if (!shape.ok) return refuse(shape.reason);
+
+  // ── One new row; the version it replaces keeps its content and changes status ─
+  let created: Row;
+  try {
+    created = await db.$transaction(async (tx) => {
+      const row = await tx.spaceMemory.create({
+        data: {
+          spaceId: scope.spaceId, ownerUserId: scope.ownerUserId,
+          kind: KIND_OF_CLASS[chosen] as MemoryKind, subject,
+          payload: payload as never,
+          statedAs: words,
+          status: op === 'retire' ? MemoryStatus.RETIRED : MemoryStatus.ACTIVE,
+          ...(w.statedAt ? { statedAt: new Date(w.statedAt) } : {}),
+          ...(w.appliesFrom ? { appliesFrom: new Date(w.appliesFrom) } : {}),
+          ...(w.appliesTo   ? { appliesTo:   new Date(w.appliesTo)   } : {}),
+          ...(head ? { supersedesId: head.id } : {}),
+        },
+      });
+      if (head && head.status === MemoryStatus.ACTIVE) {
+        await tx.spaceMemory.updateMany({
+          where: { id: head.id, spaceId: scope.spaceId, ownerUserId: scope.ownerUserId },
+          data: { status: op === 'retire' ? MemoryStatus.RETIRED : MemoryStatus.SUPERSEDED } });
+      }
+      return row;
     });
-    const created = await tx.spaceMemory.create({
-      data: {
-        spaceId: scope.spaceId, ownerUserId: scope.ownerUserId,
-        kind: args.kind, subject,
-        payload: args.payload as never,
-        statedAs: args.statedAs.trim(),
-        ...(args.statedAt ? { statedAt: new Date(args.statedAt) } : {}),
-        ...(args.appliesFrom ? { appliesFrom: new Date(args.appliesFrom) } : {}),
-        ...(args.appliesTo   ? { appliesTo:   new Date(args.appliesTo)   } : {}),
-        ...(prior ? { supersedesId: prior.id } : {}),
-      },
-    });
-    if (prior) {
-      await tx.spaceMemory.update({
-        where: { id: prior.id }, data: { status: MemoryStatus.SUPERSEDED } });
+  } catch (err) {
+    // `supersedesId` is unique: two writers replacing the same version cannot both win.
+    if ((err as { code?: string })?.code === 'P2002') {
+      return { stored: false, conflict: true, reason: 'this item was changed at the same moment by another request. Read it again, then repeat' };
     }
-    return { created, prior };
-  });
+    throw err;
+  }
 
   return {
-    stored: true,
-    superseded: written.prior,
-    memory: {
-      id: written.created.id, kind: written.created.kind, subject: written.created.subject,
-      status: written.created.status, payload: written.created.payload,
-      statedAs: written.created.statedAs,
-      statedAt: written.created.statedAt.toISOString(),
-      appliesFrom: written.created.appliesFrom?.toISOString() ?? null,
-      appliesTo:   written.created.appliesTo?.toISOString() ?? null,
-      supersedesId: written.created.supersedesId,
-    },
+    stored: true, op, class: chosen,
+    inWords: op === 'retire' ? null : describeMemory(chosen, fields),
+    memory: present(created),
+    superseded: head && head.status === MemoryStatus.ACTIVE ? { id: head.id, statedAs: head.statedAs } : null,
+    ...echo,
+    ...(chosen === 'RULE' ? { otherRulesInForce: await otherRules(scope, subject) } : {}),
   };
+}
+
+/** The owner's OTHER active rules — echoed on every rule write, so a second subject for one strategy is visible. */
+async function otherRules(scope: MemoryScope, subject: string): Promise<{ subject: string; inWords: string }[]> {
+  const rows = await db.spaceMemory.findMany({
+    where: { spaceId: scope.spaceId, ownerUserId: scope.ownerUserId,
+      kind: MemoryKind.INTENTION, status: MemoryStatus.ACTIVE, subject: { not: subject } },
+    orderBy: [{ statedAt: 'desc' }], take: MAX_RECALL,
+  });
+  return rows.flatMap((r) => {
+    const read = readMemory(r);
+    return read.readable && read.cls === 'RULE' ? [{ subject: r.subject, inWords: describeMemory('RULE', read.fields) }] : [];
+  });
 }
 
 // ── Projections — written by code, never on a caller's say-so ────────────────
@@ -305,23 +369,37 @@ export interface ProjectionStatement {
  * Record what a projection SAID. The ONLY writer of a PROJECTION, and only the
  * turn loop calls it.
  *
- * ⚠️ NOT REACHABLE FROM A TOOL ARGUMENT. `remember` has no projection shape and
- * `rememberMemory` refuses the kind: a model that could mint "what we said" could
- * record a scenario result — a hypothetical — as a statement, which is exactly
- * what the four model-written checkpoints on record were. The payload is
- * validated by the same pure function every reader uses, so `basis` cannot carry
- * a key the code writer does not write.
+ * ⚠️ NOT REACHABLE FROM A TOOL ARGUMENT. `remember` has no projection shape: a
+ * model that could mint "what we said" could record a scenario result — a
+ * hypothetical — as a statement, which is exactly what the four model-written
+ * checkpoints on record were. The payload is validated by the same pure function
+ * every reader uses, so `basis` cannot carry a key the code writer does not write.
  */
 export async function recordProjection(
   scope: MemoryScope, p: ProjectionStatement,
-): Promise<RememberResult> {
+): Promise<{ stored: true; memory: RecalledMemory } | { stored: false; reason: string }> {
   const payload = { v: MEMORY_VERSION, class: 'PROJECTION',
     metric: p.metric, horizon: p.horizon, value: p.value, basis: p.basis };
   const shape = validateShape(payload);
   if (!shape.ok) return { stored: false, reason: shape.reason };
   if (p.subject !== `${p.metric}-${p.horizon}`) return { stored: false, reason: 'a projection is filed under its metric and horizon' };
-  return writeSuperseding(scope, {
-    kind: MemoryKind.CHECKPOINT, subject: p.subject,
-    payload, statedAs: p.statedAs, statedAt: p.statedAt,
+
+  const head = await chainHead(scope, MemoryKind.CHECKPOINT, p.subject);
+  const created = await db.$transaction(async (tx) => {
+    const row = await tx.spaceMemory.create({
+      data: {
+        spaceId: scope.spaceId, ownerUserId: scope.ownerUserId,
+        kind: MemoryKind.CHECKPOINT, subject: p.subject,
+        payload: payload as never, statedAs: p.statedAs, statedAt: new Date(p.statedAt),
+        ...(head ? { supersedesId: head.id } : {}),
+      },
+    });
+    if (head && head.status === MemoryStatus.ACTIVE) {
+      await tx.spaceMemory.updateMany({
+        where: { id: head.id, spaceId: scope.spaceId, ownerUserId: scope.ownerUserId },
+        data: { status: MemoryStatus.SUPERSEDED } });
+    }
+    return row;
   });
+  return { stored: true, memory: present(created) };
 }
