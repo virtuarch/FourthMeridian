@@ -209,7 +209,13 @@ export type ClassificationScope =
   /** The owed-weighted contractual APR on balances owed today. Not burden, not behaviour. */
   | 'RATE_ON_OWED_BALANCE'
   /** Liquid cash divided by the monthly expense baseline, in months. */
-  | 'LIQUID_CASH_VS_MONTHLY_EXPENSES';
+  | 'LIQUID_CASH_VS_MONTHLY_EXPENSES'
+  /**
+   * The economic net (income − spending) less the cash that actually REDUCED debt
+   * (lib/transactions/debt-service.ts). Not "debt payments": a card payment that
+   * settles purchases already counted as spending is not in it.
+   */
+  | 'CASH_NET_AFTER_DEBT_PAYDOWN';
 
 /**
  * WHY A DETERMINISTIC CLASSIFICATION FIRED — one shape, for every classification
@@ -234,13 +240,21 @@ export interface ClassificationReason<Code extends string = string> {
   reasonMetrics: Record<string, number | string | null>;
   /** What the operands were computed over. Counts only — never an identity. */
   evidencePopulation: {
-    kind:     'DEBT_ACCOUNTS' | 'LIQUID_ACCOUNTS';
+    /** For BANKING_ROWS, `accounts` and `graded` count transaction rows in the window, not accounts. */
+    kind:     'DEBT_ACCOUNTS' | 'LIQUID_ACCOUNTS' | 'BANKING_ROWS';
     /** Accounts of that kind in the payload. */
     accounts: number;
     /** Of those, how many the rule could actually use (e.g. debt accounts with a known APR). */
     graded:   number;
   };
 }
+
+/** The rung of the deficit ladder that fired (engine.ts Step 2). */
+export type DeficitReasonCode =
+  | 'NET_AFTER_PAYDOWN_NOT_NEGATIVE'
+  | 'INCOME_SAMPLE_TOO_THIN_TO_GRADE'
+  | 'ECONOMIC_NET_NEGATIVE'
+  | 'PAYDOWN_EXCEEDS_ECONOMIC_NET';
 
 export type DebtReasonCode =
   | 'ACCOUNTS_DOMAIN_ABSENT'
@@ -321,6 +335,13 @@ export interface CashFlowSection {
    * paydown). See DeficitCauseClassification.
    */
   deficitCause:                 DeficitCauseClassification;
+  /**
+   * WHY `deficitCause` reads as it does — the same one shape every classification
+   * that can reach narration carries. The operands are the debt-service
+   * decomposition, so a reader can see that a card payment settling purchases
+   * already in spending was NOT subtracted a second time.
+   */
+  deficitReason:                ClassificationReason<DeficitReasonCode>;
   transactionCompleteness:      CompletenessLevel;
   /**
    * M1 — mean observed INCOME per reliable (complete, untruncated) calendar

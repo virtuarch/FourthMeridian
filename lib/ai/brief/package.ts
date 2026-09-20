@@ -279,6 +279,10 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
     cashFlowReliability: a.cashFlow.reliability,
     incomeConfidence:    a.dataQuality.incomeConfidence,
     deficitCause:        a.cashFlow.deficitCause,
+    // The reason travels with the verdict — but only when a deficit was graded. An
+    // unremarkable NOT_APPLICABLE would become a standing fact narrated every day.
+    ...(a.cashFlow.deficitCause !== 'NOT_APPLICABLE' && a.cashFlow.deficitReason
+      ? { deficit: classified(a.cashFlow.deficitCause, a.cashFlow.confidence, a.cashFlow.deficitReason) } : {}),
     // ⚠️ NEVER A BARE LABEL. `debt: { classification: 'CRITICAL' }` told the model
     // a verdict and nothing about what had been graded or why; told to explain it,
     // the model invented "the most severe tier, driven by how you've been using

@@ -13,6 +13,7 @@ import type {
   ConfidenceLevel,
   CashFlowReliability,
   DeficitCauseClassification,
+  DeficitReasonCode,
   DebtRateClassification,
   ClassificationReason,
   DebtReasonCode,
@@ -66,14 +67,21 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   // clamped spend; debt payments excluded). The after-paydown position is its
   // own named figure; the `??` keeps fixtures that predate the field working.
   const netCashFlow          = txn?.netCashFlow    ?? 0;
-  const netAfterDebtPayments = txn?.netAfterDebtPayments ?? (netCashFlow - debtPaymentTotal);
+  // The assembler always emits `netAfterDebtPayments`. A hand-built payload without
+  // it falls back to the SAME definition (economic net − net paydown), never to the
+  // retired `− debtPaymentTotal`, which counted card-funded spending twice.
+  const netPaydown = txn?.debtService?.netPaydown ?? debtPaymentTotal;
+  const netAfterDebtPayments = txn?.netAfterDebtPayments ?? (netCashFlow - netPaydown);
   const totalLiquid      = accts?.totalLiquid      ?? 0;
   const totalLiabilities = accts?.totalLiabilities ?? 0;
 
   const incomeEntry          = txn?.byCategory.find((c) => c.category === 'Income');
   const incomeTransactionCount = incomeEntry?.count ?? 0;
 
-  const totalOutflows    = expenseTotal + debtPaymentTotal;
+  // Outflows for the income-plausibility ratio: spending plus the cash that REDUCED
+  // debt. Adding every debt payment counted purchases made on a card twice (once as
+  // spending, once as the payment that settled them) and understated the ratio.
+  const totalOutflows    = expenseTotal + netPaydown;
   const incomePlausRatio = totalOutflows > 0 ? incomeTotal / totalOutflows : 1;
 
   // ── Step 1: Data quality ─────────────────────────────────────────────────
@@ -172,12 +180,28 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   // goal-less corpus (production today: zero goal rows) this ladder is
   // byte-identical to the pre-W2 one — no AI-facing verdict moves. Declared
   // intent's future home is debt planning/strategy, not this engine.
-  const deficitCause: DeficitCauseClassification = (() => {
-    if (netAfterDebtPayments >= 0)  return 'NOT_APPLICABLE';
-    if (incomeConfidence === 'LOW') return 'LOW_INCOME_SAMPLE';
-    if (netCashFlow < 0) return 'POSSIBLE_OVERSPENDING';
-    return 'DEBT_DRIVEN';
-  })();
+  // The classification AND the rung that produced it come from ONE comparison, so
+  // the reason can never describe a rule other than the one that ran.
+  const [deficitCause, deficitReasonCode]: [DeficitCauseClassification, DeficitReasonCode] =
+    netAfterDebtPayments >= 0  ? ['NOT_APPLICABLE', 'NET_AFTER_PAYDOWN_NOT_NEGATIVE']
+    : incomeConfidence === 'LOW' ? ['LOW_INCOME_SAMPLE', 'INCOME_SAMPLE_TOO_THIN_TO_GRADE']
+    : netCashFlow < 0          ? ['POSSIBLE_OVERSPENDING', 'ECONOMIC_NET_NEGATIVE']
+    : ['DEBT_DRIVEN', 'PAYDOWN_EXCEEDS_ECONOMIC_NET'];
+  const money2 = (n: number) => Math.round(n * 100) / 100;
+  const deficitReason: ClassificationReason<DeficitReasonCode> = {
+    scope: 'CASH_NET_AFTER_DEBT_PAYDOWN',
+    reasonCode: deficitReasonCode,
+    reasonMetrics: {
+      economicNet:             money2(netCashFlow),
+      debtPayments:            money2(txn?.debtService?.payments ?? debtPaymentTotal),
+      newChargesOnLiabilities: txn?.debtService ? money2(txn.debtService.newChargesOnLiabilities) : null,
+      debtProceeds:            txn?.debtService ? money2(txn.debtService.debtProceeds) : null,
+      netPaydown:              money2(netPaydown),
+      netAfterDebtPaydown:     money2(netAfterDebtPayments),
+      windowDays,
+    },
+    evidencePopulation: { kind: 'BANKING_ROWS', accounts: transactionCount, graded: transactionCount },
+  };
 
   const cashFlowReliability: CashFlowReliability =
     incomeConfidence === 'LOW'    ? 'UNRELIABLE' :
@@ -188,6 +212,7 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     reliability:                  cashFlowReliability,
     confidence:                   incomeConfidence,
     deficitCause,
+    deficitReason,
     transactionCompleteness:      transactionHistoryCompleteness,
     impliedMonthlyIncome,
     estimatedMonthlyExpenses,

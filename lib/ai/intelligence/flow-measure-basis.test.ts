@@ -311,7 +311,11 @@ console.log('\nSOURCE — one month-normalisation, and no day-normalisation anyw
   check('the engine takes monthly debt payments from the helper-backed mean',
     /estimatedMonthlyDebtPayments: number \| null = computeAverageMonthlyDebtPayments\(txn\)/.test(engine));
   check('the engine still grades deficitCause on the two named nets',
-    /if \(netAfterDebtPayments >= 0\)\s+return 'NOT_APPLICABLE'/.test(engine) && /if \(netCashFlow < 0\) return 'POSSIBLE_OVERSPENDING'/.test(engine));
+    // The verdict and its reason now come from ONE expression (so a reason cannot
+    // describe a rule other than the one that ran); the two named nets and their
+    // ORDER are what is pinned.
+    /netAfterDebtPayments >= 0\s*\?\s*\['NOT_APPLICABLE'/.test(engine) && /netCashFlow < 0\s*\?\s*\['POSSIBLE_OVERSPENDING'/.test(engine)
+      && engine.indexOf("netAfterDebtPayments >= 0") < engine.indexOf("netCashFlow < 0          ?"));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed.`); process.exit(1); }

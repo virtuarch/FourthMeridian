@@ -82,7 +82,7 @@ export const CLAIM_SPECS: Record<BriefClaim, ClaimSpec> = {
   cashFlow: {
     population: 'BANKING_TRANSACTIONS', feeds: ['bankingRows'],
     covers: ['recentActivity', 'behavior.monthlyIncome', 'behavior.monthlyExpenses',
-      'behavior.monthlyDebtPayments', 'behavior.deficitCause'],
+      'behavior.monthlyDebtPayments', 'behavior.deficitCause', 'behavior.deficit'],
   },
 };
 

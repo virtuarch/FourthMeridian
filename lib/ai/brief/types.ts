@@ -231,6 +231,12 @@ export interface BriefPackage {
     cashFlowReliability: string;
     incomeConfidence:    string;
     deficitCause:        string;
+    /**
+     * Present only when a deficit was graded: the verdict WITH its scope, rung and
+     * operands (economic net, debt payments, the new charges they settled, net
+     * paydown). Scope CASH_NET_AFTER_DEBT_PAYDOWN — never "debt payments".
+     */
+    deficit?:            BriefClassification;
     /** CURRENT only — graded against today's balances. Each carries WHY it fired. */
     liquidity?: BriefClassification & { coverageMonths: number | null };
     /**
