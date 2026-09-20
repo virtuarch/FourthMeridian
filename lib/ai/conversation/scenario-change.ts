@@ -5,7 +5,7 @@
  *
  * ⚠️ THE FAILURE THIS CLOSES WAS A MODEL SUBTRACTING TWO TOOL FIGURES. Asked
  * "what does that look like by next June", the assistant said "about $65k
- * higher" in 4 of 8 runs — 101,975 − 36,791, the projected net worth less the
+ * higher" in 4 of 8 runs — the projected net worth less the
  * opening one, composed in prose because the payload stated both levels and
  * never the difference. Both operands were the ledger's; the subtraction was
  * not anybody's. It is now a field, and the field carries its operands.
