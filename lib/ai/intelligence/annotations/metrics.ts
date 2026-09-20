@@ -35,7 +35,7 @@ import { FinanceDomains } from '@/lib/ai/types';
 import { classifyFlow, isExcludedFromSpending } from '@/lib/transactions/flow-classifier';
 // REVIEW-3 C-1/C-3 — the ONE spend-clamp authority; the monthly trend `net`
 // applies the same clamp the headline netCashFlow and the workspace use.
-import { clampEconomicSpend } from '@/lib/transactions/cash-flow';
+import { clampEconomicSpend, meanMonthlyEconomicSpend, type MonthlyEconomicSpend } from '@/lib/transactions/cash-flow';
 import { amountOwed, hasOutstandingDebt } from '@/lib/debt/balance-semantics';
 import { computeDebtAggregate, type DebtAggregateRow } from '@/lib/debt/aggregates';
 
@@ -173,7 +173,10 @@ export function round2(n: number): number {
 
 export function metricValue(m: MonthlyBreakdownEntry, metric: SpendingTrendMetric): number {
   if (metric === 'income')  return m.incomeTotal;
-  if (metric === 'expense') return m.expenseTotal;
+  // NET-BASELINE-1 — the expense TREND is economic spend too, so the three rows
+  // reconcile: income − expense = net, month by month (it used to print a gross
+  // expense beside a net that had already taken refunds off).
+  if (metric === 'expense') return clampEconomicSpend(m.expenseTotal, m.refundTotal);
   return m.incomeTotal - clampEconomicSpend(m.expenseTotal, m.refundTotal); // net — canonical
 }
 
@@ -257,19 +260,33 @@ export function reliableMonths(
 }
 
 /**
- * KD-10: the single authoritative monthly-spending value — the average of each
- * reliable month's expenseTotal. Returns null when no reliable month exists, so
- * every caller preserves the "no complete month => UNKNOWN" behavior instead of
- * falling back to a window-normalized estimate (the old competing figure).
+ * KD-10: the single authoritative monthly-spending value. Returns null when no
+ * reliable month exists, so every caller preserves the "no complete month =>
+ * UNKNOWN" behavior instead of falling back to a window-normalized estimate (the
+ * old competing figure).
+ *
+ * NET-BASELINE-1 — it is NET ECONOMIC spending: each reliable month's gross
+ * charges less the refunds dated in that month, floored at 0, then averaged
+ * (`meanMonthlyEconomicSpend`, lib/transactions/cash-flow — the one definition).
+ * It was the mean of gross `expenseTotal`, so after REFUND-1 the Spending-by-
+ * category view netted refunds while runway, savings rate, the liquid floor and
+ * every "N months of expenses" still divided by what was CHARGED. Every caller
+ * of this function asks "how much do I spend", so every caller moves together.
+ * `computeMonthlySpendingBasis` carries the gross figure and the refund effect
+ * for a surface that needs to explain the difference.
  */
 
 export function computeAverageMonthlySpending(
   txn: TransactionsSummaryData | null,
 ): number | null {
-  const months = reliableMonths(txn);
-  if (months.length === 0) return null;
-  const total = months.reduce((s, m) => s + m.expenseTotal, 0);
-  return Math.round((total / months.length) * 100) / 100;
+  return computeMonthlySpendingBasis(txn)?.net ?? null;
+}
+
+/** The same figure WITH its gross charges and refund effect — never re-derived by a caller. */
+export function computeMonthlySpendingBasis(
+  txn: TransactionsSummaryData | null,
+): MonthlyEconomicSpend | null {
+  return meanMonthlyEconomicSpend(reliableMonths(txn));
 }
 
 /**

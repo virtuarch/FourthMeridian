@@ -196,7 +196,20 @@ export interface CashFlowSection {
    * window total normalised by days. Null when no reliable month exists.
    */
   impliedMonthlyIncome:         number | null;
+  /**
+   * NET-BASELINE-1 — mean NET economic spending per reliable month: gross charges
+   * less refunds dated that month, each month floored at 0. The figure every
+   * "how much do I spend" derivation divides by.
+   */
   estimatedMonthlyExpenses:     number | null;
+  /**
+   * Present ONLY when refunds moved the monthly figure materially (≥ $1/month):
+   * the mean GROSS charges and what refunds took off, so the difference is
+   * explained from evidence rather than subtracted in prose. `gross − refundEffect
+   * = estimatedMonthlyExpenses`, exactly.
+   */
+  monthlyExpensesGross?:        number;
+  monthlyRefundEffect?:         number;
   /** Annualized debt payment flow divided into monthly equivalent. Reliable when window is ≥ 30 days. */
   estimatedMonthlyDebtPayments: number | null;
   incomeTransactionCount:       number;

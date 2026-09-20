@@ -425,9 +425,12 @@ console.log("22. expense baseline — impact stated, not hidden");
   const mk = (month: string, expenseTotal: number, refundTotal: number) => ({ month, incomeTotal: 0, expenseTotal, refundTotal,
     debtPaymentTotal: 0, transferTotal: 0, transactionCount: 1, byCategory: [], topCategories: [] });
   const txn = { monthlyBreakdown: [mk("2026-08", 3000, 0), mk("2026-09", 5000, 2000)] } as unknown as TransactionsSummaryData;
-  // GROSS mean = (3,000 + 5,000) / 2 = 4,000 ; NET mean would be (3,000 + 3,000) / 2 = 3,000
-  check("the MEASURED baseline is the GROSS mean, 4,000 — unchanged by this slice (documented decision; net would be 3,000)",
-    eq(computeAverageMonthlySpending(txn)!, 4000));
+  // GROSS mean = (3,000 + 5,000) / 2 = 4,000 ; NET mean = (3,000 + 3,000) / 2 = 3,000.
+  // REFUND-1 left the measured baseline GROSS and said so here. NET-BASELINE-1
+  // supersedes that: "how much do I spend a month" is net economic spending
+  // (full matrix: lib/transactions/net-expense-baseline.test.ts).
+  check("the MEASURED baseline is the NET mean, 3,000 — not the gross 4,000 (NET-BASELINE-1)",
+    eq(computeAverageMonthlySpending(txn)!, 3000));
   const p = resolvePeriod({ from: "2026-08-01", to: "2026-09-30" }, "2026-10-20");
   const r = measure("spending", txn.monthlyBreakdown as unknown as MonthRow[], p, COV);
   check("M1 agrees with it on gross (4,000/month) and ALSO states the net rate (3,000/month)",

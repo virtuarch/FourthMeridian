@@ -13,6 +13,7 @@ export {
   metricValue,
   reliableMonths,
   computeAverageMonthlySpending,
+  computeMonthlySpendingBasis,
   computeSpendingTrends,
 } from './metrics';
 

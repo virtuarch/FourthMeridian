@@ -38,7 +38,7 @@ import {
   // W2 — DEBT_FRACTION_DOMINANT / DEBT_FRACTION_PARTIAL no longer imported:
   // their only consumers were the deleted intent rungs of the deficit ladder.
 } from './constants';
-import { computeAverageMonthlyIncome, computeAverageMonthlySpending, computeDebtStrategy, computeSpendingOpportunities, computeSpendingTrends, getAcctsData, getSnapData, getTxnData } from './metrics';
+import { computeAverageMonthlyIncome, computeAverageMonthlySpending, computeMonthlySpendingBasis, computeDebtStrategy, computeSpendingOpportunities, computeSpendingTrends, getAcctsData, getSnapData, getTxnData } from './metrics';
 import { deriveHeuristics, derivePriorities } from './rules';
 import { computeCapitalAllocation, computeInvestmentReadiness, computeRiskOpportunities, computeTrajectory } from './engines';
 import type { SpaceContext_AI } from '@/lib/ai/types';
@@ -131,7 +131,10 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
 
   // KD-10: authoritative monthly spending (reliable-month average). Replaces the
   // window-normalized estimate that competed with the prompt context block.
-  const estimatedMonthlyExpenses: number | null = computeAverageMonthlySpending(txn);
+  // NET-BASELINE-1: NET economic spending, with the gross figure and the refund
+  // effect carried beside it when material — one call, never re-derived here.
+  const spendingBasis = computeMonthlySpendingBasis(txn);
+  const estimatedMonthlyExpenses: number | null = spendingBasis?.net ?? null;
 
   const estimatedMonthlyDebtPayments: number | null = txn && windowDays > 0 && debtPaymentTotal > 0
     ? Math.round((debtPaymentTotal / windowDays * 30) * 100) / 100
@@ -170,6 +173,8 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     transactionCompleteness:      transactionHistoryCompleteness,
     impliedMonthlyIncome,
     estimatedMonthlyExpenses,
+    ...(spendingBasis?.material
+      ? { monthlyExpensesGross: spendingBasis.gross, monthlyRefundEffect: spendingBasis.refundEffect } : {}),
     estimatedMonthlyDebtPayments,
     incomeTransactionCount,
     incompleteIncomeWarning:      incomeConfidence === 'LOW',

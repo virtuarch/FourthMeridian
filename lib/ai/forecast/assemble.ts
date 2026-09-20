@@ -53,6 +53,7 @@ import {
   deriveObservedSpendingRate, type ObservedSpendingRate,
 } from '@/lib/forecast/observed-spending';
 import { reliableMonths } from '@/lib/ai/intelligence/annotations/metrics';
+import { clampEconomicSpend } from '@/lib/transactions/cash-flow';
 import type { TransactionsSummaryData } from '@/lib/ai/types';
 import { assertedAmountBasis } from '@/lib/forecast/periodic-amount';
 import { assertedSpendingBaseline, PeriodBasis } from '@/lib/forecast/spending-baseline';
@@ -415,7 +416,13 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
       const txn = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY]?.data as
         TransactionsSummaryData | undefined;
       const rate = deriveObservedSpendingRate(
-        reliableMonths(txn ?? null).map((m) => ({ month: m.month, expenseTotal: m.expenseTotal })));
+        // NET-BASELINE-1 — the projection spends at NET economic spending: the
+        // month's charges less the refunds dated in it, floored at 0 (the canonical
+        // clamp). A refund returns the money, so a rate built on gross charges
+        // drains cash the user still has. Same months, same definition, as the
+        // measured expense baseline — one "monthly spending" across both.
+        reliableMonths(txn ?? null).map((m) => ({
+          month: m.month, expenseTotal: clampEconomicSpend(m.expenseTotal, m.refundTotal) })));
       if (rate.assertable) { observedSpending = rate; spending = { kind: 'OBSERVED', rate }; }
     }
     projection = projectCash({

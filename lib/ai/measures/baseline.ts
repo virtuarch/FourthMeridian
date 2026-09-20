@@ -14,6 +14,18 @@
  * window, the complete-month count and the completeness the measure carried.
  * It does not decide precedence; there is no second chain.
  *
+ * ⚠️ THE MEASURED RUNG IS NET ECONOMIC SPENDING (NET-BASELINE-1). "How much do I
+ * spend a month" is charges LESS the refunds dated in the same month, each month
+ * floored at zero — the spending measure's own `netOfRefunds`, which is the
+ * fold's refund total through the canonical clamp. This module computes no
+ * refund: `economicSpendingOf` only READS the gross measure and its
+ * `netOfRefunds`. Before this, the measured baseline was the gross mean, so
+ * surplus, savings rate, runway and every "N months of expenses" were priced at
+ * what was CHARGED while the Spending-by-category view showed what was SPENT.
+ * When refunds moved the figure materially the baseline also carries `gross` and
+ * `refundEffect`, so the model explains the gap from evidence, never by
+ * subtracting two tool figures in prose.
+ *
  * ⚠️ THE BASIS IS ALWAYS ECHOED. Five legitimate "monthly spending" figures exist
  * on the recovered Space (4,346 / 5,797 / 6,719 / 7,000 / 8,636 over 2 / 3 / 6 /
  * 12 / 24 complete months) and none is wrong; a figure that does not name its
@@ -29,6 +41,7 @@
  */
 
 import { resolveExpenseBaseline, type ExpenseBaselineBasis } from '@/lib/liquidity/expense-baseline';
+import { MATERIAL_MONTHLY_REFUND_EFFECT } from '@/lib/transactions/cash-flow';
 import type { MeasureResult, Completeness } from './measure';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -49,7 +62,51 @@ export interface ExpenseBaseline {
   completeMonths?: number;
   months?: { month: string; value: number }[];
   completeness?: Completeness;
+  /**
+   * MEASURED only, and only when refunds moved the monthly figure materially:
+   * mean GROSS charges per complete month and what refunds took off.
+   * `gross − refundEffect = amount`, exactly.
+   */
+  gross?: number;
+  refundEffect?: number;
   note: string;
+}
+
+/**
+ * NET-BASELINE-1 — a spending measure read as ECONOMIC spending: the monthly
+ * figure net of refunds, the per-month net values, and the gross figure beside
+ * them. Reads `MeasureResult.netOfRefunds` (absent ⇒ no refund fell in the
+ * window ⇒ net IS gross); it never subtracts a refund itself.
+ */
+export interface EconomicSpending {
+  perCompleteMonth: number | null;
+  grossPerCompleteMonth: number | null;
+  /** `gross − net` per complete month, ≥ 0; 0 when no refund fell in the window. */
+  refundEffect: number;
+  material: boolean;
+  months: { month: string; value: number; partial: boolean }[];
+  highest: { month: string; value: number } | null;
+  lowest: { month: string; value: number } | null;
+}
+
+export function economicSpendingOf(m: MeasureResult): EconomicSpending {
+  const netByMonth = new Map((m.netOfRefunds?.months ?? []).map((x) => [x.month, x.net]));
+  const months = m.months.map((x) => ({ month: x.month, partial: x.partial, value: netByMonth.get(x.month) ?? x.value }));
+  const whole = months.filter((x) => !x.partial);
+  const net = m.netOfRefunds ? m.netOfRefunds.perCompleteMonth : m.perCompleteMonth;
+  const refundEffect = net !== null && m.perCompleteMonth !== null ? round2(m.perCompleteMonth - net) : 0;
+  const pick = (cmp: (a: number, b: number) => boolean) =>
+    whole.reduce<{ month: string; value: number } | null>(
+      (best, x) => (best === null || cmp(x.value, best.value) ? { month: x.month, value: x.value } : best), null);
+  return {
+    perCompleteMonth: net,
+    grossPerCompleteMonth: m.perCompleteMonth,
+    refundEffect,
+    material: refundEffect >= MATERIAL_MONTHLY_REFUND_EFFECT,
+    months,
+    highest: pick((a, b) => a > b),
+    lowest: pick((a, b) => a < b),
+  };
 }
 
 /**
@@ -87,8 +144,10 @@ export function resolveExpenseBaselineFromEvidence(e: {
   measured?: MeasureResult | null;
 }): ExpenseBaseline | null {
   const m = e.measured ?? null;
+  // NET economic spending is the measured candidate — see the header.
+  const eco = m ? economicSpendingOf(m) : null;
   const resolved = resolveExpenseBaseline({
-    stated: e.stated, declared: e.declared, measured: m?.perCompleteMonth ?? null,
+    stated: e.stated, declared: e.declared, measured: eco?.perCompleteMonth ?? null,
   });
   if (!resolved) return null;
   if (resolved.basis === 'STATED') {
@@ -107,11 +166,16 @@ export function resolveExpenseBaselineFromEvidence(e: {
     ...(m ? {
       window: { from: m.period.from, to: m.period.to, label: m.period.label },
       completeMonths: m.completeMonths,
-      months: m.months.filter((x) => !x.partial).map((x) => ({ month: x.month, value: x.value })),
+      months: eco!.months.filter((x) => !x.partial).map((x) => ({ month: x.month, value: x.value })),
       completeness: m.completeness,
+      ...(eco!.material && eco!.grossPerCompleteMonth !== null
+        ? { gross: eco!.grossPerCompleteMonth, refundEffect: eco!.refundEffect } : {}),
     } : {}),
-    note: 'mean economic spending per WHOLE calendar month over the named window; a one-off month '
-      + 'is in the mean, so say which window when the spread matters',
+    note: 'mean NET economic spending per WHOLE calendar month over the named window: charges less the '
+      + 'refunds dated in the same month (a refund counts in the month it arrives, and a month never goes '
+      + 'below zero). A one-off month is in the mean, so say which window when the spread matters.'
+      + (eco?.material ? ' `gross` is what was charged per month and `refundEffect` what refunds took off '
+        + '— quote them as given; do not subtract.' : ''),
   };
 }
 

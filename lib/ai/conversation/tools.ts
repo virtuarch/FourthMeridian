@@ -105,7 +105,7 @@ import {
   type FlowMeasure, type MonthRow, type DataCoverage, type Tier,
 } from '@/lib/ai/measures/measure';
 import {
-  resolveExpenseBaselineFromEvidence, resolveIncomeBaseline, derive,
+  resolveExpenseBaselineFromEvidence, resolveIncomeBaseline, derive, economicSpendingOf,
   resolveMonthsOfExpensesFloor, type FloorDerivation,
 } from '@/lib/ai/measures/baseline';
 import { incomeStreamEvidence, OBSERVED_SPENDING_WINDOW_MONTHS } from '@/lib/ai/forecast/income-evidence';
@@ -975,8 +975,13 @@ const getBaselines: ToolDefinition = {
     // by side is what lets the model choose a window on purpose and say so.
     const byWindow = yearRead ? [3, 6, 12].map((n) => {
       const m = measure('spending', yearRead.rows, resolvePeriod({ completeMonths: n }, ceiling), covOf(yearRead));
-      return { completeMonths: n, from: m.period.from, to: m.period.to, perCompleteMonth: m.perCompleteMonth,
-        highest: m.highest, lowest: m.lowest, completeness: m.completeness.tier };
+      // NET-BASELINE-1 — the same NET economic figure the baseline uses, so the
+      // table and `expense.amount` are one definition; gross rides along only
+      // when refunds moved the window materially.
+      const eco = economicSpendingOf(m);
+      return { completeMonths: n, from: m.period.from, to: m.period.to, perCompleteMonth: eco.perCompleteMonth,
+        ...(eco.material ? { grossPerCompleteMonth: eco.grossPerCompleteMonth, refundEffect: eco.refundEffect } : {}),
+        highest: eco.highest, lowest: eco.lowest, completeness: m.completeness.tier };
     }) : [];
     const liquidBehind = (acc?.accounts ?? []).filter((r) =>
       (r.type === 'checking' || r.type === 'savings') && r.needsReauth).length;
@@ -997,7 +1002,9 @@ const getBaselines: ToolDefinition = {
         ? { minimumDebtServiceUnknownFor: aggregate.missingMinimumCount } : {}),
       measuredSpending: { byWindow,
         note: 'The measured monthly figure depends on the window. None of these is wrong; say which one '
-          + 'an answer used, and pass `spendingWindow` to make the baseline use it.' },
+          + 'an answer used, and pass `spendingWindow` to make the baseline use it. Every figure is NET of '
+          + 'refunds dated in the month; where refunds mattered, `grossPerCompleteMonth` and `refundEffect` '
+          + 'are given — quote them, never subtract.' },
     };
   },
 };

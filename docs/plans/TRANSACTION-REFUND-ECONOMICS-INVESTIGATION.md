@@ -255,3 +255,48 @@ The user's recollection was one refund; the data holds **two**, on two bookings,
 5. **Baselines remain gross** (§8).
 6. `BANK_FEES_INTEREST_CHARGE` with a positive amount on a card (one live row, +0.35, an interest reversal) classifies INTEREST and is folded as a cost. Out of scope; noted.
 7. Rewards deposited to a **depository** account under an INCOME family remain income (existing semantics).
+
+---
+
+## Addendum — NET-BASELINE-1: measured expense baselines use net economic spending
+
+REFUND-1 left the measured expense baseline GROSS and said so (§ "deliberately
+unchanged"). This slice closes it. **No refund arithmetic was added**: every
+consumer reads the fold's monthly `expenseTotal` / `refundTotal` through the one
+clamp (`clampEconomicSpend`) and the one monthly-mean definition
+(`meanMonthlyEconomicSpend`, `lib/transactions/cash-flow.ts`).
+
+**Semantics.** "How much do I spend a month" = per WHOLE month, gross charges less
+the refunds DATED in that month, floored at 0; then the mean over the window.
+- *Period:* a refund counts in the month it is dated. A later refund never
+  rewrites the purchase's month; the mean simply holds one higher and one lower
+  month, and the window total is conserved.
+- *Excess:* a month whose refunds exceed its charges is 0 — never negative
+  consumption. The excess is reported (`refundsUnapplied`), not carried into
+  another month and not silently dropped. A baseline of 0 is still a refusal
+  (`resolveExpenseBaseline`), never infinite runway.
+- *Disclosure:* when refunds move the monthly figure by ≥ $1
+  (`MATERIAL_MONTHLY_REFUND_EFFECT`) the tool output also carries `gross` and
+  `refundEffect`, with `gross − refundEffect = net` exactly, so the model quotes
+  the gap and never subtracts. Below that, nothing extra is said.
+
+**Consumer matrix.**
+
+| Consumer | Basis | Why |
+|---|---|---|
+| `computeAverageMonthlySpending` (assessment, `/api/spaces/[id]/expense-baseline`, Liquidity "months of expenses", Daily Brief `monthlyExpenses`) | **NET** | all ask "how much do I spend" |
+| `get_baselines` expense (MEASURED rung) + `measuredSpending.byWindow` | **NET** (+ gross / refundEffect when material) | the figure surplus, savings rate, runway and thresholds divide by |
+| monthly surplus · savings rate · runway · N-months-of-expenses thresholds | **NET** (inherited) | arithmetic over the baseline; unchanged code |
+| cash projection observed spending rate (`project_cash`, `scenario_projection`, `scenario_crossing`, `scenario_goal_seek`) | **NET** | a refund returns the money; a gross rate drains cash the user still has |
+| `liquidFloorMonthsOfExpenses` scenario floor | **NET** (inherited) | multiplies the rate the scenario itself spends at |
+| spending TREND metric `expense` | **NET** | so `income − expense = net` reconciles within one table |
+| `measure_flows(spending).total` / `perCompleteMonth`, `get_spending`, `byCategory.total`, category `gross` | **GROSS** (unchanged) | "how much was charged"; `netOfRefunds` / `netTotal` ride beside it |
+| `measure_flows(economicNet)` | unchanged | already `income − max(0, spending − refunds)` |
+| STATED / DECLARED baselines | unchanged | the user's own figure; not a measurement, carries no gross/refund fields |
+| population-aware completeness, complete-month rule, window naming | unchanged | the economic definition changed, nothing else |
+
+**Until the six legacy rows are repaired** (`scripts/repair-liability-income-credits.ts
+--apply`), the live net baseline understates refunds only by the rows that fall in
+complete months inside the window (HungerStation −18.38 in 2026-06); the two
+September Airbnb refunds sit in the current, incomplete month and enter a
+baseline once September closes.

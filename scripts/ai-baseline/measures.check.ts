@@ -90,7 +90,25 @@ async function main() {
   console.log('\n3. multiple legitimate spending windows stay distinguishable, each equal to its own measure');
   for (const w of b.measuredSpending.byWindow) {
     const m = await run('measure_flows', { measure: 'spending', period: { completeMonths: w.completeMonths } });
-    check(`${w.completeMonths} complete months: byWindow === measure_flows (${w.perCompleteMonth})`, near(w.perCompleteMonth, m.perCompleteMonth) && w.from === m.period.from);
+    // NET-BASELINE-1 — a baseline window is NET economic spending: the measure's
+    // own `netOfRefunds` (absent ⇒ no refund in the window ⇒ net IS gross). The
+    // gross figure rides along, and the three reconcile exactly.
+    const net = m.netOfRefunds ? m.netOfRefunds.perCompleteMonth : m.perCompleteMonth;
+    check(`${w.completeMonths} complete months: byWindow === measure_flows NET of refunds (${w.perCompleteMonth})`, near(w.perCompleteMonth, net) && w.from === m.period.from);
+    check(`…and never above the gross measure (${m.perCompleteMonth})`, w.perCompleteMonth <= m.perCompleteMonth + EPS);
+    if (w.grossPerCompleteMonth !== undefined) {
+      check('…where refunds mattered, the disclosed gross IS the gross measure, and gross − refundEffect = net',
+        near(w.grossPerCompleteMonth, m.perCompleteMonth) && near(r2(w.grossPerCompleteMonth - w.refundEffect), w.perCompleteMonth),
+        `${w.grossPerCompleteMonth} − ${w.refundEffect} = ${w.perCompleteMonth}`);
+    }
+  }
+  if (b.expense.basis === 'MEASURED') {
+    const mw = await run('measure_flows', { measure: 'spending', period: { from: b.expense.window.from, to: b.expense.window.to } });
+    const netw = mw.netOfRefunds ? mw.netOfRefunds.perCompleteMonth : mw.perCompleteMonth;
+    check('the default MEASURED baseline is the NET measure over its own named window', near(b.expense.amount, netw), `${b.expense.amount} vs ${netw}`);
+    check('…and economicNet/month over that window = income/month − this baseline (one definition of spending on both heads)',
+      near((await run('measure_flows', { measure: 'economicNet', period: { from: b.expense.window.from, to: b.expense.window.to } })).perCompleteMonth,
+        r2((await run('measure_flows', { measure: 'income', period: { from: b.expense.window.from, to: b.expense.window.to } })).perCompleteMonth - b.expense.amount)));
   }
   const b6 = await run('get_baselines', { spendingWindow: { completeMonths: 6 }, monthsOfExpenses: [6] });
   check('choosing a window changes the baseline AND names it', b6.expense.basis === 'MEASURED' && b6.expense.completeMonths === 6

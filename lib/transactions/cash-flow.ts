@@ -326,7 +326,71 @@ export function foldEconomicRow(
 /** Economic spend: gross cost flows minus refunds, floored at 0. The single
  *  clamp authority (was duplicated in economicTotals and economicSpend). */
 export function clampEconomicSpend(spendGross: number, refunds: number): number {
-  return Math.max(0, spendGross - refunds);
+  // NET-BASELINE-1 — a month with NO refund figure (an older payload, a fixture
+  // that predates `refundTotal`) has nothing to take off: net IS gross. Without
+  // this, `gross − undefined` is NaN, and a NaN month is silently DROPPED by the
+  // observed-rate filter and poisons a mean — a missing field must never read as
+  // a missing month.
+  return Math.max(0, spendGross - (Number.isFinite(refunds) ? refunds : 0));
+}
+
+/**
+ * NET-BASELINE-1 — a per-month refund effect smaller than this is not worth a
+ * sentence. The NET figure is always the one used; this only decides whether a
+ * surface also DISCLOSES the gross figure and the refund effect beside it, so an
+ * ordinary answer is not cluttered by a few cents of returned postage.
+ */
+export const MATERIAL_MONTHLY_REFUND_EFFECT = 1;
+
+/**
+ * NET-BASELINE-1 — "how much do I actually spend a month?", over WHOLE months the
+ * fold already produced. THE one place a monthly-spending mean is defined:
+ *
+ *     month's economic spend = clampEconomicSpend(gross, refunds dated that month)
+ *     monthly figure         = mean of those, over the months given
+ *
+ * It computes no refund: `gross` and `refunds` are each month's `foldEconomicRow`
+ * totals, so which rows are refunds (and which are card payments, transfers,
+ * rewards or reimbursements — none of which are) was decided once, upstream.
+ *
+ * PERIOD: a refund counts in the month it is DATED. A later refund never rewrites
+ * the month of the purchase; the mean simply contains one higher and one lower
+ * month. EXCESS: a month whose refunds exceed its charges floors at 0 — it is
+ * never negative consumption — and the excess is reported as `refundsUnapplied`
+ * rather than silently discarded or carried into another month.
+ *
+ * `null` when no month is given: no complete month ⇒ UNKNOWN, never 0.
+ */
+export interface MonthlyEconomicSpend {
+  /** Mean NET economic spend per month — the answer to "how much do I spend". */
+  net: number;
+  /** Mean GROSS charges per month — the answer to "how much was charged". */
+  gross: number;
+  /** `gross − net`, ≥ 0: what refunds took off the monthly figure. */
+  refundEffect: number;
+  /** Mean per month of refunds that exceeded their month's charges (floored away). */
+  refundsUnapplied: number;
+  /** True when `refundEffect` clears MATERIAL_MONTHLY_REFUND_EFFECT. */
+  material: boolean;
+  months: { month: string; gross: number; refunds: number; net: number }[];
+}
+
+export function meanMonthlyEconomicSpend(
+  months: readonly { month: string; expenseTotal: number; refundTotal: number }[],
+): MonthlyEconomicSpend | null {
+  if (months.length === 0) return null;
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const lines = months.map((m) => ({
+    month: m.month, gross: m.expenseTotal, refunds: Number.isFinite(m.refundTotal) ? m.refundTotal : 0,
+    net: clampEconomicSpend(m.expenseTotal, m.refundTotal),
+  }));
+  const n = lines.length;
+  const gross = r2(lines.reduce((s, l) => s + l.gross, 0) / n);
+  const net   = r2(lines.reduce((s, l) => s + l.net, 0) / n);
+  const unapplied = r2(lines.reduce((s, l) => s + Math.max(0, l.refunds - l.gross), 0) / n);
+  const refundEffect = r2(gross - net);
+  return { net, gross, refundEffect, refundsUnapplied: unapplied,
+    material: refundEffect >= MATERIAL_MONTHLY_REFUND_EFFECT, months: lines };
 }
 
 /**

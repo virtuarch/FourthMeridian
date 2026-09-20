@@ -53,7 +53,12 @@ export const WINDOW_MONTHS = 3;
 export interface CompleteMonth {
   /** `YYYY-MM`. */
   month: string;
-  /** The month's expense total, in the reporting currency. */
+  /**
+   * The month's ECONOMIC spend, in the reporting currency: gross charges less the
+   * refunds dated in that month, floored at 0 (NET-BASELINE-1). The caller supplies
+   * it already netted through the canonical clamp — this module averages, and
+   * decides nothing about what counts as spending or as a refund.
+   */
   expenseTotal: number;
 }
 

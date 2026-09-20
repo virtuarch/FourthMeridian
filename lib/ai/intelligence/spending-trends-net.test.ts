@@ -91,9 +91,14 @@ function mkMonth(over: Partial<MonthlyBreakdownEntry> & { month: string }): Mont
     !approx(net, debtSubtracted) && approx(debtSubtracted, net - m.debtPaymentTotal),
     `net=${net}, retiredFormula=${debtSubtracted}`);
 
-  // income / expense metrics untouched by the fix.
   check('income metric is incomeTotal (unchanged)',  approx(metricValue(m, 'income'), 4000));
-  check('expense metric is expenseTotal (unchanged)', approx(metricValue(m, 'expense'), 3000));
+  // NET-BASELINE-1 — the expense trend is ECONOMIC spend (gross 3,000 − refunds 800
+  // = 2,200), superseding "expense metric is expenseTotal". It printed a gross
+  // expense beside a net that had already taken the refund off, so the three rows
+  // of one trend table did not add up: 4,000 − 3,000 ≠ 1,800.
+  check('expense metric is economic spend: 3,000 − 800 = 2,200', approx(metricValue(m, 'expense'), 2200));
+  check('the trend rows reconcile: income − expense = net',
+    approx(metricValue(m, 'income') - metricValue(m, 'expense'), metricValue(m, 'net')));
 }
 
 // ── 2. Parity with the assembler net formula on REAL assembled data ───────────
