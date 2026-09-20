@@ -148,10 +148,11 @@ export function CashFlowWorkspace({
       : null),
     [transactions, period, asOfClock],
   );
-  // ONE trust envelope from the stamp — shared by the shell (onEnvelopeChange) and the
-  // hero's TrustIndicator, so the two can never disagree.
+  // ONE trust envelope from the stamp — reported UP to the shell (onEnvelopeChange),
+  // whose ShellTrustRow renders its orthogonal caveats. The Cash Flow hero mounts no
+  // provenance badge of its own, so the envelope is not passed down to it.
   // V25-FINAL-1 — carry the window's FX-exclusion flag (a foreign row with no rate
-  // was excluded from income/spend/net) so the hero + shell chip disclose the total
+  // was excluded from income/spend/net) so the shell caveat chip discloses the total
   // is a partial. Same `unconverted` the headline authority (economicTotals) computes.
   const fxUnconverted = data?.unconverted ?? false;
   const envelope = useMemo(
@@ -315,7 +316,7 @@ export function CashFlowWorkspace({
 
   return (
     <div className="space-y-8 sm:space-y-10 min-w-0">
-      {/* ① Summary — the editorial lede (Net + trust + delta + perspective toggle)
+      {/* ① Summary — the editorial lede (Net + delta + perspective toggle)
            over the headless breakdown body (Cash In/Out tiles + movement context). */}
       <section id="cashflow-summary" className="scroll-mt-20">
         <CashFlowHero
@@ -327,7 +328,6 @@ export function CashFlowWorkspace({
           period={period}
           asOf={asOf}
           change={change}
-          envelope={envelope}
         />
         <div className="mt-5">
           <CashFlowSummaryWidget

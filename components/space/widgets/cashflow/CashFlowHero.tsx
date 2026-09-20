@@ -4,7 +4,7 @@
  * components/space/widgets/cashflow/CashFlowHero.tsx
  *
  * Surface ① of the Cash Flow Workspace — the editorial lede, in the Net Worth /
- * prototype idiom (bare, no card): an eyebrow + trust chip, the Net headline for
+ * prototype idiom (bare, no card): an eyebrow, the Net headline for
  * the selected window, its change vs the comparison window, a quiet "as of" bridge
  * line, and the perspective toggle. Mirrors DebtHero / InvestmentsHero, tuned for
  * an OPERATIONAL surface — the Cash In / Cash Out drilldowns and the movement
@@ -21,13 +21,17 @@
  * one derivation here is the perspective-dependent Net, taken straight off the
  * shared facts via the canonical economicSpend helper (no new fold), so it
  * reconciles by construction with the tiles below.
+ *
+ * NO PROVENANCE BADGE — this hero deliberately mounts no TrustIndicator, for ANY
+ * completeness tier. The workspace still resolves the Cash Flow trust envelope and
+ * reports it up (onEnvelopeChange), so the shell's ShellTrustRow keeps showing the
+ * orthogonal FX / syncing caveats, and the Insights card keeps its stamp caveat.
+ * The other four Overview heroes keep their compact TrustIndicator.
  */
 
 import { formatDate } from "@/lib/format";
 import { formatCurrency } from "@/lib/currency";
-import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { Figure } from "@/components/atlas/Surface";
-import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
 import { DeltaBadge } from "@/components/space/widgets/wealth/wealth-ui";
 import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import { economicSpend, type CashFlowPerspective, type DayFacts } from "@/lib/transactions/cash-flow-projection";
@@ -62,7 +66,6 @@ export function CashFlowHero({
   period,
   asOf,
   change,
-  envelope,
 }: {
   /** The contract's window summary facts, or null while transactions load. */
   facts:        DayFacts | null | undefined;
@@ -76,8 +79,6 @@ export function CashFlowHero({
   asOf:         string;
   /** The comparison-window Net delta, or null when no honest comparison exists. */
   change:       CashFlowHeroChange | null;
-  /** The workspace's canonical trust envelope — drives the confidence chip. */
-  envelope:     PerspectiveEnvelope;
 }) {
   const economic = perspective === "economic";
   const net = facts ? heroNet(facts, perspective) : null;
@@ -87,12 +88,9 @@ export function CashFlowHero({
     // Bare hero — no card, no border. The Net headline is the point; the breakdown
     // tiles and read surfaces sit below.
     <section>
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
-          Net cash flow · {periodLabel(period)}
-        </p>
-        <TrustIndicator variant="compact" envelope={envelope} />
-      </div>
+      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+        Net cash flow · {periodLabel(period)}
+      </p>
 
       <div className="mt-2 flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-2">
         <Figure

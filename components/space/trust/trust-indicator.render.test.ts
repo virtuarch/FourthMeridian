@@ -5,8 +5,9 @@
  *
  *   npx tsx components/space/trust/trust-indicator.render.test.ts
  *
- * The Overview heroes (Net Worth, Cash Flow, Debt, Liquidity, Investments) each
- * render a `compact` TrustIndicator beside their headline figure. On the normal
+ * The Overview heroes (Net Worth, Debt, Liquidity, Investments) each render a
+ * `compact` TrustIndicator beside their headline figure. (Cash Flow's hero mounts
+ * none at all — see widgets/cashflow/cash-flow-hero.render.test.ts.) On the normal
  * path that was a second "Observed" badge under the shell's "Completeness
  * Observed" pill. Both are gone from the Overview. What must NOT go is a tier or
  * a caveat that changes how the figure should be read.
@@ -51,16 +52,20 @@ check("expanded still states the tier, clean or not", text(render({ completeness
 check("inline is still silent when clean, vocal when not",
   render({ completeness: tier("observed") }, "inline") === "" && text(render({ completeness: tier("estimated") }, "inline")).length > 0);
 
-console.log("5. Every Overview hero uses the compact variant (so the rule reaches all of them)");
+console.log("5. Every Overview hero that carries a badge uses the compact variant (so the rule reaches all of them)");
 for (const f of [
   "components/space/widgets/wealth/WealthHero.tsx",
-  "components/space/widgets/cashflow/CashFlowHero.tsx",
   "components/space/widgets/debt/DebtHero.tsx",
   "components/space/widgets/liquidity/LiquidityHero.tsx",
   "components/space/widgets/investments/InvestmentsHero.tsx",
 ]) {
   check(f.split("/").pop()!, /<TrustIndicator variant="compact" envelope=\{envelope\}/.test(readFileSync(path.join(process.cwd(), f), "utf8")));
 }
+// Cash Flow is the deliberate exception: its hero mounts NO badge, for any tier. Its
+// caveats still surface in the shell's ShellTrustRow, off the envelope the workspace
+// reports up.
+check("CashFlowHero.tsx mounts no TrustIndicator",
+  !/<TrustIndicator\b/.test(readFileSync(path.join(process.cwd(), "components/space/widgets/cashflow/CashFlowHero.tsx"), "utf8")));
 
 if (failures > 0) { console.error(`\ntrust-indicator: ${failures} failure(s).`); process.exit(1); }
 console.log("\ntrust-indicator: all passed.");
