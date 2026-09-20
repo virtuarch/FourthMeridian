@@ -18,9 +18,15 @@
  * payments are not read, shown, or required. There is ONE cadence — monthly —
  * and no other mode exists in this component's state.
  *
- * UNKNOWN APR stays unknown: if any selected account that owes has no APR on
- * file, there is no timeline (never a 0% one) and the panel names the accounts.
- * APRs are managed in ONE place — the Interest cost widget.
+ * UNKNOWN APR does not block the planner, and is never turned into a rate. The
+ * selection's owed balance is handed to the engine in two parts — the part with
+ * an APR on file (at ITS blended rate) and the part without — and the engine
+ * returns an ESTIMATE whose `basis` says PRINCIPAL_ONLY / PARTIAL_INTEREST. This
+ * component reads that basis; it never infers "estimate" from a number, and it
+ * never writes or displays a 0% for an account whose rate is unknown.
+ *
+ * APRs are managed in ONE place — the Interest cost widget. This panel has no
+ * APR input: its "Add APR" action only takes the user THERE (`onAddApr`).
  */
 
 import { useState, useEffect } from "react";
@@ -37,7 +43,7 @@ import type { ConversionContext } from "@/lib/money/types";
 import { useBodyScrollLock } from "@/components/atlas/useBodyScrollLock";
 import { planPayoff, DEFAULT_PAYOFF_PAYMENT } from "@/lib/debt/payoff";
 import { todayUTCISO } from "@/lib/time/clock";
-import { payoffHorizonLabel } from "@/components/space/widgets/debt/payoff-copy";
+import { payoffHorizonLabel, payoffEstimateNotice, ADD_APR_PROMPT } from "@/components/space/widgets/debt/payoff-copy";
 import { PayoffScenarioStrip } from "@/components/space/widgets/debt/PayoffScenarioStrip";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -80,6 +86,7 @@ export function DebtPayoffSection({
   onCloseFullscreen,
   ctx,
   today,
+  onAddApr,
 }: {
   accounts:           DebtPayoffAccount[];
   fullscreen?:        boolean;
@@ -94,6 +101,12 @@ export function DebtPayoffSection({
   ctx?: ConversionContext;
   /** The host's "today" (YYYY-MM-DD) — the schedule's start. Defaults to the clock. */
   today?: string;
+  /**
+   * Takes the user to the ONE APR editing surface (the Interest cost widget).
+   * Supplied by a host that mounts that widget; absent ⇒ the prompt is plain
+   * text. This panel never grows an APR input of its own.
+   */
+  onAddApr?: () => void;
 }) {
   const debtAccounts = accounts.filter((a) => a.type === "debt");
 
@@ -185,15 +198,18 @@ export function DebtPayoffSection({
   );
 
   const total = agg.totalOwed;
-  // UNKNOWN NEVER MEANS ZERO. The blended rate is a rate for the SELECTION only
-  // when every selected account that owes has one; a blend over the rated subset
-  // applied to the whole balance would be a rate nobody quoted.
+  // UNKNOWN NEVER MEANS ZERO — and never borrows a neighbour's rate. The
+  // aggregate's blend is over the RATED rows only (`ratedOwed`), so it is handed
+  // to the engine together with how much of the balance it does NOT describe.
+  // The engine accrues interest on the rated part alone and reports the rest as
+  // an estimation assumption in `plan.basis`.
   const unratedNames = filteredConv
     .filter(({ a, bal }) => bal.amount > 0 && a.interestRate == null)
     .map(({ a }) => a.name);
-  const aprPct      = agg.unratedCount > 0 ? null : agg.weightedApr;
-  const weightedApr = aprPct;
-  const hasRates    = aprPct != null;
+  const aprPct            = agg.weightedApr;               // null ⇔ no selected owing account has a rate
+  const unknownAprBalance = Math.max(0, total - agg.ratedOwed);
+  const weightedApr       = aprPct;
+  const hasRates          = aprPct != null;
 
   // Aggregate taint — any unresolvable row marks every derived projection.
   const aggEstimated = filteredConv.some((r) => r.bal.estimated);
@@ -203,7 +219,10 @@ export function DebtPayoffSection({
 
   // The clock seam (lib/time) — never an inline current-day derivation.
   const startISO = today ?? todayUTCISO();
-  const plan     = planPayoff({ balance: total, aprPct, payment: amount, startISO });
+  const plan     = planPayoff({ balance: total, aprPct, unknownAprBalance, payment: amount, startISO });
+  // STRUCTURAL, from the engine — not inferred from a missing rate or a 0.
+  const notice     = payoffEstimateNotice(plan);
+  const isEstimate = notice != null;
   const paidOff  = plan.status === "paid_off" ? plan : null;
   const totalInterest = paidOff?.totalInterest ?? null;
   const totalPaid     = paidOff?.totalPaid ?? null;
@@ -211,17 +230,17 @@ export function DebtPayoffSection({
 
   const timeLabel = () => payoffHorizonLabel(plan);
 
-  /** "$174.23 final payment" — the engine's figure, to the cent. Null without a schedule. */
+  /** "$174.23 final payment" — the engine's figure, to the cent; qualified by the
+   *  same basis as the timeline when interest evidence is incomplete. */
   const finalPaymentLine = paidOff
-    ? `${est}${formatCurrencyExact(paidOff.finalPayment, disp)} final payment`
+    ? `${est}${isEstimate ? "about " : ""}${formatCurrencyExact(paidOff.finalPayment, disp)} final payment`
       + (paidOff.fullPayments > 0 ? ` after ${paidOff.fullPayments} of ${formatBalance(amount, disp)}` : "")
+      + (isEstimate ? (paidOff.basis.interest === "PRINCIPAL_ONLY" ? " · before interest" : " · before unknown interest") : "")
     : null;
 
   /** Why there is no timeline, in the user's terms. Null when there is one. */
   const refusalLine =
-    plan.status === "unknown_apr"
-      ? `No timeline without an APR for ${unratedNames.join(", ") || "every selected debt"} — add it in Interest cost.`
-    : plan.status === "non_amortizing"
+    plan.status === "non_amortizing"
       ? `${formatBalance(amount, disp)} a month does not cover the interest (${est}${formatCurrencyExact(plan.firstPeriodInterest, disp)} in the first month), so the balance never falls.`
     : plan.status === "beyond_horizon"
       ? "At this payment the balance is not cleared within 100 years."
@@ -311,19 +330,51 @@ export function DebtPayoffSection({
         </div>
         <div className="flex items-center justify-between px-3 py-2">
           <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-            Interest{hasRates ? ` (${weightedApr!.toFixed(2)}% APR)` : ""}
+            Interest{hasRates ? ` (${weightedApr!.toFixed(2)}% APR${isEstimate ? ", known APRs only" : ""})` : ""}
           </p>
-          {totalInterest != null && (
+          {paidOff?.basis.interest === "PRINCIPAL_ONLY" ? (
+            <p className="text-xs" style={{ color: "var(--text-faint)" }}>Not included — APR unknown</p>
+          ) : totalInterest != null && (
             <p className="text-sm font-medium" style={{ color: debtColor(Math.floor(sortedDebtAccounts.length / 2), sortedDebtAccounts.length) }}>+{est}{formatCurrencyExact(totalInterest, disp)}</p>
           )}
         </div>
         <div className="flex items-center justify-between px-3 py-2.5" style={{ background: "var(--surface-muted)" }}>
-          <p className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>Total paid</p>
+          <p className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>
+            {isEstimate ? "Total paid, before unknown interest" : "Total paid"}
+          </p>
           <p className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>
             {est}{formatCurrencyExact(totalPaid ?? total, disp)}
           </p>
         </div>
       </div>
+    </div>
+  );
+
+  /** The estimate qualification + the one way to fix it. Rendered whenever the
+   *  engine's basis is not INTEREST_AWARE — beside the timeline, never instead of it. */
+  const estimateNotice = notice && (
+    <div
+      data-payoff-basis={plan.status === "paid_off" || plan.status === "non_amortizing" || plan.status === "beyond_horizon" ? plan.basis.interest : undefined}
+      className="rounded-lg border px-3 py-2"
+      style={{ borderColor: "var(--border-hairline)", background: "var(--surface-muted)" }}
+    >
+      <p className="text-[11px] font-semibold" style={{ color: "var(--accent-warning)" }}>{notice.headline}</p>
+      <p className="mt-0.5 text-[11px] leading-snug" style={{ color: "var(--text-muted)" }}>
+        {notice.detail}
+        {unratedNames.length > 0 ? ` No APR on file: ${unratedNames.join(", ")}.` : ""}
+      </p>
+      {onAddApr ? (
+        <button
+          type="button"
+          onClick={onAddApr}
+          className="mt-1 text-[11px] font-medium"
+          style={{ color: "var(--accent-info)" }}
+        >
+          {ADD_APR_PROMPT} →
+        </button>
+      ) : (
+        <p className="mt-1 text-[11px]" style={{ color: "var(--text-faint)" }}>{ADD_APR_PROMPT} — in Interest cost.</p>
+      )}
     </div>
   );
 
@@ -333,7 +384,9 @@ export function DebtPayoffSection({
       return (
         <p className={cls} style={{ color: "var(--text-faint)", borderColor: "var(--border-hairline)" }}>
           {finalPaymentLine}
-          {totalInterest != null && totalInterest > 0 ? ` · ${est}${formatCurrencyExact(totalInterest, disp)} in interest` : ""}
+          {totalInterest != null && totalInterest > 0
+            ? ` · ${est}${formatCurrencyExact(totalInterest, disp)} in interest${isEstimate ? " on known APRs" : ""}`
+            : ""}
         </p>
       );
     }
@@ -345,9 +398,9 @@ export function DebtPayoffSection({
 
   const disclaimer = (
     <p className="text-[10px] text-center" style={{ color: "var(--text-faint)" }}>
-      {hasRates
+      {!isEstimate
         ? "Monthly payments · interest accrues daily on the balance · actual totals vary with billing cycles, fees, and rate changes"
-        : "No payoff timeline is shown without an APR — an unknown rate is never treated as 0%"}
+        : "An estimate: a debt with no APR on file is counted without interest, so the real payoff takes longer. Its APR stays unknown — nothing is saved as 0%."}
     </p>
   );
 
@@ -448,6 +501,7 @@ export function DebtPayoffSection({
                 </div>
                 {resultDetail("text-[11px] mt-1.5 pt-1.5 border-t")}
               </div>
+              {estimateNotice}
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
@@ -509,7 +563,7 @@ export function DebtPayoffSection({
                               <span className="text-[10px]" style={{ color: `${debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length)}cc` }}>{a.interestRate.toFixed(2)}% APR</span>
                             )}
                             {a.interestRate == null && a.balance > 0 && (
-                              <span className="text-[10px]" style={{ color: "var(--text-faint)" }}>APR unknown</span>
+                              <span className="text-[10px]" style={{ color: "var(--text-faint)" }}>APR unknown · counted without interest</span>
                             )}
                           </div>
                         </div>
@@ -525,7 +579,7 @@ export function DebtPayoffSection({
                   </div>
                   {hasRates && (
                     <div className="flex justify-between text-xs">
-                      <span style={{ color: "var(--text-muted)" }}>Avg APR</span>
+                      <span style={{ color: "var(--text-muted)" }}>{isEstimate ? "Avg APR (known)" : "Avg APR"}</span>
                       <span className="font-semibold" style={{ color: debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length) }}>{weightedApr!.toFixed(2)}%</span>
                     </div>
                   )}
@@ -542,6 +596,7 @@ export function DebtPayoffSection({
                   {payoffDate && <p className="text-sm mt-1" style={{ color: "var(--text-secondary)" }} suppressHydrationWarning>by {payoffDate}</p>}
                   {resultDetail("text-xs mt-2")}
                 </div>
+                {estimateNotice}
 
                 <div className="space-y-3">
                   <div className="flex items-center justify-between gap-3">
@@ -613,7 +668,7 @@ export function DebtPayoffSection({
         </div>
         {hasRates && (
           <div className="text-right">
-            <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>Avg APR</p>
+            <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>{isEstimate ? "Avg APR (known)" : "Avg APR"}</p>
             <p className="text-sm font-semibold" style={{ color: debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length) }}>{weightedApr!.toFixed(2)}%</p>
           </div>
         )}
@@ -647,8 +702,9 @@ export function DebtPayoffSection({
       </div>
 
       {resultDetail("text-[11px] px-1")}
+      {estimateNotice}
       {paidOff && breakdown}
-      <PayoffScenarioStrip input={{ total, aprPct, payment: amount, startISO }} currency={disp} />
+      <PayoffScenarioStrip input={{ total, aprPct, unknownAprBalance, payment: amount, startISO }} currency={disp} />
       {disclaimer}
     </div>
   );

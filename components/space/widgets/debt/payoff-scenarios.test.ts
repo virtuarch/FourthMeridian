@@ -48,10 +48,19 @@ console.log("2. Interest saved is measured against the chosen payment");
       && r.plan.payoffISO < (rows[i - 1].plan as { payoffISO: string }).payoffISO)));
 }
 
-console.log("3. UNKNOWN APR ⇒ no rows, no fabricated horizon");
+console.log("3. UNKNOWN APR ⇒ rows are qualified ESTIMATES (supersedes 'no rows')");
 {
-  check("aprPct null ⇒ []", buildPayoffScenarios({ total: 1174, aprPct: null, payment: 500, startISO: START }).length === 0);
-  check("explicit 0 is a rate ⇒ rows", buildPayoffScenarios({ total: 1174, aprPct: 0, payment: 500, startISO: START }).length === 3);
+  const est = buildPayoffScenarios({ total: 1174, aprPct: null, payment: 500, startISO: START });
+  check("aprPct null ⇒ three rows", est.length === 3);
+  check("every row's plan carries PRINCIPAL_ONLY", est.every((r) => r.plan.status === "paid_off" && r.plan.basis.interest === "PRINCIPAL_ONLY"));
+  check("the horizon label does not overstate precision", est.every((r) => payoffHorizonLabel(r.plan).startsWith("About ")), payoffHorizonLabel(est[0].plan));
+  check("no 'interest saved' is claimed when no interest was modelled (null, not 0)", est.every((r) => r.interestSavedVsChosen === null));
+  const zero = buildPayoffScenarios({ total: 1174, aprPct: 0, payment: 500, startISO: START });
+  check("explicit 0 is a RATE ⇒ interest-aware rows, exact labels, a real 0 saved",
+    zero.every((r) => r.plan.status === "paid_off" && r.plan.basis.interest === "INTEREST_AWARE" && !payoffHorizonLabel(r.plan).startsWith("About") && r.interestSavedVsChosen === 0));
+  const mixed = buildPayoffScenarios({ total: 10000, aprPct: 24, unknownAprBalance: 4000, payment: 400, startISO: START });
+  check("mixed ⇒ PARTIAL_INTEREST rows, with a saving measured on the known part",
+    mixed.every((r) => r.plan.status === "paid_off" && r.plan.basis.interest === "PARTIAL_INTEREST" && (r.interestSavedVsChosen ?? 0) > 0));
 }
 
 console.log("4. Nothing owed / no payment ⇒ no rows");

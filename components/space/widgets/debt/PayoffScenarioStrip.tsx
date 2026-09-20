@@ -9,13 +9,13 @@
  * precise payoff horizon and the interest saved against that chosen payment,
  * computed by buildPayoffScenarios over the same `planPayoff` engine.
  *
- * Unknown APR / nothing owed ⇒ buildPayoffScenarios returns [] and the strip
- * renders nothing (the planner already says why there is no timeline).
+ * Unknown APR ⇒ the rows are ESTIMATES ("About …", from each row's plan.basis)
+ * and the footnote says which interest was counted. Nothing owed ⇒ no strip.
  */
 
 import { formatCurrency } from "@/lib/currency";
 import { buildPayoffScenarios, type PayoffScenarioInput } from "./payoff-scenarios";
-import { payoffHorizonLabel } from "./payoff-copy";
+import { payoffHorizonLabel, payoffBasisOf } from "./payoff-copy";
 
 export function PayoffScenarioStrip({
   input,
@@ -28,6 +28,7 @@ export function PayoffScenarioStrip({
   const fmtMoney = (v: number) => formatCurrency(v, currency);
   const rows = buildPayoffScenarios(input, { fmtMoney });
   if (rows.length === 0) return null;
+  const basis = payoffBasisOf(rows[0].plan)?.interest ?? "INTEREST_AWARE";
 
   return (
     <div className="mt-3 pt-3 border-t border-[var(--border-hairline)] space-y-1.5">
@@ -45,7 +46,13 @@ export function PayoffScenarioStrip({
           </span>
         </div>
       ))}
-      <p className="text-[10px] text-[var(--text-faint)] pt-0.5">Interest saved vs the payment you chose.</p>
+      <p className="text-[10px] text-[var(--text-faint)] pt-0.5">
+        {basis === "INTEREST_AWARE"
+          ? "Interest saved vs the payment you chose."
+          : basis === "PARTIAL_INTEREST"
+            ? "Estimates. Interest saved counts only the debts with an APR on file."
+            : "Estimates without interest — no APR on file."}
+      </p>
     </div>
   );
 }

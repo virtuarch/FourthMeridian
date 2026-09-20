@@ -122,12 +122,87 @@ console.log("6. NON-AMORTIZING — interest equals or exceeds the payment");
   check("a payment that clears interest amortizes", over.status === "paid_off");
 }
 
-console.log("7. UNKNOWN APR — never read as 0%");
+console.log("7. UNKNOWN APR — a principal-only ESTIMATE; UNKNOWN is still not 0%");
 {
-  const u = planPayoff({ balance: 1174, aprPct: null, payment: 500, startISO: START });
-  check("status unknown_apr", u.status === "unknown_apr");
-  check("no timeline, no final payment fabricated", !("payoffISO" in u) && !("finalPayment" in u) && !("elapsed" in u));
-  check("explicit 0 IS a rate", planPayoff({ balance: 1174, aprPct: 0, payment: 500, startISO: START }).status === "paid_off");
+  // SUPERSEDES the earlier rule ("unknown APR ⇒ no timeline"). A missing APR no
+  // longer blocks the schedule; it changes what the schedule is allowed to CLAIM.
+  const u = paid(planPayoff({ balance: 1174, aprPct: null, payment: 500, startISO: START }));
+  check("one debt, unknown APR ⇒ a payoff estimate IS returned", u !== null);
+  check("basis is PRINCIPAL_ONLY", u?.basis.interest === "PRINCIPAL_ONLY", u?.basis.interest);
+  check("the APR stays UNKNOWN in the result: basis.aprPct is null, not 0", u?.basis.aprPct === null);
+  check("the zero it used is recorded as an ESTIMATION ASSUMPTION, not a rate",
+    u?.basis.unknownAprAssumption?.aprPct === 0 && u?.basis.unknownAprAssumption?.provenance === "ESTIMATION_ASSUMPTION");
+  check("the whole balance is reported as unknown-APR", u?.basis.unknownAprBalance === 1174 && u?.basis.knownAprBalance === 0);
+  check("the final PARTIAL payment still works under principal-only (174.00 on day 11 ⇒ 2026-03-12)",
+    u?.finalPayment === 174 && u?.finalPaymentIsPartial === true && u?.finalPaymentDay === 11 && u?.payoffISO === "2026-03-12",
+    `${u?.finalPayment} ${u?.finalPaymentDay} ${u?.payoffISO}`);
+  check("no interest is CLAIMED (0 modelled — the basis says why)", u?.totalInterest === 0 && u?.totalPaid === 1174);
+
+  // KNOWN 0% vs UNKNOWN: the same dates, never the same evidence.
+  const z = paid(planPayoff({ balance: 1174, aprPct: 0, payment: 500, startISO: START }));
+  check("known 0% is INTEREST_AWARE", z?.basis.interest === "INTEREST_AWARE");
+  check("known 0% carries aprPct 0 and NO assumption", z?.basis.aprPct === 0 && z?.basis.unknownAprAssumption === null);
+  check("…the two schedules coincide", z?.payoffISO === u?.payoffISO && z?.finalPayment === u?.finalPayment);
+  check("…and are still distinguishable by structure alone", JSON.stringify(z?.basis) !== JSON.stringify(u?.basis));
+
+  const k = paid(planPayoff({ balance: 1174, aprPct: 24, payment: 500, startISO: START }));
+  check("known nonzero APR stays INTEREST_AWARE and unchanged (212.72 on 2026-03-15)",
+    k?.basis.interest === "INTEREST_AWARE" && k?.basis.aprPct === 24 && k?.finalPayment === 212.72 && k?.payoffISO === "2026-03-15");
+  check("adding the APR upgrades the SAME calculation: later date, larger final payment, no assumption",
+    (k?.payoffISO ?? "") > (u?.payoffISO ?? "z") && (k?.finalPayment ?? 0) > (u?.finalPayment ?? Infinity) && k?.basis.unknownAprAssumption === null);
+}
+
+console.log("7b. MIXED known + unknown — the unknown balance never inherits the known APR");
+{
+  // 1200 owed: 600 on a 24% card, 600 on a card with NO APR. 500/mo from 2026-01-01.
+  //   Interest accrues on the KNOWN share only (600/1200 = 0.5), at ITS rate:
+  //   Jan (31d): round2(1200 × 0.5 × .24 × 31/365) = 12.23 → 1212.23 − 500 = 712.23
+  //   Feb (28d): round2(712.23 × 0.5 × .24 × 28/365) =  6.56 →  718.79 − 500 = 218.79
+  //   Mar (31d): first d with 500·d/31 ≥ 218.79 + round2(218.79 × 0.5 × .24 × d/365)
+  //     d=13: 209.68 < 219.73 ; d=14: 225.81 ≥ 218.79 + 1.01 = 219.80
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const jan = r2(1200 * 0.5 * 0.24 * 31 / 365), b1 = r2(1200 + jan - 500);
+  const feb = r2(b1 * 0.5 * 0.24 * 28 / 365), b2 = r2(b1 + feb - 500);
+  const last = r2(b2 * 0.5 * 0.24 * 14 / 365);
+  check("hand arithmetic: 12.23 / 712.23 / 6.56 / 218.79 / 1.01",
+    jan === 12.23 && b1 === 712.23 && feb === 6.56 && b2 === 218.79 && last === 1.01, `${jan} ${b1} ${feb} ${b2} ${last}`);
+
+  const m = paid(planPayoff({ balance: 1200, aprPct: 24, unknownAprBalance: 600, payment: 500, startISO: START }));
+  check("basis is PARTIAL_INTEREST — not described as interest-aware", m?.basis.interest === "PARTIAL_INTEREST", m?.basis.interest);
+  check("basis splits the balance 600 known / 600 unknown", m?.basis.knownAprBalance === 600 && m?.basis.unknownAprBalance === 600);
+  check("the known part keeps ITS rate (24), the unknown part an assumption", m?.basis.aprPct === 24 && m?.basis.unknownAprAssumption?.aprPct === 0);
+  check("final payment 219.80 on day 14 (2026-03-15)", m?.finalPayment === 219.8 && m?.payoffISO === "2026-03-15", `${m?.finalPayment} ${m?.payoffISO}`);
+  check("total interest 12.23 + 6.56 + 1.01 = 19.80", m?.totalInterest === 19.8, `${m?.totalInterest}`);
+
+  // THE INVARIANT: had the unknown 600 inherited the 24% blend, Jan alone would
+  // accrue 24.46 on the whole 1200. It accrues exactly half of that.
+  const inherited = paid(planPayoff({ balance: 1200, aprPct: 24, payment: 500, startISO: START }));
+  check("whole-balance-at-24% would accrue 24.46 in January", accruedInterest(1200, 24, 31) === 24.46);
+  check("the mixed plan accrues LESS interest than the inherited-APR plan", (m?.totalInterest ?? 0) < (inherited?.totalInterest ?? 0),
+    `${m?.totalInterest} vs ${inherited?.totalInterest}`);
+  check("…and MORE than treating everything as principal", (m?.totalInterest ?? 0) > 0);
+  // The unknown part contributes EXACTLY zero interest: the same money with that
+  // card KNOWN to be 0% (blend (600×24 + 600×0)/1200 = 12) costs the same 19.80 —
+  // and is a different claim, which only the basis can tell apart.
+  const knownZero = paid(planPayoff({ balance: 1200, aprPct: 12, unknownAprBalance: 0, payment: 500, startISO: START }));
+  check("unknown part accrues exactly 0: same interest as that card at a KNOWN 0%", knownZero?.totalInterest === m?.totalInterest && knownZero?.payoffISO === m?.payoffISO,
+    `${knownZero?.totalInterest} vs ${m?.totalInterest}`);
+  check("…yet known-0% is INTEREST_AWARE and the unknown one is PARTIAL_INTEREST",
+    knownZero?.basis.interest === "INTEREST_AWARE" && m?.basis.interest === "PARTIAL_INTEREST");
+
+  // Supplying the missing APR (18%) ⇒ blended (600×24 + 600×18)/1200 = 21, nothing unknown.
+  const done = paid(planPayoff({ balance: 1200, aprPct: 21, unknownAprBalance: 0, payment: 500, startISO: START }));
+  check("adding the APR ⇒ INTEREST_AWARE, qualification gone", done?.basis.interest === "INTEREST_AWARE" && done?.basis.unknownAprAssumption === null);
+  check("…and the interest-aware result costs more than the estimate did", (done?.totalInterest ?? 0) > (m?.totalInterest ?? Infinity));
+
+  check("a 'known' part with no rate is refused, not guessed",
+    planPayoff({ balance: 1200, aprPct: null, unknownAprBalance: 600, payment: 500, startISO: START }).status === "invalid_input");
+  check("negative unknown balance is invalid",
+    planPayoff({ balance: 1200, aprPct: 24, unknownAprBalance: -1, payment: 500, startISO: START }).status === "invalid_input");
+  const all = paid(planPayoff({ balance: 1200, aprPct: 24, unknownAprBalance: 5000, payment: 500, startISO: START }));
+  check("unknown ≥ balance clamps to PRINCIPAL_ONLY and drops the unused rate", all?.basis.interest === "PRINCIPAL_ONLY" && all?.basis.aprPct === null);
+  const na = planPayoff({ balance: 10000, aprPct: 24, unknownAprBalance: 1000, payment: 100, startISO: START });
+  check("a refusal that ran a schedule still reports its basis", na.status === "non_amortizing" && na.basis.interest === "PARTIAL_INTEREST");
 }
 
 console.log("8. Refusals");

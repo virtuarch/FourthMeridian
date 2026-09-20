@@ -10,8 +10,9 @@
  * payment is a fraction of a full one.
  *
  * ── Inputs ──────────────────────────────────────────────────────────────────
- * balance + APR + chosen payment. NOTHING ELSE. A minimum payment is not an
- * input: the payment the user chose is the payment.
+ * balance (and how much of it has a known rate) + APR + chosen payment. NOTHING
+ * ELSE. A minimum payment is not an input: the payment the user chose is the
+ * payment.
  *
  * ── Cadence ─────────────────────────────────────────────────────────────────
  * ONE cadence: MONTHLY. `payment` is money per calendar month, paid on each
@@ -25,8 +26,35 @@
  *     interest = round2(balance × apr/100 × days/365)
  *
  * which is the line `lib/ai/conversation/scenario-ledger.ts` settles a modelled
- * liability with. An explicit 0 is a rate. `null` is UNKNOWN and is never read
- * as 0: no schedule is produced for it.
+ * liability with. An explicit 0 is a rate.
+ *
+ * ── Unknown APR: an ESTIMATE, never a rate ──────────────────────────────────
+ * A missing APR does not block the schedule. The part of the balance whose rate
+ * is unknown is carried at ZERO interest as an explicitly labelled ESTIMATION
+ * ASSUMPTION, and the result says so STRUCTURALLY, in `basis`:
+ *
+ *     INTEREST_AWARE    every dollar owed has a rate on file (0% included)
+ *     PARTIAL_INTEREST  some of the balance has a rate, some does not
+ *     PRINCIPAL_ONLY    none of it has a rate — payments against principal only
+ *
+ * UNKNOWN IS NOT 0%. A known 0% card is INTEREST_AWARE with `aprPct: 0`; an
+ * unknown one is PRINCIPAL_ONLY with `aprPct: null` and an
+ * `unknownAprAssumption`. The two may print the same date; they never carry the
+ * same basis. Nothing here writes, returns, or implies a rate for the account —
+ * the assumption lives on the RESULT, and only there.
+ *
+ * MIXED balances. `aprPct` is the blended rate over the KNOWN part only, and it
+ * is applied to the known part only:
+ *
+ *     interest = round2(balance × knownShare × apr/100 × days/365)
+ *
+ * where `knownShare = known / (known + unknown)` is fixed for the schedule —
+ * the payment retires the two parts pro-rata, which is the SAME assumption the
+ * single blended balance has always made about the accounts inside it (a
+ * blended rate is only constant if the mix is). The unknown part therefore
+ * accrues exactly 0 and NEVER inherits the known accounts' rate; the old planner
+ * applied the rated subset's blend to the whole balance, which is the defect
+ * this replaces.
  *
  * ── The final partial payment ───────────────────────────────────────────────
  * A payment of P a month is a budget that accrues evenly across the month. When
@@ -43,9 +71,9 @@
  * final payment.
  *
  * ── What it refuses ─────────────────────────────────────────────────────────
- * It never fabricates a date. Unknown APR, a payment that does not reduce the
- * balance over a full year, and a schedule longer than `MAX_PAYOFF_PAYMENTS`
- * each come back as a named status with no timeline.
+ * A payment that does not reduce the balance over a full year, and a schedule
+ * longer than `MAX_PAYOFF_PAYMENTS`, each come back as a named status with no
+ * timeline. An estimate is qualified; it is never dressed up as precise.
  */
 
 import { amountOwed } from "@/lib/debt/balance-semantics";
@@ -63,8 +91,17 @@ export const MAX_PAYOFF_PAYMENTS = 1200;
 export interface PayoffInput {
   /** Signed balance; normalised through `amountOwed` (a credit owes nothing). */
   balance:  number;
-  /** Percent per year (19.99). `null` = UNKNOWN — never treated as 0. `0` is a rate. */
+  /**
+   * Percent per year (19.99), blended over the part of `balance` whose rate IS
+   * known. `0` is a rate. `null` = no part of the balance has a known rate.
+   */
   aprPct:   number | null;
+  /**
+   * The part of `balance` whose APR is UNKNOWN (same currency, ≥ 0). It accrues
+   * no interest — an estimation assumption reported in `basis`, not a rate.
+   * Omitted ⇒ all of it when `aprPct` is null, none of it otherwise.
+   */
+  unknownAprBalance?: number;
   /** Money per month. */
   payment:  number;
   /** YYYY-MM-DD the schedule starts from (injected — this module owns no clock). */
@@ -87,8 +124,32 @@ export interface PayoffElapsed {
   label:       string;
 }
 
+/** How much of the schedule's interest is evidenced by a rate on file. */
+export type PayoffInterestBasis = "INTEREST_AWARE" | "PARTIAL_INTEREST" | "PRINCIPAL_ONLY";
+
+/**
+ * The evidence a schedule stands on. Carried by every status that ran one, so a
+ * consumer never infers "was this an estimate?" from copy or from a 0.
+ */
+export interface PayoffBasis {
+  interest: PayoffInterestBasis;
+  /** Blended APR over the KNOWN part; null when none of the balance has a rate. */
+  aprPct: number | null;
+  /** Owed with a rate on file (interest accrues on this part). */
+  knownAprBalance: number;
+  /** Owed with NO rate on file (carried at the assumption below). */
+  unknownAprBalance: number;
+  /**
+   * What the unknown part was computed at, and that it is an ASSUMPTION. Null
+   * when nothing was unknown. This is never the account's APR — that stays
+   * unknown in the data; only this estimate used a zero.
+   */
+  unknownAprAssumption: { aprPct: 0; provenance: "ESTIMATION_ASSUMPTION" } | null;
+}
+
 export interface PaidOffPlan {
   status:   "paid_off";
+  basis:    PayoffBasis;
   cadence:  typeof PAYOFF_CADENCE;
   startISO: string;
   /** The date of the final payment. */
@@ -112,14 +173,12 @@ export interface PaidOffPlan {
 export type PayoffPlan =
   | PaidOffPlan
   | { status: "nothing_owed" }
-  /** No rate on file. No schedule — an unknown rate is not a 0% rate. */
-  | { status: "unknown_apr" }
-  /** Payment ≤ 0, or a non-finite / negative input. */
+  /** Payment ≤ 0, a non-finite / negative input, or a known part with no rate. */
   | { status: "invalid_input" }
   /** A full year of payments did not reduce the balance: interest meets or exceeds the payment. */
-  | { status: "non_amortizing"; payment: number; firstPeriodInterest: number }
+  | { status: "non_amortizing"; basis: PayoffBasis; payment: number; firstPeriodInterest: number }
   /** Amortizes, but not within `MAX_PAYOFF_PAYMENTS`. */
-  | { status: "beyond_horizon"; maxPayments: number };
+  | { status: "beyond_horizon"; basis: PayoffBasis; maxPayments: number };
 
 const DAY_MS = 86_400_000;
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -157,8 +216,26 @@ export function planPayoff(input: PayoffInput): PayoffPlan {
   const principal = round2(amountOwed(input.balance));
   if (!(principal > 0)) return { status: "nothing_owed" };
 
-  if (aprPct === null) return { status: "unknown_apr" };
-  if (!Number.isFinite(aprPct) || aprPct < 0) return { status: "invalid_input" };
+  if (aprPct !== null && (!Number.isFinite(aprPct) || aprPct < 0)) return { status: "invalid_input" };
+  const rawUnknown = input.unknownAprBalance ?? (aprPct === null ? principal : 0);
+  if (!Number.isFinite(rawUnknown) || rawUnknown < 0) return { status: "invalid_input" };
+  const unknownAprBalance = Math.min(round2(rawUnknown), principal);
+  const knownAprBalance   = round2(principal - unknownAprBalance);
+  // A part of the balance is claimed as KNOWN but no rate came with it.
+  if (knownAprBalance > 0 && aprPct === null) return { status: "invalid_input" };
+
+  const basis: PayoffBasis = {
+    interest: unknownAprBalance <= 0 ? "INTEREST_AWARE" : knownAprBalance <= 0 ? "PRINCIPAL_ONLY" : "PARTIAL_INTEREST",
+    aprPct: knownAprBalance > 0 ? aprPct : null,
+    knownAprBalance,
+    unknownAprBalance,
+    unknownAprAssumption: unknownAprBalance > 0 ? { aprPct: 0, provenance: "ESTIMATION_ASSUMPTION" } : null,
+  };
+  // Interest accrues on the KNOWN share only, at the known part's own rate. The
+  // unknown share accrues exactly 0 — it never borrows the known accounts' APR.
+  const knownShare = knownAprBalance / principal;
+  const rate = basis.aprPct ?? 0;
+  const interestOn = (bal: number, days: number) => accruedInterest(bal * knownShare, rate, days);
 
   let balance = principal;
   let totalInterest = 0;
@@ -176,13 +253,14 @@ export function planPayoff(input: PayoffInput): PayoffPlan {
     // Can the accruing budget clear what is left inside this month? (A budget
     // that tops out below the balance cannot, whatever the day — skip the scan.)
     for (let d = 1; payment + 1e-9 >= balance && d <= D; d++) {
-      const interest = accruedInterest(balance, aprPct, d);
+      const interest = interestOn(balance, d);
       const due = round2(balance + interest);
       if (payment * (d / D) + 1e-9 >= due) {
         const payoffISO = addDays(prev, d);
         const onBoundary = d === D;
         return {
           status: "paid_off",
+          basis,
           cadence: PAYOFF_CADENCE,
           startISO,
           payoffISO,
@@ -200,7 +278,7 @@ export function planPayoff(input: PayoffInput): PayoffPlan {
     }
 
     // A full month: accrue, then pay.
-    const interest = accruedInterest(balance, aprPct, D);
+    const interest = interestOn(balance, D);
     if (k === 0) firstPeriodInterest = interest;
     balance = round2(balance + interest - payment);
     totalInterest += interest;
@@ -210,10 +288,10 @@ export function planPayoff(input: PayoffInput): PayoffPlan {
     // Every month length has been seen once a year has passed. If twelve
     // payments left the balance no lower, no number of them will.
     if ((k + 1) % 12 === 0) {
-      if (balance >= yearAgoBalance) return { status: "non_amortizing", payment, firstPeriodInterest };
+      if (balance >= yearAgoBalance) return { status: "non_amortizing", basis, payment, firstPeriodInterest };
       yearAgoBalance = balance;
     }
   }
 
-  return { status: "beyond_horizon", maxPayments: MAX_PAYOFF_PAYMENTS };
+  return { status: "beyond_horizon", basis, maxPayments: MAX_PAYOFF_PAYMENTS };
 }

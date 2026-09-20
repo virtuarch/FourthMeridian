@@ -96,7 +96,7 @@ console.log("3. DUAL AUTHORITY — lens is prose-only; visible figures come from
 {
   // Hero total + ledger + payoff + signals are all sourced from the accounts array.
   check("hero figures sourced from accounts via computeDebtKpis (not the lens)", CODE.includes("computeDebtKpis(accounts"));
-  check("payoff planner sourced from accounts (+ the shell's today)", CODE.includes("renderDebtPayoffCalculator(accounts, false, undefined, ctx, today)"));
+  check("payoff planner sourced from accounts (+ the shell's today)", CODE.includes("renderDebtPayoffCalculator(accounts, false, undefined, ctx, today, handleAddApr)"));
   check("interest cost — THE APR surface — sourced from accounts", SRC.includes("<InterestCostWidget accounts={accounts}"));
   check("liabilities ledger sourced from accounts (not the lens)", SRC.includes("<LiabilitiesLedger accounts={accounts}"));
   check("signals fed the lens only as context (lensResult:), figures from accounts",

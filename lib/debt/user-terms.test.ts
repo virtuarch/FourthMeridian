@@ -113,10 +113,13 @@ async function main(): Promise<void> {
     check("interest cost: after the save ⇒ 1174 × 24% / 12 = 23.48", Math.abs(cost(after.apr).totalMonthly - 23.48) < 1e-9, `${cost(after.apr).totalMonthly}`);
 
     const plan = (apr: number | null) => planPayoff({ balance: 1174, aprPct: apr, payment: 500, startISO: "2026-01-01" });
-    check("payoff: unknown ⇒ NO timeline", plan(before.apr).status === "unknown_apr");
+    const est = plan(before.apr);
+    check("payoff: unknown ⇒ a PRINCIPAL_ONLY estimate, the APR still null in its basis",
+      est.status === "paid_off" && est.basis.interest === "PRINCIPAL_ONLY" && est.basis.aprPct === null && est.finalPayment === 174);
+    check("…and the canonical authority still says UNKNOWN — the estimate wrote nothing", resolveEffectiveDebtTerms({ interestRate: null, debtProfile: null }).apr === null);
     const p = plan(after.apr);
-    check("payoff: after the save ⇒ a schedule that carries the interest",
-      p.status === "paid_off" && p.finalPayment === 212.72 && p.payoffISO === "2026-03-15", JSON.stringify(p));
+    check("payoff: after the save ⇒ the SAME calculation, now interest-aware",
+      p.status === "paid_off" && p.basis.interest === "INTEREST_AWARE" && p.finalPayment === 212.72 && p.payoffISO === "2026-03-15", JSON.stringify(p));
     const p2 = plan(12);
     check("payoff: a different APR ⇒ a different final payment",
       p2.status === "paid_off" && p.status === "paid_off" && p2.finalPayment !== p.finalPayment && p2.finalPayment < p.finalPayment);

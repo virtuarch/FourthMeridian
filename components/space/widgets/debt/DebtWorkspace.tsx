@@ -67,6 +67,9 @@ import { CreditScoreInput, CreditLimitInputs } from "./CreditHealthInputs";
  * Payoff only when a balance is owed. A published anchor with no element scrolled
  * nowhere in silence; now a row exists iff its section does.
  */
+/** DOM id of the Interest cost widget — where the planner's "Add APR" lands. */
+export const INTEREST_COST_ANCHOR = "debt-interest-cost";
+
 export function debtSections(args: { hasLiabilities: boolean; hasDebt: boolean }): SpaceChromeSection[] {
   return [
     { label: "Summary",         anchor: "debt-summary" },
@@ -201,6 +204,13 @@ export function DebtWorkspace({
   const router = useRouter();
   const handleScoreSaved = useCallback(() => router.refresh(), [router]);
 
+  // The planner's "Add APR" goes to the ONE APR surface — it scrolls to the
+  // Interest cost widget (the sidebar's own scrollIntoView idiom). No APR input
+  // is opened or created anywhere else.
+  const handleAddApr = useCallback(() => {
+    document.getElementById(INTEREST_COST_ANCHOR)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
+
   // v2.6 — the DEBT root. Clicking a Debt point asks about Debt, not about Net
   // Worth: the breadcrumb starts here and the accounts are its direct children.
   const debtPoints = history?.points ?? [];
@@ -293,10 +303,13 @@ export function DebtWorkspace({
                 <SubHeading>Credit utilization</SubHeading>
                 <CreditUtilizationWidget accounts={accounts} ctx={ctx} />
               </Surface>
-              <Surface className="p-4 min-w-0">
-                <SubHeading>Interest cost</SubHeading>
-                <InterestCostWidget accounts={accounts} ctx={ctx} />
-              </Surface>
+              {/* The anchor the planner's "Add APR" scrolls to (Surface takes no id). */}
+              <div id={INTEREST_COST_ANCHOR} className="min-w-0 scroll-mt-20">
+                <Surface className="p-4 min-w-0">
+                  <SubHeading>Interest cost</SubHeading>
+                  <InterestCostWidget accounts={accounts} ctx={ctx} />
+                </Surface>
+              </div>
             </div>
           </Block>
 
@@ -304,7 +317,7 @@ export function DebtWorkspace({
               "pay a little more" presets over the payment the user chose. */}
           <Block id="debt-payoff" label="Payoff strategy">
             <Surface className="p-4 min-w-0">
-              {renderDebtPayoffCalculator(accounts, false, undefined, ctx, today)}
+              {renderDebtPayoffCalculator(accounts, false, undefined, ctx, today, handleAddApr)}
             </Surface>
           </Block>
         </>

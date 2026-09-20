@@ -147,6 +147,9 @@ export function renderDebtBreakdownChart(
  *                            labels follow; absent ⇒ today's behavior).
  * @param today             - The host's "today" (YYYY-MM-DD): the schedule's
  *                            start date. Absent ⇒ the planner reads the clock.
+ * @param onAddApr          - Takes the user to the ONE APR editing surface (the
+ *                            Interest cost widget) from the planner's estimate
+ *                            notice. Absent ⇒ the prompt is plain text.
  */
 export function renderDebtPayoffCalculator(
   accounts:           DebtPayoffAccount[],
@@ -154,10 +157,12 @@ export function renderDebtPayoffCalculator(
   onCloseFullscreen?: () => void,
   ctx?:               ConversionContext,
   today?:             string,
+  onAddApr?:          () => void,
 ): React.ReactElement {
   return (
     <DebtPayoffSection
       today={today}
+      onAddApr={onAddApr}
       accounts={accounts}
       fullscreen={fullscreen}
       onCloseFullscreen={onCloseFullscreen}

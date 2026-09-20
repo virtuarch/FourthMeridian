@@ -14,8 +14,9 @@
  *      unknown rate as UNKNOWN (never $0 of interest), and re-renders a
  *      different cost when the APR prop changes.
  *   B. Payoff Strategy opens at 50, has no weekly toggle, no minimum payment,
- *      prints the engine's precise horizon + final payment, and refuses a
- *      timeline when an APR is unknown.
+ *      prints the engine's precise horizon + final payment, and — when an APR is
+ *      unknown — still estimates, QUALIFIED ("Estimated without interest"), with
+ *      an Add-APR action that leads to Interest cost, never a second APR input.
  *   C. Credit health exposes the user's inputs for edit and the derived values
  *      as read-only text.
  *   D. The redundant interest / APR / minimum-payment surfaces are gone — from
@@ -111,12 +112,55 @@ console.log("B. PAYOFF STRATEGY — $50 default, monthly only, precise timing");
   check("no minimum payment shown, though the account carries one", !/\bmin\b|minimum/i.test(t), t);
   check("'pay a little more' presets sit over the chosen payment", t.includes("+$50/mo") && t.includes("+$250/mo") && !t.includes("Minimums"));
 
-  const unknown = text(renderToStaticMarkup(createElement(DebtPayoffSection, {
-    accounts: [acct("a", "Card A", 124, { interestRate: 0 }), acct("b", "Card B", 600)], today: TODAY,
-  })));
-  check("UNKNOWN APR ⇒ no timeline", unknown.includes("Debt-free in APR needed") && !/\d+ months?/.test(unknown.replace(/\/mo/g, "")), unknown);
-  check("…names the account and where to add it", unknown.includes("No timeline without an APR for Card B — add it in Interest cost."));
-  check("…and no fabricated payoff date or total", !unknown.includes("final payment") && !unknown.includes("Total paid"));
+  // ── UNKNOWN APR — supersedes "no timeline": an estimate, visibly qualified ──
+  // 124 owed, NO APR on file, 50/mo: same money as the 0% case above, so the same
+  // dates — and a different claim.
+  const oneUnknownHtml = renderToStaticMarkup(createElement(DebtPayoffSection, {
+    accounts: [acct("b", "Card B", 124)], today: TODAY, onAddApr: () => {},
+  }));
+  const oneUnknown = text(oneUnknownHtml);
+  check("one debt, unknown APR ⇒ a timeline IS shown", oneUnknown.includes("Debt-free in About 2 months, 2 weeks, 1 day"), oneUnknown);
+  check("…qualified, not overstated: 'About', and 'Estimated without interest'",
+    oneUnknown.includes("Estimated without interest") && !oneUnknown.includes("Debt-free in 2 months"));
+  check("…the basis is on the markup as STRUCTURE (PRINCIPAL_ONLY)", oneUnknownHtml.includes('data-payoff-basis="PRINCIPAL_ONLY"'));
+  check("…the final partial payment still prints, qualified through the same basis",
+    oneUnknown.includes("about $24.00 final payment after 2 of $50 · before interest"), oneUnknown);
+  check("…interest is 'Not included — APR unknown', never a $0.00 interest claim",
+    oneUnknown.includes("Not included — APR unknown") && !oneUnknown.includes("+$0.00"), oneUnknown);
+  check("…and NO APR is displayed for the account — it stays unknown (no 0.00%)",
+    !oneUnknown.includes("0.00%") && !/Avg APR/.test(oneUnknown), oneUnknown);
+  check("the Add-APR prompt is a BUTTON leading to Interest cost",
+    /<button[^>]*>Add APR for a more accurate payoff estimate/.test(oneUnknownHtml));
+  check("…and the panel still contains exactly ONE input — the payment — so no APR editor",
+    (oneUnknownHtml.match(/<input\b/g) ?? []).filter((x) => x).length === 2 /* text + range of the ONE payment control */
+      && !/aria-label="[^"]*APR/i.test(oneUnknownHtml));
+  const noHandler = renderToStaticMarkup(createElement(DebtPayoffSection, { accounts: [acct("b", "Card B", 124)], today: TODAY }));
+  check("without a host handler the prompt is plain text pointing at Interest cost (no dead button)",
+    text(noHandler).includes("Add APR for a more accurate payoff estimate — in Interest cost.") && !/<button[^>]*>Add APR/.test(noHandler));
+
+  // A KNOWN 0% renders the same dates with NO qualification — 0% ≠ unknown on screen too.
+  check("known 0% ⇒ exact label, no estimate notice, its 0.00% APR shown",
+    t.includes("Debt-free in 2 months, 2 weeks, 1 day") && !t.includes("Estimated without") && t.includes("0.00%") && !html.includes("data-payoff-basis"));
+
+  // MIXED — Card A 600 @ 24%, Card B 600 with no APR.
+  const mixedHtml = renderToStaticMarkup(createElement(DebtPayoffSection, {
+    accounts: [acct("a", "Card A", 600, { interestRate: 24 }), acct("b", "Card B", 600)], today: TODAY, onAddApr: () => {},
+  }));
+  const mixed = text(mixedHtml);
+  check("mixed ⇒ PARTIAL_INTEREST on the markup — not presented as interest-aware", mixedHtml.includes('data-payoff-basis="PARTIAL_INTEREST"'));
+  check("…'Estimated without some interest', naming the account with no APR",
+    mixed.includes("Estimated without some interest") && mixed.includes("No APR on file: Card B."), mixed);
+  check("…the rate shown is Card A's OWN 24.00%, labelled as known-only — not a blend spread over Card B",
+    mixed.includes("Avg APR (known) 24.00%"), mixed);
+  check("…'About' on the horizon", /Debt-free in About /.test(mixed));
+  // Card B gains an APR (what the host's re-read delivers after a save in Interest cost).
+  const upgradedHtml = renderToStaticMarkup(createElement(DebtPayoffSection, {
+    accounts: [acct("a", "Card A", 600, { interestRate: 24 }), acct("b", "Card B", 600, { interestRate: 18 })], today: TODAY, onAddApr: () => {},
+  }));
+  const upgraded = text(upgradedHtml);
+  check("adding the APR upgrades the SAME panel to interest-aware: no notice, no 'About', blended 21.00%",
+    !upgradedHtml.includes("data-payoff-basis") && !upgraded.includes("Estimated without") && !/Debt-free in About/.test(upgraded)
+      && upgraded.includes("Avg APR 21.00%"), upgraded);
 
   const rated = text(renderToStaticMarkup(createElement(DebtPayoffSection, {
     accounts: [acct("a", "Card A", 124, { interestRate: 30 })], today: TODAY,
@@ -136,6 +180,9 @@ console.log("B. PAYOFF STRATEGY — $50 default, monthly only, precise timing");
     planner.includes("useState(DEFAULT_PAYOFF_PAYMENT)") && !/useEffect\([^)]*setAmount/.test(planner) && !/setAmount\(DEFAULT_PAYOFF_PAYMENT\)/.test(planner));
   check("the schedule comes from planPayoff — no local amortization", planner.includes("planPayoff(") && !planner.includes("simulatePayoff") && !/Math\.ceil\(\s*balance/.test(planner) && !/30\.44/.test(planner));
   check("minimum payments are not read", !/\.minimumPayment\b/.test(planner) && !/minPayment/.test(planner));
+  check("'is this an estimate?' is read from the engine's basis — never inferred from a rate",
+    planner.includes("payoffEstimateNotice(plan)") && !/isEstimate\s*=\s*[^;]*interestRate/.test(planner) && !/isEstimate\s*=\s*!hasRates/.test(planner));
+  check("the planner never manufactures a 0% for an unknown account", !/interestRate\s*\?\?\s*0/.test(planner) && !/apr:\s*[^,\n]*\?\?\s*0/.test(planner));
 }
 
 // ── C. Credit health ─────────────────────────────────────────────────────────
@@ -195,6 +242,27 @@ console.log("D. REDUNDANT INTEREST / APR / MINIMUM-PAYMENT SURFACES REMOVED");
   // it is not a management widget and writes the same authority).
   const planner = code("components/space/sections/DebtPayoffSection.tsx");
   check("the planner has no APR input of its own", !/apr.*<input|<input[^>]*apr/i.test(planner));
+  // INTEREST COST REMAINS THE ONLY APR EDITING SURFACE: across the whole debt
+  // experience exactly one component calls the APR write, and the planner's
+  // "Add APR" is a scroll to it.
+  const callers = [
+    "components/space/sections/DebtPayoffSection.tsx",
+    "components/space/widgets/debt/DebtWorkspace.tsx",
+    "components/space/widgets/debt/CreditHealthInputs.tsx",
+    "components/space/widgets/debt/PayoffScenarioStrip.tsx",
+    "components/space/widgets/debt/LiabilitiesLedger.tsx",
+    "components/space/widgets/debt/DebtAccountDetail.tsx",
+    "components/space/widgets/debt-perspective-adapters.tsx",
+    "components/space/widgets/debt-adapters.tsx",
+    "components/dashboard/DebtClient.tsx",
+  // A WRITE is the save helper or a request body carrying `apr` — reading
+  // `interestRate` into the aggregate (the planner does) is not one.
+  ].filter((f) => /saveAccountApr|JSON\.stringify\(\{[^}]*\bapr\b/.test(code(f)));
+  check("no debt surface other than InterestCostWidget writes an APR", callers.length === 0, callers.join());
+  check("InterestCostWidget does", code("components/space/widgets/debt/InterestCostWidget.tsx").includes("saveAccountApr("));
+  check("the workspace's Add-APR handler only SCROLLS to the Interest cost anchor",
+    /handleAddApr = useCallback\(\(\) => \{\s*document\.getElementById\(INTEREST_COST_ANCHOR\)\?\.scrollIntoView/.test(ws)
+      && ws.includes("<div id={INTEREST_COST_ANCHOR}") && ws.includes("handleAddApr)"));
 
   // Rendered markup of the surviving debt surfaces carries no minimum payment.
   const accounts = [acct("a", "Card A", 1200, { interestRate: 24, minimumPayment: 35, creditLimit: 5000 })];
