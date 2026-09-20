@@ -40,9 +40,16 @@ export type DeficitCauseClassification =
    * post-M1 D3 — "paydown" is the NET paydown (lib/transactions/debt-service.ts):
    * payments beyond the new charges they settle and the borrowing that funded
    * them. A card payment that settles purchases already counted in spending is
-   * NOT paydown, so a household paying its cards in full is never DEBT_DRIVEN.
-   * What this verdict now states is exact: income covered spending, and more
-   * cash than the surplus went to REDUCING what is owed.
+   * NOT paydown, so a household whose payments settle the SAME WINDOW's charges
+   * is never DEBT_DRIVEN. What this verdict states is exact: income covered
+   * spending, and more cash than the surplus went to REDUCING what is owed.
+   *
+   * ⚠️ STATEMENT LAG IS REAL PAYDOWN, AND IS GRADED AS SUCH. A full-payer whose
+   * spending FELL across the window edge pays last period's larger statement
+   * inside this window: in-window payments exceed in-window charges, the balance
+   * owed genuinely fell by the difference, and cash genuinely went to it. That can
+   * grade DEBT_DRIVEN without any revolving debt. The arithmetic is honest — the
+   * verdict says where the cash went, never that a balance is being carried.
    */
   | 'DEBT_DRIVEN'
   | 'NOT_APPLICABLE';          // no deficit (economic net after NET debt paydown ≥ 0)
@@ -252,6 +259,8 @@ export interface ClassificationReason<Code extends string = string> {
 /** The rung of the deficit ladder that fired (engine.ts Step 2). */
 export type DeficitReasonCode =
   | 'NET_AFTER_PAYDOWN_NOT_NEGATIVE'
+  /** No debt-service decomposition on the payload: graded on the economic net alone. */
+  | 'ECONOMIC_NET_NOT_NEGATIVE_PAYDOWN_UNMEASURED'
   | 'INCOME_SAMPLE_TOO_THIN_TO_GRADE'
   | 'ECONOMIC_NET_NEGATIVE'
   | 'PAYDOWN_EXCEEDS_ECONOMIC_NET';

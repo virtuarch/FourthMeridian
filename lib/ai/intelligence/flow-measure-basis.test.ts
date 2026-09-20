@@ -314,8 +314,11 @@ console.log('\nSOURCE — one month-normalisation, and no day-normalisation anyw
     // The verdict and its reason now come from ONE expression (so a reason cannot
     // describe a rule other than the one that ran); the two named nets and their
     // ORDER are what is pinned.
-    /netAfterDebtPayments >= 0\s*\?\s*\['NOT_APPLICABLE'/.test(engine) && /netCashFlow < 0\s*\?\s*\['POSSIBLE_OVERSPENDING'/.test(engine)
-      && engine.indexOf("netAfterDebtPayments >= 0") < engine.indexOf("netCashFlow < 0          ?"));
+    // The graded net IS the after-paydown net whenever one exists; only an
+    // unmeasured paydown falls back to the economic net (never to a payments total).
+    /const gradedNet = netAfterDebtPayments \?\? netCashFlow;/.test(engine)
+      && /gradedNet >= 0\s*\?\s*\['NOT_APPLICABLE'/.test(engine) && /netCashFlow < 0\s*\?\s*\['POSSIBLE_OVERSPENDING'/.test(engine)
+      && engine.search(/gradedNet >= 0/) < engine.search(/netCashFlow < 0\s*\?/));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed.`); process.exit(1); }

@@ -60,17 +60,63 @@ assert.equal(financed.deficitReason.reasonCode, 'ECONOMIC_NET_NEGATIVE');
 assert.equal(financed.deficitReason.reasonMetrics.netPaydown, 0);
 ok('overspending financed on a card still reads as overspending; borrowing is not a surplus');
 
-// A hand-built payload without the assembler's field falls back to the SAME definition.
+// A hand-built payload without the assembler's after-paydown field, but WITH the
+// decomposition, falls back to the same definition.
 const bare = txn({ income: 30000, spending: 18000, payments: 18000, charges: 18000 }) as unknown as Record<string, unknown>;
 delete bare.netAfterDebtPayments;
 assert.equal(assess(bare as unknown as TransactionsSummaryData).deficitCause, 'NOT_APPLICABLE');
 ok('no `netAfterDebtPayments` on the payload ⇒ economic net − NET paydown, never − every debt payment');
+
+// ⚠️ THE REAL FALLBACK: neither field. The first version of this slice aliased the
+// missing paydown to `debtPaymentTotal` — the retired subtraction under a new name —
+// and graded this full-payer DEBT_DRIVEN with `netPaydown: 18000` stated as fact.
+// An unmeasured paydown is null, the ladder grades on the economic net, and
+// DEBT_DRIVEN cannot be reached without a measurement.
+const unmeasured = txn({ income: 30000, spending: 18000, payments: 18000, charges: 18000 }) as unknown as Record<string, unknown>;
+delete unmeasured.netAfterDebtPayments; delete unmeasured.debtService;
+const um = assess(unmeasured as unknown as TransactionsSummaryData);
+assert.equal(um.deficitCause, 'NOT_APPLICABLE');
+assert.equal(um.deficitReason.reasonCode, 'ECONOMIC_NET_NOT_NEGATIVE_PAYDOWN_UNMEASURED');
+assert.equal(um.deficitReason.reasonMetrics.netPaydown, null);
+assert.equal(um.deficitReason.reasonMetrics.netAfterDebtPaydown, null);
+assert.equal(um.deficitReason.reasonMetrics.debtPayments, 18000);
+ok('neither field ⇒ paydown is null, not the payments total; graded on the economic net; never DEBT_DRIVEN');
+const unmeasuredDeficit = txn({ income: 20000, spending: 26000, payments: 9000, charges: 0 }) as unknown as Record<string, unknown>;
+delete unmeasuredDeficit.netAfterDebtPayments; delete unmeasuredDeficit.debtService;
+assert.equal(assess(unmeasuredDeficit as unknown as TransactionsSummaryData).deficitCause, 'POSSIBLE_OVERSPENDING');
+ok('…and a negative economic net is still overspending when the paydown is unmeasured');
+
+// STATEMENT LAG. Everything on a card, paid in full every month; spending fell across
+// the window edge, so this window pays LAST period's larger statement. Payments
+// 15,000 against in-window charges 8,800: the balance owed fell by 6,200 and the
+// cash went there. Economic net +4,500, after-paydown −1,700 ⇒ DEBT_DRIVEN — an
+// honest statement of where the cash went, with the operands that show it is a
+// settled statement and not revolving debt (payments ≫ charges, economic net > 0).
+const lag = assess(txn({ income: 13300, spending: 8800, payments: 15000, charges: 8800 }));
+assert.equal(lag.deficitCause, 'DEBT_DRIVEN');
+assert.equal(lag.deficitReason.reasonMetrics.netPaydown, 6200);
+assert.equal(lag.deficitReason.reasonMetrics.economicNet, 4500);
+assert.equal(lag.deficitReason.reasonMetrics.netAfterDebtPaydown, -1700);
+ok('statement lag: a full-payer whose spending fell CAN grade DEBT_DRIVEN — real paydown, operands shown, no overspending claim');
+
+// INCOME PLAUSIBILITY moves with the outflow definition — and only upward. Income
+// 6,000 over 4 deposits, 5,000 spent on a card, 8,000 paid to it (3,000 real
+// paydown). Outflows are 5,000 + 3,000, ratio 0.75 ⇒ HIGH. The retired sum
+// (5,000 + 8,000 ⇒ 0.46, under INCOME_PLAUS_RATIO_LOW) read the same household as
+// MEDIUM because it counted the card-funded 5,000 twice.
+const plausible = txn({ income: 6000, spending: 5000, payments: 8000, charges: 5000 }) as unknown as { byCategory: { category: string; total: number; count: number }[] };
+plausible.byCategory = [{ category: 'Income', total: 6000, count: 4 }];
+assert.equal(assess(plausible as unknown as TransactionsSummaryData).confidence, 'HIGH');
+ok('income plausibility: outflows = spending + NET paydown (0.75 ⇒ HIGH), not + every payment (0.46 ⇒ MEDIUM)');
 
 // The income-plausibility ratio no longer counts card-funded spending twice.
 import { readFileSync } from 'node:fs';
 const src = readFileSync('lib/ai/intelligence/annotations/engine.ts', 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
 assert.ok(!/expenseTotal\s*\+\s*debtPaymentTotal/.test(src), 'totalOutflows must not add every debt payment to spending');
 assert.ok(!/netCashFlow\s*-\s*debtPaymentTotal/.test(src), 'no fallback may subtract every debt payment from the economic net');
+// …and not under an alias either: the paydown may never DEFAULT to the payments total.
+assert.ok(!/netPaydown[^;\n]*\?\?\s*debtPaymentTotal/.test(src), 'an unmeasured paydown is null, never the payments total');
+assert.ok(/const netPaydown: number \| null = txn\?\.debtService\?\.netPaydown \?\? null;/.test(src), 'netPaydown is read from the decomposition or is null');
 ok('source: neither retired subtraction survives in the engine');
 
 console.log(`deficit-reason: ${n} checks passed`);

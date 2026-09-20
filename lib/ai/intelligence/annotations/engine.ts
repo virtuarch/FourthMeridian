@@ -67,11 +67,15 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   // clamped spend; debt payments excluded). The after-paydown position is its
   // own named figure; the `??` keeps fixtures that predate the field working.
   const netCashFlow          = txn?.netCashFlow    ?? 0;
-  // The assembler always emits `netAfterDebtPayments`. A hand-built payload without
-  // it falls back to the SAME definition (economic net − net paydown), never to the
-  // retired `− debtPaymentTotal`, which counted card-funded spending twice.
-  const netPaydown = txn?.debtService?.netPaydown ?? debtPaymentTotal;
-  const netAfterDebtPayments = txn?.netAfterDebtPayments ?? (netCashFlow - netPaydown);
+  // The assembler always emits `debtService` and `netAfterDebtPayments`. A payload
+  // without the decomposition has NO MEASURED PAYDOWN — and an unmeasured paydown is
+  // null, never "every debt payment": that alias was the retired subtraction under a
+  // new name (it counted card-funded spending twice and reported the payments total
+  // as a paydown nothing had measured). With no paydown and no supplied after-paydown
+  // net, the ladder grades on the economic net alone and DEBT_DRIVEN is unreachable.
+  const netPaydown: number | null = txn?.debtService?.netPaydown ?? null;
+  const netAfterDebtPayments: number | null =
+    txn?.netAfterDebtPayments ?? (netPaydown === null ? null : netCashFlow - netPaydown);
   const totalLiquid      = accts?.totalLiquid      ?? 0;
   const totalLiabilities = accts?.totalLiabilities ?? 0;
 
@@ -81,7 +85,8 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   // Outflows for the income-plausibility ratio: spending plus the cash that REDUCED
   // debt. Adding every debt payment counted purchases made on a card twice (once as
   // spending, once as the payment that settled them) and understated the ratio.
-  const totalOutflows    = expenseTotal + netPaydown;
+  // An unmeasured paydown adds nothing: spending alone is the floor of what left.
+  const totalOutflows    = expenseTotal + (netPaydown ?? 0);
   const incomePlausRatio = totalOutflows > 0 ? incomeTotal / totalOutflows : 1;
 
   // ── Step 1: Data quality ─────────────────────────────────────────────────
@@ -182,8 +187,15 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   // intent's future home is debt planning/strategy, not this engine.
   // The classification AND the rung that produced it come from ONE comparison, so
   // the reason can never describe a rule other than the one that ran.
+  //
+  // PAYDOWN UNMEASURED ⇒ the graded net is the economic net. Its not-negative rung
+  // has its own code, so the reason never claims an after-paydown position nothing
+  // computed; a negative economic net is overspending on either path, and the
+  // DEBT_DRIVEN rung needs a measured paydown to be reached at all.
+  const gradedNet = netAfterDebtPayments ?? netCashFlow;
   const [deficitCause, deficitReasonCode]: [DeficitCauseClassification, DeficitReasonCode] =
-    netAfterDebtPayments >= 0  ? ['NOT_APPLICABLE', 'NET_AFTER_PAYDOWN_NOT_NEGATIVE']
+    gradedNet >= 0  ? ['NOT_APPLICABLE', netAfterDebtPayments === null
+      ? 'ECONOMIC_NET_NOT_NEGATIVE_PAYDOWN_UNMEASURED' : 'NET_AFTER_PAYDOWN_NOT_NEGATIVE']
     : incomeConfidence === 'LOW' ? ['LOW_INCOME_SAMPLE', 'INCOME_SAMPLE_TOO_THIN_TO_GRADE']
     : netCashFlow < 0          ? ['POSSIBLE_OVERSPENDING', 'ECONOMIC_NET_NEGATIVE']
     : ['DEBT_DRIVEN', 'PAYDOWN_EXCEEDS_ECONOMIC_NET'];
@@ -196,8 +208,8 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
       debtPayments:            money2(txn?.debtService?.payments ?? debtPaymentTotal),
       newChargesOnLiabilities: txn?.debtService ? money2(txn.debtService.newChargesOnLiabilities) : null,
       debtProceeds:            txn?.debtService ? money2(txn.debtService.debtProceeds) : null,
-      netPaydown:              money2(netPaydown),
-      netAfterDebtPaydown:     money2(netAfterDebtPayments),
+      netPaydown:              netPaydown === null ? null : money2(netPaydown),
+      netAfterDebtPaydown:     netAfterDebtPayments === null ? null : money2(netAfterDebtPayments),
       windowDays,
     },
     evidencePopulation: { kind: 'BANKING_ROWS', accounts: transactionCount, graded: transactionCount },
