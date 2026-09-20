@@ -24,10 +24,12 @@ import {
 import {
   clausesInForce, compactClauses, contributionBasis, contributionName, boundedLabel,
   isClausesInForce, unknownContributionKeys, withoutUnappliedLabels,
-  CONTRIBUTION_KEYS, MAX_LABEL_CHARS, type FloorIdentity,
+  refuseUnknownArguments, refuseUnknownItemKeys, schemaKeys, schemaItemKeys, notAppliedEcho,
+  NOT_APPLIED_SHOWN, CONTRIBUTION_KEYS, MAX_LABEL_CHARS, type FloorIdentity,
 } from './scenario-rules';
 import { captureActiveScenario, scenarioMessage, SCENARIO_TOOL, CROSSING_TOOL } from './active-scenario';
 import { resolveMonthsOfExpensesFloor } from '@/lib/ai/measures/baseline';
+import { findTool } from './tools';
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -279,6 +281,93 @@ console.log('\n6. AN UNSUPPORTED CLAUSE IS REFUSED BY NAME, NEVER RUN WITHOUT');
     const props = [...block.matchAll(/^ {6}(\w+):/gm)].map((m) => m[1]);
     return props.length === CONTRIBUTION_KEYS.length && props.every((p) => (CONTRIBUTION_KEYS as readonly string[]).includes(p));
   })());
+}
+
+console.log('\n6b. A CLOSED ARGUMENT SET — the schema the model was shown is the one literal');
+{
+  const SCENARIO_TOOLS = ['scenario_projection', 'scenario_crossing', 'scenario_goal_seek'] as const;
+  const SHARED = ['granularity', 'annualReturnPct', 'returns', 'contributions', 'outflows',
+    'assumedMonthlySpending', 'liabilityAssumptions'];
+  for (const name of SCENARIO_TOOLS) {
+    const schema = findTool(name)!.parameters;
+    const keys = schemaKeys(schema);
+    check(`${name}: the closed set is readable off its own schema`, keys !== null
+      && SHARED.every((k) => keys.includes(k)), JSON.stringify(keys));
+    for (const arr of ['returns', 'contributions', 'outflows', 'liabilityAssumptions']) {
+      check(`${name}: \`${arr}\` entries declare their keys`, (schemaItemKeys(schema, arr) ?? []).length > 0);
+    }
+    check(`${name}: the contribution keys the schema declares ARE the contract's`,
+      JSON.stringify([...(schemaItemKeys(schema, 'contributions') ?? [])].sort())
+        === JSON.stringify([...CONTRIBUTION_KEYS].sort()));
+    // The reviewer's three: a premature argument, a singular, a misplaced clause.
+    for (const bad of ['incomeChanges', 'contribution', 'floor', 'liquidFloor']) {
+      const refused = refuseUnknownArguments({ contributions: [], [bad]: 1 }, schema);
+      check(`${name}: \`${bad}\` is refused by name`, refused.length === 1 && refused[0].argument === bad
+        && refused[0].input === `argument \`${bad}\`` && /NOT applied/.test(refused[0].reason)
+        && /`contributions`/.test(refused[0].reason));
+    }
+    check(`${name}: every argument it declares is accepted`,
+      refuseUnknownArguments(Object.fromEntries((keys ?? []).map((k) => [k, 1])), schema).length === 0);
+  }
+  const proj = findTool('scenario_projection')!.parameters;
+  const cross = findTool('scenario_crossing')!.parameters;
+  check('PER TOOL: a crossing\'s `threshold` is not a projection argument',
+    refuseUnknownArguments({ to: 'x', threshold: 1 }, proj).length === 1
+    && refuseUnknownArguments({ metric: 'netWorth', direction: 'at_or_above', threshold: 1 }, cross).length === 0);
+  check('…and a goal seek\'s own arguments pass on the goal seek only',
+    refuseUnknownArguments({ target: 1, by: 'x', solveFor: 'annualReturnPct', measure: 'debt', contributionTarget: 'highest_apr' },
+      findTool('scenario_goal_seek')!.parameters).length === 0
+    && refuseUnknownArguments({ to: 'x', solveFor: 'annualReturnPct' }, proj).length === 1);
+  check('an undefined value is not a stated argument', refuseUnknownArguments({ to: 'x', nope: undefined }, proj).length === 0);
+  check('a schema that declares nothing refuses nothing (and the checks above pin that it does declare)',
+    refuseUnknownArguments({ anything: 1 }, {}).length === 0 && schemaKeys(null) === null);
+
+  // Array entries: an undeclared key refuses the ENTRY, never runs the rest of it.
+  const out = refuseUnknownItemKeys({ onDate: '2026-12-01', amount: 30000, recurring: true }, proj, 'outflows', 'car');
+  check('an outflow with an undeclared key is refused by name, naming the key and the fields that exist',
+    out !== null && out.input === 'car' && /`recurring`/.test(out.reason) && /`onDate`, `amount`, `label`/.test(out.reason));
+  check('a well-formed outflow passes', refuseUnknownItemKeys({ onDate: 'x', amount: 1, label: 'car' }, proj, 'outflows', 'car') === null);
+  check('a return period with an undeclared key is refused',
+    refuseUnknownItemKeys({ from: 'a', to: 'b', annualPct: 8, compounding: 'daily' }, proj, 'returns', 'r') !== null);
+  check('a liability assumption with `aprPct` (not `apr`) is refused rather than silently assuming nothing',
+    refuseUnknownItemKeys({ liabilityId: 'x', aprPct: 18 }, proj, 'liabilityAssumptions', 'la', ['id']) !== null);
+  check('…while the `id` alias the parser actually READS is not a silent drop and is not refused',
+    refuseUnknownItemKeys({ id: 'x', apr: 18 }, proj, 'liabilityAssumptions', 'la', ['id']) === null);
+
+  // The echo, and what the envelope remembers.
+  check('nothing refused ⇒ no `notApplied` key at all', notAppliedEcho([]) === undefined);
+  const many = Array.from({ length: 12 }, (_, i) => ({ input: `x${i}`, reason: 'r' }));
+  const echo = notAppliedEcho(many)!;
+  check('the echo is bounded and says how many there were', echo.count === 12 && echo.inputs.length === NOT_APPLIED_SHOWN);
+  const floorRun = runRaw([FLOOR_6]);
+  const refusedArgs = refuseUnknownArguments({ to: HORIZON, incomeChanges: [{ from: '2027-01-01', monthly: 1500 }] }, proj);
+  const result = { ...floorRun.result,
+    assumptions: { ...(floorRun.result.assumptions as object), notApplied: notAppliedEcho(refusedArgs) } };
+  const cap = captureActiveScenario(SCENARIO_TOOL,
+    { to: HORIZON, incomeChanges: [{ from: '2027-01-01', monthly: 1500 }], contributions: [FLOOR_6] }, result);
+  check('the envelope does NOT remember an argument no execution honoured', cap.action === 'REPLACE'
+    && !('incomeChanges' in cap.scenario.assumptions) && !JSON.stringify(cap.scenario).includes('incomeChanges'));
+  check('…and keeps every argument that was', cap.action === 'REPLACE'
+    && Object.keys(cap.scenario.assumptions).join(',') === 'to,contributions');
+  const crossing = { asOf: ASOF, assumptionsInForce: result.assumptions,
+    crossing: { date: '2027-03-31', composition: { liquid: 30_000, investments: 30_000, debt: 0, netWorth: 60_000 } } };
+  const capX = captureActiveScenario(CROSSING_TOOL, { metric: 'netWorth', direction: 'at_or_above', threshold: 60_000,
+    incomeChanges: [1], contributions: [FLOOR_6] }, crossing);
+  check('…on a crossing too, read from `assumptionsInForce`', capX.action === 'REPLACE'
+    && !('incomeChanges' in capX.scenario.assumptions));
+
+  const tools = readFileSync('lib/ai/conversation/tools.ts', 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
+  check('prepareScenario refuses against the CALLING tool\'s schema, before anything is sized',
+    /const rejected: RefusedInput\[\] = \[\.\.\.refuseUnknownArguments\(a, tool\.parameters\)\];/.test(tools));
+  check('…and each scenario tool hands it its own definition — no tool calls it without one',
+    /prepareScenario\(a, ctx, String\(a\.to\), scenarioProjection\)/.test(tools)
+    && /prepareScenario\(a, ctx, searchThrough, scenarioCrossing, dates\)/.test(tools)
+    && /prepareScenario\(a, ctx, toISO, scenarioGoalSeek\)/.test(tools)
+    && (tools.match(/prepareScenario\(a, /g) ?? []).length === 3);
+  check('…`returns`, `outflows` and `liabilityAssumptions` entries pass through the same refusal',
+    ['returns', 'outflows', 'liabilityAssumptions'].every((k) => tools.includes(`declared('${k}',`)));
+  check('the refusals ride in the echo every scenario path returns',
+    /function scenarioAssumptions\([\s\S]*?notApplied: notAppliedEcho\(\[\.\.\.setup\.rejected, \.\.\.ledger\.rejected\]\)/.test(tools));
 }
 
 console.log('\n7. BOTH BASES STATED — the ledger\'s refusal stays, and the roster agrees');

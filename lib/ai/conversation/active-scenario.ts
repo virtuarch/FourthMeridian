@@ -170,8 +170,8 @@ export function captureActiveScenario(
   // sized nothing; kept here it is a sentence about the scenario that no
   // execution vouches for, re-read on every later turn. Every structured field
   // is untouched, so the arguments still replay to the same figures.
-  const stated = withoutUnappliedLabels(
-    (args && typeof args === 'object' ? args : {}) as Record<string, unknown>);
+  const stated = withoutRefusedArguments(withoutUnappliedLabels(
+    (args && typeof args === 'object' ? args : {}) as Record<string, unknown>), r);
   const ran = clausesRan(r);
 
   // ⚠️ ONE LITERAL, ONE EXECUTION. The pair's coupling is this expression.
@@ -183,6 +183,26 @@ export function captureActiveScenario(
       result: { asOf, to, liquid, investments, debt, netWorth },
     },
   };
+}
+
+/**
+ * The arguments less any the tool REFUSED as not being arguments at all.
+ *
+ * ⚠️ AN ARGUMENT NO EXECUTION HONOURED IS NOT AN ASSUMPTION. A refused
+ * `incomeChanges` left in the remembered arguments would be re-read on every
+ * later turn as part of the scenario — the label problem again, as a key. The
+ * result's own echo names what it refused (`notApplied[].argument`), so this
+ * removes exactly those keys and knows no list of its own.
+ */
+function withoutRefusedArguments(
+  args: Record<string, unknown>, r: Record<string, unknown>,
+): Record<string, unknown> {
+  const echo = (r.assumptions ?? r.assumptionsInForce) as { notApplied?: { inputs?: unknown } } | null | undefined;
+  const inputs = echo && typeof echo === 'object' ? echo.notApplied?.inputs : undefined;
+  const refused = new Set((Array.isArray(inputs) ? inputs : [])
+    .map((i) => (i as { argument?: unknown })?.argument).filter((k): k is string => typeof k === 'string'));
+  if (refused.size === 0) return args;
+  return Object.fromEntries(Object.entries(args).filter(([k]) => !refused.has(k)));
 }
 
 /**

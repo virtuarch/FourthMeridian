@@ -77,7 +77,10 @@ import {
   type PlannedMovement, type ReturnPeriod, type SpinePoint,
   type LiabilityLine, type AllocationTarget,
 } from './scenario-ledger';
-import { clausesInForce, contributionName, unknownContributionKeys } from './scenario-rules';
+import {
+  clausesInForce, contributionName, unknownContributionKeys,
+  refuseUnknownArguments, refuseUnknownItemKeys, notAppliedEcho, type RefusedInput,
+} from './scenario-rules';
 import type { SpaceContext } from '@/lib/space';
 // ⚠️ THE ONE WRITE PATH, IMPORTED RATHER THAN INLINED. Keeping the memory tools
 // in their own module is what lets THIS file keep an exact "no Prisma client,
@@ -1944,7 +1947,7 @@ interface ScenarioSetup {
   outflows: PlannedMovement[];
   /** The liabilities the ledger moves, built from the position and the stated assumptions. */
   liabilities: LiabilityLine[];
-  rejected: { input: string; reason: string }[];
+  rejected: RefusedInput[];
   /** The spending level the base run used, and where it came from. */
   monthlySpending: { amount: number | null; source: 'USER_STATED' | 'OBSERVED' | 'NONE' };
   /** M1 — floors stated as months of expenses, with the derivation each resolved through. */
@@ -1964,6 +1967,8 @@ interface ScenarioSetup {
  */
 async function prepareScenario(
   a: Record<string, unknown>, ctx: ToolContext, toISO: string,
+  /** The calling tool: its `parameters` are the closed set of arguments this call may carry. */
+  tool: Pick<ToolDefinition, 'parameters'>,
   /**
    * The checkpoint dates to evaluate, when the caller owns them.
    *
@@ -2024,7 +2029,19 @@ async function prepareScenario(
   const dates = plan.dates;
 
   // ── The stated assumptions, normalised ─────────────────────────────────────
-  const rejected: { input: string; reason: string }[] = [];
+  // ⚠️ A CLOSED ARGUMENT SET, READ OFF THE TOOL'S OWN SCHEMA. Everything below
+  // reads the keys it knows; nothing looked at the rest, so a premature or
+  // misspelt argument (`incomeChanges`, `contribution`, `floor`) ran the scenario
+  // WITHOUT that clause and echoed nothing. `additionalProperties: false` only
+  // asks the provider to stop it. The schema the model was shown is the one
+  // literal: an undeclared argument, or an undeclared key on an array entry, is
+  // refused by name (`scenario-rules`), and the echo carries it on every path.
+  const rejected: RefusedInput[] = [...refuseUnknownArguments(a, tool.parameters)];
+  const declared = (arrayKey: string, name: string, alsoRead?: string[]) => (raw: Record<string, unknown>): boolean => {
+    const refusal = refuseUnknownItemKeys(raw, tool.parameters, arrayKey, name, alsoRead);
+    if (refusal) rejected.push(refusal);
+    return !refusal;
+  };
 
   // ⚠️ THE SPENDING LEVEL THIS SCENARIO RUNS AT, RESOLVED BEFORE THE RULES THAT
   // MAY DEPEND ON IT. "Keep six months of expenses" multiplies this figure, so
@@ -2039,7 +2056,8 @@ async function prepareScenario(
   const floorDerivations: FloorDerivation[] = [];
 
   const flatPct = typeof a.annualReturnPct === 'number' ? a.annualReturnPct : 0;
-  const statedReturns = (a.returns as { from: string; to: string; annualPct: number }[]) ?? [];
+  const statedReturns = ((a.returns as Record<string, unknown>[]) ?? [])
+    .filter((r) => declared('returns', `return ${String(r.annualPct)}% ${String(r.from)}..${String(r.to)}`)(r));
   // ⚠️ ONE SOURCE OF RETURNS, NOT TWO BLENDED. Per-period rates are the whole
   // truth when given; a flat rate filling their gaps would apply a number the
   // user only meant for the years they named.
@@ -2165,6 +2183,7 @@ async function prepareScenario(
     const amount = Number(o.amount);
     const date   = String(o.onDate);
     const label  = String(o.label ?? 'one-off');
+    if (!declared('outflows', `${label} on ${date}`)(o)) continue;
     if (!Number.isFinite(amount) || amount === 0) {
       rejected.push({ input: `${label} on ${date}`, reason: 'the amount is zero or not a number' });
     } else if (date < asOf || date > toISO) {
@@ -2210,6 +2229,7 @@ async function prepareScenario(
   }
   for (const la of (a.liabilityAssumptions as Record<string, unknown>[]) ?? []) {
     const id = String(la.liabilityId ?? la.id ?? '');
+    if (!declared('liabilityAssumptions', `liability assumption for ${id || '(no id)'}`, ['id'])(la)) continue;
     const line = liabilities.find((l) => l.id === id);
     if (!line) {
       rejected.push({ input: `liability assumption for ${id || '(no id)'}`,
@@ -2427,6 +2447,9 @@ function scenarioAssumptions(
       ...(setup.monthlySpending.source === 'OBSERVED'
         ? { note: 'from the same observed rate project_cash uses' } : {}) },
     ...(ledger.liabilities ? { liabilities: liabilityEcho(ledger) } : {}),
+    // ⚠️ WHAT WAS STATED AND NOT APPLIED, IN THE SAME ECHO — see `notAppliedEcho`.
+    ...(notAppliedEcho([...setup.rejected, ...ledger.rejected])
+      ? { notApplied: notAppliedEcho([...setup.rejected, ...ledger.rejected]) } : {}),
   };
 }
 
@@ -2666,7 +2689,7 @@ const scenarioProjection: ToolDefinition = {
     'illustration; it may never be called expected, likely, or a forecast.',
   parameters: obj({ to: str('YYYY-MM-DD horizon end. Required.'), ...SCENARIO_INPUTS }, ['to']),
   async run(a, ctx) {
-    const setup = await prepareScenario(a, ctx, String(a.to));
+    const setup = await prepareScenario(a, ctx, String(a.to), scenarioProjection);
     if ('unavailable' in setup) return setup;
     return presentScenario(setup, setup.run(), setup.returns);
   },
@@ -2752,7 +2775,7 @@ const scenarioCrossing: ToolDefinition = {
     // miss one entirely. Walking the grid is O(months) and costs less than the
     // model reading a table.
     const dates = monthEndsBetween(ctx.asOfISO, searchThrough);
-    const setup = await prepareScenario(a, ctx, searchThrough, dates);
+    const setup = await prepareScenario(a, ctx, searchThrough, scenarioCrossing, dates);
     if ('unavailable' in setup) return setup;
     const ledger = setup.run();
 
@@ -2920,7 +2943,7 @@ const scenarioGoalSeek: ToolDefinition = {
         canSolveFor: Object.keys(SOLVABLE) };
     }
 
-    const setup = await prepareScenario(a, ctx, toISO);
+    const setup = await prepareScenario(a, ctx, toISO, scenarioGoalSeek);
     if ('unavailable' in setup) return setup;
 
     /** The horizon value of whichever line the target is about. */

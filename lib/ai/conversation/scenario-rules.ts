@@ -56,10 +56,110 @@ export const CONTRIBUTION_KEYS = [
   'onDate', 'from', 'to', 'cadence', 'label',
 ] as const;
 
+/** The keys of `raw` that are stated (not undefined) and that `known` does not contain. */
+export function unknownKeys(raw: Record<string, unknown>, known: readonly string[]): string[] {
+  const set = new Set<string>(known);
+  return Object.keys(raw).filter((k) => !set.has(k) && raw[k] !== undefined);
+}
+
 /** The keys on a raw contribution that the contract does not define. */
 export function unknownContributionKeys(raw: Record<string, unknown>): string[] {
-  const known = new Set<string>(CONTRIBUTION_KEYS);
-  return Object.keys(raw).filter((k) => !known.has(k) && raw[k] !== undefined);
+  return unknownKeys(raw, CONTRIBUTION_KEYS);
+}
+
+// ── The closed ARGUMENT set ──────────────────────────────────────────────────
+
+/**
+ * ⚠️ THE SCHEMA IS THE ONE LITERAL. `CONTRIBUTION_KEYS` closes a contribution;
+ * nothing closed the scenario's own arguments. `prepareScenario` reads the keys
+ * it knows and never looked at the rest, so `incomeChanges`, `contribution`,
+ * `floor` — a premature, misspelt or invented argument — ran the scenario
+ * WITHOUT that clause and said nothing: the same silent substitution, one level
+ * up. The only guard was `additionalProperties: false` in the tool schema, which
+ * is a request to the provider, not a check.
+ *
+ * The closed set is therefore not a second list to keep in step. It is read off
+ * the SAME object the model was shown — the tool's `parameters` — so an argument
+ * the schema gains (I1's `incomeChanges`) is accepted the moment it is
+ * declared, and never before.
+ */
+type SchemaNode = { properties?: unknown; items?: unknown } | null | undefined;
+
+/** The property names an object schema declares, or null when it declares none. */
+export function schemaKeys(schema: unknown): string[] | null {
+  const props = (schema as SchemaNode)?.properties;
+  return props && typeof props === 'object' ? Object.keys(props as Record<string, unknown>) : null;
+}
+
+/** The property names the ITEMS of one array argument declare (`outflows`, `returns`, …). */
+export function schemaItemKeys(schema: unknown, arrayKey: string): string[] | null {
+  const props = (schema as SchemaNode)?.properties as Record<string, SchemaNode> | undefined;
+  return schemaKeys(props?.[arrayKey]?.items);
+}
+
+/**
+ * One input that was NOT applied, by name.
+ *
+ * `argument` is set when a whole top-level argument was refused — the envelope
+ * reads it to avoid remembering an argument no execution honoured.
+ */
+export interface RefusedInput { input: string; reason: string; argument?: string }
+
+const code = (keys: readonly string[]) => keys.map((k) => `\`${k}\``).join(', ');
+
+/** Refusals for every top-level argument the tool's own schema does not declare. */
+export function refuseUnknownArguments(args: Record<string, unknown>, schema: unknown): RefusedInput[] {
+  const known = schemaKeys(schema);
+  if (!known) return [];
+  return unknownKeys(args, known).map((k) => ({
+    input: `argument \`${k}\``, argument: k,
+    reason: `\`${k}\` is not an argument of this tool, so whatever it stated was NOT applied — `
+      + 'this result was computed without it. Express the condition with the arguments that '
+      + `exist (${code(known)}), or tell the user it cannot be modelled; do not describe it as `
+      + 'included.' }));
+}
+
+/** How many refusals the echo lists before it counts the rest. */
+export const NOT_APPLIED_SHOWN = 8;
+
+/**
+ * What was stated and NOT applied, as part of the echo of what was.
+ *
+ * ⚠️ IT RIDES IN `scenarioAssumptions`, SO IT IS ON EVERY PATH. `rejected` sits
+ * beside a projection and a crossing, but a goal seek that finds nothing feasible
+ * returns no scenario at all — only `assumptionsInForce`. A refusal that lives
+ * outside the echo is a refusal that path never shows; inside it, "what was in
+ * force" and "what was not" are read in one place. Undefined when nothing was
+ * refused, so an ordinary result is unchanged.
+ */
+export function notAppliedEcho(rejected: readonly RefusedInput[]) {
+  if (rejected.length === 0) return undefined;
+  return {
+    count: rejected.length,
+    inputs: rejected.slice(0, NOT_APPLIED_SHOWN),
+    meaning: 'These were stated and NOT applied; the figures here were computed without them. '
+      + 'Do not describe any of them as included — correct the call, or tell the user.',
+  };
+}
+
+/**
+ * The refusal for ONE item of an array argument that carries undeclared keys,
+ * or null when it carries none. The item is not applied at all: running the rest
+ * of it without the undeclared condition would be the weaker scenario.
+ */
+export function refuseUnknownItemKeys(
+  raw: Record<string, unknown>, schema: unknown, arrayKey: string, name: string,
+  /** Keys the parser READS although the schema does not offer them (an accepted alias). */
+  alsoRead: readonly string[] = [],
+): RefusedInput | null {
+  const known = schemaItemKeys(schema, arrayKey);
+  if (!known) return null;
+  const unknown = unknownKeys(raw, [...known, ...alsoRead]);
+  if (unknown.length === 0) return null;
+  return { input: name,
+    reason: `this \`${arrayKey}\` entry carries ${code(unknown)}, which is not a field of it `
+      + `(${code(known)}), so that condition cannot be applied and the entry was NOT run without it. `
+      + 'Express it with the fields that exist, or tell the user it cannot be modelled.' };
 }
 
 /**
