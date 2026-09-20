@@ -14,6 +14,7 @@
 import { readFileSync } from 'node:fs';
 import { StructuredOutputRefusalError, StructuredOutputTimeoutError, type StructuredClient } from '@/lib/ai/provider';
 import { acceptNarration, generateBriefFromPackage, type StructuredCall } from './generate';
+import { GENERATION_CALL_BUDGET_MS, GENERATION_LEASE_MS } from './policy';
 import { BRIEF_SCENARIOS } from './fixtures';
 import { BRIEF_SYSTEM_PROMPT } from './prompt';
 import type { BriefNarration, BriefObservation } from './types';
@@ -120,8 +121,77 @@ async function main() {
       && !/deserve a brief CONTEXT observation even on a quiet day/.test(BRIEF_SYSTEM_PROMPT));
   }
 
+  console.log('\n4b. causality needs evidence — and the evidence is where the row posted');
+  {
+    // The forensic shape: a hotel charge, and a week's rise in card debt.
+    const onCard = structuredClone(fixture('18-stale-brokerage-debt-claim'));
+    const debtOb = (over: Partial<BriefObservation> = {}) => ob({ kind: 'DEBT', title: 'Card balance rose',
+      body: 'Your card balance rose by $2,480 this week with a Delta Air Lines purchase.', importance: 'NOTABLE',
+      evidence: ['recentChanges.w1.debt', 'recentActivity.top.0'], ...over });
+    const kept = acceptNarration(onCard, narration({ quiet: false, observations: [debtOb()] }));
+    check('a purchase that posted on a LIABILITY account may be tied to the rise in debt',
+      kept.ok && kept.narration.observations.length === 1 && onCard.recentActivity!.top[0].account === 'LIABILITY');
+
+    const onChecking = structuredClone(onCard);
+    onChecking.recentActivity!.top[0].account = 'LIQUID';
+    const dropped = acceptNarration(onChecking, narration({ quiet: false, observations: [debtOb()] }));
+    check('the SAME sentence over the SAME amounts is dropped when the row posted on a LIQUID account',
+      dropped.ok && dropped.narration.observations.length === 0
+        && dropped.validation.droppedObservations[0]?.reason === 'UNCONNECTED_MOVEMENT');
+    check('…decided by the account class alone: merchant, category and flow are identical in both',
+      JSON.stringify({ ...onCard.recentActivity!.top[0], account: 0 }) === JSON.stringify({ ...onChecking.recentActivity!.top[0], account: 0 }));
+
+    const spending = acceptNarration(onChecking, narration({ quiet: false, observations: [ob({ kind: 'SPENDING',
+      title: 'A large travel purchase', body: 'A Delta Air Lines purchase of $2,480 stands out against monthly expenses of $6,240.',
+      importance: 'NOTABLE', evidence: ['recentActivity.top.0', 'behavior.monthlyExpenses'] })] }));
+    check('the expense is still worth surfacing on its own — no balance is cited, so nothing is refused',
+      spending.ok && spending.narration.observations.length === 1);
+
+    const unknown = structuredClone(onCard);
+    delete unknown.recentActivity!.top[0].account;
+    const notGuessed = acceptNarration(unknown, narration({ quiet: false, observations: [debtOb()] }));
+    check('a row whose account class is unknown is not refused by code (only a KNOWN mismatch fires)',
+      notGuessed.ok && notGuessed.narration.observations.length === 1);
+
+    const payoff = fixture('04-card-payoff');
+    const legs = acceptNarration(payoff, narration({ quiet: false, observations: [ob({ kind: 'DEBT', title: 'Card paid off',
+      body: 'You paid off your card balance of $3,210.55.', importance: 'NOTABLE',
+      evidence: ['recentChanges.d1.debt', 'recentActivity.top.0', 'recentActivity.top.1'] })] }));
+    check('a leg between the user\'s own accounts touches both sides and is always allowed',
+      legs.ok && legs.narration.observations.length === 1 && payoff.recentActivity!.top[0].account === 'LIQUID');
+
+    const cash = acceptNarration(onCard, narration({ quiet: false, observations: [ob({ kind: 'CASH', title: 'Cash fell',
+      body: 'Your cash changed by $310.44 this week alongside a Delta Air Lines purchase.',
+      evidence: ['recentChanges.w1.liquid', 'recentActivity.top.0'] })] }));
+    check('it is general, not a debt rule: a card purchase cannot be tied to a CASH movement either',
+      cash.ok && cash.validation.droppedObservations[0]?.reason === 'UNCONNECTED_MOVEMENT');
+    const worth = acceptNarration(onChecking, narration({ quiet: false, observations: [ob({ kind: 'CASH', title: 'Net worth',
+      body: 'Net worth moved by $2,242.72 this week.', evidence: ['recentChanges.w1.netWorth', 'recentActivity.top.0'] })] }));
+    check('net worth spans every class, so no row is foreign to it', worth.ok && worth.narration.observations.length === 1);
+
+    const freshOnly = acceptNarration(onCard, narration({ observations: [ob({ kind: 'DATA_QUALITY', title: 'Brokerage is behind',
+      body: 'Charles Schwab has not updated recently.', evidence: ['claimEvidence.investments', 'freshness.staleSources.0'] })] }));
+    check('an observation resting only on claim evidence is freshness-only too — the page already says it',
+      freshOnly.ok && freshOnly.validation.droppedObservations[0]?.reason === 'SHOWN_ON_PAGE');
+  }
+
   console.log('\n5. the instruction');
   {
+    check('a classification is explained only from its own reason',
+      /explain a classification only from its own scope and reasonMetrics/.test(BRIEF_SYSTEM_PROMPT)
+        && !/Say what a classification means in plain words/.test(BRIEF_SYSTEM_PROMPT));
+    check('the debt rate is not a debt verdict, and the burden is not interest paid',
+      /grades only the interest rate on what is owed today/.test(BRIEF_SYSTEM_PROMPT) && /not interest the user is paying/.test(BRIEF_SYSTEM_PROMPT));
+    check('a rate alone is not NOTABLE', !/cash buffer or debt classification at WARNING or CRITICAL/.test(BRIEF_SYSTEM_PROMPT)
+      && /when that cost is small it is CONTEXT, however high the rate/.test(BRIEF_SYSTEM_PROMPT));
+    check('freshness is never an observation of its own, of any kind',
+      /Never write an observation about stale data, a source or a connection, of any kind/.test(BRIEF_SYSTEM_PROMPT));
+    check('the model is no longer asked to judge which conclusions rest on a stale source',
+      !/qualify only conclusions that rest on them/.test(BRIEF_SYSTEM_PROMPT) && !/guess which connection/.test(BRIEF_SYSTEM_PROMPT)
+        && /only when the entry covering its figures has a tier other than observed/.test(BRIEF_SYSTEM_PROMPT));
+    check('a movement joins a balance only through the account it posted on',
+      /Connect a movement to a change in debt only when its account is LIABILITY/.test(BRIEF_SYSTEM_PROMPT));
+    check('a withheld percentage is never replaced by a multiple', /pct is null[^.]*: state the amounts, never a percentage or a multiple/.test(BRIEF_SYSTEM_PROMPT));
     check('stale data must be named', /STALE, VERY_STALE or UNKNOWN/.test(BRIEF_SYSTEM_PROMPT) && /out of date/.test(BRIEF_SYSTEM_PROMPT));
     check('absent windows are not measured', /absent was not measured/.test(BRIEF_SYSTEM_PROMPT));
     check('debt payments are not spending', /DEBT_PAYMENT is paying down debt, not spending/.test(BRIEF_SYSTEM_PROMPT));
@@ -144,6 +214,50 @@ async function main() {
     check('unparseable output is MALFORMED_OUTPUT', !garbled.ok && garbled.reason === 'MALFORMED_OUTPUT');
     const down = await generateBriefFromPackage(pkg, { model: 'gpt-5.1', deps: { structured: throwing(new Error('503')) } });
     check('anything else is PROVIDER_ERROR', !down.ok && down.reason === 'PROVIDER_ERROR');
+
+    // ── A provider rate limit is quota, not a failed Brief ──
+    const RATE_LIMITED = new Error('429 Rate limit reached for gpt-5.1 on tokens per min (TPM). Please try again in 8.2s.');
+    const fake = (failTimes: number, err: unknown = RATE_LIMITED) => {
+      let t = 5_000_000;
+      const timeouts: (number | undefined)[] = [];
+      const sleeps: number[] = [];
+      const structured = (async (_s: unknown, _m: unknown, _sch: unknown, o?: { timeoutMs?: number }) => {
+        timeouts.push(o?.timeoutMs); t += 250;
+        if (timeouts.length <= failTimes) throw err;
+        return { value: narration(), model: 'gpt-5.1', latencyMs: 1, finishReason: 'stop', usage: null };
+      }) as unknown as StructuredCall;
+      return { timeouts, sleeps, deps: { structured, clock: () => t, sleep: async (ms: number) => { sleeps.push(ms); t += ms; } } };
+    };
+    const blip = fake(1);
+    const healed = await generateBriefFromPackage(pkg, { model: 'gpt-5.1', deps: blip.deps });
+    check('one 429 then an answer is a Brief, not a refusal — two calls, one honoured wait',
+      healed.ok && blip.timeouts.length === 2 && blip.sleeps.length === 1 && blip.sleeps[0] === 9_700);
+    check('…and the wait is recorded, so a slow Brief is never mistaken for a slow model',
+      healed.meta.rateLimitRetries?.length === 1 && healed.meta.rateLimitRetries[0].waitedMs === 9_700);
+    check('the retried call may not buy a second full provider timeout: it gets what is left of the budget',
+      blip.timeouts[0] === 60_000 && (blip.timeouts[1] ?? 0) < 75_000 - 9_700 && (blip.timeouts[1] ?? 0) <= 60_000);
+
+    const stuck = fake(99);
+    const gaveUp = await generateBriefFromPackage(pkg, { model: 'gpt-5.1', deps: stuck.deps });
+    const slept = stuck.sleeps.reduce((a, b) => a + b, 0);
+    check('a provider that stays rate-limited fails as PROVIDER_ERROR — bounded, never a loop',
+      !gaveUp.ok && gaveUp.reason === 'PROVIDER_ERROR' && stuck.timeouts.length <= 4 && stuck.sleeps.length <= 3,
+      `${stuck.timeouts.length} calls`);
+    check('…and every wait it took fits inside the budget, which fits inside the generation lease',
+      slept < GENERATION_CALL_BUDGET_MS && GENERATION_CALL_BUDGET_MS < GENERATION_LEASE_MS, String(slept));
+
+    const tooLong = fake(99, new Error('429 rate limit. Please try again in 70s.'));
+    const failFast = await generateBriefFromPackage(pkg, { model: 'gpt-5.1', deps: tooLong.deps });
+    check('a wait that cannot fit the lease is not slept through: one call, fail now',
+      !failFast.ok && tooLong.timeouts.length === 1 && tooLong.sleeps.length === 0);
+
+    const flaky = fake(1, new Error('503 upstream'));
+    const notQuota = await generateBriefFromPackage(pkg, { model: 'gpt-5.1', deps: flaky.deps });
+    check('only a rate limit is retried: a 5xx still fails at once', !notQuota.ok && flaky.timeouts.length === 1 && flaky.sleeps.length === 0);
+    const slow = fake(1, new StructuredOutputTimeoutError(10));
+    const timedOut = await generateBriefFromPackage(pkg, { model: 'gpt-5.1', deps: slow.deps });
+    check('…and so does a timeout — a model is never asked again because of how it answered',
+      !timedOut.ok && timedOut.reason === 'TIMEOUT' && slow.timeouts.length === 1);
 
     const bodies: Record<string, unknown>[] = [];
     const rows: Record<string, unknown>[] = [];

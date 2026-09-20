@@ -105,7 +105,9 @@ export function materialProjection(pkg: BriefPackage) {
       debtPayments: moneyBucket(b.monthlyDebtPayments),
       reliability: b.cashFlowReliability, incomeConfidence: b.incomeConfidence, deficitCause: b.deficitCause,
       liquidity: b.liquidity?.classification ?? null,
-      debt: b.debt?.classification ?? null, aprCompleteness: b.debt?.aprCompleteness ?? null,
+      // The projection's KEYS are unchanged (`debt`, `aprCompleteness`) though the
+      // package path moved to `debtRate`: same material fact, so no digest moves.
+      debt: b.debtRate?.classification ?? null, aprCompleteness: b.debtRate?.aprCompleteness ?? null,
     } : null,
     plans: {
       goals: sorted((pkg.plans?.goals ?? []).map((g) => `${g.metric}|${g.targetAmount}|${g.byDate}`)),

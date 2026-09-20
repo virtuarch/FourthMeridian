@@ -111,6 +111,54 @@ async function main() {
     check('the package still exists', r.package.identity.asOf === '2026-09-13' && !r.package.plans);
   }
 
+  console.log('\n4. claim-scoped evidence — what the loader hands across, and what it keeps');
+  {
+    const accountsSection = { domain: 'accounts', assembledAt: 'x', data: {
+      totalCount: 3, totalAssets: 1, totalLiabilities: 1, netWorth: 0, totalLiquid: 1, totalInvestments: 0,
+      totalDigitalAssets: 0, totalRealAssets: 0, totalsEstimated: false, totalsUnconverted: false,
+      counts: { liquid: 1, investments: 0, digitalAssets: 0, realAssets: 0, liabilities: 1 },
+      health: { errorCount: 0, errorAccountNames: [], staleCount: 0, needsReauthCount: 0 }, knowledgeGaps: [],
+      accounts: [
+        { id: 'fa_card', type: 'debt' }, { id: 'fa_checking', type: 'checking' },
+        { id: 'agg_1', type: 'savings', aggregate: { memberAccountIds: ['fa_hidden_a', 'fa_hidden_b'] } },
+      ],
+    } } as never;
+    const seen: { classes: (string | undefined)[]; banking?: ReadonlySet<string>; order: string[] } = { classes: [], order: [] };
+    const { deps } = recorder({
+      assemble: async (domain) => { if (domain === 'accounts') { seen.order.push('accounts'); return accountsSection; } return null; },
+      recentActivity: async (_s, asOf, accountTypeOf) => {
+        seen.order.push('recentActivity');
+        seen.classes = ['fa_card', 'fa_checking', 'fa_hidden_b', 'fa_not_in_space'].map((id) => accountTypeOf?.(id));
+        return { from: asOf, to: asOf, days: 7, complete: true, transactionsInWindow: 0, top: [] };
+      },
+      bankingPopulation: async () => ['fa_card', 'fa_checking'],
+      assess: () => ({ dataQuality: {}, ungraded: [] }) as unknown as FinancialAssessment,
+      dataHealth: async (_s, _u, _n, bankingAccountIds) => { seen.banking = bankingAccountIds; return { sources: [], groups: [], attention: 0 }; },
+    });
+    const r = await loadBriefPackage({ spaceCtx, now: NOW, deps });
+    check('recent activity is read AFTER the accounts, with a type lookup over the rows the viewer was shown',
+      seen.order.indexOf('accounts') < seen.order.indexOf('recentActivity')
+        && JSON.stringify(seen.classes) === JSON.stringify(['debt', 'checking', 'savings', undefined]), JSON.stringify(seen.classes));
+    check('an aggregated privacy row answers for its members; an account outside the Space answers nothing',
+      seen.classes[2] === 'savings' && seen.classes[3] === undefined);
+    check('the banking population reaches source health as a set of ids — and nowhere else',
+      seen.banking instanceof Set && seen.banking.has('fa_card') && !/fa_/.test(JSON.stringify(r.package)));
+
+    const retro = recorder({ bankingPopulation: async () => { throw new Error('must not be read'); },
+      dataHealth: async () => { throw new Error('must not be read'); } });
+    const rr = await loadBriefPackage({ spaceCtx, asOf: '2026-09-05', now: NOW, deps: retro.deps });
+    check('a retrospective package reads neither (source health is a claim about today)', rr.degraded.length === 0 && !rr.package.claimEvidence);
+
+    const origError = console.error;
+    console.error = () => {};
+    const down = recorder({ bankingPopulation: async () => { throw new Error('db down'); },
+      dataHealth: async (_s, _u, _n, ids) => { seen.banking = ids; return { sources: [], groups: [], attention: 0 }; } });
+    const dr = await loadBriefPackage({ spaceCtx, now: NOW, deps: down.deps });
+    console.error = origError;
+    check('a failed population read degrades: source health is still read, without banking ids',
+      dr.degraded.includes('bankingPopulation') && seen.banking === undefined);
+  }
+
   console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);
   process.exit(failures === 0 ? 0 : 1);
 }

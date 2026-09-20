@@ -3,15 +3,23 @@
  *
  * ONE PACKAGE, ONE MODEL CALL, ONE VALIDATED BRIEF — or a typed refusal.
  *
- * ⚠️ NO TOOL LOOP AND NO SECOND ATTEMPT. The model receives the deterministic
+ * ⚠️ NO TOOL LOOP AND NO SECOND OPINION. The model receives the deterministic
  * package and returns a structured narration, once. Whatever it returns is then
- * accepted, reduced, or refused by code:
+ * accepted, reduced, or refused by code — it is never asked again because of what
+ * it said. The ONE thing that repeats the call is a provider rate limit (429):
+ * that is quota, not an answer, so it is absorbed by the canonical bounded retry
+ * (lib/ai/rate-limit-retry.ts) inside a budget that cannot outlive the
+ * generation lease (policy.ts GENERATION_CALL_BUDGET_MS). A timeout, a refusal,
+ * malformed output and every other provider error still fail immediately.
+ *
  *
  *   shape or size broken         → refused (MALFORMED_OUTPUT) — never trimmed
  *   headline states an unlicensed figure → refused (UNLICENSED_HEADLINE)
  *   an observation states one    → that observation is dropped (UNLICENSED_FIGURE)
  *   an observation cites nothing real → dropped (NO_EVIDENCE); bad paths stripped
  *   SPENDING citing a debt payment or own-account transfer → dropped (MISLABELED_MOVEMENT)
+ *   a balance tied to a movement that posted on another class of account → dropped
+ *     (UNCONNECTED_MOVEMENT): causality needs evidence, and the evidence is where the row posted
  *   an observation resting only on data freshness → dropped (SHOWN_ON_PAGE): the
  *     page shows freshness and connection problems itself, every day they last
  *   `quiet` contradicting the kept observations' importance → reconciled to them
@@ -29,19 +37,24 @@
 
 import { randomUUID } from 'node:crypto';
 import {
-  generateStructuredWithUsage,
+  generateStructuredWithUsage, STRUCTURED_TIMEOUT_MS,
   StructuredOutputRefusalError, StructuredOutputTimeoutError,
   type ChatMessage, type StructuredClient, type StructuredOptions,
   type StructuredResult, type UsageSinks,
 } from '@/lib/ai/provider';
 import { runWithAiInvocationContext } from '@/lib/ai/invocation-context';
+import { callWithRateLimitRetry, type RateLimitRetryRecord } from '@/lib/ai/rate-limit-retry';
 import { rateAt } from '@/lib/usage/pricing';
 import { todayUTCISO } from '@/lib/time/clock';
 import {
   BRIEF_SCHEMA, MAX_EVIDENCE_PATHS,
-  citesNonSpendingAsSpending, onlyReportsFreshness, resolveEvidencePath, validateNarration,
+  associatesUnconnectedMovement, citesNonSpendingAsSpending, onlyReportsFreshness,
+  resolveEvidencePath, validateNarration,
 } from './contract';
 import { licenceFromPackage, unlicensedFigures } from './licence';
+import {
+  GENERATION_CALL_BUDGET_MS, GENERATION_MAX_RATE_LIMIT_RETRIES, GENERATION_MIN_ATTEMPT_MS,
+} from './policy';
 import { BRIEF_SYSTEM_PROMPT, approxTokens, briefUserMessage, serializePackage } from './prompt';
 import type { BriefNarration, BriefObservation, BriefPackage, DailyBrief } from './types';
 
@@ -56,7 +69,7 @@ export type StructuredCall = <T>(
 export interface DroppedObservation {
   index:  number;
   kind:   string;
-  reason: 'NO_EVIDENCE' | 'UNLICENSED_FIGURE' | 'MISLABELED_MOVEMENT' | 'SHOWN_ON_PAGE';
+  reason: 'NO_EVIDENCE' | 'UNLICENSED_FIGURE' | 'MISLABELED_MOVEMENT' | 'SHOWN_ON_PAGE' | 'UNCONNECTED_MOVEMENT';
   figures?: string[];
 }
 
@@ -115,6 +128,10 @@ export function acceptNarration(pkg: BriefPackage, raw: unknown): AcceptanceResu
       validation.droppedObservations.push({ index, kind: ob.kind, reason: 'MISLABELED_MOVEMENT' });
       return;
     }
+    if (associatesUnconnectedMovement(candidate, pkg)) {
+      validation.droppedObservations.push({ index, kind: ob.kind, reason: 'UNCONNECTED_MOVEMENT' });
+      return;
+    }
     kept.push(candidate);
   });
 
@@ -143,6 +160,8 @@ export interface BriefGenerationMeta {
   usage?: StructuredResult<unknown>['usage'];
   /** Derived at read time from the effective-dated rate. Never stored. */
   costUsd?: number | null;
+  /** Rate-limit waits taken before the call that answered (or gave up). Empty when none. */
+  rateLimitRetries?: RateLimitRetryRecord[];
 }
 
 export type BriefGenerationResult =
@@ -168,7 +187,13 @@ export interface GenerateBriefOptions {
   reason?: 'daily' | 'change' | 'version';
   timeoutMs?: number;
   now?: Date;
-  deps?: { structured?: StructuredCall; client?: StructuredClient; sinks?: UsageSinks };
+  /** The whole model phase's budget, waits included. Default GENERATION_CALL_BUDGET_MS. */
+  budgetMs?: number;
+  deps?: {
+    structured?: StructuredCall; client?: StructuredClient; sinks?: UsageSinks;
+    /** Injectable for tests: the wait between rate-limited attempts, and the clock the budget reads. */
+    sleep?: (ms: number) => Promise<void>; clock?: () => number;
+  };
 }
 
 function costOf(model: string, day: string, usage: StructuredResult<unknown>['usage']): number | null {
@@ -194,18 +219,32 @@ export async function generateBriefFromPackage(
     packageBytes: Buffer.byteLength(serialized, 'utf8'),
     packageApproxTokens: approxTokens(serialized),
   };
+  const rateLimitRetries: RateLimitRetryRecord[] = [];
+  meta.rateLimitRetries = rateLimitRetries;
   const structured: StructuredCall = options.deps?.structured ?? generateStructuredWithUsage;
+  const clock = options.deps?.clock ?? Date.now;
+  const deadlineAt = clock() + (options.budgetMs ?? GENERATION_CALL_BUDGET_MS);
 
   let result: StructuredResult<unknown>;
   try {
-    result = await runWithAiInvocationContext({ correlationId, turnIndex: 0, surface }, () =>
-      structured<unknown>(
-        BRIEF_SYSTEM_PROMPT,
-        [{ role: 'user', content: briefUserMessage(pkg) }],
-        BRIEF_SCHEMA as unknown as { name: string; schema: Record<string, unknown> },
-        { model: options.model, ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}) },
-        { client: options.deps?.client, sinks: options.deps?.sinks },
-      ));
+    // ⚠️ EVERY ATTEMPT'S OWN DEADLINE IS WHAT IS LEFT OF THE BUDGET. A retried call
+    // may not buy a second full provider timeout: the claim this runs under does
+    // not get longer because the provider was busy.
+    result = await callWithRateLimitRetry(() => {
+      const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? STRUCTURED_TIMEOUT_MS, deadlineAt - clock()));
+      return runWithAiInvocationContext({ correlationId, turnIndex: 0, surface }, () =>
+        structured<unknown>(
+          BRIEF_SYSTEM_PROMPT,
+          [{ role: 'user', content: briefUserMessage(pkg) }],
+          BRIEF_SCHEMA as unknown as { name: string; schema: Record<string, unknown> },
+          { model: options.model, timeoutMs },
+          { client: options.deps?.client, sinks: options.deps?.sinks },
+        ));
+    }, {
+      maxRetries: GENERATION_MAX_RATE_LIMIT_RETRIES, deadlineAt, minAttemptMs: GENERATION_MIN_ATTEMPT_MS,
+      onRetry: (r) => rateLimitRetries.push(r),
+      ...(options.deps?.sleep ? { sleep: options.deps.sleep } : {}), now: clock,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (err instanceof StructuredOutputTimeoutError) return { ok: false, reason: 'TIMEOUT', detail: [message], meta };

@@ -106,7 +106,15 @@ console.log('\n3. what MUST move it');
   differs('needsReauth appearing', (p) => { p.freshness!.needsReauth = true; });
   differs('the knowledge-gap set changing', (p) => { p.dataQuality.knowledgeGaps = [{ account: 'Amex Gold', missing: 'APR' }]; });
   differs('an ungraded section appearing', (p) => { p.dataQuality.ungraded = [{ section: 'debt', reason: 'APR_MISSING' }]; });
-  differs('a verdict changing', (p) => { p.behavior!.liquidity = { classification: 'WARNING', coverageMonths: 1.1 }; });
+  differs('a verdict changing', (p) => { p.behavior!.liquidity = { ...p.behavior!.liquidity!, classification: 'WARNING', coverageMonths: 1.1 }; });
+  differs('the debt RATE verdict changing (the projection key is still `debt`)',
+    (p) => { p.behavior!.debtRate = { ...p.behavior!.debtRate!, classification: 'CRITICAL' }; });
+  same('a classification\'s reason, burden or claim evidence moving without the verdict — they restate bucketed facts', (p) => {
+    p.behavior!.debtRate!.reasonMetrics = { ...p.behavior!.debtRate!.reasonMetrics, weightedAprPct: 12.4 };
+    p.behavior!.debtBurden = { ratedOwed: 3210.55, monthlyInterestIfCarried: 33.17, interestOfMonthlyIncomePct: 0.3,
+      interestOfMonthlyExpensesPct: 0.5, owedOfLiquidPct: 17, comparedWith: { monthlyIncome: 9620, monthlyExpenses: 6240.35, liquid: 18920.4 } };
+    p.claimEvidence!.debt!.completeness.reason = 'reworded';
+  });
   differs('an active goal appearing', (p) => {
     p.plans = { goals: [{ metric: 'netWorth', targetAmount: 750000, byDate: '2027-06-30' }], planned: [] };
   });

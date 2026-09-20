@@ -16,6 +16,17 @@
  * reference and account numbers), no institution, no provider metadata. The id is
  * read only to make the sort a total order and is never emitted.
  *
+ * ⚠️ AN ACCOUNT'S CLASS, NEVER ITS IDENTITY. A row may say what KIND of account it
+ * posted on — LIQUID, LIABILITY or ASSET, the tiers of lib/account-classifier
+ * `accountTier` — because that is the only deterministic evidence that a movement
+ * belongs to a balance's change. Measured: a hotel charge and a week's rise in
+ * card debt were narrated together ("a recent jump alongside higher travel
+ * spending"); it happened to be true, and nothing in the package could have shown
+ * it. A purchase on a LIABILITY account IS part of what is owed; the same
+ * purchase on a LIQUID account is not. The class is resolved by a caller-supplied
+ * lookup over the accounts the viewer may already see; the account id is read for
+ * that lookup and never emitted. No merchant, category or flow is special-cased.
+ *
  * ⚠️ LEGS ARE NOT MERGED. A card payment posts on the account it left and the card
  * it reached, and both may rank. Collapsing them needs the corpus-scoped transfer
  * authority; this slice flags each leg (`betweenOwnAccounts`) from the privacy-
@@ -24,7 +35,17 @@
  */
 
 import type { Transaction } from '@/types';
-import type { BriefActivityRow, BriefRecentActivity } from './types';
+import { accountTier } from '@/lib/account-classifier';
+import type { BriefAccountClass, BriefActivityRow, BriefRecentActivity } from './types';
+
+/** Account id → `FinancialAccount.type`, for accounts the viewer may see; undefined when unknown. */
+export type AccountTypeLookup = (accountId: string) => string | undefined;
+
+/** The class a row posted on, through THE tier authority. Unknown stays unknown. */
+export function accountClassOf(type: string | undefined): BriefAccountClass | undefined {
+  const tier = accountTier(type);
+  return tier === 'liquid' ? 'LIQUID' : tier === 'liability' ? 'LIABILITY' : tier === 'asset' ? 'ASSET' : undefined;
+}
 
 export const RECENT_ACTIVITY_DAYS = 7;
 export const RECENT_ACTIVITY_ROWS = 5;
@@ -60,6 +81,7 @@ const dayOf = (r: Transaction) => (r.economicDate ?? r.date).slice(0, 10);
 /** Pure: rows in, the ranked presentation-safe window out. */
 export function projectRecentActivity(
   rows: readonly Transaction[], window: { from: string; to: string }, complete: boolean,
+  accountTypeOf?: AccountTypeLookup,
 ): BriefRecentActivity {
   const inWindow = rows.filter((r) => {
     const d = dayOf(r);
@@ -72,6 +94,7 @@ export function projectRecentActivity(
 
   const top: BriefActivityRow[] = ranked.slice(0, RECENT_ACTIVITY_ROWS).map((r) => {
     const merchant = safeMerchant(r.merchantDisplayName ?? r.merchant);
+    const account = accountTypeOf ? accountClassOf(accountTypeOf(r.accountId)) : undefined;
     return {
       date: dayOf(r),
       amount: round2(r.amount),
@@ -80,6 +103,7 @@ export function projectRecentActivity(
       category: String(r.category),
       ...(r.pending ? { pending: true as const } : {}),
       ...(r.counterpartyAccountId ? { betweenOwnAccounts: true as const } : {}),
+      ...(account ? { account } : {}),
     };
   });
 
@@ -102,10 +126,11 @@ const defaultReader: RecentWindowReader = async (spaceId, query) => {
 /** Read and rank the seven days ending on `asOf`. `asOf` is the ceiling. */
 export async function loadRecentActivity(
   spaceId: string, asOf: string, read: RecentWindowReader = defaultReader,
+  accountTypeOf?: AccountTypeLookup,
 ): Promise<BriefRecentActivity> {
   const window = recentActivityWindow(asOf);
   const { rows, complete } = await read(spaceId, {
     sort: 'newest', dateFrom: window.from, dateTo: window.to,
   });
-  return projectRecentActivity(rows, window, complete);
+  return projectRecentActivity(rows, window, complete, accountTypeOf);
 }

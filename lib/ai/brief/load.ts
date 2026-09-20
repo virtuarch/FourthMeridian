@@ -35,7 +35,7 @@ import type { SpaceDataHealth } from '@/lib/connections/space-data-health.core';
 import type { Snapshot } from '@/types';
 import { todayUTCISO } from '@/lib/time/clock';
 import { projectBriefPackage } from './package';
-import { loadRecentActivity } from './recent-activity';
+import { loadRecentActivity, type AccountTypeLookup } from './recent-activity';
 import type { BriefPackage, BriefRecentActivity } from './types';
 
 /** The bound `lib/history/exploration` and the chat history tools use. */
@@ -48,10 +48,21 @@ export interface BriefLoadDeps {
   readSnapshots(spaceId: string): Promise<Snapshot[]>;
   projectSnapshots(rows: Snapshot[]): SnapshotSectionData | null;
   recall(scope: MemoryScope): Promise<RecalledMemory[]>;
-  recentActivity(spaceId: string, asOf: string): Promise<BriefRecentActivity>;
+  /** `accountTypeOf` resolves the CLASS of account a row posted on; ids never leave the loader. */
+  recentActivity(spaceId: string, asOf: string, accountTypeOf?: AccountTypeLookup): Promise<BriefRecentActivity>;
   assess(ctx: SpaceContext_AI): FinancialAssessment;
-  /** Optional: per-source freshness (what the page shows), so conclusions can name a stale source. */
-  dataHealth?(spaceId: string, viewerUserId: string, now: Date): Promise<SpaceDataHealth>;
+  /**
+   * Optional: per-source freshness (what the page shows). Given the banking
+   * accounts, each source also reports whether it feeds the banking population,
+   * so a cash-flow claim can be scoped to the sources that actually post rows.
+   */
+  dataHealth?(spaceId: string, viewerUserId: string, now: Date,
+    bankingAccountIds?: ReadonlySet<string>): Promise<SpaceDataHealth>;
+  /**
+   * Optional: the accounts that put rows into the banking population at the
+   * ceiling (lib/data/transaction-population — M1's population authority).
+   */
+  bankingPopulation?(spaceId: string, asOf: string): Promise<string[]>;
 }
 
 async function defaultDeps(): Promise<BriefLoadDeps> {
@@ -62,6 +73,7 @@ async function defaultDeps(): Promise<BriefLoadDeps> {
   const { recallMemories } = await import('@/lib/ai/conversation/memory-store');
   const { computeAssessment } = await import('@/lib/ai/intelligence');
   const { loadSpaceDataHealth } = await import('@/lib/connections/space-data-health');
+  const { transactionAccountPopulation } = await import('@/lib/data/transaction-population');
   const { db } = await import('@/lib/db');
   return {
     assemble: async (domain, spaceCtx, options) => {
@@ -71,9 +83,12 @@ async function defaultDeps(): Promise<BriefLoadDeps> {
     readSnapshots: (spaceId) => getRecentSnapshots({ rows: SNAPSHOT_READ_ROWS }, { spaceId }),
     projectSnapshots: (rows) => projectSnapshotSection(rows, 'full'),
     recall: (scope) => recallMemories(scope, { limit: 50 }),
-    recentActivity: (spaceId, asOf) => loadRecentActivity(spaceId, asOf),
+    recentActivity: (spaceId, asOf, accountTypeOf) => loadRecentActivity(spaceId, asOf, undefined, accountTypeOf),
     assess: computeAssessment,
-    dataHealth: (spaceId, viewerUserId, now) => loadSpaceDataHealth(db, { spaceId, viewerUserId, now }),
+    dataHealth: (spaceId, viewerUserId, now, bankingAccountIds) =>
+      loadSpaceDataHealth(db, { spaceId, viewerUserId, now, bankingAccountIds }),
+    bankingPopulation: async (spaceId, asOf) =>
+      (await transactionAccountPopulation({ spaceId, asOf })).filter((p) => p.rows > 0).map((p) => p.accountId),
   };
 }
 
@@ -85,6 +100,20 @@ export interface LoadedBriefPackage {
   historyThrough: string | null;
   /** Milliseconds per read, for the report. */
   timings: Record<string, number>;
+}
+
+/**
+ * Account id → type, over the rows the accounts assembler disclosed to this
+ * viewer (an aggregated privacy row answers for each of its members). Used only
+ * to resolve a CLASS; the ids stay inside the loader.
+ */
+function accountTypeLookup(accounts: AccountsSectionData | undefined): AccountTypeLookup {
+  const types = new Map<string, string>();
+  for (const a of accounts?.accounts ?? []) {
+    types.set(a.id, a.type);
+    for (const member of a.aggregate?.memberAccountIds ?? []) types.set(member, a.type);
+  }
+  return (accountId) => types.get(accountId);
 }
 
 const shiftDays = (iso: string, days: number) =>
@@ -129,9 +158,16 @@ export async function loadBriefPackage(args: {
         label: `daily brief as of ${asOf}` } }
     : { scopeHint: 'brief' };
 
-  const [accounts, transactions, holdings, rows, memories, recentActivity] = await Promise.all([
-    attempt('accounts', () => deps.assemble(FinanceDomains.ACCOUNTS, spaceCtx,
-      { scopeHint: 'full', positionClass: 'ALL' }), null),
+  // ⚠️ RECENT ACTIVITY WAITS FOR THE ACCOUNTS — and only for them. A row's account
+  // CLASS comes from the accounts payload the viewer is already entitled to, so the
+  // activity read is chained off that one read and still runs beside the rest.
+  const accountsRead = attempt('accounts', () => deps.assemble(FinanceDomains.ACCOUNTS, spaceCtx,
+    { scopeHint: 'full', positionClass: 'ALL' }), null);
+  const recentActivityRead = accountsRead.then((section) => attempt('recentActivity', () =>
+    deps.recentActivity(spaceId, asOf, accountTypeLookup(section?.data as AccountsSectionData | undefined)), null));
+
+  const [accounts, transactions, holdings, rows, memories, recentActivity, bankingAccountIds] = await Promise.all([
+    accountsRead,
     attempt('transactions', () => deps.assemble(FinanceDomains.TRANSACTIONS_SUMMARY, spaceCtx,
       transactionOptions), null),
     retrospective ? Promise.resolve(null)
@@ -142,11 +178,17 @@ export async function loadBriefPackage(args: {
     // could point at another member. `recallMemories` takes both halves of the
     // scope as one argument, so no other member's rows can be returned.
     attempt('memory', () => deps.recall({ spaceId, ownerUserId: spaceCtx.userId }), [] as RecalledMemory[]),
-    attempt('recentActivity', () => deps.recentActivity(spaceId, asOf), null),
+    recentActivityRead,
+    // Which accounts post banking rows — so source health can be scoped to the
+    // cash-flow claim. Not read for a retrospective package (no source health).
+    !retrospective && deps.bankingPopulation
+      ? attempt<string[] | null>('bankingPopulation', () => deps.bankingPopulation!(spaceId, asOf), null)
+      : Promise.resolve(null),
   ]);
   // Freshness is a claim about today: never read for a retrospective package.
   const dataHealth = !retrospective && deps.dataHealth
-    ? await attempt('dataHealth', () => deps.dataHealth!(spaceId, spaceCtx.userId, now), null)
+    ? await attempt('dataHealth', () => deps.dataHealth!(spaceId, spaceCtx.userId, now,
+        bankingAccountIds ? new Set(bankingAccountIds) : undefined), null)
     : null;
 
   const t0 = Date.now();
@@ -192,6 +234,7 @@ export async function loadBriefPackage(args: {
     memories,
     recentActivity,
     dataHealth,
+    bankingPopulationKnown: bankingAccountIds !== null,
   });
 
   return { package: pkg, degraded, timings, historyThrough: snapshot?.newestDate ?? null };

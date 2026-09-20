@@ -19,6 +19,28 @@
 export const GENERATION_LEASE_MS = 90_000;
 
 /**
+ * The whole model phase of one generation — every attempt and every wait between
+ * them — must end within this many milliseconds of starting.
+ *
+ * ⚠️ A RATE LIMIT IS QUOTA, NOT A FAILED BRIEF. One provider 429 used to yield a
+ * refused Brief and the three-minute cooldown below (measured: 23 of 23
+ * "refusals" in a concurrent run were 429s). Generation now absorbs a rate limit
+ * through the canonical bounded retry (lib/ai/rate-limit-retry.ts) — but it holds
+ * a CLAIM while it does, so the retry is budgeted against the lease: 75 s leaves
+ * 15 s of the 90 s lease for package assembly (0.1–0.5 s measured) and one-row
+ * persistence. A wait is taken only if a useful attempt still fits after it;
+ * otherwise the 429 fails the generation immediately, inside the lease, and the
+ * cooldown applies as before. lifecycle.test.ts pins budget < lease.
+ */
+export const GENERATION_CALL_BUDGET_MS = 75_000;
+
+/** The shortest attempt worth waiting for: live Brief calls measured 5–20 s. */
+export const GENERATION_MIN_ATTEMPT_MS = 20_000;
+
+/** Waits one generation may take. The budget usually binds first; this bounds a provider that suggests tiny waits. */
+export const GENERATION_MAX_RATE_LIMIT_RETRIES = 3;
+
+/**
  * After a failed generation, how long before another may be attempted.
  *
  * A fixed cooldown from `lastFailedAt`, not a progressive backoff: the row records
@@ -66,8 +88,13 @@ export const RELEVANCE_PRIOR_MAX_DAYS = 30;
  *
  * History — 2: Slice 4.1 (freshness belongs to the page: no connection talk in
  * headline or cards, stale sources named only where they matter, NEW is not a change).
+ * 3: claim-scoped evidence (a classification ships with its scope and reason, the
+ * debt RATE is no longer a debt verdict, freshness is per claim, a movement is tied
+ * to a balance only by the class of account it posted on — UNCONNECTED_MOVEMENT —
+ * and a percentage over a base smaller than the movement is withheld). Every
+ * stored Brief is rewritten once, lazily, under reason `version`.
  */
-export const BRIEF_GENERATION_VERSION = 'brief-generation-2';
+export const BRIEF_GENERATION_VERSION = 'brief-generation-3';
 
 /**
  * The generation version a stored `promptVersion` was written under. Stored as

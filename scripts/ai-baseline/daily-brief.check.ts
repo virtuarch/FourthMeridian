@@ -17,6 +17,7 @@
  *   npm run ai:brief-check                       # goldens (3 samples each) + live
  *   BRIEF_SAMPLES=5 npm run ai:brief-check
  *   BRIEF_ONLY=goldens | live npm run ai:brief-check
+ *   BRIEF_SCENARIOS=16-high-rate-small-balance,18-stale-brokerage-debt-claim   # a subset, by id prefix
  *   CHECK_SPACE_ID=<id> npm run ai:brief-check
  */
 
@@ -28,13 +29,16 @@ import { db } from '@/lib/db';
 import { CHAT_MODEL } from '@/lib/ai/conversation/engine';
 import { generateBriefFromPackage, type BriefGenerationResult } from '@/lib/ai/brief/generate';
 import { generateDailyBrief, BriefScopeError } from '@/lib/ai/brief/daily-brief';
-import { BRIEF_SCENARIOS, GLOBAL_FORBIDDEN, type BriefScenario } from '@/lib/ai/brief/fixtures';
+import { BRIEF_SCENARIOS as ALL_SCENARIOS, GLOBAL_FORBIDDEN, QUALIFIES_AS_STALE, type BriefScenario } from '@/lib/ai/brief/fixtures';
 import { approxTokens, serializePackage, BRIEF_SYSTEM_PROMPT } from '@/lib/ai/brief/prompt';
 import { priceInvocation } from '@/lib/platform/ai/invocation-economics';
 
 const SAMPLES = Math.max(1, Number(process.env.BRIEF_SAMPLES ?? 3));
 const CONCURRENCY = Math.max(1, Number(process.env.BRIEF_CONCURRENCY ?? 4));
 const ONLY = process.env.BRIEF_ONLY ?? 'all';
+const WANTED = (process.env.BRIEF_SCENARIOS ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+const BRIEF_SCENARIOS = WANTED.length === 0 ? ALL_SCENARIOS
+  : ALL_SCENARIOS.filter((s) => WANTED.some((w) => s.id.startsWith(w)));
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -56,6 +60,19 @@ function score(s: BriefScenario, r: BriefGenerationResult): string[] {
   if (s.expect.quietCeiling !== undefined) {
     if (r.brief.observations.length > s.expect.quietCeiling) out.push(`quiet day wrote ${r.brief.observations.length} observations (ceiling ${s.expect.quietCeiling})`);
     if (r.brief.observations.some((o) => o.importance === 'NOTABLE')) out.push('quiet day marked an observation NOTABLE');
+  }
+  for (const re of s.expect.headlineForbids ?? []) if (re.test(r.brief.headline)) out.push(`headline forbidden: "${r.brief.headline.match(re)?.[0]}"`);
+  // Claim-scoped freshness, judged PER OBSERVATION: a caveat belongs only on a
+  // conclusion whose own sources are behind.
+  for (const o of r.brief.observations) {
+    const prose = `${o.title}\n${o.body}`;
+    const qualified = QUALIFIES_AS_STALE.test(prose);
+    if (s.expect.mustNotQualifyKinds?.includes(o.kind) && qualified) {
+      out.push(`${o.kind} observation qualified by a source it does not rest on: "${prose.match(QUALIFIES_AS_STALE)?.[0]}"`);
+    }
+    if (s.expect.mustQualifyKinds?.includes(o.kind) && !qualified) {
+      out.push(`${o.kind} observation rests on an out-of-date source and does not say so`);
+    }
   }
   for (const g of GLOBAL_FORBIDDEN) if (g.pattern.test(text)) out.push(`${g.name}: "${text.match(g.pattern)?.[0]}"`);
   for (const d of r.validation.droppedObservations) {

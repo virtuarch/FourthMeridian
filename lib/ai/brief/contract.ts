@@ -18,7 +18,7 @@
 
 import {
   IMPORTANCE, OBSERVATION_KINDS,
-  type BriefNarration, type BriefObservation, type BriefPackage,
+  type BriefAccountClass, type BriefNarration, type BriefObservation, type BriefPackage,
 } from './types';
 
 export const HEADLINE_MAX_CHARS = 140;
@@ -116,7 +116,8 @@ export function resolveEvidencePath(pkg: BriefPackage, path: string): unknown {
  * the next day, say it again as if it were new.
  */
 export function onlyReportsFreshness(ob: BriefObservation): boolean {
-  return ob.evidence.length > 0 && ob.evidence.every((p) => /^freshness(\.|\[|$)/.test(p.trim()));
+  // `claimEvidence` is freshness too — per claim rather than per Space.
+  return ob.evidence.length > 0 && ob.evidence.every((p) => /^(freshness|claimEvidence)(\.|\[|$)/.test(p.trim()));
 }
 
 /** Flow types that are movements of the user's own money, never spending. */
@@ -135,5 +136,46 @@ export function citesNonSpendingAsSpending(ob: BriefObservation, pkg: BriefPacka
     if (!m) return false;
     const row = pkg.recentActivity?.top[Number(m[1])];
     return !!row && (NOT_SPENDING_FLOWS.has(row.flow) || row.betweenOwnAccounts === true);
+  });
+}
+
+/**
+ * The account class whose balance a package path measures, or null when the path
+ * is not a single-class balance (net worth spans all of them; behavior averages
+ * and plans are not balances).
+ */
+function balanceClassOf(path: string): BriefAccountClass | null {
+  const p = path.trim().replace(/\[(\d+)\]/g, '.$1');
+  if (/^(currentState|recentChanges\.[^.]+)\.debt(\.|$)/.test(p) || /^behavior\.debt(Rate|Burden)(\.|$)/.test(p)) return 'LIABILITY';
+  if (/^(currentState|recentChanges\.[^.]+)\.liquid(\.|$)/.test(p) || /^behavior\.liquidity(\.|$)/.test(p)) return 'LIQUID';
+  if (/^currentState\.(investments|concentration)(\.|$)/.test(p)
+    || /^recentChanges\.[^.]+\.(investments|digitalAssets)(\.|$)/.test(p)) return 'ASSET';
+  return null;
+}
+
+/**
+ * True when an observation ties a movement to a balance it did not touch.
+ *
+ * ⚠️ CAUSALITY NEEDS EVIDENCE, AND THE EVIDENCE IS WHERE THE ROW POSTED. An
+ * observation that rests on a single-class balance (debt, cash, investments) AND
+ * on a recent movement is associating them. Code can check that: a row's
+ * `account` says which class of account it posted on. A hotel charge on a
+ * LIQUID account is not part of a rise in card debt, however close in time; on a
+ * LIABILITY account it is. A row that is one leg of a movement between the
+ * user's own accounts touches both sides and is always allowed.
+ *
+ * ⚠️ ONLY A KNOWN MISMATCH FIRES. A row with no `account` (class not known, or a
+ * package built without the lookup) establishes nothing and refuses nothing here
+ * — the instruction tells the model not to connect it, and this guard does not
+ * guess. No merchant, category or flow is special-cased.
+ */
+export function associatesUnconnectedMovement(ob: BriefObservation, pkg: BriefPackage): boolean {
+  const classes = new Set(ob.evidence.map(balanceClassOf).filter((c): c is BriefAccountClass => c !== null));
+  if (classes.size === 0) return false;
+  return ob.evidence.some((p) => {
+    const m = /^recentActivity\.top(?:\.|\[)(\d+)/.exec(p.trim());
+    if (!m) return false;
+    const row = pkg.recentActivity?.top[Number(m[1])];
+    return !!row && row.account !== undefined && row.betweenOwnAccounts !== true && !classes.has(row.account);
   });
 }

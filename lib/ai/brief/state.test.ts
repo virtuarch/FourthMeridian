@@ -7,7 +7,10 @@
  */
 
 import { STRUCTURED_TIMEOUT_MS } from '@/lib/ai/provider';
-import { BRIEF_GENERATION_VERSION, GENERATION_LEASE_MS, STALE_FALLBACK_MAX_DAYS, generationVersionOf } from './policy';
+import {
+  BRIEF_GENERATION_VERSION, GENERATION_CALL_BUDGET_MS, GENERATION_LEASE_MS, GENERATION_MAX_RATE_LIMIT_RETRIES,
+  GENERATION_MIN_ATTEMPT_MS, STALE_FALLBACK_MAX_DAYS, generationVersionOf,
+} from './policy';
 import { claimIsActive, decideArtifactState, fallbackFrom, type BriefRow } from './state';
 
 let failures = 0;
@@ -33,6 +36,12 @@ console.log('1. policy');
   check('the lease outlives the provider deadline with room for assembly and persistence',
     GENERATION_LEASE_MS >= STRUCTURED_TIMEOUT_MS + 20_000, `${GENERATION_LEASE_MS} vs ${STRUCTURED_TIMEOUT_MS}`);
   check('a fallback may be at most two days old', STALE_FALLBACK_MAX_DAYS === 2);
+  check('the whole model phase — rate-limit waits included — ends inside the lease, with room to assemble and persist',
+    GENERATION_CALL_BUDGET_MS >= STRUCTURED_TIMEOUT_MS && GENERATION_CALL_BUDGET_MS + 10_000 <= GENERATION_LEASE_MS,
+    `${GENERATION_CALL_BUDGET_MS} vs lease ${GENERATION_LEASE_MS}`);
+  check('a rate-limit retry is bounded in count, and only taken when a useful attempt still fits',
+    GENERATION_MAX_RATE_LIMIT_RETRIES >= 1 && GENERATION_MAX_RATE_LIMIT_RETRIES <= 5
+      && GENERATION_MIN_ATTEMPT_MS > 0 && GENERATION_MIN_ATTEMPT_MS < GENERATION_CALL_BUDGET_MS);
 }
 
 console.log('\n1b. the generation contract');

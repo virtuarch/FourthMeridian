@@ -34,9 +34,10 @@ import type {
   AccountsSectionData, HoldingsSummaryData, SnapshotDataPoint,
   SnapshotSectionData, TransactionsSummaryData,
 } from '@/lib/ai/types';
-import type { FinancialAssessment } from '@/lib/ai/intelligence';
+import type { ClassificationReason, FinancialAssessment } from '@/lib/ai/intelligence';
+import { claimEvidence, claimsAffectedBy } from './claim-evidence';
 import type {
-  BriefChangeWindow, BriefDelta, BriefPackage, BriefRecentActivity,
+  BriefChangeWindow, BriefClassification, BriefDelta, BriefPackage, BriefRecentActivity,
 } from './types';
 
 export interface BriefInputs {
@@ -56,6 +57,12 @@ export interface BriefInputs {
   /** The owner's own memories in this Space. */
   memories:     readonly RecalledMemory[];
   recentActivity: BriefRecentActivity | null;
+  /**
+   * The banking population was read and matched into `dataHealth` (sources report
+   * `bankingRows`). False/absent ⇒ the cash-flow claim's sources are not
+   * established and it gets no evidence entry.
+   */
+  bankingPopulationKnown?: boolean;
 }
 
 const MAX_GOALS = 3;
@@ -87,8 +94,27 @@ function seriesOf(history: readonly SnapshotDataPoint[], metric: Metric): Series
     .filter((p): p is SeriesPoint => typeof p.value === 'number' && Number.isFinite(p.value));
 }
 
-const delta = (c: { abs: number; pct: number | null }): BriefDelta =>
-  ({ abs: money(c.abs), pct: c.pct === null ? null : pct1(c.pct) });
+/**
+ * ⚠️ THE PERCENTAGE RULE IS THE AUTHORITY'S (`pctOfOpening`). This module only
+ * asks for the narrating-consumer option: a base smaller than the movement gives
+ * no percentage (`debt.pct: 11937.8` over a $9.75 opening was arithmetic without
+ * meaning). When it is withheld, the opening value rides along so the change can
+ * be told as two amounts.
+ */
+const NARRATED = { baseMustCoverChange: true } as const;
+
+const delta = (c: { abs: number; pct: number | null; fromValue: number }): BriefDelta =>
+  c.pct === null
+    ? { abs: money(c.abs), pct: null, from: money(c.fromValue) }
+    : { abs: money(c.abs), pct: pct1(c.pct) };
+
+/** A classification as the model receives it: the verdict WITH its reason (types.ts). */
+const classified = (
+  classification: string, confidence: string, reason: ClassificationReason,
+): BriefClassification => ({
+  classification, scope: reason.scope, reasonCode: reason.reasonCode,
+  reasonMetrics: reason.reasonMetrics, confidence, evidencePopulation: reason.evidencePopulation,
+});
 
 /**
  * A product-defined window (1W / 1M), per metric, through `canonicalWindowChange`.
@@ -101,11 +127,11 @@ const delta = (c: { abs: number; pct: number | null }): BriefDelta =>
 function presetWindow(
   history: readonly SnapshotDataPoint[], preset: 'PAST_WEEK' | 'PAST_MONTH',
 ): BriefChangeWindow | undefined {
-  const anchor = canonicalWindowChange(seriesOf(history, 'liquid'), preset);
+  const anchor = canonicalWindowChange(seriesOf(history, 'liquid'), preset, NARRATED);
   if (!anchor) return undefined;
   const out: BriefChangeWindow = { from: anchor.fromDate, to: anchor.toDate };
   for (const m of Object.keys(METRICS) as Metric[]) {
-    const c = canonicalWindowChange(seriesOf(history, m), preset);
+    const c = canonicalWindowChange(seriesOf(history, m), preset, NARRATED);
     if (c && c.fromDate === anchor.fromDate && c.toDate === anchor.toDate) out[m] = delta(c);
   }
   return out;
@@ -130,7 +156,7 @@ function sincePreviousDay(history: readonly SnapshotDataPoint[]): BriefChangeWin
     return typeof v === 'number' ? { date: new Date(`${p.date}T00:00:00.000Z`), value: v } : null;
   };
   for (const m of Object.keys(METRICS) as Metric[]) {
-    const c = observedChange(at(prev, m), at(last, m));
+    const c = observedChange(at(prev, m), at(last, m), NARRATED);
     if (c) out[m] = delta(c);
   }
   return out;
@@ -190,6 +216,12 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
     };
   }
 
+  // ── Claim-scoped evidence (today only — source health is a claim about today) ──
+  const evidence = !retrospective
+    ? claimEvidence({ health: i.dataHealth ?? null, asOf: i.asOf,
+        bankingPopulationKnown: i.bankingPopulationKnown === true })
+    : undefined;
+
   // ── Freshness (today only) ──
   const rows = acc?.accounts ?? [];
   const freshness: BriefPackage['freshness'] = !retrospective && acc && rows.length > 0
@@ -211,7 +243,10 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
           // Not the assembler's errorCount: it counts syncStatus 'error', which nothing writes.
           ...(i.dataHealth ? { connectionsNeedingAttention: i.dataHealth.attention } : {}),
           needsReauth: acc.health.needsReauthCount > 0,
-          ...(stale.length > 0 ? { staleSources: stale } : {}),
+          // Each stale source says which claims it reaches — possibly none. The
+          // global list is never a licence to qualify a figure it does not feed.
+          ...(stale.length > 0 ? { staleSources: stale.map((s) => ({
+            ...s, ...(evidence ? { affects: claimsAffectedBy(s.label, evidence) } : {}) })) } : {}),
         };
       })()
     : undefined;
@@ -244,12 +279,36 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
     cashFlowReliability: a.cashFlow.reliability,
     incomeConfidence:    a.dataQuality.incomeConfidence,
     deficitCause:        a.cashFlow.deficitCause,
+    // ⚠️ NEVER A BARE LABEL. `debt: { classification: 'CRITICAL' }` told the model
+    // a verdict and nothing about what had been graded or why; told to explain it,
+    // the model invented "the most severe tier, driven by how you've been using
+    // and repaying it" for a rule whose only input was an APR. Every
+    // classification ships with its scope, the rung that fired, the operands and
+    // thresholds, its confidence and its population — one shape (types.ts).
     ...(!retrospective ? {
       liquidity: {
-        classification: a.liquidity.classification,
+        ...classified(a.liquidity.classification, a.liquidity.confidence, a.liquidity.reason),
         coverageMonths: a.liquidity.coverageMonths === null ? null : pct1(a.liquidity.coverageMonths),
       },
-      debt: { classification: a.debt.classification, aprCompleteness: a.debt.aprCompleteness },
+      debtRate: {
+        ...classified(a.debt.classification, a.debt.confidence, a.debt.reason),
+        aprCompleteness: a.debt.aprCompleteness,
+      },
+      // What the rate costs next to this user's own position — shipped only WITH a
+      // flagged rate (WARNING / CRITICAL), because that is the question it answers:
+      // "the rate is high; does it matter here?". Measured: shipped beside an
+      // unremarkable rate it became a standing fact the model narrated on every
+      // quiet day ("Debt is modest and interest cost is small", 5/5 samples). The
+      // assessment still carries the burden for every Space that owes anything.
+      ...(a.debt.totalLiabilities > 0 && (a.debt.classification === 'WARNING' || a.debt.classification === 'CRITICAL') ? { debtBurden: {
+        ratedOwed: a.debt.burden.ratedOwed,
+        monthlyInterestIfCarried: a.debt.burden.monthlyInterestIfCarried,
+        interestOfMonthlyIncomePct: a.debt.burden.interestOfMonthlyIncomePct,
+        interestOfMonthlyExpensesPct: a.debt.burden.interestOfMonthlyExpensesPct,
+        owedOfLiquidPct: a.debt.burden.owedOfLiquidPct,
+        comparedWith: { monthlyIncome: a.debt.burden.monthlyIncome,
+          monthlyExpenses: a.debt.burden.monthlyExpenses, liquid: a.debt.burden.liquid },
+      } } : {}),
     } : {}),
   } : undefined;
 
@@ -302,6 +361,7 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
     identity: { briefDay: i.asOf, asOf: i.asOf, currency: i.currency,
       basis: retrospective ? 'RETROSPECTIVE' : 'CURRENT' },
     ...(freshness ? { freshness } : {}),
+    ...(evidence ? { claimEvidence: evidence } : {}),
     currentState,
     recentChanges,
     ...(i.recentActivity ? { recentActivity: i.recentActivity } : {}),

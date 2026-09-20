@@ -15,10 +15,19 @@
  * resolved against it (contract.ts).
  */
 
-/** One measured movement, in the metric's own direction. `pct` null when the opening was 0. */
+/**
+ * One measured movement, in the metric's own direction.
+ *
+ * `pct` is null when the opening value cannot be a base — nothing was there, or
+ * it was smaller than the movement itself, so the ratio would describe the base
+ * and not the change (lib/data/snapshot-window `pctOfOpening`). `from` is then
+ * present: the opening the percentage was withheld over, so the change can be
+ * stated as two amounts instead.
+ */
 export interface BriefDelta {
   abs: number;
   pct: number | null;
+  from?: number;
 }
 
 /**
@@ -46,6 +55,65 @@ export interface BriefActivityRow {
   pending?: true;
   /** Both sides of this movement are the user's own accounts — one LEG of it. */
   betweenOwnAccounts?: true;
+  /**
+   * The CLASS of account this row posted on (lib/account-classifier `accountTier`):
+   * LIQUID = checking/savings, LIABILITY = a card or loan, ASSET = investment,
+   * crypto or other. A class, never an identity. It is the only evidence that a
+   * movement belongs to a balance's change: a purchase that posted on a LIABILITY
+   * account is part of what is owed; one on a LIQUID account is not. Absent when
+   * the account's class is not known — then no connection is established.
+   */
+  account?: BriefAccountClass;
+}
+
+export type BriefAccountClass = 'LIQUID' | 'LIABILITY' | 'ASSET';
+
+/**
+ * A DETERMINISTIC CLASSIFICATION AS THE MODEL RECEIVES IT — never a bare label.
+ *
+ * The assessment's `ClassificationReason` (lib/ai/intelligence) plus the verdict
+ * and its confidence: what was graded (`scope`), which rung fired (`reasonCode`),
+ * the operands and thresholds the rule compared (`reasonMetrics`), and what they
+ * were computed over. One shape for every classification the Brief ships.
+ */
+export interface BriefClassification {
+  classification: string;
+  scope:          string;
+  reasonCode:     string;
+  reasonMetrics:  Record<string, number | string | null>;
+  confidence:     string;
+  evidencePopulation: { kind: string; accounts: number; graded: number };
+}
+
+/** The claim families a Brief makes, each resting on its own population of sources. */
+export const BRIEF_CLAIMS = [
+  'netWorth', 'liquid', 'debt', 'investments', 'digitalAssets', 'pricedPositions', 'cashFlow',
+] as const;
+export type BriefClaim = (typeof BRIEF_CLAIMS)[number];
+
+/**
+ * CLAIM-SCOPED EVIDENCE — whether the sources behind ONE family of figures are
+ * current. Completeness is a property of a claim, never of the Space.
+ *
+ * `completeness` is M1's contract (lib/ai/measures/measure.ts `Completeness`):
+ * the same tiers, a reason sentence, and `byComponent` listing every source that
+ * feeds THIS population — only when one of them is behind. A source that feeds a
+ * different population does not appear, however stale it is.
+ */
+export interface BriefClaimEvidence {
+  /** The package paths this entry governs (`*` = any measured window). */
+  covers:     string[];
+  /** What the figures were computed over. */
+  population: string;
+  /** How many sources feed that population in this Space. */
+  sources:    number;
+  /**
+   * `reason` names each out-of-date source this claim rests on, with its state and
+   * last update; `byComponent` (present only then) lists every source of the claim
+   * with its tier. The same source's row in `freshness.staleSources` says which
+   * claims it `affects` — one mapping, read from either side.
+   */
+  completeness: import('@/lib/ai/measures/measure').Completeness;
 }
 
 export interface BriefRecentActivity {
@@ -90,8 +158,23 @@ export interface BriefPackage {
      * qualified with "Chase hasn't updated since Sep 10" rather than "some
      * balances". Omitted when every source is current.
      */
-    staleSources?: { label: string; state: string; lastUpdated: string | null }[];
+    staleSources?: {
+      label: string; state: string; lastUpdated: string | null;
+      /**
+       * The claims this source's staleness actually reaches (the keys of
+       * `claimEvidence`). Empty = it qualifies nothing in this package. Absent only
+       * when claim evidence could not be established.
+       */
+      affects?: BriefClaim[];
+    }[];
   };
+
+  /**
+   * Per claim: the population it rests on and whether THAT population's sources
+   * are current (claim-evidence.ts). CURRENT packages only. A claim with no entry
+   * was not established — it is never "stale by default".
+   */
+  claimEvidence?: Partial<Record<BriefClaim, BriefClaimEvidence>>;
 
   currentState: {
     basis: 'CURRENT_ACCOUNTS' | 'HISTORICAL_SNAPSHOT';
@@ -148,9 +231,30 @@ export interface BriefPackage {
     cashFlowReliability: string;
     incomeConfidence:    string;
     deficitCause:        string;
-    /** CURRENT only — graded against today's balances. */
-    liquidity?: { classification: string; coverageMonths: number | null };
-    debt?:      { classification: string; aprCompleteness: string };
+    /** CURRENT only — graded against today's balances. Each carries WHY it fired. */
+    liquidity?: BriefClassification & { coverageMonths: number | null };
+    /**
+     * The RATE on the balance owed today (scope RATE_ON_OWED_BALANCE) — not the
+     * size of the debt, not how it is used or repaid, not a verdict on the user's
+     * debt situation. Was `debt: { classification }`, a bare label that was
+     * narrated as "the most severe tier, driven by how you've been using it".
+     */
+    debtRate?: BriefClassification & { aprCompleteness: string };
+    /**
+     * What that rate would cost, next to the user's own position — ungraded facts
+     * with their operands. `monthlyInterestIfCarried` is NOT interest being paid.
+     * Present only beside a flagged rate (WARNING / CRITICAL): it answers "the rate
+     * is high — does it matter here?", and is not a standing fact to narrate daily.
+     */
+    debtBurden?: {
+      ratedOwed: number;
+      monthlyInterestIfCarried: number | null;
+      interestOfMonthlyIncomePct: number | null;
+      interestOfMonthlyExpensesPct: number | null;
+      owedOfLiquidPct: number | null;
+      /** The bases those percentages divided by. */
+      comparedWith: { monthlyIncome: number | null; monthlyExpenses: number | null; liquid: number | null };
+    };
   };
 
   plans?: {

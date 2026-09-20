@@ -70,7 +70,7 @@ async function main() {
     check('no description, logo or raw reference numbers', !/REF|ACCT|99887766|logo|description/i.test(json));
     check('no run of four or more digits survives in a merchant', !a.top.some((r) => /\d{4,}/.test(r.merchant ?? '')));
     check('keys are the allowlist only', a.top.every((r) => Object.keys(r).every((k) =>
-      ['date', 'amount', 'flow', 'merchant', 'category', 'pending', 'betweenOwnAccounts'].includes(k))));
+      ['date', 'amount', 'flow', 'merchant', 'category', 'pending', 'betweenOwnAccounts', 'account'].includes(k))));
     check('safeMerchant strips digit runs and symbols', safeMerchant('AMZN Mktp US*2K4 #1234567') === 'AMZN Mktp US 2K4');
     check('safeMerchant drops an all-digit name', safeMerchant('123456789') === undefined);
   }
@@ -86,6 +86,36 @@ async function main() {
     check('the Space is the one named', q.spaceId === 'space_S');
     check('dateTo is asOf and dateFrom six days earlier', q.query.dateTo === '2026-09-01' && q.query.dateFrom === '2026-08-26');
     check('an incomplete read is reported, not absorbed', r.complete === false);
+  }
+
+  console.log('\n5. the CLASS of account a row posted on — never the account');
+  {
+    const types: Record<string, string> = { fa_card: 'debt', fa_checking: 'checking', fa_savings: 'savings', fa_broker: 'investment', fa_wallet: 'crypto' };
+    const lookup = (id: string) => types[id];
+    const w = recentActivityWindow('2026-09-13');
+    const classed = projectRecentActivity([
+      tx('2026-09-12', -1440.83, { accountId: 'fa_card', merchantDisplayName: 'Hotel', category: 'Travel' as Transaction['category'] }),
+      tx('2026-09-12', -900, { accountId: 'fa_checking', merchantDisplayName: 'Rent' }),
+      tx('2026-09-11', 800, { accountId: 'fa_savings', merchantDisplayName: 'Interest' }),
+      tx('2026-09-10', -700, { accountId: 'fa_broker', merchantDisplayName: 'Buy' }),
+      tx('2026-09-09', -600, { accountId: 'fa_unknown_to_viewer', merchantDisplayName: 'Mystery' }),
+    ], w, true, lookup);
+    const by = (m: string) => classed.top.find((r) => r.merchant === m);
+    check('a purchase on a card is on a LIABILITY account', by('Hotel')?.account === 'LIABILITY');
+    check('checking and savings are LIQUID', by('Rent')?.account === 'LIQUID' && by('Interest')?.account === 'LIQUID');
+    check('a brokerage row is ASSET', by('Buy')?.account === 'ASSET');
+    check('an account the lookup does not know carries NO class — no connection is established, none is guessed',
+      by('Mystery') !== undefined && !('account' in by('Mystery')!));
+    check('the class is decided by the account, never by merchant, category or flow',
+      projectRecentActivity([tx('2026-09-12', -1440.83, { accountId: 'fa_checking', merchantDisplayName: 'Hotel', category: 'Travel' as Transaction['category'] })],
+        w, true, lookup).top[0].account === 'LIQUID');
+    check('the id used for the lookup is still never emitted', !/fa_/.test(JSON.stringify(classed)));
+    check('without a lookup no row carries a class (retrospective and legacy callers unchanged)',
+      projectRecentActivity(rows, w, true).top.every((r) => !('account' in r)));
+    let passed: unknown;
+    await loadRecentActivity('space_S', '2026-09-13', async () => ({ rows: [tx('2026-09-12', -5, { accountId: 'fa_card' })], complete: true }), lookup)
+      .then((r) => { passed = r.top[0].account; });
+    check('the loader hands the lookup through to the projection', passed === 'LIABILITY');
   }
 
   console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);

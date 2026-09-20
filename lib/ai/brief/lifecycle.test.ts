@@ -392,7 +392,7 @@ async function main() {
     // may say changed meaningfully: if so bump BRIEF_GENERATION_VERSION (policy.ts);
     // either way, update the pin. The version, not this hash, decides validity.
     check('the prompt/schema hash is pinned (review BRIEF_GENERATION_VERSION when it moves)',
-      BRIEF_PROMPT_HASH === 'f649c8f6be8a', BRIEF_PROMPT_HASH);
+      BRIEF_PROMPT_HASH === 'f64f50f29bc7', BRIEF_PROMPT_HASH);
     check('what a row stores is the intentional version plus the hash', BRIEF_PROMPT_VERSION === `${BRIEF_GENERATION_VERSION}+prompt-${BRIEF_PROMPT_HASH}`);
 
     const r = harness();
