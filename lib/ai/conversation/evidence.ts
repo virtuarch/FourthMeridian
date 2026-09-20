@@ -41,6 +41,7 @@ import { loadCoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { runSignalDetectors } from '@/lib/ai/signals';
 import type { SpaceContext } from '@/lib/space';
 import { recallMemories, MemoryKind } from './memory-store';
+import { composeMemoryLine, MEMORY_LINE_RULES } from './memory-model';
 import { transactionCorpusSpan } from '@/lib/data/transaction-query';
 import { todayUTCISO } from '@/lib/time/clock';
 import {
@@ -228,13 +229,8 @@ function thinCore(
   };
 }
 
-/** How many intentions the orientation will name before it stops listing them. */
-const MAX_CORE_INTENTIONS = 8;
-/** And how many recorded projections it will name. One survives per horizon. */
-const MAX_CORE_CHECKPOINTS = 6;
-
 /**
- * The memory line — subjects, targets and horizons. Never balances.
+ * The memory line — what this user asked us to remember, as they stated it.
  *
  * ⚠️ IT IS HERE BECAUSE THE MEASUREMENT DEMANDED IT, and it was measured before
  * it was built. The investigation proposed it as "one concession worth testing:
@@ -249,56 +245,25 @@ const MAX_CORE_CHECKPOINTS = 6;
  * is itself a finding. This is evidence — the same shape as the coverage
  * envelope beside it — and it says what exists, not how to behave.
  *
- * ⚠️ AND IT SPEAKS FOR ALL OF MEMORY, NOT JUST FOR GOALS. The first version
- * listed intentions only, and its empty-state note said "nothing has been
- * recorded for this user yet". Slice 7 then started recording projections
- * silently — so when the user asked "am I ahead of where you said I would be?",
- * the model read that note, believed it, and answered "I have no record of a
- * previous projection" while two checkpoints sat in the table. A summary that
- * covers part of a store must not narrate the whole of it.
+ * ⚠️ THE READS ARE HERE; EVERYTHING DECIDED IS PURE. `composeMemoryLine`
+ * (`memory-model.ts`) reads every row through the one fail-closed reader and the
+ * one in-force rule, so the line, `recall`, the starters and the Brief cannot
+ * disagree about what a stored row means. It speaks for ALL of memory — goals,
+ * rules, planning figures, plans and the projections on record — because a
+ * summary covering part of a store must not narrate the whole of it. One read
+ * per kind, so a long run of projection horizons cannot crowd the goals out.
  *
- * Targets, dates and horizons only. No balance can appear here, because no
- * memory payload can hold one.
+ * No balance can appear here: no class has a field that could hold one, and a
+ * projection contributes its horizon only.
  */
-async function memoryLine(spaceId: string, ownerUserId: string) {
+async function memoryLine(spaceId: string, ownerUserId: string, todayISO: string) {
   const scope = { spaceId, ownerUserId };
-  const [goals, projections] = await Promise.all([
+  const rows = (await Promise.all([
     recallMemories(scope, { kind: MemoryKind.INTENTION }),
+    recallMemories(scope, { kind: MemoryKind.ASSUMPTION }),
     recallMemories(scope, { kind: MemoryKind.CHECKPOINT }),
-  ]);
-
-  const intentions = goals.slice(0, MAX_CORE_INTENTIONS).map((r) => {
-    const p = r.payload as Record<string, unknown>;
-    return { subject: r.subject, statedAt: r.statedAt.slice(0, 10),
-      target: p.targetMetric
-        ? `${p.targetAmount} ${p.targetMetric} by ${p.byDate}`
-        : `${p.label} ~${p.amount}${p.earliest ? ` from ${p.earliest}` : ''}` };
-  });
-
-  const horizons = projections.slice(0, MAX_CORE_CHECKPOINTS)
-    .map((r) => (r.payload as { horizon?: string }).horizon)
-    .filter((h): h is string => typeof h === 'string');
-
-  const note = goals.length === 0 && projections.length === 0
-    ? 'Nothing has been recorded for this user yet. When they state a goal, a plan, or a '
-      + 'change of mind, record it with `remember` so a later session can pick it up.'
-    : [
-        goals.length > 0
-          ? 'What this user has decided. Call `recall` for the words they used and the full '
-            + 'history; call the financial tools for where they actually stand.'
-          : 'No goals recorded for this user.',
-        projections.length > 0
-          ? `${projections.length} projection(s) we previously stated are on record — `
-            + '`reconcile_projection` compares them with what actually happened. They are '
-            + 'statements about a horizon, never current balances.'
-          : 'No projections have been recorded yet.',
-      ].join(' ');
-
-  return {
-    intentions: { count: goals.length, ...(intentions.length ? { items: intentions } : {}) },
-    projectionsOnRecord: { count: projections.length, ...(horizons.length ? { horizons } : {}) },
-    note,
-  };
+  ])).flat();
+  return composeMemoryLine(rows, todayISO, { rules: MEMORY_LINE_RULES });
 }
 
 /** Build the evidence for one arm. */
@@ -323,7 +288,7 @@ export async function buildEvidence(
   if (arm === 'A2') {
     const [envelope, memory, activity] = await Promise.all([
       loadCoverageEnvelope(spaceId),
-      memoryLine(spaceId, ctx.userId),
+      memoryLine(spaceId, ctx.userId, asOf),
       buildActivityFrame(ctx, spaceCtx, asOf),
     ]);
     const body = JSON.stringify(

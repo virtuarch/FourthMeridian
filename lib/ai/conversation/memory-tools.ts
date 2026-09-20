@@ -22,6 +22,10 @@ import {
   recallMemories, rememberMemory, recordProjection, MemoryKind, PROJECTIONS_ARE_AUTOMATIC,
   type MemoryPayload, type MemoryScope, type ProjectionStatement,
 } from './memory-store';
+import {
+  STATED_CLASSES, SHAPE_KEY, REMEMBERED, readMemory, stateOf, describeMemory,
+  type MemoryClass, type MemoryRow,
+} from './memory-model';
 
 const obj = (props: Record<string, unknown>, required: string[] = []) =>
   ({ type: 'object', properties: props, required, additionalProperties: false });
@@ -144,41 +148,89 @@ const KIND_VALUES = Object.values(MemoryKind);
 /** What a caller may write. A CHECKPOINT is written by the turn loop only. */
 const STATED_KINDS = KIND_VALUES.filter((k) => k !== MemoryKind.CHECKPOINT);
 
+const CLASS_VALUES: readonly MemoryClass[] = [...STATED_CLASSES, 'PROJECTION'];
+
+/**
+ * A recalled row, as words plus the fields that ARE the arguments. PURE.
+ *
+ * ⚠️ A ROW THAT CANNOT BE READ RELIABLY RETURNS NOTHING BUT ITS DATE. Its payload
+ * is the wrong part — a month count in a money field, a null date — and its
+ * `statedAs` is the model's own paraphrase, which in the recorded rows had
+ * already copied a coerced figure back in as "the user's words". Its owner sees
+ * it in the Memory panel, with a delete; the model is only told it exists.
+ */
+export function presentRecall(rows: readonly MemoryRow[], todayISO: string, only?: MemoryClass) {
+  const today = todayISO.slice(0, 10);
+  const stated: unknown[] = []; const projectionsWeMade: unknown[] = []; const unreadable: { savedOn: string }[] = [];
+  for (const row of rows) {
+    const read = readMemory(row);
+    if (!read.readable) {
+      if (!read.tombstone && row.status === 'ACTIVE') unreadable.push({ savedOn: row.statedAt.slice(0, 10) });
+      else if (read.tombstone && !only) stated.push({ subject: row.subject, state: 'RETIRED', retiredOn: row.statedAt.slice(0, 10), notedAs: row.statedAs });
+      continue;
+    }
+    if (only && read.cls !== only) continue;
+    const state = stateOf(row, read, today);
+    if (read.cls === 'PROJECTION') {
+      const basis = (read.fields.basis ?? {}) as Record<string, unknown>;
+      projectionsWeMade.push({ subject: row.subject, metric: read.fields.metric, horizon: read.fields.horizon,
+        value: read.fields.value, statedAt: row.statedAt.slice(0, 10), state,
+        ...(basis.spendingSource ? { restedOn: basis.spendingSource } : {}) });
+      continue;
+    }
+    stated.push({ subject: row.subject, class: read.cls, statedAt: row.statedAt.slice(0, 10), state,
+      inWords: describeMemory(read.cls, read.fields),
+      [SHAPE_KEY[read.cls]]: read.cls === 'BASELINE' ? { ...read.fields, basis: REMEMBERED } : read.fields,
+      notedAs: row.statedAs });
+  }
+  return { stated, projectionsWeMade, unreadable };
+}
+
 const recall: ToolDefinition = {
   name: 'recall',
   description:
-    'What THIS user previously decided, assumed, or was told — goals, planned purchases, ' +
-    'stated assumptions, and projections we made and when. Call it when the question ' +
-    'refers to something from an earlier session ("how are we doing?", "am I on track?", ' +
-    '"what did we say?"). It never returns balances: current money is always re-read from ' +
-    'the financial tools.',
+    'What THIS user previously asked us to remember — goals, planned purchases, standing rules ' +
+    'and planning figures, as they stated them — and the projections we made and when. Call it ' +
+    'when the question refers to something from an earlier session ("what strategy did I want?", ' +
+    '"how are we doing?", "what did we say?"). Nothing it returns is in effect or a current ' +
+    'figure: current money is always re-read from the financial tools.',
   parameters: obj({
-    kind: { type: 'string', enum: KIND_VALUES,
-      description: 'INTENTION = what they decided. ASSUMPTION = a premise they stated. '
-        + 'CHECKPOINT = a projection we made, with its horizon and basis. Omit for all.' },
-    subject: str('Narrow to one subject, e.g. "net-worth-target". Omit for all.'),
-    includeSuperseded: { type: 'boolean',
-      description: 'True to see the history of a subject, including what it replaced.' },
+    class: { type: 'string', enum: CLASS_VALUES,
+      description: 'GOAL, PLANNED_EXPENSE, RULE (a standing allocation policy), BASELINE (a planning '
+        + 'figure they gave — not measured), or PROJECTION (a statement we made, with its horizon). Omit for all.' },
+    subject: str('Narrow to one subject, e.g. "cash-strategy". Omit for all.'),
+    includeHistory: { type: 'boolean',
+      description: 'True to see earlier versions of a subject, and what was retired.' },
   }),
   async run(a, ctx) {
-    const memories = await recallMemories(scopeOf(ctx), {
-      ...(a.kind ? { kind: a.kind as MemoryKind } : {}),
+    const rows = await recallMemories(scopeOf(ctx), {
       ...(a.subject ? { subject: String(a.subject) } : {}),
-      ...(a.includeSuperseded ? { includeSuperseded: true } : {}),
+      ...(a.includeHistory ? { includeSuperseded: true } : {}),
+      limit: 50,
     });
+    const only = CLASS_VALUES.includes(a.class as MemoryClass) ? a.class as MemoryClass : undefined;
+    const { stated, projectionsWeMade, unreadable } = presentRecall(rows, ctx.asOfISO, only);
+    const nothing = stated.length === 0 && projectionsWeMade.length === 0;
     return {
       scope: 'this user, in this Space',
-      count: memories.length,
-      memories,
-      // ⚠️ SAID WHERE THE MODEL WILL READ IT. A checkpoint's `value` is a
-      // sentence about a future date, spoken on `statedAt`. Quoting it as a
-      // present balance is the one way this table can do harm.
-      meaning: memories.length === 0
-        ? 'Nothing has been recorded for this user yet. Say so plainly rather than guessing '
-          + 'at a goal.'
-        : 'A CHECKPOINT is what we SAID on `statedAt` about `horizon` — it is NOT a current '
-          + 'balance and must never be quoted as one. For what the user has now, call the '
-          + 'financial tools; then compare.',
+      // ⚠️ SAID WHERE THE MODEL WILL READ IT. Remembering never computes: what is
+      // listed is what they SAID, on the date shown, and a projection's `value` is
+      // a sentence about a future date. Quoting either as the present is the one
+      // way this table can do harm.
+      meaning: nothing
+        ? 'Nothing has been remembered for this user yet. Say so plainly rather than guessing '
+          + 'at a goal, a rule or a planning figure.'
+        : 'What they asked us to remember, as stated on the dates shown. None of it is in effect and '
+          + 'none of it has been applied to any number. A rule\'s fields are the arguments a scenario '
+          + 'tool takes; a BASELINE is a planning figure they gave (REMEMBERED) — never their measured '
+          + 'spending. Use one only by passing it as explicit tool arguments when they ask, and say it '
+          + 'was remembered. A projection is what we SAID on `statedAt` about `horizon` — it is '
+          + 'NOT a current balance and must never be quoted as one.',
+      stated,
+      projectionsWeMade,
+      ...(unreadable.length ? { unreadable: { count: unreadable.length, savedOn: unreadable.map((u) => u.savedOn),
+        note: 'Older notes that cannot be read reliably, so their contents are not shown. The user can see and '
+          + 'delete them under Memory; restating one records it properly.' } } : {}),
     };
   },
 };

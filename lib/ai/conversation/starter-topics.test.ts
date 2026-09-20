@@ -8,7 +8,8 @@
  */
 
 import type { RecalledMemory } from './memory-store';
-import { selectStarterTopics, MAX_INTENTION_PROMPTS } from './starter-topics';
+import { STATED_CLASSES, toPayload, type StatedClass } from './memory-model';
+import { selectStarterTopics, selectMemoryPlans, MAX_INTENTION_PROMPTS } from './starter-topics';
 import {
   composeStarters, EMPTY_STATE_SUGGESTIONS, MAX_STARTER_PROMPTS,
 } from '@/components/ai/conversation-surface';
@@ -50,8 +51,8 @@ console.log('an active future target is a personal headline and chip');
   const march = select([mem('INTENTION', { ...GOAL, byDate: '2027-03-31' })]);
   check('a non-year-end deadline reads as month + year', march.headline === 'Still aiming for $750K by Mar 2027?', String(march.headline));
   const unknown = select([mem('INTENTION', { ...GOAL, targetMetric: 'somethingNew' })]);
-  check('an unknown metric is left unnamed, not guessed',
-    unknown.prompts[0]?.prompt === 'Am I still on pace for my $750K goal by the end of 2029?', unknown.prompts[0]?.prompt);
+  check('a metric V1 never documented makes the row unreadable — not a chip, and never guessed',
+    unknown.headline === null && unknown.prompts.length === 0, JSON.stringify(unknown));
   check('amounts follow the Space currency', select([mem('INTENTION', GOAL)], 'EUR').headline === 'Still aiming for €750K by 2029?');
   check('an unrenderable currency drops the topic rather than printing dollars',
     select([mem('INTENTION', GOAL)], 'NOT-A-CURRENCY').prompts.length === 0);
@@ -87,6 +88,46 @@ console.log('shapes that are not topics');
   check('a planned expense with a real amount is a chip',
     planned.prompts[0]?.label === 'Can I afford a car (~$20K)?' && planned.prompts[0]?.topic === 'planned-expense', dump(planned));
   check('a planned expense alone does not claim the headline', planned.headline === null);
+}
+
+console.log('memory V2: every class `remember` can write goes through the one reader');
+{
+  const RULE = { liquidFloorMonthsOfExpenses: 6, fractionOfExcess: 1, target: ['highest_apr', 'investments'] };
+  const written: Record<StatedClass, RecalledMemory> = {
+    GOAL: mem('INTENTION', toPayload('GOAL', { targetMetric: 'netWorth', targetAmount: 750000, byDate: '2029-12-31' })),
+    PLANNED_EXPENSE: mem('INTENTION', toPayload('PLANNED_EXPENSE', { label: 'a car', amount: 20000, earliest: '2027-03-01' })),
+    RULE: mem('INTENTION', toPayload('RULE', RULE)),
+    BASELINE: mem('ASSUMPTION', toPayload('BASELINE', { monthlySpending: 5000 })),
+  };
+  for (const cls of STATED_CLASSES) {
+    const plans = selectMemoryPlans([written[cls]], TODAY);
+    const text = dump([plans, select([written[cls]])]);
+    check(`${cls}: selected or deliberately silent — never mis-rendered`, !/undefined|null ~|NaN|\[object/.test(text.replace(/"headline":null|"nearestLiquidCheckpoint":null|"metric":null/g, '')), text);
+  }
+  check('a V2 goal is the same headline and chip as ever', select([written.GOAL]).headline === 'Still aiming for $750K by 2029?');
+  check('a V2 planned expense is the same chip as ever', select([written.PLANNED_EXPENSE]).prompts[0]?.label === 'Can I afford a car (~$20K)?');
+  check('a RULE is never a starter or a plan — a chip must not be one click from running it',
+    selectMemoryPlans([written.RULE], TODAY).intentions.length === 0 && select([written.RULE]).prompts.length === 0);
+  check('a planning figure is never a starter or a plan, and its figure never appears',
+    selectMemoryPlans([written.BASELINE], TODAY).intentions.length === 0 && !/5,?000|5K/.test(dump(select([written.BASELINE]))));
+  check('an open-ended goal and a debt-free goal are goals, but not dated targets to be "on pace" for',
+    select([mem('INTENTION', toPayload('GOAL', { targetMetric: 'netWorth', targetAmount: 1000000 })),
+      mem('INTENTION', toPayload('GOAL', { targetMetric: 'debt', targetAmount: 0, byDate: '2028-12-31' }))]).prompts.length === 0);
+  check('a V2 projection is a topic by its horizon only',
+    select([mem('CHECKPOINT', { v: 2, class: 'PROJECTION', metric: 'liquid', horizon: '2026-12-31', value: 51598.84, basis: { openingCash: 13330.97 } })])
+      .prompts[0]?.label === 'Check my year-end cash projection');
+  check('a retirement marker is nothing', select([mem('INTENTION', { v: 2, class: 'RULE', retired: true }, { status: 'RETIRED' as RecalledMemory['status'] })]).prompts.length === 0);
+
+  // The chips the V1 reader produced from coerced rows — observed in the product.
+  const coerced = [
+    mem('INTENTION', { intent: 'keep-buffer', amount: 6, label: 'monthsOfExpenses' }),
+    mem('INTENTION', { intent: 'allocation-rule', amount: 30000, label: 'Keep $30k cash, then pay highest-APR debt' }),
+    mem('INTENTION', { targetMetric: 'liquid', targetAmount: 26078.88, byDate: null }),
+    mem('INTENTION', { targetMetric: 'monthsOfExpenses', targetAmount: 9, byDate: '2030-01-01' }),
+  ];
+  const out = select(coerced);
+  check('"Can I afford monthsOfExpenses (~$6)?" is no longer a chip — nor is any coerced row',
+    out.headline === null && out.prompts.length === 0, dump(out));
 }
 
 console.log('checkpoints: one topic, nearest future horizon, never a figure');

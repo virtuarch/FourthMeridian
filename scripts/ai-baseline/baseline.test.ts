@@ -29,10 +29,10 @@ import {
   PROVENANCE, MAX_EXPANDED_CONTRIBUTIONS,
 } from '@/lib/ai/conversation/scenario-ledger';
 import { compactToolHistory, DEFAULT_COMPACTION } from '@/lib/ai/conversation/compaction';
-import { WRITE_TOOL_NAME, projectionStatement } from '@/lib/ai/conversation/memory-tools';
+import { WRITE_TOOL_NAME, projectionStatement, presentRecall } from '@/lib/ai/conversation/memory-tools';
 import { validatePayload, rememberMemory, MemoryKind } from '@/lib/ai/conversation/memory-store';
 import {
-  fieldNames as memoryFieldNames, GOAL_METRICS, validateShape, PROJECTION_BASIS_KEYS,
+  fieldNames as memoryFieldNames, GOAL_METRICS, validateShape, PROJECTION_BASIS_KEYS, composeMemoryLine, LINE_CAPS,
 } from '@/lib/ai/conversation/memory-model';
 import { CONTRIBUTION_KEYS, ALLOCATION_TARGET_WORDS } from '@/lib/ai/conversation/scenario-rules';
 import {
@@ -1804,12 +1804,23 @@ console.log('19a. memory line');
   check('the A2 orientation carries this user\'s memory',
     /memory \}/.test(ev) && /async function memoryLine/.test(ev));
   check('…scoped to the authenticated user, not the Space',
-    /memoryLine\(spaceId, ctx\.userId\)/.test(ev)
+    /memoryLine\(spaceId, ctx\.userId, asOf\)/.test(ev)
       && /const scope = \{ spaceId, ownerUserId \}/.test(ev));
-  check('…bounded on both kinds, so a long history cannot grow the core without limit',
-    /MAX_CORE_INTENTIONS = 8/.test(ev) && /MAX_CORE_CHECKPOINTS = 6/.test(ev));
-  check('the empty state names the tool rather than saying nothing',
-    /record it with `remember`/.test(read('lib/ai/conversation/evidence.ts')));
+  check('…read per kind, so a run of projection horizons cannot crowd the goals out',
+    ['INTENTION', 'ASSUMPTION', 'CHECKPOINT'].every((k) => new RegExp(`kind: MemoryKind\\.${k}`).test(ev)));
+  check('…and everything decided about it is the pure composer\'s, under the measured rule rendering',
+    /return composeMemoryLine\(rows, todayISO, \{ rules: MEMORY_LINE_RULES \}\);/.test(ev));
+
+  // ⚠️ BEHAVIOUR, NOT SOURCE TEXT (Memory V2). These used to be six regexes over
+  // `memoryLine`'s body; the body is now one call into a pure function, so the
+  // same properties are asserted by CALLING it. The exhaustive version lives in
+  // lib/ai/conversation/memory-model.test.ts.
+  let seq = 0;
+  const mrow = (kind: string, payload: unknown, status = 'ACTIVE') => ({ id: `m${++seq}`, kind, subject: `s${seq}`, status,
+    payload, statedAs: 'RAW', statedAt: '2026-09-20T00:00:00.000Z', appliesFrom: null, appliesTo: null, supersedesId: null });
+  const projection = (horizon: string) => mrow('CHECKPOINT', { v: 2, class: 'PROJECTION', metric: 'liquid', horizon, value: 51598.84, basis: { openingCash: 13330.97 } });
+  const empty = composeMemoryLine([], '2026-09-20') as { note?: string };
+  check('the empty state names the tool rather than saying nothing', /record it with `remember`/.test(empty.note ?? ''));
 
   // ⚠️ FOUND BY RUNNING IT, IN THE SLICE THAT BROKE IT. The first version listed
   // intentions only and its empty note said "nothing has been recorded for this
@@ -1817,15 +1828,48 @@ console.log('19a. memory line');
   // I ahead of where you said I would be?", the model read that note, believed
   // it, and answered "I have no record of a previous projection" while two
   // checkpoints sat in the table.
+  const onlyProjections = composeMemoryLine([projection('2026-12-31'), projection('2027-06-30')], '2026-09-20') as
+    { note?: string; projectionsOnRecord: { count: number; horizons: string[]; note: string } };
   check('the line speaks for ALL of memory, not only for goals',
-    /projectionsOnRecord: \{ count: projections\.length/.test(ev)
-      && /kind: MemoryKind\.CHECKPOINT/.test(ev) && /kind: MemoryKind\.INTENTION/.test(ev));
-  check('…so "nothing recorded" is said only when nothing at all is recorded',
-    /goals\.length === 0 && projections\.length === 0/.test(ev));
+    onlyProjections.projectionsOnRecord.count === 2 && onlyProjections.projectionsOnRecord.horizons.length === 2);
+  check('…so "nothing remembered" is said only when nothing at all is on record', onlyProjections.note === undefined);
   check('…and recorded projections point at the tool that reconciles them',
-    /`reconcile_projection` compares them/.test(read('lib/ai/conversation/evidence.ts')));
+    /`reconcile_projection` compares them/.test(onlyProjections.projectionsOnRecord.note));
   check('…and say what they are, so they are not read as balances',
-    /never current balances/.test(read('lib/ai/conversation/evidence.ts')));
+    /never current balances/.test(onlyProjections.projectionsOnRecord.note));
+  const many = composeMemoryLine([
+    ...Array.from({ length: 9 }, () => mrow('INTENTION', { v: 2, class: 'GOAL', targetMetric: 'netWorth', targetAmount: 1e6, byDate: '2030-12-31' })),
+    ...Array.from({ length: 9 }, (_, i) => projection(`2027-0${i + 1}-28`)),
+  ], '2026-09-20') as { goals: unknown[]; projectionsOnRecord: { count: number; horizons: string[] } };
+  check('…bounded per section, so a long history cannot grow the core without limit',
+    many.goals.length === LINE_CAPS.goals && many.projectionsOnRecord.horizons.length === LINE_CAPS.horizons
+      && many.projectionsOnRecord.count === 9);
+  check('only ACTIVE, in-force rows are listed',
+    JSON.stringify(composeMemoryLine([
+      mrow('INTENTION', { v: 2, class: 'GOAL', targetMetric: 'netWorth', targetAmount: 1e6, byDate: '2030-12-31' }, 'SUPERSEDED'),
+      mrow('INTENTION', { v: 2, class: 'GOAL', targetMetric: 'netWorth', targetAmount: 1e6, byDate: '2026-01-01' }),
+    ], '2026-09-20')) === JSON.stringify(empty));
+
+  // ── `recall` reads through the same reader ───────────────────────────────
+  const recalled = presentRecall([
+    mrow('INTENTION', { v: 2, class: 'RULE', rule: { liquidFloorMonthsOfExpenses: 6, fractionOfExcess: 1, target: ['highest_apr', 'investments'] } }),
+    mrow('ASSUMPTION', { v: 2, class: 'BASELINE', monthlySpending: 5000, basis: 'REMEMBERED', scope: 'PLANNING' }),
+    mrow('INTENTION', { v: 2, class: 'GOAL', targetMetric: 'netWorth', targetAmount: 1e6 }),
+    mrow('INTENTION', { v: 2, class: 'PLANNED_EXPENSE', label: 'car', amount: 20000 }),
+    projection('2026-12-31'),
+    mrow('INTENTION', { intent: 'keep-buffer', amount: 6, label: 'monthsOfExpenses' }),
+    mrow('INTENTION', { targetMetric: 'liquid', targetAmount: 26078.88, byDate: null }),
+  ], '2026-09-20');
+  const recalledText = JSON.stringify(recalled);
+  check('recall renders every class `remember` can write, as words plus the fields that are the arguments',
+    ['RULE', 'BASELINE', 'GOAL', 'PLANNED_EXPENSE'].every((c) => (recalled.stated as { class: string; inWords: string }[]).some((x) => x.class === c && x.inWords.length > 10))
+      && /"rule":\{"liquidFloorMonthsOfExpenses":6/.test(recalledText) && /"basis":"REMEMBERED"/.test(recalledText));
+  check('…keeps projections apart from what the user stated', recalled.projectionsWeMade.length === 1 && !/PROJECTION/.test(JSON.stringify(recalled.stated)));
+  check('…and returns NOTHING of an unreadable row but its date: no payload, no words',
+    recalled.unreadable.length === 2 && !recalledText.includes('26078') && !recalledText.includes('monthsOfExpenses"')
+      && JSON.stringify(recalled.unreadable) === '[{"savedOn":"2026-09-20"},{"savedOn":"2026-09-20"}]');
+  check('recall can be narrowed to one class', presentRecall([projection('2026-12-31'),
+    mrow('INTENTION', { v: 2, class: 'GOAL', targetMetric: 'netWorth', targetAmount: 1e6 })], '2026-09-20', 'GOAL').projectionsWeMade.length === 0);
 
   // ⚠️ IT IS EVIDENCE, NOT DOCTRINE. It deliberately did NOT go in the system
   // instruction, which is ~140 words and whose growth is itself a finding.
@@ -1836,10 +1880,16 @@ console.log('19a. memory line');
 
   // ⚠️ NO BALANCE REACHES THE ORIENTATION THROUGH MEMORY. Only subjects, targets,
   // dates and horizons are ever emitted.
-  check('an intention in the core emits only subject, statedAt and target',
-    /return \{ subject: r\.subject, statedAt: r\.statedAt\.slice\(0, 10\),/.test(ev));
-  check('…and a projection emits only its horizon',
-    /\.map\(\(r\) => \(r\.payload as \{ horizon\?: string \}\)\.horizon\)/.test(ev));
+  const everything = JSON.stringify(composeMemoryLine([
+    mrow('INTENTION', { v: 2, class: 'GOAL', targetMetric: 'netWorth', targetAmount: 1e6, byDate: '2030-12-31' }),
+    mrow('INTENTION', { v: 2, class: 'RULE', rule: { liquidFloorMonthsOfExpenses: 6, fractionOfExcess: 1, target: ['highest_apr', 'investments'] } }),
+    mrow('ASSUMPTION', { v: 2, class: 'BASELINE', monthlySpending: 5000, basis: 'REMEMBERED', scope: 'PLANNING' }),
+    projection('2026-12-31'),
+  ], '2026-09-20'));
+  check('a stated item emits its subject, its date and its own fields — never the raw words',
+    /"subject":"s\d+","statedAt":"2026-09-20"/.test(everything) && !everything.includes('RAW'));
+  check('…and a projection emits only its horizon: no value, no opening balance',
+    !everything.includes('51598') && !everything.includes('13330') && everything.includes('"horizons":["2026-12-31"]'));
 
   // The collision slice 1 removed from every tool result survived one file.
   check('the orientation core calls checking-plus-savings `liquid`, not `cash`',

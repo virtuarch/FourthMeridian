@@ -788,6 +788,15 @@ export const LINE_CAPS = { goals: 3, rules: 3, planningAssumptions: 2, planned: 
 /** How a rule appears in the line: its literal clause, or one plain sentence (the clause is then in `recall`). */
 export type RuleRendering = 'clause' | 'sentence';
 
+/**
+ * How the PRODUCTION line shows a rule. `clause` is the faithful form — the
+ * fields ARE the arguments, so "run my remembered strategy" is a copy rather
+ * than a parse — but a literal clause on every request could prime the model to
+ * apply it unasked. Which one ships is decided by measurement, recorded in
+ * docs/plans/AI-FINANCIAL-MEMORY-V2-DESIGN.md (ruling R6), not by preference.
+ */
+export const MEMORY_LINE_RULES: RuleRendering = 'clause';
+
 export const LINE_MEANING =
   'Remembered for this user, as stated on the dates shown. Nothing listed is in effect and none of it is a current '
   + 'figure. Use one only as explicit tool arguments, and say it was remembered.';
