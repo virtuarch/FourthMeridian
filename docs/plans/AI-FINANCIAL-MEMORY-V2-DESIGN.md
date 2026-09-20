@@ -1,7 +1,8 @@
 # Durable financial memory V2 — design
 
-**Date:** 2026-09-20 · **Design only. No production code, prompt, tool description, schema, migration or test is changed by this
-document.** Implementation follows an independent adversarial review.
+**Date:** 2026-09-20 · amended 2026-09-21 · **IMPLEMENTED on `postm1/b-memory-v2` (S1–S6), after an independent adversarial review
+(APPROVE WITH REQUIRED CHANGES) and twelve lead rulings. §A below is authoritative: where it contradicts the body, §A wins.**
+Statements in the body that a ruling found false are ~~struck~~ and corrected in place.
 Authority: `189b6df` (HEAD of `v2.6`). Evidence: `docs/plans/AI-CONVERSATION-STATE-MEMORY-ORCHESTRATION-INVESTIGATION.md`
 §5, §6, §15, §16 (G1–G4, G13, G15) and the raw traces under `tmp/inv/out/*.jsonl`, re-read for this design (§0.2).
 Clone database used, read-only: `fintracker_postm1_b`.
@@ -9,6 +10,105 @@ Clone database used, read-only: `fintracker_postm1_b`.
 Architecture, unchanged: **MODEL OWNS MEANING · CONTRACTS OWN SEMANTICS · CODE OWNS MONEY · DATA OWNS TRUTH.**
 Three sentences this design is built to keep true: **memory is not financial truth; memory is not an active scenario; a
 scenario is not memory.**
+
+---
+
+## A. AMENDMENTS — lead rulings R1–R12 and what was implemented (2026-09-21)
+
+> **This section is authoritative. Where it contradicts the text below, it wins.** The design was reviewed (APPROVE WITH
+> REQUIRED CHANGES), the lead ruled on every blocker, and the implementation landed on `postm1/b-memory-v2` as S1–S6. The body
+> below is kept as the reasoning of record; statements it makes that the rulings found false are struck and corrected in place,
+> and listed here.
+
+### A.1 What the rulings changed
+
+| # | Ruling | What the design said | What is implemented |
+|---|---|---|---|
+| R1 | **The user's words are passed in, never read off the transcript.** | §7.2: build the gate's evidence "from `messages`" — user = `role: 'user'` messages. **False premise:** the orientation is a `role: 'user'` message (`engine.ts` `openTranscript`) and the active scenario a trailing `role: 'system'` one, so that set contains every balance we hold. | `executeTurn` takes `userTexts` explicitly (`runStatelessTurn` passes `history`'s user messages; an in-process caller accumulates them on its tool context). `turnEvidence(userTexts, messages)` is pure: USER-STATED = those texts + the current one; OURS = every other message content (orientation, envelope, assistant prose, this turn's tool results incl. string leaves), minus a memory write's own echo. `ToolContext.turn?` is optional and harness-safe; nothing the model sees changes. Tests: an `openTranscript`-shaped array (the orientation's balances license nothing); the recorded "Remember this." turn, where `targetAmount` was the envelope's `result.netWorth` — refused. |
+| R2 | **"No money field in a rule" was false.** | §0.2, §2.1: "There is **no money field in it**, so $26,078.88 cannot be frozen: the bad state is unrepresentable." `liquidFloor` and `amount` are Money fields. | A Money field with a relational sibling (`liquidFloor` ↔ `liquidFloorMonthsOfExpenses`) needs **positive, strict** user evidence (a currency mark, a K/M suffix, grouping, decimals, or a bare integer ≥ 1,000 in the user's own turns); otherwise it is refused and the refusal names the months field. **Cut from V2 rules:** `amount`+`cadence`, `fractionOfLiquid`+`cadence`, `{liability: id}` targets (ids churn on reconnect), `onDate`, `label`. A rule is a cash floor or a surplus share, with the two target words. |
+| R3 | **A remembered planning figure is `REMEMBERED` — never `STATED`.** | §4: `basis: "STATED"`, passed as `statedMonthlySpending`. That would have been a second durable authority beside M1's STATED > DECLARED > MEASURED. | Stamped `basis: "REMEMBERED", scope: "PLANNING"` by code. Not a rung of `resolveExpenseBaseline`; no tool reads it; `lib/liquidity/**`, `lib/ai/measures/**` and the `get_baselines` text are untouched. The line says, per item, *"On ‹date› the user asked to plan with ‹X›/month of spending — not their measured spending, and not in effect unless they say so."* plus one section-level `planningNote` (A.4). |
+| R4 | **One vocabulary authority.** | §2.3: `memory-model.ts` "declares the rule field table itself" and keeps its own exclusive-groups table. | The model **imports** `CONTRIBUTION_KEYS`, `unknownContributionKeys`, `contributionBasis`, `contributionName` from `scenario-rules.ts`, which gains `ALLOCATION_TARGET_WORDS`. Which fields exclude each other on an amend is `contributionBasis`'s answer; the only relation kept locally is the floor's relational sibling pair. A stored rule is **nested** — `{v: 2, class: "RULE", rule: {…}}` — so it holds EXACTLY contract keys (`unknownContributionKeys` refuses a whole rule on any foreign key). No label is stored or rendered for a rule; words come from `contributionName`. **One deviation, forced by a guard:** `scenario-ledger.ts` is import-free by test (`baseline.test.ts`), so it cannot read the constant. The constant is instead tied to the ledger's `AllocationTarget` type by the compiler (`satisfies` + an exhaustiveness check), `prepareScenario`'s `toTarget` uses it, and a behavioural parity test asserts the ledger accepts each word and refuses any other. |
+| R5 | **Validator split.** | One `validateStated`, incl. "`byDate` must be after `asOf`" — which would have made a goal unreadable the day after its date. | `validateShape` / `validateFields` are **timeless** (read, write, merge). `admitWrite` is about **this call**: the provenance gate and the future-date checks, applied only to supplied fields and exempting any value equal to the current version's. A goal whose `byDate` passed is `LAPSED`, not unreadable; an amend never re-gates what it inherits. |
+| R6 | **Priming is measured; it gates the reader.** | §16.5 named the risk and left it to case 12. | `composeMemoryLine(rows, today, {rules: 'clause' \| 'sentence'})`; production uses `MEMORY_LINE_RULES = 'clause'`, which **passed** (A.4). |
+| R7 | **Cuts.** | — | Cut: the `PREFERENCE` class (five classes remain, four stateable); the word-number grammar (digits only); words-consistency for legacy rows; "a Label is not a contract field name"; `unreadable: n` in the memory line (kept in `recall` and the panel); `saidAs` for unreadable rows in `recall`; `history[]` in the list response. |
+| R8 | **Legacy rows — deterministic.** | §9: words-consistency over `statedAs`. | Readable as-is: `{targetMetric ∈ {netWorth, liquid, investments}, targetAmount > 0, byDate a real date}` → GOAL (LAPSED if past); `{metric, horizon, value}` → PROJECTION. **Planned outlays — the rule implemented:** a no-`v` `{intent, amount, label[, earliest]}` row is a PLANNED_EXPENSE **iff** `intent ∈ {buy, purchase, spend}`, `amount > 0` and `label` is 1–40 chars. Those three are every `intent` value the V1 code, tests and live check ever documented (`starter-topics.test.ts`, `lib/ai/brief/package.test.ts`, `baseline.test.ts`, `memory-store.check.ts`); `intent` was otherwise free text and is exactly where the recorded rows smuggled a rule (`keep-buffer`, `allocation-rule`, whole sentences — 0 of the 106 recorded calls carrying an `intent` used a documented word). Everything else, **including a standalone V1 ASSUMPTION**, is unreadable. `amount: 6` is never read as months. Nothing is rewritten or destroyed by deploy; an unreadable ACTIVE row is superseded only by the user's own later V2 statement on its subject. |
+| R9 | **Readers before writers.** | §14: write path (S3) before readers (S4). | S1 model → S2 checkpoints → S3 readers → S4 writers → S5 API → S6 panel. No commit leaves a V1 reader meeting a V2 row (an S2 PROJECTION keeps every key the V1 readers read). |
+| R10 | **Bytes are measured.** | "≤ 900 B typical, ≤ 2,000 B worst case". | Measured after `JSON.stringify(…, null, 1)`: **typical 1,204 B** (one rule + one planning figure + one goal), **capped worst case 2,948 B** (max-length subjects and labels, every cap hit), **empty 189 B**. The fixed "nothing listed is in effect" sentence is 187 B. Pinned by test at the measured values plus margin. |
+| R11 | **The replay.** | §13 "+ legacy": classify `tmp/inv/out/written-memories.json` in a test. | A **sanitised, committed** fixture (`lib/ai/conversation/fixtures/remember-replay.json`): all 201 recorded calls — arguments, the conversation's user turns, tool-result digests, the figures in prior assistant prose — with every non-round figure remapped. No test reads `tmp/`. Result in A.3. |
+| R12 | **Acceptance, on the clone.** | §13 M cases. | A.4. |
+
+### A.2 One change beyond the rulings, forced by R11's replay
+
+**Every `Money` value needs positive user evidence, in digits — not only a rule's floor.** The design's gate refused a value only
+when it matched a figure *we* produced ("a value found nowhere is accepted"). Replayed over the recording, that still admitted
+`{amount: 6, label: "months-of-expenses"}` for *"Remember that I want six months cash."* and `{amount: 9}` for *"use nine"*: a
+month count the user spoke in words is found nowhere, so nothing refused it (5 rows), and R7 had cut the label rule that was the
+design's defence. What *we* produced now only sharpens the refusal ("a figure we produced" vs "nobody stated it"). User-side
+tokens are the licence's own figures plus bare small integers **not followed by a count unit** ("6 months", "3 years", "50%").
+**Cost, accepted and to be measured in use:** *"remember my goal is a million"* is asked for the number once ("$1M", "1,000,000"
+and "$1 million" all license it). *Primitive or patch?* Primitive: "memory admits money only in figures the user stated" — one
+sentence, every money field, every class.
+
+### A.3 The replay — 201 recorded `remember` calls through `validateFields` + `admitWrite`
+
+Most generous reading: each payload (and a nested `rule`) is offered to **every** class with foreign keys dropped, so the test is
+adversarial to the validators rather than to the recording.
+
+| | V1 (recorded) | V2 (replayed) |
+|---|---|---|
+| stored / admitted | 117 of 201 | **20 of 201** |
+| faithful to what the user said | 0 of 90 (investigation) | 20 of 20 by the four assertions below |
+| what was admitted | — | 3 RULE `{liquidFloorMonthsOfExpenses: 6[, fractionOfExcess, target]}` · 13 BASELINE `{monthlySpending: 5000}` where the user typed "$5k" · 4 GOAL `{netWorth, 1000000}` where the user typed "$1M" |
+| a dollar figure the user did not type | 56 | **0** |
+| a month count in a money field | 27 (incl. zeros) | **0** |
+| a zero placeholder or a null | 11 + 43 `byDate: null` | **0** |
+
+Residual, named in §16.4 and unchanged: the 4 admitted goals carry a **derived date** (`byDate` = a crossing date). Dates are not
+gated — "by 2030" against "in five years" cannot be checked without parsing language.
+
+### A.4 Acceptance — production path, full tool surface, clone `fintracker_postm1_b`, n = 6 per case
+
+159 model turns in all (108 planned; +42 re-measuring two wordings the first run failed; +12 re-running the DECLARED case, whose
+first wording — "in June", asked on 2026-09-20 — every run read as June 2026; −3 lost to two provider timeouts). Counts, not rates.
+
+| # | Case | Result |
+|---|---|---|
+| 1 | "Keep six months of expenses in cash." / "Remember that." → fresh "What cash rule did I want?" | Semantic six-month rule **6 of 6**; dollars in memory **0 of 6**; `remember` refusals 0. **First wording:** 4 of 6 also stored `fractionOfExcess: 1` and a debt-first `target` the user never stated (copied from a three-clause example). **After the wording change:** floor-only **5 of 5** completed runs (one run lost to provider timeouts); fresh chat says the rest "is still open" 5 of 5. |
+| 2 | "Use $5k monthly spending for planning." / "Remember that." → fresh "What spending assumption did I ask you to use?" | Stored **6 of 6** (V1: refused 10 of 10). Fresh chat: "a remembered planning figure from 2026-09-20 … not your measured spending" **6 of 6**. |
+| 3 | Three-clause strategy / "Remember that." → fresh "What strategy did I want?" then "Run it through next June." | One RULE row with all three fields **6 of 6**; the repeat "Remember that." wrote nothing 6 of 6. Recall first with no tool call and no dollar figure **6 of 6**; computation only when asked **6 of 6**; scenario arguments carried `liquidFloorMonthsOfExpenses: 6`, `fractionOfExcess: 1` and the ordered target **6 of 6**; Agent 3's roster: `cashFloor.ran` true with `statedAs.monthsOfExpenses: 6` 6 of 6, `debtPaydown.ran` true in order 6 of 6, `surplusShare.ran` false 6 of 6. (Not memory's: in 3 of 6 the model passed a *measured* figure as `assumedMonthlySpending`, which the scenario echoes as STATED.) |
+| 4 | Seeded strategy → fresh "Actually make the cash buffer nine months." | `op: "amend"` **6 of 6**; floor 9 **and** the original ordering kept 6 of 6; exactly one ACTIVE rule 6 of 6; the six-month version kept as SUPERSEDED 6 of 6. (V1: ordering lost.) |
+| 5a | R6 — remembered RULE shown as its **literal clause**; three neutral questions × 6 | **Silent applications: 0 of 18.** "What will my cash be next June?": plain `project_cash`, no clause, 6 of 6. "How am I doing?": no tool, 6 of 6. "How much can I invest this month?": the rule was *consulted* — `get_baselines([6])`, the tool's figure, under an explicit "your remembered rule" — 6 of 6; no scenario was run with the clause. **PASS ⇒ `'clause'` ships.** |
+| 5b | R6/R3 — remembered BASELINE; the same three questions × 6 | **First wording: FAIL.** "next June" applied $5k 4 of 6 as "what you asked us to plan with" — never said to be remembered, no measured figure beside it, one with no provenance at all; measured-without-mention 2 of 6. **After `planningNote`:** measured basis **18 of 18**, applications **0 of 18**, presented as observed 0, presented as stated-in-this-conversation 0; the figure offered as available 1 of 6 on "next June". |
+| 5c | R3 — the same with a **DECLARED** product figure (`emergency_fund_progress.config.monthlyExpenses = 4800`, seeded in the clone only, removed after) | "What will my cash be next June?": `project_cash` on OBSERVED spending **6 of 6**, the remembered $5k applied **0 of 6**, offered as available 2 of 6. "How much can I invest this month?": `get_baselines` resolved **DECLARED 4,800** 6 of 6 — M1's ladder is untouched and the remembered figure is not a rung of it; applied 0 of 6. Presented as observed 0 of 12; presented as stated-in-this-conversation 0 of 12. |
+| 6 | What the model retries with after a refusal | `remember` calls **49**, refusals **0**, retries **0**, coerced retries **0** (V1: 84 refused of 201; 32 of 45 retried rows coerced). The teaching refusals are therefore exercised by unit tests and the replay, not by this sample. |
+
+### A.5 The final durable model — exact JSON
+
+```json
+{ "kind": "INTENTION",  "payload": { "v": 2, "class": "GOAL", "targetMetric": "netWorth", "targetAmount": 1000000, "byDate": "2030-12-31" } }
+{ "kind": "INTENTION",  "payload": { "v": 2, "class": "PLANNED_EXPENSE", "label": "car", "amount": 20000, "earliest": "2027-03-01" } }
+{ "kind": "INTENTION",  "payload": { "v": 2, "class": "RULE", "rule": { "liquidFloorMonthsOfExpenses": 6, "fractionOfExcess": 1, "target": ["highest_apr", "investments"] } } }
+{ "kind": "ASSUMPTION", "payload": { "v": 2, "class": "BASELINE", "monthlySpending": 5000, "basis": "REMEMBERED", "scope": "PLANNING" } }
+{ "kind": "CHECKPOINT", "payload": { "v": 2, "class": "PROJECTION", "metric": "liquid", "horizon": "2026-12-31", "value": 51598.84,
+    "basis": { "spendingSource": "OBSERVED", "dailyRate": 142.9, "monthsAveraged": ["2026-07", "2026-08"], "incomeEvents": 7, "userAssumptions": [], "openingCash": 13330.97 } } }
+{ "status": "RETIRED",  "payload": { "v": 2, "class": "RULE", "retired": true } }
+```
+
+`byDate`, `earliest` optional; a GOAL's `targetAmount` may be `0` only with `targetMetric: "debt"`; a RULE is `liquidFloorMonthsOfExpenses`
+**or** `liquidFloor` (+ optional `fractionOfExcess`, `target`), **or** `surplusFraction` (+ optional `target`), with optional `from` / `to`;
+a BASELINE is exactly one of `monthlySpending` / `annualReturnPct`. What the model sends: `remember({op?, subject, statedAs, goal | plannedExpense | rule | baseline, set?, unset?, replace?})`.
+
+### A.6 Also true of the implementation, and not in the body below
+
+- **An identical re-statement writes nothing** ("Remember that." after the item is on record: `unchanged: true`).
+- **Every RULE write echoes `otherRulesInForce`**, so a second subject for one strategy is visible to the model.
+- **The panel lives in `components/dashboard/MemoryPanel.tsx`,** not `components/ai/`: that directory is presentation-only by an
+  existing guard (no `fetch`), and the guard was kept rather than loosened. It says "noted as", never "you said".
+- **`reconcile_projection` does not yet report `restedOn`** (§10): that edit is in `tools.ts`, outside this agent's ownership.
+  `recall` reports it. Legacy USER_STATED checkpoints stay readable.
+- **DELETE writes one content-free `AuditLog` row** — `AI_MEMORY_ERASED`, `{kind, versionsErased}` — never what the item said.
+- **A debt-free goal and an open-ended goal are goals but not starters or Brief plans**: `PlanGoal` is frozen as a positive target
+  with a deadline.
 
 ---
 
@@ -24,15 +124,17 @@ usually right: 36 first attempts reached for semantic keys, and one wrote — ve
 
 **The design, in eight decisions.**
 
-1. **Six semantic classes, no enum migration.** Five things a user can state — `GOAL`, `PLANNED_EXPENSE`, `RULE`, `BASELINE`,
-   `PREFERENCE` — and one thing the system observes — `PROJECTION`. They are a **versioned discriminator inside the existing
+1. **~~Six~~ Five semantic classes, no enum migration.** ~~Five~~ Four things a user can state — `GOAL`, `PLANNED_EXPENSE`, `RULE`,
+   `BASELINE` (~~`PREFERENCE`~~ — cut, R7) — and one thing the system observes — `PROJECTION`. They are a **versioned discriminator inside the existing
    `payload` Json** (`{v: 2, class: …}`), stored under the three existing `MemoryKind`s. No enum value, no column, no
    migration, no `prisma generate` on the shared client. What that costs is stated in §11; the additive SQL for the alternative
    is given there and not recommended.
 2. **A rule is stored in the scenario contract's own vocabulary.** "Keep six months of expenses, then highest-APR debt, then
    invest the rest" is `{liquidFloorMonthsOfExpenses: 6, fractionOfExcess: 1, target: ["highest_apr","investments"]}` — the
-   exact object a `contributions[]` item takes (`tools.ts:2455-2501`). There is **no money field in it**, so $26,078.88 cannot
-   be frozen: the bad state is unrepresentable, not detected. "Run my remembered strategy" is the model copying that object
+   exact object a `contributions[]` item takes (`tools.ts:2455-2501`). ~~There is **no money field in it**, so $26,078.88 cannot
+   be frozen: the bad state is unrepresentable, not detected.~~ **Corrected (R2):** `liquidFloor` IS a money field, so the bad
+   state is *detected*: a dollar floor is admitted only on positive evidence that the user typed those dollars, and is otherwise
+   refused in favour of `liquidFloorMonthsOfExpenses`. The stored payload nests the clause — `{v, class, rule: {…}}` (R4). "Run my remembered strategy" is the model copying that object
    into a scenario call, where the existing echo (`floorRule.derivedFrom`, `assumptionsInForce`) shows the user what ran.
    Memory code never imports, calls or compiles for a scenario tool; a parity test keeps the two vocabularies one.
 3. **Field-wise amendment, row-per-version.** "Make it nine months" is `op: "amend", set: {liquidFloorMonthsOfExpenses: 9}`:
@@ -40,12 +142,14 @@ usually right: 36 first attempts reached for semantic keys, and one wrote — ve
    supersession-creates-a-row property is kept. A `record` that would silently drop a field the prior version held is refused
    unless the caller says `replace: true`. Lossy supersession (G4) becomes a deliberate act with an echo, not an accident.
 4. **A stated baseline gets a durable home; the anchor rule is replaced.** `BASELINE {monthlySpending: 5000}` persists on its
-   own, stamped by code `basis: "STATED", scope: "PLANNING"`. It reaches a calculation **only** when the model passes it as
-   `statedMonthlySpending` / `assumedMonthlySpending`, which those tools already echo as STATED. No tool reads memory into a
+   own, stamped by code `basis: ~~"STATED"~~ "REMEMBERED", scope: "PLANNING"` (R3 — never one of M1's three words; not a rung of the
+   expense baseline). It reaches a calculation **only** when the model passes it as the existing explicit argument, in a
+   conversation where the user asks to plan with it, saying that it was remembered. No tool reads memory into a
    money calculation; a source scan pins `recallMemories(` in `tools.ts` to its one existing call site (`reconcile_projection`).
 5. **Value-typed validation and one provenance primitive.** Every numeric field has a unit by type (`Money`, `Months`,
-   `Fraction`, `Percent`, `ISODate`); null, empty and zero are not values. **A `Money` value is refused when it is a figure
-   *we* produced** — present in this turn's tool results or in assistant prose, and absent from everything the user wrote.
+   `Fraction`, `Percent`, `ISODate`); null, empty and zero are not values. **A `Money` value is ~~refused when it is a figure
+   *we* produced~~ admitted only when the user stated it, in digits** (§A.2) — and "what the user wrote" is passed in explicitly,
+   never read off the transcript, whose `role: 'user'` messages include the orientation (R1).
    That is what stops a projected net worth becoming "the user's goal". Refusals carry the correct shape built from the
    caller's own payload.
 6. **Remembering never computes.** The memory line (sent on every request) lists items *as stated, on the date stated*, under
@@ -63,7 +167,7 @@ usually right: 36 first attempts reached for semantic keys, and one wrote — ve
    rows are hidden from the model's line, the starters and the Brief and shown to the user as "couldn't read this reliably —
    saved on ‹date›: ‹their words›" with a delete.
 
-**Seven slices** (§14), each independently committable; S1 is pure and changes no behaviour. **No migration.** Estimated
+**~~Seven~~ Six slices**, re-ordered readers-before-writers (R9; §A.1), each its own commit; S1 is pure and changes no behaviour. **No migration.** Estimated
 model-sampled acceptance: 80 turns on the clone (§13).
 
 ### 0.1 What I verified in current code (path:line)
@@ -195,15 +299,15 @@ What is **stored** (row `kind` / `subject` / `statedAs` / `payload`):
 ```json
 { "kind": "INTENTION", "subject": "cash-strategy",
   "statedAs": "Keep six months of expenses, then pay highest-APR debt, then invest the rest",
-  "payload": { "v": 2, "class": "RULE",
+  "payload": { "v": 2, "class": "RULE", "rule": {
     "liquidFloorMonthsOfExpenses": 6, "fractionOfExcess": 1,
-    "target": ["highest_apr", "investments"] } }
+    "target": ["highest_apr", "investments"] } } }
 ```
 ```json
 { "kind": "ASSUMPTION", "subject": "planning-spending",
   "statedAs": "Use $5k monthly spending for planning",
   "payload": { "v": 2, "class": "BASELINE", "monthlySpending": 5000,
-    "basis": "STATED", "scope": "PLANNING" } }
+    "basis": "REMEMBERED", "scope": "PLANNING" } }
 ```
 ```json
 { "kind": "INTENTION", "subject": "net-worth-target",
@@ -811,7 +915,7 @@ rate under n = 5.
 
 | # | Case | Layer | Assertion |
 |---|---|---|---|
-| 1 | remember a six-month expense rule | U, L, M | U: the rule validates; **no money key is admissible in it**. L: stored under `INTENTION`, `class RULE`. M: 8× "From now on keep six months of expenses in cash. Remember that." → stored rows hold `liquidFloorMonthsOfExpenses: 6`; **0 rows hold a dollar figure** (today 8/8 frozen); rejection rate reported |
+| 1 | remember a six-month expense rule | U, L, M | U: the rule validates; ~~**no money key is admissible in it**~~ **a dollar floor is admissible only on positive user evidence, and is otherwise refused naming the months field** (R2). L: stored under `INTENTION`, `class RULE`. M: 8× "From now on keep six months of expenses in cash. Remember that." → stored rows hold `liquidFloorMonthsOfExpenses: 6`; **0 rows hold a dollar figure** (today 8/8 frozen); rejection rate reported |
 | 2 | the expense baseline changes later | U, S | U: `composeMemoryLine` and `describeMemory` output for the rule is byte-identical under any baseline — nothing in the row can move because nothing in it is a level. S: the store does not import the measures layer |
 | 3 | a fresh chat recalls the semantic rule, not frozen dollars | U, M | U: the line carries the literal clause and no money. M: fresh chat, "What strategy did I want?" → answer states months, not a dollar floor as the rule (a priced figure is acceptable only if it came from a tool call in that turn) |
 | 4 | remember a $5k planning baseline | U, L, M | L: a standalone `BASELINE` persists (the anchor check is replaced). M: 8× "Use $5k/month as my spending assumption. Remember that." → stored 8/8 (today 0/10) |
