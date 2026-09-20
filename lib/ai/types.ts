@@ -558,6 +558,18 @@ export interface CategorySpend {
   /** Sum of positive-amount rows in this category, when > 0. Disclosure only —
    *  never added to `total`, never counted as spending. (KD-17) */
   creditTotal?: number;
+  /**
+   * REFUND-1 — Σ|amount| of rows the classifier typed REFUND in this category,
+   * when > 0. A verdict, not a sign test: a positive Payment / Transfer / Income
+   * row is a credit (`creditTotal`) but never a refund.
+   */
+  refundTotal?: number;
+  /**
+   * REFUND-1 — what the category actually cost: max(0, total − refundTotal), by
+   * the one clamp authority. Present exactly when `refundTotal` is. State THIS
+   * when asked what was spent on the category; never subtract in prose.
+   */
+  netTotal?: number;
   count:    number;
 }
 

@@ -112,6 +112,11 @@ import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-pa
 // BEFORE classifyFlow, so the descriptor decision produces category + flowType
 // coherently and the classifier stays descriptor-blind.
 import { resolvePayrollIncomeCategory } from "@/lib/transactions/descriptor-evidence";
+// REFUND-1 — the merchant-credit category authority + its one evidence read: a
+// liability inflow the provider filed as INCOME is resolved to the spend category
+// it reverses (or `Other`) BEFORE classifyFlow, like the two rescues above.
+import { needsMerchantCreditEvidence, resolveLiabilityMerchantCreditCategory } from "@/lib/transactions/merchant-credit";
+import { readPriorPurchaseCategories, type MerchantCreditEvidenceClient } from "@/lib/transactions/merchant-credit-evidence";
 export { mapPlaidCategory } from "@/lib/transactions/plaid-category";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 // FlowType P2 (import fidelity) — shadow classification only. Nothing below is
@@ -476,6 +481,31 @@ export async function syncTransactionsForItem(
         // provenance so a freshly-synced pending payroll carries the same
         // DESCRIPTOR_EVIDENCE reason as a row the repair fixed retroactively.
         const payrollRescued = category !== categoryBeforePayroll;
+
+        // REFUND-1 — a credit on a LIABILITY that the provider filed as INCOME
+        // cannot be income (nobody is paid onto a credit card): it is a merchant
+        // credit Plaid labelled from the brand (an Airbnb refund → INCOME_RENTAL).
+        // The classifier's structural veto guarantees "never INCOME"; THIS step
+        // decides which spend category the credit reverses, from the same
+        // merchant's prior purchases on the same account (unanimous or `Other`),
+        // so one decision yields a coherent category + flowType (Travel/REFUND,
+        // or Other/UNKNOWN). Runs LAST in the rescue chain and only for that
+        // population, so the history read is paid on ~0.1% of rows.
+        if (needsMerchantCreditEvidence(category, "Income", { accountType: meta.type, debtSubtype: meta.debtSubtype, amount })) {
+          const priorPurchaseCategories = await readPriorPurchaseCategories(database as unknown as MerchantCreditEvidenceClient, {
+            financialAccountId,
+            merchantEntityId: txn.merchant_entity_id ?? null,
+            merchant,
+            description,
+            onOrBefore: date,
+          });
+          category = resolveLiabilityMerchantCreditCategory(category, "Income", "Other", {
+            accountType: meta.type,
+            debtSubtype: meta.debtSubtype,
+            amount,
+            priorPurchaseCategories,
+          }).category as typeof category;
+        }
 
         const { input, captured } = buildPlaidFlowInput(txn, {
           category,

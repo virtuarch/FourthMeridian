@@ -41,7 +41,7 @@ import { isSpendLedgerFlow } from './flow-predicates';
 // CCPAY-2A/2B — liability structure (what counts as a liability account, and the
 // negative-liability veto) lives in ONE authority. Also a zero-import pure
 // module, so this stays Prisma-free and tsx-runnable: no cycle.
-import { isLiabilityAccount, isLiabilityOutflow } from './liability-payment';
+import { isLiabilityAccount, isLiabilityInflow, isLiabilityOutflow } from './liability-payment';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Enums (TypeScript-only in P1 — no Prisma enum is created this phase)
@@ -82,6 +82,17 @@ import { isLiabilityAccount, isLiabilityOutflow } from './liability-payment';
  *       changes semantic OUTPUT for existing rows (Other/REFUND/SIGN_DEFAULT_INFLOW
  *       → UNKNOWN/AMBIGUOUS_UNKNOWN), hence the version bump: see
  *       scripts/repair-refund-misclassification.ts for the version-gated repair.
+ *   5 = REFUND-1 — the liability-INFLOW income veto, the mirror of CCPAY-2B. Money
+ *       arriving on a liability account (a credit card) can never be INCOME,
+ *       whatever the provider's family claims: nobody is paid a salary, a rental
+ *       payout or a gig fare onto a credit card. Plaid nonetheless files merchant
+ *       credits there under INCOME_* by brand (an Airbnb refund → INCOME_RENTAL,
+ *       an Uber fare adjustment → INCOME_GIG_ECONOMY), which stored the refund as
+ *       earned income and left the purchase's category reported gross. The
+ *       veto routes the row to the category it carries: a GENUINE spend category
+ *       (resolved ONE layer up, lib/transactions/merchant-credit.ts) ⇒ REFUND;
+ *       anything else ⇒ the honest UNKNOWN valve. Never INCOME, and never a
+ *       fabricated refund. Existing rows: scripts/repair-liability-income-credits.ts.
  *
  * ── OWNERSHIP, not merely staleness (CCPAY-2F) ──────────────────────────────
  * This number records WHICH AUTHORITY produced a row's persisted flow facts, and
@@ -99,7 +110,7 @@ import { isLiabilityAccount, isLiabilityOutflow } from './liability-payment';
  * unknown-inflow honesty signal and raised confidence on a circular derivation.
  * See docs/doctrine/financial-semantics.md (§ Liability payment classification).
  */
-export const FLOW_CLASSIFIER_VERSION = 4;
+export const FLOW_CLASSIFIER_VERSION = 5;
 
 export type FlowType =
   | 'SPENDING'      // discretionary/non-discretionary consumption (a real cost)
@@ -292,6 +303,60 @@ function debtPaymentUnlessLiabilityOutflow(
   };
 }
 
+/**
+ * REFUND-1 — true for a category whose POSITIVE side is real reversal evidence:
+ * a member of SPEND_CATEGORIES other than the `Other` sentinel (SR-1). Exported
+ * so the merchant-credit category authority (lib/transactions/merchant-credit.ts)
+ * asks THIS module which categories may carry a refund, rather than keeping a
+ * second list that could drift from the one classifyFlow nets against.
+ */
+export function isGenuineSpendCategory(category: string | null | undefined): boolean {
+  return category != null && category !== UNRESOLVED_CATEGORY && SPEND_CATEGORIES.has(category);
+}
+
+/**
+ * REFUND-1 — the constructor BOTH earned-income claims go through (the provider's
+ * INCOME family and the `Income` category), so the structural veto cannot hold on
+ * one path and lapse on the other. The mirror of debtPaymentUnlessLiabilityOutflow.
+ * (Interest is already liability-guarded above; `Dividend` is an investment-account
+ * category and is left alone.)
+ *
+ * Money moving INTO a liability account lowers what you owe. It is a payment you
+ * made, a merchant's credit for something you bought, or an issuer's credit — it
+ * is never earnings, because nobody's income is deposited onto a credit card.
+ * PURELY STRUCTURAL: account shape + sign, no descriptor, no institution.
+ *
+ * Motivating evidence (live corpus, 2026-09-20): six posted rows, $1,356.95, all
+ * merchant credits on a CREDIT CARD that Plaid filed under INCOME by brand —
+ *   Airbnb              +521.34 / +339.96   INCOME_RENTAL       (two booking refunds)
+ *   MICROSOFT#G1744…    +280.45             INCOME_SALARY
+ *   EasyTime            +151.73             INCOME_CONTRACTOR
+ *   Uber                 +45.09             INCOME_GIG_ECONOMY
+ *   HUNGERSTATION LLC    +18.38             INCOME_CONTRACTOR
+ * The read-time income taxonomy already refused to COUNT them as income
+ * (ISSUER_CREDIT → NOT_INCOME), but the stored kind stayed INCOME, so the
+ * economic fold dropped the money entirely: not income, not a refund, and the
+ * Travel category stayed gross.
+ *
+ * What the vetoed row BECOMES is decided by the category it carries, which the
+ * category layer (merchant-credit.ts) resolved from evidence BEFORE this ran:
+ *   • a genuine spend category ⇒ REFUND — the merchant's credit reverses spend
+ *     in that category (category-level netting; no purchase is paired).
+ *   • anything else             ⇒ UNKNOWN/INFLOW — the SR-1 honesty valve. The
+ *     veto proves "not income"; it does not prove WHICH spending was reversed,
+ *     and absence of evidence never manufactures a refund.
+ */
+function incomeUnlessLiabilityInflow(
+  input: FlowClassificationInput,
+  income: FlowClassification,
+): FlowClassification {
+  if (!isLiabilityInflow(input)) return income;
+  if (isGenuineSpendCategory(input.category)) {
+    return { flowType: 'REFUND', flowDirection: 'INFLOW', confidence: 0.6, reason: 'ACCOUNT_TYPE_CONTEXT' };
+  }
+  return { flowType: 'UNKNOWN', flowDirection: 'INFLOW', confidence: 0.2, reason: 'AMBIGUOUS_UNKNOWN' };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Plaid PFC path (dormant in P1 — exercised only when a caller passes PFC,
 // which no persisted read path does yet; the future sync/import write path will)
@@ -314,7 +379,12 @@ function classifyFromPfc(input: FlowClassificationInput): FlowClassification | n
 
   switch (primary) {
     case 'INCOME':
-      return { flowType: 'INCOME', flowDirection: 'INFLOW', confidence: 0.8, reason: 'PLAID_PFC_PRIMARY' };
+      // REFUND-1 — EXCEPT on a liability inflow, which structurally cannot be
+      // earnings (a merchant credit Plaid filed under INCOME_* by brand).
+      return incomeUnlessLiabilityInflow(
+        input,
+        { flowType: 'INCOME', flowDirection: 'INFLOW', confidence: 0.8, reason: 'PLAID_PFC_PRIMARY' },
+      );
     case 'TRANSFER_IN':
       return { flowType: 'TRANSFER', flowDirection: 'INFLOW', confidence: 0.8, reason: 'PLAID_PFC_PRIMARY' };
     case 'TRANSFER_OUT':
@@ -404,7 +474,13 @@ export function classifyFlow(input: FlowClassificationInput): FlowClassification
     }
 
     case 'Income':
-      return { flowType: 'INCOME', flowDirection: amount >= 0 ? 'INFLOW' : 'OUTFLOW', confidence: amount >= 0 ? 1.0 : 0.5, reason: 'CATEGORY_FLOW_VALUE' };
+      // REFUND-1 — the veto is applied on BOTH INCOME paths (as CCPAY-2B does for
+      // DEBT_PAYMENT) so the answer cannot depend on whether PFC was present: a
+      // CSV / manual row carrying `Income` on a card is the same impossibility.
+      return incomeUnlessLiabilityInflow(
+        input,
+        { flowType: 'INCOME', flowDirection: amount >= 0 ? 'INFLOW' : 'OUTFLOW', confidence: amount >= 0 ? 1.0 : 0.5, reason: 'CATEGORY_FLOW_VALUE' },
+      );
 
     case 'Fee':
       return { flowType: 'FEE', flowDirection: amount > 0 ? 'INFLOW' : 'OUTFLOW', confidence: 1.0, reason: 'CATEGORY_FLOW_VALUE' };

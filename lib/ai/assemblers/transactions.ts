@@ -73,7 +73,7 @@ import type {
   DrilldownTransaction,
 } from '@/lib/ai/types';
 import { normalizeMerchant } from '@/lib/transactions/merchant';
-import { isCostFlow, isIncome, isTransfer, isDebtPayment, isAdjustment, isNonEconomicResidue } from '@/lib/transactions/flow-predicates';
+import { isCostFlow, isIncome, isRefund, isTransfer, isDebtPayment, isAdjustment, isNonEconomicResidue } from '@/lib/transactions/flow-predicates';
 // REVIEW-3 C-1 — THE economic fold. The window and monthly money folds below are
 // consumers of the SAME primitives the Cash Flow workspace folds with
 // (lib/transactions/cash-flow.ts): foldEconomicRow decides which bucket a row's
@@ -791,7 +791,7 @@ async function assembleTransactions(
   // misclassified as e.g. Other) inflate or deflate the category "spending"
   // figure relative to expenseTotal — which counts debit rows only. See
   // docs/investigations/KD17_TRANSACTION_LEVEL_PROOF.md.
-  const categoryMap = new Map<string, { debitTotal: number; creditTotal: number; count: number }>();
+  const categoryMap = new Map<string, { debitTotal: number; creditTotal: number; eco: EconomicAccumulator; count: number }>();
 
   // P2-7B — the canonical population now admits non-economic residue (UNKNOWN /
   // ADJUSTMENT / null). These rows are counted in transactionCount and surfaced
@@ -824,9 +824,13 @@ async function assembleTransactions(
     const amt = conv.amount;
 
     // Category bucket accumulator
-    const entry = categoryMap.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, count: 0 };
+    const entry = categoryMap.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, eco: { income: 0, spendGross: 0, refunds: 0 }, count: 0 };
     if (amt < 0) entry.debitTotal += Math.abs(amt);
     else if (amt > 0) entry.creditTotal += amt;
+    // REFUND-1 — the category's refunds come from THE fold (the classifier's
+    // verdict, not the sign): only a REFUND row nets its category — a positive
+    // Payment / Transfer / Income row never does. Only `eco.refunds` is read.
+    if (isRefund(txn.flowType)) foldEconomicRow(entry.eco, txn.flowType, Math.abs(amt));
     entry.count += 1;
     categoryMap.set(txn.category, entry);
 
@@ -952,10 +956,11 @@ async function assembleTransactions(
   // consumers); serialization filters them. Sorted by debit total descending.
 
   const byCategory: CategorySpend[] = Array.from(categoryMap.entries())
-    .map(([category, { debitTotal, creditTotal, count }]): CategorySpend => ({
+    .map(([category, { debitTotal, creditTotal, eco: catEco, count }]): CategorySpend => ({
       category,
       total: Math.round(debitTotal * 100) / 100,
       ...(creditTotal > 0 ? { creditTotal: Math.round(creditTotal * 100) / 100 } : {}),
+      ...categoryRefundFields(debitTotal, catEco.refunds),
       count,
     }))
     .sort((a, b) => b.total - a.total);
@@ -1256,6 +1261,19 @@ async function assembleTransactions(
 // ---------------------------------------------------------------------------
 
 /** UTC calendar month key (YYYY-MM) for a Date. */
+/**
+ * REFUND-1 — a category's refund disclosure, present ONLY when REFUND rows exist
+ * in it. `total` stays the debit-only gross (KD-17, unchanged); `netTotal` is the
+ * code-owned answer to "what did this category actually cost", through the ONE
+ * clamp authority (clampEconomicSpend) the Cash Flow workspace nets with — so the
+ * model never subtracts a refund in prose, and the two surfaces cannot disagree.
+ */
+function categoryRefundFields(debitTotal: number, refundTotal: number): { refundTotal?: number; netTotal?: number } {
+  if (!(refundTotal > 0)) return {};
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  return { refundTotal: r2(refundTotal), netTotal: r2(clampEconomicSpend(debitTotal, refundTotal)) };
+}
+
 function monthKey(d: Date): string {
   return d.toISOString().slice(0, 7);
 }
@@ -1363,7 +1381,7 @@ export function buildMonthlyBreakdown(
     // KD-17: per-category debit sum + credit sum + settled row count, mirroring
     // the top-level byCategory (debit-only `total`, credits disclosed
     // separately — never a signed net). count mirrors CategorySpend.count.
-    categoryAgg:      Map<string, { debitTotal: number; creditTotal: number; count: number }>;
+    categoryAgg:      Map<string, { debitTotal: number; creditTotal: number; eco: EconomicAccumulator; count: number }>;
   };
 
   const buckets = new Map<string, Bucket>();
@@ -1399,9 +1417,10 @@ export function buildMonthlyBreakdown(
       if (c.amount === null) continue;
       amt = c.amount;
     }
-    const agg = b.categoryAgg.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, count: 0 };
+    const agg = b.categoryAgg.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, eco: { income: 0, spendGross: 0, refunds: 0 }, count: 0 };
     if (amt < 0) agg.debitTotal += Math.abs(amt);
     else if (amt > 0) agg.creditTotal += amt;
+    if (isRefund(txn.flowType)) foldEconomicRow(agg.eco, txn.flowType, Math.abs(amt)); // REFUND-1 — THE fold; verdict, not sign
     agg.count  += 1;
     b.categoryAgg.set(txn.category, agg);
 
@@ -1453,10 +1472,11 @@ export function buildMonthlyBreakdown(
       // category month (refund-only) is dropped rather than shown as phantom
       // spending.
       const byCategory: CategorySpend[] = Array.from(b.categoryAgg.entries())
-        .map(([category, { debitTotal, creditTotal, count }]): CategorySpend => ({
+        .map(([category, { debitTotal, creditTotal, eco: catEco, count }]): CategorySpend => ({
           category,
           total: Math.round(debitTotal * 100) / 100,
           ...(creditTotal > 0 ? { creditTotal: Math.round(creditTotal * 100) / 100 } : {}),
+          ...categoryRefundFields(debitTotal, catEco.refunds),
           count,
         }))
         .filter((c) => c.total > 0)

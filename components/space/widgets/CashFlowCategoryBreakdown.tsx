@@ -13,7 +13,9 @@
  *      and shorter than N full-width bars for 3–12 categories.
  *
  * SAME data + math as before: `outflowByCategory` (FlowType-aware, refunds net
- * their category, descending). Presentation only — no new calculation.
+ * their category, descending). Presentation only — no new calculation. A
+ * category with refunds in the window also prints the ledger's own gross and
+ * refund figures under its net (REFUND-1), so net ≠ charged is explained.
  */
 
 import { useState } from "react";
@@ -152,6 +154,15 @@ export function CashFlowCategoryBreakdown({
                 </div>
                 <span className="text-xs font-semibold tabular-nums text-[var(--text-primary)] shrink-0">{fmt(c.value)}</span>
               </div>
+              {/* REFUND-1 — only a category that HAD refunds explains itself: the
+                  value above is net, and this names the two figures it came from.
+                  Both are the ledger's (categorySpendLedger) — nothing is
+                  subtracted here. Worded as what happened, never as a saving. */}
+              {c.gross !== undefined && c.refunds !== undefined && (
+                <p className="text-[10px] tabular-nums text-[var(--text-faint)] truncate">
+                  {fmt(c.gross)} charged · −{fmt(c.refunds)} refunded
+                </p>
+              )}
             </>
           );
           const cardStyle = { background: "var(--surface-inset)", borderColor: "var(--border-subtle, rgba(255,255,255,0.06))" };

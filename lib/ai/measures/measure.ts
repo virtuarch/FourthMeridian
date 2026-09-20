@@ -45,7 +45,8 @@ export interface MonthRow {
   transferTotal: number;
   partial?: boolean;
   truncated?: boolean;
-  byCategory: { category: string; total: number; count?: number }[];
+  /** `refundTotal` — Σ REFUND rows in the category that month (REFUND-1); absent = none. */
+  byCategory: { category: string; total: number; refundTotal?: number; count?: number }[];
 }
 
 export type Tier = CompletenessTier;
@@ -101,12 +102,32 @@ export interface MeasureResult {
    * in prose. `sharePct` is null when nothing was spent at all.
    */
   ofAllSpending?: { total: number; sharePct: number | null };
+  /**
+   * REFUND-1 — `spending` measures only, and ONLY when refunds fall in the window.
+   *
+   * `total` above is GROSS: what was charged. This is what the spending actually
+   * COST once refunds dated in the same months are taken off — each month floored
+   * at zero by the same rule `economicNet` uses (max(0, spending − refunds)), so
+   * `income − netOfRefunds` IS `economicNet`, month by month. A refund counts in
+   * the month it is DATED, never the month of the purchase it reverses.
+   *
+   * Asked without this, the model had two tool figures (spending, refunds) and
+   * subtracted them in prose — and for a category it had no refund figure at all.
+   */
+  netOfRefunds?: {
+    refunds: number;
+    total: number;
+    perCompleteMonth: number | null;
+    months: { month: string; refunds: number; net: number }[];
+    basis: string;
+  };
   basis: string;
   completeness: Completeness;
 }
 
 const BASIS: Record<FlowMeasure, string> = {
-  spending: 'economic spending (SPENDING + FEE + INTEREST rows, gross of refunds); card and debt '
+  spending: 'economic spending (SPENDING + FEE + INTEREST rows, gross of refunds — when refunds fall '
+    + 'in the window `netOfRefunds` carries what it cost after them); card and debt '
     + 'payments and movements between own accounts are NOT in it',
   income: 'observed deposits classified INCOME at their settled nominal amount; not gross pay, '
     + 'not a salary figure — a month can hold two or three paychecks',
@@ -115,6 +136,12 @@ const BASIS: Record<FlowMeasure, string> = {
   transfersBetweenOwnAccounts: 'transfer legs between own accounts (each movement has two legs)',
   refunds: 'REFUND rows',
 };
+
+/** Refunds dated in month `m` for a spending measure — the category's own, or all. */
+export function refundsOf(m: MonthRow, category?: string): number {
+  if (category) return m.byCategory.find((x) => x.category === category)?.refundTotal ?? 0;
+  return m.refundTotal;
+}
 
 export function valueOf(m: MonthRow, measure: FlowMeasure, category?: string): number {
   if (category) {
@@ -194,20 +221,50 @@ export function measure(
   const hi = whole.length ? whole.reduce((a, b) => (b.value > a.value ? b : a)) : null;
   const lo = whole.length ? whole.reduce((a, b) => (b.value < a.value ? b : a)) : null;
   const inWindow = rows.filter((m) => months.some((x) => x.month === m.month));
+  const netOfRefunds = kind === 'spending' ? netOfRefundsFor(months, byMonth, category) : null;
   const allSpending = category ? round2(inWindow.reduce((n, m) => n + valueOf(m, 'spending'), 0)) : null;
   return {
     measure: kind, ...(category ? { category } : {}), unit: 'USD', period, total, months,
     ...(allSpending !== null ? { ofAllSpending: { total: allSpending,
       sharePct: allSpending < MONEY_EPSILON ? null : round2((total / allSpending) * 100) } } : {}),
+    ...(netOfRefunds ? { netOfRefunds } : {}),
     completeMonths: whole.length,
     partialMonths: months.filter((m) => m.partial).map((m) => m.month),
     perCompleteMonth: whole.length ? round2(whole.reduce((n, m) => n + m.value, 0) / whole.length) : null,
     highest: hi ? { month: hi.month, value: hi.value } : null,
     lowest: lo ? { month: lo.month, value: lo.value } : null,
     basis: category
-      ? `debit-only rows in category ${category} (a category line within spending, ≤ spending)`
+      ? `debit-only rows in category ${category} (a category line within spending, ≤ spending; gross of `
+        + 'refunds — `netOfRefunds` carries the net when the category had any)'
       : BASIS[kind],
     completeness: completenessFor(period, cov, inWindow),
+  };
+}
+
+/**
+ * The refund side of a spending measure: per month max(0, gross − refunds), summed.
+ * Null when no refund is dated in the window — a figure with nothing to explain
+ * carries nothing extra.
+ */
+function netOfRefundsFor(
+  months: { month: string; value: number; partial: boolean }[],
+  byMonth: Map<string, MonthRow>, category?: string,
+): MeasureResult['netOfRefunds'] | null {
+  const lines = months.map((m) => {
+    const row = byMonth.get(m.month);
+    const refunds = round2(row ? refundsOf(row, category) : 0);
+    return { month: m.month, partial: m.partial, refunds, net: round2(Math.max(0, m.value - refunds)) };
+  });
+  const refunds = round2(lines.reduce((n, l) => n + l.refunds, 0));
+  if (refunds < MONEY_EPSILON) return null;
+  const whole = lines.filter((l) => !l.partial);
+  return {
+    refunds,
+    total: round2(lines.reduce((n, l) => n + l.net, 0)),
+    perCompleteMonth: whole.length ? round2(whole.reduce((n, l) => n + l.net, 0) / whole.length) : null,
+    months: lines.filter((l) => l.refunds >= MONEY_EPSILON).map(({ month, refunds: r, net }) => ({ month, refunds: r, net })),
+    basis: 'spending less the REFUND rows dated in the same month, each month floored at zero; a refund '
+      + 'counts in the month it arrived, not the month of the purchase. `total` beside this is gross',
   };
 }
 
@@ -220,6 +277,13 @@ export interface Comparison {
   comparedOn: 'total' | 'perCompleteMonth';
   /** left − right on that figure. null when no comparable figure exists; `notComparable` says why. */
   change: { abs: number; pct: number | null; direction: 'UP' | 'DOWN' | 'FLAT' } | null;
+  /**
+   * REFUND-1 — the same comparison on spending NET of refunds, present when either
+   * side had refunds. A side with none contributes its gross figure (its net IS
+   * its gross). Computed here so "did I spend more on travel" is never answered
+   * by subtracting a refund from one side in prose.
+   */
+  changeNetOfRefunds?: { left: number; right: number; abs: number; pct: number | null; direction: 'UP' | 'DOWN' | 'FLAT' };
   notComparable?: string;
   completeness: Completeness;
   caveats: string[];
@@ -259,8 +323,18 @@ export function compare(left: MeasureResult, right: MeasureResult): Comparison {
         + 'totals are shown and no difference is computed — compare the same elapsed days '
         + '(PREVIOUS on a to-date period) or two whole months instead' };
   }
-  const abs = round2(l - r);
-  const pct = Math.abs(r) < MONEY_EPSILON ? null : round2((abs / Math.abs(r)) * 100);
-  const direction = Math.abs(abs) < MONEY_EPSILON ? 'FLAT' : abs > 0 ? 'UP' : 'DOWN';
-  return { ...head, comparedOn, change: { abs, pct, direction }, completeness, caveats };
+  const diff = (a: number, b: number) => {
+    const abs = round2(a - b);
+    const pct = Math.abs(b) < MONEY_EPSILON ? null : round2((abs / Math.abs(b)) * 100);
+    const direction: 'UP' | 'DOWN' | 'FLAT' = Math.abs(abs) < MONEY_EPSILON ? 'FLAT' : abs > 0 ? 'UP' : 'DOWN';
+    return { abs, pct, direction };
+  };
+  const netFigure = (m: MeasureResult, gross: number): number | null =>
+    !m.netOfRefunds ? gross : comparedOn === 'total' ? m.netOfRefunds.total : m.netOfRefunds.perCompleteMonth;
+  const ln = netFigure(left, l);
+  const rn = netFigure(right, r);
+  const changeNetOfRefunds = (left.netOfRefunds || right.netOfRefunds) && ln !== null && rn !== null
+    ? { left: ln, right: rn, ...diff(ln, rn) } : null;
+  return { ...head, comparedOn, change: diff(l, r), ...(changeNetOfRefunds ? { changeNetOfRefunds } : {}),
+    completeness, caveats };
 }

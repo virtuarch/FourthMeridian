@@ -731,7 +731,8 @@ async function readFlowMonths(
       month: m.month, incomeTotal: m.incomeTotal, expenseTotal: m.expenseTotal,
       refundTotal: m.refundTotal, debtPaymentTotal: m.debtPaymentTotal, transferTotal: m.transferTotal,
       partial: m.partial, truncated: m.truncated,
-      byCategory: m.byCategory.map((c) => ({ category: c.category, total: c.total, count: c.count })),
+      byCategory: m.byCategory.map((c) => ({ category: c.category, total: c.total, count: c.count,
+        ...(c.refundTotal ? { refundTotal: c.refundTotal } : {}) })),
     })),
     truncated: t.truncated,
     // The assembler clamps a floor older than its maximum lookback; the clamp is
@@ -796,7 +797,10 @@ const measureFlows: ToolDefinition = {
     'spend / earn in X", "am I spending more than I used to", "was August higher than July", ' +
     '"compare the last three complete months with the three before", "did I spend more on travel", ' +
     '"is my income up this quarter". Every figure names its window, which months are whole, and ' +
-    'whether the record covers it; `perCompleteMonth` is the monthly figure. NEVER divide a window ' +
+    'whether the record covers it; `perCompleteMonth` is the monthly figure. Spending `total` is ' +
+    'what was CHARGED; when refunds arrived in the window `netOfRefunds` is what it actually cost ' +
+    '(and `changeNetOfRefunds` the comparison on that basis) — say that figure, never subtract a ' +
+    'refund yourself. NEVER divide a window ' +
     'total by its days or months yourself, never compute a difference or percentage between two ' +
     'figures yourself, and never compare figures from two different windows by hand — ask for the ' +
     'comparison here. "PREVIOUS" of a period to date is the same elapsed days of the period before.',

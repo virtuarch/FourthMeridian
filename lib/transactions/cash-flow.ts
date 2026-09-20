@@ -493,28 +493,94 @@ export interface CashFlowContribution {
   value: number;
   /** Transaction ids contributing to `value`, in encounter order. */
   transactionIds: string[];
+  /**
+   * REFUND-1 — present ONLY on a spending category that had refunds in the
+   * window, so a surface can explain why `value` (net) is below what was
+   * charged without doing arithmetic: `value === max(0, gross − refunds)`.
+   * Absent on every other line (income sources, cash-in reasons, categories
+   * with no refund) — no clutter where there is nothing to explain.
+   */
+  gross?: number;
+  refunds?: number;
 }
 
-/** Where outflows go, grouped by transaction category (cost flows only),
- *  descending. Refunds reduce their category's total (clamped ≥ 0). */
-export function outflowByCategory(transactions: Transaction[], ctx?: ConversionContext): CashFlowContribution[] {
-  const byCategory = new Map<string, number>();
+/**
+ * REFUND-1 — one spending category's economic ledger over a window.
+ *
+ *     gross            Σ|amount| of cost flows (SPENDING + FEE + INTEREST) DATED IN the window
+ *     refunds          Σ|amount| of REFUND rows DATED IN the window
+ *     net              max(0, gross − refunds)             — what the category cost
+ *     refundsUnapplied max(0, refunds − gross)             — refund of a purchase that
+ *                                                            sits OUTSIDE the window
+ *
+ * ── Period semantics (the ONE definition; every surface inherits it) ─────────
+ * A refund reduces its category IN THE PERIOD THE REFUND IS DATED, never the
+ * period of the purchase it reverses. No purchase is looked up, inside or
+ * outside the window — the provider gives no refund→purchase link, so pairing
+ * would be a guess, and re-opening a closed month when a refund arrives later
+ * would silently rewrite history the user already read.
+ *
+ *   purchase + refund in the window      gross 1,500 · refunds 500 · net 1,000
+ *   purchase BEFORE, refund IN           gross 0 · refunds 500 · net 0 · unapplied 500
+ *   purchase IN, refund AFTER            gross 1,500 · refunds 0 · net 1,500 (this window);
+ *                                        the later window shows the refund
+ *
+ * ⚠️ `refundsUnapplied` is what keeps the clamp HONEST. A category cannot cost
+ * less than nothing, so its net floors at 0 — but the headline (economicTotals)
+ * nets refunds against ALL spending, so without this field the category lines
+ * and the headline disagree by exactly the unapplied amount and nothing says
+ * why. Conservation, pinned by test:
+ *
+ *     Σ gross − Σ refunds  ===  Σ net − Σ refundsUnapplied
+ *
+ * Membership is the classifier's (isCostFlow / isRefund) — never a sign test, so
+ * a card payment, a transfer, an issuer credit or income can not enter it.
+ */
+export interface CategorySpendLine {
+  category: string;
+  gross: number;
+  refunds: number;
+  net: number;
+  refundsUnapplied: number;
+  /** Rows folded into this line (charges AND refunds), in encounter order. */
+  transactionIds: string[];
+}
+
+export function categorySpendLedger(transactions: Transaction[], ctx?: ConversionContext): CategorySpendLine[] {
+  const byCategory = new Map<string, { gross: number; refunds: number }>();
   const idsByCategory = new Map<string, string[]>();
   for (const t of transactions) {
     const flow = t.flowType ?? null;
     const raw = rowAmount(t, ctx);
     if (raw === null) continue; // V25-FINAL-1 — unconvertible row excluded from the category rollup
-    const amt = Math.abs(raw);
-    if (!isCostFlow(flow) && !isRefund(flow)) continue;
-    byCategory.set(t.category, (byCategory.get(t.category) ?? 0) + (isCostFlow(flow) ? amt : -amt));
+    const cost = isCostFlow(flow);
+    if (!cost && !isRefund(flow)) continue;
+    const line = byCategory.get(t.category) ?? { gross: 0, refunds: 0 };
+    if (cost) line.gross += Math.abs(raw); else line.refunds += Math.abs(raw);
+    byCategory.set(t.category, line);
     // Recorded on the SAME pass and under the SAME skip rules as the total, so a
     // drill-down cannot include a row the total left out.
     idsByCategory.set(t.category, [...(idsByCategory.get(t.category) ?? []), t.id]);
   }
-  return [...byCategory.entries()]
-    .map(([label, value]) => ({
-      id: label, label, value: Math.max(0, value),
-      transactionIds: idsByCategory.get(label) ?? [],
+  return [...byCategory.entries()].map(([category, l]) => ({
+    category,
+    gross: l.gross,
+    refunds: l.refunds,
+    net: clampEconomicSpend(l.gross, l.refunds),
+    refundsUnapplied: Math.max(0, l.refunds - l.gross),
+    transactionIds: idsByCategory.get(category) ?? [],
+  }));
+}
+
+/** Where outflows go, grouped by transaction category (cost flows only),
+ *  descending. Refunds reduce their category's total (clamped ≥ 0). A projection
+ *  of categorySpendLedger — the ledger is the arithmetic, this is the ranking. */
+export function outflowByCategory(transactions: Transaction[], ctx?: ConversionContext): CashFlowContribution[] {
+  return categorySpendLedger(transactions, ctx)
+    .map((l): CashFlowContribution => ({
+      id: l.category, label: l.category, value: l.net,
+      transactionIds: l.transactionIds,
+      ...(l.refunds > 0 ? { gross: l.gross, refunds: l.refunds } : {}),
     }))
     .filter((c) => c.value > 0)
     .sort((a, b) => b.value - a.value);

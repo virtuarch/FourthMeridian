@@ -68,7 +68,17 @@ const sliceOf = (rows: Transaction[], ids: readonly string[]) => {
 // can put a row in one and not the other.
 {
   const src = readFileSync(new URL("./cash-flow.ts", import.meta.url), "utf8");
-  for (const fn of ["outflowByCategory", "incomeBySource"]) {
+  // REFUND-1 — the spending loop moved, whole, into categorySpendLedger (the
+  // gross / refunds / net arithmetic); outflowByCategory is now its ranking and
+  // owns NO loop of its own, so the property is asserted where the loop lives —
+  // and the delegation is asserted so it cannot quietly grow a second one.
+  {
+    const ranking = src.slice(src.indexOf("export function outflowByCategory"));
+    const body = ranking.slice(0, ranking.indexOf("\n}"));
+    assert.ok(body.includes("categorySpendLedger(transactions, ctx)") && !/\bfor\s*\(/.test(body),
+      "outflowByCategory must project categorySpendLedger and fold nothing itself");
+  }
+  for (const fn of ["categorySpendLedger", "incomeBySource"]) {
     const body = src.slice(src.indexOf(`export function ${fn}`));
     const loop = body.slice(0, body.indexOf("\n}"));
     const skipAt = loop.indexOf("if (raw === null) continue;");
