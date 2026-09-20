@@ -263,6 +263,11 @@ export const AuditAction = {
   // Written by lib/ai/context-builder.ts on every context assembly. Still live:
   // the Brief and the expense-baseline route both build contexts.
   AI_CONTEXT_ASSEMBLED:     "AI_CONTEXT_ASSEMBLED",
+  // Memory V2 — the user erased one remembered item AND its history from their
+  // own Memory panel (DELETE /api/ai/memory/[id]). CONTENT-FREE by contract: the
+  // row says that an erasure happened, in which Space, of which class and how
+  // many versions — never what the item said, which is the thing they erased.
+  AI_MEMORY_ERASED:         "AI_MEMORY_ERASED",
   //
   // ⚠️ TWO CONSTANTS WERE REMOVED HERE BY THE AI CONVERSATION RESET, because
   // their only writers were deleted with the conversation layer:

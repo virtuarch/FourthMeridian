@@ -44,9 +44,9 @@ import { db } from '@/lib/db';
 import { MemoryKind, MemoryStatus } from '@prisma/client';
 import {
   MEMORY_VERSION, KIND_OF_CLASS, MAX_WORDS_CHARS, EXAMPLES, SHAPE_KEY,
-  validateShape, validateFields, admitWrite, mergeAmend, droppedFields, readMemory,
+  validateShape, validateFields, admitWrite, mergeAmend, droppedFields, readMemory, stateOf,
   describeMemory, toPayload, tombstonePayload, expectedFrom, validSubject,
-  type StatedClass, type MemoryClass, type Fields, type FieldChange, type TurnEvidence,
+  type StatedClass, type MemoryClass, type Fields, type FieldChange, type TurnEvidence, type MemoryState,
 } from './memory-model';
 
 export { MemoryKind, MemoryStatus };
@@ -402,4 +402,68 @@ export async function recordProjection(
     return row;
   });
   return { stored: true, memory: present(created) };
+}
+
+// ── The owner's own surface: see, stop, erase ────────────────────────────────
+
+export interface OwnMemoryItem {
+  id: string;
+  /** Null when the row cannot be read reliably. */
+  class: MemoryClass | null;
+  state: MemoryState | 'UNREADABLE';
+  /** The item as one plain sentence, from its fields. Null when unreadable. */
+  inWords: string | null;
+  /** The words it was noted in — the assistant's paraphrase, shown as "noted as". */
+  notedAs: string;
+  notedOn: string;
+}
+
+/** Everything this user has on record in this Space that is not a past version. Newest first. */
+export async function listOwnMemories(scope: MemoryScope, todayISO: string): Promise<OwnMemoryItem[]> {
+  const rows = await db.spaceMemory.findMany({
+    where: { spaceId: scope.spaceId, ownerUserId: scope.ownerUserId, status: MemoryStatus.ACTIVE },
+    orderBy: [{ statedAt: 'desc' }, { createdAt: 'desc' }], take: MAX_RECALL,
+  });
+  return rows.map((r) => {
+    const row = present(r);
+    const read = readMemory(row);
+    return read.readable
+      ? { id: r.id, class: read.cls, state: stateOf(row, read, todayISO.slice(0, 10)),
+          inWords: describeMemory(read.cls, read.fields), notedAs: r.statedAs, notedOn: row.statedAt.slice(0, 10) }
+      : { id: r.id, class: null, state: 'UNREADABLE' as const, inWords: null, notedAs: r.statedAs, notedOn: row.statedAt.slice(0, 10) };
+  });
+}
+
+export type OwnMutation = { ok: true } | { ok: false; why: 'NOT_FOUND' | 'NOT_RETIRABLE' | 'CONFLICT' };
+
+/** The owner's row by id — or null, which is also what another member's id returns. */
+async function ownRow(scope: MemoryScope, id: string): Promise<Row | null> {
+  return db.spaceMemory.findFirst({ where: { id, spaceId: scope.spaceId, ownerUserId: scope.ownerUserId } });
+}
+
+/** Stop using an item: the same tombstone row a conversation writes, in the panel's words. */
+export async function retireMemory(scope: MemoryScope, id: string, statedAt?: string): Promise<OwnMutation> {
+  const row = await ownRow(scope, id);
+  if (!row || row.status !== MemoryStatus.ACTIVE) return { ok: false, why: 'NOT_FOUND' };
+  const read = readMemory(row);
+  if (!read.readable || read.cls === 'PROJECTION') return { ok: false, why: 'NOT_RETIRABLE' };
+  const result = await rememberStated(scope, { op: 'retire', cls: read.cls, subject: row.subject,
+    statedAs: 'Retired by you in Memory.', ...(statedAt ? { statedAt } : {}) });
+  if (result.stored) return { ok: true };
+  return { ok: false, why: result.conflict ? 'CONFLICT' : 'NOT_RETIRABLE' };
+}
+
+/**
+ * Erase an item AND its whole history. Someone erasing what the assistant
+ * remembers does not expect the previous version to survive. The chain is every
+ * row of that `(owner, kind, subject)`; one statement removes it.
+ */
+export async function deleteMemoryChain(
+  scope: MemoryScope, id: string,
+): Promise<{ ok: true; erased: number; kind: MemoryKind } | { ok: false; why: 'NOT_FOUND' }> {
+  const row = await ownRow(scope, id);
+  if (!row) return { ok: false, why: 'NOT_FOUND' };
+  const { count } = await db.spaceMemory.deleteMany({
+    where: { spaceId: scope.spaceId, ownerUserId: scope.ownerUserId, kind: row.kind, subject: row.subject } });
+  return { ok: true, erased: count, kind: row.kind };
 }

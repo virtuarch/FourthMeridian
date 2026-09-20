@@ -27,7 +27,8 @@
 
 import { db } from '@/lib/db';
 import {
-  recallMemories, rememberStated, recordProjection, MemoryKind, MemoryStatus,
+  recallMemories, rememberStated, recordProjection, listOwnMemories, retireMemory, deleteMemoryChain,
+  MemoryKind, MemoryStatus,
 } from '@/lib/ai/conversation/memory-store';
 import { readMemory, composeMemoryLine, REMEMBERED, type TurnEvidence } from '@/lib/ai/conversation/memory-model';
 import { selectMemoryPlans } from '@/lib/ai/conversation/starter-topics';
@@ -185,6 +186,31 @@ async function main(): Promise<void> {
       kind: 'CHECKPOINT', payload: { metric: 'net-worth', horizon: '2027-06-30', value: 88617.84 } }, ctx) as { stored: boolean };
     check('…and the tool path cannot mint one', !minted.stored
       && (await recallMemories(A, { kind: MemoryKind.CHECKPOINT, includeSuperseded: true })).length === 2);
+
+    // ── The owner's own surface: see, stop, erase ──────────────────────────
+    const mine = await listOwnMemories(A, TODAY);
+    check('the owner\'s listing is ACTIVE items only, each as a sentence — never a past version or a tombstone',
+      mine.length > 0 && mine.every((m) => m.state !== 'SUPERSEDED' && m.state !== 'RETIRED')
+        && mine.filter((m) => m.class === 'RULE').every((m) => (m.inWords ?? '').startsWith('Keep ') || (m.inWords ?? '').startsWith('Each month')));
+    check('…and never another member\'s', (await listOwnMemories(B, TODAY)).every((m) => !mine.some((x) => x.id === m.id)));
+    const strategyId = mine.find((m) => m.class === 'RULE' && /12 months/.test(m.inWords ?? ''))?.id ?? '';
+    check('another member cannot retire or erase it by id — it is simply not found',
+      (await retireMemory(B, strategyId)).ok === false && (await deleteMemoryChain(B, strategyId)).ok === false
+        && (await listOwnMemories(A, TODAY)).some((m) => m.id === strategyId));
+    const projectionId = mine.find((m) => m.class === 'PROJECTION')?.id ?? '';
+    const stopProjection = await retireMemory(A, projectionId);
+    check('a projection cannot be "stopped" — only erased', !stopProjection.ok && stopProjection.why === 'NOT_RETIRABLE');
+    const stopped = await retireMemory(A, strategyId, TODAY);
+    check('the owner retiring an item writes the same tombstone a conversation does', stopped.ok
+      && (await recallMemories(A, { kind: MemoryKind.INTENTION, subject: 'cash-strategy', includeSuperseded: true }))
+        .some((r) => r.status === MemoryStatus.RETIRED && r.statedAs === 'Retired by you in Memory.'));
+    const before = await db.spaceMemory.count({ where: { ...A, kind: 'INTENTION', subject: 'cash-strategy' } });
+    const anyVersion = (await recallMemories(A, { kind: MemoryKind.INTENTION, subject: 'cash-strategy', includeSuperseded: true }))[0];
+    const erased = await deleteMemoryChain(A, anyVersion.id);
+    check('erasing removes the item AND its whole history, in one statement', erased.ok && erased.erased === before && before >= 4
+      && (await db.spaceMemory.count({ where: { ...A, kind: 'INTENTION', subject: 'cash-strategy' } })) === 0);
+    check('…and nothing of the other member\'s same-named chain',
+      (await db.spaceMemory.count({ where: { ...B, kind: 'INTENTION', subject: 'cash-strategy' } })) === 1);
 
     // ── Refusals, at the edges ─────────────────────────────────────────────
     check('a memory with no subject is refused',
