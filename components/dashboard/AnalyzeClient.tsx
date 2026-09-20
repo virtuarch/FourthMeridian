@@ -48,6 +48,7 @@ import {
   type StarterModel,
 } from "@/components/ai";
 import { AdviceBanner } from "@/components/dashboard/AdviceBanner";
+import { MemoryPanel } from "@/components/dashboard/MemoryPanel";
 import {
   KnowledgeAcquisitionCard,
   KnowledgeClarificationCard,
@@ -332,8 +333,10 @@ export function AnalyzeClient({
     </div>
   );
 
-  const controls =
-    mode === "conversation" ? (
+  const controls = (
+    <>
+      <MemoryPanel spaceId={spaceId} spaceName={spaceName} />
+      {mode === "conversation" && (
       <button
         type="button"
         onClick={startNewConversation}
@@ -342,7 +345,9 @@ export function AnalyzeClient({
         <SquarePen size={14} aria-hidden />
         <span className="max-sm:sr-only">New chat</span>
       </button>
-    ) : undefined;
+      )}
+    </>
+  );
 
   return (
     <AiShell
