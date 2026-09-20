@@ -93,8 +93,12 @@ export const RELEVANCE_PRIOR_MAX_DAYS = 30;
  * to a balance only by the class of account it posted on — UNCONNECTED_MOVEMENT —
  * and a percentage over a base smaller than the movement is withheld). Every
  * stored Brief is rewritten once, lazily, under reason `version`.
+ * 4: review B3 — UNCONNECTED_MOVEMENT no longer drops a DEBT_PAYMENT row whose
+ * cash leg has no nameable counterparty (the flow is the authority's verdict and
+ * touches cash AND debt), and now also refuses a movement dated outside the
+ * window it is cited with; the instruction says both.
  */
-export const BRIEF_GENERATION_VERSION = 'brief-generation-3';
+export const BRIEF_GENERATION_VERSION = 'brief-generation-4';
 
 /**
  * The generation version a stored `promptVersion` was written under. Stored as

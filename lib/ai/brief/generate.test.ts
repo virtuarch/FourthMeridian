@@ -169,6 +169,50 @@ async function main() {
       body: 'Net worth moved by $2,242.72 this week.', evidence: ['recentChanges.w1.netWorth', 'recentActivity.top.0'] })] }));
     check('net worth spans every class, so no row is foreign to it', worth.ok && worth.narration.observations.length === 1);
 
+    // ── Review B3: the flow is the authority's verdict; and WHEN matters too ──
+    const attested = fixture('20-type-attested-debt-payment');
+    const payment = attested.recentActivity!.top[0];
+    const paid = (evidence: string[], pkg = attested) => acceptNarration(pkg, narration({ quiet: false, observations: [ob({ kind: 'DEBT',
+      title: 'Card payment brought the balance down', body: 'You paid $1,500 toward your card and what you owe fell by $1,500 this week.',
+      importance: 'NOTABLE', evidence })] }));
+    check('the fixture row is the hard case: DEBT_PAYMENT on a LIQUID account with NO betweenOwnAccounts',
+      payment.flow === 'DEBT_PAYMENT' && payment.account === 'LIQUID' && !('betweenOwnAccounts' in payment));
+    const keptPayment = paid(['recentChanges.w1.debt', 'recentActivity.top.0']);
+    check('a type-attested debt payment explains the fall in debt — the most legitimate debt narrative is KEPT',
+      keptPayment.ok && keptPayment.narration.observations.length === 1 && keptPayment.validation.droppedObservations.length === 0);
+    const cashSide = paid(['recentChanges.w1.liquid', 'recentActivity.top.0']);
+    check('…and it explains the fall in cash too: a payment touches BOTH sides', cashSide.ok && cashSide.narration.observations.length === 1);
+    const notInvestments = paid(['recentChanges.w1.investments', 'recentActivity.top.0']);
+    check('…but not a change in investments', notInvestments.ok && notInvestments.validation.droppedObservations[0]?.reason === 'UNCONNECTED_MOVEMENT');
+    const noAccount = structuredClone(attested);
+    delete noAccount.recentActivity!.top[0].account;
+    check('the flow decides even when the account class is unknown', paid(['recentChanges.w1.debt', 'recentActivity.top.0'], noAccount).ok
+      && paid(['recentChanges.w1.debt', 'recentActivity.top.0'], noAccount).ok === true
+      && (paid(['recentChanges.w1.debt', 'recentActivity.top.0'], noAccount) as { narration: BriefNarration }).narration.observations.length === 1);
+
+    // WHEN: the Delta charge is dated 09-11; d1 runs 09-12 → 09-13, w1 09-06 → 09-13.
+    const dated = structuredClone(onCard);
+    dated.recentChanges.d1!.debt = { abs: 40, pct: 1.3 };
+    const viaD1 = acceptNarration(dated, narration({ quiet: false, observations: [debtOb({ evidence: ['recentChanges.d1.debt', 'recentActivity.top.0'] })] }));
+    check('a LIABILITY charge dated BEFORE the window cannot explain that window\'s change in debt',
+      dated.recentActivity!.top[0].date < dated.recentChanges.d1!.from
+        && viaD1.ok && viaD1.validation.droppedObservations[0]?.reason === 'UNCONNECTED_MOVEMENT');
+    const alsoCurrent = acceptNarration(dated, narration({ quiet: false, observations: [debtOb({ evidence: ['currentState.debt', 'recentChanges.d1.debt', 'recentActivity.top.0'] })] }));
+    check('…citing today\'s balance beside it does not launder the date', alsoCurrent.ok && alsoCurrent.validation.droppedObservations[0]?.reason === 'UNCONNECTED_MOVEMENT');
+    const eitherWindow = acceptNarration(dated, narration({ quiet: false, observations: [debtOb({ evidence: ['recentChanges.d1.debt', 'recentChanges.w1.debt', 'recentActivity.top.0'] })] }));
+    check('…while a window that DOES contain it keeps the observation', eitherWindow.ok && eitherWindow.narration.observations.length === 1);
+    const edge = structuredClone(dated);
+    edge.recentActivity!.top[0].date = edge.recentChanges.d1!.from;
+    check('both ends of a window are inclusive (a snapshot day may or may not hold that day\'s rows)',
+      (acceptNarration(edge, narration({ quiet: false, observations: [debtOb({ evidence: ['recentChanges.d1.debt', 'recentActivity.top.0'] })] })) as { narration: BriefNarration }).narration.observations.length === 1);
+    const standing = acceptNarration(dated, narration({ quiet: false, observations: [debtOb({ evidence: ['currentState.debt', 'recentActivity.top.0'] })] }));
+    check('no window cited ⇒ no date to violate', standing.ok && standing.narration.observations.length === 1);
+    const ownLegOutside = structuredClone(payoff);
+    ownLegOutside.recentActivity!.top[0].date = '2026-09-08';
+    const legD1 = acceptNarration(ownLegOutside, narration({ quiet: false, observations: [ob({ kind: 'DEBT', title: 'Card paid off',
+      body: 'You paid off your card balance of $3,210.55.', importance: 'NOTABLE', evidence: ['recentChanges.d1.debt', 'recentActivity.top.0'] })] }));
+    check('a leg between own accounts is exempt from WHERE, never from WHEN', legD1.ok && legD1.validation.droppedObservations[0]?.reason === 'UNCONNECTED_MOVEMENT');
+
     const freshOnly = acceptNarration(onCard, narration({ observations: [ob({ kind: 'DATA_QUALITY', title: 'Brokerage is behind',
       body: 'Charles Schwab has not updated recently.', evidence: ['claimEvidence.investments', 'freshness.staleSources.0'] })] }));
     check('an observation resting only on claim evidence is freshness-only too — the page already says it',
@@ -191,6 +235,9 @@ async function main() {
         && /only when the entry covering its figures has a tier other than observed/.test(BRIEF_SYSTEM_PROMPT));
     check('a movement joins a balance only through the account it posted on',
       /Connect a movement to a change in debt only when its account is LIABILITY/.test(BRIEF_SYSTEM_PROMPT));
+    check('…a debt payment belongs to both sides, and a movement only to a window that contains it',
+      /A DEBT_PAYMENT row, and any row marked betweenOwnAccounts, belongs to both sides/.test(BRIEF_SYSTEM_PROMPT)
+        && /only over a window whose from and to contain its date/.test(BRIEF_SYSTEM_PROMPT));
     check('a withheld percentage is never replaced by a multiple', /pct is null[^.]*: state the amounts, never a percentage or a multiple/.test(BRIEF_SYSTEM_PROMPT));
     check('stale data must be named', /STALE, VERY_STALE or UNKNOWN/.test(BRIEF_SYSTEM_PROMPT) && /out of date/.test(BRIEF_SYSTEM_PROMPT));
     check('absent windows are not measured', /absent was not measured/.test(BRIEF_SYSTEM_PROMPT));

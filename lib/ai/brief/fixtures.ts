@@ -511,4 +511,28 @@ export const BRIEF_SCENARIOS: BriefScenario[] = [
     mustQualifyKinds: ['INVESTMENTS'],
     mustNotQualifyKinds: ['DEBT', 'CASH', 'SPENDING'],
   }, { health: fixtureSources({ brokerage: { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-08-17T23:41:39.000Z' } }) }),
+
+  // ── A type-attested debt payment (review B3) ──────────────────────────────
+  // The debt-payment authority also admits a payment it cannot pair with a named
+  // counterparty: ONE row, flow DEBT_PAYMENT, posted on the checking account, no
+  // `betweenOwnAccounts`. "You paid $1,500 toward your card and what you owe fell"
+  // is the most legitimate debt narrative there is, and the first guard dropped it
+  // because the row posted on a LIQUID account. The harness counts a dropped
+  // observation as a failure, so a pass here means code kept it.
+  scenario('20-type-attested-debt-payment', 'a debt payment with no nameable counterparty explains the fall in debt', (p) => {
+    p.currentState.debt = 1710.55;
+    p.currentState.liquid = 17420.40;
+    p.recentActivity!.top = [
+      { date: '2026-09-10', amount: -1500.00, flow: 'DEBT_PAYMENT', merchant: 'Card Services Payment', category: 'Payment', account: 'LIQUID' },
+      ...p.recentActivity!.top.slice(0, 4),
+    ];
+    p.recentChanges.w1 = { from: '2026-09-06', to: '2026-09-13',
+      netWorth: { abs: 330.18, pct: 0.3 }, liquid: { abs: -1189.56, pct: -6.4 },
+      investments: { abs: 402.90, pct: 0.5 }, digitalAssets: { abs: -73.16, pct: -0.3 },
+      debt: { abs: -1500.00, pct: -46.7 } };
+  }, {
+    quiet: false,
+    mentionsAny: [/pa(id|y(ing|ment))/i],
+    forbids: [/\bspen(t|ding)\b[^.]{0,40}1,5|1,5[0-9.,]*K?[^.]{0,40}\bspen(t|ding)\b/i],
+  }),
 ];

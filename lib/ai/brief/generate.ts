@@ -18,8 +18,9 @@
  *   an observation states one    → that observation is dropped (UNLICENSED_FIGURE)
  *   an observation cites nothing real → dropped (NO_EVIDENCE); bad paths stripped
  *   SPENDING citing a debt payment or own-account transfer → dropped (MISLABELED_MOVEMENT)
- *   a balance tied to a movement that posted on another class of account → dropped
- *     (UNCONNECTED_MOVEMENT): causality needs evidence, and the evidence is where the row posted
+ *   a balance tied to a movement that posted on another class of account, or that is
+ *     dated outside the cited window → dropped (UNCONNECTED_MOVEMENT): causality needs
+ *     evidence, and the evidence is where and when the row posted
  *   an observation resting only on data freshness → dropped (SHOWN_ON_PAGE): the
  *     page shows freshness and connection problems itself, every day they last
  *   `quiet` contradicting the kept observations' importance → reconciled to them
