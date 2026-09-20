@@ -15,16 +15,49 @@
  * monthly run, and equals the liquid line `scenario_projection` composes at
  * that date. Read-only; nothing is written.
  *
+ * ⚠️ NO DATE, ROW COUNT OR DISTANCE IS WRITTEN DOWN ANY MORE. The first version
+ * froze the as-of at 2026-09-13 and pinned what followed from it — "31 rows",
+ * "16 rows", "67 omitted", "5 months, 15 days", "30.3 years". None of that was
+ * personal money, but all of it was one day's calendar, and none of it could be
+ * run on another. The as-of is today (or `CHECK_AS_OF`); horizons are placed
+ * relative to it (inside the monthly band, past it, a non-quarter day ten years
+ * out, a February month-end past the 80-row ceiling); and what a cadence must
+ * return is computed HERE from the calendar — every month-end, the quarter-ends
+ * among them, the Decembers among them, the horizon appended — and compared as
+ * exact date lists, which is stronger than a count. Every row's `elapsed` is
+ * checked against the distance authority AND against plain day arithmetic. The
+ * "5 months, 15 days, not 1.5 years" literal lives in the pure
+ * `scenario-crossing.test.ts`, where it belongs.
+ *
  *   npm run ai:project-cash-check
+ *   CHECK_AS_OF=2027-01-31 npm run ai:project-cash-check
  */
 
 import '@/lib/ai/assemblers';
 import { db } from '@/lib/db';
-import { findTool, type ToolContext } from '@/lib/ai/conversation/tools';
+import { findTool, monthEndsBetween, type ToolContext } from '@/lib/ai/conversation/tools';
+import { elapsedBetween } from '@/lib/ai/conversation/scenario-crossing';
 import type { SpaceContext } from '@/lib/space';
 
 const SPACE = process.env.CHECK_SPACE_ID ?? 'cmrrm846r000j7znwsl67gt1g';
-const ASOF = process.env.CHECK_AS_OF ?? '2026-09-13';
+const ASOF = process.env.CHECK_AS_OF ?? new Date().toISOString().slice(0, 10);
+const DAY = 86_400_000;
+const shift = (iso: string, days: number) => new Date(Date.parse(`${iso}T00:00:00Z`) + days * DAY).toISOString().slice(0, 10);
+const daysBetween = (a: string, b: string) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / DAY);
+const YEAR = Number(ASOF.slice(0, 4));
+const QUARTER_END = /-(03-31|06-30|09-30|12-31)$/;
+/** What each cadence must return to a horizon: the calendar's own period-ends after the as-of, then the horizon. */
+const monthly = (to: string) => monthEndsBetween(ASOF, to);
+const quarterly = (to: string) => monthly(to).filter((d) => QUARTER_END.test(d) || d === to);
+const yearly = (to: string) => monthly(to).filter((d) => d.endsWith('-12-31') || d === to);
+// ── Horizons, placed relative to the as-of ─────────────────────────────────
+const THIRTY = `${YEAR + 30}-12-31`;                        // decades: yearly by default
+const SHORT = monthly(shift(ASOF, 480))[14];                // ~15 months: inside the 548-day monthly band
+const MID = `${YEAR + 4}-12-31`;                            // several years: quarterly by default, monthly still fits 80 rows
+let TEN = shift(ASOF, 3652); if (shift(TEN, 1).endsWith('-01')) TEN = shift(TEN, -3);   // ~10 years, NOT a month-end
+const TINY = shift(ASOF, 30);                               // under ~45 days: no rows by default
+/** A February month-end 8–9 years out: not a quarter-end, and more than 80 month-ends away. */
+const FEB = monthly(`${YEAR + 9}-12-31`).find((d) => d > `${YEAR + 8}-01-31` && /-02-(28|29)$/.test(d))!;
 let failures = 0;
 const check = (name: string, cond: boolean, detail?: string) => {
   console.log(`${cond ? '  ✓' : '  ✗'} ${name}${detail ? `  ${detail}` : ''}`); if (!cond) failures++; };
@@ -49,6 +82,11 @@ async function main() {
     return { at: (p) => at(raw, p), rows, bytes: JSON.stringify(raw).length, ms: Date.now() - t0 };
   };
   const dates = (p: Payload) => p.rows.map((r) => r.date);
+  const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(b);
+  console.log(`Space ${SPACE} as of ${ASOF}: short ${SHORT}, mid ${MID}, ten ${TEN}, feb ${FEB}, thirty ${THIRTY}\n`);
+  check('the horizons sit where the cadence bands need them',
+    daysBetween(ASOF, SHORT) <= 548 && daysBetween(ASOF, SHORT) > 365 && daysBetween(ASOF, MID) > 548 && monthly(MID).length <= 80
+      && !QUARTER_END.test(TEN) && !QUARTER_END.test(FEB) && monthly(FEB).length > 80 && quarterly(FEB).length <= 80 && daysBetween(ASOF, TINY) < 45);
   const wellFormed = (p: Payload, name: string, to: string) => {
     const ds = dates(p);
     check(`${name}: ascending, unique, horizon last, every row carries elapsed`,
@@ -58,53 +96,61 @@ async function main() {
   };
 
   console.log('1. the thirty-year residual');
-  const thirty = await cash({ to: '2056-12-31' });
-  wellFormed(thirty, 'default over 30 years', '2056-12-31');
-  check('…is yearly by default: 31 rows, not 364', thirty.rows.length === 31 && thirty.at('horizon.granularity') === 'yearly'
-    && thirty.at('horizon.cadenceSource') === 'DEFAULT' && thirty.at('horizon.omitted') === undefined);
+  const thirty = await cash({ to: THIRTY });
+  wellFormed(thirty, 'default over 30 years', THIRTY);
+  check(`…is yearly by default: the ${yearly(THIRTY).length} Decembers, not ${monthly(THIRTY).length} month-ends`,
+    same(dates(thirty), yearly(THIRTY)) && thirty.at('horizon.granularity') === 'yearly'
+    && thirty.at('horizon.cadenceSource') === 'DEFAULT' && thirty.at('horizon.omitted') === undefined, `${thirty.rows.length} rows`);
   check('…and under a tenth of the old payload', thirty.bytes < 112_136 / 10, `${thirty.bytes} B vs 112,136 B before`);
   const ex = thirty.at('projection.basis.excluded') as { count: number; groups: unknown[]; compacted: boolean };
   // ⚠️ THE COUNT IS THE SPACE'S, NOT THE CONTRACT'S. How many unlicensed streams a
   // Space has, and how far they run, moves with its data (727 occurrences in 2
   // groups on 2026-09-14; 364 in 1 the next day, after a stream lapsed). What the
   // contract promises is the SHAPE: many occurrences, a handful of groups.
-  check('…the unlicensed events are grouped by stream, not listed per occurrence',
-    ex.count >= 100 && ex.groups.length <= 5 && ex.groups.length < ex.count && ex.compacted === true, `${ex.count} occurrences in ${ex.groups.length} groups`);
-  const thirtyMonthly = await cash({ to: '2056-12-31', checkpoints: 'monthly' });
+  if (!ex || ex.count === 0) console.log('   branch: this Space has NO unlicensed recurring stream today — there is nothing to group, and nothing is asserted about grouping');
+  else check('…the unlicensed events are grouped by stream, not listed per occurrence',
+    ex.groups.length >= 1 && ex.groups.length * 10 <= ex.count && ex.compacted === true,
+    `${ex.count} occurrences in ${ex.groups.length} groups`);
+  const thirtyMonthly = await cash({ to: THIRTY, checkpoints: 'monthly' });
   check('explicit monthly over 30 years is thinned to yearly and says which dates fell out',
     thirtyMonthly.at('horizon.granularity') === 'yearly' && thirtyMonthly.at('horizon.requested') === 'monthly'
-      && at(thirtyMonthly.at('horizon.omitted'), 'how') === 'THINNED' && at(thirtyMonthly.at('horizon.omitted'), 'count') === 364 - 31,
+      && at(thirtyMonthly.at('horizon.omitted'), 'how') === 'THINNED'
+      && at(thirtyMonthly.at('horizon.omitted'), 'count') === monthly(THIRTY).length - yearly(THIRTY).length,
     JSON.stringify(thirtyMonthly.at('horizon.omitted')).slice(0, 120));
   check('…every returned row equals the default run\'s row at the same date',
     JSON.stringify(thirtyMonthly.rows.map((r) => [r.date, r.closingCash])) === JSON.stringify(thirty.rows.map((r) => [r.date, r.closingCash])));
 
   console.log('2. cadence by horizon');
-  const short = await cash({ to: '2027-12-31' });
-  wellFormed(short, 'within 18 months', '2027-12-31');
-  check('…monthly, 16 rows', short.rows.length === 16 && short.at('horizon.granularity') === 'monthly');
-  const mid = await cash({ to: '2030-12-31' });
-  wellFormed(mid, 'several years', '2030-12-31');
-  check('…quarterly, 18 rows (was 52 monthly)', mid.rows.length === 18 && mid.at('horizon.granularity') === 'quarterly');
-  const ten = await cash({ to: '2036-09-13' });
-  wellFormed(ten, 'about ten years, non-quarter horizon', '2036-09-13');
-  check('…quarterly with the exact horizon appended', ten.at('horizon.granularity') === 'quarterly' && ten.rows[ten.rows.length - 2].date === '2036-06-30');
-  const tiny = await cash({ to: '2026-10-13' });
+  const short = await cash({ to: SHORT });
+  wellFormed(short, 'within 18 months', SHORT);
+  check('…monthly: every month-end to the horizon', same(dates(short), monthly(SHORT)) && short.at('horizon.granularity') === 'monthly', `${short.rows.length} rows`);
+  const mid = await cash({ to: MID });
+  wellFormed(mid, 'several years', MID);
+  check(`…quarterly: every quarter-end (${quarterly(MID).length} rows, where monthly would be ${monthly(MID).length})`,
+    same(dates(mid), quarterly(MID)) && mid.at('horizon.granularity') === 'quarterly', `${mid.rows.length} rows`);
+  const ten = await cash({ to: TEN });
+  wellFormed(ten, 'about ten years, non-quarter horizon', TEN);
+  check('…quarterly with the exact horizon appended after the last quarter-end before it',
+    ten.at('horizon.granularity') === 'quarterly' && same(dates(ten), quarterly(TEN)) && QUARTER_END.test(ten.rows[ten.rows.length - 2].date));
+  const tiny = await cash({ to: TINY });
   check('under ~45 days: no checkpoints by default, horizon still carries elapsed',
-    tiny.rows.length === 0 && at(tiny.at('horizon.elapsed'), 'months') === 1 && tiny.at('horizon.checkpoints') === 0);
-  const none = await cash({ to: '2030-12-31', checkpoints: 'none' });
+    tiny.rows.length === 0 && at(tiny.at('horizon.elapsed'), 'label') === elapsedBetween(ASOF, TINY).label && tiny.at('horizon.checkpoints') === 0);
+  const none = await cash({ to: MID, checkpoints: 'none' });
   check('`none` still means none', none.rows.length === 0);
 
   console.log('3. explicit cadences');
-  const q = await cash({ to: '2035-02-28', checkpoints: 'quarterly' });
-  wellFormed(q, 'explicit quarterly to a non-quarter horizon', '2035-02-28');
-  check('…35 rows as requested, nothing omitted', q.rows.length === 35 && q.at('horizon.cadenceSource') === 'REQUESTED' && q.at('horizon.omitted') === undefined);
-  const y = await cash({ to: '2030-12-31', checkpoints: 'yearly' });
-  check('explicit yearly: Decembers only', dates(y).join(',') === '2026-12-31,2027-12-31,2028-12-31,2029-12-31,2030-12-31');
-  const m = await cash({ to: '2030-12-31', checkpoints: 'monthly' });
-  check('explicit monthly under the ceiling: 52 rows, none omitted', m.rows.length === 52 && m.at('horizon.omitted') === undefined);
-  const over = await cash({ to: '2035-02-28', checkpoints: 'monthly' });
-  check('explicit monthly over the ceiling: quarterly returned, 67 omitted named, horizon kept',
-    over.at('horizon.granularity') === 'quarterly' && at(over.at('horizon.omitted'), 'count') === 67 && dates(over).slice(-1)[0] === '2035-02-28');
+  const q = await cash({ to: FEB, checkpoints: 'quarterly' });
+  wellFormed(q, 'explicit quarterly to a non-quarter horizon', FEB);
+  check('…every quarter-end as requested, nothing omitted', same(dates(q), quarterly(FEB)) && q.at('horizon.cadenceSource') === 'REQUESTED' && q.at('horizon.omitted') === undefined, `${q.rows.length} rows`);
+  const y = await cash({ to: MID, checkpoints: 'yearly' });
+  check('explicit yearly: Decembers only', same(dates(y), yearly(MID)) && dates(y).every((d) => d.endsWith('-12-31')), dates(y).join(','));
+  const m = await cash({ to: MID, checkpoints: 'monthly' });
+  check('explicit monthly under the ceiling: every month-end, none omitted', same(dates(m), monthly(MID)) && m.at('horizon.omitted') === undefined, `${m.rows.length} rows`);
+  const over = await cash({ to: FEB, checkpoints: 'monthly' });
+  check('explicit monthly over the ceiling: quarterly returned, the month-ends that fell out counted, horizon kept',
+    over.at('horizon.granularity') === 'quarterly' && same(dates(over), quarterly(FEB))
+      && at(over.at('horizon.omitted'), 'count') === monthly(FEB).length - quarterly(FEB).length && dates(over).slice(-1)[0] === FEB,
+    `${at(over.at('horizon.omitted'), 'count')} omitted of ${monthly(FEB).length}`);
 
   console.log('4. the plan never touches the spine');
   const byDate = new Map(m.rows.map((r) => [r.date, r.closingCash]));
@@ -113,7 +159,7 @@ async function main() {
   check('…and the yearly rows too', y.rows.every((r) => byDate.get(r.date) === r.closingCash));
   check('the horizon figure is the same on every cadence',
     new Set([mid, y, m, none].map((p) => p.at('projection.endingCash'))).size === 1, String(mid.at('projection.endingCash')));
-  const scen = await findTool('scenario_projection')!.run({ to: '2030-12-31', granularity: 'quarterly' }, toolCtx);
+  const scen = await findTool('scenario_projection')!.run({ to: MID, granularity: 'quarterly' }, toolCtx);
   const scenLiquid = new Map(((at(scen, 'checkpoints') as { date: string; liquid: { amount: number } }[]) ?? []).map((c) => [c.date, c.liquid.amount]));
   check('…and equals the liquid line scenario_projection composes at the same dates (one spine)',
     mid.rows.every((r) => scenLiquid.get(r.date) === r.closingCash));
@@ -122,12 +168,19 @@ async function main() {
       - ((mid.at('projection.endingCash') as number) - (mid.at('openingCash') as number))) < 0.02);
 
   console.log('5. elapsed');
-  const feb = m.rows.find((r) => r.date === '2027-02-28')!;
-  check('2027-02-28 is 5 months, 15 days from asOf — about 5.5 months, about 0.46 years',
-    feb.elapsed.months === 5 && feb.elapsed.days === 15 && feb.elapsed.monthsFractional === 5.5 && feb.elapsed.years === 0.46
-      && feb.elapsed.label === '5 months, 15 days', JSON.stringify(feb.elapsed));
-  check('the horizon carries its own distance', at(thirty.at('horizon.elapsed'), 'years') === 30.3
-    && at(short.at('horizon.elapsed'), 'label') === '15 months, 18 days', JSON.stringify(short.at('horizon.elapsed')));
+  const distanceOk = (e: Row['elapsed'] | undefined, to: string) => { const want = elapsedBetween(ASOF, to);
+    return !!e && e.months === want.months && e.days === want.days && e.monthsFractional === want.monthsFractional
+      && e.years === want.years && e.label === want.label
+      // …and, independently of that authority: years is the day count over 365.25, to two places.
+      && e.years === Math.round((daysBetween(ASOF, to) / 365.25) * 100) / 100; };
+  check('every row of every run carries the distance from the as-of to ITS date — never to the horizon, never to today',
+    [thirty, short, mid, ten, q, y, m, over].every((p) => p.rows.length > 0 && p.rows.every((r) => distanceOk(r.elapsed, r.date))));
+  check('…and rows farther away are farther away', m.rows.every((r, i) => i === 0 || r.elapsed.years >= m.rows[i - 1].elapsed.years));
+  const sixth = m.rows[5];
+  console.log(`   live: ${sixth.date} is ${sixth.elapsed.label} away (${sixth.elapsed.monthsFractional} months, ${sixth.elapsed.years} years)`);
+  check('the horizon carries its own distance', distanceOk(thirty.at('horizon.elapsed') as Row['elapsed'], THIRTY)
+    && distanceOk(short.at('horizon.elapsed') as Row['elapsed'], SHORT) && distanceOk(tiny.at('horizon.elapsed') as Row['elapsed'], TINY),
+    JSON.stringify(short.at('horizon.elapsed')));
 
   // ⚠️ RELATIONAL, NOT PINNED. No figure below is this Space's money: every
   // assertion is that an interval AGREES WITH the cumulative runs either side of

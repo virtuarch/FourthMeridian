@@ -16,6 +16,21 @@
  * The remaining hop, a signed-in browser against a running server, is a human
  * dogfood and is reported as such rather than claimed here.
  *
+ * ⚠️ MODEL-SAMPLED, AND IT CAN WRITE — RUN IT AGAINST A CLONE. Four real model
+ * turns through `runStatelessTurn`, which is the production turn loop with both
+ * of its durable write paths live: the `remember` tool, and the silent
+ * `project_cash` CHECKPOINT (turn 3, "where do I end up by the end of next year",
+ * is exactly the kind of question that reaches it). It also writes `AiInvocation`
+ * telemetry. "NOTHING WAS PERSISTED" in §6 is a statement about CONVERSATIONS —
+ * there is no conversation table — not about memory; §6 now prints what the run
+ * did to the named Space's `SpaceMemory` so the difference is visible.
+ *
+ * ⚠️ NO PERSONAL MONEY OR DATE IS ASSERTED. The dollar figures in the questions
+ * ($6,000, $1,500, $2,000) are the user's hypothetical, typed here; every
+ * assertion is structural (a tool ran, a carrier sealed, a binding refused) or a
+ * relation between two turns of the same run. Because the turns are sampled, a
+ * single failure in §1–§4 can be variance; §5 and §7 are deterministic.
+ *
  *   npm run ai:chat-route-check
  */
 
@@ -50,6 +65,7 @@ async function main() {
 
   const asOfISO = todayUTCISO();
   console.log(`Space ${space.name} · model ${CHAT_MODEL} · as of ${asOfISO}\n`);
+  const memoryBefore = await db.spaceMemory.count({ where: { spaceId } });
 
   /**
    * One HTTP turn, end to end — exactly what the route does between reading the
@@ -144,6 +160,11 @@ async function main() {
     // the schema itself.
     check('there is no conversation table to have written to',
       !Object.keys(db).some((k) => /^conversation/i.test(k)));
+    // Not an assertion: a checkpoint of a stated projection is product behaviour.
+    // Printed so a run against the wrong database is at least visible.
+    const memoryAfter = await db.spaceMemory.count({ where: { spaceId } });
+    console.log(`  · SpaceMemory on this Space: ${memoryBefore} row(s) before, ${memoryAfter} after`
+      + (memoryAfter === memoryBefore ? '' : ' — the turn loop recorded a checkpoint or a memory (expected; this is why it runs on a clone)'));
   }
 
   console.log('\n7. THE HANDLER ITSELF, OVER REAL HTTP');

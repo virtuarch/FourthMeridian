@@ -9,6 +9,14 @@
  * DB-free suite (the memory-store.check.ts / transaction-corpus.check.ts
  * precedent).
  *
+ * ⚠️ NO DATE IS WRITTEN DOWN. No money ever was — every figure here is compared
+ * with an independent read of the same window — but two dates were: `2024-08-16`
+ * as "an as-of inside the first days of the record", which is a fact about where
+ * THIS Space's record happens to begin, and `2026-03-15` with "from starts with
+ * 2025". The early as-of is now taken from the record's own first transaction
+ * (`transactionCorpusSpan`), and the retrospective as-of is the most recent
+ * 15 March, whose six-month window must open in the year before it.
+ *
  *   npm run ai:activity-check
  */
 
@@ -16,6 +24,7 @@ import '@/lib/ai/assemblers';
 import { db } from '@/lib/db';
 import { buildEvidence, assembleFullContext } from '@/lib/ai/conversation/evidence';
 import { findTool, type ToolContext } from '@/lib/ai/conversation/tools';
+import { transactionCorpusSpan } from '@/lib/data/transaction-query';
 import type { SpaceContext } from '@/lib/space';
 
 let failures = 0;
@@ -51,6 +60,11 @@ async function main() {
     });
 
   const ctx = await assembleFullContext(spaceCtx, 'activity-check');
+  const shift = (iso: string, days: number) => new Date(Date.parse(`${iso}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+  const corpus = await transactionCorpusSpan({ spaceId });
+  check('the record has a first transaction to measure coverage from', corpus.from !== null, `${corpus.from}..${corpus.to}`);
+  /** Twenty-six days into the record: far short of two assessment windows, so the frame cannot exist. */
+  const EARLY = shift(corpus.from ?? '1970-01-01', 26);
 
   console.log('1. MATURE SPACE — the frame exists and is measured over its own window');
   txQueries = 0;
@@ -87,7 +101,7 @@ async function main() {
   txQueries = 0;
   // An asOf inside the first days of the record: coverage is far too short, so
   // the frame cannot exist and the body is the proven single-frame control.
-  const early = await buildEvidence('A2', ctx, spaceCtx, '2024-08-16');
+  const early = await buildEvidence('A2', ctx, spaceCtx, EARLY);
   const queriesWithout = txQueries;
   const b = core(early.body);
   check('activity is OMITTED under sparse history', !('activity' in b));
@@ -105,12 +119,20 @@ async function main() {
     queriesWithout <= 2, `${queriesWithout} (corpus span + coverage envelope)`);
 
   console.log('\n5. RETROSPECTIVE asOf');
-  const retro = core((await buildEvidence('A2', ctx, spaceCtx, '2026-03-15')).body);
-  check('to is the historical ceiling', retro.activity?.window?.to === '2026-03-15');
+  // The most recent 15 March on or before the ceiling: six months back from it is always the year before.
+  const ceiling = a.activity!.window.to;
+  const marchYear = Number(ceiling.slice(0, 4)) - (ceiling >= `${ceiling.slice(0, 4)}-03-15` ? 0 : 1);
+  const RETRO = `${marchYear}-03-15`;
+  const retro = core((await buildEvidence('A2', ctx, spaceCtx, RETRO)).body);
+  check('to is the historical ceiling', retro.activity?.window?.to === RETRO, `${retro.activity?.window?.to} vs ${RETRO}`);
   check('from crosses the calendar year — no YTD reset',
-    (retro.activity?.window?.from ?? '').startsWith('2025'), retro.activity?.window?.from);
+    (retro.activity?.window?.from ?? '').startsWith(String(marchYear - 1)), retro.activity?.window?.from);
+  check('…and is the same ~6 calendar months wide as the current frame',
+    (retro.activity?.window?.days ?? 0) >= 181 && (retro.activity?.window?.days ?? 0) <= 185, `${retro.activity?.window?.days}d`);
+  check('the retrospective frame exists — the record reaches back far enough to measure it',
+    retro.activity != null && corpus.from !== null && corpus.from <= shift(RETRO, -200), `record from ${corpus.from}`);
   check('figures differ from the current frame (measured, not reused)',
-    retro.activity?.income !== a.activity!.income);
+    retro.activity != null && (retro.activity.income !== a.activity!.income || retro.activity.spending !== a.activity!.spending));
 
   console.log('\n6. CONTEXT COST');
   const s1 = JSON.stringify(a, null, 1), s2 = JSON.stringify(stripped, null, 1);

@@ -12,6 +12,21 @@
  * on: the window cells A and B chose in 20 of 20 calls is genuinely empty of the
  * Coinbase evidence, the same search unwindowed returns it, and BOTH results now
  * report the same available span.
+ *
+ * ⚠️ WHAT IS PINNED HERE, AND WHY IT WAS LEFT (post-M1 harness audit). No money.
+ * What is pinned is a HISTORICAL NEEDLE: the as-of is frozen at 2026-09-08, the
+ * windows are the experiment's own (2026-06-10..09-08, 2026-01-01..09-12), and
+ * the evidence is this Space's Coinbase transfers of 2026-02-27. Because the
+ * as-of is frozen and every `to` is clamped to it, NEW ACTIVITY CANNOT MOVE ANY
+ * OF IT — a paycheck, a purchase or a new month changes nothing this reads. It
+ * can only fail if February 2026 itself is re-imported or re-classified, which is
+ * a change to the record this check exists to notice. The generic properties
+ * (span unshrunk by a miss, partial window visible, small sets finished, large
+ * sets stay a page, the ceiling reaches the span and the count) are pinned purely
+ * in `transaction-corpus-coverage.test.ts`; this file is the reproduction of one
+ * measured failure, and a needle cannot be derived without choosing another one.
+ * Counts are already asserted as properties, not numbers (§6). If this fails
+ * after a re-import, FIND THE NEW NEEDLE — do not loosen the assertions.
  */
 
 import '@/lib/ai/assemblers';
