@@ -226,6 +226,7 @@ import {
   CADENCES, type Cadence, type CheckpointPlan,
 } from './scenario-checkpoints';
 export { yearEndsBetween };
+import { positionChange, compactChange, openingPosition, checkpointPosition } from './scenario-change';
 
 async function assemble<T>(
   domain: string, ctx: ToolContext, options: Record<string, unknown> = {},
@@ -2416,6 +2417,8 @@ function liabilityEcho(ledger: LedgerResult) {
 function presentScenario(setup: ScenarioSetup, ledger: LedgerResult, returns: ReturnPeriod[]) {
   const difference = round2(ledger.opening.netWorth - (setup.accounts.netWorth ?? 0));
   const warnings = [...ledger.warnings];
+  const from = openingPosition(ledger.opening);
+  const last = ledger.checkpoints[ledger.checkpoints.length - 1];
   if (Math.abs(difference) > 1) {
     warnings.push('The ledger\'s opening net worth differs from the accounts total by '
       + `${difference.toFixed(2)}; state the accounts figure, not this one, as today's position.`);
@@ -2438,7 +2441,19 @@ function presentScenario(setup: ScenarioSetup, ledger: LedgerResult, returns: Re
     },
     assumptions: scenarioAssumptions(setup, ledger, returns),
     opening: ledger.opening,
-    checkpoints: ledger.checkpoints,
+    // ⚠️ THE DIFFERENCE IS A FIELD, NOT A SUBTRACTION LEFT TO THE READER. "About
+    // $65k higher by next June" was the projected net worth minus the opening one,
+    // composed in prose in 4 of 8 runs because the payload stated both levels and
+    // never the movement. Stated ONCE in full for the horizon — operands, `abs`,
+    // `pct`, and what the sign of `debt` means — and as bare `abs` figures on every
+    // row, whose operands (`opening` and the row's own lines) are already here.
+    // Every row the ledger produced is kept as it was: the fields are ADDED, and
+    // the six numbers the active-scenario envelope reads have not moved.
+    changeSinceOpening: last ? positionChange(from, checkpointPosition(last)) : null,
+    checkpoints: ledger.checkpoints.map((c) => {
+      const changeSinceOpening = compactChange(from, checkpointPosition(c));
+      return changeSinceOpening ? { ...c, changeSinceOpening } : c;
+    }),
     // ⚠️ BOUNDED. A thirty-year rule settles 361 dated amounts and the result was
     // repeating every one beside a table whose rows already carry the same money.
     movements: compactMovements(ledger.movements),
@@ -2671,6 +2686,11 @@ const scenarioCrossing: ToolDefinition = {
       debt: c.debt.amount, otherAssets: c.otherAssets.amount,
       netWorth: c.netWorth?.amount ?? null,
     });
+    // ⚠️ BESIDE `composition`, NEVER INSIDE IT. The active-scenario envelope reads
+    // its six numbers off `composition`; how far the position is from the opening
+    // is a sibling, computed by the same function the projection table uses.
+    const changeAt = (c: LedgerCheckpoint) =>
+      positionChange(openingPosition(ledger.opening), checkpointPosition(c));
     // ⚠️ THE WALK IS PURE AND LIVES NEXT DOOR. Nothing about money is decided
     // here: the ledger produced the path, `findScenarioCrossing` says where the
     // line is first crossed on it, and this only says it in words.
@@ -2705,7 +2725,8 @@ const scenarioCrossing: ToolDefinition = {
         neverCrossesBy: found.end
           ? { date: found.end.checkpoint.date, value: found.end.value,
               elapsed: elapsedBetween(setup.asOf, found.end.checkpoint.date),
-              composition: composition(found.end.checkpoint) }
+              composition: composition(found.end.checkpoint),
+              changeSinceOpening: changeAt(found.end.checkpoint) }
           : null,
         meaning: 'Under these assumptions the condition is not met at any month-end through '
           + `${searchThrough}. That is a statement about this search window, not about ever.` };
@@ -2739,6 +2760,7 @@ const scenarioCrossing: ToolDefinition = {
         previousCheckpoint: hit.previous
           ? { ...hit.previous, elapsed: elapsedBetween(setup.asOf, hit.previous.date) } : null,
         composition: composition(hit.checkpoint),
+        changeSinceOpening: changeAt(hit.checkpoint),
       },
       alreadySatisfied: null,
       meaning: 'The first month-end at which this is true. The projection is month-grain, so '
