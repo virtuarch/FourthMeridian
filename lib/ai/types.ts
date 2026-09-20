@@ -24,6 +24,7 @@ import type { SpaceMemberRole } from '@prisma/client';
 import type { LiabilityState } from '@/lib/debt/balance-semantics';
 import type { BoundedSelection } from "@/lib/ai/bounded-selection";
 import type { TemporalRequest, TemporalScope, ScopeProvenance } from "@/lib/ai/temporal-scope";
+import type { DebtService } from "@/lib/transactions/debt-service";
 
 // ---------------------------------------------------------------------------
 // Domain type
@@ -894,12 +895,32 @@ export interface TransactionsSummaryData {
    */
   netCashFlow:       number;
   /**
-   * netCashFlow − debtPaymentTotal: the cash position after debt paydown. A
-   * SEPARATE, named measure — never the headline net (a debt payment is capital
-   * directed at a goal, not consumption). Optional only so fixtures that
-   * predate it still compile; the assembler always emits it.
+   * netCashFlow − debtService.netPaydown: the economic net after the cash that
+   * genuinely went to REDUCING debt. A SEPARATE, named measure — never the
+   * headline net (a debt payment is capital directed at a goal, not
+   * consumption). Always ≤ netCashFlow.
+   *
+   * post-M1 D3 — this was `netCashFlow − debtPaymentTotal`, which double-counted
+   * card-funded spending: `netCashFlow` already contains every purchase made on
+   * a card, and subtracting the payment that settles it subtracts it again. A
+   * household paying its cards in full read as deeply in deficit. Only the NET
+   * PAYDOWN is subtracted now (lib/transactions/debt-service.ts).
+   *
+   * Optional only so fixtures that predate it still compile; the assembler
+   * always emits it.
    */
   netAfterDebtPayments?: number;
+  /**
+   * post-M1 D3 — what the cash sent toward liabilities in this window actually
+   * did (lib/transactions/debt-service.ts): `payments` (=== debtPaymentTotal),
+   * the `newChargesOnLiabilities` they settle (a SUBSET of expenseTotal — never
+   * add the two), attested `debtProceeds`, and the resulting `netPaydown` /
+   * `netNewBorrowing`. OBSERVED HISTORICAL FLOW — not Σ stated minimums
+   * (lib/debt/aggregates.ts), not the payoff planner's chosen payment
+   * (lib/debt/payoff.ts), not L1's projected minimums (scenario-ledger.ts).
+   * Optional only so fixtures that predate it still compile.
+   */
+  debtService?: DebtService;
   /**
    * MC1 Phase 3 Slice 4 (D-7) — true when any converted row in the window
    * totals above was estimated (rate walked back / missing, or null-residue

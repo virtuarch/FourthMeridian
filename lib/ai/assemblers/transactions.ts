@@ -96,6 +96,12 @@ import type { FlowAuthorityName } from '@/lib/transactions/flow-authority';
 // and missed transfer-typed rows whose destination the transfer authority proved
 // to be a liability.
 import { selectDebtPaymentCashLegs } from '@/lib/transactions/debt-payment-authority';
+// post-M1 D3 — THE debt-service decomposition. `netAfterDebtPayments` subtracts
+// only the NET PAYDOWN (payments beyond the new charges they settle and the
+// borrowing that funded them), never the raw payment total: purchases made on a
+// card are already inside `spending`, and subtracting their settlement as well
+// counted the same consumption twice.
+import { computeDebtService, netAfterDebtPaydown } from '@/lib/transactions/debt-service';
 import { tierResolver, type LiquidityTx } from '@/lib/transactions/liquidity';
 import { resolveTransferAssessments } from '@/lib/transactions/transfer-resolution';
 import { dispositionForMaturity } from '@/lib/transactions/transfer-evidence';
@@ -760,7 +766,8 @@ async function assembleTransactions(
       incomeSubtype:         attr?.subtype ?? null,
     } as unknown as LiquidityTx;
   };
-  const debtSelection  = selectDebtPaymentCashLegs(settled.map(asLiquidityTx), liqCtx);
+  const settledLiquidityRows = settled.map(asLiquidityTx);
+  const debtSelection  = selectDebtPaymentCashLegs(settledLiquidityRows, liqCtx);
   const debtCountedIds = new Set(debtSelection.counted.map((t) => t.id));
 
   // MC1 P3 Slice 4 (D-7) — window-level taint, mirrors the monthly buckets.
@@ -918,7 +925,26 @@ async function assembleTransactions(
   // debt payments) was a fourth definition of "net" and let the Brief print
   // "you spent more than you took in" while the workspace showed a surplus.
   const netCashFlow          = incomeTotal - clampEconomicSpend(eco.spendGross, eco.refunds);
-  const netAfterDebtPayments = netCashFlow - debtPaymentTotal;
+
+  // post-M1 D3 — the after-paydown net subtracts the NET PAYDOWN, not the payment
+  // total. `netCashFlow` already contains every purchase made on a card (the
+  // economic axis counts it the day it happened), so `netCashFlow −
+  // debtPaymentTotal` subtracted those purchases a second time when they were
+  // settled: a household paying its cards in full was reported thousands in
+  // deficit and graded DEBT_DRIVEN. The decomposition, its identity and every
+  // case it resolves live in lib/transactions/debt-service.ts.
+  //
+  // Row exclusions are THIS loop's, restated once: non-economic residue and
+  // unconvertible rows fold into no money figure above, so they fold into none
+  // here — `debtService.payments` is therefore `debtPaymentTotal` by
+  // construction (same selection, same rows, same conversion).
+  const settledById = new Map(settled.map((r) => [r.id, r]));
+  const debtService = computeDebtService(settledLiquidityRows, liqCtx, (lr) => {
+    const r = settledById.get(lr.id);
+    if (!r || isNonEconomicResidue(r.flowType)) return null;
+    return amountInTarget(r, moneyCtx).amount;
+  });
+  const netAfterDebtPayments = netAfterDebtPaydown(netCashFlow, debtService);
 
   // ── Pending aggregation ───────────────────────────────────────────────────
 
@@ -1187,6 +1213,10 @@ async function assembleTransactions(
     // named measure, never the headline.
     netCashFlow:          Math.round(netCashFlow          * 100) / 100,
     netAfterDebtPayments: Math.round(netAfterDebtPayments * 100) / 100,
+    // post-M1 D3 — the decomposition behind it, so the figure travels with its
+    // reason: what was paid, what of it settled charges already in spending,
+    // what was borrowed, and what is left as genuine paydown.
+    debtService,
     estimated:        windowEstimated, // MC1 P3 Slice 4 (D-7) — data-only until Phase 4
 
     pendingCreditCount,
