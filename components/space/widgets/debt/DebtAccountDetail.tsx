@@ -9,7 +9,8 @@
  *
  * HONESTY: every figure is the ledger's own display-converted LiabilityRow (never
  * re-derived here) — the panel and the row can never disagree. Utilization renders only
- * for a revolving line (a real limit); an estimated minimum is labelled as such. Debt is
+ * for a revolving line (a real limit). The APR is shown as a FACT; it is edited in one
+ * place only — the Interest cost widget. Minimum payments are not surfaced. Debt is
  * PRESENT-DAY (dual-authority), so these are current facts. Per-account balance/payment
  * HISTORY is not carried by the contract (only total-debt-over-time is) — so it is
  * OMITTED, never fabricated; the note says so plainly.
@@ -98,21 +99,12 @@ export function DebtAccountDetail({ row, currency }: { row: LiabilityRow; curren
       <div className="mt-5 divide-y divide-[var(--border-hairline)] border-t border-[var(--border-hairline)]">
         <Row
           label="APR"
-          value={a.interestRate != null ? `${a.interestRate.toFixed(2)}%` : "Not on file"}
+          value={a.interestRate != null ? `${a.interestRate.toFixed(2)}%` : "Unknown — add it in Interest cost"}
           valueColor={a.interestRate == null ? "var(--text-faint)" : undefined}
         />
         {row.estInterest != null && (
           <Row label="Est. interest" value={<span className="text-[var(--accent-negative)]">{approx}{formatCurrencyExact(row.estInterest, currency)}/mo</span>} />
         )}
-        <Row
-          label="Minimum payment"
-          value={
-            row.minPayment != null
-              ? <>{approx}{formatCurrency(row.minPayment, currency)}/mo{a.minimumPaymentIsEstimated ? <span className="text-[var(--text-faint)]"> · estimated</span> : null}</>
-              : "Not on file"
-          }
-          valueColor={row.minPayment == null ? "var(--text-faint)" : undefined}
-        />
         {row.limit != null && <Row label="Credit limit" value={`${approx}${formatCurrency(row.limit, currency)}`} />}
       </div>
 

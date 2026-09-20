@@ -38,6 +38,7 @@
 import { useMemo, useState } from "react";
 import { convertMoney } from "@/lib/money/convert";
 import { amountOwed, creditBalance, liabilityState } from "@/lib/debt/balance-semantics";
+import { estimatedMonthlyInterest } from "@/lib/debt/interest-cost";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { formatCurrency, formatCurrencyExact } from "@/lib/currency";
 import type { ConversionContext } from "@/lib/money/types";
@@ -91,13 +92,10 @@ function buildRows(accounts: DebtPerspectiveAccount[], ctx?: ConversionContext):
       const owed = amountOwed(bal.amount);
       const credit = creditBalance(bal.amount);
       const limit = a.creditLimit != null ? conv(a.creditLimit, a.currency) : null;
-      const min = a.minimumPayment != null ? conv(a.minimumPayment, a.currency) : null;
-      // No principal ⇒ no interest. A credit balance accrues nothing.
-      const estInterest =
-        a.interestRate != null && a.interestRate > 0 && owed > 0
-          ? owed * (a.interestRate / 100) / 12
-          : null;
-      const estimated = bal.estimated || (limit?.estimated ?? false) || (min?.estimated ?? false);
+      // No principal ⇒ no interest row. Otherwise the interest-cost authority
+      // decides: an unknown APR is null (never 0), an explicit 0% is a real 0.
+      const estInterest = owed > 0 ? estimatedMonthlyInterest(owed, a.interestRate) : null;
+      const estimated = bal.estimated || (limit?.estimated ?? false);
       return {
         account: a,
         cls: classifyDebt(a),
@@ -105,8 +103,6 @@ function buildRows(accounts: DebtPerspectiveAccount[], ctx?: ConversionContext):
         value: owed,
         credit,
         limit: limit?.amount ?? null,
-        // Nothing is due on a settled or credit-balance account.
-        minPayment: owed > 0 ? min?.amount ?? null : null,
         estInterest,
         utilizationPct: accountUtilization(a),
         estimated,

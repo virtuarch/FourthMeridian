@@ -59,13 +59,22 @@ console.log("2. Utilization level (landed thresholds)");
   check("no limit ⇒ no utilization signal", byId(noLimit, "utilization") === undefined);
 }
 
-console.log("3. Missing APR / minimum (gap logic) vs all-set");
+console.log("3. APR on file (unknown stays unknown) — minimum payments are NOT a signal");
 {
-  const gaps = buildDebtSignals({ accounts: [debt({ balance: 900 })] }); // no APR, no minimum
-  check("missing both ⇒ gaps warn", byId(gaps, "gaps")?.tone === "warn");
-  check("gaps text names APR and minimum", byId(gaps, "gaps")!.text.includes("APR") && byId(gaps, "gaps")!.text.includes("minimum"));
-  const set = buildDebtSignals({ accounts: [debt({ balance: 900, interestRate: 20, minimumPayment: 30, creditLimit: 5000 })] });
-  check("all details on file ⇒ gaps ok", byId(set, "gaps")?.tone === "ok");
+  const gaps = buildDebtSignals({ accounts: [debt({ balance: 900 })] }); // no APR
+  check("owing debt with no APR ⇒ gaps warn", byId(gaps, "gaps")?.tone === "warn");
+  check("gaps text names the APR and says the cost is unknown",
+    byId(gaps, "gaps")!.text.includes("APR") && byId(gaps, "gaps")!.text.includes("unknown"), byId(gaps, "gaps")?.text);
+  check("gaps text never mentions a minimum payment", !/minimum/i.test(byId(gaps, "gaps")!.text));
+  // APR on file, NO minimum payment on file ⇒ still fully "ok": a minimum is not required.
+  const set = buildDebtSignals({ accounts: [debt({ balance: 900, interestRate: 20, creditLimit: 5000 })] });
+  check("APR on file + no minimum ⇒ gaps ok (a minimum is not required)", byId(set, "gaps")?.tone === "ok");
+  // An explicit 0% is a rate ON FILE, not a gap.
+  const zero = buildDebtSignals({ accounts: [debt({ balance: 900, interestRate: 0 })] });
+  check("explicit 0% APR ⇒ gaps ok (0 is a rate, not missing)", byId(zero, "gaps")?.tone === "ok");
+  // A paid-off card with no APR accrues nothing — not a gap.
+  const settled = buildDebtSignals({ accounts: [debt({ balance: 0 })] });
+  check("settled card with no APR ⇒ no gaps warn", byId(settled, "gaps")?.tone !== "warn");
 }
 
 console.log("4. Promotional rate ending — from the lens metric only");
@@ -79,17 +88,14 @@ console.log("4. Promotional rate ending — from the lens metric only");
   check("no lensResult ⇒ no promo signal", byId(noLens, "promo") === undefined);
 }
 
-console.log("5. Minimums may not cover interest — simulatePayoff null over the aggregate");
+console.log("5. No minimum-payment signal exists in this experience");
 {
-  // 10000 @ 24% APR ⇒ 200/mo interest; a 150 minimum cannot cover it.
-  const uncovered = buildDebtSignals({ accounts: [debt({ balance: 10000, interestRate: 24, minimumPayment: 150 })] });
-  check("under-covering minimum ⇒ min-coverage warn", byId(uncovered, "min-coverage")?.tone === "warn");
-  // A 300 minimum covers it ⇒ no signal.
-  const covered = buildDebtSignals({ accounts: [debt({ balance: 10000, interestRate: 24, minimumPayment: 300 })] });
-  check("covering minimum ⇒ no min-coverage signal", byId(covered, "min-coverage") === undefined);
-  // No known rate ⇒ simulatePayoff is never null ⇒ no false alarm.
-  const noRate = buildDebtSignals({ accounts: [debt({ balance: 10000, minimumPayment: 50 })] });
-  check("no rate ⇒ no min-coverage signal", byId(noRate, "min-coverage") === undefined);
+  // 10000 @ 24% with a 150 minimum used to raise "min-coverage". Whether a payment
+  // covers interest is now answered where the payment is CHOSEN (the planner,
+  // via planPayoff's non_amortizing status) — never from a stored minimum.
+  const s5 = buildDebtSignals({ accounts: [debt({ balance: 10000, interestRate: 24, minimumPayment: 150 })] });
+  check("no min-coverage signal", byId(s5, "min-coverage") === undefined);
+  check("no signal text mentions a minimum", s5.every((x) => !/minimum/i.test(x.text)), s5.map((x) => x.text).join(" | "));
 }
 
 if (failures > 0) { console.error(`\n${failures} debt-signals check(s) failed`); process.exit(1); }

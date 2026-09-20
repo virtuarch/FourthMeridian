@@ -5,6 +5,12 @@ interface Props {
   score:       number | null;
   lastUpdated: string;
   compact?:    boolean;
+  /**
+   * When supplied, the empty state's "Add credit score" is a BUTTON that calls
+   * this (the host edits the score in place) instead of a link to the legacy
+   * credit page.
+   */
+  onAdd?:      () => void;
 }
 
 // FICO bands collapse to a restrained 3-step tone (Step B accent decision):
@@ -26,7 +32,7 @@ function getScoreBand(score: number): { tone: FicoTone; label: string } {
   return                { tone: "negative", label: "Poor" };
 }
 
-export function FicoCard({ score, lastUpdated, compact }: Props) {
+export function FicoCard({ score, lastUpdated, compact, onAdd }: Props) {
   // ── Empty state ───────────────────────────────────────────────────────────
   if (score === null) {
     if (compact) {
@@ -63,14 +69,26 @@ export function FicoCard({ score, lastUpdated, compact }: Props) {
           <p className="text-xs leading-relaxed" style={{ color: "var(--text-faint)" }}>
             Add your score to start tracking credit history and unlock personalized advice.
           </p>
-          <a
-            href="/dashboard/credit"
-            className="mt-1 inline-flex items-center gap-1.5 text-xs font-semibold transition-colors"
-            style={{ color: "var(--accent-info)" }}
-          >
-            <PlusCircle size={13} />
-            Add credit score
-          </a>
+          {onAdd ? (
+            <button
+              type="button"
+              onClick={onAdd}
+              className="mt-1 inline-flex items-center gap-1.5 text-xs font-semibold transition-colors"
+              style={{ color: "var(--accent-info)" }}
+            >
+              <PlusCircle size={13} />
+              Add credit score
+            </button>
+          ) : (
+            <a
+              href="/dashboard/credit"
+              className="mt-1 inline-flex items-center gap-1.5 text-xs font-semibold transition-colors"
+              style={{ color: "var(--accent-info)" }}
+            >
+              <PlusCircle size={13} />
+              Add credit score
+            </a>
+          )}
         </div>
       </DataCard>
     );

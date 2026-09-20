@@ -14,18 +14,24 @@
  *
  * Exports:
  *   renderDebtByAccount       — ranked bars, highest-APR (else largest) first (hero)
- *   renderDebtCost            — estimated monthly interest per debt (APR × balance / 12)
- *   renderCreditUtilization   — balance / creditLimit for revolving lines
+ *   CreditUtilizationWidget   — balance / creditLimit for revolving lines
+ *   renderDebtHistory         — total debt over time
+ *
+ * Interest cost + APR editing live in ONE component —
+ * `debt/InterestCostWidget.tsx` — and credit-health inputs in
+ * `debt/CreditHealthInputs.tsx`. The former `renderDebtCost` (read-only interest
+ * bars), `renderDebtCompleteInfo` (a second APR / minimum-payment editor) and
+ * `renderCreditScore` (a score card that linked away to edit) were retired so an
+ * APR has exactly one management surface.
  */
 
 import { useState } from "react";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { debtColor } from "@/components/space/widgets/debt-adapters";
-import { KnowledgeAcquisitionCard, type GapEntry } from "@/components/dashboard/KnowledgeAcquisitionCard";
-import { FicoCard } from "@/components/dashboard/FicoCard";
 import { creditUtilization } from "@/lib/accounts/credit-utilization";
 import { amountOwed } from "@/lib/debt/balance-semantics";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
+import { parseCreditLimitInput, saveAccountCreditLimit } from "@/lib/debt/user-terms";
 import { formatAggregateMoney } from "@/components/space/widgets/display-money";
 import { formatCurrency } from "@/lib/currency";
 import { convertMoney } from "@/lib/money/convert";
@@ -42,14 +48,18 @@ export interface DebtPerspectiveAccount {
   institution:     string;
   balance:         number;
   currency:        string;
-  interestRate?:   number;  // APR, e.g. 19.99
-  minimumPayment?: number;  // monthly minimum
+  interestRate?:   number;  // APR, e.g. 19.99 — undefined = UNKNOWN, never 0
+  /** Still carried by the loader for other consumers (lens / privacy proof /
+   *  legacy KPI fields). NOT surfaced anywhere in this debt experience. */
+  minimumPayment?: number;
   creditLimit?:    number;
   // Presentation-only metadata already carried on the runtime Account object
   // (types/index.ts). Widened here so the editorial ledger can GROUP liabilities
-  // by kind and label an estimated minimum — no data-layer / authority change.
+  // by kind — no data-layer / authority change.
   debtSubtype?:               string;   // credit_card | line_of_credit | heloc | auto_loan | mortgage | personal_loan | student_loan
-  minimumPaymentIsEstimated?: boolean;  // true ⇒ minimum was computed, not entered/issuer-provided
+  /** Present ONLY on a privacy-aggregated row (synthetic id, several accounts
+   *  behind it) — such a row has no single liability to attach a rate or limit to. */
+  aggregate?: { memberAccountIds: string[]; memberCount: number };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -105,10 +115,7 @@ export function renderDebtByAccount(
     value: bal,
     color: debtColor(i, n),
     meta:  a.institution || undefined,
-    meta2: [
-      a.interestRate   != null ? `${a.interestRate.toFixed(2)}% APR` : null,
-      a.minimumPayment != null ? `${fmtMoney(inDisp(a.minimumPayment, a.currency, ctx), ctx)}/mo min` : null,
-    ].filter(Boolean).join(" · ") || undefined,
+    meta2: a.interestRate != null ? `${a.interestRate.toFixed(2)}% APR` : undefined,
   }));
 
   return (
@@ -119,58 +126,6 @@ export function renderDebtByAccount(
       emptyHeadline={NO_DEBT_HEADLINE}
       emptySubline={NO_DEBT_SUBLINE}
       {...valueFormatterProps(ctx)}
-    />
-  );
-}
-
-// ─── 2. Debt Cost / Interest Exposure ─────────────────────────────────────────
-
-/** Estimated monthly interest per debt (balance × APR/12), most expensive first.
- *  Only accounts WITH a rate are shown; the footer discloses any missing APR.
- *  No APR anywhere ⇒ honest data-thin empty state (we never invent a rate). */
-export function renderDebtCost(
-  accounts: DebtPerspectiveAccount[],
-  ctx?:     ConversionContext,
-): React.ReactElement {
-  // V25-SIDE-1 — magnitude surface (see renderDebtByAccount). `bal` is amount
-  // OWED, so a credit balance can never generate phantom interest here.
-  const debts = debtAccounts(accounts).map((a) => ({ a, bal: amountOwed(inDisp(a.balance, a.currency, ctx)) })).filter((x) => x.bal > 0);
-  const rated = debts.filter((x) => x.a.interestRate != null && x.a.interestRate > 0);
-  const missing = debts.length - rated.length;
-
-  const items: BreakdownItem[] = rated
-    .map(({ a, bal }) => ({ a, monthly: bal * ((a.interestRate as number) / 100) / 12 }))
-    .filter((x) => x.monthly > 0)
-    .sort((x, y) => y.monthly - x.monthly)
-    .map(({ a, monthly }, i, arr) => ({
-      id:    a.id,
-      label: a.name,
-      value: monthly,
-      color: debtColor(i, arr.length),
-      meta:  `${(a.interestRate as number).toFixed(2)}% APR`,
-    }));
-
-  const totalMonthly = items.reduce((s, i) => s + i.value, 0);
-
-  return (
-    <BreakdownWidget
-      items={items}
-      viewMode="bar"
-      itemNoun="account"
-      emptyHeadline="Interest cost unavailable"
-      emptySubline="Add an APR to your debt accounts to estimate monthly interest."
-      {...valueFormatterProps(ctx)}
-      footer={items.length > 0 ? (
-        <div className="text-center">
-          <p className="text-[11px] text-[var(--text-muted)]">Estimated interest</p>
-          <p className="text-sm font-semibold text-[var(--accent-negative)]">{fmtMoney(totalMonthly, ctx)}/mo</p>
-          {missing > 0 && (
-            <p className="text-[10px] text-[var(--text-faint)] mt-0.5">
-              {missing} debt{missing === 1 ? "" : "s"} without an APR not shown
-            </p>
-          )}
-        </div>
-      ) : undefined}
     />
   );
 }
@@ -202,20 +157,15 @@ export function CreditUtilizationWidget({
   const [savingId, setSavingId] = useState<string | null>(null);
 
   async function saveLimit(id: string) {
-    const limit = Number(draft.replace(/[^0-9.]/g, ""));
-    if (!(limit > 0)) return;
+    // Same parse + write path as Credit health's limit editor (lib/debt/user-terms.ts).
+    const parsed = parseCreditLimitInput(draft);
+    if (!parsed.ok) return;
     setSavingId(id);
-    try {
-      await fetch(`/api/accounts/${id}`, {
-        method:  "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ creditLimit: limit }),
-      });
-      window.dispatchEvent(new CustomEvent(SPACE_ACCOUNTS_CHANGED_EVENT));
-      setEditingId(null); setDraft("");
-    } finally {
-      setSavingId(null);
-    }
+    const res = await saveAccountCreditLimit(id, parsed.value);
+    setSavingId(null);
+    if (!res.ok) return;
+    window.dispatchEvent(new CustomEvent(SPACE_ACCOUNTS_CHANGED_EVENT));
+    setEditingId(null); setDraft("");
   }
 
   if (rows.length === 0 && missingLimit.length === 0) {
@@ -334,50 +284,5 @@ export function renderDebtHistory(
         ))}
       </div>
     </div>
-  );
-}
-
-// ─── 6. Credit Score (manual credit-health signal — reuses FicoCard) ──────────
-
-/** Manual-entry credit-health companion (NOT a computed debt fact, and never
- *  drives debt math). Reuses the existing FicoCard, including its "add score"
- *  affordance when none is on file. */
-export function renderCreditScore(
-  score:       number | null | undefined,
-  lastUpdated: string | undefined,
-): React.ReactElement {
-  return <FicoCard score={score ?? null} lastUpdated={lastUpdated || "—"} />;
-}
-
-// ─── 7. Complete Missing Info (inline edit — reuses KnowledgeAcquisitionCard) ──
-
-/** Inline editor for missing APR / minimum payment on debt accounts, reusing
- *  the existing KnowledgeAcquisitionCard (PATCH /api/accounts/[id]/debt-profile).
- *  On save it broadcasts SPACE_ACCOUNTS_CHANGED_EVENT so the workspace refreshes.
- *  Nothing missing ⇒ a quiet "all set" state (no fake fields). */
-export function renderDebtCompleteInfo(
-  accounts: DebtPerspectiveAccount[],
-): React.ReactElement {
-  const gaps: GapEntry[] = [];
-  for (const a of debtAccounts(accounts)) {
-    if (a.interestRate == null)   gaps.push({ accountId: a.id, accountName: a.name, field: "apr",            label: "APR" });
-    if (a.minimumPayment == null) gaps.push({ accountId: a.id, accountName: a.name, field: "minimumPayment", label: "Minimum payment" });
-  }
-
-  if (gaps.length === 0) {
-    return (
-      <div className="text-center py-6">
-        <CreditCard size={20} className="text-[var(--text-faint)] mx-auto mb-2" />
-        <p className="text-sm text-[var(--text-muted)]">All debt details are filled in</p>
-        <p className="text-xs text-[var(--text-faint)] mt-1">APR and minimum payments are set on every debt.</p>
-      </div>
-    );
-  }
-
-  return (
-    <KnowledgeAcquisitionCard
-      gaps={gaps}
-      onSaved={() => window.dispatchEvent(new CustomEvent(SPACE_ACCOUNTS_CHANGED_EVENT))}
-    />
   );
 }

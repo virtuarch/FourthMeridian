@@ -50,7 +50,7 @@ import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import {
   METRIC_COMPOSITION_REGIME,
   METRIC_DRIVER_COMPONENTS,
-  showsLiabilityContribution,
+  whereItSitsTotal,
 } from "./wealth-metric-facets";
 
 type CompositionMode = "class" | "institution" | "account" | "concentration";
@@ -138,6 +138,9 @@ export function WealthCompositionCard({
   const metricComponents = new Set<string>(METRIC_DRIVER_COMPONENTS[metric]);
 
   const c = asOfState.composition;
+  // The card's headline total. Net Worth mode ⇒ the snapshot's canonical net
+  // worth (liabilities REDUCE it); every other metric ⇒ null, the slices' own sum.
+  const sitsTotal = whereItSitsTotal(metric, asOfState);
   // Colours pinned to the CLASS, not its position. wealthCompositionItems drops
   // zero-value classes, so index-assigned colour meant a portfolio without (say)
   // crypto drew "Real World Assets" in crypto's amber — and disagreed with the
@@ -234,23 +237,40 @@ export function WealthCompositionCard({
             emptyHeadline="No assets on this date"
             emptySubline="This snapshot recorded no asset balances."
             formatValue={(v: number) => formatCurrency(v, currency)}
+            centerTotal={sitsTotal ? { value: sitsTotal.value, label: sitsTotal.label } : undefined}
           />
         ) : (
           <WealthUnavailable message="This snapshot recorded no asset balances." />
         )}
 
-        {/* Liabilities contribution — shown ONLY in Net Worth mode. In Assets mode
-            the card is assets-only, so the liabilities row is removed. */}
-        {showsLiabilityContribution(metric) && c.liabilities > 0 && (
-          <div
-            className="mt-3 flex items-center justify-between rounded-[var(--radius-lg)] px-3 py-2 border"
+        {/* The reconciliation — ONLY in Net Worth mode (sitsTotal is null in Assets
+            mode, where the card is assets-only). Liabilities are SUBTRACTED, and
+            the line they are subtracted into is the same canonical net worth the
+            donut centre shows. With no debt the three lines would say one number
+            three times, so the block is omitted. */}
+        {sitsTotal && sitsTotal.liabilities > 0 && (
+          <dl
+            className="mt-3 rounded-[var(--radius-lg)] px-3 py-2 border text-xs tabular-nums space-y-1"
             style={{ background: "var(--surface-hover)", borderColor: "var(--border-hairline)" }}
           >
-            <span className="text-xs text-[var(--text-muted)]">Liabilities (shown separately)</span>
-            <span className="text-xs font-semibold tabular-nums text-[var(--accent-negative)]">
-              −{formatCurrency(c.liabilities, currency)}
-            </span>
-          </div>
+            <div className="flex items-center justify-between">
+              <dt className="text-[var(--text-muted)]">Assets</dt>
+              <dd className="font-medium text-[var(--text-secondary)]">{formatCurrency(sitsTotal.assets, currency)}</dd>
+            </div>
+            <div className="flex items-center justify-between">
+              <dt className="text-[var(--text-muted)]">Liabilities</dt>
+              <dd className="font-semibold text-[var(--accent-negative)]">−{formatCurrency(sitsTotal.liabilities, currency)}</dd>
+            </div>
+            <div className="flex items-center justify-between border-t pt-1" style={{ borderColor: "var(--border-hairline)" }}>
+              <dt className="font-medium text-[var(--text-secondary)]">Net worth</dt>
+              <dd className="font-semibold text-[var(--text-primary)]">{formatCurrency(sitsTotal.value, currency)}</dd>
+            </div>
+            {!sitsTotal.reconciles && (
+              <p className="pt-1 text-[10px] leading-snug text-[var(--text-faint)]">
+                Net worth is the figure recorded for this date; the assets and liabilities shown don&rsquo;t fully account for it.
+              </p>
+            )}
+          </dl>
         )}
 
         {/* Per-class change chips — real component deltas, only when comparing,

@@ -102,8 +102,18 @@ function main(): void {
   const liab = card("totalLiabilities");
   const liquid = card("liquidNetWorth");
 
-  check("Net Worth shows the liabilities contribution row", nw.includes("Liabilities (shown separately)"));
-  check("Assets does NOT show the liabilities contribution row", !assets.includes("Liabilities (shown separately)"));
+  // "WHERE IT SITS" TOTAL — the donut centre used to print Σ asset slices
+  // ($300,000) under a Net Worth heading while $200,000 of liabilities sat in a
+  // side row and were never subtracted. The centre is now the canonical net worth.
+  const centre = (html: string) => html.match(/data-center-total[^>]*>([^<]+)</)?.[1] ?? null;
+  check("Net Worth centre total is the canonical net worth ($100,000)", centre(nw) === "$100,000", `${centre(nw)}`);
+  check("Net Worth centre is NOT total assets ($300,000)", centre(nw) !== "$300,000");
+  check("Net Worth centre is labelled 'net worth'", nw.includes(">net worth<"));
+  check("Net Worth shows the reconciliation: assets, −liabilities, net worth",
+    nw.includes("$300,000") && nw.includes("−$200,000") && nw.includes(">Net worth<"));
+  check("the old un-subtracted 'shown separately' row is gone", !nw.includes("shown separately"));
+  check("Assets mode keeps the slices' own sum (no net-worth centre, no liabilities line)",
+    centre(assets) === null && assets.includes("$300,000") && !assets.includes("−$200,000"));
 
   check("Liabilities mode shows debt composition (a debt account)",
     liab.includes("Chase Card") || liab.includes("Auto Loan"));

@@ -96,7 +96,8 @@ console.log("3. DUAL AUTHORITY — lens is prose-only; visible figures come from
 {
   // Hero total + ledger + payoff + signals are all sourced from the accounts array.
   check("hero figures sourced from accounts via computeDebtKpis (not the lens)", CODE.includes("computeDebtKpis(accounts"));
-  check("payoff aggregate sourced from accounts", CODE.includes("computePayoffAggregate(accounts"));
+  check("payoff planner sourced from accounts (+ the shell's today)", CODE.includes("renderDebtPayoffCalculator(accounts, false, undefined, ctx, today)"));
+  check("interest cost — THE APR surface — sourced from accounts", SRC.includes("<InterestCostWidget accounts={accounts}"));
   check("liabilities ledger sourced from accounts (not the lens)", SRC.includes("<LiabilitiesLedger accounts={accounts}"));
   check("signals fed the lens only as context (lensResult:), figures from accounts",
     CODE.includes("buildDebtSignals({ accounts") && CODE.includes("lensResult: lens"));
@@ -120,7 +121,10 @@ console.log("4. Completeness PRESENTED via the canonical envelope, not recompute
 
 console.log("5. FICO passthrough via the contract");
 {
-  check("FICO rendered from the contract passthrough (data.fico)", CODE.includes("renderCreditScore(data.fico"));
+  check("FICO rendered from the contract passthrough (data.fico), editable in place",
+    SRC.includes("<CreditScoreInput") && CODE.includes("data.fico.score") && CODE.includes("data.fico.updatedAt"));
+  check("a recorded score re-reads the server host (router.refresh), no local copy of truth",
+    CODE.includes("router.refresh()"));
 }
 
 console.log("6. FX ownership — history converted via the canonical transform, ONE money authority");

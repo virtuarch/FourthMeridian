@@ -23,6 +23,7 @@ import { convertMoney } from "@/lib/money/convert";
 import { amountOwed, hasOutstandingDebt, liabilityState } from "@/lib/debt/balance-semantics";
 import { computeDebtAggregate, type DebtAggregateRow } from "@/lib/debt/aggregates";
 import { yesterdayUTCISO } from "@/lib/fx/config";
+import { computeInterestCost } from "@/lib/debt/interest-cost";
 import { utilizationLevel, isRevolvingLine, type UtilizationLevel } from "@/lib/accounts/credit-utilization";
 import type { ConversionContext } from "@/lib/money/types";
 import type { DebtPerspectiveAccount } from "@/components/space/widgets/debt-perspective-adapters";
@@ -129,11 +130,13 @@ export function computeDebtKpis(
   // month. It stays here because it is a sum of money, not a rate — and a 0%
   // row contributes exactly 0, so the population needs no `> 0` guard to agree
   // with the rated split above.
+  // The arithmetic is the interest-cost authority's (lib/debt/interest-cost.ts)
+  // — the same call the Interest cost widget makes, so the hero's figure and the
+  // widget's total cannot drift. An unrated row is EXCLUDED, never costed at 0%.
   const owing = debts.filter((x) => x.owes);
-  const estMonthlyInterest = owing.reduce(
-    (s, x) => s + (x.a.interestRate != null ? x.bal * (x.a.interestRate / 100) / 12 : 0),
-    0,
-  );
+  const estMonthlyInterest = computeInterestCost(
+    debts.map((x) => ({ id: x.a.id, balance: x.bal, aprPct: x.a.interestRate })),
+  ).totalMonthly;
   const accountCount = debts.length;
   const owingCount = owing.length;
   const settledCount = debts.filter((x) => x.state === "settled").length;

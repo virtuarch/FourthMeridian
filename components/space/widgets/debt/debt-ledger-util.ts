@@ -36,8 +36,6 @@ export interface LiabilityRow {
   share:          number;
   /** Display-currency credit limit, or null. */
   limit:          number | null;
-  /** Display-currency minimum payment, or null. */
-  minPayment:     number | null;
   /** Display-currency estimated monthly interest (balance × APR/12), or null. */
   estInterest:    number | null;
   /** Native utilization % (balance / limit), or null. May exceed 100. */

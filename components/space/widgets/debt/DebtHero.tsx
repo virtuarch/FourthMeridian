@@ -144,11 +144,6 @@ export function DebtHero({
               <span style={{ color: UTIL_COLOR[kpis.utilizationLevel] }}>{kpis.utilizationPct.toFixed(0)}%</span>
             </Stat>
           )}
-          {kpis.minPayments > 0 && (
-            <Stat label="Min. payments">
-              {approx}{formatCurrency(kpis.minPayments, currency)}/mo
-            </Stat>
-          )}
         </div>
       )}
 

@@ -88,6 +88,14 @@ export interface BreakdownWidgetProps {
   emptyHeadline?: string;
   emptySubline?:  string;
   /**
+   * Donut only — the figure in the centre of the ring when it is NOT Σ items.
+   * The slices stay proportions of their own sum; this replaces only the resting
+   * centre label. Used where the slices are one leg of the headline (asset
+   * classes under a NET WORTH total, which liabilities reduce). The caller
+   * supplies the canonical figure — this presenter never derives it.
+   */
+  centerTotal?: { value: number; label: string };
+  /**
    * Makes segments/rows interrogable. When omitted the widget is inert — and
    * importantly does NOT render a pointer cursor, which it previously did on
    * every donut segment while doing nothing on click.
@@ -300,12 +308,14 @@ function DonutView({
   itemNoun,
   total,
   sel,
+  centerTotal,
 }: {
   items:       ColoredItem[];
   formatValue: (v: number) => string;
   itemNoun:    string;
   total:       number;
   sel:         SelectApi;
+  centerTotal?: { value: number; label: string };
 }) {
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const interactive = sel.onSelect != null;
@@ -410,6 +420,15 @@ function DonutView({
                   {(hovered.pct * 100).toFixed(1)}% of total
                 </p>
               </>
+            ) : centerTotal ? (
+              <>
+                <p className="text-lg font-bold leading-tight" style={{ color: "var(--text-primary)" }} data-center-total>
+                  {formatValue(centerTotal.value)}
+                </p>
+                <p className="text-[10px] mt-0.5 leading-tight" style={{ color: "var(--text-muted)" }}>
+                  {centerTotal.label}
+                </p>
+              </>
             ) : (
               <>
                 <p className="text-lg font-bold leading-tight" style={{ color: totalColor }}>
@@ -472,6 +491,7 @@ export function BreakdownWidget({
   footer,
   emptyHeadline,
   emptySubline,
+  centerTotal,
   onSelect,
   selectedId,
   selectLabel,
@@ -505,7 +525,7 @@ export function BreakdownWidget({
       {viewMode === "bar"  && <BarView  items={colored} formatValue={formatValue} total={total} sel={sel} />}
       {viewMode === "list" && <ListView items={colored} formatValue={formatValue} total={total} sel={sel} />}
       {viewMode === "donut" && (
-        <DonutView items={colored} formatValue={formatValue} itemNoun={itemNoun} total={total} sel={sel} />
+        <DonutView items={colored} formatValue={formatValue} itemNoun={itemNoun} total={total} sel={sel} centerTotal={centerTotal} />
       )}
       {footer && <div>{footer}</div>}
     </div>

@@ -17,7 +17,7 @@
 
 import { BreakdownWidget, type BreakdownItem, type BreakdownViewMode } from "@/components/space/widgets/BreakdownWidget";
 import { DebtPayoffSection, type DebtPayoffAccount } from "@/components/space/sections/DebtPayoffSection";
-import { formatBalance, formatCurrency } from "@/lib/currency";
+import { formatCurrency } from "@/lib/currency";
 import { convertMoney } from "@/lib/money/convert";
 import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
 import { yesterdayUTCISO } from "@/lib/fx/config";
@@ -61,7 +61,6 @@ export interface DebtAdapterAccount {
   balance:         number;
   currency:        string;
   interestRate?:   number;
-  minimumPayment?: number;
 }
 
 // ─── Debt Breakdown Chart ─────────────────────────────────────────────────────
@@ -73,10 +72,12 @@ export interface DebtAdapterAccount {
  * @param viewMode   - "donut" | "bar" | "list" (default: "donut")
  * @param emptyText  - Optional override for the empty-state subtitle
  * @param ctx        - MC1 QA Q4 — optional conversion context. Present ⇒ slice
- *                     values and the min-payment footer convert into ctx.target
- *                     (a donut over mixed native currencies has dishonest
- *                     proportions) and labels follow; per-account meta stays
- *                     native. Absent ⇒ today's behavior byte-for-byte.
+ *                     values convert into ctx.target (a donut over mixed
+ *                     native currencies has dishonest proportions) and labels
+ *                     follow. Absent ⇒ native amounts, no currency claim.
+ *
+ * Minimum payments are not surfaced here: the debt experience is driven by
+ * balance + APR + the payment the user chooses.
  */
 export function renderDebtBreakdownChart(
   accounts:  DebtAdapterAccount[],
@@ -106,21 +107,13 @@ export function renderDebtBreakdownChart(
   const sorted = [...converted].sort((x, y) => y.bal.amount - x.bal.amount);
   const n = sorted.length;
 
-  const minConv     = sorted.map(({ a }) => inDisp(a.minimumPayment ?? 0, a.currency));
-  const totalMinPmt = minConv.reduce((s, c) => s + c.amount, 0);
-  const minTainted  = minConv.some((c) => c.estimated);
-
   const items: BreakdownItem[] = sorted.map(({ a, bal }, i) => ({
     id:    a.id,
     label: a.name,
     value: bal.amount,
     color: debtColor(i, n),
     meta:  a.institution || undefined,
-    meta2: [
-      a.interestRate   != null ? `${a.interestRate.toFixed(2)}% APR`        : null,
-      // Itemized meta stays native — the row's own currency labels its own amount.
-      a.minimumPayment != null ? `${formatBalance(a.minimumPayment, a.currency)}/mo min` : null,
-    ].filter(Boolean).join(" · ") || undefined,
+    meta2: a.interestRate != null ? `${a.interestRate.toFixed(2)}% APR` : undefined,
   }));
 
   return (
@@ -132,15 +125,6 @@ export function renderDebtBreakdownChart(
       // formatter (and all-USD pixels) are untouched; lib/format's
       // formatCurrency matches the widget's default exactly.
       {...(ctx ? { formatValue: (v: number) => formatCurrency(v, ctx.target) } : {})}
-      footer={totalMinPmt > 0 ? (
-        <div className="text-center">
-          <p className="text-[11px] text-[var(--text-muted)]">Minimum monthly payments</p>
-          <p className="text-sm font-semibold text-white mt-0.5">
-            {minTainted ? "≈ " : ""}{formatBalance(totalMinPmt, ctx?.target)}
-            <span className="text-[10px] text-[var(--text-faint)] ml-0.5">/mo</span>
-          </p>
-        </div>
-      ) : undefined}
       emptyHeadline="No debt accounts yet"
       emptySubline={
         emptyText ??
@@ -161,15 +145,19 @@ export function renderDebtBreakdownChart(
  * @param ctx               - MC1 QA Q4 — optional conversion context, passed
  *                            through to the planner (aggregates convert +
  *                            labels follow; absent ⇒ today's behavior).
+ * @param today             - The host's "today" (YYYY-MM-DD): the schedule's
+ *                            start date. Absent ⇒ the planner reads the clock.
  */
 export function renderDebtPayoffCalculator(
   accounts:           DebtPayoffAccount[],
   fullscreen?:        boolean,
   onCloseFullscreen?: () => void,
   ctx?:               ConversionContext,
+  today?:             string,
 ): React.ReactElement {
   return (
     <DebtPayoffSection
+      today={today}
       accounts={accounts}
       fullscreen={fullscreen}
       onCloseFullscreen={onCloseFullscreen}

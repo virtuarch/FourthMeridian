@@ -22,9 +22,6 @@ import { EstimatedChip } from "@/components/ui/EstimatedChip";
 import { TransactionDate } from "@/components/ui/TransactionDate";
 import { formatDate as formatDateUTC } from "@/lib/format";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
-import {
-  estimateMinimumPayment,
-} from "@/lib/debt";
 import { amountOwed, creditBalance, hasOutstandingDebt, liabilityState } from "@/lib/debt/balance-semantics";
 import { utilizationPercent, REVOLVING_DEBT_SUBTYPES } from "@/lib/accounts/credit-utilization";
 // TI5-3C — rows open the shared Transaction Detail drawer (mounted in DashboardChrome).
@@ -103,8 +100,6 @@ function ordinal(n: number): string {
 // to mean "explicitly cleared" so it's distinguishable from "no override yet,
 // fall back to the server-provided account".
 type DebtProfileOverride = {
-  apr: number | null;
-  minimumPayment: number | null;
   dueDay: number | null;
   statementCloseDay: number | null;
   promoAprEndDate: string | null;
@@ -190,11 +185,13 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
   const [subtypeError,     setSubtypeError]     = useState<string | null>(null);
   const [subtypeOverrides, setSubtypeOverrides] = useState<Record<string, string>>({});
 
-  // Card state — debt profile editing (APR, minimum payment, due day,
-  // statement close day, promo APR end date, notes)
+  // Card state — debt profile editing (due day, statement close day, promo APR
+  // end date, notes). APR is NOT edited here: it has ONE management surface —
+  // the Interest cost widget on Overview (components/space/widgets/debt/
+  // InterestCostWidget.tsx). Minimum payments are no longer collected at all.
   const [editingDebtId,        setEditingDebtId]        = useState<string | null>(null);
   const [debtForm,             setDebtForm]             = useState({
-    apr: "", minimumPayment: "", dueDay: "", statementCloseDay: "", promoAprEndDate: "", notes: "",
+    dueDay: "", statementCloseDay: "", promoAprEndDate: "", notes: "",
   });
   const [savingDebt,           setSavingDebt]           = useState(false);
   const [debtError,            setDebtError]            = useState<string | null>(null);
@@ -324,8 +321,6 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
   function openDebtEditor(card: Account) {
     const dp = debtProfileOverrides[card.id] ?? card.debtProfile ?? {};
     setDebtForm({
-      apr:               dp.apr               != null ? String(dp.apr)            : "",
-      minimumPayment:    dp.minimumPayment     != null ? String(dp.minimumPayment) : "",
       dueDay:            dp.dueDay             != null ? String(dp.dueDay)         : "",
       statementCloseDay: dp.statementCloseDay  != null ? String(dp.statementCloseDay) : "",
       promoAprEndDate:   dp.promoAprEndDate    ?? "",
@@ -340,12 +335,6 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
     setDebtError(null);
 
     // Blank field → explicit clear (null). Non-blank → must parse cleanly.
-    const parseFloatOrNull = (raw: string): number | null | undefined => {
-      const t = raw.trim();
-      if (t === "") return null;
-      const n = parseFloat(t.replace(/[^0-9.]/g, ""));
-      return isNaN(n) ? undefined : n;
-    };
     const parseDayOrNull = (raw: string): number | null | undefined => {
       const t = raw.trim();
       if (t === "") return null;
@@ -353,20 +342,13 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
       return isNaN(n) ? undefined : n;
     };
 
-    const apr               = parseFloatOrNull(debtForm.apr);
-    const minimumPayment    = parseFloatOrNull(debtForm.minimumPayment);
     const dueDay             = parseDayOrNull(debtForm.dueDay);
     const statementCloseDay = parseDayOrNull(debtForm.statementCloseDay);
     const promoAprEndDate   = debtForm.promoAprEndDate.trim() === "" ? null : debtForm.promoAprEndDate.trim();
     const notes              = debtForm.notes.trim() === "" ? null : debtForm.notes.trim();
 
-    if (apr === undefined || minimumPayment === undefined || dueDay === undefined || statementCloseDay === undefined) {
+    if (dueDay === undefined || statementCloseDay === undefined) {
       setDebtError("Please enter valid numbers.");
-      setSavingDebt(false);
-      return;
-    }
-    if (apr !== null && (apr < 0 || apr > 100)) {
-      setDebtError("APR must be between 0 and 100.");
       setSavingDebt(false);
       return;
     }
@@ -380,7 +362,9 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
       const res = await fetch(`/api/accounts/${accountId}/debt-profile`, {
         method:  "PATCH",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ apr, minimumPayment, dueDay, statementCloseDay, promoAprEndDate, notes }),
+        // The route changes ONLY the fields it is sent — apr / minimumPayment are
+        // deliberately absent, so a save here can never overwrite the APR.
+        body:    JSON.stringify({ dueDay, statementCloseDay, promoAprEndDate, notes }),
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
@@ -390,7 +374,7 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
       }
       setDebtProfileOverrides((prev) => ({
         ...prev,
-        [accountId]: { apr, minimumPayment, dueDay, statementCloseDay, promoAprEndDate, notes },
+        [accountId]: { dueDay, statementCloseDay, promoAprEndDate, notes },
       }));
       setEditingDebtId(null);
       router.refresh();
@@ -405,33 +389,14 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
   const cards = accounts.map((a) => {
     const dpOverride = debtProfileOverrides[a.id];
 
-    // APR: prefer the in-flight override, else whatever the server resolved
-    // (DebtProfile.apr ?? legacy interestRate column).
-    const apr = dpOverride ? (dpOverride.apr ?? undefined) : a.interestRate;
-
-    // Minimum payment: prefer override, else server value. If the override
-    // cleared the manual minimum but an APR is set, recompute the same
-    // "Estimated minimum payment" heuristic the server uses so the UI doesn't
-    // show a stale/blank value until the next refresh lands.
-    let minimumPayment = dpOverride ? (dpOverride.minimumPayment ?? undefined) : a.minimumPayment;
-    let minimumPaymentIsEstimated = dpOverride ? false : (a.minimumPaymentIsEstimated ?? false);
-    // V25-SIDE-1 — mirrors lib/data/accounts.ts: estimate from amount OWED, and
-    // only when something is owed (no invented minimum on a paid-off/credit card).
-    if (dpOverride && dpOverride.minimumPayment == null && apr != null && hasOutstandingDebt(a.balance)) {
-      minimumPayment = estimateMinimumPayment(amountOwed(a.balance), apr);
-      minimumPaymentIsEstimated = true;
-    }
-
+    // APR is whatever the server resolved (DebtProfile.apr ?? legacy column) — it
+    // is not editable on this page, so there is no in-flight override for it.
     return {
       ...a,
       creditLimit: limitOverrides[a.id]  ?? a.creditLimit,
       debtSubtype: subtypeOverrides[a.id] ?? a.debtSubtype,
-      interestRate: apr,
-      minimumPayment,
-      minimumPaymentIsEstimated,
       debtProfile: dpOverride ? {
-        apr:               dpOverride.apr               ?? undefined,
-        minimumPayment:    dpOverride.minimumPayment     ?? undefined,
+        ...a.debtProfile,
         dueDay:            dpOverride.dueDay             ?? undefined,
         statementCloseDay: dpOverride.statementCloseDay  ?? undefined,
         promoAprEndDate:   dpOverride.promoAprEndDate    ?? undefined,
@@ -855,23 +820,13 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
                       </div>
                     )}
 
-                    {/* APR + minimum payment + due/statement days */}
-                    {(card.interestRate != null || card.minimumPayment != null || card.debtProfile?.dueDay || card.debtProfile?.statementCloseDay) && (
+                    {/* APR (read-only fact) + due/statement days */}
+                    {(card.interestRate != null || card.debtProfile?.dueDay || card.debtProfile?.statementCloseDay) && (
                       <div className="flex items-center gap-4 flex-wrap">
                         {card.interestRate != null && (
                           <div>
                             <p className="text-[10px] uppercase tracking-widest" style={{ color: "var(--text-faint)" }}>APR</p>
                             <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{card.interestRate.toFixed(2)}%</p>
-                          </div>
-                        )}
-                        {card.minimumPayment != null && (
-                          <div>
-                            <p className="text-[10px] uppercase tracking-widest" style={{ color: "var(--text-faint)" }}>
-                              {card.minimumPaymentIsEstimated ? "Est. Min Payment" : "Min Payment"}
-                            </p>
-                            <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-                              {fmtUSD(card.minimumPayment, card.currency ?? DEFAULT_DISPLAY_CURRENCY)}/mo
-                            </p>
                           </div>
                         )}
                         {card.debtProfile?.dueDay && (
@@ -887,11 +842,6 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
                           </div>
                         )}
                       </div>
-                    )}
-                    {card.minimumPaymentIsEstimated && card.minimumPayment != null && (
-                      <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-                        Estimated minimum payment — not provided by your issuer. Enter an exact amount in debt details for accuracy.
-                      </p>
                     )}
                     {card.debtProfile?.promoAprEndDate && (
                       <p className="text-xs" style={{ color: "var(--text-secondary)" }}>Promo APR ends {formatDate(card.debtProfile.promoAprEndDate)}</p>
@@ -947,9 +897,9 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
                       </div>
                     )}
 
-                    {/* Debt profile editor — APR, minimum payment, due day, statement
-                        close day, promo APR end date, notes (Goal 2). Lives on a
-                        separate DebtProfile row, edited via its own sub-resource. */}
+                    {/* Debt profile editor — due day, statement close day, promo APR end
+                        date, notes. APR is edited in ONE place (Interest cost, on
+                        Overview); minimum payments are no longer collected. */}
                     <div className="flex flex-col gap-1.5">
                       {editingDebtId === card.id ? (
                         <div
@@ -958,26 +908,6 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
                           onClick={(e) => e.stopPropagation()}
                         >
                           <div className="grid grid-cols-2 gap-2">
-                            <div>
-                              <label className="block text-[10px] mb-1" style={{ color: "var(--text-muted)" }}>APR %</label>
-                              <input
-                                type="text" inputMode="decimal" placeholder="e.g. 24.99"
-                                value={debtForm.apr}
-                                onChange={(e) => setDebtForm((f) => ({ ...f, apr: e.target.value }))}
-                                className={`w-full border rounded-lg px-2.5 py-1.5 text-sm ${INPUT_CLS}`}
-                                style={inputStyle}
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-[10px] mb-1" style={{ color: "var(--text-muted)" }}>Min Payment $</label>
-                              <input
-                                type="text" inputMode="decimal" placeholder="Auto-estimated if blank"
-                                value={debtForm.minimumPayment}
-                                onChange={(e) => setDebtForm((f) => ({ ...f, minimumPayment: e.target.value }))}
-                                className={`w-full border rounded-lg px-2.5 py-1.5 text-sm ${INPUT_CLS}`}
-                                style={inputStyle}
-                              />
-                            </div>
                             <div>
                               <label className="block text-[10px] mb-1" style={{ color: "var(--text-muted)" }}>Due Day (1–31)</label>
                               <input

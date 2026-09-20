@@ -7,13 +7,27 @@
  * Supports both an embedded card view and a full-screen modal view.
  *
  * Extracted from SpaceDashboard.tsx to keep that file manageable.
+ *
+ * CODE OWNS MONEY — this component holds the user's CHOICES (which accounts,
+ * how much a month) and nothing else. The schedule, the elapsed time, the final
+ * partial payment and every refusal come from `planPayoff` (lib/debt/payoff.ts);
+ * the blended rate comes from `computeDebtAggregate`. Nothing here divides a
+ * balance by a payment.
+ *
+ * Inputs to the schedule are balance + APR + the chosen payment. Minimum
+ * payments are not read, shown, or required. There is ONE cadence — monthly —
+ * and no other mode exists in this component's state.
+ *
+ * UNKNOWN APR stays unknown: if any selected account that owes has no APR on
+ * file, there is no timeline (never a 0% one) and the panel names the accounts.
+ * APRs are managed in ONE place — the Interest cost widget.
  */
 
 import { useState, useEffect } from "react";
 import { CreditCard, X } from "lucide-react";
-import { formatBalance, currencySymbol } from "@/lib/currency";
+import { formatBalance, formatCurrencyExact, currencySymbol } from "@/lib/currency";
 import { useAggregateCurrency } from "@/components/space/widgets/display-money";
-import { formatMonthYear } from "@/lib/format";
+import { formatDate } from "@/lib/format";
 import { convertMoney } from "@/lib/money/convert";
 // v2.6-DEBT-1 — `amountOwed` / `hasOutstandingDebt` are no longer applied here:
 // the aggregate authority owns both, so the planner cannot drift from the rule.
@@ -21,6 +35,10 @@ import { computeDebtAggregate, type DebtAggregateRow } from "@/lib/debt/aggregat
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
 import { useBodyScrollLock } from "@/components/atlas/useBodyScrollLock";
+import { planPayoff, DEFAULT_PAYOFF_PAYMENT } from "@/lib/debt/payoff";
+import { todayUTCISO } from "@/lib/time/clock";
+import { payoffHorizonLabel } from "@/components/space/widgets/debt/payoff-copy";
+import { PayoffScenarioStrip } from "@/components/space/widgets/debt/PayoffScenarioStrip";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -33,13 +51,8 @@ export type DebtPayoffAccount = {
   institution:     string;
   balance:         number;
   currency:        string;
-  interestRate?:   number;  // APR, e.g. 19.99
-  minimumPayment?: number;  // monthly minimum
+  interestRate?:   number;  // APR, e.g. 19.99 — undefined = UNKNOWN (never 0)
 };
-
-type PayFreq = "week" | "month" | "year";
-
-type PayoffResult = { months: number; totalPaid: number; totalInterest: number };
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 // formatBalance + currencySymbol now come from the single lib/currency authority
@@ -59,43 +72,6 @@ function debtColor(i: number, n: number): string {
 // Darkest red convenience (totals, primary debt figures)
 const DEBT_RED = debtColor(0, 1);
 
-/**
- * Simulate amortization month-by-month so the last payment is exact
- * (not a full monthly payment). This avoids over-counting interest.
- *
- * Exported so callers that only need the calculation (e.g. collapsed section
- * summary text in SpaceDashboard) don't have to duplicate the logic.
- */
-export function simulatePayoff(balance: number, monthlyRate: number, payment: number): PayoffResult | null {
-  if (payment <= 0 || balance <= 0) return null;
-  if (monthlyRate <= 0) {
-    const months = Math.ceil(balance / payment);
-    return { months, totalPaid: balance, totalInterest: 0 };
-  }
-  const firstInterest = balance * monthlyRate;
-  if (payment <= firstInterest) return null; // payment doesn't cover interest
-
-  let remaining = balance;
-  let totalPaid = 0;
-  let months = 0;
-  const MAX_MONTHS = 600;
-
-  while (remaining > 0.005 && months < MAX_MONTHS) {
-    const interest = remaining * monthlyRate;
-    if (payment >= remaining + interest) {
-      totalPaid += remaining + interest;
-      remaining = 0;
-    } else {
-      remaining = remaining + interest - payment;
-      totalPaid += payment;
-    }
-    months++;
-  }
-
-  if (months >= MAX_MONTHS) return null;
-  return { months, totalPaid, totalInterest: Math.max(0, totalPaid - balance) };
-}
-
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function DebtPayoffSection({
@@ -103,6 +79,7 @@ export function DebtPayoffSection({
   fullscreen     = false,
   onCloseFullscreen,
   ctx,
+  today,
 }: {
   accounts:           DebtPayoffAccount[];
   fullscreen?:        boolean;
@@ -115,6 +92,8 @@ export function DebtPayoffSection({
    * Per-account rows stay native either way (itemized doctrine).
    */
   ctx?: ConversionContext;
+  /** The host's "today" (YYYY-MM-DD) — the schedule's start. Defaults to the clock. */
+  today?: string;
 }) {
   const debtAccounts = accounts.filter((a) => a.type === "debt");
 
@@ -139,9 +118,10 @@ export function DebtPayoffSection({
     return debtColor(idx < 0 ? 0 : idx, sortedDebtAccounts.length);
   };
 
-  const [freq,        setFreq]        = useState<PayFreq>("month");
-  const [amount,      setAmount]      = useState(500);
-  const [inputStr,    setInputStr]    = useState("500");
+  // The default is an INITIAL value only (useState initialiser): a payment the
+  // user has chosen is never overwritten by it on a later render.
+  const [amount,      setAmount]      = useState(DEFAULT_PAYOFF_PAYMENT);
+  const [inputStr,    setInputStr]    = useState(String(DEFAULT_PAYOFF_PAYMENT));
   // Track explicit user deselections; new accounts auto-include, removed ones auto-exclude
   const [deselectedIds, setDeselectedIds] = useState<Set<string>>(new Set());
 
@@ -186,60 +166,66 @@ export function DebtPayoffSection({
   // amounts through, so this is the original raw addition byte-for-byte.
   // V25-SIDE-1 — the planner projects a PAYOFF, so every figure is amount OWED
   // (lib/debt/balance-semantics.ts). A credit balance contributes nothing: it
-  // must not net against another card's obligation, carry APR weight, or imply
-  // a minimum payment.
+  // must not net against another card's obligation or carry APR weight.
   // v2.6-DEBT-1 — the population rule (who counts, how they are weighted, what a
   // missing rate means) belongs to `computeDebtAggregate`, not to this planner.
   // This block now does only what IS the planner's context: convert into the
   // display currency and carry the FX taint. Six surfaces derived this same
   // triple; five of them wrote it out again, and one of those five disagreed.
-  const filteredConv = filtered.map((a) => {
-    const bal = inDisp(a.balance, a.currency);
-    const min = a.minimumPayment == null ? null : inDisp(a.minimumPayment, a.currency);
-    return { a, bal, min };
-  });
+  const filteredConv = filtered.map((a) => ({ a, bal: inDisp(a.balance, a.currency) }));
 
+  // Minimum payments are not an input to this experience — the aggregate is
+  // asked only for what is owed and at what blended rate.
   const agg = computeDebtAggregate(
-    filteredConv.map(({ a, bal, min }): DebtAggregateRow => ({
+    filteredConv.map(({ a, bal }): DebtAggregateRow => ({
       balance:        bal.amount,
       apr:            a.interestRate ?? null,
-      minimumPayment: min?.amount ?? null,
+      minimumPayment: null,
     })),
   );
 
-  const total       = agg.totalOwed;
-  const weightedApr = agg.weightedApr;
-  const hasRates    = weightedApr != null;
-  const minPayment  = agg.minimumPayment;
+  const total = agg.totalOwed;
+  // UNKNOWN NEVER MEANS ZERO. The blended rate is a rate for the SELECTION only
+  // when every selected account that owes has one; a blend over the rated subset
+  // applied to the whole balance would be a rate nobody quoted.
+  const unratedNames = filteredConv
+    .filter(({ a, bal }) => bal.amount > 0 && a.interestRate == null)
+    .map(({ a }) => a.name);
+  const aprPct      = agg.unratedCount > 0 ? null : agg.weightedApr;
+  const weightedApr = aprPct;
+  const hasRates    = aprPct != null;
 
   // Aggregate taint — any unresolvable row marks every derived projection.
-  const aggEstimated =
-    filteredConv.some((r) => r.bal.estimated) || filteredConv.some((r) => r.min?.estimated === true);
+  const aggEstimated = filteredConv.some((r) => r.bal.estimated);
   const est = aggEstimated ? "≈ " : "";
-
-  const monthlyEquiv = freq === "week" ? (amount * 52) / 12
-                     : freq === "year" ? amount / 12
-                     : amount;
 
   const sliderMax = Math.max(5000, Math.ceil(total));
 
-  const monthlyRate   = hasRates ? (weightedApr! / 100) / 12 : 0;
-  const result        = simulatePayoff(total, monthlyRate, monthlyEquiv);
-  const months        = result?.months ?? null;
-  const totalInterest = (result && hasRates) ? result.totalInterest : null;
-  const totalPaid     = result ? result.totalPaid : null;
-  const years         = months != null ? Math.floor(months / 12) : null;
-  const remMonths     = months != null ? months % 12 : null;
-  const payoffDate    = months != null
-    ? formatMonthYear(new Date(new Date().getTime() + months * 30.44 * 24 * 60 * 60 * 1000).toISOString())
+  // The clock seam (lib/time) — never an inline current-day derivation.
+  const startISO = today ?? todayUTCISO();
+  const plan     = planPayoff({ balance: total, aprPct, payment: amount, startISO });
+  const paidOff  = plan.status === "paid_off" ? plan : null;
+  const totalInterest = paidOff?.totalInterest ?? null;
+  const totalPaid     = paidOff?.totalPaid ?? null;
+  const payoffDate    = paidOff ? formatDate(paidOff.payoffISO) : null;
+
+  const timeLabel = () => payoffHorizonLabel(plan);
+
+  /** "$174.23 final payment" — the engine's figure, to the cent. Null without a schedule. */
+  const finalPaymentLine = paidOff
+    ? `${est}${formatCurrencyExact(paidOff.finalPayment, disp)} final payment`
+      + (paidOff.fullPayments > 0 ? ` after ${paidOff.fullPayments} of ${formatBalance(amount, disp)}` : "")
     : null;
 
-  function timeLabel() {
-    if (months == null) return "Payment too low";
-    if (years === 0)     return `${months} month${months !== 1 ? "s" : ""}`;
-    if (remMonths === 0) return `${years} year${years !== 1 ? "s" : ""}`;
-    return `${years}y ${remMonths}mo`;
-  }
+  /** Why there is no timeline, in the user's terms. Null when there is one. */
+  const refusalLine =
+    plan.status === "unknown_apr"
+      ? `No timeline without an APR for ${unratedNames.join(", ") || "every selected debt"} — add it in Interest cost.`
+    : plan.status === "non_amortizing"
+      ? `${formatBalance(amount, disp)} a month does not cover the interest (${est}${formatCurrencyExact(plan.firstPeriodInterest, disp)} in the first month), so the balance never falls.`
+    : plan.status === "beyond_horizon"
+      ? "At this payment the balance is not cleared within 100 years."
+    : null;
 
   function handleInput(val: string) {
     setInputStr(val);
@@ -251,8 +237,6 @@ export function DebtPayoffSection({
     setAmount(val);
     setInputStr(String(val));
   }
-
-  const freqLabel = freq === "week" ? "Weekly" : freq === "year" ? "Yearly" : "Monthly";
 
   // Empty state — placed after all hooks/computations to satisfy rules-of-hooks
   if (debtAccounts.length === 0) {
@@ -266,25 +250,6 @@ export function DebtPayoffSection({
   }
 
   // ── Shared sub-components used by both views ─────────────────────────────
-  const freqToggle = (
-    <div className="flex rounded-lg overflow-hidden border" style={{ borderColor: "var(--border-hairline)" }}>
-      {(["month", "week"] as const).map((f) => (
-        <button
-          key={f}
-          onClick={() => setFreq(f)}
-          className={`text-[10px] font-semibold px-2.5 py-1 transition-colors ${
-            freq === f ? "" : "hover:text-[var(--text-secondary)]"
-          }`}
-          style={freq === f
-            ? { backgroundColor: "var(--surface-hover-strong)", color: "var(--accent-info)" }
-            : { color: "var(--text-faint)" }}
-        >
-          {f === "month" ? "Mo" : "Wk"}
-        </button>
-      ))}
-    </div>
-  );
-
   const paymentInput = (wide = false) => (
     <div className={`flex items-center rounded-lg px-3 py-1.5 gap-1 ${wide ? "w-full" : ""}`} style={{ background: "var(--surface-inset)" }}>
       <span className="text-sm" style={{ color: "var(--text-muted)" }}>{sym}</span>
@@ -348,27 +313,41 @@ export function DebtPayoffSection({
           <p className="text-xs" style={{ color: "var(--text-muted)" }}>
             Interest{hasRates ? ` (${weightedApr!.toFixed(2)}% APR)` : ""}
           </p>
-          {hasRates && totalInterest != null ? (
-            <p className="text-sm font-medium" style={{ color: debtColor(Math.floor(sortedDebtAccounts.length / 2), sortedDebtAccounts.length) }}>+{est}{formatBalance(totalInterest, disp)}</p>
-          ) : (
-            <p className="text-xs" style={{ color: "var(--text-faint)" }}>— add APR to account for estimate</p>
+          {totalInterest != null && (
+            <p className="text-sm font-medium" style={{ color: debtColor(Math.floor(sortedDebtAccounts.length / 2), sortedDebtAccounts.length) }}>+{est}{formatCurrencyExact(totalInterest, disp)}</p>
           )}
         </div>
         <div className="flex items-center justify-between px-3 py-2.5" style={{ background: "var(--surface-muted)" }}>
           <p className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>Total paid</p>
           <p className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>
-            {est}{totalPaid != null ? formatBalance(totalPaid, disp) : formatBalance(total, disp)}
+            {est}{formatCurrencyExact(totalPaid ?? total, disp)}
           </p>
         </div>
       </div>
     </div>
   );
 
+  /** Under the headline: the final payment + interest, or WHY there is no timeline. */
+  const resultDetail = (cls: string) => {
+    if (paidOff) {
+      return (
+        <p className={cls} style={{ color: "var(--text-faint)", borderColor: "var(--border-hairline)" }}>
+          {finalPaymentLine}
+          {totalInterest != null && totalInterest > 0 ? ` · ${est}${formatCurrencyExact(totalInterest, disp)} in interest` : ""}
+        </p>
+      );
+    }
+    if (!refusalLine) return null;
+    return (
+      <p className={cls} style={{ color: "var(--accent-warning)", borderColor: "var(--border-hairline)" }}>{refusalLine}</p>
+    );
+  };
+
   const disclaimer = (
     <p className="text-[10px] text-center" style={{ color: "var(--text-faint)" }}>
       {hasRates
-        ? "Estimate only · actual totals may vary based on billing cycles, fees, and rate changes"
-        : "Simplified estimate · add APR to accounts for interest-aware calculation"}
+        ? "Monthly payments · interest accrues daily on the balance · actual totals vary with billing cycles, fees, and rate changes"
+        : "No payoff timeline is shown without an APR — an unknown rate is never treated as 0%"}
     </p>
   );
 
@@ -450,15 +429,6 @@ export function DebtPayoffSection({
                     </div>
                   </>
                 )}
-                {minPayment > 0 && (
-                  <>
-                    <span style={{ color: "var(--text-faint)" }}>·</span>
-                    <div className="flex items-center gap-1">
-                      <span style={{ color: "var(--text-faint)" }}>Min</span>
-                      <span className="font-semibold" style={{ color: "var(--text-secondary)" }}>{est}{formatBalance(minPayment, disp)}/mo</span>
-                    </div>
-                  </>
-                )}
               </div>
 
               <div className="rounded-2xl px-4 py-3 border" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
@@ -476,29 +446,22 @@ export function DebtPayoffSection({
                     </div>
                   )}
                 </div>
-                {months != null && totalInterest != null && hasRates && (
-                  <p className="text-[11px] mt-1.5 pt-1.5 border-t" style={{ color: "var(--text-faint)", borderColor: "var(--border-hairline)" }}>
-                    {est}{formatBalance(totalInterest, disp)} in interest over {months} payment{months !== 1 ? "s" : ""}
-                  </p>
-                )}
+                {resultDetail("text-[11px] mt-1.5 pt-1.5 border-t")}
               </div>
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <p className="text-xs" style={{ color: "var(--text-secondary)" }}>{freqLabel} payment</p>
-                    {freqToggle}
-                  </div>
+                  <p className="text-xs" style={{ color: "var(--text-secondary)" }}>Monthly payment</p>
                   {paymentInput()}
                 </div>
                 {slider}
                 <div className="flex justify-between text-[10px]" style={{ color: "var(--text-faint)" }}>
-                  <span>{sym}50 / {freq === "week" ? "week" : "month"}</span>
-                  <span>{formatBalance(sliderMax, disp)} / {freq === "week" ? "week" : "month"}</span>
+                  <span>{sym}50 / month</span>
+                  <span>{formatBalance(sliderMax, disp)} / month</span>
                 </div>
               </div>
 
-              {months != null && breakdown}
+              {paidOff && breakdown}
               {disclaimer}
             </div>
 
@@ -545,8 +508,8 @@ export function DebtPayoffSection({
                             {a.interestRate != null && (
                               <span className="text-[10px]" style={{ color: `${debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length)}cc` }}>{a.interestRate.toFixed(2)}% APR</span>
                             )}
-                            {a.minimumPayment != null && (
-                              <span className="text-[10px]" style={{ color: "var(--text-faint)" }}>{formatBalance(a.minimumPayment, a.currency)}/mo min</span>
+                            {a.interestRate == null && a.balance > 0 && (
+                              <span className="text-[10px]" style={{ color: "var(--text-faint)" }}>APR unknown</span>
                             )}
                           </div>
                         </div>
@@ -566,12 +529,6 @@ export function DebtPayoffSection({
                       <span className="font-semibold" style={{ color: debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length) }}>{weightedApr!.toFixed(2)}%</span>
                     </div>
                   )}
-                  {minPayment > 0 && (
-                    <div className="flex justify-between text-xs">
-                      <span style={{ color: "var(--text-muted)" }}>Min monthly payments</span>
-                      <span className="font-semibold" style={{ color: "var(--text-secondary)" }}>{est}{formatBalance(minPayment, disp)}</span>
-                    </div>
-                  )}
                 </div>
               </div>
 
@@ -583,19 +540,12 @@ export function DebtPayoffSection({
                     {timeLabel()}
                   </p>
                   {payoffDate && <p className="text-sm mt-1" style={{ color: "var(--text-secondary)" }} suppressHydrationWarning>by {payoffDate}</p>}
-                  {months != null && totalInterest != null && hasRates && (
-                    <p className="text-xs mt-2" style={{ color: "var(--text-faint)" }}>
-                      {est}{formatBalance(totalInterest, disp)} in interest over {months} payment{months !== 1 ? "s" : ""}
-                    </p>
-                  )}
+                  {resultDetail("text-xs mt-2")}
                 </div>
 
                 <div className="space-y-3">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                      <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{freqLabel} payment</p>
-                      {freqToggle}
-                    </div>
+                    <p className="text-sm" style={{ color: "var(--text-secondary)" }}>Monthly payment</p>
                     {paymentInput()}
                   </div>
                   {slider}
@@ -603,15 +553,12 @@ export function DebtPayoffSection({
                     {/* MC1 QA — slider bounds are Space-native aggregates; label
                         in the Space's display currency like the other two
                         slider variants (was a hardcoded-$ omission). */}
-                    <span>{sym}50 / {freq === "week" ? "week" : "month"}</span>
-                    <span>{formatBalance(sliderMax, disp)} / {freq === "week" ? "week" : "month"}</span>
+                    <span>{sym}50 / month</span>
+                    <span>{formatBalance(sliderMax, disp)} / month</span>
                   </div>
-                  {minPayment > 0 && (
-                    <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>Minimum payment: {est}{formatBalance(minPayment, disp)} / month</p>
-                  )}
                 </div>
 
-                {months != null && breakdown}
+                {paidOff && breakdown}
                 {disclaimer}
               </div>
             </div>
@@ -674,21 +621,13 @@ export function DebtPayoffSection({
 
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <p className="text-xs shrink-0" style={{ color: "var(--text-secondary)" }}>{freqLabel} payment</p>
-              {freqToggle}
-            </div>
-            {minPayment > 0 && (
-              <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>min {est}{formatBalance(minPayment, disp)}/mo</p>
-            )}
-          </div>
+          <p className="text-xs shrink-0" style={{ color: "var(--text-secondary)" }}>Monthly payment</p>
           {paymentInput()}
         </div>
         {slider}
         <div className="flex justify-between text-[10px]" style={{ color: "var(--text-faint)" }}>
-          <span>{sym}50/{freq === "week" ? "wk" : "mo"}</span>
-          <span>{formatBalance(sliderMax, disp)}/{freq === "week" ? "wk" : "mo"}</span>
+          <span>{sym}50/mo</span>
+          <span>{formatBalance(sliderMax, disp)}/mo</span>
         </div>
       </div>
 
@@ -707,7 +646,9 @@ export function DebtPayoffSection({
         )}
       </div>
 
-      {months != null && breakdown}
+      {resultDetail("text-[11px] px-1")}
+      {paidOff && breakdown}
+      <PayoffScenarioStrip input={{ total, aprPct, payment: amount, startISO }} currency={disp} />
       {disclaimer}
     </div>
   );

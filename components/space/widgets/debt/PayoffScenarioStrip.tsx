@@ -3,44 +3,29 @@
 /**
  * components/space/widgets/debt/PayoffScenarioStrip.tsx
  *
- * S4 — the extra-payment scenario strip that sits BENEATH the interactive
- * planner inside the same Payoff panel (plan §2, §3.3). Three honest presets —
- * minimums / +$100/mo / +$250/mo — each with its payoff horizon and interest
- * saved vs minimums, computed by buildPayoffScenarios over the SAME aggregate
- * ({total, monthlyRate, minPayment}) the planner derives (plan risk §5). The
- * planner IS the interactive extra-payment control; this strip is the at-a-glance
- * comparison the mockup's scenario bars imply — no avalanche/snowball engine.
+ * The "pay a little more" strip rendered BY the interactive planner, beneath its
+ * result, over the planner's own {total, aprPct, payment}. Three presets —
+ * +50 / +100 / +250 a month over the payment the user chose — each with its
+ * precise payoff horizon and the interest saved against that chosen payment,
+ * computed by buildPayoffScenarios over the same `planPayoff` engine.
  *
- * No minimums / nothing owed ⇒ buildPayoffScenarios returns [] and the strip
- * renders nothing (the planner's own disclaimers already cover it).
+ * Unknown APR / nothing owed ⇒ buildPayoffScenarios returns [] and the strip
+ * renders nothing (the planner already says why there is no timeline).
  */
 
 import { formatCurrency } from "@/lib/currency";
-import { useAggregateCurrency } from "@/components/space/widgets/display-money";
-import type { ConversionContext } from "@/lib/money/types";
 import { buildPayoffScenarios, type PayoffScenarioInput } from "./payoff-scenarios";
-
-function horizonLabel(months: number | null): string {
-  if (months == null) return "Won't cover interest";
-  const y = Math.floor(months / 12);
-  const m = months % 12;
-  if (y === 0) return `${months} mo`;
-  if (m === 0) return `${y}y`;
-  return `${y}y ${m}m`;
-}
+import { payoffHorizonLabel } from "./payoff-copy";
 
 export function PayoffScenarioStrip({
   input,
-  ctx,
+  currency,
 }: {
   input: PayoffScenarioInput;
-  ctx?: ConversionContext;
+  /** The planner's display currency — the strip never resolves its own. */
+  currency: string;
 }) {
-  // REVIEW-3 B-5 — the display-currency AUTHORITY is the fallback, never a
-  // build-time USD literal (display-money.ts). The formatter is INJECTED into
-  // buildPayoffScenarios, which no longer owns a "$" default of its own.
-  const aggregateCurrency = useAggregateCurrency(ctx);
-  const fmtMoney = (v: number) => formatCurrency(v, aggregateCurrency);
+  const fmtMoney = (v: number) => formatCurrency(v, currency);
   const rows = buildPayoffScenarios(input, { fmtMoney });
   if (rows.length === 0) return null;
 
@@ -51,16 +36,16 @@ export function PayoffScenarioStrip({
         <div key={r.id} className="flex items-center justify-between gap-2">
           <span className="text-[12px] text-[var(--text-secondary)] truncate">{r.label}</span>
           <span className="flex items-center gap-2 shrink-0 text-[11px] tabular-nums">
-            <span className="text-[var(--text-muted)]">{horizonLabel(r.months)}</span>
-            {r.interestSavedVsMin != null && r.interestSavedVsMin > 0 && (
+            <span className="text-[var(--text-muted)]">{payoffHorizonLabel(r.plan)}</span>
+            {r.interestSavedVsChosen != null && r.interestSavedVsChosen > 0 && (
               <span className="font-medium text-[var(--accent-positive)]">
-                saves {fmtMoney(r.interestSavedVsMin)}
+                saves {fmtMoney(r.interestSavedVsChosen)}
               </span>
             )}
           </span>
         </div>
       ))}
-      <p className="text-[10px] text-[var(--text-faint)] pt-0.5">Interest saved vs paying minimums only.</p>
+      <p className="text-[10px] text-[var(--text-faint)] pt-0.5">Interest saved vs the payment you chose.</p>
     </div>
   );
 }
