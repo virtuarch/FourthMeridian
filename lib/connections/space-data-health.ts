@@ -18,13 +18,22 @@ import 'server-only';
 import type { PrismaClient, VisibilityLevel } from '@prisma/client';
 import { grantsAccountDetail } from '@/lib/ai/visibility';
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from '@/lib/accounts/display-identity';
+import { grantsBalanceDisclosure } from '@/lib/account-privacy';
 import { deriveSpaceDataHealth, type DataHealthAccountInput, type SpaceDataHealth } from './space-data-health.core';
 import { loadRefreshPolicies } from '@/lib/platform/refresh-policy';
 
 type Client = Pick<PrismaClient, 'spaceAccountLink' | 'platformSetting'>;
 
 export async function loadSpaceDataHealth(
-  client: Client, args: { spaceId: string; viewerUserId: string; now: Date },
+  client: Client, args: {
+    spaceId: string; viewerUserId: string; now: Date;
+    /**
+     * The accounts that put rows into the banking population
+     * (lib/data/transaction-population), when the caller scopes flow claims. The
+     * ids are matched here and never leave: a source reports only `bankingRows`.
+     */
+    bankingAccountIds?: ReadonlySet<string>;
+  },
 ): Promise<SpaceDataHealth> {
   const [links, policies] = await Promise.all([client.spaceAccountLink.findMany({
     where: { spaceId: args.spaceId, status: 'ACTIVE', financialAccount: { deletedAt: null } },
@@ -32,7 +41,7 @@ export async function loadSpaceDataHealth(
       visibilityLevel: true,
       financialAccount: {
         select: {
-          ...ACCOUNT_NAME_SELECT, ownerUserId: true, lastUpdated: true, syncStatus: true,
+          ...ACCOUNT_NAME_SELECT, id: true, type: true, ownerUserId: true, lastUpdated: true, syncStatus: true,
           connections: {
             where: { deletedAt: null },
             orderBy: [{ isCanonical: 'desc' }, { createdAt: 'asc' }],
@@ -56,6 +65,10 @@ export async function loadSpaceDataHealth(
     return {
       detailVisible: grantsAccountDetail(l.visibilityLevel as VisibilityLevel) || fa.ownerUserId === args.viewerUserId,
       accountName: accountDisplayName(fa),
+      accountType: fa.type,
+      // Same gate as the accounts assembler: a non-disclosing link is in no total.
+      contributesBalance: grantsBalanceDisclosure(l.visibilityLevel),
+      feedsBankingRows: args.bankingAccountIds?.has(fa.id) ?? false,
       lastUpdated: fa.lastUpdated,
       syncStatus: fa.syncStatus,
       plaid: plaidConn ? {

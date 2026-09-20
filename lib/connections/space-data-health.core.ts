@@ -39,10 +39,30 @@
  * ⚠️ NAMES FOLLOW THE DETAIL GRANT. An institution or wallet name is shown only
  * when the viewer may see the account's detail (or owns the account); otherwise
  * the source is described generically, as the accounts assembler already does.
+ *
+ * ⚠️ A SOURCE SAYS WHAT IT FEEDS. A stale brokerage says nothing about a card
+ * balance. Each source reports the POPULATIONS its accounts in this Space belong
+ * to (`feeds`) — the balance buckets of THE account classifier
+ * (lib/account-classifier `classifyAccounts`), plus `bankingRows` when the caller
+ * knows which accounts put rows into the banking population
+ * (lib/data/transaction-population). That is what lets a consumer scope
+ * completeness to a CLAIM instead of to the Space: M1 established the rule for
+ * flow measures (a NEEDS_RECONNECT brokerage with zero banking rows must not make
+ * spending incomplete); this makes it available for balances. Classes only —
+ * never an account, an id or an amount.
  */
 
 import { bandForAge, isStaleBand, VERY_STALE_AFTER_DAYS } from "@/lib/freshness/observation";
 import { isOverdue, type RefreshPolicy } from "@/lib/platform/refresh-policy.core";
+import { classifyAccounts } from "@/lib/account-classifier";
+
+/**
+ * A population a source's accounts contribute to: the five balance buckets of
+ * `classifyAccounts`, and the banking-transaction population.
+ */
+export type FedPopulation =
+  | "liquid" | "investments" | "digitalAssets" | "realAssets" | "liabilities" | "bankingRows";
+const BALANCE_POPULATIONS = ["liquid", "investments", "digitalAssets", "realAssets", "liabilities"] as const;
 
 export type DataSourceKind = "BANK" | "WALLET" | "MANUAL";
 
@@ -72,6 +92,14 @@ export interface DataSourceView {
   needsAttention: boolean;
   /** The viewer can resolve it on the Connections page (they own the connection). */
   actionable: boolean;
+  /**
+   * The populations this source's accounts in this Space contribute to, in a
+   * fixed order. Present only when the caller supplied account types. An account
+   * whose link discloses no balance contributes to no balance population — it is
+   * in no total, so it can qualify none. Server-side only: the Brief's view model
+   * copies sources field by field and does not forward it.
+   */
+  feeds?: FedPopulation[];
 }
 
 export interface DataGroupView {
@@ -94,6 +122,12 @@ export interface SpaceDataHealth {
 export interface DataHealthAccountInput {
   /** The viewer may see this account's identifying detail. */
   detailVisible: boolean;
+  /** `FinancialAccount.type`. When given, the source reports which populations it feeds. */
+  accountType?: string;
+  /** The link discloses this account's balance, so it is IN the Space's totals. Default true. */
+  contributesBalance?: boolean;
+  /** This account put rows into the banking population (lib/data/transaction-population). */
+  feedsBankingRows?: boolean;
   accountName:   string;
   /** When Fourth Meridian last wrote this account after a successful read. */
   lastUpdated:   Date | null;
@@ -186,6 +220,20 @@ export function deriveSourceHealth(input: SourceHealthInput, now: Date): SourceH
   return { state, lastUpdatedAt: accountsClock?.toISOString() ?? null, needsAttention: state !== "CURRENT" };
 }
 
+/**
+ * The populations a source's accounts belong to — bucketed by THE classifier, so
+ * "liquid" here is exactly the set `totalLiquid` sums. Undefined when no row
+ * carried a type (a caller that does not scope claims).
+ */
+function feedsOf(rows: DataHealthAccountInput[]): FedPopulation[] | undefined {
+  if (!rows.some((r) => typeof r.accountType === "string")) return undefined;
+  const inTotals = rows.filter((r) => typeof r.accountType === "string" && r.contributesBalance !== false);
+  const buckets = classifyAccounts(inTotals.map((r) => ({ type: r.accountType as string, balance: 0 })));
+  const feeds: FedPopulation[] = BALANCE_POPULATIONS.filter((k) => buckets[k].length > 0);
+  if (rows.some((r) => r.feedsBankingRows === true)) feeds.push("bankingRows");
+  return feeds;
+}
+
 export function deriveSpaceDataHealth(
   rows: DataHealthAccountInput[], viewerUserId: string, now: Date,
   /** Resolved refresh policies by kind (lib/platform/refresh-policy.ts). Manual accounts take none. */
@@ -213,8 +261,10 @@ export function deriveSpaceDataHealth(
       : rs.length === 1 && rs[0].detailVisible ? rs[0].accountName : "Manual accounts";
     const actionable = kind === "BANK" ? p!.ownerUserId === viewerUserId
       : kind === "WALLET" ? w!.ownerUserId === viewerUserId : false;
+    const feeds = feedsOf(rs);
     sources.push({ kind, label, state: health.state, lastUpdatedAt: health.lastUpdatedAt,
-      accountCount: rs.length, needsAttention: health.needsAttention, actionable });
+      accountCount: rs.length, needsAttention: health.needsAttention, actionable,
+      ...(feeds ? { feeds } : {}) });
   }
 
   sources.sort((a, b) => SEVERITY[b.state] - SEVERITY[a.state]

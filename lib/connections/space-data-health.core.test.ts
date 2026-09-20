@@ -170,5 +170,34 @@ console.log('\nJ. cadence-aware health — expected cadence is policy, overdue i
     by('Cold storage') === 'OUT_OF_DATE' && by('Chase') === 'CURRENT' && by('House') === 'CURRENT');
 }
 
+console.log('\nJ. a source says what it feeds — populations, never accounts');
+{
+  const h = derive([
+    bank({}, { accountName: 'Checking', accountType: 'checking', feedsBankingRows: true }),
+    bank({}, { accountName: 'Sapphire', accountType: 'debt', feedsBankingRows: true }),
+    bank({ key: 'item_SECRET_BROKER', institutionName: 'Charles Schwab', status: 'NEEDS_REAUTH' },
+      { accountName: 'Brokerage', accountType: 'investment', lastUpdated: daysAgo(34) }),
+    wallet({}, { accountType: 'crypto' }),
+    { ...manual(3), accountType: 'other' },
+  ]);
+  const feeds = (label: string) => JSON.stringify(h.sources.find((s) => s.label === label)?.feeds);
+  check('one connection feeding checking and a card feeds liquid, liabilities and the banking rows',
+    feeds('Chase') === '["liquid","liabilities","bankingRows"]', feeds('Chase'));
+  check('a brokerage that posts no banking rows feeds investments ONLY (M1: it cannot qualify a spending figure)',
+    feeds('Charles Schwab') === '["investments"]', feeds('Charles Schwab'));
+  check('a wallet feeds digital assets; a manual asset feeds real assets',
+    feeds('Cold storage') === '["digitalAssets"]' && feeds('House') === '["realAssets"]');
+  check('the buckets are the account classifier\'s own (crypto is never an investment)',
+    !/investments/.test(feeds('Cold storage')));
+
+  const hidden = derive([bank({}, { accountType: 'savings', contributesBalance: false, feedsBankingRows: false })]);
+  check('an account whose link discloses no balance is in no total, so it feeds no balance population',
+    JSON.stringify(hidden.sources[0].feeds) === '[]');
+
+  check('a caller that supplies no account types gets no `feeds` key at all (existing callers unchanged)',
+    derive([bank(), wallet()]).sources.every((s) => !('feeds' in s)));
+  check('no account id, name or amount rides along', !/item_SECRET|conn_SECRET|Sapphire|Brokerage/.test(JSON.stringify(h.sources.map((s) => s.feeds))));
+}
+
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
