@@ -50,6 +50,12 @@ export type {
   CashFlowReliability,
   DeficitCauseClassification,
   DebtHealthClassification,
+  DebtRateClassification,
+  ClassificationScope,
+  ClassificationReason,
+  DebtReasonCode,
+  LiquidityReasonCode,
+  DebtBurden,
   LiquidityCoverageClassification,
   CurrentStatePriority,
 } from './annotations';

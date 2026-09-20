@@ -120,7 +120,9 @@ function mkCtx(
 
 const DECLARED_COVERAGE: Record<string, string[]> = {
   // Base sections — the primary financial judgements.
-  DebtHealthClassification: [
+  // Renamed from DebtHealthClassification: the union grades the RATE on the owed
+  // balance, and now says so. The verdict set is UNCHANGED — no new claim.
+  DebtRateClassification: [
     "CRITICAL", "WARNING", "IMPROVING", "HEALTHY", "INSUFFICIENT_DATA", "NO_DEBT",
   ],
   LiquidityCoverageClassification: [

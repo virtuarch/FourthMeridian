@@ -48,13 +48,38 @@ export type DeficitCauseClassification =
   | 'NOT_APPLICABLE';          // no deficit (economic net after NET debt paydown ≥ 0)
 
 
-export type DebtHealthClassification =
-  | 'CRITICAL'          // high-APR debt needing urgent attention
-  | 'WARNING'           // elevated APR worth active management
-  | 'IMPROVING'         // liabilities declining over snapshot window
-  | 'HEALTHY'           // APR manageable and not rising
-  | 'INSUFFICIENT_DATA' // APR missing for one or more debt accounts
+/**
+ * THE DEBT RATE CLASSIFICATION — what the contractual rate on the balance owed
+ * TODAY is graded as. It is NOT a grade of the user's debt situation.
+ *
+ * ⚠️ SCOPE: `RATE_ON_OWED_BALANCE`. The ladder has one graded input, the
+ * owed-weighted APR, and one tie-break below the rate rungs (whether liabilities
+ * declined over the canonical window). Balance size, utilisation, payment
+ * behaviour and whether interest is actually being paid are NOT inputs, so
+ * CRITICAL means exactly "the rate on what is owed exceeds APR_CRITICAL_THRESHOLD"
+ * — a property of the borrowing terms. A transactor with $50 on a 29% card and a
+ * revolver with $40,000 on one grade identically HERE, and differ in
+ * `DebtSection.burden`, which states what the rate costs next to the user's own
+ * income, expenses and cash. Every consumer in this engine already reads
+ * CRITICAL/WARNING as "high-APR debt present" (HIGH_INTEREST_DEBT,
+ * PAY_HIGH_APR_DEBT, highAprDebtPresent); the name now says so too.
+ *
+ * Which rung fired, with its operands and thresholds, is `DebtSection.reason`.
+ */
+export type DebtRateClassification =
+  | 'CRITICAL'          // owed-weighted APR above APR_CRITICAL_THRESHOLD
+  | 'WARNING'           // owed-weighted APR above APR_WARNING_THRESHOLD
+  | 'IMPROVING'         // rate below WARNING, and liabilities declined over the canonical window
+  | 'HEALTHY'           // rate below WARNING, liabilities not declining
+  | 'INSUFFICIENT_DATA' // APR missing for one or more debt accounts — the rate cannot be graded
   | 'NO_DEBT';          // no liabilities in context
+
+/**
+ * @deprecated The former name. It described a health grade the rule never
+ * computed (a rate threshold presented as debt health). Kept as an alias so no
+ * import breaks; new code names the rate.
+ */
+export type DebtHealthClassification = DebtRateClassification;
 
 
 export type LiquidityCoverageClassification =
@@ -172,6 +197,100 @@ export interface UngradedSection {
   detail:  string;
 }
 
+// ── Classification reasons (claim-scoped evidence) ───────────────────────────
+
+/**
+ * WHAT a classification is a classification OF. A label without its scope is
+ * read as the widest thing its name could mean: `debt: CRITICAL` was narrated as
+ * "your debt situation is in the most severe tier" when the rule had graded one
+ * number, a rate.
+ */
+export type ClassificationScope =
+  /** The owed-weighted contractual APR on balances owed today. Not burden, not behaviour. */
+  | 'RATE_ON_OWED_BALANCE'
+  /** Liquid cash divided by the monthly expense baseline, in months. */
+  | 'LIQUID_CASH_VS_MONTHLY_EXPENSES';
+
+/**
+ * WHY A DETERMINISTIC CLASSIFICATION FIRED — one shape, for every classification
+ * that can reach model narration.
+ *
+ * ⚠️ THE MODEL MUST NEVER REVERSE-ENGINEER A CAUSE. A bare label handed to a
+ * narrator that is told to "say what it means" is explained from whatever
+ * figures sit nearest to it; measured, that produced "driven by how you've been
+ * using and repaying it" for a verdict whose only input was an APR. The reason
+ * travels WITH the verdict: the rung that fired, the operands the rule compared,
+ * the thresholds it compared them with, and the population they were computed
+ * over. Nothing here is prose and nothing is a recommendation.
+ *
+ * `reasonMetrics` keys that hold a percentage end in `Pct` (the Brief's figure
+ * licence reads that suffix); money is in the Space's reporting currency.
+ */
+export interface ClassificationReason<Code extends string = string> {
+  scope:        ClassificationScope;
+  /** The rung of the ladder that produced the classification. */
+  reasonCode:   Code;
+  /** The operands the rule compared AND the thresholds it compared them with. */
+  reasonMetrics: Record<string, number | string | null>;
+  /** What the operands were computed over. Counts only — never an identity. */
+  evidencePopulation: {
+    kind:     'DEBT_ACCOUNTS' | 'LIQUID_ACCOUNTS';
+    /** Accounts of that kind in the payload. */
+    accounts: number;
+    /** Of those, how many the rule could actually use (e.g. debt accounts with a known APR). */
+    graded:   number;
+  };
+}
+
+export type DebtReasonCode =
+  | 'ACCOUNTS_DOMAIN_ABSENT'
+  | 'NO_LIABILITIES'
+  | 'ACCOUNT_LIST_ABSENT'
+  | 'APR_UNKNOWN'
+  | 'WEIGHTED_APR_ABOVE_CRITICAL'
+  | 'WEIGHTED_APR_ABOVE_WARNING'
+  | 'RATE_BELOW_WARNING_LIABILITIES_DECLINING'
+  | 'RATE_BELOW_WARNING';
+
+export type LiquidityReasonCode =
+  | 'NO_LIQUID_ACCOUNTS'
+  | 'NO_EXPENSE_BASELINE'
+  | 'COVERAGE_NOT_FINITE'
+  | 'COVERAGE_BELOW_CRITICAL'
+  | 'COVERAGE_BELOW_WARNING'
+  | 'COVERAGE_BELOW_EXCELLENT'
+  | 'COVERAGE_AT_OR_ABOVE_EXCELLENT';
+
+/**
+ * WHAT THE RATE COSTS, NEXT TO THE USER'S OWN POSITION — facts, not a grade.
+ *
+ * ⚠️ DELIBERATELY UNGRADED. No scoring model for debt health exists in this
+ * product (components/space/widgets/debt/debt-signals.ts refuses one for the same
+ * reason), and a threshold invented here would be a number chosen to make one
+ * Space read well. What code CAN state exactly is the arithmetic a judgement
+ * needs: the interest the rated balances would accrue in a month IF carried, and
+ * how that and the amount owed compare with this user's monthly income, monthly
+ * expense baseline and liquid cash. Each ratio names its operands; a ratio whose
+ * base is not established (or is under half a cent) is null, never 0 or Infinity.
+ *
+ * ⚠️ "IF CARRIED" IS NOT "BEING PAID". A card paid in full each statement accrues
+ * none of this. Nothing here observes interest actually charged.
+ */
+export interface DebtBurden {
+  /** Reporting-currency amount owed across the debt accounts that carry a known APR. */
+  ratedOwed:                    number;
+  /** Σ owed × APR ÷ 12 over those accounts. Null when nothing rated is owed. */
+  monthlyInterestIfCarried:     number | null;
+  /** The bases the ratios below divide by, echoed so each ratio can be checked. */
+  monthlyIncome:                number | null;
+  monthlyExpenses:              number | null;
+  liquid:                       number | null;
+  interestOfMonthlyIncomePct:   number | null;
+  interestOfMonthlyExpensesPct: number | null;
+  /** Total liabilities ÷ liquid cash × 100. */
+  owedOfLiquidPct:              number | null;
+}
+
 // ── Typed assessment sections ─────────────────────────────────────────────────
 
 
@@ -249,13 +368,19 @@ export interface CashFlowSection {
 
 
 export interface DebtSection {
-  classification:        DebtHealthClassification;
+  /** The RATE classification (scope RATE_ON_OWED_BALANCE) — see DebtRateClassification. */
+  classification:        DebtRateClassification;
   /**
+   * Confidence IN THE RATE CLASSIFICATION — never in a wider debt verdict.
    * HIGH   — all FULL-visibility debt APRs are known.
    * MEDIUM — some FULL-visibility debt APRs known, some missing.
    * LOW    — no APRs known, or no FULL-visibility debt accounts.
    */
   confidence:            ConfidenceLevel;
+  /** Which rung fired, with its operands, thresholds and population. */
+  reason:                ClassificationReason<DebtReasonCode>;
+  /** What the rate costs next to the user's own income, expenses and cash. Ungraded. */
+  burden:                DebtBurden;
   totalLiabilities:      number;
   monthlyInterestBurden: number | null;
   /** APR coverage across FULL-visibility debt accounts only. */
@@ -277,6 +402,8 @@ export interface DebtSection {
 
 export interface LiquiditySection {
   classification:          LiquidityCoverageClassification;
+  /** Which rung fired, with its operands, thresholds and population. */
+  reason:                  ClassificationReason<LiquidityReasonCode>;
   /**
    * HIGH   — liquid accounts present in this Space, balance data reliable.
    * MEDIUM — accounts present but no liquid accounts linked to this Space.

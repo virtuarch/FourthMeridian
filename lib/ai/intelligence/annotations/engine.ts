@@ -13,7 +13,10 @@ import type {
   ConfidenceLevel,
   CashFlowReliability,
   DeficitCauseClassification,
-  DebtHealthClassification,
+  DebtRateClassification,
+  ClassificationReason,
+  DebtReasonCode,
+  LiquidityReasonCode,
   LiquidityCoverageClassification,
   CurrentStatePriority,
   AprCompleteness,
@@ -30,16 +33,14 @@ import {
   TXN_COUNT_MINIMUM,
   INCOME_PLAUS_RATIO_LOW,
   INCOME_TXN_HIGH_THRESHOLD,
-  APR_CRITICAL_THRESHOLD,
-  APR_WARNING_THRESHOLD,
-  LIQUIDITY_CRITICAL_MONTHS,
-  LIQUIDITY_WARNING_MONTHS,
-  LIQUIDITY_EXCELLENT_MONTHS,
   // W2 — DEBT_FRACTION_DOMINANT / DEBT_FRACTION_PARTIAL no longer imported:
   // their only consumers were the deleted intent rungs of the deficit ladder.
 } from './constants';
 import { computeAverageMonthlyDebtPayments, computeAverageMonthlyIncome, computeAverageMonthlySpending, computeMonthlySpendingBasis, computeDebtStrategy, computeSpendingOpportunities, computeSpendingTrends, getAcctsData, getSnapData, getTxnData } from './metrics';
 import { deriveHeuristics, derivePriorities } from './rules';
+import {
+  computeDebtBurden, gradeDebtRate, gradeLiquidityCoverage, liquidityReason, ungradedDebtReason,
+} from './classification-reason';
 import { computeCapitalAllocation, computeInvestmentReadiness, computeRiskOpportunities, computeTrajectory } from './engines';
 import type { SpaceContext_AI } from '@/lib/ai/types';
 import { MATERIAL_UNIDENTIFIED_INFLOW_SHARE, deriveUnidentifiedInflowShare } from '@/lib/ai/types';
@@ -199,12 +200,21 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
 
   // ── Step 3: Debt ─────────────────────────────────────────────────────────
 
-  let debtSection: DebtSection;
+  // ⚠️ THE RATE, ITS REASON, AND — SEPARATELY — ITS BURDEN. What this step grades
+  // is the contractual rate on the balance owed today (DebtRateClassification,
+  // scope RATE_ON_OWED_BALANCE); every branch below records WHICH rung fired.
+  // The burden (what that rate costs next to this user's income, expenses and
+  // cash) needs the expense baseline Step 4 resolves, so it is attached right
+  // after Step 4 — `debtCore` is the section minus that one field.
+  let debtCore: Omit<DebtSection, 'burden'>;
+  /** Reporting-currency owed across rated rows — the burden's and the reason's operand. */
+  let ratedOwed = 0;
 
   if (!accts) {
-    debtSection = {
+    debtCore = {
       classification:        'INSUFFICIENT_DATA',
       confidence:            'LOW',
+      reason:                ungradedDebtReason('ACCOUNTS_DOMAIN_ABSENT', { debtAccounts: 0, debtAccountsWithApr: 0 }),
       totalLiabilities:      0,
       monthlyInterestBurden: null,
       aprCompleteness:       'NONE',
@@ -213,9 +223,11 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
       aprGapAccountNames:    [],
     };
   } else if (totalLiabilities === 0) {
-    debtSection = {
+    debtCore = {
       classification:        'NO_DEBT',
       confidence:            'HIGH',
+      reason:                ungradedDebtReason('NO_LIABILITIES', {
+        debtAccounts: accts.counts.liabilities, debtAccountsWithApr: 0 }),
       totalLiabilities:      0,
       monthlyInterestBurden: null,
       aprCompleteness:       'FULL', // vacuously: no debt accounts to be incomplete
@@ -244,9 +256,11 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     // built by the assembler (fixture, hand-rolled context) — a genuine
     // payload gap, refused honestly below as ACCOUNT_LIST_ABSENT. The refusal
     // stands; only its attribution stopped being a payload-size choice.
-    debtSection = {
+    debtCore = {
       classification:        'INSUFFICIENT_DATA',
       confidence:            'LOW',
+      reason:                ungradedDebtReason('ACCOUNT_LIST_ABSENT', {
+        debtAccounts: accts.counts.liabilities, debtAccountsWithApr: 0 }),
       totalLiabilities,
       monthlyInterestBurden: null,
       aprCompleteness:       'NONE',
@@ -296,6 +310,7 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
           // A 0% row accrues nothing, so it adds nothing here — but it IS a
           // known rate and belongs in the blended-rate population below.
           interestBurden += balance * acct.apr / 100 / 12;
+          ratedOwed      += balance;
           aprRows.push({ balance, apr: acct.apr, minimumPayment: null });
         }
       }
@@ -313,16 +328,20 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
       .filter((g) => g.field === 'apr')
       .map((g) => g.accountName);
 
-    // Debt health classification.
-    let debtHealthClassification: DebtHealthClassification;
+    // Debt RATE classification — and the rung that produced it.
+    const population = { debtAccounts: debtAccounts.length, debtAccountsWithApr: fullVisWithAPR };
+    let debtRateClassification: DebtRateClassification;
+    let debtReason: ClassificationReason<DebtReasonCode>;
     if (hasNullAPR) {
-      debtHealthClassification = 'INSUFFICIENT_DATA';
+      debtRateClassification = 'INSUFFICIENT_DATA';
+      debtReason = ungradedDebtReason('APR_UNKNOWN', population);
     } else {
-      // No rated row that owes ⇒ no blended rate. `?? 0` preserves the previous
-      // behaviour exactly: with nothing to weight, the rate thresholds below
-      // cannot fire and the classification falls to IMPROVING / HEALTHY on the
-      // liabilities trend, which is the honest read when no interest is accruing.
-      const weightedAvgAPR = computeDebtAggregate(aprRows).weightedApr ?? 0;
+      // No rated row that owes ⇒ no blended rate (null). `gradeDebtRate` weighs a
+      // null rate as 0 — the previous behaviour exactly: with nothing to weight,
+      // the rate rungs cannot fire and the classification falls to IMPROVING /
+      // HEALTHY on the liabilities trend, the honest read when no interest is
+      // accruing. The reason echoes the null, never a 0% nobody measured.
+      const weightedAvgAPR = computeDebtAggregate(aprRows).weightedApr;
       // W3 — IMPROVING now derives from the CANONICAL window authority
       // (`liabilitiesChange`, computed by canonicalWindowChange over the same
       // product-defined preset as `canonicalChange`), replacing the accidental
@@ -333,29 +352,31 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
       // canonicalChange. Corpora where the row-count window and the calendar
       // window disagree may flip this verdict: that movement is a CORRECTION,
       // the same class as v2.6-WINDOW-1.
-      const isLiabilitiesDeclining = (snap?.liabilitiesChange?.abs ?? 0) < 0;
-
-      if (weightedAvgAPR > APR_CRITICAL_THRESHOLD) {
-        debtHealthClassification = 'CRITICAL';
-      } else if (weightedAvgAPR > APR_WARNING_THRESHOLD) {
-        debtHealthClassification = 'WARNING';
-      } else if (isLiabilitiesDeclining) {
-        debtHealthClassification = 'IMPROVING';
-      } else {
-        debtHealthClassification = 'HEALTHY';
-      }
+      //
+      // The ladder itself (rate rungs, then the trend tie-break) is
+      // `gradeDebtRate` — the comparison and its reason come from one place, so
+      // the reason cannot describe a rule other than the one that ran.
+      const graded = gradeDebtRate({
+        weightedAprPct:       weightedAvgAPR,
+        ratedOwed,
+        liabilitiesChangeAbs: snap?.liabilitiesChange?.abs ?? null,
+        ...population,
+      });
+      debtRateClassification = graded.classification;
+      debtReason             = graded.reason;
     }
 
     // Debt confidence: how reliable is the classification?
     // Balance data is always reliable; the uncertainty is APR completeness.
     const debtConfidence: ConfidenceLevel =
-      debtHealthClassification !== 'INSUFFICIENT_DATA' ? 'HIGH' :
+      debtRateClassification !== 'INSUFFICIENT_DATA' ? 'HIGH' :
       aprCompleteness === 'PARTIAL'                    ? 'MEDIUM' :
       'LOW';
 
-    debtSection = {
-      classification:        debtHealthClassification,
+    debtCore = {
+      classification:        debtRateClassification,
       confidence:            debtConfidence,
+      reason:                debtReason,
       totalLiabilities,
       monthlyInterestBurden: interestBurden > 0
         ? Math.round(interestBurden * 100) / 100
@@ -379,6 +400,7 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
 
   let liquidityCoverageMonths: number | null = null;
   let liquidityCoverageClassification: LiquidityCoverageClassification;
+  let liquidityReasonCode: LiquidityReasonCode;
 
   // v2.6-ASSESS-1 — A ZERO BASELINE IS NOT INFINITE RUNWAY.
   //
@@ -420,6 +442,7 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
 
   if (liquidAccountCount === 0 || baseline === null) {
     liquidityCoverageClassification = 'UNKNOWN';
+    liquidityReasonCode = liquidAccountCount === 0 ? 'NO_LIQUID_ACCOUNTS' : 'NO_EXPENSE_BASELINE';
   } else {
     const months = totalLiquid / baseline.amount;
     // Belt to the braces above: `totalLiquid` is summed by an assembler, and a
@@ -428,13 +451,14 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     // most favourable verdict available, by falling through every check.
     if (!Number.isFinite(months)) {
       liquidityCoverageClassification = 'UNKNOWN';
+      liquidityReasonCode = 'COVERAGE_NOT_FINITE';
     } else {
       liquidityCoverageMonths = Math.round(months * 100) / 100;
-      liquidityCoverageClassification =
-        liquidityCoverageMonths < LIQUIDITY_CRITICAL_MONTHS  ? 'CRITICAL' :
-        liquidityCoverageMonths < LIQUIDITY_WARNING_MONTHS   ? 'WARNING'  :
-        liquidityCoverageMonths < LIQUIDITY_EXCELLENT_MONTHS ? 'SAFE'     :
-        'EXCELLENT';
+      // The same four rungs and thresholds as before; the ladder now also names
+      // the rung it took (classification-reason.ts).
+      const graded = gradeLiquidityCoverage(liquidityCoverageMonths);
+      liquidityCoverageClassification = graded.classification;
+      liquidityReasonCode             = graded.reasonCode;
     }
   }
 
@@ -451,6 +475,14 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
 
   const liquidity: LiquiditySection = {
     classification:          liquidityCoverageClassification,
+    reason:                  liquidityReason({
+      reasonCode:           liquidityReasonCode,
+      coverageMonths:       liquidityCoverageMonths,
+      liquid:               totalLiquid,
+      monthlyExpenses:      baseline?.amount ?? null,
+      monthlyExpensesBasis: baseline?.basis ?? null,
+      liquidAccounts:       liquidAccountCount,
+    }),
     confidence:              liquidityConfidence,
     liquidCashTotal:         totalLiquid,
     liquidAccountCount,
@@ -462,6 +494,22 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     estimatedMonthlyExpenseBasis: baseline?.basis ?? null,
     noLiquidAccountsInSpace,
     hasAccountsDomain,
+  };
+
+  // ── Step 3 (completion): the debt burden ────────────────────────────────
+  // Attached here, not above, because it divides by the SAME expense baseline
+  // liquidity coverage divided by (one authority chose it) and by liquid cash.
+  // Facts with their operands — deliberately not a grade (types.ts, DebtBurden).
+  const debtSection: DebtSection = {
+    ...debtCore,
+    burden: computeDebtBurden({
+      ratedOwed,
+      monthlyInterestIfCarried: debtCore.monthlyInterestBurden,
+      totalLiabilities:         debtCore.totalLiabilities,
+      monthlyIncome:            cashFlow.impliedMonthlyIncome,
+      monthlyExpenses:          baseline?.amount ?? null,
+      liquid:                   hasAccountsDomain && liquidAccountCount > 0 ? totalLiquid : null,
+    }),
   };
 
   // ── Step 5: Current state priority ──────────────────────────────────────
