@@ -79,6 +79,7 @@ export interface CanonicalWindowChange {
 export function canonicalWindowChange(
   points: SeriesPoint[],
   preset: TimePreset = "PAST_MONTH",
+  options: PctOptions = {},
 ): CanonicalWindowChange | null {
   if (points.length === 0) return null;
   const last = points[points.length - 1];
@@ -101,7 +102,7 @@ export function canonicalWindowChange(
     toDate,
     fromValue: opening.value,
     toValue:   last.value,
-    pct:       opening.value === 0 ? null : (abs / Math.abs(opening.value)) * 100,
+    pct:       pctOfOpening(abs, opening.value, options),
     abs,
     preset,
   };
@@ -147,6 +148,7 @@ export interface ObservedChange {
 export function observedChange(
   from: SeriesPoint | null | undefined,
   to:   SeriesPoint | null | undefined,
+  options: PctOptions = {},
 ): ObservedChange | null {
   if (!from || !to) return null;
   if (!Number.isFinite(from.value) || !Number.isFinite(to.value)) return null;
@@ -160,8 +162,44 @@ export function observedChange(
     fromDate, toDate,
     fromValue: from.value, toValue: to.value,
     abs,
-    pct: from.value === 0 ? null : (abs / Math.abs(from.value)) * 100,
+    pct: pctOfOpening(abs, from.value, options),
   };
+}
+
+/**
+ * WHEN A PERCENTAGE OF THE OPENING VALUE MEANS SOMETHING — decided here, once,
+ * for every stock change this module computes.
+ *
+ * ⚠️ NO BASE, NO PERCENTAGE. An opening under half a cent is not a base: it is
+ * float residue on a settled balance (this Space's debt series holds
+ * `2.842170943040401e-14` on a day the debt was paid off), and dividing by it
+ * yields a twelve-digit percentage of nothing. The guard was `=== 0`, which that
+ * value is not. `MONEY_EPSILON` is the same rule M1's comparison contract uses
+ * for the same question (lib/ai/measures/measure.ts `compare`), so a stock change
+ * and a flow comparison now refuse a percentage at the same point.
+ *
+ * ⚠️ A BASE SMALLER THAN THE MOVEMENT (opt-in: `baseMustCoverChange`). Measured:
+ * a card carrying $9.75 took a $1,164 week of charges, and the Daily Brief
+ * package shipped `debt.pct: 11937.8`. The arithmetic is right and the figure
+ * says nothing about the change — it measures how small the opening happened to
+ * be. When |opening| < |change| the ratio describes the BASE, not the movement,
+ * so a narrating consumer asks for it to be withheld and states the two values
+ * instead. No constant: the rule compares the movement with its own opening, so
+ * it scales with every Space and every metric. It can only fire on a rise of
+ * more than 100% or a sign crossing; a fall toward zero keeps its percentage.
+ * Opt-in because existing consumers (the product's change chips, the chat tools)
+ * already show their opening value beside the percentage.
+ */
+export interface PctOptions {
+  /** Withhold the percentage when the opening value is smaller than the change itself. */
+  baseMustCoverChange?: boolean;
+}
+
+export function pctOfOpening(abs: number, opening: number, options: PctOptions = {}): number | null {
+  const base = Math.abs(opening);
+  if (!Number.isFinite(abs) || !Number.isFinite(base) || base < MONEY_EPSILON) return null;
+  if (options.baseMustCoverChange && base < Math.abs(abs)) return null;
+  return (abs / base) * 100;
 }
 
 /**
