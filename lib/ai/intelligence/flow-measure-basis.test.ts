@@ -302,9 +302,21 @@ console.log('\nSOURCE — one month-normalisation, and no day-normalisation anyw
   check('metrics.ts divides by a month count in exactly ONE place — meanPerReliableMonth',
     (metrics.match(/\/\s*months\.length/g) ?? []).length === 1 &&
     /export function meanPerReliableMonth[\s\S]{0,400}\/\s*months\.length/.test(metrics));
-  for (const fn of ['computeAverageMonthlySpending', 'computeAverageMonthlyIncome', 'computeAverageMonthlyDebtPayments']) {
+  for (const fn of ['computeAverageMonthlyIncome', 'computeAverageMonthlyDebtPayments']) {
     check(`${fn} is the helper over one field`, new RegExp(`export function ${fn}\\([\\s\\S]{0,120}return meanPerReliableMonth\\(`).test(metrics));
   }
+  // ⚠️ SPENDING IS THE ONE THAT DOES NOT USE THE GENERIC HELPER, AND THE RULE IS THE
+  // SAME. It is NET economic spending: each reliable month's charges less that month's
+  // refunds, clamped at 0, then averaged — a rule that belongs to the refund authority
+  // (`meanMonthlyEconomicSpend`, lib/transactions/cash-flow) and is not copied here.
+  // What this guard protects is the PROPERTY, not the spelling: the same month
+  // population as income and debt payments, and no day normalisation.
+  check('monthly spending is the economic-spend authority over the SAME reliable months',
+    /export function computeAverageMonthlySpending\([\s\S]{0,160}return computeMonthlySpendingBasis\(txn\)\?\.net/.test(metrics)
+      && /export function computeMonthlySpendingBasis\([\s\S]{0,200}return meanMonthlyEconomicSpend\(reliableMonths\(txn\)\)/.test(metrics));
+  check('…and every one of the three averages over `reliableMonths`, nothing else',
+    (metrics.match(/reliableMonths\(txn\)/g) ?? []).length >= 1
+      && /export function meanPerReliableMonth\([\s\S]{0,240}reliableMonths\(txn\)/.test(metrics));
   check('the category figure goes through the helper too', /const monthlyEquivalent = meanPerReliableMonth\(/.test(metrics));
 
   const engine = stripComments(readFileSync(join(DIR, 'engine.ts'), 'utf8'));
