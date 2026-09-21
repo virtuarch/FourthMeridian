@@ -145,6 +145,156 @@ export const UNSUPPORTED_SPEND_CATEGORIES: readonly string[] =
 export const NOT_SPENDING_CATEGORIES: readonly string[] =
   Object.entries(CATEGORY_VOCABULARY).filter(([, d]) => d.role === "NOT_SPENDING").map(([c]) => c);
 
+// ── S1 — what a spending CHANGE may be applied to ───────────────────────────
+
+/**
+ * What a transformable line MEANS when a change is applied to it:
+ *   DIRECT        it is what its name says (SUPPORTED: Travel, Fee);
+ *   WHOLE_BUCKET  it holds more than its name (DERIVED: Dining holds groceries,
+ *                 Utilities holds rent) — a change applies to ALL of it;
+ *   RESIDUAL      the catch-all (Other) — medical, transport, entertainment and
+ *                 everything unplaced, changed together.
+ */
+export type SpendTransformClass = "DIRECT" | "WHOLE_BUCKET" | "RESIDUAL";
+
+export function spendTransformClass(category: string): SpendTransformClass | null {
+  if (!isTransformableSpendCategory(category)) return null;
+  if (category === RESIDUAL_SPEND_CATEGORY) return "RESIDUAL";
+  return categoryDefinition(category)!.observability === "SUPPORTED" ? "DIRECT" : "WHOLE_BUCKET";
+}
+
+/**
+ * Where the spending an UNSUPPORTED label names actually lands in bank-synced data —
+ * the bucket a refusal can honestly offer instead. Mirrors each `meaning` above.
+ */
+const CONTAINED_IN: Record<string, string> = {
+  Groceries: "Dining", Medical: "Other", Entertainment: "Other", Transport: "Other",
+  PersonalCare: "Other", Services: "Other", Education: "Other",
+};
+
+/**
+ * THE USER'S OWN WORDS, when they are narrower (or other) than a line.
+ *
+ * ⚠️ A SUBSET NEVER SILENTLY WIDENS INTO ITS BUCKET. "Cut restaurants 20%" applied
+ * to Dining would cut groceries too — a change nobody stated, carried out
+ * confidently. So a word that names PART of a bucket resolves to a refusal that
+ * says what the bucket holds and offers it whole; only the user can agree to that.
+ *
+ *   EQUALS     the word means the whole line ("food" = Dining, "fees" = Fee);
+ *   SUBSET_OF  the word is part of a line the data does not split (restaurants ⊂ Dining);
+ *   IS         the word is an existing category name spelled another way.
+ *
+ * Keys are normalised like `resolveSpendCategory` (lower case, no spaces/_/-). A
+ * test pins that every target exists and every SUBSET_OF names a transformable line.
+ *
+ * ⚠️ AN AMBIGUOUS WORD IS LEFT OUT ON PURPOSE. "Gas" is a utility bill or fuel;
+ * "bills" is utilities or a card statement. Unlisted, it resolves UNKNOWN and the
+ * user is asked — a table that guessed would be the silent widening this prevents.
+ */
+export const SPEND_WORD_ALIASES: Record<string, { kind: "EQUALS" | "SUBSET_OF" | "IS"; category: string }> = {
+  food: { kind: "EQUALS", category: "Dining" },
+  foodanddrink: { kind: "EQUALS", category: "Dining" },
+  restaurants: { kind: "SUBSET_OF", category: "Dining" },
+  restaurant: { kind: "SUBSET_OF", category: "Dining" },
+  eatingout: { kind: "SUBSET_OF", category: "Dining" },
+  diningout: { kind: "SUBSET_OF", category: "Dining" },
+  takeout: { kind: "SUBSET_OF", category: "Dining" },
+  coffee: { kind: "SUBSET_OF", category: "Dining" },
+  bars: { kind: "SUBSET_OF", category: "Dining" },
+  grocery: { kind: "IS", category: "Groceries" },
+  supermarket: { kind: "IS", category: "Groceries" },
+  rent: { kind: "SUBSET_OF", category: "Utilities" },
+  electricity: { kind: "SUBSET_OF", category: "Utilities" },
+  internet: { kind: "SUBSET_OF", category: "Utilities" },
+  flights: { kind: "SUBSET_OF", category: "Travel" },
+  hotels: { kind: "SUBSET_OF", category: "Travel" },
+  vacations: { kind: "SUBSET_OF", category: "Travel" },
+  clothes: { kind: "SUBSET_OF", category: "Shopping" },
+  clothing: { kind: "SUBSET_OF", category: "Shopping" },
+  fees: { kind: "EQUALS", category: "Fee" },
+  bankfees: { kind: "EQUALS", category: "Fee" },
+  subscription: { kind: "EQUALS", category: "Subscriptions" },
+  streaming: { kind: "SUBSET_OF", category: "Subscriptions" },
+  movies: { kind: "IS", category: "Entertainment" },
+  concerts: { kind: "IS", category: "Entertainment" },
+  healthcare: { kind: "IS", category: "Medical" },
+  doctor: { kind: "IS", category: "Medical" },
+  transportation: { kind: "IS", category: "Transport" },
+  fuel: { kind: "IS", category: "Transport" },
+  haircuts: { kind: "IS", category: "PersonalCare" },
+  tuition: { kind: "IS", category: "Education" },
+  debtinterest: { kind: "IS", category: "Interest" },
+  cardinterest: { kind: "IS", category: "Interest" },
+};
+
+export type SpendTransformResolution =
+  | { ok: true; category: string; class: SpendTransformClass; meaning: string;
+      /** The user's word, when it was not the category's own name. */
+      requestedAs?: string }
+  | { ok: false; requested: string;
+      reason: "SUBSET_OF_BUCKET" | "UNSUPPORTED" | "GOVERNED_ELSEWHERE" | "NOT_SPENDING" | "UNKNOWN";
+      /** The line the data DOES have that holds this spending, when there is one. */
+      bucket?: string; bucketMeaning?: string;
+      unavailable: string };
+
+const norm = (raw: string) => raw.trim().toLowerCase().replace(/[\s_-]+/g, "");
+const TRANSFORMABLE_LIST = () => TRANSFORMABLE_SPEND_CATEGORIES.join(", ");
+
+/**
+ * Resolve what a spending change is ABOUT to a line it may transform — or a
+ * deterministic refusal that says why and offers the bucket that holds it.
+ * Refusals never apply anything; the caller refuses the rule whole (and staging
+ * refuses it before it can be held).
+ */
+export function resolveTransformableCategory(raw: string): SpendTransformResolution {
+  const alias = SPEND_WORD_ALIASES[norm(raw)];
+  const direct = Object.keys(CATEGORY_VOCABULARY).find((c) => c.toLowerCase() === norm(raw));
+  if (alias?.kind === "SUBSET_OF") {
+    const bucket = alias.category;
+    const meaning = categoryDefinition(bucket)!.meaning;
+    return { ok: false, requested: raw, reason: "SUBSET_OF_BUCKET", bucket, bucketMeaning: meaning,
+      unavailable: `"${raw}" is not separated in this data — it is part of ${bucket} (${meaning}). Nothing was `
+        + `applied. Offer the user ${bucket} AS A WHOLE, saying what else it contains, and apply the change to `
+        + `${bucket} only if they agree — never to ${bucket} on their behalf.` };
+  }
+  const name = alias ? alias.category : direct;
+  if (!name) {
+    return { ok: false, requested: raw, reason: "UNKNOWN",
+      unavailable: `"${raw}" is not a spending line this data has. The lines a change can apply to are `
+        + `${TRANSFORMABLE_LIST()}. Ask the user which one they mean; do not pick one for them.` };
+  }
+  const def = categoryDefinition(name)!;
+  if (def.role === "NOT_SPENDING") {
+    return { ok: false, requested: raw, reason: "NOT_SPENDING",
+      unavailable: `${name} is not spending (${def.meaning}), so a spending change cannot apply to it. The lines `
+        + `a change can apply to are ${TRANSFORMABLE_LIST()}.` };
+  }
+  if (def.observability === "UNSUPPORTED") {
+    const bucket = CONTAINED_IN[name];
+    return { ok: false, requested: raw, reason: "UNSUPPORTED",
+      ...(bucket ? { bucket, bucketMeaning: categoryDefinition(bucket)!.meaning } : {}),
+      unavailable: `${name} is not tracked on its own — ${def.meaning}. Nothing was applied.`
+        + (bucket ? ` Offer the user ${bucket} AS A WHOLE (${categoryDefinition(bucket)!.meaning}), and apply `
+          + `the change to it only if they agree.` : "") };
+  }
+  if (def.governedBy) {
+    return { ok: false, requested: raw, reason: "GOVERNED_ELSEWHERE",
+      unavailable: `${name} is not a spending line a change can cut: it is set by ${def.governedBy}. Nothing was `
+        + "applied. To change it, model the debt instead — a different rate (`liabilityAssumptions`) or "
+        + "paying it down (`contributions` with a debt `target`)." };
+  }
+  return { ok: true, category: name, class: spendTransformClass(name)!, meaning: def.meaning,
+    ...(norm(raw) !== name.toLowerCase() ? { requestedAs: raw } : {}) };
+}
+
+/** The line-by-line meanings, for a tool description generated from THIS module. */
+export function transformableCategoryGuide(): string {
+  return TRANSFORMABLE_SPEND_CATEGORIES.map((c) => {
+    const cls = spendTransformClass(c);
+    return `${c}${cls === "WHOLE_BUCKET" ? " (as a whole)" : cls === "RESIDUAL" ? " (the catch-all)" : ""}`;
+  }).join(", ");
+}
+
 export type SpendCategoryResolution =
   | { ok: true; category: string; observability: "SUPPORTED" | "DERIVED"; meaning: string }
   | { ok: false; category?: string; reason: "NOT_SPENDING" | "UNSUPPORTED" | "UNKNOWN"; unavailable: string };
