@@ -124,6 +124,14 @@ a BASELINE is exactly one of `monthlySpending` / `annualReturnPct`. What the mod
 | Required | **A stale planning figure could not be re-affirmed**: the identical-re-statement short-circuit meant *"yes, still $5k"* never moved `statedAt`, so the figure the user had just confirmed still read as months old. | A `record` whose current version is `STALE` or `LAPSED` writes a new version and moves the date; a repeat of a fresh item still writes nothing. |
 | Required | Four small reconcile/reader items (§A.6 and the commit for them). | `reconcile_projection` no longer promises every projection is recorded; a legacy projection that rested on a user-stated figure is **not reconcilable**, by code; the "one reader" claim is corrected rather than forced; `recordProjection` owns its own P2002. |
 
+**Acceptance re-measured after the blocker fix** (production path, full tool surface, clone, n = 6 on cases 1,
+2 and 4 — 42 turns, 0 errors): **29 `remember` calls, 0 refusals**, so exactness costs the happy path nothing.
+Case 1: the semantic six-month rule 6/6, frozen dollars 0/6 — though 3/6 still completed the rule the user
+left open with `fractionOfExcess: 1` + a target, which the share-of-1 exemption permits by design and the
+earlier run happened not to show (5/5 floor-only there); it is a distribution, not a trend. Case 2: the $5k
+planning figure stored 6/6 and described in a fresh chat as remembered and not measured 6/6. Case 4: amended
+to nine months 6/6, ordering kept 6/6, one ACTIVE row and one superseded 6/6.
+
 **Replay after the blocker fix: 20 admitted of 201, unchanged.** Every row the recorded corpus admitted was
 already an exact match ($5k → 5000, $1M → 1000000, "six" → 6), so the hole was latent there — and live in the
 reviewer's constructed echoes, which is the whole reason a corpus is not a proof.
