@@ -678,4 +678,4 @@ function activeUndatedObligations(acc: AccountsSectionData | undefined): number 
 export { PeriodBasis, AssumptionDimension, AssumptionOrigin, AssumptionStance, EventProvenance, FlowRole, ActivityState, ConclusionStatus, StatementMode };
 export type { CashForecast, ConclusionStatusKind, ForecastHorizon, UserStatement, ProjectedInterval, ModelledInterestExclusion };
 export type { SpendingChangeRule, SpendingChangeResult } from '@/lib/forecast/spending-change';
-export { SpendingChangeOp } from '@/lib/forecast/spending-change';
+export { SpendingChangeOp, monthlyRateAt } from '@/lib/forecast/spending-change';

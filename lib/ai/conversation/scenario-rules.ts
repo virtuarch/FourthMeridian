@@ -300,7 +300,7 @@ export function withoutUnappliedLabels(args: Record<string, unknown>): Record<st
 /** A floor as months of expenses, when that is how it was stated. */
 export interface FloorIdentity {
   liquidFloor: number;
-  derivedFrom: { monthsOfExpenses: number; baseline: { amount: number; basis: string } };
+  derivedFrom: { monthsOfExpenses: number; baseline: { amount: number; basis: string }; inForceFrom?: string };
 }
 
 type Settled = DatedMovement & { kind: 'CONTRIBUTION' | 'OUTFLOW' };
@@ -311,7 +311,9 @@ export interface ClausesInForce {
   /** STOCK: cash held at or above a line. The clause G5 lost. */
   cashFloor:
     | { ran: true; keep: OneOrMany<number>; fractionOfExcess: OneOrMany<number>;
-        statedAs?: OneOrMany<{ monthsOfExpenses: number; atMonthlySpending: number; spendingBasis: string }>;
+        statedAs?: OneOrMany<{ monthsOfExpenses: number; atMonthlySpending: number; spendingBasis: string;
+          /** S1 — the first date this level governs, when spending changes over the horizon. */
+          from?: string }>;
         /**
          * Whether the floor ever BOUND. The first month-end the running balance was at
          * or above the floor (null = never, within this horizon), and how many month-ends
@@ -535,7 +537,8 @@ export function clausesInForce(
   const identities = floors.filter((f) => floorsKept.includes(f.liquidFloor)).map((f) => ({
     monthsOfExpenses: f.derivedFrom.monthsOfExpenses,
     atMonthlySpending: f.derivedFrom.baseline.amount,
-    spendingBasis: f.derivedFrom.baseline.basis }));
+    spendingBasis: f.derivedFrom.baseline.basis,
+    ...(f.derivedFrom.inForceFrom ? { from: f.derivedFrom.inForceFrom } : {}) }));
 
   // The orders of the rules the settler actually placed, less any that name no liability.
   const orders = ledger.allocationOrders

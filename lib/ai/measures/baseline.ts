@@ -344,7 +344,9 @@ export function derive(args: {
  */
 export interface FloorDerivation {
   liquidFloor: number;
-  derivedFrom: { rule: string; monthsOfExpenses: number; baseline: { amount: number; basis: ExpenseBasis; note: string } };
+  derivedFrom: { rule: string; monthsOfExpenses: number; baseline: { amount: number; basis: ExpenseBasis; note: string };
+    /** S1 — the first movement date this level governs, when spending changes over the horizon. */
+    inForceFrom?: string };
 }
 export function resolveMonthsOfExpensesFloor(args: {
   monthsOfExpenses: number;

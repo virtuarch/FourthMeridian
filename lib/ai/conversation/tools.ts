@@ -62,7 +62,7 @@ import {
   loadForecastIncomeStreams, type IncomeTransactionReader, type AccountTypeReader,
 } from '@/lib/ai/forecast/streams';
 import {
-  assembleForecast, projectInterval,
+  assembleForecast, projectInterval, monthlyRateAt,
   type ModelledInterestExclusion, type SpendingChangeOutcome, type SpendingChangeRule,
 } from '@/lib/ai/forecast/assemble';
 import { SCENARIO_INPUTS, NOT_AN_ASSUMPTION, scenarioAssumptionKeys } from './scenario-inputs';
@@ -2811,6 +2811,18 @@ async function prepareScenario(
     return points;
   };
 
+  // S1-5 — the spending schedule a run at this spending level spends by (null when
+  // no spending rule applied), from the spine's own endpoint run — memoised like it.
+  const scheduleCache = new Map<string, NonNullable<SpendingChangeOutcome & { applied: true }>['schedule'] | null>();
+  const scheduleFor = (level?: number) => {
+    const key = String(level ?? 'base');
+    if (!scheduleCache.has(key)) {
+      const out = runTo(toISO, level === undefined ? undefined : { monthly: level }).spendingChanges;
+      scheduleCache.set(key, out && out.applied && out.executions.some((x) => x.affectedProjection) ? out.schedule : null);
+    }
+    return scheduleCache.get(key)!;
+  };
+
   return {
     asOf, toISO, plan, dates, accounts, returns, liabilities,
     contributions: expanded.movements, outflows, rejected, monthlySpending, floorDerivations,
@@ -2827,7 +2839,17 @@ async function prepareScenario(
       // canonical resolver at the level THIS run spends — so "cut $X" never holds
       // six months of the uncut figure in cash. An absolute dollar floor has no
       // binding and is never touched.
-      const rebound = rebindDerivedFloors(expanded.movements, o.monthlySpending, monthlySpending, floorDerivations);
+      // ⚠️ S1-5 — AND WHEN SPENDING CHANGES OVER THE HORIZON, THE DEPENDENCY IS A
+      // FUNCTION OF THE DATE. "Keep nine months of expenses" held at a month-end
+      // after a January Dining cut is nine months of the CUT spending; before it,
+      // nine months of the old. The rate in force on each floor movement's date is
+      // read off the SAME spine run the ledger settles against (this run's spending
+      // level, this run's schedule), never recomputed here.
+      const schedule = scheduleFor(o.monthlySpending);
+      const runLevel = o.monthlySpending ?? monthlySpending.amount;
+      const rebound = schedule && runLevel !== null
+        ? rebindDerivedFloorsByDate(expanded.movements, (d) => monthlyRateAt(schedule, runLevel, d), monthlySpending, floorDerivations)
+        : rebindDerivedFloors(expanded.movements, o.monthlySpending, monthlySpending, floorDerivations);
       if ('unavailable' in rebound) {
         throw new Error(`a derived floor could not be re-resolved at ${o.monthlySpending}/month: ${rebound.unavailable}`);
       }
@@ -2886,22 +2908,7 @@ export function rebindDerivedFloors(
   }
   const byMonths = new Map<number, FloorDerivation>();
   for (const n of new Set(movements.map((m) => m.floorMonthsOfExpenses).filter((x): x is number => x !== undefined))) {
-    if (runMonthlySpending <= 0) {
-      // N months of NOTHING is a zero floor — arithmetic, not a baseline (the
-      // canonical resolver refuses a non-positive baseline, which is right for a
-      // baseline and wrong here: a solve's bracket reaches "cut everything").
-      const was = baseDerivations.find((b) => b.derivedFrom.monthsOfExpenses === n);
-      if (!was) return { unavailable: `no base derivation for ${n} months of expenses` };
-      byMonths.set(n, { liquidFloor: 0, derivedFrom: { ...was.derivedFrom, rule: `${n} × 0`,
-        baseline: { ...was.derivedFrom.baseline, amount: 0,
-          note: 'this run spends nothing, so N months of expenses is zero' } } });
-      continue;
-    }
-    const d = resolveMonthsOfExpensesFloor({
-      monthsOfExpenses: n,
-      stated: base.source === 'USER_STATED' ? runMonthlySpending : null,
-      observedMonthly: base.source === 'USER_STATED' ? null : runMonthlySpending,
-    });
+    const d = resolveFloorAt(n, runMonthlySpending, base, baseDerivations);
     if ('unavailable' in d) return d;
     byMonths.set(n, { ...d, derivedFrom: { ...d.derivedFrom, baseline: { ...d.derivedFrom.baseline,
       note: `${d.derivedFrom.baseline.note} — re-resolved at the ${round2(runMonthlySpending)}/month this run `
@@ -2913,6 +2920,65 @@ export function rebindDerivedFloors(
       : { ...m, liquidFloor: byMonths.get(m.floorMonthsOfExpenses)!.liquidFloor })),
     derivations: [...byMonths.values()],
   };
+}
+
+/**
+ * N months of expenses at one spending level, on the rung the scenario's base came
+ * from — the ONE resolution both rebinds share.
+ */
+function resolveFloorAt(
+  n: number, level: number, base: { amount: number | null; source: string }, baseDerivations: FloorDerivation[],
+): FloorDerivation | { unavailable: string } {
+  if (level <= 0) {
+    // N months of NOTHING is a zero floor — arithmetic, not a baseline (the
+    // canonical resolver refuses a non-positive baseline, which is right for a
+    // baseline and wrong here: a solve's bracket reaches "cut everything").
+    const was = baseDerivations.find((b) => b.derivedFrom.monthsOfExpenses === n);
+    if (!was) return { unavailable: `no base derivation for ${n} months of expenses` };
+    return { liquidFloor: 0, derivedFrom: { ...was.derivedFrom, rule: `${n} × 0`,
+      baseline: { ...was.derivedFrom.baseline, amount: 0,
+        note: 'this run spends nothing, so N months of expenses is zero' } } };
+  }
+  return resolveMonthsOfExpensesFloor({
+    monthsOfExpenses: n,
+    stated: base.source === 'USER_STATED' ? level : null,
+    observedMonthly: base.source === 'USER_STATED' ? null : level,
+  });
+}
+
+/**
+ * S1-5 — every DERIVED floor at the spending in force ON ITS OWN DATE. The same
+ * canonical resolver as `rebindDerivedFloors`, on the same rung, once per distinct
+ * (months, level); each derivation says the first date its level governs. An
+ * absolute floor carries no binding and is never touched. Pure.
+ */
+export function rebindDerivedFloorsByDate(
+  movements: readonly PlannedMovement[],
+  rateAt: (dateISO: string) => number,
+  base: { amount: number | null; source: string },
+  baseDerivations: FloorDerivation[],
+): { movements: PlannedMovement[]; derivations: FloorDerivation[] } | { unavailable: string } {
+  const byKey = new Map<string, FloorDerivation>();
+  const derivations: FloorDerivation[] = [];
+  const out: PlannedMovement[] = [];
+  for (const m of movements) {
+    if (m.floorMonthsOfExpenses === undefined) { out.push(m); continue; }
+    const n = m.floorMonthsOfExpenses;
+    const level = rateAt(m.date);
+    const key = `${n}|${level}`;
+    let d = byKey.get(key);
+    if (!d) {
+      const got = resolveFloorAt(n, level, base, baseDerivations);
+      if ('unavailable' in got) return got;
+      d = { ...got, derivedFrom: { ...got.derivedFrom, inForceFrom: m.date,
+        baseline: { ...got.derivedFrom.baseline, note: `${got.derivedFrom.baseline.note} — at the `
+          + `${round2(level)}/month this scenario spends from ${m.date} (its spending changes in force)` } } };
+      byKey.set(key, d);
+      derivations.push(d);
+    }
+    out.push({ ...m, liquidFloor: d.liquidFloor });
+  }
+  return { movements: out, derivations: derivations.length > 0 ? derivations : baseDerivations };
 }
 
 /**
