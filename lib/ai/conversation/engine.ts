@@ -94,6 +94,8 @@ export async function openTranscript(args: {
   asOfISO:  string;
   model:    string;
   arm?:     Arm;
+  /** FM-AUDIT-019 — true ONLY for the product route or a clone-verified harness opt-in. */
+  memoryWrites?: boolean;
 }): Promise<OpenTranscript> {
   const { spaceCtx, agentId, asOfISO, model } = args;
   const arm = args.arm ?? CHAT_ARM;
@@ -103,7 +105,9 @@ export async function openTranscript(args: {
 
   const usesTools = ARM_USES_TOOLS[arm] && supportsTools(model);
   const toolSchemas = usesTools ? openAiToolSchemas() : [];
-  const toolCtx: ToolContext = { spaceCtx, spaceId: spaceCtx.spaceId, asOfISO };
+  // FM-AUDIT-019 — durable memory writes are off unless the caller says otherwise.
+  const toolCtx: ToolContext = { spaceCtx, spaceId: spaceCtx.spaceId, asOfISO,
+    ...(args.memoryWrites === true ? { memoryWrites: true } : {}) };
 
   const messages: unknown[] = [
     { role: 'system', content: `${SYSTEM_INSTRUCTION}\n\nToday is ${asOfISO}.` },
@@ -193,12 +197,14 @@ export async function runStatelessTurn(args: {
   model?:    string;
   correlationId?: string;
   surface?:  string;
+  /** FM-AUDIT-019 — true ONLY for the product route or a clone-verified harness opt-in. */
+  memoryWrites?: boolean;
 }): Promise<StatelessTurn> {
   const asOfISO = args.asOfISO ?? todayUTCISO();
   const model = args.model ?? CHAT_MODEL;
 
   const open = await openTranscript({
-    spaceCtx: args.spaceCtx, agentId: args.agentId, asOfISO, model });
+    spaceCtx: args.spaceCtx, agentId: args.agentId, asOfISO, model, memoryWrites: args.memoryWrites });
   replayHistory(open.messages, args.history);
 
   // ⚠️ A SLOT PER REQUEST, RESTORED — NOT A SLOT THAT LIVES ON THE SERVER. The

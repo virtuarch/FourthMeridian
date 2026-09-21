@@ -155,10 +155,14 @@ scripts still reach live deliberately.
   does not set it is protected only by convention. The destructive npm scripts
   (`db:reset`, `db:migrate`, `db:migrate:safe`, `db:backup`, `db:wipe`) check target
   identity whether or not it is set.
-- Withholding a tool is **not** isolation. `turn.ts` checkpoints a `project_cash`
-  result into `SpaceMemory` with no `remember` call involved, and `lib/ai/invocation.ts`
-  writes an `AiInvocation` row on every model call. A model harness writes to whatever
-  database it is pointed at.
+- Withholding a tool is **not** isolation — but durable MEMORY is now closed by default
+  (FM-AUDIT-019, `lib/ai/conversation/memory-write-policy.ts`): `remember` and the silent
+  `project_cash` checkpoint write only when the turn's context carries `memoryWrites: true`,
+  which only the product chat route sets. The `ai:*` harnesses are read-only for memory unless
+  `FM_AI_MEMORY_WRITES=clone-only` is set AND the target is a clone (opting in against live is
+  refused before anything runs); checks whose purpose is writing memory rows refuse anything
+  but a clone. `lib/ai/invocation.ts` still writes an `AiInvocation` row on every model call,
+  so a harness still writes usage rows to whatever database it is pointed at.
 - Never pass `$DATABASE_URL` as `--shadow-database-url`.
 - Take `npm run db:backup` before anything schema-touching.
 - If unsure whether an operation is destructive, stop and ask.

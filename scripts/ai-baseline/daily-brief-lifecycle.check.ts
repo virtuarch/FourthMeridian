@@ -19,6 +19,7 @@
  */
 
 import '@/lib/ai/assemblers';
+import { assertCloneForDurableWrites } from '@/lib/ai/conversation/memory-write-policy';
 import { db } from '@/lib/db';
 import type { SpaceContext } from '@/lib/space';
 import { basePackage } from '@/lib/ai/brief/fixtures';
@@ -144,6 +145,8 @@ async function storeSection() {
 }
 
 async function watermarkSection() {
+  // FM-AUDIT-019 — this section seeds SpaceMemory rows, so it runs on a clone or not at all.
+  console.log(`clone: ${assertCloneForDurableWrites()}`);
   console.log('\n3. THE WATERMARK — scoped to this Space and this owner');
   const ids = await throwaway();
   const accounts: string[] = [];

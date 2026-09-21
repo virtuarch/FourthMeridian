@@ -1758,7 +1758,9 @@ console.log('19. memory shape');
   }
   check('V1\'s free-form `kind` + `payload` are gone from the schema', !('kind' in rememberProps) && !('payload' in rememberProps));
   check('…and the three operations live in ONE tool', JSON.stringify((rememberProps.op as { enum?: string[] }).enum) === '["record","amend","retire"]');
-  const noCtx = { spaceId: 'none', asOfISO: '2026-09-20', spaceCtx: { userId: 'none' } } as never;
+  // memoryWrites: true — FM-AUDIT-019 makes a context without it read-only; these
+  // checks are about the refusals BEHIND that gate, which all fire before the store.
+  const noCtx = { spaceId: 'none', asOfISO: '2026-09-20', spaceCtx: { userId: 'none' }, memoryWrites: true } as never;
   const v1Call = await findTool('remember')!.run({ kind: 'INTENTION', subject: 'cash-buffer', statedAs: 'Keep six months of expenses',
     payload: { intent: 'keep-buffer', label: 'months of expenses', monthsOfExpenses: 6, allocationOrder: ['highest_apr', 'investments'] } }, noCtx) as Record<string, unknown>;
   check('a refusal hands back the RIGHT SHAPE built from the caller\'s own payload — never a list of missing keys',
@@ -2129,7 +2131,7 @@ console.log('20a. checkpoint-on-projection');
     !JSON.stringify(findTool('remember')!.parameters).includes('CHECKPOINT'));
   const minted = await findTool('remember')!.run({ kind: 'CHECKPOINT', subject: 'net-worth-2027-06-30',
     payload: { metric: 'net-worth', horizon: '2027-06-30', value: 88617.84, basis: { surplusRule: 'x' } },
-    statedAs: 'a scenario result' }, { spaceId: 'none', asOfISO: '2026-09-20', spaceCtx: { userId: 'none' } } as never) as { stored: boolean; reason: string };
+    statedAs: 'a scenario result' }, { spaceId: 'none', asOfISO: '2026-09-20', spaceCtx: { userId: 'none' }, memoryWrites: true } as never) as { stored: boolean; reason: string };
   check('…and a V1-style attempt to mint one is refused before anything touches the database',
     !minted.stored && /recorded automatically/.test(minted.reason));
 

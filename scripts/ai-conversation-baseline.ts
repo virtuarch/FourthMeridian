@@ -19,9 +19,14 @@
  * ⚠️ NOTHING RUNS WITHOUT AN EXPLICIT SELECTION. `--all` is 120 whole
  * conversations against a paid API; it is never the default and never implied.
  *
- * ⚠️ READ-ONLY AGAINST REAL FINANCIAL DATA. Every tool is a read or a pure
- * calculation. The Space is resolved explicitly and printed before anything runs.
- * Artifacts land under tmp/ (gitignored) because they contain real balances.
+ * ⚠️ READ-ONLY FOR DURABLE MEMORY BY DEFAULT (FM-AUDIT-019). This header used to
+ * say "read-only" while every turn could write the operator's SpaceMemory — the
+ * `remember` tool and the silent projection checkpoint. Writes are now OFF unless
+ * `FM_AI_MEMORY_WRITES=clone-only` is set AND the target database is a clone; opting
+ * in against live is refused before anything runs (memory-write-policy.ts). The
+ * turns still write AiInvocation usage rows (cost accounting), as the product does.
+ * The Space is resolved explicitly and printed before anything runs. Artifacts
+ * land under tmp/ (gitignored) because they contain real balances.
  */
 
 import { mkdirSync, writeFileSync } from 'fs';
@@ -34,6 +39,7 @@ import { ARMS, ARM_QUESTION, type Arm } from '@/lib/ai/conversation/evidence';
 import { runCase, type CaseResult } from './ai-baseline/run';
 import { supportsTools } from '@/lib/ai/conversation/turn';
 import { runInteractive } from './ai-baseline/interactive';
+import { harnessMemoryPolicy } from '@/lib/ai/conversation/memory-write-policy';
 import { writeIndex } from './ai-baseline/artifacts';
 import { createInterface } from 'readline/promises';
 import type { SpaceContext } from '@/lib/space';
@@ -208,6 +214,14 @@ async function resolveSpace(explicit?: string): Promise<{ spaceCtx: SpaceContext
 async function main(): Promise<void> {
   if (has('list') || has('help') || process.argv.length <= 2) { usage(); return; }
 
+  // FM-AUDIT-019 — decided before any Space is read or any turn runs.
+  const memory = harnessMemoryPolicy();
+  if ('refusal' in memory) { console.error(`\n✗ ${memory.refusal}\n`); process.exitCode = 1; return; }
+  const memoryWrites = memory.writes;
+  console.log(memoryWrites
+    ? `⚠  durable memory writes ENABLED — clone ${memory.basis === 'CLONE_OPT_IN' ? memory.database : ''}`
+    : 'durable memory: READ-ONLY (set FM_AI_MEMORY_WRITES=clone-only against a clone to enable writes)');
+
   // ── Interactive operator mode ─────────────────────────────────────────────
   if (has('interactive') || has('chat')) {
     const { spaceCtx, agentId } = await resolveSpace(flag('space') || undefined);
@@ -215,7 +229,7 @@ async function main(): Promise<void> {
     const txnCount = await db.transaction.count({
       where: { financialAccount: { spaceAccountLinks: { some: { spaceId: spaceCtx.spaceId } } } },
     });
-    console.log(`\nSpace: ${spaceCtx.space.name} (${spaceCtx.spaceId})  ${txnCount} transactions  [READ-ONLY]`);
+    console.log(`\nSpace: ${spaceCtx.space.name} (${spaceCtx.spaceId})  ${txnCount} transactions  [memory ${memoryWrites ? 'WRITES ON (clone)' : 'READ-ONLY'}]`);
     const model = await chooseModel(flag('model') || undefined);
     if (!supportsTools(model)) {
       console.error(`\n✗ ${model} cannot call tools through this provider seam, and this mode is a`);
@@ -225,7 +239,7 @@ async function main(): Promise<void> {
     }
     const runDir = join(process.cwd(), 'tmp', 'ai-baseline',
       `interactive-${new Date().toISOString().replace(/[:.]/g, '-')}`);
-    await runInteractive({ spaceCtx, agentId, asOfISO, model, runDir,
+    await runInteractive({ spaceCtx, agentId, asOfISO, model, runDir, memoryWrites,
       compaction: has('no-compaction') ? null : undefined });
     return;
   }
@@ -285,7 +299,7 @@ async function main(): Promise<void> {
     process.stdout.write(`${label} … `);
     try {
       const r = await runCase({ probeId: cell.probe, arm: cell.arm, model: cell.model,
-        spaceCtx, agentId, asOfISO, runDir,
+        spaceCtx, agentId, asOfISO, runDir, memoryWrites,
         compaction: has('no-compaction') ? null : undefined });
       results.push(r);
       console.log(`${r.ok ? 'ok ' : 'ERR'} ${(r.totals.latencyMs / 1000).toFixed(1)}s  ` +

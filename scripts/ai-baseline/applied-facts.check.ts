@@ -37,6 +37,7 @@
  */
 
 import '@/lib/ai/assemblers';
+import { assertCloneForDurableWrites } from '@/lib/ai/conversation/memory-write-policy';
 import { db } from '@/lib/db';
 import { findTool, monthEndsBetween, type ToolContext } from '@/lib/ai/conversation/tools';
 import type { SpaceContext } from '@/lib/space';
@@ -68,6 +69,8 @@ function appliedChannels(r: Cash): string {
 }
 
 async function main() {
+  // FM-AUDIT-019 — it writes checkpoint rows (to a scratch Space), so a clone or nothing.
+  console.log(`clone: ${assertCloneForDurableWrites()}`);
   const spaceId = process.env.CHECK_SPACE_ID ?? 'cmrrm846r000j7znwsl67gt1g';
   const space = await db.space.findUniqueOrThrow({ where: { id: spaceId } });
   const owner = await db.spaceMember.findFirstOrThrow({
@@ -183,7 +186,7 @@ async function main() {
   const scratch = await db.space.create({ data: { name: TAG, type: 'PERSONAL', category: 'PERSONAL',
     members: { create: [{ userId: scratchUser.id, role: 'OWNER' }] } } });
   try {
-    const scratchCtx = { spaceId: scratch.id, asOfISO: ASOF, spaceCtx: { userId: scratchUser.id } };
+    const scratchCtx = { spaceId: scratch.id, asOfISO: ASOF, spaceCtx: { userId: scratchUser.id }, memoryWrites: true };
     // ⚠️ MEMORY V2 — CHECKPOINT NARROWING. A projection resting on a figure the user
     // STATED is a hypothetical, and a hypothetical is not a durable statement of
     // ours: it is not recorded at all. That closes the prose route by construction

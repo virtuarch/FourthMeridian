@@ -145,6 +145,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       asOfISO: todayUTCISO(),
       correlationId: conversationKey(user.id, history[0]?.content ?? asked),
       surface: 'chat',
+      // FM-AUDIT-019 — the product route is where durable memory is a feature: the
+      // signed-in user's own memory, in their own Space. Every other caller of the
+      // turn loop (the dogfood / evaluation harnesses) is read-only unless opted in.
+      memoryWrites: true,
     });
 
     if (!turn.answer) {

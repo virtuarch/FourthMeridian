@@ -18,6 +18,7 @@
  */
 
 import type { ToolDefinition } from './tools';
+import { durableMemoryWritesAllowed } from './memory-write-policy';
 import {
   recallMemories, rememberStated, recordProjection, PROJECTIONS_ARE_AUTOMATIC,
   type MemoryScope, type ProjectionStatement,
@@ -131,10 +132,12 @@ export function projectionStatement(
  * never take down an answer that was already correct.
  */
 export async function checkpointProjection(
-  ctx: { spaceId: string; asOfISO: string; spaceCtx: { userId: string } },
+  ctx: { spaceId: string; asOfISO: string; spaceCtx: { userId: string }; memoryWrites?: boolean },
   toolName: string,
   result: unknown,
 ): Promise<{ subject: string } | null> {
+  // FM-AUDIT-019 — a read-only context (every harness by default) records no checkpoint.
+  if (!durableMemoryWritesAllowed(ctx)) return null;
   const statement = projectionStatement(toolName, result, ctx.asOfISO);
   if (!statement) return null;
   try {
@@ -312,6 +315,14 @@ const remember: ToolDefinition = {
       description: 'record over an existing item: true ONLY when the user replaced the whole thing, accepting that fields they did not repeat are dropped.' },
   }, ['subject', 'statedAs']),
   async run(a, ctx) {
+    // ⚠️ FM-AUDIT-019 — DURABLE WRITES ARE OFF UNLESS THE CALLER TURNED THEM ON.
+    // The product chat route does; a dogfood / evaluation harness does only when
+    // explicitly opted in against a clone (memory-write-policy.ts). Checked before
+    // anything else, so a probe sentence can never become the operator's memory.
+    if (!durableMemoryWritesAllowed(ctx)) {
+      return { stored: false, reason: 'durable memory writes are disabled in this run (a read-only '
+        + 'evaluation context), so nothing was remembered. Say that nothing was saved.' };
+    }
     const op = a.op === 'amend' || a.op === 'retire' ? a.op : 'record';
     const given = SHAPES.filter(([, key]) => a[key] !== undefined && a[key] !== null);
     // ⚠️ A V1-SHAPED CALL IS ANSWERED WITH THE V2 SHAPE BUILT FROM ITS OWN PAYLOAD.

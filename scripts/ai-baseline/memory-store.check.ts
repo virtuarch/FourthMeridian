@@ -26,6 +26,7 @@
  */
 
 import { db } from '@/lib/db';
+import { assertCloneForDurableWrites } from '@/lib/ai/conversation/memory-write-policy';
 import {
   recallMemories, rememberStated, recordProjection, listOwnMemories, retireMemory, deleteMemoryChain,
   MemoryKind, MemoryStatus,
@@ -50,6 +51,8 @@ const STRATEGY = { liquidFloorMonthsOfExpenses: 6, fractionOfExcess: 1, target: 
 
 async function main(): Promise<void> {
   console.log('\nmemory store V2 — rules, amendment, the drop guard, retirement, ownership\n');
+  // FM-AUDIT-019 — this check's PURPOSE is writing memory rows, so it runs on a clone or not at all.
+  console.log(`clone: ${assertCloneForDurableWrites()}`);
 
   const alice = await db.user.create({ data: { email: `${TAG}-a@example.invalid` } });
   const bob   = await db.user.create({ data: { email: `${TAG}-b@example.invalid` } });
@@ -181,7 +184,9 @@ async function main(): Promise<void> {
     check('…and a basis key the code writer does not write is refused',
       !(await recordProjection(A, { subject: 'liquid-2027-06-30', metric: 'liquid', horizon: '2027-06-30', value: 1,
         basis: { surplusRule: 'all of it' }, statedAs: 'x', statedAt: TODAY })).stored);
-    const ctx = { spaceId: space.id, asOfISO: TODAY, spaceCtx: { userId: alice.id } } as never;
+    // memoryWrites: true — so the refusal below is the CHECKPOINT rule's, not the
+    // read-only default's (a read-only context would pass this vacuously).
+    const ctx = { spaceId: space.id, asOfISO: TODAY, spaceCtx: { userId: alice.id }, memoryWrites: true } as never;
     const minted = await findTool('remember')!.run({ subject: 'net-worth-2027-06-30', statedAs: 'a scenario result',
       kind: 'CHECKPOINT', payload: { metric: 'net-worth', horizon: '2027-06-30', value: 88617.84 } }, ctx) as { stored: boolean };
     check('…and the tool path cannot mint one', !minted.stored

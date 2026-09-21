@@ -41,6 +41,8 @@ export interface InteractiveArgs {
   asOfISO:  string;
   model:    string;
   runDir:   string;
+  /** FM-AUDIT-019 — durable memory writes; false (read-only) unless a clone-verified opt-in. */
+  memoryWrites?: boolean;
   /** null disables context compaction. */
   compaction?: CompactionPolicy | null;
 }
@@ -53,7 +55,7 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
   // open with. A2 is a tool arm; a model that cannot take tools would silently
   // become a different experiment, so `usesTools` is stated, never absorbed.
   const { messages: opened, context: ctx, evidence, toolSchemas, toolCtx, usesTools: useTools } =
-    await openTranscript({ spaceCtx, agentId, asOfISO, model, arm: ARM });
+    await openTranscript({ spaceCtx, agentId, asOfISO, model, arm: ARM, memoryWrites: args.memoryWrites === true });
   let messages: unknown[] = opened;
 
   const startedAt = new Date();

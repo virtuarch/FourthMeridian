@@ -35,6 +35,7 @@
  */
 
 import '@/lib/ai/assemblers';
+import { harnessMemoryPolicy } from '@/lib/ai/conversation/memory-write-policy';
 import { db } from '@/lib/db';
 import { runStatelessTurn, CHAT_MODEL, type ConversationMessage } from '@/lib/ai/conversation/engine';
 import {
@@ -52,6 +53,9 @@ function check(name: string, cond: boolean, detail?: string) {
 const money = /\$[\d,]+(\.\d{2})?/;
 
 async function main() {
+  // FM-AUDIT-019 — read-only for durable memory unless opted in against a clone.
+  const memory = harnessMemoryPolicy();
+  if ('refusal' in memory) { console.error(`✗ ${memory.refusal}`); process.exit(1); }
   const spaceId = process.env.CHECK_SPACE_ID ?? 'cmrrm846r000j7znwsl67gt1g';
   const space = await db.space.findUniqueOrThrow({ where: { id: spaceId } });
   const owner = await db.spaceMember.findFirstOrThrow({
@@ -79,7 +83,7 @@ async function main() {
     const turn = await runStatelessTurn({
       spaceCtx, agentId: agent?.id ?? 'ai-chat', user, history,
       scenario: carried?.scenario ?? null, asOfISO, surface: 'chat-route-check',
-      correlationId: 'chat-route-check',
+      correlationId: 'chat-route-check', memoryWrites: memory.writes,
     });
     const answer = turn.answer ?? '';
     history.push({ role: 'user', content: user });
@@ -164,7 +168,8 @@ async function main() {
     // Printed so a run against the wrong database is at least visible.
     const memoryAfter = await db.spaceMemory.count({ where: { spaceId } });
     console.log(`  · SpaceMemory on this Space: ${memoryBefore} row(s) before, ${memoryAfter} after`
-      + (memoryAfter === memoryBefore ? '' : ' — the turn loop recorded a checkpoint or a memory (expected; this is why it runs on a clone)'));
+      + (memoryAfter === memoryBefore ? (memory.writes ? '' : ' (read-only run — FM_AI_MEMORY_WRITES unset)')
+        : ' — the turn loop recorded a checkpoint or a memory (opted in against a clone)'));
   }
 
   console.log('\n7. THE HANDLER ITSELF, OVER REAL HTTP');

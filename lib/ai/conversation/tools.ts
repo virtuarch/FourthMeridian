@@ -155,6 +155,12 @@ export interface ToolContext {
   spaceId:  string;
   /** Test seam only — see CashSpineReads. Unset in production. */
   cashSpineReads?: CashSpineReads;
+  /**
+   * FM-AUDIT-019 — durable memory writes (`remember`, the projection checkpoint)
+   * happen ONLY when this is exactly `true`: the product chat route, or a harness
+   * explicitly opted in against a clone (memory-write-policy.ts). Absent = no writes.
+   */
+  memoryWrites?: boolean;
   /** The clock for the whole run, so two tools can never disagree about today. */
   asOfISO:  string;
   /**

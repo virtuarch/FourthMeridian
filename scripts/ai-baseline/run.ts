@@ -68,6 +68,8 @@ export async function runCase(args: {
   agentId: string;
   asOfISO: string;
   runDir: string;
+  /** FM-AUDIT-019 — durable memory writes; false (read-only) unless a clone-verified opt-in. */
+  memoryWrites?: boolean;
   /** null disables context compaction, for a before/after comparison. */
   compaction?: CompactionPolicy | null;
 }): Promise<CaseResult> {
@@ -80,7 +82,7 @@ export async function runCase(args: {
   // opened by the same function the product route opens its transcript with, so
   // a recorded run and a user's conversation begin identically.
   const { messages: opened, evidence, toolSchemas, toolCtx, usesTools: useTools } =
-    await openTranscript({ spaceCtx, agentId, asOfISO, model, arm });
+    await openTranscript({ spaceCtx, agentId, asOfISO, model, arm, memoryWrites: args.memoryWrites === true });
   let messages: unknown[] = opened;
 
   const turns: TurnRecord[] = [];
