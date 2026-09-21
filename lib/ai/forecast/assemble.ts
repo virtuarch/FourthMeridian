@@ -71,6 +71,10 @@ import {
   type UserStatement,
 } from '@/lib/forecast/policy';
 import { forecastCash, type CashForecast } from '@/lib/forecast/engine';
+import {
+  applyIncomeChanges,
+  type IncomeChangeResult, type IncomeChangeRule, type IncomeStreamRef,
+} from '@/lib/forecast/income-change';
 import type { ResolvedIncomeStream } from './streams';
 
 /** What a forecast needs that is not already a FORECAST-* authority's job. */
@@ -107,6 +111,23 @@ export interface ForecastAssemblyInput {
    * somebody; this module does not license it.
    */
   additionalEvents?: readonly FutureCashEvent[];
+  /**
+   * I1 — dated changes to FUTURE income, as a scenario supposition.
+   *
+   * ⚠️ THE STATE IS NOT TOUCHED. A rule here changes the dated occurrences a
+   * licensed stream generates; it does not change `CurrentOperatingState`, the
+   * observed history, or any measured figure. "Starting January I make $180k" is
+   * a hypothetical about next year, not a claim about this month's payroll, and
+   * the two must not be able to become each other. A test pins that the state is
+   * identical with and without these rules.
+   *
+   * ⚠️ AND IT IS APPLIED HERE RATHER THAN AS A POLICY DIMENSION, for the reason
+   * `income-change.ts`'s header sets out: `applyPolicy` feeds the LICENSED path,
+   * which refuses on a real Space, and PROJECTION-1's `projectCash` — the path
+   * that answers — never sees a policy. A change expressed only as a supposition
+   * would be reported everywhere and move nothing.
+   */
+  incomeChanges?: readonly IncomeChangeRule[];
 }
 
 export interface AssembledForecast {
@@ -138,6 +159,15 @@ export interface AssembledForecast {
    * disagree with the cumulative figure printed beside it.
    */
   projectionInput?: ProjectCashInput;
+  /**
+   * I1 — what the income rules ACTUALLY DID, counted off the event arrays.
+   *
+   * ⚠️ THE EXECUTION EVIDENCE, AND THE ONLY THING ENTITLED TO SAY A RULE RAN.
+   * Absent when no rule was supplied. Present with `ran: false` and a reason when
+   * one was supplied and changed nothing — which is a different sentence from
+   * absence, and the one a reader needs.
+   */
+  incomeChanges?: IncomeChangeResult;
 }
 
 /**
@@ -346,7 +376,7 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   for (const e of [...(input.additionalEvents ?? []), ...assertedEvents, ...supposedEvents]) {
     if (!byId.has(e.id)) byId.set(e.id, e);
   }
-  const events: FutureCashEvent[] = [...byId.values()];
+  const derivedEvents: FutureCashEvent[] = [...byId.values()];
   for (const s of streams) {
     if (!isCadence(s.cadence)) continue;
     const asserted = assertedBasis.get(s.sourceKey);
@@ -356,10 +386,37 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
     // OWN derived level. A user-asserted basis (`asserted`) is a statement about
     // a payroll figure and answers the basis question directly; it needs no
     // observation marker and must not borrow one.
-    events.push(...periodicCashEvents(
+    derivedEvents.push(...periodicCashEvents(
       s.activity, s.cadence, amount, horizon.fromISO, horizon.toISO, s.role,
       asserted === undefined && s.settledDepository));
   }
+
+  // ── I1: dated income changes, applied to the occurrences ─────────────────
+  //
+  // ⚠️ AFTER the licensed streams have generated their dates and BEFORE either
+  // path folds them, because both paths fold the same array. The rules reach no
+  // other event: an asserted one-off carries no `sourceKey`, so a rule cannot
+  // touch a bonus, and an OUTFLOW is not income however it is dated.
+  const incomeChanges = (input.incomeChanges && input.incomeChanges.length > 0)
+    ? applyIncomeChanges({
+      events: derivedEvents,
+      streams: streams.map((s): IncomeStreamRef => ({
+        sourceKey: s.sourceKey,
+        ...(s.label ? { label: s.label } : {}),
+        role: s.role,
+        cadence: isCadence(s.cadence) ? s.cadence.kind : null,
+        // ⚠️ FORECAST-2's licence, carried — never re-derived. A rule cannot
+        // reach a stream the activity authority has not licensed to continue,
+        // which is what keeps "my income goes up 10%" from resurrecting an
+        // employer the user left.
+        projectionEligible: s.activity.mayGenerateExpectedOccurrences,
+      })),
+      rules: input.incomeChanges,
+      horizon: { fromISO: horizon.fromISO, toISO: horizon.toISO },
+      currency: state.liquidity.currency ?? 'USD',
+    })
+    : null;
+  const events: FutureCashEvent[] = incomeChanges ? incomeChanges.events : derivedEvents;
 
   // ── Policy: horizon, the one licensed system default, and suppositions ────
   const assumptions: PolicyAssumption[] = [continueLicensedCadence()];
@@ -450,6 +507,7 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
     statements, appliedFacts,
     unavailable: acc ? null : 'account balances could not be assembled for this Space',
     projection, observedSpending, projectionInput,
+    ...(incomeChanges ? { incomeChanges } : {}),
   };
 }
 

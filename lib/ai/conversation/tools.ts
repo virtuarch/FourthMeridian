@@ -56,6 +56,10 @@ import {
 import { loadForecastIncomeStreams } from '@/lib/ai/forecast/streams';
 import { assembleForecast, projectInterval } from '@/lib/ai/forecast/assemble';
 import { SCENARIO_INPUTS } from './scenario-inputs';
+import {
+  type IncomeChangeOpKind, type IncomeChangeResult, type IncomeChangeRule,
+  type RatePeriodKind,
+} from '@/lib/forecast/income-change';
 import { resolvePayDates, PayDateAsk } from '@/lib/ai/forecast/pay-dates';
 // ⚠️ NOTHING HERE IMPORTS lib/forecast/** DIRECTLY, AND A GUARD ENFORCES IT.
 // FORECAST-6/8/9 each carry a "consumed only through the sanctioned adapter"
@@ -80,7 +84,8 @@ import {
 } from './scenario-ledger';
 import {
   clausesInForce, contributionName, outflowName, unknownContributionKeys, isAllocationTargetWord,
-  refuseUnknownArguments, refuseUnknownItemKeys, notAppliedEcho, type RefusedInput,
+  refuseUnknownArguments, refuseUnknownItemKeys, notAppliedEcho, boundedLabel,
+  type RefusedInput,
 } from './scenario-rules';
 import type { SpaceContext } from '@/lib/space';
 // ⚠️ THE ONE WRITE PATH, IMPORTED RATHER THAN INLINED. Keeping the memory tools
@@ -1552,7 +1557,21 @@ interface CashSpine {
 
 async function buildCashSpine(
   ctx: ToolContext,
-  opts: { asOf: string; assumedMonthlySpending?: number },
+  opts: {
+    asOf: string; assumedMonthlySpending?: number;
+    /**
+     * I1 — dated income rules, baked into the closure so EVERY spine point sees
+     * them.
+     *
+     * ⚠️ THIS IS WHY I1 REACHES THE FLOOR, THE DEBT WATERFALL AND THE CROSSINGS
+     * WITHOUT TOUCHING ANY OF THEM. `spineFor` calls `runTo` once per date; a
+     * rule inside the closure changes the cash at every one of those dates, and
+     * the ledger reads nothing but that cash. A rule applied anywhere else would
+     * have had to be applied to each consumer separately, and the first one
+     * forgotten would answer a different question in the same conversation.
+     */
+    incomeChanges?: readonly IncomeChangeRule[];
+  },
 ): Promise<CashSpine | { unavailable: string; asOf: string }> {
   const asOf = opts.asOf;
   const retrospective = asOf < ctx.asOfISO;
@@ -1642,6 +1661,8 @@ async function buildCashSpine(
         statements: spendingOverride
           ? spendingStatement(spendingOverride.monthly)
           : statements,
+        ...(opts.incomeChanges && opts.incomeChanges.length > 0
+          ? { incomeChanges: opts.incomeChanges } : {}),
         horizon: { fromISO: asOf, toISO: end, origin: AssumptionOrigin.USER_REQUESTED,
           statedAs: `through ${end}` } as unknown as ForecastHorizon,
       }),
@@ -1961,6 +1982,15 @@ interface ScenarioSetup {
   monthlySpending: { amount: number | null; source: 'USER_STATED' | 'OBSERVED' | 'NONE' };
   /** M1 — floors stated as months of expenses, with the derivation each resolved through. */
   floorDerivations: FloorDerivation[];
+  /**
+   * I1 — what the income rules DID, at the horizon this scenario ran to.
+   *
+   * ⚠️ FROM THE SPINE, NOT FROM `a.incomeChanges`. This is the endpoint run's own
+   * record of the occurrences it altered. A rule that was stated and changed
+   * nothing appears here with `ran: false` and a reason; a rule that was never
+   * stated does not appear at all. Absent when none was stated.
+   */
+  incomeChanges?: IncomeChangeResult;
   run: (o?: ScenarioOverrides) => LedgerResult;
 }
 
@@ -1974,6 +2004,61 @@ interface ScenarioSetup {
  * both looked right. `scenario_goal_seek` solves over `run`, and then renders
  * the ledger `run` produced at the answer.
  */
+/**
+ * I1 — the tool's `incomeChanges` entries as the primitive's rules.
+ *
+ * ⚠️ IT MAPS AND VALIDATES NOTHING ELSE. Every question about whether a rule is
+ * coherent — a multiplier of 1, a gross-or-net that was not stated, a period the
+ * amount is not per, a cadence that cannot be started — belongs to
+ * `invalidIncomeChange`, beside the transformation that would otherwise act on
+ * the answer. A second opinion here is how two layers come to disagree about
+ * which rules ran.
+ *
+ * ⚠️ NO UNIT IS DEFAULTED AND NO WORDING IS CARRIED. `per` is passed through
+ * exactly as stated so a missing one is REFUSED rather than guessed, and nothing
+ * the caller wrote in prose travels: `label` names a STARTed income (a thing),
+ * and the sentence describing what a rule did is derived from its figures by
+ * `income-change.ts`. This is the applied-facts invariant (54eb8e1), where a
+ * caller's `statedAs` once rode a $15,000 bonus into a $4,346 spending figure.
+ */
+function toIncomeChangeRules(
+  raw: unknown, declaredOk: (entry: Record<string, unknown>) => boolean,
+): IncomeChangeRule[] {
+  if (!Array.isArray(raw)) return [];
+  const rules: IncomeChangeRule[] = [];
+  raw.forEach((entry, i) => {
+    if (!entry || typeof entry !== 'object') return;
+    const c = entry as Record<string, unknown>;
+    if (!declaredOk(c)) return;
+    const statesRate = c.amount !== undefined || c.per !== undefined || c.basis !== undefined;
+    rules.push({
+      id: `i${i + 1}`,
+      op: c.op as IncomeChangeOpKind,
+      sourceKey: typeof c.source === 'string' && c.source !== '' ? c.source : null,
+      fromISO: typeof c.from === 'string' ? c.from : '',
+      ...(typeof c.to === 'string' ? { toISO: c.to } : {}),
+      ...(typeof c.multiplier === 'number' ? { multiplier: c.multiplier } : {}),
+      ...(statesRate
+        ? { rate: {
+          amount: typeof c.amount === 'number' ? c.amount : NaN,
+          per: c.per as RatePeriodKind,
+          basis: c.basis as IncomeChangeRule['rate'] extends undefined ? never
+            : NonNullable<IncomeChangeRule['rate']>['basis'],
+        } }
+        : {}),
+      ...(typeof c.cadence === 'string'
+        ? { cadence: c.cadence as NonNullable<IncomeChangeRule['cadence']> } : {}),
+      // ⚠️ BOUNDED, LIKE EVERY OTHER CALLER NAME THAT REACHES A RESULT. A STARTed
+      // income's label names a THING ("consulting") and is worth keeping; it is
+      // also the only free text on this argument, and unbounded it would ride
+      // into the roster's `of` list and the envelope on every later turn — the
+      // channel a contribution's `label` was before `scenario-rules.ts` demoted it.
+      ...(boundedLabel(c.label) ? { label: boundedLabel(c.label) as string } : {}),
+    });
+  });
+  return rules;
+}
+
 async function prepareScenario(
   a: Record<string, unknown>, ctx: ToolContext, toISO: string,
   /** The calling tool: its `parameters` are the closed set of arguments this call may carry. */
@@ -1990,11 +2075,34 @@ async function prepareScenario(
    */
   explicitDates?: string[],
 ): Promise<ScenarioSetup | { unavailable: string; reason?: unknown }> {
+  // ── The closed argument set, read off the tool's own schema ────────────────
+  //
+  // ⚠️ THIS RAN AFTER THE SPINE WAS BUILT, AND I1 MOVED IT. Everything below
+  // reads the keys it knows; nothing looked at the rest, so a premature or
+  // misspelt argument (`contribution`, `floor`) ran the scenario WITHOUT that
+  // clause and echoed nothing. `additionalProperties: false` only asks the
+  // provider to stop it. The schema the model was shown is the one literal: an
+  // undeclared argument, or an undeclared key on an array entry, is refused by
+  // name (`scenario-rules`), and the echo carries it on every path.
+  //
+  // It is FIRST now because `incomeChanges` changes the spine, so the rules have
+  // to be read and refused before there is a spine to change.
+  const rejected: RefusedInput[] = [...refuseUnknownArguments(a, tool.parameters)];
+  const declared = (arrayKey: string, name: string, alsoRead?: string[]) => (raw: Record<string, unknown>): boolean => {
+    const refusal = refuseUnknownItemKeys(raw, tool.parameters, arrayKey, name, alsoRead);
+    if (refusal) rejected.push(refusal);
+    return !refusal;
+  };
+
+  const incomeChanges = toIncomeChangeRules(
+    a.incomeChanges, declared('incomeChanges', 'an `incomeChanges` entry'));
+
   const spine = await buildCashSpine(ctx, {
     asOf: ctx.asOfISO,
     ...(typeof a.assumedMonthlySpending === 'number'
       ? { assumedMonthlySpending: a.assumedMonthlySpending }
       : {}),
+    ...(incomeChanges.length > 0 ? { incomeChanges } : {}),
   });
   if ('unavailable' in spine) return spine;
   const { asOf, runTo, accounts } = spine;
@@ -2016,6 +2124,22 @@ async function prepareScenario(
   }
 
   const endpoint = runTo(toISO);
+
+  // ── I1 — what the income rules did, and what they refused ─────────────────
+  //
+  // ⚠️ THE REFUSALS JOIN THE ECHO, AND THE WHOLE ARGUMENT IS FORGOTTEN ONLY WHEN
+  // NOTHING IN IT RAN. A partly-refused array is kept: the rules that ran are
+  // still the scenario, and the refused one is refused identically on every
+  // replay, visibly. Naming `incomeChanges` as the refused ARGUMENT when only
+  // some entries failed would delete the user's working clauses along with the
+  // broken one.
+  const incomeRejected = endpoint.incomeChanges?.rejected ?? [];
+  const allRefused = incomeChanges.length > 0 && incomeRejected.length === incomeChanges.length;
+  for (const r of incomeRejected) {
+    rejected.push({ input: r.input, reason: r.reason,
+      ...(allRefused ? { argument: 'incomeChanges' } : {}) });
+  }
+
   // The spine's own opening balance — checking plus savings. Named `liquid`
   // below for the same reason nothing in the result is named `cash`.
   const openingLiquid = endpoint.projection?.openingCash
@@ -2038,20 +2162,6 @@ async function prepareScenario(
   const dates = plan.dates;
 
   // ── The stated assumptions, normalised ─────────────────────────────────────
-  // ⚠️ A CLOSED ARGUMENT SET, READ OFF THE TOOL'S OWN SCHEMA. Everything below
-  // reads the keys it knows; nothing looked at the rest, so a premature or
-  // misspelt argument (`incomeChanges`, `contribution`, `floor`) ran the scenario
-  // WITHOUT that clause and echoed nothing. `additionalProperties: false` only
-  // asks the provider to stop it. The schema the model was shown is the one
-  // literal: an undeclared argument, or an undeclared key on an array entry, is
-  // refused by name (`scenario-rules`), and the echo carries it on every path.
-  const rejected: RefusedInput[] = [...refuseUnknownArguments(a, tool.parameters)];
-  const declared = (arrayKey: string, name: string, alsoRead?: string[]) => (raw: Record<string, unknown>): boolean => {
-    const refusal = refuseUnknownItemKeys(raw, tool.parameters, arrayKey, name, alsoRead);
-    if (refusal) rejected.push(refusal);
-    return !refusal;
-  };
-
   // ⚠️ THE SPENDING LEVEL THIS SCENARIO RUNS AT, RESOLVED BEFORE THE RULES THAT
   // MAY DEPEND ON IT. "Keep six months of expenses" multiplies this figure, so
   // the floor and the spending in force are one number by construction.
@@ -2286,6 +2396,7 @@ async function prepareScenario(
   return {
     asOf, toISO, plan, dates, accounts, returns, liabilities,
     contributions: expanded.movements, outflows, rejected, monthlySpending, floorDerivations,
+    ...(endpoint.incomeChanges ? { incomeChanges: endpoint.incomeChanges } : {}),
     run: (o: ScenarioOverrides = {}) => {
       const useContribs = o.extraContributions
         ? [...expanded.movements, ...o.extraContributions] : expanded.movements;
@@ -2424,7 +2535,9 @@ function scenarioAssumptions(
     // reported here as `cashFloor.ran: false`, with the lowest cash the scenario
     // reached, in the same turn the model is about to narrate it.
     clauses: clausesInForce(ledger,
-      setup.floorDerivations.map((d) => ({ liquidFloor: d.liquidFloor, derivedFrom: d.derivedFrom }))),
+      setup.floorDerivations.map((d) => ({ liquidFloor: d.liquidFloor, derivedFrom: d.derivedFrom })),
+      // I1 — the SPINE's own record, not `a.incomeChanges`. See `clausesInForce`.
+      setup.incomeChanges?.executions ?? []),
     returns: returns.length === 0
       ? { statedRate: null,
           note: 'No return was in force. Investments are held flat at 0% — do not substitute '

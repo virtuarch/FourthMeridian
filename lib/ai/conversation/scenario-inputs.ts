@@ -125,6 +125,55 @@ export const SCENARIO_INPUTS = {
       label: str('What it is.') }, ['onDate', 'amount']) },
   assumedMonthlySpending: num('If the user stated a monthly spending level, pass it here — '
     + 'it changes the cash spine exactly as it does in project_cash.'),
+  // ── I1 — dated changes to FUTURE income ────────────────────────────────────
+  //
+  // ⚠️ THE ROUTING BOUNDARY IS IN THE DESCRIPTION, NOT ON A FIELD. Measured on
+  // the one-off capability (54eb8e1): a boundary written on a PARAMETER is read
+  // only after the tool has already been chosen, and the model kept choosing the
+  // wrong tool 9/10. So the sentences that decide WHEN this applies lead here.
+  incomeChanges: { type: 'array',
+    description: 'A dated change to FUTURE income — a raise, a new salary, an income '
+      + 'starting, an income ending. Use this whenever the user says income changes from a '
+      + 'date: "starting January my income goes up 10%", "my salary goes to $180k in March", '
+      + '"my contract ends in June", "I start consulting in February at $3,000 a month". The '
+      + 'change is executed by the projection, which reports which pay dates it actually '
+      + 'altered — do NOT compute a new income figure yourself, do NOT convert a yearly '
+      + 'salary into a monthly one, and do NOT apply a percentage in prose. A one-off amount '
+      + 'arriving on a date (a bonus, a settlement) is NOT this: use `outflows` with a '
+      + 'negative amount. A change to SPENDING is not this either and cannot be modelled — '
+      + 'say so rather than describing it as included.',
+    items: obj({
+      op: { type: 'string', enum: ['SCALE', 'SET_RATE', 'STOP', 'START'],
+        description: 'SCALE for a percentage change ("up 10%"). SET_RATE when the user states '
+          + 'what the income BECOMES ("goes to $180k", "I make $15k a month"). STOP when an '
+          + 'income ends. START for an income that does not exist yet.' },
+      source: str('WHICH income, as a `sourceKey` from get_pay_dates or get_income — never a '
+        + 'name you composed. Omit it only when the user meant income as a whole ("my income '
+        + 'goes up 10%"); an omitted source scales EVERY stream, and for SET_RATE or STOP it '
+        + 'is refused when there is more than one income, because "I make $15k a month" could '
+        + 'mean one of them or all of them. Never guess which transactions are the salary.'),
+      from: str('YYYY-MM-DD, INCLUSIVE — the first pay date the change applies to. '
+        + '"Starting January" is January 1 of the next January. For STOP this is the first '
+        + 'date NOT paid, so "stops after June" is July 1.'),
+      to: str('YYYY-MM-DD, inclusive. Omit to continue to the horizon.'),
+      multiplier: num('SCALE only. 1.1 for "up 10%", 0.8 for "a 20% pay cut". Not a percentage.'),
+      amount: num('SET_RATE and START only. What the income BECOMES, as the user stated it — '
+        + 'do not annualise or monthly-ise it yourself; say which period it is in `per`.'),
+      per: { type: 'string', enum: ['YEAR', 'MONTH', 'OCCURRENCE'],
+        description: 'What `amount` is per. "$180k salary" = YEAR. "$15k a month" = MONTH. '
+          + '"$3,000 a paycheck" = OCCURRENCE. The projection converts it against that '
+          + 'stream\'s own pay schedule — a yearly figure on a fortnightly job is divided by '
+          + '26, not by 12.' },
+      basis: { type: 'string', enum: ['NET', 'GROSS'],
+        description: 'SET_RATE and START only. NET is take-home; GROSS is before deductions. '
+          + 'Required, and never guessed: a gross figure is real money but is NOT cash the '
+          + 'user can spend, so it does not raise the projected balance. If the user did not '
+          + 'say, ask.' },
+      cadence: { type: 'string', enum: ['WEEKLY', 'BIWEEKLY', 'MONTHLY'],
+        description: 'START only — how often the new income arrives. An existing income keeps '
+          + 'its own observed schedule and must not be given one here.' },
+      label: str('START only. A short NAME for the new income ("consulting"). Never a rule.'),
+    }, ['op', 'from']) },
   liabilityAssumptions: { type: 'array',
     description: 'Terms the user STATED for an existing liability, for this scenario only: '
       + '"assume the card is at 18%", "my minimum is $300". Overrides that liability\'s known '

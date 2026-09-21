@@ -130,10 +130,11 @@ function unclassifiedKeys(schema: Record<string, unknown>, except: readonly stri
 
   // ⚠️ THE MUTATION. Without this, the check above is satisfied by a schema that
   // happens to have no unconsumed keys today and would say nothing on the day one
-  // appears. `incomeChanges` is the real case: declared for I1, and — until the
-  // spine reads it — accepted, echoed, replayed and never executed.
+  // appears. This was run for real against `incomeChanges` before the spine read
+  // it — declaring it turned the suite red by name — and the planted key is now a
+  // synthetic one, because the real one has a consumer.
   check('PLANTED: a declared key with no consumer is CAUGHT',
-    unconsumedKeys([...keys, 'incomeChanges'], PREPARE).join(',') === 'incomeChanges');
+    unconsumedKeys([...keys, 'plantedKeyWithNoConsumer'], PREPARE).join(',') === 'plantedKeyWithNoConsumer');
   check('PLANTED: a misspelt consumer does not satisfy the guard',
     unconsumedKeys(['assumedMonthlySpendng'], PREPARE).length === 1);
   // A key named only in its own schema prose is NOT consumed — the exact shape of

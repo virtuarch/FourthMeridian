@@ -183,6 +183,38 @@ export function monthlyEquivalent(amount: number, kind: CadenceKindName): number
   return amount * annualFactor(kind) / 12;
 }
 
+/**
+ * What a rate STATED PER YEAR is worth per occurrence of this cadence.
+ *
+ * ⚠️ I1. "My salary goes from $150k to $180k" is an ANNUAL rate, and there is no
+ * annual cadence for it to be the cadence OF — `CadenceKind` has four members and
+ * `annualFactor` is an exhaustive switch over them. So an annual figure only ever
+ * becomes money by being divided by the occurrences of a schedule that already
+ * exists, and this is the one place that division happens. $180,000 against a
+ * BIWEEKLY stream is $180,000 ÷ 26, never ÷ 24 and never ÷ 12 × (something).
+ *
+ * ⚠️ IT LIVES HERE FOR THE REASON `monthlyEquivalent` DOES. The evaluation order
+ * above is canonical because two orders disagree in the last bits for a real
+ * minority of inputs; an inverse computed at a call site would be a second, quietly
+ * different convention for the same conversion.
+ */
+export function perOccurrenceFromAnnual(annualAmount: number, kind: CadenceKindName): number {
+  return annualAmount / annualFactor(kind);
+}
+
+/**
+ * What a rate STATED PER MONTH is worth per occurrence of this cadence.
+ *
+ * ⚠️ THE EXACT INVERSE OF `monthlyEquivalent`, AND ITS ORDER MATCHES BY
+ * CONSTRUCTION. `monthlyEquivalent` is `amount × annual ÷ 12`; this is
+ * `amount × 12 ÷ annual`, so a round trip through the pair returns the input for
+ * every kind. Written the natural-looking way — `monthly / monthlyFactor(kind)` —
+ * it would not, for the same last-bit reason the note above records.
+ */
+export function perOccurrenceFromMonthly(monthlyAmount: number, kind: CadenceKindName): number {
+  return monthlyAmount * 12 / annualFactor(kind);
+}
+
 // ── Occurrence generation ────────────────────────────────────────────────────
 
 

@@ -40,6 +40,7 @@
  */
 
 import type { DatedMovement, LedgerResult, AllocationTarget } from './scenario-ledger';
+import type { IncomeChangeExecution } from '@/lib/forecast/income-change';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -321,6 +322,47 @@ export interface ClausesInForce {
   debtPaydown:
     | { ran: true; order: OneOrMany<string[]>; paidToDebt: number }
     | { ran: false; meaning?: string };
+  /**
+   * I1 — WHETHER A DATED INCOME CHANGE ACTUALLY ALTERED ANY PAY DATE.
+   *
+   * ⚠️ THE ONE CLAUSE THAT CANNOT BE READ OFF A MOVEMENT. The five above are
+   * proven by the settled movements, because each of them MOVES money and the
+   * ledger records what it moved. An income change moves nothing — it changes
+   * the shape of the cash curve those movements are settled against — so it
+   * carries its own evidence, and the evidence is a DIFF the spine counted:
+   * which occurrences it altered, between which dates, from what to what.
+   *
+   * ⚠️ AND IT IS STILL NOT READ OFF THE ARGUMENTS. `clausesInForce` cannot see
+   * them: its `ledger` parameter is narrowed to three ledger fields precisely so
+   * that it cannot, and the executions it now also takes are the SPINE'S OUTPUT,
+   * not the caller's input. A rule the spine refused, or one whose window falls
+   * outside the horizon, arrives here already saying `ran: false` with its
+   * reason — and a caller's label cannot change that, because no label reaches it.
+   */
+  incomeChange:
+    | { ran: true; rules: IncomeClauseLine[]; didNotRun?: IncomeClauseLine[];
+        notCash?: { rules: string[]; meaning: string } }
+    | { ran: false; didNotRun?: IncomeClauseLine[]; meaning?: string };
+}
+
+/** One income rule as the roster states it. Derived; no caller text. */
+export interface IncomeClauseLine {
+  id: string;
+  op: string;
+  /** The streams it reached, by label where one exists. Empty when it reached none. */
+  of: string[];
+  from: string;
+  to: string;
+  /** Pay dates whose amount the rule altered, created or removed. */
+  payDatesChanged: number;
+  first: string | null;
+  last: string | null;
+  /** Dated income inside the governed window, before and after. */
+  incomeBefore: number;
+  incomeAfter: number;
+  /** Of `incomeAfter`, what the projection counts as spendable. Only when they differ. */
+  countedAsCash?: number;
+  reason?: string;
 }
 
 const NO_FLOOR_MEANING =
@@ -357,6 +399,37 @@ const NEVER_REACHED_MEANING =
   + 'nothing and cash was NOT held at the floor — it is still building toward it. Do not say the '
   + 'buffer is in place.';
 
+const NO_INCOME_CHANGE_MEANING =
+  'An income change was stated and NO pay date changed, so every figure here was computed at '
+  + 'the CURRENT income. Read `didNotRun[].reason` and say what actually happened — do not '
+  + 'describe the raise, the new salary or the ending income as included.';
+
+/**
+ * ⚠️ A RULE CAN EXECUTE PERFECTLY AND LOWER THE PROJECTION. A stated GROSS figure
+ * is real money and is NOT cash the user can spend (FORECAST-3), so replacing an
+ * observed take-home level with a gross salary removes it from the projected
+ * balance. That is the correct answer and it is the one a reader calls a bug, so
+ * the roster says it rather than leaving a smaller number to be explained.
+ */
+const NOT_CASH_MEANING =
+  'These rules ran, and the income they set is GROSS — money before deductions, which is NOT '
+  + 'spendable cash. The projection therefore does NOT count it, and the cash here may be '
+  + 'LOWER than before the change. Say so; if the user meant take-home, re-run with NET.';
+
+/**
+ * ⚠️ AN UNQUALIFIED CHANGE IS A READING OF THE SENTENCE, AND THE RESULT SAYS SO.
+ * "My income increases 10%" against four streams raises all four, which is what
+ * the words mean and is not always what the speaker meant — and on a real Space
+ * the streams a rule reaches include bank interest, because the flow classifier
+ * files interest deposits as INCOME. Naming them is what lets a wrong reading be
+ * corrected in one turn rather than going unnoticed for the rest of the
+ * conversation.
+ */
+const EVERY_STREAM_MEANING =
+  'This change named no income, so it was applied to EVERY income stream listed under `of` — '
+  + 'which may include interest as well as pay. If the user meant one income, say which streams '
+  + 'this covered and re-run with `source` (the keys are on get_pay_dates / get_income).';
+
 const NO_DEBT_MEANING =
   'No rule named a liability: every contribution went to investments, and debts moved only by '
   + 'interest and their stated minimums. If the user asked to pay debt first, re-run with `target`.';
@@ -386,6 +459,8 @@ const targetWord = (t: unknown): string =>
 export function clausesInForce(
   ledger: Pick<LedgerResult, 'movements' | 'checkpoints' | 'allocationOrders'>,
   floors: readonly FloorIdentity[] = [],
+  /** I1 — the SPINE's record of what each income rule altered. Never the arguments. */
+  incomeExecutions: readonly IncomeChangeExecution[] = [],
 ): ClausesInForce {
   const ran: Settled[] = ledger.movements.filter((m) => m.kind === 'CONTRIBUTION');
   const uniq = <T>(xs: T[]) => [...new Set(xs)];
@@ -445,6 +520,57 @@ export function clausesInForce(
     debtPaydown: orders.length > 0 || paidToDebt > 0
       ? { ran: true, order: oneOrMany(orders), paidToDebt }
       : ran.length > 0 ? { ran: false, meaning: NO_DEBT_MEANING } : { ran: false },
+    incomeChange: incomeClause(incomeExecutions),
+  };
+}
+
+/** One execution as a roster line. Every field is code's; none is the caller's. */
+const incomeLine = (x: IncomeChangeExecution): IncomeClauseLine => ({
+  id: x.ruleId, op: x.op,
+  of: x.matched.map((m) => m.label ?? m.sourceKey),
+  from: x.governed.fromISO, to: x.governed.toISO,
+  payDatesChanged: x.occurrencesChanged,
+  first: x.firstChangedISO, last: x.lastChangedISO,
+  incomeBefore: round2(x.nominalBefore), incomeAfter: round2(x.nominalAfter),
+  // ⚠️ SAID ONLY WHEN IT DIFFERS. On an ordinary rule over take-home pay these
+  // two are the same number, and printing it twice on every line would train a
+  // reader to skip the one row where it matters.
+  ...(round2(x.spendableAfter) !== round2(x.nominalAfter)
+    ? { countedAsCash: round2(x.spendableAfter) } : {}),
+  ...(x.reason ? { reason: x.reason } : {}),
+});
+
+export function incomeClause(
+  executions: readonly IncomeChangeExecution[],
+): ClausesInForce['incomeChange'] {
+  // ⚠️ NOTHING STATED IS SILENT; STATED-AND-INERT IS NOT. A scenario with no
+  // income rule reports `ran: false` and stops — there is nothing to explain.
+  // A scenario that WAS given one and changed no pay date has to say so, because
+  // that is the case a reader would otherwise read as "the raise is in here".
+  if (executions.length === 0) return { ran: false };
+  const didRun = executions.filter((x) => x.ran);
+  const didNot = executions.filter((x) => !x.ran).map(incomeLine);
+  if (didRun.length === 0) {
+    return { ran: false, didNotRun: didNot, meaning: NO_INCOME_CHANGE_MEANING };
+  }
+  // ⚠️ THE RULE PRODUCED INCOME THE PROJECTION WILL NOT COUNT AT ALL. Not "some
+  // of what it touched was already unspendable" — a rule is not answerable for
+  // what it inherited, and the first version of this fired on an ordinary +10%
+  // for exactly that reason. This is the case where the rule SET a figure and the
+  // figure buys nothing.
+  const everyStream = didRun
+    .filter((x) => x.scope === 'EVERY_INCOME_STREAM' && x.matched.length > 1)
+    .map((x) => x.ruleId);
+  const notCash = didRun
+    .filter((x) => x.nominalAfter > 0 && round2(x.spendableAfter) === 0)
+    .map((x) => x.ruleId);
+  return {
+    ran: true,
+    rules: didRun.map(incomeLine),
+    ...(didNot.length ? { didNotRun: didNot } : {}),
+    ...(notCash.length ? { notCash: { rules: notCash, meaning: NOT_CASH_MEANING } } : {}),
+    ...(everyStream.length
+      ? { everyStream: { rules: everyStream, meaning: EVERY_STREAM_MEANING } } : {}),
   };
 }
 
@@ -459,7 +585,10 @@ export function clausesInForce(
  */
 export type ClausesRan = Record<keyof ClausesInForce, unknown>;
 
-export function compactClauses(c: ClausesInForce): ClausesRan {
+export function compactClauses(
+  /** A roster from THIS build, or one an older build wrote into a live envelope. */
+  c: ClausesInForce | (Omit<ClausesInForce, 'incomeChange'> & { incomeChange?: undefined }),
+): ClausesRan {
   return {
     cashFloor: c.cashFloor.ran
       ? { keep: c.cashFloor.keep,
@@ -475,6 +604,21 @@ export function compactClauses(c: ClausesInForce): ClausesRan {
     balanceShare: c.balanceShare.ran ? c.balanceShare.share : 'NONE',
     fixedAmounts: c.fixedAmounts.ran ? { count: c.fixedAmounts.count, total: c.fixedAmounts.total } : 'NONE',
     debtPaydown: c.debtPaydown.ran ? c.debtPaydown.order : 'NONE',
+    // ⚠️ THE ENVELOPE KEEPS THE RULE, NOT THE PAY DATES. A later turn saying
+    // "make the raise 15%" has to inherit the SENTENCE — which income, from when,
+    // what it became — and a hundred and thirty-five altered dates are an
+    // accident of one horizon. `changed` is kept because "it ran" and "it changed
+    // nothing" are the two readings this whole clause exists to separate.
+    // ⚠️ OPTIONAL-CHAINED FOR THE SAME REASON `isClausesInForce` ACCEPTS IT
+    // MISSING, and a test caught the two disagreeing. A roster can arrive from an
+    // envelope written by an EARLIER build, where this clause did not exist; the
+    // validator was taught to let that through and this was not, so a two-hour-old
+    // cookie threw instead of degrading. Absent reads as 'NONE', which is the
+    // truth about a scenario that had no income rule to run.
+    incomeChange: c.incomeChange?.ran
+      ? c.incomeChange.rules.map((r) => ({ op: r.op, of: r.of, from: r.from, to: r.to,
+          changed: r.payDatesChanged }))
+      : 'NONE',
   };
 }
 
@@ -482,7 +626,14 @@ export function compactClauses(c: ClausesInForce): ClausesRan {
 export function isClausesInForce(v: unknown): v is ClausesInForce {
   if (!v || typeof v !== 'object') return false;
   const o = v as Record<string, unknown>;
+  // ⚠️ THE FIVE ARE REQUIRED AND `incomeChange` IS CHECKED ONLY IF PRESENT. This
+  // reads a roster off a result that may have been produced by an EARLIER build —
+  // an envelope lives in a two-hour cookie — and rejecting a pre-I1 roster whole
+  // would throw away the five clauses it does carry to punish it for a sixth that
+  // did not exist yet. Going forward `compactClauses` always writes it.
+  const wellFormed = (v: unknown) =>
+    v !== null && typeof v === 'object' && typeof (v as { ran?: unknown }).ran === 'boolean';
   return (['cashFloor', 'surplusShare', 'balanceShare', 'fixedAmounts', 'debtPaydown'] as const)
-    .every((k) => o[k] !== null && typeof o[k] === 'object'
-      && typeof (o[k] as { ran?: unknown }).ran === 'boolean');
+    .every((k) => wellFormed(o[k]))
+    && (o.incomeChange === undefined || wellFormed(o.incomeChange));
 }

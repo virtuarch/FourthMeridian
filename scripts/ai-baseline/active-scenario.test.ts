@@ -66,9 +66,26 @@ console.log('1. CAPTURE — success establishes the pair');
   const c3 = captureActiveScenario(SCENARIO_TOOL, A1, withRoster);
   check('…and exactly three, in one order, when it does',
     c3.action === 'REPLACE' && Object.keys(c3.scenario).join(',') === 'assumptions,ran,result');
+  // ⚠️ THE FIXTURE ABOVE IS A PRE-I1 ROSTER, DELIBERATELY. An envelope lives in a
+  // two-hour cookie, so a roster written by an EARLIER build reaches this code on
+  // every deploy. It must degrade, not throw — it threw, and this caught it. The
+  // sixth clause is stated as `'NONE'` in its named slot, which is the truth about
+  // a scenario that carried no income rule.
   check('…the roster says NONE in a named slot rather than omitting the clause',
     c3.action === 'REPLACE' && JSON.stringify(c3.scenario.ran)
-      === '{"cashFloor":"NONE","surplusShare":1,"balanceShare":"NONE","fixedAmounts":"NONE","debtPaydown":"NONE"}');
+      === '{"cashFloor":"NONE","surplusShare":1,"balanceShare":"NONE","fixedAmounts":"NONE",'
+        + '"debtPaydown":"NONE","incomeChange":"NONE"}');
+  // I1 — a roster that DID run an income rule keeps the rule, not the pay dates.
+  const ranIncome = { ...R1, assumptions: { clauses: { cashFloor: none, surplusShare: none,
+    balanceShare: none, fixedAmounts: none, debtPaydown: none,
+    incomeChange: { ran: true, rules: [{ id: 'i1', op: 'SCALE', of: ['Payroll'],
+      from: '2027-01-01', to: '2027-12-31', payDatesChanged: 26, first: '2027-01-01',
+      last: '2027-12-17', incomeBefore: 100, incomeAfter: 110 }] } } } };
+  const cI = captureActiveScenario(SCENARIO_TOOL, A1, ranIncome);
+  check('…and an income rule that RAN survives as the rule, not as its pay dates',
+    cI.action === 'REPLACE'
+    && JSON.stringify((cI.scenario.ran as Record<string, unknown>).incomeChange)
+      === '[{"op":"SCALE","of":["Payroll"],"from":"2027-01-01","to":"2027-12-31","changed":26}]');
   check('…and a malformed roster is not carried at all',
     (() => { const x = captureActiveScenario(SCENARIO_TOOL, A1, { ...R1, assumptions: { clauses: { cashFloor: 'yes' } } });
       return x.action === 'REPLACE' && !('ran' in x.scenario); })());

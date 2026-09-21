@@ -305,7 +305,11 @@ console.log('\n6b. A CLOSED ARGUMENT SET — the schema the model was shown is t
       JSON.stringify([...(schemaItemKeys(schema, 'contributions') ?? [])].sort())
         === JSON.stringify([...CONTRIBUTION_KEYS].sort()));
     // The reviewer's three: a premature argument, a singular, a misplaced clause.
-    for (const bad of ['incomeChanges', 'contribution', 'floor', 'liquidFloor']) {
+    // ⚠️ `incomeChanges` WAS THIS LIST'S FIRST EXAMPLE AND IS NOW A REAL ARGUMENT
+    // (I1). `spendingChanges` replaces it as the premature one — S1's argument,
+    // which does not exist — so the case this list exists for is still covered, and
+    // a future-spending rule is proved to be refused rather than run as income.
+    for (const bad of ['spendingChanges', 'contribution', 'floor', 'liquidFloor']) {
       const refused = refuseUnknownArguments({ contributions: [], [bad]: 1 }, schema);
       check(`${name}: \`${bad}\` is refused by name`, refused.length === 1 && refused[0].argument === bad
         && refused[0].input === `argument \`${bad}\`` && /NOT applied/.test(refused[0].reason)
@@ -313,6 +317,17 @@ console.log('\n6b. A CLOSED ARGUMENT SET — the schema the model was shown is t
     }
     check(`${name}: every argument it declares is accepted`,
       refuseUnknownArguments(Object.fromEntries((keys ?? []).map((k) => [k, 1])), schema).length === 0);
+    // I1 — declared, so accepted; and its ENTRIES are closed the same way a
+    // contribution's are, so an invented field on one is refused rather than run
+    // without. The consumer side is pinned in `scenario-contract.test.ts`.
+    check(`${name}: \`incomeChanges\` is a declared argument`, (keys ?? []).includes('incomeChanges'));
+    check(`${name}: \`incomeChanges\` entries declare their keys`,
+      JSON.stringify([...(schemaItemKeys(schema, 'incomeChanges') ?? [])].sort())
+        === JSON.stringify(['amount', 'basis', 'cadence', 'from', 'label', 'multiplier',
+          'op', 'per', 'source', 'to']));
+    check(`${name}: an invented key on an \`incomeChanges\` entry is refused`,
+      refuseUnknownItemKeys({ op: 'SCALE', from: '2027-01-01', percent: 10 },
+        schema, 'incomeChanges', 'an entry') !== null);
   }
   const proj = findTool('scenario_projection')!.parameters;
   const cross = findTool('scenario_crossing')!.parameters;
@@ -345,21 +360,21 @@ console.log('\n6b. A CLOSED ARGUMENT SET — the schema the model was shown is t
   const echo = notAppliedEcho(many)!;
   check('the echo is bounded and says how many there were', echo.count === 12 && echo.inputs.length === NOT_APPLIED_SHOWN);
   const floorRun = runRaw([FLOOR_6]);
-  const refusedArgs = refuseUnknownArguments({ to: HORIZON, incomeChanges: [{ from: '2027-01-01', monthly: 1500 }] }, proj);
+  const refusedArgs = refuseUnknownArguments({ to: HORIZON, spendingChanges: [{ from: '2027-01-01', monthly: 1500 }] }, proj);
   const result = { ...floorRun.result,
     assumptions: { ...(floorRun.result.assumptions as object), notApplied: notAppliedEcho(refusedArgs) } };
   const cap = captureActiveScenario(SCENARIO_TOOL,
-    { to: HORIZON, incomeChanges: [{ from: '2027-01-01', monthly: 1500 }], contributions: [FLOOR_6] }, result);
+    { to: HORIZON, spendingChanges: [{ from: '2027-01-01', monthly: 1500 }], contributions: [FLOOR_6] }, result);
   check('the envelope does NOT remember an argument no execution honoured', cap.action === 'REPLACE'
-    && !('incomeChanges' in cap.scenario.assumptions) && !JSON.stringify(cap.scenario).includes('incomeChanges'));
+    && !('spendingChanges' in cap.scenario.assumptions) && !JSON.stringify(cap.scenario).includes('spendingChanges'));
   check('…and keeps every argument that was', cap.action === 'REPLACE'
     && Object.keys(cap.scenario.assumptions).join(',') === 'to,contributions');
   const crossing = { asOf: ASOF, assumptionsInForce: result.assumptions,
     crossing: { date: '2027-03-31', composition: { liquid: 30_000, investments: 30_000, debt: 0, netWorth: 60_000 } } };
   const capX = captureActiveScenario(CROSSING_TOOL, { metric: 'netWorth', direction: 'at_or_above', threshold: 60_000,
-    incomeChanges: [1], contributions: [FLOOR_6] }, crossing);
+    spendingChanges: [1], contributions: [FLOOR_6] }, crossing);
   check('…on a crossing too, read from `assumptionsInForce`', capX.action === 'REPLACE'
-    && !('incomeChanges' in capX.scenario.assumptions));
+    && !('spendingChanges' in capX.scenario.assumptions));
 
   const tools = readFileSync('lib/ai/conversation/tools.ts', 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
   check('prepareScenario refuses against the CALLING tool\'s schema, before anything is sized',
@@ -453,13 +468,20 @@ console.log('\n7c. A FLOOR RULE THAT RAN IS NOT A FLOOR THAT WAS KEPT (review NB
   const worstCompact = JSON.stringify(compactClauses(clausesInForce(worst.ledger, worst.floors)));
   const floorCompact = JSON.stringify(compactClauses(clausesInForce(never.ledger, never.floors)));
   const reachedCompact = JSON.stringify(compactClauses(clausesInForce(reached.ledger, reached.floors)));
-  check('a floor scenario\'s envelope roster still fits the pinned 200 B, reached or not',
-    floorCompact.length < 200 && reachedCompact.length < 200, `${floorCompact.length} B / ${reachedCompact.length} B`);
+  // ⚠️ 200 → 225 B, AND THE RAISE IS THE WHOLE OF I1'S ENVELOPE COST. The roster
+  // gained a sixth clause, so every scenario — including one with no income rule
+  // at all — now carries `"incomeChange":"NONE"`: 25 bytes, measured, on a raw
+  // envelope ceiling of 900 B. That word is the point of the closed roster. A
+  // missing key is not a statement, and the clause this whole module exists for
+  // was invisible for exactly that reason.
+  check('a floor scenario\'s envelope roster still fits the pinned 225 B, reached or not',
+    floorCompact.length < 225 && reachedCompact.length < 225, `${floorCompact.length} B / ${reachedCompact.length} B`);
   // ⚠️ A NEW, SEPARATE BOUND — not the 200 B pin raised. Every clause kind running at once
   // (floor + months + two unbound rules + share + fixed amounts + a debt order) was already
   // 225 B before `reached` existed; the 200 B pin never covered it. It is bounded here so it
   // cannot grow unnoticed, and the raw envelope ceiling (900 B) is what protects the cookie.
-  check('every clause at once is bounded too (its own bound: 260 B)', worstCompact.length < 260, `${worstCompact.length} B`);
+  // Likewise +25 B for the sixth clause's `"NONE"`; no income rule runs in `worst`.
+  check('every clause at once is bounded too (its own bound: 285 B)', worstCompact.length < 285, `${worstCompact.length} B`);
 }
 
 console.log('\n7d. THE ORDER IS THE SETTLER\'S RECORD, NOT A MATCH (review NB3b)');
@@ -521,7 +543,7 @@ console.log('\n7e. AN OUTFLOW LABEL IS BOUNDED AND DEMOTED LIKE A CONTRIBUTION\'
 
 console.log('\n8. THE ROSTER IS CLOSED — every clause kind, on every result');
 {
-  const KEYS = 'cashFloor,surplusShare,balanceShare,fixedAmounts,debtPaydown';
+  const KEYS = 'cashFloor,surplusShare,balanceShare,fixedAmounts,debtPaydown,incomeChange';
   for (const [name, raws] of [
     ['no contributions', []],
     ['floor', [FLOOR_6]],
@@ -531,8 +553,8 @@ console.log('\n8. THE ROSTER IS CLOSED — every clause kind, on every result');
   ] as [string, Record<string, unknown>[]][]) {
     const r = runRaw(raws);
     const c = clausesInForce(r.ledger, r.floors);
-    check(`${name}: five keys, each with a boolean \`ran\``, Object.keys(c).join(',') === KEYS && isClausesInForce(c));
-    check(`${name}: the compact form keeps all five`, Object.keys(compactClauses(c)).join(',') === KEYS);
+    check(`${name}: six keys, each with a boolean \`ran\``, Object.keys(c).join(',') === KEYS && isClausesInForce(c));
+    check(`${name}: the compact form keeps all six`, Object.keys(compactClauses(c)).join(',') === KEYS);
   }
   const fixed = runRaw([{ amount: 500, from: '2026-10-31', cadence: 'monthly', label: 'Roth IRA' }]);
   const cf = clausesInForce(fixed.ledger, fixed.floors);

@@ -736,8 +736,20 @@ console.log('13h. applied facts — nothing reaches the applied channel that did
     !(openAiToolSchemas() as { function: { name: string; parameters: unknown } }[])
       .filter((t) => t.function.name !== WRITE_TOOL_NAME)
       .some((t) => JSON.stringify(t.function.parameters).includes('statedAs')));
-  check('the cash spine takes no wording from its caller',
-    /opts: \{ asOf: string; assumedMonthlySpending\?: number \},/.test(src));
+  // I1 widened the spine's options with `incomeChanges`. The INVARIANT is
+  // unchanged and is what is checked: every field is typed, and none of them is a
+  // sentence. The one piece of free text on the income argument — a STARTed
+  // income's name — is bounded by `boundedLabel` on the way in, exactly as a
+  // contribution's `label` is, so it cannot grow into a claim about the scenario.
+  check('the cash spine takes no wording from its caller', (() => {
+    const opts = src.slice(src.indexOf('  opts: {', src.indexOf('async function buildCashSpine')),
+      src.indexOf('): Promise<CashSpine', src.indexOf('async function buildCashSpine')));
+    return /asOf: string; assumedMonthlySpending\?: number;/.test(opts)
+      && /incomeChanges\?: readonly IncomeChangeRule\[\];/.test(opts)
+      && !/: string(;|,)?\s*$/m.test(opts.replace(/asOf: string;/, ''));
+  })());
+  check('a started income\'s name is bounded before it reaches the spine',
+    /boundedLabel\(c\.label\)/.test(src));
   check('the statement\'s wording is DERIVED from the amount it applies',
     /statedAs: `assumed monthly spending \$\{monthly\}`/.test(src));
   check('…and there is exactly one derivation of it',
