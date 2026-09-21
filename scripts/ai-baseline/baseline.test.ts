@@ -1865,7 +1865,7 @@ console.log('19a. memory line');
   let seq = 0;
   const mrow = (kind: string, payload: unknown, status = 'ACTIVE') => ({ id: `m${++seq}`, kind, subject: `s${seq}`, status,
     payload, statedAs: 'RAW', statedAt: '2026-09-20T00:00:00.000Z', appliesFrom: null, appliesTo: null, supersedesId: null });
-  const projection = (horizon: string) => mrow('CHECKPOINT', { v: 2, class: 'PROJECTION', metric: 'liquid', horizon, value: 51598.84, basis: { openingCash: 13330.97 } });
+  const projection = (horizon: string) => mrow('CHECKPOINT', { v: 2, class: 'PROJECTION', metric: 'liquid', horizon, value: 37450.62, basis: { openingCash: 9274.31 } });
   const empty = composeMemoryLine([], '2026-09-20') as { note?: string };
   check('the empty state names the tool rather than saying nothing', /record it with `remember`/.test(empty.note ?? ''));
 
@@ -1905,7 +1905,7 @@ console.log('19a. memory line');
     mrow('INTENTION', { v: 2, class: 'PLANNED_EXPENSE', label: 'car', amount: 20000 }),
     projection('2026-12-31'),
     mrow('INTENTION', { intent: 'keep-buffer', amount: 6, label: 'monthsOfExpenses' }),
-    mrow('INTENTION', { targetMetric: 'liquid', targetAmount: 26078.88, byDate: null }),
+    mrow('INTENTION', { targetMetric: 'liquid', targetAmount: 19096.50, byDate: null }),
   ], '2026-09-20');
   const recalledText = JSON.stringify(recalled);
   check('recall renders every class `remember` can write, as words plus the fields that are the arguments',
@@ -1936,7 +1936,7 @@ console.log('19a. memory line');
   check('a stated item emits its subject, its date and its own fields — never the raw words',
     /"subject":"s\d+","statedAt":"2026-09-20"/.test(everything) && !everything.includes('RAW'));
   check('…and a projection emits only its horizon: no value, no opening balance',
-    !everything.includes('51598') && !everything.includes('13330') && everything.includes('"horizons":["2026-12-31"]'));
+    !everything.includes('37450') && !everything.includes('9274') && everything.includes('"horizons":["2026-12-31"]'));
 
   // The collision slice 1 removed from every tool result survived one file.
   check('the orientation core calls checking-plus-savings `liquid`, not `cash`',
@@ -2066,11 +2066,11 @@ console.log('20a. checkpoint-on-projection');
   // checkpoints — or silently recording the wrong thing.
   const cashResult = (over: Record<string, unknown> = {}, spending: Record<string, unknown> = { source: 'OBSERVED', dailyRate: 142.89, monthsAveraged: ['2026-07', '2026-08'] }) => ({
     horizon: { asOf: '2026-09-20', to: '2026-12-31', days: 102 },
-    projection: { endingCash: 51598.84, basis: { openingCash: 13330.97, incomeEventsCounted: 7, spending } },
+    projection: { endingCash: 37450.62, basis: { openingCash: 9274.31, incomeEventsCounted: 7, spending } },
     appliedUserFacts: [], ...over });
   const observed = projectionStatement('project_cash', cashResult(), '2026-09-20');
   check('an OBSERVED projection is a statement: liquid, its horizon, its ending balance',
-    observed?.subject === 'liquid-2026-12-31' && observed.metric === 'liquid' && observed.value === 51598.84 && observed.horizon === '2026-12-31');
+    observed?.subject === 'liquid-2026-12-31' && observed.metric === 'liquid' && observed.value === 37450.62 && observed.horizon === '2026-12-31');
   check('…with the closed, code-written basis — it reads back through the one validator',
     !!observed && validateShape({ v: 2, class: 'PROJECTION', metric: observed.metric, horizon: observed.horizon, value: observed.value, basis: observed.basis }).ok
       && Object.keys(observed.basis).every((k) => (PROJECTION_BASIS_KEYS as readonly string[]).includes(k)));
@@ -2080,7 +2080,7 @@ console.log('20a. checkpoint-on-projection');
   check('a retrospective run is still not a statement',
     projectionStatement('project_cash', cashResult({ retrospective: true }), '2026-09-20') === null);
   const windowed = cashResult({ interval: { from: '2027-01-01', to: '2027-12-31', days: 365,
-    cashAtStart: { date: '2026-12-31', amount: 51598.84 }, cashAtEnd: { date: '2027-12-31', amount: 66733.35 }, cashChange: 15134.51 } });
+    cashAtStart: { date: '2026-12-31', amount: 37450.62 }, cashAtEnd: { date: '2027-12-31', amount: 48120.90 }, cashChange: 15134.51 } });
   check('an INTERVAL projection is never recorded as an ending balance',
     projectionStatement('project_cash', windowed, '2026-09-20') === null);
   check('a scenario result is never a statement, whatever it carries',

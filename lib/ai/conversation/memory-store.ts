@@ -173,7 +173,7 @@ async function chainHead(scope: MemoryScope, kind: MemoryKind, subject: string):
  * versioning system and no event log.
  *
  * ⚠️ AND IT NEVER SILENTLY LOSES A FIELD. The observed failure was a strategy
- * ("six months; cards first; then invest") replaced by `{liquid: 39118.32}`: the
+ * ("six months; cards first; then invest") replaced by a bare `{liquid: <dollars>}`: the
  * ordering left memory without anyone deciding it should. So an `amend` merges
  * field-wise onto the current version and re-validates the whole; a `record`
  * that would drop a field the current version holds is refused unless the caller

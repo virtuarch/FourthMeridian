@@ -60,7 +60,7 @@ console.log('1. a rule is the scenario contract\'s own clause');
   check('the two target words are the contract\'s', JSON.stringify(ALLOCATION_TARGET_WORDS) === '["investments","highest_apr"]');
   check('the observed wrong key is refused by name, pointing at the right one',
     /`monthsOfExpenses` is not a rule field[\s\S]*liquidFloorMonthsOfExpenses/.test(why('RULE', { monthsOfExpenses: 6 })));
-  check('a month count is not a dollar-sized number', !ok('RULE', { liquidFloorMonthsOfExpenses: 26078.88 }));
+  check('a month count is not a dollar-sized number', !ok('RULE', { liquidFloorMonthsOfExpenses: 19096.50 }));
   check('75 is not a share', !ok('RULE', { liquidFloorMonthsOfExpenses: 6, fractionOfExcess: 75 }));
 }
 
@@ -135,10 +135,10 @@ console.log('4. legacy rows — deterministic, by value, never reinterpreted');
   const unreadable: [string, string, unknown][] = [
     ['amount: 6 squeezed into an outlay', 'INTENTION', { intent: 'keep-buffer', amount: 6, label: 'monthsOfExpenses' }],
     ['…even with a plausible label', 'INTENTION', { intent: 'Maintain a buffer', amount: 6, label: 'months of expenses to keep in cash' }],
-    ['a frozen dollar floor under a rule-shaped intent', 'INTENTION', { intent: 'keep-buffer', amount: 35739.18, label: 'six months of expenses in cash' }],
+    ['a frozen dollar floor under a rule-shaped intent', 'INTENTION', { intent: 'keep-buffer', amount: 24096.50, label: 'six months of expenses in cash' }],
     ['a zero placeholder', 'INTENTION', { intent: 'allocation-rule', amount: 0, label: 'Keep six months' }],
     ['a zero placeholder under a documented intent', 'INTENTION', { intent: 'buy', amount: 0, label: 'car' }],
-    ['byDate: null', 'INTENTION', { targetMetric: 'liquid', targetAmount: 35739.18, byDate: null }],
+    ['byDate: null', 'INTENTION', { targetMetric: 'liquid', targetAmount: 24096.50, byDate: null }],
     ['months smuggled through a free-text metric', 'INTENTION', { targetMetric: 'monthsOfExpenses', targetAmount: 9, byDate: '2030-01-01' }],
     ['an over-long label', 'INTENTION', { intent: 'buy', amount: 5000, label: 'x'.repeat(41) }],
     ['a mixed shape', 'INTENTION', { targetMetric: 'netWorth', targetAmount: 1e6, byDate: '2030-12-31', intent: 'buy' }],
@@ -147,7 +147,7 @@ console.log('4. legacy rows — deterministic, by value, never reinterpreted');
     ['a non-object payload', 'INTENTION', 'keep six months'],
   ];
   for (const [name, kind, payload] of unreadable) check(`unreadable: ${name}`, !read(kind, payload).readable);
-  const cp = read('CHECKPOINT', { metric: 'liquid', horizon: '2026-12-31', value: 51598.84, basis: { spendingSource: 'USER_STATED', userAssumptions: ['x'], openingCash: 1 } });
+  const cp = read('CHECKPOINT', { metric: 'liquid', horizon: '2026-12-31', value: 37450.62, basis: { spendingSource: 'USER_STATED', userAssumptions: ['x'], openingCash: 1 } });
   check('a V1 checkpoint with {metric, horizon, value} stays readable as a PROJECTION', cp.readable && cp.cls === 'PROJECTION' && cp.legacy);
   const line = JSON.stringify(composeMemoryLine(unreadable.map(([, kind, payload]) => row(kind, payload)), TODAY));
   check('no unreadable row reaches the memory line — nothing renders as money', line === JSON.stringify({ note: LINE_EMPTY }), line);
@@ -194,11 +194,11 @@ console.log('6. admitWrite — money only in figures the user stated');
   check('the 6 of "6 months" licenses NO money', !admit('PLANNED_EXPENSE', { label: 'buffer', amount: 6 }, ev(['keep 6 months of expenses'])).ok);
   check('a month count spoken in words licenses no money (the replayed `amount: 6`)',
     !admit('PLANNED_EXPENSE', { label: 'months-of-expenses', amount: 6 }, ev(['Remember that I want six months cash.'])).ok);
-  const computed = admit('GOAL', { targetMetric: 'liquid', targetAmount: 26078.88 }, ev(['Keep six months of expenses in cash.'], [{ thresholds: [{ monthsOfExpenses: 6, amount: 26078.88 }] }]));
+  const computed = admit('GOAL', { targetMetric: 'liquid', targetAmount: 19096.50 }, ev(['Keep six months of expenses in cash.'], [{ thresholds: [{ monthsOfExpenses: 6, amount: 19096.50 }] }]));
   check('a figure from this turn\'s tool results is refused as OURS', !computed.ok && /figure we produced/.test(computed.reason));
-  check('…including a rounding of it at the precision it was written', !admit('GOAL', { targetMetric: 'liquid', targetAmount: 26000 }, ev(['six months'], ['about $26,078.88'])).ok);
+  check('…including a rounding of it at the precision it was written', !admit('GOAL', { targetMetric: 'liquid', targetAmount: 19000 }, ev(['six months'], ['about $19,096.50'])).ok);
   check('…and a string leaf inside a tool result', (() => { const r = admit('PLANNED_EXPENSE', { label: 'buffer', amount: 30000 }, ev(['six months'], [{ note: 'a floor of $30,000 was kept' }])); return !r.ok && /we produced/.test(r.reason); })());
-  check('the user\'s own rounding of our figure is theirs', admit('GOAL', { targetMetric: 'liquid', targetAmount: 26000 }, ev(['ok call it $26k'], ['$26,078.88'])).ok);
+  check('the user\'s own rounding of our figure is theirs', admit('GOAL', { targetMetric: 'liquid', targetAmount: 19000 }, ev(['ok call it $19k'], ['$19,096.50'])).ok);
   const floor = admit('RULE', { liquidFloor: 30000 }, ev(['Keep six months of expenses in cash.'], ['6 × $5,000 = $30,000']));
   check('R2: a dollar floor the user never stated is refused, naming the months field', !floor.ok && /liquidFloorMonthsOfExpenses/.test(floor.reason));
   check('R2: "keep $50k liquid" is a dollar floor', admit('RULE', { liquidFloor: 50000 }, ev(['keep $50k liquid, invest the rest'])).ok);
@@ -220,7 +220,7 @@ console.log('6. admitWrite — money only in figures the user stated');
 // reused the Brief licence's tolerance — `min(writtenUnit, max(1, 3%))` — which
 // is the right question asked backwards: the licence asks whether ROUNDED PROSE
 // fairly renders a PRECISE figure, and memory must ask whether THIS figure was
-// said. "so about 270k?" is not a statement of 271,433.12.
+// said. "so about 210k?" is not a statement of 271,433.12.
 console.log('6a. the rounding tolerance ran the wrong way (blocker M1)');
 {
   const ev = (userTexts: string[], ours: unknown[] = []): TurnEvidence => ({ userTexts, ours: () => ours });
@@ -228,15 +228,15 @@ console.log('6a. the rounding tolerance ran the wrong way (blocker M1)');
     admitWrite({ cls, supplied, current: null, evidence: e, asOf: TODAY });
   const goal = (n: number) => ({ targetMetric: 'netWorth', targetAmount: n });
 
-  check('"so about 270k?" does NOT license the projection\'s 271,433.12',
-    !admit('GOAL', goal(271433.12), ev(['so about 270k? remember that'], ['{"netWorth":271433.12}'])).ok);
-  check('…and DOES license the 270,000 they said', admit('GOAL', goal(270000), ev(['so about 270k? remember that'])).ok);
+  check('"so about 210k?" does NOT license the projection\'s 271,433.12',
+    !admit('GOAL', goal(211433.12), ev(['so about 210k? remember that'], ['{"netWorth":211433.12}'])).ok);
+  check('…and DOES license the 210,000 they said', admit('GOAL', goal(210000), ev(['so about 210k? remember that'])).ok);
   check('"$300k" does not license 295,000', !admit('GOAL', goal(295000), ev(['make my goal $300k'], ['{"n":295000}'])).ok);
   check('"1.2m" does not license 1,230,000, and does license 1,200,000',
     !admit('GOAL', goal(1230000), ev(['aim for 1.2m'], ['{"n":1230000}'])).ok && admit('GOAL', goal(1200000), ev(['aim for 1.2m'])).ok);
-  check('"so keep about 36k?" does not license a derived $35,739.18 floor — the defect, through an echo',
-    !admit('RULE', { liquidFloor: 35739.18 }, ev(['so keep about 36k?'], ['{"floor":35739.18}'])).ok);
-  check('…and "keep about 36k" does license a 36,000 floor', admit('RULE', { liquidFloor: 36000 }, ev(['so keep about 36k?'])).ok);
+  check('"so keep about 24k?" does not license a derived $35,739.18 floor — the defect, through an echo',
+    !admit('RULE', { liquidFloor: 24096.50 }, ev(['so keep about 24k?'], ['{"floor":24096.50}'])).ok);
+  check('…and "keep about 24k" does license a 24,000 floor', admit('RULE', { liquidFloor: 24000 }, ev(['so keep about 24k?'])).ok);
   check('a cent of drift is still not the figure', !admit('BASELINE', { monthlySpending: 5000.01 }, ev(['use $5,000.00 a month'])).ok);
   check('…while the figure itself is, however it was written',
     admit('BASELINE', { monthlySpending: 5000 }, ev(['use $5,000.00 a month'])).ok
@@ -302,24 +302,24 @@ console.log('6b. every numeric type is held to what the user said');
 console.log('7. R1 — what the user said is passed in, never read off the transcript');
 {
   // An `openTranscript`-shaped array: system, then the ORIENTATION AS A `role: \'user\'` MESSAGE.
-  const orientation = `FINANCIAL ORIENTATION\n${JSON.stringify({ asOf: TODAY, position: { netWorth: 182345.67, liquid: 13330.97, investments: 150000 },
+  const orientation = `FINANCIAL ORIENTATION\n${JSON.stringify({ asOf: TODAY, position: { netWorth: 121504.88, liquid: 9274.31, investments: 150000 },
     recent: { spending: 16250.4 }, memory: { note: 'x' } }, null, 1)}`;
   const messages: unknown[] = [
     { role: 'system', content: 'You are… Today is 2026-09-20.' },
     { role: 'user', content: orientation },
     { role: 'user', content: 'How am I doing?' },
-    { role: 'assistant', content: 'Your net worth is $182,345.67 and you hold $13,330.97 in cash.' },
+    { role: 'assistant', content: 'Your net worth is $121,504.88 and you hold $9,274.31 in cash.' },
     { role: 'user', content: 'Remember that as my goal.' },
   ];
   const e = turnEvidence(['How am I doing?', 'Remember that as my goal.'], messages);
-  check('the orientation is OURS although it is a role:user message', producedNumbers(e.ours()).includes(13330.97) && producedNumbers(e.ours()).includes(150000));
+  check('the orientation is OURS although it is a role:user message', producedNumbers(e.ours()).includes(9274.31) && producedNumbers(e.ours()).includes(150000));
   check('…and the conversation\'s user turns are not', !e.ours().includes('How am I doing?'));
-  for (const v of [182345.67, 13330.97, 150000, 182000]) {
+  for (const v of [121504.88, 9274.31, 150000, 121000]) {
     const r = admitWrite({ cls: 'GOAL', supplied: { targetMetric: 'netWorth', targetAmount: v }, evidence: e, asOf: TODAY });
     check(`an orientation balance (${v}) does NOT license a Money value`, !r.ok && /we produced/.test(r.reason));
   }
   check('had "user messages" been read off the transcript, the orientation would have licensed it (the B1 defect, shown)',
-    admitWrite({ cls: 'GOAL', supplied: { targetMetric: 'netWorth', targetAmount: 13330.97 },
+    admitWrite({ cls: 'GOAL', supplied: { targetMetric: 'netWorth', targetAmount: 9274.31 },
       evidence: { userTexts: messages.filter((m) => (m as { role: string }).role === 'user').map((m) => (m as { content: string }).content), ours: () => [] }, asOf: TODAY }).ok);
 
   // The recorded trace turn: three directives, a scenario run, then "Remember this." — the model stored
@@ -345,7 +345,7 @@ console.log('7. R1 — what the user said is passed in, never read off the trans
   const echoed = turnEvidence(['x'], [{ role: 'tool', content: JSON.stringify({ stored: false, reason: 'r', expected: { baseline: { monthlySpending: 4321 } } }) }]);
   check('a memory write\'s own refusal echo is not evidence against the retry', producedNumbers(echoed.ours()).length === 0);
   check('`ours()` is lazy: a tool result that lands mid-turn is seen', (() => { const live: unknown[] = []; const lazy = turnEvidence(['q'], live);
-    live.push({ role: 'tool', content: '{"expense":{"amount":4346.48}}' }); return producedNumbers(lazy.ours()).includes(4346.48); })());
+    live.push({ role: 'tool', content: '{"expense":{"amount":3182.75}}' }); return producedNumbers(lazy.ours()).includes(3182.75); })());
 }
 
 console.log('8. refusals teach — the expected shape is built from the caller\'s own payload');
@@ -372,7 +372,7 @@ console.log('9. words and the memory line');
     row('INTENTION', toPayload('RULE', RULE3), { subject: 'cash-strategy' }),
     row('ASSUMPTION', toPayload('BASELINE', { monthlySpending: 5000 }), { subject: 'planning-spending' }),
     row('INTENTION', toPayload('PLANNED_EXPENSE', { label: 'car', amount: 20000, earliest: '2027-03-01' }), { subject: 'car' }),
-    row('CHECKPOINT', { v: 2, class: 'PROJECTION', metric: 'liquid', horizon: '2026-12-31', value: 51598.84, basis: { openingCash: 13330.97 } }, { subject: 'liquid-2026-12-31' }),
+    row('CHECKPOINT', { v: 2, class: 'PROJECTION', metric: 'liquid', horizon: '2026-12-31', value: 37450.62, basis: { openingCash: 9274.31 } }, { subject: 'liquid-2026-12-31' }),
   ];
   const line = composeMemoryLine(rows, TODAY) as unknown as Line;
   const text = JSON.stringify(line, null, 1);
@@ -390,7 +390,7 @@ console.log('9. words and the memory line');
       && !('planningNote' in composeMemoryLine([rows[0]], TODAY)));
   check('…and never wears M1\'s words', !/STATED|DECLARED|MEASURED/.test(text));
   check('nothing listed is in effect, said once', /Nothing listed is in effect/.test(line.meaning));
-  check('no projection value or basis reaches the line', !text.includes('51598') && !text.includes('13330') && line.projectionsOnRecord.count === 1
+  check('no projection value or basis reaches the line', !text.includes('37450') && !text.includes('9274') && line.projectionsOnRecord.count === 1
     && line.projectionsOnRecord.horizons[0] === '2026-12-31');
   check('projections point at the tool that reconciles them and are never balances', /`reconcile_projection` compares them/.test(text) && /never current balances/.test(text));
   check('`statedAs` never appears', !text.includes('RAW-WORDS'));

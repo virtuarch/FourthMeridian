@@ -10,8 +10,9 @@
  * number, validation checked that a key was PRESENT rather than that it had a
  * value, and the refusal named the missing key — so the model supplied one. Of
  * 201 recorded `remember` calls not one stored row held the user's rule: six
- * months of expenses became `targetAmount: 26078.88`, `amount: 6`, `amount: 0`
- * or `byDate: null`, and one projected net worth became the user's goal.
+ * months of expenses became a frozen dollar level (six times one month's measured
+ * spending), `amount: 6`, `amount: 0` or `byDate: null`, and one projected net
+ * worth became the user's goal.
  *
  * ⚠️ THREE SENTENCES THIS FILE KEEPS TRUE. Memory is not financial truth. Memory
  * is not an active scenario. A scenario is not memory. Nothing here computes a
@@ -177,7 +178,7 @@ export const fieldNames = (cls: StatedClass): string[] => Object.keys(FIELDS[cls
  * A Money field that has a RELATIONAL sibling — the same clause said as a
  * multiplier. Such a field needs POSITIVE evidence that the user said dollars;
  * otherwise the sibling is what they meant, and the dollars are one month's
- * evaluation of it (the 26,078.88 defect).
+ * evaluation of it — the frozen-dollar defect.
  */
 const RELATIONAL_SIBLING: Record<string, string> = { liquidFloor: 'liquidFloorMonthsOfExpenses' };
 

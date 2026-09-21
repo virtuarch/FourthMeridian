@@ -114,7 +114,7 @@ console.log('memory V2: every class `remember` can write goes through the one re
     select([mem('INTENTION', toPayload('GOAL', { targetMetric: 'netWorth', targetAmount: 1000000 })),
       mem('INTENTION', toPayload('GOAL', { targetMetric: 'debt', targetAmount: 0, byDate: '2028-12-31' }))]).prompts.length === 0);
   check('a V2 projection is a topic by its horizon only',
-    select([mem('CHECKPOINT', { v: 2, class: 'PROJECTION', metric: 'liquid', horizon: '2026-12-31', value: 51598.84, basis: { openingCash: 13330.97 } })])
+    select([mem('CHECKPOINT', { v: 2, class: 'PROJECTION', metric: 'liquid', horizon: '2026-12-31', value: 37450.62, basis: { openingCash: 9274.31 } })])
       .prompts[0]?.label === 'Check my year-end cash projection');
   check('a retirement marker is nothing', select([mem('INTENTION', { v: 2, class: 'RULE', retired: true }, { status: 'RETIRED' as RecalledMemory['status'] })]).prompts.length === 0);
 
@@ -122,7 +122,7 @@ console.log('memory V2: every class `remember` can write goes through the one re
   const coerced = [
     mem('INTENTION', { intent: 'keep-buffer', amount: 6, label: 'monthsOfExpenses' }),
     mem('INTENTION', { intent: 'allocation-rule', amount: 30000, label: 'Keep $30k cash, then pay highest-APR debt' }),
-    mem('INTENTION', { targetMetric: 'liquid', targetAmount: 26078.88, byDate: null }),
+    mem('INTENTION', { targetMetric: 'liquid', targetAmount: 19096.50, byDate: null }),
     mem('INTENTION', { targetMetric: 'monthsOfExpenses', targetAmount: 9, byDate: '2030-01-01' }),
   ];
   const out = select(coerced);

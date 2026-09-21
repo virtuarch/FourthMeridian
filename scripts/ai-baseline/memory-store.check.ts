@@ -113,8 +113,8 @@ async function main(): Promise<void> {
       && ((await active(MemoryKind.INTENTION, 'cash-strategy'))[0].payload as { rule: { liquidFloorMonthsOfExpenses: number } }).rule.liquidFloorMonthsOfExpenses === 9);
     const replaced = await rememberStated(A, { cls: 'RULE', subject: 'cash-strategy', fields: { liquidFloorMonthsOfExpenses: 12 }, replace: true, statedAs: 'new plan: just keep twelve months' });
     check('with `replace: true` the loss is deliberate, and echoed', replaced.stored && JSON.stringify([...(replaced.dropped ?? [])].sort()) === '["fractionOfExcess","target"]');
-    const clash = await rememberStated(A, { cls: 'GOAL', subject: 'cash-strategy', fields: { targetMetric: 'liquid', targetAmount: 39118.32 }, statedAs: 'nine months in cash' });
-    check('a DIFFERENT class cannot replace a rule under its subject (the {liquid: 39118.32} defect)', !clash.stored && /already names a RULE/.test(clash.reason));
+    const clash = await rememberStated(A, { cls: 'GOAL', subject: 'cash-strategy', fields: { targetMetric: 'liquid', targetAmount: 28644.75 }, statedAs: 'nine months in cash' });
+    check('a DIFFERENT class cannot replace a rule under its subject (the {liquid: 28644.75} defect)', !clash.stored && /already names a RULE/.test(clash.reason));
     const second = await rememberStated(A, { cls: 'RULE', subject: 'bonus-rule', fields: { surplusFraction: 0.5, target: 'investments' }, statedAs: 'half of what I save goes to investments' });
     check('a second rule is a second item, and the write echoes the other rule in force',
       second.stored && second.otherRulesInForce?.length === 1 && second.otherRulesInForce[0].subject === 'cash-strategy');
