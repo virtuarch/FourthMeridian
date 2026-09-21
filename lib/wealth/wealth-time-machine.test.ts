@@ -133,8 +133,10 @@ console.log("S5 regression lock — pre-existing fields byte-identical (only the
 {
   const r = computeWealthTimeMachine(base({ asOf: "2026-07-15", compareTo: "2026-01-01" }));
   // explanation holds the exact former `story` content (rename only).
+  // MONEY-PRECISION-1 — the sentence and its arithmetic are unchanged; its
+  // FIGURES now carry cents, like every money figure inside a Space.
   check("explanation carries the deterministic sentence (former story content)",
-    /^Your net worth increased by \$37,000 since Jan 1, 2026\. Assets increased by \$32,000 and liabilities decreased by \$5,000\.$/.test(r.explanation ?? ""));
+    /^Your net worth increased by \$37,000\.00 since Jan 1, 2026\. Assets increased by \$32,000\.00 and liabilities decreased by \$5,000\.00\.$/.test(r.explanation ?? ""));
   check("chart.points unchanged by the compareSeries addition",
     JSON.stringify(r.chart.points.map((p) => p.date)) === JSON.stringify(["2026-01-01", "2026-06-01", "2026-07-01", "2026-07-14"]));
 }
@@ -184,8 +186,8 @@ console.log("Story is deterministic, template-driven, supported facts only");
 {
   const r = computeWealthTimeMachine(base({ asOf: "2026-07-15", compareTo: "2026-01-01" }));
   check("story states the net-worth change since the comparison date",
-    r.explanation != null && /net worth increased by \$37,000 since Jan 1, 2026/.test(r.explanation!));
-  check("story states assets up and liabilities down", /Assets increased by \$32,000 and liabilities decreased by \$5,000/.test(r.explanation!));
+    r.explanation != null && /net worth increased by \$37,000\.00 since Jan 1, 2026/.test(r.explanation!));
+  check("story states assets up and liabilities down", /Assets increased by \$32,000\.00 and liabilities decreased by \$5,000\.00/.test(r.explanation!));
   const noCmp = computeWealthTimeMachine(base({ compareTo: null }));
   check("no comparison ⇒ no story", noCmp.explanation === null);
 }

@@ -238,6 +238,11 @@ export function WealthCompositionCard({
             emptySubline="This snapshot recorded no asset balances."
             formatValue={(v: number) => formatCurrency(v, currency)}
             centerTotal={sitsTotal ? { value: sitsTotal.value, label: sitsTotal.label } : undefined}
+            // The centre figure is this card's HEADLINE (net worth on Overall,
+            // the asset total on Assets) — a value, not a legend of the ring, so
+            // it reads in the primary text colour on every metric rather than
+            // inheriting the first slice's colour.
+            centerTone="neutral"
           />
         ) : (
           <WealthUnavailable message="This snapshot recorded no asset balances." />

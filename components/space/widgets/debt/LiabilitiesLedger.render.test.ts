@@ -73,8 +73,8 @@ console.log("1. MIXED — $2,100 owed · $0 settled · $124.04 credit");
 
   // Owed/settled use the ledger's house whole-dollar rounding; a CREDIT is shown
   // exact, because credits are small enough that rounding would destroy them.
-  check("owed row states the amount owed", text.includes("$2,100 owed"), text);
-  check("settled row states $0 owed", text.includes("$0 owed"), text);
+  check("owed row states the amount owed", text.includes("$2,100.00 owed"), text);
+  check("settled row states $0 owed", text.includes("$0.00 owed"), text);
   check("settled row is labelled Paid off", text.includes("Paid off"));
   check("credit row states the positive credit to the cent",
     text.includes("$124.04 credit"), text);

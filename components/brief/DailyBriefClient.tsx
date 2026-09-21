@@ -27,7 +27,9 @@ import { useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, ChevronDown, ShieldCheck } from "lucide-react";
 import { Surface, Figure } from "@/components/atlas/Surface";
-import { formatCurrency } from "@/lib/currency";
+// MONEY-PRECISION-1 — the Brief is a CROSS-SPACE morning read, not a Space's own
+// ledger: it keeps whole dollars. A Space's surfaces show cents (`formatCurrency`).
+import { formatCurrencyWhole as formatCurrency } from "@/lib/currency";
 import type {
   BriefArtifactView, BriefDataHealthView, BriefMetricsView, BriefObservationView, BriefResponse,
   DataGroupView, DataSourceKind, DataSourceView,

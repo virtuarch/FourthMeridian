@@ -83,8 +83,11 @@ function main(): void {
   check("illiquid = 300,000", r1.metrics.find((m) => m.id === "illiquid")?.value === 300_000);
   check("available credit = 6,000 (limit 10k − |−4k|)",
     r1.metrics.find((m) => m.id === "availableCredit")?.value === 6_000);
+  // MONEY-PRECISION-1 — the verdict's FIGURES now carry cents (one money format
+  // inside a Space). The template, its branch conditions and its arithmetic are
+  // unchanged; only the rendered amounts gained '.00'.
   check("verdict is the exact deterministic template",
-    r1.verdict === "About $18,400 is available as cash now, and roughly $52,000 more could be raised by selling investments.",
+    r1.verdict === "About $18,400.00 is available as cash now, and roughly $52,000.00 more could be raised by selling investments.",
     r1.verdict);
   check("lensVersion stamped", r1.lensVersion === LIQUIDITY_LENS_VERSION);
   check("accountIds sorted + complete",
@@ -166,10 +169,10 @@ function main(): void {
     rDebtOnly.status === "ok" && rDebtOnly.verdict === "No readily accessible funds in this Space.");
   check("cash-only verdict branch",
     computeLiquidity(SCOPE, OPTS, [row({ id: "c", balance: 500 })]).verdict ===
-    "About $500 is available as cash now.");
+    "About $500.00 is available as cash now.");
   check("marketable-only verdict branch",
     computeLiquidity(SCOPE, OPTS, [row({ id: "i", type: "investment", balance: 500 })]).verdict ===
-    "No cash on hand, but roughly $500 could be raised by selling investments.");
+    "No cash on hand, but roughly $500.00 could be raised by selling investments.");
 
   // ── 6. Source tripwires (name-freedom at the adapter boundary) ───────────
   console.log("6. Source tripwires");

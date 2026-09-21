@@ -81,8 +81,11 @@ function main(): void {
   check("minimum payments = 420, not estimated",
     r1.metrics.find((m) => m.id === "minPayments")?.value === 420 &&
     r1.metrics.find((m) => m.id === "minPayments")?.estimated === undefined);
+  // MONEY-PRECISION-1 — the verdict's FIGURES now carry cents (one money format
+  // inside a Space). The template, its branch conditions and its arithmetic are
+  // unchanged; only the rendered amounts gained '.00'.
   check("verdict exact deterministic template",
-    r1.verdict === "You carry $23,400 of debt across 2 accounts, accruing an estimated $177/month in interest at known rates.",
+    r1.verdict === "You carry $23,400.00 of debt across 2 accounts, accruing an estimated $177.00/month in interest at known rates.",
     r1.verdict);
   check("lensVersion stamped", r1.lensVersion === DEBT_LENS_VERSION);
   check("provenance = debt rows only, sorted; dataAsOf oldest",
@@ -174,7 +177,7 @@ function main(): void {
       "No outstanding debt balances in this Space.");
   check("no rates on file → rate-free verdict",
     computeDebt(SCOPE, OPTS, [row({ id: "d", balance: 750 })]).verdict ===
-      "You carry $750 of debt across 1 account; no interest rates are on file yet.");
+      "You carry $750.00 of debt across 1 account; no interest rates are on file yet.");
   const rEmpty = computeDebt(SCOPE, OPTS, []);
   check("no rows → status empty with static safe copy",
     rEmpty.status === "empty" && rEmpty.empty?.headline === DEBT_EMPTY.headline &&

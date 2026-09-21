@@ -14,9 +14,31 @@
 export const DEFAULT_DISPLAY_CURRENCY = "USD";
 
 /**
- * Shared formatter. Pass `currency` explicitly when you have a native account
- * currency that differs from the display currency (e.g. a EUR savings account).
- * Leave it undefined to fall back to the app display currency.
+ * MONEY-PRECISION-1 — THE money presentation contract, in one place.
+ *
+ *   INSIDE A SPACE      money is shown to the cent: $7,273.88 · $50.00 · −$861.30
+ *   OUTSIDE A SPACE     whole dollars, unchanged: `formatCurrencyWhole`
+ *
+ * A Space is where the user reads their own finances to the cent — a reconciled
+ * total, a refund of $861.30, a $24.00 final payment. Rounding those to the
+ * dollar was a display decision taken once, in this function's
+ * `maximumFractionDigits: 0`, and it made figures that reconcile exactly look
+ * like they do not ($9,007.64 spending shown beside two $4,503 halves).
+ *
+ * The boundary is enforced by WHICH FORMATTER A SURFACE CALLS, not by a runtime
+ * flag: `formatCurrency` (this one, cents) is what the Space tree already calls
+ * everywhere, so the contract holds without touching those call sites; the few
+ * launcher / cross-Space surfaces call `formatCurrencyWhole` explicitly and say
+ * why. No caller rounds a value to change its display, and nothing here alters a
+ * number: `Intl` rounds for presentation exactly as it always did.
+ *
+ * COMPACT IS THE ONE EXCEPTION (`compact: true` / `formatCompactCurrency`):
+ * "$1.2M" is a deliberate constrained-space notation for chart axes and the
+ * Spaces cards, where "$1,234,567.89" cannot fit. Unchanged.
+ *
+ * Pass `currency` explicitly when you have a native account currency that
+ * differs from the display currency (e.g. a EUR savings account); leave it
+ * undefined to fall back to the app display currency.
  */
 export function formatCurrency(
   amount: number,
@@ -27,16 +49,39 @@ export function formatCurrency(
     style:                 "currency",
     currency,
     notation:              compact ? "compact" : "standard",
-    maximumFractionDigits: compact ? 1 : 0,
+    ...(compact
+      ? { maximumFractionDigits: 1 }
+      : { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
   }).format(amount);
 }
 
 /**
- * Whole-currency label (no fractional digits) — the canonical formatter for
- * aggregate/balance figures. Identical to `formatCurrency(amount, currency)`;
- * kept as a named export because it is the historical spelling used across the
- * Space dashboard and section renderers. Consolidated here (SEC-3) so there is
- * ONE implementation instead of the former per-module copies.
+ * Whole dollars — the OUTSIDE-A-SPACE presentation (MONEY-PRECISION-1).
+ *
+ * The launcher and cross-Space surfaces compare Spaces at a glance rather than
+ * reconciling one Space's figures, so they keep the whole-dollar reading they
+ * have always had. Every caller is an explicit, named decision; a surface that
+ * shows a Space's own money uses `formatCurrency` and shows the cents.
+ */
+export function formatCurrencyWhole(
+  amount: number,
+  currency: string = DEFAULT_DISPLAY_CURRENCY,
+): string {
+  return new Intl.NumberFormat("en-US", {
+    style:                 "currency",
+    currency,
+    maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+/**
+ * The canonical formatter for aggregate/balance figures. Identical to
+ * `formatCurrency(amount, currency)` — so, since MONEY-PRECISION-1, to the cent
+ * inside a Space. Kept as a named export because it is the historical spelling
+ * used across the Space dashboard and section renderers. Consolidated here
+ * (SEC-3) so there is ONE implementation instead of the former per-module copies.
+ * (The name is historical: "balance", not "whole". Whole dollars are
+ * `formatCurrencyWhole`.)
  */
 export function formatBalance(amount: number, currency: string = DEFAULT_DISPLAY_CURRENCY): string {
   return formatCurrency(amount, currency);
@@ -52,11 +97,10 @@ export function formatCurrencyExact(
   amount:   number,
   currency: string = DEFAULT_DISPLAY_CURRENCY,
 ): string {
-  return new Intl.NumberFormat("en-US", {
-    style:                 "currency",
-    currency,
-    maximumFractionDigits: 2,
-  }).format(amount);
+  // MONEY-PRECISION-1 — the same format `formatCurrency` now produces. Kept as
+  // the name a surface uses when cents are the POINT (a transaction row, a final
+  // payment), so that intent stays legible at the call site; one implementation.
+  return formatCurrency(amount, currency);
 }
 
 /**

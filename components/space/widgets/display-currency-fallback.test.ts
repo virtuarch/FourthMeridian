@@ -80,8 +80,11 @@ check("display-money.ts exports formatAggregateMoney (no-context ⇒ no currency
 // ── Runtime spot-proofs (no relabel; correct label with a real target) ───────
 void (async () => {
   const { formatAggregateMoney } = await import("./display-money");
+  // MONEY-PRECISION-1 — the aggregate label is the Space money format, so it
+  // carries cents. What this pins is the LABEL (the context's target currency),
+  // not the digit count: €, never a USD relabel.
   check("formatAggregateMoney labels the context target (EUR fixture)",
-    formatAggregateMoney(1234, { target: "EUR" }) === "€1,234",
+    formatAggregateMoney(1234, { target: "EUR" }) === "€1,234.00",
     formatAggregateMoney(1234, { target: "EUR" }));
   check("without a context the magnitude carries NO currency claim",
     formatAggregateMoney(1234) === "1,234",

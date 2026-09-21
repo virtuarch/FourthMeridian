@@ -96,6 +96,16 @@ export interface BreakdownWidgetProps {
    */
   centerTotal?: { value: number; label: string };
   /**
+   * Donut only — how the resting centre TOTAL is coloured.
+   *   "series"  (default) the first slice's colour, as it has always been;
+   *   "neutral" the primary text colour, for a card whose centre figure is a
+   *             HEADLINE VALUE rather than a legend of the ring beneath it.
+   * "Where it sits" uses "neutral" so its Assets figure reads like the Assets
+   * figure on the Overall tab, instead of inheriting Cash's blue. Legends,
+   * segments and hover values keep their series colours either way.
+   */
+  centerTone?: "series" | "neutral";
+  /**
    * Makes segments/rows interrogable. When omitted the widget is inert — and
    * importantly does NOT render a pointer cursor, which it previously did on
    * every donut segment while doing nothing on click.
@@ -309,6 +319,7 @@ function DonutView({
   total,
   sel,
   centerTotal,
+  centerTone = "series",
 }: {
   items:       ColoredItem[];
   formatValue: (v: number) => string;
@@ -316,6 +327,7 @@ function DonutView({
   total:       number;
   sel:         SelectApi;
   centerTotal?: { value: number; label: string };
+  centerTone?: "series" | "neutral";
 }) {
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const interactive = sel.onSelect != null;
@@ -346,7 +358,9 @@ function DonutView({
 
   const hovered       = hoveredIdx !== null ? segments[hoveredIdx] : null;
   // Centre label uses first item colour when showing totals (matches original red-gradient behaviour)
-  const totalColor    = items[0]?.color ?? DEFAULT_CHART_COLOR;
+  const totalColor    = centerTone === "neutral"
+    ? "var(--text-primary)"
+    : items[0]?.color ?? DEFAULT_CHART_COLOR;
   const pluralNoun    = items.length === 1 ? itemNoun : pluralize(itemNoun);
 
   return (
@@ -492,6 +506,7 @@ export function BreakdownWidget({
   emptyHeadline,
   emptySubline,
   centerTotal,
+  centerTone,
   onSelect,
   selectedId,
   selectLabel,
@@ -525,7 +540,7 @@ export function BreakdownWidget({
       {viewMode === "bar"  && <BarView  items={colored} formatValue={formatValue} total={total} sel={sel} />}
       {viewMode === "list" && <ListView items={colored} formatValue={formatValue} total={total} sel={sel} />}
       {viewMode === "donut" && (
-        <DonutView items={colored} formatValue={formatValue} itemNoun={itemNoun} total={total} sel={sel} centerTotal={centerTotal} />
+        <DonutView items={colored} formatValue={formatValue} itemNoun={itemNoun} total={total} sel={sel} centerTotal={centerTotal} centerTone={centerTone} />
       )}
       {footer && <div>{footer}</div>}
     </div>

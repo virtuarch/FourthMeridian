@@ -107,7 +107,7 @@ console.log("B. PAYOFF STRATEGY — $50 default, monthly only, precise timing");
   check("opens at a 50 payment", html.includes('value="50"'), t);
   check("does NOT open at 500", !html.includes('value="500"'));
   check("precise horizon, not a rounded month count", t.includes("Debt-free in 2 months, 2 weeks, 1 day"), t);
-  check("exact final payment, to the cent", t.includes("$24.00 final payment after 2 of $50"), t);
+  check("exact final payment, to the cent", t.includes("$24.00 final payment after 2 of $50.00"), t);
   check("dated to the day", t.includes("Mar 16, 2026"), t);
   check("no weekly toggle rendered", !/>\s*Wk\s*</.test(html) && !/>\s*Mo\s*</.test(html) && !/week(ly)? payment/i.test(t));
   check("cadence stated once: Monthly payment", t.includes("Monthly payment"));
@@ -130,7 +130,7 @@ console.log("B. PAYOFF STRATEGY — $50 default, monthly only, precise timing");
     oneUnknown.includes("Estimated without interest") && !oneUnknown.includes("Debt-free in 2 months"));
   check("…the basis is on the markup as STRUCTURE (PRINCIPAL_ONLY)", oneUnknownHtml.includes('data-payoff-basis="PRINCIPAL_ONLY"'));
   check("…the final partial payment still prints, qualified through the same basis",
-    oneUnknown.includes("about $24.00 final payment after 2 of $50 · before interest"), oneUnknown);
+    oneUnknown.includes("about $24.00 final payment after 2 of $50.00 · before interest"), oneUnknown);
   check("…interest is 'Not included — APR unknown', never a $0.00 interest claim",
     oneUnknown.includes("Not included — APR unknown") && !oneUnknown.includes("+$0.00"), oneUnknown);
   check("…and NO APR is displayed for the account — it stays unknown (no 0.00%)",
@@ -286,9 +286,9 @@ console.log("B2. PAYMENT BUDGET > MODELLED REQUIREMENT — information, clamped,
 
   const below = text(renderToStaticMarkup(createElement(DebtPayoffSection, { accounts: [acct("a", "Card A", 124, { interestRate: 0 })], today: TODAY })));
   check("multi-payment keeps its useful duration: headline 'Debt-free in 2 months, 2 weeks, 1 day' + 'final payment after 2 of $50'",
-    below.includes("Debt-free in 2 months, 2 weeks, 1 day") && below.includes("$24.00 final payment after 2 of $50") && !below.includes("estimated payoff"), below);
+    below.includes("Debt-free in 2 months, 2 weeks, 1 day") && below.includes("$24.00 final payment after 2 of $50.00") && !below.includes("estimated payoff"), below);
   check("below the requirement: the multi-payment view is unchanged and carries no notice",
-    below.includes("Debt-free in 2 months, 2 weeks, 1 day") && below.includes("$24.00 final payment after 2 of $50") && !below.includes("this debt needs"), below);
+    below.includes("Debt-free in 2 months, 2 weeks, 1 day") && below.includes("$24.00 final payment after 2 of $50.00") && !below.includes("this debt needs"), below);
 
   console.log("   copy review (unknown-APR footnote)");
   const planner = code("components/space/sections/DebtPayoffSection.tsx");
@@ -328,7 +328,7 @@ console.log("C. CREDIT HEALTH — user inputs editable, derived values read-only
   ];
   const limits = renderToStaticMarkup(createElement(CreditLimitInputs, { accounts }));
   const lt = text(limits);
-  check("an existing limit is an EDIT control", limits.includes('aria-label="Edit credit limit for Card A"') && lt.includes("$1,000 limit"));
+  check("an existing limit is an EDIT control", limits.includes('aria-label="Edit credit limit for Card A"') && lt.includes("$1,000.00 limit"));
   check("a missing limit offers 'Add limit'", lt.includes("Card B") && lt.includes("Add limit"));
   check("utilization is shown as CALCULATED text, with no edit control", lt.includes("12% used · calculated from balance ÷ limit") && !/aria-label="Edit util/i.test(limits));
   check("a loan is not offered a credit limit (not a revolving line)", !lt.includes("Auto Loan"));

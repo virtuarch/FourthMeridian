@@ -17,6 +17,9 @@
 import { computeWealthTimeMachine, wealthCompositionItems } from "@/lib/wealth/wealth-time-machine";
 import type { Snapshot } from "@/types";
 import { whereItSitsTotal } from "./wealth-metric-facets";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { WealthCompositionCard } from "./WealthCompositionCard";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -87,6 +90,36 @@ console.log("6. Only Net Worth takes a net total");
   for (const m of ["totalAssets", "totalLiabilities", "liquidNetWorth", "cash", "invested"] as const) {
     check(`${m} ⇒ null (its total is the slices it draws)`, whereItSitsTotal(m, st) === null);
   }
+}
+
+console.log("7. the centre figure is a VALUE, not a legend — neutral on every metric");
+{
+  // MONEY-PRECISION-1 / colour: the donut's resting centre used the FIRST SLICE's
+  // colour, so on the Assets tab the headline read in Cash's blue while the same
+  // figure on Overall (Net Worth) read in the primary text colour. The card now
+  // opts into the neutral treatment for both.
+  const st = stateOf(snap("2026-09-01", { cash: 8000, savings: 13000, inv: 66000, crypto: 0, debt: 15000 }));
+  const render = (metric: "netWorth" | "totalAssets") =>
+    renderToStaticMarkup(createElement(WealthCompositionCard, {
+      result: { asOf: "2026-09-01", compareTo: null, hasHistory: true, coverageFrom: "2026-01-01",
+        asOfState: st, compareState: null, deltas: null, drivers: null,
+        chart: { points: [], compareSeries: [], asOfDate: "2026-09-01", compareDate: null },
+        completeness: { tier: "observed", label: "Observed", tone: "positive" }, evidence: null, explanation: null } as never,
+      currency: "USD", accounts: [], metric,
+    } as never));
+  /** The colour the centre figure is actually painted in. */
+  const centreColor = (html: string) =>
+    html.match(/<p class="text-lg font-bold leading-tight" style="color:([^"]+)"/)?.[1]?.trim() ?? null;
+  const nw = render("netWorth"), assets = render("totalAssets");
+  check("Assets: the centre figure is the primary text colour, not a slice colour",
+    centreColor(assets) === "var(--text-primary)", String(centreColor(assets)));
+  check("…and specifically not the blue it inherited from Cash",
+    !/rgb|#[0-9a-f]{3,6}/i.test(centreColor(assets) ?? ""), String(centreColor(assets)));
+  check("Overall (Net Worth) keeps the same neutral treatment — one style, both tabs",
+    centreColor(nw) === centreColor(assets));
+  check("the legend/segments keep their series colours (only the centre is neutral)",
+    /background-color:/.test(assets) || /stroke="(?!var\(--text-primary\))[^"]+"/.test(assets));
+  check("both centres carry cents, like every Space figure", /\$\d[\d,]*\.\d\d/.test(nw) && /\$\d[\d,]*\.\d\d/.test(assets));
 }
 
 console.log(failures === 0 ? "\nPASS" : `\nFAIL — ${failures} check(s)`);

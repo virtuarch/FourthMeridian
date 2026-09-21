@@ -58,10 +58,10 @@ console.log("1. Total spending prints the authority's total, not Σ lines");
     browserTitle: "Spending categories", browserEyebrow: "Spending", noun: "categories", detailEyebrow: "Spending category",
     sliceFor: () => [], invalidationKey: "MTD",
   })));
-  check("header prints Total spending $280 (the Spending tile's figure)", /Total spending \$280(?![\d.,])/.test(html), html.slice(0, 200));
-  check("the React sum $680 is NOT printed as the total", !/Total spending \$680/.test(html));
-  check("the reconciling refund line is disclosed (−$400)", /no matching purchase in this period −\$400(?![\d.,])/.test(html));
-  check("the lines themselves still print (Groceries $600, Dining $80)", /Groceries \$600(?![\d.,])/.test(html) && /Dining \$80(?![\d.,])/.test(html));
+  check("header prints Total spending $280 (the Spending tile's figure)", /Total spending \$280\.00(?![\d])/.test(html), html.slice(0, 200));
+  check("the React sum $680 is NOT printed as the total", !/Total spending \$680(\.00)?/.test(html));
+  check("the reconciling refund line is disclosed (−$400)", /no matching purchase in this period −\$400\.00(?![\d])/.test(html));
+  check("the lines themselves still print (Groceries $600, Dining $80)", /Groceries \$600\.00(?![\d])/.test(html) && /Dining \$80\.00(?![\d])/.test(html));
 }
 
 console.log("2. nothing to reconcile ⇒ no adjustment line");
@@ -71,7 +71,7 @@ console.log("2. nothing to reconcile ⇒ no adjustment line");
     total: 50, adjustment: { label: "Net of refunds with no matching purchase in this period", value: 0 },
     browserTitle: "x", browserEyebrow: "x", noun: "categories", detailEyebrow: "x", sliceFor: () => [], invalidationKey: "MTD",
   })));
-  check("no disclosure when refundsUnapplied is 0", !/no matching purchase/.test(html) && /\$50(?![\d.,])/.test(html));
+  check("no disclosure when refundsUnapplied is 0", !/no matching purchase/.test(html) && /\$50\.00(?![\d])/.test(html));
 }
 
 console.log("3. the gross card figure says 'Charged', never 'Spent'");
