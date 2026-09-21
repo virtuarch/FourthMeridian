@@ -24,6 +24,7 @@
  */
 
 import { execSync } from 'child_process';
+import { provenanceCovers } from './slice-provenance';
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
 import { ComponentState, composeInvestments } from '../ai/economic-concepts';
@@ -620,16 +621,18 @@ check('N3 it consumes FORECAST-7\'s licence rather than re-deriving one',
 check('N4 and FORECAST-3\'s net contribution rather than reimplementing it',
   /netCashContribution\(/.test(src) && !/basis === AmountBasis\.GROSS/.test(codeOnly));
 // Commit-to-commit, per the lesson this suite already records for N6.
+// Now DATA, not a git call: the claim is recorded in ./slice-provenance and
+// verified against the commit itself by scripts/audit-forecast-slice-provenance.ts
+// (REQUIRED), so this suite no longer needs repository ancestry to run.
 check('N5 FORECAST-9 changed no FORECAST-1..8 production file it did not have to',
-  execSync('git diff --name-only 6410d82 714d099 -- lib/forecast/cadence.ts lib/forecast/stream-activity.ts '
-    + 'lib/forecast/future-cash-event.ts lib/forecast/obligation.ts lib/forecast/periodic-amount.ts '
-    + 'lib/forecast/operating-state.ts', { encoding: 'utf8' }).trim() === '');
+  provenanceCovers('FORECAST-9', ['lib/forecast/cadence.ts', 'lib/forecast/stream-activity.ts',
+    'lib/forecast/future-cash-event.ts', 'lib/forecast/obligation.ts', 'lib/forecast/periodic-amount.ts',
+    'lib/forecast/operating-state.ts']));
 // ⚠️ COMMIT-TO-COMMIT (FORECAST-10). Against the working tree this said "no
 // later slice may touch a prompt surface", which FORECAST-10 exists to do. The
 // claim about FORECAST-9's own commit is exact and permanently true.
 check('N6 FORECAST-9 touched no prompt, retrieval or UI surface',
-  execSync('git diff --name-only 6410d82 714d099 -- lib/ai/ app/ components/ prisma/',
-    { encoding: 'utf8' }).trim() === '');
+  provenanceCovers('FORECAST-9', ['lib/ai/', 'app/', 'components/', 'prisma/']));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // M. MUTATION TESTING — 16 deliberate breaks

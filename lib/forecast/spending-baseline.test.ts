@@ -28,6 +28,7 @@
  */
 
 import { execSync } from 'child_process';
+import { provenanceCovers } from './slice-provenance';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
@@ -368,11 +369,14 @@ check('L4 FORECAST-6 is consumed only through the sanctioned adapter',
 // design, to give a user-asserted income basis somewhere to land, and tripped
 // it. The same form is still present in four sibling suites and will trip the
 // next slice that edits one of their dependencies.
+// Now DATA, not a git call: the claim is recorded in ./slice-provenance and
+// verified against the commit itself by scripts/audit-forecast-slice-provenance.ts
+// (REQUIRED), so this suite no longer needs repository ancestry to run.
 check('L5 FORECAST-6 did not touch FORECAST-1..5',
-  execSync('git diff --name-only 0506c67 5ca025a -- lib/forecast/cadence.ts lib/forecast/stream-activity.ts lib/forecast/future-cash-event.ts lib/forecast/obligation.ts lib/forecast/periodic-amount.ts',
-    { encoding: 'utf8' }).trim() === '');
+  provenanceCovers('FORECAST-6', ['lib/forecast/cadence.ts', 'lib/forecast/stream-activity.ts',
+    'lib/forecast/future-cash-event.ts', 'lib/forecast/obligation.ts', 'lib/forecast/periodic-amount.ts']));
 check('L6 nor flow-predicates',
-  execSync('git diff --name-only 0506c67 5ca025a -- lib/transactions/flow-predicates.ts', { encoding: 'utf8' }).trim() === '');
+  provenanceCovers('FORECAST-6', ['lib/transactions/flow-predicates.ts']));
 check('L7 no category decomposition was built', !/byCategory|categoryBaseline/.test(code));
 
 // ═══════════════════════════════════════════════════════════════════════════

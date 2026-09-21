@@ -21,6 +21,7 @@
  */
 
 import { execSync } from 'child_process';
+import { provenanceCovers } from './slice-provenance';
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
 import {
@@ -340,12 +341,13 @@ check('J5 FORECAST-7 is consumed only through the sanctioned adapter',
 // FORECAST-9A legitimately edits periodic-amount.ts, which would have failed it
 // a second time for the opposite reason. The claim being made is about
 // FORECAST-7's own commit, so it is pinned there and is now permanently true.
+// Now DATA, not a git call: the claim is recorded in ./slice-provenance and
+// verified against the commit itself by scripts/audit-forecast-slice-provenance.ts
+// (REQUIRED), so this suite no longer needs repository ancestry to run.
 check('J6 FORECAST-7 did not touch FORECAST-1..6 or CF-7',
-  execSync('git diff --name-only 5ca025a 3bcfce3 -- lib/forecast/cadence.ts '
-    + 'lib/forecast/stream-activity.ts lib/forecast/future-cash-event.ts '
-    + 'lib/forecast/obligation.ts lib/forecast/periodic-amount.ts '
-    + 'lib/forecast/spending-baseline.ts lib/ai/economic-concepts.ts',
-  { encoding: 'utf8' }).trim() === '');
+  provenanceCovers('FORECAST-7', ['lib/forecast/cadence.ts', 'lib/forecast/stream-activity.ts',
+    'lib/forecast/future-cash-event.ts', 'lib/forecast/obligation.ts', 'lib/forecast/periodic-amount.ts',
+    'lib/forecast/spending-baseline.ts', 'lib/ai/economic-concepts.ts']));
 check('J7 no tax estimate anywhere', !/tax|withhold/i.test(codeOnly));
 
 // ═══════════════════════════════════════════════════════════════════════════

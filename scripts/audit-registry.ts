@@ -186,6 +186,15 @@ export const AUDITS: readonly AuditEntry[] = [
           "TransactionEvent (cross-event exclusion + DF-4 raw-descriptor key), and " +
           "wallet/crypto rows stay outside the banking event domain",
   },
+  {
+    // Source + git objects: the corpus is the repository's own history. Moved out
+    // of the eight FORECAST unit suites, which must not depend on ancestry.
+    name: "audit-forecast-slice-provenance", tier: "REQUIRED", needsDb: false,
+    what: "every recorded \"FORECAST-N did not touch …\" claim (lib/forecast/slice-provenance.ts) " +
+          "holds on that slice's own commit: parent recorded correctly, subject names the slice, " +
+          "empty diff over the untouched paths; fetches the recorded commits on a shallow clone " +
+          "and fails closed if it cannot read them",
+  },
 
   // ── INFORMATIONAL — reports and investigations, never a gate ──────────────
   {

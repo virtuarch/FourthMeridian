@@ -24,6 +24,7 @@
  */
 
 import { execSync } from 'child_process';
+import { provenanceCovers } from './slice-provenance';
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
 import { ComponentState } from '../ai/economic-concepts';
@@ -643,14 +644,15 @@ check('J9 FORECAST-8 is consumed only through the sanctioned adapter',
 // slice may touch it either — and FORECAST-9A legitimately edits
 // periodic-amount.ts and operating-state.ts to close the gap this module found.
 // Pinned at FORECAST-8's own commit the claim is exact and permanent.
+// Now DATA, not a git call: the claim is recorded in ./slice-provenance and
+// verified against the commit itself by scripts/audit-forecast-slice-provenance.ts
+// (REQUIRED), so this suite no longer needs repository ancestry to run.
 check('J10 FORECAST-8 did not touch FORECAST-1..7',
-  execSync('git diff --name-only 3bcfce3 109c9e1 -- lib/forecast/cadence.ts '
-    + 'lib/forecast/stream-activity.ts lib/forecast/future-cash-event.ts '
-    + 'lib/forecast/obligation.ts lib/forecast/periodic-amount.ts '
-    + 'lib/forecast/spending-baseline.ts lib/forecast/operating-state.ts '
-    + 'lib/ai/economic-concepts.ts', { encoding: 'utf8' }).trim() === '');
+  provenanceCovers('FORECAST-8', ['lib/forecast/cadence.ts', 'lib/forecast/stream-activity.ts',
+    'lib/forecast/future-cash-event.ts', 'lib/forecast/obligation.ts', 'lib/forecast/periodic-amount.ts',
+    'lib/forecast/spending-baseline.ts', 'lib/forecast/operating-state.ts', 'lib/ai/economic-concepts.ts']));
 check('J11 nor any CF-era retrieval or prompt surface',
-  execSync('git diff --name-only 3bcfce3 109c9e1 -- lib/ai/', { encoding: 'utf8' }).trim() === '');
+  provenanceCovers('FORECAST-8', ['lib/ai/']));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // K. EXPLANATION AND SERIALIZATION — DELETED (V26-REASONING Slice 0)

@@ -25,6 +25,7 @@
  */
 
 import { execSync } from 'child_process';
+import { provenanceCovers } from './slice-provenance';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
@@ -320,9 +321,12 @@ check('J7 FORECAST-4 is consumed only through the sanctioned adapter',
 // gates of this exact shape had already failed for that reason (FORECAST-6 L5,
 // FORECAST-7 J6, FORECAST-8 J10/J11), each time for a legitimate later edit. The
 // files and the claim are unchanged; only the second ref is.
+// Now DATA, not a git call: the claim is recorded in ./slice-provenance and
+// verified against the commit itself by scripts/audit-forecast-slice-provenance.ts
+// (REQUIRED), so this suite no longer needs repository ancestry to run.
 check('J8 FORECAST-4 did not touch FORECAST-1/2/3',
-  execSync('git diff --name-only f849c05 f0af73d -- lib/forecast/cadence.ts lib/forecast/stream-activity.ts lib/forecast/future-cash-event.ts',
-    { encoding: 'utf8' }).trim() === '');
+  provenanceCovers('FORECAST-4', ['lib/forecast/cadence.ts', 'lib/forecast/stream-activity.ts',
+    'lib/forecast/future-cash-event.ts']));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // K. Regression corpus A–L
