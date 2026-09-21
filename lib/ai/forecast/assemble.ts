@@ -51,9 +51,13 @@ import {
   type ProjectedCash, type ProjectedInterval, type ProjectCashInput, type ProjectionSpending,
 } from '@/lib/forecast/projection';
 import {
-  deriveObservedSpendingRate, withoutModelledInterest,
+  deriveObservedSpendingRate, deriveCategorySpendingRates, withoutModelledInterest,
   type ModelledInterestExclusion, type ObservedSpendingRate,
 } from '@/lib/forecast/observed-spending';
+import {
+  applySpendingChanges,
+  type SpendingBaseline, type SpendingChangeResult, type SpendingChangeRule,
+} from '@/lib/forecast/spending-change';
 import { reliableMonths } from '@/lib/ai/intelligence/annotations/metrics';
 import { clampEconomicSpend } from '@/lib/transactions/cash-flow';
 import type { TransactionsSummaryData } from '@/lib/ai/types';
@@ -136,7 +140,26 @@ export interface ForecastAssemblyInput {
    * this; a plain projection has no liability model and keeps every cost flow.
    */
   interestModelledOn?: readonly string[];
+  /**
+   * S1 — dated changes to FUTURE spending, as a scenario supposition, with their
+   * categories already resolved by the caller.
+   *
+   * ⚠️ APPLIED TO THE PROJECTION'S RATE, NOWHERE ELSE. Like I1's rules they never
+   * touch the state or the measured history; unlike them they are not events — the
+   * projection's spend term integrates the schedule they produce. The LICENSED path
+   * never sees them, and when it is the one that answered they are reported as not
+   * applied rather than quietly dropped.
+   */
+  spendingChanges?: readonly SpendingChangeRule[];
 }
+
+/**
+ * S1 — what the spending rules did: applied to the projection, or not applied at
+ * all with the reason. Never absent when rules were supplied.
+ */
+export type SpendingChangeOutcome =
+  | (SpendingChangeResult & { applied: true })
+  | { applied: false; reason: string; ruleIds: string[] };
 
 export interface AssembledForecast {
   state: CurrentOperatingState;
@@ -181,6 +204,8 @@ export interface AssembledForecast {
    * accrues it, restricted to the months the rate averaged. Absent when nothing was.
    */
   modelledInterest?: ModelledInterestExclusion;
+  /** S1 — what the spending rules did. Absent when none was supplied. */
+  spendingChanges?: SpendingChangeOutcome;
 }
 
 /**
@@ -479,6 +504,18 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   let observedSpending: ObservedSpendingRate | undefined;
   let projectionInput: ProjectCashInput | undefined;
   let modelledInterest: ModelledInterestExclusion | undefined;
+  let spendingChanges: SpendingChangeOutcome | undefined;
+  const spendingRules = input.spendingChanges ?? [];
+  const notApplied = (reason: string): SpendingChangeOutcome =>
+    ({ applied: false, reason, ruleIds: spendingRules.map((r) => r.id) });
+  if (spendingRules.length > 0 && hasLicensedAnswer) {
+    // ⚠️ THE LICENSED ENGINE IGNORES SPENDING CHANGES, AND SAYS SO. It answers from
+    // licensed evidence and a policy; a scenario supposition about next year's
+    // Dining is neither, and a second, divergent implementation of it inside the
+    // engine is exactly the parallel path this adapter exists to prevent.
+    spendingChanges = notApplied('the licensed forecast is what answered here, and it does not apply '
+      + 'scenario spending changes — so NONE was applied. The figures are without them.');
+  }
   if (!hasLicensedAnswer && projectionEnabled()) {
     // ⚠️ THE USER'S OWN RATE WINS, AND THE ENGINE ALREADY RESOLVED IT. When the
     // conversation supplied a spending level, `forecast.spending` carries it as
@@ -487,6 +524,8 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
     // rather than removing it.
     const engineSpending = 'refused' in forecast ? null : forecast.spending;
     let spending: ProjectionSpending | null = null;
+    const txnForRates = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY]?.data as
+      TransactionsSummaryData | undefined;
     if (engineSpending && engineSpending.dailyRate !== null) {
       spending = {
         kind: 'USER_ASSUMED',
@@ -495,8 +534,7 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
         statedAs: engineSpending.reason,
       };
     } else {
-      const txn = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY]?.data as
-        TransactionsSummaryData | undefined;
+      const txn = txnForRates;
       // S1-N1 — interest the caller's ledger accrues itself leaves the months
       // BEFORE the clamp, by the authority in observed-spending; nothing else does.
       const net = withoutModelledInterest(reliableMonths(txn ?? null), input.interestModelledOn ?? []);
@@ -514,13 +552,46 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
         if (net.excluded && inWindow.length > 0) modelledInterest = { ...net.excluded, months: inWindow };
       }
     }
+    // ── S1: the spending rules, on the rate this projection spends at ─────────
+    //
+    // The TOTAL is the rate just resolved (observed, or the user's stated level);
+    // each category line is the canonical ledger's over the SAME averaged months.
+    let spendingSchedule: SpendingChangeResult['schedule'] | undefined;
+    if (spendingRules.length > 0) {
+      const reliable = withoutModelledInterest(reliableMonths(txnForRates ?? null), input.interestModelledOn ?? []).months;
+      const observed = observedSpending ?? deriveObservedSpendingRate(reliable.map((m) => ({
+        month: m.month, expenseTotal: clampEconomicSpend(m.expenseTotal, m.refundTotal) })));
+      const windowMonths = observed.assertable ? observed.months : [];
+      const baseline: SpendingBaseline | null = spending === null ? null
+        : spending.kind === 'OBSERVED'
+          ? { monthly: spending.rate.monthlyRate, daily: spending.rate.dailyRate, basis: 'MEASURED',
+            months: spending.rate.months, values: spending.rate.values }
+          : spending.monthlyAmount !== null
+            ? { monthly: spending.monthlyAmount, daily: spending.dailyRate, basis: 'STATED_TOTAL',
+              months: windowMonths, values: [] }
+            : null;
+      if (baseline === null) {
+        spendingChanges = notApplied('there is no monthly spending rate for these changes to apply to, so '
+          + 'NONE was applied.');
+      } else {
+        const result = applySpendingChanges({
+          baseline, categoryRates: deriveCategorySpendingRates(reliable, windowMonths),
+          rules: spendingRules, asOfISO: horizon.fromISO, horizonISO: horizon.toISO,
+        });
+        spendingChanges = { ...result, applied: true };
+        spendingSchedule = result.schedule;
+      }
+    }
     projectionInput = {
       openingCash: 'refused' in forecast ? null : forecast.openingCash.amount,
       events, spending,
       fromISO: horizon.fromISO, toISO: horizon.toISO,
       currency: state.liquidity.currency ?? 'USD',
+      ...(spendingSchedule ? { spendingSchedule } : {}),
     };
     projection = projectCash(projectionInput);
+  } else if (spendingRules.length > 0 && !spendingChanges) {
+    spendingChanges = notApplied('the evidence-based projection is switched off here, so NONE was applied.');
   }
 
   return {
@@ -530,6 +601,7 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
     projection, observedSpending, projectionInput,
     ...(incomeChanges ? { incomeChanges } : {}),
     ...(modelledInterest ? { modelledInterest } : {}),
+    ...(spendingChanges ? { spendingChanges } : {}),
   };
 }
 
@@ -605,3 +677,5 @@ function activeUndatedObligations(acc: AccountsSectionData | undefined): number 
 // without them, so omitting them forced the exact reach-past the guard forbids.
 export { PeriodBasis, AssumptionDimension, AssumptionOrigin, AssumptionStance, EventProvenance, FlowRole, ActivityState, ConclusionStatus, StatementMode };
 export type { CashForecast, ConclusionStatusKind, ForecastHorizon, UserStatement, ProjectedInterval, ModelledInterestExclusion };
+export type { SpendingChangeRule, SpendingChangeResult } from '@/lib/forecast/spending-change';
+export { SpendingChangeOp } from '@/lib/forecast/spending-change';

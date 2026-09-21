@@ -42,6 +42,7 @@ import { addDays, daysBetween } from './_time';
 import { observedCashContribution, exactDateOf, type FutureCashEvent } from './future-cash-event';
 import { ConclusionStatus, type ConclusionStatusKind } from './policy';
 import { monthLabel, type ObservedSpendingRate } from './observed-spending';
+import { spendOver, type SpendingSegment } from './spending-change';
 
 /** One component of a projected total, named so the reply can attribute it. */
 export interface ProjectionComponent {
@@ -101,6 +102,15 @@ export interface ProjectCashInput {
   fromISO: string;
   toISO: string;
   currency: string;
+  /**
+   * S1 — the spending rate as a scenario's dated spending changes left it: a
+   * piecewise schedule over the projected days. Absent ⇒ the rate above, constant.
+   *
+   * ⚠️ THE ONE SPEND TERM STILL HAS ONE HOME. The cumulative run, an interval of it
+   * and the range all integrate THIS through `spendOver`, so a scenario's cut
+   * cannot reach one of them and not the others.
+   */
+  spendingSchedule?: readonly SpendingSegment[];
 }
 
 /** The spending term's daily rate, whichever source it came from. */
@@ -122,7 +132,10 @@ const dailyRateOf = (spending: ProjectionSpending | null): number | null =>
  */
 function foldWindow(
   events: readonly FutureCashEvent[], dailyRate: number | null,
-  eventsFromISO: string, eventsToISO: string, days: number,
+  eventsFromISO: string, eventsToISO: string,
+  /** Spending accrues over the days AFTER this, through `eventsToISO`. */
+  spendFromExclusiveISO: string,
+  schedule: readonly SpendingSegment[] | undefined,
 ) {
   const excluded: { id: string; reason: string }[] = [];
   let inflow = 0, outflow = 0, counted = 0;
@@ -134,8 +147,9 @@ function foldWindow(
     counted += 1;
     if (e.direction === 'INFLOW') inflow += c.value; else outflow += c.value;
   }
+  // S1 — `spendOver` is `dailyRate × days` exactly when there is no schedule.
   return { inflow, outflow, counted, excluded,
-    spend: dailyRate === null ? null : dailyRate * days };
+    spend: dailyRate === null ? null : spendOver(schedule, dailyRate, spendFromExclusiveISO, eventsToISO) };
 }
 
 /**
@@ -148,6 +162,8 @@ function foldWindow(
 function namedComponents(
   fold: { inflow: number; outflow: number; spend: number },
   spending: ProjectionSpending, days: number,
+  /** S1 — how far the scenario's spending changes moved this window's spend (negative = less). */
+  changed: number | null = null,
 ): ProjectionComponent[] {
   const components: ProjectionComponent[] = [];
   if (fold.inflow > 0) {
@@ -165,17 +181,31 @@ function namedComponents(
   }
   const obs = spending.kind === 'OBSERVED' ? spending.rate : null;
   components.push({
-    label: obs ? 'projected spending at the observed rate' : 'projected spending at your assumed rate',
+    label: (obs ? 'projected spending at the observed rate' : 'projected spending at your assumed rate')
+      + (changed !== null ? ', with your spending changes applied' : ''),
     value: fold.spend,
-    derivation: obs
+    derivation: (obs
       ? `${obs.monthlyRate.toFixed(2)}/month across the ${obs.monthCount} `
         + `complete month(s) ${obs.months.map(monthLabel).join(' and ')}, accrued over `
         + `${days} day(s)`
       : `${spending.kind === 'USER_ASSUMED' ? spending.statedAs : ''} — the user's own figure, `
-        + `accrued over ${days} day(s)`,
+        + `accrued over ${days} day(s)`)
+      + (changed !== null
+        ? `; the scenario's dated spending changes moved it by ${changed.toFixed(2)} over this period`
+        : ''),
   });
   return components;
 }
+
+/** S1 — the schedule's departure from the constant rate over a span (0 without one). */
+const departureOf = (
+  schedule: readonly SpendingSegment[] | undefined, dailyRate: number, spend: number, days: number,
+): number | null => {
+  if (!schedule || schedule.length === 0) return null;
+  // A window no rule reaches is reported as unchanged, not as "changed by 0.00".
+  const d = spend - dailyRate * days;
+  return Math.abs(d) < 0.005 ? null : d;
+};
 
 /**
  * Project cash forward from measured evidence.
@@ -194,7 +224,8 @@ export function projectCash(input: ProjectCashInput): ProjectedCash {
   // with different semantics. A horizon whose end precedes its start spends zero
   // days, which is a decision this line makes visibly.
   const days = Math.max(0, daysBetween(fromISO, toISO));
-  const fold = foldWindow(events, dailyRateOf(spending), fromISO, toISO, days);
+  const schedule = input.spendingSchedule;
+  const fold = foldWindow(events, dailyRateOf(spending), fromISO, toISO, fromISO, schedule);
   const { inflow, outflow, spend, excluded } = fold;
   const components: ProjectionComponent[] = [];
 
@@ -216,17 +247,25 @@ export function projectCash(input: ProjectCashInput): ProjectedCash {
   // minus, so the licensed figure and the quoted figure did not reconcile and a
   // correct answer collected "could not be automatically verified". Direction is
   // carried by the label, where a reader gets it too.
-  components.push(...namedComponents({ inflow, outflow, spend }, spending, days));
+  const departure = departureOf(schedule, dailyRateOf(spending) as number, spend, days);
+  components.push(...namedComponents({ inflow, outflow, spend }, spending, days, departure));
   const obs = spending.kind === 'OBSERVED' ? spending.rate : null;
 
   const closing = openingCash + inflow - outflow - spend;
   // The same arithmetic at the window's own extremes. Not a distribution, and
   // meaningless for a user-supplied rate, which has no window to vary over.
+  // S1 — a scenario's spending changes move both ends by the same departure; with
+  // none this is the pre-S1 arithmetic unchanged.
   const range = obs && obs.monthCount > 1
-    ? {
-      low:  openingCash + inflow - outflow - (obs.high / (365 / 12)) * days,
-      high: openingCash + inflow - outflow - (obs.low  / (365 / 12)) * days,
-    }
+    ? departure === null
+      ? {
+        low:  openingCash + inflow - outflow - (obs.high / (365 / 12)) * days,
+        high: openingCash + inflow - outflow - (obs.low  / (365 / 12)) * days,
+      }
+      : {
+        low:  openingCash + inflow - outflow - ((obs.high / (365 / 12)) * days + departure),
+        high: openingCash + inflow - outflow - ((obs.low  / (365 / 12)) * days + departure),
+      }
     : null;
 
   const assumptions = [
@@ -236,6 +275,10 @@ export function projectCash(input: ProjectCashInput): ProjectedCash {
         + `${obs.months.map(monthLabel).join(' and ')} and no other period`
       : `spending is ${spending.kind === 'USER_ASSUMED' ? spending.statedAs : 'as the user supposed'} `
         + '— the user\'s supposition for this conversation, not a measurement',
+    ...(departure !== null
+      ? ['spending then changes on the dates the user stated for this scenario — a supposition '
+        + 'about their future, not a measurement']
+      : []),
     'settled recurring deposits continue at their observed level and cadence',
   ];
 
@@ -334,10 +377,11 @@ export function projectCashInterval(
         spending === null ? 'a complete calendar month of spending to average' : null]
         .filter(Boolean).join('; '));
   }
+  const schedule = input.spendingSchedule;
 
   // The cumulative position on a date, exactly as `projectCash` computes it.
   const cumulative = (toISO: string): number => {
-    const f = foldWindow(events, dailyRate, asOf, toISO, Math.max(0, daysBetween(asOf, toISO)));
+    const f = foldWindow(events, dailyRate, asOf, toISO, asOf, schedule);
     return openingCash + f.inflow - f.outflow - (f.spend as number);
   };
 
@@ -347,7 +391,7 @@ export function projectCashInterval(
   const measuredFrom = isClamped ? asOf : window.fromISO;
   const openingDate = isClamped ? asOf : addDays(window.fromISO, -1);
   const days = daysBetween(openingDate, window.toISO);
-  const fold = foldWindow(events, dailyRate, measuredFrom, window.toISO, days);
+  const fold = foldWindow(events, dailyRate, measuredFrom, window.toISO, openingDate, schedule);
   const opening = isClamped ? openingCash : cumulative(openingDate);
   const closing = cumulative(window.toISO);
 
@@ -362,7 +406,8 @@ export function projectCashInterval(
     closing: { dateISO: window.toISO, cash: closing },
     cashChange: closing - opening,
     components: namedComponents(
-      { inflow: fold.inflow, outflow: fold.outflow, spend: fold.spend as number }, spending, days),
+      { inflow: fold.inflow, outflow: fold.outflow, spend: fold.spend as number }, spending, days,
+      departureOf(schedule, dailyRate, fold.spend as number, days)),
     eventsCounted: fold.counted,
     excluded: fold.excluded,
   };

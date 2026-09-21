@@ -24,7 +24,7 @@ const near = (a: number | null | undefined, b: number, eps = 1e-9) => typeof a =
 const ASOF = '2026-12-15';
 const HORIZON = '2027-12-31';
 const MONTHS = ['2026-09', '2026-10', '2026-11'];
-const BASE: SpendingBaseline = { monthly: 5_000, basis: 'MEASURED', months: MONTHS, values: [5_000, 5_000, 5_000] };
+const BASE: SpendingBaseline = { monthly: 5_000, daily: 5_000 / DAYS_PER_MONTH, basis: 'MEASURED', months: MONTHS, values: [5_000, 5_000, 5_000] };
 const cat = (category: string, monthly: number): CategoryRate => ({ category, monthly, months: MONTHS, values: [monthly, monthly, monthly] });
 const CATS = [cat('Dining', 1_000), cat('Shopping', 1_500), cat('Travel', 200)];
 const DINING: SpendingScope = { category: 'Dining', class: 'WHOLE_BUCKET', meaning: 'restaurants AND groceries' };
@@ -187,6 +187,18 @@ console.log('6. what each rule did');
   check('E on a line with no spending in the window: RAN, but moved nothing — and says so', E.ran && !E.affectedProjection && E.baseline.monthly === 0);
   check('a rule\'s spendingRemoved is its marginal effect (A with B present ≠ A alone)',
     A.spendingRemoved > 0 && !near(A.spendingRemoved, run([rule('A', { op: 'SCALE', scope: DINING, fromISO: '2026-11-01', toISO: '2027-03-31', multiplier: 0.8 })]).spendingRemoved, 1e-6));
+}
+
+// ── 6b. the schedule is anchored to the projection's OWN daily rate ─────────
+console.log('6b. a stated level accrues by the mean Gregorian month — the schedule converts by the base\'s own constant');
+{
+  const gregorian = 5_000 / (365.2425 / 12);
+  const stated: SpendingBaseline = { monthly: 5_000, daily: gregorian, basis: 'STATED_TOTAL', months: MONTHS, values: [] };
+  const r = run([rule('A', { op: 'SCALE', scope: DINING, fromISO: '2027-01-01', multiplier: 0.8 })], CATS, stated);
+  check('the unchanged segment keeps the base daily rate EXACTLY (no drift on days no rule governs)',
+    r.schedule[0].daily === gregorian && r.schedule[0].toISO === '2026-12-31');
+  check('the changed segment converts 4,800/month by the SAME constant', near(r.schedule[1].daily, 4_800 / (365.2425 / 12)));
+  check('spending removed = 200/month × 365 days at that constant', near(r.spendingRemoved, 200 / (365.2425 / 12) * 365, 1e-7));
 }
 
 // ── 7. category rates over the SAME months ──────────────────────────────────

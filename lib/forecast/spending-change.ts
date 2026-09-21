@@ -93,6 +93,13 @@ export interface SpendingChangeRule {
 /** The total rate being transformed, and where it came from. */
 export interface SpendingBaseline {
   monthly: number;
+  /**
+   * The daily rate the projection ACCRUES this baseline at — its own figure, never
+   * re-derived here. The observed rate converts by 365/12 and a stated level by the
+   * mean Gregorian month; a schedule built on the other constant would move the
+   * projection on days no rule governs. Every segment converts by `monthly / daily`.
+   */
+  daily: number;
   /** MEASURED — the observed average; STATED_TOTAL — the user's own monthly figure. */
   basis: 'MEASURED' | 'STATED_TOTAL';
   /** The averaged months, oldest first (the category rates are over the SAME months). */
@@ -262,8 +269,12 @@ function boundaries(rules: readonly SpendingChangeRule[], start: string, horizon
 
 function scheduleOf(
   rules: readonly SpendingChangeRule[], start: string, horizon: string,
-  R: number, cats: ReadonlyMap<string, number>, clampedBy?: Set<string>,
+  base: SpendingBaseline, cats: ReadonlyMap<string, number>, clampedBy?: Set<string>,
 ): SpendingSegment[] {
+  const R = base.monthly;
+  // The base's own days-per-month; an unchanged segment keeps the base daily rate exactly.
+  const perMonth = base.monthly > 0 && base.daily > 0 ? base.monthly / base.daily : DAYS_PER_MONTH;
+  const dailyOf = (monthly: number) => (monthly === R ? base.daily : monthly / perMonth);
   if (start > horizon) return [];
   const byScope = new Map<string, SpendingChangeRule[]>();
   for (const r of [...rules].sort(byStart)) {
@@ -277,7 +288,7 @@ function scheduleOf(
     const monthly = totalOn(from, horizon, R, cats, byScope, clampedBy);
     const last = out[out.length - 1];
     if (last && last.monthly === monthly) last.toISO = to;
-    else out.push({ fromISO: from, toISO: to, monthly, daily: monthly / DAYS_PER_MONTH });
+    else out.push({ fromISO: from, toISO: to, monthly, daily: dailyOf(monthly) });
   });
   return out;
 }
@@ -359,8 +370,8 @@ export function applySpendingChanges(args: {
   const cats = new Map(categoryRates.map((c) => [c.category, c.monthly]));
   const start = addDays(asOfISO, 1);
   const clampedBy = new Set<string>();
-  const schedule = scheduleOf(rules, start, horizonISO, baseline.monthly, cats, clampedBy);
-  const baseDaily = baseline.monthly / DAYS_PER_MONTH;
+  const schedule = scheduleOf(rules, start, horizonISO, baseline, cats, clampedBy);
+  const baseDaily = baseline.daily;
   const spent = (s: SpendingSegment[]) => spendOver(s, baseDaily, asOfISO, horizonISO);
   const scheduled = spent(schedule);
   const spendingRemoved = spendOver(null, baseDaily, asOfISO, horizonISO) - scheduled;
@@ -386,7 +397,7 @@ export function applySpendingChanges(args: {
       monthlyBefore = foldScope(b0, earlier, governed.fromISO, horizonISO);
       monthlyAfter = step(monthlyBefore, r).rate;
     }
-    const without = scheduleOf(rules.filter((x) => x !== r), start, horizonISO, baseline.monthly, cats);
+    const without = scheduleOf(rules.filter((x) => x !== r), start, horizonISO, baseline, cats);
     const removed = spent(without) - scheduled;
     const overlaps = sorted.filter((x) => x !== r && keyOf(x) === k
       && x.fromISO <= to && (x.toISO ?? horizonISO) >= r.fromISO).map((x) => x.id);
