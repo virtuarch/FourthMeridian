@@ -196,5 +196,50 @@ console.log('income-clause — what the sixth clause says, and what a later turn
       .incomeChange as unknown[]).length, 1);
 }
 
+// ── 6. REVIEW BLOCKERS 2 AND 3 ───────────────────────────────────────────────
+{
+  // Blocker 2 — a SET_RATE to 120,000 then a ×0.5 SCALE over the same dates. The
+  // first line's `incomeAfter` is 120,000; the projection folds 60,000. Both
+  // lines must name the overlap, and the clause must say what that means.
+  const setRate = exec({ ruleId: 'i1', op: 'SET_RATE', nominalAfter: 120_000, spendableAfter: 120_000 });
+  const halve = exec({ ruleId: 'i2', op: 'SCALE', nominalBefore: 120_000, nominalAfter: 60_000,
+    spendableBefore: 120_000, spendableAfter: 60_000, overlapsRules: ['i1'] });
+  const c = incomeClause([setRate, halve]) as {
+    rules: { id: string; overlaps?: string[] }[]; overlapping?: { rules: string[]; meaning: string } };
+  eq('the EARLIER rule names the rule that later changed its dates',
+    c.rules.find((r) => r.id === 'i1')?.overlaps, ['i2']);
+  eq('…and the later rule names the earlier one', c.rules.find((r) => r.id === 'i2')?.overlaps, ['i1']);
+  check('…and the clause says a per-rule figure is NOT the scenario\'s income',
+    /NOT the income under this scenario/.test(c.overlapping?.meaning ?? ''));
+  eq('…and the envelope carries the overlap forward',
+    (compactClauses(clausesInForce(EMPTY_LEDGER, [], [setRate, halve])).incomeChange as { overlaps?: string[] }[])
+      .map((r) => r.overlaps), [['i2'], ['i1']]);
+  check('rules that do not overlap carry no overlap note',
+    !('overlapping' in incomeClause([exec()])));
+
+  // The GROSS case reaches later turns too: a rule whose income counts as no cash
+  // is marked in the envelope, not only in the full result that later turns lose.
+  eq('a rule counted as no cash is marked in the envelope',
+    (compactClauses(clausesInForce(EMPTY_LEDGER, [], [exec({ spendableAfter: 0 })]))
+      .incomeChange as { countsAsCash?: boolean }[])[0].countsAsCash, false);
+
+  // Blocker 3 — a label on a non-START rule is a sentence about the scenario; it
+  // must not survive into the envelope's remembered arguments.
+  const labelled = captureActiveScenario(SCENARIO_TOOL,
+    { to: '2027-12-31', incomeChanges: [
+      { op: 'SCALE', from: '2027-01-01', multiplier: 1.1,
+        label: 'the six-month buffer is kept and the cards are paid first' },
+      { op: 'START', from: '2027-02-01', amount: 3000, per: 'MONTH', basis: 'NET', cadence: 'MONTHLY',
+        label: 'consulting work for a very long client name that runs on and on' }] },
+    { asOf: '2026-09-21', horizon: { to: '2027-12-31' }, assumptions: {},
+      checkpoints: [{ date: '2027-12-31', liquid: { amount: 1 }, investments: { amount: 1 },
+        debt: { amount: 0 }, netWorth: { amount: 2 } }] });
+  const kept = labelled.action === 'REPLACE'
+    ? (labelled.scenario.assumptions.incomeChanges as Record<string, unknown>[]) : [];
+  check('a label on a SCALE does not survive into the envelope', !('label' in (kept[0] ?? {})));
+  check('a STARTed income keeps its name, bounded to 40 characters',
+    typeof kept[1]?.label === 'string' && (kept[1].label as string).length <= 40);
+}
+
 if (failures > 0) { console.error(`\nincome-clause: ${failures} failure(s).`); process.exit(1); }
 console.log('\nincome-clause: all passed.');

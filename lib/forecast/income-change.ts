@@ -452,6 +452,19 @@ export function applyIncomeChanges(args: {
           + ' — name one of those, or ask the user which income they mean. Do not guess.' });
         continue;
       }
+      // ⚠️ A STREAM THE ACTIVITY AUTHORITY HAS NOT LICENSED TO CONTINUE HAS NO
+      // FUTURE PAY DATES, and saying "no pay date falls in the window" sent a
+      // reader to fix a date that was fine (review). The honest reason is the
+      // licence. A rule cannot resurrect an income the evidence says has stopped;
+      // "I still work there" is a claim about the world with a door of its own.
+      if (!hit.projectionEligible && rule.op !== IncomeChangeOp.STOP) {
+        rejected.push({ input: named(rule.id), reason:
+          `"${hit.label ?? hit.sourceKey}" is not projected to continue — the evidence says it `
+          + 'has stopped paying — so there are no future pay dates for this rule to change. '
+          + 'Nothing was applied. If the user says it is still paying, that is a claim about their '
+          + 'income today, not a scenario; to model new income from that source, use START.' });
+        continue;
+      }
       targets = [hit];
     } else {
       // ⚠️ EARNED INCOME ONLY, when the user named no source. See `IncomeStreamRef.role`.

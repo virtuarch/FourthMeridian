@@ -55,7 +55,7 @@ import {
 } from '@/lib/data/snapshot-window';
 import { loadForecastIncomeStreams } from '@/lib/ai/forecast/streams';
 import { assembleForecast, projectInterval } from '@/lib/ai/forecast/assemble';
-import { SCENARIO_INPUTS } from './scenario-inputs';
+import { SCENARIO_INPUTS, NOT_AN_ASSUMPTION } from './scenario-inputs';
 import {
   type IncomeChangeOpKind, type IncomeChangeResult, type IncomeChangeRule,
   type RatePeriodKind,
@@ -1774,7 +1774,13 @@ const projectCash: ToolDefinition = {
     // current-trend projection came back as the answer to a question about a
     // raise. A tool that cannot model a condition must say so, not compute
     // without it.
-    const rejected = refuseUnknownArguments(a, projectCash.parameters);
+    // ⚠️ PRESENTATION KEYS ARE NOT REFUSED (review). `granularity` is the scenario
+    // tools' table cadence — project_cash's own is `checkpoints` — and a model
+    // carrying it over from a scenario call would otherwise lose the whole
+    // projection over a field that changes no figure. Only a key that would have
+    // CHANGED the answer is worth refusing the answer for.
+    const rejected = refuseUnknownArguments(a, projectCash.parameters)
+      .filter((r) => !r.argument || !NOT_AN_ASSUMPTION.includes(r.argument));
     if (rejected.length > 0) {
       return { unavailable: 'this projection cannot carry what was stated, so it was NOT run',
         notApplied: notAppliedEcho(rejected),
@@ -1949,6 +1955,16 @@ const investmentScenario: ToolDefinition = {
       }, ['component', 'changePercent']) },
   }, ['moves']),
   async run(a, ctx) {
+    // ⚠️ CLOSED, LIKE EVERY TOOL THAT COMPUTES MONEY (review). This is a
+    // current-instant move on investments; an income change stated to it was
+    // silently dropped, and the answer came back as if it had been considered.
+    const rejected = refuseUnknownArguments(a, investmentScenario.parameters);
+    if (rejected.length > 0) {
+      return { unavailable: 'this calculation cannot carry what was stated, so it was NOT run',
+        notApplied: notAppliedEcho(rejected),
+        instead: 'investment_scenario moves investment components as of TODAY. A change to '
+          + 'future income is scenario_projection\'s `incomeChanges`.' };
+    }
     const acc = await assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx);
     if (!acc) return { unavailable: 'no accounts in scope' };
     const comp = composeInvestments(acc);
@@ -2049,46 +2065,77 @@ interface ScenarioSetup {
  */
 function toIncomeChangeRules(
   raw: unknown, declaredOk: (entry: Record<string, unknown>) => boolean,
+  rejected: RefusedInput[],
 ): IncomeChangeRule[] {
   if (!Array.isArray(raw)) return [];
   const rules: IncomeChangeRule[] = [];
   raw.forEach((entry, i) => {
-    if (!entry || typeof entry !== 'object') return;
+    const name = `\`incomeChanges\` rule i${i + 1}`;
+    if (!entry || typeof entry !== 'object') {
+      rejected.push({ input: name, reason: 'an `incomeChanges` entry must be an object; nothing was applied for it.' });
+      return;
+    }
     const c = entry as Record<string, unknown>;
     if (!declaredOk(c)) return;
-    // ⚠️ A RATE IS BUILT ONLY WHERE A RATE BELONGS. `basis` is shared between the
-    // ops — it qualifies a stated rate for SET_RATE and START, and it qualifies the
-    // SCALED income for SCALE — so folding it into `rate` unconditionally turned a
-    // SCALE carrying `basis: NET` into a rate with a NaN amount, which the
-    // validator then refused as a malformed SET_RATE. The model sends that
-    // combination because "a 10% net raise" is one phrase.
+
+    // ⚠️ A FIELD OF THE WRONG TYPE IS REFUSED, NEVER DROPPED (review blocker 4).
+    // Dropping `to: 20270301` because it was not a string ran the rule to the
+    // horizon — a narrower window silently widened — and `source: 123` silently
+    // became every income stream. Every declared field is checked here; `null`
+    // means "not stated", as it does everywhere else in the scenario contract.
+    const TYPES: Record<string, 'string' | 'number'> = {
+      op: 'string', source: 'string', from: 'string', to: 'string', multiplier: 'number',
+      amount: 'number', per: 'string', basis: 'string', cadence: 'string', label: 'string',
+    };
+    const wrong = Object.entries(TYPES)
+      .filter(([k, t]) => c[k] !== undefined && c[k] !== null && typeof c[k] !== t)
+      .map(([k, t]) => `\`${k}\` must be a ${t}`);
+    if (wrong.length > 0) {
+      rejected.push({ input: name, reason: `${wrong.join('; ')}, so this rule was NOT applied — `
+        + 'running it without that field would turn it into a broader rule nobody stated.' });
+      return;
+    }
+    const str = (k: string) => (typeof c[k] === 'string' && c[k] !== '' ? c[k] as string : undefined);
     const op = c.op as IncomeChangeOpKind;
-    const statesRate = op !== 'SCALE'
-      && (c.amount !== undefined || c.per !== undefined || c.basis !== undefined);
+
+    // ⚠️ A LABEL NAMES A NEW INCOME, AND NOTHING ELSE (review blocker 3). On a
+    // SCALE, SET_RATE or STOP it names a stream that already has a name, so the
+    // only thing it can carry is a sentence about the scenario — "the buffer is
+    // kept and the cards are paid first" rode into the envelope beside a roster
+    // saying neither ran.
+    if (op !== 'START' && str('label') !== undefined) {
+      rejected.push({ input: name, reason: '`label` names a NEW income and belongs only on START; '
+        + 'this income already has a name. The rule was NOT applied — drop `label` and re-run.' });
+      return;
+    }
+
+    // ⚠️ A RATE IS BUILT WHEREVER A RATE WAS STATED (review blocker 1). The first
+    // fix for "a 10% net raise" built no rate for any SCALE, which let a SCALE
+    // carrying `amount: 180000, per: YEAR` run as ×1.1 and drop the $180k without
+    // a word. Now `amount` or `per` always builds a rate — so a SCALE carrying one
+    // reaches the engine's refusal ("two answers to one question") — and `basis`
+    // alone on a SCALE is the scaled income's basis, which is what it means there.
+    const statesRate = c.amount !== undefined && c.amount !== null
+      || c.per !== undefined && c.per !== null
+      || (op !== 'SCALE' && c.basis !== undefined && c.basis !== null);
     rules.push({
       id: `i${i + 1}`,
       op,
-      sourceKey: typeof c.source === 'string' && c.source !== '' ? c.source : null,
-      fromISO: typeof c.from === 'string' ? c.from : '',
-      ...(typeof c.to === 'string' ? { toISO: c.to } : {}),
+      sourceKey: str('source') ?? null,
+      fromISO: str('from') ?? '',
+      ...(str('to') ? { toISO: str('to') } : {}),
       ...(typeof c.multiplier === 'number' ? { multiplier: c.multiplier } : {}),
       ...(statesRate
         ? { rate: {
           amount: typeof c.amount === 'number' ? c.amount : NaN,
           per: c.per as RatePeriodKind,
-          basis: c.basis as IncomeChangeRule['rate'] extends undefined ? never
-            : NonNullable<IncomeChangeRule['rate']>['basis'],
+          basis: c.basis as NonNullable<IncomeChangeRule['rate']>['basis'],
         } }
         : {}),
-      ...(op === 'SCALE' && typeof c.basis === 'string'
-        ? { basis: c.basis as NonNullable<IncomeChangeRule['basis']> } : {}),
-      ...(typeof c.cadence === 'string'
-        ? { cadence: c.cadence as NonNullable<IncomeChangeRule['cadence']> } : {}),
-      // ⚠️ BOUNDED, LIKE EVERY OTHER CALLER NAME THAT REACHES A RESULT. A STARTed
-      // income's label names a THING ("consulting") and is worth keeping; it is
-      // also the only free text on this argument, and unbounded it would ride
-      // into the roster's `of` list and the envelope on every later turn — the
-      // channel a contribution's `label` was before `scenario-rules.ts` demoted it.
+      ...(op === 'SCALE' && !statesRate && str('basis')
+        ? { basis: str('basis') as NonNullable<IncomeChangeRule['basis']> } : {}),
+      ...(str('cadence') ? { cadence: str('cadence') as NonNullable<IncomeChangeRule['cadence']> } : {}),
+      // Bounded, like every other caller name that reaches a result.
       ...(boundedLabel(c.label) ? { label: boundedLabel(c.label) as string } : {}),
     });
   });
@@ -2131,7 +2178,7 @@ async function prepareScenario(
   };
 
   const incomeChanges = toIncomeChangeRules(
-    a.incomeChanges, declared('incomeChanges', 'an `incomeChanges` entry'));
+    a.incomeChanges, declared('incomeChanges', 'an `incomeChanges` entry'), rejected);
 
   const spine = await buildCashSpine(ctx, {
     asOf: ctx.asOfISO,
@@ -2170,10 +2217,14 @@ async function prepareScenario(
   // some entries failed would delete the user's working clauses along with the
   // broken one.
   const incomeRejected = endpoint.incomeChanges?.rejected ?? [];
-  const allRefused = incomeChanges.length > 0 && incomeRejected.length === incomeChanges.length;
-  for (const r of incomeRejected) {
-    rejected.push({ input: r.input, reason: r.reason,
-      ...(allRefused ? { argument: 'incomeChanges' } : {}) });
+  // Stated entries = those the engine saw plus those the mapper refused before it.
+  const statedEntries = Array.isArray(a.incomeChanges) ? a.incomeChanges.length : 0;
+  const allRefused = statedEntries > 0 && incomeRejected.length === incomeChanges.length;
+  for (const r of incomeRejected) rejected.push({ input: r.input, reason: r.reason });
+  // Refusals from BOTH layers — the mapper's type and label checks, and the
+  // engine's — mark the argument as unapplied only when nothing in it ran.
+  if (allRefused) {
+    for (const r of rejected) if (r.input.startsWith('`incomeChanges` rule')) r.argument = 'incomeChanges';
   }
 
   // The spine's own opening balance — checking plus savings. Named `liquid`

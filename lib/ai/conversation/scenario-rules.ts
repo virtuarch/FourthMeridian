@@ -280,11 +280,18 @@ export function withoutUnappliedLabels(args: Record<string, unknown>): Record<st
       // Key order is preserved for a label that was already a bounded name.
       return name === label ? c : name ? { ...rest, label: name } : rest;
     });
-  if (!Array.isArray(args.contributions) && !Array.isArray(args.outflows)) return args;
+  if (!Array.isArray(args.contributions) && !Array.isArray(args.outflows)
+    && !Array.isArray(args.incomeChanges)) return args;
   return { ...args,
     ...(Array.isArray(args.contributions)
       ? { contributions: relabel(args.contributions, (rest) => contributionBasis(rest) === 'AMOUNT') } : {}),
-    ...(Array.isArray(args.outflows) ? { outflows: relabel(args.outflows, () => true) } : {}) };
+    ...(Array.isArray(args.outflows) ? { outflows: relabel(args.outflows, () => true) } : {}),
+    // I1 (review blocker 3). A STARTed income's label names a THING and is kept,
+    // bounded; on any other op it names nothing the stream does not already have,
+    // so the only thing it can carry into later turns is a sentence about the
+    // scenario that no execution vouches for.
+    ...(Array.isArray(args.incomeChanges)
+      ? { incomeChanges: relabel(args.incomeChanges, (rest) => rest.op === 'START') } : {}) };
 }
 
 // ── The roster ───────────────────────────────────────────────────────────────
@@ -337,7 +344,9 @@ export interface ClausesInForce {
    * that it cannot, and the executions it now also takes are the SPINE'S OUTPUT,
    * not the caller's input. A rule the spine refused, or one whose window falls
    * outside the horizon, arrives here already saying `ran: false` with its
-   * reason — and a caller's label cannot change that, because no label reaches it.
+   * reason — and a caller's label cannot change that. The one caller string that
+   * reaches this clause is a STARTed income's name in `of`, bounded to 40
+   * characters; it names a thing and can set no `ran`.
    */
   incomeChange:
     | { ran: true; rules: IncomeClauseLine[]; didNotRun?: IncomeClauseLine[];
@@ -362,6 +371,12 @@ export interface IncomeClauseLine {
   incomeAfter: number;
   /** Of `incomeAfter`, what the projection counts as spendable. Only when they differ. */
   countedAsCash?: number;
+  /**
+   * Other rules in this scenario that govern some of the same pay dates. On an
+   * EARLIER rule this means its `incomeAfter` was later changed again; see
+   * `overlapping.meaning`.
+   */
+  overlaps?: string[];
   reason?: string;
 }
 
@@ -524,8 +539,31 @@ export function clausesInForce(
   };
 }
 
+/**
+ * ⚠️ OVERLAP IS REPORTED ON BOTH SIDES (review blocker 2). The engine recorded an
+ * overlap only on the LATER rule, and the roster printed neither. Measured: a
+ * SET_RATE to 120,000 followed by a ×0.5 SCALE over the same dates printed
+ * `incomeAfter: 120000` on the first line while the projection folded 60,000 —
+ * the model read the superseded figure as the scenario's income, 2× wrong, with
+ * nothing on that line to warn it. Rules run in the order given and order changes
+ * the answer, so each overlapping line names the others and the clause says what
+ * the per-rule figures do and do not mean.
+ */
+const OVERLAP_MEANING =
+  'These rules govern some of the same pay dates and ran IN THE ORDER LISTED, each on the '
+  + 'income the previous one left. `incomeBefore`/`incomeAfter` on each line are that rule\'s '
+  + 'own step, so an earlier rule\'s `incomeAfter` is NOT the income under this scenario — the '
+  + 'cash figures reflect all of them. Do not quote a per-rule figure as the income.';
+
+function overlapMap(executions: readonly IncomeChangeExecution[]): Map<string, string[]> {
+  const m = new Map<string, Set<string>>();
+  const add = (a: string, b: string) => { if (!m.has(a)) m.set(a, new Set()); m.get(a)!.add(b); };
+  for (const x of executions) for (const y of x.overlapsRules ?? []) { add(x.ruleId, y); add(y, x.ruleId); }
+  return new Map([...m].map(([k, v]) => [k, [...v].sort()]));
+}
+
 /** One execution as a roster line. Every field is code's; none is the caller's. */
-const incomeLine = (x: IncomeChangeExecution): IncomeClauseLine => ({
+const incomeLine = (x: IncomeChangeExecution, overlaps?: string[]): IncomeClauseLine => ({
   id: x.ruleId, op: x.op,
   of: x.matched.map((m) => m.label ?? m.sourceKey),
   // ⚠️ A RULE THAT RAN IS REPORTED BY WHAT IT COVERED; ONE THAT DID NOT, BY WHAT
@@ -542,6 +580,7 @@ const incomeLine = (x: IncomeChangeExecution): IncomeClauseLine => ({
   // reader to skip the one row where it matters.
   ...(round2(x.spendableAfter) !== round2(x.nominalAfter)
     ? { countedAsCash: round2(x.spendableAfter) } : {}),
+  ...(overlaps && overlaps.length ? { overlaps } : {}),
   ...(x.reason ? { reason: x.reason } : {}),
 });
 
@@ -553,8 +592,10 @@ export function incomeClause(
   // A scenario that WAS given one and changed no pay date has to say so, because
   // that is the case a reader would otherwise read as "the raise is in here".
   if (executions.length === 0) return { ran: false };
+  const ov = overlapMap(executions);
+  const line = (x: IncomeChangeExecution) => incomeLine(x, ov.get(x.ruleId));
   const didRun = executions.filter((x) => x.ran);
-  const didNot = executions.filter((x) => !x.ran).map(incomeLine);
+  const didNot = executions.filter((x) => !x.ran).map(line);
   if (didRun.length === 0) {
     return { ran: false, didNotRun: didNot, meaning: NO_INCOME_CHANGE_MEANING };
   }
@@ -569,13 +610,16 @@ export function incomeClause(
   const notCash = didRun
     .filter((x) => x.nominalAfter > 0 && round2(x.spendableAfter) === 0)
     .map((x) => x.ruleId);
+  const overlapping = didRun.filter((x) => ov.has(x.ruleId)).map((x) => x.ruleId);
   return {
     ran: true,
-    rules: didRun.map(incomeLine),
+    rules: didRun.map(line),
     ...(didNot.length ? { didNotRun: didNot } : {}),
     ...(notCash.length ? { notCash: { rules: notCash, meaning: NOT_CASH_MEANING } } : {}),
     ...(everyStream.length
       ? { everyStream: { rules: everyStream, meaning: EVERY_STREAM_MEANING } } : {}),
+    ...(overlapping.length
+      ? { overlapping: { rules: overlapping, meaning: OVERLAP_MEANING } } : {}),
   };
 }
 
@@ -622,7 +666,12 @@ export function compactClauses(
     // truth about a scenario that had no income rule to run.
     incomeChange: c.incomeChange?.ran
       ? c.incomeChange.rules.map((r) => ({ op: r.op, of: r.of, from: r.from, to: r.to,
-          changed: r.payDatesChanged }))
+          changed: r.payDatesChanged,
+          // ⚠️ THE TWO FACTS A LATER TURN MOST NEEDS AND THE FULL RESULT ALONE HELD.
+          // A GROSS rate can take cash negative; carried forward without this, the
+          // figure is re-read as if the income were spendable.
+          ...(r.countedAsCash === 0 ? { countsAsCash: false } : {}),
+          ...(r.overlaps ? { overlaps: r.overlaps } : {}) }))
       : 'NONE',
   };
 }

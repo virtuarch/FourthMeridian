@@ -151,7 +151,7 @@ function unclassifiedKeys(schema: Record<string, unknown>, except: readonly stri
 // ── 3. The schema is ONE literal ─────────────────────────────────────────────
 {
   check('tools.ts imports the schema and does not restate it',
-    TOOLS.includes("import { SCENARIO_INPUTS } from './scenario-inputs'")
+    /import \{ SCENARIO_INPUTS[^}]*\} from '\.\/scenario-inputs'/.test(TOOLS)
     && !TOOLS.includes('const SCENARIO_INPUTS = {'));
   check('all three scenario tools spread the same literal',
     (TOOLS.match(/\.\.\.SCENARIO_INPUTS/g) ?? []).length === 3,

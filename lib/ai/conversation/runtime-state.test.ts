@@ -34,6 +34,7 @@ const SCENARIO: ActiveScenario = {
   assumptions: { to: '2027-03-31', monthlySpending: 6000, contributions: 1500 },
   result: { asOf: '2026-09-13', to: '2027-03-31',
     liquid: 51_598.84, investments: 210_004.11, debt: -8_112.00, netWorth: 253_490.95 },
+  covers: '2027-03-31. No other date was computed.',
 };
 const BINDING = { userId: 'usr_1', spaceId: 'spc_1', tail: 'tail_a' };
 

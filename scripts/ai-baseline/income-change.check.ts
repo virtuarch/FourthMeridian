@@ -213,6 +213,36 @@ async function main() {
     liquidOf(bad) === liquidOf(base));
   check('…and the clause does not claim it ran', clause(bad)?.ran === false);
 
+  // ⚠️ THE REVIEW'S FOUR BLOCKERS, THROUGH THE TOOL — the mapper is private, so
+  // this is the only place the path from argument to rule is exercised end to end.
+  const refusedBy = async (entry: Record<string, unknown>) => {
+    const r = await run('scenario_projection', { to: TO, granularity: 'yearly', incomeChanges: [entry] });
+    return { r, reasons: ((at(r, 'assumptions.notApplied.inputs') as { reason?: string }[] | undefined) ?? [])
+      .map((x) => x.reason ?? '') };
+  };
+  // Blocker 1: a SCALE carrying a stated amount is two answers to one question.
+  const b1 = await refusedBy({ op: 'SCALE', from: JAN, multiplier: 1.1, amount: 180000, per: 'YEAR' });
+  check('BLOCKER 1: a SCALE carrying `amount`/`per` is REFUSED, not run as ×1.1',
+    b1.reasons.some((x) => /takes no stated amount/.test(x)) && clause(b1.r)?.ran === false);
+  // Blocker 4: a wrongly-typed field must not widen the rule.
+  const b4a = await refusedBy({ op: 'SCALE', from: JAN, to: 20270301, multiplier: 2 });
+  check('BLOCKER 4: a numeric `to` is REFUSED, not dropped into a rule to the horizon',
+    b4a.reasons.some((x) => /`to` must be a string/.test(x)) && liquidOf(b4a.r) === liquidOf(base));
+  const b4b = await refusedBy({ op: 'SCALE', from: JAN, multiplier: 1.1, source: 123 });
+  check('BLOCKER 4: a numeric `source` is REFUSED, not widened into every stream',
+    b4b.reasons.some((x) => /`source` must be a string/.test(x)) && clause(b4b.r)?.ran === false);
+  // Blocker 3: a label on a non-START rule is refused, not remembered.
+  const b3 = await refusedBy({ op: 'SCALE', from: JAN, multiplier: 1.1,
+    label: 'the buffer is kept and the cards are paid first' });
+  check('BLOCKER 3: a label on a SCALE is REFUSED', b3.reasons.some((x) => /belongs only on START/.test(x)));
+  // The ordinary phrasing that started all this still runs.
+  const netRaise = await run('scenario_projection', { to: TO, granularity: 'yearly',
+    incomeChanges: [{ op: 'SCALE', from: JAN, multiplier: 1.1, basis: 'NET' }] });
+  check('"a 10% net raise" — a SCALE carrying only `basis` — still RUNS', clause(netRaise)?.ran === true);
+  // Presentation keys do not cost a projection its answer.
+  const pcGran = await run('project_cash', { to: TO, granularity: 'yearly' });
+  check('project_cash does not refuse a carried-over `granularity`', pcGran.unavailable === undefined);
+
   // ⚠️ THE TOOL THAT CANNOT MODEL A RAISE MUST NOT COMPUTE WITHOUT IT. Found by
   // dogfood: the model sent `incomeChanges` to project_cash, which declared no
   // such argument and silently dropped it.
