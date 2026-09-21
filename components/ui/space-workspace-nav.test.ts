@@ -21,7 +21,9 @@
  *   G. the host wiring is navigation only;
  *   H. ONE switcher per width: the in-page lens row is below-lg only in a
  *      customer Space (the sidebar owns lg+), and BottomNav carries no stale
- *      "Sections" label.
+ *      "Sections" label;
+ *   I. the open workspace's content region is NAMED at every width — no
+ *      aria-labelledby into a control that is missing or CSS-hidden.
  */
 
 import { createElement, type ReactElement } from "react";
@@ -263,6 +265,42 @@ console.log("H. One workspace switcher per width; no stale Sections label");
   check("BottomNav destinations/visuals unchanged: PRIMARY_NAV, lg:hidden bar, per-link labels",
     /PRIMARY_NAV\.map/.test(bar) && /fixed inset-x-0 bottom-0 z-40 border-t border-\[var\(--border-hairline\)\] lg:hidden/.test(bar) &&
       /aria-label=\{d\.label\}/.test(bar));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("I. The workspace region's accessible name");
+{
+  const host = code(read("components", "dashboard", "SpaceDashboard.tsx"));
+  const panel = host.match(/<div\s+role="region"[\s\S]*?>/)?.[0] ?? "";
+  check("the content panel is a named region: aria-label from the open workspace's label",
+    /aria-label=\{openWorkspaceLabel\}/.test(panel), panel);
+  check("…derived from the SAME lens list both switchers render (no second label source)",
+    /const openWorkspaceLabel = lensSelectorItems\.find\(\(l\) => l\.id === openWorkspace\)\?\.label;/.test(host));
+  const nameFor = (tab: string, p: string | null) => LENSES.find((l) => l.id === openWorkspaceId(tab, p))?.label;
+  check("Net Worth selected ⇒ region named \"Net Worth\"", nameFor("OVERVIEW", "wealth") === "Net Worth");
+  check("Cash Flow selected ⇒ region named \"Cash Flow\"", nameFor("OVERVIEW", "cashFlow") === "Cash Flow");
+  check("the name does not depend on which switcher is visible (no id reference at all)",
+    !/aria-labelledby/.test(panel) && !/role="tabpanel"/.test(host) && !/ptab-/.test(host));
+
+  // No dangling labelled-by anywhere on this path: every aria-labelledby in the
+  // host, the shell and the lens row must name an id that is actually rendered.
+  const shellHtml = renderToStaticMarkup(createElement(PerspectiveShell as never, {
+    today: "2026-09-21", onAsOfChange: () => {}, onCompareToChange: () => {}, onSwap: () => {}, onSelectPreset: () => {},
+    envelope: {}, temporalCapability: { asOf: "full", compareTo: "full", period: "none" },
+    timeState: { preset: "MTD", asOf: "2026-09-21", compareTo: "2026-09-01" },
+    tabs: LENSES.map((l) => ({ ...l, hasWorkspace: true })), activeTabId: "networth", onSelectTab: () => {},
+    tabsVisibility: "belowLg",
+  } as never));
+  const refs = [...shellHtml.matchAll(/aria-labelledby="([^"]+)"/g)].flatMap((m) => m[1].split(/\s+/));
+  check("no dangling aria-labelledby in the rendered shell", refs.every((id) => shellHtml.includes(`id="${id}"`)), refs.join());
+  const srcRefs = [
+    host,
+    code(read("components", "space", "shell", "PerspectiveShell.tsx")),
+    code(read("components", "space", "shell", "PerspectiveTabs.tsx")),
+  ].join("\n").match(/aria-labelledby/g) ?? [];
+  check("no aria-labelledby left on the host → shell → lens-row path", srcRefs.length === 0, String(srcRefs.length));
+  check("the mobile lens row keeps its own name (radiogroup \"Perspectives\") with the selected radio exposed",
+    /role="radiogroup" aria-label="Perspectives"/.test(shellHtml) && /role="radio" aria-checked="true"[^>]*>Net Worth</.test(shellHtml));
 }
 
 if (failures > 0) { console.error(`\nspace-workspace-nav: ${failures} failure(s).`); process.exit(1); }

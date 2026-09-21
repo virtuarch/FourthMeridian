@@ -380,6 +380,7 @@ export function SpaceDashboard({
     [selectLens, setActiveTab],
   );
   const openWorkspace = openWorkspaceId(activeTab, activePerspectiveId);
+  const openWorkspaceLabel = lensSelectorItems.find((l) => l.id === openWorkspace)?.label;
   useEffect(() => {
     publishWorkspaceNav({
       items: lensSelectorItems.map(({ id, label }) => ({ id, label, href: lensHref(id) })),
@@ -848,9 +849,15 @@ export function SpaceDashboard({
                 renders (WealthWorkspace); Cash Flow's perspective / measure
                 controls live in its own widgets. Below it begins the existing
                 widget/card stack. */}
+            {/* The open workspace, NAMED by its own label. It used to be a
+                `tabpanel` labelled by `ptab-*` ids that nothing rendered — the
+                lens switcher is a radiogroup (no tabs, no ids), and it is CSS-
+                hidden at lg+ where the sidebar is the switcher. So the name is
+                carried here, from the same label source both switchers use:
+                valid at every width, no id reference to dangle. */}
             <div
-              role="tabpanel"
-              aria-labelledby={activePerspectiveId ? `ptab-${activePerspectiveId}` : undefined}
+              role="region"
+              aria-label={openWorkspaceLabel}
               className="space-y-3"
             >
               {activePerspectiveId && WORKSPACE_RENDERERS[activePerspectiveId] ? (

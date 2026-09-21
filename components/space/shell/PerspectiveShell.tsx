@@ -73,7 +73,8 @@ interface Props {
    * the workspace switcher (a customer Space: ContextualNavbar's Net Worth ·
    * Cash Flow, `hidden … lg:block`). The exact complement of that breakpoint, so
    * exactly one switcher shows at any width. Presentation only: the row stays
-   * mounted (its tab ids still label the host's tabpanel) and its selection
+   * mounted (the host's workspace region names itself, so hiding this row
+   * leaves no label behind) and its selection
    * logic is untouched.
    */
   tabsVisibility?: "always" | "belowLg";
