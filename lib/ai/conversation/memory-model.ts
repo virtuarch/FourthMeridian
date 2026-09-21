@@ -770,9 +770,10 @@ function notStated(type: FieldType, field: string, v: number): string {
       return `the user has not stated ${v}% in this conversation. A rate they asked to plan with is theirs to say; an observed `
         + 'or computed rate is not a planning figure';
     default:
-      return `the user has not stated ${v} as an amount in this conversation. Memory holds money only in figures they gave — `
-        + 'with a currency mark, a k/m suffix, thousands or decimals ("$800", "800 dollars", "$5k"), never a bare small number, '
-        + 'which is a count. If the number is theirs, ask them to say it; if what they said was a multiple or a rule, record that instead';
+      return `the user has not stated ${v} as an amount in this conversation. Memory holds money only in figures they gave, `
+        + 'written as money — with a currency mark, a k/m suffix, thousands grouping, decimals, or the currency named in words. '
+        + 'A bare small number is a count, not an amount. If the figure is theirs, ask them to say it; if what they said was a '
+        + 'multiple or a rule, record that instead';
   }
 }
 
