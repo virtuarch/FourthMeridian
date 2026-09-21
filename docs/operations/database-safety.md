@@ -64,15 +64,71 @@ The guard refuses if it ever sees `SHADOW_DATABASE_URL === DATABASE_URL`.
 
 ## 4. Recovery process (if data is lost anyway)
 
-1. **Check `backups/`** first — restore the newest good dump: `psql "$DATABASE_URL" < backups/<file>.sql`.
+1. **Check `backups/`** first — restore the newest good dump:
+
+   ```bash
+   # ⚠️ pg_dump 18 → PG 16. The host tools are 18.x; the server in docker-compose
+   # is postgres:16-alpine. A pg_dump 18 file emits `SET transaction_timeout = 0;`
+   # (a PG17+ GUC) near line 13, which a PG16 server rejects — so with
+   # ON_ERROR_STOP the restore aborts before creating anything.
+   grep -v '^SET transaction_timeout = 0;$' backups/<file>.sql \
+     | psql -v ON_ERROR_STOP=1 "$DATABASE_URL"
+   ```
+
+   Verify by diffing per-table `count(*)` against the source before trusting it.
 2. No backup? The **Plaid data is not truly lost** — Plaid is the upstream source of truth. Re-registering the account and reconnecting institutions re-imports transaction history (see the reconstruction flow). What's lost and must be rebuilt: the user row, platform grants, Space configuration, and any manual/CSV accounts.
 3. Restore the operator account through the **normal product lifecycle** (register → login → MFA), then re-grant platform access via the SYSTEM_ADMIN grant surface — never by injecting a user row.
+
+---
+
+## 4a. Clones, and the guard that makes them mandatory
+
+**Live is exactly `fintracker`. Every disposable copy is `fintracker_<suffix>`.**
+That convention is not a style preference — it is the predicate
+`lib/db/live-guard.ts` classifies on, because live and every clone share a
+byte-identical host, port, user and password. The database NAME is the whole of
+the difference.
+
+Cut a clone:
+
+```bash
+createdb fintracker_<program>                      # base clone
+pg_dump fintracker | psql -q fintracker_<program>
+createdb -T fintracker_<program> fintracker_<program>_a   # per-agent copies
+```
+
+`createdb -T` is a file-level copy and needs no other session connected to the
+TEMPLATE — which is why the per-agent copies are templated off the base clone and
+never off `fintracker`.
+
+**Arm the guard for anything write-capable:**
+
+```bash
+FM_DB_GUARD=clone-only DATABASE_URL="postgresql://…/fintracker_<program>_a" npm run <script>
+```
+
+Armed, `lib/db.ts` refuses — before a client exists — any database it cannot
+identify as a clone. Unset, it is inert, so `npm run ai:chat` and the `audit:*`
+scripts still reach live deliberately.
+
+> ⚠️ **An EXPORTED `DATABASE_URL` BEATS `--env-file`.** Node's `--env-file` fills
+> blanks and never overrides. Five of seven post-M1 agent worktrees wrote to LIVE
+> through exactly this: each had a clone URL in its own `.env.local` and inherited
+> the parent shell's live one anyway. Check `printenv DATABASE_URL` before blaming
+> the file. Setting up a worktree means **rewriting its `.env.local` to its clone**,
+> not instructing an agent to remember to export something.
 
 ---
 
 ## 5. For agents specifically
 
 - Never run a destructive Prisma command as a step in a task. If a schema change needs applying, use `npm run db:migrate:safe`.
+- Anything write-capable — a test, an eval, a model harness — runs with
+  `FM_DB_GUARD=clone-only` against a `fintracker_<suffix>` clone. Not by convention: the guard refuses otherwise.
+- Withholding a tool is **not** isolation. `turn.ts` checkpoints a `project_cash`
+  result into `SpaceMemory` with no `remember` call involved, and `lib/ai/invocation.ts`
+  writes an `AiInvocation` row on every model call. A model harness writes to whatever
+  database it is pointed at.
 - Never pass `$DATABASE_URL` as `--shadow-database-url`.
 - Take `npm run db:backup` before anything schema-touching.
 - If unsure whether an operation is destructive, stop and ask.

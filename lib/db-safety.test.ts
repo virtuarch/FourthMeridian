@@ -6,6 +6,7 @@
  * scripts. Deterministic, no DB.
  */
 
+import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -41,6 +42,39 @@ const pkg = JSON.parse(src("package.json")) as { scripts: Record<string, string>
   check("guard blocks SHADOW_DATABASE_URL === DATABASE_URL (the actual footgun)",
     guard.includes("SHADOW_DATABASE_URL") && /shadow[\s\S]*dbUrl|dbUrl[\s\S]*shadow/i.test(guard));
   check("guard exits non-zero when blocking", guard.includes("process.exit(1)"));
+}
+
+// I1 — Slice 0. A disposable process (a test, an eval, an agent harness) cannot
+// reach live while the clone guard is armed, and the guard is wired at the ONE
+// place every such process shares: the module-global Prisma client.
+//
+// ⚠️ THE INCIDENT: five of seven post-M1 agent worktrees wrote to LIVE because an
+// EXPORTED DATABASE_URL beats `--env-file`. The predicate itself is proved in
+// lib/db/live-guard.test.ts, including the planted accidents; this pins the WIRING.
+{
+  const dbSrc = src("lib/db.ts");
+  check("lib/db.ts consults the clone guard", dbSrc.includes("assertNonLiveDatabase"));
+  check("…before any client exists", dbSrc.indexOf("assertNonLiveDatabase(") < dbSrc.indexOf("new PrismaClient("));
+
+  // Every write-capable script path reaches a DB through this ONE client. A new
+  // `new PrismaClient` outside lib/db.ts is a path around the guard, so the set
+  // of files allowed to construct one is closed and this counts it.
+  const OWN_CLIENT = [
+    "prisma/seed.ts", "scripts/db-guard.ts", "scripts/backfill-ai-agents.ts",
+    "scripts/backfill-personal-sections.ts", "scripts/diagnose-invalid-plaid-tokens.ts",
+    "scripts/run-reconstruction.ts", "scripts/audit-ciphertext-versions.ts",
+    "scripts/audit-visibility-levels.ts", "scripts/copy-fx-rates.ts",
+    "scripts/test-incident-transaction-safety.ts", "scripts/test-visibility-two-user-space.impl.ts",
+  ];
+  // ⚠️ TEST FILES EXCLUDED, because a test that ASSERTS about `new PrismaClient`
+  // contains the string without constructing one — this file and
+  // lib/db/live-guard.test.ts both do.
+  const found = execSync("grep -rl 'new PrismaClient' --include='*.ts' prisma scripts lib app jobs || true",
+    { cwd: ROOT, encoding: "utf8" }).trim().split("\n")
+    .filter((f) => f && !f.endsWith(".test.ts")).sort();
+  const expected = [...OWN_CLIENT, "lib/db.ts"].sort();
+  check("no NEW way around the guard: `new PrismaClient` only in the known files",
+    JSON.stringify(found) === JSON.stringify(expected));
 }
 
 // Backups are never committed.

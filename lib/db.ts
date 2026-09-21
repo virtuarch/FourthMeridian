@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 
 import { runtimeDatasourceUrl } from "@/lib/db/connection-url";
+import { assertNonLiveDatabase } from "@/lib/db/live-guard";
 
 // Prevent multiple Prisma Client instances in Next.js dev (hot-reload creates
 // new module instances; without this guard you'd exhaust the connection pool).
@@ -14,6 +15,16 @@ const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 // connection and produced P2024 pool timeouts. Host, port 6543 and
 // `pgbouncer=true` are preserved exactly; only the pool size is normalised.
 const datasourceUrl = runtimeDatasourceUrl();
+
+// I1 — Slice 0. When `FM_DB_GUARD=clone-only` is set, this process may reach a
+// clone and nothing else; anything it cannot identify as one is refused here,
+// BEFORE a client exists, so a write-capable script cannot reach a query against
+// live. Inert when the variable is unset, which is every ordinary runtime.
+//
+// ⚠️ IT CHECKS THE RESOLVED URL, NOT THE ENV FILE. An exported DATABASE_URL beats
+// `--env-file`; that precedence is the mechanism behind the post-M1 incident, and
+// a guard that read a file rather than the value in force would have missed it.
+assertNonLiveDatabase(datasourceUrl ?? process.env.DATABASE_URL);
 
 export const db =
   globalForPrisma.prisma ??
