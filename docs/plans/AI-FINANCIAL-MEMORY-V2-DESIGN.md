@@ -745,7 +745,7 @@ item (say it again) · a Settings entry · notifications · any Brief surface ch
 fail closed. `amount: 6` is never reinterpreted as six months — it is simply not rendered as money.
 
 One pure function, `readMemory(row) → Readable | Unreadable`, in the spirit of `readCheckpoint` (`reconcile.ts:139-157`).
-**Every reader goes through it.** A row with `payload.v === 2` is validated by the same function as a write (validate-on-read).
+**Every reader goes through it — with one stated exception.** A row with `payload.v === 2` is validated by the same function as a write (validate-on-read). The exception is `reconcile.ts`'s `readCheckpoint`, which is held import-free by a source guard (`baseline.test.ts`: "the ledger and the compactor remain pure" — the same rule covers reconcile), so it cannot call `readMemory`. It therefore re-implements the projection reading it needs, fails closed the same way, and now also refuses a conditional projection (§A.7). The guard was not loosened to make this sentence true.
 A row with no `v` is legacy:
 
 | Legacy shape | Readable **iff** | Read as |

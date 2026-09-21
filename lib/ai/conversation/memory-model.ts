@@ -354,7 +354,8 @@ const onlyKeys = (p: Record<string, unknown>, allowed: string[]) => Object.keys(
 /**
  * What a stored row MEANS, or that it cannot be read reliably.
  *
- * ⚠️ EVERY READER GOES THROUGH THIS. A V2 row is validated by the same function
+ * ⚠️ EVERY READER GOES THROUGH THIS BUT ONE, WHICH CANNOT. A V2 row is validated
+ * by the same function
  * as a write. A row with no `v` was written under V1 and is judged against the
  * contract it was written under, BY VALUE, deterministically:
  *   • `{targetMetric, targetAmount, byDate}` with a V1 metric, a positive amount
@@ -368,6 +369,11 @@ const onlyKeys = (p: Record<string, unknown>, allowed: string[]) => Object.keys(
  * simply not rendered as money. Nothing is rewritten and nothing is destroyed:
  * an unreadable row is hidden from the model's line, the starters and the Brief,
  * and shown to its owner with its date and a delete.
+ *
+ * ⚠️ THE ONE EXCEPTION, NAMED. `reconcile.ts` is held import-free by a source
+ * guard, so `readCheckpoint` cannot call this; it reads a projection itself and
+ * fails closed the same way. Making the claim literally true would mean
+ * loosening that guard, which is a worse trade than a caveat.
  */
 export function readMemory(row: Pick<MemoryRow, 'kind' | 'payload'>): ReadMemory {
   const p = row.payload;

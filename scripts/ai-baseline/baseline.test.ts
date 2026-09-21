@@ -2090,6 +2090,24 @@ console.log('20a. checkpoint-on-projection');
       && projectionStatement('project_cash', { projection: { endingCash: 1 } }, '2026-09-20') === null);
   check('the turn loop\'s writer is the store\'s code-only entry point',
     /recordProjection\(scopeOf\(ctx\)/.test(mt) && !/rememberMemory\([^)]*CHECKPOINT/.test(mt));
+  // ⚠️ A CONDITIONAL PROJECTION IS NOT OURS TO BE GRADED ON, INCLUDING THE ONES
+  // ALREADY ON RECORD. Narrowing stopped WRITING them; rows written before it
+  // were still being compared with what happened, and the assumption's raw text
+  // reached the model through the basis diff.
+  const conditional = readCheckpoint({ id: 'm1', subject: 'liquid-2026-12-31', statedAs: 'x', statedAt: '2026-09-12',
+    payload: { metric: 'liquid', horizon: '2026-12-31', value: 34629.98,
+      basis: { spendingSource: 'USER_STATED', userAssumptions: ['spending baseline 3182.75 USD'] } } });
+  check('a legacy projection that rested on a user-stated figure is NOT reconcilable',
+    'unusable' in conditional && /whether they did what they said/.test(conditional.unusable));
+  check('…and an evidence-based one still is', !('unusable' in readCheckpoint({ id: 'm2', subject: 'liquid-2026-12-31',
+    statedAs: 'x', statedAt: '2026-09-12', payload: { metric: 'liquid', horizon: '2026-12-31', value: 34629.98,
+      basis: { spendingSource: 'OBSERVED' } } })));
+  check('the tool no longer promises that every projection is recorded',
+    /an evidence-based projection first/.test(read('lib/ai/conversation/tools.ts'))
+      && !/it will be recorded automatically/.test(read('lib/ai/conversation/tools.ts')));
+  check('`recordProjection` owns its own unique-constraint race, rather than leaving it to the caller\'s catch',
+    /P2002[\s\S]{0,200}another turn recorded a projection for this horizon/.test(code(read('lib/ai/conversation/memory-store.ts'))));
+
   check('`remember` offers no projection shape',
     !JSON.stringify(findTool('remember')!.parameters).includes('CHECKPOINT'));
   const minted = await findTool('remember')!.run({ kind: 'CHECKPOINT', subject: 'net-worth-2027-06-30',

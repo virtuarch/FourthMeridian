@@ -3122,7 +3122,8 @@ const reconcileProjection: ToolDefinition = {
         // otherwise would invent a history. Checkpoints only exist from the
         // moment a projection was made in a conversation.
         unavailable: 'no projection has been recorded for this user yet — there is nothing to '
-          + 'reconcile against. Ask for a projection first; it will be recorded automatically.' };
+          + 'reconcile against. Ask for an evidence-based projection first — one is recorded automatically, '
+          + 'while a projection run on a spending figure the user supplied is a hypothetical and is not.' };
     }
 
     const spine = await buildCashSpine(ctx, { asOf: ctx.asOfISO });

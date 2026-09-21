@@ -149,6 +149,17 @@ export function readCheckpoint(m: {
   if (typeof p.metric !== 'string' || !p.metric) {
     return { unusable: `checkpoint ${m.subject} does not say what it measured` };
   }
+  // ⚠️ A CONDITIONAL PROJECTION IS NOT OURS TO BE GRADED ON. A projection that
+  // ran on a spending figure the USER supplied says what would happen if they
+  // did what they said; comparing it with what happened measures their
+  // compliance, not our accuracy — the same reason a scenario is never recorded.
+  // Such rows are no longer written (only an evidence-based projection is), but
+  // they exist from before that rule, and they were being graded, with the
+  // assumption's raw text surfacing through the basis diff.
+  if (((p.basis ?? {}) as Record<string, unknown>).spendingSource === 'USER_STATED') {
+    return { unusable: `checkpoint ${m.subject} rested on a spending figure the user supplied, so it is a conditional `
+      + 'statement: comparing it with what happened would measure whether they did what they said, not whether we were right' };
+  }
   return {
     id: m.id, subject: m.subject, statedAs: m.statedAs, statedAt: m.statedAt,
     metric: p.metric, horizon: p.horizon, value: p.value,

@@ -393,7 +393,24 @@ export async function recordProjection(
   if (p.subject !== `${p.metric}-${p.horizon}`) return { stored: false, reason: 'a projection is filed under its metric and horizon' };
 
   const head = await chainHead(scope, MemoryKind.CHECKPOINT, p.subject);
-  const created = await db.$transaction(async (tx) => {
+  try {
+    return { stored: true, memory: present(await writeProjectionRow(scope, p, payload, head)) };
+  } catch (err) {
+    // ⚠️ ITS OWN RACE TO LOSE. `supersedesId` is unique, so two turns stating the
+    // same horizon at once cannot both supersede the same version. The caller in
+    // the turn loop swallows everything, which would have hidden any other fault
+    // here as well; this names the one that is expected and lets the rest throw.
+    if ((err as { code?: string })?.code === 'P2002') {
+      return { stored: false, reason: 'another turn recorded a projection for this horizon at the same moment' };
+    }
+    throw err;
+  }
+}
+
+async function writeProjectionRow(
+  scope: MemoryScope, p: ProjectionStatement, payload: Record<string, unknown>, head: Row | null,
+): Promise<Row> {
+  return db.$transaction(async (tx) => {
     const row = await tx.spaceMemory.create({
       data: {
         spaceId: scope.spaceId, ownerUserId: scope.ownerUserId,
@@ -409,7 +426,6 @@ export async function recordProjection(
     }
     return row;
   });
-  return { stored: true, memory: present(created) };
 }
 
 // ── The owner's own surface: see, stop, erase ────────────────────────────────
