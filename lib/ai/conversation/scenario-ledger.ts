@@ -169,6 +169,21 @@ export interface PlannedMovement {
   liquidFloor?: number;
   fractionOfExcess?: number;
   /**
+   * FM-AUDIT-011 — the floor's DEPENDENCY, when it was derived rather than stated.
+   *
+   * "Keep six months of expenses" is resolved to a dollar `liquidFloor` before the
+   * ledger runs, from the spending level the scenario runs at. That literal is a
+   * DERIVED value: if a transformation changes the spending (a goal-seek spending
+   * cut today, S1's category-rate changes next), the floor must be re-resolved
+   * from the transformed spending, or the solve answers "cut $X" while still
+   * holding six months of the UNCUT figure in cash. This field is that binding —
+   * set by code (tools.ts prepareScenario), never by the model — and the scenario
+   * runner re-resolves every bound floor for the spending level it runs at. An
+   * ABSOLUTE floor (a `liquidFloor` the user stated in dollars) carries no binding
+   * and never moves. The ledger itself never reads it.
+   */
+  floorMonthsOfExpenses?: number;
+  /**
    * A share of the month's projected cash SURPLUS: 0.75 for "invest three
    * quarters of what I'm putting aside".
    *
@@ -264,7 +279,9 @@ export type ContributionSpec =
    * surplus share, and for the same reason: the balance is read at month-ends
    * and a cadence with one legal value invites the illegal one.
    */
-  | ({ liquidFloor: number; fractionOfExcess: number; from?: string; to?: string; label?: string } & Targeted);
+  | ({ liquidFloor: number; fractionOfExcess: number; from?: string; to?: string; label?: string;
+      /** See PlannedMovement.floorMonthsOfExpenses — the derivation binding, set by code. */
+      floorMonthsOfExpenses?: number } & Targeted);
 
 export interface LedgerOpening {
   asOfISO:     string;
@@ -463,6 +480,19 @@ export function monthEndsBetween(fromISO: string, toISO: string): string[] {
   return out;
 }
 
+/** True when `iso` (YYYY-MM-DD) is the last calendar day of its month — leap years included. */
+export function isMonthEndISO(iso: string): boolean {
+  const d = new Date(`${iso}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.getUTCDate() === 1;
+}
+
+function addDaysISO(iso: string, n: number): string {
+  const d = new Date(`${iso}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
 /**
  * Reject overlapping return periods rather than silently applying both.
  *
@@ -637,7 +667,9 @@ export function expandContributions(
       }
       let n = 0;
       for (const date of dates) {
-        movements.push({ date, label, liquidFloor: floor, fractionOfExcess: f, ...targeted });
+        const bound = (floorSpec as { floorMonthsOfExpenses?: number }).floorMonthsOfExpenses;
+        movements.push({ date, label, liquidFloor: floor, fractionOfExcess: f,
+          ...(bound !== undefined ? { floorMonthsOfExpenses: bound } : {}), ...targeted });
         if (++n >= MAX_EXPANDED_CONTRIBUTIONS) {
           rejected.push({ input: name,
             reason: `stopped after ${MAX_EXPANDED_CONTRIBUTIONS} occurrences` });
@@ -798,7 +830,7 @@ export interface SettledLedger {
   liabilitiesByDate: Map<string, LiabilityCheckpoint[]>;
   /** Distinct target orders of the rules that settled — see `LedgerResult.allocationOrders`. */
   allocationOrders: AllocationTarget[][];
-  /** Stated minimums settled on each spine date, and interest accrued on it. */
+  /** Stated minimums settled on each spine date (one per obligation month — FM-AUDIT-009), and interest accrued on it. */
   minimumsByDate: Map<string, number>;
   interestByDate: Map<string, number>;
 }
@@ -871,6 +903,20 @@ export function settleMovements(
     openingSinceSpine: Math.max(0, round2(l.balance)), extraSinceSpine: 0 }));
   const spineDates = [...new Set(spine.map((p) => p.date))].sort();
   const spineSet = new Set(spineDates);
+  // ⚠️ FM-AUDIT-009 — A STATED MINIMUM IS A MONTHLY OBLIGATION, NOT A SPINE EVENT.
+  // Each calendar month owes ONE minimum, due at its month-end: the obligation
+  // periods are the month-ends strictly after asOf (a month-end that IS asOf is
+  // already in the observed balance) up to the last spine date. A minimum is paid
+  // on the first spine date on or after its due date — at the month-end itself on
+  // the monthly grid a liability forces. It used to be paid on EVERY spine date,
+  // so a share rule dated the 15th (which adds the 15th to the spine) or a
+  // mid-month horizon charged a second minimum inside one month. Identity tests
+  // could not see it: a minimum is a transfer from cash to debt at 0%.
+  const obligationFrom = asOfISO ?? (spineDates[0] ? addDaysISO(spineDates[0], -1) : undefined);
+  const lastSpine = spineDates[spineDates.length - 1];
+  const obligationDue = obligationFrom && lastSpine
+    ? monthEndsBetween(obligationFrom, lastSpine).filter(isMonthEndISO) : [];
+  let nextObligation = 0;
   // Settlement dates: every spine date, plus any date a movement falls on.
   const dates = [...new Set([...spineDates, ...planned.map((m) => m.date)])].sort();
   let prevSettle = asOfISO ?? spineDates[0] ?? dates[0];
@@ -905,6 +951,13 @@ export function settleMovements(
     if (states.length > 0 && spineSet.has(date)) {
       const elapsed = days(prevSettle, date);
       let interestHere = 0, minimumsHere = 0;
+      // Obligation periods whose due date has arrived by this spine date — one on
+      // a month-end, none on a mid-month date, and (should a grid ever skip a
+      // month-end) every overdue period exactly once, never zero and never twice.
+      let periodsDue = 0;
+      while (nextObligation < obligationDue.length && obligationDue[nextObligation] <= date) {
+        periodsDue++; nextObligation++;
+      }
       for (const st of states) {
         const cp: LiabilityCheckpoint = { id: st.line.id, opening: st.openingSinceSpine, interest: 0,
           minimumPaid: 0, extraPaid: st.extraSinceSpine, closing: st.balance };
@@ -914,7 +967,7 @@ export function settleMovements(
           st.balance = round2(st.balance + interest);
           cp.interest = interest; cp.closing = st.balance; interestHere += interest;
         }
-        if (st.line.minimumPayment !== null && st.balance > 0) {
+        for (let k = 0; k < periodsDue && st.line.minimumPayment !== null && st.balance > 0; k++) {
           minimumsHere += pay(st, st.line.minimumPayment, cp, false);
         }
         cps.set(st.line.id, cp);

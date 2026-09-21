@@ -370,8 +370,14 @@ console.log('\nJ/K. the threshold becomes the EXISTING liquid floor — no ledge
   check('a non-positive month count is refused', 'unavailable' in resolveMonthsOfExpensesFloor({ monthsOfExpenses: 0, stated: 5000 }));
   // K — composition with L1 needs no code: the resolved literal is an ordinary `liquidFloor`.
   const ledger = readFileSync('lib/ai/conversation/scenario-ledger.ts', 'utf8');
-  check('the ledger has no notion of months of expenses — the floor it settles is the literal it always took',
-    !/MonthsOfExpenses|monthsOfExpenses/.test(ledger));
+  // FM-AUDIT-011 — the movement now CARRIES its derivation binding
+  // (`floorMonthsOfExpenses`) so a run at another spending level can re-resolve
+  // it; the ledger's SETTLEMENT still reads only the dollar literal.
+  const settle = ledger.slice(ledger.indexOf('export function settleMovements'), ledger.indexOf('export function runScenarioLedger'));
+  check('the ledger settles only the literal — settlement never reads months of expenses',
+    settle.length > 1000 && !/MonthsOfExpenses|monthsOfExpenses/.test(settle));
+  check('…and expansion passes the binding through untouched (the one non-type reference)',
+    ledger.includes('...(bound !== undefined ? { floorMonthsOfExpenses: bound } : {})'));
   const tools = readFileSync('lib/ai/conversation/tools.ts', 'utf8');
   check('the scenario preparer resolves the floor through the measures authority and passes `target` through untouched',
     /resolveMonthsOfExpensesFloor\(/.test(tools) && /c = \{ \.\.\.rest, liquidFloor: floor\.liquidFloor/.test(tools));

@@ -2106,6 +2106,19 @@ const investmentScenario: ToolDefinition = {
 const DAYS_PER_MONTH = 365 / 12;
 
 /** What a caller may vary without restating the whole scenario. */
+/**
+ * A ledger as the scenario runner produced it, with the floor derivations THIS
+ * run actually used (FM-AUDIT-011): at the base spending level they are the
+ * setup's; at a transformed one (a goal-seek spending cut) they are re-resolved,
+ * and every echo — the clause roster, the floor rule — reads these.
+ */
+type ScenarioRun = LedgerResult & { floorDerivations: FloorDerivation[] };
+
+/** The floor derivations a ledger ran with (the setup's, for a plain LedgerResult). */
+function floorDerivationsOf(setup: ScenarioSetup, ledger: LedgerResult | ScenarioRun): FloorDerivation[] {
+  return (ledger as Partial<ScenarioRun>).floorDerivations ?? setup.floorDerivations;
+}
+
 interface ScenarioOverrides {
   returns?:            ReturnPeriod[];
   extraContributions?: PlannedMovement[];
@@ -2145,7 +2158,7 @@ interface ScenarioSetup {
   staged?: { applied: (Attribution & { value: unknown })[]; supersededByCall: { id: string; key: string }[] };
   /** The arguments this run executed — the call's, with any staged clauses merged in. */
   argumentsRun: Record<string, unknown>;
-  run: (o?: ScenarioOverrides) => LedgerResult;
+  run: (o?: ScenarioOverrides) => ScenarioRun;
 }
 
 /**
@@ -2445,7 +2458,9 @@ async function prepareScenario(
       floorDerivations.push(floor);
       const { liquidFloorMonthsOfExpenses: _months, ...rest } = raw;
       void _months;
-      c = { ...rest, liquidFloor: floor.liquidFloor };
+      // FM-AUDIT-011 — the literal travels WITH its dependency, so a run at another
+      // spending level re-resolves it instead of keeping this one.
+      c = { ...rest, liquidFloor: floor.liquidFloor, floorMonthsOfExpenses: floor.derivedFrom.monthsOfExpenses };
     }
     const label = name;
     // How much: a dollar amount, or a share of the balance. The ledger refuses
@@ -2615,9 +2630,20 @@ async function prepareScenario(
     ...(endpoint.incomeChanges ? { incomeChanges: endpoint.incomeChanges } : {}),
     ...(staged ? { staged } : {}),
     argumentsRun: a,
-    run: (o: ScenarioOverrides = {}) => {
+    run: (o: ScenarioOverrides = {}): ScenarioRun => {
+      // ⚠️ FM-AUDIT-011 — A DERIVED VALUE RECOMPUTES WHEN ITS DEPENDENCY CHANGES.
+      // A floor stated as "N months of expenses" was resolved above from the BASE
+      // spending level. A run at a different level (a goal-seek spending cut; S1's
+      // spending transforms next) re-resolves every bound floor through the SAME
+      // canonical resolver at the level THIS run spends — so "cut $X" never holds
+      // six months of the uncut figure in cash. An absolute dollar floor has no
+      // binding and is never touched.
+      const rebound = rebindDerivedFloors(expanded.movements, o.monthlySpending, monthlySpending, floorDerivations);
+      if ('unavailable' in rebound) {
+        throw new Error(`a derived floor could not be re-resolved at ${o.monthlySpending}/month: ${rebound.unavailable}`);
+      }
       const useContribs = o.extraContributions
-        ? [...expanded.movements, ...o.extraContributions] : expanded.movements;
+        ? [...rebound.movements, ...o.extraContributions] : rebound.movements;
       // ⚠️ SHARE-BASED CONTRIBUTIONS NEED THE PROJECTION ON THEIR OWN DATE. "Half
       // my liquidity every June" falls nowhere near a year end, and half of a
       // balance the ledger cannot see is not something to guess at. Those dates
@@ -2638,14 +2664,65 @@ async function prepareScenario(
           .flatMap((m) => (m.baseDate ? [m.baseDate, m.date] : [m.date])),
         ...(liabilities.some((l) => l.balance > 0) ? monthEndsBetween(asOf, toISO) : []),
       ].sort();
-      return runScenarioLedger({
-        opening,
-        spine: spineFor(shareDates, o.monthlySpending),
-        contributions: useContribs,
-        outflows,
-        returns: o.returns ?? returns,
-      });
+      return {
+        ...runScenarioLedger({
+          opening,
+          spine: spineFor(shareDates, o.monthlySpending),
+          contributions: useContribs,
+          outflows,
+          returns: o.returns ?? returns,
+        }),
+        floorDerivations: rebound.derivations,
+      };
     },
+  };
+}
+
+/**
+ * FM-AUDIT-011 — re-resolve every DERIVED floor (a movement carrying
+ * `floorMonthsOfExpenses`) at the spending level a run uses. At the base level
+ * (no override, or the same figure) nothing changes. Otherwise each bound floor
+ * is resolved again through `resolveMonthsOfExpensesFloor` with the transformed
+ * level on the SAME rung the base came from (stated or observed), and the
+ * derivation says so. Pure; the input movements are never mutated.
+ */
+export function rebindDerivedFloors(
+  movements: readonly PlannedMovement[],
+  runMonthlySpending: number | undefined,
+  base: { amount: number | null; source: string },
+  baseDerivations: FloorDerivation[],
+): { movements: PlannedMovement[]; derivations: FloorDerivation[] } | { unavailable: string } {
+  if (runMonthlySpending === undefined || runMonthlySpending === base.amount) {
+    return { movements: [...movements], derivations: baseDerivations };
+  }
+  const byMonths = new Map<number, FloorDerivation>();
+  for (const n of new Set(movements.map((m) => m.floorMonthsOfExpenses).filter((x): x is number => x !== undefined))) {
+    if (runMonthlySpending <= 0) {
+      // N months of NOTHING is a zero floor — arithmetic, not a baseline (the
+      // canonical resolver refuses a non-positive baseline, which is right for a
+      // baseline and wrong here: a solve's bracket reaches "cut everything").
+      const was = baseDerivations.find((b) => b.derivedFrom.monthsOfExpenses === n);
+      if (!was) return { unavailable: `no base derivation for ${n} months of expenses` };
+      byMonths.set(n, { liquidFloor: 0, derivedFrom: { ...was.derivedFrom, rule: `${n} × 0`,
+        baseline: { ...was.derivedFrom.baseline, amount: 0,
+          note: 'this run spends nothing, so N months of expenses is zero' } } });
+      continue;
+    }
+    const d = resolveMonthsOfExpensesFloor({
+      monthsOfExpenses: n,
+      stated: base.source === 'USER_STATED' ? runMonthlySpending : null,
+      observedMonthly: base.source === 'USER_STATED' ? null : runMonthlySpending,
+    });
+    if ('unavailable' in d) return d;
+    byMonths.set(n, { ...d, derivedFrom: { ...d.derivedFrom, baseline: { ...d.derivedFrom.baseline,
+      note: `${d.derivedFrom.baseline.note} — re-resolved at the ${round2(runMonthlySpending)}/month this run `
+        + `spends (the scenario's ${base.source === 'USER_STATED' ? 'stated' : 'observed'} level after its transformation)` } } });
+  }
+  if (byMonths.size === 0) return { movements: [...movements], derivations: baseDerivations };
+  return {
+    movements: movements.map((m) => (m.floorMonthsOfExpenses === undefined ? m
+      : { ...m, liquidFloor: byMonths.get(m.floorMonthsOfExpenses)!.liquidFloor })),
+    derivations: [...byMonths.values()],
   };
 }
 
@@ -2802,7 +2879,7 @@ function scenarioAssumptions(
     // reported here as `cashFloor.ran: false`, with the lowest cash the scenario
     // reached, in the same turn the model is about to narrate it.
     clauses: clausesInForce(ledger,
-      setup.floorDerivations.map((d) => ({ liquidFloor: d.liquidFloor, derivedFrom: d.derivedFrom })),
+      floorDerivationsOf(setup, ledger).map((d) => ({ liquidFloor: d.liquidFloor, derivedFrom: d.derivedFrom })),
       // I1 — the SPINE's own record, not `a.incomeChanges`. See `clausesInForce`.
       setup.incomeChanges?.executions ?? []),
     returns: returns.length === 0
@@ -2825,8 +2902,8 @@ function scenarioAssumptions(
       // scenario state carrying only the amounts would inherit an accident of
       // one horizon. `settled` above stays the evidence; this is the assumption.
       ...(surplusRule(ledger) ? { surplusRule: surplusRule(ledger) } : {}),
-      ...(floorRule(ledger, setup.floorDerivations)
-        ? { floorRule: floorRule(ledger, setup.floorDerivations) } : {}),
+      ...(floorRule(ledger, floorDerivationsOf(setup, ledger))
+        ? { floorRule: floorRule(ledger, floorDerivationsOf(setup, ledger)) } : {}),
       ...(kind('CONTRIBUTION').length === 0
         ? { note: 'No contributions were in force. Do not describe this result as including '
             + 'any.' } : {}),

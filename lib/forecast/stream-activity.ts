@@ -402,7 +402,22 @@ export function expectedOccurrencesBetween(
 ): string[] {
   if (!activity.mayGenerateExpectedOccurrences) return [];
   if (!isCadence(cadence)) return [];
-  return occurrencesBetween(cadence, fromISO, toISO);
+  // ⚠️ FM-AUDIT-008 — AN OCCURRENCE THE LEDGER ALREADY SETTLED IS NOT FUTURE CASH.
+  // `lastSatisfiedOccurrenceISO` is the schedule slot the newest observed
+  // settlement paid. That money is already in today's balance, so the slot — and
+  // every slot before it — must not be generated again. Without this, a paycheque
+  // that landed TODAY (slot = asOf) or EARLY (paid the 24th for the 25th, asOf on
+  // the 24th) was both in the opening balance and projected as income on the
+  // projection's first day: one extra paycheque in every projection, crossing,
+  // goal seek and floor sweep run on a payday.
+  //
+  // What stays deliberately OUT: an unsatisfied slot dated before `fromISO` (a
+  // late payment still inside the settlement tolerance). Cash is never claimed
+  // before it is either observed or scheduled forward; the next scheduled slot is
+  // the first expected one, and the late deposit appears as observed cash when it
+  // settles.
+  const settled = activity.lastSatisfiedOccurrenceISO;
+  return occurrencesBetween(cadence, fromISO, toISO).filter((d) => settled === null || d > settled);
 }
 
 /** A compact statement of activity. Not wired into chat retrieval. */
