@@ -28,7 +28,7 @@ import {
   type RuntimeState,
 } from './runtime-state';
 import { continuityMessage, injectContinuity, CONTINUITY_MARKER } from './continuity';
-import { emptyPlan, stagePlan } from './pending-plan';
+import { emptyPlan, stagePlan, IDENTITY, MAX_PENDING_BYTES, MAX_PENDING_CLAUSES, type PendingPlan } from './pending-plan';
 import { turnEvidence } from './memory-model';
 import type { ActiveScenario } from './active-scenario';
 
@@ -147,6 +147,57 @@ async function main(): Promise<void> {
   const route = (await import('node:fs')).readFileSync('app/api/ai/chat/route.ts', 'utf8');
   check('the route tells the client ONLY on a fresh loss, and carries the loss into the next turn',
     /seal\.carried === 'LOST' && seal\.fresh && seal\.loss/.test(route) && /continuity: carried\?\.continuity \?\? null/.test(route));
+
+  // ── 8. S1-0 — the staged-plan budget is a measurement ────────────────────
+  console.log('8. the staged-plan byte cap, measured against the real seal');
+  const REAL_IDS = { userId: 'cmrrm846r000j7znwsl67gt1a', spaceId: 'cmrrm846r000j7znwsl67gt1g', tail: 'a'.repeat(32) };
+  const sealReal = (s: RuntimeState) => sealRuntimeStateWithReport(s, REAL_IDS);
+  const clause = (n: number, key: string, value: unknown, identity: string) => ({ id: `p${n}`, key, identity, value, stagedAt: n });
+  const planOf = (cs: ReturnType<typeof clause>[]): PendingPlan => ({ v: 1, clauses: cs, next: cs.length + 1 });
+  const bytes = (p: PendingPlan) => JSON.stringify(p.clauses).length;
+  // The canonical S1 conversation, as staging holds it: "cut Dining 20% from January",
+  // "my raise is 15%", "keep nine months of expenses", "pay the highest APR first and
+  // invest the rest" — the last merges into the floor rule (one contribution clause).
+  const canonical = planOf([
+    clause(1, 'spendingChanges', { category: 'Dining', op: 'SCALE', from: '2027-01-01', multiplier: 0.8 }, 'RATE|Dining|2027-01-01'),
+    clause(2, 'incomeChanges', { op: 'SCALE', from: '2027-01-01', multiplier: 1.15 }, 'RATE|*|2027-01-01'),
+    clause(3, 'contributions', { liquidFloorMonthsOfExpenses: 9, fractionOfExcess: 1, target: ['highest_apr', 'investments'] }, 'LIQUID_FLOOR'),
+  ]);
+  check(`the cap is ${MAX_PENDING_BYTES} bytes and the clause cap stays ${MAX_PENDING_CLAUSES}`, MAX_PENDING_BYTES === 1_600 && MAX_PENDING_CLAUSES === 8);
+  check(`the canonical S1 plan fits the cap with room for the rest of a conversation (${bytes(canonical)} bytes)`,
+    bytes(canonical) <= MAX_PENDING_BYTES / 2, `${bytes(canonical)}`);
+  // The largest REALISTIC clause: an S1 rule carrying a category, both dates and a multiplier.
+  const largest = (n: number) => clause(n, 'spendingChanges', { category: 'Subscriptions', op: 'SCALE',
+    from: `2027-0${(n % 9) + 1}-15`, to: `2027-1${n % 3}-28`, multiplier: 0.85 }, `RATE|Subscriptions|2027-0${(n % 9) + 1}-15`);
+  const eightLargest = planOf(Array.from({ length: MAX_PENDING_CLAUSES }, (_, i) => largest(i + 1)));
+  check(`eight of the largest realistic clauses fit the byte cap — the CLAUSE cap is what binds (${bytes(eightLargest)} bytes)`,
+    bytes(eightLargest) <= MAX_PENDING_BYTES, `${bytes(eightLargest)}`);
+  // A plan AT the cap, alone — which is how a plan rides: staging closes once a scenario runs.
+  const atCap = planOf([clause(1, 'outflows', { onDate: '2027-01-01', amount: 1, label: 'x' }, 'x')]);
+  // The identity reads the label bounded to 40 characters, so it is fixed first and
+  // the label then pads the plan to exactly the cap.
+  (atCap.clauses[0].value as { label: string }).label = 'x'.repeat(100);
+  atCap.clauses[0].identity = IDENTITY.outflows(atCap.clauses[0].value)!;
+  (atCap.clauses[0].value as { label: string }).label = 'x'.repeat(100 + MAX_PENDING_BYTES - bytes(atCap));
+  const alone = sealReal({ scenario: null, pending: atCap });
+  check(`a plan AT the cap (${bytes(atCap)} bytes) seals FULL on its own with ≥30% of the ceiling to spare (${alone.sealed?.length})`,
+    bytes(atCap) === MAX_PENDING_BYTES && alone.carried === 'FULL' && (alone.sealed?.length ?? Infinity) <= MAX_SEALED_CHARS * 0.7,
+    `${alone.carried} ${alone.sealed?.length}`);
+  // Beside an executed scenario (clauses a run could not confirm are kept): the
+  // canonical plan fits beside a large envelope; a plan at the cap beside the
+  // largest envelope that fits may not — and then it is REPORTED, never dropped.
+  const bigEnvelope = scenario(largestFitting - 1_300);
+  const besideCanonical = sealReal({ scenario: bigEnvelope, pending: canonical });
+  check(`the canonical plan fits beside a ${JSON.stringify(bigEnvelope).length}-byte executed scenario`, besideCanonical.carried === 'FULL',
+    `${besideCanonical.carried} ${besideCanonical.sealed?.length}`);
+  for (const env of [scenario(10), bigEnvelope, scenario(largestFitting)]) {
+    const r = sealReal({ scenario: env, pending: atCap });
+    const opened = openRuntimeState(r.sealed, REAL_IDS);
+    check(`a plan at the cap beside a ${JSON.stringify(env).length}-byte scenario is carried whole OR named as lost — never silent`,
+      (r.carried === 'FULL' && opened?.pending?.clauses.length === 1)
+        || (r.carried === 'LOST' && opened?.continuity?.droppedPendingClauses === 1 && opened?.continuity?.droppedScenario === true),
+      `${r.carried} ${r.sealed?.length}`);
+  }
 
   if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log('\nall runtime-state capacity checks passed');

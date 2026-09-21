@@ -51,7 +51,8 @@ import {
   type ProjectedCash, type ProjectedInterval, type ProjectCashInput, type ProjectionSpending,
 } from '@/lib/forecast/projection';
 import {
-  deriveObservedSpendingRate, type ObservedSpendingRate,
+  deriveObservedSpendingRate, withoutModelledInterest,
+  type ModelledInterestExclusion, type ObservedSpendingRate,
 } from '@/lib/forecast/observed-spending';
 import { reliableMonths } from '@/lib/ai/intelligence/annotations/metrics';
 import { clampEconomicSpend } from '@/lib/transactions/cash-flow';
@@ -128,6 +129,13 @@ export interface ForecastAssemblyInput {
    * would be reported everywhere and move nothing.
    */
   incomeChanges?: readonly IncomeChangeRule[];
+  /**
+   * S1-N1 — liabilities whose FUTURE interest the caller's ledger accrues itself
+   * (a known rate). Their historical interest charges are left out of the observed
+   * spending rate so the interest is counted once. Only the scenario ledger passes
+   * this; a plain projection has no liability model and keeps every cost flow.
+   */
+  interestModelledOn?: readonly string[];
 }
 
 export interface AssembledForecast {
@@ -168,6 +176,11 @@ export interface AssembledForecast {
    * absence, and the one a reader needs.
    */
   incomeChanges?: IncomeChangeResult;
+  /**
+   * S1-N1 — interest left out of the observed rate because the caller's ledger
+   * accrues it, restricted to the months the rate averaged. Absent when nothing was.
+   */
+  modelledInterest?: ModelledInterestExclusion;
 }
 
 /**
@@ -465,6 +478,7 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   let projection: ProjectedCash | undefined;
   let observedSpending: ObservedSpendingRate | undefined;
   let projectionInput: ProjectCashInput | undefined;
+  let modelledInterest: ModelledInterestExclusion | undefined;
   if (!hasLicensedAnswer && projectionEnabled()) {
     // ⚠️ THE USER'S OWN RATE WINS, AND THE ENGINE ALREADY RESOLVED IT. When the
     // conversation supplied a spending level, `forecast.spending` carries it as
@@ -483,15 +497,22 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
     } else {
       const txn = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY]?.data as
         TransactionsSummaryData | undefined;
+      // S1-N1 — interest the caller's ledger accrues itself leaves the months
+      // BEFORE the clamp, by the authority in observed-spending; nothing else does.
+      const net = withoutModelledInterest(reliableMonths(txn ?? null), input.interestModelledOn ?? []);
       const rate = deriveObservedSpendingRate(
         // NET-BASELINE-1 — the projection spends at NET economic spending: the
         // month's charges less the refunds dated in it, floored at 0 (the canonical
         // clamp). A refund returns the money, so a rate built on gross charges
         // drains cash the user still has. Same months, same definition, as the
         // measured expense baseline — one "monthly spending" across both.
-        reliableMonths(txn ?? null).map((m) => ({
+        net.months.map((m) => ({
           month: m.month, expenseTotal: clampEconomicSpend(m.expenseTotal, m.refundTotal) })));
-      if (rate.assertable) { observedSpending = rate; spending = { kind: 'OBSERVED', rate }; }
+      if (rate.assertable) {
+        observedSpending = rate; spending = { kind: 'OBSERVED', rate };
+        const inWindow = net.excluded?.months.filter((x) => rate.months.includes(x.month)) ?? [];
+        if (net.excluded && inWindow.length > 0) modelledInterest = { ...net.excluded, months: inWindow };
+      }
     }
     projectionInput = {
       openingCash: 'refused' in forecast ? null : forecast.openingCash.amount,
@@ -508,6 +529,7 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
     unavailable: acc ? null : 'account balances could not be assembled for this Space',
     projection, observedSpending, projectionInput,
     ...(incomeChanges ? { incomeChanges } : {}),
+    ...(modelledInterest ? { modelledInterest } : {}),
   };
 }
 
@@ -582,4 +604,4 @@ function activeUndatedObligations(acc: AccountsSectionData | undefined): number 
 // started taking `UserStatement[]` — a caller cannot construct the input
 // without them, so omitting them forced the exact reach-past the guard forbids.
 export { PeriodBasis, AssumptionDimension, AssumptionOrigin, AssumptionStance, EventProvenance, FlowRole, ActivityState, ConclusionStatus, StatementMode };
-export type { CashForecast, ConclusionStatusKind, ForecastHorizon, UserStatement, ProjectedInterval };
+export type { CashForecast, ConclusionStatusKind, ForecastHorizon, UserStatement, ProjectedInterval, ModelledInterestExclusion };

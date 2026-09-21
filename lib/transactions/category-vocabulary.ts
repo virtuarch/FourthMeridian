@@ -57,10 +57,15 @@ export interface CategoryDefinition {
   observability: CategoryObservability;
   /** What the line actually contains — stated by every surface that measures it. */
   meaning: string;
+  /**
+   * S1 — set when a line is MEASURABLE but its future is determined by another
+   * model, so a spending change must not transform it. The value names that model.
+   */
+  governedBy?: string;
 }
 
-const spend = (observability: CategoryObservability, meaning: string): CategoryDefinition =>
-  ({ role: "SPENDING", observability, meaning });
+const spend = (observability: CategoryObservability, meaning: string, governedBy?: string): CategoryDefinition =>
+  ({ role: "SPENDING", observability, meaning, ...(governedBy ? { governedBy } : {}) });
 const structural = (meaning: string): CategoryDefinition =>
   ({ role: "NOT_SPENDING", observability: "SUPPORTED", meaning });
 
@@ -72,7 +77,8 @@ export const CATEGORY_VOCABULARY = {
   Travel:        spend("SUPPORTED", "Plaid TRAVEL plus curated travel / ride-hailing merchant rules"),
   Subscriptions: spend("DERIVED", "only merchants on the curated subscription allowlist; other recurring charges stay in their own spend bucket"),
   Fee:           spend("SUPPORTED", "bank and card fees (Plaid BANK_FEES); fee rebates and reversals reduce it"),
-  Interest:      spend("SUPPORTED", "interest charged on liabilities; interest reversals reduce it"),
+  Interest:      spend("SUPPORTED", "interest charged on liabilities; interest reversals reduce it",
+    "the debt it is charged on — future interest follows the balance and its rate, which a scenario's `liabilityAssumptions` and debt payments change"),
   Other:         spend("DERIVED", "the residual: every spend bucket without its own line — medical, transportation, entertainment, personal care, general services, home improvement, government — plus spending the vocabulary cannot place"),
   Groceries:     spend("UNSUPPORTED", "not separated by bank sync — Plaid files groceries under FOOD_AND_DRINK, i.e. Dining; only CSV imports or manual corrections carry this label"),
   Medical:       spend("UNSUPPORTED", "not produced by bank sync — medical spending is inside Other"),
@@ -118,6 +124,20 @@ export function isMeasurableSpendCategory(category: string): boolean {
 
 export const MEASURABLE_SPEND_CATEGORIES: readonly string[] =
   Object.keys(CATEGORY_VOCABULARY).filter(isMeasurableSpendCategory);
+
+/**
+ * S1 — whether a spending change may TRANSFORM this line: measurable, AND not a
+ * line whose future another model owns. Measurable is necessary, never sufficient:
+ * Interest is measured exactly and is still refused, because "cut my interest 50%"
+ * is a statement about a debt's balance and rate, and a spending rule applied to it
+ * would move money the liability ledger already accrues on its own.
+ */
+export function isTransformableSpendCategory(category: string): boolean {
+  return isMeasurableSpendCategory(category) && !categoryDefinition(category)!.governedBy;
+}
+
+export const TRANSFORMABLE_SPEND_CATEGORIES: readonly string[] =
+  Object.keys(CATEGORY_VOCABULARY).filter(isTransformableSpendCategory);
 
 export const UNSUPPORTED_SPEND_CATEGORIES: readonly string[] =
   Object.entries(CATEGORY_VOCABULARY).filter(([, d]) => d.role === "SPENDING" && d.observability === "UNSUPPORTED").map(([c]) => c);

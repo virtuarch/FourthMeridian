@@ -141,6 +141,77 @@ export function deriveObservedSpendingRate(
   };
 }
 
+// ── S1-N1 — interest the scenario ledger accrues itself ─────────────────────
+
+/** A month as the canonical breakdown holds it — only the fields this reads. */
+export interface BreakdownMonthForRate {
+  month: string;
+  /** GROSS cost-flow charges. */
+  expenseTotal: number;
+  refundTotal: number;
+  /** Interest charged this month, by the account it posted to (charges ⊆ expenseTotal). */
+  interestByAccount?: Record<string, { charges: number; credits: number }>;
+}
+
+/** What was left out of the spending rate, month by month, and why. */
+export interface ModelledInterestExclusion {
+  /** The liabilities whose historical interest was left out. */
+  accounts: string[];
+  /** Per month: interest charged on those accounts, net of reversals. Full precision. */
+  months: { month: string; excluded: number }[];
+  meaning: string;
+}
+
+/**
+ * The months with the interest of ledger-modelled liabilities taken out of GROSS
+ * and REFUNDS — before the canonical clamp, which the caller still applies.
+ *
+ * ⚠️ WHY (S1-N1). The spending rate averages every cost flow, and INTEREST is one:
+ * interest charged on a card's carried balance is in `expenseTotal`. A scenario
+ * whose ledger ALSO accrues interest on that card (L1: a known rate, ACT/365, on
+ * the balance carried into each month-end) would charge that interest twice — once
+ * as a repeat of history inside ordinary spending, once as the balance's own
+ * accrual. Only one of them is a model of the future.
+ *
+ * ⚠️ ONLY WHAT CAN BE ATTRIBUTED, ONLY TO WHAT IS MODELLED. A charge is taken out
+ * when it posted to an account in `modelledAccounts` — the liabilities the ledger
+ * accrues at a known rate. Interest with no account, or on a liability the ledger
+ * does not accrue (no rate known), is untouched and stays in the rate: nothing
+ * else models it, so removing it would make it vanish rather than count once.
+ *
+ * PURE. Months are returned in the input order with every other field intact.
+ */
+export function withoutModelledInterest<M extends BreakdownMonthForRate>(
+  months: readonly M[], modelledAccounts: readonly string[],
+): { months: M[]; excluded: ModelledInterestExclusion | null } {
+  const ids = new Set(modelledAccounts);
+  if (ids.size === 0) return { months: [...months], excluded: null };
+  const perMonth: { month: string; excluded: number }[] = [];
+  const touched = new Set<string>();
+  const out = months.map((m) => {
+    let charges = 0, credits = 0;
+    for (const [id, v] of Object.entries(m.interestByAccount ?? {})) {
+      if (!ids.has(id)) continue;
+      charges += v.charges; credits += v.credits;
+      touched.add(id);
+    }
+    if (charges === 0 && credits === 0) return m;
+    perMonth.push({ month: m.month, excluded: charges - credits });
+    return { ...m, expenseTotal: m.expenseTotal - charges, refundTotal: m.refundTotal - credits };
+  });
+  if (touched.size === 0) return { months: out, excluded: null };
+  return {
+    months: out,
+    excluded: {
+      accounts: [...touched].sort(),
+      months: perMonth,
+      meaning: 'Interest charged on these liabilities in the averaged months is NOT in the spending '
+        + 'rate, because this scenario\'s ledger accrues their future interest itself from each '
+        + 'balance and rate. Counted once, as the ledger\'s interest.',
+    },
+  };
+}
+
 // ⚠️ `describeObservedSpending` DELETED (V26-REASONING Slice 0). A prose
 // renderer with no caller but its own test. `deriveObservedSpendingRate` and its
 // completeness reasons are the authority and are unchanged.

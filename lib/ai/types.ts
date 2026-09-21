@@ -634,6 +634,14 @@ export interface MonthlyBreakdownEntry {
    *  selection (≤3 items, `totalCount` = every category this month). Convenience
    *  slice of `byCategory` — kept for compact summaries. */
   topCategories?:   BoundedSelection<{ category: string; total: number }>;
+  /**
+   * S1-N1 — interest CHARGED this month (flowType INTEREST, settled, inside the
+   * economic fold), by the account it posted to: `charges` ⊆ expenseTotal and
+   * `credits` ⊆ refundTotal. Read by the scenario spine to leave out of ordinary
+   * spending the interest of a liability whose FUTURE interest the scenario ledger
+   * accrues itself — counted once. Absent when the month has none attributable.
+   */
+  interestByAccount?: Record<string, { charges: number; credits: number }>;
 }
 
 /**

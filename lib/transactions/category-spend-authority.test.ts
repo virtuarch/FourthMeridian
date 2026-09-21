@@ -34,7 +34,7 @@ import {
 } from '@/lib/transactions/cash-flow';
 import {
   CATEGORY_VOCABULARY, MEASURABLE_SPEND_CATEGORIES, UNSUPPORTED_SPEND_CATEGORIES, resolveSpendCategory,
-  spendCategoryKey, categoryDefinition,
+  spendCategoryKey, categoryDefinition, isTransformableSpendCategory, TRANSFORMABLE_SPEND_CATEGORIES,
 } from '@/lib/transactions/category-vocabulary';
 import { mapPlaidCategory } from '@/lib/transactions/plaid-category';
 import { classifyFlow } from '@/lib/transactions/flow-classifier';
@@ -172,6 +172,18 @@ async function main(): Promise<void> {
   check('the unsupported set is exactly the categories nothing in bank sync writes',
     ['Groceries', 'Medical', 'Entertainment', 'Transport', 'PersonalCare', 'Services', 'Education'].every((c) => UNSUPPORTED_SPEND_CATEGORIES.includes(c))
       && UNSUPPORTED_SPEND_CATEGORIES.length === 7);
+
+  // S1-0 — measurable is necessary, never sufficient, for a spending change.
+  check('Interest is measurable but NOT transformable — its future belongs to the debt it is charged on',
+    MEASURABLE_SPEND_CATEGORIES.includes('Interest') && !isTransformableSpendCategory('Interest')
+      && /debt/.test(categoryDefinition('Interest')!.governedBy ?? ''));
+  check('the transformable set is exactly the measurable set less Interest',
+    JSON.stringify([...TRANSFORMABLE_SPEND_CATEGORIES].sort())
+      === JSON.stringify(['Dining', 'Fee', 'Other', 'Shopping', 'Subscriptions', 'Travel', 'Utilities']),
+    TRANSFORMABLE_SPEND_CATEGORIES.join(','));
+  check('nothing unsupported or structural is transformable',
+    [...UNSUPPORTED_SPEND_CATEGORIES, 'Income', 'Transfer', 'Payment', 'Buy', 'Sell', 'Dividend', 'Split']
+      .every((c) => !isTransformableSpendCategory(c)));
 
   // ── F. unsupported ≠ measured zero ───────────────────────────────────────
   console.log('F. measure_flows refuses what the ledger cannot identify');

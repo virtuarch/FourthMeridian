@@ -60,7 +60,7 @@ import {
 import {
   loadForecastIncomeStreams, type IncomeTransactionReader, type AccountTypeReader,
 } from '@/lib/ai/forecast/streams';
-import { assembleForecast, projectInterval } from '@/lib/ai/forecast/assemble';
+import { assembleForecast, projectInterval, type ModelledInterestExclusion } from '@/lib/ai/forecast/assemble';
 import { SCENARIO_INPUTS, NOT_AN_ASSUMPTION, scenarioAssumptionKeys } from './scenario-inputs';
 import {
   mergeIntoArgs, stagePlan, type Attribution, type PlanSlot,
@@ -1661,6 +1661,12 @@ async function buildCashSpine(
      * forgotten would answer a different question in the same conversation.
      */
     incomeChanges?: readonly IncomeChangeRule[];
+    /**
+     * S1-N1 — which liabilities' interest the caller's ledger accrues, decided from
+     * the SAME accounts payload this spine opens from. Only the scenario ledger
+     * passes it; `project_cash` has no liability model and keeps every cost flow.
+     */
+    interestModelledOn?: (accounts: AccountsSectionData) => string[];
   },
 ): Promise<CashSpine | { unavailable: string; asOf: string }> {
   const asOf = opts.asOf;
@@ -1736,6 +1742,9 @@ async function buildCashSpine(
     openingBasis = 'HISTORICAL_SNAPSHOT';
   }
 
+  const interestModelledOn = opts.interestModelledOn && accounts && !retrospective
+    ? opts.interestModelledOn(accounts) : [];
+
   const forecastCtx = {
     space: { name: '', reportingCurrency: 'USD' },
     domains: {
@@ -1754,6 +1763,7 @@ async function buildCashSpine(
           : statements,
         ...(opts.incomeChanges && opts.incomeChanges.length > 0
           ? { incomeChanges: opts.incomeChanges } : {}),
+        ...(interestModelledOn.length > 0 ? { interestModelledOn } : {}),
         horizon: { fromISO: asOf, toISO: end, origin: AssumptionOrigin.USER_REQUESTED,
           statedAs: `through ${end}` } as unknown as ForecastHorizon,
       }),
@@ -2190,6 +2200,8 @@ interface ScenarioSetup {
    * stated does not appear at all. Absent when none was stated.
    */
   incomeChanges?: IncomeChangeResult;
+  /** S1-N1 — historical interest the spending rate left out because the ledger accrues it. */
+  modelledInterest?: ModelledInterestExclusion;
   /**
    * Conditions staged earlier in this conversation that this run applied, and the
    * arguments as they actually ran. Absent when nothing was staged.
@@ -2306,6 +2318,67 @@ function toIncomeChangeRules(
   return rules;
 }
 
+/**
+ * The liabilities the scenario ledger moves: one line per full-visibility debt
+ * account, with any stated `liabilityAssumptions` applied. THE one definition —
+ * the ledger's lines and the spine's S1-N1 interest exclusion both read it, so a
+ * liability cannot be "modelled" for one and not the other.
+ */
+function liabilityLinesOf(
+  accounts: AccountsSectionData, stated: unknown,
+  onRefuse: (r: RefusedInput) => void = () => {},
+  declaredOk: (raw: Record<string, unknown>, name: string) => boolean = () => true,
+): LiabilityLine[] {
+  const liabilities: LiabilityLine[] = [];
+  const rows = Array.isArray((accounts as { accounts?: unknown }).accounts)
+    ? (accounts as { accounts: AccountSummaryItem[] }).accounts : [];
+  for (const r of rows) {
+    if (r.type !== 'debt' || r.visibilityLevel !== 'FULL') continue;
+    const reporting = r.reportingBalance;
+    const balance = typeof reporting === 'number' ? Math.max(0, reporting)
+      : typeof r.amountOwed === 'number' ? r.amountOwed : Math.max(0, r.balance);
+    const apr = typeof r.apr === 'number' ? r.apr : null;
+    const minimumPayment = typeof r.minimumPayment === 'number' ? r.minimumPayment : null;
+    liabilities.push({ id: r.id, label: r.name, balance: round2(balance), apr, minimumPayment,
+      subtype: (r as { debtSubtype?: string | null }).debtSubtype ?? null,
+      termsProvenance: { apr: apr === null ? 'UNKNOWN' : 'STATED',
+        minimumPayment: minimumPayment === null ? 'UNKNOWN' : 'STATED' } });
+  }
+  for (const la of (Array.isArray(stated) ? stated as Record<string, unknown>[] : [])) {
+    const id = String(la.liabilityId ?? la.id ?? '');
+    if (!declaredOk(la, `liability assumption for ${id || '(no id)'}`)) continue;
+    const line = liabilities.find((l) => l.id === id);
+    if (!line) {
+      onRefuse({ input: `liability assumption for ${id || '(no id)'}`,
+        reason: 'no liability with that id is in this position; use an id from get_financial_snapshot' });
+      continue;
+    }
+    if (la.apr !== undefined) {
+      const apr = Number(la.apr);
+      if (!Number.isFinite(apr) || apr < 0 || apr > 100) {
+        onRefuse({ input: `assumed APR for ${line.label}`, reason: 'an APR is a percentage between 0 and 100' });
+      } else { line.apr = apr; line.termsProvenance!.apr = 'USER_ASSUMED'; }
+    }
+    if (la.minimumPayment !== undefined) {
+      const min = Number(la.minimumPayment);
+      if (!Number.isFinite(min) || min < 0) {
+        onRefuse({ input: `assumed minimum for ${line.label}`, reason: 'a minimum payment is zero or more' });
+      } else { line.minimumPayment = min; line.termsProvenance!.minimumPayment = 'USER_ASSUMED'; }
+    }
+  }
+  return liabilities;
+}
+
+/**
+ * S1-N1 — the liabilities whose FUTURE interest the ledger accrues itself: every
+ * line with a known rate (the ledger accrues ACT/365 on each of them; a line with
+ * no rate accrues nothing and is reported as unmodelled). Their historical interest
+ * is left out of ordinary spending so it is counted once.
+ */
+export function interestModelledLiabilityIds(lines: readonly LiabilityLine[]): string[] {
+  return lines.filter((l) => l.apr !== null).map((l) => l.id);
+}
+
 async function prepareScenario(
   a: Record<string, unknown>, ctx: ToolContext, toISO: string,
   /** The calling tool: its `parameters` are the closed set of arguments this call may carry. */
@@ -2367,6 +2440,9 @@ async function prepareScenario(
       ? { assumedMonthlySpending: a.assumedMonthlySpending }
       : {}),
     ...(incomeChanges.length > 0 ? { incomeChanges } : {}),
+    // S1-N1 — the SAME liability lines the ledger is about to accrue on, so the
+    // interest it models is the interest the spending rate leaves out.
+    interestModelledOn: (acc) => interestModelledLiabilityIds(liabilityLinesOf(acc, a.liabilityAssumptions)),
   });
   if ('unavailable' in spine) return spine;
   const { asOf, runTo, accounts } = spine;
@@ -2606,43 +2682,8 @@ async function prepareScenario(
   // ⚠️ A STATED ASSUMPTION OVERRIDES A TERM FOR THIS SCENARIO ONLY. The account
   // is not touched; the line says the term was USER_ASSUMED; an id that is not
   // a liability the viewer can see is refused by name.
-  const liabilities: LiabilityLine[] = [];
-  const rows = Array.isArray((accounts as { accounts?: unknown }).accounts)
-    ? (accounts as { accounts: AccountSummaryItem[] }).accounts : [];
-  for (const r of rows) {
-    if (r.type !== 'debt' || r.visibilityLevel !== 'FULL') continue;
-    const reporting = r.reportingBalance;
-    const balance = typeof reporting === 'number' ? Math.max(0, reporting)
-      : typeof r.amountOwed === 'number' ? r.amountOwed : Math.max(0, r.balance);
-    const apr = typeof r.apr === 'number' ? r.apr : null;
-    const minimumPayment = typeof r.minimumPayment === 'number' ? r.minimumPayment : null;
-    liabilities.push({ id: r.id, label: r.name, balance: round2(balance), apr, minimumPayment,
-      subtype: (r as { debtSubtype?: string | null }).debtSubtype ?? null,
-      termsProvenance: { apr: apr === null ? 'UNKNOWN' : 'STATED',
-        minimumPayment: minimumPayment === null ? 'UNKNOWN' : 'STATED' } });
-  }
-  for (const la of (a.liabilityAssumptions as Record<string, unknown>[]) ?? []) {
-    const id = String(la.liabilityId ?? la.id ?? '');
-    if (!declared('liabilityAssumptions', `liability assumption for ${id || '(no id)'}`, ['id'])(la)) continue;
-    const line = liabilities.find((l) => l.id === id);
-    if (!line) {
-      rejected.push({ input: `liability assumption for ${id || '(no id)'}`,
-        reason: 'no liability with that id is in this position; use an id from get_financial_snapshot' });
-      continue;
-    }
-    if (la.apr !== undefined) {
-      const apr = Number(la.apr);
-      if (!Number.isFinite(apr) || apr < 0 || apr > 100) {
-        rejected.push({ input: `assumed APR for ${line.label}`, reason: 'an APR is a percentage between 0 and 100' });
-      } else { line.apr = apr; line.termsProvenance!.apr = 'USER_ASSUMED'; }
-    }
-    if (la.minimumPayment !== undefined) {
-      const min = Number(la.minimumPayment);
-      if (!Number.isFinite(min) || min < 0) {
-        rejected.push({ input: `assumed minimum for ${line.label}`, reason: 'a minimum payment is zero or more' });
-      } else { line.minimumPayment = min; line.termsProvenance!.minimumPayment = 'USER_ASSUMED'; }
-    }
-  }
+  const liabilities = liabilityLinesOf(accounts, a.liabilityAssumptions, (r) => rejected.push(r),
+    (la, name) => declared('liabilityAssumptions', name, ['id'])(la));
 
   const opening = { asOfISO: asOf, liquid: openingLiquid, investments: composition.combined,
     debt: accounts.totalLiabilities ?? 0, otherAssets, liabilities };
@@ -2671,6 +2712,7 @@ async function prepareScenario(
     asOf, toISO, plan, dates, accounts, returns, liabilities,
     contributions: expanded.movements, outflows, rejected, monthlySpending, floorDerivations,
     ...(endpoint.incomeChanges ? { incomeChanges: endpoint.incomeChanges } : {}),
+    ...(endpoint.modelledInterest ? { modelledInterest: endpoint.modelledInterest } : {}),
     ...(staged ? { staged } : {}),
     argumentsRun: a,
     run: (o: ScenarioOverrides = {}): ScenarioRun => {
@@ -2955,7 +2997,14 @@ function scenarioAssumptions(
       provenance: PROVENANCE.USER_ASSUMED },
     spending: { source: setup.monthlySpending.source, monthly: setup.monthlySpending.amount,
       ...(setup.monthlySpending.source === 'OBSERVED'
-        ? { note: 'from the same observed rate project_cash uses' } : {}) },
+        ? { note: setup.modelledInterest
+          ? 'from the same observed rate project_cash uses, LESS the interest below — so it can be lower than project_cash\'s'
+          : 'from the same observed rate project_cash uses' } : {}),
+      // S1-N1 — interest counted once: as the ledger's accrual, not as spending.
+      ...(setup.modelledInterest ? { interestLeftOut: {
+        liabilities: setup.modelledInterest.accounts,
+        byMonth: setup.modelledInterest.months.map((m) => ({ month: m.month, amount: round2(m.excluded) })),
+        meaning: setup.modelledInterest.meaning } } : {}) },
     ...(ledger.liabilities ? { liabilities: liabilityEcho(ledger) } : {}),
     // ⚠️ WHAT RAN BECAUSE IT WAS STAGED, SAID CLAUSE BY CLAUSE (planning
     // continuity). A condition the user stated in an earlier turn and this run

@@ -45,13 +45,28 @@ import { userStatedFigure, type GatedFigure, type TurnEvidence } from './memory-
 // ── Limits ───────────────────────────────────────────────────────────────────
 
 /**
- * ⚠️ BOUNDED BECAUSE IT SHARES A COOKIE WITH THE EXECUTED SCENARIO. Both ride in
- * one sealed runtime state; a seal over its ceiling is discarded WHOLE, taking the
- * scenario with it. The caps are enforced at staging, so the combination can never
- * reach the seal oversize.
+ * ⚠️ BOUNDED BECAUSE IT SHARES A COOKIE WITH THE EXECUTED SCENARIO — and the byte
+ * cap is now a MEASUREMENT, not the hex-era guess (S1-0).
+ *
+ * 600 was set when the seal spent two characters per byte and an oversize seal
+ * was discarded WHOLE. Neither is true any more (FM-AUDIT-018): the seal is
+ * base64url, and state that does not fit becomes an explicit continuity marker.
+ * Measured with the real serializer (`runtime-state-capacity.test.ts` §8 pins it):
+ *
+ *   · staging is refused once a scenario has run, so a plan AT THIS CAP normally
+ *     rides ALONE — and alone it seals to ~2,450 of the 3,900 characters (≥35%
+ *     headroom; a pending plan alone overflows only past ~2,690 bytes);
+ *   · eight of the LARGEST realistic clauses (S1 spending rules carrying a
+ *     category, both dates and a multiplier) measure ~1,590 bytes — so the clause
+ *     cap, not this one, is what binds a real conversation;
+ *   · the canonical S1 plan (Dining cut + raise + months-of-expenses floor with
+ *     its highest-APR → investments waterfall merged in) is ~480 bytes;
+ *   · the one case where a plan sits BESIDE an executed scenario — clauses a run
+ *     could not confirm, kept — can exceed the ceiling, and then the seal carries
+ *     the continuity marker naming both. Never a silent drop.
  */
 export const MAX_PENDING_CLAUSES = 8;
-export const MAX_PENDING_BYTES = 600;
+export const MAX_PENDING_BYTES = 1_600;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 

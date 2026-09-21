@@ -339,7 +339,12 @@ type MonthlyRow = Pick<TxnRow, 'date' | 'amount' | 'currency' | 'category' | 'fl
   // REVIEW-3 C — row identity, needed only when the caller supplies authority
   // verdicts (debt-payment membership / income class) keyed by id. Optional so
   // the KD-17 golden fixtures, which construct rows by hand, are unaffected.
-  & { id?: string };
+  & { id?: string }
+  // S1-N1 — the account a row posted to, read ONLY to attribute interest charged
+  // to the liability it was charged on (`interestByAccount`). Optional for the same
+  // reason `id` is; a row without it is interest nobody can attribute, and stays
+  // in the month's spending.
+  & { financialAccountId?: string | null };
 
 /**
  * L8-B — the canonical financial date of a row.
@@ -1428,6 +1433,9 @@ export function buildMonthlyBreakdown(
     // FM-AUDIT-004 — the month's rows as the canonical ledger reads them (the
     // rows that reach this month's economic fold), folded after the loop.
     ledgerRows:       CategoryLedgerRow[];
+    // S1-N1 — INTEREST flow rows that reached the economic fold, by the account
+    // they posted to: charges and credits apart, exactly as the fold split them.
+    interestByAccount: Map<string, { charges: number; credits: number }>;
   };
 
   const buckets = new Map<string, Bucket>();
@@ -1438,6 +1446,7 @@ export function buildMonthlyBreakdown(
       b = {
         eco: { income: 0, spendGross: 0, refunds: 0 }, debtPaymentTotal: 0,
         transferTotal: 0, transactionCount: 0, estimated: false, ledgerRows: [],
+        interestByAccount: new Map(),
       };
       buckets.set(key, b);
     }
@@ -1488,6 +1497,16 @@ export function buildMonthlyBreakdown(
         incomeClass: authority?.incomeClassOf && txn.id !== undefined ? authority.incomeClassOf(txn.id) : null,
       });
       b.ledgerRows.push({ id: txn.id, category: txn.category, flowType: txn.flowType, amount: amt });
+      // S1-N1 — the SAME side the fold just used, so Σ charges ⊆ expenseTotal and
+      // Σ credits ⊆ refundTotal by construction.
+      if (txn.flowType === 'INTEREST' && txn.financialAccountId) {
+        const side = economicSideOf(txn.flowType, amt);
+        if (side === 'SPEND' || side === 'CREDIT') {
+          const a = b.interestByAccount.get(txn.financialAccountId) ?? { charges: 0, credits: 0 };
+          if (side === 'SPEND') a.charges += Math.abs(amt); else a.credits += Math.abs(amt);
+          b.interestByAccount.set(txn.financialAccountId, a);
+        }
+      }
     }
   }
 
@@ -1540,6 +1559,11 @@ export function buildMonthlyBreakdown(
         ...(monthTruncated ? { truncated: true } : {}),
         byCategory,
         ...(topCategories.items.length > 0 ? { topCategories } : {}),
+        // Emitted only when there is some, so every payload without attributable
+        // interest is byte-identical to before.
+        ...(b.interestByAccount.size > 0 ? { interestByAccount: Object.fromEntries(
+          [...b.interestByAccount].sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)).map(([id, v]) =>
+            [id, { charges: Math.round(v.charges * 100) / 100, credits: Math.round(v.credits * 100) / 100 }])) } : {}),
       };
     });
 }
