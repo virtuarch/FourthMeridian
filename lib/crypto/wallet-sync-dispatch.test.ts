@@ -366,10 +366,14 @@ check("…and its only account UPDATE touches lifecycle, never a balance",
 // work a successful one does.
 {
   const b = body(syncRoute);
-  check("snapshot + history regen run ONLY inside the result.ok branch",
-    b.indexOf("if (result.ok)") > 0
-      && b.indexOf("if (result.ok)") < b.indexOf("regenerateSnapshotsForAccounts(")
-      && b.indexOf("if (result.ok)") < b.indexOf("regenerateWealthHistoryForAccounts("));
+  // 2026-09-21 — the gate is `outcomeRevalued(result)`, strictly narrower than
+  // `result.ok` (false whenever ok is false; also false for an unpriced BTC run),
+  // executed in btc-partial-sync.test.ts.
+  const gate = "if (outcomeRevalued(result))";
+  check("snapshot + history regen run ONLY inside the revalued (⊂ ok) branch",
+    b.indexOf(gate) > 0
+      && b.indexOf(gate) < b.indexOf("regenerateSnapshotsForAccounts(")
+      && b.indexOf(gate) < b.indexOf("regenerateWealthHistoryForAccounts("));
 }
 check("the dispatcher surfaces the adapter's own stage/reason rather than inventing one",
   /stage:\s*result\.stage/.test(dispatch) && /reason:\s*result\.reason/.test(dispatch));

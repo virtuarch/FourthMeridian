@@ -41,7 +41,7 @@
  * refusal. This module writes no clock and no financial row of its own.
  */
 
-import { SYNCABLE_CHAINS, syncWalletByChain, walletRefreshTrigger, type WalletSyncOutcome } from './wallet-sync-dispatch';
+import { SYNCABLE_CHAINS, syncWalletByChain, walletRefreshTrigger, outcomeRevalued, type WalletSyncOutcome } from './wallet-sync-dispatch';
 import { isDueForScheduledRefresh, type RefreshPolicy } from '@/lib/platform/refresh-policy.core';
 
 /**
@@ -239,7 +239,8 @@ export async function refreshScheduledWallets(options: {
     result.slowestWalletMs = Math.max(result.slowestWalletMs, ms);
     if (outcome.ok) {
       tally.succeeded++; result.succeeded++;
-      result.syncedAccountIds.push(w.accountId);
+      // Only runs with new valuation evidence feed snapshot regeneration.
+      if (outcomeRevalued(outcome)) result.syncedAccountIds.push(w.accountId);
       const impacted = outcome.historyRefresh?.impactedFromISO ?? null;
       if (impacted && (!result.historyImpactedFromISO || impacted < result.historyImpactedFromISO)) result.historyImpactedFromISO = impacted;
     } else {

@@ -37,7 +37,7 @@ import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import { limitByUser } from "@/lib/rate-limit";
 import {
-  syncWalletByChain, isSyncableChain, chainSupportsHistory, SYNCABLE_CHAINS,
+  syncWalletByChain, isSyncableChain, chainSupportsHistory, SYNCABLE_CHAINS, outcomeRevalued,
 } from "@/lib/crypto/wallet-sync-dispatch";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { regenerateWealthHistoryForAccounts } from "@/lib/snapshots/regenerate-history";
@@ -87,7 +87,9 @@ export async function POST(
   // the refresh ledger, so the run, its duration and its verdict are inspectable.
   const result = await syncWalletByChain(id, account.walletChain, { trigger: "MANUAL" });
 
-  if (result.ok) {
+  // Regenerate only from NEW valuation evidence: an ok run with no canonical
+  // close refreshed the quantity but not the value (see outcomeRevalued).
+  if (outcomeRevalued(result)) {
     // Best-effort/non-fatal — same pattern as every other account-mutation path.
     try {
       await regenerateSnapshotsForAccounts([id]);

@@ -252,7 +252,8 @@ const DETAIL    = code(read("app", "api", "spaces", "[id]", "accounts", "detail"
   // regenerate-history reads to decide a wallet ever held anything material, and
   // the pair is the last-resort fallback for a wallet with no spine evidence.
   check("btc-sync still WRITES both legacy columns (write compat ≠ read authority)",
-    /nativeBalance, balance: balanceUsd/.test(BTCSYNC));
+    // (2026-09-21: the USD pair is written only by a PRICED run; the quantity always.)
+    /nativeBalance,[\s\S]{0,300}balance:\s*balanceUsd/.test(BTCSYNC));
   // The current path may not be sourced from the replay, in either direction.
   check("btc-sync derives nothing current from the historical reconstruction",
     !/resolvePositionAsOf|regenerateSpace|btc-history-sync|replay/i.test(BTCSYNC));

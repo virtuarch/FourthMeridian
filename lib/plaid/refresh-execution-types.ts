@@ -135,7 +135,11 @@ export type RefreshEndpoint =
   // ("balance", "price", "capture", …) are its own vocabulary and land on the
   // execution's `failureStage`; the history refresh that follows a successful
   // read is the existing DERIVED HISTORY_BACKFILL stage.
-  | "WALLET_SYNC";
+  | "WALLET_SYNC"
+  // BTC — the canonical archived close applied to the quantity WALLET_SYNC just
+  // observed. DERIVED (an archive read, not a provider call): a failure makes the
+  // run PARTIAL — quantity fresh, value not — and never FAILED on its own.
+  | "VALUATION";
 
 export type RefreshStageKind = "PROVIDER" | "DERIVED";
 

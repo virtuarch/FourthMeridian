@@ -135,8 +135,11 @@ async function main(): Promise<void> {
   if (savedTimeout === undefined) delete process.env.BTC_SYNC_TIMEOUT_MS; else process.env.BTC_SYNC_TIMEOUT_MS = savedTimeout;
   check("a hanging provider fails as a staged BtcSyncError, once, within its budget",
     hangErr instanceof BtcSyncError && hangErr.stage === "balance" && hangMs < 2000, `took ${hangMs} ms`);
+  // 2026-09-21 — the single-address BALANCE authority is its own Esplora host
+  // (blockstream.info), no longer the history explorer's — so the host named
+  // here is the balance authority's.
   check("…whose reason names the host and the timeout budget, not Node's abort text",
-    hangErr instanceof Error && /^mempool\.space did not respond within 25 ms$/.test(hangErr.message),
+    hangErr instanceof Error && /^blockstream\.info did not respond within 25 ms$/.test(hangErr.message),
     hangErr instanceof Error ? hangErr.message : String(hangErr));
 
   // ── PART B — source-scan invariants on the DB-touching modules ──────────────

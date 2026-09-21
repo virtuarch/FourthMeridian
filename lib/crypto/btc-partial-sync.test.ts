@@ -47,6 +47,12 @@ const read = (...seg: string[]) => readFileSync(join(process.cwd(), ...seg), "ut
 
 const ADDRESS = "bc1qunitstubaddress";
 const ACCOUNT = "acc-btc-unit";
+// BIP32 test vector 1 master xpub — public test material, not a wallet.
+const XPUB = "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8";
+const XPUB_ADDRS = ["bc1qxpubchildzero", "bc1qxpubchildone"];
+
+/** The wallet shape the fake store serves. */
+const shape = { walletAddress: ADDRESS, identities: [ADDRESS] };
 const SATS = 100_000_000;
 
 interface TxRow { externalTransactionId: string; amount: number; currency: string; deletedAt: Date | null; settlementState: string }
@@ -61,7 +67,7 @@ interface Store {
 
 function install(db: Record<string, unknown>, store: Store): void {
   db.financialAccount = {
-    findUnique: async () => ({ id: ACCOUNT, ownerUserId: null, walletChain: "BTC", walletAddress: ADDRESS, deletedAt: null }),
+    findUnique: async () => ({ id: ACCOUNT, ownerUserId: null, walletChain: "BTC", walletAddress: shape.walletAddress, deletedAt: null }),
     update: async ({ data }: { data: Record<string, unknown> }) => {
       store.accountUpdates.push(data);
       Object.assign(store.account, data);
@@ -69,7 +75,7 @@ function install(db: Record<string, unknown>, store: Store): void {
     },
   };
   db.accountConnection = { findFirst: async () => null };
-  db.providerAccountIdentity = { findMany: async () => [{ externalAccountId: ADDRESS }] };
+  db.providerAccountIdentity = { findMany: async () => shape.identities.map((externalAccountId) => ({ externalAccountId })) };
   db.transaction = {
     findMany: async ({ where }: { where: Record<string, unknown> }) => {
       const ids = (where.externalTransactionId as { in?: string[] } | undefined)?.in;
@@ -217,18 +223,26 @@ async function main() {
     check("8 balance failure: previous quantity stands untouched", store.account.nativeBalance === 0.1);
   }
 
-  // ── 9. price authority failure → no valuation claimed ─────────────────────
+  // ── CASE 5. balance ok, valuation authority fails → quantity fresh, value not
   {
     const store = freshStore(PRIOR);
     install(db as unknown as Record<string, unknown>, store);
     const r = await syncBtcWallet(ACCOUNT, {
-      balanceFetcher: async () => 0.1 * SATS,
-      txFetcher: async () => [],
+      balanceFetcher: async () => 0.15 * SATS,
+      txFetcher: async () => [receive("txA", 0.1 * SATS), receive("txB", 0.05 * SATS)],
       priceFetcher: async () => { throw new Error("no canonical BTC close in the price archive on or before 2026-09-21"); },
     });
-    check("9 price failure: not ok, stage price", r.ok === false && r.stage === "price");
-    check("9 price failure: no account write (no stale-priced value presented as current)",
-      store.accountUpdates.length === 0 && store.account.balance === 7000);
+    check("9 price failure: the sync is ok — the quantity does not wait on a price", r.ok === true, JSON.stringify(r));
+    check("9 price failure: the fresh quantity IS recorded — on the spine observation",
+      store.observations[0]?.quantity === 0.15 && r.nativeBalance === 0.15);
+    check("9 price failure: the legacy pair AND its clock stay as the last priced run left them",
+      store.accountUpdates.length === 1 && !("nativeBalance" in store.accountUpdates[0]) && !("balance" in store.accountUpdates[0])
+        && !("lastUpdated" in store.accountUpdates[0]) && store.account.balance === 7000 && store.account.nativeBalance === 0.1
+        && store.account.lastUpdated.getTime() < before.getTime(), JSON.stringify(store.accountUpdates));
+    check("9 price failure: valuation UNAVAILABLE by name; no priceUsd/balanceUsd claimed",
+      r.valuation?.status === "UNAVAILABLE" && /no canonical BTC close/.test(r.valuation.reason)
+        && r.priceUsd === undefined && r.balanceUsd === undefined, JSON.stringify(r.valuation));
+    check("9 price failure: history import unaffected", r.transactionImport?.status === "IMPORTED");
   }
 
   // ── 7. the refresh ledger: a failed import makes the run PARTIAL ──────────
@@ -248,6 +262,20 @@ async function main() {
     ok.succeed("WALLET_SYNC");
     ok.recordMeasured("TRANSACTIONS", "PROVIDER", { ok: true, startedAt: new Date(), durationMs: 300, facts: { recordsRead: 28, recordsWritten: 0, recordsChanged: 0 } });
     check("1 ledger: import ok ⇒ SUCCEEDED", deriveOverallStatus(ok.records) === "SUCCEEDED");
+
+    const unpriced = new StageRecorder();
+    unpriced.begin("WALLET_SYNC", "PROVIDER");
+    unpriced.succeed("WALLET_SYNC");
+    unpriced.recordMeasured("VALUATION", "DERIVED", { ok: false, startedAt: new Date(), durationMs: 3, err: new Error("no canonical BTC close") });
+    unpriced.recordMeasured("TRANSACTIONS", "PROVIDER", { ok: true, startedAt: new Date(), durationMs: 5 });
+    check("13 ledger: quantity ok + VALUATION failed ⇒ PARTIAL (not FAILED, not SUCCEEDED)",
+      deriveOverallStatus(unpriced.records) === "PARTIAL");
+
+    const noBalance = new StageRecorder();
+    noBalance.begin("WALLET_SYNC", "PROVIDER");
+    noBalance.fail("WALLET_SYNC", new Error("HTTP 500 from blockstream.info"));
+    check("13 ledger: balance authority failed ⇒ FAILED (current position not refreshed)",
+      deriveOverallStatus(noBalance.records) === "FAILED");
   }
 
   // ── Explorer: complete-or-throw under a hang, with no partial page ────────
@@ -274,6 +302,205 @@ async function main() {
     check("explorer: a hang mid-pagination throws a staged error — never a partial list that looks complete",
       got === null && err instanceof BtcSyncError && err.stage === "transactions" && calls === 2,
       `calls=${calls} err=${String(err)}`);
+  }
+
+  // ── SINGLE-ADDRESS through the REAL provider routing (injected fetch) ────
+  //
+  // No balanceFetcher / txFetcher: syncBtcWallet builds the real Esplora calls,
+  // and a fake network routes by HOST. This is what proves which authority owns
+  // which dimension — not a stub standing in for the routing itself.
+  const esplora = (funded: number, spent: number) =>
+    ({ chain_stats: { funded_txo_sum: funded, spent_txo_sum: spent, tx_count: 1 }, mempool_stats: { funded_txo_sum: 0, spent_txo_sum: 0, tx_count: 0 } });
+  const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+  type Route = (url: URL) => Promise<Response>;
+  function network(routes: Record<string, Route>) {
+    const calls: string[] = [];
+    const f = (async (input: string) => {
+      const url = new URL(input);
+      calls.push(url.host);
+      const route = routes[url.host];
+      if (!route) throw new TypeError(`fetch failed (no route to ${url.host})`);
+      return route(url);
+    }) as unknown as typeof fetch;
+    return { f, calls };
+  }
+  const unreachable: Route = async () => { throw new TypeError("fetch failed: connect ETIMEDOUT"); };
+  const savedRetries = process.env.BTC_RATE_LIMIT_RETRIES;
+  process.env.BTC_RATE_LIMIT_RETRIES = "0";
+
+  shape.walletAddress = ADDRESS; shape.identities = [ADDRESS];
+
+  // S1 — balance authority ok, history ok → full success
+  {
+    const store = freshStore(PRIOR);
+    install(db as unknown as Record<string, unknown>, store);
+    const net = network({
+      "blockstream.info": async () => json(esplora(0.15 * SATS, 0)),
+      "mempool.space":    async (u) => json(u.pathname.split("/").length > 6 ? [] : [receive("txA", 0.1 * SATS), receive("txB", 0.05 * SATS)]),
+    });
+    const r = await syncBtcWallet(ACCOUNT, { fetchImpl: net.f, priceFetcher: async () => PRICE });
+    check("S1 single: full success (synced, history imported)",
+      r.ok && r.syncStatus === "synced" && r.transactionImport?.status === "IMPORTED", JSON.stringify(r));
+    check("S1 single: balance read from the BALANCE authority (blockstream.info), history from mempool.space",
+      net.calls[0] === "blockstream.info" && net.calls.slice(1).every((h) => h === "mempool.space"), net.calls.join(","));
+    check("S1 single: observation advances to the provider's quantity", store.observations[0]?.quantity === 0.15);
+    check("12 valuation is the injected archive price, never a network quote",
+      r.priceUsd === PRICE && !net.calls.some((h) => h !== "blockstream.info" && h !== "mempool.space"));
+  }
+
+  // S2 — balance ok, mempool history times out → PARTIAL-shaped result
+  {
+    const store = freshStore(PRIOR);
+    install(db as unknown as Record<string, unknown>, store);
+    const savedT = process.env.BTC_SYNC_TIMEOUT_MS;
+    process.env.BTC_SYNC_TIMEOUT_MS = "25";
+    const net = network({
+      "blockstream.info": async () => json(esplora(0.1 * SATS, 0)),
+      "mempool.space":    (u) => new Promise<Response>(() => { void u; }), // never answers
+    });
+    // The fake never honours abort by itself; wrap so the abort rejects like undici.
+    const aborting = ((input: string, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => { const e = new Error("This operation was aborted"); e.name = "AbortError"; reject(e); }, { once: true });
+      (net.f as unknown as (i: string) => Promise<Response>)(input).then(resolve, reject);
+    })) as unknown as typeof fetch;
+    const r = await syncBtcWallet(ACCOUNT, { fetchImpl: aborting, priceFetcher: async () => PRICE });
+    if (savedT === undefined) delete process.env.BTC_SYNC_TIMEOUT_MS; else process.env.BTC_SYNC_TIMEOUT_MS = savedT;
+    check("S2 single: history timeout ⇒ ok, quantity + valuation + observation written",
+      r.ok && store.account.nativeBalance === 0.1 && store.account.balance === 8_000 && store.observations[0]?.quantity === 0.1, JSON.stringify(r));
+    check("S2 single: transaction stage FAILED naming mempool.space's budget",
+      r.transactionImport?.status === "FAILED" && /^mempool\.space did not respond within 25 ms$/.test(r.transactionImport.reason),
+      JSON.stringify(r.transactionImport));
+    check("S2 single: history preserved, nothing fabricated", store.transactions.length === 1 && store.transactions[0].externalTransactionId === "txA");
+  }
+
+  // S3 — THE PRIMARY GATE: mempool.space unavailable ENTIRELY, balance authority ok
+  {
+    const store = freshStore(PRIOR);
+    install(db as unknown as Record<string, unknown>, store);
+    const net = network({ "blockstream.info": async () => json(esplora(0.12345678 * SATS, 0)), "mempool.space": unreachable });
+    const r = await syncBtcWallet(ACCOUNT, { fetchImpl: net.f, priceFetcher: async () => PRICE });
+    check("S3 single: mempool.space gone ⇒ current position STILL updates",
+      r.ok === true && store.observations[0]?.quantity === 0.12345678 && store.account.nativeBalance === 0.12345678, JSON.stringify(r));
+    check("S3 single: valuation follows (0.12345678 × 80,000 = 9,876.54)", store.account.balance === 9876.54);
+    check("S3 single: the outage is reported as a history failure, not a position failure",
+      r.transactionImport?.status === "FAILED" && /network error reaching mempool\.space/.test(r.transactionImport.reason));
+    check("S3 single: prior history intact, no rows fabricated", store.transactions.length === 1);
+  }
+
+  // S4 — balance authority fails, history would succeed → nothing claimed
+  {
+    const store = freshStore(PRIOR);
+    install(db as unknown as Record<string, unknown>, store);
+    const net = network({ "blockstream.info": async () => json({ error: "down" }, 500), "mempool.space": async () => json([]) });
+    const r = await syncBtcWallet(ACCOUNT, { fetchImpl: net.f, priceFetcher: async () => PRICE });
+    check("S4 single: balance authority failure ⇒ not ok, stage balance", r.ok === false && r.stage === "balance", JSON.stringify(r));
+    check("S4 single: no fabricated quantity, no observation, no account write, clock NOT advanced",
+      store.observations.length === 0 && store.accountUpdates.length === 0 && store.account.nativeBalance === 0.1
+        && store.account.lastUpdated.getTime() < before.getTime());
+    check("S4 single: history is not consulted for the quantity (no mempool call)", !net.calls.includes("mempool.space"), net.calls.join(","));
+    check("15 privacy: the failure names the host, never the address",
+      r.reason === "HTTP 500 from blockstream.info" && !JSON.stringify(store.syncIssues).includes(ADDRESS), r.reason);
+  }
+
+  // S5 — balance AND history unavailable → not fresh, nothing written
+  {
+    const store = freshStore(PRIOR);
+    install(db as unknown as Record<string, unknown>, store);
+    const net = network({ "blockstream.info": unreachable, "mempool.space": unreachable });
+    const r = await syncBtcWallet(ACCOUNT, { fetchImpl: net.f, priceFetcher: async () => PRICE });
+    check("S5 single: both down ⇒ not ok at balance; previous quantity stands, not re-stamped fresh",
+      r.ok === false && r.stage === "balance" && store.accountUpdates.length === 0 && store.observations.length === 0
+        && store.account.lastUpdated.getTime() < before.getTime(), JSON.stringify(r));
+    check("S5 single: the balance failure is recorded (history was not attempted)",
+      store.syncIssues.some((i) => (i.detail as { stage?: string }).stage === "balance") && !(r.reason ?? "").includes(ADDRESS));
+  }
+
+  // S6 — zero balance is an exact zero, not missing
+  {
+    const store = freshStore([]);
+    install(db as unknown as Record<string, unknown>, store);
+    const net = network({ "blockstream.info": async () => json(esplora(5_000, 5_000)), "mempool.space": async () => json([]) });
+    const r = await syncBtcWallet(ACCOUNT, { fetchImpl: net.f, priceFetcher: async () => PRICE });
+    check("S6 zero: ok, quantity exactly 0, a 0 observation written, value 0",
+      r.ok && r.nativeBalance === 0 && store.account.nativeBalance === 0 && store.observations[0]?.quantity === 0 && store.account.balance === 0,
+      JSON.stringify(r));
+  }
+
+  // S7 — satoshi precision
+  for (const sats of [1, 24_060_252, 12_345_678_901, 2_099_999_997_690_000]) {
+    const store = freshStore([]);
+    install(db as unknown as Record<string, unknown>, store);
+    const net = network({ "blockstream.info": async () => json(esplora(sats, 0)), "mempool.space": unreachable });
+    const r = await syncBtcWallet(ACCOUNT, { fetchImpl: net.f, priceFetcher: async () => PRICE });
+    const q = store.observations[0]?.quantity ?? NaN;
+    check(`S7 precision: ${sats} sats round-trips exactly`, r.ok && Math.round(q * SATS) === sats && q === sats / SATS, `q=${q}`);
+  }
+
+  // ── XPUB regression: blockchain.info still owns xpub balance ──────────────
+  shape.walletAddress = XPUB; shape.identities = XPUB_ADDRS;
+  {
+    const store = freshStore([]);
+    install(db as unknown as Record<string, unknown>, store);
+    const net = network({
+      "blockchain.info": async () => json({ addresses: [
+        { address: XPUB_ADDRS[0], n_tx: 3, final_balance: 20_000_000 },
+        { address: XPUB_ADDRS[1], n_tx: 0, final_balance: 0 },
+      ] }),
+      "mempool.space": unreachable,
+    });
+    const r = await syncBtcWallet(ACCOUNT, { fetchImpl: net.f, priceFetcher: async () => PRICE });
+    check("8 xpub: balance from blockchain.info (summed), NOT the single-address authority",
+      r.ok && store.account.nativeBalance === 0.2 && net.calls[0] === "blockchain.info" && !net.calls.includes("blockstream.info"),
+      `${JSON.stringify(r)} calls=${net.calls.join(",")}`);
+    check("9 xpub: mempool.space gone ⇒ 1352d4f partial contract intact (position written, import FAILED)",
+      store.observations[0]?.quantity === 0.2 && r.transactionImport?.status === "FAILED" && store.transactions.length === 0);
+    check("9 xpub: only the ACTIVE address is asked for history", net.calls.filter((h) => h === "mempool.space").length === 1, net.calls.join(","));
+  }
+  {
+    const store = freshStore([]);
+    install(db as unknown as Record<string, unknown>, store);
+    const net = network({ "blockchain.info": async () => json({}, 500) });
+    const r = await syncBtcWallet(ACCOUNT, { fetchImpl: net.f, priceFetcher: async () => PRICE });
+    check("15 privacy: an xpub batch failure names the host, never the (up to 50) addresses in its URL",
+      r.ok === false && r.reason === "HTTP 500 from blockchain.info" && !XPUB_ADDRS.some((a) => JSON.stringify(store.syncIssues).includes(a)),
+      r.reason);
+  }
+  shape.walletAddress = ADDRESS; shape.identities = [ADDRESS];
+  if (savedRetries === undefined) delete process.env.BTC_RATE_LIMIT_RETRIES; else process.env.BTC_RATE_LIMIT_RETRIES = savedRetries;
+
+  // ── Regeneration gate: an unpriced run feeds NO snapshot rebuild ─────────
+  {
+    const { outcomeRevalued } = await import("./wallet-sync-dispatch");
+    const { refreshScheduledWallets } = await import("./wallet-refresh");
+    check("gate: ok + PRICED ⇒ revalued", outcomeRevalued({ ok: true, valuation: { status: "PRICED" } }));
+    check("gate: ok + UNAVAILABLE ⇒ NOT revalued", !outcomeRevalued({ ok: true, valuation: { status: "UNAVAILABLE", reason: "no close" } }));
+    check("gate: failed ⇒ NOT revalued", !outcomeRevalued({ ok: false }));
+    check("gate: a chain with no valuation field (ETH/SOL) ⇒ revalued as before", outcomeRevalued({ ok: true }));
+    let t = 0;
+    const sweep = await refreshScheduledWallets({ now: new Date("2026-09-21T12:00:00Z"), deps: {
+      listWallets: async () => [
+        { accountId: "priced", chain: "BTC", lastSuccessAt: null },
+        { accountId: "unpriced", chain: "BTC", lastSuccessAt: null },
+      ],
+      sync: async (accountId) => ({ accountId, chain: "BTC", support: "HISTORY_SUPPORTED", ok: true, netWorthParticipation: "LEGACY_BALANCE_COLUMN",
+        valuation: accountId === "unpriced" ? { status: "UNAVAILABLE", reason: "no close" } : { status: "PRICED" } }),
+      policy: async () => ({ sourceKind: "WALLET", cadence: "EVERY_6H", expectedEveryHours: 6, graceHours: 1, overdueAfterHours: 12, origin: "DEFAULT" } as never),
+      admit: async () => ({ decision: "ADMIT" }),
+      clock: () => (t += 10),
+    } });
+    check("sweep: both runs count as succeeded, only the PRICED one feeds regeneration",
+      sweep.succeeded === 2 && JSON.stringify(sweep.syncedAccountIds) === JSON.stringify(["priced"]), JSON.stringify(sweep));
+  }
+
+  // ── 15 privacy: transport text never carries the URL ──────────────────────
+  {
+    const { fetchConfirmedSats } = await import("@/lib/crypto/btc-explorer");
+    const quoting = (async (u: string) => { throw new TypeError(`request to ${u} failed, reason: ECONNRESET`); }) as unknown as typeof fetch;
+    let e: unknown;
+    try { await fetchConfirmedSats(ADDRESS, quoting); } catch (x) { e = x; }
+    check("15 privacy: a transport that quotes the request URL is redacted to the host",
+      e instanceof BtcSyncError && !e.message.includes(ADDRESS) && /network error reaching blockstream\.info: request to blockstream\.info failed/.test(e.message),
+      e instanceof Error ? e.message : String(e));
   }
 
   // ── Source pins: the wiring that makes the outcome visible ────────────────

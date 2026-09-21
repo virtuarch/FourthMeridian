@@ -18,14 +18,20 @@
  * address balance only. No xpub, no transaction history, no other chains, no
  * schema changes. The orchestration + persistence live in ./btc-sync.ts.
  *
- * Confirmed-only: balance = chain_stats.funded_txo_sum - chain_stats.spent_txo_sum
- * (mempool_stats — unconfirmed — is intentionally ignored).
+ * Confirmed-only (single-address): balance = chain_stats.funded_txo_sum -
+ * chain_stats.spent_txo_sum (mempool_stats — unconfirmed — intentionally ignored),
+ * read from the BALANCE authority (`btcBalanceBaseUrl`, Esplora), which is a
+ * different host from the HISTORY explorer (`btcExplorerBaseUrl`).
+ * ⚠️ xpub balances come from the batch provider (blockchain.info), whose
+ * `final_balance` INCLUDES unconfirmed effects — a known, measured divergence
+ * between wallet shapes (see `parseMultiaddrStats`), not an equivalence.
  */
 
 /** 1 BTC = 100,000,000 satoshis. */
 export const SATS_PER_BTC = 100_000_000;
 
 const DEFAULT_EXPLORER_BASE = "https://mempool.space";
+const DEFAULT_BALANCE_BASE  = "https://blockstream.info";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /** Which external call failed — carried on the error and into any SyncIssue. */
@@ -39,9 +45,41 @@ export class BtcSyncError extends Error {
   }
 }
 
-/** Explorer base URL (trailing slashes trimmed). Overridable, keyless default. */
+/**
+ * HISTORY explorer base URL (trailing slashes trimmed) — the transaction-history
+ * authority. Overridable, keyless default.
+ */
 export function btcExplorerBaseUrl(): string {
   const base = process.env.BTC_EXPLORER_BASE_URL?.trim() || DEFAULT_EXPLORER_BASE;
+  return base.replace(/\/+$/, "");
+}
+
+/**
+ * CURRENT-BALANCE authority for single-address wallets — an Esplora host,
+ * deliberately NOT the history explorer's.
+ *
+ * Both used to be mempool.space, so one explorer outage was two outages: on
+ * 2026-09-21 mempool.space refused TCP and every single-address wallet failed at
+ * "balance" — its current position lost to what should only have been a history
+ * problem. Separate hosts, one interface: blockstream.info serves the SAME
+ * Esplora API mempool.space does (the multi-network investigation already named
+ * Esplora the canonical Bitcoin interface), so `parseConfirmedSats` reads the
+ * same `chain_stats` and the semantics — CONFIRMED only — are unchanged. Measured
+ * before switching: blockstream's confirmed balance and tx count for the live
+ * wallet's active address equal the figures mempool.space reported (24,060,252
+ * sats, 28 txs), and every public fixture agreed to the satoshi.
+ *
+ * NOT blockchain.info, although xpub balances come from there: every balance it
+ * serves (multiaddr `final_balance`, `/balance`, `/q/addressbalance`, which
+ * ignores `?confirmations=`) INCLUDES unconfirmed effects — measured
+ * final = confirmed + mempool Δ on every address with pending activity — so
+ * moving single-address wallets there would silently change what "balance"
+ * means. There is deliberately NO fallback chain: one authority per dimension,
+ * and an unavailable authority is reported, never papered over by a second
+ * provider whose answer means something else.
+ */
+export function btcBalanceBaseUrl(): string {
+  const base = process.env.BTC_BALANCE_API_URL?.trim() || DEFAULT_BALANCE_BASE;
   return base.replace(/\/+$/, "");
 }
 
@@ -156,7 +194,10 @@ async function getJson(url: string, stage: BtcSyncStage, fetchImpl: FetchFn): Pr
         if (Number.isFinite(ra) && ra > 0) retryAfterMs = ra * 1000;
         // fall through to backoff/retry below (after finally clears the timer)
       } else if (!res.ok) {
-        throw new BtcSyncError(stage, `HTTP ${res.status} from ${url}`);
+        // The HOST, never the URL: the path carries wallet addresses (up to 50
+        // per multiaddr call), and this text reaches SyncIssue rows, the route's
+        // 502 body and the Refresh button.
+        throw new BtcSyncError(stage, `HTTP ${res.status} from ${new URL(url).host}`);
       } else {
         return await res.json();
       }
@@ -171,7 +212,11 @@ async function getJson(url: string, stage: BtcSyncStage, fetchImpl: FetchFn): Pr
       if (controller.signal.aborted) {
         throw new BtcSyncError(stage, `${host} did not respond within ${budgetMs} ms`);
       }
-      throw new BtcSyncError(stage, `network error reaching ${host}: ${err instanceof Error ? err.message : String(err)}`);
+      // The transport's own text is passed through with the URL (and so any
+      // address in it) replaced by the host — undici says "fetch failed", but an
+      // injected transport may quote the request.
+      const detail = (err instanceof Error ? err.message : String(err)).split(url).join(host);
+      throw new BtcSyncError(stage, `network error reaching ${host}: ${detail}`);
     } finally {
       clearTimeout(timer);
     }
@@ -185,9 +230,9 @@ async function getJson(url: string, stage: BtcSyncStage, fetchImpl: FetchFn): Pr
   }
 }
 
-/** Confirmed balance (satoshis) for a public BTC address. */
+/** Confirmed balance (satoshis) for a public BTC address — from the BALANCE authority. */
 export async function fetchConfirmedSats(address: string, fetchImpl: FetchFn = fetch): Promise<number> {
-  const url = `${btcExplorerBaseUrl()}/api/address/${encodeURIComponent(address)}`;
+  const url = `${btcBalanceBaseUrl()}/api/address/${encodeURIComponent(address)}`;
   return parseConfirmedSats(await getJson(url, "balance", fetchImpl));
 }
 
@@ -227,7 +272,13 @@ export const BATCH_CHUNK = 50;
 
 /**
  * Parse a blockchain.info `/multiaddr` response into per-address stats for
- * EXACTLY the requested addresses. Addresses the provider omits (no activity)
+ * EXACTLY the requested addresses.
+ *
+ * ⚠️ `final_balance` is NOT confirmed-only: measured 2026-09-21, it equals
+ * Esplora's confirmed balance PLUS its mempool delta on every address with
+ * pending activity (and it counts the unspendable genesis coinbase). For an
+ * address with no pending activity the two agree to the satoshi. xpub balances
+ * therefore include unconfirmed effects while single-address balances do not. Addresses the provider omits (no activity)
  * default to zero, so the result always has an entry per requested address.
  */
 export function parseMultiaddrStats(json: unknown, requested: string[]): Map<string, AddrStat> {

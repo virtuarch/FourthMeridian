@@ -98,6 +98,8 @@ export interface BtcWalletSyncResult {
   balanceUsd?: number;
   priceUsd?: number;
   /** On failure: which step failed and why (also recorded as a SyncIssue). */
+  // ("price" is no longer returned — a missing close is `valuation: UNAVAILABLE`
+  // on an ok run — and stays in the union only for readers of old results.)
   stage?: "load" | "discovery" | "balance" | "price" | "transactions" | "capture";
   reason?: string;
   /**
@@ -115,7 +117,18 @@ export interface BtcWalletSyncResult {
    * is reported instead of disappearing into a console warning.
    */
   transactionImport?: BtcTransactionImportOutcome;
+  /**
+   * The valuation of the quantity this run observed — separate from the
+   * quantity, which is written whether or not a canonical close exists.
+   * UNAVAILABLE ⇒ `balanceUsd`/`priceUsd` are absent and the USD column was not
+   * rewritten; the read model shows the position unpriced, not stale-priced.
+   */
+  valuation?: BtcValuationOutcome;
 }
+
+export type BtcValuationOutcome =
+  | { status: "PRICED"; priceUsd: number; balanceUsd: number; startedAt: Date; durationMs: number }
+  | { status: "UNAVAILABLE"; reason: string; startedAt: Date; durationMs: number };
 
 /**
  * The historical transaction import's own outcome, measured by the import.
@@ -747,16 +760,31 @@ export async function syncBtcWallet(
   // handshakes and every BTC refresh spent the 10 s timeout and failed here.
   // The archive is the authority the account card already values against
   // (loadWalletCurrentValues), so the column now agrees with it by construction.
-  // No fallback to a live quote: a wallet with no archived close refuses at this
-  // stage, by name, exactly as before.
-  let priceUsd: number;
+  // No fallback to a live quote: a wallet with no archived close is reported
+  // UNPRICED by name (below) — never valued from a second, undated source.
+  //
+  // 2026-09-21 — AND IT NO LONGER GATES THE QUANTITY. A missing close used to
+  // return here, before the observation, so a wallet whose balance authority HAD
+  // answered lost its current position to a valuation problem. Quantity and
+  // valuation are separate dimensions: the observation is quantity-only and is
+  // valued at READ time through the same archive reader with the same staleness
+  // bound. The sync now records the quantity ON THE SPINE, leaves the legacy USD
+  // pair AND its clock exactly as the last priced run left them (see the account
+  // write below for why the clock must not move), reports the valuation as
+  // UNAVAILABLE — a VALUATION stage failure, so the run is PARTIAL — and the
+  // callers skip snapshot/wealth regeneration (`outcomeRevalued`), because there
+  // is no new valuation evidence to rebuild from.
+  const valuationStartedAt = new Date();
+  const valuationT0 = Date.now();
+  let priceUsd: number | null = null;
+  let priceFailure: string | null = null;
   try {
     priceUsd = await priceFetcher();
   } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    await recordWalletSyncIssue(accountId, "price", reason);
-    return { accountId, ok: false, stage: "price", reason };
+    priceFailure = err instanceof Error ? err.message : String(err);
+    await recordWalletSyncIssue(accountId, "price", priceFailure);
   }
+  const valuationDurationMs = Date.now() - valuationT0;
 
   // 3) Persist the aggregated balance (one account, one balance — no duplicates).
   //    Until an xpub's discovery completes, the account is "pending" (partial),
@@ -771,7 +799,10 @@ export async function syncBtcWallet(
     await recordWalletSyncIssue(accountId, "balance", reason);
     return { accountId, ok: false, stage: "balance", reason };
   }
-  const balanceUsd = computeUsdBalance(nativeBalance, priceUsd);
+  const balanceUsd = priceUsd === null ? null : computeUsdBalance(nativeBalance, priceUsd);
+  const valuation: BtcValuationOutcome = priceUsd !== null && balanceUsd !== null
+    ? { status: "PRICED", priceUsd, balanceUsd, startedAt: valuationStartedAt, durationMs: valuationDurationMs }
+    : { status: "UNAVAILABLE", reason: priceFailure ?? "no BTC price", startedAt: valuationStartedAt, durationMs: valuationDurationMs };
 
   // v2 — one summed BTC position (W5: FA balance + spine observation; the
   //    legacy Holding mirror is retired). v3 — transactions aggregated across addresses,
@@ -886,12 +917,24 @@ export async function syncBtcWallet(
   await db.financialAccount.update({
     where: { id: accountId },
     data: {
-      nativeBalance, balance: balanceUsd, currency: "USD",
+      // ONLY A PRICED RUN MOVES THE LEGACY PAIR AND ITS CLOCK. `lastUpdated` is
+      // both the read model's observedAt AND (point 3 above) the instant of the
+      // USD column's valuation, and three readers fall back to that column when
+      // the read model answers NO_PRICE (space-accounts snapshot, Space mount,
+      // applyCanonicalWalletBalances). Advancing the clock and quantity while
+      // keeping the old USD figure would publish old-quantity × old-price as a
+      // FRESH value (and $0 on a first connect) — adversarial review, 2026-09-21.
+      // So an unpriced run leaves the pair and clock exactly as the last priced
+      // run left them: the fresh QUANTITY lives on the spine observation written
+      // above (dated today), the value is reported UNAVAILABLE, and every reader
+      // keeps seeing a last-known figure with its true, older clock.
+      ...(balanceUsd !== null
+        ? { nativeBalance, balance: balanceUsd, currency: "USD", lastUpdated: new Date() }
+        : {}),
       // "pending" is the honest status when the ledger is short: the balance is
       // real, the history is still incomplete, and the next run continues the
       // pagination.
       syncStatus: discoveryComplete && ledger.complete ? "synced" : "pending",
-      lastUpdated: new Date(),
     },
   });
 
@@ -946,7 +989,9 @@ export async function syncBtcWallet(
     // ledger we know is short is the dishonesty this gate removes, and it is the
     // status the connect route's history regeneration runs against.
     syncStatus:   discoveryComplete && ledger.complete ? "synced" : "pending",
-    nativeBalance, balanceUsd, priceUsd,
+    nativeBalance,
+    ...(balanceUsd !== null && priceUsd !== null ? { balanceUsd, priceUsd } : {}),
+    valuation,
     ledgerComplete: ledger.complete,
     ledgerResidual: ledger.residual,
     transactionImport,
@@ -989,7 +1034,8 @@ export async function syncAllBtcWallets(deps: BtcSyncDeps = {}): Promise<SyncAll
   const syncedAccountIds: string[] = [];
   for (const w of wallets) {
     const r = await syncBtcWallet(w.id, { ...deps, priceFetcher: sharedPriceFetcher });
-    if (r.ok) { succeeded++; syncedAccountIds.push(w.id); }
+    // Regeneration input = runs with NEW VALUATION evidence (see outcomeRevalued).
+    if (r.ok) { succeeded++; if (r.valuation?.status !== "UNAVAILABLE") syncedAccountIds.push(w.id); }
     else failed++;
   }
 

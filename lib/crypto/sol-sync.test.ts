@@ -294,7 +294,8 @@ async function main(): Promise<void> {
   check("the SOL adapter imports neither sibling adapter",
     !sync.includes("btc-sync") && !sync.includes("eth-sync") && !sync.includes("eth-rpc"));
   check("BTC still writes its own balance columns (unchanged by this slice)",
-    /nativeBalance,\s*balance:\s*balanceUsd/.test(btc));
+    // (2026-09-21: the USD pair is written only by a PRICED run; the quantity always.)
+    /nativeBalance,[\s\S]{0,300}balance:\s*balanceUsd/.test(btc));
   // W-M3 — Ethereum's orchestration moved into the shared EVM adapter, so the
   // convergence is now BTC + SOL + the one EVM adapter that serves four chains.
   check("every adapter converges on ONE capture writer",

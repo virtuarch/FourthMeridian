@@ -43,7 +43,7 @@
  * `raw` for logging, never for branching.
  */
 
-import { syncBtcWallet, BTC_CHAIN, type BtcTransactionImportOutcome } from "@/lib/crypto/btc-sync";
+import { syncBtcWallet, BTC_CHAIN, type BtcTransactionImportOutcome, type BtcValuationOutcome } from "@/lib/crypto/btc-sync";
 import { syncEthWallet, ETH_CHAIN } from "@/lib/crypto/eth-sync";
 import { syncSolWallet, SOL_CHAIN } from "@/lib/crypto/sol-sync";
 import { syncEvmWallet } from "@/lib/crypto/evm-native";
@@ -181,6 +181,14 @@ export interface WalletSyncOutcome {
   transactionImport?:
     | { status: "IMPORTED"; written: number }
     | { status: "FAILED"; reason: string };
+  /**
+   * The valuation of the quantity an `ok` sync observed (BTC). UNAVAILABLE ⇒ the
+   * position is current and unpriced: a PARTIAL run, never a failed one and
+   * never a clean one.
+   */
+  valuation?:
+    | { status: "PRICED" }
+    | { status: "UNAVAILABLE"; reason: string };
 }
 
 interface ChainAdapter {
@@ -221,6 +229,7 @@ interface ChainAdapter {
   sync(accountId: string): Promise<{
     ok: boolean; syncStatus?: "synced" | "pending"; stage?: string; reason?: string;
     transactionImport?: BtcTransactionImportOutcome;
+    valuation?: BtcValuationOutcome;
   }>;
 }
 
@@ -398,6 +407,17 @@ export function chainSupportsHistory(chain: string | null | undefined): boolean 
 }
 
 /**
+ * Did this run produce NEW VALUATION evidence — the input snapshot and wealth
+ * regeneration rebuild from? An `ok` BTC run whose close was unavailable wrote a
+ * fresh quantity to the spine but left the legacy USD pair and clock untouched;
+ * regenerating from it would re-publish the last priced figure as today's. One
+ * predicate, used by the manual route and the scheduled sweep alike.
+ */
+export function outcomeRevalued(outcome: Pick<WalletSyncOutcome, "ok" | "valuation">): boolean {
+  return outcome.ok && outcome.valuation?.status !== "UNAVAILABLE";
+}
+
+/**
  * Sync one wallet through its chain's adapter.
  *
  * Never throws: every adapter already carries a never-throw contract, and an
@@ -449,6 +469,13 @@ export async function syncWalletByChain(
     // transaction history did not. Before this, a mempool.space outage spent the
     // full timeout inside a WALLET_SYNC recorded as a clean SUCCEEDED, and the
     // only trace was a console warning.
+    // VALUATION likewise: the quantity is current whether or not a close exists.
+    const valuation = result.valuation;
+    if (valuation) {
+      recorder.recordMeasured("VALUATION", "DERIVED", valuation.status === "PRICED"
+        ? { ok: true, startedAt: valuation.startedAt, durationMs: valuation.durationMs, facts: { coveredAccountIds: [accountId] } }
+        : { ok: false, startedAt: valuation.startedAt, durationMs: valuation.durationMs, err: new Error(valuation.reason) });
+    }
     const txImport = result.transactionImport;
     if (txImport) {
       recorder.recordMeasured("TRANSACTIONS", "PROVIDER", txImport.status === "IMPORTED"
@@ -509,6 +536,9 @@ export async function syncWalletByChain(
         ? (txImport.status === "IMPORTED"
             ? { status: "IMPORTED", written: txImport.written }
             : { status: "FAILED", reason: txImport.reason })
+        : undefined,
+      valuation: valuation
+        ? (valuation.status === "PRICED" ? { status: "PRICED" } : { status: "UNAVAILABLE", reason: valuation.reason })
         : undefined,
       raw: result,
     };

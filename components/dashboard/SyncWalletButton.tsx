@@ -31,7 +31,7 @@ export function SyncWalletButton({ accountId, syncStatus }: Props) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  // A PARTIAL success: balance and value refreshed, transaction history did not.
+  // A PARTIAL success: the balance refreshed, but its value or its history did not.
   const [notice, setNotice] = useState("");
 
   const idleLabel = syncStatus === "pending" ? "Sync wallet" : "Refresh";
@@ -53,8 +53,15 @@ export function SyncWalletButton({ accountId, syncStatus }: Props) {
       // The historical import is best-effort: when it failed, the balance and
       // value still refreshed and the existing history was kept. Say so, rather
       // than letting a clean-looking refresh hide it or an error overstate it.
-      if (data?.transactionImport?.status === "FAILED") {
-        setNotice("Balance updated. Transaction history couldn't be refreshed right now. Existing history is kept.");
+      // Likewise the valuation: the quantity is current even when no price is.
+      const historyFailed = data?.transactionImport?.status === "FAILED";
+      const unpriced      = data?.valuation?.status === "UNAVAILABLE";
+      if (historyFailed || unpriced) {
+        setNotice([
+          "Balance updated.",
+          ...(unpriced ? ["Its USD value couldn't be priced right now."] : []),
+          ...(historyFailed ? ["Transaction history couldn't be refreshed right now. Existing history is kept."] : []),
+        ].join(" "));
       }
       router.refresh();
     } catch {

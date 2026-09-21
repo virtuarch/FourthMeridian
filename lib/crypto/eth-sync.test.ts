@@ -291,7 +291,8 @@ async function main(): Promise<void> {
   check("provider text is redacted before it can reach a log or an incident",
     /redactProviderSecrets/.test(sync));
   check("BTC still writes its own balance columns (unchanged by this slice)",
-    /nativeBalance,\s*balance:\s*balanceUsd/.test(btc));
+    // (2026-09-21: the USD pair is written only by a PRICED run; the quantity always.)
+    /nativeBalance,[\s\S]{0,300}balance:\s*balanceUsd/.test(btc));
 
   // W-M1d owns activation. Nothing may dispatch to this adapter yet.
   const walletRoute = code(read("app", "api", "accounts", "wallet", "route.ts"));
