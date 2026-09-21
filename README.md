@@ -72,7 +72,7 @@ Production runs on Vercel + Supabase; the steps below spin up a local Postgres (
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 24 — the version in `.nvmrc`, which CI and production (`engines.node`, Vercel 24.x) also use. `nvm use` selects it.
 - Docker + Docker Compose (local Postgres only)
 - A [Plaid](https://plaid.com) developer account (sandbox is free)
 
@@ -155,7 +155,24 @@ npm run db:migrate    # Run pending Prisma migrations
 npm run db:seed       # Seed demo data
 npm run db:studio     # Open Prisma Studio
 npm run db:reset      # Reset DB and re-run migrations (destroys data)
+npm run ci            # GitHub CI, locally — run before every push (see below)
 ```
+
+### Before you push: `npm run ci`
+
+`npm run ci` runs both GitHub CI jobs — `test` (unit tests, typecheck, lint) and
+`architecture` (migrate, seed, REQUIRED audits) — step for step, on a **clean
+depth-1 copy of HEAD**, so ignored local files and git history cannot make it pass
+where GitHub would fail. It gates commits: uncommitted edits are not included.
+
+- **Runtime:** it refuses to run unless Node's major matches `.nvmrc`.
+- **Database:** the audits run against a Postgres container it starts and removes
+  itself (Docker required). Your `DATABASE_URL` is stripped from its environment
+  and never used; the throwaway database must classify as a clone under
+  `lib/db/live-guard.ts`. Without Docker the architecture job fails — it does not
+  fall back.
+- **Parity:** the step lists live in `scripts/lib/ci-contract.ts`;
+  `scripts/ci-local.test.ts` fails if `.github/workflows/ci.yml` drifts from them.
 
 ---
 

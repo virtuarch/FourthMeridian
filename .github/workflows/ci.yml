@@ -2,6 +2,17 @@ name: CI
 
 # Unit-test + typecheck + lint gate, plus the ARCHITECTURE AUDIT gate.
 #
+# ── one contract, three places (2026-09-21) ─────────────────────────────────
+# `npm run ci` (scripts/ci-local.ts) runs these two jobs locally, step for step,
+# on a clean depth-1 copy of HEAD against a throwaway Postgres. The step lists
+# live in scripts/lib/ci-contract.ts and scripts/ci-local.test.ts FAILS if the
+# `run:` lines below drift from them — change both together.
+# Node comes from .nvmrc here, locally, and (as engines.node) in production:
+# CI was on 22 while production ran 24 and developers 26, and two defects
+# behaved differently on each. No step may need git history (no fetch-depth):
+# a check that does must fetch what it needs itself, as
+# scripts/audit-forecast-slice-provenance.ts does.
+#
 # ── job: test ────────────────────────────────────────────────────────────────
 # The safe local test suite (scripts/run-tests.ts → every *.test.ts under lib/,
 # app/, components/, jobs/, scripts/). These need no database, no network and no
@@ -51,7 +62,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install dependencies
@@ -66,7 +77,7 @@ jobs:
         run: npm run test:unit
 
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       - name: Lint
         run: npm run lint
@@ -100,7 +111,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install dependencies

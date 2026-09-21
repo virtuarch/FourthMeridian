@@ -2,12 +2,17 @@
   "name": "fourth-meridian",
   "version": "2.6.0",
   "private": true,
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "dev": "next dev --webpack",
     "build": "prisma generate && next build",
     "start": "next start",
     "lint": "eslint",
     "test": "npm run test:unit",
+    "typecheck": "tsc --noEmit",
+    "ci": "tsx scripts/ci-local.ts",
     "test:unit": "prisma generate && tsx scripts/run-tests.ts",
     "db:migrate": "tsx scripts/db-guard.ts --mode=migrate-dev && npm run db:backup && prisma migrate dev",
     "db:migrate:safe": "npm run db:backup && prisma migrate deploy",
