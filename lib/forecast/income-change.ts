@@ -449,7 +449,8 @@ export function applyIncomeChanges(args: {
         rejected.push({ input: named(rule.id), reason:
           `no income stream is called \`${rule.sourceKey}\`. The streams this Space has are `
           + `${[...known.values()].map((s) => `\`${s.sourceKey}\`${s.label ? ` ("${s.label}")` : ''}`).join(', ') || '(none)'}`
-          + ' — name one of those, or ask the user which income they mean. Do not guess.' });
+          + ' — re-run now with one of those keys copied exactly, or ask the user which income '
+          + 'they mean if more than one could be it. Do not guess.' });
         continue;
       }
       // ⚠️ A STREAM THE ACTIVITY AUTHORITY HAS NOT LICENSED TO CONTINUE HAS NO

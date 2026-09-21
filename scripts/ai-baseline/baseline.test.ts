@@ -1934,8 +1934,11 @@ console.log('19a. memory line');
   // instruction, which is ~140 words and whose growth is itself a finding.
   check('the system instruction still says nothing about memory',
     !/recall|remember|memory|intention|goal/i.test(SYSTEM_INSTRUCTION));
+  // ⚠️ `<=`, THE CEILING THE OTHER TWO PINS STATE (90–240 inclusive). This one
+  // alone read `< 240`; I1 spent the last six words of headroom on one measured
+  // sentence ("Run tools rather than offering to.") and met the disagreement.
   check('…and it is still a short instruction',
-    SYSTEM_INSTRUCTION.split(/\s+/).length < 240, String(SYSTEM_INSTRUCTION.split(/\s+/).length));
+    SYSTEM_INSTRUCTION.split(/\s+/).length <= 240, String(SYSTEM_INSTRUCTION.split(/\s+/).length));
 
   // ⚠️ NO BALANCE REACHES THE ORIENTATION THROUGH MEMORY. Only subjects, targets,
   // dates and horizons are ever emitted.

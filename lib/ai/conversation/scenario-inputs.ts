@@ -147,7 +147,8 @@ export const SCENARIO_INPUTS = {
         description: 'SCALE for a percentage change ("up 10%"). SET_RATE when the user states '
           + 'what the income BECOMES ("goes to $180k", "I make $15k a month"). STOP when an '
           + 'income ends. START for an income that does not exist yet.' },
-      source: str('WHICH income, as a `sourceKey` from get_pay_dates or get_income — never a '
+      source: str('WHICH income: copy a `sourceKey` EXACTLY as get_pay_dates or get_income '
+        + 'returns it (it looks like `NAME@accountid`) — never an account id, a label, or a '
         + 'name you composed. Omit it only when the user meant income as a whole ("my income '
         + 'goes up 10%"); an omitted source scales EVERY stream, and for SET_RATE or STOP it '
         + 'is refused when there is more than one income, because "I make $15k a month" could '
