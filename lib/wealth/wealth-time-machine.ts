@@ -25,7 +25,7 @@
  *  - drivers are real snapshot component deltas — never invented attribution.
  */
 
-import { formatCurrency } from "@/lib/currency";
+import { formatCurrencyWhole } from "@/lib/currency";   // MONEY-PRECISION-2 — `fmt` below is used ONLY by the story sentence
 import { derivedRealAssets } from "@/lib/snapshots/aggregate-authorisation.core";
 import { nearestOnOrBefore } from "@/lib/data/nearest-on-or-before";
 import { wealthBasisDisclosure, type WealthBasisDisclosure } from "@/lib/wealth/basis-disclosure";
@@ -268,7 +268,10 @@ export function formatWealthDate(iso: string): string {
 
 export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthResult {
   const { asOf, compareTo, currency } = input;
-  const fmt = (n: number) => formatCurrency(n, currency);
+  // The wealth STORY ("Your net worth increased by $37,000 since …") is prose:
+  // whole dollars. Every structured wealth figure is formatted by its surface
+  // through the cents formatter; this module renders no field.
+  const fmt = (n: number) => formatCurrencyWhole(n, currency);
 
   // Drop mixed-unit fx-miss points (the hero/chart reads drop these too), then
   // sort ascending so "nearest ≤ date" is a single linear pass.

@@ -28,7 +28,7 @@
 
 import type { ReactNode } from "react";
 import { formatDate } from "@/lib/format";
-import { formatCurrency } from "@/lib/currency";
+import { formatCurrency, formatCurrencyWhole } from "@/lib/currency";
 import { describeExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { Figure } from "@/components/atlas/Surface";
@@ -196,7 +196,10 @@ export function LiquidityHero({
               <span className="text-[var(--text-faint)]">
                 {" · "}{describeExpenseBaseline(
                   { amount: coverage.monthlyExpenses, basis: coverage.basis },
-                  (n: number) => formatCurrency(n, currency),
+                  // MONEY-PRECISION-2 — "at $4,000/mo — the figure you set" is a
+                  // clause, not a field: whole dollars. The coverage figure and
+                  // every structured amount on this hero keep their cents.
+                  (n: number) => formatCurrencyWhole(n, currency),
                 )}
               </span>
             </Stat>

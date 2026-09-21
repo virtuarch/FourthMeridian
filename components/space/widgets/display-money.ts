@@ -36,7 +36,7 @@
  */
 
 import { useDisplayCurrency } from "@/lib/currency-context";
-import { formatCurrency, formatCurrencyExact } from "@/lib/currency";
+import { formatCurrency, formatCurrencyExact, formatCurrencyWhole } from "@/lib/currency";
 
 /** Minimal structural shape — accepts ConversionContext or its serialized form. */
 export interface HasTarget { target: string }
@@ -52,9 +52,31 @@ export function useAggregateCurrency(ctx?: HasTarget | null): string {
 }
 
 /**
+ * MONEY-PRECISION-2 — PROSE money. A sentence names a magnitude; a field states
+ * a figure. "You carry $23,400 of debt" reads as English, "$23,400.00" reads as
+ * a spreadsheet cell someone dropped into a paragraph — and the cents carry no
+ * information a reader of that sentence wants. So app-owned NARRATIVE (lens
+ * verdicts, the wealth story, insight lines, the baseline clause) rounds to the
+ * dollar, while every STRUCTURED figure inside a Space keeps its cents
+ * (MONEY-PRECISION-1): a balance, a total, a ledger row, a payoff amount, a
+ * category line, a drawer total.
+ *
+ * The choice is made HERE, at the module that owns the sentence — never by a
+ * heuristic over strings or DOM position.
+ */
+export function formatProseMoney(v: number, ctx?: HasTarget | null): string {
+  if (ctx) return formatCurrencyWhole(v, ctx.target);
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(v);
+}
+
+/**
  * Aggregate money label for pure helpers: `ctx.target` when a context exists;
- * otherwise the magnitude with NO currency claim. `digits` mirrors the two
- * house formats (0 = formatCurrency, 2 = formatCurrencyExact).
+ * otherwise the magnitude with NO currency claim.
+ *
+ * ⚠️ STRUCTURED money — a tile, a row, a total. Since MONEY-PRECISION-1 both
+ * `digits` values render to the cent (`formatCurrency` and `formatCurrencyExact`
+ * are one implementation); the parameter survives because it records which
+ * format a call site MEANT. For a SENTENCE use `formatProseMoney`.
  */
 export function formatAggregateMoney(
   v: number,

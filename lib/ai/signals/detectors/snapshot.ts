@@ -33,7 +33,7 @@ import { FinanceDomains } from '@/lib/ai/types';
 import type { ContextDomainSection, ContextSignal, SnapshotSectionData } from '@/lib/ai/types';
 import { SignalType } from '@/lib/ai/signals/types';
 import { registerDetector } from '@/lib/ai/signals/registry';
-import { formatCurrency, DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
+import { formatCurrencyWhole, DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';   // MONEY-PRECISION-2 — a signal is a sentence
 
 // ---------------------------------------------------------------------------
 // Confidence thresholds
@@ -83,7 +83,7 @@ function detectSnapshotSignals(
 
   const now      = new Date().toISOString();
   const currency = data.currency ?? DEFAULT_DISPLAY_CURRENCY;
-  const abs      = formatCurrency(Math.abs(change.abs), currency);
+  const abs      = formatCurrencyWhole(Math.abs(change.abs), currency);
   const pct      = change.pct !== null
     ? ` (${change.pct > 0 ? '+' : ''}${change.pct.toFixed(1)}%)`
     : '';

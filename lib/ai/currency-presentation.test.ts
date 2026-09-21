@@ -94,8 +94,12 @@ check(
     /currency:\s*string\s*=\s*DEFAULT_DISPLAY_CURRENCY/.test(fmt) && /style:\s*'currency'/.test(fmt));
 
   const snapDetector = readFileSync(join(ROOT, 'lib', 'ai', 'signals', 'detectors', 'snapshot.ts'), 'utf8');
-  check('snapshot detector formats via formatCurrency and fires off canonicalChange',
-    /formatCurrency\(/.test(snapDetector) && /canonicalChange/.test(snapDetector) &&
+  // MONEY-PRECISION-2 — the signal is a SENTENCE, so it formats with
+  // `formatCurrencyWhole`. What this guard is about is unchanged: the figure goes
+  // through the shared currency module (never a literal symbol) and the change
+  // comes from `canonicalChange`, not a re-derived trend.
+  check('snapshot detector formats via the currency module and fires off canonicalChange',
+    /formatCurrency(Whole)?\(/.test(snapDetector) && /canonicalChange/.test(snapDetector) &&
     !/netWorthTrend/.test(codeOf(snapDetector)));
 }
 

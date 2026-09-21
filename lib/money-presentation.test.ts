@@ -26,7 +26,7 @@ import {
   formatCurrency, formatCurrencyWhole, formatCurrencyExact, formatBalance,
   formatCompactCurrency, currencySymbol, DEFAULT_DISPLAY_CURRENCY,
 } from "./currency";
-import { formatAggregateMoney } from "@/components/space/widgets/display-money";
+import { formatAggregateMoney, formatProseMoney } from "@/components/space/widgets/display-money";
 import { clampEconomicSpend, economicTotals } from "./transactions/cash-flow";
 import { planPayoff } from "./debt/payoff";
 
@@ -139,6 +139,54 @@ console.log("13. the boundary is where the surfaces call it");
   }
   check("display-money delegates to the shared formatters — it defines no format of its own",
     /from "@\/lib\/currency"/.test(code("components/space/widgets/display-money.ts")));
+}
+
+console.log("14. MONEY-PRECISION-2 — a SENTENCE rounds to the dollar; a FIGURE keeps its cents");
+{
+  // The distinction is semantic and is made at the module that owns the text —
+  // never by inspecting a string or the DOM around it.
+  check("the same value, both ways: 23400 → $23,400.00 structured · $23,400 in prose",
+    formatCurrency(23400) === "$23,400.00" && formatProseMoney(23400, { target: "USD" }) === "$23,400");
+  check("prose rounds rather than truncating: 177.49 → $177 · 177.50 → $178",
+    formatProseMoney(177.49, { target: "USD" }) === "$177" && formatProseMoney(177.5, { target: "USD" }) === "$178");
+  check("prose negatives and zero follow the same convention as outside-Space money",
+    formatProseMoney(-861.3, { target: "USD" }) === "-$861" && formatProseMoney(0, { target: "USD" }) === "$0");
+  check("prose === the whole-dollar formatter, with a context", [0, 50, -861.3, 23400, 1_000_000.4].every((v) =>
+    formatProseMoney(v, { target: "USD" }) === formatCurrencyWhole(v)));
+  check("…and without one it keeps the no-currency-claim rule", formatProseMoney(1234) === "1,234");
+  check("a native currency still labels itself in prose", formatProseMoney(23400, { target: "EUR" }) === "€23,400");
+
+  // The real sentences, from the modules that own them.
+  const debtVerdict = code("lib/perspective-engine/lenses/debt.core.ts");
+  const liqVerdict  = code("lib/perspective-engine/lenses/liquidity.core.ts");
+  const story       = code("lib/wealth/wealth-time-machine.ts");
+  const signal      = code("lib/ai/signals/detectors/snapshot.ts");
+  const insights    = code("components/space/widgets/cashflow/cash-flow-insights.ts");
+  const hero        = code("components/space/widgets/liquidity/LiquidityHero.tsx");
+  for (const [name, src] of [["debt verdict", debtVerdict], ["liquidity verdict", liqVerdict],
+    ["wealth story", story], ["net-worth signal", signal]] as const) {
+    check(`${name}: formats with formatCurrencyWhole, and never the cents formatter`,
+      /formatCurrencyWhole\(/.test(src) && !/\bformatCurrency\(/.test(src));
+  }
+  check("cash-flow insights: the sentence helper is formatProseMoney", /formatProseMoney\(v, moneyCtx\)/.test(insights) && !/formatAggregateMoney/.test(insights));
+  check("the liquidity hero passes the whole-dollar formatter INTO the baseline clause…",
+    /describeExpenseBaseline\([\s\S]{0,400}?formatCurrencyWhole\(n, currency\)/.test(hero));
+  check("…while its own structured figures keep the cents formatter", /formatCurrency\(cashNow, currency\)/.test(hero));
+
+  // STRUCTURED money is untouched by this slice — these are figures, not sentences.
+  const structured: [string, string][] = [
+    ["payoff amounts", "components/space/sections/DebtPayoffSection.tsx"],
+    ["ledger rows", "components/space/widgets/debt/LiabilitiesLedger.tsx"],
+    ["category lines + total", "components/space/widgets/cashflow/CashFlowCategoryLedger.tsx"],
+    ["drawer totals", "components/space/widgets/TransactionSliceDrawer.tsx"],
+    ["evidence rows", "lib/perspectives/envelope.ts"],
+    ["the composition card", "components/space/widgets/wealth/WealthCompositionCard.tsx"],
+  ];
+  for (const [what, f] of structured) {
+    check(`${what} still format to the cent (no prose formatter)`, !/formatCurrencyWhole|formatProseMoney/.test(code(f)));
+  }
+  check("the prose helper is NOT reachable from the structured aggregate helper",
+    !/formatProseMoney/.test(code("components/space/widgets/display-money.ts").split("export function formatAggregateMoney")[1] ?? ""));
 }
 
 console.log(failures === 0 ? `\nPASS — ${passed} checks` : `\nFAIL — ${failures} of ${passed + failures} check(s)`);

@@ -51,7 +51,7 @@
  */
 
 import type { FreshnessBasis } from "@/lib/freshness/observation";
-import { formatCurrency } from "@/lib/currency";
+import { formatCurrencyWhole } from "@/lib/currency";   // MONEY-PRECISION-2 — a VERDICT is a sentence (see display-money.ts)
 import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
 import { computeDebtAggregate, type DebtAggregateRow } from "@/lib/debt/aggregates";
 import { convertMoney } from "@/lib/money/convert";
@@ -382,9 +382,9 @@ export function computeDebt(
   if (totalDebt === 0) {
     verdict = "No outstanding debt balances in this Space.";
   } else if (interestKnown) {
-    verdict = `You carry ${formatCurrency(totalDebt, ctx?.target)} of debt across ${plural(n, "account")}, accruing an estimated ${formatCurrency(monthlyInterest, ctx?.target)}/month in interest at known rates.`;
+    verdict = `You carry ${formatCurrencyWhole(totalDebt, ctx?.target)} of debt across ${plural(n, "account")}, accruing an estimated ${formatCurrencyWhole(monthlyInterest, ctx?.target)}/month in interest at known rates.`;
   } else {
-    verdict = `You carry ${formatCurrency(totalDebt, ctx?.target)} of debt across ${plural(n, "account")}; no interest rates are on file yet.`;
+    verdict = `You carry ${formatCurrencyWhole(totalDebt, ctx?.target)} of debt across ${plural(n, "account")}; no interest rates are on file yet.`;
   }
 
   return {
