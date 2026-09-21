@@ -32,6 +32,7 @@
 
 import { refreshScheduledWallets, type WalletRefreshDeps, type WalletRefreshResult } from "@/lib/crypto/wallet-refresh";
 import { chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch";
+import { activeWalletAccountIdsForChains } from "@/lib/crypto/wallet-snapshot-scope";
 import {
   regenerateWealthHistoryForAccounts,
   wealthRegenerationEnabled,
@@ -93,12 +94,19 @@ export async function syncCrypto(options: {
 
   let snapshotSpaces = 0;
   let wealthRegenSpaces = 0;
-  if (result.syncedAccountIds.length > 0) {
+  // TODAY's snapshots follow new valuation evidence AND every changed quote: a
+  // quote is shared, so every holder of a re-quoted asset is regenerated, not
+  // only the wallets this sweep happened to sync.
+  const quoteHolders = result.requotedChains.length > 0 ? await activeWalletAccountIdsForChains(result.requotedChains) : [];
+  const snapshotAccountIds = [...new Set([...result.syncedAccountIds, ...quoteHolders])];
+  if (snapshotAccountIds.length > 0) {
     try {
-      snapshotSpaces = (await regenerateSnapshotsForAccounts(result.syncedAccountIds)).length;
+      snapshotSpaces = (await regenerateSnapshotsForAccounts(snapshotAccountIds)).length;
     } catch (err) {
       console.warn("[sync-crypto] snapshot regen failed (non-fatal):", err instanceof Error ? err.message : err);
     }
+  }
+  if (result.syncedAccountIds.length > 0) {
 
     if (wealthRegenerationEnabled()) {
       // The manual route's gate: history exists to regenerate only where it has been proven.

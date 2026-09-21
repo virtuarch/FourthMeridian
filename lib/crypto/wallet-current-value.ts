@@ -57,6 +57,8 @@ import {
 } from "@/lib/investments/valuation";
 import { todayUTCISO } from "@/lib/time/clock";
 import { usesLegacyColumnForCurrentValue } from "./wallet-sync-dispatch";
+import { readQuotesForDate, type StoredQuote } from "@/lib/prices/current-quotes";
+import { quoteServesAsOf, quoteProvenance, closeProvenance, type PriceProvenance } from "@/lib/prices/current-quote.core";
 import { nativeAssetForChain } from "./native-asset";
 import { bandForAge, ageInDays, type FreshnessBand } from "@/lib/freshness/observation";
 
@@ -110,8 +112,15 @@ export interface WalletCurrentValue {
   state:      WalletValueState;
   /** The date this was valued at (the caller's clock). */
   asOf:       string;
-  /** The close actually used, which may be earlier than `asOf`. */
+  /** The close actually used, which may be earlier than `asOf` (or `asOf` itself when a current quote priced it). */
   priceDate:  string | null;
+  /**
+   * 2026-09-21 — the PRICE's own clock, independent of the quantity's
+   * (`observedAt`/`freshness` below). CURRENT_QUOTE: today's quote, `asOf` its
+   * provider instant, CURRENT or DELAYED. LAST_CLOSE: the archive's close, `asOf`
+   * its date — never current. Null when nothing priced the position.
+   */
+  price:      PriceProvenance | null;
   /**
    * W6b — WHEN the provider last successfully confirmed this wallet, and the
    * canonical band for that age.
@@ -289,6 +298,7 @@ export async function loadWalletCurrentValues(
       state:     "NO_OBSERVATION",
       asOf,
       priceDate: null,
+      price:     null,
       observedAt: f.observedAt,
       freshness:  f.band,
     });
@@ -329,6 +339,16 @@ export async function loadWalletCurrentValues(
 
   if (posRows.length === 0) return out;
 
+  // 2026-09-21 — TODAY is priced at today's CURRENT quote where one is stored;
+  // any other date (and any instrument without a quote) keeps the RAW_CLOSE
+  // rule. Same persisted row for every reader of today ⇒ the account read, the
+  // Space mount and today's SpaceSnapshot cannot disagree about it.
+  const todayISO = todayUTCISO(now);
+  const quotes = asOf === todayISO
+    ? await readQuotesForDate([...new Set(posRows.map((r) => r.instrumentId))], todayISO, client)
+    : new Map<string, StoredQuote>();
+  const servingQuotes = new Map([...quotes].filter(([, q]) => quoteServesAsOf(q.quotedAt, asOf, now)));
+
   // THE canonical valuation path. No price, FX or staleness decision is made here.
   const view = await valuePositionRows({
     client,
@@ -338,6 +358,7 @@ export async function loadWalletCurrentValues(
     holdConstant:      false,
     posRows,
     reconRows,
+    currentQuotes: { dateISO: asOf, byInstrument: new Map([...servingQuotes].map(([id, q]) => [id, { price: q.priceUsd, currency: "USD" }])) },
   });
 
   // A wallet holds ONE native asset, so one component per account. Should a
@@ -358,12 +379,18 @@ export async function loadWalletCurrentValues(
     const valued = components.filter((c) => c.reportingValue !== null);
     const quantity = components.length === 1 ? components[0].quantity : null;
     const priceDate = components.length === 1 ? components[0].priceDate ?? null : null;
+    // The archive never holds today's date, so priceDate === asOf ⇔ a quote priced it.
+    const quote = components.length === 1 ? servingQuotes.get(components[0].instrumentId) : undefined;
+    const price: PriceProvenance | null =
+      quote && priceDate === asOf ? quoteProvenance(quote.quotedAt, now)
+      : priceDate ? closeProvenance(priceDate)
+      : null;
 
     if (valued.length !== components.length) {
       // At least one held asset could not be priced. We know the quantity; the
       // value is unknown, and a partial subtotal would be a smaller lie than
       // zero but a lie all the same.
-      out.set(accountId, { ...seed, quantity, value: null, state: "NO_PRICE", priceDate });
+      out.set(accountId, { ...seed, quantity, value: null, state: "NO_PRICE", priceDate, price: null });
       continue;
     }
 
@@ -382,6 +409,7 @@ export async function loadWalletCurrentValues(
       state:     isFresh(f.band) ? "VALUED" : "STALE",
       asOf,
       priceDate,
+      price,
       observedAt: f.observedAt,
       freshness:  f.band,
     });

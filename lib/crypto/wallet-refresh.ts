@@ -41,7 +41,7 @@
  * refusal. This module writes no clock and no financial row of its own.
  */
 
-import { SYNCABLE_CHAINS, syncWalletByChain, walletRefreshTrigger, outcomeRevalued, type WalletSyncOutcome } from './wallet-sync-dispatch';
+import { SYNCABLE_CHAINS, syncWalletByChain, walletRefreshTrigger, outcomeRevalued, outcomeRequoted, type WalletSyncOutcome } from './wallet-sync-dispatch';
 import { isDueForScheduledRefresh, type RefreshPolicy } from '@/lib/platform/refresh-policy.core';
 
 /**
@@ -124,6 +124,8 @@ export interface WalletRefreshResult {
   /** Failure stages, counted — never ids or provider text. */
   failureStages: Record<string, number>;
   syncedAccountIds: string[];
+  /** Chains whose native-asset current quote CHANGED this sweep — their holders' snapshots must follow. */
+  requotedChains: string[];
   /** Due wallets placed after the rest because their last attempt failed recently. */
   deprioritizedRecentFailures: number;
   /** The earliest reconstructed-history date any synced wallet changed (measured by ETH), for regeneration. */
@@ -200,7 +202,7 @@ export async function refreshScheduledWallets(options: {
   const result: WalletRefreshResult = {
     total: wallets.length, notDue: wallets.length - due.length,
     attempted: 0, succeeded: 0, failed: 0, deferred: 0,
-    byChain: {}, failureStages: {}, syncedAccountIds: [], slowestWalletMs: 0, elapsedMs: 0,
+    byChain: {}, failureStages: {}, syncedAccountIds: [], requotedChains: [], slowestWalletMs: 0, elapsedMs: 0,
     deprioritizedRecentFailures: due.filter((w) => failedRecently(w, policy, now)).length,
     historyImpactedFromISO: null,
     policy: { cadence: policy.cadence, overdueAfterHours: policy.overdueAfterHours, version: policy.version },
@@ -241,6 +243,7 @@ export async function refreshScheduledWallets(options: {
       tally.succeeded++; result.succeeded++;
       // Only runs with new valuation evidence feed snapshot regeneration.
       if (outcomeRevalued(outcome)) result.syncedAccountIds.push(w.accountId);
+      if (outcomeRequoted(outcome) && !result.requotedChains.includes(outcome.chain)) result.requotedChains.push(outcome.chain);
       const impacted = outcome.historyRefresh?.impactedFromISO ?? null;
       if (impacted && (!result.historyImpactedFromISO || impacted < result.historyImpactedFromISO)) result.historyImpactedFromISO = impacted;
     } else {

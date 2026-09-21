@@ -39,6 +39,7 @@
  * slice (URL-synced in useSpaceNavigation — the evolved `?metric=` mechanism).
  */
 
+import { summarizeCryptoPricing } from "@/lib/prices/current-quote.core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import {
@@ -436,7 +437,8 @@ export function WealthWorkspace({
 
         {/* ① Hero — the headline scalar of the page's subject. */}
         <div id="wealth-summary" className="scroll-mt-20">
-          <WealthHero result={result} currency={displayCurrency} envelope={envelope} metric={metric} />
+          <WealthHero result={result} currency={displayCurrency} envelope={envelope} metric={metric}
+            cryptoPriceNote={result.asOfState.date === today ? summarizeCryptoPricing((accounts ?? []).map((a) => a.cryptoPrice)) : null} />
         </div>
 
         {/* ② Trend — the dominant honesty chart; in Assets, sliceable. */}

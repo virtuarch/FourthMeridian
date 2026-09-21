@@ -143,6 +143,8 @@ export interface Account {
     assetKey:  string | null;
     priceDate: string | null;
     asOf:      string;
+    /** 2026-09-21 — the PRICE's own clock (CURRENT_QUOTE / LAST_CLOSE); see lib/prices/current-quote.core. */
+    price:     { basis: "CURRENT_QUOTE" | "LAST_CLOSE"; asOf: string; freshness: "CURRENT" | "DELAYED" | "LAST_CLOSE" } | null;
   };
   /**
    * 'manual'  = user-entered asset (AccountType.other, no Plaid connection)

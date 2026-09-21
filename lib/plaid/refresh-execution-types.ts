@@ -139,7 +139,11 @@ export type RefreshEndpoint =
   // BTC — the canonical archived close applied to the quantity WALLET_SYNC just
   // observed. DERIVED (an archive read, not a provider call): a failure makes the
   // run PARTIAL — quantity fresh, value not — and never FAILED on its own.
-  | "VALUATION";
+  | "VALUATION"
+  // The chain's native-asset CURRENT quote (lib/prices/current-quotes), fetched
+  // after a successful wallet read. PROVIDER: a failure makes the run PARTIAL
+  // and the value falls back to the last close, labelled as such.
+  | "CURRENT_QUOTE";
 
 export type RefreshStageKind = "PROVIDER" | "DERIVED";
 

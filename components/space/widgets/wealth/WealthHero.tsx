@@ -74,6 +74,7 @@ export function WealthHero({
   currency,
   envelope,
   metric = "netWorth",
+  cryptoPriceNote,
 }: {
   result:   WealthResult;
   currency: string;
@@ -82,6 +83,12 @@ export function WealthHero({
   /** The page's resolved series — the hero reflects the SAME metric the chart
    *  plots, so Total / Assets / a slice change the headline too. */
   metric?:  WealthMetricKey;
+  /**
+   * 2026-09-21 — the price basis of the crypto inside TODAY's figure
+   * (summarizeCryptoPricing over the same wallet values the snapshot was
+   * written from). Absent for a past date or a Space with no priced wallet.
+   */
+  cryptoPriceNote?: string | null;
 }) {
   const { asOfState, deltas, compareState } = result;
   const compareLabel =
@@ -133,7 +140,7 @@ export function WealthHero({
           <span className="text-[11px] text-[var(--text-muted)]">Add a Compare To date above to see the change.</span>
         )}
       </div>
-      {asOfLabel && <p className="mt-2.5 text-sm text-[var(--text-secondary)]">{asOfLabel}</p>}
+      {asOfLabel && <p className="mt-2.5 text-sm text-[var(--text-secondary)]">{asOfLabel}{cryptoPriceNote ? ` · ${cryptoPriceNote}` : ""}</p>}
 
       {/* Secondary stats — the subject's dimensions, each a real WealthMetrics
           key off the same as-of snapshot (label · value · signed change). */}

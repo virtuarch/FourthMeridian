@@ -39,6 +39,7 @@ import { limitByUser } from "@/lib/rate-limit";
 import {
   syncWalletByChain, isSyncableChain, chainSupportsHistory, SYNCABLE_CHAINS, outcomeRevalued,
 } from "@/lib/crypto/wallet-sync-dispatch";
+import { snapshotAccountsForOutcome } from "@/lib/crypto/wallet-snapshot-scope";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { regenerateWealthHistoryForAccounts } from "@/lib/snapshots/regenerate-history";
 import { resolveHistoricalWorkWindow } from "@/lib/snapshots/historical-work-window";
@@ -87,15 +88,23 @@ export async function POST(
   // the refresh ledger, so the run, its duration and its verdict are inspectable.
   const result = await syncWalletByChain(id, account.walletChain, { trigger: "MANUAL" });
 
-  // Regenerate only from NEW valuation evidence: an ok run with no canonical
-  // close refreshed the quantity but not the value (see outcomeRevalued).
-  if (outcomeRevalued(result)) {
-    // Best-effort/non-fatal — same pattern as every other account-mutation path.
+  // TODAY's snapshots: this account when the run produced new valuation
+  // evidence, plus every holder of a re-quoted asset (a quote is shared — see
+  // snapshotAccountsForOutcome). Best-effort/non-fatal, as on every
+  // account-mutation path.
+  const snapshotAccounts = await snapshotAccountsForOutcome(result).catch(() => (outcomeRevalued(result) ? [id] : []));
+  if (snapshotAccounts.length > 0) {
     try {
-      await regenerateSnapshotsForAccounts([id]);
+      await regenerateSnapshotsForAccounts(snapshotAccounts);
     } catch (snapshotErr) {
       console.warn(`[POST /api/accounts/${id}/sync] snapshot regen failed (non-fatal):`, snapshotErr);
     }
+  }
+
+  // Wealth HISTORY regenerates only from NEW valuation evidence for THIS
+  // account: an ok run with no canonical close refreshed the quantity but not
+  // the value (see outcomeRevalued). Quotes never enter history.
+  if (outcomeRevalued(result)) {
     // Part-2 — also regenerate the wealth HISTORY so the per-day valuation runs
     // for a real account sync, not just today's flat row. Best-effort/non-fatal;
     // gated on WEALTH_REGENERATION_ENABLED.

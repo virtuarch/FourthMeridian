@@ -42,8 +42,12 @@ export async function GET() {
   const canonical = await applyCanonicalWalletBalances(accounts);
 
   return NextResponse.json(
-    canonical.map(({ cryptoPosition: _c, walletChain: _w, ...a }) => ({
+    canonical.map(({ cryptoPosition, walletChain: _w, ...a }) => ({
       ...a, lastUpdated: a.lastUpdated.toISOString(),
+      // 2026-09-21 — the price clock travels WITH the number it priced (it was
+      // stripped with the rest of the position): a picker balance is a current
+      // claim too, and "current" needs the quote instant or the close date.
+      ...(cryptoPosition?.price ? { cryptoPrice: cryptoPosition.price } : {}),
     }))
   );
 }

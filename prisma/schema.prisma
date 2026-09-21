@@ -2020,6 +2020,10 @@ model PriceObservation {
   currency  String // ISO 4217 quote currency of `price`
   basis     PriceBasis
   source    String // provider that supplied the batch — provenance, not identity
+  // For INTRADAY rows (current crypto quotes, lib/prices/current-quotes.ts)
+  // `fetchedAt` is the PROVIDER's attested quote instant, and `date` its UTC
+  // market date; the row holds the latest quote of that day. No historical
+  // reader requests INTRADAY — dated valuation is RAW_CLOSE only.
   fetchedAt DateTime   @default(now())
   createdAt DateTime   @default(now())
 

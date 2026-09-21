@@ -19,6 +19,8 @@ export type DashboardSection = {
   config:      Record<string, unknown> | null;
 };
 
+import type { PriceProvenance } from "@/lib/prices/current-quote.core";
+
 export type SpaceAccount = {
   id:             string;
   name:           string;
@@ -60,6 +62,13 @@ export type SpaceAccount = {
     /** How many provider-observed pending rows backed the prediction. */
     pendingCount: number;
   };
+  /**
+   * 2026-09-21 — a crypto wallet's PRICE provenance, independent of the
+   * quantity's clock: CURRENT_QUOTE (provider instant, CURRENT/DELAYED) or
+   * LAST_CLOSE (close date). Present only on wallets whose value is priced; the
+   * one presentation is `describePriceProvenance`.
+   */
+  cryptoPrice?:   PriceProvenance;
   creditLimit?:   number;
   interestRate?:  number;  // APR, e.g. 19.99
   minimumPayment?: number; // monthly minimum

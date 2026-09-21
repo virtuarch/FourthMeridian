@@ -331,6 +331,12 @@ export async function resolveInvestmentScopeAndCurrency(
  * single-date list — the per-day valuation logic lives in exactly one place, so
  * the window batch (HIST-1C) and the single read produce byte-identical views.
  */
+/** Current quotes for ONE market date (see valuePositionRowsOverDates). */
+export interface CurrentQuoteInput {
+  dateISO:      string;
+  byInstrument: ReadonlyMap<string, { price: number; currency: string }>;
+}
+
 export async function valuePositionRows(args: {
   client:            Client;
   asOf:              string;
@@ -339,6 +345,8 @@ export async function valuePositionRows(args: {
   holdConstant:      boolean;
   posRows:           readonly ObservationValuationRow[];
   reconRows:         readonly ReconstructionConflictRow[];
+  /** See `valuePositionRowsOverDates` — one date only; the current-value path alone passes it. */
+  currentQuotes?:    CurrentQuoteInput;
 }): Promise<InvestmentValuationView> {
   const byDate = await valuePositionRowsOverDates({
     client: args.client,
@@ -348,6 +356,7 @@ export async function valuePositionRows(args: {
     holdConstant: args.holdConstant,
     posRows: args.posRows,
     reconRows: args.reconRows,
+    currentQuotes: args.currentQuotes,
   });
   // valuePortfolioAsOf always returns a view for a requested date (empty when no
   // holdings), so this is defined; the fallback keeps the function total-typed.
@@ -382,12 +391,30 @@ export async function valuePositionRowsOverDates(args: {
    * is consulted. Optional and inert when `QUANTITY_AUTHORITY_MODE` is off.
    */
   authorityLedgerOut?: ComparisonRow[];
+  /**
+   * 2026-09-21 — CURRENT quotes (PriceBasis.INTRADAY, lib/prices/current-quotes)
+   * for the ONE market date they belong to. Accepted ONLY when this valuation is
+   * for exactly one date and it is that date; anything else throws, so no
+   * multi-date caller — every historical reconstruction — can be handed an
+   * intraday price. The only caller (loadWalletCurrentValues) passes them for
+   * TODAY, and the archive never holds today's date (assertClosedDateISO), so a
+   * price dated today in the result can only have come from here.
+   */
+  currentQuotes?: CurrentQuoteInput;
 }): Promise<Map<string, InvestmentValuationView>> {
   const { client, contextSpaceId, reportingCurrency, holdConstant, posRows, reconRows } = args;
 
   const out = new Map<string, InvestmentValuationView>();
   const dates = [...new Set(args.dates)].sort();
   if (dates.length === 0) return out;
+  if (args.currentQuotes && args.currentQuotes.byInstrument.size > 0) {
+    if (dates.length !== 1 || dates[0] !== args.currentQuotes.dateISO) {
+      throw new Error(
+        `[valuation] current quotes for ${args.currentQuotes.dateISO} refused for dates ${dates.join(",")} — ` +
+        "a quote prices its own day only; historical valuation reads RAW_CLOSE and nothing else",
+      );
+    }
+  }
 
   // ── Shared prep, built ONCE for every requested date ───────────────────────
   // Group full rows by (account|instrument).
@@ -436,6 +463,13 @@ export async function valuePositionRowsOverDates(args: {
   const maxDate = dates[dates.length - 1];
   const floorISO = minusDaysISO(minDate, PRICE_MAX_STALE_DAYS);
   const priceWindow = (await priceArchive.readRange?.([...instrumentIds], PriceBasis.RAW_CLOSE, floorISO, maxDate)) ?? [];
+  // TODAY's current quotes join the in-memory window dated today (guarded above),
+  // so they win nearest-on-or-before for today and are invisible to any other date.
+  if (args.currentQuotes) {
+    for (const [instrumentId, q] of args.currentQuotes.byInstrument) {
+      if (instrumentIds.has(instrumentId)) priceWindow.push({ instrumentId, dateISO: maxDate, price: q.price, currency: q.currency } as (typeof priceWindow)[number]);
+    }
+  }
   const priceService = createPriceService(memoryPriceReader(priceWindow));
 
   // ── One conversion context spanning every date × every native currency ─────

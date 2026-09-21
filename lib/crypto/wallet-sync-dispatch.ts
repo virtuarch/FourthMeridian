@@ -44,6 +44,7 @@
  */
 
 import { syncBtcWallet, BTC_CHAIN, type BtcTransactionImportOutcome, type BtcValuationOutcome } from "@/lib/crypto/btc-sync";
+import { refreshCurrentQuotesForChains } from "@/lib/prices/current-quotes";
 import { syncEthWallet, ETH_CHAIN } from "@/lib/crypto/eth-sync";
 import { syncSolWallet, SOL_CHAIN } from "@/lib/crypto/sol-sync";
 import { syncEvmWallet } from "@/lib/crypto/evm-native";
@@ -189,6 +190,17 @@ export interface WalletSyncOutcome {
   valuation?:
     | { status: "PRICED" }
     | { status: "UNAVAILABLE"; reason: string };
+  /**
+   * The chain's native-asset CURRENT quote, refreshed after an `ok` read.
+   * REFRESHED carries the instruments whose quote CHANGED, so the caller can
+   * regenerate today's snapshot for EVERY wallet holding them — a quote is
+   * shared, and a Space the sync did not touch must not keep a value priced at
+   * the previous one. Absent on a failed sync.
+   */
+  currentQuote?:
+    | { status: "REFRESHED"; quotedAt: string; changedInstrumentIds: string[] }
+    | { status: "UNAVAILABLE"; reason: string }
+    | { status: "NOT_CONFIGURED" };
 }
 
 interface ChainAdapter {
@@ -417,6 +429,11 @@ export function outcomeRevalued(outcome: Pick<WalletSyncOutcome, "ok" | "valuati
   return outcome.ok && outcome.valuation?.status !== "UNAVAILABLE";
 }
 
+/** Did this run CHANGE the chain's stored current quote? */
+export function outcomeRequoted(outcome: Pick<WalletSyncOutcome, "currentQuote">): boolean {
+  return outcome.currentQuote?.status === "REFRESHED" && outcome.currentQuote.changedInstrumentIds.length > 0;
+}
+
 /**
  * Sync one wallet through its chain's adapter.
  *
@@ -510,6 +527,17 @@ export async function syncWalletByChain(
     // Never fatal. The reconstruction refuses before it opens a write
     // transaction, so a refusal leaves the previous rows and licence exactly
     // where they were, and the balance this sync DID read is still reported.
+    // CURRENT QUOTE — after a successful read, the chain's native asset is
+    // re-quoted so today's value is priced at the market, not yesterday's close.
+    // Recorded as its own PROVIDER stage with its own clock; never gating.
+    const quote = result.ok ? await refreshCurrentQuotesForChains([key]) : null;
+    if (quote) {
+      if (quote.status === "NOT_CONFIGURED") recorder.skip("CURRENT_QUOTE", "PROVIDER", "NOT_APPLICABLE");
+      else recorder.recordMeasured("CURRENT_QUOTE", "PROVIDER", quote.status === "REFRESHED"
+        ? { ok: true, startedAt: quote.startedAt, durationMs: quote.durationMs, facts: { recordsRead: quote.instrumentIds.length, recordsWritten: quote.changedInstrumentIds.length, recordsChanged: quote.changedInstrumentIds.length } }
+        : { ok: false, startedAt: quote.startedAt, durationMs: quote.durationMs, err: new Error(quote.reason) });
+    }
+
     if (result.ok) recorder.begin("HISTORY_BACKFILL", "DERIVED");
     const historyRefresh = result.ok ? await refreshWalletHistory(accountId, key) : null;
     if (historyRefresh && !historyRefresh.refreshed && historyRefresh.reason) {
@@ -539,6 +567,11 @@ export async function syncWalletByChain(
         : undefined,
       valuation: valuation
         ? (valuation.status === "PRICED" ? { status: "PRICED" } : { status: "UNAVAILABLE", reason: valuation.reason })
+        : undefined,
+      currentQuote: quote
+        ? (quote.status === "REFRESHED" ? { status: "REFRESHED", quotedAt: quote.quotedAt.toISOString(), changedInstrumentIds: quote.changedInstrumentIds }
+          : quote.status === "UNAVAILABLE" ? { status: "UNAVAILABLE", reason: quote.reason }
+          : { status: "NOT_CONFIGURED" })
         : undefined,
       raw: result,
     };

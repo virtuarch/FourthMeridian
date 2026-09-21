@@ -173,7 +173,7 @@ async function main() {
     check('H. the job runs the unified sweep and no chain-specific batch', /refreshScheduledWallets\(/.test(job)
       && !/syncAllBtcWallets|syncAllSolWallets|syncAllEthWallets|syncBtcWallet\(/.test(job));
     check('H. the job regenerates what the manual route regenerates, for synced wallets only',
-      /regenerateSnapshotsForAccounts\(result\.syncedAccountIds\)/.test(job) && /chainSupportsHistory/.test(job));
+      /regenerateSnapshotsForAccounts\(snapshotAccountIds\)/.test(job) && /result\.syncedAccountIds, \.\.\.quoteHolders/.test(job) && /chainSupportsHistory/.test(job));
     check('the sweep writes no clock or financial row of its own', !/\.(update|create|upsert|delete)\w*\(/.test(refresh));
     const registry = readFileSync('lib/jobs/registry.ts', 'utf8');
     check('the continuation slot runs the same job body', /syncCrypto\(\{ continuation: true \}\)/.test(registry));

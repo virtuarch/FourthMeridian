@@ -104,6 +104,7 @@ export async function fetchSecurityPrices(now: Date = new Date()): Promise<Fetch
   const missing = selectInstrumentsMissingDate(instrumentIds, covered, dateISO);
 
   let fetched = 0, inserted = 0, failed = 0, actions = 0;
+  let cryptoClosesLanded = false;
   for (const instrumentId of missing) {
     try {
       const res = await fetchInstrumentWindow(
@@ -121,6 +122,7 @@ export async function fetchSecurityPrices(now: Date = new Date()): Promise<Fetch
         fetched++;
         const w = await priceArchive.writeBatch(res.source, res.rows);
         inserted += w.inserted;
+        if (w.inserted > 0 && classById.get(instrumentId) === "CRYPTO") cryptoClosesLanded = true;
         // V26-S1-CA — a split that happens TODAY is stated on today's row, in
         // this very response. Capturing it here is what keeps the terms
         // authority current without a second job or a second vendor call.
@@ -135,6 +137,24 @@ export async function fetchSecurityPrices(now: Date = new Date()): Promise<Fetch
     } catch (err) {
       failed++;
       console.warn(`[prices-cron] ${dateISO}: instrument ${instrumentId} failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  // 2026-09-21 — A NEWER CLOSE CHANGES TODAY'S FALLBACK VALUE. A wallet with no
+  // current quote today is valued at the latest close, and this job is what
+  // lands yesterday's; today's snapshot was written by an earlier sync against
+  // the close before it (a 00:00/06:00 sweep runs ahead of this 06:30 job). So
+  // every wallet's TODAY snapshot is regenerated here — otherwise the headline
+  // keeps a close two days old while the account read has moved to yesterday's.
+  if (cryptoClosesLanded) {
+    try {
+      const { SYNCABLE_CHAINS } = await import("@/lib/crypto/wallet-sync-dispatch");
+      const { activeWalletAccountIdsForChains } = await import("@/lib/crypto/wallet-snapshot-scope");
+      const { regenerateSnapshotsForAccounts } = await import("@/lib/snapshots/regenerate");
+      const wallets = await activeWalletAccountIdsForChains(SYNCABLE_CHAINS);
+      if (wallets.length > 0) await regenerateSnapshotsForAccounts(wallets);
+    } catch (e) {
+      console.warn(`[prices-cron] ${dateISO}: wallet snapshot refresh after new crypto closes failed (non-fatal): ${e instanceof Error ? e.message : e}`);
     }
   }
 

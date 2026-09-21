@@ -228,10 +228,14 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
     const currentState = a.aggregate
       ? aggregateCurrentCashState(a.aggregate.memberAccountIds.map((id) => currentStateByAccount.get(id)))
       : currentStateByAccount.get(a.id);
+    // 2026-09-21 — the PRICE's clock beside the number (never on an aggregated
+    // privacy row: its synthetic id maps to no single wallet).
+    const cryptoPrice = a.aggregate ? null : walletValueByAccount.get(a.id)?.price ?? null;
     return {
       ...a,
       earliestTxDate: floorByAccount.get(a.id) ?? null,
       ...(currentState ? { currentState } : {}),
+      ...(cryptoPrice ? { cryptoPrice } : {}),
     };
   })) as unknown as SpaceAccount[];
 }

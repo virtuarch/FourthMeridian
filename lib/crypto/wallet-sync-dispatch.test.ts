@@ -245,8 +245,11 @@ check("the per-user rate limit is unchanged",
   /limitByUser\(user\.id, "wallet-resync", \{ limit: 6, windowSec: 3600 \}\)/.test(syncRoute));
 check("the honest 200/502 contract is unchanged",
   /status: result\.ok \? 200 : 502/.test(syncRoute));
-check("snapshot regen still runs for every successful sync",
-  /regenerateSnapshotsForAccounts\(\[id\]\)/.test(syncRoute));
+// 2026-09-21 — the scope is `snapshotAccountsForOutcome(result)`: this account
+// when revalued, plus every holder of a re-quoted asset (executed in
+// lib/prices/current-quote.test.ts / btc-partial-sync.test.ts).
+check("snapshot regen runs over the outcome's scope (this account ∪ re-quoted holders)",
+  /snapshotAccountsForOutcome\(result\)/.test(syncRoute) && /regenerateSnapshotsForAccounts\(snapshotAccounts\)/.test(syncRoute));
 check("the ORCH-1 changedSince stamp still precedes the sync",
   body(syncRoute).indexOf("syncStartedAt = new Date()") < body(syncRoute).indexOf("syncWalletByChain("));
 
@@ -370,10 +373,12 @@ check("…and its only account UPDATE touches lifecycle, never a balance",
   // `result.ok` (false whenever ok is false; also false for an unpriced BTC run),
   // executed in btc-partial-sync.test.ts.
   const gate = "if (outcomeRevalued(result))";
-  check("snapshot + history regen run ONLY inside the revalued (⊂ ok) branch",
-    b.indexOf(gate) > 0
-      && b.indexOf(gate) < b.indexOf("regenerateSnapshotsForAccounts(")
-      && b.indexOf(gate) < b.indexOf("regenerateWealthHistoryForAccounts("));
+  // Snapshots follow the outcome's scope (empty for a failed sync — a failed
+  // sync is neither revalued nor re-quoted); wealth HISTORY stays behind the gate.
+  check("wealth history regen runs ONLY inside the revalued (⊂ ok) branch",
+    b.indexOf(gate) > 0 && b.indexOf(gate) < b.indexOf("regenerateWealthHistoryForAccounts("));
+  check("snapshot regen is bounded by the outcome's scope, not unconditional",
+    /if \(snapshotAccounts\.length > 0\)/.test(b));
 }
 check("the dispatcher surfaces the adapter's own stage/reason rather than inventing one",
   /stage:\s*result\.stage/.test(dispatch) && /reason:\s*result\.reason/.test(dispatch));

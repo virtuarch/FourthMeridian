@@ -30,6 +30,7 @@
  * `cursor` is selected solely to derive state and is NEVER returned to the client.
  */
 
+import type { PriceProvenance } from "@/lib/prices/current-quote.core";
 import { NextRequest, NextResponse }         from "next/server";
 import { db }                                from "@/lib/db";
 import { ShareStatus, ImportBatchStatus }    from "@prisma/client";
@@ -81,6 +82,12 @@ export interface AccountDetailRow {
    * no single account whose transactions could be counted.
    */
   freshness:          AccountFreshness;
+  /**
+   * 2026-09-21 — a crypto wallet's PRICE clock (CURRENT_QUOTE / LAST_CLOSE),
+   * separate from `freshness` (the quantity's). FULL rows only; absent when the
+   * position is unpriced or the account is not a wallet.
+   */
+  cryptoPrice?:       PriceProvenance;
   /**
    * v2.6-L2 — the canonical current-balance answer: the observed ledger figure
    * and the account-type-aware reading of `availableBalance`, each NAMED. The
@@ -338,6 +345,7 @@ export async function GET(
       freshness:          fullFreshness,
       balances:           fullBalances,
       reconciliation:     fullReconciliation,
+      ...(walletValue?.price ? { cryptoPrice: walletValue.price } : {}),
     });
   }
 

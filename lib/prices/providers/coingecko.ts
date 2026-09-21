@@ -21,6 +21,7 @@
  * the same insert-only priceArchive the stock backfill uses.
  */
 
+import { parseSimplePriceQuotes, type CurrentQuote, type QuoteRejection } from "@/lib/prices/current-quote.core";
 import { PriceBasis } from "@prisma/client";
 import type {
   PriceFetchRequest, PriceProviderAdapter, PriceResult, ProviderRoutingKey,
@@ -379,4 +380,60 @@ export function createCoinGeckoPriceProvider(
       }));
     },
   };
+}
+
+// ── CURRENT quotes (2026-09-21) ───────────────────────────────────────────────
+//
+// `/simple/price` with `include_last_updated_at` — the SAME vendor, key, header
+// and coin ids as the daily closes above, so the current and historical prices
+// of one asset never come from two providers that could disagree about it. The
+// response carries the vendor's own instant for each price, which is what makes
+// it a quote rather than a number. Validation lives in the pure core
+// (parseSimplePriceQuotes); this function only transports and classifies.
+
+/**
+ * Current USD quotes for the given tickers. Tickers with no coin id are
+ * rejected by name, never guessed. Throws ProviderFetchError on transport /
+ * HTTP failure (same classification as the daily closes); returns an empty
+ * result, not an error, when no API key is configured — the dark no-op every
+ * CoinGecko call in this file shares.
+ */
+export async function fetchCoinGeckoCurrentQuotes(
+  symbols: readonly string[],
+  opts: CoinGeckoOptions & { now?: Date } = {},
+): Promise<{ quotes: CurrentQuote[]; rejected: QuoteRejection[]; configured: boolean }> {
+  const apiKey = opts.apiKey ?? process.env.COINGECKO_API_KEY;
+  if (!apiKey) return { quotes: [], rejected: [], configured: false };
+
+  const coinIdBySymbol: Record<string, string> = {};
+  const rejected: QuoteRejection[] = [];
+  for (const sym of symbols) {
+    const id = coinIdForSymbol(sym);
+    if (id) coinIdBySymbol[sym.trim().toUpperCase()] = id;
+    else rejected.push({ symbol: sym, reason: "no CoinGecko coin id" });
+  }
+  const ids = [...new Set(Object.values(coinIdBySymbol))];
+  if (ids.length === 0) return { quotes: [], rejected, configured: true };
+
+  const baseUrl = opts.baseUrl ?? COINGECKO_BASE_URL;
+  const doFetch: CoinGeckoFetch =
+    opts.fetchImpl ?? ((url, init) => fetch(url, init) as unknown as Promise<CoinGeckoHttpResponse>);
+  const url = `${baseUrl}/simple/price?ids=${encodeURIComponent(ids.join(","))}&vs_currencies=usd&include_last_updated_at=true`;
+
+  let res: CoinGeckoHttpResponse;
+  try {
+    res = await doFetch(url, { headers: { "Content-Type": "application/json", "x-cg-demo-api-key": apiKey } });
+  } catch (e) {
+    throw new ProviderFetchError("PROVIDER_ERROR", `coingecko: network error for current quotes — ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!res.ok) {
+    throw new ProviderFetchError(res.status === 429 ? "THROTTLED" : "PROVIDER_ERROR",
+      `coingecko: ${res.status === 429 ? "rate-limited (429)" : `HTTP ${res.status}`} for current quotes`);
+  }
+  let body: unknown;
+  try { body = await res.json(); }
+  catch { throw new ProviderFetchError("INVALID_DATA", "coingecko: unparseable current-quote response"); }
+
+  const parsed = parseSimplePriceQuotes(body, coinIdBySymbol, opts.now ?? new Date());
+  return { quotes: parsed.quotes, rejected: [...rejected, ...parsed.rejected], configured: true };
 }

@@ -24,6 +24,7 @@
  * carry NO management actions, exactly as the detail read neutralised them.
  */
 
+import { describePriceProvenance } from "@/lib/prices/current-quote.core";
 import { useState } from "react";
 import Link from "next/link";
 import {
@@ -310,6 +311,10 @@ export function AccountDetail({
         {/* Ledger reach is a SEPARATE fact from balance age — the two feeds advance
             independently, and a wallet can carry a live balance over a ledger that
             stops years earlier. Never presented as staleness. */}
+        {/* 2026-09-21 — a wallet's PRICE is its own clock: a quantity read a minute
+            ago says nothing about how old the price is. CURRENT_QUOTE shows the
+            provider's instant; LAST_CLOSE says so and is never shown as current. */}
+        {row.cryptoPrice && <FactRow label="Price" value={describePriceProvenance(row.cryptoPrice)} />}
         <FactRow label="Transactions" value={ledgerValue(row.freshness.ledger)} />
         {/* v2.6-L3 — reconciliation state is its OWN dimension, beside freshness.
             A mathematically EXACT reconciliation over a two-month-old balance is

@@ -408,6 +408,7 @@ export async function getAccountsWithVisibility(
         assetKey:  walletValue.assetKey,
         priceDate: walletValue.priceDate,
         asOf:      walletValue.asOf,
+        price:     walletValue.price,
       } } : {}),
       syncStatus:    r.syncStatus    as Account["syncStatus"]  ?? undefined,
       needsReauth:   !!reauthConnection,
