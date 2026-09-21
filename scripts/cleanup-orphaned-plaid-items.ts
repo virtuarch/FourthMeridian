@@ -77,6 +77,7 @@
 import { db } from "@/lib/db";
 import { PlaidItemStatus } from "@prisma/client";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 
 const APPLY = process.argv.includes("--apply");
 const VERBOSE = process.argv.includes("--verbose");
@@ -181,7 +182,7 @@ async function main() {
 
 main()
   .catch((e) => {
-    console.error("❌  Cleanup failed to run:", e);
+    console.error("❌  Cleanup failed to run:", redactedErrorForLog(e));
     process.exitCode = 1;
   })
   .finally(() => db.$disconnect());

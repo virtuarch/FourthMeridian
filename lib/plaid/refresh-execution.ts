@@ -57,6 +57,7 @@ import type {
   ExecutionVerdict,
 } from "@/lib/plaid/refresh-execution-types";
 import { buildVerdict } from "@/lib/plaid/refresh-verdict.core";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 
 // ── Narrow write-client seam (the JobRunWriteClient idiom) ───────────────────
 //
@@ -403,7 +404,7 @@ export async function runFullRefresh<T = RefreshItemResult>(
     if (!deps.verdict) return undefined;
     try { return deps.verdict({ ...ctx, stages: recorder.records }); }
     catch (verdictErr) {
-      console.error(`[refresh-execution] ${runId}: verdict callback threw (ignored):`, verdictErr);
+      console.error(`[refresh-execution] ${runId}: verdict callback threw (ignored):`, redactedErrorForLog(verdictErr));
       return undefined;
     }
   };
@@ -468,7 +469,7 @@ async function openExecution(
     const row = await client.refreshExecution.create({ data, select: { id: true } });
     return row.id;
   } catch (err) {
-    console.error(`[refresh-execution] ${data.runId}: start write failed (non-fatal):`, err);
+    console.error(`[refresh-execution] ${data.runId}: start write failed (non-fatal):`, redactedErrorForLog(err));
     // Same escalation as the JobRun wrapper (SCHEDULER-DISPATCH-RESTORE-1): a
     // null here suppresses every downstream write for this execution — endpoint
     // results, coverage, provider calls — so the refresh runs and the entire
@@ -513,7 +514,7 @@ async function closeExecution(
         })),
       });
     } catch (writeErr) {
-      console.error(`[refresh-execution] ${executionId}: endpoint-result write failed (non-fatal):`, writeErr);
+      console.error(`[refresh-execution] ${executionId}: endpoint-result write failed (non-fatal):`, redactedErrorForLog(writeErr));
     }
   }
 
@@ -535,7 +536,7 @@ async function closeExecution(
     try {
       await client.refreshEndpointAccountCoverage.createMany({ data: coverageRows });
     } catch (writeErr) {
-      console.error(`[refresh-execution] ${executionId}: account-coverage write failed (non-fatal):`, writeErr);
+      console.error(`[refresh-execution] ${executionId}: account-coverage write failed (non-fatal):`, redactedErrorForLog(writeErr));
     }
   }
 
@@ -570,7 +571,7 @@ async function closeExecution(
       },
     });
   } catch (writeErr) {
-    console.error(`[refresh-execution] ${executionId}: completion write failed (non-fatal):`, writeErr);
+    console.error(`[refresh-execution] ${executionId}: completion write failed (non-fatal):`, redactedErrorForLog(writeErr));
   }
 }
 
@@ -630,7 +631,7 @@ export async function recordAdmissionDenial(
         },
       });
     } catch (writeErr) {
-      console.error(`[refresh-execution] ${runId}: admission-denial write failed (non-fatal):`, writeErr);
+      console.error(`[refresh-execution] ${runId}: admission-denial write failed (non-fatal):`, redactedErrorForLog(writeErr));
     }
   }
 

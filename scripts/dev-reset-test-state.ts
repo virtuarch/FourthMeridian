@@ -50,6 +50,7 @@
 
 import { db } from "@/lib/db";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 
 const APPLY = process.argv.includes("--apply");
 function argValue(flag: string): string | null {
@@ -291,5 +292,5 @@ async function main() {
 }
 
 main()
-  .catch((e) => { console.error("❌ dev-reset-test-state failed:", e); process.exitCode = 1; })
+  .catch((e) => { console.error("❌ dev-reset-test-state failed:", redactedErrorForLog(e)); process.exitCode = 1; })
   .finally(() => db.$disconnect());

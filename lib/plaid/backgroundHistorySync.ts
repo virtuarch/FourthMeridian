@@ -549,7 +549,7 @@ export async function runDeferredHistorySync(
     recorder?.failOpen(e);
     console.error(
       `[plaid][D2x-slice2] background history sync FAILED for item ${plaidItemId} (non-fatal — Link already succeeded): ${plaidErrorSummary(e)}`,
-      e,
+      redactedErrorForLog(e),
     );
 
     // Write an EXPLICIT incomplete-sync marker so the item is never left
@@ -584,7 +584,7 @@ export async function runDeferredHistorySync(
     } catch (updateErr) {
       console.error(
         `[plaid][D2x-slice2] failed to persist PlaidItem health for item ${plaidItemId} (non-fatal):`,
-        updateErr,
+        redactedErrorForLog(updateErr),
       );
     }
     // Failure: history genuinely did not complete — the incomplete marker set

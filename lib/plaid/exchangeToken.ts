@@ -54,6 +54,7 @@ import { syncInvestmentsForItem } from "@/lib/plaid/sync-investments";
 import { persistAccountSpine } from "@/lib/accounts/persist-account-spine";
 import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identity";
 import { deploymentEnvironment } from "@/lib/env";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -212,7 +213,7 @@ export async function performPlaidTokenExchange(
     try {
       await plaidClient.itemRemove({ access_token });
     } catch (removeErr) {
-      console.warn(`[plaid] best-effort itemRemove of duplicate item ${item_id} failed (non-fatal):`, removeErr);
+      console.warn(`[plaid] best-effort itemRemove of duplicate item ${item_id} failed (non-fatal):`, redactedErrorForLog(removeErr));
     }
     throw new DuplicateInstitutionError(institution_name);
   }
@@ -313,7 +314,7 @@ export async function performPlaidTokenExchange(
       connectionId = created.id;
     }
   } catch (connErr) {
-    console.warn("[plaid][D2-SliceA] Connection dual-write failed (non-fatal):", connErr);
+    console.warn("[plaid][D2-SliceA] Connection dual-write failed (non-fatal):", redactedErrorForLog(connErr));
   }
 
   // 6. Fetch accounts from Plaid
@@ -506,7 +507,7 @@ export async function performPlaidTokenExchange(
         `[plaid] initial transaction sync — ${txSync.added} added, ${txSync.modified} modified, ${txSync.removed} removed`,
       );
     } catch (syncErr) {
-      console.warn("[plaid] initial transaction sync failed (non-fatal):", syncErr);
+      console.warn("[plaid] initial transaction sync failed (non-fatal):", redactedErrorForLog(syncErr));
     }
   }
 
@@ -517,7 +518,7 @@ export async function performPlaidTokenExchange(
     // nothing to project. Skipped rather than run over an empty import.
     if (ingestionAdmitted) spacesSnapshotted = await regenerateSnapshotsForAccounts(importedIds);
   } catch (snapshotErr) {
-    console.warn("[plaid] initial snapshot regeneration failed (non-fatal):", snapshotErr);
+    console.warn("[plaid] initial snapshot regeneration failed (non-fatal):", redactedErrorForLog(snapshotErr));
   }
 
   // 10. Audit log
@@ -544,7 +545,7 @@ export async function performPlaidTokenExchange(
       },
     });
   } catch (auditErr) {
-    console.warn("[plaid] audit log write failed (non-fatal):", auditErr);
+    console.warn("[plaid] audit log write failed (non-fatal):", redactedErrorForLog(auditErr));
   }
 
   console.log(

@@ -234,23 +234,181 @@ export function isRetryablePlaidError(err: unknown): boolean {
   return false;
 }
 
+// ── The log-safety boundary (FM-AUDIT-001) ──────────────────────────────────
+//
+// NEVER log a raw AxiosError. Its `config` carries the outgoing request headers
+// and body verbatim — which for Plaid means `PLAID-SECRET`, `PLAID-CLIENT-ID`
+// and the item's `access_token` — and its `request` (a ClientRequest) carries the
+// raw header block again in `_header`. `console.error(msg, err)` serialises all
+// of it, so on 2026-07-22 a production Plaid secret and a live access token sat in
+// plaintext in the Vercel runtime logs on EVERY Plaid API failure (c28d853).
+//
+// c28d853 fixed the call sites it could see and missed five (the pre-S1 audit,
+// FM-AUDIT-001) — a call-site discipline is only as good as the last catch block
+// someone wrote. So the boundary is now TWO layers, each sufficient alone:
+//
+//   1. SOURCE — `sanitizeProviderErrorInPlace` runs on every error leaving the
+//      `plaidClient` proxy (lib/plaid/client.ts). By the time any catch block in
+//      the codebase sees a Plaid error, `config` / `request` / response headers are
+//      gone and the response body is reduced to Plaid's own error fields. A raw
+//      `console.error(err)` anywhere downstream is harmless.
+//   2. RENDER — `redactedErrorForLog` renders any error as one line of
+//      allowlisted facts, and scrubs credential shapes from free text. The Plaid
+//      logging surface is source-scanned to use it (plaid-log-safety.test.ts).
+
+/** Plaid error-body fields that carry no credential and are worth keeping. */
+const SAFE_PLAID_BODY_KEYS = [
+  "error_type", "error_code", "error_code_reason", "error_message", "display_message",
+  "request_id", "documentation_url", "suggested_action",
+] as const;
+
+const SANITIZED = Symbol.for("fm.plaid.sanitizedError");
+
+/** An error shaped like an HTTP-client (axios) failure — the shape that can carry a request. */
+function isHttpClientError(err: unknown): err is Record<string, unknown> {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as Record<string, unknown>;
+  return e.isAxiosError === true || "config" in e || "request" in e || "response" in e;
+}
+
+function pickSafeBody(data: unknown): Record<string, unknown> | undefined {
+  if (typeof data !== "object" || data === null) return undefined;
+  const src = data as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const k of SAFE_PLAID_BODY_KEYS) {
+    if (typeof src[k] === "string" || src[k] === null) out[k] = src[k];
+  }
+  return out;
+}
+
+function setOwn(target: Record<string, unknown>, key: string, value: unknown): void {
+  try {
+    delete target[key];
+    if (value !== undefined) {
+      Object.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: key !== "toJSON" });
+    }
+  } catch { /* a frozen/exotic error keeps its shape; the render layer still applies */ }
+}
+
 /**
- * A log-safe rendering of an error thrown by a Plaid call.
+ * Strip every credential-bearing part of an HTTP-client error IN PLACE and
+ * return the same object — identity, prototype, `isAxiosError`, `message`,
+ * `stack`, `response.status` and Plaid's error body (error_code, error_type,
+ * request_id, …) survive, so every classifier downstream behaves exactly as
+ * before. What goes: `config` (headers + body; reduced to method + url),
+ * `request`, `response.config`, `response.request`, `response.headers`, and any
+ * response-body field outside SAFE_PLAID_BODY_KEYS. `toJSON` is replaced so
+ * `JSON.stringify(err)` renders only the allowlisted facts. Idempotent.
+ * Non-HTTP errors are returned untouched.
+ */
+export function sanitizeProviderErrorInPlace<T>(err: T): T {
+  if (!isHttpClientError(err)) return err;
+  const e = err as Record<string | symbol, unknown> & Record<string, unknown>;
+  if (e[SANITIZED]) return err;
+  const cfg = e.config as { method?: unknown; url?: unknown } | undefined;
+  setOwn(e, "config", cfg && typeof cfg === "object"
+    ? { method: typeof cfg.method === "string" ? cfg.method : undefined, url: typeof cfg.url === "string" ? cfg.url : undefined }
+    : undefined);
+  setOwn(e, "request", undefined);
+  const resp = e.response as { status?: unknown; statusText?: unknown; data?: unknown } | undefined;
+  if (resp && typeof resp === "object") {
+    setOwn(e, "response", {
+      status: typeof resp.status === "number" ? resp.status : undefined,
+      statusText: typeof resp.statusText === "string" ? resp.statusText : undefined,
+      data: pickSafeBody(resp.data),
+    });
+  }
+  setOwn(e, "toJSON", function toJSON() { return safePlaidErrorFields(e); });
+  try { Object.defineProperty(e, SANITIZED, { value: true, enumerable: false }); } catch { /* frozen */ }
+  return err;
+}
+
+/** The allowlisted facts of a provider error — safe to log, persist or return to an operator. */
+export interface SafePlaidErrorFields {
+  kind: "provider-http" | "provider-network" | "error";
+  errorType?: string;
+  errorCode?: string;
+  requestId?: string;
+  httpStatus?: number;
+  retryable: boolean;
+  message: string;
+}
+
+export function safePlaidErrorFields(err: unknown): SafePlaidErrorFields {
+  if (isHttpClientError(err)) {
+    const resp = err.response as { status?: unknown; data?: Record<string, unknown> } | undefined;
+    const data = (resp?.data ?? {}) as Record<string, unknown>;
+    const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+    return {
+      kind: resp ? "provider-http" : "provider-network",
+      errorType: str(data.error_type),
+      errorCode: str(data.error_code),
+      requestId: str(data.request_id),
+      httpStatus: typeof resp?.status === "number" ? resp.status : undefined,
+      retryable: isRetryablePlaidError(err),
+      message: scrubSecrets(str(data.error_message) ?? str(err.message) ?? "provider request failed"),
+    };
+  }
+  return {
+    kind: "error",
+    retryable: false,
+    message: scrubSecrets(err instanceof Error ? `${err.name}: ${err.message}` : String(err)),
+  };
+}
+
+const TOKEN_SHAPE = /\b(access|public|link|processor|item)-(sandbox|development|production)-[A-Za-z0-9-]{6,}/g;
+const HEADER_SHAPE = /(PLAID-SECRET|PLAID-CLIENT-ID|authorization)(["']?\s*[:=]\s*["']?)[^"',\s}]+/gi;
+const BODY_FIELD_SHAPE = /("?(?:secret|client_secret|access_token|public_token|client_id)"?\s*[:=]\s*")[^"]*"/gi;
+
+/**
+ * Remove credential shapes from free text: the configured PLAID_SECRET /
+ * PLAID_CLIENT_ID values wherever they appear, Plaid token shapes, credential
+ * headers and credential body fields. Defence in depth for messages and stacks
+ * of non-HTTP errors (an Error whose message was built from a request).
+ */
+export function scrubSecrets(text: string): string {
+  let out = text;
+  for (const name of ["PLAID_SECRET", "PLAID_CLIENT_ID"] as const) {
+    const v = process.env[name];
+    if (v && v.length >= 8) out = out.split(v).join(`[redacted ${name}]`);
+  }
+  return out
+    .replace(TOKEN_SHAPE, "[redacted-token]")
+    .replace(HEADER_SHAPE, "$1$2[redacted]")
+    .replace(BODY_FIELD_SHAPE, "$1[redacted]\"");
+}
+
+function renderSafe(f: SafePlaidErrorFields): string {
+  const parts = [
+    f.kind === "provider-network" ? "network failure" : `HTTP ${f.httpStatus ?? "?"}`,
+    f.errorType && `type=${f.errorType}`,
+    f.errorCode && `code=${f.errorCode}`,
+    f.requestId && `request_id=${f.requestId}`,
+    `retryable=${f.retryable}`,
+  ].filter(Boolean);
+  return `[provider error] ${parts.join(" ")} — ${f.message}`;
+}
+
+/**
+ * A log-safe rendering of ANY caught error. The Plaid logging surface must pass
+ * errors through this (or `plaidErrorSummary`) — never the raw object.
  *
- * NEVER log a raw AxiosError. Its `config` carries the outgoing request headers
- * and body verbatim — which for Plaid means `PLAID-SECRET`, `PLAID-CLIENT-ID`
- * and the item's `access_token`. `console.error(msg, err)` serialises all of it,
- * so on 2026-07-22 a production Plaid secret and a live access token were sitting
- * in plaintext in the Vercel runtime logs (and, since these requests are Sentry
- * instrumented, potentially in Sentry too) on EVERY Plaid API failure.
- *
- * For Axios errors this returns the Plaid error_code/message (or HTTP status)
- * and nothing else — the stack is Axios internals and carries no useful signal.
- * For anything else (Prisma, TypeError, …) the message and stack are kept: they
- * are genuinely useful and contain no credentials.
+ * HTTP-client errors render as one line of allowlisted facts (status, Plaid
+ * error_type/error_code, request_id, retry classification, Plaid's message).
+ * Anything else (Prisma, TypeError, …) keeps name + message + stack — genuinely
+ * useful — with credential shapes scrubbed; an HTTP-client `cause` is rendered
+ * the safe way rather than dropped.
  */
 export function redactedErrorForLog(err: unknown): string {
-  if (isAxiosError(err)) return plaidErrorSummary(err);
-  if (err instanceof Error) return `${err.name}: ${err.message}${err.stack ? `\n${err.stack}` : ""}`;
-  return String(err);
+  if (isHttpClientError(err)) return renderSafe(safePlaidErrorFields(err));
+  if (err instanceof Error) {
+    const cause = (err as { cause?: unknown }).cause;
+    const causeLine = cause !== undefined ? `\n[cause] ${redactedErrorForLog(cause)}` : "";
+    return scrubSecrets(`${err.name}: ${err.message}${err.stack ? `\n${err.stack}` : ""}`) + causeLine;
+  }
+  return scrubSecrets(typeof err === "string" ? err : safeStringify(err));
+}
+
+function safeStringify(v: unknown): string {
+  try { return JSON.stringify(v) ?? String(v); } catch { return String(v); }
 }

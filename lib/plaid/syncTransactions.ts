@@ -547,7 +547,7 @@ export async function syncTransactionsForItem(
         if (shadowEnabled) accumulateShadow(shadowStats, classification, category, amount);
         classified = true;
       } catch (e) {
-        console.warn(`[flowtype] classification skipped for ${txn.transaction_id} — null flow columns on create, existing facts preserved on update:`, e);
+        console.warn(`[flowtype] classification skipped for ${txn.transaction_id} — null flow columns on create, existing facts preserved on update:`, redactedErrorForLog(e));
       }
 
       // The 7 original values are byte-identical; flow columns are additive.
@@ -671,7 +671,7 @@ export async function syncTransactionsForItem(
           if (mode === "update" && !classified) return { ...columns };
           return { ...columns, ...ownFlow(defaultCategoryFlow), ...(mi.categorySource ? { categorySource: mi.categorySource } : {}) };
         } catch (e) {
-          console.warn(`[merchant-intelligence] resolution skipped for ${txn.transaction_id} — default category/flow on create, existing facts preserved on update; no MI:`, e);
+          console.warn(`[merchant-intelligence] resolution skipped for ${txn.transaction_id} — default category/flow on create, existing facts preserved on update; no MI:`, redactedErrorForLog(e));
           // V26-PRE (B1): same preservation rule on the failure path.
           if (mode === "update" && !classified) return {};
           return { ...ownFlow(defaultCategoryFlow) };
@@ -703,7 +703,7 @@ export async function syncTransactionsForItem(
             observedAt: new Date(),
           });
         } catch (e) {
-          console.warn(`[l8] observation skipped for ${txn.transaction_id} — event identity is additive and non-blocking:`, e);
+          console.warn(`[l8] observation skipped for ${txn.transaction_id} — event identity is additive and non-blocking:`, redactedErrorForLog(e));
         }
       };
 

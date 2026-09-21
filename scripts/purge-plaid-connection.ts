@@ -75,6 +75,7 @@
 
 import { db } from "@/lib/db";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 
 const APPLY = process.argv.includes("--apply");
 
@@ -280,5 +281,5 @@ async function main() {
 }
 
 main()
-  .catch((e) => { console.error("❌ purge-plaid-connection failed:", e); process.exitCode = 1; })
+  .catch((e) => { console.error("❌ purge-plaid-connection failed:", redactedErrorForLog(e)); process.exitCode = 1; })
   .finally(() => db.$disconnect());

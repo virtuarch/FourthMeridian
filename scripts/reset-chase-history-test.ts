@@ -65,6 +65,7 @@ import { db }                    from "@/lib/db";
 import { plaidClient }            from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { PlaidItemStatus }        from "@prisma/client";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 
 // ── CLI arg parsing ────────────────────────────────────────────────────────────
 
@@ -308,7 +309,7 @@ async function main() {
 
 main()
   .catch((e) => {
-    console.error("\n❌  Script failed:", e);
+    console.error("\n❌  Script failed:", redactedErrorForLog(e));
     process.exitCode = 1;
   })
   .finally(() => db.$disconnect());

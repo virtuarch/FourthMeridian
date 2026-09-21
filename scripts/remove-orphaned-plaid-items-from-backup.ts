@@ -70,6 +70,7 @@
 import { readFileSync } from "node:fs";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { plaidClient, PLAID_ENV } from "@/lib/plaid/client";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 
 interface DumpItem {
   externalItemId:  string;
@@ -295,4 +296,4 @@ async function main() {
   }
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((e) => { console.error(redactedErrorForLog(e)); process.exit(1); });

@@ -43,6 +43,7 @@ import { snapshotAccountsForOutcome } from "@/lib/crypto/wallet-snapshot-scope";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { regenerateWealthHistoryForAccounts } from "@/lib/snapshots/regenerate-history";
 import { resolveHistoricalWorkWindow } from "@/lib/snapshots/historical-work-window";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 
 export async function POST(
   _req: NextRequest,
@@ -97,7 +98,7 @@ export async function POST(
     try {
       await regenerateSnapshotsForAccounts(snapshotAccounts);
     } catch (snapshotErr) {
-      console.warn(`[POST /api/accounts/${id}/sync] snapshot regen failed (non-fatal):`, snapshotErr);
+      console.warn(`[POST /api/accounts/${id}/sync] snapshot regen failed (non-fatal):`, redactedErrorForLog(snapshotErr));
     }
   }
 
@@ -143,7 +144,7 @@ export async function POST(
       );
       await regenerateWealthHistoryForAccounts([id], { fromDate: plan.fromDate, toDate: plan.toDate });
     } catch (wealthErr) {
-      console.warn(`[POST /api/accounts/${id}/sync] wealth-history regen failed (non-fatal):`, wealthErr);
+      console.warn(`[POST /api/accounts/${id}/sync] wealth-history regen failed (non-fatal):`, redactedErrorForLog(wealthErr));
     }
   }
 

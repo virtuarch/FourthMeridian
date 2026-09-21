@@ -400,7 +400,7 @@ export async function refreshPlaidItem(
       }
     }
   } catch (reconErr) {
-    console.error(`[reconcile] balance↔transaction reconciliation failed for item ${plaidItemDbId} (non-fatal):`, reconErr);
+    console.error(`[reconcile] balance↔transaction reconciliation failed for item ${plaidItemDbId} (non-fatal):`, redactedErrorForLog(reconErr));
   }
   // DF-2A — reconciliation is a best-effort DERIVED stage: it ran (a mismatch is
   // recorded data, not a stage failure; an internal error is swallowed above).
@@ -450,7 +450,7 @@ export async function refreshPlaidItem(
       },
     });
   } catch (auditErr) {
-    console.warn(`[refreshPlaidItem] ConnectionSynced audit failed for item ${plaidItemDbId} (non-fatal):`, auditErr);
+    console.warn(`[refreshPlaidItem] ConnectionSynced audit failed for item ${plaidItemDbId} (non-fatal):`, redactedErrorForLog(auditErr));
   }
 
   return {
@@ -845,7 +845,7 @@ export async function refreshAllActiveItemsForUser(
   try {
     snapshottedSpaceIds = await regenerateCompleted(succeededAccountIds, failedItemIds);
   } catch (snapErr) {
-    console.error("[refreshAllActiveItemsForUser] post-loop snapshot regeneration failed (non-fatal):", snapErr);
+    console.error("[refreshAllActiveItemsForUser] post-loop snapshot regeneration failed (non-fatal):", redactedErrorForLog(snapErr));
   }
 
   return {

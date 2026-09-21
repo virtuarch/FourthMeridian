@@ -65,6 +65,7 @@ import { PlaidItemStatus, ShareStatus } from "@prisma/client";
 import { plaidClient, PLAID_ENV } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -254,5 +255,5 @@ async function main(): Promise<void> {
 }
 
 main()
-  .catch((e) => { console.error(e); process.exit(1); })
+  .catch((e) => { console.error(redactedErrorForLog(e)); process.exit(1); })
   .finally(() => db.$disconnect());

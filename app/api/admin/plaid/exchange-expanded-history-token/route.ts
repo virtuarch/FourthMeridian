@@ -48,6 +48,7 @@ import { performPlaidTokenExchange, parsePlaidError, AdmissionDeniedError } from
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 
 export async function POST(req: NextRequest) {
   // Capture the acting admin for attribution. The guard returns before any state
@@ -108,7 +109,7 @@ export async function POST(req: NextRequest) {
       `[admin][expand-history] resolved target user ${oldItem.userId} → spaceId ${spaceId}`,
     );
   } catch (spaceErr) {
-    console.error("[admin][expand-history] failed to resolve target user space:", spaceErr);
+    console.error("[admin][expand-history] failed to resolve target user space:", redactedErrorForLog(spaceErr));
     return NextResponse.json(
       { error: "Could not resolve the institution owner's Space. The user may have no active Space membership." },
       { status: 422 },
@@ -180,7 +181,7 @@ export async function POST(req: NextRequest) {
     console.error(
       `[admin][expand-history] WARNING: exchange succeeded but retire failed for ${oldPlaidItemId}. ` +
         "Old PlaidItem is still ACTIVE. Run retire-superseded-item manually to clean up.",
-      retireErr,
+      redactedErrorForLog(retireErr),
     );
   }
 

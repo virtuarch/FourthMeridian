@@ -35,7 +35,7 @@ import { sendEmail } from "@/lib/email/send";
 import { AuditAction } from "@/lib/audit-actions";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
-import { getPlaidErrorCode } from "@/lib/plaid/errors";
+import { getPlaidErrorCode, redactedErrorForLog } from "@/lib/plaid/errors";
 import {
   classifyRevocationFailure, decideRevocation, countPriorFailureDays,
   MAX_REVOCATION_ATTEMPT_DAYS,
@@ -326,7 +326,7 @@ export async function purgeUser(userId: string): Promise<PurgeResult> {
       `expect this, contact support.`,
   });
   if (emailResult.status === "error") {
-    console.error("[purge] deletion-complete security-alert email failed to send:", emailResult.error);
+    console.error("[purge] deletion-complete security-alert email failed to send:", redactedErrorForLog(emailResult.error));
   }
 
   // ── 8. Delete the User (final cascade) ─────────────────────────────────────

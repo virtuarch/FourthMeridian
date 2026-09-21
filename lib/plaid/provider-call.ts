@@ -31,6 +31,7 @@
 import "server-only";
 import { db } from "@/lib/db";
 import { getProviderCallContext, nextAttempt, type ProviderCallContext } from "@/lib/plaid/provider-call-context";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 
 export type ProviderCallStatus = "SUCCEEDED" | "FAILED" | "RATE_LIMITED";
 
@@ -64,7 +65,7 @@ export async function recordProviderCall(
   try {
     await client.providerCall.create({ data: input });
   } catch (err) {
-    console.error(`[provider-call] write failed for ${input.provider}.${input.operation} (non-fatal):`, err);
+    console.error(`[provider-call] write failed for ${input.provider}.${input.operation} (non-fatal):`, redactedErrorForLog(err));
   }
 }
 
@@ -122,7 +123,7 @@ export async function instrumentProviderCall<T>(
   // Guard the emit so a throwing telemetry write can NEVER be mistaken for a
   // provider failure by the try/catch below (telemetry ≠ provider semantics).
   const emit = (input: ProviderCallInput) => {
-    try { rawEmit(input); } catch (e) { console.error(`[provider-call] emit failed for ${input.operation} (non-fatal):`, e); }
+    try { rawEmit(input); } catch (e) { console.error(`[provider-call] emit failed for ${input.operation} (non-fatal):`, redactedErrorForLog(e)); }
   };
   const startedAt = new Date();
   const t0 = Date.now();

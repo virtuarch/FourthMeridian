@@ -150,7 +150,7 @@ export async function runCronItemRefresh(
     }
   } catch (e) {
     recorder.fail(stage, e);
-    console.warn(`[sync-banks] balance/snapshot freshness failed for PlaidItem ${itemId} (non-fatal):`, e);
+    console.warn(`[sync-banks] balance/snapshot freshness failed for PlaidItem ${itemId} (non-fatal):`, redactedErrorForLog(e));
   }
 
   return { skippedLocked: false, added: tx.added, modified: tx.modified, removed: tx.removed };
@@ -243,7 +243,7 @@ export async function syncBanks(): Promise<SyncBanksResult> {
               await regenerateWealthHistoryForAccounts(faIds, { fromDate, toDate });
             }
           } catch (e) {
-            console.warn(`[sync-banks] wealth-history regen failed for "${item.institutionName}" (PlaidItem ${item.id}) (non-fatal):`, e);
+            console.warn(`[sync-banks] wealth-history regen failed for "${item.institutionName}" (PlaidItem ${item.id}) (non-fatal):`, redactedErrorForLog(e));
           }
         }
       }
@@ -274,7 +274,7 @@ export async function syncBanks(): Promise<SyncBanksResult> {
         await ingestInvestmentEvents({ accessToken, plaidItemId: item.id, now: new Date() });
         eventItems++;
       } catch (evErr) {
-        console.warn(`[sync-banks] investment event ingestion failed for "${item.institutionName}" (PlaidItem ${item.id}) (non-fatal):`, evErr);
+        console.warn(`[sync-banks] investment event ingestion failed for "${item.institutionName}" (PlaidItem ${item.id}) (non-fatal):`, redactedErrorForLog(evErr));
       }
     }
   }

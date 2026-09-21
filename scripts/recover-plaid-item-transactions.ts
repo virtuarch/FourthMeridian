@@ -29,6 +29,7 @@
 
 import { db } from "@/lib/db";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 
 const APPLY = process.argv.includes("--apply");
 
@@ -85,5 +86,5 @@ async function main(): Promise<void> {
 }
 
 main()
-  .catch((e) => { console.error(e); process.exit(1); })
+  .catch((e) => { console.error(redactedErrorForLog(e)); process.exit(1); })
   .finally(() => db.$disconnect());
