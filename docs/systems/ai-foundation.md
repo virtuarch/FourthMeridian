@@ -16,6 +16,11 @@
 > The implementation section at the end of this doc is the map; the doctrine below is
 > the law.
 
+> **⚠️ STALE STATUS BELOW (FM-AUDIT-066, open).** The "conversation layer was removed"
+> note that follows is historical: `/api/ai/chat` is live again (a 20-tool engine,
+> Memory V2, a sealed scenario carrier). This doc has not been re-baselined yet; the one
+> section kept current is [Conversation state carrier](#conversation-state-carrier-current).
+
 > ## ⚠️ The conversation layer was removed (AI conversation reset)
 >
 > **The doctrine below is unchanged and still binding. The conversational layer
@@ -387,3 +392,32 @@ requesting Space is not permitted to see.
 one visibility gate (`lib/ai/visibility.ts` `[FULL]`), one context entry
 (`buildContext → SpaceContext_AI`), narrating facts the Financial Truth Spine owns —
 never authoring them.
+
+---
+
+## Conversation state carrier (current)
+
+*Kept current by the pre-S1 gate repairs (FM-AUDIT-018, FM-AUDIT-019), 2026-09-22.*
+
+A chat conversation carries three things between turns, in ONE sealed, HttpOnly,
+path-scoped cookie (`fm_ai_state`, `lib/ai/conversation/runtime-state.ts`): the
+**executed scenario** (what ran), the **staged conditions** (stated, not yet run) and — only
+when needed — a **continuity-loss** descriptor. Three slots, never merged; none is a
+financial truth, and none is durable (2 h TTL, bound to user + Space + the digest of the
+last assistant reply, so a new chat or another Space opens to nothing).
+
+- **Cipher:** the repo's purpose-derived AES-256-GCM (`sealWithPurpose`), as one base64url
+  token (`c1.` iv‖tag‖ciphertext, 12-byte IV, 16-byte tag pinned both sides).
+- **Capacity:** 3,900 characters — a browser discards a cookie over 4,096 bytes silently —
+  holding ~2,890 bytes of state (base64url; the previous hex encoding held ~1,915).
+- **Overflow is explicit, never silent.** State that does not fit is replaced by a sealed
+  continuity marker naming what was lost (an executed scenario, N staged clauses). The next
+  turn receives a `CONTINUITY NOT CARRIED` notice (`continuity.ts`) saying the plan is not in
+  force; the plan stays *in play* (project_cash refuses to answer it from the current trend
+  unless `ignoreStaged`); the loss is carried until a scenario runs again; the response
+  carries `continuity` on the turn it happens and the chat UI shows a notice.
+- **Durable memory** (`SpaceMemory`, Memory V2) is separate from the carrier and is written
+  only when the turn's context says `memoryWrites: true` — the product chat route. Dogfood /
+  evaluation harnesses are read-only for memory unless `FM_AI_MEMORY_WRITES=clone-only` against
+  a clone (`memory-write-policy.ts`).
+

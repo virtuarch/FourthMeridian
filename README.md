@@ -87,10 +87,13 @@ npm install
 ### 2. Configure environment
 
 ```bash
-cp .env.example .env
+cp .env.example .env.local
 ```
 
-Edit `.env` with your values. **Never commit `.env`.**
+Edit `.env.local` with your values. **Never commit it.** `DATABASE_URL` and `DIRECT_URL`
+must name the **same** database (Prisma Migrate connects through `DIRECT_URL`; the DB guard
+refuses any command where the two differ). The `db:*` scripts read the shell environment, so
+load it first: `set -a; . ./.env.local; set +a`.
 
 ```bash
 openssl rand -base64 32   # → NEXTAUTH_SECRET
@@ -103,12 +106,15 @@ openssl rand -hex 32      # → ENCRYPTION_KEY
 docker compose up -d db
 ```
 
-### 4. Run migrations and generate client
+### 4. Apply migrations and generate client
 
 ```bash
-npx prisma migrate dev
+npm run db:migrate:safe     # guard (target identity) → backup → prisma migrate deploy (additive)
 npx prisma generate
 ```
+
+Never run raw `npx prisma migrate dev` / `migrate reset` — see
+[docs/operations/database-safety.md](docs/operations/database-safety.md).
 
 ### 5. Seed demo data (optional)
 
@@ -139,7 +145,7 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ```bash
 docker compose up -d          # app + db containers
-npx prisma migrate dev && npx prisma generate
+npm run db:migrate:safe && npx prisma generate
 open http://localhost:3000
 ```
 
@@ -151,11 +157,13 @@ open http://localhost:3000
 npm run dev           # Start dev server
 npm run build         # Production build
 npm run lint          # ESLint
-npm run db:migrate    # Run pending Prisma migrations
-npm run db:seed       # Seed demo data
-npm run db:studio     # Open Prisma Studio
-npm run db:reset      # Reset DB and re-run migrations (destroys data)
-npm run ci            # GitHub CI, locally — run before every push (see below)
+npm run db:migrate:safe  # APPLY pending migrations: guard → backup → migrate deploy (never resets)
+npm run db:migrate       # AUTHOR a migration: guarded (refuses a non-interactive shell on a populated DB), backup first
+npm run db:backup        # pg_dump of the database the next command would change (DIRECT_URL)
+npm run db:seed          # Seed demo data (refuses a DB holding non-demo users)
+npm run db:studio        # Open Prisma Studio
+npm run db:reset         # DESTROYS data: ALLOW_DESTRUCTIVE_DB=true, and a typed host/db for anything not a clone
+npm run ci               # GitHub CI, locally — run before every push (see below)
 ```
 
 ### Before you push: `npm run ci`

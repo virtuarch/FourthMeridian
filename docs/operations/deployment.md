@@ -202,9 +202,9 @@ Local development continues to use:
 - `next dev --webpack` dev server
 - Docker Compose Postgres (`localhost:5432`)
 - `.env.local` for secrets
-- `prisma migrate dev` for schema changes
+- `npm run db:migrate` (guarded, interactive) to author a migration and `npm run db:migrate:safe` to apply one — never raw `prisma migrate dev` ([database-safety.md](database-safety.md))
 
-The `DIRECT_URL` added to `.env.local` mirrors `DATABASE_URL` for local dev — no behavioral change.
+The `DIRECT_URL` added to `.env.local` mirrors `DATABASE_URL` for local dev. It must: Prisma Migrate connects through `DIRECT_URL`, and the DB guard refuses any command where the two name different databases (FM-AUDIT-002).
 
 ---
 
