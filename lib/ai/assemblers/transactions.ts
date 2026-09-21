@@ -73,14 +73,18 @@ import type {
   DrilldownTransaction,
 } from '@/lib/ai/types';
 import { normalizeMerchant } from '@/lib/transactions/merchant';
-import { isCostFlow, isIncome, isRefund, isTransfer, isDebtPayment, isAdjustment, isNonEconomicResidue } from '@/lib/transactions/flow-predicates';
+import { isIncome, isTransfer, isDebtPayment, isAdjustment, isNonEconomicResidue } from '@/lib/transactions/flow-predicates';
 // REVIEW-3 C-1 — THE economic fold. The window and monthly money folds below are
 // consumers of the SAME primitives the Cash Flow workspace folds with
 // (lib/transactions/cash-flow.ts): foldEconomicRow decides which bucket a row's
 // magnitude lands in, clampEconomicSpend is the sole netting/clamp site. This
 // assembler re-implemented that 3-way branch three times; it now re-implements
 // it zero times, and lib/ai/fold-enrolment.test.ts pins the enrolment.
-import { foldEconomicRow, clampEconomicSpend, type EconomicAccumulator } from '@/lib/transactions/cash-flow';
+import {
+  foldEconomicRow, clampEconomicSpend, economicSideOf, foldCategorySpend,
+  type EconomicAccumulator, type CategoryLedgerRow, type CategorySpendLine,
+} from '@/lib/transactions/cash-flow';
+import { categoryDefinition } from '@/lib/transactions/category-vocabulary';
 // REVIEW-3 C-2 — the canonical income taxonomy, run over the SAME evidence the
 // product DTO path feeds it (lib/transactions/serialize.ts). The payload's
 // incomeByClass / incomeSourcesByClass / incomeExcluded previously read
@@ -798,7 +802,13 @@ async function assembleTransactions(
   // misclassified as e.g. Other) inflate or deflate the category "spending"
   // figure relative to expenseTotal — which counts debit rows only. See
   // docs/investigations/KD17_TRANSACTION_LEVEL_PROOF.md.
-  const categoryMap = new Map<string, { debitTotal: number; creditTotal: number; eco: EconomicAccumulator; count: number }>();
+  // FM-AUDIT-004 — category lines come from THE canonical ledger
+  // (foldCategorySpend), fed exactly the rows that reach the economic fold below,
+  // so Σ line gross === expenseTotal and Σ line credits === refundTotal by
+  // construction. `structuralCount` keeps the row count of NOT_SPENDING labels
+  // (Income's entry exists for its `count` — annotations/engine.ts reads it).
+  const ledgerRows: CategoryLedgerRow[] = [];
+  const structuralCount = new Map<string, number>();
 
   // P2-7B — the canonical population now admits non-economic residue (UNKNOWN /
   // ADJUSTMENT / null). These rows are counted in transactionCount and surfaced
@@ -830,16 +840,8 @@ async function assembleTransactions(
     if (conv.amount === null) continue;
     const amt = conv.amount;
 
-    // Category bucket accumulator
-    const entry = categoryMap.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, eco: { income: 0, spendGross: 0, refunds: 0 }, count: 0 };
-    if (amt < 0) entry.debitTotal += Math.abs(amt);
-    else if (amt > 0) entry.creditTotal += amt;
-    // REFUND-1 — the category's refunds come from THE fold (the classifier's
-    // verdict, not the sign): only a REFUND row nets its category — a positive
-    // Payment / Transfer / Income row never does. Only `eco.refunds` is read.
-    if (isRefund(txn.flowType)) foldEconomicRow(entry.eco, txn.flowType, Math.abs(amt));
-    entry.count += 1;
-    categoryMap.set(txn.category, entry);
+    // Structural labels keep a row count (never a money figure).
+    if (!isSpendRoleCategory(txn.category)) structuralCount.set(txn.category, (structuralCount.get(txn.category) ?? 0) + 1);
 
     // FlowType P5 Slice 4 / REVIEW-3 C — each settled row is EITHER a movement
     // (debt payment / transfer, disclosed but never economic) OR folds through
@@ -899,7 +901,7 @@ async function assembleTransactions(
       }
     }
 
-    if (isCostFlow(txn.flowType)) {
+    if (economicSideOf(txn.flowType, amt) === "SPEND") { // a charge — never a reversal (FM-AUDIT-006)
       if (!largestExpenseRow || mag > largestExpenseAmt) {
         largestExpenseRow = txn;
         largestExpenseAmt = mag;
@@ -910,7 +912,8 @@ async function assembleTransactions(
     // One authority decides which economic bucket this magnitude lands in —
     // the same foldEconomicRow the Cash Flow workspace folds with. NOT_INCOME
     // exclusion happens inside it, from the same class derived above.
-    foldEconomicRow(eco, txn.flowType, mag, incomeAttrById.get(txn.id)?.incomeClass ?? null);
+    foldEconomicRow(eco, { flowType: txn.flowType, amount: amt, incomeClass: incomeAttrById.get(txn.id)?.incomeClass ?? null });
+    ledgerRows.push({ id: txn.id, category: txn.category, flowType: txn.flowType, amount: amt });
   }
 
   const incomeTotal  = eco.income;
@@ -972,24 +975,14 @@ async function assembleTransactions(
   }
 
   // ── By-category summary ───────────────────────────────────────────────────
-  // KD-17 universal rule: `total` is the DEBIT-ONLY sum — the exact population
-  // expenseTotal and the drilldown aggregate — for every category, including
-  // non-spending ones (Income's inflow figure is carried by incomeTotal, not
-  // byCategory; its byCategory entry exists for its `count`, which
-  // lib/ai/intelligence/annotations.ts reads for incomeTransactionCount).
-  // Credits are disclosed separately via `creditTotal`, never netted.
-  // Zero-total entries are intentionally KEPT at the window level (count
-  // consumers); serialization filters them. Sorted by debit total descending.
-
-  const byCategory: CategorySpend[] = Array.from(categoryMap.entries())
-    .map(([category, { debitTotal, creditTotal, eco: catEco, count }]): CategorySpend => ({
-      category,
-      total: Math.round(debitTotal * 100) / 100,
-      ...(creditTotal > 0 ? { creditTotal: Math.round(creditTotal * 100) / 100 } : {}),
-      ...categoryRefundFields(debitTotal, catEco.refunds),
-      count,
-    }))
-    .sort((a, b) => b.total - a.total);
+  // FM-AUDIT-004 — `total` is the canonical ledger's GROSS (charges of cost-flow
+  // rows, by flow verdict and sign), `refundTotal` its credits (refunds + cost
+  // reversals), `netTotal` what the line cost. Spending lines come from the ledger
+  // alone; a structural label (Income, Transfer, Payment…) keeps a count-only
+  // entry with total 0 — it is never a spending line (a vetoed purchase that
+  // still carries "Payment" is filed under Other by the vocabulary).
+  // Zero-total count entries are intentionally KEPT at the window level (count consumers).
+  const byCategory: CategorySpend[] = categorySpendEntries(foldCategorySpend(ledgerRows), structuralCount);
 
   // For brief scope: keep only the top 5 SPENDING categories (enough for a
   // morning summary).
@@ -1298,10 +1291,31 @@ async function assembleTransactions(
  * clamp authority (clampEconomicSpend) the Cash Flow workspace nets with — so the
  * model never subtracts a refund in prose, and the two surfaces cannot disagree.
  */
-function categoryRefundFields(debitTotal: number, refundTotal: number): { refundTotal?: number; netTotal?: number } {
-  if (!(refundTotal > 0)) return {};
+/**
+ * FM-AUDIT-004 — the AI's category entries, projected from THE canonical ledger
+ * (foldCategorySpend). `total` = the line's gross charges; `refundTotal` /
+ * `netTotal` = its credits and what it cost, present exactly when credits exist.
+ * `structuralCount` adds count-only (total 0) entries for NOT_SPENDING labels —
+ * never a money figure. Ordered by gross descending.
+ */
+function categorySpendEntries(
+  lines: readonly CategorySpendLine[], structuralCount?: ReadonlyMap<string, number>,
+): CategorySpend[] {
   const r2 = (n: number) => Math.round(n * 100) / 100;
-  return { refundTotal: r2(refundTotal), netTotal: r2(clampEconomicSpend(debitTotal, refundTotal)) };
+  const entries: CategorySpend[] = lines
+    .filter((l) => l.gross > 0 || l.refunds > 0)
+    .map((l) => ({
+      category: l.category,
+      total: r2(l.gross),
+      ...(l.refunds > 0 ? { refundTotal: r2(l.refunds), netTotal: r2(l.net) } : {}),
+      count: l.count,
+    }));
+  for (const [category, count] of structuralCount ?? []) entries.push({ category, total: 0, count });
+  return entries.sort((a, b) => b.total - a.total);
+}
+
+function isSpendRoleCategory(category: string): boolean {
+  return categoryDefinition(category)?.role === "SPENDING";
 }
 
 function monthKey(d: Date): string {
@@ -1411,7 +1425,9 @@ export function buildMonthlyBreakdown(
     // KD-17: per-category debit sum + credit sum + settled row count, mirroring
     // the top-level byCategory (debit-only `total`, credits disclosed
     // separately — never a signed net). count mirrors CategorySpend.count.
-    categoryAgg:      Map<string, { debitTotal: number; creditTotal: number; eco: EconomicAccumulator; count: number }>;
+    // FM-AUDIT-004 — the month's rows as the canonical ledger reads them (the
+    // rows that reach this month's economic fold), folded after the loop.
+    ledgerRows:       CategoryLedgerRow[];
   };
 
   const buckets = new Map<string, Bucket>();
@@ -1421,7 +1437,7 @@ export function buildMonthlyBreakdown(
     if (!b) {
       b = {
         eco: { income: 0, spendGross: 0, refunds: 0 }, debtPaymentTotal: 0,
-        transferTotal: 0, transactionCount: 0, estimated: false, categoryAgg: new Map(),
+        transferTotal: 0, transactionCount: 0, estimated: false, ledgerRows: [],
       };
       buckets.set(key, b);
     }
@@ -1447,12 +1463,6 @@ export function buildMonthlyBreakdown(
       if (c.amount === null) continue;
       amt = c.amount;
     }
-    const agg = b.categoryAgg.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, eco: { income: 0, spendGross: 0, refunds: 0 }, count: 0 };
-    if (amt < 0) agg.debitTotal += Math.abs(amt);
-    else if (amt > 0) agg.creditTotal += amt;
-    if (isRefund(txn.flowType)) foldEconomicRow(agg.eco, txn.flowType, Math.abs(amt)); // REFUND-1 — THE fold; verdict, not sign
-    agg.count  += 1;
-    b.categoryAgg.set(txn.category, agg);
 
     // REVIEW-3 C — same partition rules as the window loop, from the SAME
     // authorities. With `authority` supplied, debt-payment membership is the
@@ -1473,10 +1483,11 @@ export function buildMonthlyBreakdown(
       // Legacy fixture behaviour: only positive income folded when no authority.
     } else {
       // ── THE canonical economic fold (REVIEW-3 C-1) ───────────────────────
-      foldEconomicRow(
-        b.eco, txn.flowType, mag,
-        authority?.incomeClassOf && txn.id !== undefined ? authority.incomeClassOf(txn.id) : null,
-      );
+      foldEconomicRow(b.eco, {
+        flowType: txn.flowType, amount: amt,
+        incomeClass: authority?.incomeClassOf && txn.id !== undefined ? authority.incomeClassOf(txn.id) : null,
+      });
+      b.ledgerRows.push({ id: txn.id, category: txn.category, flowType: txn.flowType, amount: amt });
     }
   }
 
@@ -1493,24 +1504,12 @@ export function buildMonthlyBreakdown(
   return Array.from(buckets.entries())
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)) // oldest → newest
     .map(([month, b]): MonthlyBreakdownEntry => {
-      // Full deterministic per-category totals for this month (all present
-      // categories, non-zero debit total only). This is the authoritative
-      // per-month category source — absence means "no classified settled
-      // SPENDING (debit rows) this month", never $0. KD-17: `total` is the
-      // debit-only sum (same population as expenseTotal and the drilldown);
-      // credits are disclosed via `creditTotal`, never netted. A pure-credit
-      // category month (refund-only) is dropped rather than shown as phantom
-      // spending.
-      const byCategory: CategorySpend[] = Array.from(b.categoryAgg.entries())
-        .map(([category, { debitTotal, creditTotal, eco: catEco, count }]): CategorySpend => ({
-          category,
-          total: Math.round(debitTotal * 100) / 100,
-          ...(creditTotal > 0 ? { creditTotal: Math.round(creditTotal * 100) / 100 } : {}),
-          ...categoryRefundFields(debitTotal, catEco.refunds),
-          count,
-        }))
-        .filter((c) => c.total > 0)
-        .sort((x, y) => y.total - x.total);
+      // Full deterministic per-category spending lines for this month, from THE
+      // canonical ledger (FM-AUDIT-004) — the same primitive as the window and the
+      // Cash Flow workspace. Absence means "no spending row this month in that
+      // line", never $0. A credit-only line (a refund of an earlier month's
+      // purchase) is KEPT, so Σ line credits === this month's refundTotal.
+      const byCategory: CategorySpend[] = categorySpendEntries(foldCategorySpend(b.ledgerRows));
 
       // topCategories stays a compact convenience slice of byCategory.
       // CF-1 — and says so: `byCategory` sits beside it complete, but a

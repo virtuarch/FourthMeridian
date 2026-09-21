@@ -36,7 +36,7 @@ import {
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 import {
   granularityFor, bucketKey, bucketLabel,
-  foldEconomicRow, clampEconomicSpend,
+  foldEconomicRow, clampEconomicSpend, economicSideOf,
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
 import { convertMoney } from "@/lib/money/convert";
@@ -166,17 +166,20 @@ function foldDayFacts(acc: DayFacts, t: LiquidityTx, liqCtx: LiquidityContext, m
   // (foldEconomicRow) shared with economicTotals — no independent 3-way branch.
   // v2.6-TRUTH-5 — the canonical income class rides along, so DayFacts and
   // economicTotals cannot disagree about what counts as income.
-  foldEconomicRow(acc, ft, amt, t.incomeClass ?? null);
+  // FM-AUDIT-006 — the fold reads the SIGNED amount (a cost-flow credit is a
+  // reversal, not more spending); `amt` is the magnitude of that same amount.
+  const signed = t.amount < 0 ? -amt : amt;
+  foldEconomicRow(acc, { flowType: ft, amount: signed, incomeClass: t.incomeClass ?? null });
   // The liability/direct tier split of gross spend is DayFacts-only (needs liqCtx),
-  // so it stays here alongside the shared economic fold.
-  if (isCostFlow(ft)) {
-    if (liqCtx.tierOf(t.financialAccountId ?? t.accountId ?? null) === "liability") acc.creditCardSpending += amt;
-    else acc.directSpending += amt;
-  } else if (isRefund(ft)) {
-    // CF-RECON-1 — mirrors foldEconomicRow's refund branch exactly (cost first,
-    // then refund), so the two refund tiers always partition `refunds`.
-    if (liqCtx.tierOf(t.financialAccountId ?? t.accountId ?? null) === "liability") acc.creditCardRefunds += amt;
-    else acc.directRefunds += amt;
+  // so it stays here alongside the shared economic fold. CF-RECON-1 — it routes by
+  // the fold's OWN side decision, so the two spend tiers always partition
+  // `spendGross` and the two refund tiers always partition `refunds`.
+  const side = economicSideOf(ft, signed);
+  const onCard = liqCtx.tierOf(t.financialAccountId ?? t.accountId ?? null) === "liability";
+  if (side === "SPEND") {
+    if (onCard) acc.creditCardSpending += amt; else acc.directSpending += amt;
+  } else if (side === "CREDIT") {
+    if (onCard) acc.creditCardRefunds += amt; else acc.directRefunds += amt;
   }
 
   // ── Physical cash (form change, Part 5) — CASH_MOVEMENT disposition, out ──

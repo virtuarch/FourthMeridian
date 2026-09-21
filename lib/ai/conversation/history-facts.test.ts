@@ -129,11 +129,15 @@ console.log('\n5. A CARD PAYMENT IS ONE EVENT SEEN FROM TWO ACCOUNTS');
 
 console.log('\n6. A MONTHLY FIGURE IS MEASURED, NOT DIVIDED');
 {
+  // FM-AUDIT-007 — the monthly figure is THE one monthly-spending mean
+  // (meanMonthlyEconomicSpend, NET of refunds), over whole months only.
   check('whole months only — a partial month is excluded',
-    /months\.filter\(\(m\) => !m\.partialMonth\)/.test(tools));
+    /monthlyBreakdown\.filter\(\(m\) => !\(m\.partial \?\? false\)\)/.test(tools));
+  check('the monthly figure is the shared NET mean, not adapter arithmetic',
+    /meanMonthlyEconomicSpend\(wholeMonths\.map/.test(tools) && !/whole\.reduce\(\(n, m\) => n \+ m\.spending, 0\) \/ whole\.length/.test(tools));
   check('the spread is reported beside the mean',
-    /lowest:\s*\{ month: low\.month/.test(tools) && /highest: \{ month: high\.month/.test(tools));
-  check('one month is not a spread', /whole\.length >= 2 \? \{/.test(tools));
+    /lowest:\s*\{ month: low!\.month/.test(tools) && /highest: \{ month: high!\.month/.test(tools));
+  check('one month is not a spread', /wholeMonths\.length >= 2/.test(tools));
   // The basis sentence is wrapped across source lines; assert the phrases.
   check('it states that debt payments are NOT in it',
     raw.includes('card and debt ') && raw.includes('payments and movements between your own accounts are NOT in it'));

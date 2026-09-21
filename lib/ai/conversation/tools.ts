@@ -48,7 +48,11 @@ import type { Transaction } from '@/types';
 import { getRecentSnapshots } from '@/lib/data/snapshots';
 import { projectSnapshotSection } from '@/lib/ai/assemblers/snapshot';
 import type { Snapshot } from '@/types';
-import { FlowType, TransactionCategory } from '@prisma/client';
+import { FlowType } from '@prisma/client';
+import { clampEconomicSpend, meanMonthlyEconomicSpend } from '@/lib/transactions/cash-flow';
+import {
+  MEASURABLE_SPEND_CATEGORIES, UNSUPPORTED_SPEND_CATEGORIES, resolveSpendCategory, categoryDefinition,
+} from '@/lib/transactions/category-vocabulary';
 import { resolveExplorationNode } from '@/lib/history/exploration';
 import {
   observedChange, findObservation, NEEDS_THRESHOLD, type TemporalOperation,
@@ -403,35 +407,60 @@ const getSpending: ToolDefinition = {
       { transactionWindow: { startDate: from, endDate: to, label: `${from}..${to}` } });
     if (!t) return { unavailable: `no transactions between ${from} and ${to}` };
 
+    // FM-AUDIT-007 — spending here is the SAME economic figure get_baselines and
+    // the cash projection use: charges LESS the refunds and reversals dated in the
+    // same month, floored at 0 (`clampEconomicSpend`). The gross (what was charged)
+    // travels beside it, named, never as the headline.
     const months = t.monthlyBreakdown.map((m) => ({
-      month: m.month, income: m.incomeTotal, spending: m.expenseTotal,
+      month: m.month, income: m.incomeTotal,
+      spending: clampEconomicSpend(m.expenseTotal, m.refundTotal),
+      spendingCharged: m.expenseTotal, refundsAndReversals: m.refundTotal,
       cardAndDebtPayments: m.debtPaymentTotal, transfers: m.transferTotal,
       transactionCount: m.transactionCount, partialMonth: m.partial ?? false,
     }));
     // Whole months only. A partial month is a fraction of a month's spending and
-    // averaging it in understates every month beside it.
-    const whole = months.filter((m) => !m.partialMonth);
-    const low  = whole.reduce((a, b) => (b.spending < a.spending ? b : a), whole[0]);
-    const high = whole.reduce((a, b) => (b.spending > a.spending ? b : a), whole[0]);
-    const monthly = whole.length >= 2 ? {
-      completeMonths: whole.length,
-      mean: round2(whole.reduce((n, m) => n + m.spending, 0) / whole.length),
-      lowest:  { month: low.month,  spending: low.spending },
-      highest: { month: high.month, spending: high.spending },
+    // averaging it in understates every month beside it. The monthly figure is
+    // `meanMonthlyEconomicSpend` — THE one monthly-spending mean (NET-BASELINE-1),
+    // not arithmetic in this adapter.
+    const wholeMonths = t.monthlyBreakdown.filter((m) => !(m.partial ?? false));
+    const econ = wholeMonths.length >= 2
+      ? meanMonthlyEconomicSpend(wholeMonths.map((m) => ({ month: m.month, expenseTotal: m.expenseTotal, refundTotal: m.refundTotal })))
+      : null;
+    const pick = (cmp: (a: number, b: number) => boolean) => econ
+      ? econ.months.reduce((best, x) => (cmp(x.net, best.net) ? x : best), econ.months[0]) : null;
+    const low = pick((a, b) => a < b), high = pick((a, b) => a > b);
+    const monthly = econ ? {
+      completeMonths: econ.months.length,
+      perCompleteMonth: econ.net,
+      ...(econ.material ? { chargedPerCompleteMonth: econ.gross, refundEffect: econ.refundEffect } : {}),
+      lowest:  { month: low!.month,  spending: low!.net },
+      highest: { month: high!.month, spending: high!.net },
       basis:
-        'Ordinary spending per WHOLE calendar month in this window — card and debt '
-        + 'payments and movements between your own accounts are NOT in it. Use these '
-        + 'rather than dividing a window total. This is what was spent, not a core or '
-        + 'recurring commitment: a month containing a one-off purchase is in the mean, '
-        + 'and a debt payoff is not spending at all. Say which month a figure came from '
-        + 'when the spread matters.',
+        'Economic spending per WHOLE calendar month in this window — what the months COST: charges '
+        + 'less the refunds and reversals dated in the same month, the same figure get_baselines '
+        + 'measures; card and debt payments and movements between your own accounts are NOT in it. '
+        + 'Use these rather than dividing a window total. '
+        + 'This is what was spent, not a core or recurring commitment: a month containing a one-off '
+        + 'purchase is in the mean, and a debt payoff is not spending at all. Say which month a figure '
+        + 'came from when the spread matters.',
     } : null;
+
+    // Spending LINES only, from the canonical ledger (FM-AUDIT-004); a provider-
+    // bucket line carries what it actually contains (Dining holds groceries).
+    const spendingLines = t.byCategory
+      .filter((c) => categoryDefinition(c.category)?.role === 'SPENDING' && (c.total > 0 || (c.refundTotal ?? 0) > 0))
+      .map((c) => {
+        const def = categoryDefinition(c.category)!;
+        return { ...c, ...(def.observability === 'DERIVED' ? { contains: def.meaning } : {}) };
+      });
 
     return {
       window: { from: t.startDate, to: t.endDate, days: t.windowDays,
         transactionCount: t.transactionCount, truncated: t.truncated },
       totals: {
-        income: t.incomeTotal, spending: t.expenseTotal, refunds: t.refundTotal,
+        income: t.incomeTotal,
+        spending: clampEconomicSpend(t.expenseTotal, t.refundTotal),
+        spendingCharged: t.expenseTotal, refundsAndReversals: t.refundTotal,
         netCashFlow: t.netCashFlow,
         // Named apart on purpose: on a Space where cards are paid in full these
         // are transfers to a card, not debt burden, and the purchases they settle
@@ -439,7 +468,9 @@ const getSpending: ToolDefinition = {
         cardAndDebtPayments: t.debtPaymentTotal,
         transfersBetweenOwnAccounts: t.transferTotal,
       },
-      byCategory: t.byCategory,
+      // `total` is what the line was CHARGED; `netTotal` (present when refunds or
+      // reversals hit it) is what it COST. Lines reconcile: Σ total = spendingCharged.
+      byCategory: spendingLines,
       byMonth: months,
       // ⚠️ THE MONTHLY FIGURE, COMPUTED OVER WHOLE MONTHS — because dividing a
       // window total by its length is where "how long would my cash last"
@@ -813,14 +844,32 @@ async function flowCoverage(
   return { corpusFrom: span.from, corpusTo: span.to, components: [...byKey.values()] };
 }
 
-/** A category named by the model, matched to the canonical vocabulary or refused by name. */
-function resolveCategoryArg(raw: unknown): { category?: string } | { unavailable: string } {
+/**
+ * A category named by the model, resolved through THE category vocabulary
+ * (lib/transactions/category-vocabulary.ts) — FM-AUDIT-003. A structural label
+ * (Payment, Transfer, Income…) is not a spending line, and a category bank sync
+ * never produces (Groceries, Medical, Transport…) is NOT a measured $0 — both are
+ * refused by name, with where the money actually is. A provider-bucket line
+ * (Dining holds groceries) is measured and carries its `meaning`.
+ */
+function resolveCategoryArg(raw: unknown):
+  { category?: string; categoryMeaning?: { observability: string; contains: string } } | { unavailable: string } {
   if (raw === undefined || raw === null || raw === '') return {};
-  const wanted = String(raw).trim().toLowerCase().replace(/[\s_-]+/g, '');
-  const hit = Object.values(TransactionCategory).find((c) => c.toLowerCase() === wanted);
-  return hit ? { category: hit }
-    : { unavailable: `unknown category "${raw}"; one of ${Object.values(TransactionCategory).join(', ')}` };
+  const r = resolveSpendCategory(String(raw));
+  if (!r.ok) return { unavailable: r.unavailable };
+  return { category: r.category, categoryMeaning: { observability: r.observability, contains: r.meaning } };
 }
+
+const CATEGORY_VOCABULARY_UNSUPPORTED_LIST = UNSUPPORTED_SPEND_CATEGORIES.join(', ');
+
+/** The category-argument description, generated from the vocabulary so the two cannot diverge. */
+const CATEGORY_ARG_DESCRIPTION =
+  `Optional spending category — one of ${MEASURABLE_SPEND_CATEGORIES.join(', ')} — to measure one line of `
+  + 'spending instead of all of it; the result also carries all spending over the same window and this line\'s '
+  + 'share of it (`ofAllSpending`) and `categoryMeaning` (what the line contains — SAY it when it matters: '
+  + 'Dining includes groceries, Utilities includes rent, Other is the residual of medical, transportation, '
+  + `entertainment and other unsplit spending). ${CATEGORY_VOCABULARY_UNSUPPORTED_LIST} are NOT tracked by bank `
+  + 'sync and are refused rather than measured. Only with `measure: "spending"`.';
 
 const measureFlows: ToolDefinition = {
   name: 'measure_flows',
@@ -853,10 +902,7 @@ const measureFlows: ToolDefinition = {
         + 'means the N whole months BEFORE `period` begins). The result carries both sides, the '
         + 'difference, the percentage and the direction.',
       anyOf: [{ type: 'string', enum: ['PREVIOUS', 'SAME_PERIOD_LAST_YEAR'] }, PERIOD_SHAPE] },
-    category: str('Optional spending category (Groceries, Dining, Travel, Shopping, Subscriptions, '
-      + 'Utilities, Medical, Entertainment, Transport, …) to measure one line of spending instead of '
-      + 'all of it; the result also carries all spending over the same window and this line\'s share '
-      + 'of it (`ofAllSpending`). Only with `measure: "spending"`.'),
+    category: str(CATEGORY_ARG_DESCRIPTION),
     asOf: str('Information ceiling: pretend today is this date. Nothing after it is read.'),
   }, ['measure', 'period']),
   async run(a, ctx) {
@@ -869,6 +915,7 @@ const measureFlows: ToolDefinition = {
     if ('unavailable' in spec) return spec;
     const cat = resolveCategoryArg(a.category);
     if ('unavailable' in cat) return cat;
+    const meaning = cat.categoryMeaning ? { categoryMeaning: cat.categoryMeaning } : {};
     if (cat.category && kind !== 'spending') {
       return { unavailable: 'a category is a line of SPENDING; use `measure: "spending"` with it' };
     }
@@ -886,7 +933,7 @@ const measureFlows: ToolDefinition = {
       return measure(kind, read?.rows ?? [], p,
         { ...cov, fetchCapHit: read?.truncated ?? false, readFrom: read?.readFrom ?? null }, cat.category);
     };
-    if (!compareSpec) return { asOf: ceiling, ...(await one(period)) };
+    if (!compareSpec) return { asOf: ceiling, ...(await one(period)), ...meaning };
 
     const other = resolveCompareTo(period, spec, compareSpec as Parameters<typeof resolveCompareTo>[2], ceiling);
     if (other.from === period.from && other.to === period.to) {
@@ -895,7 +942,7 @@ const measureFlows: ToolDefinition = {
     }
     // ⚠️ BOTH SIDES IN ONE CALL, SO THE MODEL NEVER HOLDS ONE AND COMPUTES THE OTHER.
     const [left, right] = await Promise.all([one(period), one(other)]);
-    return { asOf: ceiling, ...compare(left, right) };
+    return { asOf: ceiling, ...compare(left, right), ...meaning };
   },
 };
 

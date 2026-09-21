@@ -352,7 +352,7 @@ console.log("19. conservation + invariants");
   check("a refund is never earned income: the income taxonomy names it REFUND_REVERSAL / NOT_INCOME",
     attributeIncome({ flowType: "REFUND", accountType: "debt", amount: 500 }).incomeClass === "NOT_INCOME");
   const acc = { income: 0, spendGross: 0, refunds: 0 };
-  foldEconomicRow(acc, "REFUND", 500);
+  foldEconomicRow(acc, { flowType: "REFUND", amount: 500 });
   check("the fold puts a refund in `refunds` and nowhere else", acc.refunds === 500 && acc.income === 0 && acc.spendGross === 0);
   check("classifier version is bumped for the rule change", FLOW_CLASSIFIER_VERSION === 5);
 }
@@ -379,7 +379,7 @@ function months(rows: Transaction[]): MonthRow[] {
     const m = by.get(month) ?? { month, incomeTotal: 0, expenseTotal: 0, refundTotal: 0, debtPaymentTotal: 0, transferTotal: 0, byCategory: [] };
     by.set(month, m);
     const acc = { income: 0, spendGross: 0, refunds: 0 };
-    foldEconomicRow(acc, t.flowType ?? null, Math.abs(t.amount));
+    foldEconomicRow(acc, { flowType: t.flowType ?? null, amount: t.amount });
     m.incomeTotal += acc.income; m.expenseTotal += acc.spendGross; m.refundTotal += acc.refunds;
     if (acc.spendGross > 0 || acc.refunds > 0) {
       let c = m.byCategory.find((x) => x.category === t.category);

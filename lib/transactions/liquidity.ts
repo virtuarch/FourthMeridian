@@ -184,6 +184,16 @@ export function classifyLiquidity(tx: LiquidityTx, ctx: LiquidityContext): Liqui
       : make(ft, "NEUTRAL", "REFUND", 0.6);
   }
 
+  // FM-AUDIT-006 — a cost-flow row with money IN (a fee rebate, an interest
+  // reversal) is a reversal of spending, exactly as a REFUND is: cash back when it
+  // lands on the liquid tier, never "Cash Out". The economic fold nets it against
+  // spending by the same rule (economicSideOf), so the two axes agree.
+  if (isCostFlow(ft) && tx.amount > 0) {
+    return ownTier === "liquid"
+      ? make(ft, "CASH_IN", "REFUND", 0.9)
+      : make(ft, "NEUTRAL", "REFUND", 0.6);
+  }
+
   // Cost flows (SPENDING / FEE / INTEREST) — real costs. They only drain
   // spendable cash when paid from the liquid tier; a credit-card purchase raises
   // debt instead, so the spendable drain happens later at debt payment.

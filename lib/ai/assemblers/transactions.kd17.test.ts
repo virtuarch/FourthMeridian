@@ -196,9 +196,12 @@ const janRows: Row[] = [
     other !== undefined && approx(other.total, drilldownEquivalent),
     `monthly ${other?.total} vs drilldown ${drilldownEquivalent}`);
 
+  // FM-AUDIT-004 — the credit is carried as the canonical ledger's refundTotal (a
+  // REFUND verdict), and netTotal states what the line cost; total stays gross.
   check('Jan-2026 shape: Shopping is $1,119.01 (credit no longer understates it to $1,095.06)',
-    shopping !== undefined && approx(shopping.total, 1119.01) && approx(shopping.creditTotal ?? 0, 23.95),
-    `got ${shopping?.total} / ${shopping?.creditTotal}`);
+    shopping !== undefined && approx(shopping.total, 1119.01) && approx(shopping.refundTotal ?? 0, 23.95)
+      && approx(shopping.netTotal ?? 0, 1095.06),
+    `got ${shopping?.total} / ${shopping?.refundTotal} / ${shopping?.netTotal}`);
 
   const spendingCats = jan.byCategory.filter((c) => !NON_SPENDING.has(c.category));
   check('Jan-2026 shape: invariant holds post-fix (Σ spending categories ≤ expenseTotal)',
@@ -232,8 +235,9 @@ const janRows: Row[] = [
   const shopping = jan.byCategory.find((c) => c.category === 'Shopping');
   check('Net-positive month: Shopping total is $100.00 (debits), not |net| $6,529.45',
     shopping !== undefined && approx(shopping.total, 100.00), `got ${shopping?.total}`);
-  check('Net-positive month: refund credit carried in creditTotal ($6,629.45), never netted',
-    shopping !== undefined && approx(shopping.creditTotal ?? 0, 6629.45), `got ${shopping?.creditTotal}`);
+  check('Net-positive month: refund credit carried in refundTotal ($6,629.45), never netted into total; net floors at 0',
+    shopping !== undefined && approx(shopping.refundTotal ?? 0, 6629.45) && shopping.netTotal === 0,
+    `got ${shopping?.refundTotal} / ${shopping?.netTotal}`);
   check('Net-positive month: expenseTotal counts debits only ($150.00)',
     approx(jan.expenseTotal, 150.00), `got ${jan.expenseTotal}`);
   const spendingCats = jan.byCategory.filter((c) => !NON_SPENDING.has(c.category));
@@ -275,8 +279,13 @@ const janRows: Row[] = [
     row(3, TransactionCategory.Travel, +250.00, 'Airline refund'),
     row(4, TransactionCategory.Dining, -40.00),
   ]);
-  check('Pure-credit month: refund-only Travel is DROPPED from byCategory (no phantom $250 spending)',
-    jan.byCategory.find((c) => c.category === 'Travel') === undefined);
+  // FM-AUDIT-004 — the canonical ledger KEEPS a credit-only line so Σ line credits
+  // reconcile with the month's refundTotal — but it is never phantom spending:
+  // charged 0, cost 0, the refund disclosed.
+  const travel = jan.byCategory.find((c) => c.category === 'Travel');
+  check('Pure-credit month: refund-only Travel is no phantom spending (total 0, net 0, refund $250 disclosed)',
+    travel === undefined || (travel.total === 0 && travel.netTotal === 0 && approx(travel.refundTotal ?? 0, 250)),
+    JSON.stringify(travel));
   check('Pure-credit month: expenseTotal unaffected by the credit ($40.00)',
     approx(jan.expenseTotal, 40.00), `got ${jan.expenseTotal}`);
 }
@@ -331,11 +340,14 @@ const janRows: Row[] = [
     !/agg\.signed|Math\.abs\(signed\)|\{ signed: 0/.test(assemblerSrc),
     'a signed accumulator reappeared — the KD-17 defect class');
 
-  check('Tripwire: both rollup sites aggregate debitTotal/creditTotal',
-    (assemblerSrc.match(/debitTotal: 0, creditTotal: 0/g) ?? []).length >= 2);
+  // FM-AUDIT-004 — both rollup sites (window + monthly) fold through THE canonical
+  // category ledger; neither keeps its own debit/credit accumulator.
+  check('Tripwire: both rollup sites fold through the canonical ledger (foldCategorySpend)',
+    (assemblerSrc.match(/categorySpendEntries\(foldCategorySpend\(/g) ?? []).length >= 2
+      && !/debitTotal: 0, creditTotal: 0/.test(assemblerSrc));
 
   check('Tripwire: window-level byCategory keeps zero-total entries (annotations reads Income count)',
-    /Zero-total entries are intentionally KEPT/.test(assemblerSrc));
+    /Zero-total count entries are intentionally KEPT/.test(assemblerSrc) && /structuralCount/.test(assemblerSrc));
 
   check('Tripwire: drilldown still aggregates the debits-only population (lt: 0)',
     /amount: \{ lt: 0 \}/.test(assemblerSrc));

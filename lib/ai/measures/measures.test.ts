@@ -63,7 +63,7 @@ function fold(rows: Tx[], from: string, to: string): MonthRow[] {
       by.set(month, m);
     }
     const acc = { income: 0, spendGross: 0, refunds: 0 };
-    foldEconomicRow(acc, t.flow as never, Math.abs(t.amount), t.incomeClass as never);
+    foldEconomicRow(acc, { flowType: t.flow, amount: t.amount, incomeClass: t.incomeClass ?? null });
     m.incomeTotal += acc.income; m.expenseTotal += acc.spendGross; m.refundTotal += acc.refunds;
     if (isDebtPayment(t.flow as never)) m.debtPaymentTotal += Math.abs(t.amount);
     if (isTransfer(t.flow as never)) m.transferTotal += Math.abs(t.amount);

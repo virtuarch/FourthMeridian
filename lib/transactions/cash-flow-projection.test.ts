@@ -44,7 +44,7 @@ const rows: LiquidityTx[] = [
   tx({ amount: -50,     date: "2026-06-10", category: "Transfer",  flowType: "TRANSFER", transferDisposition: "PAYMENT_APP_MOVEMENT" }), // payments through apps
   tx({ amount: 200,     date: "2026-06-12", category: "Transfer",  flowType: "TRANSFER", transferDisposition: "PAYMENT_APP_MOVEMENT" }), // from payment apps
   tx({ amount: -300,    date: "2026-06-15", category: "Transfer",  flowType: "TRANSFER", transferDisposition: "CASH_MOVEMENT" }),        // ATM withdrawal
-  tx({ amount: -30.00,  date: "2026-06-18", category: "Shopping",  flowType: "REFUND",   accountId: "card", financialAccountId: "card" }), // card refund
+  tx({ amount: 30.00,   date: "2026-06-18", category: "Shopping",  flowType: "REFUND",   accountId: "card", financialAccountId: "card" }), // card refund — money IN (+); the classifier types REFUND only on a credit, and the fold is signed (FM-AUDIT-006)
 ];
 
 const liqCtx = tierResolver([{ id: "chk", type: "checking" }, { id: "card", type: "debt" }, { id: "brk", type: "investment" }]);

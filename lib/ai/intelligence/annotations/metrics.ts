@@ -149,9 +149,13 @@ export function computeSpendingOpportunities(
   for (const [category, transactionCount] of counts) {
     const classification = classifySpendingCategory(category);
     if (classification === null) continue;
-    const monthlyEquivalent = meanPerReliableMonth(
-      txn, (m) => (m.byCategory ?? []).find((c) => c.category === category)?.total ?? 0,
-    );
+    // FM-AUDIT-004 — what the category COST each month (the canonical ledger's
+    // net: charges less the refunds and reversals dated in that month), not what
+    // was charged — the same basis as the expense baseline it is ranked beside.
+    const monthlyEquivalent = meanPerReliableMonth(txn, (m) => {
+      const c = (m.byCategory ?? []).find((x) => x.category === category);
+      return c ? (c.netTotal ?? c.total) : 0;
+    });
     if (monthlyEquivalent === null || monthlyEquivalent < 1) continue; // skip negligible amounts
     categories.push({ category, monthlyEquivalent, classification, transactionCount });
   }

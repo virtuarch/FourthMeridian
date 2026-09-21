@@ -18,6 +18,7 @@
  */
 
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
+import { spendCategoryKey } from "@/lib/transactions/category-vocabulary";
 import { compareToForPreset } from "@/lib/perspectives/time-range";
 import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
@@ -291,21 +292,50 @@ export interface CashFlowTotals {
  *  structural superset, so it can be passed directly where this is expected. */
 export interface EconomicAccumulator {
   income:     number;   // Σ|amount| INCOME
-  spendGross: number;   // Σ|amount| cost flows (SPENDING+FEE+INTEREST), pre-refund
-  refunds:    number;   // Σ|amount| REFUND
+  spendGross: number;   // Σ|amount| cost-flow CHARGES (SPENDING+FEE+INTEREST, amount < 0), pre-refund
+  refunds:    number;   // Σ|amount| CREDITS against spending: REFUND rows + cost-flow reversals (FM-AUDIT-006)
 }
 
 /**
- * Fold ONE row's already-converted magnitude into the economic accumulator by
- * FlowType. The single authority for what counts as income / gross spend /
- * refund. TRANSFER / DEBT_PAYMENT / INVESTMENT / null are not cash flow and are
- * ignored (matching SpaceTransactionsPanel exactly). `magnitude` must be the
- * non-negative converted amount (Math.abs of the row's converted amount).
+ * FM-AUDIT-006 — which side of the economic ledger ONE row lands on.
+ *
+ * MEMBERSHIP is the classifier's verdict (flowType), never the sign: only cost
+ * flows (SPENDING | FEE | INTEREST) and REFUND rows touch spending; INCOME
+ * touches income; everything else (TRANSFER, DEBT_PAYMENT, INVESTMENT,
+ * ADJUSTMENT, UNKNOWN, null) touches neither.
+ *
+ * DIRECTION, within spending, is the sign — because it is the only direction
+ * evidence the row carries. The persisted `flowDirection` cannot serve: a
+ * provider bank-fee row and liability INTEREST are classified OUTFLOW whatever the sign
+ * (flow-classifier.ts), so a $3 ATM-fee REBATE and an interest REVERSAL arrive
+ * as FEE / INTEREST rows with a POSITIVE amount (money in; the stored convention
+ * is +in / −out on every account). The fold used to add |amount| for any cost
+ * row, so "−$3 fee, +$3 rebate, −$100 groceries" reported $106 of spending. A
+ * credit against a cost flow is a reversal of spending, exactly as a REFUND is:
+ *
+ *     cost/refund row, amount < 0  → SPEND   (a charge)
+ *     cost/refund row, amount > 0  → CREDIT  (a refund or a reversal)
+ *     income row                   → INCOME  (sign handling unchanged — FM-AUDIT-015)
+ *
+ * The fold, the DayFacts tier split and the category ledger all route through
+ * this one decision, so they partition identically by construction.
  */
-export function foldEconomicRow(
-  acc: EconomicAccumulator,
-  flowType: string | null | undefined,
-  magnitude: number,
+export type EconomicSide = "SPEND" | "CREDIT" | "INCOME" | null;
+
+export function economicSideOf(flowType: string | null | undefined, signedAmount: number): EconomicSide {
+  if (isCostFlow(flowType) || isRefund(flowType)) {
+    if (signedAmount < 0) return "SPEND";
+    if (signedAmount > 0) return "CREDIT";
+    return null;
+  }
+  if (isIncome(flowType)) return "INCOME";
+  return null;
+}
+
+/** One row as the economic fold reads it. `amount` is SIGNED (+in / −out), already converted. */
+export interface EconomicFoldRow {
+  flowType: string | null | undefined;
+  amount: number;
   /**
    * v2.6-TRUTH-5 — the row's canonical income class, when the DTO carried one.
    *
@@ -319,13 +349,28 @@ export function foldEconomicRow(
    * Omitted (undefined) means the read supplied no attribution — the old
    * behaviour is kept rather than a row being dropped on an absence.
    */
-  incomeClass?: string | null,
-): void {
-  if (isCostFlow(flowType)) acc.spendGross += magnitude;
-  else if (isRefund(flowType)) acc.refunds += magnitude;
-  else if (isIncome(flowType)) {
-    if (incomeClass === "NOT_INCOME") return;   // named, excluded, never silent
-    acc.income += magnitude;
+  incomeClass?: string | null;
+}
+
+/**
+ * Fold ONE row into the economic accumulator. The single authority for what
+ * counts as income / gross spend / credits against spend. TRANSFER /
+ * DEBT_PAYMENT / INVESTMENT / null are not cash flow and are ignored.
+ *
+ * The row's amount is SIGNED — the object form exists so no caller can hand
+ * this a pre-`Math.abs`'d magnitude and silently turn every charge into a
+ * credit (the pre-FM-AUDIT-006 positional form took a magnitude).
+ */
+export function foldEconomicRow(acc: EconomicAccumulator, row: EconomicFoldRow): void {
+  const magnitude = Math.abs(row.amount);
+  switch (economicSideOf(row.flowType, row.amount)) {
+    case "SPEND":  acc.spendGross += magnitude; return;
+    case "CREDIT": acc.refunds    += magnitude; return;
+    case "INCOME":
+      if (row.incomeClass === "NOT_INCOME") return;   // named, excluded, never silent
+      acc.income += magnitude;
+      return;
+    default: return;
   }
 }
 
@@ -417,7 +462,7 @@ export function economicTotals(transactions: Transaction[], ctx?: ConversionCont
   for (const t of transactions) {
     const a = rowAmount(t, ctx);
     if (a === null) { unconverted = true; continue; } // V25-FINAL-1 — exclude the unconvertible row
-    foldEconomicRow(acc, t.flowType ?? null, Math.abs(a), t.incomeClass ?? null);
+    foldEconomicRow(acc, { flowType: t.flowType ?? null, amount: a, incomeClass: t.incomeClass ?? null });
   }
   const spend = clampEconomicSpend(acc.spendGross, acc.refunds);
   return { income: acc.income, spend, refunds: acc.refunds, net: acc.income - spend, unconverted,
@@ -576,13 +621,33 @@ export interface CashFlowContribution {
 }
 
 /**
- * REFUND-1 — one spending category's economic ledger over a window.
+ * THE CANONICAL CATEGORY-SPEND LEDGER (REFUND-1; FM-AUDIT-004/005/006).
  *
- *     gross            Σ|amount| of cost flows (SPENDING + FEE + INTEREST) DATED IN the window
- *     refunds          Σ|amount| of REFUND rows DATED IN the window
+ * One spending category's economic ledger over a window:
+ *
+ *     gross            Σ|amount| of CHARGES (cost-flow / refund rows with amount < 0) DATED IN the window
+ *     refunds          Σ|amount| of CREDITS against spending DATED IN the window — REFUND rows AND
+ *                      reversals of cost flows (a fee rebate, an interest reversal)
  *     net              max(0, gross − refunds)             — what the category cost
- *     refundsUnapplied max(0, refunds − gross)             — refund of a purchase that
- *                                                            sits OUTSIDE the window
+ *     refundsUnapplied max(0, refunds − gross)             — credit for a charge that sits OUTSIDE the window
+ *
+ * ── ONE LEDGER, EVERY CONSUMER ───────────────────────────────────────────────
+ * Every row reaches its line through `foldEconomicRow` — the same fold that makes
+ * the headline spendGross / refunds — so the lines reconcile with the headline BY
+ * CONSTRUCTION, not by a parity test. The Cash Flow category list
+ * (`categorySpendLedger`), the AI assembler's `byCategory` and monthly lines, and
+ * therefore `get_spending`, `measure_flows` and the category baselines all build
+ * from `foldCategorySpend`. Before FM-AUDIT-004 the AI summed "every debit row in
+ * the category" whatever its flow — a Transfer-flow row in Shopping was AI
+ * spending and not UI spending, and "Payment" could exceed 100% of spending.
+ *
+ * ── MEMBERSHIP, LINE, DIRECTION ──────────────────────────────────────────────
+ *   membership  the classifier's flow verdict (cost flows + REFUND), never a sign test —
+ *               a card payment, a transfer, an issuer credit or income cannot enter;
+ *   line        `spendCategoryKey` (category-vocabulary.ts): a spending label is kept, a
+ *               structural label on a spending row (a vetoed "Payment" purchase) → Other;
+ *   direction   `economicSideOf`: a charge adds to gross, a credit to refunds — so a fee
+ *               and its rebate net to zero instead of doubling (FM-AUDIT-006).
  *
  * ── Period semantics (the ONE definition; every surface inherits it) ─────────
  * A refund reduces its category IN THE PERIOD THE REFUND IS DATED, never the
@@ -602,10 +667,7 @@ export interface CashFlowContribution {
  * and the headline disagree by exactly the unapplied amount and nothing says
  * why. Conservation, pinned by test:
  *
- *     Σ gross − Σ refunds  ===  Σ net − Σ refundsUnapplied
- *
- * Membership is the classifier's (isCostFlow / isRefund) — never a sign test, so
- * a card payment, a transfer, an issuer credit or income can not enter it.
+ *     Σ gross − Σ refunds  ===  Σ net − Σ refundsUnapplied  ===  headline spendGross − headline refunds
  */
 export interface CategorySpendLine {
   category: string;
@@ -613,34 +675,59 @@ export interface CategorySpendLine {
   refunds: number;
   net: number;
   refundsUnapplied: number;
-  /** Rows folded into this line (charges AND refunds), in encounter order. */
+  /** Rows folded into this line (charges AND credits), in encounter order. */
   transactionIds: string[];
+  /** Number of rows folded into this line. */
+  count: number;
 }
 
-export function categorySpendLedger(transactions: Transaction[], ctx?: ConversionContext): CategorySpendLine[] {
-  const byCategory = new Map<string, { gross: number; refunds: number }>();
-  const idsByCategory = new Map<string, string[]>();
-  for (const t of transactions) {
-    const flow = t.flowType ?? null;
-    const raw = rowAmount(t, ctx);
-    if (raw === null) continue; // V25-FINAL-1 — unconvertible row excluded from the category rollup
-    const cost = isCostFlow(flow);
-    if (!cost && !isRefund(flow)) continue;
-    const line = byCategory.get(t.category) ?? { gross: 0, refunds: 0 };
-    if (cost) line.gross += Math.abs(raw); else line.refunds += Math.abs(raw);
-    byCategory.set(t.category, line);
+/** One row as the category ledger reads it. `amount` is SIGNED (+in / −out), already converted. */
+export interface CategoryLedgerRow {
+  id?: string;
+  category: string;
+  flowType: string | null | undefined;
+  amount: number;
+}
+
+/**
+ * THE category-spend primitive. Rows that are not spending (by flow verdict) are
+ * skipped; every other row is folded through `foldEconomicRow` into its line.
+ * Unconvertible rows must be dropped by the caller (as every fold does).
+ */
+export function foldCategorySpend(rows: Iterable<CategoryLedgerRow>): CategorySpendLine[] {
+  const lines = new Map<string, { acc: EconomicAccumulator; ids: string[]; count: number }>();
+  for (const r of rows) {
+    const side = economicSideOf(r.flowType, r.amount);
+    if (side !== "SPEND" && side !== "CREDIT") continue;
+    const key = spendCategoryKey(r.category);
+    const line = lines.get(key) ?? { acc: { income: 0, spendGross: 0, refunds: 0 }, ids: [], count: 0 };
+    foldEconomicRow(line.acc, { flowType: r.flowType, amount: r.amount });
     // Recorded on the SAME pass and under the SAME skip rules as the total, so a
     // drill-down cannot include a row the total left out.
-    idsByCategory.set(t.category, [...(idsByCategory.get(t.category) ?? []), t.id]);
+    if (r.id !== undefined) line.ids.push(r.id);
+    line.count++;
+    lines.set(key, line);
   }
-  return [...byCategory.entries()].map(([category, l]) => ({
+  return [...lines.entries()].map(([category, l]) => ({
     category,
-    gross: l.gross,
-    refunds: l.refunds,
-    net: clampEconomicSpend(l.gross, l.refunds),
-    refundsUnapplied: Math.max(0, l.refunds - l.gross),
-    transactionIds: idsByCategory.get(category) ?? [],
+    gross: l.acc.spendGross,
+    refunds: l.acc.refunds,
+    net: clampEconomicSpend(l.acc.spendGross, l.acc.refunds),
+    refundsUnapplied: Math.max(0, l.acc.refunds - l.acc.spendGross),
+    transactionIds: l.ids,
+    count: l.count,
   }));
+}
+
+/** The Cash Flow workspace's category ledger: its rows, converted, through THE primitive. */
+export function categorySpendLedger(transactions: Transaction[], ctx?: ConversionContext): CategorySpendLine[] {
+  const rows: CategoryLedgerRow[] = [];
+  for (const t of transactions) {
+    const raw = rowAmount(t, ctx);
+    if (raw === null) continue; // V25-FINAL-1 — unconvertible row excluded from the category rollup
+    rows.push({ id: t.id, category: t.category, flowType: t.flowType ?? null, amount: raw });
+  }
+  return foldCategorySpend(rows);
 }
 
 /** Where outflows go, grouped by transaction category (cost flows only),

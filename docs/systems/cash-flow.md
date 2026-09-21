@@ -63,7 +63,30 @@ subsets: `cashIn`/`cashOut` (liquidity), `income`/`spendGross`/`refunds` (econom
   `cash-flow-projection.ts`.
 - `foldEconomicRow` + `clampEconomicSpend` — the SOLE economic income / gross-spend /
   refund / spend-clamp definition (`cash-flow.ts`); the 3-way branch and the clamp must
-  never be re-inlined elsewhere.
+  never be re-inlined elsewhere. The fold reads the row's **signed** amount
+  (`economicSideOf`, FM-AUDIT-006): membership is the classifier's flow verdict, and
+  within spending a charge (amount < 0) adds to gross while a credit (a REFUND, or a
+  fee rebate / interest reversal on a cost flow) is a refund — a $3 fee and its $3
+  rebate are $3 charged and $3 reversed, never $6 spent.
+- `foldCategorySpend` — **THE category-spending ledger** (FM-AUDIT-004). Every category
+  line is built from it, through the same fold, so lines reconcile with the headline
+  by construction: Σ gross − Σ refunds = Σ net − Σ refundsUnapplied = headline
+  spendGross − refunds. Consumers: the Cash Flow category list (`categorySpendLedger`),
+  the AI assembler's window and monthly `byCategory`, and therefore `get_spending`,
+  `measure_flows` (category) and the category opportunity figures (which use the
+  line's **net**). A refund reduces its category in the month it is dated; a line
+  never costs less than nothing and the excess is disclosed as `refundsUnapplied`.
+- `lib/transactions/category-vocabulary.ts` — **THE category vocabulary**
+  (FM-AUDIT-003/005). Every `TransactionCategory` has a role (SPENDING /
+  NOT_SPENDING) and an observability: SUPPORTED (bank sync produces it and it means
+  what it says), DERIVED (a provider bucket — Dining holds groceries, Utilities holds
+  rent, Other is the residual of medical, transportation, entertainment, personal
+  care, services, home improvement and government) or UNSUPPORTED (Groceries,
+  Medical, Entertainment, Transport, PersonalCare, Services, Education — bank sync
+  never produces them). A spending row carrying a structural label (a vetoed
+  "Payment" purchase) lands on Other. `measure_flows` refuses UNSUPPORTED and
+  NOT_SPENDING categories by name — never a measured $0.00 — and S1 may transform
+  only `isMeasurableSpendCategory` lines.
 - `CashFlowSpaceData` + `buildCashFlowSpaceData` — the workspace contract
   (`cash-flow-space-data.ts`), a PURE PROJECTION (no DB — inputs are host-fetched).
 

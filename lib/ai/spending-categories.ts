@@ -1,33 +1,24 @@
 /**
  * lib/ai/spending-categories.ts
  *
- * The flow-derived set of TransactionCategory names that are NOT presented as
- * discretionary spending in AI serialization. Single owner shared by the prompt
- * context serializer (per-month + per-category spending lines) and the chat
- * message-analysis drilldown resolver — both must agree on exactly which
- * categories count as spending, so the set lives here rather than being copied.
+ * The TransactionCategory names that are NOT spending lines in AI serialization
+ * (the brief-scope category cap; the message-analysis drilldown).
  *
- * FlowType P5 Slice 6 — flow-derived category name sets ────────────────────
- * Successor to the hand-written {Income, Interest, Transfer, Payment} copies:
- * a category is serialized as a SPENDING line only when its debit rows classify
- * to a flow presented as spending — SPENDING or FEE (whose debits live inside
- * expenseTotal since Slice 4 D-2). INTEREST charges are also inside
- * expenseTotal but stay excluded from the category lines (unchanged legacy
- * presentation — the KD-17 invariant is ≤, not =, for exactly this reason).
- * Income/Transfer/Payment resolve to non-spending flows as before, and the
- * post-Slice-4 newcomers resolve correctly by construction: Dividend → INCOME
- * (excluded — no more $0 average lines), Fee → FEE (included). The probe uses
- * amount −1 because byCategory `total` is the KD-17 debit-only population.
- * TI1 — SERIALIZED_SPENDING_FLOWS is now imported from the single-authority
- * predicate module (lib/transactions/flow-predicates.ts).
+ * FM-AUDIT-005 — ONE membership rule. This set used to be derived by probing the
+ * classifier with `classifyFlow({category, amount: −1})` ∈ {SPENDING, FEE}: a
+ * third definition beside the Cash Flow ledger's (cost flows ∪ REFUND, which
+ * includes INTEREST) and the annotations probe ({SPENDING, REFUND}). So "Interest"
+ * was a spending line on the Cash Flow page and not in the AI, and S1 would have
+ * shown or hidden it depending on the surface. It is now read from THE category
+ * vocabulary (lib/transactions/category-vocabulary.ts): a label is a spending line
+ * exactly when its role is SPENDING — the same keys the canonical ledger
+ * (foldCategorySpend) produces.
+ *
+ * (Opportunity ELIGIBILITY — whether a spending line is a candidate to cut — is a
+ * separate judgement layered on top, in annotations/metrics.ts. It is not a
+ * membership rule.)
  */
 
-import { TransactionCategory } from '@prisma/client';
-import { classifyFlow } from '@/lib/transactions/flow-classifier';
-import { SERIALIZED_SPENDING_FLOWS } from '@/lib/transactions/flow-predicates';
+import { NOT_SPENDING_CATEGORIES } from '@/lib/transactions/category-vocabulary';
 
-export const NON_SPENDING_CATEGORY_NAMES: ReadonlySet<string> = new Set(
-  (Object.values(TransactionCategory) as string[]).filter(
-    (c) => !SERIALIZED_SPENDING_FLOWS.has(classifyFlow({ category: c, amount: -1 }).flowType),
-  ),
-);
+export const NON_SPENDING_CATEGORY_NAMES: ReadonlySet<string> = new Set(NOT_SPENDING_CATEGORIES);

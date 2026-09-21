@@ -70,11 +70,11 @@ console.log("v2.6-TRUTH-5. (3) NOT_INCOME never enters broad income");
 
   // The Cash Flow economic fold must agree.
   const acc: EconomicAccumulator = { income: 0, spendGross: 0, refunds: 0 };
-  foldEconomicRow(acc, "INCOME", 280.45, "NOT_INCOME");
+  foldEconomicRow(acc, { flowType: "INCOME", amount: 280.45, incomeClass: "NOT_INCOME" });
   check("foldEconomicRow refuses a NOT_INCOME row", acc.income === 0);
-  foldEconomicRow(acc, "INCOME", 100, "EARNED_INCOME");
+  foldEconomicRow(acc, { flowType: "INCOME", amount: 100, incomeClass: "EARNED_INCOME" });
   check("...and accepts an earned one", acc.income === 100);
-  foldEconomicRow(acc, "INCOME", 50, null);
+  foldEconomicRow(acc, { flowType: "INCOME", amount: 50, incomeClass: null });
   check("...and keeps prior behaviour when no attribution was supplied", acc.income === 150);
 }
 

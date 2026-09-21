@@ -195,7 +195,10 @@ function fullEvidence(e: { railType?: "PAYMENT_APP"; movementForm?: "CASH"; venu
 
 function econBucket(flowType: FlowTypeT): EconBucket {
   const acc: EconomicAccumulator = { income: 0, spendGross: 0, refunds: 0 };
-  foldEconomicRow(acc, flowType, 1);
+  // A representative row of the flow: a cost flow is a charge (money out), every
+  // other flow money in — the fold reads the SIGNED amount (FM-AUDIT-006).
+  const amount = flowType === "SPENDING" || flowType === "FEE" || flowType === "INTEREST" ? -1 : 1;
+  foldEconomicRow(acc, { flowType, amount });
   if (acc.income) return "income";
   if (acc.spendGross) return "spend";
   if (acc.refunds) return "refund";

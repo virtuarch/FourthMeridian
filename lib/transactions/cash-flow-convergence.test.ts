@@ -78,7 +78,24 @@ const sliceOf = (rows: Transaction[], ids: readonly string[]) => {
     assert.ok(body.includes("categorySpendLedger(transactions, ctx)") && !/\bfor\s*\(/.test(body),
       "outflowByCategory must project categorySpendLedger and fold nothing itself");
   }
-  for (const fn of ["categorySpendLedger", "incomeBySource"]) {
+  // FM-AUDIT-004 — categorySpendLedger converts and drops unconvertible rows, then
+  // hands the rest to THE primitive (foldCategorySpend), which records each id on
+  // the same pass and AFTER the membership skip that governs the value.
+  {
+    const body = src.slice(src.indexOf("export function categorySpendLedger"));
+    const loop = body.slice(0, body.indexOf("\n}"));
+    const skipAt = loop.indexOf("if (raw === null) continue;");
+    assert.ok(skipAt >= 0, "categorySpendLedger skips unconvertible rows");
+    assert.ok(loop.indexOf("rows.push(") > skipAt, "categorySpendLedger: a row enters the ledger only AFTER the skip");
+    assert.ok(loop.includes("return foldCategorySpend(rows)"), "categorySpendLedger folds through THE primitive");
+    const prim = src.slice(src.indexOf("export function foldCategorySpend"));
+    const primLoop = prim.slice(0, prim.indexOf("\n}"));
+    const memberSkip = primLoop.indexOf('if (side !== "SPEND" && side !== "CREDIT") continue;');
+    assert.ok(memberSkip >= 0, "foldCategorySpend skips non-spending rows");
+    assert.ok(primLoop.indexOf("line.ids.push(") > memberSkip,
+      "foldCategorySpend: the id must be recorded AFTER the skip that governs the value");
+  }
+  for (const fn of ["incomeBySource"]) {
     const body = src.slice(src.indexOf(`export function ${fn}`));
     const loop = body.slice(0, body.indexOf("\n}"));
     const skipAt = loop.indexOf("if (raw === null) continue;");
