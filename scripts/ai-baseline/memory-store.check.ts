@@ -30,7 +30,7 @@ import {
   recallMemories, rememberStated, recordProjection, listOwnMemories, retireMemory, deleteMemoryChain,
   MemoryKind, MemoryStatus,
 } from '@/lib/ai/conversation/memory-store';
-import { readMemory, composeMemoryLine, REMEMBERED, type TurnEvidence } from '@/lib/ai/conversation/memory-model';
+import { readMemory, stateOf, composeMemoryLine, REMEMBERED, type TurnEvidence } from '@/lib/ai/conversation/memory-model';
 import { selectMemoryPlans } from '@/lib/ai/conversation/starter-topics';
 import { findTool } from '@/lib/ai/conversation/tools';
 
@@ -186,6 +186,31 @@ async function main(): Promise<void> {
       kind: 'CHECKPOINT', payload: { metric: 'net-worth', horizon: '2027-06-30', value: 88617.84 } }, ctx) as { stored: boolean };
     check('…and the tool path cannot mint one', !minted.stored
       && (await recallMemories(A, { kind: MemoryKind.CHECKPOINT, includeSuperseded: true })).length === 2);
+
+    // ── A stale planning figure can be re-affirmed ─────────────────────────
+    //
+    // ⚠️ "YES, STILL $5K" IS THE NEWEST THING THEY HAVE SAID ABOUT IT. A planning
+    // figure goes stale on its age alone, so an identical re-statement is not a
+    // repetition to be skipped — skipping it left the figure they had just
+    // confirmed still reading as months old, and still shown to them as stale.
+    const OLD = '2026-01-05';
+    await rememberStated(A, { cls: 'BASELINE', subject: 'old-figure', fields: { monthlySpending: 5000 },
+      statedAs: 'Use $5k monthly spending for planning', statedAt: OLD });
+    const beforeRow = (await active(MemoryKind.ASSUMPTION, 'old-figure'))[0];
+    const stateOfRow = (r: typeof beforeRow) => { const x = readMemory(r); return x.readable ? stateOf(r, x, TODAY) : 'UNREADABLE'; };
+    check('a planning figure older than the staleness threshold reads as STALE', stateOfRow(beforeRow) === 'STALE');
+    const reaffirmed = await rememberStated(A, { cls: 'BASELINE', subject: 'old-figure', fields: { monthlySpending: 5000 },
+      statedAs: 'yes, still $5k', statedAt: TODAY });
+    const afterRow = (await active(MemoryKind.ASSUMPTION, 'old-figure'))[0];
+    check('re-affirming it writes a new version and moves its date',
+      reaffirmed.stored && !('unchanged' in reaffirmed && reaffirmed.unchanged) && afterRow.statedAt.slice(0, 10) === TODAY
+        && afterRow.id !== beforeRow.id, JSON.stringify(reaffirmed).slice(0, 140));
+    check('…so it is no longer stale, and the earlier version is kept', stateOfRow(afterRow) === 'IN_FORCE'
+      && (await recallMemories(A, { kind: MemoryKind.ASSUMPTION, subject: 'old-figure', includeSuperseded: true })).length === 2);
+    const third = await rememberStated(A, { cls: 'BASELINE', subject: 'old-figure', fields: { monthlySpending: 5000 },
+      statedAs: 'still five thousand', statedAt: TODAY });
+    check('…while repeating a FRESH figure still writes nothing', third.stored && 'unchanged' in third && third.unchanged === true
+      && (await recallMemories(A, { kind: MemoryKind.ASSUMPTION, subject: 'old-figure', includeSuperseded: true })).length === 2);
 
     // ── The owner's own surface: see, stop, erase ──────────────────────────
     const mine = await listOwnMemories(A, TODAY);

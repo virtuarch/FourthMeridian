@@ -268,7 +268,15 @@ export async function rememberStated(
       if (dropped.length > 0) echo = { dropped };
       // ⚠️ SAYING IT AGAIN IS NOT A CHANGE OF MIND. "Remember that." after the item
       // is already on record, word for word in its fields, writes nothing.
-      if (dropped.length === 0 && Object.keys(fields).length === Object.keys(currentFields).length
+      //
+      // ⚠️ UNLESS SAYING IT AGAIN IS THE POINT. A planning figure goes STALE on its
+      // age alone, and a lapsed item is over — for those, "yes, still $5k" is not a
+      // repetition but the newest thing the user has said about it, and it must
+      // move the date, or the figure they just confirmed still reads as months old.
+      const today = (w.statedAt ?? gate?.asOf)?.slice(0, 10);
+      const reaffirmable = head !== null && today !== undefined && current?.readable === true
+        && ['STALE', 'LAPSED'].includes(stateOf(present(head), current, today));
+      if (!reaffirmable && dropped.length === 0 && Object.keys(fields).length === Object.keys(currentFields).length
         && Object.entries(fields).every(([k, v]) => JSON.stringify(currentFields[k]) === JSON.stringify(v)) && head) {
         return { stored: true, unchanged: true, op, class: chosen, inWords: describeMemory(chosen, fields),
           memory: present(head), superseded: null };
