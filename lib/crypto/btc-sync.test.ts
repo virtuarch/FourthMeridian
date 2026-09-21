@@ -424,9 +424,14 @@ async function main(): Promise<void> {
     /isXpub && connection/.test(sync) && sync.includes("touchWalletConnectionStatus"));
   check("raw txs deduped by txid across addresses before normalization",
     sync.includes("dedupeRawTxsByTxid"));
+  // 2026-09-21 (slice 3) — the position is persisted BEFORE history enrichment,
+  // so a second write may follow it: STATUS ONLY, when the import changed the
+  // ledger verdict. Still exactly one BALANCE write, whatever the address count.
   check("one balance write + zero Holding writes regardless of address count (W5)",
     (sync.match(/holding\.upsert/g) || []).length === 0 &&
-    (sync.match(/financialAccount\.update/g) || []).length === 1);
+    (sync.match(/financialAccount\.update/g) || []).length === 2 &&
+    (sync.match(/nativeBalance, balance: balanceUsd/g) || []).length === 1 &&
+    /financialAccount\.update\(\{ where: \{ id: accountId \}, data: \{ syncStatus: finalStatus \} \}\)/.test(sync));
 
   // ── Schema: the approved constraint drop (durable STATE, not the migration SQL) ─
   // The schema.prisma checks below are the source of truth for the constraint; the

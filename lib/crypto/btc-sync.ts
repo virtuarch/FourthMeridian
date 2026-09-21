@@ -829,9 +829,7 @@ export async function syncBtcWallet(
   const txAddresses = statsByAddress
     ? addresses.filter((a) => (statsByAddress.get(a)?.txCount ?? 0) > 0)
     : addresses;
-  // Best-effort: its outcome is REPORTED (result + refresh ledger), never gating.
-  // Everything below — observation, balance, status — runs whatever it returns.
-  const transactionImport = await importBtcTransactions({ id: accountId, ownerUserId: account.ownerUserId, addresses: txAddresses }, deps);
+  // (The import itself runs AFTER the current position is persisted — below.)
 
   // V26-S3-LEDGER — A WALLET IS NOT HISTORY-READY UNTIL ITS LEDGER RECONCILES.
   //
@@ -849,10 +847,18 @@ export async function syncBtcWallet(
   // evidence is gathered, on the SAME authority the regenerator uses — never a
   // second reconciliation rule.
   //
-  // The reconciliation runs BEFORE the balance is persisted, so the row is
-  // written ONCE with both facts at the same instant. Writing "synced" first and
-  // correcting it afterwards would leave a window — however short — in which the
-  // account claims a completeness we already knew it did not have.
+  // 2026-09-21 — CURRENT POSITION BEFORE HISTORY ENRICHMENT. The import used to
+  // run first, so a slow or hanging explorer (up to 40 pages × 10 s per address)
+  // stood between a balance we HAD read and its persistence — a function timeout
+  // there lost a valid current observation to optional enrichment. Now the
+  // observation and the account row are written first, and the import follows.
+  //
+  // The completeness invariant is kept, not relaxed: the status written with the
+  // position is reconciled against the ledger AS STORED at that instant — true
+  // then — so it can never claim "synced" for a ledger known to be short. After
+  // the import the ledger is reconciled again and the status is rewritten only
+  // if the verdict changed (a short ledger the import completed ⇒ synced; one it
+  // could not ⇒ stays pending). Never an over-claim in either window.
   //
   // This gate is identical for a first connection and a resync because there is
   // exactly ONE sync path (`syncBtcWallet`); the connect route, the manual sync
@@ -875,7 +881,8 @@ export async function syncBtcWallet(
     return { accountId, ok: false, stage: "capture", reason: captureRefusal };
   }
 
-  const ledger = await reconcileWalletLedgerForAccount(accountId, nativeBalance);
+  // Reconciled against the ledger as stored NOW, before any enrichment.
+  const ledgerBefore = await reconcileWalletLedgerForAccount(accountId, nativeBalance);
 
   // ── THE BTC MONEY CONTRACT (REVIEW-3, row 30/33 — read before touching) ─────
   //
@@ -934,9 +941,20 @@ export async function syncBtcWallet(
       // "pending" is the honest status when the ledger is short: the balance is
       // real, the history is still incomplete, and the next run continues the
       // pagination.
-      syncStatus: discoveryComplete && ledger.complete ? "synced" : "pending",
+      syncStatus: discoveryComplete && ledgerBefore.complete ? "synced" : "pending",
     },
   });
+
+  // ── HISTORY ENRICHMENT — after the position is durable ─────────────────────
+  // Best-effort: its outcome is REPORTED (result + refresh ledger), never
+  // gating, and nothing above can be undone by it. Complete-or-throw: a failed
+  // import writes no rows, so prior history is untouched.
+  const transactionImport = await importBtcTransactions({ id: accountId, ownerUserId: account.ownerUserId, addresses: txAddresses }, deps);
+  const ledger = await reconcileWalletLedgerForAccount(accountId, nativeBalance);
+  const finalStatus = discoveryComplete && ledger.complete ? "synced" : "pending";
+  if (ledger.complete !== ledgerBefore.complete) {
+    await db.financialAccount.update({ where: { id: accountId }, data: { syncStatus: finalStatus } });
+  }
 
   if (!ledger.complete) {
     await recordWalletSyncIssue(accountId, "transactions", ledger.reason, {

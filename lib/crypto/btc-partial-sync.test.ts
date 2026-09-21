@@ -235,9 +235,9 @@ async function main() {
     check("9 price failure: the sync is ok — the quantity does not wait on a price", r.ok === true, JSON.stringify(r));
     check("9 price failure: the fresh quantity IS recorded — on the spine observation",
       store.observations[0]?.quantity === 0.15 && r.nativeBalance === 0.15);
-    check("9 price failure: the legacy pair AND its clock stay as the last priced run left them",
-      store.accountUpdates.length === 1 && !("nativeBalance" in store.accountUpdates[0]) && !("balance" in store.accountUpdates[0])
-        && !("lastUpdated" in store.accountUpdates[0]) && store.account.balance === 7000 && store.account.nativeBalance === 0.1
+    check("9 price failure: the legacy pair AND its clock stay as the last priced run left them (in EVERY account write)",
+      store.accountUpdates.length >= 1 && store.accountUpdates.every((u) => !("nativeBalance" in u) && !("balance" in u) && !("lastUpdated" in u))
+        && store.account.balance === 7000 && store.account.nativeBalance === 0.1
         && store.account.lastUpdated.getTime() < before.getTime(), JSON.stringify(store.accountUpdates));
     check("9 price failure: valuation UNAVAILABLE by name; no priceUsd/balanceUsd claimed",
       r.valuation?.status === "UNAVAILABLE" && /no canonical BTC close/.test(r.valuation.reason)
@@ -514,6 +514,71 @@ async function main() {
       p2.urls[1]?.endsWith("/txs/chain/p-24") === true, p2.urls[1]);
   }
 
+  // ── SLICE 3 — CURRENT POSITION BEFORE HISTORY ENRICHMENT ─────────────────
+  // The txFetcher looks at the store AT THE MOMENT history enrichment begins:
+  // the current position must already be durable, and it must stay so.
+  {
+    const store = freshStore(PRIOR);
+    install(db as unknown as Record<string, unknown>, store);
+    let seenAtFetch: { obs: number; native: number; status: string; clock: number } | null = null;
+    const r = await syncBtcWallet(ACCOUNT, {
+      balanceFetcher: async () => 0.15 * SATS,
+      txFetcher: async () => {
+        seenAtFetch = { obs: store.observations.length, native: store.account.nativeBalance, status: store.account.syncStatus, clock: store.account.lastUpdated.getTime() };
+        return [receive("txA", 0.1 * SATS), receive("txB", 0.05 * SATS)];
+      },
+      priceFetcher: async () => PRICE,
+    });
+    const at = seenAtFetch as { obs: number; native: number; status: string; clock: number } | null;
+    check("S3 order: when history enrichment starts, the observation is ALREADY written",
+      at !== null && at.obs === 1, JSON.stringify(at));
+    check("S3 order: …and the account row already carries the new quantity + clock",
+      at !== null && at.native === 0.15 && at.clock >= before.getTime());
+    check("S3 no over-claim: during enrichment a ledger short of the new balance reads PENDING, not synced",
+      at !== null && at.status === "pending");
+    check("S3 after enrichment completes the ledger, the status is corrected to synced",
+      r.ok && r.syncStatus === "synced" && store.account.syncStatus === "synced" && r.transactionImport?.status === "IMPORTED");
+  }
+  {
+    // quote/valuation ok, history TIMES OUT ⇒ position stays, PARTIAL-shaped
+    const store = freshStore(PRIOR);
+    install(db as unknown as Record<string, unknown>, store);
+    const r = await syncBtcWallet(ACCOUNT, { balanceFetcher: async () => 0.15 * SATS, txFetcher: async () => TIMEOUT(), priceFetcher: async () => PRICE });
+    check("S3 matrix balance✓ price✓ history✗: observation + quantity + valuation persisted and NOT rolled back",
+      r.ok && store.observations[0]?.quantity === 0.15 && store.account.nativeBalance === 0.15 && store.account.balance === 12_000);
+    check("S3 matrix balance✓ price✓ history✗: prior history intact, import FAILED, status pending", store.transactions.length === 1
+      && r.transactionImport?.status === "FAILED" && store.account.syncStatus === "pending");
+  }
+  {
+    // balance ok, price UNAVAILABLE, history ok / history fails
+    for (const historyOk of [true, false]) {
+      const store = freshStore(PRIOR);
+      install(db as unknown as Record<string, unknown>, store);
+      const r = await syncBtcWallet(ACCOUNT, {
+        balanceFetcher: async () => 0.15 * SATS,
+        txFetcher: historyOk ? async () => [receive("txA", 0.1 * SATS), receive("txB", 0.05 * SATS)] : async () => TIMEOUT(),
+        priceFetcher: async () => { throw new Error("no canonical BTC close"); },
+      });
+      check(`S3 matrix balance✓ price✗ history${historyOk ? "✓" : "✗"}: quantity on the spine, valuation UNAVAILABLE, pair+clock untouched`,
+        r.ok && store.observations[0]?.quantity === 0.15 && r.valuation?.status === "UNAVAILABLE"
+          && store.account.balance === 7000 && store.account.lastUpdated.getTime() < before.getTime(), JSON.stringify(r));
+      check(`S3 matrix balance✓ price✗ history${historyOk ? "✓" : "✗"}: history outcome reported independently`,
+        r.transactionImport?.status === (historyOk ? "IMPORTED" : "FAILED") && store.transactions.length === (historyOk ? 2 : 1));
+    }
+  }
+  {
+    // A fetch that fails AFTER a successful page writes nothing (complete-or-throw)
+    const store = freshStore(PRIOR);
+    install(db as unknown as Record<string, unknown>, store);
+    let n = 0;
+    await syncBtcWallet(ACCOUNT, {
+      balanceFetcher: async () => 0.15 * SATS,
+      txFetcher: async () => { n++; throw new BtcSyncError("transactions", "blockstream.info did not respond within 10000 ms (page 2)"); },
+      priceFetcher: async () => PRICE,
+    });
+    check("S3 partial history fetch mutates no canonical history", n === 1 && store.transactions.length === 1 && store.transactions[0].externalTransactionId === "txA");
+  }
+
   // ── Regeneration gate: an unpriced run feeds NO snapshot rebuild ─────────
   {
     const { outcomeRevalued } = await import("./wallet-sync-dispatch");
@@ -556,8 +621,10 @@ async function main() {
   check("pin: the import outcome is kept, not discarded", /const transactionImport = await importBtcTransactions\(/.test(body));
   check("pin: no early return keyed on the import outcome (it never gates the position)",
     !/transactionImport[^;\n]*\)\s*return\b/.test(body) && !/if\s*\(\s*transactionImport/.test(body));
-  check("pin: observation + account write still follow the import",
-    importAt > 0 && body.indexOf("writeBtcObservation(", importAt) > importAt && body.indexOf("db.financialAccount.update(", importAt) > importAt);
+  // SLICE 3 — inverted on purpose: the position is durable BEFORE enrichment
+  // (executed below in "SLICE 3"; this pin only guards the source order).
+  check("pin: the import runs AFTER the observation and the first account write",
+    importAt > 0 && body.indexOf("writeBtcObservation(") < importAt && body.indexOf("db.financialAccount.update(") < importAt);
 
   const dispatch = code(read("lib", "crypto", "wallet-sync-dispatch.ts"));
   check("pin: dispatch records the import as its own TRANSACTIONS provider stage",
