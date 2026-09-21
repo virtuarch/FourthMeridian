@@ -28,6 +28,12 @@
  *      outflow on the spine (FM-AUDIT-009);
  *   F. goal seek — a spending-cut solve holds the floor re-resolved at the SOLVED
  *      spending (FM-AUDIT-011), and the ledger at the answer reaches the target.
+ *   G. S1 in the whole composition — a category spending change beside I1, L1, M1,
+ *      a one-off outflow, the waterfall, investment allocation and a goal seek:
+ *      roster, one forecast path, one minimum a month, the category delta, the
+ *      floor stepping at the cut (and a dollar floor not), a 0% net-worth identity,
+ *      a solved rule that reruns to the cent, a changed cut that recomputes, and
+ *      the real composed envelope sealing whole beside a staged plan.
  *
  * Standalone tsx script. No DB, no network, no model.
  */
@@ -191,6 +197,86 @@ async function main(): Promise<void> {
   const gsEnd = (gs.scenario?.checkpoints as Rec[] | undefined)?.find((c) => c.date === HORIZON);
   check('the ledger AT the answer reaches the target', gsEnd !== undefined && gsEnd.netWorth.amount >= target - 0.5,
     `${gsEnd?.netWorth.amount} vs ${target}`);
+
+  // ── G. S1 in the whole composition ───────────────────────────────────────
+  console.log('G. a category spending change composes with everything else');
+  const DINING_20 = { category: 'Dining', op: 'SCALE', from: '2027-01-01', multiplier: 0.8 };
+  const CAR = { onDate: '2027-06-15', amount: 5_000, label: 'car deposit' };
+  const composed = { to: HORIZON, incomeChanges: [RAISE], spendingChanges: [DINING_20],
+    contributions: [FLOOR_TO_DEBT_THEN_INVEST], outflows: [CAR], annualReturnPct: 0 };
+  const all = await run('scenario_projection', composed);
+  const withoutS1 = await run('scenario_projection', { ...composed, spendingChanges: undefined });
+  const neither = await run('scenario_projection', { ...composed, spendingChanges: undefined, incomeChanges: undefined });
+  const gc = all.assumptions.clauses;
+  check('roster: income, spending, floor and debt order all RAN', gc.incomeChange.ran && gc.spendingChange.ran
+    && gc.cashFloor.ran && gc.debtPaydown.ran && JSON.stringify(gc.debtPaydown.order) === '["highest_apr","investments"]');
+  check('the category delta: Dining 1,500 → 1,200 from 2027-01-01, a whole bucket',
+    gc.spendingChange.rules[0].monthlyBefore === 1_500 && gc.spendingChange.rules[0].monthlyAfter === 1_200
+      && gc.spendingChange.rules[0].class === 'WHOLE_BUCKET');
+  // One forecast path: the spine is additive, so the ledger's reconstructed spine
+  // moves by EXACTLY the spending the rule removed — nothing else touched cash.
+  const spineOf = (r: Rec) => { const e = at(r, HORIZON);
+    return e.liquid.amount + e.movements.contributionsToDate.total + e.movements.outflowsToDate.total + e.movements.minimumPaymentsToDate; };
+  const removed = all.assumptions.spending.changes.spendingRemovedToHorizon;
+  check(`one forecast path: the reconstructed spine moves by exactly the spending removed (${removed})`,
+    cents(spineOf(all) - spineOf(withoutS1), removed) && cents(removed, 300 * 731 / (365 / 12)), `${spineOf(all) - spineOf(withoutS1)} vs ${removed}`);
+  const mins = (r: Rec) => at(r, HORIZON).movements.minimumPaymentsToDate as number;
+  check('at most one minimum a month per card (28 obligation months × 210 at most), and S1 never adds one',
+    mins(withoutS1) <= 28 * 210 && mins(all) <= mins(withoutS1), `${mins(all)} / ${mins(withoutS1)}`);
+  check('the derived floor steps at the cut: 3 × 3,900 = 11,700, then 3 × 3,600 = 10,800',
+    JSON.stringify(gc.cashFloor.keep) === '[11700,10800]', JSON.stringify(gc.cashFloor.keep));
+  const absAll = await run('scenario_projection', { ...composed, contributions: [{ liquidFloor: 11_700, fractionOfExcess: 1, target: ['highest_apr', 'investments'] }] });
+  check('…while a DOLLAR floor stays 11,700 with the same cut', absAll.assumptions.clauses.cashFloor.keep === 11_700);
+  // The 0% identity: net worth moves by income added + spending removed − extra interest.
+  const extra = gc.incomeChange.rules[0].incomeAfter - gc.incomeChange.rules[0].incomeBefore;
+  const dNW3 = at(all, HORIZON).netWorth.amount - at(neither, HORIZON).netWorth.amount;
+  const dInt3 = at(all, HORIZON).movements.interestToDate - at(neither, HORIZON).movements.interestToDate;
+  check(`0% identity: ΔNW = income added (${extra}) + spending removed (${removed}) − Δinterest (${dInt3.toFixed(2)})`,
+    cents(dNW3, extra + removed - dInt3), `ΔNW ${dNW3}`);
+  const dNW1 = at(all, HORIZON).netWorth.amount - at(withoutS1, HORIZON).netWorth.amount;
+  const dInt1 = at(all, HORIZON).movements.interestToDate - at(withoutS1, HORIZON).movements.interestToDate;
+  check('…and S1 alone: ΔNW = spending removed − Δinterest (the freed cash paid the cards sooner)',
+    cents(dNW1, removed - dInt1) && dInt1 <= 0, `ΔNW ${dNW1} Δint ${dInt1}`);
+  check('investment allocation: the freed cash reaches investments by the horizon',
+    at(all, HORIZON).investments.amount > at(withoutS1, HORIZON).investments.amount);
+  // Goal seek over the composition, and the solved rule re-run as a stated one.
+  const tgt = Math.round(at(withoutS1, HORIZON).netWorth.amount + 4_000);
+  const gsS1 = await run('scenario_goal_seek', { target: tgt, by: HORIZON, solveFor: 'spendingChange',
+    spendingChangeToSolve: { category: 'Dining', unit: 'percent', from: '2027-01-01' },
+    incomeChanges: [RAISE], contributions: [FLOOR_TO_DEBT_THEN_INVEST], outflows: [CAR], annualReturnPct: 0 });
+  check('goal seek over the whole composition: feasible, within the line', gsS1.feasible === true && gsS1.required > 0 && gsS1.required < 100,
+    JSON.stringify(gsS1).slice(0, 200));
+  const rerun = await run('scenario_projection', { ...composed,
+    spendingChanges: [{ category: 'Dining', op: 'SCALE', from: '2027-01-01', multiplier: 1 - gsS1.required / 100 }] });
+  check('the solved rule, re-run as a stated rule, reproduces the ledger at the answer to the cent',
+    cents(at(rerun, HORIZON).netWorth.amount, (gsS1.scenario.checkpoints as Rec[]).find((c) => c.date === HORIZON)!.netWorth.amount));
+  // A changed assumption recomputes everything downstream of it.
+  const ten = await run('scenario_projection', { ...composed, spendingChanges: [{ ...DINING_20, multiplier: 0.9 }] });
+  check('"make it 10%": the floor re-derives (11,700 → 11,250) and the result recomputes by the smaller removal',
+    JSON.stringify(ten.assumptions.clauses.cashFloor.keep) === '[11700,11250]'
+      && cents(ten.assumptions.spending.changes.spendingRemovedToHorizon, removed / 2)
+      && at(ten, HORIZON).netWorth.amount < at(all, HORIZON).netWorth.amount);
+  // The REAL composed envelope, sealed beside a staged plan.
+  const { captureActiveScenario } = await import('./active-scenario');
+  const { sealRuntimeStateWithReport, openRuntimeState } = await import('./runtime-state');
+  const { IDENTITY, MAX_PENDING_BYTES } = await import('./pending-plan');
+  const env = captureActiveScenario('scenario_projection', composed, all);
+  const B = { userId: 'cmrrm846r000j7znwsl67gt1a', spaceId: 'cmrrm846r000j7znwsl67gt1g', tail: 'a'.repeat(32) };
+  const alone = env.action === 'REPLACE' ? sealRuntimeStateWithReport({ scenario: env.scenario }, B) : null;
+  check(`the real I1+S1+L1+M1 envelope seals FULL (${alone?.sealed?.length} of 3,900 chars) and reopens with the S1 rule`,
+    alone?.carried === 'FULL' && JSON.stringify((openRuntimeState(alone.sealed, B)?.scenario?.assumptions as Rec)?.spendingChanges) === JSON.stringify([DINING_20]));
+  const clause = { id: 'p1', key: 'spendingChanges', value: { category: 'Shopping', op: 'DELTA', from: '2027-03-01', monthly: -500 },
+    identity: IDENTITY.spendingChanges({ category: 'Shopping', op: 'DELTA', from: '2027-03-01', monthly: -500 })!, stagedAt: 0 };
+  const beside = env.action === 'REPLACE' ? sealRuntimeStateWithReport({ scenario: env.scenario, pending: { v: 1, clauses: [clause], next: 2 } }, B) : null;
+  check('…and still FULL beside a staged spending clause', beside?.carried === 'FULL', `${beside?.carried} ${beside?.sealed?.length}`);
+  const big = { v: 1 as const, next: 9, clauses: Array.from({ length: 8 }, (_, i) => {
+    const value = { category: 'Subscriptions', op: 'SCALE', from: `2027-0${i + 1}-15`, to: `2027-1${i % 3}-28`, multiplier: 0.85 };
+    return { id: `p${i + 1}`, key: 'spendingChanges', value, identity: IDENTITY.spendingChanges(value)!, stagedAt: i };
+  }) };
+  const worst = env.action === 'REPLACE' ? sealRuntimeStateWithReport({ scenario: env.scenario, pending: big }, B) : null;
+  check(`beside a FULL staged plan (8 clauses, ${JSON.stringify(big.clauses).length} ≤ ${MAX_PENDING_BYTES} bytes): carried whole or NAMED as lost — never silent`,
+    worst?.carried === 'FULL' || (worst?.carried === 'LOST' && worst.loss?.droppedPendingClauses === 8 && worst.loss.droppedScenario === true),
+    `${worst?.carried} ${worst?.sealed?.length}`);
 
   if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log('\nall scenario composition checks passed');
