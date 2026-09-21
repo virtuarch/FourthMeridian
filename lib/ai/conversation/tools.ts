@@ -57,7 +57,9 @@ import { resolveExplorationNode } from '@/lib/history/exploration';
 import {
   observedChange, findObservation, NEEDS_THRESHOLD, type TemporalOperation,
 } from '@/lib/data/snapshot-window';
-import { loadForecastIncomeStreams } from '@/lib/ai/forecast/streams';
+import {
+  loadForecastIncomeStreams, type IncomeTransactionReader, type AccountTypeReader,
+} from '@/lib/ai/forecast/streams';
 import { assembleForecast, projectInterval } from '@/lib/ai/forecast/assemble';
 import { SCENARIO_INPUTS, NOT_AN_ASSUMPTION, scenarioAssumptionKeys } from './scenario-inputs';
 import {
@@ -131,9 +133,28 @@ import { computeDebtAggregate } from '@/lib/debt/aggregates';
 
 // ── The tool contract ────────────────────────────────────────────────────────
 
+/**
+ * FM-AUDIT-010 — the authority reads the cash spine makes, as one seam.
+ *
+ * ⚠️ PRODUCTION LEAVES THIS UNSET, and the database authorities are used. It
+ * exists so a CI test can drive the REAL scenario path — argument merging, the
+ * derived floor, liability lines, income rules, the spine, the ledger, the solve —
+ * on fixture DATA: the seam is the data boundary, and nothing downstream of it is
+ * stubbed. The income page is still resolved by the real stream resolver; the
+ * transactions summary is still whatever the real monthly fold produced.
+ */
+export interface CashSpineReads {
+  incomeTransactions: IncomeTransactionReader;
+  incomeAccountTypes: AccountTypeReader;
+  accounts: () => Promise<AccountsSectionData | null>;
+  transactionsSummary: () => Promise<TransactionsSummaryData | null>;
+}
+
 export interface ToolContext {
   spaceCtx: SpaceContext;
   spaceId:  string;
+  /** Test seam only — see CashSpineReads. Unset in production. */
+  cashSpineReads?: CashSpineReads;
   /** The clock for the whole run, so two tools can never disagree about today. */
   asOfISO:  string;
   /**
@@ -1639,9 +1660,10 @@ async function buildCashSpine(
   const asOf = opts.asOf;
   const retrospective = asOf < ctx.asOfISO;
 
+  const reads = ctx.cashSpineReads;
   const [streams, accounts, transactions] = await Promise.all([
-    loadForecastIncomeStreams(ctx.spaceId, asOf),
-    assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx),
+    loadForecastIncomeStreams(ctx.spaceId, asOf, reads?.incomeTransactions, reads?.incomeAccountTypes),
+    reads ? reads.accounts() : assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx),
     // ⚠️ THE ONE LINE THAT MADE THIS TOOL WORK. PROJECTION-1 derives its spending
     // rate from `reliableMonths(transactionsDomain)`; with only the accounts
     // domain in scope it sees zero months, cannot assert a rate, and returns
@@ -1649,7 +1671,7 @@ async function buildCashSpine(
     // null / null. After: $38,243.50 to end-2026 and $128,827.54 to end-2027.
     // Both models papered over the null by doing the arithmetic in prose, and
     // one of them was $745.86 out.
-    assemble<TransactionsSummaryData>(FinanceDomains.TRANSACTIONS_SUMMARY, ctx,
+    reads ? reads.transactionsSummary() : assemble<TransactionsSummaryData>(FinanceDomains.TRANSACTIONS_SUMMARY, ctx,
       retrospective
         ? { transactionWindow: { startDate: daysAgoISO(asOf, 179), endDate: asOf,
             label: `evidence through ${asOf}` } }
@@ -2522,6 +2544,10 @@ async function prepareScenario(
       contribSpecs.push({ ...size,
         ...(c.from ? { from: String(c.from) } : {}),
         ...(c.to ? { to: String(c.to) } : {}),
+        // FM-AUDIT-011 — the derived floor's dependency MUST survive this rebuild,
+        // or `run()` has nothing to re-resolve (the composition contract caught
+        // exactly that: a solved spending cut still echoed the uncut floor).
+        ...(typeof c.floorMonthsOfExpenses === 'number' ? { floorMonthsOfExpenses: c.floorMonthsOfExpenses } : {}),
         ...(label ? { label } : {}) } as unknown as ContributionSpec);
       continue;
     }

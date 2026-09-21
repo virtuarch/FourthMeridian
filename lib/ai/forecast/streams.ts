@@ -108,8 +108,19 @@ const shift = (iso: string, n: number) =>
  * groups income by, so a stream's identity is the same one the transactions
  * assembler shows. Everything after the grouping is a delegated verdict.
  */
+/**
+ * FM-AUDIT-010 — the account-type read, injectable for the same reason the page
+ * read is: the depository verdict decides whether a stream's settlements license
+ * an observed-settled projection, and a composition test that could not supply
+ * it would silently exercise the fail-closed branch instead of the real one.
+ */
+export type AccountTypeReader = (accountIds: string[]) => Promise<{ id: string; type: string }[]>;
+const dbAccountTypes: AccountTypeReader = (accountIds) =>
+  db.financialAccount.findMany({ where: { id: { in: accountIds } }, select: { id: true, type: true } });
+
 export async function loadForecastIncomeStreams(
   spaceId: string, asOfISO: string, read: IncomeTransactionReader = queryTransactions,
+  accountTypes: AccountTypeReader = dbAccountTypes,
 ): Promise<ResolvedIncomeStream[]> {
   const page = await read({
     spaceId,
@@ -164,8 +175,7 @@ export async function loadForecastIncomeStreams(
   const accountIds = [...new Set(page.rows.map((r) => r.accountId))];
   const depository = new Set<string>();
   try {
-    const accts = await db.financialAccount.findMany({
-      where: { id: { in: accountIds } }, select: { id: true, type: true } });
+    const accts = await accountTypes(accountIds);
     for (const a of accts) if (DEPOSITORY_TYPES.has(a.type)) depository.add(a.id);
   } catch (err) {
     // ⚠️ FAILS CLOSED: no depository set means no observed-settled licence, which
