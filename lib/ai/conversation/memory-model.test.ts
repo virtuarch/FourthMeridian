@@ -251,6 +251,9 @@ console.log('6a. the rounding tolerance ran the wrong way (blocker M1)');
   check('…nor 6, nor the year', !admit('PLANNED_EXPENSE', { label: 'car', amount: 6 }, ev(['buy a car by 06/30/2027'])).ok
     && !admit('GOAL', goal(2027), ev(['buy a car by 06/30/2027'])).ok);
   check('an ISO date licenses none of its parts', !admit('PLANNED_EXPENSE', { label: 'car', amount: 30 }, ev(['by 2027-06-30'])).ok);
+  check('…and the mask cuts no fragment of its own out of a grouped number',
+    !admit('BASELINE', { monthlySpending: 1 }, ev(['somewhere between $1,200-1,500 a month'])).ok
+      && admit('BASELINE', { monthlySpending: 1200 }, ev(['somewhere between $1,200-1,500 a month'])).ok);
 
   // The bare integer after a months statement — the original coercion, still open.
   const afterMonths = ev(['keep 6 months of expenses', 'make it 9']);

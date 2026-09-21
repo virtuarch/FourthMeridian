@@ -650,9 +650,12 @@ const FRACTION_WORDS: Record<string, number> = {
  */
 function maskNonAmounts(text: string): string {
   return text
-    .replace(/\b\d{1,4}[/-]\d{1,2}(?:[/-]\d{1,4})?\b/g, ' ')  // 06/30/2027 · 2027-06-30 · 6-12
-    .replace(/\b\d{1,2}:\d{2}\b/g, ' ')                        // clock times
-    .replace(/\b\d{1,3}(?:\s+\d{3})+\b/g, ' ');                // "5 000"
+    // ⚠️ THE GUARDS MATTER AS MUCH AS THE PATTERN. Without them this very mask cut
+    // "200-1" out of the middle of "$1,200-1,500", leaving "$1" — a fragment it
+    // had itself created, and one that licensed a $1 planning figure.
+    .replace(/(?<![\d,])\d{1,4}[/-]\d{1,2}(?:[/-]\d{1,4})?(?![\d,])/g, ' ')  // 06/30/2027 · 2027-06-30 · 6-12
+    .replace(/\b\d{1,2}:\d{2}\b/g, ' ')                                    // clock times
+    .replace(/(?<![\d,])\d{1,3}(?:\s+\d{3})+(?![\d,])/g, ' ');              // "5 000"
 }
 
 /** What the user's own words state, by the kind of quantity each is. */
