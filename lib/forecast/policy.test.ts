@@ -25,7 +25,8 @@
 
 import { execSync } from 'child_process';
 import { provenanceCovers } from './slice-provenance';
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
+import { mutantLoader } from '../test-support/mutant-module';
+import { readFileSync } from 'fs';
 import { join } from 'path';
 import { ComponentState } from '../ai/economic-concepts';
 import { composeInvestments } from '../ai/economic-concepts';
@@ -744,23 +745,19 @@ eq('R16 and adds no dependency, because it changed nothing', (() => {
 // M. MUTATION TESTING — break it on purpose, and require the right failure
 // ═══════════════════════════════════════════════════════════════════════════
 
-const MUTANT = join(__dirname, '__policy_mutant__.ts');
-const cleanup = () => { if (existsSync(MUTANT)) unlinkSync(MUTANT); };
-process.on('exit', cleanup);
+// Each mutant is its own file (lib/test-support/mutant-module): a query-string
+// cache-bust on one fixed path returned the FIRST mutant on Node 22.
+const mutants = mutantLoader(__dirname, 'policy');
 
-let mutantSeq = 0;
 async function mutate(
   name: string, find: string, replace: string,
   assertion: (m: typeof import('./policy')) => boolean,
 ): Promise<void> {
   if (!src.includes(find)) { check(`${name} [anchor present]`, false, `anchor not found: ${find}`); return; }
-  writeFileSync(MUTANT, src.replace(find, replace), 'utf8');
-  try {
-    const m = await import(`./__policy_mutant__?v=${++mutantSeq}`) as typeof import('./policy');
-    let survived: boolean;
-    try { survived = assertion(m); } catch { survived = false; }
-    check(name, !survived, 'the mutant passed the assertion — the test does not actually pin this');
-  } finally { cleanup(); }
+  const m = await mutants.load<typeof import('./policy')>(src.replace(find, replace));
+  let survived: boolean;
+  try { survived = assertion(m); } catch { survived = false; }
+  check(name, !survived, 'the mutant passed the assertion — the test does not actually pin this');
 }
 
 async function mutations(): Promise<void> {

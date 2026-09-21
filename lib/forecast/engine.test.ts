@@ -25,7 +25,8 @@
 
 import { execSync } from 'child_process';
 import { provenanceCovers } from './slice-provenance';
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
+import { mutantLoader } from '../test-support/mutant-module';
+import { readFileSync } from 'fs';
 import { join } from 'path';
 import { ComponentState, composeInvestments } from '../ai/economic-concepts';
 import { CadenceKind, occurrencesBetween, type Cadence, CadenceProvenance } from './cadence';
@@ -638,22 +639,21 @@ check('N6 FORECAST-9 touched no prompt, retrieval or UI surface',
 // M. MUTATION TESTING — 16 deliberate breaks
 // ═══════════════════════════════════════════════════════════════════════════
 
-const MUTANT = join(__dirname, '__engine_mutant__.ts');
-const cleanup = () => { if (existsSync(MUTANT)) unlinkSync(MUTANT); };
-process.on('exit', cleanup);
-let seq = 0;
+// Each mutant is its own file (lib/test-support/mutant-module): a query-string
+// cache-bust on one fixed path returned the FIRST mutant on Node 22.
+const mutants = mutantLoader(__dirname, 'engine');
+/** The source of the mutant under assertion — M13 inspects the code itself. */
+let mutantSource = '';
 async function mutate(
   name: string, find: string, replace: string,
   assertion: (m: typeof import('./engine')) => boolean,
 ): Promise<void> {
   if (!src.includes(find)) { check(`${name} [anchor]`, false, `anchor not found: ${find}`); return; }
-  writeFileSync(MUTANT, src.replace(find, replace), 'utf8');
-  try {
-    const m = await import(`./__engine_mutant__?v=${++seq}`) as typeof import('./engine');
-    let survived: boolean;
-    try { survived = assertion(m); } catch { survived = false; }
-    check(name, !survived, 'the mutant passed — the test does not actually pin this');
-  } finally { cleanup(); }
+  mutantSource = src.replace(find, replace);
+  const m = await mutants.load<typeof import('./engine')>(mutantSource);
+  let survived: boolean;
+  try { survived = assertion(m); } catch { survived = false; }
+  check(name, !survived, 'the mutant passed — the test does not actually pin this');
 }
 const via = (m: typeof import('./engine'), s: CurrentOperatingState,
   e: readonly FutureCashEvent[], p: ForecastPolicy) => {
@@ -751,7 +751,7 @@ async function mutations(): Promise<void> {
     'import { dailySpendRate, PeriodBasis, type PeriodBasisKind } from \'./spending-baseline\';',
     'import { dailySpendRate, PeriodBasis, deriveSpendingBaseline, type PeriodBasisKind } from \'./spending-baseline\';',
     () => !/deriveSpendingBaseline|deriveCurrentPeriodicAmount/.test(
-      stripLiterals(readFileSync(MUTANT, 'utf8'))));
+      stripLiterals(mutantSource)));
 
   await mutate('M14 including the SILENT Abacus stream is caught',
     '  const inWindow = res.events.filter((r) => {',

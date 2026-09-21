@@ -22,7 +22,8 @@
 
 import { execSync } from 'child_process';
 import { provenanceCovers } from './slice-provenance';
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
+import { mutantLoader } from '../test-support/mutant-module';
+import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
   IncomeClass, Conclusion, composeOperatingState, conclusionLicence,
@@ -439,22 +440,18 @@ check('N12 the composer decides no basis of its own',
 // O. MUTATION — the composer must carry, and the licence must not soften
 // ═══════════════════════════════════════════════════════════════════════════
 
-const MUTANT = join(__dirname, '__state_mutant__.ts');
-const cleanupMutant = () => { if (existsSync(MUTANT)) unlinkSync(MUTANT); };
-process.on('exit', cleanupMutant);
-let seq = 0;
+// Each mutant is its own file (lib/test-support/mutant-module): a query-string
+// cache-bust on one fixed path returned the FIRST mutant on Node 22.
+const mutants = mutantLoader(__dirname, 'state');
 async function mutate(
   name: string, find: string, replace: string,
   assertion: (m: typeof import('./operating-state')) => boolean,
 ): Promise<void> {
   if (!src.includes(find)) { check(`${name} [anchor]`, false, `anchor not found: ${find}`); return; }
-  writeFileSync(MUTANT, src.replace(find, replace), 'utf8');
-  try {
-    const m = await import(`./__state_mutant__?v=${++seq}`) as typeof import('./operating-state');
-    let survived: boolean;
-    try { survived = assertion(m); } catch { survived = false; }
-    check(name, !survived, 'the mutant passed — the test does not actually pin this');
-  } finally { cleanupMutant(); }
+  const m = await mutants.load<typeof import('./operating-state')>(src.replace(find, replace));
+  let survived: boolean;
+  try { survived = assertion(m); } catch { survived = false; }
+  check(name, !survived, 'the mutant passed — the test does not actually pin this');
 }
 
 /** Rebuild the asserted-NET fixture against a mutated module. */

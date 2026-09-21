@@ -23,7 +23,8 @@
 
 import { execSync } from 'child_process';
 import { provenanceCovers } from './slice-provenance';
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
+import { mutantLoader } from '../test-support/mutant-module';
+import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
   REGIME, ExclusionReason, deriveCurrentPeriodicAmount, assertedPeriodicAmount,
@@ -487,22 +488,18 @@ check('P21 the activity licence still outranks everything — a NET amount on a 
 // Q. MUTATION — break the no-automatic-NET invariant on purpose
 // ═══════════════════════════════════════════════════════════════════════════
 
-const MUTANT = join(__dirname, '__periodic_mutant__.ts');
-const cleanup = () => { if (existsSync(MUTANT)) unlinkSync(MUTANT); };
-process.on('exit', cleanup);
-let seq = 0;
+// Each mutant is its own file (lib/test-support/mutant-module): a query-string
+// cache-bust on one fixed path returned the FIRST mutant on Node 22.
+const mutants = mutantLoader(__dirname, 'periodic');
 async function mutate(
   name: string, find: string, replace: string,
   assertion: (m: typeof import('./periodic-amount')) => boolean,
 ): Promise<void> {
   if (!src.includes(find)) { check(`${name} [anchor]`, false, `anchor not found: ${find}`); return; }
-  writeFileSync(MUTANT, src.replace(find, replace), 'utf8');
-  try {
-    const m = await import(`./__periodic_mutant__?v=${++seq}`) as typeof import('./periodic-amount');
-    let survived: boolean;
-    try { survived = assertion(m); } catch { survived = false; }
-    check(name, !survived, 'the mutant passed — the test does not actually pin this');
-  } finally { cleanup(); }
+  const m = await mutants.load<typeof import('./periodic-amount')>(src.replace(find, replace));
+  let survived: boolean;
+  try { survived = assertion(m); } catch { survived = false; }
+  check(name, !survived, 'the mutant passed — the test does not actually pin this');
 }
 
 async function mutations(): Promise<void> {
