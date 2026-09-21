@@ -141,6 +141,57 @@ export function deriveObservedSpendingRate(
   };
 }
 
+// ── S1 — category rates over the SAME months ─────────────────────────────────
+
+/** A month's category lines as the canonical ledger emits them. */
+export interface BreakdownMonthCategories {
+  month: string;
+  byCategory?: readonly { category: string; total: number; netTotal?: number }[];
+}
+
+/** One category line's rate. Shape-compatible with `spending-change.ts`'s CategoryRate. */
+export interface CategorySpendingRate {
+  category: string;
+  /** The mean of `values`, full precision. */
+  monthly: number;
+  /** Exactly the months the total rate averaged, oldest first. */
+  months: string[];
+  /** The line's NET (charges less its own credits, floored at 0) in each of them. */
+  values: number[];
+}
+
+/**
+ * The rate of each category line over EXACTLY the months the total rate averaged.
+ *
+ * ⚠️ THE SAME MONTHS, OR IT IS NOT A DECOMPOSITION. A category averaged over a
+ * different window than the total is two measurements pretending to be one, and a
+ * cut applied to it would move the total by an amount measured somewhere else.
+ * `windowMonths` is the observed rate's own `months`.
+ *
+ * ⚠️ A LINE ABSENT FROM A MONTH COUNTS AS NOTHING SPENT THAT MONTH, for the mean
+ * only: the ledger omits a line with no rows, and averaging over the months where
+ * it happened to appear would overstate it. The months are named beside the values.
+ *
+ * Each value is the ledger line's own net (`netTotal ?? total`), so a refund lowers
+ * the category it was filed against, as it does everywhere else.
+ */
+export function deriveCategorySpendingRates(
+  months: readonly BreakdownMonthCategories[], windowMonths: readonly string[],
+): CategorySpendingRate[] {
+  if (windowMonths.length === 0) return [];
+  const inWindow = windowMonths.map((ym) => months.find((m) => m.month === ym));
+  const names = new Set<string>();
+  for (const m of inWindow) for (const c of m?.byCategory ?? []) names.add(c.category);
+  return [...names].sort().map((category) => {
+    const values = inWindow.map((m) => {
+      const line = m?.byCategory?.find((c) => c.category === category);
+      return line ? (line.netTotal ?? line.total) : 0;
+    });
+    return { category, monthly: values.reduce((t, v) => t + v, 0) / values.length,
+      months: [...windowMonths], values };
+  });
+}
+
 // ── S1-N1 — interest the scenario ledger accrues itself ─────────────────────
 
 /** A month as the canonical breakdown holds it — only the fields this reads. */
