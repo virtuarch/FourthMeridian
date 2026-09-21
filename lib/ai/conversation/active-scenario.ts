@@ -44,6 +44,7 @@
 import {
   compactClauses, isClausesInForce, withoutUnappliedLabels, type ClausesRan,
 } from './scenario-rules';
+import { scenarioAssumptionKeys } from './scenario-inputs';
 
 /** The tool whose success establishes a scenario. Goal-seek is NOT one of these. */
 export const SCENARIO_TOOL = 'scenario_projection' as const;
@@ -218,13 +219,23 @@ function clausesRan(r: Record<string, unknown>): ClausesRan | null {
 
 /**
  * The scenario inputs that make a call a hypothetical rather than a reading of
- * the current trend. The same list `SCENARIO_INPUTS` offers, minus presentation
- * (`granularity`) and the search window.
+ * the current trend.
+ *
+ * ⚠️ DERIVED FROM THE SCHEMA THE MODEL WAS SHOWN, NOT TYPED OUT A SECOND TIME
+ * (I1 — readiness condition 1). This was a hand-written list, and the list was
+ * the whole of the relationship: an argument the schema gained and the list did
+ * not would make a crossing carrying ONLY that argument look like a baseline
+ * reading of the current trend — so the call would be IGNORED, the PREVIOUS
+ * scenario would survive a question that changed the world, and the model would
+ * be handed a stale result wearing a fresh label. An I1 `incomeChanges` left off
+ * the list would have failed in exactly that direction, which is worse than
+ * being dropped: nothing would have looked wrong.
+ *
+ * `scenario-inputs.ts` now owns the schema and the exception list together, so
+ * a new argument is an assumption the moment it is declared, and stops being one
+ * only by being named a non-assumption on purpose.
  */
-const ASSUMPTION_KEYS = [
-  'annualReturnPct', 'returns', 'contributions', 'outflows', 'assumedMonthlySpending',
-  'liabilityAssumptions',
-] as const;
+const ASSUMPTION_KEYS: readonly string[] = scenarioAssumptionKeys();
 
 function carriesAssumptions(args: unknown): boolean {
   if (!args || typeof args !== 'object') return false;

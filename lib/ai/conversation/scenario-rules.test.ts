@@ -276,8 +276,13 @@ console.log('\n6. AN UNSUPPORTED CLAUSE IS REFUSED BY NAME, NEVER RUN WITHOUT');
   const tools = readFileSync('lib/ai/conversation/tools.ts', 'utf8');
   check('prepareScenario refuses on the same check, before it sizes anything',
     /const unknown = unknownContributionKeys\(raw\);\s*if \(unknown\.length > 0\) \{\s*rejected\.push/.test(tools));
+  // I1 — the shared schema literal moved to `scenario-inputs.ts` so the continuity
+  // policy could be derived from it rather than typed out a second time. This scrape
+  // follows the literal; the bidirectional equality at 6b reads the same object
+  // through `schemaItemKeys` and does not depend on where the text lives.
+  const inputs = readFileSync('lib/ai/conversation/scenario-inputs.ts', 'utf8');
   check('…and every schema property is a key the contract knows', (() => {
-    const block = tools.slice(tools.indexOf('contributions: { type: \'array\''), tools.indexOf('outflows: { type: \'array\''));
+    const block = inputs.slice(inputs.indexOf('contributions: { type: \'array\''), inputs.indexOf('outflows: { type: \'array\''));
     const props = [...block.matchAll(/^ {6}(\w+):/gm)].map((m) => m[1]);
     return props.length === CONTRIBUTION_KEYS.length && props.every((p) => (CONTRIBUTION_KEYS as readonly string[]).includes(p));
   })());
