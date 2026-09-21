@@ -3943,6 +3943,14 @@ const stageAssumptions: ToolDefinition = {
       + 'staged rule ("don\'t pay debt first after all", "actually from February"). Saying where '
       + 'money goes NEXT is not a withdrawal: "invest everything above the floor" after "pay the '
       + 'highest APR first" is `target: ["highest_apr","investments"]`, without `replace`.' },
+    // ⚠️ THE REFUSAL NAMED A FLAG THIS TOOL DID NOT HAVE (found in S1). Staging a
+    // second rule about the same thing from another date ("another 10% from July",
+    // "a second raise in July") is refused until the call says which it is, and the
+    // refusal says "stage it again with `inAddition: true`" — which this schema did
+    // not declare, so the retry was refused as an unknown assumption.
+    inAddition: { type: 'boolean', description: 'Only when the user stated a SECOND rule about the '
+      + 'same thing from another date and BOTH apply ("then cut it another 10% starting July", "and '
+      + 'another raise next year"). Not for a correction — that is `replace`.' },
   }),
   async run(a, ctx) {
     if (!ctx.plan || !ctx.turn) {
@@ -3965,9 +3973,9 @@ const stageAssumptions: ToolDefinition = {
         instead: 'run scenario_projection again now with the ACTIVE SCENARIO\'s arguments and this '
           + 'change applied to them (for the horizon the user asked about). That run is the answer.' };
     }
-    const { retract, replace, ...stage } = a;
+    const { retract, replace, inAddition, ...stage } = a;
     const r = stagePlan(ctx.plan.pending,
-      { stage, replace: replace === true,
+      { stage, replace: replace === true, inAddition: inAddition === true,
         retract: Array.isArray(retract) ? retract.filter((x): x is string => typeof x === 'string') : [] },
       { turn: Math.max(0, ctx.turn.userTexts.length - 1), evidence: ctx.turn });
     ctx.plan.pending = r.plan;

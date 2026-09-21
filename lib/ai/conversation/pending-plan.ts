@@ -41,6 +41,7 @@ import {
   boundedLabel, contributionBasis, refuseUnknownItemKeys, type RefusedInput,
 } from './scenario-rules';
 import { userStatedFigure, type GatedFigure, type TurnEvidence } from './memory-model';
+import { resolveTransformableCategory } from '@/lib/transactions/category-vocabulary';
 
 // ── Limits ───────────────────────────────────────────────────────────────────
 
@@ -187,13 +188,24 @@ export const IDENTITY: Record<string, (v: unknown) => string | null> = {
   },
   // S1 — SCALE, DELTA and SET_RATE all say what a line's rate IS from a date, so
   // "actually make the January cut 15%" replaces the 20% rather than stacking on it.
-  // The line is the user's word as stated; `*` is all spending.
+  // The line is the RESOLVED one ("food" and "Dining" are one rule); `*` is all
+  // spending. A word that resolves to no line has no identity — staging refuses it
+  // first, with the vocabulary's reason.
   spendingChanges: (v) => {
     const c = o(v);
     if (!s(c.op) || !s(c.from)) return null;
-    return `RATE|${s(c.category).trim().toLowerCase() || '*'}|${s(c.from)}`;
+    const line = spendingLineOf(c);
+    return line === null ? null : `RATE|${line}|${s(c.from)}`;
   },
 };
+
+/** S1 — the transformable line a spending clause names, `*` for all spending, or null. */
+function spendingLineOf(c: Obj): string | null {
+  const word = s(c.category).trim();
+  if (!word) return '*';
+  const r = resolveTransformableCategory(word);
+  return r.ok ? r.category : null;
+}
 
 /**
  * THE SUBJECT A RULE IS ABOUT, which is wider than its identity.
@@ -218,6 +230,14 @@ export function subjectOf(key: string, v: unknown): string | null {
   if (key === 'contributions') {
     const b = contributionBasis(c);
     return b === 'AMOUNT' || b === 'BALANCE_SHARE' ? b : null;
+  }
+  // S1 — every spending rule on one line is about that line's rate: "another 10% in
+  // July" after "20% from January" shares the subject under a different identity,
+  // so the caller must say `inAddition` (both apply) or `replace` (it corrects).
+  // All spending (`*`) overlaps every line, as an unqualified income rule does.
+  if (key === 'spendingChanges') {
+    const line = spendingLineOf(c);
+    return line === null ? null : `RATE|${line}`;
   }
   return null;
 }
@@ -249,7 +269,21 @@ const FIGURES: Record<string, Record<string, Gate>> = {
   },
   outflows: { amount: 'Money' },
   liabilityAssumptions: { apr: 'Percent', minimumPayment: 'Money' },
+  // S1 — "a 20% cut" licenses 0.8 through the MULTIPLIER gate; "spend $500 less"
+  // licenses −500 (the gate compares magnitudes).
+  spendingChanges: { multiplier: 'MULTIPLIER', monthly: 'Money' },
 };
+
+/**
+ * S1 — STOP IS AN OPERATION, NOT A FIGURE. "Stop spending on Travel from June" is
+ * `SET_RATE 0` (or `SCALE 0`), and the user never says "$0" to mean it. Only that
+ * exact zero on those two fields passes without a stated figure; every other value
+ * is still gated.
+ */
+function isStop(key: string, item: Obj, field: string, v: number): boolean {
+  return key === 'spendingChanges' && v === 0
+    && ((field === 'monthly' && item.op === 'SET_RATE') || (field === 'multiplier' && item.op === 'SCALE'));
+}
 
 function licensed(gate: Gate, v: number, evidence: TurnEvidence): boolean {
   if (gate === 'MULTIPLIER') {
@@ -315,12 +349,19 @@ function invalid(key: string, value: unknown, evidence: TurnEvidence, name: stri
         return refuse(`\`${f}\` is a figure this state has no provenance rule for, so it was NOT `
           + 'staged. Nothing is carried that no gate has checked.');
       }
-      if (!licensed(gate, v, evidence)) {
+      if (!isStop(key, item, f, v) && !licensed(gate, v, evidence)) {
         return refuse(`\`${f}: ${v}\` was not stated by the user, so this entry was NOT staged. A `
           + 'figure a tool produced, or one remembered and not restated, is not theirs to carry — '
           + 'use the exact number they said, or ask.');
       }
     }
+  }
+  // ⚠️ S1 — A LINE THE DATA CANNOT CHANGE IS NEVER HELD. "Cut Medical 30%", "cut
+  // restaurants 20%", "cut my interest" are refused HERE, with the vocabulary's own
+  // reason (and the bucket it offers), so no later run can pick them up.
+  if (key === 'spendingChanges' && typeof item.category === 'string' && item.category.trim() !== '') {
+    const r = resolveTransformableCategory(item.category);
+    if (!r.ok) return refuse(`${r.unavailable} It was NOT staged.`);
   }
   // ⚠️ A LABEL NAMES A THING WHERE THE CONTRACT KEEPS ONE, AND NOWHERE ELSE — the
   // same boundary the scenario tools enforce, so a clause cannot be staged with a
