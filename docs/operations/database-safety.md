@@ -34,20 +34,38 @@ backup  →  migrate  →  verify
 
 | Command | What it does |
 |---|---|
-| `npm run db:backup` | Timestamped `pg_dump` → `backups/<db>-<iso>.sql` (gitignored). Fails loudly on an empty/partial dump. Restore: `psql "$DATABASE_URL" < backups/<file>.sql`. |
-| `npm run db:migrate:safe` | `db:backup` then `prisma migrate deploy` — applies pending migrations **additively** (never resets). This is the normal way to apply a new migration to your dev DB. |
+| `npm run db:backup` | Timestamped `pg_dump` of the **mutation target** (`DIRECT_URL`, which Prisma Migrate uses — see §2a) → `backups/<db>-<iso>.sql` (gitignored). Refuses when `DATABASE_URL`/`DIRECT_URL` are not provably one database. Fails loudly on an empty/partial dump. Restore: see §4. |
+| `npm run db:migrate:safe` | `db-guard --mode=migrate-deploy` (target identity) → `db:backup` → `prisma migrate deploy` — applies pending migrations **additively** (never resets). This is the normal way to apply a new migration to your dev DB. |
 | `npm run db:migrate` | Routed through `db-guard --mode=migrate-dev` **+ backup** first. **Refuses a non-interactive shell** against a populated (or unreachable) database — on 2026-09-15 a bare `prisma migrate dev` run by an agent session with drift pending reset the dev DB before Prisma's own interactivity refusal printed. From a real terminal it proceeds and Prisma prompts you. |
-| `npm run db:reset` | Routed through `db-guard` **+ backup** first. Refuses unless `ALLOW_DESTRUCTIVE_DB=true`. Even then, a backup is taken before the reset. |
+| `npm run db:reset` | Routed through `db-guard` **+ backup** first. Refuses unless `ALLOW_DESTRUCTIVE_DB=true`; for a target that is **not a recognised clone** (`fintracker`, `postgres`, anything off the `fintracker_<suffix>` convention) it additionally requires a human at a real terminal to **type the exact `host/database`** — the env flag alone may be left exported from an earlier command. A backup of the same database is taken before the reset. |
 
-The **guard** (`scripts/db-guard.ts`, run by the destructive scripts) blocks unless **both**:
-1. `ALLOW_DESTRUCTIVE_DB=true` is set explicitly (no default, no config), and
-2. `SHADOW_DATABASE_URL` ≠ `DATABASE_URL` (the shadow-DB footgun).
+The **guard** (`scripts/db-guard.ts`, run by every destructive or schema-mutating script) refuses unless **all** of:
+1. **Target identity (every mode).** The database Prisma Migrate will actually mutate is resolved the way Prisma resolves it — `DIRECT_URL` (schema.prisma declares `directUrl = env("DIRECT_URL")`) — and `DATABASE_URL` and `DIRECT_URL` must be **provably the same logical database** (§2a). A split, an unprovable pairing, or a missing `DIRECT_URL` is refused before anything is probed, backed up or mutated.
+2. **Shadow distinct (every mode).** `SHADOW_DATABASE_URL`, if set, must be provably a *different* database from both.
+3. **Clone-only (when armed).** With `FM_DB_GUARD=clone-only`, the target must be a `fintracker_<suffix>` clone.
+4. **Mode gate.** reset: `ALLOW_DESTRUCTIVE_DB=true` (+ typed target for non-clones). migrate-dev: a TTY when the target is populated or unknown. migrate-deploy: nothing further (additive).
 
 So the *only* way to reset is a conscious, backed-up act:
 ```bash
 npm run db:backup                                  # if you want a manual one first
-ALLOW_DESTRUCTIVE_DB=true npm run db:reset          # backs up again, then resets
+ALLOW_DESTRUCTIVE_DB=true npm run db:reset          # backs up the same target, then resets
 ```
+
+### 2a. One command, one database (FM-AUDIT-002)
+
+Until 2026-09-21 the guard and the backup read `DATABASE_URL` while Prisma Migrate connected through `DIRECT_URL`. With the two split — which the old clone recipe produced, since it rewrote `DATABASE_URL` only — the guard approved and backed up the **clone** and Prisma reset **live**. The invariant now enforced by `lib/db/target-identity.ts`:
+
+> A supported command never validates or backs up database A and then mutates database B.
+
+"The same logical database" means equal identity keys:
+
+| Family | Identity | Example pair that is the SAME |
+|---|---|---|
+| local (loopback) | port + database name | `localhost:5432/fintracker_x` ≡ `127.0.0.1/fintracker_x` |
+| Supabase | project ref + database name | pooler `postgres.<ref>@…pooler.supabase.com:6543/postgres` ≡ direct `db.<ref>.supabase.co:5432/postgres` |
+| any other host | exact host + port + database name | — |
+
+Anything not provably the same (two unknown hosts that might be a pooler and its primary) is refused. `db:wipe` checks the same authority before its inventory, backup and Plaid teardown.
 
 ---
 
@@ -101,11 +119,19 @@ createdb -T fintracker_<program> fintracker_<program>_a   # per-agent copies
 TEMPLATE — which is why the per-agent copies are templated off the base clone and
 never off `fintracker`.
 
-**Arm the guard for anything write-capable:**
+**Point EVERY mutation-capable URL at the clone, and arm the guard for anything write-capable:**
 
 ```bash
-FM_DB_GUARD=clone-only DATABASE_URL="postgresql://…/fintracker_<program>_a" npm run <script>
+FM_DB_GUARD=clone-only \
+  DATABASE_URL="postgresql://…/fintracker_<program>_a" \
+  DIRECT_URL="postgresql://…/fintracker_<program>_a" \
+  npm run <script>
 ```
+
+`DIRECT_URL` is not optional: it is what `prisma migrate …` connects to. A clone
+recipe that rewrites only `DATABASE_URL` leaves Migrate pointed at live — the
+db-guard now refuses that split outright (§2a), but a worktree `.env.local` must
+still be rewritten for **both** variables.
 
 Armed, `lib/db.ts` refuses — before a client exists — any database it cannot
 identify as a clone. Unset, it is inert, so `npm run ai:chat` and the `audit:*`
@@ -124,7 +150,11 @@ scripts still reach live deliberately.
 
 - Never run a destructive Prisma command as a step in a task. If a schema change needs applying, use `npm run db:migrate:safe`.
 - Anything write-capable — a test, an eval, a model harness — runs with
-  `FM_DB_GUARD=clone-only` against a `fintracker_<suffix>` clone. Not by convention: the guard refuses otherwise.
+  `FM_DB_GUARD=clone-only` against a `fintracker_<suffix>` clone (both `DATABASE_URL` and `DIRECT_URL`).
+  ⚠️ The runtime guard is ARMED by that variable and inert without it — a script that
+  does not set it is protected only by convention. The destructive npm scripts
+  (`db:reset`, `db:migrate`, `db:migrate:safe`, `db:backup`, `db:wipe`) check target
+  identity whether or not it is set.
 - Withholding a tool is **not** isolation. `turn.ts` checkpoints a `project_cash`
   result into `SpaceMemory` with no `remember` call involved, and `lib/ai/invocation.ts`
   writes an `AiInvocation` row on every model call. A model harness writes to whatever

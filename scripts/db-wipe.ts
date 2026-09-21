@@ -46,7 +46,9 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
+import { processMutationAuthority, schemaRequiresDirectUrl } from "@/lib/db/target-identity";
 import { stdin, stdout } from "node:process";
 
 function fail(lines: string[]): never {
@@ -83,6 +85,14 @@ if (!raw) {
         "Export them for the database you intend to wipe, then re-run."]);
 }
 if (!pooled) fail(["DATABASE_URL is not set — db:backup needs it."]);
+
+// FM-AUDIT-002 — the wipe runs DDL on DIRECT_URL ?? DATABASE_URL, the backup and
+// the Plaid-item read must be of that SAME database. Refuse a split (or an
+// unprovable pairing) before anything is inventoried, backed up or torn down.
+{
+  const authority = processMutationAuthority(schemaRequiresDirectUrl(readFileSync("prisma/schema.prisma", "utf8")));
+  if (!authority.ok) fail([...authority.reasons, "", ...authority.hint]);
+}
 
 const connUrl = raw.split("?")[0]; // psql rejects Prisma-only params (?pgbouncer, ?schema)
 const target  = targetOf(raw);

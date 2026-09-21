@@ -15,7 +15,7 @@
     "ci": "tsx scripts/ci-local.ts",
     "test:unit": "prisma generate && tsx scripts/run-tests.ts",
     "db:migrate": "tsx scripts/db-guard.ts --mode=migrate-dev && npm run db:backup && prisma migrate dev",
-    "db:migrate:safe": "npm run db:backup && prisma migrate deploy",
+    "db:migrate:safe": "tsx scripts/db-guard.ts --mode=migrate-deploy && npm run db:backup && prisma migrate deploy",
     "db:backup": "tsx scripts/db-backup.ts",
     "db:guard": "tsx scripts/db-guard.ts",
     "db:drift": "tsx --env-file=.env.local scripts/check-schema-drift.ts",
