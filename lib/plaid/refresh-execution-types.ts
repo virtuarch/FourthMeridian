@@ -249,4 +249,17 @@ export interface RefreshStageRecorder {
    * open. Distinct from fail(endpoint): the caller need not know which stage.
    */
   failOpen(err: unknown): void;
+  /**
+   * Record a stage that ran INSIDE another call and was timed by its owner (a
+   * chain adapter's best-effort transaction import runs inside WALLET_SYNC).
+   * The owner's clock is used verbatim — never a zero-length window invented
+   * here. Does not touch whatever stage is open.
+   */
+  recordMeasured(
+    endpoint: RefreshEndpoint,
+    stageKind: RefreshStageKind,
+    measured:
+      | { ok: true;  startedAt: Date; durationMs: number; facts?: RefreshStageFacts }
+      | { ok: false; startedAt: Date; durationMs: number; err: unknown },
+  ): void;
 }

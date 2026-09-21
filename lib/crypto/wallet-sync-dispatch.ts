@@ -43,7 +43,7 @@
  * `raw` for logging, never for branching.
  */
 
-import { syncBtcWallet, BTC_CHAIN } from "@/lib/crypto/btc-sync";
+import { syncBtcWallet, BTC_CHAIN, type BtcTransactionImportOutcome } from "@/lib/crypto/btc-sync";
 import { syncEthWallet, ETH_CHAIN } from "@/lib/crypto/eth-sync";
 import { syncSolWallet, SOL_CHAIN } from "@/lib/crypto/sol-sync";
 import { syncEvmWallet } from "@/lib/crypto/evm-native";
@@ -171,6 +171,16 @@ export interface WalletSyncOutcome {
    * Absent for a chain with no reconstruction and for a failed sync.
    */
   historyRefresh?: WalletHistoryRefresh;
+  /**
+   * The adapter's HISTORICAL transaction import, when the chain has one (BTC).
+   * Reported separately because it is separate: an `ok` sync whose import FAILED
+   * wrote the current position and valuation and kept the previous history —
+   * partial freshness, which the refresh ledger records as PARTIAL and the UI
+   * can say out loud. Absent for chains without an import and for failed syncs.
+   */
+  transactionImport?:
+    | { status: "IMPORTED"; written: number }
+    | { status: "FAILED"; reason: string };
 }
 
 interface ChainAdapter {
@@ -210,6 +220,7 @@ interface ChainAdapter {
   currentValueAuthority: "SPINE" | "LEGACY_COLUMN";
   sync(accountId: string): Promise<{
     ok: boolean; syncStatus?: "synced" | "pending"; stage?: string; reason?: string;
+    transactionImport?: BtcTransactionImportOutcome;
   }>;
 }
 
@@ -432,6 +443,19 @@ export async function syncWalletByChain(
     const result = await adapter.sync(accountId);
     if (result.ok) recorder.succeed("WALLET_SYNC");
     else recorder.fail("WALLET_SYNC", new Error(result.reason ?? `wallet sync failed at ${result.stage ?? "unknown"} stage`));
+    // THE HISTORICAL IMPORT IS ITS OWN STAGE. It ran inside the adapter call, so
+    // it is recorded with the adapter's own clock. A FAILED import on an `ok`
+    // sync makes the execution PARTIAL: the position and valuation advanced, the
+    // transaction history did not. Before this, a mempool.space outage spent the
+    // full timeout inside a WALLET_SYNC recorded as a clean SUCCEEDED, and the
+    // only trace was a console warning.
+    const txImport = result.transactionImport;
+    if (txImport) {
+      recorder.recordMeasured("TRANSACTIONS", "PROVIDER", txImport.status === "IMPORTED"
+        ? { ok: true, startedAt: txImport.startedAt, durationMs: txImport.durationMs,
+            facts: { recordsRead: txImport.fetched, recordsWritten: txImport.written, recordsChanged: txImport.written, coveredAccountIds: [accountId] } }
+        : { ok: false, startedAt: txImport.startedAt, durationMs: txImport.durationMs, err: new Error(txImport.reason) });
+    }
     // W-M2a — A REFUSAL MUST REACH THE CONNECTION, NOT ONLY THE INCIDENT LOG.
     //
     // Every adapter already records a SyncIssue. None of them (outside BTC's
@@ -481,6 +505,11 @@ export async function syncWalletByChain(
       // W6f — so the caller can bound its snapshot regeneration to the window
       // whose evidence actually moved, instead of guessing or rebuilding all.
       historyRefresh: historyRefresh ?? undefined,
+      transactionImport: txImport
+        ? (txImport.status === "IMPORTED"
+            ? { status: "IMPORTED", written: txImport.written }
+            : { status: "FAILED", reason: txImport.reason })
+        : undefined,
       raw: result,
     };
   } catch (e) {

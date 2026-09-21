@@ -107,7 +107,31 @@ export interface BtcWalletSyncResult {
    */
   ledgerComplete?: boolean;
   ledgerResidual?: number | null;
+  /**
+   * What the HISTORICAL transaction import did on this run — present on every
+   * run that reached it (i.e. every `ok` run). The import is best-effort
+   * enrichment and never decides `ok`: the current position and its valuation
+   * are written whether it succeeds or not. This field is how that partiality
+   * is reported instead of disappearing into a console warning.
+   */
+  transactionImport?: BtcTransactionImportOutcome;
 }
+
+/**
+ * The historical transaction import's own outcome, measured by the import.
+ *
+ * IMPORTED — every requested address was read to exhaustion; `written` new rows
+ *            were persisted (0 is a normal, complete answer).
+ * FAILED   — the provider did not answer (or answered garbage). NOTHING was
+ *            written: the fetch is complete-or-throw, so previously imported
+ *            history is untouched and no partial page is persisted.
+ *
+ * `startedAt`/`durationMs` are the import's own clock so the refresh ledger can
+ * record it as its own stage without inventing a duration.
+ */
+export type BtcTransactionImportOutcome =
+  | { status: "IMPORTED"; addresses: number; fetched: number; written: number; startedAt: Date; durationMs: number }
+  | { status: "FAILED"; addresses: number; reason: string; startedAt: Date; durationMs: number };
 
 export interface BtcSyncDeps {
   /** Injected fetch (offline tests / alternate transport). */
@@ -386,14 +410,19 @@ export function filterFreshMovements<T extends { externalId: string }>(
 async function importBtcTransactions(
   account: { id: string; ownerUserId: string | null; addresses: string[] },
   deps: BtcSyncDeps,
-): Promise<void> {
+): Promise<BtcTransactionImportOutcome> {
+  const startedAt = new Date();
+  const t0 = Date.now();
+  const addresses = account.addresses.length;
+  const imported = (fetched: number, written: number): BtcTransactionImportOutcome =>
+    ({ status: "IMPORTED", addresses, fetched, written, startedAt, durationMs: Date.now() - t0 });
   try {
     const fetchTxs = deps.txFetcher ?? ((a: string) => fetchAddressTxsRaw(a, deps.fetchImpl));
     const lists = await Promise.all(account.addresses.map(fetchTxs));
     const rawTxs = dedupeRawTxsByTxid(lists.flat());
 
     const movements = normalizeBtcAddressTxs(rawTxs, account.addresses);
-    if (movements.length === 0) return;
+    if (movements.length === 0) return imported(rawTxs.length, 0);
 
     // Engine-level counterparty resolution → INTERNAL transfers.
     const ownByAddress = account.ownerUserId
@@ -430,14 +459,21 @@ async function importBtcTransactions(
       select: { externalTransactionId: true },
     });
     const fresh = filterFreshMovements(movements, existing.map((e) => e.externalTransactionId));
-    if (fresh.length === 0) return;
+    if (fresh.length === 0) return imported(rawTxs.length, 0);
 
-    await db.transaction.createMany({
+    const { count } = await db.transaction.createMany({
       data: fresh.map((m) => buildTransactionRow(account.id, m, ownByAddress)),
       skipDuplicates: true,
     });
+    return imported(rawTxs.length, count);
   } catch (e) {
-    console.warn(`[btc-sync] transaction import failed for account ${account.id} (non-fatal):`, e);
+    // NON-FATAL MEANS EXACTLY THIS: the caller goes on to write the current
+    // position and its valuation, and this outcome travels on the result (and
+    // into the refresh ledger as a FAILED TRANSACTIONS stage) so the run is
+    // reported PARTIAL rather than as a clean success. It does NOT mean ignored.
+    const reason = e instanceof Error ? e.message : String(e);
+    console.warn(`[btc-sync] transaction import failed for account ${account.id} (non-fatal — position still written):`, reason);
+    return { status: "FAILED", addresses, reason, startedAt, durationMs: Date.now() - t0 };
   }
 }
 
@@ -762,7 +798,9 @@ export async function syncBtcWallet(
   const txAddresses = statsByAddress
     ? addresses.filter((a) => (statsByAddress.get(a)?.txCount ?? 0) > 0)
     : addresses;
-  await importBtcTransactions({ id: accountId, ownerUserId: account.ownerUserId, addresses: txAddresses }, deps);
+  // Best-effort: its outcome is REPORTED (result + refresh ledger), never gating.
+  // Everything below — observation, balance, status — runs whatever it returns.
+  const transactionImport = await importBtcTransactions({ id: accountId, ownerUserId: account.ownerUserId, addresses: txAddresses }, deps);
 
   // V26-S3-LEDGER — A WALLET IS NOT HISTORY-READY UNTIL ITS LEDGER RECONCILES.
   //
@@ -863,6 +901,9 @@ export async function syncBtcWallet(
       movementTotal: ledger.movementTotal,
       observedBalance: nativeBalance,
       residual: ledger.residual,
+      // A short ledger while the transaction provider was unreachable is an
+      // outage, not missing history — say which, so the two are never confused.
+      ...(transactionImport.status === "FAILED" ? { transactionImportFailed: transactionImport.reason } : {}),
     });
   }
 
@@ -908,6 +949,7 @@ export async function syncBtcWallet(
     nativeBalance, balanceUsd, priceUsd,
     ledgerComplete: ledger.complete,
     ledgerResidual: ledger.residual,
+    transactionImport,
   };
 }
 

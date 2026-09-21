@@ -31,11 +31,14 @@ export function SyncWalletButton({ accountId, syncStatus }: Props) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  // A PARTIAL success: balance and value refreshed, transaction history did not.
+  const [notice, setNotice] = useState("");
 
   const idleLabel = syncStatus === "pending" ? "Sync wallet" : "Refresh";
 
   async function handleSync() {
     setError("");
+    setNotice("");
     setLoading(true);
     try {
       const res = await fetch(`/api/accounts/${accountId}/sync`, { method: "POST" });
@@ -46,6 +49,12 @@ export function SyncWalletButton({ accountId, syncStatus }: Props) {
       if (!res.ok || data?.ok === false) {
         setError(data?.error ?? data?.reason ?? "Sync failed. Please try again.");
         return;
+      }
+      // The historical import is best-effort: when it failed, the balance and
+      // value still refreshed and the existing history was kept. Say so, rather
+      // than letting a clean-looking refresh hide it or an error overstate it.
+      if (data?.transactionImport?.status === "FAILED") {
+        setNotice("Balance updated. Transaction history couldn't be refreshed right now. Existing history is kept.");
       }
       router.refresh();
     } catch {
@@ -70,6 +79,7 @@ export function SyncWalletButton({ accountId, syncStatus }: Props) {
         {loading ? "Syncing…" : idleLabel}
       </button>
       {error && <p className="text-xs text-[var(--accent-negative)] mt-1">{error}</p>}
+      {notice && <p className="text-xs text-[var(--text-secondary)] mt-1">{notice}</p>}
     </div>
   );
 }

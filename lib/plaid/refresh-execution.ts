@@ -241,6 +241,36 @@ export class StageRecorder implements RefreshStageRecorder {
     });
   }
 
+  recordMeasured(
+    endpoint: RefreshEndpoint,
+    stageKind: RefreshStageKind,
+    measured:
+      | { ok: true;  startedAt: Date; durationMs: number; facts?: RefreshStageFacts }
+      | { ok: false; startedAt: Date; durationMs: number; err: unknown },
+  ): void {
+    const { startedAt, durationMs } = measured;
+    const completedAt = new Date(startedAt.getTime() + durationMs);
+    if (measured.ok) {
+      const recordsChanged = measured.facts?.recordsChanged;
+      this.records.push({
+        endpoint, stageKind, status: "SUCCEEDED", startedAt, completedAt, durationMs,
+        recordsRead: measured.facts?.recordsRead,
+        recordsWritten: measured.facts?.recordsWritten,
+        recordsChanged,
+        coveredAccountIds: measured.facts?.coveredAccountIds ?? [],
+        freshnessAdvanced: recordsChanged === undefined ? undefined : recordsChanged > 0,
+        accounts: measured.facts?.accounts ?? [],
+      });
+    } else {
+      this.records.push({
+        endpoint, stageKind, status: "FAILED", startedAt, completedAt, durationMs,
+        coveredAccountIds: [],
+        errorSummary: summarizeError(measured.err),
+        accounts: [],
+      });
+    }
+  }
+
   private takeOpen(endpoint: RefreshEndpoint) {
     const open = this.open?.endpoint === endpoint ? this.open : undefined;
     if (open) this.open = undefined;
