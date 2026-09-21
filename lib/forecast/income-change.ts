@@ -113,6 +113,24 @@ export interface IncomeChangeRule {
   multiplier?: number;
   /** SET_RATE | START. */
   rate?: { amount: number; per: RatePeriodKind; basis: AmountBasisKind; currency?: string };
+  /**
+   * SCALE — what the user says the SCALED income is, when they said.
+   *
+   * ⚠️ IT EXISTS BECAUSE ITS ABSENCE DESTROYED VALID RULES. Measured on the first
+   * dogfood: asked for "a 10% raise", the model sent
+   * `{op:'SCALE', multiplier:1.1, basis:'NET'}` — because "a 10% net raise" is how
+   * the sentence is said, and because the contract has a `basis` field. The rule
+   * was refused whole for carrying a field that asserted nothing the contract
+   * could not already represent, and the composed scenario ran with the floor and
+   * the debt waterfall and NO RAISE. The refusal was honest and the answer was
+   * useless.
+   *
+   * So a SCALE may carry a basis, and it MEANS something: the resulting
+   * occurrences are asserted to be that. Omitted, the stream's own basis is
+   * preserved — the ordinary case, where a tenth more of an observed take-home
+   * deposit is money of the same kind.
+   */
+  basis?: AmountBasisKind;
   /** START only — the schedule the new stream pays on. */
   cadence?: CadenceKindName;
   /** START only — the name of a THING ("consulting"), never a restatement of the rule. */
@@ -268,7 +286,15 @@ export function invalidIncomeChange(r: IncomeChangeRule): string | null {
         + 'use STOP, which says so.';
     }
     if (r.multiplier === 1) return 'a `multiplier` of 1 changes nothing, so there is no change to run.';
-    if (r.rate || r.cadence) return 'SCALE takes a `multiplier` only — a rate or a cadence belongs to SET_RATE or START.';
+    if (r.rate) {
+      return 'SCALE is a percentage change, so it takes no stated amount — `amount` and `per` '
+        + 'belong to SET_RATE, which says what the income BECOMES. (A `basis` on its own is '
+        + 'allowed and says what the scaled income is.)';
+    }
+    if (r.cadence) return 'SCALE keeps the stream\'s own pay schedule and cannot restate it.';
+    if (r.basis !== undefined && r.basis !== AmountBasis.NET && r.basis !== AmountBasis.GROSS) {
+      return '`basis` must be NET or GROSS when it is stated at all.';
+    }
     return null;
   }
 
@@ -499,8 +525,19 @@ export function applyIncomeChanges(args: {
           // change is who says so: the level is no longer purely observed, so the
           // provenance becomes HYPOTHETICAL — the value FORECAST-3 minted and
           // reserved in writing for exactly a supposition like this.
-          amount: { ...e.amount, value: e.amount.value * m,
-            provenance: EventProvenance.HYPOTHETICAL } };
+          // ⚠️ THE BASIS IS PRESERVED UNLESS THE USER RESTATED IT. A tenth more of
+          // an observed take-home deposit is money of the same kind, and the
+          // gross-or-net question has not changed. What DOES change is who says
+          // so: the level is no longer purely observed, so the provenance becomes
+          // HYPOTHETICAL — the value FORECAST-3 minted and reserved in writing
+          // for exactly a supposition like this. A stated `basis` overrides, and
+          // then `observedSettled` goes with it: an asserted figure is not an
+          // observation, and leaving the marker on would let a GROSS assertion
+          // keep counting as spendable cash through the back door.
+          amount: rule.basis === undefined
+            ? { ...e.amount, value: e.amount.value * m, provenance: EventProvenance.HYPOTHETICAL }
+            : { value: e.amount.value * m, currency: e.amount.currency, basis: rule.basis,
+              provenance: EventProvenance.HYPOTHETICAL } };
       });
       after = events.filter(governs);
     } else if (rule.op === IncomeChangeOp.SET_RATE) {

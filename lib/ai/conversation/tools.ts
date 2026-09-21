@@ -2050,10 +2050,18 @@ function toIncomeChangeRules(
     if (!entry || typeof entry !== 'object') return;
     const c = entry as Record<string, unknown>;
     if (!declaredOk(c)) return;
-    const statesRate = c.amount !== undefined || c.per !== undefined || c.basis !== undefined;
+    // ⚠️ A RATE IS BUILT ONLY WHERE A RATE BELONGS. `basis` is shared between the
+    // ops — it qualifies a stated rate for SET_RATE and START, and it qualifies the
+    // SCALED income for SCALE — so folding it into `rate` unconditionally turned a
+    // SCALE carrying `basis: NET` into a rate with a NaN amount, which the
+    // validator then refused as a malformed SET_RATE. The model sends that
+    // combination because "a 10% net raise" is one phrase.
+    const op = c.op as IncomeChangeOpKind;
+    const statesRate = op !== 'SCALE'
+      && (c.amount !== undefined || c.per !== undefined || c.basis !== undefined);
     rules.push({
       id: `i${i + 1}`,
-      op: c.op as IncomeChangeOpKind,
+      op,
       sourceKey: typeof c.source === 'string' && c.source !== '' ? c.source : null,
       fromISO: typeof c.from === 'string' ? c.from : '',
       ...(typeof c.to === 'string' ? { toISO: c.to } : {}),
@@ -2066,6 +2074,8 @@ function toIncomeChangeRules(
             : NonNullable<IncomeChangeRule['rate']>['basis'],
         } }
         : {}),
+      ...(op === 'SCALE' && typeof c.basis === 'string'
+        ? { basis: c.basis as NonNullable<IncomeChangeRule['basis']> } : {}),
       ...(typeof c.cadence === 'string'
         ? { cadence: c.cadence as NonNullable<IncomeChangeRule['cadence']> } : {}),
       // ⚠️ BOUNDED, LIKE EVERY OTHER CALLER NAME THAT REACHES A RESULT. A STARTed
@@ -2749,7 +2759,15 @@ const scenarioProjection: ToolDefinition = {
   // what the ledger has always done.
   description:
     'Deterministic projection when something specific happens that the observed pattern ' +
-    'does not contain: a dated one-off amount arriving or leaving — a bonus, an ' +
+    // ⚠️ THE INCOME CLAUSE LEADS, BECAUSE A MODEL CHOOSING A TOOL READS THE FIRST
+    // SENTENCE. Measured on the first I1 dogfood: asked "starting January my income
+    // increases 10%, what does that do to my cash?", the model called project_cash,
+    // then explained in prose that the question needed this tool. It knew; the
+    // description did not say so where it was looking. Same lever, same shape, as
+    // the one-off boundary that moved 0/5 to 5/5 (7859d6c).
+    'does not contain: a CHANGE TO FUTURE INCOME from a date — a raise, a new salary, an ' +
+    'income starting or ending (`incomeChanges`); a dated one-off amount arriving or ' +
+    'leaving — a bonus, an ' +
     'inheritance, a car, a tax bill, proceeds from a sale — money moved into investments, ' +
     'and an annual return. Cash comes from the same deterministic projection as ' +
     'project_cash; this adds only what the user said, and reports cash, investments, debt ' +

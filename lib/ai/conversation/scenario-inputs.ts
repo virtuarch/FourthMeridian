@@ -156,7 +156,8 @@ export const SCENARIO_INPUTS = {
         + '"Starting January" is January 1 of the next January. For STOP this is the first '
         + 'date NOT paid, so "stops after June" is July 1.'),
       to: str('YYYY-MM-DD, inclusive. Omit to continue to the horizon.'),
-      multiplier: num('SCALE only. 1.1 for "up 10%", 0.8 for "a 20% pay cut". Not a percentage.'),
+      multiplier: num('SCALE only. 1.1 for "up 10%", 0.8 for "a 20% pay cut". Not a percentage. '
+        + 'A SCALE needs nothing else: no `amount`, no `per`, no `cadence`.'),
       amount: num('SET_RATE and START only. What the income BECOMES, as the user stated it — '
         + 'do not annualise or monthly-ise it yourself; say which period it is in `per`.'),
       per: { type: 'string', enum: ['YEAR', 'MONTH', 'OCCURRENCE'],
@@ -166,10 +167,11 @@ export const SCENARIO_INPUTS = {
           + 'stream\'s own pay schedule — a yearly figure on a fortnightly job is divided by '
           + '26, not by 12.' },
       basis: { type: 'string', enum: ['NET', 'GROSS'],
-        description: 'SET_RATE and START only. NET is take-home; GROSS is before deductions. '
-          + 'Required, and never guessed: a gross figure is real money but is NOT cash the '
-          + 'user can spend, so it does not raise the projected balance. If the user did not '
-          + 'say, ask.' },
+        description: 'NET is take-home; GROSS is before deductions. REQUIRED on SET_RATE and '
+          + 'START, and never guessed: a gross figure is real money but is NOT cash the user '
+          + 'can spend, so it does not raise the projected balance — if the user did not say, '
+          + 'ask. Optional on SCALE, where it says what the raised income is; omit it and the '
+          + 'income keeps whatever it already was, which is usually right.' },
       cadence: { type: 'string', enum: ['WEEKLY', 'BIWEEKLY', 'MONTHLY'],
         description: 'START only — how often the new income arrives. An existing income keeps '
           + 'its own observed schedule and must not be given one here.' },

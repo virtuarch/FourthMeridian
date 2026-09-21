@@ -765,9 +765,9 @@ const BAD: [string, IncomeChangeRule, string][] = [
   ['20.11 a malformed `to`',
     { id: 'b11', op: SCALE, sourceKey: ACME, fromISO: '2027-03-01', toISO: 'June', multiplier: 1.1 },
     '`to` must be a YYYY-MM-DD date.'],
-  ['20.12 a SCALE carrying a rate — two answers to one question',
+  ['20.12 a SCALE carrying a stated AMOUNT — two answers to one question',
     { id: 'b12', op: SCALE, sourceKey: ACME, fromISO: '2027-01-01', multiplier: 1.1, rate: { ...net(5000) } },
-    'SCALE takes a `multiplier` only'],
+    'SCALE is a percentage change, so it takes no stated amount'],
   ['20.13 a STOP carrying an amount',
     { id: 'b13', op: STOP, sourceKey: ACME, fromISO: '2027-07-01', rate: { ...net(5000) } },
     'STOP takes only a date'],
@@ -808,6 +808,52 @@ BAD.forEach(([name, rule, needle], i) => {
   check(`${name} — invalidIncomeChange agrees standalone`,
     (invalidIncomeChange(rule) ?? '').includes(needle), String(invalidIncomeChange(rule)));
 });
+
+// ⚠️ 20b. A SCALE MAY CARRY A `basis`, AND IT IS NOT A NO-OP. This is the field
+// whose refusal destroyed valid rules on the first dogfood: asked for "a 10%
+// raise", the model sent `{op:'SCALE', multiplier:1.1, basis:'NET'}` — because
+// that is how the sentence is said — and the whole rule died, so a composed
+// scenario ran with a cash floor, a debt waterfall and no raise.
+
+const r20b = run([{ id: 'r20b', op: SCALE, sourceKey: ACME, fromISO: '2027-01-01',
+  multiplier: 1.1, basis: AmountBasis.NET }]);
+eq('20b.1 a SCALE carrying a NET basis RUNS', r20b.executions[0].ran, true);
+/**
+ * The distinct basis/marker pairs on one stream's INFLOWS.
+ *
+ * ⚠️ INFLOWS ONLY, AND THE FIXTURE IS WHY. `BASE_EVENTS` carries a clawback —
+ * an OUTFLOW on the ACME key — and a first version of this helper counted it,
+ * reporting a stream half-converted when the module had correctly left an
+ * outflow alone. Section 24 asserts that directly; this one would have blamed it.
+ */
+const basesOf = (res: IncomeChangeResult, key: string) =>
+  [...new Set(res.events.filter((e) => e.sourceKey === key && e.direction === 'INFLOW')
+    .map((e) => `${e.amount?.basis}/${e.amount?.observedSettled ?? false}`))].sort();
+eq('20b.2 …and every occurrence it touched is NET now, with no observation marker left',
+  basesOf(r20b, ACME), ['NET/false']);
+eq('20b.3 …and it still counts as cash', r20b.executions[0].spendableAfter,
+  r20b.executions[0].nominalAfter);
+
+// ⚠️ A GROSS SCALE TAKES THE OBSERVED-SETTLED MARKER WITH IT. An asserted figure
+// is not an observation; leaving the marker on would let a GROSS assertion keep
+// counting as spendable cash through the back door.
+const r20c = run([{ id: 'r20c', op: SCALE, sourceKey: ACME, fromISO: '2027-01-01',
+  multiplier: 1.1, basis: AmountBasis.GROSS }]);
+eq('20b.4 a SCALE asserted GROSS runs', r20c.executions[0].ran, true);
+eq('20b.5 …and the projection then counts NONE of it as cash',
+  r20c.executions[0].spendableAfter, 0);
+eq('20b.6 …while the nominal money is still there',
+  r20c.executions[0].nominalAfter > 0, true);
+eq('20b.7 …and no occurrence keeps the observed-settled marker',
+  basesOf(r20c, ACME), ['GROSS/false']);
+
+// Omitted, the stream's own basis survives — the ordinary case.
+const r20d = run([{ id: 'r20d', op: SCALE, sourceKey: ACME, fromISO: '2027-01-01', multiplier: 1.1 }]);
+eq('20b.8 with no stated basis the stream\'s own basis and marker are preserved',
+  basesOf(r20d, ACME), ['UNKNOWN/true']);
+eq('20b.9 an unrecognised basis on a SCALE is refused by name',
+  invalidIncomeChange({ id: 'x', op: SCALE, sourceKey: ACME, fromISO: '2027-01-01',
+    multiplier: 1.1, basis: 'MAYBE' as never })?.includes('NET or GROSS'), true);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 21. A rate needs a schedule to be a rate OF
