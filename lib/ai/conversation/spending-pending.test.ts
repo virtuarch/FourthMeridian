@@ -173,6 +173,8 @@ async function main(): Promise<void> {
   const c2 = tctx(c1.plan!.pending, texts);
   const refusedFirst = await st.run({ spendingChanges: [JULY] }, c2) as Rec;
   const retried = await st.run({ spendingChanges: [JULY], inAddition: true }, c2) as Rec;
+  check('the staging result says what the held line CONTAINS (Dining — groceries)',
+    /groceries/.test(JSON.stringify((retried as Rec).spendingLines ?? {})));
   check('without it: refused, naming `inAddition`; with it: staged — two rules held',
     /inAddition/.test(JSON.stringify(refusedFirst.notStaged)) && retried.staged?.length === 1 && c2.plan!.pending.clauses.length === 2,
     JSON.stringify(retried).slice(0, 240));

@@ -422,8 +422,10 @@ const getSpending: ToolDefinition = {
     'card payments kept separate from spending. This is the evidence behind a window. ' +
     'For HOW MUCH per month, MORE OR LESS than another period, runway, surplus or ' +
     '"N months of expenses", use measure_flows / get_baselines — they compute the ' +
-    'figure and the comparison; never divide this tool\'s totals yourself. Default ' +
-    'window is the last 90 days.',
+    'figure and the comparison; never divide this tool\'s totals yourself. What a spending ' +
+    'CUT or change would do ("cut Dining 20%", "spend less on Other") is not measured here: ' +
+    'it is scenario_projection\'s `spendingChanges` (or stage_assumptions) — never apply a ' +
+    'percentage to these totals in prose. Default window is the last 90 days.',
   parameters: obj({
     from: str('YYYY-MM-DD inclusive. Omit for the 90 days before `to`.'),
     to:   str('YYYY-MM-DD inclusive. Omit for today.'),
@@ -3391,7 +3393,10 @@ const scenarioProjection: ToolDefinition = {
     // description did not say so where it was looking. Same lever, same shape, as
     // the one-off boundary that moved 0/5 to 5/5 (7859d6c).
     'does not contain: a CHANGE TO FUTURE INCOME from a date — a raise, a new salary, an ' +
-    'income starting or ending (`incomeChanges`); a dated one-off amount arriving or ' +
+    'income starting or ending (`incomeChanges`); a CHANGE TO FUTURE SPENDING — cutting a ' +
+    'spending line or all spending by a percent or an amount, from now or from a date ' +
+    '("cut Dining 20%", "cut Other 20%", `spendingChanges`), passing the user\'s own word for ' +
+    'the line; a dated one-off amount arriving or ' +
     'leaving — a bonus, an ' +
     'inheritance, a car, a tax bill, proceeds from a sale — money moved into investments, ' +
     'and an annual return. Cash comes from the same deterministic projection as ' +
@@ -4010,11 +4015,24 @@ const reconcileProjection: ToolDefinition = {
  * here; a standing preference the user wants kept across conversations is theirs
  * to ask `remember` for.
  */
+/** S1 — the transformable lines named by held spending clauses, with what each holds. */
+function spendingLinesHeld(clauses: readonly { key: string; value: unknown }[]) {
+  const seen = new Map<string, { line: string; class: string; contains: string }>();
+  for (const c of clauses) {
+    const word = c.key === 'spendingChanges' ? (c.value as { category?: unknown }).category : undefined;
+    if (typeof word !== 'string' || !word.trim()) continue;
+    const r = resolveTransformableCategory(word);
+    if (r.ok && !seen.has(r.category)) seen.set(r.category, { line: r.category, class: r.class, contains: r.meaning });
+  }
+  return [...seen.values()];
+}
+
 const stageAssumptions: ToolDefinition = {
   name: 'stage_assumptions',
   description:
     'Hold a condition the user just stated for a projection that has NOT been run yet — a '
-    + 'raise or income change from a date, a cash floor, which debt to pay first, where the '
+    + 'raise or income change from a date, a cut or change to a spending line or to all '
+    + 'spending ("cut Dining 20%"), a cash floor, which debt to pay first, where the '
     + 'rest goes, a one-off amount, a return, a spending level — so the next '
     + 'scenario_projection, scenario_crossing or scenario_goal_seek in this conversation '
     + 'applies it. Use it whenever a condition is stated without asking for a figure yet ("keep '
@@ -4091,6 +4109,12 @@ const stageAssumptions: ToolDefinition = {
           + 'rest), stage the combined value, e.g. `target: ["highest_apr", "investments"]`.',
       } } : {}),
       heldNow: r.plan.clauses.map((c) => ({ id: c.id, [c.key]: c.value })),
+      // S1 — what each held spending line CONTAINS, so a whole bucket is said when the
+      // user is told it is held ("Dining — which includes groceries").
+      ...(spendingLinesHeld(r.plan.clauses).length ? { spendingLines: {
+        lines: spendingLinesHeld(r.plan.clauses),
+        meaning: 'Tell the user what each held line contains — a WHOLE bucket (Dining includes '
+          + 'groceries, Utilities includes rent) or the catch-all (Other) changes all of it.' } } : {}),
       meaning: 'Held for THIS conversation only and not yet run; nothing here is a figure. The next '
         + 'scenario run applies every condition in `heldNow` and says so. To answer with numbers, '
         + 'run the scenario.',

@@ -99,8 +99,14 @@ async function main(): Promise<void> {
     sc?.ran === true && sc.rules[0].of === 'Dining' && sc.rules[0].class === 'WHOLE_BUCKET'
       && sc.rules[0].monthlyBefore === 1_500 && sc.rules[0].monthlyAfter === 1_200
       && sc.rules[0].from === '2027-01-01' && sc.rules[0].to === HORIZON, JSON.stringify(sc));
-  check('…with the months its baseline came from, and the whole-bucket notice',
-    JSON.stringify(sc.rules[0].baselineMonths) === '["2026-06","2026-07","2026-08"]' && sc.wholeBucket?.rules?.[0] === 's1');
+  check('…with the months its baseline came from, and the whole-bucket notice saying what Dining HOLDS',
+    JSON.stringify(sc.rules[0].baselineMonths) === '["2026-06","2026-07","2026-08"]' && sc.wholeBucket?.rules?.[0] === 's1'
+      && /groceries/.test(sc.wholeBucket?.holds?.Dining ?? ''));
+  const routing = String(findTool('scenario_projection')!.description) + String(findTool('get_spending')!.description)
+    + String(findTool('stage_assumptions')!.description);
+  check('routing: the scenario tool LEADS with spending changes beside income; get_spending and staging point to them',
+    /CHANGE TO FUTURE SPENDING/.test(String(findTool('scenario_projection')!.description))
+      && /never apply a percentage to these totals in prose/.test(routing) && /cut or change to a spending line/.test(routing));
   check('a scenario with no spending rule says NONE in the roster slot', base.assumptions.clauses.spendingChange.ran === false);
   const ch = cut.assumptions.spending.changes;
   check('the spending echo gives the schedule and the total removed (300 × 12 = 3,600)',

@@ -366,7 +366,8 @@ export interface ClausesInForce {
    */
   spendingChange:
     | { ran: true; rules: SpendingClauseLine[]; didNotRun?: SpendingClauseLine[];
-        wholeBucket?: { rules: string[]; meaning: string }; residual?: { rules: string[]; meaning: string };
+        wholeBucket?: { rules: string[]; holds: Record<string, string>; meaning: string };
+        residual?: { rules: string[]; holds: Record<string, string>; meaning: string };
         overlapping?: { rules: string[]; meaning: string }; noEffect?: { rules: string[]; meaning: string } }
     | { ran: false; didNotRun?: SpendingClauseLine[]; meaning?: string };
 }
@@ -591,8 +592,8 @@ const NO_SPENDING_CHANGE_MEANING =
   + 'at the CURRENT spending rate. Read `didNotRun[].reason` and say what actually happened — do not '
   + 'describe the cut as included.';
 const WHOLE_BUCKET_MEANING =
-  'These rules changed a WHOLE line that holds more than its name (Dining includes groceries; '
-  + 'Utilities includes rent). Say so when you describe them.';
+  'These rules changed a WHOLE line that holds more than its name — see `holds`. Say so in the '
+  + 'answer, e.g. "Dining (restaurants AND groceries)": the user may have meant only part of it.';
 const RESIDUAL_MEANING =
   'These rules changed Other — the catch-all (medical, transport, entertainment and every unplaced '
   + 'charge together). Say what it holds when you describe them.';
@@ -634,14 +635,16 @@ export function spendingClause(
   const ids = (f: (x: SpendingChangeExecution) => boolean) => didRun.filter(f).map((x) => x.ruleId);
   const whole = ids((x) => x.category?.class === 'WHOLE_BUCKET');
   const residual = ids((x) => x.category?.class === 'RESIDUAL');
+  const holds = (cls: string) => Object.fromEntries(didRun.filter((x) => x.category?.class === cls)
+    .map((x) => [x.category!.category, x.category!.meaning]));
   const overlapping = ids((x) => (x.overlapsRules?.length ?? 0) > 0);
   const noEffect = ids((x) => !x.affectedProjection);
   return {
     ran: true,
     rules: didRun.map(line),
     ...(didNot.length ? { didNotRun: didNot } : {}),
-    ...(whole.length ? { wholeBucket: { rules: whole, meaning: WHOLE_BUCKET_MEANING } } : {}),
-    ...(residual.length ? { residual: { rules: residual, meaning: RESIDUAL_MEANING } } : {}),
+    ...(whole.length ? { wholeBucket: { rules: whole, holds: holds('WHOLE_BUCKET'), meaning: WHOLE_BUCKET_MEANING } } : {}),
+    ...(residual.length ? { residual: { rules: residual, holds: holds('RESIDUAL'), meaning: RESIDUAL_MEANING } } : {}),
     ...(overlapping.length ? { overlapping: { rules: overlapping, meaning: SPEND_OVERLAP_MEANING } } : {}),
     ...(noEffect.length ? { noEffect: { rules: noEffect, meaning: NO_EFFECT_MEANING } } : {}),
   };
