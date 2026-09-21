@@ -58,8 +58,10 @@ console.log('\n2. IT IS OPAQUE');
   const sealed = sealRuntimeState({ scenario: SCENARIO }, BINDING)!;
   check('no figure is readable in the carrier', !/51598|51,598|6000/.test(sealed));
   check('no field name is readable either', !/scenario|assumptions|netWorth|usr_1/.test(sealed));
-  check('it is the repo\'s v2 authenticated-cipher format, not a home-made one',
-    sealed.startsWith('v2:') && sealed.split(':').length === 4);
+  // FM-AUDIT-018 — the repo's purpose-derived AES-256-GCM, in its compact transport
+  // encoding (lib/plaid/encryption.ts sealWithPurpose): one base64url string.
+  check('it is the repo\'s authenticated cipher in its compact sealed-token form, not a home-made one',
+    sealed.startsWith('c1.') && /^c1\.[A-Za-z0-9_-]+$/.test(sealed));
 }
 
 console.log('\n3. IT CANNOT BE MOVED');
@@ -80,13 +82,22 @@ console.log('\n3. IT CANNOT BE MOVED');
 console.log('\n4. IT CANNOT BE FORGED OR EDITED');
 {
   const sealed = sealRuntimeState({ scenario: SCENARIO }, BINDING)!;
-  const [v, iv, tag, ct] = sealed.split(':');
-  const flip = (hex: string) => (hex[0] === '0' ? '1' : '0') + hex.slice(1);
+  // The compact token is iv(12) ‖ tag(16) ‖ ciphertext, base64url. Flip ONE real
+  // byte in each region and re-encode — so each refusal is the cipher's, not a parser's.
+  const flipAt = (offset: number) => {
+    const raw = Buffer.from(sealed.slice(3), 'base64url');
+    raw[offset] ^= 0x01;
+    return 'c1.' + raw.toString('base64url');
+  };
+  check('the untouched token still opens (the flips below are the only difference)', openRuntimeState(sealed, BINDING) !== null);
   check('a flipped ciphertext byte is refused (authenticated, not merely encrypted)',
-    openRuntimeState([v, iv, tag, flip(ct)].join(':'), BINDING) === null);
-  check('a flipped auth tag is refused',
-    openRuntimeState([v, iv, flip(tag), ct].join(':'), BINDING) === null);
-  check('a flipped IV is refused', openRuntimeState([v, flip(iv), tag, ct].join(':'), BINDING) === null);
+    openRuntimeState(flipAt(12 + 16 + 5), BINDING) === null);
+  check('a flipped auth tag is refused', openRuntimeState(flipAt(12 + 3), BINDING) === null);
+  check('a flipped IV is refused', openRuntimeState(flipAt(2), BINDING) === null);
+  check('a truncated auth tag is refused, never accepted as a shorter tag',
+    openRuntimeState('c1.' + Buffer.from(sealed.slice(3), 'base64url').subarray(0, 12 + 8).toString('base64url'), BINDING) === null);
+  check('the legacy hex (v2) form is refused — a v2 seal is simply no state',
+    openRuntimeState('v2:aa:bb:cc', BINDING) === null);
   check('a truncated carrier is refused', openRuntimeState(sealed.slice(0, -8), BINDING) === null);
   check('plain JSON is refused — a client cannot simply write the state it wants',
     openRuntimeState(JSON.stringify({ v: 1, ...BINDING, iat: Date.now(), scenario: SCENARIO }),
@@ -112,11 +123,16 @@ console.log('\n5. IT EXPIRES, AND IT CLEARS');
 
   check('no scenario seals to nothing — the carrier is cleared, not filled with null',
     sealRuntimeState({ scenario: null }, BINDING) === null);
-  // ⚠️ AN OVERSIZED COOKIE IS DISCARDED SILENTLY BY THE BROWSER. Refusing to
-  // issue one turns an invisible failure into an ordinary absent hypothetical.
-  check('a scenario too large for a cookie is not issued',
-    sealRuntimeState({ scenario: { ...SCENARIO,
-      assumptions: { note: 'x'.repeat(4000) } } }, BINDING) === null);
+  // ⚠️ AN OVERSIZED COOKIE IS DISCARDED SILENTLY BY THE BROWSER, so none is ever
+  // issued. FM-AUDIT-018: what does not fit is replaced by a sealed CONTINUITY
+  // marker — never silently dropped (runtime-state-capacity.test.ts has the rest).
+  {
+    const big = sealRuntimeState({ scenario: { ...SCENARIO, assumptions: { note: 'x'.repeat(4000) } } }, BINDING);
+    const opened = openRuntimeState(big, BINDING);
+    check('a scenario too large for a cookie is not issued — a continuity marker is, under the ceiling',
+      typeof big === 'string' && big.length <= MAX_SEALED_CHARS && opened?.scenario === null
+        && opened?.continuity?.droppedScenario === true);
+  }
   check('…and an ordinary one is comfortably inside the ceiling',
     (sealRuntimeState({ scenario: SCENARIO }, BINDING) ?? '').length < MAX_SEALED_CHARS / 2,
     `${(sealRuntimeState({ scenario: SCENARIO }, BINDING) ?? '').length} chars`);
@@ -157,9 +173,13 @@ console.log('\n7. IT IS NOT PERSISTENCE');
   // Planning continuity widened this from one slot to two — what RAN and what was
   // STATED since — and the rest of the claim is unchanged: no evidence, no tool
   // result, no transcript, no memory.
-  check('it carries the scenario and the staged plan, and NOTHING else',
+  // FM-AUDIT-018 added a third slot: a LOSS descriptor (what could not be carried) —
+  // counts and a timestamp, never a result, never a clause.
+  check('it carries the scenario, the staged plan and a continuity-loss descriptor, and NOTHING else',
     !/evidence|toolResult|messages|memory|body/.test(src)
-    && /interface RuntimeState \{\s*scenario: ActiveScenario \| null;[\s\S]*?pending\?: PendingPlan \| null;\s*\}/.test(src));
+    && /interface RuntimeState \{\s*scenario: ActiveScenario \| null;[\s\S]*?pending\?: PendingPlan \| null;[\s\S]*?continuity\?: ContinuityLoss \| null;\s*\}/.test(src));
+  check('the loss descriptor holds counts and a timestamp — no figure, no clause',
+    /interface ContinuityLoss \{[\s\S]*?reason: 'TOO_LARGE';[\s\S]*?droppedScenario: boolean;[\s\S]*?droppedPendingClauses: number;[\s\S]*?wouldHaveSealedTo: number;[\s\S]*?at: string;\s*\}/.test(src));
 }
 
 console.log('\n8. A STAGED PLAN — carried beside the scenario, never as one');

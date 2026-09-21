@@ -22,6 +22,7 @@
  */
 
 import { consumePlan, injectPending } from './pending-plan';
+import { injectContinuity } from './continuity';
 import { generateWithTools } from '@/lib/ai/provider';
 import { callWithRateLimitRetry } from '@/lib/ai/rate-limit-retry';
 import { findTool, type ToolContext } from './tools';
@@ -231,6 +232,9 @@ async function executeTurnInner(args: {
   // its envelope out and pushes it to the tail, so the last thing before the
   // question is still what RAN; what was merely stated sits just before it, under
   // its own marker. Absent when nothing is staged.
+  // FM-AUDIT-018 — a plan that could not be carried is SAID, before anything else
+  // about the plan: first the loss, then what is staged, then what ran.
+  injectContinuity(messages, toolCtx.plan?.continuity ?? null);
   injectPending(messages, toolCtx.plan?.pending ?? null);
   if (args.scenario) injectScenario(messages, args.scenario);
   messages.push({ role: 'user', content: user });

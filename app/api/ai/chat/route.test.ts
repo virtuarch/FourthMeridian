@@ -121,7 +121,7 @@ console.log('\n6. CONTINUITY WITHOUT PERSISTENCE');
   check('the only database read is the Space\'s agent id',
     (src.match(/db\./g) ?? []).length === 1 && /db\.aiAgent\.findUnique/.test(src));
   check('the scenario crosses the gap sealed, not in the response body',
-    /openRuntimeState\(/.test(src) && /sealRuntimeState\(/.test(src)
+    /openRuntimeState\(/.test(src) && /sealRuntimeStateWithReport\(/.test(src)
       && !/scenario: turn\.scenario[\s\S]{0,40}NextResponse/.test(src));
   check('the seal is opened against THIS user, Space and conversation',
     /userId: user\.id, spaceId: spaceCtx\.spaceId,[\s\S]{0,60}conversationTail\(history\)/.test(src));

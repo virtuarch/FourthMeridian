@@ -69,6 +69,8 @@ interface Message {
    * Absent when there are no gaps.
    */
   knowledgeGapMode?: "clarification" | "form";
+  /** FM-AUDIT-018 — the plan built so far could not be carried to the next turn. */
+  continuityNotice?: string;
 }
 
 interface Props {
@@ -249,6 +251,10 @@ export function AnalyzeClient({
               ...(gaps.length
                 ? { knowledgeGaps: gaps, knowledgeGapMode: data.knowledgeGapMode }
                 : {}),
+              // FM-AUDIT-018 — never a silent loss of the plan under discussion.
+              ...(data.continuity?.carried === false
+                ? { continuityNotice: "This plan was too large to carry into your next message — restate the conditions you want to keep, and it will be re-run with them." }
+                : {}),
             },
           ];
           remember(next);
@@ -281,7 +287,17 @@ export function AnalyzeClient({
   // Per-answer extras: the knowledge-gap prompt for the assistant message at `index`.
   // Behaviour is unchanged from the pre-reshell IIFE — only the presentation frame
   // (KnowledgeGapCard) is new; the interactive cards are reused verbatim.
+  // FM-AUDIT-018 — the continuity notice renders beside (never instead of) the gap card.
   function renderExtras(index: number): ReactNode {
+    const m = messages[index];
+    const notice = m.role === "assistant" && m.continuityNotice
+      ? <p className="mt-2 text-xs text-muted-foreground" role="note">{m.continuityNotice}</p>
+      : null;
+    const gaps = renderGapExtras(index);
+    return notice || gaps ? <>{notice}{gaps}</> : null;
+  }
+
+  function renderGapExtras(index: number): ReactNode {
     const m = messages[index];
     if (m.role !== "assistant" || !m.knowledgeGaps?.length) return null;
 

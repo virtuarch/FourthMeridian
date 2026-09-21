@@ -28,7 +28,7 @@
 
 import { createHash } from 'crypto';
 import {
-  encryptWithPurpose, decryptWithPurpose, EncryptionPurpose,
+  sealWithPurpose, openWithPurpose, EncryptionPurpose,
 } from '@/lib/plaid/encryption';
 import type { ActiveScenario } from './active-scenario';
 import { isPendingPlan, type PendingPlan } from './pending-plan';
@@ -37,7 +37,11 @@ import { isPendingPlan, type PendingPlan } from './pending-plan';
 // 2 — a conversation may now carry STAGED clauses beside an executed scenario
 // (`pending-plan.ts`). A v1 seal is discarded, never coerced: it cannot say
 // whether a pending plan existed, and guessing "none" is the safe reading anyway.
-const VERSION = 2;
+// 3 — FM-AUDIT-018: compact base64url sealing (~50% more state in the same
+// cookie), and an explicit CONTINUITY marker when state cannot be carried. A v2
+// seal is discarded, never coerced — the next turn simply starts without state,
+// which is what a fresh conversation does.
+const VERSION = 3;
 
 /**
  * How long a sealed state may be presented.
@@ -51,22 +55,39 @@ export const RUNTIME_STATE_TTL_MS = 2 * 60 * 60 * 1000;
 /**
  * The largest seal worth issuing.
  *
- * ⚠️ A BROWSER DISCARDS AN OVERSIZED COOKIE SILENTLY, and a silently discarded
- * carrier is continuity that works until the day a user states a scenario with
- * enough one-off events in it, then stops — with nothing anywhere saying why. A
- * scenario that will not fit is therefore refused HERE, where the caller clears
- * the carrier deliberately and the next turn simply has no hypothetical. The
- * ceiling is well under the ~4 KB a cookie gets, after URL-encoding roughly
- * doubles the hex; a measured ordinary scenario seals to about 1.1 KB.
+ * ⚠️ A BROWSER DISCARDS AN OVERSIZED COOKIE SILENTLY — a browser's limit is 4,096
+ * bytes of name plus value, and `fm_ai_state=` is 12 of them — so nothing larger
+ * than this is ever set. The seal is base64url, so it needs no URL-encoding.
+ *
+ * 3,000 → 3,900 (planning continuity), set from a measurement: a 1,000-byte
+ * envelope beside a plan at its staging cap was refused at 3,600.
+ *
+ * FM-AUDIT-018 — the CEILING stays; what fits under it grew, and what does not fit
+ * is no longer silent. Hex spent two characters per plaintext byte; base64url
+ * spends 1.33 (`sealWithPurpose`), so ~2,880 bytes of state fit where ~1,900 did.
+ * State that STILL does not fit is replaced by a sealed CONTINUITY MARKER (a few
+ * hundred characters, always under the ceiling): the next turn is TOLD the plan
+ * was not carried, instead of quietly having no plan and answering from trend.
  */
-// ⚠️ 3,000 → 3,900 (planning continuity), SET FROM A MEASUREMENT. The carrier now
-// holds the executed scenario AND the conditions staged since it ran, and a seal
-// over the ceiling is discarded WHOLE — so it must hold the worst case of both at
-// once. Tested, not estimated: a 1,000-byte envelope (its pinned ceiling) beside a
-// plan at its staging cap was refused at 3,600. The seal is hex, so it needs no
-// URL-encoding; a browser's limit is 4,096 bytes of name plus value, and
-// `fm_ai_state=` is 12 of them.
 export const MAX_SEALED_CHARS = 3_900;
+
+/**
+ * FM-AUDIT-018 — what was lost when state could not be carried, and when. Carried
+ * as its own small slot (never merged into the executed or the staged slot), so
+ * the next turn can say the plan is NOT in force and keep treating the plan as in
+ * play (project_cash will not quietly answer the plan's question from trend).
+ */
+export interface ContinuityLoss {
+  reason: 'TOO_LARGE';
+  /** An executed scenario was dropped. */
+  droppedScenario: boolean;
+  /** How many staged (not-yet-run) conditions were dropped. */
+  droppedPendingClauses: number;
+  /** The size the full state would have sealed to. */
+  wouldHaveSealedTo: number;
+  /** ISO timestamp of the loss. */
+  at: string;
+}
 
 /**
  * What a conversation carries between turns: what RAN, and what has been stated
@@ -77,6 +98,8 @@ export interface RuntimeState {
   scenario: ActiveScenario | null;
   /** Conditions staged in this conversation and not yet run. Absent when none. */
   pending?: PendingPlan | null;
+  /** A plan this conversation built that could NOT be carried (FM-AUDIT-018). Absent when none. */
+  continuity?: ContinuityLoss | null;
 }
 
 /**
@@ -115,30 +138,65 @@ export function conversationTail(history: readonly { role: string; content: stri
   return '';
 }
 
+/** How a turn's state crossed the boundary. */
+export interface SealReport {
+  /** The cookie value, or null to clear the carrier (nothing to carry, or no cipher). */
+  sealed: string | null;
+  /** FULL — state carried whole; LOST — a continuity marker carried instead; NONE — nothing to carry. */
+  carried: 'FULL' | 'LOST' | 'NONE';
+  /** Present when `carried === 'LOST'`: exactly what was not carried. */
+  loss?: ContinuityLoss;
+  /** True when the loss happened THIS turn (a surface tells the user once); false when carried forward. */
+  fresh?: boolean;
+}
+
+function sealPayload(payload: SealedPayload): string {
+  return sealWithPurpose(JSON.stringify(payload), EncryptionPurpose.AI_RUNTIME_STATE);
+}
+
 /**
- * Seal state for one conversation, one user, one Space.
+ * Seal state for one conversation, one user, one Space — and say how it went.
  *
- * Returns null when there is nothing worth carrying, when what there is will not
- * fit a cookie, and on a cipher failure — all three the same way, because all
- * three mean the same thing to the caller: clear the carrier. Continuity is a
- * convenience, and a missing key or an outsized hypothetical must degrade the
- * conversation, never fail the answer.
+ * ⚠️ FM-AUDIT-018 — STATE THAT DOES NOT FIT IS NEVER DROPPED SILENTLY. It was:
+ * an oversize seal returned null, the route cleared the cookie, and the next turn
+ * had no scenario and no staged conditions — with nothing anywhere saying so,
+ * and the project_cash guard (which refuses to answer a plan's question from the
+ * current trend) switched off because no plan was visible. Now the state is
+ * replaced by a sealed continuity marker naming what was lost; the next turn is
+ * told, and the plan stays "in play". A missing key still degrades to no state
+ * (null): continuity is a convenience, and it must never fail the answer.
  */
-export function sealRuntimeState(
-  state: RuntimeState, binding: StateBinding,
-): string | null {
+export function sealRuntimeStateWithReport(state: RuntimeState, binding: StateBinding): SealReport {
   const pending = state.pending && state.pending.clauses.length > 0 ? state.pending : null;
-  if (!state.scenario && !pending) return null;
-  const payload: SealedPayload = {
-    v: VERSION, iat: Date.now(), ...binding, scenario: state.scenario,
-    ...(pending ? { pending } : {}) };
+  const continuity = state.continuity ?? null;
+  if (!state.scenario && !pending && !continuity) return { sealed: null, carried: 'NONE' };
+  const base = { v: VERSION, iat: Date.now(), ...binding };
   try {
-    const sealed = encryptWithPurpose(
-      JSON.stringify(payload), EncryptionPurpose.AI_RUNTIME_STATE);
-    return sealed.length > MAX_SEALED_CHARS ? null : sealed;
+    const sealed = sealPayload({ ...base, scenario: state.scenario,
+      ...(pending ? { pending } : {}), ...(continuity ? { continuity } : {}) });
+    if (sealed.length <= MAX_SEALED_CHARS) {
+      return continuity ? { sealed, carried: 'LOST', loss: continuity, fresh: false } : { sealed, carried: 'FULL' };
+    }
+    const loss: ContinuityLoss = {
+      reason: 'TOO_LARGE',
+      droppedScenario: state.scenario !== null || (continuity?.droppedScenario ?? false),
+      droppedPendingClauses: (pending?.clauses.length ?? 0) + (continuity?.droppedPendingClauses ?? 0),
+      wouldHaveSealedTo: sealed.length,
+      at: new Date(base.iat).toISOString(),
+    };
+    const marker = sealPayload({ ...base, scenario: null, continuity: loss });
+    return marker.length <= MAX_SEALED_CHARS ? { sealed: marker, carried: 'LOST', loss, fresh: true } : { sealed: null, carried: 'NONE' };
   } catch {
-    return null;
+    return { sealed: null, carried: 'NONE' };
   }
+}
+
+/**
+ * Seal state for one conversation, one user, one Space. The cookie value, or null
+ * to clear the carrier — see `sealRuntimeStateWithReport` for how it went.
+ */
+export function sealRuntimeState(state: RuntimeState, binding: StateBinding): string | null {
+  return sealRuntimeStateWithReport(state, binding).sealed;
 }
 
 /**
@@ -157,7 +215,7 @@ export function openRuntimeState(
   let payload: SealedPayload;
   try {
     payload = JSON.parse(
-      decryptWithPurpose(sealed, EncryptionPurpose.AI_RUNTIME_STATE)) as SealedPayload;
+      openWithPurpose(sealed, EncryptionPurpose.AI_RUNTIME_STATE)) as SealedPayload;
   } catch {
     return null;
   }
@@ -175,6 +233,13 @@ export function openRuntimeState(
   if (scenario !== null && (typeof scenario !== 'object'
     || typeof scenario.assumptions !== 'object' || scenario.assumptions === null
     || typeof scenario.result !== 'object' || scenario.result === null)) return null;
-  if (!scenario && !pending) return null;
-  return { scenario, ...(pending ? { pending } : {}) };
+  const continuity = isContinuityLoss(payload.continuity) ? payload.continuity : null;
+  if (!scenario && !pending && !continuity) return null;
+  return { scenario, ...(pending ? { pending } : {}), ...(continuity ? { continuity } : {}) };
+}
+
+function isContinuityLoss(x: unknown): x is ContinuityLoss {
+  const c = x as ContinuityLoss | null | undefined;
+  return !!c && c.reason === 'TOO_LARGE' && typeof c.droppedScenario === 'boolean'
+    && Number.isInteger(c.droppedPendingClauses) && typeof c.at === 'string';
 }

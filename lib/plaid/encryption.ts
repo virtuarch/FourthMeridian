@@ -165,3 +165,38 @@ export function detectCiphertextVersion(value: string): CiphertextVersion {
 // is still supported via the v1 branch of decryptWithPurpose() above; that
 // backward-compatibility branch is retained until its own removal gate (0 v1
 // rows across all environments + backup-retention window) is met.
+
+// ─── Compact sealed tokens (FM-AUDIT-018) ────────────────────────────────────
+//
+// For a value the SERVER hands out and takes back through a size-limited
+// carrier (the AI runtime-state cookie), not for a stored field. Same purpose
+// subkey, same AES-256-GCM — only the transport encoding differs: one base64url
+// string ("c1." + iv‖tag‖ciphertext) instead of three hex segments. Hex spends
+// two characters per byte; base64url spends 1.33, so the same cookie carries
+// ~50% more plaintext without the cookie growing a byte. The IV is the 12 bytes
+// GCM is specified for, and the tag length is pinned to 16 on BOTH sides, so a
+// truncated tag is refused rather than accepted as a shorter one.
+
+const COMPACT_PREFIX = "c1.";
+const COMPACT_IV_BYTES = 12;
+const COMPACT_TAG_BYTES = 16;
+
+export function sealWithPurpose(plaintext: string, purpose: EncryptionPurpose): string {
+  const key = deriveKey(purpose);
+  const iv = crypto.randomBytes(COMPACT_IV_BYTES);
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv, { authTagLength: COMPACT_TAG_BYTES });
+  const enc = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  return COMPACT_PREFIX + Buffer.concat([iv, cipher.getAuthTag(), enc]).toString("base64url");
+}
+
+export function openWithPurpose(sealed: string, purpose: EncryptionPurpose): string {
+  if (!sealed.startsWith(COMPACT_PREFIX)) throw new Error("Invalid sealed token format");
+  const raw = Buffer.from(sealed.slice(COMPACT_PREFIX.length), "base64url");
+  if (raw.length < COMPACT_IV_BYTES + COMPACT_TAG_BYTES) throw new Error("Sealed token too short");
+  const iv = raw.subarray(0, COMPACT_IV_BYTES);
+  const tag = raw.subarray(COMPACT_IV_BYTES, COMPACT_IV_BYTES + COMPACT_TAG_BYTES);
+  const enc = raw.subarray(COMPACT_IV_BYTES + COMPACT_TAG_BYTES);
+  const decipher = crypto.createDecipheriv(ALGORITHM, deriveKey(purpose), iv, { authTagLength: COMPACT_TAG_BYTES });
+  decipher.setAuthTag(tag);
+  return decipher.update(enc).toString("utf8") + decipher.final("utf8");
+}

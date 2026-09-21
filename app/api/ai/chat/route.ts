@@ -43,7 +43,7 @@ import { runStatelessTurn } from '@/lib/ai/conversation/engine';
 import { readChatRequest, type ChatRequestRefusal } from '@/lib/ai/conversation/request';
 import type { AiChatResponse } from '@/types';
 import {
-  sealRuntimeState, openRuntimeState, conversationTail, RUNTIME_STATE_TTL_MS,
+  sealRuntimeStateWithReport, openRuntimeState, conversationTail, RUNTIME_STATE_TTL_MS,
 } from '@/lib/ai/conversation/runtime-state';
 
 export const preferredRegion = 'sin1';
@@ -140,6 +140,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // What was stated earlier in THIS conversation and has not run. Bound by the
       // same seal, so a new chat, another Space or another user carries none.
       pending: carried?.pending ?? null,
+      // FM-AUDIT-018 — a plan the previous turn could not carry; this turn is told.
+      continuity: carried?.continuity ?? null,
       asOfISO: todayUTCISO(),
       correlationId: conversationKey(user.id, history[0]?.content ?? asked),
       surface: 'chat',
@@ -156,19 +158,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // and must never become one: the prose renders normally and the missing
     // evidence renders beside it. The key is omitted entirely when there is
     // none, so an ordinary answer is the same single-field body it was.
-    const body: AiChatResponse = {
-      message: turn.answer,
-      ...(turn.knowledgeGaps.length ? { knowledgeGaps: turn.knowledgeGaps } : {}),
-    };
-    const res = NextResponse.json(body);
     // ⚠️ RE-SEALED EVERY TURN, AGAINST THE ANSWER JUST GIVEN. The next request's
     // transcript will end with this reply, so this reply's digest is the tail
     // the seal must be bound to. When the hypothetical is gone — cleared by a
     // failed recomputation, or never established — the carrier is cleared too,
     // rather than left holding a scenario the conversation has moved past.
-    const sealed = sealRuntimeState({ scenario: turn.scenario, pending: turn.pending }, {
+    // FM-AUDIT-018 — state too large to carry is replaced by a sealed continuity
+    // marker (never silently dropped), and the response SAYS so.
+    const seal = sealRuntimeStateWithReport(
+      { scenario: turn.scenario, pending: turn.pending, continuity: turn.continuity }, {
       ...binding, tail: conversationTail([...history, { role: 'assistant', content: turn.answer }]),
     });
+    const sealed = seal.sealed;
+    const body: AiChatResponse = {
+      message: turn.answer,
+      ...(turn.knowledgeGaps.length ? { knowledgeGaps: turn.knowledgeGaps } : {}),
+      ...(seal.carried === 'LOST' && seal.fresh && seal.loss ? { continuity: { carried: false, reason: seal.loss.reason,
+        droppedScenario: seal.loss.droppedScenario, droppedPendingClauses: seal.loss.droppedPendingClauses } } : {}),
+    };
+    const res = NextResponse.json(body);
     res.cookies.set(STATE_COOKIE, sealed ?? '', {
       httpOnly: true,
       sameSite: 'lax',

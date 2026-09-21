@@ -36,6 +36,7 @@
  */
 
 import { SCENARIO_INPUTS, scenarioAssumptionKeys } from './scenario-inputs';
+import type { ContinuityLoss } from './runtime-state';
 import {
   boundedLabel, contributionBasis, refuseUnknownItemKeys, type RefusedInput,
 } from './scenario-rules';
@@ -94,6 +95,13 @@ export interface PlanSlot {
    * ran only matters when it runs again, so the staging result says so.
    */
   scenarioRan?: boolean;
+  /**
+   * FM-AUDIT-018 — a plan built earlier in this conversation that could NOT be
+   * carried to this turn (too large for the carrier). Its own slot: it is neither
+   * pending nor executed, and it is never a result. While it stands the plan is
+   * still in play — the turn is told it is not in force.
+   */
+  continuity?: ContinuityLoss;
 }
 
 /**

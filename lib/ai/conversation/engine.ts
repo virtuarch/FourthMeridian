@@ -24,6 +24,7 @@
  */
 
 import { emptyPlan, type PendingPlan } from './pending-plan';
+import type { ContinuityLoss } from './runtime-state';
 import {
   assembleFullContext, buildEvidence, ARM_USES_TOOLS, type Arm, type EvidencePack,
 } from './evidence';
@@ -148,6 +149,11 @@ export interface StatelessTurn {
   /** Conditions staged and not yet run when the turn ended; null when none. */
   pending:  PendingPlan | null;
   /**
+   * FM-AUDIT-018 — a plan this conversation built that could not be carried, still
+   * unresolved when the turn ended (carried forward until a scenario runs again).
+   */
+  continuity: ContinuityLoss | null;
+  /**
    * Evidence this answer wanted and did not have, ready to show.
    *
    * ⚠️ PART OF THE ANSWER, NOT A FAULT. What Fourth Meridian could say and what
@@ -181,6 +187,8 @@ export async function runStatelessTurn(args: {
   scenario?: ActiveScenario | null;
   /** Conditions staged earlier in this conversation and not yet run, if verified. */
   pending?:  PendingPlan | null;
+  /** A plan the previous turn could NOT carry (FM-AUDIT-018), if the seal said so. */
+  continuity?: ContinuityLoss | null;
   asOfISO?:  string;
   model?:    string;
   correlationId?: string;
@@ -200,7 +208,10 @@ export async function runStatelessTurn(args: {
   const slot: ScenarioSlot = newScenarioSlot();
   if (args.scenario) slot.active = args.scenario;
   // The staged plan, restored the same way and for the same span: one turn.
-  open.toolCtx.plan = { pending: args.pending ?? emptyPlan(), scenarioRan: slot.active !== null };
+  // A LOST plan is still a plan in play: the turn is told it is not in force, and
+  // project_cash keeps refusing to answer its question from the current trend.
+  open.toolCtx.plan = { pending: args.pending ?? emptyPlan(), scenarioRan: slot.active !== null,
+    ...(args.continuity ? { continuity: args.continuity } : {}) };
 
   const record = await executeTurn({
     messages: open.messages, user: args.user, index: args.history.length,
@@ -214,6 +225,9 @@ export async function runStatelessTurn(args: {
   return { answer: record.assistant, record, evidence: open.evidence,
     scenario: slot.active,
     pending: open.toolCtx.plan.pending.clauses.length > 0 ? open.toolCtx.plan.pending : null,
+    // The loss stands until a scenario RUNS again in this conversation — a new
+    // executed plan is what the user re-established after being told.
+    continuity: args.continuity && !(slot.active && slot.active !== args.scenario) ? args.continuity : null,
     // Read off THIS turn's tool results, so a gap is a remark about this answer
     // rather than a standing notice about the Space.
     knowledgeGaps: collectKnowledgeGaps(record.toolCalls) };

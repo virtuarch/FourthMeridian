@@ -1861,8 +1861,19 @@ const projectCash: ToolDefinition = {
     // current trend. Pending is empty once a scenario runs, so the staged check
     // could not catch it. While a plan is in play in this conversation — staged or
     // run — its questions are answered with it; the current trend is one flag away.
-    const planInPlay = staged.length > 0 || ctx.plan?.scenarioRan === true;
+    // FM-AUDIT-018 — a plan that could not be CARRIED to this turn is still in play:
+    // answering its question from the current trend is exactly the silent failure
+    // the continuity marker exists to prevent.
+    const planInPlay = staged.length > 0 || ctx.plan?.scenarioRan === true || ctx.plan?.continuity !== undefined;
     if (planInPlay && a.ignoreStaged !== true && !retrospectiveRun && rejected.length === 0) {
+      if (staged.length === 0 && ctx.plan?.scenarioRan !== true && ctx.plan?.continuity) {
+        return { unavailable: 'the plan the user built earlier in this conversation could not be carried to '
+            + 'this turn (it was too large), so it is NOT in force and this projection cannot apply it — it '
+            + 'was NOT run',
+          instead: 'tell the user the earlier plan was not carried forward, and re-run scenario_projection with '
+            + 'every condition they want (ask them to restate what you cannot see). Only if they asked for the '
+            + 'current trend WITHOUT their plan, call project_cash again with `ignoreStaged: true`, and say so.' };
+      }
       if (staged.length === 0) {
         return { unavailable: 'a scenario the user built is under discussion in this conversation, and '
             + 'this projection cannot apply it, so it was NOT run',

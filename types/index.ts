@@ -614,6 +614,18 @@ export interface AiChatResponse {
   knowledgeGaps?: AiKnowledgeGap[];
   /** Never emitted by the current runtime. See above. */
   knowledgeGapMode?: 'clarification' | 'form';
+  /**
+   * FM-AUDIT-018 — present ONLY when the plan this conversation built (an executed
+   * scenario and/or staged conditions) could NOT be carried to the next turn
+   * because it was too large. The next turn is told the same thing; a surface
+   * shows this so the loss is never silent. Omitted in the ordinary case.
+   */
+  continuity?: {
+    carried: false;
+    reason: 'TOO_LARGE';
+    droppedScenario: boolean;
+    droppedPendingClauses: number;
+  };
 }
 
 export interface AiAdvice {
