@@ -81,7 +81,7 @@ function nav(
 const sidebar = (n: SpaceChromeWorkspaceNav | null, pathname = "/dashboard") =>
   renderToStaticMarkup(createElement(SpaceMode, {
     pathname, pendingInvites: 0,
-    space: { identity: { name: "Household", subtitle: "Family Space · 3 members", shared: true }, onLeave: () => {}, onManage: () => {}, onLeaveSpace: () => {} },
+    space: { identity: { name: "Household", subtitle: "Family Space · 3 members", shared: true }, onManage: () => {}, onLeaveSpace: () => {} },
     currencyControl: null, workspaceNav: n,
     sections: [{ label: "Summary", anchor: "wealth-summary" }, { label: "Holdings", anchor: "inv-holdings" }],
     activeSection: "Summary", onSelectSection: () => {},

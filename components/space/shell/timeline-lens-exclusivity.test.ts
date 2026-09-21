@@ -169,8 +169,8 @@ console.log("3b. Period choices intact; the range pill follows the selected peri
     temporalCapability: { asOf: "full", compareTo: "full", period: "none" }, timeState: TIME,
     tabs: [{ id: "wealth", label: "Net Worth" }, { id: "cashFlow", label: "Cash Flow" }], activeTabId: "wealth", onSelectTab: noop,
   } as never));
-  check("the Net Worth / Cash Flow lens tabs still render, above the time row",
-    tabbed.includes("Net Worth") && tabbed.includes("Cash Flow") && tabbed.indexOf("Net Worth") < tabbed.indexOf("data-timeline-period"));
+  check("the Net Worth / Cash Flow lens tabs still render, BELOW the time row",
+    tabbed.includes("Net Worth") && tabbed.includes("Cash Flow") && tabbed.indexOf("data-timeline-period") < tabbed.indexOf("Net Worth"));
 }
 
 // ── 4. Provenance chrome is OFF the Overview header; caveats are not ─────────

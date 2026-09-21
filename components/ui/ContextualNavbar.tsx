@@ -19,9 +19,9 @@
  *              platform-HQ destinations the user is granted.
  *   space    — inside a Space (published through SpaceChrome by SpaceDashboard):
  *              the site nav, THEN — under a hairline, so the hierarchy reads
- *              site → Space → workspace — back-to-Spaces, the Space's identity,
- *              its display-currency + Manage controls, and the Space's two
- *              workspace destinations: Net Worth · Cash Flow. There is NO
+ *              site → Space → workspace — the Space's display-currency +
+ *              Manage controls, its identity, and the Space's workspace
+ *              destinations: Net Worth · Cash Flow · Markets. There is NO
  *              Sections list inside a customer Space (the page-anchor list was
  *              retired in favour of workspace-level destinations). Inside a
  *              PLATFORM Space it instead carries that HQ workspace's section
@@ -51,7 +51,6 @@ import {
   Sparkles,
   Link2,
   Shield,
-  ArrowLeft,
   ChartCandlestick,
   Gem,
   LayoutGrid,
@@ -591,7 +590,7 @@ export function SpaceMode({
   activeSection: string;
   onSelectSection: (label: string) => void;
 }) {
-  const { identity, onManage, onLeave, onLeaveSpace } = space;
+  const { identity, onManage, onLeaveSpace } = space;
 
   // PLATFORM inside a Space — rendered ONLY on the platform axis.
   //
@@ -615,17 +614,15 @@ export function SpaceMode({
       <PrimaryNav pathname={pathname} pendingInvites={pendingInvites} />
 
       {/* SPACE — under a hairline, so the order reads site → this Space → its
-          workspaces. "All Spaces" is the Space's own way back up and stays: it is
-          part of the Space's context (it sits with the name it leaves), where
-          the Spaces item above is a site destination. Same route, one hop. */}
+          workspaces. There is no in-Space "All Spaces" back control: the site's
+          Spaces destination above is the way back up (same route, one hop). */}
       <div data-nav-context="space" className="border-t border-[var(--border-hairline)] pt-5">
-        <button
-          onClick={onLeave}
-          className="-ml-1 mb-2.5 flex items-center gap-1.5 rounded-[var(--radius-sm)] px-1 py-0.5 text-[11px] font-medium text-[var(--text-muted)] transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)] hover:text-[var(--text-secondary)]"
-        >
-          <ArrowLeft size={11} strokeWidth={2} />
-          All Spaces
-        </button>
+        {/* SpaceControls — the canonical FX + Manage cluster, ABOVE the name it
+            governs. At this (wide) width it lives here in the Space sidebar.
+            Narrow widths get the SAME cluster relocated near the rail (see
+            SpaceShell). One state source: the FX node is owned above, Manage is
+            the host's handler; this is purely the wide mount point. */}
+        <SpaceControls currencyControl={currencyControl} onManage={onManage} className="mb-3" />
 
         <div className="flex items-center gap-2">
           <h1 className="truncate text-[15px] font-semibold text-[var(--text-primary)]">
@@ -655,15 +652,6 @@ export function SpaceMode({
             {identity.freshnessNote}
           </p>
         )}
-
-        {/* SpaceControls — the canonical FX + Manage cluster. At this (wide)
-            width it lives here in the Space sidebar, exactly like the prototype.
-            Narrow widths get the SAME cluster relocated near the rail (see
-            SpaceShell). One state source: the FX node is owned above, Manage is
-            the host's handler; this is purely the wide mount point. */}
-        <div className="mt-3">
-          <SpaceControls currencyControl={currencyControl} onManage={onManage} />
-        </div>
 
         {/* WORKSPACES — Net Worth · Cash Flow, inside the Space block so they
             read as THIS Space's destinations, attached to its identity. */}

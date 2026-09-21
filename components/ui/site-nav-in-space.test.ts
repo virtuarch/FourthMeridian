@@ -53,7 +53,7 @@ const spaceMode = (pathname: string, over: Record<string, unknown> = {}) =>
     pathname, pendingInvites: 0,
     space: {
       identity: { name: "Household", subtitle: "Shared · 3 members", shared: true },
-      onLeave: () => {}, onManage: () => {}, onLeaveSpace: () => {},
+      onManage: () => {}, onLeaveSpace: () => {},
     },
     currencyControl: null,
     workspaceNav: {
@@ -106,7 +106,7 @@ console.log("C. The Space's own navigation is all still there");
   const t = text(html);
   check("which Space I am in: its name is THE heading", /<h1[^>]*>Household<\/h1>/.test(html));
   check("…with its Shared chip and subtitle", t.includes("Household Shared Shared · 3 members"));
-  check("return to Spaces: the 'All Spaces' back control", t.includes("All Spaces"));
+  check("no in-Space 'All Spaces' back control (the site's Spaces link is the way back)", !t.includes("All Spaces"));
   check("Manage control", t.includes("Manage"));
   check('the Space nav (aria-label="Space") with its two workspaces',
     html.includes('<nav aria-label="Space"') && t.includes("Net Worth Cash Flow"));
@@ -124,8 +124,8 @@ console.log("C. The Space's own navigation is all still there");
     `${iSite} ${iSpace} ${iName} ${iWork}`);
   check("the Space block is set apart by the hairline divider",
     /data-nav-context="space" class="[^"]*border-t[^"]*border-\[var\(--border-hairline\)\]/.test(html));
-  check("two ways back to Spaces, neither a dead end: the site 'Spaces' link and the Space's 'All Spaces'",
-    hrefs(html).includes("/dashboard/spaces") && t.includes("All Spaces"));
+  check("the way back to Spaces is the site 'Spaces' link — no dead end without 'All Spaces'",
+    hrefs(html).includes("/dashboard/spaces") && !t.includes("All Spaces"));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -166,8 +166,8 @@ console.log("E. ONE definition — reused, not duplicated");
 
   const hosts = code(read("components", "dashboard", "SpaceDashboard.tsx")) + code(read("components", "platform", "PlatformSpaceDashboard.tsx"));
   check("no Space host builds a site nav of its own", !/PRIMARY_NAV|PrimaryNav/.test(hosts));
-  check("'All Spaces' still routes to the launcher from both hosts (pure client navigation)",
-    (hosts.match(/onLeave: \(\) => router\.push\("\/dashboard\/spaces"\)/g) ?? []).length === 2);
+  check("no host publishes an 'All Spaces' handler, and the chrome contract no longer carries one",
+    !/\bonLeave:/.test(hosts) && !/\bonLeave:/.test(code(read("lib", "space", "space-chrome-context.tsx"))));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

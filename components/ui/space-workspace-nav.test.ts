@@ -107,9 +107,9 @@ const spaceMode = (pathname: string, workspaceNav: SpaceChromeWorkspaceNav | nul
     pathname, pendingInvites: 0,
     space: {
       identity: { name: "Household", subtitle: "Family Space · 3 members", updatedLabel: "Last checked 2 hr ago", shared: true },
-      onLeave: () => {}, onManage: () => {}, onLeaveSpace: () => {},
+      onManage: () => {}, onLeaveSpace: () => {},
     },
-    currencyControl: null,
+    currencyControl: createElement("span", { "data-currency-control": "" }, "USD"),
     workspaceNav,
     sections: PUBLISHED_SECTIONS,
     activeSection: "Assets",
@@ -221,12 +221,15 @@ console.log("E. The rest of the Space sidebar is intact");
   const t = text(html);
   check("global PRIMARY_NAV present, all five", PRIMARY_NAV.every((d) => hrefs(navHtml(html, "Global")).includes(d.href)));
   check("Space identity: name heading, subtitle, freshness", /<h1[^>]*>Household<\/h1>/.test(html) && t.includes("Family Space · 3 members") && t.includes("Last checked 2 hr ago"));
-  check("All Spaces + Manage + Leave Space", t.includes("All Spaces") && t.includes("Manage") && t.includes("Leave Space"));
+  check("Manage + Leave Space; no 'All Spaces' back control", !t.includes("All Spaces") && t.includes("Manage") && t.includes("Leave Space"));
   const iName = html.indexOf("Household</h1>"), iManage = html.indexOf("Manage"), iWork = html.indexOf('aria-label="Space"');
+  const iFx = html.indexOf("data-currency-control");
+  check("Currency + Manage sit ABOVE the Space title, first in the Space block",
+    html.indexOf('data-nav-context="space"') < iFx && iFx < iManage && iManage < iName, `${iFx} ${iManage} ${iName}`);
   const iBlockEnd = html.indexOf("</div>", html.lastIndexOf("</nav>"));
   const iLeave = html.indexOf("Leave Space");
-  check("workspaces sit INSIDE the Space block, after identity + controls (not detached)",
-    iName < iManage && iManage < iWork && html.indexOf('data-nav-context="space"') < iWork && iWork < iBlockEnd && iBlockEnd < iLeave,
+  check("workspaces sit INSIDE the Space block, after controls + identity (not detached)",
+    iManage < iName && iName < iWork && html.indexOf('data-nav-context="space"') < iWork && iWork < iBlockEnd && iBlockEnd < iLeave,
     `${iName} ${iManage} ${iWork} ${iBlockEnd} ${iLeave}`);
   check("one hairline divider (the Space block's), no second", (html.match(/border-t/g) ?? []).length === 1);
 }
@@ -300,6 +303,22 @@ console.log("H. One workspace switcher per width; no stale Sections label");
       /tabs=\{lensSelectorItems\}[\s\S]{0,120}onSelectTab=\{selectLens\}[\s\S]{0,40}tabsVisibility="belowLg"/.test(host));
   check("Net Worth internal modes (Total · Assets · Debt) are not the lens row — untouched by this switch",
     !/tabsVisibility/.test(code(read("components", "space", "widgets", "wealth", "WealthWorkspace.tsx"))));
+
+  // THE DATE PICKER'S POSITION DOES NOT DEPEND ON THE ACTIVE WORKSPACE: it is the
+  // first thing in the shell, alone in its row; the lens pills and any
+  // workspace-specific caveat come after it; and the page-turn animation (keyed
+  // on the workspace) does not wrap it.
+  check("date picker renders BEFORE the lens pills", customer.indexOf("data-timeline-period") > -1 &&
+    customer.indexOf("data-timeline-period") < customer.indexOf("data-lens-row"));
+  const caveated = shell({ tabsVisibility: "belowLg", envelope: { warnings: [{ kind: "fx", label: "Some balances excluded" }] } });
+  const timeRow = caveated.slice(0, caveated.indexOf("data-lens-row"));
+  const iCaveat = caveated.indexOf("Some balances excluded");
+  check("a workspace caveat does not share the picker's row: its own row, after the picker, before the pills",
+    iCaveat > caveated.indexOf("data-timeline-period") && iCaveat < caveated.indexOf("data-lens-row") &&
+      timeRow.lastIndexOf("</div></div>", iCaveat) > caveated.indexOf("data-timeline-period"));
+  const iShell = host.indexOf("<PerspectiveShell"), iTurn = host.indexOf('className="fm-view-enter"');
+  check("the host mounts PerspectiveShell OUTSIDE (before) the workspace-keyed page-turn block",
+    iShell > -1 && iTurn > -1 && iShell < iTurn && (host.match(/<PerspectiveShell\b/g) ?? []).length === 1, `${iShell} ${iTurn}`);
 
   const bar = code(read("components", "ui", "BottomNav.tsx"));
   check('BottomNav: no stale "Sections" label; named "Global" like the desktop PRIMARY_NAV block it mirrors',

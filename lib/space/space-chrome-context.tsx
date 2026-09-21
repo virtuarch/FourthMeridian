@@ -109,8 +109,6 @@ export interface SpaceChromeSpace {
   identity: SpaceChromeIdentity;
   /** Opens the Manage dialog; omitted ⇒ no Manage affordance (e.g. no rights). */
   onManage?: () => void;
-  /** "All Spaces" — back to the Spaces launcher (pure navigation). */
-  onLeave: () => void;
   /** Membership leave (destructive; shared Spaces only). Omitted ⇒ no affordance
    *  — e.g. a Personal Space, or an Owner/Admin who cannot leave their own. */
   onLeaveSpace?: () => void;

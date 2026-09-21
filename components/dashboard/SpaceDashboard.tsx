@@ -600,11 +600,10 @@ export function SpaceDashboard({
         shared: spaceType !== "PERSONAL",
       },
       onManage: canManage ? () => setShowManage(true) : undefined,
-      onLeave: () => router.push("/dashboard/spaces"),
       onLeaveSpace: canLeave ? () => setConfirmLeave(true) : undefined,
     });
     return () => publishSpace(null);
-  }, [publishSpace, spaceName, chromeSubtitle, chromeUpdated, chromeFreshnessNote, chromeFreshnessWarn, spaceType, canManage, canLeave, router]);
+  }, [publishSpace, spaceName, chromeSubtitle, chromeUpdated, chromeFreshnessNote, chromeFreshnessWarn, spaceType, canManage, canLeave]);
 
   useEffect(() => {
     publishCurrencyControl(displayCurrencyControl ?? null);
@@ -816,13 +815,6 @@ export function SpaceDashboard({
       }}
     >
 
-        {/* M3-Reset — the "turn a page" transition. The shell + rail stay fixed;
-            only THIS body region re-enters on any change of Workspace OR engaged
-            lens (keyed on both), so switching feels like content arriving in
-            place, never a route change or a page rebuild. Reduced-motion users get
-            no animation (the @media rule below). */}
-        <div key={`${activeTab}:${activePerspectiveId ?? "networth"}`} className="fm-view-enter">
-
         {/* V25-CLOSE-3A — non-blocking disclosure when the requested reporting
             currency could not be satisfied and the display fell back to USD. One
             banner at the composition root; no per-perspective handling.
@@ -835,31 +827,19 @@ export function SpaceDashboard({
           />
         )}
 
-        {/* Settings is no longer an in-space tab (UX-CUST-1A correction):
-            section show/hide and layout controls moved to ManageSpaceModal →
-            Overview. Opened via the "Manage" button above. */}
-
-        {/* M2 canonical IA — the Perspective experience lives UNDER Overview
-            (no separate PERSPECTIVES rail tab). REVIEW-3: the Overview content
-            slot ALWAYS renders the resolved lens's workspace + the lens
-            selector (the Net Worth default resolves to the Wealth workspace;
-            the former summary canvas was unreachable and is deleted).
-            Selecting a lens swaps the panel below: workspace-backed
-            Perspectives render their WORKSPACE_RENDERERS entry; others show
-            an honest "coming soon" placeholder. (W2 — the widgets[]/virtual-
-            section SectionCard path retired with the Goals surface.) The
-            financial workspaces, contracts, time semantics, Evidence, and FX
-            are unchanged. */}
         {activeTab === "OVERVIEW" && activePerspective != null && (
-          <div className="space-y-4">
+          <div className="mb-4">
             {/* ── Perspective shell — two framed containers (§2) ────────────────
-                Container 1 (time & trust): As of / Compare to / Completeness /
-                Evidence over the preset row. Container 2 (the lens): the tabs.
+                Container 1 (time) FIRST: the date picker, then any caveat chips.
+                Container 2 (the lens) BELOW it: Net Worth · Cash Flow · Markets.
                 Time is shared context above every Perspective; the shell writes
                 shell state only through its own controls. Wealth supplies the
                 Completeness/Evidence envelope; other Perspectives leave them as
                 neutral placeholders until their engines drive them. */}
             <PerspectiveShell
+              // Keyed on the lens: the shell is outside the page-turn block but keeps
+              // its per-lens remount (boundary-field feedback resets on a switch).
+              key={activePerspectiveId}
               today={shellToday}
               onAsOfChange={handleAsOfChange}
               onCompareToChange={handleCompareToChange}
@@ -884,7 +864,36 @@ export function SpaceDashboard({
               // (published above); below lg there is no sidebar, so this row is.
               tabsVisibility="belowLg"
             />
+          </div>
+        )}
 
+        {/* M3-Reset — the "turn a page" transition. The shell + rail stay fixed;
+            only THIS body region re-enters on any change of Workspace OR engaged
+            lens (keyed on both), so switching feels like content arriving in
+            place, never a route change or a page rebuild. The date picker and
+            the lens row (PerspectiveShell, above) are deliberately OUTSIDE it:
+            the page turn animated them too, so the picker lifted and blurred on
+            every workspace switch. Reduced-motion users get no animation (the
+            @media rule below). */}
+        <div key={`${activeTab}:${activePerspectiveId ?? "networth"}`} className="fm-view-enter">
+
+        {/* Settings is no longer an in-space tab (UX-CUST-1A correction):
+            section show/hide and layout controls moved to ManageSpaceModal →
+            Overview. Opened via the "Manage" button above. */}
+
+        {/* M2 canonical IA — the Perspective experience lives UNDER Overview
+            (no separate PERSPECTIVES rail tab). REVIEW-3: the Overview content
+            slot ALWAYS renders the resolved lens's workspace + the lens
+            selector (the Net Worth default resolves to the Wealth workspace;
+            the former summary canvas was unreachable and is deleted).
+            Selecting a lens swaps the panel below: workspace-backed
+            Perspectives render their WORKSPACE_RENDERERS entry; others show
+            an honest "coming soon" placeholder. (W2 — the widgets[]/virtual-
+            section SectionCard path retired with the Goals surface.) The
+            financial workspaces, contracts, time semantics, Evidence, and FX
+            are unchanged. */}
+        {activeTab === "OVERVIEW" && activePerspective != null && (
+          <div className="space-y-4">
             {/* Row 4 — Perspective-specific controls slot. These stay
                 Perspective-specific (never shared): Net Worth's page-level
                 Total · Assets · Debt selector is the first thing its workspace

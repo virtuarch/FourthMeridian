@@ -34,7 +34,6 @@
  */
 
 import { useEffect, useMemo, useState, type ComponentType } from "react";
-import { useRouter } from "next/navigation";
 import {
   useSpaceChromePublisher,
   useSpaceSectionsPublisher,
@@ -362,17 +361,15 @@ export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) 
   // mode (the same transforming sidebar customer Spaces use; platform Spaces are
   // count-based, so no FX and no Manage). The operator's access level, formerly a
   // toolbar badge, folds into the subtitle so no information is lost.
-  const router = useRouter();
   const { publishSpace, publishCurrencyControl } = useSpaceChromePublisher();
   const chromeSubtitle = `Platform · ${areaLabel} · ${accessLevel}`;
   useEffect(() => {
     publishCurrencyControl(null);
     publishSpace({
       identity: { name: spaceName, subtitle: chromeSubtitle },
-      onLeave: () => router.push("/dashboard/spaces"),
     });
     return () => publishSpace(null);
-  }, [publishSpace, publishCurrencyControl, spaceName, chromeSubtitle, router]);
+  }, [publishSpace, publishCurrencyControl, spaceName, chromeSubtitle]);
 
   // SECTIONS — the ACTIVE workspace's "what's inside" list, published UP to the
   // same ContextualNavbar block customer workspaces feed (SpaceChrome sections
