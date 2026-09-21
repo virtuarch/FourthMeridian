@@ -15,7 +15,8 @@ scenario is not memory.**
 
 ## A. AMENDMENTS — lead rulings R1–R12 and what was implemented (2026-09-21)
 
-> **This section is authoritative. Where it contradicts the text below, it wins.** The design was reviewed (APPROVE WITH
+> **This section is authoritative. Where it contradicts the text below, it wins.** It records both rounds of review:
+> the twelve lead rulings (§A.1–§A.6) and the final independent review's blocker and required changes (§A.7–§A.8). The design was reviewed (APPROVE WITH
 > REQUIRED CHANGES), the lead ruled on every blocker, and the implementation landed on `postm1/b-memory-v2` as S1–S6. The body
 > below is kept as the reasoning of record; statements it makes that the rulings found false are struck and corrected in place,
 > and listed here.
@@ -44,9 +45,10 @@ when it matched a figure *we* produced ("a value found nowhere is accepted"). Re
 `{amount: 6, label: "months-of-expenses"}` for *"Remember that I want six months cash."* and `{amount: 9}` for *"use nine"*: a
 month count the user spoke in words is found nowhere, so nothing refused it (5 rows), and R7 had cut the label rule that was the
 design's defence. What *we* produced now only sharpens the refusal ("a figure we produced" vs "nobody stated it"). User-side
-tokens are the licence's own figures plus bare small integers **not followed by a count unit** ("6 months", "3 years", "50%").
+tokens were the licence's own figures plus bare small integers not followed by a count unit — **superseded by §A.7**, which
+removed the bare-integer tier entirely after the reviewer showed "make it 9" still licensing a Money field.
 **Cost, accepted and to be measured in use:** *"remember my goal is a million"* is asked for the number once ("$1M", "1,000,000"
-and "$1 million" all license it). *Primitive or patch?* Primitive: "memory admits money only in figures the user stated" — one
+and "$1 million" all license it), and since §A.7 a sub-$1,000 amount must carry a money marker ("$800", "800 dollars"). *Primitive or patch?* Primitive: "memory admits money only in figures the user stated" — one
 sentence, every money field, every class.
 
 ### A.3 The replay — 201 recorded `remember` calls through `validateFields` + `admitWrite`
@@ -109,6 +111,42 @@ a BASELINE is exactly one of `monthlySpending` / `annualReturnPct`. What the mod
 - **DELETE writes one content-free `AuditLog` row** — `AI_MEMORY_ERASED`, `{kind, versionsErased}` — never what the item said.
 - **A debt-free goal and an open-ended goal are goals but not starters or Brief plans**: `PlanGoal` is frozen as a positive target
   with a deadline.
+
+### A.7 The independent review — accepted with one blocker and three required changes (2026-09-21)
+
+| # | Finding | Resolution |
+|---|---|---|
+| **M1 blocker** | **The rounding tolerance ran the wrong way.** `licensedBy` reused the Brief licence's `min(writtenUnit, max(1, 3%))`. The licence asks whether ROUNDED PROSE fairly renders a PRECISE figure; memory must ask whether THIS figure was stated. Backwards, a loose echo of our own number licensed our number to the cent: *"so about 270k?"* admitted the projection's `271,433.12`; *"$300k"* admitted `295,000`; *"1.2m"* admitted `1,230,000`; *"so keep about 36k?"* admitted a derived `liquidFloor: 35,739.18` — the frozen-dollar defect, reached through an echo. | A stored figure is now no more precise than the words it came from: **half a cent, or it was not said**. Each reproduction is a test, paired with the figure the user *did* say, which is still admitted. |
+| M1 (same gate) | **A fragment of a number licensed a figure.** `"5 000"` licensed `monthlySpending: 5`; `"06/30/2027"` licensed `amount: 30`. | A digit group belonging to a larger number or to a date licenses **nothing** — not the fragment, and not the whole, because which was meant is a guess. |
+| M1 (same gate) | **A bare integer after a months statement was money.** After *"keep 6 months…"*, *"make it 9"* licensed `monthlySpending: 9` — the original coercion, still open. | Money is now the licence's own definition of a figure and nothing else: a currency mark, a k/m suffix, thousands grouping, decimals, a spelled currency word, or a bare integer ≥ 1,000 that is not a year. **A bare small integer is a count.** Stated cost: a sub-$1,000 amount must be said as `$800` or `800 dollars`, and the refusal says so. |
+| M1 (same gate) | **Only money was gated.** Our own `coverageMonths: 3.1` was admissible as the user's floor, a computed `annualReturnPct: 12.34` as their planning rate, a computed savings rate as their share. | `Months`, `Fraction` and `Percent` are gated identically. Months accept digits or a closed word list, because *"keep six months of expenses"* is the product's central sentence and digits alone would refuse it. **One exception, stated:** a `Fraction` of exactly `1` needs no figure — *"…then invest"* says where the rest goes while holding nothing back, and the contract documents that share as `1`. Gating it would refuse the three-clause strategy (acceptance case 3). `0.9` still has to be said. |
+| Required | Real figures were back in this program's tests and in the replay fixture. | Replaced with a synthetic family of the same shape, arithmetic preserved. Pre-program and other agents' lines are named in the commit and left alone. |
+| Required | **A stale planning figure could not be re-affirmed**: the identical-re-statement short-circuit meant *"yes, still $5k"* never moved `statedAt`, so the figure the user had just confirmed still read as months old. | A `record` whose current version is `STALE` or `LAPSED` writes a new version and moves the date; a repeat of a fresh item still writes nothing. |
+| Required | Four small reconcile/reader items (§A.6 and the commit for them). | `reconcile_projection` no longer promises every projection is recorded; a legacy projection that rested on a user-stated figure is **not reconcilable**, by code; the "one reader" claim is corrected rather than forced; `recordProjection` owns its own P2002. |
+
+**Replay after the blocker fix: 20 admitted of 201, unchanged.** Every row the recorded corpus admitted was
+already an exact match ($5k → 5000, $1M → 1000000, "six" → 6), so the hole was latent there — and live in the
+reviewer's constructed echoes, which is the whole reason a corpus is not a proof.
+
+### A.8 Known and deliberately not built
+
+1. **The concurrent first-record race.** Two turns recording the same new subject at the same instant both
+   find no head and both write `supersedesId: null`, leaving **two ACTIVE rows** on one `(owner, kind,
+   subject)`. Every reader then shows both. The unique index that would close it —
+   `@@unique([spaceId, ownerUserId, kind, subject]) WHERE status = 'ACTIVE'` (a partial unique index, so
+   superseded history is unaffected) — needs a migration, and this program applies none. Until then the
+   second write is a duplicate, not a corruption: both rows are things the user said, and either can be
+   retired or deleted. A same-user double-submit is the only realistic path.
+2. **An amend inherits a legacy GOAL's ungated amount.** `admitWrite` exempts a value equal to the current
+   version's, which is what stops an amendment re-gating what it did not touch. A V1 goal carrying a frozen
+   derived dollar figure therefore keeps that figure through a date-only amendment. Re-gating inherited
+   values would refuse ordinary amendments of legitimate old rows; the honest fix is the panel, where the
+   user can see the figure and delete it.
+3. **"Remember my raise in March" is refused.** A future income change is not in the `RULE` vocabulary
+   (it is I1's `incomeChanges`), so it can only be stored as a planned expense with a negative amount, which
+   the Money type refuses. The refusal is correct and the capability is I1's to add.
+4. **Derived dates are not gated** (§16.4), and word-form money is refused once ("a million" → "say the
+   number"). Both are unchanged by this review.
 
 ---
 
