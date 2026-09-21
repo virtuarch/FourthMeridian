@@ -372,9 +372,12 @@ function safeParse(raw: string): unknown {
 /** The staged clause ids a scenario result says it applied. Read off the tool's own echo. */
 function appliedStagedIds(result: unknown): string[] {
   const r = result as Record<string, unknown> | null | undefined;
+  // Confirmed-applied clauses, plus those this call superseded (resolved by the
+  // call's own version). NEVER the not-confirmed ones: those stay held.
   const echo = (r?.assumptions ?? r?.assumptionsInForce) as
-    { fromEarlierInConversation?: { clauses?: { id?: unknown }[] } } | null | undefined;
-  const clauses = echo?.fromEarlierInConversation?.clauses;
-  return Array.isArray(clauses)
-    ? clauses.map((c) => c?.id).filter((id): id is string => typeof id === 'string') : [];
+    { fromEarlierInConversation?: { clauses?: { id?: unknown }[];
+      supersededByThisCall?: { clauses?: { id?: unknown }[] } } } | null | undefined;
+  const ids = [...(echo?.fromEarlierInConversation?.clauses ?? []),
+    ...(echo?.fromEarlierInConversation?.supersededByThisCall?.clauses ?? [])];
+  return ids.map((c) => c?.id).filter((id): id is string => typeof id === 'string');
 }

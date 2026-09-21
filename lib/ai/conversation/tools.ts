@@ -1802,7 +1802,12 @@ const projectCash: ToolDefinition = {
     // A retrospective run ("what would you have predicted in January?") is about
     // the past and is not affected; the current trend on purpose is one visible
     // flag away.
-    const retrospectiveRun = typeof a.asOf === 'string' && a.asOf < ctx.asOfISO;
+    // ⚠️ A REAL LOOK BACK, NOT A STRING THAT SORTS EARLIER (review). `a.asOf <
+    // today` let `asOf: ""` (which then falls back to today) and yesterday walk past
+    // the refusal with a current-trend run. "What would you have predicted in
+    // January?" is at least a month back; anything nearer is the present.
+    const retrospectiveRun = typeof a.asOf === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.asOf)
+      && Date.parse(`${ctx.asOfISO}T00:00:00Z`) - Date.parse(`${a.asOf}T00:00:00Z`) >= 30 * 86_400_000;
     const staged = ctx.plan?.pending.clauses ?? [];
     if (staged.length > 0 && a.ignoreStaged !== true && !retrospectiveRun && rejected.length === 0) {
       return { unavailable: `${staged.length} condition(s) the user stated earlier in this `
@@ -1821,6 +1826,13 @@ const projectCash: ToolDefinition = {
           + 'income starting or ending — is scenario_projection\'s `incomeChanges`; a one-off '
           + 'amount arriving or leaving is its `outflows`.' };
     }
+    // When the user asked for the current trend on purpose, the answer says what
+    // it left out — the staged conditions are theirs, and they are not in it.
+    const leftOut = staged.length > 0 && a.ignoreStaged === true
+      ? { leftOutOnPurpose: { staged: staged.map((c) => ({ id: c.id, [c.key]: c.value })),
+          meaning: 'The current trend, WITHOUT the conditions the user stated in this '
+            + 'conversation — as they asked. Say so; these are still held.' } }
+      : {};
     const spine = await buildCashSpine(ctx, {
       asOf: (a.asOf as string) || ctx.asOfISO,
       ...(typeof a.assumedMonthlySpending === 'number'
@@ -1875,6 +1887,7 @@ const projectCash: ToolDefinition = {
     }
 
     return {
+      ...leftOut,
       horizon: { asOf, to: toISO, days: horizonDays, elapsed: elapsedBetween(asOf, toISO),
         ...(plan ? describePlan(plan) : { checkpoints: 0 }) },
       // ⚠️ A SIBLING OF THE ANSWER, NEVER A REPLACEMENT FOR IT. `projection.endingCash`
@@ -2069,7 +2082,7 @@ interface ScenarioSetup {
    * Conditions staged earlier in this conversation that this run applied, and the
    * arguments as they actually ran. Absent when nothing was staged.
    */
-  staged?: { applied: Attribution[]; replacedCallItems: { id: string; key: string }[] };
+  staged?: { applied: (Attribution & { value: unknown })[]; supersededByCall: { id: string; key: string }[] };
   /** The arguments this run executed — the call's, with any staged clauses merged in. */
   argumentsRun: Record<string, unknown>;
   run: (o?: ScenarioOverrides) => LedgerResult;
@@ -2211,7 +2224,7 @@ async function prepareScenario(
   if (ctx.plan && ctx.plan.pending.clauses.length > 0) {
     const m = mergeIntoArgs(ctx.plan.pending, a);
     a = m.args;
-    staged = { applied: m.applied, replacedCallItems: m.replacedCallItems };
+    staged = { applied: m.applied, supersededByCall: m.supersededByCall };
   }
 
   // ── The closed argument set, read off the tool's own schema ────────────────
@@ -2664,6 +2677,55 @@ function floorRule(ledger: LedgerResult, derivations: FloorDerivation[] = []) {
   };
 }
 
+/**
+ * Which staged clauses this run can be SHOWN to have applied.
+ *
+ * ⚠️ REVIEW BLOCKER 2. The first version listed every merged clause as applied and
+ * the turn then consumed them — while `notApplied` in the SAME result named one as
+ * refused. A staged STOP on an unknown source was "applied, describe it as the
+ * user's stated condition", refused, consumed, and dropped from the envelope: it
+ * then existed nowhere. A clause is now confirmed only when nothing refused it:
+ * exactly, for an income rule (refusals name it by position) and for a wholly
+ * refused argument; conservatively otherwise — when this run refused something it
+ * cannot attribute, the staged clauses of the other arguments are reported NOT
+ * CONFIRMED and are kept for the next run rather than consumed on a guess.
+ */
+function stagedEcho(setup: ScenarioSetup, rejected: readonly { input: string; argument?: string }[]) {
+  const staged = setup.staged!;
+  const run = setup.argumentsRun;
+  const incomeIdx = (v: unknown) =>
+    (Array.isArray(run.incomeChanges) ? run.incomeChanges : []).indexOf(v) + 1;
+  const refusedIncome = new Set(rejected.map((r) => /`incomeChanges` rule i(\d+)/.exec(r.input)?.[1])
+    .filter((n): n is string => !!n).map(Number));
+  const wholeArgs = new Set(rejected.map((r) => r.argument).filter((a): a is string => !!a));
+  const unattributed = rejected.some((r) => !r.argument && !/`incomeChanges`/.test(r.input));
+  const confirmed: typeof staged.applied = [];
+  const unconfirmed: typeof staged.applied = [];
+  for (const c of staged.applied) {
+    const refused = wholeArgs.has(c.key)
+      || (c.key === 'incomeChanges' ? refusedIncome.has(incomeIdx(c.value))
+        : c.key === 'annualReturnPct' ? Array.isArray(run.returns) && run.returns.length > 0
+          : c.key === 'assumedMonthlySpending' ? false : unattributed);
+    (refused ? unconfirmed : confirmed).push(c);
+  }
+  return {
+    clauses: confirmed.map((x) => ({ id: x.id, argument: x.key, statedInTurn: x.stagedAt + 1 })),
+    ...(unconfirmed.length ? { notConfirmed: {
+      clauses: unconfirmed.map((x) => ({ id: x.id, argument: x.key })),
+      meaning: 'These staged conditions were sent to this run but it refused something in them (see '
+        + '`notApplied`), so they are NOT shown to have applied. They are still held; do not describe '
+        + 'them as included.',
+    } } : {}),
+    ...(staged.supersededByCall.length ? { supersededByThisCall: {
+      clauses: staged.supersededByCall,
+      meaning: 'This call restated these rules (or another rule about the same thing), so the call\'s '
+        + 'version ran and the staged one did not.',
+    } } : {}),
+    meaning: '`clauses` were stated earlier in this conversation and applied to this run alongside the '
+      + 'arguments of this call. Describe them as the user\'s stated conditions.',
+  };
+}
+
 function scenarioAssumptions(
   setup: ScenarioSetup, ledger: LedgerResult, returns: ReturnPeriod[],
 ) {
@@ -2720,15 +2782,7 @@ function scenarioAssumptions(
     // applied is named as such — never as something this call said — and a call
     // item a newer staged restatement replaced is named too, so "pending wins" is
     // never silent. `argumentsRun` is what executed; the envelope keeps THAT.
-    ...(setup.staged ? { fromEarlierInConversation: {
-      clauses: setup.staged.applied.map((x) => ({ id: x.id, argument: x.key, statedInTurn: x.stagedAt + 1 })),
-      ...(setup.staged.replacedCallItems.length
-        ? { replacedInThisCall: setup.staged.replacedCallItems } : {}),
-      meaning: 'These conditions were stated earlier in this conversation and were applied to this '
-        + 'run alongside the arguments of this call. Describe them as the user\'s stated conditions. '
-        + 'Where `replacedInThisCall` names one, the user\'s newer statement replaced what this call '
-        + 'carried.',
-    } } : {}),
+    ...(setup.staged ? { fromEarlierInConversation: stagedEcho(setup, [...setup.rejected, ...ledger.rejected]) } : {}),
     argumentsRun: setup.argumentsRun,
     // ⚠️ WHAT WAS STATED AND NOT APPLIED, IN THE SAME ECHO — see `notAppliedEcho`.
     ...(notAppliedEcho([...setup.rejected, ...ledger.rejected])
@@ -3480,7 +3534,10 @@ const stageAssumptions: ToolDefinition = {
     // envelope carries every condition that ran, and a re-run merges nothing stale
     // because the staged plan is empty from the moment a scenario runs. One carrier
     // per phase: stated-not-run here, ran in the envelope.
-    if (ctx.plan.scenarioRan) {
+    // Withdrawing is always allowed: a clause a run could not confirm is still held,
+    // and the user must be able to take it back after the run as well as before.
+    const onlyRetracting = Object.keys(a).every((k) => k === 'retract');
+    if (ctx.plan.scenarioRan && !onlyRetracting) {
       return { unavailable: 'a scenario has ALREADY RUN in this conversation, so this change was '
           + 'NOT staged — staging holds conditions only until the first run',
         instead: 'run scenario_projection again now with the ACTIVE SCENARIO\'s arguments and this '

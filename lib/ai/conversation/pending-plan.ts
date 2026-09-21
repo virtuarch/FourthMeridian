@@ -150,12 +150,51 @@ export const IDENTITY: Record<string, (v: unknown) => string | null> = {
     }
     return basis;
   },
-  outflows: (v) => (s(o(v).onDate) ? `onDate:${s(o(v).onDate)}` : null),
+  // ⚠️ A DATE ALONE IS NOT A THING (review blocker 3): a $3,000 car and $500
+  // insurance on the same day were one identity, and the second silently replaced
+  // the first. The named thing — or, unnamed, the amount — is part of it.
+  outflows: (v) => {
+    const c = o(v);
+    if (!s(c.onDate)) return null;
+    return `onDate:${s(c.onDate)}|${boundedLabel(c.label) ?? `amount:${String(c.amount)}`}`;
+  },
   liabilityAssumptions: (v) => {
     const id = s(o(v).liabilityId) || s(o(v).id);
     return id ? `liability:${id}` : null;
   },
 };
+
+/**
+ * THE SUBJECT A RULE IS ABOUT, which is wider than its identity.
+ *
+ * ⚠️ REVIEW BLOCKER 3. Two rules can be about the same thing and differ in a
+ * field that is part of identity — "up 10% from January" then "actually 15%,
+ * starting February" were two identities, both were kept, and from February the
+ * income was ×1.265. Code cannot tell a correction ("actually…") from a second
+ * rule ("and another 5% in July") by reading fields, so when a new rule shares a
+ * SUBJECT with a staged one under a different identity, the choice is made
+ * explicit: `replace` (it corrects the earlier one) or `inAddition` (both apply).
+ * Null means the key has no such notion: its identity is its subject.
+ */
+export function subjectOf(key: string, v: unknown): string | null {
+  const c = o(v);
+  if (key === 'incomeChanges') {
+    const op = s(c.op);
+    if (op === 'SCALE' || op === 'SET_RATE') return `RATE|${s(c.source) || '*'}`;
+    if (op === 'STOP') return `STOP|${s(c.source) || '*'}`;
+    return null;
+  }
+  if (key === 'contributions') {
+    const b = contributionBasis(c);
+    return b === 'AMOUNT' || b === 'BALANCE_SHARE' ? b : null;
+  }
+  return null;
+}
+
+/** Do two income scopes overlap? `*` (every income stream) overlaps everything. */
+const scopesOverlap = (a: string, b: string) => a === b
+  || a.endsWith('|*') && a.split('|')[0] === b.split('|')[0]
+  || b.endsWith('|*') && a.split('|')[0] === b.split('|')[0];
 
 // ── Provenance — which fields are figures, and of what kind ──────────────────
 
@@ -220,8 +259,9 @@ function invalid(key: string, value: unknown, evidence: TurnEvidence, name: stri
     if (wrongType(INPUTS[key], value) || value === null || value === undefined) {
       return refuse(`\`${key}\` must be a ${INPUTS[key]?.type ?? 'value'}.`);
     }
-    if (typeof value === 'number' && figures['']
-      && value !== 0 && !licensed(figures[''], value, evidence)) {
+    // ⚠️ ZERO IS A FIGURE (review). Skipping the gate for 0 let an unstated
+    // "spend nothing" or "no return" in; Memory V2 refuses a zero outright.
+    if (typeof value === 'number' && figures[''] && !licensed(figures[''], value, evidence)) {
       return refuse(`${value} was not stated by the user for \`${key}\`, so it was NOT staged. `
         + 'Only a figure the user said may be carried; ask them, or use their exact number.');
     }
@@ -238,7 +278,7 @@ function invalid(key: string, value: unknown, evidence: TurnEvidence, name: stri
   const props = INPUTS[key]?.items?.properties ?? {};
   for (const [f, v] of Object.entries(item)) {
     if (wrongType(props[f], v)) return refuse(`\`${f}\` has the wrong type, so this entry was NOT staged.`);
-    if (typeof v === 'number' && v !== 0) {
+    if (typeof v === 'number') {
       const gate = figures[f];
       if (!gate) {
         return refuse(`\`${f}\` is a figure this state has no provenance rule for, so it was NOT `
@@ -314,8 +354,13 @@ export function stagePlan(
   plan: PendingPlan,
   input: {
     stage?: Record<string, unknown>; retract?: readonly string[];
-    /** Allow a merge to NARROW a staged rule (drop a target it held). Explicit, or refused. */
+    /**
+     * The new rule CORRECTS the staged one it overlaps: narrow a waterfall, or
+     * replace a same-subject rule stated with a different date. Explicit, or refused.
+     */
     replace?: boolean;
+    /** The new rule applies AS WELL AS a staged same-subject rule (a second raise). */
+    inAddition?: boolean;
   },
   ctx: { turn: number; evidence: TurnEvidence },
 ): StageResult {
@@ -376,7 +421,27 @@ export function stagePlan(
         return;
       }
 
-      const same = clauses.find((c) => c.key === key && c.identity === identity);
+      let same = clauses.find((c) => c.key === key && c.identity === identity);
+      const subject = subjectOf(key, value);
+      if (!same && subject !== null) {
+        const rivals = clauses.filter((c) => c.key === key && c.identity !== identity
+          && subjectOf(key, c.value) !== null && scopesOverlap(subjectOf(key, c.value)!, subject));
+        if (rivals.length > 0 && !input.replace && !input.inAddition) {
+          refused.push({ input: name, reason: `this is about the same thing as the staged `
+            + `${rivals.map((r) => `\`${r.id}\``).join(', ')} (${JSON.stringify(rivals[0].value)}) but differs `
+            + 'in a date or a scope, and code cannot tell a correction from a second rule. If it '
+            + 'CORRECTS the staged one, stage it again with `replace: true`; if BOTH apply (e.g. a '
+            + 'second raise later), with `inAddition: true`. It was NOT staged.' });
+          return;
+        }
+        if (rivals.length > 0 && input.replace) {
+          // The correction takes the rival's place — and its id, so the reader's
+          // "p1" is still the raise.
+          same = rivals[0];
+          clauses = clauses.filter((c) => !rivals.slice(1).some((r) => r.id === c.id));
+          replacedFields.push({ id: same.id, field: '(whole rule)', was: same.value, now: value });
+        }
+      }
       // ⚠️ NARROWING A WATERFALL IS A WITHDRAWAL, AND A WITHDRAWAL IS EXPLICIT — the
       // rule Memory V2's `amend` already keeps (a write that would drop fields is
       // refused unless `replace`). Measured: "pay highest APR first" staged
@@ -400,7 +465,16 @@ export function stagePlan(
           return;
         }
       }
-      if (same && key === 'contributions') {
+      if (same && key === 'contributions' && same.identity === identity) {
+        // ⚠️ A FLOOR IS STATED ONCE, IN ONE UNIT (review blocker 3). "Keep nine
+        // months" then "actually keep $50,000" merged into a rule carrying BOTH,
+        // which the executor refuses — taking the whole floor, debt order and
+        // "invest the rest" with it. Setting one unit clears the other, exactly as
+        // Memory V2's `amend` swaps mutually exclusive fields.
+        const nv = value as Obj; const sv = { ...(same.value as Obj) };
+        if (nv.liquidFloor !== undefined) delete sv.liquidFloorMonthsOfExpenses;
+        if (nv.liquidFloorMonthsOfExpenses !== undefined) delete sv.liquidFloor;
+        same = { ...same, value: sv };
         for (const [f, now] of Object.entries(value as Obj)) {
           const was = (same.value as Obj)[f];
           if (was !== undefined && JSON.stringify(was) !== JSON.stringify(now)) {
@@ -414,8 +488,13 @@ export function stagePlan(
           return;
         }
       }
+      if (same && key !== 'contributions' && same.identity === identity
+        && JSON.stringify(same.value) !== JSON.stringify(value)) {
+        // Every key reports a restatement, not only contributions (review).
+        replacedFields.push({ id: same.id, field: '(whole rule)', was: same.value, now: value });
+      }
       const clause: PendingClause = same
-        ? { ...same, value, stagedAt: ctx.turn }
+        ? { ...same, identity, value, stagedAt: ctx.turn }
         : { id: `p${next}`, key, identity, value, stagedAt: ctx.turn };
 
       const candidate = same
@@ -451,50 +530,60 @@ export interface Attribution {
 
 export interface MergeResult {
   args: Record<string, unknown>;
-  applied: Attribution[];
-  /** A call item the pending clause replaced, by identity. Said, never silent. */
-  replacedCallItems: { id: string; key: string }[];
+  /** Staged clauses laid into the arguments, with the exact object each became. */
+  applied: (Attribution & { value: unknown })[];
+  /**
+   * Staged clauses this call SUPERSEDED — it states the same rule, or another rule
+   * about the same subject — and which therefore did not run. Said, never silent.
+   */
+  supersededByCall: { id: string; key: string }[];
 }
 
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-
 /**
- * The call's arguments with the staged clauses laid over them, by identity.
+ * The call's arguments with the staged clauses added, where the call has not
+ * restated them.
  *
- * ⚠️ THE STAGED CLAUSE WINS A CONFLICT, AND THE REASON IS ORDER, NOT RANK. Pending
- * state is consumed by every successful run, so whatever is in it was stated AFTER
- * the last execution — and a model re-running a scenario copies its arguments from
- * the envelope, which is older. "Actually make the raise 15%", staged, must beat a
- * 1.1 copied forward from the last run. Every such replacement is reported.
+ * ⚠️ THE CALL WINS, AND THE REASON IS THE STATE MACHINE (review blocker 1). The
+ * first version let the staged clause win, on the theory that a model re-running a
+ * scenario copies stale arguments forward from the envelope. But staging is refused
+ * once a scenario has run, so whenever a plan is non-empty NO envelope exists to
+ * copy from — the call's items are this turn's words, and this turn is newer than
+ * anything staged. Measured before the fix: staged "up 10%", then "actually 15%",
+ * called with 1.15 — and it RAN AT 1.1 while the echo credited the 1.1 as the
+ * user's newer statement.
  *
- * ⚠️ RULES ARE APPENDED IN THE ORDER THEY WERE STATED, because the income primitive
- * applies rules in array order and order changes the answer (a STOP then a SCALE is
- * not a SCALE then a STOP).
+ * ⚠️ "THE SAME RULE" INCLUDES "THE SAME SUBJECT". A staged raise on every income
+ * and a called raise on the salary, from different dates, are both about the rate
+ * of that income; running both compounded them (×1.21). A staged clause is
+ * superseded by any call item with its identity, or with an overlapping subject.
+ *
+ * ⚠️ APPENDED IN THE ORDER STATED, because the income primitive applies rules in
+ * array order and order changes the answer.
  */
 export function mergeIntoArgs(plan: PendingPlan, args: Record<string, unknown>): MergeResult {
   const out: Record<string, unknown> = { ...args };
-  const applied: Attribution[] = [];
-  const replacedCallItems: { id: string; key: string }[] = [];
+  const applied: MergeResult['applied'] = [];
+  const supersededByCall: MergeResult['supersededByCall'] = [];
   const ordered = [...plan.clauses].sort((a, b) => a.stagedAt - b.stagedAt || a.id.localeCompare(b.id));
 
   for (const c of ordered) {
     if (isArrayKey(c.key)) {
-      const list = Array.isArray(out[c.key]) ? [...(out[c.key] as unknown[])] : [];
-      const at = list.findIndex((item) => IDENTITY[c.key]?.(item) === c.identity);
-      if (at >= 0) {
-        if (!same(list[at], c.value)) replacedCallItems.push({ id: c.id, key: c.key });
-        list[at] = c.value;
-      } else {
-        list.push(c.value);
-      }
-      out[c.key] = list;
+      const callItems = Array.isArray(args[c.key]) ? args[c.key] as unknown[] : [];
+      const mySubject = subjectOf(c.key, c.value);
+      const restated = callItems.some((item) => {
+        if (IDENTITY[c.key]?.(item) === c.identity) return true;
+        const theirs = subjectOf(c.key, item);
+        return mySubject !== null && theirs !== null && scopesOverlap(mySubject, theirs);
+      });
+      if (restated) { supersededByCall.push({ id: c.id, key: c.key }); continue; }
+      out[c.key] = [...(Array.isArray(out[c.key]) ? out[c.key] as unknown[] : []), c.value];
     } else {
-      if (out[c.key] !== undefined && !same(out[c.key], c.value)) replacedCallItems.push({ id: c.id, key: c.key });
+      if (args[c.key] !== undefined) { supersededByCall.push({ id: c.id, key: c.key }); continue; }
       out[c.key] = c.value;
     }
-    applied.push({ id: c.id, key: c.key, source: 'EARLIER_IN_CONVERSATION', stagedAt: c.stagedAt });
+    applied.push({ id: c.id, key: c.key, source: 'EARLIER_IN_CONVERSATION', stagedAt: c.stagedAt, value: c.value });
   }
-  return { args: out, applied, replacedCallItems };
+  return { args: out, applied, supersededByCall };
 }
 
 /** Is this value a plan this module produced? Structural, for the seal's reader. */

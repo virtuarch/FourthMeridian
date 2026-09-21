@@ -123,18 +123,58 @@ let plan: PendingPlan = emptyPlan();
     widened.replacedFields.some((f) => f.field === 'target'));
 }
 
-// ── 3. Merge: pending beats a stale copy, and says so ────────────────────────
+// ── 3. Merge: THIS CALL wins, and says so (review blocker 1) ────────────────
 {
-  const p = stagePlan(emptyPlan(), { stage: { incomeChanges: [{ ...RAISE, multiplier: 1.15 }] } },
-    { turn: 5, evidence: turnEvidence(['make the raise 15%'], []) }).plan;
-  // The model re-runs, copying the OLD 1.1 forward from the envelope.
-  const m = mergeIntoArgs(p, { to: '2027-06-30', incomeChanges: [RAISE],
-    contributions: [{ liquidFloorMonthsOfExpenses: 9, fractionOfExcess: 1 }] });
-  eq('a staged restatement beats a stale copy carried forward from the last run',
+  const p = stagePlan(emptyPlan(), { stage: { incomeChanges: [RAISE] } },
+    { turn: 0, evidence: turnEvidence(['up 10% from January'], []) }).plan;
+  // The user corrects in the question turn; the model puts 1.15 in the call.
+  const m = mergeIntoArgs(p, { to: '2027-12-31', incomeChanges: [{ ...RAISE, multiplier: 1.15 }] });
+  eq('BLOCKER 1: this turn\'s 1.15 runs — a staged 1.1 cannot overrule it',
     (m.args.incomeChanges as { multiplier: number }[]).map((x) => x.multiplier), [1.15]);
-  eq('…and the replacement is REPORTED, not silent', m.replacedCallItems.map((x) => x.key), ['incomeChanges']);
-  check('…and the call\'s other clauses are kept', Array.isArray(m.args.contributions));
+  eq('…and the staged clause is reported as superseded, not as applied',
+    [m.supersededByCall.map((x) => x.id), m.applied.length], [['p1'], 0]);
+  // Same subject, different identity: a staged raise on EVERY income from January,
+  // a called raise on the salary from February. Running both compounded them.
+  const scoped = mergeIntoArgs(p, { incomeChanges: [{ op: 'SCALE', from: '2027-02-01', multiplier: 1.15, source: 'SAL@1' }] });
+  eq('BLOCKER 1: a same-subject call rule supersedes the staged one — nothing compounds',
+    (scoped.args.incomeChanges as unknown[]).length, 1);
+  // A different subject is added, in the order stated.
+  const other = mergeIntoArgs(p, { outflows: [{ onDate: '2027-06-01', amount: 40000, label: 'car' }] });
+  check('a call about something else keeps the staged clause, and applies it',
+    other.applied.length === 1 && Array.isArray(other.args.incomeChanges));
   eq('an empty plan changes nothing', mergeIntoArgs(emptyPlan(), { to: 'x', a: 1 }).args, { to: 'x', a: 1 });
+}
+
+// ── 3b. Corrections to an identity field are explicit (review blocker 3) ─────
+{
+  const e = turnEvidence(['up 10% from January', 'actually 15%, starting February', '$500 a month', '$50,000',
+    'keep nine months', 'a $3,000 car and $500 insurance'], []);
+  const base = stagePlan(emptyPlan(), { stage: { incomeChanges: [RAISE] } }, { turn: 0, evidence: e }).plan;
+  const moved = { ...RAISE, multiplier: 1.15, from: '2027-02-01' };
+  const bare = stagePlan(base, { stage: { incomeChanges: [moved] } }, { turn: 1, evidence: e });
+  check('BLOCKER 3: a same-subject rule with a different date is REFUSED without a choice',
+    bare.staged.length === 0 && /replace: true/.test(bare.refused[0]?.reason ?? '') && /inAddition: true/.test(bare.refused[0]?.reason ?? ''));
+  const corrected = stagePlan(base, { stage: { incomeChanges: [moved] }, replace: true }, { turn: 1, evidence: e });
+  eq('…with `replace`, it takes the earlier rule\'s place and id',
+    corrected.plan.clauses.map((c) => [c.id, (c.value as { multiplier: number }).multiplier]), [['p1', 1.15]]);
+  const both = stagePlan(base, { stage: { incomeChanges: [moved] }, inAddition: true }, { turn: 1, evidence: e });
+  eq('…with `inAddition`, both are held (a second raise)', both.plan.clauses.length, 2);
+
+  // The floor's unit: months then dollars is ONE floor, in the newer unit.
+  const f = stagePlan(emptyPlan(), { stage: { contributions: [{ liquidFloorMonthsOfExpenses: 9, fractionOfExcess: 1,
+    target: ['highest_apr', 'investments'] }] } }, { turn: 0, evidence: e }).plan;
+  const dollars = stagePlan(f, { stage: { contributions: [{ liquidFloor: 50000 }] } }, { turn: 1, evidence: e });
+  eq('BLOCKER 3: a floor restated in dollars replaces the floor in months — never both',
+    dollars.plan.clauses[0].value, { fractionOfExcess: 1, target: ['highest_apr', 'investments'], liquidFloor: 50000 });
+
+  // Two things on the same day are two things.
+  const day = stagePlan(emptyPlan(), { stage: { outflows: [{ onDate: '2027-03-01', amount: 3000, label: 'car' },
+    { onDate: '2027-03-01', amount: 500, label: 'insurance' }] } }, { turn: 0, evidence: e });
+  eq('BLOCKER 3: two outflows on one date are two clauses', day.plan.clauses.length, 2);
+  // A restatement of any key is reported, not only contributions.
+  const again = stagePlan(day.plan, { stage: { outflows: [{ onDate: '2027-03-01', amount: 3500, label: 'car' }] } },
+    { turn: 1, evidence: turnEvidence(['the car is $3,500'], []) });
+  check('a restated outflow is reported as replaced', again.replacedFields.some((r) => r.id === 'p1'));
 }
 
 // ── 4. Provenance: only the user's own figures ──────────────────────────────
@@ -151,6 +191,10 @@ let plan: PendingPlan = emptyPlan();
   const said = stagePlan(emptyPlan(), { stage: { assumedMonthlySpending: 5000 } },
     { turn: 0, evidence: turnEvidence(['assume I spend $5,000 a month'], []) });
   check('…while the same figure, said now, is staged', said.staged.length === 1);
+  check('ZERO is a figure too: an unstated zero spending is refused',
+    stagePlan(emptyPlan(), { stage: { assumedMonthlySpending: 0 } }, { turn: 0, evidence: turnEvidence(['hello'], []) }).refused.length === 1);
+  check('…and an unstated zero multiplier (income wiped) is refused',
+    stagePlan(emptyPlan(), { stage: { incomeChanges: [{ ...RAISE, multiplier: 0 }] } }, { turn: 0, evidence: turnEvidence(['hello'], []) }).refused.length === 1);
   check('"the rest" (1) needs no figure', stagePlan(emptyPlan(), { stage: { contributions: [
     { liquidFloorMonthsOfExpenses: 9, fractionOfExcess: 1 }] } }, { turn: 0, evidence: turnEvidence(['keep 9 months, invest the rest'], []) }).staged.length === 1);
 }
