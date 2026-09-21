@@ -59,17 +59,21 @@ const pkg = JSON.parse(src("package.json")) as { scripts: Record<string, string>
   // Every write-capable script path reaches a DB through this ONE client. A new
   // `new PrismaClient` outside lib/db.ts is a path around the guard, so the set
   // of files allowed to construct one is closed and this counts it.
+  // ⚠️ COMMITTED FILES ONLY. The first version listed `scripts/audit-visibility-
+  // levels.ts`, which exists only as an UNTRACKED file in one checkout — so the
+  // guard passed there and failed in a clean worktree. A guard about the code must
+  // read the code that is committed, never whatever happens to be on one disk.
   const OWN_CLIENT = [
     "prisma/seed.ts", "scripts/db-guard.ts", "scripts/backfill-ai-agents.ts",
     "scripts/backfill-personal-sections.ts", "scripts/diagnose-invalid-plaid-tokens.ts",
     "scripts/run-reconstruction.ts", "scripts/audit-ciphertext-versions.ts",
-    "scripts/audit-visibility-levels.ts", "scripts/copy-fx-rates.ts",
+    "scripts/copy-fx-rates.ts",
     "scripts/test-incident-transaction-safety.ts", "scripts/test-visibility-two-user-space.impl.ts",
   ];
   // ⚠️ TEST FILES EXCLUDED, because a test that ASSERTS about `new PrismaClient`
   // contains the string without constructing one — this file and
   // lib/db/live-guard.test.ts both do.
-  const found = execSync("grep -rl 'new PrismaClient' --include='*.ts' prisma scripts lib app jobs || true",
+  const found = execSync("git grep -l 'new PrismaClient' -- 'prisma/*.ts' 'scripts/*.ts' 'lib/*.ts' 'app/*.ts' 'jobs/*.ts' || true",
     { cwd: ROOT, encoding: "utf8" }).trim().split("\n")
     .filter((f) => f && !f.endsWith(".test.ts")).sort();
   const expected = [...OWN_CLIENT, "lib/db.ts"].sort();
