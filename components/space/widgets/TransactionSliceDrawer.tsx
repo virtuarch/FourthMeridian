@@ -67,6 +67,11 @@ export interface TransactionSlice {
    *  with the row/segment that opened it. Shown only when income and spend are 0. */
   total?:        number;
   totalLabel?:   string;
+  /** CF-TIER-NET — what the net cost figure is called for THIS slice. Default
+   *  "Spending". A slice of GROSS charges (cost rows only, by design — e.g. the
+   *  "Charged on credit" context row) passes "Charged", so the drawer never labels
+   *  a gross amount as spending. */
+  spendLabel?:   string;
 }
 
 
@@ -208,7 +213,11 @@ export function TransactionSliceDrawer({
   const viewingAll = showAll && canShowAll;
   const displayRows = shown ? (viewingAll ? shown.allRows! : shown.rows) : [];
 
-  const { income, spend, net } = economicTotals(displayRows, ctx);
+  // The drawer's figures are the canonical fold over its OWN rows — so a slice
+  // whose rows include refunds (a Spending or spending-tier cell) nets them here
+  // exactly as the cell did, and says so: charged, refunded, and any refund
+  // beyond the charges that the floor at zero absorbed.
+  const { income, spend, net, refunds, spendGross, refundsUnapplied } = economicTotals(displayRows, ctx);
 
   return (
     <RightPanel open={slice != null} onClose={onClose} ariaLabel="Transaction slice">
@@ -231,9 +240,9 @@ export function TransactionSliceDrawer({
             Income <span className="font-semibold text-[var(--accent-positive)]">+{money(income, ctx)}</span>
           </span>
         )}
-        {spend > 0 && (
+        {(spend > 0 || refunds > 0) && (
           <span className="text-[var(--text-secondary)]">
-            Spending <span className="font-semibold text-[var(--accent-negative)]">−{money(spend, ctx)}</span>
+            {shown.spendLabel ?? "Spending"} <span className="font-semibold text-[var(--accent-negative)]">−{money(spend, ctx)}</span>
           </span>
         )}
         {(income > 0 || spend > 0) && (
@@ -246,6 +255,15 @@ export function TransactionSliceDrawer({
         <span className="text-[var(--text-faint)] ml-auto">
           {displayRows.length} {displayRows.length === 1 ? "transaction" : "transactions"}
         </span>
+        {/* The reconciliation, only when a refund is in the slice: what was charged,
+            what came back, and — if refunds exceeded the charges here — how much of
+            them the floor at zero absorbed. No arithmetic in this component. */}
+        {refunds > 0 && (
+          <span data-drawer-refunds className="basis-full text-[11px] text-[var(--text-muted)] tabular-nums">
+            {money(spendGross, ctx)} charged · −{money(refunds, ctx)} refunded
+            {refundsUnapplied > 0 ? ` · ${money(refundsUnapplied, ctx)} of refunds beyond the charges shown` : ""}
+          </span>
+        )}
       </div>
 
       {/* CF-2B — Show all activity / back to the selected measure. Clearly states

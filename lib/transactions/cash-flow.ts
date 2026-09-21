@@ -261,6 +261,12 @@ export interface CashFlowTotals {
   spend:   number;   // COST_FLOWS minus REFUND, clamped ≥ 0
   refunds: number;   // Σ|amount| where REFUND (disclosed separately)
   net:     number;   // income − spend
+  /** CF-TIER-NET — Σ|amount| of cost flows BEFORE refunds ("charged"). `spend` is
+   *  clampEconomicSpend(spendGross, refunds); both come from the same fold. */
+  spendGross:       number;
+  /** Refunds beyond the charges in THIS row set: max(0, refunds − spendGross). The
+   *  amount the floor at zero absorbed — disclosed, never silently discarded. */
+  refundsUnapplied: number;
   /**
    * V25-FINAL-1 — true when at least one row had no acceptable FX rate and was
    * EXCLUDED from these totals (its native magnitude was never blended in). The
@@ -414,7 +420,8 @@ export function economicTotals(transactions: Transaction[], ctx?: ConversionCont
     foldEconomicRow(acc, t.flowType ?? null, Math.abs(a), t.incomeClass ?? null);
   }
   const spend = clampEconomicSpend(acc.spendGross, acc.refunds);
-  return { income: acc.income, spend, refunds: acc.refunds, net: acc.income - spend, unconverted };
+  return { income: acc.income, spend, refunds: acc.refunds, net: acc.income - spend, unconverted,
+    spendGross: acc.spendGross, refundsUnapplied: Math.max(0, acc.refunds - acc.spendGross) };
 }
 
 // ─── History (time buckets) ───────────────────────────────────────────────────

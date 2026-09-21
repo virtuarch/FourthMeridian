@@ -330,6 +330,8 @@ const reasonIs = (t: LiquidityTx, ctx: LiquidityContext, e: LiquidityEffect, ...
   const c = classifyLiquidity(t, ctx);
   return c.effect === e && rs.includes(c.reason);
 };
+/** A row that enters economic spending: a cost flow, or a REFUND that nets it. */
+const isEconomicSpendRow = (t: LiquidityTx) => isCostFlow(t.flowType ?? null) || isRefund(t.flowType ?? null);
 const dispositionIs = (t: LiquidityTx, d: TransferDisposition) =>
   ((t as { transferDisposition?: TransferDisposition | null }).transferDisposition ?? null) === d;
 
@@ -346,9 +348,21 @@ export const CALENDAR_MEASURES: Record<CalendarMeasureId, CalendarMeasure> = {
   income:              { id: "income",              label: "Income",               direction: "in",  perspective: "economic",  value: (f) => f.income,      rowMatches: (t) => isIncome(t.flowType ?? null) },
   // All spending includes REFUNDs (they net the total) — same doctrine as Spending
   // by Category, so the drawer's clamped spend reconciles.
-  allSpending:         { id: "allSpending",         label: "Spending",             direction: "out", perspective: "economic",  value: economicSpend,        rowMatches: (t) => isCostFlow(t.flowType ?? null) || isRefund(t.flowType ?? null) },
-  creditCardSpending:  { id: "creditCardSpending",  label: "Credit-card spending", direction: "out", perspective: "economic",  subsetOf: "allSpending", value: (f) => f.creditCardSpending, rowMatches: (t, c) => isCostFlow(t.flowType ?? null) && tierOfRow(t, c) === "liability" },
-  directDebitSpending: { id: "directDebitSpending", label: "Direct/debit spending", direction: "out", perspective: "economic", subsetOf: "allSpending", value: (f) => f.directSpending,     rowMatches: (t, c) => isCostFlow(t.flowType ?? null) && tierOfRow(t, c) !== "liability" },
+  allSpending:         { id: "allSpending",         label: "Spending",             direction: "out", perspective: "economic",  value: economicSpend,        rowMatches: (t) => isEconomicSpendRow(t) },
+  // CF-TIER-NET — the two spending TIERS are NET of their own refunds, exactly as
+  // "Spending" is. They were gross per day (`f.creditCardSpending` /
+  // `f.directSpending`, cost rows only), so inside the Spending view a label saying
+  // "spending" printed what was CHARGED. Now:
+  //   value      = economicSpendByTier(f) — the tier's cost flows less the refunds
+  //                on the same tier, floored at 0 (the one clamp; excess reported
+  //                as refundsUnapplied, never negative);
+  //   rowMatches = that tier's cost flows AND its REFUND rows, so the drawer — which
+  //                folds its rows through economicTotals — lands on the SAME figure
+  //                the cell shows, and shows the refund that made the difference.
+  // Tier = the row's account tier (liability ⇒ credit card), the same resolver the
+  // fold used to split the refunds; no attribution to a purchase is invented.
+  creditCardSpending:  { id: "creditCardSpending",  label: "Credit-card spending", direction: "out", perspective: "economic",  subsetOf: "allSpending", value: (f) => economicSpendByTier(f).creditCard, rowMatches: (t, c) => isEconomicSpendRow(t) && tierOfRow(t, c) === "liability" },
+  directDebitSpending: { id: "directDebitSpending", label: "Direct/debit spending", direction: "out", perspective: "economic", subsetOf: "allSpending", value: (f) => economicSpendByTier(f).direct,     rowMatches: (t, c) => isEconomicSpendRow(t) && tierOfRow(t, c) !== "liability" },
   // Physical cash — its own honest line, subset of neither axis (Part 5).
   cashWithdrawals:     { id: "cashWithdrawals",     label: "Cash withdrawals",     direction: "out", perspective: "liquidity", value: (f) => f.cashWithdrawals, rowMatches: (t) => dispositionIs(t, "CASH_MOVEMENT") && t.amount < 0 },
 };

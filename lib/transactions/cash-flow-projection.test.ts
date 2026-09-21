@@ -219,10 +219,15 @@ test("drill-down: 'Debt payments' shows the payment, never a card purchase", () 
 
 test("INVARIANT: drill-down rows reconcile with the measure's heat-map value", () => {
   const f = projectDailyFacts(mixedDay, liqCtx).get("2026-07-08")!;
-  for (const id of ["creditCardSpending", "debtPayments"] as CalendarMeasureId[]) {
-    const rowsSum = rowsForMeasures(mixedDay, [id], liqCtx).reduce((s, r) => s + Math.abs(r.amount), 0);
-    assert.equal(Math.round(rowsSum * 100), Math.round(CALENDAR_MEASURES[id].value(f) * 100), `${id} drawer Σ == cell`);
-  }
+  // CF-TIER-NET — an ECONOMIC measure reconciles through the canonical fold, not a
+  // sum of row magnitudes: its rows may include a REFUND that nets the cell, and
+  // that is exactly what the drawer (economicTotals) does with them.
+  const cardRows = rowsForMeasures(mixedDay, ["creditCardSpending"], liqCtx);
+  assert.equal(Math.round(economicTotals(cardRows).spend * 100),
+    Math.round(CALENDAR_MEASURES.creditCardSpending.value(f) * 100), "credit-card drawer fold == cell");
+  // A liquidity measure carries no economic fold; its rows sum by magnitude.
+  const paySum = rowsForMeasures(mixedDay, ["debtPayments"], liqCtx).reduce((s, r) => s + Math.abs(r.amount), 0);
+  assert.equal(Math.round(paySum * 100), Math.round(CALENDAR_MEASURES.debtPayments.value(f) * 100), "debt-payment drawer Σ == cell");
 });
 
 test("INVARIANT: no row is in both a purchase measure and a payment measure (no double-count)", () => {

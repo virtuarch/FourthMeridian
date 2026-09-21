@@ -88,10 +88,13 @@ interface Props {
   hideHeadline?:        boolean;
 }
 
+/** The Cash Out tile's note — exported so a test can pin the exact copy. */
+export const CASH_OUT_HINT = "Card purchases count here when you pay the card.";
+
 /** One expandable side (Cash In or Cash Out) with its reason breakdown. Each
  *  reason line drills into its exact transactions when `onOpenLine` is provided. */
 function AxisTile({
-  label, total, accent, lines, ctx, sign, onOpenLine,
+  label, total, accent, lines, ctx, sign, onOpenLine, hint,
 }: {
   label:  string;
   total:  number;
@@ -100,6 +103,8 @@ function AxisTile({
   ctx?:   ConversionContext;
   sign:   "+" | "−";
   onOpenLine?: (line: TileLine) => void;
+  /** A one-line, visually subordinate note under the figure. */
+  hint?:  string;
 }) {
   const [open, setOpen] = useState(false);
   const color = accent === "green" ? "var(--accent-positive)" : "var(--accent-negative)";
@@ -125,6 +130,7 @@ function AxisTile({
         </span>
         <span className="shrink-0 text-base sm:text-lg font-semibold tabular-nums" style={{ color }} title={`${sign}${fmt(total, ctx)}`}>{sign}{fmt(total, ctx)}</span>
       </button>
+      {hint && <p data-tile-hint className="mt-1 text-[10px] leading-snug text-[var(--text-faint)]">{hint}</p>}
 
       {open && canExpand && (
         <div className="mt-2 space-y-1 border-t border-[var(--border-hairline)] pt-2">
@@ -307,7 +313,12 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
         /* Liquidity: Cash In / Cash Out — expandable into reason breakdown. */
         <div className="grid grid-cols-2 gap-3">
           <AxisTile label="Cash In"  total={facts.cashIn}  accent="green" sign="+" lines={breakdown.cashIn}  ctx={ctx} onOpenLine={(l) => openReasonSlice("CASH_IN", l)} />
-          <AxisTile label="Cash Out" total={facts.cashOut} accent="red"   sign="−" lines={breakdown.cashOut} ctx={ctx} onOpenLine={(l) => openReasonSlice("CASH_OUT", l)} />
+          {/* CF-TIER-NET — Cash Out is a CASH measure, not spending: a card purchase
+              moves no cash until the card is paid, so it enters here as a debt
+              payment, possibly in another period. One line says the timing; it
+              claims no matching between payments and purchases. */}
+          <AxisTile label="Cash Out" total={facts.cashOut} accent="red"   sign="−" lines={breakdown.cashOut} ctx={ctx} onOpenLine={(l) => openReasonSlice("CASH_OUT", l)}
+            hint={CASH_OUT_HINT} />
         </div>
       )}
 
@@ -322,7 +333,8 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
           <ContextRow
             label="Charged on credit (no cash moved at purchase)"
             value={fmt(facts.creditCardSpending, ctx)}
-            onOpen={() => setSlice({ title: "Credit-card spending", subtitle: "Bought on credit this period", rows: rows.filter((r) => isCostFlow(r.flowType) && isLiabilityRow(r)) })}
+            onOpen={() => setSlice({ title: "Charged on credit", subtitle: "Bought on credit this period", spendLabel: "Charged",
+              rows: rows.filter((r) => isCostFlow(r.flowType) && isLiabilityRow(r)) })}
           />
         </div>
       )}
