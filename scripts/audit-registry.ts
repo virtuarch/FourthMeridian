@@ -337,6 +337,13 @@ export const AUDITS: readonly AuditEntry[] = [
           "(v2.6-EVENT-1); RETAIN UNTIL the event-migration production deploy completes",
   },
   {
+    name: "repair-liability-income-credits", tier: "OPERATIONAL", needsDb: true,
+    what: "REFUND-1 historical repair: a positive INCOME-family row on a LIABILITY account " +
+          "(classifier < v5) re-derived through the same v5 chain a fresh sync runs ⇒ REFUND or " +
+          "UNKNOWN, never INCOME; dry-run by default, idempotent. RETAIN UNTIL it has been applied " +
+          "to every database the v4 pipeline wrote",
+  },
+  {
     name: "diagnose-invalid-plaid-tokens", tier: "OPERATIONAL", needsDb: true,
     what: "READ-ONLY diagnostic for PlaidItem rows whose encryptedToken is neither v1 nor v2; " +
           "step 2 of the key-rotation runbook (docs/operations/key-rotation.md)",
