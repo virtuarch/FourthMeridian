@@ -193,9 +193,13 @@ async function main(): Promise<void> {
     await withPlaidRetry(async () => { calls++; if (calls === 1) throw rawAxiosError(); return "ok"; }, "transactionsSync");
   } finally { console.warn = origWarn; }
   check("C: retried once and succeeded", calls === 2);
-  check("C: a warning was logged", captured.length === 1);
-  leaks("C withPlaidRetry warning", captured.join("\n"));
-  check("C: the warning names the code", /TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION/.test(captured.join("\n")));
+  // Only the retry's own line is counted: an unrelated fire-and-forget warning (the
+  // usage recorder failing with no DB, from section A) can land in this window on a
+  // slower runner. The leak check still reads EVERYTHING captured.
+  const retryLines = captured.filter((l) => l.startsWith("[plaid][retry]"));
+  check("C: exactly one retry warning was logged", retryLines.length === 1, `${retryLines.length} of ${captured.length} captured`);
+  leaks("C everything captured during the retry", captured.join("\n"));
+  check("C: the warning names the code", /TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION/.test(retryLines.join("\n")));
 
   // ── D. free-text scrubbing ────────────────────────────────────────────────
   console.log("D. scrubSecrets / non-HTTP errors");
