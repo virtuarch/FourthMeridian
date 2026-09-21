@@ -19,19 +19,22 @@
  *              platform-HQ destinations the user is granted.
  *   space    — inside a Space (published through SpaceChrome by SpaceDashboard):
  *              the site nav, THEN — under a hairline, so the hierarchy reads
- *              site → Space → section — back-to-Spaces, the Space's identity, its
- *              display-currency + Manage controls, and the section anchors for
- *              the active workspace. Inside a PLATFORM Space it additionally
- *              carries the same access-derived Platform destinations global mode
- *              shows, so the operator can move between HQ Spaces without first
- *              leaving to the launcher.
+ *              site → Space → workspace — back-to-Spaces, the Space's identity,
+ *              its display-currency + Manage controls, and the Space's two
+ *              workspace destinations: Net Worth · Cash Flow. There is NO
+ *              Sections list inside a customer Space (the page-anchor list was
+ *              retired in favour of workspace-level destinations). Inside a
+ *              PLATFORM Space it instead carries that HQ workspace's section
+ *              anchors plus the same access-derived Platform destinations global
+ *              mode shows, so the operator can move between HQ Spaces without
+ *              first leaving to the launcher.
  *
  * Both modes share DOM position and the left-accent-bar selection idiom, so
  * moving between them reads as the sidebar re-resolving, not one panel replacing
  * another. This REPLACES the former components/ui/Sidebar.tsx, whose persistent
  * global tree, inline Spaces list, footer Refresh/Sign-out and brand row are all
  * retired — brand → GlobalHeader, Refresh/identity/Sign-out → GlobalActions,
- * the in-Space identity/FX/Manage/sections → Space mode here.
+ * the in-Space identity/FX/Manage/workspaces → Space mode here.
  *
  * Navigation is route-based (production uses real routes, not the prototype's
  * single-page state), so the mobile presentation of this SAME model is
@@ -49,11 +52,18 @@ import {
   Link2,
   Shield,
   ArrowLeft,
+  Gem,
   LayoutGrid,
   LogOut,
+  Waves,
   type LucideIcon,
 } from "lucide-react";
-import { useSpaceChrome, type SpaceChromeSpace, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
+import {
+  useSpaceChrome,
+  type SpaceChromeSpace,
+  type SpaceChromeSection,
+  type SpaceChromeWorkspaceNav,
+} from "@/lib/space/space-chrome-context";
 import { SpaceControls } from "@/components/space/shell/SpaceControls";
 import {
   PRIMARY_NAV,
@@ -71,6 +81,17 @@ const NAV_ICONS: Record<PrimaryDestId, LucideIcon> = {
   ai: Sparkles,
   spaces: Layers,
   connections: Link2,
+};
+
+/**
+ * Workspace icons — the perspective library's own (lib/perspectives: wealth
+ * "Gem", cashFlow "Waves"), so the sidebar and the lens identity agree. Keyed by
+ * the lens id the host publishes; an unknown id renders without an icon rather
+ * than borrowing one.
+ */
+const WORKSPACE_ICONS: Record<string, LucideIcon> = {
+  networth: Gem,
+  cashFlow: Waves,
 };
 
 type PlatformItem = { id: string; name: string; platformArea: string };
@@ -203,7 +224,7 @@ export function PlatformNav({
 }
 
 export function ContextualNavbar() {
-  const { space, currencyControl, sections, activeSection, setActiveSection } = useSpaceChrome();
+  const { space, currencyControl, workspaceNav, sections, activeSection, setActiveSection } = useSpaceChrome();
   // Owned HERE, above the mode switch: the site nav's inputs must not reset (and
   // the badge must not re-fetch) when a Space publishes or clears its chrome.
   const pathname = usePathname();
@@ -218,6 +239,7 @@ export function ContextualNavbar() {
             pendingInvites={pendingInvites}
             space={space}
             currencyControl={currencyControl}
+            workspaceNav={workspaceNav}
             sections={sections}
             activeSection={activeSection}
             onSelectSection={setActiveSection}
@@ -362,10 +384,67 @@ function GlobalMode({ pathname, pendingInvites }: { pathname: string | null; pen
 }
 
 /**
- * The SECTIONS block — the active workspace's "what's inside" anchors, published
- * up through SpaceChrome by whatever host is mounted (a customer workspace or a
- * Platform workspace; ONE model, one block). Extracted verbatim from Space mode
- * so it is directly renderable in a test — no markup, no behaviour change.
+ * The SPACE WORKSPACE block — the Space's workspace-level destinations (Net Worth
+ * · Cash Flow), published by the host from the navigation state it owns. Peers of
+ * the site destinations above: same row, accent bar, icon size and type — never
+ * indented like a subsection.
+ *
+ * Each row is a real link to its canonical deep link (lib/space/use-space-
+ * navigation `lensHref`), so open-in-new-tab / copy-link work; a plain primary
+ * click selects IN PLACE through the host's state (`onSelect`) — the Space's
+ * navigation is History-driven, not a route change, and a router navigation to
+ * the same page would not re-read it. Active state is the host's `activeId`
+ * (the RENDERED workspace), never text matching, so Net Worth stays lit across
+ * its own Total · Assets · Debt modes.
+ */
+export function SpaceWorkspaceNav({ nav }: { nav: SpaceChromeWorkspaceNav | null }) {
+  if (!nav || nav.items.length === 0) return null;
+  return (
+    <nav aria-label="Space" className="flex flex-col gap-0.5">
+      {nav.items.map((item) => {
+        const on = item.id === nav.activeId;
+        const Icon = WORKSPACE_ICONS[item.id];
+        return (
+          <a
+            key={item.id}
+            href={item.href}
+            onClick={(e) => {
+              // Let the browser own modified / non-primary clicks (new tab etc.).
+              if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+              e.preventDefault();
+              nav.onSelect(item.id);
+            }}
+            aria-current={on ? "true" : undefined}
+            className={[
+              "group relative flex items-center gap-2.5 rounded-[var(--radius-sm)] py-1.5 pl-3 pr-2 text-left text-[13px]",
+              "transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+              on
+                ? "text-[var(--text-primary)]"
+                : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+            ].join(" ")}
+          >
+            <span
+              aria-hidden
+              className={[
+                "absolute inset-y-1 left-0 w-0.5 rounded-full bg-[var(--meridian-400)]",
+                "transition-opacity duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+                on ? "opacity-100" : "opacity-0",
+              ].join(" ")}
+            />
+            {Icon && <Icon size={14} strokeWidth={1.75} className="shrink-0" />}
+            <span className="flex-1 truncate">{item.label}</span>
+          </a>
+        );
+      })}
+    </nav>
+  );
+}
+
+/**
+ * The SECTIONS block — a Platform workspace's "what's inside" anchors, published
+ * up through SpaceChrome. Rendered ONLY on the platform axis: inside a customer
+ * Space the sidebar shows workspace destinations (SpaceWorkspaceNav) instead, and
+ * never a section list. Directly renderable in a test.
  *
  * A section whose `anchor` is null is DISABLED and marked "· soon": the page has
  * no element to scroll to, and inventing one would scroll nowhere in silence.
@@ -439,6 +518,7 @@ export function SpaceMode({
   pendingInvites,
   space,
   currencyControl,
+  workspaceNav,
   sections,
   activeSection,
   onSelectSection,
@@ -447,6 +527,7 @@ export function SpaceMode({
   pendingInvites: number;
   space: SpaceChromeSpace;
   currencyControl: React.ReactNode;
+  workspaceNav: SpaceChromeWorkspaceNav | null;
   sections: SpaceChromeSection[];
   activeSection: string;
   onSelectSection: (label: string) => void;
@@ -475,7 +556,7 @@ export function SpaceMode({
       <PrimaryNav pathname={pathname} pendingInvites={pendingInvites} />
 
       {/* SPACE — under a hairline, so the order reads site → this Space → its
-          sections. "All Spaces" is the Space's own way back up and stays: it is
+          workspaces. "All Spaces" is the Space's own way back up and stays: it is
           part of the Space's context (it sits with the name it leaves), where
           the Spaces item above is a site destination. Same route, one hop. */}
       <div data-nav-context="space" className="border-t border-[var(--border-hairline)] pt-5">
@@ -524,13 +605,25 @@ export function SpaceMode({
         <div className="mt-3">
           <SpaceControls currencyControl={currencyControl} onManage={onManage} />
         </div>
+
+        {/* WORKSPACES — Net Worth · Cash Flow, inside the Space block so they
+            read as THIS Space's destinations, attached to its identity. */}
+        {workspaceNav && workspaceNav.items.length > 0 && (
+          <div className="mt-4">
+            <SpaceWorkspaceNav nav={workspaceNav} />
+          </div>
+        )}
       </div>
 
-      <SectionsNav
-        sections={sections}
-        activeSection={activeSection}
-        onSelectSection={onSelectSection}
-      />
+      {/* Section anchors survive ONLY on the platform axis (HQ workspaces have
+          no Net Worth / Cash Flow); a customer Space never renders them. */}
+      {onPlatformAxis && (
+        <SectionsNav
+          sections={sections}
+          activeSection={activeSection}
+          onSelectSection={onSelectSection}
+        />
+      )}
 
       {onPlatformAxis && <PlatformNav items={platform} pathname={pathname} className="mt-2" />}
 

@@ -15,7 +15,7 @@
  * Pins, by rendering the real components:
  *   A. the site nav on a non-Space route (the Spaces launcher);
  *   B. the SAME site nav inside a Space, above the Space's own context;
- *   C. the Space's navigation is all still there;
+ *   C. the Space's navigation is all still there (workspaces, not Sections);
  *   D. active states — one rule, both modes;
  *   E. one definition: no second link list, one component in both modes;
  *   F. the responsive contract is untouched (rail lg+, bar < lg, same width).
@@ -56,6 +56,15 @@ const spaceMode = (pathname: string, over: Record<string, unknown> = {}) =>
       onLeave: () => {}, onManage: () => {}, onLeaveSpace: () => {},
     },
     currencyControl: null,
+    workspaceNav: {
+      items: [
+        { id: "networth", label: "Net Worth", href: "/dashboard?tab=overview" },
+        { id: "cashFlow", label: "Cash Flow", href: "/dashboard?tab=overview&perspective=cash-flow" },
+      ],
+      activeId: "networth",
+      onSelect: () => {},
+    },
+    // A customer workspace may still PUBLISH anchors — the sidebar must not render them.
     sections: [{ label: "Summary", anchor: "debt-summary" }, { label: "Liabilities", anchor: "debt-liabilities" }],
     activeSection: "Liabilities",
     onSelectSection: () => {},
@@ -99,18 +108,20 @@ console.log("C. The Space's own navigation is all still there");
   check("…with its Shared chip and subtitle", t.includes("Household Shared Shared · 3 members"));
   check("return to Spaces: the 'All Spaces' back control", t.includes("All Spaces"));
   check("Manage control", t.includes("Manage"));
-  check('the Sections nav (aria-label="Sections") with every published section',
-    html.includes('<nav aria-label="Sections"') && t.includes("Sections Summary Liabilities"));
+  check('the Space nav (aria-label="Space") with its two workspaces',
+    html.includes('<nav aria-label="Space"') && t.includes("Net Worth Cash Flow"));
+  check("NO Sections list inside a customer Space, even with anchors published",
+    !html.includes('aria-label="Sections"') && !/\bSections\b/.test(t) && !t.includes("Liabilities"));
   check("Leave Space", t.includes("Leave Space"));
 
-  // HIERARCHY — document order is site → Space → sections, and the Space block is
+  // HIERARCHY — document order is site → Space → workspaces, and the Space block is
   // visibly its own group (a hairline above it), not five more rows in one list.
   const iSite = html.indexOf('aria-label="Global"');
   const iSpace = html.indexOf('data-nav-context="space"');
   const iName = html.indexOf("Household</h1>");
-  const iSections = html.indexOf('aria-label="Sections"');
-  check("order: site nav → Space context → its sections", iSite > -1 && iSite < iSpace && iSpace < iName && iName < iSections,
-    `${iSite} ${iSpace} ${iName} ${iSections}`);
+  const iWork = html.indexOf('aria-label="Space"');
+  check("order: site nav → Space context → its workspaces", iSite > -1 && iSite < iSpace && iSpace < iName && iName < iWork,
+    `${iSite} ${iSpace} ${iName} ${iWork}`);
   check("the Space block is set apart by the hairline divider",
     /data-nav-context="space" class="[^"]*border-t[^"]*border-\[var\(--border-hairline\)\]/.test(html));
   check("two ways back to Spaces, neither a dead end: the site 'Spaces' link and the Space's 'All Spaces'",
@@ -123,7 +134,7 @@ console.log("D. Active states — one rule, both modes, never two at once");
   const inSpace = spaceMode("/dashboard");
   check("inside the active Space (/dashboard): My Space is lit — the same rule the mobile bar uses",
     activeIn(inSpace, "Global").join() === "My Space", activeIn(inSpace, "Global").join());
-  check("…and the Space's active SECTION is lit independently", activeIn(inSpace, "Sections").join() === "Liabilities");
+  check("…and the Space's open WORKSPACE is lit independently", activeIn(inSpace, "Space").join() === "Net Worth");
   check("'Spaces' is NOT lit while inside a Space (My Space ≠ Spaces)", !activeIn(inSpace, "Global").includes("Spaces"));
 
   const hq = spaceMode("/dashboard/platform/PLATFORM_OPS");

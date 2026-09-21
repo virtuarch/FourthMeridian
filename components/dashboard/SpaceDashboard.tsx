@@ -14,7 +14,7 @@ import { todayUTCISO } from "@/lib/time/clock";
  * still feed the initial-tab pick, but nothing here renders them.
  */
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import type { ExpenseBaseline } from "@/lib/liquidity/expense-baseline";
 import { useRouter } from "next/navigation";
 import { Loader2, LogOut } from "lucide-react";
@@ -28,7 +28,7 @@ import { usePerspectiveShellState } from "@/components/space/shell/usePerspectiv
 import { SpaceShell } from "@/components/space/shell/SpaceShell";
 import { openPerspectiveDataNeeds } from "@/lib/space/workspace-resources";
 import { useSpaceData } from "@/lib/space/use-space-data";
-import { useSpaceNavigation, NET_WORTH_LENS_ID, CORE_LENS_IDS } from "@/lib/space/use-space-navigation";
+import { useSpaceNavigation, NET_WORTH_LENS_ID, CORE_LENS_IDS, lensHref, openWorkspaceId } from "@/lib/space/use-space-navigation";
 import { useSpaceLensResults } from "@/lib/space/use-space-lens-results";
 import { useActiveEnvelope } from "@/lib/space/use-active-envelope";
 import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
@@ -40,7 +40,7 @@ import { AccountsWorkspace } from "@/components/space/workspaces/AccountsWorkspa
 import { ActivityWorkspace } from "@/components/space/workspaces/ActivityWorkspace";
 import type { SectionCardBundle } from "@/components/space/workspaces/SpaceSectionStack";
 import { railVisibleTabs, SPACE_TAB_LABELS } from "@/lib/space-nav";
-import { useSpaceChromePublisher } from "@/lib/space/space-chrome-context";
+import { useSpaceChromePublisher, useSpaceWorkspaceNavPublisher } from "@/lib/space/space-chrome-context";
 import { resolveSpaceFreshness } from "@/lib/freshness/space-freshness";
 import { getPerspectivesForCategory, getWorkspaceDefinition, type PerspectiveDef } from "@/lib/perspectives";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
@@ -365,6 +365,30 @@ export function SpaceDashboard({
   );
   // selectLens + activeLensId now come from useSpaceNavigation (SD-8b).
 
+  // SIDEBAR WORKSPACES — the same lens set, published UP to the ContextualNavbar
+  // as the Space's workspace destinations (Net Worth · Cash Flow; the Sections
+  // anchor list is gone from a customer Space). Selecting one from the sidebar
+  // opens it from ANY rail tab (Overview + that lens); active = the RENDERED
+  // workspace, so Net Worth stays lit across its Total · Assets · Debt modes and
+  // nothing is lit on Activity / Accounts / Transactions / Members.
+  const publishWorkspaceNav = useSpaceWorkspaceNavPublisher();
+  const selectWorkspace = useCallback(
+    (id: string) => {
+      selectLens(id);
+      setActiveTab("OVERVIEW");
+    },
+    [selectLens, setActiveTab],
+  );
+  const openWorkspace = openWorkspaceId(activeTab, activePerspectiveId);
+  useEffect(() => {
+    publishWorkspaceNav({
+      items: lensSelectorItems.map(({ id, label }) => ({ id, label, href: lensHref(id) })),
+      activeId: openWorkspace,
+      onSelect: selectWorkspace,
+    });
+  }, [publishWorkspaceNav, lensSelectorItems, openWorkspace, selectWorkspace]);
+  useEffect(() => () => publishWorkspaceNav(null), [publishWorkspaceNav]);
+
   // (REVIEW-3) The Overview Perspectives doorway-card row retired with the
   // summary canvas; the lens selector inside PerspectiveShell is the one
   // remaining lens entry surface.
@@ -512,9 +536,8 @@ export function SpaceDashboard({
   //    app-global chrome ABOVE this route child, so the host reaches it through
   //    SpaceChrome rather than props. Cleared on unmount ⇒ the sidebar reverts to
   //    global navigation when you leave the Space. Declared BEFORE the loading
-  //    early-return so the hook order is unconditional. Section anchors are
-  //    deferred (they require workspace-body ids, out of scope for this shell-only
-  //    pass), so an empty list keeps the SECTIONS block hidden — honest.
+  //    early-return so the hook order is unconditional. The workspace destinations
+  //    (Net Worth · Cash Flow) are published separately, above.
   const { publishSpace, publishCurrencyControl } = useSpaceChromePublisher();
   const chromeSubtitle =
     `${catLabel} Space` +

@@ -41,6 +41,7 @@ import {
   type AssetsSlice, type LegacyPerspectiveTarget, type WealthMode,
 } from "@/lib/wealth/wealth-mode";
 import type { DashboardSection } from "@/lib/space/dashboard-types";
+import { MY_SPACE_HREF } from "@/lib/space-nav";
 
 // ─── URL ⇄ tab vocabulary ───────────────────────────────────────────────────────
 // M2 canonical IA: PERSPECTIVES / DEBT / INVESTMENTS are no longer runtime
@@ -129,6 +130,29 @@ export const TAB_ORDER = ["OVERVIEW", "ACCOUNTS", "ACTIVITY"];
 // Liquidity / Investments / Debt live INSIDE Net Worth (Assets / Assets / Debt).
 export const NET_WORTH_LENS_ID = "networth";
 export const CORE_LENS_IDS = ["cashFlow"];
+
+/**
+ * The canonical deep link for a lens — the SAME ?tab=/?perspective= the URL
+ * writer below commits when that lens is selected, so a sidebar link opened in
+ * a new tab lands exactly where an in-place click does. Net Worth is the clean
+ * Overview URL (no perspective param).
+ */
+export function lensHref(id: string): string {
+  const params = new URLSearchParams({ tab: "overview" });
+  if (id !== NET_WORTH_LENS_ID) params.set("perspective", perspectiveIdToSlug(id));
+  return `${MY_SPACE_HREF}?${params.toString()}`;
+}
+
+/**
+ * Which workspace destination is OPEN — read from the RENDERED lens, not the
+ * selection chip: on Overview, "wealth" is the Net Worth workspace (whatever its
+ * Total · Assets · Debt mode — those are wealthMode, a separate axis) and any
+ * other rendered lens is itself. Off Overview (Activity / Accounts / …) none is.
+ */
+export function openWorkspaceId(activeTab: string, activePerspectiveId: string | null): string | null {
+  if (activeTab !== "OVERVIEW" || !activePerspectiveId) return null;
+  return activePerspectiveId === "wealth" ? NET_WORTH_LENS_ID : activePerspectiveId;
+}
 
 export interface UseSpaceNavigationArgs {
   /** Space category — drives the trend-hero default-tab shortcut. */
