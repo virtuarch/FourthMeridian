@@ -138,7 +138,8 @@ console.log("B. Routing — the canonical ?view= on the Markets lens");
   check("…the default is Portfolio and serializes to nothing", DEFAULT_MARKETS_MODE === "portfolio" && serializeMarketsMode("portfolio") === null);
   const host = code(read("components", "dashboard", "SpaceDashboard.tsx"));
   check("11. an in-place click on the Markets parent opens Portfolio (what its href opens)",
-    /if \(id === MARKETS_LENS_ID\) setMarketsMode\(DEFAULT_MARKETS_MODE\);/.test(host));
+    /const selectWorkspace = openWorkspaceDefault;/.test(host) &&
+      /if \(id === MARKETS_LENS_ID\) setMarketsMode\(DEFAULT_MARKETS_MODE\);/.test(read("lib", "space", "use-space-navigation.ts")));
   for (const m of MARKETS_MODES) {
     const href = marketsModeHref(m);
     const q = new URLSearchParams(href.split("?")[1]);
@@ -157,8 +158,9 @@ console.log("B. Routing — the canonical ?view= on the Markets lens");
       /syncFromUrl\(\);\s*return spaceUrl\.subscribe\(syncFromUrl\);/.test(hook));
   check("…read BEFORE the Net Worth legacy early-return (a legacy link cannot drop the view)",
     sync.indexOf("setMarketsMode") > -1 && sync.indexOf("setMarketsMode") < sync.indexOf("if (legacy)"));
-  check("19. view writes use the established view-toggle contract (?view= via replace, default clears)",
-    /\[MARKETS_VIEW_PARAM\]: serializeMarketsMode\(m\) \}, \{ history: "replace" \}/.test(hook));
+  check("19. ?view= is written by the ONE URL writer for the open Markets (default clears; REPLACE — space-history.test §7–9)",
+    /openWorkspace === MARKETS_LENS_ID \? \{ \[MARKETS_VIEW_PARAM\]: serializeMarketsMode\(marketsMode\) \}/.test(hook) &&
+      /const handleMarketsModeChange = useCallback\(\(m: MarketsMode\) => setMarketsMode\(m\), \[\]\);/.test(hook));
   check("?view= is a documented Space param", read("lib", "space", "space-url.ts").includes('"view",'));
 
   const picks: string[] = [];

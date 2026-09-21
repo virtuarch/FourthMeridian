@@ -95,8 +95,24 @@ export function usePerspectiveShellState(args: {
 
   const [state, setState] = useState<PerspectiveTimeState>(() => defaultPerspectiveTimeState(today));
 
+  // HISTORY INTENT (the Space contract — see useSpaceNavigation): a time change
+  // the USER makes is a navigation step (PUSH, so Back undoes it — the SD-0A
+  // behaviour); everything the SYSTEM does — URL hydration, popstate re-sync,
+  // re-deriving ALL when coverage arrives — REPLACES. Declared at the entry
+  // point: only `actions` (user) mark push, and only when the slice CHANGES.
+  // (This replaces "the first real write replaces, later ones push", which made
+  // a user's first change after a canonical load erase the entry, and let a
+  // late coverage re-derivation push an entry nobody asked for.)
+  const historyIntent = useRef<"push" | "replace">("replace");
   const dispatch = useCallback(
-    (action: ShellTimeAction) => setState((s) => shellTimeReducer(s, action, ctxRef.current)),
+    (action: ShellTimeAction) =>
+      setState((s) => {
+        const next = shellTimeReducer(s, action, ctxRef.current);
+        if (next.asOf !== s.asOf || next.compareTo !== s.compareTo || next.preset !== s.preset) {
+          historyIntent.current = "push";
+        }
+        return next;
+      }),
     [],
   );
 
@@ -126,23 +142,20 @@ export function usePerspectiveShellState(args: {
     if (raw.asOf || raw.compareTo || raw.preset) setState(hydrateShellTimeState(raw, ctxRef.current));
     setHydrated(true);
     return spaceUrl.subscribe(() => {
+      historyIntent.current = "replace";
       setState(hydrateShellTimeState(readTimeParams(spaceUrl.getSearch()), ctxRef.current));
     });
   }, [spaceUrl]);
 
   // Mirror state → URL through the canonical authority (only after hydration, so
   // we never clobber the incoming params with the default before hydration
-  // commits). The authority replaces on the first real write (canonicalize) and
-  // pushes after, so Back/Forward works; it preserves every unrelated param.
-  const urlInit = useRef(false);
+  // commits), with the DECLARED intent above; it preserves every unrelated param.
   useEffect(() => {
     if (!hydrated) return;
     const ser = serializeShellTimeState(state);
-    const wrote = spaceUrl.commit(
-      { asof: ser.asOf, compareto: ser.compareTo, preset: ser.preset },
-      { history: urlInit.current ? "push" : "replace" },
-    );
-    if (wrote) urlInit.current = true;
+    const history = historyIntent.current;
+    historyIntent.current = "replace";
+    spaceUrl.commit({ asof: ser.asOf, compareto: ser.compareTo, preset: ser.preset }, { history });
   }, [state, hydrated, spaceUrl]);
 
   return {

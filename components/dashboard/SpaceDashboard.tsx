@@ -32,8 +32,8 @@ import {
   useSpaceNavigation, NET_WORTH_LENS_ID, MARKETS_LENS_ID, CORE_LENS_IDS,
   lensHref, openWorkspaceId, openChildId, workspaceChildren,
 } from "@/lib/space/use-space-navigation";
-import { DEFAULT_WEALTH_MODE, type WealthMode } from "@/lib/wealth/wealth-mode";
-import { DEFAULT_MARKETS_MODE, type MarketsMode } from "@/lib/markets/markets-mode";
+import type { WealthMode } from "@/lib/wealth/wealth-mode";
+import type { MarketsMode } from "@/lib/markets/markets-mode";
 import { useSpaceLensResults } from "@/lib/space/use-space-lens-results";
 import { useActiveEnvelope } from "@/lib/space/use-active-envelope";
 import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
@@ -189,6 +189,7 @@ export function SpaceDashboard({
     marketsMode, setMarketsMode,
     initialAccountFilter,
     applyInitialTab,
+    openWorkspaceDefault,
   } = useSpaceNavigation({ category, availablePerspectives });
 
   // SD-7b — the shared structural data lifecycle (sections / accounts / snapshots /
@@ -387,16 +388,10 @@ export function SpaceDashboard({
   // A PARENT link goes to its workspace's DEFAULT view — its href carries no view
   // param (Net Worth ≡ Total, Markets ≡ Portfolio) — so an in-place click does
   // exactly what that href does in a new tab: open the workspace on its default.
+  // The navigation authority owns that as ONE action with ONE history write
+  // (a new entry for a different workspace; see useSpaceNavigation).
   const publishWorkspaceNav = useSpaceWorkspaceNavPublisher();
-  const selectWorkspace = useCallback(
-    (id: string) => {
-      selectLens(id);
-      setActiveTab("OVERVIEW");
-      if (id === NET_WORTH_LENS_ID) setWealthMode(DEFAULT_WEALTH_MODE);
-      if (id === MARKETS_LENS_ID) setMarketsMode(DEFAULT_MARKETS_MODE);
-    },
-    [selectLens, setActiveTab, setWealthMode, setMarketsMode],
-  );
+  const selectWorkspace = openWorkspaceDefault;
   const selectWorkspaceChild = useCallback(
     (workspaceId: string, childId: string) => {
       if (workspaceId === NET_WORTH_LENS_ID) setWealthMode(childId as WealthMode);

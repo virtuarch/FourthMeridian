@@ -199,12 +199,16 @@ console.log("D. Selection — in place for a plain click, the browser's for a mo
   check("⌘/Ctrl/Shift/middle click is left to the browser (new tab on the canonical href)", picked.length === 2 && prevented === 2);
 
   const host = code(read("components", "dashboard", "SpaceDashboard.tsx"));
-  const sel = host.match(/const selectWorkspace = useCallback\(([\s\S]*?)\n  \);/)?.[1] ?? "";
   // A parent opens its workspace on its DEFAULT view — what its href (no view
-  // param) opens in a new tab — so click and link agree (Net Worth ≡ Total).
-  check("host selection = the lens + the Overview tab + the workspace's DEFAULT view (from any rail tab)",
-    /selectLens\(id\);\s*setActiveTab\("OVERVIEW"\);\s*if \(id === NET_WORTH_LENS_ID\) setWealthMode\(DEFAULT_WEALTH_MODE\);\s*if \(id === MARKETS_LENS_ID\) setMarketsMode\(DEFAULT_MARKETS_MODE\);/.test(sel) &&
-      (sel.match(/;/g) ?? []).length === 4, sel);
+  // param) opens in a new tab — so click and link agree (Net Worth ≡ Total). It
+  // is ONE action of the navigation authority (behaviour + history:
+  // components/space/shell/space-history.test.ts).
+  const open = read("lib", "space", "use-space-navigation.ts").match(/const openWorkspaceDefault = useCallback\(([\s\S]*?)\n  \);/)?.[1] ?? "";
+  check("host selection = the navigation authority's openWorkspaceDefault (Overview + lens + DEFAULT view, from any rail tab)",
+    /const selectWorkspace = openWorkspaceDefault;/.test(host) &&
+      /setActiveTabState\("OVERVIEW"\);\s*setSelectedPerspectiveIdState\(id === NET_WORTH_LENS_ID \? null : id\);/.test(open) &&
+      /if \(id === NET_WORTH_LENS_ID\) \{\s*setWealthMode\(DEFAULT_WEALTH_MODE\);/.test(open) &&
+      /if \(id === MARKETS_LENS_ID\) setMarketsMode\(DEFAULT_MARKETS_MODE\);/.test(open), open);
   check("host publishes the SAME lens set the in-page lens row uses (one list, no second definition)",
     /items: lensSelectorItems\.map\(\(\{ id, label \}\) => \{\s*const children = workspaceChildren\(id\);\s*return \{ id, label, href: lensHref\(id\), \.\.\.\(children \? \{ children \} : \{\}\) \};/.test(host));
   check("host clears the channel on unmount", /useEffect\(\(\) => \(\) => publishWorkspaceNav\(null\), \[publishWorkspaceNav\]\)/.test(host));
@@ -420,8 +424,12 @@ console.log("J. Net Worth is a parent: Total · Assets · Debt nested while open
   check("host: the active child is the open workspace's own mode (wealthMode only while Net Worth is open)",
     /activeChildId: openChild,/.test(host) && openChildId(NET_WORTH_LENS_ID, { wealthMode: "debt", marketsMode: "research" }) === "debt" &&
       openChildId("cashFlow", { wealthMode: "debt", marketsMode: "research" }) === null && openChildId(null, { wealthMode: "debt", marketsMode: "research" }) === null);
-  check("mode writes are unchanged (?metric= via replace — the existing history contract)",
-    /metric: serializeWealthMode\(m\)[\s\S]{0,120}\{ history: "replace" \}/.test(read("lib", "space", "use-space-navigation.ts")));
+  // ?metric= is written by the ONE URL writer with the default REPLACE intent —
+  // a view refines its workspace's entry (behaviour: space-history.test §4–6).
+  const navSrc = read("lib", "space", "use-space-navigation.ts");
+  check("mode writes: ?metric= from the ONE URL writer, only for the open Net Worth; the mode setter declares no push",
+    /openWorkspace === NET_WORTH_LENS_ID\s*\? \{ metric: serializeWealthMode\(wealthMode\)/.test(navSrc) &&
+      !/historyIntent/.test(navSrc.match(/const handleModeChange = useCallback\([\s\S]*?\}, \[\]\);/)?.[0] ?? "historyIntent"));
 
   // Responsive: ONE Total · Assets · Debt control per width.
   const ww = read("components", "space", "widgets", "wealth", "WealthWorkspace.tsx");

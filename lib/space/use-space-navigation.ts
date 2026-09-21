@@ -246,14 +246,20 @@ export interface SpaceNavigation {
   initialAccountFilter: string | null;
   /** Resolve + apply the initial tab ONCE, from the URL / sections. */
   applyInitialTab: (sections: DashboardSection[]) => void;
+  /** Open a workspace (from its parent link) on its default view — PUSH when
+   *  it is a different workspace, REPLACE when it is the open one. */
+  openWorkspaceDefault: (id: string) => void;
 }
 
 export function useSpaceNavigation({
   category,
   availablePerspectives,
 }: UseSpaceNavigationArgs): SpaceNavigation {
-  const [activeTab, setActiveTab] = useState("");
-  const [selectedPerspectiveId, setSelectedPerspectiveId] = useState<string | null>(null);
+  // Raw state setters are for SYSTEM writes (URL hydration, popstate, initial
+  // resolution). The user-facing setters returned below wrap them and DECLARE
+  // navigation (see `historyIntent`).
+  const [activeTab, setActiveTabState] = useState("");
+  const [selectedPerspectiveId, setSelectedPerspectiveIdState] = useState<string | null>(null);
   const [wealthMode, setWealthMode] = useState<WealthMode>(DEFAULT_WEALTH_MODE);
   const [marketsMode, setMarketsMode] = useState<MarketsMode>(DEFAULT_MARKETS_MODE);
   const [assetsSlice, setAssetsSlice] = useState<AssetsSlice>(DEFAULT_ASSETS_SLICE);
@@ -266,6 +272,32 @@ export function useSpaceNavigation({
   //    re-hydrate through spaceUrl.subscribe. Every commit preserves unrelated
   //    params, so no two writers clobber each other.
   const spaceUrl = useSpaceUrl();
+
+  // ── HISTORY INTENT — declared by the entry point, never inferred ────────────
+  // The Space's browser-history contract:
+  //   • WORKSPACE / rail-tab NAVIGATION by the user  → PUSH (a Back/Forward step)
+  //   • a workspace's own VIEW (Net Worth Total·Assets·Debt + Assets slice,
+  //     Markets Portfolio…Watchlist)                 → REPLACE (refines the entry)
+  //   • SYSTEM writes — first hydration, canonicalization of an invalid/legacy
+  //     param, popstate re-sync                       → REPLACE / no write
+  // The user-facing navigation setters set this to "push" when they CHANGE
+  // something; the URL writer below consumes it (one write per render) and
+  // resets it. There is no "first real write replaces" rule any more — that
+  // heuristic conflated canonicalization with the user's first navigation, so
+  // the first workspace switch after a load erased the page it came from.
+  const historyIntent = useRef<"push" | "replace">("replace");
+  const setActiveTab = useCallback((tab: string) => {
+    setActiveTabState((prev) => {
+      if (prev !== tab) historyIntent.current = "push";
+      return tab;
+    });
+  }, []);
+  const setSelectedPerspectiveId = useCallback((id: string | null) => {
+    setSelectedPerspectiveIdState((prev) => {
+      if (prev !== id) historyIntent.current = "push";
+      return id;
+    });
+  }, []);
 
   // M3-Reset — NET WORTH SUBSUMES WEALTH. On Overview the RENDERED lens defaults to
   // "wealth" when no other lens is engaged; selectedPerspectiveId stays the clean
@@ -289,33 +321,64 @@ export function useSpaceNavigation({
   const activePerspectiveId =
     activeTab === "OVERVIEW" ? (selectedAvailableId ?? (wealthAvailable ? "wealth" : null)) : null;
   // Net Worth ⇒ the summary (clear the engaged lens); any other id engages it.
+  // Both are USER navigation — they go through the intent-declaring setter.
   const selectLens = useCallback(
     (id: string) => setSelectedPerspectiveId(id === NET_WORTH_LENS_ID ? null : id),
-    [],
+    [setSelectedPerspectiveId],
   );
-  const switchLens = useCallback((id: string) => setSelectedPerspectiveId(id), []);
+  const switchLens = useCallback((id: string) => setSelectedPerspectiveId(id), [setSelectedPerspectiveId]);
   // Highlight the engaged non-default lens, else "Net Worth" (the default).
   const activeLensId = selectedPerspectiveId ?? NET_WORTH_LENS_ID;
 
-  // ── URL-backed tab state (write) — mirror activeTab (+ engaged lens) into
-  //    ?tab=…&perspective=…. First sync canonicalizes with replace (a legacy URL
-  //    self-heals); later user changes push so back/forward works. The perspective
-  //    param is written only on OVERVIEW when a non-default lens is engaged.
-  const urlInitDone = useRef(false);
+  // ── THE URL writer — mirrors the navigation state into ONE history write ────
+  //    ?tab= + ?perspective= (written only on OVERVIEW for a non-default lens) +
+  //    the OPEN workspace's own view params (Net Worth: ?metric= + ?slice=;
+  //    Markets: ?view=). Every state change a single user action makes lands in
+  //    ONE commit with that action's declared intent — so a parent click that
+  //    opens a workspace on its default view is exactly one PUSH, never a
+  //    replace of the source entry followed by a push. Other workspaces' params
+  //    are left as they are (they are ignored where they don't apply).
+  const openWorkspace = openWorkspaceId(activeTab, activePerspectiveId);
   useEffect(() => {
     if (!activeTab || !URL_SYNCED_TABS.has(activeTab)) return;
-    const wrote = spaceUrl.commit(
+    const history = historyIntent.current;
+    historyIntent.current = "replace";
+    spaceUrl.commit(
       {
         tab: activeTab.toLowerCase(),
         perspective:
           activeTab === "OVERVIEW" && selectedPerspectiveId
             ? perspectiveIdToSlug(selectedPerspectiveId)
             : null,
+        ...(openWorkspace === NET_WORTH_LENS_ID
+          ? { metric: serializeWealthMode(wealthMode), slice: wealthMode === "assets" ? serializeAssetsSlice(assetsSlice) : null }
+          : {}),
+        ...(openWorkspace === MARKETS_LENS_ID ? { [MARKETS_VIEW_PARAM]: serializeMarketsMode(marketsMode) } : {}),
       },
-      { history: urlInitDone.current ? "push" : "replace" },
+      { history },
     );
-    if (wrote) urlInitDone.current = true;
-  }, [activeTab, selectedPerspectiveId, spaceUrl]);
+  }, [activeTab, selectedPerspectiveId, openWorkspace, wealthMode, assetsSlice, marketsMode, spaceUrl]);
+
+  /**
+   * Open a workspace from its PARENT link, on its DEFAULT view — the place its
+   * href goes (Net Worth ≡ Total, Markets ≡ Portfolio). Moving to a DIFFERENT
+   * workspace is navigation (PUSH); re-clicking the open one resets its view
+   * in place (REPLACE, like any view change). One write either way.
+   */
+  const openWorkspaceDefault = useCallback(
+    (id: string) => {
+      historyIntent.current = id !== openWorkspace ? "push" : "replace";
+      setActiveTabState("OVERVIEW");
+      setSelectedPerspectiveIdState(id === NET_WORTH_LENS_ID ? null : id);
+      if (id === NET_WORTH_LENS_ID) {
+        setWealthMode(DEFAULT_WEALTH_MODE);
+        setAssetsSlice(DEFAULT_ASSETS_SLICE);
+        setWealthFocus(null);
+      }
+      if (id === MARKETS_LENS_ID) setMarketsMode(DEFAULT_MARKETS_MODE);
+    },
+    [openWorkspace],
+  );
 
   // OVERVIEW-CONSOLIDATION — a legacy peer-lens link canonicalises to the mode
   // it now lives in. Applied from the URL read (mount + back/forward) below.
@@ -333,15 +396,19 @@ export function useSpaceNavigation({
   }, [spaceUrl]);
 
   // ── URL-backed tab state (read: browser back/forward) ───────────────────────
+  //    The URL is the authority on traversal: state is rebuilt FROM it with the
+  //    raw (system) setters, so the writer finds the URL already in sync and
+  //    writes nothing — Back/Forward never creates or rewrites an entry.
   useEffect(
     () =>
       spaceUrl.subscribe(() => {
+        historyIntent.current = "replace";
         const { tab, perspective, legacy } = readUrlTabState();
         // Set unconditionally: navigating BACK to a summary URL (no perspective)
         // must clear an engaged lens, not leave the previous one stuck.
-        setSelectedPerspectiveId(perspective);
+        setSelectedPerspectiveIdState(perspective);
         applyLegacy(legacy);
-        if (tab) setActiveTab(tab);
+        if (tab) setActiveTabState(tab);
       }),
     [spaceUrl, applyLegacy],
   );
@@ -374,37 +441,21 @@ export function useSpaceNavigation({
     syncFromUrl();
     return spaceUrl.subscribe(syncFromUrl);
   }, [spaceUrl, applyLegacy]);
-  const handleModeChange = useCallback(
-    (m: WealthMode) => {
-      setWealthMode(m);
-      setWealthFocus(null);
-      // A view toggle → always replace (never a history entry); the default clears
-      // the param. Leaving Assets also clears the slice (it has no meaning elsewhere).
-      spaceUrl.commit(
-        { metric: serializeWealthMode(m), ...(m !== "assets" ? { slice: null } : {}) },
-        { history: "replace" },
-      );
-      if (m !== "assets") setAssetsSlice(DEFAULT_ASSETS_SLICE);
-    },
-    [spaceUrl],
-  );
-  // The Markets view — the same discipline as the Net Worth subject: a view
-  // toggle REPLACES (never a history entry), and the default clears the param.
-  const handleMarketsModeChange = useCallback(
-    (m: MarketsMode) => {
-      setMarketsMode(m);
-      spaceUrl.commit({ [MARKETS_VIEW_PARAM]: serializeMarketsMode(m) }, { history: "replace" });
-    },
-    [spaceUrl],
-  );
-  const handleSliceChange = useCallback(
-    (sl: AssetsSlice) => {
-      setAssetsSlice(sl);
-      setWealthFocus(null);
-      spaceUrl.commit({ slice: serializeAssetsSlice(sl) }, { history: "replace" });
-    },
-    [spaceUrl],
-  );
+  // VIEW changes inside a workspace — state only; the URL writer mirrors them
+  // with the default intent, REPLACE (a view refines the workspace's entry,
+  // never a history step). The default view writes no param; leaving Assets
+  // also resets the slice (it has no meaning elsewhere).
+  const handleModeChange = useCallback((m: WealthMode) => {
+    setWealthMode(m);
+    setWealthFocus(null);
+    if (m !== "assets") setAssetsSlice(DEFAULT_ASSETS_SLICE);
+  }, []);
+  // The Markets view — the same discipline as the Net Worth subject.
+  const handleMarketsModeChange = useCallback((m: MarketsMode) => setMarketsMode(m), []);
+  const handleSliceChange = useCallback((sl: AssetsSlice) => {
+    setAssetsSlice(sl);
+    setWealthFocus(null);
+  }, []);
 
   // ── Initial-tab resolution (called ONCE by the host when data lands) ─────────
   // URL wins, then the section-derived default: a trend-hero Space opens on
@@ -430,9 +481,11 @@ export function useSpaceNavigation({
           ? "OVERVIEW"
           : TAB_ORDER.find((t) => t !== "ACTIVITY" && enabledTabs.has(t)) ??
             (enabledTabs.has("ACTIVITY") ? "ACTIVITY" : "OVERVIEW"));
-      if (url.perspective) setSelectedPerspectiveId(url.perspective);
+      // SYSTEM resolution — raw setters, so the first write canonicalizes the
+      // loaded URL in place (REPLACE) instead of pushing a duplicate entry.
+      if (url.perspective) setSelectedPerspectiveIdState(url.perspective);
       applyLegacy(url.legacy);
-      setActiveTab(nextTab);
+      setActiveTabState(nextTab);
     },
     [category, applyLegacy],
   );
@@ -455,5 +508,6 @@ export function useSpaceNavigation({
     wealthFocus,
     initialAccountFilter,
     applyInitialTab,
+    openWorkspaceDefault,
   };
 }

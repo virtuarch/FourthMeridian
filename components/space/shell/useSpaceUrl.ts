@@ -43,11 +43,12 @@ export interface SpaceUrlSeam {
   /** The current query string (no leading "?"), "" on the server. */
   getSearch(): string;
   /**
-   * Canonically write `updates`, preserving all unrelated params. `history:
-   * "replace"` canonicalizes/normalizes without a history entry; `"push"`
-   * records a Back/Forward entry. Returns `false` (no write) when the URL would
-   * not change — callers use this to keep the "first write replaces, later
-   * writes push" invariant.
+   * Canonically write `updates`, preserving all unrelated params. The caller
+   * DECLARES the history intent — it is never inferred here:
+   *   `"push"`    — a user NAVIGATION (a new Back/Forward entry);
+   *   `"replace"` — a refinement of the current entry, or a SYSTEM write
+   *                 (hydration, canonicalization, legacy-alias repair).
+   * Returns `false` (no write) when the URL would not change (e.g. after popstate).
    */
   commit(updates: SpaceUrlUpdate, opts: { history: "push" | "replace" }): boolean;
   /** Subscribe to Back/Forward; returns an unsubscribe. One real listener. */
@@ -67,8 +68,16 @@ export function useSpaceUrl(): SpaceUrlSeam {
       const next = nextQs ? `${window.location.pathname}?${nextQs}` : window.location.pathname;
       const current = `${window.location.pathname}${window.location.search}`;
       if (next === current) return false; // already in sync (incl. after popstate)
-      if (opts.history === "replace") window.history.replaceState(window.history.state, "", next);
-      else window.history.pushState(window.history.state, "", next);
+      // NEXT.JS INTEGRATION — pass NO state. Next's app router patches
+      // pushState/replaceState: for a write WITHOUT its private `__NA` marker it
+      // copies its own entry state in AND syncs its router to the new URL
+      // (ACTION_RESTORE). Passing `window.history.state` (which carries `__NA`)
+      // made every Space write look like Next's own, so the sync was SKIPPED:
+      // the router kept the page-load URL as its canonical URL and rewrote the
+      // entry back to it (replaceState) on its next commit — the Space URL
+      // silently reverted, and Back/Forward walked corrupted entries.
+      if (opts.history === "replace") window.history.replaceState(null, "", next);
+      else window.history.pushState(null, "", next);
       return true;
     },
     [],
