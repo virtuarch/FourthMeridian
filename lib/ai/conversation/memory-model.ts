@@ -594,45 +594,101 @@ export function turnEvidence(userTexts: readonly string[], messages: readonly un
 
 const EPS = 1e-9;
 
-/** The unit a stored value was written at: its decimals, else its trailing zeros. */
-function writtenUnit(v: number): number {
-  if (!Number.isInteger(v)) return twoDecimals(v * 10) ? 0.1 : 0.01;
-  const s = String(Math.abs(v));
-  return 10 ** Math.min(s.match(/0+$/)?.[0].length ?? 0, Math.max(s.length - 1, 0));
-}
-
-/** Counts, not amounts: "6 months", "3 years", "50%". */
-const COUNT_UNIT = /^\s*(?:-\s*)?(?:months?|mos?|years?|yrs?|weeks?|wks?|days?|x|times|percent|%)(?![a-z])/i;
-
-interface StatedToken { value: number; unit: number; strict: boolean }
+/**
+ * How close a stored figure must be to what the user said: half a cent. EXACTLY,
+ * not "a faithful rounding of".
+ *
+ * ⚠️ THE TOLERANCE RAN THE WRONG WAY, AND IT REOPENED THE DEFECT THE GATE EXISTS
+ * FOR. The first implementation reused the Brief licence's rule,
+ * `min(writtenUnit, max(1, 3%))`. That rule is right for the licence, which asks
+ * whether ROUNDED PROSE is a fair rendering of a PRECISE figure code computed.
+ * Memory asks the mirror question — and the mirror of "may prose round our
+ * figure?" is not "may a stored figure be a rounding of what was said?", it is
+ * "did they say THIS figure?". Run the wrong way round, a user loosely echoing
+ * our own number licensed our number, to the cent: "so about 270k?" admitted the
+ * projection's 271,433.12 as their goal, "$300k" admitted 295,000, "1.2m"
+ * admitted 1,230,000, and "so keep about 36k?" admitted a derived $35,739.18
+ * cash floor — the original frozen-dollar defect, reached through an echo. A
+ * stored figure may be no more precise than the words it came from: the model
+ * stores 270000, or asks.
+ */
+const SAID_EXACTLY = 0.005;
 
 /**
- * The amounts a user's own words state, DIGITS ONLY.
- *
- * `strict` tokens are the licence's own definition of a figure in prose (a
- * currency mark, a K/M suffix, grouping, decimals, or a bare integer ≥ 1,000
- * that is not a year). Bare smaller integers are kept as non-strict tokens —
- * "a bike for 800" — unless a count unit follows them, which is what stops the
- * 6 of "6 months" licensing `amount: 6`.
+ * The number words a COUNT may be spoken in. Closed, and bounded by the type it
+ * serves (`Months`: 0 < n ≤ 120). Months are the one quantity users habitually
+ * say in words — "keep six months of expenses" — so digits alone would refuse
+ * the product's central sentence.
  */
-function statedTokens(texts: readonly string[]): StatedToken[] {
-  const out: StatedToken[] = [];
-  for (const text of texts) {
-    for (const f of extractFigures(text)) {
-      if (f.kind !== 'PERCENT') out.push({ value: f.value, unit: f.unit, strict: true });
-    }
-    const bare = text.replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ');
-    for (const m of bare.matchAll(/(?<![\w.,$])(\d{1,3})(?![\w]|[.,]\d)/g)) {
-      if (COUNT_UNIT.test(bare.slice((m.index ?? 0) + m[0].length))) continue;
-      out.push({ value: Number(m[1]), unit: 1, strict: false });
-    }
-  }
-  return out;
+const COUNT_WORDS: Record<string, number> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9,
+  ten: 10, eleven: 11, twelve: 12, fifteen: 15, eighteen: 18, twenty: 20,
+  'twenty-four': 24, 'twenty four': 24, thirty: 30, 'thirty-six': 36, 'thirty six': 36,
+  forty: 40, 'forty-eight': 48, 'forty eight': 48, sixty: 60,
+};
+
+/** The shares a user states in words. "All of it" is not here — see `userStated`. */
+const FRACTION_WORDS: Record<string, number> = {
+  half: 0.5, quarter: 0.25, third: 1 / 3, 'two thirds': 2 / 3, 'three quarters': 0.75,
+};
+
+/**
+ * The user's words with everything that is not a stated amount blanked out.
+ *
+ * ⚠️ A FRAGMENT OF A NUMBER IS NOT A NUMBER. Scanned raw, "5 000" offered a `5`
+ * (stored as $5 a month) and "06/30/2027" offered a `30` (stored as a $30 planned
+ * expense). A digit group belonging to a larger number or to a date licenses
+ * NOTHING — neither the fragment nor the whole, because which was meant is a
+ * guess, and a guess is what this gate refuses to make.
+ */
+function maskNonAmounts(text: string): string {
+  return text
+    .replace(/\b\d{1,4}[/-]\d{1,2}(?:[/-]\d{1,4})?\b/g, ' ')  // 06/30/2027 · 2027-06-30 · 6-12
+    .replace(/\b\d{1,2}:\d{2}\b/g, ' ')                        // clock times
+    .replace(/\b\d{1,3}(?:\s+\d{3})+\b/g, ' ');                // "5 000"
 }
 
-function licensedBy(v: number, tokens: StatedToken[], strictOnly: boolean): boolean {
-  return tokens.some((t) => (!strictOnly || t.strict)
-    && Math.abs(v - t.value) < Math.min(t.unit, Math.max(1, 0.03 * v)) + EPS);
+/** What the user's own words state, by the kind of quantity each is. */
+interface StatedAmounts { money: number[]; counts: number[]; fractions: number[]; percents: number[] }
+
+const matchesWord = (words: string, word: string) => new RegExp(`(?<![a-z])${word}(?![a-z])`).test(words);
+
+/**
+ * The amounts in the user's own turns — digits, plus a closed word list for the
+ * two quantities people say in words rather than figures: how many months, and
+ * how much of the rest.
+ *
+ * ⚠️ MONEY IS THE LICENCE'S DEFINITION OF A FIGURE AND NOTHING ELSE: a currency
+ * mark, a k/m suffix, thousands grouping, decimals, a spelled currency word, or a
+ * bare integer of 1,000 or more that is not a year (`extractFigures`). A bare
+ * SMALL integer is a count — "keep 6 months", "make it 9", "3 cards" — and the
+ * V1 corpus is what that rule is for: every coerced row in it was a count
+ * standing in a money field, and after a months statement "make it 9" still
+ * licensed `monthlySpending: 9`. The cost is that "a bike for 800" must be said
+ * as "$800" or "800 dollars"; the refusal says exactly that, and costs one turn.
+ */
+function statedAmounts(texts: readonly string[]): StatedAmounts {
+  const out: StatedAmounts = { money: [], counts: [], fractions: [], percents: [] };
+  for (const raw of texts) {
+    const text = maskNonAmounts(raw);
+    for (const f of extractFigures(text)) {
+      if (f.kind === 'PERCENT') { out.percents.push(f.value); out.fractions.push(f.value / 100); }
+      else out.money.push(f.value);
+    }
+    // A figure the licence cannot see, because it carries no mark of its own.
+    for (const m of text.matchAll(/(\d[\d,]*(?:\.\d+)?)\s*(?:dollars?|usd|bucks)\b/gi)) {
+      const n = Number(m[1].replace(/,/g, ''));
+      if (Number.isFinite(n)) out.money.push(n);
+    }
+    for (const m of text.matchAll(/(?<![\w.,$])(\d{1,3})(?![\w]|[.,]\d)/g)) out.counts.push(Number(m[1]));
+    for (const m of text.matchAll(/(?<![\w.,$])(0?\.\d+)(?![\w])/g)) out.fractions.push(Number(m[1]));
+    const words = raw.toLowerCase();
+    for (const [word, n] of Object.entries(COUNT_WORDS)) if (matchesWord(words, word)) out.counts.push(n);
+    for (const [word, n] of Object.entries(FRACTION_WORDS)) if (matchesWord(words, word)) out.fractions.push(n);
+  }
+  // "Assume 7" answers "what return should I plan on?" as surely as "7%" does.
+  out.percents.push(...out.counts);
+  return out;
 }
 
 /** Every number in what WE produced: JSON numbers, JSON inside strings, and figures in prose. */
@@ -656,10 +712,61 @@ export function producedNumbers(ours: readonly unknown[]): number[] {
   return out;
 }
 
-/** Is `v` a faithful rounding of something we produced, at the precision `v` was written at? */
+/** The unit a stored value was written at: its decimals, else its trailing zeros. */
+function writtenUnit(v: number): number {
+  if (!Number.isInteger(v)) return twoDecimals(v * 10) ? 0.1 : 0.01;
+  const s = String(Math.abs(v));
+  return 10 ** Math.min(s.match(/0+$/)?.[0].length ?? 0, Math.max(s.length - 1, 0));
+}
+
+/**
+ * Is `v` a faithful rounding of something we produced?
+ *
+ * ⚠️ THIS ONE MAY BE LOOSE, BECAUSE IT ONLY CHOOSES THE SENTENCE. A value reaches
+ * it having already failed to be licensed, so the question is no longer whether
+ * to refuse but whether to say "that is our figure" or "nobody said that".
+ */
 function producedByUs(v: number, produced: readonly number[]): boolean {
   const unit = writtenUnit(v);
   return produced.some((o) => Math.abs(v - o) < Math.min(unit, Math.max(1, 0.03 * o)) + EPS);
+}
+
+/** The numeric types a value must be STATED in, not merely be well-formed as. */
+const GATED_TYPES: readonly FieldType[] = ['Money', 'Months', 'Fraction', 'Percent'];
+
+/** Did the user state `v`, read as a `type`? Exactly — to half a cent. */
+function userStated(type: FieldType, v: number, said: StatedAmounts): boolean {
+  const near = (xs: readonly number[]) => xs.some((x) => Math.abs(v - x) < SAID_EXACTLY);
+  switch (type) {
+    case 'Money':   return near(said.money);
+    case 'Months':  return near(said.counts);
+    case 'Percent': return near(said.percents);
+    // ⚠️ ONE SHARE NEEDS NO FIGURE: ALL OF IT. "…and then invest" says where the
+    // rest goes while holding nothing back, and the contract documents that share
+    // as `1` ("the rest" = 1) — it is the absence of a share, not a number we
+    // could have produced. Every other share is a figure and is held to the words.
+    case 'Fraction': return v === 1 || near(said.fractions);
+    default: return true;
+  }
+}
+
+/** What to tell a caller whose figure nobody stated. */
+function notStated(type: FieldType, field: string, v: number): string {
+  switch (type) {
+    case 'Months':
+      return `the user has not said ${v} in this conversation. \`${field}\` is a number of months, and memory keeps the `
+        + 'number they gave — never a figure we worked out, such as how many months their cash currently covers';
+    case 'Fraction':
+      return `the user has not stated a share of ${v}. Record the share they said ("half" is 0.5, "the rest" is 1), or leave `
+        + 'the clause out — a share we calculated is not a rule they set';
+    case 'Percent':
+      return `the user has not stated ${v}% in this conversation. A rate they asked to plan with is theirs to say; an observed `
+        + 'or computed rate is not a planning figure';
+    default:
+      return `the user has not stated ${v} as an amount in this conversation. Memory holds money only in figures they gave — `
+        + 'with a currency mark, a k/m suffix, thousands or decimals ("$800", "800 dollars", "$5k"), never a bare small number, '
+        + 'which is a count. If the number is theirs, ask them to say it; if what they said was a multiple or a rule, record that instead';
+  }
 }
 
 export interface AdmitArgs {
@@ -668,7 +775,7 @@ export interface AdmitArgs {
   supplied: Fields;
   /** The current version's fields. A supplied value equal to one of these is inherited, not new. */
   current?: Fields | null;
-  /** Null when the write path carries no conversation evidence: a money value then cannot be checked. */
+  /** Null when the write path carries no conversation evidence: a figure then cannot be checked. */
   evidence: TurnEvidence | null;
   /** The conversation's clock, YYYY-MM-DD. */
   asOf: string;
@@ -680,64 +787,59 @@ export interface AdmitArgs {
  * value equal to the current version's, so an amendment cannot re-gate what it
  * inherited.
  *
- * ⚠️ THE GATE: MEMORY ADMITS MONEY ONLY IN FIGURES THE USER STATED, IN DIGITS.
- * Every new `Money` value needs a matching figure in the conversation's user
- * turns; what we produced — the orientation's balances, the scenario envelope,
- * our prose, this turn's tool results — licenses nothing, and only sharpens the
- * refusal ("a figure we produced" rather than "nobody said it"). A Money field
- * with a relational sibling (`liquidFloor` ↔ `liquidFloorMonthsOfExpenses`) is
- * held to the strict reading of a figure, because its dollars are otherwise one
- * month's evaluation of the multiplier the user actually said.
+ * ⚠️ THE GATE: MEMORY ADMITS A FIGURE ONLY IN THE TERMS THE USER STATED IT.
+ * Every new money amount, month count, share and rate must appear in the
+ * conversation's user turns, read as that kind of quantity and matched exactly.
+ * What we produced — the orientation's balances, the scenario envelope, our own
+ * prose, this turn's tool results — licenses nothing; it only sharpens the
+ * refusal ("a figure we produced" rather than "nobody said it").
  *
- * ⚠️ WHY POSITIVE EVIDENCE EVERYWHERE, NOT ONLY ON REFUSAL. The design's first
- * gate refused only a value found among OUR figures. Replayed over the 201
+ * ⚠️ WHY POSITIVE EVIDENCE, NOT "REFUSE WHAT WE RECOGNISE". The design's first
+ * gate refused only a value matching one of OUR figures. Replayed over the 201
  * recorded calls it still stored `amount: 6` for "I want six months cash" and
- * `amount: 9` for "use nine": a month count the user spoke in words is found
- * nowhere, so nothing refused it. The cost is a user who says "a million" in
- * words being asked for the number once. That is recoverable; a month count
- * rendered as dollars is not.
+ * `amount: 9` for "use nine": a count spoken in words is found nowhere, so
+ * nothing refused it. And the types beyond money were not gated at all, so our
+ * own `coverageMonths: 3.1` and a computed `annualReturnPct: 12.34` were
+ * admissible as the user's rule. The cost is a user who says "a million" in
+ * words being asked for the number once; that is recoverable, and a figure we
+ * invented for them is not.
  */
 export function admitWrite(a: AdmitArgs): Verdict {
   const spec = FIELDS[a.cls];
-  let tokens: StatedToken[] | null = null;
+  let said: StatedAmounts | null = null;
   let produced: number[] | null = null;
 
   for (const [field, value] of Object.entries(a.supplied)) {
     if (value === undefined || (a.current && same(a.current[field], value))) continue;
+    const type = spec[field];
 
-    if (spec[field] === 'ISODate' && (field === 'byDate' || field === 'to')) {
+    if (type === 'ISODate' && (field === 'byDate' || field === 'to')) {
       const day = isoDay(value);
       if (day && day <= a.asOf.slice(0, 10)) {
         return { ok: false, field, reason: `\`${field}\` ${day} is not in the future (today is ${a.asOf.slice(0, 10)}). Leave the date out if the user gave none` };
       }
     }
-    if (spec[field] !== 'Money' || !isNumber(value) || value === 0) continue;
+    if (!GATED_TYPES.includes(type) || !isNumber(value) || value === 0) continue;
 
     if (!a.evidence) {
-      return { ok: false, field, reason: 'this write path has no conversation evidence, so a money value cannot be checked against what the user said' };
+      return { ok: false, field, reason: 'this write path has no conversation evidence, so a figure cannot be checked against what the user said' };
     }
-    tokens ??= statedTokens(a.evidence.userTexts);
-    const sibling = RELATIONAL_SIBLING[field];
-    if (sibling) {
-      if (!licensedBy(value, tokens, true)) {
-        return { ok: false, field,
-          reason: `the user did not state ${value} in dollars. A floor they gave as months of expenses is \`${sibling}\` — `
-            + 'the multiplier, never the dollars it works out to today. Use `' + field + '` only for a dollar level they said themselves' };
-      }
-      continue;
-    }
-    if (licensedBy(value, tokens, false)) continue;
+    said ??= statedAmounts(a.evidence.userTexts);
+    if (userStated(type, value, said)) continue;
+
     produced ??= producedNumbers(a.evidence.ours());
+    const sibling = RELATIONAL_SIBLING[field];
     return { ok: false, field,
-      reason: producedByUs(value, produced)
-        ? `${value} is a figure we produced — it is in this conversation's results or our own prose, and the user never stated it. `
-          + 'A figure we computed is not theirs to have remembered. Record only a number they said; if they want this one, ask them to say it'
-        : `the user has not stated ${value} as an amount in this conversation. Memory holds money only in figures they gave, in digits. `
-          + 'If the number is theirs, ask them to say it; if what they said was a multiple or a rule, record that instead — never a number standing in for it' };
+      reason: sibling
+        ? `the user did not state ${value} in dollars. A floor they gave as months of expenses is \`${sibling}\` — `
+          + `the multiplier, never the dollars it works out to today. Use \`${field}\` only for a dollar level they said themselves`
+        : producedByUs(value, produced)
+          ? `${value} is a figure we produced — it is in this conversation's results or our own prose, and the user never stated it. `
+            + 'A figure we computed is not theirs to have remembered. Record only a number they said; if they want this one, ask them to say it'
+          : notStated(type, field, value) };
   }
   return { ok: true };
 }
-
 // ── Refusals that teach ──────────────────────────────────────────────────────
 
 export const EXAMPLES: Record<StatedClass, Record<string, unknown>> = {

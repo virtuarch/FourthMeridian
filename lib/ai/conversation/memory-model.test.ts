@@ -187,7 +187,10 @@ console.log('6. admitWrite — money only in figures the user stated');
   check('"$1M" licenses 1000000', admit('GOAL', { targetMetric: 'netWorth', targetAmount: 1000000 }, ev(['I want $1M by 2030'])).ok);
   check('"5,000" and a bare "20000" license', admit('BASELINE', { monthlySpending: 5000 }, ev(['plan with 5,000 a month'])).ok
     && admit('PLANNED_EXPENSE', { label: 'car', amount: 20000 }, ev(['a car for 20000'])).ok);
-  check('a bare small amount licenses ("a bike for 800")', admit('PLANNED_EXPENSE', { label: 'bike', amount: 800 }, ev(['a bike for 800'])).ok);
+  check('a sub-$1,000 amount licenses when it is said as money', admit('PLANNED_EXPENSE', { label: 'bike', amount: 800 }, ev(['a bike for $800'])).ok
+    && admit('PLANNED_EXPENSE', { label: 'bike', amount: 800 }, ev(['a bike, 800 dollars'])).ok);
+  check('…and a BARE small integer does not: it is a count, not an amount',
+    !admit('PLANNED_EXPENSE', { label: 'bike', amount: 800 }, ev(['a bike for 800'])).ok);
   check('the 6 of "6 months" licenses NO money', !admit('PLANNED_EXPENSE', { label: 'buffer', amount: 6 }, ev(['keep 6 months of expenses'])).ok);
   check('a month count spoken in words licenses no money (the replayed `amount: 6`)',
     !admit('PLANNED_EXPENSE', { label: 'months-of-expenses', amount: 6 }, ev(['Remember that I want six months cash.'])).ok);
@@ -200,12 +203,100 @@ console.log('6. admitWrite — money only in figures the user stated');
   check('R2: a dollar floor the user never stated is refused, naming the months field', !floor.ok && /liquidFloorMonthsOfExpenses/.test(floor.reason));
   check('R2: "keep $50k liquid" is a dollar floor', admit('RULE', { liquidFloor: 50000 }, ev(['keep $50k liquid, invest the rest'])).ok);
   check('R2: a bare small integer is not dollar evidence for a floor', !admit('RULE', { liquidFloor: 500 }, ev(['keep 500'])).ok);
-  check('non-money fields need no evidence', admit('RULE', RULE3, ev(['Keep six months of expenses…'])).ok && admit('BASELINE', { annualReturnPct: 7 }, ev(['assume seven percent'])).ok);
-  check('no conversation evidence ⇒ a money value cannot be checked (fails closed)', !admit('BASELINE', { monthlySpending: 5000 }, null).ok && admit('RULE', RULE3, null).ok);
+  check('a month count and a share the user did state are admitted', admit('RULE', RULE3, ev(['Keep six months of expenses…'])).ok
+    && admit('BASELINE', { annualReturnPct: 7 }, ev(['assume seven percent'])).ok);
+  check('no conversation evidence ⇒ NO figure can be checked (fails closed), money or count',
+    !admit('BASELINE', { monthlySpending: 5000 }, null).ok && !admit('RULE', RULE3, null).ok);
   check('R5: an amend never re-gates an inherited value', admit('GOAL', { targetAmount: 1000000, byDate: '2031-12-31' }, ev(['make it 2031']), { targetMetric: 'netWorth', targetAmount: 1000000, byDate: '2030-12-31' }).ok);
   check('R5: a field the call did not supply is not checked', admit('GOAL', { byDate: '2031-12-31' }, null, { targetMetric: 'netWorth', targetAmount: 1e6 }).ok);
   check('a new byDate must be in the future', !admit('GOAL', { byDate: '2026-01-01' }, ev([''])).ok && !admit('GOAL', { byDate: TODAY }, ev([''])).ok);
   check('debt-free (0) needs no figure', admit('GOAL', { targetMetric: 'debt', targetAmount: 0 }, ev(['I want to be debt-free'])).ok);
+}
+
+// ══ 6a. A STORED FIGURE IS NO MORE PRECISE THAN THE WORDS IT CAME FROM ════════
+//
+// ⚠️ EVERY CASE HERE WAS ADMITTED BY THE FIRST IMPLEMENTATION, and each is the
+// original frozen-dollar defect reached through a loose echo. The gate had
+// reused the Brief licence's tolerance — `min(writtenUnit, max(1, 3%))` — which
+// is the right question asked backwards: the licence asks whether ROUNDED PROSE
+// fairly renders a PRECISE figure, and memory must ask whether THIS figure was
+// said. "so about 270k?" is not a statement of 271,433.12.
+console.log('6a. the rounding tolerance ran the wrong way (blocker M1)');
+{
+  const ev = (userTexts: string[], ours: unknown[] = []): TurnEvidence => ({ userTexts, ours: () => ours });
+  const admit = (cls: StatedClass, supplied: Fields, e: TurnEvidence) =>
+    admitWrite({ cls, supplied, current: null, evidence: e, asOf: TODAY });
+  const goal = (n: number) => ({ targetMetric: 'netWorth', targetAmount: n });
+
+  check('"so about 270k?" does NOT license the projection\'s 271,433.12',
+    !admit('GOAL', goal(271433.12), ev(['so about 270k? remember that'], ['{"netWorth":271433.12}'])).ok);
+  check('…and DOES license the 270,000 they said', admit('GOAL', goal(270000), ev(['so about 270k? remember that'])).ok);
+  check('"$300k" does not license 295,000', !admit('GOAL', goal(295000), ev(['make my goal $300k'], ['{"n":295000}'])).ok);
+  check('"1.2m" does not license 1,230,000, and does license 1,200,000',
+    !admit('GOAL', goal(1230000), ev(['aim for 1.2m'], ['{"n":1230000}'])).ok && admit('GOAL', goal(1200000), ev(['aim for 1.2m'])).ok);
+  check('"so keep about 36k?" does not license a derived $35,739.18 floor — the defect, through an echo',
+    !admit('RULE', { liquidFloor: 35739.18 }, ev(['so keep about 36k?'], ['{"floor":35739.18}'])).ok);
+  check('…and "keep about 36k" does license a 36,000 floor', admit('RULE', { liquidFloor: 36000 }, ev(['so keep about 36k?'])).ok);
+  check('a cent of drift is still not the figure', !admit('BASELINE', { monthlySpending: 5000.01 }, ev(['use $5,000.00 a month'])).ok);
+  check('…while the figure itself is, however it was written',
+    admit('BASELINE', { monthlySpending: 5000 }, ev(['use $5,000.00 a month'])).ok
+      && admit('BASELINE', { monthlySpending: 5000 }, ev(['use $5k a month'])).ok
+      && admit('BASELINE', { monthlySpending: 5000 }, ev(['use 5,000 a month'])).ok);
+
+  // A fragment of a number is not a number, and neither is the number it sits in.
+  check('"5 000" licenses no 5 (it was stored as $5 a month)', !admit('BASELINE', { monthlySpending: 5 }, ev(['I spend about 5 000 a month'])).ok);
+  check('…and licenses no 5,000 either: which was meant is a guess', !admit('BASELINE', { monthlySpending: 5000 }, ev(['I spend about 5 000 a month'])).ok);
+  check('"06/30/2027" licenses no 30 (it was stored as a $30 outlay)',
+    !admit('PLANNED_EXPENSE', { label: 'car', amount: 30 }, ev(['buy a car by 06/30/2027'])).ok);
+  check('…nor 6, nor the year', !admit('PLANNED_EXPENSE', { label: 'car', amount: 6 }, ev(['buy a car by 06/30/2027'])).ok
+    && !admit('GOAL', goal(2027), ev(['buy a car by 06/30/2027'])).ok);
+  check('an ISO date licenses none of its parts', !admit('PLANNED_EXPENSE', { label: 'car', amount: 30 }, ev(['by 2027-06-30'])).ok);
+
+  // The bare integer after a months statement — the original coercion, still open.
+  const afterMonths = ev(['keep 6 months of expenses', 'make it 9']);
+  check('"make it 9" after a months statement licenses no Money field',
+    !admit('BASELINE', { monthlySpending: 9 }, afterMonths).ok && !admit('GOAL', { targetMetric: 'liquid', targetAmount: 9 }, afterMonths).ok);
+  check('…and does license the month count it was', admit('RULE', { liquidFloorMonthsOfExpenses: 9 }, afterMonths).ok);
+}
+
+// ══ 6b. MONTHS, SHARES AND RATES ARE STATED TOO ══════════════════════════════
+//
+// ⚠️ ONLY MONEY WAS GATED, so our own figures were admissible as the user's rule
+// in every other unit: `coverageMonths: 3.1` (how long their cash lasts) as a
+// floor, a computed `annualReturnPct`, a computed savings rate as a share.
+console.log('6b. every numeric type is held to what the user said');
+{
+  const ev = (userTexts: string[], ours: unknown[] = []): TurnEvidence => ({ userTexts, ours: () => ours });
+  const admit = (cls: StatedClass, supplied: Fields, e: TurnEvidence) =>
+    admitWrite({ cls, supplied, current: null, evidence: e, asOf: TODAY });
+
+  check('our own coverageMonths is not their floor', (() => {
+    const r = admit('RULE', { liquidFloorMonthsOfExpenses: 3.1 }, ev(['how am I doing?'], ['{"coverageMonths":3.1}']));
+    return !r.ok && /we produced/.test(r.reason); })());
+  check('…and a month count they never said is refused in their own words', (() => {
+    const r = admit('RULE', { liquidFloorMonthsOfExpenses: 4 }, ev(['keep six months of expenses']));
+    return !r.ok && /number of months/.test(r.reason); })());
+  check('months in words and in digits are both theirs',
+    admit('RULE', { liquidFloorMonthsOfExpenses: 6 }, ev(['Keep six months of expenses in cash.'])).ok
+      && admit('RULE', { liquidFloorMonthsOfExpenses: 6 }, ev(['keep 6 months of expenses'])).ok
+      && admit('RULE', { liquidFloorMonthsOfExpenses: 24 }, ev(['keep twenty-four months of expenses'])).ok);
+  check('a computed rate is not a planning figure', !admit('BASELINE', { annualReturnPct: 12.34 }, ev(['plan for me'], ['{"pct":12.34}'])).ok);
+  check('…a stated one is, as a percent or as a plain number',
+    admit('BASELINE', { annualReturnPct: 7 }, ev(['assume 7% a year'])).ok
+      && admit('BASELINE', { annualReturnPct: 7 }, ev(['assume 7 a year'])).ok);
+  check('a computed share is not a rule', !admit('RULE', { surplusFraction: 0.6039 }, ev(['invest some of it'], ['{"savingsRate":0.6039}'])).ok);
+  check('…a stated share is, in digits, percent or words',
+    admit('RULE', { surplusFraction: 0.5, target: 'investments' }, ev(['invest half of what I save'])).ok
+      && admit('RULE', { surplusFraction: 0.5, target: 'investments' }, ev(['invest 50% of my surplus'])).ok
+      && admit('RULE', { surplusFraction: 0.25, target: 'investments' }, ev(['invest a quarter of it'])).ok);
+  // ⚠️ THE ONE SHARE THAT NEEDS NO FIGURE. "…then invest" says where the rest goes
+  // and holds nothing back; the contract documents that share as 1. Gating it would
+  // refuse the product's three-clause strategy, which is acceptance case 3.
+  check('"all of it" needs no figure, because it is the absence of a share',
+    admit('RULE', { liquidFloorMonthsOfExpenses: 6, fractionOfExcess: 1, target: ['highest_apr', 'investments'] },
+      ev(['Keep six months of expenses, pay my highest-interest cards first, then invest.'])).ok);
+  check('…but 0.9 of it is a figure, and must be said', !admit('RULE', { liquidFloorMonthsOfExpenses: 6, fractionOfExcess: 0.9 },
+    ev(['Keep six months of expenses, pay my cards first, then invest.'])).ok);
 }
 
 console.log('7. R1 — what the user said is passed in, never read off the transcript');
