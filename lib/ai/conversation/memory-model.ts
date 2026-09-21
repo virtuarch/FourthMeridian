@@ -760,6 +760,22 @@ function userStated(type: FieldType, v: number, said: StatedAmounts): boolean {
   }
 }
 
+/**
+ * Did the user's own words state this figure, as this kind of quantity?
+ *
+ * ⚠️ THE ONE PROVENANCE AUTHORITY, SHARED — not a second copy. The pending
+ * planning state (`pending-plan.ts`) holds conditions the user stated for a
+ * calculation that has not yet run, and a figure may enter it on exactly the terms
+ * a figure may enter durable memory: the user said THIS figure, to half a cent.
+ * A tool-derived number, a remembered number the user did not restate, and a loose
+ * echo of our own projection are refused by the same rule in both places, because
+ * two gates would drift and the looser one would become the laundering path.
+ */
+export type GatedFigure = 'Money' | 'Months' | 'Fraction' | 'Percent';
+export function userStatedFigure(type: GatedFigure, value: number, evidence: TurnEvidence): boolean {
+  return userStated(type, Math.abs(value), statedAmounts(evidence.userTexts));
+}
+
 /** What to tell a caller whose figure nobody stated. */
 function notStated(type: FieldType, field: string, v: number): string {
   switch (type) {
