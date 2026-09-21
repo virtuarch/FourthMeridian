@@ -837,6 +837,9 @@ export function SpaceDashboard({
               tabs={lensSelectorItems}
               activeTabId={activeLensId}
               onSelectTab={selectLens}
+              // lg+ the sidebar's Net Worth · Cash Flow IS the workspace switcher
+              // (published above); below lg there is no sidebar, so this row is.
+              tabsVisibility="belowLg"
             />
 
             {/* Row 4 — Perspective-specific controls slot. These stay

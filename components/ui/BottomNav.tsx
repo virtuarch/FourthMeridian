@@ -40,7 +40,7 @@ export function BottomNav() {
   const pathname = usePathname();
   return (
     <nav
-      aria-label="Sections"
+      aria-label="Global"
       className="fixed inset-x-0 bottom-0 z-40 border-t border-[var(--border-hairline)] lg:hidden"
       style={{
         background: "var(--glass-regular)",

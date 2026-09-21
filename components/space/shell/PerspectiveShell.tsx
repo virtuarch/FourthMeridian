@@ -67,6 +67,16 @@ interface Props {
   tabs:        PerspectiveTabItem[];
   activeTabId: string | null;
   onSelectTab: (id: string) => void;
+  /**
+   * Where the lens row is SHOWN. "always" (default) — every width. "belowLg" —
+   * only below the `lg` breakpoint, for a host whose desktop sidebar already is
+   * the workspace switcher (a customer Space: ContextualNavbar's Net Worth ·
+   * Cash Flow, `hidden … lg:block`). The exact complement of that breakpoint, so
+   * exactly one switcher shows at any width. Presentation only: the row stays
+   * mounted (its tab ids still label the host's tabpanel) and its selection
+   * logic is untouched.
+   */
+  tabsVisibility?: "always" | "belowLg";
 }
 
 export function PerspectiveShell(props: Props) {
@@ -116,7 +126,10 @@ export function PerspectiveShell(props: Props) {
           engaged and summary lens rows are visually identical. The former floating
           pill (FloatingNavWrapper) is dropped: the prototype's lens selector is
           in-flow, and loose chips must not float over the content. */}
-      <div className="flex justify-center px-1">
+      <div
+        data-lens-row
+        className={["flex justify-center px-1", props.tabsVisibility === "belowLg" ? "lg:hidden" : ""].join(" ").trim()}
+      >
         <PerspectiveTabs
           items={props.tabs}
           activeId={props.activeTabId}

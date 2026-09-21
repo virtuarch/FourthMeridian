@@ -18,7 +18,10 @@
  *   D. a plain click selects in place; a modified click is left to the browser;
  *   E. the rest of the sidebar is intact (site nav, identity, Leave Space);
  *   F. platform axis + mobile are unchanged; no duplicate destinations;
- *   G. the host wiring is navigation only.
+ *   G. the host wiring is navigation only;
+ *   H. ONE switcher per width: the in-page lens row is below-lg only in a
+ *      customer Space (the sidebar owns lg+), and BottomNav carries no stale
+ *      "Sections" label.
  */
 
 import { createElement, type ReactElement } from "react";
@@ -31,6 +34,7 @@ import {
   CORE_LENS_IDS, NET_WORTH_LENS_ID, lensHref, openWorkspaceId, resolveUrlLens,
 } from "@/lib/space/use-space-navigation";
 import type { SpaceChromeWorkspaceNav } from "@/lib/space/space-chrome-context";
+import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -216,6 +220,49 @@ console.log("G. Navigation only — no financial surface touched by the sidebar"
   const rail = code(read("components", "ui", "ContextualNavbar.tsx"));
   check("the sidebar imports no finance/workspace module",
     !/from "@\/lib\/(cashflow|cash-flow|wealth|perspectives|forecast|ai)|from "@\/components\/space\/widgets/.test(rail));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("H. One workspace switcher per width; no stale Sections label");
+{
+  const shell = (over: Record<string, unknown> = {}) => renderToStaticMarkup(createElement(PerspectiveShell as never, {
+    today: "2026-09-21", onAsOfChange: () => {}, onCompareToChange: () => {}, onSwap: () => {}, onSelectPreset: () => {},
+    envelope: {}, temporalCapability: { asOf: "full", compareTo: "full", period: "none" },
+    timeState: { preset: "MTD", asOf: "2026-09-21", compareTo: "2026-09-01" },
+    tabs: [{ id: "networth", label: "Net Worth", hasWorkspace: true }, { id: "cashFlow", label: "Cash Flow", hasWorkspace: true }],
+    activeTabId: "networth", onSelectTab: () => {},
+    ...over,
+  } as never));
+  const rowClass = (html: string) => html.match(/<div data-lens-row="[^"]*" class="([^"]*)"/)?.[1] ?? null;
+
+  const customer = shell({ tabsVisibility: "belowLg" });
+  check("desktop (lg+): the customer lens row is hidden — the sidebar is the only switcher",
+    /(^| )lg:hidden( |$)/.test(rowClass(customer) ?? ""), String(rowClass(customer)));
+  check("mobile/tablet (<lg): the row is still RENDERED with both workspaces and its active tab (display only, not unmounted)",
+    text(customer).includes("Net Worth") && text(customer).includes("Cash Flow") && /aria-checked="true"[^>]*>Net Worth</.test(customer) &&
+      !/(^| )hidden( |$)/.test(rowClass(customer) ?? ""));
+  const dflt = shell();
+  check("default presentation is unchanged (visible at every width) for any other host",
+    rowClass(dflt) === "flex justify-center px-1", String(rowClass(dflt)));
+  check("…and the markup differs ONLY by that class (same tabs, same selection)",
+    customer.replace(/ lg:hidden/, "") === dflt);
+
+  const rail = read("components", "ui", "ContextualNavbar.tsx");
+  check("the two breakpoints are exact complements: sidebar `hidden … lg:block` ⇔ row `lg:hidden`",
+    /<aside className="hidden w-\[212px\] shrink-0 lg:block">/.test(rail));
+  const host = code(read("components", "dashboard", "SpaceDashboard.tsx"));
+  check("the customer host opts in exactly once, on the lens row it already renders (no second switcher, same routing)",
+    (host.match(/tabsVisibility="belowLg"/g) ?? []).length === 1 &&
+      /tabs=\{lensSelectorItems\}[\s\S]{0,120}onSelectTab=\{selectLens\}[\s\S]{0,40}tabsVisibility="belowLg"/.test(host));
+  check("Net Worth internal modes (Total · Assets · Debt) are not the lens row — untouched by this switch",
+    !/tabsVisibility/.test(code(read("components", "space", "widgets", "wealth", "WealthWorkspace.tsx"))));
+
+  const bar = code(read("components", "ui", "BottomNav.tsx"));
+  check('BottomNav: no stale "Sections" label; named "Global" like the desktop PRIMARY_NAV block it mirrors',
+    !/Sections/.test(bar) && /<nav\s+aria-label="Global"/.test(bar));
+  check("BottomNav destinations/visuals unchanged: PRIMARY_NAV, lg:hidden bar, per-link labels",
+    /PRIMARY_NAV\.map/.test(bar) && /fixed inset-x-0 bottom-0 z-40 border-t border-\[var\(--border-hairline\)\] lg:hidden/.test(bar) &&
+      /aria-label=\{d\.label\}/.test(bar));
 }
 
 if (failures > 0) { console.error(`\nspace-workspace-nav: ${failures} failure(s).`); process.exit(1); }
