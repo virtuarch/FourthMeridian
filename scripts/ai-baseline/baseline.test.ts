@@ -756,8 +756,10 @@ console.log('13h. applied facts — nothing reaches the applied channel that did
     /statedAs: `assumed monthly spending \$\{monthly\}`/.test(src));
   check('…and there is exactly one derivation of it',
     (src.match(/assumed monthly spending \$\{monthly\}/g) ?? []).length === 1);
-  check('the internal spending override carries a number only, no prose',
-    /spendingOverride\?: \{ monthly: number \}/.test(src)
+  // S1-7 — the solver's spending variation is now a typed RULE appended to the
+  // scenario's own (`extraSpendingChanges`), never a statement carrying prose.
+  check('the internal spending override carries typed rules only, no prose',
+    /extraSpendingChanges\?: readonly SpendingChangeRule\[\]\) => AssembledForecast/.test(src)
     && !/statedAs: `monthly spending of/.test(src));
 
   // The two places a reader could take as "this was applied" are fed by the same
@@ -1410,7 +1412,7 @@ console.log('17b. one spine');
   check('…and every tool that projects reaches it through the same spine',
     (src.match(/buildCashSpine\(ctx, \{/g) ?? []).length === 3);
   check('every checkpoint is an INDEPENDENT run from the same asOf',
-    /runTo\(date, override\)\.projection\?\.closing/.test(src) && /const run = runTo\(date\)/.test(src));
+    /runTo\(date, extra\)\.projection\?\.closing/.test(src) && /const run = runTo\(date\)/.test(src));
   check('the last checkpoint date IS the horizon, monthly and yearly alike',
     monthEndsBetween('2026-09-08', '2027-03-15').slice(-1)[0] === '2027-03-15'
       && yearEndsBetween('2026-09-08', '2030-06-30').slice(-1)[0] === '2030-06-30');
@@ -1668,8 +1670,9 @@ console.log('18a. goal seek tool');
   check('the assumptions actually in force are echoed on EVERY path, refusal included',
     /assumptionsInForce: scenarioAssumptions\(setup, baseLedger, setup\.returns\)/.test(src)
       && /^function scenarioAssumptions/m.test(src));
+  // 3 tools + the goal seek's one refusal-echo helper (S1-7), all the same function.
   check('…and it is the same function the projection and the crossing report from',
-    (src.match(/scenarioAssumptions\(setup,/g) ?? []).length === 3);
+    (src.match(/scenarioAssumptions\(setup,/g) ?? []).length === 4);
   check('…so an absent return says it was absent, rather than saying nothing',
     /do not describe this result as carrying a return/
       .test(read('lib/ai/conversation/tools.ts')));
@@ -1681,7 +1684,7 @@ console.log('18a. goal seek tool');
   // The spine is memoised per spending level; a return solve must not pay for it.
   check('varying a return or a contribution re-uses one set of projection runs',
     /const spineCache = new Map/.test(src)
-      && /\$\{monthlySpending \?\? 'base'\}/.test(src));
+      && /\$\{extraKey\(extra\)\}\|/.test(src));
   check('a horizon in the past is refused before anything is projected',
     /is not in the future; a scenario needs a/.test(read('lib/ai/conversation/tools.ts')));
 }

@@ -1645,8 +1645,14 @@ interface CashSpine {
   openingBasis:  string;
   /** The accounts payload the projection opened from. Null for a refused build. */
   accounts:      AccountsSectionData | null;
+  /**
+   * One forecast to `end`. `extraSpendingChanges` are appended to the spine's own
+   * spending rules for this run only — how a solver varies spending (S1-7): as a
+   * RULE the scenario's other rules compose with, never a replacement level that
+   * would silently drop them.
+   */
   runTo:         (end: string,
-                  spendingOverride?: { monthly: number }) => AssembledForecast;
+                  extraSpendingChanges?: readonly SpendingChangeRule[]) => AssembledForecast;
 }
 
 async function buildCashSpine(
@@ -1701,11 +1707,10 @@ async function buildCashSpine(
         : {}),
   ]);
 
-  // ⚠️ BUILT PER RUN, NOT ONCE, SO A SOLVER CAN VARY IT. `scenario_goal_seek`
-  // solves for a monthly spending cut by re-running the projection at dozens of
-  // spending levels; the expensive part is the three reads above, and
-  // `assembleForecast` itself is pure. Baking one statement into the closure
-  // would have forced a fresh set of reads per bisection step.
+  // ⚠️ A SOLVER VARIES SPENDING BY RULE, NOT BY STATEMENT (S1-7). `scenario_goal_seek`
+  // re-runs the projection at dozens of spending cuts; the expensive part is the three
+  // reads above, and `assembleForecast` itself is pure, so each run appends its rule
+  // to the closure's own (`runTo`'s second argument) rather than replacing the level.
   // ⚠️ ONE DERIVATION OF THE WORDING, AND IT IS THE AMOUNT. See the note below.
   const spendingStatement = (monthly: number): UserStatement[] => ([{
     mode: StatementMode.ASSERTS_FACT,
@@ -1766,20 +1771,19 @@ async function buildCashSpine(
 
   return {
     asOf, retrospective, openingBasis, accounts: openingAccounts,
-    runTo: (end: string, spendingOverride?: { monthly: number }) =>
-      assembleForecast({
+    runTo: (end: string, extraSpendingChanges?: readonly SpendingChangeRule[]) => {
+      const rules = [...(opts.spendingChanges ?? []), ...(extraSpendingChanges ?? [])];
+      return assembleForecast({
         ctx: forecastCtx, streams, asOfISO: asOf,
-        statements: spendingOverride
-          ? spendingStatement(spendingOverride.monthly)
-          : statements,
+        statements,
         ...(opts.incomeChanges && opts.incomeChanges.length > 0
           ? { incomeChanges: opts.incomeChanges } : {}),
         ...(interestModelledOn.length > 0 ? { interestModelledOn } : {}),
-        ...(opts.spendingChanges && opts.spendingChanges.length > 0
-          ? { spendingChanges: opts.spendingChanges } : {}),
+        ...(rules.length > 0 ? { spendingChanges: rules } : {}),
         horizon: { fromISO: asOf, toISO: end, origin: AssumptionOrigin.USER_REQUESTED,
           statedAs: `through ${end}` } as unknown as ForecastHorizon,
-      }),
+      });
+    },
   };
 }
 
@@ -2175,18 +2179,27 @@ const DAYS_PER_MONTH = 365 / 12;
  * setup's; at a transformed one (a goal-seek spending cut) they are re-resolved,
  * and every echo — the clause roster, the floor rule — reads these.
  */
-type ScenarioRun = LedgerResult & { floorDerivations: FloorDerivation[] };
+type ScenarioRun = LedgerResult & { floorDerivations: FloorDerivation[]; spendingChanges?: SpendingChangeOutcome };
 
 /** The floor derivations a ledger ran with (the setup's, for a plain LedgerResult). */
 function floorDerivationsOf(setup: ScenarioSetup, ledger: LedgerResult | ScenarioRun): FloorDerivation[] {
   return (ledger as Partial<ScenarioRun>).floorDerivations ?? setup.floorDerivations;
 }
 
+/** S1 — what the spending rules did IN THIS RUN (a solve adds its own), else the setup's. */
+function spendingOf(setup: ScenarioSetup, ledger: LedgerResult | ScenarioRun): SpendingChangeOutcome | undefined {
+  return (ledger as Partial<ScenarioRun>).spendingChanges ?? setup.spendingChanges;
+}
+
 interface ScenarioOverrides {
   returns?:            ReturnPeriod[];
   extraContributions?: PlannedMovement[];
-  /** Rebuilds the cash spine at a different spending level. */
-  monthlySpending?:    number;
+  /**
+   * S1-7 — spending rules appended to the scenario's own for this run (a solver's
+   * cut). They compose with every stated spending change; the derived floors are
+   * re-resolved at the rate they leave on each date.
+   */
+  extraSpendingChanges?: SpendingChangeRule[];
 }
 
 interface ScenarioSetup {
@@ -2231,6 +2244,8 @@ interface ScenarioSetup {
   /** The arguments this run executed — the call's, with any staged clauses merged in. */
   argumentsRun: Record<string, unknown>;
   run: (o?: ScenarioOverrides) => ScenarioRun;
+  /** S1-7 — the spine's spending outcome with these extra rules (category rates, schedule), or null. */
+  runProbe: (...extra: SpendingChangeRule[]) => (SpendingChangeOutcome & { applied: true }) | null;
 }
 
 /**
@@ -2797,14 +2812,14 @@ async function prepareScenario(
   // cash, so eighty bisection steps re-use one set of runs; only a spending cut
   // pays for a rebuild, and even then `assembleForecast` is pure.
   const spineCache = new Map<string, SpinePoint[]>();
-  const spineFor = (shareDates: string[], monthlySpending?: number): SpinePoint[] => {
-    const key = `${monthlySpending ?? 'base'}|${shareDates.join(',')}`;
+  const extraKey = (extra?: readonly SpendingChangeRule[]) => (extra && extra.length ? JSON.stringify(extra) : 'base');
+  const spineFor = (shareDates: string[], extra?: readonly SpendingChangeRule[]): SpinePoint[] => {
+    const key = `${extraKey(extra)}|${shareDates.join(',')}`;
     const hit = spineCache.get(key);
     if (hit) return hit;
     const allDates = [...new Set([...dates, ...shareDates])].sort();
-    const override = monthlySpending === undefined ? undefined : { monthly: monthlySpending };
     const points = allDates.map((date) => ({
-      date, liquid: runTo(date, override).projection?.closing ?? null,
+      date, liquid: runTo(date, extra).projection?.closing ?? null,
       isCheckpoint: checkpointDates.has(date),
     }));
     spineCache.set(key, points);
@@ -2813,14 +2828,15 @@ async function prepareScenario(
 
   // S1-5 — the spending schedule a run at this spending level spends by (null when
   // no spending rule applied), from the spine's own endpoint run — memoised like it.
-  const scheduleCache = new Map<string, NonNullable<SpendingChangeOutcome & { applied: true }>['schedule'] | null>();
-  const scheduleFor = (level?: number) => {
-    const key = String(level ?? 'base');
-    if (!scheduleCache.has(key)) {
-      const out = runTo(toISO, level === undefined ? undefined : { monthly: level }).spendingChanges;
-      scheduleCache.set(key, out && out.applied && out.executions.some((x) => x.affectedProjection) ? out.schedule : null);
-    }
-    return scheduleCache.get(key)!;
+  const outcomeCache = new Map<string, SpendingChangeOutcome | undefined>();
+  const outcomeFor = (extra?: readonly SpendingChangeRule[]) => {
+    const key = extraKey(extra);
+    if (!outcomeCache.has(key)) outcomeCache.set(key, runTo(toISO, extra).spendingChanges);
+    return outcomeCache.get(key);
+  };
+  const scheduleFor = (extra?: readonly SpendingChangeRule[]) => {
+    const out = outcomeFor(extra);
+    return out && out.applied && out.executions.some((x) => x.affectedProjection) ? out.schedule : null;
   };
 
   return {
@@ -2845,13 +2861,13 @@ async function prepareScenario(
       // nine months of the old. The rate in force on each floor movement's date is
       // read off the SAME spine run the ledger settles against (this run's spending
       // level, this run's schedule), never recomputed here.
-      const schedule = scheduleFor(o.monthlySpending);
-      const runLevel = o.monthlySpending ?? monthlySpending.amount;
-      const rebound = schedule && runLevel !== null
-        ? rebindDerivedFloorsByDate(expanded.movements, (d) => monthlyRateAt(schedule, runLevel, d), monthlySpending, floorDerivations)
-        : rebindDerivedFloors(expanded.movements, o.monthlySpending, monthlySpending, floorDerivations);
+      const schedule = scheduleFor(o.extraSpendingChanges);
+      const baseLevel = monthlySpending.amount;
+      const rebound = schedule && baseLevel !== null
+        ? rebindDerivedFloorsByDate(expanded.movements, (d) => monthlyRateAt(schedule, baseLevel, d), monthlySpending, floorDerivations)
+        : rebindDerivedFloors(expanded.movements, undefined, monthlySpending, floorDerivations);
       if ('unavailable' in rebound) {
-        throw new Error(`a derived floor could not be re-resolved at ${o.monthlySpending}/month: ${rebound.unavailable}`);
+        throw new Error(`a derived floor could not be re-resolved: ${rebound.unavailable}`);
       }
       const useContribs = o.extraContributions
         ? [...rebound.movements, ...o.extraContributions] : rebound.movements;
@@ -2878,13 +2894,19 @@ async function prepareScenario(
       return {
         ...runScenarioLedger({
           opening,
-          spine: spineFor(shareDates, o.monthlySpending),
+          spine: spineFor(shareDates, o.extraSpendingChanges),
           contributions: useContribs,
           outflows,
           returns: o.returns ?? returns,
         }),
         floorDerivations: rebound.derivations,
+        ...(o.extraSpendingChanges && o.extraSpendingChanges.length > 0 && outcomeFor(o.extraSpendingChanges)
+          ? { spendingChanges: outcomeFor(o.extraSpendingChanges) } : {}),
       };
+    },
+    runProbe: (...extra: SpendingChangeRule[]) => {
+      const out = outcomeFor(extra);
+      return out && out.applied ? out : null;
     },
   };
 }
@@ -3142,8 +3164,9 @@ function scenarioAssumptions(
       floorDerivationsOf(setup, ledger).map((d) => ({ liquidFloor: d.liquidFloor, derivedFrom: d.derivedFrom })),
       // I1 — the SPINE's own record, not `a.incomeChanges`. See `clausesInForce`.
       setup.incomeChanges?.executions ?? [],
-      // S1 — likewise the spine's record of each spending rule.
-      setup.spendingChanges?.applied ? setup.spendingChanges.executions : [],
+      // S1 — likewise the spine's record of each spending rule (this run's, so a
+      // solved cut is listed beside the scenario's own rules).
+      ((sc) => (sc?.applied ? sc.executions : []))(spendingOf(setup, ledger)),
       setup.spendingRequestedAs ?? {}),
     returns: returns.length === 0
       ? { statedRate: null,
@@ -3179,15 +3202,16 @@ function scenarioAssumptions(
           ? 'from the same observed rate project_cash uses, LESS the interest below — so it can be lower than project_cash\'s'
           : 'from the same observed rate project_cash uses' } : {}),
       // S1 — the schedule the spending rules left, and what it removed in total.
-      ...(setup.spendingChanges ? { changes: setup.spendingChanges.applied
+      ...(spendingOf(setup, ledger) ? { changes: spendingOf(setup, ledger)!.applied
         ? { applied: true,
-            spendingRemovedToHorizon: round2(setup.spendingChanges.spendingRemoved),
+            spendingRemovedToHorizon: round2((spendingOf(setup, ledger) as SpendingChangeOutcome & { applied: true }).spendingRemoved),
             // At most 12 rows; the roster carries each rule.
-            monthlyFrom: setup.spendingChanges.schedule.slice(0, 12).map((x) => ({ from: x.fromISO, to: x.toISO, monthly: round2(x.monthly) })),
+            monthlyFrom: (spendingOf(setup, ledger) as SpendingChangeOutcome & { applied: true }).schedule.slice(0, 12)
+              .map((x) => ({ from: x.fromISO, to: x.toISO, monthly: round2(x.monthly) })),
             meaning: 'Spending runs at `monthly` between those dates because of the spending changes in '
               + '`clauses.spendingChange`; `monthly` above is the rate BEFORE them. Positive '
               + '`spendingRemovedToHorizon` is spending the changes took away.' }
-        : { applied: false, reason: setup.spendingChanges.reason } } : {}),
+        : { applied: false, reason: (spendingOf(setup, ledger) as { reason: string }).reason } } : {}),
       // S1-N1 — interest counted once: as the ledger's accrual, not as spending.
       ...(setup.modelledInterest ? { interestLeftOut: {
         liabilities: setup.modelledInterest.accounts,
@@ -3572,7 +3596,12 @@ const SOLVABLE = {
   annualReturnPct:     'annualReturnPct',
   monthlyContribution: 'monthlyContribution',
   monthlySpendingCut:  'monthlySpendingCut',
+  /** S1-7 — the one spending line's cut, by percent or by monthly amount. */
+  spendingChange:      'spendingChange',
 } as const;
+
+/** The first day a projection from `asOf` governs. */
+const dayAfter = (iso: string) => new Date(Date.parse(`${iso}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
 
 /** A wide, stated bracket. Anything beyond it is reported as out of range, not clamped. */
 const MAX_SOLVED_RETURN_PCT = 500;
@@ -3601,7 +3630,16 @@ const scenarioGoalSeek: ToolDefinition = {
         'annualReturnPct = what return would be needed. monthlyContribution = how much cash '
         + 'to move into investments each month (this RELOCATES money — at a 0% return it does '
         + 'not change net worth at all). monthlySpendingCut = how much less to spend each '
-        + 'month, with that amount invested; this is the lever that actually creates net worth.' },
+        + 'month overall, with that amount invested; this is the lever that actually creates '
+        + 'net worth. spendingChange = how much to cut ONE spending line ("how much would I need '
+        + 'to cut Dining to…") — give `spendingChangeToSolve`.' },
+    spendingChangeToSolve: obj({
+      category: str('The spending line, in the user\'s own word (as in `spendingChanges[].category`).'),
+      unit: { type: 'string', enum: ['percent', 'monthly'],
+        description: 'percent = the share of the line to cut (0–100); monthly = how much less a '
+          + 'month (up to the whole line).' },
+      from: str('YYYY-MM-DD the cut starts. Omit for the first projected day.'),
+    }, ['category', 'unit']),
     measure: { type: 'string', enum: ['netWorth', 'liquid', 'investments', 'debt'],
       description: 'What the target is a target FOR. Default netWorth. `debt` solves DOWNWARD: '
         + 'the smallest value that brings debt at `by` to at or below the target ("what extra '
@@ -3636,6 +3674,47 @@ const scenarioGoalSeek: ToolDefinition = {
 
     const setup = await prepareScenario(a, ctx, toISO, scenarioGoalSeek);
     if ('unavailable' in setup) return setup;
+
+    // ── S1-7 — the spending cuts a solve evaluates, as rules ──────────────────
+    // Every refusal below still echoes what was in force (see `scenarioAssumptions`).
+    const assumptionsNow = () => scenarioAssumptions(setup, setup.run(), setup.returns);
+    const totalCut = (x: number): SpendingChangeRule => ({ id: 'solved', op: 'DELTA', scope: null,
+      fromISO: dayAfter(setup.asOf), monthly: -round2(x) });
+    let spendSolve = { unit: 'percent' as 'percent' | 'monthly', lineMonthly: 0, from: '', category: '',
+      rule: (_x: number): SpendingChangeRule => { throw new Error(String(_x)); } };
+    if (solveFor === SOLVABLE.spendingChange) {
+      const want = (a.spendingChangeToSolve ?? {}) as Record<string, unknown>;
+      const unitWanted = want.unit === 'monthly' ? 'monthly' : want.unit === 'percent' ? 'percent' : null;
+      if (typeof want.category !== 'string' || !unitWanted) {
+        return { unavailable: 'solveFor spendingChange needs `spendingChangeToSolve` with a `category` and a '
+          + '`unit` (percent or monthly)', assumptionsInForce: assumptionsNow() };
+      }
+      const line = resolveTransformableCategory(want.category);
+      if (!line.ok) {
+        return { unavailable: line.unavailable, assumptionsInForce: assumptionsNow() };
+      }
+      const from = typeof want.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(want.from) ? want.from : dayAfter(setup.asOf);
+      const scope = { category: line.category, class: line.class, meaning: line.meaning };
+      // Two different rules on one line from one date are refused by the engine —
+      // so a solve that would collide with a stated rule is refused up front, said.
+      const stated = setup.spendingChanges?.applied ? setup.spendingChanges.executions : [];
+      if (stated.some((x) => x.category?.category === line.category && x.requested.fromISO === from)) {
+        return { unavailable: `the scenario already changes ${line.category} from ${from}; a solved cut from the `
+          + 'same date would be a second answer to the same rule. Solve from another date, or run the scenario '
+          + `without that ${line.category} rule.`, assumptionsInForce: assumptionsNow() };
+      }
+      // The line's own measured rate, from the spine (the category rates do not depend on any rule).
+      const probe = setup.runProbe({ id: 'probe', op: 'SCALE', scope, fromISO: from, multiplier: 0.5 });
+      const lineMonthly = probe?.categoryRates.find((c) => c.category === line.category)?.monthly ?? 0;
+      if (lineMonthly <= 0) {
+        return { unavailable: `${line.category} had no spending in the averaged months, so there is nothing to cut`,
+          assumptionsInForce: assumptionsNow() };
+      }
+      spendSolve = { unit: unitWanted, lineMonthly, from, category: line.category,
+        rule: (x) => (unitWanted === 'percent'
+          ? { id: 'solved', op: 'SCALE', scope, fromISO: from, multiplier: 1 - x / 100 }
+          : { id: 'solved', op: 'DELTA', scope, fromISO: from, monthly: -x }) };
+    }
 
     /** The horizon value of whichever line the target is about. */
     const valueOf = (l: LedgerResult): number | null => {
@@ -3675,7 +3754,7 @@ const scenarioGoalSeek: ToolDefinition = {
         : Math.max(Math.abs(target), 1_000);
       evaluate = (x) => valueOf(setup.run({
         extraContributions: monthly(x, 'solved monthly contribution') }));
-    } else {
+    } else if (solveFor === SOLVABLE.monthlySpendingCut) {
       unit = 'USD per month';
       const base = setup.monthlySpending.amount;
       if (base === null || base <= 0) {
@@ -3687,9 +3766,21 @@ const scenarioGoalSeek: ToolDefinition = {
       // their whole outgoings, and "you would need to free up $12,400 a month"
       // said to somebody who spends $7,549 is a fabrication with a decimal point.
       hi = base;
+      // ⚠️ S1-7 — THE CUT IS A RULE ON TOP OF THE SCENARIO, NOT A NEW SPENDING LEVEL.
+      // It was a replacement level (`base − x`), which with a Dining cut already in
+      // the scenario would have silently dropped the Dining cut. An aggregate DELTA
+      // composes with every stated spending change, and without them it is exactly
+      // the old arithmetic.
       evaluate = (x) => valueOf(setup.run({
-        monthlySpending: round2(base - x),
+        ...(x > 0 ? { extraSpendingChanges: [totalCut(x)] } : {}),
         extraContributions: monthly(x, 'solved monthly amount freed up and invested') }));
+    } else {
+      unit = spendSolve.unit === 'percent' ? 'percent of the line' : 'USD per month';
+      hi = spendSolve.unit === 'percent' ? 100 : spendSolve.lineMonthly;
+      // ⚠️ THE CUT JOINS THE SCENARIO'S OWN RULES, and the freed cash stays wherever
+      // the scenario's rules send cash — a floor sweep, a waterfall, or nowhere. It is
+      // a question about the line, not an instruction to invest.
+      evaluate = (x) => valueOf(setup.run(x > 0 ? { extraSpendingChanges: [spendSolve.rule(x)] } : {}));
     }
 
     const baseLedger = setup.run();
@@ -3710,7 +3801,14 @@ const scenarioGoalSeek: ToolDefinition = {
         note: solveFor === SOLVABLE.monthlySpendingCut
           ? `the upper bound is the whole ${setup.monthlySpending.source.toLowerCase()} `
             + 'monthly spending level — nobody can cut more than they spend'
-          : 'a value outside this range is reported as out of range, never clamped' },
+          : solveFor === SOLVABLE.spendingChange
+            ? `the upper bound is the whole ${spendSolve.category} line (${round2(spendSolve.lineMonthly)}/month over `
+              + 'the averaged months) — a line cannot be cut below nothing'
+            : 'a value outside this range is reported as out of range, never clamped' },
+      ...(solveFor === SOLVABLE.spendingChange ? { solving: { category: spendSolve.category, unit: spendSolve.unit,
+        from: spendSolve.from, lineMonthly: round2(spendSolve.lineMonthly),
+        meaning: 'The cut is added to the scenario\'s own rules (any stated spending change still applies); the '
+          + 'cash it frees goes wherever the scenario\'s rules send cash.' } } : {}),
     };
 
     if (!solved.feasible) {
@@ -3729,13 +3827,14 @@ const scenarioGoalSeek: ToolDefinition = {
     // ⚠️ THE LEDGER RETURNED IS THE ONE RUN AT THE ANSWER, not a re-derivation of
     // it. Solve, then render what the solution actually produces, so the table
     // beneath the number cannot disagree with the number.
-    const atSolution = solveFor === SOLVABLE.annualReturnPct
+    const atSolution: ScenarioOverrides = solveFor === SOLVABLE.annualReturnPct
       ? { returns: [{ fromISO: setup.asOf, toISO, annualPct: solved.required }] }
       : solveFor === SOLVABLE.monthlyContribution
         ? { extraContributions: monthly(solved.required, 'solved monthly contribution') }
-        : { monthlySpending: round2((setup.monthlySpending.amount as number) - solved.required),
-            extraContributions: monthly(solved.required,
-              'solved monthly amount freed up and invested') };
+        : solveFor === SOLVABLE.monthlySpendingCut
+          ? { ...(solved.required > 0 ? { extraSpendingChanges: [totalCut(solved.required)] } : {}),
+              extraContributions: monthly(solved.required, 'solved monthly amount freed up and invested') }
+          : (solved.required > 0 ? { extraSpendingChanges: [spendSolve.rule(solved.required)] } : {});
     const ledger = setup.run(atSolution);
     const returnsUsed = solveFor === SOLVABLE.annualReturnPct
       ? [{ fromISO: setup.asOf, toISO, annualPct: solved.required }] : setup.returns;
@@ -3750,6 +3849,9 @@ const scenarioGoalSeek: ToolDefinition = {
         ? { meaning: `The target is already reached without any ${solveFor} at all.` }
         : {}),
       provenance: PROVENANCE.USER_ASSUMED,
+      // ⚠️ THE LEDGER AT THE ANSWER, WITH THE SOLVED RULE IN ITS ROSTER — the table
+      // beneath the number is the run that produced it (S1-7: the solved spending
+      // rule is listed as a rule that ran, beside the scenario's own).
       scenario: presentScenario(setup, ledger, returnsUsed),
       qualification:
         'This is the value that reaches the target under the stated assumptions — it is '
