@@ -134,6 +134,7 @@ export function WealthWorkspace({
   ctx,
   mode = "total",
   onModeChange,
+  modeSelectorVisibility = "always",
   slice = "all",
   onSliceChange,
   focusSection = null,
@@ -160,6 +161,13 @@ export function WealthWorkspace({
   /** The page-level subject (Total · Assets · Debt) — URL-synced by the host. */
   mode?:            WealthMode;
   onModeChange?:    (m: WealthMode) => void;
+  /**
+   * Where the Total · Assets · Debt selector is SHOWN. "belowLg" — only below
+   * the `lg` breakpoint, for a host whose desktop sidebar carries these three
+   * views nested under Net Worth (a customer Space). The same selector, the same
+   * `mode` state; display only — the exact complement of the sidebar's `lg:block`.
+   */
+  modeSelectorVisibility?: "always" | "belowLg";
   /** The Assets balance-history slice (All · Cash · Investments) — URL-synced by the host. */
   slice?:           AssetsSlice;
   onSliceChange?:   (s: AssetsSlice) => void;
@@ -288,7 +296,10 @@ export function WealthWorkspace({
   // The evolved WealthMetric switcher, promoted out of the chart header: it
   // represents the SUBJECT of the page, so it sits under the shell, above the hero.
   const modeSelector = (
-    <div className="flex justify-center px-1">
+    <div
+      data-wealth-mode-row
+      className={["flex justify-center px-1", modeSelectorVisibility === "belowLg" ? "lg:hidden" : ""].join(" ").trim()}
+    >
       <Chips
         options={WEALTH_MODES.map((m) => ({ id: m, label: WEALTH_MODE_LABELS[m] }))}
         value={mode}

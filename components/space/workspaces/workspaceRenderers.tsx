@@ -91,6 +91,8 @@ export interface WorkspaceRenderCtx {
 
   // Callbacks
   onModeChange:            (m: WealthMode) => void;
+  /** Net Worth's Total · Assets · Debt selector presentation (see WealthWorkspace). */
+  wealthModeSelectorVisibility?: "always" | "belowLg";
   onSliceChange:           (s: AssetsSlice) => void;
   onSwitchLens:            (id: string) => void;
   onEnvelopeChange:        (env: PerspectiveEnvelope) => void;
@@ -163,6 +165,7 @@ export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => Re
       ctx={ctx.widgetCtx}
       mode={ctx.wealthMode}
       onModeChange={ctx.onModeChange}
+      modeSelectorVisibility={ctx.wealthModeSelectorVisibility}
       slice={ctx.assetsSlice}
       onSliceChange={ctx.onSliceChange}
       focusSection={ctx.wealthFocus}

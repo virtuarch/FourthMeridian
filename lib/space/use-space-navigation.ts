@@ -144,6 +144,16 @@ export function lensHref(id: string): string {
 }
 
 /**
+ * The canonical deep link for a Net Worth MODE — the Net Worth lens URL plus
+ * the SAME ?metric= the mode writer commits (serializeWealthMode: Total is the
+ * default and writes nothing). Read back on load by the ?metric= sync below.
+ */
+export function wealthModeHref(mode: WealthMode): string {
+  const metric = serializeWealthMode(mode);
+  return metric ? `${lensHref(NET_WORTH_LENS_ID)}&metric=${encodeURIComponent(metric)}` : lensHref(NET_WORTH_LENS_ID);
+}
+
+/**
  * Which workspace destination is OPEN — read from the RENDERED lens, not the
  * selection chip: on Overview, "wealth" is the Net Worth workspace (whatever its
  * Total · Assets · Debt mode — those are wealthMode, a separate axis) and any

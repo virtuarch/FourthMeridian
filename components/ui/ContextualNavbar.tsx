@@ -383,6 +383,12 @@ function GlobalMode({ pathname, pendingInvites }: { pathname: string | null; pen
   );
 }
 
+/** A plain primary click is handled in place; anything else (⌘/Ctrl/Shift/Alt,
+ *  middle button) is the browser's — open the canonical href in a new tab. */
+function isPlainPrimaryClick(e: React.MouseEvent): boolean {
+  return e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
+}
+
 /**
  * The SPACE WORKSPACE block — the Space's workspace-level destinations (Net Worth
  * · Cash Flow), published by the host from the navigation state it owns. Peers of
@@ -396,6 +402,14 @@ function GlobalMode({ pathname, pendingInvites }: { pathname: string | null; pen
  * the same page would not re-read it. Active state is the host's `activeId`
  * (the RENDERED workspace), never text matching, so Net Worth stays lit across
  * its own Total · Assets · Debt modes.
+ *
+ * CHILDREN — a workspace that publishes `children` (Net Worth: Total · Assets ·
+ * Debt) shows them nested under it ONLY while it is the open workspace; they
+ * collapse when another workspace opens. They are links too (canonical href +
+ * in-place `onSelectChild`), grouped under the parent's name. ONE accent bar in
+ * this block at a time: while a child list is showing, the bar marks the current
+ * CHILD on the guide line and the parent reads as open through its text weight
+ * — so the parent and the child are never two identical indicators.
  */
 export function SpaceWorkspaceNav({ nav }: { nav: SpaceChromeWorkspaceNav | null }) {
   if (!nav || nav.items.length === 0) return null;
@@ -404,36 +418,78 @@ export function SpaceWorkspaceNav({ nav }: { nav: SpaceChromeWorkspaceNav | null
       {nav.items.map((item) => {
         const on = item.id === nav.activeId;
         const Icon = WORKSPACE_ICONS[item.id];
+        const children = on && item.children && item.children.length > 0 ? item.children : null;
         return (
-          <a
-            key={item.id}
-            href={item.href}
-            onClick={(e) => {
-              // Let the browser own modified / non-primary clicks (new tab etc.).
-              if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-              e.preventDefault();
-              nav.onSelect(item.id);
-            }}
-            aria-current={on ? "true" : undefined}
-            className={[
-              "group relative flex items-center gap-2.5 rounded-[var(--radius-sm)] py-1.5 pl-3 pr-2 text-left text-[13px]",
-              "transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
-              on
-                ? "text-[var(--text-primary)]"
-                : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
-            ].join(" ")}
-          >
-            <span
-              aria-hidden
+          <div key={item.id} className="flex flex-col gap-0.5">
+            <a
+              href={item.href}
+              onClick={(e) => {
+                if (!isPlainPrimaryClick(e)) return;
+                e.preventDefault();
+                nav.onSelect(item.id);
+              }}
+              aria-current={on ? "true" : undefined}
               className={[
-                "absolute inset-y-1 left-0 w-0.5 rounded-full bg-[var(--meridian-400)]",
-                "transition-opacity duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
-                on ? "opacity-100" : "opacity-0",
+                "group relative flex items-center gap-2.5 rounded-[var(--radius-sm)] py-1.5 pl-3 pr-2 text-left text-[13px]",
+                "transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+                on
+                  ? "text-[var(--text-primary)]"
+                  : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+                children ? "font-medium" : "",
               ].join(" ")}
-            />
-            {Icon && <Icon size={14} strokeWidth={1.75} className="shrink-0" />}
-            <span className="flex-1 truncate">{item.label}</span>
-          </a>
+            >
+              <span
+                aria-hidden
+                className={[
+                  "absolute inset-y-1 left-0 w-0.5 rounded-full bg-[var(--meridian-400)]",
+                  "transition-opacity duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+                  on && !children ? "opacity-100" : "opacity-0",
+                ].join(" ")}
+              />
+              {Icon && <Icon size={14} strokeWidth={1.75} className="shrink-0" />}
+              <span className="flex-1 truncate">{item.label}</span>
+            </a>
+            {children && (
+              <div
+                role="group"
+                aria-label={item.label}
+                className="ml-[18px] flex flex-col border-l border-[var(--border-hairline)]"
+              >
+                {children.map((c) => {
+                  const cOn = c.id === nav.activeChildId;
+                  return (
+                    <a
+                      key={c.id}
+                      href={c.href}
+                      onClick={(e) => {
+                        if (!isPlainPrimaryClick(e)) return;
+                        e.preventDefault();
+                        nav.onSelectChild?.(item.id, c.id);
+                      }}
+                      aria-current={cOn ? "true" : undefined}
+                      className={[
+                        "relative block rounded-[var(--radius-sm)] py-1 pl-[17px] pr-2 text-left text-[12px]",
+                        "transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+                        cOn
+                          ? "text-[var(--text-primary)]"
+                          : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
+                      ].join(" ")}
+                    >
+                      <span
+                        aria-hidden
+                        className={[
+                          "absolute inset-y-1 -left-px w-0.5 rounded-full bg-[var(--meridian-400)]",
+                          "transition-opacity duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+                          cOn ? "opacity-100" : "opacity-0",
+                        ].join(" ")}
+                      />
+                      <span className="truncate">{c.label}</span>
+                    </a>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         );
       })}
     </nav>

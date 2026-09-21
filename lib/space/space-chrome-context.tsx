@@ -49,12 +49,26 @@ export interface SpaceChromeSection {
   anchor: string | null;
 }
 
+/** One view INSIDE a workspace (Net Worth's Total · Assets · Debt). */
+export interface SpaceChromeWorkspaceChild {
+  id: string;
+  label: string;
+  /** The canonical deep link for this view. */
+  href: string;
+}
+
 /** One workspace-level destination inside a Space (Net Worth, Cash Flow). */
 export interface SpaceChromeWorkspaceItem {
   id: string;
   label: string;
   /** The canonical deep link for this destination (open-in-new-tab, copy link). */
   href: string;
+  /**
+   * The workspace's own views, shown nested under it WHILE it is the open
+   * workspace (collapsed otherwise). Omitted ⇒ a leaf workspace (Cash Flow).
+   * The same state the workspace's in-content selector drives — never a copy.
+   */
+  children?: SpaceChromeWorkspaceChild[];
 }
 
 /** The Space's workspace navigation, published by the host that owns the state. */
@@ -64,6 +78,10 @@ export interface SpaceChromeWorkspaceNav {
   activeId: string | null;
   /** In-place selection through the host's navigation state (no route change). */
   onSelect: (id: string) => void;
+  /** The open workspace's selected child id (only meaningful for `activeId`). */
+  activeChildId?: string | null;
+  /** Select a child view of the open workspace, through the host's state. */
+  onSelectChild?: (workspaceId: string, childId: string) => void;
 }
 
 /** Domain-agnostic Space identity — a finance Space or a platform HQ Space
