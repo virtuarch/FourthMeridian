@@ -45,14 +45,45 @@ export function formatCurrency(
   currency: string = DEFAULT_DISPLAY_CURRENCY,
   compact = false,
 ): string {
-  return new Intl.NumberFormat("en-US", {
+  return new Intl.NumberFormat("en-US", compact
+    ? compactCurrencyOptions(currency, 1)
+    : {
+        style:                 "currency",
+        currency,
+        notation:              "standard",
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      },
+  ).format(amount);
+}
+
+/**
+ * THE compact-money contract — every option that shapes "$750K" / "$1.2M" is
+ * stated here, none is left to the runtime.
+ *
+ * Why: with only `maximumFractionDigits` given, the MINIMUM falls back to the
+ * currency's own digits (2 for USD), and runtimes disagree on how that default
+ * meets the maximum. Node 22 renders 750,000 as "$750.0K" (and at a maximum of 2,
+ * "$750.00K"); Node 24/26 and current browsers render "$750K". Same code, two
+ * outputs — and a server/client pair on different engines disagrees on the page.
+ * `minimumFractionDigits: 0` makes a whole compact figure print whole everywhere;
+ * `maximumFractionDigits` is the caller's precision (launcher/axes 1, starter
+ * chips 2). Rounding is half-away-from-zero, the Intl default, now stated.
+ */
+export function compactCurrencyOptions(
+  currency: string,
+  maximumFractionDigits: number,
+): Intl.NumberFormatOptions {
+  return {
     style:                 "currency",
     currency,
-    notation:              compact ? "compact" : "standard",
-    ...(compact
-      ? { maximumFractionDigits: 1 }
-      : { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-  }).format(amount);
+    currencyDisplay:       "symbol",
+    notation:              "compact",
+    compactDisplay:        "short",
+    minimumFractionDigits: 0,
+    maximumFractionDigits,
+    roundingMode:          "halfExpand",
+  };
 }
 
 /**

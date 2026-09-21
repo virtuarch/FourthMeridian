@@ -59,7 +59,7 @@ import {
   CATEGORY_ICONS,
   SpaceCategory,
 } from "@/lib/space-presets";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { DEFAULT_DISPLAY_CURRENCY, compactCurrencyOptions } from "@/lib/currency";
 import { displaySpaceName, formatDate } from "@/lib/format";
 import {
   SPACE_LIST_CHANGED_EVENT,
@@ -363,11 +363,11 @@ function Sparkline({
 // cookie-switch on click. Only the presentation moved from tile to row.
 
 // Compact money for the row figure so long balances (S$1,284,320) read as
-// S$1.28M and never wrap the right column. Same currency, same source number.
+// S$1.3M and never wrap the right column. Same currency, same source number.
+// The Intl options are lib/currency's pinned compact contract — this stays the
+// launcher's own formatter (never the cents one), with no runtime defaults.
 function formatCurrencyCompact(value: number, currency = DEFAULT_DISPLAY_CURRENCY) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency", currency, notation: "compact", maximumFractionDigits: 1,
-  }).format(value);
+  return new Intl.NumberFormat("en-US", compactCurrencyOptions(currency, 1)).format(value);
 }
 
 // v2.6-L4F — `trendDeltaPct(trend)` was REMOVED. It ran over the last 14 SNAPSHOT

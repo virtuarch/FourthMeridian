@@ -21,10 +21,11 @@
  *
  * Run:  npx tsx lib/money-presentation.test.ts
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import {
   formatCurrency, formatCurrencyWhole, formatCurrencyExact, formatBalance,
-  formatCompactCurrency, currencySymbol, DEFAULT_DISPLAY_CURRENCY,
+  formatCompactCurrency, compactCurrencyOptions, currencySymbol, DEFAULT_DISPLAY_CURRENCY,
 } from "./currency";
 import { formatAggregateMoney, formatProseMoney } from "@/components/space/widgets/display-money";
 import { clampEconomicSpend, economicTotals } from "./transactions/cash-flow";
@@ -83,6 +84,39 @@ console.log("10. the exception: compact notation stays compact");
   check("$1.2M and $25K keep their constrained form", formatCompactCurrency(1_200_000) === "$1.2M" && formatCompactCurrency(25_000) === "$25K");
   check("compact is the same through either entry point", formatCurrency(1_200_000, "USD", true) === formatCompactCurrency(1_200_000));
   check("…and is NOT how an ordinary figure renders", formatCurrency(1_200_000) === "$1,200,000.00");
+
+  // MONEY-PRECISION-3 — compact output is OWNED, not inherited from the runtime.
+  // Before `compactCurrencyOptions` pinned minimumFractionDigits, Node 22 printed
+  // "$750.0K" / "$25.0K" where Node 24/26 print "$750K" / "$25K". Every string
+  // below is the canonical (Node 24) rendering; the suite runs on each runtime CI
+  // or a developer uses, so a divergence is a failure here, not a surprise on a page.
+  const battery: [number, string][] = [
+    [0, "$0"], [999, "$999"], [999.5, "$999.5"], [1_000, "$1K"], [1_049, "$1K"],
+    [1_050, "$1.1K"], [1_234, "$1.2K"], [25_000, "$25K"], [750_000, "$750K"],
+    [999_949, "$999.9K"], [999_950, "$1M"], [1_200_000, "$1.2M"], [1_250_000, "$1.3M"],
+    [-1_200_000, "-$1.2M"], [-25_000, "-$25K"],
+  ];
+  for (const [v, want] of battery) {
+    const got = formatCompactCurrency(v);
+    check(`compact ${v} → ${want}`, got === want, got);
+  }
+  check("a native currency keeps its own symbol in compact form", formatCompactCurrency(750_000, "EUR") === "€750K");
+  const two = (v: number) => new Intl.NumberFormat("en-US", compactCurrencyOptions("USD", 2)).format(v);
+  check("the caller owns precision, not the minimum: at 2 digits a whole figure is still whole",
+    two(20_000) === "$20K" && two(750_000) === "$750K" && two(1_234_567) === "$1.23M" && two(1_235_000) === "$1.24M",
+    [two(20_000), two(750_000), two(1_234_567), two(1_235_000)].join(" "));
+  // No compact formatter may build its own options: a raw `notation: "compact"`
+  // anywhere outside lib/currency is exactly the unpinned default that diverged.
+  const sources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? (e.name === "node_modules" ? [] : sources(join(dir, e.name)))
+      : /\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [join(dir, e.name)] : []);
+  const rawCompact = ["lib", "app", "components", "jobs"].flatMap(sources)
+    .filter((f) => f !== join("lib", "currency.ts") && /notation:\s*["']compact["']/.test(code(f)));
+  check("no product formatter builds compact options of its own (lib/currency owns them)",
+    rawCompact.length === 0, rawCompact.join(", "));
+  check("the launcher and the starter chips format through compactCurrencyOptions",
+    ["components/dashboard/SpacesClient.tsx", "lib/ai/conversation/starter-topics.ts"]
+      .every((f) => /compactCurrencyOptions\(/.test(code(f))));
 }
 
 console.log("11. formatting changes strings, never money");
