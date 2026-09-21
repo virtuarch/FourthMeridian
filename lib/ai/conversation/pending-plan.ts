@@ -453,7 +453,11 @@ export function stagePlan(
       const targetWords = (t: unknown): string[] => (Array.isArray(t) ? t.map(String) : t === undefined ? [] : [String(t)]);
       const holder = same ?? (key === 'contributions' && IDENTITY[key](item) === null
         ? clauses.find((c) => c.key === 'contributions') : undefined);
-      if (holder && key === 'contributions' && !input.replace && (value as Obj).target !== undefined) {
+      // ⚠️ NOT EVEN WITH `replace` (measured 1/6, twice): the refusal once offered
+      // `replace: true` as the way out, and the model took it for "invest everything
+      // above the floor" — a NEXT destination, not a withdrawal. Withdrawing part of
+      // a rule is now two deliberate acts: retract it, then stage it again.
+      if (holder && key === 'contributions' && (value as Obj).target !== undefined) {
         const kept = targetWords((value as Obj).target);
         const dropped = targetWords((holder.value as Obj).target).filter((w) => !kept.includes(w));
         if (dropped.length > 0) {
@@ -461,7 +465,8 @@ export function stagePlan(
             + `from the staged rule \`${holder.id}\`, whose target is `
             + `${JSON.stringify((holder.value as Obj).target)}. If the user meant "then", stage the ordered `
             + `list (e.g. ${JSON.stringify([...targetWords((holder.value as Obj).target), ...kept.filter((w) => !targetWords((holder.value as Obj).target).includes(w))])}); `
-            + 'if they withdrew it, stage again with `replace: true`. It was NOT staged.' });
+            + `only if the user explicitly withdrew it, retract \`${holder.id}\` and stage the rule again. `
+            + 'It was NOT staged.' });
           return;
         }
       }

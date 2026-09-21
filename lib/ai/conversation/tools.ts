@@ -1772,8 +1772,8 @@ const projectCash: ToolDefinition = {
         + 'so under `horizon.requested` / `horizon.omitted`.' },
     asOf: str('Project FROM this date using only evidence available then. Omit for today. '
       + 'Use for "what would you have predicted back in January?".'),
-    ignoreStaged: { type: 'boolean', description: 'Only when conditions are staged in this '
-      + 'conversation AND the user asked for the current trend without them.' },
+    ignoreStaged: { type: 'boolean', description: 'Only when the user has stated a plan in this '
+      + 'conversation AND asks for the current trend WITHOUT it.' },
   }, ['to']),
   async run(a, ctx) {
     const toISO = String(a.to);
@@ -1809,7 +1809,20 @@ const projectCash: ToolDefinition = {
     const retrospectiveRun = typeof a.asOf === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.asOf)
       && Date.parse(`${ctx.asOfISO}T00:00:00Z`) - Date.parse(`${a.asOf}T00:00:00Z`) >= 30 * 86_400_000;
     const staged = ctx.plan?.pending.clauses ?? [];
-    if (staged.length > 0 && a.ignoreStaged !== true && !retrospectiveRun && rejected.length === 0) {
+    // ⚠️ AND WHEN A SCENARIO HAS ALREADY RUN (measured 1/6): after the plan ran,
+    // "what about next June?" came here and answered the plan's question with the
+    // current trend. Pending is empty once a scenario runs, so the staged check
+    // could not catch it. While a plan is in play in this conversation — staged or
+    // run — its questions are answered with it; the current trend is one flag away.
+    const planInPlay = staged.length > 0 || ctx.plan?.scenarioRan === true;
+    if (planInPlay && a.ignoreStaged !== true && !retrospectiveRun && rejected.length === 0) {
+      if (staged.length === 0) {
+        return { unavailable: 'a scenario the user built is under discussion in this conversation, and '
+            + 'this projection cannot apply it, so it was NOT run',
+          instead: 'answer with scenario_projection — the ACTIVE SCENARIO\'s arguments, at the horizon the '
+            + 'user asked about. Only if they asked for the current trend WITHOUT their plan, call '
+            + 'project_cash again with `ignoreStaged: true`, and say that is what it shows.' };
+      }
       return { unavailable: `${staged.length} condition(s) the user stated earlier in this `
           + 'conversation are staged, and this projection cannot apply them, so it was NOT run',
         staged: staged.map((c) => ({ id: c.id, [c.key]: c.value })),
@@ -1828,7 +1841,7 @@ const projectCash: ToolDefinition = {
     }
     // When the user asked for the current trend on purpose, the answer says what
     // it left out — the staged conditions are theirs, and they are not in it.
-    const leftOut = staged.length > 0 && a.ignoreStaged === true
+    const leftOut = planInPlay && a.ignoreStaged === true && staged.length > 0
       ? { leftOutOnPurpose: { staged: staged.map((c) => ({ id: c.id, [c.key]: c.value })),
           meaning: 'The current trend, WITHOUT the conditions the user stated in this '
             + 'conversation — as they asked. Say so; these are still held.' } }
@@ -3518,9 +3531,14 @@ const stageAssumptions: ToolDefinition = {
     })),
     retract: { type: 'array', items: { type: 'string' },
       description: 'Ids of staged conditions the user has withdrawn (e.g. "p2").' },
-    replace: { type: 'boolean', description: 'Only when the user WITHDREW part of a staged rule '
-      + '(e.g. "don\'t pay debt first after all"). Without it, a change that would drop part of a '
-      + 'staged rule is refused.' },
+    // ⚠️ MEASURED 1/6: "invest everything above the floor", after "pay highest APR
+    // debt first", was sent with `replace: true` and the debt order left the plan —
+    // the guard made it explicit, and the description had not said that naming the
+    // NEXT destination is not withdrawing the first.
+    replace: { type: 'boolean', description: 'Only when the user WITHDREW or CORRECTED part of a '
+      + 'staged rule ("don\'t pay debt first after all", "actually from February"). Saying where '
+      + 'money goes NEXT is not a withdrawal: "invest everything above the floor" after "pay the '
+      + 'highest APR first" is `target: ["highest_apr","investments"]`, without `replace`.' },
   }),
   async run(a, ctx) {
     if (!ctx.plan || !ctx.turn) {

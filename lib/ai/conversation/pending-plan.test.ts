@@ -111,9 +111,15 @@ let plan: PendingPlan = emptyPlan();
     /DROP `highest_apr`/.test(narrowed.refused[0]?.reason ?? '')
     && /\["highest_apr","investments"\]/.test(narrowed.refused[0]?.reason ?? ''));
   eq('…and the plan is unchanged', narrowed.plan, base);
-  const withdrawn = stagePlan(base, { stage: { contributions: [{ target: 'investments' }] }, replace: true },
+  // Withdrawal is two deliberate acts; `replace` no longer narrows (measured 1/6, twice).
+  const viaReplace = stagePlan(base, { stage: { contributions: [{ target: 'investments' }] }, replace: true },
     { turn: 1, evidence: e });
-  eq('with `replace: true` the withdrawal is honoured',
+  check('`replace: true` does NOT narrow a waterfall', viaReplace.staged.length === 0
+    && /retract `p1`/.test(viaReplace.refused[0]?.reason ?? ''));
+  const retracted = stagePlan(base, { retract: ['p1'] }, { turn: 1, evidence: e }).plan;
+  const withdrawn = stagePlan(retracted, { stage: { contributions: [{ liquidFloorMonthsOfExpenses: 9,
+    fractionOfExcess: 1, target: 'investments' }] } }, { turn: 1, evidence: e });
+  eq('retract, then stage again, is how a withdrawal is honoured',
     (withdrawn.plan.clauses[0].value as { target: unknown }).target, 'investments');
   const widened = stagePlan(stagePlan(emptyPlan(), { stage: { contributions: [{ liquidFloorMonthsOfExpenses: 9,
     fractionOfExcess: 1, target: ['highest_apr'] }] } }, { turn: 0, evidence: e }).plan,
