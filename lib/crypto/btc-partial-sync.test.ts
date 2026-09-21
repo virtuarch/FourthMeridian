@@ -327,6 +327,12 @@ async function main() {
   const unreachable: Route = async () => { throw new TypeError("fetch failed: connect ETIMEDOUT"); };
   const savedRetries = process.env.BTC_RATE_LIMIT_RETRIES;
   process.env.BTC_RATE_LIMIT_RETRIES = "0";
+  // The history authority is CONFIGURED here to a host distinct from the
+  // balance authority, so the fake network can tell the two dimensions apart.
+  // (mempool.space is a contract-compatible history host; the default is
+  // blockstream.info — pinned separately below.)
+  const savedExplorer = process.env.BTC_EXPLORER_BASE_URL;
+  process.env.BTC_EXPLORER_BASE_URL = "https://mempool.space";
 
   shape.walletAddress = ADDRESS; shape.identities = [ADDRESS];
 
@@ -467,6 +473,46 @@ async function main() {
   }
   shape.walletAddress = ADDRESS; shape.identities = [ADDRESS];
   if (savedRetries === undefined) delete process.env.BTC_RATE_LIMIT_RETRIES; else process.env.BTC_RATE_LIMIT_RETRIES = savedRetries;
+  if (savedExplorer === undefined) delete process.env.BTC_EXPLORER_BASE_URL; else process.env.BTC_EXPLORER_BASE_URL = savedExplorer;
+
+  // ── SLICE 2A — ONE configured history authority; the pager stops on a short page
+  {
+    const { btcExplorerBaseUrl, ESPLORA_CHAIN_PAGE_SIZE } = await import("@/lib/crypto/btc-explorer");
+    const saved = process.env.BTC_EXPLORER_BASE_URL;
+    delete process.env.BTC_EXPLORER_BASE_URL;
+    check("2A default history authority is blockstream.info (proven 28/28 against stored history)",
+      btcExplorerBaseUrl() === "https://blockstream.info");
+    process.env.BTC_EXPLORER_BASE_URL = "https://esplora.example/";
+    check("2A the ONE setting still overrides it (trailing slash trimmed)", btcExplorerBaseUrl() === "https://esplora.example");
+    if (saved === undefined) delete process.env.BTC_EXPLORER_BASE_URL; else process.env.BTC_EXPLORER_BASE_URL = saved;
+    check("2A Esplora page size is 25", ESPLORA_CHAIN_PAGE_SIZE === 25);
+
+    const pager = (sizes: number[]) => {
+      const urls: string[] = [];
+      let n = 0;
+      const f = (async (u: string) => {
+        urls.push(u);
+        const size = sizes[urls.length - 1] ?? 0;
+        return new Response(JSON.stringify(Array.from({ length: size }, () => receive(`p-${n++}`, 1000))), { status: 200 });
+      }) as unknown as typeof fetch;
+      return { f, urls };
+    };
+    for (const [sizes, expectCalls, expectTxs] of [
+      [[25, 3], 2, 28],       // the live wallet's shape: was 3 requests
+      [[3], 1, 3],            // one short page: one request
+      [[25, 25, 0], 3, 50],   // exact multiple: the empty page is genuinely needed
+      [[0], 1, 0],            // no history
+    ] as Array<[number[], number, number]>) {
+      const p = pager(sizes);
+      const txs = await fetchAddressTxsRaw(ADDRESS, p.f);
+      check(`2A pager ${JSON.stringify(sizes)} ⇒ ${expectCalls} request(s), ${expectTxs} txs`,
+        p.urls.length === expectCalls && txs.length === expectTxs, `calls=${p.urls.length} txs=${txs.length}`);
+    }
+    const p2 = pager([25, 3]);
+    await fetchAddressTxsRaw(ADDRESS, p2.f);
+    check("2A pager continues from the last txid of a FULL page (cursor unchanged)",
+      p2.urls[1]?.endsWith("/txs/chain/p-24") === true, p2.urls[1]);
+  }
 
   // ── Regeneration gate: an unpriced run feeds NO snapshot rebuild ─────────
   {

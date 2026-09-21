@@ -4,7 +4,7 @@
  * BTC wallet balance sync v1 — pure provider layer.
  *
  * Fetches a public BTC address's CONFIRMED balance, usage and confirmed
- * transactions from a keyless block explorer (mempool.space by default).
+ * transactions from a keyless Esplora block explorer (blockstream.info by default).
  * NO PRICE: the BTC→USD figure a sync writes is the CANONICAL dated close from
  * the price archive (see btc-sync.ts), never a live spot quote from here — a
  * second provider's undated quote was gating the canonical reconciliation
@@ -30,7 +30,15 @@
 /** 1 BTC = 100,000,000 satoshis. */
 export const SATS_PER_BTC = 100_000_000;
 
-const DEFAULT_EXPLORER_BASE = "https://mempool.space";
+// 2026-09-21 — the HISTORY authority's default moved from mempool.space (TCP
+// refused on every IP) to blockstream.info, after proof rather than on the
+// strength of "both are Esplora": the live wallet's history fetched from
+// blockstream and run through `normalizeBtcAddressTxs` reproduced all 28 stored
+// rows exactly — ids, sats, dates, flow, settlement; 0 extra, 0 missing. Still
+// ONE configured authority (BTC_EXPLORER_BASE_URL overrides it), never a runtime
+// fallback chain: two hosts at different chain tips would make a history that
+// depends on which one answered.
+const DEFAULT_EXPLORER_BASE = "https://blockstream.info";
 const DEFAULT_BALANCE_BASE  = "https://blockstream.info";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
@@ -56,7 +64,13 @@ export function btcExplorerBaseUrl(): string {
 
 /**
  * CURRENT-BALANCE authority for single-address wallets — an Esplora host,
- * deliberately NOT the history explorer's.
+ * configured SEPARATELY from the history explorer (`btcExplorerBaseUrl`).
+ *
+ * ⚠️ Since the history default also moved to blockstream.info (proven 28/28),
+ * the two DEFAULTS coincide. That is shared availability, not shared fate: a
+ * history failure is non-fatal by construction (the import never gates the
+ * position), whatever host serves it. They remain two settings because they are
+ * two authorities, and either can be pointed elsewhere without touching the other.
  *
  * Both used to be mempool.space, so one explorer outage was two outages: on
  * 2026-09-21 mempool.space refused TCP and every single-address wallet failed at
@@ -464,6 +478,12 @@ export function normalizeBtcAddressTxs(rawTxs: RawBtcTx[], myAddresses: string[]
  * this loop is not: an exhausted page budget must be caught by arithmetic, not
  * assumed away. Env-overridable for a genuinely large wallet.
  */
+/**
+ * Esplora's fixed confirmed-tx page size for `/address/:a/txs/chain` (the same
+ * on mempool.space and blockstream.info — measured: 25, 25, 25, 25, 22 for 122).
+ */
+export const ESPLORA_CHAIN_PAGE_SIZE = 25;
+
 function txPageBudget(): number {
   const n = Number(process.env.BTC_TX_PAGE_BUDGET);
   return Number.isFinite(n) && n > 0 ? n : 40; // 40 pages × 25 = 1000 confirmed txs
@@ -508,6 +528,7 @@ export async function fetchAddressTxsRaw(address: string, fetchImpl: FetchFn = f
     }
     const rows = json as RawBtcTx[];
     if (rows.length === 0) break;
+    const shortPage = rows.length < ESPLORA_CHAIN_PAGE_SIZE;
 
     // A page that adds nothing new means the cursor did not advance. Stop rather
     // than spin — and never let a repeated page inflate the movement set.
@@ -520,6 +541,11 @@ export async function fetchAddressTxsRaw(address: string, fetchImpl: FetchFn = f
     }
     const next = rows[rows.length - 1]?.txid;
     if (added === 0 || typeof next !== "string" || next === lastSeenTxid) break;
+    // A SHORT page is Esplora's end-of-history signal (it pages confirmed txs in
+    // fixed pages and returns a full page whenever more exist). The loop used to
+    // spend one more request to receive an empty page it could already predict —
+    // one wasted round trip per address per sync (measured: 28 txs ⇒ 3 requests).
+    if (shortPage) break;
     lastSeenTxid = next;
   }
 
