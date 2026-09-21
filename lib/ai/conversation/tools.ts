@@ -697,6 +697,12 @@ const getIncome: ToolDefinition = {
       // The cadence half. This is the evidence that distinguishes a three-paycheck
       // month from a pay cut, and it comes from FORECAST-1/2, not from arithmetic here.
       sources: streams.map((s) => ({
+        // ⚠️ THE KEY, NOT ONLY THE NAME (I1). `incomeChanges.source` documented
+        // itself as taking a `sourceKey` "from get_pay_dates or get_income", and
+        // this returned a label and no key — a documented affordance that did not
+        // exist. Measured: the model fabricated `id:<an account id it saw
+        // elsewhere>`, which was refused, and the salary replacement never ran.
+        sourceKey: s.sourceKey,
         label: s.label,
         cadence: typeof s.cadence === 'object' && s.cadence && 'kind' in s.cadence
           ? (s.cadence as { kind: string }).kind : null,

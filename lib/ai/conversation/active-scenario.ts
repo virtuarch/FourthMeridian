@@ -102,6 +102,26 @@ export interface ActiveScenario {
    */
   ran?: ClausesRan;
   result: ActiveScenarioResult;
+  /**
+   * WHAT THE SIX FIGURES ARE — one date, and whether the path that reached it is
+   * a straight line.
+   *
+   * ⚠️ THE MEASURED FAILURE (I1). With the envelope carrying a December result,
+   * "what about next June?" was answered WITHOUT re-running, 0/6 — and the three
+   * reps of an earlier run gave three different net-worth figures for the same
+   * June, $45,000 apart, each interpolated in prose from the same December number.
+   * Nothing in the shape said a June figure was not derivable from a December one;
+   * `to` states the date and stops.
+   *
+   * ⚠️ IT IS A STATEMENT OF FACT, NOT DOCTRINE, which is why it belongs in the
+   * object and the MARKER stays bare. It says what was computed (one date) and
+   * what this particular path does — and the second half is DERIVED from the
+   * roster, so it is claimed only when a clause that actually bends the path ran.
+   * A floor holds cash flat and then releases it; a debt payoff ends; a
+   * contribution starts. None of those is a slope a fraction of a year can be
+   * taken from. With no such clause the sentence does not make the claim.
+   */
+  covers: string;
 }
 
 /** A conversation's single slot. Owned by whoever owns the transcript. */
@@ -182,8 +202,36 @@ export function captureActiveScenario(
       assumptions: stated,
       ...(ran ? { ran } : {}),
       result: { asOf, to, liquid, investments, debt, netWorth },
+      covers: coversSentence(to, ran),
     },
   };
+}
+
+/**
+ * The clauses whose presence means this path is not a straight line, named as a
+ * reader would name them.
+ *
+ * ⚠️ DERIVED FROM THE ROSTER, WHICH IS EXECUTION EVIDENCE. A clause is listed
+ * because it RAN, not because it was stated — so the sentence cannot claim a
+ * bend that no execution produced.
+ */
+const BENDS: { key: keyof ClausesRan; says: string }[] = [
+  { key: 'cashFloor', says: 'a cash floor' },
+  { key: 'debtPaydown', says: 'a debt payoff' },
+  { key: 'incomeChange', says: 'a dated income change' },
+  { key: 'surplusShare', says: 'a monthly contribution' },
+  { key: 'balanceShare', says: 'a balance-share contribution' },
+  { key: 'fixedAmounts', says: 'a scheduled contribution' },
+];
+
+function coversSentence(to: string, ran: ClausesRan | null): string {
+  const bends = ran
+    ? BENDS.filter((b) => ran[b.key] !== undefined && ran[b.key] !== 'NONE').map((b) => b.says)
+    : [];
+  const one = `${to}. No other date was computed.`;
+  if (bends.length === 0) return one;
+  return `${one} This path changes slope (${bends.join(', ')}), so a figure for any other `
+    + 'date is a different computation — not a fraction of this one.';
 }
 
 /**

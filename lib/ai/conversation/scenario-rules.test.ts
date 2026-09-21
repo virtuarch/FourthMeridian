@@ -231,14 +231,21 @@ console.log('\n4. FRESH ESTABLISHMENT — what the envelope keeps of the argumen
   check('a blank label is no name', boundedLabel('   ') === null && boundedLabel(undefined) === null);
   const established = runRaw([FLOOR_6]);
   const cap = captureActiveScenario(SCENARIO_TOOL, args, established.result);
-  check('exactly three keys, in one order, when the result carries a roster', cap.action === 'REPLACE'
-    && Object.keys(cap.scenario).join(',') === 'assumptions,ran,result');
-  check('a result with NO roster yields the two-key pair it always did', (() => {
+  // I1 — `covers` is the fourth member: one derived sentence naming the single
+  // date the figures are for, and — only when the roster shows a clause that
+  // bends the path — that another date is a different computation. Measured: the
+  // horizon change "what about next June?" gave a stale prose figure 6/6 without
+  // it and 0/6 with it.
+  check('exactly four keys, in one order, when the result carries a roster', cap.action === 'REPLACE'
+    && Object.keys(cap.scenario).join(',') === 'assumptions,ran,result,covers');
+  check('a result with NO roster yields the pair plus `covers`', (() => {
     const c = captureActiveScenario(SCENARIO_TOOL, args, { ...established.result, assumptions: {} });
-    return c.action === 'REPLACE' && Object.keys(c.scenario).join(',') === 'assumptions,result';
+    return c.action === 'REPLACE' && Object.keys(c.scenario).join(',') === 'assumptions,result,covers';
   })());
-  check('the envelope stays well inside the cookie: < 900 B for a three-rule scenario', cap.action === 'REPLACE'
-    && JSON.stringify(cap.scenario).length < 900, cap.action === 'REPLACE' ? `${JSON.stringify(cap.scenario).length} B` : '');
+  // ⚠️ 900 → 1,100 B, the measured cost of `covers` on a floor scenario (~210 B),
+  // and no further. The cookie refuses above 3,000 chars.
+  check('the envelope stays well inside the cookie: < 1,100 B for a three-rule scenario', cap.action === 'REPLACE'
+    && JSON.stringify(cap.scenario).length < 1100, cap.action === 'REPLACE' ? `${JSON.stringify(cap.scenario).length} B` : '');
 }
 
 console.log('\n5. A CLAUSE INTENTIONALLY REMOVED IS ALLOWED, AND ECHOED AS ABSENT');

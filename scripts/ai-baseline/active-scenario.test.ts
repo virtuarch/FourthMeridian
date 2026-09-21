@@ -55,8 +55,16 @@ console.log('1. CAPTURE — success establishes the pair');
     c.scenario.result.asOf === '2026-09-12' && c.scenario.result.to === '2026-12-31');
   check('exactly the six figures and nothing else',
     Object.keys(c.scenario.result).join(',') === 'asOf,to,liquid,investments,debt,netWorth');
-  check('exactly two keys on the envelope when the result carries no clause roster',
-    Object.keys(c.scenario).join(',') === 'assumptions,result');
+  // I1 — `covers` joins them: one derived sentence saying WHAT the six figures are
+  // (one date) and, when the roster shows a clause that bends the path, that a
+  // figure for another date is a different computation. Always present, because it
+  // is derivable from the horizon alone.
+  check('three keys on the envelope when the result carries no clause roster',
+    Object.keys(c.scenario).join(',') === 'assumptions,result,covers');
+  check('…and `covers` names the one date that WAS computed',
+    c.scenario.covers.startsWith('2026-12-31. No other date was computed.'));
+  check('…and claims no bend when no roster says one ran',
+    !/changes slope/.test(c.scenario.covers));
   // ⚠️ THE THIRD MEMBER (G5). A result that echoes which clauses RAN hands that
   // roster to the envelope in the same literal — so a floor that never ran is a
   // stated `'NONE'` on every later turn, not a key that was never there.
@@ -64,8 +72,11 @@ console.log('1. CAPTURE — success establishes the pair');
   const withRoster = { ...R1, assumptions: { clauses: { cashFloor: none, surplusShare: { ran: true, share: 1 },
     balanceShare: none, fixedAmounts: none, debtPaydown: none } } };
   const c3 = captureActiveScenario(SCENARIO_TOOL, A1, withRoster);
-  check('…and exactly three, in one order, when it does',
-    c3.action === 'REPLACE' && Object.keys(c3.scenario).join(',') === 'assumptions,ran,result');
+  check('…and exactly four, in one order, when it does',
+    c3.action === 'REPLACE' && Object.keys(c3.scenario).join(',') === 'assumptions,ran,result,covers');
+  check('…and the bend is claimed only for clauses that RAN',
+    c3.action === 'REPLACE' && /changes slope \(a monthly contribution\)/.test(c3.scenario.covers),
+    c3.action === 'REPLACE' ? c3.scenario.covers : '');
   // ⚠️ THE FIXTURE ABOVE IS A PRE-I1 ROSTER, DELIBERATELY. An envelope lives in a
   // two-hour cookie, so a roster written by an EARLIER build reaches this code on
   // every deploy. It must degrade, not throw — it threw, and this caught it. The
@@ -249,12 +260,29 @@ console.log('\n5. CLIP 6 — the raw result is elided, the envelope is not');
 
 console.log('\n6. SIZE');
 {
-  const s = scenarioMessage({ assumptions: A1, result: {
-    asOf: '2026-09-12', to: '2026-12-31', liquid: 50898.84,
-    investments: 24346.97, debt: 0, netWorth: 75245.81 } } as ActiveScenario).content;
+  // ⚠️ THE CEILING MOVED ONCE, FOR ONE MEASURED SENTENCE (I1). The envelope's
+  // original design estimate was ~423 B / ~106 tok for a bare scenario, and the
+  // fixture below is the WORST case the contract can produce: every clause in the
+  // roster, an income rule, an outflow, and the full `covers` sentence. `covers`
+  // itself is ~210 B of it. The raw cookie ceiling (3,000 chars) is what protects
+  // the transport; this is what stops the envelope growing unnoticed.
+  const withCovers = captureActiveScenario(SCENARIO_TOOL, A1, { ...R1, assumptions: { clauses: {
+    cashFloor: { ran: true, keep: 45000, firstReached: '2026-10-31', monthsBelowAfterReached: 0,
+      fractionOfExcess: 1 },
+    surplusShare: { ran: false }, balanceShare: { ran: false }, fixedAmounts: { ran: false },
+    debtPaydown: { ran: true, order: [['highest_apr']], paidToDebt: 10 },
+    incomeChange: { ran: true, rules: [{ id: 'i1', op: 'SCALE', of: ['Payroll'],
+      from: '2027-01-01', to: '2027-12-31', payDatesChanged: 26, first: '2027-01-01',
+      last: '2027-12-17', incomeBefore: 1, incomeAfter: 2 }] } } } });
+  const s = scenarioMessage(
+    (withCovers.action === 'REPLACE' ? withCovers.scenario : null) as ActiveScenario).content;
   const tok = Math.ceil(s.length / 4);
-  check('within the design estimate (~423 B / ~106 tok)', s.length < 700 && tok < 180,
-    `${s.length} B / ~${tok} tok`);
+  check('the worst case the contract can produce fits 1,000 B / 250 tok',
+    s.length < 1000 && tok < 250, `${s.length} B / ~${tok} tok`);
+  // A bare scenario — no roster, no clause — is still close to the original design.
+  const bare = scenarioMessage(
+    (captureActiveScenario(SCENARIO_TOOL, A1, R1) as { scenario: ActiveScenario }).scenario).content;
+  check('…and a bare scenario is still ~half of that', bare.length < 560, `${bare.length} B`);
   check('no prose doctrine in the label',
     !/prefer|always|never|trust|instead of|rather than|baseline/i.test(ACTIVE_SCENARIO_MARKER),
     ACTIVE_SCENARIO_MARKER);
