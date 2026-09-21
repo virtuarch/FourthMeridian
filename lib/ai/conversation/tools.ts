@@ -55,7 +55,10 @@ import {
 } from '@/lib/data/snapshot-window';
 import { loadForecastIncomeStreams } from '@/lib/ai/forecast/streams';
 import { assembleForecast, projectInterval } from '@/lib/ai/forecast/assemble';
-import { SCENARIO_INPUTS, NOT_AN_ASSUMPTION } from './scenario-inputs';
+import { SCENARIO_INPUTS, NOT_AN_ASSUMPTION, scenarioAssumptionKeys } from './scenario-inputs';
+import {
+  mergeIntoArgs, stagePlan, type Attribution, type PlanSlot,
+} from './pending-plan';
 import {
   type IncomeChangeOpKind, type IncomeChangeResult, type IncomeChangeRule,
   type RatePeriodKind,
@@ -136,6 +139,13 @@ export interface ToolContext {
    * never sent to the model and no financial tool reads it.
    */
   turn?:    TurnEvidence;
+  /**
+   * The conditions staged in this conversation and not yet run — written only by
+   * `stage_assumptions`, read only by the scenario tools, which merge it into the
+   * arguments they execute. Absent in a context built without it (every harness
+   * that predates it): nothing is merged, and behaviour is exactly as before.
+   */
+  plan?:    PlanSlot;
 }
 
 export interface ToolDefinition {
@@ -1762,6 +1772,8 @@ const projectCash: ToolDefinition = {
         + 'so under `horizon.requested` / `horizon.omitted`.' },
     asOf: str('Project FROM this date using only evidence available then. Omit for today. '
       + 'Use for "what would you have predicted back in January?".'),
+    ignoreStaged: { type: 'boolean', description: 'Only when conditions are staged in this '
+      + 'conversation AND the user asked for the current trend without them.' },
   }, ['to']),
   async run(a, ctx) {
     const toISO = String(a.to);
@@ -1781,6 +1793,26 @@ const projectCash: ToolDefinition = {
     // CHANGED the answer is worth refusing the answer for.
     const rejected = refuseUnknownArguments(a, projectCash.parameters)
       .filter((r) => !r.argument || !NOT_AN_ASSUMPTION.includes(r.argument));
+    // ⚠️ STAGED CONDITIONS ARE NOT DROPPED BY PICKING THE TOOL THAT CANNOT SEE THEM
+    // (planning continuity). Measured: with a raise, a floor, a debt order and
+    // "invest the rest" all staged, "what do I have next December?" called THIS
+    // tool 6/6 and answered with the current trend — while saying, in the answer,
+    // that none of the user's conditions were in it. It is the same failure as
+    // `incomeChanges` sent here: a condition the user stated, computed without.
+    // A retrospective run ("what would you have predicted in January?") is about
+    // the past and is not affected; the current trend on purpose is one visible
+    // flag away.
+    const retrospectiveRun = typeof a.asOf === 'string' && a.asOf < ctx.asOfISO;
+    const staged = ctx.plan?.pending.clauses ?? [];
+    if (staged.length > 0 && a.ignoreStaged !== true && !retrospectiveRun && rejected.length === 0) {
+      return { unavailable: `${staged.length} condition(s) the user stated earlier in this `
+          + 'conversation are staged, and this projection cannot apply them, so it was NOT run',
+        staged: staged.map((c) => ({ id: c.id, [c.key]: c.value })),
+        instead: 'scenario_projection applies every staged condition by itself — call it with the '
+          + 'horizon (`to`) and nothing else needs restating. Only if the user asked for the '
+          + 'current trend WITHOUT their conditions, call project_cash again with '
+          + '`ignoreStaged: true`, and say that is what it shows.' };
+    }
     if (rejected.length > 0) {
       return { unavailable: 'this projection cannot carry what was stated, so it was NOT run',
         notApplied: notAppliedEcho(rejected),
@@ -2033,6 +2065,13 @@ interface ScenarioSetup {
    * stated does not appear at all. Absent when none was stated.
    */
   incomeChanges?: IncomeChangeResult;
+  /**
+   * Conditions staged earlier in this conversation that this run applied, and the
+   * arguments as they actually ran. Absent when nothing was staged.
+   */
+  staged?: { applied: Attribution[]; replacedCallItems: { id: string; key: string }[] };
+  /** The arguments this run executed — the call's, with any staged clauses merged in. */
+  argumentsRun: Record<string, unknown>;
   run: (o?: ScenarioOverrides) => LedgerResult;
 }
 
@@ -2158,6 +2197,23 @@ async function prepareScenario(
    */
   explicitDates?: string[],
 ): Promise<ScenarioSetup | { unavailable: string; reason?: unknown }> {
+  // ── Staged conditions, merged in before anything reads the arguments ───────
+  //
+  // ⚠️ THE MEASURED FAILURE (planning continuity). Stated one bare turn at a time
+  // — a raise, a floor, a debt order, where the rest goes — and then "what do I
+  // have next December?", the scenario that ran contained all four 0/6. What the
+  // user said was in prose, and the call carried whatever the model reassembled.
+  // Staged clauses are laid over the call by IDENTITY; whatever ran is reported
+  // clause by clause as `EARLIER_IN_CONVERSATION`, and a call item a staged
+  // restatement replaced is named. Remembered memory is never merged: there is no
+  // path from it to here.
+  let staged: ScenarioSetup['staged'];
+  if (ctx.plan && ctx.plan.pending.clauses.length > 0) {
+    const m = mergeIntoArgs(ctx.plan.pending, a);
+    a = m.args;
+    staged = { applied: m.applied, replacedCallItems: m.replacedCallItems };
+  }
+
   // ── The closed argument set, read off the tool's own schema ────────────────
   //
   // ⚠️ THIS RAN AFTER THE SPINE WAS BUILT, AND I1 MOVED IT. Everything below
@@ -2484,6 +2540,8 @@ async function prepareScenario(
     asOf, toISO, plan, dates, accounts, returns, liabilities,
     contributions: expanded.movements, outflows, rejected, monthlySpending, floorDerivations,
     ...(endpoint.incomeChanges ? { incomeChanges: endpoint.incomeChanges } : {}),
+    ...(staged ? { staged } : {}),
+    argumentsRun: a,
     run: (o: ScenarioOverrides = {}) => {
       const useContribs = o.extraContributions
         ? [...expanded.movements, ...o.extraContributions] : expanded.movements;
@@ -2657,6 +2715,21 @@ function scenarioAssumptions(
       ...(setup.monthlySpending.source === 'OBSERVED'
         ? { note: 'from the same observed rate project_cash uses' } : {}) },
     ...(ledger.liabilities ? { liabilities: liabilityEcho(ledger) } : {}),
+    // ⚠️ WHAT RAN BECAUSE IT WAS STAGED, SAID CLAUSE BY CLAUSE (planning
+    // continuity). A condition the user stated in an earlier turn and this run
+    // applied is named as such — never as something this call said — and a call
+    // item a newer staged restatement replaced is named too, so "pending wins" is
+    // never silent. `argumentsRun` is what executed; the envelope keeps THAT.
+    ...(setup.staged ? { fromEarlierInConversation: {
+      clauses: setup.staged.applied.map((x) => ({ id: x.id, argument: x.key, statedInTurn: x.stagedAt + 1 })),
+      ...(setup.staged.replacedCallItems.length
+        ? { replacedInThisCall: setup.staged.replacedCallItems } : {}),
+      meaning: 'These conditions were stated earlier in this conversation and were applied to this '
+        + 'run alongside the arguments of this call. Describe them as the user\'s stated conditions. '
+        + 'Where `replacedInThisCall` names one, the user\'s newer statement replaced what this call '
+        + 'carried.',
+    } } : {}),
+    argumentsRun: setup.argumentsRun,
     // ⚠️ WHAT WAS STATED AND NOT APPLIED, IN THE SAME ECHO — see `notAppliedEcho`.
     ...(notAppliedEcho([...setup.rejected, ...ledger.rejected])
       ? { notApplied: notAppliedEcho([...setup.rejected, ...ledger.rejected]) } : {}),
@@ -3347,12 +3420,102 @@ const reconcileProjection: ToolDefinition = {
 
 // ── Registry ─────────────────────────────────────────────────────────────────
 
+// ── 12. Staging — conditions stated before a scenario has run ────────────────
+
+/**
+ * THE CARRIER FOR "SAID, NOT YET RUN" (planning continuity).
+ *
+ * ⚠️ ITS PARAMETERS ARE THE SCENARIO'S OWN, READ OFF `SCENARIO_INPUTS`. There is
+ * no second schema: a clause staged here is one item of the argument the scenario
+ * tools already take, in the same shape, checked against the same literal — and
+ * the next scenario run merges it in by identity (`pending-plan.ts`).
+ *
+ * ⚠️ THE BOUNDARY WITH `remember` IS THE SENTENCE THIS DESCRIPTION LEADS WITH.
+ * Measured before this tool existed: "For this scenario, keep nine months in cash"
+ * was written to DURABLE memory 3/3 — because memory was the only structured place
+ * a condition could go. A condition for the calculation being assembled is staged
+ * here; a standing preference the user wants kept across conversations is theirs
+ * to ask `remember` for.
+ */
+const stageAssumptions: ToolDefinition = {
+  name: 'stage_assumptions',
+  description:
+    'Hold a condition the user just stated for a projection that has NOT been run yet — a '
+    + 'raise or income change from a date, a cash floor, which debt to pay first, where the '
+    + 'rest goes, a one-off amount, a return, a spending level — so the next '
+    + 'scenario_projection, scenario_crossing or scenario_goal_seek in this conversation '
+    + 'applies it. Use it whenever a condition is stated without asking for a figure yet ("keep '
+    + 'nine months of expenses in cash", "starting January my income goes up 10%", "pay the '
+    + 'highest APR first", "for this scenario, …"), and to restate one ("actually make it 15%" '
+    + 'replaces the staged raise). Each field takes exactly the shape the scenario tools take. '
+    + 'Staged conditions are NOT remembered beyond this conversation, NOT current facts, and NOT '
+    + 'results: nothing is calculated until a scenario runs. A standing preference the user wants '
+    + 'kept for future conversations is a different thing, and is not this.',
+  // ⚠️ THE KEYS ARE DERIVED; THE SHAPES ARE REFERENCED, NOT COPIED. Spreading
+  // `SCENARIO_INPUTS` in here restated ~11 KB of schema that scenario_projection
+  // already puts in every prompt. The model reads each shape there; this names the
+  // same closed set of keys, and `pending-plan.ts` checks every entry against the
+  // canonical literal exactly as the scenario would.
+  parameters: obj({
+    ...Object.fromEntries(scenarioAssumptionKeys().map((k) => {
+      const t = (SCENARIO_INPUTS as Record<string, { type?: string }>)[k]?.type ?? 'object';
+      return [k, { type: t, ...(t === 'array' ? { items: { type: 'object' } } : {}),
+        description: `Exactly the shape of scenario_projection's \`${k}\`.` }];
+    })),
+    retract: { type: 'array', items: { type: 'string' },
+      description: 'Ids of staged conditions the user has withdrawn (e.g. "p2").' },
+    replace: { type: 'boolean', description: 'Only when the user WITHDREW part of a staged rule '
+      + '(e.g. "don\'t pay debt first after all"). Without it, a change that would drop part of a '
+      + 'staged rule is refused.' },
+  }),
+  async run(a, ctx) {
+    if (!ctx.plan || !ctx.turn) {
+      return { unavailable: 'this conversation cannot hold staged conditions here, so nothing was '
+        + 'staged. State the conditions in the scenario call itself.' };
+    }
+    // ⚠️ STAGING IS FOR BEFORE A SCENARIO RUNS, AND ONLY THEN. Measured: once a
+    // scenario had run, "actually make the raise 15%" was STAGED 6/6 and nothing
+    // re-ran, although the result said to run it — the recompute I1 held at 6/6
+    // fell to 0/6. After a run, a change takes effect by running again with it; the
+    // envelope carries every condition that ran, and a re-run merges nothing stale
+    // because the staged plan is empty from the moment a scenario runs. One carrier
+    // per phase: stated-not-run here, ran in the envelope.
+    if (ctx.plan.scenarioRan) {
+      return { unavailable: 'a scenario has ALREADY RUN in this conversation, so this change was '
+          + 'NOT staged — staging holds conditions only until the first run',
+        instead: 'run scenario_projection again now with the ACTIVE SCENARIO\'s arguments and this '
+          + 'change applied to them (for the horizon the user asked about). That run is the answer.' };
+    }
+    const { retract, replace, ...stage } = a;
+    const r = stagePlan(ctx.plan.pending,
+      { stage, replace: replace === true,
+        retract: Array.isArray(retract) ? retract.filter((x): x is string => typeof x === 'string') : [] },
+      { turn: Math.max(0, ctx.turn.userTexts.length - 1), evidence: ctx.turn });
+    ctx.plan.pending = r.plan;
+    return {
+      staged: r.staged, retracted: r.retracted,
+      ...(r.refused.length ? { notStaged: notAppliedEcho(r.refused) } : {}),
+      ...(r.replacedFields.length ? { replacedFields: {
+        fields: r.replacedFields,
+        meaning: 'These fields REPLACED what was staged before — a merge cannot tell "instead" from '
+          + '"then". If the user meant both (e.g. pay the highest-APR debt first, THEN invest the '
+          + 'rest), stage the combined value, e.g. `target: ["highest_apr", "investments"]`.',
+      } } : {}),
+      heldNow: r.plan.clauses.map((c) => ({ id: c.id, [c.key]: c.value })),
+      meaning: 'Held for THIS conversation only and not yet run; nothing here is a figure. The next '
+        + 'scenario run applies every condition in `heldNow` and says so. To answer with numbers, '
+        + 'run the scenario.',
+    };
+  },
+};
+
 export const TOOLS: readonly ToolDefinition[] = [
   getFinancialSnapshot, getSpending, measureFlows, getBaselines, getTransactions, getIncome,
   getInvestments,
   getNetWorthHistory, findInBalanceHistory, explainNetWorthComposition, projectCash,
   getPayDates, investmentScenario,
   scenarioProjection, scenarioCrossing, scenarioGoalSeek, reconcileProjection,
+  stageAssumptions,
   ...MEMORY_TOOLS,
 ];
 

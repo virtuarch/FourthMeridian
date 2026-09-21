@@ -176,7 +176,9 @@ console.log('4. tool surface');
   // 17 + the two M1 heads: `measure_flows` (a measure and its comparison in one
   // call) and `get_baselines` (the monthly rates and what is derived from them).
   // Two heads, not a catalogue: no per-question measure tool exists.
-  check('nineteen tools', TOOLS.length === 19, String(TOOLS.length));
+  // +1 — `stage_assumptions`, the carrier for conditions stated before a scenario
+  // has run (planning continuity). Its keys are derived from SCENARIO_INPUTS.
+  check('twenty tools', TOOLS.length === 20, String(TOOLS.length));
   check('names are unique', new Set(TOOLS.map((t) => t.name)).size === TOOLS.length);
   check('every tool describes itself', TOOLS.every((t) => t.description.length > 40));
   check('every schema is a closed object',

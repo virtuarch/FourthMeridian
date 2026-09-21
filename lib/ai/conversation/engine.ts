@@ -23,6 +23,7 @@
  * whatever it names.
  */
 
+import { emptyPlan, type PendingPlan } from './pending-plan';
 import {
   assembleFullContext, buildEvidence, ARM_USES_TOOLS, type Arm, type EvidencePack,
 } from './evidence';
@@ -144,6 +145,8 @@ export interface StatelessTurn {
   evidence: EvidencePack;
   /** The hypothetical under discussion when the turn ended, if there is one. */
   scenario: ActiveScenario | null;
+  /** Conditions staged and not yet run when the turn ended; null when none. */
+  pending:  PendingPlan | null;
   /**
    * Evidence this answer wanted and did not have, ready to show.
    *
@@ -176,6 +179,8 @@ export async function runStatelessTurn(args: {
   history:   readonly ConversationMessage[];
   /** The hypothetical carried in from the previous turn, if one was verified. */
   scenario?: ActiveScenario | null;
+  /** Conditions staged earlier in this conversation and not yet run, if verified. */
+  pending?:  PendingPlan | null;
   asOfISO?:  string;
   model?:    string;
   correlationId?: string;
@@ -194,6 +199,8 @@ export async function runStatelessTurn(args: {
   // duration of one process.
   const slot: ScenarioSlot = newScenarioSlot();
   if (args.scenario) slot.active = args.scenario;
+  // The staged plan, restored the same way and for the same span: one turn.
+  open.toolCtx.plan = { pending: args.pending ?? emptyPlan(), scenarioRan: slot.active !== null };
 
   const record = await executeTurn({
     messages: open.messages, user: args.user, index: args.history.length,
@@ -206,6 +213,7 @@ export async function runStatelessTurn(args: {
 
   return { answer: record.assistant, record, evidence: open.evidence,
     scenario: slot.active,
+    pending: open.toolCtx.plan.pending.clauses.length > 0 ? open.toolCtx.plan.pending : null,
     // Read off THIS turn's tool results, so a gap is a remark about this answer
     // rather than a standing notice about the Space.
     knowledgeGaps: collectKnowledgeGaps(record.toolCalls) };

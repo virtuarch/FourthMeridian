@@ -31,9 +31,13 @@ import {
   encryptWithPurpose, decryptWithPurpose, EncryptionPurpose,
 } from '@/lib/plaid/encryption';
 import type { ActiveScenario } from './active-scenario';
+import { isPendingPlan, type PendingPlan } from './pending-plan';
 
 /** Bumped when the sealed shape changes. An older version is discarded, never coerced. */
-const VERSION = 1;
+// 2 — a conversation may now carry STAGED clauses beside an executed scenario
+// (`pending-plan.ts`). A v1 seal is discarded, never coerced: it cannot say
+// whether a pending plan existed, and guessing "none" is the safe reading anyway.
+const VERSION = 2;
 
 /**
  * How long a sealed state may be presented.
@@ -55,11 +59,24 @@ export const RUNTIME_STATE_TTL_MS = 2 * 60 * 60 * 1000;
  * ceiling is well under the ~4 KB a cookie gets, after URL-encoding roughly
  * doubles the hex; a measured ordinary scenario seals to about 1.1 KB.
  */
-export const MAX_SEALED_CHARS = 3_000;
+// ⚠️ 3,000 → 3,900 (planning continuity), SET FROM A MEASUREMENT. The carrier now
+// holds the executed scenario AND the conditions staged since it ran, and a seal
+// over the ceiling is discarded WHOLE — so it must hold the worst case of both at
+// once. Tested, not estimated: a 1,000-byte envelope (its pinned ceiling) beside a
+// plan at its staging cap was refused at 3,600. The seal is hex, so it needs no
+// URL-encoding; a browser's limit is 4,096 bytes of name plus value, and
+// `fm_ai_state=` is 12 of them.
+export const MAX_SEALED_CHARS = 3_900;
 
-/** What a conversation carries between turns. One slot, and nothing else. */
+/**
+ * What a conversation carries between turns: what RAN, and what has been stated
+ * since and has not run yet. Two slots, never one object — the envelope means
+ * "this executed", and a clause that merely was said must never borrow that.
+ */
 export interface RuntimeState {
   scenario: ActiveScenario | null;
+  /** Conditions staged in this conversation and not yet run. Absent when none. */
+  pending?: PendingPlan | null;
 }
 
 /**
@@ -110,9 +127,11 @@ export function conversationTail(history: readonly { role: string; content: stri
 export function sealRuntimeState(
   state: RuntimeState, binding: StateBinding,
 ): string | null {
-  if (!state.scenario) return null;
+  const pending = state.pending && state.pending.clauses.length > 0 ? state.pending : null;
+  if (!state.scenario && !pending) return null;
   const payload: SealedPayload = {
-    v: VERSION, iat: Date.now(), ...binding, scenario: state.scenario };
+    v: VERSION, iat: Date.now(), ...binding, scenario: state.scenario,
+    ...(pending ? { pending } : {}) };
   try {
     const sealed = encryptWithPurpose(
       JSON.stringify(payload), EncryptionPurpose.AI_RUNTIME_STATE);
@@ -147,9 +166,15 @@ export function openRuntimeState(
   if (payload.spaceId !== binding.spaceId) return null;
   if (payload.tail !== binding.tail) return null;
   if (typeof payload.iat !== 'number' || Date.now() - payload.iat > RUNTIME_STATE_TTL_MS) return null;
-  const scenario = payload.scenario;
-  if (!scenario || typeof scenario !== 'object'
+  // ⚠️ A STAGED PLAN THAT IS NOT ONE IS DROPPED ON ITS OWN; A SCENARIO THAT IS
+  // NOT ONE DROPS EVERYTHING. The first is conditions nobody ran, and losing them
+  // costs a restatement. The second is a claim about what executed, and a seal
+  // that carries a malformed one is not a seal this code issued.
+  const pending = isPendingPlan(payload.pending) ? payload.pending : null;
+  const scenario = payload.scenario ?? null;
+  if (scenario !== null && (typeof scenario !== 'object'
     || typeof scenario.assumptions !== 'object' || scenario.assumptions === null
-    || typeof scenario.result !== 'object' || scenario.result === null) return null;
-  return { scenario };
+    || typeof scenario.result !== 'object' || scenario.result === null)) return null;
+  if (!scenario && !pending) return null;
+  return { scenario, ...(pending ? { pending } : {}) };
 }

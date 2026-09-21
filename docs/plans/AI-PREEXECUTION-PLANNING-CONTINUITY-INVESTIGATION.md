@@ -205,7 +205,7 @@ values and when each was staged, plus one factual line: "stated in this conversa
 not yet run; the next scenario run applies them".
 
 **Budget**
-- ≤ 8 clauses and ≤ 700 bytes serialised. Staging beyond either is refused by name.
+- ≤ 8 clauses and ≤ 600 bytes serialised. Staging beyond either is refused by name.
 - `MAX_SEALED_CHARS` rises from 3,000 to 3,600, because pending and a worst-case
   envelope must fit together. A cookie's hard limit is 4,096 bytes including name and
   attributes.

@@ -166,6 +166,14 @@ export function captureActiveScenario(
   toolName: string, args: unknown, result: unknown,
 ): ScenarioCapture {
   if (toolName !== SCENARIO_TOOL && toolName !== CROSSING_TOOL) return { action: 'IGNORE' };
+  // ⚠️ THE ARGUMENTS THAT RAN, NOT THE ONES THAT WERE SENT (planning continuity).
+  // A scenario tool merges conditions staged earlier in the conversation into its
+  // call and echoes the result as `argumentsRun`. Capturing the call's own
+  // arguments would store a scenario missing exactly the clauses the user stated
+  // in earlier turns — and a bare crossing that ran them would look like a
+  // baseline reading and be IGNORED. The echo is the tool's output, so a model
+  // cannot put a clause into it that did not run.
+  args = argumentsRunOf(result) ?? args;
   // ⚠️ A BASELINE QUESTION IS NOT A HYPOTHETICAL. "When do I hit $50k on my
   // current trend?" is a crossing with no assumption in it, and measured live it
   // REPLACED the sweep scenario the conversation had just built — the next turn's
@@ -205,6 +213,14 @@ export function captureActiveScenario(
       covers: coversSentence(to, ran),
     },
   };
+}
+
+/** The arguments a scenario result says it executed, when it says. */
+function argumentsRunOf(result: unknown): Record<string, unknown> | null {
+  const r = result as Record<string, unknown> | null | undefined;
+  const echo = (r?.assumptions ?? r?.assumptionsInForce) as { argumentsRun?: unknown } | null | undefined;
+  const run = echo && typeof echo === 'object' ? echo.argumentsRun : undefined;
+  return run && typeof run === 'object' && !Array.isArray(run) ? run as Record<string, unknown> : null;
 }
 
 /**
