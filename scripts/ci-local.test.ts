@@ -83,10 +83,10 @@ console.log("contract helpers");
     nvmrcMajor("lts/*") === null && nvmrcMajor("") === null);
   check("engines: 24.x / 24 ⇒ 24, a range ⇒ null", enginesMajor("24.x") === 24
     && enginesMajor("24") === 24 && enginesMajor(">=20.9.0") === null && enginesMajor(undefined) === null);
-  const stripped = withoutDatabaseUrls({ DATABASE_URL: "postgresql://x@h/fintracker",
+  const stripped = withoutDatabaseUrls({ NODE_ENV: "test", DATABASE_URL: "postgresql://x@h/fintracker",
     DIRECT_URL: "d", SHADOW_DATABASE_URL: "s", KEEP: "k" });
   check("every database URL is removed from the inherited environment",
-    DB_URL_VARS.every((k) => !(k in stripped)) && stripped.KEEP === "k");
+    DB_URL_VARS.every((k) => !(k in stripped)) && stripped.KEEP === "k" && stripped.NODE_ENV === "test");
 }
 
 console.log(`\n${passes} passed, ${failures} failed`);
