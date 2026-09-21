@@ -137,6 +137,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       user: asked,
       history,
       scenario: carried?.scenario ?? null,
+      // What was stated earlier in THIS conversation and has not run. Bound by the
+      // same seal, so a new chat, another Space or another user carries none.
+      pending: carried?.pending ?? null,
       asOfISO: todayUTCISO(),
       correlationId: conversationKey(user.id, history[0]?.content ?? asked),
       surface: 'chat',
@@ -163,7 +166,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // the seal must be bound to. When the hypothetical is gone — cleared by a
     // failed recomputation, or never established — the carrier is cleared too,
     // rather than left holding a scenario the conversation has moved past.
-    const sealed = sealRuntimeState({ scenario: turn.scenario }, {
+    const sealed = sealRuntimeState({ scenario: turn.scenario, pending: turn.pending }, {
       ...binding, tail: conversationTail([...history, { role: 'assistant', content: turn.answer }]),
     });
     res.cookies.set(STATE_COOKIE, sealed ?? '', {

@@ -23,6 +23,8 @@ import {
   RUNTIME_STATE_TTL_MS, MAX_SEALED_CHARS,
 } from './runtime-state';
 import type { ActiveScenario } from './active-scenario';
+import { emptyPlan, stagePlan, MAX_PENDING_CLAUSES } from './pending-plan';
+import { turnEvidence } from './memory-model';
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -152,8 +154,50 @@ console.log('\n7. IT IS NOT PERSISTENCE');
     .replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
   check('it touches no database', !/db\.|prisma|findUnique|create\(/.test(src));
   check('it holds no module-level store', !/new Map|new Set|let cache|globalThis/.test(src));
-  check('it carries the scenario and NOTHING else',
-    !/evidence|toolResult|messages|memory|body/.test(src));
+  // Planning continuity widened this from one slot to two — what RAN and what was
+  // STATED since — and the rest of the claim is unchanged: no evidence, no tool
+  // result, no transcript, no memory.
+  check('it carries the scenario and the staged plan, and NOTHING else',
+    !/evidence|toolResult|messages|memory|body/.test(src)
+    && /interface RuntimeState \{\s*scenario: ActiveScenario \| null;[\s\S]*?pending\?: PendingPlan \| null;\s*\}/.test(src));
+}
+
+console.log('\n8. A STAGED PLAN — carried beside the scenario, never as one');
+{
+  const staged = stagePlan(emptyPlan(), { stage: {
+    incomeChanges: [{ op: 'SCALE', from: '2027-01-01', multiplier: 1.1 }],
+    contributions: [{ liquidFloorMonthsOfExpenses: 9, fractionOfExcess: 1, target: ['highest_apr', 'investments'] }],
+  } }, { turn: 0, evidence: turnEvidence(['up 10% from January; keep 9 months, pay highest APR first, invest the rest'], []) }).plan;
+  const onlyPending = sealRuntimeState({ scenario: null, pending: staged }, BINDING);
+  check('a conversation with ONLY staged conditions still seals', onlyPending !== null);
+  const back = openRuntimeState(onlyPending, BINDING);
+  check('…and opens to the same plan, with no scenario invented beside it',
+    back !== null && back.scenario === null && JSON.stringify(back.pending) === JSON.stringify(staged));
+  check('…and refuses a fresh chat', openRuntimeState(onlyPending, { ...BINDING, tail: '' }) === null);
+  check('…another Space', openRuntimeState(onlyPending, { ...BINDING, spaceId: 'spc_2' }) === null);
+  check('…another user', openRuntimeState(onlyPending, { ...BINDING, userId: 'usr_2' }) === null);
+  check('an EMPTY plan is nothing to carry', sealRuntimeState({ scenario: null, pending: emptyPlan() }, BINDING) === null);
+  const both = sealRuntimeState({ scenario: SCENARIO, pending: staged }, BINDING);
+  const opened = openRuntimeState(both, BINDING);
+  check('scenario and plan travel together, each intact',
+    opened !== null && JSON.stringify(opened.scenario) === JSON.stringify(SCENARIO)
+    && JSON.stringify(opened.pending) === JSON.stringify(staged));
+  // The worst case the caps allow, beside an ordinary scenario, fits the seal.
+  const e = turnEvidence(['$1,000 $2,000 $3,000 $4,000 $5,000 $6,000 $7,000 $8,000'], []);
+  let worst = emptyPlan();
+  for (let i = 0; i < MAX_PENDING_CLAUSES; i++) {
+    worst = stagePlan(worst, { stage: { outflows: [{ onDate: `2027-0${i + 1}-15`, amount: (i + 1) * 1000,
+      label: 'a forty-character name for a thing here' }] } }, { turn: i, evidence: e }).plan;
+  }
+  // The envelope's own worst case is pinned under 1,000 B (active-scenario.test.ts);
+  // this one is padded to it, so the pair is tested at both ceilings at once.
+  const BIG: ActiveScenario = { ...SCENARIO, assumptions: { ...SCENARIO.assumptions,
+    pad: 'x'.repeat(Math.max(0, 1000 - JSON.stringify(SCENARIO).length)) } };
+  check('the padded envelope is the pinned worst case', JSON.stringify(BIG).length >= 1000);
+  const sealedWorst = sealRuntimeState({ scenario: BIG, pending: worst }, BINDING);
+  check('the fullest plan the caps allow, beside a scenario, still fits the seal',
+    sealedWorst !== null && sealedWorst.length <= MAX_SEALED_CHARS,
+    `${sealedWorst?.length ?? 'refused'} chars / ${worst.clauses.length} clauses`);
 }
 
 console.log(failures === 0 ? '\nALL PASSED' : `\n${failures} FAILED`);

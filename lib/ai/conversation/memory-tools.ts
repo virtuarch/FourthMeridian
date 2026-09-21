@@ -260,8 +260,10 @@ const remember: ToolDefinition = {
   description:
     'Record ONE thing this user asked you to remember, so a later session can pick it up — or change or ' +
     'withdraw one. Use it when they say to remember a goal ("I want $1M by 2030"), a planned expense ("a car ' +
-    'around 20k in 2027"), a standing rule ("keep six months of expenses in cash"), or a planning figure ' +
-    '("use $5k monthly spending for planning"). Give exactly one of ' +
+    'around 20k in 2027"), a standing rule ("I always want six months of expenses in cash"), or a planning ' +
+    'figure ("use $5k monthly spending for planning"). A condition for a projection being put together in ' +
+    'THIS conversation — "for this scenario…", "assume…", "what if…", or a raise, floor or debt order stated ' +
+    'while building one — is not a memory: stage it with stage_assumptions instead. Give exactly one of ' +
     '`goal`, `plannedExpense`, `rule`, `baseline`. Store what they SAID: a multiple stays a multiple (six ' +
     'months is `liquidFloorMonthsOfExpenses: 6`, never the dollars it works out to), and a money value must be ' +
     'a figure they stated — never a balance, a projection or anything you read from another tool. Leave out ' +

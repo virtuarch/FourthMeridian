@@ -21,6 +21,7 @@
  * scripts/ai-baseline, which is now a client of this module like any other.
  */
 
+import { consumePlan, injectPending } from './pending-plan';
 import { generateWithTools } from '@/lib/ai/provider';
 import { callWithRateLimitRetry } from '@/lib/ai/rate-limit-retry';
 import { findTool, type ToolContext } from './tools';
@@ -226,6 +227,11 @@ async function executeTurnInner(args: {
   // compaction only rewrites `role: 'tool'` content and counts turns by assistant
   // completions, so a system message is inert to it. This is the whole continuity
   // contract: raw scenario payloads keep ageing out exactly as before.
+  // ⚠️ THE STAGED SLOT GOES FIRST, THE EXECUTED ONE LAST. `injectScenario` splices
+  // its envelope out and pushes it to the tail, so the last thing before the
+  // question is still what RAN; what was merely stated sits just before it, under
+  // its own marker. Absent when nothing is staged.
+  injectPending(messages, toolCtx.plan?.pending ?? null);
   if (args.scenario) injectScenario(messages, args.scenario);
   messages.push({ role: 'user', content: user });
   const rec: TurnRecord = {
@@ -291,6 +297,16 @@ async function executeTurnInner(args: {
           const capture = captureActiveScenario(call.name, safeParse(call.arguments), result);
           applyCapture(args.scenario, capture);
           if (capture.action !== 'IGNORE') rec.scenarioCapture = capture.action;
+          // ⚠️ A STAGED CLAUSE IS CONSUMED ONLY BY A RUN THAT ESTABLISHED A SCENARIO.
+          // It now lives in the envelope's `argumentsRun`, which is truer: it ran.
+          // A failed run CLEARs the envelope and keeps the clauses, so nothing the
+          // user said is lost to an error; a goal seek establishes no scenario and
+          // consumes nothing.
+          if (toolCtx.plan) toolCtx.plan.scenarioRan = args.scenario.active !== null;
+          if (capture.action === 'REPLACE' && toolCtx.plan) {
+            const applied = appliedStagedIds(result);
+            if (applied.length > 0) toolCtx.plan.pending = consumePlan(toolCtx.plan.pending, applied);
+          }
         }
         messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
       }
@@ -351,4 +367,17 @@ export function measureTranscript(messages: readonly unknown[]): TranscriptCompo
 /** Tool arguments as the model sent them, never lost to a parse failure. */
 function safeParse(raw: string): unknown {
   try { return JSON.parse(raw || '{}'); } catch { return { unparseable: raw }; }
+}
+
+/** The staged clause ids a scenario result says it applied. Read off the tool's own echo. */
+function appliedStagedIds(result: unknown): string[] {
+  const r = result as Record<string, unknown> | null | undefined;
+  // Confirmed-applied clauses, plus those this call superseded (resolved by the
+  // call's own version). NEVER the not-confirmed ones: those stay held.
+  const echo = (r?.assumptions ?? r?.assumptionsInForce) as
+    { fromEarlierInConversation?: { clauses?: { id?: unknown }[];
+      supersededByThisCall?: { clauses?: { id?: unknown }[] } } } | null | undefined;
+  const ids = [...(echo?.fromEarlierInConversation?.clauses ?? []),
+    ...(echo?.fromEarlierInConversation?.supersededByThisCall?.clauses ?? [])];
+  return ids.map((c) => c?.id).filter((id): id is string => typeof id === 'string');
 }

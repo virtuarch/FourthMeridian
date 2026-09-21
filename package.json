@@ -23,6 +23,7 @@
     "ai:measures-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/measures.check.ts",
     "ai:liquid-floor-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/liquid-floor.check.ts",
     "ai:project-cash-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/project-cash-evidence.check.ts",
+    "ai:planning-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/planning-continuity.check.ts",
     "ai:income-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/income-change.check.ts",
     "ai:liability-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/liability-dynamics.check.ts",
     "ai:networth-change-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/net-worth-change.check.ts",
