@@ -7,7 +7,7 @@
  * here, so unrelated params are ALWAYS preserved and there is a single
  * serialization authority — no writer can clobber another's params.
  *
- * The known Space-scoped params are tab · perspective · metric · asof ·
+ * The known Space-scoped params are tab · perspective · metric · view · asof ·
  * compareto · preset · account · transaction. The core is deliberately
  * param-agnostic — it sets/deletes exactly the keys a caller names and leaves
  * every other key byte-for-byte untouched. The runtime seam
@@ -21,6 +21,7 @@ export const SPACE_URL_PARAMS = [
   "tab",
   "perspective",
   "metric",
+  "view",
   "asof",
   "compareto",
   "preset",

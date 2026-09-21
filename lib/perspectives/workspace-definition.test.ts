@@ -182,8 +182,20 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
   // registry describes the intended contract, never fossilizing an impl gap as a
   // non-temporal category. (Renderer-backed = kind perspective, available — W2:
   // the routed-modal exclusion is gone with the mechanism.)
+  //
+  // ONE NAMED EXEMPTION — `markets` is a SKELETON: its five views are empty
+  // states and none reads canonical time, so declaring an axis would be false
+  // (and would render As-of / Compare-to inputs over an empty page). Its intended
+  // contract IS temporal (performance, price history); it must declare its axes
+  // in the slice where its first view consumes time, and this exemption goes.
+  const SKELETON_NON_TEMPORAL = new Set(["markets"]);
+  check("the skeleton exemption is Markets alone, declared all-\"none\" (not undefined)",
+    [...SKELETON_NON_TEMPORAL].join() === "markets" &&
+      PERSPECTIVE_LIBRARY.markets?.temporalCapability?.asOf === "none" &&
+      PERSPECTIVE_LIBRARY.markets.temporalCapability.compareTo === "none" &&
+      PERSPECTIVE_LIBRARY.markets.temporalCapability.period === "none");
   for (const [id, def] of Object.entries(PERSPECTIVE_LIBRARY)) {
-    if (def.kind === "perspective" && def.status === "available") {
+    if (def.kind === "perspective" && def.status === "available" && !SKELETON_NON_TEMPORAL.has(id)) {
       check(`perspective workspace "${id}" declares a temporalCapability`, def.temporalCapability !== undefined);
       check(`perspective workspace "${id}" is temporal (derived consumesShellTime)`, workspaceConsumesShellTime(def) === true);
     }

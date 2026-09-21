@@ -305,6 +305,20 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     temporalCapability: { asOf: "full", compareTo: "full", period: "full" },
     envelope: "cashFlow",
   },
+  // MARKETS (skeleton) — the third customer workspace: "How are my investments
+  // and potential investments behaving?" Read through five views (Portfolio ·
+  // Research · Fundamentals · Technicals · Watchlist — lib/markets/markets-mode).
+  // Distinct from `investments` below: Net Worth → Assets VALUES holdings as
+  // wealth; Markets will ANALYSE securities. A destination only for now — no
+  // data needs, no engine lens (no lensId), no envelope, no time axis — so its
+  // workspace self-renders empty states and the host activates no fetch for it.
+  markets: {
+    id: "markets", kind: "perspective", label: "Markets", icon: "ChartCandlestick", status: "available", group: "Financial",
+    description: "How your investments, and the securities you follow, are behaving.",
+    dataNeeds: [],
+    temporalCapability: { asOf: "none", compareTo: "none", period: "none" },
+    envelope: "none",
+  },
   // OVERVIEW-CONSOLIDATION — `investments`, `debt` and `liquidity` are NO LONGER
   // Overview lens destinations: they render inside the Net Worth workspace
   // (Assets / Debt / Assets). Their registry entries remain because the engine
@@ -410,30 +424,30 @@ const PERSPECTIVES_BY_CATEGORY: Record<string, string[]> = {
   // §2.5). Other categories can adopt it later as one-line changes here.
   // W2 — "goals" and "retirement" removed from every list: both lens entries
   // are deleted (surfaces retired outright).
-  PERSONAL:        ["overview", "wealth", "cashFlow", "liquidity", "investments", "debt"],
-  FAMILY:          ["overview", "wealth", "cashFlow", "liquidity", "debt"],
-  RETIREMENT:      ["overview", "wealth", "investments", "cashFlow"],
-  INVESTMENT:      ["overview", "investments", "wealth", "cashFlow"],
+  PERSONAL:        ["overview", "wealth", "cashFlow", "liquidity", "investments", "debt", "markets"],
+  FAMILY:          ["overview", "wealth", "cashFlow", "liquidity", "debt", "markets"],
+  RETIREMENT:      ["overview", "wealth", "investments", "cashFlow", "markets"],
+  INVESTMENT:      ["overview", "investments", "wealth", "cashFlow", "markets"],
   // V25-CLOSE-4: `property` / `businessHealth` removed. They are comingSoon
   // lenses with no workspace, so as the 2nd id they led the Perspectives doorway
   // with a non-clickable "Soon" card — a template leading with something the user
   // cannot access. The equity hero (Property) and the cash-position hero +
   // cashFlow/liquidity lenses (Business) already carry each Space's story. Re-add
   // each id here only when its real workspace ships.
-  PROPERTY:        ["overview", "cashFlow", "wealth"],
-  VEHICLE:         ["overview", "wealth", "cashFlow"],
-  BUSINESS:        ["overview", "cashFlow", "liquidity", "wealth"],
-  DEBT_PAYOFF:     ["overview", "debt", "cashFlow", "wealth"],
+  PROPERTY:        ["overview", "cashFlow", "wealth", "markets"],
+  VEHICLE:         ["overview", "wealth", "cashFlow", "markets"],
+  BUSINESS:        ["overview", "cashFlow", "liquidity", "wealth", "markets"],
+  DEBT_PAYOFF:     ["overview", "debt", "cashFlow", "wealth", "markets"],
   // Emergency funds exist to BE liquidity — the lens sits right up front.
-  EMERGENCY_FUND:  ["overview", "liquidity", "wealth", "cashFlow"],
-  GOAL:            ["overview", "wealth", "cashFlow"],
-  TRIP:            ["overview", "cashFlow"],
-  EQUIPMENT:       ["overview", "wealth", "cashFlow"],
-  CUSTOM:          ["overview", "wealth", "cashFlow"],
-  OTHER:           ["overview", "wealth", "cashFlow"],
+  EMERGENCY_FUND:  ["overview", "liquidity", "wealth", "cashFlow", "markets"],
+  GOAL:            ["overview", "wealth", "cashFlow", "markets"],
+  TRIP:            ["overview", "cashFlow", "markets"],
+  EQUIPMENT:       ["overview", "wealth", "cashFlow", "markets"],
+  CUSTOM:          ["overview", "wealth", "cashFlow", "markets"],
+  OTHER:           ["overview", "wealth", "cashFlow", "markets"],
 };
 
-const DEFAULT_PERSPECTIVES = ["overview", "wealth", "cashFlow"];
+const DEFAULT_PERSPECTIVES = ["overview", "wealth", "cashFlow", "markets"];
 
 /** Returns the ordered Perspective definitions for a Space category. */
 export function getPerspectivesForCategory(category: string): PerspectiveDef[] {

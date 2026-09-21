@@ -11,6 +11,13 @@
  * Deliberately NOT a SegmentedControl: no track, no sliding highlight, no
  * container — just chips whose colour/background/border fade on selection (120ms
  * ease-standard). Real radiogroup semantics.
+ *
+ * `wrap` (default true) keeps the chips wrapping onto new lines. `wrap={false}`
+ * holds them on ONE line that scrolls horizontally when it overflows (the
+ * existing `no-scrollbar overflow-x-auto` pattern) — for a set that must read as
+ * one row on a phone (Markets' five views). Pair it with `justify-center-safe`,
+ * never `justify-center`: a centred overflowing row clips its first options out
+ * of scroll reach, a safe-centred one falls back to start-aligned.
  */
 
 export function Chips<T extends string>({
@@ -19,18 +26,20 @@ export function Chips<T extends string>({
   onChange,
   ariaLabel,
   className = "",
+  wrap = true,
 }: {
   options: { id: T; label: string }[];
   value: T;
   onChange: (id: T) => void;
   ariaLabel?: string;
   className?: string;
+  wrap?: boolean;
 }) {
   return (
     <div
       role="radiogroup"
       aria-label={ariaLabel}
-      className={["no-scrollbar flex flex-wrap gap-1.5 overflow-x-auto", className].join(" ")}
+      className={["no-scrollbar flex gap-1.5 overflow-x-auto", wrap ? "flex-wrap" : "flex-nowrap", className].join(" ")}
     >
       {options.map((o) => {
         const on = o.id === value;

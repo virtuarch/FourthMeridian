@@ -9,6 +9,7 @@
  *   - the engaged analytical lens (selectedPerspectiveId → activePerspectiveId),
  *   - the Net Worth page subject + Assets slice (wealthMode ?metric=, assetsSlice
  *     ?slice=) — the evolved WealthMetric mechanism (OVERVIEW-CONSOLIDATION),
+ *   - the Markets view (marketsMode ?view=) — the same mechanism, second workspace,
  *   - the account deep-link seed (?account= → initialAccountFilter),
  *   - and the ONE URL writer + ONE popstate reader (via useSpaceUrl).
  *
@@ -38,8 +39,13 @@ import {
   legacyPerspectiveTarget, parseAssetsSlice, parseWealthMode,
   serializeAssetsSlice, serializeWealthMode,
   DEFAULT_ASSETS_SLICE, DEFAULT_WEALTH_MODE,
+  WEALTH_MODES, WEALTH_MODE_LABELS,
   type AssetsSlice, type LegacyPerspectiveTarget, type WealthMode,
 } from "@/lib/wealth/wealth-mode";
+import {
+  DEFAULT_MARKETS_MODE, MARKETS_MODES, MARKETS_MODE_LABELS, MARKETS_VIEW_PARAM,
+  parseMarketsMode, serializeMarketsMode, type MarketsMode,
+} from "@/lib/markets/markets-mode";
 import type { DashboardSection } from "@/lib/space/dashboard-types";
 import { MY_SPACE_HREF } from "@/lib/space-nav";
 
@@ -128,8 +134,11 @@ export const TAB_ORDER = ["OVERVIEW", "ACCOUNTS", "ACTIVITY"];
 // read through its Total · Assets · Debt modes); "Cash Flow" is the one other
 // engageable lens — it describes movement, not balance-sheet position.
 // Liquidity / Investments / Debt live INSIDE Net Worth (Assets / Assets / Debt).
+// MARKETS — the third workspace (skeleton): Portfolio · Research · Fundamentals ·
+// Technicals · Watchlist, the Markets view (?view=).
 export const NET_WORTH_LENS_ID = "networth";
-export const CORE_LENS_IDS = ["cashFlow"];
+export const MARKETS_LENS_ID = "markets";
+export const CORE_LENS_IDS = ["cashFlow", MARKETS_LENS_ID];
 
 /**
  * The canonical deep link for a lens — the SAME ?tab=/?perspective= the URL
@@ -151,6 +160,40 @@ export function lensHref(id: string): string {
 export function wealthModeHref(mode: WealthMode): string {
   const metric = serializeWealthMode(mode);
   return metric ? `${lensHref(NET_WORTH_LENS_ID)}&metric=${encodeURIComponent(metric)}` : lensHref(NET_WORTH_LENS_ID);
+}
+
+/** The canonical deep link for a Markets VIEW — the Markets lens URL plus the
+ *  ?view= the view writer commits (Portfolio, the default, writes nothing). */
+export function marketsModeHref(mode: MarketsMode): string {
+  const view = serializeMarketsMode(mode);
+  return view ? `${lensHref(MARKETS_LENS_ID)}&${MARKETS_VIEW_PARAM}=${encodeURIComponent(view)}` : lensHref(MARKETS_LENS_ID);
+}
+
+/** One view inside a workspace, as navigation surfaces present it. */
+export interface WorkspaceChild { id: string; label: string; href: string }
+
+/**
+ * The views a workspace carries as CHILDREN (the sidebar nests them under the
+ * open workspace; below lg the workspace's own selector shows them). Built from
+ * each workspace's own vocabulary module — never restated. A workspace without
+ * views (Cash Flow) returns undefined.
+ */
+export function workspaceChildren(workspaceId: string): WorkspaceChild[] | undefined {
+  if (workspaceId === NET_WORTH_LENS_ID)
+    return WEALTH_MODES.map((m) => ({ id: m, label: WEALTH_MODE_LABELS[m], href: wealthModeHref(m) }));
+  if (workspaceId === MARKETS_LENS_ID)
+    return MARKETS_MODES.map((m) => ({ id: m, label: MARKETS_MODE_LABELS[m], href: marketsModeHref(m) }));
+  return undefined;
+}
+
+/** The OPEN workspace's current view id — its own mode state — or null. */
+export function openChildId(
+  openWorkspace: string | null,
+  modes: { wealthMode: WealthMode; marketsMode: MarketsMode },
+): string | null {
+  if (openWorkspace === NET_WORTH_LENS_ID) return modes.wealthMode;
+  if (openWorkspace === MARKETS_LENS_ID) return modes.marketsMode;
+  return null;
 }
 
 /**
@@ -189,6 +232,10 @@ export interface SpaceNavigation {
   wealthMode: WealthMode;
   /** Set the subject + mirror to ?metric= (total clears the param). */
   setWealthMode: (m: WealthMode) => void;
+  /** The Markets view (Portfolio · … · Watchlist) — mirrored to ?view=. */
+  marketsMode: MarketsMode;
+  /** Set the Markets view + mirror to ?view= (Portfolio clears the param). */
+  setMarketsMode: (m: MarketsMode) => void;
   /** The Assets balance-history slice (All · Cash · Investments) — mirrored to ?slice=. */
   assetsSlice: AssetsSlice;
   /** Set the slice + mirror to ?slice= (all clears the param). */
@@ -208,6 +255,7 @@ export function useSpaceNavigation({
   const [activeTab, setActiveTab] = useState("");
   const [selectedPerspectiveId, setSelectedPerspectiveId] = useState<string | null>(null);
   const [wealthMode, setWealthMode] = useState<WealthMode>(DEFAULT_WEALTH_MODE);
+  const [marketsMode, setMarketsMode] = useState<MarketsMode>(DEFAULT_MARKETS_MODE);
   const [assetsSlice, setAssetsSlice] = useState<AssetsSlice>(DEFAULT_ASSETS_SLICE);
   const [wealthFocus, setWealthFocus] = useState<"cash" | "investments" | null>(null);
   const [initialAccountFilter, setInitialAccountFilter] = useState<string | null>(null);
@@ -316,6 +364,8 @@ export function useSpaceNavigation({
   useEffect(() => {
     const syncFromUrl = () => {
       const search = spaceUrl.getSearch();
+      // The Markets view is independent of the Net Worth legacy aliases below.
+      setMarketsMode(parseMarketsMode(readSpaceParam(search, MARKETS_VIEW_PARAM)));
       const legacy = readUrlTabState().legacy;
       if (legacy) { applyLegacy(legacy); return; }
       setWealthMode(parseWealthMode(readSpaceParam(search, "metric")));
@@ -335,6 +385,15 @@ export function useSpaceNavigation({
         { history: "replace" },
       );
       if (m !== "assets") setAssetsSlice(DEFAULT_ASSETS_SLICE);
+    },
+    [spaceUrl],
+  );
+  // The Markets view — the same discipline as the Net Worth subject: a view
+  // toggle REPLACES (never a history entry), and the default clears the param.
+  const handleMarketsModeChange = useCallback(
+    (m: MarketsMode) => {
+      setMarketsMode(m);
+      spaceUrl.commit({ [MARKETS_VIEW_PARAM]: serializeMarketsMode(m) }, { history: "replace" });
     },
     [spaceUrl],
   );
@@ -389,6 +448,8 @@ export function useSpaceNavigation({
     switchLens,
     wealthMode,
     setWealthMode: handleModeChange,
+    marketsMode,
+    setMarketsMode: handleMarketsModeChange,
     assetsSlice,
     setAssetsSlice: handleSliceChange,
     wealthFocus,

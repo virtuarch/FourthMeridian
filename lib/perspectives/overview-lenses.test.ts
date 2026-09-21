@@ -45,9 +45,9 @@ function check(name: string, cond: boolean, detail?: string): void {
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 
-console.log("1. Overview exposes only Net Worth + Cash Flow");
+console.log("1. Overview exposes only Net Worth + Cash Flow + Markets");
 check("the default lens is Net Worth", NET_WORTH_LENS_ID === "networth");
-check("the only other engageable lens is Cash Flow", CORE_LENS_IDS.join() === "cashFlow");
+check("the other engageable lenses are Cash Flow, then Markets", CORE_LENS_IDS.join() === "cashFlow,markets");
 check("liquidity / investments / debt are not lens-rail ids", !CORE_LENS_IDS.some((id) => ["liquidity", "investments", "debt"].includes(id)));
 check("the host builds the rail from NET_WORTH_LENS_ID + CORE_LENS_IDS only",
   HOST.includes("id: NET_WORTH_LENS_ID") && HOST.includes("CORE_LENS_IDS.map"));
@@ -55,7 +55,7 @@ check("the host builds the rail from NET_WORTH_LENS_ID + CORE_LENS_IDS only",
 console.log("2. Registry ↔ renderer parity");
 {
   const rendererIds = Object.keys(WORKSPACE_RENDERERS).sort();
-  check("renderer map is exactly {cashFlow, wealth}", rendererIds.join() === "cashFlow,wealth");
+  check("renderer map is exactly {cashFlow, markets, wealth}", rendererIds.join() === "cashFlow,markets,wealth");
   check("every renderer id is a registered, available perspective",
     rendererIds.every((id) => PERSPECTIVE_LIBRARY[id]?.kind === "perspective" && PERSPECTIVE_LIBRARY[id].status === "available"));
   check("every lens-rail destination has a renderer (Net Worth → wealth, Cash Flow → cashFlow)",

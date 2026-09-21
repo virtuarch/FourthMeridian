@@ -24,7 +24,9 @@ import { HistoryExplorationSheet } from "@/components/history/HistoryExploration
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { WealthWorkspace } from "@/components/space/widgets/wealth/WealthWorkspace";
 import { CashFlowWorkspace } from "@/components/space/widgets/cashflow/CashFlowWorkspace";
+import { MarketsWorkspace } from "@/components/space/widgets/markets/MarketsWorkspace";
 import type { AssetsSlice, WealthMode } from "@/lib/wealth/wealth-mode";
+import type { MarketsMode } from "@/lib/markets/markets-mode";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
@@ -93,6 +95,10 @@ export interface WorkspaceRenderCtx {
   onModeChange:            (m: WealthMode) => void;
   /** Net Worth's Total · Assets · Debt selector presentation (see WealthWorkspace). */
   wealthModeSelectorVisibility?: "always" | "belowLg";
+  /** The Markets view (?view=) + its setter + selector presentation (skeleton). */
+  marketsMode:             MarketsMode;
+  onMarketsModeChange:     (m: MarketsMode) => void;
+  marketsModeSelectorVisibility?: "always" | "belowLg";
   onSliceChange:           (s: AssetsSlice) => void;
   onSwitchLens:            (id: string) => void;
   onEnvelopeChange:        (env: PerspectiveEnvelope) => void;
@@ -200,6 +206,15 @@ export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => Re
       asOf={ctx.asOf}
       compareTo={ctx.historicalCompareTo}
       onSelectPeriod={ctx.onSelectCashFlowPeriod}
+      onEnvelopeChange={ctx.onEnvelopeChange}
+    />
+  ),
+  // MARKETS (skeleton) — five views, each an honest empty state; no data needs.
+  markets: (ctx) => (
+    <MarketsWorkspace
+      mode={ctx.marketsMode}
+      onModeChange={ctx.onMarketsModeChange}
+      modeSelectorVisibility={ctx.marketsModeSelectorVisibility}
       onEnvelopeChange={ctx.onEnvelopeChange}
     />
   ),

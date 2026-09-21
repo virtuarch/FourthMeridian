@@ -92,12 +92,12 @@ const absent = (qs: string, k: string) => !params(qs).has(k);
   check("readSpaceParam absent → null", readSpaceParam("tab=overview", "preset") === null);
 }
 
-// ── the documented Space params are exactly the eight known ones ────────────────
+// ── the documented Space params are exactly the nine known ones ─────────────────
 {
   check(
-    "SPACE_URL_PARAMS lists the eight Space-scoped params",
+    "SPACE_URL_PARAMS lists the nine Space-scoped params (Markets added `view`)",
     JSON.stringify([...SPACE_URL_PARAMS].sort()) ===
-      JSON.stringify(["account", "asof", "compareto", "metric", "perspective", "preset", "tab", "transaction"]),
+      JSON.stringify(["account", "asof", "compareto", "metric", "perspective", "preset", "tab", "transaction", "view"]),
   );
 }
 

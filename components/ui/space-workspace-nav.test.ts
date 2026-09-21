@@ -36,8 +36,9 @@ import path from "node:path";
 import { SpaceMode, SpaceWorkspaceNav } from "@/components/ui/ContextualNavbar";
 import { PRIMARY_NAV } from "@/lib/space-nav";
 import {
-  CORE_LENS_IDS, NET_WORTH_LENS_ID, lensHref, openWorkspaceId, resolveUrlLens, wealthModeHref,
+  CORE_LENS_IDS, NET_WORTH_LENS_ID, lensHref, openChildId, openWorkspaceId, resolveUrlLens, wealthModeHref, workspaceChildren,
 } from "@/lib/space/use-space-navigation";
+import { PERSPECTIVE_LIBRARY } from "@/lib/perspectives";
 import { WEALTH_MODES, WEALTH_MODE_LABELS, parseWealthMode, type WealthMode } from "@/lib/wealth/wealth-mode";
 import type { SpaceChromeWorkspaceNav } from "@/lib/space/space-chrome-context";
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
@@ -64,7 +65,7 @@ function activeIn(html: string, label: string): string[] {
 /** The nav the host publishes — built from the REAL helpers, as SpaceDashboard does. */
 const LENSES = [
   { id: NET_WORTH_LENS_ID, label: "Net Worth" },
-  ...CORE_LENS_IDS.map((id) => ({ id, label: "Cash Flow" })),
+  ...CORE_LENS_IDS.map((id) => ({ id, label: PERSPECTIVE_LIBRARY[id].label })),
 ];
 function publishedNav(
   activeTab: string,
@@ -75,15 +76,13 @@ function publishedNav(
 ): SpaceChromeWorkspaceNav {
   const activeId = openWorkspaceId(activeTab, activePerspectiveId);
   return {
-    items: LENSES.map(({ id, label }) => ({
-      id, label, href: lensHref(id),
-      ...(id === NET_WORTH_LENS_ID
-        ? { children: WEALTH_MODES.map((m) => ({ id: m, label: WEALTH_MODE_LABELS[m], href: wealthModeHref(m) })) }
-        : {}),
-    })),
+    items: LENSES.map(({ id, label }) => {
+      const children = workspaceChildren(id);
+      return { id, label, href: lensHref(id), ...(children ? { children } : {}) };
+    }),
     activeId,
     onSelect,
-    activeChildId: activeId === NET_WORTH_LENS_ID ? wealthMode : null,
+    activeChildId: openChildId(activeId, { wealthMode, marketsMode: "portfolio" }),
     onSelectChild,
   };
 }
@@ -124,17 +123,18 @@ console.log("A. Exactly Net Worth · Cash Flow — and no Sections");
   const nav = navHtml(html, "Space");
   check("renders Net Worth", text(nav).includes("Net Worth"));
   check("renders Cash Flow", text(nav).includes("Cash Flow"));
-  check("exactly two WORKSPACE destinations, in that order", text(topLevel(nav)) === "Net Worth Cash Flow", text(topLevel(nav)));
+  check("exactly three WORKSPACE destinations, in that order", text(topLevel(nav)) === "Net Worth Cash Flow Markets", text(topLevel(nav)));
   check('no "Sections" label anywhere in the Space sidebar', !/\bSections\b/.test(text(html)) && !html.includes('aria-label="Sections"'));
   check("no published section anchor surfaces (Summary row, anchor ids); Assets / Debt appear ONLY as Net Worth's views",
     !/\bSummary\b/.test(text(html)) && !html.includes("wealth-summary") && !html.includes("cf-calendar") &&
       !/Assets|Debt/.test(text(topLevel(nav))) && (text(html).match(/\bAssets\b/g) ?? []).length === 1);
   check("Cash Flow appears ONCE (the published 'Cash Flow' anchor is not rendered too)",
     (text(html).match(/Cash Flow/g) ?? []).length === 1);
+  const top = topLevel(nav);
   check("peers, not subsections: same row class as the site nav (pl-3, 13px, 14px icon), no indentation",
-    (nav.match(/py-1\.5 pl-3 pr-2 text-left text-\[13px\]/g) ?? []).length === 2 &&
-      (nav.match(/<svg[^>]*width="14"/g) ?? []).length === 2 && !/\bml-\d|pl-[4-9]/.test(nav));
-  check("semantic links (no clickable divs / buttons)", (topLevel(nav).match(/<a /g) ?? []).length === 2 && !/<button/.test(nav));
+    (top.match(/py-1\.5 pl-3 pr-2 text-left text-\[13px\]/g) ?? []).length === 3 &&
+      (top.match(/<svg[^>]*width="14"/g) ?? []).length === 3 && !/\bml-\d|pl-[4-9]/.test(top));
+  check("semantic links (no clickable divs / buttons)", (topLevel(nav).match(/<a /g) ?? []).length === 3 && !/<button/.test(nav));
   check("a Space that publishes no workspaces renders no empty block", renderToStaticMarkup(createElement(SpaceWorkspaceNav, { nav: null })) === ""
     && renderToStaticMarkup(createElement(SpaceWorkspaceNav, { nav: { items: [], activeId: null, onSelect: () => {} } })) === "");
 }
@@ -200,10 +200,13 @@ console.log("D. Selection — in place for a plain click, the browser's for a mo
 
   const host = code(read("components", "dashboard", "SpaceDashboard.tsx"));
   const sel = host.match(/const selectWorkspace = useCallback\(([\s\S]*?)\n  \);/)?.[1] ?? "";
-  check("host selection = the lens + the Overview tab, nothing else (works from any rail tab)",
-    /selectLens\(id\);\s*setActiveTab\("OVERVIEW"\);/.test(sel) && (sel.match(/;/g) ?? []).length === 2, sel);
+  // A parent opens its workspace on its DEFAULT view — what its href (no view
+  // param) opens in a new tab — so click and link agree (Net Worth ≡ Total).
+  check("host selection = the lens + the Overview tab + the workspace's DEFAULT view (from any rail tab)",
+    /selectLens\(id\);\s*setActiveTab\("OVERVIEW"\);\s*if \(id === NET_WORTH_LENS_ID\) setWealthMode\(DEFAULT_WEALTH_MODE\);\s*if \(id === MARKETS_LENS_ID\) setMarketsMode\(DEFAULT_MARKETS_MODE\);/.test(sel) &&
+      (sel.match(/;/g) ?? []).length === 4, sel);
   check("host publishes the SAME lens set the in-page lens row uses (one list, no second definition)",
-    /items: lensSelectorItems\.map\(\(\{ id, label \}\) => \(\{\s*id,\s*label,\s*href: lensHref\(id\),/.test(host));
+    /items: lensSelectorItems\.map\(\(\{ id, label \}\) => \{\s*const children = workspaceChildren\(id\);\s*return \{ id, label, href: lensHref\(id\), \.\.\.\(children \? \{ children \} : \{\}\) \};/.test(host));
   check("host clears the channel on unmount", /useEffect\(\(\) => \(\) => publishWorkspaceNav\(null\), \[publishWorkspaceNav\]\)/.test(host));
 }
 
@@ -310,8 +313,8 @@ console.log("I. The workspace region's accessible name");
   check("the content panel is a named region: aria-label from the open workspace's label",
     /aria-label=\{openWorkspaceLabel\}/.test(panel), panel);
   check("…derived from the SAME lens list both switchers render + the open mode's label (no second label source)",
-    /lensSelectorItems\.find\(\(l\) => l\.id === openWorkspace\)\?\.label, openChild \? WEALTH_MODE_LABELS\[openChild\] : null\]/.test(host) &&
-      /const openChild = openWorkspace === NET_WORTH_LENS_ID \? wealthMode : null;/.test(host));
+    /lensSelectorItems\.find\(\(l\) => l\.id === openWorkspace\)\?\.label,\s*openWorkspace \? workspaceChildren\(openWorkspace\)\?\.find\(\(c\) => c\.id === openChild\)\?\.label : null,/.test(host) &&
+      /const openChild = openChildId\(openWorkspace, \{ wealthMode, marketsMode \}\);/.test(host));
   const nameFor = (tab: string, p: string | null, m: WealthMode = "total") => {
     const ws = openWorkspaceId(tab, p);
     const child = ws === NET_WORTH_LENS_ID ? WEALTH_MODE_LABELS[m] : null;
@@ -408,12 +411,15 @@ console.log("J. Net Worth is a parent: Total · Assets · Debt nested while open
 
   const host = code(read("components", "dashboard", "SpaceDashboard.tsx"));
   const selChild = host.match(/const selectWorkspaceChild = useCallback\(([\s\S]*?)\n  \);/)?.[1] ?? "";
-  check("host: a child selection IS setWealthMode — the in-content selector's own setter (one source of truth)",
-    /if \(workspaceId === NET_WORTH_LENS_ID\) setWealthMode\(childId as WealthMode\);/.test(selChild) && (selChild.match(/;/g) ?? []).length === 1, selChild);
-  check("host: children are WEALTH_MODES with WEALTH_MODE_LABELS + wealthModeHref (no second mode list)",
-    /children: WEALTH_MODES\.map\(\(m\) => \(\{ id: m, label: WEALTH_MODE_LABELS\[m\], href: wealthModeHref\(m\) \}\)\)/.test(host));
-  check("host: the active child is wealthMode, only while Net Worth is open",
-    /activeChildId: openChild,/.test(host));
+  check("host: a Net Worth child selection IS setWealthMode — the in-content selector's own setter (one source of truth)",
+    /if \(workspaceId === NET_WORTH_LENS_ID\) setWealthMode\(childId as WealthMode\);/.test(selChild), selChild);
+  const nwKids = workspaceChildren(NET_WORTH_LENS_ID) ?? [];
+  check("Net Worth's children are WEALTH_MODES / WEALTH_MODE_LABELS / wealthModeHref (no second mode list)",
+    JSON.stringify(nwKids) === JSON.stringify(WEALTH_MODES.map((m) => ({ id: m, label: WEALTH_MODE_LABELS[m], href: wealthModeHref(m) }))));
+  check("Cash Flow has no children", workspaceChildren("cashFlow") === undefined);
+  check("host: the active child is the open workspace's own mode (wealthMode only while Net Worth is open)",
+    /activeChildId: openChild,/.test(host) && openChildId(NET_WORTH_LENS_ID, { wealthMode: "debt", marketsMode: "research" }) === "debt" &&
+      openChildId("cashFlow", { wealthMode: "debt", marketsMode: "research" }) === null && openChildId(null, { wealthMode: "debt", marketsMode: "research" }) === null);
   check("mode writes are unchanged (?metric= via replace — the existing history contract)",
     /metric: serializeWealthMode\(m\)[\s\S]{0,120}\{ history: "replace" \}/.test(read("lib", "space", "use-space-navigation.ts")));
 

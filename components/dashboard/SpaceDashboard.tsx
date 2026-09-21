@@ -28,8 +28,12 @@ import { usePerspectiveShellState } from "@/components/space/shell/usePerspectiv
 import { SpaceShell } from "@/components/space/shell/SpaceShell";
 import { openPerspectiveDataNeeds } from "@/lib/space/workspace-resources";
 import { useSpaceData } from "@/lib/space/use-space-data";
-import { useSpaceNavigation, NET_WORTH_LENS_ID, CORE_LENS_IDS, lensHref, wealthModeHref, openWorkspaceId } from "@/lib/space/use-space-navigation";
-import { WEALTH_MODES, WEALTH_MODE_LABELS, type WealthMode } from "@/lib/wealth/wealth-mode";
+import {
+  useSpaceNavigation, NET_WORTH_LENS_ID, MARKETS_LENS_ID, CORE_LENS_IDS,
+  lensHref, openWorkspaceId, openChildId, workspaceChildren,
+} from "@/lib/space/use-space-navigation";
+import { DEFAULT_WEALTH_MODE, type WealthMode } from "@/lib/wealth/wealth-mode";
+import { DEFAULT_MARKETS_MODE, type MarketsMode } from "@/lib/markets/markets-mode";
 import { useSpaceLensResults } from "@/lib/space/use-space-lens-results";
 import { useActiveEnvelope } from "@/lib/space/use-active-envelope";
 import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
@@ -182,6 +186,7 @@ export function SpaceDashboard({
     setSelectedPerspectiveId,
     activePerspectiveId, activeLensId, selectLens, switchLens,
     wealthMode, setWealthMode, assetsSlice, setAssetsSlice, wealthFocus,
+    marketsMode, setMarketsMode,
     initialAccountFilter,
     applyInitialTab,
   } = useSpaceNavigation({ category, availablePerspectives });
@@ -373,42 +378,50 @@ export function SpaceDashboard({
   // workspace, so Net Worth stays lit across its Total · Assets · Debt modes and
   // nothing is lit on Activity / Accounts / Transactions / Members.
   //
-  // Net Worth carries its three MODES as children — the SAME wealthMode state
-  // (?metric=) the in-content selector drives, via the same setter; the sidebar
-  // shows them only while Net Worth is open.
+  // Workspaces with VIEWS carry them as children (lib/space/use-space-navigation
+  // `workspaceChildren`): Net Worth → Total · Assets · Debt (wealthMode, ?metric=),
+  // Markets → Portfolio · … · Watchlist (marketsMode, ?view=). Each is the SAME
+  // state its in-content selector drives, through the same setter; the sidebar
+  // shows a workspace's children only while it is open.
+  //
+  // A PARENT link goes to its workspace's DEFAULT view — its href carries no view
+  // param (Net Worth ≡ Total, Markets ≡ Portfolio) — so an in-place click does
+  // exactly what that href does in a new tab: open the workspace on its default.
   const publishWorkspaceNav = useSpaceWorkspaceNavPublisher();
   const selectWorkspace = useCallback(
     (id: string) => {
       selectLens(id);
       setActiveTab("OVERVIEW");
+      if (id === NET_WORTH_LENS_ID) setWealthMode(DEFAULT_WEALTH_MODE);
+      if (id === MARKETS_LENS_ID) setMarketsMode(DEFAULT_MARKETS_MODE);
     },
-    [selectLens, setActiveTab],
+    [selectLens, setActiveTab, setWealthMode, setMarketsMode],
   );
   const selectWorkspaceChild = useCallback(
     (workspaceId: string, childId: string) => {
       if (workspaceId === NET_WORTH_LENS_ID) setWealthMode(childId as WealthMode);
+      if (workspaceId === MARKETS_LENS_ID) setMarketsMode(childId as MarketsMode);
     },
-    [setWealthMode],
+    [setWealthMode, setMarketsMode],
   );
   const openWorkspace = openWorkspaceId(activeTab, activePerspectiveId);
-  const openChild = openWorkspace === NET_WORTH_LENS_ID ? wealthMode : null;
+  const openChild = openChildId(openWorkspace, { wealthMode, marketsMode });
   // The content region's name: the open workspace, plus its open view when it has
-  // one ("Net Worth, Assets") — at lg+ the in-content mode selector is hidden, so
-  // the region itself says which view it is showing.
+  // one ("Net Worth, Assets", "Markets, Research") — at lg+ the in-content view
+  // selector is hidden, so the region itself says which view it is showing.
   const openWorkspaceLabel =
-    [lensSelectorItems.find((l) => l.id === openWorkspace)?.label, openChild ? WEALTH_MODE_LABELS[openChild] : null]
+    [
+      lensSelectorItems.find((l) => l.id === openWorkspace)?.label,
+      openWorkspace ? workspaceChildren(openWorkspace)?.find((c) => c.id === openChild)?.label : null,
+    ]
       .filter(Boolean)
       .join(", ") || undefined;
   useEffect(() => {
     publishWorkspaceNav({
-      items: lensSelectorItems.map(({ id, label }) => ({
-        id,
-        label,
-        href: lensHref(id),
-        ...(id === NET_WORTH_LENS_ID
-          ? { children: WEALTH_MODES.map((m) => ({ id: m, label: WEALTH_MODE_LABELS[m], href: wealthModeHref(m) })) }
-          : {}),
-      })),
+      items: lensSelectorItems.map(({ id, label }) => {
+        const children = workspaceChildren(id);
+        return { id, label, href: lensHref(id), ...(children ? { children } : {}) };
+      }),
       activeId: openWorkspace,
       onSelect: selectWorkspace,
       activeChildId: openChild,
@@ -716,6 +729,10 @@ export function SpaceDashboard({
     // lg+ the sidebar carries Total · Assets · Debt under Net Worth (published
     // above); below lg there is no sidebar, so the in-content selector does.
     wealthModeSelectorVisibility: "belowLg",
+    marketsMode,
+    onMarketsModeChange: setMarketsMode,
+    // Same contract for the Markets views: the sidebar owns them at lg+.
+    marketsModeSelectorVisibility: "belowLg",
     onSliceChange: setAssetsSlice,
     onSwitchLens: switchLens,
     onEnvelopeChange,

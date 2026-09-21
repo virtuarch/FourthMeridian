@@ -52,6 +52,7 @@ import {
   Link2,
   Shield,
   ArrowLeft,
+  ChartCandlestick,
   Gem,
   LayoutGrid,
   LogOut,
@@ -85,13 +86,15 @@ const NAV_ICONS: Record<PrimaryDestId, LucideIcon> = {
 
 /**
  * Workspace icons — the perspective library's own (lib/perspectives: wealth
- * "Gem", cashFlow "Waves"), so the sidebar and the lens identity agree. Keyed by
+ * "Gem", cashFlow "Waves", markets "ChartCandlestick"), so the sidebar and the
+ * lens identity agree. Keyed by
  * the lens id the host publishes; an unknown id renders without an icon rather
  * than borrowing one.
  */
 const WORKSPACE_ICONS: Record<string, LucideIcon> = {
   networth: Gem,
   cashFlow: Waves,
+  markets: ChartCandlestick,
 };
 
 type PlatformItem = { id: string; name: string; platformArea: string };
