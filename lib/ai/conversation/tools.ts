@@ -1727,7 +1727,9 @@ const projectCash: ToolDefinition = {
     'headline answer is `projection` — an evidence-based estimate built from observed ' +
     'payroll cadence and observed spending continuing as they are. ' +
     '`assumedMonthlySpending` is the only assumption it can apply; a dated one-off amount ' +
-    'arriving or leaving is not part of this projection. `establishment` says how firmly ' +
+    'arriving or leaving is not part of this projection, and neither is a CHANGE TO FUTURE ' +
+    'INCOME from a date — a raise, a new salary, an income starting or ending all belong to ' +
+    'scenario_projection. `establishment` says how firmly ' +
     'each input is pinned down; it is provenance, not a competing answer. With `from` it ' +
     'also states what is projected to come in and go out INSIDE a future window.',
   parameters: obj({
@@ -1757,6 +1759,24 @@ const projectCash: ToolDefinition = {
   }, ['to']),
   async run(a, ctx) {
     const toISO = String(a.to);
+    // ⚠️ THE CLOSED ARGUMENT SET REACHES THIS TOOL TOO (I1). The scenario tools
+    // have refused an undeclared argument since the closed set existed; this one
+    // never did, and the first I1 dogfood turn found the hole by walking into it:
+    // asked "starting January my income increases 10%, what does that do to my
+    // cash?", the model called project_cash with a well-formed `incomeChanges`
+    // array. There was nothing to read it, so the raise was SILENTLY DROPPED and a
+    // current-trend projection came back as the answer to a question about a
+    // raise. A tool that cannot model a condition must say so, not compute
+    // without it.
+    const rejected = refuseUnknownArguments(a, projectCash.parameters);
+    if (rejected.length > 0) {
+      return { unavailable: 'this projection cannot carry what was stated, so it was NOT run',
+        notApplied: notAppliedEcho(rejected),
+        instead: 'project_cash continues the observed pattern and can assume only a monthly '
+          + 'spending level. A change to future INCOME from a date — a raise, a new salary, an '
+          + 'income starting or ending — is scenario_projection\'s `incomeChanges`; a one-off '
+          + 'amount arriving or leaving is its `outflows`.' };
+    }
     const spine = await buildCashSpine(ctx, {
       asOf: (a.asOf as string) || ctx.asOfISO,
       ...(typeof a.assumedMonthlySpending === 'number'
@@ -2698,6 +2718,28 @@ const SCENARIO_QUALIFICATION =
   + 'the user\'s own assumptions and nothing here predicts a market. Present the '
   + 'result as "if these assumptions hold", and never as an expectation.';
 
+/**
+ * ⚠️ ONE SENTENCE, ONE DEFINITION, TWO TOOLS. A recomputation rule stated twice
+ * in slightly different words is two rules, and the one a model happens to read
+ * is the one that applies. It is deliberately about ANY assumption rather than
+ * about income: the failure it addresses ("make it nine months", "what about next
+ * June?") predates I1 and is not about income at all.
+ *
+ * ⚠️ WHY A TOOL DESCRIPTION AND NOT THE SYSTEM INSTRUCTION. Post-M1 dogfood
+ * measured a changed assumption recomputed 2/6 and a new horizon 2/6. Nothing in
+ * the runtime detects that a user changed an assumption — the scenario slot is
+ * written only by a tool EXECUTION — and nothing inspects the reply, so the choice
+ * is the model's. In the same matrix the one tool carrying an explicit re-call
+ * sentence (`get_baselines`) scored 5/6. The system instruction had six words of
+ * headroom before a pinned 240-word ceiling; the tool contract had room and the
+ * precedent.
+ */
+const RECOMPUTE_SENTENCE =
+  'Call it AGAIN whenever the user changes ANY assumption or the horizon — a rate, a '
+  + 'contribution, a floor, a raise, a date. Every figure in the result changes with it, and '
+  + 'none of them is to be recomputed in prose: never scale a previous result, add to it, '
+  + 'subtract two of them, or read a new date off an old table.';
+
 const scenarioProjection: ToolDefinition = {
   name: 'scenario_projection',
   // ⚠️ IT LED WITH "NET WORTH" AND EXEMPLIFIED ONLY INVESTING, so a question
@@ -2711,7 +2753,8 @@ const scenarioProjection: ToolDefinition = {
     'inheritance, a car, a tax bill, proceeds from a sale — money moved into investments, ' +
     'and an annual return. Cash comes from the same deterministic projection as ' +
     'project_cash; this adds only what the user said, and reports cash, investments, debt ' +
-    'and net worth at every checkpoint. Do NOT do this arithmetic yourself. The default ' +
+    'and net worth at every checkpoint. Do NOT do this arithmetic yourself. ' +
+    RECOMPUTE_SENTENCE + ' The default ' +
     'return is 0% — the no-growth baseline, which is not a prediction that markets return ' +
     'nothing. A rate the user did not state may be run as an explicitly labelled ' +
     'illustration; it may never be called expected, likely, or a forecast.',
@@ -2756,7 +2799,8 @@ const scenarioCrossing: ToolDefinition = {
     + 'I have X" — anything asking WHEN rather than HOW MUCH. It returns the crossing month, the '
     + 'month before it, and what the position looks like there. Do NOT read a date off a '
     + 'projection table yourself, and do NOT guess a deadline to hand scenario_goal_seek: that '
-    + 'tool answers "what would it take by DATE", this one answers "when".',
+    + 'tool answers "what would it take by DATE", this one answers "when". '
+    + RECOMPUTE_SENTENCE,
   parameters: obj({
     metric: { type: 'string', enum: Object.keys(CROSSING_METRICS),
       description: 'Which line crosses. `liquid` is checking + savings; `debt` is what is owed, '

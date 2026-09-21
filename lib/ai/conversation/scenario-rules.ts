@@ -528,7 +528,12 @@ export function clausesInForce(
 const incomeLine = (x: IncomeChangeExecution): IncomeClauseLine => ({
   id: x.ruleId, op: x.op,
   of: x.matched.map((m) => m.label ?? m.sourceKey),
-  from: x.governed.fromISO, to: x.governed.toISO,
+  // ⚠️ A RULE THAT RAN IS REPORTED BY WHAT IT COVERED; ONE THAT DID NOT, BY WHAT
+  // IT ASKED FOR. For a rule the projection never reached there is no covered
+  // window, and printing one would be inventing the overlap the `reason` is about
+  // to say does not exist.
+  from: x.governed?.fromISO ?? x.requested.fromISO,
+  to: x.governed?.toISO ?? x.requested.toISO ?? '(the horizon)',
   payDatesChanged: x.occurrencesChanged,
   first: x.firstChangedISO, last: x.lastChangedISO,
   incomeBefore: round2(x.nominalBefore), incomeAfter: round2(x.nominalAfter),

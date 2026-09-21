@@ -178,8 +178,19 @@ export interface IncomeChangeExecution {
   occurrencesChanged: number;
   firstChangedISO: string | null;
   lastChangedISO: string | null;
-  /** The window as it was governed, clamped to the horizon it actually ran over. */
-  governed: { fromISO: string; toISO: string };
+  /** The rule's OWN window, uninterpreted. `toISO: null` means "to the horizon". */
+  requested: { fromISO: string; toISO: string | null };
+  /**
+   * The part of that window this projection actually covered, or null when the
+   * two do not overlap at all.
+   *
+   * ⚠️ NULL RATHER THAN AN INVERTED PAIR. Clamping a window that starts after the
+   * horizon produced `{from: 2028-01-01, to: 2027-12-31}` — a window this
+   * module's own validator refuses as INPUT, sitting in its output. There is no
+   * covered window in that case; there is a rule and a projection that do not
+   * meet, and `requested` beside `reason` is what says so.
+   */
+  governed: { fromISO: string; toISO: string } | null;
   /** Nominal dated income inside the governed window, before and after. Full precision. */
   nominalBefore: number;
   nominalAfter: number;
@@ -394,7 +405,13 @@ export function applyIncomeChanges(args: {
     if (bad !== null) { rejected.push({ input: named(rule.id), reason: bad }); continue; }
 
     const to = rule.toISO ?? horizon.toISO;
-    const governed = { fromISO: rule.fromISO, toISO: to };
+    // ⚠️ THE REPORTED WINDOW IS THE INTERSECTION; THE GOVERNING TEST IS NOT.
+    // `governs` still compares against the rule's own dates, so what the rule
+    // REACHES is unchanged — this is only what the result says it COVERED.
+    const coveredFrom = rule.fromISO > horizon.fromISO ? rule.fromISO : horizon.fromISO;
+    const coveredTo = to < horizon.toISO ? to : horizon.toISO;
+    const governed = coveredFrom <= coveredTo ? { fromISO: coveredFrom, toISO: coveredTo } : null;
+    const requested = { fromISO: rule.fromISO, toISO: rule.toISO ?? null };
 
     // ── Which streams does it reach ──────────────────────────────────────────
     let targets: IncomeStreamRef[];
@@ -449,17 +466,32 @@ export function applyIncomeChanges(args: {
     const nominalBefore = nominal(before);
     const spendableBefore = spendableTotal(before);
     let changed = 0;
+    /**
+     * ⚠️ THE DATES OF THE OCCURRENCES THIS RULE ACTUALLY TOUCHED, collected where
+     * the touch happens. They used to be re-derived from the governed set, which
+     * is a different set: SCALE skips a governed occurrence that carries no
+     * amount (a cadence-derived event with `amount: null` is FORECAST-3's
+     * documented default), so a rule could report `occurrencesChanged: 0` and a
+     * twelve-month changed window in the same object — and, worse, a rule that
+     * changed exactly one December occurrence reported January to December.
+     */
+    const changedDates: string[] = [];
+    const touch = (e: FutureCashEvent) => {
+      changed += 1;
+      const d = dateOf(e);
+      if (d !== null) changedDates.push(d);
+    };
     let after: FutureCashEvent[] = [];
 
     if (rule.op === IncomeChangeOp.STOP) {
+      for (const e of before) touch(e);
       events = events.filter((e) => !governs(e));
-      changed = before.length;
       after = [];
     } else if (rule.op === IncomeChangeOp.SCALE) {
       const m = rule.multiplier as number;
       events = events.map((e) => {
         if (!governs(e) || e.amount === null) return e;
-        changed += 1;
+        touch(e);
         return { ...e,
           // ⚠️ BASIS AND `observedSettled` ARE PRESERVED. A tenth more of an
           // observed net deposit is still money of the same kind, and the
@@ -484,7 +516,7 @@ export function applyIncomeChanges(args: {
       const value = perOccurrence(rate.amount, rate.per, stream.cadence);
       events = events.map((e) => {
         if (!governs(e)) return e;
-        changed += 1;
+        touch(e);
         return { ...e,
           amount: { value, currency: rate.currency || currency, basis: rate.basis,
             provenance: EventProvenance.HYPOTHETICAL } };
@@ -516,7 +548,7 @@ export function applyIncomeChanges(args: {
         sourceKey,
       }));
       events = [...events, ...minted];
-      changed = minted.length;
+      for (const e of minted) touch(e);
       after = minted;
       if (minted.length > 0) {
         // ⚠️ A STARTED STREAM IS EARNED INCOME, so a LATER unqualified "my income
@@ -527,11 +559,11 @@ export function applyIncomeChanges(args: {
       }
     }
 
-    const dates = (rule.op === IncomeChangeOp.STOP ? before : after)
-      .map(dateOf).filter((d): d is string => d !== null).sort();
+    const dates = [...changedDates].sort();
 
+    // Only a rule that COVERED something can overlap this one.
     const overlaps = executions
-      .filter((x) => x.ran && x.matched.some((m) => keys.has(m.sourceKey))
+      .filter((x) => x.ran && x.governed !== null && x.matched.some((m) => keys.has(m.sourceKey))
         && x.governed.fromISO <= to && x.governed.toISO >= rule.fromISO)
       .map((x) => x.ruleId);
 
@@ -546,6 +578,7 @@ export function applyIncomeChanges(args: {
       occurrencesChanged: changed,
       firstChangedISO: dates[0] ?? null,
       lastChangedISO: dates[dates.length - 1] ?? null,
+      requested,
       governed,
       nominalBefore,
       nominalAfter: nominal(after),
@@ -553,7 +586,7 @@ export function applyIncomeChanges(args: {
       spendableAfter: spendableTotal(after),
       ...(overlaps.length ? { overlapsRules: overlaps } : {}),
       ran,
-      ...(ran ? {} : { reason: notRunReason(rule, horizon) }),
+      ...(ran ? {} : { reason: notRunReason(rule, horizon, before.length) }),
     });
   }
 
@@ -567,7 +600,11 @@ export function applyIncomeChanges(args: {
  * a reader fills in with a guess, and the guess is usually "it must have applied
  * anyway".
  */
-function notRunReason(r: IncomeChangeRule, horizon: { fromISO: string; toISO: string }): string {
+function notRunReason(
+  r: IncomeChangeRule, horizon: { fromISO: string; toISO: string },
+  /** How many occurrences the window DID reach — the difference between the last two cases. */
+  governedCount: number,
+): string {
   const to = r.toISO ?? horizon.toISO;
   if (r.fromISO > horizon.toISO) {
     return `it starts on ${r.fromISO}, after this projection ends (${horizon.toISO}), so it did `
@@ -576,6 +613,16 @@ function notRunReason(r: IncomeChangeRule, horizon: { fromISO: string; toISO: st
   if (to < horizon.fromISO) {
     return `its window ends on ${to}, before this projection begins (${horizon.fromISO}), so it `
       + 'did NOT affect any figure here.';
+  }
+  // ⚠️ TWO DIFFERENT SILENCES, AND THEY HAVE DIFFERENT NEXT STEPS. "No pay date
+  // in the window" means there is nothing to do. "Pay dates, but no established
+  // amount" means the schedule is known and the LEVEL is not — FORECAST-5's
+  // refusal, inherited — and the next step is to ask the user what they earn.
+  // Reporting the first for the second sends a reader to fix a date that is fine.
+  if (governedCount > 0) {
+    return `${governedCount} pay date(s) fall in ${r.fromISO}..${to}, but none of them has an `
+      + 'established amount — the schedule is known and the level is not, so there was no figure '
+      + 'to change. Ask the user what that income pays, or state it with SET_RATE.';
   }
   return `no pay date falls in ${r.fromISO}..${to}, so there was no occurrence to change. The `
     + 'figures here were computed without it.';

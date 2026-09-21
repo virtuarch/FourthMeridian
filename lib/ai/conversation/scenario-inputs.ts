@@ -160,8 +160,9 @@ export const SCENARIO_INPUTS = {
       amount: num('SET_RATE and START only. What the income BECOMES, as the user stated it — '
         + 'do not annualise or monthly-ise it yourself; say which period it is in `per`.'),
       per: { type: 'string', enum: ['YEAR', 'MONTH', 'OCCURRENCE'],
-        description: 'What `amount` is per. "$180k salary" = YEAR. "$15k a month" = MONTH. '
-          + '"$3,000 a paycheck" = OCCURRENCE. The projection converts it against that '
+        description: 'What `amount` is per. A salary of $180k = YEAR. Earning $15k a month = '
+          + 'MONTH. Being paid $3,000 a paycheck = OCCURRENCE. The projection converts it '
+          + 'against that '
           + 'stream\'s own pay schedule — a yearly figure on a fortnightly job is divided by '
           + '26, not by 12.' },
       basis: { type: 'string', enum: ['NET', 'GROSS'],
