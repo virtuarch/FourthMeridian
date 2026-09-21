@@ -140,8 +140,7 @@ export const SCENARIO_INPUTS = {
       + 'altered — do NOT compute a new income figure yourself, do NOT convert a yearly '
       + 'salary into a monthly one, and do NOT apply a percentage in prose. A one-off amount '
       + 'arriving on a date (a bonus, a settlement) is NOT this: use `outflows` with a '
-      + 'negative amount. A change to SPENDING is not this either and cannot be modelled — '
-      + 'say so rather than describing it as included.',
+      + 'negative amount. A change to SPENDING is not this: it is `spendingChanges`.',
     items: obj({
       op: { type: 'string', enum: ['SCALE', 'SET_RATE', 'STOP', 'START'],
         description: 'SCALE for a percentage change ("up 10%"). SET_RATE when the user states '
@@ -177,6 +176,45 @@ export const SCENARIO_INPUTS = {
         description: 'START only — how often the new income arrives. An existing income keeps '
           + 'its own observed schedule and must not be given one here.' },
       label: str('START only. A short NAME for the new income ("consulting"). Never a rule.'),
+    }, ['op', 'from']) },
+  // ── S1 — dated changes to FUTURE spending ──────────────────────────────────
+  //
+  // ⚠️ THE CATEGORY IS THE USER'S OWN WORD, NOT THE MODEL'S TRANSLATION. Code
+  // resolves it through the category vocabulary and either applies it to a line or
+  // refuses it and offers the line that holds it. A model that turned "restaurants"
+  // into "Dining" would cut groceries too, on nobody's instruction. The line list
+  // below is `transformableCategoryGuide()` verbatim (pinned by a test — this module
+  // imports nothing).
+  spendingChanges: { type: 'array',
+    description: 'A dated change to FUTURE spending — all of it, or one spending line. Use this '
+      + 'whenever the user says their spending changes from a date: "starting January cut Dining '
+      + '20%", "spend $500 less on Shopping from March", "Travel at $300 a month from June", '
+      + '"cut all my spending 10%", "for three months". The projection changes its spending RATE '
+      + 'from those dates and reports what each rule did — do NOT compute a new spending figure '
+      + 'yourself and do NOT apply a percentage in prose. Lines a change can apply to: Dining (as a '
+      + 'whole), Shopping (as a whole), Utilities (as a whole), Travel, Subscriptions (as a whole), '
+      + 'Fee, Other (the catch-all). A new recurring bill that does not exist yet is not '
+      + 'this. Interest cannot be cut here — it follows the debt (`liabilityAssumptions`, '
+      + '`contributions` with a debt `target`).',
+    items: obj({
+      category: str('WHAT spending, in the user\'s OWN word, exactly as they said it ("Dining", '
+        + '"restaurants", "groceries", "rent"). Never substitute a broader line yourself: '
+        + '"restaurants" is NOT "Dining" (Dining also holds groceries), "rent" is NOT '
+        + '"Utilities". The result applies it to a line, or refuses it and names the line that '
+        + 'holds it — offer that line to the user and apply it only if they agree. Omit '
+        + 'category only when the user meant ALL their spending.'),
+      op: { type: 'string', enum: ['SCALE', 'DELTA', 'SET_RATE'],
+        description: 'SCALE for a percentage change ("cut 20%" = multiplier 0.8). DELTA for an '
+          + 'amount more or less each month ("spend $500 less" = monthly -500). SET_RATE when the user '
+          + 'says what it BECOMES ("make it $300 a month"); to stop spending on something, SET_RATE 0.' },
+      from: str('YYYY-MM-DD, INCLUSIVE — the first day the change applies. "Starting January" is '
+        + 'January 1 of the next January.'),
+      to: str('YYYY-MM-DD, INCLUSIVE — the last day it applies ("for three months", "until '
+        + 'June" = May 31). Omit to continue to the horizon. After this day the rule no longer '
+        + 'applies and spending returns to what the other rules make it.'),
+      multiplier: num('SCALE only. 0.8 for "cut 20%", 1.1 for "10% more". Not a percentage.'),
+      monthly: num('DELTA and SET_RATE only, per month. DELTA is signed: -500 for "spend $500 less". '
+        + 'SET_RATE is the new monthly level, 0 or more.'),
     }, ['op', 'from']) },
   liabilityAssumptions: { type: 'array',
     description: 'Terms the user STATED for an existing liability, for this scenario only: '

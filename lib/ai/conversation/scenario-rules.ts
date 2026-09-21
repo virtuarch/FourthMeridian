@@ -41,6 +41,7 @@
 
 import type { DatedMovement, LedgerResult, AllocationTarget } from './scenario-ledger';
 import type { IncomeChangeExecution } from '@/lib/forecast/income-change';
+import type { SpendingChangeExecution } from '@/lib/forecast/spending-change';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -352,6 +353,44 @@ export interface ClausesInForce {
     | { ran: true; rules: IncomeClauseLine[]; didNotRun?: IncomeClauseLine[];
         notCash?: { rules: string[]; meaning: string } }
     | { ran: false; didNotRun?: IncomeClauseLine[]; meaning?: string };
+  /**
+   * S1 — WHETHER A DATED SPENDING CHANGE ACTUALLY GOVERNED ANY PROJECTED DAY.
+   *
+   * ⚠️ LIKE `incomeChange`, IT CANNOT BE READ OFF A MOVEMENT — it changes the rate
+   * the cash curve is built at — so it carries the spine's own record: which line,
+   * what class of line, between which dates, from what rate to what. Never the
+   * arguments; a refused rule is in `notApplied`, and a rule the projection never
+   * reached arrives here already saying `ran: false` with its reason.
+   */
+  spendingChange:
+    | { ran: true; rules: SpendingClauseLine[]; didNotRun?: SpendingClauseLine[];
+        wholeBucket?: { rules: string[]; meaning: string }; residual?: { rules: string[]; meaning: string };
+        overlapping?: { rules: string[]; meaning: string }; noEffect?: { rules: string[]; meaning: string } }
+    | { ran: false; didNotRun?: SpendingClauseLine[]; meaning?: string };
+}
+
+/** One spending rule as the roster states it. Derived; the only caller text is `asked`. */
+export interface SpendingClauseLine {
+  id: string;
+  op: string;
+  /** The line it changed, or "all spending". */
+  of: string;
+  /** What that line contains, for a WHOLE_BUCKET or RESIDUAL line. */
+  class?: 'DIRECT' | 'WHOLE_BUCKET' | 'RESIDUAL';
+  /** The user's own word, when it was not the line's name ("food" → Dining). Bounded. */
+  asked?: string;
+  from: string;
+  to: string;
+  /** The line's monthly rate on the first day, before and after this rule's step. */
+  monthlyBefore: number | null;
+  monthlyAfter: number | null;
+  /** Spending this rule took out of the projection (negative = added). */
+  removed: number;
+  /** The averaged months its baseline came from. */
+  baselineMonths?: string[];
+  clampedAtZero?: true;
+  overlaps?: string[];
+  reason?: string;
 }
 
 /** One income rule as the roster states it. Derived; no caller text. */
@@ -476,6 +515,10 @@ export function clausesInForce(
   floors: readonly FloorIdentity[] = [],
   /** I1 — the SPINE's record of what each income rule altered. Never the arguments. */
   incomeExecutions: readonly IncomeChangeExecution[] = [],
+  /** S1 — the SPINE's record of what each spending rule did. Never the arguments. */
+  spendingExecutions: readonly SpendingChangeExecution[] = [],
+  /** S1 — the user's word per rule id, where it was not the line's name. */
+  spendingAsked: Readonly<Record<string, string>> = {},
 ): ClausesInForce {
   const ran: Settled[] = ledger.movements.filter((m) => m.kind === 'CONTRIBUTION');
   const uniq = <T>(xs: T[]) => [...new Set(xs)];
@@ -536,6 +579,68 @@ export function clausesInForce(
       ? { ran: true, order: oneOrMany(orders), paidToDebt }
       : ran.length > 0 ? { ran: false, meaning: NO_DEBT_MEANING } : { ran: false },
     incomeChange: incomeClause(incomeExecutions),
+    spendingChange: spendingClause(spendingExecutions, spendingAsked),
+  };
+}
+
+const NO_SPENDING_CHANGE_MEANING =
+  'A spending change was stated and it governed NO projected day, so every figure here was computed '
+  + 'at the CURRENT spending rate. Read `didNotRun[].reason` and say what actually happened — do not '
+  + 'describe the cut as included.';
+const WHOLE_BUCKET_MEANING =
+  'These rules changed a WHOLE line that holds more than its name (Dining includes groceries; '
+  + 'Utilities includes rent). Say so when you describe them.';
+const RESIDUAL_MEANING =
+  'These rules changed Other — the catch-all (medical, transport, entertainment and every unplaced '
+  + 'charge together). Say what it holds when you describe them.';
+const SPEND_OVERLAP_MEANING =
+  'These rules change the same line on some of the same days; on each day the rules in force apply in '
+  + 'order of their start dates. `monthlyBefore`/`monthlyAfter` are each rule\'s own step on its first '
+  + 'day, not the rate under the whole scenario — the cash figures reflect all of them, and a rule '
+  + 'stops applying after its `to`.';
+const NO_EFFECT_MEANING =
+  'These rules ran and moved nothing — the line had no spending in the averaged months, or the rule '
+  + 'set it to what it already was. Say so rather than describing a saving.';
+
+function spendingLine(x: SpendingChangeExecution, asked?: string): SpendingClauseLine {
+  return {
+    id: x.ruleId, op: x.op,
+    of: x.category?.category ?? 'all spending',
+    ...(x.category && x.category.class !== 'DIRECT' ? { class: x.category.class } : {}),
+    ...(asked ? { asked } : {}),
+    from: x.governed?.fromISO ?? x.requested.fromISO,
+    to: x.governed?.toISO ?? x.requested.toISO ?? '(the horizon)',
+    monthlyBefore: x.monthlyBefore === null ? null : round2(x.monthlyBefore),
+    monthlyAfter: x.monthlyAfter === null ? null : round2(x.monthlyAfter),
+    removed: round2(x.spendingRemoved),
+    ...(x.category ? { baselineMonths: x.baseline.months } : {}),
+    ...(x.clampedAtZero ? { clampedAtZero: true as const } : {}),
+    ...(x.overlapsRules && x.overlapsRules.length ? { overlaps: x.overlapsRules } : {}),
+    ...(x.reason ? { reason: x.reason } : {}),
+  };
+}
+
+export function spendingClause(
+  executions: readonly SpendingChangeExecution[], asked: Readonly<Record<string, string>> = {},
+): ClausesInForce['spendingChange'] {
+  if (executions.length === 0) return { ran: false };
+  const line = (x: SpendingChangeExecution) => spendingLine(x, asked[x.ruleId]);
+  const didRun = executions.filter((x) => x.ran);
+  const didNot = executions.filter((x) => !x.ran).map(line);
+  if (didRun.length === 0) return { ran: false, didNotRun: didNot, meaning: NO_SPENDING_CHANGE_MEANING };
+  const ids = (f: (x: SpendingChangeExecution) => boolean) => didRun.filter(f).map((x) => x.ruleId);
+  const whole = ids((x) => x.category?.class === 'WHOLE_BUCKET');
+  const residual = ids((x) => x.category?.class === 'RESIDUAL');
+  const overlapping = ids((x) => (x.overlapsRules?.length ?? 0) > 0);
+  const noEffect = ids((x) => !x.affectedProjection);
+  return {
+    ran: true,
+    rules: didRun.map(line),
+    ...(didNot.length ? { didNotRun: didNot } : {}),
+    ...(whole.length ? { wholeBucket: { rules: whole, meaning: WHOLE_BUCKET_MEANING } } : {}),
+    ...(residual.length ? { residual: { rules: residual, meaning: RESIDUAL_MEANING } } : {}),
+    ...(overlapping.length ? { overlapping: { rules: overlapping, meaning: SPEND_OVERLAP_MEANING } } : {}),
+    ...(noEffect.length ? { noEffect: { rules: noEffect, meaning: NO_EFFECT_MEANING } } : {}),
   };
 }
 
@@ -636,7 +741,8 @@ export type ClausesRan = Record<keyof ClausesInForce, unknown>;
 
 export function compactClauses(
   /** A roster from THIS build, or one an older build wrote into a live envelope. */
-  c: ClausesInForce | (Omit<ClausesInForce, 'incomeChange'> & { incomeChange?: undefined }),
+  c: ClausesInForce | (Omit<ClausesInForce, 'incomeChange' | 'spendingChange'>
+    & { incomeChange?: ClausesInForce['incomeChange']; spendingChange?: ClausesInForce['spendingChange'] }),
 ): ClausesRan {
   return {
     cashFloor: c.cashFloor.ran
@@ -673,6 +779,14 @@ export function compactClauses(
           ...(r.countedAsCash === 0 ? { countsAsCash: false } : {}),
           ...(r.overlaps ? { overlaps: r.overlaps } : {}) }))
       : 'NONE',
+    // S1 — the RULE a later turn must inherit (which line, from when, to what), plus
+    // whether the line was a whole bucket; absent in an older envelope ⇒ 'NONE'.
+    spendingChange: c.spendingChange?.ran
+      ? c.spendingChange.rules.map((r) => ({ op: r.op, of: r.of, from: r.from, to: r.to,
+          after: r.monthlyAfter,
+          ...(r.class ? { class: r.class } : {}),
+          ...(r.removed === 0 ? { noEffect: true } : {}) }))
+      : 'NONE',
   };
 }
 
@@ -689,5 +803,6 @@ export function isClausesInForce(v: unknown): v is ClausesInForce {
     v !== null && typeof v === 'object' && typeof (v as { ran?: unknown }).ran === 'boolean';
   return (['cashFloor', 'surplusShare', 'balanceShare', 'fixedAmounts', 'debtPaydown'] as const)
     .every((k) => wellFormed(o[k]))
-    && (o.incomeChange === undefined || wellFormed(o.incomeChange));
+    && (o.incomeChange === undefined || wellFormed(o.incomeChange))
+    && (o.spendingChange === undefined || wellFormed(o.spendingChange));
 }

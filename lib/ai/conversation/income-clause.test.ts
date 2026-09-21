@@ -130,9 +130,10 @@ console.log('income-clause — what the sixth clause says, and what a later turn
 // ── 4. The roster stays closed, and the envelope carries the rule ────────────
 {
   const roster = clausesInForce(EMPTY_LEDGER, [], [exec()]);
-  eq('the roster has six clauses, each with a boolean `ran`',
+  // S1 added the seventh clause, `spendingChange`, on the same terms as this one.
+  eq('the roster has seven clauses, each with a boolean `ran`',
     Object.keys(roster).join(','),
-    'cashFloor,surplusShare,balanceShare,fixedAmounts,debtPaydown,incomeChange');
+    'cashFloor,surplusShare,balanceShare,fixedAmounts,debtPaydown,incomeChange,spendingChange');
   check('…and is recognised as a roster', isClausesInForce(roster));
   eq('the compact form keeps the RULE, not its pay dates',
     compactClauses(roster).incomeChange,

@@ -81,11 +81,11 @@ console.log('1. CAPTURE — success establishes the pair');
   // two-hour cookie, so a roster written by an EARLIER build reaches this code on
   // every deploy. It must degrade, not throw — it threw, and this caught it. The
   // sixth clause is stated as `'NONE'` in its named slot, which is the truth about
-  // a scenario that carried no income rule.
+  // a scenario that carried no income rule — and so is S1's seventh.
   check('…the roster says NONE in a named slot rather than omitting the clause',
     c3.action === 'REPLACE' && JSON.stringify(c3.scenario.ran)
       === '{"cashFloor":"NONE","surplusShare":1,"balanceShare":"NONE","fixedAmounts":"NONE",'
-        + '"debtPaydown":"NONE","incomeChange":"NONE"}');
+        + '"debtPaydown":"NONE","incomeChange":"NONE","spendingChange":"NONE"}');
   // I1 — a roster that DID run an income rule keeps the rule, not the pay dates.
   const ranIncome = { ...R1, assumptions: { clauses: { cashFloor: none, surplusShare: none,
     balanceShare: none, fixedAmounts: none, debtPaydown: none,

@@ -209,7 +209,7 @@ let plan: PendingPlan = emptyPlan();
 {
   const e = turnEvidence(['anything 10%'], []);
   const r = (stage: Record<string, unknown>) => stagePlan(emptyPlan(), { stage }, { turn: 0, evidence: e });
-  check('an unknown clause type is refused', r({ spendingChanges: [{ from: '2027-01-01' }] }).refused.length === 1);
+  check('an unknown clause type is refused', r({ taxChanges: [{ from: '2027-01-01' }] }).refused.length === 1);
   check('the horizon is not an assumption and cannot be staged', r({ to: '2027-06-30' }).refused.length === 1);
   check('granularity cannot be staged', r({ granularity: 'monthly' }).refused.length === 1);
   check('an unknown field on an entry is refused', r({ incomeChanges: [{ ...RAISE, percent: 10 }] }).refused.length === 1);
@@ -267,15 +267,16 @@ let plan: PendingPlan = emptyPlan();
   check('every scenario assumption key has exactly one identity rule', missing.length === 0, missing.join(','));
   check('…and the registry names nothing the schema does not declare',
     Object.keys(IDENTITY).every((k) => keys.includes(k)));
-  // ⚠️ PLANTED: S1 declares `spendingChanges`. The derived continuity policy
-  // classifies it as an assumption automatically; this registry must then be
-  // given one line, or the gate above goes red. Nothing else changes: no new
-  // carrier, no memory class, no field.
-  const planted = { ...SCENARIO_INPUTS, spendingChanges: { type: 'array', items: { properties: {} } } } as Record<string, unknown>;
-  const withS1 = scenarioAssumptionKeys(planted);
-  check('PLANTED S1: a new scenario argument is an assumption the moment it is declared', withS1.includes('spendingChanges'));
-  check('PLANTED S1: …and the identity gate catches that it has no rule yet',
-    withS1.filter((k) => !IDENTITY[k]).join(',') === 'spendingChanges');
+  // S1 declared `spendingChanges` and this registry was given its one line — the
+  // whole cost this gate promised. The mechanism stays pinned with a synthetic
+  // argument that does not exist: declared, it is an assumption at once, and the
+  // gate goes red until it has an identity rule.
+  check('S1: `spendingChanges` is declared and has its identity rule', keys.includes('spendingChanges') && !!IDENTITY.spendingChanges);
+  const planted = { ...SCENARIO_INPUTS, taxChanges: { type: 'array', items: { properties: {} } } } as Record<string, unknown>;
+  const withNext = scenarioAssumptionKeys(planted);
+  check('PLANTED: a new scenario argument is an assumption the moment it is declared', withNext.includes('taxChanges'));
+  check('PLANTED: …and the identity gate catches that it has no rule yet',
+    withNext.filter((k) => !IDENTITY[k]).join(',') === 'taxChanges');
 }
 
 if (failures > 0) { console.error(`\npending-plan: ${failures} failure(s).`); process.exit(1); }

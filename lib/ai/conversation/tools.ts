@@ -52,6 +52,7 @@ import { FlowType } from '@prisma/client';
 import { clampEconomicSpend, meanMonthlyEconomicSpend } from '@/lib/transactions/cash-flow';
 import {
   MEASURABLE_SPEND_CATEGORIES, UNSUPPORTED_SPEND_CATEGORIES, resolveSpendCategory, categoryDefinition,
+  resolveTransformableCategory,
 } from '@/lib/transactions/category-vocabulary';
 import { resolveExplorationNode } from '@/lib/history/exploration';
 import {
@@ -60,7 +61,10 @@ import {
 import {
   loadForecastIncomeStreams, type IncomeTransactionReader, type AccountTypeReader,
 } from '@/lib/ai/forecast/streams';
-import { assembleForecast, projectInterval, type ModelledInterestExclusion } from '@/lib/ai/forecast/assemble';
+import {
+  assembleForecast, projectInterval,
+  type ModelledInterestExclusion, type SpendingChangeOutcome, type SpendingChangeRule,
+} from '@/lib/ai/forecast/assemble';
 import { SCENARIO_INPUTS, NOT_AN_ASSUMPTION, scenarioAssumptionKeys } from './scenario-inputs';
 import {
   mergeIntoArgs, stagePlan, type Attribution, type PlanSlot,
@@ -1667,6 +1671,13 @@ async function buildCashSpine(
      * passes it; `project_cash` has no liability model and keeps every cost flow.
      */
     interestModelledOn?: (accounts: AccountsSectionData) => string[];
+    /**
+     * S1 — dated spending rules, categories already resolved, baked into the closure
+     * for the same reason I1's are: every spine point — each checkpoint, share date,
+     * crossing step and solve evaluation — spends at the rate they leave, so the
+     * floor, the waterfall and the crossings inherit them without knowing they exist.
+     */
+    spendingChanges?: readonly SpendingChangeRule[];
   },
 ): Promise<CashSpine | { unavailable: string; asOf: string }> {
   const asOf = opts.asOf;
@@ -1764,6 +1775,8 @@ async function buildCashSpine(
         ...(opts.incomeChanges && opts.incomeChanges.length > 0
           ? { incomeChanges: opts.incomeChanges } : {}),
         ...(interestModelledOn.length > 0 ? { interestModelledOn } : {}),
+        ...(opts.spendingChanges && opts.spendingChanges.length > 0
+          ? { spendingChanges: opts.spendingChanges } : {}),
         horizon: { fromISO: asOf, toISO: end, origin: AssumptionOrigin.USER_REQUESTED,
           statedAs: `through ${end}` } as unknown as ForecastHorizon,
       }),
@@ -1932,8 +1945,9 @@ const projectCash: ToolDefinition = {
         notApplied: notAppliedEcho(rejected),
         instead: 'project_cash continues the observed pattern and can assume only a monthly '
           + 'spending level. A change to future INCOME from a date — a raise, a new salary, an '
-          + 'income starting or ending — is scenario_projection\'s `incomeChanges`; a one-off '
-          + 'amount arriving or leaving is its `outflows`.' };
+          + 'income starting or ending — is scenario_projection\'s `incomeChanges`; a dated change '
+          + 'to SPENDING (a category cut, spending less from a date) is its `spendingChanges`; a '
+          + 'one-off amount arriving or leaving is its `outflows`.' };
     }
     // When the user asked for the current trend on purpose, the answer says what
     // it left out — the staged conditions are theirs, and they are not in it.
@@ -2203,6 +2217,13 @@ interface ScenarioSetup {
   /** S1-N1 — historical interest the spending rate left out because the ledger accrues it. */
   modelledInterest?: ModelledInterestExclusion;
   /**
+   * S1 — what the spending rules did at the horizon this scenario ran to: the
+   * spine's own record (never `a.spendingChanges`), and the user's word for each
+   * rule's category where it differed from the line. Absent when none was stated.
+   */
+  spendingChanges?: SpendingChangeOutcome;
+  spendingRequestedAs?: Record<string, string>;
+  /**
    * Conditions staged earlier in this conversation that this run applied, and the
    * arguments as they actually ran. Absent when nothing was staged.
    */
@@ -2316,6 +2337,64 @@ function toIncomeChangeRules(
     });
   });
   return rules;
+}
+
+/**
+ * S1 — the tool's `spendingChanges` entries as the primitive's rules.
+ *
+ * ⚠️ THE CATEGORY IS RESOLVED HERE, BY THE VOCABULARY, AND A REFUSAL IS WHOLE.
+ * "restaurants" is refused and Dining offered; "groceries" is refused and Dining
+ * offered; Interest is refused and the debt model named. Nothing of a refused rule
+ * runs — a narrower sentence never becomes a broader cut. Every other question
+ * about a rule (a multiplier of 1, a DELTA of 0, a date order) belongs to
+ * `invalidSpendingChange`, beside the transformation, as I1's do.
+ */
+function toSpendingChangeRules(
+  raw: unknown, declaredOk: (entry: Record<string, unknown>) => boolean,
+  rejected: RefusedInput[],
+): { rules: SpendingChangeRule[]; requestedAs: Record<string, string> } {
+  const rules: SpendingChangeRule[] = [];
+  const requestedAs: Record<string, string> = {};
+  if (!Array.isArray(raw)) return { rules, requestedAs };
+  raw.forEach((entry, i) => {
+    const id = `s${i + 1}`;
+    const name = `\`spendingChanges\` rule ${id}`;
+    if (!entry || typeof entry !== 'object') {
+      rejected.push({ input: name, reason: 'a `spendingChanges` entry must be an object; nothing was applied for it.' });
+      return;
+    }
+    const c = entry as Record<string, unknown>;
+    if (!declaredOk(c)) return;
+    const TYPES: Record<string, 'string' | 'number'> = {
+      category: 'string', op: 'string', from: 'string', to: 'string', multiplier: 'number', monthly: 'number',
+    };
+    const wrong = Object.entries(TYPES)
+      .filter(([k, t]) => c[k] !== undefined && c[k] !== null && typeof c[k] !== t)
+      .map(([k, t]) => `\`${k}\` must be a ${t}`);
+    if (wrong.length > 0) {
+      rejected.push({ input: name, reason: `${wrong.join('; ')}, so this rule was NOT applied — running it `
+        + 'without that field would turn it into a broader rule nobody stated.' });
+      return;
+    }
+    let scope: SpendingChangeRule['scope'] = null;
+    if (typeof c.category === 'string' && c.category.trim() !== '') {
+      const res = resolveTransformableCategory(c.category);
+      if (!res.ok) {
+        rejected.push({ input: name, reason: res.unavailable });
+        return;
+      }
+      scope = { category: res.category, class: res.class, meaning: res.meaning };
+      if (res.requestedAs) requestedAs[id] = boundedLabel(res.requestedAs) ?? res.requestedAs;
+    }
+    rules.push({
+      id, op: c.op as SpendingChangeRule['op'], scope,
+      fromISO: typeof c.from === 'string' ? c.from : '',
+      ...(typeof c.to === 'string' && c.to !== '' ? { toISO: c.to } : {}),
+      ...(typeof c.multiplier === 'number' ? { multiplier: c.multiplier } : {}),
+      ...(typeof c.monthly === 'number' ? { monthly: c.monthly } : {}),
+    });
+  });
+  return { rules, requestedAs };
 }
 
 /**
@@ -2433,6 +2512,8 @@ async function prepareScenario(
 
   const incomeChanges = toIncomeChangeRules(
     a.incomeChanges, declared('incomeChanges', 'an `incomeChanges` entry'), rejected);
+  const spending = toSpendingChangeRules(
+    a.spendingChanges, declared('spendingChanges', 'a `spendingChanges` entry'), rejected);
 
   const spine = await buildCashSpine(ctx, {
     asOf: ctx.asOfISO,
@@ -2443,6 +2524,7 @@ async function prepareScenario(
     // S1-N1 — the SAME liability lines the ledger is about to accrue on, so the
     // interest it models is the interest the spending rate leaves out.
     interestModelledOn: (acc) => interestModelledLiabilityIds(liabilityLinesOf(acc, a.liabilityAssumptions)),
+    ...(spending.rules.length > 0 ? { spendingChanges: spending.rules } : {}),
   });
   if ('unavailable' in spine) return spine;
   const { asOf, runTo, accounts } = spine;
@@ -2482,6 +2564,27 @@ async function prepareScenario(
   // engine's — mark the argument as unapplied only when nothing in it ran.
   if (allRefused) {
     for (const r of rejected) if (r.input.startsWith('`incomeChanges` rule')) r.argument = 'incomeChanges';
+  }
+
+  // ── S1 — what the spending rules did, and what they refused ────────────────
+  //
+  // Same shape as I1 above: the engine's refusals join the echo; the whole argument
+  // is marked unapplied only when nothing in it ran — or when the projection that
+  // would apply them did not run at all, which the outcome says in its own words.
+  const spendingOutcome = endpoint.spendingChanges;
+  if (spendingOutcome) {
+    const stated = Array.isArray(a.spendingChanges) ? a.spendingChanges.length : 0;
+    if (spendingOutcome.applied) {
+      for (const r of spendingOutcome.rejected) rejected.push({ input: r.input, reason: r.reason });
+      if (stated > 0 && spendingOutcome.executions.length === 0) {
+        for (const r of rejected) if (r.input.startsWith('`spendingChanges` rule')) r.argument = 'spendingChanges';
+      }
+    } else {
+      rejected.push({ input: '`spendingChanges`', reason: spendingOutcome.reason, argument: 'spendingChanges' });
+    }
+  } else if (Array.isArray(a.spendingChanges) && a.spendingChanges.length > 0 && spending.rules.length === 0) {
+    // Every entry was refused before the spine (a subset word, an unsupported line).
+    for (const r of rejected) if (r.input.startsWith('`spendingChanges` rule')) r.argument = 'spendingChanges';
   }
 
   // The spine's own opening balance — checking plus savings. Named `liquid`
@@ -2713,6 +2816,7 @@ async function prepareScenario(
     contributions: expanded.movements, outflows, rejected, monthlySpending, floorDerivations,
     ...(endpoint.incomeChanges ? { incomeChanges: endpoint.incomeChanges } : {}),
     ...(endpoint.modelledInterest ? { modelledInterest: endpoint.modelledInterest } : {}),
+    ...(spendingOutcome ? { spendingChanges: spendingOutcome, spendingRequestedAs: spending.requestedAs } : {}),
     ...(staged ? { staged } : {}),
     argumentsRun: a,
     run: (o: ScenarioOverrides = {}): ScenarioRun => {
@@ -2919,13 +3023,18 @@ function stagedEcho(setup: ScenarioSetup, rejected: readonly { input: string; ar
     (Array.isArray(run.incomeChanges) ? run.incomeChanges : []).indexOf(v) + 1;
   const refusedIncome = new Set(rejected.map((r) => /`incomeChanges` rule i(\d+)/.exec(r.input)?.[1])
     .filter((n): n is string => !!n).map(Number));
+  const spendIdx = (v: unknown) =>
+    (Array.isArray(run.spendingChanges) ? run.spendingChanges : []).indexOf(v) + 1;
+  const refusedSpending = new Set(rejected.map((r) => /`spendingChanges` rule s(\d+)/.exec(r.input)?.[1])
+    .filter((n): n is string => !!n).map(Number));
   const wholeArgs = new Set(rejected.map((r) => r.argument).filter((a): a is string => !!a));
-  const unattributed = rejected.some((r) => !r.argument && !/`incomeChanges`/.test(r.input));
+  const unattributed = rejected.some((r) => !r.argument && !/`(incomeChanges|spendingChanges)`/.test(r.input));
   const confirmed: typeof staged.applied = [];
   const unconfirmed: typeof staged.applied = [];
   for (const c of staged.applied) {
     const refused = wholeArgs.has(c.key)
       || (c.key === 'incomeChanges' ? refusedIncome.has(incomeIdx(c.value))
+        : c.key === 'spendingChanges' ? refusedSpending.has(spendIdx(c.value))
         : c.key === 'annualReturnPct' ? Array.isArray(run.returns) && run.returns.length > 0
           : c.key === 'assumedMonthlySpending' ? false : unattributed);
     (refused ? unconfirmed : confirmed).push(c);
@@ -2966,7 +3075,10 @@ function scenarioAssumptions(
     clauses: clausesInForce(ledger,
       floorDerivationsOf(setup, ledger).map((d) => ({ liquidFloor: d.liquidFloor, derivedFrom: d.derivedFrom })),
       // I1 — the SPINE's own record, not `a.incomeChanges`. See `clausesInForce`.
-      setup.incomeChanges?.executions ?? []),
+      setup.incomeChanges?.executions ?? [],
+      // S1 — likewise the spine's record of each spending rule.
+      setup.spendingChanges?.applied ? setup.spendingChanges.executions : [],
+      setup.spendingRequestedAs ?? {}),
     returns: returns.length === 0
       ? { statedRate: null,
           note: 'No return was in force. Investments are held flat at 0% — do not substitute '
@@ -3000,6 +3112,16 @@ function scenarioAssumptions(
         ? { note: setup.modelledInterest
           ? 'from the same observed rate project_cash uses, LESS the interest below — so it can be lower than project_cash\'s'
           : 'from the same observed rate project_cash uses' } : {}),
+      // S1 — the schedule the spending rules left, and what it removed in total.
+      ...(setup.spendingChanges ? { changes: setup.spendingChanges.applied
+        ? { applied: true,
+            spendingRemovedToHorizon: round2(setup.spendingChanges.spendingRemoved),
+            // At most 12 rows; the roster carries each rule.
+            monthlyFrom: setup.spendingChanges.schedule.slice(0, 12).map((x) => ({ from: x.fromISO, to: x.toISO, monthly: round2(x.monthly) })),
+            meaning: 'Spending runs at `monthly` between those dates because of the spending changes in '
+              + '`clauses.spendingChange`; `monthly` above is the rate BEFORE them. Positive '
+              + '`spendingRemovedToHorizon` is spending the changes took away.' }
+        : { applied: false, reason: setup.spendingChanges.reason } } : {}),
       // S1-N1 — interest counted once: as the ledger's accrual, not as spending.
       ...(setup.modelledInterest ? { interestLeftOut: {
         liabilities: setup.modelledInterest.accounts,

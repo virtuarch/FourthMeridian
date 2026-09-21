@@ -185,6 +185,14 @@ export const IDENTITY: Record<string, (v: unknown) => string | null> = {
     const id = s(o(v).liabilityId) || s(o(v).id);
     return id ? `liability:${id}` : null;
   },
+  // S1 — SCALE, DELTA and SET_RATE all say what a line's rate IS from a date, so
+  // "actually make the January cut 15%" replaces the 20% rather than stacking on it.
+  // The line is the user's word as stated; `*` is all spending.
+  spendingChanges: (v) => {
+    const c = o(v);
+    if (!s(c.op) || !s(c.from)) return null;
+    return `RATE|${s(c.category).trim().toLowerCase() || '*'}|${s(c.from)}`;
+  },
 };
 
 /**
