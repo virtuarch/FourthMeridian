@@ -133,3 +133,11 @@ jobs:
       # specific statement that no longer holds.
       - name: Architecture audits (REQUIRED tier)
         run: npm run audit:ci
+
+      # RLS-3 — tenant isolation, proven as the RUNTIME role rather than as the
+      # superuser every other step runs as. Asserts that fm_app has no
+      # BYPASSRLS, owns no protected table, that every RLS-enabled table is
+      # forced, and that a query which omits its tenant predicate entirely
+      # still cannot read another tenant's financial data.
+      - name: RLS tenant-isolation acceptance
+        run: RLS_TARGET_URL=$DATABASE_URL npm run rls:accept

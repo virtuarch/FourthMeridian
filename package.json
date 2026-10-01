@@ -37,8 +37,8 @@
     "ai:brief-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/daily-brief.check.ts",
     "ai:brief-lifecycle-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/daily-brief-lifecycle.check.ts",
     "ai:brief-route-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/daily-brief-route.check.ts",
-  "ai:chat": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-conversation-baseline.ts --interactive",
-  "db:seed": "prisma db seed",
+    "ai:chat": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-conversation-baseline.ts --interactive",
+    "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
     "db:reset": "tsx scripts/db-guard.ts && npm run db:backup && prisma migrate reset --force",
     "db:wipe": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/db-wipe.ts",
@@ -86,7 +86,8 @@
     "prices:acquisition": "dotenv -e .env.local -- tsx scripts/run-acquisition.ts",
     "snapshots:regeneration-dry-run": "dotenv -e .env.local -- tsx scripts/dry-run-regeneration.ts",
     "snapshots:regeneration-delta": "dotenv -e .env.local -- tsx scripts/regeneration-delta-attribution.ts",
-    "positions:reconstruct": "tsx scripts/run-reconstruction.ts"
+    "positions:reconstruct": "tsx scripts/run-reconstruction.ts",
+    "rls:accept": "tsx scripts/rls-acceptance.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -166,6 +166,16 @@ GRANT EXECUTE ON FUNCTION current_fm_user_id(), fm_visible_space_ids(),
 -- Sequences: Prisma uses cuid() defaults, but autoincrement tables exist.
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO fm_app, fm_system;
 
+-- fm_backup needs SELECT on EVERYTHING, and BYPASSRLS alone does not give it.
+-- BYPASSRLS exempts a role from POLICIES; it says nothing about GRANTS. A
+-- backup role with the attribute but without the privilege produces
+--     pg_dump: error: query failed: ERROR: permission denied for table ...
+-- which at least fails loudly — unlike the partial-dump case this role exists
+-- to prevent. The acceptance suite asserts the complete dump, which is how this
+-- was found.
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO fm_backup;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO fm_backup;
+
 -- ── 4. TABLES fm_app MUST NOT REACH AT ALL ───────────────────────────────────
 -- Revoking is stronger and simpler than inventing a permissive policy. These
 -- are operator-facing forensic ledgers and deployment-global telemetry. Several

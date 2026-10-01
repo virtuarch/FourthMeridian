@@ -24,6 +24,12 @@ export const ARCHITECTURE_JOB = [
   "npx prisma migrate deploy",
   "npx prisma db seed",
   "npm run audit:ci",
+  // RLS-3 — the tenant-isolation gate. Runs as fm_app (NOBYPASSRLS, non-owner)
+  // against the job's own throwaway database, so CI exercises the POLICIES and
+  // not merely the application's where-clauses. Before this step existed, CI
+  // ran everything as a superuser and could not have detected a policy that
+  // did nothing.
+  "RLS_TARGET_URL=$DATABASE_URL npm run rls:accept",
 ] as const;
 
 /** ci.yml's `postgres` service: image and credentials of the throwaway database. */

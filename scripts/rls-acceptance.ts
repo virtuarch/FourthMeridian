@@ -27,11 +27,19 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes }             from "node:crypto";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir }                  from "node:os";
 import { join }                    from "node:path";
 
 const KEEP  = process.argv.includes("--keep");
+/**
+ * When RLS_TARGET_URL is set the suite runs against THAT database instead of
+ * building one. CI already has a throwaway Postgres service with the migration
+ * history applied, and starting a second container inside the job would be
+ * wasteful and slower. The URL must be a clone — lib/db/live-guard.ts's naming
+ * rule is the check, and it is enforced below before a single statement runs.
+ */
+const TARGET_URL = process.env.RLS_TARGET_URL ?? null;
 const IMAGE = "postgres:16-alpine";
 const DB    = `fintracker_rls_${process.pid}`;
 const OWNER = "fmowner";
@@ -112,23 +120,32 @@ function asApp(appUrl: string, userId: string | null, sql: string) {
   return psql(appUrl, `BEGIN;\n${setLocal}${sql}\nCOMMIT;`, false);
 }
 
-function main(): void {
+async function main(): Promise<void> {
   console.log("\n=== RLS ACCEPTANCE SUITE ===\n");
 
-  const { base } = startPostgres();
-  console.log(`[rls] throwaway database: ${DB} in container ${container}`);
-
-  // 1. migration history, exactly as production applies it
-  console.log("[rls] applying committed migration history (prisma migrate deploy)...");
-  const migrate = spawnSync("npx", ["prisma", "migrate", "deploy"], {
-    encoding: "utf8",
-    env: { ...process.env, DATABASE_URL: `${base}?schema=public`, DIRECT_URL: `${base}?schema=public` },
-  });
-  if (migrate.status !== 0) {
-    console.error(migrate.stdout, migrate.stderr);
-    throw new Error("prisma migrate deploy failed against the throwaway database");
+  let base: string;
+  if (TARGET_URL) {
+    const name = TARGET_URL.split("/").pop()?.split("?")[0] ?? "";
+    if (!/^fintracker_[a-z0-9_]+$/.test(name)) {
+      throw new Error(`RLS_TARGET_URL names "${name}", which is not a recognised clone. This suite writes fixtures and will not run against a database it cannot prove is disposable.`);
+    }
+    base = TARGET_URL.split("?")[0];
+    console.log(`[rls] using the provided throwaway database: ${name}`);
+    console.log("[rls] assuming the migration history is already applied (CI applies it as its own step).");
+  } else {
+    base = startPostgres().base;
+    console.log(`[rls] throwaway database: ${DB} in container ${container}`);
+    console.log("[rls] applying committed migration history (prisma migrate deploy)...");
+    const migrate = spawnSync("npx", ["prisma", "migrate", "deploy"], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: `${base}?schema=public`, DIRECT_URL: `${base}?schema=public` },
+    });
+    if (migrate.status !== 0) {
+      console.error(migrate.stdout, migrate.stderr);
+      throw new Error("prisma migrate deploy failed against the throwaway database");
+    }
+    console.log("[rls] migration history applied.");
   }
-  console.log("[rls] migration history applied.");
 
   // 2. give fm_app a throwaway password (the migration deliberately creates the
   //    roles WITHOUT one; secrets never live in source control)
@@ -137,7 +154,9 @@ function main(): void {
   const appUrl = base.replace(`${OWNER}:${OWNER_PW}`, `fm_app:${APP_PW}`);
 
   // 3. fixtures, written as the OWNER so RLS does not interfere with setup
-  console.log("[rls] seeding Alice / Bob / Carol fixtures...");
+  console.log("[rls] seeding Alice / Bob fixtures...");
+  // Idempotent: the suite may run against a clone that already carries them.
+  psql(base, FIXTURE_CLEANUP, false);
   const seed = psql(base, FIXTURES);
   if (!seed.ok) throw new Error(`fixture seed failed: ${seed.err}`);
 
@@ -276,7 +295,19 @@ function main(): void {
   check(13, "Direct SQL as fm_app respects RLS (Alice sees her own + shared, not Bob's)",
         direct.ok && direct.out.includes("2"), `expected 2, got ${direct.out || direct.err}`);
 
+  // ── the production mechanism, not just the SQL one ─────────────────────────
+  // Everything above drove psql. This drives PRISMA through withTenantDb()'s
+  // exact shape, over a pool deliberately SMALLER than the concurrency, so
+  // every request is forced to reuse a connection another identity just used.
+  // That is the condition under which a session-scoped GUC would leak.
+  await concurrencyProof(appUrl);
+
   // ── report ─────────────────────────────────────────────────────────────────
+  // ── backup completeness, and the failure mode it guards ───────────────────
+  backupProof(base, appUrl);
+
+  if (TARGET_URL) psql(base, FIXTURE_CLEANUP, false);
+
   const failed = results.filter((r) => !r.ok);
   console.log(`\n=== ${results.length - failed.length}/${results.length} passed ===`);
   if (failed.length) {
@@ -287,10 +318,110 @@ function main(): void {
   console.log("\nTenant isolation is enforced by PostgreSQL, not by application predicates.\n");
 }
 
+/**
+ * Cases 28-29 — the backup path under RLS.
+ *
+ * This is the half of the design that is easy to get wrong silently. pg_dump is
+ * an ordinary client, so policies apply to it. A dump taken by a role without
+ * BYPASSRLS does not announce itself as partial — it is a well-formed .sql file
+ * containing a fraction of the rows, and the old "> 100 bytes" check passes it.
+ *
+ * So we prove BOTH directions: fm_backup produces a complete dump, and fm_app
+ * demonstrably does not.
+ */
+function backupProof(ownerUrl: string, appUrl: string): void {
+  const live = Number(psql(ownerUrl, `select count(*) from "Transaction";`).out);
+  const dir  = mkdtempSync(join(tmpdir(), "fm-rls-dump-"));
+  workdir = dir;
+
+  const countCopyRows = (file: string, table: string): number => {
+    const dump = readFileSync(file, "utf8");
+    const start = dump.indexOf(`COPY public."${table}" `);
+    if (start === -1) return 0;
+    const from = dump.indexOf("\n", dump.indexOf("FROM stdin;", start)) + 1;
+    const end  = dump.indexOf("\n\\.", from);
+    return end <= from ? 0 : dump.slice(from, end).split("\n").length;
+  };
+
+  // fm_backup carries BYPASSRLS precisely so this is complete.
+  const bkPw = randomBytes(18).toString("hex");
+  psql(ownerUrl, `ALTER ROLE fm_backup LOGIN PASSWORD '${bkPw}';`);
+  const bkUrl = ownerUrl.replace(/\/\/[^@]+@/, `//fm_backup:${bkPw}@`);
+  const good = join(dir, "fm_backup.sql");
+  const g = sh("pg_dump", ["--no-owner", "--no-privileges", "-f", good, bkUrl]);
+  const goodRows = g.ok ? countCopyRows(good, "Transaction") : -1;
+  check(28, "A dump taken as fm_backup is COMPLETE (row-for-row with the live table)",
+        g.ok && goodRows === live, `live=${live}, in dump=${goodRows}${g.ok ? "" : ` (pg_dump failed: ${g.err.split("\n")[0]})`}`);
+
+  // …and the same dump taken as the runtime role is NOT. Either pg_dump refuses
+  // outright, or --enable-row-security hands back a quietly truncated file.
+  const bad = join(dir, "fm_app.sql");
+  const b = sh("pg_dump", ["--no-owner", "--no-privileges", "--enable-row-security", "-f", bad, appUrl]);
+  const badRows = b.ok ? countCopyRows(bad, "Transaction") : -1;
+  check(29, "A dump taken as fm_app is REFUSED or silently partial — never complete",
+        !b.ok || badRows < live,
+        `live=${live}, in dump=${badRows} — a complete dump by the runtime role would mean RLS is not binding it`);
+}
+
+/**
+ * Case 17 — pooled identity cannot bleed between tenants.
+ *
+ * connection_limit=1 means every one of these interleaved requests is served by
+ * the SAME physical server connection, one after another. If the identity were
+ * set at session scope instead of transaction scope, a request would inherit
+ * its predecessor's tenant and the counts would be wrong in a way no
+ * application test would catch.
+ */
+async function concurrencyProof(appUrl: string): Promise<void> {
+  const { PrismaClient } = await import("@prisma/client");
+  const url = `${appUrl}?connection_limit=1`;
+  const client = new PrismaClient({ datasources: { db: { url } }, log: [] });
+
+  // withTenantDb()'s shape, inlined so this script stays runnable without the
+  // Next.js "server-only" module graph.
+  const asTenant = async (userId: string) =>
+    client.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.user_id', ${userId}, true)`;
+      const rows = await tx.$queryRaw<Array<{ n: bigint }>>`SELECT count(*)::bigint AS n FROM "Transaction"`;
+      return Number(rows[0].n);
+    });
+
+  try {
+    const EXPECT: Record<string, number> = { alice: 3, bob: 2 };
+    const plan = Array.from({ length: 40 }, (_, i) => (i % 2 === 0 ? "alice" : "bob"));
+    const got = await Promise.all(plan.map((u) => asTenant(u)));
+    const bad = got.map((n, i) => ({ u: plan[i], n })).filter((r) => r.n !== EXPECT[r.u]);
+    check(17, "Concurrent Alice/Bob on a pool of ONE never cross-contaminate (40 interleaved requests)",
+          bad.length === 0, `${bad.length} wrong: ${JSON.stringify(bad.slice(0, 4))}`);
+
+    // And the identity must be gone the moment the transaction ends.
+    const leaked = await client.$queryRaw<Array<{ v: string | null }>>`
+      SELECT nullif(current_setting('app.user_id', true), '') AS v`;
+    check(27, "No identity survives outside a transaction on a pooled connection",
+          leaked[0]?.v == null, `leaked value: ${leaked[0]?.v}`);
+  } finally {
+    await client.$disconnect();
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Fixtures. Written as the owner. Deliberately minimal: two tenants, one shared
 // Space exercising the many-to-many account case, and one user-private row.
 // ─────────────────────────────────────────────────────────────────────────────
+const FIXTURE_CLEANUP = `
+delete from "SpaceMemory"       where id = 'mem_a';
+delete from "Transaction"       where id like 'tx_alice%' or id like 'tx_bob%' or id like 'tx_shared%' or id = 'tx_evil_1';
+delete from "SpaceSnapshot"     where id = 'snap_evil';
+delete from "SpaceAccountLink"  where id in ('l_a','l_b','l_sh','l_sh2');
+delete from "PlaidItem"         where id = 'pi_a';
+delete from "FinancialAccount"  where id in ('acct_alice','acct_bob','acct_shared');
+delete from "SpaceMember"       where id in ('m_a','m_b','m_sa','m_sb');
+delete from "Space"             where id in ('space_a','space_b','space_s');
+delete from "User"              where id in ('alice','bob');
+delete from "FxRate"            where id = 'fx1';
+delete from "AiInvocation"      where id = 'ai1';
+`;
+
 const FIXTURES = `
 insert into "User" (id,email,name,"updatedAt") values
   ('alice','alice@example.test','Alice',now()),
@@ -336,9 +467,7 @@ insert into "AiInvocation" (id,provider,model,"promptTokens","completionTokens",
   values ('ai1','openai','gpt',1,1,1,'test');
 `;
 
-try {
-  main();
-} catch (e) {
+main().catch((e) => {
   console.error(`\n[rls] SUITE ERROR: ${e instanceof Error ? e.message : String(e)}\n`);
   process.exit(1);
-}
+});

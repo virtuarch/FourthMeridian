@@ -53,6 +53,64 @@ try {
 
 const bytes = statSync(outFile).size;
 if (bytes < 100) fail(`the dump is suspiciously small (${bytes} bytes) — treating as failed.`);
+
+// ── RLS-3 — A BYTE FLOOR IS NOT A COMPLETENESS CHECK ─────────────────────────
+//
+// Row-level security applies to pg_dump exactly as it does to any other client.
+// Under FORCE ROW LEVEL SECURITY, a role without BYPASSRLS either fails outright
+// ("query would be affected by row-level security policy") or, with
+// --enable-row-security, SILENTLY WRITES A PARTIAL DUMP. A partial dump of a
+// financial database sails past a 100-byte floor and looks like a backup right
+// up until the restore.
+//
+// So the dump is verified by COUNTING. For each table that carries rows in the
+// live database, the dump must contain a COPY block with the same number of
+// data lines. A table that is present and non-empty upstream but empty or
+// missing here is a silently truncated dump, and that is a hard failure.
+{
+  const sql = `
+    select c.relname
+      from pg_class c join pg_namespace n on n.oid = c.relnamespace
+     where n.nspname = 'public' and c.relkind = 'r' and c.relname <> '_prisma_migrations'
+     order by 1`;
+  const names = execFileSync("psql", ["-X", "-A", "-t", "-q", "--no-psqlrc", "-c", sql, cleanUrl], { encoding: "utf8" })
+    .trim().split("\n").map((s) => s.trim()).filter(Boolean);
+
+  const dump = readFileSync(outFile, "utf8");
+  const mismatches: string[] = [];
+  let checked = 0;
+
+  for (const t of names) {
+    const live = Number(
+      execFileSync("psql", ["-X", "-A", "-t", "-q", "--no-psqlrc", "-c", `select count(*) from "${t}"`, cleanUrl],
+        { encoding: "utf8" }).trim(),
+    );
+    if (!Number.isFinite(live) || live === 0) continue; // nothing to under-report
+    checked++;
+
+    // pg_dump writes:  COPY public."Name" (cols) FROM stdin;\n<rows>\n\\.
+    const start = dump.indexOf(`COPY public."${t}" `);
+    if (start === -1) { mismatches.push(`${t}: ${live} live rows, NO COPY block in the dump`); continue; }
+    const from = dump.indexOf("\n", dump.indexOf("FROM stdin;", start)) + 1;
+    const end  = dump.indexOf("\n\\.", from);
+    const inDump = end <= from ? 0 : dump.slice(from, end).split("\n").length;
+    if (inDump !== live) mismatches.push(`${t}: ${live} live rows, ${inDump} in the dump`);
+  }
+
+  if (mismatches.length) {
+    fail([
+      "the dump is INCOMPLETE — it does not contain every live row.",
+      "",
+      ...mismatches.map((m) => `  ${m}`),
+      "",
+      "  Under row-level security a dump taken by a role without BYPASSRLS is",
+      "  silently partial. Take backups as fm_backup (the one role granted",
+      "  BYPASSRLS for exactly this reason), not as the application role.",
+    ].join("\n"));
+  }
+  console.log(`  verified row-for-row across ${checked} non-empty table(s).`);
+}
+
 console.log(`✓ db:backup — wrote backups/${path.basename(outFile)} (${(bytes / 1024).toFixed(1)} KB).`);
 // A pg_dump newer than the server emits `SET transaction_timeout`, which PG16 rejects
 // (docs/operations/database-safety.md §4) — the restore line filters it.
