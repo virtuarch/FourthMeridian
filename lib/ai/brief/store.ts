@@ -63,7 +63,12 @@ export type ClaimResult = { won: true; token: Date } | { won: false };
 
 /** The models and the one raw-SQL seam the Brief's own phases touch. */
 export type BriefDbClient =
-  Pick<PrismaClient, 'dailyBrief' | 'spaceAccountLink' | 'spaceMemory'> & {
+  // `platformSetting` joined this list in RLS-12. The watermark and the data-
+  // health read both hash the refresh-cadence rows, and until fm_app was
+  // granted SELECT on that table they had to run on a deployment-wide client —
+  // an authority escape inside an otherwise converted surface. The Pick is the
+  // invariant: these five are everything a Brief phase can reach.
+  Pick<PrismaClient, 'dailyBrief' | 'spaceAccountLink' | 'spaceMemory' | 'platformSetting'> & {
     $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T>;
   };
 
@@ -82,11 +87,12 @@ export type BriefDbPhase = <T>(fn: (client: BriefDbClient) => Promise<T>) => Pro
  *
  * The source watermark and the per-source health read both hash
  * `PlatformSetting`'s refresh-cadence rows, and the RLS migration REVOKES ALL on
- * `PlatformSetting` from fm_app (it is deployment-global policy, not tenant
- * content). Running either as the tenant role would fail with "permission denied
- * for table PlatformSetting". Both are read-only and neither returns a row to the
- * user, so they stay on a deployment-wide client until that grant is decided —
- * recorded here as one field rather than hidden in a leaf import.
+ * `PlatformSetting`, which the first RLS migration had swept into the
+ * operational revoke. RLS-12 granted fm_app SELECT on it — it is deployment
+ * CONFIGURATION with no tenant dimension, so there was nothing for a tenant to
+ * learn from it — and both reads became ordinary tenant phases. The structural
+ * type survives because a transaction client satisfies it; the deployment-wide
+ * FIELD does not, because nothing needs it any more.
  */
 export type BriefPlatformClient =
   Pick<PrismaClient, 'spaceAccountLink' | 'platformSetting'> & {
@@ -97,8 +103,6 @@ export type BriefPlatformClient =
 export interface BriefRuntime {
   /** One short operation as the Brief's owner. */
   asOwner: BriefDbPhase;
-  /** See BriefPlatformClient: the two reads that cross the tenant boundary by necessity. */
-  platformWide: BriefPlatformClient;
 }
 
 export interface BriefStore {

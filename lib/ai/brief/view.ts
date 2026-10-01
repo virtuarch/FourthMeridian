@@ -38,7 +38,6 @@
 import 'server-only';
 import { resolveSpaceContext, type SpaceContext } from '@/lib/space';
 import { getSpaceNetWorthSummaries } from '@/lib/data/snapshots';
-import { db } from '@/lib/db';
 import { loadSpaceDataHealth } from '@/lib/connections/space-data-health';
 import { todayUTCISO } from '@/lib/time/clock';
 import type { BriefDataHealthView, BriefMetricsView, BriefResponse } from '@/lib/brief-types';
@@ -57,7 +56,6 @@ import { responseFromEnsure, responseFromInspection } from './view-model';
 export function briefRuntimeFor(userId: string): BriefRuntime {
   return {
     asOwner: (fn) => withTenantDb(userId, (tx) => fn(tx)),
-    platformWide: db,
   };
 }
 
@@ -94,7 +92,8 @@ async function loadDataHealth(spaceId: string, viewerUserId: string, now: Date):
   try {
     // Deployment-wide: it hashes PlatformSetting's refresh cadence, which fm_app is
     // denied. See BriefPlatformClient. Read-only, and no row reaches the user.
-    return await loadSpaceDataHealth(db, { spaceId, viewerUserId, now });
+    return await withTenantDb(viewerUserId, (tx) =>
+      loadSpaceDataHealth(tx, { spaceId, viewerUserId, now }));
   } catch (err) {
     console.error('[brief] data health unavailable:', err);
     return null;

@@ -74,7 +74,7 @@ export interface BriefLoadDeps {
  * a leaf reaching past every call site above it for the migration principal. The memory
  * recall now runs as the Brief's owner, one short transaction; the per-source
  * health read runs deployment-wide, for the reason recorded on
- * `BriefPlatformClient` (it hashes PlatformSetting, which fm_app is denied).
+ * the tenant phase runner (RLS-12 granted fm_app SELECT on PlatformSetting).
  *
  * The assemblers, the snapshot read and the population read still reach the
  * database through their own modules. They are not converted in this slice, and
@@ -101,7 +101,7 @@ async function defaultDeps(rt: BriefRuntime): Promise<BriefLoadDeps> {
     recentActivity: (spaceId, asOf, accountTypeOf) => loadRecentActivity(spaceId, asOf, undefined, accountTypeOf),
     assess: computeAssessment,
     dataHealth: (spaceId, viewerUserId, now, bankingAccountIds) =>
-      loadSpaceDataHealth(rt.platformWide, { spaceId, viewerUserId, now, bankingAccountIds }),
+      rt.asOwner((c) => loadSpaceDataHealth(c, { spaceId, viewerUserId, now, bankingAccountIds })),
     bankingPopulation: async (spaceId, asOf) =>
       (await transactionAccountPopulation({ spaceId, asOf })).filter((p) => p.rows > 0).map((p) => p.accountId),
   };

@@ -1,0 +1,36 @@
+-- RLS-12 — fm_app MAY READ DEPLOYMENT CONFIGURATION (AND ONLY READ IT)
+--
+-- The first migration revoked the whole operational family from fm_app in one
+-- sweep: AiInvocation, ApiUsageCounter, PlatformSetting, the refresh ledger,
+-- the incident ledger. That was right for twelve of those thirteen tables and
+-- wrong for this one, and adopting the Daily Brief is what surfaced it.
+--
+-- `sourceWatermark` and `loadSpaceDataHealth` both hash the refresh-cadence
+-- rows in PlatformSetting as part of deciding whether a Brief is stale. As
+-- fm_app both failed with `permission denied`, which left the Brief holding a
+-- deployment-wide client for two reads — an authority escape inside a surface
+-- this programme had just finished converting.
+--
+-- ── WHY SELECT IS SAFE AND WRITE IS NOT ──────────────────────────────────────
+-- PlatformSetting is DEPLOYMENT CONFIGURATION, not tenant data: refresh
+-- cadence, registration mode, maintenance mode, REQUIRE_TOTP_ALL_USERS. It has
+-- no tenant dimension at all, so there is no row in it that belongs to one user
+-- rather than another and nothing a reader could learn about another tenant.
+-- The sweep that caught it was aimed at the operational LEDGERS, where rows are
+-- per-tenant forensics; config is different in kind.
+--
+-- Write stays denied. A tenant request has no business changing platform
+-- policy, and `maintenance_mode` or `registration_mode` in reach of fm_app
+-- would be a genuine escalation. fm_system keeps the write.
+GRANT SELECT ON TABLE public."PlatformSetting" TO fm_app;
+CREATE POLICY fm_app_sel ON public."PlatformSetting" FOR SELECT TO fm_app USING (true);
+
+-- ── ONE CONSEQUENCE, STATED RATHER THAN DISCOVERED ───────────────────────────
+-- With this grant the Brief's watermark finally runs under the tenant role, so
+-- the tenant tables it hashes are RLS-filtered for the first time. The hash
+-- therefore changes once, and every stored watermark invalidates on the first
+-- read after deployment — each Space regenerates its Brief once, then settles.
+--
+-- That is the correct behaviour, not a regression: a staleness marker computed
+-- over rows the viewer cannot see was answering a slightly different question
+-- than the one it claimed to.

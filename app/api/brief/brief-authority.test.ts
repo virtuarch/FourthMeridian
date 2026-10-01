@@ -132,13 +132,17 @@ console.log("\n4b. the tenant boundary — entered per phase, never around the m
   check("every artifact-store method is its own phase — the claim is not split",
     phased.length > 0 && (phased.match(/=> phase\(/g) ?? []).length === 5
       && ["read:", "claim:", "complete:", "fail:", "refreshWatermark:"].every((m) => phased.includes(m)));
-  // The REASON is prose, so it is read from the raw file; the WIRING is code.
-  const storeRaw = readFileSync("lib/ai/brief/store.ts", "utf8");
-  check("the two reads that cannot be tenant-scoped are named in ONE place, with the reason",
-    /REVOKES ALL on\s*\n?\s*\*?\s*`?PlatformSetting`?/.test(storeRaw)
-      && /export type BriefPlatformClient/.test(STORE) && /platformSetting/.test(STORE)
-      && (LOAD.match(/rt\.platformWide/g) ?? []).length === 1
-      && (LIFECYCLE.match(/rt\.platformWide/g) ?? []).length === 1);
+  // RLS-12 — this pin INVERTED. It used to assert that exactly two reads were
+  // allowed to escape the tenant boundary, named in one place with a reason.
+  // Granting fm_app SELECT on PlatformSetting removed the need, so the pin now
+  // asserts the escape hatch is GONE: no deployment-wide field on the runtime,
+  // and no call site reaching for one. An exception that no longer applies
+  // should stop being documented and start being impossible.
+  check("the Brief has NO deployment-wide escape — every phase runs as the owner",
+    !/platformWide/.test(STORE) && !/platformWide/.test(LOAD) && !/platformWide/.test(LIFECYCLE)
+      && /'platformSetting'/.test(STORE)
+      && (LOAD.match(/rt\.asOwner\(/g) ?? []).length >= 2
+      && (LIFECYCLE.match(/rt\.asOwner\(/g) ?? []).length >= 2);
 }
 
 console.log("\n5. the retired engine stays retired");

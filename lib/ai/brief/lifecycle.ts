@@ -107,7 +107,8 @@ const CORE_DEPS: (keyof LifecycleDeps)[] = ['store', 'resolveSpace', 'watermark'
  * ⚠️ AND EVERY DB PHASE IS ITS OWN SHORT OPERATION. `generate` is the model call
  * and takes no client at all, so there is no shape in which a transaction could
  * span it. `store` and `hasFinancialData` run as the owner; `watermark` runs
- * deployment-wide, for the reason recorded on `BriefPlatformClient`.
+ * a tenant phase like every other, since RLS-12 granted fm_app SELECT on
+ * PlatformSetting.
  */
 export async function briefLifecycleDeps(rt: BriefRuntime): Promise<LifecycleDeps> {
   const { resolveSpaceContext } = await import('@/lib/space');
@@ -118,7 +119,8 @@ export async function briefLifecycleDeps(rt: BriefRuntime): Promise<LifecycleDep
   return {
     store: phaseBriefStore(rt.asOwner),
     resolveSpace: resolveSpaceContext,
-    watermark: async (scope, now) => (await sourceWatermark(rt.platformWide, scope, now)).watermark,
+    watermark: async (scope, now) =>
+      (await rt.asOwner((c) => sourceWatermark(c, scope, now))).watermark,
     loadPackage: (spaceCtx, now) => loadBriefPackage({ spaceCtx, now, runtime: rt }),
     generate: (pkg, now, reason) => generateBriefFromPackage(pkg, { model: CHAT_MODEL, now, surface: 'brief', reason }),
     hasFinancialData: async (scope) =>
