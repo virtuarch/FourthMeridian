@@ -70,8 +70,8 @@ async function main(): Promise<void> {
     tx.transaction.count());
   const bobTx = await tenant.withTenantDb("bob", async (tx) =>
     tx.transaction.count());
-  check(4, "[channel] withTenantDb scopes an UNFILTERED count to the caller (alice 3, bob 2, corpus 4)",
-    aliceTx === 3 && bobTx === 2, `alice=${aliceTx} bob=${bobTx}`);
+  check(4, "[channel] withTenantDb scopes an UNFILTERED count to the caller (alice 4, bob 2, corpus 5)",
+    aliceTx === 4 && bobTx === 2, `alice=${aliceTx} bob=${bobTx}`);
 
   // THE BACKSTOP: no application WHERE clause at all.
   const aliceSeesBob = await tenant.withTenantDb("alice", async (tx) =>
@@ -143,7 +143,7 @@ async function main(): Promise<void> {
     Array.from({ length: 30 }, (_, i) => (i % 2 === 0 ? "alice" : "bob"))
       .map(async (u) => ({ u, n: await tenant.withTenantDb(u, (tx) => tx.transaction.count()) })),
   );
-  const wrong = interleaved.filter((r) => r.n !== (r.u === "alice" ? 3 : 2));
+  const wrong = interleaved.filter((r) => r.n !== (r.u === "alice" ? 4 : 2));
   check(13, "[channel] 30 interleaved Alice/Bob operations never cross-contaminate",
     wrong.length === 0, `${wrong.length} wrong: ${JSON.stringify(wrong.slice(0, 4))}`);
 
@@ -162,7 +162,7 @@ async function main(): Promise<void> {
   const sysBypass = psql(h.ownerUrl, `select rolbypassrls from pg_roles where rolname='fm_system';`).out.trim();
   const sysSees = psql(h.systemUrl, `select count(*) from "Transaction";`, false);
   check(16, "[role] fm_system reaches all tenants by POLICY, never by BYPASSRLS",
-    sysBypass === "f" && sysSees.ok && sysSees.out.trim() === "4",
+    sysBypass === "f" && sysSees.ok && sysSees.out.trim() === "5",
     `bypassrls=${sysBypass} sees=${sysSees.out || sysSees.err.split("\n")[0]}`);
 
   // ── [service] REAL service functions, including a FORGED application scope ──
@@ -251,6 +251,38 @@ async function main(): Promise<void> {
   const availSrc = readFileSync(join(process.cwd(), "lib/users/availability.ts"), "utf8");
   check(29, "[service] the capability returns ONLY booleans — no row, no id, no column",
     /Promise<boolean>/.test(availSrc) && !/select\s*:/.test(availSrc) && /\.count\(/.test(availSrc));
+
+  // ── [role] RLS IS TENANCY ONLY — the tier stays the application's job ─────
+  // Bob reaches the joint account through a BALANCE_ONLY link. fm_account_visible()
+  // ignores visibilityLevel entirely, BY DESIGN: the owner decision is that RLS
+  // answers "is this row in a Space I belong to" and nothing else. So the row
+  // must be ADMITTED by the database and REDACTED by lib/account-privacy.
+  //
+  // If this ever starts returning null, RLS has quietly taken on a job it does
+  // not model — and the tier would then be enforced in two places that can
+  // disagree, which is worse than enforcing it in one.
+  const tierRow = await tenant.withTenantDb("bob", (tx) =>
+    tx.financialAccount.findUnique({ where: { id: "acct_shared" }, select: { id: true } }));
+  check(30, "[role] a BALANCE_ONLY link still ADMITS the row at the database — the tier is not RLS's job",
+    tierRow?.id === "acct_shared", `got ${JSON.stringify(tierRow)}`);
+
+  // …and a REVOKED link excludes it even though the Space itself is visible.
+  const revoked = await tenant.withTenantDb("bob", (tx) =>
+    tx.financialAccount.findUnique({ where: { id: "acct_alice" }, select: { id: true } }));
+  check(31, "[role] a REVOKED link excludes the account even though Bob can see that Space",
+    revoked === null, `got ${JSON.stringify(revoked)}`);
+
+  // The many-to-many fact, asserted rather than assumed: one account, two
+  // Spaces, two members, both legitimately see it.
+  const joint = psql(h.ownerUrl,
+    `select count(*) from "SpaceAccountLink" where "financialAccountId"='acct_shared' and status='ACTIVE';`).out.trim();
+  const aliceJoint = await tenant.withTenantDb("alice", (tx) =>
+    tx.financialAccount.count({ where: { id: "acct_shared" } }));
+  const bobJoint = await tenant.withTenantDb("bob", (tx) =>
+    tx.financialAccount.count({ where: { id: "acct_shared" } }));
+  check(32, "[role] MANY-TO-MANY preserved: one account, 3 ACTIVE links, visible to BOTH members",
+    joint === "3" && aliceJoint === 1 && bobJoint === 1,
+    `links=${joint} alice=${aliceJoint} bob=${bobJoint}`);
 
   // ── [role] the owner is not in the tenant path ────────────────────────────
   check(17, "[role] the tenant client is NOT the migration principal",

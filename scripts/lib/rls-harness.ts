@@ -219,19 +219,39 @@ insert into "SpaceMember" (id,"spaceId","userId",role,status) values
 insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","updatedAt") values
   ('acct_alice','Alice Checking','checking','TestBank','USER','alice',now()),
   ('acct_bob','Bob Checking','checking','TestBank','USER','bob',now()),
-  ('acct_shared','Joint','checking','TestBank','USER','alice',now());
+  ('acct_shared','Joint','checking','TestBank','USER','alice',now()),
+  -- Owned by Alice and deliberately NOT linked into the shared Space, so a
+  -- transfer counterparty can exist that a co-member must not be able to see.
+  ('acct_alice_private','Alice Savings','savings','TestBank','USER','alice',now());
 
+-- ⚠️ TIER VARIETY IS LOAD-BEARING. Every link used to be FULL, which made it
+-- impossible to tell "RLS admitted this row" from "the application tier
+-- admitted this row". fm_account_visible() ignores visibilityLevel entirely by
+-- design — RLS is TENANCY ONLY — so a BALANCE_ONLY link is the only fixture
+-- that can prove the tier is still the application's job.
 insert into "SpaceAccountLink" (id,"spaceId","financialAccountId",kind,status,"visibilityLevel","updatedAt") values
   ('l_a','space_a','acct_alice','HOME','ACTIVE','FULL',now()),
   ('l_b','space_b','acct_bob','HOME','ACTIVE','FULL',now()),
   ('l_sh','space_s','acct_shared','HOME','ACTIVE','FULL',now()),
-  ('l_sh2','space_a','acct_shared','SHARED','ACTIVE','FULL',now());
+  ('l_sh2','space_a','acct_shared','SHARED','ACTIVE','FULL',now()),
+  ('l_ap','space_a','acct_alice_private','HOME','ACTIVE','FULL',now()),
+  -- Bob sees the joint account in the SHARED Space at a REDUCED tier. RLS must
+  -- still admit the row; the application must still redact it.
+  ('l_sh_bal','space_b','acct_shared','SHARED','ACTIVE','BALANCE_ONLY',now()),
+  -- A revoked link must stay excluded even though the Space is visible.
+  ('l_rev','space_b','acct_alice','SHARED','REVOKED','FULL',now());
 
-insert into "Transaction" (id,"financialAccountId",date,merchant,category,amount,"updatedAt") values
-  ('tx_alice_1','acct_alice',current_date,'Coffee','Dining',-10,now()),
-  ('tx_alice_2','acct_alice',current_date,'Books','Shopping',-20,now()),
-  ('tx_bob_1','acct_bob',current_date,'Rent','Other',-50,now()),
-  ('tx_shared_1','acct_shared',current_date,'Groceries','Groceries',-30,now());
+-- ⚠️ economicDate IS NOT OPTIONAL FOR THESE FIXTURES. Every transaction list
+-- read orders on it (nulls last) and transactionCorpusSpan filters it to
+-- NOT NULL. With it absent, a list-read test would pass
+-- over an EMPTY SET and report success — a vacuous pass is worse than a
+-- failure, because it is indistinguishable from working.
+insert into "Transaction" (id,"financialAccountId",date,"economicDate",merchant,category,amount,"updatedAt") values
+  ('tx_alice_1','acct_alice',current_date,current_date,'Coffee','Dining',-10,now()),
+  ('tx_alice_2','acct_alice',current_date,current_date,'Books','Shopping',-20,now()),
+  ('tx_bob_1','acct_bob',current_date,current_date,'Rent','Other',-50,now()),
+  ('tx_shared_1','acct_shared',current_date,current_date,'Groceries','Groceries',-30,now()),
+  ('tx_alice_priv','acct_alice_private',current_date,current_date,'Transfer out','Transfer',-100,now());
 
 -- Private rows inside the SHARED Space: spaceId alone must NOT be enough.
 insert into "SpaceMemory" (id,"spaceId","ownerUserId",kind,subject,payload,"statedAs",status)
