@@ -22,7 +22,12 @@ import { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
-import { db } from "@/lib/db";
+// RLS-6 — the PRE-IDENTITY authority. Everything this module reads it reads in
+// order to establish who the caller is, so there is no app.user_id for a policy
+// to key on yet. fm_auth is granted exactly this surface (User, UserSession,
+// RecoveryCode, AuditLog INSERT, PlatformSetting SELECT) and no financial table
+// at all — see prisma/migrations/*_rls_auth_surface.
+import { authDb as db } from "@/lib/db";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { verifyRecoveryCode } from "@/lib/recovery-codes";
 import { AuditAction } from "@/lib/audit-actions";

@@ -49,7 +49,20 @@ import "server-only";
 import { getServerSession }      from "next-auth";
 import { NextResponse }          from "next/server";
 import { authOptions }           from "@/lib/auth";
-import { db }                    from "@/lib/db";
+// RLS-6 — this module spans the identity boundary, so it holds BOTH authorities
+// and the choice per query is deliberate:
+//
+//   authDb        the revocation re-check. It runs while establishing who the
+//                 caller is, so there is no app.user_id for a policy to use.
+//   withTenantDb  the Space membership lookup. By then the caller IS known, and
+//                 the row is their own — fm_app's SpaceMember policy admits
+//                 `userId = current_fm_user_id()`, so this needs no privilege
+//                 beyond the identity it already has.
+//
+// Routing the membership check through authDb would have been one character
+// easier and would have handed the pre-identity role a reason to read tenancy.
+import { authDb }                from "@/lib/db";
+import { withTenantDb }          from "@/lib/db/tenant-context";
 import { setCachedRevocation }   from "@/lib/session-cache";
 import { isRevocationIndeterminate } from "@/lib/auth/session-outcome";
 import { captureSessionRevocationFailure } from "@/lib/monitoring/capture";
@@ -157,7 +170,7 @@ async function recheckSessionLive(
   sessionToken: string,
 ): Promise<"valid" | "revoked" | "unavailable"> {
   try {
-    const dbSession = await db.userSession.findFirst({
+    const dbSession = await authDb.userSession.findFirst({
       where:  { sessionToken, revokedAt: null },
       select: { id: true },
     });
@@ -365,10 +378,15 @@ export async function requireSpaceRole(
   const user = resolution.user;
   if (totpSetupPending(user)) return [null, forbidden()];
 
-  const membership = await db.spaceMember.findUnique({
-    where:  { spaceId_userId: { spaceId, userId: user.id } },
-    select: { spaceId: true, userId: true, role: true, status: true },
-  });
+  // The caller is established, so this runs under their own identity. fm_app's
+  // SpaceMember policy admits a row whose userId is the current identity, which
+  // is exactly this row — no elevated authority is needed to ask "am I a member".
+  const membership = await withTenantDb(user.id, (tx) =>
+    tx.spaceMember.findUnique({
+      where:  { spaceId_userId: { spaceId, userId: user.id } },
+      select: { spaceId: true, userId: true, role: true, status: true },
+    }),
+  );
 
   if (!membership || membership.status !== "ACTIVE") return [null, forbidden()];
   if (!meetsMinRole(membership.role, minRole))        return [null, forbidden()];

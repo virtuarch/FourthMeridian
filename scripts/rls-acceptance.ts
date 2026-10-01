@@ -333,6 +333,9 @@ async function main(): Promise<void> {
   await concurrencyProof(appUrl);
 
   // ── report ─────────────────────────────────────────────────────────────────
+  // ── fm_auth: the pre-identity role must not be a way to reach money ───────
+  authSurfaceProof(base);
+
   // ── backup completeness, and the failure mode it guards ───────────────────
   backupProof(base, appUrl);
 
@@ -346,6 +349,53 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log("\nTenant isolation is enforced by PostgreSQL, not by application predicates.\n");
+}
+
+/**
+ * Cases 30-32 — fm_auth is a key to the front door, not to the vault.
+ *
+ * fm_auth exists because authentication must read the database BEFORE an
+ * identity exists for a policy to key on. That makes it the one role that
+ * operates without tenant context, which makes "can it reach financial data"
+ * the question that matters. The grants were derived by reading every
+ * pre-identity query in lib/auth.ts, lib/session.ts and lib/recovery-codes.ts;
+ * this asserts the OTHER half — everything that was deliberately left out.
+ *
+ * Tested as denial-by-GRANT rather than denial-by-policy on purpose: a table
+ * fm_auth was never granted cannot be reached even if a policy is later written
+ * carelessly. Absence of privilege outlives correctness of predicate.
+ */
+function authSurfaceProof(ownerUrl: string): void {
+  const pw = randomBytes(18).toString("hex");
+  psql(ownerUrl, `ALTER ROLE fm_auth LOGIN PASSWORD '${pw}';`);
+  const url = withRole(ownerUrl, "fm_auth", pw);
+
+  const who = psql(url, `select current_user;`).out.trim();
+  if (who !== "fm_auth") {
+    check(30, "fm_auth connection authenticates as fm_auth", false, `authenticated as "${who}"`);
+    return;
+  }
+
+  const FORBIDDEN = [
+    "Transaction", "PositionObservation", "PlaidItem", "SpaceMemory",
+    "DailyBrief", "FinancialAccount", "SpaceAccountLink", "Connection",
+  ];
+  const reachable: string[] = [];
+  for (const t of FORBIDDEN) {
+    const r = psql(url, `select count(*) from "${t}";`, false);
+    if (!deniedByGrant(r)) reachable.push(`${t} (${r.err.split("\n")[0] || `returned ${r.out}`})`);
+  }
+  check(30, `fm_auth cannot read ANY financial table (${FORBIDDEN.length} probed)`,
+        reachable.length === 0, `reachable: ${reachable.join("; ")}`);
+
+  // …but it must still be able to do its actual job, or login breaks.
+  const canUser    = psql(url, `select count(*) from "User";`, false);
+  const canSession = psql(url, `select count(*) from "UserSession";`, false);
+  check(31, "fm_auth CAN read the pre-identity surface it exists for (User, UserSession)",
+        canUser.ok && canSession.ok, `User: ${canUser.err.split("\n")[0]} | UserSession: ${canSession.err.split("\n")[0]}`);
+
+  const bypass = psql(ownerUrl, `select rolbypassrls from pg_roles where rolname='fm_auth';`).out.trim();
+  check(32, "fm_auth does NOT have BYPASSRLS", bypass === "f", `rolbypassrls=${bypass}`);
 }
 
 /**

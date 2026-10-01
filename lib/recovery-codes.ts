@@ -9,7 +9,9 @@
 
 import bcrypt from "bcryptjs";
 import { randomBytes } from "crypto";
-import { db } from "@/lib/db";
+// RLS-6 — pre-identity authority: a recovery code is one of the ways a session
+// is established, so this runs before app.user_id exists.
+import { authDb as db } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 
 const CODE_COUNT = 10;

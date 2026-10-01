@@ -161,15 +161,22 @@ async function main() {
     : "";
   check("the live re-check is funnelled through one guarded helper",
     recheckStart >= 0 &&
-    recheckBody.includes("db.userSession.findFirst") &&
+    recheckBody.includes("authDb.userSession.findFirst") &&
     recheckBody.includes("catch") &&
     recheckBody.includes("captureSessionRevocationFailure"),
     "recheckSessionLive must catch and report, not propagate");
   check("…returning a three-way verdict so 'unavailable' is not 'revoked'",
     recheckBody.includes('"unavailable"') && recheckBody.includes('"revoked"') && recheckBody.includes('"valid"'));
-  const findFirstCalls = (sessionSrc.match(/db\.userSession\.findFirst/g) ?? []).length;
+  const findFirstCalls = (sessionSrc.match(/\bauthDb\.userSession\.findFirst/g) ?? []).length;
   check("…and it is the ONLY userSession.findFirst in the guards (no inline duplicate)",
     findFirstCalls === 1, `found ${findFirstCalls} call sites (expected 1)`);
+  // RLS-6 — and it reaches the database as the PRE-IDENTITY role. The revocation
+  // re-check runs while establishing who the caller is, so there is no
+  // app.user_id for a policy to key on; routing it through the tenant client
+  // would deadlock the identity on itself.
+  check("…and it uses the pre-identity authority, never the tenant or shared client",
+    !/\bdb\.userSession\./.test(sessionSrc) && recheckBody.includes("authDb."),
+    "recheckSessionLive must query through authDb (fm_auth)");
 
   // ── 6. The session callback must not let the revocation check throw ─────────
   const authSrc = read("lib/auth.ts");
