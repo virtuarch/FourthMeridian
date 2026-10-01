@@ -5,9 +5,9 @@
  *
  * ⚠️ THEY LIVE APART FROM `tools.ts` ON PURPOSE, and not to slip past its
  * read-only scan. That scan asserts `tools.ts` imports no Prisma client and
- * contains no write op; it now has a sibling that asserts THIS file may reach
- * `db.spaceMemory` and nothing else. Splitting the files is what lets both
- * assertions be exact instead of one of them being loosened into uselessness.
+ * contains no write op; it now has a sibling that asserts the store THIS file
+ * calls may reach `spaceMemory` and nothing else. Splitting the files is what lets
+ * both assertions be exact instead of one of them being loosened into uselessness.
  *
  * ⚠️ NO MEMORY IS INJECTED INTO ANY PROMPT. Retrieval is model-driven, exactly
  * like every other tool — A2 and A3 already showed a model with no pre-loaded
@@ -21,7 +21,7 @@ import type { ToolDefinition } from './tools';
 import { durableMemoryWritesAllowed } from './memory-write-policy';
 import {
   recallMemories, rememberStated, recordProjection, PROJECTIONS_ARE_AUTOMATIC,
-  type MemoryScope, type ProjectionStatement,
+  type MemoryClient, type MemoryScope, type ProjectionStatement,
 } from './memory-store';
 import {
   STATED_CLASSES, SHAPE_KEY, REMEMBERED, GOAL_METRICS, EXAMPLES, readMemory, stateOf, describeMemory, expectedFrom,
@@ -44,6 +44,16 @@ const str = (description: string) => ({ type: 'string', description });
  */
 const scopeOf = (ctx: { spaceId: string; spaceCtx: { userId: string } }): MemoryScope =>
   ({ spaceId: ctx.spaceId, ownerUserId: ctx.spaceCtx.userId });
+
+/**
+ * The database authority this call runs under — the context's, never this file's.
+ *
+ * ⚠️ RLS slice A. This module holds no Prisma client (a source scan asserts it),
+ * so the client arrives with the context the boundary built: in the product that
+ * is the transaction-scoped `tx` from `withTenantDb`; in a script it is the global
+ * client, named explicitly at the script's own top level.
+ */
+const clientOf = (ctx: { memoryClient: MemoryClient }): MemoryClient => ctx.memoryClient;
 
 // ── Slice 7: the automatic checkpoint ────────────────────────────────────────
 
@@ -132,7 +142,8 @@ export function projectionStatement(
  * never take down an answer that was already correct.
  */
 export async function checkpointProjection(
-  ctx: { spaceId: string; asOfISO: string; spaceCtx: { userId: string }; memoryWrites?: boolean },
+  ctx: { spaceId: string; asOfISO: string; spaceCtx: { userId: string };
+         memoryClient: MemoryClient; memoryWrites?: boolean },
   toolName: string,
   result: unknown,
 ): Promise<{ subject: string } | null> {
@@ -141,7 +152,7 @@ export async function checkpointProjection(
   const statement = projectionStatement(toolName, result, ctx.asOfISO);
   if (!statement) return null;
   try {
-    const written = await recordProjection(scopeOf(ctx), { ...statement, statedAt: ctx.asOfISO });
+    const written = await recordProjection(clientOf(ctx), scopeOf(ctx), { ...statement, statedAt: ctx.asOfISO });
     return written.stored ? { subject: written.memory.subject } : null;
   } catch {
     // A memory failure must never break a turn that already answered correctly.
@@ -205,7 +216,7 @@ const recall: ToolDefinition = {
       description: 'True to see earlier versions of a subject, and what was retired.' },
   }),
   async run(a, ctx) {
-    const rows = await recallMemories(scopeOf(ctx), {
+    const rows = await recallMemories(clientOf(ctx), scopeOf(ctx), {
       ...(a.subject ? { subject: String(a.subject) } : {}),
       ...(a.includeHistory ? { includeSuperseded: true } : {}),
       limit: 50,
@@ -344,7 +355,7 @@ const remember: ToolDefinition = {
       const blind = admitWrite({ cls, supplied: fields as Fields, current: null, evidence: null, asOf: ctx.asOfISO });
       if (!blind.ok) return { stored: false, reason: blind.reason };
     }
-    const result = await rememberStated(scopeOf(ctx), {
+    const result = await rememberStated(clientOf(ctx), scopeOf(ctx), {
       op,
       ...(cls ? { cls } : {}),
       subject:  String(a.subject ?? ''),

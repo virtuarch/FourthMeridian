@@ -60,7 +60,7 @@ async function main() {
     spaceCtx: { userId: owner.userId, spaceId: SPACE, role: 'OWNER',
       permissions: { canInvite: true, canManage: true, canWrite: true, canRead: true, isOwner: true },
       space } as unknown as SpaceContext,
-    spaceId: SPACE, asOfISO: ASOF };
+    spaceId: SPACE, asOfISO: ASOF, memoryClient: db };
   const run = (n: string, a: Record<string, unknown>) =>
     findTool(n)!.run(a, ctx) as Promise<Record<string, unknown>>;
   const scale = (multiplier: number, from = JAN) =>

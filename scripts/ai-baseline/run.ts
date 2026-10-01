@@ -22,6 +22,8 @@
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { findProbe, type Probe } from './probes';
+// RLS slice A — a recorded run's database authority, named rather than implied.
+import { db } from '@/lib/db';
 import { ARM_USES_TOOLS, ARM_QUESTION, type Arm } from '@/lib/ai/conversation/evidence';
 import { openTranscript } from '@/lib/ai/conversation/engine';
 import { executeTurn, SYSTEM_INSTRUCTION, type TurnRecord } from '@/lib/ai/conversation/turn';
@@ -82,7 +84,8 @@ export async function runCase(args: {
   // opened by the same function the product route opens its transcript with, so
   // a recorded run and a user's conversation begin identically.
   const { messages: opened, evidence, toolSchemas, toolCtx, usesTools: useTools } =
-    await openTranscript({ spaceCtx, agentId, asOfISO, model, arm, memoryWrites: args.memoryWrites === true });
+    await openTranscript({ spaceCtx, agentId, asOfISO, model, arm,
+      memoryClient: db, memoryWrites: args.memoryWrites === true });
   let messages: unknown[] = opened;
 
   const turns: TurnRecord[] = [];

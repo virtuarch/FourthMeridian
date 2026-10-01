@@ -41,7 +41,7 @@ async function main() {
   const owner = await db.spaceMember.findFirstOrThrow({ where: { spaceId: SPACE, role: 'OWNER', status: 'ACTIVE' } });
   const spaceCtx = { userId: owner.userId, spaceId: SPACE, role: 'OWNER', permissions: { canInvite: true, canManage: true, canWrite: true, canRead: true, isOwner: true },
     space: { id: space.id, name: space.name, type: space.type, category: space.category, isPublic: space.isPublic, reportingCurrency: space.reportingCurrency } } as unknown as SpaceContext;
-  const ctx: ToolContext = { spaceCtx, spaceId: SPACE, asOfISO: ASOF };
+  const ctx: ToolContext = { spaceCtx, spaceId: SPACE, asOfISO: ASOF, memoryClient: db };
   const sizes: Record<string, number> = {}; const times: Record<string, number> = {};
   const run = async (name: string, args: Record<string, unknown>, tag?: string): Promise<any> => {
     const t0 = Date.now(); const r = await findTool(name)!.run(args, ctx);

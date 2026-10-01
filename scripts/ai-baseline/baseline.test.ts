@@ -207,12 +207,25 @@ console.log('4. tool surface');
   // store is the whole write path in the harness, and the only Prisma accessor
   // it may name is `db.spaceMemory`. A `db.transaction`, a `db.financialAccount`
   // or a `db.space` write here fails the build.
+  // ⚠️ RLS SLICE A — THE ACCESSOR IS `client.` / `tx.` NOW, NOT `db.`. The store
+  // imports no Prisma client at all; it is handed one, narrowed by type to a single
+  // model. The scan follows the accessor rather than the old name, because a scan
+  // that still looked for `db.` would have passed over an empty set and said nothing.
   const storeSrc = code(read('lib/ai/conversation/memory-store.ts'));
-  const accessors = [...storeSrc.matchAll(/\bdb\.(\w+)/g)].map((m) => m[1]);
+  const accessors = [...storeSrc.matchAll(/\b(?:db|client)\.(\w+)/g)].map((m) => m[1]);
   const txAccessors = [...storeSrc.matchAll(/\btx\.(\w+)/g)].map((m) => m[1]);
+  const reached = [...new Set([...accessors, ...txAccessors])];
   check('the only Prisma model the write path can reach is SpaceMemory',
-    [...new Set([...accessors, ...txAccessors])].every((x) => x === 'spaceMemory' || x === '$transaction'),
-    [...new Set([...accessors, ...txAccessors])].join(','));
+    reached.length > 0 && reached.every((x) => x === 'spaceMemory' || x === '$transaction'),
+    reached.join(','));
+  // ⚠️ AND IT HOLDS NO CLIENT OF ITS OWN. The authority a memory read or write runs
+  // under is decided by the boundary that knows the user, which is why the parameter
+  // is required and has no default — a default would be the escape hatch back.
+  check('the write path imports no Prisma client and defaults to none',
+    !/from '@\/lib\/db'/.test(storeSrc) && !/client: MemoryClient = /.test(storeSrc)
+      && /export async function recallMemories\(\s*client: MemoryClient,/.test(storeSrc));
+  check('…and it opens a transaction on a CAPABILITY, never on an identity',
+    /'\$transaction' in client/.test(storeSrc) && !/client === db/.test(storeSrc));
   check('no other harness file holds a Prisma client',
     ['tools.ts', 'scenario-ledger.ts', 'scenario.ts', 'compaction.ts', 'memory-tools.ts']
       .every((f) => !/from '@\/lib\/db'/.test(code(read(`lib/ai/conversation/${f}`)))));
@@ -475,8 +488,10 @@ console.log('12. interactive operator mode');
   const eng = code(read('lib/ai/conversation/engine.ts'));
   check('the transcript is opened by the shared prologue, not a bespoke one',
     /openTranscript\(\{[^}]*arm: ARM[^}]*\}\)/.test(src) && !/buildEvidence\(/.test(src));
+  // RLS slice A — the client is the first argument and the engine states it from
+  // its own required parameter, so the authority is the caller's and never a default.
   check('evidence comes from buildEvidence, not a bespoke pack',
-    /buildEvidence\(arm, ctx, spaceCtx\)/.test(eng));
+    /buildEvidence\(args\.memoryClient, arm, ctx, spaceCtx\)/.test(eng));
   check('the tool surface is the shared one',
     /openAiToolSchemas\(\)/.test(eng) && !/openAiToolSchemas\(\)/.test(src));
   check('the instruction is the shared one — not a second prompt',
@@ -1870,7 +1885,7 @@ console.log('19a. memory line');
   check('the A2 orientation carries this user\'s memory',
     /memory \}/.test(ev) && /async function memoryLine/.test(ev));
   check('…scoped to the authenticated user, not the Space',
-    /memoryLine\(spaceId, ctx\.userId, asOf\)/.test(ev)
+    /memoryLine\(memoryClient, spaceId, ctx\.userId, asOf\)/.test(ev)
       && /const scope = \{ spaceId, ownerUserId \}/.test(ev));
   check('…read per kind, so a run of projection horizons cannot crowd the goals out',
     ['INTENTION', 'ASSUMPTION', 'CHECKPOINT'].every((k) => new RegExp(`kind: MemoryKind\\.${k}`).test(ev)));
@@ -2111,7 +2126,7 @@ console.log('20a. checkpoint-on-projection');
     projectionStatement('project_cash', { horizon: { to: '2026-12-31' }, projection: {} }, '2026-09-20') === null
       && projectionStatement('project_cash', { projection: { endingCash: 1 } }, '2026-09-20') === null);
   check('the turn loop\'s writer is the store\'s code-only entry point',
-    /recordProjection\(scopeOf\(ctx\)/.test(mt) && !/rememberMemory\([^)]*CHECKPOINT/.test(mt));
+    /recordProjection\(clientOf\(ctx\), scopeOf\(ctx\)/.test(mt) && !/rememberMemory\([^)]*CHECKPOINT/.test(mt));
   // ⚠️ A CONDITIONAL PROJECTION IS NOT OURS TO BE GRADED ON, INCLUDING THE ONES
   // ALREADY ON RECORD. Narrowing stopped WRITING them; rows written before it
   // were still being compared with what happened, and the assumption's raw text

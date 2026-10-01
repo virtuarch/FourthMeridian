@@ -22,6 +22,8 @@ import { createInterface } from 'readline/promises';
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { ARM_QUESTION } from '@/lib/ai/conversation/evidence';
+// RLS slice A — a dogfood session's database authority, named rather than implied.
+import { db } from '@/lib/db';
 import { openTranscript } from '@/lib/ai/conversation/engine';
 import { sumTurns } from './run';
 import { executeTurn, SYSTEM_INSTRUCTION, type TurnRecord } from '@/lib/ai/conversation/turn';
@@ -55,7 +57,8 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
   // open with. A2 is a tool arm; a model that cannot take tools would silently
   // become a different experiment, so `usesTools` is stated, never absorbed.
   const { messages: opened, context: ctx, evidence, toolSchemas, toolCtx, usesTools: useTools } =
-    await openTranscript({ spaceCtx, agentId, asOfISO, model, arm: ARM, memoryWrites: args.memoryWrites === true });
+    await openTranscript({ spaceCtx, agentId, asOfISO, model, arm: ARM,
+      memoryClient: db, memoryWrites: args.memoryWrites === true });
   let messages: unknown[] = opened;
 
   const startedAt = new Date();

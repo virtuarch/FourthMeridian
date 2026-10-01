@@ -61,7 +61,7 @@ async function main() {
   const owner = await db.spaceMember.findFirstOrThrow({ where: { spaceId: SPACE, role: 'OWNER', status: 'ACTIVE' } });
   const spaceCtx = { userId: owner.userId, spaceId: SPACE, role: 'OWNER', permissions: { canInvite: true, canManage: true, canWrite: true, canRead: true, isOwner: true },
     space: { id: space.id, name: space.name, type: space.type, category: space.category, isPublic: space.isPublic, reportingCurrency: space.reportingCurrency } } as unknown as SpaceContext;
-  const toolCtx: ToolContext = { spaceCtx, spaceId: SPACE, asOfISO: ASOF };
+  const toolCtx: ToolContext = { spaceCtx, spaceId: SPACE, asOfISO: ASOF, memoryClient: db };
   /** One tool result, read by dotted path. Everything here is a JSON payload a model would read. */
   type Payload = { at: (path: string) => unknown; raw: unknown };
   const read = (raw: unknown): Payload => ({ raw,

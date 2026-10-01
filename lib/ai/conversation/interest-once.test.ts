@@ -89,7 +89,7 @@ async function main(): Promise<void> {
   const { emptyPlan } = await import('./pending-plan');
   const { withoutModelledInterest } = await import('@/lib/forecast/observed-spending');
   const { reads, monthlyBreakdown } = await fixtureReads();
-  const ctx = (): ToolContext => ({ asOfISO: ASOF, spaceId: 'spc', spaceCtx: {} as never, cashSpineReads: reads,
+  const ctx = (): ToolContext => ({ asOfISO: ASOF, spaceId: 'spc', spaceCtx: {} as never, memoryClient: {} as never, cashSpineReads: reads,
     plan: { pending: emptyPlan(), scenarioRan: false } });
   const run = async (tool: string, args: Rec): Promise<Rec> => (await findTool(tool)!.run(args, ctx())) as Rec;
   const at = (r: Rec, date: string) => (r.checkpoints as Rec[]).find((c) => c.date === date)!;

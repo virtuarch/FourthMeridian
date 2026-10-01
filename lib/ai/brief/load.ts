@@ -82,7 +82,7 @@ async function defaultDeps(): Promise<BriefLoadDeps> {
     },
     readSnapshots: (spaceId) => getRecentSnapshots({ rows: SNAPSHOT_READ_ROWS }, { spaceId }),
     projectSnapshots: (rows) => projectSnapshotSection(rows, 'full'),
-    recall: (scope) => recallMemories(scope, { limit: 50 }),
+    recall: (scope) => recallMemories(db, scope, { limit: 50 }),
     recentActivity: (spaceId, asOf, accountTypeOf) => loadRecentActivity(spaceId, asOf, undefined, accountTypeOf),
     assess: computeAssessment,
     dataHealth: (spaceId, viewerUserId, now, bankingAccountIds) =>

@@ -73,7 +73,7 @@ async function main() {
     permissions: { canInvite: true, canManage: true, canWrite: true, canRead: true, isOwner: true },
     space: { id: space.id, name: space.name, type: space.type, category: space.category,
       isPublic: space.isPublic, reportingCurrency: space.reportingCurrency } } as unknown as SpaceContext;
-  const toolCtx: ToolContext = { spaceCtx, spaceId: SPACE, asOfISO: ASOF };
+  const toolCtx: ToolContext = { spaceCtx, spaceId: SPACE, asOfISO: ASOF, memoryClient: db };
   const at = (raw: unknown, path: string): unknown => path.split('.').reduce<unknown>((v, k) =>
     (v && typeof v === 'object' ? (v as Record<string, unknown>)[k] : undefined), raw);
   const cash = async (args: Record<string, unknown>): Promise<Payload> => {

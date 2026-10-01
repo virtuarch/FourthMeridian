@@ -143,6 +143,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // FM-AUDIT-018 — a plan the previous turn could not carry; this turn is told.
       continuity: carried?.continuity ?? null,
       asOfISO: todayUTCISO(),
+      // ⚠️ RLS slice A — STATED, NOT ASSUMED. A turn makes model calls, so its
+      // memory work CANNOT run inside one `withTenantDb` transaction; this route
+      // therefore still names the long-lived authority explicitly, and the memory
+      // surface beside it (app/api/ai/memory) is the one already running as the
+      // tenant. Making the choice visible here is what a later slice converts.
+      memoryClient: db,
       correlationId: conversationKey(user.id, history[0]?.content ?? asked),
       surface: 'chat',
       // FM-AUDIT-019 — the product route is where durable memory is a feature: the

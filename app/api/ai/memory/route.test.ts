@@ -108,11 +108,21 @@ void (async () => {
   {
     const read = (f: string) => readFileSync(join(__dirname, f), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
     const files = ['route.ts', '[id]/route.ts', 'handlers.ts', 'deps.ts'].map(read);
-    check('no route or handler reads a user id from the request', files.every((s) => !/searchParams\.get\('(userId|ownerUserId)'\)|\.(userId|ownerUserId)\s*[;,)]/.test(s.replace(/ownerUserId: user\.id|s\.scope\.ownerUserId/g, ''))));
+    check('no route or handler reads a user id from the request', files.every((s) => !/searchParams\.get\('(userId|ownerUserId)'\)|\.(userId|ownerUserId)\s*[;,)]/.test(s.replace(/ownerUserId: user\.id|(?:s\.)?scope\.ownerUserId/g, ''))));
     check('the owner is the session user', /ownerUserId: user\.id/.test(files[2]));
     check('no memory query lives outside memory-store.ts', files.every((s) => !/spaceMemory/.test(s)));
-    check('the only table the routes touch directly is the audit log', (files[3].match(/\bdb\.(\w+)/g) ?? []).every((m) => m === 'db.auditLog')
+    // ⚠️ THE ACCESSOR IS NOW `tx.`, BECAUSE THE DEPS ENTER `withTenantDb` (RLS slice A).
+    // The property asserted is unchanged — exactly one table is reached from here —
+    // but it is read off the transaction-scoped client the boundary hands down, which
+    // is the only client this file has.
+    const depsTables = files[3].match(/\b(?:db|tx)\.(\w+)/g) ?? [];
+    check('the only table the routes touch directly is the audit log',
+      depsTables.length === 1 && depsTables[0] === 'tx.auditLog'
       && files.slice(0, 3).every((s) => !/@\/lib\/db/.test(s)));
+    check('every dep that reaches the database enters the tenant boundary with the owner\'s identity',
+      (files[3].match(/withTenantDb\(/g) ?? []).length === 4
+      && /withTenantDb\(scope\.ownerUserId,/.test(files[3]) && /withTenantDb\(userId,/.test(files[3])
+      && !/\bfrom '@\/lib\/db'/.test(files[3]));
     check('the audit metadata is counts and kinds only', /metadata: \{ kind, versionsErased \}/.test(files[3]));
     check('there is no admin bypass of ownership', files.every((s) => !/SYSTEM_ADMIN/.test(s)));
     check('the routes are rate limited like the chat route', /limitByUser\(userId, 'ai-memory', \{ limit: 30, windowSec: 60 \}\)/.test(files[3]));

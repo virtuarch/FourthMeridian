@@ -153,7 +153,7 @@ async function main(): Promise<void> {
     && JSON.stringify(superseded.args.spendingChanges) === JSON.stringify([{ ...DINING_20, multiplier: 0.85 }]));
   const { findTool } = await import('./tools');
   const reads = await fixtureReads('2026-09-21');
-  const ctx: ToolContext = { asOfISO: '2026-09-21', spaceId: 'spc', spaceCtx: {} as never, cashSpineReads: reads,
+  const ctx: ToolContext = { asOfISO: '2026-09-21', spaceId: 'spc', spaceCtx: {} as never, memoryClient: {} as never, cashSpineReads: reads,
     plan: { pending: base, scenarioRan: false } };
   const r = await findTool('scenario_projection')!.run({ to: '2027-12-31', annualReturnPct: 0 }, ctx) as Rec;
   check('the run applied it: roster RAN (Dining 1,500 → 1,200) and it is credited to the earlier turn',
@@ -166,7 +166,7 @@ async function main(): Promise<void> {
   const st = findTool('stage_assumptions')!;
   check('`inAddition` is declared beside `replace`', 'inAddition' in (st.parameters as Rec).properties && 'replace' in (st.parameters as Rec).properties);
   const tctx = (pending: ReturnType<typeof emptyPlan>, texts: string[]): ToolContext => ({ asOfISO: '2026-09-21', spaceId: 'spc',
-    spaceCtx: {} as never, plan: { pending, scenarioRan: false }, turn: say(...texts) } as ToolContext);
+    spaceCtx: {} as never, memoryClient: {} as never, plan: { pending, scenarioRan: false }, turn: say(...texts) } as ToolContext);
   const c1 = tctx(emptyPlan(), ['cut Dining 20% from January']);
   await st.run({ spendingChanges: [DINING_20] }, c1);
   const texts = ['cut Dining 20% from January', 'then cut it another 10% starting July'];

@@ -43,7 +43,7 @@ async function main() {
   const ctx: ToolContext = {
     spaceCtx: { userId: owner.userId, spaceId: SPACE, role: 'OWNER',
       permissions: { canInvite: true, canManage: true, canWrite: true, canRead: true, isOwner: true }, space } as unknown as SpaceContext,
-    spaceId: SPACE, asOfISO: ASOF, plan: { pending: emptyPlan() } };
+    spaceId: SPACE, asOfISO: ASOF, memoryClient: db, plan: { pending: emptyPlan() } };
   const userSays = (t: string) => { said.push(t); ctx.turn = turnEvidence([...said], []); };
   const run = (n: string, a: Record<string, unknown>) => findTool(n)!.run(a, ctx) as Promise<Record<string, unknown>>;
 

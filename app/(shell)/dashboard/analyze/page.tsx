@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { getSpaceContext, type SpaceContext } from "@/lib/space";
 import { getLatestAdvice } from "@/lib/data/advice";
 import { recallMemories } from "@/lib/ai/conversation/memory-store";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { selectStarterTopics, type StarterTopics } from "@/lib/ai/conversation/starter-topics";
 import { todayUTCISO } from "@/lib/time/clock";
 import { AnalyzeClient } from "@/components/dashboard/AnalyzeClient";
@@ -67,13 +68,19 @@ export default async function AnalyzePage() {
  * One indexed read (ACTIVE rows, scoped to this Space AND this user) plus pure
  * formatting; no model call. Memory is a nicety here: any failure is the generic
  * empty state, never a failed page.
+ *
+ * ⚠️ RLS slice A — THE READ RUNS AS THE USER. `withTenantDb` wraps exactly the
+ * read: the identity comes from the resolved Space context (server-side session
+ * state, never a cookie value this page trusts), and the transaction closes before
+ * anything is rendered. The formatting below is pure, so it stays outside.
  */
 async function loadStarterTopics(ctx: SpaceContext): Promise<StarterTopics | null> {
   try {
-    const memories = await recallMemories(
+    const memories = await withTenantDb(ctx.userId, (tx) => recallMemories(
+      tx,
       { spaceId: ctx.spaceId, ownerUserId: ctx.userId },
       { limit: 50 },
-    );
+    ));
     return selectStarterTopics(memories, todayUTCISO(), ctx.space.reportingCurrency);
   } catch {
     return null;

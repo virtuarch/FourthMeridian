@@ -40,7 +40,7 @@ import { composeInvestments } from '@/lib/ai/economic-concepts';
 import { loadCoverageEnvelope } from '@/lib/ai/coverage-envelope';
 import { runSignalDetectors } from '@/lib/ai/signals';
 import type { SpaceContext } from '@/lib/space';
-import { recallMemories, MemoryKind } from './memory-store';
+import { recallMemories, MemoryKind, type MemoryClient } from './memory-store';
 import { composeMemoryLine, MEMORY_LINE_RULES } from './memory-model';
 import { transactionCorpusSpan } from '@/lib/data/transaction-query';
 import { todayUTCISO } from '@/lib/time/clock';
@@ -256,18 +256,28 @@ function thinCore(
  * No balance can appear here: no class has a field that could hold one, and a
  * projection contributes its horizon only.
  */
-async function memoryLine(spaceId: string, ownerUserId: string, todayISO: string) {
+async function memoryLine(
+  client: MemoryClient, spaceId: string, ownerUserId: string, todayISO: string,
+) {
   const scope = { spaceId, ownerUserId };
   const rows = (await Promise.all([
-    recallMemories(scope, { kind: MemoryKind.INTENTION }),
-    recallMemories(scope, { kind: MemoryKind.ASSUMPTION }),
-    recallMemories(scope, { kind: MemoryKind.CHECKPOINT }),
+    recallMemories(client, scope, { kind: MemoryKind.INTENTION }),
+    recallMemories(client, scope, { kind: MemoryKind.ASSUMPTION }),
+    recallMemories(client, scope, { kind: MemoryKind.CHECKPOINT }),
   ])).flat();
   return composeMemoryLine(rows, todayISO, { rules: MEMORY_LINE_RULES });
 }
 
-/** Build the evidence for one arm. */
+/**
+ * Build the evidence for one arm.
+ *
+ * ⚠️ THE CLIENT IS THE FIRST ARGUMENT AND IT IS REQUIRED (RLS slice A). The only
+ * database read this function owns is the memory line, and the authority it runs
+ * under is the caller's to state — there is no module-level client here to fall
+ * back to, so a call site that forgot would not compile.
+ */
 export async function buildEvidence(
+  memoryClient: MemoryClient,
   arm: Arm, ctx: SpaceContext_AI, spaceCtx: SpaceContext,
   /**
    * The orientation's information ceiling. Defaults to the end of the assessment
@@ -288,7 +298,7 @@ export async function buildEvidence(
   if (arm === 'A2') {
     const [envelope, memory, activity] = await Promise.all([
       loadCoverageEnvelope(spaceId),
-      memoryLine(spaceId, ctx.userId, asOf),
+      memoryLine(memoryClient, spaceId, ctx.userId, asOf),
       buildActivityFrame(ctx, spaceCtx, asOf),
     ]);
     const body = JSON.stringify(

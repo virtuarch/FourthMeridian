@@ -68,7 +68,7 @@ async function main() {
 
   console.log('1. MATURE SPACE — the frame exists and is measured over its own window');
   txQueries = 0;
-  const withFrame = await buildEvidence('A2', ctx, spaceCtx);
+  const withFrame = await buildEvidence(db, 'A2', ctx, spaceCtx);
   const queriesWith = txQueries;
   const a = core(withFrame.body);
   check('activity is present', a.activity != null, JSON.stringify(a.activity?.window));
@@ -82,7 +82,7 @@ async function main() {
     === 'window,income,spending,cardAndDebtPayments,netCashFlow,transactionCount');
 
   console.log('\n2. THE FIGURES ARE THE ASSEMBLER\'S OWN, OVER EXACTLY THAT WINDOW');
-  const toolCtx: ToolContext = { spaceId, asOfISO: a.activity!.window.to, spaceCtx } as ToolContext;
+  const toolCtx: ToolContext = { spaceId, asOfISO: a.activity!.window.to, spaceCtx, memoryClient: db } as ToolContext;
   const direct = await findTool('get_spending')!.run(
     { from: a.activity!.window.from, to: a.activity!.window.to }, toolCtx) as {
       window: { from: string; days: number; transactionCount: number };
@@ -101,7 +101,7 @@ async function main() {
   txQueries = 0;
   // An asOf inside the first days of the record: coverage is far too short, so
   // the frame cannot exist and the body is the proven single-frame control.
-  const early = await buildEvidence('A2', ctx, spaceCtx, EARLY);
+  const early = await buildEvidence(db, 'A2', ctx, spaceCtx, EARLY);
   const queriesWithout = txQueries;
   const b = core(early.body);
   check('activity is OMITTED under sparse history', !('activity' in b));
@@ -123,7 +123,7 @@ async function main() {
   const ceiling = a.activity!.window.to;
   const marchYear = Number(ceiling.slice(0, 4)) - (ceiling >= `${ceiling.slice(0, 4)}-03-15` ? 0 : 1);
   const RETRO = `${marchYear}-03-15`;
-  const retro = core((await buildEvidence('A2', ctx, spaceCtx, RETRO)).body);
+  const retro = core((await buildEvidence(db, 'A2', ctx, spaceCtx, RETRO)).body);
   check('to is the historical ceiling', retro.activity?.window?.to === RETRO, `${retro.activity?.window?.to} vs ${RETRO}`);
   check('from crosses the calendar year — no YTD reset',
     (retro.activity?.window?.from ?? '').startsWith(String(marchYear - 1)), retro.activity?.window?.from);

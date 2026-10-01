@@ -111,7 +111,7 @@ import type { TurnEvidence } from './memory-model';
 // ⚠️ READING memory, never writing it. `recallMemories` is the store's read half;
 // the write half lives in the turn loop (slice 7) and in `remember`. This file
 // still holds no Prisma client, which a test asserts.
-import { recallMemories, MemoryKind } from './memory-store';
+import { recallMemories, MemoryKind, type MemoryClient } from './memory-store';
 import {
   readCheckpoint, compareToStatement, diffBasis,
 } from './reconcile';
@@ -157,6 +157,18 @@ export interface CashSpineReads {
 export interface ToolContext {
   spaceCtx: SpaceContext;
   spaceId:  string;
+  /**
+   * RLS slice A — THE DATABASE AUTHORITY MEMORY RUNS UNDER, and the only client
+   * anything in the tool layer is given.
+   *
+   * ⚠️ REQUIRED, AND DELIBERATELY NOT DEFAULTED. This file holds no Prisma client
+   * (a source scan asserts it), so a context that omitted this would have nothing
+   * to fall back to — which is the point: every caller that opens a transcript
+   * states the authority its memory reads and writes execute under, and
+   * TypeScript names the ones that forget. It is narrowed to `spaceMemory`, so it
+   * cannot be used to reach a financial table from here even by accident.
+   */
+  memoryClient: MemoryClient;
   /** Test seam only — see CashSpineReads. Unset in production. */
   cashSpineReads?: CashSpineReads;
   /**
@@ -3900,6 +3912,7 @@ const reconcileProjection: ToolDefinition = {
   }),
   async run(a, ctx) {
     const statements = await recallMemories(
+      ctx.memoryClient,
       { spaceId: ctx.spaceId, ownerUserId: ctx.spaceCtx.userId },
       { kind: MemoryKind.CHECKPOINT,
         ...(a.subject ? { subject: String(a.subject) } : {}),

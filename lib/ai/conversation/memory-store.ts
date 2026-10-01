@@ -5,9 +5,26 @@
  *
  * ⚠️ EVERY OTHER TOOL IS READ-ONLY AND A TEST ASSERTS IT. That test did not get
  * weakened to let this through; it gained a named, narrow exception. This file
- * is the whole exception: it may touch `db.spaceMemory` and nothing else, which
- * a source scan enforces. No financial row can be created, updated or deleted
- * from anywhere in the harness, including here.
+ * is the whole exception: it may touch `spaceMemory` on the client it is handed
+ * and nothing else, which a source scan enforces — and the TYPE says the same
+ * thing, because `MemoryClient` exposes `spaceMemory` and no other model. No
+ * financial row can be created, updated or deleted from anywhere in the harness,
+ * including here.
+ *
+ * ── RLS: THE CLIENT IS A PARAMETER, NOT AN IMPORT (RLS SLICE A) ──────────────
+ * This file imports no Prisma client at all. Every exported function takes the
+ * client it runs on as its FIRST, REQUIRED argument, so the authority a memory
+ * read or write executes under is decided — visibly — by the boundary that knows
+ * who the user is, and TypeScript fails at any call site that forgets to say.
+ * The product surfaces pass the transaction-scoped `tx` from `withTenantDb`; a
+ * script passes the global client deliberately.
+ *
+ * ⚠️ AND THE TWO SUPERSESSION WRITES TEST A CAPABILITY, NOT AN IDENTITY. A
+ * `Prisma.TransactionClient` has no `$transaction` method; a `PrismaClient` does.
+ * So `'$transaction' in client` decides whether to open one or to run inline —
+ * never a comparison against a particular client object. Running inline when the
+ * caller already supplied a transaction is what keeps the new row and its
+ * predecessor's status change atomic without nesting one transaction in another.
  *
  * ── What memory is for, and what it is demonstrably not for ─────────────────
  * Clip 6 proved conversational continuity does NOT need memory: after eliding a
@@ -40,8 +57,8 @@
  * exists that returns, retires or erases another member's rows.
  */
 
-import { db } from '@/lib/db';
 import { MemoryKind, MemoryStatus } from '@prisma/client';
+import type { Prisma, PrismaClient, SpaceMemory } from '@prisma/client';
 import {
   MEMORY_VERSION, KIND_OF_CLASS, MAX_WORDS_CHARS, EXAMPLES, SHAPE_KEY,
   validateShape, validateFields, admitWrite, mergeAmend, droppedFields, readMemory, stateOf,
@@ -50,6 +67,45 @@ import {
 } from './memory-model';
 
 export { MemoryKind, MemoryStatus };
+
+// ── The client, as narrowly as it can be stated ───────────────────────────────
+
+/**
+ * What this file is allowed to be handed: one Prisma model, plus the ABILITY to
+ * open a transaction when — and only when — the caller did not already open one.
+ *
+ * ⚠️ `spaceMemory` AND NOTHING ELSE. A `Pick` is the invariant in the type
+ * system: a caller cannot pass something through which this file could reach
+ * `financialAccount` or `transaction`, because the parameter does not have those
+ * properties. The source scan that says the same thing stays, because the two
+ * fail at different moments — the type at the call site, the scan at the edit.
+ *
+ * ⚠️ `$transaction` IS OPTIONAL BY CONSTRUCTION. A transaction-scoped client does
+ * not have it, and that absence is the signal that a transaction is already open.
+ */
+export type MemoryClient =
+  Pick<Prisma.TransactionClient, 'spaceMemory'> & Partial<Pick<PrismaClient, '$transaction'>>;
+
+/** The client inside one transaction: the same single model, no nesting. */
+type MemoryTx = Pick<Prisma.TransactionClient, 'spaceMemory'>;
+
+/**
+ * Run `fn` in ONE transaction: open one if the client can, otherwise run inline
+ * because the caller already did.
+ *
+ * ⚠️ A CAPABILITY TEST, NEVER AN IDENTITY TEST. Comparing the client against a
+ * particular module-level object would be wrong the moment a second authority
+ * exists (it does: fm_app, fm_system and the migration principal are three
+ * clients), and it would silently open a nested transaction for the tenant one.
+ */
+async function inOneTransaction<T>(
+  client: MemoryClient, fn: (tx: MemoryTx) => Promise<T>,
+): Promise<T> {
+  if ('$transaction' in client && typeof client.$transaction === 'function') {
+    return (client as unknown as PrismaClient).$transaction((tx) => fn(tx));
+  }
+  return fn(client);
+}
 
 // ── Reading ──────────────────────────────────────────────────────────────────
 
@@ -71,7 +127,7 @@ export interface RecalledMemory {
   supersedesId: string | null;
 }
 
-type Row = Awaited<ReturnType<typeof db.spaceMemory.findFirstOrThrow>>;
+type Row = SpaceMemory;
 
 const present = (r: Row): RecalledMemory => ({
   id: r.id, kind: r.kind, subject: r.subject, status: r.status,
@@ -93,9 +149,9 @@ const present = (r: Row): RecalledMemory => ({
  * asks it; this returns what is stored.
  */
 export async function recallMemories(
-  scope: MemoryScope, args: RecallArgs = {},
+  client: MemoryClient, scope: MemoryScope, args: RecallArgs = {},
 ): Promise<RecalledMemory[]> {
-  const rows = await db.spaceMemory.findMany({
+  const rows = await client.spaceMemory.findMany({
     where: {
       spaceId: scope.spaceId,
       ownerUserId: scope.ownerUserId,
@@ -156,8 +212,10 @@ const refuse = (reason: string, extra: { expected?: unknown; example?: unknown }
   ({ stored: false, reason, ...extra });
 
 /** The newest row of a (kind, subject) chain — the one no other row supersedes. */
-async function chainHead(scope: MemoryScope, kind: MemoryKind, subject: string): Promise<Row | null> {
-  const rows = await db.spaceMemory.findMany({
+async function chainHead(
+  client: MemoryClient, scope: MemoryScope, kind: MemoryKind, subject: string,
+): Promise<Row | null> {
+  const rows = await client.spaceMemory.findMany({
     where: { spaceId: scope.spaceId, ownerUserId: scope.ownerUserId, kind, subject },
     orderBy: [{ createdAt: 'desc' }], take: 200,
   });
@@ -189,7 +247,7 @@ async function chainHead(scope: MemoryScope, kind: MemoryKind, subject: string):
  * theirs to retire or delete.
  */
 export async function rememberStated(
-  scope: MemoryScope, w: StatedWrite, gate?: WriteGate,
+  client: MemoryClient, scope: MemoryScope, w: StatedWrite, gate?: WriteGate,
 ): Promise<StatedResult> {
   const op: StatedOp = w.op ?? 'record';
   const subject = w.subject?.trim();
@@ -206,9 +264,9 @@ export async function rememberStated(
         { expected: expectedFrom(w), example: EXAMPLES.RULE });
     }
     if (!validSubject(subject)) return refuse(`"${subject}" is not a subject key: lowercase words joined by hyphens, e.g. "cash-strategy"`);
-    head = await chainHead(scope, KIND_OF_CLASS[cls] as MemoryKind, subject);
+    head = await chainHead(client, scope, KIND_OF_CLASS[cls] as MemoryKind, subject);
   } else {
-    const heads = (await Promise.all([MemoryKind.INTENTION, MemoryKind.ASSUMPTION].map((k) => chainHead(scope, k, subject))))
+    const heads = (await Promise.all([MemoryKind.INTENTION, MemoryKind.ASSUMPTION].map((k) => chainHead(client, scope, k, subject))))
       .filter((r): r is Row => r !== null && r.status === MemoryStatus.ACTIVE)
       .filter((r) => { const x = readMemory(r); return !cls || (x.readable && x.cls === cls); });
     if (heads.length !== 1) {
@@ -301,7 +359,7 @@ export async function rememberStated(
   // ── One new row; the version it replaces keeps its content and changes status ─
   let created: Row;
   try {
-    created = await db.$transaction(async (tx) => {
+    created = await inOneTransaction(client, async (tx) => {
       const row = await tx.spaceMemory.create({
         data: {
           spaceId: scope.spaceId, ownerUserId: scope.ownerUserId,
@@ -336,13 +394,15 @@ export async function rememberStated(
     memory: present(created),
     superseded: head && head.status === MemoryStatus.ACTIVE ? { id: head.id, statedAs: head.statedAs } : null,
     ...echo,
-    ...(chosen === 'RULE' ? { otherRulesInForce: await otherRules(scope, subject) } : {}),
+    ...(chosen === 'RULE' ? { otherRulesInForce: await otherRules(client, scope, subject) } : {}),
   };
 }
 
 /** The owner's OTHER active rules — echoed on every rule write, so a second subject for one strategy is visible. */
-async function otherRules(scope: MemoryScope, subject: string): Promise<{ subject: string; inWords: string }[]> {
-  const rows = await db.spaceMemory.findMany({
+async function otherRules(
+  client: MemoryClient, scope: MemoryScope, subject: string,
+): Promise<{ subject: string; inWords: string }[]> {
+  const rows = await client.spaceMemory.findMany({
     where: { spaceId: scope.spaceId, ownerUserId: scope.ownerUserId,
       kind: MemoryKind.INTENTION, status: MemoryStatus.ACTIVE, subject: { not: subject } },
     orderBy: [{ statedAt: 'desc' }], take: MAX_RECALL,
@@ -384,7 +444,7 @@ export interface ProjectionStatement {
  * every reader uses, so `basis` cannot carry a key the code writer does not write.
  */
 export async function recordProjection(
-  scope: MemoryScope, p: ProjectionStatement,
+  client: MemoryClient, scope: MemoryScope, p: ProjectionStatement,
 ): Promise<{ stored: true; memory: RecalledMemory } | { stored: false; reason: string }> {
   const payload = { v: MEMORY_VERSION, class: 'PROJECTION',
     metric: p.metric, horizon: p.horizon, value: p.value, basis: p.basis };
@@ -392,9 +452,9 @@ export async function recordProjection(
   if (!shape.ok) return { stored: false, reason: shape.reason };
   if (p.subject !== `${p.metric}-${p.horizon}`) return { stored: false, reason: 'a projection is filed under its metric and horizon' };
 
-  const head = await chainHead(scope, MemoryKind.CHECKPOINT, p.subject);
+  const head = await chainHead(client, scope, MemoryKind.CHECKPOINT, p.subject);
   try {
-    return { stored: true, memory: present(await writeProjectionRow(scope, p, payload, head)) };
+    return { stored: true, memory: present(await writeProjectionRow(client, scope, p, payload, head)) };
   } catch (err) {
     // ⚠️ ITS OWN RACE TO LOSE. `supersedesId` is unique, so two turns stating the
     // same horizon at once cannot both supersede the same version. The caller in
@@ -408,9 +468,10 @@ export async function recordProjection(
 }
 
 async function writeProjectionRow(
-  scope: MemoryScope, p: ProjectionStatement, payload: Record<string, unknown>, head: Row | null,
+  client: MemoryClient, scope: MemoryScope, p: ProjectionStatement,
+  payload: Record<string, unknown>, head: Row | null,
 ): Promise<Row> {
-  return db.$transaction(async (tx) => {
+  return inOneTransaction(client, async (tx) => {
     const row = await tx.spaceMemory.create({
       data: {
         spaceId: scope.spaceId, ownerUserId: scope.ownerUserId,
@@ -443,8 +504,10 @@ export interface OwnMemoryItem {
 }
 
 /** Everything this user has on record in this Space that is not a past version. Newest first. */
-export async function listOwnMemories(scope: MemoryScope, todayISO: string): Promise<OwnMemoryItem[]> {
-  const rows = await db.spaceMemory.findMany({
+export async function listOwnMemories(
+  client: MemoryClient, scope: MemoryScope, todayISO: string,
+): Promise<OwnMemoryItem[]> {
+  const rows = await client.spaceMemory.findMany({
     where: { spaceId: scope.spaceId, ownerUserId: scope.ownerUserId, status: MemoryStatus.ACTIVE },
     orderBy: [{ statedAt: 'desc' }, { createdAt: 'desc' }], take: MAX_RECALL,
   });
@@ -461,17 +524,19 @@ export async function listOwnMemories(scope: MemoryScope, todayISO: string): Pro
 export type OwnMutation = { ok: true } | { ok: false; why: 'NOT_FOUND' | 'NOT_RETIRABLE' | 'CONFLICT' };
 
 /** The owner's row by id — or null, which is also what another member's id returns. */
-async function ownRow(scope: MemoryScope, id: string): Promise<Row | null> {
-  return db.spaceMemory.findFirst({ where: { id, spaceId: scope.spaceId, ownerUserId: scope.ownerUserId } });
+async function ownRow(client: MemoryClient, scope: MemoryScope, id: string): Promise<Row | null> {
+  return client.spaceMemory.findFirst({ where: { id, spaceId: scope.spaceId, ownerUserId: scope.ownerUserId } });
 }
 
 /** Stop using an item: the same tombstone row a conversation writes, in the panel's words. */
-export async function retireMemory(scope: MemoryScope, id: string, statedAt?: string): Promise<OwnMutation> {
-  const row = await ownRow(scope, id);
+export async function retireMemory(
+  client: MemoryClient, scope: MemoryScope, id: string, statedAt?: string,
+): Promise<OwnMutation> {
+  const row = await ownRow(client, scope, id);
   if (!row || row.status !== MemoryStatus.ACTIVE) return { ok: false, why: 'NOT_FOUND' };
   const read = readMemory(row);
   if (!read.readable || read.cls === 'PROJECTION') return { ok: false, why: 'NOT_RETIRABLE' };
-  const result = await rememberStated(scope, { op: 'retire', cls: read.cls, subject: row.subject,
+  const result = await rememberStated(client, scope, { op: 'retire', cls: read.cls, subject: row.subject,
     statedAs: 'Retired by you in Memory.', ...(statedAt ? { statedAt } : {}) });
   if (result.stored) return { ok: true };
   return { ok: false, why: result.conflict ? 'CONFLICT' : 'NOT_RETIRABLE' };
@@ -483,11 +548,11 @@ export async function retireMemory(scope: MemoryScope, id: string, statedAt?: st
  * row of that `(owner, kind, subject)`; one statement removes it.
  */
 export async function deleteMemoryChain(
-  scope: MemoryScope, id: string,
+  client: MemoryClient, scope: MemoryScope, id: string,
 ): Promise<{ ok: true; erased: number; kind: MemoryKind } | { ok: false; why: 'NOT_FOUND' }> {
-  const row = await ownRow(scope, id);
+  const row = await ownRow(client, scope, id);
   if (!row) return { ok: false, why: 'NOT_FOUND' };
-  const { count } = await db.spaceMemory.deleteMany({
+  const { count } = await client.spaceMemory.deleteMany({
     where: { spaceId: scope.spaceId, ownerUserId: scope.ownerUserId, kind: row.kind, subject: row.subject } });
   return { ok: true, erased: count, kind: row.kind };
 }

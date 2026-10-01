@@ -81,6 +81,8 @@ async function main() {
     const binding = { userId: owner.userId, spaceId, tail: conversationTail(history) };
     const carried = openRuntimeState(cookie, binding);
     const turn = await runStatelessTurn({
+      // RLS slice A — script authority, stated rather than assumed.
+      memoryClient: db,
       spaceCtx, agentId: agent?.id ?? 'ai-chat', user, history,
       scenario: carried?.scenario ?? null, asOfISO, surface: 'chat-route-check',
       correlationId: 'chat-route-check', memoryWrites: memory.writes,

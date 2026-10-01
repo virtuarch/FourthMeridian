@@ -163,7 +163,12 @@ console.log("1b. one conversation, one active Space");
   check("the client posts exactly that id", /body: JSON\.stringify\(\{\s*spaceId,/.test(client));
   check("advice is read for the same Space", /getLatestAdvice\(\{ spaceId: ctx\.spaceId \}\)/.test(page));
   check("memory is read scoped to this Space AND this user",
-    /recallMemories\(\s*\{ spaceId: ctx\.spaceId, ownerUserId: ctx\.userId \}/.test(page));
+    /recallMemories\(\s*tx,\s*\{ spaceId: ctx\.spaceId, ownerUserId: ctx\.userId \}/.test(page));
+  // RLS slice A — and it runs AS that user: the read is wrapped in the tenant
+  // boundary with the identity from the resolved Space context, so the Postgres
+  // policies on SpaceMemory apply on top of the application scope above.
+  check("…under the tenant boundary, with the identity from server-side state",
+    /withTenantDb\(ctx\.userId, \(tx\) => recallMemories\(/.test(page));
   check("memory failure falls back instead of failing the page", /catch \{\s*return null;\s*\}/.test(page));
   check("no model call, no transcript read on page load",
     !/openai|runStatelessTurn|CHAT_MODEL|from "@\/lib\/ai\/conversation\/(engine|turn)"/.test(page));

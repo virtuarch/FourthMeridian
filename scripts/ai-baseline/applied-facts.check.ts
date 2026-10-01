@@ -80,7 +80,7 @@ async function main() {
     space: { id: space.id, name: space.name, type: space.type, category: space.category,
       isPublic: space.isPublic, reportingCurrency: space.reportingCurrency },
   } as unknown as SpaceContext;
-  const ctx: ToolContext = { spaceCtx, spaceId, asOfISO: ASOF };
+  const ctx: ToolContext = { spaceCtx, spaceId, asOfISO: ASOF, memoryClient: db };
   const cash = (args: Record<string, unknown>) =>
     findTool('project_cash')!.run(args, ctx) as Promise<Cash>;
   console.log(`Space ${spaceId} as of ${ASOF} → ${TO}\n`);
@@ -186,7 +186,9 @@ async function main() {
   const scratch = await db.space.create({ data: { name: TAG, type: 'PERSONAL', category: 'PERSONAL',
     members: { create: [{ userId: scratchUser.id, role: 'OWNER' }] } } });
   try {
-    const scratchCtx = { spaceId: scratch.id, asOfISO: ASOF, spaceCtx: { userId: scratchUser.id }, memoryWrites: true };
+    const scratchCtx = { spaceId: scratch.id, asOfISO: ASOF, spaceCtx: { userId: scratchUser.id },
+      // RLS slice A — a check writes as the migration principal, now visibly.
+      memoryClient: db, memoryWrites: true };
     // ⚠️ MEMORY V2 — CHECKPOINT NARROWING. A projection resting on a figure the user
     // STATED is a hypothetical, and a hypothetical is not a durable statement of
     // ours: it is not recorded at all. That closes the prose route by construction
