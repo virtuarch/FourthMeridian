@@ -162,6 +162,41 @@ async function main(): Promise<void> {
     sysBypass === "f" && sysSees.ok && sysSees.out.trim() === "4",
     `bypassrls=${sysBypass} sees=${sysSees.out || sysSees.err.split("\n")[0]}`);
 
+  // ── [service] REAL service functions, including a FORGED application scope ──
+  // This is the case the whole programme exists for. memory-store takes a
+  // MemoryScope {spaceId, ownerUserId} from the caller. Suppose that scope is
+  // wrong — a bug, a stale value, or an attacker who found a way to influence
+  // it. The application predicate would happily ask for Bob's rows. RLS is the
+  // thing that has to refuse, because by then nothing else will.
+  const store = await import("@/lib/ai/conversation/memory-store");
+  const today = new Date().toISOString().slice(0, 10);
+
+  const aliceOwn = await tenant.withTenantDb("alice", (tx) =>
+    store.listOwnMemories(tx, { spaceId: "space_s", ownerUserId: "alice" }, today));
+  check(18, "[service] listOwnMemories returns Alice's own memory in the SHARED Space",
+    aliceOwn.length === 1 && aliceOwn[0].id === "mem_alice",
+    JSON.stringify(aliceOwn.map((m) => m.id)));
+
+  const bobOwn = await tenant.withTenantDb("bob", (tx) =>
+    store.listOwnMemories(tx, { spaceId: "space_s", ownerUserId: "bob" }, today));
+  check(19, "[service] Bob sees only his own memory in the same SHARED Space",
+    bobOwn.length === 1 && bobOwn[0].id === "mem_bob",
+    JSON.stringify(bobOwn.map((m) => m.id)));
+
+  // THE BACKSTOP. Alice's identity, Bob's scope. The service asks for his rows.
+  const forgedRead = await tenant.withTenantDb("alice", (tx) =>
+    store.listOwnMemories(tx, { spaceId: "space_s", ownerUserId: "bob" }, today));
+  check(20, "[service] a FORGED scope naming Bob returns NOTHING under Alice's identity — RLS is the backstop",
+    forgedRead.length === 0, `leaked ${JSON.stringify(forgedRead.map((m) => m.id))}`);
+
+  // …and the same forgery as a WRITE.
+  const forgedErase = await tenant.withTenantDb("alice", (tx) =>
+    store.deleteMemoryChain(tx, { spaceId: "space_s", ownerUserId: "bob" }, "mem_bob"));
+  const bobStillThere = psql(h.ownerUrl, `select count(*) from "SpaceMemory" where id='mem_bob';`).out.trim();
+  check(21, "[service] a FORGED scope cannot ERASE Bob's memory — the row survives",
+    forgedErase.ok === false && bobStillThere === "1",
+    `result=${JSON.stringify(forgedErase)} rowsLeft=${bobStillThere}`);
+
   // ── [role] the owner is not in the tenant path ────────────────────────────
   check(17, "[role] the tenant client is NOT the migration principal",
     dbMod.tenantDb !== dbMod.db, "tenantDb fell back to the shared client");
