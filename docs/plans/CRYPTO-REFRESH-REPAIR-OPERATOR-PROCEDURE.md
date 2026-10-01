@@ -1,8 +1,47 @@
 # CRYPTO REFRESH REPAIR — OPERATOR PROCEDURE
 
-**Two live actions are required to finish the 2026-10-01 repair. Neither was
+> ## ✅ BOTH ACTIONS EXECUTED — 2026-10-01 19:22–19:3x UTC, under operator authorization
+>
+> | | Result |
+> |---|---|
+> | **Action 1** — schema migration | **APPLIED** to `localhost:5432/fintracker` via `npm run db:migrate:safe` (guard + backup + `migrate deploy`). `20261001120000_connection_facet_freshness` recorded, `applied_steps_count=1`, not rolled back. Both columns present and nullable; all 11 `Connection` rows NULL in both — **no backfill, no fabricated timestamps**. |
+> | **Action 2** — RAW_CLOSE gap repair | **COMPLETE.** 27/27 asset-days acquired (BTC/ETH/SOL × 2026-09-21..09-29), provider outcome `OK=1` per asset, **0 gaps remaining**. |
+>
+> **Path taken for Action 1 — a deliberate deviation from the draft below, in the safer
+> direction.** The draft prescribed `db execute` + `migrate resolve`. The repo's own
+> sanctioned additive path `npm run db:migrate:safe` was used instead because it is
+> strictly stronger: it runs the house DB guard's target-identity check, takes a backup
+> automatically, and `migrate deploy` applies **and records atomically** — removing the
+> one real hazard of the manual route, which is `migrate resolve` marking a migration
+> applied when the SQL only partly ran. `prisma migrate dev` was never invoked.
+> Exactly one migration was pending (proven: 107 on disk, 106 applied), so deploy could
+> not apply anything unintended.
+>
+> Pre-migration backup: `backups/fintracker-2026-10-01T19-22-24-926Z.sql` (8.7 MB).
+>
+> **Proof nothing else was touched** — content digests taken before and after:
+> ```
+> connection_digest  4c21a5f8eec866665cd13387b5c234c6   UNCHANGED
+> tx_digest          4abd8ac3e5e468dd5a138ee49b445de4   UNCHANGED
+> position_digest    c6a0d6fce3fa4af8bd8b8e51130e3084   UNCHANGED
+> wallet quantities  BTC:0.02, BTC:0.038, BTC:0.24060252, SOL:0, ETH:0   UNCHANGED
+> PriceObservation   10426 → 10453  (+27, exactly the authorized RAW_CLOSE inserts)
+> INTRADAY rows      BTC 2 / ETH 1 / SOL 2   UNCHANGED — never promoted
+> ```
+> Post-repair, all three held assets resolve a usable close as of 2026-10-01
+> (floor 2026-09-24, usable close 2026-09-30), so no wallet is latched.
+>
+> No wallet sync was triggered. No commit was required for either action — the
+> migration file was already committed and both outcomes live in the database.
+>
+> *The remainder of this document is the original procedure, kept as the record of what
+> was authorized and why.*
+
+---
+
+**Two live actions were required to finish the 2026-10-01 repair. Neither was
 performed during implementation, because the repair authorization restricted live
-DB access to READ ONLY. Both need your explicit go-ahead.**
+DB access to READ ONLY. Both needed explicit go-ahead — given and executed above.**
 
 Authority: `docs/plans/CRYPTO-REFRESH-INCIDENT-2026-10-01.md`
 Code: the `CRYPTO-LATCH-*` / `CRYPTO-FRESHNESS-1` / `CRYPTO-COPY-1` /
