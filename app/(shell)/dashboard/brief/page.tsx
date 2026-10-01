@@ -16,10 +16,16 @@
  * (row + watermark + metrics, never a model call), so a current Brief paints with
  * the page and only a Brief that needs work shows a skeleton. If that read fails,
  * the client simply asks for it.
+ *
+ * ⚠️ THE NAME IS READ AS THE USER (RLS slice A). One row, their own: the tenant
+ * policy on `User` is `id = current_fm_user_id()`, so the predicate below and the
+ * database now agree about whose name this is. The Brief read beside it enters the
+ * same boundary per phase — see lib/ai/brief/view.ts for why it cannot be one
+ * transaction.
  */
 
 import { getSpaceContext } from "@/lib/space";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { readBriefResponse } from "@/lib/ai/brief/view";
 import { DailyBriefClient } from "@/components/brief/DailyBriefClient";
 import type { BriefResponse } from "@/lib/brief-types";
@@ -36,7 +42,8 @@ export default async function DailyBriefPage() {
   const ctx = await getSpaceContext();
 
   const [user, initial] = await Promise.all([
-    db.user.findUnique({ where: { id: ctx.userId }, select: { firstName: true, name: true } }),
+    withTenantDb(ctx.userId, (tx) =>
+      tx.user.findUnique({ where: { id: ctx.userId }, select: { firstName: true, name: true } })),
     readBriefResponse(ctx.userId, ctx.spaceId)
       .then((r): BriefResponse | null => (r.ok ? r.body : null))
       .catch((err) => { console.error("[brief] initial read failed:", err); return null; }),

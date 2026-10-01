@@ -36,6 +36,7 @@ import type { Snapshot } from '@/types';
 import { todayUTCISO } from '@/lib/time/clock';
 import { projectBriefPackage } from './package';
 import { loadRecentActivity, type AccountTypeLookup } from './recent-activity';
+import type { BriefRuntime } from './store';
 import type { BriefPackage, BriefRecentActivity } from './types';
 
 /** The bound `lib/history/exploration` and the chat history tools use. */
@@ -65,7 +66,22 @@ export interface BriefLoadDeps {
   bankingPopulation?(spaceId: string, asOf: string): Promise<string[]>;
 }
 
-async function defaultDeps(): Promise<BriefLoadDeps> {
+/**
+ * The real reads, with the two that take a client taking it from the RUNTIME
+ * (RLS slice A).
+ *
+ * ⚠️ THE DYNAMIC IMPORT OF THE GLOBAL CLIENT THAT USED TO BE HERE IS GONE. It was
+ * a leaf reaching past every call site above it for the migration principal. The memory
+ * recall now runs as the Brief's owner, one short transaction; the per-source
+ * health read runs deployment-wide, for the reason recorded on
+ * `BriefPlatformClient` (it hashes PlatformSetting, which fm_app is denied).
+ *
+ * The assemblers, the snapshot read and the population read still reach the
+ * database through their own modules. They are not converted in this slice, and
+ * pretending otherwise by wrapping them in a tenant transaction would hold one
+ * open across eight heavy reads for no isolation gain.
+ */
+async function defaultDeps(rt: BriefRuntime): Promise<BriefLoadDeps> {
   await import('@/lib/ai/assemblers'); // registers every assembler
   const { getAssembler } = await import('@/lib/ai/assembler-registry');
   const { getRecentSnapshots } = await import('@/lib/data/snapshots');
@@ -74,7 +90,6 @@ async function defaultDeps(): Promise<BriefLoadDeps> {
   const { computeAssessment } = await import('@/lib/ai/intelligence');
   const { loadSpaceDataHealth } = await import('@/lib/connections/space-data-health');
   const { transactionAccountPopulation } = await import('@/lib/data/transaction-population');
-  const { db } = await import('@/lib/db');
   return {
     assemble: async (domain, spaceCtx, options) => {
       const assembler = getAssembler(domain);
@@ -82,11 +97,11 @@ async function defaultDeps(): Promise<BriefLoadDeps> {
     },
     readSnapshots: (spaceId) => getRecentSnapshots({ rows: SNAPSHOT_READ_ROWS }, { spaceId }),
     projectSnapshots: (rows) => projectSnapshotSection(rows, 'full'),
-    recall: (scope) => recallMemories(db, scope, { limit: 50 }),
+    recall: (scope) => rt.asOwner((c) => recallMemories(c, scope, { limit: 50 })),
     recentActivity: (spaceId, asOf, accountTypeOf) => loadRecentActivity(spaceId, asOf, undefined, accountTypeOf),
     assess: computeAssessment,
     dataHealth: (spaceId, viewerUserId, now, bankingAccountIds) =>
-      loadSpaceDataHealth(db, { spaceId, viewerUserId, now, bankingAccountIds }),
+      loadSpaceDataHealth(rt.platformWide, { spaceId, viewerUserId, now, bankingAccountIds }),
     bankingPopulation: async (spaceId, asOf) =>
       (await transactionAccountPopulation({ spaceId, asOf })).filter((p) => p.rows > 0).map((p) => p.accountId),
   };
@@ -123,6 +138,13 @@ export async function loadBriefPackage(args: {
   spaceCtx: SpaceContext;
   asOf?: string;
   now?: Date;
+  /**
+   * Which database authority the reads that take a client run under. Required
+   * whenever the defaults are needed; a test that supplies every core dep needs
+   * none, and omitting it with incomplete deps THROWS rather than quietly picking
+   * one (RLS slice A).
+   */
+  runtime?: BriefRuntime;
   deps?: Partial<BriefLoadDeps>;
 }): Promise<LoadedBriefPackage> {
   const now = args.now ?? new Date();
@@ -135,7 +157,12 @@ export async function loadBriefPackage(args: {
 
   const needsDefaults = !args.deps || ['assemble', 'readSnapshots', 'projectSnapshots', 'recall',
     'recentActivity', 'assess'].some((k) => !(k in (args.deps as object)));
-  const deps: BriefLoadDeps = { ...(needsDefaults ? await defaultDeps() : {}), ...args.deps } as BriefLoadDeps;
+  if (needsDefaults && !args.runtime) {
+    throw new Error('loadBriefPackage needs either a complete set of deps or a runtime that says '
+      + 'which database authority its reads run under (see BriefRuntime).');
+  }
+  const deps: BriefLoadDeps = {
+    ...(needsDefaults ? await defaultDeps(args.runtime as BriefRuntime) : {}), ...args.deps } as BriefLoadDeps;
 
   const degraded: string[] = [];
   const timings: Record<string, number> = {};

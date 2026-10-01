@@ -52,6 +52,55 @@ export interface BriefCompletion {
 
 export type ClaimResult = { won: true; token: Date } | { won: false };
 
+// ── HOW THE BRIEF REACHES THE DATABASE (RLS slice A) ─────────────────────────
+//
+// The Brief's lifecycle is not one database operation: it reads a row, reads a
+// watermark, claims, CALLS A MODEL, then writes. A single transaction around all
+// of that would hold a Postgres transaction open across an LLM request, which is
+// exactly what `withTenantDb` must never be used for. So the authority arrives as
+// a RUNNER rather than as a client: the caller decides what one phase runs as, and
+// each phase is one short operation.
+
+/** The models and the one raw-SQL seam the Brief's own phases touch. */
+export type BriefDbClient =
+  Pick<PrismaClient, 'dailyBrief' | 'spaceAccountLink' | 'spaceMemory'> & {
+    $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T>;
+  };
+
+/**
+ * ONE short database operation, run under whatever authority the caller supplies.
+ *
+ * In the product that is `withTenantDb(ownerUserId, fn)` — a transaction per
+ * phase, carrying the identity the policies read. In the inspect-only path the
+ * whole inspection is already inside one tenant transaction, so the phase runs
+ * inline against that `tx`. A test supplies its own and asserts what ran.
+ */
+export type BriefDbPhase = <T>(fn: (client: BriefDbClient) => Promise<T>) => Promise<T>;
+
+/**
+ * ⚠️ THE PHASES fm_app CANNOT SERVE — a deployment-wide authority, named.
+ *
+ * The source watermark and the per-source health read both hash
+ * `PlatformSetting`'s refresh-cadence rows, and the RLS migration REVOKES ALL on
+ * `PlatformSetting` from fm_app (it is deployment-global policy, not tenant
+ * content). Running either as the tenant role would fail with "permission denied
+ * for table PlatformSetting". Both are read-only and neither returns a row to the
+ * user, so they stay on a deployment-wide client until that grant is decided —
+ * recorded here as one field rather than hidden in a leaf import.
+ */
+export type BriefPlatformClient =
+  Pick<PrismaClient, 'spaceAccountLink' | 'platformSetting'> & {
+    $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T>;
+  };
+
+/** Everything the Brief needs in order to reach a database, and nothing more. */
+export interface BriefRuntime {
+  /** One short operation as the Brief's owner. */
+  asOwner: BriefDbPhase;
+  /** See BriefPlatformClient: the two reads that cross the tenant boundary by necessity. */
+  platformWide: BriefPlatformClient;
+}
+
 export interface BriefStore {
   /** Today's row (with or without content) and the newest earlier successful Brief. */
   read(scope: BriefScope, today: string): Promise<{ todayRow: BriefRow | null; latestPrior: BriefRow | null }>;
@@ -59,6 +108,25 @@ export interface BriefStore {
   complete(key: BriefKey, token: Date, data: BriefCompletion): Promise<boolean>;
   fail(key: BriefKey, token: Date, reason: string, at: Date): Promise<boolean>;
   refreshWatermark(key: BriefKey, expectedDigest: string, watermark: string): Promise<boolean>;
+}
+
+/**
+ * The artifact store, with every method as its own phase.
+ *
+ * ⚠️ EACH METHOD IS ALREADY ONE COHERENT OPERATION, which is why this wrapping is
+ * safe: `read` is two finds, `complete`, `fail` and `refreshWatermark` are one
+ * conditional update each, and `claim` is the update/insert/update sequence whose
+ * atomicity Postgres provides per statement. Nothing here spans the model call,
+ * and nothing that was previously atomic has been split.
+ */
+export function phaseBriefStore(phase: BriefDbPhase): BriefStore {
+  return {
+    read:  (scope, today)      => phase((c) => prismaBriefStore(c).read(scope, today)),
+    claim: (key, now)          => phase((c) => prismaBriefStore(c).claim(key, now)),
+    complete: (key, token, d)  => phase((c) => prismaBriefStore(c).complete(key, token, d)),
+    fail: (key, token, why, at) => phase((c) => prismaBriefStore(c).fail(key, token, why, at)),
+    refreshWatermark: (k, digest, mark) => phase((c) => prismaBriefStore(c).refreshWatermark(k, digest, mark)),
+  };
 }
 
 const dayDate = (day: string) => new Date(`${day}T00:00:00.000Z`);

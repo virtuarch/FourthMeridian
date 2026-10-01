@@ -34,6 +34,14 @@
  *
  * ⚠️ NO PROVIDER REFRESH. This observes Fourth Meridian's current truth; the
  * package already carries freshness and data-quality state when that truth is old.
+ *
+ * ⚠️ AND THE DATABASE AUTHORITY IS A PARAMETER, PHASE BY PHASE (RLS slice A). The
+ * sequence above contains a MODEL CALL, so there is no coherent transaction around
+ * the whole of it — a tenant transaction held across an LLM request is the one
+ * thing `withTenantDb` must never be used for. `BriefRuntime` therefore hands this
+ * module a RUNNER: the row read, the claim, the completion write and the
+ * account-link check are each one short operation under the owner's identity, and
+ * `generate` takes no client at all, so nothing can span it even by mistake.
  */
 
 import { createHash } from 'node:crypto';
@@ -48,7 +56,7 @@ import { BRIEF_GENERATION_VERSION, GENERATION_FAILURE_COOLDOWN_MS } from './poli
 import { BRIEF_SYSTEM_PROMPT } from './prompt';
 import { applyRelevance, readStandingFacts, standingFactsOf } from './relevance';
 import { decideArtifactState, type ArtifactDecision, type BriefFallback, type BriefRow } from './state';
-import type { BriefScope, BriefStore } from './store';
+import { phaseBriefStore, type BriefRuntime, type BriefScope, type BriefStore } from './store';
 import type { BriefPackage, DailyBrief } from './types';
 
 export type GenerationReason = 'daily' | 'change' | 'version';
@@ -87,28 +95,54 @@ export interface LifecycleDeps {
 
 const CORE_DEPS: (keyof LifecycleDeps)[] = ['store', 'resolveSpace', 'watermark', 'loadPackage', 'generate'];
 
-async function defaultDeps(): Promise<LifecycleDeps> {
-  const { db } = await import('@/lib/db');
+/**
+ * The real dependencies, built from a runtime the CALLER supplies.
+ *
+ * ⚠️ RLS SLICE A — THIS NO LONGER DYNAMICALLY IMPORTS THE GLOBAL CLIENT. A leaf
+ * that fetched its own client was a database authority chosen by the file that
+ * happened to need one, invisible at every call site above it. The runtime now
+ * arrives from the authenticated boundary (lib/ai/brief/view.ts), which is the
+ * only place that knows whose Brief this is.
+ *
+ * ⚠️ AND EVERY DB PHASE IS ITS OWN SHORT OPERATION. `generate` is the model call
+ * and takes no client at all, so there is no shape in which a transaction could
+ * span it. `store` and `hasFinancialData` run as the owner; `watermark` runs
+ * deployment-wide, for the reason recorded on `BriefPlatformClient`.
+ */
+export async function briefLifecycleDeps(rt: BriefRuntime): Promise<LifecycleDeps> {
   const { resolveSpaceContext } = await import('@/lib/space');
   const { CHAT_MODEL } = await import('@/lib/ai/conversation/engine');
-  const { prismaBriefStore } = await import('./store');
   const { sourceWatermark } = await import('./watermark');
   const { loadBriefPackage } = await import('./load');
   const { generateBriefFromPackage } = await import('./generate');
   return {
-    store: prismaBriefStore(db),
+    store: phaseBriefStore(rt.asOwner),
     resolveSpace: resolveSpaceContext,
-    watermark: async (scope, now) => (await sourceWatermark(db, scope, now)).watermark,
-    loadPackage: (spaceCtx, now) => loadBriefPackage({ spaceCtx, now }),
+    watermark: async (scope, now) => (await sourceWatermark(rt.platformWide, scope, now)).watermark,
+    loadPackage: (spaceCtx, now) => loadBriefPackage({ spaceCtx, now, runtime: rt }),
     generate: (pkg, now, reason) => generateBriefFromPackage(pkg, { model: CHAT_MODEL, now, surface: 'brief', reason }),
     hasFinancialData: async (scope) =>
-      (await db.spaceAccountLink.count({ where: { spaceId: scope.spaceId, status: 'ACTIVE' } })) > 0,
+      (await rt.asOwner((c) => c.spaceAccountLink.count({
+        where: { spaceId: scope.spaceId, status: 'ACTIVE' } }))) > 0,
   };
 }
 
-async function resolveDeps(partial?: Partial<LifecycleDeps>): Promise<LifecycleDeps> {
+/**
+ * ⚠️ NO RUNTIME AND NO COMPLETE DEPS IS A THROW, NOT A DEFAULT. A fallback here
+ * would be the escape hatch this slice exists to close: the caller would get a
+ * working Brief on an authority nobody chose. A pure test supplies the five core
+ * deps and needs no runtime at all.
+ */
+async function resolveDeps(
+  partial: Partial<LifecycleDeps> | undefined, rt: BriefRuntime | undefined,
+): Promise<LifecycleDeps> {
   const complete = CORE_DEPS.every((k) => partial?.[k]);
-  return { ...(complete ? {} : await defaultDeps()), ...partial } as LifecycleDeps;
+  if (complete) return { ...partial } as LifecycleDeps;
+  if (!rt) {
+    throw new Error('the Brief lifecycle needs either a complete set of deps or a runtime that '
+      + 'says which database authority its phases run under (see BriefRuntime).');
+  }
+  return { ...(await briefLifecycleDeps(rt)), ...partial } as LifecycleDeps;
 }
 
 export interface LifecycleTimings { [step: string]: number }
@@ -148,9 +182,10 @@ async function prepare(
   args: { spaceId: string; ownerUserId: string },
   now: Date,
   partial: Partial<LifecycleDeps> | undefined,
+  rt: BriefRuntime | undefined,
   lap: <T>(name: string, fn: () => Promise<T>) => Promise<T>,
 ): Promise<Prepared> {
-  const deps = await resolveDeps(partial);
+  const deps = await resolveDeps(partial, rt);
   const today = todayUTCISO(now);
   const spaceCtx = await lap('resolveSpace', () => deps.resolveSpace(args.ownerUserId, args.spaceId));
   if (spaceCtx.spaceId !== args.spaceId) throw new BriefScopeError(args.spaceId);
@@ -192,11 +227,11 @@ export interface BriefInspection {
  */
 export async function inspectDailyBrief(
   args: { spaceId: string; ownerUserId: string },
-  options: { now?: Date; deps?: Partial<LifecycleDeps> } = {},
+  options: { now?: Date; deps?: Partial<LifecycleDeps>; runtime?: BriefRuntime } = {},
 ): Promise<BriefInspection> {
   const now = options.now ?? new Date();
   const { timings, lap, total } = timer();
-  const p = await prepare(args, now, options.deps, lap);
+  const p = await prepare(args, now, options.deps, options.runtime, lap);
   total();
   return {
     today: p.today, hasData: p.hasData, decision: p.decision,
@@ -206,7 +241,7 @@ export async function inspectDailyBrief(
 
 export async function ensureDailyBrief(
   args: { spaceId: string; ownerUserId: string },
-  options: { now?: Date; deps?: Partial<LifecycleDeps> } = {},
+  options: { now?: Date; deps?: Partial<LifecycleDeps>; runtime?: BriefRuntime } = {},
 ): Promise<EnsureResult> {
   const now = options.now ?? new Date();
   const { t0, timings, lap, total } = timer();
@@ -215,7 +250,8 @@ export async function ensureDailyBrief(
   // so an injected clock and the cooldown it is measured against always agree.
   const failedAt = () => new Date(now.getTime() + (Date.now() - t0));
 
-  const { deps, spaceCtx, scope, today, watermark, hasData, decision, latestPrior } = await prepare(args, now, options.deps, lap);
+  const { deps, spaceCtx, scope, today, watermark, hasData, decision, latestPrior } =
+    await prepare(args, now, options.deps, options.runtime, lap);
   const { state } = decision;
   const key = { ...scope, briefDay: today };
 

@@ -107,6 +107,40 @@ console.log("\n4. no verdicts, no recomputed money, no provider refresh");
       && !/(headline|body|title)\s*\.\s*(match|replace|split)\(/.test(CLIENT));
 }
 
+console.log("\n4b. the tenant boundary — entered per phase, never around the model call");
+{
+  // RLS slice A. What is asserted here is not "a boundary exists" but WHERE it is:
+  // the view is the only file that knows whose Brief this is, so it is the only one
+  // that may name an authority, and the lifecycle must be incapable of spanning the
+  // model call with a transaction.
+  const STORE = code("lib/ai/brief/store.ts");
+  const LOAD = code("lib/ai/brief/load.ts");
+  check("the view builds the runtime from the authenticated user's id",
+    /export function briefRuntimeFor\(userId: string\)/.test(VIEW)
+      && /withTenantDb\(userId, \(tx\) => fn\(tx\)\)/.test(VIEW));
+  check("…and both entries pass it to the lifecycle",
+    (VIEW.match(/runtime: briefRuntimeFor\(userId\)/g) ?? []).length === 2);
+  check("the lifecycle and the package loader fetch no client of their own",
+    !/from ['"]@\/lib\/db['"]/.test(LIFECYCLE + LOAD) && !/import\(\s*['"]@\/lib\/db['"]/.test(LIFECYCLE + LOAD));
+  check("…and neither falls back to one: incomplete deps without a runtime THROWS",
+    /needs either a complete set of deps or a runtime/.test(LIFECYCLE)
+      && /needs either a complete set of deps or a runtime/.test(LOAD));
+  check("the model call takes no database client, so no transaction can span it",
+    /generate\(pkg: BriefPackage, now: Date, reason\?: GenerationReason\)/.test(LIFECYCLE)
+      && !/withTenantDb/.test(LIFECYCLE));
+  const phased = STORE.slice(STORE.indexOf("export function phaseBriefStore"));
+  check("every artifact-store method is its own phase — the claim is not split",
+    phased.length > 0 && (phased.match(/=> phase\(/g) ?? []).length === 5
+      && ["read:", "claim:", "complete:", "fail:", "refreshWatermark:"].every((m) => phased.includes(m)));
+  // The REASON is prose, so it is read from the raw file; the WIRING is code.
+  const storeRaw = readFileSync("lib/ai/brief/store.ts", "utf8");
+  check("the two reads that cannot be tenant-scoped are named in ONE place, with the reason",
+    /REVOKES ALL on\s*\n?\s*\*?\s*`?PlatformSetting`?/.test(storeRaw)
+      && /export type BriefPlatformClient/.test(STORE) && /platformSetting/.test(STORE)
+      && (LOAD.match(/rt\.platformWide/g) ?? []).length === 1
+      && (LIFECYCLE.match(/rt\.platformWide/g) ?? []).length === 1);
+}
+
 console.log("\n5. the retired engine stays retired");
 {
   check("the last-viewed endpoint and its call are gone",

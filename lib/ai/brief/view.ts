@@ -13,6 +13,26 @@
  * ⚠️ READING NEVER SPENDS. `readBriefResponse` calls `inspectDailyBrief` — a row
  * read and a watermark — and the deterministic metric summary. It cannot claim,
  * assemble or generate; brief-authority.test.ts pins that by source.
+ *
+ * ── THIS IS THE BRIEF'S TENANT BOUNDARY (RLS SLICE A) ────────────────────────
+ * Both entries take `userId` from an authenticated caller, so this is where that
+ * identity becomes a database authority. Neither hands a client down: they hand
+ * down a `BriefRuntime`, whose `asOwner` runs ONE phase inside
+ * `withTenantDb(userId, …)` — the DailyBrief row read, the claim, the completion
+ * write, the account-link check and the memory recall.
+ *
+ * ⚠️ AND NOT ONE TRANSACTION, BECAUSE GENERATION CALLS A MODEL. `ensureDailyBrief`
+ * claims, then calls the model, then writes. A transaction spanning that would be
+ * held open across an LLM request — the one use `withTenantDb` forbids — so the
+ * boundary is entered per phase. The inspect path has no model call, so its phases
+ * could be one transaction; they are still per-phase, because `inspectDailyBrief`
+ * runs its row read and its watermark CONCURRENTLY and a single transaction would
+ * serialise them.
+ *
+ * ⚠️ TWO READS STAY DEPLOYMENT-WIDE, ON PURPOSE AND IN ONE PLACE. The source
+ * watermark and the per-source health read both hash `PlatformSetting`, which the
+ * RLS migration revokes from fm_app outright; see `BriefPlatformClient` in store.ts
+ * for why and for what has to be decided to close it.
  */
 
 import 'server-only';
@@ -22,8 +42,24 @@ import { db } from '@/lib/db';
 import { loadSpaceDataHealth } from '@/lib/connections/space-data-health';
 import { todayUTCISO } from '@/lib/time/clock';
 import type { BriefDataHealthView, BriefMetricsView, BriefResponse } from '@/lib/brief-types';
+import { withTenantDb } from '@/lib/db/tenant-context';
 import { ensureDailyBrief, inspectDailyBrief, type LifecycleDeps } from './lifecycle';
+import type { BriefRuntime } from './store';
 import { responseFromEnsure, responseFromInspection } from './view-model';
+
+/**
+ * The authority the Brief's phases run under, for ONE user.
+ *
+ * `asOwner` opens a transaction per phase and binds `app.user_id`, so the policies
+ * on `DailyBrief` (a visible Space AND `ownerUserId = current_fm_user_id()`) and on
+ * `SpaceMemory` apply on top of the application scope rather than instead of it.
+ */
+export function briefRuntimeFor(userId: string): BriefRuntime {
+  return {
+    asOwner: (fn) => withTenantDb(userId, (tx) => fn(tx)),
+    platformWide: db,
+  };
+}
 
 export type BriefViewResult = { ok: true; body: BriefResponse } | { ok: false; status: 403 };
 
@@ -56,6 +92,8 @@ async function loadMetrics(spaceId: string): Promise<BriefMetricsView | null> {
  */
 async function loadDataHealth(spaceId: string, viewerUserId: string, now: Date): Promise<BriefDataHealthView | null> {
   try {
+    // Deployment-wide: it hashes PlatformSetting's refresh cadence, which fm_app is
+    // denied. See BriefPlatformClient. Read-only, and no row reaches the user.
     return await loadSpaceDataHealth(db, { spaceId, viewerUserId, now });
   } catch (err) {
     console.error('[brief] data health unavailable:', err);
@@ -73,7 +111,8 @@ export async function readBriefResponse(
   const now = options.now ?? new Date();
   const [inspection, metrics, dataHealth] = await Promise.all([
     inspectDailyBrief({ spaceId, ownerUserId: userId },
-      { now, deps: { ...options.deps, resolveSpace: async () => spaceCtx } }),
+      { now, runtime: briefRuntimeFor(userId),
+        deps: { ...options.deps, resolveSpace: async () => spaceCtx } }),
     loadMetrics(spaceId),
     loadDataHealth(spaceId, userId, now),
   ]);
@@ -89,6 +128,7 @@ export async function generateBriefResponse(
   if (!spaceCtx) return { ok: false, status: 403 };
   const now = options.now ?? new Date();
   const result = await ensureDailyBrief({ spaceId, ownerUserId: userId },
-    { now, deps: { ...options.deps, resolveSpace: async () => spaceCtx } });
+    { now, runtime: briefRuntimeFor(userId),
+      deps: { ...options.deps, resolveSpace: async () => spaceCtx } });
   return { ok: true, body: responseFromEnsure({ spaceId, result, today: todayUTCISO(now), now }) };
 }
