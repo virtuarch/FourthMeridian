@@ -50,11 +50,17 @@ export const ROLE_ACCESS: Record<string, string> = {
   VIEWER: "View only — cannot invite, edit, or add accounts",
 };
 
+/**
+ * RLS Slice 2 — the email fallback is gone. GET /api/spaces/[id] no longer
+ * selects member emails, and it never sent them to a non-member anyway
+ * (rosterForViewer), so on the public-read path this rung was already dead.
+ * A member with neither a name nor a username now reads as "Member" rather than
+ * disclosing their email address to the whole roster.
+ */
 export function memberDisplayName(m: Pick<Member, "user">): string {
   return (
     m.user.name ??
     (m.user.username ? `@${m.user.username}` : null) ??
-    m.user.email ??
     "Member"
   );
 }

@@ -21,11 +21,14 @@ export { formatBalance } from "@/lib/currency";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
+// RLS Slice 2 — `email` is gone: GET /api/spaces/[id] no longer selects it (it
+// was only a last-resort display fallback, and rosterForViewer already withheld
+// it from non-members). The type must not claim a field the route never sends.
 export type Member = {
   id: string;
   role: string;
   joinedAt: string;
-  user: { id: string; name: string | null; username: string | null; email: string | null };
+  user: { id: string; name: string | null; username: string | null };
 };
 
 export type SpaceDetail = {

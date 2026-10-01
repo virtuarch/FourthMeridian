@@ -39,7 +39,15 @@ export const GET = withApiHandler(async (
     include: {
       members: {
         where: { status: "ACTIVE" },
-        include: { user: { select: { id: true, name: true, username: true, email: true } } },
+        // RLS Slice 2 — `email` is NOT selected. rosterForViewer already strips
+        // it on the public-read path, so it was only ever delivered to ACTIVE
+        // members, where its single consumer was a last-resort display fallback
+        // in memberDisplayName (after name, after @username). That is not worth
+        // loading every member's email address into process memory BEFORE the
+        // membership check below — §17.1 item 4 names this route's pre-auth
+        // fetch as the starkest of the fourteen. Not selecting it is the fix;
+        // stripping it afterwards never was. See lib/spaces/roster-visibility.ts.
+        include: { user: { select: { id: true, name: true, username: true } } },
         orderBy: { joinedAt: "asc" },
       },
     },

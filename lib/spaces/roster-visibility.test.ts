@@ -115,6 +115,28 @@ const members = [
   const rosterAt = src.indexOf("rosterForViewer(space.members");
   check("roster override comes after the ...space spread",
     spreadAt !== -1 && rosterAt !== -1 && rosterAt > spreadAt, `spread@${spreadAt} roster@${rosterAt}`);
+
+  // ── RLS Slice 2 — DON'T LOAD IT AT ALL ──────────────────────────────────────
+  // rosterForViewer strips email on the way OUT; this pins that the route never
+  // reads it on the way IN. The GET fetches the roster BEFORE the membership
+  // check (§17.1 item 4 calls this the starkest of the fourteen bare-id fetches),
+  // so every member's email address used to sit in process memory before anyone
+  // was authorized. The member path had exactly one consumer — a last-resort
+  // display fallback in memberDisplayName, after name and after @username — and
+  // that rung is now gone too, so nothing wants the column back.
+  const codeOnly = src.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  check("GET route does NOT select member email (not loaded, not just stripped)",
+    !/email/.test(codeOnly), "email appears in the route's code");
+  const sharedTypes = readFileSync(
+    path.join(ROOT, "components", "space", "manage", "manage-shared.ts"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  check("the client Member type no longer claims an email the route never sends",
+    !/email/.test(sharedTypes));
+  const membersUi = readFileSync(
+    path.join(ROOT, "components", "space", "widgets", "members", "members-ui.tsx"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  check("memberDisplayName no longer falls back to an email address",
+    !/email/.test(membersUi));
 }
 
 // ── Report ────────────────────────────────────────────────────────────────────

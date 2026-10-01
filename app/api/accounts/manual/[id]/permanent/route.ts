@@ -13,11 +13,20 @@
  *   3. FinancialAccount
  *
  * Returns: { ok: true, accountId }
+ *
+ * Authorization: requireFreshUser() — see lib/session.ts on why a sensitive
+ * action must not trust the CACHED revocation check. This delete is
+ * IRREVERSIBLE: a hard delete of the FinancialAccount plus its links and
+ * connections, with no soft-delete left to undo. RLS Slice 2 — it used
+ * requireUser(), making it the only irreversible-delete route in app/api that
+ * did; its peers (user/delete, user/deactivate, imports/[id]/rollback) all
+ * re-check the session against the live UserSession row first. The ownerUserId
+ * comparison below is unchanged — a fresher session, the same authority.
  */
 
 import { NextRequest, NextResponse }   from "next/server";
 import { db }                          from "@/lib/db";
-import { requireUser }                 from "@/lib/session";
+import { requireFreshUser }            from "@/lib/session";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { dualDeleteSpaceAccountLinks } from "@/lib/accounts/space-account-link";
 
@@ -25,7 +34,7 @@ export const DELETE = withApiHandler(async (
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) => {
-  const [user, err] = await requireUser();
+  const [user, err] = await requireFreshUser();
   if (err) return err;
   const userId = user.id;
 

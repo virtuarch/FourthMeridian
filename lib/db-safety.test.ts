@@ -73,7 +73,24 @@ const pkg = JSON.parse(src("package.json")) as { scripts: Record<string, string>
   // ⚠️ TEST FILES EXCLUDED, because a test that ASSERTS about `new PrismaClient`
   // contains the string without constructing one — this file and
   // lib/db/live-guard.test.ts both do.
-  const found = execSync("git grep -l 'new PrismaClient' -- 'prisma/*.ts' 'scripts/*.ts' 'lib/*.ts' 'app/*.ts' 'jobs/*.ts' || true",
+  //
+  // RLS Slice 2 — THE SCAN IS NOW REPO-WIDE, over every tracked .ts/.tsx file,
+  // with no directory list at all.
+  //
+  // The previous form listed five directories ('prisma/*.ts', 'scripts/*.ts',
+  // 'lib/*.ts', 'app/*.ts', 'jobs/*.ts'). Those globs were NOT shallow — a git
+  // pathspec is fnmatch WITHOUT FNM_PATHNAME, so `*` crosses `/` and
+  // 'lib/*.ts' already matched lib/db/live-guard.test.ts. The real hole was the
+  // CLOSED DIRECTORY LIST: a `new PrismaClient` in components/, middleware.ts,
+  // a repo-root script, or any directory nobody thought to enumerate was a path
+  // around the clone guard that this test would have reported as absent. A guard
+  // whose coverage depends on remembering to extend it is not a guard.
+  //
+  // Dropping the pathspec is strictly broader and cannot be out-grown. It is
+  // also cheap to keep honest: the widened scan finds the SAME set as the old
+  // one, so OWN_CLIENT is unchanged — the directory hole was real but, as of
+  // this commit, unexploited.
+  const found = execSync("git grep -l 'new PrismaClient' -- '*.ts' '*.tsx' || true",
     { cwd: ROOT, encoding: "utf8" }).trim().split("\n")
     .filter((f) => f && !f.endsWith(".test.ts")).sort();
   const expected = [...OWN_CLIENT, "lib/db.ts"].sort();
