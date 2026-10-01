@@ -1584,8 +1584,9 @@ model SpaceDashboardSection {
 model Holding {
   id String @id @default(cuid())
 
-  financialAccountId String?
-  financialAccount   FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  // RLS-0 — NOT NULL, same reason as Transaction.financialAccountId.
+  financialAccountId String
+  financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
 
   symbol    String
   name      String
@@ -2285,8 +2286,11 @@ enum MerchantEnrichmentSource {
 model Transaction {
   id String @id @default(cuid())
 
-  financialAccountId String?
-  financialAccount   FinancialAccount? @relation("FinancialAccountTransactions", fields: [financialAccountId], references: [id], onDelete: Cascade)
+  // RLS-0 — NOT NULL. Under tenancy policies a NULL here makes the ownership
+  // EXISTS evaluate FALSE, so the row would be invisible to everyone including
+  // its owner and un-insertable under WITH CHECK. No writer ever set it null.
+  financialAccountId String
+  financialAccount   FinancialAccount @relation("FinancialAccountTransactions", fields: [financialAccountId], references: [id], onDelete: Cascade)
 
   date        DateTime            @db.Date
   merchant    String
