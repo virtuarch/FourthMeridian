@@ -132,7 +132,7 @@ export async function POST(
   // (name or @username), never a real email, because the activity consumer
   // currently reads meta.invitedEmail (key rename is deferred debt).
   // `emailStatus` (S3) records the notification outcome on this same event.
-  await emitDomainEvent({
+  await emitDomainEvent(db, {
     type:        "MemberInvited",
     spaceId,
     actorUserId: user.id,

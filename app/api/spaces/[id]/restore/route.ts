@@ -44,7 +44,7 @@ export const POST = withApiHandler(async (
     data:  { deletedAt: null },
   });
 
-  await emitDomainEvent({
+  await emitDomainEvent(db, {
     type:        "SpaceRestored",
     spaceId:     id,
     actorUserId: user.id,

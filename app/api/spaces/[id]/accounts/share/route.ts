@@ -115,7 +115,7 @@ export const POST = withApiHandler(async (
       },
     });
 
-    await emitDomainEvent(event, { tx });
+    await emitDomainEvent(tx, event);
   });
 
   // Post-commit: regenerate SpaceSnapshot now that this space has a new active
@@ -212,7 +212,7 @@ export const DELETE = withApiHandler(async (
       },
     });
 
-    await emitDomainEvent(event, { tx });
+    await emitDomainEvent(tx, event);
   });
 
   // Post-commit: regenerate SpaceSnapshot now that this space lost an active

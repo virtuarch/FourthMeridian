@@ -91,7 +91,7 @@ export const PATCH = withApiHandler(async (
   // EV-1 Slice 5B — MemberRoleChanged (audit-only, no handler). No transaction
   // and no side effect here today; the no-tx emit persists the canonical
   // MEMBER_ROLE_CHANGED row with byte-identical metadata.
-  await emitDomainEvent({
+  await emitDomainEvent(db, {
     type:        "MemberRoleChanged",
     spaceId,
     actorUserId: user.id,
@@ -188,7 +188,7 @@ export const DELETE = withApiHandler(async (
     payload:     { removedUserId: targetUserId, removedName, newStatus },
   };
 
-  await emitDomainEvent(event);
+  await emitDomainEvent(db, event);
 
   return NextResponse.json({ ok: true });
 }, "DELETE /api/spaces/[id]/members/[userId]");

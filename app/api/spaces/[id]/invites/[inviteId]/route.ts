@@ -85,7 +85,7 @@ export async function PATCH(
     // Timeline-visible row. Emitted post-commit (no-tx) so the array-form
     // transaction above is untouched; actorUserId is the joining user, from
     // which the activity consumer derives "{name} joined the space".
-    await emitDomainEvent({
+    await emitDomainEvent(db, {
       type:        "MemberJoined",
       spaceId,
       actorUserId: user.id,

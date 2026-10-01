@@ -439,7 +439,7 @@ export async function refreshPlaidItem(
   // this does not touch the snapshot fan-out, the return value, or error
   // semantics.
   try {
-    await emitDomainEvent({
+    await emitDomainEvent(db, {
       type:        "ConnectionSynced",
       actorUserId: item.userId,
       payload: {
