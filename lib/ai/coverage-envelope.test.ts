@@ -208,8 +208,13 @@ const render = (e: CoverageEnvelope, from?: string, to?: string) =>
   const src = readFileSync(join(process.cwd(), 'lib/ai/coverage-envelope.ts'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
 
+  // ⚠️ THE RESOLVER IS THE PROPERTY; ITS ARGUMENT ORDER IS NOT. This pinned
+  // `resolveFullVisibleAccountIds(spaceId, client)` until RLS slice B made the
+  // client that helper's required FIRST parameter, so the same call now reads
+  // `(client, spaceId)`. What must not regress is that presence is resolved by
+  // the canonical helper rather than a fourth hand-rolled traversal.
   check('H: account presence goes through the CANONICAL visibility resolver',
-    /resolveFullVisibleAccountIds\(spaceId, client\)/.test(src),
+    /resolveFullVisibleAccountIds\([^)]*\bspaceId\b[^)]*\)/.test(src),
     'a fourth hand-rolled traversal is exactly what the parity guard exists to catch');
   check('H: …and does not hand-roll the link query itself',
     !/spaceAccountLink\.findMany/.test(src),

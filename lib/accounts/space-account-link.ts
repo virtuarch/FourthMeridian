@@ -41,7 +41,14 @@
  *            errors and logged via console.warn without throwing. Removed
  *            so that SpaceAccountLink failures surface to the caller now
  *            that SAL is the primary write target.
- *   Rule 7 — [UPDATED KD-4 Phase 1] Each write helper accepts an optional
+ *   Rule 7 — [UPDATED RLS SLICE B] Each helper takes the client it runs on as
+ *            its FIRST, REQUIRED parameter. It was OPTIONAL, defaulting to the
+ *            `db` singleton — which meant every caller that said nothing ran
+ *            through the migration principal and looked identical to one that
+ *            had chosen. The default is gone and the choice is now at every
+ *            call site, where TypeScript enforces it.
+ *
+ *            [SUPERSEDED, KD-4 Phase 1 wording] Each write helper accepts an optional
  *            transaction client (DbClient, above), defaulting to the `db`
  *            singleton. Callers that need atomicity across several tables wrap
  *            their DB-only write group in db.$transaction(async (tx) => …) and
@@ -54,23 +61,37 @@
  *            introduced here by KD-4.)
  */
 
-import { db } from "@/lib/db";
+import type { PrismaClient } from "@prisma/client";
 import { Prisma, SpaceAccountLinkKind, ShareStatus, VisibilityLevel } from "@prisma/client";
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 
 /**
- * A Prisma client handle that is either the module-level singleton `db` or an
- * interactive-transaction client (`tx`) from `db.$transaction(async (tx) => …)`.
+ * A Prisma client handle: a full client, or an interactive-transaction client
+ * (`tx`) from `db.$transaction(async (tx) => …)` or from `withTenantDb`.
  *
- * KD-4 Phase 1 — every write helper below accepts one of these (defaulting to
- * `db`) so a caller can thread its own transaction through, without any
- * existing call site having to change. Wrapping DB-only write groups in a
- * transaction, and threading `tx` into these helpers, is what makes the
- * multi-table SpaceAccountLink write sequences atomic (see
- * docs/investigations/KD4_ATOMIC_SPACE_ACCOUNT_LINK_WRITES_CHECKLIST.md).
+ * RLS SLICE B — this module imports NO client. Every helper takes one as its
+ * first, required argument, so the authority a SpaceAccountLink read or write
+ * runs under is the caller's visible decision. Threading `tx` is still what
+ * makes the multi-table write sequences atomic (see
+ * docs/investigations/KD4_ATOMIC_SPACE_ACCOUNT_LINK_WRITES_CHECKLIST.md);
+ * what changed is that NOT threading one is no longer expressible.
+ *
+ * ⚠️ WHAT A TENANT CLIENT CHANGES BENEATH computeLinkKind — read it before
+ * converting another call site. `SpaceAccountLink.fm_app_sel` is
+ * `spaceId IN (SELECT fm_visible_space_ids())`, so as fm_app the cross-Space
+ * reads in computeLinkKind see only the links in Spaces the CALLER belongs to.
+ * If an account's existing links were all invisible, the count would read 0,
+ * the new link would be computed HOME, and the partial unique index
+ * `SpaceAccountLink_one_home_per_account` would reject it (P2002) — loudly, but
+ * for the wrong reason. The share route is safe because it first proves
+ * `ownerUserId === caller`, and an account's owner is a permanent ACTIVE OWNER
+ * of the Personal Space that holds its first (HOME) link, so at least that link
+ * is always visible to them. A call site WITHOUT that ownership proof does not
+ * get to assume it.
+ *
  * Exported so lib/accounts/reconcile.ts (Phase 2) can reuse the same type.
  */
-export type DbClient = Prisma.TransactionClient | typeof db;
+export type DbClient = Prisma.TransactionClient | PrismaClient;
 
 /**
  * Resolve a user's personal Space — same lookup used by
@@ -83,8 +104,10 @@ export type DbClient = Prisma.TransactionClient | typeof db;
  * hardening), so no ACTIVE non-owner membership on one should exist. Filtered
  * here anyway so this resolver can never return a stranger's personal Space.
  */
-export async function resolvePersonalSpaceId(userId: string): Promise<string | null> {
-  const membership = await db.spaceMember.findFirst({
+export async function resolvePersonalSpaceId(
+  client: DbClient, userId: string,
+): Promise<string | null> {
+  const membership = await client.spaceMember.findFirst({
     where: {
       userId,
       status: "ACTIVE",
@@ -112,8 +135,8 @@ export async function resolvePersonalSpaceId(userId: string): Promise<string | n
  * no row and so is absent from the set.
  */
 export async function resolveFullVisibleAccountIds(
+  client: DbClient,
   spaceId: string,
-  client: DbClient = db,
 ): Promise<Set<string>> {
   const links = await client.spaceAccountLink.findMany({
     where: {
@@ -132,8 +155,8 @@ export async function resolveFullVisibleAccountIds(
  * createdByUserId ?? ownerUserId.
  */
 export async function resolveAccountCreatorUserId(
+  client: DbClient,
   financialAccountId: string,
-  client: DbClient = db,
 ): Promise<string | null> {
   const fa = await client.financialAccount.findUnique({
     where:  { id: financialAccountId },
@@ -165,9 +188,9 @@ export async function resolveAccountCreatorUserId(
  * Never throws on its own — any DB error propagates to the caller.
  */
 export async function computeLinkKind(
+  client: DbClient,
   spaceId: string,
   financialAccountId: string,
-  client: DbClient = db,
 ): Promise<SpaceAccountLinkKind> {
   const existingLinkCount = await client.spaceAccountLink.count({
     where: { financialAccountId },
@@ -207,23 +230,27 @@ export interface SpaceAccountLinkWriteFields {
  *
  * Throws on failure — callers are responsible for error handling.
  */
-export async function dualWriteSpaceAccountLink(params: {
-  spaceId:            string;
-  financialAccountId: string;
-  creatorUserId?:     string | null;
-  create:             SpaceAccountLinkWriteFields;
-  update:             Partial<SpaceAccountLinkWriteFields>;
-  // KD-4 Phase 1 — optional transaction client. When a caller wraps a
-  // multi-table write group in db.$transaction, it passes `tx` here so the
-  // kind read and the upsert run inside that same transaction. Defaults to
-  // the `db` singleton, so every existing call site is unchanged.
-  client?:            DbClient;
-}): Promise<void> {
-  const client = params.client ?? db;
+export async function dualWriteSpaceAccountLink(
+  // RLS slice B — required and first. The kind read and the upsert always run
+  // on the same client, and which one that is is now the caller's statement.
+  client: DbClient,
+  params: {
+    spaceId:            string;
+    financialAccountId: string;
+    creatorUserId?:     string | null;
+    create:             SpaceAccountLinkWriteFields;
+    update:             Partial<SpaceAccountLinkWriteFields>;
+  },
+): Promise<void> {
+  // ⚠️ A CAPABILITY TEST, NOT A FLAG. The retry below is only correct OUTSIDE a
+  // caller's transaction, which used to be read off `!params.client`. A
+  // `Prisma.TransactionClient` has no `$transaction` method and a `PrismaClient`
+  // does, so the client's own shape answers it and the two cannot disagree.
+  const standalone = "$transaction" in client && typeof client.$transaction === "function";
   // params.creatorUserId is accepted for call-site backward compatibility
   // (every existing dual-write call site still passes it) but is no longer
   // used to compute kind — see computeLinkKind()'s doc comment.
-  const kind = await computeLinkKind(params.spaceId, params.financialAccountId, client);
+  const kind = await computeLinkKind(client, params.spaceId, params.financialAccountId);
   try {
     await client.spaceAccountLink.upsert({
       where: {
@@ -256,11 +283,11 @@ export async function dualWriteSpaceAccountLink(params: {
     // duplicate HOME. Semantics are unchanged: the retry reuses the same
     // computeLinkKind() decision, never a hard-coded kind.
     if (
-      !params.client &&
+      standalone &&
       err instanceof Prisma.PrismaClientKnownRequestError &&
       err.code === "P2002"
     ) {
-      const retryKind = await computeLinkKind(params.spaceId, params.financialAccountId, client);
+      const retryKind = await computeLinkKind(client, params.spaceId, params.financialAccountId);
       await client.spaceAccountLink.upsert({
         where: {
           spaceId_financialAccountId: {
@@ -293,8 +320,8 @@ export async function dualWriteSpaceAccountLink(params: {
  * Throws on failure — callers are responsible for error handling.
  */
 export async function dualDeleteSpaceAccountLinks(
+  client: DbClient,
   financialAccountId: string,
-  client: DbClient = db,
 ): Promise<void> {
   await client.spaceAccountLink.deleteMany({ where: { financialAccountId } });
 }

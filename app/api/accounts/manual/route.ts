@@ -161,11 +161,10 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     });
 
     for (const wsId of shareTargets) {
-      await dualWriteSpaceAccountLink({
+      await dualWriteSpaceAccountLink(tx, {
         spaceId:            wsId,
         financialAccountId: created.id,
         creatorUserId:       userId,
-        client:              tx,
         create: {
           addedByUserId:    userId,
           visibilityLevel:  VisibilityLevel.FULL,

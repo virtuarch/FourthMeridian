@@ -11,10 +11,28 @@
  *  - Caller must be an ACTIVE member of the space.
  *  - The FinancialAccount must be owned by the caller (ownerUserId).
  *  - Only the user who added the share (addedByUserId) can revoke it, or an OWNER/ADMIN.
+ *
+ * ── RLS SLICE B — THE WHOLE ROUTE RUNS AS THE CALLER ─────────────────────────
+ * Both handlers' batch work was already a `db.$transaction` callback; it is now
+ * the interactive transaction `withTenantDb` opens, so the SpaceAccountLink
+ * write and its AuditLog row still commit together AND now commit identified.
+ * The dispatch phase (snapshot regeneration) was already outside, and stays
+ * outside — see lib/events/emit.ts for why that is structural, not stylistic.
+ *
+ * ⚠️ WHY computeLinkKind IS SAFE HERE AND NOT EVERYWHERE. `dualWriteSpaceAccountLink`
+ * recomputes HOME vs SHARED by counting an account's links ACROSS Spaces, and
+ * `SpaceAccountLink.fm_app_sel` shows only the Spaces the caller belongs to. An
+ * account whose existing links were all invisible would count 0, be written
+ * HOME, and hit the one-HOME-per-account partial unique index. This route is
+ * safe because it proves `ownerUserId === caller` FIRST, and an owner is a
+ * permanent ACTIVE OWNER of the Personal Space holding that account's first
+ * (HOME) link — so at least one link is always visible to them. The note on
+ * `DbClient` in lib/accounts/space-account-link.ts says the same thing to the
+ * call sites that have no such proof.
  */
 
 import { NextRequest, NextResponse }                    from "next/server";
-import { db }                                           from "@/lib/db";
+import { withTenantDb }                                 from "@/lib/db/tenant-context";
 import { ShareStatus, VisibilityLevel }                 from "@prisma/client";
 import { requireSpaceAction } from "@/lib/spaces/authorize";
 import { can } from "@/lib/spaces/policy";
@@ -56,10 +74,19 @@ export const POST = withApiHandler(async (
 
   // Verify the caller owns this FinancialAccount. type + debtSubtype are
   // selected for the P1-3 display-safe activity name below.
-  const fa = await db.financialAccount.findUnique({
+  // RLS slice B — a bare-id fetch followed by an ownership check.
+  // `FinancialAccount.fm_app_sel` is `ownerUserId = me OR fm_account_visible(id)`,
+  // so an account that is neither the caller's nor reachable through any Space
+  // they belong to now returns nothing and 404s before the check.
+  //
+  // ⚠️ THE 403 IS STILL LOAD-BEARING, UNLIKE MOST OF THE CHECKS THIS SLICE MADE
+  // REDUNDANT. The policy's second arm admits an account the caller can merely
+  // SEE through a shared Space; this route requires that they OWN it. RLS is
+  // tenancy, the check is authorization, and here the two genuinely differ.
+  const fa = await withTenantDb(userId, (tx) => tx.financialAccount.findUnique({
     where: { id: financialAccountId },
     select: { ownerUserId: true, deletedAt: true, name: true, type: true, debtSubtype: true },
-  });
+  }));
 
   if (!fa || fa.deletedAt) {
     return NextResponse.json({ error: "Account not found" }, { status: 404 });
@@ -96,11 +123,10 @@ export const POST = withApiHandler(async (
   // together. Snapshot regen below stays OUTSIDE.
   // D3 Stage B3 — SpaceAccountLink is the sole write target.
   // Upsert the link — if one exists (even REVOKED), re-activate it.
-  await db.$transaction(async (tx) => {
-    await dualWriteSpaceAccountLink({
+  await withTenantDb(userId, async (tx) => {
+    await dualWriteSpaceAccountLink(tx, {
       spaceId,
       financialAccountId,
-      client: tx,
       create: {
         addedByUserId:   userId,
         visibilityLevel: visibilityLevel as VisibilityLevel,
@@ -151,7 +177,11 @@ export const DELETE = withApiHandler(async (
 
   // D3 Stage B1/B3 — authorization and revoke write on SpaceAccountLink.
   // POST (above) also writes SpaceAccountLink exclusively as of Stage B3.
-  const link = await db.spaceAccountLink.findUnique({
+  // RLS slice B — the link and the account behind it are both reachable: the
+  // link by `spaceId IN fm_visible_space_ids()`, the account by
+  // `fm_account_visible(id)` through that very link. The 404 below is now the
+  // same answer the policy would give for a foreign Space.
+  const link = await withTenantDb(userId, (tx) => tx.spaceAccountLink.findUnique({
     where: { spaceId_financialAccountId: { spaceId, financialAccountId } },
     select: {
       status:          true,
@@ -160,7 +190,7 @@ export const DELETE = withApiHandler(async (
       // type + debtSubtype for the P1-3 display-safe activity name below.
       financialAccount: { select: { name: true, type: true, debtSubtype: true } },
     },
-  });
+  }));
 
   if (!link || link.status !== ShareStatus.ACTIVE) {
     return NextResponse.json({ error: "Share not found" }, { status: 404 });
@@ -202,7 +232,7 @@ export const DELETE = withApiHandler(async (
 
   // KD-4 Phase 3 — the revoke write and its audit row commit together.
   // Snapshot regen below stays OUTSIDE.
-  await db.$transaction(async (tx) => {
+  await withTenantDb(userId, async (tx) => {
     await tx.spaceAccountLink.update({
       where: { spaceId_financialAccountId: { spaceId, financialAccountId } },
       data: {

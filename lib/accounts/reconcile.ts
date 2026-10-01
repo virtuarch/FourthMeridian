@@ -531,18 +531,17 @@ export async function mergeArchivedDuplicateIntoCanonical(
   // `kind` is still recomputed per dualWriteSpaceAccountLink's Rule 1
   // (computeLinkKind), so the winner's first re-pointed link correctly becomes
   // HOME if it had none before the merge. Reads and writes here run on `tx`.
-  const winnerCreatorUserId = await resolveAccountCreatorUserId(winnerId, tx);
+  const winnerCreatorUserId = await resolveAccountCreatorUserId(tx, winnerId);
 
   const loserLinks = await tx.spaceAccountLink.findMany({
     where:  { financialAccountId: loserId },
     select: { spaceId: true, addedByUserId: true, visibilityLevel: true },
   });
   for (const l of loserLinks) {
-    await dualWriteSpaceAccountLink({
+    await dualWriteSpaceAccountLink(tx, {
       spaceId:            l.spaceId,
       financialAccountId: winnerId,
       creatorUserId:      winnerCreatorUserId,
-      client:             tx,
       create: {
         addedByUserId:   l.addedByUserId,
         visibilityLevel: l.visibilityLevel,

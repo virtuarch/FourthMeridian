@@ -88,7 +88,9 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     }
   }
 
-  const personalSpaceId = await resolvePersonalSpaceId(userId);
+  // RLS slice B — `resolvePersonalSpaceId` now requires its client. The export
+  // assembler is not converted in this slice, so it passes the one it already held.
+  const personalSpaceId = await resolvePersonalSpaceId(db, userId);
 
   // ── ACTIVE memberships in non-deleted Spaces ───────────────────────────────
   const memberships = await db.spaceMember.findMany({

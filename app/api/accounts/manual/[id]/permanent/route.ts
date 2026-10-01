@@ -82,7 +82,7 @@ export const DELETE = withApiHandler(async (
   // KD-4 Phase 3 — the three deletes commit atomically. The audit row above is
   // written before deletion (to retain the name) and stays OUTSIDE.
   await db.$transaction(async (tx) => {
-    await dualDeleteSpaceAccountLinks(id, tx);
+    await dualDeleteSpaceAccountLinks(tx, id);
     await tx.accountConnection.deleteMany({ where: { financialAccountId: id } });
     await tx.financialAccount.delete({ where: { id } });
   });

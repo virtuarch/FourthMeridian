@@ -129,11 +129,10 @@ export async function persistAccountSpine(params: PersistAccountSpineParams): Pr
     }
 
     // D3 Stage B3 — SpaceAccountLink is the sole write target.
-    await dualWriteSpaceAccountLink({
+    await dualWriteSpaceAccountLink(tx, {
       spaceId,
       financialAccountId,
       creatorUserId,
-      client: tx,
       create: {
         addedByUserId,
         visibilityLevel: VisibilityLevel.FULL,

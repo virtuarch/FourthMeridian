@@ -163,7 +163,9 @@ export async function POST(req: NextRequest) {
     // Already exists and active — re-share into this space if needed and
     // return success silently. No 409, no "already connected" message.
     // D3 Stage B3 — SpaceAccountLink is the sole write target.
-    await dualWriteSpaceAccountLink({
+    // RLS slice B — `dualWriteSpaceAccountLink` now requires its client. This
+    // caller is not converted in this slice, so it passes the one it already used.
+    await dualWriteSpaceAccountLink(db, {
       spaceId,
       financialAccountId: activeFa.id,
       create: {
@@ -248,10 +250,9 @@ export async function POST(req: NextRequest) {
         data:  { deletedAt: null },
       });
       // D3 Stage B3 — SpaceAccountLink is the sole write target.
-      await dualWriteSpaceAccountLink({
+      await dualWriteSpaceAccountLink(tx, {
         spaceId,
         financialAccountId: archivedFa.id,
-        client:          tx,
         create: {
           addedByUserId:   userId,
           visibilityLevel: VisibilityLevel.FULL,

@@ -161,7 +161,7 @@ export async function loadCoverageEnvelope(
     // drops `status: ACTIVE` and so sees slightly more than its siblings. On
     // THIS boundary a slightly larger set is one family member reading another's
     // private account.
-    const visibleIds = await resolveFullVisibleAccountIds(spaceId, client);
+    const visibleIds = await resolveFullVisibleAccountIds(client, spaceId);
     const accounts = visibleIds.size === 0 ? [] : await client.financialAccount.findMany({
       where:  { id: { in: [...visibleIds] } },
       select: { id: true, type: true, walletChain: true },
