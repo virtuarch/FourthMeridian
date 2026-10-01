@@ -19,7 +19,7 @@
 
 import { NextResponse } from "next/server";
 import { todayUTCISO } from "@/lib/time/clock"; // B-6 — THE clock seam
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { requireFreshUser } from "@/lib/session";
 import { limitByUser } from "@/lib/rate-limit";
 import { sendEmail } from "@/lib/email/send";
@@ -44,7 +44,11 @@ export async function POST() {
     const zip = await buildExportZip(data);
 
     // The user's email lives on the row, not the session.
-    const dbUser = await db.user.findUnique({ where: { id: user.id }, select: { email: true } });
+    // RLS slice A. `assembleUserExport` above holds its own client and is not
+    // converted in this slice; this route's own two reads/writes run as the user, and
+    // the `sendEmail` between them is why each is its own short transaction.
+    const dbUser = await withTenantDb(user.id, (tx) =>
+      tx.user.findUnique({ where: { id: user.id }, select: { email: true } }));
 
     // Notify. NON-THROWING: a delivery failure is logged and audited, never
     // fails the export.
@@ -63,13 +67,13 @@ export async function POST() {
       }
     }
 
-    const auditRow = await db.auditLog.create({
+    const auditRow = await withTenantDb(user.id, (tx) => tx.auditLog.create({
       data: {
         userId:   user.id,
         action:   AuditAction.DATA_EXPORTED,
         metadata: { counts: data.manifest.counts, truncated: data.manifest.truncated, emailStatus },
       },
-    });
+    }));
 
     // OPS-3 S5 Wave 1 — bell mirror. Non-throwing.
     await createNotification({

@@ -7,7 +7,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { countRemainingCodes } from "@/lib/recovery-codes";
 import { requireUser } from "@/lib/session";
 
@@ -17,13 +17,19 @@ export async function GET() {
   const [user, err] = await requireUser({ allowTotpSetupPending: true });
   if (err) return err;
 
-  const dbUser = await db.user.findUnique({
+  // RLS slice A — one row, their own, as them.
+  const dbUser = await withTenantDb(user.id, (tx) => tx.user.findUnique({
     where:  { id: user.id },
     select: { totpEnabled: true, totpSecret: true },
-  });
+  }));
 
   if (!dbUser) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+  // ⚠️ DELIBERATELY OUTSIDE THE TENANT BOUNDARY. `lib/recovery-codes.ts` runs on
+  // authDb — the PRE-IDENTITY authority — because the same module serves the sign-in
+  // leg, where no identity exists yet. Routing this count through fm_app would mean
+  // two authorities for one table; widening authDb instead would make it a general
+  // escape. Left as it is, and reported.
   const recoveryCodesRemaining = dbUser.totpEnabled
     ? await countRemainingCodes(user.id)
     : 0;

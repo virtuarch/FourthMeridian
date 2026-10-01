@@ -17,6 +17,7 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { env } from "@/lib/env";
 import { requireFreshUser } from "@/lib/session";
 import { hashResetToken } from "@/lib/password-reset-token";
@@ -55,10 +56,12 @@ export async function POST(req: NextRequest) {
 
     const normalizedNew = newEmail.toLowerCase().trim();
 
-    const dbUser = await db.user.findUnique({
+    // RLS slice A — their own row, as them. Each DB step is its own short
+    // transaction: bcrypt and two `sendEmail` calls sit between them.
+    const dbUser = await withTenantDb(user.id, (tx) => tx.user.findUnique({
       where:  { id: user.id },
       select: { passwordHash: true, email: true },
-    });
+    }));
     if (!dbUser?.passwordHash) {
       return NextResponse.json({ error: "Account has no password set." }, { status: 400 });
     }
@@ -73,8 +76,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "That's already your email address." }, { status: 400 });
     }
 
-    // Reject an address already owned by another account (final uniqueness is
-    // re-checked at swap; this is the early, friendly rejection).
+    // ⚠️ THIS ONE PROBE CANNOT RUN AS THE TENANT, AND THAT IS THE POLICY WORKING.
+    // fm_app's `User` SELECT policy is `id = current_fm_user_id()` — a user sees
+    // themselves — so asking "does ANOTHER account own this address?" through the
+    // tenant role returns nothing and this check would always pass. A cross-user
+    // uniqueness question is not tenant-scoped data by definition; it is answered on
+    // the deployment-wide client, which is why this file still imports one. It is a
+    // SELECT of a single `id` and it is never returned to the caller — the response is
+    // the same 409 either way, so it discloses nothing the unique index would not.
     const taken = await db.user.findUnique({ where: { email: normalizedNew }, select: { id: true } });
     if (taken) {
       return NextResponse.json({ error: "That email is already in use." }, { status: 409 });
@@ -84,14 +93,14 @@ export async function POST(req: NextRequest) {
     const rawToken = crypto.randomBytes(32).toString("hex");
     const expiry   = new Date(Date.now() + CHANGE_TTL_MS);
 
-    await db.user.update({
+    await withTenantDb(user.id, (tx) => tx.user.update({
       where: { id: user.id },
       data:  {
         pendingEmail:      normalizedNew,
         emailChangeToken:  hashResetToken(rawToken),
         emailChangeExpiry: expiry,
       },
-    });
+    }));
 
     // ── Notify (both NON-THROWING) ────────────────────────────────────────────
     const confirmUrl = buildEmailChangeUrl(env.NEXT_PUBLIC_APP_URL, rawToken);
@@ -112,13 +121,13 @@ export async function POST(req: NextRequest) {
       console.error("[email/request] old-address alert failed to send:", oldResult.error);
     }
 
-    const auditRow = await db.auditLog.create({
+    const auditRow = await withTenantDb(user.id, (tx) => tx.auditLog.create({
       data: {
         userId:   user.id,
         action:   AuditAction.EMAIL_CHANGE_REQUESTED,
         metadata: { newEmail: normalizedNew, emailStatusNew: newResult.status, emailStatusOld: oldResult.status },
       },
-    });
+    }));
 
     // OPS-3 S5 Wave 1 — bell mirror. pendingEmail is MASKED at the producer
     // (registry pointer contract): the bell never carries the full new address.

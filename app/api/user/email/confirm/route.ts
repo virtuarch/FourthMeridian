@@ -21,6 +21,16 @@
  * columns are a no-op (email already equals pendingEmail); Settings/export treat
  * that state as "no pending change".
  *
+ * ⚠️ NOT TENANT-SCOPED, AND IT CANNOT BE (RLS slice A). Two reasons, either of
+ * which is sufficient. First, there is no identity to scope TO: the user is
+ * resolved BY TOKEN, with no session, so `withTenantDb` has nothing to bind — this
+ * is a PRE-IDENTITY path of exactly the kind fm_auth exists for. Second, the
+ * uniqueness re-check below asks whether ANOTHER account now owns the address, and
+ * fm_app's `User` policy is `id = current_fm_user_id()`, so the tenant role cannot
+ * see another account at all. Both halves are an owner decision about the
+ * pre-identity surface, not something a product route should settle by widening a
+ * role, so this file is deliberately unchanged and the decision is reported.
+ *
  * Body: { token: string }
  * Responses (always JSON with a `status`):
  *   200 { success: true,  status: "changed", newEmail }  — swapped, or idempotent repeat

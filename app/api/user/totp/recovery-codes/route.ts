@@ -18,7 +18,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { generateRecoveryCodes } from "@/lib/recovery-codes";
 import { verifyTOTP } from "@/lib/totp";
@@ -43,10 +43,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const dbUser = await db.user.findUnique({
+  // RLS slice A — their own row, as them.
+  const dbUser = await withTenantDb(user.id, (tx) => tx.user.findUnique({
     where:  { id: user.id },
     select: { totpEnabled: true, totpSecret: true },
-  });
+  }));
 
   if (!dbUser) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -72,7 +73,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Regenerate codes (isRegen = true → RECOVERY_CODES_REGENERATED audit event)
+  // ⚠️ NOT TENANT-SCOPED — see the same note in totp/verify. `generateRecoveryCodes`
+  // runs on authDb, which is granted neither INSERT/DELETE on RecoveryCode nor
+  // anything on AuditLog. Reported rather than fixed from here.
   const plainCodes = await generateRecoveryCodes(user.id, true);
 
   return NextResponse.json({

@@ -15,7 +15,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { requireUser } from "@/lib/session";
 import { parseUserAgent } from "@/lib/ua-parser";
 import { SECURITY_HISTORY_ACTIONS, securityHistoryLabel } from "@/lib/security-history";
@@ -26,12 +26,17 @@ export async function GET() {
   const [user, err] = await requireUser();
   if (err) return err;
 
-  const rows = await db.auditLog.findMany({
+  // RLS slice A — read as the user. ⚠️ THE APPLICATION PREDICATE IS STILL
+  // LOAD-BEARING: fm_app's AuditLog SELECT policy is `userId = me OR spaceId IN my
+  // Spaces`, which is WIDER than this surface wants (a Space-keyed row written by a
+  // co-member would satisfy it). The `userId` filter and the action allowlist below
+  // are what make this the caller's OWN security log; RLS is the floor, not the spec.
+  const rows = await withTenantDb(user.id, (tx) => tx.auditLog.findMany({
     where:   { userId: user.id, action: { in: SECURITY_HISTORY_ACTIONS } },
     orderBy: { createdAt: "desc" },
     take:    HISTORY_LIMIT,
     select:  { id: true, action: true, createdAt: true, ipAddress: true, userAgent: true, metadata: true },
-  });
+  }));
 
   const events = rows.map((r) => {
     // Surface only a curated `reason` string from metadata (present on failed

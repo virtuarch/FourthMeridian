@@ -15,7 +15,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { generateRecoveryCodes } from "@/lib/recovery-codes";
 import { AuditAction } from "@/lib/audit-actions";
@@ -42,10 +42,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "A 6-digit code is required." }, { status: 400 });
   }
 
-  const dbUser = await db.user.findUnique({
+  // RLS slice A — their own row, as them.
+  const dbUser = await withTenantDb(user.id, (tx) => tx.user.findUnique({
     where:  { id: user.id },
     select: { totpSecret: true, totpEnabled: true },
-  });
+  }));
 
   if (!dbUser) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -81,24 +82,30 @@ export async function POST(req: NextRequest) {
   }
 
   // Enable 2FA
-  await db.user.update({
+  await withTenantDb(user.id, (tx) => tx.user.update({
     where: { id: user.id },
     data:  { totpEnabled: true },
-  });
+  }));
 
-  // Generate recovery codes and write TWO_FACTOR_ENABLED audit log
+  // ⚠️ NOT TENANT-SCOPED, AND IT CANNOT BE WITHOUT A DECISION. `generateRecoveryCodes`
+  // lives in lib/recovery-codes.ts, which runs on authDb because the same module
+  // serves the PRE-IDENTITY sign-in leg. Here it is POST-identity work: it DELETEs and
+  // INSERTs RecoveryCode rows and writes an AuditLog row, and fm_auth is granted only
+  // SELECT and UPDATE on RecoveryCode and nothing at all on AuditLog. Left exactly as
+  // it is and reported, because the fix is an owner decision about where that module's
+  // write half belongs — not a widening of authDb from a product route.
   const plainCodes = await generateRecoveryCodes(
     user.id,
     false, // not a regen — first-time setup
   );
 
   // generateRecoveryCodes writes RECOVERY_CODES_GENERATED; write TWO_FACTOR_ENABLED separately
-  const auditRow = await db.auditLog.create({
+  const auditRow = await withTenantDb(user.id, (tx) => tx.auditLog.create({
     data: {
       userId: user.id,
       action: AuditAction.TWO_FACTOR_ENABLED,
     },
-  });
+  }));
 
   // OPS-3 S5 Wave 1 — bell mirror. Non-throwing.
   await createNotification({

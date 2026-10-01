@@ -9,7 +9,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import bcrypt from "bcryptjs";
 import { requireFreshUser } from "@/lib/session";
 import { withApiHandler } from "@/lib/api";
@@ -44,10 +44,15 @@ export const PATCH = withApiHandler(async (req: NextRequest) => {
     return NextResponse.json({ error: "New password must be different from current password." }, { status: 400 });
   }
 
-  const dbUser = await db.user.findUnique({
+  // RLS slice A — every DB step below is its own short transaction as the user.
+  // ⚠️ AND THAT IS NOT A STYLE CHOICE: bcrypt and `sendEmail` sit between them, and a
+  // tenant transaction must never be held across a hash or a network call.
+  // `getMinPasswordLength()` above reads PlatformSetting, which fm_app is revoked on,
+  // so it stays on its own authority — see lib/ai/brief/store.ts for the same case.
+  const dbUser = await withTenantDb(user.id, (tx) => tx.user.findUnique({
     where:  { id: user.id },
     select: { passwordHash: true, email: true },
-  });
+  }));
 
   if (!dbUser?.passwordHash) {
     return NextResponse.json({ error: "Account has no password set." }, { status: 400 });
@@ -55,22 +60,22 @@ export const PATCH = withApiHandler(async (req: NextRequest) => {
 
   const valid = await bcrypt.compare(currentPassword, dbUser.passwordHash);
   if (!valid) {
-    await db.auditLog.create({
+    await withTenantDb(user.id, (tx) => tx.auditLog.create({
       data: {
         userId: user.id,
         action: AuditAction.PASSWORD_CHANGE_FAILED,
         metadata: { reason: "wrong_current_password" },
       },
-    });
+    }));
     return NextResponse.json({ error: "Current password is incorrect." }, { status: 401 });
   }
 
   const newHash = await bcrypt.hash(newPassword, 12);
 
-  await db.user.update({
+  await withTenantDb(user.id, (tx) => tx.user.update({
     where: { id: user.id },
     data:  { passwordHash: newHash },
-  });
+  }));
 
   // Harden (OPS-2 S2): revoke every OTHER session so a stolen session can't
   // outlive a password change. The current session is preserved — the user
@@ -87,13 +92,13 @@ export const PATCH = withApiHandler(async (req: NextRequest) => {
     console.error("[user/password] security-alert email failed to send:", emailResult.error);
   }
 
-  const auditRow = await db.auditLog.create({
+  const auditRow = await withTenantDb(user.id, (tx) => tx.auditLog.create({
     data: {
       userId: user.id,
       action: AuditAction.PASSWORD_CHANGED,
       metadata: { revokedOtherSessions, emailStatus: emailResult.status },
     },
-  });
+  }));
 
   // OPS-3 S5 Wave 1 — in-app mirror of the alert above (bell only; the email
   // guarantee stays with the security-alert send). Non-throwing by contract.

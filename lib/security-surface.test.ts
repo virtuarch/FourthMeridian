@@ -18,7 +18,7 @@
  *   4. /api/health exposes no env secrets.
  */
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 const ROOT = process.cwd();
@@ -196,6 +196,54 @@ check(
   "login success is recorded through the buildAuditData() operator/security shape",
   authorizeBody.includes("buildAuditData({") && authorizeBody.includes("mfa: mfaMethod"),
 );
+
+// ── 6. RLS SLICE A — /api/user REACHES THE DATABASE AS ITS USER ──────────────
+//
+// The authority a request handler executes under is invisible at the call site, so
+// it is asserted here instead of reviewed by eye. The routes are ENUMERATED from
+// disk, not listed, so a new one is covered the day it is added.
+//
+// ⚠️ AN EXCEPTION MUST SAY WHY IN ITS OWN SOURCE. A bare path list would become a
+// quiet allowlist; a listed path whose file no longer states its reason fails.
+console.log("6. /api/user reaches the database as its user (RLS slice A)");
+{
+  const USER_API = path.join(ROOT, "app", "api", "user");
+  const walk = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? walk(path.join(d, e.name)) : e.name === "route.ts" ? [path.join(d, e.name)] : []);
+  const routes = walk(USER_API).map((f) => path.relative(ROOT, f)).sort();
+
+  const EXCEPTIONS: Record<string, RegExp> = {
+    // Cross-user uniqueness: fm_app's User policy is `id = current_fm_user_id()`,
+    // so "is this taken by SOMEONE ELSE" is unanswerable as the tenant.
+    "app/api/user/profile/route.ts":       /A CROSS-USER UNIQUENESS PROBE, SO NOT TENANT-SCOPED/,
+    "app/api/user/email/request/route.ts": /THIS ONE PROBE CANNOT RUN AS THE TENANT/,
+    // Token-authenticated: there is no identity to bind at all (pre-identity path).
+    "app/api/user/email/confirm/route.ts": /NOT TENANT-SCOPED, AND IT CANNOT BE/,
+  };
+
+  check(`every route under /api/user is accounted for (${routes.length} found)`, routes.length >= 16);
+  for (const rel of routes) {
+    const s = src(rel);
+    if (EXCEPTIONS[rel]) {
+      check(`${rel} is a NAMED exception and states its reason in its own source`,
+        EXCEPTIONS[rel].test(s));
+      continue;
+    }
+    check(`${rel} holds no deployment-wide client`, !/from "@\/lib\/db"/.test(s));
+    const touchesDb = /\b(?:tx|db)\.[a-z]\w*\.(?:find|create|update|delete|upsert|count)/.test(s);
+    check(`${rel} ${touchesDb ? "enters the tenant boundary for its DB work" : "makes no direct DB call"}`,
+      !touchesDb || /withTenantDb\(/.test(s));
+  }
+  // A batch `$transaction([...])` cannot carry a `SET LOCAL` identity — the array
+  // form is issued without a callback, so there is nowhere to set one. Three of
+  // these routes used it; none may again.
+  // Read CODE, not prose: two of these files now explain in a comment what the
+  // array form could not do, and a scan that counted the explanation as the offence
+  // would be a scan nobody could satisfy.
+  const code = (rel: string) => src(rel).replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  check("no /api/user route uses the batch $transaction([...]) form",
+    routes.every((rel) => !/\$transaction\(\[/.test(code(rel))));
+}
 
 console.log(failures === 0 ? "\nAll security-surface scans passed." : `\n${failures} failure(s).`);
 process.exit(failures === 0 ? 0 : 1);

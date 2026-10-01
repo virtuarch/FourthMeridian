@@ -8,6 +8,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
 import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { EmploymentStatus, UseCase } from "@prisma/client";
@@ -29,7 +30,8 @@ export async function GET() {
   const [user, err] = await requireUser();
   if (err) return err;
 
-  const dbUser = await db.user.findUnique({
+  // RLS slice A — their own row, as them.
+  const dbUser = await withTenantDb(user.id, (tx) => tx.user.findUnique({
     where:  { id: user.id },
     select: {
       email: true, username: true,
@@ -40,7 +42,7 @@ export async function GET() {
       preferredSpaceId: true,
       reportingCurrency: true, // MC1 Phase 4 Slice 2 — user default (copy-once seed)
     },
-  }) as {
+  })) as {
     email: string; username: string | null; firstName: string | null;
     lastName: string | null; employmentStatus: string | null; useCase: string | null;
     dateOfBirthEncrypted: string | null; preferredSpaceId: string | null;
@@ -78,6 +80,12 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
+    // ⚠️ A CROSS-USER UNIQUENESS PROBE, SO NOT TENANT-SCOPED — and the same reasoning
+    // as the email probe in email/request: fm_app's `User` SELECT policy is `id =
+    // current_fm_user_id()`, so through the tenant role this returns nothing and every
+    // username would read as free. "Is this taken by SOMEONE ELSE" is not a question
+    // about the caller's own rows. One `id`, never returned; the 409 is all the caller
+    // learns, and the unique index remains the final arbiter.
     const taken = await db.user.findFirst({
       where: { username: username.toLowerCase(), NOT: { id: user.id } },
       select: { id: true },
@@ -123,10 +131,11 @@ export async function PATCH(req: NextRequest) {
   if (preferredSpaceId  !== undefined) {
     // Validate that user is actually a member of this space (or null to clear)
     if (preferredSpaceId !== null) {
-      const membership = await db.spaceMember.findUnique({
+      // Their OWN membership, so the tenant role answers it.
+      const membership = await withTenantDb(user.id, (tx) => tx.spaceMember.findUnique({
         where: { spaceId_userId: { spaceId: preferredSpaceId, userId: user.id } },
         select: { status: true },
-      });
+      }));
       if (!membership || membership.status !== "ACTIVE") {
         return NextResponse.json({ error: "Not a member of that Space" }, { status: 403 });
       }
@@ -138,28 +147,32 @@ export async function PATCH(req: NextRequest) {
   const firstForName = firstName ?? undefined;
   const lastForName  = lastName  ?? undefined;
   if (firstForName || lastForName) {
-    const current = await db.user.findUnique({
+    const current = await withTenantDb(user.id, (tx) => tx.user.findUnique({
       where: { id: user.id },
       select: { firstName: true, lastName: true },
-    });
+    }));
     const newFirst = (firstForName ?? current?.firstName ?? "").trim();
     const newLast  = (lastForName  ?? current?.lastName  ?? "").trim();
     if (newFirst || newLast) data.name = `${newFirst} ${newLast}`.trim();
   }
 
-  const updated = await db.user.update({
-    where: { id: user.id },
-    data,
-    select: { username: true, firstName: true, lastName: true, name: true },
+  // The update and its audit row in ONE tenant transaction: nothing sits between
+  // them, so the shortest coherent operation is both of them together.
+  const updated = await withTenantDb(user.id, async (tx) => {
+    const row = await tx.user.update({
+      where: { id: user.id },
+      data,
+      select: { username: true, firstName: true, lastName: true, name: true },
+    });
+    await tx.auditLog.create({
+      data: {
+        userId: user.id,
+        action: "PROFILE_UPDATE",
+        metadata: { fields: Object.keys(data).filter((k) => k !== "dateOfBirthEncrypted") },
+      },
+    });
+    return row;
   }) as { username: string | null; firstName: string | null; lastName: string | null; name: string | null };
-
-  await db.auditLog.create({
-    data: {
-      userId: user.id,
-      action: "PROFILE_UPDATE",
-      metadata: { fields: Object.keys(data).filter((k) => k !== "dateOfBirthEncrypted") },
-    },
-  });
 
   return NextResponse.json({ success: true, username: updated.username, name: updated.name });
 }

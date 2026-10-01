@@ -20,7 +20,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { AuditAction } from "@/lib/audit-actions";
 import { verifyTOTP } from "@/lib/totp";
@@ -48,10 +48,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const dbUser = await db.user.findUnique({
+  // RLS slice A — their own row, as them. Decryption, TOTP verification and bcrypt
+  // all happen below, outside any transaction.
+  const dbUser = await withTenantDb(user.id, (tx) => tx.user.findUnique({
     where:  { id: user.id },
     select: { totpEnabled: true, totpSecret: true, passwordHash: true },
-  });
+  }));
 
   if (!dbUser) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -81,21 +83,26 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Disable 2FA ──────────────────────────────────────────────────────────────
-  const [, , auditRow] = await db.$transaction([
-    db.user.update({
+  // ⚠️ THE BATCH ARRAY BECAME THE TENANT TRANSACTION ITSELF — same three writes,
+  // same single commit, now carrying `app.user_id`. Note the DELETE: fm_app holds
+  // SELECT/INSERT/UPDATE/DELETE on RecoveryCode (policy `userId = me`), whereas
+  // fm_auth holds only SELECT and UPDATE. Destroying a user's codes is POST-identity
+  // tenant work and belongs here, which is exactly why this route does it itself.
+  const auditRow = await withTenantDb(user.id, async (tx) => {
+    await tx.user.update({
       where: { id: user.id },
       data:  { totpSecret: null, totpEnabled: false },
-    }),
-    db.recoveryCode.deleteMany({
+    });
+    await tx.recoveryCode.deleteMany({
       where: { userId: user.id },
-    }),
-    db.auditLog.create({
+    });
+    return tx.auditLog.create({
       data: {
         userId: user.id,
         action: AuditAction.TWO_FACTOR_DISABLED,
       },
-    }),
-  ]);
+    });
+  });
 
   // OPS-3 S5 Wave 1 — bell mirror, AFTER the transaction commits (fact first,
   // ping second). Non-throwing.

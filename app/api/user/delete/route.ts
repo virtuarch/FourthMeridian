@@ -22,7 +22,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { requireFreshUser } from "@/lib/session";
 import { revokeAllUserSessions } from "@/lib/sessions";
 import { sendEmail } from "@/lib/email/send";
@@ -55,10 +55,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Current password is required." }, { status: 400 });
     }
 
-    const dbUser = await db.user.findUnique({
+    // RLS slice A — one short tenant transaction per step. bcrypt, the sole-OWNER
+    // preflight (its own authority: it must see co-members' Spaces) and `sendEmail`
+    // all sit between them, so none of them is ever inside one.
+    const dbUser = await withTenantDb(user.id, (tx) => tx.user.findUnique({
       where:  { id: user.id },
       select: { passwordHash: true, email: true, deletionScheduledAt: true },
-    });
+    }));
     if (!dbUser?.passwordHash) {
       return NextResponse.json({ error: "Account has no password set." }, { status: 400 });
     }
@@ -93,7 +96,7 @@ export async function POST(req: NextRequest) {
     const now         = new Date();
     const scheduledAt = new Date(now.getTime() + GRACE_MS);
 
-    await db.user.update({
+    await withTenantDb(user.id, (tx) => tx.user.update({
       where: { id: user.id },
       data:  {
         deletionRequestedAt: now,
@@ -101,7 +104,7 @@ export async function POST(req: NextRequest) {
         // Reuse the S4 lockout: pending-deletion IS deactivation + a timer.
         deactivatedAt:       now,
       },
-    });
+    }));
 
     // Revoke EVERY session, including the current one — the caller is signed
     // out everywhere the moment this returns; recovery is only via the
@@ -122,7 +125,7 @@ export async function POST(req: NextRequest) {
       console.error("[user/delete] security-alert email failed to send:", emailResult.error);
     }
 
-    const auditRow = await db.auditLog.create({
+    const auditRow = await withTenantDb(user.id, (tx) => tx.auditLog.create({
       data: {
         userId:   user.id,
         action:   AuditAction.ACCOUNT_DELETION_REQUESTED,
@@ -133,7 +136,7 @@ export async function POST(req: NextRequest) {
           emailStatus:         emailResult.status,
         },
       },
-    });
+    }));
 
     // OPS-3 S5 Wave 1 — bell mirror, seen if the user signs back in to cancel.
     // scheduledFor is display payload per the registry pointer contract.

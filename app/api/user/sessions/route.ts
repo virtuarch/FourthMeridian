@@ -6,7 +6,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { AuditAction } from "@/lib/audit-actions";
 import { parseUserAgent } from "@/lib/ua-parser";
 import { requireUser, requireFreshUser } from "@/lib/session";
@@ -19,11 +19,13 @@ export async function GET() {
   const userId       = user.id;
   const currentToken = user.sessionToken ?? null;
 
-  const sessions = await db.userSession.findMany({
+  // RLS slice A — fm_app's UserSession policy is `userId = me`, so the predicate
+  // below and the database now agree about whose devices these are.
+  const sessions = await withTenantDb(userId, (tx) => tx.userSession.findMany({
     where:   { userId },
     orderBy: { createdAt: "desc" },
     take:    20,
-  });
+  }));
 
   return NextResponse.json({
     sessions: sessions.map((s) => ({
@@ -46,13 +48,16 @@ export async function DELETE() {
   // password-change hardening in OPS-2 S2).
   const count = await revokeOtherUserSessions(userId, currentToken);
 
-  await db.auditLog.create({
+  // The revocation above runs through the shared sessions helper, which holds its
+  // own client and is not converted in this slice; the audit row is this route's own
+  // write and runs as the user.
+  await withTenantDb(userId, (tx) => tx.auditLog.create({
     data: {
       userId,
       action:   AuditAction.SESSION_REVOKED,
       metadata: { revokedAll: true, exceptCurrent: true, count },
     },
-  });
+  }));
 
   return NextResponse.json({ success: true, count });
 }
