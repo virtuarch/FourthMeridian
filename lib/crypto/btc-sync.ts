@@ -70,6 +70,9 @@ import {
 import { captureWalletPosition } from "@/lib/crypto/wallet-position-capture";
 import { BTC_ASSET } from "@/lib/investments/crypto-instrument";
 import { readCryptoUsdWindows } from "@/lib/crypto/crypto-price-window";
+import {
+  ensureCryptoCloseCoverage, coverageCanValue, type CryptoCloseCoverage,
+} from "@/lib/crypto/crypto-close-coverage";
 import { todayUTCISO } from "@/lib/time/clock";
 import { BTC_NATIVE, ledgerEpsilonFor } from "@/lib/crypto/native-asset";
 import { reconcileWalletLedger, type LedgerReconciliation } from "@/lib/crypto/ledger-completeness.core";
@@ -124,6 +127,13 @@ export interface BtcWalletSyncResult {
    * rewritten; the read model shows the position unpriced, not stale-priced.
    */
   valuation?: BtcValuationOutcome;
+  /**
+   * CRYPTO-LATCH-1 — what RAW_CLOSE archive maintenance did, when the canonical
+   * close was missing and the default price authority repaired it. Absent when
+   * the archive was already covered (the overwhelmingly common case), so its
+   * PRESENCE means "the archive was short and this run acted on it".
+   */
+  closeCoverage?: CryptoCloseCoverage;
 }
 
 export type BtcValuationOutcome =
@@ -151,8 +161,22 @@ export interface BtcSyncDeps {
   fetchImpl?: FetchFn;
   /** Override the balance fetch — returns confirmed satoshis for an address. */
   balanceFetcher?: (address: string) => Promise<number>;
-  /** Override the BTC→USD read (offline tests). Default: the canonical archived close. */
+  /**
+   * Override the BTC→USD read (offline tests). Default: the canonical archived
+   * close, WITH its own archive maintenance (`canonicalBtcCloseUsdMaintained`).
+   *
+   * CRYPTO-LATCH-1 — an injected fetcher REPLACES the canonical close authority
+   * wholesale, so it owns its own coverage and no maintenance runs behind it.
+   * That is why every pre-existing test that injects a failing `priceFetcher`
+   * still observes a plain UNAVAILABLE and never reaches the network.
+   */
   priceFetcher?: () => Promise<number>;
+  /**
+   * Override the RAW_CLOSE archive maintenance the default price authority
+   * performs on a miss (offline tests). Only consulted when `priceFetcher` is
+   * NOT injected — see above.
+   */
+  closeCoverage?: (asOfISO: string) => Promise<CryptoCloseCoverage>;
   /** Override the confirmed-transactions fetch (offline tests). */
   txFetcher?: (address: string) => Promise<RawBtcTx[]>;
   /** Override the xpub batch address-stats lookup (offline tests). */
@@ -666,6 +690,57 @@ async function canonicalBtcCloseUsd(now: Date = new Date()): Promise<number> {
   return close;
 }
 
+/**
+ * CRYPTO-LATCH-1 — THE CANONICAL CLOSE AUTHORITY, WITH ITS OWN MAINTENANCE.
+ *
+ * `canonicalBtcCloseUsd` above is a pure archive read, and a pure archive read
+ * is how the latch happened: a miss returned UNAVAILABLE, UNAVAILABLE closed
+ * `outcomeRevalued`, and `outcomeRevalued` gated the ONLY code that could have
+ * refilled the archive. Every BTC refresh from 2026-09-28 to 10-01 refused in
+ * 29–36 ms without one network call, and nothing a BTC-only holder could press
+ * would ever fix it.
+ *
+ * So the authority now owns the prerequisite it depends on: on a miss it
+ * repairs exactly the walk-back window and asks ITS OWN READER again. Not a
+ * fallback to a different price — the same basis, the same reader, the same
+ * tolerance, with the archive made able to answer first.
+ *
+ * ORDER MATTERS AND IS DELIBERATE: read, then repair, then re-read. A covered
+ * archive never issues a vendor request, so the happy path is unchanged and
+ * costs nothing — which is what makes this safe on every refresh.
+ *
+ * `onCoverage` reports what maintenance did so the caller can account for it as
+ * its own stage with its own clock. A repair that runs invisibly is the same
+ * mistake as a latch that fails invisibly.
+ */
+async function canonicalBtcCloseUsdMaintained(
+  onCoverage: (c: CryptoCloseCoverage) => void,
+  deps: Pick<BtcSyncDeps, "closeCoverage">,
+  now: Date = new Date(),
+): Promise<number> {
+  try {
+    return await canonicalBtcCloseUsd(now);
+  } catch (firstMiss) {
+    const asOfISO = todayUTCISO(now);
+    const ensure = deps.closeCoverage ?? ((iso: string) => ensureCryptoCloseCoverage(BTC_ASSET, iso));
+    const coverage = await ensure(asOfISO);
+    onCoverage(coverage);
+    if (!coverageCanValue(coverage)) {
+      // The archive still cannot answer. Report the MAINTENANCE reason, which
+      // says what was attempted and what the vendor returned — strictly more
+      // than the bare archive miss, which only ever said "no close".
+      throw new Error(
+        `no canonical BTC close in the price archive on or before ${asOfISO} ` +
+        `(archive maintenance ${coverage.status}${coverage.reason ? `: ${coverage.reason}` : ""})`,
+      );
+    }
+    // Repaired — re-read through the SAME reader. Never trust `inserted`: a
+    // vendor can write rows that still do not reach `asOfISO`.
+    void firstMiss;
+    return await canonicalBtcCloseUsd(now);
+  }
+}
+
 export async function syncBtcWallet(
   accountId: string,
   deps: BtcSyncDeps = {},
@@ -725,7 +800,12 @@ export async function syncBtcWallet(
     return { accountId, ok: false, stage: "load", reason: "no addresses to sync" };
   }
 
-  const priceFetcher = deps.priceFetcher ?? canonicalBtcCloseUsd;
+  // CRYPTO-LATCH-1 — the default authority carries its own archive maintenance.
+  // `closeCoverage` is captured here so the outcome travels on the result and
+  // can be recorded as its own stage.
+  let closeCoverage: CryptoCloseCoverage | undefined;
+  const priceFetcher = deps.priceFetcher
+    ?? (() => canonicalBtcCloseUsdMaintained((c) => { closeCoverage = c; }, deps));
 
   // 1) Confirmed balance across every KNOWN address — batch (one request per 50)
   //    for xpub, per-address for single-address. For a partially-discovered xpub
@@ -1010,6 +1090,10 @@ export async function syncBtcWallet(
     nativeBalance,
     ...(balanceUsd !== null && priceUsd !== null ? { balanceUsd, priceUsd } : {}),
     valuation,
+    // CRYPTO-LATCH-1 — present only when the archive was short and maintenance
+    // acted, so the dispatch can record a PRICE_ARCHIVE stage for exactly those
+    // runs and stay silent on the ones where nothing was needed.
+    ...(closeCoverage ? { closeCoverage } : {}),
     ledgerComplete: ledger.complete,
     ledgerResidual: ledger.residual,
     transactionImport,

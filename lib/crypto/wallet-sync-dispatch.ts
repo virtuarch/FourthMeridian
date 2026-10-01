@@ -52,6 +52,7 @@ import { BNB_NETWORK, AVAX_NETWORK } from "@/lib/crypto/evm-networks";
 const BNB_CHAIN = BNB_NETWORK.chain;
 const AVAX_CHAIN = AVAX_NETWORK.chain;
 import { refreshWalletHistory, type WalletHistoryRefresh } from "./wallet-history-refresh";
+import { coverageCanValue, type CryptoCloseCoverage } from "./crypto-close-coverage";
 import { recordWalletSyncRefusal } from "@/lib/accounts/wallet-connection";
 // PLATFORM OPS OBSERVABILITY — every wallet sync is now an EXECUTION in the one
 // refresh ledger (RefreshExecution), exactly like a Plaid refresh: a start row,
@@ -201,7 +202,39 @@ export interface WalletSyncOutcome {
     | { status: "REFRESHED"; quotedAt: string; changedInstrumentIds: string[] }
     | { status: "UNAVAILABLE"; reason: string }
     | { status: "NOT_CONFIGURED" };
+  /**
+   * CRYPTO-LATCH-2 — HOW THIS CHAIN IS VALUED, STATED RATHER THAN INFERRED.
+   *
+   * Stamped from the registry so `outcomeRevalued` can be a pure predicate that
+   * does not have to guess what an ABSENT `valuation` field means. Before this,
+   * it guessed — and guessed wrong-but-useful (see `outcomeRevalued`).
+   */
+  valuationModel: WalletValuationModel;
+  /**
+   * CRYPTO-LATCH-1 — RAW_CLOSE archive maintenance, when the archive was short
+   * and this run repaired it. Absent when nothing was needed.
+   */
+  closeCoverage?: CryptoCloseCoverage;
 }
+
+/**
+ * WHERE A CHAIN'S VALUATION HAPPENS — and therefore what "this run produced new
+ * valuation evidence" means for it.
+ *
+ * ADAPTER_VALUED    the adapter itself prices the quantity it just read and
+ *                   reports a `valuation` outcome, because it writes a stored
+ *                   USD figure that can be stale independently of the quantity.
+ *                   Today: BTC (the legacy `balance` column).
+ * READ_TIME_VALUED  the adapter stores QUANTITY ONLY and the value is derived
+ *                   whenever someone reads it, from the spine and the dated
+ *                   archive. There is no adapter valuation to succeed or fail,
+ *                   so a successful quantity read IS new valuation evidence.
+ *                   Today: ETH, SOL, BNB, AVAX.
+ *
+ * The distinction already existed in the code; it was simply never written
+ * down, which is what let `outcomeRevalued` depend on an accident.
+ */
+export type WalletValuationModel = "ADAPTER_VALUED" | "READ_TIME_VALUED";
 
 interface ChainAdapter {
   support: WalletChainSupport;
@@ -238,10 +271,17 @@ interface ChainAdapter {
    * statements to be recorded as false.
    */
   currentValueAuthority: "SPINE" | "LEGACY_COLUMN";
+  /**
+   * CRYPTO-LATCH-2 — declared, not inferred. See `WalletValuationModel`. This is
+   * the field that makes `outcomeRevalued` able to fail CLOSED on a chain that
+   * owes a valuation and did not produce one.
+   */
+  valuationModel: WalletValuationModel;
   sync(accountId: string): Promise<{
     ok: boolean; syncStatus?: "synced" | "pending"; stage?: string; reason?: string;
     transactionImport?: BtcTransactionImportOutcome;
     valuation?: BtcValuationOutcome;
+    closeCoverage?: CryptoCloseCoverage;
   }>;
 }
 
@@ -261,6 +301,7 @@ const ADAPTERS: Readonly<Record<string, ChainAdapter>> = {
     netWorthParticipation: "LEGACY_BALANCE_COLUMN",
     historicalQuantityAuthority: "SPINE",
     currentValueAuthority: "SPINE",
+    valuationModel: "ADAPTER_VALUED",
     sync: (id) => syncBtcWallet(id),
   },
   [ETH_CHAIN]: {
@@ -278,6 +319,7 @@ const ADAPTERS: Readonly<Record<string, ChainAdapter>> = {
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
     historicalQuantityAuthority: "SPINE",
     currentValueAuthority: "SPINE",
+    valuationModel: "READ_TIME_VALUED",
     sync: (id) => syncEthWallet(id),
   },
   // W-M3 — EVM networks whose native balance is acquirable AND whose canonical
@@ -294,6 +336,7 @@ const ADAPTERS: Readonly<Record<string, ChainAdapter>> = {
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
     historicalQuantityAuthority: "SPINE",
     currentValueAuthority: "SPINE",
+    valuationModel: "READ_TIME_VALUED",
     sync: (id) => syncEvmWallet(id, BNB_NETWORK),
   },
   [AVAX_CHAIN]: {
@@ -301,6 +344,7 @@ const ADAPTERS: Readonly<Record<string, ChainAdapter>> = {
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
     historicalQuantityAuthority: "SPINE",
     currentValueAuthority: "SPINE",
+    valuationModel: "READ_TIME_VALUED",
     sync: (id) => syncEvmWallet(id, AVAX_NETWORK),
   },
   [SOL_CHAIN]: {
@@ -319,6 +363,7 @@ const ADAPTERS: Readonly<Record<string, ChainAdapter>> = {
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
     historicalQuantityAuthority: "SPINE",
     currentValueAuthority: "SPINE",
+    valuationModel: "READ_TIME_VALUED",
     sync: (id) => syncSolWallet(id),
   },
 };
@@ -424,9 +469,38 @@ export function chainSupportsHistory(chain: string | null | undefined): boolean 
  * fresh quantity to the spine but left the legacy USD pair and clock untouched;
  * regenerating from it would re-publish the last priced figure as today's. One
  * predicate, used by the manual route and the scheduled sweep alike.
+ *
+ * ── CRYPTO-LATCH-2 — the accident this removes ──────────────────────────────
+ * This used to read `outcome.valuation?.status !== "UNAVAILABLE"`, so a chain
+ * that reports NO valuation at all satisfied it through `undefined !==
+ * "UNAVAILABLE"`. That was accidental, and on 2026-10-01 it was LOAD-BEARING:
+ * it was the only reason a Solana sync regenerated wealth history, which was
+ * the only thing that refilled the RAW_CLOSE archive, which was the only way
+ * Bitcoin's valuation ever recovered. A BTC-only holder had no such accident
+ * and stayed latched forever.
+ *
+ * Two things were wrong with depending on it. It made a correct-looking tidy-up
+ * ("only regenerate when we actually revalued") silently weld the latch shut,
+ * and it made the predicate answer "yes, revalued" for a run that valued
+ * nothing. The meaning is now DECLARED per chain (`valuationModel`), and the
+ * archive maintenance that Bitcoin's recovery depends on no longer rides on
+ * another chain's sync at all (CRYPTO-LATCH-1), so nothing load-bearing is
+ * left resting on an absent field.
  */
-export function outcomeRevalued(outcome: Pick<WalletSyncOutcome, "ok" | "valuation">): boolean {
-  return outcome.ok && outcome.valuation?.status !== "UNAVAILABLE";
+export function outcomeRevalued(
+  outcome: Pick<WalletSyncOutcome, "ok" | "valuation" | "valuationModel">,
+): boolean {
+  if (!outcome.ok) return false;
+  switch (outcome.valuationModel) {
+    // The adapter OWES a valuation, so only a stated PRICED counts. An absent
+    // valuation on a chain that should have produced one is a defect, and this
+    // now fails CLOSED on it instead of reading it as success.
+    case "ADAPTER_VALUED":   return outcome.valuation?.status === "PRICED";
+    // The value is derived at READ time from the spine and the dated archive, so
+    // there is no adapter valuation to succeed or fail and a successful quantity
+    // read genuinely IS new valuation evidence. Stated, not inferred.
+    case "READ_TIME_VALUED": return true;
+  }
 }
 
 /** Did this run CHANGE the chain's stored current quote? */
@@ -467,6 +541,9 @@ export async function syncWalletByChain(
         `Balance sync is available for ${SYNCABLE_CHAINS.join(", ")}. ` +
         "The wallet stays recorded and visible; only its balance is unavailable.",
       netWorthParticipation: "NONE",
+      // An unsupported chain has no valuation model of its own; READ_TIME_VALUED
+      // is inert here because `ok:false` already short-circuits the predicate.
+      valuationModel: "READ_TIME_VALUED",
     };
   }
 
@@ -487,6 +564,19 @@ export async function syncWalletByChain(
     // full timeout inside a WALLET_SYNC recorded as a clean SUCCEEDED, and the
     // only trace was a console warning.
     // VALUATION likewise: the quantity is current whether or not a close exists.
+    // CRYPTO-LATCH-1 — ARCHIVE MAINTENANCE IS ITS OWN STAGE, recorded only on
+    // the runs where the archive was short. It ran INSIDE the adapter's price
+    // authority (it is a prerequisite of valuation, not a consequence of it), so
+    // it is recorded with the adapter's own clock, before VALUATION, in the
+    // order the work actually happened.
+    const coverage = result.closeCoverage;
+    if (coverage) {
+      const facts = { recordsWritten: coverage.inserted, recordsChanged: coverage.inserted, coveredAccountIds: [accountId] };
+      const measured = { startedAt: coverage.startedAt ?? new Date(), durationMs: coverage.durationMs ?? 0 };
+      recorder.recordMeasured("PRICE_ARCHIVE", "PROVIDER", coverageCanValue(coverage)
+        ? { ok: true, ...measured, facts }
+        : { ok: false, ...measured, err: new Error(coverage.reason ?? `price archive ${coverage.status}`) });
+    }
     const valuation = result.valuation;
     if (valuation) {
       recorder.recordMeasured("VALUATION", "DERIVED", valuation.status === "PRICED"
@@ -557,6 +647,10 @@ export async function syncWalletByChain(
       // normally does — reporting the chain's usual participation on a run that
       // wrote nothing would overstate what the row now contains.
       netWorthParticipation: result.ok ? adapter.netWorthParticipation : "NONE",
+      // CRYPTO-LATCH-2 — declared by the registry, so `outcomeRevalued` never
+      // has to infer what an absent `valuation` field means.
+      valuationModel: adapter.valuationModel,
+      ...(coverage ? { closeCoverage: coverage } : {}),
       // W6f — so the caller can bound its snapshot regeneration to the window
       // whose evidence actually moved, instead of guessing or rebuilding all.
       historyRefresh: historyRefresh ?? undefined,
@@ -586,6 +680,7 @@ export async function syncWalletByChain(
       accountId, chain: key, support: adapter.support, ok: false,
       stage: "adapter-error", reason, errorCode: "ADAPTER_ERROR",
       netWorthParticipation: "NONE",
+      valuationModel: adapter.valuationModel,
     };
   }
   };

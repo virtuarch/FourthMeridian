@@ -143,7 +143,17 @@ export type RefreshEndpoint =
   // The chain's native-asset CURRENT quote (lib/prices/current-quotes), fetched
   // after a successful wallet read. PROVIDER: a failure makes the run PARTIAL
   // and the value falls back to the last close, labelled as such.
-  | "CURRENT_QUOTE";
+  | "CURRENT_QUOTE"
+  // CRYPTO-LATCH-1 — RAW_CLOSE archive maintenance performed as a PREREQUISITE
+  // of valuation, recorded only on the runs where the archive was actually
+  // short. PROVIDER (it acquires real vendor rows); a failure makes the run
+  // PARTIAL and is never FAILED on its own, exactly like VALUATION.
+  //
+  // It exists as its own stage because the incident of 2026-10-01 was invisible:
+  // the archive had been unable to value Bitcoin for four days and the only
+  // trace was a 36 ms VALUATION failure that said "no close" without saying
+  // that nothing had tried to get one.
+  | "PRICE_ARCHIVE";
 
 export type RefreshStageKind = "PROVIDER" | "DERIVED";
 

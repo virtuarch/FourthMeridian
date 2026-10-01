@@ -26,6 +26,13 @@
  * sweep: a declared widening of the price provider's reach is noticed where the
  * affected accounts are already being fanned out over.
  *
+ * CLOSE-ARCHIVE MAINTENANCE (CRYPTO-LATCH-1) also runs on the main slot, also
+ * before the sweep, and for a stronger reason than convenience: the RAW_CLOSE
+ * archive is a PREREQUISITE of crypto valuation, and making it a consequence of
+ * valuation instead is what latched Bitcoin unpriced for four days in the
+ * 2026-10-01 incident. Maintained for HELD assets only, bounded to the
+ * valuation's own walk-back window, idempotent, and never fatal.
+ *
  * Idempotent and safe to re-run: each adapter dedupes and never throws, and a
  * failed wallet is counted, not fatal.
  */
@@ -38,6 +45,10 @@ import {
   wealthRegenerationEnabled,
 } from "@/lib/snapshots/regenerate-history";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
+import {
+  maintainHeldCryptoCloseCoverage, coverageCanValue, type CryptoCloseCoverage,
+} from "@/lib/crypto/crypto-close-coverage";
+import { todayUTCISO } from "@/lib/time/clock";
 import { resolveHistoricalWorkWindow } from "@/lib/snapshots/historical-work-window";
 import { reconcileProviderCapability, type CapabilityWideningPlan } from "@/lib/prices/capability-reconciliation";
 import { BTC_PRICE_SOURCE } from "@/lib/crypto/btc-price";
@@ -48,6 +59,11 @@ export interface SyncCryptoResult extends WalletRefreshResult {
   snapshotSpaces: number;
   /** Spaces whose wealth history was regenerated this run (0 when the flag is off). */
   wealthRegenSpaces: number;
+  /**
+   * CRYPTO-LATCH-1 — per-asset RAW_CLOSE archive maintenance performed BEFORE
+   * the sweep. Empty on a continuation run (the main slot owns it).
+   */
+  closeCoverage: CryptoCloseCoverage[];
 }
 
 export async function syncCrypto(options: {
@@ -82,6 +98,42 @@ export async function syncCrypto(options: {
     } catch (err) {
       // Non-fatal by construction: a capability check must never fail the sweep.
       console.warn("[sync-crypto] capability reconciliation failed (non-fatal):", err instanceof Error ? err.message : err);
+    }
+  }
+
+  // ── CRYPTO-LATCH-1 — PRICE ARCHIVE MAINTENANCE, BEFORE THE SWEEP ──────────
+  //
+  // The RAW_CLOSE archive is a PREREQUISITE of crypto valuation, so it is
+  // maintained here, on its own, ahead of any wallet read — not downstream of
+  // one having succeeded.
+  //
+  // THE INCIDENT THIS CLOSES (2026-10-01): the only code that refreshed this
+  // archive was `backfillHeldInstrumentPrices`, reached from the wealth-history
+  // regeneration below, which is gated on `result.syncedAccountIds` — populated
+  // only for runs `outcomeRevalued` accepts, which EXCLUDES an unpriced BTC run.
+  // So a stale archive made BTC unpriced, and unpriced BTC skipped the only step
+  // that could have refilled the archive. The sweep could not break its own
+  // latch; on 2026-10-01 only a Solana wallet's success did, and a BTC-only
+  // holder would have stayed unpriced indefinitely.
+  //
+  // Main slot only, like the capability check: the continuation exists to finish
+  // deferred WALLET work, and re-walking the archive on it would double the
+  // vendor cost for an archive the main slot has already mended this cycle.
+  // Non-fatal by construction.
+  let closeCoverage: CryptoCloseCoverage[] = [];
+  if (!continuation) {
+    try {
+      closeCoverage = await maintainHeldCryptoCloseCoverage(todayUTCISO(runStartedAt));
+      for (const c of closeCoverage) {
+        const line =
+          `[sync-crypto] close archive ${c.assetKey} ${c.status} ` +
+          `(${c.fromISO}..${c.toISO}, newest ${c.closeDateISO ?? "none"}` +
+          `${c.inserted > 0 ? `, +${c.inserted} row(s)` : ""})`;
+        if (coverageCanValue(c)) console.log(line);
+        else console.warn(`${line} — ${c.reason ?? "no reason given"}`);
+      }
+    } catch (err) {
+      console.warn("[sync-crypto] close-archive maintenance failed (non-fatal):", err instanceof Error ? err.message : err);
     }
   }
 
@@ -138,5 +190,5 @@ export async function syncCrypto(options: {
     }
   }
 
-  return { ...result, continuation, snapshotSpaces, wealthRegenSpaces };
+  return { ...result, continuation, snapshotSpaces, wealthRegenSpaces, closeCoverage };
 }

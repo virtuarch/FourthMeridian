@@ -22,9 +22,11 @@ const NOW = new Date('2026-09-13T12:00:00.000Z');
 const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000);
 const wallet = (accountId: string, chain: string, lastSuccessAt: Date | null): ScheduledWalletCandidate => ({ accountId, chain, lastSuccessAt });
 const ok = (accountId: string, chain: string): WalletSyncOutcome =>
-  ({ accountId, chain, support: 'HISTORY_SUPPORTED', ok: true, syncStatus: 'synced', netWorthParticipation: 'NONE' });
+  ({ accountId, chain, support: 'HISTORY_SUPPORTED', ok: true, syncStatus: 'synced', netWorthParticipation: 'NONE',
+    valuationModel: 'READ_TIME_VALUED' });
 const fail = (accountId: string, chain: string, errorCode: WalletSyncOutcome['errorCode']): WalletSyncOutcome =>
-  ({ accountId, chain, support: 'HISTORY_SUPPORTED', ok: false, stage: 'balance', errorCode, netWorthParticipation: 'NONE' });
+  ({ accountId, chain, support: 'HISTORY_SUPPORTED', ok: false, stage: 'balance', errorCode, netWorthParticipation: 'NONE',
+    valuationModel: 'READ_TIME_VALUED' });
 
 function harness(wallets: ScheduledWalletCandidate[], over: Partial<WalletRefreshDeps> & { stepMs?: number } = {}) {
   let t = NOW.getTime();
@@ -85,7 +87,7 @@ async function main() {
     check('I. …and that registry holds BTC, ETH and SOL', ['BTC', 'ETH', 'SOL'].every((c) => SYNCABLE_CHAINS.includes(c)));
     const h = harness([wallet('ada', 'ADA', null)], {
       sync: async (id) => ({ accountId: id, chain: 'ADA', support: 'UNSUPPORTED', ok: false, stage: 'unsupported-chain',
-        errorCode: 'CHAIN_UNSUPPORTED', netWorthParticipation: 'NONE' }),
+        errorCode: 'CHAIN_UNSUPPORTED', netWorthParticipation: 'NONE', valuationModel: 'READ_TIME_VALUED' }),
     });
     const r = await h.run();
     check('I. an unsupported chain reaching the sync is a counted refusal, not a success', r.failed === 1 && r.failureStages.CHAIN_UNSUPPORTED === 1);

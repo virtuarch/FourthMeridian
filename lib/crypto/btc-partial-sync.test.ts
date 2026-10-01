@@ -583,10 +583,20 @@ async function main() {
   {
     const { outcomeRevalued } = await import("./wallet-sync-dispatch");
     const { refreshScheduledWallets } = await import("./wallet-refresh");
-    check("gate: ok + PRICED ⇒ revalued", outcomeRevalued({ ok: true, valuation: { status: "PRICED" } }));
-    check("gate: ok + UNAVAILABLE ⇒ NOT revalued", !outcomeRevalued({ ok: true, valuation: { status: "UNAVAILABLE", reason: "no close" } }));
-    check("gate: failed ⇒ NOT revalued", !outcomeRevalued({ ok: false }));
-    check("gate: a chain with no valuation field (ETH/SOL) ⇒ revalued as before", outcomeRevalued({ ok: true }));
+    check("gate: ok + PRICED ⇒ revalued", outcomeRevalued({ ok: true, valuationModel: "ADAPTER_VALUED", valuation: { status: "PRICED" } }));
+    check("gate: ok + UNAVAILABLE ⇒ NOT revalued", !outcomeRevalued({ ok: true, valuationModel: "ADAPTER_VALUED", valuation: { status: "UNAVAILABLE", reason: "no close" } }));
+    check("gate: failed ⇒ NOT revalued", !outcomeRevalued({ ok: false, valuationModel: "ADAPTER_VALUED" }));
+    // ── CRYPTO-LATCH-2 — THE ACCIDENT IS GONE ─────────────────────────────
+    // This block used to assert `outcomeRevalued({ ok: true })` was TRUE, i.e.
+    // that an ABSENT valuation counted as revalued via `undefined !==
+    // "UNAVAILABLE"`. That accident was load-bearing on 2026-10-01: it was the
+    // only reason a Solana sync regenerated wealth history, which was the only
+    // thing that refilled the RAW_CLOSE archive, which was the only way
+    // Bitcoin's valuation ever recovered. The meaning is now DECLARED.
+    check("gate: READ_TIME_VALUED (ETH/SOL) ⇒ revalued, BY DECLARATION not by an absent field",
+      outcomeRevalued({ ok: true, valuationModel: "READ_TIME_VALUED" }));
+    check("gate: ADAPTER_VALUED with NO valuation ⇒ NOT revalued (fails CLOSED; this was accidentally true before)",
+      !outcomeRevalued({ ok: true, valuationModel: "ADAPTER_VALUED" }));
     let t = 0;
     const sweep = await refreshScheduledWallets({ now: new Date("2026-09-21T12:00:00Z"), deps: {
       listWallets: async () => [
@@ -594,6 +604,7 @@ async function main() {
         { accountId: "unpriced", chain: "BTC", lastSuccessAt: null },
       ],
       sync: async (accountId) => ({ accountId, chain: "BTC", support: "HISTORY_SUPPORTED", ok: true, netWorthParticipation: "LEGACY_BALANCE_COLUMN",
+        valuationModel: "ADAPTER_VALUED",
         valuation: accountId === "unpriced" ? { status: "UNAVAILABLE", reason: "no close" } : { status: "PRICED" } }),
       policy: async () => ({ sourceKind: "WALLET", cadence: "EVERY_6H", expectedEveryHours: 6, graceHours: 1, overdueAfterHours: 12, origin: "DEFAULT" } as never),
       admit: async () => ({ decision: "ADMIT" }),

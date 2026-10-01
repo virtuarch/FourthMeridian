@@ -62,6 +62,19 @@ type Client = PrismaClient | Prisma.TransactionClient;
 const DEFAULT_MAX_STALE_DAYS = 7;
 
 /**
+ * THE crypto close walk-back tolerance, exported so that the valuation's
+ * tolerance and the ARCHIVE MAINTENANCE that keeps it satisfiable are the same
+ * number (lib/crypto/crypto-close-coverage.ts).
+ *
+ * CRYPTO-LATCH-1 — they must not be two constants. The repair window is the
+ * walk-back window: if maintenance acquired a narrower span than the valuation
+ * inspects it could "succeed" and leave the valuation still refusing, and if it
+ * acquired a wider one it would do unbounded work that cannot change the
+ * answer. One constant makes both impossible by construction.
+ */
+export const CRYPTO_CLOSE_MAX_STALE_DAYS = DEFAULT_MAX_STALE_DAYS;
+
+/**
  * Answers "the USD close for this asset on this date", keyed by canonical
  * assetKey. Null means NO PRICE REACHED THIS DAY — never zero, never another
  * asset's.

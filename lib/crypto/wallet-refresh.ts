@@ -232,7 +232,11 @@ export async function refreshScheduledWallets(options: {
     } catch (err) {
       // syncWalletByChain never throws; an injected or future sync might.
       outcome = { accountId: w.accountId, chain: w.chain, support: 'UNSUPPORTED', ok: false, stage: 'adapter-error',
-        reason: err instanceof Error ? err.message : String(err), netWorthParticipation: 'NONE' };
+        reason: err instanceof Error ? err.message : String(err), netWorthParticipation: 'NONE',
+        // CRYPTO-LATCH-2 — inert on a thrown adapter (`ok:false` short-circuits
+        // `outcomeRevalued`), but the field is required so the predicate can
+        // never fall back to inferring it.
+        valuationModel: 'READ_TIME_VALUED' };
     }
     const ms = deps.clock() - t0;
     const tally = (result.byChain[w.chain] ??= { attempted: 0, succeeded: 0, failed: 0, durationMs: 0 });
