@@ -30,19 +30,19 @@ const GOOD = {
   DATABASE_URL_APP:    "postgresql://fm_app:x@h:5432/fintracker_x",
   DATABASE_URL_AUTH:   "postgresql://fm_auth:x@h:5432/fintracker_x",
   DATABASE_URL_SYSTEM: "postgresql://fm_system:x@h:5432/fintracker_x",
-} as NodeJS.ProcessEnv;
+} as unknown as NodeJS.ProcessEnv;
 
 // ── the flag is opt-in and exact ─────────────────────────────────────────────
-check("strict is OFF when unset", !strictRlsEnabled({}));
+check("strict is OFF when unset", !strictRlsEnabled({} as NodeJS.ProcessEnv));
 check("strict is OFF for 'True', '1', 'yes' — only the exact string arms it",
-  !strictRlsEnabled({ FM_RLS_STRICT: "True" }) &&
-  !strictRlsEnabled({ FM_RLS_STRICT: "1" }) &&
-  !strictRlsEnabled({ FM_RLS_STRICT: "yes" }));
-check("strict is ON for exactly 'true'", strictRlsEnabled({ FM_RLS_STRICT: "true" }));
+  !strictRlsEnabled({ FM_RLS_STRICT: "True" } as unknown as NodeJS.ProcessEnv) &&
+  !strictRlsEnabled({ FM_RLS_STRICT: "1" } as unknown as NodeJS.ProcessEnv) &&
+  !strictRlsEnabled({ FM_RLS_STRICT: "yes" } as unknown as NodeJS.ProcessEnv));
+check("strict is ON for exactly 'true'", strictRlsEnabled({ FM_RLS_STRICT: "true" } as unknown as NodeJS.ProcessEnv));
 
 // ── fallback survives only while strict is OFF ───────────────────────────────
 check("with strict OFF, a missing role URL is NOT a problem (adoption fallback)",
-  strictConfigProblems({}).length === 0);
+  strictConfigProblems({} as NodeJS.ProcessEnv).length === 0);
 
 // ── THE CENTRAL CASE ─────────────────────────────────────────────────────────
 {
@@ -102,22 +102,22 @@ void (async () => {
   });
 
   const good = await verifyAuthority("DATABASE_URL_APP", "fm_app",
-    fake({ who: "fm_app", super: false, bypass: false, owned: 0n }));
+    fake({ who: "fm_app", super: false, bypass: false, owned: BigInt(0) }));
   check("a correct fm_app connection verifies", good.ok, JSON.stringify(good.problems));
 
   const impostor = await verifyAuthority("DATABASE_URL_APP", "fm_app",
-    fake({ who: "postgres", super: false, bypass: true, owned: 56n }));
+    fake({ who: "postgres", super: false, bypass: true, owned: BigInt(56) }));
   check("a URL labelled fm_app that authenticates as postgres is CAUGHT",
     !impostor.ok && impostor.problems.length === 3,
     JSON.stringify(impostor.problems));
 
   const bypass = await verifyAuthority("DATABASE_URL_APP", "fm_app",
-    fake({ who: "fm_app", super: false, bypass: true, owned: 0n }));
+    fake({ who: "fm_app", super: false, bypass: true, owned: BigInt(0) }));
   check("fm_app with BYPASSRLS is CAUGHT (the policies would be inert)",
     !bypass.ok && /BYPASSRLS/.test(bypass.problems.join()));
 
   const owner = await verifyAuthority("DATABASE_URL_APP", "fm_app",
-    fake({ who: "fm_app", super: false, bypass: false, owned: 41n }));
+    fake({ who: "fm_app", super: false, bypass: false, owned: BigInt(41) }));
   check("fm_app owning protected tables is CAUGHT (owners are exempt without FORCE)",
     !owner.ok && /OWNS 41/.test(owner.problems.join()));
 
