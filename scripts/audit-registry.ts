@@ -300,6 +300,17 @@ export const AUDITS: readonly AuditEntry[] = [
           "(--only-version=<N> --apply --exclude-deleted); dry-run by default, idempotent",
   },
   {
+    name: "repair-crypto-close-gaps", tier: "OPERATIONAL", needsDb: true,
+    what: "finds — and with --apply closes — missing RAW_CLOSE days for HELD crypto assets " +
+          "(CRYPTO-LATCH-3, incident 2026-10-01, which left 2026-09-21..2026-09-29 absent for " +
+          "BTC/ETH/SOL). DRY RUN by default: without --apply every statement is a SELECT. " +
+          "Repair delegates to the ONE acquisition path (backfillPricesForInstruments), so it is " +
+          "missing-only, idempotent, insert-only, closed-dates-only and never interpolates; it " +
+          "re-reads afterwards and reports days the vendor still does not serve. The latch repair " +
+          "in the refresh path restores only the valuation's 7-day walk-back by design, so closing " +
+          "an older hole is this tool's job — docs/plans/CRYPTO-REFRESH-REPAIR-OPERATOR-PROCEDURE.md",
+  },
+  {
     name: "backfill-fx-rates", tier: "OPERATIONAL", needsDb: true,
     what: "historical FX rate backfill + archive spot-check (MC1 P1 S3); " +
           "docs/operations/background-jobs.md names it as the FX-gap self-heal path",
