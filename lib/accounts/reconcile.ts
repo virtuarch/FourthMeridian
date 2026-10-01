@@ -48,7 +48,7 @@
  */
 
 import { db } from "@/lib/db";
-import { AccountType, ShareStatus, DuplicateDetectionSource, DuplicateStatus, ProviderType } from "@prisma/client";
+import { AccountType, ShareStatus, DuplicateDetectionSource, DuplicateStatus, ProviderType, type PrismaClient } from "@prisma/client";
 import { dualWriteSpaceAccountLink, resolveAccountCreatorUserId, type DbClient } from "@/lib/accounts/space-account-link";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 
@@ -470,15 +470,30 @@ export async function mergeArchivedDuplicateIntoCanonical(
   // KD-4 Phase 2 — the entire re-point / debt-move / link-re-point / audit
   // group below must commit or roll back together. (W2 — the contribution-move
   // member of this group was deleted with the Goals retirement.) When
-  // called at the top level (client === db) we open our own interactive
+  // called with a client that can begin one we open our own interactive
   // transaction and re-enter with the tx client. When a caller already passes
   // a tx (e.g. pickCanonicalAndMerge, which bundles the loser-archive into the
   // same transaction), we reuse it — Prisma forbids nested interactive
   // transactions, so we must never open a second one here. External
   // side-effects (closeOutAccountConnections / Plaid itemRemove) live in the
   // callers and stay OUTSIDE this transaction.
-  if (client === db) {
-    await db.$transaction(async (tx) => {
+  // ⚠️ RLS-7 — ASK WHAT THE CLIENT *IS*, NOT WHETHER IT IS ONE PARTICULAR
+  // OBJECT. This was `client === db`, a reference comparison against the
+  // module-global client. That is correct for exactly two inputs — the default,
+  // and a Prisma.TransactionClient — and silently wrong for a third that now
+  // exists: a role client. `tenantDb`/`systemDb` are PrismaClients, so they can
+  // open a transaction, but they are DIFFERENT OBJECTS, so `=== db` was false
+  // and this function would have skipped the transaction entirely and run the
+  // re-point, the debt move and the link re-point as separate autocommitted
+  // statements — losing the atomicity the comment above exists to guarantee,
+  // during a merge that re-points every transaction the loser account owns.
+  //
+  // The real question is a capability: can this client begin a transaction?
+  // Prisma.TransactionClient cannot (ITXClientDenyList excludes $transaction),
+  // every PrismaClient can. That test is true for any client we are handed,
+  // including ones that do not exist yet.
+  if ("$transaction" in client) {
+    await (client as PrismaClient).$transaction(async (tx) => {
       await mergeArchivedDuplicateIntoCanonical(loserId, winnerId, source, spaceId, tx);
     });
     return;

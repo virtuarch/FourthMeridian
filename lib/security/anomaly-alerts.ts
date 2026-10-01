@@ -32,7 +32,13 @@
 
 import "server-only";
 
-import { db } from "@/lib/db";
+// RLS-7 — SYSTEM authority. This is cross-tenant forensics: it reads AuditLog
+// across all users to detect credential-stuffing patterns, then fans out to
+// every SECURITY_OPS grant holder and SYSTEM_ADMIN. It is reached from the
+// pre-identity login path, where no tenant exists yet and the question being
+// asked is deliberately platform-wide. Routing it through fm_auth would have
+// handed the login role a reason to read the whole forensic log.
+import { systemDb as db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { AuditAction } from "@/lib/audit-actions";
 import { createNotification } from "@/lib/notifications/create";

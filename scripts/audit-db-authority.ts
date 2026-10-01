@@ -31,7 +31,7 @@
  */
 
 import { execSync } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = process.cwd();
@@ -42,15 +42,29 @@ function check(name: string, ok: boolean, detail = "") {
   console.error(`  ✗ ${name}${detail ? `\n      ${detail}` : ""}`);
 }
 
-const tracked = (globs: string[]): string[] =>
-  execSync(`git ls-files -- ${globs.map((g) => `'${g}'`).join(" ")}`, { cwd: ROOT, encoding: "utf8" })
-    .trim().split("\n").filter(Boolean);
-
 const read = (f: string) => { try { return readFileSync(join(ROOT, f), "utf8"); } catch { return ""; } };
 
-/** Runtime-reachable source: what actually serves a request or a job. */
-const RUNTIME = tracked(["app/**/*.ts", "app/**/*.tsx", "lib/**/*.ts", "jobs/**/*.ts", "components/**/*.tsx", "components/**/*.ts"])
-  .filter((f) => !f.endsWith(".test.ts") && !f.endsWith(".test.tsx"));
+/**
+ * Runtime-reachable source: what actually serves a request or a job.
+ *
+ * ⚠️ LIST EVERY TRACKED FILE AND FILTER IN JS, rather than asking git for
+ * `lib/**\/*.ts`. A git pathspec `**` requires at least one intervening
+ * directory, so `lib/**\/*.ts` silently matches NOTHING at the top level —
+ * lib/auth.ts, lib/session.ts, lib/rate-limit.ts and lib/space.ts were all
+ * invisible to the first version of this audit. It reported a clean ratchet
+ * over a set that excluded the authentication layer.
+ *
+ * That is precisely the failure lib/db-safety.test.ts already documents about
+ * its own history: a guard whose coverage depends on a pattern nobody
+ * re-checks is not a guard. Enumerate, then filter by prefix — a form that
+ * cannot quietly under-match.
+ */
+const ROOT_DIRS = ["app/", "lib/", "jobs/", "components/"];
+const RUNTIME = execSync(`git ls-files -- '*.ts' '*.tsx'`, { cwd: ROOT, encoding: "utf8" })
+  .trim().split("\n").filter(Boolean)
+  .filter((f) => ROOT_DIRS.some((d) => f.startsWith(d)))
+  .filter((f) => !f.endsWith(".test.ts") && !f.endsWith(".test.tsx"))
+  .sort();
 
 console.log("\naudit-db-authority — every runtime database authority is intentional\n");
 
@@ -63,7 +77,11 @@ const CONFINED: Record<string, { allowed: string[]; why: string }> = {
     why: "the tenant client must only ever be reached through withTenantDb(), which supplies the identity the policies read. A direct import is a query with NO app.user_id set, which under RLS returns nothing and under the fallback returns EVERYTHING.",
   },
   authDb: {
-    allowed: ["lib/db.ts", "lib/auth.ts", "lib/session.ts"],
+    // Three files, and the list is meant to stay this short. Each one runs
+    // BEFORE an identity exists: lib/auth.ts establishes it, lib/session.ts
+    // re-checks revocation on every request, and lib/recovery-codes.ts is one
+    // of the two second factors by which a session can be established at all.
+    allowed: ["lib/db.ts", "lib/auth.ts", "lib/session.ts", "lib/recovery-codes.ts"],
     why: "fm_auth exists so authentication can read User/UserSession BEFORE an identity exists. Imported anywhere else it is a convenience escape hatch from tenancy with a reassuring name.",
   },
   systemDb: {
@@ -106,6 +124,18 @@ const globalImporters = RUNTIME.filter((f) => {
 }).sort();
 
 const baselinePath = join(ROOT, BASELINE_FILE);
+
+if (process.argv.includes("--write-baseline")) {
+  writeFileSync(baselinePath, JSON.stringify({
+    note: "RLS-4 ratchet. Runtime-reachable files still reaching the database through the migration principal (@/lib/db `db`). This set may SHRINK freely as adoption proceeds; it may never GROW. Regenerate with `npx tsx scripts/audit-db-authority.ts --write-baseline`, and say in the commit why anything added is justified.",
+    generatedAt: new Date().toISOString().slice(0, 10),
+    count: globalImporters.length,
+    files: globalImporters,
+  }, null, 2) + "\n");
+  console.log(`  wrote ${BASELINE_FILE}: ${globalImporters.length} file(s)\n`);
+  process.exit(0);
+}
+
 if (!existsSync(baselinePath)) {
   console.error(`\n  ✗ missing ${BASELINE_FILE}. Regenerate with:\n      npx tsx scripts/audit-db-authority.ts --write-baseline\n`);
   process.exit(1);

@@ -51,7 +51,15 @@
  * generated client.
  */
 
-import { db } from "@/lib/db";
+// RLS-7 — SYSTEM authority, whoever triggers it. This module writes
+// NotificationDelivery, which fm_app is explicitly denied (it is operational
+// delivery telemetry, not tenant content), and it is reached from the auth path
+// (reactivation), from ~12 tenant routes, and from cron alike. Every one of its
+// writes is inside a non-throwing try/catch, so under the tenant role the whole
+// notification subsystem would have degraded SILENTLY — bells simply never
+// appearing. One explicit authority is the honest answer; widening fm_app or
+// fm_auth to reach delivery telemetry would not be.
+import { systemDb as db } from "@/lib/db";
 import { emailNotificationAdapter } from "@/lib/notifications/channels/email";
 import {
   resolveChannelEnabled,
