@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 
 import { runtimeDatasourceUrl, withConnectionLimit } from "@/lib/db/connection-url";
 import { assertNonLiveDatabase } from "@/lib/db/live-guard";
+import { assertStrictRoleConfiguration, strictRlsEnabled } from "@/lib/db/strict-mode";
 
 // Prevent multiple Prisma Client instances in Next.js dev (hot-reload creates
 // new module instances; without this guard you'd exhaust the connection pool).
@@ -66,6 +67,11 @@ if (process.env.NODE_ENV !== "production") {
 // closes the set of files allowed to construct one, because each is a path
 // around the clone guard above.
 
+// RLS-4 — before any role client is built. In strict mode a missing or unsafe
+// role URL is a refusal to boot, never a quiet downgrade to the migration
+// principal. Inert when FM_RLS_STRICT is not exactly "true".
+assertStrictRoleConfiguration();
+
 function roleClient(envVar: string): PrismaClient | null {
   const raw = process.env[envVar];
   if (!raw) return null;
@@ -108,3 +114,21 @@ export const systemDb = systemClient ?? db;
 export function activeDbRoles(): { app: boolean; auth: boolean; system: boolean } {
   return { app: tenantClient !== null, auth: authClient !== null, system: systemClient !== null };
 }
+
+/**
+ * The role clients that are genuinely distinct, keyed by the variable that
+ * configured them. Only these can be interrogated about their principal — a
+ * fallback client would answer for the migration role and make the check lie.
+ */
+export function configuredRoleClients(): Partial<Record<
+  "DATABASE_URL_APP" | "DATABASE_URL_AUTH" | "DATABASE_URL_SYSTEM", PrismaClient
+>> {
+  return {
+    ...(tenantClient ? { DATABASE_URL_APP: tenantClient } : {}),
+    ...(authClient   ? { DATABASE_URL_AUTH: authClient } : {}),
+    ...(systemClient ? { DATABASE_URL_SYSTEM: systemClient } : {}),
+  };
+}
+
+/** True when this process is declaring database-level tenant isolation. */
+export const rlsStrict = strictRlsEnabled();

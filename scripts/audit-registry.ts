@@ -162,6 +162,22 @@ export const AUDITS: readonly AuditEntry[] = [
     what: "a stored balance component is a magnitude — never negative, never non-finite",
   },
   {
+    // RLS-4 — database authority. Source-only: the corpus is the repository.
+    // The client a path chooses IS its authority, and `db` is the migration
+    // principal (owner + BYPASSRLS), so a query through it is exempt from every
+    // policy. Two call sites that look identical can differ in whether tenant
+    // isolation applies at all, which is why this is asserted rather than
+    // reviewed. Confinement is absolute; the global-client count is a RATCHET,
+    // because adoption is incremental and a gate that fails on day one is a
+    // gate that gets switched off.
+    name: "audit-db-authority", tier: "REQUIRED", needsDb: false,
+    what: "every role client is confined to the code that owns that authority (authDb cannot " +
+          "become a general-purpose bypass), no NEW runtime file reaches the database through " +
+          "the migration principal, strict RLS mode is asserted before any client exists and " +
+          "refuses a missing or migration-principal role URL, and the tenant identity stays " +
+          "transaction-local",
+  },
+  {
     // W2 — goals tombstone. Source-only: the corpus it audits is the repository.
     name: "audit-goals-tombstone", tier: "REQUIRED", needsDb: false,
     what: "no runtime path reads, writes, or speaks retired goal state — Goals/Retirement are " +
