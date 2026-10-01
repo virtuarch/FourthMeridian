@@ -47,12 +47,24 @@
  *   - requireFreshUser() — this is a destructive, state-changing action;
  *     see lib/session.ts's doc comment on why sensitive actions should not
  *     trust the cached revocation check.
- *   - The caller's active Space (getSpaceContext()) must have an ACTIVE
- *     SpaceAccountLink for the batch's own financialAccountId — the same
- *     lookup POST .../accounts/[id]/import performs for the same id, just
- *     read from the batch row instead of a client-supplied path param. A
+ *   - The caller's active Space (getSpaceContext()) must resolve the batch's own
+ *     financialAccountId through resolveImportableFinancialAccount — the SAME
+ *     shared guard POST .../accounts/[id]/import and its four siblings use,
+ *     just read from the batch row instead of a client-supplied path param. A
  *     batch in a Space the caller can't see returns the same 404 as a
  *     missing batch, so existence is never leaked.
+ *
+ *     RLS Slice 2 — THIS ROUTE HAD DRIFTED. It used to perform its own inline
+ *     spaceAccountLink.findFirst({ spaceId, financialAccountId, status: ACTIVE
+ *     }) and that query OMITTED the visibilityLevel FULL gate (and the
+ *     financialAccount.deletedAt filter) which lib/imports/authorize.ts applies
+ *     for every other import route. Rollback is the most destructive operation
+ *     in the import feature — it soft-deletes every Transaction a batch
+ *     created — yet it was the ONE import route an OWNER/ADMIN holding only a
+ *     BALANCE_ONLY / SUMMARY_ONLY link could reach, erasing transaction detail
+ *     they were never permitted to READ. Two copies of one authority rule is
+ *     how that happens; there is now one copy. See
+ *     docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md §17.1 item 7.
  *   - The caller must be either the batch's own creator (createdByUserId)
  *     or a canManage (OWNER/ADMIN) member of that Space — undoing your own
  *     import is unrestricted; undoing someone else's requires management
@@ -78,7 +90,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireFreshUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
-import { ShareStatus, ImportBatchStatus, ImportBatchKind } from "@prisma/client";
+import { ImportBatchStatus, ImportBatchKind } from "@prisma/client";
+import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { rollbackInvestmentBatchRows, type InvestmentRollbackResult } from "@/lib/investments/investment-import-rollback";
@@ -107,21 +120,23 @@ export const POST = withApiHandler(async (
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  // ── Authorize: caller's active Space must have an ACTIVE SpaceAccountLink
-  //    for the batch's own financialAccountId — same lookup
-  //    POST .../accounts/[id]/import performs for the same FinancialAccount.
-  //    A batch in a Space the caller can't see returns the same 404 as a
-  //    missing batch, avoiding an existence-enumeration signal.
+  // ── Authorize: the ONE shared import guard, never a second copy of it ─────
+  //    resolveImportableFinancialAccount applies the full contract the other
+  //    five import routes get: an ACTIVE, non-deleted-account SpaceAccountLink
+  //    in the caller's active Space (404 otherwise — a batch in a Space the
+  //    caller can't see is indistinguishable from a missing batch), then the
+  //    write-authority check, with the FULL visibility tier required on the
+  //    non-owner path. The inline lookup this replaces omitted that tier (see
+  //    module header, RLS Slice 2).
   const { spaceId, permissions } = await getSpaceContext();
-  const link = await db.spaceAccountLink.findFirst({
-    where:  { spaceId, financialAccountId: batch.financialAccountId, status: ShareStatus.ACTIVE },
-    select: { id: true },
-  });
-  if (!link) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  const access = await resolveImportableFinancialAccount(
+    user.id, spaceId, batch.financialAccountId);
+  if (!access.ok) return access.response;
 
   // ── Permission: the batch's own creator, or a canManage member ───────────
+  //    ADDITIONAL to the guard above, not a substitute for it: rollback can
+  //    erase another member's history, so passing the import guard is necessary
+  //    but not sufficient. Both must hold.
   const isCreator = batch.createdByUserId === user.id;
   if (!isCreator && !permissions.canManage) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });

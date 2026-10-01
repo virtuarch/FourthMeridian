@@ -152,6 +152,12 @@ async function main(): Promise<void> {
       ["app", "api", "accounts", "[id]", "import", "investments", "route.ts"],
       ["app", "api", "accounts", "[id]", "import", "investments", "preview", "route.ts"],
       ["app", "api", "investments", "opening-position", "route.ts"],
+      // RLS Slice 2 — the SIXTH import route. Rollback had its own inline
+      // spaceAccountLink.findFirst that omitted the FULL tier, so it was the one
+      // import route a BALANCE_ONLY / SUMMARY_ONLY OWNER/ADMIN could reach — and
+      // the most destructive one (it soft-deletes every Transaction the batch
+      // created, i.e. detail they could not read). It now shares the one guard.
+      ["app", "api", "imports", "[id]", "rollback", "route.ts"],
     ];
     for (const rel of routes) {
       const src = readFileSync(join(process.cwd(), ...rel), "utf8");
@@ -159,6 +165,40 @@ async function main(): Promise<void> {
       check(`${label} calls the shared guard`, src.includes("resolveImportableFinancialAccount("));
       check(`${label} has no redundant local FULL re-check`, !/visibilityLevel\s*!==\s*VisibilityLevel\.FULL/.test(src));
     }
+  }
+
+  // ── 9. Rollback-specific pins (RLS Slice 2) ───────────────────────────────
+  // The defect was a SECOND, weaker copy of the same authority rule. These pin
+  // that the copy is gone, that the guard is driven off the BATCH's own account
+  // (never a client-supplied id), and that the creator/canManage check survives
+  // as an ADDITIONAL restriction rather than being replaced by the guard.
+  console.log("9. source-scan — rollback uses the guard and keeps its own extra restriction");
+  {
+    const src = readFileSync(
+      join(process.cwd(), "app", "api", "imports", "[id]", "rollback", "route.ts"), "utf8");
+    // Comments legitimately describe the removed query, so scan real code only.
+    const code = src.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+
+    check("rollback dropped its inline spaceAccountLink lookup (no second copy of the rule)",
+      !code.includes("spaceAccountLink."));
+    check("rollback no longer imports ShareStatus (the inline query's only user)",
+      !code.includes("ShareStatus"));
+    check("guard is driven off the BATCH's own financialAccountId, not a path param",
+      /resolveImportableFinancialAccount\(\s*\n?\s*user\.id,\s*spaceId,\s*batch\.financialAccountId\s*\)/.test(code));
+    check("rollback returns the guard's own response (same 404/403 bodies as its siblings)",
+      /if\s*\(\s*!access\.ok\s*\)\s*return\s+access\.response/.test(code));
+    check("rollback KEEPS the creator-or-canManage restriction on top of the guard",
+      /batch\.createdByUserId === user\.id/.test(code) &&
+      /!isCreator\s*&&\s*!permissions\.canManage/.test(code));
+    check("rollback still requires a FRESH session (destructive action)",
+      /requireFreshUser\s*\(\s*\)/.test(code));
+
+    // Order: authorize before any destructive work. The guard must precede the
+    // $transaction that performs the soft-delete.
+    const guardAt = code.indexOf("resolveImportableFinancialAccount(");
+    const txAt    = code.indexOf("db.$transaction");
+    check("guard precedes the soft-delete transaction",
+      guardAt !== -1 && txAt !== -1 && guardAt < txAt, `guard@${guardAt} tx@${txAt}`);
   }
 
   if (failures > 0) {
