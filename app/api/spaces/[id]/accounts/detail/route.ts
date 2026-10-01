@@ -232,7 +232,9 @@ export async function GET(
 
   // v2.6-L3 — provider-observed pending movements, scoped per account. Nothing is
   // inferred: this is a read of rows a provider (or an import) delivered.
-  const pending = await loadPendingEvidence(ledgerAccountIds);
+  // RLS slice B — `loadPendingEvidence` now requires its client. This caller is
+  // not converted in this slice, so it passes the client it already held.
+  const pending = await loadPendingEvidence(db, ledgerAccountIds);
 
   // FULL shares carry the full management shape; BALANCE_ONLY shares are routed
   // through the shared aggregator so no identifying field ever leaks.

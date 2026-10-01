@@ -92,12 +92,16 @@ const loaderSrc = readFileSync(
   "utf8",
 );
 const scrunch = loaderSrc.replace(/\s+/g, " ");
-const routeDelegates = readFileSync(
+// ⚠️ THE DELEGATION IS THE PROPERTY; THE ARGUMENT LIST IS NOT. This pinned the
+// literal `loadSpaceAccounts(spaceId)` until RLS slice B made the database
+// client the loader's required FIRST parameter, so the same delegation now reads
+// `loadSpaceAccounts(tx, spaceId)`.
+const routeDelegates = /loadSpaceAccounts\([^)]*\bspaceId\b/.test(readFileSync(
   path.join(process.cwd(), "app", "api", "spaces", "[id]", "accounts", "route.ts"),
   "utf8",
-).includes("loadSpaceAccounts(spaceId)");
+));
 
-check("accounts route delegates to the shared loadSpaceAccounts loader", routeDelegates, "expected the route to call loadSpaceAccounts(spaceId)");
+check("accounts route delegates to the shared loadSpaceAccounts loader", routeDelegates, "expected the route to call loadSpaceAccounts(…, spaceId)");
 check("loader groups transactions by financialAccountId", /groupBy\(\s*\{[^}]*by:\s*\[\s*"financialAccountId"\s*\]/.test(scrunch), "expected transaction.groupBy by financialAccountId");
 check("loader floors on min transaction date", /_min:\s*\{\s*date:\s*true\s*\}/.test(scrunch), "expected _min: { date: true }");
 check("loader excludes soft-deleted transactions (parity with regen)", /deletedAt:\s*null/.test(scrunch), "expected deletedAt: null in the floor query");

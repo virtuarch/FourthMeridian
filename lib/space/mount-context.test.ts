@@ -215,10 +215,15 @@ console.log("\nOne loader definition per resource (routes delegate to compositio
 check("composition owns loadSpaceSections", comp.includes("export async function loadSpaceSections"));
 check("composition owns loadSpaceAccounts", comp.includes("export async function loadSpaceAccounts"));
 check("composition owns getSpaceMemberCount", comp.includes("export function getSpaceMemberCount"));
-check("sections route DELEGATES to loadSpaceSections", secRoute.includes("loadSpaceSections(spaceId)"));
+// ⚠️ THE DELEGATION IS THE PROPERTY; THE ARGUMENT LIST IS NOT. These pinned
+// `loadSpaceSections(spaceId)` until RLS slice B made the database client each
+// loader's required FIRST parameter, so the same delegation now reads
+// `loadSpaceSections(tx, spaceId)`. What must not regress is that the route
+// calls the shared loader with this Space's id rather than re-declaring a query.
+check("sections route DELEGATES to loadSpaceSections", /loadSpaceSections\([^)]*\bspaceId\b/.test(secRoute));
 check("sections route no longer defines the inline query",
   !secRoute.includes("spaceDashboardSection.findMany"));
-check("accounts route DELEGATES to loadSpaceAccounts", accRoute.includes("loadSpaceAccounts(spaceId)"));
+check("accounts route DELEGATES to loadSpaceAccounts", /loadSpaceAccounts\([^)]*\bspaceId\b/.test(accRoute));
 check("accounts route no longer defines the inline links query",
   !accRoute.includes("spaceAccountLink.findMany"));
 
@@ -257,7 +262,9 @@ check("Platform page still uses platformMountContext (untouched)", platPage.incl
 
 // ── Page wiring + no duplicate getSpaceContext ─────────────────────────────────
 console.log("\nPage composition + no duplicate authority");
-check("page composes the finance initial payload", finPage.includes("composeFinancialInitialWorkspace(ctx.spaceId)"));
+// Same reasoning: the composer now takes a PHASE RUNNER before the space id.
+check("page composes the finance initial payload",
+  /composeFinancialInitialWorkspace\([\s\S]{0,200}?ctx\.spaceId/.test(finPage));
 check("page passes initialWorkspace to the shell", finPage.includes("initialWorkspace={initialWorkspace}"));
 check("page resolves getSpaceContext exactly ONCE (cache-deduped authority)",
   (finPage.match(/getSpaceContext\(\)/g) ?? []).length === 1);

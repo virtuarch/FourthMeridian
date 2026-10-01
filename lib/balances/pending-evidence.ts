@@ -44,8 +44,25 @@
  * `pendingTransactionRef`.
  */
 
-import { db } from "@/lib/db";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { resolveLifecycle, contributesPendingEvidence } from "@/lib/transactions/lifecycle";
+
+/**
+ * RLS SLICE B — THE CLIENT IS A PARAMETER, NOT AN IMPORT.
+ *
+ * This file imports no Prisma client. `loadPendingEvidence` takes the client it
+ * reads through as its FIRST, REQUIRED argument, so the authority a pending-
+ * evidence read runs under is the caller's visible decision and TypeScript fails
+ * at any site that forgets to say. `Transaction` is in the account subtree, whose
+ * policy is `fm_account_visible("financialAccountId")`, so as the tenant this
+ * returns pending rows for accounts linked ACTIVE into a Space the caller is an
+ * ACTIVE member of — which is what every caller's own predicate already meant.
+ *
+ * ⚠️ `transaction` AND NOTHING ELSE. The Pick is the invariant: there is no model
+ * on this parameter through which the file could reach anything but the rows it
+ * exists to count.
+ */
+export type PendingEvidenceClient = Pick<Prisma.TransactionClient | PrismaClient, "transaction">;
 
 /** Provider-observed pending movements for one account. */
 export interface PendingContribution {
@@ -71,12 +88,13 @@ export const NO_PENDING: PendingContribution = { count: 0, sum: 0, transactionId
  * real answer ("nothing pending"), not a missing one.
  */
 export async function loadPendingEvidence(
+  client: PendingEvidenceClient,
   accountIds: string[],
 ): Promise<Map<string, PendingContribution>> {
   const byAccount = new Map<string, PendingContribution>();
   if (accountIds.length === 0) return byAccount;
 
-  const rows = await db.transaction.findMany({
+  const rows = await client.transaction.findMany({
     where: {
       financialAccountId: { in: accountIds },
       deletedAt: null,
@@ -118,7 +136,7 @@ export async function loadPendingEvidence(
   const supersededRefs = pendingProviderIds.length
     ? new Set(
         (
-          await db.transaction.findMany({
+          await client.transaction.findMany({
             where: {
               deletedAt: null,
               pendingTransactionRef: { in: pendingProviderIds },

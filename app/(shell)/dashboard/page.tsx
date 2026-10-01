@@ -4,6 +4,7 @@ import { PersonalDashboard }                       from "@/components/dashboard/
 import { getFicoData }                                 from "@/lib/data/accounts";
 import { getSpaceContext }                         from "@/lib/space";
 import { composeFinancialInitialWorkspace }        from "@/lib/space/mount-composition";
+import { withTenantDb }                            from "@/lib/db/tenant-context";
 import { DisplayCurrencyProvider }                 from "@/lib/currency-context";
 
 // Co-locate compute with the Singapore-region Supabase instance — see
@@ -38,7 +39,16 @@ export default async function DashboardPage() {
   // of which independently re-ran session + spaceMember). The three loaders are
   // the SAME ones the API routes now delegate to (no duplication). Snapshots /
   // perspectives / transactions stay lazy/client — deferred.
-  const initialWorkspace = await composeFinancialInitialWorkspace(ctx.spaceId);
+  //
+  // RLS slice B — the composer is handed a PHASE RUNNER bound to the mounting
+  // user, not a client: each of its three loaders gets its own short transaction
+  // so they still run in parallel (one shared transaction would have put them on
+  // one connection and undone the fan-out fix this payload exists for). The
+  // identity comes from the already-resolved, server-side SpaceContext.
+  const initialWorkspace = await composeFinancialInitialWorkspace(
+    (fn) => withTenantDb(ctx.userId, (tx) => fn(tx)),
+    ctx.spaceId,
+  );
 
   // Non-personal spaces render the planning dashboard (client-side data fetching)
   //

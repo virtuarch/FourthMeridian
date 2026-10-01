@@ -27,13 +27,35 @@
  * SpaceAccount / number) — all strings/numbers/booleans, byte-identical to the
  * fetch().json() the client used to receive — so hydrating from the RSC payload
  * cannot drift from the fetched shape.
+ *
+ * ── RLS SLICE B — THE CLIENT IS A PARAMETER, NOT AN IMPORT ───────────────────
+ * This file imports no Prisma client. Each loader takes the client it reads
+ * through as its FIRST, REQUIRED argument, so the authority a Space's mount data
+ * is composed under is decided by the caller that knows who is mounting, and
+ * TypeScript fails at any site that forgets to say.
+ *
+ * ⚠️ THE COMPOSER TAKES A PHASE RUNNER, NOT A CLIENT, AND THAT IS A PERFORMANCE
+ * DECISION AS MUCH AS A SECURITY ONE. The three loaders are independent and run
+ * in parallel — that parallelism is the whole point of PS-6B, which exists
+ * because the mount fan-out produced P2024 pool timeouts. Handing the composer
+ * ONE transaction would put all three on ONE connection and silently serialise
+ * them. It instead takes a runner, so each loader is its own short transaction
+ * and the three still overlap, exactly as the three independent queries did.
+ * In the product the runner is `withTenantDb(userId, fn)`; a test supplies its
+ * own and asserts what ran.
+ *
+ * ⚠️ THE MODULE STILL PERFORMS NO AUTHORIZATION, and RLS does not make it do so.
+ * A caller must still have authorized the Space (the routes' requireSpaceAction
+ * / requireSpaceRole, the page's getSpaceContext). What the tenant client adds
+ * is that a loader called for the WRONG Space now returns nothing instead of
+ * that Space's data — a backstop beneath the check, never a replacement for it.
  */
 
 import "server-only";
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { sortAccountsForDisplay } from "@/lib/data/accounts";
 
-import { db } from "@/lib/db";
+import type { Prisma } from "@prisma/client";
 import { ShareStatus } from "@prisma/client";
 import { normalizeSharedAccounts, aggregateCurrentCashState } from "@/lib/account-privacy";
 import { resolveEffectiveDebtTerms } from "@/lib/debt/effective-terms";
@@ -42,9 +64,25 @@ import { resolveRowBalances, reconcileAccount } from "@/lib/balances/account-bal
 import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
 import { loadWalletCurrentValues, hasKnownValue } from "@/lib/crypto/wallet-current-value";
 
+/**
+ * The client these loaders read through.
+ *
+ * Deliberately the whole transaction client rather than a Pick: the accounts
+ * loader forwards it to `loadPendingEvidence` and `loadWalletCurrentValues`,
+ * each of which states its own narrower contract, and re-declaring their unions
+ * here would duplicate three invariants instead of stating one.
+ */
+export type SpaceCompositionClient = Prisma.TransactionClient;
+
+/** ONE short database operation, run under whatever authority the caller supplies. */
+export type SpaceCompositionPhase =
+  <T>(fn: (client: SpaceCompositionClient) => Promise<T>) => Promise<T>;
+
 /** THE sections loader (was inline in /api/spaces/[id]/sections). */
-export async function loadSpaceSections(spaceId: string): Promise<DashboardSection[]> {
-  const rows = await db.spaceDashboardSection.findMany({
+export async function loadSpaceSections(
+  client: SpaceCompositionClient, spaceId: string,
+): Promise<DashboardSection[]> {
+  const rows = await client.spaceDashboardSection.findMany({
     where:   { spaceId },
     orderBy: [{ tab: "asc" }, { order: "asc" }],
   });
@@ -63,8 +101,10 @@ export async function loadSpaceSections(spaceId: string): Promise<DashboardSecti
 
 /** THE accounts loader (was inline in /api/spaces/[id]/accounts) — identical
  *  links query + earliest-transaction floor + visibility normalization. */
-export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]> {
-  const links = await db.spaceAccountLink.findMany({
+export async function loadSpaceAccounts(
+  client: SpaceCompositionClient, spaceId: string,
+): Promise<SpaceAccount[]> {
+  const links = await client.spaceAccountLink.findMany({
     where: {
       spaceId,
       status:           ShareStatus.ACTIVE,
@@ -112,7 +152,7 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
 
   const accountIds = links.map((l) => l.financialAccount.id);
   const floors = accountIds.length
-    ? await db.transaction.groupBy({
+    ? await client.transaction.groupBy({
         by:    ["financialAccountId"],
         where: { financialAccountId: { in: accountIds }, deletedAt: null },
         _min:  { date: true },
@@ -161,7 +201,11 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
       walletChain: l.financialAccount.walletChain,
       lastUpdated: l.financialAccount.lastUpdated,
     })),
-    { contextSpaceId: spaceId },
+    // ⚠️ THE CLIENT IS PASSED EXPLICITLY. `loadWalletCurrentValues` still carries
+    // an optional `options.client ?? db` default — fifteen call sites wide, so
+    // not this slice's to remove — and a caller that said nothing would have
+    // dropped out of the tenant transaction without a word.
+    { contextSpaceId: spaceId, client },
   );
 
   const effectiveLinks = links.map((l) => {
@@ -192,7 +236,7 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
   // widget consumes the same answer and none of them re-derives it. Pending
   // evidence is provider-observed only (loadPendingEvidence); nothing is
   // inferred from recurrence, averages, or habits.
-  const pending = await loadPendingEvidence(accountIds);
+  const pending = await loadPendingEvidence(client, accountIds);
   const now = new Date();
   const currentStateByAccount = new Map<string, SpaceAccount["currentState"]>();
   for (const l of links) {
@@ -243,8 +287,10 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
 /** ACTIVE member count — the ONLY field the shell header reads from the heavy
  *  /api/spaces/[id] route. Composed as a cheap count so the mount need not call
  *  that route at all (the route stays for its other consumers). */
-export function getSpaceMemberCount(spaceId: string): Promise<number> {
-  return db.spaceMember.count({ where: { spaceId, status: "ACTIVE" } });
+export function getSpaceMemberCount(
+  client: SpaceCompositionClient, spaceId: string,
+): Promise<number> {
+  return client.spaceMember.count({ where: { spaceId, status: "ACTIVE" } });
 }
 
 /**
@@ -260,14 +306,21 @@ export interface FinancialInitialWorkspacePayload {
   memberCount: number;
 }
 
-/** Compose the finance initial payload for an ALREADY-AUTHORIZED space. */
+/**
+ * Compose the finance initial payload for an ALREADY-AUTHORIZED space.
+ *
+ * `asOwner` runs ONE loader under the mounting user's authority — see the header
+ * for why this is a runner and not a client: three short transactions that
+ * overlap, not one that serialises them.
+ */
 export async function composeFinancialInitialWorkspace(
+  asOwner: SpaceCompositionPhase,
   spaceId: string,
 ): Promise<FinancialInitialWorkspacePayload> {
   const [sections, accounts, memberCount] = await Promise.all([
-    loadSpaceSections(spaceId),
-    loadSpaceAccounts(spaceId),
-    getSpaceMemberCount(spaceId),
+    asOwner((c) => loadSpaceSections(c, spaceId)),
+    asOwner((c) => loadSpaceAccounts(c, spaceId)),
+    asOwner((c) => getSpaceMemberCount(c, spaceId)),
   ]);
   return { sections, accounts, memberCount };
 }

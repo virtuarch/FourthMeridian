@@ -103,7 +103,9 @@ async function loadCurrentCashState(
       walletAddress: true, lastUpdated: true, balanceLastUpdatedAt: true,
     },
   });
-  const pending = await loadPendingEvidence(rows.map((r) => r.id));
+  // RLS slice B — `loadPendingEvidence` now requires its client. This caller is
+  // not converted in this slice, so it passes the client it already held.
+  const pending = await loadPendingEvidence(db, rows.map((r) => r.id));
   const now = new Date();
   for (const r of rows) {
     const rec = reconcileAccount(

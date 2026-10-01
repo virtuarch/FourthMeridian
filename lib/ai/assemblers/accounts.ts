@@ -270,7 +270,9 @@ async function assembleAccounts(
 
   // v2.6-L3 — provider-observed pending, scoped per account. Read-only; nothing
   // is inferred from recurrence, averages, or habits.
-  const pendingByAccount = await loadPendingEvidence(links.map((l) => l.financialAccount.id));
+  // RLS slice B — `loadPendingEvidence` now requires its client. This caller is
+  // not converted in this slice, so it passes the client it already held.
+  const pendingByAccount = await loadPendingEvidence(db, links.map((l) => l.financialAccount.id));
 
   /**
    * v2.6-L1 — the resolved freshness claim for one account, through the canonical
