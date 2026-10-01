@@ -69,6 +69,12 @@ const pkg = JSON.parse(src("package.json")) as { scripts: Record<string, string>
     "scripts/run-reconstruction.ts", "scripts/audit-ciphertext-versions.ts",
     "scripts/copy-fx-rates.ts",
     "scripts/test-incident-transaction-safety.ts", "scripts/test-visibility-two-user-space.impl.ts",
+    // RLS-3 — the tenant-isolation acceptance suite. It needs a client bound to
+    // the fm_app ROLE rather than the configured one, which lib/db cannot give
+    // it. It is allowed here because it refuses to run against any database
+    // whose name is not a recognised clone, and refuses again unless the
+    // connection authenticates as fm_app and is not a superuser.
+    "scripts/rls-acceptance.ts",
   ];
   // ⚠️ TEST FILES EXCLUDED, because a test that ASSERTS about `new PrismaClient`
   // contains the string without constructing one — this file and

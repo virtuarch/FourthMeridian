@@ -25,7 +25,7 @@
  *   npx tsx scripts/rls-acceptance.ts --keep     # leave the container up
  */
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { randomBytes }             from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir }                  from "node:os";
@@ -110,6 +110,22 @@ function psql(url: string, sql: string, stopOnError = true) {
   // on the exit code — otherwise a refusal reads as a pass.
   return { ok: r.status === 0 && !/\bERROR:/.test(err), out: (r.stdout ?? "").trim(), err };
 }
+/**
+ * Return `url` with its credentials replaced. String-replacing the userinfo was
+ * the original form and it was a LATENT DISASTER: in RLS_TARGET_URL mode the
+ * owner credentials it searched for were this script's own docker constants,
+ * which never appear in a CI connection string, so the "swap" silently did
+ * nothing and every case ran as the SUPERUSER. The suite reported failures for
+ * the wrong reason; with weaker assertions it would have reported success while
+ * testing nothing at all. Parse, do not pattern-match.
+ */
+function withRole(url: string, role: string, password: string): string {
+  const u = new URL(url);
+  u.username = role;
+  u.password = password;
+  return u.toString();
+}
+
 /** True when the statement was refused by a row-level security policy. */
 const deniedByRls   = (r: { err: string }) => /row-level security policy/i.test(r.err);
 /** True when the role has no privilege on the relation at all. */
@@ -151,7 +167,21 @@ async function main(): Promise<void> {
   //    roles WITHOUT one; secrets never live in source control)
   const pw = psql(base, `ALTER ROLE fm_app LOGIN PASSWORD '${APP_PW}';`);
   if (!pw.ok) throw new Error(`could not set the throwaway fm_app password: ${pw.err}`);
-  const appUrl = base.replace(`${OWNER}:${OWNER_PW}`, `fm_app:${APP_PW}`);
+  const appUrl = withRole(base, "fm_app", APP_PW);
+
+  // ⚠️ THE SUITE MUST PROVE WHO IT IS BEFORE IT PROVES ANYTHING ELSE.
+  // Every assertion below is only meaningful if this connection is actually the
+  // non-privileged runtime role. A suite that quietly runs as the owner passes
+  // nothing and claims everything.
+  const whoami = psql(appUrl, `select current_user;`).out.trim();
+  if (whoami !== "fm_app") {
+    throw new Error(`refusing to run: the adversarial connection authenticated as "${whoami}", not fm_app. Every case would be meaningless.`);
+  }
+  const whoBypass = psql(appUrl, `select current_setting('is_superuser');`).out.trim();
+  if (whoBypass !== "off") {
+    throw new Error(`refusing to run: the adversarial connection is a superuser (is_superuser=${whoBypass}).`);
+  }
+  console.log(`[rls] adversarial connection verified as ${whoami} (not a superuser).`);
 
   // 3. fixtures, written as the OWNER so RLS does not interfere with setup
   console.log("[rls] seeding Alice / Bob fixtures...");
@@ -346,7 +376,7 @@ function backupProof(ownerUrl: string, appUrl: string): void {
   // fm_backup carries BYPASSRLS precisely so this is complete.
   const bkPw = randomBytes(18).toString("hex");
   psql(ownerUrl, `ALTER ROLE fm_backup LOGIN PASSWORD '${bkPw}';`);
-  const bkUrl = ownerUrl.replace(/\/\/[^@]+@/, `//fm_backup:${bkPw}@`);
+  const bkUrl = withRole(ownerUrl, "fm_backup", bkPw);
   const good = join(dir, "fm_backup.sql");
   const g = sh("pg_dump", ["--no-owner", "--no-privileges", "-f", good, bkUrl]);
   const goodRows = g.ok ? countCopyRows(good, "Transaction") : -1;
