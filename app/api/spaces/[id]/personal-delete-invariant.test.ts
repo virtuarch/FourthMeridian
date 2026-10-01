@@ -45,10 +45,16 @@ check("soft-delete refuses PERSONAL (type === PERSONAL guard)",
   /space\.type\s*===\s*["']PERSONAL["']/.test(softDelete));
 check("soft-delete PERSONAL guard returns an error status (fails closed)",
   /space\.type\s*===\s*["']PERSONAL["'][\s\S]{0,160}?status:\s*400/.test(softDelete));
+// ⚠️ THE PIN IS ON THE WRITE, NOT ON THE CLIENT IT RUNS THROUGH. It read
+// `db.space.update` until RLS slice B moved the trash flip inside
+// `withTenantDb`, where the same statement is `tx.space.update` — a test that
+// fails because the AUTHORITY changed is asserting the corpus, not the property.
+// What must not regress is that the PERSONAL guard precedes the write.
+const trashUpdateAt = softDelete.search(/\b(?:db|tx)\.space\.update\b/);
 check("soft-delete PERSONAL guard precedes the trash update (guard is upstream)",
   softDelete.indexOf('space.type === "PERSONAL"') !== -1 &&
-  softDelete.indexOf('space.type === "PERSONAL"') <
-    softDelete.indexOf("db.space.update"));
+  trashUpdateAt !== -1 &&
+  softDelete.indexOf('space.type === "PERSONAL"') < trashUpdateAt);
 
 // ── 2. Permanent-delete route — DELETE /api/spaces/[id]/permanent ────────────
 const permaDelete = code(read("app", "api", "spaces", "[id]", "permanent", "route.ts"));
@@ -59,10 +65,14 @@ check("permanent-delete refuses PERSONAL (type === PERSONAL guard)",
   /space\.type\s*===\s*["']PERSONAL["']/.test(permaDelete));
 check("permanent-delete PERSONAL guard returns 400 (fails closed)",
   /space\.type\s*===\s*["']PERSONAL["'][\s\S]{0,160}?status:\s*400/.test(permaDelete));
-check("permanent-delete PERSONAL guard precedes db.space.delete (guard is upstream)",
+// Same reasoning as the trash pin above: the write, whichever client issues it.
+// (It is still `db.space.delete` today — fm_app has no DELETE policy on Space —
+// but the check must not be what notices if that changes.)
+const permaDeleteAt = permaDelete.search(/\b(?:db|tx)\.space\.delete\b/);
+check("permanent-delete PERSONAL guard precedes the space delete (guard is upstream)",
   permaDelete.indexOf('space.type === "PERSONAL"') !== -1 &&
-  permaDelete.indexOf('space.type === "PERSONAL"') <
-    permaDelete.indexOf("db.space.delete"));
+  permaDeleteAt !== -1 &&
+  permaDelete.indexOf('space.type === "PERSONAL"') < permaDeleteAt);
 
 // ── 3. UI — ManageSpaceModal hides the danger/delete tab for PERSONAL ────────
 const manage = code(read("components", "space", "manage", "ManageSpaceModal.tsx"));

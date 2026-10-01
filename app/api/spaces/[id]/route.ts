@@ -14,12 +14,28 @@
  * (app/api/spaces/[id]/permanent/route.ts). Archiving and trashing never
  * touch WorkspaceAccountShare or SpaceSnapshot rows — those are only
  * affected by permanent delete.
+ *
+ * ── RLS SLICE B — PATCH AND DELETE ENTER THE BOUNDARY; GET CANNOT ────────────
+ * PATCH and DELETE are gated by requireSpaceRole, so the caller is an ACTIVE
+ * member before a row is touched and every statement is expressible as fm_app.
+ *
+ * ⚠️ THE GET IS A NAMED EXCEPTION, AND IT IS THE PUBLIC-SPACE READ THAT MAKES IT
+ * ONE. fm_app's `Space` SELECT policy is membership-or-platform-grant; it has no
+ * `isPublic` arm and cannot be given one from here. Running this handler's fetch
+ * as the tenant would return NOTHING for a PUBLIC Space the caller is not a
+ * member of, which is property 2 of the three documented below — so a 200 with a
+ * public Space's roster would silently become a 404. That is not a tenancy leak
+ * being closed, it is a product read being broken, so the fetch stays on the
+ * deployment-wide client and says so here. Closing it properly needs an
+ * `OR "isPublic"` arm on that policy (a migration, and an owner decision about
+ * whether an unauthenticated-adjacent read belongs in the tenant role at all).
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser, requireSpaceRole } from "@/lib/session";
 import { SpaceMemberRole } from "@prisma/client";
 import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
@@ -34,6 +50,9 @@ export const GET = withApiHandler(async (
   const [user, err] = await requireUser();
   if (err) return err;
 
+  // ⚠️ DELIBERATELY NOT withTenantDb — see the public-space note in the file
+  // header. As fm_app this returns nothing for a PUBLIC Space the caller is not
+  // a member of, and the 403/404/myRole shape below depends on getting the row.
   const space = await db.space.findUnique({
     where: { id },
     include: {
@@ -70,7 +89,14 @@ export const GET = withApiHandler(async (
   //      non-member (it 403s first).
   // See docs/initiatives/sp2/SP-2B_BATCH3_INVESTIGATION.md. Do NOT swap this for
   // requireSpaceAction("space:read").
-  const membership = await db.spaceMember.findUnique({ where: { spaceId_userId: { spaceId: id, userId: user.id } } });
+  //
+  // RLS slice B — this one IS tenant-expressible and is converted: fm_app's
+  // `SpaceMember` SELECT policy carries a `userId = current_fm_user_id()` arm, so
+  // the caller's own row — ACTIVE, LEFT or REMOVED alike — is visible, which is
+  // exactly what the status check below needs.
+  const membership = await withTenantDb(user.id, (tx) => tx.spaceMember.findUnique({
+    where: { spaceId_userId: { spaceId: id, userId: user.id } },
+  }));
   const isActiveMember = membership?.status === "ACTIVE";
   if (!space.isPublic && !isActiveMember) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -125,7 +151,14 @@ export const PATCH = withApiHandler(async (
     resolvedReportingCurrency = parsed.value;
   }
 
-  const existing = await db.space.findUnique({ where: { id } });
+  // RLS slice B — requireSpaceRole has already established an ACTIVE ADMIN
+  // membership, so the Space is visible to fm_app and this read is its own short
+  // transaction (the validation below sits between it and the write).
+  //
+  // ⚠️ THE 404 IS NOW REDUNDANT RATHER THAN LOAD-BEARING. It is kept: a Space
+  // that genuinely does not exist still returns null, and under the policy a
+  // foreign one would too — which is the same answer, reached one layer earlier.
+  const existing = await withTenantDb(user.id, (tx) => tx.space.findUnique({ where: { id } }));
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   // ── Category allowlist (REVIEW-3, slice F) ─────────────────────────────
@@ -165,35 +198,44 @@ export const PATCH = withApiHandler(async (
     }
   }
 
-  const space = await db.space.update({
-    where: { id },
-    data: {
-      ...(name        !== undefined && { name: name.trim() }),
-      ...(description !== undefined && { description: description?.trim() || null }),
-      ...(isPublic    !== undefined && { isPublic }),
-      ...(category    !== undefined && { category: category as never }),
-      ...(archivedAt  !== undefined && { archivedAt: archivedAt ? new Date(archivedAt) : null }),
-      ...(resolvedReportingCurrency !== undefined && { reportingCurrency: resolvedReportingCurrency }),
-    },
-  });
-
-  await db.auditLog.create({
-    data: {
-      userId:      user.id,
-      spaceId: id,
-      action:      archivedAt !== undefined
-        ? (archivedAt ? AuditAction.SPACE_ARCHIVED : AuditAction.SPACE_UNARCHIVED)
-        : AuditAction.SPACE_UPDATE,
-      metadata:    {
-        name: space.name, isPublic: space.isPublic, category,
-        // MC1 Phase 4 Slice 2 (plan D-4) — record currency changes with
-        // from/to; omitted entirely when the field wasn't part of this PATCH.
-        ...(resolvedReportingCurrency !== undefined && resolvedReportingCurrency !== existing.reportingCurrency
-          ? { reportingCurrency: { from: existing.reportingCurrency, to: resolvedReportingCurrency } }
-          : {}),
+  // RLS slice B — the edit and its audit row are adjacent with no intervening
+  // work, so they share ONE transaction, which is also the one that carries the
+  // identity. They were two independent statements before; nothing that was
+  // atomic has been split, and a failed audit write can no longer leave an
+  // unrecorded Space edit behind.
+  const space = await withTenantDb(user.id, async (tx) => {
+    const updated = await tx.space.update({
+      where: { id },
+      data: {
+        ...(name        !== undefined && { name: name.trim() }),
+        ...(description !== undefined && { description: description?.trim() || null }),
+        ...(isPublic    !== undefined && { isPublic }),
+        ...(category    !== undefined && { category: category as never }),
+        ...(archivedAt  !== undefined && { archivedAt: archivedAt ? new Date(archivedAt) : null }),
+        ...(resolvedReportingCurrency !== undefined && { reportingCurrency: resolvedReportingCurrency }),
       },
-      ipAddress:   getClientIp(req),
-    },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        userId:      user.id,
+        spaceId: id,
+        action:      archivedAt !== undefined
+          ? (archivedAt ? AuditAction.SPACE_ARCHIVED : AuditAction.SPACE_UNARCHIVED)
+          : AuditAction.SPACE_UPDATE,
+        metadata:    {
+          name: updated.name, isPublic: updated.isPublic, category,
+          // MC1 Phase 4 Slice 2 (plan D-4) — record currency changes with
+          // from/to; omitted entirely when the field wasn't part of this PATCH.
+          ...(resolvedReportingCurrency !== undefined && resolvedReportingCurrency !== existing.reportingCurrency
+            ? { reportingCurrency: { from: existing.reportingCurrency, to: resolvedReportingCurrency } }
+            : {}),
+        },
+        ipAddress:   getClientIp(req),
+      },
+    });
+
+    return updated;
   });
 
   return NextResponse.json(space);
@@ -211,7 +253,8 @@ export const DELETE = withApiHandler(async (
   if (err) return err;
   const { user } = auth;
 
-  const space = await db.space.findUnique({ where: { id } });
+  // RLS slice B — an ACTIVE OWNER's own Space, read as that owner.
+  const space = await withTenantDb(user.id, (tx) => tx.space.findUnique({ where: { id } }));
   if (!space) return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (space.type === "PERSONAL") {
     return NextResponse.json({ error: "Cannot delete your Personal Space" }, { status: 400 });
@@ -225,19 +268,27 @@ export const DELETE = withApiHandler(async (
   // until (and unless) the space is permanently deleted from the trash
   // via app/api/spaces/[id]/permanent/route.ts. Clears archivedAt so a
   // space is never simultaneously "archived" and "trashed".
-  await db.space.update({
-    where: { id },
-    data:  { deletedAt: new Date(), archivedAt: null },
-  });
+  //
+  // RLS slice B — the trash flip and its audit row share ONE transaction (the
+  // one that carries the identity). Two independent statements before; nothing
+  // atomic was split. ⚠️ This is an UPDATE, not a DELETE: fm_app has an UPDATE
+  // policy on `Space` and no DELETE policy at all, which is exactly why the real
+  // delete lives in permanent/route.ts and is called out there.
+  await withTenantDb(user.id, async (tx) => {
+    await tx.space.update({
+      where: { id },
+      data:  { deletedAt: new Date(), archivedAt: null },
+    });
 
-  await db.auditLog.create({
-    data: {
-      userId:    user.id,
-      spaceId: id,
-      action:    AuditAction.SPACE_TRASHED,
-      metadata:  { name: space.name },
-      ipAddress: getClientIp(req),
-    },
+    await tx.auditLog.create({
+      data: {
+        userId:    user.id,
+        spaceId: id,
+        action:    AuditAction.SPACE_TRASHED,
+        metadata:  { name: space.name },
+        ipAddress: getClientIp(req),
+      },
+    });
   });
 
   return NextResponse.json({ ok: true });

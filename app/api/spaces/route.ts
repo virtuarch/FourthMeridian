@@ -5,10 +5,20 @@
  *                         be a live template — category derives from it) or
  *                         legacy `category` (SpaceCategory), and generates
  *                         default SpaceDashboardSection rows.
+ *
+ * ── RLS SLICE B — BOTH HANDLERS RUN AS THEIR USER ────────────────────────────
+ * Nothing here needs an authority wider than the caller. The GET's three reads
+ * are each already keyed on the caller (`SpaceMember.userId`,
+ * `PlatformGrant.userId`, and the platform Spaces those grants name), and the
+ * policies say the same thing — `SpaceMember.fm_app_sel` is
+ * `spaceId IN fm_visible_space_ids() OR userId = me`, and `Space.fm_app_sel`
+ * carries the PlatformGrant arm precisely so a platform Space is reachable
+ * without a membership row. The application predicates stay exactly as they
+ * were; the database now agrees with them instead of trusting them.
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { Prisma } from "@prisma/client";
 // SpaceCategory imported from space-presets so this file compiles
 // before `prisma generate` has been re-run with the new schema values.
@@ -43,35 +53,45 @@ export const GET = withApiHandler(async () => {
   console.log(`[api/spaces] requireUser: ${Date.now() - t0}ms`);
 
   const t1 = Date.now();
-  // `mine` (membership-driven) and `platform` (access-derived) are independent —
-  // run them together. Platform Spaces have NO SpaceMember rows by design, so
-  // they can never appear in `mine`; the two lists never overlap.
-  const [myMemberships, grants] = await Promise.all([
-    db.spaceMember.findMany({
-      // Exclude archived/trashed spaces from the default switcher list —
-      // they're only reachable via the Archive/Bin page from here on.
-      where: { userId: user.id, status: "ACTIVE", space: { archivedAt: null, deletedAt: null } },
-      select: {
-        role: true,
-        space: { select: { id: true, name: true, type: true } },
-      },
-      orderBy: { joinedAt: "asc" },
-    }),
-    // PO1.0 — platform Spaces the caller holds an ACTIVE grant on
-    // (access-derived; no SpaceMember rows exist for platform Spaces).
-    db.platformGrant.findMany({
-      where:  { userId: user.id, status: "ACTIVE" },
-      select: { area: true, level: true },
-    }),
-  ]);
-  console.log(`[api/spaces] myMemberships: ${Date.now() - t1}ms, total: ${Date.now() - t0}ms`);
+  // RLS slice B — ONE short transaction for the whole list read. The three
+  // queries are a single coherent operation (the platform read is a function of
+  // the grants), there is no non-database work between them, and nothing here
+  // calls out of the process.
+  const { myMemberships, grants, platformSpaces } = await withTenantDb(user.id, async (tx) => {
+    // `mine` (membership-driven) and `platform` (access-derived) are independent —
+    // run them together. Platform Spaces have NO SpaceMember rows by design, so
+    // they can never appear in `mine`; the two lists never overlap.
+    const [myMemberships, grants] = await Promise.all([
+      tx.spaceMember.findMany({
+        // Exclude archived/trashed spaces from the default switcher list —
+        // they're only reachable via the Archive/Bin page from here on.
+        where: { userId: user.id, status: "ACTIVE", space: { archivedAt: null, deletedAt: null } },
+        select: {
+          role: true,
+          space: { select: { id: true, name: true, type: true } },
+        },
+        orderBy: { joinedAt: "asc" },
+      }),
+      // PO1.0 — platform Spaces the caller holds an ACTIVE grant on
+      // (access-derived; no SpaceMember rows exist for platform Spaces).
+      tx.platformGrant.findMany({
+        where:  { userId: user.id, status: "ACTIVE" },
+        select: { area: true, level: true },
+      }),
+    ]);
 
-  const platform = grants.length === 0 ? [] : (
-    await db.space.findMany({
+    const platformSpaces = grants.length === 0 ? [] : await tx.space.findMany({
       where:  { platformArea: { in: grants.map((g) => g.area) } },
       select: { id: true, name: true, platformArea: true },
-    })
-  ).map((s) => ({ ...s, access: grants.find((g) => g.area === s.platformArea)!.level }));
+    });
+
+    return { myMemberships, grants, platformSpaces };
+  });
+  console.log(`[api/spaces] myMemberships: ${Date.now() - t1}ms, total: ${Date.now() - t0}ms`);
+
+  const platform = platformSpaces.map((s) => ({
+    ...s, access: grants.find((g) => g.area === s.platformArea)!.level,
+  }));
 
   return NextResponse.json({
     mine: myMemberships.map((m) => ({ ...m.space, myRole: m.role })),
@@ -147,10 +167,13 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // Space thereafter (no retroactive inheritance; editing the User default
   // never re-denominates existing Spaces). Nothing reads the value yet — the
   // conversion flip is Phase 3 Slices 3–6.
-  const creator = await db.user.findUnique({
+  // RLS slice B — the creator reads their OWN User row, which is exactly what
+  // fm_app's `User` policy (`id = current_fm_user_id()`) permits and all this
+  // ever wanted.
+  const creator = await withTenantDb(user.id, (tx) => tx.user.findUnique({
     where:  { id: user.id },
     select: { reportingCurrency: true },
-  });
+  }));
   const reportingCurrency = reportingCurrencyForNewSpace(creator);
 
   // Space creation, membership, dashboard sections, and the Space's AiAgent
@@ -158,7 +181,30 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // enforces @@unique on spaceId); creating it here — in the same transaction
   // as the Space — mirrors the register route and prevents the "No AiAgent
   // found" gap that buildContext() would otherwise hit on the Daily Brief.
-  const space = await db.$transaction(async (tx) => {
+  // ⚠️ RLS slice B — THE ORDER OF THE WRITES INSIDE THIS TRANSACTION IS NOW
+  // LOAD-BEARING, AND SO IT IS NO LONGER LEFT TO PRISMA'S NESTED-WRITE EMISSION
+  // ORDER. Every Space-scoped table's INSERT policy is
+  // `spaceId IN (SELECT fm_visible_space_ids())`, and that function reads
+  // SpaceMember — so a child row can only be written AFTER the creator's OWNER
+  // membership exists. Within one transaction a later statement sees the earlier
+  // statement's uncommitted rows, so the sequence below is admissible, but only
+  // in this sequence:
+  //
+  //     1. Space              INSERT policy is WITH CHECK (true) — deliberately,
+  //                           because creation is self-service and no membership
+  //                           can exist yet (see §11 of the RLS migration).
+  //     2. SpaceMember        admitted by the `userId = current_fm_user_id()` arm
+  //                           of its INSERT policy — the creator inserting their
+  //                           OWN row. This is the statement that makes the new
+  //                           Space visible to everything after it.
+  //     3. sections, AiAgent  now `spaceId IN fm_visible_space_ids()` holds.
+  //
+  // `dashboardSections` therefore moved OUT of the nested create: as a sibling
+  // nested write its position relative to `members` was Prisma's choice, not
+  // ours, and if it had gone first every new Space would have been born with no
+  // sections and no error. The response shape is unchanged — the rows are read
+  // back under the same orderBy the include used.
+  const space = await withTenantDb(user.id, async (tx) => {
     const created = await tx.space.create({
       data: {
         name:        name.trim(),
@@ -170,25 +216,29 @@ export const POST = withApiHandler(async (req: NextRequest) => {
         members: {
           create: { userId: user.id, role: "OWNER" },
         },
-        dashboardSections: {
-          create: sectionPresets.map((s) => ({
-            key:     s.key,
-            label:   s.label,
-            tab:     s.tab,
-            enabled: s.enabled,
-            order:   s.order,
-            config:  s.config == null ? Prisma.DbNull : s.config as Prisma.InputJsonValue,
-          })),
-        },
       },
       include: {
         members: {
           include: { user: { select: { id: true, name: true, username: true } } },
         },
-        dashboardSections: {
-          orderBy: [{ tab: "asc" }, { order: "asc" }],
-        },
       },
+    });
+
+    await tx.spaceDashboardSection.createMany({
+      data: sectionPresets.map((s) => ({
+        spaceId: created.id,
+        key:     s.key,
+        label:   s.label,
+        tab:     s.tab,
+        enabled: s.enabled,
+        order:   s.order,
+        config:  s.config == null ? Prisma.DbNull : s.config as Prisma.InputJsonValue,
+      })),
+    });
+
+    const dashboardSections = await tx.spaceDashboardSection.findMany({
+      where:   { spaceId: created.id },
+      orderBy: [{ tab: "asc" }, { order: "asc" }],
     });
 
     await tx.aiAgent.create({
@@ -199,10 +249,10 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       },
     });
 
-    return created;
+    return { ...created, dashboardSections };
   });
 
-  await db.auditLog.create({
+  await withTenantDb(user.id, (tx) => tx.auditLog.create({
     data: {
       userId:      user.id,
       spaceId: space.id,
@@ -212,7 +262,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       metadata:    { name: space.name, isPublic: space.isPublic, category: resolvedCategory as string, templateId: template.id },
       ipAddress:   getClientIp(req),
     },
-  });
+  }));
 
   return NextResponse.json(space, { status: 201 });
 }, "POST /api/spaces");
