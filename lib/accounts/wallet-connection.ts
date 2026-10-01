@@ -175,6 +175,55 @@ export async function recordWalletSyncRefusal(params: {
 }
 
 /**
+ * CRYPTO-FRESHNESS-1 — RECORD THAT A NAMED FACET ACTUALLY SUCCEEDED.
+ *
+ * `Connection.lastSyncedAt` means "a provider sync succeeded", and for a wallet
+ * that is specifically "the BALANCE was read". The Connections card nonetheless
+ * read it as "Transactions: Updated" and as "Financial profile: Built", so on
+ * 2026-10-01 a BTC refresh whose transaction import had ABORTED at the 10 s
+ * budget rendered "Transactions: Updated today". The import's FAILED outcome
+ * travelled on the result object and reached the banner — which told the truth —
+ * and was then discarded. No durable timestamp recorded it, so the card could
+ * not tell a failed import from a successful one and claimed success by default.
+ *
+ * These clocks are written ONLY on the success of the facet named, so:
+ *   · a failed import leaves `transactionsSyncedAt` where the last SUCCESSFUL
+ *     one left it — a truthful older date, or null if there has never been one;
+ *   · null means NEVER SUCCEEDED, and the UI renders that as silence rather than
+ *     substituting a different clock.
+ *
+ * Only fields explicitly passed are written: a run that refreshed history but
+ * failed its import must not advance the import's clock, and vice versa.
+ *
+ * Best-effort and non-throwing, like every other clock writer here: a sync must
+ * not fail because recording its freshness failed.
+ */
+export async function recordWalletFacetSuccess(params: {
+  financialAccountId: string;
+  /** Set when the transaction-history acquisition COMPLETED. */
+  transactionsSyncedAt?: Date;
+  /** Set when the derived-history reconstruction COMPLETED. */
+  historyRebuiltAt?: Date;
+  client?: DbClient;
+}): Promise<void> {
+  const data: { transactionsSyncedAt?: Date; historyRebuiltAt?: Date } = {};
+  if (params.transactionsSyncedAt) data.transactionsSyncedAt = params.transactionsSyncedAt;
+  if (params.historyRebuiltAt)     data.historyRebuiltAt     = params.historyRebuiltAt;
+  if (Object.keys(data).length === 0) return;
+  try {
+    const client = params.client ?? db;
+    const link = await client.accountConnection.findFirst({
+      where:  { financialAccountId: params.financialAccountId, deletedAt: null, connectionId: { not: null } },
+      select: { connectionId: true },
+    });
+    if (!link?.connectionId) return;
+    await client.connection.update({ where: { id: link.connectionId }, data });
+  } catch (e) {
+    console.warn(`[wallet-connection] could not record facet freshness for ${params.financialAccountId} (non-fatal):`, e);
+  }
+}
+
+/**
  * Clear a stale error WITHOUT marking the connection fully synced. Used when an
  * xpub sync makes partial discovery PROGRESS: a prior run's errorCode must not
  * outlive it (that's what wrongly pinned the card on "Sync Error"), but the

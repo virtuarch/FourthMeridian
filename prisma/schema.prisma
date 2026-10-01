@@ -1031,6 +1031,35 @@ model Connection {
   cursor               String? // sync cursor, where the provider supports one
   errorCode            String?
   lastSyncedAt         DateTime?
+  // ───────────────────────────────────────────────────────────────────────────
+  // CRYPTO-FRESHNESS-1 — PER-FACET SUCCESS CLOCKS.
+  //
+  // `lastSyncedAt` above means "a provider sync succeeded", and for a WALLET
+  // that is specifically "the BALANCE was read". The Connections card was
+  // nevertheless reading it for THREE different claims — "Transactions:
+  // Updated", "Financial profile: Built", and (through the account clock) the
+  // overall freshness — so on 2026-10-01 a BTC refresh whose transaction import
+  // had ABORTED rendered "Transactions: Updated today". The import's outcome
+  // existed on the result object and reached the banner, then was discarded:
+  // no durable timestamp recorded it, so the card could not tell a failed
+  // import from a successful one and defaulted to claiming success.
+  //
+  // These two columns are that missing durable state. They are written ONLY on
+  // the success of the facet they name, so an absent value means "never
+  // successfully established", never "unknown" and never "assume the balance
+  // clock". Nullable and permanently so: every pre-existing row reads null and
+  // the UI must render that as silence rather than inventing a date.
+  //
+  // WHY NOT READ RefreshExecution/RefreshEndpointResult INSTEAD: that ledger is
+  // OPERATIONAL history with its own retention lifecycle, and product freshness
+  // must not silently become whatever the retention window happens to still
+  // hold. A fact the user is shown needs state whose lifetime is the
+  // connection's, not the log's.
+
+  /// Last SUCCESSFUL transaction-history acquisition. Null = never succeeded.
+  transactionsSyncedAt DateTime?
+  /// Last SUCCESSFUL derived-history reconstruction. Null = never succeeded.
+  historyRebuiltAt     DateTime?
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
 

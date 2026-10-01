@@ -40,9 +40,17 @@ const body = (s: string) => {
 // ══ THE RECONSTRUCTIONS NOW HAVE A CALLER ═════════════════════════════════════
 {
   const dispatch = code(read("lib", "crypto", "wallet-sync-dispatch.ts"));
+  // CRYPTO-PARALLEL-1 — this used to pin the exact line
+  //   `const historyRefresh = result.ok ? await refreshWalletHistory(...) : null;`
+  // The refresh is now awaited inside a Promise.all alongside the independent
+  // CURRENT_QUOTE stage, so the LITERAL changed while the two properties it was
+  // really protecting did not. They are asserted directly below, which is
+  // stronger: the old regex would have passed for any `await` anywhere.
   check("a successful sync refreshes the chain's history",
-    /const historyRefresh = result\.ok \? await refreshWalletHistory\(accountId, key\) : null;/.test(dispatch),
+    /refreshWalletHistory\(accountId, key\)/.test(dispatch),
     "without this the reconstructions have zero production callers and history goes stale");
+  check("…and it is the dispatcher that calls it (one production caller, not a route)",
+    /const \[quote, historyRefresh\] = await Promise\.all\(\[/.test(dispatch));
 
   const refresh = code(read("lib", "crypto", "wallet-history-refresh.ts"));
   check("…dispatching to the reconstruction that belongs to the chain",
@@ -57,8 +65,13 @@ const body = (s: string) => {
 
   // ONLY on success: re-running against a failed acquisition is how a provider
   // outage turns into a narrower history.
+  // Still gated on `result.ok`, now as the ternary's condition inside the join.
+  // Re-running against a failed acquisition is how a provider outage turns into
+  // a narrower history, so this gate is the load-bearing part — not the `await`.
   check("a FAILED sync refreshes nothing",
-    /result\.ok \? await refreshWalletHistory/.test(dispatch));
+    /result\.ok\s*\n?\s*\?\s*refreshWalletHistory\(accountId, key\)/.test(dispatch));
+  check("…and a FAILED sync re-quotes nothing either",
+    /result\.ok\s*\n?\s*\?\s*refreshCurrentQuotesForChains\(\[key\]\)/.test(dispatch));
   check("the refresh is never fatal to the sync",
     /reconstruction threw/.test(refresh),
     "a history step must not turn a balance we DID read into a 502");

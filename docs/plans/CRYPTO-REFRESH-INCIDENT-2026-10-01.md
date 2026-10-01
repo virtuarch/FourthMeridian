@@ -718,9 +718,11 @@ Two further findings fall out of this table:
 - **BTC's `TRANSACTIONS` succeeded on retry in 5 770 ms** (28 rows read, 0 new) —
   i.e. the work *fits* inside 10 s when the provider is merely slow rather than
   degraded. The 10 s budget is marginal, not wrong by an order of magnitude.
-- **ETH's `HISTORY_BACKFILL` spent 43 784 ms to write ZERO rows**, and SOL's spent
-  44 123 ms. That is ~85 % of each request's wall-clock, it is non-gating, it holds
-  the HTTP connection open, and for ETH it accomplished nothing. P1-3.
+- **ETH's `HISTORY_BACKFILL` spent 43 784 ms** and SOL's 44 123 ms — ~85 % of each
+  request's wall-clock, non-gating, holding the HTTP connection open. P1-3.
+  ⚠️ I first read ETH's `recordsWritten: 0` as "accomplished nothing"; that was wrong
+  — the 0 is hardcoded for `mode === "NO_CHANGE"`, which means it PROVED nothing
+  changed. See the correction under P1-3.
 
 `SyncIssue` where `provider='WALLET'` today — **exactly two rows, both from the
 incident, both honest**:
@@ -730,13 +732,23 @@ incident, both honest**:
 17:10:11.887  WALLET_SYNC_FAILED  {"chain":"SOL","stage":"balance","message":"network error: This operation was aborted"}
 ```
 
-> ⚠️ **Note: BTC's PARTIAL runs produced NO `SyncIssue` row today.** `btc-sync.ts:785`
-> does call `recordWalletSyncIssue(accountId, "price", …)`, so a `price` issue should
-> exist for both BTC runs and does not appear in the `provider='WALLET'` set. Either
-> it is recorded under a different provider/kind or it was suppressed. Worth one
-> check during repair — a latched valuation failure that leaves no incident row is
-> exactly the thing that let this go unnoticed for days. (Flagged as P1-4; not
-> chased further here to keep the read-only footprint small.)
+> ⚠️ **CORRECTED 2026-10-01 during the repair.** I first wrote that BTC's PARTIAL runs
+> produced no `SyncIssue` row. **That was wrong, and it was my query's fault.** The
+> `price` issue exists and is correct; `recordSyncIssue` converges retries into one
+> EPISODE, so the row's `createdAt` is 2026-09-15 and only its `lastOccurredAt`
+> advanced to 2026-10-01 17:15:19 — invisible to a `createdAt > '2026-10-01'` filter:
+>
+> ```
+> stage    chain  firstOccurredAt           lastOccurredAt            resolved
+> price    BTC    2026-09-15 17:19:44.496   2026-10-01 17:15:19.428   f
+> balance  ETH    2026-10-01 17:10:12.876   2026-10-01 17:10:12.876   f
+> balance  SOL    2026-10-01 17:10:11.874   2026-10-01 17:10:11.874   f
+> ```
+>
+> The lesson is sharper than the defect I claimed: **a latched failure is exactly the
+> one that looks old by `createdAt`**, so an incident reader must sort by
+> `lastOccurredAt` or it will systematically hide the longest-running problems. See
+> the revised P1-4.
 
 Live state fingerprint (read-only, taken before any conclusion):
 
@@ -982,12 +994,50 @@ failure. Directly caused both 502s.
 **P1-3 — ETH and SOL history reconstruction has no timeout at all.** `eth-history.ts:380-388`
 and `sol-history.ts:233-248` build transports with **no `signal`**. A hanging host
 hangs until the platform kills the request. Measured cost even when healthy:
-43 784 ms (ETH, **0 rows written**) and 44 123 ms (SOL) — ~85 % of the request.
+43 784 ms (ETH) and 44 123 ms (SOL) — ~85 % of the request. **This half stands.**
 
-**P1-4 — BTC's latched valuation failure left no `SyncIssue` row.** `btc-sync.ts:785`
-should record a `price` issue; none appears in today's `provider='WALLET'` set despite
-two PARTIAL runs. A permanent failure with no incident row is why this went unnoticed
-for ~11 days.
+> ⚠️ **CORRECTED 2026-10-01 during the repair — "ETH wrote 0 rows" was a reporting
+> convention, not waste.** `recordHistoryStage` (`wallet-sync-dispatch.ts`) **hardcodes**
+> `{ recordsWritten: 0, recordsChanged: 0 }` whenever `mode === "NO_CHANGE"`. So the
+> ledger's 0 does not mean the run accomplished nothing; it means the run PROVED
+> nothing had changed — which `eth-history-incremental.ts:178-182` does by writing the
+> checkpoint quantity forward for each day, then reporting NO_CHANGE.
+>
+> That proof is real work and genuinely requires chain reads: verifying the stored
+> checkpoint against the chain at the resume block, then walking ~10 days of new
+> blocks (Sep 21 → Oct 1) on a degraded network. It is NOT deterministically skippable
+> — ETH has no transfer index available here (`alchemy_getAssetTransfers` is refused by
+> design), so "has anything happened?" cannot be answered more cheaply than by asking
+> the chain.
+>
+> So there was **no obviously unnecessary zero-work reconstruction to eliminate**, and
+> the Slice 9 outcome is: the latency is real, non-gating, and moving it off the
+> synchronous refresh is genuine architecture. **Deferred, with this evidence.** The
+> available win was taken instead — overlapping it with the independent quote stage
+> (CRYPTO-PARALLEL-1), and `freshnessAdvanced: false` for NO_CHANGE is correct as it
+> stands.
+
+**P1-4 — ~~BTC's latched valuation failure left no `SyncIssue` row.~~ WITHDRAWN —
+THIS WAS MY QUERY, NOT A DEFECT.** Corrected during the repair (2026-10-01): the
+`price` issue **does** exist and is correct. `recordSyncIssue` converges retries into
+one EPISODE, so the row carries
+
+```
+stage=price chain=BTC  firstOccurredAt 2026-09-15 17:19:44  lastOccurredAt 2026-10-01 17:15:19
+```
+
+My original query filtered `createdAt > '2026-10-01'`, and this episode's `createdAt`
+is from September — so it was invisible to the query, not missing from the table. The
+convergence is the behaviour `recordSyncIssue` was built for (it replaced a path that
+inserted a fresh row per retry).
+
+**The real lesson is sharper than the one I claimed:** a LATCHED failure is precisely
+the one that looks *old* by `createdAt`. Any reader that sorts or filters incidents by
+`createdAt` will systematically hide exactly the longest-running problems. Incident
+readers must use `lastOccurredAt`.
+
+Note also what the corrected row shows: BTC's valuation has been failing intermittently
+since **2026-09-15**, not merely since the 09-28 latch arming.
 
 **P1-7 — The CoinGecko transport is unbounded.** `coingecko.ts:419-428` is a bare
 `fetch(url, init)` with **no `AbortSignal`, no retry, no fallback vendor** — the only

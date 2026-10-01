@@ -70,6 +70,9 @@ import type { SourceHealthInput } from "@/lib/connections/space-data-health.core
 import { loadRefreshPolicies, type RefreshPolicies } from "@/lib/platform/refresh-policy";
 import type { AccountLite } from "@/components/connections/ConnectionCard";
 import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wallet-history-metadata";
+// CRYPTO-FRESHNESS-1 — "does this chain STORE a value?" is registry policy, asked
+// here rather than re-decided, so a valuation clock is only claimed where one exists.
+import { usesLegacyColumnForCurrentValue } from "@/lib/crypto/wallet-sync-dispatch";
 
 /**
  * The canonical Connections view model. `status` is the provider-agnostic
@@ -204,9 +207,16 @@ async function loadPlaidConnectionAccounts(
  *   - PLAID_HISTORY_SYNCED AuditLog anchor → reconstruction-complete + timestamp
  *   - MIN(non-deleted Transaction.date) across the connection's accounts → available history
  *   - SyncConnection.state → acquisition status
- * Wallets have no PLAID_HISTORY_SYNCED anchor (reconstruction runs inline before
- * Connection.lastSyncedAt is set), so a ready wallet uses lastSyncedAt as the
- * reconstruction proxy. PCS-2-safe: status/dates only, no balances/valuations.
+ * CRYPTO-FRESHNESS-1 — WALLETS NO LONGER PROXY ANYTHING. This used to say that a
+ * ready wallet "uses lastSyncedAt as the reconstruction proxy", and that proxy
+ * is precisely how a BTC refresh whose transaction import had ABORTED came to
+ * render "Transactions: Updated today" and "Financial profile: Built today" on
+ * 2026-10-01. `Connection.lastSyncedAt` means "the balance was read" for a
+ * wallet, and it is now used for exactly that and nothing else. Transaction and
+ * reconstruction freshness come from their OWN success clocks
+ * (`Connection.transactionsSyncedAt` / `historyRebuiltAt`), and the current
+ * position comes from the spine. An absent clock renders as silence.
+ * PCS-2-safe: status/dates only, no balances/valuations.
  */
 async function loadConnectionIntelligence(
   userId: string,
@@ -215,6 +225,8 @@ async function loadConnectionIntelligence(
   connectedAtByConnId: Map<string, Date>,
   /** Raw provider fields per connection id, for sourceHealthForConnection. */
   rawByConnId: Map<string, Pick<SourceHealthInput, "plaid" | "wallet">>,
+  /** CRYPTO-FRESHNESS-1 — per-facet success clocks (wallet connections). */
+  facetClocksByConnId: Map<string, { transactionsSyncedAt: Date | null; historyRebuiltAt: Date | null }>,
   /** Resolved once per page load — the same policies the Brief's data health uses. */
   policies: RefreshPolicies,
 ): Promise<Record<string, ConnectionIntelligenceStatus>> {
@@ -288,6 +300,26 @@ async function loadConnectionIntelligence(
     .filter((a) => a.walletChain !== null);
   const historyMeta = await loadWalletHistoryMetadata(walletAccounts);
 
+  // CRYPTO-FRESHNESS-1 — CURRENT-POSITION FRESHNESS, from the spine.
+  //
+  // `PositionObservation` is the authoritative record that a quantity was
+  // OBSERVED, and it advances whether or not that quantity could be priced. No
+  // connection surface read it before, which is why the incident's card said
+  // "Balances: Updated on Sep 21" while the spine already carried a 2026-10-01
+  // observation written minutes earlier. Timestamp only — no quantity, no value,
+  // so the PCS-2 no-portfolio-read boundary holds.
+  const positionRows = allAccountIds.length
+    ? await db.positionObservation.groupBy({
+        by:    ["financialAccountId"],
+        where: { financialAccountId: { in: allAccountIds }, supersededById: null, deletedAt: null },
+        _max:  { date: true },
+      })
+    : [];
+  const positionObservedByAccount = new Map<string, Date>();
+  for (const r of positionRows) {
+    if (r.financialAccountId && r._max.date) positionObservedByAccount.set(r.financialAccountId, r._max.date);
+  }
+
   const out: Record<string, ConnectionIntelligenceStatus> = {};
   for (const c of connections) {
     // Connection availability = the earliest transaction across its accounts;
@@ -312,13 +344,48 @@ async function loadConnectionIntelligence(
       // with a stale one look current. The same rule the Daily Brief applies.
       if (b && (!balancesUpdated || b < balancesUpdated)) balancesUpdated = b;
     }
+    const facets = facetClocksByConnId.get(c.id);
+    // CRYPTO-FRESHNESS-1 — THE FALLBACK IS GONE.
+    //
+    // This read `(anchor) ?? (WALLET && ready && lastSyncedAt)`, so any ready
+    // wallet reported "Financial profile: Built <balance sync time>" whether or
+    // not a reconstruction had ever run — and on the incident run, where the
+    // reconstruction was skipped entirely because `outcomeRevalued` was false,
+    // it still said "Built today".
+    //
+    // A wallet now uses its OWN reconstruction clock, written only when
+    // `refreshWalletHistory` actually refreshed. Null stays null: "we have never
+    // successfully rebuilt this" is a fact, and silence is how it is told.
     const historySyncedAt =
       (anchorByConn.get(c.id) ?? null) ??
-      // Wallet fallback: reconstruction runs inline before Connection.lastSyncedAt
-      // is set, so a ready wallet with no explicit anchor uses lastSyncedAt.
-      (c.provider === "WALLET" && c.state === "ready" && c.lastSyncedAt
-        ? new Date(c.lastSyncedAt)
-        : null);
+      (c.provider === "WALLET" ? facets?.historyRebuiltAt ?? null : null);
+
+    // TRANSACTION HISTORY — its own authority per provider.
+    //   PLAID  the item sync IS the transaction sync, so `lastSyncedAt` is not a
+    //          proxy here; it is the same fact under a different name.
+    //   WALLET `transactionsSyncedAt`, advanced only by a COMPLETED import.
+    const transactionsSyncedAt = c.provider === "PLAID"
+      ? (c.lastSyncedAt ? new Date(c.lastSyncedAt) : null)
+      : (facets?.transactionsSyncedAt ?? null);
+
+    // CURRENT POSITION — the newest observation on the spine. The one clock that
+    // was correct and current throughout the incident, and the one the card had
+    // no reader for at all.
+    let positionObservedAt: Date | null = null;
+    for (const a of accountsByConnectionId[c.id] ?? []) {
+      const p = positionObservedByAccount.get(a.id) ?? null;
+      if (p && (!positionObservedAt || p > positionObservedAt)) positionObservedAt = p;
+    }
+
+    // VALUATION — for a wallet whose adapter STORES a value, `lastUpdated` is
+    // that value's instant (btc-sync advances it only on a priced run, by
+    // design). For a read-time-valued chain there is no such clock, and claiming
+    // one would be inventing it.
+    const chains = (accountsByConnectionId[c.id] ?? [])
+      .map((a) => walletChainByAccount.get(a.id) ?? null)
+      .filter((ch): ch is string => ch !== null);
+    const valuationIsReadTime = c.provider === "WALLET" && chains.length > 0
+      && chains.every((ch) => !usesLegacyColumnForCurrentValue(ch));
 
     out[c.id] = deriveConnectionIntelligence(
       {
@@ -329,6 +396,12 @@ async function loadConnectionIntelligence(
         connectedAt:    connectedAtByConnId.get(c.id) ?? null,
         lastSyncedAt:   c.lastSyncedAt ? new Date(c.lastSyncedAt) : null,
         balancesUpdatedAt: balancesUpdated,
+        positionObservedAt,
+        transactionsSyncedAt,
+        // The same column the Balances row reads, named for what it means on a
+        // wallet: the instant the stored USD figure was computed.
+        valuationUpdatedAt: valuationIsReadTime ? null : balancesUpdated,
+        valuationIsReadTime,
         sourceHealth: sourceHealthForConnection({ provider: c.provider, accountsUpdated, ...rawByConnId.get(c.id),
           policy: c.provider === "PLAID" ? policies.BANK : policies.WALLET }, now),
       },
@@ -382,7 +455,12 @@ export async function loadConnectionsSpaceData(userId: string): Promise<Connecti
     where:  { userId, status: { not: ConnectionStatus.REVOKED } },
     // status/errorCode/lastSyncedAt/cursor — the raw fields source health reads
     // (the cursor only as "is there one"; its value never leaves this function).
-    select: { id: true, createdAt: true, status: true, errorCode: true, lastSyncedAt: true, cursor: true },
+    // CRYPTO-FRESHNESS-1 — `transactionsSyncedAt` / `historyRebuiltAt` are the
+    // per-facet SUCCESS clocks. They exist because this loader used to answer
+    // three different questions with `lastSyncedAt`, which for a wallet means
+    // only "the balance was read".
+    select: { id: true, createdAt: true, status: true, errorCode: true, lastSyncedAt: true, cursor: true,
+              transactionsSyncedAt: true, historyRebuiltAt: true },
   });
   const rawByConnId = new Map<string, Pick<SourceHealthInput, "plaid" | "wallet">>();
   for (const i of items) {
@@ -395,6 +473,11 @@ export async function loadConnectionsSpaceData(userId: string): Promise<Connecti
   const connectedAtByConnId = new Map<string, Date>();
   for (const i of items) connectedAtByConnId.set(i.id, i.createdAt);
   for (const w of walletCreatedRows) connectedAtByConnId.set(w.id, w.createdAt);
+  // CRYPTO-FRESHNESS-1 — per-facet success clocks, wallet connections only.
+  const facetClocksByConnId = new Map<string, { transactionsSyncedAt: Date | null; historyRebuiltAt: Date | null }>();
+  for (const w of walletCreatedRows) {
+    facetClocksByConnId.set(w.id, { transactionsSyncedAt: w.transactionsSyncedAt, historyRebuiltAt: w.historyRebuiltAt });
+  }
 
   const intelligenceByConnectionId = await loadConnectionIntelligence(
     userId,
@@ -402,6 +485,7 @@ export async function loadConnectionsSpaceData(userId: string): Promise<Connecti
     accountsByConnectionId,
     connectedAtByConnId,
     rawByConnId,
+    facetClocksByConnId,
     await loadRefreshPolicies(),
   );
 

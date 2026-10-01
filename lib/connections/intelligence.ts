@@ -80,6 +80,32 @@ export interface ConnectionIntelligenceStatus {
   /** The source's health by the SAME rule the Daily Brief shows
    *  (space-data-health.core deriveSourceHealth). null when not derived. */
   sourceHealth:            SourceHealth | null;
+  // ── CRYPTO-FRESHNESS-1 — FOUR FACETS, FOUR AUTHORITIES ───────────────────
+  //
+  // Each of these answers a DIFFERENT question, and the incident of 2026-10-01
+  // happened because three of them were being answered by one clock
+  // (`Connection.lastSyncedAt`, which for a wallet means "the balance was
+  // read"). A BTC refresh whose transaction import had aborted rendered
+  // "Transactions: Updated today".
+  //
+  // null means NEVER SUCCESSFULLY ESTABLISHED, and the UI must render null as
+  // silence. It must never fall back to another facet's clock.
+
+  /** CURRENT POSITION — newest PositionObservation date. The authoritative record
+   *  that a quantity was observed, independent of whether it could be PRICED. */
+  positionObservedAt:      string | null; // ISO
+  /** TRANSACTION HISTORY — last SUCCESSFUL acquisition. Plaid: the item sync (its
+   *  sync IS transactions). Wallet: `Connection.transactionsSyncedAt`, written
+   *  only when the import completed. */
+  transactionsSyncedAt:    string | null; // ISO
+  /** VALUATION — when the stored value was last computed. For BTC this is
+   *  `FinancialAccount.lastUpdated`, which that adapter advances ONLY on a priced
+   *  run, deliberately (btc-sync: an unpriced run must not publish
+   *  old-quantity × old-price as fresh). */
+  valuationUpdatedAt:      string | null; // ISO
+  /** True when this source's value is derived at READ time rather than stored, so
+   *  a "valuation" clock would be meaningless for it (ETH, SOL). */
+  valuationIsReadTime:     boolean;
 }
 
 /** Structural input for the pure derivation — gathered by the loader. */
@@ -101,6 +127,22 @@ export interface IntelligenceInput {
   balancesUpdatedAt: Date | null;
   /** From sourceHealthForConnection — omitted by callers that do not derive it (ops). */
   sourceHealth?: SourceHealth | null;
+  // ── CRYPTO-FRESHNESS-1 ────────────────────────────────────────────────────
+  /** Newest PositionObservation date across the connection's accounts. */
+  positionObservedAt?: Date | null;
+  /**
+   * Last SUCCESSFUL transaction acquisition.
+   *
+   * ⚠️ The loader must pass `Connection.transactionsSyncedAt` for a WALLET, NOT
+   * `lastSyncedAt`. For PLAID the item sync IS the transaction sync, so
+   * `lastSyncedAt` is the correct authority there and passing it is not a
+   * fallback — it is the same fact under a different name.
+   */
+  transactionsSyncedAt?: Date | null;
+  /** When the stored valuation was last computed (null for read-time chains). */
+  valuationUpdatedAt?: Date | null;
+  /** True when value is derived at read time and no valuation clock applies. */
+  valuationIsReadTime?: boolean;
 }
 
 const MS_PER_DAY = 86_400_000;
@@ -183,6 +225,13 @@ export function deriveConnectionIntelligence(
     lastSyncedAt: input.lastSyncedAt ? input.lastSyncedAt.toISOString() : null,
     balancesUpdatedAt: input.balancesUpdatedAt ? input.balancesUpdatedAt.toISOString() : null,
     sourceHealth: input.sourceHealth ?? null,
+    // CRYPTO-FRESHNESS-1 — each passed through from its OWN authority. No
+    // coalescing: an absent facet clock stays absent, because substituting
+    // another facet's clock is exactly the defect being removed.
+    positionObservedAt:   input.positionObservedAt   ? input.positionObservedAt.toISOString()   : null,
+    transactionsSyncedAt: input.transactionsSyncedAt ? input.transactionsSyncedAt.toISOString() : null,
+    valuationUpdatedAt:   input.valuationUpdatedAt   ? input.valuationUpdatedAt.toISOString()   : null,
+    valuationIsReadTime:  input.valuationIsReadTime === true,
   };
 }
 

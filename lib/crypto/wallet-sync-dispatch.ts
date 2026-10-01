@@ -53,7 +53,7 @@ const BNB_CHAIN = BNB_NETWORK.chain;
 const AVAX_CHAIN = AVAX_NETWORK.chain;
 import { refreshWalletHistory, type WalletHistoryRefresh } from "./wallet-history-refresh";
 import { coverageCanValue, type CryptoCloseCoverage } from "./crypto-close-coverage";
-import { recordWalletSyncRefusal } from "@/lib/accounts/wallet-connection";
+import { recordWalletSyncRefusal, recordWalletFacetSuccess } from "@/lib/accounts/wallet-connection";
 // PLATFORM OPS OBSERVABILITY — every wallet sync is now an EXECUTION in the one
 // refresh ledger (RefreshExecution), exactly like a Plaid refresh: a start row,
 // the adapter's run as a PROVIDER stage, the history refresh as a DERIVED
@@ -121,6 +121,53 @@ export function walletSyncErrorCode(stage: string | undefined): WalletSyncErrorC
 }
 
 /**
+ * CRYPTO-COPY-1 — THE PRODUCT-FACING SENTENCE FOR A FAILED WALLET SYNC.
+ *
+ * Pure, so it is testable without a provider and cannot drift from what is
+ * recorded. Derived from the generic error code and the CLASSIFIED failure
+ * category (`classifyFailureCategory`, the same classifier the refresh ledger's
+ * verdict uses) rather than from pattern-matching the provider's prose a second
+ * time — one classifier, two audiences.
+ *
+ * EVERY MESSAGE STATES WHAT SURVIVED. That is the point: a failed authoritative
+ * quantity read writes nothing, so the previous position is still there, and a
+ * user who is not told that reasonably assumes their balance was destroyed.
+ */
+export function walletSyncUserMessage(
+  errorCode: WalletSyncErrorCode | undefined,
+  reason: string | undefined,
+  chain: string,
+): string {
+  switch (errorCode) {
+    case "PROVIDER_NOT_CONFIGURED":
+      return `Fourth Meridian is not configured to read ${chain} right now. Your recorded position is unchanged.`;
+    case "INVALID_WALLET_ADDRESS":
+      return "This wallet's address isn't valid for its chain, so it can't be read. Edit the address to fix it.";
+    case "CHAIN_UNSUPPORTED":
+      return `Fourth Meridian cannot read ${chain} wallets yet. The wallet stays recorded; only its balance is unavailable.`;
+    case "POSITION_CAPTURE_UNAVAILABLE":
+      return "The balance was read but couldn't be recorded, so nothing was changed. Try again shortly.";
+    case "BALANCE_UNAVAILABLE": {
+      // The abort that produced "This operation was aborted" classifies here.
+      const category = classifyFailureCategory({ code: errorCode, message: reason });
+      if (category === "PROVIDER_TIMEOUT") {
+        return "Balance provider timed out. Existing position was kept.";
+      }
+      if (category === "PROVIDER_RATE_LIMITED") {
+        return "The balance provider is rate-limiting us right now. Existing position was kept.";
+      }
+      if (category === "PROVIDER_AUTH") {
+        return "The balance provider rejected our credentials. Existing position was kept.";
+      }
+      return `${chain} couldn't be read right now. Existing position was kept.`;
+    }
+    case "ADAPTER_ERROR":
+    default:
+      return "This wallet couldn't be refreshed right now. Existing position was kept.";
+  }
+}
+
+/**
  * PLATFORM OPS OBSERVABILITY — how a wallet sync was initiated, in the refresh
  * ledger's trigger vocabulary. A caller that knows (the manual route: MANUAL)
  * says so; one that does not gets the ambient JobRun's answer: a cron sweep
@@ -166,6 +213,24 @@ export interface WalletSyncOutcome {
   netWorthParticipation: "LEGACY_BALANCE_COLUMN" | "WITHHELD_PENDING_CONVERGENCE" | "NONE";
   /** W-M2a — the generic code recorded on the Connection. Present on failure. */
   errorCode?: WalletSyncErrorCode;
+  /**
+   * CRYPTO-COPY-1 — THE PRODUCT-FACING SENTENCE, on failure.
+   *
+   * `reason` is PROVIDER/IMPLEMENTATION language and stays exactly as it is: it
+   * is the operator's evidence and it reaches SyncIssue, Connection.errorCode
+   * and the refresh ledger unchanged. But it also reached the Refresh button
+   * verbatim, so on 2026-10-01 the user was told
+   *
+   *     "network error: This operation was aborted"
+   *
+   * which is undici's `AbortError.message` describing the SERVER's own 10 s
+   * timeout — and which reads as "your internet failed". The browser's network
+   * was fine; there is no client-side timeout on this request at all.
+   *
+   * This field is the same fact in product language, derived from the classified
+   * category so the two can never disagree. Absent on success.
+   */
+  userMessage?: string;
   /** The adapter's own result, for logging. NEVER branched on by a caller. */
   raw?: unknown;
   /**
@@ -544,6 +609,7 @@ export async function syncWalletByChain(
       // An unsupported chain has no valuation model of its own; READ_TIME_VALUED
       // is inert here because `ok:false` already short-circuits the predicate.
       valuationModel: "READ_TIME_VALUED",
+      userMessage: walletSyncUserMessage("CHAIN_UNSUPPORTED", undefined, key || "this chain"),
     };
   }
 
@@ -620,7 +686,51 @@ export async function syncWalletByChain(
     // CURRENT QUOTE — after a successful read, the chain's native asset is
     // re-quoted so today's value is priced at the market, not yesterday's close.
     // Recorded as its own PROVIDER stage with its own clock; never gating.
-    const quote = result.ok ? await refreshCurrentQuotesForChains([key]) : null;
+    // ── CRYPTO-PARALLEL-1 — TWO INDEPENDENT NON-GATING STAGES, CONCURRENTLY ──
+    //
+    // The quote and the history reconstruction share nothing. Different
+    // authority (CoinGecko vs the chain's own RPC/explorer), different output
+    // (an INTRADAY PriceObservation vs DERIVED position rows), and neither reads
+    // the other. Running them in series made the refresh take their SUM for no
+    // reason: 8 124 ms + 253 ms on the incident's BTC run, 1 465 ms + 44 123 ms
+    // on the Solana one.
+    //
+    // WHY THIS IS SAFE, not merely faster:
+    //   · Both are gated on `result.ok` exactly as before, so NOTHING runs
+    //     earlier relative to success than it used to.
+    //   · Both are already non-gating: neither can change `ok`.
+    //   · They cannot collide in the price archive. The quote writes INTRADAY;
+    //     the reconstruction reads RAW_CLOSE. Basis isolation (lib/prices/archive)
+    //     makes that a structural guarantee, not a timing accident.
+    //   · Each carries its OWN measured clock, so stage timings stay truthful
+    //     whichever finishes first.
+    //   · FAILURE IS ISOLATED PER PROMISE: a rejection in one must not discard
+    //     the other's completed result, which a bare Promise.all would do.
+    //   · THE RECORDING ORDER IS FIXED below — quote, then history — so the
+    //     ledger and the returned outcome do NOT depend on completion order.
+    //
+    // HISTORY_BACKFILL is opened before the work because `recorder.succeed`
+    // takes its start clock from the open stage. CURRENT_QUOTE uses
+    // `recordMeasured`, which never touches that open slot, so the two cannot
+    // interleave in the recorder.
+    if (result.ok) recorder.begin("HISTORY_BACKFILL", "DERIVED");
+    const [quote, historyRefresh] = await Promise.all([
+      result.ok
+        ? refreshCurrentQuotesForChains([key]).catch((e) => {
+            console.warn(`[wallet-sync] ${key} current-quote threw for ${accountId} (non-fatal):`, e instanceof Error ? e.message : e);
+            return null;
+          })
+        : Promise.resolve(null),
+      result.ok
+        ? refreshWalletHistory(accountId, key).catch((e) => {
+            // Contract says it never throws; if it does, the adapter's success
+            // must still stand.
+            console.warn(`[wallet-sync] ${key} history refresh threw for ${accountId} (contract violation):`, e instanceof Error ? e.message : e);
+            return null;
+          })
+        : Promise.resolve(null),
+    ]);
+
     if (quote) {
       if (quote.status === "NOT_CONFIGURED") recorder.skip("CURRENT_QUOTE", "PROVIDER", "NOT_APPLICABLE");
       else recorder.recordMeasured("CURRENT_QUOTE", "PROVIDER", quote.status === "REFRESHED"
@@ -628,12 +738,41 @@ export async function syncWalletByChain(
         : { ok: false, startedAt: quote.startedAt, durationMs: quote.durationMs, err: new Error(quote.reason) });
     }
 
-    if (result.ok) recorder.begin("HISTORY_BACKFILL", "DERIVED");
-    const historyRefresh = result.ok ? await refreshWalletHistory(accountId, key) : null;
     if (historyRefresh && !historyRefresh.refreshed && historyRefresh.reason) {
       console.log(`[wallet-sync] ${key} history not refreshed for ${accountId}: ${historyRefresh.reason}`);
     }
-    recordHistoryStage(recorder, historyRefresh);
+    // `begin` was called when result.ok, so the stage MUST be closed on that
+    // same condition. A null here with an ok result means the never-throw
+    // contract was violated above — record it as FAILED rather than leaving the
+    // stage open for `failOpen` to mislabel later.
+    if (result.ok && historyRefresh === null) {
+      recorder.fail("HISTORY_BACKFILL", new Error("history refresh threw (contract violation)"));
+    } else {
+      recordHistoryStage(recorder, historyRefresh);
+    }
+
+    // ── CRYPTO-FRESHNESS-1 — PER-FACET SUCCESS CLOCKS ────────────────────────
+    //
+    // Recorded HERE because this is the one place that holds BOTH outcomes, and
+    // recorded SEPARATELY because they are separate facts: a run whose import
+    // aborted but whose reconstruction succeeded must advance exactly one clock.
+    //
+    // The alternative — what the card used to do — was to read
+    // `Connection.lastSyncedAt` (a BALANCE clock) for both, which is how a
+    // failed import came to render as "Transactions: Updated today".
+    //
+    // Each is passed only on success, so a failure leaves the previous
+    // successful clock untouched rather than aging it or faking it.
+    const txSucceeded      = txImport?.status === "IMPORTED";
+    const historySucceeded = historyRefresh?.refreshed === true;
+    if (txSucceeded || historySucceeded) {
+      const at = new Date();
+      await recordWalletFacetSuccess({
+        financialAccountId: accountId,
+        ...(txSucceeded      ? { transactionsSyncedAt: at } : {}),
+        ...(historySucceeded ? { historyRebuiltAt: at }     : {}),
+      });
+    }
     return {
       accountId,
       chain: key,
@@ -651,6 +790,10 @@ export async function syncWalletByChain(
       // has to infer what an absent `valuation` field means.
       valuationModel: adapter.valuationModel,
       ...(coverage ? { closeCoverage: coverage } : {}),
+      // CRYPTO-COPY-1 — on failure only. `reason` keeps the provider's own text
+      // for the operator; this is the same fact for the person who pressed
+      // Refresh. Both travel, neither replaces the other.
+      ...(result.ok ? {} : { userMessage: walletSyncUserMessage(errorCode, result.reason, key) }),
       // W6f — so the caller can bound its snapshot regeneration to the window
       // whose evidence actually moved, instead of guessing or rebuilding all.
       historyRefresh: historyRefresh ?? undefined,
@@ -681,6 +824,7 @@ export async function syncWalletByChain(
       stage: "adapter-error", reason, errorCode: "ADAPTER_ERROR",
       netWorthParticipation: "NONE",
       valuationModel: adapter.valuationModel,
+      userMessage: walletSyncUserMessage("ADAPTER_ERROR", reason, key),
     };
   }
   };

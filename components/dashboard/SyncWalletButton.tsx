@@ -47,7 +47,14 @@ export function SyncWalletButton({ accountId, syncStatus }: Props) {
       // and { error } (400/404) for guard failures — the account stays visible
       // and "pending" either way; surface a clear message.
       if (!res.ok || data?.ok === false) {
-        setError(data?.error ?? data?.reason ?? "Sync failed. Please try again.");
+        // CRYPTO-COPY-1 — `userMessage` FIRST. `reason` is the provider's own
+        // text and used to arrive here verbatim, so on 2026-10-01 the user was
+        // shown "network error: This operation was aborted" — undici's wording
+        // for the SERVER's 10 s timeout, which reads as "your internet failed".
+        // There is no client-side timeout on this request; the browser was fine.
+        // `reason` stays as the last resort so an unclassified failure still
+        // says something concrete rather than nothing.
+        setError(data?.error ?? data?.userMessage ?? data?.reason ?? "Sync failed. Please try again.");
         return;
       }
       // The historical import is best-effort: when it failed, the balance and

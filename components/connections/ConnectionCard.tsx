@@ -485,14 +485,46 @@ function SourceHealthLine({ intelligence }: { intelligence?: ConnectionIntellige
   );
 }
 
+/**
+ * CRYPTO-FRESHNESS-1 — EVERY LINE READS ITS OWN AUTHORITY.
+ *
+ * On 2026-10-01 this component rendered "Transactions: Updated today" for a BTC
+ * refresh whose transaction import had ABORTED at its 10 s budget, and
+ * "Financial profile: Built today" for a reconstruction that never ran — because
+ * three lines were reading one clock (`Connection.lastSyncedAt`, which for a
+ * wallet means "the balance was read"). Meanwhile the position spine already
+ * carried a fresh observation that no line read at all.
+ *
+ * Each row below now reads the clock for the fact it names, and a row whose fact
+ * has no durable success clock is NOT RENDERED. Silence is the honest answer to
+ * "when did this last work?" when the answer is "never" — and it is strictly
+ * better than borrowing a neighbouring fact's timestamp.
+ *
+ * `Position` is listed first on a wallet, deliberately: it is the authoritative
+ * current fact, it survives a valuation or history outage, and it was the one
+ * thing the card could not say during the incident.
+ */
 function FreshnessRows({ intelligence }: { intelligence: ConnectionIntelligenceStatus }) {
-  // "Balances: Updated" is the OLDEST account's last successful write — every
-  // balance arrived at least that recently. It is not a provider verification.
-  const rows: Array<{ label: string; verb: string; iso: string | null }> = [
-    { label: "Transactions",      verb: "Updated",  iso: intelligence.lastSyncedAt },
-    { label: "Financial profile", verb: "Built",    iso: intelligence.lastReconstructedAt },
-    { label: "Balances",          verb: "Updated",  iso: intelligence.balancesUpdatedAt },
-  ];
+  const isWallet = intelligence.valuationIsReadTime || intelligence.positionObservedAt !== null;
+  const rows: Array<{ label: string; verb: string; iso: string | null }> = isWallet
+    ? [
+        // The quantity actually observed on-chain — independent of pricing.
+        { label: "Position",           verb: "Updated", iso: intelligence.positionObservedAt },
+        // Advanced ONLY by a completed import. A failed import leaves the last
+        // truthful success date, or nothing at all.
+        { label: "Transaction history", verb: "Updated", iso: intelligence.transactionsSyncedAt },
+        // Advanced ONLY by a reconstruction that actually refreshed.
+        { label: "Financial profile",  verb: "Built",   iso: intelligence.lastReconstructedAt },
+        // Only where a value is STORED. A read-time-valued chain has no
+        // valuation clock, so it shows none rather than inventing one.
+        { label: "USD valuation",      verb: "Updated", iso: intelligence.valuationUpdatedAt },
+      ]
+    : [
+        // PLAID — `lastSyncedAt` IS the transaction sync here, not a proxy for it.
+        { label: "Transactions",      verb: "Updated", iso: intelligence.lastSyncedAt },
+        { label: "Financial profile", verb: "Built",   iso: intelligence.lastReconstructedAt },
+        { label: "Balances",          verb: "Updated", iso: intelligence.balancesUpdatedAt },
+      ];
   const shown = rows.filter((r) => r.iso);
   if (shown.length === 0) return null;
   return (
