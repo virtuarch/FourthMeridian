@@ -9,6 +9,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { countRemainingCodes } from "@/lib/recovery-codes";
+import { systemDb } from "@/lib/db";
 import { requireSystemAdmin } from "@/lib/session";
 
 export async function GET() {
@@ -22,7 +23,7 @@ export async function GET() {
       where:  { id: userId },
       select: { totpEnabled: true, totpSecret: true },
     }),
-    countRemainingCodes(userId),
+    countRemainingCodes(systemDb, userId),
     db.userSession.count({ where: { userId, revokedAt: null } }),
     db.auditLog.findFirst({
       where:   { userId, action: "LOGIN" },

@@ -73,10 +73,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // ⚠️ NOT TENANT-SCOPED — see the same note in totp/verify. `generateRecoveryCodes`
-  // runs on authDb, which is granted neither INSERT/DELETE on RecoveryCode nor
-  // anything on AuditLog. Reported rather than fixed from here.
-  const plainCodes = await generateRecoveryCodes(user.id, true);
+  // RLS-13 — POST-IDENTITY: the user is regenerating their OWN codes, so this
+  // runs under their identity. The admin route that regenerates someone else's
+  // uses systemDb instead, because fm_app's RecoveryCode policy is
+  // `userId = current_fm_user_id()` and could not reach them.
+  const plainCodes = await withTenantDb(user.id, (tx) => generateRecoveryCodes(tx, user.id, true));
 
   return NextResponse.json({
     ok:            true,

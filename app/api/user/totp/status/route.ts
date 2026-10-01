@@ -31,7 +31,7 @@ export async function GET() {
   // two authorities for one table; widening authDb instead would make it a general
   // escape. Left as it is, and reported.
   const recoveryCodesRemaining = dbUser.totpEnabled
-    ? await countRemainingCodes(user.id)
+    ? await withTenantDb(user.id, (tx) => countRemainingCodes(tx, user.id))
     : 0;
 
   return NextResponse.json({

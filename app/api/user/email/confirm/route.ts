@@ -41,7 +41,14 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
-import { db } from "@/lib/db";
+// RLS-13 — PRE-IDENTITY BY DESIGN, and deliberately kept that way. The
+// confirmation token IS the credential for this operation; requiring a session
+// would break the case it exists for (confirming from the link in the email,
+// in whatever browser opened it). There is no app.user_id to bind, so it runs
+// on the authentication authority — which is granted User, UserSession,
+// RecoveryCode, an AuditLog INSERT and nothing financial at all. The narrowness
+// is the containment: this route cannot reach money even by mistake.
+import { authDb as db } from "@/lib/db";
 import { hashResetToken } from "@/lib/password-reset-token";
 import { revokeAllUserSessions } from "@/lib/sessions";
 import { AuditAction } from "@/lib/audit-actions";

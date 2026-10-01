@@ -77,11 +77,18 @@ const CONFINED: Record<string, { allowed: string[]; why: string }> = {
     why: "the tenant client must only ever be reached through withTenantDb(), which supplies the identity the policies read. A direct import is a query with NO app.user_id set, which under RLS returns nothing and under the fallback returns EVERYTHING.",
   },
   authDb: {
-    // Three files, and the list is meant to stay this short. Each one runs
-    // BEFORE an identity exists: lib/auth.ts establishes it, lib/session.ts
-    // re-checks revocation on every request, and lib/recovery-codes.ts is one
-    // of the two second factors by which a session can be established at all.
-    allowed: ["lib/db.ts", "lib/auth.ts", "lib/session.ts", "lib/recovery-codes.ts"],
+    // The list is meant to stay this short, and every entry runs BEFORE an
+    // identity exists — that is the ONLY thing that earns fm_auth:
+    //   lib/auth.ts    establishes the identity
+    //   lib/session.ts re-checks revocation on every request
+    //   app/api/user/email/confirm  the token IS the credential; requiring a
+    //     session would break confirming from the emailed link in whatever
+    //     browser opened it (owner decision, RLS-13)
+    // lib/recovery-codes.ts is deliberately NOT here any more: it takes its
+    // client as a parameter now, because the same module serves a pre-identity
+    // verification AND post-identity regeneration AND an operator acting on
+    // someone else. Authority follows the execution phase, not the module.
+    allowed: ["lib/db.ts", "lib/auth.ts", "lib/session.ts", "app/api/user/email/confirm/route.ts"],
     why: "fm_auth exists so authentication can read User/UserSession BEFORE an identity exists. Imported anywhere else it is a convenience escape hatch from tenancy with a reassuring name.",
   },
   systemDb: {
@@ -92,6 +99,13 @@ const CONFINED: Record<string, { allowed: string[]; why: string }> = {
       "lib/platform/", "app/api/platform/", "app/api/admin/",
       "lib/notifications/", "lib/security/", "lib/account-deletion/",
       "lib/alerts/", "lib/usage/", "lib/investments/",
+      // RLS-13 — the uniqueness capability. Uniqueness is a deployment-wide
+      // question the tenant role cannot answer (fm_app's User policy is
+      // `id = current_fm_user_id()`, so every name reads as free). It is listed
+      // as a single FILE, not a directory, because the whole point is that the
+      // widest authority is reached through the narrowest opening: two
+      // functions that take a value and return a boolean.
+      "lib/users/availability.ts",
     ],
     why: "fm_system reaches every tenant through role-scoped policies. It is an exceptional authority; an ordinary HTTP request handler must never execute through it.",
   },

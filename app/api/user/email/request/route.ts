@@ -16,7 +16,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
-import { db } from "@/lib/db";
+import { isEmailAvailable } from "@/lib/users/availability";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { env } from "@/lib/env";
 import { requireFreshUser } from "@/lib/session";
@@ -84,8 +84,8 @@ export async function POST(req: NextRequest) {
     // the deployment-wide client, which is why this file still imports one. It is a
     // SELECT of a single `id` and it is never returned to the caller — the response is
     // the same 409 either way, so it discloses nothing the unique index would not.
-    const taken = await db.user.findUnique({ where: { email: normalizedNew }, select: { id: true } });
-    if (taken) {
+    const free = await isEmailAvailable(normalizedNew);
+    if (!free) {
       return NextResponse.json({ error: "That email is already in use." }, { status: 409 });
     }
 

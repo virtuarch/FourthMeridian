@@ -402,7 +402,8 @@ export const authOptions: NextAuthOptions = {
             mfaMethod = "totp";
           } else if (recoveryCode) {
             // Verify and consume a recovery code
-            const used = await verifyRecoveryCode(user.id, recoveryCode);
+            // PRE-IDENTITY: this IS the authentication. fm_auth, by necessity.
+            const used = await verifyRecoveryCode(db, user.id, recoveryCode);
             if (!used) {
               await recordLoginFailure({
                 reason: "recovery_code_invalid", identifier, ipAddress, userAgent,

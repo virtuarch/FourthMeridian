@@ -212,13 +212,23 @@ console.log("6. /api/user reaches the database as its user (RLS slice A)");
     e.isDirectory() ? walk(path.join(d, e.name)) : e.name === "route.ts" ? [path.join(d, e.name)] : []);
   const routes = walk(USER_API).map((f) => path.relative(ROOT, f)).sort();
 
+  // RLS-13 — TWO OF THE THREE EXCEPTIONS ARE GONE.
+  //
+  // profile and email/request were exceptions because cross-user uniqueness is
+  // unanswerable as the tenant: fm_app's User policy is `id =
+  // current_fm_user_id()`, so under it every name reads as free. They held a
+  // deployment-wide client for that one question. They now call
+  // lib/users/availability.ts, which takes a value and returns a BOOLEAN — the
+  // widest authority reached through the narrowest opening — so neither route
+  // holds a general client any more and both are checked like every other.
+  //
+  // email/confirm REMAINS an exception, by owner decision and permanently: the
+  // confirmation token IS the credential, so requiring a session would break
+  // confirming from the emailed link. There is no identity to bind. It runs on
+  // the pre-identity authority, which is granted User, UserSession,
+  // RecoveryCode and an AuditLog INSERT, and nothing financial at all.
   const EXCEPTIONS: Record<string, RegExp> = {
-    // Cross-user uniqueness: fm_app's User policy is `id = current_fm_user_id()`,
-    // so "is this taken by SOMEONE ELSE" is unanswerable as the tenant.
-    "app/api/user/profile/route.ts":       /A CROSS-USER UNIQUENESS PROBE, SO NOT TENANT-SCOPED/,
-    "app/api/user/email/request/route.ts": /THIS ONE PROBE CANNOT RUN AS THE TENANT/,
-    // Token-authenticated: there is no identity to bind at all (pre-identity path).
-    "app/api/user/email/confirm/route.ts": /NOT TENANT-SCOPED, AND IT CANNOT BE/,
+    "app/api/user/email/confirm/route.ts": /PRE-IDENTITY BY DESIGN/,
   };
 
   check(`every route under /api/user is accounted for (${routes.length} found)`, routes.length >= 16);
@@ -229,7 +239,11 @@ console.log("6. /api/user reaches the database as its user (RLS slice A)");
         EXCEPTIONS[rel].test(s));
       continue;
     }
-    check(`${rel} holds no deployment-wide client`, !/from "@\/lib\/db"/.test(s));
+    // `db` specifically — the migration principal. An explicit role client is
+    // an authority statement, not an escape, and the confinement check in
+    // scripts/audit-db-authority.ts is what polices which file may hold which.
+    check(`${rel} holds no deployment-wide client`,
+      !/import\s*\{[^}]*\bdb\b[^}]*\}\s*from\s*"@\/lib\/db"/.test(s));
     const touchesDb = /\b(?:tx|db)\.[a-z]\w*\.(?:find|create|update|delete|upsert|count)/.test(s);
     check(`${rel} ${touchesDb ? "enters the tenant boundary for its DB work" : "makes no direct DB call"}`,
       !touchesDb || /withTenantDb\(/.test(s));

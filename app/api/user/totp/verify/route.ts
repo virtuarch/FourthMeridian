@@ -87,17 +87,14 @@ export async function POST(req: NextRequest) {
     data:  { totpEnabled: true },
   }));
 
-  // ⚠️ NOT TENANT-SCOPED, AND IT CANNOT BE WITHOUT A DECISION. `generateRecoveryCodes`
-  // lives in lib/recovery-codes.ts, which runs on authDb because the same module
-  // serves the PRE-IDENTITY sign-in leg. Here it is POST-identity work: it DELETEs and
-  // INSERTs RecoveryCode rows and writes an AuditLog row, and fm_auth is granted only
-  // SELECT and UPDATE on RecoveryCode and nothing at all on AuditLog. Left exactly as
-  // it is and reported, because the fix is an owner decision about where that module's
-  // write half belongs — not a widening of authDb from a product route.
-  const plainCodes = await generateRecoveryCodes(
+  // RLS-13 — POST-IDENTITY, so it runs as the user. lib/recovery-codes.ts no
+  // longer owns a client: the authority follows the execution phase, and here
+  // the caller is authenticated and is acting on their OWN codes.
+  const plainCodes = await withTenantDb(user.id, (tx) => generateRecoveryCodes(
+    tx,
     user.id,
     false, // not a regen — first-time setup
-  );
+  ));
 
   // generateRecoveryCodes writes RECOVERY_CODES_GENERATED; write TWO_FACTOR_ENABLED separately
   const auditRow = await withTenantDb(user.id, (tx) => tx.auditLog.create({

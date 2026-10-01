@@ -24,6 +24,9 @@
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs scripts/rls-app-acceptance.ts
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import {
   prepareHarness, teardownHarness, psql, deniedByGrant,
   makeRecorder, APP_FIXTURES,
@@ -196,6 +199,58 @@ async function main(): Promise<void> {
   check(21, "[service] a FORGED scope cannot ERASE Bob's memory — the row survives",
     forgedErase.ok === false && bobStillThere === "1",
     `result=${JSON.stringify(forgedErase)} rowsLeft=${bobStillThere}`);
+
+  // ── [service] RLS-13 — authority follows the EXECUTION PHASE ──────────────
+  // lib/recovery-codes.ts serves three authorities from one module: a
+  // pre-identity verification, a user regenerating their own codes, and an
+  // operator regenerating someone else's. The client is a parameter precisely
+  // so each caller states which it is; these cases prove the boundaries hold.
+  const rc = await import("@/lib/recovery-codes");
+
+  const ownCodes = await tenant.withTenantDb("alice", (tx) =>
+    rc.generateRecoveryCodes(tx, "alice", false));
+  const aliceHas = psql(h.ownerUrl, `select count(*) from "RecoveryCode" where "userId"='alice';`).out.trim();
+  check(22, "[service] POST-identity: a user regenerating their OWN codes succeeds under the tenant role",
+    ownCodes.length === 10 && aliceHas === "10", `codes=${ownCodes.length} rows=${aliceHas}`);
+
+  // The whole point of the split: fm_app's RecoveryCode policy is
+  // `userId = current_fm_user_id()`, so the tenant role CANNOT touch another
+  // user's codes. The refusal is the feature, not an obstacle.
+  let crossCodes = "no error";
+  try {
+    await tenant.withTenantDb("alice", (tx) => rc.generateRecoveryCodes(tx, "bob", false));
+  } catch (e) { crossCodes = e instanceof Error ? e.message : String(e); }
+  const bobHas = psql(h.ownerUrl, `select count(*) from "RecoveryCode" where "userId"='bob';`).out.trim();
+  check(23, "[service] Alice CANNOT mint recovery codes for Bob through the tenant role",
+    bobHas === "0", `bobRows=${bobHas} err=${crossCodes.split("\n")[0]}`);
+
+  // …and the operator path, which legitimately acts on another user, can.
+  const sysCount = await rc.countRemainingCodes(dbMod.systemDb, "alice");
+  check(24, "[service] the OPERATOR authority can read another user's remaining-code count",
+    sysCount === 10, `count=${sysCount}`);
+
+  // ── [service] RLS-13 — the uniqueness capability ──────────────────────────
+  // A deployment-wide question the tenant role structurally cannot answer:
+  // fm_app's User policy is `id = current_fm_user_id()`, so under it every name
+  // reads as free. The capability answers correctly and returns only a boolean.
+  psql(h.ownerUrl, `update "User" set username='takenname' where id='bob';`);
+  const avail = await import("@/lib/users/availability");
+
+  check(25, "[service] a username held by ANOTHER user reads as taken (fm_app alone could not tell)",
+    (await avail.isUsernameAvailable("takenname")) === false);
+  check(26, "[service] a free username reads as available",
+    (await avail.isUsernameAvailable("nobody-has-this")) === true);
+  check(27, "[service] a user renaming to their OWN current name is not blocked by themselves",
+    (await avail.isUsernameAvailable("takenname", "bob")) === true);
+  check(28, "[service] email availability answers across users too",
+    (await avail.isEmailAvailable("bob@example.test")) === false
+    && (await avail.isEmailAvailable("free@example.test")) === true);
+
+  // The narrowing itself: booleans only. If this ever returns a row it has
+  // become the directory escape hatch it was built to prevent.
+  const availSrc = readFileSync(join(process.cwd(), "lib/users/availability.ts"), "utf8");
+  check(29, "[service] the capability returns ONLY booleans — no row, no id, no column",
+    /Promise<boolean>/.test(availSrc) && !/select\s*:/.test(availSrc) && /\.count\(/.test(availSrc));
 
   // ── [role] the owner is not in the tenant path ────────────────────────────
   check(17, "[role] the tenant client is NOT the migration principal",

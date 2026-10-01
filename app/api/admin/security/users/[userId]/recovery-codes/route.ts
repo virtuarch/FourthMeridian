@@ -12,6 +12,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { generateRecoveryCodes } from "@/lib/recovery-codes";
+import { systemDb } from "@/lib/db";
 import { db } from "@/lib/db";
 import { requireFreshSystemAdmin } from "@/lib/session";
 
@@ -38,7 +39,10 @@ export async function POST(
   });
   if (!target) return NextResponse.json({ error: "User not found." }, { status: 404 });
 
-  const codes = await generateRecoveryCodes(userId, true /* isRegen */, adminId);
+  // OPERATOR authority: these are ANOTHER user's codes. fm_app's RecoveryCode
+  // policy is `userId = current_fm_user_id()`, so the tenant role structurally
+  // cannot reach them — which is the correct refusal, not an obstacle.
+  const codes = await generateRecoveryCodes(systemDb, userId, true /* isRegen */, adminId);
 
   return NextResponse.json({
     success: true,

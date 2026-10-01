@@ -7,7 +7,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { isUsernameAvailable } from "@/lib/users/availability";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
 import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
@@ -80,17 +80,13 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    // ⚠️ A CROSS-USER UNIQUENESS PROBE, SO NOT TENANT-SCOPED — and the same reasoning
-    // as the email probe in email/request: fm_app's `User` SELECT policy is `id =
-    // current_fm_user_id()`, so through the tenant role this returns nothing and every
-    // username would read as free. "Is this taken by SOMEONE ELSE" is not a question
-    // about the caller's own rows. One `id`, never returned; the 409 is all the caller
-    // learns, and the unique index remains the final arbiter.
-    const taken = await db.user.findFirst({
-      where: { username: username.toLowerCase(), NOT: { id: user.id } },
-      select: { id: true },
-    });
-    if (taken) return NextResponse.json({ error: "That username is already taken." }, { status: 409 });
+    // RLS-13 — a DEPLOYMENT-WIDE question, asked through a capability that can
+    // only answer this one. fm_app's `User` policy is `id = current_fm_user_id()`,
+    // so the tenant role would report every name as free; rather than hand this
+    // route a client that can read every User row, it gets a function that
+    // returns a boolean and nothing else.
+    const free = await isUsernameAvailable(username, user.id);
+    if (!free) return NextResponse.json({ error: "That username is already taken." }, { status: 409 });
   }
 
   // ── Build update payload ──────────────────────────────────────────────────
