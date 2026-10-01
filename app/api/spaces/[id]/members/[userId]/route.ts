@@ -18,15 +18,67 @@
  *   3. WorkspaceAccountShare rows added by that user in this space → REVOKED
  *
  * The member row and their share records are preserved for audit history.
+ *
+ * ── RLS SLICE B — THE SELF-LEAVE PAIR, AND WHY IT IS NOW IN THE OTHER ORDER ──
+ * The DELETE handler's two writes commit together to close a privacy gap: a
+ * departed member's shared accounts must stop being visible in the same instant
+ * their membership ends. Under RLS the ORDER inside that transaction became
+ * load-bearing, and the order it had was the broken one.
+ *
+ *   `fm_visible_space_ids()` reads SpaceMember and is STABLE — evaluated against
+ *   the SNAPSHOT OF THE STATEMENT that calls it. So within one transaction:
+ *     · statement 1 flips the ACTING user's own membership to LEFT. Its own
+ *       USING/WITH CHECK still see the pre-update ACTIVE row, so it succeeds.
+ *     · statement 2 is a NEW statement. It sees the uncommitted LEFT row, the
+ *       Space drops out of fm_visible_space_ids(), and
+ *       `SpaceAccountLink.fm_app_upd` — `spaceId IN fm_visible_space_ids()` —
+ *       matches NOTHING. updateMany returns `{count: 0}`. No error. The links
+ *       stay ACTIVE and the privacy gap this transaction exists to close
+ *       reopens, silently, for exactly the self-leave case.
+ *
+ * The fix needed no policy, no systemDb and no weakening: the two writes are
+ * ORDER-INDEPENDENT, so the link revoke now runs FIRST, while the acting user is
+ * still ACTIVE and the Space still visible, and the membership flip runs second,
+ * where its own statement snapshot still shows it as ACTIVE. Both are
+ * admissible, they are still in ONE transaction, and they still commit together
+ * or not at all. Admin removal was never affected — the actor stays ACTIVE —
+ * and is unchanged by the reorder.
+ *
+ * ⚠️ AND THE TARGET'S NAME IS NOT THE CALLER'S TO READ. Both handlers joined
+ * `user: { firstName, lastName, email }` onto the target's SpaceMember row to
+ * build a display name for the audit payload. fm_app's `User` policy is
+ * `id = current_fm_user_id()` (§10), the relation is REQUIRED, and Prisma raises
+ * "Inconsistent query result" rather than returning null — so the include would
+ * have 500'd every role change and every removal. It is now a separate,
+ * explicitly-named read on the deployment-wide client, of the same three
+ * display columns, producing the identical `targetName` / `removedName`.
  */
 
 import { NextRequest, NextResponse }              from "next/server";
 import { db }                                     from "@/lib/db";
 import { SpaceMemberStatus, ShareStatus, SpaceMemberRole, SpaceType } from "@prisma/client";
+import { withTenantDb }                            from "@/lib/db/tenant-context";
 import { requireSpaceRole }                   from "@/lib/session";
 import { withApiHandler, getClientIp }            from "@/lib/api";
-import { emitDomainEvent }                        from "@/lib/events/emit";
+import { emitDomainEvent, dispatchDomainEvent }   from "@/lib/events/emit";
 import type { DomainEvent }                       from "@/lib/events/types";
+
+/**
+ * The target member's display name for an audit payload.
+ *
+ * ⚠️ DELIBERATELY NOT withTenantDb — see the header. This is a co-member's
+ * identity, which fm_app's `User` policy does not serve by design; the three
+ * columns are exactly the ones the old `include` selected, and the fallback
+ * chain is byte-identical to the one it fed.
+ */
+async function displayNameOf(userId: string): Promise<string> {
+  const u = await db.user.findUnique({
+    where:  { id: userId },
+    select: { firstName: true, lastName: true, email: true },
+  });
+  if (!u) return userId;
+  return [u.firstName, u.lastName].filter(Boolean).join(" ").trim() || u.email || userId;
+}
 
 const PROMOTABLE_ROLES: SpaceMemberRole[] = [
   SpaceMemberRole.ADMIN,
@@ -50,15 +102,18 @@ export const PATCH = withApiHandler(async (
   // (whose role is immutable below anyway), so there is never a non-owner member
   // to re-role. Reject defensively so a role change can never be the operation
   // that first gives a personal Space a non-owner member. SHARED unaffected.
-  const pspace = await db.space.findUnique({ where: { id: spaceId }, select: { type: true } });
+  const pspace = await withTenantDb(user.id, (tx) => tx.space.findUnique({
+    where: { id: spaceId }, select: { type: true },
+  }));
   if (pspace?.type === SpaceType.PERSONAL) {
     return NextResponse.json({ error: "Personal Spaces have no additional members to manage." }, { status: 400 });
   }
 
-  const targetMembership = await db.spaceMember.findUnique({
+  // RLS slice B — the membership row is this Space's, which the ACTIVE OWNER
+  // guard has made visible. The `user` include moved out (see the header).
+  const targetMembership = await withTenantDb(user.id, (tx) => tx.spaceMember.findUnique({
     where: { spaceId_userId: { spaceId, userId: targetUserId } },
-    include: { user: { select: { firstName: true, lastName: true, email: true } } },
-  });
+  }));
 
   if (!targetMembership || targetMembership.status !== SpaceMemberStatus.ACTIVE) {
     return NextResponse.json({ error: "Member not found" }, { status: 404 });
@@ -80,24 +135,31 @@ export const PATCH = withApiHandler(async (
     );
   }
 
-  const updated = await db.spaceMember.update({
+  // `SpaceMember.fm_app_upd` is `spaceId IN fm_visible_space_ids()` on both
+  // clauses, and the acting OWNER is ACTIVE, so an ordinary role change is
+  // admissible. (The arm this policy LACKS — `userId = me` — is what the DELETE
+  // handler's reorder below works around, and what the re-join path in
+  // invites/[inviteId] cannot.)
+  const updated = await withTenantDb(user.id, (tx) => tx.spaceMember.update({
     where: { spaceId_userId: { spaceId, userId: targetUserId } },
     data: { role: role as SpaceMemberRole },
-  });
+  }));
 
-  const tu = targetMembership.user;
-  const targetName = [tu.firstName, tu.lastName].filter(Boolean).join(" ").trim() || tu.email || targetUserId;
+  const targetName = await displayNameOf(targetUserId);
 
-  // EV-1 Slice 5B — MemberRoleChanged (audit-only, no handler). No transaction
-  // and no side effect here today; the no-tx emit persists the canonical
-  // MEMBER_ROLE_CHANGED row with byte-identical metadata.
-  await emitDomainEvent(db, {
+  // EV-1 Slice 5B — MemberRoleChanged. Persist as the caller; dispatch after.
+  // The registered handler notifies the TARGET user, and `Notification.fm_app_ins`
+  // is `userId = current_fm_user_id()` — the acting owner structurally cannot
+  // write it, which is why the handler phase is outside the boundary.
+  const event: DomainEvent = {
     type:        "MemberRoleChanged",
     spaceId,
     actorUserId: user.id,
     ipAddress:   getClientIp(req),
     payload:     { targetUserId, targetName, oldRole: targetMembership.role, newRole: role },
-  });
+  };
+  await withTenantDb(user.id, (tx) => emitDomainEvent(tx, event));
+  await dispatchDomainEvent(event);
 
   return NextResponse.json(updated);
 }, "PATCH /api/spaces/[id]/members/[userId]");
@@ -115,10 +177,10 @@ export const DELETE = withApiHandler(async (
   if (err) return err;
   const { user, membership: callerMembership } = auth;
 
-  const targetMembership = await db.spaceMember.findUnique({
+  // RLS slice B — see the PATCH note; the `user` include moved out.
+  const targetMembership = await withTenantDb(user.id, (tx) => tx.spaceMember.findUnique({
     where: { spaceId_userId: { spaceId, userId: targetUserId } },
-    include: { user: { select: { firstName: true, lastName: true, email: true } } },
-  });
+  }));
 
   if (!targetMembership || targetMembership.status !== SpaceMemberStatus.ACTIVE) {
     return NextResponse.json({ error: "Member not found" }, { status: 404 });
@@ -144,18 +206,20 @@ export const DELETE = withApiHandler(async (
   //    added commit together. Previously non-atomic: a failed SAL revoke after
   //    the member flip left a departed member's shared accounts visible to the
   //    remaining members (a privacy gap). Snapshot regen below stays OUTSIDE.
-  await db.$transaction([
-    // 1. Soft-update SpaceMember
-    db.spaceMember.update({
-      where: { spaceId_userId: { spaceId, userId: targetUserId } },
-      data: {
-        status:      newStatus,
-        revokedAt:   now,
-        revokedById: isSelf ? null : user.id,
-      },
-    }),
-    // 2. D3 Stage B4 — Revoke all active SpaceAccountLink rows the member added
-    db.spaceAccountLink.updateMany({
+  //
+  // ⚠️ RLS slice B — THE BATCH ARRAY BECAME THE INTERACTIVE TRANSACTION
+  // withTenantDb ALREADY OPENS, AND THE TWO STATEMENTS SWAPPED PLACES. The array
+  // form takes no callback, so there was nowhere to set `app.user_id` — the
+  // identity and the writes could not have shared a transaction at all. The
+  // swap is the self-leave fix explained in full in the file header: the link
+  // revoke must run while the acting user is still ACTIVE, because the
+  // membership flip would otherwise make the Space invisible to the NEXT
+  // statement and the revoke would match zero rows in silence. Same two writes,
+  // same transaction, same all-or-nothing.
+  await withTenantDb(user.id, async (tx) => {
+    // 1. D3 Stage B4 — Revoke all active SpaceAccountLink rows the member added.
+    //    FIRST, deliberately: see above.
+    await tx.spaceAccountLink.updateMany({
       where: {
         spaceId,
         addedByUserId: targetUserId,
@@ -166,8 +230,17 @@ export const DELETE = withApiHandler(async (
         revokedAt:       now,
         revokedByUserId: isSelf ? targetUserId : user.id,
       },
-    }),
-  ]);
+    });
+    // 2. Soft-update SpaceMember
+    await tx.spaceMember.update({
+      where: { spaceId_userId: { spaceId, userId: targetUserId } },
+      data: {
+        status:      newStatus,
+        revokedAt:   now,
+        revokedById: isSelf ? null : user.id,
+      },
+    });
+  });
 
   // ── 2a/3. EV-1 Slice 3 — persist the audit row and regenerate the snapshot
   //   behind the event seam. The array-form transaction above (member flip +
@@ -177,8 +250,7 @@ export const DELETE = withApiHandler(async (
   //   handler failure is warned and swallowed, so the removal still succeeds).
   //   Self-leave → MemberLeft (SPACE_LEAVE); admin removal → MemberRemoved
   //   (MEMBER_REMOVED). Timeline renders both exactly as before.
-  const ru = targetMembership.user;
-  const removedName = [ru.firstName, ru.lastName].filter(Boolean).join(" ").trim() || ru.email || targetUserId;
+  const removedName = await displayNameOf(targetUserId);
 
   const event: DomainEvent = {
     type:        isSelf ? "MemberLeft" : "MemberRemoved",
@@ -188,7 +260,18 @@ export const DELETE = withApiHandler(async (
     payload:     { removedUserId: targetUserId, removedName, newStatus },
   };
 
-  await emitDomainEvent(db, event);
+  // ⚠️ THE AUDIT ROW STAYS OUTSIDE THE PAIR, EXACTLY AS BEFORE, and the handler
+  // phase stays outside the boundary: it regenerates the Space snapshot and (for
+  // a removal) notifies the removed user, neither of which belongs inside a
+  // transaction that carries the acting user's identity.
+  //
+  // ⚠️ AND ON A SELF-LEAVE THE ACTOR IS ALREADY `LEFT` BY NOW. That is fine for
+  // this write and only this write: `AuditLog.fm_app_ins` is WITH CHECK (true)
+  // (§18 — 90 independent writers, no spaceId parameter in the shared shape
+  // helper), so the row lands even though its Space is no longer visible to its
+  // author. Nothing else here writes after the flip.
+  await withTenantDb(user.id, (tx) => emitDomainEvent(tx, event));
+  await dispatchDomainEvent(event);
 
   return NextResponse.json({ ok: true });
 }, "DELETE /api/spaces/[id]/members/[userId]");

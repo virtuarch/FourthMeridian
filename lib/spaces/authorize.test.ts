@@ -199,8 +199,14 @@ const invite  = code(read("app", "api", "spaces", "[id]", "invite", "route.ts"))
 const members = code(read("app", "api", "spaces", "[id]", "members", "[userId]", "route.ts"));
 check("E invite door is requireSpaceRole(ADMIN); its findUnique is a target lookup",
   /requireSpaceRole\([^)]*ADMIN\)/.test(invite) && /spaceMember\.findUnique/.test(invite));
+// ⚠️ THE CLIENT IS NOT THE PROPERTY. This pinned `await db.spaceMember.findUnique`
+// until RLS slice B moved the lookup inside `withTenantDb`, where the same
+// statement reads `(tx) => tx.spaceMember.findUnique`. What must not regress is
+// that the members route's findUniques are TARGET lookups behind a
+// requireSpaceRole door — not that they run through any particular client.
 check("E members caller doors are requireSpaceRole; its findUniques are targetMembership",
-  /requireSpaceRole\(/.test(members) && /targetMembership\s*=\s*await\s+db\.spaceMember\.findUnique/.test(members));
+  /requireSpaceRole\(/.test(members) &&
+  /targetMembership\s*=\s*await[\s\S]{0,120}?\bspaceMember\.findUnique/.test(members));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PART F — RLS Slice 2: routes that authorized a DURABLE WRITE on a READ
