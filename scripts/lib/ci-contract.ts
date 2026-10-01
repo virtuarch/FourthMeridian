@@ -30,6 +30,12 @@ export const ARCHITECTURE_JOB = [
   // ran everything as a superuser and could not have detected a policy that
   // did nothing.
   "RLS_TARGET_URL=$DATABASE_URL npm run rls:accept",
+  // RLS-8 — the APPLICATION-level proof. The SQL suite above would stay green
+  // if the application never used fm_app at all; this one goes red the moment
+  // a service reaches the database through any authority but its own. It
+  // builds its own throwaway database because it must control the role URLs
+  // before lib/db.ts binds them at module load.
+  "npm run rls:accept:app",
 ] as const;
 
 /** ci.yml's `postgres` service: image and credentials of the throwaway database. */

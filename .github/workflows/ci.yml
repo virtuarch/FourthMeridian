@@ -141,3 +141,10 @@ jobs:
       # still cannot read another tenant's financial data.
       - name: RLS tenant-isolation acceptance
         run: RLS_TARGET_URL=$DATABASE_URL npm run rls:accept
+
+      # RLS-8 — proves the APPLICATION goes through that boundary, not merely
+      # that the boundary exists. Runs real lib/db + lib/db/tenant-context
+      # wiring against its own throwaway database, and REFUSES to start unless
+      # its tenant connection is genuinely fm_app and unprivileged.
+      - name: RLS application adversarial suite
+        run: npm run rls:accept:app
