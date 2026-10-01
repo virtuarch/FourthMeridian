@@ -203,6 +203,61 @@ check("E members caller doors are requireSpaceRole; its findUniques are targetMe
   /requireSpaceRole\(/.test(members) && /targetMembership\s*=\s*await\s+db\.spaceMember\.findUnique/.test(members));
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PART F — RLS Slice 2: routes that authorized a DURABLE WRITE on a READ
+// predicate. `transactionDetailWhere(id, spaceId)` answers "may this Space see
+// this row's detail?" — an ACTIVE, FULL-tier SpaceAccountLink. It was the only
+// gate on POST /api/transactions/[id]/correct, so a VIEWER of a Space holding a
+// FULL link could stamp the row, mint a USER MerchantRule that steers every
+// future transaction, and set a category override. See
+// docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md §17.1 item 7.
+//
+// The fix is AND, never OR: the role door is added, the read predicate stays.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Role semantics of the new action: MEMBER+ writes, VIEWER reads only.
+check("F transaction:correct VIEWER/ACTIVE deny (read visibility is not write authority)",
+  can("transaction:correct", A("VIEWER", "ACTIVE", "SHARED")) === false);
+check("F transaction:correct MEMBER/ACTIVE allow",
+  can("transaction:correct", A("MEMBER", "ACTIVE", "SHARED")) === true);
+check("F transaction:correct ADMIN/ACTIVE allow",
+  can("transaction:correct", A("ADMIN", "ACTIVE", "SHARED")) === true);
+check("F transaction:correct OWNER/ACTIVE allow",
+  can("transaction:correct", A("OWNER", "ACTIVE", "SHARED")) === true);
+check("F transaction:correct OWNER/REMOVED deny",
+  can("transaction:correct", A("OWNER", "REMOVED", "SHARED")) === false);
+check("F transaction:correct OWNER/LEFT deny",
+  can("transaction:correct", A("OWNER", "LEFT", "SHARED")) === false);
+// Corrections are a PERSONAL-Space operation too (that is where most of them
+// happen), so the action must not be sharedOnly.
+check("F transaction:correct PERSONAL OWNER allow (not sharedOnly)",
+  can("transaction:correct", A("OWNER", "ACTIVE", "PERSONAL")) === true);
+
+const correct = code(read("app", "api", "transactions", "[id]", "correct", "route.ts"));
+
+check("F correct POST adds the requireSpaceAction(transaction:correct) door",
+  /requireSpaceAction\(\s*spaceId\s*,\s*["']transaction:correct["']\s*\)/.test(correct));
+check("F correct POST returns the door's error response",
+  /if\s*\(\s*spaceErr\s*\)\s*return\s+spaceErr/.test(correct));
+// AND, not OR — the FULL-tier read predicate is a NECESSARY condition still.
+check("F correct POST KEEPS transactionDetailWhere (FULL tier stays necessary)",
+  /transactionDetailWhere\(\s*id\s*,\s*spaceId\s*\)/.test(correct));
+// Order: the door runs before the body parse and before the row is loaded.
+{
+  const doorAt = correct.indexOf('requireSpaceAction(spaceId, "transaction:correct")');
+  const rowAt  = correct.indexOf("db.transaction.findFirst");
+  const bodyAt = correct.indexOf("req.json()");
+  check("F correct POST door precedes the row read",
+    doorAt !== -1 && rowAt !== -1 && doorAt < rowAt, `door@${doorAt} row@${rowAt}`);
+  check("F correct POST door precedes the body parse",
+    doorAt !== -1 && bodyAt !== -1 && doorAt < bodyAt, `door@${doorAt} body@${bodyAt}`);
+}
+// The three durable writes this door now covers must all stay behind it.
+check("F correct POST still performs the three durable corrections",
+  /applyMerchantIdentityCorrection/.test(correct) &&
+  /applyCategoryRuleCorrection/.test(correct) &&
+  /applyTransactionOverride/.test(correct));
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 console.log(`\n${passes} passed, ${failures} failed (${passes + failures} checks).`);
 if (failures > 0) { console.log("SP-2b authorize tests FAILED."); process.exit(1); }

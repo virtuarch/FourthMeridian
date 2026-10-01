@@ -16,10 +16,25 @@
  * NEVER minted from free text alone. Only the edited row changes here; future
  * transactions inherit corrections through the live write path (no historical
  * rewrite). No UI is added.
+ *
+ * RLS Slice 2 — WRITE AUTHORITY IS NOT READ VISIBILITY.
+ * `transactionDetailWhere(id, spaceId)` is a READ predicate: it answers "may
+ * this Space see this row's detail?" (an ACTIVE SpaceAccountLink at a
+ * transaction-detail tier). It was the ONLY gate here, so a VIEWER of a Space
+ * holding a FULL-tier link could perform three durable writes — stamp the row,
+ * mint a USER MerchantRule that then steers every future transaction, or set a
+ * category override. One of the two drifted write-authority shapes in
+ * docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md §17.1 item 7.
+ *
+ * The role gate is now explicit: `requireSpaceAction(spaceId,
+ * "transaction:correct")` (MEMBER+, ACTIVE). `transactionDetailWhere` is KEPT —
+ * FULL visibility remains a NECESSARY condition, it is simply no longer a
+ * sufficient one. Both must hold.
  */
 
 import { NextRequest, NextResponse }  from "next/server";
 import { requireUser }                from "@/lib/session";
+import { requireSpaceAction }         from "@/lib/spaces/authorize";
 import { getSpaceContext }            from "@/lib/space";
 import { getTransactionDetail }       from "@/lib/data/transactions";
 import { db }                         from "@/lib/db";
@@ -47,6 +62,11 @@ export async function POST(
   if (err) return err;
 
   const { spaceId } = await getSpaceContext();
+
+  // Role gate BEFORE any body parse or row read: a durable write needs MEMBER+,
+  // not merely a Space that can see the row (see module header).
+  const [, spaceErr] = await requireSpaceAction(spaceId, "transaction:correct");
+  if (spaceErr) return spaceErr;
 
   let body: Record<string, unknown>;
   try {

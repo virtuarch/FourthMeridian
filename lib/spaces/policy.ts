@@ -23,6 +23,9 @@
  *   - member:remove      OR  isSelf (self-leave); AND cannot remove OWNER unless self
  *   - space:archive/delete AND data-state guards (not-trashed / not-already-trashed)
  *   - space:read         OR  space.isPublic (non-member path — has no membership ctx)
+ *   - transaction:correct AND the row resolves under transactionDetailWhere
+ *                        (FULL-tier SpaceAccountLink) — a READ predicate, which
+ *                        is why it cannot be the write authority on its own
  *
  * Grounded 1:1 in the current route gates; this module mirrors existing
  * behavior and introduces no new rule. See
@@ -68,7 +71,9 @@ export type SpaceAction =
   | "snapshot:read"
   | "transaction:read"
   | "activity:read"
-  | "perspective:read";
+  | "perspective:read"
+  // Transaction corrections (RLS Slice 2)
+  | "transaction:correct";    // durable MI correction: merchant / category rule / override
 
 // ── Policy context ────────────────────────────────────────────────────────────
 
@@ -138,6 +143,11 @@ const ACTION_POLICY: Record<SpaceAction, ActionRule> = {
   "transaction:read":      { minRole: "VIEWER", sharedOnly: false },
   "activity:read":         { minRole: "VIEWER", sharedOnly: false },
   "perspective:read":      { minRole: "VIEWER", sharedOnly: false },
+  // Transaction corrections — a DURABLE write (row update + MerchantRule mint),
+  // so it must not be reachable by a VIEWER. MEMBER+ mirrors "can view
+  // everything and add their own accounts"; read visibility (the FULL-tier
+  // SpaceAccountLink) stays a NECESSARY condition applied by the route.
+  "transaction:correct":   { minRole: "MEMBER", sharedOnly: false },
 };
 
 /** Every known action, derived from the rule map (stays in sync with the union). */

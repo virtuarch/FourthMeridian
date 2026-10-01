@@ -13,9 +13,13 @@
  *
  * Strategy: an INDEPENDENT oracle (re-deriving the expected decision from its
  * own inlined tables, NOT importing ACTION_POLICY) is checked against `can()`
- * across the full 4×3×2×20 = 480-combination matrix, plus named
+ * across the full 4×3×2×21 = 504-combination matrix, plus named
  * leak/invariant cases pinning the recurring "read surface disagrees with the
  * canonical rule" failure class.
+ *
+ * RLS Slice 2 added the 21st action, "transaction:correct" (MEMBER+): the
+ * transactions/[id]/correct route used to authorize a DURABLE write on read
+ * visibility alone. The matrix therefore covers 4x3x2x21 = 504 combinations.
  */
 
 import type {
@@ -72,6 +76,7 @@ const EXPECTED_MIN_RANK: Record<SpaceAction, number> = {
   "transaction:read":      0,
   "activity:read":         0,
   "perspective:read":      0,
+  "transaction:correct":   1,
 };
 
 const LIFECYCLE_ACTIONS = new Set<SpaceAction>([
@@ -97,7 +102,7 @@ const ROLES:    SpaceMemberRole[]   = ["OWNER", "ADMIN", "MEMBER", "VIEWER"];
 const STATUSES: SpaceMemberStatus[] = ["ACTIVE", "REMOVED", "LEFT"];
 const TYPES:    SpaceType[]         = ["PERSONAL", "SHARED"];
 
-// ── A. Full 480-combination matrix vs oracle ──────────────────────────────────
+// ── A. Full 504-combination matrix vs oracle ──────────────────────────────────
 
 let combos = 0;
 for (const action of ALL_SPACE_ACTIONS) {
@@ -116,8 +121,8 @@ for (const action of ALL_SPACE_ACTIONS) {
     }
   }
 }
-check(`matrix covered exactly 480 combinations (got ${combos})`, combos === 480,
-  `20 actions × 4 roles × 3 statuses × 2 types = 480`);
+check(`matrix covered exactly 504 combinations (got ${combos})`, combos === 504,
+  `21 actions × 4 roles × 3 statuses × 2 types = 504`);
 
 // ── B. Named leak / invariant cases ───────────────────────────────────────────
 
@@ -160,13 +165,16 @@ for (const status of ["REMOVED", "LEFT"] as SpaceMemberStatus[]) {
     "space:edit", "space:archive", "space:delete", "space:deletePermanent",
     "member:invite", "member:manageRoles", "member:remove",
     "section:edit", "goal:edit", "account:revoke",
+    // RLS Slice 2 — a VIEWER may READ a transaction and may NOT correct it.
+    // The durable write (row stamp + MerchantRule mint) is the whole point.
+    "transaction:correct",
   ];
   check("leak#4 VIEWER allowed set", readable.every((a) => can(a, ctx) === true));
   check("leak#4 VIEWER denied set",  denied.every((a) => can(a, ctx) === false));
   // read + write sets together must cover the whole union exactly once.
-  check("leak#4 read/write sets partition all 20 actions",
-    readable.length + denied.length === 20 &&
-    new Set([...readable, ...denied]).size === 20);
+  check("leak#4 read/write sets partition all 21 actions",
+    readable.length + denied.length === 21 &&
+    new Set([...readable, ...denied]).size === 21);
 }
 
 // 5. Only OWNER manages roles.
@@ -186,6 +194,7 @@ for (const status of ["REMOVED", "LEFT"] as SpaceMemberStatus[]) {
   check("leak#6 MEMBER can section:read",    can("section:read", ctx) === true);
   check("leak#6 MEMBER can goal:checkIn",    can("goal:checkIn", ctx) === true);
   check("leak#6 MEMBER can account:share",   can("account:share", ctx) === true);
+  check("leak#6 MEMBER can transaction:correct", can("transaction:correct", ctx) === true);
 }
 
 // 7. Determinism — same args, same result across repeated calls.
@@ -199,7 +208,7 @@ for (const status of ["REMOVED", "LEFT"] as SpaceMemberStatus[]) {
 
 // 8. Exhaustiveness — every union member is covered by the module's action list.
 {
-  check("leak#8 ALL_SPACE_ACTIONS has 20 entries", ALL_SPACE_ACTIONS.length === 20,
+  check("leak#8 ALL_SPACE_ACTIONS has 21 entries", ALL_SPACE_ACTIONS.length === 21,
     `got ${ALL_SPACE_ACTIONS.length}`);
   check("leak#8 no duplicate actions", new Set(ALL_SPACE_ACTIONS).size === ALL_SPACE_ACTIONS.length);
   // oracle table and module list agree on the action set.
