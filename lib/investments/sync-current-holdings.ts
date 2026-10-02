@@ -203,7 +203,24 @@ export async function syncCurrentHoldings(client: WriteClient, params: SyncCurre
       await tx.holding.deleteMany({ where: { id: { in: plan.deleteIds } } });
     }
     for (const u of plan.update) {
-      await tx.holding.update({ where: { id: u.id }, data: { ...u.row, financialAccountId: params.financialAccountId } });
+      // ⚠️ RLS-ACC-FK — `financialAccountId` IS DELIBERATELY ABSENT FROM THIS
+      // `data`, AND ITS ABSENCE IS THE POINT.
+      //
+      // It used to be re-stated here, which was a NO-OP TODAY and a silent
+      // relocation path TOMORROW. `plan.update` is derived from `existingRaw`,
+      // read moments earlier with `where: { financialAccountId:
+      // params.financialAccountId }`, so the clause read and wrote the identical
+      // expression — it could not change anything, and it bought nothing.
+      //
+      // What it DID buy was a live FK write on the holdings reconciliation path,
+      // which is exactly where a relocation would appear the moment the merge is
+      // extended: `reconcile.ts` re-points only `Transaction` and `DebtProfile`,
+      // leaving `Holding` (and PositionObservation / InvestmentEvent /
+      // ImportBatch / PositionReconstruction / PositionCoverage) STRANDED on the
+      // soft-deleted loser. The day somebody adds `Holding` to that merge, a
+      // sync that re-states the FK can quietly carry rows between accounts.
+      // Dropping the clause is behaviour-preserving today and removes the site.
+      await tx.holding.update({ where: { id: u.id }, data: u.row });
     }
     if (plan.insert.length) {
       await tx.holding.createMany({

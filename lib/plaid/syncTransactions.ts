@@ -100,6 +100,7 @@ import { activeLedger } from "@/lib/plaid/refresh-ledger";
 import { retireItemSyncFailure } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { findByFingerprint } from "@/lib/transactions/fingerprint";
+import { assertAccountFkUnchanged } from "@/lib/accounts/account-reparenting";
 // Pure Plaid → TransactionCategory mapping, extracted to a Prisma-free module so
 // it is unit-testable in isolation (lib/transactions/plaid-category.test.ts).
 // Re-exported below to preserve the historical `@/lib/plaid/syncTransactions`
@@ -235,6 +236,18 @@ export interface SyncTransactionsResult {
   updatedByFingerprint:  number;
   /** Transactions dropped because no FinancialAccount matched the Plaid account_id. */
   skippedMissingAccount: number;
+  /**
+   * RLS-ACC-FK — transactions dropped because the row their `plaidTransactionId`
+   * resolved lives on a DIFFERENT FinancialAccount, so updating it with this
+   * sync's fields would have RE-PARENTED it.
+   *
+   * ⚠️ THIS IS A REFUSAL, NOT A FAILURE, and the distinction is why it may be
+   * returned at all. The NOTE below forbids a `failedRows` counter because a
+   * returned result means complete persistence; this counter is the sibling of
+   * `skippedMissingAccount` — a row DELIBERATELY not persisted because it is not
+   * this account's row to write. Each one also carries a durable incident.
+   */
+  refusedReparenting:    number;
   // NOTE (PRE-V26-PLAID-CLOSE Phase 2): there is deliberately NO `failedRows`
   // field. A returned result is SYNONYMOUS with complete persistence — a page
   // with any unmet persistence obligation throws `PlaidSyncIncompleteError`
@@ -301,6 +314,7 @@ export async function syncTransactionsForItem(
   let updatedByPlaidId      = 0;
   let updatedByFingerprint  = 0;
   let skippedMissingAccount = 0;
+  let refusedReparenting    = 0;
 
   // Live import progress (see PlaidItem.syncImportedCount). A null cursor means
   // this is a FRESH import, so the counter starts at zero; any other value means
@@ -788,10 +802,85 @@ export async function syncTransactionsForItem(
           where:  { plaidTransactionId: txn.transaction_id },
           // v2.6-OWN-1 — flowAuthority joins the read so the update arm can tell
           // whether the classifier still owns this row's flow facts.
-          select: { id: true, merchantId: true, categorySource: true, flowAuthority: true },
+          //
+          // ⚠️ RLS-ACC-FK — `financialAccountId` JOINS THIS READ, AND THAT IS
+          // MOST OF THE FIX. `plaidTransactionId` is a TENANT-WIDE `@unique`
+          // column: it names a ROW without naming an ACCOUNT, so this lookup can
+          // resolve a row belonging to a different account — and then the update
+          // below, which writes `updateFields` built for THIS sync's account,
+          // RELOCATES it. Until this select read the FK there was nothing to
+          // compare, so the move was not merely unrefused, it was UNOBSERVABLE.
+          //
+          // The event that makes the destination differ is real and is adjacent:
+          // `lib/accounts/provider-identity.ts` swallows a unique-constraint
+          // collision meaning "another FinancialAccount already owns this
+          // provider identity" and logs it as a non-fatal warn, so the identity
+          // mapping can point somewhere this row does not live.
+          select: { id: true, financialAccountId: true, merchantId: true, categorySource: true, flowAuthority: true },
         });
 
         if (existingByPlaidId) {
+          // ── RLS-ACC-FK — A RE-DELIVERED PROVIDER ID IS NOT A LICENCE TO MOVE A ROW ──
+          //
+          // Refuse the relocation, record it durably, and SKIP the row.
+          //
+          // ⚠️ DELIBERATELY NOT CURSOR-BLOCKING, and the reason is the one thing
+          // worth reading here: cursor safety exists for failures A REPLAY CAN
+          // FIX. This one is deterministic — the next attempt resolves the same
+          // row to the same foreign account and fails identically — so holding
+          // the cursor would convert an integrity anomaly on ONE row into a
+          // permanent sync outage for the whole Item, with no path to recovery
+          // and no remaining delivery of healthy transactions. So it records and
+          // continues, exactly as the non-blocking event-identity failure above
+          // does, and for the same stated reason.
+          //
+          // ⚠️ `plaidTransactionId` IS OMITTED FROM THE INCIDENT ENVELOPE on
+          // purpose, following that same precedent: `classifySyncIssue` reads a
+          // row that names a bank transaction as an AFFIRMATIVE transaction
+          // signal and sets `customerActionable`, which tells the member to
+          // reconnect their bank. No member action helps here. The provider's id
+          // travels inside `detail`, where the member-facing activity route is
+          // forbidden from reading it.
+          //
+          // The guard runs UNCONDITIONALLY rather than behind an inequality
+          // check. An `if (a !== b)` in front of it would be a SECOND copy of
+          // the comparison, in the one place where the two could drift — and the
+          // guard's null-handling (a forgotten `select` must refuse, not clear)
+          // is exactly what a hand-written inequality gets wrong.
+          try {
+            assertAccountFkUnchanged(
+              { table: "Transaction", fkField: "financialAccountId", operation: "update" },
+              existingByPlaidId.id,
+              existingByPlaidId.financialAccountId,
+              financialAccountId as string,
+            );
+          } catch (e) {
+            console.error(
+              `[plaid sync][RLS-ACC-FK] REFUSED to relocate transaction ${existingByPlaidId.id} — ` +
+              `plaidTransactionId ${txn.transaction_id} resolved a row on account ${existingByPlaidId.financialAccountId}, ` +
+              `but this sync is for account ${financialAccountId}. Row left where it is; NOT updated.`,
+              redactedErrorForLog(e),
+            );
+            await recordSyncIssue({
+              kind:               "UPSERT_ERROR",
+              plaidItemId:        plaidItemDbId,
+              financialAccountId,
+              plaidAccountId:     txn.account_id,
+              detail: {
+                stage:                   "reparenting-refused",
+                runId,
+                providerRowId:           txn.transaction_id,
+                transactionId:           existingByPlaidId.id,
+                rowBelongsToAccountId:   existingByPlaidId.financialAccountId,
+                syncIsForAccountId:      financialAccountId,
+                cursorBlocking:          false,
+                canonicalStatePersisted: false,
+                error:                   e instanceof Error ? e.message : String(e),
+              },
+            }, incidents);
+            refusedReparenting++;
+            continue;
+          }
           // Integrity hardening: resurrect (deletedAt: null). If this row had
           // been tombstoned by a prior removed[] and Plaid now re-sends it in
           // added/modified, it is live again — Plaid only sends added/modified
@@ -1124,7 +1213,7 @@ export async function syncTransactionsForItem(
   await retireItemSyncFailure(plaidItemDbId, { itemClient: database });
 
   console.log(
-    `[plaid sync] item ${plaidItemDbId} — created ${created}, updatedByPlaidId ${updatedByPlaidId}, updatedByFingerprint ${updatedByFingerprint}, skippedMissingAccount ${skippedMissingAccount}, removed ${removed}`
+    `[plaid sync] item ${plaidItemDbId} — created ${created}, updatedByPlaidId ${updatedByPlaidId}, updatedByFingerprint ${updatedByFingerprint}, skippedMissingAccount ${skippedMissingAccount}, refusedReparenting ${refusedReparenting}, removed ${removed}`
   );
 
   // FlowType P2 shadow — one aggregate, non-PII summary line per run when enabled.
@@ -1141,5 +1230,6 @@ export async function syncTransactionsForItem(
     updatedByPlaidId,
     updatedByFingerprint,
     skippedMissingAccount,
+    refusedReparenting,
   };
 }

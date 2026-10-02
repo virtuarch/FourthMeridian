@@ -19,6 +19,7 @@
 import type { InvestmentTransaction, Security } from "plaid";
 import { ProviderType, type PrismaClient } from "@prisma/client";
 import { inOneTransaction, type WriteClient } from "@/lib/db/write-phase";
+import { assertAccountFkUnchanged } from "@/lib/accounts/account-reparenting";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 import { getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
@@ -491,8 +492,35 @@ export async function persistPlaidEvent(
 ): Promise<"inserted" | "unchanged" | "corrected"> {
   const existing = await client.investmentEvent.findUnique({
     where: { source_externalEventId: { source: mapped.source, externalEventId: mapped.externalEventId } },
-    select: { id: true, type: true, date: true, quantity: true, price: true, amount: true, fees: true, currency: true, providerType: true, providerSubtype: true, providerSecurityId: true, description: true, instrumentId: true },
+    // ⚠️ RLS-ACC-FK — `financialAccountId` JOINS THIS READ, AND THAT IS MOST OF
+    // THE FIX. `@@unique([source, externalEventId])` is TENANT-WIDE: it names a
+    // ROW without naming an ACCOUNT. Every write below then uses `faId` — this
+    // ingest's account — so a key that resolved somebody else's row would
+    // RELOCATE it, twice over: the `unchanged` arm's `instrumentId` attach keeps
+    // the row where it is, but the CORRECTION arm appends a NEW row under
+    // `faId` and supersedes the foreign one, which moves the live event to this
+    // account and leaves the other account's history pointing at a superseded
+    // shell. Until this select read the FK there was nothing to compare.
+    select: { id: true, financialAccountId: true, type: true, date: true, quantity: true, price: true, amount: true, fees: true, currency: true, providerType: true, providerSubtype: true, providerSecurityId: true, description: true, instrumentId: true },
   });
+
+  if (existing) {
+    // ── RLS-ACC-FK — THE SAME KEY, A DIFFERENT ACCOUNT, IS A RELOCATION ──────
+    //
+    // Raised rather than skipped, unlike the Plaid transaction path. The two
+    // differ in what a caller can do about it: the Plaid loop holds a CURSOR
+    // whose stall would stop delivering every other transaction on the Item, so
+    // it records and continues. This function persists ONE event and returns a
+    // verdict; there is no shared progress to protect, and an `inserted` /
+    // `unchanged` / `corrected` verdict for a row that was not this account's is
+    // a lie its callers project into coverage and reconstruction state.
+    assertAccountFkUnchanged(
+      { table: "InvestmentEvent", fkField: "financialAccountId", operation: "update" },
+      existing.id,
+      existing.financialAccountId,
+      faId,
+    );
+  }
 
   if (!existing) {
     await client.investmentEvent.create({ data: eventData(faId, instrumentId, mapped) });

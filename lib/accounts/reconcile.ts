@@ -51,6 +51,8 @@ import { db } from "@/lib/db";
 import { AccountType, ShareStatus, DuplicateDetectionSource, DuplicateStatus, ProviderType, type PrismaClient } from "@prisma/client";
 import { dualWriteSpaceAccountLink, resolveAccountCreatorUserId, type DbClient } from "@/lib/accounts/space-account-link";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
+import { assertAccountReparentingAuthorized } from "@/lib/accounts/account-reparenting";
+import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
 
 /**
  * Lifecycle fix — docs/bugfixes/BUGFIX_PLAID_REFRESH_ORPHANED_PLAID_ITEMS.md,
@@ -525,6 +527,38 @@ export async function mergeArchivedDuplicateIntoCanonical(
   }
   const tx = client;
 
+  // ── RLS-ACC-FK — THE AUTHORITY QUESTION, ASKED BEFORE ANY ROW MOVES ────────
+  //
+  // Everything below re-points financial detail from one account to another. The
+  // measured defect this guard closes is that NOTHING established the two
+  // accounts belong to the same owner — not here, and not in the database:
+  // `Transaction.fm_app_upd` is `fm_account_visible("financialAccountId")` on
+  // both arms, so a shared Space makes a cross-owner move a LEGAL write. Six of
+  // another owner's transactions moved under a real `fm_app` role, at both
+  // visibility tiers, in both directions.
+  //
+  // ⚠️ IT ASKS `tx`, NOT `db`, AND THAT IS NOT COSMETIC. A probe on a wider
+  // authority than the write answers about rows the writer cannot see — the rule
+  // `lib/db/conditional-write.ts` states for its visibility thunk. Passing the
+  // phase client through is also what makes this module's eventual client
+  // conversion an edit to the CALLERS rather than to the guard: today `tx`
+  // descends from the migration principal, so the ownership comparison is
+  // mechanical while the SCOPE half degenerates to "exists"; the day a tenant
+  // client arrives here, the same line starts enforcing scope too, unchanged.
+  //
+  // It also closes the `ownerUserId`-null hole in ONE place. Two paths reach
+  // here with a null-owner account possible: `findCandidatesByFingerprint`
+  // DROPS its `ownerUserId` predicate entirely when the fingerprint's owner is
+  // null (a global, cross-owner candidate sweep), and `ownerUser` is
+  // `onDelete: SetNull`. A null owner now REFUSES rather than comparing equal to
+  // another null.
+  await assertAccountReparentingAuthorized(
+    tx,
+    { table: "FinancialAccount", fkField: "financialAccountId", operation: "updateMany" },
+    loserId,
+    winnerId,
+  );
+
   // Re-points ALL of the loser's transactions, including any soft-deleted by
   // an import rollback (Transaction.deletedAt) — intentionally NOT filtered
   // to deletedAt: null. A soft-deleted row must move with the rest of the
@@ -533,10 +567,26 @@ export async function mergeArchivedDuplicateIntoCanonical(
   // restored. This is the one Transaction call site the D2 Step 4D-R audit
   // identified as needing to keep ignoring deletedAt — see
   // docs/initiatives/d2/investigations/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §5.
-  await tx.transaction.updateMany({
+  //
+  // ── RLS-ACC-FK (clauses 7 and 8) — PROVE THE WHOLE POPULATION ─────────────
+  // The observation in front of this write is the GUARD, not an optimisation.
+  // A bulk re-point whose count fell short has left rows on an account the rest
+  // of this merge has already treated as emptied, and a shortfall reports
+  // health: `updateMany` just returns a smaller, plausible number. 1-of-6 looks
+  // exactly like success. Under the migration principal the two can only
+  // disagree through concurrent modification, which is why a disagreement is an
+  // alarm rather than a business outcome — and the day this module runs on a
+  // scoped client, the same two statements start telling a policy refusal from a
+  // complete write with no further change.
+  const loserTxCount = await tx.transaction.count({ where: { financialAccountId: loserId } });
+  const movedTx = await tx.transaction.updateMany({
     where: { financialAccountId: loserId },
     data:  { financialAccountId: winnerId },
   });
+  assertEveryObservedRowWasWritten(
+    { table: "Transaction", operation: "update", scope: "one archived duplicate's transactions" },
+    loserTxCount, movedTx.count,
+  );
 
   // W2 — the GoalContribution re-point block was DELETED with the Goals
   // retirement (see the doc bullet above): contributions now cascade with the
@@ -544,10 +594,20 @@ export async function mergeArchivedDuplicateIntoCanonical(
 
   const winnerDebtProfile = await tx.debtProfile.findUnique({ where: { financialAccountId: winnerId } });
   if (!winnerDebtProfile) {
-    await tx.debtProfile.updateMany({
+    // Same clause-7/8 reasoning as the transaction re-point. DebtProfile is a
+    // strict 1:1 so the population is 0 or 1, which is precisely the size at
+    // which a shortfall is easiest to mistake for "there was nothing to move":
+    // the APR and minimum-payment facts are USER-ENTERED and exist nowhere else,
+    // so a silently unmoved profile strands the only copy on a soft-deleted row.
+    const loserDebtCount = await tx.debtProfile.count({ where: { financialAccountId: loserId } });
+    const movedDebt = await tx.debtProfile.updateMany({
       where: { financialAccountId: loserId },
       data:  { financialAccountId: winnerId },
     });
+    assertEveryObservedRowWasWritten(
+      { table: "DebtProfile", operation: "update", scope: "one archived duplicate's debt profile" },
+      loserDebtCount, movedDebt.count,
+    );
   }
 
   // D3 Stage B2 — loser-share re-pointing migrated from WorkspaceAccountShare

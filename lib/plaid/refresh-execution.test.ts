@@ -265,6 +265,8 @@ async function main() {
   const TX: SyncTransactionsResult = {
     added: 2, modified: 1, removed: 0, cursor: "c",
     created: 3, updatedByPlaidId: 0, updatedByFingerprint: 0, skippedMissingAccount: 0,
+    // RLS-ACC-FK — a sync that refused to re-parent a row reports it here.
+    refusedReparenting: 0,
   };
   function cronDeps(over: Partial<CronItemDeps> = {}, capture?: { runId?: string }): CronItemDeps {
     return {
