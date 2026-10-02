@@ -52,7 +52,7 @@ function poolTimeout(): Error {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** P1 — the cache now stores the session's facts (owner + current role), not a bare boolean. */
-const LIVE: SessionFacts = { userId: "user-1", role: "USER" };
+const LIVE: SessionFacts = { userId: "user-1", role: "USER", requireTotpSetup: false };
 
 console.log("PROD-POOLER-AUTH-INCIDENT-1 — session revocation cache policy");
 

@@ -17,8 +17,11 @@ declare module "next-auth" {
       username?:    string | null;
       role:         UserRole;
     };
-    sessionToken?:     string | null; // opaque id matching UserSession.sessionToken — used to identify current session
-    requireTotpSetup?: boolean | null; // set when platform requires TOTP but user hasn't enrolled yet — middleware redirects to /settings
+    // P1b — NO sessionToken here. Session is what GET /api/auth/session
+    // serialises to the browser; the sessionToken is authentication material
+    // and stays in the encrypted JWT (read server-side by lib/session.ts).
+    /** Derived from CURRENT state by the session callback (not the token's claim). */
+    requireTotpSetup?: boolean | null;
     /**
      * PROD-POOLER-AUTH-INCIDENT-1 — set when the UserSession revocation check
      * could not be answered (DB unreachable / pool exhausted) and no bounded-

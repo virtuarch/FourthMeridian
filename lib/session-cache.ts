@@ -73,8 +73,15 @@
  * `role` is a string here so this module stays free of Prisma imports.
  */
 export interface SessionFacts {
-  readonly userId: string;
-  readonly role:   string;
+  readonly userId:           string;
+  readonly role:             string;
+  /**
+   * P1b — whether the platform requires this user to finish TOTP enrolment,
+   * derived from CURRENT state (role, User.totpEnabled, require_totp_all_users).
+   * The token's own `requireTotpSetup` is a navigation hint only: it is
+   * client-updatable (useSession().update) and must never gate authority.
+   */
+  readonly requireTotpSetup: boolean;
 }
 
 /** A cached answer: the session is live (with its facts), or it is not. */

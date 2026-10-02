@@ -64,7 +64,11 @@ import { authOptions }           from "@/lib/auth";
 import { authDb }                from "@/lib/db";
 import { withTenantDb }          from "@/lib/db/tenant-context";
 import { setCachedRevocation, type SessionFacts } from "@/lib/session-cache";
-import { factsFromRow, SESSION_ROW_SELECT } from "@/lib/auth/session-proof";
+import { factsFromRow, readSessionClaims, SESSION_ROW_SELECT } from "@/lib/auth/session-proof";
+import { authCookiesSecure, sessionCookieName } from "@/lib/auth/session-cookie";
+import { getToken }              from "next-auth/jwt";
+import { cookies }               from "next/headers";
+import { PlatformSettingKey }    from "@/lib/platform-settings";
 import { isRevocationIndeterminate } from "@/lib/auth/session-outcome";
 import { captureSessionRevocationFailure } from "@/lib/monitoring/capture";
 import { decideAdminApiAccess }  from "@/lib/admin-totp-enrollment";
@@ -141,6 +145,31 @@ type SessionResolution =
   | { kind: "anonymous" }
   | { kind: "indeterminate" };
 
+/**
+ * P1b — the current request's sessionToken, decrypted from its own session
+ * cookie on the server. The session callback no longer places it on the
+ * session object, because that object is serialised to the browser by
+ * GET /api/auth/session. Bound to the verified identity: the cookie's id must
+ * be the user getServerSession just proved, else null (the fresh guards then
+ * refuse). Cookies only — never an Authorization header — matching
+ * getServerSession, which reads the same cookie.
+ */
+async function sessionTokenFromCookie(verifiedUserId: string): Promise<string | null> {
+  try {
+    const secure = authCookiesSecure();
+    const token  = await getToken({
+      req:          { cookies: await cookies(), headers: {} } as unknown as Parameters<typeof getToken>[0]["req"],
+      secret:       process.env.NEXTAUTH_SECRET,
+      secureCookie: secure,
+      cookieName:   sessionCookieName(secure),
+    });
+    const claims = readSessionClaims(token);
+    return claims && claims.userId === verifiedUserId ? claims.sessionToken : null;
+  } catch {
+    return null;
+  }
+}
+
 async function resolveSession(): Promise<SessionResolution> {
   const session = await getServerSession(authOptions);
   // Checked BEFORE the user check: the degraded session deliberately carries no
@@ -153,7 +182,9 @@ async function resolveSession(): Promise<SessionResolution> {
       id:               session.user.id,
       role:             session.user.role,
       username:         session.user.username ?? null,
-      sessionToken:     session.sessionToken  ?? null,
+      // P1b — read from the cookie, never from the session object (which is
+      // what /api/auth/session serialises to the browser).
+      sessionToken:     await sessionTokenFromCookie(session.user.id),
       requireTotpSetup: session.requireTotpSetup ?? false,
     },
   };
@@ -174,10 +205,16 @@ async function recheckSessionLive(
   try {
     // P1 — the same proof the session callback applies (lib/auth/session-proof.ts):
     // live, OWNED by this user, and carrying the owner's CURRENT role.
-    const facts = factsFromRow(await authDb.userSession.findFirst({
-      where:  { sessionToken: user.sessionToken },
-      select: SESSION_ROW_SELECT,
-    }));
+    const facts = await factsFromRow(
+      await authDb.userSession.findFirst({
+        where:  { sessionToken: user.sessionToken },
+        select: SESSION_ROW_SELECT,
+      }),
+      async () => (await authDb.platformSetting.findUnique({
+        where:  { key: PlatformSettingKey.REQUIRE_TOTP_ALL_USERS },
+        select: { value: true },
+      }))?.value === "true",
+    );
     if (!facts || facts.userId !== user.id) return { verdict: "revoked" };
     return { verdict: "valid", facts };
   } catch (error) {
@@ -273,6 +310,8 @@ export async function requireFreshUser(
   // Refresh the cache with this authoritative result so any cached reads
   // within the TTL window right after this reflect it too.
   setCachedRevocation(user.sessionToken, live.facts);
+  // P1b — re-judge the enrolment gate on the requirement just read.
+  if (totpSetupPending({ ...user, requireTotpSetup: live.facts.requireTotpSetup }, opts)) return [null, forbidden()];
 
   return [user, null];
 }
@@ -343,7 +382,7 @@ export async function requireFreshSystemAdmin(): Promise<
 
   setCachedRevocation(user.sessionToken, live.facts);
   // P1 — the role re-read just now, not the one served from the 30s cache.
-  if (adminApiAccess({ ...user, role: live.facts.role as SessionUser["role"] }) !== "ALLOW") {
+  if (adminApiAccess({ ...user, role: live.facts.role as SessionUser["role"], requireTotpSetup: live.facts.requireTotpSetup }) !== "ALLOW") {
     return [null, forbidden()];
   }
 

@@ -71,10 +71,13 @@ let encode: typeof import("next-auth/jwt").encode;
 let UserRole: typeof import("@prisma/client").UserRole;
 
 // ── The fake session store ────────────────────────────────────────────────────
-interface Row { userId: string; revokedAt: Date | null; user: { id: string; role: string } | null }
+interface Row { userId: string; revokedAt: Date | null; user: { id: string; role: string; totpEnabled: boolean } | null }
 const ROWS = new Map<string, Row>();
 let lookups = 0;
 let failStore = false;
+let settingReads = 0;
+let failSetting = false;
+let requireTotpAllUsers = false;
 
 const ALICE = "cmalice00000000000000000a";
 const BOB   = "cmbob0000000000000000000b";
@@ -87,10 +90,10 @@ const ORPHAN_SESSION  = "0b6f2a4e-5c1d-4f8e-9a7b-555555555555";
 
 function seed() {
   ROWS.clear();
-  ROWS.set(ALICE_SESSION,   { userId: ALICE, revokedAt: null,       user: { id: ALICE, role: "USER" } });
-  ROWS.set(BOB_SESSION,     { userId: BOB,   revokedAt: null,       user: { id: BOB,   role: "USER" } });
-  ROWS.set(ADMIN_SESSION,   { userId: ADMIN, revokedAt: null,       user: { id: ADMIN, role: "SYSTEM_ADMIN" } });
-  ROWS.set(REVOKED_SESSION, { userId: ALICE, revokedAt: new Date(), user: { id: ALICE, role: "USER" } });
+  ROWS.set(ALICE_SESSION,   { userId: ALICE, revokedAt: null,       user: { id: ALICE, role: "USER", totpEnabled: true } });
+  ROWS.set(BOB_SESSION,     { userId: BOB,   revokedAt: null,       user: { id: BOB,   role: "USER", totpEnabled: true } });
+  ROWS.set(ADMIN_SESSION,   { userId: ADMIN, revokedAt: null,       user: { id: ADMIN, role: "SYSTEM_ADMIN", totpEnabled: true } });
+  ROWS.set(REVOKED_SESSION, { userId: ALICE, revokedAt: new Date(), user: { id: ALICE, role: "USER", totpEnabled: true } });
   ROWS.set(ORPHAN_SESSION,  { userId: "cmdeleted0000000000000000", revokedAt: null, user: null });
 }
 
@@ -111,6 +114,13 @@ const fakeUserSession = {
   },
   async updateMany() { return { count: 1 }; },
 };
+const fakePlatformSetting = {
+  async findUnique(args: { where: { key?: unknown } }) {
+    settingReads++;
+    if (failSetting) throw new Error("settings store unavailable");
+    return args?.where?.key === "require_totp_all_users" ? { value: requireTotpAllUsers ? "true" : "false" } : null;
+  },
+};
 async function load() {
   ({ authOptions } = await import("@/lib/auth"));
   ({ clearAllSessions } = await import("@/lib/session-cache"));
@@ -119,6 +129,7 @@ async function load() {
   ({ UserRole } = await import("@prisma/client"));
   const { authDb } = await import("@/lib/db");
   Object.defineProperty(authDb, "userSession", { value: fakeUserSession, configurable: true });
+  Object.defineProperty(authDb, "platformSetting", { value: fakePlatformSetting, configurable: true });
 }
 
 // ── Drive the real NextAuth pipeline ─────────────────────────────────────────
@@ -204,12 +215,12 @@ async function main() {
     decideAdminApiAccess({ role: f5.user?.role as UserRoleT, requireTotpSetup: false, systemAdminDisabled: false }) !== "ALLOW");
   // Demotion after issuance: the store now says USER for the admin.
   seed();
-  ROWS.set(ADMIN_SESSION, { userId: ADMIN, revokedAt: null, user: { id: ADMIN, role: "USER" } });
+  ROWS.set(ADMIN_SESSION, { userId: ADMIN, revokedAt: null, user: { id: ADMIN, role: "USER", totpEnabled: true } });
   const demoted = await serve(await forge({ id: ADMIN, role: "SYSTEM_ADMIN", sessionToken: ADMIN_SESSION }));
   check("5. an admin demoted after login is served with the CURRENT role (USER)", demoted.user?.role === "USER", JSON.stringify(demoted));
   // Unknown role in the store → refused, never defaulted.
   seed();
-  ROWS.set(ALICE_SESSION, { userId: ALICE, revokedAt: null, user: { id: ALICE, role: "ROOT" } });
+  ROWS.set(ALICE_SESSION, { userId: ALICE, revokedAt: null, user: { id: ALICE, role: "ROOT", totpEnabled: true } });
   const unknownRole = await serve(await forge({ id: ALICE, role: "USER", sessionToken: ALICE_SESSION }));
   check("5. a role the application does not know → refused", !authenticated(unknownRole), JSON.stringify(unknownRole));
 
@@ -231,13 +242,15 @@ async function main() {
   const ok = await serve(await forge({ id: ALICE, role: "USER", sessionToken: ALICE_SESSION, username: "alice" }));
   check("8. valid, owned, live session → accepted as USER", ok.user?.id === ALICE && ok.user?.role === "USER", JSON.stringify(ok));
   check("   …after exactly one store lookup", lookups === 1);
-  check("   …carrying the sessionToken the guards' fresh checks need", (ok as { sessionToken?: string }).sessionToken === ALICE_SESSION);
+  // P1b — the served session is what GET /api/auth/session sends the BROWSER.
+  check("   …and the browser-facing session carries NO sessionToken (P1b)",
+    !("sessionToken" in ok) && !JSON.stringify(ok).includes(ALICE_SESSION), JSON.stringify(ok));
   seed();
   const admin = await serve(await forge({ id: ADMIN, role: "SYSTEM_ADMIN", sessionToken: ADMIN_SESSION }));
   check("9. valid SYSTEM_ADMIN session whose store role is SYSTEM_ADMIN → accepted as SYSTEM_ADMIN",
     admin.user?.id === ADMIN && admin.user?.role === "SYSTEM_ADMIN", JSON.stringify(admin));
   seed();
-  ROWS.set(ALICE_SESSION, { userId: ALICE, revokedAt: null, user: { id: ALICE, role: "SYSTEM_ADMIN" } });
+  ROWS.set(ALICE_SESSION, { userId: ALICE, revokedAt: null, user: { id: ALICE, role: "SYSTEM_ADMIN", totpEnabled: true } });
   const promoted = await serve(await forge({ id: ALICE, role: "USER", sessionToken: ALICE_SESSION }));
   check("9. a user promoted after login is served with the CURRENT role", promoted.user?.role === "SYSTEM_ADMIN", JSON.stringify(promoted));
 
@@ -272,14 +285,46 @@ async function main() {
   const f12b = await serve(await forge({ id: ALICE, role: "SYSTEM_ADMIN" })); // and no sessionToken during an outage
   check("12. during an outage a token without a sessionToken is still refused", !authenticated(f12b));
 
+  // ── 12b. P1b — the TOTP-enrolment requirement is CURRENT state, not a claim ─
+  console.log("\n12b. requireTotpSetup comes from the store; the token's copy is a hint");
+  const totp = async (row: Row, claim: unknown) => {
+    seed(); ROWS.set(ALICE_SESSION, row); settingReads = 0;
+    return serve(await forge({ id: row.userId, role: "USER", sessionToken: ALICE_SESSION, requireTotpSetup: claim }));
+  };
+  const unenrolledAdmin = await totp({ userId: ADMIN, revokedAt: null, user: { id: ADMIN, role: "SYSTEM_ADMIN", totpEnabled: false } }, null);
+  check("T1. un-enrolled SYSTEM_ADMIN whose token says requireTotpSetup: null → served PENDING",
+    unenrolledAdmin.user?.role === "SYSTEM_ADMIN" && unenrolledAdmin.requireTotpSetup === true, JSON.stringify(unenrolledAdmin));
+  check("    …so admin access is denied despite the token", decideAdminApiAccess({ role: "SYSTEM_ADMIN" as UserRoleT,
+    requireTotpSetup: unenrolledAdmin.requireTotpSetup === true, systemAdminDisabled: false }) !== "ALLOW");
+  check("    …and the setting was not consulted for an admin (as authorize() does)", settingReads === 0);
+  requireTotpAllUsers = true;
+  const forcedUser = await totp({ userId: ALICE, revokedAt: null, user: { id: ALICE, role: "USER", totpEnabled: false } }, false);
+  check("T2. require_totp_all_users ON + un-enrolled USER whose token (client-updated) says false → served PENDING",
+    forcedUser.requireTotpSetup === true && settingReads === 1, JSON.stringify(forcedUser));
+  requireTotpAllUsers = false;
+  const optionalUser = await totp({ userId: ALICE, revokedAt: null, user: { id: ALICE, role: "USER", totpEnabled: false } }, true);
+  check("T3. setting OFF + un-enrolled USER whose token says true → served NOT pending (the hint never decides)",
+    optionalUser.user?.id === ALICE && optionalUser.requireTotpSetup === false, JSON.stringify(optionalUser));
+  const enrolled = await totp({ userId: ALICE, revokedAt: null, user: { id: ALICE, role: "USER", totpEnabled: true } }, true);
+  check("T4. enrolled user with a stale `true` hint → served NOT pending, setting not read",
+    enrolled.requireTotpSetup === false && settingReads === 0, JSON.stringify(enrolled));
+  failSetting = true;
+  const settingDown = await totp({ userId: ALICE, revokedAt: null, user: { id: ALICE, role: "USER", totpEnabled: false } }, false);
+  failSetting = false;
+  check("T5. settings read fails for an un-enrolled USER → NOT authenticated (indeterminate), never 'not required'",
+    !authenticated(settingDown) && settingDown[SESSION_INDETERMINATE_FLAG] === true, JSON.stringify(settingDown));
+
   // ── 13. Pure-function edges ──────────────────────────────────────────────
   console.log("\n13. pure judgement edges");
+  const never = async (): Promise<boolean> => { throw new Error("setting must not be read"); };
   check("factsFromRow(revokedAt missing) → null (malformed is not 'not revoked')",
-    factsFromRow({ userId: ALICE, user: { id: ALICE, role: "USER" } }) === null);
+    (await factsFromRow({ userId: ALICE, user: { id: ALICE, role: "USER", totpEnabled: true } }, never)) === null);
   check("factsFromRow(user.id ≠ row.userId) → null",
-    factsFromRow({ userId: ALICE, revokedAt: null, user: { id: BOB, role: "USER" } }) === null);
+    (await factsFromRow({ userId: ALICE, revokedAt: null, user: { id: BOB, role: "USER", totpEnabled: true } }, never)) === null);
+  check("factsFromRow(totpEnabled missing) → null (cannot derive the requirement)",
+    (await factsFromRow({ userId: ALICE, revokedAt: null, user: { id: ALICE, role: "USER" } }, never)) === null);
   check("judgeSession(stale verified facts of ANOTHER user) → refused",
-    judgeSession({ userId: ALICE, sessionToken: BOB_SESSION }, { valid: true, facts: { userId: BOB, role: "USER" }, disposition: "STALE_HIT" }).kind === "refused");
+    judgeSession({ userId: ALICE, sessionToken: BOB_SESSION }, { valid: true, facts: { userId: BOB, role: "USER", requireTotpSetup: false }, disposition: "STALE_HIT" }).kind === "refused");
   check("judgeSession(valid without facts) → refused, never authenticated",
     judgeSession({ userId: ALICE, sessionToken: ALICE_SESSION }, { valid: true, disposition: "LIVE" }).kind === "refused");
   check("readSessionClaims rejects a numeric id", readSessionClaims({ id: 7, sessionToken: ALICE_SESSION }) === null);
@@ -294,6 +339,9 @@ async function main() {
   check("the session callback no longer gates the lookup on `if (sessionToken)`", !/if\s*\(\s*sessionToken\s*\)/.test(cb));
   check("the session callback refuses when claims are absent", /if\s*\(\s*!claims\s*\)\s*return refusedSession\(session\)/.test(cb));
   check("the session callback never assigns token.role to the session", !/session\.user\.role\s*=\s*token\.role/.test(cb));
+  check("P1b: the session callback never puts a sessionToken on the session", !/session\.sessionToken\s*=/.test(cb));
+  check("P1b: the session callback never takes requireTotpSetup from the token",
+    !/session\.requireTotpSetup\s*=\s*\(?\s*token\./.test(cb) && /session\.requireTotpSetup\s*=\s*verdict\.requireTotpSetup/.test(cb));
   check("the session callback judges every outcome with judgeSession()", auth.includes("judgeSession(claims, outcome)"));
   check("the fresh re-check proves ownership and refreshes the cache with facts",
     sess.includes("facts.userId !== user.id") && /setCachedRevocation\(user\.sessionToken, live\.facts\)/.test(sess));

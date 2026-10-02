@@ -16,8 +16,10 @@
  *   2. a UserSession row with that sessionToken exists and is not revoked;
  *   3. that row's userId EQUALS the token's id (ownership, not mere existence);
  *   4. the row's user exists, and its role is a known role;
- * and the role the application acts on is the user's CURRENT role from the
- * store (factsFromRow), never the token's claim. Expiry is the JWT's own
+ * and the role AND the TOTP-enrolment requirement the application acts on are
+ * the user's CURRENT state from the store (factsFromRow), never the token's
+ * claims. (P1b: `requireTotpSetup` in the token is client-updatable through
+ * useSession().update and is a navigation hint for proxy.ts only.) Expiry is the JWT's own
  * `exp`, enforced by NextAuth's decode before any of this runs.
  *
  * FAILURE IS NOT TRUST. When the store cannot answer, the verdict is
@@ -31,6 +33,9 @@
  */
 
 import type { RevocationOutcome, SessionFacts } from "@/lib/session-cache";
+
+/** The platform setting key authorize() reads (PlatformSettingKey.REQUIRE_TOTP_ALL_USERS). */
+export const REQUIRE_TOTP_ALL_USERS_KEY = "require_totp_all_users";
 
 /** The roles a session may carry. Pinned equal to Prisma's UserRole by test. */
 export const KNOWN_ROLES: readonly string[] = ["USER", "SYSTEM_ADMIN"];
@@ -62,13 +67,13 @@ export function readSessionClaims(token: { id?: unknown; sessionToken?: unknown 
 export const SESSION_ROW_SELECT = {
   userId:    true,
   revokedAt: true,
-  user:      { select: { id: true, role: true } },
+  user:      { select: { id: true, role: true, totpEnabled: true } },
 } as const;
 
 export interface SessionRowLike {
   userId?:    unknown;
   revokedAt?: unknown;
-  user?:      { id?: unknown; role?: unknown } | null;
+  user?:      { id?: unknown; role?: unknown; totpEnabled?: unknown } | null;
 }
 
 /**
@@ -76,7 +81,10 @@ export interface SessionRowLike {
  * absent, revoked, ownerless, inconsistent, or carrying an unknown role.
  * Never throws — a malformed row is a refusal, not an exception.
  */
-export function factsFromRow(row: SessionRowLike | null | undefined): SessionFacts | null {
+export async function factsFromRow(
+  row: SessionRowLike | null | undefined,
+  readRequireTotpAllUsers: () => Promise<boolean>,
+): Promise<SessionFacts | null> {
   if (!row || typeof row !== "object") return null;
   if (row.revokedAt !== null) return null; // undefined (field missing) is malformed, not "not revoked"
   if (typeof row.userId !== "string" || row.userId.length === 0) return null;
@@ -84,11 +92,34 @@ export function factsFromRow(row: SessionRowLike | null | undefined): SessionFac
   if (!user || typeof user !== "object") return null;
   if (user.id !== row.userId) return null;
   if (typeof user.role !== "string" || !KNOWN_ROLES.includes(user.role)) return null;
-  return { userId: row.userId, role: user.role };
+  if (typeof user.totpEnabled !== "boolean") return null;
+  return {
+    userId:           row.userId,
+    role:             user.role,
+    requireTotpSetup: await currentTotpRequirement(user.role, user.totpEnabled, readRequireTotpAllUsers),
+  };
+}
+
+/**
+ * P1b — the enrolment requirement from CURRENT state, by the same rule
+ * authorize() applies at sign-in (lib/auth-totp-policy.ts): never once
+ * enrolled; always for SYSTEM_ADMIN; otherwise the require_totp_all_users
+ * setting. The setting is read only when it can matter (an un-enrolled USER),
+ * as authorize() does. A failed read THROWS — the caller's degradation path
+ * turns that into INDETERMINATE, never into "not required".
+ */
+async function currentTotpRequirement(
+  role: string,
+  totpEnabled: boolean,
+  readRequireTotpAllUsers: () => Promise<boolean>,
+): Promise<boolean> {
+  if (totpEnabled) return false;
+  if (role === "SYSTEM_ADMIN") return true;
+  return (await readRequireTotpAllUsers()) === true;
 }
 
 export type SessionVerdict =
-  | { readonly kind: "authenticated"; readonly userId: string; readonly role: string }
+  | { readonly kind: "authenticated"; readonly userId: string; readonly role: string; readonly requireTotpSetup: boolean }
   | { readonly kind: "refused"; readonly reason: "not-live" | "owner-mismatch" | "malformed-facts" }
   | { readonly kind: "indeterminate" };
 
@@ -99,10 +130,11 @@ export type SessionVerdict =
 export function judgeSession(claims: SessionClaims, outcome: RevocationOutcome): SessionVerdict {
   if (outcome.valid === null) return { kind: "indeterminate" };
   if (outcome.valid !== true || !outcome.facts) return { kind: "refused", reason: "not-live" };
-  const { userId, role } = outcome.facts;
-  if (typeof userId !== "string" || typeof role !== "string" || !KNOWN_ROLES.includes(role)) {
+  const { userId, role, requireTotpSetup } = outcome.facts;
+  if (typeof userId !== "string" || typeof role !== "string" || !KNOWN_ROLES.includes(role) ||
+      typeof requireTotpSetup !== "boolean") {
     return { kind: "refused", reason: "malformed-facts" };
   }
   if (userId !== claims.userId) return { kind: "refused", reason: "owner-mismatch" };
-  return { kind: "authenticated", userId, role };
+  return { kind: "authenticated", userId, role, requireTotpSetup };
 }

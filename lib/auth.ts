@@ -557,7 +557,11 @@ export const authOptions: NextAuthOptions = {
         token.sessionToken     = u.sessionToken     ?? null;
         token.requireTotpSetup = u.requireTotpSetup ?? null;
       }
-      // `trigger === "update"` fires when client calls useSession().update(...)
+      // `trigger === "update"` fires when client calls useSession().update(...).
+      // ⚠️ P1b — the CLIENT chooses these values. That is why neither may ever
+      // be read as authority: `username` is presentation, and the token's
+      // `requireTotpSetup` is only proxy.ts's navigation hint (the session
+      // callback derives the real requirement from current state).
       if (trigger === "update") {
         if (session?.username !== undefined)         token.username         = session.username;
         if (session?.requireTotpSetup !== undefined) token.requireTotpSetup = session.requireTotpSetup;
@@ -607,10 +611,17 @@ export const authOptions: NextAuthOptions = {
       //      deletes the session cookie — a transient DB blip became a logout.
       //   3. It degrades through a BOUNDED stale window before giving up.
       const outcome = await resolveRevocation(sessionToken, async () =>
-        factsFromRow(await db.userSession.findFirst({
-          where:  { sessionToken },
-          select: SESSION_ROW_SELECT,
-        })),
+        factsFromRow(
+          await db.userSession.findFirst({
+            where:  { sessionToken },
+            select: SESSION_ROW_SELECT,
+          }),
+          // P1b — only consulted for an un-enrolled USER, as authorize() does.
+          async () => (await db.platformSetting.findUnique({
+            where:  { key: PlatformSettingKey.REQUIRE_TOTP_ALL_USERS },
+            select: { value: true },
+          }))?.value === "true",
+        ),
       );
       const verdict = judgeSession(claims, outcome);
 
@@ -662,9 +673,16 @@ export const authOptions: NextAuthOptions = {
       session.user.id        = verdict.userId;
       // The CURRENT role from the session store — never the token's claim.
       session.user.role      = verdict.role           as UserRole;
+      // Presentation only (display, invite-email inviter name) — grants nothing.
       session.user.username  = token.username         as string | null | undefined;
-      session.sessionToken   = sessionToken;
-      session.requireTotpSetup = (token.requireTotpSetup as boolean | null | undefined) ?? null;
+      // P1b — the enrolment requirement from CURRENT state. The token's copy is
+      // client-updatable (jwt callback, trigger "update") and is only a
+      // navigation hint for proxy.ts.
+      session.requireTotpSetup = verdict.requireTotpSetup;
+      // P1b — deliberately NO sessionToken on the session. This object is what
+      // GET /api/auth/session serialises to the browser (useSession()), and the
+      // sessionToken is authentication material under P1. Server code that
+      // needs it reads it from the cookie (lib/session.ts sessionTokenFromCookie).
       return session;
     },
   },
