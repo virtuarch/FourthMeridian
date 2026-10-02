@@ -82,8 +82,16 @@ check("B adapter is server-only",              /import\s+["']server-only["']/.te
 check("B adapter reuses requireUser",          /requireUser\s*\(/.test(adapterCode) && /from\s+["']@\/lib\/session["']/.test(adapterCode));
 check("B adapter reuses forbidden",            /\bforbidden\s*\(\s*\)/.test(adapterCode));
 check("B adapter delegates to can()",          /\bcan\s*\(/.test(adapterCode) && /from\s+["']\.\/policy["']/.test(adapterCode));
+// ⚠️ IT FETCHES BOTH; IT NO LONGER JOINS THEM. RLS slice B split the
+// `space: { select: { type } }` include into a second read in the same
+// transaction, because `SpaceMember.space` is a REQUIRED relation whose policy
+// is not satisfied for a LEFT/REMOVED member — Prisma would raise
+// "Inconsistent query result" and turn a 403 into a 500. What must not regress
+// is that the adapter resolves BOTH the membership and the Space type.
 check("B adapter fetches membership + space.type",
-  /spaceMember\.findUnique/.test(adapterCode) && /space:\s*\{\s*select:\s*\{\s*type:\s*true/.test(adapterCode));
+  /spaceMember\.findUnique/.test(adapterCode) &&
+  /space\.findUnique/.test(adapterCode) &&
+  /select:\s*\{\s*type:\s*true/.test(adapterCode));
 check("B decideSpaceAction denies null membership",
   /if\s*\(\s*!membership\s*\)\s*return\s+false/.test(adapterCode));
 check("B adapter never emits 404",             !/404/.test(adapterCode));

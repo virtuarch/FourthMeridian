@@ -31,6 +31,28 @@
  *   const [auth, err] = await requireSpaceAction(spaceId, "section:edit");
  *   if (err) return err;
  *   const { user, membership } = auth;
+ *
+ * ── RLS SLICE B — THE AUTHORIZATION READ RUNS AS THE CALLER TOO ──────────────
+ * This is the twin of requireSpaceRole (lib/session.ts), which already enters
+ * withTenantDb; leaving one of the two Space doors on the migration principal
+ * would have split a single concern across two authorities. The caller is
+ * established before this read, and fm_app's `SpaceMember` SELECT policy carries
+ * a `userId = current_fm_user_id()` arm — "am I a member" needs no elevated
+ * authority to ask.
+ *
+ * ⚠️ AND THE `space` JOIN HAD TO BECOME A SECOND READ, FOR THE SAME REASON IT
+ * DID IN /api/space/switch. `SpaceMember.space` is a REQUIRED relation, but
+ * `Space.fm_app_sel` needs an ACTIVE membership — so for a LEFT or REMOVED
+ * member the row is visible and the Space is not, and Prisma raises
+ * "Inconsistent query result: Field space is required" rather than returning
+ * null. A departed member's clean 403 would have become a 500.
+ *
+ * Reading the Space separately in the SAME transaction preserves every outcome
+ * exactly. A LEFT member now yields a null membership (the Space read returns
+ * nothing) instead of a membership that `can()` refuses at step 1 — both reach
+ * `decideSpaceAction(action, null)` and both emit the same 403. The DECISION
+ * still belongs entirely to the pure function below; nothing about the policy
+ * moved into the adapter.
  */
 
 import "server-only";
@@ -41,7 +63,7 @@ import type {
   SpaceMemberStatus,
   SpaceType,
 } from "@prisma/client";
-import { db }                               from "@/lib/db";
+import { withTenantDb }                     from "@/lib/db/tenant-context";
 import { requireUser, forbidden }           from "@/lib/session";
 import type { SessionUser }                 from "@/lib/session";
 import { can }                              from "./policy";
@@ -93,13 +115,21 @@ export async function requireSpaceAction(
   const [user, err] = await requireUser();
   if (err) return [null, err]; // 401 — no session
 
-  const row = await db.spaceMember.findUnique({
-    where:  { spaceId_userId: { spaceId, userId: user.id } },
-    select: { role: true, status: true, space: { select: { type: true } } },
-  });
+  const { row, space } = await withTenantDb(user.id, async (tx) => ({
+    row: await tx.spaceMember.findUnique({
+      where:  { spaceId_userId: { spaceId, userId: user.id } },
+      select: { role: true, status: true },
+    }),
+    // See the header: a separate read, not an include, because the relation is
+    // REQUIRED and the policy behind it is not satisfied for every member row.
+    space: await tx.space.findUnique({
+      where:  { id: spaceId },
+      select: { type: true },
+    }),
+  }));
 
-  const membership: SpaceActionMembership | null = row
-    ? { role: row.role, status: row.status, spaceType: row.space.type }
+  const membership: SpaceActionMembership | null = row && space
+    ? { role: row.role, status: row.status, spaceType: space.type }
     : null;
 
   if (!decideSpaceAction(action, membership)) {
