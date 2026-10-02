@@ -16,6 +16,7 @@ import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
 import { withApiHandler } from "@/lib/api";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { investmentImportsEnabled } from "@/lib/investments/opening-position";
 import { buildImportPreview } from "@/lib/investments/investment-import-preview";
 import { guardImportUpload } from "@/lib/investments/import-upload-guard";
@@ -34,7 +35,8 @@ export const POST = withApiHandler(async (
   // owner/creator OR non-owner with FULL visibility + permitted role. The
   // redundant inlined FULL check (which gated the owner too) was removed.
   const { spaceId } = await getSpaceContext();
-  const access = await resolveImportableFinancialAccount(user.id, spaceId, id);
+  const access = await withTenantDb(
+    user.id, (tx) => resolveImportableFinancialAccount(tx, user.id, spaceId, id));
   if (!access.ok) return access.response;
 
   const form = await req.formData().catch(() => null);

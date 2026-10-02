@@ -13,6 +13,7 @@ import { getSpaceContext } from "@/lib/space";
 import { ImportSource } from "@prisma/client";
 import { withApiHandler } from "@/lib/api";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { investmentImportsEnabled } from "@/lib/investments/opening-position";
 import { commitInvestmentImport, type UserDecisions } from "@/lib/investments/investment-import-commit";
 import { runInvestmentImportPipelineFromCsv } from "@/lib/imports/investments/pipeline";
@@ -33,7 +34,8 @@ export const POST = withApiHandler(async (
   // authority; the previously-inlined redundant FULL check (which gated the
   // owner too) was removed so this route cannot disagree with it.
   const { spaceId } = await getSpaceContext();
-  const access = await resolveImportableFinancialAccount(user.id, spaceId, id);
+  const access = await withTenantDb(
+    user.id, (tx) => resolveImportableFinancialAccount(tx, user.id, spaceId, id));
   if (!access.ok) return access.response;
 
   const form = await req.formData().catch(() => null);

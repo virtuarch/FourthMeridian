@@ -22,6 +22,7 @@ import { requireFreshUser } from "@/lib/session";
 import { getSpaceContext } from "@/lib/space";
 import { withApiHandler } from "@/lib/api";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { assertOpeningPosition, investmentImportsEnabled } from "@/lib/investments/opening-position";
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
@@ -65,7 +66,13 @@ export const POST = withApiHandler(async (req: NextRequest) => {
 
   // ── Authorize (canonical import rule — owner OR FULL non-owner + role) ──────
   const { spaceId } = await getSpaceContext();
-  const access = await resolveImportableFinancialAccount(user.id, spaceId, financialAccountId);
+  // RLS-ACC-S2 — the shared guard takes its authority as a required leading
+  // parameter now, so the check runs as the caller rather than as the
+  // migration principal it used to default to. The WRITE below is a separate
+  // question and is named in the header: `assertOpeningPosition` is not this
+  // slice's to convert.
+  const access = await withTenantDb(
+    user.id, (tx) => resolveImportableFinancialAccount(tx, user.id, spaceId, financialAccountId));
   if (!access.ok) return access.response;
 
   // ── Write ──────────────────────────────────────────────────────────────────

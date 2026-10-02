@@ -68,7 +68,13 @@ function fakeClient(f: Fixture) {
 }
 
 async function access(userId: string, f: Fixture, spaceId: string = SPACE) {
-  return resolveImportableFinancialAccount(userId, spaceId, FA, fakeClient(f));
+  // RLS-ACC-S2 — the authority is REQUIRED and LEADING. The fake is structurally
+  // assignable to `ReadClient`, which is the point of that type: a test can still
+  // drive this gate with a faithful fake, and no production caller can pass
+  // nothing. Note the fake is NOT policy-aware — it reproduces the resolver's own
+  // where-clauses, so these cases prove the APPLICATION rule. Whether the role is
+  // allowed to see the rows at all is the acceptance suite's question.
+  return resolveImportableFinancialAccount(fakeClient(f), userId, spaceId, FA);
 }
 function activeLink(visibilityLevel: VisibilityLevel, deleted = false) {
   return { visibilityLevel, status: ShareStatus.ACTIVE, deleted };
@@ -183,8 +189,14 @@ async function main(): Promise<void> {
       !code.includes("spaceAccountLink."));
     check("rollback no longer imports ShareStatus (the inline query's only user)",
       !code.includes("ShareStatus"));
+    // RLS-ACC-S2 — the guard's authority became a required LEADING parameter, so
+    // the shape moved by one argument. The invariant did not weaken: what this
+    // pins is still that the account id comes from the BATCH and never from a path
+    // param, and it now additionally pins that the client is the TENANT one.
     check("guard is driven off the BATCH's own financialAccountId, not a path param",
-      /resolveImportableFinancialAccount\(\s*\n?\s*user\.id,\s*spaceId,\s*batch\.financialAccountId\s*\)/.test(code));
+      /resolveImportableFinancialAccount\(\s*tx,\s*user\.id,\s*spaceId,\s*batch\.financialAccountId\s*\)/.test(code));
+    check("…and the guard runs inside a tenant phase, not on a defaulted authority",
+      /withTenantDb\(\s*\n?\s*user\.id,\s*\(tx\)\s*=>\s*resolveImportableFinancialAccount\(/.test(code));
     check("rollback returns the guard's own response (same 404/403 bodies as its siblings)",
       /if\s*\(\s*!access\.ok\s*\)\s*return\s+access\.response/.test(code));
     check("rollback KEEPS the creator-or-canManage restriction on top of the guard",

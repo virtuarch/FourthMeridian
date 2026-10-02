@@ -153,9 +153,17 @@ export const POST = withApiHandler(async (
   //    write-authority check, with the FULL visibility tier required on the
   //    non-owner path. The inline lookup this replaces omitted that tier (see
   //    module header, RLS Slice 2).
+  //
+  // RLS-ACC-S2 — AND IT RUNS AS THE CALLER NOW, WHICH IT DID NOT BEFORE.
+  // RLS-C-S8 converted all three phases of this route and left no `db` in its
+  // source — the suite asserts that by scan and was right. The authorization
+  // BETWEEN the phases was still running as the migration principal anyway,
+  // because the shared guard defaulted `client = db` one file away. Nothing here
+  // could see it; nothing here was wrong. The seam was. It is a required leading
+  // parameter now, so this phase is the authority the check actually uses.
   const { spaceId, permissions } = await getSpaceContext();
-  const access = await resolveImportableFinancialAccount(
-    user.id, spaceId, batch.financialAccountId);
+  const access = await withTenantDb(
+    user.id, (tx) => resolveImportableFinancialAccount(tx, user.id, spaceId, batch.financialAccountId));
   if (!access.ok) return access.response;
 
   // ── Permission: the batch's own creator, or a canManage member ───────────

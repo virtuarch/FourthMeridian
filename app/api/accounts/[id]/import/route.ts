@@ -131,6 +131,7 @@ import {
 } from "@/lib/imports/csv";
 import { runImportPipeline } from "@/lib/imports/pipeline";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { getImportProviderCapabilities } from "@/lib/imports/provider-capabilities";
 // FlowType P5 Slice 0 — same classification contract as the Plaid sync write path.
 import { classifyFlow, FLOW_CLASSIFIER_VERSION } from "@/lib/transactions/flow-classifier";
@@ -175,7 +176,8 @@ export const POST = withApiHandler(async (
   // Zero behavior change here — same two db reads, same NextResponse
   // bodies/status codes. See that module's header for the
   // SpaceAccountLink-first/legacy-Account-fallback rationale.
-  const access = await resolveImportableFinancialAccount(user.id, spaceId, id);
+  const access = await withTenantDb(
+    user.id, (tx) => resolveImportableFinancialAccount(tx, user.id, spaceId, id));
   if (!access.ok) return access.response;
   const { financialAccountId } = access;
 

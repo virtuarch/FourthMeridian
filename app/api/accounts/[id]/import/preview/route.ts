@@ -99,6 +99,7 @@ import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-pa
 // preview matches the confirm route's persisted category exactly.
 import { resolvePayrollIncomeCategory } from "@/lib/transactions/descriptor-evidence";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { suggestColumnMapping } from "@/lib/imports/suggest";
 import { getImportProviderCapabilities } from "@/lib/imports/provider-capabilities";
 
@@ -143,7 +144,8 @@ export const POST = withApiHandler(async (
   // transactions to compute match/skip/create outcomes — same read that
   // the confirm route performs before committing). A read-only Space
   // MEMBER should not see match outcomes against an account they can't import.
-  const access = await resolveImportableFinancialAccount(user.id, spaceId, id);
+  const access = await withTenantDb(
+    user.id, (tx) => resolveImportableFinancialAccount(tx, user.id, spaceId, id));
   if (!access.ok) return access.response;
   const { financialAccountId } = access;
 
