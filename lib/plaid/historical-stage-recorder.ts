@@ -36,7 +36,17 @@
  * number, never a row.
  */
 
-import { db } from "@/lib/db";
+// ⚠️ RLS-P-3a — fm_system. The only table this module reads is
+// `RefreshEndpointResult`, which fm_app is revoked from outright
+// (…_rls_roles_and_policies §4), so the tenant role could not serve this read at
+// all and the migration principal served it only by accident of this import.
+//
+// ⚠️ AND NOTE WHAT IS *NOT* READ THROUGH IT: the attempt NUMBER. That probe feeds
+// an INSERT, so it must share the INSERT's authority and is passed in by the
+// ledger door (see `HistoricalStageAttemptReader`). The two reads in this file
+// are standalone queries by the retry and readiness authorities, which is why
+// they may resolve a client of their own.
+import { systemDb } from "@/lib/db";
 import {
   HISTORICAL_STAGES, LEGACY_HISTORY_STAGE, isHistoricalStage, isHistoricalStageStatus,
   isStageErrorCode, nextStageToRun,
@@ -82,7 +92,7 @@ const MAX_ERROR_CHARS = 500;
 export async function loadHistoricalStageAttempts(
   refreshExecutionId: string,
 ): Promise<StageAttemptRecord[]> {
-  const rows = await db.refreshEndpointResult.findMany({
+  const rows = await systemDb.refreshEndpointResult.findMany({
     where:   { refreshExecutionId, endpoint: { in: [...HISTORICAL_STAGES] } },
     orderBy: [{ endpoint: "asc" }, { attempt: "asc" }],
   });

@@ -403,7 +403,13 @@ export async function refreshPlaidItem(
           // account, not about an execution, and widening a ledger blackout to
           // swallow it would make the blackout worse than it is.
           if (recorder?.ledger) await recorder.ledger.recordIncident(mismatch);
-          else await recordSyncIssue(mismatch, db);
+          // RLS-P-3a — NO CLIENT. SyncIssue is revoked from fm_app and this call
+          // site passed the migration principal explicitly; omitting the argument
+          // takes the facade's fm_system default. Nothing else about the call
+          // changes, and `db` is still this module's client for the FINANCIAL
+          // reads and writes around it — which is the distinction the slice is
+          // making, not an oversight.
+          else await recordSyncIssue(mismatch);
         }
       }
     }

@@ -92,7 +92,7 @@
 import { randomUUID } from "node:crypto";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
-import { db } from "@/lib/db";
+import { db, systemDb } from "@/lib/db";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
 import { ProviderType, PlaidItemStatus } from "@prisma/client";
 import { recordSyncIssue, resolveCursorBlockingIssues } from "@/lib/plaid/syncIssues";
@@ -254,6 +254,24 @@ export async function syncTransactionsForItem(
   // One resolution point for the injected seam; everything below uses these.
   const database = deps.db    ?? db;
   const plaid    = deps.plaid ?? plaidClient;
+  // ⚠️ RLS-P-3a — THE INCIDENT AUTHORITY IS NOT THE SYNC'S AUTHORITY.
+  //
+  // `SyncIssue` / `SyncIssueOccurrence` are revoked from fm_app outright
+  // (…_rls_roles_and_policies §4), so they are fm_system work no matter which
+  // client this sync persists transactions through. The three `recordSyncIssue`
+  // calls below used to hand the facade `database`, which in production is the
+  // migration principal — the exact drift this slice removes.
+  //
+  // IT FALLS BACK TO `deps.db` WHEN ONE WAS INJECTED, AND THAT IS DELIBERATE.
+  // No production caller passes `deps.db` (verified over all nine call sites),
+  // so production always lands on fm_system. A test that injects a database is
+  // injecting it precisely so its error paths do not write into a real one —
+  // cursor-safety.test.ts and removed-tombstone-reprojection.test.ts both ASSERT
+  // the recorded issues through that fake, and the eight stray rows in the local
+  // dev database are what happens when telemetry escapes an injected client. So
+  // telemetry follows the injection when there is one, and fm_system when there
+  // is not.
+  const incidents = deps.db ?? systemDb;
 
   // PRE-V26-PLAID-CLOSE Phase 4 — one id per sync RUN, stamped into every
   // SyncIssue this invocation writes. Platform Ops correlates episodes on
@@ -384,7 +402,7 @@ export async function syncTransactionsForItem(
           plaidAccountId:     txn.account_id,
           plaidTransactionId: txn.transaction_id,
           detail:             { stage: "transaction-persist", runId, cursorBlocking: true, merchant: txn.merchant_name ?? txn.name, amount: txn.amount, date: txn.date, pending: txn.pending },
-        }, database);
+        }, incidents);
         // CURSOR SAFETY — this transaction was delivered and NOT persisted. The
         // page is incomplete, so its cursor must not advance (see header).
         pageFailures.push({
@@ -868,7 +886,7 @@ export async function syncTransactionsForItem(
           plaidAccountId:     txn.account_id,
           plaidTransactionId: txn.transaction_id,
           detail:             { stage: "transaction-persist", runId, cursorBlocking: true, merchant, amount, date: date.toISOString(), pending: txn.pending, error: e instanceof Error ? e.message : String(e) },
-        }, database);
+        }, incidents);
         // CURSOR SAFETY — delivered and NOT persisted; the page is incomplete.
         pageFailures.push({
           kind:               "UPSERT_ERROR",
@@ -942,7 +960,7 @@ export async function syncTransactionsForItem(
           kind:        "REMOVED_TOMBSTONE",
           plaidItemId: plaidItemDbId,
           detail:      { runId, count: result.count, ids, reprojectedEvents: affectedEventIds.length },
-        }, database);
+        }, incidents);
       }
     }
 
@@ -1042,7 +1060,7 @@ export async function syncTransactionsForItem(
   // invented, and always pointable.
   const ledger = activeLedger();
   if (ledger) await ledger.resolveIncidentsByRecovery({ plaidItemId: plaidItemDbId });
-  else await resolveCursorBlockingIssues(plaidItemDbId, database, runId);
+  else await resolveCursorBlockingIssues(plaidItemDbId, incidents, runId);
 
   // OPS-3 S5 Wave 3 — the item provably works again: retire the open
   // SYNC_FAILED condition (releases the :open dedupe key + archives the stale

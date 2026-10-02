@@ -41,7 +41,7 @@
 
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { db } from "@/lib/db";
+import { systemDb } from "@/lib/db";
 import { summarizeError, currentJobRun } from "@/lib/jobs/run";
 import { currentDeploymentSha } from "@/lib/monitoring/deployment";
 import {
@@ -155,15 +155,29 @@ export interface RefreshEndpointAccountCoverageData {
  *
  * Every operational-ledger write in the product tree — RefreshExecution,
  * RefreshEndpointResult, RefreshEndpointAccountCoverage, ProviderCall — passes
- * through the client this line names. It is still the migration principal, by
- * design: RLS-P-1 moved the authority question to one place without answering it
- * differently. The flip is this line.
+ * through the client this line names.
+ *
+ * ── RLS-P-3a — IT IS fm_system NOW, AND THIS LINE IS THE WHOLE FLIP ──────────
+ * All four refresh-ledger tables — RefreshExecution, RefreshEndpointResult,
+ * RefreshEndpointAccountCoverage, ProviderCall — are REVOKED FROM fm_app
+ * outright (…_rls_roles_and_policies §4), so the tenant role cannot write any of
+ * them and the migration principal wrote them only by accident of which client
+ * this module happened to import. One line, because RLS-P-1 spent itself making
+ * it one line: before that slice the same change was nine statements in four
+ * modules, and a slice that found six of nine would have gone green.
+ *
+ * ⚠️ AND IT IS A CLIENT, NOT AN IMPORT SPREAD THROUGH THE REFRESH CODE. This is
+ * the ONLY `systemDb` reference anywhere that reaches these four tables — no
+ * stage runner, no producer and no route gains one. The widest authority is
+ * reached through the narrowest opening (the lib/users/availability.ts idiom),
+ * and the opening here is one constant consumed by one function.
  *
  * (SyncIssue / SyncIssueOccurrence reach the door too, but the door forwards
  * them to the incident FACADE, which keeps its own client parameter because
- * fourteen non-envelope producers thread one. See refresh-ledger.ts.)
+ * fourteen non-envelope producers thread one. For those two tables the flip is
+ * TWO defaults and not one line; see refresh-ledger.ts and the P-3a report.)
  */
-const LEDGER_CLIENT = db as unknown as LedgerWriteClient;
+const LEDGER_CLIENT = systemDb as unknown as LedgerWriteClient;
 
 /**
  * ⚠️ RLS-P-2 — ONE RECORDER PER REFRESH, NOT ONE PER PROCESS.

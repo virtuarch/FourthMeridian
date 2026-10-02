@@ -33,7 +33,11 @@
 
 import "server-only";
 
-import { db } from "@/lib/db";
+// ⚠️ RLS-P-3a — fm_system, NOT the migration principal. Same reasoning as the
+// projection authority next door: every `db.` here read one of the four DF-2
+// refresh tables and nothing else, and fm_app holds no grant on any of them. The
+// reach does not change; the authority stops being incidental.
+import { systemDb } from "@/lib/db";
 import { captureLedgerWriteFailure } from "@/lib/monitoring/capture";
 import {
   clampLimit,
@@ -144,7 +148,7 @@ const EXECUTION_SELECT = {
 function realReaders(): ExecutionQueryReaders {
   return {
     async executions(params) {
-      return db.refreshExecution.findMany({
+      return systemDb.refreshExecution.findMany({
         where: {
           ...(params.plaidItemIds ? { plaidItemId: { in: [...params.plaidItemIds] } } : {}),
           ...(params.overallStatus ? { overallStatus: { in: [...params.overallStatus] } } : {}),
@@ -177,11 +181,11 @@ function realReaders(): ExecutionQueryReaders {
       });
     },
     async execution(id) {
-      return db.refreshExecution.findUnique({ where: { id }, select: EXECUTION_SELECT });
+      return systemDb.refreshExecution.findUnique({ where: { id }, select: EXECUTION_SELECT });
     },
     async lastSucceeded(source) {
       if (!source.plaidItemId && !source.sourceRef) return null;
-      return db.refreshExecution.findFirst({
+      return systemDb.refreshExecution.findFirst({
         where: {
           overallStatus: "SUCCEEDED",
           startedAt: { lt: source.before },
@@ -193,7 +197,7 @@ function realReaders(): ExecutionQueryReaders {
       });
     },
     async endpoints(executionId) {
-      return db.refreshEndpointResult.findMany({
+      return systemDb.refreshEndpointResult.findMany({
         where: { refreshExecutionId: executionId },
         select: {
           refreshExecutionId: true, endpoint: true, stageKind: true, status: true,
@@ -205,7 +209,7 @@ function realReaders(): ExecutionQueryReaders {
       });
     },
     async providerCalls(executionId) {
-      return db.providerCall.findMany({
+      return systemDb.providerCall.findMany({
         where: { refreshExecutionId: executionId },
         select: {
           refreshExecutionId: true, endpoint: true, provider: true, operation: true,
@@ -217,7 +221,7 @@ function realReaders(): ExecutionQueryReaders {
       });
     },
     async coverage(executionId) {
-      return db.refreshEndpointAccountCoverage.findMany({
+      return systemDb.refreshEndpointAccountCoverage.findMany({
         where: { refreshExecutionId: executionId },
         select: {
           refreshExecutionId: true, endpoint: true, financialAccountId: true,
@@ -375,7 +379,7 @@ export async function getExecutionContext(
  */
 export async function getExecutionIdByRunId(runId: string): Promise<string | null> {
   try {
-    const row = await db.refreshExecution.findUnique({ where: { runId }, select: { id: true } });
+    const row = await systemDb.refreshExecution.findUnique({ where: { runId }, select: { id: true } });
     return row?.id ?? null;
   } catch (e) {
     console.error(

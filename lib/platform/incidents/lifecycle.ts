@@ -30,7 +30,15 @@
  */
 
 import "server-only";
-import { db } from "@/lib/db";
+// ⚠️ RLS-P-3a — fm_system. `SyncIssue` / `SyncIssueOccurrence` are revoked from
+// fm_app outright (…_rls_roles_and_policies §4), and this module is the only
+// thing in the product tree permitted to touch either row
+// (incident-boundary.test.ts §4). The client stays a PARAMETER for the reason
+// lib/plaid/syncIssues.ts gives — the injection seam is what keeps a unit test's
+// error path from writing a real row — so what moves here is the DEFAULT. Used
+// as a type (`Pick<typeof systemDb, …>`) as well as a value, which keeps the
+// structural accessor set anchored to a real client rather than hand-listed.
+import { systemDb } from "@/lib/db";
 import type { Prisma, SyncIssueKind } from "@prisma/client";
 import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
 import {
@@ -118,7 +126,7 @@ export interface IncidentObservation {
  * `refreshExecution` is read-only here (correlator lookup); the ledger is never
  * written from this module.
  */
-export type IncidentClient = Pick<typeof db, "syncIssue" | "syncIssueOccurrence" | "$transaction">;
+export type IncidentClient = Pick<typeof systemDb, "syncIssue" | "syncIssueOccurrence" | "$transaction">;
 type Client = IncidentClient;
 
 /**
@@ -234,7 +242,7 @@ function reportWriteFailure(
  */
 export async function recordIncidentObservation(
   obs: IncidentObservation,
-  client: Client = db,
+  client: Client = systemDb,
   /** Injection seam — production uses the canonical row seam. */
   lookupExecutionId: LookupExecutionId | undefined = getExecutionIdByRunId,
   /** RLS-P-2 — listen-only; see LifecycleObservers. Optional everywhere. */
@@ -476,7 +484,7 @@ export interface AutomaticRecoveryScope {
  */
 export async function resolveByAutomaticRecovery(
   scope: AutomaticRecoveryScope,
-  client: Client = db,
+  client: Client = systemDb,
   /** Injection seam — production uses the canonical row seam. */
   lookupExecutionId: LookupExecutionId | undefined = getExecutionIdByRunId,
   /** RLS-P-2 — listen-only; see LifecycleObservers. Optional everywhere. */

@@ -83,6 +83,7 @@ process.on("unhandledRejection", (err) => {
 const ROOT = process.cwd();
 const DOOR = "lib/plaid/refresh-ledger.ts";
 const ORCHESTRATOR = "lib/plaid/refresh-execution.ts";
+const AUTHORITY = "lib/platform/incidents/lifecycle.ts";
 const read = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
 const stripComments = (src: string) =>
   src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -277,6 +278,58 @@ function scanCaptureArgsAreLiterals(src: string): { examined: number; bad: strin
     }
   }
   return { examined, bad };
+}
+
+/**
+ * EVERY PAIR THE DOOR CAN PRODUCE HAS AN ESCALATION LINE (mechanical).
+ *
+ * ⚠️ THIS SCAN EXISTS BECAUSE THE BEHAVIOURAL CHECKS COULD NOT SEE THE BRANCH.
+ * §3, §8, §9, §10 and §16 all assert that a failure "was escalated" — and every
+ * one of them does it by INJECTING `deps.capture`, which replaces
+ * `defaultCapture` outright. So the real escalation function was driven by no
+ * test at all: re-adding its old `if (ledger !== "RefreshExecution") return;`
+ * left the entire suite GREEN while seven of the nine ledger-write sites went
+ * back to reaching no monitor. That is the "unit suite blind to the one branch
+ * that mattered" failure, reproduced inside the slice that was fixing it.
+ *
+ * The honest substitute is not a bigger behavioural test — it is to compare TWO
+ * MEASURED SETS:
+ *
+ *   PRODUCED   every (table, phase) the door actually degrades under. Taken from
+ *              the door's own `degrade("X", "y"` literals, plus the pairs the
+ *              incident authority reports back through the observer channel.
+ *   ESCALATED  every pair `defaultCapture` has a `case` for.
+ *
+ * PRODUCED must be a subset of ESCALATED, both must be non-empty, and
+ * `defaultCapture` must contain no early return before its switch. A missing
+ * case fails on the first rule; a reinstated early return fails on the third.
+ */
+function scanEveryProducedPairIsEscalated(door: string, authority: string): { examined: number; bad: string[] } {
+  const d = stripComments(door);
+  const a = stripComments(authority);
+  const bad: string[] = [];
+
+  const produced = new Set<string>();
+  for (const m of d.matchAll(/degrade\(\s*"([A-Za-z]+)"\s*,\s*"([A-Za-z]+)"/g)) produced.add(`${m[1]}/${m[2]}`);
+  // The pairs that arrive as a reported SITE rather than as a local degrade call:
+  // the incident authority names them, and the door forwards them verbatim.
+  for (const m of a.matchAll(/reportWriteFailure\(\s*observers\s*,\s*"([A-Za-z]+)"\s*,\s*"([A-Za-z]+)"/g)) produced.add(`${m[1]}/${m[2]}`);
+
+  const escalated = new Set<string>();
+  const impl = d.slice(d.indexOf("function defaultCapture"));
+  const body = impl.slice(0, impl.indexOf("\n}"));
+  for (const m of body.matchAll(/case\s+"([A-Za-z]+)\/([A-Za-z]+)"/g)) escalated.add(`${m[1]}/${m[2]}`);
+
+  if (produced.size === 0) bad.push("no produced pair found — the scan has no subject");
+  if (escalated.size === 0) bad.push("no escalation case found — the scan has no subject");
+  for (const pair of produced) if (!escalated.has(pair)) bad.push(`UNESCALATED: ${pair}`);
+
+  // The early return that M6 reinstated. Anything that leaves defaultCapture
+  // before reaching its switch makes the case table unreachable for some input.
+  const beforeSwitch = body.slice(0, body.indexOf("switch"));
+  if (/\breturn\b/.test(beforeSwitch)) bad.push("defaultCapture returns before its switch");
+
+  return { examined: produced.size + escalated.size, bad };
 }
 
 async function main() {
@@ -718,6 +771,15 @@ async function main() {
       "NO PARTIAL IS POSSIBLE on the stage/coverage batches: each is a single createMany, so it writes every row or none, and a failure yields ONE degradation rather than N. The residual, reported rather than hidden: the completion row still closes SUCCEEDED over zero children, because overallStatus is derived from the stages that RAN and degrading it would FABRICATE a refresh failure. The honest signal is the PARTIAL completeness verdict beside it.");
   }
 
+  // ══ 12b. EVERY PAIR THE DOOR PRODUCES REACHES A MONITOR ═════════════════
+  console.log("12b. the real escalation function covers every pair the door can produce");
+  {
+    const authSrc = read(AUTHORITY);
+    const e = scanEveryProducedPairIsEscalated(doorSrc, authSrc);
+    check(`every produced (table, phase) has an escalation line and defaultCapture has no early return (${e.examined} pair-mentions examined)`,
+      e.bad.length === 0 && e.examined >= 12, e.bad.join("; ") || `only ${e.examined} examined`);
+  }
+
   // ══ 13. THE SCANS GO RED ON A REAL VIOLATION ═════════════════════════════
   console.log("13. mutation self-check — each source scan rejects the violation it owns");
   {
@@ -739,6 +801,24 @@ async function main() {
           "const ledgerRecorder = ledgerRecorderFor(LEDGER_CLIENT);\n  return ledgerRecorder;",
         ),
         scanRecorderIsPerRefresh,
+      ],
+      [
+        "the escalation returns early for every table but one (the pre-P-2 shape)",
+        doorSrc,
+        doorSrc.replace(
+          "function defaultCapture(ledger: LedgerTable, phase: LedgerWritePhase, error: unknown): void {\n  switch",
+          'function defaultCapture(ledger: LedgerTable, phase: LedgerWritePhase, error: unknown): void {\n  if (ledger !== "RefreshExecution") return;\n  switch',
+        ),
+        (src: string) => scanEveryProducedPairIsEscalated(src, read(AUTHORITY)),
+      ],
+      [
+        "one escalation case is deleted, so a produced pair reaches no monitor",
+        doorSrc,
+        doorSrc.replace(
+          '    case "ProviderCall/providerCall":\n      captureLedgerWriteFailure("ProviderCall", "providerCall", error); return;\n',
+          "",
+        ),
+        (src: string) => scanEveryProducedPairIsEscalated(src, read(AUTHORITY)),
       ],
       [
         "the escalation is passed variables instead of literals",

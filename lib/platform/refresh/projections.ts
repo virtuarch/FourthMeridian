@@ -38,7 +38,16 @@ import "server-only";
 import { todayUTCISO } from "@/lib/time/clock";
 import { deriveIngestionDeferral, type IngestionDeferral } from "@/lib/sync/deferred-ingestion";
 
-import { db } from "@/lib/db";
+// ⚠️ RLS-P-3a — fm_system, NOT the migration principal. Every `db.` in this file
+// read one of the four DF-2 refresh tables and NOTHING else, all four of which
+// fm_app is revoked from outright (…_rls_roles_and_policies §4). On the
+// migration principal these reads were exempt from every policy by accident of
+// which client the module happened to import; on fm_system they are exempt by a
+// role-scoped policy that is visible in pg_policies and reviewable in source
+// control. The REACH is identical — fm_system's policy on this family is
+// USING(true) — so no projection changes, and that is the point: this is the
+// authority becoming explicit, not widening.
+import { systemDb } from "@/lib/db";
 import {
   buildCoverageSummary,
   buildExecutionTimeline,
@@ -156,7 +165,7 @@ function realReaders(now: Date): RefreshProjectionReaders {
   return {
     now,
     async executions(from, to, plaidItemIds) {
-      return db.refreshExecution.findMany({
+      return systemDb.refreshExecution.findMany({
         where: {
           startedAt: { gte: from, lte: to },
           ...(plaidItemIds ? { plaidItemId: { in: [...plaidItemIds] } } : {}),
@@ -188,7 +197,7 @@ function realReaders(now: Date): RefreshProjectionReaders {
     },
     async endpoints(executionIds) {
       if (executionIds.length === 0) return [];
-      return db.refreshEndpointResult.findMany({
+      return systemDb.refreshEndpointResult.findMany({
         where: { refreshExecutionId: { in: [...executionIds] } },
         select: {
           refreshExecutionId: true,
@@ -211,7 +220,7 @@ function realReaders(now: Date): RefreshProjectionReaders {
     },
     async providerCalls(executionIds) {
       if (executionIds.length === 0) return [];
-      return db.providerCall.findMany({
+      return systemDb.providerCall.findMany({
         where: { refreshExecutionId: { in: [...executionIds] } },
         select: {
           refreshExecutionId: true,
@@ -234,7 +243,7 @@ function realReaders(now: Date): RefreshProjectionReaders {
     },
     async coverage(executionIds) {
       if (executionIds.length === 0) return [];
-      return db.refreshEndpointAccountCoverage.findMany({
+      return systemDb.refreshEndpointAccountCoverage.findMany({
         where: { refreshExecutionId: { in: [...executionIds] } },
         select: {
           refreshExecutionId: true,
@@ -250,14 +259,14 @@ function realReaders(now: Date): RefreshProjectionReaders {
       });
     },
     async lastSucceededByKind(kind) {
-      return db.refreshExecution.findFirst({
+      return systemDb.refreshExecution.findFirst({
         where: { sourceKind: kind, overallStatus: "SUCCEEDED" },
         orderBy: [{ startedAt: "desc" }, { id: "desc" }],
         select: EXECUTION_FACT_SELECT,
       });
     },
     async execution(id) {
-      return db.refreshExecution.findUnique({
+      return systemDb.refreshExecution.findUnique({
         where: { id },
         select: {
           id: true,
@@ -485,7 +494,7 @@ export async function getIngestionDeferrals(
   const ids = items.map((i) => i.id);
   if (ids.length === 0) return out;
 
-  const rows = await db.refreshExecution.findMany({
+  const rows = await systemDb.refreshExecution.findMany({
     where:   { plaidItemId: { in: ids } },
     orderBy: { startedAt: "desc" },
     select:  { plaidItemId: true, overallStatus: true, admissionReason: true },
