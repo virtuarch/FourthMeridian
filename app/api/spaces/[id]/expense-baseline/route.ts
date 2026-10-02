@@ -72,13 +72,34 @@
  * Security: caller must be an ACTIVE member (VIEWER+), like every other
  * Space-scoped read. The measured figure is derived from the caller's own
  * visibility-gated transaction population by the assembler.
+ *
+ * ── RLS-T2 — AND NOW THAT SENTENCE IS TRUE OF THE DATABASE, NOT JUST THE JOIN ──
+ * Both reads run as the authenticated caller. Nothing in this route was
+ * unclassifiable, so it holds no deployment-wide client at all.
+ *
+ * ⚠️ TWO SHORT PHASES, NOT ONE. The declared figure is a single
+ * `SpaceDashboardSection` row (`"spaceId" IN fm_visible_space_ids()`, which the
+ * VIEWER guard has established); the measured figure is the transactions
+ * assembler, ~24 reads over the account subtree. `resolveSpaceContext` sits
+ * between them and is NOT a tenant read — it resolves the caller's Space scope
+ * from session state — so there was never one coherent phase to put them in, and
+ * a transaction spanning both would be a boundary held across a resolution it
+ * does not police.
+ *
+ * ⚠️ THE ASSEMBLER PHASE'S BUDGET IS IMPORTED, NOT CHOSEN HERE.
+ * `PHASE_BUDGET_MS.PROLOGUE` is the budget the AI surface already derived from a
+ * MEASUREMENT of this exact assembler (~24 queries, the heaviest prologue
+ * domain). A hand-copied 5_000 here would be the same number today and silently
+ * the wrong one the day that measurement moves — the failure mode this
+ * programme's own history calls "the floor hand-copied, not derived".
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { SpaceMemberRole } from "@prisma/client";
 
 import { requireSpaceRole } from "@/lib/session";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
+import { PHASE_BUDGET_MS } from "@/lib/ai/tenant-phase";
 import { resolveSpaceContext } from "@/lib/space";
 import { computeAverageMonthlySpending } from "@/lib/ai/intelligence";
 import { resolveExpenseBaseline } from "@/lib/liquidity/expense-baseline";
@@ -102,10 +123,10 @@ export async function GET(
 
   // The DECLARED figure — the same `emergency_fund_progress` config the
   // workspace has always divided by.
-  const section = await db.spaceDashboardSection.findFirst({
+  const section = await withTenantDb(viewer.user.id, (tx) => tx.spaceDashboardSection.findFirst({
     where:  { spaceId, key: "emergency_fund_progress" },
     select: { config: true },
-  });
+  }));
   const rawDeclared = Number(
     (section?.config as { monthlyExpenses?: unknown } | null)?.monthlyExpenses,
   );
@@ -116,10 +137,17 @@ export async function GET(
   // implementations of the same idea.
   const spaceCtx = await resolveSpaceContext(viewer.user.id, spaceId);
   const assemble = getAssembler(FinanceDomains.TRANSACTIONS_SUMMARY);
-  // RLS-AI-S6 — the assembler takes its authority from the caller now. This route
-  // is NOT converted in this slice and still holds `db`, so it passes it
-  // EXPLICITLY rather than having the assembler reach a global on its behalf.
-  const txnSection = assemble ? await assemble(db, spaceCtx, { scopeHint: "full" }) : null;
+  // RLS-AI-S6 — the assembler takes its authority from the caller. RLS-T2 — and
+  // the authority it is handed is now the authenticated caller's own, so the
+  // MEASURED rung is computed over exactly the transaction population the caller
+  // may see, which is what the security note above has always claimed.
+  const txnSection = assemble
+    ? await withTenantDb(
+        viewer.user.id,
+        (tx) => assemble(tx, spaceCtx, { scopeHint: "full" }),
+        { timeout: PHASE_BUDGET_MS.PROLOGUE },
+      )
+    : null;
   const measured = computeAverageMonthlySpending(
     txnSection ? (txnSection.data as TransactionsSummaryData) : null,
   );

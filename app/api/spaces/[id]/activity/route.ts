@@ -47,11 +47,23 @@
  *   MANUAL_ASSET_ADD, MANUAL_ASSET_DELETE (archived), MANUAL_ASSET_RESTORE
  *   PLAID_SYNC, PLAID_REFRESH, WALLET_SYNC, ACCOUNT_ADD, ACCOUNT_REMOVE
  *   IMPORT_BATCH_ROLLED_BACK
+ *
+ * ── RLS-T2 — EVERY SOURCE ROW IS NOW THE CALLER'S TO READ; THE ACTOR'S NAME IS
+ *    NOT ───────────────────────────────────────────────────────────────────────
+ * All four source reads (AuditLog, SpaceAccountLink, ImportBatch, SyncIssue) run
+ * as the authenticated caller in one short transaction. `SyncIssue` is reachable
+ * at all only because migration 20261002000500 granted fm_app a COLUMN-LEVEL
+ * SELECT shaped like this route's select — see the note at that query.
+ *
+ * ⚠️ The one thing that could NOT come with them is the actor's display name, and
+ * it is the half that would have failed quietly rather than loudly. It is now a
+ * separate, explicitly-named read; the reasoning is at the stitch below.
  */
 
 import { NextRequest, NextResponse }    from "next/server";
 import { ShareStatus }                  from "@prisma/client";
 import { db }                           from "@/lib/db";
+import { withTenantDb }                 from "@/lib/db/tenant-context";
 import { requireSpaceAction }           from "@/lib/spaces/authorize";
 import { possessive }                   from "@/lib/format";
 import { withApiHandler }               from "@/lib/api";
@@ -424,90 +436,137 @@ export const GET = withApiHandler(async (
   if (!spaceId) return NextResponse.json({ error: "Missing space id" }, { status: 400 });
 
   // ── Membership guard (any ACTIVE member) ──────────────────────────────────
-  const [, err] = await requireSpaceAction(spaceId, "activity:read");
+  const [auth, err] = await requireSpaceAction(spaceId, "activity:read");
   if (err) return err;
 
-  // ── Fetch raw logs ────────────────────────────────────────────────────────
-  // We fetch slightly more than 30 to account for rows that normalise to null
-  const rawLogs = await db.auditLog.findMany({
-    where: {
-      spaceId,
-      action: { in: Array.from(ALLOWED_ACTIONS) },
-    },
-    orderBy: { createdAt: "desc" },
-    take:    100,
-    select: {
-      id:        true,
-      action:    true,
-      metadata:  true,
-      createdAt: true,
-      user: {
-        select: {
-          firstName: true,
-          lastName:  true,
-          email:     true,
+  // ── Every source row, read as the caller, in ONE short phase ──────────────
+  // RLS-T2 — four reads, one transaction, and they are one coherent answer about
+  // one Space's activity: the link set is the SCOPE of the other two, so splitting
+  // them would mean scoping an import/sync read by a link set resolved under a
+  // different statement snapshot. Nothing inside reaches a provider, a model or
+  // the network, so there is nothing a boundary must not be held across.
+  //
+  // ⚠️ The `user` include came OUT of the AuditLog read and did not come with it —
+  // see the note on the actor stitch below.
+  const { logRows, accountIds, importBatches, syncIssues } = await withTenantDb(
+    auth.user.id,
+    async (tx) => {
+      // ── Fetch raw logs ────────────────────────────────────────────────────
+      // We fetch slightly more than 30 to account for rows that normalise to null
+      const logRows = await tx.auditLog.findMany({
+        where: {
+          spaceId,
+          action: { in: Array.from(ALLOWED_ACTIONS) },
         },
-      },
+        orderBy: { createdAt: "desc" },
+        take:    100,
+        select: {
+          id:        true,
+          action:    true,
+          metadata:  true,
+          createdAt: true,
+          userId:    true,
+        },
+      });
+
+      // ── Resolve this space's ACTIVE-linked, non-deleted account ids ────────
+      // ImportBatch has a `financialAccount` relation, but SyncIssue is a forensic
+      // side-table with only a scalar `financialAccountId` (no relation to traverse),
+      // so neither can use the nested `financialAccount.spaceAccountLinks` shape for
+      // both. We resolve the account-id set once via SpaceAccountLink (the shape §1.3
+      // verified) — mirroring lib/data/transactions.ts's ACTIVE + deletedAt:null
+      // filter — then scope both producers by `financialAccountId: { in }`. An empty
+      // set yields no import/sync events, which is correct for a space with no links.
+      const links = await tx.spaceAccountLink.findMany({
+        where: { spaceId, status: ShareStatus.ACTIVE, financialAccount: { deletedAt: null } },
+        select: { financialAccountId: true },
+      });
+      const accountIds = links.map((l) => l.financialAccountId);
+
+      return {
+        logRows,
+        accountIds,
+        // ── ImportBatch source — COMPLETED batches on those accounts ─────────
+        importBatches: accountIds.length === 0 ? [] : await tx.importBatch.findMany({
+          where: { status: "COMPLETED", financialAccountId: { in: accountIds } },
+          orderBy: { completedAt: "desc" },
+          take: 50,
+          select: {
+            id: true, kind: true, status: true,
+            importedCount: true, skippedCount: true, matchedCount: true,
+            completedAt: true,
+          },
+        }),
+        // ── SyncIssue source — UNRESOLVED issues on those accounts ───────────
+        // `detail` is deliberately NOT selected: it may carry provider-internal
+        // identifiers and must never reach member-facing copy.
+        //
+        // ⚠️ RLS-T2 — AND AS fm_app IT IS NOT MERELY UNSELECTED, IT IS UNGRANTED.
+        // `SyncIssue` was revoked from fm_app wholesale (§4) and given back a
+        // COLUMN-LEVEL `SELECT ("id","kind","resolved","createdAt",
+        // "financialAccountId","plaidTransactionId")` by migration
+        // 20261002000500, for this route and only this route. Every column named
+        // below — in the select AND in the where, which needs the privilege just
+        // the same — is inside that list. Adding `detail`, `message`,
+        // `incidentKey` or `lastOccurredAt` here no longer degrades a privacy
+        // convention; it fails with "permission denied for table SyncIssue".
+        //
+        // Phase 4 — `UPSERT_ERROR` also covers investment-repair, import-rollback
+        // and BTC wallet failures, and this feed was telling members to "reconnect
+        // your bank" over those. They are operator concerns with no member action,
+        // so they are EXCLUDED here rather than reworded.
+        //
+        // The exclusion uses `plaidTransactionId`, a SCALAR column that only the two
+        // bank-transaction-sync producers ever set — deliberately NOT `detail`, whose
+        // never-load invariant is the single most important safety property of this
+        // route (and is source-guarded in route.test.ts). The semantics authority owns
+        // the verdict; this select stays exactly the contract fields plus that scalar.
+        syncIssues: accountIds.length === 0 ? [] : await tx.syncIssue.findMany({
+          // Defence in depth: the WHERE excludes repair rows outright (only the two
+          // bank-transaction producers set plaidTransactionId), and the authority
+          // re-checks below. Neither alone is trusted to keep internal failures out.
+          where: { resolved: false, financialAccountId: { in: accountIds }, plaidTransactionId: { not: null } },
+          orderBy: { createdAt: "desc" },
+          take: 50,
+          select: { id: true, kind: true, resolved: true, createdAt: true, plaidTransactionId: true },
+        }),
+      };
     },
+  );
+
+  // ── The actor's display name — a separate, explicitly-named read ───────────
+  // ⚠️ DELIBERATELY NOT withTenantDb, AND THE INCLUDE IT REPLACES WOULD HAVE
+  // DEGRADED IN TOTAL SILENCE. `AuditLog.user` is an OPTIONAL relation
+  // (`userId String?`, SetNull), and fm_app's `User` SELECT policy is
+  // `id = current_fm_user_id()` (§10 — co-member display identity is served by
+  // the application, see lib/spaces/roster-visibility.ts). So as the tenant the
+  // include returns NULL for every actor who is not the caller, `actorName()`
+  // returns undefined, and an entire shared-Space timeline renders as unattributed
+  // events — no error, no log, no 500 to notice. On the dev corpus this is 36 of
+  // the (link, viewer) pairs across 6 multi-member Spaces, not a hypothetical.
+  //
+  // Three display columns, for ids this Space's OWN tenant-visible audit rows
+  // named, stitched back into the identical `RawLog` shape — the same
+  // construction GET /api/spaces/[id]/invites already uses for the same reason.
+  const actorIds = [...new Set(logRows.map((r) => r.userId).filter((v): v is string => v !== null))];
+  const actors = actorIds.length === 0 ? [] : await db.user.findMany({
+    where:  { id: { in: actorIds } },
+    select: { id: true, firstName: true, lastName: true, email: true },
   });
+  const actorById = new Map(actors.map(({ id, ...display }) => [id, display]));
 
   // ── Normalize AuditLog source ─────────────────────────────────────────────
-  const auditEvents: TimelineEvent[] = rawLogs
-    .map((log) => normalizeLog(log as RawLog))
+  const auditEvents: TimelineEvent[] = logRows
+    .map(({ userId, ...log }) => normalizeLog({
+      ...log,
+      user: userId === null ? null : actorById.get(userId) ?? null,
+    } as RawLog))
     .filter((e): e is TimelineEvent => e !== null);
 
-  // ── Resolve this space's ACTIVE-linked, non-deleted account ids ────────────
-  // ImportBatch has a `financialAccount` relation, but SyncIssue is a forensic
-  // side-table with only a scalar `financialAccountId` (no relation to traverse),
-  // so neither can use the nested `financialAccount.spaceAccountLinks` shape for
-  // both. We resolve the account-id set once via SpaceAccountLink (the shape §1.3
-  // verified) — mirroring lib/data/transactions.ts's ACTIVE + deletedAt:null
-  // filter — then scope both producers by `financialAccountId: { in }`. An empty
-  // set yields no import/sync events, which is correct for a space with no links.
-  const links = await db.spaceAccountLink.findMany({
-    where: { spaceId, status: ShareStatus.ACTIVE, financialAccount: { deletedAt: null } },
-    select: { financialAccountId: true },
-  });
-  const accountIds = links.map((l) => l.financialAccountId);
-
-  // ── ImportBatch source — COMPLETED batches on those accounts ───────────────
-  const importBatches = accountIds.length === 0 ? [] : await db.importBatch.findMany({
-    where: { status: "COMPLETED", financialAccountId: { in: accountIds } },
-    orderBy: { completedAt: "desc" },
-    take: 50,
-    select: {
-      id: true, kind: true, status: true,
-      importedCount: true, skippedCount: true, matchedCount: true,
-      completedAt: true,
-    },
-  });
   const importEvents = importBatches
     .map(normalizeImportBatchEvent)
     .filter((e): e is TimelineEvent => e !== null);
 
-  // ── SyncIssue source — UNRESOLVED issues on those accounts ─────────────────
-  // `detail` is deliberately NOT selected: it may carry provider-internal
-  // identifiers and must never reach member-facing copy.
-  //
-  // Phase 4 — `UPSERT_ERROR` also covers investment-repair, import-rollback and
-  // BTC wallet failures, and this feed was telling members to "reconnect your
-  // bank" over those. They are operator concerns with no member action, so they
-  // are EXCLUDED here rather than reworded.
-  //
-  // The exclusion uses `plaidTransactionId`, a SCALAR column that only the two
-  // bank-transaction-sync producers ever set — deliberately NOT `detail`, whose
-  // never-load invariant is the single most important safety property of this
-  // route (and is source-guarded in route.test.ts). The semantics authority owns
-  // the verdict; this select stays exactly the contract fields plus that scalar.
-  const syncIssues = accountIds.length === 0 ? [] : await db.syncIssue.findMany({
-    // Defence in depth: the WHERE excludes repair rows outright (only the two
-    // bank-transaction producers set plaidTransactionId), and the authority
-    // re-checks below. Neither alone is trusted to keep internal failures out.
-    where: { resolved: false, financialAccountId: { in: accountIds }, plaidTransactionId: { not: null } },
-    orderBy: { createdAt: "desc" },
-    take: 50,
-    select: { id: true, kind: true, resolved: true, createdAt: true, plaidTransactionId: true },
-  });
   const syncEvents = syncIssues
     .map(({ plaidTransactionId, ...row }) =>
       normalizeSyncIssueEvent(row, classifySyncIssue({ kind: row.kind, plaidTransactionId }).customerActionable))

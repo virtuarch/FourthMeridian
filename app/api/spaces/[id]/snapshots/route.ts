@@ -12,6 +12,30 @@
  *   - 403 for non-members (no space existence disclosure).
  *   - Snapshot aggregates are Space-level by construction (written by
  *     lib/snapshots/regenerate.ts from the Space's linked accounts).
+ *
+ * ── RLS-T2 — THE SPACE'S OWN ROWS CONVERT; THE BACKFILL PROBE CANNOT ─────────
+ * The snapshot series AND the link set it is scoped by now share ONE short tenant
+ * phase: both are `"spaceId" IN fm_visible_space_ids()` tables and the VIEWER
+ * guard has established that membership, so they are one coherent answer about
+ * one Space with no network or model call anywhere inside.
+ *
+ * ⚠️ THE `PlaidItem` PROBE STAYS ON THE DEPLOYMENT-WIDE CLIENT, DELIBERATELY, AND
+ * IT WOULD HAVE DEGRADED SILENTLY. `PlaidItem.fm_app_sel` is
+ * `"userId" = current_fm_user_id()` (§9 — PlaidItem is a USER-scoped table), but
+ * the question this probe asks is a SPACE-level one: "is a backfill running on any
+ * account linked into this Space". In a shared Space the accounts are often a
+ * co-member's, so as the tenant the probe would return null for a backfill that
+ * IS running and the Wealth chart would render an incomplete series as if it were
+ * final — the exact "honest loading state" this signal exists to provide,
+ * switched off for precisely the members who cannot see the connection.
+ *
+ * It is not routed to systemDb either: app/api/spaces/ is not in that client's
+ * confinement list (scripts/audit-db-authority.ts) and an ordinary HTTP handler
+ * acquiring a deployment-wide authority is the escape this programme exists to
+ * close. Two columns, for accounts this Space's OWN tenant-visible links named,
+ * on `db`, named here. The honest fix is a `PlaidItem` SELECT arm admitting items
+ * whose connections reach a visible Space — a migration, and so an owner
+ * decision, not something to be worked around from a route.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -43,14 +67,18 @@ export async function GET(
   // at most one row per day, so 365 rows always cover at least 365 days: a
   // conservative over-cover for every hero window, and the client filters further.
   //
-  // RLS-C-S3 — and it runs as the TENANT, in its own short transaction, with the
-  // identity taken from the authenticated requester (requireSpaceRole above). Only
-  // the snapshot read is wrapped: the backfill probe below reads PlaidItem, a leaf
-  // this slice does not own, and a transaction around both would be a boundary
-  // over a read still executing on another authority.
-  const snapshots = await withTenantDb(
-    ctx.user.id, (tx) => getRecentSnapshots(tx, { rows: HERO_HISTORY_ROWS }, { spaceId }),
-  );
+  // RLS-C-S3 — and it runs as the TENANT, with the identity taken from the
+  // authenticated requester (requireSpaceRole above). RLS-T2 — the link set the
+  // backfill probe is scoped by joins it: both are Space-keyed reads of the same
+  // Space, so they are one phase, and the probe that cannot convert is the only
+  // thing left outside it.
+  const { snapshots, faIds } = await withTenantDb(ctx.user.id, async (tx) => ({
+    snapshots: await getRecentSnapshots(tx, { rows: HERO_HISTORY_ROWS }, { spaceId }),
+    faIds: (await tx.spaceAccountLink.findMany({
+      where:  { spaceId, status: ShareStatus.ACTIVE },
+      select: { financialAccountId: true },
+    })).map((l) => l.financialAccountId),
+  }));
 
   // Part-6 — per-Space "a backfill is actively running" signal, derived from the
   // SAME PlaidItem.syncIncompleteAt truth the Connections/sync-status subsystem
@@ -60,11 +88,12 @@ export async function GET(
   // snapshots are mid-backfill instead of rendering an incomplete series as if
   // final. Fires on EVERY new connect (the connect sets syncIncompleteAt), not
   // just the first Space ever.
-  const links = await db.spaceAccountLink.findMany({
-    where:  { spaceId, status: ShareStatus.ACTIVE },
-    select: { financialAccountId: true },
-  });
-  const faIds = links.map((l) => l.financialAccountId);
+  //
+  // ⚠️ DELIBERATELY NOT withTenantDb — see the header. `PlaidItem` is USER-keyed
+  // and this is a SPACE-level question, so as the tenant it would answer "no
+  // backfill" for a co-member's running one. The account ids it ranges over came
+  // from the tenant read above, so the SCOPE is the caller's even though the
+  // authority is not.
   let backfillInProgress = false;
   if (faIds.length > 0) {
     const busy = await db.plaidItem.findFirst({

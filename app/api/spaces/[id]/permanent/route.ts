@@ -55,6 +55,28 @@
  * confinement list (scripts/audit-db-authority.ts), and it should not be: an
  * ordinary HTTP handler acquiring a deployment-wide authority is the escape this
  * programme exists to close. They stay visibly on `db` until the policy lands.
+ *
+ * ── RLS-T2 — THE ORDERING HAZARD DOES NOT REACH THIS ROUTE, AND WHY ──────────
+ * `AccountConnection.fm_app_upd` is `fm_account_visible("financialAccountId")`,
+ * true only while an ACTIVE link exists in a visible Space — so a tenant teardown
+ * that revokes links BEFORE closing connections destroys the visibility the next
+ * statement needs and writes zero rows while raising nothing (cases 60-61 of
+ * scripts/rls-app-acceptance.ts prove both directions). This route is EXEMPT from
+ * that hazard for a structural reason, not a lucky one, and it is worth stating
+ * because the exemption is what a future converter will need:
+ *
+ *   THIS HANDLER ISSUES NO LINK OR CONNECTION STATEMENT AT ALL. Its only teardown
+ *   is `space.delete`, and everything listed above as "what actually cascades"
+ *   is performed by Postgres's own referential-integrity triggers from the
+ *   schema's `onDelete: Cascade`. Referential integrity BYPASSES row security
+ *   entirely — case 63 of rls-app-acceptance measures exactly this ("the account
+ *   DELETE takes the co-owner's link anyway … no capability was needed"). A
+ *   cascade therefore has no ordering to get wrong and no policy to be refused by.
+ *
+ * So when the `fm_app_del ON "Space"` policy named above lands and the delete
+ * converts, the cascade does NOT become a sequence of tenant statements and does
+ * NOT acquire the links-before-connections problem. The only question that
+ * conversion raises is whether the actor may delete the Space row itself.
  */
 
 import { NextRequest, NextResponse } from "next/server";

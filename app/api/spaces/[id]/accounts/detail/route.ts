@@ -28,11 +28,52 @@
  *
  * Security: membership-gated (VIEWER+), same as every other Space read. The Plaid
  * `cursor` is selected solely to derive state and is NEVER returned to the client.
+ *
+ * ── RLS-T2 — THE SPACE'S OWN ROWS CONVERT; TWO INCLUDES ABOUT OTHER PEOPLE DO NOT
+ * Every Space- and account-keyed read here now runs as the authenticated caller in
+ * ONE short transaction — the links, the import counts, the ledger-coverage
+ * groupBy, the pending evidence and the wallet valuation. That is the same
+ * justification the already-converted sibling GET /api/spaces/[id]/accounts uses:
+ * it is one coherent answer about one Space's accounts, and nothing inside reaches
+ * a provider, a model or the network.
+ *
+ * ⚠️ TWO RELATION INCLUDES HAD TO COME OUT, AND BOTH WOULD HAVE DEGRADED IN
+ * SILENCE RATHER THAN FAILING. Both are OPTIONAL relations, so Prisma returns
+ * `null` instead of raising — which is strictly worse than the 500 the REQUIRED
+ * `User` includes in this family produced, because nothing announces it:
+ *
+ *   1. `SpaceAccountLink.addedByUser` (`addedByUserId String?`). fm_app's `User`
+ *      SELECT policy is `id = current_fm_user_id()` (§10 — co-member display
+ *      identity is served by the application, see lib/spaces/roster-visibility.ts).
+ *      This is the field `normalizeSharedAccounts` builds a BALANCE_ONLY
+ *      aggregate's NAME from ("Jane's Checking Accounts" ← `addedByUser.firstName`),
+ *      and a BALANCE_ONLY share is BY DEFINITION somebody else's account — so the
+ *      degradation would have been 100% of exactly the rows the label exists for,
+ *      silently reducing every one of them to a bare "Checking Accounts".
+ *
+ *   2. `AccountConnection.plaidItem` (`plaidItemDbId String?`). `PlaidItem` is a
+ *      USER-keyed table (§9: `"userId" = current_fm_user_id()`), but connection
+ *      HEALTH on a FULL-shared account is a Space-level fact. As the tenant a
+ *      co-member's item is invisible, `deriveConnectionState` is never called, and
+ *      the row reports `connectionState: null` — which this route documents as
+ *      "manual, wallet-only, or a revoked item". A broken connection would have
+ *      rendered as a healthy manual account. (`isManual` is UNAFFECTED: it is
+ *      derived from the `plaidItemDbId` SCALAR, which fm_app can read.)
+ *
+ * Both are now separate, explicitly-named reads of the narrowest possible column
+ * sets, for ids this Space's OWN tenant-visible rows named — the construction
+ * GET /api/spaces/[id]/invites and PATCH …/members/[userId] already use. Neither
+ * is routed to systemDb: app/api/spaces/ is not in that client's confinement list
+ * (scripts/audit-db-authority.ts) and an ordinary HTTP handler acquiring a
+ * deployment-wide authority is the escape this programme exists to close. The
+ * honest fix for (2) is a `PlaidItem` SELECT arm admitting items whose connections
+ * reach a visible Space — a migration, and so an owner decision.
  */
 
 import type { PriceProvenance } from "@/lib/prices/current-quote.core";
 import { NextRequest, NextResponse }         from "next/server";
 import { db }                                from "@/lib/db";
+import { withTenantDb }                      from "@/lib/db/tenant-context";
 import { ShareStatus, ImportBatchStatus }    from "@prisma/client";
 import { SpaceMemberRole }                   from "@prisma/client";
 import { requireSpaceRole }                  from "@/lib/session";
@@ -120,6 +161,34 @@ function aggregateFreshness(
   }, now);
 }
 
+/**
+ * The PlaidItem whose state backs an account's connection health.
+ *
+ * RLS-T2 — this used to be two `find`s over a relation include
+ * (`c.isCanonical && c.plaidItem` first, then any `c.plaidItem`). The include is
+ * gone (see the file header), so the same two-tier preference is expressed over a
+ * lookup of the ids the connections carry. The ORDER is the behaviour: a canonical
+ * connection's item is authoritative, and a non-canonical one is the fallback —
+ * never the other way round.
+ *
+ * A connection whose `plaidItemDbId` is set but whose item is NOT in the map is
+ * skipped rather than treated as an item, which is what makes an unreadable item
+ * fall through to the next candidate instead of ending the search.
+ */
+function pickPlaidItem<I>(
+  connections: readonly { isCanonical: boolean; plaidItemDbId: string | null }[],
+  itemById:    ReadonlyMap<string, I>,
+): I | null {
+  const first = (cs: readonly { plaidItemDbId: string | null }[]): I | null => {
+    for (const c of cs) {
+      const item = c.plaidItemDbId === null ? undefined : itemById.get(c.plaidItemDbId);
+      if (item !== undefined) return item;
+    }
+    return null;
+  };
+  return first(connections.filter((c) => c.isCanonical)) ?? first(connections);
+}
+
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -127,10 +196,17 @@ export async function GET(
   const { id: spaceId } = await params;
 
   // requireSpaceRole enforces ACTIVE membership — REMOVED/LEFT members cannot read.
-  const [, err] = await requireSpaceRole(spaceId, SpaceMemberRole.VIEWER);
+  const [viewer, err] = await requireSpaceRole(spaceId, SpaceMemberRole.VIEWER);
   if (err) return err;
 
-  const links = await db.spaceAccountLink.findMany({
+  // ── Every Space- and account-keyed read, as the caller, in ONE short phase ──
+  // RLS-T2 — see the header. The five reads below are sequentially dependent (the
+  // account-id set scopes three of them) and make no network call, so one
+  // transaction is one coherent answer rather than a boundary held open.
+  const {
+    links, importCountByAccount, ledgerThroughByAccount, pending, walletValueByAccount,
+  } = await withTenantDb(viewer.user.id, async (client) => {
+  const links = await client.spaceAccountLink.findMany({
     where: {
       spaceId,
       status:           ShareStatus.ACTIVE,
@@ -140,9 +216,8 @@ export async function GET(
       id:              true,
       visibilityLevel: true,
       addedByUserId:   true,
-      addedByUser: {
-        select: { firstName: true, name: true },
-      },
+      // ⚠️ `addedByUser` IS NOT INCLUDED HERE — see the header. It is read
+      // separately, after this phase, on a named authority.
       financialAccount: {
         select: {
           id:             true,
@@ -176,8 +251,11 @@ export async function GET(
             select: {
               isCanonical:   true,
               plaidItemDbId: true,
-              // syncIncompleteAt is consumed only by deriveConnectionState — never returned.
-              plaidItem: { select: { status: true, syncIncompleteAt: true } },
+              // ⚠️ `plaidItem` IS NOT INCLUDED HERE — see the header. `PlaidItem`
+              // is USER-keyed, so as the tenant a co-member's item is invisible
+              // and the include would have returned null. The SCALAR id stays
+              // (it is what `isManual` is derived from) and the two state columns
+              // are read separately, after this phase, on a named authority.
             },
           },
         },
@@ -192,7 +270,7 @@ export async function GET(
   // COMPLETED historical-imports count per account, scoped to this Space via the
   // SAME spaceAccountLinks.some({ spaceId, status: ACTIVE }) join the Activity Tab
   // producer uses. groupBy keeps it one round-trip; missing accounts ⇒ 0.
-  const importCounts = await db.importBatch.groupBy({
+  const importCounts = await client.importBatch.groupBy({
     by:    ["financialAccountId"],
     where: {
       status:           ImportBatchStatus.COMPLETED,
@@ -215,7 +293,7 @@ export async function GET(
   // hold nothing for — NONE_ON_FILE, not UNKNOWN.
   const ledgerAccountIds = links.map((l) => l.financialAccount.id);
   const ledgerMax = ledgerAccountIds.length
-    ? await db.transaction.groupBy({
+    ? await client.transaction.groupBy({
         by:    ["financialAccountId"],
         where: { financialAccountId: { in: ledgerAccountIds }, deletedAt: null },
         _max:  { date: true },
@@ -226,33 +304,66 @@ export async function GET(
     if (r.financialAccountId && r._max.date) ledgerThroughByAccount.set(r.financialAccountId, r._max.date);
   }
 
-  // ONE clock for the whole response, so two rows in the same payload can never
-  // be aged against two different instants.
-  const now = new Date();
-
   // v2.6-L3 — provider-observed pending movements, scoped per account. Nothing is
   // inferred: this is a read of rows a provider (or an import) delivered.
-  // RLS slice B — `loadPendingEvidence` now requires its client. This caller is
-  // not converted in this slice, so it passes the client it already held.
-  const pending = await loadPendingEvidence(db, ledgerAccountIds);
-
-  // FULL shares carry the full management shape; BALANCE_ONLY shares are routed
-  // through the shared aggregator so no identifying field ever leaks.
-  const fullRows: AccountDetailRow[] = [];
-  const balanceOnlyShares: ShareRow[] = [];
+  // RLS slice B — `loadPendingEvidence` now requires its client. RLS-T2 — and the
+  // client it is handed is the caller's own.
+  const pending = await loadPendingEvidence(client, ledgerAccountIds);
 
   // W-M3a — a wallet on a chain that writes no `balance` column arrives from the
   // DB as a structural 0. Every claim below (freshness, balances, reconciliation)
   // is composed FROM that number, so the substitution happens once, here, before
   // any of them see it — rather than in three places that could disagree.
+  //
+  // ⚠️ RLS-T2 — `client` IS PASSED EXPLICITLY. `loadWalletCurrentValues` still
+  // carries an `options.client ?? db` default (fifteen call sites wide, named in
+  // lib/space/mount-composition.ts), and an omitted authority there is an AMBIENT
+  // one: this call would have read PositionObservation / PositionReconstruction as
+  // the migration principal while everything around it read as the caller.
   const walletValueByAccount = await loadWalletCurrentValues(
     links.map((l) => ({
       id: l.financialAccount.id,
       walletChain: l.financialAccount.walletChain,
       lastUpdated: l.financialAccount.lastUpdated,
     })),
-    { contextSpaceId: spaceId },
+    { contextSpaceId: spaceId, client },
   );
+
+    return { links, importCountByAccount, ledgerThroughByAccount, pending, walletValueByAccount };
+  });
+
+  // ── The two facts about OTHER PEOPLE, read separately and named ─────────────
+  // ⚠️ DELIBERATELY NOT withTenantDb — see the header. Both are reads fm_app's
+  // policies structurally cannot serve from within a Space context, over ids the
+  // tenant-visible rows above named, and both would otherwise have returned null
+  // and degraded a user-facing label without raising anything.
+  const adderIds = [...new Set(links.map((l) => l.addedByUserId).filter((v): v is string => v !== null))];
+  const adders = adderIds.length === 0 ? [] : await db.user.findMany({
+    where:  { id: { in: adderIds } },
+    select: { id: true, firstName: true, name: true },
+  });
+  const adderById = new Map(adders.map(({ id, ...display }) => [id, display]));
+
+  const plaidItemIds = [...new Set(
+    links.flatMap((l) => l.financialAccount.connections.map((c) => c.plaidItemDbId))
+      .filter((v): v is string => v !== null),
+  )];
+  // Exactly the two columns the state machine consumes, and no more:
+  // syncIncompleteAt is consumed only by deriveConnectionState — never returned.
+  const plaidItems = plaidItemIds.length === 0 ? [] : await db.plaidItem.findMany({
+    where:  { id: { in: plaidItemIds } },
+    select: { id: true, status: true, syncIncompleteAt: true },
+  });
+  const plaidItemById = new Map(plaidItems.map(({ id, ...state }) => [id, state]));
+
+  // ONE clock for the whole response, so two rows in the same payload can never
+  // be aged against two different instants.
+  const now = new Date();
+
+  // FULL shares carry the full management shape; BALANCE_ONLY shares are routed
+  // through the shared aggregator so no identifying field ever leaks.
+  const fullRows: AccountDetailRow[] = [];
+  const balanceOnlyShares: ShareRow[] = [];
 
   for (const link of links) {
     const raw = link.financialAccount;
@@ -268,7 +379,9 @@ export async function GET(
       balanceOnlyShares.push({
         visibilityLevel: link.visibilityLevel,
         addedByUserId:   link.addedByUserId,
-        addedByUser:     link.addedByUser,
+        addedByUser:     link.addedByUserId === null
+          ? null
+          : adderById.get(link.addedByUserId) ?? null,
         financialAccount: {
           id:             a.id,
           name:           a.name,
@@ -289,17 +402,19 @@ export async function GET(
 
     // A provider connection = an AccountConnection carrying a PlaidItem (canonical
     // preferred) or a wallet address. A manual asset has neither.
-    const plaidConn =
-      a.connections.find((c) => c.isCanonical && c.plaidItem) ??
-      a.connections.find((c) => c.plaidItem);
+    //
+    // RLS-T2 — the item is resolved through `plaidItemById` rather than a relation
+    // include, and the PREFERENCE ORDER is unchanged: a canonical connection
+    // carrying an item wins, else any connection carrying one.
+    const plaidItem = pickPlaidItem(a.connections, plaidItemById);
+    // ⚠️ `isManual` reads the SCALAR, not the resolved item, exactly as before —
+    // which is why it is unaffected by whose PlaidItem rows are readable.
     const hasProvider = a.connections.some((c) => c.plaidItemDbId !== null) || !!a.walletAddress;
 
     // connectionState from deriveConnectionState() verbatim; null when there is no
     // Plaid item to derive from (manual, wallet-only, or a revoked item) — never
     // a fabricated "healthy".
-    const connectionState = plaidConn?.plaidItem
-      ? deriveConnectionState(plaidConn.plaidItem)
-      : null;
+    const connectionState = plaidItem ? deriveConnectionState(plaidItem) : null;
 
     // ONE freshness answer per account, composed into the balance claim rather
     // than resolved twice — the two must never be able to disagree.

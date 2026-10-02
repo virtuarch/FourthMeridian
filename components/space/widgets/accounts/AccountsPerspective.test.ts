@@ -68,7 +68,13 @@ console.log("3. Manual accounts render no health chip (no fabricated 'healthy')"
   check("chip only rendered when non-null", SRC.includes("{chip && <Chip chip={chip} />}"));
   // isManual in the route is derived from a real absence of provider, never faked.
   check("route: isManual = !hasProvider", ROUTE.includes("isManual:           !hasProvider"));
-  check("route: connectionState null when no plaid item", ROUTE.includes("? deriveConnectionState(plaidConn.plaidItem)\n      : null"));
+  // RLS-T2 — the route no longer reaches the item through a relation include
+  // (`PlaidItem` is USER-keyed, so as the tenant a co-member's item comes back
+  // null and the chip would silently vanish), so the `plaidConn.plaidItem` text
+  // this pinned is gone. The PROPERTY is unchanged and still pinned: null item ⇒
+  // null state, never a fabricated "healthy".
+  check("route: connectionState null when no plaid item",
+    ROUTE.includes("const connectionState = plaidItem ? deriveConnectionState(plaidItem) : null;"));
 }
 
 console.log("4. Health-chip states map correctly");
@@ -112,7 +118,12 @@ console.log("6. Doctrine — separate surfaces, shared type untouched");
 
 console.log("7. Detail route reuses established joins + pure state derivation");
 {
-  check("ACTIVE SpaceAccountLink visibility join", ROUTE.includes("status:           ShareStatus.ACTIVE") && ROUTE.includes("db.spaceAccountLink.findMany"));
+  // RLS-T2 — the join is unchanged; the AUTHORITY it runs on is not. This used to
+  // pin `db.spaceAccountLink.findMany`, i.e. the migration principal, which is the
+  // thing the RLS programme removes. Pinning the tenant client instead keeps the
+  // original "same join as the shared route" claim AND stops it reverting.
+  check("ACTIVE SpaceAccountLink visibility join, on the caller's client",
+    ROUTE.includes("status:           ShareStatus.ACTIVE") && ROUTE.includes("client.spaceAccountLink.findMany"));
   check("financialAccount.deletedAt: null (same as shared route)", ROUTE.includes("financialAccount: { deletedAt: null }"));
   check("ImportBatch scoped by spaceAccountLinks.some ACTIVE", ROUTE.includes("spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE } }"));
   check("only COMPLETED batches counted", ROUTE.includes("status:           ImportBatchStatus.COMPLETED"));

@@ -45,11 +45,20 @@
  * last line of defense" would simply stop defending — no error, no log. A guard
  * that can only fail open must not be moved behind a policy that hides its
  * subject. It stays on `db`, named.
+ *
+ * ── RLS-T2 — AND THE CANCEL WAS REPORTING SUCCESS IT HAD NOT EARNED ──────────
+ * DELETE discarded its `deleteMany` count and returned `{ ok: true }`
+ * unconditionally. A DELETE a policy refuses returns `{ count: 0 }` silently, so
+ * a cancel that cancelled nothing looked identical to one that worked — and the
+ * invite stayed redeemable. The rows are now counted in the same phase and
+ * `assertEveryObservedRowWasWritten` compares. See the note at that statement for
+ * why the bulk helper is the right one and `resolveConditionalWrite` is not.
  */
 
 import { NextRequest, NextResponse }              from "next/server";
 import { db }                                     from "@/lib/db";
 import { withTenantDb }                           from "@/lib/db/tenant-context";
+import { assertEveryObservedRowWasWritten }       from "@/lib/db/conditional-write";
 import { requireUser, requireSpaceRole }      from "@/lib/session";
 import { isInvitableSpaceRole }                   from "@/lib/spaces/invite-role";
 import { SpaceMemberRole, SpaceMemberStatus, SpaceType } from "@prisma/client";
@@ -189,8 +198,35 @@ export async function DELETE(
 
   // `SpaceInvite.fm_app_del` is `spaceId IN fm_visible_space_ids()`, which the
   // ACTIVE ADMIN guard has established.
-  await withTenantDb(auth.user.id, (tx) => tx.spaceInvite.deleteMany({
-    where: { id: inviteId, spaceId },
-  }));
-  return NextResponse.json({ ok: true });
+  //
+  // ⚠️ RLS-T2 — THE COUNT WAS DISCARDED AND `{ ok: true }` WAS RETURNED EITHER
+  // WAY. A DELETE a policy refuses returns `{ count: 0 }` with no error and no
+  // log (lib/db/conditional-write.ts), so a cancel that cancelled nothing told
+  // the admin it had worked and left the invite redeemable. That is the same
+  // shape of defect this family has already shipped once — a refused UPDATE made
+  // a single-use invite infinitely reusable.
+  //
+  // ⚠️ AND `resolveConditionalWrite` IS THE WRONG TOOL HERE, DELIBERATELY NOT A
+  // THIRD VARIANT. Its probe conflates "the policy hid the row" with "the row is
+  // gone", and for a cancel the second of those is the EXPECTED idempotent
+  // outcome (already accepted, already cancelled) — so it would throw on the
+  // route's happy repeat. The bulk form asks the question a delete can answer:
+  // count the eligible rows in the SAME phase, then insist every one of them was
+  // written. Nothing observed ⇒ nothing written ⇒ honestly idempotent; one
+  // observed and none written ⇒ raises.
+  const scope = { id: inviteId, spaceId };
+  const eligible = await withTenantDb(auth.user.id, async (tx) => {
+    const observed = await tx.spaceInvite.count({ where: scope });
+    const { count } = await tx.spaceInvite.deleteMany({ where: scope });
+    assertEveryObservedRowWasWritten(
+      { table: "SpaceInvite", operation: "delete", scope: "one invite id in this Space" },
+      observed,
+      count,
+    );
+    return observed;
+  });
+  // The shape is unchanged for both outcomes (a cancel has always been
+  // idempotent); `cancelled` merely stops the response claiming more than
+  // happened for a caller that wants to know.
+  return NextResponse.json({ ok: true, cancelled: eligible > 0 });
 }

@@ -52,12 +52,27 @@
  * have 500'd every role change and every removal. It is now a separate,
  * explicitly-named read on the deployment-wide client, of the same three
  * display columns, producing the identical `targetName` / `removedName`.
+ *
+ * ── RLS-T2 — THE REORDER FIXED THE CAUSE AND LEFT NO DETECTOR ────────────────
+ * The link revoke in DELETE is a BULK conditional write whose `count` was thrown
+ * away. The slice-B reorder above makes the shipped order the admissible one, but
+ * a count nobody compares cannot tell a COMPLETE revoke from a PARTIAL one — and
+ * a partial one leaves a departed member's shared accounts visible to the
+ * remaining members while reporting success. The rows are now counted in the same
+ * phase and `assertEveryObservedRowWasWritten` compares; a shortfall rolls the
+ * pair back and raises instead of returning `{ ok: true }`.
+ *
+ * ⚠️ IT SHOULD NEVER FIRE, AND THAT IS THE POINT. On both paths the actor is
+ * still ACTIVE when these two statements run, so the Space is visible and every
+ * eligible row is writable. The guard exists to make that reasoning CHECKED at
+ * runtime rather than argued in a comment.
  */
 
 import { NextRequest, NextResponse }              from "next/server";
 import { db }                                     from "@/lib/db";
 import { SpaceMemberStatus, ShareStatus, SpaceMemberRole, SpaceType } from "@prisma/client";
 import { withTenantDb }                            from "@/lib/db/tenant-context";
+import { assertEveryObservedRowWasWritten }        from "@/lib/db/conditional-write";
 import { requireSpaceRole }                   from "@/lib/session";
 import { withApiHandler, getClientIp }            from "@/lib/api";
 import { emitDomainEvent, dispatchDomainEvent }   from "@/lib/events/emit";
@@ -219,18 +234,49 @@ export const DELETE = withApiHandler(async (
   await withTenantDb(user.id, async (tx) => {
     // 1. D3 Stage B4 — Revoke all active SpaceAccountLink rows the member added.
     //    FIRST, deliberately: see above.
-    await tx.spaceAccountLink.updateMany({
-      where: {
-        spaceId,
-        addedByUserId: targetUserId,
-        status:        ShareStatus.ACTIVE,
-      },
+    //
+    // ⚠️ RLS-T2 — AND THE REORDER REMOVED THE CAUSE WITHOUT LEAVING A DETECTOR.
+    // This is a BULK conditional write whose count was discarded entirely, which
+    // is the nastier half of the zero-row problem (lib/db/conditional-write.ts):
+    // a zero at least looks like nothing happened, but 1-of-2 looks exactly like
+    // success — the statement returned, nothing raised, and the count was never
+    // compared to anything. The rows a policy hid would simply not be rows the
+    // statement matched, and a departed member's shared accounts would stay
+    // visible to the remaining members. That is the privacy gap the atomicity in
+    // this block exists to prevent, so it must not be able to half-happen
+    // quietly.
+    //
+    // ⚠️ THE `count` IS THE GUARD, NOT AN OPTIMISATION TO BE HOISTED AWAY. It is
+    // issued through the SAME client, in the SAME phase, over the SAME predicate,
+    // which is the one circumstance in which a shortfall is determinate. A future
+    // edit that deletes it because "the updateMany's where clause already says
+    // that" removes the only thing that can tell a partial revoke from a complete
+    // one. A shortfall rolls the whole transaction back — the member is NOT
+    // removed and nothing is reported — which is the loud failure the doctrine
+    // asks for, not a calm one.
+    const revokeScope = {
+      spaceId,
+      addedByUserId: targetUserId,
+      status:        ShareStatus.ACTIVE,
+    };
+    const eligibleLinks = await tx.spaceAccountLink.count({ where: revokeScope });
+    const { count: revokedLinks } = await tx.spaceAccountLink.updateMany({
+      where: revokeScope,
       data: {
         status:          ShareStatus.REVOKED,
         revokedAt:       now,
         revokedByUserId: isSelf ? targetUserId : user.id,
       },
     });
+    assertEveryObservedRowWasWritten(
+      {
+        table:     "SpaceAccountLink",
+        operation: "update",
+        scope:     "the departing member's ACTIVE links in this Space",
+      },
+      eligibleLinks,
+      revokedLinks,
+    );
     // 2. Soft-update SpaceMember
     await tx.spaceMember.update({
       where: { spaceId_userId: { spaceId, userId: targetUserId } },
