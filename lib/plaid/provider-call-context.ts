@@ -24,10 +24,22 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { RefreshEndpoint } from "@/lib/plaid/refresh-execution-types";
+// Type-only: no runtime edge, so this module stays import-light and the Plaid
+// proxy can reach it without pulling in the ledger.
+import type { LedgerHandle } from "@/lib/plaid/refresh-ledger";
 
 export interface ProviderCallContext {
-  /** The owning execution — always set (the row exists before the runner runs). */
-  refreshExecutionId: string;
+  /**
+   * The owning execution's LEDGER DOOR — always set (the row exists before the
+   * runner runs; when the start write failed there is no context at all).
+   *
+   * ⚠️ RLS-P-1 — THE HANDLE, NOT THE ID. This used to be
+   * `refreshExecutionId: string`, which meant the Plaid proxy held a value it
+   * could have written any `ProviderCall` row under, including one belonging to
+   * a different execution. A handle cannot be pointed anywhere: it minted its
+   * own id and accepts none.
+   */
+  ledger: LedgerHandle;
   /** The stage active right now, updated by the recorder; undefined between stages. */
   currentEndpoint?: RefreshEndpoint;
   /** Per-operation external-request counter (retries + pagination). Internal. */

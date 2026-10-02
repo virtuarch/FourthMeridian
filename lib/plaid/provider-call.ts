@@ -25,49 +25,33 @@
  * DATA MINIMIZATION: only allowlisted operational fields are ever persisted —
  * provider, operation, status, timing, attempt, request id, http status, Plaid's
  * own error_code/error_type. NEVER a token, secret, request/response payload,
- * account number, or free-form body.
+ * account number, or free-form body. The allowlist IS the `ProviderCallInput`
+ * type, which lives with the writer (lib/plaid/refresh-ledger.ts).
+ *
+ * ── RLS-P-1: IT NO LONGER ISSUES THE WRITE ───────────────────────────────────
+ * `ProviderCall` is revoked from `fm_app` outright and the operational ledger now
+ * has exactly one door. This module keeps what it is good at — timing one round
+ * trip, counting attempts, and extracting ONLY allowlisted facts from a Plaid
+ * response or error — and hands the row to the ledger handle the context
+ * carries. It no longer resolves a database client of any kind, so there is no
+ * second authority for this table to find later.
+ *
+ * ⚠️ AND IT STILL DOES NOT AWAIT. `handle.recordProviderCall` returns `void`, so
+ * the emit cannot be awaited into the provider's latency even by accident, and
+ * cannot be inside a transaction.
  */
 
 import "server-only";
-import { db } from "@/lib/db";
 import { getProviderCallContext, nextAttempt, type ProviderCallContext } from "@/lib/plaid/provider-call-context";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
 
-export type ProviderCallStatus = "SUCCEEDED" | "FAILED" | "RATE_LIMITED";
+// The row shape and its status vocabulary live with the ONE writer; re-exported
+// here because this module is where the facts are extracted.
+export type { ProviderCallInput, ProviderCallStatus } from "@/lib/plaid/refresh-ledger";
+import type { ProviderCallInput, ProviderCallStatus } from "@/lib/plaid/refresh-ledger";
 
-export interface ProviderCallInput {
-  refreshExecutionId: string;
-  endpoint?: string;
-  provider: string;
-  operation: string;
-  status: ProviderCallStatus;
-  attempt: number;
-  startedAt: Date;
-  completedAt: Date;
-  durationMs: number;
-  providerRequestId?: string;
-  httpStatus?: number;
-  errorCode?: string;
-  errorCategory?: string;
-}
-
-// ── Narrow write-client seam (the JobRunWriteClient idiom) ───────────────────
-export interface ProviderCallWriteClient {
-  providerCall: { create(args: { data: ProviderCallInput }): Promise<unknown> };
-}
-const providerCallDb = db as unknown as ProviderCallWriteClient;
-
-/** Best-effort, non-throwing write of one provider-call attempt. */
-export async function recordProviderCall(
-  input: ProviderCallInput,
-  client: ProviderCallWriteClient = providerCallDb,
-): Promise<void> {
-  try {
-    await client.providerCall.create({ data: input });
-  } catch (err) {
-    console.error(`[provider-call] write failed for ${input.provider}.${input.operation} (non-fatal):`, redactedErrorForLog(err));
-  }
-}
+/** What `instrumentProviderCall` emits: everything but the execution id, which only the door may set. */
+export type ProviderCallFacts = Omit<ProviderCallInput, "refreshExecutionId">;
 
 // ── Safe extraction from Plaid responses / errors (no secrets, no payloads) ──
 
@@ -104,8 +88,8 @@ export function classifyProviderCallError(err: unknown): ProviderCallErrorFacts 
 // ── The instrumentation seam (called by the Plaid Proxy; unit-testable) ──────
 
 export interface InstrumentDeps {
-  /** Test seam — production uses the real recordProviderCall. */
-  record?: (input: ProviderCallInput) => void;
+  /** Test seam — production emits through the ledger handle the context carries. */
+  record?: (input: ProviderCallFacts) => void;
 }
 
 /**
@@ -119,17 +103,18 @@ export async function instrumentProviderCall<T>(
   call: () => Promise<T>,
   deps: InstrumentDeps = {},
 ): Promise<T> {
-  const rawEmit = deps.record ?? ((input: ProviderCallInput) => { void recordProviderCall(input); });
+  const rawEmit = deps.record ?? ((input: ProviderCallFacts) => { ctx.ledger.recordProviderCall(input); });
   // Guard the emit so a throwing telemetry write can NEVER be mistaken for a
   // provider failure by the try/catch below (telemetry ≠ provider semantics).
-  const emit = (input: ProviderCallInput) => {
+  const emit = (input: ProviderCallFacts) => {
     try { rawEmit(input); } catch (e) { console.error(`[provider-call] emit failed for ${input.operation} (non-fatal):`, redactedErrorForLog(e)); }
   };
   const startedAt = new Date();
   const t0 = Date.now();
   const attempt = nextAttempt(ctx, operation);
   const base = {
-    refreshExecutionId: ctx.refreshExecutionId,
+    // No execution id: the handle fills its own, so this function has no way to
+    // attribute a call to any execution but the one in flight.
     endpoint: ctx.currentEndpoint,
     provider: "PLAID",
     operation,

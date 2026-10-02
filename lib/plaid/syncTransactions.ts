@@ -96,6 +96,7 @@ import { db } from "@/lib/db";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
 import { ProviderType, PlaidItemStatus } from "@prisma/client";
 import { recordSyncIssue, resolveCursorBlockingIssues } from "@/lib/plaid/syncIssues";
+import { activeLedger } from "@/lib/plaid/refresh-ledger";
 import { retireItemSyncFailure } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { findByFingerprint } from "@/lib/transactions/fingerprint";
@@ -1031,7 +1032,17 @@ export async function syncTransactionsForItem(
   // RefreshExecution.runId when a caller threaded one; when nobody did (see
   // exchangeToken) it names no execution and the authority stores null rather
   // than inventing a link.
-  await resolveCursorBlockingIssues(plaidItemDbId, database, runId);
+  //
+  // RLS-P-1 — when this sync is running inside a refresh envelope the resolution
+  // goes through that execution's LEDGER DOOR, which supplies the correlator
+  // itself. The door is reached from the ambient provider-call context rather
+  // than through a new parameter on this function, and that is the point: this
+  // function is ALSO called with no envelope at all (exchangeToken), so a
+  // threaded execution id would be an argument that is sometimes real, sometimes
+  // invented, and always pointable.
+  const ledger = activeLedger();
+  if (ledger) await ledger.resolveIncidentsByRecovery({ plaidItemId: plaidItemDbId });
+  else await resolveCursorBlockingIssues(plaidItemDbId, database, runId);
 
   // OPS-3 S5 Wave 3 — the item provably works again: retire the open
   // SYNC_FAILED condition (releases the :open dedupe key + archives the stale

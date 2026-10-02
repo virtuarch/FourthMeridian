@@ -24,6 +24,16 @@
  * points from `nextStageToRun`, readiness from `deriveHistoryReadiness`. And it
  * never writes a financial row — recording that a stage succeeded is not the
  * same as authorizing what it produced, which remains snapshot status alone.
+ *
+ * ── RLS-P-1: IT NO LONGER ISSUES THE WRITE ───────────────────────────────────
+ * `RefreshEndpointResult` is revoked from `fm_app` outright, and the operational
+ * ledger now has exactly one door (lib/plaid/refresh-ledger.ts). So what used to
+ * be `settleHistoricalStage` is split: the STAGE VOCABULARY and the row shape
+ * stay here, where the five stage names and their statuses are defined, and the
+ * INSERT happens at the door under the one client that may perform it. The read
+ * that numbers the next attempt stays here too — it is keyed by the execution id
+ * the door minted and by this module's own stage vocabulary, and it returns a
+ * number, never a row.
  */
 
 import { db } from "@/lib/db";
@@ -41,6 +51,12 @@ export { HISTORICAL_STAGES, LEGACY_HISTORY_STAGE, nextStageToRun };
 export type StageResultSummary = Record<string, number | string | boolean | null>;
 
 export interface StageSettleArgs {
+  /**
+   * ⚠️ NEVER SUPPLIED BY A PRODUCER (RLS-P-1). The ledger door takes
+   * `Omit<StageSettleArgs, "refreshExecutionId">` and fills this from the id it
+   * minted; the field survives on the type so that `Omit` names something real
+   * and so the row shape stays readable in one place.
+   */
   refreshExecutionId: string;
   stage: HistoricalStage;
   status: HistoricalStageStatus;
@@ -95,56 +111,74 @@ async function nextAttemptNumber(refreshExecutionId: string, stage: HistoricalSt
   return (last?.attempt ?? 0) + 1;
 }
 
+/** The exact `RefreshEndpointResult` row one settled historical stage becomes. */
+export interface HistoricalStageRow {
+  refreshExecutionId: string;
+  endpoint:      string;
+  stageKind:     "DERIVED";
+  status:        HistoricalStageStatus;
+  skipReason:    string | null;
+  startedAt:     Date;
+  completedAt:   Date;
+  durationMs:    number;
+  attempt:       number;
+  windowFromISO: string | null;
+  windowToISO:   string | null;
+  plannerMode:   string | null;
+  errorCode:     StageErrorCode | null;
+  retryable:     boolean;
+  errorSummary:  string | null;
+  resultSummary: never;
+}
+
 /**
- * Persist a settled historical stage IMMEDIATELY.
+ * Build the row for a settled historical stage, or refuse it.
  *
  * Guarded at the write boundary — the stage name, status and error code all pass
  * through the canonical vocabulary, so no caller can introduce a parallel one.
  * The legacy opaque stage is refused outright: it stays readable for old rows
- * and unwritable for migrated workflows.
+ * and unwritable for migrated workflows. `null` means REFUSED BY VOCABULARY,
+ * which is not a failure and must not be reported as one.
  *
- * Never throws: a ledger write must not be able to fail the financial work it
- * describes. A lost record degrades observability; a thrown one would degrade
- * the user's data.
+ * ⚠️ `refreshExecutionId` is a parameter here and not in the door's signature on
+ * purpose: this function cannot write anything, so it cannot be the leak. It is
+ * supplied by the handle, which minted it (lib/plaid/refresh-ledger.ts).
+ *
+ * The one read it performs — the next attempt ordinal — is keyed by that minted
+ * id and by this module's own stage vocabulary, and it returns a number.
  */
-export async function settleHistoricalStage(args: StageSettleArgs): Promise<void> {
-  try {
-    if (!isHistoricalStage(args.stage)) return;
-    if ((args.stage as string) === LEGACY_HISTORY_STAGE) return;
-    if (!isHistoricalStageStatus(args.status)) return;
+export async function prepareHistoricalStageRow(
+  refreshExecutionId: string,
+  args: Omit<StageSettleArgs, "refreshExecutionId">,
+): Promise<HistoricalStageRow | null> {
+  if (!isHistoricalStage(args.stage)) return null;
+  if ((args.stage as string) === LEGACY_HISTORY_STAGE) return null;
+  if (!isHistoricalStageStatus(args.status)) return null;
 
-    const completedAt = new Date();
-    const attempt = await nextAttemptNumber(args.refreshExecutionId, args.stage);
+  const completedAt = new Date();
+  const attempt = await nextAttemptNumber(refreshExecutionId, args.stage);
 
-    await db.refreshEndpointResult.create({
-      data: {
-        refreshExecutionId: args.refreshExecutionId,
-        endpoint:      args.stage,
-        stageKind:     "DERIVED",
-        status:        args.status,
-        skipReason:    args.status === "SKIPPED" ? (args.skipReason ?? "NOT_APPLICABLE") : null,
-        startedAt:     args.startedAt,
-        completedAt,
-        durationMs:    completedAt.getTime() - args.startedAt.getTime(),
-        attempt,
-        windowFromISO: args.windowFromISO ?? null,
-        windowToISO:   args.windowToISO ?? null,
-        plannerMode:   args.plannerMode ?? null,
-        errorCode:     isStageErrorCode(args.errorCode) ? args.errorCode : null,
-        // A provider limit is settled but NOT retryable — retrying cannot change
-        // what the tier will serve. Everything else defaults to retryable only
-        // when it actually failed.
-        retryable:     args.retryable ?? (args.status === "FAILED"),
-        errorSummary:  args.errorSummary ? truncateError(args.errorSummary) : null,
-        resultSummary: (args.resultSummary ?? undefined) as never,
-      },
-    });
-  } catch (e) {
-    console.warn(
-      `[historical-stage] failed to record ${args.stage} (non-fatal):`,
-      e instanceof Error ? e.message : e,
-    );
-  }
+  return {
+    refreshExecutionId,
+    endpoint:      args.stage,
+    stageKind:     "DERIVED",
+    status:        args.status,
+    skipReason:    args.status === "SKIPPED" ? (args.skipReason ?? "NOT_APPLICABLE") : null,
+    startedAt:     args.startedAt,
+    completedAt,
+    durationMs:    completedAt.getTime() - args.startedAt.getTime(),
+    attempt,
+    windowFromISO: args.windowFromISO ?? null,
+    windowToISO:   args.windowToISO ?? null,
+    plannerMode:   args.plannerMode ?? null,
+    errorCode:     isStageErrorCode(args.errorCode) ? args.errorCode : null,
+    // A provider limit is settled but NOT retryable — retrying cannot change
+    // what the tier will serve. Everything else defaults to retryable only
+    // when it actually failed.
+    retryable:     args.retryable ?? (args.status === "FAILED"),
+    errorSummary:  args.errorSummary ? truncateError(args.errorSummary) : null,
+    resultSummary: (args.resultSummary ?? undefined) as never,
+  };
 }
 
 /**

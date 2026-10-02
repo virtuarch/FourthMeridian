@@ -49,12 +49,12 @@ import {
   runFullRefresh,
   type RunFullRefreshParams,
   type RunFullRefreshDeps,
-  type RefreshExecutionWriteClient,
   type RefreshExecutionStartData,
   type RefreshExecutionCompletionData,
   type RefreshEndpointResultData,
   type RefreshEndpointAccountCoverageData,
 } from "@/lib/plaid/refresh-execution";
+import { ledgerRecorderFor, type LedgerRecorder, type LedgerWriteClient } from "@/lib/plaid/refresh-ledger";
 import { getProviderCallContext } from "@/lib/plaid/provider-call-context";
 import type { SyncLockResult } from "@/lib/plaid/sync-lock";
 
@@ -83,19 +83,27 @@ function makeLedger() {
   const endpointRows: RefreshEndpointResultData[] = [];
   const coverageRows: RefreshEndpointAccountCoverageData[] = [];
   let seq = 0;
-  const client: RefreshExecutionWriteClient = {
+  const stageRows: unknown[] = [];
+  const providerCalls: unknown[] = [];
+  const writeClient: LedgerWriteClient = {
     refreshExecution: {
       async create({ data }) { creates.push(data); return { id: `exec-${++seq}` }; },
       async update({ where, data }) { updates.push({ id: where.id, data }); return {}; },
     },
     refreshEndpointResult: {
       async createMany({ data }) { endpointRows.push(...data); return {}; },
+      async create({ data }) { stageRows.push(data); return {}; },
     },
     refreshEndpointAccountCoverage: {
       async createMany({ data }) { coverageRows.push(...data); return {}; },
     },
+    providerCall: {
+      async create({ data }) { providerCalls.push(data); return {}; },
+    },
   };
-  return { client, creates, updates, endpointRows, coverageRows };
+  // RLS-P-1 — the in-memory client reaches the ledger through the real door.
+  const client = ledgerRecorderFor(writeClient);
+  return { client, creates, updates, endpointRows, coverageRows, stageRows, providerCalls };
 }
 
 /**
@@ -104,7 +112,7 @@ function makeLedger() {
  * the AsyncLocalStorage provider-call context, status derivation, error
  * rethrow — is the production code path.
  */
-function spyingAuthority(client: RefreshExecutionWriteClient, calls: RunFullRefreshParams[]) {
+function spyingAuthority(client: LedgerRecorder, calls: RunFullRefreshParams[]) {
   return function <T>(params: RunFullRefreshParams, deps: RunFullRefreshDeps<T> = {}): Promise<T> {
     calls.push(params);
     return runFullRefresh<T>(params, { ...deps, client });
@@ -171,7 +179,7 @@ async function main() {
           deferSnapshot: opts?.deferSnapshot,
           hasRecorder: opts?.recorder !== undefined,
           runId: opts?.runId,
-          contextExecutionId: getProviderCallContext()?.refreshExecutionId,
+          contextExecutionId: getProviderCallContext()?.ledger.executionId,
         };
         // Drive the recorder exactly as refreshPlaidItem does, so the rows this
         // produces PROVE the recorder handed over is the execution's own.

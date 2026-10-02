@@ -11,7 +11,13 @@
  * are TypeScript string-union types over plain String columns — TS keeps
  * exhaustiveness in the derivation switch, while the DB needs no migration to
  * gain a new trigger/profile/stage/skip-reason later (DF-2B..2F).
+ *
+ * The one import below is TYPE-ONLY and therefore erased: the recorder seam
+ * carries the ledger door (RLS-P-1) but this module still pulls in no runtime
+ * dependency, so the no-cycle property above is unchanged.
  */
+
+import type { LedgerHandle } from "@/lib/plaid/refresh-ledger";
 
 /**
  * How a per-item refresh was initiated. Only currently-meaningful triggers.
@@ -238,15 +244,20 @@ export interface RefreshStageRecord {
  */
 export interface RefreshStageRecorder {
   /**
-   * V26-STAGE-1 — the open execution's id, when one exists.
+   * V26-STAGE-1 / RLS-P-1 — the open execution's LEDGER DOOR, when one exists.
    *
    * Exposed so the historical layer can persist its own stages INCREMENTALLY
    * (see historical-stage-recorder.ts) instead of relying on this recorder's
    * end-of-run flush. Those two durability models are deliberately different: a
    * short provider fan-out can afford to report at the end, a resumable
    * multi-stage pipeline cannot.
+   *
+   * ⚠️ THE HANDLE, NOT THE ID. This was `refreshExecutionId?: string`, and the
+   * historical pipeline took it as a plain parameter — one argument away from
+   * writing stages against somebody else's execution. A handle minted its own id
+   * and accepts none, so there is nothing to point.
    */
-  readonly refreshExecutionId?: string;
+  readonly ledger?: LedgerHandle;
   /** Mark a stage started. */
   begin(endpoint: RefreshEndpoint, stageKind: RefreshStageKind): void;
   /** Finalize the open stage as SUCCEEDED with the facts it produced. */

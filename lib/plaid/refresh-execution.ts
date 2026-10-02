@@ -26,14 +26,30 @@
  * The ONE authoritative business write in this path is the provider refresh
  * itself (inside refreshPlaidItem); the RefreshExecution/EndpointResult writes
  * are OPERATIONAL ledger writes.
+ *
+ * ── RLS-P-1: THIS MODULE DERIVES; IT NO LONGER WRITES ────────────────────────
+ * The four ledger INSERTs/UPDATEs that used to live here now go through the one
+ * door (lib/plaid/refresh-ledger.ts), and the swallowing lives there too. What
+ * stays here is everything that is a DECISION rather than a statement: minting
+ * the runId, stamping the deployment, flattening per-account coverage out of the
+ * stage records, deriving `overallStatus`, and building the verdict.
+ *
+ * THE ONE PLACE AN AUTHORITY IS CHOSEN for the whole (B) family is the single
+ * `ledgerRecorderFor(...)` call below. Flipping the operational ledger to another
+ * principal is that line; before this slice it was nine lines in four files.
  */
 
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
 import { summarizeError, currentJobRun } from "@/lib/jobs/run";
-import { captureLedgerWriteFailure } from "@/lib/monitoring/capture";
 import { currentDeploymentSha } from "@/lib/monitoring/deployment";
+import {
+  ledgerRecorderFor,
+  type LedgerHandle,
+  type LedgerRecorder,
+  type LedgerWriteClient,
+} from "@/lib/plaid/refresh-ledger";
 // PLATFORM OPS OBSERVABILITY — the Plaid runner is imported LAZILY (inside the
 // default runner) rather than at module load. lib/plaid/refresh.ts pulls in the
 // Plaid client, which validates credentials at import time; now that the wallet
@@ -59,11 +75,12 @@ import type {
 import { buildVerdict } from "@/lib/plaid/refresh-verdict.core";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
 
-// ── Narrow write-client seam (the JobRunWriteClient idiom) ───────────────────
+// ── The ledger row shapes ────────────────────────────────────────────────────
 //
-// Typed against exactly the three operations this module performs, and the
-// shared client is cast once below — keeping this module compile-independent of
-// Prisma-client regeneration and giving pure tests an injection point.
+// Declared here, written at the door. They stay here because the deployment
+// immutability invariant is pinned on these declarations: the START data carries
+// `deploymentSha` and the COMPLETION data structurally cannot, so a completion
+// write cannot rewrite it (lib/monitoring/deployment.test.ts).
 
 export interface RefreshExecutionStartData {
   runId: string;
@@ -131,28 +148,29 @@ export interface RefreshEndpointAccountCoverageData {
   freshnessAdvanced: boolean;
 }
 
-export interface RefreshExecutionWriteClient {
-  refreshExecution: {
-    create(args: { data: RefreshExecutionStartData; select: { id: true } }): Promise<{ id: string }>;
-    update(args: { where: { id: string }; data: RefreshExecutionCompletionData }): Promise<unknown>;
-  };
-  refreshEndpointResult: {
-    createMany(args: { data: RefreshEndpointResultData[] }): Promise<unknown>;
-  };
-  refreshEndpointAccountCoverage: {
-    createMany(args: { data: RefreshEndpointAccountCoverageData[] }): Promise<unknown>;
-  };
-}
-
-const executionDb = db as unknown as RefreshExecutionWriteClient;
+/**
+ * ⚠️ THE ONE PLACE A (B)-FAMILY WRITE AUTHORITY IS CHOSEN.
+ *
+ * Every operational-ledger write in the product tree — RefreshExecution,
+ * RefreshEndpointResult, RefreshEndpointAccountCoverage, ProviderCall — passes
+ * through the recorder this line binds. It is still the migration principal, by
+ * design: RLS-P-1 moved the authority question to one place without answering it
+ * differently. The flip is this line.
+ *
+ * (SyncIssue / SyncIssueOccurrence reach the door too, but the door forwards
+ * them to the incident FACADE, which keeps its own client parameter because
+ * fourteen non-envelope producers thread one. See refresh-ledger.ts.)
+ */
+const ledgerRecorder: LedgerRecorder = ledgerRecorderFor(db as unknown as LedgerWriteClient);
 
 // ── The recorder — collects finalized stage records; observes, never controls ─
 
 export class StageRecorder implements RefreshStageRecorder {
   readonly records: RefreshStageRecord[] = [];
-  /** V26-STAGE-1 — set when an execution row exists; lets the historical layer
-   *  persist its own stages incrementally against this run. */
-  refreshExecutionId?: string;
+  /** V26-STAGE-1 / RLS-P-1 — the ledger door for this execution, when one opened.
+   *  Lets the historical layer persist its own stages incrementally against this
+   *  run WITHOUT being handed an execution id it could point elsewhere. */
+  ledger?: LedgerHandle;
   private open?: { endpoint: RefreshEndpoint; stageKind: RefreshStageKind; startedAt: Date; t0: number };
 
   /**
@@ -338,8 +356,17 @@ export interface RunFullRefreshParams {
 export type RefreshStageRunner<T> = (opts: { recorder: RefreshStageRecorder; runId: string }) => Promise<T>;
 
 export interface RunFullRefreshDeps<T> {
-  /** Test injection seam — production callers never pass this. */
-  client?: RefreshExecutionWriteClient;
+  /**
+   * Test injection seam — production callers never pass this.
+   *
+   * ⚠️ A RECORDER, NOT A CLIENT (RLS-P-1). This used to be a write client, and
+   * that made it look like the split-authority seam it was not: it reached three
+   * of the six ledger tables, because ProviderCall, SyncIssue and the incremental
+   * RefreshEndpointResult each resolved their own `db` elsewhere. Setting it
+   * would have left three writers on the old principal while the suite went
+   * green. Typed as the capability, it can only ever be what it says it is.
+   */
+  client?: LedgerRecorder;
   /**
    * Runs the actual refresh stages, driving the recorder. Defaults to
    * refreshPlaidItem (T = RefreshItemResult). Cron/tests inject a runner that
@@ -367,7 +394,7 @@ export async function runFullRefresh<T = RefreshItemResult>(
   params: RunFullRefreshParams,
   deps: RunFullRefreshDeps<T> = {},
 ): Promise<T> {
-  const client = deps.client ?? executionDb;
+  const recorderClient = deps.client ?? ledgerRecorder;
   const runId = randomUUID();
   const startedAt = new Date();
   const t0 = Date.now();
@@ -379,15 +406,17 @@ export async function runFullRefresh<T = RefreshItemResult>(
     throw new TypeError("runFullRefresh: the default (Plaid) runner requires itemId or a PLAID_ITEM source");
   }
 
-  const executionId = await openExecution(client, startData(params, runId, startedAt));
+  const ledger = await recorderClient.open(startData(params, runId, startedAt));
 
   // DF-2D — attribute provider calls to this execution only when the ledger row
-  // exists (executionId non-null); the recorder keeps the context's active stage
-  // in sync so each ProviderCall names the stage that fired it.
+  // exists (handle non-null); the recorder keeps the context's active stage in
+  // sync so each ProviderCall names the stage that fired it. The context carries
+  // the HANDLE, so the Plaid proxy cannot write a ProviderCall for any execution
+  // but the one in flight.
   const ctx: ProviderCallContext | null =
-    executionId === null ? null : { refreshExecutionId: executionId, currentEndpoint: undefined, attempts: new Map() };
+    ledger === null ? null : { ledger, currentEndpoint: undefined, attempts: new Map() };
   const recorder = new StageRecorder(ctx ? (ep) => { ctx.currentEndpoint = ep; } : undefined);
-  if (executionId !== null) recorder.refreshExecutionId = executionId;
+  if (ledger !== null) recorder.ledger = ledger;
 
   // The default runner (refreshPlaidItem) returns RefreshItemResult; the cast is
   // sound because `deps.refresh` is undefined only when T defaulted to it.
@@ -412,11 +441,14 @@ export async function runFullRefresh<T = RefreshItemResult>(
   const execute = async (): Promise<T> => {
     try {
       const result = await runStages({ recorder, runId });
-      await closeExecution(client, executionId, recorder.records, startedAt, t0, undefined, overrideFor({ result }));
+      await closeExecution(ledger, recorder.records, startedAt, t0, undefined, overrideFor({ result }));
       return result;
     } catch (err) {
       recorder.failOpen(err);
-      await closeExecution(client, executionId, recorder.records, startedAt, t0, err, overrideFor({ error: err }));
+      await closeExecution(ledger, recorder.records, startedAt, t0, err, overrideFor({ error: err }));
+      // ⚠️ THE ORIGINAL ERROR OBJECT, NOT A WRAPPED ONE, AND NEVER A LEDGER
+      // FAILURE. reportItemRefreshFailure classifies this by identity
+      // (lib/plaid/refresh.ts), so a ledger degradation must not reach it.
       throw err;
     }
   };
@@ -461,84 +493,57 @@ function startData(
   };
 }
 
-async function openExecution(
-  client: RefreshExecutionWriteClient,
-  data: RefreshExecutionStartData,
-): Promise<string | null> {
-  try {
-    const row = await client.refreshExecution.create({ data, select: { id: true } });
-    return row.id;
-  } catch (err) {
-    console.error(`[refresh-execution] ${data.runId}: start write failed (non-fatal):`, redactedErrorForLog(err));
-    // Same escalation as the JobRun wrapper (SCHEDULER-DISPATCH-RESTORE-1): a
-    // null here suppresses every downstream write for this execution — endpoint
-    // results, coverage, provider calls — so the refresh runs and the entire
-    // DF-2 ledger records nothing. This ledger had been write-dead in production
-    // since 2026-07-24 (the RefreshExecution table itself was never migrated)
-    // and nothing reported it.
-    captureLedgerWriteFailure("RefreshExecution", "start", err);
-    return null;
-  }
-}
-
+/**
+ * Flatten the stage records into their ledger rows and write the one completion.
+ *
+ * Note what is NOT here any more: a try/catch per write. Swallowing a ledger
+ * failure is the door's job, and having it in exactly one place is what made
+ * `degradations` expressible at all — four hand-written catches reported four
+ * console lines and nothing a caller or a monitor could read.
+ */
 async function closeExecution(
-  client: RefreshExecutionWriteClient,
-  executionId: string | null,
+  ledger: LedgerHandle | null,
   records: RefreshStageRecord[],
   startedAt: Date,
   t0: number,
   err: unknown,
   override?: ExecutionVerdict,
 ): Promise<void> {
-  if (executionId === null) return; // start write never landed — nothing to complete (append-only)
+  if (ledger === null) return; // start write never landed — nothing to complete (append-only)
 
   // Persist one immutable endpoint result per attempted/skipped stage.
-  if (records.length > 0) {
-    try {
-      await client.refreshEndpointResult.createMany({
-        data: records.map((r) => ({
-          refreshExecutionId: executionId,
-          endpoint: r.endpoint,
-          stageKind: r.stageKind,
-          status: r.status,
-          skipReason: r.skipReason,
-          startedAt: r.startedAt,
-          completedAt: r.completedAt,
-          durationMs: r.durationMs,
-          recordsRead: r.recordsRead,
-          recordsWritten: r.recordsWritten,
-          recordsChanged: r.recordsChanged,
-          coveredAccountIds: r.coveredAccountIds,
-          freshnessAdvanced: r.freshnessAdvanced,
-          errorSummary: r.errorSummary,
-        })),
-      });
-    } catch (writeErr) {
-      console.error(`[refresh-execution] ${executionId}: endpoint-result write failed (non-fatal):`, redactedErrorForLog(writeErr));
-    }
-  }
+  await ledger.recordStages(
+    records.map((r) => ({
+      endpoint: r.endpoint,
+      stageKind: r.stageKind,
+      status: r.status,
+      skipReason: r.skipReason,
+      startedAt: r.startedAt,
+      completedAt: r.completedAt,
+      durationMs: r.durationMs,
+      recordsRead: r.recordsRead,
+      recordsWritten: r.recordsWritten,
+      recordsChanged: r.recordsChanged,
+      coveredAccountIds: r.coveredAccountIds,
+      freshnessAdvanced: r.freshnessAdvanced,
+      errorSummary: r.errorSummary,
+    })),
+  );
 
   // DF-2E — one immutable RefreshEndpointAccountCoverage row per (endpoint,
   // account) the execution evaluated. Flattened from the stage records that
-  // reported per-account outcomes (BALANCES, HOLDINGS). Best-effort; a coverage
-  // write failure never breaks the refresh.
-  const coverageRows: RefreshEndpointAccountCoverageData[] = records.flatMap((r) =>
-    r.accounts.map((a) => ({
-      refreshExecutionId: executionId,
-      endpoint: r.endpoint,
-      financialAccountId: a.financialAccountId,
-      status: a.status,
-      reason: a.reason,
-      freshnessAdvanced: a.freshnessAdvanced,
-    })),
+  // reported per-account outcomes (BALANCES, HOLDINGS).
+  await ledger.recordCoverage(
+    records.flatMap((r) =>
+      r.accounts.map((a) => ({
+        endpoint: r.endpoint,
+        financialAccountId: a.financialAccountId,
+        status: a.status,
+        reason: a.reason,
+        freshnessAdvanced: a.freshnessAdvanced,
+      })),
+    ),
   );
-  if (coverageRows.length > 0) {
-    try {
-      await client.refreshEndpointAccountCoverage.createMany({ data: coverageRows });
-    } catch (writeErr) {
-      console.error(`[refresh-execution] ${executionId}: account-coverage write failed (non-fatal):`, redactedErrorForLog(writeErr));
-    }
-  }
 
   const overallStatus = deriveOverallStatus(records);
   // Prefer the top-level thrown error's message; else the first failed stage's.
@@ -557,22 +562,15 @@ async function closeExecution(
     override,
   });
 
-  try {
-    await client.refreshExecution.update({
-      where: { id: executionId },
-      data: {
-        completedAt: new Date(),
-        durationMs: Date.now() - t0,
-        overallStatus,
-        errorSummary,
-        ...(verdict.failureStage ? { failureStage: verdict.failureStage } : {}),
-        ...(verdict.failureCategory ? { failureCategory: verdict.failureCategory } : {}),
-        ...(verdict.outcome ? { outcome: verdict.outcome } : {}),
-      },
-    });
-  } catch (writeErr) {
-    console.error(`[refresh-execution] ${executionId}: completion write failed (non-fatal):`, redactedErrorForLog(writeErr));
-  }
+  await ledger.close({
+    completedAt: new Date(),
+    durationMs: Date.now() - t0,
+    overallStatus,
+    errorSummary,
+    ...(verdict.failureStage ? { failureStage: verdict.failureStage } : {}),
+    ...(verdict.failureCategory ? { failureCategory: verdict.failureCategory } : {}),
+    ...(verdict.outcome ? { outcome: verdict.outcome } : {}),
+  });
 }
 
 /** A typed provider code carried on a thrown error, when one exists (Plaid errors carry `error_code`). */
@@ -609,30 +607,23 @@ function errorCodeOf(err: unknown): string | null {
  */
 export async function recordAdmissionDenial(
   params: RunFullRefreshParams & { admissionReason: string },
-  deps: { client?: RefreshExecutionWriteClient } = {},
+  deps: { client?: LedgerRecorder } = {},
 ): Promise<{ runId: string }> {
-  const client = deps.client ?? executionDb;
+  const recorderClient = deps.client ?? ledgerRecorder;
   const runId = randomUUID();
   const startedAt = new Date();
   const t0 = Date.now();
 
-  const executionId = await openExecution(client, startData(params, runId, startedAt));
+  const ledger = await recorderClient.open(startData(params, runId, startedAt));
 
-  if (executionId !== null) {
-    try {
-      await client.refreshExecution.update({
-        where: { id: executionId },
-        data: {
-          completedAt: new Date(),
-          durationMs: Date.now() - t0,
-          // No stages ran — the existing derivation rule, applied to nothing.
-          overallStatus: deriveOverallStatus([]),
-          admissionReason: params.admissionReason,
-        },
-      });
-    } catch (writeErr) {
-      console.error(`[refresh-execution] ${runId}: admission-denial write failed (non-fatal):`, redactedErrorForLog(writeErr));
-    }
+  if (ledger !== null) {
+    await ledger.close({
+      completedAt: new Date(),
+      durationMs: Date.now() - t0,
+      // No stages ran — the existing derivation rule, applied to nothing.
+      overallStatus: deriveOverallStatus([]),
+      admissionReason: params.admissionReason,
+    });
   }
 
   return { runId };

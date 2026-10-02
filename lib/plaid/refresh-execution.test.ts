@@ -20,12 +20,12 @@ import {
   runFullRefresh,
   deriveOverallStatus,
   StageRecorder,
-  type RefreshExecutionWriteClient,
   type RefreshExecutionStartData,
   type RefreshExecutionCompletionData,
   type RefreshEndpointResultData,
   type RefreshEndpointAccountCoverageData,
 } from "@/lib/plaid/refresh-execution";
+import { ledgerRecorderFor, type LedgerWriteClient } from "@/lib/plaid/refresh-ledger";
 import type { RefreshItemResult } from "@/lib/plaid/refresh";
 import type { RefreshStageRecord, RefreshStageRecorder, RefreshEndpoint } from "@/lib/plaid/refresh-execution-types";
 // DF-2B — the real cron per-item runner, exercised through the SAME authority.
@@ -63,8 +63,12 @@ function makeFake(opts: FakeOpts = {}) {
   const updates: Array<{ id: string; data: RefreshExecutionCompletionData }> = [];
   const endpointRows: RefreshEndpointResultData[] = [];
   const coverageRows: RefreshEndpointAccountCoverageData[] = [];
+  const stageRows: unknown[] = [];
+  const providerCalls: unknown[] = [];
   let seq = 0;
-  const client: RefreshExecutionWriteClient = {
+  // RLS-P-1 — the in-memory client is now bound through the REAL door, so these
+  // guards exercise `ledgerRecorderFor` rather than a hand-rolled write path.
+  const writeClient: LedgerWriteClient = {
     refreshExecution: {
       async create({ data }) {
         if (opts.failCreate) throw new Error("ledger down");
@@ -83,6 +87,11 @@ function makeFake(opts: FakeOpts = {}) {
         endpointRows.push(...data);
         return {};
       },
+      async create({ data }) {
+        if (opts.failCreateMany) throw new Error("ledger down");
+        stageRows.push(data);
+        return {};
+      },
     },
     refreshEndpointAccountCoverage: {
       async createMany({ data }) {
@@ -91,8 +100,12 @@ function makeFake(opts: FakeOpts = {}) {
         return {};
       },
     },
+    providerCall: {
+      async create({ data }) { providerCalls.push(data); return {}; },
+    },
   };
-  return { client, creates, updates, endpointRows, coverageRows };
+  const client = ledgerRecorderFor(writeClient);
+  return { client, writeClient, creates, updates, endpointRows, coverageRows, stageRows, providerCalls };
 }
 
 const okResult: RefreshItemResult = {
@@ -420,7 +433,7 @@ async function main() {
       client,
       refresh: async ({ recorder }) => {
         const ctx = getProviderCallContext();
-        seen.execId = ctx?.refreshExecutionId;
+        seen.execId = ctx?.ledger.executionId;
         recorder.begin("BALANCES", "PROVIDER");
         seen.epDuring = ctx?.currentEndpoint;            // recorder.begin → context updated
         recorder.succeed("BALANCES", { recordsChanged: 1, coveredAccountIds: ["a1"] });

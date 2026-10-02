@@ -387,15 +387,23 @@ export async function refreshPlaidItem(
           console.warn(
             `[reconcile] BALANCE_TX_MISMATCH account ${t.id} (${t.type}) — balanceDelta=${v.balanceDelta.toFixed(2)} expected=${v.expected.toFixed(2)} mismatch=${v.mismatch.toFixed(2)} > threshold=${v.threshold.toFixed(2)}`
           );
-          await recordSyncIssue({
-            kind:               "BALANCE_TX_MISMATCH",
+          const mismatch = {
+            kind:               "BALANCE_TX_MISMATCH" as const,
             plaidItemId:        plaidItemDbId,
             financialAccountId: t.id,
             // `basis` records WHICH rule produced this row, so a future reader
             // can tell a post-Phase-2 finding from the pending-inclusive legacy
             // events already in the table.
             detail:             { accountType: t.type, kind: t.kind, basis: "posted", balanceDelta: v.balanceDelta, txnSumDelta: v.txnSumDelta, expected: v.expected, mismatch: v.mismatch, threshold: v.threshold },
-          }, db);
+          };
+          // RLS-P-1 — inside a refresh this goes through the ledger door, which
+          // stamps THIS execution's correlator so the finding is attributable.
+          // Outside one (there is no door when the start write failed) the
+          // uncorrelated facade still records it: a mismatch is a fact about an
+          // account, not about an execution, and widening a ledger blackout to
+          // swallow it would make the blackout worse than it is.
+          if (recorder?.ledger) await recorder.ledger.recordIncident(mismatch);
+          else await recordSyncIssue(mismatch, db);
         }
       }
     }

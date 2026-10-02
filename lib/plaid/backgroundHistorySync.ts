@@ -35,7 +35,7 @@ import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 // DF-2C — observational execution-ledger seam. Optional; when absent,
 // runDeferredHistorySync behaves byte-identically.
 import type { RefreshStageRecorder } from "@/lib/plaid/refresh-execution-types";
-import { settleHistoricalStage } from "@/lib/plaid/historical-stage-recorder";
+import type { LedgerHandle } from "@/lib/plaid/refresh-ledger";
 import { classifyPlaidErrorForHealth, plaidErrorSummary, redactedErrorForLog } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed, notifyItemSyncComplete } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
@@ -164,8 +164,12 @@ async function backfillHistoryForItem(
    * V26-STAGE-1 — when present, each of the five historical stages is persisted
    * AS IT SETTLES, so a crash or failure is resumable instead of re-paying the
    * whole pipeline. Absent ⇒ byte-identical prior behaviour, unrecorded.
+   *
+   * ⚠️ RLS-P-1 — THE DOOR, NOT AN ID. This was `refreshExecutionId?: string`,
+   * which is precisely the argument a caller could point at another execution.
+   * A handle minted its own id and accepts none.
    */
-  refreshExecutionId?: string,
+  ledger?: LedgerHandle,
 ): Promise<void> {
   try {
     const conns = await db.accountConnection.findMany({
@@ -212,7 +216,7 @@ async function backfillHistoryForItem(
       // repairs reconstructions). This stage therefore RECORDS what that
       // ingestion demonstrated rather than re-fetching it: re-requesting the
       // corpus here would double provider cost to learn nothing.
-      if (refreshExecutionId) {
+      if (ledger) {
         const covStartedAt = new Date();
         const cov = await db.investmentEventCoverage.findMany({
           where:  { financialAccountId: { in: investmentFaIds } },
@@ -226,8 +230,8 @@ async function backfillHistoryForItem(
         // No coverage row at all means the provider corpus was never
         // demonstrated for these accounts — reported as a provider limit, not a
         // success, so downstream stages are not credited with evidence.
-        await settleHistoricalStage({
-          refreshExecutionId, stage: "COVERAGE",
+        await ledger.settleHistoricalStage({
+          stage: "COVERAGE",
           status: cov.length === 0 ? "PROVIDER_LIMITED" : "SUCCEEDED",
           startedAt: covStartedAt,
           windowFromISO: demonstratedFloor,
@@ -273,9 +277,9 @@ async function backfillHistoryForItem(
           // safely excludes it (the residue guard and ownership licensing both
           // refuse it), so the honest report is a success whose summary names
           // exactly what did not resolve.
-          if (refreshExecutionId) {
-            await settleHistoricalStage({
-              refreshExecutionId, stage: "RECONSTRUCTION",
+          if (ledger) {
+            await ledger.settleHistoricalStage({
+              stage: "RECONSTRUCTION",
               status: reconConflicted > 0 || reconFailed > 0 ? "SUCCEEDED" : "SUCCEEDED",
               startedAt: reconStartedAt,
               errorCode: reconConflicted > 0 ? "RECONSTRUCTION_CONFLICT" : null,
@@ -285,9 +289,9 @@ async function backfillHistoryForItem(
               },
             });
           }
-        } else if (refreshExecutionId) {
-          await settleHistoricalStage({
-            refreshExecutionId, stage: "RECONSTRUCTION", status: "SKIPPED",
+        } else if (ledger) {
+          await ledger.settleHistoricalStage({
+            stage: "RECONSTRUCTION", status: "SKIPPED",
             startedAt: new Date(), skipReason: "NOT_APPLICABLE",
             resultSummary: { reason: "reconstruction disabled" },
           });
@@ -328,17 +332,17 @@ async function backfillHistoryForItem(
               // resolves ownership windows and plans only inside them, so the
               // licensing decision is made and observable here rather than being
               // a separate re-derivation that could disagree with it.
-              if (refreshExecutionId) {
-                await settleHistoricalStage({
-                  refreshExecutionId, stage: "OWNERSHIP", status: "SUCCEEDED",
+              if (ledger) {
+                await ledger.settleHistoricalStage({
+                  stage: "OWNERSHIP", status: "SUCCEEDED",
                   startedAt: priceStartedAt,
                   resultSummary: { instrumentsConsidered: heldInstrumentIds.length },
                 });
                 // A budget-truncated run is NOT a success: some planned dates were
                 // never attempted, and calling that SUCCEEDED would let readiness
                 // claim a completeness the archive does not have.
-                await settleHistoricalStage({
-                  refreshExecutionId, stage: "PRICES",
+                await ledger.settleHistoricalStage({
+                  stage: "PRICES",
                   status: m.skippedForBudget ? "FAILED" : "SUCCEEDED",
                   startedAt: priceStartedAt,
                   errorCode: m.skippedForBudget ? "PRICE_GAP" : null,
@@ -386,9 +390,9 @@ async function backfillHistoryForItem(
     const regenStartedAt = new Date();
     try {
       await regenerateWealthHistoryForItem(plaidItemId, faIds);
-      if (refreshExecutionId) {
-        await settleHistoricalStage({
-          refreshExecutionId, stage: "REGENERATION", status: "SUCCEEDED",
+      if (ledger) {
+        await ledger.settleHistoricalStage({
+          stage: "REGENERATION", status: "SUCCEEDED",
           startedAt: regenStartedAt,
           resultSummary: { accounts: faIds.length },
         });
@@ -396,9 +400,9 @@ async function backfillHistoryForItem(
     } catch (regenErr) {
       // Prices and every upstream stage stay settled; only REGENERATION is
       // marked failed, so a retry resumes here and does not refetch a thing.
-      if (refreshExecutionId) {
-        await settleHistoricalStage({
-          refreshExecutionId, stage: "REGENERATION", status: "FAILED",
+      if (ledger) {
+        await ledger.settleHistoricalStage({
+          stage: "REGENERATION", status: "FAILED",
           startedAt: regenStartedAt, errorCode: "REGENERATION_FAILED", retryable: true,
           errorSummary: regenErr instanceof Error ? regenErr.message : String(regenErr),
         });
@@ -532,7 +536,7 @@ export async function runDeferredHistorySync(
     // this path. Its five constituents now record themselves individually and
     // incrementally, so a failure is attributable and a retry is resumable. Old
     // executions keep their HISTORY_BACKFILL rows and stay readable.
-    await backfillHistoryForItem(plaidItemId, recorder?.refreshExecutionId);
+    await backfillHistoryForItem(plaidItemId, recorder?.ledger);
 
     // Part-3 — the FULL deferred pipeline is done: record it + notify the owner
     // (bell + Recent Activity, from ONE AuditLog record). Only reached on a

@@ -265,12 +265,19 @@ async function main(): Promise<void> {
       !/catch\s*\(\s*err\s*\)\s*\{[^}]*captureLedgerWriteFailure[^}]*\bthrow\b/.test(src),
     );
     // The sibling ledger carries the identical contract and the identical gap.
-    const refreshSrc = readFileSync("lib/plaid/refresh-execution.ts", "utf8")
+    // RLS-P-1 — the escalation moved WITH the writer: the operational ledger now
+    // has exactly one door, and the start/completion writes it swallows live
+    // there rather than in the orchestrator. The property asserted is unchanged.
+    const refreshSrc = readFileSync("lib/plaid/refresh-ledger.ts", "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/^\s*\/\/.*$/gm, "");
     check(
       "RefreshExecution start-write failure is captured too",
       /captureLedgerWriteFailure\(\s*"RefreshExecution"\s*,\s*"start"/.test(refreshSrc),
+    );
+    check(
+      "RefreshExecution completion-write failure is captured too",
+      /captureLedgerWriteFailure\(\s*"RefreshExecution"\s*,\s*"completion"/.test(refreshSrc),
     );
     // A start-write failure still suppresses the completion write — capture is
     // additive and must not have disturbed the append-only rule.
