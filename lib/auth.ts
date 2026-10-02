@@ -40,6 +40,7 @@ import { createNotification } from "@/lib/notifications/create";
 import { formatDateTime } from "@/lib/format";
 import { UserRole } from "@prisma/client";
 import { resolveRevocation, invalidateSession } from "@/lib/session-cache";
+import { readSessionClaims, factsFromRow, judgeSession, SESSION_ROW_SELECT } from "@/lib/auth/session-proof";
 import { checkKeyLimitStrict, peekKey } from "@/lib/rate-limit";
 import { captureAuthInfraFailure, captureSessionRevocationFailure } from "@/lib/monitoring/capture";
 import { SESSION_INDETERMINATE_FLAG } from "@/lib/auth/session-outcome";
@@ -128,6 +129,14 @@ async function coarseRoute(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * A refused session: no user, already expired. The shape the revoked branch has
+ * always returned — middleware redirects to /login, every guard reads anonymous.
+ */
+function refusedSession<S extends { expires: string }>(session: S): S {
+  return { ...session, user: undefined as never, expires: new Date(0).toISOString() };
 }
 
 export const authOptions: NextAuthOptions = {
@@ -557,9 +566,18 @@ export const authOptions: NextAuthOptions = {
     },
 
     async session({ session, token }) {
-      const sessionToken = token.sessionToken as string | null | undefined;
+      // ── P1: a signed token is not a session (lib/auth/session-proof.ts) ────
+      // The token must carry a well-formed id AND sessionToken; the session
+      // store must prove that sessionToken is live AND owned by that id; and
+      // the role acted on is the owner's CURRENT role from the store. Before
+      // P1 this callback skipped the lookup entirely when sessionToken was
+      // absent and took id + role from the token — so a token signed with
+      // NEXTAUTH_SECRET (shared with Preview) could be any user, any role.
+      const claims = readSessionClaims(token);
+      if (!claims) return refusedSession(session);
+      const { sessionToken } = claims;
 
-      // ── Revocation check (cached, short TTL) ────────────────────────────────
+      // ── Revocation + ownership check (cached, short TTL) ────────────────────
       // JWT tokens are stateless — revoking a UserSession row doesn't invalidate
       // the cookie automatically, so we still must check the DB to reject
       // revoked sessions. But this callback runs on EVERY
@@ -569,86 +587,83 @@ export const authOptions: NextAuthOptions = {
       // the multi-second /dashboard/spaces latency (a trivial count()
       // query elsewhere still took 5+ seconds once wrapped in this check).
       //
-      // Fix: cache the verified result per sessionToken for
-      // SESSION_CACHE_TTL_MS (lib/session-cache.ts, currently 30s). Ordinary
-      // page loads/navigation read the cache and skip the DB entirely on a
-      // hit. Sensitive actions (password change, disabling 2FA, regenerating
-      // recovery codes, revoking sessions, admin security actions) must NOT
-      // rely on this — they call requireFreshUser()/requireFreshSystemAdmin()
-      // (lib/session.ts) instead, which always bypasses this cache and hits
-      // the DB live. Revocation is NOT removed — only the polling frequency
-      // for low-stakes requests is throttled.
-      if (sessionToken) {
-        const tRevoke = Date.now();
+      // Fix: cache the verified FACTS (owner + current role) per sessionToken
+      // for SESSION_CACHE_TTL_MS (lib/session-cache.ts, currently 30s). The
+      // cache never decides ownership — judgeSession() compares the cached
+      // owner with THIS token's id on every request. Sensitive actions
+      // (password change, disabling 2FA, regenerating recovery codes, revoking
+      // sessions, admin security actions) must NOT rely on this — they call
+      // requireFreshUser()/requireFreshSystemAdmin() (lib/session.ts) instead,
+      // which always bypass this cache and hit the DB live.
+      const tRevoke = Date.now();
 
-        // PROD-POOLER-AUTH-INCIDENT-1 — resolveRevocation() owns three things
-        // this callback used to get wrong:
-        //   1. It COALESCES concurrent misses into one query. Under Fluid Compute
-        //      many requests share this process and its single pooled connection
-        //      (connection_limit=1), so N simultaneous cache misses used to mean
-        //      N queued queries and a 10s P2024 for the losers.
-        //   2. It NEVER THROWS. A throw here reaches NextAuth's catch, which
-        //      deletes the session cookie — a transient DB blip became a logout.
-        //   3. It degrades through a BOUNDED stale window before giving up.
-        const outcome = await resolveRevocation(sessionToken, async () => {
-          const dbSession = await db.userSession.findFirst({
-            where:  { sessionToken, revokedAt: null },
-            select: { id: true },
-          });
-          return !!dbSession;
-        });
+      // PROD-POOLER-AUTH-INCIDENT-1 — resolveRevocation() owns three things
+      // this callback used to get wrong:
+      //   1. It COALESCES concurrent misses into one query. Under Fluid Compute
+      //      many requests share this process and its single pooled connection
+      //      (connection_limit=1), so N simultaneous cache misses used to mean
+      //      N queued queries and a 10s P2024 for the losers.
+      //   2. It NEVER THROWS. A throw here reaches NextAuth's catch, which
+      //      deletes the session cookie — a transient DB blip became a logout.
+      //   3. It degrades through a BOUNDED stale window before giving up.
+      const outcome = await resolveRevocation(sessionToken, async () =>
+        factsFromRow(await db.userSession.findFirst({
+          where:  { sessionToken },
+          select: SESSION_ROW_SELECT,
+        })),
+      );
+      const verdict = judgeSession(claims, outcome);
 
-        if (process.env.NODE_ENV !== "production") {
-          console.log(`[auth] session callback revocation check: ${outcome.disposition}, ${Date.now() - tRevoke}ms, valid=${outcome.valid}`);
-        }
-
-        // Bump lastActiveAt (fire-and-forget — don't block the response). Only on
-        // a genuine live check, as before: a COALESCED caller is riding someone
-        // else's query and must not add a second write, and a STALE_HIT means the
-        // database is already refusing connections — piling on a write there
-        // would add pressure to the exact resource that is failing.
-        if (outcome.disposition === "LIVE" && outcome.valid) {
-          db.userSession.updateMany({
-            where: { sessionToken },
-            data:  { lastActiveAt: new Date() },
-          }).catch(() => {});
-        }
-
-        // ── INDETERMINATE — infrastructure could not answer ───────────────────
-        // Deny THIS request, preserve the credential. Returning a value (rather
-        // than throwing) is what keeps the cookie: NextAuth re-issues it on the
-        // normal path. The user sees a retryable error, not a logout.
-        if (outcome.valid === null) {
-          captureSessionRevocationFailure({
-            error:       outcome.error,
-            disposition: "INDETERMINATE",
-            route:       await coarseRoute(),
-          });
-          return { ...session, user: undefined as never, [SESSION_INDETERMINATE_FLAG]: true };
-        }
-
-        // A bounded-stale answer was used — the window absorbed the pressure.
-        // Still reported: this is the leading indicator of the condition that
-        // produces the INDETERMINATE case above.
-        if (outcome.disposition === "STALE_HIT") {
-          captureSessionRevocationFailure({
-            error:       outcome.error,
-            disposition: "STALE_HIT",
-            route:       await coarseRoute(),
-          });
-        }
-
-        if (!outcome.valid) {
-          // Authoritatively revoked (fresh or bounded-stale). Return a bare
-          // expired session — middleware will redirect to /login.
-          return { ...session, user: undefined as never, expires: new Date(0).toISOString() };
-        }
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[auth] session callback proof: ${outcome.disposition}, ${Date.now() - tRevoke}ms, verdict=${verdict.kind}`);
       }
 
-      session.user.id        = token.id               as string;
-      session.user.role      = token.role             as UserRole;
+      // ── INDETERMINATE — infrastructure could not answer ───────────────────
+      // Deny THIS request, preserve the credential. Returning a value (rather
+      // than throwing) is what keeps the cookie: NextAuth re-issues it on the
+      // normal path. The user sees a retryable error, not a logout. Never
+      // "could not verify, so trust the token".
+      if (verdict.kind === "indeterminate") {
+        captureSessionRevocationFailure({
+          error:       outcome.error,
+          disposition: "INDETERMINATE",
+          route:       await coarseRoute(),
+        });
+        return { ...session, user: undefined as never, [SESSION_INDETERMINATE_FLAG]: true };
+      }
+
+      // A bounded-stale answer was used — the window absorbed the pressure.
+      // Still reported: this is the leading indicator of the condition that
+      // produces the INDETERMINATE case above.
+      if (outcome.disposition === "STALE_HIT") {
+        captureSessionRevocationFailure({
+          error:       outcome.error,
+          disposition: "STALE_HIT",
+          route:       await coarseRoute(),
+        });
+      }
+
+      // Revoked, absent, owned by someone else, or a user that no longer
+      // exists: a bare expired session — middleware will redirect to /login.
+      if (verdict.kind === "refused") return refusedSession(session);
+
+      // Bump lastActiveAt (fire-and-forget — don't block the response). Only on
+      // a genuine live check, as before: a COALESCED caller is riding someone
+      // else's query and must not add a second write, and a STALE_HIT means the
+      // database is already refusing connections — piling on a write there
+      // would add pressure to the exact resource that is failing.
+      if (outcome.disposition === "LIVE") {
+        db.userSession.updateMany({
+          where: { sessionToken, userId: verdict.userId },
+          data:  { lastActiveAt: new Date() },
+        }).catch(() => {});
+      }
+
+      session.user.id        = verdict.userId;
+      // The CURRENT role from the session store — never the token's claim.
+      session.user.role      = verdict.role           as UserRole;
       session.user.username  = token.username         as string | null | undefined;
-      session.sessionToken   = sessionToken           ?? null;
+      session.sessionToken   = sessionToken;
       session.requireTotpSetup = (token.requireTotpSetup as boolean | null | undefined) ?? null;
       return session;
     },

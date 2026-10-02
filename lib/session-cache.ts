@@ -63,10 +63,33 @@
  * below for it without touching any call site.
  */
 
+/**
+ * P1 — what the authoritative session store said about a session token: WHO
+ * owns it and the owner's CURRENT role. Cached instead of a bare "valid"
+ * boolean because a boolean keyed only by sessionToken cannot be re-judged:
+ * a token claiming to be Alice but carrying Bob's live sessionToken would hit
+ * Bob's cached `true`. Every request compares `userId` against ITS OWN token
+ * (lib/auth/session-proof.ts); the cache only remembers facts.
+ * `role` is a string here so this module stays free of Prisma imports.
+ */
+export interface SessionFacts {
+  readonly userId: string;
+  readonly role:   string;
+}
+
+/** A cached answer: the session is live (with its facts), or it is not. */
+export type CachedVerdict =
+  | { readonly valid: true;  readonly facts: SessionFacts }
+  | { readonly valid: false };
+
 type CacheEntry = {
-  valid:     boolean;
+  verdict:   CachedVerdict;
   checkedAt: number;
 };
+
+function verdictOf(facts: SessionFacts | null): CachedVerdict {
+  return facts ? { valid: true, facts } : { valid: false };
+}
 
 /** How long a live DB result may be served from cache before re-checking. */
 export const SESSION_CACHE_TTL_MS = 30_000; // 30 seconds
@@ -94,7 +117,7 @@ const cache = new Map<string, CacheEntry>();
  * In-flight live checks, keyed by sessionToken. Present only while a live
  * check is running; used to coalesce concurrent misses (defect 1 above).
  */
-const inflight = new Map<string, Promise<boolean>>();
+const inflight = new Map<string, Promise<SessionFacts | null>>();
 
 /**
  * How a revocation answer was obtained. Reported to monitoring as a tag so a
@@ -119,6 +142,8 @@ export type RevocationOutcome = {
    * treated as either "valid" or "revoked".
    */
   valid:       boolean | null;
+  /** Present exactly when `valid === true`: the owner and current role. */
+  facts?:      SessionFacts;
   disposition: RevocationDisposition;
   /** The underlying failure, present only on STALE_HIT / INDETERMINATE. */
   error?:      unknown;
@@ -144,11 +169,11 @@ function prune(now: number): void {
  * bounded stale window (getStaleRevocation) so a DB outage has something
  * better than a logout to fall back on. Eviction happens in prune().
  */
-export function getCachedRevocation(sessionToken: string): boolean | null {
+export function getCachedRevocation(sessionToken: string): CachedVerdict | null {
   const entry = cache.get(sessionToken);
   if (!entry) return null;
   if (Date.now() - entry.checkedAt > SESSION_CACHE_TTL_MS) return null;
-  return entry.valid;
+  return entry.verdict;
 }
 
 /**
@@ -160,7 +185,7 @@ export function getCachedRevocation(sessionToken: string): boolean | null {
  * honoured just like a fresh one: degradation must not resurrect a session the
  * DB already told us was revoked.
  */
-export function getStaleRevocation(sessionToken: string): boolean | null {
+export function getStaleRevocation(sessionToken: string): CachedVerdict | null {
   const entry = cache.get(sessionToken);
   if (!entry) return null;
   const age = Date.now() - entry.checkedAt;
@@ -168,14 +193,24 @@ export function getStaleRevocation(sessionToken: string): boolean | null {
     cache.delete(sessionToken);
     return null;
   }
-  return entry.valid;
+  return entry.verdict;
 }
 
-/** Records a freshly DB-verified revocation result. */
-export function setCachedRevocation(sessionToken: string, valid: boolean): void {
+/**
+ * Records a freshly DB-verified result: the session's facts when it is live,
+ * `null` when it is revoked or absent.
+ */
+export function setCachedRevocation(sessionToken: string, facts: SessionFacts | null): void {
   const now = Date.now();
-  cache.set(sessionToken, { valid, checkedAt: now });
+  cache.set(sessionToken, { verdict: verdictOf(facts), checkedAt: now });
   prune(now);
+}
+
+function outcomeOf(verdict: CachedVerdict, disposition: RevocationDisposition, error?: unknown): RevocationOutcome {
+  const withError = error !== undefined ? { error } : {};
+  return verdict.valid
+    ? { valid: true, facts: verdict.facts, disposition, ...withError }
+    : { valid: false, disposition, ...withError };
 }
 
 /**
@@ -192,31 +227,31 @@ export function setCachedRevocation(sessionToken: string, valid: boolean): void 
  */
 export async function resolveRevocation(
   sessionToken: string,
-  liveCheck: () => Promise<boolean>,
+  liveCheck: () => Promise<SessionFacts | null>,
 ): Promise<RevocationOutcome> {
   const fresh = getCachedRevocation(sessionToken);
-  if (fresh !== null) return { valid: fresh, disposition: "FRESH_HIT" };
+  if (fresh !== null) return outcomeOf(fresh, "FRESH_HIT");
 
   // Someone else is already asking the DB this exact question — wait for their
   // answer instead of opening a second query against a 1-connection pool.
   const existing = inflight.get(sessionToken);
   if (existing) {
     try {
-      return { valid: await existing, disposition: "COALESCED" };
+      return outcomeOf(verdictOf(await existing), "COALESCED");
     } catch (error) {
       return degrade(sessionToken, error);
     }
   }
 
   const pending = (async () => {
-    const valid = await liveCheck();
-    setCachedRevocation(sessionToken, valid);
-    return valid;
+    const facts = await liveCheck();
+    setCachedRevocation(sessionToken, facts);
+    return facts;
   })();
   inflight.set(sessionToken, pending);
 
   try {
-    return { valid: await pending, disposition: "LIVE" };
+    return outcomeOf(verdictOf(await pending), "LIVE");
   } catch (error) {
     return degrade(sessionToken, error);
   } finally {
@@ -231,7 +266,7 @@ export async function resolveRevocation(
  */
 function degrade(sessionToken: string, error: unknown): RevocationOutcome {
   const stale = getStaleRevocation(sessionToken);
-  if (stale !== null) return { valid: stale, disposition: "STALE_HIT", error };
+  if (stale !== null) return outcomeOf(stale, "STALE_HIT", error);
   return { valid: null, disposition: "INDETERMINATE", error };
 }
 

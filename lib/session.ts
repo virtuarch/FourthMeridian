@@ -63,7 +63,8 @@ import { authOptions }           from "@/lib/auth";
 // easier and would have handed the pre-identity role a reason to read tenancy.
 import { authDb }                from "@/lib/db";
 import { withTenantDb }          from "@/lib/db/tenant-context";
-import { setCachedRevocation }   from "@/lib/session-cache";
+import { setCachedRevocation, type SessionFacts } from "@/lib/session-cache";
+import { factsFromRow, SESSION_ROW_SELECT } from "@/lib/auth/session-proof";
 import { isRevocationIndeterminate } from "@/lib/auth/session-outcome";
 import { captureSessionRevocationFailure } from "@/lib/monitoring/capture";
 import { decideAdminApiAccess }  from "@/lib/admin-totp-enrollment";
@@ -167,17 +168,21 @@ async function resolveSession(): Promise<SessionResolution> {
  * session) but HONESTLY (503, not 401, and never a destroyed cookie).
  */
 async function recheckSessionLive(
-  sessionToken: string,
-): Promise<"valid" | "revoked" | "unavailable"> {
+  user: SessionUser,
+): Promise<{ verdict: "valid"; facts: SessionFacts } | { verdict: "revoked" } | { verdict: "unavailable" }> {
+  if (!user.sessionToken) return { verdict: "revoked" };
   try {
-    const dbSession = await authDb.userSession.findFirst({
-      where:  { sessionToken, revokedAt: null },
-      select: { id: true },
-    });
-    return dbSession ? "valid" : "revoked";
+    // P1 — the same proof the session callback applies (lib/auth/session-proof.ts):
+    // live, OWNED by this user, and carrying the owner's CURRENT role.
+    const facts = factsFromRow(await authDb.userSession.findFirst({
+      where:  { sessionToken: user.sessionToken },
+      select: SESSION_ROW_SELECT,
+    }));
+    if (!facts || facts.userId !== user.id) return { verdict: "revoked" };
+    return { verdict: "valid", facts };
   } catch (error) {
     captureSessionRevocationFailure({ error, disposition: "INDETERMINATE" });
-    return "unavailable";
+    return { verdict: "unavailable" };
   }
 }
 
@@ -257,17 +262,17 @@ export async function requireFreshUser(
   if (!user.sessionToken) return [null, unauthorized()];
 
   const t0 = Date.now();
-  const verdict = await recheckSessionLive(user.sessionToken);
+  const live = await recheckSessionLive(user);
   if (process.env.NODE_ENV !== "production") {
-    console.log(`[session] requireFreshUser live revocation check: ${Date.now() - t0}ms, verdict=${verdict}`);
+    console.log(`[session] requireFreshUser live revocation check: ${Date.now() - t0}ms, verdict=${live.verdict}`);
   }
 
-  if (verdict === "unavailable") return [null, serviceUnavailable()];
-  if (verdict === "revoked")     return [null, unauthorized()];
+  if (live.verdict === "unavailable") return [null, serviceUnavailable()];
+  if (live.verdict === "revoked")     return [null, unauthorized()];
 
   // Refresh the cache with this authoritative result so any cached reads
   // within the TTL window right after this reflect it too.
-  setCachedRevocation(user.sessionToken, true);
+  setCachedRevocation(user.sessionToken, live.facts);
 
   return [user, null];
 }
@@ -328,15 +333,19 @@ export async function requireFreshSystemAdmin(): Promise<
   if (!user.sessionToken) return [null, unauthorized()];
 
   const t0 = Date.now();
-  const verdict = await recheckSessionLive(user.sessionToken);
+  const live = await recheckSessionLive(user);
   if (process.env.NODE_ENV !== "production") {
-    console.log(`[session] requireFreshSystemAdmin live revocation check: ${Date.now() - t0}ms, verdict=${verdict}`);
+    console.log(`[session] requireFreshSystemAdmin live revocation check: ${Date.now() - t0}ms, verdict=${live.verdict}`);
   }
 
-  if (verdict === "unavailable") return [null, serviceUnavailable()];
-  if (verdict === "revoked")     return [null, unauthorized()];
+  if (live.verdict === "unavailable") return [null, serviceUnavailable()];
+  if (live.verdict === "revoked")     return [null, unauthorized()];
 
-  setCachedRevocation(user.sessionToken, true);
+  setCachedRevocation(user.sessionToken, live.facts);
+  // P1 — the role re-read just now, not the one served from the 30s cache.
+  if (adminApiAccess({ ...user, role: live.facts.role as SessionUser["role"] }) !== "ALLOW") {
+    return [null, forbidden()];
+  }
 
   return [user, null];
 }

@@ -31,6 +31,7 @@ import {
   _debugSetCheckedAt,
   SESSION_CACHE_TTL_MS,
   SESSION_STALE_GRACE_MS,
+  type SessionFacts,
 } from "@/lib/session-cache";
 
 let failures = 0;
@@ -50,17 +51,20 @@ function poolTimeout(): Error {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** P1 — the cache now stores the session's facts (owner + current role), not a bare boolean. */
+const LIVE: SessionFacts = { userId: "user-1", role: "USER" };
+
 console.log("PROD-POOLER-AUTH-INCIDENT-1 — session revocation cache policy");
 
 async function main() {
   // ── 1. Fresh hit short-circuits the DB entirely ─────────────────────────────
   clearAllSessions();
-  setCachedRevocation("tok-fresh", true);
+  setCachedRevocation("tok-fresh", LIVE);
   let calls = 0;
-  const counting = async () => { calls++; return true; };
+  const counting = async () => { calls++; return LIVE; };
   const fresh = await resolveRevocation("tok-fresh", counting);
   check("fresh cache hit ⇒ FRESH_HIT and DB never consulted",
-    fresh.disposition === "FRESH_HIT" && fresh.valid === true && calls === 0,
+    fresh.disposition === "FRESH_HIT" && fresh.valid === true && fresh.facts?.userId === "user-1" && calls === 0,
     `disposition=${fresh.disposition} calls=${calls}`);
 
   // ── 2. Miss performs exactly one live check and caches it ────────────────────
@@ -69,7 +73,7 @@ async function main() {
   const live = await resolveRevocation("tok-live", counting);
   check("cache miss ⇒ LIVE, one query, result cached",
     live.disposition === "LIVE" && live.valid === true && calls === 1 &&
-    getCachedRevocation("tok-live") === true,
+    getCachedRevocation("tok-live")?.valid === true,
     `disposition=${live.disposition} calls=${calls}`);
 
   // ── 3. THE FREQUENCY FIX — concurrent misses coalesce to ONE query ───────────
@@ -78,7 +82,7 @@ async function main() {
   // against a one-connection pool.
   clearAllSessions();
   let slowCalls = 0;
-  const slow = async () => { slowCalls++; await sleep(40); return true; };
+  const slow = async () => { slowCalls++; await sleep(40); return LIVE; };
   const CONCURRENCY = 12;
   const outcomes = await Promise.all(
     Array.from({ length: CONCURRENCY }, () => resolveRevocation("tok-herd", slow)),
@@ -127,7 +131,7 @@ async function main() {
   // Concurrent waiters on a FAILING check must also not throw.
   clearAllSessions();
   let anyThrew = false;
-  const failing = async (): Promise<boolean> => { await sleep(20); throw poolTimeout(); };
+  const failing = async (): Promise<SessionFacts | null> => { await sleep(20); throw poolTimeout(); };
   const results = await Promise.all(
     Array.from({ length: 6 }, () =>
       resolveRevocation("tok-herd-fail", failing).catch(() => { anyThrew = true; return null; })),
@@ -138,20 +142,20 @@ async function main() {
   // ── 5. Bounded stale window ─────────────────────────────────────────────────
   // Verified valid, then aged just past the fresh TTL but inside the grace.
   clearAllSessions();
-  setCachedRevocation("tok-stale", true);
+  setCachedRevocation("tok-stale", LIVE);
   _debugSetCheckedAt("tok-stale", Date.now() - (SESSION_CACHE_TTL_MS + 1_000));
   check("past TTL, an ordinary read reports a miss (a live check is still tried)",
     getCachedRevocation("tok-stale") === null);
   check("…but the entry is retained for the bounded stale window",
-    getStaleRevocation("tok-stale") === true);
+    getStaleRevocation("tok-stale")?.valid === true);
   const staleOutcome = await resolveRevocation("tok-stale", async () => { throw poolTimeout(); });
   check("DB fails + entry inside grace ⇒ STALE_HIT serving the verified answer",
-    staleOutcome.disposition === "STALE_HIT" && staleOutcome.valid === true,
+    staleOutcome.disposition === "STALE_HIT" && staleOutcome.valid === true && staleOutcome.facts?.role === "USER",
     `disposition=${staleOutcome.disposition} valid=${String(staleOutcome.valid)}`);
 
   // Past the ceiling ⇒ refuse to guess.
   clearAllSessions();
-  setCachedRevocation("tok-ancient", true);
+  setCachedRevocation("tok-ancient", LIVE);
   _debugSetCheckedAt("tok-ancient", Date.now() - (SESSION_CACHE_TTL_MS + SESSION_STALE_GRACE_MS + 5_000));
   const ancient = await resolveRevocation("tok-ancient", async () => { throw poolTimeout(); });
   check("past the stale ceiling ⇒ INDETERMINATE, never an unbounded stale grant",
@@ -160,7 +164,7 @@ async function main() {
 
   // A stale REVOKED verdict must be honoured, not resurrected.
   clearAllSessions();
-  setCachedRevocation("tok-revoked", false);
+  setCachedRevocation("tok-revoked", null);
   _debugSetCheckedAt("tok-revoked", Date.now() - (SESSION_CACHE_TTL_MS + 1_000));
   const staleRevoked = await resolveRevocation("tok-revoked", async () => { throw poolTimeout(); });
   check("a stale REVOKED result stays revoked (degradation never resurrects a session)",
@@ -169,20 +173,20 @@ async function main() {
 
   // ── 6. Revocation still works normally ─────────────────────────────────────
   clearAllSessions();
-  const revoked = await resolveRevocation("tok-gone", async () => false);
+  const revoked = await resolveRevocation("tok-gone", async () => null);
   check("a live 'revoked' answer is reported as valid === false (not null)",
-    revoked.valid === false && revoked.disposition === "LIVE");
+    revoked.valid === false && revoked.disposition === "LIVE" && revoked.facts === undefined);
 
   // ── 7. Invalidation clears cache AND any in-flight check ────────────────────
   clearAllSessions();
-  setCachedRevocation("tok-inv", true);
+  setCachedRevocation("tok-inv", LIVE);
   invalidateSession("tok-inv");
   check("invalidateSession drops the entry entirely (no stale remnant)",
     getCachedRevocation("tok-inv") === null && getStaleRevocation("tok-inv") === null);
 
   // A revoke landing mid-check must not be overwritten by the older query.
   clearAllSessions();
-  const inflightPromise = resolveRevocation("tok-race", async () => { await sleep(30); return true; });
+  const inflightPromise = resolveRevocation("tok-race", async () => { await sleep(30); return LIVE; });
   invalidateSession("tok-race");
   await inflightPromise;
   // The in-flight result may still land; what matters is a subsequent revoke is
@@ -193,11 +197,11 @@ async function main() {
 
   // ── 8. Bounded memory ──────────────────────────────────────────────────────
   clearAllSessions();
-  for (let i = 0; i < 50; i++) setCachedRevocation(`old-${i}`, true);
+  for (let i = 0; i < 50; i++) setCachedRevocation(`old-${i}`, LIVE);
   for (let i = 0; i < 50; i++) {
     _debugSetCheckedAt(`old-${i}`, Date.now() - (SESSION_CACHE_TTL_MS + SESSION_STALE_GRACE_MS + 60_000));
   }
-  setCachedRevocation("trigger-prune", true); // writes prune opportunistically
+  setCachedRevocation("trigger-prune", LIVE); // writes prune opportunistically
   check("entries beyond the stale ceiling are pruned (map stays bounded)",
     _debugCacheSize() === 1, `cache size=${_debugCacheSize()} (expected 1)`);
 }
