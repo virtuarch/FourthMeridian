@@ -32,33 +32,60 @@ function check(name: string, ok: boolean, detail?: string): void {
 }
 
 /**
- * A client that answers the ONE query the oracle issues.
+ * A client that answers the ONE query the oracle issues — a `SpaceMember` read.
  *
- * `sees` is the set of Space ids this identity may observe — which is exactly what
- * the `Space` SELECT policy decides for `fm_app`, and unconditionally true for the
- * migration principal. `calls` counts the probes, because "zero added queries on
- * the success path" is an assertion, not a hope.
+ * ⚠️ RLS-AI-S10 — THE PROBE MOVED FROM `Space` TO `SpaceMember`, AND THIS FIXTURE
+ * HAD TO MOVE WITH IT RATHER THAN BE MADE TO SATISFY IT. Making the fake answer
+ * whatever the probe happens to ask is how a suite becomes a tautology: a probe
+ * that cannot see anything would then "approve" everything. So the fake holds
+ * MEMBERSHIP ROWS and APPLIES THE PROBE'S OWN `where` to them, including
+ * `status: 'ACTIVE'`. A probe that forgot the status filter, or asked about the
+ * wrong Space, gets the wrong answer from this fixture — which is the only way a
+ * fake client is worth anything.
+ *
+ * The reason the probe moved is in `lib/ai/absence.ts`: `fm_app_sel ON "Space"`
+ * ORs in `"isPublic" = true` and a platform-grant arm, while every child policy
+ * reads `fm_visible_space_ids()`, which is ACTIVE membership and nothing else.
+ *
+ * `calls` counts the probes, because "zero added queries on the success path" is
+ * an assertion, not a hope. `lastWhere` is recorded so the QUESTION can be
+ * asserted and not just the answer.
  */
-function fakeClient(sees: string[] | 'throws'): ReadClient & { calls: number } {
+type MemberRow = { spaceId: string; status: 'ACTIVE' | 'REMOVED' | 'LEFT' };
+
+function fakeClient(
+  membership: readonly MemberRow[] | 'throws',
+): ReadClient & { calls: number; lastWhere: { spaceId?: string; status?: string } | null } {
   const c = {
     calls: 0,
-    space: {
-      findFirst: async ({ where }: { where: { id: string } }) => {
+    lastWhere: null as { spaceId?: string; status?: string } | null,
+    spaceMember: {
+      findFirst: async ({ where }: { where: { spaceId: string; status: string } }) => {
         c.calls++;
-        if (sees === 'throws') throw new Error('permission denied for table "Space"');
-        return sees.includes(where.id) ? { id: where.id } : null;
+        c.lastWhere = where;
+        if (membership === 'throws') {
+          throw new Error('permission denied for table "SpaceMember"');
+        }
+        const row = membership.find(
+          (m) => m.spaceId === where.spaceId && m.status === where.status);
+        return row ? { id: `m_${row.spaceId}` } : null;
       },
     },
   };
-  return c as unknown as ReadClient & { calls: number };
+  return c as unknown as ReadClient
+    & { calls: number; lastWhere: { spaceId?: string; status?: string } | null };
 }
+
+/** An ACTIVE member of each named Space — the ordinary case, spelled once. */
+const activeIn = (...spaceIds: string[]): MemberRow[] =>
+  spaceIds.map((spaceId) => ({ spaceId, status: 'ACTIVE' as const }));
 
 // ⚠️ ONE `main()`: tsx compiles these suites as CJS, where top-level await is a
 // build error — the kind of thing that reads as a test failure and is not one.
 async function main(): Promise<void> {
   // ══ THE PAIR — ONE EMPTY READ, TWO VERDICTS ══════════════════════════════════
   {
-    const visible   = fakeClient(['space-alice']);
+    const visible   = fakeClient(activeIn('space-alice'));
     const refused   = fakeClient([]);
 
     const a = await adjudicateAbsence(visible, 'space-alice');
@@ -73,7 +100,7 @@ async function main(): Promise<void> {
 
   // ══ THE PROBE IS THE ONLY QUERY, AND IT IS ISSUED ONCE ═══════════════════════
   {
-    const c = fakeClient(['s1']);
+    const c = fakeClient(activeIn('s1'));
     await adjudicateAbsence(c, 's1');
     await adjudicateAbsence(c, 's1');
     await adjudicateAbsence(c, 's1');
@@ -94,13 +121,51 @@ async function main(): Promise<void> {
       c.calls === 2, `${c.calls} probes`);
   }
 
+  // ══ THE PROBE ASKS THE RIGHT QUESTION, NOT MERELY A QUESTION ════════════════
+  //
+  // ⚠️ THIS IS THE CASE THAT STOPS THE FIXTURE BECOMING A TAUTOLOGY. The verdicts
+  // above are only meaningful if the probe interrogates ACTIVE MEMBERSHIP OF THE
+  // NAMED SPACE — the exact definition of `fm_visible_space_ids()`. A probe that
+  // asked something laxer would still pass the pair above against a lax fake.
+  {
+    const c = fakeClient(activeIn('s-asked'));
+    await adjudicateAbsence(c, 's-asked');
+    check('the probe asks about THIS Space and about ACTIVE status, by name',
+      c.lastWhere?.spaceId === 's-asked' && c.lastWhere?.status === 'ACTIVE',
+      JSON.stringify(c.lastWhere));
+  }
+
+  // ══ MEMBERSHIP THAT IS NOT ACTIVE IS NOT MEMBERSHIP ═════════════════════════
+  //
+  // A REMOVED row exists for the Space, so a probe that merely checked "is there
+  // a member row" would say PROVEN_EMPTY. `fm_visible_space_ids()` requires
+  // ACTIVE, so the honest verdict is INDETERMINATE — and the pair proves the
+  // fixture is not simply answering null to everything.
+  {
+    const removed = fakeClient([{ spaceId: 's-rev', status: 'REMOVED' }]);
+    const stillIn = fakeClient([
+      { spaceId: 's-rev', status: 'REMOVED' }, { spaceId: 's-ok', status: 'ACTIVE' }]);
+
+    const v = await adjudicateAbsence(removed, 's-rev');
+    check('a REMOVED membership is INDETERMINATE, even though a row exists',
+      v === EvidenceState.INDETERMINATE, String(v));
+    check('NOT VACUOUS — the same fixture answers PROVEN_EMPTY where membership IS active',
+      (await adjudicateAbsence(stillIn, 's-ok')) === EvidenceState.PROVEN_EMPTY);
+  }
+
   // ══ A PROBE THAT CANNOT ANSWER MUST NOT ASSERT ═══════════════════════════════
   {
+    // ⚠️ THE MOST IMPORTANT CASE IN THE FILE, AND THE ONE A "HELPFUL" FIXTURE
+    // DESTROYS. If a fake is written to make the probe SUCCEED whatever it asks,
+    // this case is the only thing left distinguishing "the Space is empty" from
+    // "I could not find out" — and it must stay on the refusing side.
     const thrown = await adjudicateAbsence(fakeClient('throws'), 's1');
     check('a THROWING probe is INDETERMINATE, not PROVEN_EMPTY and not an exception',
       thrown === EvidenceState.INDETERMINATE, String(thrown));
+    check('…and a throwing probe is never memoised as observable',
+      (await adjudicateAbsence(fakeClient('throws'), 's1')) === EvidenceState.INDETERMINATE);
 
-    const blank = fakeClient(['s1']);
+    const blank = fakeClient(activeIn('s1'));
     const noId = await adjudicateAbsence(blank, '');
     check('an empty Space id is INDETERMINATE',
       noId === EvidenceState.INDETERMINATE, String(noId));
@@ -110,7 +175,7 @@ async function main(): Promise<void> {
   // ══ THE WORDING — DERIVED, AND IT CANNOT CARRY THE CLAIM ═════════════════════
   {
     const PROVEN = 'no dated transactions are available for this Space';
-    const okCase = await absent(fakeClient(['s1']), 's1',
+    const okCase = await absent(fakeClient(activeIn('s1')), 's1',
       { proven: PROVEN, subject: 'dated transactions' });
     const badCase = await absent(fakeClient([]), 's1',
       { proven: PROVEN, subject: 'dated transactions' });
@@ -140,8 +205,8 @@ async function main(): Promise<void> {
 
   // ══ THE MEMORY STORE — THE SAME-CLIENT RULE IS CHECKED, NOT ASSUMED ══════════
   {
-    const one = fakeClient(['s1']);
-    const two = fakeClient(['s1']);
+    const one = fakeClient(activeIn('s1'));
+    const two = fakeClient(activeIn('s1'));
 
     const same = await adjudicateMemoryAbsence({
       spaceId: 's1', memoryClient: one, readClient: one });
@@ -206,10 +271,34 @@ async function main(): Promise<void> {
       TXQUERY.indexOf('adjudicateAbsence(client, args.spaceId)')
         < TXQUERY.indexOf("'no dated transactions are available for this Space'"));
 
-    /** The envelope must probe only when the whole census saw nothing. */
+    /**
+     * The envelope must probe only when the whole census saw nothing.
+     *
+     * ⚠️ RLS-AI-S8 — `txn._count` BECAME AN OBJECT, so the condition now reads
+     * `allTxns === 0`. The aggregate asks for `{ _all, economicDate }` in one
+     * query, because the old single count was measured over ALL rows while the
+     * range beside it was measured over the DATED ones. The PROPERTY pinned here
+     * is unchanged: the probe is on the empty path only.
+     */
     check('the coverage census probes on the empty path only',
-      /const sawNothing = txn\._count === 0 && snap\.count === 0 && accounts\.length === 0;/
-        .test(ENVELOPE));
+      /const sawNothing\s+= allTxns === 0 && snap\.count === 0 && accounts\.length === 0;/
+        .test(ENVELOPE),
+      (ENVELOPE.match(/const sawNothing[^\n]*/) ?? ['(not found)'])[0]);
+    check('…and the census still derives the DATED count separately from the row total',
+      /_count: \{ _all: true, economicDate: true \}/.test(ENVELOPE)
+        && /const datedTxns\s+= txn\._count\.economicDate;/.test(ENVELOPE));
+
+    /**
+     * ⚠️ RLS-AI-S10 — THE ORACLE PROBES MEMBERSHIP, NOT THE `Space` ROW, and no
+     * fixture can express why: the reason is two extra arms on a policy in a
+     * migration this slice may read and may not change.
+     */
+    check('the oracle probes SpaceMember, filtered to ACTIVE',
+      /client\.spaceMember\.findFirst\(\{\s*\n?\s*where: \{ spaceId, status: "ACTIVE" \}/
+        .test(ABSENCE),
+      (ABSENCE.match(/client\.\w+\.findFirst[\s\S]{0,80}/) ?? ['(not found)'])[0]);
+    check('…and it no longer reads the `Space` row, whose policy is NOT membership',
+      !/client\.space\.findFirst/.test(ABSENCE));
 
     /** The recall instruction must be gated on the verdict. */
     check("`recall`'s \"Say so plainly\" is reachable only when not INDETERMINATE",

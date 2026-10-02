@@ -36,7 +36,7 @@
  * wider authority answers "the data exists" for data the reader cannot see —
  * the original bug plus a round trip.
  *
- * ── WHY ONE PROBE OF `Space` ADJUDICATES THE WHOLE SURFACE ──────────────────
+ * ── WHY ONE MEMBERSHIP PROBE ADJUDICATES THE WHOLE SURFACE ──────────────────
  * This is the load-bearing soundness argument and it is a property of the
  * policies, not an assumption. Every table this surface reads is reachable from
  * `fm_app` under exactly one of four predicates
@@ -63,10 +63,16 @@
  *
  * ── WHY IT IS CORRECT ON THE MIGRATION PRINCIPAL TOO ────────────────────────
  * The probe is a POLICY-MEDIATED read, not a `current_fm_user_id()` comparison.
- * On `db`/`fm_system` the Space row is always returned, so the verdict is
- * PROVEN_EMPTY and today's behaviour is preserved byte for byte. A probe written
- * as `WHERE userId = current_fm_user_id()` would have returned INDETERMINATE for
+ * On `db`/`fm_system` every ACTIVE `SpaceMember` row is returned, so the verdict
+ * is PROVEN_EMPTY and today's behaviour is preserved. A probe written as
+ * `WHERE userId = current_fm_user_id()` would have returned INDETERMINATE for
  * every read on the owner client, which is why it is not written that way.
+ *
+ * ⚠️ RLS-AI-S10 — AND IT PROBES `SpaceMember`, NOT `Space`. The theorem audit
+ * (lib/ai/evidence-authorities.test.ts) falsified the `Space` probe on its first
+ * run: that policy ORs in `"isPublic" = true` and a platform-grant arm, neither of
+ * which is membership, while every child policy reads `fm_visible_space_ids()` —
+ * which is membership and nothing else. See the body for the full table.
  *
  * ── COST: ZERO ON THE SUCCESS PATH ──────────────────────────────────────────
  * The oracle is called ONLY when a read came back empty. A turn whose reads all
@@ -156,8 +162,54 @@ export async function adjudicateAbsence(
     // `findUnique` on some Prisma versions can be served from a request-scoped
     // cache, and a cached row is not a policy evaluation.
     probes++;
-    const row = await client.space.findFirst({ where: { id: spaceId }, select: { id: true } });
-    if (!row) return EvidenceState.INDETERMINATE;
+    // ⚠️ RLS-AI-S10 — THE PROBE READS `SpaceMember`, NOT `Space`, AND THAT CHANGED
+    // BECAUSE THE THEOREM AUDIT FALSIFIED THE OLD ONE ON ITS FIRST RUN.
+    //
+    // The probe used to be one `Space` row by primary key, on the argument that
+    // "may this identity see this Space?" is necessary and sufficient. It is not,
+    // because `fm_app_sel ON "Space"` has THREE arms, and only the first is
+    // membership:
+    //
+    //   "id" IN (SELECT fm_visible_space_ids())
+    //   OR "isPublic" = true                                   ← 20261002000400
+    //   OR ("platformArea" IS NOT NULL AND EXISTS (PlatformGrant … ACTIVE … area))
+    //
+    // Every Space-granular CHILD policy reads `fm_visible_space_ids()`, which is
+    // `SpaceMember WHERE userId = current_fm_user_id() AND status = 'ACTIVE'` and
+    // contains NEITHER a public Space you have not joined nor a platform Space you
+    // merely hold a grant on. So on both of those the old probe answered
+    // "visible — PROVEN_EMPTY" truthfully about `Space` and falsely about the
+    // evidence, and licensed exactly the sentence this module exists to forbid.
+    // That is not hypothetical: RLS-C-S3 recorded that the Spaces launcher hands
+    // PUBLIC Spaces the viewer has NOT joined to a net-worth reader, so a
+    // non-member reaching a public Space is a shape the product already has.
+    //
+    // ⚠️ SO THE PROBE IS NOW A STRUCTURAL MIRROR OF THE FUNCTION THE CHILD POLICIES
+    // ACTUALLY CONSULT, rather than of a table that happens to be reachable. One
+    // indexed read of `SpaceMember` by (spaceId, status), and it is correct on
+    // every client for the same reason the old one was correct on one of them:
+    //
+    //   migration principal   every ACTIVE member row returns  → PROVEN_EMPTY
+    //                         (today's behaviour, preserved — the probe is still
+    //                          POLICY-MEDIATED and not a current_fm_user_id()
+    //                          comparison, which is what would have broken it)
+    //   ACTIVE member         own row matches the policy's `userId` arm → PROVEN_EMPTY
+    //   foreign private Space no arm matches                   → INDETERMINATE
+    //   PUBLIC, not a member  no arm matches                   → INDETERMINATE  ← fixed
+    //   platform grant only   no arm matches                   → INDETERMINATE  ← fixed
+    //   REVOKED membership    own row fails `status: ACTIVE`    → INDETERMINATE  ← fixed
+    //
+    // ⚠️ AND IT NEEDS NO `platformArea` OR `isPublic` BRANCH, which is the point.
+    // A probe written against the derived FUNCTION cannot drift from it when a
+    // fourth arm is added to `Space`; a probe written against `Space` already had.
+    //
+    // ⚠️ ONE EDGE, STATED: a Space with no ACTIVE member at all is INDETERMINATE
+    // even on the migration principal. That is an orphaned row no identity can
+    // reach through any child policy, so refusing to speak about it is right.
+    const member = await client.spaceMember.findFirst({
+      where: { spaceId, status: "ACTIVE" }, select: { id: true },
+    });
+    if (!member) return EvidenceState.INDETERMINATE;
     let set = observable.get(key);
     if (!set) { set = new Set(); observable.set(key, set); }
     set.add(spaceId);
