@@ -125,3 +125,13 @@ export function loginUrlFor(returnTo: unknown): string {
   const safe = validateReturnTo(returnTo);
   return safe ? `/login?callbackUrl=${encodeURIComponent(safe)}` : "/login";
 }
+
+/**
+ * Request header carrying the page's own path + query from proxy.ts to Server
+ * Components (lib/auth/login-redirect.ts). A Server Component cannot see its
+ * URL; without this, a page that finds the session revoked can only send the
+ * user to a bare /login and the deep link is lost. proxy.ts always OVERWRITES
+ * it, and every reader re-validates it — a client-supplied value is never
+ * trusted.
+ */
+export const RETURN_TO_HEADER = "x-fm-return-to";

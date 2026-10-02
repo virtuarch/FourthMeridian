@@ -49,6 +49,7 @@ import {
   isLegacyAuthCookie,
 } from "./lib/auth/session-cookie";
 import { evaluateWriteOrigin, selfOriginOf, WRITE_ORIGIN_REFUSED_ERROR } from "./lib/security/write-origin";
+import { RETURN_TO_HEADER } from "./lib/auth/return-to";
 
 /**
  * Expire any pre-`__Host-` auth cookie the browser still sends. After the
@@ -162,7 +163,15 @@ async function route(req: NextRequest): Promise<NextResponse> {
     return NextResponse.redirect(new URL(setupPath, req.url));
   }
 
-  return NextResponse.next();
+  // ── Deep-link carrier ───────────────────────────────────────────────────
+  // A Server Component cannot see its own URL. If the page then finds the
+  // session REVOKED (a check this file cannot make — it has no DB), it sends
+  // the user to /login via lib/auth/login-redirect.ts, which reads this header
+  // so the deep link survives. Always overwritten: a client-sent value is
+  // discarded here, and the reader re-validates whatever it finds.
+  const forwarded = new Headers(req.headers);
+  forwarded.set(RETURN_TO_HEADER, pathname + req.nextUrl.search);
+  return NextResponse.next({ request: { headers: forwarded } });
 }
 
 export const config = {
