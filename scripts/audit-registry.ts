@@ -121,6 +121,20 @@ export const AUDITS: readonly AuditEntry[] = [
     what: "lifecycle resolution and transaction identity hold across the corpus",
   },
   {
+    // RLS-ACC-FK. REQUIRED and needsDb: FALSE — it is a SOURCE invariant, not a
+    // corpus report, so it holds on any checkout with no database at all. The
+    // property is CODE-SHAPED: a write capable of moving a financial child row
+    // between accounts must be classified, because RLS cannot refuse it (both
+    // accounts are inside a shared Space's tenancy by design) and six of another
+    // owner's transactions moved under a real fm_app role at both visibility
+    // tiers and in both directions.
+    name: "audit-account-reparenting", tier: "REQUIRED", needsDb: false,
+    what: "every code site capable of changing a FinancialAccount FK is classified in a closed allowlist, " +
+          "the FK inventory is read from the schema rather than copied, the two unscoped-source provider lookups " +
+          "still read and compare the account, and Transaction.counterpartyAccountId — a second FK NO RLS predicate " +
+          "mentions — has a closed participant inventory with exactly one non-null writer",
+  },
+  {
     name: "audit-ui-truth-convergence", tier: "REQUIRED", needsDb: true,
     what: "every presentation surface reads its canonical authority — debt membership, " +
           "income taxonomy, issuer credits, and cross-surface debt parity",

@@ -258,14 +258,40 @@ async function main(): Promise<void> {
 
   // ── THE CALLERS: the two unscoped-source selects must READ the FK ─────────
   {
-    for (const [name, path, needle] of [
-      ["syncTransactions plaidTransactionId lookup", "lib/plaid/syncTransactions.ts", "assertAccountFkUnchanged"],
-      ["investment-event persist [source, externalEventId] lookup", "lib/investments/investment-event-ingest.ts", "assertAccountFkUnchanged"],
+    // ⚠️ THE FIRST VERSION OF THIS CHECK PASSED FOR THE WRONG REASON. It asked
+    // whether `financialAccountId: true` appeared ANYWHERE in the file, and
+    // investment-event-ingest.ts has a second, unrelated select that satisfies
+    // it — so stripping the FK out of the GUARDED select left this green. (The
+    // type checker did catch it: `observedAccountId` is typed `string | null`,
+    // not optional, so `existing.financialAccountId` stops compiling. That is
+    // the mechanical enforcement; this is the shape pin in front of it.)
+    //
+    // What is asserted now is the property that actually matters: every
+    // `assertAccountFkUnchanged` call reads its OBSERVED value off the resolved
+    // ROW — `<something>.financialAccountId` — and never off a constant, a
+    // parameter, or the very value it is being compared against.
+    for (const [name, path] of [
+      ["syncTransactions plaidTransactionId lookup", "lib/plaid/syncTransactions.ts"],
+      ["investment-event persist [source, externalEventId] lookup", "lib/investments/investment-event-ingest.ts"],
     ] as const) {
       const code = stripComments(src(path));
-      check(`${name}: selects financialAccountId AND compares it`,
-        /financialAccountId:\s*true/.test(code) && code.includes(needle),
-        `select=${/financialAccountId:\s*true/.test(code)} guard=${code.includes(needle)}`);
+      const calls = [...code.matchAll(/assertAccountFkUnchanged\(([\s\S]{0,400}?)\);/g)].map((m) => m[1]);
+      const args = calls.map((c) => {
+        let d = 0;
+        return c.split("").reduce<string[]>((acc, ch) => {
+          if ("([{".includes(ch)) d++;
+          if (")]}".includes(ch)) d--;
+          if (ch === "," && d === 0) acc.push("");
+          else acc[acc.length - 1] += ch;
+          return acc;
+        }, [""]).map((a) => a.trim()).filter(Boolean);   // a trailing comma leaves an empty tail
+      });
+      check(`${name}: calls the guard at least once`, calls.length >= 1, `${calls.length} call(s)`);
+      check(`${name}: every call reads the OBSERVED account off the resolved row (<row>.financialAccountId)`,
+        args.length >= 1 && args.every((a) => a.length === 4 && /^[\w.]+\.financialAccountId$/.test(a[2])),
+        JSON.stringify(args.map((a) => a[2] ?? "(missing)")));
+      check(`${name}: and the intended account is NOT the same expression (a self-comparison always passes)`,
+        args.every((a) => a[2] !== a[3]), JSON.stringify(args.map((a) => [a[2], a[3]])));
     }
 
     // reconcile.ts is the AUTHORITY half's only current caller, and the
