@@ -506,7 +506,37 @@ const QUEUE_WAIT_MS = PLAN_SIZE * PER_TXN_MS;
 
 async function concurrencyProof(appUrl: string): Promise<void> {
   const { PrismaClient } = await import("@prisma/client");
-  const url = `${appUrl}?connection_limit=1`;
+
+  // ⚠️ PARSED, NOT CONCATENATED — AND THEN ASSERTED.
+  //
+  // This was `${appUrl}?connection_limit=1`, which is correct only because the
+  // RLS_TARGET_URL branch strips the query string 360 lines above
+  // (`base = TARGET_URL.split("?")[0]`). CI passes DATABASE_URL, which carries
+  // `?schema=public`, so had that strip ever been refactored away the result
+  // would have been a SECOND `?`:
+  //
+  //     new URL("postgresql://h/db?schema=public?connection_limit=1")
+  //        → schema           = "public?connection_limit=1"
+  //        → connection_limit = null
+  //
+  // Verified empirically. Two things then happen, and the order matters: the
+  // pool-of-one — the entire premise of case 17, that every request is served
+  // by the SAME physical connection — is silently gone, and only afterwards
+  // does Prisma fail on the mangled schema (42P01 relation "User" does not
+  // exist). An uglier version of this bug, where the schema happened to parse,
+  // would have left case 17 PASSING over a pool that never forced any reuse.
+  //
+  // So the limit is set through the URL parser, as lib/db/connection-url.ts
+  // already does, and then read back. A security case whose precondition is
+  // established 360 lines away by a string operation is a case that can be
+  // retired by an unrelated tidy-up.
+  const parsed = new URL(appUrl);
+  parsed.searchParams.set("connection_limit", "1");
+  const url = parsed.toString();
+  check(33, "the pool-of-one precondition is IN FORCE, not merely intended",
+        new URL(url).searchParams.get("connection_limit") === "1",
+        `connection_limit resolved to ${new URL(url).searchParams.get("connection_limit")} — case 17 would prove nothing`);
+
   const client = new PrismaClient({ datasources: { db: { url } }, log: [] });
 
   // withTenantDb()'s shape, inlined so this script stays runnable without the
