@@ -119,6 +119,16 @@ import { recallMemories, MemoryKind, type MemoryClient } from './memory-store';
  * and nowhere else.
  */
 import type { ReadClient } from '@/lib/db/tenant-context';
+import type { AiPhaseRunner } from '@/lib/ai/tenant-phase';
+/**
+ * RLS-AI-S0 — THE ABSENCE CONTRACT. Value imports, and deliberately: the oracle is
+ * a CAPABILITY derived from `ctx.readClient`, not a client, so this file still
+ * holds no Prisma client and the source scans that assert it still pass.
+ */
+import {
+  absent, adjudicateAbsence, adjudicateMemoryAbsence, indeterminateSentence as indeterminateFor,
+  EvidenceState, type AbsenceVerdict,
+} from '@/lib/ai/absence';
 import {
   readCheckpoint, compareToStatement, diffBasis,
 } from './reconcile';
@@ -199,6 +209,23 @@ export interface ToolContext {
    * `$transaction`, so no tool can open a transaction of its own.
    */
   readClient: ReadClient;
+  /**
+   * RLS-AI-S2 — THE PHASE RUNNER, when the surface that opened this transcript has
+   * an authenticated session to bind.
+   *
+   * ⚠️ OPTIONAL, AND THE OPTIONALITY IS THE MIGRATION PATH, NOT AN ESCAPE. Absent
+   * means every read runs on `readClient` exactly as it did before this field
+   * existed — which is what the dogfood harnesses and batch runners need, since
+   * they read a CLONE as the migration principal and have no session at all. When
+   * present, the DISPATCHER (`turn.ts`) opens one short tenant transaction per tool
+   * call and hands the tool a context whose `readClient` and `memoryClient` are
+   * that transaction. No tool body knows about it; that is the point.
+   *
+   * ⚠️ IT CARRIES AN IDENTITY AND A MODEL CANNOT REACH IT. There is no tool
+   * argument, no JSON-schema field and no transcript channel through which this
+   * could be set: it is constructed where the session is, from `requireUser()`.
+   */
+  phase?: AiPhaseRunner;
   /** Test seam only — see CashSpineReads. Unset in production. */
   cashSpineReads?: CashSpineReads;
   /**
@@ -334,6 +361,24 @@ import {
 export { yearEndsBetween };
 import { positionChange, openingPosition, checkpointPosition } from './scenario-change';
 
+/**
+ * RLS-AI-S0 — AN EMPTY AUTHORITATIVE READ, ADJUDICATED.
+ *
+ * ⚠️ EVERY DECLARATIVE ABSENCE IN THIS FILE GOES THROUGH HERE, which is the point:
+ * one helper means the next tool somebody writes cannot assert an absence without
+ * also establishing it. `proven` is the sentence for a Space that genuinely holds
+ * nothing; `subject` is a NOUN PHRASE from which the indeterminate sentence is
+ * derived — a caller cannot write prose into the indeterminate branch.
+ *
+ * ⚠️ IT COSTS NOTHING ON THE SUCCESS PATH. It is called only where a read already
+ * came back empty, and `adjudicateAbsence` issues at most ONE indexed probe per
+ * client per Space (see lib/ai/absence.ts), so a six-hop turn that happens to find
+ * three empty domains pays one query, not three.
+ */
+const absentIn = (
+  ctx: ToolContext, proven: string, subject: string, extra: Record<string, unknown> = {},
+) => absent(ctx.readClient, ctx.spaceId, { proven, subject }, extra);
+
 async function assemble<T>(
   domain: string, ctx: ToolContext, options: Record<string, unknown> = {},
 ): Promise<T | null> {
@@ -358,7 +403,9 @@ async function assemble<T>(
 async function historicalSnapshot(ctx: ToolContext, asOf: string) {
   const rows = await getRecentSnapshots(ctx.readClient, { rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
   const section = projectSnapshotSection(rows as Snapshot[], 'full');
-  if (!section) return { unavailable: 'no usable snapshot history for this Space' };
+  if (!section) {
+    return absentIn(ctx, 'no usable snapshot history for this Space', 'any usable snapshot history');
+  }
 
   // The latest observation ON OR BEFORE the requested date. A date with no
   // observation reports the one it actually used rather than interpolating.
@@ -429,7 +476,7 @@ const getFinancialSnapshot: ToolDefinition = {
     if (asOf < ctx.asOfISO) return historicalSnapshot(ctx, asOf);
 
     const acc = await assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx);
-    if (!acc) return { unavailable: 'no accounts in scope' };
+    if (!acc) return absentIn(ctx, 'no accounts in scope', 'any accounts in scope');
     return {
       asOf: ctx.asOfISO, basis: 'CURRENT_ACCOUNTS',
       netWorth: acc.netWorth, totalAssets: acc.totalAssets,
@@ -482,7 +529,10 @@ const getSpending: ToolDefinition = {
     const t = await assemble<TransactionsSummaryData>(
       FinanceDomains.TRANSACTIONS_SUMMARY, ctx,
       { transactionWindow: { startDate: from, endDate: to, label: `${from}..${to}` } });
-    if (!t) return { unavailable: `no transactions between ${from} and ${to}` };
+    if (!t) {
+      return absentIn(ctx, `no transactions between ${from} and ${to}`,
+        `transactions between ${from} and ${to}`);
+    }
 
     // FM-AUDIT-007 — spending here is the SAME economic figure get_baselines and
     // the cash projection use: charges LESS the refunds and reversals dated in the
@@ -1145,14 +1195,29 @@ const getBaselines: ToolDefinition = {
     const liquidBehind = (acc?.accounts ?? []).filter((r) =>
       (r.type === 'checking' || r.type === 'savings') && r.needsReauth).length;
 
+    // ── RLS-AI-S0 — ONE ADJUDICATION FOR THREE REFUSALS ──────────────────────
+    //
+    // ⚠️ THE THREE EMPTIES HAVE ONE CAUSE OR NONE. Every one of them is downstream
+    // of the accounts domain and the monthly fold on THIS Space, and the policies
+    // are Space-granular, so three separate verdicts could only ever disagree by
+    // accident. Adjudicated once, here, and only when at least one of them is
+    // actually empty — a Space with all three answerable issues no probe.
+    const anyEmpty = !expense || !income || liquid === null;
+    const verdict: AbsenceVerdict | null = anyEmpty
+      ? await adjudicateAbsence(ctx.readClient, ctx.spaceId) : null;
+    const refuse = (proven: string, subject: string) =>
+      (verdict === EvidenceState.INDETERMINATE
+        ? { unavailable: indeterminateFor(subject), evidenceState: verdict }
+        : { unavailable: proven, evidenceState: EvidenceState.PROVEN_EMPTY });
+
     return {
       asOf: ceiling,
-      expense: expense ?? { unavailable: 'no expense baseline: nothing stated, nothing declared, and no '
-        + 'complete calendar month of spending to average' },
-      income: income ?? { unavailable: 'no income baseline: nothing stated, no settled recurring deposits, '
-        + 'and no complete month of observed income' },
+      expense: expense ?? refuse('no expense baseline: nothing stated, nothing declared, and no '
+        + 'complete calendar month of spending to average', 'anything to build an expense baseline from'),
+      income: income ?? refuse('no income baseline: nothing stated, no settled recurring deposits, '
+        + 'and no complete month of observed income', 'anything to build an income baseline from'),
       ...derived,
-      liquid: liquid === null ? { unavailable: 'no accounts in scope' } : {
+      liquid: liquid === null ? refuse('no accounts in scope', 'any accounts in scope') : {
         amount: liquid, basis: 'checking + savings from the current accounts — the same figure as '
           + 'get_financial_snapshot.liquid; investments and digital assets are not in it',
         ...(liquidBehind > 0 ? { completeness: { tier: 'incomplete' as Tier,
@@ -1235,7 +1300,7 @@ const getInvestments: ToolDefinition = {
         positions: hold.topPositions?.items,
         concentration: hold.concentration,
         limits: hold.dataLimits,
-      } : { unavailable: 'no priced positions in scope' },
+      } : await absentIn(ctx, 'no priced positions in scope', 'any priced positions in scope'),
     };
   },
 };
@@ -1291,7 +1356,9 @@ const getNetWorthHistory: ToolDefinition = {
     // worth in early 2025.
     const rows = await getRecentSnapshots(ctx.readClient, { rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
     const section = projectSnapshotSection(rows as Snapshot[], 'full');
-    if (!section) return { unavailable: 'no usable snapshot history for this Space' };
+    if (!section) {
+      return absentIn(ctx, 'no usable snapshot history for this Space', 'any usable snapshot history');
+    }
 
     const inRange = section.history.filter((p) => p.date >= from && p.date <= to);
     if (inRange.length === 0) {
@@ -1474,7 +1541,14 @@ const findInBalanceHistory: ToolDefinition = {
     const to = clampToCeiling((a.to as string) || ceiling, ceiling);
     const rows = await getRecentSnapshots(ctx.readClient, { rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
     const section = projectSnapshotSection(rows as Snapshot[], 'full');
-    if (!section) return { unavailable: 'no usable snapshot history for this Space' };
+    // ⚠️ THE CONTRACT OF THIS TOOL IS "THE FIRST DAY DEBT HIT $0", so an empty
+    // series does not merely fail to answer it — it answers it WRONGLY unless the
+    // emptiness is established. This is the site the absence contract was written
+    // for: `result: null` plus a licensed sentence, never a date.
+    if (!section) {
+      return absentIn(ctx, 'no usable snapshot history for this Space', 'any usable snapshot history',
+        { metric, operation, ...(threshold !== undefined ? { threshold } : {}), result: null });
+    }
     // ⚠️ THE WHOLE RECORD BY DEFAULT. "When did I FIRST" has no natural start
     // date, and defaulting to ninety days the way the series tool does would
     // answer a different question and sound certain doing it. `oldestDate` is
@@ -1789,7 +1863,12 @@ async function buildCashSpine(
   let openingBasis = 'CURRENT_ACCOUNTS';
   if (retrospective) {
     const snap = await historicalSnapshot(ctx, asOf) as Record<string, unknown>;
-    if (snap.unavailable) return { unavailable: snap.unavailable as string, asOf };
+    // ⚠️ THE STATE TRAVELS WITH THE SENTENCE. Forwarding only `unavailable` would
+    // strip the adjudication off exactly the refusal a projection is built on.
+    if (snap.unavailable) {
+      return { unavailable: snap.unavailable as string, asOf,
+        ...(snap.evidenceState ? { evidenceState: snap.evidenceState as AbsenceVerdict } : {}) };
+    }
     openingAccounts = {
       totalLiquid: snap.liquid as number,
       totalLiabilities: snap.debt as number,
@@ -2184,7 +2263,7 @@ const investmentScenario: ToolDefinition = {
           + 'future income is scenario_projection\'s `incomeChanges`.' };
     }
     const acc = await assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx);
-    if (!acc) return { unavailable: 'no accounts in scope' };
+    if (!acc) return absentIn(ctx, 'no accounts in scope', 'any accounts in scope');
     const comp = composeInvestments(acc);
     const components: ScenarioComponent[] = (comp?.components ?? [])
       .filter((c) => c.state === 'ASSERTABLE' && c.amount !== null)
@@ -2589,7 +2668,7 @@ async function prepareScenario(
   });
   if ('unavailable' in spine) return spine;
   const { asOf, runTo, accounts } = spine;
-  if (!accounts) return { unavailable: 'no accounts in scope' };
+  if (!accounts) return absentIn(ctx, 'no accounts in scope', 'any accounts in scope');
   if (toISO <= asOf) {
     return { unavailable: `the horizon ${toISO} is not in the future; a scenario needs a `
       + 'date after today' };
@@ -3951,7 +4030,15 @@ const reconcileProjection: ToolDefinition = {
         ...(a.includeSuperseded ? { includeSuperseded: true } : {}) },
     );
     if (statements.length === 0) {
-      return { count: 0,
+      // RLS-AI-S0 — the SAME adjudication `recall` makes, for the same store and
+      // the same reason: this sentence is a claim about the user's history, and an
+      // unreadable store must not be able to make it.
+      const memoryVerdict = await adjudicateMemoryAbsence(ctx);
+      if (memoryVerdict === EvidenceState.INDETERMINATE) {
+        return { count: 0, evidenceState: memoryVerdict,
+          unavailable: indeterminateFor('any recorded projection for this user') };
+      }
+      return { count: 0, evidenceState: memoryVerdict,
         // ⚠️ NOTHING RECORDED IS NOT THE SAME AS NOTHING SAID, and pretending
         // otherwise would invent a history. Checkpoints only exist from the
         // moment a projection was made in a conversation.

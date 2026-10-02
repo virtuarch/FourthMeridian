@@ -24,6 +24,10 @@ import { ShareStatus, FlowType, TransactionCategory } from "@prisma/client";
 import type { Prisma } from "@prisma/client";
 import type { Transaction } from "@/types";
 import type { ReadClient } from "@/lib/db/tenant-context";
+// RLS-AI-S0 — the absence contract. This module already depends on @/lib/ai for
+// the visibility tier, so the direction is established; the oracle is derived from
+// the `client` parameter below and never from a module-level authority.
+import { adjudicateAbsence, indeterminateSentence, EvidenceState } from "@/lib/ai/absence";
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 import { assertOneRowPerEvent } from "@/lib/transactions/event-projection";
 import {
@@ -277,10 +281,14 @@ export async function transactionCorpusSpan(
    * RLS-C-S3 — REQUIRED and leading. ⚠️ THIS ONE CARRIES A CONTRACT, NOT JUST AN
    * AUTHORITY. The span is what tells a consumer apart "nothing in this window"
    * from "nothing in this Space", and under a tenant client an empty span can
-   * ALSO mean "nothing this identity may see". The two are not the same claim,
-   * and the `unavailableReason` below is worded for the first. That is why the AI
-   * surface — the one consumer that turns this into English — keeps passing the
-   * migration principal in this slice: see docs/plans/RLS-SILENT-REFUSAL-CAS.md.
+   * ALSO mean "nothing this identity may see". The two are not the same claim.
+   *
+   * RLS-AI-S0 — AND THE THIRD CASE IS NOW REPRESENTED rather than deferred. On
+   * the empty path only, the absence oracle is derived FROM THIS CLIENT and asked
+   * whether the Space is observable at all; `absence` says which of the two empties
+   * this is, and `unavailableReason` is worded to match. A caller may therefore
+   * pass a tenant client without the span becoming a false statement about the
+   * Space. See lib/ai/absence.ts and docs/plans/RLS-SILENT-REFUSAL-CAS.md Part 2.
    */
   client: ReadClient,
   args: {
@@ -303,14 +311,27 @@ export async function transactionCorpusSpan(
   const from = agg._min.economicDate;
   const to = agg._max.economicDate;
   if (!from || !to) {
+    // ⚠️ ONE EXTRA QUERY, ON THE EMPTY PATH, NEVER ON THE SUCCESS PATH. The
+    // aggregate returning bounds is itself proof the identity can read the Space,
+    // so an answerable span costs exactly what it did before this field existed.
+    const verdict = await adjudicateAbsence(client, args.spaceId);
+    if (verdict === EvidenceState.INDETERMINATE) {
+      return {
+        from: null, to: null, absence: EvidenceState.INDETERMINATE,
+        // ⚠️ NOT THE SENTENCE ABOVE, AND NOT A SUFFIX ON IT. RLS-C-S3 measured the
+        // two as byte-identical; appending a caveat to a claim leaves the claim.
+        unavailableReason: indeterminateSentence(
+          args.asOf ? `dated transactions on or before ${args.asOf}` : 'dated transactions'),
+      };
+    }
     return {
-      from: null, to: null,
+      from: null, to: null, absence: EvidenceState.PROVEN_EMPTY,
       unavailableReason: args.asOf
         ? `no dated transactions are available on or before ${args.asOf}`
         : 'no dated transactions are available for this Space',
     };
   }
-  return { from: isoDay(from), to: isoDay(to), unavailableReason: null };
+  return { from: isoDay(from), to: isoDay(to), unavailableReason: null, absence: null };
 }
 
 /** A `@db.Date` column back to the YYYY-MM-DD it encodes, in UTC. */

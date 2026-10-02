@@ -30,7 +30,7 @@ function check(name: string, cond: boolean) {
 }
 
 /** The real Space's span at the time of the experiment. */
-const CORPUS: TransactionCorpusBounds = { from: "2024-07-18", to: "2026-09-07", unavailableReason: null };
+const CORPUS: TransactionCorpusBounds = { from: "2024-07-18", to: "2026-09-07", unavailableReason: null, absence: null };
 
 console.log("1. AN UNWINDOWED RESULT REPORTS THE FULL AVAILABLE SPAN");
 {
@@ -136,7 +136,8 @@ console.log("\n7. FILTERS DO NOT SHRINK THE SPAN TO THE MATCHING ROWS");
 console.log("\n8. UNAVAILABLE BOUNDS ARE REPRESENTED, NEVER FABRICATED");
 {
   const none: TransactionCorpusBounds = { from: null, to: null,
-    unavailableReason: "no dated transactions are available on or before 2020-01-01" };
+    unavailableReason: "no dated transactions are available on or before 2020-01-01",
+    absence: "PROVEN_EMPTY" as const };
   const c = transactionCoverage({ corpus: none, searchedFrom: "2019-01-01", searchedTo: "2020-01-01" });
   check("both ends stay null", c.transactionsAvailableFrom === null && c.transactionsAvailableTo === null);
   check("the requested window is NOT substituted for the missing span",

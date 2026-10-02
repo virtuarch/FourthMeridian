@@ -1476,7 +1476,8 @@ export interface SnapshotSectionData {
 // ---------------------------------------------------------------------------
 
 /**
- * The complete AI context object returned by buildContext().
+ * The complete AI context object. (Named for `buildContext()`, deleted in
+ * RLS-AI-S1; `assembleFullContext` in lib/ai/conversation/evidence.ts builds it.)
  *
  * `domains` is an open map keyed by ContextDomain string — consumers
  * access sections by key (e.g. ctx.domains['accounts']) rather than
@@ -1496,6 +1497,20 @@ export interface SpaceContext_AI {
   role:            SpaceMemberRole;
   agentId:         string;
   resolvedDomains: string[]; // ordered list of domains that were attempted
+  /**
+   * RLS-AI-S0 — domains whose authority THREW and were therefore not assembled.
+   *
+   * ⚠️ A MISSING DOMAIN AND A BROKEN ONE USED TO LOOK IDENTICAL. The assembler
+   * loop catches every exception into `console.error` and continues, which is the
+   * lesser evil (the four assemblers return `null`, not zeroes, so `thinCore`
+   * renders honest ambiguity) — but a BROKEN authority then produced an answer
+   * with nothing anywhere saying so. Listed here, and stated in the evidence pack,
+   * so "we could not read it" is never delivered as "there is none".
+   *
+   * Optional: absent and empty mean the same thing, and every existing fixture
+   * stays valid.
+   */
+  unreadableDomains?: string[];
   space: {
     id:       string;
     name:     string;

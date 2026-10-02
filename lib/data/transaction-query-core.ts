@@ -556,6 +556,18 @@ export interface TransactionCorpusBounds {
   from: string | null;
   to: string | null;
   unavailableReason: string | null;
+  /**
+   * RLS-AI-S0 — WHICH KIND OF EMPTY this is. Null when bounds exist.
+   *
+   * ⚠️ `unavailableReason` ALONE CANNOT CARRY THIS, which is the whole point.
+   * It is a SENTENCE, and the two cases need different sentences: "no dated
+   * transactions are available for this Space" is a claim about the Space, and
+   * under a tenant client an empty aggregate can equally mean "nothing this
+   * identity may see". A consumer that renders prose reads this field; a consumer
+   * that only forwards the reason gets a reason that has already been reworded
+   * for it. See lib/ai/absence.ts.
+   */
+  absence: 'PROVEN_EMPTY' | 'INDETERMINATE' | null;
 }
 
 export interface TransactionCoverage {
@@ -570,6 +582,12 @@ export interface TransactionCoverage {
    */
   windowCoversAvailableRecord: boolean;
   unavailableReason?: string;
+  /**
+   * RLS-AI-S0 — carried straight through from the corpus bounds, never re-derived.
+   * Present only when the corpus had no bounds. `'INDETERMINATE'` means the
+   * emptiness of this coverage statement establishes NOTHING about the Space.
+   */
+  absence?: 'PROVEN_EMPTY' | 'INDETERMINATE';
   note?: string;
 }
 
@@ -598,6 +616,10 @@ export function transactionCoverage(args: {
       transactionsAvailableTo: null,
       windowCoversAvailableRecord: false,
       ...(corpus.unavailableReason ? { unavailableReason: corpus.unavailableReason } : {}),
+      // ⚠️ FORWARDED, NOT INFERRED. `from === null` is exactly the ambiguity this
+      // field exists to resolve; re-deriving it here from the nulls would
+      // reintroduce it one layer up.
+      ...(corpus.absence ? { absence: corpus.absence } : {}),
     };
   }
   const covers = (searchedFrom === null || searchedFrom <= corpus.from) && searchedTo >= corpus.to;

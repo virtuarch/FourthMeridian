@@ -44,6 +44,8 @@
 
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { db } from '@/lib/db';
+import { adjudicateAbsence, EvidenceState } from '@/lib/ai/absence';
+import type { ReadClient } from '@/lib/db/tenant-context';
 import { bankingTransactionWhere } from '@/lib/data/banking-population';
 import { resolveFullVisibleAccountIds } from '@/lib/accounts/space-account-link';
 import { getSnapshotExtent } from '@/lib/data/snapshots';
@@ -116,16 +118,38 @@ export interface CoverageEnvelope {
    * than letting a span be read as a valuation claim.
    */
   chains: ChainQuantityCoverage[];
+  /**
+   * RLS-AI-S0 — WHY nothing could be established, when that is the answer.
+   *
+   * ⚠️ THE TWO FAILURES USED TO BE ONE, AND THEY RUN OPPOSITE WAYS. The census
+   * `catch` swallowed every exception into an UNKNOWN envelope that renders as
+   * `[]`, so a GRANT failure failed safe-and-silent — while a POLICY filter,
+   * which does not throw at all, arrived as an empty count and rendered as the
+   * declarative `"Transactions: none recorded in this Space."` On the AI read
+   * path only the second is reachable, so the loud-and-wrong one was the live
+   * one. They are separate values now:
+   *
+   *   null                   the census ran and established what it reports
+   *   'CENSUS_FAILED'        an authority threw; nothing was established
+   *   'SPACE_NOT_OBSERVABLE' the census ran, found nothing, AND the absence
+   *                          oracle could not confirm this Space is readable by
+   *                          the identity that asked — so the emptiness is
+   *                          INDETERMINATE and must never be rendered as absence
+   */
+  unavailability: null | 'CENSUS_FAILED' | 'SPACE_NOT_OBSERVABLE';
 }
 
 /** Empty envelope — every class UNKNOWN. Used when the census cannot run. */
-function unknownEnvelope(): CoverageEnvelope {
+function unknownEnvelope(
+  unavailability: 'CENSUS_FAILED' | 'SPACE_NOT_OBSERVABLE' = 'CENSUS_FAILED',
+): CoverageEnvelope {
   const none: EvidenceSpan = { fromISO: null, toISO: null, count: 0 };
   return {
     transactions: { availability: EvidenceAvailability.UNKNOWN, span: none },
     snapshots:    { availability: EvidenceAvailability.UNKNOWN, span: none },
     accounts: { cash: 0, debt: 0, investments: 0, digitalAssets: 0, other: 0 },
     chains: [],
+    unavailability,
   };
 }
 
@@ -224,7 +248,27 @@ export async function loadCoverageEnvelope(
     const count = (pred: (t: string | null) => boolean) =>
       accounts.filter((a) => pred(a.type)).length;
 
+    // ── RLS-AI-S0: THE ABSENCE ORACLE, ON THE EMPTY PATH ONLY ────────────────
+    //
+    // ⚠️ ONE PROBE PER CENSUS, AND ONLY WHEN THE CENSUS SAW NOTHING AT ALL. A
+    // single row from ANY of the three reads is itself proof that this identity
+    // can observe this Space, so the probe is not merely cached on the success
+    // path — it is never issued. The added cost is: zero queries whenever any
+    // evidence exists, exactly ONE indexed read by primary key when none does.
+    //
+    // ⚠️ AND IT ADJUDICATES ALL THREE CLASSES, NOT JUST TRANSACTIONS. The
+    // policies are Space-granular (see lib/ai/absence.ts), so "this Space is not
+    // observable" is the one fact that explains every empty read in the census;
+    // reporting NONE for snapshots while reporting UNKNOWN for transactions would
+    // be two different claims about one refusal.
+    const sawNothing = txn._count === 0 && snap.count === 0 && accounts.length === 0;
+    if (sawNothing
+        && await adjudicateAbsence(client as ReadClient, spaceId) === EvidenceState.INDETERMINATE) {
+      return unknownEnvelope('SPACE_NOT_OBSERVABLE');
+    }
+
     return {
+      unavailability: null,
       transactions: {
         availability: txn._count > 0 ? EvidenceAvailability.AVAILABLE : EvidenceAvailability.NONE,
         span: { fromISO: iso(txn._min.economicDate), toISO: iso(txn._max.economicDate), count: txn._count },
@@ -243,10 +287,11 @@ export async function loadCoverageEnvelope(
       chains: [...byChain.values()].sort((a, b) => a.chain.localeCompare(b.chain)),
     };
   } catch (err) {
-    // Awareness is additive. A census failure must never cost the user an
-    // answer, and UNKNOWN renders as silence rather than as a false absence.
+    // Awareness is additive. A census failure must never cost the user an answer
+    // — and it must not pass for one either, so UNKNOWN now renders as an
+    // explicit "could not be established" rather than as silence.
     console.error('[coverage-envelope] census failed (non-fatal):', err);
-    return unknownEnvelope();
+    return unknownEnvelope('CENSUS_FAILED');
   }
 }
 
@@ -275,8 +320,8 @@ export interface LoadedTransactionInterval {
  * where one half is rendered here and the other three hundred lines away is a
  * design where they drift.
  *
- * Returns [] when nothing is known, so an empty census costs nothing and
- * advertises nothing.
+ * Returns ONE line when nothing is known — see the UNKNOWN branch — so an
+ * unestablished census advertises no range and no absence either.
  */
 export function describeCoverageEnvelope(
   env: CoverageEnvelope,
@@ -285,7 +330,26 @@ export function describeCoverageEnvelope(
   const lines: string[] = [];
   const t = env.transactions;
 
-  if (t.availability === EvidenceAvailability.UNKNOWN) return lines;
+  // ⚠️ RLS-AI-S0 — THIS BRANCH USED TO RENDER AS SILENCE, AND SILENCE WAS NOT
+  // ENOUGH. The module's original note was right that UNKNOWN must never cost an
+  // answer, and nothing here costs one: no range is advertised, no total, no
+  // conclusion. But a broken or refused authority that produces an answer with
+  // NOTHING saying so is the second half of the same defect — the model has no
+  // way to know the difference between "this Space holds nothing" and "we could
+  // not look", and the rest of the prompt is full of invitations to assert the
+  // first. One sentence, which is a PROHIBITION rather than a claim.
+  if (t.availability === EvidenceAvailability.UNKNOWN) {
+    lines.push(
+      'EVIDENCE COVERAGE COULD NOT BE ESTABLISHED for this Space'
+      + (env.unavailability === 'SPACE_NOT_OBSERVABLE'
+        ? ' — this request could not read its record'
+        : ' — the coverage census failed')
+      + '. Treat every class of evidence here as UNKNOWN: do not describe any record as empty, do '
+      + 'not give a count, and do not state how far back history goes. If asked, say the record '
+      + 'could not be checked for this request.',
+    );
+    return lines;
+  }
 
   lines.push(
     'EVIDENCE THAT EXISTS in this Space. This is NOT what was loaded below. ' +
@@ -306,7 +370,21 @@ export function describeCoverageEnvelope(
           : '; this turn loaded that full range.'
         : '.'),
     );
+  } else if (t.availability === EvidenceAvailability.AVAILABLE) {
+    // ⚠️ AVAILABLE WITH NO SPAN IS NOT ABSENCE, AND IT USED TO FALL HERE. The
+    // count comes from `_count` while the span comes from `_min`/`_max` over
+    // `economicDate`, so rows that exist but cannot be placed in time make the
+    // first positive and the second null — and the `else` below then asserted the
+    // Space had none. Found while separating the three states; unrelated to RLS
+    // and reachable today.
+    lines.push(
+      `  Transactions EXIST (${t.span.count.toLocaleString()} records) but none of them carries a `
+      + 'date, so no range can be stated. Do not say the Space has no transactions.',
+    );
   } else {
+    // PROVEN_EMPTY. The census ran, it returned nothing, and the absence oracle
+    // confirmed this identity can observe this Space — so this is the one state in
+    // which asserting absence is licensed.
     lines.push('  Transactions: none recorded in this Space.');
   }
 

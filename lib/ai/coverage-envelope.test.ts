@@ -63,6 +63,8 @@ function env(o: Partial<{
       cash: o.cash ?? 4, debt: o.debt ?? 2, investments: o.investments ?? 3,
       digitalAssets: o.digitalAssets ?? 4, other: o.other ?? 0,
     },
+    // RLS-AI-S0 — the census ran. `unknown: true` models a census that did NOT.
+    unavailability: o.unknown ? 'CENSUS_FAILED' : null,
     chains: o.chains ?? [
       { chain: 'BTC', fromISO: '2023-03-18', toISO: '2026-08-27', claimsHistory: true },
       { chain: 'ETH', fromISO: '2021-04-27', toISO: '2026-08-27', claimsHistory: true },
@@ -192,11 +194,69 @@ const render = (e: CoverageEnvelope, from?: string, to?: string) =>
       && !/digital assets/.test(debtOnly));
 }
 
-// ══ UNKNOWN CENSUS RENDERS AS SILENCE ════════════════════════════════════════
+// ══ THE PAIR THAT SEPARATES THE FIX FROM THE BUG ═════════════════════════════
+//
+// ⚠️ THIS IS THE ONLY TEST THAT DISTINGUISHES THEM. Both Spaces produce the SAME
+// empty aggregates; the only difference is whether the absence oracle could
+// establish that the identity may observe the Space. One must say "none", the
+// other must not — and must not fall silent either, because the rest of the
+// prompt instructs the model to answer record-span questions from this block.
+//
+// Previously this suite asserted UNKNOWN renders as the empty string. It no
+// longer does, deliberately: silence left the model free to answer from nothing
+// with nothing saying so, which is the second half of the same defect. Nothing
+// here costs an answer — no range, no total, no conclusion, one sentence.
 {
-  check('a failed census emits NOTHING rather than a false absence',
-    render(env({ unknown: true }), '2026-05-29', '2026-08-26') === '',
-    'UNKNOWN is not NONE — awareness is additive and must never cost an answer');
+  const emptyButVisible = render(env({
+    txnFrom: null, txnTo: null, txnCount: 0, snapCount: 0,
+    cash: 0, debt: 0, investments: 0, digitalAssets: 0, other: 0, chains: [],
+  }), null as never);
+  const notObservable = describeCoverageEnvelope(
+    { ...env({ unknown: true }), unavailability: 'SPACE_NOT_OBSERVABLE' },
+    { fromISO: '2026-05-29', toISO: '2026-08-26' },
+  ).join('\n');
+  const censusFailed = render(env({ unknown: true }), '2026-05-29', '2026-08-26');
+
+  check('PAIR: empty-but-VISIBLE still says none recorded',
+    /Transactions: none recorded in this Space/.test(emptyButVisible));
+  check('PAIR: empty-and-INACCESSIBLE never says none recorded',
+    !/none recorded/.test(notObservable) && !/no transactions/i.test(notObservable),
+    notObservable);
+  check('PAIR: …it says the record could not be established',
+    /COULD NOT BE ESTABLISHED/.test(notObservable)
+      && /could not read its record/.test(notObservable));
+  check('PAIR: …and it PROHIBITS the absence claim rather than merely omitting it',
+    /treat every class of evidence here as UNKNOWN/i.test(notObservable)
+      && /do not describe any record as empty/.test(notObservable));
+  // ⚠️ AND THE PROHIBITION DOES NOT CONTAIN THE SENTENCE IT FORBIDS. The first
+  // draft read "do NOT state … that there are no transactions", which a
+  // word-presence check cannot tell from the claim itself — the erratum recorded
+  // in bb2f6ec, reproduced here in one line of prose.
+  check('PAIR: …without putting the forbidden sentence in the model\'s mouth',
+    !/no transactions/i.test(notObservable), notObservable);
+  check('PAIR: …and advertises no range',
+    !/\d{4}/.test(notObservable), notObservable);
+  check('PAIR: the two renderings are not the same string',
+    emptyButVisible !== notObservable);
+
+  check('a FAILED census is also stated, and is not an absence either',
+    /COULD NOT BE ESTABLISHED/.test(censusFailed)
+      && /census failed/.test(censusFailed)
+      && !/none recorded/.test(censusFailed),
+    censusFailed);
+  check('a failed census and an unobservable Space say WHY, differently',
+    censusFailed !== notObservable);
+
+  // AVAILABLE with no datable row is a third non-absence, and used to fall into
+  // the "none recorded" branch.
+  const undated = describeCoverageEnvelope(
+    { ...env({ txnCount: 12, txnFrom: null, txnTo: null, snapCount: 0,
+               cash: 0, debt: 0, investments: 0, digitalAssets: 0, other: 0, chains: [] }) },
+    null,
+  ).join('\n');
+  check('rows that exist but cannot be dated are NOT reported as none',
+    !/none recorded/.test(undated) && /Transactions EXIST \(12 records\)/.test(undated),
+    undated);
 }
 
 // ══ H — VISIBILITY IS ENFORCED AT THE SOURCE ═════════════════════════════════

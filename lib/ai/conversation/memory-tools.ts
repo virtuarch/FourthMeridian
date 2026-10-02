@@ -29,6 +29,10 @@ import {
   type MemoryClass, type MemoryRow, type Fields,
 } from './memory-model';
 import { ALLOCATION_TARGET_WORDS } from './scenario-rules';
+// RLS-AI-S0 — the absence contract. This module still holds no Prisma client of its
+// own (a source scan asserts it); the oracle is DERIVED from the context's client,
+// which is what makes "the same client as the read" structural rather than reviewed.
+import { adjudicateMemoryAbsence, indeterminateSentence, EvidenceState } from '@/lib/ai/absence';
 
 const obj = (props: Record<string, unknown>, required: string[] = []) =>
   ({ type: 'object', properties: props, required, additionalProperties: false });
@@ -224,13 +228,28 @@ const recall: ToolDefinition = {
     const only = CLASS_VALUES.includes(a.class as MemoryClass) ? a.class as MemoryClass : undefined;
     const { stated, projectionsWeMade, unreadable } = presentRecall(rows, ctx.asOfISO, only);
     const nothing = stated.length === 0 && projectionsWeMade.length === 0;
+    // ── RLS-AI-S0 — AN INSTRUCTION TO ASSERT ABSENCE NEEDS THE ABSENCE PROVEN ──
+    //
+    // ⚠️ "Say so plainly rather than guessing" IS THE MOST DECLARATIVE SENTENCE ON
+    // THIS SURFACE. It does not merely report an empty store, it TELLS THE MODEL TO
+    // STATE the emptiness — and under `fm_app` an empty `SpaceMemory` read is
+    // indistinguishable from a refused one (the policy is `spaceId IN
+    // fm_visible_space_ids() AND ownerUserId = current_fm_user_id()`, and neither
+    // half can fail loudly because the table is granted to fm_app). The probe runs
+    // ONLY when the store came back empty, and only through the client that
+    // performed the read. See lib/ai/absence.ts for why the narrowed memory client
+    // makes the same-client rule a CHECKED invariant here rather than an assumed one.
+    const verdict = nothing ? await adjudicateMemoryAbsence(ctx) : EvidenceState.PRESENT;
     return {
       scope: 'this user, in this Space',
+      ...(verdict === EvidenceState.PRESENT ? {} : { evidenceState: verdict }),
       // ⚠️ SAID WHERE THE MODEL WILL READ IT. Remembering never computes: what is
       // listed is what they SAID, on the date shown, and a projection's `value` is
       // a sentence about a future date. Quoting either as the present is the one
       // way this table can do harm.
-      meaning: nothing
+      meaning: verdict === EvidenceState.INDETERMINATE
+        ? indeterminateSentence('anything remembered for this user')
+        : nothing
         ? 'Nothing has been remembered for this user yet. Say so plainly rather than guessing '
           + 'at a goal, a rule or a planning figure.'
         : 'What they asked us to remember, as stated on the dates shown. None of it is in effect and '

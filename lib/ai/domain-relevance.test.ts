@@ -64,6 +64,7 @@ function evidence(o: Partial<{ investments: number; digitalAssets: number }> = {
       digitalAssets: o.digitalAssets ?? 4,
       other: 0,
     },
+    unavailability: null,
     chains: [{ chain: 'BTC', fromISO: '2023-03-18', toISO: '2026-08-27', claimsHistory: true }],
   };
 }

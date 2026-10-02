@@ -73,6 +73,8 @@ export async function assembleFullContext(
   spaceCtx: SpaceContext, agentId: string,
 ): Promise<SpaceContext_AI> {
   const domains: Record<string, ContextDomainSection> = {};
+  // RLS-AI-S0 — WHICH AUTHORITIES BROKE, not merely that something did.
+  const unreadable: string[] = [];
   await Promise.all(FOUR_DOMAINS.map(async (d) => {
     const a = getAssembler(d);
     if (!a) return;
@@ -80,11 +82,18 @@ export async function assembleFullContext(
       const section = await a(spaceCtx, { scopeHint: 'full', positionClass: 'ALL' });
       if (section) domains[d] = section;
     } catch (err) {
+      // ⚠️ STILL NON-FATAL, AND STILL THE LESSER EVIL — a broken holdings
+      // authority must not cost the user an answer about their cash. What changes
+      // is that it is no longer SILENT: the domain is named, carried on the
+      // context, and stated in the evidence pack. A `null` domain is honest
+      // ambiguity; a null domain the reader believes is an empty one is not.
       console.error(`[evidence] assembler ${d} threw:`, err);
+      unreadable.push(d);
     }
   }));
   return {
     requestedAt: new Date().toISOString(),
+    ...(unreadable.length > 0 ? { unreadableDomains: unreadable.sort() } : {}),
     spaceId: spaceCtx.spaceId, userId: spaceCtx.userId, role: spaceCtx.role,
     agentId, resolvedDomains: Object.keys(domains),
     space: {
@@ -206,6 +215,17 @@ function thinCore(
       cardAndDebtPayments: txn.debtPaymentTotal, netCashFlow: txn.netCashFlow,
       transactionCount: txn.transactionCount,
     } : null,
+    // ⚠️ RLS-AI-S0 — A BROKEN AUTHORITY IS STATED, NEVER INFERRED FROM A null.
+    // Omitted entirely when nothing broke, so an ordinary orientation is
+    // byte-for-byte what it was. When something did, the sentence is a
+    // PROHIBITION: the fields below are missing because we could not read them,
+    // which licenses no claim about what the Space holds.
+    ...(ctx.unreadableDomains?.length ? { evidenceUnreadable: {
+      domains: ctx.unreadableDomains,
+      meaning: 'These authorities FAILED for this turn, so the matching fields above are absent '
+        + 'because nothing was read — NOT because the Space has none. Do not state or imply that '
+        + 'any of them is empty, zero or missing; say that it could not be read.',
+    } } : {}),
     // ⚠️ SIBLING OF `recent`, NOT A FIELD INSIDE IT, AND OMITTED WHEN ABSENT.
     // `recent` above is byte-for-byte what it was before this key existed; the
     // second frame adds a view and changes nothing about the assessment.
@@ -332,6 +352,12 @@ export async function buildEvidence(
       return acc ? composeInvestments(acc) : null;
     })(),
     signals: ctx.signals,
+    // RLS-AI-S0 — same statement, same reason, in the broad-context arms.
+    ...(ctx.unreadableDomains?.length ? { evidenceUnreadable: {
+      domains: ctx.unreadableDomains,
+      meaning: 'These authorities FAILED for this turn. The matching keys above are absent because '
+        + 'nothing was read, not because the Space has none. Never state that they are empty.',
+    } } : {}),
   };
 
   if (arm === 'A1') {
