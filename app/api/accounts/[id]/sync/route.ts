@@ -30,11 +30,29 @@
  * Fourth Meridian's single server IP), not metered per-item cost — so a
  * generous per-user cap is the right shape, not a strict per-item one.
  * SYSTEM_ADMIN exempt, matching the house call-site idiom.
+ *
+ * ── RLS-ACC-S1 — THE GATE IS A TENANT PHASE; THE SYNC IS NOT ─────────────────
+ * This handler has exactly ONE database read of its own — the owner-only
+ * authorization gate — and everything after it is provider HTTP (the chain
+ * adapter) plus best-effort snapshot and wealth-history regeneration. So the
+ * gate, and only the gate, runs inside `withTenantDb`.
+ *
+ * That split is not tidiness. `withTenantDb` is a SECURITY BOUNDARY, not a
+ * request-lifetime container: it holds an interactive transaction open for the
+ * duration of the callback, and a wallet sync reaches a block explorer and a
+ * price source. Wrapping the sync would pin a pooled connection across the
+ * network for as long as the slowest explorer takes, which is how an isolation
+ * feature turns into an availability incident.
+ *
+ * The gate predicate is `ownerUserId === user.id`, which is served by
+ * `FinancialAccount.fm_app_sel`'s owner arm, so the check and the policy now
+ * agree by construction. `syncWalletByChain` and the two regenerators keep the
+ * authority they already had — named below rather than silently inherited.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { limitByUser } from "@/lib/rate-limit";
 import {
   syncWalletByChain, isSyncableChain, chainSupportsHistory, SYNCABLE_CHAINS, outcomeRevalued,
@@ -60,12 +78,17 @@ export async function POST(
     if (limited) return limited;
   }
 
-  const account = await db.financialAccount.findUnique({
+  // The authorization gate, and the only read this route owns. One short tenant
+  // phase — see the header on why the sync itself must stay outside it.
+  const account = await withTenantDb(user.id, (tx) => tx.financialAccount.findUnique({
     where: { id },
     select: { id: true, ownerUserId: true, walletChain: true, deletedAt: true },
-  });
+  }));
 
   // Owner-only, and no existence disclosure for accounts the user doesn't own.
+  // Under fm_app this is now belt AND braces: the policy has already refused to
+  // return another tenant's row, so `account` is null rather than a row that
+  // fails the comparison. Both readings produce the same 404.
   if (!account || account.ownerUserId !== user.id || account.deletedAt) {
     return NextResponse.json({ error: "Wallet not found." }, { status: 404 });
   }
@@ -87,6 +110,17 @@ export async function POST(
   const syncStartedAt = new Date();
   // PLATFORM OPS OBSERVABILITY — the owner pressed Sync: a MANUAL execution in
   // the refresh ledger, so the run, its duration and its verdict are inspectable.
+  //
+  // RLS-ACC-S1 — AUTHORITY, UNRESOLVED AND NAMED RATHER THAN BURIED. This and
+  // the two regenerators below still reach the database through the migration
+  // principal, each for a reason of its own and none of them this route's to
+  // settle: `syncWalletByChain` interleaves explorer and price HTTP with its
+  // writes (so no single transaction can contain it); `snapshotAccountsForOutcome`
+  // deliberately ranges over EVERY holder of a re-quoted asset, which is a
+  // deployment-wide blast radius like `lib/accounts/links-everywhere.ts`'s; and
+  // `regenerateSnapshotsForAccounts` already writes a CO-OWNER's snapshot by
+  // design, which fm_app cannot reach at all (RLS-C-S7 classified it fm_system
+  // for exactly that reason).
   const result = await syncWalletByChain(id, account.walletChain, { trigger: "MANUAL" });
 
   // TODAY's snapshots: this account when the run produced new valuation
