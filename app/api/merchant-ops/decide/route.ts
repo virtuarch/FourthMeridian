@@ -13,7 +13,12 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+// RLS-C-S6 — fm_system. MerchantMergeDecision is revoked from the tenant role,
+// and a merge rewrites merchant identity for EVERY tenant that saw the absorbed
+// name; neither is a tenant-scoped act. Gated by Merchant Operations Space
+// membership above. The decision store and the merge engine take their client
+// as a parameter, so the authority is chosen here, at the execution phase.
+import { systemDb as db } from "@/lib/db";
 import { requireMerchantOpsMember } from "@/lib/merchant-ops-access";
 import { applyMergeReviewDecision } from "@/lib/transactions/merchant-merge-review";
 

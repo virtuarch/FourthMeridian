@@ -138,7 +138,16 @@ export interface WalletRefreshResult {
 }
 
 async function defaultDeps(): Promise<WalletRefreshDeps> {
-  const { db } = await import('@/lib/db');
+  // ⚠️ RLS-C-S6 — fm_system, and not because this file is "infrastructure".
+  // Every read below is DEPLOYMENT-WIDE BY CONSTRUCTION: listWallets enumerates
+  // every syncable wallet on the platform, and the failure clock it joins is
+  // SyncIssue — an operator forensic ledger revoked from the tenant role, whose
+  // `lastOccurredAt` is outside the column grant RLS-16 made for the activity
+  // timeline. The only caller is jobs/sync-crypto.ts (the 6-hourly sweep and its
+  // :30 continuation), so there is no tenant to scope to, and widening RLS-16's
+  // grant to admit this read would have let the tenant role reach a forensic
+  // column to serve a job that never runs as a tenant.
+  const { systemDb: db } = await import('@/lib/db');
   const { loadRefreshPolicies } = await import('@/lib/platform/refresh-policy');
   const { admitOperationalWork } = await import('@/lib/platform/admission/facts');
   return {

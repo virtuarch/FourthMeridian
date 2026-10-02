@@ -406,6 +406,213 @@ async function main(): Promise<void> {
   check(41, "[service] a GENUINE stale-condition CAS on a VISIBLE row still returns ordinary contention",
     casContention === false, `got ${JSON.stringify(casContention)}`);
 
+  // ── RLS-C-S6 — THE DENIED-TABLE SEAMS ─────────────────────────────────────
+  // BetaAccessRequest is the one table in the family migration …000100 §4 revoked
+  // wholesale that a PUBLIC, UNAUTHENTICATED request must touch: the waitlist
+  // intake and the single-use invite redemption. It is PRE-TENANT by
+  // construction — the subject has no User row — so NOT ONE property below is
+  // carried by a tenant predicate. Each is a column GRANT or a WITH CHECK.
+
+  // The fixtures the whole block rests on. ⚠️ ASSERTED, NOT ASSUMED: three cases
+  // below are ABSENCE claims ("the public role cannot find this"), and an absent
+  // fixture makes every one of them pass for the wrong reason. RLS-14 shipped
+  // exactly that bug once.
+  const barSeeded = psql(h.ownerUrl,
+    `select string_agg(id || ':' || status, ',' order by id) from "BetaAccessRequest";`).out.trim();
+  check(42, "[role] the five pre-tenant invite shapes are seeded, so the denials below cannot pass over an empty table",
+    barSeeded === "bar_live:APPROVED,bar_live2:APPROVED,bar_notoken:APPROVED,bar_pending:PENDING,bar_redeemed:REDEEMED",
+    barSeeded);
+
+  const appBeta = psql(h.appUrl,
+    `begin; set local app.user_id='alice'; select count(*) from "BetaAccessRequest"; commit;`, false);
+  check(43, "[role] the TENANT role cannot read the waitlist at all — there is no identity in this table to bind a policy to",
+    deniedByGrant(appBeta), appBeta.err.split("\n")[0] || `returned ${appBeta.out}`);
+
+  // ANTI-ENUMERATION, and the mechanism matters: `email` is not GRANTED, so the
+  // question is refused by Postgres before any policy is consulted. A policy
+  // could not have carried this — a stranger probing addresses must learn
+  // nothing, and `… WHERE email = $1` would be admitted by any USING clause that
+  // admits the row at all.
+  const emailRead  = psql(h.authUrl, `select email from "BetaAccessRequest" where id='bar_live';`, false);
+  const emailProbe = psql(h.authUrl, `select id from "BetaAccessRequest" where email='waitlisted@example.test';`, false);
+  check(44, "[role] the pre-identity role can neither READ nor FILTER ON an address — the waitlist is not enumerable",
+    deniedByGrant(emailRead) && deniedByGrant(emailProbe),
+    `read=${emailRead.err.split("\n")[0] || emailRead.out} probe=${emailProbe.err.split("\n")[0] || emailProbe.out}`);
+
+  // …and what it CAN see is two identity-free columns of the invite LIFECYCLE.
+  // The WAITLIST is outside the policy: a PENDING request is invisible even by
+  // id, so the public surface cannot see who is queued. (REDEEMED is inside it
+  // of necessity — the SELECT policy is applied to the post-update row too, so a
+  // policy narrower than the redemption's destination makes the redemption
+  // impossible. See migration …000600.)
+  const authVisible = psql(h.authUrl,
+    `select coalesce(string_agg(id,',' order by id),'(none)') from "BetaAccessRequest";`, false);
+  check(45, "[role] the pre-identity role sees the invite LIFECYCLE and never the WAITLIST — bar_pending is invisible even by id",
+    authVisible.ok && authVisible.out.trim() === "bar_live,bar_live2,bar_notoken,bar_redeemed",
+    authVisible.err.split("\n")[0] || `saw ${authVisible.out.trim()}`);
+
+  // THE SELF-ISSUED INVITE. `fm_app_insert … WITH CHECK (true)` authorised an
+  // anonymous INSERT of an APPROVED row with an attacker-chosen token hash — a
+  // valid invite, minted by whoever can reach the public intake. The route only
+  // ever writes email and note, so no product test could have found it; the
+  // POLICY allowed it. This is the RLS-15 shape, and these are its pins.
+  const authSelfApprove = psql(h.authUrl,
+    `insert into "BetaAccessRequest" (id,email,status,"inviteTokenHash","inviteExpiresAt")
+     values ('bar_evil','evil@example.test','APPROVED','hash_evil', now() + interval '7 days');`, false);
+  const appSelfApprove = psql(h.appUrl,
+    `begin; set local app.user_id='alice';
+     insert into "BetaAccessRequest" (id,email,status,"inviteTokenHash","inviteExpiresAt")
+     values ('bar_evil2','evil2@example.test','APPROVED','hash_evil2', now() + interval '7 days');
+     commit;`, false);
+  const plainIntake = psql(h.authUrl,
+    `insert into "BetaAccessRequest" (id,email) values ('bar_intake','newcomer@example.test');`, false);
+  const evilRows = psql(h.ownerUrl,
+    `select count(*) from "BetaAccessRequest" where id in ('bar_evil','bar_evil2');`).out.trim();
+  check(46, "[role] NEITHER public role can mint itself an APPROVED request with its own invite token, while a plain intake still succeeds",
+    deniedByRls(authSelfApprove) && deniedByRls(appSelfApprove) && plainIntake.ok && evilRows === "0",
+    `auth=${authSelfApprove.err.split("\n")[0] || "SUCCEEDED — self-issued invite"} app=${appSelfApprove.err.split("\n")[0] || "SUCCEEDED — self-issued invite"} intake=${plainIntake.err.split("\n")[0] || "ok"} rows=${evilRows}`);
+
+  // ── [service] the invite-validation CAPABILITY ────────────────────────────
+  // Neither public role is granted this read, so it is not a grant at all: a raw
+  // token in, a closed {valid, email, requestId} out, over systemDb. The token
+  // IS the authorisation — a 32-byte secret only the addressee was emailed — so
+  // possession proves the right to learn that one address and no other.
+  const tokenMod = await import("@/lib/password-reset-token");
+  const RAW_INVITE = "raw-invite-token-for-the-acceptance-suite";
+  const setHash = psql(h.ownerUrl,
+    `update "BetaAccessRequest" set "inviteTokenHash"='${tokenMod.hashResetToken(RAW_INVITE)}' where id='bar_live';`);
+  if (!setHash.ok) throw new Error(`invite hash fixture failed: ${setHash.err}`);
+  const reg = await import("@/lib/registration-policy");
+
+  const goodInvite = await reg.validateInvite(RAW_INVITE);
+  const wrongInvite = await reg.validateInvite("not-the-token");
+  check(47, "[service] validateInvite resolves a live invite to its BOUND email, and a wrong token to nothing",
+    goodInvite.valid && goodInvite.email === "invitee@example.test" && goodInvite.requestId === "bar_live"
+    && wrongInvite.valid === false && wrongInvite.email === null,
+    `good=${JSON.stringify(goodInvite)} wrong=${JSON.stringify(wrongInvite)}`);
+
+  // The narrowing itself — the reason a deployment-wide authority is acceptable
+  // here. If this module ever gains an address-keyed lookup or a list read it has
+  // become the waitlist directory the column grants exist to prevent.
+  const regSrc = readFileSync(join(process.cwd(), "lib/registration-policy.ts"), "utf8");
+  check(48, "[service] the capability's ONLY key is the invite-token hash — it cannot be asked about an address, or for a list",
+    /inviteTokenHash:\s*hashResetToken\(/.test(regSrc)
+    && !/betaAccessRequest\.(findMany|count|aggregate|groupBy)/.test(regSrc)
+    && !/where:\s*\{\s*email/.test(regSrc));
+
+  // ── THE SILENT REFUSAL, REPRODUCED ────────────────────────────────────────
+  // `bar_notoken` is APPROVED — so the application's `status: APPROVED`
+  // compare-and-swap matches it — and HIDDEN by the fm_auth policy, which admits
+  // only an invite with an outstanding token. This is the one configuration that
+  // produces the defect: a role holding UPDATE whose policy filters the row. A
+  // missing GRANT would have raised; a policy filter returns `{count: 0}` with
+  // no error and no log, and the register route used to discard that count and
+  // create the account anyway — leaving `inviteTokenHash` non-null and the
+  // single-use invite reusable for ever.
+  let rawRefusal: { count: number } | string;
+  try {
+    rawRefusal = await dbMod.authDb.$transaction(async (tx) =>
+      tx.betaAccessRequest.updateMany({
+        where: { id: "bar_notoken", status: "APPROVED" },
+        data:  { status: "REDEEMED", redeemedAt: new Date(), redeemedUserId: "alice", inviteTokenHash: null },
+      }));
+  } catch (e) { rawRefusal = e instanceof Error ? e.message : String(e); }
+  const notokenAfterRaw = psql(h.ownerUrl, `select status from "BetaAccessRequest" where id='bar_notoken';`).out.trim();
+  check(49, "[role] a POLICY-HIDDEN redemption returns count 0 and RAISES NOTHING — the silent refusal is real, not hypothetical",
+    typeof rawRefusal !== "string" && rawRefusal.count === 0 && notokenAfterRaw === "APPROVED",
+    `result=${JSON.stringify(rawRefusal)} status=${notokenAfterRaw}`);
+
+  // …AND THE PROPERTY THAT MATTERS: the authority refuses to proceed. Both a
+  // policy refusal (bar_notoken) and an ordinary lost race (bar_redeemed, already
+  // consumed) raise, because a single-use invite redeemed by somebody else is
+  // exactly as fatal as one the database refused. There is no third state and no
+  // visibility probe — the invite is consumed or the registration does not happen.
+  const attempts: unknown[] = [];
+  for (const id of ["bar_notoken", "bar_redeemed"]) {
+    try {
+      await dbMod.authDb.$transaction(async (tx) =>
+        reg.redeemBetaInvite(tx, { requestId: id, redeemedUserId: "alice" }));
+      attempts.push(null);
+    } catch (e) { attempts.push(e); }
+  }
+  const untouched = psql(h.ownerUrl,
+    `select status || '|' || coalesce("redeemedUserId",'(null)') from "BetaAccessRequest" where id='bar_notoken';`).out.trim();
+  check(50, "[service] redeemBetaInvite RAISES on a refused AND on a raced redemption — no account can be minted against an unconsumed invite",
+    attempts.every((a) => a instanceof reg.InviteNotConsumedError) && untouched === "APPROVED|(null)",
+    `attempts=${attempts.map((a) => (a === null ? "SILENT NO-OP" : (a as Error).name)).join(",")} row=${untouched}`);
+
+  // The positive case, under the role that actually serves registration. Without
+  // this the two above would be satisfied by a redemption that never works.
+  let redeemed = "ok";
+  try {
+    await dbMod.authDb.$transaction(async (tx) =>
+      reg.redeemBetaInvite(tx, { requestId: "bar_live", redeemedUserId: "alice" }));
+  } catch (e) { redeemed = e instanceof Error ? e.message : String(e); }
+  const liveAfter = psql(h.ownerUrl,
+    `select status || '|' || coalesce("inviteTokenHash",'(null)') || '|' || coalesce("redeemedUserId",'(null)')
+       from "BetaAccessRequest" where id='bar_live';`).out.trim();
+  check(51, "[service] the redemption SUCCEEDS under the pre-identity role: consumed, token destroyed, redeemer recorded",
+    redeemed === "ok" && liveAfter === "REDEEMED|(null)|alice",
+    `err=${redeemed.split("\n")[0]} row=${liveAfter}`);
+
+  // Redemption is ONE-WAY at the database. Clearing a live invite's token WITHOUT
+  // consuming it violates WITH CHECK and raises; un-redeeming a consumed one is
+  // outside USING and matches nothing. A public role cannot resurrect an invite
+  // it just destroyed, however the application is edited.
+  const stealToken = psql(h.authUrl,
+    `update "BetaAccessRequest" set "inviteTokenHash"=null where id='bar_live2';`, false);
+  const unredeem = psql(h.authUrl,
+    `update "BetaAccessRequest" set status='APPROVED' where id='bar_live';`, false);
+  const oneWay = psql(h.ownerUrl,
+    `select (select status from "BetaAccessRequest" where id='bar_live') || '|' ||
+            (select coalesce("inviteTokenHash",'(null)') from "BetaAccessRequest" where id='bar_live2');`).out.trim();
+  check(52, "[role] redemption is ONE-WAY: a token cannot be destroyed without consuming the invite, and a consumed invite cannot be re-approved",
+    deniedByRls(stealToken) && oneWay === "REDEEMED|hash_live2",
+    `steal=${stealToken.err.split("\n")[0] || "SUCCEEDED"} unredeem=${unredeem.err.split("\n")[0] || "no error"} row=${oneWay}`);
+
+  // ── THE INTAKE FITS INSIDE INSERT-ONLY ────────────────────────────────────
+  // The waitlist route used `upsert` by email with an EMPTY update — the same
+  // intent said a more expensive way, and one that needs SELECT (to detect the
+  // conflict) and UPDATE (to resolve it) on a table whose only public privilege
+  // is INSERT. Both halves are asserted: the old shape is IMPOSSIBLE for the
+  // public role, and the conflict-ignoring insert that replaced it works and
+  // changes nothing. Note the conflicting row is bar_pending, which this role
+  // cannot SEE — proof that a repeat submission involves no read at all, which
+  // is the strongest form of the non-enumeration promise the route makes.
+  let oldShape = "no error";
+  try {
+    await dbMod.authDb.betaAccessRequest.upsert({
+      where: { email: "waitlisted@example.test" }, update: {},
+      create: { email: "waitlisted@example.test" },
+    });
+  } catch (e) { oldShape = e instanceof Error ? e.message : String(e); }
+  let newShape = "ok";
+  try {
+    await dbMod.authDb.betaAccessRequest.createMany({
+      data: [{ email: "waitlisted@example.test", note: "resubmitted" }], skipDuplicates: true,
+    });
+  } catch (e) { newShape = e instanceof Error ? e.message : String(e); }
+  const pendingRow = psql(h.ownerUrl,
+    `select status || '|' || coalesce(note,'(null)') from "BetaAccessRequest" where id='bar_pending';`).out.trim();
+  check(54, "[service] a REPEAT waitlist submission fits inside INSERT-only — the upsert it replaced is refused, and the existing request is untouched",
+    /permission denied/i.test(oldShape) && newShape === "ok" && pendingRow === "PENDING|(null)",
+    `upsert=${oldShape.split("\n")[0]} insert=${newShape.split("\n")[0]} row=${pendingRow}`);
+
+  // ── [role] RLS-16's COLUMN GRANT DID NOT WIDEN ────────────────────────────
+  // The scheduled wallet sweep groups SyncIssue by `lastOccurredAt`, which RLS-16
+  // deliberately left out of the tenant role's six columns. Its only caller is
+  // jobs/sync-crypto.ts and it enumerates every wallet in the deployment, so it
+  // moved to fm_system. This asserts the decision: the forensic clock is STILL
+  // unreachable from fm_app, and the authority that legitimately needs it has it.
+  const lastOccRead = psql(h.appUrl,
+    `begin; set local app.user_id='alice'; select "lastOccurredAt" from "SyncIssue" where id='si_alice'; commit;`, false);
+  const sysGroup = psql(h.systemUrl,
+    `select count(*) from (select "financialAccountId", max("lastOccurredAt") m from "SyncIssue"
+       group by "financialAccountId") q where q.m is not null;`, false);
+  check(53, "[role] SyncIssue.lastOccurredAt is STILL ungranted to fm_app — the sweep moved to fm_system rather than widening the forensic grant",
+    deniedByGrant(lastOccRead) && sysGroup.ok && sysGroup.out.trim() === "2",
+    `app=${lastOccRead.err.split("\n")[0] || `ALLOWED — read ${lastOccRead.out}`} system=${sysGroup.err.split("\n")[0] || sysGroup.out.trim()}`);
+
   // ── [role] the owner is not in the tenant path ────────────────────────────
   check(17, "[role] the tenant client is NOT the migration principal",
     dbMod.tenantDb !== dbMod.db, "tenantDb fell back to the shared client");

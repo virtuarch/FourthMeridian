@@ -106,16 +106,85 @@ const CONFINED: Record<string, { allowed: string[]; why: string }> = {
       // widest authority is reached through the narrowest opening: two
       // functions that take a value and return a boolean.
       "lib/users/availability.ts",
+      // RLS-C-S6 — the invite-validation capability, listed as a FILE for the
+      // same reason. `validateInvite` takes a RAW INVITE TOKEN and returns a
+      // closed {valid, email, requestId}; BetaAccessRequest is pre-tenant (the
+      // subject has no User row, so no policy predicate can exist) and granting
+      // the read to a public role would hand it `email` — a waitlist
+      // enumeration oracle — and `inviteTokenHash`, the secret itself. The
+      // token IS the authorisation: possession proves the right to learn that
+      // one address. The suite asserts the narrowing (no email-keyed lookup, no
+      // findMany), so this stays a capability and does not become a directory.
+      "lib/registration-policy.ts",
+      // RLS-C-S6 — the Merchant Operations review surface. MerchantMergeDecision
+      // is revoked from the tenant role, and the candidate facts are
+      // cross-tenant merchant/transaction counts: under fm_app they would
+      // silently narrow to the reviewing operator's own rows rather than fail.
+      // Gated on Merchant Operations Space membership, like the other operator
+      // consoles above. The decision store and merge engine in lib/transactions/
+      // need no entry at all — they take their client as a parameter.
+      "app/merchant-ops/", "app/api/merchant-ops/",
     ],
     why: "fm_system reaches every tenant through role-scoped policies. It is an exceptional authority; an ordinary HTTP request handler must never execute through it.",
   },
 };
 
+/**
+ * WHICH CLIENTS A FILE ACTUALLY TAKES FROM @/lib/db — asked once, used by both
+ * checks below, because they were asking it two different and two differently
+ * wrong ways.
+ *
+ * ⚠️ THE DYNAMIC FORM IS NOT A CURIOSITY, IT IS THE LAZY-DEPS IDIOM. Job modules
+ * resolve their dependencies inside a `defaultDeps()` so importing the module
+ * touches no database, and they do it in two spellings:
+ *
+ *     const { systemDb: db } = await import('@/lib/db');          // destructured
+ *     const c = client ?? (await import('@/lib/db')).db;           // member access
+ *
+ * The confinement check matched only the STATIC form, so a dynamic
+ * `const { authDb } = await import('@/lib/db')` anywhere in the tree was
+ * invisible to it — and authDb's entire value is that its importer list is four
+ * files long. The ratchet had the mirror-image defect: it counted ANY dynamic
+ * import of the module whatever was destructured, so a file that fully adopted
+ * `systemDb` stayed recorded as reaching the migration principal for ever and
+ * the ratchet could never reach zero by honest work.
+ *
+ * ⚠️ AND THE OBVIOUS FIX IS A TRAP, WHICH IS WHY THE PATTERN FORBIDS `{` AND
+ * NEWLINES INSIDE THE BINDING LIST. Written as `\{([^}]*)\}\s*=\s*await …` the
+ * brace that matches is some earlier BLOCK's, and the capture swallows whole
+ * lines up to the real destructuring — so `{ db }` was read as the binding
+ * `const { db` and jobs/sync-crypto.ts and lib/crypto/eth-sync.ts silently left
+ * the ratchet. Measured, not reasoned about: the first version of this fix
+ * dropped four files and two of them genuinely still reach `db`.
+ *
+ * UNRECOGNISED DYNAMIC USE COUNTS AS `db`. A spelling neither form matches is
+ * reported as the migration principal rather than as nothing, so a novel one
+ * fails the ratchet loudly instead of disappearing from it.
+ */
+const DYN_DESTRUCTURE = /\{([^{}\n]*)\}\s*=\s*await\s+import\(\s*["']@\/lib\/db["']\s*\)/g;
+const DYN_MEMBER      = /\(\s*await\s+import\(\s*["']@\/lib\/db["']\s*\)\s*\)\s*\.\s*(\w+)/g;
+const DYN_ANY         = /await\s+import\(\s*["']@\/lib\/db["']\s*\)/g;
+const STATIC_IMPORT   = /import\s*\{([^{}]*)\}\s*from\s*["']@\/lib\/db["']/g;
+
+/** The exported names a file binds from @/lib/db, as it binds them (pre-alias). */
+function clientsTakenFrom(src: string): Set<string> {
+  const taken = new Set<string>();
+  const addBindings = (list: string) => {
+    for (const b of list.split(",")) {
+      const name = b.trim().split(/\s+as\s+/)[0].trim();
+      if (name) taken.add(name);
+    }
+  };
+  for (const m of src.matchAll(STATIC_IMPORT)) addBindings(m[1]);
+  let recognised = 0;
+  for (const m of src.matchAll(DYN_DESTRUCTURE)) { addBindings(m[1]); recognised++; }
+  for (const m of src.matchAll(DYN_MEMBER))      { taken.add(m[1]);   recognised++; }
+  if ([...src.matchAll(DYN_ANY)].length > recognised) taken.add("db");
+  return taken;
+}
+
 for (const [symbol, { allowed, why }] of Object.entries(CONFINED)) {
-  const importers = RUNTIME.filter((f) => {
-    const src = read(f);
-    return new RegExp(`import\\s*\\{[^}]*\\b${symbol}\\b[^}]*\\}\\s*from\\s*["']@/lib/db["']`).test(src);
-  });
+  const importers = RUNTIME.filter((f) => clientsTakenFrom(read(f)).has(symbol));
   const strays = importers.filter((f) => !allowed.some((a) => (a.endsWith("/") ? f.startsWith(a) : f === a)));
   check(`${symbol} is confined to the code that owns that authority`,
     strays.length === 0,
@@ -128,14 +197,10 @@ for (const [symbol, { allowed, why }] of Object.entries(CONFINED)) {
 
 const BASELINE_FILE = "scripts/lib/db-authority-baseline.json";
 
-const globalImporters = RUNTIME.filter((f) => {
-  const src = read(f);
-  // `db` as a named import from @/lib/db, not tenantDb/authDb/systemDb.
-  const m = src.match(/import\s*\{([^}]*)\}\s*from\s*["']@\/lib\/db["']/);
-  if (m && m[1].split(",").some((s) => s.trim().split(/\s+as\s+/)[0].trim() === "db")) return true;
-  // dynamic import, which the investigation found in at least one job
-  return /await\s+import\(\s*["']@\/lib\/db["']\s*\)/.test(src);
-}).sort();
+// `db` — the migration principal — however it was reached: statically, by
+// destructuring a dynamic import, or off one as a member. Not tenantDb /
+// authDb / systemDb, which are the point of adopting an authority.
+const globalImporters = RUNTIME.filter((f) => clientsTakenFrom(read(f)).has("db")).sort();
 
 const baselinePath = join(ROOT, BASELINE_FILE);
 

@@ -65,17 +65,27 @@ export async function POST(req: NextRequest) {
     const normalizedEmail = email.toLowerCase().trim();
     const trimmedNote = typeof note === "string" ? note.trim() : "";
 
-    // Upsert-by-email: a re-submission of the same address updates nothing that
-    // could leak state (it only refreshes the note on a still-PENDING row) and
-    // never resets an APPROVED/DENIED/REDEEMED lifecycle. Create-side seeds a
-    // fresh PENDING request. Either way the response is identical (below).
-    await db.betaAccessRequest.upsert({
-      where:  { email: normalizedEmail },
-      update: {}, // never disturb an existing request's status/token/decision
-      create: {
-        email: normalizedEmail,
-        note:  trimmedNote || null,
-      },
+    // INSERT … ON CONFLICT DO NOTHING, by email.
+    //
+    // This was an `upsert` with an EMPTY `update`, which is the same intent said
+    // a more expensive way: never disturb an existing request's status, token or
+    // decision. RLS-C-S6 narrowed the statement to match the intent, because the
+    // two differ in AUTHORITY. An upsert needs SELECT (to detect the conflict)
+    // and UPDATE (to resolve it) on a table whose only non-operator privilege is
+    // INSERT, so under any converted role a repeat submission failed. A
+    // conflict-ignoring insert needs neither, which means the public intake
+    // STRUCTURALLY CANNOT READ this table — the strongest form of the
+    // non-enumeration property the route already promises, since a privilege it
+    // does not hold cannot be misused by a later edit.
+    //
+    // ⚠️ THE COUNT IS DELIBERATELY DISCARDED. `createMany` returns 1 for a new
+    // address and 0 for one already on the waitlist: branching on it — or
+    // letting it reach the response — would reintroduce exactly the existence
+    // oracle this endpoint is built not to be. The response below is identical
+    // either way.
+    await db.betaAccessRequest.createMany({
+      data: [{ email: normalizedEmail, note: trimmedNote || null }],
+      skipDuplicates: true,
     });
 
     // Forensic trail — no userId (there is no account), ip/user-agent captured.

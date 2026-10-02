@@ -11,7 +11,14 @@
  */
 
 import { redirect } from "next/navigation";
-import { db } from "@/lib/db";
+// RLS-C-S6 — fm_system, because this review surface is DEPLOYMENT-WIDE by
+// construction: MerchantMergeDecision is revoked from the tenant role, and the
+// candidate facts it joins are per-merchant transaction counts across every
+// tenant. Under fm_app those counts would silently narrow to the reviewing
+// operator's own transactions — a wrong answer, not a refusal. The gate is
+// Merchant Operations Space membership (requireMerchantOpsMember), which is
+// where the authorization for that reach lives.
+import { systemDb as db } from "@/lib/db";
 import { requireMerchantOpsMember } from "@/lib/merchant-ops-access";
 import { getPendingMergeCandidates } from "@/lib/transactions/merchant-merge-review";
 import { MergeReviewList } from "./MergeReviewList";

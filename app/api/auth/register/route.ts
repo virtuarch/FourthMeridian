@@ -28,13 +28,13 @@ import { hashResetToken } from "@/lib/password-reset-token";
 import { sendEmail } from "@/lib/email/send";
 import { buildVerifyUrl } from "@/lib/email/verify-url";
 import { possessive } from "@/lib/format";
-import { EmploymentStatus, UseCase, SpaceMemberRole, BetaAccessRequestStatus, Prisma } from "@prisma/client";
+import { EmploymentStatus, UseCase, SpaceMemberRole, Prisma } from "@prisma/client";
 import { limitByIp } from "@/lib/rate-limit";
 import { getRequestMeta } from "@/lib/api";
 import { verifyCaptchaToken } from "@/lib/captcha";
 import { AuditAction } from "@/lib/audit-actions";
 import { getMinPasswordLength, getRegistrationMode } from "@/lib/platform-settings";
-import { validateInvite } from "@/lib/registration-policy";
+import { validateInvite, redeemBetaInvite, InviteNotConsumedError } from "@/lib/registration-policy";
 import { getTemplateForCategory } from "@/lib/space-templates/registry";
 import { planTemplateApplication } from "@/lib/space-templates/apply";
 
@@ -296,18 +296,18 @@ export async function POST(req: NextRequest) {
       });
 
       // Consume the beta invite single-use, inside the same transaction so the
-      // account and the redemption commit together (or not at all). The
-      // status: APPROVED guard makes a concurrent second redemption a no-op.
+      // account and the redemption commit together (or not at all).
+      //
+      // ⚠️ RLS-C-S6 — THE COUNT IS NOW READ, AND A ZERO ABORTS THIS TRANSACTION.
+      // This used to be an inline updateMany whose count was discarded, on the
+      // reasoning that "the status: APPROVED guard makes a concurrent second
+      // redemption a no-op". It is a no-op for the ROW and not for the account:
+      // the registration completed regardless, leaving `inviteTokenHash`
+      // non-null and the single-use invite reusable for ever. Under a tenant or
+      // pre-identity role a policy refusal produces the identical silent zero.
+      // redeemBetaInvite() raises instead; see lib/registration-policy.ts.
       if (betaRequestId) {
-        await tx.betaAccessRequest.updateMany({
-          where: { id: betaRequestId, status: BetaAccessRequestStatus.APPROVED },
-          data:  {
-            status:          BetaAccessRequestStatus.REDEEMED,
-            redeemedAt:      new Date(),
-            redeemedUserId:  newUser.id,
-            inviteTokenHash: null, // single-use — the token can never resolve again
-          },
-        });
+        await redeemBetaInvite(tx, { requestId: betaRequestId, redeemedUserId: newUser.id });
         await tx.auditLog.create({
           data: {
             userId:   newUser.id,
@@ -346,6 +346,17 @@ export async function POST(req: NextRequest) {
       { status: 201 },
     );
   } catch (err) {
+    // RLS-C-S6 — an unconsumed invite is reported, never swallowed. The whole
+    // transaction (user, Space, membership, agent) has already rolled back, so
+    // no account exists against an invite that is still outstanding. 409, not
+    // 500: the honest meaning is "that invite is no longer yours to redeem".
+    if (err instanceof InviteNotConsumedError) {
+      console.error(`[register] invite NOT consumed (${err.requestId}, matched ${err.matched}) — registration aborted:`, err.message);
+      return NextResponse.json(
+        { error: "This invite could not be redeemed. It may already have been used — please request access again." },
+        { status: 409 },
+      );
+    }
     console.error("[register] error:", err);
     return NextResponse.json({ error: "Registration failed. Please try again." }, { status: 500 });
   }

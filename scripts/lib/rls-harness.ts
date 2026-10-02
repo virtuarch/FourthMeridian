@@ -272,8 +272,42 @@ insert into "FxRate" (id,date,base,quote,rate,source) values ('fx1',current_date
 -- Operational rows for the activity timeline. The orphan is the important one:
 -- most SyncIssue rows have no derivable tenant at all, and fm_app must not see
 -- them even though it may see the two that are account-scoped.
-insert into "SyncIssue" (id,kind,"financialAccountId","plaidTransactionId",resolved,"updatedAt") values
-  ('si_alice','BALANCE_TX_MISMATCH','acct_alice','ptx1',false,now()),
-  ('si_bob','BALANCE_TX_MISMATCH','acct_bob','ptx2',false,now()),
-  ('si_orphan','BALANCE_TX_MISMATCH',null,'ptx3',false,now());
+-- ⚠️ lastOccurredAt IS SET ON THESE ROWS AND ON NO NEW ONE. It is the column
+-- RLS-16 deliberately left OUT of the tenant role's six, and the scheduled
+-- wallet sweep groups by it, so both halves of that case need a non-null clock
+-- to read: an empty set would make "fm_app cannot read it" and "fm_system can
+-- group by it" look fine for the wrong reason. Adding a FOURTH SyncIssue row
+-- would instead have changed what Alice sees and silently relaxed RLS-16's
+-- visibility pin, which is the opposite of a regression test.
+insert into "SyncIssue" (id,kind,"financialAccountId","plaidTransactionId",resolved,"lastOccurredAt","updatedAt") values
+  ('si_alice','BALANCE_TX_MISMATCH','acct_alice','ptx1',false,now(),now()),
+  ('si_bob','BALANCE_TX_MISMATCH','acct_bob','ptx2',false,now(),now()),
+  ('si_orphan','BALANCE_TX_MISMATCH',null,'ptx3',false,null,now());
+
+-- ── BetaAccessRequest — PRE-TENANT BY CONSTRUCTION ───────────────────────────
+-- There is no User row for any of these subjects, so no tenant predicate can
+-- exist and no fixture here belongs to Alice or Bob. The four shapes are each
+-- load-bearing:
+--
+--   bar_live        APPROVED + outstanding token — the ONE row a redemption may
+--                   consume, and the one validateInvite must resolve. Its hash
+--                   is replaced at runtime with hashResetToken(a real token).
+--   bar_pending     a waitlist entry nobody decided. ⚠️ ITS EXISTENCE IS THE
+--                   ANTI-ENUMERATION TEST'S DENOMINATOR: "the public role cannot
+--                   find waitlisted@example.test" is vacuous over an empty
+--                   table, and that is the exact bug RLS-14 found once already.
+--   bar_notoken     APPROVED but with NO outstanding token — satisfies the
+--                   application's status: APPROVED compare-and-swap and is
+--                   HIDDEN by the fm_auth policy. The only fixture that can
+--                   reproduce the silent refusal the redemption guard exists for.
+--   bar_redeemed    already consumed — the ordinary lost-race zero.
+insert into "BetaAccessRequest" (id,email,status,"inviteTokenHash","inviteExpiresAt","invitedAt","redeemedAt","redeemedUserId") values
+  ('bar_live',    'invitee@example.test',    'APPROVED','hash_placeholder_live', now() + interval '7 days', now(), null, null),
+  -- A SECOND live invite, so the WITH CHECK half can be tested against a row the
+  -- USING half admits. Destroying a token without consuming the invite must
+  -- RAISE, and that is unprovable once the only live invite has been redeemed.
+  ('bar_live2',   'invitee2@example.test',   'APPROVED','hash_live2',            now() + interval '7 days', now(), null, null),
+  ('bar_pending', 'waitlisted@example.test', 'PENDING', null,                    null,                      null, null, null),
+  ('bar_notoken', 'revoked@example.test',    'APPROVED',null,                    now() + interval '7 days', now(), null, null),
+  ('bar_redeemed','already@example.test',    'REDEEMED',null,                    null,                      now(), now(), 'some_prior_user');
 `;
