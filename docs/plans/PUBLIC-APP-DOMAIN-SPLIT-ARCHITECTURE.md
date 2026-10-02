@@ -769,7 +769,8 @@ Nothing outside NextAuth uses the secret.
 **Combine Preview rotation with the Stage A deploy:** Stage A's cookie rename already signs every Preview user out once, so doing both in one Preview deploy costs a single sign-out.
 
 **Production rotation:** every Production session ends; there is no data effect.
-- It is needed **twice**: once to end the Preview-exposure window (recommended soon after Preview proves the procedure), and again immediately before Production Stage D (§16.2, REQUIRED).
+- It serves one purpose: ending the Preview-exposure window. It is recommended soon after Preview proves the procedure.
+- A **separate** invalidation is required before Production Stage D (§16.2). It handles a different problem: sessions still live for the old apex host when `fourthmeridian.com` becomes the public site. It is not needed because the new secret was compromised. It can be another rotation or an authoritative mass revocation, decided at cutover (§17.15).
 - If the first rotation happens close enough to the cutover that no apex sessions are issued after it, one rotation can serve both purposes. That is the owner's timing call.
 
 ### 17.4 `ENCRYPTION_KEY`: data inventory
@@ -989,7 +990,7 @@ The role acted on is the user's **current** role from the store. The 30-second c
 1. Deploy Stage A and P1 to Preview, rotating Preview's secret (B) in the same deploy: one Preview sign-out. Run §17.11 D-1 and D-2.
 2. Deploy the same commit to Production **and rotate Production's secret (C) in that same deploy.** Stage A's `__Host-` rename already signs every Production user out once, so the rotation costs nothing extra.
 3. Do not leave the shared secret in Production for an open-ended period on the strength of P1. P1 narrows what the secret is worth; it does not make the secret private again.
-4. The second Production rotation before Stage D (§16.2) is still required. Mass revocation of every `UserSession` row is an acceptable alternative there.
+4. The domain-cutover invalidation before Stage D (§16.2) is still required, for the apex-session reason in §17.15. It is not a response to any compromise of the new secret. Either a rotation or an authoritative mass revocation of every `UserSession` row satisfies it.
 
 **Remaining authentication risks after P1:**
 1. **Raw `sessionToken` values are returned by two list endpoints.**
@@ -1002,3 +1003,50 @@ The role acted on is the user's **current** role from the store. The 30-second c
 3. `proxy.ts` routes on `token.role`. After a demotion without re-login, the proxy sends `/dashboard` to `/admin`, and the admin layout (store role) sends it back: a redirect loop until sign-out. `scripts/admin-promote.ts` should revoke the user's sessions when it changes a role.
 4. P1 does not check `User.deactivatedAt`. Deactivation and deletion already call `revokeAllUserSessions`, which P1 honours.
 5. The existing cache trade-off is unchanged. Another warm instance can serve verified facts for up to 30 s after a revocation or role change (120 s more only during a store outage). Sensitive routes use `requireFresh*`.
+
+### 17.15 P1b (`ab6b063`): session-token exposure, token-claim authority, role change, deactivation
+
+**Every `sessionToken` serialisation surface found:**
+
+| Surface | Before | Now |
+|---|---|---|
+| `GET /api/auth/session` (`useSession()`, and any server component handing `session` to a client) | P1's session callback set `session.sessionToken`, so every signed-in browser received its own token | **Closed.** The callback does not set it, and `Session` no longer declares it. `lib/session.ts` reads it on the server from the request's own cookie, bound to the id that was just verified |
+| `GET /api/user/sessions` | Spread every row (`...s`), returning every device's token | **Closed.** Explicit `toSessionView()` projection of exactly the rendered fields |
+| `GET /api/admin/security/users/[userId]/sessions` | Spreads every row to any SYSTEM_ADMIN | **Deferred.** RLS-owned file. Pinned by name in `lib/auth/session-token-exposure.test.ts` (the fix is the same projection) |
+| `DELETE /api/user/sessions/[sessionId]` | Returns `{success, isCurrent}` | Never exposed |
+| Logs, capture, audit metadata | — | None found (scanned `app`, `lib`, `jobs`, `scripts`, `proxy.ts`) |
+| Client types | `SessionRow.sessionToken` declared, never read | Removed |
+
+**Token-claim authority classification:**
+
+| Claim | Class | Basis |
+|---|---|---|
+| `id` | **A. Authority** | Proven against the session row (P1) |
+| `sessionToken` | **A. Authority** | Must be a live row owned by `id` (P1). Never serialised (P1b) |
+| `role` | **A. Authority** | Session and guards use the store's current role (P1). The token copy is **C. navigation hint** for `proxy.ts` |
+| `requireTotpSetup` | **A. Authority**, previously sourced from a **client-writable** claim | The jwt callback copies it on `trigger: "update"`, i.e. from `useSession().update()`, so a user pending forced enrolment could clear it with no secret at all. Now derived from current state by `authorize()`'s own rule. The token copy is **C. navigation hint** |
+| `username` | **B. Presentation** | Display and invite-email wording only. Grants nothing |
+| `email`, `name` | **B. Presentation** | Display only |
+
+**Role change:**
+- `scripts/admin-promote.ts` is the only code that writes `User.role`.
+- It now revokes the user's live sessions in the same transaction as the role write and its audit row.
+- So no session outlives its role, and the proxy's token-role hint cannot disagree with the store. No redirect loop can arise from a scripted role change.
+- A manual database edit of `role` must revoke sessions the same way. This is pinned for all code paths by the exposure test.
+
+**Deactivation:** all three paths that set `deactivatedAt` call `revokeAllUserSessions` after the write:
+- self-deactivate
+- self-delete (pending deletion)
+- operator
+
+This is now a census-pinned invariant, not an assumption. P1 therefore needs no `deactivatedAt` term of its own.
+
+**Residual bounded exposure (policy unchanged):**
+- Another warm instance can serve verified facts (owner, role, TOTP requirement) for up to `SESSION_CACHE_TTL_MS` (30 s) after a revocation, role or setting change.
+- During a store outage it can serve them for up to `SESSION_STALE_GRACE_MS` (120 s) more.
+- `requireFresh*` guards always re-read.
+
+**The three `NEXTAUTH_SECRET` / session actions, stated precisely:**
+1. **P1 / P1b (done):** possession of `NEXTAUTH_SECRET` alone is insufficient, and the material that would complete a forgery is no longer handed to browsers. The RLS-owned admin route is the one exception until it is released.
+2. **First Production rotation:** invalidates the secret historically shared with Preview.
+3. **Domain-cutover invalidation:** addresses sessions still live for the old apex host before `fourthmeridian.com` becomes the public site. It may be another rotation or an authoritative mass session revocation, depending on the final cutover architecture. It is **not** a response to any compromise of the new secret.
