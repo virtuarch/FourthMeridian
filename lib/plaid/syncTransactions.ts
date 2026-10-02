@@ -145,7 +145,7 @@ import { economicDateWriteFields } from "@/lib/transactions/economic-date-write"
 // v2.6-EVENT-1 — `reprojectEvent` beside the observation writer: a tombstone
 // changes an event's liveness just as surely as a new observation does, and both
 // must go through the one module that owns event state.
-import { recordTransactionObservation, reprojectEvent } from "@/lib/transactions/event-write";
+import { isEventWriteIntegrityFailure, recordTransactionObservation, reprojectEvent } from "@/lib/transactions/event-write";
 import {
   transferEvidenceWriteFields,
   NULL_TRANSFER_EVIDENCE_FIELDS,
@@ -722,6 +722,62 @@ export async function syncTransactionsForItem(
             observedAt: new Date(),
           });
         } catch (e) {
+          // ── RLS-P-2 / EVENT-WRITE-1 — A SWALLOWED WRITE GETS A DURABLE RECORD ──
+          //
+          // `EventWriteIntegrityFailure` says in its own TYPE that nothing of
+          // the event was persisted while the transaction row already
+          // committed (`canonicalStatePersisted: false`). That is precisely the
+          // shape this slice exists to stop losing: the `console.warn` below
+          // was the whole record, and a warn in a serverless log window is not
+          // a record. EVENT-WRITE-1 named this catch block as the integration
+          // point and correctly did not edit it.
+          //
+          // ⚠️ STILL NON-BLOCKING, AND THAT IS NOT NEGOTIABLE. Event identity
+          // is additive and nothing reads it yet. The cursor MUST still
+          // advance: holding a page because a derived layer failed would stop
+          // delivering real transactions over a gap that cost the member
+          // nothing. So this records and returns — it does not rethrow and it
+          // does not enter `pageFailures`.
+          if (isEventWriteIntegrityFailure(e)) {
+            await recordSyncIssue({
+              kind: "UPSERT_ERROR",
+              plaidItemId: plaidItemDbId,
+              financialAccountId,
+              // ⚠️ `plaidTransactionId` IS DELIBERATELY OMITTED, and omitting it
+              // is load-bearing rather than tidy. `classifySyncIssue` treats a
+              // row that names a bank transaction as an AFFIRMATIVE transaction
+              // signal and sets `customerActionable`, which tells the member to
+              // reconnect their bank. No member action helps here and no
+              // financial record is missing — the row committed. The provider's
+              // id travels inside `detail` instead, where the member-facing
+              // activity route is forbidden from reading it.
+              detail: {
+                // SPREAD FIRST. `EventWriteIntegrityDetail` has its own `stage`
+                // ("OBSERVATION_WRITE" | "REPLAY_HEAL" | "TERMINAL_STATE_CHECK")
+                // and `detail.stage` is the INCIDENT IDENTITY DISCRIMINATOR
+                // (lib/platform/incidents/operation-key.ts). Spreading after the
+                // assignment would key every episode on the event-writer's
+                // internal phase and split one operational problem into three.
+                ...e.detail,
+                eventWriteStage: e.detail.stage,
+                stage: "event-identity-persist",
+                runId,
+                // The cursor is NOT held, so a later successful sync proves
+                // nothing about this row and must never auto-resolve it
+                // (lib/plaid/syncIssues.ts). Stated rather than left to the
+                // absence of the key.
+                cursorBlocking: false,
+                canonicalStatePersisted: false,
+              },
+            }, incidents, {
+              onWriteFailure: (ledgerTable, phase) =>
+                console.error(
+                  `[l8] the event-identity incident could NOT be recorded either (${ledgerTable}/${phase}) — ` +
+                  `this failure now has no durable record at all for transaction ${txn.transaction_id}.`,
+                ),
+            });
+            return;
+          }
           console.warn(`[l8] observation skipped for ${txn.transaction_id} — event identity is additive and non-blocking:`, redactedErrorForLog(e));
         }
       };
