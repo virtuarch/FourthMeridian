@@ -37,10 +37,109 @@
  *     that don't change the value (the exact-match branch) — it self-heals
  *     any row that was never backfilled rather than requiring the caller to
  *     determine whether the value actually changed.
+ *
+ * ── RLS-ACC-S4 — THE CATCH-EVERYTHING WAS SWALLOWING AN AUTHORITY REFUSAL ────
+ * The catch below exists for ONE condition, stated in its own comment: a
+ * unique-constraint collision, which "should not happen for PLAID". Under
+ * `fm_app` it was also swallowing something entirely different.
+ *
+ * `ProviderAccountIdentity` is an account-SUBTREE table (migration §15), so
+ * `fm_app_ins` is `WITH CHECK (fm_account_visible("financialAccountId"))` — false
+ * until an ACTIVE `SpaceAccountLink` exists in a Space this identity belongs to.
+ * MEASURED on a real provisioned fm_app role against a throwaway Postgres:
+ *
+ *     tx.providerAccountIdentity.create({ ... })   on an account with no link
+ *       → PostgresError code "42501",
+ *         "new row violates row-level security policy for table
+ *          \"ProviderAccountIdentity\""
+ *       → surfaced as PrismaClientUnknownRequestError with `code` UNDEFINED
+ *
+ * ⚠️ THERE IS NO TYPED PRISMA CODE. `e.code === "P2002"` never matches it, so
+ * every refusal fell straight through to `console.warn` and the function returned
+ * normally — and the identity row was then permanently absent. Which manifests
+ * LATER, somewhere else, as the `[D2-3G]` coverage-gap warning. That is the
+ * fallback whose entire job is to surface this class of problem, so swallowing
+ * the refusal defeats the only detector we have for it.
+ *
+ * So the two are now DISTINGUISHED. A collision is still swallowed, exactly as
+ * before. An authority refusal RAISES `ProviderIdentityAuthorityRefusedError`.
+ *
+ * ⚠️ THIS IS A DELIBERATE PRE-FLIP BLOCKER, AND IT HAS A NAMED UNBLOCKING EDIT.
+ * `lib/plaid/exchangeToken.ts:418` calls this helper BEFORE `persistAccountSpine`
+ * (:427), i.e. before the account has any link, so on a freshly imported Plaid
+ * account the refusal is reachable. Today it CANNOT fire — there are no role
+ * URLs, every client falls back to one principal, and `db` carries BYPASSRLS —
+ * so product behaviour is unchanged by this commit. It becomes reachable at the
+ * same moment the silent identity loss does, which is exactly when an operator
+ * should hear about it rather than read a coverage-gap warning three surfaces
+ * away. The edit that clears it is one move: in `lib/plaid/exchangeToken.ts`,
+ * call `dualWriteProviderAccountIdentity` AFTER `persistAccountSpine` rather than
+ * before. That file is outside this slice, so the edit is requested, not made.
+ *
+ * If the owner prefers the refusal non-fatal instead, the whole change is the one
+ * `throw` below; everything else here is diagnosis.
  */
 
-import { db } from "@/lib/db";
 import { ProviderType } from "@prisma/client";
+import { db } from "@/lib/db";
+
+/**
+ * A database AUTHORITY refused the statement — row-level security or a missing
+ * grant — as opposed to any modelled application condition.
+ *
+ * ── WHY IT IS DETECTED THIS WAY AND NOT BY A CODE ───────────────────────────
+ * A refused MODEL operation reaches us as `PrismaClientUnknownRequestError` with
+ * NO `code` at all; the SQLSTATE and Postgres's own wording survive only inside
+ * the message. (A refused RAW query is different: Prisma reports it as the TYPED
+ * `P2010`, which is why P2010 is the one typed code admitted here — see
+ * lib/plaid/refresh-ledger-failure-matrix.test.ts's note.) Every OTHER typed
+ * `P2xxx` is a modelled condition — P2002 unique collision, P2003 foreign key,
+ * P2025 not found — and none of them is a policy refusal, so a typed code is a
+ * positive reason to say NO.
+ *
+ * Exported so the next module with a defensive catch does not re-derive it. It
+ * belongs in `lib/db/conditional-write.ts` beside `IndeterminateWriteError` and
+ * `PartialBulkWriteError`; that file is outside this slice, so the move is
+ * requested rather than made.
+ */
+export function isAuthorityRefusal(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const code = (e as { code?: unknown }).code;
+  if (typeof code === "string" && code !== "P2010") return false;
+  const meta = (e as { meta?: unknown }).meta;
+  const text = `${e.message} ${meta === undefined ? "" : JSON.stringify(meta)}`;
+  return (
+    /\b42501\b/.test(text) ||
+    /row-level security policy/i.test(text) ||
+    /permission denied for table/i.test(text)
+  );
+}
+
+/**
+ * The mirror-table write was refused by an AUTHORITY, not lost to a collision.
+ *
+ * Carries the account and provider so an operator can find the account whose
+ * identity row is missing, and the cause so the SQLSTATE is not thrown away.
+ * Never the externalAccountId — that is a provider identifier and this travels
+ * into logs.
+ */
+export class ProviderIdentityAuthorityRefusedError extends Error {
+  readonly financialAccountId: string;
+  readonly provider: ProviderType;
+
+  constructor(financialAccountId: string, provider: ProviderType, cause: unknown) {
+    super(
+      `ProviderAccountIdentity for account "${financialAccountId}" provider ${provider}: the write was REFUSED BY A DATABASE AUTHORITY, not lost to a unique collision. ` +
+        `Refusing to swallow it — this helper is best-effort about PROVIDER facts, never about whether it was allowed to run. ` +
+        `A swallowed refusal leaves the identity row permanently absent and resurfaces as the [D2-3G] coverage gap, with nothing pointing back here. ` +
+        `The usual cause is write ORDER: the account-subtree policies require an ACTIVE SpaceAccountLink in a visible Space, so the link must exist first.`,
+      { cause },
+    );
+    this.name = "ProviderIdentityAuthorityRefusedError";
+    this.financialAccountId = financialAccountId;
+    this.provider = provider;
+  }
+}
 
 /**
  * Ensures exactly one ProviderAccountIdentity row exists for
@@ -96,6 +195,13 @@ export async function dualWriteProviderAccountIdentity(
     }
     // else: already correct — idempotent no-op.
   } catch (e) {
+    // ⚠️ AN AUTHORITY REFUSAL IS NOT THE CONDITION THIS CATCH WAS WRITTEN FOR.
+    // It arrives with NO typed Prisma code, so it used to fall straight through
+    // to the warn below and the function returned as if it had succeeded. See
+    // the module header for the measurement and for the one edit that clears it.
+    if (isAuthorityRefusal(e)) {
+      throw new ProviderIdentityAuthorityRefusedError(financialAccountId, provider, e);
+    }
     // Defensive only — see module header. A unique-constraint collision here
     // would mean some OTHER FinancialAccount already holds this
     // externalAccountId, which should not happen for PLAID (the value comes

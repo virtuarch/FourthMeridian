@@ -24,19 +24,75 @@
  * Everything here is best-effort / non-fatal — spine bookkeeping must never
  * break wallet add/re-add/reactivate or a balance sync. Mirrors the
  * dualWriteProviderAccountIdentity / dualWriteSpaceAccountLink philosophy.
+ *
+ * ── RLS-ACC-S4 — THE AUTHORITY, AND WHERE THIS SLICE STOPS ───────────────────
+ * Six functions here had `client?: DbClient` resolved with `?? db`. No caller
+ * anywhere passes one, so all six resolved to the migration principal in
+ * production. Two of them are now REQUIRED and LEADING; four are not, and the
+ * reason is a boundary rather than a judgement:
+ *
+ *   CLOSED — `ensureWalletConnection` and `linkAccountConnectionToWalletConnection`
+ *     had NO importer outside this module (proved by five independent methods;
+ *     see the reachability note below). They are module-private now, and their
+ *     client is required and leading, with the compiler enumerating the one
+ *     caller: `alignWalletProviderSpine`.
+ *
+ *   OPEN, AND NAMED — `recordWalletSyncRefusal`, `recordWalletFacetSuccess`,
+ *     `markWalletAccountConnectionSynced` and `alignWalletProviderSpine` keep
+ *     `client?`. Making those required is a COMPILE ERROR in five files this
+ *     slice does not own, one of which is explicitly fenced:
+ *
+ *       app/api/accounts/wallet/route.ts   :190 :272 :346   FENCED (calls the
+ *                                                           blocked merge subgraph)
+ *       lib/crypto/btc-sync.ts             :1064 :1066 :1067 :1069 :1072
+ *       lib/crypto/sol-sync.ts             :281
+ *       lib/crypto/evm-native.ts           :302
+ *       lib/crypto/wallet-sync-dispatch.ts :596 :668 :770 :821
+ *
+ *     That is not a mechanical edit to request either. Four of those five are
+ *     PROVIDER-SYNC paths that interleave explorer and price HTTP with their
+ *     writes, and `withTenantDb` is a SECURITY BOUNDARY, not a request-lifetime
+ *     container — it must not span a network round trip. Their eventual authority
+ *     is a genuine design decision (a per-phase tenant client passed down, or
+ *     `fm_system` for the scheduled refresh, which would make `lib/crypto/` a
+ *     systemDb neighbourhood and needs the `links-everywhere.ts` treatment). So
+ *     it is a slice of its own, and the ask is recorded here rather than guessed.
+ *
+ *     What DID change for those four: the `?? db` is resolved ONCE per function,
+ *     on its own line, under a marker. A defaulted authority that LOOKS converted
+ *     is strictly worse than an obvious one (RLS-AI-S6), and four obvious ones
+ *     that say what they are beat six hidden ones. The module keeps its `db`
+ *     import and therefore its place on the ratchet, honestly.
+ *
+ * ── THREE DEAD EXPORTS, AND THE COUNT WAS ONE SHORT ──────────────────────────
+ * Checked five ways, because a bare grep has been wrong twice in this programme:
+ * static importers of this module path, `require`, dynamic `import()`, barrel
+ * re-export, and a bare symbol grep across every .ts/.tsx/.js/.json/.md in the
+ * repo. Exactly five files import from here, between them exactly six symbols —
+ * `alignWalletProviderSpine`, `touchWalletConnectionStatus`,
+ * `clearWalletConnectionError`, `markWalletAccountConnectionSynced`,
+ * `recordWalletSyncRefusal`, `recordWalletFacetSuccess`. Dead as exports:
+ *
+ *   · `DbClient` — every external `DbClient` import in the repo comes from
+ *     `@/lib/accounts/space-account-link`, never from here. A duplicate type.
+ *     DELETED; this module imports the shared one, which also drops the
+ *     `typeof db` that made the type depend on the client value.
+ *   · the `walletConnectionCredential` / `walletExternalConnectionId` re-export —
+ *     both consumers (`lib/accounts/wallet-connection.test.ts`,
+ *     `lib/crypto/wallet-card-truth.test.ts`) import them from
+ *     `@/lib/accounts/wallet-connection-format` directly. DELETED.
+ *   · `ensureWalletConnection` AND `linkAccountConnectionToWalletConnection` —
+ *     TWO functions, not one. Neither has an importer; both are called only from
+ *     `alignWalletProviderSpine` in this file. UN-EXPORTED, not deleted: they are
+ *     live at runtime and deleting them would be wrong.
  */
 
 import { db } from "@/lib/db";
-import { ConnectionStatus, ProviderType, type Prisma } from "@prisma/client";
-import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identity";
+import { ConnectionStatus, ProviderType } from "@prisma/client";
+import { dualWriteProviderAccountIdentity, isAuthorityRefusal } from "@/lib/accounts/provider-identity";
 import { walletConnectionCredential, walletExternalConnectionId } from "@/lib/accounts/wallet-connection-format";
 import { setWalletConnectionHealth } from "@/lib/connections/health-transitions";
-
-export type DbClient = Prisma.TransactionClient | typeof db;
-
-// Re-exported for call-site convenience; defined in the DB-free format module
-// so they stay unit-testable under the bare-tsx runner.
-export { walletConnectionCredential, walletExternalConnectionId };
+import type { DbClient } from "@/lib/accounts/space-account-link";
 
 /**
  * Find-or-create the WALLET Connection backing a single-address wallet, deduped
@@ -46,13 +102,11 @@ export { walletConnectionCredential, walletExternalConnectionId };
  * concurrent double-add could create two rows — acceptable and matches the
  * findFirst-then-create pattern the wallet route already uses for accounts.
  */
-export async function ensureWalletConnection(params: {
+async function ensureWalletConnection(client: DbClient, params: {
   userId: string;
   address: string;
   chain: string;
-  client?: DbClient;
 }): Promise<{ id: string }> {
-  const client = params.client ?? db;
   const credential = walletConnectionCredential(params.address, params.chain);
 
   const existing = await client.connection.findFirst({
@@ -78,12 +132,10 @@ export async function ensureWalletConnection(params: {
  * Connection. Only touches rows whose connectionId is still null, so it's
  * idempotent and never repoints a row that already belongs to a Connection.
  */
-export async function linkAccountConnectionToWalletConnection(params: {
+async function linkAccountConnectionToWalletConnection(client: DbClient, params: {
   financialAccountId: string;
   connectionId: string;
-  client?: DbClient;
 }): Promise<void> {
-  const client = params.client ?? db;
   // UI-C1 — RE-POINT A LINK THAT LANDED ON A DIFFERENT ROW FOR THE SAME WALLET.
   //
   // This only ever filled a NULL link, which is right while one wallet can have
@@ -157,7 +209,10 @@ export async function recordWalletSyncRefusal(params: {
   client?: DbClient;
 }): Promise<void> {
   try {
-    const client = params.client ?? db;
+    // RLS-ACC-S4 — UNRESOLVED, AND SAYING SO. This `?? db` is the ONE place
+    // this function's authority is chosen; see the module header for the five
+    // call sites that must name theirs before the parameter can be required.
+    const client: DbClient = params.client ?? db;
     const link = await client.accountConnection.findFirst({
       where:  { financialAccountId: params.financialAccountId, deletedAt: null, connectionId: { not: null } },
       select: { connectionId: true },
@@ -211,7 +266,10 @@ export async function recordWalletFacetSuccess(params: {
   if (params.historyRebuiltAt)     data.historyRebuiltAt     = params.historyRebuiltAt;
   if (Object.keys(data).length === 0) return;
   try {
-    const client = params.client ?? db;
+    // RLS-ACC-S4 — UNRESOLVED, AND SAYING SO. This `?? db` is the ONE place
+    // this function's authority is chosen; see the module header for the five
+    // call sites that must name theirs before the parameter can be required.
+    const client: DbClient = params.client ?? db;
     const link = await client.accountConnection.findFirst({
       where:  { financialAccountId: params.financialAccountId, deletedAt: null, connectionId: { not: null } },
       select: { connectionId: true },
@@ -250,7 +308,9 @@ export async function markWalletAccountConnectionSynced(params: {
   financialAccountId: string;
   client?: DbClient;
 }): Promise<void> {
-  const client = params.client ?? db;
+  // RLS-ACC-S4 — UNRESOLVED, AND SAYING SO. See the module header: btc-sync.ts
+  // is this function's only caller and passes nothing.
+  const client: DbClient = params.client ?? db;
   await client.accountConnection.updateMany({
     where: { financialAccountId: params.financialAccountId, plaidItemDbId: null, deletedAt: null },
     data:  { syncStatus: "synced", lastSyncedAt: new Date() },
@@ -281,16 +341,20 @@ export async function alignWalletProviderSpine(params: {
   descriptorOnly?: boolean;
 }): Promise<string | null> {
   try {
-    const connection = await ensureWalletConnection({
+    // RLS-ACC-S4 — UNRESOLVED, AND RESOLVED EXACTLY ONCE. The two callees below
+    // take their client as a REQUIRED LEADING parameter, so this is the single
+    // place in the wallet-spine path where the authority is chosen, instead of
+    // three `?? db` defaults hidden one per function. See the module header for
+    // the five call sites that block making this one required too.
+    const client: DbClient = params.client ?? db;
+    const connection = await ensureWalletConnection(client, {
       userId:  params.userId,
       address: params.address,
       chain:   params.chain,
-      client:  params.client,
     });
-    await linkAccountConnectionToWalletConnection({
+    await linkAccountConnectionToWalletConnection(client, {
       financialAccountId: params.financialAccountId,
       connectionId:       connection.id,
-      client:             params.client,
     });
     // Identity dual-write is itself best-effort; passing connectionId links the
     // existing (or new) ProviderAccountIdentity row to this Connection. Skipped
@@ -309,11 +373,40 @@ export async function alignWalletProviderSpine(params: {
       // AccountConnection mirror (compatibility) — kept fresh, not authoritative.
       await markWalletAccountConnectionSynced({
         financialAccountId: params.financialAccountId,
-        client:             params.client,
+        client,
       });
     }
     return connection.id;
   } catch (e) {
+    // RLS-ACC-S4 — THE CONTRACT IS HONOURED, THE DIAGNOSIS IS NOT BURIED.
+    //
+    // `dualWriteProviderAccountIdentity` now RAISES on an authority refusal
+    // rather than swallowing it (see that module's header: a 42501 arrives with
+    // no typed Prisma code, so the `P2002` catch never saw it and the identity
+    // row went permanently missing). This catch would re-hide it.
+    //
+    // It is NOT re-thrown, and the asymmetry is deliberate. This function has an
+    // EXPLICIT documented contract that five callers depend on — four of them
+    // background provider-sync paths — that it returns null and never breaks the
+    // caller's primary flow. Breaking that would change product behaviour as a
+    // side effect of an authority migration, which is the drift RLS-C-S7 exists
+    // to prevent. `dualWriteProviderAccountIdentity` makes no such promise about
+    // its caller's flow, which is why the raise lives there: it escapes on the
+    // PLAID exchange path, where the write order is actually wrong, and is
+    // absorbed here, where (after RLS-ACC-S4's inversion of
+    // `persistAccountSpine`) the link already exists and it should never fire.
+    //
+    // So the refusal gets its own severity and its own marker, because an
+    // operator must be able to tell "the explorer was down" from "the database
+    // refused us and a mirror row is now missing".
+    if (isAuthorityRefusal(e)) {
+      console.error(
+        `[wallet-connection] AUTHORITY REFUSED a spine write for account ${params.financialAccountId} — ` +
+        `an identity or connection row is now MISSING, and this is a write-ORDER defect, not a provider failure:`,
+        e,
+      );
+      return null;
+    }
     console.warn(`[wallet-connection] spine alignment failed for account ${params.financialAccountId} (non-fatal):`, e);
     return null;
   }

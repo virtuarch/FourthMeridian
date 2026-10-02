@@ -88,6 +88,51 @@ export interface PersistAccountSpineParams {
  * callers already relied on. FinancialAccount resolution/creation, the
  * ProviderAccountIdentity mirror, and any Connection write stay OUTSIDE this
  * boundary (as they already were), owned by the provider-specific caller.
+ *
+ * ── RLS-ACC-S4 — THE ORDER IS INVERTED, AND IT IS NOT A PREFERENCE ───────────
+ * This writer did `AccountConnection` first and `SpaceAccountLink` second. Under
+ * `fm_app` that order cannot work, and it fails in TWO distinct ways rather than
+ * one. MEASURED against a real provisioned fm_app role on a throwaway Postgres:
+ *
+ *   1. THE WRITE IS REFUSED. `AccountConnection.fm_app_ins` is
+ *      `WITH CHECK (fm_account_visible("financialAccountId"))`, true only while
+ *      an ACTIVE link exists in a visible Space. On an account with no link:
+ *        PostgresError 42501, "new row violates row-level security policy for
+ *        table \"AccountConnection\"" — and an INSERT refusal RAISES, so the
+ *        whole transaction rolls back. `FinancialAccount` is fine: its policy has
+ *        an `ownerUserId` arm for exactly this "visible to its creator before any
+ *        link exists" case (measured: the owner CAN read their link-less
+ *        account). Its subtree has no such arm.
+ *
+ *   2. THE EXISTENCE PROBE IS BLINDED, WHICH IS THE WORSE HALF AND IS NEW.
+ *      The `findFirst` that decides CREATE vs UPDATE is as policy-filtered as the
+ *      write. With the link REVOKED — the re-link case this writer exists to
+ *      serve — it was measured returning NULL for a row that is genuinely there.
+ *      The writer would then take the CREATE branch, and `AccountConnection` has
+ *      NO unique constraint on (financialAccountId, connectedByUserId,
+ *      plaidItemDbId) — only indexes — so the duplicate LANDS. Measured: a second
+ *      identical row created, count 1 → 2, nothing raised. A refused write is
+ *      loud; a blinded read is a silent duplicate.
+ *
+ * Both are closed by one move: `dualWriteSpaceAccountLink` goes FIRST, at the top
+ * of the transaction, so the link that confers visibility exists before anything
+ * reads or writes the subtree. Within the same transaction the just-inserted
+ * link is visible to `fm_account_visible`, measured end to end:
+ * FA.create → SAL.create → AC.create → PAI.create all succeed.
+ *
+ * ⚠️ DO NOT "TIDY" THIS BACK. Reading the connection first is the natural way to
+ * write this function and it is why it was written that way. The ordering is
+ * pinned by source scan in lib/accounts/account-spine-s4.authority.test.ts,
+ * because local development has no role URLs and reversing it would fail nothing
+ * at runtime here. This is the third instance of the phenomenon RLS-C-S7
+ * (b42e8e0) recorded twice for disconnect/restore, and RLS-ACC-S3 found a fourth
+ * and fifth in the manual-asset routes.
+ *
+ * The SpaceAccountLink write is idempotent (`dualWriteSpaceAccountLink` upserts
+ * and reasserts ACTIVE), so moving it earlier changes no outcome — only which
+ * statement observes which state. `computeLinkKind` counts links to decide HOME
+ * vs SHARED and is unaffected: it was already reading the link table, not the
+ * connection table.
  */
 export async function persistAccountSpine(params: PersistAccountSpineParams): Promise<void> {
   const { financialAccountId, spaceId, addedByUserId, creatorUserId, connection } = params;
@@ -96,6 +141,30 @@ export async function persistAccountSpine(params: PersistAccountSpineParams): Pr
   // Run in the caller's transaction when given one (Wallet: FA + spine atomic);
   // otherwise open our own so conn + SAL still commit together (Plaid exchange).
   const run = async (tx: DbClient) => {
+    // ── THE LINK COMES FIRST. See the header: both the connection READ and the
+    //    connection WRITE are gated on `fm_account_visible`, so neither can
+    //    happen correctly before the link that confers it exists.
+    //
+    // D3 Stage B3 — SpaceAccountLink is the sole write target.
+    await dualWriteSpaceAccountLink(tx, {
+      spaceId,
+      financialAccountId,
+      creatorUserId,
+      create: {
+        addedByUserId,
+        visibilityLevel: VisibilityLevel.FULL,
+        status:          ShareStatus.ACTIVE,
+      },
+      update: {
+        status:          ShareStatus.ACTIVE,
+        revokedAt:       null,
+        revokedByUserId: null,
+      },
+    });
+
+    // Now the subtree is reachable, so this probe tells the truth about whether
+    // a connection row exists — which is what decides CREATE vs UPDATE, and
+    // therefore whether a duplicate lands on a table with no unique constraint.
     const existing = await tx.accountConnection.findFirst({
       where: {
         financialAccountId,
@@ -127,23 +196,6 @@ export async function persistAccountSpine(params: PersistAccountSpineParams): Pr
         },
       });
     }
-
-    // D3 Stage B3 — SpaceAccountLink is the sole write target.
-    await dualWriteSpaceAccountLink(tx, {
-      spaceId,
-      financialAccountId,
-      creatorUserId,
-      create: {
-        addedByUserId,
-        visibilityLevel: VisibilityLevel.FULL,
-        status:          ShareStatus.ACTIVE,
-      },
-      update: {
-        status:          ShareStatus.ACTIVE,
-        revokedAt:       null,
-        revokedByUserId: null,
-      },
-    });
   };
 
   if (params.client) await run(params.client);
