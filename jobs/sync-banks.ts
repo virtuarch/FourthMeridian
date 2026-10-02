@@ -271,7 +271,10 @@ export async function syncBanks(): Promise<SyncBanksResult> {
     if (eventsOn && item.investmentsConsent === PlaidInvestmentsConsent.ENABLED) {
       try {
         const accessToken = decryptWithPurpose(item.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN);
-        await ingestInvestmentEvents({ accessToken, plaidItemId: item.id, now: new Date() });
+        // RLS-C-S8 — a cron job's authority, stated at the call site. `db` and
+        // not `systemDb` only because the Plaid surface's split-authority slice
+        // owns that move; the parameter now makes it a one-line change.
+        await ingestInvestmentEvents(db, { accessToken, plaidItemId: item.id, now: new Date() });
         eventItems++;
       } catch (evErr) {
         console.warn(`[sync-banks] investment event ingestion failed for "${item.institutionName}" (PlaidItem ${item.id}) (non-fatal):`, redactedErrorForLog(evErr));

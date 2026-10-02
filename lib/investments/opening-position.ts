@@ -177,8 +177,8 @@ export async function assertOpeningPosition(params: AssertOpeningPositionParams)
   // ── Bounded reconstruction repair (non-fatal) ──────────────────────────────
   let repair: AssertOpeningPositionResult["repair"];
   try {
-    const m = await repairReconstructionForAccount({
-      financialAccountId, affectedInstrumentIds: [instrumentId], affectedCash: false, now, client,
+    const m = await repairReconstructionForAccount(client, {
+      financialAccountId, affectedInstrumentIds: [instrumentId], affectedCash: false, now,
     });
     repair = { status: m.status, repairedInstrumentIds: m.repairedInstrumentIds };
   } catch (err) {

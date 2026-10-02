@@ -99,10 +99,10 @@ async function main(): Promise<void> {
   ): Promise<CoverageRow[]> => {
     const { rows, client } = stubClient();
     stubPlaid(behaviour);
-    await ingestInvestmentEvents({
+    await ingestInvestmentEvents(client, {
       accessToken: "stub-token", plaidItemId: "item_1",
       now: new Date("2026-07-31T00:00:00Z"),
-      coveredFinancialAccountIds: covered, client,
+      coveredFinancialAccountIds: covered,
     });
     return rows;
   };
@@ -156,9 +156,9 @@ async function main(): Promise<void> {
     check("PRODUCT_NOT_READY records NOT_READY", notReady.every((r) => r.outcome === "NOT_READY"));
 
     const { rows, client } = stubClient();
-    await recordDisabledInvestmentEventCoverage({
+    await recordDisabledInvestmentEventCoverage(client, {
       plaidItemId: "item_1", coveredFinancialAccountIds: ["fa_1"],
-      now: new Date("2026-07-31T00:00:00Z"), client,
+      now: new Date("2026-07-31T00:00:00Z"),
     });
     check("the kill switch being off records DISABLED",
       rows.length === 1 && rows[0].outcome === "DISABLED");
@@ -174,9 +174,9 @@ async function main(): Promise<void> {
 
     const { rows, client } = stubClient();
     stubPlaid({ kind: "pages", total: 0, pages: [[]] });
-    await ingestInvestmentEvents({
+    await ingestInvestmentEvents(client, {
       accessToken: "stub", now: new Date("2026-07-31T00:00:00Z"),
-      coveredFinancialAccountIds: ["fa_1"], client,
+      coveredFinancialAccountIds: ["fa_1"],
     });
     check("no plaidItemId → no rows (coverage must attach to an item)", rows.length === 0);
   }

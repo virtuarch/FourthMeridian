@@ -193,12 +193,27 @@ async function main(): Promise<void> {
     check("rollback still requires a FRESH session (destructive action)",
       /requireFreshUser\s*\(\s*\)/.test(code));
 
-    // Order: authorize before any destructive work. The guard must precede the
-    // $transaction that performs the soft-delete.
-    const guardAt = code.indexOf("resolveImportableFinancialAccount(");
-    const txAt    = code.indexOf("db.$transaction");
-    check("guard precedes the soft-delete transaction",
-      guardAt !== -1 && txAt !== -1 && guardAt < txAt, `guard@${guardAt} tx@${txAt}`);
+    // Order: authorize before any destructive work.
+    //
+    // RLS-C-S8 — this used to look for `db.$transaction`, which no longer exists:
+    // the route runs in three `withTenantDb` phases, and the FIRST of them now
+    // precedes the guard on purpose (it resolves the batch under the caller's own
+    // identity, because the guard needs the batch's financialAccountId to run at
+    // all). So the anchor moved to the DESTRUCTIVE STATEMENT ITSELF rather than to
+    // whatever opens a transaction — which is both what the comment above always
+    // meant and immune to the next change of opener.
+    const guardAt     = code.indexOf("resolveImportableFinancialAccount(");
+    const softDelete  = code.indexOf("transaction.updateMany");
+    check("guard precedes the soft-delete",
+      guardAt !== -1 && softDelete !== -1 && guardAt < softDelete, `guard@${guardAt} softDelete@${softDelete}`);
+    // …and the one thing that legitimately runs BEFORE the guard is a READ.
+    const firstPhase = code.indexOf("withTenantDb");
+    const resolveRead = code.indexOf("importBatch.findUnique");
+    check("the only pre-guard database work is the batch resolution READ",
+      firstPhase !== -1 && firstPhase < guardAt && resolveRead > firstPhase && resolveRead < guardAt,
+      `phase@${firstPhase} read@${resolveRead} guard@${guardAt}`);
+    check("every destructive write happens inside a tenant phase, never on a root client",
+      !/\bdb\s*\.\w/.test(code) && !/db\.\$transaction/.test(code));
   }
 
   if (failures > 0) {

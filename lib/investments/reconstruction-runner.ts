@@ -20,8 +20,8 @@
  * Reads/writes only A4-owned data. No reader/UI changes, no valuation, no prices.
  */
 
-import { AssetClass, InvestmentCoverageOutcome, InvestmentEventType, PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
-import { db } from "@/lib/db";
+import { AssetClass, InvestmentCoverageOutcome, InvestmentEventType, PositionOrigin, type Prisma } from "@prisma/client";
+import { inOneTransaction, type WriteClient } from "@/lib/db/write-phase";
 import { COMPLETENESS_TIERS, isCompletenessTier } from "@/lib/perspective-engine/completeness";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
 // V26-A4-SIGN — the canonical type→direction mapping (BUY +, SELL −), reused
@@ -41,7 +41,13 @@ import {
   type WalkReconciliation,
 } from "./reconstruction-core";
 
-type Client = PrismaClient | Prisma.TransactionClient;
+/**
+ * RLS-C-S8 — every read and write below executes through the authority its
+ * CALLER earned. The local `Client` alias (and the `?? db` that went with it)
+ * is gone: see lib/db/write-phase.ts for why an optional authority is an
+ * ambient one.
+ */
+type Client = WriteClient;
 
 /** DERIVED PositionObservation.source for reconstruction rows (distinct from brokerage-cash). */
 export const RECONSTRUCTION_SOURCE = "reconstruction";
@@ -316,7 +322,6 @@ export interface ReconstructionMetrics {
 export interface ReconstructAccountParams {
   financialAccountId: string;
   now: Date;
-  client?: Client;
   /**
    * Bounded repair (A4-3): restrict the run to these instrument ids. Omitted ⇒
    * reconstruct every anchored/closed position for the account (the one-time run).
@@ -330,11 +335,10 @@ export interface ReconstructAccountParams {
  * Best-effort by contract — callers wrap in try/catch; a persistence failure
  * must never fail a refresh or ingestion.
  */
-export async function reconstructAccount(params: ReconstructAccountParams): Promise<ReconstructionMetrics> {
+export async function reconstructAccount(client: WriteClient, params: ReconstructAccountParams): Promise<ReconstructionMetrics> {
   if (!investmentReconstructionEnabled()) {
     return { status: "disabled", instruments: 0, complete: 0, partial: 0, failed: 0, conflicted: 0, derivedRows: 0 };
   }
-  const client = params.client ?? db;
   const inputs = await gatherReconstructionInputs(client, params.financialAccountId, params.now);
 
   let results = reconstructPositions(inputs);
@@ -417,8 +421,12 @@ export async function reconstructAccount(params: ReconstructAccountParams): Prom
     }
   };
 
-  if ("$transaction" in client) await (client as PrismaClient).$transaction((tx) => persistAll(tx));
-  else await persistAll(client);
+  // ONE atomic unit per ACCOUNT: the whole instrument set, or none of it. Half a
+  // reconstruction publishes DERIVED rows for some positions while the summaries
+  // of the rest still describe the previous walk, and the residue guard reads
+  // both. Under a tenant phase this joins the enclosing transaction rather than
+  // opening its own — see lib/db/write-phase.ts.
+  await inOneTransaction(client, (tx) => persistAll(tx));
 
   return metrics;
 }
@@ -432,7 +440,6 @@ export interface RepairParams {
   /** A cash-only event (instrumentId null) was ingested/corrected. */
   affectedCash: boolean;
   now: Date;
-  client?: Client;
 }
 
 export interface RepairMetrics extends ReconstructionMetrics {
@@ -453,12 +460,11 @@ export interface RepairMetrics extends ReconstructionMetrics {
  * unexplained opening — the "min(affected dates) → next OBSERVED anchor" bound is
  * satisfied by scoping to the affected instruments, never the whole account.
  */
-export async function repairReconstructionForAccount(params: RepairParams): Promise<RepairMetrics> {
+export async function repairReconstructionForAccount(client: WriteClient, params: RepairParams): Promise<RepairMetrics> {
   const empty: RepairMetrics = {
     status: "disabled", instruments: 0, complete: 0, partial: 0, failed: 0, conflicted: 0, derivedRows: 0, repairedInstrumentIds: [],
   };
   if (!investmentReconstructionEnabled()) return empty;
-  const client = params.client ?? db;
 
   const summaries = await client.positionReconstruction.findMany({
     where:  { financialAccountId: params.financialAccountId },
@@ -489,10 +495,9 @@ export async function repairReconstructionForAccount(params: RepairParams): Prom
   }
   if (target.size === 0) return { ...empty, status: "ok" };
 
-  const m = await reconstructAccount({
+  const m = await reconstructAccount(client, {
     financialAccountId: params.financialAccountId,
     now: params.now,
-    client,
     instrumentIds: [...target],
   });
   return { ...m, repairedInstrumentIds: [...target] };

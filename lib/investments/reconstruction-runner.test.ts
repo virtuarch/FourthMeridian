@@ -78,7 +78,7 @@ async function main(): Promise<void> {
   delete process.env.INVESTMENT_RECONSTRUCTION_ENABLED;
   {
     const f = makeFake([anchor("TQQQ", 42.5)], [event("TQQQ", InvestmentEventType.BUY, "2026-06-03", { quantity: 7.5 })]);
-    const m = await reconstructAccount({ financialAccountId: "fa1", now: D("2026-07-11"), client: f.client as never });
+    const m = await reconstructAccount(f.client as never, { financialAccountId: "fa1", now: D("2026-07-11") });
     check("status disabled", m.status === "disabled");
     check("no DERIVED rows written", f.derivedCreated.length === 0 && f.calls.createMany === 0);
     check("no summaries written", f.summaries.length === 0 && f.calls.upsert === 0);
@@ -95,7 +95,7 @@ async function main(): Promise<void> {
         event("TQQQ", InvestmentEventType.BUY, "2026-06-20", { quantity: 15 }),
       ],
     );
-    const m = await reconstructAccount({ financialAccountId: "fa1", now: D("2026-07-11"), client: f.client as never });
+    const m = await reconstructAccount(f.client as never, { financialAccountId: "fa1", now: D("2026-07-11") });
     check("status ok, one instrument", m.status === "ok" && m.instruments === 1);
     check("summary written for the position", f.summaries.length === 1);
     const s = f.summaries[0];
@@ -133,7 +133,7 @@ async function main(): Promise<void> {
         event("VTI", InvestmentEventType.BUY, "2026-06-01", { quantity: 20 }),
       ],
     );
-    await reconstructAccount({ financialAccountId: "fa1", now: D("2026-07-11"), client: f.client as never });
+    await reconstructAccount(f.client as never, { financialAccountId: "fa1", now: D("2026-07-11") });
     check("complete summary completeness = derived", f.summaries[0].completeness === "derived");
     check("complete summary reconciliation = COMPLETE", f.summaries[0].reconciliation === "COMPLETE");
   }
@@ -145,7 +145,7 @@ async function main(): Promise<void> {
       [anchor("TQQQ", 10), anchor("VTI", 20)],
       [event("TQQQ", InvestmentEventType.BUY, "2026-06-01", { quantity: 10 }), event("VTI", InvestmentEventType.BUY, "2026-06-01", { quantity: 20 })],
     );
-    const m = await reconstructAccount({ financialAccountId: "fa1", now: D("2026-07-11"), client: f.client as never, instrumentIds: ["VTI"] });
+    const m = await reconstructAccount(f.client as never, { financialAccountId: "fa1", now: D("2026-07-11"), instrumentIds: ["VTI"] });
     check("only one instrument reconstructed", m.instruments === 1 && f.summaries.length === 1);
     check("it is the requested instrument", f.summaries[0].instrumentId === "VTI");
   }
@@ -162,8 +162,8 @@ async function main(): Promise<void> {
       ],
       { existingSummaries: [{ instrumentId: "TQQQ" }] },
     );
-    const m = await repairReconstructionForAccount({
-      financialAccountId: "fa1", affectedInstrumentIds: ["TQQQ"], affectedCash: false, now: D("2026-07-11"), client: f.client as never,
+    const m = await repairReconstructionForAccount(f.client as never, {
+      financialAccountId: "fa1", affectedInstrumentIds: ["TQQQ"], affectedCash: false, now: D("2026-07-11"),
     });
     check("repaired the affected reconstructed instrument", m.repairedInstrumentIds.includes("TQQQ") && m.instruments === 1);
     check("late event now fully explains it → COMPLETE (residual shrank to 0)", f.summaries[0].reconciliation === "COMPLETE");
@@ -172,8 +172,8 @@ async function main(): Promise<void> {
   console.log("bounded repair — never reconstructs a position that was never reconstructed");
   {
     const f = makeFake([anchor("NEW", 10)], [event("NEW", InvestmentEventType.BUY, "2026-06-01", { quantity: 10 })], { existingSummaries: [] });
-    const m = await repairReconstructionForAccount({
-      financialAccountId: "fa1", affectedInstrumentIds: ["NEW"], affectedCash: false, now: D("2026-07-11"), client: f.client as never,
+    const m = await repairReconstructionForAccount(f.client as never, {
+      financialAccountId: "fa1", affectedInstrumentIds: ["NEW"], affectedCash: false, now: D("2026-07-11"),
     });
     check("no existing summary ⇒ repair is a no-op", m.instruments === 0 && f.summaries.length === 0 && f.calls.upsert === 0);
   }
@@ -185,8 +185,8 @@ async function main(): Promise<void> {
       [event("TQQQ", InvestmentEventType.BUY, "2026-06-01", { quantity: 10 }), event("OTHER", InvestmentEventType.BUY, "2026-06-01", { quantity: 5 })],
       { existingSummaries: [{ instrumentId: "TQQQ" }] }, // only TQQQ was reconstructed
     );
-    const m = await repairReconstructionForAccount({
-      financialAccountId: "fa1", affectedInstrumentIds: ["OTHER"], affectedCash: false, now: D("2026-07-11"), client: f.client as never,
+    const m = await repairReconstructionForAccount(f.client as never, {
+      financialAccountId: "fa1", affectedInstrumentIds: ["OTHER"], affectedCash: false, now: D("2026-07-11"),
     });
     check("affected-but-unreconstructed instrument is not repaired", m.instruments === 0 && f.summaries.length === 0);
   }
@@ -198,8 +198,8 @@ async function main(): Promise<void> {
       [event(null, InvestmentEventType.CONTRIBUTION, "2026-06-01", { amount: 100 })],
       { existingSummaries: [{ instrumentId: "CASH_USD" }], cashInstruments: [{ id: "CASH_USD" }] },
     );
-    const m = await repairReconstructionForAccount({
-      financialAccountId: "fa1", affectedInstrumentIds: [], affectedCash: true, now: D("2026-07-11"), client: f.client as never,
+    const m = await repairReconstructionForAccount(f.client as never, {
+      financialAccountId: "fa1", affectedInstrumentIds: [], affectedCash: true, now: D("2026-07-11"),
     });
     check("cash instrument repaired via AssetClass resolution", m.repairedInstrumentIds.includes("CASH_USD") && m.instruments === 1);
   }
@@ -208,8 +208,8 @@ async function main(): Promise<void> {
   {
     delete process.env.INVESTMENT_RECONSTRUCTION_ENABLED;
     const f = makeFake([anchor("TQQQ", 10)], [event("TQQQ", InvestmentEventType.BUY, "2026-06-01", { quantity: 10 })], { existingSummaries: [{ instrumentId: "TQQQ" }] });
-    const m = await repairReconstructionForAccount({
-      financialAccountId: "fa1", affectedInstrumentIds: ["TQQQ"], affectedCash: false, now: D("2026-07-11"), client: f.client as never,
+    const m = await repairReconstructionForAccount(f.client as never, {
+      financialAccountId: "fa1", affectedInstrumentIds: ["TQQQ"], affectedCash: false, now: D("2026-07-11"),
     });
     check("repair disabled with the flag off", m.status === "disabled" && f.summaries.length === 0);
     process.env.INVESTMENT_RECONSTRUCTION_ENABLED = "true";

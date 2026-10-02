@@ -288,7 +288,7 @@ export async function commitInvestmentImport(input: CommitInput): Promise<Commit
 
   let repair: CommitResult["repair"];
   try {
-    const m = await repairReconstructionForAccount({ financialAccountId, affectedInstrumentIds: [...touchedInstruments], affectedCash: touchedCash, now, client });
+    const m = await repairReconstructionForAccount(client, { financialAccountId, affectedInstrumentIds: [...touchedInstruments], affectedCash: touchedCash, now });
     repair = { status: m.status, repairedInstrumentIds: m.repairedInstrumentIds };
   } catch (err) {
     console.warn(`[investment-import] reconstruction repair for account ${financialAccountId} failed (non-fatal): ${err instanceof Error ? err.message : err}`);

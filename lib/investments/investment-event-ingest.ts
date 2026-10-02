@@ -17,8 +17,8 @@
  */
 
 import type { InvestmentTransaction, Security } from "plaid";
-import { ProviderType, type Prisma, type PrismaClient } from "@prisma/client";
-import { db } from "@/lib/db";
+import { ProviderType, type PrismaClient } from "@prisma/client";
+import { inOneTransaction, type WriteClient } from "@/lib/db/write-phase";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 import { getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
@@ -34,8 +34,6 @@ import {
 import { captureSecurityPrices, securityPriceCapturesEnabled } from "@/lib/prices/capture";
 import { InvestmentCoverageOutcome } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-
-type Client = PrismaClient | Prisma.TransactionClient;
 
 const PAGE_SIZE = 500;
 
@@ -190,15 +188,6 @@ export interface IngestParams {
    */
   coveredFinancialAccountIds?: readonly string[];
   now: Date;
-  /**
-   * OPS-2D-TX-1 — a ROOT client, never a `Prisma.TransactionClient`. This
-   * function records incidents, and incident recording must run on its own
-   * connection: a telemetry write that fails inside a caller's transaction
-   * aborts it, and the caller's COMMIT then silently degrades to ROLLBACK.
-   * Inner persistence helpers still accept the wider union — they write no
-   * telemetry, so they remain safe to run transactionally.
-   */
-  client?: PrismaClient;
 }
 
 /**
@@ -208,13 +197,12 @@ export interface IngestParams {
  * effect. Without this, a period with the flag off is indistinguishable from a
  * period in which nothing happened.
  */
-export async function recordDisabledInvestmentEventCoverage(args: {
+export async function recordDisabledInvestmentEventCoverage(client: PrismaClient, args: {
   plaidItemId: string;
   coveredFinancialAccountIds: readonly string[];
   now: Date;
-  client?: PrismaClient;
 }): Promise<void> {
-  await recordCoverage(args.client ?? db, {
+  await recordCoverage(client, {
     plaidItemId: args.plaidItemId,
     financialAccountIds: args.coveredFinancialAccountIds,
     window: computeIngestWindow(args.now),
@@ -229,9 +217,29 @@ export async function recordDisabledInvestmentEventCoverage(args: {
  * Ingest investment events for one Plaid Item. Never throws for expected Plaid
  * conditions (consent / PRODUCT_NOT_READY) — returns a status instead. Callers
  * still wrap in try/catch (best-effort contract).
+ *
+ * ── RLS-C-S8 — THE AUTHORITY IS THE FIRST PARAMETER, REQUIRED, AND IT IS A ROOT
+ *    CLIENT BY TYPE, NOT BY CONVENTION ─────────────────────────────────────────
+ * `PrismaClient` here is a statement the compiler enforces: THIS PATH CANNOT BE
+ * GIVEN A TENANT PHASE. Two independent reasons, both already in this file:
+ *
+ *   1. OPS-2D-TX-1 (the old `IngestParams.client` comment, kept below in spirit):
+ *      ingestion records incidents, and a telemetry write that fails inside a
+ *      caller's transaction ABORTS it — the caller's COMMIT then silently
+ *      degrades to ROLLBACK.
+ *   2. It writes SyncIssue, on which fm_app holds a column-level READ grant and
+ *      nothing more (prisma/migrations/…_rls_app_sync_issue_read). Under a tenant
+ *      authority every `recordSyncIssue` here would raise `permission denied`.
+ *      Split-authority for the Plaid surface is a LATER slice; this one makes the
+ *      authority visible at the call site so that slice is one line, not a hunt.
+ *
+ * It also paginates `investmentsTransactionsGet`. A tenant phase is a SECURITY
+ * BOUNDARY, not a request-lifetime container, and holding one across provider
+ * HTTP would pin a connection and a bound identity to somebody else's latency.
+ * The fetch loop below completes IN FULL before any persistence transaction
+ * opens, and lib/investments/transaction-boundary.test.ts keeps it that way.
  */
-export async function ingestInvestmentEvents(params: IngestParams): Promise<IngestMetrics> {
-  const client = params.client ?? db;
+export async function ingestInvestmentEvents(client: PrismaClient, params: IngestParams): Promise<IngestMetrics> {
   const metrics = emptyMetrics("ok");
   const { start, end } = computeIngestWindow(params.now);
   const covered = params.coveredFinancialAccountIds ?? [];
@@ -394,12 +402,11 @@ async function maybeRepairReconstructions(
   if (!investmentReconstructionEnabled() || affected.size === 0) return;
   for (const [financialAccountId, a] of affected) {
     try {
-      await repairReconstructionForAccount({
+      await repairReconstructionForAccount(client, {
         financialAccountId,
         affectedInstrumentIds: [...a.instrumentIds],
         affectedCash: a.cash,
         now,
-        client,
       });
     } catch (err) {
       console.warn(`[investment-events] reconstruction repair for account ${financialAccountId} failed (non-fatal): ${err instanceof Error ? err.message : err}`);
@@ -408,7 +415,7 @@ async function maybeRepairReconstructions(
   }
 }
 
-async function resolveFinancialAccountId(client: Client, plaidAccountId: string, cache: Map<string, string | null>): Promise<string | null> {
+async function resolveFinancialAccountId(client: WriteClient, plaidAccountId: string, cache: Map<string, string | null>): Promise<string | null> {
   if (cache.has(plaidAccountId)) return cache.get(plaidAccountId)!;
   // Canonical provider-account identity first (D2), legacy plaidAccountId fallback.
   const identity = await client.providerAccountIdentity.findFirst({
@@ -476,8 +483,8 @@ function eventData(faId: string, instrumentId: string | null, m: MappedInvestmen
  * and supersede the old row (its externalEventId released to null, recoverable
  * via the supersededById chain). Never mutates raw facts in place.
  */
-async function persistPlaidEvent(
-  client: Client,
+export async function persistPlaidEvent(
+  client: WriteClient,
   faId: string,
   instrumentId: string | null,
   mapped: MappedInvestmentEvent,
@@ -503,12 +510,11 @@ async function persistPlaidEvent(
 
   // Correction: append + supersede, releasing the unique key in a transaction so
   // two rows never hold the same [source, externalEventId] simultaneously.
-  const run = async (tx: Client) => {
+  const run = async (tx: WriteClient) => {
     const created = await tx.investmentEvent.create({ data: { ...eventData(faId, instrumentId, mapped), externalEventId: null } });
     await tx.investmentEvent.update({ where: { id: existing.id }, data: { externalEventId: null, supersededById: created.id } });
     await tx.investmentEvent.update({ where: { id: created.id }, data: { externalEventId: mapped.externalEventId } });
   };
-  if ("$transaction" in client) await (client as PrismaClient).$transaction((tx) => run(tx));
-  else await run(client);
+  await inOneTransaction(client, (tx) => run(tx));
   return "corrected";
 }

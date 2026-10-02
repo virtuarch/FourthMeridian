@@ -168,7 +168,13 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
 
       // A2 — stable per-holding reconciliation (insert / update-in-place /
       // remove-stale), the shared writer. Cash/no-ticker stay filtered.
-      const syncCounts = await syncCurrentHoldings({
+      // RLS-C-S8 — the authority is STATED, in one visible place, rather than
+      // resolved by the writer from a global. It stays `db` deliberately: this is
+      // the Plaid provider sync path, it records SyncIssue (on which fm_app holds
+      // a READ-only column grant) and it is a job authority, not a tenant one.
+      // Split-authority for the Plaid surface is a later slice; when it lands,
+      // these three call sites are the one line it has to change.
+      const syncCounts = await syncCurrentHoldings(db, {
         financialAccountId: fa.id,
         plaidHoldings:      acctHoldings,
         securitiesById:     secById,
@@ -197,14 +203,14 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
 
     if (investmentEventsEnabled()) {
       try {
-        await ingestInvestmentEvents({ accessToken, plaidItemId, now: new Date(), coveredFinancialAccountIds });
+        await ingestInvestmentEvents(db, { accessToken, plaidItemId, now: new Date(), coveredFinancialAccountIds });
       } catch (evErr) {
         console.warn(`${LOG} investment event ingestion failed for item ${plaidItemId} (non-fatal): ${evErr instanceof Error ? evErr.message : evErr}`);
       }
     } else {
       // A window that was never requested must say so. Silence here would be
       // read downstream as "no movement", which is the defect this ledger closes.
-      await recordDisabledInvestmentEventCoverage({
+      await recordDisabledInvestmentEventCoverage(db, {
         plaidItemId, coveredFinancialAccountIds, now: new Date(),
       });
     }

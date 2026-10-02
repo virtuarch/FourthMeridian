@@ -255,7 +255,8 @@ async function backfillHistoryForItem(
           let reconOk = 0, reconFailed = 0, reconConflicted = 0, reconDerived = 0;
           for (const faId of investmentFaIds) {
             try {
-              const m = await reconstructAccount({ financialAccountId: faId, now: new Date() });
+              // RLS-C-S8 — a background job's authority, stated at the call site.
+              const m = await reconstructAccount(db, { financialAccountId: faId, now: new Date() });
               reconOk += m.complete; reconFailed += m.failed;
               reconConflicted += m.conflicted; reconDerived += m.derivedRows;
               console.log(

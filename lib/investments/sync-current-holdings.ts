@@ -44,8 +44,7 @@
  */
 
 import type { Holding as PlaidHolding, Security } from "plaid";
-import type { Prisma, PrismaClient } from "@prisma/client";
-import { db } from "@/lib/db";
+import { inOneTransaction, type WriteClient } from "@/lib/db/write-phase";
 
 // ─── Pure core ────────────────────────────────────────────────────────────────
 
@@ -147,8 +146,6 @@ export function planHoldingSync(params: {
 
 // ─── DB binding ───────────────────────────────────────────────────────────────
 
-type Client = PrismaClient | Prisma.TransactionClient;
-
 export interface SyncCurrentHoldingsParams {
   financialAccountId: string;
   /** RAW, unfiltered Plaid holdings for THIS account. */
@@ -158,17 +155,26 @@ export interface SyncCurrentHoldingsParams {
   accountCurrency: string | null;
   /** false ⇒ degraded payload (is_investments_fallback_item); stale rows are NOT removed. */
   payloadComplete?: boolean;
-  client?: Client;
 }
 
 /**
  * Synchronize the current Holding projection for one account. Idempotent:
  * a same-payload re-run produces all-unchanged and no id churn. Only ever call
  * this after a SUCCESSFUL holdings fetch (a partial/failed fetch must not reach
- * here) so removal is safe. Applies the plan in a single transaction.
+ * here) so removal is safe. Applies the plan as ONE atomic unit.
+ *
+ * ── RLS-C-S8 — THE AUTHORITY IS THE FIRST PARAMETER, AND IT HAS NO DEFAULT ───
+ * It used to be `params.client ?? db`: an OPTIONAL authority, which is an
+ * AMBIENT one. Every one of this writer's call sites spelled a Plaid job and a
+ * tenant request identically, and the sites that forget are exactly the ones
+ * nobody reviews. Required means the compiler enumerates the callers; first
+ * means the authority is read next to the function's own name.
+ *
+ * A root client (`db`, `systemDb`) opens the transaction; a tenant phase's
+ * client joins ITS transaction. See lib/db/write-phase.ts for why that
+ * distinction is made in one place instead of three.
  */
-export async function syncCurrentHoldings(params: SyncCurrentHoldingsParams): Promise<SyncCounts> {
-  const client = params.client ?? db;
+export async function syncCurrentHoldings(client: WriteClient, params: SyncCurrentHoldingsParams): Promise<SyncCounts> {
   const removeStale = params.payloadComplete ?? true;
 
   const current: TargetRow[] = [];
@@ -187,9 +193,12 @@ export async function syncCurrentHoldings(params: SyncCurrentHoldingsParams): Pr
 
   const plan = planHoldingSync({ current, existing, removeStale });
 
-  // Single transaction: delete stale → update in place → insert new. A failure
+  // ONE atomic unit: delete stale → update in place → insert new. A failure
   // rolls back, so valid existing rows are never left corrupted or removed.
-  const apply = async (tx: Client) => {
+  // THIS IS A LOAD-BEARING REQUIREMENT, not a performance choice — the three
+  // statements are a reconciliation, and two of three applied is a projection
+  // that states positions the account does not hold.
+  const apply = async (tx: WriteClient) => {
     if (plan.deleteIds.length) {
       await tx.holding.deleteMany({ where: { id: { in: plan.deleteIds } } });
     }
@@ -202,12 +211,7 @@ export async function syncCurrentHoldings(params: SyncCurrentHoldingsParams): Pr
       });
     }
   };
-  // Use an interactive transaction only when not already inside one.
-  if ("$transaction" in client) {
-    await (client as PrismaClient).$transaction((tx) => apply(tx));
-  } else {
-    await apply(client);
-  }
+  await inOneTransaction(client, (tx) => apply(tx));
 
   if (plan.conflicts.length) {
     console.warn(
