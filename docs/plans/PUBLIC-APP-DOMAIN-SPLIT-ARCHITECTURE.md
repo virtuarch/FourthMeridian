@@ -123,7 +123,7 @@ Inbound: Vercel Cron ──> /api/jobs/*   Plaid ──> /api/plaid/webhook   Pl
 - **2FA (TOTP / recovery codes):** handled inside `authorize()`. Mandatory for SYSTEM_ADMIN (`lib/auth.ts:9-15`). Pending enrolment is routed by `proxy.ts:94-111`.
 - **Other cookies, all host-only:**
   - `fm_ai_state`: HttpOnly, Lax, `Path=/api/ai/chat`, AES-GCM (`app/api/ai/chat/route.ts:223-229`)
-  - `fm_active_space`: not HttpOnly, readable by page scripts (`app/api/space/switch/route.ts:106-112`)
+  - `fintracker_space` (`ACTIVE_SPACE_COOKIE`, `lib/space.ts:31`; the investigation called it `fm_active_space`, which is wrong): not HttpOnly, readable by page scripts (`app/api/space/switch/route.ts:106-112`)
   - `fm_ai_transcript`: hint cookie written by page scripts (`components/ai/transcript-cache.ts:59,276`)
 - **CSRF on the app's own API:** relies only on SameSite=Lax. There are no Origin or Host checks and no CORS anywhere (grep found none). 65 route handlers call `req.json()` without checking the content type. `docs/operations/security-checklist.md:240-241` already lists "add Origin check" as needed work.
 - **Revoked sessions lose the deep link.** A revoked-but-signed JWT passes `proxy.ts`. The page then calls `redirect("/login")` with no `callbackUrl`, e.g. `app/(shell)/dashboard/spaces/page.tsx:43` and `lib/settings/loaders.ts:62`.
@@ -289,7 +289,7 @@ Background work stays in the app project. Nothing justifies a separate deploymen
 3. **Logout:**
    - Current revocation and cookie clearing stay as they are (`lib/auth.ts:657-679`).
    - Also clear `fm_signed_in` (if B2) and the existing `clearAllTranscripts()`.
-   - Optionally expire `fm_active_space`.
+   - Optionally expire `fintracker_space`.
    - The public site has nothing of its own to clear.
 
 ## 9. Exact logged-out and logged-in behaviour
@@ -541,11 +541,11 @@ Authenticated app    app.fourthmeridian.com     preview-app.fourthmeridian.com
 
 - **Cross-origin GETs carry cookies.** A sibling page can trigger credentialed GETs to the app (images, top-level navigations). Without CORS it cannot read the responses, so this is harmless *as long as no GET changes state*. A heuristic scan of `app/api/**` GET handlers for direct Prisma writes found none; the three hits were `Map.set`. It cannot see writes reached through helper functions. Before Stage D, the RLS-aware owner of each route should confirm "GET is safe".
 - **Non-`__Host-` app cookies can still be planted by a sibling:**
-  - `fm_active_space`: not HttpOnly, host-only today, no prefix. A planted parent-domain value can steer which Space is "active". The server re-checks membership (a named Space mismatch is a 403, per the V26 promotion), so this is a nuisance, not authority.
+  - `fintracker_space`: not HttpOnly, host-only today, no prefix. A planted parent-domain value can steer which Space is "active". The server re-checks membership (a named Space mismatch is a 403, per the V26 promotion), so this is a nuisance, not authority.
   - `fm_ai_transcript`: a client hint cookie.
   - `fm_ai_state`: sealed with `ENCRYPTION_KEY`, so a planted value fails to open and the turn starts without state.
 
-  Recommendation: move `fm_active_space` to `__Host-` during Stage C. Low urgency.
+  Recommendation: move `fintracker_space` to `__Host-` during Stage C. Low urgency.
 - **Preview code is Production's sibling.** Today, branch code deployed to `preview.fourthmeridian.com` is same-site with Production on `fourthmeridian.com`. Stage A closes the two ways that mattered: planting a session and cross-origin writes. The residual risks above apply equally to this pre-split arrangement.
 
 **Ephemeral `*.vercel.app` deployments:**
@@ -689,3 +689,271 @@ Nothing has been changed at Plaid.
 4. Exact-SHA GitHub CI is green.
 5. Owner facts §16.5 items 1–5 are answered.
 6. Preview is cut over before Production.
+
+---
+
+## 17. Environment authority separation: owner action plan (2026-10-03)
+
+### 17.0 Owner-confirmed configuration facts
+
+| Shared between Preview and Production | Separate |
+|---|---|
+| `NEXTAUTH_SECRET`, `ENCRYPTION_KEY`, `PLAID_CLIENT_ID`, `OPENAI_API_KEY`, `CRON_SECRET` | Database and database credentials; `PLAID_SECRET` |
+
+No value was read, printed or changed for this section. Every classification below rests on code paths in the repo.
+
+### 17.1 🚨 Application defect found: a session JWT with no `sessionToken` skips revocation and carries its own role
+
+`lib/auth.ts`, `callbacks.session`:
+- The revocation lookup runs **only `if (sessionToken)`**. A JWT without that claim is accepted with no database check at all.
+- `session.user.id` and `session.user.role` come straight from the token.
+- `lib/session.ts` `requireUser()` and `requireSystemAdmin()` trust that role. Only `requireFresh*()` insists on a `sessionToken`.
+- The revocation lookup is `userSession.findFirst({ where: { sessionToken, revokedAt: null } })`. It does **not** require the row's `userId` to equal `token.id`.
+
+Consequence: **anyone holding `NEXTAUTH_SECRET` can mint a Production-valid session for any user id, with any role (including `SYSTEM_ADMIN`), with `requireTotpSetup` unset, and with no live session row.** Alternatively, they can attach their own live `sessionToken` to someone else's id.
+
+Tokens from real logins always carry a `sessionToken`: `authorize()` creates the `UserSession` row and the UUID together.
+
+Because `NEXTAUTH_SECRET` is shared, every principal able to read Preview's runtime env holds this capability against Production. That includes every branch deployment if Preview is Vercel's generic Preview environment (§17.9).
+
+**Application prerequisite P1 (not implemented; needs authorisation):**
+- Fail closed when `sessionToken` is absent.
+- Bind the revocation lookup to `userId = token.id`.
+- Optionally take `role` from the matched row's user rather than the token.
+
+After P1, the secret alone no longer opens an account: a forger also needs a live session id belonging to that same user. P1 does not touch any RLS-owned file. Its tests must cover the forged-token cases.
+
+### 17.2 Environment authority matrix
+
+| Credential / authority | Current | Target | Must separate? | Why (repo evidence) | Rotation consequence | App prerequisite | Owner action | Verification |
+|---|---|---|---|---|---|---|---|---|
+| `NEXTAUTH_SECRET` | SHARED | Per environment | **YES, highest priority** | Keys the session JWE and CSRF hash (`lib/auth.ts:700`, `proxy.ts` `getToken`). With §17.1, the holder can mint any Production session. | All sessions in that environment end; CSRF tokens reissue transparently; no stored data depends on it | None to rotate. P1 to make a future leak survivable | Preview now (A-2); Production with explicit authorisation (E-1), plus again before Stage D (§16.2) | §17.13 D-1 |
+| `ENCRYPTION_KEY` | SHARED | Per environment | **YES** | HKDF root for every stored ciphertext (§17.4) and for the `fm_ai_state` seal | **Stored ciphertext becomes unreadable** unless re-encrypted first | P2 re-encryption script, **only if** Preview data must be preserved | Preview only (B/C). Production untouched | §17.13 D-3 |
+| `DATABASE_URL` | SEPARATE | Separate | Already | Legacy client (`lib/db.ts`) | — | — | Confirm points at the Preview project | Presence/host check only |
+| `DATABASE_URL_APP` (fm_app) | SEPARATE (owner) | Separate | Already | `lib/db.ts:92` | — | — | Confirm points at the Preview project | — |
+| `DATABASE_URL_AUTH` (fm_auth) | SEPARATE (owner) | Separate | Already | `lib/db.ts:93` | — | — | Confirm | — |
+| `DATABASE_URL_SYSTEM` (fm_system) | SEPARATE (owner) | Separate | Already | `lib/db.ts:94` | — | — | Confirm | — |
+| `DIRECT_URL` / `SHADOW_DATABASE_URL` | Unknown | **Absent from every Vercel runtime env** | n/a | Migration principal (`postgres`). Vercel does not run migrations | — | — | Confirm absent (A-1) | — |
+| `FM_RLS_STRICT`, `FM_DB_GUARD` | Unknown | Per environment, per the RLS cutover doc | n/a | `lib/db.ts:60-72`, `lib/db/live-guard.ts` | — | RLS workstream owns | No action here | — |
+| `PLAID_CLIENT_ID` | SHARED | Shared | **No, safe to share** | Identifies the Plaid team. Plaid authority = `client_id` + the **environment's** secret + `PLAID_ENV` (`lib/plaid/client.ts`). The repo states Preview runs `PLAID_ENV="sandbox"` (`lib/env.ts:216`); Production refuses to boot otherwise (`lib/env.ts:431-447`) | — | — | Confirm Preview `PLAID_ENV=sandbox` | — |
+| `PLAID_SECRET` | SEPARATE | Separate | Already | Sandbox secret cannot call `production.plaid.com` | — | — | Confirm Preview holds the **sandbox** secret | — |
+| `PLAID_ENV` | Unknown | Preview `sandbox`, Production `production` | Yes | As above | — | — | Confirm | — |
+| `PLAID_WEBHOOK_URL` | Unknown (presence) | Unset (derived from `NEXT_PUBLIC_APP_URL`), or per environment | If set, yes | Overrides the derived webhook URL (`app/api/plaid/link-token/route.ts` `resolvePlaidWebhookUrl`) | New Items only; existing Items keep theirs (§16.3) | — | Confirm presence per environment | — |
+| `PLAID_REDIRECT_URI` | Unknown (presence) | **Unset** (`lib/plaid/redirect-uri.ts:34-38`) | n/a | Derived from `NEXT_PUBLIC_APP_URL` | — | — | Confirm absent | — |
+| `OPENAI_API_KEY` | SHARED | Separate OpenAI **project** for Preview | **Recommended hardening, before private beta** | Only `chat.completions.create` (`lib/ai/provider.ts`); no files, vector stores, assistants or `store:` | Preview AI fails until the new key is set; Production unaffected | — | A-4 | AI turn on Preview succeeds; Preview usage appears only in the new project |
+| `CRON_SECRET` | SHARED | Per environment | **YES** (cheap) | Bearer guard on 6 `/api/jobs/*` routes, fail-closed when unset. Vercel cron runs **only on Production deployments** | Preview: none (nothing calls it automatically) | — | Preview now (A-3); Production later (E-2) | §17.13 D-4 |
+| `RESEND_API_KEY` | **Unknown** | Separate, restricted Preview key or none | **Owner check** | Sends mail as `@fourthmeridian.com` (`lib/email/senders.ts`) | — | — | Report shared/separate | — |
+| `TURNSTILE_SECRET_KEY` | Unknown | Either | Low | Verifies challenge tokens only | — | — | Report | — |
+| `ALCHEMY_API_KEY`, `ETHERSCAN_API_KEY`, `HELIUS_API_KEY`, `TIINGO_API_KEY`, `COINGECKO_API_KEY`, `OXR_APP_ID`, `ETH_RPC_URL`, `SOL_RPC_URL` | Unknown | Separate where the provider bills or rate-limits per key | Cost/quota only | Market and chain data reads | — | — | Report | — |
+| `MERCHANT_OPS_SPACE_ID`, `DISABLE_SYSTEM_ADMIN`, feature flags | Config | Per environment | n/a | Not credentials | — | — | — | — |
+
+### 17.3 `NEXTAUTH_SECRET`: rotation consequences
+
+**Every use:** `lib/auth.ts` `authOptions.secret`, `proxy.ts` `getToken({ secret })`, and `lib/env.ts` (required list; its getter is unused).
+
+| NextAuth function | Depends on the secret? |
+|---|---|
+| JWE encryption of the session token | Yes (key derived by HKDF) |
+| `__Host-next-auth.csrf-token` hash (`core/lib/csrf-token.js`) | Yes |
+| Callback-url cookie | No: it carries a URL and is neither signed nor encrypted |
+| Revocation | No: it uses the `sessionToken` claim, so it is only as strong as §17.1 allows |
+
+Nothing outside NextAuth uses the secret.
+
+**Rotating Preview's value: effect on Production is none.** Production reads only its own environment variable. The only cross-environment effect is that tokens minted with the old shared value stop working *on Preview*. Production tokens are never sent to Preview anyway, because the cookies are host-only.
+
+**What Preview rotation does not do:** it does **not** reduce the Production exposure. The current Production value has already been readable from Preview, and from every branch deployment if Preview is generic. Only rotating Production's value (E-1) revokes that, and P1 contains it in the meantime.
+
+**Combine Preview rotation with the Stage A deploy:** Stage A's cookie rename already signs every Preview user out once, so doing both in one Preview deploy costs a single sign-out.
+
+**Production rotation:** every Production session ends; there is no data effect.
+- It is needed **twice**: once to end the Preview-exposure window (recommended soon after Preview proves the procedure), and again immediately before Production Stage D (§16.2, REQUIRED).
+- If the first rotation happens close enough to the cutover that no apex sessions are issued after it, one rotation can serve both purposes. That is the owner's timing call.
+
+### 17.4 `ENCRYPTION_KEY`: data inventory
+
+Mechanism: `lib/plaid/encryption.ts`. One 32-byte root key, with an HKDF subkey per purpose. `v2:` is the current format; the legacy `v1` root-key branch is still read. There is **no key versioning or multi-key rotation**. `scripts/audit-ciphertext-versions.ts` audits the format, not the key.
+
+| Purpose | Stored at | Writers | Readers (decrypt) | If the key changes without migration | Class |
+|---|---|---|---|---|---|
+| `PLAID_ACCESS_TOKEN` | `PlaidItem.encryptedToken` | `lib/plaid/exchangeToken.ts` | `jobs/sync-banks.ts`, `lib/plaid/refresh.ts`, `syncTransactions.ts`, `disconnect.ts`, `lib/account-deletion/purge.ts`, link-token update mode, ops scripts | Every sync, refresh, update-mode Link and **`/item/remove` on disconnect or deletion fails** (Items are stranded at Plaid) | Preview (sandbox): **A** (recreate) or **B**; **C** (re-link) if not migrated |
+| `CONNECTION_CREDENTIAL` | `Connection.credential`, **PLAID rows only** | `exchangeToken.ts` | link-token update mode | Update-mode Link fails | Same as above. WALLET rows hold a plaintext public descriptor or address (`lib/crypto/btc-sync.ts:759`) and are unaffected |
+| `TOTP_SECRET` | `User.totpSecret` | `app/api/user/totp/setup` | `lib/auth.ts` authorize (fail-safe `return null`), `totp/verify`, `totp/disable`, `totp/recovery-codes` | **Enrolled users cannot sign in with TOTP.** Recovery codes (bcrypt) still work, but disable/regenerate then fail; SYSTEM_ADMIN (TOTP mandatory) depends on recovery codes or another admin's `2fa-reset` | **B**, or clear before rotating |
+| `DATE_OF_BIRTH` | `User.dateOfBirthEncrypted` | register, profile | `lib/export/assemble.ts` (try/catch) | Export silently omits the date of birth | **A**/**B** (re-enter) |
+| `AI_RUNTIME_STATE` | **Not stored**: the `fm_ai_state` cookie (`lib/ai/conversation/runtime-state.ts`) | chat route | chat route | In-flight scenario state is discarded, as designed | **D**: naturally transient |
+
+There are **no** deterministic hashes or other derived keys from this root.
+
+### 17.5 `ENCRYPTION_KEY`: Preview separation design
+
+Production key and Production ciphertext stay **untouched**. Separation is achieved by giving Preview a *new* value.
+
+1. **Owner-A (read-only):** count the Preview population in the Preview Supabase SQL editor. These statements are read-only and select no secret column values:
+   ```sql
+   SELECT status, count(*) FROM "PlaidItem" GROUP BY status;
+   SELECT count(*) FROM "Connection" WHERE provider = 'PLAID' AND credential IS NOT NULL;
+   SELECT count(*) FROM "User" WHERE "totpSecret" IS NOT NULL;
+   SELECT count(*) FROM "User" WHERE "dateOfBirthEncrypted" IS NOT NULL;
+   ```
+   Also answer: **was the Preview database ever loaded from a Production dump?** If yes, those rows are Production ciphertext protected only by the shared key, and they must be purged, not migrated.
+2. **Decide: recreate or preserve.**
+   - **Recreate** (recommended if Preview is sandbox test data). No app prerequisite. *While the old key is still in place:*
+     1. Disconnect each sandbox Plaid connection through the app (it calls `/item/remove`).
+     2. Have each TOTP user disable 2FA (or use admin `2fa-reset`).
+     3. Clear date-of-birth via the profile page.
+     4. Re-run the counts and confirm they are zero.
+     5. Then set the new key (C-2).
+   - **Preserve:** needs **P2**, a dual-key re-encryption script that is not yet written. It reads `ENCRYPTION_KEY_PREVIOUS` and `ENCRYPTION_KEY`:
+     1. Back up Preview.
+     2. Dry run: exact population per class.
+     3. Per row: decrypt with the old key, encrypt with the new, then decrypt the new ciphertext and compare plaintext equality in-process. Commit per class in one transaction; abort the class on any mismatch.
+     4. Re-count.
+     5. Deploy with the new key.
+     6. Remove `ENCRYPTION_KEY_PREVIOUS`.
+3. **Rollback:** before any rows change, set the old value back and redeploy. After recreate or re-encrypt, rollback means restoring the backup and the old key together.
+
+### 17.6 `CRON_SECRET`
+
+- **Consumers** (each `GET`, fail-closed `if (!cronSecret || authHeader !== \`Bearer ${cronSecret}\`) 401`):
+  - `/api/jobs/dispatch`
+  - `/api/jobs/resume-stale-imports` (both scheduled in `vercel.json`)
+  - `/api/jobs/sync-banks`
+  - `/api/jobs/fetch-fx-rates`
+  - `/api/jobs/fetch-security-prices`
+  - `/api/jobs/process-deletions` (fallback routes)
+- **Required:** Production only (`lib/env.ts:283-290`).
+- **Elsewhere:** tests use their own constants, no operator script calls these routes, and no external service stores the value. Vercel injects it into its own cron requests from the deployment's environment, and Vercel runs crons only for Production deployments.
+- **Preview change:** set a new value in Preview, then redeploy. Nothing breaks, because nothing calls Preview crons automatically.
+- **Production change:** set a new value, then redeploy. Vercel's next cron uses it. The comparison is not constant-time (minor). Monitor the next scheduled `JobRun`.
+
+### 17.7 Plaid, OpenAI, database
+
+- **Plaid client ID: SAFE TO SHARE.** A shared `client_id` with a per-environment secret is Plaid's own model: the secret selects the environment.
+  - Preview authority is sandbox-only *if* Preview's `PLAID_ENV` is `sandbox` with the sandbox secret. The repo states it is; the owner should confirm.
+  - Allowed redirect URIs and the webhook are configured at Plaid. Whether they are per environment or team-wide must be checked in the Plaid dashboard (§17.11).
+- **OpenAI: RECOMMENDED HARDENING, before private beta.**
+  - A Preview compromise gives spend, model access, and the ability to exhaust the shared rate limit and budget, taking Production AI down.
+  - It gives no stored data: chat completions only, no `store`, no files, vector stores or assistants.
+  - It gives no Fourth Meridian Production authority.
+  - A **separate OpenAI project** is materially better than a second key in the same project: projects have separate rate limits, budgets and usage. Keys within one project share all three.
+- **Database:** the app reads `DATABASE_URL`, `DATABASE_URL_APP`, `DATABASE_URL_AUTH` and `DATABASE_URL_SYSTEM` from each deployment's own environment (`lib/db.ts`). Nothing in code crosses environments. The owner confirms all four point at the Preview project on Preview. Nothing here connects to either database. The RLS role credentials remain the RLS workstream's.
+
+### 17.8 `fintracker_space`: classification
+
+- **Writer:** `POST /api/space/switch` sets it after verifying ACTIVE membership. Options: Path=/, SameSite=Lax, not HttpOnly, Secure keyed on `NODE_ENV` (true on Vercel builds), host-only, 30 days.
+- **Readers:**
+  - `lib/space.ts` `getSpaceContextUncached` → `resolveSpaceContext`, which re-checks ACTIVE membership and a non-archived Space, otherwise falls back to the user's PERSONAL Space.
+  - `dashboard/spaces/page.tsx`, which only uses it to highlight the active Space.
+- Nothing treats it as proof of access.
+
+**Classification: SECURITY-RELEVANT HINT.** It grants no authority and cannot expose another user's Space. But a sibling-planted parent-domain value can switch a victim's *active* Space among Spaces they already belong to. New data the victim enters could then land in a shared Space they did not intend.
+
+Move it to `__Host-` at Stage C. Its writer and readers include RLS-owned files (`spaces/page.tsx`), so not now.
+
+### 17.9 Vercel: Custom Environment or generic Preview?
+
+**How to check (read-only):**
+- **Project → Settings → Domains:** each domain row states what it is connected to: Production, Preview with a Git branch, or a named custom environment.
+- **Project → Settings → Environments:** lists Production, Preview, Development and any Custom Environments.
+- **Project → Settings → Environment Variables:** each variable shows its scope, e.g. "Preview", "Preview (branch: v2.6)", or a custom environment name.
+
+**If `preview.fourthmeridian.com` is generic Preview:** every branch and PR deployment inherits every Preview-scoped variable. That means the Preview database credentials, `PLAID_SECRET` (sandbox), `OPENAI_API_KEY`, `CRON_SECRET`, `ENCRYPTION_KEY`, and **`NEXTAUTH_SECRET`, today equal to Production's.** Any code pushed to any branch can read and exfiltrate them.
+
+This does not change recommendation A (§16.1). It changes its precondition:
+- Stable-Preview credentials move to a **Custom Environment** (e.g. `staging`) or to **branch-scoped** Preview variables for the stable branch only.
+- Generic Preview gets reduced authority: its own throwaway `NEXTAUTH_SECRET` and `ENCRYPTION_KEY`, and no database URL or a disposable one.
+
+### 17.10 Threat model: Preview compromised today
+
+| Shared value | Production impact | Category |
+|---|---|---|
+| `NEXTAUTH_SECRET` | Mint a Production session for any user id and any role, including SYSTEM_ADMIN, bypassing TOTP and revocation (§17.1). Full read/write of any user's financial data through the app | **DIRECT PRODUCTION AUTHORITY: critical** |
+| `CRON_SECRET` | Trigger Production jobs at will: bank syncs (Plaid calls), price/FX fetches (provider quota), resume-imports, dispatch. `process-deletions` only runs deletions already due (`deletionScheduledAt <= now`), so none can be forced early | **DIRECT PRODUCTION AUTHORITY: operational** (load, cost, quota; no data access) |
+| `ENCRYPTION_KEY` | Alone: forge `fm_ai_state` cookies that Production accepts. The state is bound to user, Space and the last-assistant digest, so this only affects the attacker's own conversation. Combined with any copy of Production ciphertext (dump, backup, DB read): decrypt TOTP seeds (2FA defeated given the password), dates of birth, and Plaid access tokens (unusable without Production's separate `PLAID_SECRET`) | **CONDITIONAL**: escalates any Production data leak |
+| `OPENAI_API_KEY` | Spend, quota exhaustion (Production AI outage), model access | **SHARED PROVIDER / COST BLAST RADIUS** |
+| `PLAID_CLIENT_ID` | None with a sandbox-only Preview secret | **NO MATERIAL CROSS-ENVIRONMENT AUTHORITY** |
+
+### 17.11 Owner checklists
+
+Conventions for every action:
+- Generate values locally, for example `openssl rand -base64 32` (`NEXTAUTH_SECRET`, `CRON_SECRET`) or `openssl rand -hex 32` (`ENCRYPTION_KEY`, exactly 64 hex characters).
+- Paste the value straight into the Vercel field, never into chat or a file. Mark it **Sensitive**.
+- Never edit a variable shared across scopes in place. Create the Preview-scoped value and remove Preview from the shared variable's scope.
+
+**PHASE OWNER-A: safe now** (no app prerequisite; Production untouched)
+
+| # | Environment | Variable / action | New value? | Keep old? | Redeploy | Sessions | Data | Verify | Rollback |
+|---|---|---|---|---|---|---|---|---|---|
+| A-1 | Both (read-only) | Inspect §17.9; confirm `PLAID_ENV` per environment; confirm all four DB URLs per environment; confirm `DIRECT_URL`, `SHADOW_DATABASE_URL`, `PLAID_REDIRECT_URI`, `PLAID_WEBHOOK_URL` presence; report shared/separate for `RESEND_API_KEY` and the provider keys in §17.2 | — | — | — | — | — | Answers recorded | — |
+| A-2 | Preview only | `NEXTAUTH_SECRET` | Yes | No | Yes (Preview) | **All Preview sessions end.** Production unaffected | None | D-1, D-2 | Set another new value. Never restore the shared one |
+| A-3 | Preview only | `CRON_SECRET` | Yes | No | Yes (Preview) | None | None | D-4 | Set another new value |
+| A-4 | Preview only | `OPENAI_API_KEY` from a new OpenAI **project** with a budget cap | Yes | No | Yes (Preview) | None | None | D-5 | Point Preview back at any working key |
+| A-5 | Preview (read-only SQL) | §17.5 step 1 population counts; Production-dump question | — | — | — | — | — | Counts recorded | — |
+
+A-2 is best deployed together with Stage A on Preview (one sign-out). On its own it is equally safe.
+
+**PHASE OWNER-B: after application prerequisites**
+
+| # | Prerequisite | Then |
+|---|---|---|
+| B-1 | **P1** (§17.1), reviewed and green | Deploy to Preview, then Production. A normal deploy with no env change. Contains the shared-secret exposure until E-1 |
+| B-2 | Recreate path: none. Preserve path: **P2** (§17.5) | Recreate: the old-key clean-up steps in §17.5. Preserve: backup plus a P2 dry run on Preview |
+| B-3 | Stage A merged | Deploy Stage A to Preview |
+
+**PHASE OWNER-C: Preview cutover**
+
+| # | Environment | Variable / action | New value? | Keep old? | Redeploy | Sessions | Data | Verify | Rollback |
+|---|---|---|---|---|---|---|---|---|---|
+| C-1 | Vercel | If generic Preview: create a Custom Environment for the stable host (or branch-scope the stable values), then give generic Preview its own throwaway `NEXTAUTH_SECRET` and `ENCRYPTION_KEY` and no stable DB URL | Yes | — | Yes | Stable Preview: per C-2. Branch previews: lose stable authority | None | Branch deployment cannot reach the stable Preview DB | Re-scope the variables back |
+| C-2 | Stable Preview | `ENCRYPTION_KEY` (and `ENCRYPTION_KEY_PREVIOUS` only on the P2 path, removed after D-3) | Yes | **Only during P2** | Yes | None | **Recreate path:** counts must already be zero. **Preserve path:** P2 run against the backup-protected DB | D-3 | Restore the old key (and the backup if rows changed) |
+
+**PHASE OWNER-D: Preview verification** (after each relevant change)
+
+- **D-1 (session):**
+  - Sign in on Preview; the cookie is `__Host-next-auth.session-token`, Secure, no Domain.
+  - Sign out; the `/dashboard` deep link survives a fresh sign-in.
+  - Revoke the session from the security settings; the next page goes to `/login?callbackUrl=…`.
+  - A Production cookie value pasted into the Preview host is rejected.
+- **D-2 (CSRF and Origin):** a write from the browser console on Preview succeeds. A `fetch` to Preview's `/api` from `https://fourthmeridian.com` gets `403 cross_origin_write_refused`.
+- **D-3 (encryption):**
+  - TOTP sign-in works for a newly enrolled test user.
+  - A sandbox Plaid connection links, syncs and disconnects (`/item/remove` succeeds).
+  - Data export includes date of birth when set.
+  - An AI chat turn keeps scenario state across two turns.
+  - Re-run the §17.5 counts; P2 path: zero decrypt failures in logs.
+- **D-4 (cron):** `curl -H "Authorization: Bearer <old value>"` against Preview `/api/jobs/fetch-fx-rates` gets 401. The new value gets 200. Generate the header locally and do not paste it anywhere shared.
+- **D-5 (OpenAI):** one AI turn on Preview succeeds, and usage appears only in the new OpenAI project.
+
+**PHASE OWNER-E: Production later** (each step needs explicit owner authorisation after Preview passes D)
+
+| # | Variable / action | New value? | Redeploy | Sessions | Data | Verify | Rollback |
+|---|---|---|---|---|---|---|---|
+| E-1 | Production `NEXTAUTH_SECRET` (recommended soon after B-1; required again before Stage D, §16.2) | Yes | Yes | **All Production sessions end** | None | D-1 on Production | Another new value; never the old shared value |
+| E-2 | Production `CRON_SECRET` (its old value was readable from Preview) | Yes | Yes | None | None | Next scheduled `JobRun` succeeds (Platform Ops) | Another new value |
+| E-3 | Production `OPENAI_API_KEY` in its own project | Yes | Yes | None | None | AI turn; usage in the Production project | Previous key |
+| E-4 | Production `ENCRYPTION_KEY`: **not needed for separation** (Preview moves away). Rotate only if Production ciphertext exposure is suspected; requires P2 run against Production with a backup | Optional | Yes | None | **Re-encryption required** | D-3 on Production | Backup plus old key |
+| E-5 | Domain cutover (§12 Stages C–F) after §16.7 | — | — | — | — | — | §13 |
+
+### 17.12 Items the owner inspects
+
+- **Vercel:**
+  - domain-to-environment mapping;
+  - Custom Environments;
+  - each variable's scope;
+  - presence of `DIRECT_URL`, `SHADOW_DATABASE_URL`, `PLAID_REDIRECT_URI`, `PLAID_WEBHOOK_URL`;
+  - Sensitive flags;
+  - team-level Shared Environment Variables.
+- **Plaid:**
+  - which secret and environment each Vercel environment uses;
+  - allowed redirect URIs (per environment or team-wide);
+  - per-Item webhook destinations (§16.3 dry run, later).
+- **OpenAI:** project layout and budget caps.
+- **Resend:** whether Preview can send as `@fourthmeridian.com`.
+- **DNS:** host and whether Cloudflare proxies traffic (unchanged from §16.5).
+
+### 17.13 Application prerequisites blocking owner actions
+
+- **P1** blocks nothing mechanically. It is the containment that makes deferring E-1 defensible.
+- **P2** blocks C-2 **only if** Preview data must be preserved.
+- **Stage A** must deploy to Preview before D-1 and D-2 can show the `__Host-` and Origin behaviour.
+- Nothing blocks A-1 to A-5.
