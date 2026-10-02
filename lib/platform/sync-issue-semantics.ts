@@ -116,6 +116,11 @@ export interface ClassifiableSyncIssue {
 const STAGE_DOMAIN: Record<string, SyncIssueDomain> = {
   // lib/plaid/syncTransactions.ts — the only financial-data-critical producer.
   "transaction-persist":          "transactions",
+  // Same subsystem, NOT the same severity story: the row committed and the
+  // cursor is not held. It is domain `transactions` because that is the
+  // subsystem that writes it; see the severity note in classifySyncIssue for
+  // why it still classifies critical, and why that was left alone.
+  "event-identity-persist":       "transactions",
   // lib/investments/*
   "opening-position-repair":      "investments",
   "investment-import-repair":     "investments",
@@ -236,6 +241,22 @@ export function classifySyncIssue(row: ClassifiableSyncIssue): SyncIssueClassifi
         // Only the bank-transaction path can leave canonical financial data
         // unpersisted behind a held cursor. Everything else is a failed
         // best-effort repair the system retries on its own schedule.
+        //
+        // ⚠️ `event-identity-persist` is a KNOWN OVERSTATEMENT here, and it is
+        // deliberate. That stage means a derived identity row was lost: the
+        // transaction committed, the cursor is not held, and nothing a member
+        // does helps — so by the letter of the sentence above it is an `error`.
+        // It is left `critical` because the only available narrowing is to stop
+        // deriving this from `domain`, and `domain` is ALSO what a detail-less
+        // row falls back to. The member activity route cannot read `detail`, so
+        // that fallback is load-bearing in the other direction (see the note on
+        // affirmativeTransaction below): narrowing to fix one operator-facing
+        // severity would quietly reclassify every row whose detail is
+        // unreadable. Erring loud for operators is the stated contract, the
+        // member never sees this row (`customerActionable` stays false because
+        // affirmativeTransaction is false), and the cursor behaviour is already
+        // right. Revisit only with a discriminator that does not run through
+        // `domain`.
         severity: isTransactionPersistence ? "critical" : "error",
         nature:   "condition",
         customerActionable: isTransactionPersistence && affirmativeTransaction,
@@ -444,6 +465,7 @@ export function incidentDescription(kind: string, domain: SyncIssueDomain): stri
 const OPERATION_PHRASE: Record<OperationKey, string> = {
   // Bank transactions.
   "transaction-persist":          "Storing bank transactions",
+  "event-identity-persist":       "Linking a transaction to its logical event",
 
   // Investments — six operations that otherwise share one label.
   "investment-events-fetch":      "Retrieving investment activity",

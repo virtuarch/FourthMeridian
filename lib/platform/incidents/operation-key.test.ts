@@ -173,14 +173,21 @@ async function main() {
      * is not "registered", and conflating the two is how a registry becomes
      * decorative.
      */
-    const PENDING_REGISTRATION = new Set(["event-identity-persist"]);
-    check(`the pending-registration list holds exactly one stage, and it is the named one (${PENDING_REGISTRATION.size})`,
-      PENDING_REGISTRATION.size === 1 && PENDING_REGISTRATION.has("event-identity-persist"),
-      [...PENDING_REGISTRATION].join(", "));
-    // A pending entry is only honest while the stage is genuinely still
-    // unregistered. The day the edit above lands, this goes red and the entry is
-    // deleted — the list cannot outlive its reason.
-    check("the pending stage really is unregistered (the entry has not outlived its reason)",
+    // ✅ REGISTERED, AND THE LIST IS EMPTY AGAIN. `event-identity-persist` was
+    // landed in OPERATION_KEYS / OPERATION_PHRASE / STAGE_DOMAIN by the parent
+    // (the three files are outside the slice that needed the key, and adding the
+    // key alone makes sync-issue-semantics.ts fail to compile, which is why it
+    // was requested rather than smuggled). The second check below went RED the
+    // moment it landed, exactly as designed, and the entry was deleted rather
+    // than aged — so the mechanism that keeps this list from becoming a parking
+    // lot has now been exercised once, for real.
+    const PENDING_REGISTRATION = new Set<string>();
+    check(`the pending-registration list is EMPTY — nothing is awaiting a key (${PENDING_REGISTRATION.size})`,
+      PENDING_REGISTRATION.size === 0, [...PENDING_REGISTRATION].join(", "));
+    // Still asserted, and now vacuously true: a pending entry is only honest
+    // while its stage is genuinely unregistered. Kept so the next pending entry
+    // inherits the guard rather than re-inventing it.
+    check("no pending entry has outlived its reason",
       [...PENDING_REGISTRATION].every((s) => !isRegisteredOperation(s)),
       [...PENDING_REGISTRATION].filter((s) => isRegisteredOperation(s)).join(", "));
 

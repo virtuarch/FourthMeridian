@@ -45,6 +45,13 @@ export const ARCHITECTURE_JOB = [
   // could not be established, and that no tool argument can name another
   // database identity.
   "npm run rls:accept:ai",
+  // RLS-P — the PROVIDER surface. The three suites above cannot reach it: the
+  // operational ledger is revoked from fm_app entirely, so its writes have no
+  // tenant to scope to and a refusal there is invisible to a tenant-isolation
+  // test. This suite proves the ledger is written by fm_system and by nothing
+  // else — including the part Postgres cannot tell you, since a row records no
+  // writer identity, so the authority is discriminated by revoke/re-grant.
+  "npm run rls:accept:plaid",
 ] as const;
 
 /** ci.yml's `postgres` service: image and credentials of the throwaway database. */

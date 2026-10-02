@@ -64,6 +64,14 @@ export const OPERATION_KEYS = {
   "investment-import-repair":     "investment-import-repair",
   "opening-position-repair":      "opening-position-repair",
 
+  // ── Event identity (derived identity, NOT financial data) ──────────────────
+  // Written when the observation unit loses canonical event state — the
+  // transaction row committed and the cursor is NOT held, so no financial record
+  // is missing and no member action helps. It exists so that a P2002 on
+  // TransactionEvent.currentTransactionId stops being visible only to
+  // console.warn (RLS-P-2b / EVENT-WRITE-1).
+  "event-identity-persist": "event-identity-persist",
+
   // ── Instrument identity (EVENT evidence) ───────────────────────────────────
   "import-weak-ambiguous":  "import-weak-ambiguous",
   "import-strong-conflict": "import-strong-conflict",

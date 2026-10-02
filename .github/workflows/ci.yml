@@ -156,3 +156,11 @@ jobs:
       # fm_app principal, and that a tool argument cannot select an identity.
       - name: RLS AI-surface adversarial suite
         run: npm run rls:accept:ai
+
+      # RLS-P — the provider surface. The operational ledger is revoked from
+      # fm_app outright, so a tenant-isolation suite cannot see a refusal there.
+      # Proves the ledger is written by fm_system and by nothing else — by
+      # revoke/re-grant, because a Postgres row records no writer identity and
+      # "a row appeared" is satisfied by any principal.
+      - name: RLS provider-ledger adversarial suite
+        run: npm run rls:accept:plaid
