@@ -20,6 +20,9 @@
  *     race); fn's return value passed through on success; fn's thrown error
  *     propagates AND leaves syncIncompleteAt untouched (the failure path must
  *     never look like the success path).
+ *  3b. RLS-C-S6a — a claim that matched nothing against an INVISIBLE item
+ *     raises IndeterminateWriteError rather than returning false ("another
+ *     sync is in flight"), and a claim that SUCCEEDS pays for no probe.
  *  4. Source scan — every live caller of the sync engine outside the engine's
  *     own internals goes through the lock, and runDeferredHistorySync is only
  *     ever invoked from its sanctioned guarded wrapper. This is the exact gap
@@ -28,6 +31,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { IndeterminateWriteError } from "@/lib/db/conditional-write";
 import {
   claimPlaidItemSyncLock,
   releasePlaidItemSyncLock,
@@ -62,9 +66,10 @@ interface FakeState {
   syncIncompleteAt: Date | null;
 }
 
-function makeFake(initial: Partial<FakeState> = {}) {
+function makeFake(initial: Partial<FakeState> = {}, visible = 1) {
   const state: FakeState = { syncLockedAt: null, syncIncompleteAt: null, ...initial };
   const calls: Array<{ where: unknown; data: unknown }> = [];
+  const probes: unknown[] = [];
 
   function whereMatches(where: { OR?: unknown }): boolean {
     if (!where.OR) return true; // release calls have no OR — always apply.
@@ -86,9 +91,15 @@ function makeFake(initial: Partial<FakeState> = {}) {
         Object.assign(state, data);
         return { count: 1 };
       },
+      // RLS-C-S6a — the visibility probe. `visible` is the fake's answer to
+      // "can this authority see the item at all", independent of the lock.
+      async count({ where }) {
+        probes.push(where);
+        return visible;
+      },
     },
   };
-  return { client, state, calls };
+  return { client, state, calls, probes };
 }
 
 async function main(): Promise<void> {
@@ -96,20 +107,55 @@ async function main(): Promise<void> {
 
   // ── 1. claim: unlocked → succeeds ───────────────────────────────────────────
   {
-    const { client, state } = makeFake();
+    const { client, state, probes } = makeFake();
     const claimed = await claimPlaidItemSyncLock("item-1", client);
     check("claim succeeds when unlocked", claimed === true);
     check("claim stamps syncLockedAt", state.syncLockedAt !== null);
+    // RLS-C-S6a: the guard must cost NOTHING on the path that succeeds.
+    check("a successful claim issues NO visibility probe", probes.length === 0, `probes=${probes.length}`);
   }
 
   // ── 2. claim: fresh lock held → fails, stamps syncIncompleteAt ──────────────
   {
-    const { client, state, calls } = makeFake({ syncLockedAt: new Date() });
+    const { client, state, calls, probes } = makeFake({ syncLockedAt: new Date() });
     const claimed = await claimPlaidItemSyncLock("item-2", client);
     check("claim fails when a fresh lock is held", claimed === false);
     check("failed claim stamps syncIncompleteAt (records pending work)", state.syncIncompleteAt !== null);
     check("failed claim does NOT touch syncLockedAt", state.syncLockedAt !== null);
-    check("exactly two DB calls (claim attempt + incomplete stamp)", calls.length === 2);
+    check("exactly two updateMany calls (claim attempt + incomplete stamp)", calls.length === 2);
+    check("a lost claim probes visibility exactly once", probes.length === 1, `probes=${probes.length}`);
+  }
+
+  // ── 2b. RLS-C-S6a: claim matched nothing AND the item is invisible ──────────
+  // The defect this guard exists for. Before it, this returned false — reported
+  // to the product as "another sync is in flight", a verdict whose calm,
+  // permanent response is to skip. Nothing holds a lock, so nothing ever
+  // finishes, and the item never refreshes again while the logs say "healthy".
+  {
+    const { client, state, calls } = makeFake({ syncLockedAt: new Date() }, /* visible */ 0);
+    let thrown: unknown = null;
+    try { await claimPlaidItemSyncLock("item-2b", client); } catch (e) { thrown = e; }
+    check("an INVISIBLE item raises IndeterminateWriteError instead of reporting contention",
+      thrown instanceof IndeterminateWriteError, `got ${thrown === null ? "no error" : String(thrown)}`);
+    check("the error names the table, the row and the operation",
+      thrown instanceof IndeterminateWriteError
+      && thrown.table === "PlaidItem" && thrown.rowId === "item-2b" && thrown.operation === "update");
+    check("an indeterminate claim stamps NOTHING (only the claim attempt ran)",
+      calls.length === 1 && state.syncIncompleteAt === null, `calls=${calls.length}`);
+  }
+
+  // ── 2c. the throw reaches the caller through withPlaidItemSyncLock ──────────
+  // The wrapper must not convert it into { ok: false, reason: "in-flight" } —
+  // that is the phantom contention wearing the wrapper's clothes.
+  {
+    const { client } = makeFake({ syncLockedAt: new Date() }, /* visible */ 0);
+    let ran = false;
+    let thrown: unknown = null;
+    try {
+      await withPlaidItemSyncLock("item-2c", async () => { ran = true; return 1; }, client);
+    } catch (e) { thrown = e; }
+    check("withPlaidItemSyncLock PROPAGATES the indeterminate claim (never 'in-flight')",
+      thrown instanceof IndeterminateWriteError && ran === false);
   }
 
   // ── 3. claim: stale lock → reclaimable ──────────────────────────────────────

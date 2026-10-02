@@ -368,6 +368,44 @@ async function main(): Promise<void> {
   check(39, "[role] the tenant role cannot WRITE the operational ledger (the split-authority seam holds)",
     deniedByGrant(issueWrite), issueWrite.err.split("\n")[0] || "ALLOWED — tenant wrote an operator ledger");
 
+  // ── [service] RLS-C-S6a — A REFUSED WRITE IS NOT A LOST RACE ──────────────
+  // Case 6 above proved the REFUSAL: Alice's UPDATE of Bob's row affects zero
+  // rows, silently. These two prove that the guard tells that zero apart from
+  // the identical zero a real compare-and-swap produces, against the real
+  // policy rather than a fake. Without the guard, both of these return `false`
+  // and the product calls both of them "somebody else got there first".
+  const cas = await import("@/lib/db/conditional-write");
+
+  let casRefusal: unknown = null;
+  await tenant.withTenantDb("alice", async (tx) => {
+    const w = await tx.transaction.updateMany({ where: { id: "tx_bob_1", merchant: "Rent" }, data: { category: "Other" } });
+    try {
+      await cas.resolveConditionalWrite(
+        w.count,
+        { table: "Transaction", rowId: "tx_bob_1", operation: "update" },
+        () => tx.transaction.count({ where: { id: "tx_bob_1" } }),
+      );
+    } catch (e) { casRefusal = e; }
+  });
+  check(40, "[service] a POLICY-REFUSED compare-and-swap raises IndeterminateWriteError instead of reporting contention",
+    casRefusal instanceof cas.IndeterminateWriteError,
+    casRefusal === null ? "returned a business verdict — the refusal is still silent" : String(casRefusal).split("\n")[0]);
+
+  // The control, and the half that keeps the guard honest: Alice's OWN row with
+  // a CAS condition that cannot match. Visible, so this is genuine contention
+  // and must stay an ordinary `false` — a guard that raised here would convert
+  // every lost race in the system into an incident.
+  const casContention = await tenant.withTenantDb("alice", async (tx) => {
+    const w = await tx.transaction.updateMany({ where: { id: "tx_alice_1", merchant: "NotCoffee" }, data: { category: "Other" } });
+    return cas.resolveConditionalWrite(
+      w.count,
+      { table: "Transaction", rowId: "tx_alice_1", operation: "update" },
+      () => tx.transaction.count({ where: { id: "tx_alice_1" } }),
+    );
+  });
+  check(41, "[service] a GENUINE stale-condition CAS on a VISIBLE row still returns ordinary contention",
+    casContention === false, `got ${JSON.stringify(casContention)}`);
+
   // ── [role] the owner is not in the tenant path ────────────────────────────
   check(17, "[role] the tenant client is NOT the migration principal",
     dbMod.tenantDb !== dbMod.db, "tenantDb fell back to the shared client");

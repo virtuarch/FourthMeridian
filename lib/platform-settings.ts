@@ -16,6 +16,7 @@
  */
 
 import { db } from "@/lib/db";
+import { resolveConditionalWrite } from "@/lib/db/conditional-write";
 import type { PrismaClient } from "@prisma/client";
 import {
   DEFAULT_REFRESH_CADENCE, REFRESH_CADENCES, REFRESH_CADENCE_SETTING_KEY,
@@ -300,6 +301,30 @@ export type SettingWriteClient = Pick<PrismaClient, "platformSetting">;
  *
  * `updatedAt` is the version token (Prisma @updatedAt; no version column).
  * These stay in THIS file so PlatformSetting keeps exactly one writer module.
+ *
+ * ⚠️ RLS-C-S6a — `false` MEANS CONTENTION, SO IT MUST NOT ALSO MEAN REFUSED.
+ * The two conditional primitives below returned `count === 1`, and the policy
+ * editor renders a `false` as "This policy changed since you opened the editor"
+ * — a 409 the operator is expected to resolve by reloading and trying again. A
+ * zero row count from a policy refusal would render as that same sentence:
+ * loud, specific, actionable, and a lie, which sends the operator in a loop
+ * against a write that cannot ever succeed. Both now resolve the zero against
+ * the row's VISIBILITY first and raise IndeterminateWriteError when the row
+ * cannot be seen. That propagates out of mutate.ts's transaction — it is
+ * neither a PolicyConflict nor a validation refusal, so the service's `catch`
+ * rethrows it — and surfaces as a 500 the operator can escalate instead of a
+ * 409 they cannot clear.
+ *
+ * ⚠️ THE DELETE CASE IS GENUINELY AMBIGUOUS, AND WE CHOOSE LOUD ON PURPOSE.
+ * For `deleteSettingIfVersion` an invisible row has a THIRD innocent reading: a
+ * concurrent operator already reset the override, which really is the conflict
+ * the 409 describes. It is indistinguishable from a refusal, and only one of the
+ * two is safe to be calm about, so the ambiguity resolves to the error. The cost
+ * is a rare noisy 500 on a double reset; the alternative is a silent, permanent
+ * phantom conflict. (Both callers in lib/platform/policies/mutate.ts read the
+ * row inside the same transaction immediately before the write, so by the letter
+ * of the rule their zero is already determinate — the probe stays because these
+ * are EXPORTED primitives and the next caller may not read first.)
  */
 export async function createSettingIfAbsent(
   client: SettingWriteClient,
@@ -331,7 +356,11 @@ export async function updateSettingIfVersion(
     where: { key, updatedAt: expectedUpdatedAt },
     data:  { value: v.value, updatedById },
   });
-  return count === 1;
+  return resolveConditionalWrite(
+    count,
+    { table: "PlatformSetting", rowId: key, operation: "update" },
+    () => client.platformSetting.count({ where: { key } }),
+  );
 }
 
 export async function deleteSettingIfVersion(
@@ -342,7 +371,11 @@ export async function deleteSettingIfVersion(
   const d = SETTING_DESCRIPTORS[key];
   if (!d.resettable) throw new PlatformSettingValidationError(key, "", `${key} has no default to reset to; it must be set explicitly.`);
   const { count } = await client.platformSetting.deleteMany({ where: { key, updatedAt: expectedUpdatedAt } });
-  return count === 1;
+  return resolveConditionalWrite(
+    count,
+    { table: "PlatformSetting", rowId: key, operation: "delete" },
+    () => client.platformSetting.count({ where: { key } }),
+  );
 }
 
 /**

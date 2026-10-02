@@ -11,6 +11,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { IndeterminateWriteError } from "@/lib/db/conditional-write";
 import {
   PlatformSettingKey, PlatformSettingValidationError, SETTING_DESCRIPTORS,
   createSettingIfAbsent, deleteSettingIfVersion, isPlatformSettingKey, listSettingDescriptors, setSetting,
@@ -131,6 +132,11 @@ async function main(): Promise<void> {
         create: async (a: { data: { key: string; value: string } }) => { calls.push("create"); if (rows.has(a.data.key)) throw Object.assign(new Error(), { code: "P2002" }); rows.set(a.data.key, { value: a.data.value, updatedAt: new Date(1) }); return a.data; },
         updateMany: async (a: { where: { key: string; updatedAt: Date }; data: { value: string } }) => { calls.push("updateMany"); const r = rows.get(a.where.key); if (!r || r.updatedAt.getTime() !== a.where.updatedAt.getTime()) return { count: 0 }; rows.set(a.where.key, { value: a.data.value, updatedAt: new Date(2) }); return { count: 1 }; },
         deleteMany: async (a: { where: { key: string; updatedAt: Date } }) => { calls.push("deleteMany"); const r = rows.get(a.where.key); if (!r || r.updatedAt.getTime() !== a.where.updatedAt.getTime()) return { count: 0 }; rows.delete(a.where.key); return { count: 1 }; },
+        // RLS-C-S6a — the visibility probe the conditional primitives now run on
+        // their failure path. It answers the CAS's IDENTITY question without the
+        // version condition, so a stale token (row present) stays an ordinary
+        // `false` while a missing row becomes IndeterminateWriteError.
+        count: async (a: { where: { key: string } }) => { calls.push("count"); return rows.has(a.where.key) ? 1 : 0; },
       },
     } as never;
     let thrown: unknown = null;
@@ -148,6 +154,27 @@ async function main(): Promise<void> {
     thrown = null;
     try { await deleteSettingIfVersion(client, "min_password_length", new Date(2)); } catch (e) { thrown = e; }
     check("a non-resettable key cannot be deleted", thrown instanceof PlatformSettingValidationError);
+
+    // ── RLS-C-S6a — a stale token and an INVISIBLE row are different answers ──
+    // Both match zero rows. The first is the concurrent edit the operator is
+    // told about; the second is a removed row or a refused write, and reporting
+    // it as a concurrent edit sends the operator round a loop they cannot exit.
+    // (refresh_cadence_wallet was deleted by the case above, so it is gone.)
+    thrown = null;
+    try { await updateSettingIfVersion(client, "refresh_cadence_wallet", "24h", new Date(2), "u"); } catch (e) { thrown = e; }
+    check("an update against a row that is NOT VISIBLE raises IndeterminateWriteError, never 'changed since you opened the editor'",
+      thrown instanceof IndeterminateWriteError && thrown.table === "PlatformSetting"
+      && thrown.rowId === "refresh_cadence_wallet" && thrown.operation === "update");
+    thrown = null;
+    try { await deleteSettingIfVersion(client, "refresh_cadence_wallet", new Date(2)); } catch (e) { thrown = e; }
+    check("a reset of a row that is NOT VISIBLE raises IndeterminateWriteError too (the ambiguity resolves LOUD)",
+      thrown instanceof IndeterminateWriteError && thrown.operation === "delete");
+    // The guard is free when the write lands: a successful update must not probe.
+    await createSettingIfAbsent(client, "refresh_cadence_wallet", "12h", "u");
+    const before = calls.filter((c) => c === "count").length;
+    await updateSettingIfVersion(client, "refresh_cadence_wallet", "24h", new Date(1), "u");
+    check("a SUCCESSFUL conditional update issues no visibility probe",
+      calls.filter((c) => c === "count").length === before);
     const settings = readFileSync("lib/platform-settings.ts", "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
     const writers = ["lib/platform/policies/mutate.ts", "app/api/platform/platform-ops/policies/route.ts"].map((f) => readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, ""));
     check("PlatformSetting is written from this module only (the mutation service composes its primitives)",

@@ -15,6 +15,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { IndeterminateWriteError } from "@/lib/db/conditional-write";
 import { SCHEDULED_JOBS } from "@/lib/jobs/registry";
 import { attemptPeriodHours } from "@/lib/jobs/cadence";
 import { classifyJobHealth } from "@/lib/jobs/health";
@@ -87,6 +88,11 @@ function makeDb(initial: Partial<State> = {}, faults: Faults = {}) {
         st.settings.delete(r.key);
         return { count: 1 };
       },
+      // RLS-C-S6a — the VISIBILITY probe the conditional primitives run when
+      // their count comes back zero. It drops the version predicate, so a row
+      // that merely MOVED still answers 1 (ordinary conflict) while a row that
+      // left the visible set answers 0 (indeterminate, and loud).
+      count: async (args: { where: { key: string } }) => (st.settings.has(args.where.key) ? 1 : 0),
     },
     auditLog: {
       create: async (args: { data: Audit }) => {
@@ -248,6 +254,20 @@ async function main(): Promise<void> {
     const moved = makeDb({ settings: new Map(seeded.state.settings) }, { interleave: (st) => st.settings.set(WKEY, { ...st.settings.get(WKEY)!, value: "24h", updatedAt: new Date("2026-09-14T13:00:00.000Z") }) });
     const late = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: tok, actor: ACTOR }, moved.db);
     check("a row that moves between the read and the delete is refused (0 rows deleted ⇒ CONFLICT)", !late.ok && late.code === "CONFLICT" && moved.state.settings.get(WKEY)?.value === "24h");
+
+    // ── RLS-C-S6a — a row that VANISHES is not the same as a row that moved ──
+    // This is the deliberate behaviour change, recorded so it is a decision and
+    // not an accident. A zero delete count against a row this authority cannot
+    // see has two readings — a concurrent reset (a real conflict) and a policy
+    // refusal (not one) — and they are indistinguishable. The ambiguity resolves
+    // LOUD: a rare noisy error on a double reset, instead of a 409 that can
+    // never be cleared because nothing is actually competing.
+    const vanished = makeDb({ settings: new Map(seeded.state.settings) }, { interleave: (st) => st.settings.delete(WKEY) });
+    const err = await resetRefreshCadence({ sourceKind: "WALLET", expectedUpdatedAt: tok, actor: ACTOR }, vanished.db)
+      .then(() => null, (e: unknown) => e);
+    check("a row that LEAVES THE VISIBLE SET between the read and the delete raises IndeterminateWriteError, never CONFLICT",
+      err instanceof IndeterminateWriteError && err.table === "PlatformSetting" && err.operation === "delete",
+      err === null ? "resolved to a business verdict" : String(err).split("\n")[0]);
   }
 
   console.log("\n8. transactional audit: setting and audit commit together or not at all");
