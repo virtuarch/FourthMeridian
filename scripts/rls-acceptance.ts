@@ -330,7 +330,26 @@ async function main(): Promise<void> {
   // exact shape, over a pool deliberately SMALLER than the concurrency, so
   // every request is forced to reuse a connection another identity just used.
   // That is the condition under which a session-scoped GUC would leak.
-  await concurrencyProof(appUrl);
+  // ⚠️ RECORDED, NOT RETHROWN. This is the only proof in the suite that competes
+  // for a scarce resource (one connection, PLAN_SIZE deep), so it is the only one
+  // whose failure can be about the MACHINE rather than about tenancy. Letting it
+  // throw sent it to main().catch, which exited before authSurfaceProof and
+  // backupProof ran — so a slow runner did not merely fail a case, it DELETED six
+  // of them from the report and from the exit code's evidence. A security suite
+  // that shrinks under load is worse than one that fails, because the report
+  // still reads like a clean 27.
+  //
+  // A genuine isolation failure still fails: check(..., false) lands in `results`
+  // and the report below exits 1 on any failure.
+  try {
+    await concurrencyProof(appUrl);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    check(17, `Concurrent Alice/Bob on a pool of ONE never cross-contaminate (${PLAN_SIZE} interleaved requests)`,
+          false, `the proof could not complete: ${msg.split("\n")[0]}`);
+    check(27, "No identity survives outside a transaction on a pooled connection",
+          false, "not reached — case 17 did not complete");
+  }
 
   // ── report ─────────────────────────────────────────────────────────────────
   // ── fm_auth: the pre-identity role must not be a way to reach money ───────
@@ -452,6 +471,39 @@ function backupProof(ownerUrl: string, appUrl: string): void {
  * its predecessor's tenant and the counts would be wrong in a way no
  * application test would catch.
  */
+/**
+ * ⚠️ THE QUEUE WE DELIBERATELY BUILT MUST NOT READ AS AN ISOLATION FAILURE.
+ *
+ * `connection_limit=1` is the whole point of this case — it forces every request
+ * onto one physical backend so each one reuses a connection another identity just
+ * used. The consequence is that these transactions do not run concurrently at
+ * all: they QUEUE, and the last one waits for the other PLAN_SIZE-1 before it may
+ * begin.
+ *
+ * Prisma's default `maxWait` is 2000 ms. On a developer machine a round trip to a
+ * local container is ~3 ms, so a 40-deep queue drains in well under that and the
+ * default is invisible. On a loaded CI runner it is not, and Prisma reports
+ *
+ *     Transaction API error: Unable to start a transaction in the given time.
+ *
+ * which is a SCHEDULING fact about the runner and never a statement about
+ * tenancy — but it arrives as a thrown error indistinguishable from a real one.
+ * This suite shipped with the default and GitHub run 36970100526 duly failed on
+ * it while the local run was green: 27 cases passed, then the throw reached
+ * main().catch and SIX CASES NEVER RAN AT ALL. A timing flake presented as a
+ * security-suite failure and silently shrank the suite.
+ *
+ * So the budget is stated and DERIVED from the queue this case creates, rather
+ * than inherited from a default that encodes an assumption about machine speed.
+ * Raising PLAN_SIZE raises the budget with it, which is the property that keeps
+ * this from rotting back into a flake.
+ */
+const PLAN_SIZE = 40;
+/** Generous per-transaction execution budget — one `count(*)` over ~5 rows. */
+const PER_TXN_MS = 1_000;
+/** Every transaction may be last in the queue, so each must be able to wait for all of them. */
+const QUEUE_WAIT_MS = PLAN_SIZE * PER_TXN_MS;
+
 async function concurrencyProof(appUrl: string): Promise<void> {
   const { PrismaClient } = await import("@prisma/client");
   const url = `${appUrl}?connection_limit=1`;
@@ -464,14 +516,14 @@ async function concurrencyProof(appUrl: string): Promise<void> {
       await tx.$executeRaw`SELECT set_config('app.user_id', ${userId}, true)`;
       const rows = await tx.$queryRaw<Array<{ n: bigint }>>`SELECT count(*)::bigint AS n FROM "Transaction"`;
       return Number(rows[0].n);
-    });
+    }, { maxWait: QUEUE_WAIT_MS, timeout: PER_TXN_MS });
 
   try {
     const EXPECT: Record<string, number> = { alice: 3, bob: 2 };
-    const plan = Array.from({ length: 40 }, (_, i) => (i % 2 === 0 ? "alice" : "bob"));
+    const plan = Array.from({ length: PLAN_SIZE }, (_, i) => (i % 2 === 0 ? "alice" : "bob"));
     const got = await Promise.all(plan.map((u) => asTenant(u)));
     const bad = got.map((n, i) => ({ u: plan[i], n })).filter((r) => r.n !== EXPECT[r.u]);
-    check(17, "Concurrent Alice/Bob on a pool of ONE never cross-contaminate (40 interleaved requests)",
+    check(17, `Concurrent Alice/Bob on a pool of ONE never cross-contaminate (${PLAN_SIZE} interleaved requests)`,
           bad.length === 0, `${bad.length} wrong: ${JSON.stringify(bad.slice(0, 4))}`);
 
     // And the identity must be gone the moment the transaction ends.
