@@ -36,6 +36,15 @@ export const ARCHITECTURE_JOB = [
   // builds its own throwaway database because it must control the role URLs
   // before lib/db.ts binds them at module load.
   "npm run rls:accept:app",
+  // RLS-AI — the AI-surface proof. The two suites above cannot reach it: the
+  // model's tools read through their own context/evidence layer, and the
+  // failure mode there is not a refusal but a SILENT EMPTY SET that this
+  // surface renders as an English absence claim. So this suite proves the
+  // absence contract as a real fm_app principal — that an empty-but-visible
+  // Space still says "none recorded" while an inaccessible one says the record
+  // could not be established, and that no tool argument can name another
+  // database identity.
+  "npm run rls:accept:ai",
 ] as const;
 
 /** ci.yml's `postgres` service: image and credentials of the throwaway database. */

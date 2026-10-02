@@ -148,3 +148,11 @@ jobs:
       # its tenant connection is genuinely fm_app and unprivileged.
       - name: RLS application adversarial suite
         run: npm run rls:accept:app
+
+      # RLS-AI — the AI surface. Neither suite above can reach it: every table
+      # the model's tools read is GRANTED to fm_app, so no AI read can fail
+      # loudly, and the only failure mode is a silent empty set that this
+      # surface turns into a sentence. Proves the absence contract on a real
+      # fm_app principal, and that a tool argument cannot select an identity.
+      - name: RLS AI-surface adversarial suite
+        run: npm run rls:accept:ai
