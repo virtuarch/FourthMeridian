@@ -64,9 +64,9 @@ function todayUTC(now: () => Date): Date {
 
 /**
  * All accounts visible to the space, each resolved to `asOf` (YYYY-MM-DD).
- * Mirrors getAccountsWithVisibility's argument contract (`spaceId`/`userId` are
- * the same optional internal/test seam; production callers pass at most
- * `{ spaceId }` and resolve the viewer from request scope).
+ * Mirrors getAccountsWithVisibility's argument contract — RLS-C-S1: `spaceId` and
+ * `userId` are both REQUIRED and are forwarded verbatim. This function never
+ * resolved identity itself; it now cannot pass an absent viewer downstream either.
  *
  * `now` is an injectable clock so callers can stay deterministic; it defaults
  * to the real clock. Resolution semantics live entirely in the pure core — this
@@ -75,7 +75,7 @@ function todayUTC(now: () => Date): Date {
  */
 export async function getAccountsAsOf(args: {
   spaceId: string;
-  userId?: string;
+  userId:  string;
   asOf:    string;
   now?:    () => Date;
 }): Promise<AccountAsOf[]> {

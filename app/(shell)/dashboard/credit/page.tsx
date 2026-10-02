@@ -12,7 +12,10 @@ export default async function CreditPage() {
   const ctx = await getSpaceContext();
   const [{ score, updatedAt }, accounts, debtTxns, paymentTxns] = await Promise.all([
     getFicoData({ userId: ctx.userId }),
-    getAccounts({ spaceId: ctx.spaceId }),
+    // RLS-C-S1 fix — `ctx.userId` was in scope on the line above and was not
+    // forwarded, so this call took `getAccounts`' ambient branch and re-resolved
+    // the viewer inside the leaf. Same value, now stated by the caller.
+    getAccounts({ spaceId: ctx.spaceId, userId: ctx.userId }),
     getDebtTransactions({ spaceId: ctx.spaceId }), // TX-2 bounded (default cap)
     // v2.6-TRUTH-7 — the debt-payment authority counts the CASH leg, which lives on
     // the account the money LEFT. A liability-scoped read cannot see it.

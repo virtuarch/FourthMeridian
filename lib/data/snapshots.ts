@@ -16,7 +16,6 @@
 
 import { db } from "@/lib/db";
 import { type TimePreset } from "@/lib/perspectives/time-range";
-import { getSpaceContext } from "@/lib/space";
 import { resolveEffectiveSpaceConversion } from "@/lib/money/server-context";
 import { convertStampedValues } from "@/lib/snapshots/stamp-conversion";
 import {
@@ -129,9 +128,12 @@ export async function getSnapshotExtent(
  */
 export async function getRecentSnapshots(
   bound: SnapshotReadBound,
-  ctx?: { spaceId: string },
+  scope: { spaceId: string },
 ): Promise<Snapshot[]> {
-  const { spaceId } = ctx ?? (await getSpaceContext());
+  // RLS-C-S1 — the Space is an argument, REQUIRED. The ambient
+  // ambient space-context fallback is gone; every one of the eleven call sites
+  // already stated `{ spaceId }`, so none of them changes shape.
+  const { spaceId } = scope;
 
   const rows = await db.spaceSnapshot.findMany({
     where:   { spaceId },

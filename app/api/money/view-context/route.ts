@@ -61,7 +61,10 @@ export async function GET(req: NextRequest) {
   // bounded by days not transaction count — instead of loading the full history.
   const txWhere = bankingTransactionWhere(ctx.spaceId);
   const [accounts, currencyRows, dateRows, snapshots] = await Promise.all([
-    getAccounts({ spaceId: ctx.spaceId }),
+    // RLS-C-S1 fix — `ctx.userId` was in scope on the line above and was not
+    // forwarded, so this call took `getAccounts`' ambient branch and re-resolved
+    // the viewer inside the leaf. Same value, now stated by the caller.
+    getAccounts({ spaceId: ctx.spaceId, userId: ctx.userId }),
     db.transaction.groupBy({ by: ["currency"], where: txWhere }),
     // v2.6-CHRON-1 — ECONOMIC dates. This population is flow-shaped
     // (bankingTransactionWhere), and the folds that will consume this context

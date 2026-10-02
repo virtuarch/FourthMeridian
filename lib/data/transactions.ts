@@ -36,7 +36,6 @@
 
 import { db } from "@/lib/db";
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
-import { getSpaceContext } from "@/lib/space";
 import {
   Transaction,
   TransactionDetail,
@@ -199,17 +198,30 @@ export interface BoundedTransactions {
 
 
 /**
+ * RLS-C-S1 — the bounded-read scope. `spaceId` is REQUIRED and the ambient
+ * ambient space-context fallback is gone, so no read in this module can name its own
+ * tenant. `windowDays` / `limit` stay optional: they are bounding policy, not
+ * identity.
+ */
+interface BoundedReadScope {
+  spaceId:     string;
+  windowDays?: number;
+  limit?:      number;
+}
+
+/**
  * Banking transactions (excludes investment activity), newest first — BOUNDED.
- * @param ctx.windowDays optional date floor (days back from today)
- * @param ctx.limit      row cap (default DEFAULT_TX_LIMIT); `limit + 1` is fetched
- *                        to detect truncation.
+ * @param scope.spaceId    REQUIRED — the Space whose banking population to read.
+ * @param scope.windowDays optional date floor (days back from today)
+ * @param scope.limit      row cap (default DEFAULT_TX_LIMIT); `limit + 1` is fetched
+ *                          to detect truncation.
  */
 export async function getTransactions(
-  ctx?: { spaceId?: string; windowDays?: number; limit?: number },
+  scope: BoundedReadScope,
 ): Promise<BoundedTransactions> {
-  const spaceId    = ctx?.spaceId ?? (await getSpaceContext()).spaceId;
-  const limit      = ctx?.limit ?? DEFAULT_TX_LIMIT;
-  const windowDays = ctx?.windowDays ?? null;
+  const spaceId    = scope.spaceId;
+  const limit      = scope.limit ?? DEFAULT_TX_LIMIT;
+  const windowDays = scope.windowDays ?? null;
   const floor      = windowFloorDate(windowDays);
 
   const fetched = await db.transaction.findMany({
@@ -296,11 +308,11 @@ function contextFields(
  * intelligence consumer inherits this bound automatically.
  */
 export async function getDebtTransactions(
-  ctx?: { spaceId?: string; windowDays?: number; limit?: number },
+  scope: BoundedReadScope,
 ): Promise<BoundedTransactions> {
-  const spaceId    = ctx?.spaceId ?? (await getSpaceContext()).spaceId;
-  const limit      = ctx?.limit ?? DEFAULT_TX_LIMIT;
-  const windowDays = ctx?.windowDays ?? null;
+  const spaceId    = scope.spaceId;
+  const limit      = scope.limit ?? DEFAULT_TX_LIMIT;
+  const windowDays = scope.windowDays ?? null;
   const floor      = windowFloorDate(windowDays);
 
   const fetched = await db.transaction.findMany({
@@ -342,11 +354,11 @@ export async function getDebtTransactions(
  * Same Space scoping, same KD-15 visibility, same bound as its sibling.
  */
 export async function getDebtPaymentRows(
-  ctx?: { spaceId?: string; windowDays?: number; limit?: number },
+  scope: BoundedReadScope,
 ): Promise<BoundedTransactions> {
-  const spaceId    = ctx?.spaceId ?? (await getSpaceContext()).spaceId;
-  const limit      = ctx?.limit ?? DEFAULT_TX_LIMIT;
-  const windowDays = ctx?.windowDays ?? null;
+  const spaceId    = scope.spaceId;
+  const limit      = scope.limit ?? DEFAULT_TX_LIMIT;
+  const windowDays = scope.windowDays ?? null;
   const floor      = windowFloorDate(windowDays);
 
   const fetched = await db.transaction.findMany({
@@ -436,9 +448,11 @@ function resolveAccountName(fa: {
  */
 export async function getTransactionDetail(
   id: string,
-  ctx?: { spaceId: string },
+  scope: { spaceId: string },
 ): Promise<TransactionDetail | null> {
-  const { spaceId } = ctx ?? (await getSpaceContext());
+  // RLS-C-S1 — REQUIRED. A detail read that resolved its own Space could answer
+  // for a tenant the caller's client is not bound to.
+  const { spaceId } = scope;
 
   const row = await db.transaction.findFirst({
     where: transactionDetailWhere(id, spaceId),

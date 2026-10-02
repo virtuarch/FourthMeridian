@@ -6,12 +6,17 @@
  */
 
 import { db } from "@/lib/db";
-import { getSpaceContext } from "@/lib/space";
 import { AiAdvice } from "@/types";
 
-/** The most recent advice record for the current space, or null if none exists yet. */
-export async function getLatestAdvice(ctx?: { spaceId: string }): Promise<AiAdvice | null> {
-  const { spaceId } = ctx ?? (await getSpaceContext());
+/**
+ * The most recent advice record for the named space, or null if none exists yet.
+ *
+ * RLS-C-S1 — `scope.spaceId` is REQUIRED. The ambient space-context fallback
+ * is gone: tenant identity is bound at the request boundary, and the Space is an
+ * ordinary argument. The one caller (the Analyze page) already resolves it.
+ */
+export async function getLatestAdvice(scope: { spaceId: string }): Promise<AiAdvice | null> {
+  const { spaceId } = scope;
 
   const row = await db.aiAdvice.findFirst({
     where:   { spaceId },

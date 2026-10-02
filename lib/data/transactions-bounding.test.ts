@@ -31,8 +31,15 @@ console.log("BOUNDARY — the default is a finite cap; unlimited is not reachabl
 {
   check("DEFAULT_TX_LIMIT is a finite positive number (5000)", Number.isFinite(DEFAULT_TX_LIMIT) && DEFAULT_TX_LIMIT === 5000);
   const src = code("lib/data/transactions.ts");
-  check("getTransactions defaults limit to DEFAULT_TX_LIMIT", /limit\s*=\s*ctx\?\.limit\s*\?\?\s*DEFAULT_TX_LIMIT/.test(src));
-  check("getDebtTransactions defaults limit to DEFAULT_TX_LIMIT", (src.match(/limit\s*=\s*ctx\?\.limit\s*\?\?\s*DEFAULT_TX_LIMIT/g) ?? []).length >= 2);
+  // RLS-C-S1 — the PROPERTY under test is "an unstated limit falls back to
+  // DEFAULT_TX_LIMIT", not the name of the parameter it is read off. The scope
+  // argument was renamed `ctx?` → `scope` and made REQUIRED when the ambient
+  // space-context fallback was removed from these loaders, so the optional
+  // chain on the object itself is gone; `limit` is still optional ON it, which is
+  // the only thing this assertion ever cared about.
+  const DEFAULTS_LIMIT = /limit\s*=\s*\w+\??\.limit\s*\?\?\s*DEFAULT_TX_LIMIT/g;
+  check("getTransactions defaults limit to DEFAULT_TX_LIMIT", new RegExp(DEFAULTS_LIMIT.source).test(src));
+  check("getDebtTransactions defaults limit to DEFAULT_TX_LIMIT", (src.match(DEFAULTS_LIMIT) ?? []).length >= 2);
   check("both banking loaders fetch a bounded page (take: limit + 1)", (src.match(/take:\s*limit\s*\+\s*1/g) ?? []).length >= 2);
 }
 

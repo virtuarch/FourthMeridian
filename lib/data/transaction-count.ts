@@ -30,7 +30,6 @@ import "server-only";
 
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { getSpaceContext } from "@/lib/space";
 import { bankingTransactionWhere } from "@/lib/data/transactions";
 import { buildFilterWhere, type TransactionQuery } from "@/lib/data/transaction-query-core";
 import { resolveVisibleAccountIds } from "@/lib/data/transaction-query";
@@ -42,10 +41,12 @@ import { resolveVisibleAccountIds } from "@/lib/data/transaction-query";
  * filtered SET, not of any page through it.
  */
 export async function countTransactions(args: {
-  spaceId?: string;
+  /** RLS-C-S1 — REQUIRED. No ambient space-context fallback: a count must
+   *  be scoped by its caller, never by a leaf re-deriving its own identity. */
+  spaceId: string;
   query: TransactionQuery;
 }): Promise<number> {
-  const spaceId = args.spaceId ?? (await getSpaceContext()).spaceId;
+  const spaceId = args.spaceId;
   const query = args.query;
 
   // The same visibility intersection the row query applies — a count must never

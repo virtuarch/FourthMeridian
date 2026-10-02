@@ -2,7 +2,8 @@
  * lib/data/transaction-query-core.ts  (TX-3.0, hardened in TX-3.1b)
  *
  * The PURE query contract + keyset-pagination logic for the Transaction Explorer —
- * deliberately free of any server-only dependency (no `db`, no `getSpaceContext`) so
+ * deliberately free of any server-only dependency (no `db`, no ambient space
+ * context) so
  * every ordering/cursor/filter/parse rule is unit-testable in isolation. The server
  * authorities (transaction-query.ts / transaction-aggregate.ts) are thin shells that
  * compose THESE fragments with the existing population/visibility authority

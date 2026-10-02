@@ -24,7 +24,6 @@ import { ShareStatus, FlowType, TransactionCategory } from "@prisma/client";
 import type { Prisma } from "@prisma/client";
 import type { Transaction } from "@/types";
 import { db } from "@/lib/db";
-import { getSpaceContext } from "@/lib/space";
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 import { assertOneRowPerEvent } from "@/lib/transactions/event-projection";
 import {
@@ -120,10 +119,12 @@ export async function resolveVisibleAccountIds(spaceId: string): Promise<Set<str
  * `date` fragment ever overwrites another.
  */
 export async function queryTransactions(args: {
-  spaceId?: string;
+  /** RLS-C-S1 — REQUIRED. The ambient space-context fallback is gone: a
+   *  leaf read may not invent the tenant whose rows it is paging. */
+  spaceId: string;
   query: TransactionQuery;
 }): Promise<TransactionQueryResult> {
-  const spaceId = args.spaceId ?? (await getSpaceContext()).spaceId;
+  const spaceId = args.spaceId;
   const query = args.query;
   const limit = clampLimit(query.limit);
 
@@ -186,10 +187,12 @@ export async function queryTransactions(args: {
  * a page is the thing this is counting past.
  */
 export async function countTransactions(args: {
-  spaceId?: string;
+  /** RLS-C-S1 — REQUIRED, for the same reason as `queryTransactions` above: the
+   *  count and the page must be the same population, named by the same caller. */
+  spaceId: string;
   query: Omit<TransactionQuery, 'cursor' | 'limit'>;
 }): Promise<number> {
-  const spaceId = args.spaceId ?? (await getSpaceContext()).spaceId;
+  const spaceId = args.spaceId;
   let accountIds = args.query.accountIds;
   if (accountIds && accountIds.length > 0) {
     const visible = await resolveVisibleAccountIds(spaceId);

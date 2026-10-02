@@ -25,7 +25,6 @@ import { db } from "@/lib/db";
 import {
   accountDisplayName, compareAccountsByDisplayName,
 } from "@/lib/accounts/display-identity";
-import { getSpaceContext } from "@/lib/space";
 import { Account } from "@/types";
 import { ShareStatus, PlaidItemStatus, type VisibilityLevel } from "@prisma/client";
 import { estimateMinimumPayment } from "@/lib/debt";
@@ -62,25 +61,6 @@ export interface AccountWithVisibility {
   visibilityLevel: VisibilityLevel;
 }
 
-/**
- * All accounts visible to the current space, via SpaceAccountLink, each
- * paired with the visibility tier that produced it (AccountWithVisibility
- * above). Most callers want getAccounts() below instead.
- *
- * Pass `ctx` when the caller has already resolved space context for this
- * request (e.g. the dashboard page resolves it once and fans it out to all
- * its data helpers) to avoid a redundant getSpaceContext() call. Falls
- * back to resolving it internally (now cached per-request via React's
- * cache()) when called standalone, so existing callers keep working.
- *
- * `ctx.userId` is an optional internal/test seam: `getSpaceContext()` reads
- * next-auth `headers()` and therefore cannot run outside a Next request scope
- * (e.g. a standalone tsx privacy-proof script). A caller that already knows the
- * viewing user — and only such a caller — may pass `userId` to skip that
- * resolution. Production callers pass at most `{ spaceId }`, so they resolve
- * `userId` from the request scope exactly as before; production behavior is
- * unchanged.
- */
 /**
  * v2.6-L3 — reachable cash + unexplained hold per CASH account, through the
  * canonical lib/balances authority. READ-ONLY, and scoped to ids this module has
@@ -124,18 +104,40 @@ async function loadCurrentCashState(
   return out;
 }
 
+/**
+ * All accounts visible to the current space, via SpaceAccountLink, each
+ * paired with the visibility tier that produced it (AccountWithVisibility
+ * above). Most callers want getAccounts() below instead.
+ *
+ * ── RLS-C-S1 — THE SCOPE IS AN ARGUMENT, NEVER RE-DERIVED HERE ──────────────
+ *
+ * `scope` is REQUIRED, and this function no longer resolves ambient space context.
+ * It used to: when a caller omitted either key, the leaf read next-auth
+ * `headers()` and invented its own identity. That is fatal to RLS adoption — a
+ * helper that re-derives identity inside a transaction which already has a
+ * tenant bound can never be threaded with a scoped client, because the two
+ * identities can disagree and only one of them is the authority.
+ *
+ * TENANT IDENTITY (which database client may see which rows) is supplied at the
+ * request boundary and travels with the client. What arrives HERE is ordinary
+ * PRODUCT context:
+ *   - `spaceId` — which Space's links to read.
+ *   - `userId`  — the VIEWING member, a product input only: it decides whose
+ *                 broken Plaid connection gets a reconnect badge (D2-7E below).
+ *                 It is never a visibility widener and never an authority.
+ *
+ * Every caller already has both from server-side state (the resolved context at
+ * the page/route, `PerspectiveScope` in the engine, an explicit seed identity in
+ * the proof scripts), so requiring them costs nothing and removes the only way
+ * this read could ever disagree with its caller.
+ */
 export async function getAccountsWithVisibility(
-  ctx?: { spaceId: string; userId?: string },
+  scope: { spaceId: string; userId: string },
 ): Promise<AccountWithVisibility[]> {
-  // Resolve spaceId + the current userId (used only for the reconnect badge
-  // below). Call getSpaceContext() only when the caller hasn't supplied both —
-  // it is cache()-memoized per request, so this is at most one call. When both
-  // are provided (internal/test), no request scope is touched.
-  const needsResolve = !ctx?.spaceId || !ctx?.userId;
-  const resolved = needsResolve ? await getSpaceContext() : null;
-  const spaceId = ctx?.spaceId ?? resolved!.spaceId;
-  // D2-7E — current user, for the reconnect-badge ownership check below.
-  const userId = ctx?.userId ?? resolved!.userId;
+  // RLS-C-S1 — both supplied by the caller. No ambient resolution, no request
+  // scope touched. `userId` is the viewing member, used ONLY for the
+  // reconnect-badge ownership check below (D2-7E).
+  const { spaceId, userId } = scope;
 
   const links = await db.spaceAccountLink.findMany({
     where: {
@@ -426,8 +428,8 @@ export async function getAccountsWithVisibility(
  * the server-side visibility tier, so this function's output is unchanged
  * by the AccountWithVisibility addition.
  */
-export async function getAccounts(ctx?: { spaceId: string; userId?: string }): Promise<Account[]> {
-  return sortAccountsForDisplay((await getAccountsWithVisibility(ctx)).map((r) => r.account));
+export async function getAccounts(scope: { spaceId: string; userId: string }): Promise<Account[]> {
+  return sortAccountsForDisplay((await getAccountsWithVisibility(scope)).map((r) => r.account));
 }
 
 /**
@@ -451,11 +453,14 @@ export function sortAccountsForDisplay<T extends { id: string; type: string; nam
 // here. See the module header; the canonical seam is getCurrentPositions.
 
 /**
- * Latest credit score for the current user.
+ * Latest credit score for the named user.
  * CreditScore is user-owned (not space-owned) since it is personal identity data.
+ *
+ * RLS-C-S1 — `scope.userId` is REQUIRED. The ambient space-context fallback
+ * is gone: a leaf read must not decide whose credit score it is looking at.
  */
-export async function getFicoData(ctx?: { userId: string }): Promise<{ score: number | null; updatedAt: string | null }> {
-  const { userId } = ctx ?? (await getSpaceContext());
+export async function getFicoData(scope: { userId: string }): Promise<{ score: number | null; updatedAt: string | null }> {
+  const { userId } = scope;
 
   const row = await db.creditScore.findFirst({
     where:   { userId },
@@ -469,7 +474,8 @@ export async function getFicoData(ctx?: { userId: string }): Promise<{ score: nu
   };
 }
 
-/** @deprecated use getFicoData instead */
-export async function getFicoScore(): Promise<number | null> {
-  return (await getFicoData()).score;
-}
+// RLS-C-S1 — `getFicoScore()` was DELETED here. It was `@deprecated` with zero
+// callers repo-wide, and it was the last zero-argument read in this module: its
+// only way to name a user was the ambient space-context fallback. Deleting
+// it is strictly better than threading a `userId` through a function nobody calls.
+// The canonical read is `getFicoData({ userId })` above.

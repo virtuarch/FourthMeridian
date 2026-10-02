@@ -21,7 +21,6 @@
  */
 
 import { db } from "@/lib/db";
-import { getSpaceContext } from "@/lib/space";
 import { getAccounts } from "@/lib/data/accounts";
 import { countCurrentPositionsByAccount } from "@/lib/investments/current-positions";
 // REVIEW-3 — the ONE gate function for the observation pipeline; consulted so a
@@ -44,14 +43,21 @@ export type { InvestmentAccountView } from "@/lib/investments/current-holdings";
  * owner-only actions.
  */
 export async function getInvestmentAccountsView(
-  ctx?: { spaceId: string; userId: string },
+  scope: { spaceId: string; userId: string },
 ): Promise<InvestmentAccountView[]> {
-  const { spaceId, userId } = ctx ?? (await getSpaceContext());
+  // RLS-C-S1 — both REQUIRED, no ambient space-context resolution. `userId` is a
+  // PRODUCT input: it scopes the Enable/Refresh affordances to the viewer's own
+  // PlaidItem below, and nothing else.
+  const { spaceId, userId } = scope;
 
   // Canonical non-cash position count per account (getCurrentPositions, FULL-gated
   // inside the seam) — the position-PRESENCE signal, not holding contents.
   const [accounts, positionCountByAccount] = await Promise.all([
-    getAccounts({ spaceId }),
+    // RLS-C-S1 fix — this DROPPED the `userId` it had just destructured, so the
+    // account read silently took the ambient branch and re-resolved the viewer
+    // from request scope. Forwarding it is the whole fix; behaviour is identical
+    // on the request path and now also correct off it.
+    getAccounts({ spaceId, userId }),
     countCurrentPositionsByAccount({ spaceId }),
   ]);
 
