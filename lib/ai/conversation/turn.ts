@@ -211,6 +211,42 @@ export async function executeTurn(args: {
   );
 }
 
+/**
+ * ONE TOOL CALL, IN ONE PHASE.
+ *
+ * ⚠️ THE BOUNDARY IS HERE AND NOT IN THE TOOLS, which is the whole property: a
+ * tool written next year is tenant-scoped because the DISPATCHER scoped it, not
+ * because its author remembered to. Where a tool reaches several authorities
+ * (`get_baselines`, the scenario setup, `project_cash`) they all run inside this
+ * one transaction and receive the client through the context, so `get_baselines`
+ * opens one transaction and not five.
+ *
+ * ⚠️ THE TRANSACTION ENDS BEFORE THE RESULT IS RETURNED. The provider call sits in
+ * the loop ABOVE this function; nothing here is awaited across it. That is asserted
+ * by source scan in scripts/rls-ai-acceptance.ts rather than left to reading.
+ *
+ * ⚠️ BOTH CLIENTS ARE REPLACED TOGETHER. `readClient` and `memoryClient` must be
+ * the SAME OBJECT for the absence oracle to adjudicate the memory store at all
+ * (lib/ai/absence.ts checks it rather than assuming it), and splitting them would
+ * silently turn every empty `recall` into INDETERMINATE.
+ *
+ * ⚠️ A SHALLOW COPY, ON PURPOSE. `plan` and `turn` are shared by REFERENCE, so the
+ * mutations the turn loop and `stage_assumptions` make to their contents are seen
+ * by the caller exactly as before. No tool assigns `ctx.plan` or `ctx.turn`
+ * wholesale (verified by scan), which is the condition that makes this safe.
+ *
+ * With no phase runner this is `tool.run(args, ctx)` and nothing else.
+ */
+async function runToolCall(
+  tool: { name: string; run: (a: Record<string, unknown>, c: ToolContext) => Promise<unknown> },
+  args: Record<string, unknown>, ctx: ToolContext,
+): Promise<unknown> {
+  const phase = ctx.phase;
+  if (!phase) return tool.run(args, ctx);
+  return phase.run(tool.name, (tx) =>
+    tool.run(args, { ...ctx, readClient: tx, memoryClient: tx }));
+}
+
 async function executeTurnInner(args: {
   messages:    unknown[];
   user:        string;
@@ -273,7 +309,7 @@ async function executeTurnInner(args: {
           const tool = findTool(call.name);
           if (!tool) throw new Error(`no such tool: ${call.name}`);
           const parsed = JSON.parse(call.arguments || '{}') as Record<string, unknown>;
-          result = await tool.run(parsed, toolCtx);
+          result = await runToolCall(tool, parsed, toolCtx);
         } catch (err) {
           error = err instanceof Error ? err.message : String(err);
           result = { error };

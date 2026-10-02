@@ -149,17 +149,29 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // surface beside it (app/api/ai/memory) is the one already running as the
       // tenant. Making the choice visible here is what a later slice converts.
       memoryClient: db,
-      // ⚠️ RLS-C-S3 — STATED HERE, AND STILL THE MIGRATION PRINCIPAL ON PURPOSE.
-      // The twenty tools now take their read authority from the turn instead of
-      // each leaf reaching a global, so this line is the ONE place the chat
-      // surface's authority is chosen. It does not move yet, for two measured
-      // reasons: a turn makes up to six model calls, so no tenant transaction can
-      // span it; and every table these tools read is granted to `fm_app`, so an RLS
-      // refusal here cannot fail loudly — it arrives as an empty set, which this
-      // surface renders as declarative English ("no dated transactions are
-      // available for this Space") and hands to a model. Flipping the authority
-      // before that absence contract exists would turn a refusal into a confident
-      // false statement. See docs/plans/RLS-SILENT-REFUSAL-CAS.md Part 2.
+      // ⚠️ RLS-C-S3/RLS-AI — STATED HERE, AND STILL THE MIGRATION PRINCIPAL. The
+      // twenty tools take their read authority from the turn instead of each leaf
+      // reaching a global, so this line is the ONE place the chat surface's
+      // authority is chosen.
+      //
+      // RLS-AI-S0 closed the first of the two reasons it had not moved: the ABSENCE
+      // CONTRACT now exists (lib/ai/absence.ts), so an RLS-filtered empty read is
+      // reported as INDETERMINATE rather than narrated as absence, and
+      // scripts/rls-ai-acceptance.ts proves that against real `fm_app`.
+      // RLS-AI-S2 closed the second: `phase` on the tool context makes ONE TOOL
+      // CALL ONE SHORT TRANSACTION, opened in the dispatcher, so nothing spans the
+      // up-to-six model calls a turn makes.
+      //
+      // ⚠️ IT STILL DOES NOT MOVE, AND THE REASON IS NAMED RATHER THAN IMPLIED. The
+      // four CONTEXT ASSEMBLERS (`lib/ai/assemblers/*`) hold `db` themselves —
+      // `AssemblerFn` takes no client — and their leaves reach into
+      // lib/data, lib/history and lib/investments. Setting `readClient` to a tenant
+      // transaction here would make a turn SPLIT-AUTHORITY: the prologue's census
+      // and corpus span as the tenant, the four domains as the migration principal.
+      // That is not a disclosure (all four AI callers 403 on a Space mismatch before
+      // any read), but it is an authority nobody could state in one sentence, and
+      // the absence contract would bind half the turn. The flip lands when the
+      // assembler seam takes a client. See docs/plans/RLS-SILENT-REFUSAL-CAS.md.
       readClient: db,
       correlationId: conversationKey(user.id, history[0]?.content ?? asked),
       surface: 'chat',
