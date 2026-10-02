@@ -1,6 +1,6 @@
 import { getServerSession } from "next-auth";
 import { authOptions }      from "@/lib/auth";
-import { db }               from "@/lib/db";
+import { withTenantDb }     from "@/lib/db/tenant-context";
 import { redirect }         from "next/navigation";
 import {
   ArchiveBinClient,
@@ -26,12 +26,43 @@ export default async function ArchivedAssetsPage() {
 
   const userId = session.user.id;
 
-  // Three independent lists feeding the three tabs — run concurrently.
-  const [accounts, archivedMemberships, trashedMemberships] = await Promise.all([
+  // ── RLS-T3 — THE ARCHIVE BIN IS ONE ANSWER, SO IT IS ONE TRANSACTION ───────
+  //
+  // All three reads execute as the viewer, with the identity taken from
+  // getServerSession above and nothing else. They share one short transaction
+  // because the three tabs are one coherent answer about one person's archive,
+  // and because none of them calls out of the process — the loadSpaceAccounts
+  // precedent from RLS-B4, not the mount fan-out one. Prisma puts an interactive
+  // transaction's statements on a single connection, so the `Promise.all` below
+  // no longer overlaps them; three indexed reads is not a fan-out worth a
+  // connection each.
+  //
+  // ── SOFT-DELETED ROWS ARE POLICIED NORMALLY, AND THAT IS THE POINT ─────────
+  // No fm_app policy mentions `deletedAt`, so a soft-deleted FinancialAccount is
+  // exactly as visible to its owner as a live one. The account list is served by
+  // the `"ownerUserId" = current_fm_user_id()` arm of
+  // `FinancialAccount.fm_app_sel` (§14, added so a just-created account is
+  // visible to its creator before any link exists) — which is also why this page
+  // CANNOT reach the known no-ACTIVE-link coverage gap: that gap is that the
+  // account-SUBTREE tables (AccountConnection, Transaction, DebtProfile) have no
+  // ownerUserId arm, and this page reads none of them.
+  //
+  // ⚠️ ONE DEGRADATION, AND IT IS A CHIP NOT A 404. `spaceAccountLinks` is read
+  // through `SpaceAccountLink.fm_app_sel` = `spaceId IN
+  // fm_visible_space_ids()`, which has no ownerUserId arm either. A link is
+  // therefore visible whatever its STATUS (the policy never mentions status, so
+  // the REVOKED links a deletion leaves behind still come back) but only while
+  // the owner is an ACTIVE member of the Space it points at. An archived asset
+  // that was once shared into a Space the owner has since LEFT loses that
+  // Space's chip. The relation is to-MANY, so it degrades to `[]` rather than
+  // raising, and the nested `space` is safe despite being REQUIRED: a link is
+  // only visible when its spaceId is in `fm_visible_space_ids()`, which is
+  // exactly the predicate `Space.fm_app_sel`'s membership arm tests.
+  const [accounts, archivedMemberships, trashedMemberships] = await withTenantDb(userId, (tx) => Promise.all([
     // All of the current user's soft-deleted accounts — Plaid, manual, and
     // wallet alike — not just manual assets. Restore/delete actions in
     // ArchiveBinClient branch per-row based on `source`.
-    db.financialAccount.findMany({
+    tx.financialAccount.findMany({
       where: {
         ownerUserId: userId,
         deletedAt:   { not: null },
@@ -66,7 +97,14 @@ export default async function ArchivedAssetsPage() {
     // Archived (not yet trashed) spaces the user is still an active
     // member of. Shown to any member; restore/trash actions are gated to
     // OWNER in the client.
-    db.spaceMember.findMany({
+    //
+    // Both membership reads are served by the `"userId" =
+    // current_fm_user_id()` arm of `SpaceMember.fm_app_sel` (§12), and the
+    // REQUIRED `space` relation resolves because `fm_visible_space_ids()` keys
+    // on membership and ACTIVE status ONLY — it never filters on archivedAt or
+    // deletedAt, so an archived or trashed Space stays visible to the member
+    // whose archive bin is listing it. That is the whole page.
+    tx.spaceMember.findMany({
       where: { userId, status: "ACTIVE", space: { archivedAt: { not: null }, deletedAt: null } },
       select: {
         role:      true,
@@ -76,7 +114,7 @@ export default async function ArchivedAssetsPage() {
     }),
 
     // Trashed spaces the user is still an active member of.
-    db.spaceMember.findMany({
+    tx.spaceMember.findMany({
       where: { userId, status: "ACTIVE", space: { deletedAt: { not: null } } },
       select: {
         role:      true,
@@ -84,7 +122,7 @@ export default async function ArchivedAssetsPage() {
       },
       orderBy: { space: { deletedAt: "desc" } },
     }),
-  ]);
+  ]));
 
   const assets: ArchivedAsset[] = accounts.map((a) => ({
     id:          a.id,

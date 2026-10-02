@@ -448,7 +448,7 @@ export const GET = withApiHandler(async (
   //
   // ⚠️ The `user` include came OUT of the AuditLog read and did not come with it —
   // see the note on the actor stitch below.
-  const { logRows, accountIds, importBatches, syncIssues } = await withTenantDb(
+  const { logRows, importBatches, syncIssues } = await withTenantDb(
     auth.user.id,
     async (tx) => {
       // ── Fetch raw logs ────────────────────────────────────────────────────
@@ -483,9 +483,11 @@ export const GET = withApiHandler(async (
       });
       const accountIds = links.map((l) => l.financialAccountId);
 
+      // `accountIds` deliberately does NOT leave the phase: it is the SCOPE of
+      // the two reads below and nothing outside consumes it, so returning it
+      // would publish a tenant-resolved id set no caller has a use for.
       return {
         logRows,
-        accountIds,
         // ── ImportBatch source — COMPLETED batches on those accounts ─────────
         importBatches: accountIds.length === 0 ? [] : await tx.importBatch.findMany({
           where: { status: "COMPLETED", financialAccountId: { in: accountIds } },
