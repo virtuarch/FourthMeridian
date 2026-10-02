@@ -1,7 +1,7 @@
 {
   "note": "RLS-4 ratchet. Runtime-reachable files still reaching the database through the migration principal (@/lib/db `db`). This set may SHRINK freely as adoption proceeds; it may never GROW. Regenerate with `npx tsx scripts/audit-db-authority.ts --write-baseline`, and say in the commit why anything added is justified.",
   "generatedAt": "2026-10-02",
-  "count": 217,
+  "count": 213,
   "files": [
     "app/(shell)/dashboard/platform/[area]/page.tsx",
     "app/(shell)/dashboard/settings/archived-assets/page.tsx",
@@ -103,9 +103,7 @@
     "lib/ai/assemblers/accounts.ts",
     "lib/ai/assemblers/snapshot.ts",
     "lib/ai/assemblers/transactions.ts",
-    "lib/ai/context-builder.ts",
     "lib/ai/coverage-envelope.ts",
-    "lib/ai/invocation.ts",
     "lib/alerts/run.ts",
     "lib/connections/health-transitions.ts",
     "lib/connections/health.ts",
@@ -163,7 +161,6 @@
     "lib/plaid/backgroundHistorySync.ts",
     "lib/plaid/exchangeToken.ts",
     "lib/plaid/historical-stage-recorder.ts",
-    "lib/plaid/provider-call.ts",
     "lib/plaid/refresh-execution.ts",
     "lib/plaid/refresh.ts",
     "lib/plaid/refreshCooldown.ts",
@@ -218,7 +215,6 @@
     "lib/spaces/sync-completeness.ts",
     "lib/sync/wallet-connections.ts",
     "lib/transactions/fingerprint.ts",
-    "lib/transactions/transfer-resolution.ts",
-    "lib/usage/record.ts"
+    "lib/transactions/transfer-resolution.ts"
   ]
 }

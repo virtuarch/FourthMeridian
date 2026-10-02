@@ -25,7 +25,7 @@
  */
 
 import 'server-only';
-import { db } from '@/lib/db';
+import { systemDb } from '@/lib/db';
 import { deploymentEnvironment } from '@/lib/env';
 import { getAiInvocationContext } from '@/lib/ai/invocation-context';
 import type { OpenAiUsage } from '@/lib/usage/ai-tokens';
@@ -58,7 +58,12 @@ const whole = (n: unknown): number =>
  */
 export async function recordAiInvocation(
   input: AiInvocationInput,
-  client: AiInvocationWriteClient = db as unknown as AiInvocationWriteClient,
+  // ⚠️ fm_system, NOT the tenant role and NOT the migration principal.
+  // AiInvocation is REVOKED from fm_app (…000100 §4) and has no tenant column BY
+  // DESIGN — a recorded privacy decision, which adding one to satisfy RLS would
+  // reverse. So the only authority that can write it is fm_system, and the
+  // default says so rather than leaving it to the ambient client.
+  client: AiInvocationWriteClient = systemDb as unknown as AiInvocationWriteClient,
 ): Promise<void> {
   try {
     const ctx = getAiInvocationContext();

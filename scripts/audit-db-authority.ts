@@ -106,6 +106,14 @@ const CONFINED: Record<string, { allowed: string[]; why: string }> = {
       // widest authority is reached through the narrowest opening: two
       // functions that take a value and return a boolean.
       "lib/users/availability.ts",
+      // RLS-AI — the AI cost ledger. AiInvocation is REVOKED from fm_app and has
+      // no tenant column by a recorded privacy decision, so fm_system is the only
+      // authority that can write it. Listed as a FILE, not a directory, for the
+      // same reason as availability.ts above: the opening is one function that
+      // takes a usage payload and returns void. It is fired `void` from
+      // provider.ts DURING a model call, so it could not live in a tenant
+      // transaction even if a tenant could write the table.
+      "lib/ai/invocation.ts",
       // RLS-C-S6 — the invite-validation capability, listed as a FILE for the
       // same reason. `validateInvite` takes a RAW INVITE TOKEN and returns a
       // closed {valid, email, requestId}; BetaAccessRequest is pre-tenant (the
