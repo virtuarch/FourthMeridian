@@ -37,6 +37,7 @@ import { requireUser }               from '@/lib/session';
 import { limitByUser }               from '@/lib/rate-limit';
 import { resolveSpaceContext }       from '@/lib/space';
 import { db }                        from '@/lib/db';
+import { aiPhaseRunner }             from '@/lib/ai/tenant-phase';
 import { todayUTCISO }               from '@/lib/time/clock';
 import '@/lib/ai/assemblers';
 import { runStatelessTurn } from '@/lib/ai/conversation/engine';
@@ -120,8 +121,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   // ── The turn ───────────────────────────────────────────────────────────────
   try {
-    const agent = await db.aiAgent.findUnique({
-      where: { spaceId: spaceCtx.spaceId }, select: { id: true } });
+    // ⚠️ RLS-AI-S11 — THE FLIP. One runner, bound to the authenticated session's
+    // user id and nothing else: `requireUser()` produced it, and there is no tool
+    // argument, JSON-schema field, header, request body or cookie through which a
+    // model or a browser could reach this parameter.
+    const phase = aiPhaseRunner(user.id);
+
+    // The agent id is a Space-granular read (`AiAgent`), so it belongs inside the
+    // tenant authority like everything else this route reads. It is its OWN short
+    // phase rather than part of the prologue because it is an INPUT to opening the
+    // transcript — the prologue needs it before it starts.
+    const agent = await phase.run('ai_agent', (tx) => tx.aiAgent.findUnique({
+      where: { spaceId: spaceCtx.spaceId }, select: { id: true } }));
 
     // ⚠️ THE SEAL IS OPENED AGAINST THIS REQUEST, NOT MERELY DECRYPTED. User,
     // Space and the tail of the transcript that was actually posted all have to
@@ -143,36 +154,34 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // FM-AUDIT-018 — a plan the previous turn could not carry; this turn is told.
       continuity: carried?.continuity ?? null,
       asOfISO: todayUTCISO(),
-      // ⚠️ RLS slice A — STATED, NOT ASSUMED. A turn makes model calls, so its
-      // memory work CANNOT run inside one `withTenantDb` transaction; this route
-      // therefore still names the long-lived authority explicitly, and the memory
-      // surface beside it (app/api/ai/memory) is the one already running as the
-      // tenant. Making the choice visible here is what a later slice converts.
+      // ⚠️ RLS-AI-S11 — THE AUTHORITY HAS MOVED, AND THESE TWO FIELDS ARE NOW THE
+      // FALLBACK RATHER THAN THE ANSWER.
+      //
+      // `phase` below is what this surface's reads actually run under: ONE short
+      // tenant transaction for the prologue, ONE per tool call, ONE for a durable
+      // checkpoint write, each opened with the authenticated user's identity bound
+      // by `SET LOCAL`. These two clients remain on the context because
+      // `ToolContext` requires them and because a phase client is a TRANSACTION —
+      // it cannot be stored on a context that outlives it. With `phase` present,
+      // nothing reads them: the dispatcher replaces both per call.
+      //
+      // ⚠️ WHAT HAD TO BE TRUE BEFORE THIS LINE COULD CHANGE, since the previous
+      // slice refused it for a reason that was correct:
+      //   · `AssemblerFn` takes a REQUIRED leading `ReadClient` (S6), so the four
+      //     context assemblers can no longer hold `db`, and a turn cannot be
+      //     SPLIT-AUTHORITY between its orientation and its tools;
+      //   · every financial leaf on that graph receives it — including the two
+      //     investment seams that defaulted `client ?? db` invisibly (S7) and the
+      //     transfer resolver, which had no client parameter at all;
+      //   · the absence contract reaches the ENVELOPE OBJECT the model actually
+      //     reads, not just the renderer nothing in production called (S8);
+      //   · an assembler FAILURE is a distinct, stated evidence state (S9);
+      //   · the Space-probe theorem is pinned by a test that re-derives the real
+      //     policies from the migration — and that test FALSIFIED the old `Space`
+      //     probe on its first run (S10).
       memoryClient: db,
-      // ⚠️ RLS-C-S3/RLS-AI — STATED HERE, AND STILL THE MIGRATION PRINCIPAL. The
-      // twenty tools take their read authority from the turn instead of each leaf
-      // reaching a global, so this line is the ONE place the chat surface's
-      // authority is chosen.
-      //
-      // RLS-AI-S0 closed the first of the two reasons it had not moved: the ABSENCE
-      // CONTRACT now exists (lib/ai/absence.ts), so an RLS-filtered empty read is
-      // reported as INDETERMINATE rather than narrated as absence, and
-      // scripts/rls-ai-acceptance.ts proves that against real `fm_app`.
-      // RLS-AI-S2 closed the second: `phase` on the tool context makes ONE TOOL
-      // CALL ONE SHORT TRANSACTION, opened in the dispatcher, so nothing spans the
-      // up-to-six model calls a turn makes.
-      //
-      // ⚠️ IT STILL DOES NOT MOVE, AND THE REASON IS NAMED RATHER THAN IMPLIED. The
-      // four CONTEXT ASSEMBLERS (`lib/ai/assemblers/*`) hold `db` themselves —
-      // `AssemblerFn` takes no client — and their leaves reach into
-      // lib/data, lib/history and lib/investments. Setting `readClient` to a tenant
-      // transaction here would make a turn SPLIT-AUTHORITY: the prologue's census
-      // and corpus span as the tenant, the four domains as the migration principal.
-      // That is not a disclosure (all four AI callers 403 on a Space mismatch before
-      // any read), but it is an authority nobody could state in one sentence, and
-      // the absence contract would bind half the turn. The flip lands when the
-      // assembler seam takes a client. See docs/plans/RLS-SILENT-REFUSAL-CAS.md.
       readClient: db,
+      phase,
       correlationId: conversationKey(user.id, history[0]?.content ?? asked),
       surface: 'chat',
       // FM-AUDIT-019 — the product route is where durable memory is a feature: the

@@ -307,8 +307,19 @@ console.log('\n7. STRUCTURE — no partial write exists');
   check('capture is the only producer of a scenario',
     (mod.match(/action: 'REPLACE',/g) ?? []).length === 1
     && (mod.match(/scenario: \{\n\s*assumptions:/g) ?? []).length === 1);
-  check('the write hook sits beside checkpointProjection, same position',
-    /checkpointProjection\(toolCtx, call\.name, result\)[\s\S]{0,700}captureActiveScenario\(call\.name/.test(run));
+  // ⚠️ RLS-AI-S11 — THE CHECKPOINT WRITE GAINED ITS OWN TENANT PHASE, so the call
+  // in the loop is `runCheckpointPhase(toolCtx, …)`. The POSITION is what this pins
+  // and the position is unchanged: the transient scenario capture still sits
+  // immediately after the durable checkpoint, in the same lifecycle slot. The
+  // durable write needed a phase because it is the ONE memory operation that does
+  // not pass through `runToolCall`, and leaving it outside would have made a turn
+  // tenant-authoritative for every read and owner-authoritative for its one write.
+  check('the write hook sits beside the checkpoint write, same position',
+    /runCheckpointPhase\(toolCtx, call\.name, result\)[\s\S]{0,700}captureActiveScenario\(call\.name/.test(run));
+  check('…and the durable checkpoint is the thing it sits beside — still ONE site',
+    (run.match(/runCheckpointPhase\(/g) ?? []).length === 2
+      && /checkpointProjection\(\{ \.\.\.ctx, memoryClient: tx \}, toolName, result\)/.test(run),
+    'expected one definition and one call site of the phased checkpoint writer');
   check('…and nothing here persists: no db, no memory, no checkpoint',
     !/db\.|prisma|rememberMemory|SpaceMemory|checkpointProjection/.test(mod));
   check('the envelope is injected before the user message, replaced not appended',

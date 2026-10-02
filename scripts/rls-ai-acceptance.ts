@@ -86,6 +86,53 @@ insert into "SpaceMemory" (id,"spaceId","ownerUserId",kind,subject,payload,"stat
   ('mem_bob_goal','space_s','bob','INTENTION','bob-goal',
    '{"targetMetric":"liquid","targetAmount":50000,"byDate":"2029-01-01"}'::jsonb,
    'a goal of Bob''s','ACTIVE');
+
+-- ⚠️ RLS-AI-S10 — A PUBLIC SPACE ALICE IS NOT A MEMBER OF. This is the fixture
+-- that falsified the old Space probe: fm_app_sel ON "Space" ORs in
+-- "isPublic" = true, so Alice IS returned this row, while every Space-granular
+-- child policy reads fm_visible_space_ids() and does not contain it. The old
+-- oracle therefore said PROVEN_EMPTY about evidence Alice cannot read. It is a
+-- real product shape, not a contrivance: RLS-C-S3 recorded that the Spaces
+-- launcher hands PUBLIC Spaces the viewer has NOT joined to a net-worth reader.
+insert into "Space" (id,name,type,"isPublic","updatedAt") values
+  ('space_pub','Bob Public','PERSONAL',true,now());
+insert into "SpaceMember" (id,"spaceId","userId",role,status) values
+  ('m_pub','space_pub','bob','OWNER','ACTIVE'),
+  -- ⚠️ AND A REVOKED MEMBERSHIP, which the old probe also got wrong: Alice's own
+  -- row matches the SpaceMember policy's userId arm, but fm_visible_space_ids()
+  -- requires status ACTIVE. The probe's status: "ACTIVE" filter is what makes
+  -- these two agree. REMOVED, not REVOKED: SpaceMemberStatus is ACTIVE | REMOVED | LEFT.
+  ('m_rev','space_pub','alice','VIEWER','REMOVED');
+insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","updatedAt") values
+  ('acct_pub','Bob Public Checking','checking','TestBank','USER','bob',now());
+insert into "SpaceAccountLink" (id,"spaceId","financialAccountId",kind,status,"visibilityLevel","updatedAt") values
+  ('l_pub','space_pub','acct_pub','HOME','ACTIVE','FULL',now());
+insert into "Transaction" (id,"financialAccountId",date,"economicDate",merchant,category,amount,"updatedAt") values
+  ('tx_pub_1','acct_pub',current_date,current_date,'Public Rent','Other',-77,now());
+
+-- ⚠️ RLS-AI-S8 — AN UNDATED TRANSACTION, IN A SPACE OF ITS OWN SO THE COUNT IS
+-- UNAMBIGUOUS. Transaction.economicDate is nullable and the
+-- audit-economic-date-persistence audit is RED on the live corpus, so rows that
+-- exist and cannot be placed in time are a production state. Before S8 the census
+-- reported count over ALL rows beside a range measured over the DATED ones, and
+-- a ledger of entirely undated rows fell through to "none recorded in this Space".
+insert into "Space" (id,name,type,"updatedAt") values
+  ('space_undated','Alice Undated','PERSONAL',now()),
+  ('space_mixed','Alice Mixed','PERSONAL',now());
+insert into "SpaceMember" (id,"spaceId","userId",role,status) values
+  ('m_un','space_undated','alice','OWNER','ACTIVE'),
+  ('m_mx','space_mixed','alice','OWNER','ACTIVE');
+insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","updatedAt") values
+  ('acct_undated','Alice Undated Checking','checking','TestBank','USER','alice',now()),
+  ('acct_mixed','Alice Mixed Checking','checking','TestBank','USER','alice',now());
+insert into "SpaceAccountLink" (id,"spaceId","financialAccountId",kind,status,"visibilityLevel","updatedAt") values
+  ('l_un','space_undated','acct_undated','HOME','ACTIVE','FULL',now()),
+  ('l_mx','space_mixed','acct_mixed','HOME','ACTIVE','FULL',now());
+insert into "Transaction" (id,"financialAccountId",date,"economicDate",merchant,category,amount,"updatedAt") values
+  ('tx_un_1','acct_undated',current_date,null,'Undated A','Other',-11,now()),
+  ('tx_un_2','acct_undated',current_date,null,'Undated B','Other',-12,now()),
+  ('tx_mx_dated','acct_mixed',current_date,current_date,'Dated','Other',-20,now()),
+  ('tx_mx_undated','acct_mixed',current_date,null,'Undated','Other',-30,now());
 `;
 
 /** A SpaceContext shaped exactly as resolveSpaceContext returns one. */
@@ -176,13 +223,13 @@ async function main(): Promise<void> {
 
   // ── [envelope] THE PROLOGUE — THE SENTENCE A MODEL READS ───────────────────
   const envOwn = await tenant.withTenantDb("alice", (tx) =>
-    envelope.loadCoverageEnvelope("space_a", { client: tx }));
+    envelope.loadCoverageEnvelope(tx, "space_a"));
   const envEmpty = await tenant.withTenantDb("alice", (tx) =>
-    envelope.loadCoverageEnvelope("space_empty", { client: tx }));
+    envelope.loadCoverageEnvelope(tx, "space_empty"));
   const envForeign = await tenant.withTenantDb("alice", (tx) =>
-    envelope.loadCoverageEnvelope("space_b", { client: tx }));
+    envelope.loadCoverageEnvelope(tx, "space_b"));
   const envBobOwn = await tenant.withTenantDb("bob", (tx) =>
-    envelope.loadCoverageEnvelope("space_b", { client: tx }));
+    envelope.loadCoverageEnvelope(tx, "space_b"));
 
   const say = (e: Awaited<ReturnType<typeof envelope.loadCoverageEnvelope>>) =>
     envelope.describeCoverageEnvelope(e, null).join("\n");
@@ -435,13 +482,13 @@ async function main(): Promise<void> {
     await txq.transactionCorpusSpan(tx, { spaceId: "space_empty" });
     await txq.transactionCorpusSpan(tx, { spaceId: "space_empty" });
     await txq.transactionCorpusSpan(tx, { spaceId: "space_empty" });
-    await envelope.loadCoverageEnvelope("space_empty", { client: tx });
+    await envelope.loadCoverageEnvelope(tx, "space_empty");
   });
   const probesOnFourEmpties = absence.absenceProbesIssued();
 
   absence.resetAbsenceProbeCount();
   await tenant.withTenantDb("alice", async (tx) => {
-    await envelope.loadCoverageEnvelope("space_a", { client: tx });
+    await envelope.loadCoverageEnvelope(tx, "space_a");
     await txq.transactionCorpusSpan(tx, { spaceId: "space_a" });
   });
   const probesOnFullPrologue = absence.absenceProbesIssued();
@@ -487,6 +534,259 @@ async function main(): Promise<void> {
     withinOnePhase[0] === withinOnePhase[1], withinOnePhase.join(" vs "));
   check(45, "[phase] a tool phase does not reuse an earlier phase's transaction",
     !perPhase.includes(withinOnePhase[0]), withinOnePhase[0]);
+
+
+  // ── [absence] THE TWO ARMS OF `Space` THAT ARE NOT MEMBERSHIP (RLS-AI-S10) ──
+  //
+  // ⚠️ THESE THREE CASES ARE THE REASON THE ORACLE CHANGED, AND THE THEOREM AUDIT
+  // (lib/ai/evidence-authorities.test.ts) IS WHAT FOUND THEM. The probe used to
+  // read `Space`; that policy ORs in `"isPublic" = true` and a platform-grant arm,
+  // neither of which puts the Space in `fm_visible_space_ids()`, which is what
+  // every child policy reads. So a non-member of a PUBLIC Space, and a member
+  // whose membership was REVOKED, were both told PROVEN_EMPTY about evidence they
+  // could not read — the exact false absence this whole contract exists to forbid.
+  const oraclePublicNonMember = await tenant.withTenantDb("alice", (tx) =>
+    absence.adjudicateAbsence(tx, "space_pub"));
+  const oraclePublicOwner = await tenant.withTenantDb("bob", (tx) =>
+    absence.adjudicateAbsence(tx, "space_pub"));
+  const spanAliceOnPublic = await tenant.withTenantDb("alice", (tx) =>
+    txq.transactionCorpusSpan(tx, { spaceId: "space_pub" }));
+  const spanBobOnPublic = await tenant.withTenantDb("bob", (tx) =>
+    txq.transactionCorpusSpan(tx, { spaceId: "space_pub" }));
+  const spaceRowVisibleToAlice = await tenant.withTenantDb("alice", (tx) =>
+    tx.space.findFirst({ where: { id: "space_pub" }, select: { id: true } }));
+
+  check(46, "[absence] the `Space` ROW of a PUBLIC Space IS returned to a non-member — the premise",
+    spaceRowVisibleToAlice !== null,
+    "if this is null the isPublic arm is gone and cases 47-48 prove nothing");
+  check(47, "[absence] …yet a PUBLIC Space Alice is NOT a member of is INDETERMINATE, never PROVEN_EMPTY",
+    oraclePublicNonMember === "INDETERMINATE" && spanAliceOnPublic.absence === "INDETERMINATE",
+    `oracle=${oraclePublicNonMember} span=${spanAliceOnPublic.absence}`);
+  check(48, "[absence] NOT VACUOUS — the same Space is PROVEN/PRESENT for its own ACTIVE member",
+    oraclePublicOwner === "PROVEN_EMPTY" && spanBobOnPublic.from !== null
+      && spanBobOnPublic.absence === null,
+    `oracle=${oraclePublicOwner} span=${JSON.stringify(spanBobOnPublic)}`);
+  check(49, "[absence] a REMOVED membership is INDETERMINATE — the probe filters status ACTIVE",
+    oraclePublicNonMember === "INDETERMINATE",
+    "alice is a REMOVED member of space_pub; fm_visible_space_ids() requires ACTIVE");
+  const oracleOwnerPublic = await absence.adjudicateAbsence(dbMod.db as never, "space_pub");
+  check(50, "[absence] …and the MIGRATION PRINCIPAL still answers PROVEN_EMPTY — behaviour preserved",
+    oracleOwnerPublic === "PROVEN_EMPTY", String(oracleOwnerPublic));
+
+  // ── [envelope] UNDATED-BUT-EXISTING ROWS ARE NOT "NONE RECORDED" ────────────
+  const envUndated = await tenant.withTenantDb("alice", (tx) =>
+    envelope.loadCoverageEnvelope(tx, "space_undated"));
+  const envMixed = await tenant.withTenantDb("alice", (tx) =>
+    envelope.loadCoverageEnvelope(tx, "space_mixed"));
+
+  check(51, "[envelope] rows that EXIST but carry no economic date are AVAILABLE, not NONE",
+    envUndated.transactions.availability === "AVAILABLE"
+      && envUndated.transactions.span.undatedCount === 2
+      && envUndated.transactions.span.count === 0
+      && envUndated.unavailability === null,
+    JSON.stringify(envUndated.transactions));
+  // ⚠️ THE ASSERTION IS ON THE CLAIM, NOT ON THE WORDS, AND THE FIRST DRAFT GOT
+  // THAT WRONG: it forbade the substring "no transactions", which the
+  // PROHIBITION itself contains ("Do not say the Space has no transactions"). A
+  // presence-of-word marker cannot tell a citation from a denial — the recorded
+  // erratum from the GPT-5.1 causal-evidence 2x2 (bb2f6ec), reproduced here in a
+  // test rather than in a transcript.
+  check(52, "[envelope] …and the model is NEVER told that Space has no transactions",
+    !/none recorded/.test(say(envUndated))
+      && /EXIST \(2 records\)/.test(say(envUndated))
+      && /Do not say the Space has no transactions/.test(say(envUndated)),
+    say(envUndated));
+  check(53, "[envelope] a MIXED Space's count is the RANGE's own denominator, not the row total",
+    envMixed.transactions.span.count === 1 && envMixed.transactions.span.undatedCount === 1
+      && envMixed.transactions.span.fromISO !== null,
+    JSON.stringify(envMixed.transactions.span));
+  check(54, "[envelope] …and the undatable remainder is stated BESIDE the range, never inside it",
+    /\(1 records\)/.test(say(envMixed)) && /PLUS 1 further record/.test(say(envMixed)),
+    say(envMixed));
+
+  // ⚠️ THE PROHIBITION MUST TRAVEL ON THE OBJECT, BECAUSE THE RENDERER IS NOT ON
+  // THE LIVE PATH. `describeCoverageEnvelope` has no production caller: the shipped
+  // A2 orientation serializes the ENVELOPE as JSON into the prompt. Every careful
+  // sentence this module owns was therefore being tested on a code path the product
+  // does not use — so the sentence is now a DERIVED field of the envelope itself.
+  check(55, "[envelope] the SERIALIZED envelope carries the prohibition, not just the renderer",
+    typeof envForeign.meaning === "string"
+      && /COULD NOT BE ESTABLISHED/.test(envForeign.meaning)
+      && /do not describe any record as empty/.test(envForeign.meaning)
+      && JSON.stringify(envForeign).includes("COULD NOT BE ESTABLISHED"),
+    String(envForeign.meaning).slice(0, 140));
+  check(56, "[envelope] …the undated case too, and an ORDINARY envelope carries no notice at all",
+    typeof envUndated.meaning === "string" && /carry no economic date/.test(envUndated.meaning)
+      && envOwn.meaning === undefined,
+    `${String(envUndated.meaning).slice(0, 100)} | own=${String(envOwn.meaning)}`);
+
+  // ── [assembler] EVERY FINANCIAL ASSEMBLER IN A PHASE SHARES ONE AUTHORITY ───
+  //
+  // ⚠️ THE CLAIM IS THE WHOLE SLICE, SO IT IS MEASURED AT THE SERVER AND NOT READ
+  // OFF THE SOURCE. `assembleFullContext` runs the four domains; a counting proxy
+  // records every delegate read and `txid_current()` says which transaction each
+  // one was in. One id across the lot is the sentence "all financial evidence for
+  // this tenant phase was read under the authenticated caller's tenant authority".
+  const evidenceMod = await import("@/lib/ai/conversation/evidence");
+
+  /** Count delegate reads AND the transaction each happens in. */
+  const instrument = (tx: object) => {
+    let reads = 0;
+    const proxy = new Proxy(tx, {
+      get(target, prop, recv) {
+        const v = Reflect.get(target, prop, recv);
+        if (typeof prop !== "string" || prop.startsWith("$") || typeof v !== "object" || v === null) {
+          return typeof v === "function" ? v.bind(target) : v;
+        }
+        return new Proxy(v as object, {
+          get(d, m, r) {
+            const fn = Reflect.get(d, m, r);
+            if (typeof fn !== "function") return fn;
+            if (typeof m === "string" && /^(findMany|findFirst|findUnique|aggregate|groupBy|count)$/.test(m)) {
+              return (...a: unknown[]) => { reads++; return (fn as (...x: unknown[]) => unknown).apply(d, a); };
+            }
+            return (fn as (...x: unknown[]) => unknown).bind(d);
+          },
+        });
+      },
+    });
+    return { proxy: proxy as never, reads: () => reads };
+  };
+
+  const runner2 = phaseMod.aiPhaseRunner("alice");
+
+  /**
+   * A `PhasedRead` that is PRODUCTION'S OWN SHAPE — one short phase per part —
+   * instrumented to record, per part, which server transaction it ran in and how
+   * many delegate reads it made.
+   *
+   * ⚠️ THE FIRST VERSION OF THIS MEASURED THE WHOLE PROLOGUE IN ONE TRANSACTION
+   * AND COMPARED IT TO A PER-DOMAIN BUDGET — 34 reads against a basis of 24 — so
+   * it failed for the right reason and the wrong one at once. The prologue is NOT
+   * one transaction (that shape measured 5,906 ms against the 5 s default and was
+   * abandoned); the budget is per DOMAIN. Measuring the thing the budget is about
+   * is the whole difference between a derivation and a number.
+   */
+  // ⚠️ THE TYPE IS IMPORTED, NOT NAMESPACED OFF THE DYNAMIC IMPORT. `phaseMod` is
+  // a VALUE (the awaited module), so `phaseMod.PhasedRead` is not a type and tsc
+  // said so — while tsx ran the file happily. A script that executes but does not
+  // typecheck is a gate that drifts from the code it gates.
+  const perPart = new Map<string, { xid: string; reads: number }>();
+  const measuredRead = <T,>(part: string, fn: (c: never) => Promise<T>): Promise<T> =>
+    runner2.run(phaseMod.prologuePhase(part), async (tx) => {
+      const inst = instrument(tx as object);
+      const id = await xid(tx as never);
+      try { return await fn(inst.proxy); }
+      finally { perPart.set(part, { xid: id, reads: inst.reads() }); }
+    });
+
+  const aliceCtxOwn = await evidenceMod.assembleFullContext(
+    measuredRead as never, spaceCtx("alice", "space_a"), "agent_a");
+  const alicePack = await evidenceMod.buildEvidence(
+    measuredRead as never, phaseMod.phasedMemoryRead(runner2), "A2", aliceCtxOwn,
+    spaceCtx("alice", "space_a"));
+
+  const parts = [...perPart.entries()];
+  const totalReads = parts.reduce((n, [, v]) => n + v.reads, 0);
+  let heaviestPart = "none", heaviestReads = 0;
+  for (const [k, v] of parts) if (v.reads > heaviestReads) { heaviestPart = k; heaviestReads = v.reads; }
+  console.log(`[phase] prologue — ${parts.length} parts, ${totalReads} delegate reads total, `
+    + `heaviest "${heaviestPart}" at ${heaviestReads}; transaction ids `
+    + `${parts.map(([k, v]) => `${k}=${v.xid}`).join(" ")}`);
+
+  check(57, "[phase] each prologue part is its OWN short transaction, and they are DISTINCT",
+    parts.length >= 4 && new Set(parts.map(([, v]) => v.xid)).size === parts.length,
+    parts.map(([k, v]) => `${k}=${v.xid}`).join(" "));
+  check(58, "[phase] every financial assembler resolved through the PROPAGATED authority",
+    totalReads > 10 && aliceCtxOwn.resolvedDomains.length >= 2
+      && parts.some(([k]) => k === "accounts") && parts.some(([k]) => k === "coverage_census"),
+    `${totalReads} reads via the propagated runner · domains=${aliceCtxOwn.resolvedDomains.join(",")}`
+      + ` · parts=${parts.map(([k]) => k).join(",")}`);
+  check(59, "[phase] …and the HEAVIEST single part fits the budget's DERIVED query basis",
+    heaviestReads <= phaseMod.PROLOGUE_DOMAIN_QUERY_BASIS,
+    `heaviest part "${heaviestPart}" made ${heaviestReads} reads; basis is `
+      + `${phaseMod.PROLOGUE_DOMAIN_QUERY_BASIS}`);
+  check(59.5, "[phase] a measured prologue produced a real orientation, not an empty one",
+    /FINANCIAL ORIENTATION/.test(String(alicePack.body))
+      && !/evidenceUnreadable/.test(String(alicePack.body)),
+    String(alicePack.body).slice(0, 140));
+
+  // ── [channel] ALICE CANNOT OBSERVE BOB'S SPACE THROUGH THE REAL ASSEMBLERS ──
+  const aliceOnBobCtx = await evidenceMod.assembleFullContext(
+    phaseMod.phasedReads(runner2), spaceCtx("alice", "space_b"), "agent_a");
+  const bobOwnCtx = await evidenceMod.assembleFullContext(
+    phaseMod.phasedReads(phaseMod.aiPhaseRunner("bob")), spaceCtx("bob", "space_b"), "agent_a");
+  const serialized = JSON.stringify(aliceOnBobCtx.domains);
+  check(60, "[channel] Alice's assembled context for Bob's Space carries NONE of Bob's figures",
+    !serialized.includes("Bob Checking") && !serialized.includes("Rent")
+      && !/\b-?50\b/.test(serialized),
+    serialized.slice(0, 220));
+  check(61, "[channel] NOT VACUOUS — the SAME assembler gives Bob his own account for that Space",
+    JSON.stringify(bobOwnCtx.domains).includes("Bob Checking"),
+    JSON.stringify(bobOwnCtx.domains).slice(0, 200));
+
+  // ── [evidence] AN ASSEMBLER EXCEPTION IS NOT EMPTY EVIDENCE ─────────────────
+  //
+  // ⚠️ A FAILURE AND AN EMPTY SPACE MUST NOT PRODUCE THE SAME PROMPT. The
+  // exception is injected by handing the assemblers a client whose ONE delegate
+  // throws, which is the realistic shape (a dropped connection, a P2028, a
+  // revoked grant) and not a stub of the assembler itself.
+  const exploding = new Proxy({}, {
+    get(_t, prop: string) {
+      if (prop === "then") return undefined;
+      if (prop.startsWith("$")) return () => { throw new Error("injected authority failure"); };
+      return new Proxy({}, { get: () => () => Promise.reject(new Error("injected authority failure")) });
+    },
+  }) as never;
+  const brokenCtx = await evidenceMod.assembleFullContext(
+    phaseMod.onClient(exploding), spaceCtx("alice", "space_a"), "agent_a");
+  check(62, "[evidence] every failed assembler is NAMED, not silently absent",
+    (brokenCtx.unreadableDomains ?? []).length === 4
+      && Object.keys(brokenCtx.domains).length === 0,
+    JSON.stringify(brokenCtx.unreadableDomains));
+
+  const brokenPack = await evidenceMod.buildEvidence(
+    phaseMod.onClient(exploding), (fn) => fn(exploding), "A2", brokenCtx,
+    spaceCtx("alice", "space_a"));
+  const brokenBody = String(brokenPack.body);
+  check(63, "[evidence] the ORIENTATION states the failure and FORBIDS the absence answer",
+    /evidenceUnreadable/.test(brokenBody)
+      && /"evidenceState": "INDETERMINATE"/.test(brokenBody)
+      && /NOT because the Space has none/.test(brokenBody),
+    brokenBody.slice(0, 200));
+  check(64, "[evidence] …and it NEVER says the Space is empty, zero or has none",
+    !/none recorded/.test(brokenBody) && !/no transactions/i.test(brokenBody),
+    brokenBody.slice(0, 200));
+
+  check(64.5, "[evidence] a failed MEMORY read is a NAMED domain, not a thrown turn",
+    (brokenPack.body ?? '').includes('"memory"')
+      && /"domains": \[\s*"accounts",\s*"holdings_summary",\s*"memory"/.test(brokenBody),
+    brokenBody.slice(brokenBody.indexOf('evidenceUnreadable'), brokenBody.indexOf('evidenceUnreadable') + 220));
+
+  const healthyPack = await evidenceMod.buildEvidence(
+    phaseMod.phasedReads(runner2), phaseMod.phasedMemoryRead(runner2), "A2",
+    await evidenceMod.assembleFullContext(
+      phaseMod.phasedReads(runner2), spaceCtx("alice", "space_a"), "agent_a"),
+    spaceCtx("alice", "space_a"));
+  check(65, "[evidence] NOT VACUOUS — a HEALTHY prologue carries no unreadable block at all",
+    !/evidenceUnreadable/.test(String(healthyPack.body))
+      && /FINANCIAL ORIENTATION/.test(String(healthyPack.body)),
+    String(healthyPack.body).slice(0, 120));
+
+  // ── [source] THE FLIP IS ARMED, AND NOTHING SPANS THE MODEL CALL ────────────
+  const ROUTE = read("app/api/ai/chat/route.ts");
+  check(66, "[source] the product chat route hands the turn an AUTHENTICATED phase runner",
+    /aiPhaseRunner\(user\.id\)/.test(ROUTE) && /\n\s+phase,/.test(ROUTE),
+    "the flip is not wired");
+  check(67, "[source] …and the identity comes from the session, never from the request",
+    !/aiPhaseRunner\(\s*(?:parsed|body|req|asked|history)/.test(ROUTE));
+  const ENGINE = read("lib/ai/conversation/engine.ts");
+  check(68, "[source] no tenant transaction lexically encloses the provider call in the ENGINE either",
+    !spansModelCall(ENGINE) && !spansModelCall(read("lib/ai/conversation/tools.ts")));
+  check(69, "[source] the global interactive-transaction timeout is NOT raised anywhere",
+    ![read("lib/db.ts"), read("lib/db/tenant-context.ts")]
+      .some((src) => /transactionOptions/.test(src)),
+    "a raised global default is what makes a whole-turn transaction shippable by accident");
 
   const failed = report("RLS AI-SURFACE ADVERSARIAL SUITE");
   teardownHarness(KEEP);

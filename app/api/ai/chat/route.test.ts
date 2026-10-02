@@ -118,8 +118,18 @@ console.log('\n6. CONTINUITY WITHOUT PERSISTENCE');
   check('nothing about the conversation is written',
     !/db\.[\w.]*\.(create|createMany|update|updateMany|upsert|delete)/.test(src)
       && !/aiAdvice|Conversation/.test(src));
+  // ⚠️ RLS-AI-S11 — THE ONE READ IS STILL THE AGENT ID, AND IT NO LONGER GOES
+  // THROUGH `db`. It runs inside a short tenant phase (`phase.run('ai_agent', …)`)
+  // like every other read this surface makes, so the pin is on the READ, not on
+  // the client: exactly one database read, and it is the agent id. `db` survives
+  // on the route only as the no-phase fallback `ToolContext` requires.
   check('the only database read is the Space\'s agent id',
-    (src.match(/db\./g) ?? []).length === 1 && /db\.aiAgent\.findUnique/.test(src));
+    (src.match(/\b(?:db|tx)\.[a-z]/g) ?? []).length === 1
+      && /tx\.aiAgent\.findUnique/.test(src),
+    (src.match(/\b(?:db|tx)\.[a-z][\w.]*/g) ?? []).join(' | '));
+  check('…and it is read under the AUTHENTICATED tenant authority, not the owner',
+    /phase\.run\('ai_agent', \(tx\) => tx\.aiAgent\.findUnique/.test(src)
+      && /aiPhaseRunner\(user\.id\)/.test(src));
   check('the scenario crosses the gap sealed, not in the response body',
     /openRuntimeState\(/.test(src) && /sealRuntimeStateWithReport\(/.test(src)
       && !/scenario: turn\.scenario[\s\S]{0,40}NextResponse/.test(src));

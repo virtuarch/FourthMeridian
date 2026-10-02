@@ -28,6 +28,7 @@ import { callWithRateLimitRetry } from '@/lib/ai/rate-limit-retry';
 import { findTool, type ToolContext } from './tools';
 import { runWithAiInvocationContext } from '@/lib/ai/invocation-context';
 import { checkpointProjection } from './memory-tools';
+import { CHECKPOINT_PHASE } from '@/lib/ai/tenant-phase';
 import { turnEvidence } from './memory-model';
 import {
   captureActiveScenario, applyCapture, injectScenario, type ScenarioSlot,
@@ -247,6 +248,31 @@ async function runToolCall(
     tool.run(args, { ...ctx, readClient: tx, memoryClient: tx }));
 }
 
+/**
+ * Write the projection checkpoint under the tenant authority, when there is one.
+ *
+ * `checkpointProjection` swallows its own errors and returns null for every tool
+ * that is not `project_cash`, so the phase is opened only when there is something
+ * to write — a turn that calls no projection tool pays no transaction at all.
+ */
+async function runCheckpointPhase(
+  ctx: ToolContext, toolName: string, result: unknown,
+): Promise<{ subject: string } | null> {
+  const phase = ctx.phase;
+  if (!phase) return checkpointProjection(ctx, toolName, result);
+  try {
+    return await phase.run(CHECKPOINT_PHASE, (tx) =>
+      checkpointProjection({ ...ctx, memoryClient: tx }, toolName, result));
+  } catch (err) {
+    // ⚠️ SAME CONTRACT AS THE INNER FUNCTION'S OWN `catch`, AND IT HAS TO BE HERE
+    // TOO: the phase can fail for reasons the inner try cannot see (a P2028, a
+    // pool timeout), and a memory failure must never break a turn that already
+    // answered correctly.
+    console.error('[turn] checkpoint phase failed (non-fatal):', err);
+    return null;
+  }
+}
+
 async function executeTurnInner(args: {
   messages:    unknown[];
   user:        string;
@@ -325,7 +351,15 @@ async function executeTurnInner(args: {
         // to the transcript, the model is not told, and a failure here cannot
         // affect the answer: `checkpointProjection` swallows its own errors and
         // returns null for every tool that is not `project_cash`.
-        const checkpointed = await checkpointProjection(toolCtx, call.name, result);
+        // ⚠️ RLS-AI-S11 — THE CHECKPOINT WRITE GETS ITS OWN PHASE, AND IT HAD TO.
+        // This is the ONE memory operation in the turn that does not go through
+        // `runToolCall`, so arming the authority without this line would have left
+        // a turn whose twenty tool READS ran as the tenant and whose one durable
+        // WRITE ran as the migration principal — a split authority on the write
+        // path, in the slice whose whole purpose is that there is no split. The
+        // tool call's own transaction has COMMITTED by now (it must: the result is
+        // already recorded), so this is a second short phase rather than a reuse.
+        const checkpointed = await runCheckpointPhase(toolCtx, call.name, result);
         if (checkpointed) (rec.checkpoints ??= []).push(checkpointed.subject);
         // ⚠️ THE SAME LIFECYCLE POSITION, THE OPPOSITE TOOL FILTER, AND A
         // DIFFERENT DESTINATION. `checkpointProjection` writes a durable record
