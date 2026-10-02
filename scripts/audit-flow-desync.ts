@@ -96,6 +96,7 @@ async function main(): Promise<void> {
 
   let desynced = 0;
   const desyncTally = new Map<DesyncKey, number>();
+  let desyncTombstoned = 0, desyncLive = 0, desyncLiabilityIncome = 0;
 
   // The ownership invariants. Each is a property of the corpus, checked on the
   // same single pass that certifies the classifier population.
@@ -112,6 +113,13 @@ async function main(): Promise<void> {
       take: PAGE,
       select: {
         id: true, category: true, amount: true,
+        // ⚠️ SELECTED SO THE REMEDIATION CAN BE POPULATION-AWARE. This audit
+        // deliberately has NO deletedAt filter — a tombstone's facts still matter,
+        // because resurrection re-applies them (syncTransactions.ts). But the
+        // remediation it printed named `--exclude-deleted`, which excluded 100%
+        // of a 12-row tombstoned failure. An audit must know which population it
+        // is reporting before it can name a repair that reaches it.
+        deletedAt: true,
         flowType: true, flowDirection: true,
         flowAuthority: true, classifierVersion: true,
         pfcPrimary: true, pfcDetailed: true, pfcConfidenceLevel: true, merchantEntityId: true,
@@ -176,6 +184,9 @@ async function main(): Promise<void> {
         desynced++;
         const key = `${r.category} | stored ${r.flowType}/${r.flowDirection} → canonical ${c.flowType}/${c.flowDirection}`;
         desyncTally.set(key, (desyncTally.get(key) ?? 0) + 1);
+        if (r.deletedAt) desyncTombstoned++; else desyncLive++;
+        const liabilityAcct = r.financialAccount?.type === "debt" || r.financialAccount?.debtSubtype != null;
+        if (liabilityAcct && Number(r.amount) > 0 && r.category === "Income") desyncLiabilityIncome++;
       }
     }
     lastId = rows[rows.length - 1].id;
@@ -230,12 +241,49 @@ async function main(): Promise<void> {
       "Their persisted flow facts differ from what the current classifier computes from\n" +
       "their own stored columns, and the ownership column says the classifier wrote them.\n" +
       "Exactly one of those two statements is wrong:\n" +
-      "  · if the CLASSIFIER genuinely owns them, re-run its ownership-scoped backfill\n" +
-      "      npx tsx scripts/backfill-flowtype.ts --only-version=<N> --apply --exclude-deleted\n" +
-      "    which now selects ONLY flowAuthority = CLASSIFIER or NULL, so it cannot reach\n" +
-      "    another authority's rows;\n" +
       "  · if another authority decided them, that authority must STAMP them at its own\n" +
-      "    write site — never leave them wearing the classifier's name.\n" +
+      "    write site — never leave them wearing the classifier's name;\n" +
+      "  · if the CLASSIFIER genuinely owns them, repair them — with the command that can\n" +
+      "    actually REACH them:\n" +
+      `\n    failing population:  ${desyncLive} live, ${desyncTombstoned} tombstoned` +
+      `${desyncLiabilityIncome > 0 ? `, of which ${desyncLiabilityIncome} are liability credits categorised Income` : ""}\n`,
+    );
+
+    // ⚠️ THE REMEDIATION IS DERIVED FROM THE FAILING POPULATION, NOT HARD-CODED.
+    //
+    // This audit printed, unconditionally:
+    //     backfill-flowtype.ts --only-version=<N> --apply --exclude-deleted
+    // and on 2026-10-02 that was wrong twice over against a real 12-row failure.
+    // `--exclude-deleted` (backfill-flowtype.ts:189-191) excluded ONE HUNDRED
+    // PERCENT of the population — all twelve were tombstones — so the command
+    // was a guaranteed no-op presented as the fix. And even reaching them, it
+    // writes only the flow columns, leaving `category = Income` on a credit-card
+    // credit: the exact half-repair REFUND-1 exists to prevent
+    // (scripts/repair-liability-income-credits.ts:8-13).
+    //
+    // A remediation that cannot touch what failed is worse than none, because it
+    // converts a real defect into a mystery. So the command is now chosen by what
+    // actually failed.
+    if (desyncLiabilityIncome > 0) {
+      console.error(
+        "    LIABILITY CREDITS CATEGORISED AS INCOME — use the purpose-built repair, which\n" +
+        "    restores the COMPLETE canonical classification (category AND flow), not flow alone:\n" +
+        "      npx tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local \\\n" +
+        "        scripts/repair-liability-income-credits.ts" +
+        (desyncTombstoned > 0 ? " --include-deleted" : "") + " --verbose\n" +
+        "    Run it WITHOUT --apply first: it is a dry run, and the candidate count must match\n" +
+        `    the ${desyncLive + desyncTombstoned} reported above before you add --apply.\n`,
+      );
+    } else {
+      console.error(
+        "      npx tsx scripts/backfill-flowtype.ts --only-version=<N> --apply" +
+        (desyncTombstoned > 0 ? "\n    ⚠️ Do NOT add --exclude-deleted: " + desyncTombstoned +
+         " of the failing rows are tombstoned and that flag would skip them.\n" : "\n") +
+        "    It selects ONLY flowAuthority = CLASSIFIER or NULL, so it cannot reach another\n" +
+        "    authority's rows.\n",
+      );
+    }
+    console.error(
       "See lib/transactions/flow-authority.ts and docs/doctrine/financial-semantics.md\n" +
       "(§ Liability payment classification).\n",
     );

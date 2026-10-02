@@ -117,14 +117,66 @@ async function main() {
   }
   check("the stored projection equals the derived projection for every event", drift === 0, driftExamples.join("; "));
 
-  // 7 — economic date does not move on posting.
+  // ── 7 — THE EVENT'S PIN DOES NOT MOVE. (Restated 2026-10-02.) ─────────────
+  //
+  // This shipped as "no multi-observation event has a moving economic date",
+  // implemented by counting events whose OBSERVATIONS hold more than one
+  // distinct economicDate:
+  //
+  //     const uniq = new Set(os.map(o => o.economicDate.toISOString()));
+  //     if (uniq.size > 1) moved++;
+  //
+  // B-6 (c1036dd, 2026-08-17) made that a FALSE invariant. An observation
+  // records the resolution of ITS OWN payload at the moment it arrived; when a
+  // provider restates `authorized_date` between the pending and the posted
+  // delivery — which Plaid does — the two observations legitimately disagree,
+  // and the whole purpose of the pin is that the EVENT does not follow them.
+  // The audit was therefore asserting the opposite of the doctrine it was
+  // written to protect, and flagged 4 events whose pins were exactly right.
+  //
+  // What matters is FIRST RESOLUTION WINS: where a credible first-PENDING
+  // observation exists, the event's published date is that one, for ever. So
+  // that is what is asserted — against the first PENDING observation by
+  // observedAt, which is precisely the `firstPendingDate` the writer feeds to
+  // resolveEconomicDate (lib/transactions/event-identity.ts:273).
+  //
+  // This still catches genuine movement: anything that re-pinned an event to a
+  // later payload's date makes it disagree with its own first pending
+  // observation. Events with no pending observation are governed by row
+  // evidence, which scripts/audit-economic-date-persistence.ts adjudicates
+  // (it asserts every event pin is the authority's answer).
   let moved = 0;
-  for (const [, os] of obsByEvent) {
-    if (os.length < 2) continue;
-    const uniq = new Set(os.map((o) => o.economicDate.toISOString()));
-    if (uniq.size > 1) moved++;
+  let pinnedByPending = 0;
+  const movedExamples: string[] = [];
+  const eventsById = new Map(events.map((e) => [e.id, e]));
+  for (const [eventId, os] of obsByEvent) {
+    const ev = eventsById.get(eventId);
+    if (!ev) continue;
+    const pending = os
+      .filter((o) => o.lifecycle === "PENDING")
+      .sort((a, b) => a.observedAt.getTime() - b.observedAt.getTime());
+    if (pending.length === 0) continue;     // row-evidence governed; not this check's business
+    pinnedByPending++;
+    const first = pending[0].economicDate.toISOString();
+    if (ev.economicDate.toISOString() !== first) {
+      moved++;
+      if (movedExamples.length < 4) {
+        movedExamples.push(`${eventId}: pin ${ev.economicDate.toISOString().slice(0, 10)} ≠ first pending ${first.slice(0, 10)}`);
+      }
+    }
   }
-  check("INV-7 no multi-observation event has a moving economic date", moved === 0, `${moved} moved`);
+  console.log(`  events pinned by a first PENDING observation : ${pinnedByPending}`);
+  check("INV-7 the event's pin equals its FIRST pending observation — first resolution wins",
+    moved === 0, movedExamples.join("; ") || `${moved} moved`);
+
+  // ⚠️ AND THE RESTATED INVARIANT MUST HAVE A POPULATION. An event set with no
+  // pending observations at all would satisfy the loop above vacuously, which is
+  // how this check could be retired by a fixture change rather than by a
+  // decision. A corpus with multi-observation events must have some.
+  const multiObs = [...obsByEvent.values()].filter((os) => os.length >= 2).length;
+  check("INV-7 is not vacuous — some event is actually pinned by a pending observation",
+    multiObs === 0 || pinnedByPending > 0,
+    `${multiObs} multi-observation event(s) but ${pinnedByPending} pinned by pending`);
   // ...and the event's economic date matches its live row's.
   const econMismatch = events.filter((e) => {
     if (!e.currentTransactionId) return false;

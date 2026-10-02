@@ -160,6 +160,44 @@ console.log("3. Source scan — materialization and disclosure");
   check("reprojectEvent feeds authorizedAt into the projection facts",
     /authorizedAt:\s*o\.authorizedAt/.test(eventWrite));
 
+  // ── THE GUARD THAT WOULD HAVE SAVED SEVEN WEEKS ──────────────────────────
+  //
+  // The check above asserts the WRITER resolves with firstPendingDate. Nothing
+  // asserted that the AUDIT does, and from 2026-08-17 to 2026-10-02 it did not:
+  // scripts/audit-economic-date-persistence.ts selected five columns,
+  // `transactionEventId` was not among them, and it recomputed every row from
+  // row evidence alone. It therefore reported DRIFT on four rows whose stored
+  // value was exactly what B-6 requires, and — measured — its printed
+  // remediation planned ZERO rows against that failure.
+  //
+  // The defect was not in the doctrine, the writer, or the data. It was that the
+  // audit held a COPY of a rule the authority had outgrown, and nothing compared
+  // the two. One regex would have failed on the day the authority moved.
+  //
+  // So: the probe for the persisted chronology must be structurally incapable of
+  // adjudicating an event-linked row without reading the canonical event identity.
+  const econAudit = readFileSync(join(ROOT, "scripts", "audit-economic-date-persistence.ts"), "utf8");
+  const idAudit   = readFileSync(join(ROOT, "scripts", "audit-event-identity.ts"), "utf8");
+
+  check("the economic-date audit READS the canonical event identity (not row evidence alone)",
+    /transactionEventId/.test(econAudit) && /transactionEvent\s*:\s*\{/.test(econAudit));
+
+  check("...and feeds the first-pending evidence the WRITER uses into the same resolver",
+    /firstPendingDate/.test(econAudit) && /lifecycle:\s*"PENDING"/.test(econAudit));
+
+  check("...and compares an event-linked row against the EVENT'S PIN, not its own columns",
+    /transactionEvent\.economicDate/.test(econAudit));
+
+  // INV-7 must assert first-resolution-wins, NOT that observations agree with
+  // each other. The old form (`new Set(os.map(o => o.economicDate))`) asserted
+  // the opposite of B-6: a provider restating authorized_date between deliveries
+  // made it fail by design. Pin the shape so it cannot drift back.
+  check("INV-7 tests the event's pin against its FIRST PENDING observation",
+    /first resolution wins/i.test(idAudit) && /lifecycle === "PENDING"/.test(idAudit));
+
+  check("INV-7 no longer asserts that an event's observations agree with EACH OTHER",
+    !/new Set\(os\.map\(\(o\) => o\.economicDate/.test(idAudit));
+
   check("the DTO discloses a pinned column as FIRST_PENDING_OBSERVATION (the basis is reachable)",
     /pinnedByEvent\s*\?\s*"FIRST_PENDING_OBSERVATION"/.test(serialize));
 
