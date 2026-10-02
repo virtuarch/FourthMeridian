@@ -149,7 +149,9 @@ check("recordLoginFailure is best-effort (own try/catch)",
   /recordLoginFailure[\s\S]*?try\s*{[\s\S]*?auditLog\.create[\s\S]*?catch/.test(auth));
 
 // login page
-const page = stripComments(src("app/(auth)/login/page.tsx"));
+// The client form moved to LoginForm.tsx when page.tsx became the server entry
+// (signed-in redirect + validated return target, lib/auth/return-to.ts).
+const page = stripComments(src("app/(auth)/login/LoginForm.tsx"));
 check("login page consumes classifyPreLoginResponse", page.includes("classifyPreLoginResponse"));
 check("login page classifies by HTTP status, not data.ok alone", page.includes("res.status"));
 check("login page no longer branches on `if (!data.ok)`", !/if\s*\(\s*!\s*data\.ok\s*\)/.test(page));
