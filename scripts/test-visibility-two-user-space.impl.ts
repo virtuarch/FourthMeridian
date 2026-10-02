@@ -347,7 +347,12 @@ async function main(): Promise<void> {
   // The dashboard/banking list read path (lib/data/transactions.ts) must obey
   // the SAME visibility rule as the AI context. Same seeded scenario:
   //   X FULL → rows visible · Y BALANCE_ONLY / Z SUMMARY_ONLY / W REVOKED → none.
-  const uiRows = await getTransactions({ spaceId: space.id });
+  // RLS-T1 — `getTransactions` now requires its authority. This probe holds its
+  // own `PrismaClient` (the migration principal) on purpose: it is asserting the
+  // APPLICATION-level KD-15 gate, which must hold even for a role that no policy
+  // constrains. Passed explicitly, exactly as `getAccounts` and
+  // `getCurrentPositions` are passed below.
+  const uiRows = await getTransactions(prisma, { spaceId: space.id });
   const uiJson = JSON.stringify(uiRows).toLowerCase();
 
   check(

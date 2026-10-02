@@ -94,7 +94,15 @@ console.log("CONSUMER tripwires — shared consumers stay bounded");
   check("view-context no longer loads rows (uses groupBy, not getTransactions)",
     !view.includes("getTransactions(") && view.includes("groupBy"));
   const exp = code("lib/export/assemble.ts");
-  check("export passes an explicit query cap (EXPORT_TRANSACTION_CAP)", /getTransactions\(\{\s*spaceId,\s*limit:\s*EXPORT_TRANSACTION_CAP\s*\}\)/.test(exp));
+  // RLS-T1 — `getTransactions` took a required, LEADING authority, so the call
+  // now reads `getTransactions(tx, { spaceId, limit: … })`. The needle admits the
+  // client argument explicitly rather than being loosened to `[\s\S]*`: the
+  // PROPERTY under test is "the export states its own cap at the query", and a
+  // needle wide enough to match anything would keep passing after the cap was
+  // deleted. (This repository has shipped exactly that bug — see the escaped-`$`
+  // scan that reported clean over zero sites.)
+  check("export passes an explicit query cap (EXPORT_TRANSACTION_CAP)",
+    /getTransactions\(\w+,\s*\{\s*spaceId,\s*limit:\s*EXPORT_TRANSACTION_CAP\s*\}\)/.test(exp));
 }
 
 if (failures > 0) { console.error(`\ntransactions-bounding: ${failures} failure(s).`); process.exit(1); }

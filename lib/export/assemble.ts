@@ -30,10 +30,58 @@
  * dateOfBirthEncrypted, RecoveryCode.codeHash, PlaidItem.encryptedToken,
  * Connection.credential, sessionToken), other members' data, raw audit rows
  * beyond the SECURITY_HISTORY_ACTIONS allowlist, and system tables.
+ *
+ * ── RLS-T1: WHY THIS FILE IS PHASES AND NOT ONE TRANSACTION ─────────────────
+ *
+ * RLS-C-S2, RLS-C-S3 and RLS-AI-S7 each deliberately left this assembler on the
+ * migration principal, and all three recorded the same reason: it walks EVERY
+ * Space the user is an ACTIVE member of, performs a DECRYPT, and then serialises
+ * a whole bundle. `withTenantDb` is a SECURITY BOUNDARY, not a request-lifetime
+ * container, so one transaction around that would hold a tenant transaction open
+ * across the entire export — unbounded in the number of Spaces, and across work
+ * that is not a database read at all.
+ *
+ * So it is a PHASE SPLIT. Three kinds of phase, each its own short transaction:
+ *
+ *   PHASE 1 (one)        the user row + personal-Space resolution + memberships
+ *   PHASE 2..N (per Space) that Space's accounts, transactions, positions, snapshots
+ *   PHASE Z (one)        the ownership lens — rows FK'd to the user
+ *
+ * ⚠️ DO NOT "SIMPLIFY" THIS INTO A SINGLE `withTenantDb`. The things that happen
+ * BETWEEN the phases are exactly what the split exists for, and they are not
+ * incidental:
+ *   · the AES decrypt of `dateOfBirthEncrypted` (CPU, between phase 1 and 2)
+ *   · `mergeSpaceExportHoldings` and the per-Space row pushes (pure)
+ *   · `dedupById` / `capTransactions` across every Space (between 2..N and Z)
+ *   · the whole manifest/notes/CSV-selection tail (after Z)
+ * A phase loop also means the transaction count scales with the Space count
+ * while each transaction's DURATION does not, which is the property that matters
+ * to a pooled connection.
+ *
+ * THE IDENTITY IS THE SUBJECT OF THE EXPORT. `assembleUserExport(userId)` is
+ * called from exactly one place — `POST /api/user/export` — with the id of the
+ * freshly re-authenticated caller (`requireFreshUser`), so binding the tenant
+ * identity to `userId` is binding it to server-side session state. There is no
+ * admin "export someone else" path; if one is ever added it must pass a system
+ * authority deliberately, not borrow this one.
+ *
+ * ⚠️ AND THE OWNERSHIP LENS GETS GENUINELY NARROWER — RECORDED, NOT DISCOVERED.
+ * Two of its collections are keyed on the user in the application `where` but on
+ * something else by POLICY:
+ *   · `ImportBatch` is in the account subtree (RLS §15,
+ *     `fm_account_visible("financialAccountId")`), so a batch this user created
+ *     for an account that is no longer ACTIVE-linked into any Space they can see
+ *     drops out of their own export.
+ *   · `ImportMappingProfile` is Space-scoped (RLS §7), so a profile created in a
+ *     Space the user has since left drops out.
+ * Both are fail-closed and both are arguably MORE correct than before — the
+ * export has always promised "exactly what that Space read surface returns" —
+ * but the population is not byte-identical to the pre-RLS one, and pretending
+ * otherwise is how a quiet data change ships.
  */
 
 import "server-only";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { getAccountsWithVisibility } from "@/lib/data/accounts";
 import { getCurrentPositions } from "@/lib/investments/current-positions";
 import { mergeSpaceExportHoldings } from "@/lib/export/holdings";
@@ -66,19 +114,46 @@ const ALL_SNAPSHOTS = 100_000;
  * is a should-not-happen guard).
  */
 export async function assembleUserExport(userId: string): Promise<ExportData> {
-  const user = await db.user.findUnique({
-    where: { id: userId },
-    select: {
-      id: true, email: true, username: true, name: true, firstName: true,
-      lastName: true, dateOfBirthEncrypted: true, employmentStatus: true,
-      useCase: true, reportingCurrency: true, role: true, totpEnabled: true,
-      emailVerifiedAt: true, pendingEmail: true, preferredSpaceId: true,
-      deactivatedAt: true, lastBriefViewedAt: true, createdAt: true, updatedAt: true,
-    },
+  // ── PHASE 1 — the subject, their personal Space, and their memberships ─────
+  // One short transaction. `User` is admitted by `"id" = current_fm_user_id()`
+  // (RLS §10) and `SpaceMember` by `"userId" = current_fm_user_id()` (§12), so
+  // this phase reads exactly the identity it is bound to.
+  const phase1 = await withTenantDb(userId, async (tx) => {
+    const user = await tx.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true, email: true, username: true, name: true, firstName: true,
+        lastName: true, dateOfBirthEncrypted: true, employmentStatus: true,
+        useCase: true, reportingCurrency: true, role: true, totpEnabled: true,
+        emailVerifiedAt: true, pendingEmail: true, preferredSpaceId: true,
+        deactivatedAt: true, lastBriefViewedAt: true, createdAt: true, updatedAt: true,
+      },
+    });
+    // RLS slice B — `resolvePersonalSpaceId` requires its client; it gets this
+    // phase's.
+    const personalSpaceId = await resolvePersonalSpaceId(tx, userId);
+    // ── ACTIVE memberships in non-deleted Spaces ─────────────────────────────
+    const memberships = await tx.spaceMember.findMany({
+      where:  { userId, status: "ACTIVE", space: { deletedAt: null } },
+      orderBy: { joinedAt: "asc" },
+      include: {
+        space: {
+          select: {
+            id: true, name: true, description: true, type: true, category: true,
+            reportingCurrency: true, isPublic: true, archivedAt: true, createdAt: true,
+          },
+        },
+      },
+    });
+    return { user, personalSpaceId, memberships };
   });
+  const { user, personalSpaceId, memberships } = phase1;
   if (!user) throw new Error(`assembleUserExport: user ${userId} not found`);
 
-  // Decrypt the user's own DOB (theirs to export). Non-fatal on failure.
+  // ── BETWEEN PHASES — the decrypt. NOT inside a transaction, by design ──────
+  // Decrypt the user's own DOB (theirs to export). Non-fatal on failure. This is
+  // the single most-cited reason this file is phases: a crypto operation is not a
+  // database read and must not be covered by a tenant boundary.
   let dateOfBirth: string | null = null;
   if (user.dateOfBirthEncrypted) {
     try {
@@ -88,24 +163,6 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     }
   }
 
-  // RLS slice B — `resolvePersonalSpaceId` now requires its client. The export
-  // assembler is not converted in this slice, so it passes the one it already held.
-  const personalSpaceId = await resolvePersonalSpaceId(db, userId);
-
-  // ── ACTIVE memberships in non-deleted Spaces ───────────────────────────────
-  const memberships = await db.spaceMember.findMany({
-    where:  { userId, status: "ACTIVE", space: { deletedAt: null } },
-    orderBy: { joinedAt: "asc" },
-    include: {
-      space: {
-        select: {
-          id: true, name: true, description: true, type: true, category: true,
-          reportingCurrency: true, isPublic: true, archivedAt: true, createdAt: true,
-        },
-      },
-    },
-  });
-
   // ── Per-Space visibility lens (composes the existing readers) ───────────────
   const accounts: ExportAccount[] = [];
   const transactions: ExportTransaction[] = [];
@@ -114,112 +171,121 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
   // W2 — the goals collection was deleted with the Goals retirement (no rows
   // exist anywhere; the export carries no retired-concept section).
 
+  // ── PHASES 2..N — ONE SHORT TRANSACTION PER SPACE ─────────────────────────
+  // The boundary is per Space, not per export. Each phase holds four pure reads
+  // over ONE Space with no decrypt, no serialisation and no network inside it;
+  // the pure work (`mergeSpaceExportHoldings`, the row pushes) is done after the
+  // phase closes. Sequential rather than `Promise.all`ed on purpose: a user in
+  // twelve Spaces must not open twelve concurrent tenant transactions against a
+  // pooled connection.
   for (const m of memberships) {
     const spaceId = m.spaceId;
     const spaceName = m.space.name;
 
-    // RLS-C-S2 — UNRESOLVED, and now VISIBLY so. `getAccountsWithVisibility`
-    // requires its authority; this assembler still holds the migration principal
-    // (it already did, implicitly, through the leaf's import). Passing `db`
-    // explicitly changes no behaviour and makes the authority readable at the
-    // call site, which is the only honest intermediate state.
-    //
-    // Not converted here on purpose: the export walks EVERY Space the user is an
-    // ACTIVE member of and performs many reads plus a decrypt per user, so
-    // wrapping it would hold one transaction across the whole assembly — the
-    // thing withTenantDb must not be used for. It needs a per-Space phase split,
-    // which is its own slice.
-    const withVis = await getAccountsWithVisibility(db, { spaceId, userId });
+    const phase = await withTenantDb(userId, async (tx) => {
+      const withVis = await getAccountsWithVisibility(tx, { spaceId, userId });
+      // TX-2E — move the export cap into the QUERY (per space) so no single space
+      // materializes its full multi-year history in memory. The final combined cap
+      // (capTransactions below) still trims to EXPORT_TRANSACTION_CAP total, and the
+      // result is identical: the global most-recent N are a subset of each space's
+      // most-recent N. Streaming a larger export remains deferred (TX-3/4).
+      const spaceTxns = await getTransactions(tx, { spaceId, limit: EXPORT_TRANSACTION_CAP });
+      // Investment positions: the ONE canonical seam (FULL-authorized, valued +
+      // FX). W5 — crypto wallets ride the same seam; the legacy bridge and its
+      // merge args are gone (mergeSpaceExportHoldings is now the passthrough its
+      // own doc promised at P2-6 completion).
+      const positions = await getCurrentPositions(tx, { spaceId });
+      const spaceSnapshots = await getRecentSnapshots(tx, { rows: ALL_SNAPSHOTS }, { spaceId });
+      return { withVis, spaceTxns, positions, spaceSnapshots };
+    });
+
+    // ── Between phases: pure projection only ────────────────────────────────
     // D3 — owned accounts (FULL HOME link) + FULL-shared only.
     // W2 — the fullAccountIds set died with the goal export block below; it
     // existed only to narrow goal contributions to FULL-visible accounts.
-    for (const row of withVis) {
+    //
+    // KD-15/KD-19/KD-21a still decide this, not RLS: the migration's own rule is
+    // that `visibilityLevel` is a COLUMN-level redaction tier and stays in
+    // application code, so the policy admitting a row never means the row may be
+    // exported at FULL detail. Both gates, as before.
+    for (const row of phase.withVis) {
       if (!isFullVisibility(row.visibilityLevel)) continue;
       accounts.push({ ...row.account, spaceId, spaceName });
     }
-
-    // TX-2E — move the export cap into the QUERY (per space) so no single space
-    // materializes its full multi-year history in memory. The final combined cap
-    // (capTransactions below) still trims to EXPORT_TRANSACTION_CAP total, and the
-    // result is identical: the global most-recent N are a subset of each space's
-    // most-recent N. Streaming a larger export remains deferred (TX-3/4).
-    const spaceTxns = await getTransactions({ spaceId, limit: EXPORT_TRANSACTION_CAP });
-    for (const t of spaceTxns.rows) transactions.push({ ...t, spaceId });
-
-    // Investment positions: the ONE canonical seam (FULL-authorized, valued +
-    // FX). W5 — crypto wallets ride the same seam; the legacy bridge and its
-    // merge args are gone (mergeSpaceExportHoldings is now the passthrough its
-    // own doc promised at P2-6 completion).
-    // RLS-AI-S7 — the client is passed EXPLICITLY, matching the three reads
-    // above it in this same loop. The export is a whole-account dump run for one
-    // user and is not converted here; what changes is that its authority is now
-    // written down at the call site instead of defaulted inside the leaf.
-    const positions = await getCurrentPositions(db, { spaceId });
+    for (const t of phase.spaceTxns.rows) transactions.push({ ...t, spaceId });
     holdings.push(...mergeSpaceExportHoldings({
-      canonicalRows: positions.rows,
+      canonicalRows: phase.positions.rows,
       spaceId,
     }));
-
-    // RLS-C-S3 — still UNRESOLVED, for the reason S2 recorded about this file: the
-    // export walks every Space the user belongs to plus a per-user decrypt, and one
-    // transaction around that is the thing `withTenantDb` must not be. It needs a
-    // per-Space phase split. The client is passed EXPLICITLY so the authority is
-    // readable here instead of resolved inside the leaf.
-    const spaceSnapshots = await getRecentSnapshots(db, { rows: ALL_SNAPSHOTS }, { spaceId });
-    for (const s of spaceSnapshots) snapshots.push({ ...s, spaceId, spaceName });
+    for (const s of phase.spaceSnapshots) snapshots.push({ ...s, spaceId, spaceName });
 
     // W2 — the per-Space goal export block (SpaceGoal + contributions +
     // check-ins, D4 visibility-narrowed) was deleted with the Goals retirement.
   }
 
+  // ── BETWEEN PHASES — cross-Space dedup + cap. No transaction held. ─────────
   // Dedup rows that appear via multiple Spaces (e.g. an owned account shared
   // FULL into another Space the user is also in).
   const dedupedAccounts = dedupById(accounts);
   const dedupedHoldings = dedupById(holdings);
   const { rows: cappedTransactions, truncated } = capTransactions(dedupById(transactions));
 
-  // ── Ownership lens (direct personal queries — no shared-account tables) ─────
+  // ── PHASE Z — ownership lens (direct personal queries) ────────────────────
+  // One short transaction over nine collections, every one of them keyed on the
+  // bound identity. Classified, because "keyed on the user in the `where`" and
+  // "keyed on the user by POLICY" are not the same claim:
+  //   TENANT, userId policy (RLS §9/§10/§18): UserSession, RecoveryCode,
+  //     CreditScore, PlaidItem, Connection, AuditLog
+  //     (AuditLog's arm is `"userId" = current_fm_user_id() OR "spaceId" IN
+  //     visible`; the `userId` arm is the one this query rides, and the
+  //     SECURITY_HISTORY_ACTIONS allowlist is unchanged beside it)
+  //   TENANT, account-subtree policy (RLS §15): AccountConnection, ImportBatch
+  //     — ImportBatch is one of the two NARROWINGS recorded in the header
+  //   TENANT, spaceId policy (RLS §7): ImportMappingProfile, AiAdvice,
+  //     SpaceDashboardSection — ImportMappingProfile is the other narrowing
+  // Nothing here is global reference data and nothing is operator-forensic; the
+  // tables fm_app may not reach at all (RLS §4) are not in the export.
   const [
     sessions, recoveryCodes, creditScores, auditRows,
     accountConnections, plaidItems, connections,
-    importBatches, mappingProfiles,
-  ] = await Promise.all([
-    db.userSession.findMany({
+    importBatches, mappingProfiles, aiAdvice, dashboardSections,
+  ] = await withTenantDb(userId, (tx) => Promise.all([
+    tx.userSession.findMany({
       where:  { userId },
       orderBy: { createdAt: "desc" },
       select: { ipAddress: true, userAgent: true, lastActiveAt: true, revokedAt: true, createdAt: true },
     }),
-    db.recoveryCode.findMany({
+    tx.recoveryCode.findMany({
       where:  { userId },
       orderBy: { createdAt: "desc" },
       select: { usedAt: true, expiresAt: true, createdAt: true }, // never codeHash
     }),
-    db.creditScore.findMany({
+    tx.creditScore.findMany({
       where:  { userId },
       orderBy: { recordedAt: "desc" },
       select: { score: true, source: true, recordedAt: true },
     }),
-    db.auditLog.findMany({
+    tx.auditLog.findMany({
       where:  { userId, action: { in: SECURITY_HISTORY_ACTIONS } },
       orderBy: { createdAt: "desc" },
       select: { action: true, ipAddress: true, metadata: true, createdAt: true },
     }),
-    db.accountConnection.findMany({
+    tx.accountConnection.findMany({
       where:  { connectedByUserId: userId, deletedAt: null },
       select: {
         id: true, financialAccountId: true, syncStatus: true, isCanonical: true,
         lastSyncedAt: true, createdAt: true, // never plaidItem token
       },
     }),
-    db.plaidItem.findMany({
+    tx.plaidItem.findMany({
       where:  { userId },
       select: { institutionName: true, institutionId: true, status: true, lastSyncedAt: true, createdAt: true },
     }),
-    db.connection.findMany({
+    tx.connection.findMany({
       where:  { userId },
       select: { provider: true, status: true, lastSyncedAt: true, createdAt: true }, // never credential
     }),
-    db.importBatch.findMany({
+    tx.importBatch.findMany({
       where:  { createdByUserId: userId },
       orderBy: { createdAt: "desc" },
       select: {
@@ -228,29 +294,27 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
         failedCount: true, createdAt: true, completedAt: true,
       },
     }),
-    db.importMappingProfile.findMany({
+    tx.importMappingProfile.findMany({
       where:  { createdByUserId: userId },
       select: { name: true, source: true, institutionLabel: true, lastUsedAt: true, useCount: true, createdAt: true },
     }),
-  ]);
-
-  // AI advice — PERSONAL Space only (approved decision D5).
-  const aiAdvice = personalSpaceId
-    ? await db.aiAdvice.findMany({
-        where:  { spaceId: personalSpaceId },
-        orderBy: { generatedAt: "desc" },
-        select: { summary: true, adviceText: true, riskLevel: true, generatedAt: true },
-      })
-    : [];
-
-  // Settings — PERSONAL Space dashboard customisations (Space property elsewhere).
-  const dashboardSections = personalSpaceId
-    ? await db.spaceDashboardSection.findMany({
-        where:  { spaceId: personalSpaceId },
-        orderBy: { order: "asc" },
-        select: { key: true, label: true, tab: true, enabled: true, order: true, config: true },
-      })
-    : [];
+    // AI advice — PERSONAL Space only (approved decision D5).
+    personalSpaceId
+      ? tx.aiAdvice.findMany({
+          where:  { spaceId: personalSpaceId },
+          orderBy: { generatedAt: "desc" },
+          select: { summary: true, adviceText: true, riskLevel: true, generatedAt: true },
+        })
+      : [],
+    // Settings — PERSONAL Space dashboard customisations (Space property elsewhere).
+    personalSpaceId
+      ? tx.spaceDashboardSection.findMany({
+          where:  { spaceId: personalSpaceId },
+          orderBy: { order: "asc" },
+          select: { key: true, label: true, tab: true, enabled: true, order: true, config: true },
+        })
+      : [],
+  ] as const));
 
   const auditHistory = auditRows.map((r) => {
     const meta = (r.metadata ?? null) as { reason?: unknown } | null;

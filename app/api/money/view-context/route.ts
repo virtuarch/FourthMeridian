@@ -34,7 +34,6 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { getSpaceContext } from "@/lib/space";
 import { getAccounts } from "@/lib/data/accounts";
@@ -61,40 +60,51 @@ export async function GET(req: NextRequest) {
   // population as getTransactions — one row per distinct currency / calendar day,
   // bounded by days not transaction count — instead of loading the full history.
   const txWhere = bankingTransactionWhere(ctx.spaceId);
-  const [accounts, currencyRows, dateRows, snapshots] = await Promise.all([
-    // RLS-C-S1 fix — `ctx.userId` was in scope on the line above and was not
-    // forwarded, so this call took `getAccounts`' ambient branch and re-resolved
-    // the viewer inside the leaf. Same value, now stated by the caller.
-    //
-    // RLS-C-S2 — and it now executes as the TENANT, in its own short transaction.
-    // Only the account read is wrapped: the two groupBy aggregates and the
-    // snapshot read beside it are separate leaves this slice does not own, and a
-    // transaction that also covered them would be a boundary around reads still
-    // running on another authority. The identity is the authenticated session's
-    // (requireUser above, then getSpaceContext) — never the Space cookie.
-    withTenantDb(ctx.userId, (tx) => getAccounts(tx, { spaceId: ctx.spaceId, userId: ctx.userId })),
-    db.transaction.groupBy({ by: ["currency"], where: txWhere }),
-    // v2.6-CHRON-1 — ECONOMIC dates. This population is flow-shaped
-    // (bankingTransactionWhere), and the folds that will consume this context
-    // convert at the DTO's `date`, which IS the economic date. Enumerating
-    // posting dates here prefetched rates for days the client never asks about
-    // while missing the days it does. `nulls` cannot occur — economicDate is
-    // NOT NULL for every live row (audit:economic-date) — but the filter is
-    // spelled out so a future backfill gap degrades to "fewer dates", never to
-    // a crash on a null key.
-    db.transaction.groupBy({ by: ["economicDate"], where: txWhere }),
-    // Snapshot dates + the Space's stamp currency are enumerated so the chart's
-    // per-point conversion resolves under the override instead of rate-missing
-    // (each historical net-worth point converts at its own date).
-    //
-    // v2.6-WINDOW-2 — the same ROW cap the Overview chart reads
-    // (app/api/spaces/[id]/snapshots), so the two enumerate the same dates. The
-    // comment here used to say "365-day window"; it was 365 rows then too.
-    // RLS-C-S3 — the snapshot read joins the account read on the tenant role, in
-    // its OWN short transaction for the reason above: the two groupBy aggregates
-    // between them are leaves this slice does not own.
-    withTenantDb(ctx.userId, (tx) => getRecentSnapshots(tx, { rows: 365 }, { spaceId: ctx.spaceId })),
-  ]);
+  // RLS-C-S1 fix — `ctx.userId` was in scope and was not forwarded, so the
+  // account read took `getAccounts`' ambient branch and re-resolved the viewer
+  // inside the leaf. Same value, now stated by the caller.
+  //
+  // RLS-C-S2/S3 wrapped the account read and the snapshot read in TWO separate
+  // short transactions, and said why: "the two groupBy aggregates between them
+  // are leaves this slice does not own". RLS-T1 OWNS THEM — they are reads of the
+  // banking population this slice converted — so the stated reason has expired
+  // and the four reads collapse into ONE short boundary. Every one of them is a
+  // pure Space-scoped read with no network, no model call and no user think time
+  // between them, which is the only shape `withTenantDb` may be used for.
+  //
+  // The identity is the authenticated session's (requireUser above, then
+  // getSpaceContext) — never the Space cookie, never the `target` query param.
+  //
+  // The FX resolution below stays OUTSIDE: it reads the rate archive on its own
+  // client and may kick off a background freshness check, and a security
+  // boundary is not a request-lifetime container.
+  const { accounts, currencyRows, dateRows, snapshots } = await withTenantDb(
+    ctx.userId,
+    async (tx) => {
+      const [accounts, currencyRows, dateRows, snapshots] = await Promise.all([
+        getAccounts(tx, { spaceId: ctx.spaceId, userId: ctx.userId }),
+        tx.transaction.groupBy({ by: ["currency"], where: txWhere }),
+        // v2.6-CHRON-1 — ECONOMIC dates. This population is flow-shaped
+        // (bankingTransactionWhere), and the folds that will consume this context
+        // convert at the DTO's `date`, which IS the economic date. Enumerating
+        // posting dates here prefetched rates for days the client never asks about
+        // while missing the days it does. `nulls` cannot occur — economicDate is
+        // NOT NULL for every live row (audit:economic-date) — but the filter is
+        // spelled out so a future backfill gap degrades to "fewer dates", never to
+        // a crash on a null key.
+        tx.transaction.groupBy({ by: ["economicDate"], where: txWhere }),
+        // Snapshot dates + the Space's stamp currency are enumerated so the chart's
+        // per-point conversion resolves under the override instead of rate-missing
+        // (each historical net-worth point converts at its own date).
+        //
+        // v2.6-WINDOW-2 — the same ROW cap the Overview chart reads
+        // (app/api/spaces/[id]/snapshots), so the two enumerate the same dates. The
+        // comment here used to say "365-day window"; it was 365 rows then too.
+        getRecentSnapshots(tx, { rows: 365 }, { spaceId: ctx.spaceId }),
+      ]);
+      return { accounts, currencyRows, dateRows, snapshots };
+    },
+  );
 
   // Same input coverage as before — balances at the latest close, the distinct
   // transaction currencies + dates, plus the snapshot series — all targeted at

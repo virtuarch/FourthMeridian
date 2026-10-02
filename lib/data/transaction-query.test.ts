@@ -74,10 +74,11 @@ console.log("SHARED DTO — same row shape + projection as getTransactions");
   check("transactions.ts exports the shared projection + include",
     tx.includes("export async function projectTransactionListRows") && tx.includes("export function transactionListInclude"));
   check("getTransactions now delegates to the shared projection (parity)",
-    // RLS-C-S3 — `getTransactions` is not converted in this slice, so it passes
-    // the client it already holds EXPLICITLY. Same shared projection, visible
-    // authority.
-    tx.includes("await projectTransactionListRows(db, capped, spaceId)"));
+    // RLS-T1 — `getTransactions` is converted: it takes its authority as a
+    // required leading parameter and hands THAT to the shared projection, so the
+    // explorer path (`client`) and the list path now spell the argument the same
+    // way and cannot be assembled by two different roles.
+    tx.includes("await projectTransactionListRows(client, capped, spaceId)"));
 }
 
 console.log("CONTRACT — no canonical Perspective time on the explorer");

@@ -17,13 +17,21 @@
  *     path. Because the result is therefore structurally partial in a
  *     shared Space, every consumer renders a scope note ("fully shared
  *     accounts only").
+ *
+ * RLS-T1 — THE ROWS NOW COME BACK AS THE CALLER, NOT AS THE TABLE OWNER.
+ * `getTransactions` requires its authority, and this route earns one: the
+ * identity is the authenticated session's (`requireSpaceRole`, which is
+ * next-auth-backed), never the `[id]` path parameter, a header, or the
+ * active-Space cookie. The path `id` still decides WHICH Space is asked about —
+ * that is what the membership check above is for — but it can no longer decide
+ * what the database is willing to show.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { SpaceMemberRole }           from "@prisma/client";
 import { requireSpaceRole }          from "@/lib/session";
 import { getTransactions }           from "@/lib/data/transactions";
-import { db }                        from "@/lib/db";
+import { withTenantDb }              from "@/lib/db/tenant-context";
 import { resolveEffectiveSpaceConversionSerialized } from "@/lib/money/server-context";
 
 export async function GET(
@@ -32,7 +40,7 @@ export async function GET(
 ) {
   const { id: spaceId } = await params;
 
-  const [, err] = await requireSpaceRole(spaceId, SpaceMemberRole.VIEWER);
+  const [auth, err] = await requireSpaceRole(spaceId, SpaceMemberRole.VIEWER);
   if (err) return err;
 
   // TX-2 — bounded read (default cap + truncation sentinel). `truncated` rides the
@@ -47,7 +55,26 @@ export async function GET(
   // workspace renderers, which fold the whole array and therefore keep the cap +
   // truncation sentinel until their own projection migration. Do not add browsing
   // features here.
-  const { rows: transactions, truncated, limit } = await getTransactions({ spaceId });
+  //
+  // RLS-T1 — ONE short transaction holds the row read and the Space-currency
+  // lookup that frames it, because the two must agree about who is asking: a
+  // page read as the caller and a reporting currency read as the table owner
+  // would be one payload assembled by two roles. Nothing else goes inside — the
+  // FX resolution below can touch the rate archive and must not be held across.
+  const { transactions, truncated, limit, space } = await withTenantDb(
+    auth.user.id,
+    async (tx) => {
+      const page = await getTransactions(tx, { spaceId });
+      const spaceRow = await tx.space.findUnique({
+        where:  { id: spaceId },
+        select: { reportingCurrency: true },
+      });
+      return {
+        transactions: page.rows, truncated: page.truncated, limit: page.limit,
+        space: spaceRow,
+      };
+    },
+  );
 
   // MC1 Phase 4 Slice 6 (F-6, plan D-8) — a serialized conversion context
   // rides the payload so the client-fetched SpaceTransactionsPanel can
@@ -56,10 +83,7 @@ export async function GET(
   // (and any Space whose rows are all already in the target) serialize an
   // EMPTY entry table — a few bytes, identical client math. Degrades to
   // undefined (panel falls back to native sums) if the Space row vanished.
-  const space = await db.space.findUnique({
-    where:  { id: spaceId },
-    select: { reportingCurrency: true },
-  });
+  //
   // V25-CLOSE-3A — resolve the EFFECTIVE currency (shared decision point): the
   // Spend/In summary converts through the reverted (USD) context when the stored
   // currency is unsatisfiable, so it never shows native amounts under a foreign

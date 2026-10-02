@@ -30,6 +30,16 @@
  * "transaction:correct")` (MEMBER+, ACTIVE). `transactionDetailWhere` is KEPT —
  * FULL visibility remains a NECESSARY condition, it is simply no longer a
  * sufficient one. Both must hold.
+ *
+ * RLS-T1 — STILL UNCONVERTED, AND NOW VISIBLY SO. `getTransactionDetail` took a
+ * required, leading authority in that slice, so the three calls below pass `db`
+ * — the migration principal — EXPLICITLY. That is what the required parameter is
+ * for: an unconverted caller stays legible instead of looking converted. This
+ * route is a WRITE path (it mints MerchantRules and stamps rows through five
+ * further `db` seams), so converting the one read inside it would have produced a
+ * route that reads as the caller and writes as the owner — a split authority that
+ * is worse than an honest single one. Its conversion belongs with the write-path
+ * slice that takes all six seams at once.
  */
 
 import { NextRequest, NextResponse }  from "next/server";
@@ -116,7 +126,7 @@ export async function POST(
         );
       }
       const { merchantId } = await applyMerchantIdentityCorrection(db, correctionRow, decision);
-      const transaction = await getTransactionDetail(id, { spaceId });
+      const transaction = await getTransactionDetail(db, id, { spaceId });
       return NextResponse.json({ transaction, merchantId });
     }
 
@@ -135,14 +145,14 @@ export async function POST(
         merchantRow = { ...correctionRow, merchantId: mi.merchantId };
       }
       const { ruleId } = await applyCategoryRuleCorrection(db, merchantRow, acct, user.id, body.category);
-      const transaction = await getTransactionDetail(id, { spaceId });
+      const transaction = await getTransactionDetail(db, id, { spaceId });
       return NextResponse.json({ transaction, ruleId });
     }
 
     if (correction === "override") {
       if (!validCategory(body.category)) return NextResponse.json({ error: "Invalid category" }, { status: 400 });
       await applyTransactionOverride(db, correctionRow, acct, body.category);
-      const transaction = await getTransactionDetail(id, { spaceId });
+      const transaction = await getTransactionDetail(db, id, { spaceId });
       return NextResponse.json({ transaction });
     }
 
