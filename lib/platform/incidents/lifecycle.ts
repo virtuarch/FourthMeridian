@@ -32,6 +32,13 @@
 import "server-only";
 import { db } from "@/lib/db";
 import type { Prisma, SyncIssueKind } from "@prisma/client";
+import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
+import {
+  captureLedgerWriteFailure,
+  type LedgerWriteObserver,
+  type LedgerWritePhase,
+  type OperationalLedger,
+} from "@/lib/monitoring/capture";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
 import { classifySyncIssue } from "@/lib/platform/sync-issue-semantics";
 import { buildIncidentKey, INCIDENT_KEY_VERSION, type ConnectionScope } from "./identity";
@@ -175,6 +182,45 @@ export interface DetectionResult {
 }
 
 /**
+ * ── RLS-P-2 — THE OBSERVER, AND WHY `null` WAS NOT ENOUGH ────────────────────
+ *
+ * Both functions below swallow every failure and return a calm value: `null`
+ * from detection, `{resolved: 0}` from resolution. Those values are also what a
+ * perfectly healthy call returns when there was nothing to do — a refused
+ * lifecycle write, an invariant refusal and "no active episode matched" are
+ * indistinguishable to every caller. That is the silent-refusal defect
+ * (docs/plans/RLS-SILENT-REFUSAL-CAS.md Part 1) sitting on two tables `fm_app`
+ * is revoked from outright, so under the authority flip a grant refusal here
+ * would have reported health.
+ *
+ * The swallow is NOT removed — fourteen producers call this from inside their
+ * own catch blocks, and OPS-2D-TX-1 is the whole reason observation may never
+ * control the observed operation. What changes is that the failure is now
+ * ANNOUNCED on a side channel that cannot affect control flow: an optional,
+ * synchronous callback carrying a table and a phase and nothing else.
+ *
+ * ⚠️ IT IS NOT A RETURN VALUE ON PURPOSE. `DetectionResult | null` is consumed
+ * by three operator harnesses and the facade; widening it would have rippled
+ * into files this slice does not own, and more importantly a caller that
+ * BRANCHED on the failure would be letting telemetry decide what happens to the
+ * financial operation. A callback can only be listened to.
+ */
+export interface LifecycleObservers {
+  /** Called at most once per invocation, with the statement that failed. */
+  onWriteFailure?: LedgerWriteObserver;
+}
+
+/** Fire an observer without letting it become the failure it reports. */
+function reportWriteFailure(
+  observers: LifecycleObservers | undefined,
+  ledger: OperationalLedger,
+  phase: LedgerWritePhase,
+): void {
+  try { observers?.onWriteFailure?.(ledger, phase); }
+  catch { /* an observer that throws must not take the swallow with it */ }
+}
+
+/**
  * Record one failure occurrence, converging on the active episode.
  *
  * NEVER THROWS — the same contract `recordSyncIssue` has always had. Telemetry
@@ -191,11 +237,20 @@ export async function recordIncidentObservation(
   client: Client = db,
   /** Injection seam — production uses the canonical row seam. */
   lookupExecutionId: LookupExecutionId | undefined = getExecutionIdByRunId,
+  /** RLS-P-2 — listen-only; see LifecycleObservers. Optional everywhere. */
+  observers?: LifecycleObservers,
 ): Promise<DetectionResult | null> {
   if (isTransactionScoped(client)) {
     refuseTransactionScopedClient("recordIncidentObservation");
+    // A refused client is a DROPPED telemetry row, not a no-op, so it is
+    // reported on the same channel as a failed write. Without this the one
+    // failure mode with a dedicated console message was also the one the
+    // degradation list could not see.
+    reportWriteFailure(observers, "SyncIssue", "incident");
     return null;
   }
+  /** True once the occurrence insert has named itself; see the outer catch. */
+  let occurrenceReported = false;
   try {
     const provider = obs.provider ?? "PLAID";
     const { domain, nature } = classifySyncIssue({
@@ -251,17 +306,30 @@ export async function recordIncidentObservation(
     };
 
     const appendOccurrence = async (incidentId: string) => {
-      const occ = await client.syncIssueOccurrence.create({
-        data: {
-          syncIssueId: incidentId,
-          refreshExecutionId: executionId,
-          runId: obs.runId ?? null,
-          observedAt: now,
-          detail: obs.detail,
-        },
-        select: { id: true },
-      });
-      return occ.id;
+      try {
+        const occ = await client.syncIssueOccurrence.create({
+          data: {
+            syncIssueId: incidentId,
+            refreshExecutionId: executionId,
+            runId: obs.runId ?? null,
+            observedAt: now,
+            detail: obs.detail,
+          },
+          select: { id: true },
+        });
+        return occ.id;
+      } catch (e) {
+        // RLS-P-2 — ATTRIBUTION ONLY. The rethrow is unchanged, so the outer
+        // catch still swallows and still returns null and the control flow is
+        // byte-identical; what this adds is that the degradation names
+        // SyncIssueOccurrence rather than being folded into SyncIssue. The two
+        // have different causes: an occurrence insert cannot lose the
+        // convergence race, so a failure here is a grant, an FK or a drift and
+        // never contention.
+        occurrenceReported = true;
+        reportWriteFailure(observers, "SyncIssueOccurrence", "incident");
+        throw e;
+      }
     };
 
     if (isEvent) {
@@ -351,6 +419,14 @@ export async function recordIncidentObservation(
     }
   } catch (e) {
     console.error("[incidents] failed to record observation (non-fatal):", redactedErrorForLog(e));
+    // RLS-P-2 — ESCALATED, NOT ONLY LOGGED, and reported to the caller's
+    // observer. `return null` is the contract and stays the contract; what it
+    // must stop being is the ONLY trace. `occurrenceReported` keeps the
+    // attribution precise: when the occurrence insert is what failed it has
+    // already named itself, and reporting SyncIssue on top would turn one
+    // failure into two.
+    captureLedgerWriteFailure("SyncIssue", "incident", e);
+    if (!occurrenceReported) reportWriteFailure(observers, "SyncIssue", "incident");
     return null;
   }
 }
@@ -381,15 +457,34 @@ export interface AutomaticRecoveryScope {
  *
  * Events are excluded structurally: they are stored resolved-inert and so can
  * never appear in the active set this queries.
+ *
+ * ── ⚠️ RLS-P-2 — `{resolved: 0}` MEANT THREE DIFFERENT THINGS ────────────────
+ * It meant "this item had no open cursor-blocking episode" (the common, healthy
+ * case), "an invariant refused the write", and "the write failed or was refused
+ * by a policy" — and a caller reading the number could not tell them apart. The
+ * third is the serious one: the episode stays OPEN, the recovery that genuinely
+ * happened is never recorded, and the item reads as permanently broken while
+ * every log line says zero.
+ *
+ * The count stays the count. The failure now travels on the observer channel,
+ * and the ZERO-OR-PARTIAL update is checked against the rows this very call
+ * observed moments earlier under the same authority — the escape clause of the
+ * indeterminate-write rule, used deliberately (lib/db/conditional-write.ts). The
+ * `findMany` above is therefore THE GUARD and not an optimisation to be hoisted
+ * away: delete it and a refused resolution becomes indistinguishable from a
+ * clean item again.
  */
 export async function resolveByAutomaticRecovery(
   scope: AutomaticRecoveryScope,
   client: Client = db,
   /** Injection seam — production uses the canonical row seam. */
   lookupExecutionId: LookupExecutionId | undefined = getExecutionIdByRunId,
+  /** RLS-P-2 — listen-only; see LifecycleObservers. Optional everywhere. */
+  observers?: LifecycleObservers,
 ): Promise<{ resolved: number; resolvingExecutionId: string | null }> {
   if (isTransactionScoped(client)) {
     refuseTransactionScopedClient("resolveByAutomaticRecovery");
+    reportWriteFailure(observers, "SyncIssue", "resolution");
     return { resolved: 0, resolvingExecutionId: null };
   }
   try {
@@ -422,13 +517,32 @@ export async function resolveByAutomaticRecovery(
     // never appear in the unresolved set above. Asserted anyway: this is the
     // write that would turn evidence into a fabricated recovery.
     const bad = lifecycleViolation("condition", { ...resolution, incidentKey: null });
-    if (bad) { console.error(`[incidents] refusing invalid resolution write: ${bad}`); return { resolved: 0, resolvingExecutionId }; }
+    if (bad) {
+      console.error(`[incidents] refusing invalid resolution write: ${bad}`);
+      // An INVARIANT refusal, deliberately NOT reported as a write failure: the
+      // write was correctly prevented, nothing is missing from the ledger, and
+      // alerting on it would train an operator to ignore the channel.
+      return { resolved: 0, resolvingExecutionId };
+    }
     const { count } = await client.syncIssue.updateMany({
       where: { id: { in: matching.map((m) => m.id) } },
       // For a CONDITION these move together — see invariant.ts for why that is
       // NOT a universal rule about the `resolved` column.
       data: resolution,
     });
+    // THE ROWS WERE OBSERVED ONE STATEMENT AGO, UNDER THIS AUTHORITY. So a
+    // shortfall is neither contention nor idempotence — a row already resolved
+    // was never in `matching`, because `matching` came from `resolved: false`.
+    // What is left is a row that WAS eligible and WAS NOT written, and the
+    // caller is not entitled to call that "nothing to do". Raises into the
+    // catch below, which swallows it as the contract requires and now reports
+    // it. On fm_system the policy is USING(true), so a disagreement can only
+    // come from concurrent modification — which is exactly why it is an alarm.
+    assertEveryObservedRowWasWritten(
+      { table: "SyncIssue", operation: "update", scope: `${matching.length} matching active condition(s)` },
+      matching.length,
+      count,
+    );
     if (count > 0) {
       console.log(
         `[incidents] item ${scope.plaidItemId} — resolved ${count} ${scope.domain} incident(s) by automatic recovery` +
@@ -438,6 +552,8 @@ export async function resolveByAutomaticRecovery(
     return { resolved: count, resolvingExecutionId };
   } catch (e) {
     console.error("[incidents] automatic resolution failed (non-fatal):", redactedErrorForLog(e));
+    captureLedgerWriteFailure("SyncIssue", "resolution", e);
+    reportWriteFailure(observers, "SyncIssue", "resolution");
     return { resolved: 0, resolvingExecutionId: null };
   }
 }

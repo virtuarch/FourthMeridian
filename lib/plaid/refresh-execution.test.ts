@@ -92,6 +92,15 @@ function makeFake(opts: FakeOpts = {}) {
         stageRows.push(data);
         return {};
       },
+      // RLS-P-2 — the attempt-numbering probe shares the WRITE client now, so
+      // the fake must answer it (and from the rows the inserts land in, never
+      // from somewhere else: a probe on a different authority is the defect).
+      async findFirst({ where }) {
+        const prior = (stageRows as Array<Record<string, unknown>>).filter(
+          (r) => r.refreshExecutionId === where.refreshExecutionId && r.endpoint === where.endpoint,
+        );
+        return prior.length === 0 ? null : { attempt: Math.max(...prior.map((r) => Number(r.attempt ?? 0))) };
+      },
     },
     refreshEndpointAccountCoverage: {
       async createMany({ data }) {

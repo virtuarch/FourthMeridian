@@ -34,6 +34,7 @@
 import "server-only";
 
 import { db } from "@/lib/db";
+import { captureLedgerWriteFailure } from "@/lib/monitoring/capture";
 import {
   clampLimit,
   decodeCursor,
@@ -351,11 +352,37 @@ export async function getExecutionContext(
   return { lastSucceeded: last ? projectExecutionRow(last, "operator") : null };
 }
 
+/**
+ * Resolve a run correlator to a `RefreshExecution.id`, or null.
+ *
+ * ── ⚠️ RLS-P-2 — `null` MEANT BOTH ANSWERS, AND ONE OF THEM WAS A FAILURE ────
+ * `null` is the honest and COMMON answer here: several incident producers have
+ * no refresh envelope at all, so their correlator legitimately names no
+ * execution and the FK is stored null rather than invented. That is why this
+ * read must not throw — a transient failure would otherwise cost the whole
+ * incident observation instead of just its correlation.
+ *
+ * But the bare `catch { return null }` meant a REFUSED or FAILED read produced
+ * the identical value, and the occurrence was then written permanently UNLINKED
+ * while every surface read it as "this run named no execution". The
+ * silent-refusal defect (docs/plans/RLS-SILENT-REFUSAL-CAS.md) on the
+ * correlation path: a refusal published as a fact.
+ *
+ * The value is unchanged — the honest one is still null, and the caller still
+ * cannot be made worse off. What changes is that the failure is now ESCALATED
+ * under its own phase, so "unlinked because nothing matched" and "unlinked
+ * because the read did not happen" stop being the same event in monitoring.
+ */
 export async function getExecutionIdByRunId(runId: string): Promise<string | null> {
   try {
     const row = await db.refreshExecution.findUnique({ where: { runId }, select: { id: true } });
     return row?.id ?? null;
-  } catch {
+  } catch (e) {
+    console.error(
+      "[refresh/execution-query] the run correlator could not be resolved; the observation will be stored UNLINKED (non-fatal):",
+      e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+    );
+    captureLedgerWriteFailure("RefreshExecution", "correlate", e);
     return null;
   }
 }

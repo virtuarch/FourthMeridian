@@ -10,6 +10,7 @@
  */
 
 import { db } from "@/lib/db";
+import type { LedgerWriteObserver } from "@/lib/monitoring/capture";
 import type { SyncIssueKind, Prisma } from "@prisma/client";
 import { recordIncidentObservation, resolveByAutomaticRecovery, type IncidentClient } from "@/lib/platform/incidents/lifecycle";
 
@@ -101,6 +102,9 @@ export async function resolveCursorBlockingIssues(
     { plaidItemId, domain: "transactions", runId: runId ?? null },
     client,
     deps.getExecutionIdByRunId,
+    // RLS-P-2 — forwarded, never interpreted here. The facade does not decide
+    // what a failed resolution means; it only makes sure somebody can hear it.
+    { onWriteFailure: deps.onWriteFailure },
   );
   return resolved;
 }
@@ -120,6 +124,28 @@ export async function resolveCursorBlockingIssues(
  */
 export interface SyncIssueDeps {
   getExecutionIdByRunId?: (runId: string) => Promise<string | null>;
+  /**
+   * RLS-P-2 — THE FACADE STILL NEVER THROWS, BUT IT NO LONGER STAYS SILENT.
+   *
+   * Both functions here swallow everything, because fourteen producers call them
+   * from inside their own catch blocks and a telemetry failure must never become
+   * a second, louder failure (OPS-2D-TX-1). That contract is unchanged. What it
+   * cost was that a REFUSED lifecycle write — and under the authority flip these
+   * two tables are revoked from `fm_app` outright, so a refusal is a real
+   * possibility — was indistinguishable from a successful one at every call
+   * site. The refresh ledger's `degradations` list reported a complete ledger
+   * while the episode had not been recorded.
+   *
+   * This is the listen-only channel that closes it. It carries a table and a
+   * phase and nothing else: no row, no message, no error object. It is forwarded
+   * straight to the lifecycle authority, which is the only code that knows which
+   * of its statements failed.
+   *
+   * ⚠️ A LISTENER, NOT A RESULT. It cannot change what either function returns
+   * or what the producer does next — observation must never control the observed
+   * operation.
+   */
+  onWriteFailure?: LedgerWriteObserver;
 }
 
 export async function recordSyncIssue(
@@ -151,5 +177,6 @@ export async function recordSyncIssue(
     },
     client,
     deps.getExecutionIdByRunId,
+    { onWriteFailure: deps.onWriteFailure },
   );
 }

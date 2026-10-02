@@ -101,9 +101,37 @@ export async function loadHistoricalStageAttempts(
   });
 }
 
+/**
+ * The narrow read this module needs in order to NUMBER the next attempt.
+ *
+ * ⚠️ RLS-P-2 — IT IS PASSED IN, AND THAT IS THE WHOLE POINT. The probe used to
+ * resolve the module-global `db` while the INSERT it feeds ran through whatever
+ * client the ledger door was bound to, so one logical write was split across two
+ * authorities. The same rule `lib/db/conditional-write.ts` states for its
+ * visibility probe applies here and for the same reason: a read on a WIDER
+ * authority than the write answers about rows the writer cannot see. If this
+ * read saw attempts 1 and 2 under one principal while the write ran under
+ * another that can see neither, the insert would collide with an attempt number
+ * the writer believes is free — or, worse, silently number a resumed stage as
+ * its own first attempt and make the resume point unreadable.
+ *
+ * Structural, not `typeof db`, so a pure test drives the real path.
+ */
+export interface HistoricalStageAttemptReader {
+  findFirst(args: {
+    where: { refreshExecutionId: string; endpoint: string };
+    orderBy: { attempt: "desc" };
+    select: { attempt: true };
+  }): Promise<{ attempt: number | null } | null>;
+}
+
 /** The next attempt number for this (execution, stage). 1-based. */
-async function nextAttemptNumber(refreshExecutionId: string, stage: HistoricalStage): Promise<number> {
-  const last = await db.refreshEndpointResult.findFirst({
+async function nextAttemptNumber(
+  reader: HistoricalStageAttemptReader,
+  refreshExecutionId: string,
+  stage: HistoricalStage,
+): Promise<number> {
+  const last = await reader.findFirst({
     where:   { refreshExecutionId, endpoint: stage },
     orderBy: { attempt: "desc" },
     select:  { attempt: true },
@@ -145,9 +173,12 @@ export interface HistoricalStageRow {
  * supplied by the handle, which minted it (lib/plaid/refresh-ledger.ts).
  *
  * The one read it performs — the next attempt ordinal — is keyed by that minted
- * id and by this module's own stage vocabulary, and it returns a number.
+ * id and by this module's own stage vocabulary, it returns a number, and (RLS-P-2)
+ * it now runs through the SAME client as the insert it is numbering for. See
+ * `HistoricalStageAttemptReader`.
  */
 export async function prepareHistoricalStageRow(
+  reader: HistoricalStageAttemptReader,
   refreshExecutionId: string,
   args: Omit<StageSettleArgs, "refreshExecutionId">,
 ): Promise<HistoricalStageRow | null> {
@@ -156,7 +187,7 @@ export async function prepareHistoricalStageRow(
   if (!isHistoricalStageStatus(args.status)) return null;
 
   const completedAt = new Date();
-  const attempt = await nextAttemptNumber(refreshExecutionId, args.stage);
+  const attempt = await nextAttemptNumber(reader, refreshExecutionId, args.stage);
 
   return {
     refreshExecutionId,

@@ -185,6 +185,15 @@ function fakeLedger(fail: FailAt = {}) {
         stageRows.push(data as unknown as Record<string, unknown>);
         return {};
       },
+      // RLS-P-2 — the attempt-numbering probe shares the WRITE client now, so
+      // the fake must answer it (and from the rows the inserts land in, never
+      // from somewhere else: a probe on a different authority is the defect).
+      async findFirst({ where }) {
+        const prior = stageRows.filter(
+          (r) => r.refreshExecutionId === where.refreshExecutionId && r.endpoint === where.endpoint,
+        );
+        return prior.length === 0 ? null : { attempt: Math.max(...prior.map((r) => Number(r.attempt ?? 0))) };
+      },
     },
     refreshEndpointAccountCoverage: {
       async createMany({ data }) {
@@ -442,8 +451,14 @@ async function main() {
     const forwarded: SyncIssueInput[] = [];
     const resolved: Array<{ plaidItemId: string; runId: string }> = [];
     const recorder = ledgerRecorderFor(f.client, {
-      recordSyncIssue: async (input) => { forwarded.push(input); },
-      resolveCursorBlockingIssues: async (plaidItemId, runId) => { resolved.push({ plaidItemId, runId }); return 0; },
+      // RLS-P-2 — both deps now REPORT whether they wrote. `null` / `failedWrite:
+      // null` is the "it landed" answer; the failure arm is exercised in
+      // refresh-ledger-failure-matrix.test.ts.
+      recordSyncIssue: async (input) => { forwarded.push(input); return null; },
+      resolveCursorBlockingIssues: async (plaidItemId, runId) => {
+        resolved.push({ plaidItemId, runId });
+        return { resolved: 0, failedWrite: null };
+      },
     });
     const handle = await recorder.open(startData("run-REAL"));
     await handle?.recordIncident({

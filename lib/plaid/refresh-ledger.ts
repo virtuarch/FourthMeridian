@@ -83,6 +83,7 @@
 
 import { classifyDbError } from "@/lib/monitoring/capture";
 import { captureLedgerWriteFailure } from "@/lib/monitoring/capture";
+import type { LedgerWritePhase, OperationalLedger } from "@/lib/monitoring/capture";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
 import { getProviderCallContext } from "@/lib/plaid/provider-call-context";
 import {
@@ -160,6 +161,22 @@ export interface LedgerWriteClient {
     createMany(args: { data: RefreshEndpointResultData[] }): Promise<unknown>;
     /** The INCREMENTAL historical stage — one row as each stage settles (V26-STAGE-1). */
     create(args: { data: HistoricalStageRow }): Promise<unknown>;
+    /**
+     * ⚠️ RLS-P-2 — THE ONLY READ ON THIS CLIENT, AND IT IS PART OF A WRITE.
+     * Numbering the next historical attempt used to resolve the module-global
+     * `db` inside the stage authority while the INSERT it feeds ran through
+     * whatever client this door was bound to, so one logical write was split
+     * across two principals. A probe on a WIDER authority than its write
+     * answers about rows the writer cannot see — the rule
+     * lib/db/conditional-write.ts states and the reason its probe is a thunk
+     * over the writing client. It returns a number, never a row, so property 2
+     * (no row crosses the boundary) is untouched.
+     */
+    findFirst(args: {
+      where: { refreshExecutionId: string; endpoint: string };
+      orderBy: { attempt: "desc" };
+      select: { attempt: true };
+    }): Promise<{ attempt: number | null } | null>;
   };
   refreshEndpointAccountCoverage: {
     createMany(args: { data: RefreshEndpointAccountCoverageData[] }): Promise<unknown>;
@@ -171,23 +188,28 @@ export interface LedgerWriteClient {
 
 // ── Degradation — what the ledger failed to record ───────────────────────────
 
-/** The six operational-ledger tables. */
-export type LedgerTable =
-  | "RefreshExecution"
-  | "RefreshEndpointResult"
-  | "RefreshEndpointAccountCoverage"
-  | "ProviderCall"
-  | "SyncIssue"
-  | "SyncIssueOccurrence";
+/**
+ * The six operational-ledger tables — the (B) family, which is exactly the
+ * escalation vocabulary minus `JobRun` (that ledger belongs to lib/jobs/run.ts
+ * and is written at a different grain).
+ *
+ * Derived rather than re-spelled so the two cannot drift: a table added to the
+ * family arrives here automatically, and a degradation can never name a table
+ * `captureLedgerWriteFailure` has no tag for.
+ */
+export type LedgerTable = Exclude<OperationalLedger, "JobRun">;
 
-/** Which write failed. `start` is the one that suppresses all the others. */
-export type LedgerWritePhase =
-  | "start"
-  | "stages"
-  | "coverage"
-  | "providerCall"
-  | "incident"
-  | "completion";
+/**
+ * Which write failed. `start` is the one that suppresses all the others.
+ *
+ * ⚠️ RLS-P-2 — ONE VOCABULARY, DEFINED ONCE. This used to be a second,
+ * independent union that happened to resemble the one in lib/monitoring/capture.ts
+ * and was NARROWER than it: a degradation could name a phase the escalation had
+ * no word for, and `defaultCapture` silently dropped those on the floor. They are
+ * now the same type, so the two can no longer drift apart and a new phase must be
+ * given an effect sentence before it can be degraded under.
+ */
+export type { LedgerWritePhase } from "@/lib/monitoring/capture";
 
 /**
  * One thing this execution's ledger failed to record.
@@ -205,6 +227,21 @@ export interface LedgerDegradation {
 }
 
 /**
+ * WHERE a swallowed write happened, with no error attached (RLS-P-2).
+ *
+ * The incident lifecycle swallows its own failures by contract — every one of
+ * its fourteen producers calls it from inside a catch block — so the error
+ * object is gone by the time this door could see it. What CAN be reported is the
+ * statement, and that is all this carries. `dbErrorCode` is therefore absent
+ * here and filled in as `UNKNOWN` by `classifyDbError`, which is the honest
+ * answer: the code was classified where the error was, not here.
+ */
+export interface LedgerWriteSite {
+  readonly ledger: LedgerTable;
+  readonly phase: LedgerWritePhase;
+}
+
+/**
  * A start failure means the (B) family recorded NOTHING for this refresh — no
  * execution row, so no stages, no coverage, no provider calls and no completion.
  *
@@ -214,6 +251,65 @@ export interface LedgerDegradation {
  */
 export function isTotalBlackout(degradations: readonly LedgerDegradation[]): boolean {
   return degradations.some((d) => d.ledger === "RefreshExecution" && d.phase === "start");
+}
+
+/**
+ * HOW COMPLETE THIS EXECUTION'S LEDGER ACTUALLY IS (RLS-P-2).
+ *
+ * ── WHY THIS EXISTS, AND WHY IT IS NOT A BOOLEAN ─────────────────────────────
+ * RLS-P-1 made the degradations EXPRESSIBLE and nothing READ them: `degradations`
+ * had no production consumer at all, `isTotalBlackout` had none either, and a
+ * refresh whose entire stage evidence failed to write logged four lines and then
+ * returned exactly what a fully-recorded refresh returns. That is the shape this
+ * programme is here to remove — the caller claiming a success the evidence does
+ * not support — so the degradations needed somewhere honest to arrive.
+ *
+ * It is deliberately NOT a boolean, because the three states are not ordered on
+ * one axis and an operator acts on them differently:
+ *
+ *   COMPLETE     every write landed. The ledger can be read at face value.
+ *   PARTIAL      the execution row exists but some of its evidence does not, so
+ *                the row OVERSTATES what is recorded beneath it. A `SUCCEEDED`
+ *                execution with no stage rows is the readable symptom.
+ *   BLACKOUT     the start write failed, so NOTHING was recorded and the refresh
+ *                ran unattributed. Not a worse PARTIAL — a different fact.
+ *
+ * ⚠️ IT DOES NOT, AND MUST NOT, CHANGE `overallStatus`. The status is derived
+ * from the stages that actually ran; degrading it because telemetry failed would
+ * FABRICATE a refresh failure, which is the mirror image of the defect and
+ * strictly worse (it reaches the customer). The incompleteness is reported
+ * BESIDE the status, never folded into it.
+ *
+ * ⚠️ AND IT CARRIES NO ROW, NO MESSAGE AND NO IDENTIFIER, for the same reason a
+ * `LedgerDegradation` does not: it is built to travel into a log line.
+ */
+export type LedgerCompleteness = "COMPLETE" | "PARTIAL" | "BLACKOUT";
+
+export function ledgerCompleteness(degradations: readonly LedgerDegradation[]): LedgerCompleteness {
+  if (isTotalBlackout(degradations)) return "BLACKOUT";
+  return degradations.length === 0 ? "COMPLETE" : "PARTIAL";
+}
+
+/**
+ * One line an operator can act on, or `null` when there is nothing to say.
+ *
+ * `null` rather than an empty string so a caller cannot log a blank line for a
+ * healthy refresh, which is how a warning channel becomes noise and then becomes
+ * ignored — the end state of the 2026-07-26 incident.
+ */
+export function describeLedgerDegradations(
+  runId: string,
+  degradations: readonly LedgerDegradation[],
+): string | null {
+  if (degradations.length === 0) return null;
+  const completeness = ledgerCompleteness(degradations);
+  // Deduplicated: a provider-call failure repeated forty times is one fact about
+  // the ledger, and forty copies of it in a log line is a reason not to read it.
+  const named = [...new Set(degradations.map((d) => `${d.ledger}/${d.phase}:${d.dbErrorCode}`))].sort();
+  return (
+    `[refresh-ledger] ${runId}: LEDGER ${completeness} — this execution's operational record is incomplete ` +
+    `and must not be read as evidence of what the refresh did: ${named.join(" ")}`
+  );
 }
 
 // ── The capability ───────────────────────────────────────────────────────────
@@ -293,48 +389,143 @@ export interface LedgerHandle {
  * neither Prisma nor the semantics authority.
  */
 export interface LedgerRecorderDeps {
-  recordSyncIssue?: (input: SyncIssueInput) => Promise<void>;
-  resolveCursorBlockingIssues?: (plaidItemId: string, runId: string) => Promise<number>;
+  /**
+   * ⚠️ RLS-P-2 — IT REPORTS WHETHER IT WROTE. The facade's contract is NEVER
+   * THROWS (fourteen producers call it from inside their own catch blocks), so
+   * a failed incident write used to be indistinguishable from a successful one
+   * at this boundary: the door's `try/catch` around it could not fire, and a
+   * SyncIssue failure was the one degradation this door structurally could not
+   * report. The failure therefore travels as a RETURN VALUE.
+   *
+   * `null` means recorded (or refused by the lifecycle's own invariants, which
+   * is not a failure and must not be reported as one). A site means the write
+   * failed, and names the table and the half of the lifecycle it was.
+   */
+  recordSyncIssue?: (input: SyncIssueInput) => Promise<LedgerWriteSite | null>;
+  resolveCursorBlockingIssues?: (
+    plaidItemId: string,
+    runId: string,
+  ) => Promise<{ resolved: number; failedWrite: LedgerWriteSite | null }>;
   /** Escalation for a swallowed write. Defaults to the Sentry capture. */
   capture?: (ledger: LedgerTable, phase: LedgerWritePhase, error: unknown) => void;
 }
 
-async function defaultRecordSyncIssue(input: SyncIssueInput): Promise<void> {
-  const { recordSyncIssue } = await import("@/lib/plaid/syncIssues");
-  await recordSyncIssue(input);
+/**
+ * The incident lifecycle names a table from the whole seven-value escalation
+ * vocabulary; only the two incident tables can reach this door. Anything else
+ * would mean the authority reported a statement it does not own, which is worth
+ * seeing rather than coercing.
+ */
+function asIncidentSite(ledger: OperationalLedger, phase: LedgerWritePhase): LedgerWriteSite | null {
+  if (ledger !== "SyncIssue" && ledger !== "SyncIssueOccurrence") {
+    console.error(`[refresh-ledger] the incident authority reported a ${ledger} write failure, which it does not own — ignored.`);
+    return null;
+  }
+  return { ledger, phase };
 }
 
-async function defaultResolveCursorBlockingIssues(plaidItemId: string, runId: string): Promise<number> {
+async function defaultRecordSyncIssue(input: SyncIssueInput): Promise<LedgerWriteSite | null> {
+  const { recordSyncIssue } = await import("@/lib/plaid/syncIssues");
+  let failed: LedgerWriteSite | null = null;
+  // The facade forwards this straight to the lifecycle authority, which is the
+  // only code that knows WHICH of its statements failed. Nothing but a table and
+  // a phase crosses back: no row, no message, no Prisma error object.
+  await recordSyncIssue(input, undefined, {
+    onWriteFailure: (ledger, phase) => { failed = asIncidentSite(ledger, phase) ?? failed; },
+  });
+  return failed;
+}
+
+async function defaultResolveCursorBlockingIssues(
+  plaidItemId: string,
+  runId: string,
+): Promise<{ resolved: number; failedWrite: LedgerWriteSite | null }> {
   const { resolveCursorBlockingIssues } = await import("@/lib/plaid/syncIssues");
-  return resolveCursorBlockingIssues(plaidItemId, undefined, runId);
+  let failed: LedgerWriteSite | null = null;
+  const resolved = await resolveCursorBlockingIssues(plaidItemId, undefined, runId, {
+    onWriteFailure: (ledger, phase) => { failed = asIncidentSite(ledger, phase) ?? failed; },
+  });
+  return { resolved, failedWrite: failed };
 }
 
 /**
  * Escalate a swallowed ledger failure.
  *
- * `captureLedgerWriteFailure` currently types its ledger as JobRun |
- * RefreshExecution and its phase as start | completion. Widening that union to
- * the six tables and six phases, and wiring every site into it, is P-2; until
- * then only the two shapes it already understands are reported to Sentry and
- * everything else is reported through `degradations` and the log. Narrowing the
- * cast instead of widening the type keeps P-1 free of monitoring churn.
+ * ── RLS-P-2 — ALL EIGHT PAIRS, AND WHY EACH ONE IS SPELLED OUT ───────────────
+ * This used to escalate TWO of the nine ledger-write sites and return early for
+ * the other seven, so a write-dead ProviderCall / coverage / stage / incident
+ * ledger reached `console.error` and stopped there — the identical shape of the
+ * 2026-07-26 incident that `captureLedgerWriteFailure` was created for.
+ *
+ * ⚠️ THE ARGUMENTS ARE LITERALS, NOT THE PARAMETERS, AND THAT IS DELIBERATE.
+ * `captureLedgerWriteFailure(ledger, phase, error)` type-checks, is shorter, and
+ * SILENTLY RETIRES THE RATCHET: lib/jobs/run.test.ts greps for the literal text
+ * `captureLedgerWriteFailure("RefreshExecution", "start"` precisely because the
+ * narrowed-variable form compiles while naming nothing a scan can find. So each
+ * pair is written out.
+ *
+ * The `default` is NOT exhaustiveness — six tables times eight phases is
+ * forty-eight combinations of which eight are real, so the compiler cannot help
+ * here. What the default does is REPORT the gap instead of returning early, so a
+ * future write whose escalation nobody added is visible in the log rather than
+ * silently unmonitored. That early return is precisely what this function did
+ * for seven of its nine callers until this slice.
  */
 function defaultCapture(ledger: LedgerTable, phase: LedgerWritePhase, error: unknown): void {
-  if (ledger !== "RefreshExecution") return;
-  // Spelled as literals rather than passed through, so the escalation stays
-  // greppable: lib/jobs/run.test.ts pins both of these by name, and that ratchet
-  // is the reason a write-dead ledger cannot go back to hiding behind a 200.
-  if (phase === "start") captureLedgerWriteFailure("RefreshExecution", "start", error);
-  else if (phase === "completion") captureLedgerWriteFailure("RefreshExecution", "completion", error);
+  switch (`${ledger}/${phase}` as `${LedgerTable}/${LedgerWritePhase}`) {
+    case "RefreshExecution/start":
+      captureLedgerWriteFailure("RefreshExecution", "start", error); return;
+    case "RefreshExecution/completion":
+      captureLedgerWriteFailure("RefreshExecution", "completion", error); return;
+    case "RefreshEndpointResult/stages":
+      captureLedgerWriteFailure("RefreshEndpointResult", "stages", error); return;
+    case "RefreshEndpointAccountCoverage/coverage":
+      captureLedgerWriteFailure("RefreshEndpointAccountCoverage", "coverage", error); return;
+    case "ProviderCall/providerCall":
+      captureLedgerWriteFailure("ProviderCall", "providerCall", error); return;
+    case "SyncIssue/incident":
+      captureLedgerWriteFailure("SyncIssue", "incident", error); return;
+    case "SyncIssue/resolution":
+      captureLedgerWriteFailure("SyncIssue", "resolution", error); return;
+    case "SyncIssueOccurrence/incident":
+      captureLedgerWriteFailure("SyncIssueOccurrence", "incident", error); return;
+    default:
+      // A (table, phase) combination the door never produces. Reported rather
+      // than dropped, because reaching here means the door grew a write whose
+      // escalation nobody wrote — exactly the state this function was in before.
+      console.error(
+        `[refresh-ledger] UNESCALATED ledger failure ${ledger}/${phase} — this pair has no ` +
+          "capture line, so the failure reached no monitor. Add it to defaultCapture.",
+      );
+  }
 }
 
 /**
- * Bind the door to a write client.
+ * Bind the door to a write client, FOR ONE REFRESH.
  *
  * THE ONE PLACE AN AUTHORITY IS CHOSEN is the call site of this function, and
  * there is exactly one in production (lib/plaid/refresh-execution.ts). A test
  * passes an in-memory client and gets the real door, which is why the behaviour
  * below is provable without a database.
+ *
+ * ── ⚠️ RLS-P-2 — ONE RECORDER PER REFRESH, AND THAT IS NOT A STYLE PREFERENCE ─
+ * `degradations` is a closure variable, so it belongs to the RECORDER and not to
+ * the execution. RLS-P-1 bound one recorder at MODULE SCOPE, which made the
+ * array process-global: on a warm serverless instance a stage failure from one
+ * item's refresh stayed in the list and was read back as the next item's, and —
+ * worse — a single failed `open()` made `isTotalBlackout()` answer TRUE for every
+ * subsequent refresh in that process, including the ones whose start write
+ * landed perfectly. The documentation said "what THIS execution failed to
+ * record"; the code could not deliver that.
+ *
+ * Fixing the array's ownership instead would have meant the recorder could no
+ * longer report a failed `open()` — there is no handle to hang it on, and that
+ * blackout is the single most important thing the family reports. So the fix is
+ * the LIFETIME: bind inside the refresh, and the recorder IS the execution.
+ * Pinned mechanically (no `ledgerRecorderFor(` at module scope) and behaviourally
+ * (two sequential refreshes do not share a degradation) in the failure-matrix
+ * suite, because the cost of getting it wrong is invisible in every single-run
+ * test — which is exactly how it shipped.
  */
 export function ledgerRecorderFor(
   client: LedgerWriteClient,
@@ -353,6 +544,20 @@ export function ledgerRecorderFor(
       redactedErrorForLog(error),
     );
     try { capture(ledger, phase, error); } catch { /* monitoring must not become the failure */ }
+  };
+
+  /**
+   * The same, for a failure that was swallowed SOMEWHERE ELSE and travelled back
+   * as a site rather than as an error (RLS-P-2).
+   *
+   * There is no error object to classify, and `classifyDbError(undefined)`
+   * answering `UNKNOWN` is the honest record of that: the code was classified by
+   * the authority that held the error, and inventing one here would be worse than
+   * admitting the gap. The escalation still fires, so the write is monitored even
+   * though its Prisma code is not readable from this side.
+   */
+  const degradeReported = (site: LedgerWriteSite, scope: string): void => {
+    degrade(site.ledger, site.phase, scope, undefined);
   };
 
   function makeHandle(executionId: string, runId: string): LedgerHandle {
@@ -399,7 +604,7 @@ export function ledgerRecorderFor(
         try {
           // The stage VOCABULARY stays with the stage authority: a refused stage
           // name, status or error code produces no row and is not a degradation.
-          const row = await prepareHistoricalStageRow(executionId, args);
+          const row = await prepareHistoricalStageRow(client.refreshEndpointResult, executionId, args);
           if (row === null) return;
           await client.refreshEndpointResult.create({ data: row });
         } catch (err) {
@@ -410,19 +615,37 @@ export function ledgerRecorderFor(
       async recordIncident(input) {
         const detail = { ...(input.detail as Record<string, unknown> | undefined), runId };
         try {
-          await recordSyncIssue({ ...input, detail });
+          // ⚠️ RLS-P-2 — THE RETURN VALUE IS THE REPORT, NOT THE CATCH. The
+          // facade NEVER THROWS by contract, so until this slice the catch below
+          // was unreachable and a failed incident write was the one degradation
+          // this door could not express: `degradations` said the ledger was
+          // complete while the episode had silently not been recorded.
+          const failed = await recordSyncIssue({ ...input, detail });
+          if (failed) degradeReported(failed, executionId);
         } catch (err) {
-          // The facade never throws today; this exists so that a future one that
-          // does cannot take a refresh with it.
+          // Still here: a future facade that DOES throw must not take a refresh
+          // with it. Both halves are needed — one for the contract as written,
+          // one for the contract as it may change.
           degrade("SyncIssue", "incident", executionId, err);
         }
       },
 
       async resolveIncidentsByRecovery(scope) {
         try {
-          await resolveCursorBlocking(scope.plaidItemId, runId);
+          // ⚠️ RLS-P-2 — THE GAP RLS-P-1 RECORDED, CLOSED. The authority returns
+          // `{resolved: 0}` for BOTH "nothing matched" and "the write was
+          // refused", and those are opposite facts: the first means this item had
+          // no open cursor-blocking episode, the second means it still does and
+          // nobody will ever hear that it recovered. The count alone cannot tell
+          // them apart — the silent-refusal defect, on the operational ledger —
+          // so the authority now reports the refusal separately.
+          //
+          // The RESOLUTION phase, not `incident`: an unrecorded failure and an
+          // unclosed recovery need different alerts.
+          const { failedWrite } = await resolveCursorBlocking(scope.plaidItemId, runId);
+          if (failedWrite) degradeReported(failedWrite, executionId);
         } catch (err) {
-          degrade("SyncIssue", "incident", executionId, err);
+          degrade("SyncIssue", "resolution", executionId, err);
         }
       },
 

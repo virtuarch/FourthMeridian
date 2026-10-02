@@ -45,7 +45,9 @@ import { db } from "@/lib/db";
 import { summarizeError, currentJobRun } from "@/lib/jobs/run";
 import { currentDeploymentSha } from "@/lib/monitoring/deployment";
 import {
+  describeLedgerDegradations,
   ledgerRecorderFor,
+  type LedgerDegradation,
   type LedgerHandle,
   type LedgerRecorder,
   type LedgerWriteClient,
@@ -153,7 +155,7 @@ export interface RefreshEndpointAccountCoverageData {
  *
  * Every operational-ledger write in the product tree — RefreshExecution,
  * RefreshEndpointResult, RefreshEndpointAccountCoverage, ProviderCall — passes
- * through the recorder this line binds. It is still the migration principal, by
+ * through the client this line names. It is still the migration principal, by
  * design: RLS-P-1 moved the authority question to one place without answering it
  * differently. The flip is this line.
  *
@@ -161,7 +163,26 @@ export interface RefreshEndpointAccountCoverageData {
  * them to the incident FACADE, which keeps its own client parameter because
  * fourteen non-envelope producers thread one. See refresh-ledger.ts.)
  */
-const ledgerRecorder: LedgerRecorder = ledgerRecorderFor(db as unknown as LedgerWriteClient);
+const LEDGER_CLIENT = db as unknown as LedgerWriteClient;
+
+/**
+ * ⚠️ RLS-P-2 — ONE RECORDER PER REFRESH, NOT ONE PER PROCESS.
+ *
+ * This used to be a module-level `const ledgerRecorder = ledgerRecorderFor(db)`,
+ * and that made the recorder's `degradations` array PROCESS-GLOBAL. On a warm
+ * serverless instance one item's stage-write failure was still in the list when
+ * the next item's refresh read it, and a single failed `open()` made
+ * `isTotalBlackout()` answer TRUE for every later refresh in that process —
+ * including the ones whose start write landed. The array is documented as "what
+ * THIS execution failed to record", and at module scope it could not be.
+ *
+ * A fresh recorder per refresh is cheap (a closure and an empty array) and makes
+ * the documented property true by construction. The authority is still chosen in
+ * exactly one place: the constant above.
+ */
+function productionLedgerRecorder(): LedgerRecorder {
+  return ledgerRecorderFor(LEDGER_CLIENT);
+}
 
 // ── The recorder — collects finalized stage records; observes, never controls ─
 
@@ -394,7 +415,7 @@ export async function runFullRefresh<T = RefreshItemResult>(
   params: RunFullRefreshParams,
   deps: RunFullRefreshDeps<T> = {},
 ): Promise<T> {
-  const recorderClient = deps.client ?? ledgerRecorder;
+  const recorderClient = deps.client ?? productionLedgerRecorder();
   const runId = randomUUID();
   const startedAt = new Date();
   const t0 = Date.now();
@@ -442,10 +463,12 @@ export async function runFullRefresh<T = RefreshItemResult>(
     try {
       const result = await runStages({ recorder, runId });
       await closeExecution(ledger, recorder.records, startedAt, t0, undefined, overrideFor({ result }));
+      reportLedgerCompleteness(runId, recorderClient.degradations);
       return result;
     } catch (err) {
       recorder.failOpen(err);
       await closeExecution(ledger, recorder.records, startedAt, t0, err, overrideFor({ error: err }));
+      reportLedgerCompleteness(runId, recorderClient.degradations);
       // ⚠️ THE ORIGINAL ERROR OBJECT, NOT A WRAPPED ONE, AND NEVER A LEDGER
       // FAILURE. reportItemRefreshFailure classifies this by identity
       // (lib/plaid/refresh.ts), so a ledger degradation must not reach it.
@@ -454,6 +477,37 @@ export async function runFullRefresh<T = RefreshItemResult>(
   };
 
   return ctx ? runWithProviderCallContext(ctx, execute) : execute();
+}
+
+/**
+ * ⚠️ RLS-P-2 — THE DEGRADATIONS FINALLY HAVE A READER.
+ *
+ * RLS-P-1 made a swallowed ledger failure EXPRESSIBLE and nothing consumed it:
+ * `degradations` had no production reader, `isTotalBlackout()` had none either,
+ * and a refresh whose whole stage evidence failed to write returned exactly what
+ * a fully-recorded refresh returns. "The caller must never claim stronger
+ * success than the evidence supports" needs somewhere for the weaker claim to
+ * arrive, and this is it.
+ *
+ * ── WHAT IT DELIBERATELY DOES NOT DO ─────────────────────────────────────────
+ * It does not touch the return value, the thrown error, or `overallStatus`. The
+ * status is derived from the stages that actually RAN; degrading it because
+ * telemetry failed would fabricate a refresh failure, which is the same defect
+ * pointing at the customer instead of at the operator. The incompleteness is
+ * reported BESIDE the outcome, never folded into it.
+ *
+ * ── THE ONE GAP, STATED RATHER THAN HIDDEN ───────────────────────────────────
+ * `recordProviderCall` is void-dispatched DURING the provider round trip, so its
+ * rejection can land after this line has already read the list. A provider-call
+ * degradation can therefore be missing from this summary. It is NOT missing from
+ * monitoring: the escalation fires from inside the door whenever the write
+ * actually fails, so Sentry sees it either way. Awaiting the emit to close the
+ * gap is not available — it would put telemetry inside the provider's latency,
+ * which is the thing `recordProviderCall` returns `void` to prevent.
+ */
+function reportLedgerCompleteness(runId: string, degradations: readonly LedgerDegradation[]): void {
+  const line = describeLedgerDegradations(runId, degradations);
+  if (line) console.error(line);
 }
 
 // ── Best-effort ledger writes (swallowed on failure — never break the refresh) ─
@@ -609,7 +663,7 @@ export async function recordAdmissionDenial(
   params: RunFullRefreshParams & { admissionReason: string },
   deps: { client?: LedgerRecorder } = {},
 ): Promise<{ runId: string }> {
-  const recorderClient = deps.client ?? ledgerRecorder;
+  const recorderClient = deps.client ?? productionLedgerRecorder();
   const runId = randomUUID();
   const startedAt = new Date();
   const t0 = Date.now();
@@ -625,6 +679,10 @@ export async function recordAdmissionDenial(
       admissionReason: params.admissionReason,
     });
   }
+
+  // A denial whose ledger writes failed is a denial NOBODY CAN SEE — the row is
+  // the entire product of this function. Same report, same reason.
+  reportLedgerCompleteness(runId, recorderClient.degradations);
 
   return { runId };
 }

@@ -184,11 +184,92 @@ export function captureSessionRevocationFailure(args: {
 // So: still swallowed, still non-fatal, but now escalated. A write-dead ledger
 // reports itself instead of hiding behind a 200.
 
-/** The append-only execution ledgers whose writes are best-effort. */
-export type OperationalLedger = "JobRun" | "RefreshExecution";
+/**
+ * The append-only operational ledgers whose writes are best-effort.
+ *
+ * ── RLS-P-2 — WIDENED FROM TWO TO SEVEN, BECAUSE TWO WAS NOT THE TRUTH ───────
+ * `JobRun` and `RefreshExecution` were the only two tables a swallowed write
+ * could be REPORTED under, so the five other operational tables — the ones that
+ * carry the per-stage evidence, the per-account coverage, the provider attempts
+ * and the incident episodes — had no vocabulary at all. Their failures reached
+ * `console.error` and stopped there, which is the SAME defect this module was
+ * created for on 2026-07-26, one layer down.
+ *
+ * ⚠️ THE UNION IS THE WRITE SURFACE, NOT A CONVENIENCE. Every value here is a
+ * table `fm_app` is revoked from outright
+ * (prisma/migrations/20261002000100_rls_roles_and_policies §4), plus `JobRun`,
+ * which belongs to the same family and the same contract. Adding a value that is
+ * not one of those would make `area: "operational-ledger"` mean two things.
+ */
+export type OperationalLedger =
+  | "JobRun"
+  | "RefreshExecution"
+  | "RefreshEndpointResult"
+  | "RefreshEndpointAccountCoverage"
+  | "ProviderCall"
+  | "SyncIssue"
+  | "SyncIssueOccurrence";
 
-/** Which of the two writes failed. Start failures suppress the completion write. */
-export type LedgerWritePhase = "start" | "completion";
+/**
+ * WHICH write failed.
+ *
+ * A phase names a WRITE, not a table: `start` and `completion` are shared by
+ * `JobRun` and `RefreshExecution`, and the remaining six each belong to exactly
+ * one table. That is why the effect sentence below can be keyed on the phase
+ * alone and still be exhaustive.
+ *
+ * ⚠️ `incident` AND `resolution` ARE SEPARATE AND MUST STAY SEPARATE. They are
+ * opposite statements — "a failure was observed" and "an open failure stopped
+ * being true" — and conflating them was the concrete gap RLS-P-1 recorded: the
+ * resolution authority returns `{resolved: 0}` both when nothing matched and
+ * when the write was refused, which is the silent-refusal defect
+ * (docs/plans/RLS-SILENT-REFUSAL-CAS.md Part 1) on the operational ledger.
+ *
+ * `correlate` is the one READ in the family that is part of a write: resolving
+ * `runId` to a `RefreshExecution.id` before an occurrence is stored. Its failure
+ * is indistinguishable from "this run names no execution" unless it is reported,
+ * and the occurrence is then stored permanently unlinked.
+ */
+export type LedgerWritePhase =
+  | "start"
+  | "stages"
+  | "coverage"
+  | "providerCall"
+  | "incident"
+  | "resolution"
+  | "correlate"
+  | "completion";
+
+/**
+ * What a swallowed write of each phase COSTS, in the words of the thing that is
+ * now unreadable rather than in the words of the statement that failed.
+ *
+ * Exhaustive by type (`Record<LedgerWritePhase, string>`), so a new phase cannot
+ * be added without saying what losing it means — which is the only part of this
+ * payload an operator actually acts on. Keeps NO row contents, NO identifiers
+ * and NO message: a phase is a static vocabulary term.
+ */
+/**
+ * A swallowed operational-ledger write, named by table and phase and by nothing
+ * else.
+ *
+ * Exists so an authority that swallows its own failure — every one of them, by
+ * contract — can still TELL SOMEBODY, without the error object, the row or the
+ * message crossing the boundary. A table and a phase are enough to find the
+ * statement and the policy; that is the whole budget.
+ */
+export type LedgerWriteObserver = (ledger: OperationalLedger, phase: LedgerWritePhase) => void;
+
+const LEDGER_WRITE_EFFECT: Record<LedgerWritePhase, string> = {
+  start:        "run left NO row in this ledger; the completion write is skipped",
+  completion:   "row left permanently 'running'; the work itself succeeded",
+  stages:       "the execution row survives with NO per-stage evidence, so its status cannot be re-derived from its children",
+  coverage:     "the execution row survives with NO per-account coverage, so 'which accounts did this run touch' is unanswerable",
+  providerCall: "this provider attempt is unrecorded, so retry and rate-limit counts for this run are understated",
+  incident:     "the failure that was observed is NOT recorded, so the episode reads as if it never happened",
+  resolution:   "active episodes this success remediates stay OPEN, so a recovery that did happen is invisible",
+  correlate:    "the run correlator was not resolved, so the observation is stored UNLINKED and reads as 'this run named no execution'",
+};
 
 /**
  * Prisma's schema-drift signatures: the deployed code references a column
@@ -245,10 +326,11 @@ export function buildLedgerWriteCapture(args: {
         ledger: args.ledger,
         phase:  args.phase,
         // Names the outcome in the words of the incident this prevents, so an
-        // alert reads as a consequence rather than as a stack trace.
-        effect: args.phase === "start"
-          ? "run left NO row in this ledger; the completion write is skipped"
-          : "row left permanently 'running'; the work itself succeeded",
+        // alert reads as a consequence rather than as a stack trace. Keyed on
+        // the phase through an EXHAUSTIVE table, so a new phase cannot ship
+        // without an effect sentence — the ternary this replaced silently
+        // described every non-start phase as a stuck 'running' row.
+        effect: LEDGER_WRITE_EFFECT[args.phase],
       },
     },
     // Always an error: either shape makes a successful run unreadable afterwards.
