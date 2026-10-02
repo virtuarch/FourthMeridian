@@ -196,17 +196,29 @@ function main(): void {
   }
 
   // ══ 3. IDENTITY IS ITS OWN, AND DOES NOT COLLIDE ═════════════════════════
-  console.log("3. the operation key is distinct and survives being unregistered");
+  console.log("3. the operation key is distinct, and is now REGISTERED");
   {
     const key = resolveOperationKey("event-identity-persist");
     check("the stage resolves to a key, not to null", key !== null, String(key));
-    check("it is UNREGISTERED and says so, rather than being normalised into a neighbour",
-      key === `${UNREGISTERED_PREFIX}event-identity-persist`, String(key));
-    // The registry is deliberately NOT extended: `OPERATION_PHRASE` is
-    // `Record<OperationKey, string>` in lib/platform/sync-issue-semantics.ts,
-    // which this slice does not own, so adding a key there would not compile.
-    // The unregistered path exists for exactly this case ("a future producer may
-    // ship before its registration does") and keeps two unknown stages distinct.
+    // ⚠️ THIS ASSERTION WAS INVERTED BY DESIGN, AND HAS NOW INVERTED.
+    //
+    // It shipped asserting the key was UNREGISTERED — true at the time, and
+    // deliberately so: OPERATION_PHRASE is `Record<OperationKey, string>` in
+    // lib/platform/sync-issue-semantics.ts, so adding the key alone makes that
+    // file fail to compile, and it was outside this slice's ownership. The stage
+    // therefore shipped namespaced as `unregistered:event-identity-persist` —
+    // safe, distinct, honest — with the registration REQUESTED rather than
+    // smuggled, and pinned here and in operation-key.test.ts so it could not be
+    // forgotten.
+    //
+    // INTEGRATE-1 landed the registration. Both pins went red, exactly as
+    // intended, and both now assert the registered state. That is the mechanism
+    // working, not a test being repaired: an assertion that cannot tell you the
+    // world changed is not holding anything.
+    check("it is REGISTERED — the key is its own name, not namespaced away",
+      key === "event-identity-persist", String(key));
+    check("…and the unregistered namespace is genuinely vacated, not merely unused",
+      key !== `${UNREGISTERED_PREFIX}event-identity-persist`, String(key));
     check("it does NOT collide with the bank-transaction operation that holds the cursor",
       key !== resolveOperationKey("transaction-persist"));
     const phases = ["OBSERVATION_WRITE", "REPLAY_HEAL", "TERMINAL_STATE_CHECK"];
