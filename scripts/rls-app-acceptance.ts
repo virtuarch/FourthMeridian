@@ -1129,6 +1129,284 @@ async function main(): Promise<void> {
     Number(heldDuringPhase) >= 1 && idleAfterPhase === "0",
     `duringHeldPhase=${heldDuringPhase} afterCommit=${idleAfterPhase}`);
 
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // RLS-ACC-FK — ACCOUNT-FK RE-PARENTING, ON A REAL fm_app ROLE
+  //
+  // THE GATING SLICE FOR THE OWNER-ARM POLICY CHANGE. Case 74 proves the
+  // database PERMITS a cross-owner re-parenting today, which is why the refusal
+  // has to be the application's; cases 75–77 prove the application now refuses
+  // it; case 78 is the denominator that stops 75–77 passing over a helper that
+  // refuses everything; case 79 covers the UNSCOPED-SOURCE class, where the
+  // destination is fine and the row was located by a tenant-wide unique key.
+  //
+  // ⚠️ THE ROLES ARE SWAPPED RELATIVE TO THE INVESTIGATION, DELIBERATELY. There
+  // is no `carol` in this repo and adding a SpaceMember row is forbidden — case
+  // 34 inserts `m_removed` for (space_b, alice) with `on conflict do nothing`,
+  // and a membership seeded for a new user would not help anyway. The existing
+  // fixtures already carry the exact shape with the parts recast:
+  //
+  //     BOB plays the attacker.  ACTIVE OWNER of space_b, owns acct_bob.
+  //     ALICE plays the victim.  Owns `acct_victim` (seeded below), linked into
+  //                              space_b at BALANCE_ONLY via `l_victim_b`.
+  //
+  // So `fm_account_visible('acct_victim')` is TRUE for Bob, the Transaction
+  // UPDATE policy is that function on BOTH arms, and the move is a legal write.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // Visibility must exist before any of this means anything: cases 60/61/63/71
+  // each destroy some of it on purpose.
+  restoreFixtures();
+
+  /**
+   * ⚠️ THE VICTIM ACCOUNT IS SEEDED HERE, NOT REUSED FROM APP_FIXTURES, AND THE
+   * REASON IS A REAL ONE THIS BLOCK HIT ON ITS FIRST RUN.
+   *
+   * The natural choice is `acct_shared` — Alice's account, BALANCE_ONLY-linked
+   * into Bob's Space via `l_sh_bal`, exactly the investigated shape. But CASE 63
+   * HARD-DELETES IT (`delete from "FinancialAccount" where id='acct_shared'`, to
+   * prove ON DELETE CASCADE is not filtered by RLS), so by the time this block
+   * runs the row is gone and every insert against it fails the FK. Measured on
+   * the first run of this block, not reasoned about.
+   *
+   * ⚠️ AND `restoreFixtures()` CANNOT BRING IT BACK — WORSE, IT DOES NOT SAY SO.
+   * Its `update "FinancialAccount" set "deletedAt"=null where id in (…,
+   * 'acct_shared', …)` matches ZERO rows for a deleted account, `psql` reports
+   * ok, and the next case's premise is quietly false. That is reported as a
+   * finding, not worked around silently: an idempotent-looking reset that
+   * matches nothing is the same defect class as a refused UPDATE reported as
+   * contention.
+   *
+   * So this block owns its own fixtures end to end: one account, two links (one
+   * at each tier, in each Space), six transactions. It depends on NOTHING an
+   * earlier case destroys, and the whole set is deleted at the end — the
+   * FinancialAccount delete cascades its links and its transactions.
+   *
+   * Six rows rather than one because cases 4 and 13 pin Alice's unfiltered
+   * transaction count at 4 and Bob's at 2; seeding into APP_FIXTURES would have
+   * moved those numbers and relaxed the backstop. Case 66 set that precedent.
+   */
+  const fkSeed = psql(h.ownerUrl, `
+    insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","updatedAt") values
+      ('acct_victim','Alice Joint (FK)','checking','TestBank','USER','alice',now());
+    insert into "SpaceAccountLink" (id,"spaceId","financialAccountId",kind,status,"visibilityLevel","updatedAt") values
+      ('l_victim_a','space_a','acct_victim','HOME','ACTIVE','FULL',now()),
+      -- THE ONE THAT MATTERS: Bob reaches Alice's account at the REDUCED tier.
+      ('l_victim_b','space_b','acct_victim','SHARED','ACTIVE','BALANCE_ONLY',now());
+    insert into "Transaction" (id,"financialAccountId",date,"economicDate",merchant,category,amount,"plaidTransactionId","updatedAt") values
+      ('fk_v1','acct_victim',current_date,current_date,'Victim 1','Other',-11,null,now()),
+      ('fk_v2','acct_victim',current_date,current_date,'Victim 2','Other',-12,null,now()),
+      ('fk_v3','acct_victim',current_date,current_date,'Victim 3','Other',-13,null,now()),
+      ('fk_v4','acct_victim',current_date,current_date,'Victim 4','Other',-14,null,now()),
+      ('fk_v5','acct_victim',current_date,current_date,'Victim 5','Other',-15,'ptx_redeliver',now()),
+      ('fk_v6','acct_victim',current_date,current_date,'Victim 6','Other',-16,null,now());`);
+  if (!fkSeed.ok) throw new Error(`RLS-ACC-FK fixture failed: ${fkSeed.err.split("\n")[0]}`);
+
+  const VICTIM_ROWS = "'fk_v1','fk_v2','fk_v3','fk_v4','fk_v5','fk_v6'";
+  /** Put the six victim rows back on `acct_victim`, by id. */
+  const restoreVictimRows = () => {
+    const r = psql(h.ownerUrl,
+      `update "Transaction" set "financialAccountId"='acct_victim' where id in (${VICTIM_ROWS});`);
+    if (!r.ok) throw new Error(`victim-row restore failed: ${r.err.split("\n")[0]}`);
+  };
+  /** How many of the six are on a given account, read on the OWNER connection. */
+  const victimRowsOn = (acct: string) => psql(h.ownerUrl,
+    `select count(*) from "Transaction" where id in (${VICTIM_ROWS}) and "financialAccountId"='${acct}';`).out.trim();
+
+  const reparent = await import("@/lib/accounts/account-reparenting");
+  const rec = await import("@/lib/accounts/reconcile");
+  const dupSource = (await import("@prisma/client")).DuplicateDetectionSource;
+
+  /** Run the real merge and report the refusal's IDENTITY, not just that it threw. */
+  const foldAttempt = async (loser: string, winner: string) => {
+    try {
+      await rec.mergeArchivedDuplicateIntoCanonical(loser, winner, dupSource.FINGERPRINT_MATCH, null);
+      return { refused: false, name: "(no throw)", reason: "(none)" };
+    } catch (e) {
+      return {
+        refused: true,
+        name: e instanceof Error ? e.name : String(e),
+        reason: e instanceof reparent.ReparentingRefusedError ? e.reason : "(not a reparenting refusal)",
+      };
+    }
+  };
+
+  // ── 73 [role] THE PREMISE — BALANCE_ONLY IS NOT A READ BARRIER AT ALL ─────
+  // Asserted RELATIONALLY (`seen === total && total >= 6`) rather than as "6",
+  // so a future fixture that adds a seventh row cannot turn this into a
+  // tautology, and an accidental DELETE cannot turn it into a vacuous pass.
+  {
+    const totalRows = psql(h.ownerUrl,
+      `select count(*) from "Transaction" where "financialAccountId"='acct_victim';`).out.trim();
+    const bobSees = asTenant("bob",
+      `select count(*) from "Transaction" where "financialAccountId"='acct_victim';`).out.trim();
+    const owner = psql(h.ownerUrl,
+      `select coalesce("ownerUserId",'(null)') from "FinancialAccount" where id='acct_victim';`).out.trim();
+    const tier = psql(h.ownerUrl,
+      `select "visibilityLevel"::text from "SpaceAccountLink" where id='l_victim_b';`).out.trim();
+    check(73, "[role] THE PREMISE: Bob's role reads EVERY one of acct_victim's transaction rows although his only link is BALANCE_ONLY, and the account is ALICE's",
+      Number(totalRows) >= 6 && bobSees === totalRows && owner === "alice" && tier === "BALANCE_ONLY",
+      `total=${totalRows} bobSees=${bobSees} owner=${owner} tier=${tier}`);
+  }
+
+  // ── 74 [role] THE DEFECT, ON A REAL ROLE ──────────────────────────────────
+  // ⚠️ THE ASSERTION IS `6`, NOT "non-zero", AND NOT "> 0". A `where` that
+  // matched nothing reports 0 and READS AS A REFUSAL; the inverse mistake — an
+  // attack that reports success because the count was never compared to the
+  // population — is the one this suite exists to prevent. The count is compared
+  // to what case 73 just proved exists.
+  {
+    const before = victimRowsOn("acct_victim");
+    const moved = asTenant("bob", counting(
+      `update "Transaction" set "financialAccountId"='acct_bob' where "financialAccountId"='acct_victim'`));
+    const after = victimRowsOn("acct_bob");
+    check(74, "[role] THE DEFECT: Bob's fm_app role re-points ALL SIX of Alice's transactions onto his own account — USING and WITH CHECK both pass, nothing is raised, and this is why the refusal cannot live in policy",
+      moved.ok && lines(moved)[0] === before && before === "6" && after === "6",
+      `population=${before} affected=${moved.out.trim() || moved.err.split("\n")[0]} nowOnBob=${after}`);
+    restoreVictimRows();
+  }
+
+  // ── 75 [service] THE SOURCE, AT BALANCE_ONLY — REFUSED BEFORE ANY WRITE ───
+  // ⚠️ The merge executes on the MIGRATION PRINCIPAL (its client conversion is a
+  // later, gated slice), and that is exactly what makes this case meaningful
+  // rather than weaker: BYPASSRLS cannot turn two owners into one, so the
+  // refusal here is the APPLICATION's. Case 74 has just proved the policy would
+  // have allowed it.
+  let refusal75 = { refused: false, name: "", reason: "" };
+  {
+    refusal75 = await foldAttempt("acct_victim", "acct_bob");
+    const still = victimRowsOn("acct_victim");
+    check(75, "[service] a cross-owner fold with Alice's BALANCE_ONLY-shared account as the SOURCE is refused, and the POST-STATE proves nothing moved",
+      refusal75.refused && refusal75.reason === "CROSS_OWNER" && still === "6",
+      `${refusal75.name}/${refusal75.reason} stillOnShared=${still}`);
+  }
+
+  // ── 76 [service] THE DESTINATION / INVERSE DIRECTION ──────────────────────
+  // THIS CASE MUST BE GREEN BEFORE THE OWNER ARM LANDS. The proposed policy
+  // change makes the destination-side variant the one that succeeds, taking the
+  // victim's own access to 0.
+  {
+    const bobBefore = psql(h.ownerUrl,
+      `select count(*) from "Transaction" where "financialAccountId"='acct_bob';`).out.trim();
+    const inverse = await foldAttempt("acct_bob", "acct_victim");
+    const bobAfter = psql(h.ownerUrl,
+      `select count(*) from "Transaction" where "financialAccountId"='acct_bob';`).out.trim();
+    check(76, "[service] pushing Bob's OWN rows ONTO Alice's account is refused too — the destination half is not a weaker case than the source half",
+      inverse.refused && inverse.reason === "CROSS_OWNER" && bobAfter === bobBefore && Number(bobBefore) >= 1,
+      `${inverse.name}/${inverse.reason} bob=${bobBefore}->${bobAfter}`);
+  }
+
+  // ── 77 [service] THE SAME FOLD AT FULL — THE ANSWER MUST NOT DIFFER ───────
+  // ⚠️ THIS IS THE OUT-OF-BOUNDS CHECK. If FULL and BALANCE_ONLY ever reach
+  // different verdicts, the guard has learned `visibilityLevel` — which belongs
+  // to lib/account-privacy.ts and must never migrate into either RLS or an
+  // ownership check. The tier is flipped on the SAME link between the SAME two
+  // accounts, so nothing but the tier differs between this case and 75.
+  {
+    const up = psql(h.ownerUrl, `update "SpaceAccountLink" set "visibilityLevel"='FULL' where id='l_victim_b';`);
+    if (!up.ok) throw new Error(`tier flip failed: ${up.err.split("\n")[0]}`);
+    const atFull = await foldAttempt("acct_victim", "acct_bob");
+    const still = victimRowsOn("acct_victim");
+    const tier = psql(h.ownerUrl, `select "visibilityLevel"::text from "SpaceAccountLink" where id='l_victim_b';`).out.trim();
+    check(77, "[service] the IDENTICAL fold at FULL is refused IDENTICALLY (same error, same reason, same post-state) — the guard never learned the tier",
+      tier === "FULL" && atFull.refused
+        && atFull.name === refusal75.name && atFull.reason === refusal75.reason && still === "6",
+      `tier=${tier} full=${atFull.name}/${atFull.reason} balanceOnly=${refusal75.name}/${refusal75.reason} stillOnShared=${still}`);
+    const back = psql(h.ownerUrl, `update "SpaceAccountLink" set "visibilityLevel"='BALANCE_ONLY' where id='l_victim_b';`);
+    if (!back.ok) throw new Error(`tier restore failed: ${back.err.split("\n")[0]}`);
+  }
+
+  // ── 78 [service] THE NON-VACUITY DENOMINATOR ──────────────────────────────
+  // ⚠️ WITHOUT THIS, 75–77 PASS OVER A HELPER THAT REFUSES EVERYTHING. A
+  // legitimate same-owner archived fold must still succeed and its rows must be
+  // PROVEN moved — the product behaviour the merge exists for.
+  {
+    const seed = psql(h.ownerUrl, `
+      insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","deletedAt","updatedAt") values
+        ('acct_fold','Alice Checking (old)','checking','TestBank','USER','alice',now(),now());
+      insert into "Transaction" (id,"financialAccountId",date,"economicDate",merchant,category,amount,"updatedAt") values
+        ('fk_f1','acct_fold',current_date,current_date,'Legit 1','Other',-21,now()),
+        ('fk_f2','acct_fold',current_date,current_date,'Legit 2','Other',-22,now());`);
+    if (!seed.ok) throw new Error(`case 78 fixture failed: ${seed.err.split("\n")[0]}`);
+
+    const legit = await foldAttempt("acct_fold", "acct_alice");
+    const onLoser  = psql(h.ownerUrl, `select count(*) from "Transaction" where "financialAccountId"='acct_fold';`).out.trim();
+    const onWinner = psql(h.ownerUrl, `select count(*) from "Transaction" where id in ('fk_f1','fk_f2') and "financialAccountId"='acct_alice';`).out.trim();
+    const audit    = psql(h.ownerUrl, `select count(*) from "DuplicateAccountCandidate" where "accountAId"='acct_alice' and "accountBId"='acct_fold';`).out.trim();
+    check(78, "[service] the LEGITIMATE same-owner archived fold still SUCCEEDS: both rows proven moved off the loser, the audit row written — so 75–77 are not refusing everything",
+      !legit.refused && onLoser === "0" && onWinner === "2" && audit === "1",
+      `refused=${legit.refused}(${legit.name}) loser=${onLoser} winner=${onWinner} auditRow=${audit}`);
+
+    // Cascades its transactions and its audit row with it.
+    psql(h.ownerUrl, `delete from "FinancialAccount" where id='acct_fold';`);
+  }
+
+  // ── 79 [service] THE UNSCOPED-SOURCE CLASS ────────────────────────────────
+  // The two worst sites in the inventory locate an EXISTING row by a TENANT-WIDE
+  // `@unique` key — `plaidTransactionId`, `[source, externalEventId]` — which
+  // names a ROW WITHOUT NAMING AN ACCOUNT, and then write it with the current
+  // sync's account. Here the read is performed on a REAL fm_app transaction, in
+  // the exact select shape the code now uses, and the guard is the real one.
+  //
+  // ⚠️ WHAT THIS DOES AND DOES NOT CLAIM: it proves the READ resolves a foreign
+  // row under the role, that the FK is now readable from it, and that the guard
+  // refuses the move and leaves the row where it is. It does NOT execute the
+  // Plaid loop, which needs a provider; that the loop CALLS this guard — and
+  // reads the observed account off the resolved row rather than a constant — is
+  // pinned by lib/accounts/account-reparenting.test.ts and the REQUIRED audit.
+  {
+    const probe = await tenant.withTenantDb("bob", async (tx) => {
+      const row = await tx.transaction.findUnique({
+        where:  { plaidTransactionId: "ptx_redeliver" },
+        select: { id: true, financialAccountId: true },
+      });
+      if (!row) return { resolved: false, refused: false, name: "(row invisible)", belongsTo: "" };
+      try {
+        reparent.assertAccountFkUnchanged(
+          { table: "Transaction", fkField: "financialAccountId", operation: "update" },
+          row.id, row.financialAccountId, "acct_bob");
+        return { resolved: true, refused: false, name: "(no throw)", belongsTo: row.financialAccountId };
+      } catch (e) {
+        return { resolved: true, refused: true, name: e instanceof Error ? e.name : String(e), belongsTo: row.financialAccountId };
+      }
+    });
+    const still = psql(h.ownerUrl,
+      `select "financialAccountId" from "Transaction" where id='fk_v5';`).out.trim();
+    check(79, "[service] a re-delivered plaidTransactionId resolves ANOTHER owner's row under Bob's role, the account is now readable from that select, and the move is REFUSED rather than performed",
+      probe.resolved && probe.refused && probe.name === "UnintendedReparentingError"
+        && probe.belongsTo === "acct_victim" && still === "acct_victim",
+      `resolved=${probe.resolved} refused=${probe.refused}(${probe.name}) rowAccount=${probe.belongsTo} postState=${still}`);
+  }
+
+  // The six victim rows go away with the block that seeded them.
+  psql(h.ownerUrl, `delete from "Transaction" where id in ('fk_v1','fk_v2','fk_v3','fk_v4','fk_v5');`);
+  restoreVictimRows();
+
+  // ── 80 [source] THE AUDIT'S OWN DENOMINATOR ───────────────────────────────
+  // An audit that prints "0 problems" cannot be distinguished from one that
+  // scanned nothing, and this programme has shipped exactly that. So the
+  // REQUIRED audit is executed here and its two numbers are read off its own
+  // output: N capable sites over M scanned files, both > 0, every site
+  // classified, exit code 0.
+  {
+    const { spawnSync } = await import("node:child_process");
+    const run = spawnSync("npx", ["tsx", "scripts/audit-account-reparenting.ts"], { encoding: "utf8", cwd: process.cwd() });
+    const out = `${run.stdout ?? ""}${run.stderr ?? ""}`;
+    const m = /\[source\]\s+(\d+)\s+capable site\(s\) found over\s+(\d+)\s+scanned file\(s\)/.exec(out);
+    const sites = m ? Number(m[1]) : 0;
+    const scanned = m ? Number(m[2]) : 0;
+    // The per-site classification block the audit prints at the end. Its line
+    // count is NOT the site count (two statements of one shape share a key), so
+    // it is asserted as non-empty rather than compared — a number that looks
+    // like a denominator but is not one is worse than no number.
+    const classifiedLines = (out.match(/^ {4}[A-Z_]+ +\S+ +line\(s\)/gm) ?? []).length;
+    const anyUnclassified = /UNCLASSIFIED/.test(out);
+    check(80, "[source] the re-parenting audit prints BOTH numbers, finds a non-empty site population over a non-empty file set, classifies every site, and exits 0",
+      run.status === 0 && m !== null && sites > 0 && scanned > 500 && classifiedLines > 0 && !anyUnclassified,
+      m ? `sites=${sites} files=${scanned} classificationLines=${classifiedLines} unclassified=${anyUnclassified} exit=${run.status}`
+        : `could not read the "[source] N capable site(s) found over M scanned file(s)" line; exit=${run.status}\n${out.split("\n").slice(-8).join("\n")}`);
+  }
+
   // ── [role] the owner is not in the tenant path ────────────────────────────
   check(17, "[role] the tenant client is NOT the migration principal",
     dbMod.tenantDb !== dbMod.db, "tenantDb fell back to the shared client");

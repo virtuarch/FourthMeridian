@@ -730,16 +730,21 @@ for (const r of REMOVED_SITES) {
     !/from\s+["']@\/lib\/db["']/.test(guard));
 
   // There must be exactly one guard module, not a second copy under a second
-  // name. The primitive this programme already wrote twice is the reason.
-  // ⚠️ THE AUDIT AND ITS SUITE NAME THESE TYPES IN THEIR OWN STRINGS AND
-  // IMPORTS, and a scan that flagged them would be reporting itself.
-  const SELF = new Set(["lib/accounts/account-reparenting.ts", "scripts/audit-account-reparenting.ts"]);
-  const copies = FILES.filter((f) => !SELF.has(f))
-    .filter((f) => /ReparentingRefusedError|UnintendedReparentingError/.test(
-      stripComments(readFileSync(join(ROOT, f), "utf8"))))
-    .filter((f) => !/\bimport\b/.test(
-      stripComments(readFileSync(join(ROOT, f), "utf8")).split("\n")
-        .filter((l) => /ReparentingRefusedError|UnintendedReparentingError/.test(l)).join("\n")));
+  // name. The primitive this programme already wrote twice — and deliberately
+  // did NOT ship under two names — is the reason.
+  //
+  // ⚠️ LOOK FOR A DECLARATION, NOT A MENTION. The first version of this scan
+  // asked which files MENTION the refusal types and tried to subtract the ones
+  // that import them, by testing whether the mention's own line contained the
+  // word `import`. It then flagged scripts/rls-app-acceptance.ts, whose case 75
+  // writes `e instanceof reparent.ReparentingRefusedError` — a member access on
+  // a namespace import, with no `import` anywhere near it. A legitimate CONSUMER
+  // read as a second copy, which is the audit crying wolf about the thing it is
+  // meant to protect. The property is a CLASS DECLARATION, so that is what is
+  // asked, and no exclusion list is needed beyond the guard itself.
+  const DECLARES = /\bclass\s+(ReparentingRefusedError|UnintendedReparentingError)\b/;
+  const copies = FILES.filter((f) => f !== "lib/accounts/account-reparenting.ts")
+    .filter((f) => DECLARES.test(stripComments(readFileSync(join(ROOT, f), "utf8"))));
   check("no SECOND copy of the refusal types exists under another name",
     copies.length === 0, copies.join(", "));
 }
