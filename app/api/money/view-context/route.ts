@@ -38,6 +38,7 @@ import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { getSpaceContext } from "@/lib/space";
 import { getAccounts } from "@/lib/data/accounts";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { bankingTransactionWhere } from "@/lib/data/transactions";
 import { getRecentSnapshots } from "@/lib/data/snapshots";
 import { resolveEffectiveSpaceConversionSerialized } from "@/lib/money/server-context";
@@ -64,7 +65,14 @@ export async function GET(req: NextRequest) {
     // RLS-C-S1 fix — `ctx.userId` was in scope on the line above and was not
     // forwarded, so this call took `getAccounts`' ambient branch and re-resolved
     // the viewer inside the leaf. Same value, now stated by the caller.
-    getAccounts({ spaceId: ctx.spaceId, userId: ctx.userId }),
+    //
+    // RLS-C-S2 — and it now executes as the TENANT, in its own short transaction.
+    // Only the account read is wrapped: the two groupBy aggregates and the
+    // snapshot read beside it are separate leaves this slice does not own, and a
+    // transaction that also covered them would be a boundary around reads still
+    // running on another authority. The identity is the authenticated session's
+    // (requireUser above, then getSpaceContext) — never the Space cookie.
+    withTenantDb(ctx.userId, (tx) => getAccounts(tx, { spaceId: ctx.spaceId, userId: ctx.userId })),
     db.transaction.groupBy({ by: ["currency"], where: txWhere }),
     // v2.6-CHRON-1 — ECONOMIC dates. This population is flow-shaped
     // (bankingTransactionWhere), and the folds that will consume this context

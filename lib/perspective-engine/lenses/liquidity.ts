@@ -25,6 +25,7 @@
  * computePerspective("liquidity", scope).
  */
 
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { getAccountsWithVisibility } from "@/lib/data/accounts";
 import { getAccountsAsOf } from "@/lib/data/accounts-asof";
 import { buildSpaceConversionContext, buildSpaceConversionContextById } from "@/lib/money/server-context";
@@ -35,6 +36,11 @@ import { computeLiquidity, type LiquidityAccountRow } from "./liquidity.core";
 import { buildLiquidityCompleteness, liquidityComponent } from "./asof-completeness";
 
 async function liquidityLens(
+  // RLS-C-S2 — the authority the calling phase earned, handed to this binding by
+  // the engine and forwarded to every data read below. The lens chooses nothing:
+  // it cannot import a client (the engine import-graph guard forbids it) and it
+  // cannot open a transaction (ReadClient has no `$transaction`).
+  client:  ReadClient,
   scope:   PerspectiveScope,
   options: ComputeOptions,
 ): Promise<LensResult> {
@@ -43,7 +49,7 @@ async function liquidityLens(
   const stamps = new Map<string, { tier: CompletenessTier; type: string }>();
 
   const visRows = options.asOf
-    ? (await getAccountsAsOf({
+    ? (await getAccountsAsOf(client, {
         spaceId: scope.spaceId,
         userId:  scope.userId,
         asOf:    options.asOf,
@@ -52,7 +58,7 @@ async function liquidityLens(
         stamps.set(r.account.id, { tier: r.tier, type: r.account.type });
         return { account: r.account, visibilityLevel: r.visibilityLevel as string };
       })
-    : (await getAccountsWithVisibility({
+    : (await getAccountsWithVisibility(client, {
         spaceId: scope.spaceId,
         // Always the viewing member — visibility is computed for the requester,
         // never a stored or elevated identity (investigation §5.9).

@@ -21,7 +21,7 @@
  * the output carries balance + method + tier, never subtype/limit/createdAt.
  */
 
-import { db } from "@/lib/db";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { ShareStatus, type VisibilityLevel } from "@prisma/client";
 import { Account } from "@/types";
 import {
@@ -72,23 +72,32 @@ function todayUTC(now: () => Date): Date {
  * to the real clock. Resolution semantics live entirely in the pure core — this
  * function adds no rule of its own (downstream streams that need a new rule must
  * extend the core, not patch around it here).
+ *
+ * RLS-C-S2 — `client` is REQUIRED and leading, and it is forwarded to EVERY read
+ * this function composes: the visibility rows, the link metadata, the coverage
+ * authority, the canonical wallet valuation and the delta groupBy. One as-of
+ * answer, one authority — a mixed-authority composition would be a row set
+ * partly policy-filtered and partly not, which is worse than either.
  */
-export async function getAccountsAsOf(args: {
-  spaceId: string;
-  userId:  string;
-  asOf:    string;
-  now?:    () => Date;
-}): Promise<AccountAsOf[]> {
+export async function getAccountsAsOf(
+  client: ReadClient,
+  args: {
+    spaceId: string;
+    userId:  string;
+    asOf:    string;
+    now?:    () => Date;
+  },
+): Promise<AccountAsOf[]> {
   const { spaceId, userId, asOf } = args;
   const now = args.now ?? (() => new Date());
 
   // 1. The visibility-redacted rows every existing caller sees (current balance).
-  const visRows = await getAccountsWithVisibility({ spaceId, userId });
+  const visRows = await getAccountsWithVisibility(client, { spaceId, userId });
 
   // 2. Classification + floor metadata, read directly from the ACTIVE, non-deleted
   //    links (the SAME set getAccountsWithVisibility queries — ids agree). This
   //    is the server-side "how/from-when" input, never exposed on the output row.
-  const linkRows = await db.spaceAccountLink.findMany({
+  const linkRows = await client.spaceAccountLink.findMany({
     where:  { spaceId, status: ShareStatus.ACTIVE, financialAccount: { deletedAt: null } },
     select: {
       createdAt: true,
@@ -120,7 +129,7 @@ export async function getAccountsAsOf(args: {
     }),
     connectionFloorISO: isoDate(maxDate(truncDateUTC(l.financialAccount.createdAt), truncDateUTC(l.createdAt))),
   }));
-  const coverage = await getAccountCoverage(refs, { client: db });
+  const coverage = await getAccountCoverage(client, refs);
 
   // W6e — THE PRESENT DAY IS A CURRENT CLAIM, AND MUST USE THE CURRENT AUTHORITY.
   //
@@ -142,7 +151,7 @@ export async function getAccountsAsOf(args: {
         lastUpdated: l.financialAccount.lastUpdated,
         balance: l.financialAccount.balance,
       })),
-      { contextSpaceId: spaceId },
+      { client, contextSpaceId: spaceId },
     )).map((r) => [r.id, r.balance] as const),
   );
 
@@ -173,8 +182,8 @@ export async function getAccountsAsOf(args: {
   // phantom. buildDeltas is unconditionally posted-only — there is no pending-
   // inclusive variant to pass, by construction (the regression wall).
   const [cashDeltas, cardDeltas] = await Promise.all([
-    buildDeltas(cashIds, asOfDay, today),
-    buildDeltas(cardIds, asOfDay, today),
+    buildDeltas(client, cashIds, asOfDay, today),
+    buildDeltas(client, cardIds, asOfDay, today),
   ]);
 
   // 4. Pure resolution, then merge onto the visibility rows by id.
@@ -206,6 +215,7 @@ export async function getAccountsAsOf(args: {
  * reintroduce the reconstructed-history phantom this walk once carried for cash.
  */
 async function buildDeltas(
+  client: ReadClient,
   ids:   string[],
   asOf:  Date,
   today: Date,
@@ -213,7 +223,7 @@ async function buildDeltas(
   const out = new Map<string, Map<string, number>>();
   if (ids.length === 0) return out;
 
-  const grouped = await db.transaction.groupBy({
+  const grouped = await client.transaction.groupBy({
     by: ["financialAccountId", "date"],
     where: {
       financialAccountId: { in: ids },

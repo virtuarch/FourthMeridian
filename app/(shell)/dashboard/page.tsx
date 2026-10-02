@@ -94,7 +94,11 @@ export default async function DashboardPage() {
   // Context is resolved exactly once above (and cache()-deduped even if it
   // weren't — see lib/space.ts). Pass the already-resolved userId into
   // getFicoData so this page makes zero redundant context lookups.
-  const ficoData = await getFicoData({ userId: ctx.userId });
+  //
+  // RLS-C-S2 — the read executes as the TENANT. Under fm_app the CreditScore
+  // policy is `"userId" = current_fm_user_id()`, so the predicate this call
+  // states is also enforced by the database.
+  const ficoData = await withTenantDb(ctx.userId, (tx) => getFicoData(tx, { userId: ctx.userId }));
 
   return (
     <DisplayCurrencyProvider currency={ctx.space.reportingCurrency}>

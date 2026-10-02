@@ -1,7 +1,7 @@
 {
   "note": "RLS-4 ratchet. Runtime-reachable files still reaching the database through the migration principal (@/lib/db `db`). This set may SHRINK freely as adoption proceeds; it may never GROW. Regenerate with `npx tsx scripts/audit-db-authority.ts --write-baseline`, and say in the commit why anything added is justified.",
   "generatedAt": "2026-10-02",
-  "count": 244,
+  "count": 239,
   "files": [
     "app/(shell)/dashboard/platform/[area]/page.tsx",
     "app/(shell)/dashboard/settings/archived-assets/page.tsx",
@@ -133,12 +133,7 @@
     "lib/crypto/wallet-position-capture.ts",
     "lib/crypto/wallet-refresh.ts",
     "lib/crypto/wallet-snapshot-scope.ts",
-    "lib/data/account-coverage.ts",
-    "lib/data/accounts-asof-window.ts",
-    "lib/data/accounts-asof.ts",
-    "lib/data/accounts.ts",
     "lib/data/advice.ts",
-    "lib/data/investment-accounts.ts",
     "lib/data/snapshots.ts",
     "lib/data/transaction-count.ts",
     "lib/data/transaction-population.ts",

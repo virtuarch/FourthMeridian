@@ -2,6 +2,7 @@ import { DebtClient } from "@/components/dashboard/DebtClient";
 import { getFicoData, getAccounts } from "@/lib/data/accounts";
 import { getDebtTransactions, getDebtPaymentRows } from "@/lib/data/transactions";
 import { getSpaceContext } from "@/lib/space";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { resolveEffectiveSpaceConversionSerialized } from "@/lib/money/server-context";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 
@@ -10,12 +11,22 @@ export const runtime = "nodejs";
 
 export default async function CreditPage() {
   const ctx = await getSpaceContext();
+  // RLS-C-S2 — the two account-spine reads execute as the TENANT, inside ONE
+  // short transaction, with the identity taken from server-side session state
+  // (getSpaceContext, which is next-auth-backed) and never from a cookie, query
+  // string or header. Both are pure reads over one Space's accounts and the
+  // viewer's own credit score, with no network or model call between them, so
+  // there is nothing a transaction must not be held across.
+  //
+  // The two transaction readers stay OUTSIDE it: they are different leaves, not
+  // yet converted, and wrapping them here would hold the boundary over reads
+  // that are still executing on another authority anyway.
   const [{ score, updatedAt }, accounts, debtTxns, paymentTxns] = await Promise.all([
-    getFicoData({ userId: ctx.userId }),
+    withTenantDb(ctx.userId, (tx) => getFicoData(tx, { userId: ctx.userId })),
     // RLS-C-S1 fix — `ctx.userId` was in scope on the line above and was not
     // forwarded, so this call took `getAccounts`' ambient branch and re-resolved
     // the viewer inside the leaf. Same value, now stated by the caller.
-    getAccounts({ spaceId: ctx.spaceId, userId: ctx.userId }),
+    withTenantDb(ctx.userId, (tx) => getAccounts(tx, { spaceId: ctx.spaceId, userId: ctx.userId })),
     getDebtTransactions({ spaceId: ctx.spaceId }), // TX-2 bounded (default cap)
     // v2.6-TRUTH-7 — the debt-payment authority counts the CASH leg, which lives on
     // the account the money LEFT. A liability-scoped read cannot see it.

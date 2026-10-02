@@ -179,9 +179,14 @@ check("D perspectives keeps missing-spaceId 400 BEFORE the door",
 // that { spaceId, userId } is the scope passed to computePerspectives — WITHOUT
 // nailing the exact arity, so additive options (e.g. the "view as"
 // { targetCurrency } second argument) can't trip this tripwire.
+//
+// RLS-C-S2 — the scope is no longer the FIRST argument: the database authority
+// leads (`computePerspectives(tx, { spaceId, userId }, …)`). One identifier
+// before the scope object is therefore allowed; the SHAPE of the scope, which is
+// what this pins, is unchanged.
 check("D perspectives still computes as the requesting viewer (userId from auth)",
   /const\s+userId\s*=\s*auth\.user\.id/.test(perspectives) &&
-  /computePerspectives\(\s*\{\s*spaceId\s*,\s*userId\s*\}/.test(perspectives));
+  /computePerspectives\(\s*(?:[A-Za-z_$][\w$]*\s*,\s*)?\{\s*spaceId\s*,\s*userId\s*\}/.test(perspectives));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PART E — GET /api/spaces/[id] documented public-read exception (Batch 3).

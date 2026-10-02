@@ -28,6 +28,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSpaceAction }        from "@/lib/spaces/authorize";
 import { withApiHandler }            from "@/lib/api";
+import { withTenantDb }              from "@/lib/db/tenant-context";
 import { computePerspectives }       from "@/lib/perspective-engine";
 import type { LensResult }           from "@/lib/perspective-engine";
 import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
@@ -59,7 +60,19 @@ export const GET = withApiHandler(async (
   const targetCurrency = parsedTarget.ok ? parsedTarget.value : undefined;
 
   // ── Compute — always as the requesting viewer ──────────────────────────────
-  const results: LensResult[] = await computePerspectives({ spaceId, userId }, { targetCurrency });
+  // RLS-C-S2 — the batch runs inside ONE short transaction on the tenant role,
+  // with the identity taken from the authenticated session (requireSpaceAction
+  // above), never from the request. Every lens read is therefore policy-checked:
+  // the §5.9 rule that visibility is the VIEWER's is now enforced by the database
+  // as well as asserted by the scope object.
+  //
+  // Lens work is arithmetic over deterministic DB reads — no LLM, no provider
+  // HTTP, no streaming (the engine's own import-graph guard forbids
+  // lib/ai/provider here) — so there is nothing this transaction must not be
+  // held across. `resolveSpaceSyncCompleteness` below is deliberately OUTSIDE it.
+  const results: LensResult[] = await withTenantDb(
+    userId, (tx) => computePerspectives(tx, { spaceId, userId }, { targetCurrency }),
+  );
 
   // ── Space-scoped sync completeness (PRE-BETA-OPS-CLOSE) ───────────────────
   // Rides THIS route rather than a new one: it is per-Space, membership-gated,

@@ -118,7 +118,18 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     const spaceId = m.spaceId;
     const spaceName = m.space.name;
 
-    const withVis = await getAccountsWithVisibility({ spaceId, userId });
+    // RLS-C-S2 — UNRESOLVED, and now VISIBLY so. `getAccountsWithVisibility`
+    // requires its authority; this assembler still holds the migration principal
+    // (it already did, implicitly, through the leaf's import). Passing `db`
+    // explicitly changes no behaviour and makes the authority readable at the
+    // call site, which is the only honest intermediate state.
+    //
+    // Not converted here on purpose: the export walks EVERY Space the user is an
+    // ACTIVE member of and performs many reads plus a decrypt per user, so
+    // wrapping it would hold one transaction across the whole assembly — the
+    // thing withTenantDb must not be used for. It needs a per-Space phase split,
+    // which is its own slice.
+    const withVis = await getAccountsWithVisibility(db, { spaceId, userId });
     // D3 — owned accounts (FULL HOME link) + FULL-shared only.
     // W2 — the fullAccountIds set died with the goal export block below; it
     // existed only to narrow goal contributions to FULL-visible accounts.

@@ -29,8 +29,8 @@
  * READ-ONLY.
  */
 
-import { db } from "@/lib/db";
-import { ShareStatus, type AccountType, type Prisma, type PrismaClient } from "@prisma/client";
+import { ShareStatus, type AccountType } from "@prisma/client";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import {
   isReconstructableCard, truncDateUTC, maxDate, isoDate, fromISO,
 } from "@/lib/snapshots/backfill-core";
@@ -41,8 +41,6 @@ import {
 } from "./accounts-asof.core";
 import { getAccountCoverage, type AccountHistoricalCoverage } from "./account-coverage";
 import { applyCanonicalWalletBalances } from "@/lib/crypto/wallet-current-value";
-
-type Client = PrismaClient | Prisma.TransactionClient;
 
 const todayUTC = (now: () => Date) => truncDateUTC(now());
 
@@ -65,20 +63,29 @@ export type WindowAccount = AsOfAccountInput & {
 /**
  * Every linked account's balance for every day in [fromISO, toISO], through the
  * SAME resolver, floors and posted-only deltas as `getAccountsAsOf`.
+ *
+ * ── RLS-C-S2 — THE AUTHORITY IS THE FIRST ARGUMENT ─────────────────────────
+ * `args.client ?? db` let a caller that said nothing about authority execute as
+ * the migration principal, which is exempt from every RLS policy. The client is
+ * now a required leading parameter: a caller must name the authority its phase
+ * has earned, and this leaf — typed `Prisma.TransactionClient` — structurally
+ * cannot open a transaction of its own, so the phase boundary stays with the
+ * caller that opened it.
  */
-export async function getAccountBalancesOverWindow(args: {
-  spaceId: string;
-  fromISO: string;
-  toISO:   string;
-  /** Restrict to these account types. Omit for all. */
-  types?:  AccountType[];
-  client?: Client;
-  now?:    () => Date;
-}): Promise<{
+export async function getAccountBalancesOverWindow(
+  client: ReadClient,
+  args: {
+    spaceId: string;
+    fromISO: string;
+    toISO:   string;
+    /** Restrict to these account types. Omit for all. */
+    types?:  AccountType[];
+    now?:    () => Date;
+  },
+): Promise<{
   accounts: WindowAccount[];
   byDate:   Map<string, Map<string, ResolvedAsOfBalance>>;
 }> {
-  const client = args.client ?? db;
   const now = args.now ?? (() => new Date());
 
   const linkRows = await client.spaceAccountLink.findMany({
@@ -113,7 +120,7 @@ export async function getAccountBalancesOverWindow(args: {
     walletChain:   l.financialAccount.walletChain,
   }));
   // THE one coverage authority — the same call `getAccountsAsOf` makes.
-  const coverageById = await getAccountCoverage(refs, { client });
+  const coverageById = await getAccountCoverage(client, refs);
 
   // W6e — the present day in this window is a CURRENT claim, resolved by the
   // current authority, for the same reason as accounts-asof.ts. Historical days
@@ -176,7 +183,7 @@ export async function getAccountBalancesOverWindow(args: {
  * anchor, so its deltas must be posted too.
  */
 async function buildDeltas(
-  client: Client, ids: string[], from: Date, today: Date,
+  client: ReadClient, ids: string[], from: Date, today: Date,
 ): Promise<Map<string, Map<string, number>>> {
   const out = new Map<string, Map<string, number>>();
   if (ids.length === 0) return out;

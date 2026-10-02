@@ -25,8 +25,7 @@
  * READ-ONLY. Performs no valuation and reads no balances.
  */
 
-import { db } from "@/lib/db";
-import type { Prisma, PrismaClient } from "@prisma/client";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { isoDate, truncDateUTC } from "@/lib/snapshots/backfill-core";
 import {
   coverageClassFor, resolveAccountCoverage,
@@ -34,8 +33,6 @@ import {
 } from "./account-coverage.core";
 import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
 import { nativeAssetForChain, ledgerEpsilonFor } from "@/lib/crypto/native-asset";
-
-type Client = PrismaClient | Prisma.TransactionClient;
 
 /** One account as the gather needs it — identity and class only, never a balance. */
 export interface CoverageAccountRef {
@@ -69,12 +66,18 @@ export interface CoverageAccountRef {
  *
  * Batched — one query per evidence kind across all accounts, not one per
  * account. A Space with 11 accounts costs 4 queries, not 44.
+ *
+ * ── RLS-C-S2 — THE AUTHORITY IS AN ARGUMENT, AND IT IS THE FIRST ONE ────────
+ * `client` was `options?.client ?? db`, which meant every caller that omitted it
+ * silently executed as the MIGRATION PRINCIPAL — the one role exempt from every
+ * RLS policy. An optional authority is an ambient authority. It is now required
+ * and leading: the compiler names every caller, and the caller states which
+ * authority its execution phase has earned.
  */
 export async function getAccountCoverage(
+  client: ReadClient,
   accounts: readonly CoverageAccountRef[],
-  options?: { client?: Client },
 ): Promise<Map<string, AccountHistoricalCoverage>> {
-  const client = options?.client ?? db;
   const out = new Map<string, AccountHistoricalCoverage>();
   if (accounts.length === 0) return out;
 

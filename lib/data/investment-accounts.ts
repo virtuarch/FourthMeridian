@@ -20,7 +20,7 @@
  * scope). No new schema.
  */
 
-import { db } from "@/lib/db";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { getAccounts } from "@/lib/data/accounts";
 import { countCurrentPositionsByAccount } from "@/lib/investments/current-positions";
 // REVIEW-3 — the ONE gate function for the observation pipeline; consulted so a
@@ -36,13 +36,16 @@ import {
 export type { InvestmentAccountView } from "@/lib/investments/current-holdings";
 
 /**
- * Build the per-account Investments view for a Space. `userId` is the VIEWER —
+ * Build the per-account Investments view for a Space. `client` is the authority
+ * the calling phase earned (RLS-C-S2) — required and leading, forwarded to the
+ * account read and to the owner-scoped PlaidItem lookup. `userId` is the VIEWER —
  * Plaid consent/status and the Enable/Refresh affordances are attached only to
  * connections owned by that user (Space ownership rule); a member viewing
  * someone else's shared investment account sees its holdings (if FULL) but no
  * owner-only actions.
  */
 export async function getInvestmentAccountsView(
+  client: ReadClient,
   scope: { spaceId: string; userId: string },
 ): Promise<InvestmentAccountView[]> {
   // RLS-C-S1 — both REQUIRED, no ambient space-context resolution. `userId` is a
@@ -57,7 +60,11 @@ export async function getInvestmentAccountsView(
     // account read silently took the ambient branch and re-resolved the viewer
     // from request scope. Forwarding it is the whole fix; behaviour is identical
     // on the request path and now also correct off it.
-    getAccounts({ spaceId, userId }),
+    getAccounts(client, { spaceId, userId }),
+    // OUT OF THE S2 SPINE, deliberately: `countCurrentPositionsByAccount` lives
+    // under lib/investments, which owns `systemDb` by the authority audit's
+    // confinement list, and takes no client. Left on its own authority and
+    // recorded as a follow-up rather than half-threaded from here.
     countCurrentPositionsByAccount({ spaceId }),
   ]);
 
@@ -71,7 +78,7 @@ export async function getInvestmentAccountsView(
   // Owner-scoped Plaid connection state per account. Only the viewer's own
   // connection (PlaidItem.userId === userId) attaches consent/status so the
   // Enable/Refresh affordances never appear on another member's account.
-  const conns = await db.accountConnection.findMany({
+  const conns = await client.accountConnection.findMany({
     where: {
       financialAccountId: { in: accountIds },
       deletedAt:          null,

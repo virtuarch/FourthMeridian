@@ -1278,8 +1278,9 @@ async function verifyLiabilitySeries(
     if (bad.length > 0) violations.push(`${isoDate(r.date)} aggregate: ${bad.join("; ")}`);
   }
 
-  const { accounts, byDate } = await getAccountBalancesOverWindow({
-    spaceId, fromISO: fromDate, toISO: toDate, types: [AccountType.debt], client,
+  // RLS-C-S2 — the authority this verification phase was handed, passed first.
+  const { accounts, byDate } = await getAccountBalancesOverWindow(client, {
+    spaceId, fromISO: fromDate, toISO: toDate, types: [AccountType.debt],
   });
   if (accounts.length > 0) {
     const ids = accounts.map((a) => a.id);

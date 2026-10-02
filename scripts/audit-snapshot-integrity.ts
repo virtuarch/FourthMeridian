@@ -82,7 +82,13 @@ async function main() {
     const from = iso(rows[0].date), to = iso(rows[rows.length - 1].date);
 
     // ── debt: the component this incident is about ──────────────────────────
-    const { accounts, byDate } = await getAccountBalancesOverWindow({
+    // RLS-C-S2 — UNRESOLVED, and named as such. This is an operator audit that
+    // sweeps EVERY Space, so `systemDb` is the authority it should eventually
+    // carry; it is left on the migration principal it already held because no
+    // script in this repo constructs a role client yet (only rls-app-acceptance
+    // does, as the thing under test), and guessing one into an unguarded
+    // operator script is worse than stating the current authority out loud.
+    const { accounts, byDate } = await getAccountBalancesOverWindow(db, {
       spaceId: sp.id, fromISO: from, toISO: to, types: [AccountType.debt],
     });
     let healthy = 0, repair = 0, frozenSkipped = 0;

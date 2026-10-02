@@ -403,7 +403,12 @@ async function main(): Promise<void> {
   // getSpaceContext() (next-auth headers()), which cannot run in this
   // standalone tsx harness. userA is the *viewer* (the non-owner member), so
   // this exercises the cross-member visibility path.
-  const accts    = await getAccounts({ spaceId: space.id, userId: userA.id });
+  // RLS-C-S2 — this harness owns its own PrismaClient (the migration principal,
+  // since it also SEEDS the fixture), so it passes that. The visibility rule
+  // under test is the APPLICATION's KD-19 tier redaction, which is exactly what
+  // must keep holding on a client that RLS does not filter: if the proof passed
+  // only because the policies hid the rows, it would be proving the wrong thing.
+  const accts    = await getAccounts(prisma, { spaceId: space.id, userId: userA.id });
   const acctsUi  = JSON.stringify(accts).toLowerCase();
   const rowFor   = (bal: number) => accts.find((a) => a.balance === bal);
   const rowX = rowFor(1000), rowY = rowFor(Y_BALANCE), rowZ = rowFor(2000), rowW = rowFor(3000);

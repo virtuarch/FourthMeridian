@@ -21,7 +21,7 @@
  * scripts/audit-crypto-holding-tombstone.ts guard against it.
  */
 
-import { db } from "@/lib/db";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import {
   accountDisplayName, compareAccountsByDisplayName,
 } from "@/lib/accounts/display-identity";
@@ -71,11 +71,12 @@ export interface AccountWithVisibility {
  * figure rather than treating a missing value as zero.
  */
 async function loadCurrentCashState(
+  client: ReadClient,
   accountIds: string[],
 ): Promise<Map<string, NonNullable<Account["currentState"]>>> {
   const out = new Map<string, NonNullable<Account["currentState"]>>();
   if (accountIds.length === 0) return out;
-  const rows = await db.financialAccount.findMany({
+  const rows = await client.financialAccount.findMany({
     where: { id: { in: accountIds }, deletedAt: null },
     select: {
       id: true, type: true, currency: true, balance: true,
@@ -83,9 +84,10 @@ async function loadCurrentCashState(
       walletAddress: true, lastUpdated: true, balanceLastUpdatedAt: true,
     },
   });
-  // RLS slice B — `loadPendingEvidence` now requires its client. This caller is
-  // not converted in this slice, so it passes the client it already held.
-  const pending = await loadPendingEvidence(db, rows.map((r) => r.id));
+  // RLS-C-S2 — `loadPendingEvidence` has required its client since slice B. It
+  // now receives the one this read leaf was HANDED, not the ambient global it
+  // used to hold: a single authority runs the whole cash-state claim.
+  const pending = await loadPendingEvidence(client, rows.map((r) => r.id));
   const now = new Date();
   for (const r of rows) {
     const rec = reconcileAccount(
@@ -130,8 +132,24 @@ async function loadCurrentCashState(
  * the page/route, `PerspectiveScope` in the engine, an explicit seed identity in
  * the proof scripts), so requiring them costs nothing and removes the only way
  * this read could ever disagree with its caller.
+ *
+ * ── RLS-C-S2 — THE AUTHORITY IS AN ARGUMENT TOO, AND IT COMES FIRST ─────────
+ * S1 made the IDENTITY explicit. The AUTHORITY — which database role executes
+ * these statements, and therefore which RLS policies apply — was still ambient:
+ * this module imported the migration principal, the one client exempt from every
+ * policy, and used it unconditionally. A reviewer could not tell a tenant-scoped
+ * read from a platform-wide one by looking at the call site, because they were
+ * spelled identically.
+ *
+ * `client` is now required and leading. It is typed `Prisma.TransactionClient`,
+ * which has no `$transaction` member, so this leaf CANNOT open a transaction of
+ * its own — the phase boundary always belongs to the caller that opened it, and
+ * `withTenantDb`'s transaction-local identity can never be undercut from here.
+ * `PrismaClient` is structurally assignable, so a job holding `systemDb` (or a
+ * not-yet-converted caller holding `db`) can still pass it — visibly.
  */
 export async function getAccountsWithVisibility(
+  client: ReadClient,
   scope: { spaceId: string; userId: string },
 ): Promise<AccountWithVisibility[]> {
   // RLS-C-S1 — both supplied by the caller. No ambient resolution, no request
@@ -139,7 +157,7 @@ export async function getAccountsWithVisibility(
   // reconnect-badge ownership check below (D2-7E).
   const { spaceId, userId } = scope;
 
-  const links = await db.spaceAccountLink.findMany({
+  const links = await client.spaceAccountLink.findMany({
     where: {
       spaceId,
       status:           ShareStatus.ACTIVE,
@@ -176,6 +194,7 @@ export async function getAccountsWithVisibility(
   // may see, and it keeps the perspective-engine binding free of a direct DB
   // read (the engine import-graph rule). Cash accounts only.
   const currentStateByAccount = await loadCurrentCashState(
+    client,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     links.map((l: any) => l.financialAccount.id),
   );
@@ -205,7 +224,7 @@ export async function getAccountsWithVisibility(
       // W6b — the successful-read clock, so a stale wallet is not published as live.
       lastUpdated: l.financialAccount.lastUpdated,
     })),
-    { contextSpaceId: spaceId },
+    { client, contextSpaceId: spaceId },
   );
 
   /**
@@ -428,8 +447,11 @@ export async function getAccountsWithVisibility(
  * the server-side visibility tier, so this function's output is unchanged
  * by the AccountWithVisibility addition.
  */
-export async function getAccounts(scope: { spaceId: string; userId: string }): Promise<Account[]> {
-  return sortAccountsForDisplay((await getAccountsWithVisibility(scope)).map((r) => r.account));
+export async function getAccounts(
+  client: ReadClient,
+  scope: { spaceId: string; userId: string },
+): Promise<Account[]> {
+  return sortAccountsForDisplay((await getAccountsWithVisibility(client, scope)).map((r) => r.account));
 }
 
 /**
@@ -458,11 +480,20 @@ export function sortAccountsForDisplay<T extends { id: string; type: string; nam
  *
  * RLS-C-S1 — `scope.userId` is REQUIRED. The ambient space-context fallback
  * is gone: a leaf read must not decide whose credit score it is looking at.
+ *
+ * RLS-C-S2 — `client` is REQUIRED and leading. Under fm_app the CreditScore
+ * policy is `"userId" = current_fm_user_id()`, so on a tenant client the row
+ * predicate here is enforced TWICE — once by this query and once by the
+ * database. That redundancy is the point: if the application predicate is ever
+ * dropped in an edit, the policy still refuses the other tenant's score.
  */
-export async function getFicoData(scope: { userId: string }): Promise<{ score: number | null; updatedAt: string | null }> {
+export async function getFicoData(
+  client: ReadClient,
+  scope: { userId: string },
+): Promise<{ score: number | null; updatedAt: string | null }> {
   const { userId } = scope;
 
-  const row = await db.creditScore.findFirst({
+  const row = await client.creditScore.findFirst({
     where:   { userId },
     orderBy: { recordedAt: "desc" },
     select:  { score: true, recordedAt: true },

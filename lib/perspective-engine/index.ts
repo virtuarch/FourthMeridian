@@ -21,6 +21,7 @@
  *    default is the real clock.
  */
 
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { getLens, listRegisteredLenses } from "./registry";
 import type {
   ComputeOptions,
@@ -178,8 +179,16 @@ function defaultOptions(options?: Partial<ComputeOptions>): ComputeOptions {
  *
  * `options.now` is the injectable clock for deterministic tests; production
  * callers omit it.
+ *
+ * RLS-C-S2 — `client` is the database authority the CALLING PHASE earned, passed
+ * straight through to the lens. The engine never chooses one and holds no client
+ * of its own: it cannot, since nothing under lib/perspective-engine/ may import
+ * a Prisma client at all (engine.test.ts). Leading, required, and never
+ * defaulted — a default would reintroduce exactly the ambient authority this
+ * programme is removing, one level further from the call site than before.
  */
 export async function computePerspective(
+  client: ReadClient,
   lensId: LensId,
   scope: PerspectiveScope,
   options?: Partial<ComputeOptions>,
@@ -195,7 +204,7 @@ export async function computePerspective(
 
   let result: LensResult;
   try {
-    result = await lens(scope, opts);
+    result = await lens(client, scope, opts);
   } catch (err) {
     // Server-side log only — the error object never enters the result
     // (raw error text can embed account names/data).
@@ -223,9 +232,10 @@ export async function computePerspective(
  * takes down the batch (the future route returns whatever computed).
  */
 export async function computePerspectives(
+  client: ReadClient,
   scope: PerspectiveScope,
   options?: Partial<ComputeOptions>,
 ): Promise<LensResult[]> {
   const ids = listRegisteredLenses();
-  return Promise.all(ids.map((id) => computePerspective(id, scope, options)));
+  return Promise.all(ids.map((id) => computePerspective(client, id, scope, options)));
 }

@@ -34,6 +34,7 @@
  * redaction line. See investigation §2.3 and §5.
  */
 
+import type { ReadClient } from "@/lib/db/tenant-context";
 import type { FreshnessBasis } from "@/lib/freshness/observation";
 
 // ── Lens identity ─────────────────────────────────────────────────────────────
@@ -307,13 +308,29 @@ export interface ComputeOptions {
 }
 
 /**
- * A lens implementation: pure async function from scope to result.
+ * A lens implementation: async function from (authority, scope) to result.
  *
  * Must not throw — return a shaped "error" result instead. (The engine
  * additionally wraps every call and converts an escaped throw into
  * COMPUTE_FAILED, but relying on that wrapper is a bug, not a feature.)
+ *
+ * ── RLS-C-S2 — WHY THE CLIENT IS A PARAMETER AND NOT PART OF ComputeOptions ──
+ * A lens binding is a read leaf: it needs an explicit database authority, and
+ * the data layer it reads through now requires one (lib/data/accounts.ts). The
+ * client CANNOT live on `ComputeOptions`, because that type is also the options
+ * object the PURE cores take (computeLiquidity / computeDebt), and those must
+ * stay DB-free and fixture-testable. So it rides where every other read leaf in
+ * this programme carries it: as the required FIRST parameter.
+ *
+ * It is typed `ReadClient` (= `Prisma.TransactionClient`), which has no
+ * `$transaction`, so a lens cannot open a transaction of its own — the boundary
+ * belongs to the route that opened it. The import is TYPE-ONLY and resolves
+ * through `@/lib/db/tenant-context`, never `@/lib/db`: the engine's import-graph
+ * guard (engine.test.ts) still forbids this directory from reaching a Prisma
+ * client or the migration principal, and that guard is unchanged.
  */
 export type LensFn = (
+  client:  ReadClient,
   scope:   PerspectiveScope,
   options: ComputeOptions,
 ) => Promise<LensResult>;

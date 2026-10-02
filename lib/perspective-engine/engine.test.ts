@@ -42,6 +42,9 @@ import {
   validateLensResult,
 } from "./index";
 import type { Completeness, ComputeOptions, LensResult, PerspectiveScope } from "./types";
+// Type-only, so nothing from the tenant-context module (including its
+// "server-only" import) is evaluated in this standalone tsx process.
+import type { ReadClient } from "@/lib/db/tenant-context";
 import {
   COMPLETENESS_TIERS,
   isCompletenessTier,
@@ -70,7 +73,14 @@ const FIXED_NOW = () => new Date("2026-07-03T12:00:00.000Z");
 // layer (and Prisma) into this pure engine-mechanics test. The real lenses
 // are fixture-tested in liquidity.test.ts / debt.test.ts; each tsx test runs
 // in its own process, so the ids never collide.
+// RLS-C-S2 — every lens now takes its database authority as the required first
+// parameter (the engine never chooses one). This fake ignores it: the point of
+// this test is engine MECHANICS, and a fake that queried anything would reopen
+// the Prisma dependency the import-graph guards below exist to keep out.
+const CLIENT = {} as ReadClient;
+
 const fakeLiquidity = async (
+  _client: ReadClient,
   scope: PerspectiveScope,
   options: ComputeOptions,
 ): Promise<LensResult> => ({
@@ -115,7 +125,7 @@ async function main(): Promise<void> {
   // ── 2. Engine shaping ───────────────────────────────────────────────────
   console.log("2. Engine shaping (fail closed, fail shaped)");
 
-  const unreg = await computePerspective("debt", SCOPE, { now: FIXED_NOW });
+  const unreg = await computePerspective(CLIENT, "debt", SCOPE, { now: FIXED_NOW });
   check("unregistered lens → status error", unreg.status === "error");
   check("unregistered lens → LENS_NOT_REGISTERED", unreg.error?.code === "LENS_NOT_REGISTERED");
   check("unregistered result is fully shaped (passes validator)",
@@ -130,7 +140,7 @@ async function main(): Promise<void> {
   registerLens(throwingId, async () => {
     throw new Error(`db exploded for account ${SENTINEL}`);
   });
-  const thrown = await computePerspective(throwingId, SCOPE, { now: FIXED_NOW });
+  const thrown = await computePerspective(CLIENT, throwingId, SCOPE, { now: FIXED_NOW });
   check("throwing lens → shaped COMPUTE_FAILED (never propagates)",
     thrown.status === "error" && thrown.error?.code === "COMPUTE_FAILED");
   check("thrown error text never enters result JSON",
@@ -138,7 +148,7 @@ async function main(): Promise<void> {
 
   // Mis-shaped lens result → COMPUTE_FAILED via validator.
   const misshapen: LensResult = {
-    ...(await fakeLiquidity(SCOPE, { now: FIXED_NOW })),
+    ...(await fakeLiquidity(CLIENT, SCOPE, { now: FIXED_NOW })),
     status: "empty", // empty without empty copy + with verdict/headline = 3 violations
   };
   check("validator flags empty-without-copy", validateLensResult(misshapen).length > 0);
@@ -155,14 +165,14 @@ async function main(): Promise<void> {
   // ── 3. Determinism ──────────────────────────────────────────────────────
   console.log("3. Determinism");
 
-  const a = await computePerspective("liquidity", SCOPE, { now: FIXED_NOW });
-  const b = await computePerspective("liquidity", SCOPE, { now: FIXED_NOW });
+  const a = await computePerspective(CLIENT, "liquidity", SCOPE, { now: FIXED_NOW });
+  const b = await computePerspective(CLIENT, "liquidity", SCOPE, { now: FIXED_NOW });
   check("identical scope + injected clock → byte-identical JSON",
     JSON.stringify(a) === JSON.stringify(b));
   check("computedAt comes from the injected clock",
     a.computedAt === "2026-07-03T12:00:00.000Z");
 
-  const batch = await computePerspectives(SCOPE, { now: FIXED_NOW });
+  const batch = await computePerspectives(CLIENT, SCOPE, { now: FIXED_NOW });
   check("batch computes every registered lens in registration order",
     batch.length === 2 && batch[0].lensId === "liquidity" && batch[1].lensId === "debt");
   check("batch degrades per-lens (bad lens shaped, good lens intact)",
@@ -175,8 +185,8 @@ async function main(): Promise<void> {
   // liquidity lens above ignores it, exactly like every existing lens today.)
   console.log("3b. A5-S1 kill switch (asOf-absent byte-identity)");
 
-  const noAsOf   = await computePerspective("liquidity", SCOPE, { now: FIXED_NOW });
-  const withAsOf = await computePerspective("liquidity", SCOPE, { now: FIXED_NOW, asOf: "2026-01-01" });
+  const noAsOf   = await computePerspective(CLIENT, "liquidity", SCOPE, { now: FIXED_NOW });
+  const withAsOf = await computePerspective(CLIENT, "liquidity", SCOPE, { now: FIXED_NOW, asOf: "2026-01-01" });
   check("asOf-absent result carries no completeness field",
     noAsOf.completeness === undefined && !JSON.stringify(noAsOf).includes("completeness"));
   check("asOf is additive/optional — an asOf-ignoring lens is byte-identical",

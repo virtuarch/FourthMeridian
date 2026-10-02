@@ -161,9 +161,14 @@ export async function bucketAccountNodes(
   // the sanctioned floors, and POSTED-ONLY deltas — all inherited, none restated.
   // Investment and crypto buckets take their metadata and floors from the same
   // read and then answer through their own asset-class authority.
-  const { accounts, byDate } = await getAccountBalancesOverWindow({
+  // RLS-C-S2 — the authority leads now. `args.client` is still optional on THIS
+  // module (its own conversion is a later slice), so the `?? db` resolution that
+  // used to happen inside the leaf happens here instead — same behaviour, but
+  // the migration principal is named at the call site rather than reached for
+  // silently two layers down.
+  const { accounts, byDate } = await getAccountBalancesOverWindow(args.client ?? db, {
     spaceId: args.spaceId, fromISO: args.fromISO, toISO: args.toISO,
-    types: [...types], client: args.client,
+    types: [...types],
   });
   if (accounts.length === 0) return [];
 

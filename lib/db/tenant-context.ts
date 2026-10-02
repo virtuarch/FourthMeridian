@@ -51,6 +51,33 @@ export const TENANT_GUC = "app.user_id";
 /** A transaction-scoped client whose statements carry a tenant identity. */
 export type TenantClient = Prisma.TransactionClient;
 
+/**
+ * A client a READ LEAF executes through (RLS-C-S2). Identical to TenantClient by
+ * type, and deliberately so: the point of the name is the direction of travel. A
+ * leaf never chooses its own authority — the caller passes the one its execution
+ * phase has earned.
+ *
+ * ── THE LOAD-BEARING PROPERTY ────────────────────────────────────────────────
+ * Prisma's ITXClientDenyList strips the transaction opener from this type, so a
+ * read leaf is STRUCTURALLY incapable of starting its own transaction: the
+ * compiler refuses it. The phase boundary therefore always belongs to the caller
+ * that opened it, and the transaction-local identity bound below can never be
+ * undercut from inside a leaf. Do NOT widen this to a union with PrismaClient —
+ * that throws the property away.
+ *
+ * ── WHY THE PARAMETER IS REQUIRED, AND WHY IT IS FIRST ───────────────────────
+ * `client: ReadClient = db` would recreate the exact escape this programme
+ * exists to close: an OPTIONAL authority is an AMBIENT one, and the call sites
+ * that forget it are precisely the ones nobody reviews. Required means the
+ * compiler enumerates every caller for us; first means the authority is the
+ * first thing read at the call site, next to the function's own name.
+ *
+ * `PrismaClient` is structurally assignable to this type, so a job that
+ * legitimately holds `systemDb` — or an as-yet-unconverted caller holding `db`
+ * — can still pass it. What it cannot do is pass NOTHING.
+ */
+export type ReadClient = Prisma.TransactionClient;
+
 export class TenantIdentityError extends Error {
   constructor(message: string) {
     super(message);

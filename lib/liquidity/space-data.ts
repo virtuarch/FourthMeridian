@@ -71,7 +71,12 @@ export interface LiquidityEngineDeps {
   getAccountsAsOf: typeof getAccountsAsOf;
   getInvestmentValueAsOf: typeof getInvestmentValueAsOf;
   buildCtx: typeof buildSpaceConversionContextById;
-  computeCurrent: (scope: PerspectiveScope, now: () => Date) => Promise<LensResult>;
+  /**
+   * RLS-C-S2 — `client` leads, like every other read in this composition. The
+   * live lens is a DB read; it must execute on the authority this loader was
+   * given, not on one it reaches for itself.
+   */
+  computeCurrent: (client: Client, scope: PerspectiveScope, now: () => Date) => Promise<LensResult>;
 }
 
 function resolveDeps(overrides?: Partial<LiquidityEngineDeps>): LiquidityEngineDeps {
@@ -81,7 +86,7 @@ function resolveDeps(overrides?: Partial<LiquidityEngineDeps>): LiquidityEngineD
     buildCtx: overrides?.buildCtx ?? buildSpaceConversionContextById,
     computeCurrent:
       overrides?.computeCurrent ??
-      ((scope, now) => computePerspective("liquidity", scope, { now })),
+      ((client, scope, now) => computePerspective(client, "liquidity", scope, { now })),
   };
 }
 
@@ -100,7 +105,7 @@ async function evaluateHistorical(
   client: Client,
 ): Promise<LensResult> {
   const [asOfAccounts, valuation] = await Promise.all([
-    deps.getAccountsAsOf({ spaceId: scope.spaceId, userId: scope.userId, asOf: date, now }),
+    deps.getAccountsAsOf(client, { spaceId: scope.spaceId, userId: scope.userId, asOf: date, now }),
     deps.getInvestmentValueAsOf({ spaceId: scope.spaceId, asOf: date, visibilityScope: "all", client }),
   ]);
 
@@ -183,11 +188,17 @@ export async function loadLiquiditySpaceData(
   options?: LoadLiquiditySpaceDataOptions,
 ): Promise<LiquiditySpaceData> {
   const now = options?.now ?? (() => new Date());
+  // RLS-C-S2, UNRESOLVED and recorded as such: this loader's `client` is still
+  // `?? db` — an optional authority, which is an ambient one. It is left alone
+  // here because the fix belongs at the HTTP boundary (the Liquidity space-data
+  // route, which does pass a tenant client), and closing the default without
+  // converting every other caller of this loader would be a guess. Named in the
+  // slice report as a follow-up.
   const client = options?.client ?? db;
   const deps = resolveDeps(options?.deps);
 
   const [current, atAsOf, atCompareTo, baseCtx] = await Promise.all([
-    deps.computeCurrent(scope, now),
+    deps.computeCurrent(client, scope, now),
     options?.asOf ? evaluateHistorical(scope, options.asOf, now, deps, client) : Promise.resolve(null),
     options?.compareTo
       ? evaluateHistorical(scope, options.compareTo, now, deps, client)
