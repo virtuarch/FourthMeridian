@@ -151,7 +151,7 @@ async function main(): Promise<void> {
         reportingCurrency: space.reportingCurrency,
       },
     };
-    const sec = await assemble(spaceCtx, { scopeHint: "full" });
+    const sec = await assemble(db, spaceCtx, { scopeHint: "full" });
     const measuredBaseline = computeAverageMonthlySpending(sec ? (sec.data as TransactionsSummaryData) : null);
 
     // ── Report ──────────────────────────────────────────────────────────────

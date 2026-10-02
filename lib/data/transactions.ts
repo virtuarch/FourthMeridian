@@ -164,7 +164,7 @@ export async function projectTransactionListRows(
   // Phase 6 — ONE call, ONE answer. The id and the maturity come from the same
   // assessment, so the counterparty the DTO shows and the name the DTO gives the
   // movement can never disagree.
-  const assessments = await resolveTransferAssessments(rows, { spaceId });
+  const assessments = await resolveTransferAssessments(client, rows, { spaceId });
   // v2.6-TRUTH-4 — the canonical income authority decides partly from the OWNING
   // account's type (interest on a deposit account vs a credit on a liability),
   // and that is not a Transaction column. One bounded lookup over the page's
@@ -348,7 +348,11 @@ export async function getDebtTransactions(
   // instead of the numbers.
   assertOneRowPerEvent(capped, "getDebtTransactions");
 
-  const assessments = await resolveTransferAssessments(capped, { spaceId });
+  // RLS-AI-S6 — `resolveTransferAssessments` now requires its authority. This
+  // product read path is NOT converted in this slice and still holds `db`, so it
+  // passes it EXPLICITLY. That is the point of the required parameter: an
+  // unconverted caller stays legible instead of looking converted.
+  const assessments = await resolveTransferAssessments(db, capped, { spaceId });
   const rows = capped.map((r) => ({
     ...serializeTransactionRow({
       ...r,
@@ -398,7 +402,11 @@ export async function getDebtPaymentRows(
   // instead of the numbers.
   assertOneRowPerEvent(capped, "getDebtPaymentRows");
 
-  const assessments = await resolveTransferAssessments(capped, { spaceId });
+  // RLS-AI-S6 — `resolveTransferAssessments` now requires its authority. This
+  // product read path is NOT converted in this slice and still holds `db`, so it
+  // passes it EXPLICITLY. That is the point of the required parameter: an
+  // unconverted caller stays legible instead of looking converted.
+  const assessments = await resolveTransferAssessments(db, capped, { spaceId });
   const rows = capped.map((r) => ({
     ...serializeTransactionRow({
       ...r,
@@ -704,6 +712,7 @@ export async function getTransactionDetail(
   let resolvedTransferCpId: string | null = null;
   if (relationships.transferCandidate?.counterpartyAccountId) {
     const visible = await filterVisibleCounterpartyAccounts(
+      db, // unconverted product read path — see the note above; passed explicitly.
       [relationships.transferCandidate.counterpartyAccountId],
       spaceId,
     );
@@ -772,7 +781,7 @@ export async function getTransactionDetail(
   // authority had already called SAVINGS_TRANSFER. One bounded assessment for
   // this row — not a second derivation.
   const detailMaturity =
-    (await resolveTransferAssessments([row] as never, { spaceId })).get(row.id)?.maturity ?? null;
+    (await resolveTransferAssessments(db, [row] as never, { spaceId })).get(row.id)?.maturity ?? null;
 
   return {
     // v2.6-TRUTH-7 — `accountType` MUST be supplied here, exactly as the list read

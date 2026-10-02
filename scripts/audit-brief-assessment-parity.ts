@@ -36,7 +36,7 @@
  * registerAssembler() at its top level — lib/ai/assembler-registry.ts), so
  * getAssembler() finds nothing unless THIS process's import graph actually
  * loaded the assembler module. Production registers everything through one
- * barrel import (lib/ai/context-builder.ts → `import '@/lib/ai/assemblers'`),
+ * barrel import that lib/ai/context-builder.ts used to carry (deleted in RLS-AI-S1),
  * and this script imports THE SAME BARREL — the canonical registration path —
  * so the TRANSACTIONS and ACCOUNTS arms both run the real production
  * assemblers, not probe re-implementations.
@@ -73,7 +73,7 @@
  */
 
 // Registration side-effects: the SAME barrel production imports
-// (lib/ai/context-builder.ts:38). It loads under tsx because the npm script
+// (as lib/ai/context-builder.ts did before RLS-AI-S1 deleted it). It loads under tsx because the npm script
 // wires the server-only preload. Do NOT narrow this back to individual
 // assembler modules — the wiring pin (audit-brief-assessment-parity.test.ts)
 // fails if ACCOUNTS or TRANSACTIONS registration becomes unreachable from this
@@ -243,10 +243,10 @@ async function main(): Promise<void> {
     };
 
     const [briefSection, fullSection, acctsBrief, acctsFull] = await Promise.all([
-      assemble(spaceCtx, { scopeHint: "brief" }),
-      assemble(spaceCtx, { scopeHint: "full"  }),
-      assembleAccts(spaceCtx, { scopeHint: "brief" }),
-      assembleAccts(spaceCtx, { scopeHint: "full"  }),
+      assemble(db, spaceCtx, { scopeHint: "brief" }),
+      assemble(db, spaceCtx, { scopeHint: "full"  }),
+      assembleAccts(db, spaceCtx, { scopeHint: "brief" }),
+      assembleAccts(db, spaceCtx, { scopeHint: "full"  }),
     ]);
     if (!briefSection || !fullSection) continue;
     measured++;

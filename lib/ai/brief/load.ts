@@ -106,10 +106,33 @@ async function defaultDeps(rt: BriefRuntime): Promise<BriefLoadDeps> {
   const { loadSpaceDataHealth } = await import('@/lib/connections/space-data-health');
   const { transactionAccountPopulation } = await import('@/lib/data/transaction-population');
   return {
-    assemble: async (domain, spaceCtx, options) => {
+    /**
+     * RLS-AI-S6 — THE ASSEMBLERS NOW RUN AS THE BRIEF'S OWNER, LIKE EVERY OTHER
+     * READ IN THIS FILE.
+     *
+     * The header above used to end "The assemblers still reach the database
+     * through their own modules and are not converted here", and the reason was
+     * that `AssemblerFn` took no client. It takes one now, and this dep already
+     * had the right runner sitting beside it: `rt.asOwnerReading` is exactly a
+     * per-phase `ReadClient`, which is what the snapshot, population and
+     * recent-activity reads one line below already use.
+     *
+     * ⚠️ THE POPULATION IS UNCHANGED BY CONSTRUCTION, and that argument is this
+     * module's own: every account `bankingTransactionWhere(spaceId)` admits is
+     * ACTIVE-linked into a Space the owner is an ACTIVE member of, so
+     * `fm_account_visible` admits it too.
+     *
+     * ⚠️ ONE FIELD DOES NARROW, AND IT IS NAMED RATHER THAN DISCOVERED LATER.
+     * The accounts assembler selects `SpaceAccountLink.addedByUser.{firstName,name}`,
+     * and `User`'s policy is `"id" = current_fm_user_id()` — NOT Space-granular. In
+     * a shared Space a co-member's display name becomes null and the assembler's
+     * existing third fallback renders instead. Recorded in
+     * lib/ai/evidence-authorities.ts as the one classified narrowing on this graph.
+     */
+    assemble: async (domain, spaceCtx, options) => rt.asOwnerReading(async (c) => {
       const assembler = getAssembler(domain);
-      return assembler ? (await assembler(spaceCtx, options as never)) ?? null : null;
-    },
+      return assembler ? (await assembler(c, spaceCtx, options as never)) ?? null : null;
+    }),
     readSnapshots: (spaceId) =>
       rt.asOwnerReading((c) => getRecentSnapshots(c, { rows: SNAPSHOT_READ_ROWS }, { spaceId })),
     projectSnapshots: (rows) => projectSnapshotSection(rows, 'full'),

@@ -28,11 +28,21 @@ import {
 import type { ComparisonRow } from "@/lib/investments/quantity-authority-bridge.core";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
 import { PositionOrigin, type Prisma, type PrismaClient, type ReconstructionStatus } from "@prisma/client";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { PriceBasis } from "@prisma/client";
-import { db } from "@/lib/db";
 import { identityContext } from "@/lib/money/convert";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { buildSpaceConversionContextById } from "@/lib/money/server-context";
+/**
+ * RLS-AI-S7 — `buildSpaceConversionContext`, NOT the `…ById` sibling.
+ *
+ * ⚠️ `…ById` DOES ITS OWN `db.space.findUnique` AND TAKES NO AUTHORITY, so a
+ * valuation running inside a tenant phase would have read the Space row as the
+ * migration principal while every other read in that phase ran as the caller.
+ * The row is read here on the phase's client instead; the FX build itself needs
+ * no client, because `FxRate` is global reference data with no row-level
+ * security (see lib/ai/evidence-authorities.ts).
+ */
+import { buildSpaceConversionContext } from "@/lib/money/server-context";
 import { resolvePositionAsOf, type PositionRow } from "@/lib/investments/reconstruction-read";
 import { DIGITAL_ASSET_ACCOUNT_TYPES } from "@/lib/account-classifier";
 import { priceArchive } from "@/lib/prices/archive";
@@ -127,7 +137,6 @@ export interface GetInvestmentValueArgs {
   /** Or a single account (its Space supplies the reporting currency + FX). */
   financialAccountId?: string;
   asOf: string; // YYYY-MM-DD
-  client?: Client;
   /**
    * A9 constant-quantity fallback. When a holding has NO position observation on
    * or before `asOf` (e.g. a just-connected investment account whose provider
@@ -166,8 +175,20 @@ export interface GetInvestmentValueArgs {
  * Returns the shaped portfolio view — a valued subtotal plus an explicit
  * unvalued remainder; never a partial total presented as the whole.
  */
-export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Promise<InvestmentValuationView> {
-  const client = args.client ?? db;
+export async function getInvestmentValueAsOf(
+/**
+ * ⚠️ RLS-AI-S7 — THE AUTHORITY IS A REQUIRED, LEADING PARAMETER AND HAS NO DEFAULT.
+ *
+ * It used to be `options?.client ?? db`. That default was the quietest escape in
+ * the whole AI read graph: `lib/ai/assemblers/holdings.ts` imports no `@/lib/db`
+ * at all, so every scan for a held client said it was clean — while both of its
+ * seams silently fell back to the migration principal, the role that owns every
+ * table, carries BYPASSRLS and is exempt from every policy. An optional authority
+ * is an ambient one; a DEFAULTED one is an ambient one that looks converted.
+ */
+  client: ReadClient,
+  args:   GetInvestmentValueArgs,
+): Promise<InvestmentValuationView> {
   const { asOf } = args;
   const holdConstant = args.holdConstantBeforeEarliest === true;
   const asOfDate = new Date(`${asOf}T00:00:00.000Z`);
@@ -218,7 +239,6 @@ export interface GetInvestmentValueWindowArgs {
   financialAccountId?: string;
   /** The exact set of dates to value (YYYY-MM-DD). Deduped + sorted internally. */
   dates: readonly string[];
-  client?: Client;
   holdConstantBeforeEarliest?: boolean;
   visibilityScope?: InvestmentVisibilityScope;
   /** V26-QUANTITY-1G — receives the quantity-authority decision ledger. */
@@ -243,9 +263,17 @@ export interface GetInvestmentValueWindowArgs {
  * subset, so the shared window cannot leak a later row into an earlier day.
  */
 export async function getInvestmentValueForWindow(
+  /**
+   * RLS-AI-S7 — required, leading, no default, for the same reason as the
+   * single-date entry point above. This one is NOT on the AI evidence graph (its
+   * callers are the snapshot regenerator and the historical-holdings window), and
+   * it is converted anyway: leaving one `?? db` in the file would have left the
+   * module importing the migration principal, and "the escape is only on the
+   * function nobody in this slice calls" is how an escape survives a slice.
+   */
+  client: ReadClient,
   args: GetInvestmentValueWindowArgs,
 ): Promise<Map<string, InvestmentValuationView>> {
-  const client = args.client ?? db;
   const holdConstant = args.holdConstantBeforeEarliest === true;
   const visibilityScope: InvestmentVisibilityScope = args.visibilityScope ?? "all";
 
@@ -479,8 +507,12 @@ export async function valuePositionRowsOverDates(args: {
   const currencySet = new Set<string>();
   for (const rows of byPair.values()) for (const r of rows) if (r.currency) currencySet.add(r.currency);
   for (const meta of instrumentMeta.values()) if (meta.currency) currencySet.add(meta.currency);
-  const ctx = contextSpaceId
-    ? await buildSpaceConversionContextById(contextSpaceId, { currencies: [...currencySet], dates })
+  const ctxSpace = contextSpaceId
+    ? await client.space.findUnique({
+        where: { id: contextSpaceId }, select: { reportingCurrency: true } })
+    : null;
+  const ctx = ctxSpace
+    ? await buildSpaceConversionContext(ctxSpace, { currencies: [...currencySet], dates })
     : identityContext(reportingCurrency);
 
   // ── V26-QUANTITY-1G — the quantity authority, when opted in ───────────────

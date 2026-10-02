@@ -46,6 +46,7 @@
 import { SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { db } from "@/lib/db";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 import { DIGITAL_ASSET_ACCOUNT_TYPES } from "@/lib/account-classifier";
 import {
@@ -156,6 +157,16 @@ export interface InvestmentsHistoryRequest {
 
 export interface LoadInvestmentsSpaceDataOptions extends CurrentPositionsOptions {
   history?: InvestmentsHistoryRequest;
+  /**
+   * RLS-AI-S7 — the authority this loader's reads run under.
+   *
+   * ⚠️ IT USED TO ARRIVE VIA `CurrentPositionsOptions.client`, which this interface
+   * extends, so the field was inherited from a leaf's option bag and defaulted to
+   * `db` two levels down. The leaf's option is gone; this surface names its own,
+   * and it is still optional HERE because this is a workspace loader with many
+   * callers — the required parameter is enforced where the READ happens.
+   */
+  client?: ReadClient;
 }
 
 /**
@@ -183,7 +194,7 @@ export async function loadInvestmentsSpaceData(
   // The current positions read and the (independent) scope-divergence read run in
   // parallel, so the disclosure adds no latency to the workspace load.
   const [positions, scopeDivergence] = await Promise.all([
-    getCurrentPositions(scope, options),
+    getCurrentPositions(client, scope, options),
     resolveScopeDivergence(client, scope),
   ]);
   const accountIds = [...new Set(positions.rows.map((r) => r.accountId))];

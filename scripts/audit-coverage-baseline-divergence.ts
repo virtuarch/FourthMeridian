@@ -115,7 +115,7 @@ async function main(): Promise<void> {
         reportingCurrency: space.reportingCurrency,
       },
     };
-    const section2 = await assemble(spaceCtx, { scopeHint: "full" });
+    const section2 = await assemble(db, spaceCtx, { scopeHint: "full" });
     const txn = section2 ? (section2.data as TransactionsSummaryData) : null;
     const derived = computeAverageMonthlySpending(txn);
 

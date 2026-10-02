@@ -106,7 +106,7 @@ async function evaluateHistorical(
 ): Promise<LensResult> {
   const [asOfAccounts, valuation] = await Promise.all([
     deps.getAccountsAsOf(client, { spaceId: scope.spaceId, userId: scope.userId, asOf: date, now }),
-    deps.getInvestmentValueAsOf({ spaceId: scope.spaceId, asOf: date, visibilityScope: "all", client }),
+    deps.getInvestmentValueAsOf(client, { spaceId: scope.spaceId, asOf: date, visibilityScope: "all" }),
   ]);
 
   // v2.6-L3 — "reachable right now" is a PRESENT-TENSE claim, so it applies to

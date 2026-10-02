@@ -150,7 +150,11 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     // FX). W5 — crypto wallets ride the same seam; the legacy bridge and its
     // merge args are gone (mergeSpaceExportHoldings is now the passthrough its
     // own doc promised at P2-6 completion).
-    const positions = await getCurrentPositions({ spaceId });
+    // RLS-AI-S7 — the client is passed EXPLICITLY, matching the three reads
+    // above it in this same loop. The export is a whole-account dump run for one
+    // user and is not converted here; what changes is that its authority is now
+    // written down at the call site instead of defaulted inside the leaf.
+    const positions = await getCurrentPositions(db, { spaceId });
     holdings.push(...mergeSpaceExportHoldings({
       canonicalRows: positions.rows,
       spaceId,

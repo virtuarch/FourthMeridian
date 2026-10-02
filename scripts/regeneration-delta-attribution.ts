@@ -172,7 +172,7 @@ async function main(): Promise<number> {
     const dates = updated.map((c) => c.dateISO);
     let viewByDate = new Map<string, InvestmentValuationView>();
     try {
-      viewByDate = await getInvestmentValueForWindow({
+      viewByDate = await getInvestmentValueForWindow(db, {
         spaceId: space.id,
         dates,
         holdConstantBeforeEarliest: true,

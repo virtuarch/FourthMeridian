@@ -77,7 +77,12 @@ const deps: Partial<LiquidityEngineDeps> = {
     ];
   }) as unknown as LiquidityEngineDeps["getAccountsAsOf"],
 
-  getInvestmentValueAsOf: (async ({ asOf }: { asOf: string }) => ({
+  // RLS-AI-S7 — the authority is the LEADING argument now, so the stub takes
+  // (and deliberately ignores) a client before the args it actually reads. A stub
+  // that kept the old single-argument shape silently received the CLIENT as
+  // `{ asOf }` and destructured `undefined`, which is why five value assertions
+  // went red rather than one signature assertion.
+  getInvestmentValueAsOf: (async (_client: unknown, { asOf }: { asOf: string }) => ({
     asOf,
     reportingCurrency: REPORTING,
     valuedSubtotal: 0,

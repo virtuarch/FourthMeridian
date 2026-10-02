@@ -71,7 +71,7 @@ async function main() {
     `${JSON.stringify(b.expense.months?.map((m: any) => m.month))} vs ${JSON.stringify(spine?.monthsAveraged)}`);
   check('…and the amount is the projection\'s own observed rate', b.expense.basis !== 'MEASURED' || near(b.expense.amount, r2(spine.dailyRate * 365 / 12)),
     `${b.expense.amount} vs ${r2((spine?.dailyRate ?? 0) * 365 / 12)}`);
-  const assemble = async (domain: string) => (await getAssembler(domain)!(spaceCtx, { scopeHint: 'full' } as never)) ?? null;
+  const assemble = async (domain: string) => (await getAssembler(domain)!(db, spaceCtx, { scopeHint: 'full' } as never)) ?? null;
   const [accounts, transactions] = await Promise.all([assemble(FinanceDomains.ACCOUNTS), assemble(FinanceDomains.TRANSACTIONS_SUMMARY)]);
   const assessment = computeAssessment({ space: { name: '', reportingCurrency: 'USD' },
     domains: { [FinanceDomains.ACCOUNTS]: accounts, [FinanceDomains.TRANSACTIONS_SUMMARY]: transactions } } as unknown as SpaceContext_AI);

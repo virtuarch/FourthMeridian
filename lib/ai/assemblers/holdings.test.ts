@@ -35,8 +35,15 @@ const core = stripComments(coreRaw);
 console.log("1. canonical read seams");
 check("imports getCurrentPositions (FULL detail seam)",
   /import\s*\{[^}]*getCurrentPositions[^}]*\}\s*from\s*['"]@\/lib\/investments\/current-positions['"]/.test(binding));
-check("calls getCurrentPositions with a spaceId scope",
-  /getCurrentPositions\(\s*\{\s*spaceId\s*\}/.test(binding));
+// RLS-AI-S6/S7 — the authority is now the leading argument and the scope follows
+// it. Both halves are pinned, because the pin exists to catch a read that scopes
+// itself (or, now, one that chooses its own client).
+check("calls getCurrentPositions with the PROPAGATED client and a spaceId scope",
+  /getCurrentPositions\(\s*client,\s*\{\s*spaceId\s*\}/.test(binding));
+check("…and the aggregate valuation takes the same client, not its own",
+  /getInvestmentValueAsOf\(\s*client,\s*\{/.test(binding));
+check("…and this assembler holds no Prisma client of its own",
+  !/from\s*['\"]@\/lib\/db['\"]/.test(binding.replace(/db\/tenant-context/g, 'TC')));
 check("imports getInvestmentValueAsOf (aggregate valuation)",
   /import\s*\{[^}]*getInvestmentValueAsOf[^}]*\}\s*from\s*['"]@\/lib\/investments\/valuation['"]/.test(binding));
 check("aggregate uses the canonical 'all' visibility scope",

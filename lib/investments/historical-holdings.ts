@@ -102,14 +102,13 @@ export async function historicalHoldingsForWindow(
     spaceId: args.spaceId,
     financialAccountId: args.financialAccountId,
     dates,
-    client,
     visibilityScope: args.visibilityScope,
     holdConstantBeforeEarliest: args.holdConstantBeforeEarliest,
     excludeDigitalAssetAccounts: args.excludeDigitalAssetAccounts,
   };
 
   const [byDate, scope] = await Promise.all([
-    getInvestmentValueForWindow(valuationArgs),
+    getInvestmentValueForWindow(client, valuationArgs),
     resolveInvestmentScopeAndCurrency(client, args, args.visibilityScope ?? "all"),
   ]);
 

@@ -99,7 +99,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const section = await assemble(spaceCtx, {
+  const section = await assemble(db, spaceCtx, {
     scopeHint: "full",
     transactionWindow: { startDate: startIso, endDate: endIso, label: `slice4 evidence ${days}d` },
   });

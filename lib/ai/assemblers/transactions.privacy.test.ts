@@ -148,9 +148,25 @@ check(
 // reads the delegate's source and proves it applies the predicate. What is left
 // to pin here is the other half — that the assembler has not quietly grown a
 // SECOND, ungated path to transaction rows.
+// ⚠️ RLS-AI-S6 — THE READS ARE ON `client`, NOT `db`, AND THE NEEDLE HAD TO
+// FOLLOW. The assembler no longer imports a Prisma client at all: the authority
+// is a required leading parameter. A needle still spelled `db.transaction.` would
+// have matched NOTHING after that change and reported clean over zero call sites —
+// the precise failure mode recorded for the `\b$transaction\s*\(` scan in this
+// programme. Both spellings are admitted so the scan cannot go quiet on either,
+// and the count assertion below is what makes its silence meaningful.
 const txReadWheres = [...source.matchAll(
-  /db\.transaction\.(?:findMany|findFirst|count|aggregate|groupBy)\(\{\s*\n\s*where:\s*([A-Za-z_$][\w$]*)\(/g,
+  /(?:db|client)\.transaction\.(?:findMany|findFirst|count|aggregate|groupBy)\(\{\s*\n\s*where:\s*([A-Za-z_$][\w$]*)\(/g,
 )].map((m) => m[1]);
+check(
+  'the where-builder scan found BOTH transaction reads — it is not reporting clean over nothing',
+  txReadWheres.length === 2,
+  `found ${txReadWheres.length}: [${txReadWheres.join(', ')}]`,
+);
+check(
+  'the assembler holds no Prisma client of its own — the authority is a parameter',
+  !/from\s*['"]@\/lib\/db['"]/.test(source.replace(/db\/tenant-context/g, 'TC')),
+);
 check(
   'every transaction read is built by a gated where-builder, and there is at least one',
   txReadWheres.length > 0 &&

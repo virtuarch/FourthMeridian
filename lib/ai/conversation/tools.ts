@@ -384,7 +384,12 @@ async function assemble<T>(
 ): Promise<T | null> {
   const a = getAssembler(domain);
   if (!a) return null;
-  const section = await a(ctx.spaceCtx, { scopeHint: 'full', ...options } as never);
+  // ⚠️ RLS-AI-S6 — THE TOOL'S OWN READ AUTHORITY, PASSED DOWN. Inside a phase this
+  // is the tenant transaction the dispatcher opened; outside one it is whatever the
+  // surface stated. Either way the assembler no longer picks: before this slice a
+  // tool running as the tenant still assembled its domain as the migration
+  // principal, which is a split authority inside a SINGLE tool call.
+  const section = await a(ctx.readClient, ctx.spaceCtx, { scopeHint: 'full', ...options } as never);
   return (section?.data as T) ?? null;
 }
 

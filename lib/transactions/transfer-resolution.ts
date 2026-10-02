@@ -23,7 +23,7 @@
  */
 
 import { FlowType, ShareStatus } from "@prisma/client";
-import { db } from "@/lib/db";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 import {
   matchTransferCandidate,
@@ -155,11 +155,13 @@ function toRel(
  * on the persisted path (ACTIVE link, FULL visibility, account not soft-deleted).
  */
 export async function filterVisibleCounterpartyAccounts(
+  /** RLS-AI-S6 — required, leading, no default. See resolveTransferAssessments. */
+  client: ReadClient,
   accountIds: string[],
   spaceId: string,
 ): Promise<Set<string>> {
   if (accountIds.length === 0) return new Set();
-  const rows = await db.financialAccount.findMany({
+  const rows = await client.financialAccount.findMany({
     where: {
       id: { in: accountIds },
       deletedAt: null,
@@ -179,10 +181,12 @@ export async function filterVisibleCounterpartyAccounts(
  * (KD-15). Rows absent from the map stay Unresolved on the liquidity axis.
  */
 export async function resolveOwnedTransferCounterparties(
+  /** RLS-AI-S6 — required, leading, no default. See resolveTransferAssessments. */
+  client: ReadClient,
   rows: TransferResolutionRow[],
   ctx: { spaceId: string },
 ): Promise<Map<string, string>> {
-  const full = await resolveTransferAssessments(rows, ctx);
+  const full = await resolveTransferAssessments(client, rows, ctx);
   const out = new Map<string, string>();
   for (const [id, a] of full) if (a.counterpartyAccountId) out.set(id, a.counterpartyAccountId);
   return out;
@@ -202,6 +206,30 @@ export async function resolveOwnedTransferCounterparties(
  * savings transfer" discloses nothing about an account the Space may not see.
  */
 export async function resolveTransferAssessments(
+  /**
+   * RLS-AI-S6 — THE AUTHORITY THE THREE READS BELOW RUN UNDER. Required, leading,
+   * no default: the RLS-C-S2/S3 idiom.
+   *
+   * ⚠️ REACH BEYOND THE AI SLICE, STATED. This module is not in the AI tree, and it
+   * is converted because it is the ONLY leaf on the live assembler graph that had
+   * no client seam of any kind — not even an optional one — so the transactions
+   * assembler could not have run its transfer pass under a tenant identity at all.
+   * Five call sites were updated mechanically; four are audit scripts that pass the
+   * migration principal, VISIBLY, which is exactly what the idiom is for.
+   *
+   * ⚠️ AND IT CHANGES WHAT THIS FUNCTION CAN SEE, WHICH IS THE POINT AND ALSO A
+   * FINDING. The ownership anchor below deliberately scopes candidate gathering to
+   * the OWNING USER's whole account graph so that "a Space member reads another
+   * member's shared account" resolves the far leg of an internal transfer. Under
+   * `fm_app` the FinancialAccount policy is
+   * `ownerUserId = current_fm_user_id() OR fm_account_visible("id")`, so a
+   * co-member's accounts that are NOT linked into a visible Space drop out of
+   * `owned` — the far leg becomes unresolvable and the row reports NO counterparty.
+   * That is a NARROWING, never a widening, and it is recorded in
+   * lib/ai/evidence-authorities.ts as the one place where the tenant flip costs
+   * evidence rather than merely scoping it.
+   */
+  client: ReadClient,
   rows: TransferResolutionRow[],
   ctx: { spaceId: string },
 ): Promise<Map<string, TransferCandidateRelationship>> {
@@ -222,14 +250,14 @@ export async function resolveTransferAssessments(
   // works when a Space member reads another member's shared account. Cross-space
   // exposure is prevented downstream by the KD-15 gate, never by this scope.
   const targetAccountIds = [...new Set(targets.map((t) => t.financialAccountId as string))];
-  const ownerRows = await db.financialAccount.findMany({
+  const ownerRows = await client.financialAccount.findMany({
     where: { id: { in: targetAccountIds } },
     select: { ownerUserId: true },
   });
   const ownerUserIds = [...new Set(ownerRows.map((o) => o.ownerUserId).filter((x): x is string => x != null))];
   if (ownerUserIds.length === 0) return new Map();
 
-  const owned = await db.financialAccount.findMany({
+  const owned = await client.financialAccount.findMany({
     where: { ownerUserId: { in: ownerUserIds }, deletedAt: null },
     // Phase 5 — `mask` and `institutionId` are the identifier tier's inputs.
     // Both are already columns on the account; neither is a new provider read.
@@ -264,7 +292,7 @@ export async function resolveTransferAssessments(
   const times = targets.map((t) => (t.economicDate ?? t.date).getTime());
   const gte = new Date(Math.min(...times) - GATHER_WINDOW_MS);
   const lte = new Date(Math.max(...times) + GATHER_WINDOW_MS);
-  const candidates = await db.transaction.findMany({
+  const candidates = await client.transaction.findMany({
     where: {
       financialAccountId: { in: ownedIds },
       // v2.6-L4C — the opposite leg may itself be filed as DEBT_PAYMENT or carry
@@ -331,7 +359,7 @@ export async function resolveTransferAssessments(
   // the MATURITY survives, because naming a movement "savings transfer" discloses
   // nothing about an account this Space may not see. Failing closed on the id
   // while keeping the name is strictly more truthful than dropping both.
-  const visible = await filterVisibleCounterpartyAccounts([...resolvedAccountIds], ctx.spaceId);
+  const visible = await filterVisibleCounterpartyAccounts(client, [...resolvedAccountIds], ctx.spaceId);
   for (const [rowId, a] of assessmentByRow) {
     if (a.counterpartyAccountId && !visible.has(a.counterpartyAccountId)) {
       assessmentByRow.set(rowId, {

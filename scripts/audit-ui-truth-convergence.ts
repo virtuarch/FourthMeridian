@@ -92,7 +92,7 @@ async function main() {
   // live path is not evidence about the live path. Consistency is not
   // correctness, and a REQUIRED gate that under-measures manufactures exactly
   // the confidence it exists to earn.
-  const assessments = await resolveTransferAssessments(rawRows as never, { spaceId: space.id });
+  const assessments = await resolveTransferAssessments(db, rawRows as never, { spaceId: space.id });
   const tx = rawRows.map((r) => ({
     ...serializeTransactionRow({ ...r, accountType: A.get(r.financialAccountId ?? "")?.type ?? null } as never),
     financialAccountId: r.financialAccountId,

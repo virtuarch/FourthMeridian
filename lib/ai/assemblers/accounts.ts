@@ -47,7 +47,7 @@
  * - Debt metadata (APR, rates) is only included for VisibilityLevel.FULL accounts.
  */
 
-import { db } from '@/lib/db';
+import type { ReadClient } from '@/lib/db/tenant-context';
 import {
   accountDisplayName, ACCOUNT_NAME_SELECT, type AccountNameEvidence,
 } from '@/lib/accounts/display-identity';
@@ -148,6 +148,13 @@ type AccountLinkRow = {
 // ---------------------------------------------------------------------------
 
 async function assembleAccounts(
+  /**
+   * RLS-AI-S6 — THE AUTHORITY EVERY READ BELOW RUNS UNDER, handed in by the
+   * phase that earned it. This file holds no Prisma client (asserted by the
+   * source scan in assemblers.authority.test.ts), so there is nothing to fall
+   * back to and nothing to choose.
+   */
+  client:   ReadClient,
   spaceCtx: SpaceContext,
   options:  AssemblerOptions,
 ): Promise<ContextDomainSection | null> {
@@ -160,7 +167,7 @@ async function assembleAccounts(
   // filtered — both confer visibility, matching all other D3 Step 4 cutover
   // points. Soft-deleted accounts (deletedAt non-null) are excluded.
 
-  const links: AccountLinkRow[] = await db.spaceAccountLink.findMany({
+  const links: AccountLinkRow[] = await client.spaceAccountLink.findMany({
     where: {
       spaceId,
       status:           ShareStatus.ACTIVE,
@@ -257,7 +264,7 @@ async function assembleAccounts(
         lastUpdated: l.financialAccount.lastUpdated,
         balance: l.financialAccount.balance,
       })),
-      { contextSpaceId: spaceId },
+      { client, contextSpaceId: spaceId },
     )).map((r) => [r.id, r.balance] as const),
   );
   for (const l of links) {
@@ -270,9 +277,11 @@ async function assembleAccounts(
 
   // v2.6-L3 — provider-observed pending, scoped per account. Read-only; nothing
   // is inferred from recurrence, averages, or habits.
-  // RLS slice B — `loadPendingEvidence` now requires its client. This caller is
-  // not converted in this slice, so it passes the client it already held.
-  const pendingByAccount = await loadPendingEvidence(db, links.map((l) => l.financialAccount.id));
+  // RLS-AI-S6 — `loadPendingEvidence` has required its client since slice B; it
+  // now receives the one this assembler was handed, so the pending read runs
+  // under the same authority as the links read above rather than under whatever
+  // this module happened to import.
+  const pendingByAccount = await loadPendingEvidence(client, links.map((l) => l.financialAccount.id));
 
   /**
    * v2.6-L1 — the resolved freshness claim for one account, through the canonical
@@ -374,7 +383,7 @@ async function assembleAccounts(
   // identical to the Phase 2 identity behavior (equivalence gates). Identity
   // fallback only if the Space row vanished mid-request. Data-only: no
   // prompt/serializer change (presentation is Phase 4).
-  const space = await db.space.findUnique({
+  const space = await client.space.findUnique({
     where:  { id: spaceId },
     select: { reportingCurrency: true },
   });

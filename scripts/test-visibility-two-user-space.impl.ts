@@ -23,12 +23,14 @@
  * so future payload additions cannot silently reintroduce the leak.
  *
  * ── Pipeline fidelity ─────────────────────────────────────────────────────────
- * This replicates buildContext() step 4 exactly: resolve the PERSONAL domain
+ * This replicates what buildContext() step 4 did before RLS-AI-S1 deleted it:
+ * resolve the PERSONAL domain
  * manifest, run every registered assembler, then run signal detectors — the
  * same modules, the same DB queries. This is faithful to the unit under test:
  * KD-1 lives entirely in the assembler queries. What is NOT exercised here is
- * buildContext()'s membership guard and audit-log write; both are unchanged
- * by KD-1 and remain covered in lib/ai/context-builder.ts.
+ * that function's membership guard and audit-log write; both are gone with it
+ * by KD-1. (They used to be covered in lib/ai/context-builder.ts, deleted in RLS-AI-S1;
+ * the live owner is lib/ai/conversation/evidence.ts.)
  *
  * All seeded rows carry a unique run ID and are deleted in a finally block,
  * pass or fail.
@@ -147,7 +149,7 @@ async function assembleFullContext(
   for (const domain of getDomainManifest('PERSONAL')) {
     const assembler = getAssembler(domain);
     if (!assembler) continue;
-    const section = await assembler(spaceCtx, options);
+    const section = await assembler(prisma, spaceCtx, options);
     if (section !== null) domains[domain] = section;
   }
 
@@ -448,7 +450,7 @@ async function main(): Promise<void> {
   // Every legacy Holding read path is deleted (REVIEW-3 killed getHoldings,
   // W5 killed the crypto bridge). getCurrentPositions must enforce the
   // identical FULL gate INSIDE the seam (KD-21a detailEligible).
-  const positions   = await getCurrentPositions({ spaceId: space.id }, { client: prisma });
+  const positions   = await getCurrentPositions(prisma, { spaceId: space.id });
   const positionsUi = JSON.stringify(positions.rows).toLowerCase();
   check(
     'canonical position seam surfaces positions from FULL wallet V',

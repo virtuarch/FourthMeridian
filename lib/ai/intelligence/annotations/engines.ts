@@ -531,7 +531,9 @@ export function computeRiskOpportunities(
  * Compute a structured financial assessment for a fully-assembled SpaceContext_AI.
  *
  * Pure function — no DB queries, no side effects, no LLM calls.
- * Call this after buildContext() and before prompt construction.
+ * Call this after the context is assembled (lib/ai/conversation/evidence.ts
+ * `assembleFullContext`; `buildContext()` was deleted in RLS-AI-S1) and before
+ * prompt construction.
  */
 
 

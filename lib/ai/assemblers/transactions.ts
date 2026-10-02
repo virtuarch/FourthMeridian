@@ -57,7 +57,7 @@
  *   drilldown share the same predicate constant.
  */
 
-import { db } from '@/lib/db';
+import type { ReadClient } from '@/lib/db/tenant-context';
 import { ShareStatus, TransactionCategory, FlowType } from '@prisma/client';
 import type { FlowDirection, Prisma } from '@prisma/client';
 
@@ -132,7 +132,27 @@ import { accountDisplayName, ACCOUNT_NAME_SELECT } from '@/lib/accounts/display-
 import { NON_SPENDING_CATEGORY_NAMES } from '@/lib/ai/spending-categories';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
 import { convertMoney, identityContext } from '@/lib/money/convert';
-import { buildSpaceConversionContext, buildSpaceConversionContextById } from '@/lib/money/server-context';
+/**
+ * RLS-AI-S6 — `buildSpaceConversionContext` ONLY, and the `…ById` sibling is gone
+ * from this file on purpose.
+ *
+ * ⚠️ IT IS THE ONE LEAF ON THIS PATH WITH NO CLIENT SEAM. `buildSpaceConversionContextById`
+ * performs its own `db.space.findUnique` and takes no authority, so calling it from a
+ * tenant phase would have read the Space row as the migration principal while every
+ * other read in the phase ran as the caller. `buildSpaceConversionContext` itself
+ * "performs no Space reads" (its own header): it is given the Space row and reads
+ * only `FxRate` through the archive.
+ *
+ * ⚠️ AND `FxRate` IS CLASSIFIED, NOT WAVED THROUGH. It is in the GLOBAL REFERENCE
+ * family of the RLS migration (section 5: `Instrument`, `InstrumentAlias`,
+ * `PriceObservation`, `CorporateActionTerms`, `FxRate`, `Merchant`,
+ * `MerchantAlias`) — granted to fm_app outright, with no row-level security at
+ * all, because an exchange rate belongs to no tenant. Reading it on whatever
+ * client the archive holds is therefore deployment-wide BY CLASSIFICATION, which
+ * `lib/ai/evidence-authorities.ts` records and the theorem audit re-derives from
+ * the migration rather than taking on trust.
+ */
+import { buildSpaceConversionContext } from '@/lib/money/server-context';
 import type { ConversionContext } from '@/lib/money/types';
 import type { SpaceContext } from '@/lib/space';
 
@@ -576,6 +596,8 @@ export function aiDrilldownWhere(
 // ---------------------------------------------------------------------------
 
 async function assembleTransactions(
+  /** RLS-AI-S6 — the authority every read below runs under. See AssemblerFn. */
+  client:   ReadClient,
   spaceCtx: SpaceContext,
   options:  AssemblerOptions,
 ): Promise<ContextDomainSection | null> {
@@ -597,7 +619,7 @@ async function assembleTransactions(
   // hero divide by. Reading it here puts both candidate baselines on one object
   // so the authority can choose; without it the engine could only ever see the
   // measured one, and "declared outranks measured" would be a rule with no rung.
-  const efSection = await db.spaceDashboardSection.findFirst({
+  const efSection = await client.spaceDashboardSection.findFirst({
     where:  { spaceId, key: 'emergency_fund_progress' },
     select: { config: true },
   });
@@ -617,7 +639,7 @@ async function assembleTransactions(
   // deterministically whether the matching set exceeded TRANSACTION_FETCH_LIMIT.
   // Rows are newest-first, so any overflow drops the OLDEST rows — which would
   // silently deflate older-month totals, category/merchant rollups, and trends.
-  const fetched: TxnRow[] = await db.transaction.findMany({
+  const fetched: TxnRow[] = await client.transaction.findMany({
     where: aiTransactionWhere(spaceId, win),
     select: {
       // TI2-W1 — id + account key for the read-time transfer matcher (§3.3 parity).
@@ -686,7 +708,7 @@ async function assembleTransactions(
   // estimated) and taint the summary's `estimated` flag — data-only, no
   // prompt/serializer change (presentation is Phase 4). Identity fallback
   // only if the Space row vanished mid-request.
-  const spaceRow = await db.space.findUnique({
+  const spaceRow = await client.space.findUnique({
     where:  { id: spaceId },
     select: { reportingCurrency: true },
   });
@@ -705,7 +727,7 @@ async function assembleTransactions(
   //      resolveOwnedTransferCounterparties call was a projection of this);
   //   2. the debt-payment authority's attestation input (transferMaturity);
   //   3. the movement-form disposition the liquidity classifier reads.
-  const assessments = await resolveTransferAssessments(rows, { spaceId });
+  const assessments = await resolveTransferAssessments(client, rows, { spaceId });
   const resolvedCp = new Set(
     [...assessments].filter(([, a]) => a.counterpartyAccountId != null).map(([id]) => id),
   );
@@ -714,7 +736,7 @@ async function assembleTransactions(
   // Account id → type for the liquidity tier resolver and the income taxonomy.
   // IDs + types only — classification input, never disclosure; nothing from this
   // query reaches the payload.
-  const spaceAccountTypes = await db.spaceAccountLink.findMany({
+  const spaceAccountTypes = await client.spaceAccountLink.findMany({
     where:  { spaceId, status: ShareStatus.ACTIVE, financialAccount: { deletedAt: null } },
     select: { financialAccount: { select: { id: true, type: true } } },
   });
@@ -1132,7 +1154,7 @@ async function assembleTransactions(
   // Never runs on ordinary prompts (the option is absent) and only reads rows
   // inside the Space's FULL-visibility boundary.
   const drilldown = options.drilldown
-    ? await assembleDrilldown(spaceCtx, options.drilldown, win)
+    ? await assembleDrilldown(client, spaceCtx, options.drilldown, win)
     : undefined;
 
   // ── Assemble payload ──────────────────────────────────────────────────────
@@ -1947,6 +1969,8 @@ function resolveCategory(raw: string | undefined): TransactionCategory | null {
  * unless the caller explicitly asked about a non-spending category.
  */
 async function assembleDrilldown(
+  /** RLS-AI-S6 — the same authority the summary above ran under, never a second one. */
+  client:    ReadClient,
   spaceCtx:  SpaceContext,
   request:   NonNullable<AssemblerOptions['drilldown']>,
   defaultWin: { startIso: string; endIso: string | null },
@@ -1982,7 +2006,7 @@ async function assembleDrilldown(
   // was explicitly requested (income is positive, etc.).
   const amountWhere = includeNonSpending ? {} : { amount: { lt: 0 } };
 
-  const rows = await db.transaction.findMany({
+  const rows = await client.transaction.findMany({
     where: aiDrilldownWhere(spaceId, { start, end }, { categoryWhere, amountWhere, merchantQuery }),
     select: {
       date:        true,
@@ -2019,10 +2043,20 @@ async function assembleDrilldown(
   // Space conversion context over exactly the capped rows' (currency × date)
   // pairs and convert every row at its own date, mirroring the summary seam.
   // Degrades to identity if the Space row vanished mid-request.
-  const drillCtx = await buildSpaceConversionContextById(spaceId, {
-    currencies: capped.map((r) => r.currency),
-    dates:      [...new Set(capped.map((r) => econOf(r).toISOString().slice(0, 10)))],
+  // RLS-AI-S6 — the Space row is read on THIS phase's authority and the FX
+  // context built from it, rather than through `…ById`, which would have reached
+  // its own client. Identity fallback when the Space row is not readable — the
+  // same degradation the summary seam above already had, for the same reason.
+  const drillSpace = await client.space.findUnique({
+    where:  { id: spaceId },
+    select: { reportingCurrency: true },
   });
+  const drillCtx = drillSpace
+    ? await buildSpaceConversionContext(drillSpace, {
+        currencies: capped.map((r) => r.currency),
+        dates:      [...new Set(capped.map((r) => econOf(r).toISOString().slice(0, 10)))],
+      })
+    : identityContext(DEFAULT_DISPLAY_CURRENCY);
   // One converted magnitude per row drives matchedTotal, the "largest" sort, and
   // each serialized amount — never a native amount beside a converted total.
   const convertedAll = capped.map((r) => {

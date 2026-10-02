@@ -72,7 +72,7 @@ async function main() {
   // result through `chooseCounterpartyId`. A probe that skips it sees a DIFFERENT
   // counterparty than the app does — which is exactly how the previous
   // convergence proof missed this defect.
-  const assess = await resolveTransferAssessments(raw as never, { spaceId: space.id });
+  const assess = await resolveTransferAssessments(db, raw as never, { spaceId: space.id });
   const rows = raw.map((r) => ({
     ...serializeTransactionRow({ ...r, accountType: A.get(r.financialAccountId ?? "")?.type ?? null }),
     counterpartyAccountId: r.counterpartyAccountId ?? assess.get(r.id)?.counterpartyAccountId ?? null,

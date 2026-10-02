@@ -167,8 +167,14 @@ async function main(): Promise<void> {
     const timeMachine = readFileSync(join(root, "lib/investments/investments-time-machine.ts"), "utf8");
     check("valuation default scope is 'all' (A9 regeneration unaffected)",
       /args\.visibilityScope\s*\?\?\s*"all"/.test(valuation));
-    check("time machine values positions with detailEligible",
-      /getInvestmentValueAsOf\(\{[^}]*visibilityScope:\s*"detailEligible"/.test(timeMachine));
+    // RLS-AI-S7 — the authority became the leading argument, so the args object
+    // is the SECOND one. The property pinned is the visibility scope, unchanged;
+    // what moved is only where the braces start.
+    check("time machine values positions with detailEligible, on the PASSED client",
+      /getInvestmentValueAsOf\(client,\s*\{[^}]*visibilityScope:\s*"detailEligible"/.test(timeMachine));
+    check("…and valuation.ts no longer defaults its own authority",
+      !/args\.client\s*\?\?\s*db/.test(valuation)
+        && !/from\s*['"]@\/lib\/db['"]/.test(valuation.replace(/db\/tenant-context/g, "TC")));
     check("time machine flows scope uses detailEligible",
       /resolveSpaceInvestmentAccountIds\(client,\s*args\.spaceId!,\s*"detailEligible"\)/.test(timeMachine) &&
       /resolveSingleAccountScope\(client,\s*args\.financialAccountId,\s*args\.spaceId\s*\?\?\s*null,\s*"detailEligible"\)/.test(timeMachine));

@@ -72,13 +72,13 @@ export async function accountHoldingNodes(
   const todayISO = todayUTCISO();
 
   const byDate = await historicalHoldingsForWindow({
-    financialAccountId: account.accountId, dates, client,
+    financialAccountId: account.accountId, dates,
     holdConstantBeforeEarliest: true, excludeDigitalAssetAccounts: true,
   });
 
   // The present, from the same spine and the same identity.
   const present = !isHistoricalDay(account.toISO, todayISO)
-    ? await getCurrentPositions({ financialAccountId: account.accountId }, { client })
+    ? await getCurrentPositions(client, { financialAccountId: account.accountId })
     : null;
 
   // ── The instrument set is the UNION over the window ────────────────────────

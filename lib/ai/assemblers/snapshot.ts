@@ -45,25 +45,23 @@
 
 import { getRecentSnapshots } from '@/lib/data/snapshots';
 /**
- * RLS-C-S3 — THE ASSEMBLER'S READ AUTHORITY, NAMED HERE RATHER THAN INHERITED.
+ * RLS-AI-S6 — THE ASSEMBLER'S READ AUTHORITY IS NOW A PARAMETER, SO THIS FILE
+ * HOLDS NO CLIENT AT ALL.
  *
- * `getRecentSnapshots` now requires its client, so this assembler must state one.
- * It states the migration principal, deliberately and unchanged: the AI surface's
- * authority is NOT being flipped in this slice, because every table it reads is
- * granted to `fm_app` and so an RLS refusal there cannot fail loudly — it arrives
- * as an empty set, and this surface converts empty sets into declarative English
- * for a model. See docs/plans/RLS-SILENT-REFUSAL-CAS.md Part 2.
+ * RLS-C-S3 recorded, honestly, why this module imported `db`: `getRecentSnapshots`
+ * had just started requiring a client, the other two heavyweight assemblers already
+ * held one, and threading a client down `AssemblerOptions` was rejected because
+ * "the Brief loader calls three assemblers and holds no long-lived client to pass".
  *
- * It is an ordinary `db` import because that is the honest shape: the two other
- * heavyweight assemblers (`accounts.ts`, `transactions.ts`) already hold one and
- * are already recorded in the authority ratchet. This assembler was reaching the
- * same client THROUGH a leaf, which is the same authority with nobody's name on
- * it. Threading a client down `AssemblerOptions` instead was rejected: the Brief
- * loader calls three assemblers and holds no long-lived client to pass, so a
- * required field there could not be satisfied and an optional one would be this
- * import with extra steps.
+ * ⚠️ THAT LAST PREMISE WAS FALSE BY THE TIME IT WAS WRITTEN, and checking it is
+ * what unblocked this slice. `lib/ai/brief/load.ts` already wraps every canonical
+ * read in `rt.asOwnerReading((c) => …)` — a per-phase tenant runner that hands out
+ * exactly a `ReadClient`. The Brief had a client to pass all along; what it did not
+ * have was a parameter to pass it to. The client therefore arrives as the FIRST
+ * ARGUMENT OF `AssemblerFn` (never on `AssemblerOptions`, where an optional field
+ * would be this import with extra steps) and every caller states it.
  */
-import { db } from '@/lib/db';
+import type { ReadClient } from '@/lib/db/tenant-context';
 // v2.6-WINDOW-1 — imported from the PURE module, not through the server-only
 // read, so the projection below stays reachable from a probe.
 import { canonicalWindowChange, seriesSpanDays } from '@/lib/data/snapshot-window';
@@ -237,6 +235,8 @@ export function projectSnapshotSection(
 // ---------------------------------------------------------------------------
 
 async function assembleSnapshot(
+  /** RLS-AI-S6 — the authority this read runs under. See AssemblerFn. */
+  client:   ReadClient,
   spaceCtx: SpaceContext,
   options:  AssemblerOptions,
 ): Promise<ContextDomainSection | null> {
@@ -245,7 +245,7 @@ async function assembleSnapshot(
   const assembledAt = new Date().toISOString();
 
   // Canonical, stamp-aware, bounded read (newest-last, ascending by date).
-  const rows = await getRecentSnapshots(db, { rows: SNAPSHOT_HISTORY_LIMIT }, { spaceId });
+  const rows = await getRecentSnapshots(client, { rows: SNAPSHOT_HISTORY_LIMIT }, { spaceId });
 
   const data = projectSnapshotSection(rows, scopeHint === 'brief' ? 'brief' : 'full');
   if (data === null) return null;

@@ -42,7 +42,7 @@ async function main() {
     include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } } },
     orderBy: { economicDate: { sort: "desc", nulls: "last" } },
   });
-  const assess = await resolveTransferAssessments(raw as never, { spaceId: space.id });
+  const assess = await resolveTransferAssessments(db, raw as never, { spaceId: space.id });
 
   const rows = raw.map((r) => ({
     ...serializeTransactionRow({ ...r, accountType: A.get(r.financialAccountId ?? "")?.type ?? null }),

@@ -61,11 +61,12 @@ export async function getInvestmentAccountsView(
     // from request scope. Forwarding it is the whole fix; behaviour is identical
     // on the request path and now also correct off it.
     getAccounts(client, { spaceId, userId }),
-    // OUT OF THE S2 SPINE, deliberately: `countCurrentPositionsByAccount` lives
-    // under lib/investments, which owns `systemDb` by the authority audit's
-    // confinement list, and takes no client. Left on its own authority and
-    // recorded as a follow-up rather than half-threaded from here.
-    countCurrentPositionsByAccount({ spaceId }),
+    // RLS-AI-S7 — THE FOLLOW-UP THIS COMMENT RECORDED IS DONE.
+    // `countCurrentPositionsByAccount` took no client when that note was written
+    // and defaulted to the migration principal inside `getCurrentPositions`. It
+    // requires one now, so this read finally runs on the SAME authority as the
+    // `getAccounts` call beside it instead of on a different one by accident.
+    countCurrentPositionsByAccount(client, { spaceId }),
   ]);
 
   const investmentAccounts = accounts.filter(

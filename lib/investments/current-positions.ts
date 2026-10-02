@@ -23,7 +23,7 @@
  */
 
 import type { Prisma, PrismaClient } from "@prisma/client";
-import { db } from "@/lib/db";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { valuePortfolioAsOf } from "./valuation-core";
 import {
   POSITION_VALUATION_SELECT,
@@ -69,7 +69,6 @@ export interface CurrentPositionsOptions {
    * latest observation ≤ it (A10-at-`asOf` without compare/flows).
    */
   asOf?:  string;
-  client?: Client;
 }
 
 /**
@@ -90,10 +89,20 @@ async function readConflicts(client: Client, accountIds: string[]) {
  * "today" (or an injected `asOf`) through the A10 valuation path.
  */
 export async function getCurrentPositions(
+/**
+ * ⚠️ RLS-AI-S7 — THE AUTHORITY IS A REQUIRED, LEADING PARAMETER AND HAS NO DEFAULT.
+ *
+ * It used to be `options?.client ?? db`. That default was the quietest escape in
+ * the whole AI read graph: `lib/ai/assemblers/holdings.ts` imports no `@/lib/db`
+ * at all, so every scan for a held client said it was clean — while both of its
+ * seams silently fell back to the migration principal, the role that owns every
+ * table, carries BYPASSRLS and is exempt from every policy. An optional authority
+ * is an ambient one; a DEFAULTED one is an ambient one that looks converted.
+ */
+  client:   ReadClient,
   scope:    CurrentPositionsScope,
   options?: CurrentPositionsOptions,
 ): Promise<CurrentPositions> {
-  const client = options?.client ?? db;
   const asOf = options?.asOf ?? todayUTCISO();
   const asOfDate = new Date(`${asOf}T00:00:00.000Z`);
   const scopeArgs = "spaceId" in scope
@@ -170,10 +179,12 @@ export async function getCurrentPositions(
  * the legacy positionCount semantics Connections replaced.
  */
 export async function countCurrentPositionsByAccount(
+  /** RLS-AI-S7 — required, leading, no default. See getCurrentPositions. */
+  client:   ReadClient,
   scope:    CurrentPositionsScope,
   options?: CurrentPositionsOptions,
 ): Promise<Record<string, number>> {
-  const { rows } = await getCurrentPositions(scope, options);
+  const { rows } = await getCurrentPositions(client, scope, options);
   const counts: Record<string, number> = {};
   for (const r of rows) {
     if (r.isCash) continue;

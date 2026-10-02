@@ -88,9 +88,9 @@ export async function getInvestmentsTimeMachine(
   // the reconciliation's coverage reports. Both endpoints use it so the change
   // compares the SAME position set like-for-like.
   const [rawView, rawCompareView] = await Promise.all([
-    getInvestmentValueAsOf({ ...scope, asOf, client, visibilityScope: "detailEligible", holdConstantBeforeEarliest: true }),
+    getInvestmentValueAsOf(client, { ...scope, asOf, visibilityScope: "detailEligible", holdConstantBeforeEarliest: true }),
     compareTo
-      ? getInvestmentValueAsOf({ ...scope, asOf: compareTo, client, visibilityScope: "detailEligible", holdConstantBeforeEarliest: true })
+      ? getInvestmentValueAsOf(client, { ...scope, asOf: compareTo, visibilityScope: "detailEligible", holdConstantBeforeEarliest: true })
       : Promise.resolve(null),
   ]);
 

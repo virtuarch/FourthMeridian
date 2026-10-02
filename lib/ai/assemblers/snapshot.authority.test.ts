@@ -77,9 +77,12 @@ check(
   !/\bdb\s*\./.test(src),
   src.match(/\bdb\s*\.[^\n]*/g)?.join(" | "),
 );
+// ⚠️ RLS-AI-S6 — THE AUTHORITY IS NO LONGER A MODULE-LEVEL `db` AT ALL. It is a
+// REQUIRED LEADING PARAMETER of the assembler, so the thing to pin is that the
+// canonical read is handed THAT and nothing else.
 check(
-  "…it appears exactly once, as the authority handed to the canonical read",
-  (src.match(/getRecentSnapshots\(\s*db\s*,/g) ?? []).length === 1,
+  "…the canonical read is handed the assembler's OWN client parameter",
+  (src.match(/getRecentSnapshots\(\s*client\s*,/g) ?? []).length === 1,
 );
 check(
   "assembler holds NO direct spaceSnapshot query",
@@ -90,10 +93,11 @@ check(
   // positional number can no longer hide which unit it is. Same call, same
   // Space scoping, same limit; the pin follows the new shape and additionally
   // requires the bound be spelled `rows`, since that is the whole point.
-  // RLS-C-S3 — one leading argument is now the stated database AUTHORITY. The
-  // Space scoping and the ROW bound this pin exists for are unchanged.
-  "assembler calls getRecentSnapshots scoped to the validated Space, bounded by ROWS",
-  /getRecentSnapshots\(\s*db\s*,\s*\{\s*rows:\s*SNAPSHOT_HISTORY_LIMIT\s*\}\s*,\s*\{\s*spaceId\s*\}\s*\)/.test(src),
+  // RLS-C-S3 — one leading argument is now the stated database AUTHORITY.
+  // RLS-AI-S6 — and that authority is the assembler's PARAMETER, so this module
+  // imports no client and the Space scoping and ROW bound are otherwise unchanged.
+  "assembler calls getRecentSnapshots on its OWN client, scoped to the validated Space, bounded by ROWS",
+  /getRecentSnapshots\(\s*client\s*,\s*\{\s*rows:\s*SNAPSHOT_HISTORY_LIMIT\s*\}\s*,\s*\{\s*spaceId\s*\}\s*\)/.test(src),
 );
 
 // ─── B. Behavioral pins on the pure projection ───────────────────────────────

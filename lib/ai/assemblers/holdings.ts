@@ -47,6 +47,7 @@ import type {
   ContextDomainSection,
 } from '@/lib/ai/types';
 import type { SpaceContext } from '@/lib/space';
+import type { ReadClient } from '@/lib/db/tenant-context';
 import { getCurrentPositions } from '@/lib/investments/current-positions';
 import { getInvestmentValueAsOf } from '@/lib/investments/valuation';
 import {
@@ -68,6 +69,16 @@ import { todayUTCISO } from '@/lib/time/clock';
 // ---------------------------------------------------------------------------
 
 async function assembleHoldings(
+  /**
+   * RLS-AI-S6 — the authority BOTH canonical seams run under.
+   *
+   * ⚠️ THIS ASSEMBLER NEVER HELD `db`, WHICH MADE IT THE QUIET ONE. It reached the
+   * migration principal THROUGH its two leaves, both of which defaulted
+   * `client ?? db` — the same authority with nobody's name on it, and invisible to
+   * a scan for `@/lib/db` in this directory. Both defaults are gone (S7) and the
+   * client is now stated here.
+   */
+  client:   ReadClient,
   spaceCtx: SpaceContext,
   options:  AssemblerOptions,
 ): Promise<ContextDomainSection | null> {
@@ -81,8 +92,8 @@ async function assembleHoldings(
   // observations valued at dated archive prices); there is no separate crypto
   // read, and a wallet without observations is honestly absent.
   const [current, allView] = await Promise.all([
-    getCurrentPositions({ spaceId }, { asOf }),
-    getInvestmentValueAsOf({ spaceId, asOf, visibilityScope: 'all' }),
+    getCurrentPositions(client, { spaceId }, { asOf }),
+    getInvestmentValueAsOf(client, { spaceId, asOf, visibilityScope: 'all' }),
   ]);
 
   const fullRows: CanonicalPositionRow[] = current.rows.map((r) => ({

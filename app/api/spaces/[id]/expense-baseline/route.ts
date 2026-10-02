@@ -116,7 +116,10 @@ export async function GET(
   // implementations of the same idea.
   const spaceCtx = await resolveSpaceContext(viewer.user.id, spaceId);
   const assemble = getAssembler(FinanceDomains.TRANSACTIONS_SUMMARY);
-  const txnSection = assemble ? await assemble(spaceCtx, { scopeHint: "full" }) : null;
+  // RLS-AI-S6 — the assembler takes its authority from the caller now. This route
+  // is NOT converted in this slice and still holds `db`, so it passes it
+  // EXPLICITLY rather than having the assembler reach a global on its behalf.
+  const txnSection = assemble ? await assemble(db, spaceCtx, { scopeHint: "full" }) : null;
   const measured = computeAverageMonthlySpending(
     txnSection ? (txnSection.data as TransactionsSummaryData) : null,
   );
