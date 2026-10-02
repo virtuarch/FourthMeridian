@@ -38,11 +38,40 @@
 import { getToken } from "next-auth/jwt";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import {
+  authCookiesSecure,
+  sessionCookieName,
+  isLegacyAuthCookie,
+} from "./lib/auth/session-cookie";
+
+/**
+ * Expire any pre-`__Host-` auth cookie the browser still sends. After the
+ * rename it is never read, but it is a signed, unrevoked JWT — a live
+ * credential nobody uses, which a rollback would silently revive. Deleting a
+ * `__Secure-` cookie requires the Secure flag; it was host-only, so no Domain.
+ */
+function expireLegacyAuthCookies(req: NextRequest, res: NextResponse): NextResponse {
+  for (const { name } of req.cookies.getAll()) {
+    if (isLegacyAuthCookie(name)) {
+      res.cookies.set(name, "", { maxAge: 0, path: "/", secure: true, httpOnly: true, sameSite: "lax" });
+    }
+  }
+  return res;
+}
 
 export default async function middleware(req: NextRequest) {
+  return expireLegacyAuthCookies(req, await route(req));
+}
+
+async function route(req: NextRequest): Promise<NextResponse> {
+  // The cookie name and Secure decision come from the same module lib/auth.ts
+  // configures NextAuth with — see lib/auth/session-cookie.ts.
+  const secureCookie = authCookiesSecure();
   const token = await getToken({
     req,
     secret: process.env.NEXTAUTH_SECRET,
+    secureCookie,
+    cookieName: sessionCookieName(secureCookie),
   });
 
   const { pathname } = req.nextUrl;

@@ -47,6 +47,7 @@ import { AUTH_UNAVAILABLE_TOKEN } from "@/lib/auth/login-outcome";
 import { verifyCaptchaToken } from "@/lib/captcha";
 import { LOGIN_ID_WINDOW_SEC, LOGIN_ID_LIMIT, LOGIN_CAPTCHA_THRESHOLD } from "@/lib/login-limits";
 import { reportLoginFailureAnomalies } from "@/lib/security/anomaly-alerts";
+import { authCookiesSecure, authCookieOverrides } from "@/lib/auth/session-cookie";
 
 // ── Login-failure recording + inline anomaly detection (Wave 3 ⑧) ─────────────
 // Reasons that could contribute to a security anomaly (credential guessing /
@@ -688,6 +689,13 @@ export const authOptions: NextAuthOptions = {
     strategy: "jwt",
     maxAge:   30 * 24 * 60 * 60, // 30 days
   },
+
+  // Host-only `__Host-` session + callback-url cookies (lib/auth/session-cookie.ts):
+  // no sibling host under the registrable domain can plant or receive them.
+  // `useSecureCookies` is pinned to the SAME decision proxy.ts's getToken uses,
+  // so the two readers can never look for different cookie names.
+  useSecureCookies: authCookiesSecure(),
+  cookies: authCookieOverrides(authCookiesSecure()),
 
   secret: process.env.NEXTAUTH_SECRET,
 };
