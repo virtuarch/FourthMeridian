@@ -331,14 +331,23 @@ check(
   proxy.includes(`"${USER_TOTP_ENROLLMENT_PATH}"`),
   `expected ${USER_TOTP_ENROLLMENT_PATH}`,
 );
+// STAGE-A3 widened the matcher to /api/:path* for the browser-write Origin
+// boundary ONLY. The PO-1A invariant survives in its real form: no session,
+// role or TOTP rule runs for /api — the /api branch returns before the token
+// is ever read, and the enrolment allow-list names no /api path. lib/session.ts
+// remains the only thing that gates a pending session's API access.
+const apiBranch = proxy.indexOf('startsWith("/api/")');
 check(
-  "proxy no longer tests /api paths its matcher can never see",
-  !proxy.includes('pathname.startsWith("/api/'),
-  "dead branches: the matcher is scoped to /dashboard/* and /admin/*",
+  "proxy's /api branch returns before the token is read (no TOTP/role rule reaches /api)",
+  apiBranch > -1 && apiBranch < proxy.indexOf("await getToken("),
 );
 check(
-  "the matcher is still page-only",
-  /matcher:\s*\[\s*"\/dashboard\/:path\*",\s*"\/admin\/:path\*",?\s*\]/.test(proxy),
+  "the TOTP allow-list names no /api path (lib/session.ts owns API enrolment)",
+  !proxy.includes('pathname.startsWith("/api/user/totp') && !proxy.includes('pathname.startsWith("/api/auth'),
+);
+check(
+  "the matcher is pages + the /api Origin boundary, nothing else",
+  /matcher:\s*\[\s*"\/dashboard\/:path\*",\s*"\/admin\/:path\*",\s*"\/api\/:path\*",?\s*(?:\/\/[^\n]*)?\s*\]/.test(proxy),
 );
 check(
   "the pending allow-list is narrowed to the enrolment sections",
