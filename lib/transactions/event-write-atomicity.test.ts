@@ -38,7 +38,14 @@ function check(name: string, cond: boolean, detail?: string): void {
 
 // ── An in-memory Prisma stand-in with a real rollback ────────────────────────
 
-interface Row { id: string; plaidTransactionId: string | null; deletedAt: Date | null; transactionEventId: string | null }
+/** EVENT-WRITE-1 — `economicDate` is now MODELLED rather than bolted on by one
+ *  test with an `as never`. The write path asserts its terminal state before
+ *  committing (row FK + the event's pin), so a harness whose rows cannot carry
+ *  the pinned column cannot execute the invariant it is meant to exercise. */
+interface Row {
+  id: string; plaidTransactionId: string | null; deletedAt: Date | null;
+  transactionEventId: string | null; economicDate: Date | null;
+}
 interface Obs {
   id: string; eventId: string; transactionId: string | null; financialAccountId: string; providerRowId: string | null;
   providerPendingRef: string | null; observedAt: Date; lifecycle: string; amount: number;
@@ -86,10 +93,10 @@ function makeDb(initial: State, failOn?: number) {
         where: { id: string; NOT?: { economicDate?: Date } };
         data: Record<string, unknown>;
       }) => {
-        const r = s.txns.find((t) => t.id === where.id) as unknown as { economicDate?: Date } | undefined;
+        const r = s.txns.find((t) => t.id === where.id);
         if (!r) return { count: 0 };
         if (where.NOT?.economicDate !== undefined &&
-            r.economicDate?.getTime?.() === where.NOT.economicDate?.getTime?.()) return { count: 0 };
+            r.economicDate?.getTime() === where.NOT.economicDate.getTime()) return { count: 0 };
         Object.assign(r, data);
         return { count: 1 };
       },
@@ -197,9 +204,9 @@ console.log("A. Moving a row between events re-derives BOTH");
   // from its own observations, which is unreachable by any other code path.
   const initial: State = {
     txns: [
-      { id: "t1",   plaidTransactionId: "post_A", deletedAt: null,       transactionEventId: "eOrigin" },
-      { id: "tOld", plaidTransactionId: "pend_A", deletedAt: new Date(), transactionEventId: "eOrigin" },
-      { id: "tp",   plaidTransactionId: "pend_B", deletedAt: new Date(), transactionEventId: "eDest" },
+      { id: "t1",   plaidTransactionId: "post_A", deletedAt: null,       transactionEventId: "eOrigin", economicDate: D("2026-08-05") },
+      { id: "tOld", plaidTransactionId: "pend_A", deletedAt: new Date(), transactionEventId: "eOrigin", economicDate: D("2026-08-05") },
+      { id: "tp",   plaidTransactionId: "pend_B", deletedAt: new Date(), transactionEventId: "eDest", economicDate: D("2026-08-05") },
     ],
     obs: [
       baseObs({ eventId: "eOrigin", transactionId: "tOld", observationKey: "k_origin", providerRowId: "pend_A" }),
@@ -246,8 +253,8 @@ console.log("\nB. A failure during the write rolls back the whole unit");
 {
   const initial: State = {
     txns: [
-      { id: "t1", plaidTransactionId: "post_A", deletedAt: null, transactionEventId: "eOrigin" },
-      { id: "tp", plaidTransactionId: "pend_B", deletedAt: new Date(), transactionEventId: "eDest" },
+      { id: "t1", plaidTransactionId: "post_A", deletedAt: null, transactionEventId: "eOrigin", economicDate: D("2026-08-05") },
+      { id: "tp", plaidTransactionId: "pend_B", deletedAt: new Date(), transactionEventId: "eDest", economicDate: D("2026-08-05") },
     ],
     obs: [
       baseObs({ eventId: "eOrigin", transactionId: "t1", observationKey: "k_origin", providerRowId: "post_A" }),
@@ -310,7 +317,7 @@ console.log("\nC. Replaying an identical payload still writes nothing");
     // B-6 — the row carries the event's pinned economicDate (as any really-
     // written row does), so the idempotent re-pin is provably a no-op.
     txns: [{ id: "t1", plaidTransactionId: "post_A", deletedAt: null, transactionEventId: "eOrigin",
-             economicDate: D("2026-08-05") } as never],
+             economicDate: D("2026-08-05") }],
     obs: [baseObs({ eventId: "eOrigin", transactionId: "t1", observationKey: realKey, providerRowId: "post_A" })],
     events: [baseEvt({ id: "eOrigin", currentTransactionId: "t1" })],
   };

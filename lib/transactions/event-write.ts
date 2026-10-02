@@ -29,6 +29,29 @@
  * AUTHORITATIVE for its current row's chronology: `reprojectEvent` materializes
  * it into `Transaction.economicDate` (see its doc block). Lifecycle/amount
  * remain row-carried; their reader cutover is still a separate slice.
+ *
+ * ── EVENT-WRITE-1: THE UNIQUE CURRENT-ROW CLAIM IS NEVER CONTESTED ─────────
+ *
+ * `TransactionEvent.currentTransactionId` is UNIQUE, so two events cannot both
+ * hold one row — and a statement that asserts it anyway does not merely say
+ * something false, it ABORTS THE UNIT. That is how two live rows came to carry
+ * an `economicDate` disagreeing with their own event's pin: the ingest writer's
+ * row re-stamp is a committed statement of its own, this unit rolled back, and
+ * the observation key was never written for a replay to find. Two rules now
+ * make the contest unreachable:
+ *
+ *   · a freshly created event claims NO row — `reprojectEvent` derives
+ *     `currentTransactionId`, after the stale claim has been released;
+ *   · `reprojectEvent` treats a row as this event's live projection only while
+ *     the ROW's own `transactionEventId` still says so, so an event that lost a
+ *     row re-derives to "I have none" instead of re-claiming it.
+ *
+ * And because a guarantee that is only hoped for is how this one was lost, the
+ * write ASSERTS its terminal state before committing, and a rolled-back unit
+ * raises `EventWriteIntegrityFailure` — which says in its own shape that
+ * canonical event state is missing — instead of a bare database error a caller
+ * cannot tell from a benign skip. Pinned by
+ * lib/transactions/event-write-claim-ordering.test.ts.
  */
 
 // ⚠️ NO `server-only` marker, deliberately.
@@ -47,7 +70,7 @@
 import type { Prisma, PrismaClient, ProviderType, SettlementState } from "@prisma/client";
 import {
   resolveEventLink, projectEvent, observationKey, isEventEligibleProvider,
-  type EventLinkBasis, type EventLinkRefusal, type ObservationFacts,
+  type EventLinkBasis, type EventLinkRefusal, type EventProjection, type ObservationFacts,
 } from "@/lib/transactions/event-identity";
 
 // Re-exported so an ingest path imports ONE module, while the pure definitions
@@ -82,6 +105,120 @@ export interface ObservationResult {
   refusal: EventLinkRefusal | null;
   /** False when an identical observation already existed — the idempotent path. */
   created: boolean;
+}
+
+// ── EVENT-WRITE-1: FAILURE SEMANTICS ────────────────────────────────────────
+//
+// An integrity failure inside this unit is NOT the same kind of event as "event
+// identity was skipped". The unit is atomic, so the whole observation —
+// including the event's own projection — was NOT PERSISTED, and the ingest
+// writer that called us has ALREADY committed its own row update as a separate
+// statement. That pairing is exactly how the two measured corrupt rows came to
+// exist: a row re-stamped from its own evidence, an event still carrying the
+// other answer, no second observation to explain the gap, and the only trace a
+// `console.warn` indistinguishable from a benign skip.
+//
+// So the failure is given a TYPE and a vocabulary. A caller can still choose to
+// continue — event identity is deliberately non-blocking at the Plaid sync, and
+// that remains correct — but it can no longer fail to *notice*: the error says
+// in its own shape that canonical event state is missing, and carries the
+// observation key, so the payload is replayable and an operator has something
+// to act on.
+//
+// ⚠️ The `console.error` below is the FLOOR, not the durable record. The durable
+// record belongs in the existing incident model (`recordSyncIssue`, kind
+// `TRANSACTION_PERSISTENCE_FAILED` / `UPSERT_ERROR`), which lives in
+// `lib/plaid/syncIssues.ts` — a module this slice deliberately does not own.
+// The integration point is one catch block: `syncTransactions.ts`'s
+// `recordObservation` should branch on `isEventWriteIntegrityFailure(e)` and
+// record `e.detail` instead of warning. Reported, not reached around.
+
+/** The Prisma error codes that mean the statement was REFUSED by the database's
+ *  own integrity rules — as opposed to a transport or logic error. P2002 is the
+ *  one the TALABAT shape produced (unique `TransactionEvent.currentTransactionId`);
+ *  P2003 (foreign key) and P2025 (a required related record vanished) mean the
+ *  same thing about persistence and deserve the same vocabulary. */
+const DB_INTEGRITY_CODES: ReadonlySet<string> = new Set(["P2002", "P2003", "P2025"]);
+
+/** Everything an operator (or a SyncIssue row) needs, and nothing a log must not
+ *  carry: no amounts, no merchant strings, no tokens. */
+export interface EventWriteIntegrityDetail {
+  stage: "OBSERVATION_WRITE" | "REPLAY_HEAL" | "TERMINAL_STATE_CHECK";
+  transactionId: string;
+  financialAccountId: string;
+  provider: ProviderType;
+  providerRowId: string | null;
+  providerPendingRef: string | null;
+  /** The event the row belonged to when this unit began, if any. */
+  originEventId: string | null;
+  /** The event the authority resolved to, when it resolved to an existing one. */
+  targetEventId: string | null;
+  basis: EventLinkBasis | null;
+  refusal: EventLinkRefusal | null;
+  /** The key of the observation that was NOT written. Replaying the provider
+   *  payload recomputes it, so this names the retry. */
+  observationKey: string;
+  /** Prisma's code, where the failure came from the database. */
+  code: string | null;
+  /** The constraint the database named, where it named one. */
+  constraint: string[] | null;
+  message: string;
+}
+
+/**
+ * CANONICAL EVENT STATE WAS NOT PERSISTED.
+ *
+ * Thrown in place of the raw database error whenever the observation unit rolls
+ * back. `canonicalStatePersisted` is `false` as a literal type so a caller
+ * cannot read this as a partial success.
+ */
+export class EventWriteIntegrityFailure extends Error {
+  readonly canonicalStatePersisted = false as const;
+  readonly detail: EventWriteIntegrityDetail;
+  constructor(detail: EventWriteIntegrityDetail, options?: { cause?: unknown }) {
+    super(
+      `event identity NOT PERSISTED for transaction ${detail.transactionId} ` +
+      `(stage ${detail.stage}${detail.code ? `, ${detail.code}` : ""}` +
+      `${detail.constraint?.length ? ` on ${detail.constraint.join("+")}` : ""}): ${detail.message}`,
+      options,
+    );
+    this.name = "EventWriteIntegrityFailure";
+    this.detail = detail;
+  }
+}
+
+export function isEventWriteIntegrityFailure(e: unknown): e is EventWriteIntegrityFailure {
+  return e instanceof EventWriteIntegrityFailure;
+}
+
+/**
+ * Wrap a rolled-back observation unit in the typed failure, and emit the ONE
+ * floor-level record that does not depend on the caller.
+ *
+ * ⚠️ Deliberately re-wraps EVERY failure of the unit, not only the Prisma
+ * integrity codes. The code is reported where there is one, but the fact the
+ * caller must act on — nothing of this event was persisted while the row write
+ * already committed — is the same whichever statement aborted.
+ */
+function asIntegrityFailure(e: unknown, base: Omit<EventWriteIntegrityDetail, "code" | "constraint" | "message">): EventWriteIntegrityFailure {
+  if (isEventWriteIntegrityFailure(e)) return e;
+  const p = e as { code?: unknown; meta?: { target?: unknown } } | null;
+  const code = typeof p?.code === "string" && DB_INTEGRITY_CODES.has(p.code) ? p.code
+    : typeof p?.code === "string" ? p.code : null;
+  const target = p?.meta?.target;
+  const constraint = Array.isArray(target) ? target.filter((t): t is string => typeof t === "string")
+    : typeof target === "string" ? [target] : null;
+  const failure = new EventWriteIntegrityFailure(
+    { ...base, code, constraint, message: e instanceof Error ? e.message.split("\n")[0] : String(e) },
+    { cause: e },
+  );
+  // Error level, a stable marker, and an explicit statement of what is missing.
+  // A caller is free to swallow the throw; it is not free to make this line
+  // read like a benign skip.
+  console.error(
+    `[l8] CANONICAL EVENT STATE NOT PERSISTED — ${JSON.stringify(failure.detail)}`,
+  );
+  return failure;
 }
 
 /**
@@ -193,7 +330,34 @@ export async function recordTransactionObservation(
         lifecycle: input.lifecycle === "PENDING" ? "PENDING" : "POSTED",
         economicDate: input.economicDate,
         currentAmount: input.amount,
-        currentTransactionId: input.transactionIsLive ? input.transactionId : null,
+        // EVENT-WRITE-1 — A FRESH EVENT CLAIMS NO ROW IN ITS OWN CREATE.
+        //
+        // `currentTransactionId` is UNIQUE. This literal is the FIRST statement
+        // of the unit, and the release-the-stale-claim block that exists for
+        // exactly this collision is forty lines BELOW it — so when the incoming
+        // observation opens a NEW event for a row some OTHER event still holds,
+        // the create aborts on P2002 (`TransactionEvent_currentTransactionId_key`)
+        // before anything can free the old claim, and the whole unit rolls back.
+        //
+        // That is not hypothetical. The measured TALABAT shape reaches it on the
+        // ordinary ingest path: two settlements of the same amount, descriptor,
+        // account and posting date, each naming a DIFFERENT pending predecessor,
+        // and NEITHER predecessor present in the corpus. The sync's DF-4
+        // fingerprint adopts the first settlement's row (its refusal guard needs
+        // a resolvable predecessor and has none), re-stamps `economicDate` from
+        // the second settlement's own evidence in a statement of its own — and
+        // then this create collides, so the event is never re-pinned. Terminal
+        // state: a row whose economic date disagrees with its own event, one
+        // observation where there should be two, and nothing to repair it,
+        // because the observation key was never written for a replay to find.
+        // Reproduced against a real Postgres; two live rows are in that state.
+        //
+        // So the create asserts NOTHING about the current row. `reprojectEvent`
+        // derives `currentTransactionId` from the observations a few lines
+        // below — it already does, unconditionally — and by then the stale claim
+        // has been released. The unit now contains no statement that can claim a
+        // contested unique column before the contest is resolved.
+        currentTransactionId: null,
         firstObservedAt: input.observedAt,
         lastObservedAt: input.observedAt,
       },
@@ -244,7 +408,7 @@ export async function recordTransactionObservation(
       data: { transactionEventId: eventId },
     });
 
-    await reprojectEvent(tx, eventId);
+    const projection = await reprojectEvent(tx, eventId);
 
     // The origin loses a row here, so its liveness — and therefore possibly its
     // lifecycle, amount and currentTransactionId — changed too. Re-derive it in
@@ -253,13 +417,85 @@ export async function recordTransactionObservation(
       await reprojectEvent(tx, originEventId);
     }
 
+    // EVENT-WRITE-1 — NO HALF-TRANSITIONED TERMINAL STATE, CHECKED NOT HOPED.
+    //
+    // Runs LAST, after both re-derivations, so it reads the state the commit
+    // will actually leave. Where this event projects to this row, the row must
+    // point back at the event and carry the event's pinned economic date — the
+    // B-6 invariant `audit-event-identity` fails on, asserted at the moment the
+    // write can still be REFUSED rather than discovered weeks later by an audit.
+    // `reprojectEvent` writes that pin unconditionally, so a failure here means
+    // some later statement moved it, and a rollback is strictly better than
+    // committing the disagreement.
+    //
+    // ⚠️ Deliberately a `findUnique` and not a `count` with the expected values
+    // in its predicate. Every in-memory harness in this repository already
+    // serves `transaction.findUnique` and returns the whole row, so this check
+    // RUNS in the fakes; a `count` predicate was tried first and threw
+    // `tx.transaction.count is not a function` in three of them — an assertion
+    // that cannot execute in the harness is exactly the shape of thing that let
+    // the unique-column collision go unnoticed for six weeks.
+    if (projection && projection.currentTransactionId === input.transactionId) {
+      const committed = await tx.transaction.findUnique({
+        where: { id: input.transactionId },
+        select: { transactionEventId: true, economicDate: true },
+      });
+      const agrees =
+        committed?.transactionEventId === eventId &&
+        committed?.economicDate instanceof Date &&
+        committed.economicDate.getTime() === projection.economicDate.getTime();
+      if (!agrees) {
+        throw new EventWriteIntegrityFailure({
+          stage: "TERMINAL_STATE_CHECK",
+          transactionId: input.transactionId,
+          financialAccountId: input.financialAccountId,
+          provider: input.provider,
+          providerRowId: input.providerRowId,
+          providerPendingRef: input.providerPendingRef,
+          originEventId,
+          targetEventId: eventId,
+          basis: link.basis,
+          refusal: link.refusal,
+          observationKey: key,
+          code: null,
+          constraint: null,
+          message:
+            `the event projects transaction ${input.transactionId} but the row does not ` +
+            `agree with it (expected transactionEventId=${eventId}, economicDate=` +
+            `${projection.economicDate.toISOString().slice(0, 10)}); refusing to commit a row ` +
+            `whose economic date disagrees with its own event's pin`,
+        });
+      }
+    }
+
     return { observationId: observation.id, eventId, basis: link.basis, refusal: link.refusal, created: true };
   };
 
   // A caller already inside an interactive transaction (the CSV importer) passes
   // its handle; Prisma forbids nesting, and joining the caller's unit is the
   // stronger guarantee anyway.
-  return hasInteractiveTransaction(db) ? db.$transaction(write) : write(db);
+  //
+  // EVENT-WRITE-1 — a rolled-back unit means CANONICAL EVENT STATE WAS NOT
+  // PERSISTED while the ingest writer's own row statement already committed.
+  // The caller may still decide to continue; it may not be left guessing from a
+  // bare Prisma error what, if anything, survived.
+  try {
+    return await (hasInteractiveTransaction(db) ? db.$transaction(write) : write(db));
+  } catch (e) {
+    throw asIntegrityFailure(e, {
+      stage: "OBSERVATION_WRITE",
+      transactionId: input.transactionId,
+      financialAccountId: input.financialAccountId,
+      provider: input.provider,
+      providerRowId: input.providerRowId,
+      providerPendingRef: input.providerPendingRef,
+      originEventId,
+      targetEventId: link.eventId,
+      basis: link.basis,
+      refusal: link.refusal,
+      observationKey: key,
+    });
+  }
 }
 
 /** True for a full PrismaClient — a TransactionClient cannot open a nested one. */
@@ -384,7 +620,36 @@ async function maybeHealDanglingLink(
       created: false,
     };
   };
-  return hasInteractiveTransaction(db) ? db.$transaction(heal) : heal(db);
+  // EVENT-WRITE-1 — the heal moves a row between events, so it can meet the same
+  // unique-column contest as the write path and deserves the same vocabulary.
+  // A heal that rolls back leaves the SPLIT in place, which is honest but is a
+  // state an operator should hear about, not a silent no-op.
+  try {
+    return await (hasInteractiveTransaction(db) ? db.$transaction(heal) : heal(db));
+  } catch (e) {
+    throw asIntegrityFailure(e, {
+      stage: "REPLAY_HEAL",
+      transactionId: input.transactionId,
+      financialAccountId: input.financialAccountId,
+      provider: input.provider,
+      providerRowId: input.providerRowId,
+      providerPendingRef: input.providerPendingRef,
+      originEventId,
+      targetEventId,
+      basis: "PROVIDER_PENDING_REF",
+      refusal: null,
+      observationKey: observationKey({
+        provider: input.provider,
+        financialAccountId: input.financialAccountId,
+        providerRowId: input.providerRowId,
+        transactionId: input.transactionId,
+        lifecycle: input.lifecycle as "PENDING" | "POSTED",
+        amount: input.amount,
+        postingDate: input.postingDate,
+        economicDate: input.economicDate,
+      }),
+    });
+  }
 }
 
 /**
@@ -413,19 +678,45 @@ async function maybeHealDanglingLink(
  * them. Superseded (tombstoned) rows are also left alone: they are outside
  * every product population and their columns are provider provenance.
  */
-export async function reprojectEvent(db: Db, eventId: string): Promise<void> {
+export async function reprojectEvent(db: Db, eventId: string): Promise<EventProjection | null> {
   const observations = await db.transactionObservation.findMany({
     where: { eventId },
     select: { observedAt: true, lifecycle: true, amount: true, postingDate: true, economicDate: true, authorizedAt: true, transactionId: true },
     orderBy: { observedAt: "asc" },
   });
-  if (observations.length === 0) return;
+  if (observations.length === 0) return null;
 
   // Which of the observed rows are still LIVE — a tombstoned row cannot be an
   // event's current projection, and that is how WITHDRAWN becomes reachable.
+  //
+  // EVENT-WRITE-1 — AND STILL THIS EVENT'S. `Transaction.transactionEventId` is
+  // the canonical statement of which event a row belongs to, and
+  // `TransactionEvent.currentTransactionId` is UNIQUE — so an event that
+  // re-asserts a row whose FK has moved away is not merely saying something
+  // false, it is making a claim the database cannot grant, and the abort costs
+  // the whole unit.
+  //
+  // ⚠️ This is the half the investigation's preferred repair did not cover, and
+  // it was MEASURED: with only the create-ordering fix in place, the TALABAT
+  // collision simply moved from the create to this function's own update. Both
+  // settlements observe the SAME adopted row, so after the row moves to the new
+  // event the ORIGIN's re-derivation re-claims it and fails on exactly the same
+  // constraint, at exactly the same cost. `deletedAt: null` alone cannot see
+  // that; the row's own FK can. The origin now honestly re-derives to "I have no
+  // live row" — which is what losing a row to another event means.
+  //
+  // Nothing legitimate is lost: every caller sets the row's FK before
+  // reprojecting (this module's write and replay-heal paths, the seed's
+  // pending→posted succession, the Plaid sync's removed[] tombstone branch), so
+  // a row an event genuinely owns always passes. What stops passing is exactly
+  // a row the event lost.
   const ids = [...new Set(observations.map((o) => o.transactionId).filter((x): x is string => x != null))];
   const live = new Set(
-    (await db.transaction.findMany({ where: { id: { in: ids }, deletedAt: null }, select: { id: true } }))
+    (await db.transaction.findMany({
+      where: { id: { in: ids }, deletedAt: null },
+      select: { id: true, transactionEventId: true },
+    }))
+      .filter((r) => r.transactionEventId === eventId)
       .map((r) => r.id),
   );
 
@@ -464,6 +755,10 @@ export async function reprojectEvent(db: Db, eventId: string): Promise<void> {
       data: { economicDate: p.economicDate },
     });
   }
+
+  // EVENT-WRITE-1 — returned so the write path can assert the TERMINAL state it
+  // is about to commit without re-reading the event it just derived.
+  return p;
 }
 
 /**
