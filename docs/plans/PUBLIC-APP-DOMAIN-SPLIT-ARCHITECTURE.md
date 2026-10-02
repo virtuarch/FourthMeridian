@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Investigation complete. Verdict: **ARCHITECTURE READY FOR IMPLEMENTATION** (Stages A and B). Stages C and D are gated on owner-confirmed dashboard facts (§15). |
+| **Status** | Investigation complete. Verdict: **ARCHITECTURE READY FOR IMPLEMENTATION** (Stages A and B). **Stage A implemented 2026-10-03, partially** (§16.0). Stages C and D are gated on §16.7. |
 | **Date** | 2026-10-02 |
 | **Repo state investigated** | `v2.6` at `3d10fe7`, with the RLS tenant-authority conversion in flight in the working tree |
 | **Method** | Read only. The repo was read with no edits, no app/test/DB/network runs, no Vercel/DNS/Supabase/Plaid changes, and no secret values read. |
@@ -18,11 +18,11 @@ File references (`path:line`) are as of `3d10fe7`. Line numbers in files the RLS
 The owner has confirmed the following. They are authoritative and override any repo-derived guess below:
 
 - **`fourthmeridian.com`** = current **Production** Fourth Meridian application.
-- **`preview.fourthmeridian.com`** = current **Preview** Fourth Meridian environment.
+- **`preview.fourthmeridian.com`** = current **Preview** Fourth Meridian environment: the **intentional, stable pre-production environment**, not an alias for an ephemeral deployment. It stays (§16.1).
 
 The investigation (§3, §10) derived Production-on-apex from repo evidence. That is now **confirmed**.
 
-The investigation's Preview design (§10) assumed Previews live only on `*.vercel.app`. **That assumption is false.** Preview is served under the Production registrable domain. The consequences are analysed in the addendum (§16), which supersedes §10 where they conflict. Neither domain is being modified as part of this document.
+The investigation's Preview design (§10) assumed Previews live only on `*.vercel.app`. **That assumption is false.** Preview is served under the Production registrable domain. The consequences are analysed in the addendum (§16.1), which supersedes §10 where they conflict. The recommended model is the stable parallel one: `fourthmeridian.com` / `app.` for Production, `preview.` / `preview-app.` for Preview. Neither domain is being modified as part of this document.
 
 ---
 
@@ -374,7 +374,7 @@ Cross-host `callbackUrl`s are never accepted. They are not needed, because the p
 1. Add the Plaid allowlist entry and the Turnstile hostname **first**.
 2. Set Production `NEXTAUTH_URL` and `NEXT_PUBLIC_APP_URL` to the app host. Redeploy.
 3. Run the Plaid `/item/webhook/update` script.
-4. C2: make the app's proxy 308 the apex's auth and app paths to `app.`. The original plan also rotates `NEXTAUTH_SECRET` here; §16.2 re-classifies that step.
+4. C2: make the app's proxy 308 the apex's auth and app paths to `app.`, and rotate the Production `NEXTAUTH_SECRET`. §16.2 classifies the rotation as **REQUIRED** before Stage D: apex-era `__Host-` session cookies would otherwise be sent to the public site.
 
 **Stage D: move `fourthmeridian.com` (and `www`) to `fm-site`.** The apex then serves marketing plus redirects. The app project keeps only `app.`.
 
@@ -411,7 +411,7 @@ Remove any transitional webhook rewrite and the apex redirects only after webhoo
 5. Run the existing-Item webhook update script.
 6. Turnstile: add the app host. Sentry: allowed domains.
 7. Create the `fm-site` project with the settings in Stage B.
-8. Decide on `NEXTAUTH_SECRET` rotation at Stage C2 (§16.2).
+8. Rotate the Production `NEXTAUTH_SECRET` at Stage C2, and Preview's at Preview's C2 (§16.2: REQUIRED).
 9. Move the domains at Stages C and D.
 10. Update the stale `docs/operations/deployment.md:102-136`.
 
@@ -439,6 +439,253 @@ None of these blocks Stage A or B. Questions 1, 2 and 3 must be answered before 
 
 ---
 
-## 16. Addendum: owner-confirmed domains, secret rotation, Plaid webhook cutover
+## 16. Addendum (2026-10-03): Stage A as built, stable Preview, secret rotation, Plaid cutover
 
-*To be completed in a follow-up documentation commit. This commit preserves the investigation as delivered.*
+This addendum records what changed after the investigation. Where it conflicts with §1–§15, it supersedes them.
+
+### 16.0 Stage A as implemented
+
+| Commit | Item | What changed |
+|---|---|---|
+| `4728c72` | A1 + A4 | `lib/auth/return-to.ts` is now the one validator for return targets. `/login` is now a server entry: a signed-in visitor goes straight to the validated target, and the client form moved to `LoginForm.tsx`. |
+| `e1ea9c2` | A2 | The session and callback-url cookies are now `__Host-` (`lib/auth/session-cookie.ts`). NextAuth and `proxy.ts` share one name and one Secure decision. Legacy `__Secure-` auth cookies are expired whenever the proxy sees them. |
+| `89d7a7f` | A3 | Browser-write Origin boundary (`lib/security/write-origin.ts`), enforced by `proxy.ts` on `/api/:path*` |
+| `63ee425` | A3a | Fix-up: two PO-1A pins in `lib/admin-totp-enrollment-surface.test.ts` still asserted a page-only matcher, so `89d7a7f` landed with that test red. Corrected in a separate commit, not by rewriting history. |
+| `0a82dd3` | A5 | Deep-link carrier (`x-fm-return-to`) plus `redirectToLogin()`. Two call sites converted; **seven deferred**. |
+
+**Where this differs from the §12 plan:**
+
+- **A3: the trusted origin is not configured.**
+  - §8 C.2 proposed "an Origin equal to the app origin" and exemptions for `/api/auth/*` and `/api/access-request`.
+  - As built, every deployment trusts **only the origin the browser addressed** (Host / X-Forwarded-Host). There is no trusted-origin env var to copy between environments, so Production and Preview cannot be configured to trust each other.
+  - The only exemption is the exact path `/api/plaid/webhook`. NextAuth's own POSTs and `/api/access-request` are judged like any other browser write. Both are same-origin today, and a cross-site POST to the credentials callback is login CSRF, so neither needed an exemption.
+  - `req.nextUrl.origin` was deliberately **not** used. A self-hosted Next server builds it from its own bind hostname (`next/dist/server/next-server.js` `attachRequestMeta`). The live check showed the Host-derived origin works on both `localhost` and `127.0.0.1`.
+- **A5 is partial.** Of nine bare `redirect("/login")` sites, seven are in files the RLS tenant-authority work still owns:
+  - `lib/settings/loaders.ts` ×4, `dashboard/spaces/page.tsx` and `dashboard/platform/[area]/page.tsx`, all in `scripts/lib/db-authority-baseline.json`;
+  - `dashboard/settings/archived-assets/page.tsx`, pinned by `lib/rls-server-component-authority.test.ts`.
+
+  Each is a one-line change to `return redirectToLogin()`. `lib/auth/login-redirect.test.ts` allows those seven by name and fails on any new bare site. The common case is unaffected: no JWT at all is already handled by the proxy, which keeps the deep link.
+- **A6 (CSP): no change.** None of the Stage A fixes needs one.
+  - The CSP is report-only. Turnstile's absence from it produces reports, not breakage.
+  - Adding `challenges.cloudflare.com` belongs with the cutover CSP work below, not with a security fix.
+  - The public site will need its own CSP: `connect-src` to the app origin for the access-request form, plus Turnstile.
+  - The app's `connect-src 'self'` stays correct after the split, because the app never calls the public site.
+  - None of this can be activated safely before the hosts exist, so it is documented for Stages C/D rather than enabled now.
+- **A7 (request-access): no code.**
+  - Today the form posts same-origin, and A3 accepts it.
+  - Once the form is on `fourthmeridian.com` and its API is on `app.fourthmeridian.com`, the app needs a **per-route** rule. It would answer the CORS preflight for exactly the configured public-site origin, with no credentials, and let that origin past the Origin boundary for this one exact path.
+  - That rule names an origin that does not exist yet. It also touches `app/api/access-request/route.ts`, which RLS owns (it runs on `db`). Both make it a **cutover dependency**, not Stage A work.
+  - Do not use a Vercel rewrite instead until the client-IP question in §7 is answered.
+- **The old `__Secure-` cookie.** After the rename it is never read. It is still a signed, unrevoked JWT in the browser, and a rollback would bring it back to life. `proxy.ts` therefore expires every `__Secure-next-auth.*` cookie it sees, including chunked ones. This happens only on requests the proxy matches (`/dashboard`, `/admin`, `/api`), which covers essentially every returning user.
+
+**Proof:**
+- `lib/auth/return-to.test.ts`: 82 checks, including 11 accept and 47 reject cases.
+- `lib/auth/session-cookie.test.ts`: 67 checks. These use NextAuth's own `defaultCookies`, `SessionStore` and `cookie` serializer, plus an RFC 6265bis model and the real proxy.
+- `lib/security/write-origin.test.ts`: 84 checks.
+- `lib/auth/login-redirect.test.ts`: 19 checks.
+- A live `next dev` on an isolated worktree (dummy env pointing at nothing, no database):
+  - same-origin writes reached the handler on both `localhost` and `127.0.0.1`;
+  - sibling, foreign and `null` origins, and `Sec-Fetch-Site: same-site`, received `403 {"error":"cross_origin_write_refused"}`;
+  - `/api/plaid/webhook` reached its own signature check;
+  - `/api/jobs/dispatch` reached its own bearer check.
+
+**Consequence the owner must expect:** deploying Stage A signs every user out once, because of the cookie rename. `NEXTAUTH_SECRET` is **not** rotated in Stage A.
+
+### 16.1 The stable Preview environment
+
+The owner has confirmed that `preview.fourthmeridian.com` is the **intentional, stable pre-production environment**. It is not a convenience alias. §10's advice to avoid `*.fourthmeridian.com` preview aliases is **withdrawn**: it optimised for browser-site isolation alone and ignored the operational value of a named staging environment.
+
+**Two different things:**
+
+| | Stable Preview / Staging | Ephemeral Vercel Preview deployments |
+|---|---|---|
+| Hosts | `preview.fourthmeridian.com` today; `preview.` + `preview-app.` after the split | `*.vercel.app`, one per branch or commit |
+| Purpose | Validate a release against Preview infrastructure before Production | Look at a branch |
+| Browser site | **Same site** as Production (`fourthmeridian.com`) | Own site each (`vercel.app` is on the Public Suffix List) |
+| Env vars | Must be Preview values, never Production values | Whatever Vercel's "Preview" environment holds (see the risk below) |
+
+**Candidate evaluated:**
+
+```
+                     PRODUCTION                 PREVIEW / STAGING
+Public website       fourthmeridian.com         preview.fourthmeridian.com
+Authenticated app    app.fourthmeridian.com     preview-app.fourthmeridian.com
+```
+
+**Recommendation: A, keep the stable parallel domain model,** under the conditions below. Three of its four security properties are already enforced in code by Stage A, and the fourth is an owner-verifiable configuration fact:
+
+1. **Sessions are host-only.**
+   - A Production session issued by `app.` reaches only `app.`. A Preview session issued by `preview-app.` reaches only `preview-app.`.
+   - No sibling can plant a `__Host-` session cookie.
+   - Shown mechanically in `lib/auth/session-cookie.test.ts` §2–§3. The `Set-Cookie` header comes from NextAuth's own write path, run through an RFC 6265bis acceptance-and-sending model across all four hosts. The same model shows that the *old* `__Secure-` name **could** be planted from any sibling.
+2. **Browser writes are bound to their own origin.**
+   - Production `app.` refuses writes whose Origin is `fourthmeridian.com`, `preview.`, `preview-app.` or anything else. Preview `preview-app.` refuses `app.`.
+   - Shown in `lib/security/write-origin.test.ts` §1 and §4 (real proxy).
+   - Nothing is configured, so nothing can be misconfigured.
+3. **Return targets are paths, never hosts.**
+   - A login on `preview-app.` can only return to a path on `preview-app.`. Cross-environment and cross-host `callbackUrl`s are refused (`lib/auth/return-to.ts`).
+   - NextAuth detects its origin from the request host, so its own callbacks stay on the host the user is on.
+4. **Separate secrets and resources per environment (owner-verified, §16.5).**
+   - Preview and Production must not share `NEXTAUTH_SECRET`, `ENCRYPTION_KEY`, any database URL or role credential, Plaid keys, or provider keys.
+   - **A shared `NEXTAUTH_SECRET` would break the boundary.** Anyone able to read the Preview secret (for example, anyone who can deploy branch code to Preview) could mint a JWT that Production accepts. Host-only cookies do not help, because the attacker would set the cookie in their own browser.
+
+**Why not B (a different Preview app host)?**
+- The only plausible alternative is nesting, e.g. `app.preview.fourthmeridian.com`.
+- Nesting makes the Preview public site a *parent* of the Preview app. That gives the public site more cookie reach (`Domain=preview.fourthmeridian.com`) and no less exposure.
+- A flat sibling (`preview-app.`) is equal or better on every property above.
+
+**Why not C (retire the custom-domain Preview)?**
+- It would trade a working staging environment for a property (site isolation) that Stage A now provides by other means for the cookies and writes that matter.
+
+**What same-site still allows** (the residual risks of model A, listed rather than hidden):
+
+- **Cross-origin GETs carry cookies.** A sibling page can trigger credentialed GETs to the app (images, top-level navigations). Without CORS it cannot read the responses, so this is harmless *as long as no GET changes state*. A heuristic scan of `app/api/**` GET handlers for direct Prisma writes found none; the three hits were `Map.set`. It cannot see writes reached through helper functions. Before Stage D, the RLS-aware owner of each route should confirm "GET is safe".
+- **Non-`__Host-` app cookies can still be planted by a sibling:**
+  - `fm_active_space`: not HttpOnly, host-only today, no prefix. A planted parent-domain value can steer which Space is "active". The server re-checks membership (a named Space mismatch is a 403, per the V26 promotion), so this is a nuisance, not authority.
+  - `fm_ai_transcript`: a client hint cookie.
+  - `fm_ai_state`: sealed with `ENCRYPTION_KEY`, so a planted value fails to open and the turn starts without state.
+
+  Recommendation: move `fm_active_space` to `__Host-` during Stage C. Low urgency.
+- **Preview code is Production's sibling.** Today, branch code deployed to `preview.fourthmeridian.com` is same-site with Production on `fourthmeridian.com`. Stage A closes the two ways that mattered: planting a session and cross-origin writes. The residual risks above apply equally to this pre-split arrangement.
+
+**Ephemeral `*.vercel.app` deployments:**
+- **Isolation from the stable hosts is structural.** They are on the Public Suffix List, so they cannot plant cookies on `*.fourthmeridian.com` or make same-site requests to it. Each trusts only its own origin for writes, and its session cookie is host-only to its own URL.
+- **⚠️ The real risk is configuration, and the repo cannot prove it either way.**
+  - Vercel's "Preview" environment variables apply to *every* non-production deployment. That normally includes the deployment the stable `preview.fourthmeridian.com` domain points at.
+  - So unless the owner has used branch-scoped variables or a Vercel Custom Environment, every branch push runs with the full stable-Preview authority: Preview database, Preview `NEXTAUTH_SECRET`, Preview Plaid keys.
+  - That is acceptable only if the stable Preview environment holds nothing you would not hand to every branch.
+  - **Recommended:** a Vercel Custom Environment (e.g. `staging`) for the stable `preview.` / `preview-app.` hosts, holding the stable-Preview values. Plain ephemeral previews then run with reduced authority: a disposable or seeded database and no real Plaid credentials.
+  - Owner question in §16.5.
+- **Reduced functionality on ephemeral previews is acceptable and expected:**
+  - Plaid OAuth will not work, because their URLs are not on Plaid's allowlist.
+  - Emails link to whatever `NEXT_PUBLIC_APP_URL` the environment holds. Under Custom Environments that would be the stable Preview host, which is environment-local and correct.
+  - Ephemeral deployments must never receive Production values.
+
+**Preview authentication and callback design:**
+
+| Flow | Production | Preview |
+|---|---|---|
+| Public CTA | `fourthmeridian.com` → `https://app.fourthmeridian.com/dashboard` | `preview.` → `https://preview-app.fourthmeridian.com/dashboard` (`NEXT_PUBLIC_APP_ORIGIN` per environment, never shared) |
+| NextAuth origin | Request host (`app.`) | Request host (`preview-app.`) |
+| `NEXTAUTH_URL` / `NEXT_PUBLIC_APP_URL` | `https://app.fourthmeridian.com` | `https://preview-app.fourthmeridian.com` |
+| Return target | Path only, on `app.` | Path only, on `preview-app.` |
+| Logout | Revokes the `app.` session row; clears the `app.` cookie | The same, on `preview-app.`; there is no cross-environment state to clear |
+| Plaid `redirect_uri` | `https://app.fourthmeridian.com/plaid-oauth-return` on Production's Plaid allowlist | `https://preview-app.fourthmeridian.com/plaid-oauth-return` on Preview's (sandbox/development) allowlist |
+| Plaid webhook | `https://app.fourthmeridian.com/api/plaid/webhook` | `https://preview-app.fourthmeridian.com/api/plaid/webhook` |
+| OAuth login providers | None (credentials only) | None |
+
+**No open redirect can bridge environments.** Return targets are paths. The only absolute URLs are built from each environment's own `NEXT_PUBLIC_APP_URL`. NextAuth's default `redirect` callback refuses an absolute URL from another origin.
+
+**Cutover order:** cut Preview over first, as a dress rehearsal for Production, with the same steps in §12 applied to `preview.` / `preview-app.`.
+
+**Rollback:** keeping `preview.fourthmeridian.com` means there is no removal to roll back. At its own Stage D it changes role from *Preview app* to *Preview public site*; rolling back means pointing it at the app deployment again. The same session caveat as §16.2 applies to Preview.
+
+### 16.2 `NEXTAUTH_SECRET` rotation: classification
+
+**Every use in the code** (`git grep NEXTAUTH_SECRET`, excluding docs and tests):
+- `lib/auth.ts` `authOptions.secret`;
+- `proxy.ts` `getToken({ secret })`;
+- `lib/env.ts` (required-variable list, and a getter that nothing calls).
+
+Inside NextAuth v4 the secret does two things:
+- It derives the key that encrypts the session JWT (JWE).
+- It hashes the CSRF double-submit token (`next-auth/core/lib/csrf-token.js`).
+
+It does **not** protect:
+- `fm_ai_state`, which uses `ENCRYPTION_KEY` via `sealWithPurpose`;
+- Plaid tokens, TOTP secrets or recovery codes, which use `ENCRYPTION_KEY` or bcrypt;
+- reset, verify or invite tokens, which are random database rows;
+- the Plaid webhook, which is verified against Plaid's own keys.
+
+**Rotating it invalidates:**
+- every live session (everyone signs in again);
+- outstanding CSRF tokens, which NextAuth reissues transparently.
+
+Nothing else in the repo depends on it.
+
+**Classification: REQUIRED, or an equivalent revocation, once per environment, before that environment's apex host is attached to the public-site deployment (Stage D, and Preview's own Stage D).**
+
+The reason is a consequence the original plan did not spell out:
+- After Stage A deploys, and until Stage C, the app still runs on `fourthmeridian.com` (and on `preview.fourthmeridian.com` for Preview). Every session issued there is a `__Host-` cookie that is host-only to **the apex**.
+- At Stage D the apex moves to the public-site deployment. Every browser that still holds such a cookie will send a **live Production session credential** to the public site on every visit.
+- The public site holds no secret, so it cannot decode or forge the cookie. But a compromised public deployment could log the cookie value and replay it against `app.fourthmeridian.com`: the JWT is a bearer token, valid on any host that shares the secret.
+- That breaks invariant §12 "public site compromise does not grant app authentication".
+
+**What the `__Host-` transition does and does not do:**
+- It does **not** close this. It retires only the *pre*-Stage-A `__Secure-` cookies.
+- It does not help with sessions issued on the apex between Stage A and Stage C.
+
+**Acceptable ways to neutralise those cookies** before the apex changes hands:
+- (a) rotate `NEXTAUTH_SECRET` at C2, as originally planned. Simplest: every apex-era JWT becomes undecryptable.
+- (b) revoke every `UserSession` row issued before C2. The proxy would still pass the page (it checks the signature only), but every page and API read rejects the session. This is weaker than (a), because the stolen cookie remains a correctly signed token.
+
+Use (a). The C2 proxy step can additionally expire the apex session cookie while it redirects, but that only reaches browsers that visit during the window. So it is hygiene, not the control.
+
+### 16.3 Plaid webhook cutover: plan only
+
+Nothing has been changed at Plaid.
+
+- **Population:** every Production Plaid Item created while `NEXT_PUBLIC_APP_URL` (or an explicit `PLAID_WEBHOOK_URL`, which overrides it: `app/api/plaid/link-token/route.ts` `resolvePlaidWebhookUrl`) pointed at the apex. The repo does **not** store the webhook URL per Item (no column in `prisma/schema.prisma`). The current value lives at Plaid and is readable per Item via `/item/get` (`item.webhook`).
+- **Dry run:** for each active Item, read `item.webhook` and report counts grouped by destination. Write nothing.
+- **Old destinations:** whatever the dry run shows. Expected `https://fourthmeridian.com/api/plaid/webhook`; possibly others if `PLAID_WEBHOOK_URL` was ever set. **Owner: is `PLAID_WEBHOOK_URL` set in Production or Preview?**
+- **New destination:** `https://app.fourthmeridian.com/api/plaid/webhook` for Production, and `https://preview-app.fourthmeridian.com/api/plaid/webhook` for Preview Items.
+- **Mechanism:** a one-off operator script calling `/item/webhook/update` per Item.
+  - Runs as `fm_system` with Plaid credentials and `ENCRYPTION_KEY`, from the owner's terminal, against one environment per run.
+  - Idempotent: skip any Item already at the target.
+  - Writes a per-Item result log.
+- **Verification:**
+  - Plaid sends `WEBHOOK_UPDATE_ACKNOWLEDGED` to the new URL, observed in the app logs at the new host.
+  - A re-run of the dry run shows zero Items on the old destination.
+- **Compatibility period:** the apex keeps serving the webhook until the dry run shows zero. During Stage C the apex is still the app, so this is automatic. The polling crons (`/api/jobs/sync-banks`) cover any gap.
+- **Transitional rewrite on the public site (`/api/plaid/webhook` → app): UNPROVEN, owner/platform verification required.**
+  - The handler verifies `sha256(rawBody)` against the `plaid-verification` JWT (`app/api/plaid/webhook/route.ts:47-51`, `lib/plaid/webhook-verify.ts`), and rejects an `iat` older than 300 s.
+  - A rewrite is therefore usable only if Vercel's external rewrite preserves:
+    - the method (POST);
+    - the body **byte-for-byte**;
+    - the `plaid-verification` header;
+    - `Content-Type`.
+  - Nothing in the repo can establish that. **Preferred:** finish the per-Item update *before* Stage D, so the rewrite is never needed. If it is needed, verify it first with a signed Plaid sandbox webhook on Preview.
+
+### 16.4 What the RLS workstream should know (collisions and dependencies)
+
+- **Done concurrently without touching any RLS-owned file:** `proxy.ts`, `lib/auth.ts` (two-line `cookies` / `useSecureCookies` addition, outside the authorize and session callbacks the RLS slices edit), the login pages, the settings index, admin security, and new `lib/auth/*` and `lib/security/*` modules.
+- **Deferred to the RLS owner:** the seven `redirect("/login")` sites (§16.0). `lib/session.ts:189-192` says the proxy "never runs on /api/*". That is no longer literally true: it now runs there for the Origin boundary only, never authorization. The comment's conclusion still holds. `lib/session.ts` is RLS-touched, so the wording fix is left to its owner.
+- **`/api/access-request` still runs on `db`** (`postgres`, BYPASSRLS). This is unchanged and remains an RLS item.
+- **Interaction to be aware of:** a browser write refused by the Origin boundary returns `403 {"error":"cross_origin_write_refused"}` before any handler runs. It cannot be confused with an RLS outcome (handler 401/403/404/500), and RLS route-authority tests call handlers directly, so the boundary does not affect them.
+
+### 16.5 Revised owner actions (supersedes §14 where they differ)
+
+1. **Confirm separation, without sharing values:** for each of the following, are the Production and Preview values *different*?
+   - `NEXTAUTH_SECRET`
+   - `ENCRYPTION_KEY`
+   - `DATABASE_URL`, `DATABASE_URL_APP`, `DATABASE_URL_AUTH`, `DATABASE_URL_SYSTEM`
+   - `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV`
+   - `OPENAI_API_KEY`
+   - `CRON_SECRET`
+2. **Which Vercel environment serves `preview.fourthmeridian.com`?** The generic "Preview" environment shared with every branch deployment, or a Custom Environment? (§16.1)
+3. **Presence only:** are `PLAID_WEBHOOK_URL`, `PLAID_REDIRECT_URI`, `DIRECT_URL` or `SHADOW_DATABASE_URL` set in either Vercel environment?
+4. Current values of `NEXTAUTH_URL` and `NEXT_PUBLIC_APP_URL` per environment: say whether each is the apex, `preview.`, or something else.
+5. Whether `www.fourthmeridian.com` exists, who hosts DNS, and whether Cloudflare proxies traffic.
+6. **At cutover (not now):**
+   - Plaid allowlist entries for `app.` and `preview-app.`
+   - Turnstile hostnames
+   - Sentry allowed domains
+   - the per-Item webhook script (§16.3)
+   - `NEXTAUTH_SECRET` rotation per environment before that environment's Stage D (§16.2)
+   - domain moves, Preview first
+
+### 16.6 Open questions added
+
+- Do Vercel external rewrites preserve body bytes and headers? (§16.3)
+- Is `PLAID_WEBHOOK_URL` set anywhere?
+- Is the stable Preview a Custom Environment?
+- Should ephemeral previews keep full Preview authority?
+
+### 16.7 Gate for Stages C and D (unchanged in spirit, now explicit)
+
+1. The 33 tenant-authority-path work is closed.
+2. Stage A is reviewed, including the seven deferred `redirectToLogin` conversions once RLS releases those files.
+3. Repository gates are green.
+4. Exact-SHA GitHub CI is green.
+5. Owner facts §16.5 items 1–5 are answered.
+6. Preview is cut over before Production.
