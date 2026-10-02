@@ -121,6 +121,14 @@ const STAGE_DOMAIN: Record<string, SyncIssueDomain> = {
   // subsystem that writes it; see the severity note in classifySyncIssue for
   // why it still classifies critical, and why that was left alone.
   "event-identity-persist":       "transactions",
+  // RLS-ACC-FK — same subsystem again, and the same posture as the stage above:
+  // domain `transactions` because that is who writes it, severity critical
+  // because severity is derived from domain, and `customerActionable` FALSE
+  // because `affirmativeTransaction` requires either a named bank transaction or
+  // the literal `transaction-persist` stage and this envelope deliberately
+  // carries NEITHER. No member action helps when two accounts claim one provider
+  // identity, and the member must not be told to reconnect their bank over it.
+  "reparenting-refused":          "transactions",
   // lib/investments/*
   "opening-position-repair":      "investments",
   "investment-import-repair":     "investments",
@@ -466,6 +474,7 @@ const OPERATION_PHRASE: Record<OperationKey, string> = {
   // Bank transactions.
   "transaction-persist":          "Storing bank transactions",
   "event-identity-persist":       "Linking a transaction to its logical event",
+  "reparenting-refused":          "Confirming which account a transaction belongs to",
 
   // Investments — six operations that otherwise share one label.
   "investment-events-fetch":      "Retrieving investment activity",
