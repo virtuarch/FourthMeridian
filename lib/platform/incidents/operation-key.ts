@@ -72,6 +72,23 @@ export const OPERATION_KEYS = {
   // console.warn (RLS-P-2b / EVENT-WRITE-1).
   "event-identity-persist": "event-identity-persist",
 
+  // ── Account-FK re-parenting refused (RLS-ACC-FK) ───────────────────────────
+  // Written when a provider identifier resolved an EXISTING row that belongs to
+  // a DIFFERENT FinancialAccount, so updating it with this sync's fields would
+  // have RE-PARENTED it. The row is left where it is and skipped.
+  //
+  // ⚠️ A SEPARATE KEY, NOT `transaction-persist`, AND THE DISTINCTION IS THE
+  // ONE THIS REGISTRY EXISTS FOR: OPERATOR REMEDIATION. `transaction-persist`
+  // means "a bank transaction failed to persist, the cursor is held, replay it";
+  // this means "two accounts claim one provider identity, a replay will fail
+  // identically for ever, go look at the identity mapping." Merging them would
+  // bury a permanent integrity anomaly inside a pile of transient retryable
+  // failures and tell the operator to wait.
+  //
+  // Deliberately NOT cursor-blocking either, for the same reason: cursor safety
+  // is for failures a replay can fix.
+  "reparenting-refused": "reparenting-refused",
+
   // ── Instrument identity (EVENT evidence) ───────────────────────────────────
   "import-weak-ambiguous":  "import-weak-ambiguous",
   "import-strong-conflict": "import-strong-conflict",
