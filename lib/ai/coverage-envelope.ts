@@ -42,8 +42,6 @@
  * and on one with four hundred thousand.
  */
 
-import type { Prisma, PrismaClient } from '@prisma/client';
-import { db } from '@/lib/db';
 import { adjudicateAbsence, EvidenceState } from '@/lib/ai/absence';
 import type { ReadClient } from '@/lib/db/tenant-context';
 import { bankingTransactionWhere } from '@/lib/data/banking-population';
@@ -51,8 +49,6 @@ import { resolveFullVisibleAccountIds } from '@/lib/accounts/space-account-link'
 import { getSnapshotExtent } from '@/lib/data/snapshots';
 import { isDigitalAssetAccountType } from '@/lib/account-classifier';
 import { loadWalletHistoryMetadata } from '@/lib/crypto/wallet-history-metadata';
-
-type Client = PrismaClient | Prisma.TransactionClient;
 
 /**
  * Whether a class of evidence exists for this Space.
@@ -74,7 +70,30 @@ export type EvidenceAvailabilityKind =
 export interface EvidenceSpan {
   fromISO: string | null;
   toISO:   string | null;
+  /**
+   * How many records lie INSIDE `[fromISO, toISO]`.
+   *
+   * ⚠️ RLS-AI-S8 — THIS USED TO BE THE COUNT OF A DIFFERENT POPULATION FROM THE
+   * RANGE BESIDE IT, and the two were rendered as one sentence. `_count` counted
+   * every row in the banking population while `_min`/`_max(economicDate)` ranged
+   * over the DATED ones only, because `Transaction.economicDate` is nullable
+   * (`prisma/schema.prisma:2327`) and the `audit-economic-date-persistence` audit
+   * is RED on the live corpus today — so this is a reachable production state, not
+   * a hypothetical. A Space with 4,184 rows of which 500 carry no economic date was
+   * described to the model as "4,184 records Mar 2023–Jun 2026": a true count and a
+   * true range that are false TOGETHER. It is now the DATED count, and the
+   * undatable remainder is a separate field rather than a silent addend.
+   */
   count:   number;
+  /**
+   * Records that EXIST and cannot be placed in time. Omitted when zero.
+   *
+   * ⚠️ "EXISTS BUT UNDATABLE" IS A THIRD STATE, NOT A ROUNDING ERROR. Folding it
+   * into `count` overstates the range; dropping it understates the record. Both
+   * are false-absence shapes — one about a period, one about the ledger — and the
+   * whole point of this module is that those are different sentences.
+   */
+  undatedCount?: number;
 }
 
 /** Per-chain digital-asset coverage. QUANTITY only — see `CoverageEnvelope`. */
@@ -137,6 +156,62 @@ export interface CoverageEnvelope {
    *                          INDETERMINATE and must never be rendered as absence
    */
   unavailability: null | 'CENSUS_FAILED' | 'SPACE_NOT_OBSERVABLE';
+  /**
+   * RLS-AI-S8 — THE PROHIBITION, ON THE OBJECT, DERIVED FROM ITS OWN STATE.
+   *
+   * ⚠️ IT IS HERE BECAUSE THE RENDERER IS NOT ON THE LIVE PATH, AND THAT WAS THE
+   * REAL DEFECT. `describeCoverageEnvelope` writes every careful sentence this
+   * module owns — the UNKNOWN prohibition RLS-AI-S0 added, the undated-rows
+   * sentence — and it has NO PRODUCTION CALLER. Search it: the only callers are
+   * this module's own unit suite and the RLS acceptance script. The shipped A2
+   * orientation (`lib/ai/conversation/evidence.ts`) puts the ENVELOPE OBJECT into
+   * the prompt as JSON (`evidenceCoverage: envelope`), so what the model actually
+   * received for a refused Space was `"availability":"UNKNOWN"`,
+   * `"count":0` and a bare `"unavailability":"SPACE_NOT_OBSERVABLE"` — three
+   * fields, no sentence, sitting next to a prompt full of invitations to assert
+   * absence. The absence contract was being tested on a code path the product
+   * does not use.
+   *
+   * ⚠️ DERIVED, NEVER WRITTEN BY A CALLER — the `applied-facts` rule (`54eb8e1`),
+   * where a verbatim caller-supplied string rode a figure it could not model into
+   * a durable checkpoint. The wording comes from the state alone.
+   *
+   * ⚠️ OMITTED WHEN THERE IS NOTHING TO PROHIBIT, so an ordinary envelope is
+   * byte-for-byte what it was and costs no tokens.
+   */
+  meaning?: string;
+}
+
+/**
+ * The sentence an envelope's own state licenses. PURE.
+ *
+ * Exported so the renderer and the serialized object cannot disagree: both read
+ * this, there is no second copy of the wording, and a test can assert the
+ * sentence exists without a database.
+ */
+export function coverageMeaning(env: Omit<CoverageEnvelope, 'meaning'>): string | undefined {
+  if (env.unavailability !== null) {
+    // ⚠️ BYTE-FOR-BYTE THE SENTENCE THE RENDERER ALREADY SHIPPED. It is prompt
+    // text, so rewording it would be an unmeasured change to what a model reads —
+    // and the suite beside this file pins its exact phrasing, including the
+    // deliberate choice NOT to contain the sentence it forbids (the bb2f6ec
+    // erratum: a word-presence check cannot tell a citation from a claim). S8
+    // changes only WHERE the sentence is delivered, never what it says.
+    return 'EVIDENCE COVERAGE COULD NOT BE ESTABLISHED for this Space'
+      + (env.unavailability === 'SPACE_NOT_OBSERVABLE'
+        ? ' — this request could not read its record'
+        : ' — the coverage census failed')
+      + '. Treat every class of evidence here as UNKNOWN: do not describe any record as empty, do '
+      + 'not give a count, and do not state how far back history goes. If asked, say the record '
+      + 'could not be checked for this request.';
+  }
+  const undated = env.transactions.span.undatedCount ?? 0;
+  if (undated > 0) {
+    return `${undated.toLocaleString()} transaction record(s) EXIST but carry no economic date, `
+      + 'so they belong to no period and are NOT included in `count` or in the from/to range. '
+      + 'Never fold them into a period total, and never describe them as absent or missing.';
+  }
+  return undefined;
 }
 
 /** Empty envelope — every class UNKNOWN. Used when the census cannot run. */
@@ -144,13 +219,16 @@ function unknownEnvelope(
   unavailability: 'CENSUS_FAILED' | 'SPACE_NOT_OBSERVABLE' = 'CENSUS_FAILED',
 ): CoverageEnvelope {
   const none: EvidenceSpan = { fromISO: null, toISO: null, count: 0 };
-  return {
+  const base = {
     transactions: { availability: EvidenceAvailability.UNKNOWN, span: none },
     snapshots:    { availability: EvidenceAvailability.UNKNOWN, span: none },
     accounts: { cash: 0, debt: 0, investments: 0, digitalAssets: 0, other: 0 },
-    chains: [],
+    chains: [] as ChainQuantityCoverage[],
     unavailability,
   };
+  // ⚠️ THE NOTICE TRAVELS WITH THE OBJECT, so a caller that serializes the
+  // envelope (which is what production does) cannot ship the state without it.
+  return { ...base, ...(coverageMeaning(base) ? { meaning: coverageMeaning(base)! } : {}) };
 }
 
 const iso = (d: Date | null | undefined): string | null =>
@@ -170,11 +248,20 @@ const iso = (d: Date | null | undefined): string | null =>
  * Account presence is scoped the same way, through the link table.
  */
 export async function loadCoverageEnvelope(
+  /**
+   * RLS-AI-S8 — REQUIRED, LEADING, AND NO LONGER `options?.client ?? db`.
+   *
+   * ⚠️ THE DEFAULT WAS THE ONE ESCAPE LEFT ON THE ABSENCE PATH, which is the worst
+   * place for it: this census is the module that decides whether an emptiness may
+   * be SPOKEN as absence, and it was deciding that on whatever client it happened
+   * to reach. On the migration principal the probe below answers PROVEN_EMPTY for
+   * every Space — correctly, since the owner can see them all — so a caller that
+   * forgot the option got a confidently licensed absence over a population it had
+   * never been scoped to.
+   */
+  client:  ReadClient,
   spaceId: string,
-  options?: { client?: Client },
 ): Promise<CoverageEnvelope> {
-  const client = options?.client ?? db;
-
   try {
     // Accounts this Space may see transaction-level detail for.
     //
@@ -193,18 +280,21 @@ export async function loadCoverageEnvelope(
 
     const [txn, snap, wallets] = await Promise.all([
       // Indexed min/max/count over the canonical banking population. No rows.
+      // ⚠️ RLS-AI-S8 — TWO COUNTS, STILL ONE QUERY. Prisma's `_count` over a FIELD
+      // counts its NON-NULL values, so `{ _all, economicDate }` returns the whole
+      // banking population and the DATED subset from the same aggregate. The fix
+      // for the mismatched populations therefore costs no extra round trip, which
+      // is why it is a correction and not a trade.
       client.transaction.aggregate({
         where: bankingTransactionWhere(spaceId),
         _min: { economicDate: true },
         _max: { economicDate: true },
-        _count: true,
+        _count: { _all: true, economicDate: true },
       }),
       // Through the snapshot authority — an aggregate is still a read, and
       // snapshot reads have one home (lib/data/snapshot-read-boundary.test.ts).
-      // RLS-C-S3 — the extent now runs on the SAME client this census already
-      // resolved (`options.client ?? db`), rather than reaching the global itself.
-      // The AUTHORITY is unchanged on this path by design — see the module's own
-      // absence contract and docs/plans/RLS-SILENT-REFUSAL-CAS.md Part 2.
+      // RLS-C-S3 — the extent runs on the SAME client this census was handed, so
+      // the absence oracle below adjudicates the authority that actually read.
       getSnapshotExtent(client, spaceId),
       // The canonical wallet-history authority (UI-C1/C2). It already separates
       // the proof floor from the first date anything was actually held, and
@@ -261,17 +351,27 @@ export async function loadCoverageEnvelope(
     // observable" is the one fact that explains every empty read in the census;
     // reporting NONE for snapshots while reporting UNKNOWN for transactions would
     // be two different claims about one refusal.
-    const sawNothing = txn._count === 0 && snap.count === 0 && accounts.length === 0;
+    const datedTxns   = txn._count.economicDate;
+    const allTxns     = txn._count._all;
+    const undatedTxns = allTxns - datedTxns;
+    const sawNothing  = allTxns === 0 && snap.count === 0 && accounts.length === 0;
     if (sawNothing
         && await adjudicateAbsence(client as ReadClient, spaceId) === EvidenceState.INDETERMINATE) {
       return unknownEnvelope('SPACE_NOT_OBSERVABLE');
     }
 
-    return {
+    const established = {
       unavailability: null,
       transactions: {
-        availability: txn._count > 0 ? EvidenceAvailability.AVAILABLE : EvidenceAvailability.NONE,
-        span: { fromISO: iso(txn._min.economicDate), toISO: iso(txn._max.economicDate), count: txn._count },
+        // ⚠️ AVAILABILITY IS ABOUT EXISTENCE, SO IT COUNTS EVERY ROW. An undatable
+        // row is still evidence that the ledger is not empty; what it cannot do is
+        // enter a range.
+        availability: allTxns > 0 ? EvidenceAvailability.AVAILABLE : EvidenceAvailability.NONE,
+        span: {
+          fromISO: iso(txn._min.economicDate), toISO: iso(txn._max.economicDate),
+          count: datedTxns,
+          ...(undatedTxns > 0 ? { undatedCount: undatedTxns } : {}),
+        },
       },
       snapshots: {
         availability: snap.count > 0 ? EvidenceAvailability.AVAILABLE : EvidenceAvailability.NONE,
@@ -285,7 +385,9 @@ export async function loadCoverageEnvelope(
         other:         count((t) => t === 'other'),
       },
       chains: [...byChain.values()].sort((a, b) => a.chain.localeCompare(b.chain)),
-    };
+    } satisfies Omit<CoverageEnvelope, 'meaning'>;
+    const meaning = coverageMeaning(established);
+    return { ...established, ...(meaning ? { meaning } : {}) };
   } catch (err) {
     // Awareness is additive. A census failure must never cost the user an answer
     // — and it must not pass for one either, so UNKNOWN now renders as an
@@ -339,15 +441,11 @@ export function describeCoverageEnvelope(
   // not look", and the rest of the prompt is full of invitations to assert the
   // first. One sentence, which is a PROHIBITION rather than a claim.
   if (t.availability === EvidenceAvailability.UNKNOWN) {
-    lines.push(
-      'EVIDENCE COVERAGE COULD NOT BE ESTABLISHED for this Space'
-      + (env.unavailability === 'SPACE_NOT_OBSERVABLE'
-        ? ' — this request could not read its record'
-        : ' — the coverage census failed')
-      + '. Treat every class of evidence here as UNKNOWN: do not describe any record as empty, do '
-      + 'not give a count, and do not state how far back history goes. If asked, say the record '
-      + 'could not be checked for this request.',
-    );
+    // ⚠️ ONE WORDING, READ FROM `coverageMeaning`, NOT A SECOND COPY. The renderer
+    // and the serialized object said the same thing in two places until S8; the
+    // measured precedent for why that is a defect is `exact-temporal-predicates`,
+    // where a hand-copied threshold drifted from the authority that owned it.
+    lines.push(env.meaning ?? coverageMeaning(env) ?? 'EVIDENCE COVERAGE COULD NOT BE ESTABLISHED.');
     return lines;
   }
 
@@ -358,9 +456,19 @@ export function describeCoverageEnvelope(
 
   if (t.availability === EvidenceAvailability.AVAILABLE && t.span.fromISO && t.span.toISO) {
     const wider = loaded !== null && loaded.fromISO > t.span.fromISO;
+    // ⚠️ RLS-AI-S8 — THE UNDATABLE REMAINDER IS NAMED BESIDE THE RANGE, NOT ADDED
+    // TO IT. The count is now the range's own denominator, so a reader can divide
+    // it by the span without being wrong; the rows that could not be placed are
+    // stated as existing-but-unplaceable, which licenses no claim about any period.
+    const undated = t.span.undatedCount ?? 0;
     lines.push(
       `  Transactions EXIST ${month(t.span.fromISO)}–${month(t.span.toISO)} ` +
       `(${t.span.count.toLocaleString()} records)` +
+      (undated > 0
+        ? `, PLUS ${undated.toLocaleString()} further record(s) that exist but carry no economic `
+          + 'date and so fall in NO period. Never fold those into a period total, and never '
+          + 'describe them as missing.'
+        : '') +
       (loaded
         ? wider
           // The sentence the whole slice exists for.
@@ -371,15 +479,20 @@ export function describeCoverageEnvelope(
         : '.'),
     );
   } else if (t.availability === EvidenceAvailability.AVAILABLE) {
-    // ⚠️ AVAILABLE WITH NO SPAN IS NOT ABSENCE, AND IT USED TO FALL HERE. The
-    // count comes from `_count` while the span comes from `_min`/`_max` over
-    // `economicDate`, so rows that exist but cannot be placed in time make the
-    // first positive and the second null — and the `else` below then asserted the
-    // Space had none. Found while separating the three states; unrelated to RLS
-    // and reachable today.
+    // ⚠️ AVAILABLE WITH NO SPAN IS NOT ABSENCE, AND IT USED TO FALL THROUGH TO THE
+    // `else` BELOW, which asserted the Space had none. Reachable today and nothing
+    // to do with RLS: `economicDate` is nullable, so a ledger of entirely undated
+    // rows makes the count positive and both bounds null.
+    //
+    // ⚠️ RLS-AI-S8 — AND THE FIGURE IT QUOTES IS NOW THE RIGHT ONE. `span.count` is
+    // the DATED count, which is zero on this branch, so quoting it here would have
+    // said "0 records exist" in the middle of a sentence insisting they do. The
+    // undated count is the whole population here, by construction.
+    const undated = t.span.undatedCount ?? 0;
     lines.push(
-      `  Transactions EXIST (${t.span.count.toLocaleString()} records) but none of them carries a `
-      + 'date, so no range can be stated. Do not say the Space has no transactions.',
+      `  Transactions EXIST (${undated.toLocaleString()} records) but none of them carries an `
+      + 'economic date, so no range can be stated and no record belongs to any period. Do not '
+      + 'say the Space has no transactions, and do not place them in a period.',
     );
   } else {
     // PROVEN_EMPTY. The census ran, it returned nothing, and the absence oracle

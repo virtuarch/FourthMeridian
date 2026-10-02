@@ -27,7 +27,7 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
-  describeCoverageEnvelope, EvidenceAvailability,
+  describeCoverageEnvelope, EvidenceAvailability, coverageMeaning, loadCoverageEnvelope,
   type CoverageEnvelope, type ChainQuantityCoverage,
 } from './coverage-envelope';
 
@@ -44,15 +44,20 @@ function env(o: Partial<{
   cash: number; debt: number; investments: number; digitalAssets: number; other: number;
   chains: ChainQuantityCoverage[];
   unknown: boolean;
+  /** RLS-AI-S8 — rows that exist and carry no economic date. */
+  txnUndated: number;
 }> = {}): CoverageEnvelope {
   const txnCount = o.txnCount ?? 4_156;
+  const txnUndated = o.txnUndated ?? 0;
   const snapCount = o.snapCount ?? 768;
   return {
     transactions: {
       availability: o.unknown ? EvidenceAvailability.UNKNOWN
-                  : txnCount > 0 ? EvidenceAvailability.AVAILABLE : EvidenceAvailability.NONE,
+                  : (txnCount + txnUndated) > 0
+                    ? EvidenceAvailability.AVAILABLE : EvidenceAvailability.NONE,
       span: { fromISO: o.txnFrom === undefined ? '2024-07-18' : o.txnFrom,
-              toISO:   o.txnTo   === undefined ? '2026-08-26' : o.txnTo, count: txnCount },
+              toISO:   o.txnTo   === undefined ? '2026-08-26' : o.txnTo, count: txnCount,
+              ...(txnUndated > 0 ? { undatedCount: txnUndated } : {}) },
     },
     snapshots: {
       availability: snapCount > 0 ? EvidenceAvailability.AVAILABLE : EvidenceAvailability.NONE,
@@ -249,14 +254,160 @@ const render = (e: CoverageEnvelope, from?: string, to?: string) =>
 
   // AVAILABLE with no datable row is a third non-absence, and used to fall into
   // the "none recorded" branch.
+  // ⚠️ RLS-AI-S8 — `count` IS NOW THE DATED COUNT, so the all-undated fixture
+  // carries its 12 rows in `undatedCount`. Before, `count: 12` sat beside a null
+  // range: a true number over a population the range did not describe.
   const undated = describeCoverageEnvelope(
-    { ...env({ txnCount: 12, txnFrom: null, txnTo: null, snapCount: 0,
+    { ...env({ txnCount: 0, txnUndated: 12, txnFrom: null, txnTo: null, snapCount: 0,
                cash: 0, debt: 0, investments: 0, digitalAssets: 0, other: 0, chains: [] }) },
     null,
   ).join('\n');
   check('rows that exist but cannot be dated are NOT reported as none',
     !/none recorded/.test(undated) && /Transactions EXIST \(12 records\)/.test(undated),
     undated);
+  check('…and the undated sentence forbids placing them in a period',
+    /no record belongs to any period/.test(undated)
+      && /do not place them in a period/.test(undated), undated);
+
+  // A MIXED Space: the range's own denominator, and the remainder beside it.
+  const mixed = describeCoverageEnvelope(env({ txnCount: 4_144, txnUndated: 12 }), null).join('\n');
+  check('a MIXED Space quotes the DATED count for the range',
+    /4,144 records/.test(mixed) && !/4,156 records/.test(mixed), mixed);
+  check('…and states the undatable remainder OUTSIDE the range',
+    /PLUS 12 further record/.test(mixed) && /fall in NO period/.test(mixed), mixed);
+}
+
+// ══ I — THE PROHIBITION TRAVELS ON THE OBJECT, NOT ONLY THE RENDERER ═════════
+//
+// ⚠️ THIS SUITE'S OWN BLIND SPOT, NAMED. Everything above renders a HAND-BUILT
+// envelope — and `describeCoverageEnvelope` HAS NO PRODUCTION CALLER. The shipped
+// A2 orientation serializes the ENVELOPE OBJECT as JSON into the prompt, so every
+// sentence asserted above was being checked on a code path the product does not
+// use. `coverageMeaning` is the derived field that fixes that, and it is pure.
+{
+  const failed = coverageMeaning({ ...env({ unknown: true }) });
+  check('a failed census CARRIES its prohibition as a field',
+    typeof failed === 'string' && /COULD NOT BE ESTABLISHED/.test(failed)
+      && /do not describe any record as empty/.test(failed), String(failed));
+  // ⚠️ THE WORDING IS UNCHANGED BY S8, AND THAT IS THE ASSERTION. The renderer's
+  // sentence was already shipped prompt text; moving it onto the object must not
+  // reword it, so the two are compared directly rather than both pattern-matched.
+  check('…and it is EXACTLY the sentence the renderer already shipped',
+    describeCoverageEnvelope({ ...env({ unknown: true }) }, null).join('\n') === failed,
+    describeCoverageEnvelope({ ...env({ unknown: true }) }, null).join('\n'));
+
+  const notObs = coverageMeaning({ ...env({ unknown: true }), unavailability: 'SPACE_NOT_OBSERVABLE' });
+  check('…and an unobservable Space says WHY, differently from a failed census',
+    typeof notObs === 'string' && notObs !== failed
+      && /could not read its record/.test(notObs), String(notObs));
+
+  check('an ORDINARY envelope carries NO notice — the field is omitted, not empty',
+    coverageMeaning(env()) === undefined, String(coverageMeaning(env())));
+
+  const und = coverageMeaning(env({ txnCount: 4_144, txnUndated: 12 }));
+  check('undated rows carry their own prohibition on the object',
+    typeof und === 'string' && /12 transaction record\(s\) EXIST/.test(und)
+      && /never describe them as absent or missing/.test(und), String(und));
+
+  // The renderer and the object must not hold two copies of the wording.
+  const rendered = describeCoverageEnvelope(
+    { ...env({ unknown: true }), unavailability: 'SPACE_NOT_OBSERVABLE',
+      meaning: notObs }, null).join('\n');
+  check('the RENDERER reads the same wording rather than keeping a second copy',
+    rendered === String(notObs), rendered);
+}
+
+// ══ J — THE CENSUS ITSELF, WHICH THIS SUITE COULD NOT PREVIOUSLY REACH ═══════
+//
+// ⚠️ A FAKE CLIENT PROVES ARITHMETIC, NEVER A POLICY, AND THE DIVISION IS THE
+// POINT. The dated/undated split is a `_count: { _all, economicDate }` aggregate
+// read and a subtraction — pure arithmetic over what Postgres returned, testable
+// here. Whether Postgres returns the RIGHT ROWS is a question about RLS, which no
+// fake client can answer; that half runs as real `fm_app` in
+// scripts/rls-ai-acceptance.ts (cases 51-56). Both halves exist because neither
+// is sufficient: this suite was blind to the census, and the acceptance suite
+// cannot be run from a unit gate.
+{
+  const census = (all: number, dated: number, min: string | null, max: string | null) => {
+    const client = {
+      spaceAccountLink: { findMany: async () => [
+        { financialAccountId: 'acct_1' }] },
+      financialAccount: { findMany: async () => [
+        { id: 'acct_1', type: 'checking', walletChain: null }] },
+      transaction: { aggregate: async () => ({
+        _min: { economicDate: min ? new Date(`${min}T00:00:00Z`) : null },
+        _max: { economicDate: max ? new Date(`${max}T00:00:00Z`) : null },
+        _count: { _all: all, economicDate: dated },
+      }) },
+      spaceSnapshot: { aggregate: async () => ({
+        _min: { date: null }, _max: { date: null }, _count: { _all: 0 } }) },
+      positionCoverage: { findMany: async () => [] },
+      positionObservation: { groupBy: async () => [] },
+      spaceMember: { findFirst: async () => ({ id: 'm_1' }) },
+    };
+    return loadCoverageEnvelope(client as never, 'space_1');
+  };
+
+  void (async () => {
+    const mixed = await census(4_156, 4_144, '2024-07-18', '2026-08-26');
+    check('CENSUS: a mixed ledger reports the DATED count and the remainder apart',
+      mixed.transactions.span.count === 4_144
+        && mixed.transactions.span.undatedCount === 12
+        && mixed.transactions.availability === EvidenceAvailability.AVAILABLE,
+      JSON.stringify(mixed.transactions.span));
+
+    const allUndated = await census(12, 0, null, null);
+    check('CENSUS: an ENTIRELY undated ledger is AVAILABLE, never NONE',
+      allUndated.transactions.availability === EvidenceAvailability.AVAILABLE
+        && allUndated.transactions.span.count === 0
+        && allUndated.transactions.span.undatedCount === 12
+        && allUndated.unavailability === null,
+      JSON.stringify(allUndated.transactions));
+    check('CENSUS: …and it never renders as "none recorded"',
+      !/none recorded/.test(describeCoverageEnvelope(allUndated, null).join('\n')),
+      describeCoverageEnvelope(allUndated, null).join('\n'));
+
+    const genuinelyEmpty = await census(0, 0, null, null);
+    check('CENSUS: NOT VACUOUS — a genuinely empty ledger IS still NONE',
+      genuinelyEmpty.transactions.availability === EvidenceAvailability.NONE
+        && genuinelyEmpty.transactions.span.undatedCount === undefined
+        && genuinelyEmpty.meaning === undefined,
+      JSON.stringify(genuinelyEmpty.transactions));
+
+    const clean = await census(4_156, 4_156, '2024-07-18', '2026-08-26');
+    check('CENSUS: a fully dated ledger carries NO undated key and NO notice',
+      clean.transactions.span.undatedCount === undefined && clean.meaning === undefined,
+      JSON.stringify(clean.transactions.span));
+
+    // ⚠️ THE OBJECT MUST CARRY THE PROHIBITION, AND A MUTATION TEST FOUND THAT
+    // THIS SUITE DID NOT CHECK IT. Deleting `const meaning = coverageMeaning(…)`
+    // from the census left all 63 checks green, because every `meaning`
+    // assertion above calls the PURE function directly or asserts the field is
+    // ABSENT. Only the real-role acceptance suite caught it — which needs Docker
+    // and therefore gates nothing in a unit run. These two close that.
+    const mixedNotice = await census(4_156, 4_144, '2024-07-18', '2026-08-26');
+    check('CENSUS: the ENVELOPE carries the undated prohibition as a field',
+      typeof mixedNotice.meaning === 'string'
+        && /12 transaction record\(s\) EXIST/.test(mixedNotice.meaning)
+        && JSON.stringify(mixedNotice).includes('EXIST but carry no economic date'),
+      String(mixedNotice.meaning));
+
+    const thrown = await loadCoverageEnvelope({
+      spaceAccountLink: { findMany: async () => { throw new Error('authority failure'); } },
+    } as never, 'space_1');
+    check('CENSUS: a THROWN authority is CENSUS_FAILED, and the object says so',
+      thrown.unavailability === 'CENSUS_FAILED'
+        && thrown.transactions.availability === EvidenceAvailability.UNKNOWN
+        && typeof thrown.meaning === 'string'
+        && /COULD NOT BE ESTABLISHED/.test(thrown.meaning)
+        && /the coverage census failed/.test(thrown.meaning),
+      JSON.stringify({ u: thrown.unavailability, m: thrown.meaning }));
+    check('CENSUS: …and a failed census is NEVER rendered as an absence',
+      !/none recorded/.test(describeCoverageEnvelope(thrown, null).join('\n')),
+      describeCoverageEnvelope(thrown, null).join('\n'));
+
+    report();
+  })();
 }
 
 // ══ H — VISIBILITY IS ENFORCED AT THE SOURCE ═════════════════════════════════
@@ -311,5 +462,15 @@ const render = (e: CoverageEnvelope, from?: string, to?: string) =>
     Math.ceil(r.length / 4) <= 300, `${Math.ceil(r.length / 4)} tokens`);
 }
 
-console.log(`\ncoverage-envelope: ${passes} passed, ${failures} failed`);
-process.exit(failures ? 1 : 0);
+/**
+ * ⚠️ THE REPORT IS A FUNCTION BECAUSE THE CENSUS BLOCK IS ASYNC, AND THIS WAS A
+ * REAL TRAP. The tail used to be a bare `console.log` + `process.exit` at module
+ * scope: the first async check added below would have resolved AFTER the process
+ * had already exited 0, and the suite would have reported "N passed" over checks
+ * that never ran. A suite that exits before its own assertions is the purest form
+ * of the vacuous pass this file exists to prevent.
+ */
+function report(): void {
+  console.log(`\ncoverage-envelope: ${passes} passed, ${failures} failed`);
+  process.exit(failures ? 1 : 0);
+}
