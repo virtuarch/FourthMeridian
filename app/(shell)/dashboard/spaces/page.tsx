@@ -6,6 +6,7 @@ import { db }               from "@/lib/db";
 import { SpacesClient }     from "@/components/dashboard/SpacesClient";
 import { ACTIVE_SPACE_COOKIE } from "@/lib/space";
 import { getSpaceNetWorthSummaries } from "@/lib/data/snapshots";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { getSpaceCardFreshness } from "@/lib/freshness/space-card-freshness";
 
 // Spaces landing page — the redesigned, premium successor to the old
@@ -136,21 +137,34 @@ export default async function SpacesPage() {
   // ── Net worth + sparkline trend, one query for every card on the page ─────
   const allIds = [...mySpaceIds, ...publicSpaces.map((w) => w.id)];
   //
-  // ⚠️ RLS-C-S3 — UNRESOLVED, AND LEFT ON THE MIGRATION PRINCIPAL ON PURPOSE.
-  // `allIds` is `mySpaceIds` PLUS every PUBLIC Space the user has NOT joined
-  // (`id: { notIn: mySpaceIds }`, above), and `getSpaceNetWorthSummaries` has no
-  // membership check of its own — it answers for whatever ids it is handed. So this
-  // page publishes the net worth and the sparkline of Spaces the viewer is not a
-  // member of, today, by application code and not by accident.
+  // ── MEMBERSHIP GATES MONEY (owner decision, 2026-10-02) ───────────────────
+  // `allIds` is `mySpaceIds` PLUS every PUBLIC Space the viewer has NOT joined
+  // (`id: { notIn: mySpaceIds }`, above). `getSpaceNetWorthSummaries` has no
+  // membership check of its own — it answers for whatever ids it is handed — so
+  // on the migration principal this page published the net worth, the 1M change
+  // and the sparkline of Spaces the viewer is not a member of. By application
+  // code, not by accident, and not by any product decision anyone had made.
   //
-  // On a tenant client the SpaceSnapshot policy (`"spaceId" IN (SELECT
-  // fm_visible_space_ids())`) would drop exactly those Spaces and every Explore
-  // card would silently render "—". That is not a bug fix this slice may make
-  // unilaterally: whether a public Space's net worth is public is a PRODUCT
-  // decision, and converting the authority would answer it by making the figure
-  // disappear. The client is passed EXPLICITLY so the authority is readable here,
-  // and the question is recorded rather than buried.
-  const netWorthBySpace = await getSpaceNetWorthSummaries(db, allIds);
+  // RLS-C-S3 found it and declined to answer it unilaterally, because the fix
+  // and the product question are the same edit. The owner has now answered:
+  // `isPublic` means DISCOVERABLE AND JOINABLE, never "my balances are
+  // published". So the figures are gated on membership.
+  //
+  // The gate is the tenant client, not a filter. `SpaceSnapshot.fm_app_sel` is
+  // `"spaceId" IN (SELECT fm_visible_space_ids())`, so a non-member's Space
+  // yields no summary and the Explore card renders the explicit no-figure state
+  // (`netWorth: 0`/`trend: []`/`change: null` → "—"). Writing it as an
+  // application `where` instead would put the rule somewhere a future edit could
+  // drop it silently; here, dropping it means reaching for a wider client, which
+  // scripts/audit-db-authority.ts refuses.
+  //
+  // ⚠️ The RLS design already said this. `Space.fm_app_sel` has an explicit
+  // `OR "isPublic" = true` arm so a public Space's ROW is readable to anyone —
+  // and `SpaceSnapshot` deliberately has no such arm. The policy drew the line
+  // at membership for financial figures before the product did.
+  const netWorthBySpace = await withTenantDb(userId, (tx) =>
+    getSpaceNetWorthSummaries(tx, allIds),
+  );
   // v2.6-L4F — per-Space ACCOUNT freshness, so the card's "updated" line is the
   // Slice 1 claim (anchored on the OLDEST observation, with its qualifier) and
   // not the snapshot date it used to show.
