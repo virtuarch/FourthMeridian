@@ -310,4 +310,100 @@ insert into "BetaAccessRequest" (id,email,status,"inviteTokenHash","inviteExpire
   ('bar_pending', 'waitlisted@example.test', 'PENDING', null,                    null,                      null, null, null),
   ('bar_notoken', 'revoked@example.test',    'APPROVED',null,                    now() + interval '7 days', now(), null, null),
   ('bar_redeemed','already@example.test',    'REDEEMED',null,                    null,                      now(), now(), 'some_prior_user');
+
+-- ── RLS-C-S10 — THE SHAPES S7 AND S8 LEFT UNPROVABLE ─────────────────────────
+-- Everything below exists so a claim one of those two slices made about what a
+-- ROLE CAN OBSERVE has a real denominator. None of it is read by cases 1–54, and
+-- none of it changes a figure any of them assert — the two rules that governed
+-- the choices are the same ones the SyncIssue note above records:
+--
+--   * NOTHING HERE ADDS A ROW TO A TABLE AN EARLIER CASE COUNTS. In particular
+--     no "Transaction" row appears here, because cases 4 and 13 pin Alice at 4
+--     and Bob at 2 and a fixture that moved those numbers would relax the
+--     backstop rather than extend it. The three transactions case 66 needs are
+--     seeded INSIDE that case, after every earlier case has run.
+--   * NO "SpaceMember" ROW IS ADDED. Case 34 inserts "m_removed" for
+--     (space_b, alice) with "on conflict do nothing"; a REMOVED membership
+--     seeded here would make that insert a silent no-op and its UPDATE would
+--     then target a row that does not exist.
+
+-- ── S7 — THE ORDERING DENOMINATOR ────────────────────────────────────────────
+-- "AccountConnection" had ZERO rows, which made S7's ordering claim unprovable
+-- in the only way that matters: with an empty table the WRONG order and the
+-- RIGHT order both report "{count: 0}" and raise nothing, so a test over it
+-- would pass whichever way round the writes went. "fm_app_upd" here is
+-- "fm_account_visible("financialAccountId")", true only while an ACTIVE link
+-- exists in a Space the actor is an ACTIVE member of — so these two rows are
+-- what lets case 60 watch visibility be destroyed BEFORE the write that needed
+-- it.
+insert into "AccountConnection" (id,"financialAccountId","connectedByUserId","plaidItemDbId","syncStatus","updatedAt") values
+  ('ac_shared','acct_shared','alice','pi_alice','pending',now()),
+  ('ac_alice','acct_alice','alice','pi_alice','pending',now());
+
+-- The RESTORE shape, which is the disconnect's mirror and needs the opposite
+-- order: an account ALREADY soft-deleted, its link ALREADY revoked, its
+-- connection ALREADY soft-deleted. Deliberately a SEPARATE account, so the
+-- restore case cannot disturb the disconnect case's fixtures or be disturbed by
+-- them — the two run opposite ways over the same policy.
+insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","deletedAt","updatedAt") values
+  ('acct_restore','Alice Archived','checking','TestBank','USER','alice',now(),now());
+insert into "SpaceAccountLink" (id,"spaceId","financialAccountId",kind,status,"visibilityLevel","revokedAt","revokedByUserId","updatedAt") values
+  ('l_restore','space_a','acct_restore','HOME','REVOKED','FULL',now(),'alice',now());
+insert into "AccountConnection" (id,"financialAccountId","connectedByUserId","plaidItemDbId","syncStatus","deletedAt","updatedAt") values
+  ('ac_restore','acct_restore','alice','pi_alice','pending',now(),now());
+
+-- ── S8 — AN INVESTMENT ACCOUNT ALICE OWNS AND CANNOT REACH ───────────────────
+-- ⚠️ THE POINT IS THE ASYMMETRY BETWEEN TWO POLICIES. "FinancialAccount.fm_app_sel"
+-- has an ""ownerUserId" = current_fm_user_id()" arm, so Alice can always see this
+-- account itself. "AccountConnection.fm_app_sel" has NO such arm — it is
+-- "fm_account_visible("financialAccountId")" alone — and this account's only
+-- ACTIVE link is in space_b, which Alice is not a member of. So the connection
+-- drops out while the account does not, which is exactly the shape
+-- "getImportableAccountsForConnection" resolves through (case 70). Ownership is
+-- not reach.
+insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","updatedAt") values
+  ('acct_alice_inv','Alice Brokerage','investment','TestBank','USER','alice',now());
+insert into "SpaceAccountLink" (id,"spaceId","financialAccountId",kind,status,"visibilityLevel","updatedAt") values
+  ('l_inv_b','space_b','acct_alice_inv','SHARED','ACTIVE','FULL',now());
+insert into "AccountConnection" (id,"financialAccountId","connectedByUserId","plaidItemDbId","syncStatus","updatedAt") values
+  ('ac_alice_inv','acct_alice_inv','alice','pi_alice','pending',now());
+
+-- ── S8 — THE IMPORT BATCHES ──────────────────────────────────────────────────
+-- Four batches on THREE different shapes, one per property, deliberately not
+-- shared: "ib_m" is rolled back twice (once by Bob, observing nothing, once by
+-- Alice against a concurrent delete) and "ib_n" must still have live rows when
+-- its un-supersession is measured. One batch serving both would make the second
+-- case depend on the first case's failure mode.
+insert into "Instrument" (id,"tickerSymbol",name,"assetClass","updatedAt") values
+  ('inst_x','XYZ','XYZ Corp','EQUITY',now());
+
+insert into "ImportBatch" (id,"financialAccountId",source,kind,status,"updatedAt") values
+  ('ib_bob','acct_bob',  'CSV','INVESTMENT_HISTORY','COMPLETED',now()),
+  ('ib_k',  'acct_alice','CSV','TRANSACTIONS',      'COMPLETED',now()),
+  ('ib_m',  'acct_alice','CSV','INVESTMENT_HISTORY','COMPLETED',now()),
+  ('ib_n',  'acct_alice','CSV','INVESTMENT_HISTORY','COMPLETED',now());
+
+insert into "InvestmentEvent" (id,"financialAccountId","instrumentId",type,date,source,"importBatchId","updatedAt") values
+  ('ie_m1','acct_alice','inst_x','BUY',current_date,       'csv:test','ib_m',now()),
+  ('ie_m2','acct_alice','inst_x','BUY',current_date - 1,   'csv:test','ib_m',now()),
+  ('ie_n1','acct_alice','inst_x','BUY',current_date - 2,   'csv:test','ib_n',now());
+
+-- "po_n_open" is the USER_ASSERTED opening the import outranked, and it is NOT a
+-- member of the batch — that is the whole point. Its "supersededById" points at a
+-- row the batch owns, so rolling the batch back must RETURN it. A silent failure
+-- here leaves a user's own stated opening permanently outranked by evidence that
+-- no longer exists, and reports "0 pointers cleared".
+insert into "PositionObservation" (id,"financialAccountId","instrumentId",date,quantity,origin,source,"importBatchId","supersededById") values
+  ('po_n_batch','acct_alice','inst_x',current_date - 2,10,'IMPORTED',     'csv:test','ib_n',null),
+  ('po_n_open', 'acct_alice','inst_x',current_date - 3, 5,'USER_ASSERTED','user',    null,  'po_n_batch');
+
+-- ── S8 — THE HOLDINGS RECONCILIATION'S THREE LEGS ────────────────────────────
+-- Case 71 needs all three legs of "syncCurrentHoldings" to have real work: one
+-- row to UPDATE, two to DELETE as stale, and one to INSERT. Without the stale
+-- pair the rollback assertion would be vacuous — there would be nothing for the
+-- failed insert to have to undo.
+insert into "Holding" (id,"financialAccountId",symbol,name,quantity,price,value,"updatedAt") values
+  ('h_aaa','acct_alice','AAA','Alpha',1,10,10,now()),
+  ('h_bbb','acct_alice','BBB','Beta', 2,20,40,now()),
+  ('h_ccc','acct_alice','CCC','Gamma',3,30,90,now());
 `;

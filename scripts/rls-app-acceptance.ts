@@ -613,6 +613,522 @@ async function main(): Promise<void> {
     deniedByGrant(lastOccRead) && sysGroup.ok && sysGroup.out.trim() === "2",
     `app=${lastOccRead.err.split("\n")[0] || `ALLOWED — read ${lastOccRead.out}`} system=${sysGroup.err.split("\n")[0] || sysGroup.out.trim()}`);
 
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // RLS-C-S10 — THE CASES S7 AND S8 DEFERRED, AGAINST REAL PRINCIPALS
+  //
+  // S7 and S8 both shipped implementations whose correctness rests on a claim
+  // about WHAT A ROLE CAN OBSERVE: that a co-owner's link is invisible to the
+  // actor, that a connection stops being writable the moment its last visible
+  // link is revoked, that a batch's rows drop out of both the observation and
+  // the write when a merge relocates them. Every one of those claims was backed
+  // only by a unit test with a FAKE CLIENT, and a fake client cannot in
+  // principle say anything about a policy — it answers whatever it was written
+  // to answer. Local development has no role URLs provisioned, so `withTenantDb`
+  // falls back to the legacy client there and the properties are unobservable;
+  // this harness is the only place they exist.
+  //
+  // ⚠️ AND THE FIRST CASE IS THE DENOMINATOR FOR THE REST. Almost everything
+  // below is an ABSENCE claim, and an absence over an empty set passes for the
+  // wrong reason — a bug an earlier slice in this programme actually shipped. So
+  // case 55 proves Alice genuinely sees FEWER rows than exist before anything
+  // asks what she cannot do, and case 64 does the same for the import block.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /** One tenant statement batch under a named identity, exactly as the role sees it. */
+  const asTenant = (userId: string, sql: string) =>
+    psql(h.appUrl, `begin; set local app.user_id='${userId}';\n${sql}\ncommit;`, false);
+  /**
+   * ⚠️ `psql -q` SUPPRESSES COMMAND TAGS, so "UPDATE 2" never reaches stdout and
+   * an affected-row count cannot be read off it. Wrapping the statement in a CTE
+   * and counting its RETURNING rows is the only way to observe the count, and it
+   * is also the honest one: RETURNING is itself filtered by the SELECT policy, so
+   * a row the write touched but the role cannot see would not be counted here —
+   * which is precisely the hazard under test.
+   */
+  const counting = (statement: string) => `with c as (${statement} returning 1) select count(*) from c;`;
+  const lines = (r: { out: string }) => r.out.trim().split("\n").map((s) => s.trim());
+
+  /**
+   * Put the link / connection / soft-delete fixtures back exactly as seeded.
+   * Cases 57, 58, 60, 61 and 71 each destroy visibility deliberately, and the
+   * NEXT case's premise is that visibility exists — so the reset is surgical and
+   * BY ID. A blanket `set status='ACTIVE' where "financialAccountId"=…` would
+   * also resurrect `l_rev`, the deliberately-revoked link case 31 pins.
+   */
+  const restoreFixtures = () => {
+    const r = psql(h.ownerUrl, `
+      update "SpaceAccountLink" set status='ACTIVE', "revokedAt"=null, "revokedByUserId"=null
+        where id in ('l_a','l_b','l_sh','l_sh2','l_sh_bal','l_ap','l_inv_b');
+      update "SpaceAccountLink" set status='REVOKED' where id in ('l_rev','l_restore');
+      update "AccountConnection" set "deletedAt"=null where id in ('ac_shared','ac_alice','ac_alice_inv');
+      update "AccountConnection" set "deletedAt"=now() where id='ac_restore';
+      update "FinancialAccount" set "deletedAt"=null
+        where id in ('acct_alice','acct_bob','acct_shared','acct_alice_private','acct_alice_inv');
+      update "FinancialAccount" set "deletedAt"=now() where id='acct_restore';`);
+    // A failed reset would make the NEXT case's premise false while its
+    // assertion still read as a legitimate verdict. Refuse instead.
+    if (!r.ok) throw new Error(`fixture restore failed: ${r.err.split("\n")[0]}`);
+  };
+
+  // ── [role] S7-A — THE PREMISE, AND WITHOUT IT NOTHING BELOW MEANS ANYTHING ──
+  // `acct_shared` carries THREE ACTIVE links: Alice's two (space_s, space_a) and
+  // a co-owner's in space_b, which she is not a member of. If that third link
+  // were ever visible to her — or ever stopped existing — every case below would
+  // go green while proving nothing, because "the write landed on fewer rows than
+  // exist" would have no rows left to miss.
+  //
+  // Asserted RELATIONALLY (visible < total) rather than as "2", so a future
+  // fixture that adds a fourth Space cannot weaken it into a tautology; the one
+  // hard-coded fact is the IDENTITY of the hidden row, which is the thing the
+  // rest of the block is about.
+  const sharedAll = psql(h.ownerUrl,
+    `select coalesce(string_agg(id,',' order by id),'') from "SpaceAccountLink"
+      where "financialAccountId"='acct_shared' and status='ACTIVE';`).out.trim();
+  const sharedAlice = asTenant("alice",
+    `select coalesce(string_agg(id,',' order by id),'') from "SpaceAccountLink"
+      where "financialAccountId"='acct_shared' and status='ACTIVE';`);
+  const allIds = sharedAll ? sharedAll.split(",") : [];
+  const aliceIds = sharedAlice.out.trim() ? sharedAlice.out.trim().split(",") : [];
+  const hiddenIds = allIds.filter((id) => !aliceIds.includes(id));
+  check(55, "[role] THE PREMISE: acct_shared's ACTIVE links outnumber the ones Alice's role admits, and the co-owner's link is the one missing",
+    allIds.length >= 3 && aliceIds.length < allIds.length && hiddenIds.includes("l_sh_bal"),
+    `total=[${sharedAll}] aliceSees=[${sharedAlice.out.trim()}] hidden=[${hiddenIds.join(",")}]`);
+
+  // ── [role] S7-D — THE AFFECTED-SPACE CAPTURE IS WIDER THAN THE ACTOR ───────
+  // The capture is not bookkeeping: each Space in it gets its snapshot
+  // regenerated, which is what makes a co-owner's net worth stop counting an
+  // account that no longer syncs. Run on the actor's authority it would omit
+  // space_b, and the co-owner's Space would narrate a balance for a dead account
+  // for ever — with no error anywhere.
+  const sysSpaces = psql(h.systemUrl,
+    `select coalesce(string_agg(distinct "spaceId",',' order by "spaceId"),'') from "SpaceAccountLink"
+      where "financialAccountId"='acct_shared' and status='ACTIVE';`).out.trim();
+  const aliceSpaces = asTenant("alice",
+    `select coalesce(string_agg(distinct "spaceId",',' order by "spaceId"),'') from "SpaceAccountLink"
+      where "financialAccountId"='acct_shared' and status='ACTIVE';`).out.trim();
+  check(56, "[role] the affected-Space capture on fm_system is a STRICT SUPERSET of the actor's and includes space_b — the Space whose snapshot must regenerate",
+    sysSpaces === "space_a,space_b,space_s"
+    && !aliceSpaces.split(",").includes("space_b")
+    && aliceSpaces.split(",").every((s) => sysSpaces.split(",").includes(s)),
+    `system=[${sysSpaces}] alice=[${aliceSpaces}]`);
+
+  // ── [role] S7-B — THE SILENT PARTIAL, REPRODUCED ──────────────────────────
+  // THE CENTREPIECE OF S7, and until now a claim rather than an observation. The
+  // naive conversion of `disconnect.ts` issues exactly this statement on the
+  // tenant role. It does not fail. It does not warn. It revokes two links of
+  // three and returns a plausible number — and a zero at least looks like
+  // nothing happened, where 1-of-2 looks exactly like success.
+  const silentPartial = asTenant("alice", counting(
+    `update "SpaceAccountLink" set status='REVOKED', "revokedAt"=now(), "revokedByUserId"='alice'
+      where "financialAccountId"='acct_shared' and status='ACTIVE'`));
+  const coOwnerAfter = psql(h.ownerUrl, `select status from "SpaceAccountLink" where id='l_sh_bal';`).out.trim();
+  check(57, "[role] the tenant role's blanket revoke writes 2 links of 3, RAISES NOTHING, and leaves the co-owner's link ACTIVE — the silent partial is real",
+    silentPartial.ok && silentPartial.out.trim() === String(aliceIds.length) && coOwnerAfter === "ACTIVE",
+    `wrote=${silentPartial.out.trim()} expected=${aliceIds.length} coOwnerLink=${coOwnerAfter} err=${silentPartial.err.split("\n")[0] || "(none)"}`);
+
+  // ── [role] S7-C — THE CAPABILITY, AND WHY IT IS THE ONLY HONEST AUTHORITY ──
+  restoreFixtures();
+  const wholeRevoke = psql(h.systemUrl, counting(
+    `update "SpaceAccountLink" set status='REVOKED', "revokedAt"=now(), "revokedByUserId"='alice'
+      where "financialAccountId"='acct_shared' and status='ACTIVE'`), false);
+  const revokedRows = psql(h.ownerUrl,
+    `select coalesce(string_agg(id || ':' || status || ':' || coalesce("revokedByUserId",'(null)'), ',' order by id),'(none)')
+       from "SpaceAccountLink" where "financialAccountId"='acct_shared';`).out.trim();
+  check(58, "[role] the SAME statement on fm_system writes every link in every Space and records the ACTOR as revoker — the blast radius is the operation's, the authorization is not",
+    wholeRevoke.ok && wholeRevoke.out.trim() === String(allIds.length)
+    && revokedRows === "l_sh:REVOKED:alice,l_sh2:REVOKED:alice,l_sh_bal:REVOKED:alice",
+    `wrote=${wholeRevoke.out.trim()} expected=${allIds.length} rows=${revokedRows}`);
+
+  // ── [role] S7-E — AUTHORIZATION IS NOT REDUNDANT WITH THE POLICY ───────────
+  // `disconnectAccounts` re-proves ownership with `ownerUserId: actorUserId` ON
+  // TOP of the policy, and the second half here is why that is not belt-and-
+  // braces: `FinancialAccount.fm_app_sel` has an `OR fm_account_visible(id)` arm,
+  // so Bob's role ADMITS the joint account he merely co-sees. Drop the
+  // `ownerUserId` narrowing and a co-viewer could hand `acct_shared` to the
+  // deployment-wide revoke.
+  restoreFixtures();
+  const bobOwns = asTenant("bob",
+    `select coalesce(string_agg(id,','),'(none)') from "FinancialAccount" where id='acct_shared' and "ownerUserId"='bob';`);
+  const bobSees = asTenant("bob",
+    `select coalesce(string_agg(id,','),'(none)') from "FinancialAccount" where id='acct_shared';`);
+  check(59, "[role] Bob's role SEES the joint account but owns none of it — the ownership narrowing in front of the capability is load-bearing, not redundant",
+    bobOwns.out.trim() === "(none)" && bobSees.out.trim() === "acct_shared",
+    `owned=${bobOwns.out.trim()} visible=${bobSees.out.trim()}`);
+
+  // ── [role] S7-F — THE DISCONNECT'S ORDER, AND WHAT THE WRONG ONE COSTS ─────
+  // `AccountConnection.fm_app_upd` is `fm_account_visible("financialAccountId")`,
+  // true only while an ACTIVE link exists in a Space the actor belongs to. So
+  // revoking the links first DESTROYS THE VISIBILITY THE NEXT WRITE NEEDS. The
+  // failure mode is the one this whole programme is about: zero rows, no error,
+  // a connection left open on an account the product has already soft-deleted.
+  // Both orders are run here, in one tenant transaction each, exactly as phase 1
+  // runs them.
+  const wrongOrder = psql(h.appUrl, `begin; set local app.user_id='alice';
+    ${counting(`update "SpaceAccountLink" set status='REVOKED', "revokedAt"=now(), "revokedByUserId"='alice'
+                 where "financialAccountId"='acct_shared' and status='ACTIVE'`)}
+    ${counting(`update "AccountConnection" set "deletedAt"=now()
+                 where "financialAccountId"='acct_shared' and "deletedAt" is null`)}
+    commit;`, false);
+  const sharedConnAfter = psql(h.ownerUrl,
+    `select coalesce("deletedAt"::text,'(still open)') from "AccountConnection" where id='ac_shared';`).out.trim();
+  const rightOrder = psql(h.appUrl, `begin; set local app.user_id='alice';
+    ${counting(`update "AccountConnection" set "deletedAt"=now()
+                 where "financialAccountId"='acct_alice' and "deletedAt" is null`)}
+    ${counting(`update "SpaceAccountLink" set status='REVOKED', "revokedAt"=now(), "revokedByUserId"='alice'
+                 where "financialAccountId"='acct_alice' and status='ACTIVE'`)}
+    commit;`, false);
+  const aliceConnAfter = psql(h.ownerUrl,
+    `select coalesce("deletedAt"::text,'(still open)') from "AccountConnection" where id='ac_alice';`).out.trim();
+  const wrongLines = lines(wrongOrder), rightLines = lines(rightOrder);
+  check(60, "[role] links-before-connections closes ZERO connections and raises NOTHING; connections-before-links closes the one it was meant to — the shipped order is the only one that works",
+    wrongOrder.ok && wrongLines[0] === "2" && wrongLines[1] === "0" && sharedConnAfter === "(still open)"
+    && rightOrder.ok && rightLines[0] === "1" && rightLines[1] === "1" && aliceConnAfter !== "(still open)",
+    `wrong=[${wrongLines.join("|")}] sharedConn=${sharedConnAfter} right=[${rightLines.join("|")}] aliceConn=${aliceConnAfter}`);
+
+  // ── [role] S7-G — AND THE RESTORE RUNS THE OTHER WAY, FOR THE SAME REASON ──
+  // The mirror image, and the reason the two orders are opposite rather than
+  // conventional. On the way back the links are what CONFER the visibility, so
+  // they must be reactivated first — and the un-delete attempted first observes
+  // nothing and writes nothing, so even the shortfall guard cannot fire: 0
+  // observed, 0 written, no deficit, no alarm, an account restored with its
+  // connection still archived.
+  restoreFixtures();
+  const wrongRestore = psql(h.appUrl, `begin; set local app.user_id='alice';
+    select count(*) from "AccountConnection" where "financialAccountId"='acct_restore' and "deletedAt" is not null;
+    ${counting(`update "AccountConnection" set "deletedAt"=null
+                 where "financialAccountId"='acct_restore' and "deletedAt" is not null`)}
+    commit;`, false);
+  const restoreConnMid = psql(h.ownerUrl,
+    `select coalesce("deletedAt"::text,'(restored)') from "AccountConnection" where id='ac_restore';`).out.trim();
+  const reactivateLinks = psql(h.systemUrl, counting(
+    `update "SpaceAccountLink" set status='ACTIVE', "revokedAt"=null, "revokedByUserId"=null
+      where "financialAccountId"='acct_restore' and status='REVOKED'`), false);
+  const rightRestore = psql(h.appUrl, `begin; set local app.user_id='alice';
+    ${counting(`update "AccountConnection" set "deletedAt"=null
+                 where "financialAccountId"='acct_restore' and "deletedAt" is not null`)}
+    commit;`, false);
+  const restoreConnEnd = psql(h.ownerUrl,
+    `select coalesce("deletedAt"::text,'(restored)') from "AccountConnection" where id='ac_restore';`).out.trim();
+  const wr = lines(wrongRestore);
+  check(61, "[role] un-deleting the connection BEFORE reactivating the links observes 0 and writes 0 — so even the shortfall guard cannot fire; links-first makes the identical statement write 1",
+    wrongRestore.ok && wr[0] === "0" && wr[1] === "0" && restoreConnMid !== "(restored)"
+    && reactivateLinks.ok && reactivateLinks.out.trim() === "1"
+    && rightRestore.ok && rightRestore.out.trim() === "1" && restoreConnEnd === "(restored)",
+    `wrongRestore=[${wr.join("|")}] mid=${restoreConnMid} reactivated=${reactivateLinks.out.trim()} rightRestore=${rightRestore.out.trim()} end=${restoreConnEnd}`);
+
+  // ── [channel] S7-I — AND THIS HALF FAILS LOUD, WHICH IS WHY IT IS fm_system ─
+  // Phase 3 regenerates a snapshot per affected Space, and the list includes
+  // Spaces the actor is not in. `SpaceSnapshot`'s tenant INSERT policy is
+  // `"spaceId" IN (SELECT fm_visible_space_ids())`, so the write for space_b is
+  // refused by WITH CHECK and RAISES — the one place in this slice where the
+  // wrong authority would have been noisy rather than silent. That asymmetry is
+  // the whole reason `regenerate.ts` defaults to `systemDb` instead of being
+  // "fixed" by narrowing the Space list to the actor's.
+  let snapWrite = "no error";
+  try {
+    await tenant.withTenantDb("alice", (tx) => tx.spaceSnapshot.upsert({
+      where:  { spaceId_date: { spaceId: "space_b", date: new Date(today) } },
+      update: { netWorth: 1 },
+      create: { spaceId: "space_b", date: new Date(today), netWorth: 1 },
+    }));
+  } catch (e) { snapWrite = e instanceof Error ? e.message : String(e); }
+  const snapRows = psql(h.ownerUrl, `select count(*) from "SpaceSnapshot" where "spaceId"='space_b';`).out.trim();
+  check(62, "[channel] a snapshot for a co-owner's Space is REFUSED LOUDLY on the tenant role — the half of the disconnect that cannot be silent",
+    /row-level security/i.test(snapWrite) && snapRows === "0",
+    `err=${snapWrite.split("\n")[0]} rows=${snapRows}`);
+
+  // ── [role] S7-H — THE PERMANENT DELETE NEEDS NO CAPABILITY ────────────────
+  // The claim S7 made without proving it: the permanent-delete route stayed
+  // entirely on the tenant role, because the links it must remove go with the
+  // account through the FK's ON DELETE CASCADE — and referential actions are
+  // performed by the system, NOT filtered by the policy that hid the row from
+  // the deleting role. So the statement the role can only half-perform is
+  // followed by one that finishes the job completely.
+  //
+  // ⚠️ THIS CASE DESTROYS acct_shared. It is last in the S7 block for that
+  // reason, and nothing after it refers to that account.
+  restoreFixtures();
+  const delLinks = asTenant("alice", counting(`delete from "SpaceAccountLink" where "financialAccountId"='acct_shared'`));
+  const survivingLink = psql(h.ownerUrl,
+    `select coalesce(string_agg(id,',' order by id),'(none)') from "SpaceAccountLink" where "financialAccountId"='acct_shared';`).out.trim();
+  const delAccount = asTenant("alice", counting(`delete from "FinancialAccount" where id='acct_shared'`));
+  const afterCascade = psql(h.ownerUrl,
+    `select coalesce(string_agg(id,',' order by id),'(none)') from "SpaceAccountLink" where "financialAccountId"='acct_shared';`).out.trim();
+  check(63, "[role] the tenant DELETE leaves the co-owner's link behind, and the account DELETE takes it anyway — ON DELETE CASCADE is not filtered by RLS, so no capability was needed",
+    delLinks.ok && delLinks.out.trim() === "2" && survivingLink === "l_sh_bal"
+    && delAccount.ok && delAccount.out.trim() === "1" && afterCascade === "(none)",
+    `links=${delLinks.out.trim()} survivor=${survivingLink} account=${delAccount.out.trim()} after=${afterCascade}`);
+
+  // ══ S8 — THE INVESTMENTS AND IMPORTS SPINE ═════════════════════════════════
+
+  // ── [role] S8 — THE DENOMINATOR FOR EVERY ABSENCE BELOW ───────────────────
+  // Cases 65, 67 and 70 are absence claims on the import spine; case 66's whole
+  // point is a row that is PRESENT and unreachable. Over an empty fixture set all
+  // four pass and none of them means anything, so the population is asserted from
+  // the owner connection first — including the un-supersession pointer, which is
+  // the single most destructive silent failure S8 found.
+  const s8Census = psql(h.ownerUrl, `
+    select (select count(*) from "ImportBatch" where id='ib_bob')::text || '|' ||
+           (select count(*) from "InvestmentEvent" where "importBatchId"='ib_m' and "deletedAt" is null)::text || '|' ||
+           (select count(*) from "InvestmentEvent" where "importBatchId"='ib_n' and "deletedAt" is null)::text || '|' ||
+           (select count(*) from "PositionObservation" where "importBatchId"='ib_n' and "deletedAt" is null)::text || '|' ||
+           (select coalesce("supersededById",'(null)') from "PositionObservation" where id='po_n_open') || '|' ||
+           (select count(*) from "AccountConnection" where "financialAccountId"='acct_alice_inv')::text;`).out.trim();
+  check(64, "[role] the import fixtures EXIST: Bob's batch, two live events, a USER_ASSERTED opening genuinely superseded, and an unreachable investment connection",
+    s8Census === "1|2|1|1|po_n_batch|1", s8Census);
+
+  // ── [channel] S8-J — THE ROUTE'S 404 IS THE DATABASE'S ANSWER ─────────────
+  // The rollback route's phase 1 is `findUnique` by batch id plus a membership
+  // check. Under the tenant role the lookup ITSELF returns nothing for another
+  // tenant's batch (`ImportBatch.fm_app_sel` is
+  // `fm_account_visible("financialAccountId")`), so the 404 no longer depends on
+  // the check that follows it being correct. Paired with the positive read, so
+  // "null" cannot be the harness failing to find anything at all.
+  const bobBatchAsAlice = await tenant.withTenantDb("alice", (tx) => tx.importBatch.findUnique({ where: { id: "ib_bob" } }));
+  const bobBatchAsBob   = await tenant.withTenantDb("bob",   (tx) => tx.importBatch.findUnique({ where: { id: "ib_bob" } }));
+  check(65, "[channel] Bob's import batch is NULL to Alice's tenant client and present to his own — the route's 404 comes from the policy, not from the check after it",
+    bobBatchAsAlice === null && bobBatchAsBob?.id === "ib_bob",
+    `alice=${JSON.stringify(bobBatchAsAlice)} bob=${bobBatchAsBob?.id}`);
+
+  // ── [channel] S8-K — THE RESIDUAL S8 RECORDED, MADE CONCRETE ──────────────
+  // The rollback's Transaction soft-delete is keyed on `importBatchId` ONLY,
+  // never `financialAccountId`, because a merge re-points a transaction's account
+  // without touching its batch. The POLICY, however, is keyed on exactly the
+  // column the statement does not mention. So a relocated row is absent from the
+  // observation AND from the write, the two agree, no shortfall exists to raise,
+  // and the batch is reported fully rolled back with a live row still in it.
+  //
+  // THE GUARD IS WORKING CORRECTLY HERE. That is the finding: comparing a write
+  // to what the same authority observed cannot detect a row that authority never
+  // saw, and S8 named the reconciliation as a follow-up rather than assuming it
+  // away. This case is what makes that residual a measured fact.
+  //
+  // ⚠️ THE THREE ROWS ARE SEEDED HERE, NOT IN APP_FIXTURES. Cases 4 and 13 pin
+  // Alice's unfiltered transaction count at 4 and Bob's at 2; seeding them with
+  // the rest would have moved those numbers and silently relaxed the backstop.
+  const kSeed = psql(h.ownerUrl, `
+    insert into "Transaction" (id,"financialAccountId",date,"economicDate",merchant,category,amount,"importBatchId","updatedAt") values
+      ('tx_k1','acct_alice',current_date,current_date,'Import A','Other',-1,'ib_k',now()),
+      ('tx_k2','acct_alice',current_date,current_date,'Import B','Other',-2,'ib_k',now()),
+      ('tx_k3','acct_bob',  current_date,current_date,'Import C','Other',-3,'ib_k',now());`);
+  if (!kSeed.ok) throw new Error(`case 66 fixture failed: ${kSeed.err.split("\n")[0]}`);
+  const residual = await tenant.withTenantDb("alice", async (tx) => {
+    const eligible = await tx.transaction.count({ where: { importBatchId: "ib_k", deletedAt: null } });
+    const soft = await tx.transaction.updateMany({ where: { importBatchId: "ib_k", deletedAt: null }, data: { deletedAt: new Date() } });
+    let raised: string | null = null;
+    try {
+      cas.assertEveryObservedRowWasWritten(
+        { table: "Transaction", operation: "update", scope: "one import batch's live rows" },
+        eligible, soft.count);
+    } catch (e) { raised = e instanceof Error ? e.name : String(e); }
+    return { eligible, written: soft.count, raised };
+  });
+  const kState = psql(h.ownerUrl,
+    `select count(*)::text || '|' || count(*) filter (where "deletedAt" is null)::text || '|' ||
+            coalesce(string_agg(id,',' order by id) filter (where "deletedAt" is null),'(none)')
+       from "Transaction" where "importBatchId"='ib_k';`).out.trim();
+  check(66, "[channel] a merge-relocated row is invisible to BOTH the observation and the write, so the counts agree, NOTHING is raised, and the batch keeps a live row — the residual is real",
+    residual.eligible === 2 && residual.written === 2 && residual.raised === null && kState === "3|1|tx_k3",
+    `observed=${residual.eligible} written=${residual.written} raised=${residual.raised ?? "(nothing)"} batch=${kState}`);
+
+  // ── [service] S8-L — THE GUARD MUST NOT FIRE ON INVISIBILITY ALONE ────────
+  // Bob rolling back Alice's batch observes zero eligible rows and writes zero,
+  // and that is CORRECT and must stay silent: nothing was eligible, so there is
+  // no deficit. Without this half, case 68 would be satisfied by a guard that
+  // raised whenever a tenant could not see something — which would turn every
+  // ordinary no-op into an incident. The real service function, on the real role.
+  const rb = await import("@/lib/investments/investment-import-rollback");
+  let bobRollsAlice: Awaited<ReturnType<typeof rb.rollbackInvestmentBatchRows>> | string;
+  try {
+    bobRollsAlice = await tenant.withTenantDb("bob", (tx) => rb.rollbackInvestmentBatchRows(tx, "ib_m", new Date()));
+  } catch (e) { bobRollsAlice = e instanceof Error ? `${e.name}: ${e.message}` : String(e); }
+  const mUntouched = psql(h.ownerUrl,
+    `select count(*) from "InvestmentEvent" where "importBatchId"='ib_m' and "deletedAt" is null;`).out.trim();
+  check(67, "[service] rollbackInvestmentBatchRows under a tenant who cannot see the batch observes 0, writes 0 and stays SILENT — the guard does not fire on invisibility alone",
+    typeof bobRollsAlice !== "string" && bobRollsAlice.eventsDeleted === 0
+    && bobRollsAlice.observationsDeleted === 0 && bobRollsAlice.pointersCleared === 0
+    && mUntouched === "2",
+    `result=${JSON.stringify(bobRollsAlice)} liveEvents=${mUntouched}`);
+
+  // ── [service] S8-M — AND IT MUST FIRE ON A REAL SHORTFALL ─────────────────
+  // The counterpart, and the reason the observation is the guard rather than an
+  // optimisation: a row observed as eligible that the write does not reach. The
+  // concurrent delete is committed by a SECOND connection between the observation
+  // and the statement — which READ COMMITTED lets the statement see — so the
+  // shortfall is produced the way production would produce it, on a real fm_app
+  // transaction rather than by a fake client returning a smaller number.
+  //
+  // The hook wraps ONLY the timing. Every statement still goes to the real tenant
+  // transaction, through the real policies.
+  let concurrentDeleteLanded = false;
+  let partialErr: unknown = null;
+  try {
+    await tenant.withTenantDb("alice", async (tx) => {
+      const hooked = {
+        investmentEvent: {
+          findMany:   (a: never) => tx.investmentEvent.findMany(a),
+          count:      (a: never) => tx.investmentEvent.count(a),
+          updateMany: async (a: never) => {
+            if (!concurrentDeleteLanded) {
+              concurrentDeleteLanded = true;
+              const gone = psql(h.ownerUrl, `delete from "InvestmentEvent" where id='ie_m2';`);
+              if (!gone.ok) throw new Error(`out-of-band delete failed: ${gone.err.split("\n")[0]}`);
+            }
+            return tx.investmentEvent.updateMany(a);
+          },
+        },
+        positionObservation: {
+          findMany:   (a: never) => tx.positionObservation.findMany(a),
+          count:      (a: never) => tx.positionObservation.count(a),
+          updateMany: (a: never) => tx.positionObservation.updateMany(a),
+        },
+      };
+      return rb.rollbackInvestmentBatchRows(hooked as never, "ib_m", new Date());
+    }, { timeout: 30_000 });
+  } catch (e) { partialErr = e; }
+  const mAfterPartial = psql(h.ownerUrl,
+    `select count(*) filter (where "deletedAt" is null)::text from "InvestmentEvent" where "importBatchId"='ib_m';`).out.trim();
+  const partial = partialErr instanceof cas.PartialBulkWriteError ? partialErr : null;
+  check(68, "[service] a row deleted between the observation and the write raises PartialBulkWriteError (observed 2, written 1) on a REAL fm_app transaction, and the phase rolls back",
+    concurrentDeleteLanded && partial !== null && partial.observed === 2 && partial.written === 1
+    && partial.table === "InvestmentEvent" && mAfterPartial === "1",
+    `concurrentDeleteLanded=${concurrentDeleteLanded} err=${partialErr instanceof Error ? partialErr.name : String(partialErr)} observed=${partial?.observed} written=${partial?.written} liveAfter=${mAfterPartial}`);
+
+  // ── [service] S8-N — THE UN-SUPERSESSION, WHICH FAILS WORST OF THE FOUR ───
+  // A refused un-supersession leaves a user's own stated opening permanently
+  // outranked by imported evidence that no longer exists, and reports "0 pointers
+  // cleared" — which reads as "none needed it". So the positive path is pinned on
+  // the real role: the opening comes back, and the count the user is shown is the
+  // number of rows that actually moved.
+  let nResult: Awaited<ReturnType<typeof rb.rollbackInvestmentBatchRows>> | string;
+  try {
+    nResult = await tenant.withTenantDb("alice", (tx) => rb.rollbackInvestmentBatchRows(tx, "ib_n", new Date()));
+  } catch (e) { nResult = e instanceof Error ? `${e.name}: ${e.message}` : String(e); }
+  const openingAfter = psql(h.ownerUrl,
+    `select coalesce("supersededById",'(null)') || '|' || coalesce("deletedAt"::text,'(live)')
+       from "PositionObservation" where id='po_n_open';`).out.trim();
+  check(69, "[service] rolling back the batch RETURNS the USER_ASSERTED opening it had outranked — pointer cleared, row still live, and the reported count is the one that moved",
+    typeof nResult !== "string" && nResult.pointersCleared === 1
+    && nResult.eventsDeleted === 1 && nResult.observationsDeleted === 1
+    && openingAfter === "(null)|(live)",
+    `result=${JSON.stringify(nResult)} opening=${openingAfter}`);
+
+  // ── [service] S8-O — OWNERSHIP IS NOT REACH ───────────────────────────────
+  // `getImportableAccountsForConnection` has no membership check of its own: it
+  // filters on the `userId` it is handed, and S8's claim is that on a tenant
+  // client the two predicates COINCIDE. This is the account that distinguishes
+  // the two — Alice OWNS it and her role can see the account row itself, because
+  // `FinancialAccount.fm_app_sel` has an `ownerUserId` arm. `AccountConnection`
+  // has none, so the connection drops out and the picker correctly offers
+  // nothing. The `db` half is the denominator: the row is there to be found.
+  const imports = await import("@/lib/investments/connection-import-accounts");
+  const viaTenant = await tenant.withTenantDb("alice", (tx) =>
+    imports.getImportableAccountsForConnection(tx, { connectionId: "pi_alice", userId: "alice" }));
+  const viaOwner = await imports.getImportableAccountsForConnection(
+    dbMod.db as never, { connectionId: "pi_alice", userId: "alice" });
+  const ownsItAnyway = await tenant.withTenantDb("alice", (tx) =>
+    tx.financialAccount.findUnique({ where: { id: "acct_alice_inv" }, select: { id: true } }));
+  check(70, "[service] an investment account Alice OWNS but cannot reach yields NO importable accounts on her tenant client, while the owner connection finds it — ownership is not reach",
+    viaTenant.length === 0 && viaOwner.length === 1 && viaOwner[0].id === "acct_alice_inv"
+    && ownsItAnyway?.id === "acct_alice_inv",
+    `tenant=${JSON.stringify(viaTenant.map((a) => a.id))} owner=${JSON.stringify(viaOwner.map((a) => a.id))} accountRowVisible=${ownsItAnyway?.id}`);
+
+  // ── [channel] S8-P — ATOMICITY, ON A REAL TRANSACTION RATHER THAN A JOURNAL ─
+  // `syncCurrentHoldings` is a three-legged reconciliation — delete stale, update
+  // in place, insert new — whose atomicity S8 records as LOAD-BEARING: two of
+  // three applied is a projection that states positions the account does not
+  // hold. `lib/investments/atomicity-under-phase.test.ts` proves the branch with a
+  // fake client; this proves the OUTCOME against Postgres.
+  //
+  // The failure is produced by the policy itself, which is the sharpest form
+  // available: a second connection revokes the account's only visible link
+  // between the UPDATE leg and the INSERT leg, so `fm_account_visible` turns
+  // false and WITH CHECK refuses the insert. Under READ COMMITTED the statement
+  // re-evaluates the predicate and sees the revocation, exactly as a concurrent
+  // disconnect would cause it.
+  //
+  // ⚠️ A DUPLICATE-SYMBOL PAYLOAD CANNOT PRODUCE THIS. `planHoldingSync` dedupes
+  // on symbol by design (`conflicts`, "keep first"), and `@@unique([financialAccountId,
+  // symbol])` is keyed on the same column the policy is, so no row the policy hides
+  // can collide with one it admits. The forcing mechanism had to be the policy.
+  restoreFixtures();
+  const sch = await import("@/lib/investments/sync-current-holdings");
+  const security = (id: string, ticker: string) => ({
+    security_id: id, ticker_symbol: ticker, name: `${ticker} Inc`, type: "equity",
+    close_price: 10, iso_currency_code: "USD",
+  });
+  let revokedMidWrite = false;
+  let holdingsErr = "no error";
+  try {
+    await tenant.withTenantDb("alice", async (tx) => {
+      const hooked = {
+        holding: {
+          findMany:   (a: never) => tx.holding.findMany(a),
+          deleteMany: (a: never) => tx.holding.deleteMany(a),
+          update:     (a: never) => tx.holding.update(a),
+          createMany: async (a: never) => {
+            if (!revokedMidWrite) {
+              revokedMidWrite = true;
+              const r = psql(h.ownerUrl, `update "SpaceAccountLink" set status='REVOKED' where id='l_a';`);
+              if (!r.ok) throw new Error(`out-of-band revoke failed: ${r.err.split("\n")[0]}`);
+            }
+            return tx.holding.createMany(a);
+          },
+        },
+      };
+      return sch.syncCurrentHoldings(hooked as never, {
+        financialAccountId: "acct_alice",
+        // AAA changes (update leg) · BBB and CCC are absent (delete leg) ·
+        // NEW is added (insert leg, the one the policy will refuse).
+        plaidHoldings: [
+          { account_id: "ext", security_id: "s_aaa", quantity: 9, institution_price: 10, institution_value: 90, iso_currency_code: "USD" },
+          { account_id: "ext", security_id: "s_new", quantity: 4, institution_price: 5,  institution_value: 20, iso_currency_code: "USD" },
+        ] as never,
+        securitiesById: { s_aaa: security("s_aaa", "AAA"), s_new: security("s_new", "NEW") } as never,
+        accountCurrency: "USD",
+        payloadComplete: true,
+      });
+    }, { timeout: 30_000 });
+  } catch (e) { holdingsErr = e instanceof Error ? e.message : String(e); }
+  psql(h.ownerUrl, `update "SpaceAccountLink" set status='ACTIVE', "revokedAt"=null, "revokedByUserId"=null where id='l_a';`);
+  const holdingsAfter = psql(h.ownerUrl,
+    `select coalesce(string_agg(symbol || ':' || quantity::text, ',' order by symbol),'(none)')
+       from "Holding" where "financialAccountId"='acct_alice';`).out.trim();
+  check(71, "[channel] a reconciliation whose INSERT leg is refused mid-write rolls back its DELETE and UPDATE legs too — all three legs or none, on a real transaction",
+    revokedMidWrite && /row-level security/i.test(holdingsErr) && holdingsAfter === "AAA:1,BBB:2,CCC:3",
+    `revoked=${revokedMidWrite} err=${holdingsErr.split("\n")[0]} holdings=${holdingsAfter}`);
+
+  // ── [channel] S8 — THE IDLE-IN-TRANSACTION PROBE, AND WHAT IT DOES NOT PROVE ─
+  // The owner asked for a real-role version of the provider-boundary pin: run a
+  // spine operation against a STUB provider and, while the call is in flight,
+  // assert `pg_stat_activity` shows no fm_app backend idle in transaction.
+  //
+  // THAT CASE IS NOT WRITABLE HONESTLY HERE, and it is not written. Neither
+  // provider entry point has an injectable seam — `syncInvestmentsForItem`
+  // references the module-level `plaidClient` directly and
+  // `ingestInvestmentEvents` reaches it through a dynamic `import()` — so
+  // stubbing one would mean either adding a seam to production code to satisfy a
+  // test, or adding module-mocking machinery this harness does not have. Both are
+  // the "force it" the brief forbids. `lib/investments/transaction-boundary.test.ts`
+  // remains the pin for that property.
+  //
+  // WHAT IS HONEST, AND IS LANDED, IS THE PROBE ITSELF — with its denominator,
+  // which is the part a future provider-stub case would otherwise be unable to
+  // establish. A probe that reads 0 because it cannot see fm_app backends at all
+  // would approve anything; this one is shown reading a HELD phase first.
+  let heldDuringPhase = "unread";
+  const idleProbe = `select count(*) from pg_stat_activity
+                      where state='idle in transaction' and usename='fm_app';`;
+  await tenant.withTenantDb("alice", async (tx) => {
+    await tx.transaction.count();
+    heldDuringPhase = psql(h.ownerUrl, idleProbe).out.trim();
+  }, { timeout: 30_000 });
+  const idleAfterPhase = psql(h.ownerUrl, idleProbe).out.trim();
+  check(72, "[channel] the idle-in-transaction probe SEES a held tenant phase (>=1) and reads 0 once it commits — the denominator a provider-boundary case would need",
+    Number(heldDuringPhase) >= 1 && idleAfterPhase === "0",
+    `duringHeldPhase=${heldDuringPhase} afterCommit=${idleAfterPhase}`);
+
   // ── [role] the owner is not in the tenant path ────────────────────────────
   check(17, "[role] the tenant client is NOT the migration principal",
     dbMod.tenantDb !== dbMod.db, "tenantDb fell back to the shared client");
