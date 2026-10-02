@@ -14,10 +14,29 @@
  *
  * Reuses the ONE disconnect primitive (lib/accounts/disconnect.ts) — no second
  * engine — and the existing AuditLog pattern (CONNECTION_DISCONNECTED).
+ *
+ * ── RLS-C-S7 — THE RESOLUTION READ IS THE AUTHORIZATION, SO IT RUNS AS THE
+ *    CALLER ───────────────────────────────────────────────────────────────────
+ * This route's only gate is the `plaidItem.userId` / `connection.userId`
+ * predicate below: own the connection, disconnect its accounts. That predicate
+ * now executes on the tenant role, so the gate is a policy and not a correctly
+ * written `WHERE`. It matters more here than on most routes, because
+ * `disconnectAccounts` revokes links in Spaces this caller cannot see.
+ *
+ * ⚠️ A NARROWING WORTH KNOWING ABOUT. `AccountConnection.fm_app_sel` is
+ * `fm_account_visible("financialAccountId")`, which requires an ACTIVE
+ * SpaceAccountLink in a Space the caller belongs to. A live account whose every
+ * link has been revoked (possible: the share route lets an owner revoke their own
+ * HOME link) is therefore invisible HERE even to its owner, and this route would
+ * answer 404 where the migration principal would have disconnected it. That is a
+ * gap in the subtree policy's owner coverage — `FinancialAccount` has an
+ * `ownerUserId = me` arm and the subtree tables do not — not a gap in this route,
+ * and closing it needs a policy change. It fails CLOSED and LOUD (a 404), which
+ * is the right direction for a state nothing else in the product can produce.
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { requireUser } from "@/lib/session";
 import { getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
@@ -36,7 +55,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // Resolve the connection's OWNED, live financial accounts (Plaid OR wallet).
   // Ownership is enforced through the connection→user relation — the caller can
   // only ever disconnect their own connection's accounts.
-  const links = await db.accountConnection.findMany({
+  const links = await withTenantDb(user.id, (tx) => tx.accountConnection.findMany({
     where: {
       deletedAt:        null,
       financialAccount: { deletedAt: null },
@@ -51,7 +70,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       plaidItem:  { select: { institutionName: true } },
       connection: { select: { provider: true } },
     },
-  });
+  }));
 
   if (links.length === 0) {
     // Not owned, unknown, or already disconnected.
@@ -68,14 +87,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // orphan-gated Plaid itemRemove. Non-destructive, reversible.
   const result = await disconnectAccounts(faIds, user.id);
 
-  await db.auditLog.create({
+  await withTenantDb(user.id, (tx) => tx.auditLog.create({
     data: {
       userId:    user.id,
       action:    AuditAction.CONNECTION_DISCONNECTED,
       metadata:  { institution, provider, accountCount: result.disconnectedAccountIds.length },
       ipAddress: getClientIp(req),
     },
-  });
+  }));
 
   return NextResponse.json({ ok: true, disconnectedAccounts: result.disconnectedAccountIds.length });
 }

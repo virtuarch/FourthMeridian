@@ -463,6 +463,31 @@ export async function mergeArchivedDuplicateIntoCanonical(
   winnerId: string,
   source: DuplicateDetectionSource,
   spaceId?: string | null,
+  // ⚠️ RLS-C-S7 — THIS DEFAULT STAYS, AND THE REASON IS STATED RATHER THAN
+  // SILENT. A defaulted client is an ambient authority and this programme is
+  // removing them; S7 nonetheless left this one alone, for the same kind of
+  // reason S6a left `claimPlaidItemSyncLock`'s in place.
+  //
+  // Making it required does not move the authority — it moves the ARGUMENT. This
+  // function is reached from `resolveAccountByFingerprint` and
+  // `pickCanonicalAndMerge`, which in turn sit behind `findCandidatesByFingerprint`,
+  // `findActiveAccountByIdentity`, `resolvePlaidAccountByExternalId` and
+  // `closeOutAccountConnections` — eight `db` call sites in this module, none of
+  // which take a client. So requiring it here forces either a client parameter
+  // through the whole of reconcile.ts and its six external callers (which span
+  // tenant request paths AND the Plaid background pipeline, i.e. two different
+  // correct authorities), or a cosmetic `db` passed in at four call sites. The
+  // module keeps its `db` import either way, so the authority ratchet does not
+  // move one file.
+  //
+  // It is a slice of its own, and it has a prerequisite: the fingerprint
+  // resolution reads ACROSS identity boundaries by design (a global
+  // `plaidAccountId` lookup, an `ownerUserId` fingerprint sweep), so converting
+  // it means deciding which of those reads a tenant may perform at all — not
+  // just which client issues them.
+  //
+  // The `"$transaction" in client` capability test below is the RLS-7 fix and
+  // must not be reverted to a `=== db` reference comparison.
   client: DbClient = db,
 ) {
   if (loserId === winnerId) return;

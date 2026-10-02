@@ -124,6 +124,25 @@ const CONFINED: Record<string, { allowed: string[]; why: string }> = {
       // consoles above. The decision store and merge engine in lib/transactions/
       // need no entry at all — they take their client as a parameter.
       "app/merchant-ops/", "app/api/merchant-ops/",
+      // RLS-C-S7 — the "revoke everywhere" capability, listed as a single FILE
+      // and NOT as `lib/accounts/`, which must never become a systemDb
+      // neighbourhood. Disconnecting an account revokes EVERY SpaceAccountLink
+      // pointing at it, including a co-owner's in a Space the actor is not a
+      // member of; that has always been the semantics, and fm_app cannot express
+      // it, because `SpaceAccountLink.fm_app_sel` is `spaceId IN
+      // (SELECT fm_visible_space_ids())` — the co-owner's link is INVISIBLE, so
+      // the revoke would land on one row of two and `updateMany` would report a
+      // smaller count instead of raising. A partial is worse than a zero: 1-of-2
+      // looks exactly like success. Authority therefore follows the operation's
+      // true blast radius, through the narrowest possible opening: two functions
+      // that take ALREADY-AUTHORIZED account ids (proved in a withTenantDb phase
+      // by the callers) and return counts plus Space ids, never rows. There is no
+      // spaceId parameter and no userId SELECTOR, so no argument through which a
+      // caller could ask it about somebody else. The suite asserts the narrowing
+      // (every `where` mentions only financialAccountId and status) and both of
+      // the orderings the policies force, so this stays a capability.
+      // Decision: docs/plans/RLS-DISCONNECT-BLAST-RADIUS.md.
+      "lib/accounts/links-everywhere.ts",
     ],
     why: "fm_system reaches every tenant through role-scoped policies. It is an exceptional authority; an ordinary HTTP request handler must never execute through it.",
   },

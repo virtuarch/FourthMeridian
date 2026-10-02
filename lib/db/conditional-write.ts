@@ -143,3 +143,100 @@ export async function resolveConditionalWrite(
 
   throw new IndeterminateWriteError(site);
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * THE PARTIAL — THE SAME DEFECT, AND THE NASTIER HALF OF IT  (RLS-C-S7)
+ *
+ * Everything above is about a conditional write that matched ZERO rows. A BULK
+ * write has a second, worse failure: it matched SOME of them.
+ *
+ *     const links = await tx.spaceAccountLink.findMany({ where });   // sees 1 of 2
+ *     await tx.spaceAccountLink.updateMany({ where, data });         // writes 1 of 2
+ *
+ * A zero at least looks like nothing happened. **1-of-2 looks exactly like
+ * success** — the statement returned, no error was raised, and the count is a
+ * plausible number that nobody compares to anything. The rows the policy hid
+ * are simply not rows the statement matched, so a cross-tenant write that half
+ * landed reports health.
+ *
+ * `resolveConditionalWrite` cannot express this and must not be bent to: it
+ * asks "can I see THE row", singular, keyed by a primary key, and a bulk
+ * statement has no single row to probe. The question a bulk write has to answer
+ * is different and cheaper — **did I write every row I had already seen?** —
+ * and the only honest way to ask it is to count the rows first, in the same
+ * phase, and compare. That is the escape clause of the rule above, used
+ * deliberately rather than relied on by accident: a zero (or a partial) is
+ * determinate exactly when visibility was established in the same phase.
+ *
+ * So the observation is not an optimisation to be hoisted away. It IS the
+ * guard. A future edit that deletes the `findMany` because "the updateMany's
+ * where clause already says that" removes the only thing that can tell a
+ * partial write from a complete one.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The bulk statement whose count fell short of what was observed.
+ *
+ * ⚠️ NO ROW CONTENTS, for the same reason as `ConditionalWriteSite`. `scope` is
+ * a short human description of WHAT the statement ranged over ("3 authorized
+ * account id(s)"), never the ids themselves and never the `data`.
+ */
+export interface BulkWriteSite {
+  /** The database table, as the policy names it (e.g. "SpaceAccountLink"). */
+  readonly table: string;
+  readonly operation: ConditionalWriteOperation;
+  /** A short, non-sensitive description of the statement's range. */
+  readonly scope: string;
+}
+
+/**
+ * A bulk write changed FEWER rows than were observed moments earlier, under the
+ * same authority.
+ *
+ * This is not contention and it is not idempotence. Both of those are already
+ * accounted for by comparing against the rows actually observed rather than
+ * against the caller's input: a row that was already in the target state was
+ * never observed as pending, so it cannot create a shortfall. What is left is
+ * a row that WAS eligible and WAS NOT written, which means either a policy
+ * refused it or something else changed it underneath us — and the caller is not
+ * entitled to conclude either one quietly.
+ */
+export class PartialBulkWriteError extends Error {
+  readonly table: string;
+  readonly operation: ConditionalWriteOperation;
+  readonly scope: string;
+  readonly observed: number;
+  readonly written: number;
+
+  constructor(site: BulkWriteSite, observed: number, written: number) {
+    super(
+      `${site.table}: bulk ${site.operation} over ${site.scope} observed ${observed} eligible row(s) and wrote only ${written}. ` +
+        `Refusing to report success — a partially applied cross-tenant write is indistinguishable from a complete one by its count alone, ` +
+        `and the rows left behind now point at state the rest of the operation has already changed.`,
+    );
+    this.name = "PartialBulkWriteError";
+    this.table = site.table;
+    this.operation = site.operation;
+    this.scope = site.scope;
+    this.observed = observed;
+    this.written = written;
+  }
+}
+
+/**
+ * Assert that a bulk write changed every row the SAME phase had already seen as
+ * eligible.
+ *
+ * `written > observed` is NOT a shortfall and does not throw: a row that became
+ * eligible between the two statements is a row that also needed writing, and
+ * refusing it would turn a benign race into an outage. Only a deficit is a
+ * defect.
+ */
+export function assertEveryObservedRowWasWritten(
+  site: BulkWriteSite,
+  observed: number,
+  written: number,
+): void {
+  if (written >= observed) return;
+  throw new PartialBulkWriteError(site, observed, written);
+}

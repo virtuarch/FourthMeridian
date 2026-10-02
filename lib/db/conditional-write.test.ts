@@ -23,7 +23,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { IndeterminateWriteError, resolveConditionalWrite } from "@/lib/db/conditional-write";
+import {
+  IndeterminateWriteError,
+  PartialBulkWriteError,
+  assertEveryObservedRowWasWritten,
+  resolveConditionalWrite,
+} from "@/lib/db/conditional-write";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -163,6 +168,56 @@ async function main(): Promise<void> {
     const rollback = code("app/api/imports/[id]/rollback/route.ts");
     check("the imports rollback route still fails LOUD on a zero claim (findUniqueOrThrow), pending conversion",
       /claim\.count === 0/.test(rollback) && /findUniqueOrThrow/.test(rollback));
+  }
+
+  console.log("\n6. the PARTIAL — the same defect, and the half that looks like success (RLS-C-S7)");
+  {
+    const SITE = { table: "SpaceAccountLink", operation: "update" as const, scope: "2 authorized account id(s)" };
+
+    let nothing: unknown = null;
+    try { assertEveryObservedRowWasWritten(SITE, 2, 2); } catch (e) { nothing = e; }
+    check("every observed row written → silence", nothing === null);
+
+    let zeroes: unknown = null;
+    try { assertEveryObservedRowWasWritten(SITE, 0, 0); } catch (e) { zeroes = e; }
+    check("NOTHING observed and nothing written is NOT a shortfall — an account with no links is legal",
+      zeroes === null);
+
+    let above: unknown = null;
+    try { assertEveryObservedRowWasWritten(SITE, 2, 3); } catch (e) { above = e; }
+    check("MORE written than observed is a benign race, not a defect: a row that became eligible needed writing",
+      above === null);
+
+    // The one that matters: 1-of-2. A zero at least looks like nothing happened.
+    let partial: PartialBulkWriteError | null = null;
+    try { assertEveryObservedRowWasWritten(SITE, 2, 1); } catch (e) { partial = e as PartialBulkWriteError; }
+    check("1-of-2 RAISES — it is the form that looks exactly like success",
+      partial instanceof PartialBulkWriteError);
+    check("name is PartialBulkWriteError (recognisable without instanceof across module copies)",
+      partial?.name === "PartialBulkWriteError");
+    check("it carries the table, the verb, the scope and BOTH counts",
+      partial?.table === "SpaceAccountLink" && partial?.operation === "update"
+      && partial?.scope === "2 authorized account id(s)" && partial?.observed === 2 && partial?.written === 1);
+    check("the message says a partially applied write is indistinguishable by its count alone",
+      /partially applied/i.test(partial!.message) && /2/.test(partial!.message) && /1/.test(partial!.message));
+
+    const own = Object.keys(partial as object).sort();
+    check("the error exposes ONLY name/table/operation/scope/observed/written — no row contents ride along",
+      own.join(",") === ["name", "operation", "scope", "table", "observed", "written"].sort().join(","), own.join(","));
+    check("the helper never receives the write's `data` (arity 3: site, observed, written)",
+      assertEveryObservedRowWasWritten.length === 3, `arity ${assertEveryObservedRowWasWritten.length}`);
+
+    // The observation is the GUARD, not an optimisation. Every converted site
+    // must still perform a read whose count is what gets compared.
+    for (const [name, path] of [
+      ["disconnect primitive",       "lib/accounts/disconnect.ts"],
+      ["account restore route",      "app/api/accounts/[id]/restore/route.ts"],
+      ["manual asset restore route", "app/api/accounts/manual/[id]/restore/route.ts"],
+    ] as const) {
+      const s = code(path);
+      check(`${name}: observes before it writes, and compares the two`,
+        /\.findMany\(/.test(s) && /assertEveryObservedRowWasWritten\(/.test(s));
+    }
   }
 
   console.log(failures === 0 ? "\nAll checks passed.\n" : `\n${failures} check(s) failed.\n`);

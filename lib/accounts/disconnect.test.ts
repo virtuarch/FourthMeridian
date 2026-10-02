@@ -7,6 +7,13 @@
  *   - NON-DESTRUCTIVE: soft-delete + SAL revoke only; NO hard delete anywhere
  *   - historical snapshots untouched (today-row regen only, not regenerateWealthHistory)
  *   - connection route is owner-gated + audited (CONNECTION_DISCONNECTED)
+ *
+ * RLS-C-S7 moved the SpaceAccountLink revoke out of this primitive and behind the
+ * one deployment-wide capability (lib/accounts/links-everywhere.ts), because a
+ * tenant role cannot see a co-owner's link and would have revoked one of two
+ * without raising. The Model A invariants below are unchanged in substance —
+ * "revoke, never delete" is now asserted against the capability as well as the
+ * primitive, so moving it cannot quietly turn into deleting it.
  */
 
 import { readFileSync } from "node:fs";
@@ -25,6 +32,7 @@ function check(name: string, cond: boolean) {
 const prim  = code("lib/accounts/disconnect.ts");
 const acct  = code("app/api/accounts/[id]/route.ts");
 const conn  = code("app/api/connections/[id]/disconnect/route.ts");
+const cap   = code("lib/accounts/links-everywhere.ts");
 
 console.log("ONE disconnect engine — both routes delegate to disconnectAccounts");
 {
@@ -37,13 +45,16 @@ console.log("ONE disconnect engine — both routes delegate to disconnectAccount
 
 console.log("NON-DESTRUCTIVE — Model A only, never a hard delete");
 {
-  for (const [name, s] of [["primitive", prim], ["connection route", conn]] as const) {
+  for (const [name, s] of [["primitive", prim], ["connection route", conn], ["revoke capability", cap]] as const) {
     check(`${name}: no financialAccount hard delete`, !/financialAccount\.delete(Many)?\(/.test(s));
     check(`${name}: no accountConnection hard delete`, !/accountConnection\.delete(Many)?\(/.test(s));
     check(`${name}: no transaction/holding hard delete`, !/(transaction|holding)\.delete(Many)?\(/.test(s));
   }
   check("primitive soft-deletes via deletedAt", prim.includes("deletedAt: now"));
-  check("primitive revokes SALs (revoke-don't-delete)", prim.includes("ShareStatus.REVOKED"));
+  check("primitive revokes SALs through the ONE deployment-wide capability (revoke-don't-delete)",
+    prim.includes("revokeAccountLinksEverywhere("));
+  check("the capability sets REVOKED and never deletes a link",
+    cap.includes("ShareStatus.REVOKED") && !/spaceAccountLink\.delete(Many)?\(/.test(cap));
   check("primitive revokes provider access only when orphaned", prim.includes("disconnectPlaidItemIfOrphaned("));
 }
 

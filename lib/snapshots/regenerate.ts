@@ -32,7 +32,22 @@
  * manual assets aren't liquid.
  */
 
-import { db } from "@/lib/db";
+/**
+ * ── RLS-C-S7 — SNAPSHOT REGENERATION IS DEPLOYMENT-WIDE, AND ALWAYS WAS ──────
+ * Every caller of this module is either a job, a webhook, a cron, or a
+ * POST-COMMIT dispatch step of a request path, and the Spaces it regenerates are
+ * resolved from an account's links rather than from the actor's membership. A
+ * disconnect's whole point is that a CO-OWNER's snapshot stops counting the
+ * account — a Space the actor is not a member of and whose snapshot a tenant
+ * client cannot write. So the authority follows the operation: `fm_system`.
+ *
+ * `fm_app` could not express this. `SpaceSnapshot.fm_app_upd` is scoped to
+ * `spaceId IN (SELECT fm_visible_space_ids())`, so the co-owner's upsert would be
+ * refused — and an upsert refused by a policy raises rather than lying, which is
+ * why this was never going to be the silent half of the problem. It would simply
+ * have turned every multi-tenant account's disconnect into a 500.
+ */
+import { systemDb } from "@/lib/db";
 import {
   readSpaceAccountsForSnapshot,
   type SnapshotAccountsClient,
@@ -100,7 +115,7 @@ export interface SpaceSnapshotClient extends SnapshotAccountsClient {
 export async function regenerateSpaceSnapshot(
   spaceId: string,
   date: Date = todayUTC(),
-  client: SpaceSnapshotClient = db,
+  client: SpaceSnapshotClient = systemDb,
 ): Promise<void> {
   const accounts = await readSpaceAccountsForSnapshot(spaceId, client);
 
@@ -302,7 +317,7 @@ export async function regenerateSnapshotsForAccounts(
 ): Promise<string[]> {
   if (financialAccountIds.length === 0) return [];
 
-  const links = await db.spaceAccountLink.findMany({
+  const links = await systemDb.spaceAccountLink.findMany({
     where:  { financialAccountId: { in: financialAccountIds }, status: ShareStatus.ACTIVE },
     select: { spaceId: true },
   });

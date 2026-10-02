@@ -13,9 +13,29 @@
  * agnostic dispatcher (e.g. disconnectProviderConnectionIfOrphaned, keyed by
  * a provider enum) has one obvious call site to swap in, instead of inline
  * logic duplicated across every route that can delete an account.
+ *
+ * ── RLS-C-S7 — WHY THE ORPHAN GATE IS SAFE, SO NOBODY RE-DERIVES IT ──────────
+ * This runs on `fm_system`: it is a post-commit, provider-facing dispatch step
+ * (`itemRemove` is an external HTTP call and must never be inside a transaction),
+ * and it is reached from jobs and webhooks as well as from request paths.
+ *
+ * The interesting question was whether a NARROWED view would make `remaining ===
+ * 0` fire the destructive `itemRemove` for an item a co-owner still uses. **It
+ * would not, and this is checked rather than assumed.** `PlaidItem`'s tenant
+ * policy is `"userId" = current_fm_user_id()`, so an item belongs to the single
+ * user who connected it, and that user owns every FinancialAccount hanging off
+ * it — so every one of its `AccountConnection` rows is reachable by them and the
+ * count is accurate under `fm_app` too. Unlike `SpaceAccountLink`, there is no
+ * second tenant whose row could be hidden from the count. The authority here is
+ * about the EXECUTION PHASE (background, post-commit), not about blast radius.
+ * See docs/plans/RLS-DISCONNECT-BLAST-RADIUS.md, "Not a finding".
+ *
+ * ⚠️ `remaining !== 0` is a plain read, NOT a conditional write, so it is not an
+ * instance of the RLS-C-S6a count-as-business-answer defect — and on `fm_system`
+ * (`USING (true)`) an empty count is determinate in any case.
  */
 
-import { db } from "@/lib/db";
+import { systemDb } from "@/lib/db";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
 import { PlaidItemStatus } from "@prisma/client";
 import { plaidClient } from "@/lib/plaid/client";
@@ -24,7 +44,7 @@ import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 
 export async function disconnectPlaidItemIfOrphaned(plaidItemDbId: string): Promise<void> {
   // Count remaining non-deleted connections on this PlaidItem
-  const remaining = await db.accountConnection.count({
+  const remaining = await systemDb.accountConnection.count({
     where: {
       plaidItemDbId,
       deletedAt: null,
@@ -33,7 +53,7 @@ export async function disconnectPlaidItemIfOrphaned(plaidItemDbId: string): Prom
 
   if (remaining !== 0) return;
 
-  const item = await db.plaidItem.findUnique({ where: { id: plaidItemDbId } });
+  const item = await systemDb.plaidItem.findUnique({ where: { id: plaidItemDbId } });
   if (!item) return;
 
   try {
