@@ -63,7 +63,6 @@
  * `getDebtPaymentRows`.
  */
 
-import { db } from "@/lib/db";
 import type { ReadClient } from "@/lib/db/tenant-context";
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import {
@@ -417,26 +416,29 @@ export async function getDebtTransactions(
  * It does NOT choose the leg — `selectDebtPaymentCashLegs` does, from the tiers.
  * Same Space scoping, same KD-15 visibility, same bound as its sibling.
  *
- * ── 🔴 RLS-T1: THE ONE READ IN THIS MODULE STILL ON THE MIGRATION PRINCIPAL ──
+ * ── RLS-T1a — AND THE SECOND CALLER TURNED OUT NOT TO EXIST ─────────────────
  *
- * Its two siblings above now take a required, leading `ReadClient`. This one does
- * NOT, and the reason is ownership, not design: it has a SECOND caller outside
- * this slice's files — `lib/ai/intelligence/debt-payments.ts`
- * (`fetchPerLiabilityDebtPayments`) — and `lib/ai/**` belongs to another agent in
- * this programme. A required parameter enumerates its callers through the
- * compiler, which is the whole point; it also means this one cannot be added
- * without editing that file. So the conversion is NAMED here and requested
- * rather than done quietly, and `db` is passed explicitly at every read below so
- * the authority is readable instead of ambient.
+ * RLS-T1 left this one read on the migration principal and said why: a required
+ * parameter enumerates its callers through the compiler, and a SECOND caller sat
+ * in `lib/ai/intelligence/debt-payments.ts`, outside that slice's ownership. It
+ * named the exact unblocking edit — add a `db` import there and pass it — and
+ * requested it rather than reaching across the boundary. That was the right call
+ * and the right stopping point.
  *
- * The edit that unblocks it, in full: add `import { db } from "@/lib/db";` to
- * `lib/ai/intelligence/debt-payments.ts` and change its one call to
- * `getDebtPaymentRows(db, { spaceId: ctx.space.id })`. (That caller currently has
- * ZERO call sites of its own — `fetchPerLiabilityDebtPayments` is unreferenced
- * across the repository — so the edit is a compile-only fixup with no runtime
- * reach, which is also why it is safe to leave for one commit.)
+ * The edit was not made, because doing it would have ADDED a file to the
+ * authority ratchet in order to keep an unreferenced function compiling. The
+ * module was dead: no static importer, no dynamic `import()`, no `require`, no
+ * barrel re-export, and both of its exports referenced in zero other files —
+ * checked that way rather than by a bare grep, because a bare grep has already
+ * been wrong once in this programme. 97 lines, deleted.
+ *
+ * So the conversion completes and this module leaves the ratchet. The lesson is
+ * the shape of the stop, not the deletion: "a required client cannot be added
+ * without editing that file" was a true statement about a file that should not
+ * have existed, and the compiler is what made the question visible at all.
  */
 export async function getDebtPaymentRows(
+  client: ReadClient,
   scope: BoundedReadScope,
 ): Promise<BoundedTransactions> {
   const spaceId    = scope.spaceId;
@@ -444,8 +446,7 @@ export async function getDebtPaymentRows(
   const windowDays = scope.windowDays ?? null;
   const floor      = windowFloorDate(windowDays);
 
-  // RLS-T1 — `db` (the migration principal), stated at the read. See the header.
-  const fetched = await db.transaction.findMany({
+  const fetched = await client.transaction.findMany({
     where: {
       ...bankingTransactionWhere(spaceId),
       flowType: FlowType.DEBT_PAYMENT,
@@ -466,7 +467,7 @@ export async function getDebtPaymentRows(
   // for the exact edit that unblocks it), so it passes it EXPLICITLY. That is the
   // point of the required parameter: an unconverted caller stays legible instead
   // of looking converted.
-  const assessments = await resolveTransferAssessments(db, capped, { spaceId });
+  const assessments = await resolveTransferAssessments(client, capped, { spaceId });
   const rows = capped.map((r) => ({
     ...serializeTransactionRow({
       ...r,

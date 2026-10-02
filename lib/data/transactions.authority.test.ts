@@ -292,29 +292,33 @@ function scanSpine(): void {
   check("getTransactionDetail takes `client: ReadClient` as its FIRST parameter",
     /export async function getTransactionDetail\(\s*client:\s*ReadClient,\s*id:\s*string,/.test(src));
 
-  // (c) THE ONE READ STILL ON THE MIGRATION PRINCIPAL IS NAMED.
-  // This is what gives (d) teeth: the claim is not "no `db` reads exist", it is
-  // "there is exactly one, it is getDebtPaymentRows, and it is blocked on a peer
-  // file". A scan that found zero would mean the needle broke, not that the
-  // module was clean — the escaped-`$` failure mode this repo has on record.
+  // (c) NO READ IN THE SPINE IS ON THE MIGRATION PRINCIPAL ANY MORE.
+  //
+  // RLS-T1 asserted "exactly ONE remains, it is getDebtPaymentRows, and it is
+  // blocked on a peer file", with this reasoning attached: a scan finding zero
+  // would mean the needle broke, not that the module was clean — the escaped-`$`
+  // failure mode this repo has on record.
+  //
+  // RLS-T1a converted it, so zero is now the truth. The reasoning still applies,
+  // which is why the zero is NOT asserted on its own: the same needle is first
+  // shown to MATCH something, by pointing it at the `client.` form and requiring
+  // the full count. A broken needle yields 0 on both and fails the second check.
+  check("getDebtPaymentRows takes `client: ReadClient` as its FIRST parameter",
+    /export async function getDebtPaymentRows\(\s*client:\s*ReadClient,/.test(src));
   const dbReads = [...src.matchAll(/\bdb\.(\w+)\.(\w+)\(/g)].map((m) => `${m[1]}.${m[2]}`);
-  check("exactly ONE db.<model>.<method>() read remains in the spine",
-    dbReads.length === 1, `found ${dbReads.length}: [${dbReads.join(", ")}]`);
-  check("...and it is the transaction page read inside getDebtPaymentRows",
-    dbReads[0] === "transaction.findMany");
-  const debtPayBody = src.slice(src.indexOf("export async function getDebtPaymentRows("));
-  const debtPaySlice = debtPayBody.slice(0, debtPayBody.indexOf("\nexport async function getTransactionDetail"));
-  check("the remaining db read is inside getDebtPaymentRows (located, not assumed)",
-    debtPaySlice.length > 0 && /\bdb\.transaction\.findMany\(/.test(debtPaySlice),
-    "could not locate getDebtPaymentRows' body");
-  // THREE, and the number is stated rather than loosened: `getTransactions`'
-  // page, `getDebtTransactions`' page, and the detail read's candidate sweep.
-  // `getDebtPaymentRows`' page is the fourth `transaction.findMany` in this file
-  // and is deliberately NOT in this set — it is the `db.` one counted above.
-  check("the other three transaction.findMany reads go through `client`, not `db`",
-    (src.match(/\bclient\.transaction\.findMany\(/g) ?? []).length === 3,
-    `found ${(src.match(/\bclient\.transaction\.findMany\(/g) ?? []).length}`);
-  check("...and the four transaction.findMany reads in the file account for all of them",
+  check("NO db.<model>.<method>() read remains in the spine",
+    dbReads.length === 0, `found ${dbReads.length}: [${dbReads.join(", ")}]`);
+  check("...and the module no longer imports the migration principal at all",
+    !/^import \{ db \} from "@\/lib\/db";$/m.test(src));
+  // FOUR now, and the number is stated rather than loosened: `getTransactions`'
+  // page, `getDebtTransactions`' page, `getDebtPaymentRows`' page, and the detail
+  // read's candidate sweep. This is the check that proves the needle above can
+  // match at all — if the pattern were broken both counts would read 0 and this
+  // one would fail.
+  const clientPages = (src.match(/\bclient\.transaction\.findMany\(/g) ?? []).length;
+  check("all FOUR transaction.findMany reads go through `client` — the needle matches, so the zero above means something",
+    clientPages === 4, `found ${clientPages}`);
+  check("...and four is every transaction.findMany in the file",
     (src.match(/\.transaction\.findMany\(/g) ?? []).length === 4);
   check("the detail read's four seams all read through `client`",
     /\bclient\.transaction\.findFirst\(/.test(src) &&
@@ -367,8 +371,14 @@ function scanCallSites(): void {
   const credit = code("app/(shell)/dashboard/credit/page.tsx");
   check("the Credit page reads debt activity inside the tenant boundary",
     /getDebtTransactions\(tx,/.test(credit));
-  check("...and keeps the still-unconverted getDebtPaymentRows OUTSIDE it",
-    /getDebtPaymentRows\(\{\s*spaceId:/.test(credit));
+  // RLS-T1a — and the payment read JOINED it, so all four of this page's reads
+  // are one short tenant phase. The old form (`getDebtPaymentRows({ spaceId:`)
+  // must be gone, not merely unused: an ambient call left beside a converted one
+  // is the split-authority shape, and it reads as finished.
+  check("...and the payment read is INSIDE it too",
+    /getDebtPaymentRows\(tx,/.test(credit));
+  check("...with no ambient call left beside it",
+    !/getDebtPaymentRows\(\{/.test(credit));
 
   const correct = code("app/api/transactions/[id]/correct/route.ts");
   check("the correction WRITE route passes its authority explicitly (legible, not converted)",

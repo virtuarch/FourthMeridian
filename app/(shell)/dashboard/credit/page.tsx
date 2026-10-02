@@ -18,29 +18,26 @@ export default async function CreditPage() {
   // and that Space's debt-account activity, with no network or model call between
   // them, so there is nothing a transaction must not be held across.
   //
-  // RLS-T1 — `getDebtTransactions` JOINED the boundary when it took a required
-  // authority. `getDebtPaymentRows` did NOT, and stays outside on purpose: it is
-  // the one read in lib/data/transactions.ts still on the migration principal
-  // (its second caller is in `lib/ai/**`, another agent's tree — the function's
-  // own header carries the exact edit that unblocks it). Keeping it outside is
-  // the honest placement: wrapping it would put a tenant boundary around a read
-  // that is not executing on the tenant role anyway.
-  const [{ score, updatedAt, accounts, debtTxns }, paymentTxns] = await Promise.all([
-    withTenantDb(ctx.userId, async (tx) => {
-      const [fico, accts, debt] = await Promise.all([
-        getFicoData(tx, { userId: ctx.userId }),
-        // RLS-C-S1 fix — `ctx.userId` was in scope and was not forwarded, so this
-        // call took `getAccounts`' ambient branch and re-resolved the viewer
-        // inside the leaf. Same value, now stated by the caller.
-        getAccounts(tx, { spaceId: ctx.spaceId, userId: ctx.userId }),
-        getDebtTransactions(tx, { spaceId: ctx.spaceId }), // TX-2 bounded (default cap)
-      ]);
-      return { score: fico.score, updatedAt: fico.updatedAt, accounts: accts, debtTxns: debt };
-    }),
-    // v2.6-TRUTH-7 — the debt-payment authority counts the CASH leg, which lives on
-    // the account the money LEFT. A liability-scoped read cannot see it.
-    getDebtPaymentRows({ spaceId: ctx.spaceId }),
-  ]);
+  // RLS-T1a — `getDebtPaymentRows` has JOINED the boundary. RLS-T1 left it
+  // outside and said why: it was the one read in lib/data/transactions.ts still
+  // on the migration principal, because a second caller sat in `lib/ai/**` and a
+  // required parameter cannot be added without editing every caller. That second
+  // caller was dead code and is gone, so all four reads this page makes are now
+  // one short tenant phase under the viewer's own identity.
+  const { score, updatedAt, accounts, debtTxns, paymentTxns } = await withTenantDb(ctx.userId, async (tx) => {
+    const [fico, accts, debt, pay] = await Promise.all([
+      getFicoData(tx, { userId: ctx.userId }),
+      // RLS-C-S1 fix — `ctx.userId` was in scope and was not forwarded, so this
+      // call took `getAccounts`' ambient branch and re-resolved the viewer
+      // inside the leaf. Same value, now stated by the caller.
+      getAccounts(tx, { spaceId: ctx.spaceId, userId: ctx.userId }),
+      getDebtTransactions(tx, { spaceId: ctx.spaceId }), // TX-2 bounded (default cap)
+      // v2.6-TRUTH-7 — the debt-payment authority counts the CASH leg, which lives
+      // on the account the money LEFT. A liability-scoped read cannot see it.
+      getDebtPaymentRows(tx, { spaceId: ctx.spaceId }),
+    ]);
+    return { score: fico.score, updatedAt: fico.updatedAt, accounts: accts, debtTxns: debt, paymentTxns: pay };
+  });
   const transactions = debtTxns.rows;
 
   const debtAccounts = accounts.filter((a) => a.type === "debt");
