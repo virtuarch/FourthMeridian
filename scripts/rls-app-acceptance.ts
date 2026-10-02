@@ -344,6 +344,30 @@ async function main(): Promise<void> {
   check(36, "[role] a member-less PLATFORM Space cannot be claimed by an ordinary user",
     deniedByRls(claimPlatform), claimPlatform.err.split("\n")[0] || "SUCCEEDED — platform escalation");
 
+  // ── [role] RLS-16 — SHAPE, NOT CONTENT ───────────────────────────────────
+  // The activity timeline needs to say "a sync problem happened on this
+  // account". SyncIssue is operator forensics whose `detail` column carries
+  // other people's merchant strings and amounts, so the grant is COLUMN-LEVEL:
+  // the route's six fields, and nothing else. That turns "the route does not
+  // read detail" from a convention into a constraint.
+  const seeAlice = psql(h.appUrl,
+    `begin; set local app.user_id='alice'; select coalesce(string_agg(id,',' order by id),'(none)') from "SyncIssue"; commit;`, false);
+  const seeBob = psql(h.appUrl,
+    `begin; set local app.user_id='bob'; select coalesce(string_agg(id,',' order by id),'(none)') from "SyncIssue"; commit;`, false);
+  check(37, "[role] a sync issue is visible only to the tenant whose account it is (orphans to NEITHER)",
+    seeAlice.out.trim() === "si_alice" && seeBob.out.trim() === "si_bob",
+    `alice=${seeAlice.out.trim()} bob=${seeBob.out.trim()}`);
+
+  const detailRead = psql(h.appUrl,
+    `begin; set local app.user_id='alice'; select detail from "SyncIssue" where id='si_alice'; commit;`, false);
+  check(38, "[role] the tenant role CANNOT read SyncIssue.detail — the column was never granted",
+    deniedByGrant(detailRead), detailRead.err.split("\n")[0] || "ALLOWED — forensic content is reachable");
+
+  const issueWrite = psql(h.appUrl,
+    `begin; set local app.user_id='alice'; update "SyncIssue" set resolved=true where id='si_alice'; commit;`, false);
+  check(39, "[role] the tenant role cannot WRITE the operational ledger (the split-authority seam holds)",
+    deniedByGrant(issueWrite), issueWrite.err.split("\n")[0] || "ALLOWED — tenant wrote an operator ledger");
+
   // ── [role] the owner is not in the tenant path ────────────────────────────
   check(17, "[role] the tenant client is NOT the migration principal",
     dbMod.tenantDb !== dbMod.db, "tenantDb fell back to the shared client");

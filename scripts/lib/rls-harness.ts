@@ -268,4 +268,12 @@ insert into "PlaidItem" (id,"userId","externalItemId","institutionId","instituti
          ('pi_bob','bob','ext_b','ins_1','TestBank','cipher','ACTIVE',now());
 
 insert into "FxRate" (id,date,base,quote,rate,source) values ('fx1',current_date,'USD','EUR',0.9,'test');
+
+-- Operational rows for the activity timeline. The orphan is the important one:
+-- most SyncIssue rows have no derivable tenant at all, and fm_app must not see
+-- them even though it may see the two that are account-scoped.
+insert into "SyncIssue" (id,kind,"financialAccountId","plaidTransactionId",resolved,"updatedAt") values
+  ('si_alice','BALANCE_TX_MISMATCH','acct_alice','ptx1',false,now()),
+  ('si_bob','BALANCE_TX_MISMATCH','acct_bob','ptx2',false,now()),
+  ('si_orphan','BALANCE_TX_MISMATCH',null,'ptx3',false,now());
 `;
