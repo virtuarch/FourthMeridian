@@ -28,7 +28,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
-  prepareHarness, teardownHarness, psql, deniedByGrant,
+  prepareHarness, teardownHarness, psql, deniedByGrant, deniedByRls,
   makeRecorder, APP_FIXTURES,
 } from "./lib/rls-harness";
 
@@ -283,6 +283,66 @@ async function main(): Promise<void> {
   check(32, "[role] MANY-TO-MANY preserved: one account, 3 ACTIVE links, visible to BOTH members",
     joint === "3" && aliceJoint === 1 && bobJoint === 1,
     `links=${joint} alice=${aliceJoint} bob=${bobJoint}`);
+
+  // ── [role] RLS-15 — MEMBERSHIP ESCALATION ─────────────────────────────────
+  // The hole these cases exist for shipped in the first policy migration and
+  // was found by probing, not by review: the SpaceMember INSERT arm read
+  // `OR "userId" = current_fm_user_id()`, which sounds like "your own row" and
+  // actually means "any row naming you, in any Space". Alice self-joined Bob's
+  // Space and her visible transaction count went 4 -> 5.
+  //
+  // The application never offered that route, so no product test could have
+  // caught it. These are the regression pins.
+  const selfJoin = psql(h.appUrl,
+    `begin; set local app.user_id='alice';
+     insert into "SpaceMember" (id,"spaceId","userId",role,status)
+       values ('evil_join','space_b','alice','OWNER','ACTIVE');
+     commit;`, false);
+  const aliceAfter = await tenant.withTenantDb("alice", (tx) => tx.transaction.count());
+  check(33, "[role] Alice CANNOT insert herself into Bob's Space (membership escalation refused)",
+    deniedByRls(selfJoin) && aliceAfter === 4,
+    `insert=${selfJoin.err.split("\n")[0] || "SUCCEEDED"} aliceSees=${aliceAfter}`);
+
+  // Revocation must stay revocation: a REMOVED member cannot re-ACTIVATE
+  // themselves without an invitation.
+  psql(h.ownerUrl, `insert into "SpaceMember" (id,"spaceId","userId",role,status)
+                    values ('m_removed','space_b','alice','VIEWER','REMOVED')
+                    on conflict do nothing;`);
+  const reactivate = psql(h.appUrl,
+    `begin; set local app.user_id='alice';
+     update "SpaceMember" set status='ACTIVE' where id='m_removed';
+     commit;`, false);
+  const stillRemoved = psql(h.ownerUrl, `select status from "SpaceMember" where id='m_removed';`).out.trim();
+  check(34, "[role] a REMOVED member cannot re-ACTIVATE themselves without an invitation",
+    stillRemoved === "REMOVED", `status is now ${stillRemoved}`);
+
+  // …but WITH a pending invitation the same update is admitted, because that
+  // is the flow the permissive arm existed to serve.
+  const invited = psql(h.ownerUrl,
+    `insert into "SpaceInvite" (id,"spaceId","invitedById","invitedUserId",role,status)
+     values ('inv1','space_b','bob','alice','VIEWER','PENDING');`, false);
+  if (!invited.ok) throw new Error(`invite fixture failed: ${invited.err.split("\n")[0]}`);
+  const accept = psql(h.appUrl,
+    `begin; set local app.user_id='alice';
+     update "SpaceMember" set status='ACTIVE' where id='m_removed';
+     commit;`, false);
+  const afterAccept = psql(h.ownerUrl, `select status from "SpaceMember" where id='m_removed';`).out.trim();
+  check(35, "[role] WITH a pending invitation, accepting it IS admitted (the flow still works)",
+    accept.ok && afterAccept === "ACTIVE", `status=${afterAccept} err=${accept.err.split("\n")[0]}`);
+  psql(h.ownerUrl, `delete from "SpaceMember" where id='m_removed'; delete from "SpaceInvite" where id='inv1';`);
+
+  // The platform Spaces have ZERO members by design, so "unclaimed" would
+  // describe them perfectly without the platformArea guard.
+  psql(h.ownerUrl, `insert into "Space" (id,name,type,"platformArea","updatedAt")
+                    values ('space_plat','Platform Ops','SHARED','PLATFORM_OPS',now())
+                    on conflict do nothing;`);
+  const claimPlatform = psql(h.appUrl,
+    `begin; set local app.user_id='alice';
+     insert into "SpaceMember" (id,"spaceId","userId",role,status)
+       values ('evil_plat','space_plat','alice','OWNER','ACTIVE');
+     commit;`, false);
+  check(36, "[role] a member-less PLATFORM Space cannot be claimed by an ordinary user",
+    deniedByRls(claimPlatform), claimPlatform.err.split("\n")[0] || "SUCCEEDED — platform escalation");
 
   // ── [role] the owner is not in the tenant path ────────────────────────────
   check(17, "[role] the tenant client is NOT the migration principal",
