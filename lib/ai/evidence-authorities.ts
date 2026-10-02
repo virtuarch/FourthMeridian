@@ -196,8 +196,21 @@ export const AI_EVIDENCE_AUTHORITIES: Readonly<Record<string, EvidenceAuthority>
     why: 'the DECLARED monthly-expense baseline the transactions assembler reads' },
   AiAgent: { family: PolicyFamily.SPACE_GRANULAR,
     why: 'the agent id the chat route resolves before opening a transcript' },
-  SpaceGoal: { family: PolicyFamily.SPACE_GRANULAR,
-    why: 'goal evidence on the Brief and the starter topics' },
+  // ⚠️ NO SpaceGoal ENTRY, DELIBERATELY. The model still exists in the schema and
+  // still carries a SPACE_GRANULAR policy, so deriving this registry from the
+  // migration alone puts it here — which is how it first arrived, described as
+  // "goal evidence on the Brief and the starter topics". That evidence does not
+  // exist: the goals surface was tombstoned, lib/ai/assemblers/goals.ts and
+  // lib/ai/signals/detectors/goals.ts are deleted, and no AI path reads the table
+  // (grep: zero `spaceGoal` references under lib/ai/** or app/api/ai/**).
+  //
+  // scripts/audit-goals-tombstone.ts caught it: no runtime source may speak the
+  // retired vocabulary. That audit and this registry are both right, and the
+  // resolution is not to exempt one from the other — it is that THIS REGISTRY
+  // CLASSIFIES SOURCES THE AI GRAPH ACTUALLY READS, not every table a policy
+  // happens to cover. A registry that drifts toward "every policied table" stops
+  // being a statement about the evidence graph and starts being a copy of the
+  // migration, which is the thing it exists to be checked against.
   AiAdvice: { family: PolicyFamily.SPACE_GRANULAR,
     why: 'the seeded advice row the Brief reads' },
 

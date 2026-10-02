@@ -368,6 +368,16 @@ export const AUDITS: readonly AuditEntry[] = [
           "production has no TransactionEvent table yet, so the residue may still be created there",
   },
   {
+    name: "repair-event-pin-drift", tier: "OPERATIONAL", needsDb: true,
+    what: "re-pins a LIVE transaction row whose economicDate drifted off its own event's " +
+          "published pin (EVENT-WRITE-1 residue). Derives its population — never a hard-coded " +
+          "id list — so it reports 0 for ever once the write path holds, and a non-zero count " +
+          "is itself the alarm. Writes ONE column and never authorizedAt: that is a provider " +
+          "fact, and rewriting it to make a row re-derive its own pin would fabricate history " +
+          "to satisfy an audit. NOT the same residue as repair-event-identity-adoption-artifacts, " +
+          "which aborted on this corpus (2936 stale events against a blast radius of 4)",
+  },
+  {
     name: "repair-event-projection-drift", tier: "OPERATIONAL", needsDb: true,
     what: "re-derives stored TransactionEvent projections that disagree with their observations " +
           "(v2.6-EVENT-1); RETAIN UNTIL the event-migration production deploy completes",

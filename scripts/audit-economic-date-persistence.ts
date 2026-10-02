@@ -103,7 +103,6 @@ async function main() {
 
   let eventFree = 0, eventLinked = 0;
   const unpinned: { id: string; row: string; pin: string }[] = [];
-  const badPin:   { id: string; eventId: string; pin: string; derived: string; basis: string }[] = [];
 
   for (const r of rows) {
     // The evidence the WRITER had. For an event-linked row that includes the
@@ -138,22 +137,35 @@ async function main() {
       unpinned.push({ id: r.id, row: iso(r.economicDate), pin });
       ok = false;
     }
-    // (b) The pin itself must be what the authority resolves. Without this, (a)
-    //     would agree with any value an event happened to hold.
+    // ── (b) WAS HERE, AND IT WAS MINE, AND IT WAS WRONG. ────────────────────
     //
-    //     ⚠️ ONLY ASKED WHEN THE ROW IS STILL ON ITS PIN. When a row has moved
-    //     off (a), the evidence this derivation reads — the row's own
-    //     authorizedAt — is the thing under suspicion, not the pin. The Talabat
-    //     adoption proves why: the pin 2026-09-10 is CORRECT (settlement A's
-    //     authorized_date, the first resolution), and it looks underivable only
-    //     because the adoption overwrote the row's authorizedAt with settlement
-    //     B's 2026-09-09. Reporting that as "event-identity corruption" would
-    //     name the one value in the pair that is right, and send a repair at it.
-    //     So (b) is scoped to rows whose evidence (a) has already vouched for.
-    if (ok && pin !== res.economicDate) {
-      badPin.push({ id: r.id, eventId: r.transactionEvent.id, pin, derived: res.economicDate, basis: res.basis });
-      ok = false;
-    }
+    // I added a second check — "the event's pin must be what resolveEconomicDate
+    // answers" — on the correct instinct that (a) alone is a tautology waiting to
+    // happen: an event could hold any value for ever and the row would dutifully
+    // agree with it. The instinct was right and the implementation was not,
+    // because it fed the resolver THE ROW'S COLUMNS.
+    //
+    // An event's pin is not derived from its current row. It is derived from its
+    // OBSERVATIONS — that is what projectEvent reads. The two part company
+    // exactly where this audit has to be careful: the repaired Talabat rows carry
+    // pin 2026-09-10 (settlement A's authorized_date, recorded in the event's
+    // observation) while the row's own authorizedAt is 2026-09-09, settlement B's
+    // genuine provider fact, deliberately preserved because rewriting it to make
+    // a row re-derive its own pin would fabricate history to satisfy an audit.
+    // So the pin is NOT derivable from the row, and never should have been
+    // expected to be. My check called correct data corrupt, in the opposite
+    // direction from the original defect.
+    //
+    // The invariant itself is real and is ALREADY OWNED, with the right evidence:
+    //   scripts/audit-event-identity.ts:112 — "the stored projection equals the
+    //   derived projection for every event", which compares
+    //   projectEvent(observations).economicDate against the stored pin, over all
+    //   4727 events, and passes.
+    //
+    // So this is not a deleted invariant; it is a duplicate implemented from the
+    // wrong input, removed in favour of the correct one. (a) is not left a
+    // tautology: the event-identity audit is what stops an event holding an
+    // arbitrary pin, and INV-7 there separately pins first-resolution-wins.
     if (ok) agree++;
   }
 
@@ -183,9 +195,37 @@ async function main() {
   }
 
   console.log(`  event-linked rows OFF their pin : ${unpinned.length}`);
-  console.log(`  event pins NOT derivable        : ${badPin.length}`);
 
-  if (missing.length === 0 && disagree.length === 0 && unpinned.length === 0 && badPin.length === 0) {
+  // ⚠️ THE DOCTRINE MUST BE OBSERVABLY IN FORCE, NOT MERELY CODED FOR.
+  //
+  // Once check (b) was removed as wrong-headed (see above), `firstPendingDate`
+  // stopped affecting any comparison: it feeds only the basis tally. I measured
+  // that — stripping it from the resolver left this audit GREEN at 4933/4933,
+  // which means the guard in lib/transactions/event-economic-date-rule.test.ts
+  // asserting that this file "feeds the first-pending evidence the writer uses"
+  // was pinning a line with no consequence. A source scan over a value nothing
+  // reads is decoration, and decoration is what let the original invariant rot
+  // for seven weeks.
+  //
+  // So the tally becomes an assertion. If any event is pinned by a first-pending
+  // observation, this audit must RESOLVE some row that way — a corpus-aware
+  // non-vacuity check, and the thing that goes red the moment the evidence is
+  // dropped from the resolver again.
+  const firstPendingResolved = basis.get("FIRST_PENDING_OBSERVATION") ?? 0;
+  const pinnedEvents = firstPendingByEvent.size;
+  console.log(`  events with a first PENDING obs  : ${pinnedEvents}`);
+  console.log(`  rows resolved by that pin        : ${firstPendingResolved}`);
+  const doctrineObserved = pinnedEvents === 0 || firstPendingResolved > 0;
+  if (!doctrineObserved) {
+    console.error(`\n[AUDIT] FAILED — ${pinnedEvents} event(s) are pinned by a first PENDING observation,`);
+    console.error(`but not one row resolved on that basis. The first-pending evidence is not reaching`);
+    console.error(`resolveEconomicDate, so this audit is adjudicating B-6 rows without B-6's evidence —`);
+    console.error(`the exact blindness that reported four correct rows as DRIFT until 2026-10-02.\n`);
+    await db.$disconnect();
+    process.exit(1);
+  }
+
+  if (missing.length === 0 && disagree.length === 0 && unpinned.length === 0) {
     console.log(`\n[AUDIT] PASSED — every row's persisted economicDate equals the authority's value. ✓\n`);
     await db.$disconnect();
     return;
@@ -213,16 +253,6 @@ async function main() {
     console.error(`    ⚠️ If any of these was written RECENTLY, this is a live WRITER defect and the`);
     console.error(`       repair is second: a fingerprint adoption can overwrite a row's economicDate`);
     console.error(`       and leave the event's pin behind. Fix the writer, then repair the artifacts.`);
-  }
-  if (badPin.length) {
-    console.error(`\n  EVENT PINS that are not the authority's answer (${badPin.length}):`);
-    for (const d of badPin.slice(0, 20)) {
-      console.error(`    event ${d.eventId} pin=${d.pin} derived=${d.derived} (${d.basis}) via row ${d.id}`);
-    }
-    console.error(`  → the row CARRIES this pin, yet no evidence produces it: event-identity`);
-    console.error(`    corruption, not column drift. (Rows that moved off their pin are listed`);
-    console.error(`    above instead — there the row's evidence is what is in doubt, not the pin.)`);
-    console.error(`    Investigate before repairing; scripts/audit-event-identity.ts carries the detail.`);
   }
   if (missing.length) {
     console.error(`\n  ${missing.length} row(s) have NO persisted economicDate.`);
