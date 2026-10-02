@@ -23,10 +23,15 @@
  * of this comment referred to an "ADMIN" role that does not exist.)
  *
  * SCOPE (PO-1A) — this file picks the enrolment SURFACE for page navigations.
- * It is NOT the authorization boundary and cannot be: the matcher below is
- * ["/dashboard/:path*", "/admin/:path*"], so this never executes for a single
- * /api/* request. API authorization lives in lib/session.ts, which denies every
- * pending session independently. Both must agree — a surface this file routes a
+ * It is NOT the authorization boundary and cannot be: no session, role or TOTP
+ * rule below is applied to /api/*. API authorization lives in lib/session.ts,
+ * which denies every pending session independently.
+ *
+ * /api/* (STAGE-A3) — the matcher includes /api/:path* for ONE purpose: the
+ * browser-write Origin boundary (lib/security/write-origin.ts). A state-changing
+ * /api request from any origin other than this deployment's own is refused with
+ * 403 before a handler runs. Nothing else here executes for /api — no token is
+ * read, no redirect is issued. Both must agree — a surface this file routes a
  * pending session TO must compose only data lib/session.ts will serve a pending
  * session, i.e. /api/user/totp/* and nothing else.
  *
@@ -43,6 +48,7 @@ import {
   sessionCookieName,
   isLegacyAuthCookie,
 } from "./lib/auth/session-cookie";
+import { evaluateWriteOrigin, selfOriginOf, WRITE_ORIGIN_REFUSED_ERROR } from "./lib/security/write-origin";
 
 /**
  * Expire any pre-`__Host-` auth cookie the browser still sends. After the
@@ -64,6 +70,24 @@ export default async function middleware(req: NextRequest) {
 }
 
 async function route(req: NextRequest): Promise<NextResponse> {
+  // ── /api: the browser-write Origin boundary, and nothing else ───────────
+  if (req.nextUrl.pathname.startsWith("/api/")) {
+    const verdict = evaluateWriteOrigin({
+      method:       req.method,
+      pathname:     req.nextUrl.pathname,
+      selfOrigin:   selfOriginOf(req.headers, req.nextUrl.protocol),
+      origin:       req.headers.get("origin"),
+      secFetchSite: req.headers.get("sec-fetch-site"),
+    });
+    if (!verdict.allowed) {
+      return NextResponse.json(
+        { error: WRITE_ORIGIN_REFUSED_ERROR, reason: verdict.reason },
+        { status: 403 },
+      );
+    }
+    return NextResponse.next();
+  }
+
   // The cookie name and Secure decision come from the same module lib/auth.ts
   // configures NextAuth with — see lib/auth/session-cookie.ts.
   const secureCookie = authCookiesSecure();
@@ -145,5 +169,6 @@ export const config = {
   matcher: [
     "/dashboard/:path*",
     "/admin/:path*",
+    "/api/:path*",   // Origin boundary only — see the /api branch in route()
   ],
 };
