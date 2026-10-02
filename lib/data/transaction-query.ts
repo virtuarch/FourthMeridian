@@ -23,7 +23,7 @@ import "server-only";
 import { ShareStatus, FlowType, TransactionCategory } from "@prisma/client";
 import type { Prisma } from "@prisma/client";
 import type { Transaction } from "@/types";
-import { db } from "@/lib/db";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 import { assertOneRowPerEvent } from "@/lib/transactions/event-projection";
 import {
@@ -98,9 +98,18 @@ export interface TransactionQueryResult {
  * join). Used only to constrain an explicit `accountIds` filter — a caller can
  * never widen a query to an account the Space cannot see. This is a visibility
  * guard, NOT a second population authority (population = FlowType, unchanged).
+ *
+ * RLS-C-S3 — `client` is REQUIRED and leading. The guard answers "which accounts
+ * may this Space see transaction detail for", and the answer depends entirely on
+ * which role asks: on the migration principal it is the whole link table, on a
+ * tenant client it is additionally filtered by `fm_account_visible`. Those are
+ * two different questions and they used to be spelled the same way.
  */
-export async function resolveVisibleAccountIds(spaceId: string): Promise<Set<string>> {
-  const accounts = await db.financialAccount.findMany({
+export async function resolveVisibleAccountIds(
+  client: ReadClient,
+  spaceId: string,
+): Promise<Set<string>> {
+  const accounts = await client.financialAccount.findMany({
     where: {
       deletedAt: null,
       spaceAccountLinks: {
@@ -117,13 +126,30 @@ export async function resolveVisibleAccountIds(spaceId: string): Promise<Set<str
  * so paging never duplicates or skips a row. The population/visibility/soft-delete
  * WHERE, the filters, and the keyset are ANDed as SEPARATE terms so no `flowType`/
  * `date` fragment ever overwrites another.
+ *
+ * ── RLS-C-S3 — THE AUTHORITY IS THE FIRST ARGUMENT ──────────────────────────
+ * S1 made the SPACE explicit. The AUTHORITY was still ambient: this module
+ * imported the migration principal — the one client exempt from every policy —
+ * and every page, count and span ran through it, so a tenant-scoped read and a
+ * platform-wide one were indistinguishable at the call site.
+ *
+ * `client` is typed `ReadClient` (= `Prisma.TransactionClient`), which has no
+ * `$transaction` member: this leaf CANNOT open a transaction of its own, so the
+ * phase boundary always belongs to the caller and `withTenantDb`'s
+ * transaction-local identity can never be undercut from in here. `PrismaClient`
+ * is structurally assignable, so a job holding `systemDb` — or a not-yet-converted
+ * caller holding `db` — can still pass one, VISIBLY. What it cannot do is pass
+ * nothing: an optional authority is an ambient one.
  */
-export async function queryTransactions(args: {
-  /** RLS-C-S1 — REQUIRED. The ambient space-context fallback is gone: a
-   *  leaf read may not invent the tenant whose rows it is paging. */
-  spaceId: string;
-  query: TransactionQuery;
-}): Promise<TransactionQueryResult> {
+export async function queryTransactions(
+  client: ReadClient,
+  args: {
+    /** RLS-C-S1 — REQUIRED. The ambient space-context fallback is gone: a
+     *  leaf read may not invent the tenant whose rows it is paging. */
+    spaceId: string;
+    query: TransactionQuery;
+  },
+): Promise<TransactionQueryResult> {
   const spaceId = args.spaceId;
   const query = args.query;
   const limit = clampLimit(query.limit);
@@ -137,7 +163,7 @@ export async function queryTransactions(args: {
   // explicit and lets an all-invisible request short-circuit to an empty page.
   let accountIds = query.accountIds;
   if (accountIds && accountIds.length > 0) {
-    const visible = await resolveVisibleAccountIds(spaceId);
+    const visible = await resolveVisibleAccountIds(client, spaceId);
     accountIds = accountIds.filter((id) => visible.has(id));
     if (accountIds.length === 0) return { rows: [], nextCursor: null, hasMore: false, cursorReset };
   }
@@ -150,7 +176,7 @@ export async function queryTransactions(args: {
     ].filter((w): w is Prisma.TransactionWhereInput => w != null),
   };
 
-  const fetched = await db.transaction.findMany({
+  const fetched = await client.transaction.findMany({
     where,
     orderBy: orderByForSort(query.sort),
     take: limit + 1, // +1 sentinel → hasMore, no second query
@@ -161,7 +187,9 @@ export async function queryTransactions(args: {
   // L8-B1 — the keyset explorer inherits the projection filter through
   // bankingTransactionWhere; this refuses the page if it ever stops doing so.
   assertOneRowPerEvent(pageRows, "queryTransactions");
-  const rows = await projectTransactionListRows(pageRows, spaceId);
+  // RLS-C-S3 — the projection runs on the SAME client the page was read with, so
+  // one authority answers the whole DTO rather than two halves of it.
+  const rows = await projectTransactionListRows(client, pageRows, spaceId);
   return { rows, nextCursor, hasMore, cursorReset };
 }
 
@@ -186,20 +214,25 @@ export async function queryTransactions(args: {
  * composes them. The keyset is deliberately absent: a cursor bounds a page, and
  * a page is the thing this is counting past.
  */
-export async function countTransactions(args: {
-  /** RLS-C-S1 — REQUIRED, for the same reason as `queryTransactions` above: the
-   *  count and the page must be the same population, named by the same caller. */
-  spaceId: string;
-  query: Omit<TransactionQuery, 'cursor' | 'limit'>;
-}): Promise<number> {
+export async function countTransactions(
+  /** RLS-C-S3 — REQUIRED and leading, for the same reason as the page: the count
+   *  and the page must be the same population read by the same authority. */
+  client: ReadClient,
+  args: {
+    /** RLS-C-S1 — REQUIRED, for the same reason as `queryTransactions` above: the
+     *  count and the page must be the same population, named by the same caller. */
+    spaceId: string;
+    query: Omit<TransactionQuery, 'cursor' | 'limit'>;
+  },
+): Promise<number> {
   const spaceId = args.spaceId;
   let accountIds = args.query.accountIds;
   if (accountIds && accountIds.length > 0) {
-    const visible = await resolveVisibleAccountIds(spaceId);
+    const visible = await resolveVisibleAccountIds(client, spaceId);
     accountIds = accountIds.filter((id) => visible.has(id));
     if (accountIds.length === 0) return 0;
   }
-  return db.transaction.count({
+  return client.transaction.count({
     where: {
       AND: [
         bankingTransactionWhere(spaceId),
@@ -239,13 +272,25 @@ export async function countTransactions(args: {
  * on. Rows with a null `economicDate` cannot be placed in time and are therefore
  * excluded from the bounds — the same rows the keyset already refuses to page.
  */
-export async function transactionCorpusSpan(args: {
-  spaceId: string;
-  /** Information ceiling: nothing dated after this contributes to the span. */
-  asOf?: string;
-}): Promise<TransactionCorpusBounds> {
+export async function transactionCorpusSpan(
+  /**
+   * RLS-C-S3 — REQUIRED and leading. ⚠️ THIS ONE CARRIES A CONTRACT, NOT JUST AN
+   * AUTHORITY. The span is what tells a consumer apart "nothing in this window"
+   * from "nothing in this Space", and under a tenant client an empty span can
+   * ALSO mean "nothing this identity may see". The two are not the same claim,
+   * and the `unavailableReason` below is worded for the first. That is why the AI
+   * surface — the one consumer that turns this into English — keeps passing the
+   * migration principal in this slice: see docs/plans/RLS-SILENT-REFUSAL-CAS.md.
+   */
+  client: ReadClient,
+  args: {
+    spaceId: string;
+    /** Information ceiling: nothing dated after this contributes to the span. */
+    asOf?: string;
+  },
+): Promise<TransactionCorpusBounds> {
   const ceiling = args.asOf ? toDbDate(args.asOf) : null;
-  const agg = await db.transaction.aggregate({
+  const agg = await client.transaction.aggregate({
     where: {
       AND: [
         bankingTransactionWhere(args.spaceId),

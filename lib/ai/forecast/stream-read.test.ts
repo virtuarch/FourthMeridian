@@ -83,12 +83,24 @@ for (let i = 14; i >= 0; i--) {
     flowType: 'INCOME', pending: false });
 }
 
+/**
+ * RLS-C-S3 — this suite is DB-FREE by design (its whole point is the page
+ * boundary, served from an in-memory corpus), so the required client is a stated
+ * placeholder rather than a real one. Nothing dereferences it: the injected reader
+ * never touches it and the account-type default is overridden below.
+ */
+const FAKE_CLIENT = {} as never;
+
 /** A reader honouring the documented contract of `queryTransactions`. */
 const readerFor = (order: 'newest' | 'oldest' | 'scrambled'): {
   read: IncomeTransactionReader; sorts: string[];
 } => {
   const sorts: string[] = [];
-  const read = (async (args: { query: Record<string, unknown> }) => {
+  // RLS-C-S3 — the fake declares the client the real `queryTransactions` requires.
+  // It is unused here (the fake serves an in-memory corpus), but it must be
+  // DECLARED: a cast-only fix would have typechecked while reading `query` off a
+  // database client at runtime — the same trap S2 found in space-data.test.ts.
+  const read = (async (_client: unknown, args: { query: Record<string, unknown> }) => {
     const q = args.query;
     sorts.push(String(q.sort));
     const matched = rows
@@ -131,7 +143,7 @@ async function main(): Promise<void> {
   // ── 2. the loader asks for, and keeps, the recent edge ──────────────────────
   {
     const { read, sorts } = readerFor('newest');
-    const streams = await loadForecastIncomeStreams('space', AS_OF, read);
+    const streams = await loadForecastIncomeStreams(FAKE_CLIENT, 'space', AS_OF, read);
     check('S3 the loader requests the newest page', sorts.every((s) => s === 'newest'), sorts.join(','));
     const pay = streams.find(PAY_KEY);
     check('S4 the payroll stream is resolved at all', pay !== undefined,
@@ -166,7 +178,7 @@ async function main(): Promise<void> {
   // exactly the pre-PARITY-1 behaviour. Everything above must collapse.
   {
     const { read } = readerFor('oldest');
-    const streams = await loadForecastIncomeStreams('space', AS_OF, read);
+    const streams = await loadForecastIncomeStreams(FAKE_CLIENT, 'space', AS_OF, read);
     const pay = streams.find(PAY_KEY);
     check('S12 reading from the oldest end loses the payroll stream entirely',
       pay === undefined, pay ? `still found: ${pay.sourceKey}` : '');
@@ -193,7 +205,7 @@ async function main(): Promise<void> {
 // land on the superseded $4,000 regime if it were not.
   {
     const { read } = readerFor('scrambled');
-    const streams = await loadForecastIncomeStreams('space', AS_OF, read);
+    const streams = await loadForecastIncomeStreams(FAKE_CLIENT, 'space', AS_OF, read);
     const pay = streams.find(PAY_KEY);
     check('S14 a shuffled page still yields a biweekly cadence',
       pay !== undefined && isCadence(pay.cadence) && pay.cadence.kind === CadenceKind.BIWEEKLY,

@@ -173,11 +173,23 @@ const NOT_CALL_SITES = new Set([
       const rel = path.relative(ROOT, file);
       if (NOT_CALL_SITES.has(rel)) continue;
       const code = stripComments(readFileSync(file, "utf8"));
+      // RLS-C-S3 — the first argument is the stated database AUTHORITY, so the
+      // BOUND moved to the second. The scan follows it rather than being dropped:
+      // the unit claim this guard exists for is exactly as enforceable one
+      // position along, and a call that still passes a bare number first would now
+      // show up as an authority that is not an identifier.
       for (const m of code.matchAll(/getRecentSnapshots\s*\(([^)]*)/g)) {
-        const arg = m[1].trim();
-        if (arg === "") continue;                       // a type-only mention
-        if (/^\{\s*rows\s*:/.test(arg)) continue;       // the sanctioned shape
-        offenders.push(`${rel}  →  getRecentSnapshots(${arg.slice(0, 48)}…`);
+        const args = m[1].trim();
+        if (args === "") continue;                      // a type-only mention
+        const comma = args.indexOf(",");
+        const authority = (comma === -1 ? args : args.slice(0, comma)).trim();
+        const bound = comma === -1 ? "" : args.slice(comma + 1).trim();
+        if (!/^[A-Za-z_$][\w$.]*$/.test(authority)) {
+          offenders.push(`${rel}  →  getRecentSnapshots(${args.slice(0, 48)}…  [first argument is not a client]`);
+          continue;
+        }
+        if (/^\{\s*rows\s*:/.test(bound)) continue;      // the sanctioned shape
+        offenders.push(`${rel}  →  getRecentSnapshots(${args.slice(0, 48)}…`);
       }
     }
   }
@@ -204,7 +216,7 @@ const NOT_CALL_SITES = new Set([
       if (NOT_CALL_SITES.has(rel)) continue;
       const code = stripComments(readFileSync(file, "utf8"));
       if (!/getRecentSnapshots\s*\(/.test(code)) continue;
-      for (const m of code.matchAll(/getRecentSnapshots\s*\(\s*\{\s*rows:\s*([A-Za-z_$][\w$]*)/g)) {
+      for (const m of code.matchAll(/getRecentSnapshots\s*\([^,]*,\s*\{\s*rows:\s*([A-Za-z_$][\w$]*)/g)) {
         const ident = m[1];
         if (/DAY|DURATION|MONTH|YEAR|WEEK/i.test(ident)) {
           offenders.push(`${rel}  →  { rows: ${ident} }`);

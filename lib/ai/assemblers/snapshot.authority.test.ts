@@ -54,9 +54,32 @@ check(
   "assembler imports the canonical read (getRecentSnapshots from @/lib/data/snapshots)",
   /import\s*\{[^}]*getRecentSnapshots[^}]*\}\s*from\s*['"]@\/lib\/data\/snapshots['"]/.test(src),
 );
+/**
+ * RLS-C-S3 — THIS PIN GOT NARROWER, NOT WEAKER.
+ *
+ * It used to be "no `@/lib/db` import at all", which was a proxy for the real
+ * invariant: truth is not rebuilt here. `getRecentSnapshots` now requires its
+ * database client as a leading argument, so the assembler has to STATE an
+ * authority — and the honest one on the AI path is the migration principal, for
+ * the reasons recorded in the assembler's own header.
+ *
+ * So the proxy is replaced by the property itself: the client may be imported
+ * ONCE and may appear in exactly ONE place — as the authority handed to the
+ * canonical read. It cannot be used to query anything. A regression to a private
+ * `db.spaceSnapshot.findMany` still trips both of these.
+ */
 check(
-  "assembler holds NO direct db import (truth is not rebuilt here)",
-  !/from\s*['"]@\/lib\/db['"]/.test(src),
+  "assembler imports the global client AT MOST ONCE",
+  (src.match(/from\s*['"]@\/lib\/db['"]/g) ?? []).length <= 1,
+);
+check(
+  "…and NEVER dereferences it — no query is issued through it here",
+  !/\bdb\s*\./.test(src),
+  src.match(/\bdb\s*\.[^\n]*/g)?.join(" | "),
+);
+check(
+  "…it appears exactly once, as the authority handed to the canonical read",
+  (src.match(/getRecentSnapshots\(\s*db\s*,/g) ?? []).length === 1,
 );
 check(
   "assembler holds NO direct spaceSnapshot query",
@@ -67,8 +90,10 @@ check(
   // positional number can no longer hide which unit it is. Same call, same
   // Space scoping, same limit; the pin follows the new shape and additionally
   // requires the bound be spelled `rows`, since that is the whole point.
+  // RLS-C-S3 — one leading argument is now the stated database AUTHORITY. The
+  // Space scoping and the ROW bound this pin exists for are unchanged.
   "assembler calls getRecentSnapshots scoped to the validated Space, bounded by ROWS",
-  /getRecentSnapshots\(\s*\{\s*rows:\s*SNAPSHOT_HISTORY_LIMIT\s*\}\s*,\s*\{\s*spaceId\s*\}\s*\)/.test(src),
+  /getRecentSnapshots\(\s*db\s*,\s*\{\s*rows:\s*SNAPSHOT_HISTORY_LIMIT\s*\}\s*,\s*\{\s*spaceId\s*\}\s*\)/.test(src),
 );
 
 // ─── B. Behavioral pins on the pure projection ───────────────────────────────

@@ -73,7 +73,7 @@ async function main() {
     permissions: { canInvite: true, canManage: true, canWrite: true, canRead: true, isOwner: true },
     space: { id: space.id, name: space.name, type: space.type, category: space.category,
       isPublic: space.isPublic, reportingCurrency: space.reportingCurrency } } as unknown as SpaceContext;
-  const toolCtx: ToolContext = { spaceCtx, spaceId: SPACE, asOfISO: ASOF, memoryClient: db };
+  const toolCtx: ToolContext = { spaceCtx, spaceId: SPACE, asOfISO: ASOF, memoryClient: db, readClient: db };
   const run = async (name: string, args: Rec) => {
     const t0 = Date.now(); const c0 = process.cpuUsage(); const raw = await findTool(name)!.run(args, toolCtx);
     const cpu = process.cpuUsage(c0);

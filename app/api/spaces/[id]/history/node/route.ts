@@ -18,6 +18,7 @@ import { requireSpaceRole } from "@/lib/session";
 import {
   resolveExplorationNode, EXPLORATION_NODE_TYPES, type ExplorationNodeType,
 } from "@/lib/history/exploration";
+import { withTenantDb } from "@/lib/db/tenant-context";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +34,6 @@ export async function GET(
 
   const [ctx, err] = await requireSpaceRole(spaceId, SpaceMemberRole.VIEWER);
   if (err) return err;
-  void ctx;
 
   const q = req.nextUrl.searchParams;
   const lens = q.get("root") ?? q.get("lens") ?? "net-worth";
@@ -62,9 +62,16 @@ export async function GET(
     return NextResponse.json({ error: "MISSING_NODE_ID" }, { status: 400 });
   }
 
-  const result = await resolveExplorationNode({
+  // RLS-C-S3 — the WHOLE walk executes as the TENANT, inside ONE short
+  // transaction, with the identity taken from the authenticated requester
+  // (requireSpaceRole above) and never from the path, the query string or the
+  // active-Space cookie. One transaction is right here rather than merely
+  // convenient: the resolver's contract is that the breadcrumb a link restores is
+  // the path clicking produced, and a path assembled across two authorities would
+  // not be the same path. Nothing in the walk makes a network or model call.
+  const result = await withTenantDb(ctx.user.id, (tx) => resolveExplorationNode(tx, {
     spaceId, lens, nodeType, nodeId, dateISO: date!, fromISO: from!, toISO: to!,
-  });
+  }));
 
   if (result.error) {
     // Stable, enumerable codes. Never a provider payload, never an internal

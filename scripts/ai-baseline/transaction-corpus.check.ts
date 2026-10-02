@@ -58,7 +58,7 @@ async function main() {
     permissions: { canInvite: true, canManage: true, canWrite: true, canRead: true, isOwner: true },
     space: { id: space.id, name: space.name, type: space.type, category: space.category,
       isPublic: space.isPublic, reportingCurrency: space.reportingCurrency },
-  } as never, memoryClient: db };
+  } as never, memoryClient: db, readClient: db };
   const gt = findTool('get_transactions')!;
   const run = (args: Record<string, unknown>) => gt.run(args, ctx) as Promise<Result>;
 

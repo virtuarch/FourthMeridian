@@ -220,7 +220,9 @@ const render = (e: CoverageEnvelope, from?: string, to?: string) =>
     !/spaceAccountLink\.findMany/.test(src),
     'a BALANCE_ONLY account must not be advertised as user-visible evidence');
   check('H: snapshot extent goes through the snapshot authority',
-    /getSnapshotExtent\(spaceId\)/.test(src) && !/spaceSnapshot\./.test(src),
+    // RLS-C-S3 — through the authority this census already resolved, not a
+    // second one reached from inside the snapshot boundary.
+    /getSnapshotExtent\(client, spaceId\)/.test(src) && !/spaceSnapshot\./.test(src),
     'an aggregate is still a read; snapshot reads have one home');
   check('H: the transaction census reuses the SHARED population predicate',
     /bankingTransactionWhere\(spaceId\)/.test(src),

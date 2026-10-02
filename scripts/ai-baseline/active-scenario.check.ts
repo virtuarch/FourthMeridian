@@ -91,7 +91,7 @@ async function main() {
     space: { id: space.id, name: space.name, type: space.type, category: space.category,
       isPublic: space.isPublic, reportingCurrency: space.reportingCurrency },
   } as unknown as SpaceContext;
-  const ctx: ToolContext = { spaceCtx, spaceId, asOfISO: ASOF, memoryClient: db };
+  const ctx: ToolContext = { spaceCtx, spaceId, asOfISO: ASOF, memoryClient: db, readClient: db };
   const run = (name: string, args: Record<string, unknown>) => findTool(name)!.run(args, ctx);
   console.log(`Space ${spaceId} as of ${ASOF} → horizon ${HORIZON}, one-off on ${BONUS_ON}\n`);
   check('the derived horizon is a month-end after the as-of, and the one-off falls between them',

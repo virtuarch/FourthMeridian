@@ -68,11 +68,16 @@ console.log("SHARED DTO — same row shape + projection as getTransactions");
 {
   check("uses the shared transactionListInclude", q.includes("transactionListInclude(spaceId)"));
   check("uses the shared projectTransactionListRows (no second DTO builder)",
-    q.includes("projectTransactionListRows(pageRows, spaceId)"));
+    // RLS-C-S3 — the projection runs on the client the page was read with, so the
+    // page and its DTO cannot be assembled by two different roles.
+    q.includes("projectTransactionListRows(client, pageRows, spaceId)"));
   check("transactions.ts exports the shared projection + include",
     tx.includes("export async function projectTransactionListRows") && tx.includes("export function transactionListInclude"));
   check("getTransactions now delegates to the shared projection (parity)",
-    tx.includes("await projectTransactionListRows(capped, spaceId)"));
+    // RLS-C-S3 — `getTransactions` is not converted in this slice, so it passes
+    // the client it already holds EXPLICITLY. Same shared projection, visible
+    // authority.
+    tx.includes("await projectTransactionListRows(db, capped, spaceId)"));
 }
 
 console.log("CONTRACT — no canonical Perspective time on the explorer");

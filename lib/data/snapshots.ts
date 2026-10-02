@@ -14,7 +14,7 @@
  * and no rate is ever resolved. Stored rows are never rewritten.
  */
 
-import { db } from "@/lib/db";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { type TimePreset } from "@/lib/perspectives/time-range";
 import { resolveEffectiveSpaceConversion } from "@/lib/money/server-context";
 import { convertStampedValues } from "@/lib/snapshots/stamp-conversion";
@@ -110,11 +110,18 @@ export interface SnapshotReadBound {
  * authority (lib/data/snapshot-read-boundary.test.ts enforces it), and an
  * aggregate is still a read: putting it in lib/ai would be the fourth place
  * that knows how to query this table.
+ *
+ * RLS-C-S3 — `client` is REQUIRED and leading. An EXTENT is exactly the kind of
+ * claim an authority silently changes: `count: 0` reads as "this Space has no
+ * history" whichever role asked, and on a tenant client it can also mean "this
+ * identity may see none of it". Naming the client is what makes the difference
+ * visible at the call site.
  */
 export async function getSnapshotExtent(
+  client: ReadClient,
   spaceId: string,
 ): Promise<{ fromISO: string | null; toISO: string | null; count: number }> {
-  const agg = await db.spaceSnapshot.aggregate({
+  const agg = await client.spaceSnapshot.aggregate({
     where: { spaceId },
     _min: { date: true }, _max: { date: true }, _count: true,
   });
@@ -125,8 +132,22 @@ export async function getSnapshotExtent(
 /**
  * Snapshot history for a Space, oldest-first so a chart renders left→right in
  * time order. Bounded by ROW COUNT — see `SnapshotReadBound`.
+ *
+ * ── RLS-C-S3 — THE AUTHORITY IS AN ARGUMENT, REQUIRED AND FIRST ─────────────
+ * S1 made the SPACE explicit. The AUTHORITY was still ambient: this module
+ * imported the migration principal — the one client exempt from every policy —
+ * and all fifteen snapshot reads in the codebase ran through it, so a
+ * tenant-scoped history read and a platform-wide one were spelled identically.
+ *
+ * `client` is typed `ReadClient` (= `Prisma.TransactionClient`), which has no
+ * `$transaction` member, so this leaf cannot open a transaction of its own and the
+ * phase boundary always belongs to the caller. `PrismaClient` is structurally
+ * assignable, so a job holding `systemDb` — or a caller this slice did not convert,
+ * holding `db` — can still pass one. There is deliberately NO DEFAULT: an optional
+ * authority is an ambient authority wearing a parameter's clothes.
  */
 export async function getRecentSnapshots(
+  client: ReadClient,
   bound: SnapshotReadBound,
   scope: { spaceId: string },
 ): Promise<Snapshot[]> {
@@ -135,13 +156,13 @@ export async function getRecentSnapshots(
   // already stated `{ spaceId }`, so none of them changes shape.
   const { spaceId } = scope;
 
-  const rows = await db.spaceSnapshot.findMany({
+  const rows = await client.spaceSnapshot.findMany({
     where:   { spaceId },
     orderBy: { date: "asc" },
     take:    -bound.rows, // the newest N rows (negative take = from the end)
   });
 
-  const space = await db.space.findUnique({
+  const space = await client.space.findUnique({
     where:  { id: spaceId },
     select: { reportingCurrency: true },
   });
@@ -288,14 +309,23 @@ export interface SpaceNetWorthSummary {
   } | null;
 }
 
+/**
+ * RLS-C-S3 — `client` is REQUIRED and leading here too, and this is the one
+ * snapshot read where the authority CHANGES THE SET rather than just the rows'
+ * provenance: it is handed a LIST of Space ids. On the migration principal it
+ * answers for any id at all; on a tenant client the `fm_app` SpaceSnapshot and
+ * Space policies drop the ones the identity is not an ACTIVE member of, so a
+ * launcher that passed somebody else's Space id gets no card instead of a figure.
+ */
 export async function getSpaceNetWorthSummaries(
-  spaceIds: string[]
+  client: ReadClient,
+  spaceIds: string[],
 ): Promise<Record<string, SpaceNetWorthSummary>> {
   if (spaceIds.length === 0) return {};
 
   // Each Space's own reporting currency (the card label source). Selected here
   // so no card ever borrows the active Space's currency.
-  const spaces = await db.space.findMany({
+  const spaces = await client.space.findMany({
     where:  { id: { in: spaceIds } },
     select: { id: true, reportingCurrency: true },
   });
@@ -309,7 +339,7 @@ export async function getSpaceNetWorthSummaries(
   // `resolveSnapshotRowProvenance` getRecentSnapshots uses — see
   // lib/data/snapshot-summary.core.ts for the launcher's honest-presentation
   // rule this implements.
-  const rows = await db.spaceSnapshot.findMany({
+  const rows = await client.spaceSnapshot.findMany({
     where:   { spaceId: { in: spaceIds } },
     orderBy: { date: "asc" },
     select:  {

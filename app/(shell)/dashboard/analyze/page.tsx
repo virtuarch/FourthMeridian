@@ -23,7 +23,11 @@ export default async function AnalyzePage() {
   // AI Experience Convergence (AI-2): only the scheduled-advice capability and the
   // starters need server data. Both are scoped to the Space resolved above.
   const [advice, personal] = await Promise.all([
-    getLatestAdvice({ spaceId: ctx.spaceId }),
+    // RLS-C-S3 — one short tenant transaction for one row. The identity is the
+    // authenticated session's (getSpaceContext, next-auth-backed); the AiAdvice
+    // policy is `"spaceId" IN (SELECT fm_visible_space_ids())`, so the Space scope
+    // on the line below is now enforced by the database as well as by the query.
+    withTenantDb(ctx.userId, (tx) => getLatestAdvice(tx, { spaceId: ctx.spaceId })),
     loadStarterTopics(ctx),
   ]);
 

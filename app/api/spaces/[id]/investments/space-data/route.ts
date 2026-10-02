@@ -27,6 +27,7 @@ import { SpaceMemberRole } from "@prisma/client";
 import { requireSpaceRole } from "@/lib/session";
 import { loadInvestmentsSpaceData } from "@/lib/investments/space-data";
 import { getRecentSnapshots } from "@/lib/data/snapshots";
+import { withTenantDb } from "@/lib/db/tenant-context";
 import { buildPortfolioValueSeries } from "@/lib/investments/portfolio-series";
 // REVIEW-3 B-6 — the server's UTC day rides the response (`serverToday`) so the
 // client classifies asOf against THE authoritative clock, not its own.
@@ -66,8 +67,10 @@ export async function GET(
     return NextResponse.json({ error: "compareTo must be earlier than asOf" }, { status: 400 });
   }
 
-  // Membership above is the gate; per-account visibility is enforced inside the loaders.
-  void ctx;
+  // Membership above is the gate; per-account visibility is enforced inside the
+  // loaders. RLS-C-S3 — `ctx` is no longer discarded: the snapshot series now
+  // executes as the authenticated requester, so the gate and the policies agree.
+
   // The composed contract AND the canonical Portfolio Value Over Time series, read in
   // ONE pass. The series REUSES the persisted SpaceSnapshot window (getRecentSnapshots,
   // a single query) — never an N×date getInvestmentValueAsOf sampler. Value per point =
@@ -79,7 +82,12 @@ export async function GET(
   // answer moved with the provider tier.
   const [data, snaps] = await Promise.all([
     loadInvestmentsSpaceData({ spaceId }, { history: { asOf, compareTo: compareToRaw ?? null } }),
-    getRecentSnapshots({ rows: SERIES_ROWS }, { spaceId }),
+    // RLS-C-S3 — one short tenant transaction around the snapshot read ALONE. The
+    // composition loader beside it is a different leaf this slice does not own, and
+    // wrapping both would hold the boundary over reads still running on another
+    // authority. The two stay CONCURRENT, which a single shared transaction would
+    // have serialised.
+    withTenantDb(ctx.user.id, (tx) => getRecentSnapshots(tx, { rows: SERIES_ROWS }, { spaceId })),
   ]);
   const series = buildPortfolioValueSeries(snaps, data.current.reportingCurrency);
   // B-6 — the today/history switch is SERVER-AUTHORITATIVE (lib/time/basis.ts):

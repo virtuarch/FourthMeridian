@@ -177,7 +177,11 @@ export async function loadCoverageEnvelope(
       }),
       // Through the snapshot authority — an aggregate is still a read, and
       // snapshot reads have one home (lib/data/snapshot-read-boundary.test.ts).
-      getSnapshotExtent(spaceId),
+      // RLS-C-S3 — the extent now runs on the SAME client this census already
+      // resolved (`options.client ?? db`), rather than reaching the global itself.
+      // The AUTHORITY is unchanged on this path by design — see the module's own
+      // absence contract and docs/plans/RLS-SILENT-REFUSAL-CAS.md Part 2.
+      getSnapshotExtent(client, spaceId),
       // The canonical wallet-history authority (UI-C1/C2). It already separates
       // the proof floor from the first date anything was actually held, and
       // already refuses to claim history for a chain that has not earned it.

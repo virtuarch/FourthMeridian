@@ -18,6 +18,13 @@
  */
 
 import { readFileSync } from 'fs';
+/**
+ * RLS-C-S3 — the paging authority now leads with its database client. This suite
+ * never reaches a database (the pager is a fake over a synthetic corpus), so the
+ * client is a stated placeholder. Required rather than optional is the point: the
+ * fakes had to DECLARE it, which is how the compiler enumerates them.
+ */
+const NO_DB = {} as never;
 import { join } from 'path';
 import { applyInvestmentScenario, SCENARIO_BASIS } from '@/lib/ai/conversation/scenario';
 import {
@@ -490,8 +497,12 @@ console.log('12. interactive operator mode');
     /openTranscript\(\{[^}]*arm: ARM[^}]*\}\)/.test(src) && !/buildEvidence\(/.test(src));
   // RLS slice A — the client is the first argument and the engine states it from
   // its own required parameter, so the authority is the caller's and never a default.
+  // RLS-C-S3 — there are now TWO stated authorities, in that order: the FINANCIAL
+  // read client and the memory client. Both come from required parameters on the
+  // engine's own signature, so neither is a default and the orientation cannot pick
+  // one for itself.
   check('evidence comes from buildEvidence, not a bespoke pack',
-    /buildEvidence\(args\.memoryClient, arm, ctx, spaceCtx\)/.test(eng));
+    /buildEvidence\(args\.readClient, args\.memoryClient, arm, ctx, spaceCtx\)/.test(eng));
   check('the tool surface is the shared one',
     /openAiToolSchemas\(\)/.test(eng) && !/openAiToolSchemas\(\)/.test(src));
   check('the instruction is the shared one — not a second prompt',
@@ -697,10 +708,13 @@ console.log('13g. corpus span — the result declares the boundary of its own au
   // escalating a windowed miss into an absence claim.
   check('every result carries coverage alongside window',
     /window: \{ from: a\.from \?\? null, to: dateTo \},\n[\s\S]{0,40}coverage,/.test(gt));
+  // RLS-C-S3 — one leading argument is the stated read authority. The CLAIMS are
+  // unchanged: the span still comes from the corpus authority, and still under this
+  // turn's ceiling.
   check('coverage is composed from the corpus authority, not computed here',
-    gt.includes('transactionCoverage({') && gt.includes('transactionCorpusSpan({'));
+    gt.includes('transactionCoverage({') && gt.includes('transactionCorpusSpan(ctx.readClient, {'));
   check('the corpus read inherits the information ceiling',
-    /transactionCorpusSpan\(\{ spaceId: ctx\.spaceId, asOf: ceiling \}\)/.test(gt));
+    /transactionCorpusSpan\(ctx\.readClient, \{ spaceId: ctx\.spaceId, asOf: ceiling \}\)/.test(gt));
   check('the searched window it reports is the one actually applied',
     /searchedFrom: \(a\.from as string\) \?\? null/.test(gt) && /searchedTo: dateTo/.test(gt));
 
@@ -848,7 +862,7 @@ console.log('13j. page coverage — a page is not the population');
   const gt = src.slice(src.indexOf("name: 'get_transactions'"), src.indexOf('// ── 4. Income'));
 
   check('the population SIZE is counted, not the rows exhausted',
-    /countTransactions\(\{ spaceId: ctx\.spaceId, query: filters \}\)/.test(gt)
+    /countTransactions\(ctx\.readClient, \{ spaceId: ctx\.spaceId, query: filters \}\)/.test(gt)
     && !/readWindowToExhaustion[\s\S]{0,80}wantLargest \? Promise/.test(gt));
   check('…and only on the paged path — sort:largest already reads the whole set',
     /wantLargest \? Promise\.resolve\(null\) : countTransactions/.test(gt));
@@ -951,7 +965,11 @@ console.log('14. complete-window ranking');
   /** A fake seam that hands out fixed-size pages and a strictly advancing cursor. */
   const pagerOf = (total: number) => {
     let calls = 0;
-    const read = (async (args: { query: { limit?: number; cursor?: { lastId: string } } }) => {
+    // RLS-C-S3 — the fake DECLARES the leading client the real pager requires. A
+    // cast-only fix would have typechecked while reading `query` off a database
+    // client at runtime.
+    const read = (async (_client: unknown,
+                         args: { query: { limit?: number; cursor?: { lastId: string } } }) => {
       calls++;
       const limit = args.query.limit ?? 100;
       const start = args.query.cursor ? Number(args.query.cursor.lastId.slice(1)) + 1 : 0;
@@ -962,40 +980,40 @@ console.log('14. complete-window ranking');
       return { rows, hasMore,
         nextCursor: hasMore && last ? { sort: 'newest', lastDate: last.date, lastId: last.id } : null,
         cursorReset: false };
-    }) as unknown as Parameters<typeof readWindowToExhaustion>[2];
+    }) as unknown as Parameters<typeof readWindowToExhaustion>[3];
     return { read, calls: () => calls };
   };
-  const q = { sort: 'newest' } as unknown as Parameters<typeof readWindowToExhaustion>[1];
+  const q = { sort: 'newest' } as unknown as Parameters<typeof readWindowToExhaustion>[2];
 
-  const one = await readWindowToExhaustion('s', q, pagerOf(40).read);
+  const one = await readWindowToExhaustion(NO_DB, 's', q, pagerOf(40).read);
   check('a window inside one page reads once and is complete',
     one.rows.length === 40 && one.pages === 1 && one.complete === true);
 
-  const two = await readWindowToExhaustion('s', q, pagerOf(173).read);
+  const two = await readWindowToExhaustion(NO_DB, 's', q, pagerOf(173).read);
   check('a 173-row window is read WHOLE, not to the first page',
     two.rows.length === 173 && two.complete === true && two.pages === 2);
 
-  const exact = await readWindowToExhaustion('s', q, pagerOf(100).read);
+  const exact = await readWindowToExhaustion(NO_DB, 's', q, pagerOf(100).read);
   check('a window exactly one page long does not lose its last row',
     exact.rows.length === 100 && exact.complete === true);
 
-  const big = await readWindowToExhaustion('s', q, pagerOf(3392).read);
+  const big = await readWindowToExhaustion(NO_DB, 's', q, pagerOf(3392).read);
   check('a multi-year window still completes', big.complete === true && big.rows.length === 3392);
 
   // The ceiling must FAIL LOUDLY. This is the property that stops "raise 100 to 500"
   // from being the fix: whatever the bound, reaching it is reported.
-  const over = await readWindowToExhaustion('s', q, pagerOf(TRANSACTION_FETCH_LIMIT + 500).read);
+  const over = await readWindowToExhaustion(NO_DB, 's', q, pagerOf(TRANSACTION_FETCH_LIMIT + 500).read);
   check('reaching the read ceiling reports incomplete, never silently truncates',
     over.complete === false && over.rows.length >= TRANSACTION_FETCH_LIMIT);
   check('…and the ceiling is the repository\'s own, shared with the assembler',
     TRANSACTION_FETCH_LIMIT === 5_000);
 
   // A seam that stops advancing would otherwise loop forever.
-  const stuck = (async () => ({
+  const stuck = (async (_client: unknown) => ({
     rows: [row(1)], hasMore: true,
     nextCursor: { sort: 'newest', lastDate: '2026-08-01', lastId: 't1' }, cursorReset: false,
-  })) as unknown as Parameters<typeof readWindowToExhaustion>[2];
-  const halted = await readWindowToExhaustion('s', q, stuck);
+  })) as unknown as Parameters<typeof readWindowToExhaustion>[3];
+  const halted = await readWindowToExhaustion(NO_DB, 's', q, stuck);
   check('a non-advancing cursor halts instead of looping',
     halted.complete === false && halted.pages <= 3);
 
@@ -1003,10 +1021,13 @@ console.log('14. complete-window ranking');
   // The two reads now run beside a population count in one `Promise.all`, so the
   // `await` moved off the ternary. The claim is unchanged: ranking exhausts, a
   // plain page reads ONE page.
+  // RLS-C-S3 — both reads now lead with `ctx.readClient`, the ONE authority the
+  // turn stated. The claim is unchanged, and the pin additionally proves the two
+  // reads share that authority rather than each resolving one.
   check('ranking uses the exhaustive read; a plain page does not',
-    /wantLargest\s*\n?\s*\? readWindowToExhaustion\(ctx\.spaceId, filters\)/.test(src)
-    && /queryTransactions\(\{ spaceId: ctx\.spaceId, query: \{ \.\.\.filters, limit \} \}\)/.test(src)
-    && (src.match(/readWindowToExhaustion\(ctx\.spaceId/g) ?? []).length === 1);
+    /wantLargest\s*\n?\s*\? readWindowToExhaustion\(ctx\.readClient, ctx\.spaceId, filters\)/.test(src)
+    && /queryTransactions\(ctx\.readClient, \{ spaceId: ctx\.spaceId, query: \{ \.\.\.filters, limit \} \}\)/.test(src)
+    && (src.match(/readWindowToExhaustion\(ctx\.readClient, ctx\.spaceId/g) ?? []).length === 1);
   check('…and the population size and completeness are always reported',
     /rankedOver: population\.length/.test(src) && /rankingIsComplete: complete/.test(src));
   check('…with a caveat only when it is genuinely incomplete',
@@ -1228,7 +1249,7 @@ console.log('16. as-of coherence');
   check('…and is applied to every windowed read',
     (src.match(/clampToCeiling\(/g) ?? []).length >= 3);
   check('the ceiling reaches the income CADENCE authority, not only the totals',
-    /loadForecastIncomeStreams\(ctx\.spaceId, ceiling\)/.test(src));
+    /loadForecastIncomeStreams\(ctx\.readClient, ctx\.spaceId, ceiling\)/.test(src));
   check('a retrospective projection starts from the balance that was true THEN',
     /openingBasis = 'HISTORICAL_SNAPSHOT'/.test(src)
       && /historicalSnapshot\(ctx, asOf\)/.test(src));

@@ -32,6 +32,7 @@
  */
 
 import type { Prisma, PrismaClient } from '@prisma/client';
+import type { ReadClient } from '@/lib/db/tenant-context';
 import { GENERATION_LEASE_MS } from './policy';
 import type { BriefRow } from './state';
 
@@ -99,10 +100,31 @@ export type BriefPlatformClient =
     $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T>;
   };
 
+/**
+ * ONE short READ, run under whatever authority the caller supplies.
+ *
+ * ⚠️ A SECOND RUNNER, NOT A WIDER `BriefDbClient` (RLS-C-S3). The `Pick` above is
+ * an invariant — those five members are everything a Brief PHASE can reach, and
+ * widening it would delete that statement. But the Brief also composes three
+ * CANONICAL READ LEAVES it does not own (the snapshot boundary, the banking
+ * population and the recent-activity pager), and those take a full `ReadClient`
+ * because they query tables a Brief phase has no business naming directly. So the
+ * authority arrives as a second, separately-named runner rather than by relaxing
+ * the first one.
+ *
+ * Same shape, same rule: ONE short operation per call. Never a model call inside.
+ */
+export type BriefReadPhase = <T>(fn: (client: ReadClient) => Promise<T>) => Promise<T>;
+
 /** Everything the Brief needs in order to reach a database, and nothing more. */
 export interface BriefRuntime {
   /** One short operation as the Brief's owner. */
   asOwner: BriefDbPhase;
+  /**
+   * RLS-C-S3 — one short read as the Brief's owner, through a canonical read leaf.
+   * Separate from `asOwner` so the narrow `BriefDbClient` stays narrow.
+   */
+  asOwnerReading: BriefReadPhase;
 }
 
 export interface BriefStore {

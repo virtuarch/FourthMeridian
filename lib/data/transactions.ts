@@ -35,6 +35,7 @@
  */
 
 import { db } from "@/lib/db";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import {
   Transaction,
@@ -130,16 +131,33 @@ export type TransactionListRow = Prisma.TransactionGetPayload<{
  * explorer authority produce byte-identical `Transaction` DTOs (no second builder).
  */
 /** Account id → type, for the page's rows only. Bounded by the page size. */
-async function loadAccountTypes(ids: (string | null)[]): Promise<Map<string, string>> {
+async function loadAccountTypes(
+  client: ReadClient, ids: (string | null)[],
+): Promise<Map<string, string>> {
   const unique = [...new Set(ids.filter((x): x is string => x != null))];
   if (unique.length === 0) return new Map();
-  const rows = await db.financialAccount.findMany({
+  const rows = await client.financialAccount.findMany({
     where: { id: { in: unique } }, select: { id: true, type: true },
   });
   return new Map(rows.map((a) => [a.id, a.type as string]));
 }
 
+/**
+ * RLS-C-S3 — `client` is REQUIRED and leading, because the DTO and the rows it
+ * projects must come from ONE authority. `queryTransactions` reads a page and then
+ * asks this function to finish it; if the page were read as the tenant and the
+ * account-type lookup as the migration principal, a row could be enriched by a
+ * fact the reader is not entitled to.
+ *
+ * ⚠️ IT DOES NOT REACH ALL THE WAY DOWN YET. `resolveTransferAssessments` still
+ * holds its own ambient client, and it is deliberately NOT converted here: it
+ * gathers CANDIDATE legs across the owning user's whole account graph and relies
+ * on the application's KD-15 gate downstream, so flipping its authority can change
+ * a counterparty VERDICT rather than only a row's visibility. That is its own
+ * slice; it is named in the follow-up list rather than done quietly.
+ */
 export async function projectTransactionListRows(
+  client: ReadClient,
   rows: TransactionListRow[],
   spaceId: string,
 ): Promise<Transaction[]> {
@@ -151,7 +169,7 @@ export async function projectTransactionListRows(
   // account's type (interest on a deposit account vs a credit on a liability),
   // and that is not a Transaction column. One bounded lookup over the page's
   // distinct account ids, rather than a join on every list read.
-  const accountTypeById = await loadAccountTypes(rows.map((r) => r.financialAccountId));
+  const accountTypeById = await loadAccountTypes(client, rows.map((r) => r.financialAccountId));
   return rows.map((r) => ({
     ...serializeTransactionRow({
       ...r,
@@ -244,7 +262,10 @@ export async function getTransactions(
   // TI4 Slice 1 + TI-1 — read-time owned-account transfer match (KD-15-gated) →
   // canonical serialization → CF-1 context → provenance source. Shared projection
   // so the keyset explorer authority (transaction-query.ts) can never diverge.
-  const rows = await projectTransactionListRows(capped, spaceId);
+  // RLS-C-S3 — `getTransactions` is NOT converted in this slice (its own read
+  // above is still the ambient one), so it passes the client it already holds.
+  // Stated at the call site rather than resolved inside the projection.
+  const rows = await projectTransactionListRows(db, capped, spaceId);
   return { rows, truncated, limit, windowDays };
 }
 

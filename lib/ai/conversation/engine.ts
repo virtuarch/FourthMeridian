@@ -29,6 +29,7 @@ import {
   assembleFullContext, buildEvidence, ARM_USES_TOOLS, type Arm, type EvidencePack,
 } from './evidence';
 import { openAiToolSchemas, type ToolContext } from './tools';
+import type { ReadClient } from '@/lib/db/tenant-context';
 import type { MemoryClient } from './memory-store';
 import { executeTurn, supportsTools, SYSTEM_INSTRUCTION, type TurnRecord } from './turn';
 import { newScenarioSlot, type ScenarioSlot, type ActiveScenario } from './active-scenario';
@@ -107,6 +108,17 @@ export async function openTranscript(args: {
    * individual memory operation, not around the turn.
    */
   memoryClient: MemoryClient;
+  /**
+   * RLS-C-S3 — the authority this conversation's FINANCIAL reads run under, stated
+   * by the same boundary that states the memory authority, and for the same reason:
+   * a transcript is opened by something that knows who the user is.
+   *
+   * ⚠️ A LONG-LIVED CLIENT, NOT A TRANSACTION, for the reason recorded above: a
+   * turn makes model calls and `withTenantDb` must never be held across one. On
+   * this path it is the migration principal today — see `ToolContext.readClient`
+   * for why that is a recorded decision and not an oversight.
+   */
+  readClient: ReadClient;
   /** FM-AUDIT-019 — true ONLY for the product route or a clone-verified harness opt-in. */
   memoryWrites?: boolean;
 }): Promise<OpenTranscript> {
@@ -114,13 +126,13 @@ export async function openTranscript(args: {
   const arm = args.arm ?? CHAT_ARM;
 
   const ctx = await assembleFullContext(spaceCtx, agentId);
-  const evidence = await buildEvidence(args.memoryClient, arm, ctx, spaceCtx);
+  const evidence = await buildEvidence(args.readClient, args.memoryClient, arm, ctx, spaceCtx);
 
   const usesTools = ARM_USES_TOOLS[arm] && supportsTools(model);
   const toolSchemas = usesTools ? openAiToolSchemas() : [];
   // FM-AUDIT-019 — durable memory writes are off unless the caller says otherwise.
   const toolCtx: ToolContext = { spaceCtx, spaceId: spaceCtx.spaceId, asOfISO,
-    memoryClient: args.memoryClient,
+    memoryClient: args.memoryClient, readClient: args.readClient,
     ...(args.memoryWrites === true ? { memoryWrites: true } : {}) };
 
   const messages: unknown[] = [
@@ -213,6 +225,8 @@ export async function runStatelessTurn(args: {
   surface?:  string;
   /** RLS slice A — the authority this turn's memory reads and writes run under. */
   memoryClient: MemoryClient;
+  /** RLS-C-S3 — the authority this turn's FINANCIAL reads run under. */
+  readClient: ReadClient;
   /** FM-AUDIT-019 — true ONLY for the product route or a clone-verified harness opt-in. */
   memoryWrites?: boolean;
 }): Promise<StatelessTurn> {
@@ -221,7 +235,8 @@ export async function runStatelessTurn(args: {
 
   const open = await openTranscript({
     spaceCtx: args.spaceCtx, agentId: args.agentId, asOfISO, model,
-    memoryClient: args.memoryClient, memoryWrites: args.memoryWrites });
+    memoryClient: args.memoryClient, readClient: args.readClient,
+    memoryWrites: args.memoryWrites });
   replayHistory(open.messages, args.history);
 
   // ⚠️ A SLOT PER REQUEST, RESTORED — NOT A SLOT THAT LIVES ON THE SERVER. The

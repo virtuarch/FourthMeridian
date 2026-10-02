@@ -35,6 +35,7 @@
  */
 
 import type { Transaction } from '@/types';
+import type { ReadClient } from '@/lib/db/tenant-context';
 import { accountTier } from '@/lib/account-classifier';
 import type { BriefAccountClass, BriefActivityRow, BriefRecentActivity } from './types';
 
@@ -113,23 +114,31 @@ export function projectRecentActivity(
   };
 }
 
-/** The read, injectable — the same idiom `readWindowToExhaustion` itself uses. */
+/**
+ * The read, injectable — the same idiom `readWindowToExhaustion` itself uses.
+ *
+ * RLS-C-S3 — and it carries the AUTHORITY now, leading and required, because the
+ * paging authority it wraps does. The seam is unchanged for a test; what it can no
+ * longer do is reach a client of its own.
+ */
 export type RecentWindowReader = (
+  client: ReadClient,
   spaceId: string, query: { sort: 'newest'; dateFrom: string; dateTo: string },
 ) => Promise<{ rows: Transaction[]; complete: boolean }>;
 
-const defaultReader: RecentWindowReader = async (spaceId, query) => {
+const defaultReader: RecentWindowReader = async (client, spaceId, query) => {
   const { readWindowToExhaustion } = await import('@/lib/ai/conversation/tools');
-  return readWindowToExhaustion(spaceId, query);
+  return readWindowToExhaustion(client, spaceId, query);
 };
 
 /** Read and rank the seven days ending on `asOf`. `asOf` is the ceiling. */
 export async function loadRecentActivity(
+  client: ReadClient,
   spaceId: string, asOf: string, read: RecentWindowReader = defaultReader,
   accountTypeOf?: AccountTypeLookup,
 ): Promise<BriefRecentActivity> {
   const window = recentActivityWindow(asOf);
-  const { rows, complete } = await read(spaceId, {
+  const { rows, complete } = await read(client, spaceId, {
     sort: 'newest', dateFrom: window.from, dateTo: window.to,
   });
   return projectRecentActivity(rows, window, complete, accountTypeOf);

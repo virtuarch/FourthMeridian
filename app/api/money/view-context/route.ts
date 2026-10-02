@@ -90,7 +90,10 @@ export async function GET(req: NextRequest) {
     // v2.6-WINDOW-2 — the same ROW cap the Overview chart reads
     // (app/api/spaces/[id]/snapshots), so the two enumerate the same dates. The
     // comment here used to say "365-day window"; it was 365 rows then too.
-    getRecentSnapshots({ rows: 365 }, { spaceId: ctx.spaceId }),
+    // RLS-C-S3 — the snapshot read joins the account read on the tenant role, in
+    // its OWN short transaction for the reason above: the two groupBy aggregates
+    // between them are leaves this slice does not own.
+    withTenantDb(ctx.userId, (tx) => getRecentSnapshots(tx, { rows: 365 }, { spaceId: ctx.spaceId })),
   ]);
 
   // Same input coverage as before — balances at the latest close, the distinct

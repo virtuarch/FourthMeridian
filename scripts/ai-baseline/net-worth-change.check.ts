@@ -42,7 +42,7 @@ async function main(){
   const owner=await db.spaceMember.findFirstOrThrow({where:{spaceId:SPACE,role:'OWNER',status:'ACTIVE'}});
   const mk=(asOf:string):ToolContext=>({spaceId:SPACE,asOfISO:asOf,spaceCtx:{userId:owner.userId,spaceId:SPACE,role:'OWNER',
     permissions:{canInvite:true,canManage:true,canWrite:true,canRead:true,isOwner:true},
-    space:{id:space.id,name:space.name,type:space.type,category:space.category,isPublic:space.isPublic,reportingCurrency:space.reportingCurrency}} as unknown as SpaceContext,memoryClient:db});
+    space:{id:space.id,name:space.name,type:space.type,category:space.category,isPublic:space.isPublic,reportingCurrency:space.reportingCurrency}} as unknown as SpaceContext,memoryClient:db,readClient:db});
   type Pt = Record<string, number | null | string>;
   type Chg = { between:{from:string;to:string} } & Record<string, {from:number;to:number;abs:number;pct:number|null}>;
   type Hist = { first: Pt; last: Pt; change: Chg | null };

@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   const { emptyPlan } = await import('./pending-plan');
   const readsPlain = await fixtureReads(false);
   const readsDebt = await fixtureReads(true);
-  const ctx = (reads: CashSpineReads): ToolContext => ({ asOfISO: ASOF, spaceId: 'spc', spaceCtx: {} as never, memoryClient: {} as never, cashSpineReads: reads,
+  const ctx = (reads: CashSpineReads): ToolContext => ({ asOfISO: ASOF, spaceId: 'spc', spaceCtx: {} as never, memoryClient: {} as never, readClient: {} as never, cashSpineReads: reads,
     plan: { pending: emptyPlan(), scenarioRan: false } });
   const run = async (tool: string, args: Rec, reads = readsPlain): Promise<Rec> => (await findTool(tool)!.run(args, ctx(reads))) as Rec;
   const end = (r: Rec) => (r.checkpoints as Rec[]).find((c) => c.date === HORIZON)!;

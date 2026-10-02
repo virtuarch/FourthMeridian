@@ -161,7 +161,13 @@ console.log("1b. one conversation, one active Space");
   check("…and hands the client its id and name", /spaceId=\{ctx\.spaceId\}/.test(page) && /spaceName=\{ctx\.space\.name\}/.test(page));
   check("a different Space remounts the client (new chat)", /key=\{ctx\.spaceId\}/.test(page));
   check("the client posts exactly that id", /body: JSON\.stringify\(\{\s*spaceId,/.test(client));
-  check("advice is read for the same Space", /getLatestAdvice\(\{ spaceId: ctx\.spaceId \}\)/.test(page));
+  // RLS-C-S3 — one leading identifier: the advice read takes its database
+  // authority first. The SPACE claim is unchanged, and the tenant wrapper is
+  // pinned on the line below.
+  check("advice is read for the same Space",
+    /getLatestAdvice\([A-Za-z_$][\w$]*, \{ spaceId: ctx\.spaceId \}\)/.test(page));
+  check("…and it runs AS the session's user, not on the migration principal",
+    /withTenantDb\(ctx\.userId, \(tx\) => getLatestAdvice\(tx,/.test(page));
   check("memory is read scoped to this Space AND this user",
     /recallMemories\(\s*tx,\s*\{ spaceId: ctx\.spaceId, ownerUserId: ctx\.userId \}/.test(page));
   // RLS slice A — and it runs AS that user: the read is wrapped in the tenant

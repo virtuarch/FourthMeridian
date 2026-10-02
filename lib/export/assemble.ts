@@ -156,7 +156,12 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
       spaceId,
     }));
 
-    const spaceSnapshots = await getRecentSnapshots({ rows: ALL_SNAPSHOTS }, { spaceId });
+    // RLS-C-S3 — still UNRESOLVED, for the reason S2 recorded about this file: the
+    // export walks every Space the user belongs to plus a per-user decrypt, and one
+    // transaction around that is the thing `withTenantDb` must not be. It needs a
+    // per-Space phase split. The client is passed EXPLICITLY so the authority is
+    // readable here instead of resolved inside the leaf.
+    const spaceSnapshots = await getRecentSnapshots(db, { rows: ALL_SNAPSHOTS }, { spaceId });
     for (const s of spaceSnapshots) snapshots.push({ ...s, spaceId, spaceName });
 
     // W2 — the per-Space goal export block (SpaceGoal + contributions +

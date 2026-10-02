@@ -37,12 +37,21 @@ import { accountHoldingNodes, accountScopeForDate } from "./holding-series";
 import type {
   HistoricalAccountNode, HistoricalBucketNode, HistoricalNode,
 } from "./historical-node.core";
-import type { Prisma, PrismaClient } from "@prisma/client";
+import type { ReadClient } from "@/lib/db/tenant-context";
 
 export interface ExpandBucketArgs {
   spaceId: string;
   bucket:  HistoricalBucketNode;
-  client?: PrismaClient | Prisma.TransactionClient;
+  /**
+   * RLS-C-S3 — REQUIRED. It was `client?: PrismaClient | Prisma.TransactionClient`,
+   * and the sole production caller (`resolveExplorationNode`) never passed one, so
+   * every expansion fell through to `account-series`' own ambient `?? db`. An
+   * optional authority is an ambient authority, and the union additionally threw
+   * away the property that makes `ReadClient` worth having: it has no
+   * `$transaction`, so nothing below this point can open one and the phase boundary
+   * stays with whoever opened it.
+   */
+  client:  ReadClient;
 }
 
 /**
@@ -122,7 +131,7 @@ export async function expandBucketNode(args: ExpandBucketArgs): Promise<Historic
 export async function expandBuckets(
   spaceId: string,
   buckets: readonly HistoricalNode[],
-  client?: PrismaClient | Prisma.TransactionClient,
+  client: ReadClient,
 ): Promise<HistoricalNode[]> {
   return Promise.all(
     buckets.map(async (b) =>
@@ -147,7 +156,8 @@ export type { HistoricalAccountNode };
 export async function expandAccountNode(args: {
   spaceId: string;
   account: HistoricalAccountNode;
-  client?: PrismaClient | Prisma.TransactionClient;
+  /** RLS-C-S3 — REQUIRED, for the reason recorded on `ExpandBucketArgs`. */
+  client:  ReadClient;
 }): Promise<HistoricalAccountNode> {
   const { account } = args;
   if (!account.drilldown.available || !account.assertable || account.displayedValue == null) {

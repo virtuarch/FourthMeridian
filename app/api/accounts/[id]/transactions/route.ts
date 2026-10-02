@@ -46,12 +46,13 @@ import {
   parseTransactionQueryParams,
   encodeCursor,
 } from "@/lib/data/transaction-query";
+import { withTenantDb } from "@/lib/db/tenant-context";
 
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const [, authErr] = await requireUser();
+  const [user, authErr] = await requireUser();
   if (authErr) return authErr;
 
   const { id } = await params;
@@ -81,14 +82,22 @@ export async function GET(
     return NextResponse.json({ error: "Invalid query", details: parsed.errors }, { status: 400 });
   }
 
-  const { rows, nextCursor, hasMore, cursorReset } = await queryTransactions({
-    spaceId,
-    // `accountIds` is FORCED to this route's account and is written LAST so a
-    // caller-supplied `?accountIds=` can never widen the query to another account.
-    // (queryTransactions would intersect it with the visible set anyway; this makes
-    // the route's own scope non-negotiable rather than merely safe.)
-    query: { ...parsed.query, accountIds: [id] },
-  });
+  // RLS-C-S3 — ONE short transaction on the tenant role. The identity is the
+  // authenticated session's user (requireUser above), never the account id in the
+  // path and never the active-Space cookie. The KD-15 tier check above stays where
+  // it is: it answers a question the policies do not — a FULL/BALANCE_ONLY
+  // DISTINCTION — and `fm_account_visible` admits every ACTIVE link regardless of
+  // tier, so the application rule is strictly narrower here, not redundant.
+  const { rows, nextCursor, hasMore, cursorReset } = await withTenantDb(
+    user.id, (tx) => queryTransactions(tx, {
+      spaceId,
+      // `accountIds` is FORCED to this route's account and is written LAST so a
+      // caller-supplied `?accountIds=` can never widen the query to another account.
+      // (queryTransactions would intersect it with the visible set anyway; this makes
+      // the route's own scope non-negotiable rather than merely safe.)
+      query: { ...parsed.query, accountIds: [id] },
+    }),
+  );
 
   return NextResponse.json({
     transactions: rows,

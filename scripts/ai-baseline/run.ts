@@ -85,7 +85,7 @@ export async function runCase(args: {
   // a recorded run and a user's conversation begin identically.
   const { messages: opened, evidence, toolSchemas, toolCtx, usesTools: useTools } =
     await openTranscript({ spaceCtx, agentId, asOfISO, model, arm,
-      memoryClient: db, memoryWrites: args.memoryWrites === true });
+      memoryClient: db, readClient: db, memoryWrites: args.memoryWrites === true });
   let messages: unknown[] = opened;
 
   const turns: TurnRecord[] = [];

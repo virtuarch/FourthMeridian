@@ -38,7 +38,7 @@
  */
 
 import { queryTransactions } from '@/lib/data/transaction-query';
-import { db } from '@/lib/db';
+import type { ReadClient } from '@/lib/db/tenant-context';
 import { MAX_TRANSACTION_PAGE_SIZE } from '@/lib/data/transaction-query-core';
 import { normalizeMerchant } from '@/lib/transactions/merchant';
 import { deriveCadence, isCadence, type CadenceResult } from '@/lib/forecast/cadence';
@@ -93,6 +93,12 @@ export interface ResolvedIncomeStream {
  * satisfy a contract the real read authority does not, which is the fidelity
  * gap this seam exists to close. Widening `queryTransactions` breaks the fakes,
  * which is the correct direction for the failure to travel.
+ *
+ * ⚠️ RLS-C-S3 — AND SO THE SEAM NOW CARRIES THE AUTHORITY TOO. `queryTransactions`
+ * takes its client as a required leading parameter, so every fake does as well.
+ * That is the point of binding the type to the real function rather than to a
+ * hand-written shape: the authority could not be dropped from the seam without the
+ * compiler saying so.
  */
 export type IncomeTransactionReader = typeof queryTransactions;
 
@@ -115,14 +121,29 @@ const shift = (iso: string, n: number) =>
  * it would silently exercise the fail-closed branch instead of the real one.
  */
 export type AccountTypeReader = (accountIds: string[]) => Promise<{ id: string; type: string }[]>;
-const dbAccountTypes: AccountTypeReader = (accountIds) =>
-  db.financialAccount.findMany({ where: { id: { in: accountIds } }, select: { id: true, type: true } });
+/**
+ * RLS-C-S3 — the production account-type reader is now a FACTORY over the client
+ * this loader was handed, not a closure over an imported global. The seam is
+ * unchanged for a test; what changed is that its production default can no longer
+ * reach a different authority than the page read beside it.
+ */
+const accountTypesVia = (client: ReadClient): AccountTypeReader => (accountIds) =>
+  client.financialAccount.findMany({ where: { id: { in: accountIds } }, select: { id: true, type: true } });
 
+/**
+ * RLS-C-S3 — `client` is REQUIRED and leading. Both production defaults below are
+ * derived FROM it (a default parameter may reference an earlier one), so the two
+ * reads this loader makes cannot end up on two authorities — which is exactly what
+ * happened before: the page went through `queryTransactions`' ambient client and
+ * the account-type probe through this module's own import of the same global, and
+ * neither call site said so.
+ */
 export async function loadForecastIncomeStreams(
+  client: ReadClient,
   spaceId: string, asOfISO: string, read: IncomeTransactionReader = queryTransactions,
-  accountTypes: AccountTypeReader = dbAccountTypes,
+  accountTypes: AccountTypeReader = accountTypesVia(client),
 ): Promise<ResolvedIncomeStream[]> {
-  const page = await read({
+  const page = await read(client, {
     spaceId,
     query: {
       dateFrom: shift(asOfISO, -LOOKBACK_DAYS),

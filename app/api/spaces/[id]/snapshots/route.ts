@@ -19,6 +19,7 @@ import { SpaceMemberRole, ShareStatus, PlaidItemStatus } from "@prisma/client";
 import { requireSpaceRole }          from "@/lib/session";
 import { getRecentSnapshots }        from "@/lib/data/snapshots";
 import { db }                        from "@/lib/db";
+import { withTenantDb }              from "@/lib/db/tenant-context";
 
 /**
  * How many trailing SpaceSnapshot ROWS the hero reads.
@@ -35,13 +36,21 @@ export async function GET(
 ) {
   const { id: spaceId } = await params;
 
-  const [, err] = await requireSpaceRole(spaceId, SpaceMemberRole.VIEWER);
+  const [ctx, err] = await requireSpaceRole(spaceId, SpaceMemberRole.VIEWER);
   if (err) return err;
 
   // v2.6-WINDOW-2 — a ROW cap, stated as one. `@@unique([spaceId, date])` means
   // at most one row per day, so 365 rows always cover at least 365 days: a
   // conservative over-cover for every hero window, and the client filters further.
-  const snapshots = await getRecentSnapshots({ rows: HERO_HISTORY_ROWS }, { spaceId });
+  //
+  // RLS-C-S3 — and it runs as the TENANT, in its own short transaction, with the
+  // identity taken from the authenticated requester (requireSpaceRole above). Only
+  // the snapshot read is wrapped: the backfill probe below reads PlaidItem, a leaf
+  // this slice does not own, and a transaction around both would be a boundary
+  // over a read still executing on another authority.
+  const snapshots = await withTenantDb(
+    ctx.user.id, (tx) => getRecentSnapshots(tx, { rows: HERO_HISTORY_ROWS }, { spaceId }),
+  );
 
   // Part-6 — per-Space "a backfill is actively running" signal, derived from the
   // SAME PlaidItem.syncIncompleteAt truth the Connections/sync-status subsystem

@@ -76,10 +76,25 @@ export interface BriefLoadDeps {
  * health read runs deployment-wide, for the reason recorded on
  * the tenant phase runner (RLS-12 granted fm_app SELECT on PlatformSetting).
  *
- * The assemblers, the snapshot read and the population read still reach the
- * database through their own modules. They are not converted in this slice, and
- * pretending otherwise by wrapping them in a tenant transaction would hold one
- * open across eight heavy reads for no isolation gain.
+ * RLS-C-S3 — THE SNAPSHOT READ, THE POPULATION READ AND THE RECENT-ACTIVITY PAGER
+ * NOW TAKE A CLIENT, and each becomes its OWN `asOwnerReading` phase (a separate
+ * runner from `asOwner`, because `BriefDbClient` is a deliberate `Pick` and a
+ * canonical read leaf needs a full read client — see store.ts). The warning above still stands and is why
+ * they are two phases and not one: a single transaction wrapped around the whole
+ * package would span the model call `ensureDailyBrief` makes. Each of these is one
+ * bounded read — a row window and an indexed groupBy — so a phase per read costs a
+ * transaction and buys the Brief the same authority its memory recall and its
+ * per-source health read already run under.
+ *
+ * ⚠️ AND THE BRIEF IS THE RIGHT PLACE FOR THAT, because a Brief is already
+ * per-(Space, OWNER): `recall` and `dataHealth` are viewer-scoped reads, so a
+ * viewer-scoped banking population is the consistent choice, not a new one. Every
+ * account `bankingTransactionWhere(spaceId)` admits is ACTIVE-linked into a Space
+ * the owner is an ACTIVE member of, so `fm_account_visible` admits it too and the
+ * population is unchanged — by construction, not by luck.
+ *
+ * The assemblers still reach the database through their own modules and are not
+ * converted here.
  */
 async function defaultDeps(rt: BriefRuntime): Promise<BriefLoadDeps> {
   await import('@/lib/ai/assemblers'); // registers every assembler
@@ -95,15 +110,18 @@ async function defaultDeps(rt: BriefRuntime): Promise<BriefLoadDeps> {
       const assembler = getAssembler(domain);
       return assembler ? (await assembler(spaceCtx, options as never)) ?? null : null;
     },
-    readSnapshots: (spaceId) => getRecentSnapshots({ rows: SNAPSHOT_READ_ROWS }, { spaceId }),
+    readSnapshots: (spaceId) =>
+      rt.asOwnerReading((c) => getRecentSnapshots(c, { rows: SNAPSHOT_READ_ROWS }, { spaceId })),
     projectSnapshots: (rows) => projectSnapshotSection(rows, 'full'),
     recall: (scope) => rt.asOwner((c) => recallMemories(c, scope, { limit: 50 })),
-    recentActivity: (spaceId, asOf, accountTypeOf) => loadRecentActivity(spaceId, asOf, undefined, accountTypeOf),
+    recentActivity: (spaceId, asOf, accountTypeOf) =>
+      rt.asOwnerReading((c) => loadRecentActivity(c, spaceId, asOf, undefined, accountTypeOf)),
     assess: computeAssessment,
     dataHealth: (spaceId, viewerUserId, now, bankingAccountIds) =>
       rt.asOwner((c) => loadSpaceDataHealth(c, { spaceId, viewerUserId, now, bankingAccountIds })),
     bankingPopulation: async (spaceId, asOf) =>
-      (await transactionAccountPopulation({ spaceId, asOf })).filter((p) => p.rows > 0).map((p) => p.accountId),
+      (await rt.asOwnerReading((c) => transactionAccountPopulation(c, { spaceId, asOf })))
+        .filter((p) => p.rows > 0).map((p) => p.accountId),
   };
 }
 

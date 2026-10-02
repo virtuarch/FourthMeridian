@@ -43,6 +43,7 @@ import type { SpaceContext } from '@/lib/space';
 import { recallMemories, MemoryKind, type MemoryClient } from './memory-store';
 import { composeMemoryLine, MEMORY_LINE_RULES } from './memory-model';
 import { transactionCorpusSpan } from '@/lib/data/transaction-query';
+import type { ReadClient } from '@/lib/db/tenant-context';
 import { todayUTCISO } from '@/lib/time/clock';
 import {
   resolveActivityWindow, projectActivityFrame, type ActivityFrame,
@@ -123,7 +124,7 @@ function assessmentCeiling(ctx: SpaceContext_AI): string {
  * the number to go stale.
  */
 async function buildActivityFrame(
-  ctx: SpaceContext_AI, spaceCtx: SpaceContext, asOf: string,
+  readClient: ReadClient, ctx: SpaceContext_AI, spaceCtx: SpaceContext, asOf: string,
 ): Promise<ActivityFrame | null> {
   const txn = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY]?.data as
     TransactionsSummaryData | undefined;
@@ -131,7 +132,7 @@ async function buildActivityFrame(
 
   // 55a2c22 — the corpus bound taken UNDER the ceiling, so a retrospective
   // orientation cannot learn from the frame's existence that later history runs on.
-  const { from: coverageFrom } = await transactionCorpusSpan({ spaceId: spaceCtx.spaceId, asOf });
+  const { from: coverageFrom } = await transactionCorpusSpan(readClient, { spaceId: spaceCtx.spaceId, asOf });
   const window = resolveActivityWindow({
     asOf, coverageFrom, assessmentWindowDays: txn.windowDays,
   });
@@ -271,12 +272,20 @@ async function memoryLine(
 /**
  * Build the evidence for one arm.
  *
- * ⚠️ THE CLIENT IS THE FIRST ARGUMENT AND IT IS REQUIRED (RLS slice A). The only
- * database read this function owns is the memory line, and the authority it runs
- * under is the caller's to state — there is no module-level client here to fall
- * back to, so a call site that forgot would not compile.
+ * ⚠️ THE CLIENTS ARE THE FIRST ARGUMENTS AND BOTH ARE REQUIRED. Slice A made the
+ * MEMORY authority explicit; RLS-C-S3 does the same for the FINANCIAL reads this
+ * orientation now owns — the corpus span behind the activity frame and the coverage
+ * census. There is no module-level client here to fall back to, so a call site that
+ * forgot either would not compile.
+ *
+ * ⚠️ `readClient` IS THE MIGRATION PRINCIPAL ON THIS PATH, DELIBERATELY. Both
+ * figures it reaches are ABSENCE claims the orientation hands to a model in English,
+ * and under a tenant client an empty corpus span is indistinguishable from a
+ * refusal. See docs/plans/RLS-SILENT-REFUSAL-CAS.md Part 2; the authority moves
+ * when that contract exists, not before.
  */
 export async function buildEvidence(
+  readClient: ReadClient,
   memoryClient: MemoryClient,
   arm: Arm, ctx: SpaceContext_AI, spaceCtx: SpaceContext,
   /**
@@ -297,9 +306,9 @@ export async function buildEvidence(
 
   if (arm === 'A2') {
     const [envelope, memory, activity] = await Promise.all([
-      loadCoverageEnvelope(spaceId),
+      loadCoverageEnvelope(spaceId, { client: readClient }),
       memoryLine(memoryClient, spaceId, ctx.userId, asOf),
-      buildActivityFrame(ctx, spaceCtx, asOf),
+      buildActivityFrame(readClient, ctx, spaceCtx, asOf),
     ]);
     const body = JSON.stringify(
       { ...thinCore(ctx, activity), evidenceCoverage: envelope, memory }, null, 1);

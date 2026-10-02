@@ -29,6 +29,17 @@
  * runs its row read and its watermark CONCURRENTLY and a single transaction would
  * serialise them.
  *
+ * ⚠️ RLS-C-S3 — AND NOW THE THREE CANONICAL READ LEAVES TOO. The snapshot
+ * boundary, the banking-population authority and the recent-activity pager all take
+ * a client as of this slice, and each becomes its own `asOwnerReading` phase — the
+ * same per-phase rule, through a separate runner because `BriefDbClient` is a
+ * deliberate `Pick` and those leaves need a full read client. A Brief is already
+ * per-(Space, OWNER) — `recall` and the per-source health read are viewer-scoped —
+ * so a viewer-scoped history and population is the CONSISTENT choice here, not a
+ * new one. Every account `bankingTransactionWhere(spaceId)` admits is ACTIVE-linked
+ * into a Space the owner is an ACTIVE member of, so `fm_account_visible` admits it
+ * too and the population is unchanged by construction.
+ *
  * ⚠️ TWO READS STAY DEPLOYMENT-WIDE, ON PURPOSE AND IN ONE PLACE. The source
  * watermark and the per-source health read both hash `PlatformSetting`, which the
  * RLS migration revokes from fm_app outright; see `BriefPlatformClient` in store.ts
@@ -56,6 +67,9 @@ import { responseFromEnsure, responseFromInspection } from './view-model';
 export function briefRuntimeFor(userId: string): BriefRuntime {
   return {
     asOwner: (fn) => withTenantDb(userId, (tx) => fn(tx)),
+    // RLS-C-S3 — the same boundary, the same identity, a wider client. One short
+    // read per call; never a model call inside one.
+    asOwnerReading: (fn) => withTenantDb(userId, (tx) => fn(tx)),
   };
 }
 
@@ -66,10 +80,19 @@ async function resolveNamedSpace(userId: string, spaceId: string): Promise<Space
   return ctx.spaceId === spaceId ? ctx : null;
 }
 
-/** The metric row, from the Space's snapshot series. Null when there is no admissible figure. */
-async function loadMetrics(spaceId: string): Promise<BriefMetricsView | null> {
+/**
+ * The metric row, from the Space's snapshot series. Null when there is no admissible figure.
+ *
+ * RLS-C-S3 — ONE short phase on the tenant role, exactly like `loadDataHealth`
+ * below. The Space has already been re-resolved for this user
+ * (`resolveNamedSpace`), so `fm_visible_space_ids()` admits it and the policy and
+ * the application scope agree. A single aggregate: no model call, nothing to hold
+ * a transaction across.
+ */
+async function loadMetrics(userId: string, spaceId: string): Promise<BriefMetricsView | null> {
   try {
-    const s = (await getSpaceNetWorthSummaries([spaceId]))[spaceId];
+    const s = (await withTenantDb(userId,
+      (tx) => getSpaceNetWorthSummaries(tx, [spaceId])))[spaceId];
     if (!s || !s.asOf) return null;
     return {
       // The summary stamps the point's instant; the contract promises its day
@@ -112,7 +135,7 @@ export async function readBriefResponse(
     inspectDailyBrief({ spaceId, ownerUserId: userId },
       { now, runtime: briefRuntimeFor(userId),
         deps: { ...options.deps, resolveSpace: async () => spaceCtx } }),
-    loadMetrics(spaceId),
+    loadMetrics(userId, spaceId),
     loadDataHealth(spaceId, userId, now),
   ]);
   return { ok: true, body: responseFromInspection({ spaceId, inspection, now, metrics, dataHealth }) };

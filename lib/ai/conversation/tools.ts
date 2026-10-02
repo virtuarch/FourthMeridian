@@ -112,6 +112,13 @@ import type { TurnEvidence } from './memory-model';
 // the write half lives in the turn loop (slice 7) and in `remember`. This file
 // still holds no Prisma client, which a test asserts.
 import { recallMemories, MemoryKind, type MemoryClient } from './memory-store';
+/**
+ * RLS-C-S3 — a TYPE-ONLY import. This file still holds no Prisma client (the
+ * source scan in lib/ai/measures/measures.test.ts and its siblings depend on that),
+ * and `import type` erases at compile, so the authority arrives on `ToolContext`
+ * and nowhere else.
+ */
+import type { ReadClient } from '@/lib/db/tenant-context';
 import {
   readCheckpoint, compareToStatement, diffBasis,
 } from './reconcile';
@@ -169,6 +176,29 @@ export interface ToolContext {
    * cannot be used to reach a financial table from here even by accident.
    */
   memoryClient: MemoryClient;
+  /**
+   * RLS-C-S3 — THE DATABASE AUTHORITY EVERY FINANCIAL READ IN THIS FILE RUNS
+   * UNDER, stated by whoever opened the transcript.
+   *
+   * ⚠️ REQUIRED, AND DELIBERATELY NOT DEFAULTED, for the same reason
+   * `memoryClient` is: this file holds no Prisma client of its own (a source scan
+   * asserts it), so a context that omitted this would have nothing to fall back
+   * on — and TypeScript names the callers that forget.
+   *
+   * ⚠️ IT IS THE MIGRATION PRINCIPAL TODAY, ON PURPOSE AND NOT BY OVERSIGHT. The
+   * twenty tools below read ten tables, every one of which is granted to `fm_app`,
+   * so an RLS refusal on this surface cannot fail loudly: it arrives as an EMPTY
+   * SET, and this surface turns empty sets into declarative English for a model
+   * ("no dated transactions are available for this Space"). Flipping the authority
+   * before an absence contract exists would convert a refusal into a confident
+   * false statement to the user. Separately, a chat turn makes up to six model
+   * calls, so a tenant transaction cannot span one. The MECHANISM is in place; the
+   * authority moves in a later slice. See docs/plans/RLS-SILENT-REFUSAL-CAS.md.
+   *
+   * Narrower than `memoryClient` in intent and wider in type: `ReadClient` has no
+   * `$transaction`, so no tool can open a transaction of its own.
+   */
+  readClient: ReadClient;
   /** Test seam only — see CashSpineReads. Unset in production. */
   cashSpineReads?: CashSpineReads;
   /**
@@ -253,6 +283,8 @@ const MAX_DAILY_POINTS = 200;
 export type TransactionPager = typeof queryTransactions;
 
 export async function readWindowToExhaustion(
+  /** RLS-C-S3 — the authority every page of the walk runs on. Required, leading. */
+  client: ReadClient,
   spaceId: string, query: Omit<TransactionQuery, 'cursor' | 'limit'>,
   read: TransactionPager = queryTransactions,
 ): Promise<{ rows: Transaction[]; complete: boolean; pages: number }> {
@@ -261,7 +293,7 @@ export async function readWindowToExhaustion(
   let pages = 0;
 
   for (;;) {
-    const page = await read({
+    const page = await read(client, {
       spaceId, query: { ...query, limit: MAX_TRANSACTION_PAGE_SIZE, ...(cursor ? { cursor } : {}) },
     });
     pages++;
@@ -324,7 +356,7 @@ async function assemble<T>(
  * be reported side by side without one being mistaken for another.
  */
 async function historicalSnapshot(ctx: ToolContext, asOf: string) {
-  const rows = await getRecentSnapshots({ rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
+  const rows = await getRecentSnapshots(ctx.readClient, { rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
   const section = projectSnapshotSection(rows as Snapshot[], 'full');
   if (!section) return { unavailable: 'no usable snapshot history for this Space' };
 
@@ -337,7 +369,7 @@ async function historicalSnapshot(ctx: ToolContext, asOf: string) {
   }
 
   const BUCKETS = ['cash', 'savings', 'investments', 'crypto', 'debt'] as const;
-  const nodes = await Promise.all(BUCKETS.map((lens) => resolveExplorationNode({
+  const nodes = await Promise.all(BUCKETS.map((lens) => resolveExplorationNode(ctx.readClient, {
     spaceId: ctx.spaceId, lens, nodeType: 'lens', nodeId: null,
     dateISO: point.date, fromISO: point.date, toISO: point.date,
   })));
@@ -621,12 +653,12 @@ const getTransactions: ToolDefinition = {
     // ceiling where exhaustion cannot.
     const [firstRead, matchedInWindow] = await Promise.all([
       wantLargest
-        ? readWindowToExhaustion(ctx.spaceId, filters)
+        ? readWindowToExhaustion(ctx.readClient, ctx.spaceId, filters)
         : (async () => {
-            const page = await queryTransactions({ spaceId: ctx.spaceId, query: { ...filters, limit } });
+            const page = await queryTransactions(ctx.readClient, { spaceId: ctx.spaceId, query: { ...filters, limit } });
             return { rows: page.rows, complete: !page.hasMore, pages: 1 };
           })(),
-      wantLargest ? Promise.resolve(null) : countTransactions({ spaceId: ctx.spaceId, query: filters }),
+      wantLargest ? Promise.resolve(null) : countTransactions(ctx.readClient, { spaceId: ctx.spaceId, query: filters }),
     ]);
 
     // ⚠️ FINISH THE SEARCH WHEN FINISHING IT IS CHEAP. Reporting "you saw 50 of
@@ -642,7 +674,7 @@ const getTransactions: ToolDefinition = {
       && matchedInWindow > limit && matchedInWindow <= COMPLETABLE_SEARCH_ROWS;
     const { rows: population, complete, pages } = completable
       ? await (async () => {
-          const page = await queryTransactions({
+          const page = await queryTransactions(ctx.readClient, {
             spaceId: ctx.spaceId, query: { ...filters, limit: matchedInWindow } });
           return { rows: page.rows, complete: !page.hasMore, pages: 2 };
         })()
@@ -674,7 +706,7 @@ const getTransactions: ToolDefinition = {
     // What to do about a partial window is the model's decision, not this
     // adapter's.
     const coverage = transactionCoverage({
-      corpus: await transactionCorpusSpan({ spaceId: ctx.spaceId, asOf: ceiling }),
+      corpus: await transactionCorpusSpan(ctx.readClient, { spaceId: ctx.spaceId, asOf: ceiling }),
       searchedFrom: (a.from as string) ?? null,
       searchedTo: dateTo,
     });
@@ -772,7 +804,7 @@ const getIncome: ToolDefinition = {
       // exist yet; at 2026-09-07 Vectrus is CURRENT and Abacus is SILENT. Passing
       // today's date here while windowing the totals to last year would describe an
       // old year with this year's employer.
-      loadForecastIncomeStreams(ctx.spaceId, ceiling),
+      loadForecastIncomeStreams(ctx.readClient, ctx.spaceId, ceiling),
     ]);
     return {
       asOf: ceiling,
@@ -866,8 +898,8 @@ async function flowCoverage(
   ctx: ToolContext, ceiling: string, accounts?: AccountsSectionData | null,
 ): Promise<Pick<DataCoverage, 'corpusFrom' | 'corpusTo' | 'components'>> {
   const [span, population, acc] = await Promise.all([
-    transactionCorpusSpan({ spaceId: ctx.spaceId, asOf: ceiling }),
-    transactionAccountPopulation({ spaceId: ctx.spaceId, asOf: ceiling }),
+    transactionCorpusSpan(ctx.readClient, { spaceId: ctx.spaceId, asOf: ceiling }),
+    transactionAccountPopulation(ctx.readClient, { spaceId: ctx.spaceId, asOf: ceiling }),
     accounts !== undefined ? Promise.resolve(accounts)
       : assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx),
   ]);
@@ -1041,7 +1073,7 @@ const getBaselines: ToolDefinition = {
     const year = resolvePeriod({ completeMonths: 12 }, ceiling);
     const [acc, streams, assessmentRead, yearRead] = await Promise.all([
       assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx),
-      loadForecastIncomeStreams(ctx.spaceId, ceiling),
+      loadForecastIncomeStreams(ctx.readClient, ctx.spaceId, ceiling),
       // The default window is the cash projection's own: the reliable months of
       // the assembler's assessment window, at most `OBSERVED_SPENDING_WINDOW_MONTHS`.
       readFlowMonths(ctx, ceiling < ctx.asOfISO
@@ -1257,7 +1289,7 @@ const getNetWorthHistory: ToolDefinition = {
     // depth and threw away the refusal, so a stale figure carried on a contaminated
     // row was reported as a fact and the model told the user he had negative net
     // worth in early 2025.
-    const rows = await getRecentSnapshots({ rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
+    const rows = await getRecentSnapshots(ctx.readClient, { rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
     const section = projectSnapshotSection(rows as Snapshot[], 'full');
     if (!section) return { unavailable: 'no usable snapshot history for this Space' };
 
@@ -1440,7 +1472,7 @@ const findInBalanceHistory: ToolDefinition = {
     // A second historical pipeline would be a second version of the truth.
     const ceiling = ctx.asOfISO;
     const to = clampToCeiling((a.to as string) || ceiling, ceiling);
-    const rows = await getRecentSnapshots({ rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
+    const rows = await getRecentSnapshots(ctx.readClient, { rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
     const section = projectSnapshotSection(rows as Snapshot[], 'full');
     if (!section) return { unavailable: 'no usable snapshot history for this Space' };
     // ⚠️ THE WHOLE RECORD BY DEFAULT. "When did I FIRST" has no natural start
@@ -1601,7 +1633,7 @@ const explainNetWorthComposition: ToolDefinition = {
     const dateISO = clampToCeiling(String(a.date), ctx.asOfISO);
     const lens = String(a.lens ?? 'net-worth');
     const nodeId = a.componentId ? String(a.componentId) : null;
-    const res = await resolveExplorationNode({
+    const res = await resolveExplorationNode(ctx.readClient, {
       spaceId: ctx.spaceId, lens,
       nodeType: nodeId ? (nodeId.startsWith('account:') ? 'account'
         : nodeId.startsWith('holding:') ? 'holding' : 'bucket') : 'lens',
@@ -1705,7 +1737,7 @@ async function buildCashSpine(
 
   const reads = ctx.cashSpineReads;
   const [streams, accounts, transactions] = await Promise.all([
-    loadForecastIncomeStreams(ctx.spaceId, asOf, reads?.incomeTransactions, reads?.incomeAccountTypes),
+    loadForecastIncomeStreams(ctx.readClient, ctx.spaceId, asOf, reads?.incomeTransactions, reads?.incomeAccountTypes),
     reads ? reads.accounts() : assemble<AccountsSectionData>(FinanceDomains.ACCOUNTS, ctx),
     // ⚠️ THE ONE LINE THAT MADE THIS TOOL WORK. PROJECTION-1 derives its spending
     // rate from `reliableMonths(transactionsDomain)`; with only the accounts
@@ -2113,7 +2145,7 @@ const getPayDates: ToolDefinition = {
     nextOnly: { type: 'boolean', description: 'True for just the next one.' },
   }),
   async run(a, ctx) {
-    const streams = await loadForecastIncomeStreams(ctx.spaceId, ctx.asOfISO);
+    const streams = await loadForecastIncomeStreams(ctx.readClient, ctx.spaceId, ctx.asOfISO);
     const r = resolvePayDates(streams, ctx.asOfISO, {
       ask: a.nextOnly ? PayDateAsk.NEXT_ONE : PayDateAsk.UPCOMING,
       ...(a.through ? { stated: { toISO: String(a.through), statedAs: `through ${a.through}` } } : {}),

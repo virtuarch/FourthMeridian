@@ -7,6 +7,9 @@
  */
 
 import type { Transaction } from '@/types';
+
+/** RLS-C-S3 — a stated placeholder: this suite is DB-free and no fake reads it. */
+const NO_DB = {} as never;
 import {
   loadRecentActivity, projectRecentActivity, recentActivityWindow, safeMerchant,
   RECENT_ACTIVITY_ROWS,
@@ -78,7 +81,9 @@ async function main() {
   console.log('\n4. the read respects the ceiling');
   {
     let seen: { spaceId: string; query: Record<string, unknown> } | null = null;
-    const r = await loadRecentActivity('space_S', '2026-09-01', async (spaceId, query) => {
+    // RLS-C-S3 — the reader seam leads with the client the pager requires; this
+    // suite is DB-free, so it is a stated placeholder the fake never dereferences.
+    const r = await loadRecentActivity(NO_DB, 'space_S', '2026-09-01', async (_c, spaceId, query) => {
       seen = { spaceId, query };
       return { rows: [tx('2026-08-30', -10)], complete: false };
     });
@@ -113,7 +118,7 @@ async function main() {
     check('without a lookup no row carries a class (retrospective and legacy callers unchanged)',
       projectRecentActivity(rows, w, true).top.every((r) => !('account' in r)));
     let passed: unknown;
-    await loadRecentActivity('space_S', '2026-09-13', async () => ({ rows: [tx('2026-09-12', -5, { accountId: 'fa_card' })], complete: true }), lookup)
+    await loadRecentActivity(NO_DB, 'space_S', '2026-09-13', async () => ({ rows: [tx('2026-09-12', -5, { accountId: 'fa_card' })], complete: true }), lookup)
       .then((r) => { passed = r.top[0].account; });
     check('the loader hands the lookup through to the projection', passed === 'LIABILITY');
   }

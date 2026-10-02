@@ -41,6 +41,26 @@
  */
 
 import { getRecentSnapshots } from '@/lib/data/snapshots';
+/**
+ * RLS-C-S3 — THE ASSEMBLER'S READ AUTHORITY, NAMED HERE RATHER THAN INHERITED.
+ *
+ * `getRecentSnapshots` now requires its client, so this assembler must state one.
+ * It states the migration principal, deliberately and unchanged: the AI surface's
+ * authority is NOT being flipped in this slice, because every table it reads is
+ * granted to `fm_app` and so an RLS refusal there cannot fail loudly — it arrives
+ * as an empty set, and this surface converts empty sets into declarative English
+ * for a model. See docs/plans/RLS-SILENT-REFUSAL-CAS.md Part 2.
+ *
+ * It is an ordinary `db` import because that is the honest shape: the two other
+ * heavyweight assemblers (`accounts.ts`, `transactions.ts`) already hold one and
+ * are already recorded in the authority ratchet. This assembler was reaching the
+ * same client THROUGH a leaf, which is the same authority with nobody's name on
+ * it. Threading a client down `AssemblerOptions` instead was rejected: the Brief
+ * loader calls three assemblers and holds no long-lived client to pass, so a
+ * required field there could not be satisfied and an optional one would be this
+ * import with extra steps.
+ */
+import { db } from '@/lib/db';
 // v2.6-WINDOW-1 — imported from the PURE module, not through the server-only
 // read, so the projection below stays reachable from a probe.
 import { canonicalWindowChange, seriesSpanDays } from '@/lib/data/snapshot-window';
@@ -222,7 +242,7 @@ async function assembleSnapshot(
   const assembledAt = new Date().toISOString();
 
   // Canonical, stamp-aware, bounded read (newest-last, ascending by date).
-  const rows = await getRecentSnapshots({ rows: SNAPSHOT_HISTORY_LIMIT }, { spaceId });
+  const rows = await getRecentSnapshots(db, { rows: SNAPSHOT_HISTORY_LIMIT }, { spaceId });
 
   const data = projectSnapshotSection(rows, scopeHint === 'brief' ? 'brief' : 'full');
   if (data === null) return null;

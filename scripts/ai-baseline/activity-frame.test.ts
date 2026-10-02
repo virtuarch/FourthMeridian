@@ -170,8 +170,12 @@ console.log('\n13–14. ASSEMBLY PATH — source tripwires');
   check('the threshold is derived from the assessment width, not a literal',
     /2 \* assessmentWindowDays/.test(af) && !/\b180\b/.test(af));
 
+  // RLS-C-S3 — one leading identifier is permitted: the corpus span takes its
+  // database authority as a required first argument now. The SCOPE claim this pins
+  // is unchanged — the span is still taken for the orientation's own Space under
+  // the orientation's own ceiling.
   check('coverage comes from the corpus authority under asOf',
-    /transactionCorpusSpan\(\{ spaceId: spaceCtx\.spaceId, asOf \}\)/.test(ev));
+    /transactionCorpusSpan\([A-Za-z_$][\w$]*, \{ spaceId: spaceCtx\.spaceId, asOf \}\)/.test(ev));
   check('the window is resolved BEFORE any assembly (no wasted query)',
     ev.indexOf('resolveActivityWindow(') < ev.indexOf('getAssembler(FinanceDomains.TRANSACTIONS_SUMMARY)')
     && /if \(!window\) return null;/.test(ev));

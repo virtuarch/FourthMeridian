@@ -23,7 +23,7 @@
 
 import "server-only";
 
-import { db } from "@/lib/db";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { bankingTransactionWhere } from "@/lib/data/banking-population";
 import { toDbDate } from "@/lib/data/transaction-query-core";
 
@@ -35,13 +35,28 @@ export interface AccountPopulationEntry {
   lastDate: string | null;
 }
 
-export async function transactionAccountPopulation(args: {
-  spaceId: string;
-  /** Information ceiling: rows dated after this do not count. */
-  asOf?: string;
-}): Promise<AccountPopulationEntry[]> {
+/**
+ * RLS-C-S3 — `client` is REQUIRED and leading, like every other read leaf.
+ *
+ * ⚠️ AND IT DECIDES WHAT "CONTRIBUTES" MEANS. This read exists so a caller can
+ * attach SOURCE HEALTH to the components of a population; under a tenant client
+ * the grouped rows are additionally filtered by `fm_account_visible`, so the
+ * population becomes the one THIS identity can see rather than the one the Space
+ * holds. For a viewer who is an ACTIVE member those coincide, because every
+ * account `bankingTransactionWhere(spaceId)` admits is ACTIVE-linked into that
+ * Space — but they coincide by CONSTRUCTION, not by accident, and the two
+ * sentences are different claims.
+ */
+export async function transactionAccountPopulation(
+  client: ReadClient,
+  args: {
+    spaceId: string;
+    /** Information ceiling: rows dated after this do not count. */
+    asOf?: string;
+  },
+): Promise<AccountPopulationEntry[]> {
   const ceiling = args.asOf ? toDbDate(args.asOf) : null;
-  const grouped = await db.transaction.groupBy({
+  const grouped = await client.transaction.groupBy({
     by: ["financialAccountId"],
     where: {
       AND: [

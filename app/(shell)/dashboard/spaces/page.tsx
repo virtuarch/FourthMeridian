@@ -135,7 +135,22 @@ export default async function SpacesPage() {
 
   // ── Net worth + sparkline trend, one query for every card on the page ─────
   const allIds = [...mySpaceIds, ...publicSpaces.map((w) => w.id)];
-  const netWorthBySpace = await getSpaceNetWorthSummaries(allIds);
+  //
+  // ⚠️ RLS-C-S3 — UNRESOLVED, AND LEFT ON THE MIGRATION PRINCIPAL ON PURPOSE.
+  // `allIds` is `mySpaceIds` PLUS every PUBLIC Space the user has NOT joined
+  // (`id: { notIn: mySpaceIds }`, above), and `getSpaceNetWorthSummaries` has no
+  // membership check of its own — it answers for whatever ids it is handed. So this
+  // page publishes the net worth and the sparkline of Spaces the viewer is not a
+  // member of, today, by application code and not by accident.
+  //
+  // On a tenant client the SpaceSnapshot policy (`"spaceId" IN (SELECT
+  // fm_visible_space_ids())`) would drop exactly those Spaces and every Explore
+  // card would silently render "—". That is not a bug fix this slice may make
+  // unilaterally: whether a public Space's net worth is public is a PRODUCT
+  // decision, and converting the authority would answer it by making the figure
+  // disappear. The client is passed EXPLICITLY so the authority is readable here,
+  // and the question is recorded rather than buried.
+  const netWorthBySpace = await getSpaceNetWorthSummaries(db, allIds);
   // v2.6-L4F — per-Space ACCOUNT freshness, so the card's "updated" line is the
   // Slice 1 claim (anchored on the OLDEST observation, with its qualifier) and
   // not the snapshot date it used to show.

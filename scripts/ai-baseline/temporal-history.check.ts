@@ -134,7 +134,7 @@ async function main() {
 
   const asOfISO = process.env.CHECK_AS_OF ?? todayUTCISO();
   const tool = findTool('find_in_balance_history')!;
-  const ctx: ToolContext = { spaceCtx, spaceId, asOfISO, memoryClient: db };
+  const ctx: ToolContext = { spaceCtx, spaceId, asOfISO, memoryClient: db, readClient: db };
   const ask = (args: Ask | Record<string, unknown>, over: Partial<ToolContext> = {}) =>
     tool.run(args as Record<string, unknown>, { ...ctx, ...over }) as Promise<Found>;
   const history = (args: Record<string, unknown>) =>
@@ -340,13 +340,13 @@ async function main() {
     const question = 'when did i first hit 0 with my debt this year?';
     const viaRoute = await runStatelessTurn({
       spaceCtx, agentId: agent?.id ?? 'temporal-check', user: question, history: [],
-      asOfISO, surface: 'temporal-check', correlationId: 'temporal-check', memoryClient: db });
+      asOfISO, surface: 'temporal-check', correlationId: 'temporal-check', memoryClient: db, readClient: db });
 
     const open = await openTranscript({ spaceCtx, agentId: agent?.id ?? 'temporal-check',
-      asOfISO, model: 'gpt-5.1', memoryClient: db });
+      asOfISO, model: 'gpt-5.1', memoryClient: db, readClient: db });
     const viaCli = await executeTurn({
       messages: open.messages, user: question, index: 0, model: 'gpt-5.1',
-      toolSchemas: openAiToolSchemas(), toolCtx: { spaceCtx, spaceId, asOfISO, memoryClient: db },
+      toolSchemas: openAiToolSchemas(), toolCtx: { spaceCtx, spaceId, asOfISO, memoryClient: db, readClient: db },
       scenario: newScenarioSlot(), correlationId: 'temporal-check', surface: 'temporal-check' });
 
     type Call = { name: string; arguments: unknown; result: unknown };

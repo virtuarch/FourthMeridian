@@ -58,7 +58,7 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
   // become a different experiment, so `usesTools` is stated, never absorbed.
   const { messages: opened, context: ctx, evidence, toolSchemas, toolCtx, usesTools: useTools } =
     await openTranscript({ spaceCtx, agentId, asOfISO, model, arm: ARM,
-      memoryClient: db, memoryWrites: args.memoryWrites === true });
+      memoryClient: db, readClient: db, memoryWrites: args.memoryWrites === true });
   let messages: unknown[] = opened;
 
   const startedAt = new Date();

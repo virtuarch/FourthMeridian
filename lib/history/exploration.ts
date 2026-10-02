@@ -22,9 +22,20 @@
  * expanded, so a child can never appear beneath a parent that has no value.
  *
  * NO PERSISTENCE. READ-ONLY. No financial arithmetic of its own.
+ *
+ * ── RLS-C-S3 — AND NO AUTHORITY OF ITS OWN EITHER ────────────────────────────
+ * The resolver composes authorities; it must not pick the ROLE they execute as.
+ * One `ReadClient` enters at `resolveExplorationNode` and reaches every read in
+ * the walk — the snapshot boundary, both series builders, and the bucket/account
+ * expanders. Before this, `expandBucketNode` and `expandAccountNode` took an
+ * OPTIONAL client and the four call sites below passed none, so each expansion
+ * silently resolved `?? db` inside `account-series` while the snapshot read beside
+ * it resolved the same global independently. The breadcrumb and the node could
+ * therefore have been assembled by two different roles; now they cannot.
  */
 
 import { getRecentSnapshots } from "@/lib/data/snapshots";
+import type { ReadClient } from "@/lib/db/tenant-context";
 import { buildNetWorthNode } from "./net-worth-node";
 import { expandBucketNode, expandAccountNode } from "./bucket-node";
 import {
@@ -64,8 +75,8 @@ export type ExplorationError =
   | "UNSUPPORTED_LENS";
 
 /** Generous enough for an all-time window; the boundary takes the newest N rows. */
-async function readSnapshotFor(spaceId: string, dateISO: string) {
-  const rows = await getRecentSnapshots({ rows: WINDOW_ROWS }, { spaceId });
+async function readSnapshotFor(client: ReadClient, spaceId: string, dateISO: string) {
+  const rows = await getRecentSnapshots(client, { rows: WINDOW_ROWS }, { spaceId });
   return { row: rows.find((r) => r.date === dateISO) ?? null, rows };
 }
 
@@ -97,6 +108,7 @@ export interface ExplorationResult {
  * node — the panel renders the refusal rather than an empty shell.
  */
 export async function resolveExplorationNode(
+  client: ReadClient,
   req: ExplorationRequest,
 ): Promise<ExplorationResult> {
   const { spaceId, nodeType, nodeId, dateISO, fromISO, toISO } = req;
@@ -105,7 +117,7 @@ export async function resolveExplorationNode(
   // link written before roots existed resolves exactly as it did.
   const lens: LensRoot = normaliseLensRoot(req.lens) ?? "net-worth";
 
-  const { row } = await readSnapshotFor(spaceId, dateISO);
+  const { row } = await readSnapshotFor(client, spaceId, dateISO);
   const currency = row?.currency ?? "USD";
 
   if (!row) {
@@ -130,19 +142,19 @@ export async function resolveExplorationNode(
     }
     // A refused bucket is still a legitimate root: it states its refusal rather
     // than 404-ing, so a Debt link on a contradictory date explains itself.
-    const expanded = raw.assertable ? await expandBucketNode({ spaceId, bucket: raw }) : raw;
+    const expanded = raw.assertable ? await expandBucketNode({ spaceId, bucket: raw, client }) : raw;
     root = reframeBucketAsRoot(expanded, lens, LENS_ROOT_LABELS[lens]);
-    root.series = await bucketSeries(spaceId, bucketKind, fromISO, toISO);
+    root.series = await bucketSeries(client, spaceId, bucketKind, fromISO, toISO);
   } else if (lens === "liquidity") {
     root = buildLiquidityRootNode({ snapshot: row, dateISO, fromISO, toISO, currency });
-    root.series = await lensSeries(spaceId, lens, fromISO, toISO);
+    root.series = await lensSeries(client, spaceId, lens, fromISO, toISO);
   } else {
     const built = buildLensRootNode({ snapshot: row, lens, dateISO, fromISO, toISO, currency });
     if (!built) {
       return { node: null, path: [], error: "UNSUPPORTED_LENS" };
     }
     root = built;
-    root.series = await lensSeries(spaceId, lens, fromISO, toISO);
+    root.series = await lensSeries(client, spaceId, lens, fromISO, toISO);
   }
 
   if (nodeType === "lens") return { node: root, path: [root], error: null };
@@ -160,7 +172,7 @@ export async function resolveExplorationNode(
       return { node: tier, path: [root, tier], error: null };
     }
     for (const tier of tiers) {
-      const found = await resolveUnderTier(spaceId, root, tier, nodeType, nodeId);
+      const found = await resolveUnderTier(client, spaceId, root, tier, nodeType, nodeId);
       if (found) return found;
     }
     return { node: null, path: [root], error: "NODE_NOT_FOUND" };
@@ -171,7 +183,7 @@ export async function resolveExplorationNode(
   // A BUCKET root has no bucket level beneath it — its children are accounts —
   // so a bucket request under one is the root itself.
   if (isBucketRoot(lens)) {
-    return resolveBeneathAccounts(spaceId, root, nodeType, nodeId, root.components);
+    return resolveBeneathAccounts(client, spaceId, root, nodeType, nodeId, root.components);
   }
 
   let expandedBucket: HistoricalBucketNode | null = null;
@@ -179,7 +191,7 @@ export async function resolveExplorationNode(
   if (nodeType === "bucket") {
     bucketId = nodeId;
   } else {
-    const found = await findBucketFor(spaceId, root, nodeId ?? "");
+    const found = await findBucketFor(client, spaceId, root, nodeId ?? "");
     bucketId = found?.id ?? null;
     expandedBucket = found;
   }
@@ -192,9 +204,9 @@ export async function resolveExplorationNode(
     return { node: rawBucket, path: [root, rawBucket], error: null };
   }
 
-  const bucket = expandedBucket ?? await expandBucketNode({ spaceId, bucket: rawBucket });
+  const bucket = expandedBucket ?? await expandBucketNode({ spaceId, bucket: rawBucket, client });
   if (nodeType === "bucket") {
-    bucket.series = await bucketSeries(spaceId, bucket.bucketKind, fromISO, toISO);
+    bucket.series = await bucketSeries(client, spaceId, bucket.bucketKind, fromISO, toISO);
     return { node: bucket, path: [root, bucket], error: null };
   }
 
@@ -204,7 +216,7 @@ export async function resolveExplorationNode(
   if (!rawAccount || rawAccount.nodeType !== "account") {
     return { node: null, path: [root, bucket], error: "NODE_NOT_FOUND" };
   }
-  const account = await expandAccountNode({ spaceId, account: rawAccount });
+  const account = await expandAccountNode({ spaceId, account: rawAccount, client });
   if (nodeType === "account") return { node: account, path: [root, bucket, account], error: null };
 
   const holding = account.components.find((c) => c.id === nodeId);
@@ -216,6 +228,7 @@ export async function resolveExplorationNode(
 
 /** Descend beneath one liquidity tier. Null when the node is not in this tier. */
 async function resolveUnderTier(
+  client: ReadClient,
   spaceId: string,
   root: HistoricalLensNode,
   tier: HistoricalNode,
@@ -226,14 +239,14 @@ async function resolveUnderTier(
   for (const raw of tier.components) {
     if (raw.nodeType !== "bucket" || !raw.assertable) continue;
     if (nodeType === "bucket" && raw.id !== nodeId) continue;
-    const bucket = await expandBucketNode({ spaceId, bucket: raw });
+    const bucket = await expandBucketNode({ spaceId, bucket: raw, client });
     if (nodeType === "bucket") {
-      bucket.series = await bucketSeries(spaceId, bucket.bucketKind, root.fromISO, root.toISO);
+      bucket.series = await bucketSeries(client, spaceId, bucket.bucketKind, root.fromISO, root.toISO);
       return { node: bucket, path: [root, tier, bucket], error: null };
     }
     const rawAccount = bucket.components.find((c) => c.id === accountId);
     if (!rawAccount || rawAccount.nodeType !== "account") continue;
-    const account = await expandAccountNode({ spaceId, account: rawAccount });
+    const account = await expandAccountNode({ spaceId, account: rawAccount, client });
     if (nodeType === "account") return { node: account, path: [root, tier, bucket, account], error: null };
     const holding = account.components.find((c) => c.id === nodeId);
     if (!holding || holding.nodeType !== "holding") return { node: null, path: [root, tier, bucket, account], error: "NODE_NOT_FOUND" };
@@ -250,6 +263,7 @@ async function resolveUnderTier(
  * `Net worth › Debt › Chase Card`.
  */
 async function resolveBeneathAccounts(
+  client: ReadClient,
   spaceId: string,
   root: HistoricalLensNode,
   nodeType: ExplorationNodeType,
@@ -261,7 +275,7 @@ async function resolveBeneathAccounts(
   if (!rawAccount || rawAccount.nodeType !== "account") {
     return { node: null, path: [root], error: "NODE_NOT_FOUND" };
   }
-  const account = await expandAccountNode({ spaceId, account: rawAccount });
+  const account = await expandAccountNode({ spaceId, account: rawAccount, client });
   if (nodeType === "account") return { node: account, path: [root, account], error: null };
 
   const holding = account.components.find((c) => c.id === nodeId);
@@ -294,6 +308,7 @@ function unavailableRoot(
  * match — a deep link to a checking account never expands Investments.
  */
 async function findBucketFor(
+  client: ReadClient,
   spaceId: string,
   root: HistoricalLensNode,
   descendantId: string,
@@ -305,7 +320,7 @@ async function findBucketFor(
   // Searched in parallel: the buckets are independent reads, and a deep link to
   // the last one should not pay for every bucket before it in sequence.
   const expanded = await Promise.all(
-    candidates.map((c) => expandBucketNode({ spaceId, bucket: c as never })),
+    candidates.map((c) => expandBucketNode({ spaceId, bucket: c as never, client })),
   );
   return expanded.find((b) => b.components.some((a) => a.id === accountId)) ?? null;
 }
@@ -325,12 +340,13 @@ async function findBucketFor(
  * row — so a root's chart and its selected point can never disagree.
  */
 async function lensSeries(
+  client: ReadClient,
   spaceId: string,
   lens: LensRoot,
   fromISO: string,
   toISO: string,
 ): Promise<HistoricalSeriesPoint[]> {
-  const rows = await getRecentSnapshots({ rows: WINDOW_ROWS }, { spaceId });
+  const rows = await getRecentSnapshots(client, { rows: WINDOW_ROWS }, { spaceId });
   const currency = rows[0]?.currency ?? "USD";
   return rows
     .filter((r) => r.date >= fromISO && r.date <= toISO && r.fxMiss !== true)
@@ -350,12 +366,13 @@ async function lensSeries(
 }
 
 async function bucketSeries(
+  client: ReadClient,
   spaceId: string,
   bucketKind: string,
   fromISO: string,
   toISO: string,
 ): Promise<HistoricalSeriesPoint[]> {
-  const rows = await getRecentSnapshots({ rows: WINDOW_ROWS }, { spaceId });
+  const rows = await getRecentSnapshots(client, { rows: WINDOW_ROWS }, { spaceId });
   const currency = rows[0]?.currency ?? "USD";
   return rows
     .filter((r) => r.date >= fromISO && r.date <= toISO && r.fxMiss !== true)
