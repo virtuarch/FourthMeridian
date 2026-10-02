@@ -176,9 +176,17 @@ console.log('\n13–14. ASSEMBLY PATH — source tripwires');
   // the orientation's own ceiling.
   check('coverage comes from the corpus authority under asOf',
     /transactionCorpusSpan\([A-Za-z_$][\w$]*, \{ spaceId: spaceCtx\.spaceId, asOf \}\)/.test(ev));
+  // ⚠️ RLS-AI-S9 — THE EARLY RETURN CARRIES A VERDICT NOW, not a bare null. A
+  // failed second frame used to be indistinguishable from "this Space has less
+  // than six months of history", because BOTH produced an omitted `activity` key.
+  // `{ frame, failed }` separates them and the caller names the failed domain in
+  // `evidenceUnreadable`. The ORDERING this case exists for is unchanged.
   check('the window is resolved BEFORE any assembly (no wasted query)',
     ev.indexOf('resolveActivityWindow(') < ev.indexOf('getAssembler(FinanceDomains.TRANSACTIONS_SUMMARY)')
-    && /if \(!window\) return null;/.test(ev));
+    && /if \(!window\) return \{ frame: null, failed: false \};/.test(ev));
+  check('…and a frame that must not exist is distinguishable from one that FAILED',
+    /return \{ frame: null, failed: true \};/.test(ev)
+      && /ACTIVITY_FRAME_DOMAIN/.test(ev));
   check('EXACTLY ONE extra TRANSACTIONS_SUMMARY assembly',
     (ev.match(/getAssembler\(FinanceDomains\.TRANSACTIONS_SUMMARY\)/g) ?? []).length === 1
     && (ev.match(/buildActivityFrame\(/g) ?? []).length === 2); // definition + one call site

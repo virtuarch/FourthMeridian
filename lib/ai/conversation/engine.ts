@@ -30,6 +30,10 @@ import {
 } from './evidence';
 import { openAiToolSchemas, type ToolContext } from './tools';
 import type { ReadClient } from '@/lib/db/tenant-context';
+import {
+  onClient, phasedReads, phasedMemoryRead,
+  type AiPhaseRunner, type MemoryPhasedRead,
+} from '@/lib/ai/tenant-phase';
 import type { MemoryClient } from './memory-store';
 import { executeTurn, supportsTools, SYSTEM_INSTRUCTION, type TurnRecord } from './turn';
 import { newScenarioSlot, type ScenarioSlot, type ActiveScenario } from './active-scenario';
@@ -121,18 +125,60 @@ export async function openTranscript(args: {
   readClient: ReadClient;
   /** FM-AUDIT-019 — true ONLY for the product route or a clone-verified harness opt-in. */
   memoryWrites?: boolean;
+  /**
+   * RLS-AI-S11 — THE PHASE RUNNER, WHEN THE SURFACE HAS AN AUTHENTICATED SESSION.
+   *
+   * ⚠️ PRESENT ⇒ THE WHOLE PROLOGUE IS ONE SHORT TENANT TRANSACTION. Four domains,
+   * the coverage census, the memory line, the corpus span and the activity frame
+   * all read through the same `tx`, so the sentence this programme exists to make
+   * true — "all financial evidence for this phase was read under the authenticated
+   * caller's tenant authority" — is a property of ONE transaction rather than a
+   * claim about a dozen call sites.
+   *
+   * ⚠️ AND IT ENDS BEFORE THE FIRST MODEL CALL. `openTranscript` returns a
+   * transcript; `executeTurn` makes the provider call. Nothing here is awaited
+   * across one, and `scripts/rls-ai-acceptance.ts` asserts that by source scan
+   * rather than by reading.
+   *
+   * ⚠️ ABSENT ⇒ BYTE-FOR-BYTE THE PREVIOUS BEHAVIOUR, which is what the dogfood
+   * harnesses and batch runners need: they read a CLONE as the migration principal
+   * and have no session at all.
+   */
+  phase?: AiPhaseRunner;
 }): Promise<OpenTranscript> {
   const { spaceCtx, agentId, asOfISO, model } = args;
   const arm = args.arm ?? CHAT_ARM;
 
-  const ctx = await assembleFullContext(spaceCtx, agentId);
-  const evidence = await buildEvidence(args.readClient, args.memoryClient, arm, ctx, spaceCtx);
+  // ⚠️ ONE SHORT PHASE PER PROLOGUE READ, CONCURRENT — NOT ONE TRANSACTION ROUND
+  // THE LOT. It WAS one, and the acceptance suite measured it at 5,906 ms against
+  // Prisma's 5 s default on a 34-read fixture, because reads inside a phase
+  // SERIALISE. The alternative was a ten-second-plus transaction on the first turn
+  // of every conversation, to buy a cross-domain snapshot the prologue has never
+  // had (before this programme the four assemblers were four concurrent chains
+  // against the migration principal, inside no transaction at all). So the
+  // concurrency and the consistency are exactly today's; only the authority moved.
+  // See `PROLOGUE_DOMAIN_QUERIES` in lib/ai/tenant-phase.ts for the measurement.
+  const read = args.phase ? phasedReads(args.phase) : onClient(args.readClient);
+  // ⚠️ THE MEMORY RUNNER IS BUILT SEPARATELY AND STAYS NARROW. Without a phase it
+  // is the `memoryClient` this transcript was opened with — which the harnesses
+  // deliberately point at a clone — and never the financial read client.
+  const memoryRead: MemoryPhasedRead = args.phase
+    ? phasedMemoryRead(args.phase)
+    : ((fn) => fn(args.memoryClient as never));
+  const ctx = await assembleFullContext(read, spaceCtx, agentId);
+  const evidence = await buildEvidence(read, memoryRead, arm, ctx, spaceCtx);
 
   const usesTools = ARM_USES_TOOLS[arm] && supportsTools(model);
   const toolSchemas = usesTools ? openAiToolSchemas() : [];
   // FM-AUDIT-019 — durable memory writes are off unless the caller says otherwise.
+  // ⚠️ THE TOOL CONTEXT STILL CARRIES THE LONG-LIVED CLIENTS, AND THAT IS RIGHT.
+  // The prologue's `tx` is COMMITTED by the time this object is built; a tool must
+  // never be handed a finished transaction. When `phase` is present the dispatcher
+  // (`turn.ts`) replaces both clients per tool call with that call's own
+  // transaction, so these values are the no-phase fallback and nothing else.
   const toolCtx: ToolContext = { spaceCtx, spaceId: spaceCtx.spaceId, asOfISO,
     memoryClient: args.memoryClient, readClient: args.readClient,
+    ...(args.phase ? { phase: args.phase } : {}),
     ...(args.memoryWrites === true ? { memoryWrites: true } : {}) };
 
   const messages: unknown[] = [
@@ -229,6 +275,8 @@ export async function runStatelessTurn(args: {
   readClient: ReadClient;
   /** FM-AUDIT-019 — true ONLY for the product route or a clone-verified harness opt-in. */
   memoryWrites?: boolean;
+  /** RLS-AI-S11 — the tenant phase runner, when the caller authenticated someone. */
+  phase?: AiPhaseRunner;
 }): Promise<StatelessTurn> {
   const asOfISO = args.asOfISO ?? todayUTCISO();
   const model = args.model ?? CHAT_MODEL;
@@ -236,7 +284,7 @@ export async function runStatelessTurn(args: {
   const open = await openTranscript({
     spaceCtx: args.spaceCtx, agentId: args.agentId, asOfISO, model,
     memoryClient: args.memoryClient, readClient: args.readClient,
-    memoryWrites: args.memoryWrites });
+    phase: args.phase, memoryWrites: args.memoryWrites });
   replayHistory(open.messages, args.history);
 
   // ⚠️ A SLOT PER REQUEST, RESTORED — NOT A SLOT THAT LIVES ON THE SERVER. The

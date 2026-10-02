@@ -38,12 +38,14 @@ import {
 import { computeAssessment } from '@/lib/ai/intelligence';
 import { composeInvestments } from '@/lib/ai/economic-concepts';
 import { loadCoverageEnvelope } from '@/lib/ai/coverage-envelope';
+import { EvidenceState } from '@/lib/ai/absence';
 import { runSignalDetectors } from '@/lib/ai/signals';
 import type { SpaceContext } from '@/lib/space';
 import { recallMemories, MemoryKind, type MemoryClient } from './memory-store';
 import { composeMemoryLine, MEMORY_LINE_RULES } from './memory-model';
 import { transactionCorpusSpan } from '@/lib/data/transaction-query';
 import type { ReadClient } from '@/lib/db/tenant-context';
+import type { PhasedRead, MemoryPhasedRead } from '@/lib/ai/tenant-phase';
 import { todayUTCISO } from '@/lib/time/clock';
 import {
   resolveActivityWindow, projectActivityFrame, type ActivityFrame,
@@ -68,9 +70,53 @@ const FOUR_DOMAINS = [
   FinanceDomains.HOLDINGS_SUMMARY,
 ];
 
-/** Assemble the four domains directly — no router, no audit row. */
+/**
+ * The domain key the ACTIVITY frame's second TRANSACTIONS_SUMMARY run is reported
+ * under when it fails.
+ *
+ * ⚠️ IT NEEDS ITS OWN NAME BECAUSE THE OMISSION ALREADY MEANT SOMETHING ELSE.
+ * `activity` is omitted — never null — when the Space has less than
+ * `2 × ASSESSMENT_WINDOW_DAYS` of corpus, and that omission is a deliberate claim:
+ * "this frame must not exist". A failed second assembly used to produce the SAME
+ * omission, so a broken authority silently asserted "you do not have six months of
+ * history". Same class as the defect this slice exists to close, one layer down.
+ */
+export const ACTIVITY_FRAME_DOMAIN = 'transactions_summary_activity';
+
+/**
+ * The domain key the MEMORY LINE is reported under when its read fails.
+ *
+ * ⚠️ FOUND BY THE ADVERSARIAL SUITE, AND IT WAS THE WORST OF THE THREE. The
+ * coverage census catches its own failures (CENSUS_FAILED) and the activity frame
+ * catches its own; `memoryLine` caught NOTHING, so one failed `recall` read threw
+ * out of `Promise.all`, out of `buildEvidence`, out of `openTranscript` and into
+ * the route's catch — the user got "Something went wrong" and no answer AT ALL,
+ * for a failure in the one arm of the prologue that holds no financial figure.
+ *
+ * ⚠️ AND ARMING THE FLIP MADE IT WORSE, WHICH IS WHY IT IS FIXED IN THE SAME
+ * SLICE: the prologue is now one transaction, so a throw here aborts it. Before,
+ * the memory read failed alone; now it takes the orientation with it.
+ */
+export const MEMORY_LINE_DOMAIN = 'memory';
+
+/**
+ * Assemble the four domains directly — no router, no audit row.
+ *
+ * ⚠️ RLS-AI-S6 — THE AUTHORITY IS THE FIRST ARGUMENT AND IT IS REQUIRED. Every
+ * domain below runs under the authority this function was handed, so a turn is
+ * never SPLIT-AUTHORITY: the orientation and the tool calls answer to the same
+ * identity. There is no module-level client here to fall back to, so a caller
+ * that forgot would not compile.
+ *
+ * ⚠️ IT IS A RUNNER, NOT A CLIENT, AND THAT SHAPE WAS FORCED BY A MEASUREMENT. A
+ * `ReadClient` parameter means ONE transaction for the whole prologue, because a
+ * client IS a transaction — and the acceptance suite measured that at 5,906 ms
+ * against the 5 s default, because reads inside a phase SERIALISE. Each domain now
+ * opens its own short phase and they run concurrently again, which is also exactly
+ * the consistency the prologue has always had. See `PhasedRead`.
+ */
 export async function assembleFullContext(
-  spaceCtx: SpaceContext, agentId: string,
+  read: PhasedRead, spaceCtx: SpaceContext, agentId: string,
 ): Promise<SpaceContext_AI> {
   const domains: Record<string, ContextDomainSection> = {};
   // RLS-AI-S0 — WHICH AUTHORITIES BROKE, not merely that something did.
@@ -79,7 +125,8 @@ export async function assembleFullContext(
     const a = getAssembler(d);
     if (!a) return;
     try {
-      const section = await a(spaceCtx, { scopeHint: 'full', positionClass: 'ALL' });
+      const section = await read(d, (c) =>
+        a(c, spaceCtx, { scopeHint: 'full', positionClass: 'ALL' }));
       if (section) domains[d] = section;
     } catch (err) {
       // ⚠️ STILL NON-FATAL, AND STILL THE LESSER EVIL — a broken holdings
@@ -133,35 +180,43 @@ function assessmentCeiling(ctx: SpaceContext_AI): string {
  * the number to go stale.
  */
 async function buildActivityFrame(
-  readClient: ReadClient, ctx: SpaceContext_AI, spaceCtx: SpaceContext, asOf: string,
-): Promise<ActivityFrame | null> {
+  read: PhasedRead, ctx: SpaceContext_AI, spaceCtx: SpaceContext, asOf: string,
+): Promise<{ frame: ActivityFrame | null; failed: boolean }> {
   const txn = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY]?.data as
     TransactionsSummaryData | undefined;
-  if (!txn?.windowDays) return null;
+  if (!txn?.windowDays) return { frame: null, failed: false };
 
   // 55a2c22 — the corpus bound taken UNDER the ceiling, so a retrospective
   // orientation cannot learn from the frame's existence that later history runs on.
-  const { from: coverageFrom } = await transactionCorpusSpan(readClient, { spaceId: spaceCtx.spaceId, asOf });
+  const { from: coverageFrom } = await read('corpus_span', (c) =>
+    transactionCorpusSpan(c, { spaceId: spaceCtx.spaceId, asOf }));
   const window = resolveActivityWindow({
     asOf, coverageFrom, assessmentWindowDays: txn.windowDays,
   });
-  if (!window) return null;
+  if (!window) return { frame: null, failed: false };
 
   const assembler = getAssembler(FinanceDomains.TRANSACTIONS_SUMMARY);
-  if (!assembler) return null;
+  if (!assembler) return { frame: null, failed: false };
   try {
-    const section = await assembler(
+    const section = await read('activity_frame', (c) => assembler(
+      c,
       spaceCtx,
       { scopeHint: 'full', transactionWindow: {
         startDate: window.from, endDate: window.to, label: `activity ${window.from}..${window.to}` } },
-    );
+    ));
     const data = section?.data as TransactionsSummaryData | undefined;
-    return data ? projectActivityFrame(data) : null;
+    return { frame: data ? projectActivityFrame(data) : null, failed: false };
   } catch (err) {
-    // Non-fatal by construction: a failed second frame must never cost the
-    // orientation its assessment. The single-frame body is the proven control.
+    // ⚠️ STILL NON-FATAL — a failed second frame must never cost the orientation
+    // its assessment, and the single-frame body is the proven control.
+    //
+    // ⚠️ BUT NO LONGER INDISTINGUISHABLE FROM "THIS SPACE HAS LESS THAN SIX
+    // MONTHS OF HISTORY". `failed` travels back and the caller names the domain in
+    // `unreadableDomains`, which the evidence pack turns into a prohibition. The
+    // corpus span above already succeeded, so the window EXISTED and the frame is
+    // missing only because the read broke — exactly the sentence the contract owes.
     console.error('[evidence] activity frame threw:', err);
-    return null;
+    return { frame: null, failed: true };
   }
 }
 
@@ -222,6 +277,12 @@ function thinCore(
     // which licenses no claim about what the Space holds.
     ...(ctx.unreadableDomains?.length ? { evidenceUnreadable: {
       domains: ctx.unreadableDomains,
+      // ⚠️ RLS-AI-S9 — THE CONTRACT'S OWN VOCABULARY, SO A FAILURE IS NOT MERELY
+      // DESCRIBED BUT CLASSIFIED. `INDETERMINATE` is the one state in
+      // `EvidenceState` that licenses no absence claim, and the tools in this
+      // turn return the same word for a refused read. One word, one meaning,
+      // across the orientation and every tool result the model will see.
+      evidenceState: EvidenceState.INDETERMINATE,
       meaning: 'These authorities FAILED for this turn, so the matching fields above are absent '
         + 'because nothing was read — NOT because the Space has none. Do not state or imply that '
         + 'any of them is empty, zero or missing; say that it could not be read.',
@@ -292,21 +353,30 @@ async function memoryLine(
 /**
  * Build the evidence for one arm.
  *
- * ⚠️ THE CLIENTS ARE THE FIRST ARGUMENTS AND BOTH ARE REQUIRED. Slice A made the
- * MEMORY authority explicit; RLS-C-S3 does the same for the FINANCIAL reads this
- * orientation now owns — the corpus span behind the activity frame and the coverage
+ * ⚠️ THE AUTHORITIES ARE THE FIRST ARGUMENTS AND BOTH ARE REQUIRED. Slice A made
+ * the MEMORY authority explicit; RLS-C-S3 did the same for the FINANCIAL reads this
+ * orientation owns — the corpus span behind the activity frame and the coverage
  * census. There is no module-level client here to fall back to, so a call site that
  * forgot either would not compile.
  *
- * ⚠️ `readClient` IS THE MIGRATION PRINCIPAL ON THIS PATH, DELIBERATELY. Both
- * figures it reaches are ABSENCE claims the orientation hands to a model in English,
- * and under a tenant client an empty corpus span is indistinguishable from a
- * refusal. See docs/plans/RLS-SILENT-REFUSAL-CAS.md Part 2; the authority moves
- * when that contract exists, not before.
+ * ⚠️ RLS-AI-S11 — AND `read` IS NOW THE AUTHENTICATED TENANT, WHICH IS THE WHOLE
+ * PROGRAMME. The note that used to sit here said the migration principal was
+ * deliberate "until the absence contract exists": both figures `read` reaches are
+ * ABSENCE claims this orientation hands to a model in English, and under a tenant
+ * client an empty corpus span was indistinguishable from a refusal. That contract
+ * is `lib/ai/absence.ts`, the census now carries its own derived prohibition, and
+ * `lib/ai/evidence-authorities.test.ts` pins the theorem the oracle rests on — so
+ * the condition is met and the authority has moved.
  */
 export async function buildEvidence(
-  readClient: ReadClient,
-  memoryClient: MemoryClient,
+  read: PhasedRead,
+  /**
+   * RLS-AI-S11 — the MEMORY authority, as a runner for the same reason `read` is
+   * one. A memory read left on a long-lived client while every financial read ran
+   * as the tenant would be a split authority inside the PROLOGUE — the exact
+   * shape, one layer up, that made the previous slice refuse to arm the flip.
+   */
+  memoryRead: MemoryPhasedRead,
   arm: Arm, ctx: SpaceContext_AI, spaceCtx: SpaceContext,
   /**
    * The orientation's information ceiling. Defaults to the end of the assessment
@@ -326,12 +396,39 @@ export async function buildEvidence(
 
   if (arm === 'A2') {
     const [envelope, memory, activity] = await Promise.all([
-      loadCoverageEnvelope(spaceId, { client: readClient }),
-      memoryLine(memoryClient, spaceId, ctx.userId, asOf),
-      buildActivityFrame(readClient, ctx, spaceCtx, asOf),
+      read('coverage_census', (c) => loadCoverageEnvelope(c, spaceId)),
+      // ⚠️ RLS-AI-S9 — GRACEFUL AND TRUTHFUL, NOT FATAL AND NOT SILENT. A failed
+      // memory read used to throw the whole turn away (see MEMORY_LINE_DOMAIN).
+      // It now degrades to `null`, which `thinCore` omits — and the domain is
+      // NAMED in `evidenceUnreadable`, so the model is told the store could not be
+      // read rather than being left to infer from a missing key that nothing was
+      // ever remembered. "Nothing has been remembered for this user yet. Say so
+      // plainly" is precisely the sentence that must not be reachable this way.
+      memoryRead((c) => memoryLine(c, spaceId, ctx.userId, asOf)).catch((err) => {
+        console.error('[evidence] memory line threw:', err);
+        return null;
+      }),
+      buildActivityFrame(read, ctx, spaceCtx, asOf),
     ]);
+    // ⚠️ RLS-AI-S9 — A FAILED SECOND FRAME JOINS THE UNREADABLE SET FOR THIS PACK
+    // ONLY. `ctx` is the caller's object and is not mutated: the orientation's
+    // statement about what broke is a property of the EVIDENCE, and a caller that
+    // builds two packs from one context must not inherit the other's failure.
+    const failedArms = [
+      ...(activity.failed ? [ACTIVITY_FRAME_DOMAIN] : []),
+      ...(memory === null ? [MEMORY_LINE_DOMAIN] : []),
+    ];
+    const unreadable = failedArms.length > 0
+      ? [...(ctx.unreadableDomains ?? []), ...failedArms].sort()
+      : ctx.unreadableDomains;
     const body = JSON.stringify(
-      { ...thinCore(ctx, activity), evidenceCoverage: envelope, memory }, null, 1);
+      { ...thinCore({ ...ctx, ...(unreadable?.length ? { unreadableDomains: unreadable } : {}) },
+          activity.frame),
+        evidenceCoverage: envelope,
+        // ⚠️ THE KEY IS OMITTED WHEN THE READ FAILED, NEVER SET TO null. A null
+        // `memory` is what an EMPTY store produces further down this path, and the
+        // two must not look alike; `evidenceUnreadable` above carries the reason.
+        ...(memory === null ? {} : { memory }) }, null, 1);
     return {
       arm, body: `FINANCIAL ORIENTATION\n${body}`, includesAssessment: false,
       approxTokens: tok(body),
@@ -355,6 +452,7 @@ export async function buildEvidence(
     // RLS-AI-S0 — same statement, same reason, in the broad-context arms.
     ...(ctx.unreadableDomains?.length ? { evidenceUnreadable: {
       domains: ctx.unreadableDomains,
+      evidenceState: EvidenceState.INDETERMINATE,
       meaning: 'These authorities FAILED for this turn. The matching keys above are absent because '
         + 'nothing was read, not because the Space has none. Never state that they are empty.',
     } } : {}),

@@ -160,8 +160,12 @@ console.log('3. evidence arms');
     /arm === 'A1'\)\s*\{\s*payload\.deterministicAssessment = computeAssessment\(ctx\)/.test(src));
   check('A3 is given no financial body at all',
     /arm === 'A3'[\s\S]{0,160}body: null/.test(src));
+  // RLS-AI-S9 — `activity` became `{ frame, failed }` so a FAILED second frame is
+  // distinguishable from a Space with too little history, and the thin core is
+  // handed a context whose `unreadableDomains` names the failure. The property
+  // pinned is unchanged: A2 gets the THIN CORE, never the assembled context.
   check('A2 gets a thin core, not the assembled context',
-    /arm === 'A2'[\s\S]{0,400}thinCore\(ctx, activity\)/.test(src));
+    /arm === 'A2'[\s\S]{0,900}thinCore\(\{ \.\.\.ctx,[\s\S]{0,160}activity\.frame\)/.test(src));
   check('the thin core omits per-account rows and the snapshot series',
     !/function thinCore[\s\S]{0,1200}acc\.accounts/.test(src)
       && !/function thinCore[\s\S]{0,1200}snap\.history/.test(src));
@@ -501,8 +505,19 @@ console.log('12. interactive operator mode');
   // read client and the memory client. Both come from required parameters on the
   // engine's own signature, so neither is a default and the orientation cannot pick
   // one for itself.
+  // RLS-AI-S11 — BOTH AUTHORITIES ARE NOW RUNNERS AND STILL BOTH REQUIRED, in the
+  // same order. A bare client would have forced the whole prologue into ONE
+  // transaction (a client IS a transaction), which measured 5,906 ms against
+  // Prisma's untouched 5 s default; each domain now opens its own short tenant
+  // phase. Neither runner is a default: `read` is built from `args.phase` when the
+  // surface authenticated someone and from `args.readClient` otherwise, and the
+  // engine has no module-level client to fall back on.
   check('evidence comes from buildEvidence, not a bespoke pack',
-    /buildEvidence\(args\.readClient, args\.memoryClient, arm, ctx, spaceCtx\)/.test(eng));
+    /buildEvidence\(read, memoryRead, arm, ctx, spaceCtx\)/.test(eng));
+  check('…and both authorities are DERIVED from required parameters, never defaulted',
+    /const read = args\.phase \? phasedReads\(args\.phase\) : onClient\(args\.readClient\);/.test(eng)
+      && /phasedMemoryRead\(args\.phase\)/.test(eng)
+      && !/from ['"]@\/lib\/db['"]/.test(eng));
   check('the tool surface is the shared one',
     /openAiToolSchemas\(\)/.test(eng) && !/openAiToolSchemas\(\)/.test(src));
   check('the instruction is the shared one — not a second prompt',
@@ -1905,9 +1920,14 @@ console.log('19a. memory line');
 
   check('the A2 orientation carries this user\'s memory',
     /memory \}/.test(ev) && /async function memoryLine/.test(ev));
+  // RLS-AI-S11 — the memory read runs through its OWN narrow runner, so the call
+  // reads `memoryRead((c) => memoryLine(c, …))`. The SCOPE this pins is unchanged:
+  // the Space AND the authenticated owner, never the Space alone.
   check('…scoped to the authenticated user, not the Space',
-    /memoryLine\(memoryClient, spaceId, ctx\.userId, asOf\)/.test(ev)
+    /memoryRead\(\(c\) => memoryLine\(c, spaceId, ctx\.userId, asOf\)\)/.test(ev)
       && /const scope = \{ spaceId, ownerUserId \}/.test(ev));
+  check('…and a FAILED memory read is a named domain, never a thrown turn',
+    /MEMORY_LINE_DOMAIN/.test(ev) && /memory === null \? \{\} : \{ memory \}/.test(ev));
   check('…read per kind, so a run of projection horizons cannot crowd the goals out',
     ['INTENTION', 'ASSUMPTION', 'CHECKPOINT'].every((k) => new RegExp(`kind: MemoryKind\\.${k}`).test(ev)));
   check('…and everything decided about it is the pure composer\'s, under the measured rule rendering',
@@ -2081,8 +2101,13 @@ console.log('20a. checkpoint-on-projection');
   // ⚠️ THE WRITE LIVES IN THE TURN LOOP, NOT IN THE TOOL. Making `project_cash`
   // write would have made the "tools.ts holds no Prisma client" assertion a lie
   // told by indirection.
+  // RLS-AI-S11 — the loop calls `runCheckpointPhase`, which opens the ONE tenant
+  // phase this write needs and then calls `checkpointProjection` with that
+  // transaction as the memory client. The property is unchanged and now stronger:
+  // the write is still the LOOP's, and it is also the authenticated identity's.
   check('the checkpoint is written by the conversation loop, not by the tool',
-    /checkpointProjection\(toolCtx, call\.name, result\)/.test(run));
+    /runCheckpointPhase\(toolCtx, call\.name, result\)/.test(run)
+      && /checkpointProjection\(\{ \.\.\.ctx, memoryClient: tx \}, toolName, result\)/.test(run));
   check('…and `project_cash` itself still writes nothing',
     !/checkpointProjection/.test(src));
   check('…and only that one tool produces a checkpoint',

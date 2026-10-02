@@ -22,6 +22,7 @@
 
 import '@/lib/ai/assemblers';
 import { db } from '@/lib/db';
+import { onClient } from '@/lib/ai/tenant-phase';
 import { buildEvidence, assembleFullContext } from '@/lib/ai/conversation/evidence';
 import { findTool, type ToolContext } from '@/lib/ai/conversation/tools';
 import { transactionCorpusSpan } from '@/lib/data/transaction-query';
@@ -59,7 +60,7 @@ async function main() {
       const r = await next(p); if (p.model === 'Transaction') txQueries++; return r;
     });
 
-  const ctx = await assembleFullContext(spaceCtx, 'activity-check');
+  const ctx = await assembleFullContext(onClient(db as never), spaceCtx, 'activity-check');
   const shift = (iso: string, days: number) => new Date(Date.parse(`${iso}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
   const corpus = await transactionCorpusSpan(db, { spaceId });
   check('the record has a first transaction to measure coverage from', corpus.from !== null, `${corpus.from}..${corpus.to}`);
@@ -68,7 +69,7 @@ async function main() {
 
   console.log('1. MATURE SPACE — the frame exists and is measured over its own window');
   txQueries = 0;
-  const withFrame = await buildEvidence(db, db, 'A2', ctx, spaceCtx);
+  const withFrame = await buildEvidence(onClient(db as never), (fn) => fn(db as never), 'A2', ctx, spaceCtx);
   const queriesWith = txQueries;
   const a = core(withFrame.body);
   check('activity is present', a.activity != null, JSON.stringify(a.activity?.window));
@@ -101,7 +102,7 @@ async function main() {
   txQueries = 0;
   // An asOf inside the first days of the record: coverage is far too short, so
   // the frame cannot exist and the body is the proven single-frame control.
-  const early = await buildEvidence(db, db, 'A2', ctx, spaceCtx, EARLY);
+  const early = await buildEvidence(onClient(db as never), (fn) => fn(db as never), 'A2', ctx, spaceCtx, EARLY);
   const queriesWithout = txQueries;
   const b = core(early.body);
   check('activity is OMITTED under sparse history', !('activity' in b));
@@ -123,7 +124,7 @@ async function main() {
   const ceiling = a.activity!.window.to;
   const marchYear = Number(ceiling.slice(0, 4)) - (ceiling >= `${ceiling.slice(0, 4)}-03-15` ? 0 : 1);
   const RETRO = `${marchYear}-03-15`;
-  const retro = core((await buildEvidence(db, db, 'A2', ctx, spaceCtx, RETRO)).body);
+  const retro = core((await buildEvidence(onClient(db as never), (fn) => fn(db as never), 'A2', ctx, spaceCtx, RETRO)).body);
   check('to is the historical ceiling', retro.activity?.window?.to === RETRO, `${retro.activity?.window?.to} vs ${RETRO}`);
   check('from crosses the calendar year — no YTD reset',
     (retro.activity?.window?.from ?? '').startsWith(String(marchYear - 1)), retro.activity?.window?.from);

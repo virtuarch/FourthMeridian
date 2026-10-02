@@ -66,6 +66,40 @@ const PESSIMISTIC_MS_PER_QUERY = 40;
 const RECONCILE_QUERIES = 650;
 /** A retrospective projection: the snapshot authority plus the forecast reads. */
 const RETROSPECTIVE_PROJECTION_QUERIES = 132;
+/**
+ * ONE DOMAIN of the prologue: an assembler, or one evidence arm.
+ *
+ * ⚠️ THE PROLOGUE IS NOT ONE TRANSACTION, AND THAT DECISION WAS MEASURED RATHER
+ * THAN ARGUED. It was built as one — four domains, the census, the memory line,
+ * the corpus span and the activity frame in a single `phase.run` — on the
+ * reasoning that the prologue makes no model call, so one transaction costs
+ * nothing and buys a single snapshot. The acceptance suite then produced
+ *
+ *     Transaction already closed … timeout 5000 ms, however 5906 ms passed
+ *
+ * on 34 reads of a FIXTURE corpus. Reads inside a phase SERIALISE (Prisma does not
+ * run a `Promise.all` inside an interactive transaction concurrently), so one
+ * transaction turned four concurrent chains into one chain and blew the default.
+ *
+ * The two ways out were: raise this phase's budget to cover ~90 serialised reads
+ * at a cold-connection cost, which means holding a pooled connection for ten-plus
+ * seconds on the FIRST turn of every conversation; or give each domain its own
+ * short phase and let them run concurrently again. The second is chosen, because
+ * the thing the single transaction bought was a CROSS-DOMAIN SNAPSHOT that the
+ * prologue never had in the first place — before this programme the four
+ * assemblers ran as four concurrent chains against the migration principal with no
+ * transaction at all. So the multi-phase shape preserves today's consistency
+ * exactly and fixes only the authority, while a long transaction would have traded
+ * a user-visible failure ("Something went wrong", no answer) for a guarantee
+ * nobody had asked for.
+ *
+ * ⚠️ STATED PLAINLY, BECAUSE IT IS A REAL LIMIT: the orientation's domains are
+ * read in SEPARATE snapshots, microseconds apart, exactly as they always were. A
+ * balance that changes mid-prologue can be reflected in one domain and not
+ * another. What is now guaranteed is the thing the slice is for — every one of
+ * those reads ran under the authenticated caller's tenant authority.
+ */
+const PROLOGUE_DOMAIN_QUERIES = 24;
 
 const ceilSeconds = (ms: number) => Math.ceil(ms / 1000) * 1000;
 
@@ -75,7 +109,33 @@ export const PHASE_BUDGET_MS = {
   RECONCILE: ceilSeconds(RECONCILE_QUERIES * PESSIMISTIC_MS_PER_QUERY),
   RETROSPECTIVE_PROJECTION:
              ceilSeconds(RETROSPECTIVE_PROJECTION_QUERIES * PESSIMISTIC_MS_PER_QUERY),
+  /**
+   * ⚠️ `max(default, derived)` AND NOT THE DERIVATION ALONE. The heaviest single
+   * prologue domain is the transactions summary at ~24 reads, which is 0.96 s —
+   * so the derivation sits BELOW Prisma's 5 s default and a tighter budget would
+   * be a new P2028 on a slow machine for no gain. The derivation therefore only
+   * ever pushes this UP, which is the direction that matters: when one domain
+   * grows past ~125 reads this number moves and somebody has to notice.
+   */
+  PROLOGUE:  Math.max(5_000, ceilSeconds(PROLOGUE_DOMAIN_QUERIES * PESSIMISTIC_MS_PER_QUERY)),
 } as const;
+
+/** Reads one prologue DOMAIN may make. Asserted against a measurement by the suite. */
+export const PROLOGUE_DOMAIN_QUERY_BASIS = PROLOGUE_DOMAIN_QUERIES;
+
+/**
+ * The phase-name PREFIX every prologue read runs under.
+ *
+ * ⚠️ A PREFIX, NOT A PHASE, because there are several: one per assembled domain
+ * and one per evidence arm, concurrent and short. The suffix names which, so a
+ * slow or failing arm is identifiable in a log rather than hidden inside
+ * "the prologue". See PROLOGUE_DOMAIN_QUERIES for why it is not one transaction.
+ */
+export const PROLOGUE_PHASE = 'ai_prologue';
+export const prologuePhase = (part: string) => `${PROLOGUE_PHASE}:${part}`;
+
+/** The phase name a durable projection checkpoint is WRITTEN under. */
+export const CHECKPOINT_PHASE = 'ai_checkpoint';
 
 /**
  * Tools whose phase needs more than the default, by name.
@@ -92,7 +152,55 @@ export const TOOL_PHASE_BUDGET_MS: Readonly<Record<string, number>> = {
 };
 
 export function phaseBudgetFor(toolName: string): number {
+  // Every prologue part shares one budget, whatever its suffix.
+  if (toolName.startsWith(`${PROLOGUE_PHASE}:`) || toolName === PROLOGUE_PHASE) {
+    return PHASE_BUDGET_MS.PROLOGUE;
+  }
   return TOOL_PHASE_BUDGET_MS[toolName] ?? PHASE_BUDGET_MS.DEFAULT;
+}
+
+/**
+ * How ONE prologue read obtains its authority.
+ *
+ * ⚠️ A FUNCTION, NOT A CLIENT, AND THAT IS THE WHOLE POINT OF THE SHAPE. A bare
+ * `ReadClient` parameter would have forced the prologue to be one transaction (a
+ * client IS a transaction), which is what blew the 5 s default. Handing the
+ * assembly layer a RUNNER instead lets each domain open and close its own short
+ * phase while still being STRUCTURALLY unable to choose an authority: there is no
+ * argument here through which a caller could supply a client, and no default.
+ *
+ * ⚠️ AND THE NO-PHASE PATH IS STILL EXPRESSIBLE, which is what keeps the dogfood
+ * harnesses working: `onClient(db)` below is a runner that opens no transaction at
+ * all and hands out the client it was built with, VISIBLY.
+ */
+export type PhasedRead =
+  <T>(part: string, fn: (client: TenantClient) => Promise<T>) => Promise<T>;
+
+/** A runner that opens NO transaction and uses the client it was given. */
+export function onClient(client: TenantClient): PhasedRead {
+  return (_part, fn) => fn(client);
+}
+
+/** A runner that opens ONE short tenant phase per read, concurrently. */
+export function phasedReads(phase: AiPhaseRunner): PhasedRead {
+  return (part, fn) => phase.run(prologuePhase(part), fn);
+}
+
+/**
+ * How ONE prologue MEMORY read obtains its authority.
+ *
+ * ⚠️ IT IS SEPARATE FROM `PhasedRead` BECAUSE THE MEMORY CLIENT IS NARROWER AND
+ * MUST STAY THAT WAY. `MemoryClient` is a `Pick<…, 'spaceMemory'>`: it cannot
+ * reach a financial table even by accident, and collapsing the two runners into
+ * one would hand the memory layer a full read client for no reason. A tenant
+ * transaction satisfies both, so a phase runner feeds them both — but the TYPES
+ * stay apart, which is the only thing keeping that narrowing real.
+ */
+export type MemoryPhasedRead =
+  <T>(fn: (client: TenantClient) => Promise<T>) => Promise<T>;
+
+export function phasedMemoryRead(phase: AiPhaseRunner): MemoryPhasedRead {
+  return (fn) => phase.run(prologuePhase('memory_line'), fn);
 }
 
 /**
