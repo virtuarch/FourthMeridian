@@ -29,7 +29,10 @@
  *   - When scopeHint='brief': latest + trend only, no history array
  *
  * ── Permissions ──────────────────────────────────────────────────────────────
- * buildContext() validates Space membership before invoking any assembler.
+ * ⚠️ MEMBERSHIP IS THE CALLER'S, AND THE CALLER IS NO LONGER buildContext()
+ * (deleted, RLS-AI-S1). The live callers are `lib/ai/conversation/evidence.ts`
+ * and the tool layer, both reached from routes that re-resolve the Space and 403
+ * on a mismatch; the Brief reaches the authorities directly.
  * All reads are scoped by spaceCtx.spaceId — no cross-Space data possible.
  * SpaceSnapshot rows belong directly to the Space (spaceId FK) so no
  * additional permission layer is required.

@@ -39,7 +39,10 @@
  * the window.
  *
  * ── Permissions ──────────────────────────────────────────────────────────────
- * buildContext() validates Space membership before invoking any assembler.
+ * ⚠️ MEMBERSHIP IS THE CALLER'S, AND THE CALLER IS NO LONGER buildContext()
+ * (deleted, RLS-AI-S1). The live callers are `lib/ai/conversation/evidence.ts`
+ * and the tool layer, both reached from routes that re-resolve the Space and 403
+ * on a mismatch.
  * The OR query always scopes to the validated spaceId — no cross-Space rows
  * can appear. SpaceAccountLink.status = ACTIVE and a transaction-detail-
  * granting visibilityLevel (KD-1) are both enforced on the current path.

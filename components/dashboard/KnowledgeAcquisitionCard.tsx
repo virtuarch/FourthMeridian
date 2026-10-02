@@ -16,8 +16,11 @@
  * Slice 3 addition:
  *   onSaved? callback — called after all PATCHes succeed so the parent
  *   (AnalyzeClient) can inject a follow-up user message and re-send to the
- *   chat API. buildContext() runs fresh on every /api/ai/chat request, so
- *   the AI's next reply automatically sees the newly persisted DebtProfile.
+ *   chat API. The turn's context is assembled fresh on every /api/ai/chat
+ *   request, so the AI's next reply automatically sees the newly persisted
+ *   DebtProfile. (This said `buildContext()` until RLS-AI-S1 deleted that
+ *   function; it had never been the chat route's path — the route builds its
+ *   evidence through lib/ai/conversation/evidence.ts.)
  *
  * `GapEntry` is now an alias of `AiKnowledgeGap` (@/types) — the public shape the
  * route serialises, so the client and the server agree at compile time instead of

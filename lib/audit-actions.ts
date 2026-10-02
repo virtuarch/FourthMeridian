@@ -260,8 +260,20 @@ export const AuditAction = {
   SECURITY_ANOMALY_DETECTED:    "SECURITY_ANOMALY_DETECTED",
 
   // ── AI Context ───────────────────────────────────────────────────────────────
-  // Written by lib/ai/context-builder.ts on every context assembly. Still live:
-  // the Brief and the expense-baseline route both build contexts.
+  // ⚠️ NO LIVE WRITER. RLS-AI-S1 deleted `lib/ai/context-builder.ts`, which was
+  // this event's ONLY writer and had no importer outside its own barrel. The claim
+  // that stood here — "written on every context assembly; still live: the Brief
+  // and the expense-baseline route both build contexts" — was false in both
+  // halves before the deletion: `lib/ai/brief/load.ts` says in its own header that
+  // it calls the authorities DIRECTLY, not through the context builder, and the
+  // conversation surface (`lib/ai/conversation/evidence.ts`) assembles domains
+  // itself and writes no audit row.
+  //
+  // The constant stays because HISTORICAL ROWS CARRY IT and
+  // lib/security-history.test.ts pins the vocabulary; a new writer was NOT
+  // invented to preserve the event. If observability over context assembly is
+  // wanted again it belongs on the live boundary, which is the turn loop, and that
+  // is a decision with a cost (one row per turn) rather than a comment fix.
   AI_CONTEXT_ASSEMBLED:     "AI_CONTEXT_ASSEMBLED",
   // Memory V2 — the user erased one remembered item AND its history from their
   // own Memory panel (DELETE /api/ai/memory/[id]). CONTENT-FREE by contract: the

@@ -5,7 +5,7 @@
  *
  * Each import below is a side-effect import — the module calls
  * registerAssembler() at load time, so importing this barrel is sufficient to
- * guarantee all assemblers are registered before buildContext() runs.
+ * guarantee all assemblers are registered before any context is assembled.
  *
  * To add a new assembler:
  *   1. Create lib/ai/assemblers/<domain>.ts
