@@ -716,7 +716,9 @@ Tokens from real logins always carry a `sessionToken`: `authorize()` creates the
 
 Because `NEXTAUTH_SECRET` is shared, every principal able to read Preview's runtime env holds this capability against Production. That includes every branch deployment if Preview is Vercel's generic Preview environment (§17.9).
 
-**Application prerequisite P1 (not implemented; needs authorisation):**
+**Status: P1 implemented in `0ac1012` (2026-10-03).** See §17.14. The original prerequisite text follows.
+
+**Application prerequisite P1:**
 - Fail closed when `sessionToken` is absent.
 - Bind the revocation lookup to `userId = token.id`.
 - Optionally take `role` from the matched row's user rather than the token.
@@ -957,3 +959,46 @@ A-2 is best deployed together with Stage A on Preview (one sign-out). On its own
 - **P2** blocks C-2 **only if** Preview data must be preserved.
 - **Stage A** must deploy to Preview before D-1 and D-2 can show the `__Host-` and Origin behaviour.
 - Nothing blocks A-1 to A-5.
+
+### 17.14 P1 implemented, and the three separate `NEXTAUTH_SECRET` actions
+
+**P1 (`0ac1012`).** `lib/auth/session-proof.ts` is applied by the session callback (`lib/auth.ts`) and by the fresh re-check (`lib/session.ts`). A request is authenticated only when all of the following hold:
+- the token carries a well-formed `id` **and** `sessionToken`;
+- the `UserSession` row exists and is unrevoked;
+- the row's `userId` equals the token's `id`;
+- the row's user exists, with a known role.
+
+The role acted on is the user's **current** role from the store. The 30-second cache stores the row's facts (owner and role), not a boolean, and ownership is judged per request.
+
+**Proof:** `lib/auth/session-proof.test.ts` runs tokens encrypted with the configured secret through NextAuth's real `AuthHandler` and the real `authOptions`. On P1's parent it fails 23 checks: every forged case authenticates, including SYSTEM_ADMIN with no `sessionToken`. On P1 it passes 51 of 51.
+
+**Role authority (answered).** Before P1, `token.role` (a login-time snapshot) was the role every server-side guard used: `requireUser`, `requireSystemAdmin`, the admin layouts and `useSession()`. The application has no in-app role change; only `scripts/admin-promote.ts` promotes, and it does not revoke sessions. After P1:
+- Every guard sees the store's current role, so promotion and demotion take effect within the cache TTL.
+- `requireFreshSystemAdmin` re-judges on the role it has just read.
+- `proxy.ts` still reads `token.role`, but only to choose a redirect; it grants nothing.
+
+**These are three separate security actions. None substitutes for another:**
+
+| | What it does | What it does not do |
+|---|---|---|
+| **A. P1** (done) | Possession of `NEXTAUTH_SECRET` **alone** no longer yields a session. Forging now also requires a live `sessionToken` belonging to the impersonated user | Does not make the historically shared Production secret safe to keep. See residual 1 below: the secret plus SYSTEM_ADMIN API access still yields any user's `sessionToken` |
+| **B. Preview rotation** (owner A-2) | Stops Preview, and every branch deployment if Preview is generic, from receiving Production's authentication secret from now on | Does nothing for copies already taken |
+| **C. Production rotation** (owner E-1) | Invalidates the credential that was shared with Preview. Ends every Production session | — |
+
+**Recommended Production rotation point (current state).** Stage A and P1 are committed on `v2.6` and not yet deployed anywhere.
+1. Deploy Stage A and P1 to Preview, rotating Preview's secret (B) in the same deploy: one Preview sign-out. Run §17.11 D-1 and D-2.
+2. Deploy the same commit to Production **and rotate Production's secret (C) in that same deploy.** Stage A's `__Host-` rename already signs every Production user out once, so the rotation costs nothing extra.
+3. Do not leave the shared secret in Production for an open-ended period on the strength of P1. P1 narrows what the secret is worth; it does not make the secret private again.
+4. The second Production rotation before Stage D (§16.2) is still required. Mass revocation of every `UserSession` row is an acceptable alternative there.
+
+**Remaining authentication risks after P1:**
+1. **Raw `sessionToken` values are returned by two list endpoints.**
+   - `GET /api/admin/security/users/[userId]/sessions` spreads every row (`...s`), so any SYSTEM_ADMIN can read any user's live `sessionToken`s. This route is in `scripts/lib/db-authority-baseline.json`, so it is RLS-owned and was not changed.
+   - `GET /api/user/sessions` returns the caller's own tokens. It was converted in RLS-11.
+   - `components/security/SessionsList.tsx` only declares the field and never uses it.
+   - **Consequence:** the secret plus an admin session (or plus XSS on the app origin, for the caller's own devices) is enough to mint tokens for live sessions.
+   - **Fix:** select explicit columns without `sessionToken` in both routes (P1b). Schedule it with the RLS owner, or once those files are released.
+2. `requireTotpSetup` and `username` still come from the token. Forging them now requires a live `sessionToken` of the same user plus the secret; the worst case is a user skipping their own forced TOTP enrolment. Deriving `requireTotpSetup` from the store is a follow-up.
+3. `proxy.ts` routes on `token.role`. After a demotion without re-login, the proxy sends `/dashboard` to `/admin`, and the admin layout (store role) sends it back: a redirect loop until sign-out. `scripts/admin-promote.ts` should revoke the user's sessions when it changes a role.
+4. P1 does not check `User.deactivatedAt`. Deactivation and deletion already call `revokeAllUserSessions`, which P1 honours.
+5. The existing cache trade-off is unchanged. Another warm instance can serve verified facts for up to 30 s after a revocation or role change (120 s more only during a store outage). Sensitive routes use `requireFresh*`.
