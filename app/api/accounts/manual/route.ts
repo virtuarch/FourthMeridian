@@ -22,10 +22,36 @@
  * }
  *
  * Returns: { accountId: string }
+ *
+ * ── RLS-ACC-S3 — THE WRITE ORDER WAS ONE RLS FORBIDS ─────────────────────────
+ * This route created the `AccountConnection` BEFORE the `SpaceAccountLink`, and
+ * under `fm_app` that order cannot work. The two policies are asymmetric by
+ * design (migration §14 vs §15):
+ *
+ *   FinancialAccount.fm_app_ins   WITH CHECK ("ownerUserId" = current_fm_user_id())
+ *   AccountConnection.fm_app_ins  WITH CHECK (fm_account_visible("financialAccountId"))
+ *
+ * `fm_account_visible` is true only while an ACTIVE `SpaceAccountLink` exists in
+ * a Space this identity belongs to. A brand-new account has NO link yet, so the
+ * connection insert is refused with SQLSTATE 42501 — and an INSERT refusal
+ * RAISES, so the whole `$transaction` rolls back and the manual asset is simply
+ * never created. The pivot has an `ownerUserId` arm for exactly the "visible to
+ * its creator before any link exists" case; its subtree does not.
+ *
+ * So the order is INVERTED: FinancialAccount, then the Space links, then the
+ * connection. Measured as succeeding in that order against a real `fm_app` role.
+ * This is the FOURTH instance of this phenomenon in the codebase — RLS-C-S7
+ * (b42e8e0) recorded two opposite orderings for disconnect and restore, and
+ * RLS-ACC-S4 inverts the shared `persistAccountSpine` writer for the same
+ * reason. The loop stays SEQUENTIAL inside the transaction, because
+ * `computeLinkKind` counts existing links to decide HOME vs SHARED and a
+ * concurrent loop could assign HOME twice (KD-5); inverting the order does not
+ * disturb that, and the first target is still `personalSpaceId`, so it is still
+ * the one that becomes HOME.
  */
 
 import { NextRequest, NextResponse }        from "next/server";
-import { db }                               from "@/lib/db";
+import { withTenantDb }                     from "@/lib/db/tenant-context";
 import { getSpaceContext }              from "@/lib/space";
 import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, SpaceMemberStatus, SpaceMemberRole } from "@prisma/client";
 import { requireUser }                      from "@/lib/session";
@@ -87,37 +113,50 @@ export const POST = withApiHandler(async (req: NextRequest) => {
                                return NextResponse.json({ error: `Unsupported currency "${normalizedCurrency}" — must be USD or one of the supported quote currencies.` }, { status: 400 });
 
   // ── Get user's personal space ──────────────────────────────────────────
+  // ONE short tenant read phase for both membership questions. `SpaceMember`'s
+  // policy is `spaceId IN (SELECT fm_visible_space_ids()) OR "userId" =
+  // current_fm_user_id()`, so the caller's OWN membership rows are exactly what
+  // is visible — which is all either question asks about. The `userId:` filters
+  // are kept: they now SELECT rather than ISOLATE, and the `role`/`status`
+  // narrowings are still the route's own rule, not the policy's.
   const ctx = await getSpaceContext();
-  const personalSpaceId = ctx.space.type === "PERSONAL"
-    ? ctx.spaceId
-    : (await db.spaceMember.findFirst({
-        // role: OWNER — defense in depth (PERSONAL Spaces are single-owner by
-        // construction now); never resolve to a stranger's personal Space.
-        where: { userId, status: SpaceMemberStatus.ACTIVE, role: SpaceMemberRole.OWNER, space: { type: "PERSONAL" } },
-        select: { spaceId: true },
-      }))?.spaceId;
+  const resolved = await withTenantDb(userId, async (tx) => {
+    const personalSpaceId = ctx.space.type === "PERSONAL"
+      ? ctx.spaceId
+      : (await tx.spaceMember.findFirst({
+          // role: OWNER — defense in depth (PERSONAL Spaces are single-owner by
+          // construction now); never resolve to a stranger's personal Space.
+          where: { userId, status: SpaceMemberStatus.ACTIVE, role: SpaceMemberRole.OWNER, space: { type: "PERSONAL" } },
+          select: { spaceId: true },
+        }))?.spaceId;
 
-  if (!personalSpaceId) {
+    if (!personalSpaceId) return { kind: "noPersonalSpace" as const };
+
+    // ── Validate additional space IDs (must be member of each) ────────────
+    const additionalIds = [...new Set(spaceIds.filter((id) => id !== personalSpaceId))];
+    if (additionalIds.length > 0) {
+      const memberships = await tx.spaceMember.findMany({
+        where: {
+          userId,
+          status:      SpaceMemberStatus.ACTIVE,
+          spaceId: { in: additionalIds },
+        },
+        select: { spaceId: true },
+      });
+      const validIds = new Set(memberships.map((m) => m.spaceId));
+      const invalid  = additionalIds.filter((id) => !validIds.has(id));
+      if (invalid.length > 0) return { kind: "notAMember" as const };
+    }
+    return { kind: "ok" as const, personalSpaceId, additionalIds };
+  });
+
+  if (resolved.kind === "noPersonalSpace") {
     return NextResponse.json({ error: "Personal Space not found." }, { status: 500 });
   }
-
-  // ── Validate additional space IDs (must be member of each) ────────────
-  const additionalIds = [...new Set(spaceIds.filter((id) => id !== personalSpaceId))];
-  if (additionalIds.length > 0) {
-    const memberships = await db.spaceMember.findMany({
-      where: {
-        userId,
-        status:      SpaceMemberStatus.ACTIVE,
-        spaceId: { in: additionalIds },
-      },
-      select: { spaceId: true },
-    });
-    const validIds = new Set(memberships.map((m) => m.spaceId));
-    const invalid  = additionalIds.filter((id) => !validIds.has(id));
-    if (invalid.length > 0) {
-      return NextResponse.json({ error: "Not a member of one or more requested Spaces." }, { status: 403 });
-    }
+  if (resolved.kind === "notAMember") {
+    return NextResponse.json({ error: "Not a member of one or more requested Spaces." }, { status: 403 });
   }
+  const { personalSpaceId, additionalIds } = resolved;
 
   // ── D3 Stage B3 — SpaceAccountLink is the sole write target ─────────────
   // Sequential, NOT Promise.all: computeLinkKind() inside
@@ -134,7 +173,10 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // ── KD-4 Phase 3 — FinancialAccount + AccountConnection + SAL links commit
   //    atomically. A partial failure previously could leave an account with no
   //    links (invisible/orphaned) or shared into some spaces but not others.
-  const fa = await db.$transaction(async (tx) => {
+  //
+  //    RLS-ACC-S3 — and the transaction is now a TENANT one, which is also what
+  //    forced the write order below. See the header.
+  const fa = await withTenantDb(userId, async (tx) => {
     const created = await tx.financialAccount.create({
       data: {
         ownerType:   AccountOwnerType.USER,
@@ -150,16 +192,12 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       },
     });
 
-    // AccountConnection (no PlaidItem, no walletAddress)
-    await tx.accountConnection.create({
-      data: {
-        financialAccountId: created.id,
-        connectedByUserId:  userId,
-        syncStatus:         "manual",
-        isCanonical:        true,
-      },
-    });
-
+    // THE SPACE LINKS COME FIRST, AND THAT IS NOT A PREFERENCE.
+    // `AccountConnection.fm_app_ins` is `WITH CHECK (fm_account_visible(...))`,
+    // which is false until an ACTIVE link exists in a Space this identity
+    // belongs to. Written the other way round — as this route did — the
+    // connection insert is refused 42501 and the whole asset creation rolls
+    // back. See the module header.
     for (const wsId of shareTargets) {
       await dualWriteSpaceAccountLink(tx, {
         spaceId:            wsId,
@@ -179,6 +217,17 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       });
     }
 
+    // AccountConnection (no PlaidItem, no walletAddress) — LAST, because its
+    // WITH CHECK needs the links above to exist first.
+    await tx.accountConnection.create({
+      data: {
+        financialAccountId: created.id,
+        connectedByUserId:  userId,
+        syncStatus:         "manual",
+        isCanonical:        true,
+      },
+    });
+
     return created;
   });
 
@@ -192,7 +241,12 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   }
 
   // ── Audit log ─────────────────────────────────────────────────────────────
-  await db.auditLog.create({
+  // Its own short phase, AFTER the snapshot regeneration, exactly where it was.
+  // `AuditLog.fm_app_ins` is `WITH CHECK (true)` (migration §18 — 90 independent
+  // writers and a shared shape helper with no spaceId parameter), so the tenant
+  // role can write it; it is deliberately NOT folded into the create transaction,
+  // because that would make an audit failure roll back the asset.
+  await withTenantDb(userId, (tx) => tx.auditLog.create({
     data: {
       userId,
       spaceId: personalSpaceId,
@@ -207,7 +261,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
         sharedSpaces: shareTargets,
       },
     },
-  });
+  }));
 
   return NextResponse.json({
     accountId:    fa.id,

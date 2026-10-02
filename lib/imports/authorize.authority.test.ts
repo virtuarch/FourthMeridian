@@ -38,7 +38,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { VisibilityLevel, ShareStatus, SpaceMemberRole, SpaceMemberStatus } from "@prisma/client";
+import { VisibilityLevel, SpaceMemberRole, SpaceMemberStatus } from "@prisma/client";
 
 import { resolveImportableFinancialAccount } from "./authorize";
 import type { ReadClient } from "@/lib/db/tenant-context";

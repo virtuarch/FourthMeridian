@@ -73,8 +73,16 @@ function main(): void {
   const phases = callArguments(rollback, "withTenantDb");
 
   console.log("the rollback route");
-  check("opens THREE tenant phases — resolve, the destructive claim, the repair",
-    phases.length === 3, `found ${phases.length}`);
+  // RLS-ACC-S2 — FOUR, not three, and the fourth is the one that was missing.
+  // RLS-C-S8 counted three because the AUTHORIZATION between them was not a
+  // phase at all: `resolveImportableFinancialAccount` defaulted `client = db`,
+  // so the check ran as the migration principal one file away while this route's
+  // own source held no `db` and the assertion below was true about it. The gate's
+  // client is required and leading now, so the route opens a phase for it. The
+  // invariant this case carries is unchanged — each unit of work is its OWN
+  // phase, so a best-effort failure cannot un-roll-back — only the count moved.
+  check("opens FOUR tenant phases — resolve, AUTHORIZE, the destructive claim, the repair",
+    phases.length === 4, `found ${phases.length}`);
   check("reaches the database through no other authority",
     !/from\s+["']@\/lib\/db["']/.test(rollback) && !/\bdb\s*\.\w/.test(rollback));
   check("binds the identity from the authenticated session, never a body/query/cookie",
