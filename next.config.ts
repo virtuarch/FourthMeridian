@@ -1,6 +1,20 @@
+import path from "node:path";
 import type { NextConfig } from "next";
 
 const isDev = process.env.NODE_ENV === "development";
+
+// ── Sentry in local development (PERF-4) ──────────────────────────────────────
+//
+// `next dev` with NO DSN resolves `@sentry/nextjs` to a no-op stub, so the dev
+// server never compiles the SDK it could not report through (it was already
+// `enabled: false` without a DSN — but the Node SDK + OpenTelemetry still landed
+// in the instrumentation layer and the browser SDK in every page). Resolution is
+// the only place this can be decided: a runtime `if (!dsn)` compiles it anyway.
+//
+// Dev with a DSN, and every production/preview build, never take this branch:
+// the key below is absent there, so their Sentry graph is untouched.
+export const SENTRY_DEV_STUB = path.join(__dirname, "lib/monitoring/sentry-dev-stub.ts");
+const stubSentryInDev = isDev && !process.env.NEXT_PUBLIC_SENTRY_DSN;
 
 // Extra LAN IPs or hostnames allowed to access the dev server (e.g. a phone
 // on your local network). Comma-separated in DEV_ALLOWED_ORIGINS.
@@ -55,6 +69,12 @@ export const SECURITY_HEADERS: { key: string; value: string }[] = [
 const nextConfig: NextConfig = {
   ...(isDev && {
     allowedDevOrigins: ["127.0.0.1", "localhost", ...extraOrigins],
+  }),
+  ...(stubSentryInDev && {
+    webpack: (config: { resolve: { alias: Record<string, unknown> } }) => {
+      config.resolve.alias = { ...config.resolve.alias, "@sentry/nextjs$": SENTRY_DEV_STUB };
+      return config;
+    },
   }),
   async headers() {
     return [
