@@ -84,15 +84,24 @@ export const POST = withApiHandler(async (
     // Only reachable via providerIdentityOf/findActiveAccountByIdentity in
     // this route (no fingerprint fallback here — see comment above), so the
     // source is always a provider-identity match.
-    // ⚠️ RLS-ACC-S5 — ONE OF THE TWO CALL SITES THAT STILL RELY ON THE MODULE
-    // DEFAULT. `DuplicateAccountCandidate.fm_app_ins` requires
-    // `fm_account_visible()` on BOTH accounts and a fold's loser is archived by
-    // construction, so a tenant client aborts the whole fold on 42501 (measured;
-    // acceptance cases 86-87). Naming `db` here instead would put this route
-    // back on the migration principal and grow the authority ratchet, which
-    // lib/accounts/links-everywhere.test.ts pins against. See
+    // ── RLS-ACC-S6 — THE FOLD RUNS ON THIS ROUTE'S OWN TENANT ROLE ──────────
+    // The merge's `client` is required and this is the authority it gets: one
+    // `withTenantDb` phase, so the whole fold — guard reads, Transaction and
+    // DebtProfile moves, link repoint, and the `DuplicateAccountCandidate`
+    // audit row — is policy-subject and atomic.
+    //
+    // ⚠️ `DuplicateAccountCandidate` was the one table that refused this.
+    // Its policy required `fm_account_visible()` on BOTH of its FK columns, and
+    // a fold's loser is archived — hence link-revoked — by construction, so the
+    // tenant who performed the merge could not write the only durable record of
+    // it (42501, measured on a live role). 20261003000100 gives each half the
+    // `OR I own the account` arm RLS-D1 gave the rest of the account subtree;
+    // `fa.ownerUserId === userId` was already proved above on the tenant role,
+    // so that arm is this caller's own ownership and nothing wider. See
     // app/api/accounts/[id]/restore/route.ts for the full note.
-    await mergeArchivedDuplicateIntoCanonical(fa.id, canonical.id, DuplicateDetectionSource.PROVIDER_IDENTITY_MATCH);
+    const winnerId = canonical.id;
+    await withTenantDb(userId, (tx) => mergeArchivedDuplicateIntoCanonical(
+      fa.id, winnerId, DuplicateDetectionSource.PROVIDER_IDENTITY_MATCH, null, tx));
 
     await withTenantDb(userId, (tx) => tx.auditLog.create({
       data: {

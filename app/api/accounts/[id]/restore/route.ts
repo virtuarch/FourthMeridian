@@ -142,22 +142,26 @@ export const POST = withApiHandler(async (
     // siblings, if any, get consolidated the next time the account is
     // reconnected via Plaid — see app/api/plaid/exchange-token/route.ts.)
     if (!canonical) {
-      // ⚠️ RLS-ACC-S5 — ONE OF THE TWO CALL SITES THAT STILL RELY ON THE
-      // MODULE DEFAULT, AND THE ONLY REASON IS A POLICY. Everything else in this
-      // route runs on `fm_app`; this resolution and the merge below cannot,
-      // because folding an archived sibling ends in a
-      // `DuplicateAccountCandidate` INSERT whose fm_app policy is
-      // `fm_account_visible("accountAId") AND fm_account_visible("accountBId")`
-      // — false for an archived loser BY CONSTRUCTION, so the whole fold aborts
-      // on 42501 (measured on a live role; acceptance cases 86-87).
+      // ⚠️ RLS-ACC-S6 — THE LAST SITE IN THE CODEBASE THAT RELIES ON
+      // reconcile.ts's MODULE DEFAULT, AND THE REASON IS NO LONGER A POLICY.
+      // 20261003000100 gave `DuplicateAccountCandidate` RLS-D1's owner arm, so
+      // the fold below now runs on this route's own tenant phase — see it.
       //
-      // Passing `db` here EXPLICITLY would be the honest shape, and it is
-      // refused for a second, independent reason: it would put this route back
-      // on the migration principal, growing the authority ratchet and falsifying
-      // lib/accounts/links-everywhere.test.ts's pin that S7 took it off. There is
-      // no authority this route may hold that can complete the fold. The default
-      // therefore stays until `DuplicateAccountCandidate` gains RLS-D1's owner
-      // arm, and reconcile.ts's header records exactly which line that is.
+      // What keeps THIS call on the default is a TRANSACTION BOUNDARY, not an
+      // authority: `resolveAccountByFingerprint`'s client is typed
+      // `PrismaClient` because it calls Plaid's `itemRemove` BETWEEN its own
+      // transactions (once per archived sibling it folds), and a tenant
+      // authority is only ever a transaction client — the identity the policies
+      // read is transaction-local by construction. The two requirements cannot
+      // both hold for one client, so there is no tenant client of any shape this
+      // parameter can accept.
+      //
+      // And naming `db` here is refused for the independent reason it always
+      // was: it would put this route back on the migration principal, growing
+      // the authority ratchet and falsifying
+      // lib/accounts/links-everywhere.test.ts's pin that RLS-C-S7 took it off.
+      // Closing it needs the provider round trip lifted OUT of that function;
+      // reconcile.ts's header records exactly that.
       const resolution = await resolveAccountByFingerprint(
         {
           ownerUserId:   fa.ownerUserId,
@@ -178,13 +182,30 @@ export const POST = withApiHandler(async (
     }
 
     if (canonical) {
-      // ⚠️ RLS-ACC-S5 — THE SECOND SITE, SAME SINGLE REASON. See the note on
-      // the fingerprint fallback above: the fold's last statement is a
-      // `DuplicateAccountCandidate` INSERT that `fm_app` cannot make about an
-      // archived loser, and naming `db` here would regress this route onto the
-      // migration principal. This is the one operation in this route that does
-      // not run on the tenant role, it is deliberate, and it is measured.
-      await mergeArchivedDuplicateIntoCanonical(fa.id, canonical.id, mergeSource);
+      // ── RLS-ACC-S6 — THE FOLD NOW RUNS ON THIS ROUTE'S OWN TENANT ROLE ─────
+      // The merge's `client` is required and this is the authority it gets: one
+      // `withTenantDb` phase, so every statement in the fold — the re-parenting
+      // guard's two account reads, the Transaction and DebtProfile moves, the
+      // SpaceAccountLink repoint and the `DuplicateAccountCandidate` audit row —
+      // is subject to the policies, and all of them commit or roll back
+      // together (the merge takes its inline branch under a phase client, by the
+      // `"$transaction" in client` capability test).
+      //
+      // ⚠️ WHAT MADE THIS POSSIBLE WAS NOT A WIDER AUTHORITY. Until
+      // 20261003000100 the fold's last statement was refused with 42501 for an
+      // ARCHIVED loser — the shape every restore has — because
+      // `DuplicateAccountCandidate`'s policy was visibility-only on both of its
+      // FK columns, and archiving an account revokes every link that confers
+      // visibility. That migration gives each half the `OR I own the account`
+      // arm RLS-D1 gave the rest of the account subtree. `fa.ownerUserId` was
+      // already proved equal to the caller above, on the tenant role, so the
+      // arm that admits this fold is the caller's own ownership of the archived
+      // row — not a privilege, and not visibility it does not have.
+      // ⚠️ `canonical` is a `let`, and TypeScript's narrowing of one does not
+      // survive into a closure. Captured, so the phase cannot be handed a null.
+      const winnerId = canonical.id;
+      await withTenantDb(user.id, (tx) =>
+        mergeArchivedDuplicateIntoCanonical(fa.id, winnerId, mergeSource, null, tx));
 
       await withTenantDb(user.id, (tx) => tx.auditLog.create({
         data: {

@@ -70,37 +70,58 @@
  *                 its `"$transaction" in client` capability test (RLS-7) is what
  *                 lets a caller that already holds a phase reuse it.
  *
- * ── THE EXCEPTION, MEASURED RATHER THAN ASSUMED ──────────────────────────────
- * `resolveAccountByFingerprint` and `mergeArchivedDuplicateIntoCanonical` KEEP a
- * trailing `= db` default, and the reason is one statement in one policy.
+ * ── THE MERGE'S DEFAULT IS GONE (RLS-ACC-S6), AND WHAT REMOVED IT WAS A POLICY ─
+ * S5 kept a trailing `= db` on `mergeArchivedDuplicateIntoCanonical` for ONE
+ * measured reason: the fold's last statement.
+ * `DuplicateAccountCandidate.fm_app_ins` was
+ * `fm_account_visible("accountAId") AND fm_account_visible("accountBId")`, and a
+ * merge's loser is an ARCHIVED, link-revoked account BY CONSTRUCTION, so the
+ * conjunction was unsatisfiable for the very shape every production fold has.
+ * Replayed statement by statement as the OWNER on a live fm_app connection:
+ * guard OK, 2 of 2 transactions moved, 1 of 1 DebtProfile moved, 1 of 1 link
+ * re-pointed, then 42501 — and the whole fold rolled back. (The refusal arrives
+ * as PrismaClientUnknownRequestError with `code` UNDEFINED, so no `P2002`-shaped
+ * handler would have caught it either.)
  *
- * The merge is tenant work and every statement in it succeeds on a real `fm_app`
- * role EXCEPT the last. `DuplicateAccountCandidate.fm_app_ins` is
- * `fm_account_visible("accountAId") AND fm_account_visible("accountBId")`.
- * RLS-D1 gave the THIRTEEN account-subtree tables an `ownerUserId = me` arm;
- * that sweep enumerated the tables keyed on a column named `financialAccountId`,
- * and this table's FK columns are named `accountAId`/`accountBId`. A merge's
- * loser is an ARCHIVED, link-revoked account BY CONSTRUCTION, so the predicate is
- * false for it and the audit row cannot be written by the tenant who performed
- * the fold. Replayed statement by statement as the owner on a live fm_app
- * connection: guard OK, 2 of 2 transactions moved, 1 of 1 DebtProfile moved,
- * 1 of 1 link re-pointed, then 42501 — and the whole fold rolls back.
+ * 20261003000100 closes it, as the REMAINDER of RLS-D1's already-approved
+ * theorem rather than as a new one: each half of that conjunction is now
+ * `(an ACTIVE link into a visible Space) OR (I own the account)`. D1 missed this
+ * table because its sweep enumerated by the column name `financialAccountId` and
+ * these FK columns are `accountAId`/`accountBId`;
+ * scripts/audit-account-reparenting.ts now refuses any FK pair that is neither
+ * predicated nor classified, so that cannot recur.
  *
- * ⚠️ AND REQUIRING THE PARAMETER ANYWAY WOULD BE A REGRESSION, NOT A STEP. Both
- * restore routes were taken OFF the migration principal by RLS-C-S7 and are
- * pinned there by lib/accounts/links-everywhere.test.ts. A required parameter
- * they could only satisfy with `db` would re-import it into both, GROW the
- * authority ratchet, and leave that pin green and false. There is no authority
- * those two routes may hold that can complete the fold.
+ * So the merge's client is REQUIRED. Both restore routes name it by running the
+ * fold inside a `withTenantDb` phase — which is what S5 said would be the only
+ * line that had to change — and neither imports `db` to do it. Acceptance case
+ * 86 proved the fold already ran end to end on `fm_app` for a LIVE loser; case
+ * 87 is the ARCHIVED one, and it is the case that flipped.
  *
- * So the default survives on EXACTLY TWO call sites — the two restore routes —
- * and reconcile.test.ts asserts that it is exactly two and names them, so the
- * number can only go down. The two callers that already hold `db` (exchangeToken
- * and the wallet route, both on the ratchet for their own reasons) now pass it
- * EXPLICITLY. Acceptance cases 86 and 87 hold the measurement on a real role:
- * the fold runs END TO END on an `fm_app` phase when the loser is still linked,
- * and is refused at exactly this one statement when it is not. Case 87 is the
- * case that flips when the policy gains its owner arm.
+ * ── THE ONE DEFAULT THAT SURVIVES, FOR A REASON THAT IS NOT A POLICY ─────────
+ * `resolveAccountByFingerprint` KEEPS its `= db`, and the blocker is now
+ * STRUCTURAL rather than a refusal that could be widened away:
+ *
+ *   · Its client is typed `PrismaClient` — a ROOT authority — because it
+ *     interleaves a provider HTTP call (closeOutAccountConnections →
+ *     disconnectPlaidItemIfOrphaned → Plaid itemRemove) BETWEEN its own
+ *     transactions, for every archived sibling it folds.
+ *   · A TENANT authority is only ever a transaction client. The identity the
+ *     policies read is bound with `set_config(…, is_local := true)`, so it
+ *     cannot outlive a transaction (lib/db/tenant-context.ts), and
+ *     lib/db/write-phase.ts states the consequence in terms: "`PrismaClient`
+ *     here means a ROOT authority: `db` today, `systemDb` for a job, never a
+ *     tenant one".
+ *
+ * Those two facts cannot both hold for one client, so there is no tenant client
+ * of ANY shape this parameter can accept — and naming `db` at its one defaulting
+ * call site would re-import the migration principal into a restore route that
+ * RLS-C-S7 took off it, which lib/accounts/links-everywhere.test.ts pins
+ * against. Removing it needs the provider round trip LIFTED OUT of this
+ * function so the fold itself becomes phase-shaped; that is a separate slice
+ * about transaction boundaries, not about authority, and it is the one thing
+ * keeping this module on the authority ratchet. reconcile.test.ts asserts the
+ * set of default-reliant call sites is EXACTLY ONE and names it, so the number
+ * can only go down.
  */
 
 import { db } from "@/lib/db";
@@ -476,15 +497,28 @@ export async function resolveAccountByFingerprint(
   fp: AccountFingerprint,
   excludeId?: string,
   spaceId?: string | null,
-  // ⚠️ RLS-ACC-S5 — THE DEFAULT SURVIVES HERE AND IN THE MERGE, AND NOWHERE
-  // ELSE IN THIS MODULE. See the file header: this path ends in a
-  // `DuplicateAccountCandidate` INSERT that `fm_app` cannot make about an
-  // archived loser, so a tenant client aborts the whole fold on 42501. The
-  // type is `PrismaClient` and not `DbClient`, which is a second, independent
-  // constraint: `closeOutAccountConnections` calls Plaid's `itemRemove`
-  // BETWEEN this function's transactions, so a phase client here would put a
-  // provider round trip inside somebody else's open transaction. A
-  // `Prisma.TransactionClient` has no `$transaction` and so does not compile.
+  // ⚠️ RLS-ACC-S6 — THE LAST DEFAULT IN THIS MODULE, AND THE REASON IS NO
+  // LONGER THE POLICY. 20261003000100 gave `DuplicateAccountCandidate` the owner
+  // arm, so the fold itself now completes on a real `fm_app` phase and the
+  // merge's own default is GONE. What keeps this one is the TYPE, and the type
+  // is load-bearing: `closeOutAccountConnections` calls Plaid's `itemRemove`
+  // BETWEEN this function's transactions — once per archived sibling — so this
+  // must be a ROOT client, and a `Prisma.TransactionClient` has no
+  // `$transaction` and does not compile here.
+  //
+  // A tenant authority, however, is ONLY ever a transaction client: the identity
+  // the policies read is transaction-local by construction (lib/db/tenant-
+  // context.ts), and lib/db/write-phase.ts says so outright — "`PrismaClient`
+  // here means a ROOT authority … never a tenant one". So no tenant client of
+  // any shape can satisfy this parameter, and the one call site that relies on
+  // the default (app/api/accounts/[id]/restore/route.ts) may not name `db`
+  // either: RLS-C-S7 took that route OFF the migration principal and
+  // lib/accounts/links-everywhere.test.ts pins it there.
+  //
+  // Removing this default therefore requires LIFTING THE PROVIDER ROUND TRIP
+  // OUT of the fold, so the whole operation becomes phase-shaped. That is a
+  // transaction-boundary change, not an authority one, and it is the single
+  // remaining reason this module imports `db` at all.
   client: PrismaClient = db,
 ): Promise<FingerprintResolution | null> {
   const [activeCandidates, archivedCandidates] = await Promise.all([
@@ -557,46 +591,40 @@ export async function mergeArchivedDuplicateIntoCanonical(
   loserId: string,
   winnerId: string,
   source: DuplicateDetectionSource,
-  spaceId?: string | null,
-  // ⚠️ RLS-ACC-S5 — THE DEFAULT STAYS, AND THE REASON IS NO LONGER THE ONE S7
-  // GAVE. S7 said requiring it "moves the argument, not the authority — the
-  // module keeps its `db` import either way, so the authority ratchet does not
-  // move one file". Three of its four premises have since been retired by
-  // measurement (see the file header), and that one WAS true and is now the
-  // least of it. The real blocker was found by running the merge, statement by
-  // statement, as the owner on a live `fm_app` role:
+  // ⚠️ REQUIRED IN ARITY, AND DELIBERATELY ACCEPTS `undefined`. A required
+  // parameter cannot follow an optional one, and `client` below is now required
+  // — so this is `string | null | undefined` rather than `spaceId?`. Every
+  // existing five-argument call site is unaffected; a three-argument one no
+  // longer compiles, which is the point.
+  spaceId: string | null | undefined,
+  // ⚠️ RLS-ACC-S6 — THE DEFAULT IS GONE. EVERY CALLER NOW NAMES ITS AUTHORITY.
+  //
+  // S5 kept `= db` here for one measured reason, and it was a real one: the
+  // fold's last statement. `DuplicateAccountCandidate.fm_app_ins` was
+  // `fm_account_visible("accountAId") AND fm_account_visible("accountBId")`, and
+  // a merge's loser is an ARCHIVED, link-revoked account BY CONSTRUCTION, so the
+  // conjunction could not be satisfied for the shape every production fold has.
+  // Replayed statement by statement as the OWNER on a live `fm_app` role:
   //
   //   guard OK · 2 of 2 transactions moved · 1 of 1 DebtProfile moved ·
   //   1 of 1 link re-pointed · then `DuplicateAccountCandidate.upsert` → 42501.
   //
-  // `DuplicateAccountCandidate.fm_app_ins` is `fm_account_visible("accountAId")
-  // AND fm_account_visible("accountBId")`. RLS-D1 gave the THIRTEEN
-  // account-subtree tables an `ownerUserId = me` arm; that sweep enumerated the
-  // tables keyed on a column named `financialAccountId`, and this table's FK
-  // columns are `accountAId`/`accountBId`. A merge's loser is an ARCHIVED,
-  // link-revoked account BY CONSTRUCTION, so the predicate is false for it and
-  // the audit row — the only durable record that the fold happened — cannot be
-  // written by the tenant who performed it. The refusal arrives as
-  // PrismaClientUnknownRequestError with `code` UNDEFINED, so no `P2002`-shaped
-  // handler would catch it either. Acceptance cases 86 and 87 hold both halves:
-  // the fold DOES run end to end on a real fm_app phase when the loser is still
-  // linked, and is refused at exactly this one statement when it is not.
+  // 20261003000100 gives each half of that conjunction the owner arm RLS-D1
+  // already gave the thirteen `financialAccountId`-keyed subtree tables —
+  // `(visible OR owned)` — which is the REMAINDER of D1's theorem, not a new
+  // one. D1 could not see this table because its sweep enumerated by that column
+  // name; scripts/audit-account-reparenting.ts now refuses any FK pair that is
+  // neither predicated by a named policy migration nor explicitly classified.
   //
-  // ⚠️ AND REQUIRING IT ANYWAY WOULD MAKE THINGS WORSE, WHICH IS WHY THIS IS A
-  // BLOCKER AND NOT A PREFERENCE. Both restore routes were taken OFF the
-  // migration principal by S7 and are pinned there by
-  // lib/accounts/links-everywhere.test.ts. A required parameter they can only
-  // satisfy with `db` would re-import it into both, GROW the authority ratchet,
-  // and turn that pin into a statement that is green and false. There is no
-  // authority those routes may hold that can complete the fold. So the default
-  // is kept, deliberately, on exactly TWO call sites — and the test file asserts
-  // that it is exactly two and names them, so the number can only go down.
-  // exchangeToken and the wallet route, which hold `db` already, now pass it
-  // explicitly instead of inheriting it.
+  // So the two restore routes supply a `withTenantDb` phase instead of
+  // inheriting an ambient authority, and NEITHER imports `db` to do it — which
+  // is what S5 predicted would be the only line that had to change. Acceptance
+  // case 86 holds the live-loser fold on fm_app; case 87 holds the archived one,
+  // and it is the case that flipped.
   //
   // The `"$transaction" in client` capability test below is the RLS-7 fix and
   // must not be reverted to a `=== db` reference comparison.
-  client: DbClient = db,
+  client: DbClient,
 ) {
   if (loserId === winnerId) return;
 
@@ -746,24 +774,25 @@ export async function mergeArchivedDuplicateIntoCanonical(
     });
   }
 
-  // ⚠️ RLS-ACC-S5 — THE ONE STATEMENT IN THIS FUNCTION A TENANT CLIENT CANNOT
-  // EXECUTE, AND THE REASON IS A POLICY, NOT A BUG HERE.
-  // `DuplicateAccountCandidate.fm_app_ins` is
-  // `fm_account_visible("accountAId") AND fm_account_visible("accountBId")`.
-  // RLS-D1 gave the THIRTEEN account-subtree tables an `ownerUserId = me` arm;
-  // they are the ones keyed on a column literally named `financialAccountId`,
-  // and this table's two FK columns are not. A merge's loser is an ARCHIVED,
-  // link-revoked account BY CONSTRUCTION, so the function is false for it and
-  // the INSERT is refused with 42501 — which Prisma surfaces as
-  // PrismaClientUnknownRequestError with `code` UNDEFINED, so no `P2002`-shaped
-  // handler would catch it. Measured on a live fm_app role: every preceding
-  // statement wrote its full population, this one aborted, the fold rolled back.
+  // ⚠️ THE STATEMENT THAT USED TO BE THE ONE A TENANT CLIENT COULD NOT EXECUTE.
+  // It was never routed around — writing this row on a wider authority would
+  // have made the audit trail the one part of the fold that escapes the policy,
+  // and skipping it would make a merge that happened indistinguishable from one
+  // that did not. So it stayed on `tx` and the CALLERS carried an ambient
+  // authority instead, visibly, with the refusal measured on a real role.
   //
-  // It is NOT routed around here. Writing the row on a wider authority would
-  // make the audit trail the one part of the fold that escapes the policy, and
-  // skipping it would make a merge that happened indistinguishable from one that
-  // did not. So the four callers pass `db` explicitly and say why, and
-  // acceptance cases 86-87 hold the measurement until the policy is widened.
+  // 20261003000100 removed the refusal rather than the statement:
+  // `DuplicateAccountCandidate`'s three fm_app policies are now
+  // `(visible(accountAId) OR owned(accountAId)) AND (visible(accountBId) OR
+  // owned(accountBId))`, the §17 conjunction preserved and each half given the
+  // arm its own account's root policy already had. An archived loser the caller
+  // OWNS satisfies the second arm; one they do not own satisfies neither, so a
+  // cross-owner pair is still invisible and still unwritable (proved on the role
+  // both ways, acceptance case 87).
+  //
+  // This statement therefore runs on whatever authority the caller named, like
+  // every other statement in the fold, and the whole thing commits or rolls back
+  // together.
   const now = new Date();
   await tx.duplicateAccountCandidate.upsert({
     where: { accountAId_accountBId: { accountAId: winnerId, accountBId: loserId } },

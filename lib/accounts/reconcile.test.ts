@@ -331,45 +331,101 @@ async function main(): Promise<void> {
     check("resolveAccountByFingerprint's client is typed PrismaClient, so a tenant PHASE cannot be threaded into a provider call",
       /client: PrismaClient = db,/.test(code));
 
-    // ── THE DEFAULT THAT SURVIVES, AND THE EXACT COUNT OF WHO RELIES ON IT ──
-    // ⚠️ THE NUMBER IS THE ASSERTION. A defaulted client is an ambient
-    // authority; this one is kept because the fold's final statement —
-    // `DuplicateAccountCandidate`'s INSERT — is refused by fm_app for an
-    // ARCHIVED loser (acceptance case 87), and because requiring it would put
-    // the two restore routes back on the migration principal and GROW the
-    // ratchet. Both facts are measured. What must not happen is the set
-    // quietly growing again, so it is counted, not described.
-    const DEFAULT_RELIANT = [
-      "app/api/accounts/[id]/restore/route.ts",
-      "app/api/accounts/manual/[id]/restore/route.ts",
-    ];
-    const MERGE_CALLERS = [
+    // ── RLS-ACC-S6 — THE MERGE'S DEFAULT IS GONE ────────────────────────────
+    // A defaulted client is an AMBIENT authority. This one was kept for one
+    // measured reason: the fold's final statement, `DuplicateAccountCandidate`'s
+    // INSERT, was refused by fm_app for an ARCHIVED loser — which is the shape
+    // EVERY production fold has (acceptance case 87). 20261003000100 gives that
+    // table's two FK columns RLS-D1's owner arm, so the refusal is gone and the
+    // parameter is required. The COMPILER now enumerates the call sites; what is
+    // asserted here is that the default cannot creep back.
+    check("the merge's client is REQUIRED — no `= db` default, so every caller names its authority",
+      /^\s*client: DbClient,\s*$/m.test(code) && !/client: DbClient = db/.test(code),
+      "a trailing `= db` here is an ambient authority on the one deliberate account-FK re-parenting in the codebase");
+    check("…and `spaceId` became required-in-arity to allow it (a required parameter cannot follow an optional one)",
+      /spaceId: string \| null \| undefined,/.test(code) && !/spaceId\?: string \| null,\s*\n\s*(?:\/\/[^\n]*\n\s*)*client: DbClient/.test(code));
+
+    // ── THE ONE DEFAULT THAT SURVIVES, AND THE EXACT COUNT OF WHO RELIES ON IT
+    // ⚠️ THE NUMBER IS THE ASSERTION, and it may only go DOWN.
+    // `resolveAccountByFingerprint` keeps its default for a reason that is NOT a
+    // policy and cannot be widened away: its client is typed `PrismaClient`
+    // because it calls Plaid's `itemRemove` BETWEEN its own transactions, and a
+    // tenant authority is only ever a transaction client (lib/db/write-phase.ts
+    // says so in terms). No tenant client of any shape can satisfy it, and
+    // naming `db` at the one site that defaults would put a restore route back
+    // on the migration principal. Closing it means lifting the provider round
+    // trip out of the fold — a transaction-boundary change, not an authority one.
+    const DEFAULT_RELIANT = ["app/api/accounts/[id]/restore/route.ts"];
+    const RECONCILE_CALLERS = [
       ...DEFAULT_RELIANT,
+      "app/api/accounts/manual/[id]/restore/route.ts",
       "app/api/accounts/wallet/route.ts",
       "lib/plaid/exchangeToken.ts",
     ];
     {
-      const callsWithoutClient: string[] = [];
-      for (const f of MERGE_CALLERS) {
+      /**
+       * Every external invocation of either defaulted-capable entry point, with
+       * its argument list flattened so the trailing authority is visible.
+       * ⚠️ BALANCED-PAREN, NOT `[\s\S]*?\);`. The non-greedy form stopped at the
+       * FIRST `);` in the file, which for `withTenantDb(uid, (tx) => merge(…))`
+       * is the wrong one — and a call whose arguments were mis-sliced would read
+       * as "no client named" and make this check cry wolf about the conversion
+       * it exists to confirm.
+       */
+      const callArgs = (src: string, fn: string): string[] => {
+        const out: string[] = [];
+        const re = new RegExp(`\\b${fn}\\s*\\(`, "g");
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(src)) !== null) {
+          const open = m.index + m[0].length - 1;
+          let d = 0, close = -1;
+          for (let i = open; i < src.length; i++) {
+            if (src[i] === "(") d++;
+            else if (src[i] === ")") { d--; if (d === 0) { close = i; break; } }
+          }
+          if (close < 0) { out.push("(UNBALANCED)"); continue; }
+          out.push(src.slice(open + 1, close).replace(/\s+/g, " ").trim());
+        }
+        return out;
+      };
+      /** An authority named at the call site: the principal, or a phase client. */
+      const namesAuthority = (args: string) => /\b(?:db|tx|client)\s*,?\s*$/.test(args);
+
+      const mergeDefaulting: string[] = [];
+      const fingerprintDefaulting: string[] = [];
+      for (const f of RECONCILE_CALLERS) {
         const src = stripComments(readFileSync(join(ROOT, f), "utf8"));
-        // Every external invocation of either defaulted entry point, with the
-        // argument list flattened so the trailing client is visible.
-        const calls = [...src.matchAll(/(?:mergeArchivedDuplicateIntoCanonical|resolveAccountByFingerprint)\(([\s\S]*?)\);/g)]
-          .map((m) => m[1].replace(/\s+/g, " "));
-        if (calls.some((c) => !/\bdb\s*,?\s*$/.test(c.trim()))) callsWithoutClient.push(f);
+        if (callArgs(src, "mergeArchivedDuplicateIntoCanonical").some((a) => !namesAuthority(a))) mergeDefaulting.push(f);
+        if (callArgs(src, "resolveAccountByFingerprint").some((a) => !namesAuthority(a))) fingerprintDefaulting.push(f);
       }
-      check("EXACTLY the two restore routes still rely on the module default — and they are the two that provably cannot supply a client",
-        callsWithoutClient.length === DEFAULT_RELIANT.length
-          && DEFAULT_RELIANT.every((f) => callsWithoutClient.includes(f)),
-        `relying on the default: ${callsWithoutClient.join(", ") || "(none)"}`);
+      check("NO call site relies on the merge's default any more — all four name an authority",
+        mergeDefaulting.length === 0,
+        `still defaulting: ${mergeDefaulting.join(", ")}`);
+      check("EXACTLY ONE call site relies on a reconcile default, and it is the fingerprint fallback in the generic restore route",
+        fingerprintDefaulting.length === 1 && fingerprintDefaulting[0] === DEFAULT_RELIANT[0],
+        `relying on a default: ${fingerprintDefaulting.join(", ") || "(none)"}`);
     }
-    for (const f of DEFAULT_RELIANT) {
+
+    // ── AND THE CONVERSION IS THE TENANT PHASE, NOT A NAMED DEFAULT ─────────
+    // ⚠️ Naming `db` in either restore route would have been a REGRESSION, not
+    // honesty: RLS-C-S7 took both off the migration principal and
+    // lib/accounts/links-everywhere.test.ts pins them there. The authority they
+    // supply is their own `withTenantDb` phase.
+    for (const f of ["app/api/accounts/[id]/restore/route.ts", "app/api/accounts/manual/[id]/restore/route.ts"]) {
       const src = readFileSync(join(ROOT, f), "utf8");
-      check(`${f}: still does NOT import the migration principal (requiring the client would have regressed it)`,
+      const code2 = stripComments(src);
+      check(`${f}: still does NOT import the migration principal`,
         !/import\s*\{[^{}]*\bdb\b[^{}]*\}\s*from\s*["']@\/lib\/db["']/.test(src));
-      check(`${f}: names the policy that blocks the conversion, so nobody re-derives it`,
-        /DuplicateAccountCandidate/.test(src) && /fm_account_visible/.test(src));
+      check(`${f}: folds through a withTenantDb PHASE — the merge's authority is this route's tenant role`,
+        /withTenantDb\([^;]*?mergeArchivedDuplicateIntoCanonical\(/s.test(code2),
+        "the merge must receive a phase client, so every statement in the fold is policy-subject and atomic with it");
+      check(`${f}: names the migration that unblocked the fold, so nobody re-derives the refusal`,
+        /DuplicateAccountCandidate/.test(src) && /20261003000100/.test(src));
     }
+    check("the generic restore route still records WHY its fingerprint fallback cannot be converted",
+      /resolveAccountByFingerprint/.test(readFileSync(join(ROOT, DEFAULT_RELIANT[0]), "utf8"))
+        && /itemRemove/.test(readFileSync(join(ROOT, DEFAULT_RELIANT[0]), "utf8")),
+      "the blocker is a transaction boundary (a provider call between transactions), and the route must say so");
   }
 
   console.log(failures === 0 ? "\nAll checks passed.\n" : `\n${failures} check(s) failed.\n`);
