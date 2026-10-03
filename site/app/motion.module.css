@@ -1,0 +1,12 @@
+@keyframes heroEnter{from{opacity:0;transform:translate3d(0,24px,0)}to{opacity:1;transform:translate3d(0,0,0)}}
+@keyframes earthDrift{from{transform:scale(1.035) translate3d(0,-.3%,0)}to{transform:scale(1) translate3d(0,0,0)}}
+@keyframes atlasBreathe{to{transform:scale(1.025);border-color:rgba(174,203,255,.2)}}
+.earth{animation:earthDrift 18s var(--ease-standard) both}
+.heroInner>*{opacity:0;animation:heroEnter 760ms var(--ease-enter) forwards}
+.heroInner>*:nth-child(1){animation-delay:90ms}
+.heroInner>*:nth-child(2){animation-delay:170ms}
+.heroInner>*:nth-child(3){animation-delay:280ms}
+.heroInner>*:nth-child(4){animation-delay:390ms}
+.heroSignal{animation:heroEnter 820ms var(--ease-enter) 480ms both}
+.aiVisual span{animation:atlasBreathe 8s var(--ease-standard) infinite alternate}
+@media(prefers-reduced-motion:reduce){.earth,.heroInner>*,.heroSignal,.aiVisual span{opacity:1!important;transform:none!important;animation:none!important}}

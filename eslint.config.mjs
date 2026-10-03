@@ -25,6 +25,10 @@ const eslintConfig = defineConfig([
     // must mean the same thing CI's lint means.
     "prototype/**",
     "app/prototype/**",
+    // The public website (domain-split Stage B) is its own project with its own
+    // eslint.config.mjs; it is linted there (`cd site && npm run lint`, CI job
+    // `site`), never by the application's config.
+    "site/**",
   ]),
   // Project-wide rule overrides
   {

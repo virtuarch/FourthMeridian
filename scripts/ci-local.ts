@@ -24,10 +24,11 @@
  *      no history — exactly what actions/checkout gives CI), with `origin`
  *      pointing back at this repo so a history-reading audit can fetch what it
  *      needs, as it does from GitHub.
- *   3. Runs the `test` job's steps there, then the `architecture` job's, in the
- *      order ci.yml runs them. `TEST_JOB` / `ARCHITECTURE_JOB` (scripts/lib/
- *      ci-contract.ts) ARE that order: scripts/ci-local.test.ts fails if
- *      ci.yml's `run:` steps differ.
+ *   3. Runs the `test` job's steps there, then the `architecture` job's, then
+ *      the `site` job's (in site/, with only PATH/HOME/TMPDIR), in the order
+ *      ci.yml runs them. `TEST_JOB` / `ARCHITECTURE_JOB` / `SITE_JOB`
+ *      (scripts/lib/ci-contract.ts) ARE that order: scripts/ci-local.test.ts
+ *      fails if ci.yml's `run:` steps differ.
  *
  * ── Database safety (fail closed) ───────────────────────────────────────────
  * The architecture job migrates, seeds and audits a database. Here that database
@@ -44,7 +45,7 @@
  *
  * Uncommitted edits are NOT gated (it says so). Commit, then `npm run ci`.
  *
- *   npm run ci            # both jobs
+ *   npm run ci            # every job
  *   npm run ci -- --keep  # keep the clean copy for inspection
  */
 
@@ -54,7 +55,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifyDatabaseTarget, DB_GUARD_CLONE_ONLY, DB_GUARD_ENV } from "../lib/db/live-guard";
 import {
-  ARCHITECTURE_JOB, CI_ENCRYPTION_KEY, CI_POSTGRES, TEST_JOB, nvmrcMajor, withoutDatabaseUrls,
+  ARCHITECTURE_JOB, CI_ENCRYPTION_KEY, CI_POSTGRES, SITE_DIR, SITE_JOB, TEST_JOB, nvmrcMajor, siteJobEnv,
+  withoutDatabaseUrls,
 } from "./lib/ci-contract";
 
 // ── plumbing ─────────────────────────────────────────────────────────────────
@@ -203,15 +205,19 @@ function main(): void {
     for (const step of ARCHITECTURE_JOB) results.push({ job: "architecture", step, ok: false, ms: 0 });
   }
 
+  // 3c. The site job — the public website, in its own directory, with an
+  // environment that cannot carry an application secret.
+  const siteOk = runJob("site", SITE_JOB, join(workdir, SITE_DIR), siteJobEnv(process.env));
+
   bar(`SUMMARY — HEAD ${sha.slice(0, 12)} · Node ${process.versions.node}`);
   for (const r of results) {
     const mark = r.ok === null ? "·" : r.ok ? "✓" : "✗";
     const state = r.ok === null ? "skipped" : `${(r.ms / 1000).toFixed(1)}s`;
     console.log(`  ${mark} ${r.job.padEnd(13)} ${r.step.padEnd(28)} ${state}`);
   }
-  const ok = testOk && archOk;
+  const ok = testOk && archOk && siteOk;
   console.log(ok
-    ? "\n[ci] PASSED — both CI jobs green on a clean copy of HEAD. ✓\n"
+    ? "\n[ci] PASSED — every CI job green on a clean copy of HEAD. ✓\n"
     : "\n[ci] FAILED — a CI job is red on a clean copy of HEAD; GitHub will agree.\n");
   process.exitCode = ok ? 0 : 1;
 }

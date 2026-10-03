@@ -31,5 +31,6 @@
     "**/*.mts"
   ],
   "//exclude": "prototype/ and app/prototype/ are local design harnesses, not production source (V25-CLOSE-1). prototype/ holds standalone Next apps with their own tsconfig/package.json; without these entries `**/*.ts` pulls both into the production typecheck, so a broken experiment fails `tsc --noEmit` for the real app.",
-  "exclude": ["node_modules", "prototype", "app/prototype"]
+  "//exclude-site": "site/ is the public website: a separate Next project with its own tsconfig, package.json and node_modules (domain-split Stage B). `**/*.ts` would otherwise type-check its sources AND site/node_modules (the root `node_modules` entry excludes only the top-level directory). lib/public-site-boundary.test.ts pins this.",
+  "exclude": ["node_modules", "prototype", "app/prototype", "site"]
 }

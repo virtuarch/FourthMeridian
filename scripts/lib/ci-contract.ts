@@ -54,6 +54,28 @@ export const ARCHITECTURE_JOB = [
   "npm run rls:accept:plaid",
 ] as const;
 
+/**
+ * ci.yml `site` job, step for step, each run in SITE_DIR. The public website
+ * (domain-split Stage B) is its own project: own install, then `npm run verify`
+ * — its structural boundary tests, typecheck, lint and a production build in a
+ * CONSTRUCTED environment holding no application secret. The job references no
+ * repository secret and no database (scripts/ci-local.test.ts pins both).
+ */
+export const SITE_JOB = [
+  "npm ci",
+  "npm run verify",
+] as const;
+
+/** Where the `site` job runs: the public site's project root. */
+export const SITE_DIR = "site";
+
+/** The only variables the local runner passes to the `site` job — no secret can be inherited. */
+export function siteJobEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { CI: "true" };
+  for (const k of ["PATH", "HOME", "TMPDIR"] as const) if (env[k] !== undefined) out[k] = env[k];
+  return out;
+}
+
 /** ci.yml's `postgres` service: image and credentials of the throwaway database. */
 export const CI_POSTGRES = {
   image: "postgres:16",

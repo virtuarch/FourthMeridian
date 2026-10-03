@@ -3,8 +3,8 @@
  *
  * `npm run ci` is only evidence about GitHub CI while it runs what GitHub runs,
  * on the runtime GitHub and production run. This pins that: ci.yml's `run:`
- * steps, per job and in order, ARE scripts/lib/ci-contract's lists; both jobs
- * take Node from .nvmrc; .nvmrc and engines.node name the same major; the
+ * steps, per job and in order, ARE scripts/lib/ci-contract's lists; every job
+ * takes Node from .nvmrc (the site job from site/.nvmrc, the same major); .nvmrc and engines.node name the same major; the
  * Postgres service is the one the local runner starts; and no job reaches for
  * repository history (fetch-depth) — the unit tier is hermetic by contract.
  *
@@ -15,7 +15,8 @@
 
 import { readFileSync } from "node:fs";
 import {
-  ARCHITECTURE_JOB, CI_POSTGRES, DB_URL_VARS, TEST_JOB, enginesMajor, nvmrcMajor, withoutDatabaseUrls,
+  ARCHITECTURE_JOB, CI_POSTGRES, DB_URL_VARS, SITE_DIR, SITE_JOB, TEST_JOB, enginesMajor, nvmrcMajor, siteJobEnv,
+  withoutDatabaseUrls,
 } from "./lib/ci-contract";
 
 let failures = 0, passes = 0;
@@ -45,9 +46,29 @@ console.log("ci.yml runs exactly what `npm run ci` runs");
     JSON.stringify(test) === JSON.stringify(TEST_JOB), JSON.stringify(test));
   check("architecture job steps === ARCHITECTURE_JOB, in order",
     JSON.stringify(arch) === JSON.stringify(ARCHITECTURE_JOB), JSON.stringify(arch));
+  const site = runSteps(jobBlock("site"));
+  check("site job steps === SITE_JOB, in order",
+    JSON.stringify(site) === JSON.stringify(SITE_JOB), JSON.stringify(site));
   const jobs = [...yml.slice(yml.indexOf("\njobs:\n")).matchAll(/^ {2}([a-z][\w-]*):\s*$/gm)].map((m) => m[1]);
-  check("exactly the two jobs the contract covers", JSON.stringify(jobs) === '["test","architecture"]',
+  check("exactly the three jobs the contract covers", JSON.stringify(jobs) === '["test","architecture","site"]',
     JSON.stringify(jobs));
+}
+
+console.log("the site job is the public site's, and carries no authority");
+{
+  const block = jobBlock("site");
+  const runs = [...block.matchAll(/^\s+run:\s*(.+)$/gm)].length;
+  const dirs = [...block.matchAll(/^\s+working-directory:\s*(\S+)\s*$/gm)].map((m) => m[1]);
+  check(`every site step runs in ${SITE_DIR}/`, dirs.length === runs && dirs.every((d) => d === SITE_DIR), JSON.stringify(dirs));
+  check("site: setup-node reads site/.nvmrc", /node-version-file:\s*site\/\.nvmrc/.test(block));
+  check("site: npm cache keyed on site/package-lock.json", /cache-dependency-path:\s*site\/package-lock\.json/.test(block));
+  check("site: references no repository secret", !/\$\{\{\s*secrets\./.test(block));
+  check("site: declares no env and no service", !/^\s+env:\s*$/m.test(block) && !/^\s+services:\s*$/m.test(block));
+  const siteMajor = nvmrcMajor(readFileSync("site/.nvmrc", "utf8"));
+  check("site/.nvmrc names the same major as .nvmrc", siteMajor !== null && siteMajor === nvmrcMajor(readFileSync(".nvmrc", "utf8")));
+  const env = siteJobEnv({ PATH: "/bin", HOME: "/h", DATABASE_URL: "postgresql://x", NEXTAUTH_SECRET: "s", ENCRYPTION_KEY: "k", PLAID_SECRET: "p" });
+  check("the local site job inherits only PATH/HOME/TMPDIR (+CI)", JSON.stringify(Object.keys(env).sort()) === '["CI","HOME","PATH"]',
+    JSON.stringify(Object.keys(env)));
 }
 
 console.log("one runtime: .nvmrc = CI = engines.node (production)");

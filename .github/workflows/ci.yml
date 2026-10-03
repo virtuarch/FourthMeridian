@@ -40,6 +40,14 @@ name: CI
 # directions, so a new scripts/audit-*.ts that nobody classified fails the build.
 # An audit outside the registry is an audit outside the gate.
 #
+# ── job: site (domain-split Stage B) ─────────────────────────────────────────
+# fourthmeridian.com is a separate, zero-authority Next project in site/ (own
+# package.json, lockfile, tsconfig, eslint). This job installs it on its own and
+# runs `npm run verify` there: the structural boundary tests, typecheck, lint and
+# a static production build in a constructed environment. It references no
+# repository secret, no database and nothing above site/ — if the site ever
+# needed one to build, that would be the defect.
+#
 # ENCRYPTION_KEY below is a throwaway constant, not a secret: the database is
 # ephemeral and is destroyed with the runner. prisma/seed.ts encrypts a fake
 # Plaid access token with it and nothing else reads it.
@@ -164,3 +172,25 @@ jobs:
       # "a row appeared" is satisfied by any principal.
       - name: RLS provider-ledger adversarial suite
         run: npm run rls:accept:plaid
+
+  site:
+    name: Public site (zero-authority boundary)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: site/.nvmrc
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install dependencies (site only)
+        working-directory: site
+        run: npm ci
+
+      # Structural tests (imports, packages, env, surface, discovery), typecheck,
+      # lint, then `next build` with only PATH/HOME and two public origins.
+      - name: Verify the public site boundary
+        working-directory: site
+        run: npm run verify

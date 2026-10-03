@@ -1,4 +1,7 @@
 @import "tailwindcss";
+/* The public website (site/) is a separate project; its sources must not feed
+   this stylesheet's class scan (lib/public-site-boundary.test.ts). */
+@source not "../site";
 
 :root {
   /* ============================================================

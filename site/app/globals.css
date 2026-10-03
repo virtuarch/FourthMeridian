@@ -1,0 +1,74 @@
+/*
+ * site/app/globals.css — the public site's whole global stylesheet.
+ *
+ * TOKENS. Each custom property below is a verbatim copy of the same declaration
+ * in the financial application's app/globals.css (Fourth Meridian Design
+ * Language v1). The site carries only the tokens it uses, and only the DARK
+ * values: the marketing surface is always dark, so there is no theme switch and
+ * no `data-theme` attribute to follow. (Under the app, these pages inherited the
+ * app's ThemeProvider, which could flip the semantic tokens to light values on a
+ * fixed dark background.)
+ *
+ * This is a deliberate, guarded copy, not a second source of truth: the root
+ * test lib/public-site-boundary.test.ts fails if any value here drifts from the
+ * app's. Change a token in the app first; then port it here.
+ *
+ * No @import, no url(), no web font: nothing outside this directory is loaded.
+ */
+
+:root {
+  /* palette (app/globals.css :root) */
+  --ink-50:  #F5F7FA;
+  --ink-300: #9CA4BC;
+  --ink-400: #6E7896;
+  --ink-950: #060911;
+  --brass-400:#D4A938;
+  --meridian-400:#5896FB;
+  --meridian-600:#2563EB;
+  --emerald-400:#34D399;
+
+  /* motion */
+  --ease-standard: cubic-bezier(.4,0,.2,1);
+  --ease-enter:    cubic-bezier(.2,0,0,1);
+  --dur-slow:    480ms;
+
+  /* elevation */
+  --shadow-e3: 0 18px 44px rgba(0,0,0,.46), 0 0 0 1px rgba(255,255,255,.08) inset;
+  --shadow-e4: 0 28px 70px rgba(0,0,0,.56), 0 0 0 1px rgba(255,255,255,.10) inset;
+
+  /* semantic (app/globals.css dark theme block) */
+  --bg-deep: var(--ink-950);
+  --text-primary: var(--ink-50);
+  --text-secondary: var(--ink-300);
+  --text-muted: var(--ink-400);
+  --border-hairline: rgba(255,255,255,.08);
+  --glass-ultrathin: rgba(255,255,255,.05);
+
+  color-scheme: dark;
+}
+
+/* The reset the marketing CSS was written against (the subset of Tailwind v4's
+   preflight these pages rely on), so the site needs no Tailwind. */
+*, ::before, ::after { box-sizing: border-box; margin: 0; padding: 0; border: 0 solid; }
+html { line-height: 1.5; -webkit-text-size-adjust: 100%; height: 100%; }
+h1, h2, h3, h4, h5, h6 { font-size: inherit; font-weight: inherit; }
+a { color: inherit; text-decoration: inherit; }
+ol, ul { list-style: none; }
+img, svg { display: block; vertical-align: middle; }
+img { max-width: 100%; height: auto; }
+button { font: inherit; color: inherit; background: transparent; cursor: pointer; }
+b, strong { font-weight: bolder; }
+
+body {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-deep);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after { scroll-behavior: auto !important; }
+}

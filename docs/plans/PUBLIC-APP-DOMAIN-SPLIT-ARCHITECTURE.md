@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Investigation complete. Verdict: **ARCHITECTURE READY FOR IMPLEMENTATION** (Stages A and B). **Stage A implemented 2026-10-03, partially** (§16.0). Stages C and D are gated on §16.7. |
+| **Status** | Investigation complete. Verdict: **ARCHITECTURE READY FOR IMPLEMENTATION** (Stages A and B). **Stage A implemented 2026-10-03, partially** (§16.0). **Stage B implemented 2026-10-04** (§18): `site/`, not yet a Vercel project. Stages C and D are gated on §16.7 and §18.6. |
 | **Date** | 2026-10-02 |
 | **Repo state investigated** | `v2.6` at `3d10fe7`, with the RLS tenant-authority conversion in flight in the working tree |
 | **Method** | Read only. The repo was read with no edits, no app/test/DB/network runs, no Vercel/DNS/Supabase/Plaid changes, and no secret values read. |
@@ -1050,3 +1050,101 @@ This is now a census-pinned invariant, not an assumption. P1 therefore needs no 
 1. **P1 / P1b (done):** possession of `NEXTAUTH_SECRET` alone is insufficient, and the material that would complete a forgery is no longer handed to browsers. The RLS-owned admin route is the one exception until it is released.
 2. **First Production rotation:** invalidates the secret historically shared with Preview.
 3. **Domain-cutover invalidation:** addresses sessions still live for the old apex host before `fourthmeridian.com` becomes the public site. It may be another rotation or an authoritative mass session revocation, depending on the final cutover architecture. It is **not** a response to any compromise of the new secret.
+
+---
+
+## 18. Stage B as built (2026-10-04): `site/`, the zero-authority public site
+
+Built at `v2.6` `16c638a`. Stage A′ and the root application's request-access implementation were deliberately **not** touched, because the account/Plaid/RLS workstream was active in the root application. The re-audit of 2026-10-04 is the baseline (§1–§17 hold, with the corrections it recorded).
+
+### 18.1 Archaeology: the marketing tree, classified
+
+| Class | Items |
+|---|---|
+| **A. Safe to move or copy** | Landing page markup; about, security and legal pages; `Reveal` (client island: IntersectionObserver only); `PageHeader`, `Container`, `LegalDocument`, footer; `content/marketing/copy.ts` and the three legal `.md` files; `landing`/`motion`/`Reveal` CSS modules. None imports anything outside the marketing seam (`lib/marketing-boundary.test.ts` already held). |
+| **B. Safe after decoupling** | `MarketingNav`: `lucide-react` icons → inline SVG; relative `/login`, `/request-access` → absolute app links passed as props. `Wordmark`: 1.4 MB mark via the image optimiser → 19 KB derived PNG. Landing CTAs: relative → app origin. `legal-content.ts`: `process.cwd()/content/marketing` → site-local. Tailwind utilities (Container, PageHeader, footer, legal, about, security) → CSS modules plus a preflight subset, which drops Tailwind entirely. **Semantic design tokens came from the app's bare `html` selector and could be flipped by the app's `ThemeProvider` (light tokens on a fixed dark page); the site owns a fixed dark token set.** Root metadata (`metadataBase = NEXT_PUBLIC_APP_URL`, app description) → site's own. |
+| **C. App only** | `RequestAccessForm` + `lib/marketing/request-access.ts` (posts to `/api/access-request`; **404 ⇒ "queued"**), both `TurnstileWidget`s, root `Providers` (`SessionProvider` fetches `/api/auth/session` on every marketing view; `PlaidProvider`; `ThemeProvider`), `public/manifest.json` (PWA, `start_url: /dashboard`), the request-access **form** itself. |
+| **D. Duplication risk** | Design tokens; legal Markdown; `copy.ts`; brand marks. Resolved as guarded copies: byte/declaration parity is enforced by `lib/public-site-boundary.test.ts` until Stage F retires the app's copies. The derived images are documented in `site/README.md`; the app's originals stay the source. |
+
+No site file needed any application module. The boundary was clean, so implementation proceeded.
+
+### 18.2 Architecture
+
+- **`site/` is an independent Next 16.2.7 project** with its own `package.json` (`"type": "module"`), `package-lock.json`, `tsconfig.json` (alias `@site/*`, deliberately not `@/`), `eslint.config.mjs`, `next.config.ts`, `.gitignore`, `.nvmrc` and `vercel.json`.
+- **Static export** (`output: "export"`, `images.unoptimized`). There is no server runtime: no route handler, middleware, server action or image optimiser.
+- `turbopack.root` and `outputFileTracingRoot` are pinned to `site/`. The config refuses to build if Next's transpilation ever moves `import.meta.url` away from `site/`.
+- **Configuration authority:** `site/lib/public-config.ts` is the only `process.env` reader. It reads:
+  - `NEXT_PUBLIC_SITE_ORIGIN` and `NEXT_PUBLIC_APP_ORIGIN` (public);
+  - `NODE_ENV` and `VERCEL_ENV` (build facts).
+
+  It fails closed:
+  - a production build with a missing, http, loopback, path-carrying or credentialed origin fails;
+  - a Preview/development Vercel build naming a Production origin fails;
+  - the app and site origins must be different hosts;
+  - `next dev` defaults to `localhost:3000` (the app) and `localhost:3001` (the site), never Production.
+- **Navigation:** "Sign in" → `<app>/login`, "Get Started" → `<app>/request-access`, "Open Fourth Meridian" → `<app>/dashboard`, as plain top-level links.
+  - The site never reads a cookie or asks about the session.
+  - `/request-access` on the site is a static hand-off page; it keeps old inbound links working.
+- **No CORS, no Turnstile, no request-access API** on the site.
+- **SEO:**
+  - canonical, Open Graph and Twitter metadata on the site origin;
+  - `robots.txt` and `sitemap.xml` are static;
+  - **only the Production site origin on a Production build is indexable**; Preview and local builds emit `Disallow: /` and `noindex`.
+- **Headers** (`site/vercel.json`):
+  - an enforced CSP: `default-src 'self'`, `connect-src 'self'`, `form-action 'none'`, `frame-ancestors 'none'`, `base-uri 'none'`;
+  - HSTS `includeSubDomains`, which the apex keeps emitting after Stage D;
+  - XFO DENY, nosniff, Referrer-Policy, Permissions-Policy, COOP.
+- **No crons, rewrites, redirects, functions or env** in `vercel.json`.
+
+### 18.3 Root changes (isolation only)
+
+| File | Change | Why |
+|---|---|---|
+| `tsconfig.json` | `exclude` += `"site"` | `**/*.ts` pulled 469 site files into the app's typecheck, 435 of them from `site/node_modules` (the `node_modules` exclude matches only the top level) |
+| `eslint.config.mjs` | ignore `site/**` | The site has its own config |
+| `app/globals.css` | `@source not "../site";` | Tailwind's automatic scan read 46 site files and added 85 site-only class candidates to the **app's** CSS input; now 0 of 2,391 scanned files |
+| `lib/public-site-boundary.test.ts` (new) | Converse proof + parity | Covers the root tsc/eslint/Tailwind/test discovery, no app import of `site/`, no workspace/lock coupling, legal/copy byte parity and 19-token parity |
+| `scripts/lib/ci-contract.ts`, `scripts/ci-local.ts`, `scripts/ci-local.test.ts`, `.github/workflows/ci.yml` | A third CI job, `site` | `npm ci` + `npm run verify` in `site/`. No secrets, no env, no services; Node from `site/.nvmrc` (same major); the local runner passes only PATH/HOME/TMPDIR |
+
+Nothing in auth, session, RLS, Prisma, Plaid, account code, financial APIs, the root `next.config.ts` or root environment authorities changed.
+
+### 18.4 Proofs
+
+All site proofs run in `site/` (`npm run verify`, CI job `site`); the converse runs in the root suite.
+
+- **Imports:** each import resolves inside `site/` or to an allowlisted, declared package (TypeScript AST). Mutation-tested: `@/lib/db`, `../../lib/auth`, `next/headers` → red.
+- **Packages:** no denied package at any lockfile depth. Mutation-tested: an injected transitive `@prisma/client` → red.
+- **Environment:** exactly one env reader, four allowlisted names. Mutation-tested: `process.env.DATABASE_URL`, `process.env["…"]` → red.
+- **Surface:** no `/api`, route handler, middleware, server action, `fetch`, form, cookie or storage access; every absolute URL comes from the config. Mutation-tested: an `app/api/x/route.ts`, `fetch(...)`, `document.cookie`, a hard-coded app URL → red.
+- **Clean-environment build:** `next build` with only PATH/HOME + two origins. The output audit checks for secret-shaped strings, `/api` references, foreign origins, server functions and middleware, and that no workspace root above `site/` was inferred.
+- **Fail-closed builds:**
+  - no origins → exit 1;
+  - Preview naming `https://app.fourthmeridian.com` → exit 1;
+  - Production origins → indexable robots plus sitemap, `index, follow`, canonical `https://fourthmeridian.com`, links to `https://app.fourthmeridian.com`.
+- **Root converse proof:** mutation-tested by removing `site` from the root `tsconfig` exclude → red; token drift → red; legal-text drift → red.
+
+### 18.5 Owner actions for Stage B
+
+These are listed in `site/README.md` § "Owner actions". In summary:
+- create a second Vercel project with Root Directory `site`;
+- "include files outside root" OFF;
+- exactly two plain environment variables per environment;
+- no Shared Environment Variables;
+- no crons;
+- Ignored Build Step scoped to `site/`;
+- **no domain**.
+
+Verify on `*.vercel.app`. Nothing touches the application project, DNS, Plaid or any secret.
+
+### 18.6 New facts for later stages
+
+- **Stage D redirects need a decision.** With a static export there is no server, and `vercel.json` cannot vary by environment. The apex's 308s for `/login`, `/reset-password`, `/dashboard/*` and so on (§9) must preserve path and query to a **per-environment** app origin. Options:
+  - (a) Vercel middleware or a function on the site, which adds a server runtime holding only the public app origin;
+  - (b) a build-time-generated `vercel.json` per environment, which requires a build step that rewrites it before Vercel reads it, and is unverified;
+  - (c) separate Production/Preview site projects.
+
+  Decide before Stage D. (a) is the smallest and keeps zero secrets.
+- **Ignored Build Step for the application project:** a `site/`-only commit should not rebuild the app (e.g. `git diff --quiet HEAD^ HEAD -- . ':!site'`). This is an owner setting; it is not configured in the repo.
+- **Legal copy:** `terms.md` and `privacy.md` say requests go "through the request-access form on this site". On `fourthmeridian.com` the form is now one click away on the app. That is a copy/legal decision, left unchanged because the parity test requires both trees to change together.
+- **No Open Graph image.** The app's `public/og-image.png` is a stale lockup per the root layout's own comment. A branded social image is a design follow-up.
+
