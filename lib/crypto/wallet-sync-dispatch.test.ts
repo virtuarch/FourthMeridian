@@ -188,8 +188,11 @@ check("a failed sync reports NO net-worth participation whatever the chain",
   // Bounded to the ADAPTERS literal itself — `feedsLegacyWealthHistory` names the
   // same constant below, and counting occurrences past the closing brace would
   // measure the predicate rather than the registrations.
-  const registryStart = dispatch.indexOf("const ADAPTERS");
-  const registry = dispatch.slice(registryStart, dispatch.indexOf("\n};", registryStart));
+  // PERF-3 — the registrations' facts live in the facts authority the
+  // dispatcher composes (wallet-sync-dispatch.core.ts).
+  const chainFacts = code(read("lib", "crypto", "wallet-sync-dispatch.core.ts"));
+  const registryStart = chainFacts.indexOf("export const WALLET_CHAIN_FACTS");
+  const registry = chainFacts.slice(registryStart, chainFacts.indexOf("\n};", registryStart));
   check("BTC alone is registered as contributing through the legacy balance column",
     (registry.match(/LEGACY_BALANCE_COLUMN/g) ?? []).length === 1
       && registry.indexOf("LEGACY_BALANCE_COLUMN") < registry.indexOf("ETH_CHAIN"));

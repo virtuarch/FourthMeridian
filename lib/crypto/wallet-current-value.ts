@@ -56,7 +56,9 @@ import {
   valuePositionRows,
 } from "@/lib/investments/valuation";
 import { todayUTCISO } from "@/lib/time/clock";
-import { usesLegacyColumnForCurrentValue } from "./wallet-sync-dispatch";
+// PERF-3 — the facts, not the dispatcher: this read runs on every /dashboard
+// render, and the dispatcher compiles every chain adapter and the Plaid SDK.
+import { usesLegacyColumnForCurrentValue } from "./wallet-sync-dispatch.core";
 import { readQuotesForDate, type StoredQuote } from "@/lib/prices/current-quotes";
 import { quoteServesAsOf, quoteProvenance, closeProvenance, type PriceProvenance } from "@/lib/prices/current-quote.core";
 import { nativeAssetForChain } from "./native-asset";

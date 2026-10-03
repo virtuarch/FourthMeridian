@@ -243,8 +243,10 @@ async function main(): Promise<void> {
     const src = read("lib/crypto/wallet-sync-dispatch.ts");
     check("11. the predicate no longer compares against UNAVAILABLE to infer success",
       !/valuation\?\.status\s*!==\s*"UNAVAILABLE"/.test(code(src)));
+    // PERF-3 — the declarations live in the facts authority the adapters compose.
+    const facts = read("lib/crypto/wallet-sync-dispatch.core.ts");
     check("11. …and every adapter DECLARES its valuation model",
-      (src.match(/valuationModel:\s*"(ADAPTER_VALUED|READ_TIME_VALUED)"/g) ?? []).length >= 5);
+      (facts.match(/valuationModel:\s*"(ADAPTER_VALUED|READ_TIME_VALUED)"/g) ?? []).length >= 5);
   }
 
   // ── 12. ASSET IDENTITY IS NEVER CROSSED ───────────────────────────────────

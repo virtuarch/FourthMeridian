@@ -86,8 +86,10 @@ async function main(): Promise<void> {
     // No invented partial success: neither adapter reports a valuation stage.
     check("6. ETH/SOL invent NO valuation stage (they are read-time valued)",
       !/valuation:/.test(evm) && !/valuation:/.test(sol));
+    // PERF-3 — the registry's facts live in wallet-sync-dispatch.core.ts.
+    const chainFacts = code(read("lib", "crypto", "wallet-sync-dispatch.core.ts"));
     check("6. …and the registry DECLARES them read-time valued",
-      (dispatch.match(/valuationModel: "READ_TIME_VALUED"/g) ?? []).length >= 4);
+      (chainFacts.match(/valuationModel: "READ_TIME_VALUED"/g) ?? []).length >= 4);
   }
 
   // ── SLICE 6 — THE PRODUCT-FACING SENTENCE ────────────────────────────────

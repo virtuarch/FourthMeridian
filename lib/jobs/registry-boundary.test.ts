@@ -21,10 +21,9 @@
  * Run:  npx tsx lib/jobs/registry-boundary.test.ts
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import path from "node:path";
 import { SCHEDULED_JOBS } from "@/lib/jobs/registry";
 import { SCHEDULED_JOB_FACTS } from "@/lib/jobs/registry.core";
+import { importClosure } from "../../scripts/lib/import-closure";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -35,83 +34,11 @@ function check(name: string, cond: boolean, detail?: string): void {
   }
 }
 
-const ROOT = process.cwd();
 const EXECUTABLE_REGISTRY = "lib/jobs/registry.ts";
-
-/** Source with comments removed — string-aware, so "/api/*" in a string survives. */
-function stripComments(src: string): string {
-  let out = "";
-  let i = 0;
-  let quote: string | null = null;
-  while (i < src.length) {
-    const c = src[i];
-    if (quote) {
-      out += c;
-      if (c === "\\") { out += src[i + 1] ?? ""; i += 2; continue; }
-      if (c === quote) quote = null;
-      i++;
-      continue;
-    }
-    if (c === "/" && src[i + 1] === "/") { while (i < src.length && src[i] !== "\n") i++; continue; }
-    if (c === "/" && src[i + 1] === "*") { const end = src.indexOf("*/", i + 2); i = end < 0 ? src.length : end + 2; continue; }
-    if (c === '"' || c === "'" || c === "`") quote = c;
-    out += c;
-    i++;
-  }
-  return out;
-}
-
-interface Edges { local: string[]; packages: string[] }
-
-/** Value edges of one module: static imports, re-exports, import(), require(). Type-only edges excluded. */
-function edgesOf(file: string): Edges {
-  const src = stripComments(readFileSync(path.join(ROOT, file), "utf8"));
-  const specs: string[] = [];
-  const staticRe = /\b(?:import|export)\s+(type\s+)?(?:[\w*${}\s,]+?\s+from\s+)?["']([^"']+)["']/g;
-  for (const m of src.matchAll(staticRe)) if (!m[1]) specs.push(m[2]);
-  for (const m of src.matchAll(/\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g)) specs.push(m[1]);
-  const local: string[] = [];
-  const packages: string[] = [];
-  for (const s of specs) {
-    const resolved = resolveLocal(file, s);
-    if (resolved) local.push(resolved);
-    else if (!s.startsWith(".") && !s.startsWith("@/")) packages.push(s.startsWith("@") ? s.split("/").slice(0, 2).join("/") : s.split("/")[0]);
-  }
-  return { local, packages };
-}
-
-function resolveLocal(from: string, spec: string): string | null {
-  let base: string;
-  if (spec.startsWith("@/")) base = spec.slice(2);
-  else if (spec.startsWith(".")) base = path.posix.normalize(path.posix.join(path.posix.dirname(from), spec));
-  else return null;
-  for (const ext of [".ts", ".tsx", "/index.ts", "/index.tsx", ""]) {
-    if (existsSync(path.join(ROOT, base + ext)) && /\.tsx?$/.test(base + ext)) return base + ext;
-  }
-  return null;
-}
-
-/** Transitive value closure, each file mapped to the file that first reached it. */
-function closure(roots: string[]): { via: Map<string, string | null>; packages: Map<string, string> } {
-  const via = new Map<string, string | null>();
-  const packages = new Map<string, string>();
-  const todo: [string, string | null][] = roots.map((r) => [r, null]);
-  while (todo.length > 0) {
-    const [file, parent] = todo.pop()!;
-    if (via.has(file)) continue;
-    via.set(file, parent);
-    const { local, packages: pk } = edgesOf(file);
-    for (const p of pk) if (!packages.has(p)) packages.set(p, file);
-    for (const l of local) todo.push([l, file]);
-  }
-  return { via, packages };
-}
-
-function chain(via: Map<string, string | null>, file: string): string {
-  const out = [file];
-  for (let p = via.get(file); p; p = via.get(p)) out.push(p);
-  return out.join(" ← ");
-}
+const graph = importClosure();
+const edgesOf = graph.edgesOf;
+const closure = (roots: string[]) => graph.closure(roots);
+const chain = (via: Map<string, string | null>, file: string) => graph.chain({ via, packages: new Map() }, file);
 
 // ── 1. The forbidden set, derived from the executable registry ──────────────
 console.log("1. the executable registry's bodies are the forbidden set");
