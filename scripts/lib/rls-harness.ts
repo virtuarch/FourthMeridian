@@ -381,11 +381,16 @@ insert into "BetaAccessRequest" (id,email,status,"inviteTokenHash","inviteExpire
 -- "AccountConnection" had ZERO rows, which made S7's ordering claim unprovable
 -- in the only way that matters: with an empty table the WRONG order and the
 -- RIGHT order both report "{count: 0}" and raise nothing, so a test over it
--- would pass whichever way round the writes went. "fm_app_upd" here is
--- "fm_account_visible("financialAccountId")", true only while an ACTIVE link
--- exists in a Space the actor is an ACTIVE member of — so these two rows are
--- what lets case 60 watch visibility be destroyed BEFORE the write that needed
--- it.
+-- would pass whichever way round the writes went.
+--
+-- ⚠️ RLS-D1 NARROWED WHO THIS BITES, AND CASE 60 MOVED WITH IT. "fm_app_upd" is
+-- now "an ACTIVE link into a visible Space OR I own the account", so the OWNER
+-- is no longer blinded by revoking her own links — case 60 runs the hazard as
+-- BOB, a non-owner co-member of "acct_shared", whose only arm is still
+-- "fm_account_visible". "ac_shared" is therefore the row that matters here:
+-- Alice owns the account, Bob merely co-sees it, and revoking the links he can
+-- see destroys the visibility his next write needs. "ac_alice" stays as the
+-- owner-side fixture.
 insert into "AccountConnection" (id,"financialAccountId","connectedByUserId","plaidItemDbId","syncStatus","updatedAt") values
   ('ac_shared','acct_shared','alice','pi_alice','pending',now()),
   ('ac_alice','acct_alice','alice','pi_alice','pending',now());
@@ -402,15 +407,18 @@ insert into "SpaceAccountLink" (id,"spaceId","financialAccountId",kind,status,"v
 insert into "AccountConnection" (id,"financialAccountId","connectedByUserId","plaidItemDbId","syncStatus","deletedAt","updatedAt") values
   ('ac_restore','acct_restore','alice','pi_alice','pending',now(),now());
 
--- ── S8 — AN INVESTMENT ACCOUNT ALICE OWNS AND CANNOT REACH ───────────────────
--- ⚠️ THE POINT IS THE ASYMMETRY BETWEEN TWO POLICIES. "FinancialAccount.fm_app_sel"
--- has an ""ownerUserId" = current_fm_user_id()" arm, so Alice can always see this
--- account itself. "AccountConnection.fm_app_sel" has NO such arm — it is
--- "fm_account_visible("financialAccountId")" alone — and this account's only
--- ACTIVE link is in space_b, which Alice is not a member of. So the connection
--- drops out while the account does not, which is exactly the shape
--- "getImportableAccountsForConnection" resolves through (case 70). Ownership is
--- not reach.
+-- ── S8 — AN INVESTMENT ACCOUNT ALICE OWNS AND IS NOT A MEMBER OF ─────────────
+-- ⚠️ THIS FIXTURE USED TO ENCODE AN ASYMMETRY BETWEEN TWO POLICIES, AND RLS-D1
+-- CLOSED IT. "FinancialAccount.fm_app_sel" always had an ""ownerUserId" =
+-- current_fm_user_id()" arm; its SUBTREE did not, so Alice could see this account
+-- and none of its contents, and "getImportableAccountsForConnection" offered her
+-- nothing for her own brokerage. 20261003000000 gives the thirteen subtree
+-- policies the same arm, and case 70 now asserts the two-sided invariant this
+-- account is still the only fixture that can express: its only ACTIVE link is in
+-- space_b, which ALICE is not a member of and BOB owns. So revoking "l_inv_b"
+-- leaves it link-unreachable for everyone — and ALICE still reaches it (she owns
+-- it) while BOB stops (he does not). Ownership is reach into one's OWN subtree,
+-- and into nobody else's.
 insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","updatedAt") values
   ('acct_alice_inv','Alice Brokerage','investment','TestBank','USER','alice',now());
 insert into "SpaceAccountLink" (id,"spaceId","financialAccountId",kind,status,"visibilityLevel","updatedAt") values
@@ -452,6 +460,11 @@ insert into "PositionObservation" (id,"financialAccountId","instrumentId",date,q
 -- row to UPDATE, two to DELETE as stale, and one to INSERT. Without the stale
 -- pair the rollback assertion would be vacuous — there would be nothing for the
 -- failed insert to have to undo.
+-- ⚠️ SINCE RLS-D1 THESE THREE ARE THE OWNER (POSITIVE-CONTROL) LEG ONLY: Alice
+-- owns "acct_alice", so her mid-write revoke no longer produces a refusal and her
+-- run applies all three legs. The REFUSAL leg runs as BOB against "acct_shared"
+-- and seeds its own three rows inside the case, because a non-owner is the only
+-- principal who can still fail the predicate.
 insert into "Holding" (id,"financialAccountId",symbol,name,quantity,price,value,"updatedAt") values
   ('h_aaa','acct_alice','AAA','Alpha',1,10,10,now()),
   ('h_bbb','acct_alice','BBB','Beta', 2,20,40,now()),

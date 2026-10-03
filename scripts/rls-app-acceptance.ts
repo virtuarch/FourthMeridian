@@ -789,66 +789,168 @@ async function main(): Promise<void> {
     bobOwns.out.trim() === "(none)" && bobSees.out.trim() === "acct_shared",
     `owned=${bobOwns.out.trim()} visible=${bobSees.out.trim()}`);
 
-  // ── [role] S7-F — THE DISCONNECT'S ORDER, AND WHAT THE WRONG ONE COSTS ─────
-  // `AccountConnection.fm_app_upd` is `fm_account_visible("financialAccountId")`,
-  // true only while an ACTIVE link exists in a Space the actor belongs to. So
-  // revoking the links first DESTROYS THE VISIBILITY THE NEXT WRITE NEEDS. The
-  // failure mode is the one this whole programme is about: zero rows, no error,
-  // a connection left open on an account the product has already soft-deleted.
-  // Both orders are run here, in one tenant transaction each, exactly as phase 1
-  // runs them.
-  const wrongOrder = psql(h.appUrl, `begin; set local app.user_id='alice';
-    ${counting(`update "SpaceAccountLink" set status='REVOKED', "revokedAt"=now(), "revokedByUserId"='alice'
+  // ── [role] S7-F — THE DISCONNECT'S ORDER, NARROWED BY THE OWNER ARM ───────
+  //
+  // ⚠️ RESTATED AT RLS-D1. WHAT THIS CASE USED TO ASSERT WAS A CONSEQUENCE OF A
+  // DEFECT, NOT AN INVARIANT. It ran both orders as ALICE — the account's OWNER —
+  // and asserted that links-before-connections closed ZERO connections. That held
+  // only because the thirteen subtree policies said `fm_account_visible(...)` and
+  // NOTHING ELSE, so archiving an account took its own owner's access with it.
+  // `20261003000000_rls_account_subtree_owner_arm` adds the `ownerUserId` arm the
+  // subtree's own root already had, and the owner now reaches her account's
+  // connections whether a link exists or not: the old assertion's `0` became `1`.
+  //
+  // THE ORDERING HAZARD IS NARROWED, NOT ELIMINATED, and the restated case proves
+  // exactly that — it is strictly stronger than the one it replaces, because it
+  // pins the hazard AND its new boundary instead of one uniform outcome:
+  //
+  //   * A NON-OWNER CO-MEMBER acting on a shared account still has only
+  //     `fm_account_visible` to stand on, and that arm is untouched. Bob co-sees
+  //     `acct_shared` (ALICE's) through space_s and space_b. Revoking the links he
+  //     can see leaves the account with one ACTIVE link in space_a he cannot see,
+  //     so his very next statement is blinded: 0 rows, no error, a connection left
+  //     open on an account the product has already soft-deleted. That is the
+  //     failure mode `b42e8e0` ordered the phases against, and this is its FIFTH
+  //     appearance in the programme. It is why the shipped order must stay.
+  //   * THE SAME TWO STATEMENTS IN THE SAME ORDER AS THE OWNER DO NOT FAIL. The
+  //     contrast is the point: the outcome now depends on the PRINCIPAL, and a
+  //     reader of the source-scan ordering pins must not conclude the hazard is
+  //     gone because their own dogfooding never reproduced it.
+  //
+  // ⚠️ THE NON-OWNER'S LINK COUNT IS A DENOMINATOR, NOT A LITERAL. `2` here is
+  // "the ACTIVE links Bob's role admits", asserted to be NON-ZERO and FEWER than
+  // exist — a `where` that matched nothing would also report 0 connections closed
+  // and would read exactly like the refusal under test.
+  restoreFixtures();
+  const sharedActiveAll = psql(h.ownerUrl,
+    `select coalesce(string_agg(id,',' order by id),'') from "SpaceAccountLink"
+      where "financialAccountId"='acct_shared' and status='ACTIVE';`).out.trim();
+  const sharedActiveBob = asTenant("bob",
+    `select coalesce(string_agg(id,',' order by id),'') from "SpaceAccountLink"
+      where "financialAccountId"='acct_shared' and status='ACTIVE';`).out.trim();
+  const allActive = sharedActiveAll ? sharedActiveAll.split(",") : [];
+  const bobActive = sharedActiveBob ? sharedActiveBob.split(",") : [];
+
+  // (1) THE NON-OWNER, WRONG ORDER — the hazard, reproduced.
+  const wrongOrder = psql(h.appUrl, `begin; set local app.user_id='bob';
+    ${counting(`update "SpaceAccountLink" set status='REVOKED', "revokedAt"=now(), "revokedByUserId"='bob'
                  where "financialAccountId"='acct_shared' and status='ACTIVE'`)}
     ${counting(`update "AccountConnection" set "deletedAt"=now()
                  where "financialAccountId"='acct_shared' and "deletedAt" is null`)}
     commit;`, false);
   const sharedConnAfter = psql(h.ownerUrl,
     `select coalesce("deletedAt"::text,'(still open)') from "AccountConnection" where id='ac_shared';`).out.trim();
-  const rightOrder = psql(h.appUrl, `begin; set local app.user_id='alice';
+
+  // (2) THE NON-OWNER, SHIPPED ORDER — the identical statements, and it works.
+  restoreFixtures();
+  const rightOrder = psql(h.appUrl, `begin; set local app.user_id='bob';
     ${counting(`update "AccountConnection" set "deletedAt"=now()
-                 where "financialAccountId"='acct_alice' and "deletedAt" is null`)}
-    ${counting(`update "SpaceAccountLink" set status='REVOKED', "revokedAt"=now(), "revokedByUserId"='alice'
-                 where "financialAccountId"='acct_alice' and status='ACTIVE'`)}
+                 where "financialAccountId"='acct_shared' and "deletedAt" is null`)}
+    ${counting(`update "SpaceAccountLink" set status='REVOKED', "revokedAt"=now(), "revokedByUserId"='bob'
+                 where "financialAccountId"='acct_shared' and status='ACTIVE'`)}
     commit;`, false);
-  const aliceConnAfter = psql(h.ownerUrl,
-    `select coalesce("deletedAt"::text,'(still open)') from "AccountConnection" where id='ac_alice';`).out.trim();
-  const wrongLines = lines(wrongOrder), rightLines = lines(rightOrder);
-  check(60, "[role] links-before-connections closes ZERO connections and raises NOTHING; connections-before-links closes the one it was meant to — the shipped order is the only one that works",
-    wrongOrder.ok && wrongLines[0] === "2" && wrongLines[1] === "0" && sharedConnAfter === "(still open)"
-    && rightOrder.ok && rightLines[0] === "1" && rightLines[1] === "1" && aliceConnAfter !== "(still open)",
-    `wrong=[${wrongLines.join("|")}] sharedConn=${sharedConnAfter} right=[${rightLines.join("|")}] aliceConn=${aliceConnAfter}`);
+  const sharedConnRight = psql(h.ownerUrl,
+    `select coalesce("deletedAt"::text,'(still open)') from "AccountConnection" where id='ac_shared';`).out.trim();
+
+  // (3) THE OWNER, WRONG ORDER — immune, and that is the new invariant.
+  restoreFixtures();
+  const ownerWrongOrder = psql(h.appUrl, `begin; set local app.user_id='alice';
+    ${counting(`update "SpaceAccountLink" set status='REVOKED', "revokedAt"=now(), "revokedByUserId"='alice'
+                 where "financialAccountId"='acct_shared' and status='ACTIVE'`)}
+    ${counting(`update "AccountConnection" set "deletedAt"=now()
+                 where "financialAccountId"='acct_shared' and "deletedAt" is null`)}
+    commit;`, false);
+  const sharedConnOwner = psql(h.ownerUrl,
+    `select coalesce("deletedAt"::text,'(still open)') from "AccountConnection" where id='ac_shared';`).out.trim();
+
+  const wrongLines = lines(wrongOrder), rightLines = lines(rightOrder), ownerLines = lines(ownerWrongOrder);
+  check(60, "[role] links-before-connections STILL closes ZERO connections and raises NOTHING for a NON-OWNER co-member, while the OWNER passes the identical wrong order — the hazard is narrowed to the visibility arm, not removed",
+    // the denominator: Bob's role admits some of acct_shared's ACTIVE links, and fewer than exist
+    bobActive.length > 0 && bobActive.length < allActive.length
+    && wrongOrder.ok && wrongLines[0] === String(bobActive.length) && wrongLines[1] === "0" && sharedConnAfter === "(still open)"
+    && rightOrder.ok && rightLines[0] === "1" && rightLines[1] === String(bobActive.length) && sharedConnRight !== "(still open)"
+    && ownerWrongOrder.ok && ownerLines[0] === String(aliceIds.length) && ownerLines[1] === "1" && sharedConnOwner !== "(still open)",
+    `bobSees=[${sharedActiveBob}] of [${sharedActiveAll}] · bobWrong=[${wrongLines.join("|")}] conn=${sharedConnAfter}` +
+    ` · bobRight=[${rightLines.join("|")}] conn=${sharedConnRight} · ownerWrong=[${ownerLines.join("|")}] conn=${sharedConnOwner}`);
 
   // ── [role] S7-G — AND THE RESTORE RUNS THE OTHER WAY, FOR THE SAME REASON ──
-  // The mirror image, and the reason the two orders are opposite rather than
-  // conventional. On the way back the links are what CONFER the visibility, so
-  // they must be reactivated first — and the un-delete attempted first observes
-  // nothing and writes nothing, so even the shortfall guard cannot fire: 0
-  // observed, 0 written, no deficit, no alarm, an account restored with its
-  // connection still archived.
+  //
+  // ⚠️ RESTATED AT RLS-D1, FOR THE SAME REASON AS 60 AND IN THE SAME DIRECTION.
+  // This case ran the restore as ALICE, who OWNS `acct_restore`, and asserted she
+  // observed 0 and wrote 0 before the links came back. With the owner arm she
+  // observes 1 and writes 1 — the old assertion's whole premise was the defect.
+  //
+  // The mirror image is still real and still the reason the two orders are
+  // OPPOSITE rather than conventional: on the way back the links are what CONFER
+  // the visibility, so a non-owner must have them reactivated FIRST. And the
+  // un-delete attempted before that is the quietest failure in the slice — 0
+  // observed, 0 written, no deficit, so not even the shortfall guard can fire,
+  // and an account comes back with its connection permanently archived.
+  //
+  // THE CONTRAST IS SHARPER HERE THAN IN 60, because both principals issue the
+  // IDENTICAL STATEMENT AGAINST THE IDENTICAL DATABASE STATE — links still
+  // revoked, connection still soft-deleted — and get different answers. Nothing
+  // about the statement, the account or the moment differs. Only who is asking.
+  //
+  // ⚠️ `l_restore_b` IS SEEDED HERE AND DELETED AT THE END. `acct_restore` is
+  // reachable from space_a alone, which Bob is not a member of, so without a
+  // REVOKED link of his own his `0 observed` would be the vacuity trap rather
+  // than the hazard — indistinguishable from "this account does not exist".
+  // Seeding it REVOKED (the post-archival shape) is what makes the links-first
+  // leg below able to hand him the visibility the write needs.
   restoreFixtures();
-  const wrongRestore = psql(h.appUrl, `begin; set local app.user_id='alice';
+  const seedRestoreB = psql(h.ownerUrl,
+    `insert into "SpaceAccountLink" (id,"spaceId","financialAccountId",kind,status,"visibilityLevel","revokedAt","revokedByUserId","updatedAt")
+       values ('l_restore_b','space_b','acct_restore','SHARED','REVOKED','FULL',now(),'alice',now());`);
+  if (!seedRestoreB.ok) throw new Error(`case 61 seed failed: ${seedRestoreB.err.split("\n")[0]}`);
+  // The denominator: how many of this account's links a links-first phase has to
+  // reactivate, counted from the owner connection before anybody is asked.
+  const restoreRevoked = psql(h.ownerUrl,
+    `select count(*) from "SpaceAccountLink" where "financialAccountId"='acct_restore' and status='REVOKED';`).out.trim();
+
+  // (1) THE NON-OWNER, CONNECTION-FIRST — blind, silent, and not even short.
+  const wrongRestore = psql(h.appUrl, `begin; set local app.user_id='bob';
     select count(*) from "AccountConnection" where "financialAccountId"='acct_restore' and "deletedAt" is not null;
     ${counting(`update "AccountConnection" set "deletedAt"=null
                  where "financialAccountId"='acct_restore' and "deletedAt" is not null`)}
     commit;`, false);
   const restoreConnMid = psql(h.ownerUrl,
     `select coalesce("deletedAt"::text,'(restored)') from "AccountConnection" where id='ac_restore';`).out.trim();
+
+  // (2) THE OWNER, SAME STATEMENT, SAME STATE — observes it and writes it.
+  const ownerRestore = psql(h.appUrl, `begin; set local app.user_id='alice';
+    select count(*) from "AccountConnection" where "financialAccountId"='acct_restore' and "deletedAt" is not null;
+    ${counting(`update "AccountConnection" set "deletedAt"=null
+                 where "financialAccountId"='acct_restore' and "deletedAt" is not null`)}
+    commit;`, false);
+  const restoreConnOwner = psql(h.ownerUrl,
+    `select coalesce("deletedAt"::text,'(restored)') from "AccountConnection" where id='ac_restore';`).out.trim();
+
+  // (3) RE-ARCHIVE, THEN THE SHIPPED ORDER FOR THE NON-OWNER: links first.
+  psql(h.ownerUrl, `update "AccountConnection" set "deletedAt"=now() where id='ac_restore';`);
   const reactivateLinks = psql(h.systemUrl, counting(
     `update "SpaceAccountLink" set status='ACTIVE', "revokedAt"=null, "revokedByUserId"=null
       where "financialAccountId"='acct_restore' and status='REVOKED'`), false);
-  const rightRestore = psql(h.appUrl, `begin; set local app.user_id='alice';
+  const rightRestore = psql(h.appUrl, `begin; set local app.user_id='bob';
     ${counting(`update "AccountConnection" set "deletedAt"=null
                  where "financialAccountId"='acct_restore' and "deletedAt" is not null`)}
     commit;`, false);
   const restoreConnEnd = psql(h.ownerUrl,
     `select coalesce("deletedAt"::text,'(restored)') from "AccountConnection" where id='ac_restore';`).out.trim();
-  const wr = lines(wrongRestore);
-  check(61, "[role] un-deleting the connection BEFORE reactivating the links observes 0 and writes 0 — so even the shortfall guard cannot fire; links-first makes the identical statement write 1",
-    wrongRestore.ok && wr[0] === "0" && wr[1] === "0" && restoreConnMid !== "(restored)"
-    && reactivateLinks.ok && reactivateLinks.out.trim() === "1"
+  const wr = lines(wrongRestore), owr = lines(ownerRestore);
+  check(61, "[role] un-deleting the connection BEFORE reactivating the links observes 0 and writes 0 for a NON-OWNER — so even the shortfall guard cannot fire; the OWNER's identical statement against the identical state writes 1, and links-first gives the non-owner the same 1",
+    Number(restoreRevoked) >= 2
+    && wrongRestore.ok && wr[0] === "0" && wr[1] === "0" && restoreConnMid !== "(restored)"
+    && ownerRestore.ok && owr[0] === "1" && owr[1] === "1" && restoreConnOwner === "(restored)"
+    && reactivateLinks.ok && reactivateLinks.out.trim() === restoreRevoked
     && rightRestore.ok && rightRestore.out.trim() === "1" && restoreConnEnd === "(restored)",
-    `wrongRestore=[${wr.join("|")}] mid=${restoreConnMid} reactivated=${reactivateLinks.out.trim()} rightRestore=${rightRestore.out.trim()} end=${restoreConnEnd}`);
+    `revokedLinks=${restoreRevoked} · bobConnFirst=[${wr.join("|")}] conn=${restoreConnMid}` +
+    ` · ownerConnFirst=[${owr.join("|")}] conn=${restoreConnOwner}` +
+    ` · reactivated=${reactivateLinks.out.trim()} bobLinksFirst=${rightRestore.out.trim()} end=${restoreConnEnd}`);
+  // Seeded here, removed here: `restoreFixtures()` restores BY ID and knows
+  // nothing about this row, so leaving it ACTIVE would silently hand Bob
+  // `acct_restore`'s whole subtree in every case after this one.
+  psql(h.ownerUrl, `delete from "SpaceAccountLink" where id='l_restore_b';`);
 
   // ── [channel] S7-I — AND THIS HALF FAILS LOUD, WHICH IS WHY IT IS fm_system ─
   // Phase 3 regenerates a snapshot per affected Space, and the list includes
@@ -932,7 +1034,12 @@ async function main(): Promise<void> {
            (select count(*) from "PositionObservation" where "importBatchId"='ib_n' and "deletedAt" is null)::text || '|' ||
            (select coalesce("supersededById",'(null)') from "PositionObservation" where id='po_n_open') || '|' ||
            (select count(*) from "AccountConnection" where "financialAccountId"='acct_alice_inv')::text;`).out.trim();
-  check(64, "[role] the import fixtures EXIST: Bob's batch, two live events, a USER_ASSERTED opening genuinely superseded, and an unreachable investment connection",
+  // ⚠️ THE LAST FIELD'S PROSE WAS CORRECTED AT RLS-D1 AND ITS ASSERTION WAS NOT.
+  // It used to read "an unreachable investment connection", which stopped being
+  // true of the owner when the subtree gained its `ownerUserId` arm. The census
+  // only ever counted that the row EXISTS — which is what case 70 needs of it —
+  // so the figure is untouched and only the sentence describing it moved.
+  check(64, "[role] the import fixtures EXIST: Bob's batch, two live events, a USER_ASSERTED opening genuinely superseded, and an investment connection linked ONLY into a Space Alice is not a member of",
     s8Census === "1|2|1|1|po_n_batch|1", s8Census);
 
   // ── [channel] S8-J — THE ROUTE'S 404 IS THE DATABASE'S ANSWER ─────────────
@@ -1071,25 +1178,89 @@ async function main(): Promise<void> {
     && openingAfter === "(null)|(live)",
     `result=${JSON.stringify(nResult)} opening=${openingAfter}`);
 
-  // ── [service] S8-O — OWNERSHIP IS NOT REACH ───────────────────────────────
-  // `getImportableAccountsForConnection` has no membership check of its own: it
-  // filters on the `userId` it is handed, and S8's claim is that on a tenant
-  // client the two predicates COINCIDE. This is the account that distinguishes
-  // the two — Alice OWNS it and her role can see the account row itself, because
-  // `FinancialAccount.fm_app_sel` has an `ownerUserId` arm. `AccountConnection`
-  // has none, so the connection drops out and the picker correctly offers
-  // nothing. The `db` half is the denominator: the row is there to be found.
+  // ── [service] S8-O — OWNERSHIP IS REACH INTO ONE'S OWN SUBTREE, AND ONLY IT ─
+  //
+  // ⚠️ RESTATED AT RLS-D1, AND THIS ONE INVERTS. Its title was "ownership is not
+  // reach", and that was never an invariant — it was the defect, stated as a
+  // property. `acct_alice_inv` is ALICE's investment account whose only ACTIVE
+  // link is in space_b; her role could see the ACCOUNT (because
+  // `FinancialAccount.fm_app_sel` always had an `ownerUserId` arm) and NONE of its
+  // contents, so the import picker offered her nothing for her own brokerage. The
+  // owner arm makes the subtree agree with its own root, and the claim reverses.
+  //
+  // IT MUST NOT INVERT INTO A HOLE, which is what the second half is for. The new
+  // invariant is TWO-SIDED and the case asserts both halves against the SAME ROW
+  // at the SAME MOMENT:
+  //
+  //   ALICE DOES   reach `ac_alice_inv` and the account's subtree with NO ACTIVE
+  //                link anywhere — the archival shape, which is every merge loser.
+  //   BOB STILL    DOES NOT. He is not the owner, so once the link he co-saw is
+  //                revoked his only arm is `fm_account_visible`, which is
+  //                untouched by the migration and now false.
+  //
+  // ⚠️ AND THE DENOMINATOR IS MEASURED, NOT ASSUMED. Bob's `null` after the revoke
+  // is worthless unless he could reach the row BEFORE it — otherwise "the policy
+  // refused him" and "the harness is looking at nothing" are the same observation.
+  // So both principals are read with `l_inv_b` ACTIVE first, and both find it.
   const imports = await import("@/lib/investments/connection-import-accounts");
+  const reachConn = (u: string) => tenant.withTenantDb(u, (tx) =>
+    tx.accountConnection.findUnique({ where: { id: "ac_alice_inv" }, select: { id: true } }));
+
+  // (1) THE DENOMINATOR — linked into space_b, BOTH principals reach the row.
+  restoreFixtures();
+  const linkedAlice = await reachConn("alice");
+  const linkedBob   = await reachConn("bob");
+
+  // (2) ARCHIVE THE SHAPE — revoke the account's ONLY ACTIVE link, exactly as
+  //     `revokeAccountLinksEverywhere` does. Nobody reaches it by visibility now.
+  const revokeInv = psql(h.ownerUrl,
+    `update "SpaceAccountLink" set status='REVOKED', "revokedAt"=now(), "revokedByUserId"='alice' where id='l_inv_b';`);
+  if (!revokeInv.ok) throw new Error(`case 70 could not archive l_inv_b: ${revokeInv.err.split("\n")[0]}`);
+  const archivedAlice = await reachConn("alice");
+  const archivedBob   = await reachConn("bob");
+
+  // (3) THE SUBTREE PROPER, not just `AccountConnection` — a Holding under the
+  //     same account, seeded here and removed below. This is the generalisation:
+  //     the arm was applied to thirteen tables, not to the one this case reads.
+  const seedInvHolding = psql(h.ownerUrl,
+    `insert into "Holding" (id,"financialAccountId",symbol,name,quantity,price,value,"updatedAt")
+       values ('h_inv_probe','acct_alice_inv','ZZZ','Zed',1,1,1,now());`);
+  if (!seedInvHolding.ok) throw new Error(`case 70 seed failed: ${seedInvHolding.err.split("\n")[0]}`);
+  const invHoldAlice = asTenant("alice", `select count(*) from "Holding" where "financialAccountId"='acct_alice_inv';`).out.trim();
+  const invHoldBob   = asTenant("bob",   `select count(*) from "Holding" where "financialAccountId"='acct_alice_inv';`).out.trim();
+  psql(h.ownerUrl, `delete from "Holding" where id='h_inv_probe';`);
+
+  // (4) AND THROUGH THE REAL SERVICE. `getImportableAccountsForConnection` has no
+  //     membership check of its own — it filters on the `userId` it is handed —
+  //     so Bob's leg deliberately passes ALICE's id: the refusal has to come from
+  //     the database, not from a parameter he controls.
   const viaTenant = await tenant.withTenantDb("alice", (tx) =>
+    imports.getImportableAccountsForConnection(tx, { connectionId: "pi_alice", userId: "alice" }));
+  const viaBob = await tenant.withTenantDb("bob", (tx) =>
     imports.getImportableAccountsForConnection(tx, { connectionId: "pi_alice", userId: "alice" }));
   const viaOwner = await imports.getImportableAccountsForConnection(
     dbMod.db as never, { connectionId: "pi_alice", userId: "alice" });
   const ownsItAnyway = await tenant.withTenantDb("alice", (tx) =>
     tx.financialAccount.findUnique({ where: { id: "acct_alice_inv" }, select: { id: true } }));
-  check(70, "[service] an investment account Alice OWNS but cannot reach yields NO importable accounts on her tenant client, while the owner connection finds it — ownership is not reach",
-    viaTenant.length === 0 && viaOwner.length === 1 && viaOwner[0].id === "acct_alice_inv"
+  restoreFixtures();
+
+  check(70, "[service] an investment account Alice OWNS with NO ACTIVE link anywhere is reachable BY HER through the real import picker and its whole subtree, and is reachable by Bob only while the link he co-saw is ACTIVE — the owner arm widened to the owner and to nobody else",
+    // the denominator: with the link ACTIVE both principals find the row
+    linkedAlice?.id === "ac_alice_inv" && linkedBob?.id === "ac_alice_inv"
+    // archived: the owner keeps it, the co-member loses it
+    && archivedAlice?.id === "ac_alice_inv" && archivedBob === null
+    // and the same split holds on another of the thirteen subtree tables
+    && invHoldAlice === "1" && invHoldBob === "0"
+    // through the real service, with the owner connection as the population
+    && viaTenant.length === 1 && viaTenant[0].id === "acct_alice_inv"
+    && viaBob.length === 0
+    && viaOwner.length === 1 && viaOwner[0].id === "acct_alice_inv"
     && ownsItAnyway?.id === "acct_alice_inv",
-    `tenant=${JSON.stringify(viaTenant.map((a) => a.id))} owner=${JSON.stringify(viaOwner.map((a) => a.id))} accountRowVisible=${ownsItAnyway?.id}`);
+    `linked alice=${linkedAlice?.id ?? "null"} bob=${linkedBob?.id ?? "null"}` +
+    ` · archived alice=${archivedAlice?.id ?? "null"} bob=${archivedBob === null ? "null" : archivedBob.id}` +
+    ` · subtreeHoldings alice=${invHoldAlice} bob=${invHoldBob}` +
+    ` · picker tenant=${JSON.stringify(viaTenant.map((a) => a.id))} bob=${JSON.stringify(viaBob.map((a) => a.id))}` +
+    ` owner=${JSON.stringify(viaOwner.map((a) => a.id))} accountRow=${ownsItAnyway?.id}`);
 
   // ── [channel] S8-P — ATOMICITY, ON A REAL TRANSACTION RATHER THAN A JOURNAL ─
   // `syncCurrentHoldings` is a three-legged reconciliation — delete stale, update
@@ -1099,11 +1270,29 @@ async function main(): Promise<void> {
   // fake client; this proves the OUTCOME against Postgres.
   //
   // The failure is produced by the policy itself, which is the sharpest form
-  // available: a second connection revokes the account's only visible link
-  // between the UPDATE leg and the INSERT leg, so `fm_account_visible` turns
-  // false and WITH CHECK refuses the insert. Under READ COMMITTED the statement
+  // available: a second connection revokes the account's visible links between
+  // the UPDATE leg and the INSERT leg, so `fm_account_visible` turns false and
+  // WITH CHECK refuses the insert. Under READ COMMITTED the statement
   // re-evaluates the predicate and sees the revocation, exactly as a concurrent
   // disconnect would cause it.
+  //
+  // ⚠️ RESTATED AT RLS-D1 — THE FORCING MECHANISM WAS THE DEFECT, THE PROPERTY
+  // WAS NOT. This case revoked `l_a` mid-write while running as ALICE, who OWNS
+  // `acct_alice`. The owner arm admits the row regardless of links, so there is
+  // no refusal left to force that way: the run now COMPLETES and all three legs
+  // apply. Nothing about atomicity changed — only the one lever this case used
+  // to pull. Relaxing it to "it did not throw" would have deleted the property.
+  //
+  // So the refusal is now forced by a principal who GENUINELY CANNOT PASS THE
+  // PREDICATE: BOB, on `acct_shared`, which ALICE owns and he merely co-sees
+  // through space_s and space_b. Revoking those links leaves one ACTIVE link in
+  // space_a that he is not a member of, and he owns nothing — both arms false,
+  // WITH CHECK refuses, and all three legs must come back.
+  //
+  // BOTH PRINCIPALS RUN, and the owner leg is not decoration: it is the positive
+  // control that proves the hooked client, the payload and the three legs are all
+  // REAL — a refusal case alone cannot tell "the write was refused" from "there
+  // was no write to refuse". Owner: 3 legs applied. Non-owner: 3 legs undone.
   //
   // ⚠️ A DUPLICATE-SYMBOL PAYLOAD CANNOT PRODUCE THIS. `planHoldingSync` dedupes
   // on symbol by design (`conflicts`, "keep first"), and `@@unique([financialAccountId,
@@ -1115,46 +1304,86 @@ async function main(): Promise<void> {
     security_id: id, ticker_symbol: ticker, name: `${ticker} Inc`, type: "equity",
     close_price: 10, iso_currency_code: "USD",
   });
-  let revokedMidWrite = false;
-  let holdingsErr = "no error";
-  try {
-    await tenant.withTenantDb("alice", async (tx) => {
-      const hooked = {
-        holding: {
-          findMany:   (a: never) => tx.holding.findMany(a),
-          deleteMany: (a: never) => tx.holding.deleteMany(a),
-          update:     (a: never) => tx.holding.update(a),
-          createMany: async (a: never) => {
-            if (!revokedMidWrite) {
-              revokedMidWrite = true;
-              const r = psql(h.ownerUrl, `update "SpaceAccountLink" set status='REVOKED' where id='l_a';`);
-              if (!r.ok) throw new Error(`out-of-band revoke failed: ${r.err.split("\n")[0]}`);
-            }
-            return tx.holding.createMany(a);
+  /**
+   * One run of the three-legged reconciliation under `userId`, with the account's
+   * links revoked out of band between the UPDATE leg and the INSERT leg.
+   * AAA changes (update leg) · BBB and CCC are absent (delete leg) · NEW is added
+   * (insert leg, the one whose admission the principal decides).
+   */
+  const syncUnderRevoke = async (userId: string, accountId: string, revokeSql: string) => {
+    let revoked = false;
+    let err = "no error";
+    try {
+      await tenant.withTenantDb(userId, async (tx) => {
+        const hooked = {
+          holding: {
+            findMany:   (a: never) => tx.holding.findMany(a),
+            deleteMany: (a: never) => tx.holding.deleteMany(a),
+            update:     (a: never) => tx.holding.update(a),
+            createMany: async (a: never) => {
+              if (!revoked) {
+                revoked = true;
+                const r = psql(h.ownerUrl, revokeSql);
+                if (!r.ok) throw new Error(`out-of-band revoke failed: ${r.err.split("\n")[0]}`);
+              }
+              return tx.holding.createMany(a);
+            },
           },
-        },
-      };
-      return sch.syncCurrentHoldings(hooked as never, {
-        financialAccountId: "acct_alice",
-        // AAA changes (update leg) · BBB and CCC are absent (delete leg) ·
-        // NEW is added (insert leg, the one the policy will refuse).
-        plaidHoldings: [
-          { account_id: "ext", security_id: "s_aaa", quantity: 9, institution_price: 10, institution_value: 90, iso_currency_code: "USD" },
-          { account_id: "ext", security_id: "s_new", quantity: 4, institution_price: 5,  institution_value: 20, iso_currency_code: "USD" },
-        ] as never,
-        securitiesById: { s_aaa: security("s_aaa", "AAA"), s_new: security("s_new", "NEW") } as never,
-        accountCurrency: "USD",
-        payloadComplete: true,
-      });
-    }, { timeout: 30_000 });
-  } catch (e) { holdingsErr = e instanceof Error ? e.message : String(e); }
-  psql(h.ownerUrl, `update "SpaceAccountLink" set status='ACTIVE', "revokedAt"=null, "revokedByUserId"=null where id='l_a';`);
-  const holdingsAfter = psql(h.ownerUrl,
+        };
+        return sch.syncCurrentHoldings(hooked as never, {
+          financialAccountId: accountId,
+          plaidHoldings: [
+            { account_id: "ext", security_id: "s_aaa", quantity: 9, institution_price: 10, institution_value: 90, iso_currency_code: "USD" },
+            { account_id: "ext", security_id: "s_new", quantity: 4, institution_price: 5,  institution_value: 20, iso_currency_code: "USD" },
+          ] as never,
+          securitiesById: { s_aaa: security("s_aaa", "AAA"), s_new: security("s_new", "NEW") } as never,
+          accountCurrency: "USD",
+          payloadComplete: true,
+        });
+      }, { timeout: 30_000 });
+    } catch (e) { err = e instanceof Error ? e.message : String(e); }
+    return { revoked, err };
+  };
+  const holdingsOf = (accountId: string) => psql(h.ownerUrl,
     `select coalesce(string_agg(symbol || ':' || quantity::text, ',' order by symbol),'(none)')
-       from "Holding" where "financialAccountId"='acct_alice';`).out.trim();
-  check(71, "[channel] a reconciliation whose INSERT leg is refused mid-write rolls back its DELETE and UPDATE legs too — all three legs or none, on a real transaction",
-    revokedMidWrite && /row-level security/i.test(holdingsErr) && holdingsAfter === "AAA:1,BBB:2,CCC:3",
-    `revoked=${revokedMidWrite} err=${holdingsErr.split("\n")[0]} holdings=${holdingsAfter}`);
+       from "Holding" where "financialAccountId"='${accountId}';`).out.trim();
+
+  // (1) THE OWNER — the same mid-write revoke, and the arm carries her through.
+  const ownerSync = await syncUnderRevoke("alice", "acct_alice", `update "SpaceAccountLink" set status='REVOKED' where id='l_a';`);
+  const ownerHoldings = holdingsOf("acct_alice");
+  psql(h.ownerUrl, `update "SpaceAccountLink" set status='ACTIVE', "revokedAt"=null, "revokedByUserId"=null where id='l_a';`);
+
+  // (2) THE NON-OWNER — seeded here, removed below, on ALICE's joint account.
+  //     Three live rows so every leg has real work: without the stale pair the
+  //     rollback claim would be vacuous, with nothing for the refusal to undo.
+  restoreFixtures();
+  const seedShared = psql(h.ownerUrl,
+    `insert into "Holding" (id,"financialAccountId",symbol,name,quantity,price,value,"updatedAt") values
+       ('h_s_aaa','acct_shared','AAA','Alpha',1,10,10,now()),
+       ('h_s_bbb','acct_shared','BBB','Beta', 2,20,40,now()),
+       ('h_s_ccc','acct_shared','CCC','Gamma',3,30,90,now());`);
+  if (!seedShared.ok) throw new Error(`case 71 seed failed: ${seedShared.err.split("\n")[0]}`);
+  // The denominator, read as BOB: the plan is computed from what HIS role sees,
+  // so a blinded pre-read would make a no-op look like a rollback.
+  const bobSeesHoldings = asTenant("bob", `select count(*) from "Holding" where "financialAccountId"='acct_shared';`).out.trim();
+  const nonOwnerSync = await syncUnderRevoke("bob", "acct_shared",
+    `update "SpaceAccountLink" set status='REVOKED' where "financialAccountId"='acct_shared' and status='ACTIVE';`);
+  const nonOwnerHoldings = holdingsOf("acct_shared");
+  psql(h.ownerUrl, `delete from "Holding" where "financialAccountId"='acct_shared';`);
+  restoreFixtures();
+
+  check(71, "[channel] a reconciliation whose INSERT leg is refused mid-write rolls back its DELETE and UPDATE legs too — all three legs or none; the refusal is forced by a NON-OWNER, because the OWNER's identical run is now admitted and applies all three",
+    // the owner leg: no refusal, and all three legs landed
+    ownerSync.revoked && ownerSync.err === "no error" && ownerHoldings === "AAA:9,NEW:4"
+    // the denominator for the non-owner leg: Bob's role genuinely sees all three
+    && bobSeesHoldings === "3"
+    // the non-owner leg: refused by the policy, and NOTHING moved
+    && nonOwnerSync.revoked && /row-level security/i.test(nonOwnerSync.err)
+    && nonOwnerHoldings === "AAA:1,BBB:2,CCC:3",
+    `owner revoked=${ownerSync.revoked} err=${ownerSync.err.split("\n")[0]} holdings=${ownerHoldings}` +
+    ` · nonOwner sawRows=${bobSeesHoldings} revoked=${nonOwnerSync.revoked}` +
+    ` err=${nonOwnerSync.err.split("\n").find((l) => /row-level security/i.test(l))?.trim() ?? nonOwnerSync.err.split("\n")[0]}` +
+    ` holdings=${nonOwnerHoldings}`);
 
   // ── [channel] S8 — THE IDLE-IN-TRANSACTION PROBE, AND WHAT IT DOES NOT PROVE ─
   // The owner asked for a real-role version of the provider-boundary pin: run a
