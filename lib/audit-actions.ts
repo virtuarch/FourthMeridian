@@ -158,6 +158,23 @@ export const AuditAction = {
   // `status` on a recoverable failure).
   PLAID_ITEM_STATUS_CHANGED:        "PLAID_ITEM_STATUS_CHANGED",
   WALLET_CONNECTION_STATUS_CHANGED: "WALLET_CONNECTION_STATUS_CHANGED",
+
+  // ── Provider-removal confirmation, which is NOT the same fact as status ────
+  // `PlaidItem.status = REVOKED` is the PRODUCT truth: the user disconnected,
+  // and a failed upstream removal must never make the institution reappear
+  // (lib/connections/space-data.ts loads the hub with `status: { not: REVOKED }`).
+  // These two record the SEPARATE question of whether the removal was CONFIRMED
+  // upstream, because status could not carry it: REVOKED is a one-way door and
+  // every retry work-list selects `status: ACTIVE`, so an unconfirmed failure
+  // used to drop out of all of them at once while the Item kept existing — and,
+  // per the vendored SDK, kept BILLING — at Plaid. That is what stranded seven
+  // live Items on 2026-07-22 (named by path in 056de06).
+  // The pair is a LIFECYCLE, read newest-first: an item owes cleanup when its
+  // most recent marker is UNCONFIRMED. CONFIRMED resolves it additively, so the
+  // failure record is never deleted. No schema change — AuditLog.action is a
+  // String by design.
+  PLAID_ITEM_REVOCATION_UNCONFIRMED: "PLAID_ITEM_REVOCATION_UNCONFIRMED",
+  PLAID_ITEM_REVOCATION_CONFIRMED:   "PLAID_ITEM_REVOCATION_CONFIRMED",
   ACCOUNT_ADD:              "ACCOUNT_ADD",
   ACCOUNT_REMOVE:           "ACCOUNT_REMOVE",
   REGISTER:                 "REGISTER",
