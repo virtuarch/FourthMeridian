@@ -202,11 +202,15 @@ async function main(): Promise<void> {
   check("job body gates the bulk regen on WEALTH_REGENERATION_ENABLED",
     job.includes("wealthRegenerationEnabled"));
 
+  // PERF-1 — slots live in the facts authority (registry.core.ts); the
+  // executable registry adds the body.
+  const registryFacts = code(read("lib", "jobs", "registry.core.ts"));
   const registry = code(read("lib", "jobs", "registry.ts"));
   // CH-3 — sync-crypto is now REGISTERED (every 6 hours), unlocked by the Vercel
   // plan upgrade off Hobby. The former "deferred — R7" ruling is retired.
   check("sync-crypto is registered in the dispatcher (6-hourly, derived from its [0,6,12,18] slots)",
-    /name:\s*["']sync-crypto["']/.test(registry) && /hourUTC:\s*\[0,\s*6,\s*12,\s*18\]/.test(registry));
+    /name:\s*["']sync-crypto["'],\s*hourUTC:\s*\[0,\s*6,\s*12,\s*18\]/.test(registryFacts) &&
+    /["']sync-crypto["']:\s*async\s*\(\)\s*=>\s*\(await import\(["']@\/jobs\/sync-crypto["']\)\)\.syncCrypto\(\)/.test(registry));
 
   const manual = code(read("app", "api", "accounts", "[id]", "sync", "route.ts"));
   check("manual route authenticates", manual.includes("requireUser"));
