@@ -136,6 +136,23 @@ export interface RenderedNotification {
 }
 
 /**
+ * Every icon a notification type may declare (kebab-case lucide names). Closed
+ * on purpose (PERF-1): components/notifications/NotificationBell.tsx maps each
+ * key to an explicitly imported icon, typed Record<NotificationIconKey, …>, so
+ * a new key here without an icon there — or a registry entry naming a key not
+ * listed here — is a compile error. The open alternative (lucide's `icons`
+ * map) put all ~1,755 lucide icons into every shell page, client and SSR.
+ */
+export type NotificationIconKey =
+  | "activity" | "badge-check" | "circle-check" | "copy" | "credit-card"
+  | "crown" | "download" | "file-check" | "file-warning" | "key-round"
+  | "life-buoy" | "lightbulb" | "mail" | "mail-check" | "mail-plus"
+  | "monitor-off" | "newspaper" | "scale" | "shield-alert" | "shield-check"
+  | "shield-off" | "sparkles" | "sunrise" | "trash-2" | "triangle-alert"
+  | "undo-2" | "user-check" | "user-minus" | "user-plus" | "user-x"
+  | "users" | "wrench";
+
+/**
  * One registry entry — the single definition site for a notification type
  * (F1). Adding a type = one entry in lib/notifications/registry.ts + one
  * producer call site, and nothing else.
@@ -159,7 +176,7 @@ export interface NotificationTypeDefinition {
    */
   dedupeKeyTemplate: string | null;
   /** Iconography key (lucide icon name) — UI stays switch-free. */
-  icon: string;
+  icon: NotificationIconKey;
   /**
    * VOCABULARY — declared, no producer wired yet (the EV-1 PROVISIONAL idiom).
    * WIRED      — a producer emits it (flipped by the wiring slice, in this file only).

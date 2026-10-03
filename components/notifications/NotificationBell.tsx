@@ -21,24 +21,74 @@
  * "Mark all read" is the single bulk action. No archive/delete in this slice
  * (S2 was narrowed to read-state only; archive ships with a later touch).
  *
- * Icons resolve from the registry's kebab-case lucide keys via the
- * lucide-react `icons` map — the registry stays the single definition site;
- * this component contains no per-type switch.
+ * Icons resolve from the registry's kebab-case keys through NOTIFICATION_ICONS,
+ * an explicit map typed over NotificationIconKey — the registry stays the
+ * single definition site and this component contains no per-type switch.
+ * PERF-1: never import lucide's `icons` object here — it is every lucide icon
+ * (~1,755 modules) and defeats Next's per-icon import optimisation, client
+ * AND SSR (components/notifications/notification-icons.test.ts guards it).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { Bell, CheckCheck, icons, type LucideIcon } from "lucide-react";
+import {
+  Activity, BadgeCheck, Bell, CheckCheck, CircleCheck, Copy, CreditCard, Crown,
+  Download, FileCheck, KeyRound, LifeBuoy, Lightbulb, Mail, MailCheck, MailPlus,
+  MonitorOff, Newspaper, Scale, ShieldAlert, ShieldCheck, ShieldOff, Sparkles,
+  Sunrise, Trash2, TriangleAlert, Undo2, UserCheck, UserMinus, UserPlus, UserX,
+  Users, Wrench, type LucideIcon,
+} from "lucide-react";
 import { formatRelativeTime } from "@/lib/format";
 import type { NotificationListItem } from "@/lib/notifications/read";
+import type { NotificationIconKey } from "@/lib/notifications/types";
 
-/** "triangle-alert" → icons["TriangleAlert"], with Bell as the safe fallback. */
-function iconFor(key: string): LucideIcon {
-  const pascal = key
-    .split("-")
-    .map((s) => (s.length > 0 ? s[0].toUpperCase() + s.slice(1) : s))
-    .join("");
-  return (icons as Record<string, LucideIcon>)[pascal] ?? Bell;
+/** Every registry icon key → its icon. Exhaustive by type: a key without an icon does not compile. */
+export const NOTIFICATION_ICONS: { readonly [K in NotificationIconKey]: LucideIcon } = {
+  "activity": Activity,
+  "badge-check": BadgeCheck,
+  "circle-check": CircleCheck,
+  "copy": Copy,
+  "credit-card": CreditCard,
+  "crown": Crown,
+  "download": Download,
+  "file-check": FileCheck,
+  // Deliberately Bell: lucide's `icons` map (the previous resolver) has no
+  // "FileWarning" entry, so this key has always rendered the Bell fallback.
+  // Preserved as-is; choosing a different icon is a product decision.
+  "file-warning": Bell,
+  "key-round": KeyRound,
+  "life-buoy": LifeBuoy,
+  "lightbulb": Lightbulb,
+  "mail": Mail,
+  "mail-check": MailCheck,
+  "mail-plus": MailPlus,
+  "monitor-off": MonitorOff,
+  "newspaper": Newspaper,
+  "scale": Scale,
+  "shield-alert": ShieldAlert,
+  "shield-check": ShieldCheck,
+  "shield-off": ShieldOff,
+  "sparkles": Sparkles,
+  "sunrise": Sunrise,
+  "trash-2": Trash2,
+  "triangle-alert": TriangleAlert,
+  "undo-2": Undo2,
+  "user-check": UserCheck,
+  "user-minus": UserMinus,
+  "user-plus": UserPlus,
+  "user-x": UserX,
+  "users": Users,
+  "wrench": Wrench,
+};
+
+/** The wire carries a string ("bell" when the type left the registry); only a known key indexes the map. */
+function isNotificationIconKey(key: string): key is NotificationIconKey {
+  return Object.hasOwn(NOTIFICATION_ICONS, key);
+}
+
+/** "triangle-alert" → TriangleAlert, with Bell as the safe fallback for anything unknown. */
+export function iconFor(key: string): LucideIcon {
+  return isNotificationIconKey(key) ? NOTIFICATION_ICONS[key] : Bell;
 }
 
 /** Priority accent for the item's icon tint. NORMAL/LOW stay neutral. */
