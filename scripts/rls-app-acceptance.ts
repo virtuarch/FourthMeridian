@@ -2306,7 +2306,11 @@ async function main(): Promise<void> {
     // CLIENT, because `dualWriteProviderAccountIdentity` does not accept one
     // yet — that conversion is a separate slice.
     {
-      const readBoth = async (externalAccountId: string, provider = PLAID) => {
+      // ⚠️ THE ANNOTATION IS LOAD-BEARING. `provider = PLAID` alone infers the
+      // LITERAL type "PLAID", so passing WALLET below is a type error — and the
+      // local tsc never reached this line (it aborts earlier on another
+      // session's stale .next/dev/types), so only the clean-copy CI saw it.
+      const readBoth = async (externalAccountId: string, provider: typeof PLAID | typeof WALLET = PLAID) => {
         const key = { provider, externalAccountId };
         const privileged = await dbMod.db.providerAccountIdentity.findMany({
           where: key, select: { financialAccountId: true },
