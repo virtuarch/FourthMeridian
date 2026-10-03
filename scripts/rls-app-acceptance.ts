@@ -1821,8 +1821,19 @@ async function main(): Promise<void> {
           && debt === "acct_alice" && audit === "1" && relinked === "1",
         `threw=${threw} principal=${principal} identity=${identity} population=${before} moved=${moved} left=${left} debt=${debt} audit=${audit} activeLink=${relinked}`);
 
+      // ⚠️ THE DebtProfile IS DELETED BY ID, AND IT WAS NOT, WHICH LEFT CASE 87
+      // ASSERTING SOMETHING ALREADY TRUE. This fold MOVED `dp_tfold` onto
+      // `acct_alice`, so deleting `acct_tfold` no longer cascades it: the winner
+      // kept a DebtProfile for the rest of the run. DebtProfile is a strict 1:1,
+      // so the next fold into `acct_alice` CORRECTLY declines to move the
+      // loser's — and case 87, which read "the loser's DebtProfile is still on
+      // the loser" as evidence that the fold had rolled back, was reading a
+      // value that would have been identical had the fold succeeded. A teardown
+      // that leaves a RELOCATED row behind is the same shape as a fixture
+      // restore that restored nothing and said nothing.
       psql(h.ownerUrl, `delete from "Transaction" where id in (${IDS});
                         delete from "DuplicateAccountCandidate" where "accountBId"='acct_tfold';
+                        delete from "DebtProfile" where id='dp_tfold';
                         delete from "FinancialAccount" where id='acct_tfold';`);
     }
 
@@ -1861,6 +1872,10 @@ async function main(): Promise<void> {
         const r = psql(h.ownerUrl, `
           delete from "DuplicateAccountCandidate" where "accountBId"='acct_afold' or "accountAId"='acct_afold';
           delete from "Transaction" where id in (${IDS});
+          -- ⚠️ BY ID, NOT BY CASCADE. Once a fold has MOVED this profile onto
+          -- the winner, deleting the loser account no longer removes it, and the
+          -- re-seed below would collide on its primary key.
+          delete from "DebtProfile" where id='dp_afold';
           delete from "FinancialAccount" where id='acct_afold';
           insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","deletedAt","updatedAt") values
             ('acct_afold','Alice Checking (archived dup)','checking','TestBank','USER','alice',now(),now());
@@ -1888,6 +1903,13 @@ async function main(): Promise<void> {
       const censusBefore    = census();
       const population      = rowsOn(IDS, "acct_afold");
       const loserDebtCount  = psql(h.ownerUrl, `select count(*) from "DebtProfile" where "financialAccountId"='acct_afold';`).out.trim();
+      // ⚠️ THE PREMISE FOR THE DebtProfile HALF, AND ITS ABSENCE MADE THIS CASE
+      // READ A VALUE THAT WAS ALREADY TRUE. DebtProfile is a strict 1:1, so the
+      // fold CORRECTLY declines to move the loser's when the winner already has
+      // one — which is exactly what case 86's teardown used to leave behind. If
+      // a future case relocates a profile onto `acct_alice` again, this premise
+      // goes red instead of the conclusion quietly changing meaning.
+      const winnerDebtBefore = psql(h.ownerUrl, `select count(*) from "DebtProfile" where "financialAccountId"='acct_alice';`).out.trim();
       const loserLinkSpaces = psql(h.ownerUrl,
         `select coalesce(string_agg(distinct "spaceId",',' order by "spaceId"),'(none)') from "SpaceAccountLink" where "financialAccountId"='acct_afold';`).out.trim();
 
@@ -1895,8 +1917,16 @@ async function main(): Promise<void> {
       //      role. `ownedOnRole` is itself only answerable BECAUSE
       //      FinancialAccount.fm_app_sel has an owner arm: an archived account
       //      has no ACTIVE link, so nothing else could return this row.
-      const ownedOnRole   = onRole("alice", `select ("ownerUserId" = current_fm_user_id())::text from "FinancialAccount" where id='acct_afold';`);
-      const winnerOwned   = onRole("alice", `select ("ownerUserId" = current_fm_user_id())::text from "FinancialAccount" where id='acct_alice';`);
+      //
+      // ⚠️ NORMALISED TO AN EXPLICIT TOKEN, NOT `boolean::text`. psql prints a
+      // bare boolean column as `t`/`f` but a cast one as `true`/`false`, and
+      // comparing the cast against `f` is the exact bug scripts/lib/
+      // rls-harness.ts records in assertTenantPrincipal. `visibleToAlice` below
+      // reads a bare boolean and so reads `t`/`f`; these read `yes`/`no`.
+      const ownedToken = (acct: string) => onRole("alice",
+        `select case when "ownerUserId" = current_fm_user_id() then 'yes' else 'no' end from "FinancialAccount" where id='${acct}';`);
+      const ownedOnRole   = ownedToken("acct_afold");
+      const winnerOwned   = ownedToken("acct_alice");
       const loserVisible  = visibleToAlice("acct_afold");
       const winnerVisible = visibleToAlice("acct_alice");
 
@@ -1977,10 +2007,10 @@ async function main(): Promise<void> {
       check(87, "[role+service] the SAME fold over an ARCHIVED loser — the shape every production merge actually has — now completes END TO END on a real fm_app phase, all the way through DuplicateAccountCandidate: the source is OWNED and provably NOT visible through the active-link arm, the destination is visible and owned, every observed Transaction and the DebtProfile move, every Space the loser was linked in is re-pointed, the tenant can READ the audit row she wrote, NOTHING else in the whole Transaction table moves, and the two refusals the owner arm must not have removed both hold — the cross-owner destination by the application guard and the other tenant by the policy itself",
         threw === "(no throw)"
           && principal === "fm_app" && identity === "alice"
-          && ownedOnRole === "t" && winnerOwned === "t"
+          && ownedOnRole === "yes" && winnerOwned === "yes"
           && loserVisible === "f" && winnerVisible === "t"
           && population === "2" && moved === population && left === "0"
-          && loserDebtCount === "1" && debtAfter === "acct_alice"
+          && loserDebtCount === "1" && winnerDebtBefore === "0" && debtAfter === "acct_alice"
           && everyLoserSpaceRepointed
           && auditAfter === "1" && auditSeenByAlice === "1" && auditSeenByBob === "0"
           && onlyTheOnePairMoved
@@ -1988,14 +2018,18 @@ async function main(): Promise<void> {
           && bobRefused,
         `threw=${threw} principal=${principal} identity=${identity} | owned(loser)=${ownedOnRole} owned(winner)=${winnerOwned} ` +
         `visible(loser)=${loserVisible} visible(winner)=${winnerVisible} | population=${population} moved=${moved} left=${left} ` +
-        `debtPopulation=${loserDebtCount} debt=${debtAfter} | loserSpaces=[${loserLinkSpaces}] winnerActiveSpaces=[${winnerLinkSpaces}] repointed=${everyLoserSpaceRepointed} ` +
+        `debtPopulation=${loserDebtCount} winnerDebtBefore=${winnerDebtBefore} debt=${debtAfter} | loserSpaces=[${loserLinkSpaces}] winnerActiveSpaces=[${winnerLinkSpaces}] repointed=${everyLoserSpaceRepointed} ` +
         `| audit=${auditAfter} seenByAlice=${auditSeenByAlice} seenByBob=${auditSeenByBob} ` +
         `| censusDelta={${changed.map(([k, d]) => `${k}:${d > 0 ? "+" : ""}${d}`).join(" ")}} onlyThePair=${onlyTheOnePairMoved} ` +
         `| crossOwner=${crossOwner} crossStillOnLoser=${crossStillOnLoser}/${crossPopulation} crossAudit=${crossAuditRows} ` +
         `| bobPolicyRefusal=${bobRefused ? "refused" : bobWrite.err.split("\n")[0] || `ADMITTED — wrote ${bobWrite.out.trim()}`}`);
 
+      // By id, for the reason the re-seed is: a MOVED profile no longer
+      // cascades with the loser, and leaving one on `acct_alice` would make the
+      // next fold into it decline to move its loser's — silently.
       psql(h.ownerUrl, `delete from "Transaction" where id in (${IDS});
                         delete from "DuplicateAccountCandidate" where "accountBId"='acct_afold' or "accountAId"='acct_afold';
+                        delete from "DebtProfile" where id='dp_afold';
                         delete from "FinancialAccount" where id='acct_afold';`);
     }
   }
