@@ -130,9 +130,12 @@ export const AUDITS: readonly AuditEntry[] = [
     // tiers and in both directions.
     name: "audit-account-reparenting", tier: "REQUIRED", needsDb: false,
     what: "every code site capable of changing a FinancialAccount FK is classified in a closed allowlist, " +
-          "the FK inventory is read from the schema rather than copied, the two unscoped-source provider lookups " +
-          "still read and compare the account, and Transaction.counterpartyAccountId — a second FK NO RLS predicate " +
-          "mentions — has a closed participant inventory with exactly one non-null writer",
+          "the FK inventory is read from the schema rather than copied, EVERY (model, column) FK pair is either " +
+          "PREDICATED by a named account-subtree policy migration that still correlates against the outer row or " +
+          "explicitly CLASSIFIED with a reason (RLS-D1b — the sweep that enumerated its tables by column name), " +
+          "the two unscoped-source provider lookups still read and compare the account, and " +
+          "Transaction.counterpartyAccountId — a second FK NO RLS predicate mentions — has a closed participant " +
+          "inventory with exactly one non-null writer",
   },
   {
     name: "audit-ui-truth-convergence", tier: "REQUIRED", needsDb: true,

@@ -136,6 +136,119 @@ const IDENTITY_COLUMNS = [
 ];
 
 /* ────────────────────────────────────────────────────────────────────────────
+ * 1b. THE POLICY-COVERAGE INVENTORY — RLS-D1b
+ *
+ * ⚠️ THE FAILURE THIS EXISTS FOR, AND IT IS THIS PROGRAMME'S OWN.
+ *
+ * RLS-D1 gave the account subtree an `ownerUserId = me` arm, and it found the
+ * tables to widen BY LOOKING FOR A COLUMN NAMED `financialAccountId`. Thirteen
+ * tables matched. `DuplicateAccountCandidate` did not — its FK columns are
+ * `accountAId` and `accountBId` — so it silently inherited nothing, and the
+ * legitimate same-owner archived fold kept aborting on 42501 at its very last
+ * statement, with `code` UNDEFINED. The sweep was CORRECT about every table it
+ * could see. It was enumerated by a NAMING CONVENTION, and a convention is not
+ * an invariant.
+ *
+ * So the coverage set is written down PER (MODEL, COLUMN) PAIR — the granularity
+ * the sweep got wrong — against the pairs this file already derives from
+ * prisma/schema.prisma. A new FK to FinancialAccount, under ANY column name,
+ * is an unknown pair and FAILS THE BUILD. It cannot inherit nothing quietly,
+ * because nothing is not one of the two answers available.
+ *
+ * Each PREDICATED entry names the migration that writes the predicate AND the
+ * exact spelling by which that predicate NAMES THE OUTER ROW, and both are
+ * verified to still be present in that file. A record that cannot rot is the
+ * only kind worth keeping: this programme has already shipped an audit holding
+ * a copy of a rule its authority had outgrown.
+ *
+ * ⚠️ IT ASSERTS COVERAGE, NOT SHAPE. "Some account-subtree predicate names this
+ * column" is a weaker claim than "the predicate says the right thing", and it is
+ * deliberately the weaker one — the shape is proved on a real role by
+ * scripts/rls-app-acceptance.ts and read off `pg_policies` in the migration's
+ * own header, neither of which can run with no database. What this guard buys is
+ * that a column NO predicate mentions can never again be discovered by a merge
+ * failing in production.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+type Coverage =
+  /** An account-subtree policy predicate names this column. */
+  | { kind: "PREDICATED"; migration: string; names: string; why: string }
+  /** No predicate names it, ON PURPOSE, and the reason is recorded. */
+  | { kind: "CLASSIFIED"; why: string };
+
+/** The thirteen-table subtree sweep's own spelling, from RLS-D1. */
+const D1 = "20261003000000_rls_account_subtree_owner_arm";
+const D1_NAMES = '%1$I."financialAccountId"';
+const D1_WHY =
+  "one of the thirteen account-subtree tables: `(an ACTIVE link into a visible Space) OR (I own the account)`, " +
+  "written out in the policy body rather than called, because fm_account_visible() is not inlined.";
+
+const FK_POLICY_COVERAGE: Readonly<Record<string, Coverage>> = {
+  // ── The thirteen-table subtree sweep (RLS-D1). Twelve of them are FK
+  //    relations; the thirteenth, TransactionObservation, reaches the account
+  //    through a SOFT column with no Prisma relation, so it is not a pair here.
+  "Transaction.financialAccountId":              { kind: "PREDICATED", migration: D1, names: D1_NAMES, why: D1_WHY },
+  "TransactionEvent.financialAccountId":         { kind: "PREDICATED", migration: D1, names: D1_NAMES, why: D1_WHY },
+  "PositionObservation.financialAccountId":      { kind: "PREDICATED", migration: D1, names: D1_NAMES, why: D1_WHY },
+  "Holding.financialAccountId":                  { kind: "PREDICATED", migration: D1, names: D1_NAMES, why: D1_WHY },
+  "InvestmentEvent.financialAccountId":          { kind: "PREDICATED", migration: D1, names: D1_NAMES, why: D1_WHY },
+  "InvestmentEventCoverage.financialAccountId":  { kind: "PREDICATED", migration: D1, names: D1_NAMES, why: D1_WHY },
+  "PositionCoverage.financialAccountId":         { kind: "PREDICATED", migration: D1, names: D1_NAMES, why: D1_WHY },
+  "PositionReconstruction.financialAccountId":   { kind: "PREDICATED", migration: D1, names: D1_NAMES, why: D1_WHY },
+  "DebtProfile.financialAccountId":              { kind: "PREDICATED", migration: D1, names: D1_NAMES, why: D1_WHY },
+  "AccountConnection.financialAccountId":        { kind: "PREDICATED", migration: D1, names: D1_NAMES, why: D1_WHY },
+  "ProviderAccountIdentity.financialAccountId":  { kind: "PREDICATED", migration: D1, names: D1_NAMES, why: D1_WHY },
+  "ImportBatch.financialAccountId":              { kind: "PREDICATED", migration: D1, names: D1_NAMES, why: D1_WHY },
+
+  // ── THE PAIR D1's SWEEP COULD NOT SEE, closed by RLS-D1b. Two FK columns on
+  //    one table, and the policy is a CONJUNCTION over both — so a single
+  //    uncovered column would have been enough to keep the fold failing.
+  "DuplicateAccountCandidate.accountAId": {
+    kind: "PREDICATED", migration: "20261003000100_rls_duplicate_candidate_owner_arm",
+    names: '"DuplicateAccountCandidate".%1$I',
+    why: "§17 Class-H conjunction, each half now `(visible OR owned)`. THIS IS THE PAIR THE COLUMN-NAME SWEEP MISSED: " +
+         "a merge's loser is archived and link-revoked BY CONSTRUCTION, so the visibility-only half made the audit row — " +
+         "the only durable record that the fold happened — unwritable by the tenant who performed it.",
+  },
+  "DuplicateAccountCandidate.accountBId": {
+    kind: "PREDICATED", migration: "20261003000100_rls_duplicate_candidate_owner_arm",
+    names: '"DuplicateAccountCandidate".%1$I',
+    why: "the other half of the same conjunction, widened in the same loop so the two columns cannot diverge.",
+  },
+
+  // ── A §17 Class-H table the sweep COULD see and still did not widen ───────
+  "GoalContribution.financialAccountId": {
+    kind: "PREDICATED", migration: "20261002000100_rls_roles_and_policies",
+    names: 'fm_account_visible("financialAccountId")',
+    why: "⚠️ NAMED, BUT VISIBILITY-ONLY — the one residue of D1's theorem, recorded rather than quietly widened. " +
+         "`EXISTS(SpaceGoal in a visible Space) AND fm_account_visible(\"financialAccountId\")`, so the same " +
+         "archived-owner asymmetry D1 closed for the subtree survives here. It is NOT a coverage gap (this guard's " +
+         "property holds) and it is not a live defect either: W2 retired Goals, the table has zero rows, the merge " +
+         "deliberately does not re-point it (the rows would cascade with the loser), and no code path writes it. " +
+         "Widening a retired concept is a separate decision from completing D1.",
+  },
+
+  // ── THE TWO PAIRS NO PREDICATE NAMES, EACH ON PURPOSE ────────────────────
+  "SpaceAccountLink.financialAccountId": {
+    kind: "CLASSIFIED",
+    why: "THE LINK *IS* THE ACCOUNT PREDICATE. SpaceAccountLink is the table every `fm_account_visible`-shaped arm " +
+         "reads, so its own tenancy cannot be account-derived without circularity; it is `spaceId IN " +
+         "(SELECT fm_visible_space_ids())` (20261002000100 §7) and that is the root of the whole subtree's reach. " +
+         "A policy here naming `financialAccountId` would be the self-reference that forced fm_visible_space_ids() " +
+         "to be SECURITY DEFINER in the first place.",
+  },
+  "Transaction.counterpartyAccountId": {
+    kind: "CLASSIFIED",
+    why: "A SECOND FK ON A POLICIED TABLE WHOSE PREDICATE NAMES ONLY `financialAccountId` — so a cross-owner value " +
+         "in this column is invisible to tenancy enforcement. That is a recorded FINDING, not an oversight, and §5 " +
+         "below holds its whole participant inventory: it grants no read (gatedCounterpartyId gates it in the " +
+         "APPLICATION), exactly one file persists a non-null value and does so from the owner's own wallet map at " +
+         "create time, and the only writes to an existing row are the literal `null` this audit pins. It concerns " +
+         "WHICH account a row points at, which is the re-parenting invariant's territory, not the subtree's.",
+  },
+};
+
+/* ────────────────────────────────────────────────────────────────────────────
  * 2. THE SOURCE SET
  * ──────────────────────────────────────────────────────────────────────────── */
 
@@ -651,6 +764,72 @@ check("Transaction.counterpartyAccountId is IN the inventory (the second FK no R
   FKS.some((f) => f.model === "Transaction" && f.field === "counterpartyAccountId"));
 check("the scan found a non-zero population (an empty scan is indistinguishable from a clean one)",
   sites.length > 0, `${sites.length} sites`);
+
+// ── 6a2. RLS-D1b — EVERY FK PAIR IS PREDICATED OR CLASSIFIED ────────────────
+// The guard against the failure in §1b's header: a policy sweep that enumerated
+// its tables BY COLUMN NAME. The pairs come from the schema; the answers come
+// from a closed table; "nothing" is not one of the answers.
+{
+  const pairs = FKS.map((f) => `${f.model}.${f.field}`);
+  const known = Object.keys(FK_POLICY_COVERAGE);
+
+  const uncovered = pairs.filter((p) => !(p in FK_POLICY_COVERAGE)).sort();
+  check(`every FinancialAccount FK pair has a recorded policy-coverage answer (${pairs.length} pairs)`,
+    uncovered.length === 0,
+    uncovered.length
+      ? `FK COLUMN(S) WITH NO RECORDED POLICY COVERAGE — this is the RLS-D1 failure repeating. A new FK to\n      ` +
+        `FinancialAccount under a new column name inherits NOTHING from the account-subtree sweep, which was\n      ` +
+        `enumerated on the name "financialAccountId". Add each pair to FK_POLICY_COVERAGE in this file, either\n      ` +
+        `PREDICATED (naming the migration and the spelling by which its predicate names the outer row) or\n      ` +
+        `CLASSIFIED (with the reason no predicate may name it):\n      ` +
+        uncovered.map((p) => {
+          const f = FKS.find((x) => `${x.model}.${x.field}` === p)!;
+          return `${p}  (prisma/schema.prisma:${f.schemaLine})`;
+        }).join("\n      ")
+      : "");
+
+  const staleCoverage = known.filter((k) => !pairs.includes(k)).sort();
+  check("no coverage entry describes an FK that no longer exists (the inventory may SHRINK, by deleting the entry)",
+    staleCoverage.length === 0,
+    staleCoverage.length ? `stale: ${staleCoverage.join(", ")}` : "");
+
+  // ⚠️ AND THE RECORD MUST NOT BE ABLE TO ROT. Each PREDICATED entry claims a
+  // migration file names the TABLE and the COLUMN and correlates against the
+  // OUTER row by a stated spelling. All three are read back out of that file,
+  // so renaming a column or rewriting a predicate cannot leave a green entry
+  // describing a policy that no longer says it. A migration is immutable by
+  // policy, which is exactly why asserting against it is worth anything.
+  let predicated = 0;
+  for (const pair of pairs.filter((p) => p in FK_POLICY_COVERAGE)) {
+    const cov = FK_POLICY_COVERAGE[pair];
+    const [model, column] = [pair.slice(0, pair.indexOf(".")), pair.slice(pair.indexOf(".") + 1)];
+    if (cov.kind === "CLASSIFIED") {
+      check(`${pair} — CLASSIFIED, with a reason no predicate may name it`,
+        cov.why.trim().length > 80, `the reason is ${cov.why.trim().length} chars; a classification nobody can check is not one`);
+      continue;
+    }
+    predicated++;
+    const path = join(ROOT, "prisma/migrations", cov.migration, "migration.sql");
+    let sql = "";
+    try { sql = readFileSync(path, "utf8"); } catch { sql = ""; }
+    const namesTable  = sql.includes(`"${model}"`) || sql.includes(`'${model}'`);
+    const namesColumn = sql.includes(`"${column}"`) || sql.includes(`'${column}'`);
+    const correlates  = sql.includes(cov.names);
+    check(`${pair} — PREDICATED by ${cov.migration}, which still names the table, the column and the outer-row correlation`,
+      sql.length > 0 && /\bPOLICY\b/.test(sql) && namesTable && namesColumn && correlates,
+      sql.length === 0
+        ? `prisma/migrations/${cov.migration}/migration.sql is unreadable — the recorded coverage cannot be verified`
+        : `policy=${/\bPOLICY\b/.test(sql)} table("${model}")=${namesTable} column("${column}")=${namesColumn} ` +
+          `correlation(${cov.names})=${correlates} — a PREDICATED record whose migration no longer says this is a record that rotted`);
+  }
+
+  // Vacuity: if the pair derivation or the table were empty, every loop above
+  // would be a no-op and this section would print nothing but passes.
+  check(`the coverage inventory is non-vacuous: ${predicated} PREDICATED pair(s) verified against their migrations`,
+    predicated >= 15, `${predicated} — the subtree alone accounts for twelve, plus GoalContribution and both DuplicateAccountCandidate columns`);
+  const classified = pairs.filter((p) => FK_POLICY_COVERAGE[p]?.kind === "CLASSIFIED");
+  console.log(`  [coverage] ${pairs.length} FK pair(s) — PREDICATED=${predicated} CLASSIFIED=${classified.length} (${classified.join(", ")})`);
+}
 check(`the scanned file set is the enumerate-then-filter form, not a git pathspec glob (${FILES.length} files)`,
   FILES.length > 500 && FILES.some((f) => f === "lib/auth.ts"),
   "lib/auth.ts missing — the `lib/**/*.ts` pathspec defect has returned");

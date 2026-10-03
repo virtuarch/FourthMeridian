@@ -1716,36 +1716,41 @@ async function main(): Promise<void> {
   // four deferrals turned on is whether the legitimate same-owner fold actually
   // WORKS as `fm_app` with no privileged fallback anywhere in the path.
   //
-  // It does, and it does not, and the boundary between those two answers is one
-  // statement. Both halves are measured here, each with a denominator:
+  // It does — and RLS-ACC-S6 is the slice in which the second half of that
+  // answer changed. Both shapes are measured here, each with a denominator:
   //
-  //   86  THE POSITIVE. The whole fold — guard, transactions, DebtProfile,
-  //       links, audit row — executes through a `withTenantDb` phase, and the
-  //       phase is shown reading `current_user = fm_app` with `app.user_id` set
-  //       in the SAME transaction the merge then runs in. No fallback can hide
-  //       behind that: the principal is read, not assumed.
+  //   86  THE LIVE-LOSER FOLD — the sibling-consolidation shape, where the
+  //       tenant can see both accounts. The whole fold — guard, transactions,
+  //       DebtProfile, links, audit row — executes through a `withTenantDb`
+  //       phase, and the phase is shown reading `current_user = fm_app` with
+  //       `app.user_id` set in the SAME transaction the merge then runs in. No
+  //       fallback can hide behind that: the principal is read, not assumed.
   //
-  //   87  THE RESIDUE. Change ONE thing — archive the loser and revoke its link,
-  //       which is the shape EVERY production fold actually faces — and the
-  //       identical call is refused with 42501 on
+  //   87  THE ARCHIVED-LOSER FOLD — the shape EVERY production fold actually
+  //       faces. It used to be refused with 42501 on
   //       `DuplicateAccountCandidate`. RLS-D1 gave the thirteen account-subtree
   //       tables an `ownerUserId = me` arm; that sweep was keyed on tables with
   //       a column literally named `financialAccountId`, and this table's FK
   //       columns are `accountAId`/`accountBId`. A merge's loser is archived BY
-  //       CONSTRUCTION, so `fm_account_visible(loser)` is false and the audit
-  //       row — the only durable record that the fold happened — cannot be
+  //       CONSTRUCTION, so `fm_account_visible(loser)` was false and the audit
+  //       row — the only durable record that the fold happened — could not be
   //       written by the tenant who performed it.
   //
-  // ⚠️ 87 CARRIES ITS OWN DENOMINATOR, three ways, because "the fold failed" is
-  // also what a typo, a missing fixture or a broken conversion would report:
-  // the two `fm_account_visible()` values are read on the role and DISAGREE, the
-  // post-state proves the whole fold ROLLED BACK rather than half-applied, and
-  // the IDENTICAL call on `db` over the IDENTICAL fixture succeeds completely.
-  // That triple is what makes it a POLICY finding rather than a code failure.
+  //       20261003000100 closes that remainder, so 87 is RESTATED to assert the
+  //       COMPLETION rather than the refusal, over the same fixture on the same
+  //       role. It carries its own denominators because "it did not throw" is
+  //       also what a fold that moved nothing would report: nine properties,
+  //       including a census over the WHOLE Transaction table, and the two
+  //       refusals the owner arm must NOT have removed — the cross-owner
+  //       destination, refused by the application guard, and the other tenant,
+  //       refused by the policy itself.
   //
-  // This is why the four external merge call sites pass `db` explicitly instead
-  // of a tenant client. When the policy gains its owner arm, 87 is the case that
-  // flips, and those four call sites are the only lines that have to change.
+  // So every external merge call site now names an authority, and the two
+  // restore routes name a TENANT PHASE rather than `db` — naming the migration
+  // principal there would have regressed what RLS-C-S7 achieved, which is why
+  // the default survived S5 at all. `resolveAccountByFingerprint`'s default is
+  // the one that remains, and its blocker is a TRANSACTION BOUNDARY rather than
+  // a policy: see lib/accounts/reconcile.ts's header.
   // ══════════════════════════════════════════════════════════════════════════
   {
     /** Where a named set of transaction rows currently live, owner-side. */
@@ -1821,12 +1826,40 @@ async function main(): Promise<void> {
                         delete from "FinancialAccount" where id='acct_tfold';`);
     }
 
-    // ── 87 [role+service] THE RESIDUE: ONE STATEMENT, AND IT IS A POLICY ────
+    // ── 87 [role+service] THE ARCHIVED FOLD, NOW COMPLETE ON fm_app ─────────
+    //
+    // ⚠️ THIS CASE WAS BUILT TO FLIP, AND IT HAS. It used to pin the refusal:
+    // the identical fold, changed in ONE respect — the loser archived and its
+    // link revoked, which is the shape EVERY production merge actually has —
+    // aborted with 42501 on `DuplicateAccountCandidate`, the one account-subtree
+    // table RLS-D1's owner arm did not reach, because that sweep enumerated
+    // tables by the column name `financialAccountId` and this table's FK columns
+    // are `accountAId`/`accountBId`. 20261003000100 closes the remainder, and
+    // the case is RESTATED rather than deleted: the refusal it recorded is now
+    // the completion it asserts, over the same fixture, on the same role.
+    //
+    // Nine properties, because "it did not throw" is also what a fold that moved
+    // nothing would report, and because an owner arm is exactly the kind of
+    // widening that can be right about the owner and wrong about everyone else:
+    //
+    //   1  the SOURCE IS OWNED by the tenant — read ON THE ROLE, not asserted
+    //   2  the SOURCE IS NOT VISIBLE through the active-link arm (so arm 2 is
+    //      the only thing that can be admitting it)
+    //   3  the DESTINATION is legitimate — visible AND owned, on the role
+    //   4  the re-parenting guard is LIVE on this path (the cross-owner
+    //      destination through the same phase is still refused by it)
+    //   5  every observed Transaction row moved
+    //   6  the DebtProfile moved
+    //   7  the SpaceAccountLink repoint reached every Space the loser was in
+    //   8  the `DuplicateAccountCandidate` operation COMPLETED — and the tenant
+    //      can READ the row she wrote, while the other tenant cannot see it and
+    //      cannot write one naming her account at all
+    //   9  NOTHING ELSE MOVED, over a census of the whole Transaction table
     {
       const IDS = `'s5_a1','s5_a2'`;
       const seedArchived = () => {
         const r = psql(h.ownerUrl, `
-          delete from "DuplicateAccountCandidate" where "accountBId"='acct_afold';
+          delete from "DuplicateAccountCandidate" where "accountBId"='acct_afold' or "accountAId"='acct_afold';
           delete from "Transaction" where id in (${IDS});
           delete from "FinancialAccount" where id='acct_afold';
           insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","deletedAt","updatedAt") values
@@ -1840,53 +1873,129 @@ async function main(): Promise<void> {
         if (!r.ok) throw new Error(`case 87 fixture failed: ${r.err.split("\n")[0]}`);
       };
 
+      /** Owner-side `financialAccountId=count` census of the WHOLE table. */
+      const census = () => psql(h.ownerUrl,
+        `select coalesce(string_agg("financialAccountId"||'='||n, ',' order by "financialAccountId"),'(empty)')
+           from (select "financialAccountId", count(*)::text n from "Transaction" group by 1) q;`).out.trim();
+      const parseCensus = (s: string) => new Map(
+        s === "(empty)" ? [] : s.split(",").map((kv) => [kv.slice(0, kv.indexOf("=")), Number(kv.slice(kv.indexOf("=") + 1))] as const));
+      /** The last line of a tenant statement batch, which is its result. */
+      const onRole = (userId: string, sql: string) => { const l = lines(asTenant(userId, sql)); return l[l.length - 1]; };
+
       seedArchived();
-      const population = rowsOn(IDS, "acct_afold");
-      // The two halves of the predicate the policy actually evaluates, read on
-      // the role rather than reasoned about.
+
+      // ── THE DENOMINATORS, READ RATHER THAN WRITTEN DOWN ──────────────────
+      const censusBefore    = census();
+      const population      = rowsOn(IDS, "acct_afold");
+      const loserDebtCount  = psql(h.ownerUrl, `select count(*) from "DebtProfile" where "financialAccountId"='acct_afold';`).out.trim();
+      const loserLinkSpaces = psql(h.ownerUrl,
+        `select coalesce(string_agg(distinct "spaceId",',' order by "spaceId"),'(none)') from "SpaceAccountLink" where "financialAccountId"='acct_afold';`).out.trim();
+
+      // 1-3. The three facts the policy's two arms turn on, each measured on the
+      //      role. `ownedOnRole` is itself only answerable BECAUSE
+      //      FinancialAccount.fm_app_sel has an owner arm: an archived account
+      //      has no ACTIVE link, so nothing else could return this row.
+      const ownedOnRole   = onRole("alice", `select ("ownerUserId" = current_fm_user_id())::text from "FinancialAccount" where id='acct_afold';`);
+      const winnerOwned   = onRole("alice", `select ("ownerUserId" = current_fm_user_id())::text from "FinancialAccount" where id='acct_alice';`);
       const loserVisible  = visibleToAlice("acct_afold");
       const winnerVisible = visibleToAlice("acct_alice");
 
-      // (a) the tenant attempt
-      let refusal = "(no throw)", isRls = false;
+      // ── (a) THE FOLD, ON A REAL fm_app PHASE, END TO END ─────────────────
+      let threw = "(no throw)", principal = "(unread)", identity = "(unread)";
+      try {
+        await tenant.withTenantDb("alice", async (tx) => {
+          // The principal, read INSIDE the phase the merge then runs in — a
+          // suite that verified a connection string and called it a principal is
+          // already on this programme's ledger.
+          const who = await tx.$queryRaw<Array<{ u: string; i: string | null }>>`
+            SELECT current_user::text AS u, nullif(current_setting('app.user_id', true),'') AS i`;
+          principal = who[0]?.u ?? "(none)";
+          identity  = who[0]?.i ?? "(none)";
+          await rec.mergeArchivedDuplicateIntoCanonical(
+            "acct_afold", "acct_alice", dupSource.FINGERPRINT_MATCH, null, tx);
+        });
+      } catch (e) {
+        threw = e instanceof Error ? `${e.name}: ${String(e.message).split("\n")[0]}` : String(e);
+      }
+
+      const moved        = rowsOn(IDS, "acct_alice");
+      const left         = rowsOn(IDS, "acct_afold");
+      const debtAfter    = debtOn("dp_afold");
+      const auditAfter   = auditRows("acct_afold");
+      // 8. The tenant READS the row she just wrote — fm_app_sel got the same arm,
+      //    so the audit trail is legible to the owner and not merely insertable.
+      const auditSeenByAlice = onRole("alice", `select count(*) from "DuplicateAccountCandidate" where "accountBId"='acct_afold';`);
+      const auditSeenByBob   = onRole("bob",   `select count(*) from "DuplicateAccountCandidate" where "accountBId"='acct_afold';`);
+      // 7. Every Space the loser held a link in now holds an ACTIVE link to the
+      //    winner. Relational: the loser's own Space set is the denominator.
+      const winnerLinkSpaces = psql(h.ownerUrl,
+        `select coalesce(string_agg(distinct "spaceId",',' order by "spaceId"),'(none)') from "SpaceAccountLink"
+          where "financialAccountId"='acct_alice' and status='ACTIVE';`).out.trim();
+      const everyLoserSpaceRepointed = loserLinkSpaces !== "(none)"
+        && loserLinkSpaces.split(",").every((s) => winnerLinkSpaces.split(",").includes(s));
+
+      // 9. NOTHING ELSE MOVED. Not "the two accounts look right" — the delta over
+      //    EVERY account in the table is exactly one pair of equal and opposite
+      //    moves, so a stray re-point anywhere else is a failure here.
+      const censusAfter = census();
+      const b4 = parseCensus(censusBefore), af = parseCensus(censusAfter);
+      const changed = [...new Set([...b4.keys(), ...af.keys()])]
+        .map((k) => [k, (af.get(k) ?? 0) - (b4.get(k) ?? 0)] as const)
+        .filter(([, d]) => d !== 0)
+        .sort((x, y) => x[0].localeCompare(y[0]));
+      const onlyTheOnePairMoved = changed.length === 2
+        && changed.some(([k, d]) => k === "acct_afold" && d === -Number(population))
+        && changed.some(([k, d]) => k === "acct_alice" && d === Number(population));
+
+      // ── (b) 4. THE GUARD IS STILL LIVE ON THIS PATH ──────────────────────
+      // The owner arm removes a backstop: the policy no longer refuses a pair
+      // naming an account the actor merely sees. So the SAME call shape, through
+      // the SAME phase, with Bob's account as the DESTINATION must still be
+      // refused — by lib/accounts/account-reparenting.ts, before anything moves.
+      seedArchived();
+      const crossPopulation = rowsOn(IDS, "acct_afold");
+      let crossOwner = "(no throw)";
       try {
         await tenant.withTenantDb("alice", (tx) =>
-          rec.mergeArchivedDuplicateIntoCanonical("acct_afold", "acct_alice", dupSource.FINGERPRINT_MATCH, null, tx));
+          rec.mergeArchivedDuplicateIntoCanonical("acct_afold", "acct_bob", dupSource.FINGERPRINT_MATCH, null, tx));
       } catch (e) {
-        refusal = e instanceof Error ? e.name : String(e);
-        isRls = /42501|row-level security/i.test(e instanceof Error ? e.message : String(e))
-             && /DuplicateAccountCandidate/.test(e instanceof Error ? e.message : String(e));
+        crossOwner = e instanceof Error ? e.name : String(e);
       }
-      // THE WHOLE FOLD ROLLED BACK — a half-applied merge would be far worse
-      // than a refused one, and "it threw" does not distinguish them.
-      const stillOnLoser  = rowsOn(IDS, "acct_afold");
-      const debtAfter     = debtOn("dp_afold");
-      const auditAfter    = auditRows("acct_afold");
+      const crossStillOnLoser = rowsOn(IDS, "acct_afold");
+      const crossAuditRows    = psql(h.ownerUrl,
+        `select count(*) from "DuplicateAccountCandidate" where "accountAId"='acct_bob';`).out.trim();
 
-      // (b) THE DENOMINATOR: the identical call, identical fixture, on `db`.
-      seedArchived();
-      let privilegedThrew = "(no throw)";
-      try {
-        await rec.mergeArchivedDuplicateIntoCanonical(
-          "acct_afold", "acct_alice", dupSource.FINGERPRINT_MATCH, null, dbMod.db);
-      } catch (e) {
-        privilegedThrew = e instanceof Error ? e.name : String(e);
-      }
-      const privilegedMoved = rowsOn(IDS, "acct_alice");
-      const privilegedAudit = auditRows("acct_afold");
+      // ── (c) 8. AND THE POLICY STILL REFUSES THE OTHER TENANT OUTRIGHT ────
+      // Bob naming Alice's archived account satisfies NEITHER arm for that half
+      // of the conjunction, so the widening is "my own archived account" and
+      // nobody else's — asserted on the role, not inferred from the SQL.
+      const bobWrite = asTenant("bob", counting(
+        `insert into "DuplicateAccountCandidate" (id,"accountAId","accountBId",status,"detectionSource","detectedAt","resolvedAt")
+         values ('dac_bob_x','acct_bob','acct_afold','CONFIRMED_DUPLICATE','FINGERPRINT_MATCH',now(),now())`));
+      const bobRefused = deniedByRls(bobWrite);
 
-      check(87, "[role+service] the SAME fold over an ARCHIVED loser — the shape every production merge actually has — is refused on fm_app at exactly ONE statement, DuplicateAccountCandidate's INSERT policy, because RLS-D1's owner arm reached the thirteen financialAccountId-keyed subtree tables and not this one; the fold rolls back WHOLE, the two fm_account_visible() values disagree on the role, and the identical call on the migration principal succeeds completely",
-        refusal !== "(no throw)" && isRls
-          && population === "2" && stillOnLoser === population
-          && debtAfter === "acct_afold" && auditAfter === "0"
+      check(87, "[role+service] the SAME fold over an ARCHIVED loser — the shape every production merge actually has — now completes END TO END on a real fm_app phase, all the way through DuplicateAccountCandidate: the source is OWNED and provably NOT visible through the active-link arm, the destination is visible and owned, every observed Transaction and the DebtProfile move, every Space the loser was linked in is re-pointed, the tenant can READ the audit row she wrote, NOTHING else in the whole Transaction table moves, and the two refusals the owner arm must not have removed both hold — the cross-owner destination by the application guard and the other tenant by the policy itself",
+        threw === "(no throw)"
+          && principal === "fm_app" && identity === "alice"
+          && ownedOnRole === "t" && winnerOwned === "t"
           && loserVisible === "f" && winnerVisible === "t"
-          && privilegedThrew === "(no throw)" && privilegedMoved === "2" && privilegedAudit === "1",
-        `tenantRefusal=${refusal} isRlsOnAuditTable=${isRls} population=${population} stillOnLoser=${stillOnLoser} ` +
-        `debt=${debtAfter} auditRows=${auditAfter} visible(loser)=${loserVisible} visible(winner)=${winnerVisible} | ` +
-        `onDb: threw=${privilegedThrew} moved=${privilegedMoved} audit=${privilegedAudit}`);
+          && population === "2" && moved === population && left === "0"
+          && loserDebtCount === "1" && debtAfter === "acct_alice"
+          && everyLoserSpaceRepointed
+          && auditAfter === "1" && auditSeenByAlice === "1" && auditSeenByBob === "0"
+          && onlyTheOnePairMoved
+          && crossOwner === "ReparentingRefusedError" && crossStillOnLoser === crossPopulation && crossAuditRows === "0"
+          && bobRefused,
+        `threw=${threw} principal=${principal} identity=${identity} | owned(loser)=${ownedOnRole} owned(winner)=${winnerOwned} ` +
+        `visible(loser)=${loserVisible} visible(winner)=${winnerVisible} | population=${population} moved=${moved} left=${left} ` +
+        `debtPopulation=${loserDebtCount} debt=${debtAfter} | loserSpaces=[${loserLinkSpaces}] winnerActiveSpaces=[${winnerLinkSpaces}] repointed=${everyLoserSpaceRepointed} ` +
+        `| audit=${auditAfter} seenByAlice=${auditSeenByAlice} seenByBob=${auditSeenByBob} ` +
+        `| censusDelta={${changed.map(([k, d]) => `${k}:${d > 0 ? "+" : ""}${d}`).join(" ")}} onlyThePair=${onlyTheOnePairMoved} ` +
+        `| crossOwner=${crossOwner} crossStillOnLoser=${crossStillOnLoser}/${crossPopulation} crossAudit=${crossAuditRows} ` +
+        `| bobPolicyRefusal=${bobRefused ? "refused" : bobWrite.err.split("\n")[0] || `ADMITTED — wrote ${bobWrite.out.trim()}`}`);
 
       psql(h.ownerUrl, `delete from "Transaction" where id in (${IDS});
-                        delete from "DuplicateAccountCandidate" where "accountBId"='acct_afold';
+                        delete from "DuplicateAccountCandidate" where "accountBId"='acct_afold' or "accountAId"='acct_afold';
                         delete from "FinancialAccount" where id='acct_afold';`);
     }
   }
