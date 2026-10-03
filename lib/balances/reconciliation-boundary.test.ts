@@ -269,6 +269,12 @@ console.log("\nPROBE 13 — the Slice 2 boundary still holds");
   const WRITE_PATHS = new Set([
     path.join("lib", "plaid", "refresh.ts"),
     path.join("lib", "plaid", "exchangeToken.ts"),
+    // The liveness repair's account-creation path. Same class as exchangeToken:
+    // it COPIES the provider's `balances.available` into a FinancialAccount it
+    // creates, and interprets nothing. It is named here rather than reformatted
+    // to slip past the needle, so the exemption stays visible and reviewable —
+    // the set is "files allowed to WRITE a balance", and this is one.
+    path.join("lib", "accounts", "recover-plaid-account.ts"),
   ]);
   const offenders: string[] = [];
   for (const f of FILES) {

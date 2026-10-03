@@ -51,6 +51,12 @@ const AUTHORITY = path.join("lib", "balances", "account-balances.ts");
 const WRITE_PATHS = new Set([
   path.join("lib", "plaid", "refresh.ts"),
   path.join("lib", "plaid", "exchangeToken.ts"),
+  // The liveness repair's account-creation path (the MISSING_ACCOUNT cursor
+  // block). It is the same CLASS as exchangeToken — it creates a
+  // FinancialAccount from `accountsGet` and must therefore decide what to write
+  // for an absent provider balance, which is exactly why write paths are exempt
+  // from the no-nullish-fallback rule rather than reformatted around it.
+  path.join("lib", "accounts", "recover-plaid-account.ts"),
 ]);
 
 console.log("PROBE 1 — availableBalance is readable ONLY by the balance authority");

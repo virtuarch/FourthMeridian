@@ -29,7 +29,11 @@
  */
 
 import { db } from "@/lib/db";
-import { ShareStatus, SpaceType } from "@prisma/client";
+import { ShareStatus, SpaceType, SyncIssueKind } from "@prisma/client";
+import { plaidClient } from "@/lib/plaid/client";
+import { withPlaidRetry } from "@/lib/plaid/retry";
+import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
+import { recoverMissingPlaidAccountsForItem } from "@/lib/accounts/recover-plaid-account";
 import { AuditAction } from "@/lib/audit-actions";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 // DF-2C — observational execution-ledger seam. Optional; when absent,
@@ -485,6 +489,68 @@ export async function runDeferredHistorySync(
   runId?: string,
 ): Promise<boolean> {
   try {
+    // ── LIVENESS — RECOVER AN ACCOUNT THE IMPORT NEVER CREATED ──────────────
+    // BEFORE the transactions stage, because this is what unblocks it. A page
+    // containing a transaction for an account that does not exist locally can
+    // never persist, so the CURSOR SAFETY GATE holds the cursor and this exact
+    // Plaid page is re-fetched and re-billed every five minutes, forever, with
+    // the item's whole history stuck behind it.
+    //
+    // ⚠️ IT CANNOT GO AFTER THE BALANCE STAGE, WHICH IS WHERE THE AUTHORITATIVE
+    // ACCOUNT LIST IS ALREADY FETCHED. `syncTransactionsForItem` runs first and
+    // THROWS on a blocked item, so everything below it — including
+    // `refreshBalancesForItem` — is skipped on precisely the items that need
+    // this. Recovery has to precede the thing it repairs.
+    //
+    // Cost on a healthy item is one indexed count (`@@index([plaidItemId, kind])`)
+    // and nothing else: the trigger is the durable record the detector already
+    // writes, and the existing auto-resolution clears it once a page proves
+    // recovery, so the trigger disarms itself. Non-fatal by construction — a
+    // recovery failure leaves the item exactly as blocked as it already was,
+    // which is no worse, and the SyncIssue remains the record.
+    try {
+      const recovery = await recoverMissingPlaidAccountsForItem(plaidItemId, {
+        loadItem: async (id) => {
+          const row = await db.plaidItem.findUnique({
+            where:  { id },
+            select: {
+              userId: true, encryptedToken: true, institutionName: true, institutionId: true,
+              user:   { select: { deactivatedAt: true } },
+            },
+          });
+          if (!row) return null;
+          return {
+            userId:           row.userId,
+            ownerDeactivated: row.user.deactivatedAt !== null,
+            accessToken:      decryptWithPurpose(row.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN),
+            institutionName:  row.institutionName,
+            institutionId:    row.institutionId,
+          };
+        },
+        // Both lifecycle columns, not just one: `resolved` is a compatibility
+        // projection the lifecycle service writes in lockstep with `resolvedAt`,
+        // but legacy rows predate that service, so requiring BOTH to be open
+        // counts only issues that are unambiguously still open.
+        countBlockingIssues: (id) => db.syncIssue.count({
+          where: { plaidItemId: id, kind: SyncIssueKind.MISSING_ACCOUNT, resolvedAt: null, resolved: false },
+        }),
+        fetchProviderAccounts: async (accessToken) => {
+          const res = await withPlaidRetry(() => plaidClient.accountsGet({ access_token: accessToken }), "accountsGet");
+          return res.data.accounts;
+        },
+      });
+      if (recovery.attempted) {
+        const created = recovery.results.filter((x) => x.status === "CREATED");
+        console.log(
+          `[plaid][liveness] account recovery for item ${plaidItemId} — created ${created.length}, ` +
+          `refused ${recovery.results.length - created.length} ` +
+          `(${recovery.results.filter((x) => x.status === "REFUSED").map((x) => x.reason).join(",") || "none"})`,
+        );
+      }
+    } catch (e) {
+      console.error(`[plaid][liveness] account recovery failed for item ${plaidItemId} (non-fatal):`, redactedErrorForLog(e));
+    }
+
     recorder?.begin("TRANSACTIONS", "PROVIDER");
     const r = runId
       ? await syncTransactionsForItem(plaidItemId, { runId })
