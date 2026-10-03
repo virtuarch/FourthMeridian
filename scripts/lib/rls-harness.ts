@@ -175,6 +175,56 @@ export function assertTenantPrincipal(appUrl: string): void {
   console.log(`[rls] tenant principal verified: fm_app, not a superuser, no BYPASSRLS, owns nothing.`);
 }
 
+/**
+ * ⚠️ THE SECOND HALF OF THE PRINCIPAL CHECK, AND THE ONE THAT WAS MISSING.
+ *
+ * `assertTenantPrincipal()` above interrogates a URL with psql. That proves the
+ * CREDENTIAL is constrained. It says nothing whatever about which client
+ * `lib/db` actually bound — and those came apart in practice:
+ *
+ *   A probe added a STATIC import of a production module. That module imports
+ *   `@/lib/db`, which binds its clients at module-evaluation time — BEFORE
+ *   prepareHarness() had set DATABASE_URL_APP. `tenantDb` silently fell back to
+ *   the legacy client, Prisma connected to the throwaway as its SUPERUSER
+ *   OWNER, and every refusal became a success and every blinded read became
+ *   "found". The probe reported NO DEFECTS AT ALL.
+ *
+ *   And this file printed "[rls] tenant principal verified: fm_app" during that
+ *   run, because it had asked the URL, not the binding.
+ *
+ * So: ask the binding. This must be called AFTER prepareHarness() and it must
+ * dynamically import `@/lib/db` (a static import here would reintroduce the
+ * exact ordering bug it exists to catch). It checks both halves — that a
+ * distinct fm_app client was constructed at all, and that a query issued
+ * THROUGH it authenticates as fm_app.
+ */
+export async function assertTenantClientBound(): Promise<void> {
+  const { activeDbRoles, tenantDb } = await import("@/lib/db");
+  const roles = activeDbRoles();
+  if (!roles.app) {
+    throw new Error(
+      `REFUSING TO RUN — lib/db did NOT bind a distinct fm_app client (activeDbRoles().app === false).\n` +
+      `  Something imported "@/lib/db" before prepareHarness() set DATABASE_URL_APP, so tenantDb is the\n` +
+      `  fallback client and every case below would run as the table OWNER while still printing PASS.\n` +
+      `  Look for a STATIC import of a production module at the top of this suite; make it dynamic.`,
+    );
+  }
+  const rows = await (tenantDb as unknown as {
+    $queryRawUnsafe: (q: string) => Promise<Array<{ who: string; su: boolean; brls: boolean }>>;
+  }).$queryRawUnsafe(
+    `select current_user as who, r.rolsuper as su, r.rolbypassrls as brls
+       from pg_roles r where r.rolname = current_user`,
+  );
+  const r = rows[0];
+  if (!r || r.who !== "fm_app" || r.su || r.brls) {
+    throw new Error(
+      `REFUSING TO RUN — the BOUND tenant client authenticates as "${r?.who}" ` +
+      `(superuser=${r?.su}, bypassrls=${r?.brls}), not as an unprivileged fm_app.`,
+    );
+  }
+  console.log(`[rls] tenant CLIENT verified: lib/db bound a real fm_app client, and a query through it agrees.`);
+}
+
 // ── assertions ────────────────────────────────────────────────────────────────
 export type Case = { n: number; name: string; ok: boolean; detail: string };
 

@@ -60,6 +60,9 @@ const read = (f: string) => { try { return readFileSync(join(ROOT, f), "utf8"); 
  * cannot quietly under-match.
  */
 const ROOT_DIRS = ["app/", "lib/", "jobs/", "components/"];
+/** Every tracked .ts/.tsx, unfiltered — the RLS-suite check below scans scripts/. */
+const RUNTIME_ALL = execSync(`git ls-files -- '*.ts' '*.tsx'`, { cwd: ROOT, encoding: "utf8" })
+  .trim().split("\n").filter(Boolean).sort();
 const RUNTIME = execSync(`git ls-files -- '*.ts' '*.tsx'`, { cwd: ROOT, encoding: "utf8" })
   .trim().split("\n").filter(Boolean)
   .filter((f) => ROOT_DIRS.some((d) => f.startsWith(d)))
@@ -285,6 +288,39 @@ if (removed.length) {
     /set_config\([\s\S]{0,80}true\s*\)/.test(ctx));
   check("the tenant channel refuses an empty identity",
     ctx.includes("TenantIdentityError"));
+
+  // ⚠️ EVERY REAL-ROLE SUITE MUST CHECK THE BINDING, NOT ONLY THE URL.
+  //
+  // assertTenantPrincipal() interrogates a connection string with psql, which
+  // proves the CREDENTIAL is constrained and says nothing about which client
+  // lib/db bound. Those came apart: a probe added a STATIC import of a
+  // production module, that module imported "@/lib/db" before the harness had
+  // set DATABASE_URL_APP, tenantDb fell back to the legacy client, and Prisma
+  // connected as the throwaway's SUPERUSER OWNER. Every refusal became a
+  // success. The probe reported no defects at all — and the harness printed
+  // "tenant principal verified: fm_app" during that very run.
+  //
+  // assertTenantClientBound() closes it by asking the binding. This asserts no
+  // suite can forget to call it: a new scripts/rls-*acceptance.ts that skips it
+  // fails the build rather than silently measuring the owner principal.
+  {
+    // Scoped to the suites that actually BIND lib/db — i.e. the ones that call
+    // prepareHarness(). scripts/rls-acceptance.ts is deliberately not among
+    // them: it drives psql directly and constructs its own PrismaClient, so
+    // there is no lib/db binding for this hazard to corrupt. Deriving the set
+    // from prepareHarness rather than from the filename means a suite cannot
+    // dodge the check by being named differently, and a suite that genuinely
+    // does not bind is not asked to prove something that does not apply.
+    const suites = RUNTIME_ALL.filter(
+      (f) => /^scripts\/rls-.*\.ts$/.test(f) && read(f).includes("prepareHarness("),
+    );
+    const missing = suites.filter((f) => !read(f).includes("assertTenantClientBound"));
+    check(`every suite that binds lib/db verifies the BOUND client, not just the URL (${suites.length} suite(s))`,
+      suites.length > 0 && missing.length === 0,
+      suites.length === 0
+        ? "found NO suite calling prepareHarness() — the scan is broken, not the tree"
+        : `these measure a URL and could be running as the table owner: ${missing.join(", ")}`);
+  }
 }
 
 if (failures > 0) {

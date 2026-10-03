@@ -35,7 +35,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 
 import {
-  prepareHarness, teardownHarness, psql, deniedByGrant,
+  prepareHarness, assertTenantClientBound, teardownHarness, psql, deniedByGrant,
   makeRecorder, APP_FIXTURES,
 } from "./lib/rls-harness";
 
@@ -109,6 +109,8 @@ async function main(): Promise<void> {
   console.log("\n=== RLS PLAID OPERATIONAL-LEDGER SUITE (P-2 semantics / P-3a authority) ===\n");
 
   const h = prepareHarness("rlsplaid");
+  // RLS-HARNESS-1 — the URL was checked above; this checks the BINDING.
+  await assertTenantClientBound();
   const seed = psql(h.ownerUrl, APP_FIXTURES);
   if (!seed.ok) throw new Error(`fixture seed failed: ${seed.err}`);
   const ledgerSeed = psql(h.ownerUrl, LEDGER_FIXTURES);

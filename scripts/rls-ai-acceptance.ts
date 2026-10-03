@@ -36,7 +36,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
-  prepareHarness, teardownHarness, psql, makeRecorder, APP_FIXTURES,
+  prepareHarness, assertTenantClientBound, teardownHarness, psql, makeRecorder, APP_FIXTURES,
 } from "./lib/rls-harness";
 
 const KEEP = process.argv.includes("--keep");
@@ -149,6 +149,8 @@ async function main(): Promise<void> {
   console.log("\n=== RLS AI-SURFACE ADVERSARIAL SUITE ===\n");
 
   const h = prepareHarness("rlsai");
+  // RLS-HARNESS-1 — the URL was checked above; this checks the BINDING.
+  await assertTenantClientBound();
   for (const [label, sql] of [["shared", APP_FIXTURES], ["ai", AI_FIXTURES]] as const) {
     const r = psql(h.ownerUrl, sql);
     if (!r.ok) throw new Error(`${label} fixture seed failed: ${r.err}`);

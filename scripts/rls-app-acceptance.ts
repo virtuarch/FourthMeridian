@@ -28,7 +28,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
-  prepareHarness, teardownHarness, psql, deniedByGrant, deniedByRls,
+  prepareHarness, assertTenantClientBound, teardownHarness, psql, deniedByGrant, deniedByRls,
   makeRecorder, APP_FIXTURES,
 } from "./lib/rls-harness";
 
@@ -39,6 +39,8 @@ async function main(): Promise<void> {
   console.log("\n=== RLS APPLICATION ADVERSARIAL SUITE ===\n");
 
   const h = prepareHarness("rlsapp");
+  // RLS-HARNESS-1 — the URL was checked above; this checks the BINDING.
+  await assertTenantClientBound();
   const seed = psql(h.ownerUrl, APP_FIXTURES);
   if (!seed.ok) throw new Error(`fixture seed failed: ${seed.err}`);
   console.log("[rls] Alice / Bob fixtures seeded (separate Spaces, one SHARED, private rows inside it).\n");
@@ -669,6 +671,37 @@ async function main(): Promise<void> {
     // A failed reset would make the NEXT case's premise false while its
     // assertion still read as a legitimate verdict. Refuse instead.
     if (!r.ok) throw new Error(`fixture restore failed: ${r.err.split("\n")[0]}`);
+
+    // ⚠️ AND `r.ok` IS NOT ENOUGH, WHICH IS THE DEFECT THE COMMENT ABOVE
+    // DESCRIBES AND DID NOT CATCH.
+    //
+    // An UPDATE that matches ZERO rows succeeds. psql reports ok. So when case
+    // 63 HARD-DELETES `acct_shared` — deliberately, to prove ON DELETE CASCADE
+    // is not RLS-filtered — every later `set "deletedAt"=null where id in (…,
+    // 'acct_shared', …)` restored nothing and said so in no way at all. The next
+    // case's premise was quietly false while its assertion still printed a
+    // verdict. That is the same shape as a refused UPDATE read as contention:
+    // the absence of an error standing in for the presence of a result.
+    //
+    // So the reset now asserts the fixtures it CLAIMS to restore are actually
+    // there, by id, and names the missing ones. A case that destroys a row
+    // permanently must seed its own replacement or run last — it may not leave
+    // the suite reporting on rows that do not exist.
+    const present = psql(h.ownerUrl, `
+      select string_agg(id, ',' order by id) from "FinancialAccount"
+       where id in ('acct_alice','acct_bob','acct_shared','acct_alice_private','acct_alice_inv','acct_restore');`);
+    if (!present.ok) throw new Error(`fixture verification failed: ${present.err.split("\n")[0]}`);
+    const have = new Set(present.out.trim().split(",").filter(Boolean));
+    const want = ["acct_alice","acct_bob","acct_shared","acct_alice_private","acct_alice_inv","acct_restore"];
+    const gone = want.filter((id) => !have.has(id));
+    if (gone.length) {
+      throw new Error(
+        `fixture restore is a NO-OP for ${gone.length} account(s) that no longer exist: ${gone.join(", ")}.\n` +
+        `  restoreFixtures() cannot resurrect a hard-deleted row, and every case after this point that\n` +
+        `  assumes one would assert over an empty set and PASS. Seed a replacement in the destroying\n` +
+        `  case, or move it last.`,
+      );
+    }
   };
 
   // ── [role] S7-A — THE PREMISE, AND WITHOUT IT NOTHING BELOW MEANS ANYTHING ──
@@ -846,19 +879,43 @@ async function main(): Promise<void> {
   // the deleting role. So the statement the role can only half-perform is
   // followed by one that finishes the job completely.
   //
-  // ⚠️ THIS CASE DESTROYS acct_shared. It is last in the S7 block for that
-  // reason, and nothing after it refers to that account.
+  // ⚠️ THIS CASE USED TO DESTROY acct_shared, AND ORDERING WAS THE MITIGATION.
+  // Its own comment read "it is last in the S7 block for that reason, and
+  // nothing after it refers to that account" — true when written, and cases
+  // 73-80 then landed after it. Worse, `restoreFixtures()` could not undo it:
+  // its `set "deletedAt"=null where id in (…)` matched ZERO rows, psql reported
+  // ok, and every later premise about acct_shared was quietly false. (That hole
+  // is now closed separately — restoreFixtures verifies presence and refuses.)
+  //
+  // "Nothing after it refers to X" is a claim about a file that grows. So the
+  // case now seeds and destroys its OWN account, and the ordering constraint
+  // disappears rather than being re-documented.
   restoreFixtures();
-  const delLinks = asTenant("alice", counting(`delete from "SpaceAccountLink" where "financialAccountId"='acct_shared'`));
+  const seedCascade = psql(h.ownerUrl, `
+    insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","updatedAt")
+      values ('acct_cascade','Cascade Probe','checking','TestBank','USER','alice',now());
+    insert into "SpaceAccountLink" (id,"spaceId","financialAccountId",kind,status,"visibilityLevel","updatedAt")
+      values ('l_casc_a','space_a','acct_cascade','HOME','ACTIVE','FULL',now()),
+             ('l_casc_s','space_s','acct_cascade','SHARED','ACTIVE','FULL',now()),
+             ('l_casc_b','space_b','acct_cascade','SHARED','ACTIVE','BALANCE_ONLY',now());`);
+  if (!seedCascade.ok) throw new Error(`case 63 seed failed: ${seedCascade.err.split("\n")[0]}`);
+
+  // The denominator: three links exist, and alice can see exactly two of them —
+  // `l_casc_b` is in space_b, which she is not a member of. Without this the
+  // "2" below could mean "the policy worked" or "only two were ever seeded".
+  const cascSeeded = psql(h.ownerUrl,
+    `select count(*) from "SpaceAccountLink" where "financialAccountId"='acct_cascade';`).out.trim();
+  const delLinks = asTenant("alice", counting(`delete from "SpaceAccountLink" where "financialAccountId"='acct_cascade'`));
   const survivingLink = psql(h.ownerUrl,
-    `select coalesce(string_agg(id,',' order by id),'(none)') from "SpaceAccountLink" where "financialAccountId"='acct_shared';`).out.trim();
-  const delAccount = asTenant("alice", counting(`delete from "FinancialAccount" where id='acct_shared'`));
+    `select coalesce(string_agg(id,',' order by id),'(none)') from "SpaceAccountLink" where "financialAccountId"='acct_cascade';`).out.trim();
+  const delAccount = asTenant("alice", counting(`delete from "FinancialAccount" where id='acct_cascade'`));
   const afterCascade = psql(h.ownerUrl,
-    `select coalesce(string_agg(id,',' order by id),'(none)') from "SpaceAccountLink" where "financialAccountId"='acct_shared';`).out.trim();
+    `select coalesce(string_agg(id,',' order by id),'(none)') from "SpaceAccountLink" where "financialAccountId"='acct_cascade';`).out.trim();
   check(63, "[role] the tenant DELETE leaves the co-owner's link behind, and the account DELETE takes it anyway — ON DELETE CASCADE is not filtered by RLS, so no capability was needed",
-    delLinks.ok && delLinks.out.trim() === "2" && survivingLink === "l_sh_bal"
+    cascSeeded === "3"
+    && delLinks.ok && delLinks.out.trim() === "2" && survivingLink === "l_casc_b"
     && delAccount.ok && delAccount.out.trim() === "1" && afterCascade === "(none)",
-    `links=${delLinks.out.trim()} survivor=${survivingLink} account=${delAccount.out.trim()} after=${afterCascade}`);
+    `seeded=${cascSeeded} links=${delLinks.out.trim()} survivor=${survivingLink} account=${delAccount.out.trim()} after=${afterCascade}`);
 
   // ══ S8 — THE INVESTMENTS AND IMPORTS SPINE ═════════════════════════════════
 

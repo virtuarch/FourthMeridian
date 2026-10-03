@@ -413,10 +413,6 @@ export async function performPlaidTokenExchange(
       }
     }
 
-    // D2 Step 2A — dual-write ProviderAccountIdentity. Idempotent; covers
-    // all three resolution branches above. Best-effort / non-fatal.
-    await dualWriteProviderAccountIdentity(fa.id, ProviderType.PLAID, acct.account_id);
-
     // PROV-4 — AccountConnection + SpaceAccountLink, committed atomically per
     // account, through the canonical spine writer shared with the Wallet route.
     // The FinancialAccount resolve/create/update above stays OUTSIDE this
@@ -436,6 +432,30 @@ export async function performPlaidTokenExchange(
         syncStatus:        "synced",
       },
     });
+
+    // ── D2 Step 2A — the identity mirror, AFTER the link that authorizes it ──
+    //
+    // ⚠️ THIS CALL USED TO RUN BEFORE persistAccountSpine, AND THE ORDER IS NOW
+    // LOAD-BEARING. `ProviderAccountIdentity.fm_app_sel/upd` is
+    // `fm_account_visible("financialAccountId")`, which is true only while an
+    // ACTIVE SpaceAccountLink exists in a visible Space — and persistAccountSpine
+    // is what creates that link. Measured on a real fm_app role: the identity
+    // insert before the link is refused with Postgres 42501, and
+    // FinancialAccount → SpaceAccountLink → AccountConnection →
+    // ProviderAccountIdentity all succeed.
+    //
+    // It mattered the moment RLS-ACC-S4 made that refusal LOUD. Until then the
+    // 42501 fell into a catch that could not recognise it — a 42501 arrives as
+    // PrismaClientUnknownRequestError with `code` UNDEFINED, so `e.code ===
+    // "P2002"` never matched — and the function returned as though it had
+    // written the row. Now it throws, this loop has no surrounding try/catch,
+    // and on the role flip the throw would have escaped exchangeToken and failed
+    // the whole Plaid import. Same statements, same idempotence, correct order.
+    //
+    // This is the fourth instance of the ordering phenomenon b42e8e0 first
+    // recorded for disconnect/restore: it is what happens every time a subtree
+    // write is authored before the link that authorizes it.
+    await dualWriteProviderAccountIdentity(fa.id, ProviderType.PLAID, acct.account_id);
 
     importedIds.push(fa.id);
     imported++;
