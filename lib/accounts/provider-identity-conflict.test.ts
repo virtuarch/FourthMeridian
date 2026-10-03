@@ -189,6 +189,83 @@ verdict("…and an empty reread under the legitimately-shared provider is equall
 verdict("WALLET, own-key collision, only a FOREIGN row visible: coexistence is legal but our own row is unaccounted for → INDETERMINATE",
   classify([{ financialAccountId: FOREIGN }], ProviderType.WALLET, true), "INDETERMINATE", 1);
 
+// ── C2. THE COLLISION THE DATABASE CAN NOW ACTUALLY PRODUCE ────────────────
+// Until 20261004000000 the PLAID global key DID NOT EXIST: D2 Step 1D had
+// replaced it with the account-scoped triple, so every branch above that takes
+// `accountScopedKey: false` for PLAID was reachable only by HAND. The partial
+// unique index makes those branches live, and these three pin the MEASURED
+// shapes rather than the imagined ones.
+//
+// Measured on Prisma 5.22 / Postgres 16 by inserting a second PLAID binding and
+// reading `meta.target` off the real driver error:
+//
+//   second account, same owner      → ["provider","externalAccountId"]
+//   second account, different owner → ["provider","externalAccountId"]
+//   same account again (replay)     → ["provider","externalAccountId","financialAccountId"]
+//
+// ⚠️ THE REPLAY REPORTS THE TRIPLE BECAUSE BOTH INDEXES ARE VIOLATED AND
+// POSTGRES CHECKS THE OLDER ONE FIRST. That is an index-OID ordering detail, not
+// a contract, so the verdict must not depend on it — C's pair at "our own row,
+// GLOBAL-key collision → still SAME_ACCOUNT" is exactly that independence, and
+// this block names why it is now load-bearing rather than hypothetical.
+{
+  const target = (t: unknown) => prismaError("Unique constraint failed", "P2002", { target: t });
+  const GLOBAL = ["provider", "externalAccountId"];
+  const TRIPLE = ["provider", "externalAccountId", "financialAccountId"];
+
+  check("the MEASURED global-key target reads as NOT account-scoped, so a foreign holder counts",
+    !conflictKeyIsAccountScoped(target(GLOBAL)));
+  check("the MEASURED replay target reads as ACCOUNT-SCOPED",
+    conflictKeyIsAccountScoped(target(TRIPLE)));
+
+  // Whichever index Postgres happens to report for a replay, the answer is the
+  // same. This is the assertion that makes the verdict OID-order independent.
+  const replayUnderEitherKey = [true, false].map((scoped) =>
+    classify([{ financialAccountId: OURS }], ProviderType.PLAID, scoped).verdict);
+  check("a PLAID replay classifies SAME_ACCOUNT under EITHER reported key — index order cannot change the verdict",
+    JSON.stringify(replayUnderEitherKey) === JSON.stringify(["SAME_ACCOUNT", "SAME_ACCOUNT"]),
+    `got ${JSON.stringify(replayUnderEitherKey)}`);
+
+  // And the cross-tenant case, which is the whole reason the index is allowed to
+  // be the authority: Postgres refuses the second binding without the writer
+  // ever being able to SEE the row it collided with, and the classifier turns
+  // that blindness into a refusal rather than into "no conflict, carry on".
+  verdict("a PLAID global collision whose holder is INVISIBLE to the writer's own role → INDETERMINATE, fail closed",
+    classify([], ProviderType.PLAID, false), "INDETERMINATE", 0);
+}
+
+// ── C3. [source] THE INDEX NAME CANNOT BE MISREAD AS ACCOUNT-SCOPED ─────────
+// `conflictKeyIsAccountScoped` tests meta.target for the stem /financia/i,
+// because Postgres truncates index names at 63 characters and the triple reads
+// `…_financia_key`, cut mid-word. The measurement above says this driver reports
+// field arrays, not names — but that is a driver detail, and if it ever reports
+// the NAME, a new index carrying that stem would make a GLOBAL collision parse
+// as "my own row", the one misreading that turns a contested identity into a
+// silent success. Pinned at the migration, which is where the name lives.
+{
+  const mig = raw("prisma/migrations/20261004000000_plaid_identity_global_exclusivity/migration.sql");
+  const created = /CREATE\s+UNIQUE\s+INDEX\s+"([^"]+)"/i.exec(mig);
+  check("the migration creates exactly one named UNIQUE index", created !== null);
+  if (created) {
+    check(`its name carries no /financia/ stem (${created[1]})`, !/financia/i.test(created[1]));
+    check("its name is within Postgres's 63-char limit, so it cannot be truncated INTO that stem",
+      created[1].length <= 63);
+    check("…and conflictKeyIsAccountScoped would read that name as NOT account-scoped",
+      !conflictKeyIsAccountScoped(prismaError("x", "P2002", { target: created[1] })));
+  }
+  // The predicate is an allowlist. A denylist would enrol MANUAL, CSV, EXCHANGE
+  // and BROKERAGE — and any future provider — into Plaid's cardinality.
+  // ⚠️ SQL COMMENTS ARE STRIPPED FIRST. The migration's own prose DISCUSSES the
+  // `<> 'WALLET'` spelling in order to reject it, so a scan of the raw file
+  // reports the denylist it exists to forbid. Measured: this needle failed on
+  // its first run for exactly that reason.
+  const sql = mig.replace(/^\s*--.*$/gm, "");
+  check("DENOMINATOR: stripping comments leaves the statement, not an empty string",
+    /CREATE\s+UNIQUE\s+INDEX/i.test(sql) && sql.replace(/\s/g, "").length > 80);
+  check("the predicate names PLAID positively and is not a `<> 'WALLET'` denylist",
+    /WHERE\s+provider\s*=\s*'PLAID'/i.test(sql) && !/provider\s*(<>|!=)/i.test(sql));
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // D — THE ERROR DISCLOSES NOTHING ABOUT THE OTHER TENANT
 // ═════════════════════════════════════════════════════════════════════════════

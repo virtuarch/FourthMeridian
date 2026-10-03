@@ -2062,31 +2062,47 @@ async function main(): Promise<void> {
   // ══════════════════════════════════════════════════════════════════════════
   {
     const pid = await import("@/lib/accounts/provider-identity");
-    const PLAID = (await import("@prisma/client")).ProviderType.PLAID;
+    const PROVIDER = (await import("@prisma/client")).ProviderType;
+    const PLAID = PROVIDER.PLAID;
+    // WALLET carries the shape PLAID is no longer allowed to have — see the
+    // fixture header and cases 81/84/89.
+    const WALLET = PROVIDER.WALLET;
 
     // Own fixtures, end to end, deleted at the end of the block. `acct_shared`
     // is unusable (case 63 hard-deletes it) and APP_FIXTURES counts are pinned
     // by cases 4 and 13, so nothing here is grafted onto them.
     //
-    // THE SHAPE: `ext_contested` is held by BOTH Alice's and Bob's account. On
-    // a migrated database that is not an error — migration 20260627180853 (D2
-    // Step 1D) replaced @@unique([provider, externalAccountId]) with the
-    // account-scoped triple so two owners can interpret one public wallet
-    // address — which is exactly why the old catch's comment ("a collision
-    // would mean some OTHER FinancialAccount already holds this") describes a
-    // constraint that no longer exists.
-    // ⚠️ THE FIXTURE IS SHAPED SO NO CASE CAN DEPEND ON WHICH ROW `findFirst`
-    // RETURNS. The helper's first statement is
+    // ══ THE SHAPE, RESTATED AROUND THE RESTORED THEOREM ═════════════════════
+    //
+    // This fixture used to seed `ext_contested` as a PLAID identity held by
+    // BOTH Alice's and Bob's account, because migration 20260627180853 (D2 Step
+    // 1D) had replaced @@unique([provider, externalAccountId]) with the
+    // account-scoped triple and that state was constructible. Migration
+    // 20261004000000 restores global exclusivity FOR PLAID, so
+    // THAT INSERT IS NOW REFUSED BY THE DATABASE and the fixture would fail at
+    // seed time. The cases below are restated, not weakened — every security
+    // claim 81-84 made is still made, and two of them are now stronger because
+    // the DATABASE refuses what previously only the application noticed.
+    //
+    // The two-holders-of-one-identity shape moves to WALLET, where it is the
+    // actual design (a public address, two owners' private interpretations) and
+    // where the blindness premise case 81 rests on still has a population.
+    //
+    // ⚠️ THE FIXTURE IS STILL SHAPED SO NO CASE CAN DEPEND ON WHICH ROW
+    // `findFirst` RETURNS. The helper's first statement is
     // `findFirst({ financialAccountId, provider })` with NO `orderBy`, so
     // physical row order decides which sibling it picks, and a case whose
     // verdict flips with that order is a coin toss wearing an assertion.
     //
-    //   `acct_pid_replay`  BOTH its addresses are Alice's alone → whichever row
+    //   `acct_pid_replay`  TWO PLAID identities, both Alice's alone (the xpub
+    //                      shape, legal under both constraints) → whichever row
     //                      is picked, repointing it onto its sibling's address
     //                      collides and the reread can only find Alice. SAME.
-    //   `acct_pid_alice`   BOTH its addresses are ALSO held by Bob → whichever
-    //                      row is picked, the collision's address has a foreign
-    //                      holder. DIFFERENT, every time.
+    //   `acct_pid_alice`   ONE PLAID identity of its own, plus WALLET addresses
+    //                      shared with Bob. Claiming a PLAID identity held by
+    //                      ANOTHER account is now a database refusal.
+    //   `acct_pid_bob`     Bob's own PLAID identity — the cross-tenant target,
+    //                      invisible to Alice's role.
     const pidSeed = psql(h.ownerUrl, `
       insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","updatedAt") values
         ('acct_pid_replay','Alice PID (replay)','checking','TestBank','USER','alice',now()),
@@ -2099,12 +2115,22 @@ async function main(): Promise<void> {
       insert into "ProviderAccountIdentity" (id,"financialAccountId",provider,"externalAccountId","createdAt") values
         ('pid_replay_1','acct_pid_replay','PLAID','ext_replay_a',now()),
         ('pid_replay_2','acct_pid_replay','PLAID','ext_replay_b',now()),
-        ('pid_alice_1','acct_pid_alice','PLAID','ext_contested',now()),
-        ('pid_alice_2','acct_pid_alice','PLAID','ext_second',now()),
-        ('pid_bob_1','acct_pid_bob','PLAID','ext_contested',now()),
-        ('pid_bob_2','acct_pid_bob','PLAID','ext_second',now()),
-        ('pid_bob_own','acct_pid_bob','PLAID','ext_bob_only',now());`);
+        ('pid_alice_1','acct_pid_alice','PLAID','ext_alice_only',now()),
+        ('pid_bob_own','acct_pid_bob','PLAID','ext_bob_only',now()),
+        ('pid_w_alice','acct_pid_alice','WALLET','addr_shared',now()),
+        ('pid_w_bob','acct_pid_bob','WALLET','addr_shared',now()),
+        ('pid_w_x2','acct_pid_alice','WALLET','addr_alice_x2',now()),
+        ('pid_w_x3','acct_pid_alice','WALLET','addr_alice_x3',now());`);
     if (!pidSeed.ok) throw new Error(`PROVIDER-IDENTITY fixture failed: ${pidSeed.err.split("\n")[0]}`);
+    // THE FIXTURE IS ITSELF THE FIRST PROOF, and it is asserted rather than
+    // assumed: the WALLET rows above would be refused by a predicate that is
+    // broader than {PLAID}, so a successful seed is evidence the allowlist did
+    // not over-reach. A `provider <> 'WALLET'` index would also pass this —
+    // which is why the semantic predicate test lives in
+    // scripts/audit-provider-identity-constraints.ts and not here.
+    const pidRows = psql(h.ownerUrl,
+      `select count(*) from "ProviderAccountIdentity" where "financialAccountId" in ('acct_pid_replay','acct_pid_alice','acct_pid_bob');`).out.trim();
+    if (pidRows !== "8") throw new Error(`PROVIDER-IDENTITY fixture seeded ${pidRows} identity rows, expected 8`);
 
     const PID_ACCOUNTS = `'acct_pid_replay','acct_pid_alice','acct_pid_bob'`;
     /** Every identity row as `id=externalAccountId@account`, owner-side, ordered. */
@@ -2119,23 +2145,37 @@ async function main(): Promise<void> {
     // report. So the SAME statement, under the SAME role, is first shown
     // returning Bob's OWN row — and the owner connection supplies the
     // population the zero is a zero OF.
+    // RESTATED: the blindness premise is now measured on WALLET, the provider
+    // where two holders of one identity is the DESIGN rather than a defect, and
+    // the PLAID half asserts the restored theorem instead of its absence.
     {
       const ownerHolders = psql(h.ownerUrl,
-        `select count(*) from "ProviderAccountIdentity" where provider='PLAID' and "externalAccountId"='ext_contested';`).out.trim();
-      const bobSeesContested = asTenant("bob",
-        `select count(*) from "ProviderAccountIdentity" where provider='PLAID' and "externalAccountId"='ext_contested';`);
+        `select count(*) from "ProviderAccountIdentity" where provider='WALLET' and "externalAccountId"='addr_shared';`).out.trim();
+      const bobSeesShared = asTenant("bob",
+        `select count(*) from "ProviderAccountIdentity" where provider='WALLET' and "externalAccountId"='addr_shared';`);
       const bobSeesOwn = asTenant("bob",
         `select count(*) from "ProviderAccountIdentity" where provider='PLAID' and "externalAccountId"='ext_bob_only';`);
-      const aliceSeesContested = asTenant("alice",
-        `select count(*) from "ProviderAccountIdentity" where provider='PLAID' and "externalAccountId"='ext_contested';`);
-      check(81, "[role] TWO accounts hold the SAME PLAID identity and the database raises nothing; each tenant's role sees only its OWN holder — so a reread of the conflicting key under a tenant client is BLIND to the other half",
+      const aliceSeesShared = asTenant("alice",
+        `select count(*) from "ProviderAccountIdentity" where provider='WALLET' and "externalAccountId"='addr_shared';`);
+      // The PLAID half: the identity Bob holds is INVISIBLE to Alice's role, and
+      // the database nonetheless refuses her claim on it. §88 proves the refusal;
+      // this proves the invisibility it happens under, over a real denominator.
+      const aliceSeesBobsPlaid = asTenant("alice",
+        `select count(*) from "ProviderAccountIdentity" where provider='PLAID' and "externalAccountId"='ext_bob_only';`);
+      const ownerSeesBobsPlaid = psql(h.ownerUrl,
+        `select count(*) from "ProviderAccountIdentity" where provider='PLAID' and "externalAccountId"='ext_bob_only';`).out.trim();
+
+      check(81, "[role] TWO accounts legitimately hold the SAME WALLET identity (D2 Step 1D) and each tenant's role sees only its OWN holder, while a PLAID identity held by another tenant reads as EXACTLY ZERO under the writer's role though the owner connection proves it exists — the blindness every reread degrades through, measured on both providers",
         ownerHolders === "2"
           && bobSeesOwn.ok && bobSeesOwn.out.trim() === "1"
-          && bobSeesContested.ok && bobSeesContested.out.trim() === "1"
-          && aliceSeesContested.ok && aliceSeesContested.out.trim() === "1",
-        `ownerHolders=${ownerHolders} bobOwnRow=${bobSeesOwn.out.trim() || bobSeesOwn.err.split("\n")[0]} ` +
-        `bobOfContested=${bobSeesContested.out.trim() || bobSeesContested.err.split("\n")[0]} ` +
-        `aliceOfContested=${aliceSeesContested.out.trim() || aliceSeesContested.err.split("\n")[0]}`);
+          && bobSeesShared.ok && bobSeesShared.out.trim() === "1"
+          && aliceSeesShared.ok && aliceSeesShared.out.trim() === "1"
+          && ownerSeesBobsPlaid === "1"
+          && aliceSeesBobsPlaid.ok && aliceSeesBobsPlaid.out.trim() === "0",
+        `walletHolders=${ownerHolders} bobOwnPlaid=${bobSeesOwn.out.trim() || bobSeesOwn.err.split("\n")[0]} ` +
+        `bobOfShared=${bobSeesShared.out.trim() || bobSeesShared.err.split("\n")[0]} ` +
+        `aliceOfShared=${aliceSeesShared.out.trim() || aliceSeesShared.err.split("\n")[0]} | ` +
+        `bobsPlaid owner=${ownerSeesBobsPlaid} alice=${aliceSeesBobsPlaid.out.trim() || aliceSeesBobsPlaid.err.split("\n")[0]}`);
     }
 
     // ── 82 [service] A REPLAY IS A SUCCESS ──────────────────────────────────
@@ -2173,32 +2213,43 @@ async function main(): Promise<void> {
       check(82, "[service] a collision with THIS ACCOUNT'S OWN mapping is an idempotent replay — the write genuinely collides (the target is proven different from the row it repoints), nothing is thrown, and the POST-STATE proves not one identity row moved",
         first !== null && first.externalAccountId !== sibling
           && replayThrew === "(none)"
-          && after === before && before.split(",").length === 7,
+          && after === before && before.split(",").length === 8,
         `threw=${replayThrew} pickedRow=${first?.externalAccountId} repointedTo=${sibling} ` +
         `rows=${before.split(",").length} before=[${before}] after=[${after}]`);
     }
 
     // ── 83 [service] A CONTESTED IDENTITY IS REFUSED, AND NOTHING IS ADOPTED ─
-    // THE CASE THE OLD CATCH SWALLOWED. The write collides on Alice's own
-    // triple, the reread finds Bob's account also holding `ext_contested`, and
-    // PLAID identity is exclusive — so the verdict is DIFFERENT_ACCOUNT.
+    // RESTATED, AND STRONGER. Before 20261004000000 this case collided on
+    // Alice's own ACCOUNT-SCOPED triple and the verdict came from the
+    // exclusive-provider rule in the classifier. The write below is different:
+    // Alice's `acct_pid_alice` claims a PLAID identity her OTHER account
+    // already holds, which under the account-scoped triple alone WOULD HAVE
+    // SUCCEEDED — producing exactly the two-accounts-one-Plaid-identity state
+    // that made `syncTransactions.ts`'s `(provider, externalAccountId)` lookup
+    // order-dependent. Now the DATABASE refuses it, so `causeScoped` is
+    // asserted FALSE: the verdict is reached from a GLOBAL key, which is a
+    // claim about the constraint rather than about the classifier's opinion.
+    //
+    // Same owner deliberately, so the reread can SEE the holder and the verdict
+    // is DIFFERENT_ACCOUNT. The cross-owner half — where the reread is blind and
+    // the verdict must degrade to INDETERMINATE — is case 84.
     //
     // ⚠️ THE ASSERTION IS THE POST-STATE, NOT THE THROW. "It threw" is satisfied
     // by a function that throws at everything; what has to be true is that no
     // alternate destination was selected, no `financialAccountId` moved, and the
-    // four identity rows are byte-for-byte where they were. The `before` string
-    // is the denominator — four rows, named, with their accounts.
+    // identity rows are byte-for-byte where they were. The `before` string is
+    // the denominator — eight rows, named, with their accounts.
     {
       const before = identityState();
       const bobRowsBefore = psql(h.ownerUrl,
         `select count(*) from "ProviderAccountIdentity" where "financialAccountId"='acct_pid_bob';`).out.trim();
 
-      // Either address works: Bob holds BOTH of them, so whichever row
-      // `findFirst` picks, the address it collides on has a foreign holder.
       const current = await dbMod.db.providerAccountIdentity.findFirst({
         where: { financialAccountId: "acct_pid_alice", provider: PLAID },
       });
-      const contestedTarget = current?.externalAccountId === "ext_contested" ? "ext_second" : "ext_contested";
+      // Alice's OTHER account holds both of these; either is a foreign holder
+      // she can see, so the verdict does not depend on which row is picked.
+      const contestedTarget = "ext_replay_a";
 
       let name = "(no throw)", verdict = "(none)", count = -1, leaked = true;
       let realTarget = "(no cause)", causeIsCollision = false, causeScoped = false;
@@ -2210,16 +2261,16 @@ async function main(): Promise<void> {
           verdict = e.verdict;
           count = e.conflictingAccountCount;
           // The message travels into logs. It may not carry the provider's
-          // identifier, and it may not name the other tenant's account.
-          leaked = e.message.includes("ext_contested") || e.message.includes("acct_pid_bob");
+          // identifier, and it may not name the holding account.
+          leaked = e.message.includes("ext_replay_a") || e.message.includes("acct_pid_replay");
 
           // ⚠️ THE PARSER, CHECKED AGAINST THE DRIVER RATHER THAN AGAINST A
           // STRING SOMEONE WROTE. The preserved `cause` is the real P2002, and
           // `causeMetaTarget` in the detail below is whatever this Prisma and
           // this Postgres actually produced — a measurement, not a prediction.
-          // Proving the key parsed as ACCOUNT-SCOPED is what shows the verdict
-          // came from the exclusive-provider rule and not from a constraint
-          // misread as global.
+          // Proving the key parsed as GLOBAL is what shows the verdict came
+          // from the restored database constraint and not from the classifier's
+          // exclusive-provider opinion about an account-scoped collision.
           const cause = (e as { cause?: unknown }).cause;
           realTarget = JSON.stringify((cause as { meta?: { target?: unknown } })?.meta?.target ?? null);
           causeIsCollision = pid.isUniqueCollision(cause);
@@ -2230,12 +2281,12 @@ async function main(): Promise<void> {
       const bobRowsAfter = psql(h.ownerUrl,
         `select count(*) from "ProviderAccountIdentity" where "financialAccountId"='acct_pid_bob';`).out.trim();
 
-      check(83, "[service] the identity write REFUSES a provider identity another FinancialAccount already holds — typed verdict DIFFERENT_ACCOUNT reached from a correctly-parsed ACCOUNT-SCOPED key, no alternate destination adopted, every identity row and every FK exactly where it was, and nothing about the other tenant in the message",
+      check(83, "[service] the DATABASE refuses a PLAID identity another FinancialAccount already holds — a write that would have SUCCEEDED under the account-scoped triple alone — and it surfaces as typed DIFFERENT_ACCOUNT reached from a correctly-parsed GLOBAL key, no alternate destination adopted, every identity row and every FK exactly where it was, nothing about the holder in the message",
         current !== null && current.externalAccountId !== contestedTarget
           && name === "ProviderIdentityConflictError" && verdict === "DIFFERENT_ACCOUNT" && count === 1
-          && causeIsCollision && causeScoped
-          && !leaked && after === before && before.split(",").length === 7
-          && bobRowsAfter === bobRowsBefore && bobRowsBefore === "3",
+          && causeIsCollision && !causeScoped
+          && !leaked && after === before && before.split(",").length === 8
+          && bobRowsAfter === bobRowsBefore && bobRowsBefore === "2",
         `threw=${name}/${verdict} holders=${count} leakedIdentifier=${leaked} picked=${current?.externalAccountId} target=${contestedTarget} ` +
         `causeMetaTarget=${realTarget} causeIsCollision=${causeIsCollision} causeAccountScoped=${causeScoped} ` +
         `rows=${before.split(",").length} before=[${before}] after=[${after}] bobRows=${bobRowsBefore}->${bobRowsAfter}`);
@@ -2255,8 +2306,8 @@ async function main(): Promise<void> {
     // CLIENT, because `dualWriteProviderAccountIdentity` does not accept one
     // yet — that conversion is a separate slice.
     {
-      const readBoth = async (externalAccountId: string) => {
-        const key = { provider: PLAID, externalAccountId };
+      const readBoth = async (externalAccountId: string, provider = PLAID) => {
+        const key = { provider, externalAccountId };
         const privileged = await dbMod.db.providerAccountIdentity.findMany({
           where: key, select: { financialAccountId: true },
         });
@@ -2281,30 +2332,47 @@ async function main(): Promise<void> {
       const globalPriv  = asking(onlyBobs.privileged, false);
       const globalBlind = asking(onlyBobs.blinded,    false);
 
-      // ── HALF TWO: THE MEASURED LIMIT, PINNED RATHER THAN ASSERTED AWAY.
-      //    `ext_contested` is held by Alice AND Bob. The collision is on
-      //    Alice's OWN account-scoped key, so her reread legitimately finds her
-      //    own row and the verdict is SAME_ACCOUNT — while the privileged read
-      //    of the IDENTICAL key sees the foreign holder and says
-      //    DIFFERENT_ACCOUNT.
+      // ── HALF TWO: THE LIMIT, NOW CONFINED TO THE PROVIDER WHERE SHARING IS
+      //    LEGAL — WHICH IS WHAT THIS SLICE CHANGED.
       //
-      //    ⚠️ THIS ONE IS NOT FIXABLE AT THIS BOUNDARY AND IS NOT PRETENDED
-      //    AWAY. Seeing a holder RLS hides needs an escalated read, which is
-      //    precisely the confused-deputy path this classifier exists without.
-      //    What protects PLAID in practice is a constraint RLS does not filter
-      //    — `FinancialAccount.plaidAccountId @unique` — not anything here. The
-      //    pin exists so that the day this verdict changes, it changes VISIBLY.
-      const contested = await readBoth("ext_contested");
-      const scopedPriv  = asking(contested.privileged, true);
-      const scopedBlind = asking(contested.blinded,    true);
+      //    This half used to read `ext_contested`, a PLAID identity held by
+      //    Alice AND Bob, and pinned a divergence: Alice's blind reread of her
+      //    own account-scoped key said SAME_ACCOUNT while a privileged read of
+      //    the identical key said DIFFERENT_ACCOUNT. The comment recorded why
+      //    it was unfixable here, and named what actually protected PLAID:
+      //    "a constraint RLS does not filter — FinancialAccount.plaidAccountId
+      //    @unique — not anything here. The pin exists so that the day this
+      //    verdict changes, it changes VISIBLY."
+      //
+      //    ⚠️ THAT DAY IS THIS MIGRATION, AND THE VERDICT DID NOT MOVE — THE
+      //    SHAPE DID. For PLAID the divergence is no longer REACHABLE:
+      //    20261004000000 makes the two-holder state unconstructible, so there
+      //    is no PLAID identity left for a blind reread to half-see, and the
+      //    constraint doing the protecting is now this table's own rather than
+      //    FinancialAccount.plaidAccountId's.
+      //
+      //    The shape that remains is WALLET's, and there the two reads AGREE —
+      //    both SAME_ACCOUNT. That is not the old divergence relocated; it is
+      //    the old divergence ABSENT, for the reason that matters: on the one
+      //    provider where coexistence is the design, a co-holder is not evidence
+      //    of anything, so being blind to it costs nothing. Measured here rather
+      //    than argued, because "the limit moved to WALLET" was the obvious
+      //    guess and it is wrong.
+      const shared = await readBoth("addr_shared", WALLET);
+      const askWallet = (rows: Array<{ financialAccountId: string }>, accountScopedKey: boolean) =>
+        pid.classifyProviderIdentityConflictRows({
+          rows, financialAccountId: "acct_pid_alice", provider: WALLET, accountScopedKey,
+        }).verdict as string;
+      const scopedPriv  = askWallet(shared.privileged, true);
+      const scopedBlind = askWallet(shared.blinded,    true);
 
-      check(84, "[role] a conflicting key held only by ANOTHER tenant reads EMPTY under the writer's own role, and the shipped classifier degrades that to INDETERMINATE — a refusal, never 'no conflict, carry on'; the account-scoped collision's documented LIMIT (blind SAME_ACCOUNT vs privileged DIFFERENT_ACCOUNT) is pinned beside it",
+      check(84, "[role] a conflicting key held only by ANOTHER tenant reads EMPTY under the writer's own role and the shipped classifier degrades that to INDETERMINATE — a refusal, never 'no conflict, carry on'; and the blind-vs-privileged divergence this case used to pin for PLAID is now UNREACHABLE by construction, while WALLET's surviving two-holder shape has the two reads AGREEING because coexistence is legitimate there",
         onlyBobs.privileged.length === 1 && onlyBobs.blinded.length === 0
           && globalPriv === "DIFFERENT_ACCOUNT" && globalBlind === "INDETERMINATE"
-          && contested.privileged.length === 2 && contested.blinded.length === 1
-          && scopedPriv === "DIFFERENT_ACCOUNT" && scopedBlind === "SAME_ACCOUNT",
-        `globalKey: rows ${onlyBobs.privileged.length}->${onlyBobs.blinded.length} verdict ${globalPriv}->${globalBlind} | ` +
-        `accountScopedKey: rows ${contested.privileged.length}->${contested.blinded.length} verdict ${scopedPriv}->${scopedBlind}`);
+          && shared.privileged.length === 2 && shared.blinded.length === 1
+          && scopedPriv === "SAME_ACCOUNT" && scopedBlind === "SAME_ACCOUNT",
+        `globalKey(PLAID): rows ${onlyBobs.privileged.length}->${onlyBobs.blinded.length} verdict ${globalPriv}->${globalBlind} | ` +
+        `accountScopedKey(WALLET): rows ${shared.privileged.length}->${shared.blinded.length} verdict ${scopedPriv}->${scopedBlind}`);
     }
 
     // ── 85 [service] THE OTHER THING THE CATCH WAS SWALLOWING ───────────────
@@ -2349,6 +2417,104 @@ async function main(): Promise<void> {
           && refusalIsAuthority && !refusalIsCollision,
         `unknown=${unknownName} asConflict=${unknownIsConflict} asAuthority=${unknownIsAuthority} rowsWritten=${orphanRows} | ` +
         `refusal=${refusalSeen} isAuthority=${refusalIsAuthority} isCollision=${refusalIsCollision}`);
+    }
+
+    // ── 88 [role] THE DATABASE ENFORCES A THEOREM THE TENANT CANNOT OBSERVE ──
+    // THE HEADLINE OF THIS SLICE, and the reason the constraint is allowed to be
+    // the authority instead of an application lookup.
+    //
+    // Alice, on the real `fm_app` role with her own identity bound, writes an
+    // identity row onto HER OWN account — so the policy's WITH CHECK is
+    // satisfied and there is no authority question — naming a PLAID
+    // externalAccountId that BOB holds. Postgres refuses it with 23505 on the
+    // partial unique index, which no RLS policy filters.
+    //
+    // ⚠️ THE TWO HALVES TOGETHER ARE THE CLAIM, AND NEITHER ALONE IS. "The
+    // insert was refused" is also what a policy denial looks like, so the
+    // SQLSTATE is read and asserted to be 23505 and NOT 42501 — a collision,
+    // not a refusal. And "Alice cannot see Bob's row" is also what an empty
+    // table looks like, so the owner connection supplies the population the
+    // zero is a zero OF, and Alice is shown reading her OWN identity row with
+    // the same statement shape under the same role.
+    //
+    // This is what makes the escalation unnecessary: the database already knows
+    // the thing the application would have needed a privileged read to learn,
+    // and it refuses without telling Alice whose row it is.
+    {
+      const before = identityState();
+      const attempt = asTenant("alice",
+        `insert into "ProviderAccountIdentity" (id,"financialAccountId",provider,"externalAccountId","createdAt")
+         values ('pid_alice_steal','acct_pid_alice','PLAID','ext_bob_only',now());`);
+      const after = identityState();
+
+      const err = attempt.err ?? "";
+      const is23505 = /\b23505\b/.test(err) || /duplicate key value violates unique constraint/i.test(err);
+      const is42501 = /\b42501\b/.test(err) || /row-level security/i.test(err);
+      // The message Postgres emits names the INDEX. It must not name Bob's
+      // account or user — the index key is (provider, externalAccountId), so the
+      // detail line carries the identity, never the holder.
+      const namesHolder = /acct_pid_bob/.test(err) || /\bbob\b/.test(err);
+
+      const aliceSeesTarget = asTenant("alice",
+        `select count(*) from "ProviderAccountIdentity" where provider='PLAID' and "externalAccountId"='ext_bob_only';`);
+      const aliceSeesOwn = asTenant("alice",
+        `select count(*) from "ProviderAccountIdentity" where provider='PLAID' and "externalAccountId"='ext_alice_only';`);
+      const ownerSeesTarget = psql(h.ownerUrl,
+        `select count(*) from "ProviderAccountIdentity" where provider='PLAID' and "externalAccountId"='ext_bob_only';`).out.trim();
+
+      check(88, "[role] on the REAL fm_app role, writing to HER OWN account so no policy is in question, Alice is refused a PLAID identity Bob holds — by the unique index (23505) and NOT by a policy (42501) — while that row reads as exactly 0 under her role and 1 under the owner's, and the error names the index but never the holder; so the database enforces global exclusivity over data the writer is blind to, with no privileged lookup anywhere",
+        !attempt.ok && is23505 && !is42501 && !namesHolder
+          && after === before
+          && ownerSeesTarget === "1"
+          && aliceSeesTarget.ok && aliceSeesTarget.out.trim() === "0"
+          && aliceSeesOwn.ok && aliceSeesOwn.out.trim() === "1",
+        `refused=${!attempt.ok} 23505=${is23505} 42501=${is42501} namesHolder=${namesHolder} ` +
+        `target owner=${ownerSeesTarget} alice=${aliceSeesTarget.out.trim() || "ERR"} aliceOwnRow=${aliceSeesOwn.out.trim() || "ERR"} ` +
+        `unchanged=${after === before} err=${err.replace(/\s+/g, " ").slice(0, 120)}`);
+    }
+
+    // ── 89 [role] WALLET KEEPS ITS MULTI-BINDING, AND xpub KEEPS ITS MANY ────
+    // The allowlist's other half, measured on a real role rather than inferred
+    // from the predicate. A `provider <> 'WALLET'` index would pass case 88 and
+    // fail here; an index with no predicate at all would fail both halves.
+    //
+    // Both writes are Alice's own account, so again no policy is in question —
+    // the only thing that can refuse these is a constraint, and nothing should.
+    {
+      const walletCross = asTenant("alice",
+        `insert into "ProviderAccountIdentity" (id,"financialAccountId",provider,"externalAccountId","createdAt")
+         values ('pid_w_alice2','acct_pid_alice','WALLET','addr_bob_only_w',now());`);
+      // Seed Bob's holder of the SAME address first, owner-side, then have Alice
+      // claim it too — the cross-owner multi-binding D2 Step 1D exists for.
+      psql(h.ownerUrl,
+        `insert into "ProviderAccountIdentity" (id,"financialAccountId",provider,"externalAccountId","createdAt")
+         values ('pid_w_bob2','acct_pid_bob','WALLET','addr_cross_owner',now());`);
+      const walletShared = asTenant("alice",
+        `insert into "ProviderAccountIdentity" (id,"financialAccountId",provider,"externalAccountId","createdAt")
+         values ('pid_w_alice3','acct_pid_alice','WALLET','addr_cross_owner',now());`);
+      // xpub: a fourth address on an account that already holds three.
+      const xpub = asTenant("alice",
+        `insert into "ProviderAccountIdentity" (id,"financialAccountId",provider,"externalAccountId","createdAt")
+         values ('pid_w_alice4','acct_pid_alice','WALLET','addr_alice_x4',now());`);
+
+      const crossHolders = psql(h.ownerUrl,
+        `select count(distinct "financialAccountId") from "ProviderAccountIdentity" where provider='WALLET' and "externalAccountId"='addr_cross_owner';`).out.trim();
+      const aliceAddrs = psql(h.ownerUrl,
+        `select count(*) from "ProviderAccountIdentity" where provider='WALLET' and "financialAccountId"='acct_pid_alice';`).out.trim();
+      // And the control: the SAME address twice on ONE account is still refused
+      // by the triple this migration kept rather than replaced.
+      const sameTwice = asTenant("alice",
+        `insert into "ProviderAccountIdentity" (id,"financialAccountId",provider,"externalAccountId","createdAt")
+         values ('pid_w_dupe','acct_pid_alice','WALLET','addr_alice_x4',now());`);
+
+      // 3 seeded (addr_shared, addr_alice_x2, addr_alice_x3) + 3 inserted above.
+      check(89, "[role] WALLET multi-binding survives on a real fm_app role — one address held by TWO owners' accounts, and SIX addresses held by ONE account (xpub) — while the same address twice on the SAME account is still refused by the account-scoped triple the migration kept; so the allowlist widened nothing and narrowed nothing for WALLET",
+        walletCross.ok && walletShared.ok && xpub.ok
+          && crossHolders === "2" && aliceAddrs === "6"
+          && !sameTwice.ok,
+        `crossOwnerInsert=${walletShared.ok} ownAddrInsert=${walletCross.ok} xpubInsert=${xpub.ok} ` +
+        `crossOwnerHolders=${crossHolders} aliceWalletAddrs=${aliceAddrs} sameAddrTwiceRefused=${!sameTwice.ok} ` +
+        `${walletShared.ok ? "" : `err=${(walletShared.err ?? "").replace(/\s+/g, " ").slice(0, 110)}`}`);
     }
 
     // The block's fixtures go away with the accounts that own them — the

@@ -195,6 +195,24 @@ export const AUDITS: readonly AuditEntry[] = [
           "transaction-local",
   },
   {
+    // PLAID identity exclusivity. needsDb BECAUSE THAT IS THE POINT: the two
+    // partial unique indexes it asserts are hand-written raw SQL that NO Prisma
+    // schema block declares, so a source scan cannot see them and `prisma
+    // migrate dev` would silently take them away. It reads the INSTALLED
+    // catalog, and its predicate test is semantic — it evaluates the stored
+    // predicate against every ProviderType member and asserts the admitted set
+    // is exactly {PLAID}, which is what separates the intended allowlist from
+    // the `<> 'WALLET'` denylist that would enrol four undesigned providers.
+    // Also carries the read-only duplicate PREFLIGHT to run before deploying
+    // the index to any persistent environment.
+    name: "audit-provider-identity-constraints", tier: "REQUIRED", needsDb: true,
+    what: "a PLAID externalAccountId binds at most one FinancialAccount globally, enforced by an " +
+          "INSTALLED partial unique index whose predicate admits exactly {PLAID} and whose name cannot " +
+          "be misread as account-scoped, while WALLET multi-binding and xpub multi-address stay " +
+          "permitted, the account-scoped triple is kept rather than replaced, and KD-5's " +
+          "one-HOME-per-account partial unique is still installed",
+  },
+  {
     // W2 — goals tombstone. Source-only: the corpus it audits is the repository.
     name: "audit-goals-tombstone", tier: "REQUIRED", needsDb: false,
     what: "no runtime path reads, writes, or speaks retired goal state — Goals/Retirement are " +

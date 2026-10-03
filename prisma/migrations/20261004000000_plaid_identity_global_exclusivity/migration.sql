@@ -1,0 +1,94 @@
+-- PLAID IDENTITY EXCLUSIVITY — THE THEOREM THE JUNE RELAXATION TOOK AWAY FROM A
+-- PROVIDER IT WAS NOT RELAXING
+--
+-- ══ WHAT WAS LOST, AND WHY IT WAS NOT NOTICED ═══════════════════════════════
+--
+-- 20260627180853 (D2 Step 1D) replaced
+--
+--     @@unique([provider, externalAccountId])
+--  with
+--     @@unique([provider, externalAccountId, financialAccountId])
+--
+-- for a real and still-correct reason: a WALLET identity is a PUBLIC EXTERNAL
+-- FACT, and two owners' private interpretations of the same public address must
+-- be able to coexist. That reason applies to WALLET. The change applied to
+-- EVERY provider.
+--
+-- The migration's own note said PLAID was unaffected "because
+-- FinancialAccount.plaidAccountId already carries its own @unique". That is a
+-- statement about a DIFFERENT TABLE. It is true, and it is not this theorem:
+-- ProviderAccountIdentity stopped being able to say "this Plaid account belongs
+-- to one FinancialAccount", while the code that reads it went on assuming it
+-- could. `syncTransactions.ts` resolves a transaction's destination through
+-- `(provider, externalAccountId)` — a key that, since June, NAMES A ROW WITHOUT
+-- NAMING AN ACCOUNT.
+--
+-- ══ THE THEOREM, RESTORED FOR EXACTLY ONE PROVIDER ══════════════════════════
+--
+--     provider = PLAID   → externalAccountId binds AT MOST ONE FinancialAccount
+--     provider = WALLET  → externalAccountId may bind MANY (D2 Step 1D, intact)
+--     everything else    → INHERITS NOTHING
+--
+-- ⚠️ THE PREDICATE IS A POSITIVE ALLOWLIST, AND THAT IS THE WHOLE DESIGN. The
+-- obvious spelling — `WHERE provider <> 'WALLET'` — is WRONG, and not subtly:
+-- ProviderType today is PLAID, MANUAL, WALLET, CSV, EXCHANGE, BROKERAGE. Four
+-- of those six have no documented cardinality design at all, and a future
+-- seventh would be silently enrolled into Plaid's semantics by a migration
+-- nobody would think to revisit. A provider has to be NAMED to be constrained.
+-- The same reasoning already governs the application-tier set
+-- PROVIDER_IDENTITY_MAY_BE_SHARED_ACROSS_ACCOUNTS in
+-- lib/accounts/provider-identity.ts, which is an allowlist for the mirror-image
+-- reason. The two now agree in shape as well as in content.
+--
+-- ══ THE TRIPLE IS KEPT, NOT REPLACED ════════════════════════════════════════
+-- It is the only thing preventing the same address twice ON ONE ACCOUNT, which
+-- is still a real error for every provider including WALLET, and it is what
+-- makes a same-account replay collide and classify as SAME_ACCOUNT. This
+-- migration is purely ADDITIVE: one index, no column, table, enum or data
+-- change.
+--
+-- ══ WHY THE NAME AVOIDS THE STEM `financia` ═════════════════════════════════
+-- Not cosmetic. `conflictKeyIsAccountScoped()` decides "did I collide with my
+-- own row, or with whoever holds this identity" by testing the driver's
+-- `meta.target` for `/financia/i`, and the stem rather than the full column
+-- name BECAUSE POSTGRES TRUNCATES INDEX NAMES AT 63 CHARACTERS — the existing
+-- triple reads, mid-word and measured:
+--
+--     ProviderAccountIdentity_provider_externalAccountId_financia_key
+--
+-- If Prisma reports an index NAME for a collision on the index below, a name
+-- containing that stem would make a GLOBAL collision parse as ACCOUNT-SCOPED —
+-- i.e. "I collided with my own row" — which is the one misreading that turns a
+-- contested identity into a silent success. 53 characters, no stem, no
+-- truncation. scripts/audit-provider-identity-constraints.ts asserts both
+-- properties against the INSTALLED index rather than against this file.
+--
+-- ══ PRE-FLIGHT ══════════════════════════════════════════════════════════════
+-- This statement FAILS, loudly and without touching a row, if any PLAID
+-- externalAccountId is already held by more than one FinancialAccount. That is
+-- deliberate: such a pair is a contested identity and the choice of winner is
+-- not a migration's to make. Measured read-only on the dev corpus before
+-- writing this file — PLAID: 11 rows, 11 distinct externalAccountId, 11
+-- distinct financialAccountId; duplicate holders 0 — so it is a no-op there.
+-- Re-run scripts/audit-provider-identity-constraints.ts (PREFLIGHT section)
+-- against any other environment BEFORE deploying, and if it reports a
+-- duplicate: stop and classify it. Do not pick a winner.
+--
+-- ⚠️ CREATE UNIQUE INDEX (not CONCURRENTLY) because Prisma's migration runner
+-- wraps each migration in a transaction and CONCURRENTLY cannot run inside one.
+-- The table is small (14 rows on dev) and the lock is brief.
+--
+-- Rollback: DROP INDEX "ProviderAccountIdentity_plaid_external_account_unique";
+--           — and if you do, the June hole reopens. Say so in the commit.
+
+-- ⚠️ `provider` IS IN THE KEY THOUGH THE PREDICATE PINS IT CONSTANT. Logically
+-- redundant — within this index `provider` is always 'PLAID', so
+-- ("externalAccountId") alone enforces the identical theorem. It is named
+-- anyway, because the key columns are what a reader and an introspection guard
+-- see first, and `UNIQUE (provider, externalAccountId) WHERE provider = 'PLAID'`
+-- states the theorem in the same words the design does. The cost is one
+-- constant column in a 14-row index.
+
+CREATE UNIQUE INDEX "ProviderAccountIdentity_plaid_external_account_unique"
+    ON "ProviderAccountIdentity" (provider, "externalAccountId")
+    WHERE provider = 'PLAID';

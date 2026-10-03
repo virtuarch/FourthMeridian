@@ -1118,6 +1118,30 @@ model ProviderAccountIdentity {
   // PLAID is unaffected: FinancialAccount.plaidAccountId already carries its
   // own independent @unique, so this relaxation doesn't change PLAID's
   // real-world uniqueness guarantee.
+  // ⚠️ PLAID EXCLUSIVITY IS A PARTIAL UNIQUE INDEX THIS BLOCK CANNOT DECLARE.
+  // The relaxation above is correct FOR WALLET and was applied to every
+  // provider; its note that "PLAID is unaffected" rests on
+  // FinancialAccount.plaidAccountId @unique, which is a different table. So
+  // from June until 20261004000000 this table could not say "this Plaid
+  // account belongs to one FinancialAccount" while syncTransactions.ts went on
+  // resolving a transaction's destination through (provider,
+  // externalAccountId) — a key that names a ROW WITHOUT NAMING AN ACCOUNT.
+  // Restored as, and readable only in, raw SQL (Prisma has no
+  // partial-unique-index syntax — same reason as KD-5's
+  // SpaceAccountLink_one_home_per_account):
+  //
+  //   ProviderAccountIdentity_plaid_external_account_unique
+  //     UNIQUE (provider, externalAccountId) WHERE provider = 'PLAID'
+  //
+  // A POSITIVE ALLOWLIST, never `WHERE provider <> 'WALLET'`: ProviderType has
+  // six members and four of them (MANUAL, CSV, EXCHANGE, BROKERAGE) have no
+  // cardinality design at all, so a denylist would enrol them — and any future
+  // seventh — into Plaid's semantics silently. A provider must be NAMED to be
+  // constrained.
+  // Because no schema block declares it, `prisma migrate dev` would take it
+  // away without a word; scripts/audit-provider-identity-constraints.ts is a
+  // REQUIRED audit that reads the INSTALLED catalog and evaluates the stored
+  // predicate against every enum member, so the loss is loud.
   @@unique([provider, externalAccountId, financialAccountId])
   // Wallet Provider v4 (xpub) — the previous @@unique([provider,
   // financialAccountId]) was DROPPED here. It allowed at most one identity per
