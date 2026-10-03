@@ -7,14 +7,17 @@
  * Every consumer that needs to know what the scheduler can attempt — the Policies
  * read model, the setting validator, job health — asks HERE. Nothing else may
  * hold a list of honourable cadences or an attempt period: they are derived from
- * SCHEDULED_JOBS (`refreshes` + fire slots, lib/jobs/cadence.ts) at call time,
+ * SCHEDULED_JOB_FACTS (`refreshes` + fire slots, lib/jobs/cadence.ts) at call time,
  * and lib/jobs/cadence.test.ts pins that derivation to vercel.json.
  *
- * Import-light: the registry dynamic-imports its job bodies, so binding to it
- * costs nothing at module load and works in any credential-free context.
+ * Reads the scheduling FACTS (lib/jobs/registry.core.ts), never the executable
+ * registry: this module is on the auth path (lib/auth.ts → platform-settings →
+ * here), and the executable registry's dynamic-imported job bodies are
+ * compiled into every route that reaches it (PERF-1; 34e592c had pulled the
+ * jobs tree and the Plaid SDK into every authenticated route this way).
  */
 
-import { SCHEDULED_JOBS } from "@/lib/jobs/registry";
+import { SCHEDULED_JOB_FACTS } from "@/lib/jobs/registry.core";
 import { attemptPeriodHours, attemptSlotsUTC, refreshFamily, type SlotFacts } from "@/lib/jobs/cadence";
 import {
   REFRESH_CADENCES, assessCadence,
@@ -41,7 +44,7 @@ const SOURCE_NOUN: Record<RefreshSourceKind, string> = { BANK: "bank", WALLET: "
 /** The deployed scheduler's capability for one source kind, from the registry. */
 export function schedulerCapability(
   sourceKind: RefreshSourceKind,
-  jobs: readonly SlotFacts[] = SCHEDULED_JOBS,
+  jobs: readonly SlotFacts[] = SCHEDULED_JOB_FACTS,
 ): RefreshSchedulerCapability {
   const period = attemptPeriodHours(jobs, sourceKind);
   const family = refreshFamily(jobs, sourceKind);
@@ -59,7 +62,7 @@ export function schedulerCapability(
 
 /** Both source kinds at once. */
 export function schedulerCapabilities(
-  jobs: readonly SlotFacts[] = SCHEDULED_JOBS,
+  jobs: readonly SlotFacts[] = SCHEDULED_JOB_FACTS,
 ): Readonly<Record<RefreshSourceKind, RefreshSchedulerCapability>> {
   return { BANK: schedulerCapability("BANK", jobs), WALLET: schedulerCapability("WALLET", jobs) };
 }
@@ -68,7 +71,7 @@ export function schedulerCapabilities(
 export function cadenceIsHonourable(
   sourceKind: RefreshSourceKind,
   cadence: RefreshCadence,
-  jobs: readonly SlotFacts[] = SCHEDULED_JOBS,
+  jobs: readonly SlotFacts[] = SCHEDULED_JOB_FACTS,
 ): CadenceAssessment {
   return assessCadence(cadence, attemptPeriodHours(jobs, sourceKind), SOURCE_NOUN[sourceKind]);
 }
